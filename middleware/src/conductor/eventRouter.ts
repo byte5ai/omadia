@@ -3,6 +3,7 @@ import type { JsonObject, Predicate } from '@omadia/conductor-core';
 
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunExecutor } from './runExecutor.js';
+import { sanitizeRunContext } from './runContext.js';
 
 export interface EmitResult {
   eventId: string;
@@ -16,8 +17,11 @@ export interface EmitResult {
  * route emits its endpoint's configured `eventId` here, exactly like any other domain event; a
  * `webhook` trigger is `event`'s sibling matched the same way, not a separate mechanism), in its
  * active version graph (an `eventId` plus an optional payload `filter` predicate). A matching
- * emit starts a run with the validated payload as initial context (US4 / FR-013). This is the
- * kernel side of the Conductor Surface; a connector calls it (today via the operator emit route
+ * emit starts a run with the validated payload as initial context (US4 / FR-013), minus the
+ * executor-owned keys (#1702 — see runContext.ts: an inbound payload must not
+ * steer the loop budget or fake step results, and a trigger `filter` is
+ * evaluated against the same sanitized context the run will actually see).
+ * This is the kernel side of the Conductor Surface; a connector calls it (today via the operator emit route
  * and the inbound webhook route; `ctx.events.emit` for plugins is a follow-up).
  */
 export class ConductorEventRouter {
@@ -29,7 +33,12 @@ export class ConductorEventRouter {
     },
   ) {}
 
-  async emit(eventId: string, payload: JsonObject, sourcePluginId?: string): Promise<EmitResult> {
+  async emit(eventId: string, rawPayload: JsonObject, sourcePluginId?: string): Promise<EmitResult> {
+    // #1702 — strip the executor-owned keys once, before anything reads the
+    // payload, so the trigger filter and the run share one context. startRun
+    // strips too (it is the chokepoint for every trigger kind); this call is
+    // what keeps `filter` from matching on a key the run will not have.
+    const payload = sanitizeRunContext(rawPayload);
     const workflows = await this.deps.workflowStore.list();
     const started: Array<{ workflowSlug: string; runId: string }> = [];
     let matched = 0;

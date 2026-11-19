@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { execSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -90,6 +91,7 @@ import { createNonPersonalFieldsEditor } from './privacy/fieldClassification/con
 import { PgFieldClassificationStore } from './privacy/fieldClassification/store.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME, perCallerService } from '@omadia/plugin-api';
 import { TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
+import { archetypeProcessesServiceName, type ArchetypeProcessesService } from '@omadia/plugin-api';
 import type { TranscriptionService } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
 import { createReceiptRoutes } from './receipts/routes.js';
@@ -116,7 +118,7 @@ import {
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
-import { resolveScopedBundle } from '@omadia/orchestrator';
+import { FACILITATOR_ARCHETYPE, archetypeAdds, archetypeOf, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, resolveScopedBundle } from '@omadia/orchestrator';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
   OrchestratorRegistry as MultiOrchestratorRegistry,
@@ -414,6 +416,33 @@ import {
   createPendingDefaultAttach,
   withInstalledParents,
 } from './plugins/defaultOrchestratorAttach.js';
+import {
+  createSqlGrantView,
+  facilitatorGrantablePluginIds,
+  resolveFacilitationEngine,
+  type FacilitationEngineSources,
+} from './platform/facilitatorGuard.js';
+import {
+  createFacilitatorRuntimeLookup,
+  FACILITATOR_CONVERSATIONS_SERVICE,
+} from './platform/facilitatorRuntimeService.js';
+import { publishSendServices } from './channels/sendServicesWiring.js';
+import { publishAgentTurnService } from './agents/agentTurnWiring.js';
+import { ChannelProviderRegistry } from './channels/sessionCapabilities/providerRegistry.js';
+import { wireSessionCapabilities } from './channels/sessionCapabilities/wiring.js';
+import { attachEngineToFacilitators } from './platform/facilitatorEngineAttach.js';
+import { createArchetypeRegistrySync } from './platform/archetypeRegistrySync.js';
+import { wireExecutionAuthorization, type ExecutionWiring } from './execution/wiring.js';
+import { createArchetypeDatabase } from './platform/archetypeDatabase.js';
+import { pluginRuntimeOf } from './plugins/pluginRuntimeOf.js';
+import { createAgentEndOfService, logOwedSystemNotice } from './platform/agentEndOfService.js';
+import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
+import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
+import { createOperatorExecutionRouter } from './routes/operatorExecution.js';
+import {
+  wireConversationMessages,
+  type ConversationMessagesWiring,
+} from './channels/conversationMessages/wiring.js';
 import { warmPatternWorker } from './plugins/setupFieldPattern.js';
 import { BuiltInPackageStore } from './plugins/builtInPackageStore.js';
 import { LocalDevPackageStore } from './plugins/localDevPackageStore.js';
@@ -554,12 +583,15 @@ import { TargetedSendRegistry } from './channels/targetedSendRegistry.js';
 import { createTargetedDeliveryService } from './channels/targetedDeliveryService.js';
 import { ConversationSendRegistry } from './channels/conversationSendRegistry.js';
 import { createConversationSendService } from './channels/conversationSendService.js';
+import { createOwnIdentityPostLog } from './channels/ownIdentityPostLog.js';
+import { publishConversationRostersService } from './channels/rosterService.js';
 import { ObservedConversationInvites } from './platform/observedConversationInvites.js';
 import { PgObservedInvitePersistence } from './platform/observedInvitePersistence.js';
-import { createAgentSetupServices } from './platform/agentSetupService.js';
-import { createScopedRoleAssignments } from './conductor/scopedRoleAssignments.js';
+import { startEphemeralAttachmentSweep } from './platform/ephemeralAttachmentSweep.js';
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
 import type { AggregateHolderLookup, ChannelRegistry, ChannelBindingResolver } from '@omadia/channel-sdk';
+import type { ChannelReadinessProvider, MeetingSourceProvider } from '@omadia/channel-sdk';
+import { InMemoryDisclosureSeenStore } from '@omadia/channel-sdk';
 import { DynamicChannelPluginResolver } from './channels/dynamicChannelResolver.js';
 import type { TurnDispatcher } from './channels/coreApi.js';
 import { createOrchestratorDispatcher } from './channels/orchestratorDispatcher.js';
@@ -573,6 +605,7 @@ import type {
   KnowledgeGraph,
 } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
+import { scramOnlyPoolOptions } from '@omadia/knowledge-graph-neon';
 import type {
   ChatAgent,
   ChatAgentBundle,
@@ -804,12 +837,41 @@ async function main(): Promise<void> {
   const targetedSendRegistry = new TargetedSendRegistry(registryLog);
   const conversationSendRegistry = new ConversationSendRegistry(registryLog);
   const conversationEventHub = new ConversationEventHub(registryLog);
+  // #2043 — set once the message hub is wired (database block, further down).
+  // A holder, because the plugin install / uninstall hooks defined before
+  // that block ask it to re-check subscriptions.
+  const conversationMessagesRef: { current?: ConversationMessagesWiring } = {};
+  // #2090 — set once the database pool exists (execution scopes, reservations).
+  const executionRef: { current?: ExecutionWiring } = {};
+  // #2043 — channel readiness providers and meeting sources (same lifecycle).
+  const readinessProviderRegistry = new ChannelProviderRegistry<ChannelReadinessProvider>(
+    'readiness',
+    registryLog,
+  );
+  const meetingSourceRegistry = new ChannelProviderRegistry<MeetingSourceProvider>(
+    'meetingSource',
+    registryLog,
+  );
   // #330 C2a — kernel-side invite index: subscribes directly at the hub (before
   // any plugin) and is the scope guard for plugin auto-binds. A plugin can only
   // bind conversations the transport actually reported a group bot_added for.
   const observedInvites = new ObservedConversationInvites({ log: (m) => console.log(`[middleware] ${m}`) });
   observedInvites.attach(conversationEventHub);
-  serviceRegistry.provide('conversationRosters', conversationRosterRegistry);
+  // #2043 — per caller: only the facilitation engine may read a roster as an
+  // agent (`{ agentSlug }`), and the kernel resolves that agent's identity.
+  publishConversationRostersService({
+    serviceRegistry,
+    registry: conversationRosterRegistry,
+    identityFor: (agentSlug, channelType) =>
+      serviceRegistry
+        .get<MultiOrchestratorRegistry>('orchestratorRegistry')
+        ?.channelIdentityFor(agentSlug, channelType),
+    isEngine: (pluginId) => {
+      const engine = resolveFacilitationEngine(facilitationEngineSources());
+      return engine.state === 'bound' && engine.pluginId === pluginId;
+    },
+    log: (m) => console.log(m),
+  });
   // Subscribe-only facade: agent plugins may LISTEN for membership events, but
   // emitting stays a channel-adapter privilege (CoreApi). A service-published
   // emit() would let any granted plugin spoof `bot_added` — the Facilitator's
@@ -1097,6 +1159,62 @@ async function main(): Promise<void> {
     INSTALLED_REGISTRY_PATH,
   );
   await installedRegistry.load();
+  // #2043 — which plugin is the facilitation engine: the one that declares
+  // the capability AND that the operator granted its SQL ledger (the trust
+  // step). One helper, so every consumer resolves the engine the same way.
+  const ownIdentityPostLog = createOwnIdentityPostLog();
+  const facilitationSqlGrants = createSqlGrantView({
+    listGranted: async () => (await sqlGrantStore.listAll()).map((row) => row.pluginId),
+    log: (m) => console.log(m),
+  });
+  // #2088 — an installed plugin of kind `archetype` registers the archetype
+  // its manifest describes; see `platform/archetypeRegistrySync.ts`.
+  const archetypeRegistry = createArchetypeRegistrySync({
+    sources: () => ({ installedRegistry, catalog: pluginCatalog }),
+    rows: () => serviceRegistry.get<Pool>('graphPool'),
+    log: (m) => console.log(m),
+  });
+  // #2088 — end of service: what ends before an agent is disabled or deleted
+  // and before its archetype plugin is removed. `system` notices are owed and
+  // not sent yet (#2045): the seam logs them.
+  const emitSystemNotice = logOwedSystemNotice((m) => console.log(m));
+  const agentEndOfService = createAgentEndOfService({
+    // Only the plugin that delivers the archetype is asked; the same service
+    // name provided by anybody else is not its process service.
+    processesFor: (archetypeId) => {
+      const source = getArchetype(archetypeId)?.source;
+      const name = archetypeProcessesServiceName(archetypeId);
+      if (!source || source === 'kernel' || !serviceRegistry.providedBy(source, name)) {
+        // The engine of the legacy form (`facilitationEngine@1`, no descriptor
+        // of its own) is the plugin for the kernel's `facilitator` descriptor.
+        const engine = resolveFacilitationEngine(facilitationEngineSources());
+        if (archetypeId !== FACILITATOR_ARCHETYPE || engine.state !== 'bound') return undefined;
+        if (!serviceRegistry.providedBy(engine.pluginId, name)) return undefined;
+      }
+      return serviceRegistry.get<ArchetypeProcessesService>(name);
+    },
+    endSubscriptionsOf: async (agentSlug, reason) =>
+      (await conversationMessagesRef.current?.hub.endAllOf(agentSlug, reason)) ?? [],
+    // #2090 — no scope of the agent authorizes anything after this, and no
+    // conversation stays reserved for it.
+    revokeExecution: async (agentId, reason) => {
+      const revoked = await executionRef.current?.store.revokeAll({ agentId }, reason);
+      return {
+        scopesEnded: revoked?.scopes.length ?? 0,
+        reservationsReleased: revoked?.reservations ?? [],
+      };
+    },
+    audit: async (entry) => {
+      await adminAudit?.record(entry);
+    },
+    emitSystemNotice,
+    log: (m) => console.log(m),
+  });
+  const facilitationEngineSources = (): FacilitationEngineSources => ({
+    installedRegistry,
+    catalog: pluginCatalog,
+    isSqlGranted: (pluginId) => facilitationSqlGrants.isGranted(pluginId),
+  });
   // #1620 — Teams SSO for `auth: 'teams-sso'` plugin routes. One verifier for
   // the process, so the per-tenant JWKS cache and its refetch throttle are
   // shared by every route; audiences = the bots of the active channel-teams.
@@ -1347,6 +1465,10 @@ async function main(): Promise<void> {
         ? summary.memory_writes
         : [];
       return Array.from(new Set([...reads, ...writes]));
+    },
+    // #2060 — the one plugin a facilitator-kind agent may be granted.
+    facilitatorGrantable(): readonly string[] {
+      return facilitatorGrantablePluginIds(facilitationEngineSources());
     },
     listInstalled(): readonly string[] {
       // Include `active` AND `inactive` plugins (the latter may simply
@@ -1603,6 +1725,18 @@ async function main(): Promise<void> {
     // published by a plugin THIS runtime activates, ~600 lines below where the
     // runtime is built, so a store bound here would be permanently null.
     sqlGrantStore,
+    // #2088 — an archetype plugin's database: own schema, own login roles,
+    // never the pool above. The roles connect to the address the kernel
+    // itself uses (through the pooler when that is a pooled address).
+    archetypeDatabase: createArchetypeDatabase({
+      adminPool: () => serviceRegistry.get<Pool>('graphPool'),
+      connectionString: config.DATABASE_URL,
+      secret: masterKey.key,
+      poolOptions: scramOnlyPoolOptions(),
+      log: (msg) => {
+        console.log(msg);
+      },
+    }),
     nativeToolRegistry,
     pluginRouteRegistry,
     // Epic #470 C4 / H1 — declared public-path prefixes are claimed here on
@@ -1841,6 +1975,29 @@ async function main(): Promise<void> {
     return true;
   };
 
+  /** #2043 — see `platform/facilitatorEngineAttach.ts`. Never throws. */
+  const attachFacilitationEngine = async (): Promise<void> => {
+    const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+    if (!store) return;
+    try {
+      // The operator's SQL grant is what makes a declared engine THE engine;
+      // read it fresh, since this runs right after an install or a grant.
+      await facilitationSqlGrants.refresh();
+      // Which archetypes are delivered, and by whom, before anything is
+      // attached or rebuilt on that basis.
+      await archetypeRegistry.sync();
+      await attachEngineToFacilitators(store, facilitationEngineSources(), (m) => console.log(m));
+      // Always: the registry rebuilds the facilitators whose effective engine
+      // grant changed, with or without a new row (boot, grant, revoke).
+      await serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')?.reload();
+    } catch (err) {
+      console.error(
+        '[middleware] facilitation engine attach FAILED:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  };
+
   const propagatePluginInstall = async (
     pluginId: string,
     opts: { attach: boolean } = { attach: true },
@@ -1862,6 +2019,10 @@ async function main(): Promise<void> {
         err instanceof Error ? err.message : String(err),
       );
     }
+    // #2043 — an engine installed (or replaced) while facilitators exist is
+    // attached to them; nothing else ever is.
+    await attachFacilitationEngine();
+    void conversationMessagesRef.current?.reconcileNow();
     // No-op for non-agent plugins (no DomainTool).
     reconcileRuntimeDomainTool(pluginId);
     console.log(`[middleware] runtime plugin install propagated: ${pluginId}`);
@@ -1872,6 +2033,9 @@ async function main(): Promise<void> {
     removedToolName?: string,
   ): Promise<void> => {
     if (pluginId === ORCHESTRATOR_PLUGIN_ID) return;
+    // #2043 — an uninstalled engine ends its message subscriptions at once.
+    void conversationMessagesRef.current?.reconcileNow();
+
     const store =
       serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
     const reg =
@@ -1929,6 +2093,16 @@ async function main(): Promise<void> {
     sqlGrantStore,
     agentPluginBindingStore,
     builtInOptOuts,
+    // #1860 — orchestrator-extras wraps `knowledgeGraph` with `replace`; a hot
+    // restart of the graph plugin then fails with "duplicate provider" and
+    // leaves it `errored`, which crash-loops the next boot. Its new values
+    // wait for the restart instead.
+    reactivationBlocker: (agentId) => {
+      const shadowed = serviceRegistry.shadowedServicesOf(agentId);
+      return shadowed.length > 0
+        ? `another plugin wraps its service(s) ${shadowed.map((n) => `'${String(n)}'`).join(', ')}`
+        : undefined;
+    },
     onInstalled: async (agentId, reason) => {
       const attach = { attach: reason === 'install' };
       // A plugin may contribute an `llm_provider` block regardless of its kind
@@ -1957,6 +2131,17 @@ async function main(): Promise<void> {
           // #1491 — every kind is attached, like first boot does.
           await propagatePluginInstall(agentId, attach);
           return;
+        case 'archetype':
+          // #2088 — runs in the extension runtime. Its archetype is registered
+          // BEFORE the activation and whatever the activation's outcome: the
+          // descriptor says what agents of the archetype never get, and that
+          // holds for a plugin that did not start (it usually has no database
+          // grant yet at this point).
+          await archetypeRegistry.sync();
+          await toolPluginRuntime.activate(agentId);
+          // Never attached to the default agent (`attachablePluginIds`).
+          await propagatePluginInstall(agentId, { attach: false });
+          return;
         case 'tool':
         case 'extension':
         case 'integration':
@@ -1979,7 +2164,40 @@ async function main(): Promise<void> {
           await propagatePluginInstall(agentId, attach);
       }
     },
+    // #2088 — an uninstalled archetype plugin no longer delivers its archetype:
+    // the kernel's own descriptor (where it has one) applies again.
+    onUninstalled: async () => {
+      await archetypeRegistry.sync();
+    },
     onUninstall: async (agentId, reason) => {
+      // #2088 — FIRST, while the plugin is still installed and running: the
+      // agents of an archetype plugin go out of service and are disabled.
+      // Not on a reactivation (the plugin comes straight back).
+      if (reason === 'uninstall') {
+        await guardArchetypePluginUninstall(agentId, {
+          sources: () => ({ installedRegistry, catalog: pluginCatalog }),
+          agents: () => {
+            const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+            return store
+              ? {
+                  list: () => store.listAgents(),
+                  disable: async (id) => {
+                    await store.updateAgent(id, { status: 'disabled' });
+                  },
+                }
+              : undefined;
+          },
+          endOfService: agentEndOfService,
+          audit: async (entry) => {
+            await adminAudit?.record(entry);
+          },
+          reload: async () => serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')?.reload(),
+          revokeExecutionOfPlugin: async (pluginId, reason) => ({
+            scopesEnded: (await executionRef.current?.store.revokeAll({ pluginId }, reason))?.scopes.length ?? 0,
+          }),
+          log: (m) => console.log(m),
+        });
+      }
       // Symmetric to onInstalled: drop a contributed provider + its models so
       // an uninstalled provider plugin disappears from the admin Providers page
       // without a restart. Runs BEFORE runtime deactivation/registry removal.
@@ -2025,20 +2243,19 @@ async function main(): Promise<void> {
           );
         }
       }
-      const kind = pluginCatalog.get(agentId)?.plugin.kind ?? 'agent';
-      switch (kind) {
+      switch (pluginRuntimeOf(pluginCatalog.get(agentId)?.plugin.kind)) {
         case 'channel':
           if (channelRegistryRef?.isActive(agentId)) {
             await channelRegistryRef.deactivate(agentId);
           }
           return;
         case 'tool':
-        case 'extension':
-        case 'integration':
+          // #2088 — includes kind `archetype`. It used to fall through to the
+          // agent runtime, which knows no such plugin: its tools, routes and
+          // services stayed registered after an uninstall.
           await toolPluginRuntime.deactivate(agentId);
           return;
-        case 'agent':
-        default: {
+        case 'agent': {
           // Capture the tool name BEFORE deactivate drops it from the runtime —
           // the per-Agent orchestrators must be told which tool to unregister.
           const removedToolName =
@@ -2369,6 +2586,8 @@ async function main(): Promise<void> {
   // agent runtime activates, so the per-Agent hydration below already sees
   // the new rows.
   await pendingDefaultAttach.flush();
+  // #2043 — and the facilitation engine to facilitators that predate it.
+  await attachFacilitationEngine();
 
   // OB-61 fix (boot path) — when the operator completed /setup in a PRIOR
   // session, the anthropic key lives in the orchestrator's VAULT, not in ENV.
@@ -4107,8 +4326,16 @@ async function main(): Promise<void> {
       getRegistry: () =>
         serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
       getChatSessionStore,
+      getFacilitationEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
+      isSqlGranted: (pluginId: string) => facilitationSqlGrants.isGranted(pluginId),
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
+      // #2088 — end of service before a disable or a delete; the audit of both.
+      endOfService: agentEndOfService,
+      recordAudit: async (entry) => {
+        await adminAudit?.record(entry);
+      },
+      tombstoneRetentionDays: config.AGENT_TOMBSTONE_RETENTION_DAYS,
       getPeerChatDirectory: peerChatDirectoryFor,
       // …and how those chats get a name: the plugin's directory (topic /
       // member-derived label) and the live roster as post-restart fallback.
@@ -4160,6 +4387,10 @@ async function main(): Promise<void> {
           runner: provisioningRunner,
           resolveTeamName,
           isProvisionerInstalled: () => serviceRegistry.has('teamsProvisioner'),
+          // #2043 D8 — the picker's default list: what the bots already know.
+          ...(peerChatDirectory
+            ? { recentConversations: (limit: number) => peerChatDirectory.recentConversations(limit) }
+            : {}),
           // Resolved per call, never cached: the connector can be installed,
           // upgraded or removed while the process runs, and the team-uninstall
           // capability (#900) has to follow it.
@@ -4286,6 +4517,38 @@ async function main(): Promise<void> {
   );
 
   // Phase B+ — operator channels dashboard.
+  // #2088 — the archetypes agents can be created of, for the agent directory.
+  app.use(
+    '/api/v1/operator/archetypes',
+    requireAuth,
+    createOperatorArchetypesRouter({
+      sources: () => ({ installedRegistry, catalog: pluginCatalog }),
+      listAgentArchetypes: async () => {
+        const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+        if (!store) return undefined;
+        return (await store.listAgents()).map((agent) => archetypeOf(agent));
+      },
+    }),
+  );
+  // #2090 — open execution scopes of archetype plugins and the kill switch.
+  app.use(
+    '/api/v1/operator/execution',
+    requireAuth,
+    createOperatorExecutionRouter({
+      store: () => executionRef.current?.store,
+      agentBySlug: async (slug) => {
+        const agent = await serviceRegistry.get<MultiOrchestratorConfigStore>('configStore')?.getAgentBySlug(slug);
+        return agent ? { id: agent.id, slug: agent.slug } : undefined;
+      },
+      agentSlugs: async () => {
+        const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+        return new Map((store ? await store.listAgents() : []).map((agent) => [agent.id, agent.slug]));
+      },
+      audit: async (entry) => {
+        await adminAudit?.record(entry);
+      },
+    }),
+  );
   app.use(
     '/api/v1/operator/channels',
     requireAuth,
@@ -4619,7 +4882,31 @@ async function main(): Promise<void> {
   // #330 C3b (review H1) — conversationSend scope authority: an agent may only
   // post into conversations it holds an ephemeral attachment for. Stays
   // undefined without Postgres → the service fails closed.
-  let conversationSendScope: ((agentSlug: string, channelType: string, conversationId: string) => Promise<boolean>) | undefined;
+  // #2043 — authenticated inbound messages; needs the database, so it stays
+  // undefined on the in-memory backend (adapters then keep their mention gate).
+  let conversationMessages: ConversationMessagesWiring | undefined;
+  // #2043 — readiness and session capabilities work without a database; only
+  // their pushes follow message subscriptions.
+  // Asked by the orchestrator on every group turn of a facilitator.
+  serviceRegistry.provide(
+    FACILITATOR_CONVERSATIONS_SERVICE,
+    createFacilitatorRuntimeLookup({
+      getRegistry,
+      getMessages: () => conversationMessages?.hub,
+      engineSources: facilitationEngineSources,
+      reportedEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
+      ownPosts: ownIdentityPostLog,
+    }),
+  );
+  const sessionCapabilityHub = wireSessionCapabilities({
+    serviceRegistry,
+    readiness: readinessProviderRegistry,
+    meetingSources: meetingSourceRegistry,
+    getRegistry,
+    getMessages: () => conversationMessages?.hub,
+    engineSources: facilitationEngineSources,
+    log: (m) => console.log(m),
+  });
   if (graphPool) {
     await runAuthMigrations(graphPool, (m) => console.log(m));
     await runProfileStorageMigrations(graphPool, (m) => console.log(m));
@@ -4635,10 +4922,10 @@ async function main(): Promise<void> {
     // is pool-backed or lazily resolved, so no wiring output is needed.
     const ephemeralAttachmentsStore = new ConductorEphemeralAttachmentsStore(graphPool);
     // #330 follow-up — the invite index survives restarts: a deploy between
-    // the Teams invite and the facilitation start must not force a re-invite.
-    // Hydration is awaited (cheap, one bounded SELECT) so the scope guard is
-    // warm before the conversationBindings service below can serve its first
-    // bind; writes stay fire-and-forget.
+    // the Teams invite and the start of a moderation must not force a
+    // re-invite. Hydration is awaited (cheap, one bounded SELECT) so the
+    // presence check is warm before the first message subscription asks;
+    // writes stay fire-and-forget.
     observedInvites.attachPersistence(new PgObservedInvitePersistence(graphPool));
     try {
       await observedInvites.hydrate();
@@ -4651,21 +4938,6 @@ async function main(): Promise<void> {
       );
     }
     const facilitationRoleStore = new ConductorRoleStore(graphPool);
-    const scopedRoleAssignments = createScopedRoleAssignments({
-      roleStore: facilitationRoleStore,
-      auditRoleChange: async (entry) => {
-        await adminAudit?.record({
-          // #775 class — a system label (the ephemeral reaper) in the uuid
-          // column made this INSERT fail; only a uuid goes to actor_id.
-          actor: auditActorFromLabel(entry.actor),
-          action: 'conductor.role_holders_change',
-          target: `conductor-role:${entry.roleKey}`,
-          before: { action: entry.action, holderId: entry.holderId },
-          after: { holders: entry.holdersAfter },
-        });
-      },
-      log: (m) => console.log(m),
-    });
     const auditBindingChange = async (entry: {
       actor: string;
       action: 'bind' | 'unbind';
@@ -4684,6 +4956,21 @@ async function main(): Promise<void> {
     // THE one disposal path (reap hook, guarded unbind, retry sweep): remove
     // the binding, close the role holders (audited), and only then delete the
     // row — a failure keeps the row, so the attachment sweep retries it.
+    // #2090 — execution scopes, conversation reservations and the kill switch
+    // of archetype plugins. Before the Conductor: its discussions share the
+    // reservation.
+    executionRef.current = wireExecutionAuthorization({
+      pool: graphPool,
+      serviceRegistry,
+      getRegistry,
+      legacyEnginePluginId: () => {
+        const engine = resolveFacilitationEngine(facilitationEngineSources());
+        return engine.state === 'bound' ? engine.pluginId : undefined;
+      },
+      configuringMaxHours: config.EXECUTION_SCOPE_CONFIGURING_MAX_HOURS,
+      sweepIntervalMs: config.EXECUTION_SCOPE_SWEEP_INTERVAL_MS,
+      log: (m) => console.log(m),
+    });
     const disposeEphemeralAttachment = async (
       attachment: { id: string; agentSlug: string; channelType: string; channelKey: string; roleKey: string | null },
       actor: string,
@@ -4695,13 +4982,40 @@ async function main(): Promise<void> {
       }
       await lateConfigStore.removeChannelBinding(attachment.channelType, attachment.channelKey);
       await lateRegistry.reload();
+      // A row written by the plugin-era facilitation may still name a role
+      // (nothing creates one any more). Its holders are closed with it, and
+      // the change is audited like before.
       if (attachment.roleKey) {
-        const holders = await scopedRoleAssignments.holders(attachment.roleKey);
-        for (const holderId of holders) {
-          await scopedRoleAssignments.removeHolder({ roleKey: attachment.roleKey, holderId, actor });
+        const roleKey = attachment.roleKey;
+        for (const holderId of await facilitationRoleStore.resolve(roleKey)) {
+          await facilitationRoleStore.removeHolder(roleKey, holderId);
+          await adminAudit
+            ?.record({
+              // #775 class — a system label (the reaper) is not a uuid.
+              actor: auditActorFromLabel(actor),
+              action: 'conductor.role_holders_change',
+              target: `conductor-role:${roleKey}`,
+              before: { action: 'remove', holderId },
+              after: { holders: await facilitationRoleStore.resolve(roleKey) },
+            })
+            .catch(() => undefined);
         }
       }
       await ephemeralAttachmentsStore.delete(attachment.id);
+      // #2090 — the discussion is over: the conversation is free for the next
+      // process (a discussion or a facilitation).
+      await executionRef.current?.store
+        .release({
+          channelType: attachment.channelType,
+          conversationId: attachment.channelKey,
+          holderKind: 'agent_discussion',
+          reason: `discussion ended (${actor})`,
+        })
+        .catch((err: unknown) => {
+          console.log(
+            `[conductor] releasing the reservation of ${attachment.channelType}/${attachment.channelKey} failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
       await auditBindingChange({
         actor,
         action: 'unbind',
@@ -4710,10 +5024,6 @@ async function main(): Promise<void> {
         agentSlug: attachment.agentSlug,
       }).catch(() => undefined);
       console.log(`[conductor] disposed ephemeral attachment ${attachment.channelType}/${attachment.channelKey}${attachment.roleKey ? ` (role ${attachment.roleKey})` : ''} by ${actor}`);
-    };
-    conversationSendScope = async (agentSlug, channelType, conversationId) => {
-      const row = await ephemeralAttachmentsStore.getByConversation(channelType, conversationId);
-      return row !== undefined && row.agentSlug === agentSlug;
     };
     const onEphemeralReaped = async (workflow: { id: string; slug: string }): Promise<void> => {
       const rows = await ephemeralAttachmentsStore.getByWorkflow(workflow.id);
@@ -4758,6 +5068,33 @@ async function main(): Promise<void> {
       }
       return bots;
     };
+    const listenUrl = directDatabaseUrl(config.DATABASE_URL, config.DATABASE_URL_DIRECT);
+    if (isPooledDatabaseUrl(config.DATABASE_URL) && config.CONVERSATION_MESSAGES_LISTEN) {
+      console.log(
+        `[conversation-messages] DATABASE_URL is a pooled address; LISTEN connects directly (${config.DATABASE_URL_DIRECT ? 'DATABASE_URL_DIRECT' : 'the same host without -pooler'})`,
+      );
+    }
+    conversationMessages = await wireConversationMessages({
+      pool: graphPool,
+      serviceRegistry,
+      getRegistry,
+      invites: observedInvites,
+      botPresence,
+      engineSources: facilitationEngineSources,
+      getConfigStore: () => serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+      listen: config.CONVERSATION_MESSAGES_LISTEN,
+      // LISTEN needs one server session; a transaction-mode pooler (Neon's
+      // `-pooler` host) accepts the statement and never delivers.
+      ...(listenUrl ? { listenConnectionString: listenUrl } : {}),
+      reconcileIntervalMs: config.CONVERSATION_MESSAGES_RECONCILE_INTERVAL_MS,
+      checkReadiness: (channelType, conversationId, channelKey) =>
+        sessionCapabilityHub.checkIdentity(channelType, conversationId, channelKey),
+      graceMs: config.CONVERSATION_MESSAGES_GRACE_MS,
+      maxAgeDays: config.CONVERSATION_MESSAGES_MAX_AGE_DAYS,
+      purgeIntervalMs: config.CONVERSATION_MESSAGES_PURGE_INTERVAL_MS,
+      log: (m) => console.log(m),
+    });
+    conversationMessagesRef.current = conversationMessages;
     // #1018 W1 — THE peer gate: the agent's own switch AND the pair's policy
     // row (migration 0058), evaluated in one place for the discussion start,
     // every relayed utterance, and the roster the calling agent sees.
@@ -4795,6 +5132,25 @@ async function main(): Promise<void> {
     });
     const conductorWiring = await wireConductor({
       pool: graphPool,
+      // #2090 — one reservation per conversation, shared by agent discussions
+      // and native facilitations. A reservation left by a discussion whose
+      // attachment is gone is stale and is taken over.
+      conversationReservations: {
+        reserve: async (channelType, conversationId) => {
+          const store = executionRef.current?.store;
+          if (!store) return true;
+          const mine = { channelType, conversationId, holderKind: 'agent_discussion' as const, role: 'home' as const };
+          const processId = `discussion:${randomUUID()}`;
+          const first = await store.reserve({ ...mine, processId });
+          if (first.ok) return true;
+          if (first.heldBy?.holderKind !== 'agent_discussion') return false;
+          await store.release({ ...mine, reason: 'stale discussion reservation' });
+          return (await store.reserve({ ...mine, processId })).ok;
+        },
+        release: async (channelType, conversationId, reason) => {
+          await executionRef.current?.store.release({ channelType, conversationId, holderKind: 'agent_discussion', reason });
+        },
+      },
       onEphemeralReaped,
       app,
       requireAuth,
@@ -4953,36 +5309,13 @@ async function main(): Promise<void> {
         log: (msg: string) => console.log(msg),
       }),
     );
-    // #330 C2a — the three zero-touch-setup services (all deny-by-default via
-    // the manifest grant gate). Constructed above, BEFORE wireConductor.
-    serviceRegistry.provide('conductorRoleAssignments', scopedRoleAssignments);
-    const agentSetup = createAgentSetupServices({
-      pool: graphPool,
-      getConfigStore: () => serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
-      getRegistry: () => serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
-      invites: observedInvites,
+    // The retry + expiry sweep over ephemeral attachments (discussions). The
+    // plugin-era setup services that lived beside it are gone (#2043).
+    startEphemeralAttachmentSweep({
       attachments: ephemeralAttachmentsStore,
       disposeAttachment: disposeEphemeralAttachment,
-      auditBindingChange,
-      // #330 field report — rehydration payload: the workflow's newest still
-      // active run, so a restarted facilitator plugin can keep poking its
-      // timer await. Read-only, newest-first, absent run → null.
-      resolveActiveRun: async (workflowId: string) => {
-        const r = await graphPool.query<{ id: string }>(
-          `SELECT r.id FROM conductor_runs r
-             JOIN conductor_workflow_versions v ON r.workflow_version_id = v.id
-            WHERE v.workflow_id = $1 AND r.status IN ('running', 'waiting')
-            ORDER BY r.started_at DESC
-            LIMIT 1`,
-          [workflowId],
-        );
-        return r.rows[0]?.id ?? null;
-      },
       log: (m) => console.log(m),
     });
-    serviceRegistry.provide('agentProvisioning', agentSetup.agentProvisioning);
-    serviceRegistry.provide('conversationBindings', agentSetup.conversationBindings);
-    agentSetup.startAttachmentSweep();
     // #330 B3 — role fan-out + cached 1:1 conversation refs for targeted sends.
     // Deliberately THE SAME holder registry the executor resolves approvals
     // through: "who gets the report" and "who may approve" come from one
@@ -5599,8 +5932,8 @@ async function main(): Promise<void> {
       // here would turn the service's success write into a lie for every
       // entry this hook silently declined to touch.
       onPackageReady: async (agentId) => {
-        const kind = pluginCatalog.get(agentId)?.plugin.kind ?? 'agent';
-        switch (kind) {
+        const kind = pluginCatalog.get(agentId)?.plugin.kind;
+        switch (pluginRuntimeOf(kind)) {
           case 'channel': {
             if (!channelRegistryRef) {
               // #1452 — a throw, not a warn-and-return. The caller records
@@ -5636,17 +5969,21 @@ async function main(): Promise<void> {
             }
             return;
           }
-          case 'tool':
-          case 'extension':
-          case 'integration': {
+          case 'tool': {
             if (toolPluginRuntime.isActive(agentId)) {
               await toolPluginRuntime.deactivate(agentId);
             }
+            // #2088 — an update may be the version that turns the plugin into
+            // an archetype plugin, or one that changes its descriptor. Same
+            // order as a first install: the registry first, whatever the
+            // activation's outcome. (Kind `archetype` used to fall through to
+            // the agent runtime here: the old version kept running and the new
+            // one failed on its duplicate services.)
+            if (kind === 'archetype') await archetypeRegistry.sync();
             await toolPluginRuntime.activate(agentId);
             return;
           }
-          case 'agent':
-          default: {
+          case 'agent': {
             // If v1 is still active, deactivate cleanly first — v2 has a
             // fresh DomainTool with potentially changed sub-tools.
             if (dynamicAgentRuntime.isActive(agentId)) {
@@ -5799,6 +6136,10 @@ async function main(): Promise<void> {
       vault: secretVault,
       catalog: pluginCatalog,
       reactivate: reactivateAgent,
+      // #2043 — a SQL grant is what makes a declared engine THE engine.
+      onGrantsWritten: () => facilitationSqlGrants.refresh(),
+      onGrantsChanged: () => attachFacilitationEngine(),
+      restartPending: (agentId) => installService.restartPending(agentId),
       dynamicAgentRuntime,
       // #1453 — the operator-facing half of the credential check: `GET
       // /installed` reports what a plugin pushed through `ctx.status`, and
@@ -6943,22 +7284,59 @@ async function main(): Promise<void> {
   // Constructed after the conductor block so the role resolver + binding
   // lookup are already set when Postgres is available; deny-by-default for
   // plugins like every other kernel service.
-  const targetedDeliveryService = createTargetedDeliveryService({
-    providers: targetedSendRegistry,
-    ...(targetedRoleResolver ? { resolveRoleHolders: targetedRoleResolver } : {}),
-    ...(targetedBindingLookup ? { lookupConversationRefs: targetedBindingLookup } : {}),
+  // #2043 — sending as an agent's OWN identity: identity from the registry
+  // (never the default bot), permission from its message subscription.
+  const ownIdentitySend = {
+    identityFor: (agentSlug: string, channelType: string) =>
+      getRegistry()?.channelIdentityFor(agentSlug, channelType),
+    ...(conversationMessages ? { subscriptions: conversationMessages.hub } : {}),
+    archetypeAddsOwnIdentitySend: (agentSlug: string) =>
+      archetypeAdds(getRegistry()?.get(agentSlug)?.agent, 'own_identity_send'),
+    getRoster: (
+      channelType: string,
+      conversationId: string,
+      opts?: { readonly asChannelKey?: string },
+    ) => conversationRosterRegistry.getRoster(channelType, conversationId, opts),
+    // The AI marking of own-identity posts, by the rule of the agent's turn
+    // answers; folded only where the channel has no AI label of its own.
+    disclosure: {
+      disclosureFor: (agentSlug: string, channelType: string) =>
+        getRegistry()?.get(agentSlug)?.built.orchestrator.disclosureForChannel(channelType),
+      seen: new InMemoryDisclosureSeenStore(),
+    },
+  };
+  // #2043 — 'agentTurn@1': the engine runs a turn as a facilitator and gets
+  // the text back unposted.
+  publishAgentTurnService({
+    serviceRegistry,
+    getRegistry,
+    ...(conversationMessages ? { messages: conversationMessages.hub } : {}),
+    engineSources: facilitationEngineSources,
+    executionFor: (pluginId) => executionRef.current?.serviceFor(pluginId),
+    maxTurnsPerMinute: config.AGENT_TURN_MAX_PER_MINUTE,
+    language: () => {
+      const raw = installedRegistry.get('@omadia/orchestrator')?.config?.['ai_disclosure_locale'];
+      return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : undefined;
+    },
     log: (m) => console.log(m),
   });
-  serviceRegistry.provide('targetedSend', targetedDeliveryService);
-  // #330 C3b — conversation-addressed proactive send (Facilitator group nudges).
-  serviceRegistry.provide(
-    'conversationSend',
-    createConversationSendService({
-      providers: conversationSendRegistry,
-      ...(conversationSendScope ? { isPermitted: conversationSendScope } : {}),
+  publishSendServices({
+    serviceRegistry,
+    targeted: createTargetedDeliveryService({
+      providers: targetedSendRegistry,
+      ...(targetedRoleResolver ? { resolveRoleHolders: targetedRoleResolver } : {}),
+      ...(targetedBindingLookup ? { lookupConversationRefs: targetedBindingLookup } : {}),
+      ownIdentity: ownIdentitySend,
       log: (m) => console.log(m),
     }),
-  );
+    // #330 C3b — conversation-addressed proactive send (group nudges).
+    conversation: createConversationSendService({
+      providers: conversationSendRegistry,
+      ownIdentity: ownIdentitySend,
+      onOwnIdentityDelivered: ownIdentityPostLog.record,
+      log: (m) => console.log(m),
+    }),
+  });
 
   const channelCoreApi = createCoreApi({
     dispatcher: orchestratorDispatcher,
@@ -6969,6 +7347,10 @@ async function main(): Promise<void> {
     targetedSends: targetedSendRegistry,
     conversationEvents: conversationEventHub,
     conversationSends: conversationSendRegistry,
+    ...(conversationMessages ? { conversationMessages: conversationMessages.hub } : {}),
+    readinessProviders: readinessProviderRegistry,
+    meetingSources: meetingSourceRegistry,
+    sessionCapabilities: sessionCapabilityHub,
     // #1086 — the channel-agnostic producer of the routines principal, for
     // every channel that drives its turn through `handleTurnStream` (in-tree:
     // public API, canvas). Adapters that call the `chatAgent` capability
@@ -7027,9 +7409,16 @@ async function main(): Promise<void> {
     peopleDirectories: peopleDirectoryRegistry,
     targetedSends: targetedSendRegistry,
     conversationSends: conversationSendRegistry,
+    readinessProviders: readinessProviderRegistry,
+    meetingSources: meetingSourceRegistry,
   });
   channelRegistryRef = channelRegistry;
   await channelRegistry.activateAllInstalled();
+  // #2043 — every plugin had its chance to activate: from here on the kernel
+  // may end message subscriptions whose ground is gone (engine plugin not
+  // active or replaced, agent disabled or deleted, identity lost).
+  conversationMessagesRef.current?.enableReconcile();
+  void conversationMessagesRef.current?.reconcileNow();
   console.log(
     `[middleware] channel runtime ready (${channelRegistry.activeIds().length} active via dynamic-resolver)`,
   );

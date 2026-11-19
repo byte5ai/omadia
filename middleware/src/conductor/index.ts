@@ -43,7 +43,7 @@ import { createConductorRouter } from './routes.js';
 import { ConductorFacilitationAdmin } from './facilitationAdmin.js';
 import { ConductorSayService } from './sayService.js';
 import type { AgentChannelIdentityResolver, ConductorSayDeps } from './sayService.js';
-import { ConductorDiscussionService } from './discussionService.js';
+import { ConductorDiscussionService, type DiscussionReservations } from './discussionService.js';
 import type { SecretVault } from '../secrets/vault.js';
 import { ConductorWebhookEndpointStore } from './webhookEndpointStore.js';
 import { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
@@ -67,6 +67,10 @@ async function buildRunEventPayload(run: ConductorRun, workflowStore: ConductorW
     workflowName: workflow?.name ?? null,
     triggerKind: run.triggerKind,
     context: run.context,
+    // #1699 — a `run.failed` subscriber used to learn only THAT a run failed.
+    // Null on a run that failed before migration 0013 ("cause not recorded").
+    errorCode: run.errorCode,
+    errorMessage: run.errorMessage,
   };
 }
 
@@ -102,7 +106,7 @@ export { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js
 export type { ConductorWebhookSubscription, ConductorWebhookDelivery, WebhookDeliveryStatus } from './webhookSubscriptionStore.js';
 export { ConductorWebhookDispatcher } from './webhookDispatcher.js';
 export { ConductorWebhookRetryWorker } from './webhookRetryWorker.js';
-export { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './webhookPostAction.js';
+export { WEBHOOK_POST_ACTION_ID, WEBHOOK_POST_DEFAULT_POSTCONDITION, invokeWebhookPostAction } from './webhookPostAction.js';
 export { assertOutboundUrlAllowed, WebhookUrlNotAllowedError } from './webhookOutbound.js';
 export { loadPatternCatalog } from './patternCatalog.js';
 export type { PatternCatalog } from './patternCatalog.js';
@@ -161,8 +165,6 @@ export {
   TRANSCRIPT_TEXT_MAX_CHARS,
 } from './transcript.js';
 export type { TranscriptEntry } from './transcript.js';
-export { createScopedRoleAssignments, FACILITATION_ROLE_PREFIX, RoleKeyOutOfScopeError } from './scopedRoleAssignments.js';
-export type { ScopedRoleAssignments } from './scopedRoleAssignments.js';
 
 export interface ConductorWiring {
   workflowStore: ConductorWorkflowStore;
@@ -218,6 +220,9 @@ export interface ConductorWiring {
  */
 export async function wireConductor(deps: {
   pool: Pool;
+  /** #2090 — the conversation reservation agent discussions share with
+   *  native facilitations (spec 2043 §5.3). */
+  conversationReservations?: DiscussionReservations;
   app: Express;
   requireAuth: RequestHandler;
   /** resolves an Agent (orchestrator instance) by slug for agent steps. */
@@ -530,6 +535,7 @@ export async function wireConductor(deps: {
     // rule must answer "can this agent speak as itself" identically, or a
     // discussion passes the gate and then goes half-silent.
     identityFor: agentChannelIdentity,
+    ...(deps.conversationReservations ? { reservations: deps.conversationReservations } : {}),
     log,
   });
   const ephemeralReaper = new ConductorEphemeralReaper({

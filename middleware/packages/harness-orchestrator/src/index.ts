@@ -52,12 +52,13 @@ export type {
 // US5 — hot-reload diff + LISTEN/NOTIFY bus.
 export { diffSnapshots, buildForAgent } from './registry/applyDiff.js';
 export type { DiffAction, DiffPlan } from './registry/applyDiff.js';
-export { ReloadBus } from './registry/reloadBus.js';
+export { ReloadBus, directDatabaseUrl, isPooledDatabaseUrl } from './registry/reloadBus.js';
 export type { ReloadBusOptions } from './registry/reloadBus.js';
 // US7 — channel routing + first-boot onboarding.
 export { ChannelResolver } from './routing/channelResolver.js';
 export type {
   ChannelResolverOptions,
+  SystemNoticeRequest,
   ResolveDecision,
   ResolveResult,
 } from './routing/channelResolver.js';
@@ -121,6 +122,75 @@ export type {
   ContextMemoryMode,
   MemoryBinderOptions,
 } from './memoryBinder.js';
+export {
+  AGENT_KINDS,
+  FacilitatorOmissionError,
+  assertNotFacilitator,
+  isFacilitatorKind,
+  parseAgentKind,
+} from './registry/agentKind.js';
+export type { AgentKind, FacilitatorOmission } from './registry/agentKind.js';
+// #2088 — tombstones: a deleted agent's row stays; readers say what they mean.
+export { liveAgentRow, ofLiveAgent, tombstoneSlug } from './registry/tombstones.js';
+export type { AgentTombstone } from './registry/tombstones.js';
+// #2088 — archetypes: the registry and the one question call sites ask.
+export {
+  ARCHETYPE_ADDITIONS,
+  ARCHETYPE_OMISSIONS,
+  ARCHETYPE_REQUIREMENTS,
+  ArchetypeOmissionError,
+  FACILITATOR_ARCHETYPE,
+  STANDARD_ARCHETYPE,
+  archetypeAdds,
+  archetypeOf,
+  archetypeOmits,
+  archetypeRequires,
+  assertArchetypeAllows,
+  getArchetype,
+  isArchetype,
+  isArchetypeId,
+  listArchetypes,
+  parseArchetype,
+  registerArchetype,
+} from './registry/archetype.js';
+export type {
+  ArchetypeAddition,
+  ArchetypeBearer,
+  ArchetypeDescriptor,
+  ArchetypeRequirement,
+  ArchetypeText,
+  ArchetypeId,
+  ArchetypeOmission,
+} from './registry/archetype.js';
+// #2043 — kernel-side seams of the facilitator runtime. `runAsEngineTurn` is
+// for the kernel's `agentTurn` service only; it is not a plugin surface.
+export { channelConversationId, conversationIdCandidates } from './channelConversationId.js';
+export {
+  currentEngineTurn,
+  facilitationNotSetUpText,
+  facilitatorRefusalText,
+  isGroupTurn,
+  runAsEngineTurn,
+  wrapFacilitatorAgent,
+} from './facilitatorAgent.js';
+export type {
+  EngineDrivenConversationLookup,
+  EngineTurnScope,
+  FacilitatorRuntimeLookup,
+  OwnPostCountLookup,
+} from './facilitatorAgent.js';
+export {
+  buildToolCallContext,
+  currentToolCallContext,
+  runWithToolCallContext,
+} from './toolCallContext.js';
+export {
+  FACILITATOR_NEUTRALITY_BLOCK,
+  FACILITATOR_NEUTRALITY_HEADING,
+  applyArchetypeContract,
+  roleContractOf,
+  withFacilitatorNeutrality,
+} from './registry/facilitatorNeutrality.js';
 export {
   AGENT_TO_AGENT_MODES,
   isAgentToAgentEnabled,

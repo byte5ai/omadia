@@ -8,6 +8,288 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.64.0 — 2026-11-19
+
+Additive (#2090, epic #2043): a model turn as an authorized action.
+
+### Added
+
+- **`agentTurn@2`** (`AGENT_TURN_V2_SERVICE_NAME`), next to the first major:
+  `ctx.services.get('agentTurn@2')`, declared as `agentTurn@^2` under
+  `optional_requires`. `ScopedAgentTurnService.runTurn` takes a
+  `ScopedAgentTurnRequest`: the first major's request plus `scopeId`,
+  `processId`, `phase`, `purpose`, `emission: 'prose'`, `budget.modelCalls`
+  and an optional `target`. The kernel draws the authorization from the
+  scope before any model is called and answers `refused` with
+  `code: 'not_authorized'` and the `executionCode` otherwise. A completed
+  turn carries `authorizationId` and `modelCalls: { reserved, used }`; the
+  kernel counts the model calls of the turn, helper and guard calls
+  included, and returns the unused part of the reservation to the scope. A
+  turn can make more calls than it reserved: the excess is charged up to the
+  scope's budget.
+- **`ExecutionEmissionType`** (`prose`, `template`, `data`) and the optional
+  `emission` on `AuthorizeActionRequest`; recorded with the authorization.
+
+The first major (`agentTurn`) is unchanged and still runs a turn without a
+scope.
+
+## 1.63.0 — 2026-11-19
+
+Additive (#2090, epic #2043): execution authorization for archetype plugins.
+
+### Added
+
+- **`ExecutionAuthorizationService`** under
+  `EXECUTION_AUTHORIZATION_SERVICE_NAME` (`executionAuthorization`; list
+  `executionAuthorization@^1` under `optional_requires`). Only the plugin
+  that delivers an agent's archetype is answered.
+  - `openScope` opens one of the five **execution scopes** of a process
+    (`configuring`, `active`, `closing`, `scheduling`, `follow_up`) with a
+    deadline, a budget (`actions`, `modelCalls`) and its targets.
+    `configuring` takes the home conversation's reservation; `active` ends
+    `configuring` in the same transaction; a (process, kind, event) exists
+    once, so an ended scope never re-opens.
+  - `authorize` reserves one action (and model calls) from a scope,
+    atomically. Refused with a code: `deadline_passed`, `budget_exhausted`,
+    `kill_switch`, `scope_ended`, `phase_mismatch`, `purpose_not_allowed`,
+    `target_not_allowed`, and others. `settle` returns unused model calls.
+  - `setPeople`, `extendScope` (also the bounded deadline wait of an
+    `active` scope), `endScope`, `listScopes`.
+  - `reserveConversation` / `releaseConversation` / `listReservations` for
+    linked session conversations. A conversation hosts one running process;
+    agent discussions share the reservation.
+- Types `ExecutionScope`, `ExecutionScopeKind`, `ExecutionPhase`,
+  `ExecutionActionType`, `ExecutionPurpose`, `ExecutionTarget`,
+  `ExecutionBudget`, `ExecutionRefusal`, `ExecutionRefusalCode`,
+  `ConversationReservation`, and the constants `EXECUTION_SCOPE_KINDS`,
+  `EXECUTION_SCOPE_PHASES`.
+- **Versioned service lookup:** `ctx.services.get('<name>@<major>')`
+  resolves a major registered next to the first one and needs that major in
+  the manifest (`<name>@^<major>`). The bare name keeps meaning the first
+  major. No service has a second major yet.
+
+Nothing calls the new service on the kernel's side yet: the existing
+services (`agentTurn`, `conversationSend`, `conversationMessages`) do not ask
+for an authorization in this version.
+
+## 1.62.0 — 2026-11-19
+
+Additive (#2088, epic #2042): the database of an archetype plugin.
+
+### Added
+
+- **`SqlAccessor.schema`**, **`SqlAccessor.query(text, params?)`** and
+  **`SqlAccessor.transaction(work)`**, with `SqlStatementResult` and
+  `SqlTransaction`. Present for a plugin of kind `archetype` that does not
+  list `graphPool` under `requires` and holds the database grant; absent for
+  every other plugin. Statements run as the plugin's own database role,
+  which reaches the tables of `schema` and nothing else; the role's
+  `search_path` is that schema, so table names stay unqualified. No client
+  is handed out: session state (`SET`, `LISTEN`, session-level advisory
+  locks, prepared statements) does not survive a call. Inside `transaction`,
+  `SET LOCAL`, `pg_advisory_xact_lock` and row locks work as usual; the
+  handle is refused after the callback settled.
+
+### For such a plugin
+
+- `ctx.sql.runMigrations()` runs the files as the plugin's migration role
+  inside its schema. A file that names `public.` or a kernel table fails.
+- `ctx.sql.seedLedger` is absent (it reads the core ledger).
+- Tables it created in `public` under its `plg_<plugin id>_` prefix move
+  into the schema at its first activation.
+
+## 1.61.0 — 2026-11-19
+
+Additive (#2088, epic #2042): end of service.
+
+### Added
+
+- **`ArchetypeProcessesService`** with
+  `endProcessesOfAgent({ agentSlug, reason })` →
+  `ArchetypeProcessEndReport` (`ended: ArchetypeProcessEnded[]`), and
+  **`archetypeProcessesServiceName(archetypeId)`** (`archetypeProcesses:<id>`),
+  `AgentEndOfServiceReason` (`agent_disabled`, `agent_deleted`,
+  `archetype_plugin_removed`). An archetype plugin provides the service
+  under that name. The kernel calls it before an agent of the archetype is
+  disabled or deleted and before the plugin itself is uninstalled, while the
+  agent is still enabled and the plugin still installed, so the plugin can
+  close each process (and tell the conversation in the agent's own voice).
+  The kernel waits 20 s, then ends the agent's message subscriptions itself
+  whatever the answer. Optional: a plugin without it loses its
+  subscriptions, as before.
+
+### Kernel behaviour a plugin can rely on from this version
+
+- A deleted agent is kept as a tombstone: it is in no list, `agentTurn` and
+  `conversationMessages` refuse it as an agent that is not active, and its
+  subscriptions were ended before the delete.
+- Uninstalling an archetype plugin disables the agents of its archetype
+  first (after the call above). Their records stay.
+
+## 1.60.0 — 2026-11-19
+
+No type change. The version marks a kernel that knows the manifest kind
+`archetype` (#2088), so an archetype plugin can state it in `compat.core`.
+
+### Kernel behaviour a plugin can rely on from this version
+
+- **Manifest `identity.kind: archetype`** with an `archetype:` block (the
+  descriptor the kernel enforces: `id`, `omits`, `adds`, `requires`, `noun`,
+  `label`, `label_plural`, `description`, `omission_reasons`,
+  `role_contract`). Read strictly: an unknown entry in `omits`, `adds` or
+  `requires` rejects the manifest. Runs in the extension runtime.
+- **An unknown `identity.kind` is rejected at ingest.** It used to be loaded
+  as `agent`.
+- **The facilitation engine is found by kind as well:** a plugin of kind
+  `archetype` whose archetype is `facilitator`, or (as before, until the
+  capability is retired) one that lists `facilitationEngine@1` under
+  `provides`. Either way it needs the operator's database grant.
+- **`agentTurn`, `conversationMessages`, own-identity sends and session
+  capabilities** are given for an agent only when its archetype's descriptor
+  lists them under `adds`. The kernel's own descriptor for `facilitator`,
+  used while no plugin ships one, lists all four.
+
+## 1.59.0 — 2026-11-19
+
+Additive (#2089, epic #2043). Question cards: a typed question out, typed
+answers in. `SendPoll` and `poll` are unchanged.
+
+### Added
+
+- **`QuestionCard`**, **`CardQuestion`** (kinds `single_choice`,
+  `multiple_choice`, `ranking`, `consent`, `assignment`, `text`, `number`,
+  `date`), **`CardOption`**, **`CardQuestionKind`**, `CARD_QUESTION_KINDS`,
+  `CARD_ID_PATTERN`. Ids of cards, questions and options are 1..64 characters
+  of `A-Z a-z 0-9 _ -`.
+- **`ConversationSendRequest.message.card?`** — post the message as a question
+  card. Refused with `channel_error` (nothing posted) when the channel
+  declares no cards, does not list a question kind, shows fewer questions per
+  card, or the card is invalid. Not together with `poll`.
+- **`ConversationSendService.capabilities?(channelType)`** →
+  `ConversationSendCapabilities` (`asOwnIdentity`, `mentions`, `poll`,
+  `card?: CardSupport`), so an engine chooses card or chat ballot per step.
+- **`ConversationSendService.updateCard?(request)`** with
+  **`ConversationCardUpdateRequest`**, **`CardUpdate`** (`closed` with title
+  and result lines, or a corrected `open` card) and **`CardUpdateOutcome`**.
+  Same identity rules as a send.
+- **`MessageCardAnswer`** — the type of `ConversationMessageRecord.cardAnswer`,
+  now with `proposalId?`, `proposalVersion?` and `answers?:
+  CardAnswerValue[]` (one typed value per answered question). `value` and
+  `answererVerified` are unchanged. Check every answer against the card you
+  sent: the kernel validates the form, not the match.
+
+## 1.58.0 — 2026-11-19
+
+Additive (#2088, epic #2042).
+
+### Added
+
+- **`AgentProfile.archetype?`** — the agent's archetype (`agents.archetype`):
+  `standard`, or one an archetype plugin registered (today `facilitator`).
+  Absent on a kernel older than this version: read `kind`.
+
+### Deprecated
+
+- **`AgentProfile.kind`** — the previous name. Still returned; removed
+  together with the `agents.kind` column.
+
+## 1.57.0 — 2026-11-18
+
+Additive (epic #2043).
+
+### Added
+
+- **`NativeToolCallContext.callerUserRef.displayName?`** — the caller's name
+  as the channel stated it for the turn (`TurnOrigin.speaker`, channel-sdk
+  0.3.2), or the stored author's name on an engine turn. Lets an engine name
+  the person who started something without a roster lookup.
+
+### Changed
+
+- **`AgentTurnService.runTurn` returns `text` without the AI disclosure
+  sentence** the turn folded into its answer. The engine posts that text
+  through an own-identity send, and the marking is decided there: the
+  channel's AI label where it has one, the instance's sentence once
+  otherwise. An engine must not add a marking of its own.
+
+## 1.56.0 — 2026-11-18
+
+Additive (epic #2043).
+
+### Added
+
+- **`ConversationMessagesService.isSubscribed?(scope): Promise<boolean>`** —
+  whether the calling engine holds an active subscription for exactly this
+  scope, read from the store. For reconciling live facilitations after a
+  restart, a revoked grant or a disabled agent, instead of inferring the loss
+  from `not_permitted` or an empty `listSince`. `false` for another plugin's
+  subscription and for a caller that is not the facilitation engine. Optional
+  member: feature-detect it.
+
+## 1.55.0 — 2026-11-18
+
+Additive. Contracts for native facilitators with the engine in a plugin
+(epic #2043): the kernel owns identity, authenticated inbound messages and
+sending; lifecycle, state and counting live in the engine plugin.
+
+### Added
+
+- **`conversationMessages` service** (`ConversationMessagesService`,
+  `ConversationMessageRecord`) — every human message of a subscribed group
+  conversation, stored by the kernel with platform-stated author, message id
+  and revision. Subscribe, live delivery, lookup by message id, replay.
+- **`agentTurn` service** (`AgentTurnService`) — run one turn as a named agent
+  for a stored inbound event and get the text back without it being posted.
+- **`channelReadiness` and `sessionCapabilities` services**
+  (`ChannelReadinessReport`, `SessionCapabilitySnapshot`) — whether an agent's
+  own identity can moderate a conversation, and what a session offers as
+  inputs and outputs.
+- **`NativeToolCallContext`** — optional second argument of
+  `NativeToolHandler`: agent, channel, conversation, inbound event and caller,
+  stated by the kernel.
+- **`ConversationSendRequest.asOwnIdentity?`, `message.mentions?`** and
+  **`TargetedSendRequest.asAgentSlug?`** — send as the agent's own identity,
+  refused with `no_identity` instead of falling back to another bot.
+  `delivered` outcomes carry an optional `messageId`.
+- **`SendPoll`** on `ConversationSendRequest.message.poll?` — post a poll;
+  the conversation outcome carries `cardMessageId?` next to `messageId?`
+  (text and card can be two messages; answers refer to the card).
+- **`TargetedSendRequest.userRef?`** — the recipient's channel user reference
+  for a first-contact direct message as the agent's own identity.
+- **`ConversationMessageRecord.cardAnswer.answererVerified?`** — `false` when
+  the platform could not state who clicked.
+- **`NativeToolCallContext.callerUserRef?`** — the caller in the channel's
+  own namespace (`kind`, `id`), next to the canonical `callerPrincipalId`.
+- **`AgentTurnService.getProfile?`** (`AgentProfile`) — display name,
+  language and own-identity channel types of an agent bound to the calling
+  engine.
+- **`ChannelReadinessCode`**, `ChannelReadinessReport.verified?`,
+  **`ChannelReadinessService.repairConsent?`**
+  (`ChannelConsentRepairOutcome`) — the readiness codes in use, whether a
+  channel made the statement at all, and a consent repair.
+- **`SessionCapabilitiesService.onSessionEvent?`** (`SessionEventRecord`) —
+  meeting lifecycle: started, ended, participant joined / left.
+- **`FACILITATION_ENGINE_CAPABILITY`** and the **`facilitation.followup`
+  service contract** (`FacilitationFollowupService`) — free/busy, invitation
+  and mail, each call bounded by an allow-list.
+
+### Changed (meaning, no type change)
+
+- **`conversationSend` without `asOwnIdentity` is refused** (`not_permitted`).
+  The scope it used to have, an ephemeral attachment posted through the
+  channel's default bot, belonged to the plugin-era facilitation and is gone.
+  `asOwnIdentity` stays optional in the type so older callers compile.
+- **Three kernel services are no longer published**: `agentProvisioning`,
+  `conversationBindings` and `conductorRoleAssignments`. A plugin that
+  declares them under `optional_requires` gets `undefined`; one that requires
+  them does not activate. Their types never were part of this package.
+- **`ChannelReadinessReport.verified`**: a channel type without a readiness
+  provider is not ready (`unsupported_conversation`); it is no longer reported
+  as ready with `verified: false`.
+- **A facilitation engine needs the operator's SQL grant.** Declaring
+  `facilitationEngine@1` makes a plugin a candidate; the kernel treats it as
+  the engine only once its `permissions.sql` ledger was granted.
+
 ## 1.54.0 — 2026-11-04
 
 Additive. The capture disclosure gets a producer.

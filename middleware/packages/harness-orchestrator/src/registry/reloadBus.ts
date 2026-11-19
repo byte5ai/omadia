@@ -1,4 +1,5 @@
-import type { Pool, PoolClient } from 'pg';
+import pg from 'pg';
+import type { Pool } from 'pg';
 
 import type { DiffPlan } from './applyDiff.js';
 
@@ -17,19 +18,70 @@ import type { DiffPlan } from './applyDiff.js';
  * collapses into one reload; the next NOTIFY queues a second reload only
  * if it arrives mid-flight.
  *
- * The bus owns the `pg.Client` lifetime; the registry's `graphPool` is
- * untouched because LISTEN is per-connection and Pool would round-robin
- * sessions away from the subscription.
+ * LISTEN is session state. It needs ONE server session for as long as the
+ * bus runs, which a transaction-mode connection pooler (PgBouncer, Neon's
+ * `-pooler` host) does not give: the statement succeeds and no notification
+ * ever arrives. So with `listenConnectionString` the bus opens its own
+ * connection to that address, which must reach Postgres directly; without it
+ * it reserves one connection of `pool`, which is only right when the pool
+ * itself connects directly. Either way the periodic reconcile is what the
+ * consumer may rely on; LISTEN only makes it faster.
  */
+
+/** Postgres through a transaction-mode pooler? Neon marks the pooled host
+ *  with `-pooler`; other poolers cannot be recognised from the address. */
+export function isPooledDatabaseUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    return /-pooler\./.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The address for work that needs one server session (LISTEN): the explicit
+ * direct URL when the operator set one, else the pooled Neon address with
+ * `-pooler` taken out of the host name (Neon serves the same database
+ * directly there), else the URL as it is.
+ */
+export function directDatabaseUrl(url: string | undefined, explicitDirect?: string): string | undefined {
+  if (explicitDirect && explicitDirect.trim().length > 0) return explicitDirect.trim();
+  if (!url || !isPooledDatabaseUrl(url)) return url;
+  const parsed = new URL(url);
+  parsed.hostname = parsed.hostname.replace(/-pooler\./, '.');
+  return parsed.toString();
+}
+
+/** What the bus needs from its LISTEN connection, pooled or its own. */
+interface ListenConnection {
+  on(event: 'error', listener: (err: Error) => void): unknown;
+  on(event: 'notification', listener: (msg: { channel: string; payload?: string }) => void): unknown;
+  query(text: string): Promise<unknown>;
+  /** End the session. LISTEN state must never reach another user of it. */
+  close(): void;
+}
 
 export interface ReloadBusOptions {
   /** Shared Postgres pool — the bus reserves one connection from it for
    *  the lifetime of the bus (LISTEN is per-connection) and never releases
    *  it. Use the same pool the registry's `ConfigStore` is bound to. */
   readonly pool: Pool;
+  /**
+   * Open a connection of the bus' own to this address for LISTEN instead of
+   * reserving one of `pool`. Must reach Postgres DIRECTLY (not through a
+   * transaction-mode pooler); see {@link directDatabaseUrl}.
+   */
+  readonly listenConnectionString?: string;
   /** Called once per coalesced trigger. Should return the diff plan that
    *  was executed (for logging). */
-  readonly reload: () => Promise<DiffPlan>;
+  /** What a notification (or the periodic reconcile) runs. The registry's
+   *  bus returns its diff plan; any other consumer returns nothing. */
+  readonly reload: () => Promise<DiffPlan | void>;
+  /** NOTIFY channel to LISTEN on. Default `agents_changed` (the registry's);
+   *  other kernel caches reuse this bus with their own channel (#2043). A
+   *  plain identifier — it is interpolated into `LISTEN`. */
+  readonly channel?: string;
   /** Periodic reconcile interval. Default 60s. Set to 0 to disable the
    *  fallback (tests that drive the bus by hand). */
   readonly reconcileIntervalMs?: number;
@@ -47,10 +99,11 @@ export interface ReloadBusOptions {
 const DEFAULT_RECONCILE_MS = 60_000;
 const DEFAULT_RECONNECT_MS = 5_000;
 const MAX_RECONNECT_MS = 30_000;
-const NOTIFY_CHANNEL = 'agents_changed';
+const DEFAULT_NOTIFY_CHANNEL = 'agents_changed';
+const CHANNEL_NAME_RE = /^[a-z_][a-z0-9_]{0,62}$/;
 
 export class ReloadBus {
-  private client: PoolClient | undefined;
+  private client: ListenConnection | undefined;
   private reconcileTimer: NodeJS.Timeout | undefined;
   private reconnectTimer: NodeJS.Timeout | undefined;
   private reconnectDelayMs: number;
@@ -58,7 +111,14 @@ export class ReloadBus {
   private inFlight: Promise<void> | undefined;
   private pending = false;
 
+  private readonly channel: string;
+
   constructor(private readonly options: ReloadBusOptions) {
+    const channel = options.channel ?? DEFAULT_NOTIFY_CHANNEL;
+    if (!CHANNEL_NAME_RE.test(channel)) {
+      throw new Error(`ReloadBus: '${channel}' is not a valid NOTIFY channel name`);
+    }
+    this.channel = channel;
     this.reconnectDelayMs =
       options.reconnectInitialMs ?? DEFAULT_RECONNECT_MS;
   }
@@ -97,10 +157,9 @@ export class ReloadBus {
     }
     if (this.client) {
       try {
-        // `release(true)` marks the connection broken so the pool drops it
-        // instead of recycling — LISTEN state is connection-bound and would
-        // bleed into the next checkout.
-        this.client.release(true);
+        // The session ends: LISTEN state is connection-bound and would bleed
+        // into the next checkout of a pooled connection.
+        this.client.close();
       } catch {
         // best-effort during shutdown
       }
@@ -121,7 +180,7 @@ export class ReloadBus {
   }
 
   private async connect(): Promise<void> {
-    const client = await this.options.pool.connect();
+    const client = await this.openListenConnection();
     client.on('error', (err) => {
       this.log(`reloadBus: client error — reconnecting`, {
         error: err.message,
@@ -129,7 +188,7 @@ export class ReloadBus {
       this.scheduleReconnect();
     });
     client.on('notification', (msg) => {
-      if (msg.channel !== NOTIFY_CHANNEL) return;
+      if (msg.channel !== this.channel) return;
       this.log(`reloadBus: notify received`, {
         channel: msg.channel,
         payload: msg.payload ?? null,
@@ -137,11 +196,31 @@ export class ReloadBus {
       void this.fire('notify');
     });
 
-    await client.query(`LISTEN ${NOTIFY_CHANNEL}`);
+    await client.query(`LISTEN ${this.channel}`);
     this.client = client;
     this.reconnectDelayMs =
       this.options.reconnectInitialMs ?? DEFAULT_RECONNECT_MS;
-    this.log(`reloadBus: subscribed`, { channel: NOTIFY_CHANNEL });
+    this.log(`reloadBus: subscribed`, { channel: this.channel });
+  }
+
+  private async openListenConnection(): Promise<ListenConnection> {
+    const connectionString = this.options.listenConnectionString;
+    if (connectionString) {
+      const own = new pg.Client({ connectionString });
+      await own.connect();
+      return {
+        on: (event: 'error' | 'notification', listener: never) => own.on(event as 'error', listener),
+        query: (text) => own.query(text),
+        close: () => void own.end().catch(() => undefined),
+      };
+    }
+    const pooled = await this.options.pool.connect();
+    return {
+      on: (event: 'error' | 'notification', listener: never) => pooled.on(event as 'error', listener),
+      query: (text) => pooled.query(text),
+      // `release(true)` makes the pool drop the connection instead of recycling it.
+      close: () => pooled.release(true),
+    };
   }
 
   private scheduleReconnect(): void {
@@ -149,7 +228,7 @@ export class ReloadBus {
     if (this.reconnectTimer) return;
     if (this.client) {
       try {
-        this.client.release(true);
+        this.client.close();
       } catch {
         // ignore
       }
@@ -210,8 +289,8 @@ export class ReloadBus {
       const plan = await this.options.reload();
       this.log(`reloadBus: reload applied`, {
         source,
-        actions: plan.actions.length,
-        platformChanged: plan.platformChanged,
+        channel: this.channel,
+        ...(plan ? { actions: plan.actions.length, platformChanged: plan.platformChanged } : {}),
       });
     } catch (err) {
       this.log(`reloadBus: reload FAILED`, {

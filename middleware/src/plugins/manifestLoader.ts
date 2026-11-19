@@ -16,6 +16,7 @@ import type {
   ChannelTransportRoute,
   OAuthProviderDescriptor,
   Plugin,
+  PluginArchetype,
   PluginJobSchedule,
   PluginJobSpec,
   PluginKind,
@@ -26,14 +27,16 @@ import type {
   SetupProfile,
   SetupEnumOption,
 } from '../api/admin-v1.js';
+import { PLUGIN_KINDS } from '../api/admin-v1.js';
 import { parseSqlPermission } from '../platform/pluginSqlGrants.js';
+import { readArchetypeManifest, type ArchetypeManifestDescriptor } from './archetypeManifest.js';
 import {
   MAX_DECLARED_PUBLIC_PATHS,
   publicPathEntrySchema,
   publicPathsDeclarationSchema,
 } from '../platform/publicPathGrants.js';
 import { compileSetupPattern } from './setupFieldPattern.js';
-import { booleanSetupDefault, integerSetupDefault } from './setupFieldDefault.js';
+import { parseBooleanSetupValue, parseIntegerSetupValue } from './setupFieldValue.js';
 import { auditManifestI18n, describeManifestI18nGaps } from './manifestI18nAudit.js';
 import { enumOption, normalizeLocalized, resolveLocalized } from './manifestLocalized.js';
 
@@ -324,6 +327,22 @@ function warnManifestI18nGaps(id: string, version: string, doc: unknown): void {
   );
 }
 
+/** The descriptor in the JSON-safe shape of the admin API (mutable copies). */
+function toPluginArchetype(descriptor: ArchetypeManifestDescriptor): PluginArchetype {
+  return {
+    id: descriptor.id,
+    omits: [...descriptor.omits],
+    adds: [...(descriptor.adds ?? [])],
+    requires: [...(descriptor.requires ?? [])],
+    noun: descriptor.noun,
+    ...(descriptor.label !== undefined ? { label: descriptor.label } : {}),
+    ...(descriptor.labelPlural !== undefined ? { labelPlural: descriptor.labelPlural } : {}),
+    ...(descriptor.description !== undefined ? { description: descriptor.description } : {}),
+    ...(descriptor.omissionReasons ? { omissionReasons: { ...descriptor.omissionReasons } } : {}),
+    ...(descriptor.roleContract !== undefined ? { roleContract: descriptor.roleContract } : {}),
+  };
+}
+
 export function adaptManifestV1(
   doc: Record<string, unknown>,
   reportUnknownPermissions: UnknownPermissionReporter = reportUnknownPermissionKeys,
@@ -426,13 +445,16 @@ export function adaptManifestV1(
     } else if (type === 'boolean') {
       // #1464 — `true` and `"true"` both mean true; shared with the install
       // schema projection so the two never disagree.
-      const defaultValue = booleanSetupDefault(f['default']);
+      const defaultValue = parseBooleanSetupValue(f['default']);
       if (defaultValue !== undefined) entry.default = defaultValue;
     } else if (type === 'integer') {
       // #1524 — a YAML number (`default: 200000`) was dropped by `asString`,
       // so the catalog, and the bundled-plugin seeding that reads it, lost it.
-      const defaultValue = integerSetupDefault(f['default']);
+      const defaultValue = parseIntegerSetupValue(f['default']);
       if (defaultValue !== undefined) entry.default = defaultValue;
+      // #1958 — lower bound, parsed exactly like installService's projection.
+      const min = parseIntegerSetupValue(f['min']);
+      if (min !== undefined) entry.min = min;
     } else {
       const defaultValue = asString(f['default']);
       if (defaultValue !== undefined) entry.default = defaultValue;
@@ -504,17 +526,34 @@ export function adaptManifestV1(
     setupFields.push(entry);
   }
 
-  const rawKind = asString(identity['kind']);
-  const kind: PluginKind =
-    rawKind === 'integration'
-      ? 'integration'
-      : rawKind === 'channel'
-        ? 'channel'
-        : rawKind === 'tool'
-          ? 'tool'
-          : rawKind === 'extension'
-            ? 'extension'
-            : 'agent';
+  // #2088 — `identity.kind` decides which runtime runs the package and what
+  // it may be attached to, so a value the kernel does not know is REJECTED.
+  // It used to become `agent` silently: a manifest of a newer kind (or with a
+  // typo) was then loaded as a persona-bearing agent plugin. A manifest
+  // without the field keeps its historical meaning, `agent`.
+  const rawKind = identity['kind'];
+  if (rawKind !== undefined && rawKind !== null && !(PLUGIN_KINDS as readonly unknown[]).includes(rawKind)) {
+    console.warn(
+      `[catalog] manifest rejected: plugin '${id}' has identity.kind ${JSON.stringify(rawKind)}, which this kernel does not know (it knows: ${PLUGIN_KINDS.join(', ')}).`,
+    );
+    return null;
+  }
+  const kind: PluginKind = typeof rawKind === 'string' ? (rawKind as PluginKind) : 'agent';
+  // The descriptor of the archetype the plugin delivers. Read strictly: the
+  // kernel enforces it, so a block it cannot read in full rejects the manifest.
+  let archetype: ArchetypeManifestDescriptor | undefined;
+  if (kind === 'archetype') {
+    const read = readArchetypeManifest(doc['archetype']);
+    if ('error' in read) {
+      console.warn(`[catalog] manifest rejected: plugin '${id}': ${read.error}.`);
+      return null;
+    }
+    archetype = read.descriptor;
+  } else if (doc['archetype'] !== undefined && doc['archetype'] !== null) {
+    console.warn(
+      `[manifest:${id}] an \`archetype:\` block is only read for identity.kind 'archetype' (this plugin is '${kind}') — ignored.`,
+    );
+  }
   const dependsOn = extractStringArray(doc['depends_on']);
   const jobs = extractJobs(doc['jobs']);
   const provides = extractCapabilityList(doc['provides'], id, 'provides');
@@ -661,6 +700,7 @@ export function adaptManifestV1(
   if (setupGuide) result = { ...result, setup_guide: setupGuide };
   if (setupProfile) result = { ...result, setup_profile: setupProfile };
   if (channel) result = { ...result, channel };
+  if (archetype) result = { ...result, archetype: toPluginArchetype(archetype) };
   if (adminUiPath) result = { ...result, admin_ui_path: adminUiPath };
   if (isReferenceOnly) result = { ...result, is_reference_only: true };
   if (multiInstanceJustification) {

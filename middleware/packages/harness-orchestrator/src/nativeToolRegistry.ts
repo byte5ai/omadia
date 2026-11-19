@@ -280,6 +280,25 @@ export class NativeToolRegistry {
     };
   }
 
+  /**
+   * Drop every tool a plugin registered. The kernel calls it when a plugin's
+   * activation FAILS after it already registered tools, and when a plugin
+   * deactivates: an activation that threw never returned a handle, so nothing
+   * would run the plugin's own disposers, and the next attempt would fail with
+   * "duplicate native-tool name" instead of the real error (or of working).
+   * Returns the names removed. Kernel-registered tools (no owner) are untouched.
+   */
+  unregisterBySource(agentId: string): string[] {
+    const removed: string[] = [];
+    for (const [name, entry] of this.entries) {
+      if (entry.agentId === agentId) {
+        this.entries.delete(name);
+        removed.push(name);
+      }
+    }
+    return removed;
+  }
+
   has(name: string): boolean {
     return this.entries.has(name);
   }

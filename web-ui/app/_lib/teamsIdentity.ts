@@ -412,6 +412,14 @@ export const TEAMS_PROVISIONING_EVENT_DETAILS = [
   'delegated_consent_required',
   'delegated_token_expired',
   'device_code_flow_failed',
+  // #2043 — the bot is checked against the Bot Connector before the identity
+  // counts as installed, and the two verdicts that check and the install
+  // itself can end in.
+  'verifying_bot',
+  'bot_rejected',
+  'bot_app_id_retired',
+  'app_registration_not_ready',
+  'rsc_consent_refused',
 ] as const;
 
 const EVENT_DETAIL_SET: ReadonlySet<string> = new Set(
@@ -750,6 +758,17 @@ export function teamsIdentityErrorMessages(
       key: `${base}.reason`,
       values: { reason: detail.reason as string },
     });
+  }
+
+  // #2043 — what Microsoft named, on its own line; the full answer is the
+  // technical detail below.
+  if (detail.code === 'rsc_consent_refused') {
+    const named = [detail.backendRequest, detail.graphCode, detail.innerCode].filter(
+      (part): part is string => part !== undefined,
+    );
+    if (named.length > 0) {
+      messages.push({ key: `${base}.reported`, values: { codes: named.join(', ') } });
+    }
   }
 
   if (detail.code === 'throttled' && detail.retryAfterSeconds !== undefined) {

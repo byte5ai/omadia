@@ -188,3 +188,17 @@ export * from './decisionModel.js';
 // #330 C3b — conversation-addressed proactive send ('conversationSend'):
 // post INTO a group conversation (the Facilitator's stall-nudges).
 export * from './conversationSend.js';
+// #2088 — end of service: an archetype plugin ends its agents' processes.
+export * from './archetypeProcesses.js';
+// #2089 — question cards: typed questions out, typed answers in.
+export * from './questionCard.js';
+
+// #2043 — native facilitators, plugin-first: the kernel keeps identity,
+// authenticated inbound events and sending; the engine lives in a plugin.
+export * from './conversationMessages.js';
+export * from './agentTurn.js';
+export * from './sessionCapabilities.js';
+export * from './facilitation.js';
+
+// #2090 — execution scopes and authorization for archetype plugins.
+export * from './executionAuthorization.js';

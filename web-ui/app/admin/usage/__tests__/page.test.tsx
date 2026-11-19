@@ -21,6 +21,7 @@ interface Totals {
   subscriptionCalls: number;
   unpricedCalls?: number;
   unpricedModels?: string[];
+  cacheSavingsUsd?: number;
 }
 
 function dashboard(totals: Totals, rest: Record<string, unknown> = {}): unknown {
@@ -283,5 +284,51 @@ describe('ADMIN → Usage & cost page', () => {
     const headline = await screen.findByText(/^2 /);
     expect(headline.textContent).not.toMatch(/\{count/);
     expect(screen.getByText(/0,5000\s\$/)).toBeInTheDocument();
+  });
+  const WITH_FX = (): unknown =>
+    dashboard(
+      { ...METERED, cacheSavingsUsd: 1.5 },
+      {
+        fx: { eurPerUsd: 0.9, date: '2026-11-13', source: 'ECB' },
+        byModel: [byKey('claude-opus-5', { costUsd: 2.5, cacheSavingsUsd: 1.5 })],
+      },
+    );
+
+  it('switches between the ledger USD and EUR at the ECB rate it names', async () => {
+    respondWith(WITH_FX());
+    renderWithIntl(<UsageDashboardPage />);
+
+    // English defaults to the ledger currency.
+    const total = (await screen.findByText('Total cost')).parentElement!;
+    expect(total).toHaveTextContent('$2.50');
+    expect(screen.getByText('Cache savings').parentElement!).toHaveTextContent('$1.50');
+
+    fireEvent.click(screen.getByRole('button', { name: 'EUR' }));
+    expect(total).toHaveTextContent('€2.25');
+    expect(total).toHaveTextContent('$2.50 · ECB rate of Nov 13, 2026');
+    const savings = screen.getByText('Cache savings').parentElement!;
+    expect(savings).toHaveTextContent('€1.35');
+    expect(savings).toHaveTextContent('Without the cache: €3.60');
+    const opus = screen.getByText('claude-opus-5').closest('li')!;
+    expect(within(opus).getByText(/· cache saved €1\.35/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'USD' }));
+    expect(total).toHaveTextContent('$2.50');
+  });
+
+  it('defaults to EUR in German', async () => {
+    respondWith(WITH_FX());
+    renderWithIntl(<UsageDashboardPage />, { locale: 'de' });
+    const total = (await screen.findByText('Gesamtkosten')).parentElement!;
+    expect(total).toHaveTextContent(/2,25\s€/);
+    expect(total).toHaveTextContent(/EZB-Kurs vom 13\.11\.2026/);
+    expect(screen.getByText('Cache-Ersparnis').parentElement!).toHaveTextContent(/1,35\s€/);
+  });
+
+  it('stays in USD without a rate and offers no currency switch', async () => {
+    respondWith(dashboard(METERED, { fx: null }));
+    renderWithIntl(<UsageDashboardPage />);
+    expect((await screen.findByText('Total cost')).nextSibling).toHaveTextContent('$2.50');
+    expect(screen.queryByRole('button', { name: 'EUR' })).not.toBeInTheDocument();
   });
 });

@@ -434,7 +434,8 @@
         "riskWarning": "Heuristic scan flagged this skill: {codes}. As a persona it drives the top-level agent with full tool access — review before relying on it.",
         "confirmAttachAction": "Attach anyway",
         "confirmAttachHighRisk": "This skill's heuristic scan is at high risk ({codes}). As a persona it drives the top-level agent with full tool access. Confirm you've reviewed it before attaching."
-      }
+      },
+      "facilitatorsNote": "Facilitators are not listed here: channels, sub-agents, tools, MCP servers and schedules cannot be wired to them."
     }
   },
   "selfExtension": {
@@ -494,8 +495,8 @@
     "openLabel": "open"
   },
   "nav": {
-    "dashboard": "Dashboard",
-    "chat": "Chat",
+    "chatCluster": "Chat",
+    "debug": "Debug",
     "store": "Hub",
     "builder": "Builder",
     "memory": "Memory",
@@ -512,6 +513,7 @@
     "agentsOverview": "Overview",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
+    "setupCluster": "Setup",
     "adminCluster": "Admin",
     "help": "Help",
     "teamsSignIn": "Teams sign-in",
@@ -551,6 +553,29 @@
     "colStep": "Step",
     "colPostcondition": "Postcondition",
     "colTransition": "Transition",
+    "colDuration": "Duration",
+    "colReason": "Reason",
+    "runReasonLabel": "Reason",
+    "runReasonUnknown": "Cause not recorded",
+    "durationMs": "{value} ms",
+    "durationSeconds": "{value} s",
+    "durationMinutes": "{min} min {sec} s",
+    "runErrorCodes": {
+      "max_steps_exceeded": "Step budget exceeded",
+      "step_not_in_graph": "Step is not in the published graph",
+      "timer_misconfigured": "Timer step is misconfigured",
+      "no_role_holder": "No reachable holder for the human step",
+      "await_timed_out": "Deadline passed with no response",
+      "effect_threw": "Step failed with an error",
+      "step_timeout": "Step exceeded its time budget",
+      "resume_no_current_step": "Resume found no next step",
+      "unknown_step": "Transition target is not a known step",
+      "postcondition_unmet_no_fallback": "Postcondition unmet and no fallback declared",
+      "no_transition_no_fallback": "No transition matched and no fallback declared",
+      "ambiguous_guards": "Several transitions matched at once",
+      "fallback_transition_missing": "Declared fallback transition does not exist",
+      "approval_rejected_no_transition": "Rejected, and no transition handles the rejection"
+    },
     "resultContext": "Result context",
     "loadError": "Could not load workflows",
     "publishError": "Publish failed",
@@ -563,7 +588,7 @@
     "cancelRunFailed": "The run could not be cancelled",
     "cancelPendingHint": "Cancellation requested — the run stops at the next step boundary.",
     "strictApprovalLabel": "Strict approval",
-    "strictApprovalHint": "Only an explicit approve advances; a missing or malformed response counts as a rejection. Recommended when this step gates an irreversible action.",
+    "strictApprovalHint": "Only an explicit approve counts as approval; a missing or malformed response counts as a rejection. A rejection never advances on an unguarded transition — guard the outgoing transitions on stepResult.approved so the refusal has a path of its own. Recommended when this step gates an irreversible action.",
     "designerHeading": "Visual designer",
     "designerHint": "Add steps, drag between them to wire transitions, edit a step in the inspector, then Save. Mark one step as the entry.",
     "chatHeading": "Conversational builder",
@@ -628,6 +653,7 @@
     "entryLabel": "Entry step",
     "transitionLabel": "Transition",
     "guardLabel": "Guard (JSON, optional)",
+    "guardHumanRejectionHint": "A transition out of a human step is never taken on a rejection unless its guard asks for one. Guard the approval path on stepResult.approved = true and give the rejection its own transition.",
     "awaitsHeading": "Pending human steps",
     "approve": "Approve",
     "reject": "Reject",
@@ -973,7 +999,6 @@
   "themeControls": {
     "paletteAriaLabel": "Accent palette",
     "appearanceAriaLabel": "Appearance",
-    "menuAriaLabel": "Palette and appearance",
     "palette": {
       "lagoon": "Lagoon (teal)",
       "petrol": "Petrol (blue)",
@@ -983,7 +1008,9 @@
       "system": "Automatic",
       "light": "Light",
       "dark": "Dark"
-    }
+    },
+    "switchToDark": "Switch to dark mode",
+    "switchToLight": "Switch to light mode"
   },
   "login": {
     "title": "Sign in to omadia",
@@ -1071,13 +1098,16 @@
     "streamErrorAnnounce": "{title}: response failed"
   },
   "authBadge": {
-    "loginLink": "Login",
     "authError": "auth err",
     "signedInAs": "Signed in as",
     "signOut": "Sign out everywhere",
     "signOutHint": "Signs you out on all your devices, not just this one.",
     "signOutFailed": "Sign-out did not go through. You are still signed in.",
-    "signOutRetry": "Try signing out again"
+    "signOutRetry": "Try signing out again",
+    "preferences": "Preferences",
+    "palette": "Palette",
+    "appearance": "Appearance",
+    "language": "Language"
   },
   "error": {
     "title": "Something went wrong",
@@ -1115,6 +1145,10 @@
       "already_installed": {
         "what": "This plugin is already installed on this server.",
         "next": "Uninstall the installed copy first if you want to install it again."
+      },
+      "archetype_confirmation_required": {
+        "what": "This is an archetype plugin: it adds a new kind of agent to this server. That is installed only after an explicit confirmation, and this request did not carry one.",
+        "next": "Start the install from the plugin's page in the store. It shows what the archetype adds and what its agents never get, and asks you to confirm."
       },
       "blocked": {
         "what": "The store marks this plugin as incompatible with this server, so the install was refused.",
@@ -2127,7 +2161,7 @@
     "actionKill": "Kill sessions",
     "drainTooltip": "Clear snapshot on every session bound to this Orchestrator — next turn re-captures from current config",
     "fallbackProtected": "This is the standard orchestrator and cannot be disabled or deleted.",
-    "deleteConfirm": "Delete orchestrator \"{slug}\"?",
+    "deleteConfirm": "Delete orchestrator \"{slug}\"? It goes out of service; its record is kept under “Deleted agents” until you remove it for good.",
     "killConfirm": "Kill all sessions for \"{slug}\"? History will be lost.",
     "memoryScopeHeading": "Memory scope",
     "memoryScopeEmpty": "No scope (runtime registry not active)",
@@ -2485,7 +2519,8 @@
       "targetUnrecognised": "This is not a Teams install target. Expected a team group id, a group chat id (19:…@thread.v2, or 19:…@thread.skype for an older chat) or a one-to-one chat id (19:…@unq.gbl.spaces).",
       "chatInstallUnsupported": "Installing into a chat needs the Microsoft 365 connector 0.7.0 or newer. The connector installed here is older — update the plugin, or choose a team as the target.",
       "pendingHintTyped": "A provisioning run targets {kind} {teamId}. It only counts as installed once the chain reaches the install step.",
-      "chatNameUnavailable": "The connector provides no name for chats — the id is shown instead."
+      "chatNameUnavailable": "The connector provides no name for chats — the id is shown instead.",
+      "fieldTargetLinkHint": "Or paste a Teams link (“Copy link” on a chat, a team or a channel): it is turned into the id. A channel link selects its team."
     },
     "identity": {
       "heading": "Identity",
@@ -2519,6 +2554,13 @@
           "standard": "Standard — as delivered",
           "detailed": "Detailed — with reasoning, sources and assumptions",
           "max": "Maximum — every step, raw value and uncertainty"
+        },
+        "language": "Language",
+        "languageInherit": "Installation language",
+        "languageHint": "The language the facilitator speaks. Without a choice it uses the installation language.",
+        "languageOptions": {
+          "de": "German",
+          "en": "English"
         }
       },
       "republish": {
@@ -2543,10 +2585,10 @@
       "droppedPresets": "The server does not know these boundary presets: {ids}",
       "persona": {
         "template": {
-          "heading": "Archetype",
-          "none": "No archetype picked — every axis sits at neutral.",
-          "active": "Archetype: {name}",
-          "choose": "Pick an archetype",
+          "heading": "Persona template",
+          "none": "No persona template picked — every axis sits at neutral.",
+          "active": "Persona template: {name}",
+          "choose": "Pick a persona template",
           "clear": "Detach"
         },
         "culture": {
@@ -2560,6 +2602,10 @@
         "notes": {
           "label": "Own notes",
           "hint": "Free text carried into the character block verbatim — for everything no slider covers."
+        },
+        "bounds": {
+          "note": "A facilitator's character stays inside the bounds of the neutrality contract. Sliders, persona templates and industry presets stop at those bounds.",
+          "axisRange": "Allowed for a facilitator: {min} to {max}"
         }
       },
       "boundaries": {
@@ -2583,7 +2629,13 @@
           "low": "Light",
           "medium": "Medium",
           "high": "Strong"
-        }
+        },
+        "sycophancyFacilitatorHint": "The guard is always on for a facilitator: a moderator who flatters one voice is partial."
+      },
+      "facilitator": {
+        "issueOnTab": "{tab}: {issue}",
+        "instructionsHint": "Opening section of the facilitator's prompt. Checked against the neutrality contract when saved: text that asks for partiality, an opinion, a vote or a hidden channel is refused.",
+        "promptNote": "The neutrality contract is compiled in after these sections and cannot be removed or overridden from here."
       }
     },
     "teamsIdentity": {
@@ -2646,7 +2698,12 @@
           "delegated_sign_in_required": "Waiting for the Teams sign-in",
           "delegated_consent_required": "Waiting for an admin to consent",
           "delegated_token_expired": "Sign-in expired",
-          "device_code_flow_failed": "Sign-in flow refused"
+          "device_code_flow_failed": "Sign-in flow refused",
+          "verifying_bot": "checking with Microsoft that the bot is known",
+          "bot_rejected": "Microsoft's Bot Connector does not accept this bot",
+          "rsc_consent_refused": "the target refused the app's permissions",
+          "bot_app_id_retired": "the application id was already used for a deleted bot",
+          "app_registration_not_ready": "Microsoft is not yet accepting calls on the new app registration"
         }
       },
       "stateSummary": "State: {state}",
@@ -2691,7 +2748,7 @@
         "consent_missing": {
           "what": "Microsoft refused the request because a tenant administrator has not granted admin consent for the permissions the provisioning needs.",
           "scopes": "Missing permissions ({count}): {scopes}",
-          "next": "Ask a Global Administrator of the customer tenant to grant admin consent for these permissions, then start provisioning again. Running it again without the consent changes nothing.",
+          "next": "Ask a Global Administrator of the customer tenant to grant admin consent for these permissions, then start provisioning again. Running it again without the consent changes nothing. If the permissions listed are already granted, wait a minute and run it again: Entra ID can refuse calls for a short time after a permission was granted.",
           "consentLink": "How to grant admin consent in Microsoft Entra ID"
         },
         "arm_not_configured": {
@@ -2745,6 +2802,23 @@
         "rsc_permissions_mismatch": {
           "what": "Microsoft Graph refused the install: this orchestrator’s Teams app package declares resource-specific permissions the installing identity may not consent to. The target id is correct — a role is missing.",
           "next": "Grant the M365 connector’s Entra app the role TeamsAppInstallation.ReadWriteAndConsentForTeam.All (team) or …ForChat.All (chat), admin-consent it, then re-run provisioning."
+        },
+        "rsc_consent_refused": {
+          "what": "Teams refused to grant this app’s resource-specific permissions in the target team or chat, so the app was not installed there. This is a permanent refusal, not a replication delay: running the provisioning again changes nothing.",
+          "reported": "Reported by Microsoft: {codes}",
+          "next": "Check two things: whether the tenant allows resource-specific consent for teams and chats (Teams admin center and Entra consent settings), and whether every permission the Teams app package declares is allowed for this kind of target. The full answer from Microsoft is in the technical detail below. The bot itself is published and already answers in personal chats."
+        },
+        "bot_rejected": {
+          "what": "Every provisioning step succeeded in Azure, but Microsoft's Bot Connector does not accept this bot: it answers 401 to the bot's own credentials. In Teams the bot shows as an invalid or unknown bot and receives nothing. The agent is therefore not ready.",
+          "next": "This happens when a bot is created again under an application id that was already used, for example after a reset whose deleted app registration was restored. Waiting does not help. Delete this Teams identity completely (\"Delete identity\"), then provision it again so that it gets a new app registration."
+        },
+        "bot_app_id_retired": {
+          "what": "The bot was not created: its application id already belonged to a bot that was deleted. Microsoft's Bot Connector keeps rejecting a bot that is created again under the same application id, although Azure reports it as healthy, so omadia does not create one.",
+          "next": "Delete this Teams identity completely (\"Delete identity\"), including its app registration, and provision it again. It then gets a new application id. Running the same provisioning again changes nothing."
+        },
+        "app_registration_not_ready": {
+          "what": "The app registration exists, but Microsoft Graph kept answering 403 to the next call on it (adding the bot's secret or creating its service principal). The permission for this is granted and was used a moment earlier, so this is not missing admin consent. Entra ID usually needs up to a minute until a new registration accepts changes; omadia waited for that and it was still refused.",
+          "next": "Start provisioning again in a minute or two; it continues on the existing app registration. If it keeps failing with this message, the app registration exists but is not owned by the omadia publisher app (for example because it was created by hand under the same name): delete this Teams identity completely and provision it again."
         }
       },
       "teamsBot": {
@@ -2797,7 +2871,9 @@
           "scope_missing": "The stored sign-in is missing a permission the team list needs. Signing in again unlocks the list.",
           "consent_required": "The tenant has not consented to listing teams. Until it does, type the id below.",
           "lookup_failed": "The team list could not be loaded just now. Reload the page, or type the id below.",
-          "sign_in_expired": "The tenant sign-in expired and could not be renewed automatically. Sign in once more, or type the id below."
+          "sign_in_expired": "The tenant sign-in expired and could not be renewed automatically. Sign in once more, or type the id below.",
+          "loading": "The team list is still being loaded from Microsoft. It appears here by itself; until then you can type the id below.",
+          "not_requested": "The team list was not requested."
         },
         "chats": {
           "connector_unavailable": "Without an active M365 connector there is no chat list — type the id into the field below.",
@@ -2806,12 +2882,34 @@
           "scope_missing": "The stored sign-in does not yet carry the {scope} permission and cannot pick it up by refreshing. One fresh sign-in unlocks the chat list; until then type the chat id below.",
           "consent_required": "The tenant has not consented to listing chats. Until it does, type the chat id below.",
           "lookup_failed": "The chat list could not be loaded just now. Reload the page, or type the chat id below.",
-          "sign_in_expired": "The tenant sign-in expired and could not be renewed automatically — that is not a missing sign-in but one that stopped being valid. Sign in once more, or type the chat id below."
+          "sign_in_expired": "The tenant sign-in expired and could not be renewed automatically — that is not a missing sign-in but one that stopped being valid. Sign in once more, or type the chat id below.",
+          "loading": "The chat list is still being loaded from Microsoft, which takes a while in a tenant with many chats. It appears here by itself; until then you can type the chat id below.",
+          "not_requested": "Chats are listed when you search for one."
         }
       },
       "filter": "Type to filter …",
       "noMatch": "Nothing matches “{query}”. For an id that does not appear here, use the field below.",
-      "matchCount": "{count, plural, =0 {No matches} one {One match} other {# matches}}"
+      "matchCount": "{count, plural, =0 {No matches} one {One match} other {# matches}}",
+      "truncated": "Showing {shown} of {total}. If the one you need is missing, type its id into the field below.",
+      "incomplete": "Microsoft returned only part of this list ({shown} entries), so it is incomplete. If the one you need is missing, type its id into the field below.",
+      "memberSearch": {
+        "untitled_only": "The filter finds chats by their name. Members are only searchable for chats without a name.",
+        "none": "The filter finds chats by their name; member names are not available for this list."
+      },
+      "withoutMemberNames": "{count, plural, one {One chat without a name has no member names and can only be told apart by its id.} other {# chats without a name have no member names and can only be told apart by their ids.}}",
+      "recent": {
+        "label": "Chats your bots are already in",
+        "empty": "None of this instance’s bots is in a chat yet. Search below, or paste a link or an id.",
+        "thisBot": "this bot is in it"
+      },
+      "search": {
+        "label": "Search all chats of the tenant",
+        "placeholder": "Chat name …",
+        "hint": "Type at least two characters of the chat’s name. The chats of the tenant are only read when you search.",
+        "searching": "Searching for “{query}” … The first search in a large tenant can take a minute; later ones are immediate.",
+        "results": "Chats matching “{query}”",
+        "none": "No chat is called “{query}”. Chats without a name are found by their members only. You can also paste a link or an id below."
+      }
     },
     "teamsReset": {
       "heading": "Reset provisioning",
@@ -2855,7 +2953,10 @@
         "config_unsync_unavailable": "This deployment does not write the teams_bots entry automatically, so there was none for the reset to remove.",
         "config_plugin_not_installed": "The Teams channel is not installed, so there is no configuration to clean up.",
         "tenant_sign_in_expired": "The tenant sign-in expired and could not be renewed automatically. Sign in once more and start the reset again — no extra permission is needed for it.",
-        "app_trace_required": "The identity is kept: the app registration could not be looked up in the recycle bin, and this row is the only trace of it. Use \"reset the run\", or upgrade the connector so the recycle bin can be searched."
+        "app_trace_required": "The identity is kept: the app registration could not be looked up in the recycle bin, and this row is the only trace of it. Use \"reset the run\", or upgrade the connector so the recycle bin can be searched.",
+        "app_purge_unconfirmed": "The app registration was deleted, but its permanent removal from the recycle bin could not be confirmed yet. Start the reset again in a minute to finish it. Do not start a new provisioning before that: it could run into the deleted registration.",
+        "app_purge_recycle_bin_unreadable": "The app registration was deleted and its permanent removal was requested, but this tenant does not let omadia read the recycle bin (that needs the permission Application.ReadWrite.All), so the removal could not be confirmed. If a new provisioning reports a reserved name or a retired application id, grant that permission and reset again.",
+        "app_purge_confirmation_unsupported": "The app registration was deleted and its permanent removal was requested, but the installed M365 connector cannot check the recycle bin, so the removal could not be confirmed. Update the connector to 0.9.2 or newer; until then wait a few minutes before provisioning again."
       },
       "openRun": "Reset the run …",
       "openIdentity": "Delete the identity …",
@@ -2877,7 +2978,155 @@
       "teams": "Teams",
       "plugins": "Plugins",
       "tools": "Tools",
-      "memory": "Memory"
+      "memory": "Memory",
+      "engine": "Facilitation"
+    },
+    "endOfService": {
+      "disabled": "“{name}” is disabled.",
+      "deleted": "“{name}” is deleted. Its record is kept under “Deleted agents” until you remove it for good.",
+      "processes": "{count, plural, =0 {No running process had to be ended.} one {One running process was ended:} other {# running processes were ended:}}",
+      "outcomeAborted": "{channel}, conversation {conversation}: ended by its archetype plugin",
+      "outcomeAbortedReported": "{channel}, conversation {conversation}: ended by its archetype plugin, the conversation was told",
+      "outcomeFailed": "{channel}, conversation {conversation}: could not be closed by its archetype plugin",
+      "pluginFailed": "The archetype plugin did not end the agent's processes ({detail}). omadia stopped delivering messages for the agent, so nothing can go on.",
+      "subscriptions": "{count, plural, =0 {The agent was not receiving the messages of any conversation.} one {It no longer receives the messages of one conversation.} other {It no longer receives the messages of # conversations.}}",
+      "noticesOwed": "{count, plural, =0 {} one {One conversation was not told by omadia itself: system notices are not available yet.} other {# conversations were not told by omadia itself: system notices are not available yet.}}",
+      "dismiss": "Dismiss"
+    },
+    "execution": {
+      "heading": "Running processes",
+      "intro": "What archetype plugins are currently allowed to do for their agents: each running process holds permissions with a deadline and a budget. Stopping refuses every further action (posts, direct messages, model calls) until you resume. Nothing is ended or deleted.",
+      "stopAll": "Stop everything",
+      "stopProcess": "Stop this process",
+      "stopAgent": "Stop this agent",
+      "resume": "Resume",
+      "stopped": "stopped",
+      "scopeRow": "{agent}: {kind} (process {process})",
+      "kindConfiguring": "being set up",
+      "kindActive": "active",
+      "kindClosing": "closing",
+      "kindScheduling": "scheduling a follow-up meeting",
+      "kindFollowUp": "following up",
+      "until": "allowed until {when}",
+      "untilWaiting": "past its deadline, waiting for open confirmations until {when}",
+      "used": "{actions} of {actionBudget} actions and {calls} of {callBudget} model calls used",
+      "switchInstance": "Everything is stopped (by {by}, {when}).",
+      "switchAgent": "Agent {agent} is stopped (by {by}, {when}).",
+      "switchProcess": "Process {process} of agent {agent} is stopped (by {by}, {when}).",
+      "nothingRunning": "No process is running.",
+      "loadFailed": "The running processes could not be loaded.",
+      "actionFailed": "That did not work. Nothing was changed; try again."
+    },
+    "deletedAgents": {
+      "heading": "Deleted agents",
+      "intro": "A deleted agent is out of service and answers nowhere. Its record, with identity, grants, bindings and schedules, is kept, so a conversation bound to it is not taken over by another agent. Removing it for good deletes all of that.",
+      "loadFailed": "The deleted agents could not be loaded.",
+      "row": "{name} ({slug}) · deleted {when}",
+      "rowBy": "{name} ({slug}) · deleted {when} by {by}",
+      "purge": "Remove for good",
+      "purging": "Removing",
+      "purgeConfirm": "Remove “{slug}” for good? Its identity, grants, bindings and schedules are deleted with it. This cannot be undone.",
+      "purgeTypeSlug": "This agent was deleted less than {days, plural, one {# day} other {# days}} ago. Type its slug “{slug}” to remove it now:",
+      "purgeMismatch": "That is not the slug. Nothing was removed.",
+      "purgeableFrom": "can be removed without typing the slug from {when}"
+    },
+    "archetype": {
+      "deliveredBy": "Delivered by the archetype plugin “{plugin}”. omadia enforces what the archetype adds and leaves out for every agent in this section.",
+      "deliveredByKernel": "Built into omadia.",
+      "notDelivered": "No installed plugin delivers the archetype “{id}” any more. Its agents stay here, but omadia gives them nothing until an archetype plugin delivers it again.",
+      "empty": "No agents of the archetype “{name}” yet. Create one above.",
+      "createHeading": "Create an agent of the archetype “{name}”",
+      "createHint": "The archetype is fixed once created. Identity and personality are set on the agent's page, which opens next.",
+      "createSubmit": "Create",
+      "deleteConfirm": "Delete agent \"{slug}\"? It goes out of service; its record is kept under “Deleted agents” until you remove it for good."
+    },
+    "facilitator": {
+      "heading": "Facilitators",
+      "intro": "A facilitator only moderates: decisions, votes, prioritisations, retrospectives. It works for no single person, holds no opinion on the content and speaks in Teams under its own name.",
+      "empty": "No facilitators yet. Create one above.",
+      "createHeading": "Create facilitator",
+      "createHint": "The archetype is fixed once created. Avatar, personality and the Teams identity are set on the facilitator's page, which opens next.",
+      "createSubmit": "Create facilitator",
+      "cardSummary": "status: {status} · runtime: {runtime}",
+      "deleteConfirm": "Delete facilitator \"{slug}\"? Its running facilitations are ended; its record is kept under “Deleted agents” until you remove it for good.",
+      "omittedNote": "No plugins, tools, MCP servers, memory, internal helpers, working modes, schedules or conversations with other agents, and never the default agent: access to company data or to one person's interests would make a moderator partial.",
+      "contractRejected": "Not saved: {count, plural, one {one setting conflicts} other {# settings conflict}} with the neutrality contract of a facilitator.",
+      "omissionWithPlugins": "{reason} Refused: {plugins}.",
+      "omissions": {
+        "plugin_grant": "A facilitator only gets the tools of the facilitation engine. Business plugins would make it partial.",
+        "tool_grant": "A facilitator only gets the tools of the facilitation engine. Other tool grants would make it partial.",
+        "memory": "A facilitator has no general memory. Its only memory is the record of each facilitation.",
+        "default_agent": "A facilitator cannot be the default agent. It never answers for or as someone.",
+        "persona_skill": "A facilitator has no working modes. It never answers as someone else.",
+        "fast_path": "A facilitator does not use the fast lane.",
+        "agent_to_agent": "A facilitator neither talks to other agents nor is addressed by them.",
+        "consultation": "A facilitator neither consults other agents nor is consulted by them.",
+        "sub_agent": "A facilitator has no internal helpers and cannot be attached to another agent.",
+        "assistance": "A facilitator is not an assistant. It only moderates.",
+        "unknown": "This is not available for a facilitator.",
+        "channel_binding": "A facilitator cannot be bound to a channel. It joins a conversation under its own Teams identity and is never routed to."
+      },
+      "issues": {
+        "persona_axis_above_bound": "{axis}: at most {bound} for a facilitator.",
+        "persona_axis_below_bound": "{axis}: at least {bound} for a facilitator.",
+        "sycophancy_guard_off": "The anti-flattery guard cannot be switched off for a facilitator.",
+        "partiality": "Asks the facilitator to favour or disadvantage someone.",
+        "takes_sides": "Asks the facilitator to take sides.",
+        "votes_or_decides": "Asks the facilitator to vote, decide or break ties itself.",
+        "gives_opinion": "Asks the facilitator for its own opinion on the content.",
+        "hidden_channel": "Asks the facilitator to keep something from the group.",
+        "lifts_contract": "Tries to lift or override the neutrality contract.",
+        "ignores_stop": "Asks the facilitator to continue after the group said stop.",
+        "acts_as_assistant": "Makes the facilitator an assistant for one person.",
+        "withExcerpt": "{reason} Passage: “{excerpt}”",
+        "unknown": "Conflicts with the neutrality contract: {detail}"
+      },
+      "readiness": {
+        "checking": "Checking readiness",
+        "ready": "Ready",
+        "notReady": "Not ready",
+        "teams": {
+          "missing": "No Teams identity of its own yet.",
+          "provisioning": "Its Teams identity is still being provisioned.",
+          "failed": "Provisioning its Teams identity failed.",
+          "unknown": "Its Teams identity could not be checked."
+        },
+        "teamsLink": "Open Teams provisioning",
+        "engineNotReady": "No usable facilitation engine on this instance. Asked in a group, this facilitator only answers that facilitation is not set up on this instance yet and that people should contact their administrator.",
+        "engineLink": "Repair",
+        "engineMissing": "The facilitation engine is not attached to this facilitator, although that normally happens automatically.",
+        "engineDisabled": "The facilitation engine is switched off for this facilitator."
+      },
+      "engine": {
+        "heading": "Facilitation engine",
+        "hint": "The archetype plugin runs the facilitations. It is the only plugin a facilitator may hold, and it is attached automatically.",
+        "loading": "Checking the facilitation engine",
+        "loadFailed": "The facilitation engine could not be checked. The server did not answer the status request.",
+        "none": "No facilitation engine is installed. Facilitators can be created, but they cannot run a facilitation until the archetype plugin is installed.",
+        "ambiguous": "More than one facilitation engine is installed ({plugins}). Until all but one are removed, no facilitator gets an engine.",
+        "openStore": "Open the plugin store",
+        "openPlugin": "Open the plugin",
+        "openGrants": "Grant database access",
+        "nothingToGrant": "There is no single engine to attach yet. Once exactly one is installed, it is attached automatically.",
+        "attached": "Attached",
+        "disabled": "Switched off for this facilitator",
+        "missing": "Not attached",
+        "repairHint": "The engine is normally attached without anyone doing anything. Here that did not happen or was undone; attaching it again repairs this.",
+        "repair": "Attach engine",
+        "repairing": "Attaching",
+        "ungranted": "The plugin “{plugin}” can be the facilitation engine, but its database access has not been granted. Until then it is not the engine and no facilitator can moderate.",
+        "unusable": {
+          "inactive": "The facilitation engine “{plugin}” is installed but not active.",
+          "not_reported": "The facilitation engine “{plugin}” is active but has not reported that it is ready.",
+          "engine_reported": "The facilitation engine “{plugin}” reports that it is not ready.",
+          "unknown": "The facilitation engine “{plugin}” cannot run facilitations right now."
+        },
+        "engineReasonLabel": "Message from the plugin, as it sent it:"
+      },
+      "detail": {
+        "kindHeading": "Facilitator"
+      },
+      "facilitationsViewLink": "Open running facilitations ({label})"
     }
   },
   "builder": {
@@ -3147,6 +3396,7 @@
       "scrollToBottomAriaLabel": "Jump to latest message",
       "placeholder": {
         "thinking": "Builder is thinking …",
+        "awaitingChoice": "Builder is waiting for your choice above …",
         "idle": "Describe what the agent should do. Enter to send, Shift+Enter for a line break."
       },
       "button": {
@@ -3156,7 +3406,8 @@
       "liveness": {
         "streamLive": "Stream live · {elapsed} · model {model}",
         "iterActivity": "Iter {iteration} · last activity {gap}",
-        "likelyStuck": "likely stuck — press Stop?"
+        "likelyStuck": "likely stuck — press Stop?",
+        "awaitingChoice": "waiting for your choice"
       },
       "turnStats": {
         "live": "Turn live",
@@ -4182,7 +4433,8 @@
         "agent": "Agents",
         "channel": "Channels",
         "tool": "Tools",
-        "extension": "Extensions"
+        "extension": "Extensions",
+        "archetype": "Archetypes"
       },
       "unknownLoadError": "Unknown error while loading the catalog.",
       "filterCategoryAria": "Filter by category",
@@ -4400,6 +4652,42 @@
       "drawerKicker": "Setup",
       "close": "Close",
       "creatingJob": "Creating job …",
+      "archetypeConfirm": {
+        "title": "Add the archetype “{name}”?",
+        "lead": "“{plugin}” is an archetype plugin. It adds a new kind of agent, “{name}”, to this instance. You create agents of it in the agent directory; the plugin itself is attached to no agent.",
+        "addsHeading": "What the archetype adds",
+        "addsEmpty": "Nothing beyond what every agent has.",
+        "omitsHeading": "What its agents never get",
+        "omitsEmpty": "Nothing: its agents can be given everything a standard agent can.",
+        "requiresHeading": "What such an agent needs",
+        "note": "omadia enforces these lists for every agent of the archetype. They come from the plugin and cannot be changed per agent.",
+        "confirm": "Add “{name}” and install",
+        "confirming": "Starting the install …",
+        "cancel": "Cancel",
+        "unknownEntry": "{code} (no description in this version)",
+        "additions": {
+          "conversation_messages": "Its plugin receives every message people write in a conversation such an agent moderates, not only messages that mention it.",
+          "agent_turn": "Its plugin lets such an agent answer by itself; every answer runs through omadia with the agent's model policy and the Privacy Shield.",
+          "own_identity_send": "Its plugin posts and sends direct messages as the agent's own channel identity, in conversations the agent moderates and to their participants.",
+          "session_capabilities": "Its plugin learns what a live session's channel can do (polls, cards, a transcript)."
+        },
+        "omissions": {
+          "plugin_grant": "Capability plugins (access to company systems).",
+          "tool_grant": "Tools other than those of its own archetype plugin.",
+          "memory": "General memory across conversations.",
+          "default_agent": "The role of default agent.",
+          "channel_binding": "A binding to a channel through another bot.",
+          "persona_skill": "Working modes.",
+          "fast_path": "The fast lane.",
+          "agent_to_agent": "Conversations with other agents.",
+          "consultation": "Consulting other agents, or being consulted by them.",
+          "sub_agent": "Internal helpers, and being attached to another agent.",
+          "assistance": "Working as an assistant for one person."
+        },
+        "requirements": {
+          "own_channel_identity": "Its own identity in the channel it works in (for Teams its own bot). It never speaks through another agent's identity."
+        }
+      },
       "setupGuide": "Setup guide",
       "noConfigNeeded": "This plugin requires no configuration — confirm the installation at the bottom right.",
       "secretsNote1": "Secrets are stored exclusively in the per-agent vault.",
@@ -4480,6 +4768,7 @@
       "save": "Save",
       "saveWithCount": "Save ({count})",
       "savedCheck": "✓ Saved",
+      "savedRestartPending": "✓ Saved — the plugin keeps running and uses the new values after the next restart.",
       "savedNotStarted": "Saved — but the plugin did not start with the new values.",
       "connected": "Connected",
       "notConnected": "Not connected",
@@ -5253,7 +5542,9 @@
       "calls": "Calls",
       "cacheHitRate": "Cache hit rate",
       "cacheHitHint": "Share of input served from the warm cache",
-      "tokens": "Tokens (in / out)"
+      "tokens": "Tokens (in / out)",
+      "cacheSavings": "Cache savings",
+      "cacheSavingsHint": "Without the cache: {uncached}"
     },
     "panels": {
       "costOverTime": "Cost over time",
@@ -5264,6 +5555,11 @@
     "barTitle": "{date} · {cost} · {calls, plural, one {# call} other {# calls}}",
     "rowStats": "{calls} calls · {input} in · {output} out · {cacheRead} cache read · {cacheWrite} cache write",
     "rowReference": " · subscription calls ≈ {reference} API equivalent",
+    "rowCacheSavings": " · cache saved {saving}",
+    "currency": {
+      "label": "Currency",
+      "converted": "{usd} · ECB rate of {date}"
+    },
     "groups": {
       "builder": "Builder ({count, plural, one {# draft} other {# drafts}})",
       "other": "Other ({count, plural, one {# source} other {# sources}})"
@@ -5357,6 +5653,7 @@
         "profileSnapshot": "Profile snapshots",
         "registry": "Plugin registries",
         "channel": "Channels",
+        "agent": "Agents: end of service, delete, remove",
         "privacyFieldClassification": "Privacy field decisions",
         "privacyFieldPreview": "Privacy field value previews",
         "privacyFieldAutoApprove": "Privacy field auto-approvals",

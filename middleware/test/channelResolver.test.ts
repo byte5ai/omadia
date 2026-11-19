@@ -380,3 +380,82 @@ test('T029: ensureFallbackAgent refuses to invent a fallback when operator left 
   assert.equal(createCalls, 0);
   assert.equal(setFallbackCalls, 0);
 });
+
+test('#2060: a binding to a facilitator is rejected at resolve time, never answered through a foreign bot', async () => {
+  const mara = '00000000-0000-0000-0000-0000000000f1';
+  const registry = await buildRegistry({
+    ...twoAgentSnap,
+    agents: [...twoAgentSnap.agents, agent('mara', mara, { kind: 'facilitator' })],
+    channelBindings: [
+      ...twoAgentSnap.channelBindings,
+      // The default bot's key, bound to the facilitator by hand.
+      { channelType: 'teams', channelKey: '28:default-bot', agentId: mara, createdAt: new Date(0) },
+    ],
+    // …while its OWN bot routes to it.
+    channelIdentities: [{ channelType: 'teams', channelKey: '28:mara-bot', agentId: mara }],
+  } as ConfigSnapshot);
+  const logs: Array<{ msg: string; fields?: Record<string, unknown> }> = [];
+  const resolver = new ChannelResolver({
+    registry,
+    log: (msg, fields) => logs.push({ msg, ...(fields ? { fields } : {}) }),
+  });
+
+  const viaBinding = resolver.resolve('teams', '28:default-bot');
+  assert.equal(viaBinding.decision, 'reject');
+  assert.equal(viaBinding.chatAgent, undefined);
+  assert.equal(logs.at(-1)?.fields?.['match'], 'binding-to-facilitator');
+
+  const viaIdentity = resolver.resolve('teams', '28:mara-bot');
+  assert.equal(viaIdentity.decision, 'bound');
+  assert.equal(viaIdentity.agent?.agent.slug, 'mara');
+  // A standard agent's binding is untouched.
+  assert.equal(resolver.resolve('teams', '28:public-bot').agent?.agent.slug, 'public');
+});
+
+test('#2088: a conversation bound to a deleted agent is refused; the default agent does not answer in its place', async () => {
+  const gone = '00000000-0000-0000-0000-0000000000d1';
+  const notices: unknown[] = [];
+  const snapshot = {
+    ...twoAgentSnap,
+    // The deleted agent is in no agent list; its binding and its bot's
+    // identity row are still there (the row is a tombstone, nothing cascaded).
+    channelBindings: [
+      ...twoAgentSnap.channelBindings,
+      { channelType: 'teams', channelKey: '19:sales-team@thread.v2', agentId: gone, createdAt: new Date(0) },
+    ],
+    channelIdentities: [{ channelType: 'teams', channelKey: '28:gone-bot', agentId: gone }],
+    tombstones: [
+      { id: gone, slug: 'mira', name: 'Mira', archetype: 'standard', deletedAt: '2026-11-19T10:00:00.000Z', deletedBy: null },
+    ],
+  } as ConfigSnapshot;
+  const registry = await buildRegistry(snapshot);
+  const logs: Array<{ msg: string; fields?: Record<string, unknown> }> = [];
+  const resolver = new ChannelResolver({
+    registry,
+    log: (msg, fields) => logs.push({ msg, ...(fields ? { fields } : {}) }),
+    emitSystemNotice: (notice) => notices.push(notice),
+  });
+
+  // The fallback exists and would have answered before.
+  assert.equal(resolver.resolve('teams', '19:somewhere-else@thread.v2').decision, 'fallback');
+
+  const bound = resolver.resolve('teams', '19:sales-team@thread.v2');
+  assert.equal(bound.decision, 'reject');
+  assert.equal(bound.chatAgent, undefined);
+  assert.equal(logs.at(-1)?.fields?.['match'], 'binding-to-deleted-agent');
+  assert.equal(logs.at(-1)?.fields?.['agentId'], gone);
+  // The seam where "Mira was deleted" will be said once the kernel can (#2045).
+  assert.deepEqual(notices, [
+    { kind: 'agent_deleted', channelType: 'teams', channelKey: '19:sales-team@thread.v2', agentId: gone, agentName: 'Mira' },
+  ]);
+
+  // Its own bot goes quiet as well, by the rule that already held for a bot
+  // whose agent is not servable.
+  const ownBot = resolver.resolve('teams', '28:gone-bot');
+  assert.equal(ownBot.decision, 'reject');
+  assert.equal(logs.at(-1)?.fields?.['match'], 'identity-unavailable');
+
+  // The refusal survives a reload: the binding is kept until somebody changes the target.
+  await registry.reload();
+  assert.equal(registry.deletedBindingOwnerFor('teams', '19:sales-team@thread.v2')?.name, 'Mira');
+});

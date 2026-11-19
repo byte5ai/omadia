@@ -1,5 +1,6 @@
 import type { ChatAgent } from '@omadia/channel-sdk';
 
+import { archetypeOmits } from '../registry/archetype.js';
 import type { ActiveAgent, OrchestratorRegistry } from '../registry/index.js';
 
 /**
@@ -72,6 +73,26 @@ export interface ResolveResult {
 export interface ChannelResolverOptions {
   readonly registry: OrchestratorRegistry;
   readonly log?: (msg: string, fields?: Record<string, unknown>) => void;
+  /** #2045 seam: see {@link SystemNoticeRequest}. Absent = nothing is said. */
+  readonly emitSystemNotice?: (notice: SystemNoticeRequest) => void;
+}
+
+/**
+ * A `system` notice the management layer owes a conversation (spec 2042
+ * INV-7): a message that is NOT an agent's and is never posted under an
+ * agent's identity. The kernel cannot send one yet (#2045); every place that
+ * owes one calls this seam, which today only records that it was owed.
+ */
+export interface SystemNoticeRequest {
+  readonly kind: 'agent_deleted' | 'agent_disabled' | 'archetype_plugin_removed';
+  readonly channelType: string;
+  /** The conversation (channel key or channel-native conversation id). */
+  readonly channelKey: string;
+  readonly agentId: string;
+  /** The name the agent wore, for the sentence. */
+  readonly agentName: string;
+  /** What ended with it, when something did (a process id of its archetype). */
+  readonly processId?: string;
 }
 
 export class ChannelResolver {
@@ -133,6 +154,33 @@ export class ChannelResolver {
       });
       return { decision: 'reject' };
     }
+    // #2088 — BOUND TO A DELETED AGENT IS NOT "BOUND TO NOBODY".
+    //
+    // A delete keeps the agent's row as a tombstone and its bindings with it.
+    // Without this rank the conversation would reach the platform fallback
+    // below and another agent would answer where people addressed the deleted
+    // one (spec 2042 §5.10, criterion 39). It is refused; an operator or a
+    // user changes the target, and routing follows.
+    const deleted = registry.deletedBindingOwnerFor(channelType, channelKey);
+    if (deleted !== undefined) {
+      this.log(`channelResolver: reject`, {
+        channelType,
+        channelKey,
+        decision: 'reject',
+        match: 'binding-to-deleted-agent',
+        agentId: deleted.id,
+      });
+      // The place where "<name> was deleted" is said to the conversation once
+      // the kernel has `system` notices (#2045). Until then the bot is quiet.
+      this.options.emitSystemNotice?.({
+        kind: 'agent_deleted',
+        channelType,
+        channelKey,
+        agentId: deleted.id,
+        agentName: deleted.name,
+      });
+      return { decision: 'reject' };
+    }
     const direct = registry.resolveByChannel(channelType, channelKey);
     if (direct) {
       // The registry's resolveByChannel returns the fallback too when no
@@ -141,6 +189,27 @@ export class ChannelResolver {
         (b) =>
           b.channelType === channelType && b.channelKey === channelKey,
       );
+      // #2060 — A FACILITATOR IS REACHED THROUGH ITS OWN BOT OR NOT AT ALL.
+      //
+      // A binding routes a channel key that is NOT the agent's identity: the
+      // default bot, or some other key an operator typed. Answering there
+      // would put the facilitator's words under a foreign name and avatar,
+      // which is the one thing its identity rule forbids. The write paths
+      // refuse such a binding; a row that exists anyway (hand-written, or
+      // older than the rule) is refused here, so the bot stays quiet rather
+      // than lending its name. (The fallback can never be a facilitator: the
+      // database refuses it.)
+      if (archetypeOmits(direct.agent, 'channel_binding')) {
+        this.log(`channelResolver: reject`, {
+          channelType,
+          channelKey,
+          decision: 'reject',
+          match: 'binding-to-facilitator',
+          slug: direct.agent.slug,
+          agentId: direct.agent.id,
+        });
+        return { decision: 'reject' };
+      }
       const decision: ResolveDecision = isDirect ? 'bound' : 'fallback';
       this.log(`channelResolver: route`, {
         channelType,

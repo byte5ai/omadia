@@ -118,6 +118,13 @@ export class ServiceRegistry {
    */
   private readonly liveByOwner = new Map<string, Map<ServiceName, number>>();
 
+  /**
+   * #1860 — the plugin-owned `provide` behind each name, so
+   * {@link shadowedServicesOf} can tell when another registration sits on
+   * top of it. Dropped once that provide is actually removed.
+   */
+  private readonly ownProvides = new Map<ServiceName, { owner: string; impl: unknown }>();
+
   /** Register a provider. Throws on duplicate — if two plugins both provide
    *  'graph', the operator needs to uninstall one.
    *
@@ -131,12 +138,29 @@ export class ServiceRegistry {
       );
     }
     this.providers.set(name, impl);
+    if (owner !== undefined) this.ownProvides.set(name, { owner, impl });
     const dispose = (): boolean => {
       if (this.providers.get(name) !== impl) return false;
       this.providers.delete(name);
+      if (this.ownProvides.get(name)?.impl === impl) this.ownProvides.delete(name);
       return true;
     };
     return this.track(owner, name, dispose);
+  }
+
+  /**
+   * #1860 — names `owner` provided that another registration currently
+   * wraps (a `replace` on top of its provide, e.g. orchestrator-extras around
+   * `knowledgeGraph`). Tearing `owner` down cannot free such a name: its
+   * dispose leaves the wrapper in place, so a fresh activation hits the
+   * duplicate check, and consumers keep the wrapper around the old instance.
+   */
+  shadowedServicesOf(owner: string): ServiceName[] {
+    const names: ServiceName[] = [];
+    for (const [name, own] of this.ownProvides) {
+      if (own.owner === owner && this.providers.get(name) !== own.impl) names.push(name);
+    }
+    return names;
   }
 
   /**

@@ -12,6 +12,9 @@ import {
   type AgentChannelPolicyRow,
   type AgentToAgentMode,
 } from './agentToAgent.js';
+import { parseAgentKind, type AgentKind } from './agentKind.js';
+import { parseArchetype, type ArchetypeId } from './archetype.js';
+import { liveAgentRow, ofLiveAgent, tombstoneSlug, type AgentTombstone } from './tombstones.js';
 import { parseModelPolicy } from './modelPolicy.js';
 import type { ModelPolicy } from '@omadia/plugin-api';
 
@@ -64,6 +67,21 @@ export interface AgentRow {
   /** Reserved, not enforced (#978) — see {@link PrivacyProfile}. */
   readonly privacyProfile: PrivacyProfile;
   readonly status: AgentStatus;
+  /**
+   * #2060 — `agents.kind` (migration 0067), fixed at creation. Optional on
+   * the row type so pre-existing `AgentRow` fixtures stay valid; absent reads
+   * as `'standard'` (see {@link parseAgentKind}).
+   *
+   * @deprecated the legacy column next to {@link archetype}; for output to
+   * clients of the previous contract only. Decide on the archetype.
+   */
+  readonly kind?: AgentKind;
+  /**
+   * #2088 — `agents.archetype` (migration 0070), fixed at creation. Optional
+   * on the row type for fixtures; read it through `archetypeOf(agent)`,
+   * which falls back to `kind` and then to `'standard'`.
+   */
+  readonly archetype?: ArchetypeId;
   /** Per-agent model routing (Agent Builder P0). Raw JSONB; shaped to
    *  `ModelRoutingConfig` at the API boundary. `null`/absent = inherit
    *  platform default. Optional so pre-existing AgentRow fixtures stay valid. */
@@ -155,6 +173,11 @@ export interface AgentRow {
    */
   readonly answerVerbosity?: AnswerVerbosity | null;
   /**
+   * #2043 — the language the agent speaks (`agent_identities.language`,
+   * migration 0069), a BCP 47 tag. `null`/absent = the installation's.
+   */
+  readonly identityLanguage?: string | null;
+  /**
    * #1569 — the agent's own response-quality settings
    * (`agent_identities.quality`, migration 0053), joined in like the other
    * identity columns and narrowed by `parseAgentQuality`. `null`/absent = the
@@ -223,6 +246,10 @@ export interface AgentInput {
   /** Reserved, not enforced (#978) — see {@link PrivacyProfile}. */
   readonly privacyProfile?: PrivacyProfile;
   readonly status?: AgentStatus;
+  /** #2088 — only settable here: the archetype is fixed at creation. */
+  readonly archetype?: ArchetypeId;
+  /** @deprecated the previous name of {@link archetype}; used when that is absent. */
+  readonly kind?: AgentKind;
 }
 
 export interface AgentPatch {
@@ -363,6 +390,10 @@ interface AgentDbRow {
   description: string | null;
   privacy_profile: PrivacyProfile;
   status: AgentStatus;
+  /** #2060 — `agents.kind`; absent on a DB that predates migration 0067. */
+  kind?: string | null;
+  /** #2088 — `agents.archetype`; absent on a DB that predates migration 0070. */
+  archetype?: string | null;
   model_routing: Record<string, unknown> | null;
   canvas_position: CanvasPosition | null;
   /** W5 — `agents.context_memory`; absent on a DB that predates migration 0050. */
@@ -388,6 +419,8 @@ interface AgentDbRow {
   identity_long_description?: string | null;
   /** `agent_identities.verbosity` (0063), same join / same absence on writes. */
   identity_verbosity?: string | null;
+  /** #2043 — `agent_identities.language` (0069), same join / same absence. */
+  identity_language?: string | null;
   /** #1569 — `agent_identities.quality` (JSONB), same join / same absence on writes. */
   identity_quality?: unknown;
   created_at: Date;
@@ -448,6 +481,26 @@ function mapAgentChannelPolicy(row: AgentChannelPolicyDbRow): AgentChannelPolicy
   };
 }
 
+interface TombstoneDbRow {
+  id: string;
+  deleted_slug: string | null;
+  name: string;
+  archetype: string | null;
+  deleted_at: Date;
+  deleted_by: string | null;
+}
+
+function mapTombstone(row: TombstoneDbRow): AgentTombstone {
+  return {
+    id: row.id,
+    slug: row.deleted_slug ?? '',
+    name: row.name,
+    archetype: parseArchetype(row.archetype),
+    deletedAt: row.deleted_at.toISOString(),
+    deletedBy: row.deleted_by,
+  };
+}
+
 function mapAgent(row: AgentDbRow): AgentRow {
   return {
     id: row.id,
@@ -456,6 +509,8 @@ function mapAgent(row: AgentDbRow): AgentRow {
     description: row.description,
     privacyProfile: row.privacy_profile,
     status: row.status,
+    kind: parseAgentKind(parseArchetype(row.archetype, row.kind)),
+    archetype: parseArchetype(row.archetype, row.kind),
     modelRouting: row.model_routing ?? null,
     canvasPosition: row.canvas_position ?? null,
     contextMemory: parseContextMemoryMode(row.context_memory),
@@ -478,6 +533,7 @@ function mapAgent(row: AgentDbRow): AgentRow {
     // predates 0063 has no column at all and a hand edit must never become
     // a level the prompt builder does not know.
     answerVerbosity: parseAnswerVerbosity(row.identity_verbosity) ?? null,
+    identityLanguage: row.identity_language?.trim() || null,
     quality: parseAgentQuality(row.identity_quality) ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -543,8 +599,14 @@ const AGENT_SELECT =
   'i.short_description AS identity_short_description, ' +
   'i.long_description AS identity_long_description, ' +
   'i.verbosity AS identity_verbosity, ' +
+  // to_jsonb, not the bare column: a database that predates migration 0069
+  // has no `language`, and this SELECT runs before any migration check.
+  "to_jsonb(i) ->> 'language' AS identity_language, " +
   'i.quality AS identity_quality ' +
-  'FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id';
+  'FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id ' +
+  // #2088 — LIVE agents only. This is the one read of `agents`; a deleted
+  // agent (tombstone, migration 0072) is reached through `listTombstones`.
+  `WHERE ${liveAgentRow('a')}`;
 
 export class ConfigStore {
   constructor(private readonly pool: Pool) {}
@@ -559,7 +621,7 @@ export class ConfigStore {
 
   async getAgentBySlug(slug: string): Promise<AgentRow | undefined> {
     const { rows } = await this.pool.query<AgentDbRow>(
-      `${AGENT_SELECT} WHERE a.slug = $1`,
+      `${AGENT_SELECT} AND a.slug = $1`,
       [slug],
     );
     return rows[0] ? mapAgent(rows[0]) : undefined;
@@ -567,7 +629,7 @@ export class ConfigStore {
 
   async getAgentById(id: string): Promise<AgentRow | undefined> {
     const { rows } = await this.pool.query<AgentDbRow>(
-      `${AGENT_SELECT} WHERE a.id = $1`,
+      `${AGENT_SELECT} AND a.id = $1`,
       [id],
     );
     return rows[0] ? mapAgent(rows[0]) : undefined;
@@ -581,8 +643,9 @@ export class ConfigStore {
     }
     try {
       const { rows } = await this.pool.query<AgentDbRow>(
-        `INSERT INTO agents (slug, name, description, privacy_profile, status)
-         VALUES ($1, $2, $3, COALESCE($4, 'default'), COALESCE($5, 'enabled'))
+        // `archetype` only: the sync trigger of 0070 fills the legacy `kind`.
+        `INSERT INTO agents (slug, name, description, privacy_profile, status, archetype)
+         VALUES ($1, $2, $3, COALESCE($4, 'default'), COALESCE($5, 'enabled'), COALESCE($6, 'standard'))
          RETURNING *`,
         [
           input.slug,
@@ -590,6 +653,7 @@ export class ConfigStore {
           input.description ?? null,
           input.privacyProfile ?? null,
           input.status ?? null,
+          input.archetype ?? input.kind ?? null,
         ],
       );
       // INSERT ... RETURNING with non-zero rowcount always yields exactly
@@ -665,7 +729,7 @@ export class ConfigStore {
     const { rows } = await this.pool.query<AgentChannelPolicyDbRow>(
       `SELECT channel_type, channel_key, agent_id, agent_to_agent, created_at, updated_at
          FROM agent_channel_policies
-        WHERE channel_type = $1 AND channel_key = $2`,
+        WHERE channel_type = $1 AND channel_key = $2 AND ${ofLiveAgent('agent_id')}`,
       [channelType, channelKey],
     );
     return rows.map(mapAgentChannelPolicy);
@@ -718,8 +782,48 @@ export class ConfigStore {
     return (result.rowCount ?? 0) > 0;
   }
 
-  async deleteAgent(id: string): Promise<void> {
-    await this.pool.query('DELETE FROM agents WHERE id = $1', [id]);
+  /**
+   * #2088 — delete an agent: the row becomes a TOMBSTONE (migration 0072).
+   * Nothing that references it is dropped; its slug is replaced by a
+   * placeholder so the name is free for a new agent. Returns the tombstone,
+   * or `undefined` when there is no live agent with that id.
+   *
+   * Ending what the agent was doing (subscriptions, processes of its
+   * archetype) is the caller's job and comes BEFORE this: see
+   * `platform/agentEndOfService.ts`.
+   */
+  async deleteAgent(id: string, deletedBy?: string): Promise<AgentTombstone | undefined> {
+    const { rows } = await this.pool.query<TombstoneDbRow>(
+      `UPDATE agents
+          SET deleted_at = now(), deleted_by = $2, deleted_slug = slug, slug = $3,
+              status = 'disabled', updated_at = now()
+        WHERE id = $1 AND deleted_at IS NULL
+        RETURNING id, deleted_slug, name, archetype, deleted_at, deleted_by`,
+      [id, deletedBy ?? null, tombstoneSlug(id)],
+    );
+    return rows[0] ? mapTombstone(rows[0]) : undefined;
+  }
+
+  /** The deleted agents, newest first. */
+  async listTombstones(): Promise<readonly AgentTombstone[]> {
+    const { rows } = await this.pool.query<TombstoneDbRow>(
+      `SELECT a.id, a.deleted_slug, COALESCE(NULLIF(i.display_name, ''), a.name) AS name, a.archetype,
+              a.deleted_at, a.deleted_by
+         FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id
+        WHERE a.deleted_at IS NOT NULL
+        ORDER BY a.deleted_at DESC`,
+    );
+    return rows.map(mapTombstone);
+  }
+
+  /**
+   * The hard delete of a TOMBSTONE: the row goes, and with it everything
+   * that references it (ON DELETE CASCADE). Only a tombstone can be purged;
+   * a live agent is deleted first. Returns whether a row was removed.
+   */
+  async purgeAgent(id: string): Promise<boolean> {
+    const result = await this.pool.query('DELETE FROM agents WHERE id = $1 AND deleted_at IS NOT NULL', [id]);
+    return (result.rowCount ?? 0) > 0;
   }
 
   /** Agent Builder — set (or clear, with null) the per-agent model routing.
@@ -783,7 +887,7 @@ export class ConfigStore {
 
   async listAllAgentPlugins(): Promise<readonly AgentPluginRow[]> {
     const { rows } = await this.pool.query<AgentPluginDbRow>(
-      'SELECT * FROM agent_plugins ORDER BY agent_id, plugin_id',
+      `SELECT * FROM agent_plugins WHERE ${ofLiveAgent('agent_id')} ORDER BY agent_id, plugin_id`,
     );
     return rows.map(mapAgentPlugin);
   }
@@ -961,15 +1065,25 @@ export class ConfigStore {
   }
 
   async setFallbackAgentId(agentId: string | null): Promise<PlatformSettingsRow> {
-    const { rows } = await this.pool.query<PlatformSettingsDbRow>(
-      `INSERT INTO multi_orchestrator_settings (id, fallback_agent_id, updated_at)
-       VALUES (true, $1, now())
-       ON CONFLICT (id) DO UPDATE SET
-         fallback_agent_id = EXCLUDED.fallback_agent_id,
-         updated_at        = now()
-       RETURNING fallback_agent_id, updated_at`,
-      [agentId],
-    );
+    let rows: PlatformSettingsDbRow[];
+    try {
+      ({ rows } = await this.pool.query<PlatformSettingsDbRow>(
+        `INSERT INTO multi_orchestrator_settings (id, fallback_agent_id, updated_at)
+         VALUES (true, $1, now())
+         ON CONFLICT (id) DO UPDATE SET
+           fallback_agent_id = EXCLUDED.fallback_agent_id,
+           updated_at        = now()
+         RETURNING fallback_agent_id, updated_at`,
+        [agentId],
+      ));
+    } catch (err) {
+      // #2060 — the trigger of migration 0067 is the last line of defence;
+      // surface it as a domain error instead of a raw pg failure.
+      if (isConstraintViolation(err, 'fallback_agent_not_facilitator')) {
+        throw new ConfigValidationError('a facilitator cannot be the default agent');
+      }
+      throw err;
+    }
     const row = rows[0];
     if (!row) {
       throw new Error('setFallbackAgentId: RETURNING produced no row');
@@ -1016,6 +1130,13 @@ export class ConfigStore {
       graph.listAllPersonaSkillLinks(),
       graph.listAllSkillToolBindings(),
     ]);
+    // #2088 — the deleted agents, so routing can tell "bound to a deleted
+    // agent" from "bound to nobody". A database before migration 0072 has no
+    // tombstones.
+    const tombstones = await this.listTombstones().catch((err: unknown) => {
+      if ((err as { code?: unknown } | null)?.code === '42703') return [];
+      throw err;
+    });
     return {
       agents,
       agentPlugins: plugins,
@@ -1029,12 +1150,21 @@ export class ConfigStore {
       mcpServers,
       personaSkillLinks,
       skillToolBindings,
+      tombstones,
     };
   }
 }
 
 export interface ConfigSnapshot {
+  /** LIVE agents. A deleted agent is in {@link tombstones}, never here. */
   readonly agents: readonly AgentRow[];
+  /**
+   * #2088 — deleted agents (migration 0072). Their `channelBindings` and
+   * `channelIdentities` rows are still in this snapshot, on purpose: a
+   * conversation bound to a deleted agent is refused by routing instead of
+   * falling to the default agent. Optional for snapshot literals in tests.
+   */
+  readonly tombstones?: readonly AgentTombstone[];
   readonly agentPlugins: readonly AgentPluginRow[];
   readonly channelBindings: readonly ChannelBindingRow[];
   /**
@@ -1065,6 +1195,15 @@ function isUndefinedTable(err: unknown): boolean {
     !!err &&
     typeof err === 'object' &&
     (err as { code?: string }).code === '42P01'
+  );
+}
+
+/** A violation raised with a named constraint (CHECK or a trigger's RAISE). */
+function isConstraintViolation(err: unknown, constraint: string): boolean {
+  return (
+    !!err &&
+    typeof err === 'object' &&
+    (err as { constraint?: string }).constraint === constraint
   );
 }
 

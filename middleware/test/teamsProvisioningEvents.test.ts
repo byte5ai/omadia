@@ -160,8 +160,9 @@ function makeStore(
 }
 
 function makeProvisioner(
-  behaviour: { readonly createBot?: () => never } = {},
+  behaviour: { readonly createBot?: () => never; readonly inCatalog?: string } = {},
 ): TeamsProvisionerPort {
+  let catalogAppId: string | undefined = behaviour.inCatalog;
   return {
     async createAppRegistration(input) {
       await input.onRegistrationCreated?.(
@@ -184,13 +185,18 @@ function makeProvisioner(
       return new Uint8Array([80, 75]);
     },
     uploadToCatalog() {
+      catalogAppId = 'catalog-77';
       return Promise.resolve({
         outcome: 'created',
         value: { teamsAppId: 'catalog-77' },
       });
     },
     getCatalogApp() {
-      return Promise.resolve({ found: false });
+      // A catalog like the real one: it has the entry once this run uploaded
+      // it, or when the row under test already names one (a resume).
+      return Promise.resolve(
+        catalogAppId !== undefined ? { found: true as const, teamsAppId: catalogAppId } : { found: false as const },
+      );
     },
     installToTeam(input) {
       return Promise.resolve({
@@ -289,7 +295,7 @@ describe('TeamsProvisioningJobRunner — progress log (#915)', () => {
       teamsAppId: 'catalog-77',
     });
     const sink = makeSink();
-    const runner = makeRunner({ store, events: sink });
+    const runner = makeRunner({ store, events: sink, provisioner: makeProvisioner({ inCatalog: 'catalog-77' }) });
 
     await runner.enqueue(REQUEST);
 

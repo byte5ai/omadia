@@ -47,6 +47,7 @@ function makeRuntime(
     // Service disposal is the sibling of route disposal on the same
     // deactivate path — see serviceRegistryDisposal.test.ts for its coverage.
     serviceRegistry: new ServiceRegistry(),
+    nativeToolRegistry: { unregisterBySource: (): string[] => [] },
     jobScheduler: {
       stopForPlugin: (id: string): void => {
         stoppedJobsFor.push(id);
@@ -143,6 +144,7 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
       pluginRouteRegistry: registry,
       uiRouteCatalog: catalog,
       serviceRegistry: new ServiceRegistry(),
+      nativeToolRegistry: { unregisterBySource: (): string[] => [] },
       jobScheduler: { stopForPlugin: (): void => {} },
       log: (): void => {},
     } as unknown as ToolPluginRuntimeDeps;

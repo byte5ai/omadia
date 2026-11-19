@@ -52,6 +52,9 @@ import {
 } from './setupForm';
 import { Markdown } from '../Markdown';
 import { Button } from '@/app/_components/ui/Button';
+import { parsePluginArchetype, type PluginArchetype } from '@/app/_lib/archetypes';
+
+import { ArchetypeInstallConfirm } from './ArchetypeInstallConfirm';
 import { RemovePackageAction } from './RemovePackageAction';
 import { useStoreErrorText } from './useStoreErrorText';
 import { errorHelpLine } from '../../_lib/errorHelp';
@@ -115,6 +118,10 @@ type Phase =
       activation?: { code: unknown; detail: string | null };
     }
   | { kind: 'wizard'; resolution: InstallChainResolution }
+  /** #2088 — the plugin is an archetype plugin: the middleware refused the
+   *  install until the operator confirms that a new kind of agent is added.
+   *  `busy` while the confirmed install job is being created. */
+  | { kind: 'confirm_archetype'; archetype: PluginArchetype; busy: boolean }
   /** Epic #470 C16 (#817) — the install succeeded and the manifest asks for at
    *  least one operator grant. Entered INSTEAD of `success`, so a plugin is
    *  never quietly left in the state issue #817 describes: installed, asking
@@ -158,6 +165,7 @@ export function InstallButton({
     phase.kind === 'submitting' ||
     phase.kind === 'error' ||
     phase.kind === 'permissions' ||
+    phase.kind === 'confirm_archetype' ||
     phase.kind === 'creating';
 
   // --- visual dispatch -----------------------------------------------------
@@ -254,6 +262,7 @@ export function InstallButton({
           fieldErrors={fieldErrors}
           onClose={handleClose}
           onSubmit={handleSubmit}
+          onConfirmArchetype={handleConfirmArchetype}
           {...(setupGuideText ? { setupGuide: setupGuideText } : {})}
         />
       ) : null}
@@ -306,6 +315,17 @@ export function InstallButton({
       //   wizard with the verbatim payload, no client-side recursion.
       if (err instanceof ApiError && err.status === 409) {
         const parsed = tryParseErrorBody(err.body);
+        // #2088 — an archetype plugin: show what it adds and ask before
+        // anything is installed.
+        if (parsed?.code === 'install.archetype_confirmation_required') {
+          const archetype = parsePluginArchetype(
+            (parsed.details as { archetype?: unknown } | undefined)?.archetype,
+          );
+          if (archetype) {
+            setPhase({ kind: 'confirm_archetype', archetype, busy: false });
+            return;
+          }
+        }
         if (parsed?.code === 'install.missing_capability' && parsed.details) {
           const resolution = parsed.details as InstallChainResolution;
           if (
@@ -324,6 +344,18 @@ export function InstallButton({
         (err instanceof ApiError ? registryUnavailableMessage(err.body, t) : null) ??
         errorText(err);
       setPhase({ kind: 'error', job: null, message });
+    }
+  }
+
+  /** #2088 — the operator confirmed the archetype: create the job for real. */
+  async function handleConfirmArchetype(): Promise<void> {
+    if (phase.kind !== 'confirm_archetype' || phase.busy) return;
+    setPhase({ ...phase, busy: true });
+    try {
+      const resp = await createInstallJob(pluginId, { confirmArchetype: true });
+      setPhase({ kind: 'form', job: resp.job });
+    } catch (err) {
+      setPhase({ kind: 'error', job: null, message: errorText(err) });
     }
   }
 
@@ -909,6 +941,8 @@ interface InstallDrawerProps {
     values: Record<string, unknown>,
     jsonFiles?: Record<string, string>,
   ) => void | Promise<void>;
+  /** #2088 — the operator confirmed the archetype of an archetype plugin. */
+  onConfirmArchetype: () => void | Promise<void>;
   /** Markdown setup guide rendered above the fields. */
   setupGuide?: string;
 }
@@ -956,6 +990,7 @@ function InstallDrawer({
   fieldErrors,
   onClose,
   onSubmit,
+  onConfirmArchetype,
   setupGuide,
 }: InstallDrawerProps): React.ReactElement {
   const t = useTranslations('store.install');
@@ -1046,6 +1081,16 @@ function InstallDrawer({
              would invite an edit the wizard can no longer apply. */
           <div className="min-h-0 flex-1 overflow-y-auto p-8">
             <PermissionsStep grants={phase.grants} onFinish={onClose} />
+          </div>
+        ) : phase.kind === 'confirm_archetype' ? (
+          <div className="min-h-0 flex-1 overflow-y-auto p-8">
+            <ArchetypeInstallConfirm
+              pluginName={pluginName}
+              archetype={phase.archetype}
+              busy={phase.busy}
+              onConfirm={onConfirmArchetype}
+              onCancel={onClose}
+            />
           </div>
         ) : phase.kind === 'error' && !jobFromPhase ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-8">

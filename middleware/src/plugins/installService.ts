@@ -1,5 +1,5 @@
 import { extractFromJsonFile } from './setupJsonFile.js';
-import { booleanSetupDefault, integerSetupDefault } from './setupFieldDefault.js';
+import { parseBooleanSetupValue, parseIntegerSetupValue } from './setupFieldValue.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -112,6 +112,14 @@ export interface InstallServiceDeps {
      *  the operator detached. */
     reason: 'install' | 'reactivate',
   ) => Promise<void>;
+  /**
+   * #1860 — why `agentId` cannot be restarted in this process, or `undefined`
+   * when it can. Asked before every reactivation; when it answers, the
+   * plugin keeps running on its current instance, the reactivation is
+   * recorded as pending a restart ({@link InstallService.restartPending}),
+   * and nothing is torn down. Omitted: every plugin can be restarted.
+   */
+  reactivationBlocker?: (agentId: string) => string | undefined;
   /** Runtime teardown before uninstall or reactivation. The reason keeps
    *  consent-removal hooks from deleting grants during a runtime restart. */
   onUninstall?: (
@@ -151,6 +159,9 @@ export interface InstallServiceDeps {
   /** OM-95 — late-resolved orchestrator config store. Bindings are purged only
    *  on real uninstall; `onUninstall` also runs during `reactivate()`. */
   agentPluginBindingStore?: () => AgentPluginBindingStore | undefined;
+  /** #2088 — after a real uninstall, once the registry entry is gone. A
+   *  failure is logged; the uninstall is complete. */
+  onUninstalled?: (agentId: string) => Promise<void>;
   /** #1481 — uninstalling a package that ships in the image records the id
    *  here so the boot seeders stop re-installing it; installing it again
    *  clears the mark. Optional: without it built-ins come back at boot. */
@@ -198,6 +209,9 @@ function isInstalledTerminal(state: InstallJobState): boolean {
  */
 export class InstallService {
   private readonly jobs = new Map<string, InstallJob>();
+  /** #1860 — plugins whose reactivation was deferred to the next start.
+   *  Process-local on purpose: the restart that applies the values clears it. */
+  private readonly deferredUntilRestart = new Set<string>();
 
   constructor(private readonly deps: InstallServiceDeps) {}
 
@@ -205,7 +219,12 @@ export class InstallService {
   // Create — derives the setup schema from the plugin manifest
   // -------------------------------------------------------------------------
 
-  create(pluginId: string): InstallJob {
+  /**
+   * `opts.confirmedArchetype` (#2088): the operator's explicit confirmation
+   * that a new kind of agent is added. Required for a plugin of kind
+   * `archetype`, ignored for every other kind.
+   */
+  create(pluginId: string, opts: { readonly confirmedArchetype?: boolean } = {}): InstallJob {
     const entry = this.deps.catalog.get(pluginId);
     if (!entry) {
       throw new InstallError(
@@ -242,6 +261,20 @@ export class InstallService {
         compat_core: coreRefusal.compat_core,
         host_plugin_api: coreRefusal.host_plugin_api,
       });
+    }
+
+    // #2088 — an archetype plugin adds a new kind of agent to the instance:
+    // what agents of it may do and never get is decided by its descriptor,
+    // not by per-agent grants. That is installed only on an explicit
+    // confirmation, and the refusal carries what is being confirmed so the
+    // UI shows exactly the descriptor the kernel will enforce.
+    if (entry.plugin.kind === 'archetype' && opts.confirmedArchetype !== true) {
+      throw new InstallError(
+        'install.archetype_confirmation_required',
+        `'${pluginId}' adds the agent archetype '${entry.plugin.archetype?.id ?? '?'}' to this instance; confirm the install explicitly`,
+        409,
+        { archetype: entry.plugin.archetype ?? null },
+      );
     }
 
     // Dependency gate: every parent in depends_on must already be installed.
@@ -714,7 +747,8 @@ export class InstallService {
    */
   async reactivate(agentId: string): Promise<InstalledAgent['status'] | undefined> {
     const status = await this.reactivateOne(agentId);
-    if (status !== undefined) {
+    // A deferred plugin is still the instance its dependents resolved.
+    if (status !== undefined && !this.deferredUntilRestart.has(agentId)) {
       // The cascade is a consequence of this call, not part of its verdict:
       // nothing it does may turn the caller's save into a failure.
       try {
@@ -787,10 +821,25 @@ export class InstallService {
     }
   }
 
+  /** #1860 — did a reactivation of `agentId` wait for the next restart? */
+  restartPending(agentId: string): boolean {
+    return this.deferredUntilRestart.has(agentId);
+  }
+
   private async reactivateOne(
     agentId: string,
   ): Promise<InstalledAgent['status'] | undefined> {
     if (!this.deps.registry.has(agentId)) return undefined;
+    // #1860 — a hot restart would fail half-way (the old service stays
+    // registered under the wrapper) and record the plugin `errored`. Leave
+    // the running instance alone; the saved values apply at the next start.
+    const blocker = this.deps.reactivationBlocker?.(agentId);
+    if (blocker !== undefined) {
+      this.deferredUntilRestart.add(agentId);
+      console.log(`[install] ${agentId} not re-activated until the next restart — ${blocker}`);
+      return this.deps.registry.get(agentId)?.status;
+    }
+    this.deferredUntilRestart.delete(agentId);
     if (this.deps.onUninstall) {
       try {
         await this.deps.onUninstall(agentId, 'reactivate');
@@ -914,6 +963,19 @@ export class InstallService {
     this.deps.conductorTemplates?.()?.unregisterPluginTemplates(agentId);
     await this.deps.registry.remove(agentId);
     await this.recordBuiltInOptOut(agentId);
+    // #2088 — the plugin is no longer installed NOW; whoever derives state
+    // from the set of installed plugins (the archetype registry) reads it
+    // here, not in `onUninstall`, which runs while the entry still exists.
+    if (this.deps.onUninstalled) {
+      try {
+        await this.deps.onUninstalled(agentId);
+      } catch (err) {
+        console.error(
+          `[install] onUninstalled hook failed for ${agentId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
   }
 
   /**
@@ -1171,12 +1233,16 @@ export function extractSetupSchema(
       // #1464 — normalized exactly like the catalog projection (manifestLoader),
       // so a `default: "true"` pre-checks the box and the missing-value
       // fallback below stores `true`, not the string.
-      const defaultValue = booleanSetupDefault(f['default']);
+      const defaultValue = parseBooleanSetupValue(f['default']);
       if (defaultValue !== undefined) field.default = defaultValue;
     } else if (type === 'integer') {
       // #1524 — normalized exactly like the catalog projection (manifestLoader).
-      const defaultValue = integerSetupDefault(f['default']);
+      const defaultValue = parseIntegerSetupValue(f['default']);
       if (defaultValue !== undefined) field.default = defaultValue;
+      // #1958 — lower bound, enforced by `coerceSetupFieldValue` on install and
+      // on every later edit. Parsed exactly like the catalog projection.
+      const min = parseIntegerSetupValue(f['min']);
+      if (min !== undefined) field.min = min;
     } else if (f['default'] !== undefined) {
       field.default = f['default'];
     }
@@ -1412,7 +1478,7 @@ async function validateValues(
       continue;
     }
 
-    const coerced = coerce(field, raw);
+    const coerced = coerceSetupFieldValue(field, raw);
     if ('error' in coerced) {
       errors.push({
         key: field.key,
@@ -1473,7 +1539,7 @@ interface InstallFieldError {
   params?: Record<string, string>;
 }
 
-type CoerceResult =
+export type CoerceResult =
   | { value: unknown }
   | {
       error: {
@@ -1483,7 +1549,19 @@ type CoerceResult =
       };
     };
 
-function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
+/**
+ * One submitted setup value → the value to store, or a field-level error.
+ *
+ * #1958 — exported so the post-install edit (`PATCH …/secrets` in
+ * routes/runtime.ts) converts typed values with this same function instead of
+ * a second implementation. Two implementations had drifted: the edit path
+ * converted only `boolean`, and every `integer` edited after install was stored
+ * as a string.
+ */
+export function coerceSetupFieldValue(
+  field: InstallSetupField,
+  raw: unknown,
+): CoerceResult {
   // #602 (OM-17) — see validateValues: German templates, no request locale.
   const label = resolveLocalized(field.label, 'de') ?? field.key;
   switch (field.type) {
@@ -1535,23 +1613,34 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
       }
       return { value: raw };
     }
-    case 'boolean':
-      if (typeof raw === 'boolean') return { value: raw };
-      if (raw === 'true') return { value: true };
-      if (raw === 'false') return { value: false };
-      return {
-        error: {
-          code: 'wrong_type',
-          message: `"${label}" muss true oder false sein.`,
-        },
-      };
+    case 'boolean': {
+      const b = parseBooleanSetupValue(raw);
+      if (b === undefined) {
+        return {
+          error: {
+            code: 'wrong_type',
+            message: `"${label}" muss true oder false sein.`,
+          },
+        };
+      }
+      return { value: b };
+    }
     case 'integer': {
-      const n = typeof raw === 'number' ? raw : Number(raw);
-      if (!Number.isInteger(n)) {
+      const n = parseIntegerSetupValue(raw);
+      if (n === undefined) {
         return {
           error: {
             code: 'wrong_type',
             message: `"${label}" muss eine ganze Zahl sein.`,
+          },
+        };
+      }
+      if (field.min !== undefined && n < field.min) {
+        return {
+          error: {
+            code: 'below_min',
+            message: `"${label}" muss mindestens ${field.min} sein.`,
+            params: { min: String(field.min) },
           },
         };
       }

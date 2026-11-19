@@ -1,3 +1,4 @@
+import { parseOperatorArchetypes, type OperatorArchetypeDto } from './archetypes';
 import { ApiError, rscTimeoutSignal } from './api';
 import type { LocalizedMarkdown } from './storeTypes';
 import type { TeamsTargetKind } from './teamsInstallTarget';
@@ -40,6 +41,27 @@ async function forwardCookieHeader(): Promise<Record<string, string>> {
 
 export type PrivacyProfile = 'strict' | 'default';
 export type AgentStatus = 'enabled' | 'disabled';
+/** @deprecated the previous name of the archetype; the API returns it next
+ *  to `archetype` until the `agents.kind` column is dropped. */
+export type AgentKind = 'standard' | 'facilitator';
+/** #2088 — the archetype of an agent: `standard`, or one an archetype plugin
+ *  registered (today `facilitator`). Fixed at creation, never switched. */
+export type AgentArchetype = string;
+export const STANDARD_ARCHETYPE: AgentArchetype = 'standard';
+export const FACILITATOR_ARCHETYPE: AgentArchetype = 'facilitator';
+
+/** What an agent DTO says about its archetype. */
+export interface ArchetypeBearer {
+  archetype?: AgentArchetype;
+  /** @deprecated see {@link AgentKind}. */
+  kind?: AgentKind;
+}
+
+/** The archetype of an agent: `archetype`, else the `kind` of a middleware
+ *  that predates it, else `standard`. */
+export function archetypeOfAgent(agent: ArchetypeBearer): AgentArchetype {
+  return agent.archetype ?? agent.kind ?? STANDARD_ARCHETYPE;
+}
 
 export interface OperatorAgentPluginDto {
   id: string;
@@ -61,6 +83,11 @@ export interface OperatorAgentDto {
    *  runtime path — `strict` behaves like `default`. */
   privacy_profile: PrivacyProfile;
   status: AgentStatus;
+  /** #2088 — absent on a middleware that predates archetypes; read it
+   *  through `archetypeOfAgent` / `isFacilitatorAgent`. */
+  archetype?: AgentArchetype;
+  /** @deprecated the previous name of {@link archetype}. */
+  kind?: AgentKind;
   created_at: string;
   updated_at: string;
   active: boolean;
@@ -121,6 +148,19 @@ export async function listOperatorAgents(): Promise<OperatorAgentsListDto> {
   return callJson<OperatorAgentsListDto>('/v1/operator/agents');
 }
 
+/**
+ * #2088 — the archetypes agents can be created of. `null` when the
+ * middleware does not have the endpoint (it predates it) or does not answer:
+ * the directory then shows what it always showed.
+ */
+export async function listOperatorArchetypes(): Promise<OperatorArchetypeDto[] | null> {
+  try {
+    return parseOperatorArchetypes(await callJson<unknown>('/v1/operator/archetypes'));
+  } catch {
+    return null;
+  }
+}
+
 /** Dashboard MCP health summary (epic #459): how many servers are registered,
  *  how many are enabled, how many discovered tools they expose, and how many
  *  enabled servers still need a Discover run. Best-effort — a rejection just
@@ -156,11 +196,21 @@ export interface CreateAgentInput {
    *  runtime path — `strict` behaves like `default`. */
   privacy_profile?: PrivacyProfile;
   status?: AgentStatus;
+  /** #2088 — only on create. Omitted = `standard`. */
+  archetype?: AgentArchetype;
+}
+
+/** A facilitator only moderates (spec 2043 §2). */
+export function isFacilitatorAgent(agent: ArchetypeBearer): boolean {
+  return archetypeOfAgent(agent) === FACILITATOR_ARCHETYPE;
 }
 
 export async function createOperatorAgent(input: CreateAgentInput): Promise<{
   id: string;
   slug: string;
+  archetype?: AgentArchetype;
+  /** @deprecated see {@link AgentKind}. */
+  kind?: AgentKind;
 }> {
   return callJson('/v1/operator/agents', {
     method: 'POST',
@@ -177,20 +227,138 @@ export interface PatchAgentInput {
   status?: AgentStatus;
 }
 
+/**
+ * #2088 — what ended with an agent when it was disabled or deleted (end of
+ * service). `process_outcome`: `ended` = its archetype plugin closed its
+ * processes; `not_supported` = the archetype has none to close (or no plugin
+ * that could); `failed` = the plugin did not answer, the kernel ended the
+ * agent's message subscriptions anyway.
+ */
+export interface EndOfServiceDto {
+  reason: 'agent_disabled' | 'agent_deleted' | 'archetype_plugin_removed';
+  process_outcome: 'ended' | 'not_supported' | 'failed';
+  process_detail?: string;
+  processes: Array<{
+    process_id: string;
+    channel_type: string;
+    conversation_id: string;
+    outcome: 'aborted' | 'failed';
+    report_posted?: boolean;
+    detail?: string;
+  }>;
+  subscriptions_ended: Array<{ channel_type: string; conversation_id: string }>;
+  /** #2090 — execution scopes the kernel ended, and conversations whose
+   *  reservation it released. Absent on an older middleware. */
+  execution_scopes_ended?: number;
+  reservations_released?: { channel_type: string; conversation_id: string }[];
+  system_notices_owed: number;
+}
+
+/** #2088 — a deleted agent: its record is kept until an operator purges it. */
+export interface DeletedAgentDto {
+  id: string;
+  slug: string;
+  name: string;
+  archetype: string;
+  deleted_at: string;
+  deleted_by: string | null;
+  purgeable_from: string;
+  purgeable_without_confirmation: boolean;
+}
+
+export interface AgentChangeResult {
+  ok: boolean;
+  end_of_service?: EndOfServiceDto;
+  tombstone?: DeletedAgentDto;
+}
+
 export async function patchOperatorAgent(
   slug: string,
   patch: PatchAgentInput,
-): Promise<void> {
-  await callJson(`/v1/operator/agents/${encodeURIComponent(slug)}`, {
+): Promise<AgentChangeResult> {
+  return callJson<AgentChangeResult>(`/v1/operator/agents/${encodeURIComponent(slug)}`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
   });
 }
 
-export async function deleteOperatorAgent(slug: string): Promise<void> {
-  await callJson(`/v1/operator/agents/${encodeURIComponent(slug)}`, {
+/** Deletes an agent: it goes out of service and its record is kept as a
+ *  deleted agent (#2088). `purgeDeletedAgent` removes it for good. */
+export async function deleteOperatorAgent(slug: string): Promise<AgentChangeResult> {
+  return callJson<AgentChangeResult>(`/v1/operator/agents/${encodeURIComponent(slug)}`, {
     method: 'DELETE',
   });
+}
+
+export async function listDeletedAgents(): Promise<{ retention_days: number; agents: DeletedAgentDto[] }> {
+  return callJson('/v1/operator/agents/deleted');
+}
+
+/** `confirm`: the agent's slug, required while it was deleted less than the
+ *  retention period ago (409 `purge_confirmation_required` otherwise). */
+export async function purgeDeletedAgent(id: string, confirm?: string): Promise<{ ok: boolean }> {
+  return callJson(`/v1/operator/agents/deleted/${encodeURIComponent(id)}/purge`, {
+    method: 'POST',
+    body: JSON.stringify(confirm !== undefined ? { confirm } : {}),
+  });
+}
+
+// ── #2090 — execution scopes of archetype plugins and the kill switch ───
+
+export type ExecutionScopeKind = 'configuring' | 'active' | 'closing' | 'scheduling' | 'follow_up';
+export type KillSwitchLevel = 'instance' | 'agent' | 'process';
+
+export interface ExecutionScopeDto {
+  id: string;
+  agent_slug: string;
+  plugin_id: string;
+  process_id: string;
+  kind: ExecutionScopeKind;
+  event_id: string | null;
+  deadline: string;
+  absolute_limit: string;
+  deadline_wait: boolean;
+  budget: { actions: number; model_calls: number };
+  used: { actions: number; model_calls: number };
+  conversations: number;
+  people: number;
+  opened_at: string;
+  /** A set kill switch reaches this scope: nothing is authorized under it. */
+  stopped: boolean;
+}
+
+export interface KillSwitchDto {
+  id: string;
+  level: KillSwitchLevel;
+  agent_slug: string | null;
+  process_id: string | null;
+  reason: string;
+  set_by: string;
+  set_at: string;
+}
+
+export interface ExecutionOverviewDto {
+  kill_switches: KillSwitchDto[];
+  scopes: ExecutionScopeDto[];
+}
+
+export async function getExecutionOverview(): Promise<ExecutionOverviewDto> {
+  return callJson('/v1/operator/execution');
+}
+
+/** Refuses every further action in the switch's reach until it is cleared.
+ *  Ends nothing. */
+export async function setKillSwitch(input: {
+  level: KillSwitchLevel;
+  agent_slug?: string;
+  process_id?: string;
+  reason?: string;
+}): Promise<{ kill_switch: KillSwitchDto }> {
+  return callJson('/v1/operator/execution/kill-switches', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export async function clearKillSwitch(id: string): Promise<{ ok: boolean }> {
+  return callJson(`/v1/operator/execution/kill-switches/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 // ── W0c (#861) — per-agent plugin assignment + grant read model ─────────
@@ -735,6 +903,18 @@ export const TEAMS_IDENTITY_LAST_ERROR_CODES = [
   // because reporting it as a generic bad request sends the operator back to
   // re-check an id that was correct all along
   'rsc_permissions_mismatch',
+  // #2043 — the target's own resource-specific consent check refused the
+  // install: permanent, and neither a wrong id nor a missing role
+  'rsc_consent_refused',
+  // #2043 — the Bot Connector answers 401 to the bot's own credentials: the
+  // run was green in Azure and the bot is invalid in Teams
+  'bot_rejected',
+  // #2043 — the connector refused to create a bot under an app id whose bot
+  // was deleted before: it would be rejected by the Bot Connector for good
+  'bot_app_id_retired',
+  // #2043 D22 — Graph kept refusing a follow-up call on the new app
+  // registration; replication or ownership, not missing consent
+  'app_registration_not_ready',
   'unknown',
 ] as const;
 
@@ -765,7 +945,26 @@ export interface TeamsIdentityLastErrorDetailDto {
    *  before the sentence is written AND again when it is decoded, so the panel
    *  may render it as a link without a third check. */
   adminConsentUrl?: string;
+  /** #2043 — what Microsoft named in an `rsc_consent_refused` answer: Graph's
+   *  error code, its inner code and the Teams backend request it relayed.
+   *  Identifiers, shown as ICU arguments. */
+  graphCode?: string;
+  innerCode?: string;
+  backendRequest?: string;
   raw: string;
+}
+
+/** Short identifier-shaped strings only: these are rendered next to copy. */
+function identifierFields<K extends string>(
+  obj: Record<string, unknown> | null,
+  keys: readonly K[],
+): Partial<Record<K, string>> {
+  const out: Partial<Record<K, string>> = {};
+  for (const key of keys) {
+    const value = obj?.[key];
+    if (typeof value === 'string' && /^[\w.-]{1,120}$/.test(value)) out[key] = value;
+  }
+  return out;
 }
 
 function stringList(value: unknown): string[] | undefined {
@@ -817,6 +1016,7 @@ export function parseTeamsIdentityLastErrorDetail(
       ? { retryAfterSeconds: retry }
       : {}),
     ...(typeof reason === 'string' && reason !== '' ? { reason } : {}),
+    ...identifierFields(obj, ['graphCode', 'innerCode', 'backendRequest']),
     raw: typeof rawText === 'string' && rawText !== '' ? rawText : lastError,
   };
 }
@@ -1130,7 +1330,8 @@ export type PluginKind =
   | 'integration'
   | 'channel'
   | 'tool'
-  | 'extension';
+  | 'extension'
+  | 'archetype';
 
 export type SetupFieldType =
   | 'string'
@@ -1454,6 +1655,11 @@ export function parseTeamsAssignmentCapabilities(
  * machine codes, each with its own sentence in `messages/*.json`.
  */
 export const TEAMS_TARGET_LISTING_UNAVAILABLE = [
+  /** #2043 — the server is still enumerating a large tenant; ask again. */
+  'loading',
+  /** #2043 — this half was not asked for: the tenant's chats are listed only
+   *  for a search, never just to open the picker. */
+  'not_requested',
   'connector_unavailable',
   'connector_unsupported',
   /** NOBODY is signed in — and since #949 nothing else. */
@@ -1502,7 +1708,21 @@ export function isTeamsTargetListingUnavailable(
  * about their tenant and sends them looking in the wrong place.
  */
 export type TeamsTargetListingDto<T> =
-  | { available: true; items: readonly T[] }
+  | {
+      available: true;
+      items: readonly T[];
+      /** #2043 — how many the tenant has; set when the server sent fewer. */
+      total?: number;
+      truncated?: boolean;
+      /** The connector's own list stopped early (M365 connector >= 0.9.1
+       *  reports it): the list is incomplete and `total` a lower bound. */
+      sourceTruncated?: boolean;
+      /** Chats: untitled chats that have no member names to label them. */
+      withoutMemberNames?: number;
+      /** Chats: whose members the filter can match. Since connector 0.9.1 a
+       *  chat WITH a name carries no members, so only untitled ones do. */
+      memberSearch?: 'all' | 'untitled_only' | 'none';
+    }
   | { available: false; reason: TeamsTargetListingUnavailable };
 
 export interface TeamsTeamOptionDto {
@@ -1517,12 +1737,52 @@ export interface TeamsChatOptionDto {
   memberNames?: readonly string[];
 }
 
+/** A chat one of the instance's bots already holds a reference in (#2043):
+ *  the picker's default list, known without asking Microsoft. */
+export interface TeamsRecentTargetDto {
+  id: string;
+  kind: 'group-chat' | 'one-on-one-chat';
+  label: string | null;
+  /** This agent's own bot is already in that chat. */
+  knownToThisBot: boolean;
+}
+
 export interface AgentTeamsTargetsDto {
   ok: boolean;
   agent: string;
   provisioner_installed: boolean;
   teams: TeamsTargetListingDto<TeamsTeamOptionDto>;
   chats: TeamsTargetListingDto<TeamsChatOptionDto>;
+  /** Absent on an older middleware, or when the list could not be read. */
+  recent?: readonly TeamsRecentTargetDto[];
+}
+
+function parseRecentTargets(value: unknown): readonly TeamsRecentTargetDto[] | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record['available'] !== true || !Array.isArray(record['items'])) return undefined;
+  const items: TeamsRecentTargetDto[] = [];
+  for (const raw of record['items']) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    const r = raw as Record<string, unknown>;
+    const id = r['id'];
+    const kind = r['kind'];
+    if (typeof id !== 'string' || id === '') continue;
+    if (kind !== 'group-chat' && kind !== 'one-on-one-chat') continue;
+    items.push({
+      id,
+      kind,
+      label: typeof r['label'] === 'string' && r['label'] !== '' ? r['label'] : null,
+      knownToThisBot: r['knownToThisBot'] === true,
+    });
+  }
+  return items;
+}
+
+/** What to ask the directory for. Without `q` the tenant's chats are not
+ *  enumerated; the answer carries teams and `recent` only. */
+export interface TeamsTargetsQuery {
+  readonly q?: string;
 }
 
 /**
@@ -1557,7 +1817,25 @@ function parseTargetListing<T>(
     const parsed = parseItem(entry);
     if (parsed !== null) items.push(parsed);
   }
-  return { available: true, items };
+  const total = record['total'];
+  const truncated = record['truncated'] === true;
+  const sourceTruncated = record['sourceTruncated'] === true;
+  const unnamed = record['withoutMemberNames'];
+  const memberSearch = record['memberSearch'];
+  return {
+    available: true,
+    items,
+    ...(truncated && typeof total === 'number' && Number.isFinite(total)
+      ? { total, truncated: true }
+      : {}),
+    ...(sourceTruncated ? { sourceTruncated: true } : {}),
+    ...(typeof unnamed === 'number' && Number.isFinite(unnamed) && unnamed > 0
+      ? { withoutMemberNames: unnamed }
+      : {}),
+    ...(memberSearch === 'all' || memberSearch === 'untitled_only' || memberSearch === 'none'
+      ? { memberSearch }
+      : {}),
+  };
 }
 
 function parseTeamOption(raw: unknown): TeamsTeamOptionDto | null {
@@ -1602,15 +1880,87 @@ function parseChatOption(raw: unknown): TeamsChatOptionDto | null {
  */
 export async function getAgentTeamsTargets(
   slug: string,
+  query: TeamsTargetsQuery = {},
 ): Promise<AgentTeamsTargetsDto> {
-  const dto = await callJson<AgentTeamsTargetsDto>(
-    `/v1/operator/agents/${encodeURIComponent(slug)}/teams/targets`,
+  const q = query.q?.trim() ?? '';
+  const dto = await callJson<AgentTeamsTargetsDto & { recent?: unknown }>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/teams/targets${
+      q !== '' ? `?q=${encodeURIComponent(q)}` : ''
+    }`,
   );
+  const recent = parseRecentTargets(dto.recent);
   return {
-    ...dto,
+    ok: dto.ok,
+    agent: dto.agent,
+    provisioner_installed: dto.provisioner_installed,
     teams: parseTargetListing(dto.teams, parseTeamOption),
     chats: parseTargetListing(dto.chats, parseChatOption),
+    ...(recent !== undefined ? { recent } : {}),
   };
+}
+
+const TARGETS_UNREADABLE: Pick<AgentTeamsTargetsDto, 'teams' | 'chats'> = {
+  teams: { available: false, reason: 'lookup_failed' },
+  chats: { available: false, reason: 'lookup_failed' },
+};
+
+export interface LoadTeamsTargetsOptions {
+  /** Called with every answer, including the intermediate `loading` ones. */
+  readonly onUpdate: (dto: AgentTeamsTargetsDto) => void;
+  readonly isCancelled: () => boolean;
+  readonly delayMs?: number;
+  readonly maxPolls?: number;
+  /** A chat search: the server lists the tenant's chats only for this. */
+  readonly query?: TeamsTargetsQuery;
+  /** Injectable for tests. */
+  readonly fetchTargets?: (slug: string, query?: TeamsTargetsQuery) => Promise<AgentTeamsTargetsDto>;
+  readonly sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Load the team/chat directory until it is there (#2043).
+ *
+ * A large tenant takes longer to enumerate than one request should wait, so
+ * the server answers `reason: 'loading'` and keeps going. This asks again
+ * until both halves have settled, and ALWAYS ends in a state the picker can
+ * show: a request that fails, or a server that never finishes, becomes
+ * `lookup_failed` ("could not be loaded, type the id below") instead of the
+ * endless "loading …" the panel used to sit in.
+ */
+export async function loadAgentTeamsTargets(
+  slug: string,
+  opts: LoadTeamsTargetsOptions,
+): Promise<void> {
+  const fetchTargets = opts.fetchTargets ?? getAgentTeamsTargets;
+  const sleep =
+    opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const maxPolls = opts.maxPolls ?? 40;
+  const isLoading = (listing: TeamsTargetListingDto<unknown>): boolean =>
+    !listing.available && listing.reason === 'loading';
+  let last: AgentTeamsTargetsDto = {
+    ok: false,
+    agent: slug,
+    provisioner_installed: false,
+    ...TARGETS_UNREADABLE,
+  };
+  for (let poll = 0; poll < maxPolls; poll += 1) {
+    try {
+      last = opts.query !== undefined ? await fetchTargets(slug, opts.query) : await fetchTargets(slug);
+    } catch {
+      if (!opts.isCancelled()) opts.onUpdate({ ...last, ...TARGETS_UNREADABLE });
+      return;
+    }
+    if (opts.isCancelled()) return;
+    opts.onUpdate(last);
+    if (!isLoading(last.teams) && !isLoading(last.chats)) return;
+    await sleep(opts.delayMs ?? 3000);
+    if (opts.isCancelled()) return;
+  }
+  opts.onUpdate({
+    ...last,
+    teams: isLoading(last.teams) ? TARGETS_UNREADABLE.teams : last.teams,
+    chats: isLoading(last.chats) ? TARGETS_UNREADABLE.chats : last.chats,
+  });
 }
 
 /**

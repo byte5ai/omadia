@@ -27,8 +27,12 @@ vi.mock('next-intl/server', async () => {
   return {
     getTranslations: async (namespace: string) =>
       createTranslator({ locale: 'en', messages, namespace: namespace as never }),
+    getLocale: async () => 'en',
   };
 });
+
+// #2066 — the page reads the plugin nav for the facilitations-view link.
+vi.mock('../../../_lib/navigation', () => ({ fetchNavEntries: async () => [] }));
 
 vi.mock('next/link', () => ({
   default: ({ children, href }: { children: React.ReactNode; href: string }) => (
@@ -36,7 +40,11 @@ vi.mock('next/link', () => ({
   ),
 }));
 
-vi.mock('../../../_lib/agents', () => ({ listOperatorAgents: mockListAgents }));
+vi.mock('../../../_lib/agents', () => ({
+  listOperatorAgents: mockListAgents,
+  // #2088 — a middleware without the endpoint: the directory falls back.
+  listOperatorArchetypes: () => Promise.resolve(null),
+}));
 vi.mock('../../../_lib/channels', () => ({ listOperatorChannels: mockListChannels }));
 vi.mock('../../../_lib/authRedirect', () => ({ redirectIfUnauthorized: mockRedirect }));
 vi.mock('../_components/AgentsDashboard', () => ({

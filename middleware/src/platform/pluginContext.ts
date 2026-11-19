@@ -60,6 +60,7 @@ import {
   type LedgerSeedReport,
   type SeedLedgerOptions,
   SqlMigrationError,
+  ServiceNotDeclaredError,
 } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 import type { DomainTool } from '@omadia/orchestrator';
@@ -89,6 +90,7 @@ import {
   readStoredTokens,
   writeStoredTokens,
 } from '../plugins/oauth/tokenStore.js';
+import { normalizeTypedSetupValue } from '../plugins/setupFieldValue.js';
 import { createLlmProviderFromNeutral } from './anthropicLlmProvider.js';
 import { pluginLlmUsageSource, recordPluginLlmUsage } from './pluginLlmUsage.js';
 import { builtinClassDefault } from './builtinLlmProviders.js';
@@ -110,7 +112,9 @@ import { neighborsForPlugin } from './shieldedNeighbors.js';
 import type { ServiceRegistry } from './serviceRegistry.js';
 import {
   createServiceGrantGate,
+  declaresServiceMajor,
   legacyServiceGrantsFor,
+  versionedServiceRef,
 } from './pluginServiceGrants.js';
 import {
   createSqlGate,
@@ -118,6 +122,7 @@ import {
   POOL_SHAPED_CAPABILITIES,
   sqlPermissionOf,
 } from './pluginSqlGrants.js';
+import { ownsItsDatabase, type ArchetypeDatabaseHandle } from './archetypeDatabase.js';
 import { borrowPool } from './borrowedPool.js';
 import { runPluginMigrations } from './pluginMigrations.js';
 import {
@@ -233,6 +238,14 @@ export interface CreatePluginContextOptions {
    * `../../` into arbitrary SQL at boot.
    */
   packageRoot?: string;
+  /**
+   * #2088 — the schema-limited database of an archetype plugin that owns its
+   * database (`ownsItsDatabase`), set up before the context is built
+   * (`ArchetypeDatabase.ensure`). With it, `ctx.sql` runs migrations as the
+   * plugin's migration role and carries `schema`, `query` and `transaction`.
+   * Without it such a plugin has no `ctx.sql`.
+   */
+  archetypeDatabase?: ArchetypeDatabaseHandle;
   logger?: (...args: unknown[]) => void;
 }
 
@@ -315,6 +328,9 @@ export function createPluginContext(
   // core writes user data through — so `graphPool` additionally needs a
   // `permissions.sql` declaration and an operator grant.
   const sqlPermission = sqlPermissionOf(agentId, catalog);
+  // #2088 — an archetype plugin that does not ask for the shared pool has a
+  // database of its own (schema and login roles), or none.
+  const hasOwnDatabase = catalogEntry ? ownsItsDatabase(catalogEntry.plugin) : false;
   const assertSqlAccess = createSqlGate({
     agentId,
     catalog,
@@ -338,13 +354,21 @@ export function createPluginContext(
   });
 
   const services: ServicesAccessor = {
-    get<T>(name: string): T | undefined {
+    get<T>(requested: string): T | undefined {
+      // #2090 — `name@2` asks for that major, registered under that key. The
+      // gates below judge the capability by its name; this adds that the
+      // manifest must declare THIS major, so `foo@^1` does not buy `foo@2`.
+      const versioned = versionedServiceRef(requested);
+      const name = versioned ? versioned.name : requested;
       assertServiceGranted(name);
+      if (versioned && !declaresServiceMajor(agentId, catalog, versioned)) {
+        throw new ServiceNotDeclaredError(agentId, requested);
+      }
       // Order matters: declaration first, permission second. A plugin that
       // declared neither should hear about the manifest line it is missing
       // before it hears about a grant it could not have obtained anyway.
       assertSqlAccess(name);
-      const resolved = serviceRegistry.get<T>(name, serviceCaller);
+      const resolved = serviceRegistry.get<T>(requested, serviceCaller);
       // Epic #470 C7 / G4 — a pool-shaped capability is BORROWED, not handed
       // over. Passing the raw `pg.Pool` would mean one `.end()` in one plugin
       // tears down the connection pool core writes user data through. Applied
@@ -507,7 +531,13 @@ export function createPluginContext(
         if (!entry) continue;
         const value = entry.config[key];
         if (value !== undefined && value !== null) {
-          return value as T;
+          // #1958 — older builds stored a `boolean` / `integer` field edited
+          // after install as a string. Hand the plugin the declared type, so
+          // such a stored value works without the operator re-saving it.
+          const field = catalog
+            .get(id)
+            ?.plugin.setup_fields?.find((f) => f.key === key);
+          return (field ? normalizeTypedSetupValue(field.type, value) : value) as T;
         }
       }
       return undefined;
@@ -1043,8 +1073,14 @@ export function createPluginContext(
   // a withheld grant are indistinguishable — all three meaning "do not touch
   // the database".
   const sql: SqlAccessor | undefined =
-    sqlPermission && (opts.sqlGranted ?? false) && opts.packageRoot
+    sqlPermission &&
+    (opts.sqlGranted ?? false) &&
+    opts.packageRoot &&
+    (!hasOwnDatabase || opts.archetypeDatabase)
       ? createSqlAccessor({
+          ...(hasOwnDatabase && opts.archetypeDatabase
+            ? { archetypeDatabase: opts.archetypeDatabase }
+            : {}),
           agentId,
           ledger: sqlPermission.ledger,
           packageRoot: opts.packageRoot,
@@ -1098,6 +1134,9 @@ interface SqlAccessorOptions {
   readonly serviceRegistry: ServiceRegistry;
   readonly serviceCaller: ServiceCaller;
   readonly log: (msg: string) => void;
+  /** #2088 — set for an archetype plugin: migrations run as its migration
+   *  role in its schema, and the accessor carries `query` / `transaction`. */
+  readonly archetypeDatabase?: ArchetypeDatabaseHandle;
 }
 
 /**
@@ -1113,6 +1152,39 @@ interface SqlAccessorOptions {
  */
 function createSqlAccessor(opts: SqlAccessorOptions): SqlAccessor {
   const { agentId, ledger, packageRoot, defaultDir, log } = opts;
+
+  // #2088 — a plugin with its own database: nothing here touches the kernel's pool. No
+  // `seedLedger` either: it reads the core ledger, a kernel table, which no
+  // plugin role can reach.
+  const database = opts.archetypeDatabase;
+  if (database) {
+    return {
+      ledger,
+      schema: database.sql.schema,
+      query: database.sql.query,
+      transaction: database.sql.transaction,
+      async runMigrations(runOpts): Promise<MigrationReport> {
+        const dir = resolveMigrationsDir(
+          agentId,
+          ledger,
+          packageRoot,
+          runOpts?.dir ?? defaultDir,
+        );
+        return database.withMigrationPool((pool) =>
+          runPluginMigrations({
+            pool,
+            pluginId: agentId,
+            ledger,
+            dir,
+            allowChecksumDrift: runOpts?.allowChecksumDrift ?? false,
+            searchPath: database.schema,
+            ledgerReadOnlyFor: database.runtimeRole,
+            log,
+          }),
+        );
+      },
+    };
+  }
 
   return {
     ledger,

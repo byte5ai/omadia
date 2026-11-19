@@ -121,6 +121,9 @@ export interface PluginSetupField {
    *  `type === 'boolean'` (#1464 — `"true"` normalized), a `number` for
    *  `type === 'integer'` (#1524), a `string` otherwise. */
   default?: string | string[] | boolean | number;
+  /** #1958 — `integer` only: the smallest accepted value. Enforced on install
+   *  and on every post-install edit; mirrors `InstallSetupField.min`. */
+  min?: number;
   /** Allowed values for `type === 'enum'`. Mirrors the install-wizard
    *  schema so the post-install editor can render a `<select>` instead of
    *  a free-text input. */
@@ -345,7 +348,34 @@ export type PluginKind =
   | 'tool'
   /** Cross-cutting extension (turn-hooks, background jobs, prompt blocks).
    *  Reserved for Phase 4 (Verifier + KG). No runtime support yet. */
-  | 'extension';
+  | 'extension'
+  /** #2088 — delivers an agent archetype (spec 2042 §5.10): its manifest
+   *  carries the descriptor the kernel enforces (`Plugin.archetype`). Never
+   *  attached to an agent; the operator creates agents OF the archetype.
+   *  Runs in the extension runtime. Installing it needs a confirmation. */
+  | 'archetype';
+
+/** Every manifest `kind` this kernel accepts. Anything else is rejected at
+ *  ingest: a kind the kernel does not know is not silently run as another. */
+export const PLUGIN_KINDS = ['agent', 'integration', 'channel', 'tool', 'extension', 'archetype'] as const;
+
+/**
+ * The archetype a plugin of kind `archetype` delivers, as its manifest states
+ * it (`archetype:` block). Mirrors the kernel's `ArchetypeDescriptor` without
+ * `source`; the lists are closed vocabularies the kernel enforces.
+ */
+export interface PluginArchetype {
+  id: string;
+  omits: string[];
+  adds: string[];
+  requires: string[];
+  noun: string;
+  label?: string | { en?: string; de?: string };
+  labelPlural?: string | { en?: string; de?: string };
+  description?: string | { en?: string; de?: string };
+  omissionReasons?: Record<string, string>;
+  roleContract?: string;
+}
 
 export type ChannelTransportKind = 'webhook' | 'websocket' | 'long-poll';
 
@@ -528,6 +558,8 @@ export type PluginInstallOrigin = 'bundled' | 'operator';
 export interface Plugin {
   id: AgentId;
   kind: PluginKind;
+  /** #2088 — present exactly when `kind === 'archetype'`. */
+  archetype?: PluginArchetype;
   name: string;
   version: string;
   latest_version: string;
@@ -986,6 +1018,10 @@ export interface PluginActivationResult {
   /** #1456 — what kind of failure it was, for operator-facing copy. `null` on
    *  success; `unknown` for a failure recorded without a code. */
   error_code: ActivationErrorCode | null;
+  /** #1860 — the values were saved, but the plugin keeps running on its
+   *  current instance until the next restart (another plugin wraps one of
+   *  its services, so it cannot be restarted in place). Omitted: false. */
+  restart_pending?: boolean;
 }
 
 /**
@@ -1041,6 +1077,9 @@ export interface InstallSetupField {
   help?: LocalizedMarkdown;
   required: boolean;
   default?: unknown;
+  /** #1958 — `integer` only: the smallest accepted value. See
+   *  `PluginSetupField.min`; parsed by the same rule in both projections. */
+  min?: number;
   enum?: SetupEnumOption[];
   provider?: string;
   scopes?: string[];

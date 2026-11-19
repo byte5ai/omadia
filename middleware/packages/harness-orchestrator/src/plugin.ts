@@ -8,6 +8,7 @@ import {
   type GrantStore,
   type SecurityPosture,
 } from '@omadia/channel-sdk';
+import type { FacilitatorRuntimeLookup } from './facilitatorAgent.js';
 import type {
   SecurityPostureSetup,
   SecurityScreenMode,
@@ -257,6 +258,8 @@ export const CLI_BINARY_RESOLVER_SERVICE = 'cliBinaryResolver';
  * block, which may come up after this plugin.
  */
 export const CHAT_PEER_AGENTS_SERVICE = 'chatPeerAgents';
+/** #2043 — kernel-published lookup, see `OrchestratorDeps.isEngineDrivenConversation`. */
+export const FACILITATOR_CONVERSATIONS_SERVICE = 'facilitatorConversations';
 
 /** #1033 W3 — the kernel's shared provider pool (see `optional_requires`). */
 export const LLM_PROVIDER_POOL_SERVICE = 'llmProviderPool';
@@ -524,6 +527,17 @@ function parseBooleanEnv(raw: string | undefined): boolean {
   if (!raw) return false;
   const v = raw.trim().toLowerCase();
   return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/**
+ * A `boolean` setup field read through `ctx.config.get`. The stored value is a
+ * real boolean (install, post-install edit, kernel read-side normalization —
+ * #1464, #1958) or, from older seeding, the string `'true'` / `'false'`. Never
+ * call `.trim()` on the raw value: `false` is not nullish, so `?? ''` does not
+ * protect it, and the throw fails the whole activation.
+ */
+function readBooleanSetting(raw: unknown): boolean {
+  return raw === true || (typeof raw === 'string' && raw.trim().toLowerCase() === 'true');
 }
 
 export async function activate(
@@ -1198,6 +1212,20 @@ export async function activate(
     // inside its database block, possibly after this plugin activated).
     chatPeerAgents: async () =>
       (await ctx.services.getOptional<ChatPeerAgentsProvider>(CHAT_PEER_AGENTS_SERVICE)?.()) ?? [],
+    // #2043 — resolved PER TURN for the same reason. Absent (older kernel):
+    // no conversation is engine-driven and no engine is usable.
+    isEngineDrivenConversation: (agentSlug, channelType, conversationId) =>
+      ctx.services
+        .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
+        ?.isEngineDriven(agentSlug, channelType, conversationId) ?? false,
+    isFacilitationEngineUsable: (agentSlug) =>
+      ctx.services
+        .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
+        ?.isEngineUsable(agentSlug) ?? false,
+    facilitatorOwnPostCount: (agentSlug, channelType, conversationId) =>
+      ctx.services
+        .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
+        ?.ownPostCount?.(agentSlug, channelType, conversationId) ?? 0,
     ...(contextRetriever ? { contextRetriever } : {}),
     ...(sessionBriefing ? { sessionBriefing } : {}),
     ...(factExtractor ? { factExtractor } : {}),
@@ -1260,9 +1288,7 @@ export async function activate(
   // work; until then routing is suppressed for non-Anthropic providers.
   const modelRoutingEnabled =
     providerId === 'anthropic' &&
-    (ctx.config.get<string>('orchestrator_model_routing') ?? '')
-      .trim()
-      .toLowerCase() === 'true';
+    readBooleanSetting(ctx.config.get<unknown>('orchestrator_model_routing'));
   // Each routing slot is a REF resolved like `orchestrator_model` above; the
   // defaults are class refs so they follow the live catalog. A slot that
   // cannot be resolved for the active provider falls back to the main model.
@@ -1294,13 +1320,11 @@ export async function activate(
     );
   }
 
-  // #445 — sticky Direct Line. Read defensively: the installed-plugin config
-  // may hold a real boolean (persisted by the install service) OR the string
-  // the manifest/bootstrap seeds. `.trim()` on a boolean throws, and `?? ''`
-  // does not protect because `false` is not nullish.
-  const stickyRaw = ctx.config.get<unknown>('orchestrator_direct_line_sticky');
-  const directLineSticky =
-    stickyRaw === true || String(stickyRaw).trim().toLowerCase() === 'true';
+  // #445 — sticky Direct Line (see `readBooleanSetting` for why it is read
+  // defensively).
+  const directLineSticky = readBooleanSetting(
+    ctx.config.get<unknown>('orchestrator_direct_line_sticky'),
+  );
   if (directLineSticky) {
     console.log(
       '[harness-orchestrator] direct-line sticky mode ON — a bare `#<agent>` binds the ' +
@@ -1431,6 +1455,12 @@ export async function activate(
         log: (msg, fields) =>
           ctx.log(
             `[harness-orchestrator] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`,
+          ),
+        // #2045 seam: a `system` notice that is owed and cannot be sent yet
+        // is logged. It is never posted under an agent's identity.
+        emitSystemNotice: (notice) =>
+          ctx.log(
+            `[system-notice] owed, not sent (#2045): ${notice.kind} for '${notice.agentName}' in ${notice.channelType}/${notice.channelKey}`,
           ),
       });
       disposeServices.push(

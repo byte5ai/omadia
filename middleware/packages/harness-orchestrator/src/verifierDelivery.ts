@@ -1,5 +1,6 @@
 import {
   applyAiDisclosure,
+  withoutFoldedAiDisclosure,
   composeVerifierBlockedText,
   NO_REPLY_SENTINEL,
 } from '@omadia/channel-sdk';
@@ -366,11 +367,7 @@ function withTurnDisclosure(
 /** `answer` without the disclosure block the fold added: its own paragraph
  *  after the answer, or the whole answer when the answer itself was blank. */
 function withoutFoldedDisclosure(answer: string, disclosure: AiDisclosure | undefined): string {
-  const block = foldedDisclosureBlock(answer, disclosure);
-  if (block === undefined) return answer;
-  if (answer === block) return '';
-  const paragraph = `\n\n${block}`;
-  return answer.endsWith(paragraph) ? answer.slice(0, -paragraph.length) : answer;
+  return withoutFoldedAiDisclosure(answer, disclosure);
 }
 
 /**

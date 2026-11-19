@@ -1,3 +1,4 @@
+import { archetypeOf } from './archetype.js';
 import {
   buildOrchestratorForAgent,
   type AgentRuntimeConfig,
@@ -400,6 +401,8 @@ export function buildForAgent(
       // installation default inside `buildOrchestratorForAgent`, so exactly
       // one verbosity block ever reaches the prompt.
       ...(agent.answerVerbosity ? { answerVerbosity: agent.answerVerbosity } : {}),
+      // #2043 — the agent's own language (a facilitator's refusal text).
+      ...(agent.identityLanguage ? { identityLanguage: agent.identityLanguage } : {}),
       // #1569 — the agent's own quality settings, so the Quality Guard plugin
       // resolves per agent instead of always answering with its default.
       ...(agent.quality ? { quality: agent.quality } : {}),
@@ -421,6 +424,8 @@ export function buildForAgent(
       // to `undefined` (grant everything) — hence the explicit presence check
       // on the argument rather than on its length.
       ...(grantedPluginIds !== undefined ? { grantedPluginIds } : {}),
+      // #2088 — what the factory keys every omission of the archetype on.
+      archetype: archetypeOf(agent),
     },
     deps,
   );
@@ -491,6 +496,10 @@ function runtimeChangeReasons(oldAgent: AgentRow, newAgent: AgentRow): string[] 
   // to reach the running Agent — the same silent-no-op rule as for the name.
   if ((oldAgent.answerVerbosity ?? null) !== (newAgent.answerVerbosity ?? null)) {
     reasons.push('identity_verbosity');
+  }
+  // #2043 — the agent's language is baked into the built agent as well.
+  if ((oldAgent.identityLanguage ?? null) !== (newAgent.identityLanguage ?? null)) {
+    reasons.push('identity_language');
   }
   // #1569 — the quality settings decide what the Quality Guard adds to the
   // prompt, so a change has to rebuild the Agent like the text it compiles to.

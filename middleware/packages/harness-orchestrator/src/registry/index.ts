@@ -19,6 +19,7 @@ import {
   type DiffAction,
   type DiffPlan,
 } from './applyDiff.js';
+import { FACILITATOR_ARCHETYPE, isArchetype } from './archetype.js';
 import {
   ConfigValidationError,
   type AgentPluginRow,
@@ -30,6 +31,7 @@ import {
   type PlatformSettingsRow,
 } from './configStore.js';
 import { orchestratorMemoryScope } from './scopedMemoryStore.js';
+import type { AgentTombstone } from './tombstones.js';
 
 /**
  * OrchestratorRegistry (US4 / T015).
@@ -97,6 +99,17 @@ export interface PluginCapabilityLookup {
    * plugins" rather than failing the seed.
    */
   listInstalled?(): readonly string[] | undefined;
+  /**
+   * #2060 — the plugin ids a facilitator-kind agent may be granted: the one
+   * installed plugin whose manifest provides the facilitation engine
+   * capability, or none. The registry intersects a facilitator's enabled
+   * `agent_plugins` rows with this list before it builds, so a row that got
+   * in past the write-time refusal (a hand edit, an engine that was since
+   * replaced) grants nothing.
+   *
+   * `undefined` (no lookup wired) and an empty list both mean "nothing".
+   */
+  facilitatorGrantable?(): readonly string[] | undefined;
 }
 
 export interface OrchestratorRegistryOptions {
@@ -175,6 +188,9 @@ export class OrchestratorRegistry {
     updatedAt: new Date(0),
   };
   private snapshot: ConfigSnapshot | undefined;
+  /** #2043 — the grants each active facilitator was BUILT with (see
+   *  `withEngineGrantDrift`), by slug. */
+  private readonly facilitatorGrants = new Map<string, string>();
   /**
    * Provisioned channel identities from the last snapshot. Flat, not indexed
    * per agent: the lookup is always key → agent and the list is one row per
@@ -182,6 +198,13 @@ export class OrchestratorRegistry {
    * keeping a second map in sync across four diff actions.
    */
   private channelIdentities: readonly ChannelIdentityRow[] = [];
+  /**
+   * #2088 — the bindings that point to a DELETED agent, with the tombstone.
+   * Kept apart from the active entries (a tombstone is never built), and
+   * adopted on every reload like the identities, for the same reason: a
+   * delete changes no live agent's row, so the diff can be empty.
+   */
+  private deletedBindings: readonly { readonly binding: ChannelBindingRow; readonly agent: AgentTombstone }[] = [];
 
   constructor(
     private readonly store: ConfigStore,
@@ -226,7 +249,7 @@ export class OrchestratorRegistry {
     const snap = await this.store.loadSnapshot();
     const safe = this.quarantineUnsatisfiablePlugins(snap);
     validateSnapshot(safe, this.options.pluginLookup);
-    const plan = diffSnapshots(this.snapshot, safe);
+    const plan = this.withEngineGrantDrift(diffSnapshots(this.snapshot, safe), safe);
     if (plan.actions.length === 0 && !plan.platformChanged) {
       // Identities are NOT part of the diff: an agent whose bot finished
       // provisioning has the same row, plugins and bindings it had a minute
@@ -235,6 +258,7 @@ export class OrchestratorRegistry {
       // agent on the next reconcile instead of only after some unrelated
       // config edit forces a rebuild.
       this.channelIdentities = safe.channelIdentities ?? [];
+      this.deletedBindings = bindingsOfTombstones(safe);
       this.snapshot = safe;
       return plan;
     }
@@ -340,7 +364,70 @@ export class OrchestratorRegistry {
       });
     }
     this.channelIdentities = snap.channelIdentities ?? [];
+    this.deletedBindings = bindingsOfTombstones(snap);
     this.snapshot = snap;
+  }
+
+  /**
+   * The authorisation set an agent is built with: its enabled grant rows.
+   * #2060 — for a facilitator, intersected with what the platform says a
+   * facilitator may hold (the facilitation engine). No lookup = nothing.
+   */
+  private grantedPluginIdsFor(
+    agent: AgentRow,
+    plugins: readonly AgentPluginRow[],
+  ): string[] {
+    const { granted, dropped } = this.effectiveGrants(agent, plugins);
+    if (isArchetype(agent, FACILITATOR_ARCHETYPE)) {
+      this.facilitatorGrants.set(agent.slug, granted.join('\n'));
+      if (dropped.length > 0) {
+        this.log(`registry: facilitator grants ignored (not the facilitation engine)`, {
+          slug: agent.slug,
+          dropped,
+        });
+      }
+    }
+    return granted;
+  }
+
+  private effectiveGrants(
+    agent: AgentRow,
+    plugins: readonly AgentPluginRow[],
+  ): { granted: string[]; dropped: string[] } {
+    const enabled = plugins.filter((p) => p.enabled).map((p) => p.pluginId);
+    const grantable = new Set(this.options.pluginLookup?.facilitatorGrantable?.() ?? []);
+    // The engine's tools are for facilitators only; a row on a standard agent
+    // (left over from the plugin era, or hand-written) grants nothing.
+    if (!isArchetype(agent, FACILITATOR_ARCHETYPE)) {
+      return { granted: enabled.filter((id) => !grantable.has(id)), dropped: [] };
+    }
+    return {
+      granted: enabled.filter((id) => grantable.has(id)),
+      dropped: enabled.filter((id) => !grantable.has(id)),
+    };
+  }
+
+  /**
+   * #2043 — what a facilitator is built with depends on which plugin is the
+   * facilitation engine RIGHT NOW (declared, and granted its SQL ledger by the
+   * operator), and that is not in the snapshot. At boot the facilitators are
+   * built before the grants can be read, a grant can be given or revoked, an
+   * engine can be replaced: the rows stay the same, so the diff is empty and
+   * the facilitator kept (or never got) the engine's tools. Every reload
+   * therefore re-derives the effective grants of the facilitators it would
+   * otherwise leave alone and rebuilds those whose set changed.
+   */
+  private withEngineGrantDrift(plan: DiffPlan, snap: ConfigSnapshot): DiffPlan {
+    const touched = new Set(plan.actions.map((action) => actionSlug(action)));
+    const pluginsByAgent = groupBy(snap.agentPlugins, (p) => p.agentId);
+    const drifted: DiffAction[] = [];
+    for (const agent of snap.agents) {
+      if (!isArchetype(agent, FACILITATOR_ARCHETYPE) || touched.has(agent.slug) || !this.active.has(agent.slug)) continue;
+      const { granted } = this.effectiveGrants(agent, pluginsByAgent.get(agent.id) ?? []);
+      if (this.facilitatorGrants.get(agent.slug) === granted.join('\n')) continue;
+      drifted.push({ kind: 'rebuild', agent, reason: 'facilitation_engine' });
+    }
+    return drifted.length === 0 ? plan : { ...plan, actions: [...plan.actions, ...drifted] };
   }
 
   private runAction(
@@ -359,7 +446,7 @@ export class OrchestratorRegistry {
           this.deps,
           this.options.defaultRuntimeConfig,
           personaSkillsFor(graph.personaSkillsByAgent.get(action.agent.id) ?? []),
-          plugins.filter((p) => p.enabled).map((p) => p.pluginId),
+          this.grantedPluginIdsFor(action.agent, plugins),
         );
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
         const memoryScope = computeMemoryScope(action.agent.slug);
@@ -394,6 +481,7 @@ export class OrchestratorRegistry {
         // so dropping the map entry is enough. The per-(Agent × plugin)
         // PluginContext lifecycle is US8 / future work.
         this.active.delete(action.slug);
+        this.facilitatorGrants.delete(action.slug);
         this.log(`registry: agent removed`, {
           slug: action.slug,
           agentId: before.agent.id,
@@ -410,7 +498,7 @@ export class OrchestratorRegistry {
           this.deps,
           this.options.defaultRuntimeConfig,
           personaSkillsFor(graph.personaSkillsByAgent.get(action.agent.id) ?? []),
-          plugins.filter((p) => p.enabled).map((p) => p.pluginId),
+          this.grantedPluginIdsFor(action.agent, plugins),
         );
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
         const memoryScope = computeMemoryScope(action.agent.slug);
@@ -563,6 +651,18 @@ export class OrchestratorRegistry {
    * boolean, so an operator reading the refusal can see which agent is
    * missing without a second lookup.
    */
+  /**
+   * #2088 — the DELETED agent this conversation is bound to, if any. A
+   * binding outlives its agent's deletion (the row is a tombstone), and the
+   * conversation must not be answered by somebody else in its place: the
+   * resolver refuses the turn. `undefined` = not bound to a deleted agent.
+   */
+  deletedBindingOwnerFor(channelType: string, channelKey: string): AgentTombstone | undefined {
+    return this.deletedBindings.find(
+      (d) => d.binding.channelType === channelType && d.binding.channelKey === channelKey,
+    )?.agent;
+  }
+
   identityOwnerFor(
     channelType: string,
     channelKey: string,
@@ -601,6 +701,17 @@ export class OrchestratorRegistry {
       (i) => i.channelType === channelType && i.agentId === entry.agent.id,
     );
     return match ? { channelType: match.channelType, channelKey: match.channelKey } : undefined;
+  }
+
+  /** #2043 — the channel types an active agent has an identity of its own on. */
+  channelTypesWithIdentity(slug: string): string[] {
+    const entry = [...this.active.values()].find((e) => e.agent.slug === slug);
+    if (!entry) return [];
+    return [
+      ...new Set(
+        this.channelIdentities.filter((i) => i.agentId === entry.agent.id).map((i) => i.channelType),
+      ),
+    ].sort();
   }
 
   /** The currently-held snapshot. Useful for diffing in US5. */
@@ -909,4 +1020,16 @@ function groupBy<T, K>(
     else out.set(key, [item]);
   }
   return out;
+}
+
+/** The bindings of a snapshot whose agent is a tombstone. */
+function bindingsOfTombstones(
+  snap: ConfigSnapshot,
+): { readonly binding: ChannelBindingRow; readonly agent: AgentTombstone }[] {
+  const tombstones = new Map((snap.tombstones ?? []).map((t) => [t.id, t]));
+  if (tombstones.size === 0) return [];
+  return snap.channelBindings.flatMap((binding) => {
+    const agent = tombstones.get(binding.agentId);
+    return agent ? [{ binding, agent }] : [];
+  });
 }

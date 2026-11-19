@@ -79,6 +79,7 @@ import {
 import type { MemoryToolHandler } from '@omadia/memory';
 import type { BoundTurnMemory, MemoryBinder } from './memoryBinder.js';
 import { memoryIndexHint, prefetchMemoryIndex } from './memoryIndexPrefetch.js';
+import { buildToolCallContext, currentToolCallContext } from './toolCallContext.js';
 import type { ChatParticipantsTool } from './tools/chatParticipantsTool.js';
 import {
   CHAT_PARTICIPANTS_TOOL_NAME,
@@ -669,6 +670,16 @@ export interface OrchestratorOptions {
    * rather than trusted from registration.
    */
   grantedPluginIds?: readonly string[];
+  /**
+   * #2088 — what the agent's archetype omits, as far as this class enforces
+   * it (the factory decides the rest by not wiring it):
+   *  - `memory`: no `memory` tool, whoever provides the store;
+   *  - `toolGrant`: ONLY the tools of its granted plugins. A tool without an
+   *    owning plugin, or any tool when no grant set was passed, is refused
+   *    (fail-closed, the inverse of the legacy "absent means ungated" rule).
+   * Absent = nothing omitted (a standard agent).
+   */
+  archetypeOmissions?: { readonly memory?: boolean; readonly toolGrant?: boolean };
   /**
    * #332 Layer 2 — Direct Line delivery policy. `'strict'` (default) relays a
    * directed specialist's verbatim answer with no orchestrator generation;
@@ -2430,6 +2441,8 @@ a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit 
 
 a2) **Ist ein maskiertes Feld das SUBJEKT der Antwort** (z.B. „Welche Abteilung hat die meisten …?"), kannst du es im Prosa-Teil nicht nennen. Schreib dann einen **vollständigen Satz, der auf die Tabelle verweist**, z.B. „Die Abteilung mit den meisten aktiven Mitarbeitern steht in der Tabelle unten (7 Mitarbeiter)." — nie einen Satz mit einer Lücke, wo der Name stünde, und nie einen Satz ohne Verb.
 
+a3) **Personennamen immer vollständig schreiben.** Namen, die im Gespräch oder in Tool-Ergebnissen stehen, können Platzhalter sein, die der Server vor der Zustellung in die echten Namen zurückübersetzt. Das gelingt nur mit dem **vollständigen Namen genau so, wie er im Kontext steht** (Vor- UND Nachname). Schreibe deshalb nie nur den Vornamen oder nur den Nachnamen, keine Abkürzung, keinen Spitznamen und keine andere Schreibweise — auch nicht bei der zweiten Erwähnung („Laura Schmitt und Lukas Becker fehlen noch … Laura Schmitt und Lukas Becker können …", nicht „Laura und Lukas können …"). Dasselbe gilt für Namen, die du an Tools oder Fach-Agenten weitergibst.
+
 b) **Behaupte NIEMALS, Daten seien „gefiltert", „maskiert" oder „aus Datenschutzgründen nicht verfügbar".** Kein „⚠️ Datenschutzfilter aktiv", kein „wende dich an einen Administrator". Du siehst \`[masked]\` — der User bekommt den echten Wert. Erfinde maskierte Werte niemals selbst.
    **Ausnahme — vom Server gemeldet:** Nennt das Ergebnis von \`v4_render_answer\` Spalten unter „Could not be rendered", dann konnte der Server deren Inhalt NICHT darstellen (z.B. einen Confluence-Seiteninhalt) und hat das unter der Tabelle vermerkt. Diese Tatsache darfst du weitergeben: der Inhalt dieser Spalte wurde nicht angezeigt; ein Administrator kann den Datenschutz-Modus des Agenten auf „Bypass" stellen. Ein Feld mit \`"shape":"nested"\` im Digest ist eine verschachtelte Struktur — versprich nie seinen „wörtlichen" Inhalt.
 
@@ -2930,6 +2943,9 @@ export class Orchestrator {
   private readonly domainToolsByName: Map<string, DomainTool>;
   /** `undefined` = ungated. A Set for O(1) checks on the dispatch path. */
   private readonly grantedPluginIds: ReadonlySet<string> | undefined;
+  /** #2088 — see `OrchestratorOptions.archetypeOmissions`. */
+  private readonly omitsMemory: boolean;
+  private readonly grantedToolsOnly: boolean;
   /** #332 Layer 2 — Direct Line delivery policy (default `'strict'`). */
   private readonly directLineMode: DirectLineMode;
   /** #332 Layer 2 — directive prefix (default `'#'`). */
@@ -3093,6 +3109,8 @@ export class Orchestrator {
     this.memoryToolHandler = options.memoryToolHandler;
     this.memoryBinder = options.memoryBinder;
     this.domainToolsByName = new Map(options.domainTools.map((t) => [t.name, t]));
+    this.omitsMemory = options.archetypeOmissions?.memory === true;
+    this.grantedToolsOnly = options.archetypeOmissions?.toolGrant === true;
     this.grantedPluginIds = options.grantedPluginIds
       ? new Set(options.grantedPluginIds)
       : undefined;
@@ -4089,6 +4107,7 @@ export class Orchestrator {
    * (`bindTurnMemory`'s fallback), not a refusal.
    */
   public async bindCliTurnMemory(input: ChatTurnInput): Promise<CliTurnMemory | undefined> {
+    if (this.omitsMemory) return undefined;
     const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
     if (!this.isToolAvailable(memoryAgentId)) return undefined;
     const turnMemory = await this.bindTurnMemoryForTurn(input);
@@ -4677,8 +4696,18 @@ export class Orchestrator {
    * branded or human-sounding persona cannot suppress it (AC2 regression).
    */
   private resolveTurnDisclosure(input: ChatTurnInput): AiDisclosure | undefined {
+    return this.disclosureForChannel(input.channelIdentity?.channelKind);
+  }
+
+  /**
+   * #2043 — the same resolution for a message that is not a turn answer: what
+   * this Agent posts as itself on `channelKind` (an own-identity send by the
+   * facilitation engine). One derivation, so a posted message and a turn
+   * answer of the same Agent on the same channel can never be marked by
+   * different rules.
+   */
+  disclosureForChannel(channelKind: string | undefined): AiDisclosure | undefined {
     const setup = this.aiDisclosure;
-    const channelKind = input.channelIdentity?.channelKind;
     // #648 — the precedence lives in ONE place now. `/health`, the boot log and
     // the operator dashboard project the same function over every channel; a
     // second copy of these rules here would let the reported posture disagree
@@ -5480,6 +5509,8 @@ export class Orchestrator {
       {
         turnId,
         turnDate: today(),
+        // #2043 — what this turn's tool handlers are told about their caller.
+        toolCall: buildToolCallContext(this.agentId, input),
         // Per-orchestrator isolation: expose THIS Agent's identity to the
         // per-call MemoryAccessor (plugin/sub-agent memory namespacing).
         agentSlug: this.agentId,
@@ -7789,6 +7820,7 @@ export class Orchestrator {
     const context: TurnContextValue = {
       turnId,
       turnDate: today(),
+      toolCall: buildToolCallContext(this.agentId, input),
       // Per-orchestrator isolation: see the matching `turnContext.run` above.
       agentSlug: this.agentId,
       // The streaming path never set `userId` — W2-1 needs it, because the MCP
@@ -10234,7 +10266,9 @@ export class Orchestrator {
           `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`,
         );
       }
-      return reg.handler(input);
+      // #2043 — the second argument tells the handler where the call comes
+      // from; kernel-stated, never from `input`.
+      return reg.handler(input, currentToolCallContext() ?? { agentSlug: this.agentId });
     }
     if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) {
       return this.knowledgeGraphTool.handle(input);
@@ -10354,8 +10388,8 @@ export class Orchestrator {
     // domain-tool loop above: a not-ready plugin's DomainTool must not be
     // advertised in the 'Fach-Agenten' roster either, otherwise the model is
     // told to route to a tool that tools[] has already hidden this turn.
-    const availableDomainTools = Array.from(this.domainToolsByName.values()).filter((tool) =>
-      this.isToolAvailable(tool.agentId),
+    const availableDomainTools = Array.from(this.domainToolsByName.values()).filter(
+      (tool) => this.isToolAvailable(tool.agentId) && this.isOfferableDomainTool(tool),
     );
     return buildSystemPrompt(
       personaOverride ?? this.assistantIdentity,
@@ -10484,6 +10518,11 @@ export class Orchestrator {
    * single-Agent orchestrator.
    */
   private isPluginGranted(pluginId: string | undefined): boolean {
+    // #2060 — a facilitator has exactly its granted plugins' tools. No grant
+    // set and no owner both mean "not the engine's tool", so: refused.
+    if (this.grantedToolsOnly) {
+      return pluginId !== undefined && this.grantedPluginIds?.has(pluginId) === true;
+    }
     if (this.grantedPluginIds === undefined) return true;
     if (pluginId === undefined) return true;
     return this.grantedPluginIds.has(pluginId);
@@ -10511,7 +10550,8 @@ export class Orchestrator {
     // A tool another orchestrator registered for itself (deferred sub-agent
     // tools) is that orchestrator's alone.
     if (orchestratorScope !== undefined && orchestratorScope !== this.agentId) return false;
-    if (name === MEMORY_TOOL_NAME) return true;
+    // #2060 — a facilitator has no general memory, whoever provides the store.
+    if (name === MEMORY_TOOL_NAME) return !this.omitsMemory;
     return this.isPluginGranted(pluginId);
   }
 
@@ -11000,6 +11040,15 @@ export class Orchestrator {
    * `isPluginToolsReady`, which defaults to "ready" when the gate was never
    * wired (byte-identical pre-#474 behaviour).
    */
+  /**
+   * #2060 — a standard agent is offered every domain tool registered on its
+   * instance (the grant is enforced at dispatch); a facilitator is not even
+   * told about one its granted plugins do not own.
+   */
+  private isOfferableDomainTool(tool: DomainTool): boolean {
+    return !this.grantedToolsOnly || this.isPluginGranted(tool.agentId);
+  }
+
   private isToolAvailable(agentId: string | undefined): boolean {
     if (agentId === undefined) return true;
     if (!this.isPluginToolsReady) return true;
@@ -11123,7 +11172,7 @@ export class Orchestrator {
     // `dispatchToolInner` check: gate on the `agentId` of whichever plugin
     // (if any) registered `memory` via `ctx.tools.registerHandler('memory')`.
     const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
-    if (this.isToolAvailable(memoryAgentId)) {
+    if (!this.omitsMemory && this.isToolAvailable(memoryAgentId)) {
       tools.push({ type: MEMORY_TOOL_TYPE, name: MEMORY_TOOL_NAME });
     }
     if (this.knowledgeGraphTool) tools.push(knowledgeGraphToolSpec);
@@ -11187,7 +11236,7 @@ export class Orchestrator {
     // machines that hydrated their registry at different times.
     const domainSpecs: unknown[] = [];
     for (const tool of this.domainToolsByName.values()) {
-      if (this.isToolAvailable(tool.agentId)) {
+      if (this.isToolAvailable(tool.agentId) && this.isOfferableDomainTool(tool)) {
         domainSpecs.push(tool.spec);
       }
     }

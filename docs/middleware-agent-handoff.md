@@ -1335,9 +1335,31 @@ Server-generiert = kein Dedupe, aber kein stiller Drop) in
 endpoint.eventId, payload, 'webhook:<endpointId>')` — jeder Workflow mit
 passendem `event`- **oder** `webhook`-Trigger (`eventRouter.ts` matcht jetzt
 beide Kinds identisch) startet einen Run. Jede geclaimte Delivery landet mit
-genau einem terminalen `outcome`; Noise (disabled, malformed JSON, kein
-Subscriber) antwortet immer `2xx` (Redelivery-Storm-Vermeidung), der globale
-Kill-Switch ist `CONDUCTOR_WEBHOOKS_ENABLED` (§10).
+genau einem `outcome`; Noise (disabled, malformed JSON, kein Subscriber)
+antwortet immer `2xx` (Redelivery-Storm-Vermeidung), der globale Kill-Switch ist
+`CONDUCTOR_WEBHOOKS_ENABLED` (§10).
+
+Nicht jedes `outcome` ist für das Dedupe terminal (#1701): `'disabled'` steht in
+`REDELIVERABLE_OUTCOMES` (`webhookEndpointStore.ts`, exportiert) — die Delivery
+wurde *abgelehnt*, `emit()` lief nie, also verbraucht sie die Delivery-Id nicht.
+`claim()` re-claimt eine solche Row (ohne zweite Row, ohne Staleness-Fenster,
+anders als die Abandoned-In-Flight-Recovery über `IN_FLIGHT_CLAIM_STALE_MS`).
+Sonst würde ein deaktivierter Endpoint jede Delivery-Id dauerhaft schlucken: die
+ehrliche Redelivery nach dem Re-Enable bekäme `'duplicate'`, kein Run, Event
+still verloren. `'started'` und `'no_subscribers'` bleiben terminal (für beide
+lief `emit()` bereits), `'invalid_payload'` ebenso (Body ist HMAC-gedeckt ⇒
+korrigierte Payload = neue Delivery-Id), `'rate_limited'` schreibt ohnehin keine
+Row.
+
+Zwei bewusste Grenzen davon: (1) Die Row ist **kein** dauerhaftes Audit der
+Ablehnung — es gibt genau eine Row pro `(endpoint_id, delivery_id)`, eine
+erfolgreiche Redelivery überschreibt `'disabled'`. In
+`conductor_webhook_inbound_deliveries` steht `'disabled'` also nur, solange die
+Id niemand redelivered hat — genau die Fälle, deren Event noch fehlt. (2) Eine
+Ablehnung belegt weiter einen Rate-Limit-Slot im rollierenden Fenster (ein
+Re-Claim setzt `received_at` neu); das begrenzt das Row-Wachstum, während ein
+Endpoint aus ist. Die Redelivery einer bereits abgelehnten Id wird nie
+gethrottelt, sie kurzschließt vor dem Window-Count.
 
 **Outbound:** `ConductorWebhookDispatcher` (`webhookDispatcher.ts`) — ein
 neuer `notifyRunEnded`-Hook in `ConductorRunExecutor` (feuert exakt an jedem
@@ -1353,6 +1375,62 @@ Retries (überlebt Prozess-Restart). Zusätzlich: ein Built-in-Action
 `webhook.post` (`webhookPostAction.ts`, special-cased in `src/index.ts`s
 `invokeAction`-Wiring VOR dem `dynamicAgentRuntime`-Dispatch, kein Plugin
 nötig) für Ad-hoc-Outbound-POST aus einem Workflow-Step.
+
+**Non-2xx = fehlgeschlagener Step (#1703).** Die Action *meldet* die Absage
+weiterhin im Ergebnis (`{ ok, status }`) und wirft NICHT — ein Throw wird vom
+`ConductorRunExecutor` gefangen, bevor die Engine läuft, der Run endet dann
+ohne Transition und ein Graph könnte seinen Error-Pfad nie nehmen. Stattdessen
+hängt `RealStepEffects.runActionStep` dem Step die Default-Postcondition
+`WEBHOOK_POST_DEFAULT_POSTCONDITION` (`stepResult.data.ok == true`) an, falls
+der Autor keine eigene deklariert hat; der Executor reicht sie als
+`NextStepOptions.defaultPostcondition` an `nextStep` weiter (Default, nie
+Override — eine eigene Postcondition gewinnt immer). Ein 500 des Receivers oder
+ein 429 (Quota) ist damit `unmet`: `fallbackTransitionId` feuert (FR-024, der
+Error-Pfad des Graphen), sonst `postcondition_unmet_no_fallback` → Run `failed`.
+`postcondition_outcome` steht als `unmet` in der History, `status` im
+Run-Context. Vorher galt "keine Postcondition ≡ immer erfüllt", also war eine
+nicht erfolgte Zustellung in UI und API nicht von einer echten zu
+unterscheiden.
+
+**Diagnose eines fehlgeschlagenen Outbound-Versuchs (#1704).** `last_error`
+trug bis dahin nur `err.message` — und undici meldet *jeden* Transportfehler als
+blankes `fetch failed` und legt den Grund in `err.cause`, also lasen DNS-Miss,
+Connection-Refused und Protokoll-Mismatch identisch. Drei Punkte dagegen:
+
+- `platform/describeError.ts` (gemeinsam mit dem `RegistryClient`, dessen
+  Ein-Ebenen-Variante aus #1482 dorthin gewandert ist — `registryClient.ts`
+  re-exportiert sie nur noch) hängt die `cause`-Kette an die Message:
+  `fetch failed (getaddrinfo ENOTFOUND doesnotexist.invalid)` bzw.
+  `fetch failed (connect ECONNREFUSED 172.18.0.2:5432)`. Maximal drei Ebenen,
+  Dubletten übersprungen, `code:`-Präfix nur wenn die Message ihn nicht schon
+  nennt.
+- **Eine Logzeile pro fehlgeschlagenem Versuch**, nicht nur beim finalen
+  Exhaust (der bis zu einer halben Stunde nach dem ersten Fehler kommt):
+  `[conductor] webhook delivery <id> to subscription <sub-id> (<origin>) attempt 2/6 failed: <grund>;
+  retrying in 60s`. Eine Subscription, die nie erfolgreich sein kann
+  (`subscription disabled`, `subscription secret missing`), loggt jetzt ebenfalls
+  — als `abandoned: <grund>`, nicht als `exhausted after 1 attempts`: dort wurde
+  kein Attempt-Budget verbraucht, und ein Grep auf die echte Exhaust-Zeile darf
+  diese Fälle nicht mittreffen.
+- **Auch der `ConductorWebhookRetryWorker`**, nicht nur der inline erste
+  Versuch: er fährt die Attempts 2..6, dort fehlten also die meisten Zeilen.
+  Seine drei Catch-Blöcke (Reconcile-Pass, `claimDue`, abgestürzter Attempt)
+  nennen jetzt die Ursache über `describeError`; und das eine terminale
+  Ergebnis, das er **ohne** den Dispatcher schreibt — eine Delivery, deren
+  Subscription inzwischen gelöscht wurde — loggt jetzt
+  `[conductor] webhook delivery <id> for subscription <sub> abandoned:
+  subscription no longer exists` statt lautlos `recordFailure` zu rufen.
+- `last_error` ist einzeilig und auf 500 Zeichen begrenzt (`condense`), weil die
+  Operator-UI den Wert wörtlich rendert und `postWebhook` bis zu 64 KiB
+  Response-Body durchreicht; ein leerer Body ergibt `http 500` statt des
+  abgeschnittenen `http 500: `.
+
+Unverändert bleiben dabei bewusst zwei Beobachtungen aus demselben Issue: das
+Backoff-Schema (30s verdoppelnd, ≈31 min bis Exhaust) und der SSRF-Precheck beim
+Anlegen einer Subscription, der nur Literal-Adressen prüft — ein Hostname, der
+erst zur Connect-Zeit auf eine private Adresse auflöst, wird weiterhin
+angenommen und dann vom guarded `Agent` abgelehnt (sichtbar jetzt als
+benannter Connect-Fehler im `last_error`).
 
 **Security:** Secrets (Inbound-Endpoint + Outbound-Subscription) leben
 ausschließlich im Vault (`core:conductor`, Split Metadata-in-Postgres /
@@ -2639,6 +2717,14 @@ Conversation-Refs kommen aus `conductorWiring.channelBindingStore.getMany`.
 
 ### Zero-Touch-Facilitator-Setup (#330 C2a)
 
+> **Abgelöst durch native Facilitators (#2043, 2026-11-18).** Die Services
+> `agentProvisioning`, `conversationBindings` und `conductorRoleAssignments`
+> sowie `src/platform/agentSetupService.ts` und
+> `src/conductor/scopedRoleAssignments.ts` sind entfernt. Geblieben ist nur
+> der Retry-/Ablauf-Sweep über `conductor_ephemeral_attachments`
+> (`src/platform/ephemeralAttachmentSweep.ts`), den Diskussionen brauchen.
+> Der Text unten beschreibt den früheren Stand.
+
 Drei neue deny-by-default Kernel-Services (Manifest-`optional_requires` ist
 das Gate, kein Katalogeintrag):
 
@@ -2731,6 +2817,12 @@ Privacy-Choke-Points. Tests: `test/transcribeRecordingTool.test.ts`,
 
 ### Facilitation-Admin-Lens (#330 Runde 4)
 
+> **Bleibt (#2043).** Die Lens listet jeden laufenden Ephemeral-Run, also
+> auch Agenten-Diskussionen, und ist deren einziger Stopp-Weg für Operatoren.
+> Native Facilitations erscheinen hier nicht mehr (sie sind keine
+> Conductor-Runs); ihre Ansicht liefert das Engine-Plugin. Name und Routen
+> (`/facilitations`) sind historisch.
+
 Ephemere Workflows sind bewusst aus der Library gefiltert — laufende
 Facilitations waren dadurch im Admin unsichtbar (Feldbefund: zwei Instanzen
 im selben Meeting, nicht stoppbar). Neue Operator-Routen (beide hinter
@@ -2773,6 +2865,11 @@ Model-Paraphrase — der autoritative DoD-Text bleibt daneben stehen. Läufe,
 die vor Pattern v3 gestartet sind, liefern `items: null` → nur DoD-Liste.
 
 ### Timer-Steps + DoD-Loops + conversationSend (#330 C3)
+
+> **Teilweise abgelöst (#2043).** Das Pattern `facilitation.json` ist
+> entfernt, `conversationSend` postet nur noch als eigene Identität des Agents
+> (Berechtigung: Message-Subscription). Timer-Steps und DoD-Loops des
+> Conductors bleiben. Der Text unten beschreibt den früheren Stand.
 
 Neuer Step-Kind **`timer`** (`conductor-core` types/schema/validate;
 Executor parkt via Await-Maschinerie mit `principal_kind='timer'`, Migration
@@ -2932,7 +3029,15 @@ danach alle installierten `depends_on`-Abhängigen (`reactivateDependents`,
 transitiv, Eltern zuerst, unabhängig vom Status), und der Upload-Seam ruft
 dasselbe über `onDependentsStale`, nachdem er das Urteil des Elternteils
 gebucht hat — ein Agent hält sonst den Client, den er in seinem eigenen
-`activate()` geholt hat. `recordActivationFailure` gibt die vorhandene
+`activate()` geholt hat. Seit #1860 fragt `reactivateOne` vorher
+`reactivationBlocker` (Host: `serviceRegistry.shadowedServicesOf`): Hält ein
+anderes Plugin einen `replace` über einen `provide` des Plugins (heute
+orchestrator-extras um `knowledgeGraph`), wird nichts abgebaut, der Status
+bleibt `active`, und `restartPending` meldet der Setup-Route
+`activation.restart_pending: true` — die neuen Werte greifen beim nächsten
+Start. Ein Hot-Restart scheiterte dort an „duplicate provider“ und hinterließ
+`errored`; `retryErroredPlugins` setzt diesen prozesslokalen Fehler beim Boot
+jetzt zurück. `recordActivationFailure` gibt die vorhandene
 `unresolved_requires`-Liste weiter, weil ein weggelassenes Argument sie löscht
 und `bootstrap.retryErroredPlugins` genau diese Liste braucht, um ein Plugin
 nach dem Nachinstallieren des Providers automatisch zurückzusetzen. Der
@@ -4276,6 +4381,7 @@ Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf�
 | Variable | Wirkung |
 |---|---|
 | `WS_SESSION_FRAME_RECHECK_MS` | Offene Channel-WebSockets (Canvas): ein Frame erreicht das Plugin nur, wenn die Prüfung der Sitzung höchstens so viele ms vor seiner Ankunft begann; sonst liest die Registry die `users`-Zeile erneut (ein Point-Read), während der Frame wartet. Bestimmt, wie schnell ein Widerruf auf einer anderen Replica einen aktiven Socket stoppt (ein schweigender Socket wird alle 60 s geprüft). Default `5000`, erlaubt `0`–`60000` (zod-validiert beim Boot, ein leerer Wert heißt Default); `0` prüft jeden Frame. Ist die Zeile nicht lesbar, werden Frames abgewiesen (Canvas: `turn_error`), der Socket bleibt offen. Siehe „Canvas WebSocket-Transport (Omadia UI, PR-11)“. |
+| `USAGE_FX_DISABLED` | `true` schaltet den Abruf des EZB-Tageskurses für die EUR-Ansicht des Kosten-Dashboards ab (`GET www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml`, ohne Credentials, höchstens alle 6 h). Default aus — für air-gapped oder egress-beschränkte Installationen. Ohne Kurs bleibt das Dashboard in USD. Siehe Abschnitt Usage-Telemetrie, Lesepfad. |
 
 ### Self-Update und Release-Check (#432, #1381)
 
@@ -5469,6 +5575,15 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+- **Agenten als virtuelle Mitarbeiter, kein Orchestrator (#2042), native
+  Facilitators (#2043): Specs im Entwurf.** `specs/2042-agents-as-virtual-employees/`
+  und `specs/2043-native-facilitators/` legen das Zielmodell fest: nur Agenten plus
+  eine deterministische Verwaltungsebene, kein Orchestrator-Agent, keine versteckten
+  Sub-Agents, kein Super-Agent ab Werk, Facilitator als eigene Agent-Art statt Plugin.
+  Ohne Kompatibilitätsschicht, weil es noch keine Kundeninstallationen gibt. Die
+  Abschnitte dieses Dokuments zu Sub-Agents, Direct Line, Persona-Skills und
+  Fallback-Agent beschreiben den Stand vor dem Umbau.
 
 - **Teams-SSO für Plugin-Routen (#1620): Kernel-Modus erledigt.** Offen:
   channel-teams auf den Kernel-Verifier umstellen (eigene Kopie in
@@ -7378,8 +7493,65 @@ npm test                      # Node --test mit tsx-Loader, 63 Tests
 npm run smoke:entity-refs     # E2E-Smoke für EntityRef-Capture-Pfad
 ```
 
-**Nicht aufrufen:** `npm run build` — Repo-Konvention sagt
-"dev-only, typecheck + lint reichen".
+`npm run build` baut zuerst die Workspace-Pakete in Abhängigkeitsreihenfolge,
+dann den Kernel und seine Non-TS-Assets (wie im `middleware`-CI-Job).
+Ein frischer Checkout braucht diese `dist/`-Exports auch für Tests.
+
+### Amp-Orbs (2026-11-10)
+
+`.agents/setup` bereitet den Snapshot vor: Node aus der Root-`.nvmrc` für
+Kernel/Web-UI, Node 24.22.2 für Desktop-Checks, npm-Abhängigkeiten aller drei
+Lockfiles mit Dev-/Optional-Paketen, den vollständigen Middleware-/Workspace-Build,
+native SQLite-/Sharp-Probes sowie Docker Compose und Buildx. Installationen
+nutzen auf beiden Node-Versionen das mit Node 22 gelieferte npm, damit Desktop-
+Install-Skripte nicht von neueren npm-Approval-Defaults übersprungen werden.
+Downloads der Node-Archive werden per SHA-256
+geprüft. Fehlende ENV-Dateien werden aus den Vorlagen kopiert; existierende
+Dateien bleiben unverändert. Keine Logins oder produktiven Secrets im Setup.
+Modelle und optionale Python-/GPU-Sidecars werden nicht vorab heruntergeladen.
+
+Der systemd-eigene Docker-Daemon läuft automatisch. Der Container
+`omadia-orb-postgres` (`pgvector/pgvector:pg16`) veröffentlicht Port 5432
+**nur an `127.0.0.1`**. `omadia` ist die App-Datenbank, `omadia_test` die
+Wegwerf-Testdatenbank; beide haben die `vector`-Extension. Benutzer und
+Passwort sind die öffentlichen lokalen Vorlagenwerte `omadia` — niemals für
+Produktion verwenden. `fsync`, `synchronous_commit` und `full_page_writes`
+sind für Wegwerfdaten abgeschaltet. `.agents/resume` startet Docker und
+den vorhandenen Container, prüft seine Bereitschaft und stellt die Shell-
+Aktivierung wieder her, ohne Installationen.
+
+**Snapshot-Grenze:** Amp verwirft Setup-Änderungen an Shell-Profilen und behält
+nur hinzugefügte PATH-Verzeichnisse. `.agents/setup` deklariert deshalb Node 22
+als direkten PATH-Eintrag für den Snapshot. Den Hook für den vorbereiteten
+Selektor `~/.config/omadia/orb-env.sh` registriert erst `.agents/resume` nach
+Aktivierung und bei jedem Wake erneut (idempotent). Nur während Setup einen
+`source`-Eintrag anzulegen reicht nicht: Dann startete ein frischer Orb trotz
+installierter Node-22-/24-Binaries mit Node 26. `.agents/resume.test.mjs`
+prüft die durch Profile-Reset und Resume laufende Aktivierung im CI-Job
+`middleware`, inklusive Wiederholung und erhaltener Profileinträge.
+
+Der Hook in `~/.bash_profile` wählt in neuen Login-Shells die
+Toolchain anhand des Git-Roots (auch in verlinkten Worktrees): unter
+`desktop/` Node 24, sonst Node 22. Wer aus dem Root `npm --prefix desktop`
+aufruft, muss Node 24 explizit im PATH setzen; die Auswahl erfolgt beim
+Shell-Start, nicht nach jedem Verzeichniswechsel.
+
+Die Test-DSNs **nicht global exportieren** und `DATABASE_URL` nicht auf die
+Testdatenbank setzen: `npm test` würde PG-Suites parallel aktivieren, während
+die CI sie bewusst seriell und getrennt ausführt. Für den PG-Lauf aus
+`middleware/`:
+
+```bash
+GRAPH_PG_TEST_URL=postgresql://omadia:omadia@127.0.0.1:5432/omadia_test \
+MEMORY_PG_TEST_URL=postgresql://omadia:omadia@127.0.0.1:5432/omadia_test \
+npm run test:pg
+```
+
+App-Server werden nicht automatisch gestartet. Bei Bedarf über
+`amp orb service start … --portal` betreiben, nicht per `nohup`/`&`.
+Portal-Manifeste unter `.amp/portals/` sind ignoriert.
+Neue Orbs nutzen dieses Setup erst nach Aufnahme auf den Projekt-Base-Branch;
+ein lokaler Feature-Commit allein aktualisiert keinen Snapshot.
 
 ### Aktuell laufende Background-Tasks
 
@@ -8144,6 +8316,25 @@ Long-Context-Tier) — Totals, Zeilen und Zeitreihe sind dann höher als
 `SUM(cost_usd)`; das Ledger bleibt append-only, kein Backfill. Abo-Zeilen
 (OM-103) sind nie „Preis unbekannt". Ein lokales Modell verliert den Hinweis
 durch einen expliziten $0-Eintrag in der Preistabelle.
+
+Cache-Ersparnis: `totals.cacheSavingsUsd` und `byModel[].cacheSavingsUsd`
+(nur gesetzt, wenn ≠ 0) = Cache-Reads zum vollen Input-Preis minus Cached-Preis,
+abzüglich des Write-Aufschlags (`CACHE_WRITE_MULTIPLIER − 1`), über
+`computeCacheSavingsUsd`. Nur metered Calls (Abo-Calls kosten so oder so
+nichts); unbekannte Modelle sparen 0. Gerechnet auf Modell-Summen zum
+Basis-Tarif — der Long-Context-Tier (Haiku 5.5 > 100k) fehlt, die Zahl ist dort
+eine Unterschätzung. Kann negativ werden (mehr geschrieben als gelesen).
+`costUsd + cacheSavingsUsd` = Kosten ohne Cache.
+
+EUR-Ansicht: Die Antwort trägt `fx: { eurPerUsd, date, source: 'ECB' } | null`
+(`exchangeRate.ts`). Quelle ist der EZB-Tageskurs
+(`eurofxref-daily.xml`), 6 h gecacht; nach einem Fehler bleibt der letzte Kurs
+stehen und der nächste Versuch kommt frühestens nach 10 min. Die Route wartet
+höchstens 1,5 s auf einen Refresh und antwortet sonst mit `fx: null` (der
+Refresh läuft weiter und füllt den Cache). `USAGE_FX_DISABLED=true` schaltet
+den Abruf ab. Das Ledger bleibt USD; die Web-UI rechnet nur zur Anzeige um,
+nennt Kurs und Datum unter den Gesamtkosten und startet auf `de` in EUR, sonst
+in USD (Umschalter EUR | USD, nur wenn ein Kurs da ist).
 
 Noch offen: der Verifier läuft nach dem Turn-Scope (Zeilen ohne Turn-ID,
 siehe #1098); `ctx.llm` liefert keine Cache-Zahlen (Plugin-Vertrag hat keine);
@@ -9006,3 +9197,470 @@ Upload des Betreibers bleibt stehen, er ist eine bewusste Wahl. Das alte Paket
 bleibt `removable_package`, bis die Installation es ersetzt.
 
 Tests: `test/storeCatalogProjection.test.ts`.
+
+### Conductor: eine Ablehnung nimmt keine ungeguardete Transition mehr (#1698)
+
+Die beiden Hälften der Freigabe waren nie verbunden: der Executor entschied, *ob*
+freigegeben wurde, die Engine entschied, *wohin* der Lauf geht — und die Engine
+kannte keine Freigabe. Eine ausgehende Kante ohne `guard` matcht bedingungslos
+(`conductor-core/src/engine.ts`), also lief ein Human-Step mit einer einzigen
+ungeguardeten Kante bei explizitem `{approved: false}` genauso weiter wie bei
+einer Freigabe und führte die Aktion aus, die die Freigabe schützen sollte.
+`human.strictApproval: true` änderte das nicht — das Flag normalisierte nur
+`stepResult.approved` (`runExecutor.ts`), und diesen Wert las auf dem
+Transitions-Pfad niemand. Schlimmer: `approval_fail_open` wurde ausgerechnet von
+`strictApproval: true` unterdrückt, der Einstellung, die die Warnung empfiehlt.
+
+Jetzt: trägt das Ergebnis eines **Human**-Steps `approved: false`, fallen
+ungeguardete Kanten aus der Kandidatenmenge. Nur eine Transition, deren Guard
+nach der Ablehnung fragt, feuert — **auch der Deadline-Fallback nicht**: er trägt
+ebenfalls keine Antwort, und ihn zu nehmen meldet ein explizites „Nein“ als
+verpasste Frist (expense-approvals Eskalation sagt dem Betreiber dann „was not
+decided within 48 hours“). Greift nichts, endet der Lauf `failed` mit dem neuen
+Stuck-Code `approval_rejected_no_transition` (statt des generischen
+`no_transition_no_fallback`) — und das gilt auch für einen **terminalen**
+Human-Step: der gatet nichts, aber ein `completed` wäre in Lauf-Liste und
+Run-Ended-Webhook nicht von einer Freigabe zu unterscheiden. Ein **fehlendes**
+oder nicht-boolesches `approved`
+ist bewusst *keine* Ablehnung: im Fail-open-Modus ist dieser Fall per Definition
+eine Freigabe, und unter `strictApproval` hat der Executor ihn längst in ein
+echtes `false` verwandelt. Damit ändert die Regel keinen Pfad eines Steps, den
+niemand abgelehnt hat — Agent- und Action-Steps bleiben ohnehin unberührt.
+
+Drumherum:
+
+- **Validator**: neue non-blocking Warnung `rejection_unguarded_edge`, sobald ein
+  Human-Step eine ungeguardete Happy-Path-Kante hat — unabhängig von
+  `strictApproval` (das Flag entschied den Pfad nie) und unabhängig von der Art
+  des Ziel-Steps (der Schaden läuft über ein Human- oder Agent-Ziel genauso
+  weit wie über ein Action-Ziel). `approval_fail_open` bleibt unverändert
+  action-only: die beiden Warnungen sagen Verschiedenes.
+- **Designer**: eine neu gezogene Kante **aus einem Human-Step** startet mit dem
+  Freigabe-Guard (`stepResult.approved = true`) statt leer, die nächste aus
+  demselben Step mit dem Ablehnungs-Guard (`= false`) — zweimal `true` würde zur
+  Laufzeit als `ambiguous_guards` kollidieren. Der Inspector erklärt es an der
+  Guard-Eingabe (`guardHumanRejectionHint`). Der Hinweistext
+  der Checkbox „Strikte Freigabe“ behauptete bisher das Gegenteil des
+  Verhaltens und ist in `en.json`/`de.json` korrigiert.
+- **Templates**: `onboarding-checklist` guardet seine Kanten und hat einen
+  `halted`-Schritt für die Ablehnung (vorher brachte eine Ablehnung des
+  HR-Schritts den IT-Await mit dem Text „HR onboarding … is done“ hervor).
+  `expense-approval` und `notify-and-escalate` sagen am Eskalations-Schritt mit
+  `{"op":"always"}` explizit „jeder Ausgang, derselbe Schritt“.
+- **Builder-Agent**: Prompt-Regel, dass jede Kante aus einem Human-Step einen
+  Guard braucht und die Ablehnung einen eigenen Pfad.
+
+Betriebs-Hinweis: Graphen werden pro Version gespeichert und von der aktuellen
+Engine ausgeführt, die Änderung gilt also auch für bereits publizierte
+Versionen. Ein Graph, der eine Ablehnung über eine ungeguardete Kante geführt
+hat, braucht dort jetzt einen Guard. Für einen Timeout-Fallback, der zugleich
+den Ablehnungspfad spielt, ist das
+`{"op":"ne","path":"stepResult.approved","value":true}` — der echte Timeout
+feuert den Fallback über `expireAwait` und wertet Guards nie aus, die Frist
+funktioniert also weiter. Genau diese Form trägt jetzt
+`fixtures/valid-release-signoff.json` (`t_deadline` → `s_autoreject`).
+`{"op":"always"}` heißt „beide Ausgänge, derselbe Schritt“ — bewusst ein Opt-out,
+das der Validator nicht von einem Versehen unterscheiden kann: er prüft, *dass*
+ein Guard da ist, nicht *was* er sagt. Auf einer Kante in eine unumkehrbare
+Aktion stellt `always` das alte Verhalten still wieder her.
+
+Auch angeglichen: `previewRun` normalisiert Human-Antworten jetzt über dieselbe
+`normalizeHumanResult`-Funktion wie `resolveAwait` (vorher rohes
+`humanResponses[stepId]`), sonst zeigt ein Dry-Run eines strikten Steps den
+Freigabe-Pfad, den der echte Lauf verweigert.
+
+Gegenstück zu #759: dort entstanden Flag, Normalisierung und Lint, der
+Transitions-Pfad blieb unberührt.
+
+Tests: `packages/conductor-core/test/engine.test.ts` (Transition statt nur Flag),
+`test/conductorCancelAndStrictApproval.test.ts` (#1698-Block: beide Modi,
+`quorum: 'all'`, geguardeter Ablehnungspfad, Fail-open-Garbage unverändert).
+
+### Conductor: ein fehlgeschlagener Lauf nennt seinen Grund (#1699)
+
+Bisher stand der Grund eines Fehlschlags **nur im Container-Log**: `conductor_runs`
+und `conductor_run_steps` hatten keine Fehlerspalte, der Kontext trug bloß
+`stepAttempts`, und `GET /conductors/<slug>/runs/<id>` gab genau diese Felder
+heraus — der „Verlauf" konnte deshalb nur ein rotes Badge zeigen (FR-030 /
+US2-AS4 verlangen den Grund).
+
+Es waren **sieben** Stellen in `runExecutor.ts`, die `status: 'failed'` schreiben,
+jede mit einer anderen Ursache. Zwei trugen nichts, fünf schmuggelten einen
+groben Hinweis in das `actor`-JSONB — und der Trace rendert davon nur `kind` und
+`ref`, warf also auch den weg.
+
+**Die achte Stelle schrieb gar nichts** (Review-Fund, US2-AS4): der
+`MAX_STEPS`-Ausgang der Treiberschleife. Jedes `break` darin schreibt vorher
+seine Zeile; fällt die Schleife mit noch offenem Step heraus, war das Budget
+erschöpft — und der Lauf blieb für immer `running`, ohne Zeile und ohne Ursache,
+genau der „silent hang with no recorded state", den AS4 verbietet. Jetzt:
+`max_steps_exceeded`, mit `{ maxSteps, stepId }` im Detail. Die Trockenübung
+hatte denselben Ausgang und meldete ihn als **Erfolg** — auch das ist jetzt ein
+Fehlschlag mit Grund.
+
+**Vokabular statt Satz.** `ConductorRunErrorCode` (`src/conductor/runError.ts`) ist
+die einzige Quelle: die acht Executor-Codes (`step_not_in_graph`,
+`timer_misconfigured`, `no_role_holder`, `await_timed_out`, `effect_threw`,
+`step_timeout`, `resume_no_current_step`, `max_steps_exceeded`) **plus** die vom Engine exportierten
+`StuckCode`-Werte unverändert — `@omadia/conductor-core` klassifiziert längst,
+warum ein Weiterschalten scheitert (`ambiguous_guards`,
+`postcondition_unmet_no_fallback`, …) und nennt die Knoten; das landete vorher nur
+im Log. Der Code wird **an der Stelle** entschieden, nie aus einem Satz
+zurückgeparst (gleiche Linie wie `last_error_detail`, #897). Ein gespeicherter
+Code außerhalb des Vokabulars wird beim Lesen **verworfen** (die Oberfläche
+schreibt dort „Ursache nicht erfasst"), die Meldung bleibt aber als Beleg
+daneben stehen.
+
+**Migration `0013_conductor_run_error.sql`** (eigenes Ledger
+`_conductor_migrations`, nächster freier Slot war 0013, weil 0012 doppelt vergeben
+ist): `error_code`/`error_message`/`error_detail` auf `conductor_run_steps`,
+`error_code`/`error_message` auf `conductor_runs`. Die Lauf-Spalten sind eine
+bewusste Kopie des terminalen Schritts — die Lauf-**Liste** (`GET /:slug/runs`)
+liefert keine Schritte, und eine Liste, die nicht sagen kann, warum eine Zeile rot
+ist, war der Anlass des Issues. Kein CHECK auf `error_code`: die Spalten werden
+auf dem Fehlerpfad in derselben Transaktion wie `status = 'failed'` geschrieben, ein
+im CHECK fehlender Code würde also genau diesen Statuswrite verlieren (Klasse
+#915). Kein Backfill — die Ursache wurde nie erfasst; `error_code IS NULL` heißt
+„Ursache nicht erfasst", nie eine geratene.
+
+**Auch auf dem geheilten Pfad.** Ein Human-Step ohne erreichbaren Inhaber, der
+seinen In-Graph-Fallback nimmt, und ein Await, das in seinen Fallback läuft,
+schreiben ihren Code ebenfalls — der Lauf endet `completed`, und der Betrieb muss
+trotzdem sehen, dass ein Mensch übersprungen wurde. Ein tickender Timer schreibt
+keinen (der Step tut genau seine Arbeit), ein Operator-Abbruch auch nicht
+(`cancelled` ist ein Ergebnis, kein Fehler). Die Lauf-Kopie entsteht **nur** beim
+terminalen Write, aus dessen eigenem Fehler.
+
+**Text, der persistiert werden darf:** `redactRunErrorMessage` =
+`redactSecrets` (Credentials) → `redactProviderInternals` (`request_id`, `cf-ray`,
+`sk-…`) → Whitespace flach → hart auf 2 000 Zeichen. Kein Stacktrace. Entfernt
+Credentials, **nicht** PII — dieselbe Grenze wie `redactAuditError` für
+`mcp_call_log`.
+
+**Dauer.** `recordStepAndAdvance` nahm kein `started_at` und setzte `ended_at =
+now()` im selben Statement; `now()` ist Transaktionszeit, also war
+`started_at == ended_at` für **jede** Zeile, nicht nur für die fehlgeschlagene.
+Der Treiber übergibt jetzt den vor dem Effekt genommenen Zeitpunkt, die
+Await-Pfade das `created_at` des Awaits (der Human-Step begann, als er parkte),
+und auch die synthetische `(resume)`-Zeile trägt ihren Start.
+
+**Weitere Oberflächen:** `buildRunEventPayload` trägt `errorCode`/`errorMessage`
+(ein `run.failed`-Abonnent erfuhr vorher nur *dass*); `PreviewResult` ist eine
+diskriminierte Union (`{status:'failed', error}` | `{status:'completed'}`, so
+kann kein Flag dem Grund widersprechen — CONTRIBUTING.md) und ein werfender
+Agent-Step beendet die Vorschau als `failed` statt die Route mit 500 zu beenden;
+`web-ui/app/_lib/api.ts` deklariert `startedAt`/`endedAt` endlich (die API lieferte
+sie immer, der Client-Typ kannte sie nicht); `ConductorRunTrace.tsx` zeigt Spalten
+„Dauer" und „Grund", der Code über den Katalog `conductor.runErrorCodes.*`
+mit `t.has`-Fallback (unbekannter Code → der Code selbst, nie ein Absturz und
+nie „kein Grund"; kein handgepflegtes Vokabular-Duplikat in der UI), die
+Meldung nur als Beleg daneben; Zahl über `useFormatter`, Einheit über den
+Katalog (`durationMs`/`durationSeconds`/`durationMinutes`, de also „1,5 s") —
+und `actorLabel` hängt die bisher verschluckten **booleschen** Qualifier
+(`noHolder`, `timedOut`, `ticked`, `invalid`) an. **Nur** die booleschen:
+`operator_cancel` trägt `requestedBy: <Principal>`, und wer abgebrochen hat,
+gehört nicht in die Trace-Tabelle (FR-030 „respecting existing redaction").
+
+Tests: `test/conductorRunFailureCause.test.ts` (alle sieben Pfade + Redaction +
+Trockenübung), `test/conductorRunError.pg.test.ts` (Read-back aus den Spalten,
+Dauer, unbekannter Code, Abbruch ohne Fehler),
+`web-ui/app/conductor/_components/__tests__/ConductorRunReason.test.tsx`.
+
+### Conductor: Trigger-Payloads können das Loop-Budget nicht mehr steuern (#1702)
+
+Der Event-Router übergab die eingehende Payload unverändert als Initial-Context
+an den Executor; nur der Ephemeral-Pfad strippte die executor-eigenen Keys — die
+beiden Pfade widersprachen sich also. Ein Self-Loop mit Guard
+`lt ctx.stepAttempts.a 3` lief bei einer korrekt signierten Webhook-Payload
+`{"stepAttempts":{"a":-5}}` **acht** Mal, bei `{"a":99}` genau einmal. Wer das
+Endpoint-Secret hat, entschied damit, wie oft ein Step mit Kosten oder
+Seiteneffekten feuert. `{"steps":{…}}` konnte zusätzlich Ergebnisse für Steps
+vorlegen, die nie gelaufen sind.
+
+Die reservierten Keys (`steps`, `stepAttempts`, `transcript`, `transcriptText`)
+liegen jetzt in **einem** Modul (`src/conductor/runContext.ts`, vorher privat in
+`ephemeralRunService.ts`). `sanitizeRunContext` läuft in
+`ConductorRunExecutor.startRun` **und** `previewRun` — das ist das einzige Tor,
+durch das jede Trigger-Art geht (event/webhook, manuell `POST /:slug/runs`, cron,
+agent). `ConductorEventRouter.emit` strippt zusätzlich einmal vor der
+Filter-Auswertung, damit ein Trigger-`filter` gegen genau den Context matcht, den
+der Run danach sieht. Verschachtelte Keys bleiben unangetastet — gestrippt wird
+nur die oberste Ebene, denn nur dort liest der Executor.
+
+Für Run-Zeilen, die VOR dem Fix persistiert wurden, ist nur der Zähler gehärtet:
+`bumpStepAttempt` akzeptiert ausschließlich eine nicht-negative Ganzzahl und
+startet bei allem anderen (negativ, gebrochen, Infinity, String) wieder bei 0.
+Weiter geht es absichtlich nicht — `resumeRun`/`expireAwait` fahren aus dem
+gespeicherten Context weiter, und der enthält ab Step 1 legitim
+`steps`/`transcript`; dort zu strippen würde jeden laufenden Run um seinen
+eigenen Zustand bringen. Ein vor dem Fix gestarteter Run behält also ein
+geseedetes `ctx.steps`/`ctx.transcript` bis zu seinem Ende; neue Runs können
+keines mehr bekommen.
+
+Security: `docs/security-architecture.md` §7.
+Tests: `test/conductorReservedContextKeys.test.ts`.
+
+
+## Native Facilitators: Kernel-Seite (Epic #2043, 2026-11-18)
+
+Ein Facilitator ist eine eigene Art von Agent (`agents.kind = 'facilitator'`,
+Migration `0067_agent_kind`), der nur moderiert. Aufteilung nach
+Owner-Entscheidung „plugin-first“: Engine (Tabellen, Lebenszyklus, Zählung,
+Scheduler) im Plugin `omadia-agent-facilitator`, der Kernel bleibt dünn und
+enthält **keine** Facilitation-Tabellen. Spec: `specs/2043-native-facilitators/spec.md`.
+
+### Kind und erzwungene Auslassungen (#2060)
+
+- `packages/harness-orchestrator/src/registry/agentKind.ts`: `AgentKind`,
+  `assertNotFacilitator(agent, omission)` als **der** Seam für „nicht für
+  Facilitators“ (Epic #2042 nutzt ihn für Konsultation in beide Richtungen),
+  `FacilitatorOmissionError` (`code: 'facilitator_omission'`).
+- Die Art ist nach dem Anlegen fix (DB-Trigger). Ein Facilitator ist nie der
+  Default-Agent (DB-Trigger plus Route).
+- **Engine-Bindung per Manifest-Capability, keine Plugin-ID im Kernel:**
+  `src/platform/facilitatorGuard.ts` sucht das eine installierte, nicht
+  fehlerhafte Plugin, das `facilitationEngine@1` unter `provides` deklariert.
+  Kein oder mehr als ein Provider: es lässt sich nichts granten. Die Registry
+  schneidet die Grant-Zeilen eines Facilitators zusätzlich mit diesem Plugin
+  (`PluginCapabilityLookup.facilitatorGrantable`).
+- **Schreibzeit (Routen):** `operatorAgents.ts` und `agentBuilder.ts` lehnen
+  ab: fremde Plugin-Grants, Context-Memory-Modi, Default-Agent,
+  Agent-to-Agent (Schalter und Chat-Policy), Persona-Skills, Sub-Agents,
+  Tool-/MCP-Grants, Schedules. Antwort `409 facilitator_omission`.
+- **Laufzeit (`buildOrchestratorForAgent`, `AgentRuntimeConfig.kind`):** kein
+  Memory-Tool/-Binder, kein Recall (`contextRetriever`, `sessionBriefing`),
+  kein Capture (`sessionLogger`, Knowledge Graph), kein Learning
+  (`factExtractor`, `excerptExtractor`, Auto-Promote), keine Kalender-Tools,
+  keine Persona-Skills, kein Fast Path. `Orchestrator.agentKind` dreht die
+  Grant-Regel um: ein Facilitator bekommt **nur** Tools seiner gegranteten
+  Plugins (kein Owner oder kein Grant-Set = verweigert).
+- **Assistenz-Verweigerung:** `facilitatorAgent.ts` umschließt den
+  `ChatAgent`. Ein Turn erreicht das Modell nur aus einer Gruppenkonversation
+  (`origin.scope.kind` `conversation`/`group`, dort bittet jemand um eine
+  Moderation) oder als Engine-Turn (`runAsEngineTurn`). Alles andere (1:1,
+  Web-Chat, API, Workflow-Step, unbekannte Herkunft) bekommt eine feste,
+  freundliche Absage ohne Modellaufruf.
+- Das Fallback-Onboarding kann Facilitators nicht treffen (Fallback ist nie
+  ein Facilitator); Plugin-getriebenes Provisioning gibt es nicht mehr.
+
+### Neutralitätsvertrag (Spec §2.4)
+
+- Text: `registry/facilitatorNeutrality.ts` (`FACILITATOR_NEUTRALITY_BLOCK`).
+  Er wird an drei Stellen als **letzter** Abschnitt gesetzt:
+  `composeAgentIdentityPrompt` (Save), `recomposeStaleIdentities` (Boot) und
+  beim Bauen des Agents nach Name und Steckbrief. Damit trägt ihn auch ein
+  Facilitator ohne gespeicherte Identität.
+- `src/services/facilitatorContract.ts`: Persona-Grenzen (`sarcasm` ≤ 20,
+  `drama` ≤ 30, `humor` ≤ 60, `risk_tolerance` ≤ 60, `warmth` ≥ 30,
+  Sycophancy-Guard nie `off`) und ein deterministischer Regel-Katalog für
+  Operator-Anweisungen (Deutsch und Englisch, kein Modellaufruf). Verstoß:
+  `422 facilitator_contract_violation` mit `issues[]`. Der Katalog ist eine
+  Hilfe beim Speichern, nicht die Durchsetzung: die leistet der Block.
+
+### Authentifizierte eingehende Nachrichten (`conversationMessages@1`)
+
+Code: `middleware/src/channels/conversationMessages/` (`store.ts` Regeln und
+In-Memory-Store, `pgStore.ts`, `hub.ts`, `service.ts`, `purgeJob.ts`,
+`wiring.ts`). Migration `0068_conversation_messages`. Nur mit Postgres; ohne
+Datenbank sind beide CoreApi-Methoden nicht definiert und das Mention-Gate
+der Adapter gilt immer.
+
+- **Kanal-Seite:** `CoreApi.emitConversationMessage(event)` speichert nur,
+  wenn die empfangende Identität (`receivedByChannelKey`) eine Subscription
+  für die Konversation hält, sonst wird verworfen. Bei N Bots in einem Chat
+  kommt also nur die Kopie der abonnierten Identität in den Store.
+  `CoreApi.isAllMessagesSubscribed(type, conversation, channelKey)` ist ein
+  synchroner Map-Lookup, wirft nie; Channel-Keys werden auf beiden Seiten
+  kleingeschrieben.
+- **Subscribe** lehnt ab mit `not_facilitator`, `no_identity` (eigene
+  Kanal-Identität, nie der Default-Bot), `not_present` (Teams: Bot hat eine
+  Conversation-Reference im Chat, `botPresenceStore`; sonst der Invite-Index
+  `observedConversationInvites`), `not_ready` (Readiness-Provider des Kanals,
+  falls vorhanden; die fehlenden Codes stehen in der Message), `unavailable`.
+  Nur das Engine-Plugin (Capability `facilitationEngine@1`) wird bedient und
+  nur für eigene Subscriptions.
+- **Autorschaft** kommt ausschließlich aus dem Plattform-Event.
+  `author.principalId` ist `user:<channel-user-id kleingeschrieben>`; das ist
+  derselbe Wert, den `targetedSend` als Principal nimmt.
+- **Revisionen vergibt der Kernel** (`created` = 0, jede Bearbeitung oder
+  Löschung = höchste gespeicherte + 1). Der Zähler des Adapters ist nur ein
+  Hinweis (`adapter_revision`), weil er nach einem Neustart wieder bei 1
+  beginnt. Reaktionen und Card-Antworten tragen die Revision, auf die sie sich
+  beziehen, und sind keine Revision der Nachricht.
+- **Idempotenz:** `dedupe_key` pro Plattform-Event; eine erneut zugestellte
+  Nachricht ist kein zweiter Datensatz.
+- **Lesen:** `getEvent` liefert `undefined` für fremde Konversationen und für
+  Nachrichten vor der Subscription (eine neue Subscription ist eine neue Zeile
+  und sieht nichts von der vorigen). `listSince({after})` liefert strikt nach
+  dem Cursor in Speicherreihenfolge, `nextCursor` nur wenn es eine weitere
+  Seite gibt. Live-Zustellung at-least-once (`onMessage`), ein fehlgeschlagener
+  Handler holt über `listSince` auf.
+- **Aufbewahrung:** Die Frist beginnt erst mit `unsubscribe`
+  (`CONVERSATION_MESSAGES_GRACE_MS`), zusätzlich ein Höchstalter je Event
+  (`CONVERSATION_MESSAGES_MAX_AGE_DAYS`). Der Purge-Tick lädt auch den
+  Subscription-Cache neu (mehrere Maschinen).
+- **Kein zweiter Turn:** Hält die Engine die Subscription, unterdrückt der
+  Kernel den vom Kanal gestarteten Turn dieses Agents in dieser Konversation
+  (`facilitatorAgent.ts`, Service `facilitatorConversations@1`): leere Antwort,
+  kein Modellaufruf. Der Adapter sollte den Turn dort gar nicht starten.
+- **Engine-Status:** `GET /api/v1/operator/agents/facilitation-engine`
+  (`src/routes/facilitationEngineStatus.ts`) liest den Zustand, den das
+  Engine-Plugin unter dem Service `facilitationEngine` veröffentlicht.
+
+### Senden als eigene Identität
+
+Code: `middleware/src/channels/ownIdentitySend.ts` (gemeinsame Regeln),
+`conversationSendService.ts` (`asOwnIdentity`), `ownIdentityDirectSend.ts`
+(`targetedSend` mit `asAgentSlug`), `sendServicesWiring.ts` (beide Services
+als Per-Caller-Fassade, damit der Kernel weiß, welches Plugin ruft).
+
+- Die Identität kommt aus `registry.channelIdentityFor(slug, channelType)`,
+  also nur die eigene. Ohne eigene Identität: `no_identity`. Es gibt keinen
+  Rückfall auf den Default-Bot, auch nicht mit Ephemeral-Attachment.
+- **Berechtigung = Message-Subscription** des rufenden Plugins für genau diese
+  Konversation (Gruppenpost) bzw. für irgendeine Konversation, in der der
+  Empfänger vorkommt (DM): Roster des Kanals oder Autor einer gespeicherten
+  Nachricht. Sonst `not_permitted`. Rollen-Principals sind für
+  Eigen-Identitäts-DMs ungültig.
+- **Mentions:** `user` als `user:<id>` oder kanal-native ID; der Kernel löst
+  auf die `ChannelUserRef` des Rosters auf (Teams: Entra-Objekt-ID, auch wenn
+  die bot-spezifische `29:`-ID genannt wurde). Unbekannte Personen bleiben
+  Klartext.
+- **Poll:** `message.poll` wird im Kernel validiert (2 bis 6 Optionen,
+  eindeutige IDs) und durchgereicht; `delivered` trägt `messageId` und
+  `cardMessageId`.
+- **DM-Erstkontakt:** der Provider bekommt `target.userRef` und
+  `opts.asChannelKey`; `app_not_installed` und `blocked` kommen unverändert
+  zurück und werden vom Kernel nicht wiederholt.
+- Ohne die neuen Flags verhalten sich beide Services wie vorher (Diskussionen,
+  Facilitator 0.7.x).
+
+### Tool-Call-Kontext und `agentTurn@1`
+
+- **`NativeToolCallContext`** (zweites Argument jedes Plugin-Tool-Handlers):
+  `agentSlug`, `channelType`, `conversationId` (kanal-nativ, ohne
+  Session-Scope-Präfix), `inboundEventId`, `callerPrincipalId`
+  (`user:<id kleingeschrieben>`), `callerUserRef` (`kind`/`id` wie
+  `record.author`). Alles vom Kernel gesetzt, nie aus Tool-Argumenten.
+  Code: `packages/harness-orchestrator/src/toolCallContext.ts`. Der
+  In-Process-Loop liest es aus `TurnContextValue.toolCall`, die
+  Subscription-CLI bindet es im wiederhergestellten Snapshot
+  (`CliChatAgent.captureTurnContext`). Die Stores sind prozessweit
+  (`processWideStore`), weil das Paket doppelt geladen sein kann.
+- **`agentTurn`** (`src/agents/agentTurnService.ts`, `agentTurnWiring.ts`):
+  nur das Engine-Plugin, nur für einen Facilitator, dem es gegrantet ist.
+  Der Turn läuft über das normale `ChatAgent`-Bundle des Agents
+  (Neutralitätsblock, Model-Policy, Privacy Shield, Receipts, Verifier);
+  `engineContext` ist der `extraSystemHint` des Turns, steht also hinter der
+  Identität und wird maskiert. Rückgabe ist der Text, gepostet wird nichts.
+  Mit `inboundEventId` liest der Kernel das gespeicherte Event; der Aufrufer
+  des Turns ist dessen Autor. Verlauf je `sessionKey` nur im Speicher
+  (20 Turns); der dauerhafte Zustand ist der der Engine.
+  Budget: `AGENT_TURN_MAX_PER_MINUTE`.
+- **Profil:** `agentTurn.getProfile(slug)` liefert Anzeigename, Sprache
+  (`agent_identities.language`, Migration `0069`, sonst Installationssprache)
+  und die Kanaltypen mit eigener Identität.
+- **Engine-Grant automatisch** (`src/platform/facilitatorEngineAttach.ts`):
+  beim Anlegen eines Facilitators, bei Installation oder Austausch der Engine
+  und beim Boot. Insert-if-absent; eine deaktivierte Zeile bleibt die
+  Entscheidung des Operators. Die Engine wird nie per Default an den
+  Standard-Agenten gehängt und lässt sich keinem Standard-Agenten granten.
+
+### Readiness, Session-Capabilities, Meeting-Lifecycle
+
+Code: `middleware/src/channels/sessionCapabilities/` (`providerRegistry.ts`,
+`hub.ts`, `services.ts`, `wiring.ts`). Funktioniert ohne Datenbank; nur die
+Pushes hängen an Message-Subscriptions.
+
+- **Registries:** ein Provider pro Kanaltyp, Eigentümer ist das registrierende
+  Kanal-Plugin, bei Deaktivierung verworfen (wie die Roster-Registry).
+  `CoreApi.registerReadinessProvider` / `registerMeetingSourceProvider`.
+- **`channelReadiness.check`** fragt den Provider mit der eigenen Identität
+  des Agents. Ohne Identität `no_identity`; ohne Provider `ready: true` mit
+  `verified: false`; ein werfender Provider wird `graph_error`, nie „ready“.
+  Der Report entscheidet auch `conversationMessages.subscribe` (`not_ready`).
+  Codes: siehe `ChannelReadinessCode` in plugin-api.
+- **`channelReadiness.repairConsent`** reicht an den Provider durch
+  (`upgraded` | `not_needed` | `failed` mit Code, z. B. `graph_forbidden`);
+  ohne Provider-Methode `failed / unsupported`.
+- **`sessionCapabilities.getSnapshot`** liefert den Snapshot der Meeting-Source
+  oder die Chat-Baseline (Text rein, Text raus). Der Kernel wartet nicht auf
+  einen Push, er liest bei Bedarf.
+- **Pushes:** `CoreApi.emitSessionCapabilities(snapshot)` und
+  `CoreApi.emitSessionEvent(event)` (`session_started`, `session_ended`,
+  `participant_joined`, `participant_left`). Zustellung über `onChange` /
+  `onSessionEvent` nur an die Engine, deren Agent die Konversation abonniert
+  hat; Teilnehmer tragen `principalId`; Duplikate mehrerer Bots werden über ein
+  begrenztes In-Memory-Set entfernt; gespeichert wird nichts.
+- **Teams-App-Paket:** Version `1.<TEMPLATE_REVISION>.<Identity-Revision>`
+  (`src/services/teamsAppPackageAssets.ts`); die Revision steht in
+  `appPackage/TEMPLATE_REVISION.txt` des Channel-Plugins (mit Endung, weil der
+  Zip-Ingest endungslose Dateien dort ablehnt; der alte Name wird noch gelesen); Graph-Rechte der Instanz-App für
+  Readiness und Reparatur stehen in `docs/teams-multi-agent-identities.md` §2.4.
+
+### Härtungen nach dem Review (2026-11-18)
+
+- **Kein Channel-Binding auf einen Facilitator** (`channel_binding`): die drei
+  Schreibwege lehnen ab, und `ChannelResolver` verwirft `match: 'binding'` auf
+  einen Facilitator (`binding-to-facilitator`). Er antwortet nur über seinen
+  eigenen Bot.
+- **Send-Provider deklarieren, was sie können:**
+  `supports: { asChannelKey, mentions, poll }` auf `ConversationSendProvider`
+  und `TargetedSendProvider`. Ohne `asChannelKey: true` sendet der Kernel
+  nichts als eigene Identität (`no_identity`), ohne `poll` keinen Poll
+  (`channel_error`), ohne `mentions` geht der Text ohne Mentions raus. Ein
+  älteres Kanal-Plugin, das das dritte Argument ignoriert, wird so gar nicht
+  erst gerufen. Mentions werden immer im Kernel aufgelöst, auch wenn ein
+  Plugin ein Objekt übergibt.
+- **Subscription nur bei deklarierter Zustellung:** ohne registrierten
+  Readiness-Provider `not_ready`. **Kernel-seitiges Ende**
+  (`hub.reconcile`, `createSubscriptionGroundCheck`): Engine nicht mehr die
+  gebundene/aktive Engine, Agent deaktiviert oder gelöscht, eigene Identität
+  weg. Erst nach dem Boot scharf (`enableReconcile`), danach alle
+  `CONVERSATION_MESSAGES_RECONCILE_INTERVAL_MS` und bei Install/Uninstall.
+  Eine per Cascade verschwundene Zeile schließt das Gate beim nächsten Event.
+- **Mehrere Maschinen:** NOTIFY-Trigger auf der Subscription-Tabelle,
+  `ReloadBus` mit Kanal `conversation_message_subscriptions_changed`
+  (`CONVERSATION_MESSAGES_LISTEN`). `refresh`, `subscribe` und `unsubscribe`
+  laufen über einen gemeinsamen Mutex im Hub.
+- **Engine = deklariert UND SQL-Grant** (`facilitatorGuard.ts`,
+  `createSqlGrantView`): bis zum Grant ist der Zustand `ungranted`, es wird
+  nichts angehängt. `facilitatorRuntimeService.ts` beantwortet dem
+  Orchestrator `isEngineUsable`; ohne nutzbare Engine sagt ein erwähnter
+  Facilitator fest „nicht eingerichtet“, ohne Modellaufruf.
+- **Gruppen-Turn nur mit positiver Aussage:** `TurnOrigin.conversationType:
+  'group'` (channel-sdk, additiv). Ein `conversation`-Scope allein gilt als
+  privat. **Der Kanal-Adapter muss das Feld setzen.**
+- **Readiness-, Repair- und Capability-Services** nur für einen Facilitator,
+  der an die rufende Engine gebunden ist; Pushes werden bei Zustellung geprüft.
+- **Keine Kernel-Tools für Facilitators** (Choice-Card, Follow-ups, Roster,
+  Attachment), auf beiden Tool-Loops.
+- **CoreApi je Kanal-Plugin gebunden** (`channels/scopedCoreApi.ts`): eigene
+  ID auf Events und Providern, fremder Kanaltyp wird verworfen bzw. abgelehnt.
+- Purge löscht in Batches; Adapter-Revisionen außerhalb 0..1.000.000 werden
+  ignoriert; Index auf `lower(author_id)`.
+
+### Entfernt: der Plugin-Pfad der Facilitation (#2067)
+
+- `conductor/patterns/facilitation.json` (ein Plugin der alten Generation
+  bekommt für `patternId: 'facilitation'` „unknown pattern“).
+- Plugin-Services `agentProvisioning`, `conversationBindings`,
+  `conductorRoleAssignments`; Module `agentSetupService.ts`,
+  `scopedRoleAssignments.ts`.
+- Der Ephemeral-Attachment-Scope von `conversationSend` (Default-Bot).
+- **Geblieben, mit Grund:** Ephemeral Runs, Diskussionen und `say`; die
+  Admin-Lens samt `FacilitationsPanel` im Web-UI (einzige Sicht und einziger
+  Stopp für laufende Diskussionen); die `CONDUCTOR_EPHEMERAL_*`-Quoten
+  (gelten für jeden Ephemeral-Run); die Audit-Aktion
+  `conductor.facilitation_terminate` für historische Zeilen;
+  Rollenhalter-Bereinigung für Attachment-Zeilen, die noch eine Rolle tragen.
+- **Rollout:** `omadia-agent-facilitator` 0.7.x funktioniert gegen diesen
+  Kernel nicht mehr; Kernel-Deploy, Teams-Kanal und Facilitator 1.0.0 gehören
+  in denselben Rollout.
+
+### Offen
+
+- Der allgemeine Orchestrator-System-Prompt (Memory-Konventionen,
+  Fach-Agenten-Liste) wird auch für Facilitators gebaut; die Abschnitte sind
+  ohne die zugehörigen Tools wirkungslos. Ein schlanker Facilitator-Rumpf ist
+  ein Follow-up.

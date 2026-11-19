@@ -9,6 +9,7 @@ import { Button } from '@/app/_components/ui/Button';
 
 import { patchBuilderSpec, setPersonaConfig } from '../../../../_lib/api';
 import {
+  axesForTemplate,
   PERSONA_TEMPLATES,
   type PersonaTemplate,
 } from '../../../../_lib/personaTemplates';
@@ -64,13 +65,13 @@ export function PersonaTemplateGallery({
     setError(null);
     startTransition(async () => {
       try {
-        // Step 1 — persona-only via the tool surface so template axes
-        // merge server-side. We send template + axes from the existing
-        // operator overrides so the merge keeps explicit per-axis values.
+        // Step 1 — persona-only via the tool surface. Only the sliders the
+        // operator moved away from the previous template are sent as
+        // overrides; every other axis follows the new template.
         const next: PersonaConfig = {
           ...(persona ?? {}),
           template: selected.id,
-          axes: { ...selected.axes, ...(persona?.axes ?? {}) },
+          axes: axesForTemplate(persona, selected),
         };
         await setPersonaConfig(draftId, next);
 

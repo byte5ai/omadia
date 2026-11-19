@@ -434,7 +434,8 @@
         "riskWarning": "Heuristischer Scan hat diesen Skill markiert: {codes}. Als Persona steuert er den Top-Level-Agent mit vollem Tool-Zugriff — vor Verwendung prüfen.",
         "confirmAttachAction": "Trotzdem anhängen",
         "confirmAttachHighRisk": "Der heuristische Scan dieses Skills zeigt hohes Risiko ({codes}). Als Persona steuert er den Top-Level-Agent mit vollem Tool-Zugriff. Bestätige, dass du ihn geprüft hast, bevor du ihn anhängst."
-      }
+      },
+      "facilitatorsNote": "Facilitatoren sind hier nicht aufgeführt: Channels, Sub-Agenten, Tools, MCP-Server und Zeitpläne lassen sich mit ihnen nicht verdrahten."
     }
   },
   "selfExtension": {
@@ -494,8 +495,8 @@
     "openLabel": "offen"
   },
   "nav": {
-    "dashboard": "Dashboard",
-    "chat": "Chat",
+    "chatCluster": "Chat",
+    "debug": "Debug",
     "store": "Hub",
     "builder": "Builder",
     "memory": "Memory",
@@ -512,6 +513,7 @@
     "agentsOverview": "Übersicht",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
+    "setupCluster": "Einrichtung",
     "adminCluster": "Admin",
     "help": "Hilfe",
     "teamsSignIn": "Teams-Anmeldung",
@@ -551,6 +553,29 @@
     "colStep": "Step",
     "colPostcondition": "Postcondition",
     "colTransition": "Transition",
+    "colDuration": "Dauer",
+    "colReason": "Grund",
+    "runReasonLabel": "Grund",
+    "runReasonUnknown": "Ursache nicht erfasst",
+    "durationMs": "{value} ms",
+    "durationSeconds": "{value} s",
+    "durationMinutes": "{min} min {sec} s",
+    "runErrorCodes": {
+      "max_steps_exceeded": "Step-Budget überschritten",
+      "step_not_in_graph": "Step ist nicht im veröffentlichten Graph",
+      "timer_misconfigured": "Timer-Step ist falsch konfiguriert",
+      "no_role_holder": "Kein erreichbarer Inhaber für den Human-Step",
+      "await_timed_out": "Frist ohne Antwort verstrichen",
+      "effect_threw": "Step mit einem Fehler abgebrochen",
+      "step_timeout": "Step hat sein Zeitbudget überschritten",
+      "resume_no_current_step": "Fortsetzen fand keinen nächsten Step",
+      "unknown_step": "Transition-Ziel ist kein bekannter Step",
+      "postcondition_unmet_no_fallback": "Postcondition nicht erfüllt und kein Fallback deklariert",
+      "no_transition_no_fallback": "Keine Transition passte und kein Fallback deklariert",
+      "ambiguous_guards": "Mehrere Transitionen passten gleichzeitig",
+      "fallback_transition_missing": "Deklarierte Fallback-Transition existiert nicht",
+      "approval_rejected_no_transition": "Abgelehnt, und keine Transition behandelt die Ablehnung"
+    },
     "resultContext": "Ergebnis-Kontext",
     "loadError": "Workflows konnten nicht geladen werden",
     "publishError": "Veröffentlichen fehlgeschlagen",
@@ -563,7 +588,7 @@
     "cancelRunFailed": "Der Lauf konnte nicht abgebrochen werden",
     "cancelPendingHint": "Abbruch angefordert — der Lauf stoppt an der nächsten Schrittgrenze.",
     "strictApprovalLabel": "Strikte Freigabe",
-    "strictApprovalHint": "Nur eine explizite Freigabe führt weiter; eine fehlende oder fehlerhafte Antwort zählt als Ablehnung. Empfohlen, wenn dieser Schritt eine unumkehrbare Aktion schützt.",
+    "strictApprovalHint": "Nur eine explizite Freigabe zählt als Freigabe; eine fehlende oder fehlerhafte Antwort zählt als Ablehnung. Eine Ablehnung läuft nie über eine ungeguardete Transition weiter — guarde die ausgehenden Transitionen auf stepResult.approved, damit die Ablehnung ihren eigenen Pfad hat. Empfohlen, wenn dieser Schritt eine unumkehrbare Aktion schützt.",
     "designerHeading": "Visueller Designer",
     "designerHint": "Steps hinzufügen, zum Verdrahten zwischen ihnen ziehen, einen Step im Inspector bearbeiten, dann Speichern. Markiere einen Step als Einstieg.",
     "chatHeading": "Konversationeller Builder",
@@ -628,6 +653,7 @@
     "entryLabel": "Einstiegs-Step",
     "transitionLabel": "Transition",
     "guardLabel": "Guard (JSON, optional)",
+    "guardHumanRejectionHint": "Eine Transition aus einem Human-Step wird bei einer Ablehnung nur genommen, wenn ihr Guard danach fragt. Guarde den Freigabe-Pfad auf stepResult.approved = true und gib der Ablehnung eine eigene Transition.",
     "awaitsHeading": "Wartende Human-Steps",
     "approve": "Freigeben",
     "reject": "Ablehnen",
@@ -973,7 +999,6 @@
   "themeControls": {
     "paletteAriaLabel": "Akzent-Palette",
     "appearanceAriaLabel": "Darstellung",
-    "menuAriaLabel": "Palette und Darstellung",
     "palette": {
       "lagoon": "Lagoon (Türkis)",
       "petrol": "Petrol (Blau)",
@@ -983,7 +1008,9 @@
       "system": "Automatisch",
       "light": "Hell",
       "dark": "Dunkel"
-    }
+    },
+    "switchToDark": "Zum dunklen Modus wechseln",
+    "switchToLight": "Zum hellen Modus wechseln"
   },
   "login": {
     "title": "Bei omadia anmelden",
@@ -1071,13 +1098,16 @@
     "streamErrorAnnounce": "{title}: Antwort fehlgeschlagen"
   },
   "authBadge": {
-    "loginLink": "Login",
     "authError": "Auth-Fehler",
     "signedInAs": "Angemeldet als",
     "signOut": "Überall abmelden",
     "signOutHint": "Meldet dich auf all deinen Geräten ab, nicht nur auf diesem.",
     "signOutFailed": "Die Abmeldung hat nicht geklappt. Du bist noch angemeldet.",
-    "signOutRetry": "Erneut abmelden"
+    "signOutRetry": "Erneut abmelden",
+    "preferences": "Einstellungen",
+    "palette": "Farbpalette",
+    "appearance": "Darstellung",
+    "language": "Sprache"
   },
   "error": {
     "title": "Etwas ist schiefgelaufen",
@@ -1115,6 +1145,10 @@
       "already_installed": {
         "what": "Dieses Plugin ist auf diesem Server bereits installiert.",
         "next": "Deinstalliere die vorhandene Kopie zuerst, wenn du es neu installieren willst."
+      },
+      "archetype_confirmation_required": {
+        "what": "Das ist ein Archetyp-Plugin: Es fügt diesem Server eine neue Art von Agent hinzu. Das wird nur nach ausdrücklicher Bestätigung installiert, und diese Anfrage enthielt keine.",
+        "next": "Starte die Installation auf der Seite des Plugins im Store. Dort steht, was der Archetyp hinzufügt und was seine Agenten nie erhalten, und du wirst um Bestätigung gebeten."
       },
       "blocked": {
         "what": "Der Store markiert dieses Plugin als inkompatibel mit diesem Server, deshalb wurde die Installation abgelehnt.",
@@ -2127,7 +2161,7 @@
     "actionKill": "Sessions killen",
     "drainTooltip": "Snapshot auf allen an diesen Orchestrator gebundenen Sessions leeren — nächster Turn nimmt frische Config aus der Registry",
     "fallbackProtected": "Das ist der Standard-Orchestrator und kann nicht deaktiviert oder gelöscht werden.",
-    "deleteConfirm": "Orchestrator „{slug}\" wirklich löschen?",
+    "deleteConfirm": "Orchestrator „{slug}“ wirklich löschen? Er geht außer Dienst; sein Datensatz bleibt unter „Gelöschte Agenten“ erhalten, bis du ihn endgültig entfernst.",
     "killConfirm": "Alle Sessions von „{slug}\" killen? History geht verloren.",
     "memoryScopeHeading": "Memory-Scope",
     "memoryScopeEmpty": "Kein Scope (Runtime-Registry nicht aktiv)",
@@ -2485,7 +2519,8 @@
       "targetUnrecognised": "Diese Eingabe ist kein Teams-Installationsziel. Erwartet wird eine Team-Gruppen-ID, eine Gruppenchat-ID (19:…@thread.v2, bei älteren Chats 19:…@thread.skype) oder eine 1:1-Chat-ID (19:…@unq.gbl.spaces).",
       "chatInstallUnsupported": "Die Installation in einen Chat braucht den Microsoft-365-Connector 0.7.0 oder neuer. Der hier installierte Connector ist älter — aktualisiere das Plugin, oder wähle ein Team als Ziel.",
       "pendingHintTyped": "Ein Provisionierungslauf zielt auf {kind} {teamId}. Als Installation zählt das erst, wenn die Kette den Installationsschritt erreicht.",
-      "chatNameUnavailable": "Für Chats liefert der Connector keinen Namen — angezeigt wird die ID."
+      "chatNameUnavailable": "Für Chats liefert der Connector keinen Namen — angezeigt wird die ID.",
+      "fieldTargetLinkHint": "Oder füge einen Teams-Link ein („Link kopieren“ an einem Chat, einem Team oder einem Kanal): Er wird in die ID umgewandelt. Ein Kanal-Link wählt sein Team."
     },
     "identity": {
       "heading": "Identität",
@@ -2519,6 +2554,13 @@
           "standard": "Standard — Auslieferungszustand",
           "detailed": "Ausführlich — mit Begründung, Quellen und Annahmen",
           "max": "Maximal — alle Zwischenschritte, Rohwerte und Unsicherheiten"
+        },
+        "language": "Sprache",
+        "languageInherit": "Sprache der Installation",
+        "languageHint": "In dieser Sprache spricht der Facilitator. Ohne Auswahl gilt die Sprache der Installation.",
+        "languageOptions": {
+          "de": "Deutsch",
+          "en": "Englisch"
         }
       },
       "republish": {
@@ -2543,10 +2585,10 @@
       "droppedPresets": "Diese Grenzen-Vorlagen kennt der Server nicht (mehr): {ids}",
       "persona": {
         "template": {
-          "heading": "Archetyp",
-          "none": "Kein Archetyp gewählt — alle Achsen stehen auf neutral.",
-          "active": "Archetyp: {name}",
-          "choose": "Archetyp wählen",
+          "heading": "Persona-Vorlage",
+          "none": "Keine Persona-Vorlage gewählt — alle Achsen stehen auf neutral.",
+          "active": "Persona-Vorlage: {name}",
+          "choose": "Persona-Vorlage wählen",
           "clear": "Lösen"
         },
         "culture": {
@@ -2560,6 +2602,10 @@
         "notes": {
           "label": "Eigene Notizen",
           "hint": "Freitext, der wörtlich in den Charakter-Block wandert — für alles, wofür kein Regler existiert."
+        },
+        "bounds": {
+          "note": "Der Charakter eines Facilitators bleibt innerhalb der Grenzen des Neutralitätsvertrags. Regler, Persona-Vorlagen und Branchen-Presets enden an diesen Grenzen.",
+          "axisRange": "Für einen Facilitator erlaubt: {min} bis {max}"
         }
       },
       "boundaries": {
@@ -2583,7 +2629,13 @@
           "low": "Leicht",
           "medium": "Mittel",
           "high": "Stark"
-        }
+        },
+        "sycophancyFacilitatorHint": "Für einen Facilitator ist die Bremse immer aktiv: Ein Moderator, der einer Stimme schmeichelt, ist parteiisch."
+      },
+      "facilitator": {
+        "issueOnTab": "{tab}: {issue}",
+        "instructionsHint": "Eröffnungsabschnitt des Facilitator-Prompts. Wird beim Speichern gegen den Neutralitätsvertrag geprüft: Text, der Parteinahme, eine Meinung, eine Stimmabgabe oder einen verdeckten Kanal verlangt, wird abgelehnt.",
+        "promptNote": "Der Neutralitätsvertrag wird nach diesen Abschnitten einkompiliert und lässt sich von hier aus weder entfernen noch überschreiben."
       }
     },
     "teamsIdentity": {
@@ -2646,7 +2698,12 @@
           "delegated_sign_in_required": "Wartet auf die Teams-Anmeldung",
           "delegated_consent_required": "Wartet auf die Zustimmung einer Administration",
           "delegated_token_expired": "Anmeldung abgelaufen",
-          "device_code_flow_failed": "Anmeldevorgang abgelehnt"
+          "device_code_flow_failed": "Anmeldevorgang abgelehnt",
+          "verifying_bot": "prüfe bei Microsoft, ob der Bot bekannt ist",
+          "bot_rejected": "Microsofts Bot Connector akzeptiert diesen Bot nicht",
+          "rsc_consent_refused": "das Ziel hat die Berechtigungen der App abgelehnt",
+          "bot_app_id_retired": "die Anwendungs-ID gehörte bereits zu einem gelöschten Bot",
+          "app_registration_not_ready": "Microsoft nimmt Aufrufe auf die neue App-Registrierung noch nicht an"
         }
       },
       "stateSummary": "Status: {state}",
@@ -2691,7 +2748,7 @@
         "consent_missing": {
           "what": "Microsoft hat die Anfrage abgelehnt, weil eine Tenant-Administration die Admin-Zustimmung für die benötigten Berechtigungen noch nicht erteilt hat.",
           "scopes": "Fehlende Berechtigungen ({count}): {scopes}",
-          "next": "Lass eine globale Administration im Kunden-Tenant die Admin-Zustimmung für diese Berechtigungen erteilen und starte das Provisioning danach erneut. Ein erneuter Lauf ohne die Zustimmung ändert nichts.",
+          "next": "Lass eine globale Administration im Kunden-Tenant die Admin-Zustimmung für diese Berechtigungen erteilen und starte das Provisioning danach erneut. Ein erneuter Lauf ohne die Zustimmung ändert nichts. Sind die genannten Berechtigungen bereits erteilt, warte eine Minute und starte erneut: Entra ID kann Aufrufe kurz nach dem Erteilen einer Berechtigung noch ablehnen.",
           "consentLink": "So wird die Admin-Zustimmung in Microsoft Entra ID erteilt"
         },
         "arm_not_configured": {
@@ -2745,6 +2802,23 @@
         "rsc_permissions_mismatch": {
           "what": "Microsoft Graph hat die Installation abgelehnt: Das Teams-App-Paket dieses Orchestrators fordert ressourcenspezifische Berechtigungen, die die installierende Identität nicht erteilen darf. Die Ziel-ID ist korrekt — es fehlt eine Rolle.",
           "next": "Weise der Entra-App des M365-Connectors die Rolle TeamsAppInstallation.ReadWriteAndConsentForTeam.All (Team) bzw. …ForChat.All (Chat) zu, erteile die Admin-Zustimmung und starte die Provisionierung erneut."
+        },
+        "rsc_consent_refused": {
+          "what": "Teams hat es abgelehnt, die ressourcenspezifischen Berechtigungen dieser App im Ziel-Team bzw. Ziel-Chat zu erteilen, deshalb wurde die App dort nicht installiert. Das ist eine dauerhafte Ablehnung und keine Replikationsverzögerung: Ein erneuter Lauf ändert nichts.",
+          "reported": "Von Microsoft gemeldet: {codes}",
+          "next": "Prüfe zwei Dinge: ob der Tenant ressourcenspezifische Zustimmung für Teams und Chats erlaubt (Teams Admin Center und Zustimmungseinstellungen in Entra) und ob jede Berechtigung, die das Teams-App-Paket anfordert, für diese Art von Ziel zulässig ist. Die vollständige Antwort von Microsoft steht unten im technischen Detail. Der Bot selbst ist veröffentlicht und antwortet in persönlichen Chats bereits."
+        },
+        "bot_rejected": {
+          "what": "In Azure sind alle Provisionierungsschritte gelungen, aber Microsofts Bot Connector akzeptiert diesen Bot nicht: Er antwortet auf die eigenen Zugangsdaten des Bots mit 401. In Teams erscheint der Bot als ungültiger oder unbekannter Bot und erhält nichts. Der Agent ist deshalb nicht bereit.",
+          "next": "Das passiert, wenn ein Bot unter einer bereits verwendeten Anwendungs-ID erneut angelegt wird, zum Beispiel nach einem Zurücksetzen, dessen gelöschte App-Registrierung wiederhergestellt wurde. Warten hilft nicht. Lösche diese Teams-Identität vollständig („Identität löschen“) und provisioniere sie danach neu, damit sie eine neue App-Registrierung bekommt."
+        },
+        "bot_app_id_retired": {
+          "what": "Der Bot wurde nicht angelegt: Seine Anwendungs-ID gehörte bereits zu einem Bot, der gelöscht wurde. Microsofts Bot Connector lehnt einen Bot, der unter derselben Anwendungs-ID erneut angelegt wird, dauerhaft ab, obwohl Azure ihn als fehlerfrei meldet. Deshalb legt omadia ihn nicht an.",
+          "next": "Lösche diese Teams-Identität vollständig („Identität löschen“), einschließlich der App-Registrierung, und provisioniere sie neu. Sie bekommt dann eine neue Anwendungs-ID. Ein erneuter Lauf derselben Provisionierung ändert nichts."
+        },
+        "app_registration_not_ready": {
+          "what": "Die App-Registrierung existiert, Microsoft Graph hat den nächsten Aufruf darauf (Secret des Bots anlegen oder Dienstprinzipal erstellen) aber wiederholt mit 403 abgelehnt. Die Berechtigung dafür ist erteilt und wurde unmittelbar vorher benutzt, es fehlt also keine Admin-Zustimmung. Entra ID braucht üblicherweise bis zu einer Minute, bis eine neue Registrierung Änderungen annimmt; omadia hat darauf gewartet, und der Aufruf wurde weiter abgelehnt.",
+          "next": "Starte das Provisioning in ein bis zwei Minuten erneut; es setzt auf der vorhandenen App-Registrierung auf. Schlägt es weiter mit dieser Meldung fehl, existiert die App-Registrierung, gehört aber nicht der omadia-Publisher-App (zum Beispiel, weil sie von Hand unter demselben Namen angelegt wurde): Lösche diese Teams-Identität vollständig und provisioniere sie neu."
         }
       },
       "teamsBot": {
@@ -2797,7 +2871,9 @@
           "scope_missing": "Die gespeicherte Anmeldung kennt eine Berechtigung nicht, die für die Teamliste nötig ist. Eine erneute Anmeldung schaltet die Liste frei.",
           "consent_required": "Dem Tenant fehlt die Zustimmung zum Auflisten von Teams. Bis dahin trage die ID unten ein.",
           "lookup_failed": "Die Teamliste konnte gerade nicht geladen werden. Lade die Seite neu oder trage die ID unten ein.",
-          "sign_in_expired": "Die Tenant-Anmeldung ist abgelaufen und ließ sich nicht automatisch erneuern. Melde dich einmal neu an oder trage die ID unten ein."
+          "sign_in_expired": "Die Tenant-Anmeldung ist abgelaufen und ließ sich nicht automatisch erneuern. Melde dich einmal neu an oder trage die ID unten ein.",
+          "loading": "Die Team-Liste wird noch von Microsoft geladen. Sie erscheint hier von selbst; bis dahin kannst du die ID unten eintippen.",
+          "not_requested": "Die Team-Liste wurde nicht angefordert."
         },
         "chats": {
           "connector_unavailable": "Ohne aktiven M365-Connector gibt es keine Chatliste — trage die ID unten von Hand ein.",
@@ -2806,12 +2882,34 @@
           "scope_missing": "Die gespeicherte Anmeldung kennt die Berechtigung {scope} noch nicht und kann sie nicht nachträglich erneuern. Eine einmalige neue Anmeldung schaltet die Chatliste frei; bis dahin trage die Chat-ID unten ein.",
           "consent_required": "Dem Tenant fehlt die Zustimmung zum Auflisten von Chats. Bis dahin trage die Chat-ID unten ein.",
           "lookup_failed": "Die Chatliste konnte gerade nicht geladen werden. Lade die Seite neu oder trage die Chat-ID unten ein.",
-          "sign_in_expired": "Die Tenant-Anmeldung ist abgelaufen und ließ sich nicht automatisch erneuern — das ist keine fehlende Anmeldung, sondern eine, die nicht mehr gilt. Melde dich einmal neu an oder trage die Chat-ID unten ein."
+          "sign_in_expired": "Die Tenant-Anmeldung ist abgelaufen und ließ sich nicht automatisch erneuern — das ist keine fehlende Anmeldung, sondern eine, die nicht mehr gilt. Melde dich einmal neu an oder trage die Chat-ID unten ein.",
+          "loading": "Die Chat-Liste wird noch von Microsoft geladen, das dauert in einem Tenant mit vielen Chats eine Weile. Sie erscheint hier von selbst; bis dahin kannst du die Chat-ID unten eintippen.",
+          "not_requested": "Chats werden aufgelistet, wenn du nach einem suchst."
         }
       },
       "filter": "Tippen zum Filtern …",
       "noMatch": "Kein Eintrag passt zu „{query}“. Für eine ID, die hier nicht auftaucht, nutze das Feld darunter.",
-      "matchCount": "{count, plural, =0 {Keine Treffer} one {Ein Treffer} other {# Treffer}}"
+      "matchCount": "{count, plural, =0 {Keine Treffer} one {Ein Treffer} other {# Treffer}}",
+      "truncated": "{shown} von {total} werden angezeigt. Fehlt der gesuchte Eintrag, tippe seine ID in das Feld unten.",
+      "incomplete": "Microsoft hat nur einen Teil dieser Liste geliefert ({shown} Einträge), sie ist also unvollständig. Fehlt der gesuchte Eintrag, tippe seine ID in das Feld unten.",
+      "memberSearch": {
+        "untitled_only": "Der Filter findet Chats über ihren Namen. Nach Mitgliedern lässt sich nur bei Chats ohne Namen suchen.",
+        "none": "Der Filter findet Chats über ihren Namen; Mitgliedernamen liegen für diese Liste nicht vor."
+      },
+      "withoutMemberNames": "{count, plural, one {Ein Chat ohne Namen hat keine Mitgliedernamen und lässt sich nur über die ID unterscheiden.} other {# Chats ohne Namen haben keine Mitgliedernamen und lassen sich nur über die ID unterscheiden.}}",
+      "recent": {
+        "label": "Chats, in denen deine Bots bereits sind",
+        "empty": "Noch ist kein Bot dieser Instanz in einem Chat. Suche unten oder füge einen Link oder eine ID ein.",
+        "thisBot": "dieser Bot ist dabei"
+      },
+      "search": {
+        "label": "Alle Chats des Tenants durchsuchen",
+        "placeholder": "Name des Chats …",
+        "hint": "Gib mindestens zwei Zeichen des Chat-Namens ein. Die Chats des Tenants werden nur gelesen, wenn du suchst.",
+        "searching": "Suche nach „{query}“ … Die erste Suche in einem großen Tenant kann eine Minute dauern, weitere gehen sofort.",
+        "results": "Chats passend zu „{query}“",
+        "none": "Kein Chat heißt „{query}“. Chats ohne Namen werden nur über ihre Mitglieder gefunden. Du kannst unten auch einen Link oder eine ID einfügen."
+      }
     },
     "teamsReset": {
       "heading": "Provisionierung zurücksetzen",
@@ -2855,7 +2953,10 @@
         "config_unsync_unavailable": "Diese Installation schreibt den teams_bots-Eintrag nicht automatisch — es gab also auch keinen, den das Zurücksetzen entfernen müsste.",
         "config_plugin_not_installed": "Der Teams-Channel ist nicht installiert, es gibt also keine Konfiguration aufzuräumen.",
         "tenant_sign_in_expired": "Die Tenant-Anmeldung ist abgelaufen und ließ sich nicht automatisch erneuern. Melde dich einmal neu an und starte das Zurücksetzen erneut — eine zusätzliche Berechtigung ist dafür nicht nötig.",
-        "app_trace_required": "Die Identität bleibt bestehen: Die App-Registrierung ließ sich nicht im Papierkorb nachschlagen, und die Zeile ist die einzige Spur zu ihr. Nutze „Lauf zurücksetzen“ oder aktualisiere den Connector, damit der Papierkorb geprüft werden kann."
+        "app_trace_required": "Die Identität bleibt bestehen: Die App-Registrierung ließ sich nicht im Papierkorb nachschlagen, und die Zeile ist die einzige Spur zu ihr. Nutze „Lauf zurücksetzen“ oder aktualisiere den Connector, damit der Papierkorb geprüft werden kann.",
+        "app_purge_unconfirmed": "Die App-Registrierung wurde gelöscht, aber ihr endgültiges Entfernen aus dem Papierkorb ließ sich noch nicht bestätigen. Starte das Zurücksetzen in einer Minute erneut, um es abzuschließen. Starte vorher keine neue Provisionierung: Sie könnte auf die gelöschte Registrierung treffen.",
+        "app_purge_recycle_bin_unreadable": "Die App-Registrierung wurde gelöscht und ihr endgültiges Entfernen angefordert, aber dieser Tenant lässt omadia den Papierkorb nicht lesen (dafür ist die Berechtigung Application.ReadWrite.All nötig), deshalb ließ sich das Entfernen nicht bestätigen. Meldet eine neue Provisionierung einen reservierten Namen oder eine ausgemusterte Anwendungs-ID, erteile diese Berechtigung und setze erneut zurück.",
+        "app_purge_confirmation_unsupported": "Die App-Registrierung wurde gelöscht und ihr endgültiges Entfernen angefordert, aber der installierte M365-Connector kann den Papierkorb nicht prüfen, deshalb ließ sich das Entfernen nicht bestätigen. Aktualisiere den Connector auf 0.9.2 oder neuer; warte bis dahin einige Minuten, bevor du neu provisionierst."
       },
       "openRun": "Lauf zurücksetzen …",
       "openIdentity": "Identität löschen …",
@@ -2877,7 +2978,155 @@
       "teams": "Teams",
       "plugins": "Plugins",
       "tools": "Werkzeuge",
-      "memory": "Memory"
+      "memory": "Memory",
+      "engine": "Moderation"
+    },
+    "endOfService": {
+      "disabled": "„{name}“ ist deaktiviert.",
+      "deleted": "„{name}“ ist gelöscht. Der Datensatz bleibt unter „Gelöschte Agenten“ erhalten, bis du ihn endgültig entfernst.",
+      "processes": "{count, plural, =0 {Es musste kein laufender Vorgang beendet werden.} one {Ein laufender Vorgang wurde beendet:} other {# laufende Vorgänge wurden beendet:}}",
+      "outcomeAborted": "{channel}, Gespräch {conversation}: vom Archetyp-Plugin beendet",
+      "outcomeAbortedReported": "{channel}, Gespräch {conversation}: vom Archetyp-Plugin beendet, das Gespräch wurde informiert",
+      "outcomeFailed": "{channel}, Gespräch {conversation}: konnte vom Archetyp-Plugin nicht abgeschlossen werden",
+      "pluginFailed": "Das Archetyp-Plugin hat die Vorgänge des Agenten nicht beendet ({detail}). omadia stellt für den Agenten keine Nachrichten mehr zu, es kann also nichts weiterlaufen.",
+      "subscriptions": "{count, plural, =0 {Der Agent hat die Nachrichten keines Gesprächs erhalten.} one {Er erhält die Nachrichten eines Gesprächs nicht mehr.} other {Er erhält die Nachrichten von # Gesprächen nicht mehr.}}",
+      "noticesOwed": "{count, plural, =0 {} one {Ein Gespräch wurde von omadia selbst nicht informiert: Systemhinweise gibt es noch nicht.} other {# Gespräche wurden von omadia selbst nicht informiert: Systemhinweise gibt es noch nicht.}}",
+      "dismiss": "Schließen"
+    },
+    "execution": {
+      "heading": "Laufende Prozesse",
+      "intro": "Was Archetyp-Plugins für ihre Agenten gerade tun dürfen: Jeder laufende Prozess hat Berechtigungen mit Frist und Budget. Stoppen verweigert jede weitere Aktion (Beiträge, Direktnachrichten, Modellaufrufe), bis du fortsetzt. Nichts wird beendet oder gelöscht.",
+      "stopAll": "Alles stoppen",
+      "stopProcess": "Diesen Prozess stoppen",
+      "stopAgent": "Diesen Agenten stoppen",
+      "resume": "Fortsetzen",
+      "stopped": "gestoppt",
+      "scopeRow": "{agent}: {kind} (Prozess {process})",
+      "kindConfiguring": "in Vorbereitung",
+      "kindActive": "aktiv",
+      "kindClosing": "im Abschluss",
+      "kindScheduling": "plant einen Folgetermin",
+      "kindFollowUp": "in der Nachverfolgung",
+      "until": "erlaubt bis {when}",
+      "untilWaiting": "Frist abgelaufen, wartet auf offene Bestätigungen bis {when}",
+      "used": "{actions} von {actionBudget} Aktionen und {calls} von {callBudget} Modellaufrufen verbraucht",
+      "switchInstance": "Alles ist gestoppt (von {by}, {when}).",
+      "switchAgent": "Agent {agent} ist gestoppt (von {by}, {when}).",
+      "switchProcess": "Prozess {process} von Agent {agent} ist gestoppt (von {by}, {when}).",
+      "nothingRunning": "Es läuft kein Prozess.",
+      "loadFailed": "Die laufenden Prozesse konnten nicht geladen werden.",
+      "actionFailed": "Das hat nicht funktioniert. Es wurde nichts geändert; versuch es noch einmal."
+    },
+    "deletedAgents": {
+      "heading": "Gelöschte Agenten",
+      "intro": "Ein gelöschter Agent ist außer Dienst und antwortet nirgends. Sein Datensatz mit Identität, Freigaben, Zuordnungen und Zeitplänen bleibt erhalten, damit ein ihm zugeordnetes Gespräch nicht von einem anderen Agenten übernommen wird. Endgültiges Entfernen löscht das alles.",
+      "loadFailed": "Die gelöschten Agenten ließen sich nicht laden.",
+      "row": "{name} ({slug}) · gelöscht {when}",
+      "rowBy": "{name} ({slug}) · gelöscht {when} von {by}",
+      "purge": "Endgültig entfernen",
+      "purging": "Wird entfernt",
+      "purgeConfirm": "„{slug}“ endgültig entfernen? Identität, Freigaben, Zuordnungen und Zeitpläne werden mitgelöscht. Das lässt sich nicht rückgängig machen.",
+      "purgeTypeSlug": "Dieser Agent wurde vor weniger als {days, plural, one {# Tag} other {# Tagen}} gelöscht. Tippe seinen Slug „{slug}“ ein, um ihn jetzt zu entfernen:",
+      "purgeMismatch": "Das ist nicht der Slug. Es wurde nichts entfernt.",
+      "purgeableFrom": "ohne Eingabe des Slugs entfernbar ab {when}"
+    },
+    "archetype": {
+      "deliveredBy": "Geliefert vom Archetyp-Plugin „{plugin}“. omadia setzt für jeden Agenten in diesem Abschnitt durch, was der Archetyp hinzufügt und weglässt.",
+      "deliveredByKernel": "In omadia eingebaut.",
+      "notDelivered": "Kein installiertes Plugin liefert den Archetyp „{id}“ mehr. Seine Agenten bleiben hier, omadia gibt ihnen aber nichts, bis ein Archetyp-Plugin ihn wieder liefert.",
+      "empty": "Noch keine Agenten des Archetyps „{name}“. Oben lässt sich einer anlegen.",
+      "createHeading": "Agent des Archetyps „{name}“ anlegen",
+      "createHint": "Der Archetyp steht nach dem Anlegen fest. Identität und Persönlichkeit werden auf der Seite des Agenten eingestellt, die sich danach öffnet.",
+      "createSubmit": "Anlegen",
+      "deleteConfirm": "Agent „{slug}“ wirklich löschen? Er geht außer Dienst; sein Datensatz bleibt unter „Gelöschte Agenten“ erhalten, bis du ihn endgültig entfernst."
+    },
+    "facilitator": {
+      "heading": "Facilitatoren",
+      "intro": "Ein Facilitator moderiert ausschließlich: Entscheidungen, Abstimmungen, Priorisierungen, Retrospektiven. Er arbeitet für keine einzelne Person, hat keine inhaltliche Meinung und tritt in Teams unter eigenem Namen auf.",
+      "empty": "Noch keine Facilitatoren. Oben lässt sich einer anlegen.",
+      "createHeading": "Facilitator anlegen",
+      "createHint": "Der Archetyp steht nach dem Anlegen fest. Avatar, Persönlichkeit und Teams-Identität werden auf der Seite des Facilitators eingestellt, die sich danach öffnet.",
+      "createSubmit": "Facilitator anlegen",
+      "cardSummary": "Status: {status} · Laufzeit: {runtime}",
+      "deleteConfirm": "Facilitator „{slug}“ wirklich löschen? Seine laufenden Moderationen werden beendet; sein Datensatz bleibt unter „Gelöschte Agenten“ erhalten, bis du ihn endgültig entfernst.",
+      "omittedNote": "Keine Plugins, Tools, MCP-Server, kein Gedächtnis, keine internen Helfer, Arbeitsmodi, Zeitpläne oder Gespräche mit anderen Agenten, und nie der Standard-Ansprechpartner: Zugriff auf Unternehmensdaten oder auf die Interessen einer Person würde einen Moderator parteiisch machen.",
+      "contractRejected": "Nicht gespeichert: {count, plural, one {eine Einstellung widerspricht} other {# Einstellungen widersprechen}} dem Neutralitätsvertrag eines Facilitators.",
+      "omissionWithPlugins": "{reason} Abgelehnt: {plugins}.",
+      "omissions": {
+        "plugin_grant": "Ein Facilitator erhält nur die Tools der Moderations-Engine. Fachliche Plugins würden ihn parteiisch machen.",
+        "tool_grant": "Ein Facilitator erhält nur die Tools der Moderations-Engine. Weitere Tool-Freigaben würden ihn parteiisch machen.",
+        "memory": "Ein Facilitator hat kein allgemeines Gedächtnis. Er kennt nur das Protokoll der jeweiligen Moderation.",
+        "default_agent": "Ein Facilitator kann nicht der Standard-Ansprechpartner sein. Er antwortet nie für oder als jemand.",
+        "persona_skill": "Ein Facilitator hat keine Arbeitsmodi. Er antwortet nie als jemand anderes.",
+        "fast_path": "Ein Facilitator nutzt die Schnellspur nicht.",
+        "agent_to_agent": "Ein Facilitator spricht nicht mit anderen Agenten und wird von ihnen nicht angesprochen.",
+        "consultation": "Ein Facilitator konsultiert keine anderen Agenten und wird von ihnen nicht konsultiert.",
+        "sub_agent": "Ein Facilitator hat keine internen Helfer und lässt sich an keinen anderen Agenten anhängen.",
+        "assistance": "Ein Facilitator ist kein Assistent. Er moderiert ausschließlich.",
+        "unknown": "Das steht für einen Facilitator nicht zur Verfügung.",
+        "channel_binding": "Ein Facilitator lässt sich an keinen Channel binden. Er nimmt unter eigener Teams-Identität an einer Unterhaltung teil und wird nie per Routing angesprochen."
+      },
+      "issues": {
+        "persona_axis_above_bound": "{axis}: für einen Facilitator höchstens {bound}.",
+        "persona_axis_below_bound": "{axis}: für einen Facilitator mindestens {bound}.",
+        "sycophancy_guard_off": "Die Schmeichel-Bremse lässt sich für einen Facilitator nicht abschalten.",
+        "partiality": "Verlangt vom Facilitator, jemanden zu bevorzugen oder zu benachteiligen.",
+        "takes_sides": "Verlangt vom Facilitator, Partei zu ergreifen.",
+        "votes_or_decides": "Verlangt vom Facilitator, selbst abzustimmen, zu entscheiden oder ein Patt aufzulösen.",
+        "gives_opinion": "Verlangt vom Facilitator eine eigene inhaltliche Meinung.",
+        "hidden_channel": "Verlangt vom Facilitator, der Gruppe etwas vorzuenthalten.",
+        "lifts_contract": "Versucht, den Neutralitätsvertrag aufzuheben oder zu überschreiben.",
+        "ignores_stop": "Verlangt vom Facilitator, nach einem Stopp der Gruppe weiterzumachen.",
+        "acts_as_assistant": "Macht den Facilitator zum Assistenten einer Person.",
+        "withExcerpt": "{reason} Textstelle: „{excerpt}“",
+        "unknown": "Widerspricht dem Neutralitätsvertrag: {detail}"
+      },
+      "readiness": {
+        "checking": "Bereitschaft wird geprüft",
+        "ready": "Bereit",
+        "notReady": "Nicht bereit",
+        "teams": {
+          "missing": "Noch keine eigene Teams-Identität.",
+          "provisioning": "Die Teams-Identität wird noch eingerichtet.",
+          "failed": "Das Einrichten der Teams-Identität ist fehlgeschlagen.",
+          "unknown": "Die Teams-Identität ließ sich nicht prüfen."
+        },
+        "teamsLink": "Teams-Einrichtung öffnen",
+        "engineNotReady": "Auf dieser Instanz gibt es keine nutzbare Moderations-Engine. In einer Gruppe angesprochen, antwortet dieser Facilitator nur, dass Moderationen auf dieser Instanz noch nicht eingerichtet sind und man sich an die Administration wenden soll.",
+        "engineLink": "Beheben",
+        "engineMissing": "Die Moderations-Engine ist diesem Facilitator nicht angehängt, obwohl das normalerweise automatisch geschieht.",
+        "engineDisabled": "Die Moderations-Engine ist für diesen Facilitator abgeschaltet."
+      },
+      "engine": {
+        "heading": "Moderations-Engine",
+        "hint": "Das Archetyp-Plugin führt die Moderationen aus. Es ist das einzige Plugin, das ein Facilitator erhalten darf, und wird automatisch angehängt.",
+        "loading": "Moderations-Engine wird geprüft",
+        "loadFailed": "Die Moderations-Engine ließ sich nicht prüfen. Der Server hat die Statusabfrage nicht beantwortet.",
+        "none": "Es ist keine Moderations-Engine installiert. Facilitatoren lassen sich anlegen, können aber erst moderieren, wenn das Archetyp-Plugin installiert ist.",
+        "ambiguous": "Es sind mehrere Moderations-Engines installiert ({plugins}). Solange nicht alle bis auf eine entfernt sind, erhält kein Facilitator eine Engine.",
+        "openStore": "Plugin-Store öffnen",
+        "openPlugin": "Plugin öffnen",
+        "openGrants": "Datenbankzugriff freigeben",
+        "nothingToGrant": "Es gibt noch keine einzelne Engine zum Anhängen. Sobald genau eine installiert ist, wird sie automatisch angehängt.",
+        "attached": "Angehängt",
+        "disabled": "Für diesen Facilitator abgeschaltet",
+        "missing": "Nicht angehängt",
+        "repairHint": "Die Engine wird normalerweise ohne Zutun angehängt. Hier ist das nicht geschehen oder wurde rückgängig gemacht; erneutes Anhängen behebt das.",
+        "repair": "Engine anhängen",
+        "repairing": "Wird angehängt",
+        "ungranted": "Das Plugin „{plugin}“ kann die Moderations-Engine sein, sein Datenbankzugriff ist aber nicht freigegeben. Bis dahin ist es nicht die Engine, und kein Facilitator kann moderieren.",
+        "unusable": {
+          "inactive": "Die Moderations-Engine „{plugin}“ ist installiert, aber nicht aktiv.",
+          "not_reported": "Die Moderations-Engine „{plugin}“ ist aktiv, hat aber noch nicht gemeldet, dass sie bereit ist.",
+          "engine_reported": "Die Moderations-Engine „{plugin}“ meldet, dass sie nicht bereit ist.",
+          "unknown": "Die Moderations-Engine „{plugin}“ kann gerade keine Moderationen ausführen."
+        },
+        "engineReasonLabel": "Meldung des Plugins im Wortlaut:"
+      },
+      "detail": {
+        "kindHeading": "Facilitator"
+      },
+      "facilitationsViewLink": "Laufende Moderationen öffnen ({label})"
     }
   },
   "builder": {
@@ -3147,6 +3396,7 @@
       "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
       "placeholder": {
         "thinking": "Builder denkt nach …",
+        "awaitingChoice": "Builder wartet oben auf deine Auswahl …",
         "idle": "Beschreibe was der Agent tun soll. Enter zum Senden, Shift+Enter für Zeilenumbruch."
       },
       "button": {
@@ -3156,7 +3406,8 @@
       "liveness": {
         "streamLive": "Stream live · {elapsed} · Modell {model}",
         "iterActivity": "Iter. {iteration} · letzte Aktivität {gap}",
-        "likelyStuck": "vermutlich hängt — Stop drücken?"
+        "likelyStuck": "vermutlich hängt — Stop drücken?",
+        "awaitingChoice": "wartet auf deine Auswahl"
       },
       "turnStats": {
         "live": "Turn live",
@@ -4182,7 +4433,8 @@
         "agent": "Agents",
         "channel": "Channels",
         "tool": "Tools",
-        "extension": "Extensions"
+        "extension": "Extensions",
+        "archetype": "Archetypen"
       },
       "unknownLoadError": "Unbekannter Fehler beim Laden des Katalogs.",
       "filterCategoryAria": "Kategorie filtern",
@@ -4400,6 +4652,42 @@
       "drawerKicker": "Einrichtung",
       "close": "Schließen",
       "creatingJob": "Job wird erstellt …",
+      "archetypeConfirm": {
+        "title": "Archetyp „{name}“ hinzufügen?",
+        "lead": "„{plugin}“ ist ein Archetyp-Plugin. Es fügt dieser Instanz eine neue Art von Agent hinzu: „{name}“. Agenten dieses Archetyps legst du im Agenten-Verzeichnis an; das Plugin selbst wird keinem Agenten angehängt.",
+        "addsHeading": "Was der Archetyp hinzufügt",
+        "addsEmpty": "Nichts über das hinaus, was jeder Agent hat.",
+        "omitsHeading": "Was seine Agenten nie erhalten",
+        "omitsEmpty": "Nichts: Seine Agenten können alles erhalten, was ein Standard-Agent erhalten kann.",
+        "requiresHeading": "Was ein solcher Agent braucht",
+        "note": "omadia setzt diese Listen für jeden Agenten des Archetyps durch. Sie stammen aus dem Plugin und lassen sich nicht je Agent ändern.",
+        "confirm": "„{name}“ hinzufügen und installieren",
+        "confirming": "Installation wird gestartet …",
+        "cancel": "Abbrechen",
+        "unknownEntry": "{code} (in dieser Version ohne Beschreibung)",
+        "additions": {
+          "conversation_messages": "Sein Plugin erhält jede Nachricht, die Menschen in einem von einem solchen Agenten moderierten Gespräch schreiben, nicht nur Nachrichten mit Erwähnung.",
+          "agent_turn": "Sein Plugin lässt einen solchen Agenten von sich aus antworten; jede Antwort läuft über omadia, mit der Modellrichtlinie des Agenten und dem Privacy Shield.",
+          "own_identity_send": "Sein Plugin postet und schreibt Direktnachrichten unter der eigenen Kanalidentität des Agenten, in den von ihm moderierten Gesprächen und an deren Teilnehmer.",
+          "session_capabilities": "Sein Plugin erfährt, was der Kanal einer Live-Sitzung kann (Umfragen, Karten, Transkript)."
+        },
+        "omissions": {
+          "plugin_grant": "Fähigkeits-Plugins (Zugriff auf Unternehmenssysteme).",
+          "tool_grant": "Werkzeuge außer denen seines eigenen Archetyp-Plugins.",
+          "memory": "Allgemeines Gedächtnis über Gespräche hinweg.",
+          "default_agent": "Die Rolle des Standard-Ansprechpartners.",
+          "channel_binding": "Eine Zuordnung zu einem Kanal über einen fremden Bot.",
+          "persona_skill": "Arbeitsmodi.",
+          "fast_path": "Die Schnellspur.",
+          "agent_to_agent": "Gespräche mit anderen Agenten.",
+          "consultation": "Rückfragen an andere Agenten und Rückfragen von ihnen.",
+          "sub_agent": "Interne Helfer und das Anhängen an einen anderen Agenten.",
+          "assistance": "Die Arbeit als Assistent einer einzelnen Person."
+        },
+        "requirements": {
+          "own_channel_identity": "Eine eigene Identität im Kanal, in dem er arbeitet (in Teams ein eigener Bot). Er spricht nie über die Identität eines anderen Agenten."
+        }
+      },
       "setupGuide": "Installationsanleitung",
       "noConfigNeeded": "Dieses Plugin erfordert keine Konfiguration — bestätige die Installation rechts unten.",
       "secretsNote1": "Secrets werden ausschließlich im per-Agent-Vault abgelegt.",
@@ -4480,6 +4768,7 @@
       "save": "Speichern",
       "saveWithCount": "Speichern ({count})",
       "savedCheck": "✓ Gespeichert",
+      "savedRestartPending": "✓ Gespeichert – das Plugin läuft weiter und übernimmt die neuen Werte nach dem nächsten Neustart.",
       "savedNotStarted": "Gespeichert – aber das Plugin ist mit den neuen Werten nicht gestartet.",
       "connected": "Verbunden",
       "notConnected": "Nicht verbunden",
@@ -5253,7 +5542,9 @@
       "calls": "Calls",
       "cacheHitRate": "Cache-Hit-Rate",
       "cacheHitHint": "Anteil Input aus dem warmen Cache",
-      "tokens": "Tokens (in / out)"
+      "tokens": "Tokens (in / out)",
+      "cacheSavings": "Cache-Ersparnis",
+      "cacheSavingsHint": "Ohne Cache: {uncached}"
     },
     "panels": {
       "costOverTime": "Kosten über Zeit",
@@ -5264,6 +5555,11 @@
     "barTitle": "{date} · {cost} · {calls, plural, one {# Call} other {# Calls}}",
     "rowStats": "{calls} Calls · {input} in · {output} out · {cacheRead} Cache gelesen · {cacheWrite} Cache geschrieben",
     "rowReference": " · Abo-Calls ≈ {reference} API-Gegenwert",
+    "rowCacheSavings": " · Cache-Ersparnis {saving}",
+    "currency": {
+      "label": "Währung",
+      "converted": "{usd} · EZB-Kurs vom {date}"
+    },
     "groups": {
       "builder": "Builder ({count, plural, one {# Entwurf} other {# Entwürfe}})",
       "other": "Sonstige ({count, plural, one {# Quelle} other {# Quellen}})"
@@ -5357,6 +5653,7 @@
         "profileSnapshot": "Profil-Snapshots",
         "registry": "Plugin-Registries",
         "channel": "Kanäle",
+        "agent": "Agenten: außer Dienst, löschen, entfernen",
         "privacyFieldClassification": "Entscheidungen zur Feldklassifizierung",
         "privacyFieldPreview": "Einsichten in Feldwerte (Klassifizierung)",
         "privacyFieldAutoApprove": "Automatische Feldfreigaben",

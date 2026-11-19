@@ -43,6 +43,7 @@ const CATEGORY_FILTERS: readonly CategoryFilter[] = [
   'channel',
   'tool',
   'extension',
+  'archetype',
 ];
 
 /** Upper bound for `?q=`; the middleware substring-matches it per entry. */
@@ -652,7 +653,8 @@ function parseFilter(raw: string | undefined): CategoryFilter {
     raw === 'agent' ||
     raw === 'channel' ||
     raw === 'tool' ||
-    raw === 'extension'
+    raw === 'extension' ||
+    raw === 'archetype'
   ) {
     return raw;
   }
@@ -666,6 +668,7 @@ function countByKind(plugins: Plugin[]): Record<PluginKind, number> {
     channel: 0,
     tool: 0,
     extension: 0,
+    archetype: 0,
   };
   for (const p of plugins) counts[p.kind] += 1;
   return counts;

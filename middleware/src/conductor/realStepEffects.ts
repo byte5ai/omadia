@@ -1,9 +1,10 @@
-import type { OrchestratorRegistry } from '@omadia/orchestrator';
+import { assertArchetypeAllows, type OrchestratorRegistry } from '@omadia/orchestrator';
 import { resolveAddressedBot, type DefaultChannelBotKey } from './channelBotOwnership.js';
 import type { JsonObject, JsonValue, Step } from '@omadia/conductor-core';
 
 import type { ConductorSayOutcome, ConductorSayService } from './sayService.js';
 import type { StepEffects, StepExecution, StepMeta } from './stepEffects.js';
+import { WEBHOOK_POST_ACTION_ID, WEBHOOK_POST_DEFAULT_POSTCONDITION } from './webhookPostAction.js';
 
 /** Resolve a dot-path over a plain object root (for prompt interpolation). */
 function resolve(root: JsonObject, path: string): JsonValue | undefined {
@@ -150,6 +151,9 @@ export class RealStepEffects implements StepEffects {
     if (!entry) {
       throw new Error(`Agent '${slug}' is not active in the orchestrator registry`);
     }
+    // #2060 — a workflow step consults an agent on somebody's behalf. A
+    // facilitator is run by its engine only (`agentTurn`), never as a step.
+    assertArchetypeAllows(entry.agent, 'consultation');
 
     const root: JsonObject = { ctx: context, steps: asObject(context.steps) };
     const userMessage = step.prompt
@@ -255,9 +259,20 @@ export class RealStepEffects implements StepEffects {
     } catch {
       data = out;
     }
+    // #1703 — `webhook.post` reports a refused delivery in its result instead of
+    // throwing (a throw never reaches the engine, so no fallback could fire). Give
+    // the step the matching postcondition unless its author declared one, so a
+    // non-2xx is `unmet`: the graph's error path, or a surfaced failure when it has
+    // none. Keyed on the action id, not on "any result with an `ok` field" — a
+    // plugin tool that happens to answer `{ok:false}` keeps its current meaning.
+    const defaultPostcondition =
+      step.postcondition === undefined && toolId === WEBHOOK_POST_ACTION_ID
+        ? WEBHOOK_POST_DEFAULT_POSTCONDITION
+        : undefined;
     return {
       result: { text: out, data },
       actor: { kind: 'action', actionId: toolId },
+      ...(defaultPostcondition ? { defaultPostcondition } : {}),
     };
   }
 }

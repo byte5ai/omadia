@@ -701,6 +701,7 @@ describe('createOperatorAgentsRouter', () => {
    *  answers per `channelType|conversationId`. `undefined` = source absent. */
   let chatDirectory: Array<{ channelType: string; key: string; label: string; members?: string[] }> | undefined;
   let chatRosters: Record<string, ConversationRoster | undefined> | undefined;
+  let rosterRequests: { channelType: string; id: string; asChannelKey?: string }[] = [];
 
   before(async () => {
     store = new FakeConfigStore();
@@ -731,7 +732,10 @@ describe('createOperatorAgentsRouter', () => {
         getConversationRosters: () =>
           chatRosters
             ? ({
-                getRoster: async (channelType: string, id: string) => chatRosters?.[`${channelType}|${id}`],
+                getRoster: async (channelType: string, id: string, opts?: { asChannelKey?: string }) => {
+                  rosterRequests.push({ channelType, id, asChannelKey: opts?.asChannelKey });
+                  return chatRosters?.[`${channelType}|${id}`];
+                },
               } as unknown as ConversationRosterRegistry)
             : undefined,
         // #1033 — a two-provider catalogue; only anthropic holds a key.
@@ -771,6 +775,7 @@ describe('createOperatorAgentsRouter', () => {
     peerChats = undefined;
     chatDirectory = undefined;
     chatRosters = undefined;
+    rosterRequests = [];
     teamsStore = new FakeTeamsIdentityStore();
     teamsRunner = new FakeTeamsRunner();
     provisionerInstalled = true;
@@ -967,6 +972,7 @@ describe('createOperatorAgentsRouter', () => {
       const asked: string[] = [];
       peerChats = {
         botAppIdsIn: async () => [],
+        recentConversations: async () => [],
         conversationsOf: async (appId) => {
           asked.push(appId);
           if (appId !== 'aaaa') return [];
@@ -1014,6 +1020,7 @@ describe('createOperatorAgentsRouter', () => {
       const at = new Date('2026-09-07T10:00:00Z');
       peerChats = {
         botAppIdsIn: async () => [],
+        recentConversations: async () => [],
         conversationsOf: async () => [
           { conversationId: '19:dir@thread.skype', teamsType: 'groupChat', name: null, updatedAt: at, botAppIds: ['aaaa'] },
           { conversationId: '19:roster@thread.skype', teamsType: 'groupChat', name: null, updatedAt: at, botAppIds: ['aaaa'] },
@@ -1051,6 +1058,10 @@ describe('createOperatorAgentsRouter', () => {
         label: 'Carla Diaz, Dieter Fink, Eva Gross, +1',
         members: ['Carla Diaz', 'Dieter Fink', 'Eva Gross', 'Finn Hahn'],
       });
+      // #2043 — the roster is read as the agent's own bot, the one that is
+      // in the chat; the default bot would name nobody.
+      assert.ok(rosterRequests.length > 0);
+      assert.ok(rosterRequests.every((r) => r.asChannelKey === '28:aaaa'), JSON.stringify(rosterRequests));
       // A titled chat keeps its own title.
       assert.equal(byKey.get('19:titled@thread.skype')?.label, 'Budget 2027');
       // Nothing knows this one: id it is, and the UI says so.

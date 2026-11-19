@@ -36,7 +36,21 @@ function actorLabel(actor: unknown): string {
       (typeof o.ref === 'string' && o.ref) ||
       (typeof o.resolvedUserId === 'string' && o.resolvedUserId) ||
       null;
-    if (kind) return ref ? `${kind}:${ref}` : kind;
+    // #1699 — the executor has always recorded boolean qualifiers next to the
+    // kind (`noHolder`, `timedOut`, `ticked`, `invalid`), and this function read
+    // `kind`/`ref` only and dropped every one of them before render. They
+    // corroborate the reason column, so they are kept.
+    //
+    // ONLY the `true` flags. String-valued keys are deliberately not rendered:
+    // `operator_cancel` carries `requestedBy: <principal id>`
+    // (`runExecutor.ts` finalizeCancelledWaitingRun), and printing whoever
+    // pressed cancel into the trace table is an identity disclosure this view
+    // never made and FR-030's "respecting existing redaction" does not invite.
+    const flags = Object.entries(o)
+      .filter(([key, value]) => value === true && key !== 'kind')
+      .map(([key]) => key);
+    const suffix = flags.length > 0 ? ` (${flags.join(', ')})` : '';
+    if (kind) return `${ref ? `${kind}:${ref}` : kind}${suffix}`;
   }
   return actor == null ? '—' : JSON.stringify(actor);
 }
@@ -45,6 +59,93 @@ function fmtTime(iso: string | null, format: Formatter): string {
   if (!iso) return '—';
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : format.dateTime(d);
+}
+
+/**
+ * #1699 — a step's wall-clock duration. Until migration 0013 every step row was
+ * written with `started_at == ended_at` (both from the same transaction), so this
+ * reads 0 ms for rows recorded by an older build — shown as such rather than
+ * hidden, because a silent dash would look like missing data.
+ *
+ * The number goes through `useFormatter` and the unit through the catalog, so a
+ * German locale reads "1,5 s" (web-ui/CLAUDE.md § String-handling 1 + 4). The
+ * four hand-rolled `toFixed`/literal duration formatters elsewhere in this app
+ * (RoutineRow, the routine-run page, BuilderChatPane, PreviewChatPane) have the
+ * same defect — follow-up: one shared, locale-correct duration util.
+ */
+function useDurationLabel(): (
+  startedAt: string | undefined,
+  endedAt: string | null | undefined,
+) => string {
+  const t = useTranslations('conductor');
+  const format = useFormatter();
+  return (startedAt, endedAt) => {
+    if (!startedAt || !endedAt) return '—';
+    const ms = new Date(endedAt).getTime() - new Date(startedAt).getTime();
+    if (Number.isNaN(ms) || ms < 0) return '—';
+    if (ms < 1000) return t('durationMs', { value: format.number(ms) });
+    if (ms < 60_000) {
+      return t('durationSeconds', {
+        value: format.number(ms / 1000, { maximumFractionDigits: 1 }),
+      });
+    }
+    return t('durationMinutes', {
+      min: format.number(Math.floor(ms / 60_000)),
+      sec: format.number(Math.round((ms % 60_000) / 1000)),
+    });
+  };
+}
+
+/**
+ * #1699 — a stored `ConductorRunErrorCode` (`middleware/src/conductor/runError.ts`)
+ * is a message-catalog KEY, and the middleware is free to add one this build has
+ * no translation for. `t.has` is how the rest of the app handles that
+ * (`admin/builder/panels/InspectorPanel.tsx`, added there after unguarded call
+ * sites rendered raw keys): the code shows as itself, never as a crash and never
+ * as "no cause" — and no hand-maintained mirror of the vocabulary drifts here.
+ */
+function useRunErrorCodeLabel(): (code: string) => string {
+  const t = useTranslations('conductor');
+  return (code) => {
+    const key = `runErrorCodes.${code}`;
+    return t.has(key) ? t(key) : code.replace(/_/g, ' ');
+  };
+}
+
+/**
+ * The cause, as text. The CODE carries the meaning (translated); the stored
+ * message is supporting detail, never the only signal — it is an engine sentence
+ * or a redacted provider error, and it is already truncated server-side.
+ */
+function Reason({
+  code,
+  message,
+  codeLabel,
+  unknownLabel,
+  emptyLabel,
+}: {
+  code: string | null | undefined;
+  message: string | null | undefined;
+  codeLabel: (code: string) => string;
+  /** Shown where the code would go when there is a message but no code — the
+   *  store drops a code outside this build's vocabulary and keeps the message,
+   *  which must stay a detail rather than be promoted to the label. */
+  unknownLabel: string;
+  /** Shown when the row carries neither: "cause not recorded" for a failed run
+   *  (pre-0013 rows), a plain dash for a step that simply has no cause. */
+  emptyLabel: string;
+}): React.JSX.Element {
+  if (!code && !message) return <span>{emptyLabel}</span>;
+  return (
+    <span className="flex flex-col gap-0.5">
+      <span>{code ? codeLabel(code) : unknownLabel}</span>
+      {message ? (
+        <span className="break-words text-[11px] text-[color:var(--fg-muted)]" title={message}>
+          {message}
+        </span>
+      ) : null}
+    </span>
+  );
 }
 
 function StatusBadge({ status }: { status: string }): React.JSX.Element {
@@ -67,6 +168,9 @@ export function ConductorRunTrace({ result }: { result: ConductorRunResult }): R
   const t = useTranslations('conductor');
   const format = useFormatter();
   const { run, steps } = result;
+  const codeLabel = useRunErrorCodeLabel();
+  const durationLabel = useDurationLabel();
+  const runFailed = run.status === 'failed';
   return (
     <div className="grid gap-3">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] text-[color:var(--fg-muted)]">
@@ -81,6 +185,20 @@ export function ConductorRunTrace({ result }: { result: ConductorRunResult }): R
           {t('endedLabel')}: {fmtTime(run.endedAt, format)}
         </span>
       </div>
+      {runFailed ? (
+        <p className="text-[13px] text-[color:var(--fg-strong)]">
+          <span className="text-[color:var(--fg-muted)]">{t('runReasonLabel')}: </span>
+          {/* Pre-0013 rows carry neither, and `Reason` renders the same
+              "cause not recorded" label for a code this build cannot read. */}
+          <Reason
+            code={run.errorCode}
+            message={run.errorMessage}
+            codeLabel={codeLabel}
+            unknownLabel={t('runReasonUnknown')}
+            emptyLabel={t('runReasonUnknown')}
+          />
+        </p>
+      ) : null}
       {steps.length === 0 ? (
         <p className="text-[13px] text-[color:var(--fg-muted)]">{t('noSteps')}</p>
       ) : (
@@ -93,6 +211,8 @@ export function ConductorRunTrace({ result }: { result: ConductorRunResult }): R
                 <th scope="col" className="border-b border-[color:var(--border)] px-2 py-1">{t('colActor')}</th>
                 <th scope="col" className="border-b border-[color:var(--border)] px-2 py-1">{t('colPostcondition')}</th>
                 <th scope="col" className="border-b border-[color:var(--border)] px-2 py-1">{t('colTransition')}</th>
+                <th scope="col" className="border-b border-[color:var(--border)] px-2 py-1">{t('colDuration')}</th>
+                <th scope="col" className="border-b border-[color:var(--border)] px-2 py-1">{t('colReason')}</th>
               </tr>
             </thead>
             <tbody className="font-mono text-[color:var(--fg-strong)]">
@@ -103,6 +223,16 @@ export function ConductorRunTrace({ result }: { result: ConductorRunResult }): R
                   <td className="border-b border-[color:var(--border)]/40 px-2 py-1">{actorLabel(s.actor)}</td>
                   <td className="border-b border-[color:var(--border)]/40 px-2 py-1">{s.postconditionOutcome ?? '—'}</td>
                   <td className="border-b border-[color:var(--border)]/40 px-2 py-1">{s.transitionTaken ?? '—'}</td>
+                  <td className="border-b border-[color:var(--border)]/40 px-2 py-1">{durationLabel(s.startedAt, s.endedAt)}</td>
+                  <td className="border-b border-[color:var(--border)]/40 px-2 py-1">
+                    <Reason
+                      code={s.errorCode}
+                      message={s.errorMessage}
+                      codeLabel={codeLabel}
+                      unknownLabel={t('runReasonUnknown')}
+                      emptyLabel="—"
+                    />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -126,6 +256,9 @@ export function ConductorRunTrace({ result }: { result: ConductorRunResult }): R
  */
 export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: () => void }): React.JSX.Element {
   const t = useTranslations('conductor');
+  // #1699 — a run LIST that cannot say why a row is red is what this issue was
+  // filed about, and the list carries the cause because the run row mirrors it.
+  const codeLabel = useRunErrorCodeLabel();
   const format = useFormatter();
   const [runs, setRuns] = useState<ConductorRun[]>([]);
   const [selected, setSelected] = useState<ConductorRunResult | null>(null);
@@ -242,9 +375,17 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
                 className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-md border border-[color:var(--border)] px-3 py-2 text-left hover:bg-white/5"
                 onClick={() => void openRun(r.id)}
               >
-                <span className="flex items-center gap-3">
+                <span className="flex min-w-0 items-center gap-3">
                   <StatusBadge status={r.status} />
                   <span className="font-mono text-[12px] text-[color:var(--fg-muted)]">{r.triggerKind}</span>
+                  {r.status === 'failed' ? (
+                    <span
+                      className="min-w-0 truncate text-[12px] text-[color:var(--fg-muted)]"
+                      title={r.errorMessage ?? undefined}
+                    >
+                      {r.errorCode ? codeLabel(r.errorCode) : t('runReasonUnknown')}
+                    </span>
+                  ) : null}
                 </span>
                 <span className="font-mono text-[11px] text-[color:var(--fg-muted)]">{fmtTime(r.startedAt, format)}</span>
               </button>

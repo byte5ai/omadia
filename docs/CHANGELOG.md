@@ -43,6 +43,843 @@ previewing a workflow cannot start a real LLM turn, create token usage, or run
 agent tools and side effects. Normal conductor runs continue to execute agent
 steps normally.
 
+### Added — A facilitator's model turn as an authorized action (#2090, epic #2043): K4.2 of the spec alignment
+
+- **`agentTurn@2`.** An archetype plugin can run a turn under an execution
+  scope: it names the scope, the process, the phase, the purpose and how
+  many model calls it reserves. The kernel takes the authorization before
+  any model is called and refuses the turn past the deadline, without
+  budget, with the kill switch on, or in a phase that does not fit the
+  scope. The turn itself and its guards are the same as before.
+- **Model calls are counted where they are recorded.** Every model call of
+  the kernel (main loop, helper models, verifier, a plugin's own calls) is
+  counted for the turn that caused it, and the scope is charged with the
+  real number; what was reserved and not used goes back. A turn that makes
+  more calls than it reserved uses the budget up, and the next action is
+  refused. The kernel cannot stop a turn in the middle.
+- The first version of the service is unchanged and still runs a turn
+  without a scope, until the facilitation engine has moved (migration 0074,
+  plugin-api 1.64.0).
+
+### Added — Execution scopes, conversation reservations and a kill switch for archetype plugins (#2090, epic #2043): K4.1 of the spec alignment
+
+- **Execution scopes.** An archetype plugin (the facilitation engine) acts
+  on its own schedule. The kernel now offers it bounded permissions per
+  process: five kinds of scope (`configuring`, `active`, `closing`,
+  `scheduling`, `follow_up`), each with a deadline, a budget of actions and
+  of model calls, and the conversations and people it may address. Every
+  action is drawn from a scope in one database statement, so two workers
+  cannot both take the last unit and a restart keeps the counters. An ended
+  scope never re-opens (migration 0073, plugin-api 1.63.0,
+  `executionAuthorization`).
+- **Not enforced yet.** The existing services do not ask for an
+  authorization in this version; the facilitation engine keeps working
+  unchanged. The services that require a scope follow.
+- **One process per conversation.** A facilitation that starts through the
+  new contract and an agent discussion now hold the same reservation: a
+  discussion is refused while a facilitation holds the conversation, and
+  the other way round. A discussion that is running when the migration is
+  applied gets its reservation.
+- **Kill switch.** An operator can stop every action of archetype plugins
+  for the instance, one agent or one process (`/api/v1/operator/execution`,
+  and "Running processes" in the agent directory). A stop refuses further
+  authorizations until it is cleared; it ends and deletes nothing. Setting
+  and clearing are in the audit log.
+- **End of service.** Disabling or deleting an agent, and uninstalling its
+  archetype plugin, now also end the agent's execution scopes and release
+  its conversation reservations, after the plugin had its chance to close
+  its processes.
+- **Two versions of a kernel service.** A plugin can ask for a second major
+  of a service by name (`agentTurn@2`) once its manifest declares it; the
+  bare name keeps meaning the first.
+- New settings: `EXECUTION_SCOPE_CONFIGURING_MAX_HOURS` (default 72),
+  `EXECUTION_SCOPE_SWEEP_INTERVAL_MS` (default 60000).
+
+### Added — An archetype plugin can have its database in its own schema under its own roles (#2088, epic #2042): K3a of the spec alignment
+
+- **Opt-in by manifest.** A plugin of manifest kind `archetype` that does
+  not list `graphPool` under `requires` no longer runs on the shared
+  database pool. With the database grant it gets `ctx.sql.query()` and
+  `ctx.sql.transaction()` (plugin-api 1.62.0). An archetype plugin that
+  still requires `graphPool`, and every plugin of another kind, is unchanged.
+- **Own schema, two login roles.** When such a plugin activates, the kernel
+  creates the schema `plg_<plugin id>`, a runtime role that reads and writes
+  the tables of that schema and nothing else, and a migration role that owns
+  the schema; the plugin's migration files run as the migration role. Both
+  are roles the connection logs in as, so SQL the plugin sends cannot leave
+  them, and they work behind a transaction-mode pooler. The runtime role may
+  read the migration ledger but not write it. Before the plugin runs, the
+  kernel checks that neither role holds a right on a table outside the
+  schema and refuses the activation otherwise.
+- **One-time move.** Tables the plugin created in `public` while it ran on
+  the shared pool (`plg_<plugin id>_*`) move into its schema, with their rows,
+  the first time a version without `graphPool` activates. There is no way
+  back: a version that expects the shared pool no longer finds them.
+- **What the database user needs.** Postgres 16 or newer, and the kernel's
+  database user must be allowed to create roles and schemas. Where it is
+  not, the activation fails with `cannot_create_roles` and the statement an
+  administrator runs once.
+- **Limit.** Plugin code runs in the kernel's process. This limits the
+  connection the kernel hands out; it does not stop code in the same process
+  from opening its own connection with credentials it finds there.
+- **Not yet:** an archetype plugin that still requires `graphPool` is not
+  refused. That follows once the facilitation engine has moved.
+### Fixed — An archetype plugin is updated and stopped in the runtime it runs in (#2088)
+
+- **Update to an archetype version.** Uploading or installing from the Hub a
+  version of an installed plugin whose manifest kind is `archetype` started
+  that version as an agent plugin next to the running one: the activation
+  failed with "duplicate provider" and the previous version was kept. The
+  update now stops the running version, registers the archetype and starts
+  the new version in the extension runtime, as a first install does.
+- **Uninstall and reactivation.** Deactivating an archetype plugin went to
+  the agent runtime, which knows no such plugin; its tools, routes and
+  services stayed registered. It is now stopped where it runs.
+- Every manifest kind has one entry in a single mapping to its runtime; a
+  kind without one no longer compiles.
+
+### Changed — End of service, guarded uninstall and tombstones (#2088, epic #2042): K2 of the spec alignment, second part
+
+- **Deleting an agent keeps a tombstone** (migration `0072`), for every
+  archetype. The row stays, marked deleted, with everything that references
+  it (identity, grants, working modes, internal helpers, schedules, channel
+  policies, bindings, subscriptions): the nine `ON DELETE CASCADE` children
+  are no longer dropped by a delete. The agent is in no list and no lookup,
+  its slug is free for a new agent, and a conversation bound to it is
+  refused by routing instead of being answered by the default agent. A
+  tombstone cannot be restored.
+- **The hard delete is a separate step:** `POST
+  /api/v1/operator/agents/deleted/:id/purge`. Inside the retention period
+  (`AGENT_TOMBSTONE_RETENTION_DAYS`, default 30) it needs the agent's slug as
+  confirmation. `GET /api/v1/operator/agents/deleted` lists the tombstones.
+  The agent directory shows them under "Deleted agents" / "Gelöschte
+  Agenten".
+- **End of service.** Before an agent is disabled or deleted, its archetype
+  plugin ends the processes it was running for the agent (new plugin
+  contract, plugin-api 1.61.0), then the kernel ends every message
+  subscription of the agent, whatever the plugin answered. Re-enabling
+  resumes nothing. The answer of the disable and delete routes says what
+  ended in which conversation, and the directory shows it.
+- **Kernel-guarded uninstall of an archetype plugin.** Before the plugin is
+  unloaded, independently of its own `onUninstall`, every enabled agent of
+  its archetype goes through end of service and is disabled. Records stay;
+  no agent is deleted or converted to another archetype.
+- **Audit:** `agent.end_of_service` (which processes and conversations),
+  `agent.disable`, `agent.delete`, `agent.purge`; filter "Agents" in the
+  audit log.
+- **No `system` notices yet (#2045).** Every place that owes a conversation
+  one ("this agent was deleted", "… disabled", "its archetype plugin was
+  removed") calls a seam that logs `[system-notice] owed, not sent`. Nothing
+  is posted under an agent's identity in its place.
+- A source check (`agentTombstoneReaders.test.ts`) fails when a new query on
+  `agents` or a table that references it neither scopes to one agent nor
+  excludes tombstones.
+
+### Added — Archetype plugins (#2088, epic #2042): K2 of the spec alignment, first part
+
+- **Manifest kind `archetype`.** A plugin of this kind delivers an agent
+  archetype: its manifest carries the descriptor the kernel enforces (what
+  agents of the archetype never get, what the archetype adds, what such an
+  agent needs, the role contract). The block is read strictly; an entry the
+  kernel does not know rejects the manifest. It runs in the extension
+  runtime and is granted only to agents of its own archetype.
+- **An unknown manifest kind is rejected at ingest** instead of being loaded
+  as an `agent` plugin. Every plugin on the public Hub (35) and every bundled
+  manifest (23) uses a known kind; none is refused by this.
+- **Registration.** An installed archetype plugin registers its archetype:
+  its descriptor replaces the kernel's own for `facilitator`, and
+  `agent_archetypes.source` names the plugin. An uninstall brings the
+  kernel's descriptor back; an archetype with no descriptor at all leaves its
+  agents with nothing. Two plugins for one archetype: neither is registered.
+- **Migration `0071`** removes the closed list on `agents.kind`, so an agent
+  of a third archetype can be created once the archetype is registered.
+  `kind` stays equal to `archetype` for every row.
+- **The facilitation engine is found by archetype kind or by the
+  `facilitationEngine@1` capability** (both until the capability is retired).
+  The role contract and the kernel services for the engine (`agentTurn`,
+  message subscription, own-identity sends, session capabilities) follow the
+  descriptor.
+- **Install confirmation.** Installing an archetype plugin is refused with
+  `install.archetype_confirmation_required` until the operator confirms; the
+  store shows what the archetype adds, what its agents never get and what
+  such an agent needs before anything is installed.
+- **Agent directory:** one section per registered archetype
+  (`GET /api/v1/operator/archetypes`) instead of the hard-coded Facilitators
+  section. The facilitator keeps its own section with engine and Teams
+  readiness; agents of an archetype nobody delivers any more stay visible
+  with the reason. Store: filter "Archetypes" / "Archetypen".
+- plugin-api 1.60.0 (no type change; marks a kernel that knows the kind).
+
+Not in this part: the kernel-guarded uninstall, end of service for a single
+agent and the tombstone delete follow as the second part.
+
+### Fixed — Session state behind a transaction-mode connection pooler
+
+Found by auditing the kernel after the facilitator plugin's lock defect: the
+hosted instance reaches Postgres through Neon's pooled address, where a
+client has no server session of its own outside a transaction.
+
+- The eight SQL migrators (core, auth, Conductor, routines, profile storage,
+  profile snapshots, knowledge graph, memory) took a session-level advisory
+  lock and released it with a second statement. Through the pooler the two
+  ran on different server sessions: the lock stayed held by a session nobody
+  owned, the next boot with a pending migration could wait out its budget and
+  fail with "timed out", and two machines sharing a server session could both
+  migrate. Every file is now applied in a transaction that takes
+  `pg_advisory_xact_lock` first, bounded by `SET LOCAL lock_timeout`, and
+  re-reads the ledger under it. Same lock keys, same error text on a timeout.
+- `LISTEN` for message-subscription changes ran on a pooled connection, where
+  the statement succeeds and no notification arrives. It now opens its own
+  connection directly to Postgres: `DATABASE_URL_DIRECT` when set, else a
+  Neon `-pooler` host without `-pooler`. The periodic reconcile is unchanged.
+- The knowledge graph's stale-vector clear and vector-column migration hold a
+  session-level lock across several transactions. With a pooled address they
+  now run on a direct connection of their own, by the same address rule.
+- New optional setting `DATABASE_URL_DIRECT`, needed only behind a pooler
+  that cannot be recognised from its address.
+### Added — Question cards: contract and kernel side (#2089, epic #2043)
+
+- An engine can post a typed question card (`message.card` on
+  `conversationSend`): single and multiple choice, ranking, consent,
+  assignment, text, number, date. A channel plugin declares what it renders
+  (`supports.card`: kinds, questions per card, whether a posted card can be
+  updated). The kernel validates the card like a poll and refuses one the
+  channel could not show with a `channel_error` that names the reason, so the
+  engine falls back to a chat ballot. Nothing is posted in that case.
+- `conversationSend.capabilities(channelType)` tells an engine what the
+  channel declares; `conversationSend.updateCard` closes a posted card with
+  the engine's result lines or replaces it with a corrected one, as the
+  agent's own identity and only where the caller holds the subscription.
+- A submission arrives as a `card_answer` event with `answers` (one typed
+  value per question) and the `proposalId` / `proposalVersion` the card
+  carried. An answer that is not in the contract's form is refused instead of
+  being stored as something else. Polls and their answers are unchanged.
+- plugin-api 1.59.0, channel-sdk 0.3.4. No migration: the answer is stored in
+  the existing JSON column.
+
+### Added — Agent archetypes: registry and `agents.archetype` (#2088, #2060, epic #2042)
+
+First of six steps that align native facilitators with the rewritten specs
+(`specs/2042-…` §5.10, `specs/2043-…` §0). Additive: nothing is removed.
+
+- Migration `0070`: table `agent_archetypes` (seeded with `standard` and
+  `facilitator`) and column `agents.archetype`, backfilled from `kind`,
+  fixed at creation. `kind` stays and stays equal: an INSERT that names only
+  one of the two fills the other, so a machine on the previous release still
+  sees a facilitator as one. Dropping `kind` is the last step, not this one.
+- The kernel reads the archetype everywhere. Whether an agent may have
+  something an archetype can leave out (plugin and tool grants, memory, the
+  default-agent role, channel bindings, working modes, the fast lane,
+  agent-to-agent, consultation, internal helpers, assistance) is one
+  question, `archetypeOmits(agent, x)`, answered by the archetype's
+  descriptor. The facilitator's descriptor is seeded by the kernel with
+  exactly the omissions it had. An archetype without a registered descriptor
+  omits everything; it is never run as a standard agent.
+- API: agents carry `archetype` next to `kind`; `POST /operator/agents`
+  accepts `archetype` (and `kind` as before; two different values are
+  refused, an unregistered archetype is refused). plugin-api 1.58.0:
+  `AgentProfile.archetype`.
+- Operator UI and refusal texts use the terms of `docs/terminology.md` on
+  the facilitator pages: archetype / Archetyp, default agent /
+  Standard-Ansprechpartner, working modes / Arbeitsmodi, fast lane /
+  Schnellspur, internal helpers / interne Helfer, archetype plugin /
+  Archetyp-Plugin, Moderation. The persona preset picker says "persona
+  template" / "Persona-Vorlage"; "archetype" now means only the job profile.
+- Roster (#2091, types only): `ConversationRoster.status`
+  (`complete | partial | unknown`), `readAt`, `statusDetail`, and
+  `getRoster(…, { fresh })` on the channel contract (channel-sdk 0.3.3) and
+  on the plugin-facing `conversationRosters` service. A provider that
+  predates `status` gets it derived from `partial`.
+
+### Fixed — Rollout defects of native facilitators (epic #2043)
+
+- A 403 right after creating the app registration is no longer reported as
+  missing admin consent (D22). Entra ID refuses a follow-up call on a new
+  registration (add the secret, create the service principal) for a short
+  time; the connector reports every 403 as `consent_missing`, and the panel
+  told the operator to grant a permission that was granted. The run now
+  waits 5, 10, 20 and 20 seconds (shown as "waiting for Entra replication")
+  and continues on the existing registration. If Graph still refuses, the
+  run ends with the new code `app_registration_not_ready`, whose text says
+  that this is not a consent problem and what to do. A 403 on the create
+  itself stays `consent_missing`; its text now also covers a permission that
+  was granted moments ago.
+- A facilitator's roster is read as the facilitator. The first live
+  facilitation opened with an empty participant list: a roster request said
+  neither which agent nor which bot asks, so the Teams adapter answered with
+  the view of the instance's default bot, which is not in the facilitator's
+  chat. `ConversationRosterProvider.getRoster` takes `{ asChannelKey }`
+  (channel-sdk 0.3.2), the plugin-facing `conversationRosters.getRoster`
+  takes `{ agentSlug }` as its third argument (facilitation engine and kernel
+  only; an agent without an identity on that channel gets "unknown", never
+  another bot's view), and mention resolution, the recipient check of a
+  direct message and the partner-chat names of an agent ask as the agent's
+  own bot. Without the option nothing changes.
+- One AI marking on everything a facilitator posts, never two. A turn
+  answer carried the instance's disclosure sentence (which a labelling
+  channel swaps for its label), a model-written engine post carried the
+  sentence and no label, and a fixed engine text or a fixed refusal carried
+  nothing. Now: `agentTurn` returns its text without the sentence; an
+  own-identity send is marked at the send, by the channel's own AI label
+  where the channel declares one (`supports.aiLabel`, channel-sdk 0.3.2) and
+  by the instance's disclosure line on the first post to a conversation or a
+  person otherwise; the facilitator's fixed answers (refusal, "not set up")
+  follow the agent's disclosure rule like a model answer.
+- A tool call knows the caller's name: `callerUserRef.displayName`
+  (plugin-api 1.57.0), from the new `TurnOrigin.speaker` a channel states and
+  from the author of the message an engine turn answers.
+- The team/chat picker served `loading` for ever on the live instance: its
+  cache was looked up by an object the route builds anew per request, so every
+  request started its own enumeration. One cache per router now. The picker
+  no longer enumerates the tenant to be opened: it shows teams and the chats
+  the instance's bots are already in (`recent`), searches the tenant's chats
+  on the server on demand (`q`, or `chats=all`), and turns a pasted Teams
+  link into its id.
+- "Reset run" really frees the identity: an app registration whose permanent
+  delete Entra did not confirm is looked up in the recycle bin and purged
+  within a bound, and the reset stays incomplete when that cannot be
+  confirmed. A new provisioning run no longer revives the old application.
+- A provisioned bot is checked against the Bot Connector before it counts as
+  installed (`probeBot` on `teamsProvisioner@1`, M365 connector >= 0.9.2). A
+  bot the connector rejects fails the run with `bot_rejected` instead of
+  showing as ready.
+- "Run provisioning again" rebuilds and re-publishes the Teams app package
+  when the catalog holds an older version than the current template and
+  identity yield, instead of skipping both steps once a catalog app exists.
+- An install answered 404 right after the catalog upload is waited out like
+  the 400 was.
+- A facilitator with its own Teams identity could not start a facilitation:
+  its tools were told a conversation id that still carried the bot key
+  (`28:<appId>-19:…`), taken from the session scope. A channel now states its
+  native conversation id on the turn origin (`TurnOrigin.channelConversationId`,
+  channel-sdk 0.3.1) and the kernel uses it as given, per thread in a Teams
+  channel; reading the scope remains as a fallback and handles the bot-key
+  form. A refused readiness check logs its cause and the id once.
+- A provisioned Teams bot is served as soon as its app is published in the
+  org catalog, before the team/chat install. A refused install no longer
+  leaves a bot users can add personally and that never answers.
+- A team or chat that refuses the app's resource-specific permissions is a
+  permanent failure with its own code (`rsc_consent_refused`), not a
+  "replication" retry; the whole Graph answer is stored, returned by the API
+  and shown under the technical detail (en + de).
+- The team/chat picker no longer waits for the whole tenant: the list is
+  enumerated once for all callers, kept for five minutes, answered within
+  eight seconds (`loading` otherwise, the UI asks again), and
+  `GET /operator/agents/:slug/teams/targets` takes `q`, `limit` and `refresh`.
+- With M365 connector 0.9.1 the targets route reports when the connector's
+  own list is incomplete (`sourceTruncated`), how many untitled chats have no
+  member names, and whose members a search can match (`memberSearch`); the
+  picker says so. The `rsc_consent_refused` classification reads the
+  connector's `graphError`. Connector 0.9.0 keeps working unchanged.
+- The Teams template revision is read from `appPackage/TEMPLATE_REVISION.txt`
+  (the extension-less `TEMPLATE_REVISION` is still read as a fallback). The
+  plugin zip ingest refuses an extension-less file there, so channel-teams
+  0.36.0 could not be installed; 0.36.1 ships the `.txt`.
+- Installing a version by number right after its publish no longer answers
+  `version_not_found` from the cached Hub index: the index is read once more.
+- `@omadia/agent-facilitator` before 1.0.0 is not started on this core, also
+  when it is already installed: it is shown as errored with the reason and
+  "install 1.0.0 or newer", and `query_facilitator` leaves the agents. It
+  could no longer start a facilitation but still told the group it had.
+
+### Added — Facilitators in the agent directory (#2066, epic #2043)
+
+2026-11-18. Operator UI for facilitator-kind agents in `web-ui`. The
+facilitations view is not part of it; that is the engine plugin's own UI.
+
+- **Directory**: `/operator/agents` lists "Facilitators" apart from
+  "Orchestrators". A facilitator is not counted as an orchestrator and is not
+  offered as the standard orchestrator. Creating one sends
+  `kind: "facilitator"` and opens its page.
+- **Facilitator page**: tabs Identity, Model, Teams and Facilitation only.
+  Plugins, tools and MCP, conversations with other agents and memory have no
+  tab, and one line says why. The Facilitation tab shows the engine plugin,
+  which the kernel attaches by itself, and offers "attach" only as a repair
+  when the row is missing or switched off.
+- **Identity within bounds**: persona sliders, archetypes and industry presets
+  stop at the facilitator bounds (sarcasm at most 20, drama 30, humour 60, risk
+  tolerance 60, warmth at least 30) and each bounded slider shows its range.
+  The anti-flattery guard has no "off". A refused save
+  (`422 facilitator_contract_violation`) lists every finding and repeats it at
+  the field it is about; `409 facilitator_omission` is shown as a sentence per
+  omission. Both in English and German. A facilitator's profile has a
+  language select (German, English, installation language).
+- **Readiness**: a facilitator is "not ready" without its own installed Teams
+  identity, without a usable engine or without the engine grant, each with a
+  link to the fix. Teams provisioning is the existing per-agent flow.
+- **Engine notice** from `GET /api/v1/operator/agents/facilitation-engine`,
+  one sentence per state and reason code: no engine installed (link to the
+  store), more than one installed, installed without its SQL grant (link to
+  the plugin's grants), bound but inactive, not reported or reporting itself
+  not ready (link to the plugin; the plugin's own words are shown apart, as
+  sent). With a usable engine that contributes a nav entry, the directory
+  links to its facilitations view. The readiness line says what a
+  facilitator answers in a group meanwhile.
+- **No channel binding**: the channels dashboard and the Builder agent picker
+  do not offer facilitators; `409 facilitator_omission` with omission
+  `channel_binding` is shown as a sentence.
+- **Language**: sent only when the operator changed it on a facilitator;
+  standard agents never send it.
+
+### Added — `conversationMessages.isSubscribed` (epic #2043)
+
+plugin-api 1.56.0. The facilitation engine can ask whether it holds an active
+subscription for a scope (`isSubscribed?(scope): Promise<boolean>`, read from
+the store, own subscriptions only), to reconcile its live facilitations after
+a restart, a revoked grant or a disabled agent.
+
+### Fixed — Native facilitators, found by running the real engine against the real kernel (epic #2043)
+
+- A plugin whose `activate()` threw after registering tools kept them registered; the next activation failed with "duplicate native-tool name". Failed activations and deactivations now drop the plugin's tools.
+- `ctx.routes.register` accepts a plain `(req, res[, next])` handler (wrapped into a router); error handlers and non-functions are still refused.
+- The facilitation engine status is current right after a SQL grant or revoke (`ungranted` is reachable through a real install; no 30 s wait).
+- After a restart a facilitator had no engine tools: it was built before the SQL grants could be read and nothing rebuilt it. The registry now rebuilds a facilitator whenever its effective engine grant changes.
+- The mention that opens a facilitation produced two messages (the engine's handshake and the model's own paraphrase). The answer of a channel-started turn is dropped when the engine posted as the facilitator during it.
+- A channel-started facilitator turn tells the model that it comes from a group conversation, that the engine is set up and that it keeps no memory between messages there.
+- Grant views are refreshed before a plugin is re-activated after a consent change, so the engine's re-subscription in `activate()` is no longer refused after a re-grant.
+- The subscription NOTIFY trigger of migration `0068_conversation_messages.sql` is row-level: a statement that touches no row wakes no listener.
+- A channel type belongs to the plugin that first acts for it (no longer derived from the plugin id); `GET /operator/channels` reports each agent's `kind`.
+
+### Added — Native facilitators, kernel side (epic #2043)
+
+2026-11-18. A facilitator is a kind of agent that only moderates. The engine
+(tables, lifecycle, counting, scheduler) lives in the plugin
+`omadia-agent-facilitator`; the kernel adds the kind, its enforced omissions
+and the neutrality contract. No facilitation tables in the kernel.
+
+- **Migration `0067_agent_kind`** (#2060): `agents.kind`
+  (`standard` | `facilitator`, default `standard`, CHECK). Trigger
+  `agents_kind_immutable` refuses any change of the kind after insert; trigger
+  `fallback_agent_not_facilitator` on `multi_orchestrator_settings` refuses a
+  facilitator as the default agent. Existing rows are `standard`.
+- **Operator API**: `POST /api/v1/operator/agents` takes `kind`; list, picker
+  and create answer carry it. Refusals for a facilitator answer
+  `409 { error: "facilitator_omission", omission, message }`: plugin grants
+  other than the installed plugin whose manifest provides
+  `facilitationEngine@1` (none or more than one installed: nothing can be
+  granted), context-memory modes, default-agent designation, agent-to-agent
+  switch and per-chat policy, persona skills, sub-agents, tool and MCP grants,
+  schedules. An identity that conflicts with the neutrality contract answers
+  `422 { error: "facilitator_contract_violation", issues[] }` (persona axis
+  bounds, sycophancy guard off, instructions matched by a deterministic rule
+  list; no model call).
+- **Runtime**: a facilitator is built without memory tool and binder, recall,
+  session capture, fact/excerpt extraction, auto-promote, knowledge-graph and
+  calendar tools, persona skills and fast path. It is offered and may run only
+  the tools of its granted plugins, and the registry intersects its grant rows
+  with the engine plugin. The peer gate is closed for it in both directions and
+  a workflow step cannot run it. Outside a group conversation or an engine-run
+  turn its `ChatAgent` answers with a fixed refusal, without a model call.
+- **Neutrality block**: compiled as the last section of a facilitator's
+  identity prompt at save time, in the boot recompose and again when the agent
+  is built (after name and self-description), so it is present without a
+  stored identity too.
+- **Migration `0068_conversation_messages`**: tables
+  `conversation_message_subscriptions` (agent, channel type, conversation,
+  lower-cased channel key, subscribing plugin; one active row per identity and
+  conversation) and `conversation_message_events` (append-only, kernel-assigned
+  `event_seq` and `revision`, dedupe key per platform event). Postgres only.
+- **`conversationMessages` service** (plugin-api `conversationMessages@1`):
+  `CoreApi.emitConversationMessage` stores an event only when the receiving
+  identity holds a subscription; `CoreApi.isAllMessagesSubscribed` is a
+  synchronous cache lookup. Subscribe refuses unless the agent is a
+  facilitator with its own channel identity whose bot was observed in the
+  conversation and whose channel reports readiness (when it has a readiness
+  provider). Only the facilitation engine plugin is answered. Revisions are
+  assigned by the kernel (an adapter's edit counter restarts with the
+  process); replay by cursor (`listSince`).
+- **Retention**: `CONVERSATION_MESSAGES_GRACE_MS` (default 6 h after the
+  subscription ended), `CONVERSATION_MESSAGES_MAX_AGE_DAYS` (default 30, 0 =
+  off), `CONVERSATION_MESSAGES_PURGE_INTERVAL_MS` (default 10 min).
+- **No second answer**: once the engine holds a facilitator's subscription for
+  a conversation, a channel-started turn of that agent there returns an empty
+  answer without a model call; the engine drives every turn through
+  `agentTurn`.
+- **Send as own identity** (`conversationSend` with `asOwnIdentity`,
+  `targetedSend` with `asAgentSlug`): the agent's own bot or `no_identity`,
+  never the default bot. Permission comes from the agent's message
+  subscription held by the calling plugin; a direct message goes only to a
+  person of a conversation the agent moderates (roster or a stored message),
+  with the channel user reference handed to the provider for a first contact.
+  Mentions are resolved to channel user references; a poll is validated and
+  passed through; the provider's `messageId`, `cardMessageId`,
+  `app_not_installed` and `blocked` are returned as they are. Both services
+  are now per-caller facades; sends without the new flags are unchanged.
+  channel-sdk: `TargetedMessage.poll`, `TargetedPoll`, `cardMessageId` on the
+  delivered outcome, `cardAnswer.answererVerified`.
+- **Tool call context**: a plugin's native tool handler receives
+  `NativeToolCallContext` as its second argument on both tool loops
+  (in-process and subscription CLI): agent slug, channel type, channel-native
+  conversation id, inbound event id, caller principal and caller channel user
+  reference, all stated by the kernel.
+- **`agentTurn` service**: the facilitation engine runs one turn as a
+  facilitator it is granted to, inside the agent's normal envelope (identity
+  with neutrality block, model policy, Privacy Shield, receipts);
+  `engineContext` travels as the turn's system hint after the identity; the
+  text is returned and not posted. `inboundEventId` must be a stored message
+  of the conversation; the caller of the turn is its platform-stated author.
+  Ceiling `AGENT_TURN_MAX_PER_MINUTE` (default 60 per agent, 0 = off).
+  `getProfile` returns display name, language and own-identity channel types.
+- **Migration `0069_agent_identity_language`**: `agent_identities.language`
+  (BCP 47 tag, CHECK). `PUT /:slug/identity` takes `language`, the read
+  returns it; a facilitator's refusal text and the engine's profile read use
+  it, falling back to the installation language.
+- **Engine attach without a manual grant**: a facilitator gets the facilitation
+  engine when it is created, and existing facilitators get it when an engine
+  is installed or replaced (also at boot). The engine is never part of a
+  default attach, cannot be granted to a standard agent (`409
+  config_validation`), and a leftover engine row on a standard agent grants
+  nothing at runtime.
+- **Readiness and session capabilities**: `CoreApi.registerReadinessProvider`,
+  `registerMeetingSourceProvider`, `emitSessionCapabilities` and
+  `emitSessionEvent` (one provider per channel type, owned by its channel,
+  dropped on deactivate). Plugin services `channelReadiness` (`check`,
+  `repairConsent`) and `sessionCapabilities` (`getSnapshot` with the chat
+  baseline when no meeting source knows the conversation, `onChange`,
+  `onSessionEvent`). The readiness report decides a message subscription
+  (`not_ready`). Pushed snapshots and meeting lifecycle events reach the
+  engine only for conversations it holds a subscription for; duplicates from
+  several bots in one chat are removed; nothing is stored.
+- **Teams app package version** is `1.<template revision>.<identity
+  revision>`; the template revision is read from
+  `appPackage/TEMPLATE_REVISION.txt` of the installed channel plugin (absent = 0,
+  versions unchanged), so a changed template is republished for existing
+  agents.
+- **Kernel contract suite** (`middleware/test/facilitatorContract.pg.test.ts`,
+  #2068 kernel half): the facilitator surface end to end on Postgres through
+  the real kernel modules, with a simulated channel, a fixture engine plugin
+  and a scripted model.
+- **Removed — the plugin path of facilitation (#2067)**: the Conductor
+  pattern `facilitation`, the plugin services `agentProvisioning`,
+  `conversationBindings` and `conductorRoleAssignments`, and the
+  ephemeral-attachment scope of `conversationSend` (a call without
+  `asOwnIdentity` now answers `not_permitted`). `omadia-agent-facilitator`
+  0.7.x does not work against this kernel; roll out the kernel, the Teams
+  channel and facilitator 1.0.0 together. Kept: ephemeral runs, agent
+  discussions and `say`; the operator lens over live ephemeral runs
+  (`/api/v1/operator/conductors/facilitations`, the Facilitations panel),
+  which is the only view and stop control for running discussions; the
+  `CONDUCTOR_EPHEMERAL_*` quotas; the audit action
+  `conductor.facilitation_terminate` for existing rows.
+- **`GET /api/v1/operator/agents/facilitation-engine`**: `state` (bound |
+  ungranted | none | ambiguous), `capability`, `plugin_id`, `plugin_ids`,
+  `version`, `available`, `reason_code` (none | ambiguous | ungranted |
+  inactive | not_reported | engine_reported) and `engine_reason` (the engine's
+  own text). Codes, no sentences. The agent slug `facilitation-engine` is
+  reserved.
+- **The engine needs the operator's SQL grant.** A plugin that declares
+  `facilitationEngine@1` is a candidate (`ungranted`): nothing is attached to
+  it and it reads nothing until its SQL ledger is granted.
+- **Upgrade note — the earlier "omadia Facilitator" agent.** The agent the
+  0.7.x plugin provisioned is a `standard` agent, and the kind is fixed at
+  creation. It does not become a facilitator: create a new agent of kind
+  `facilitator`, provision its Teams identity, and delete the old one. The old
+  agent's engine grant row grants nothing any more, and the engine plugin is
+  no longer attached to the default agent.
+- **Review fixes (2026-11-18)**: a channel binding to a facilitator is refused
+  at the three write paths and rejected at resolve time; send providers
+  declare `supports { asChannelKey, mentions, poll }` and the kernel sends as
+  an agent's own identity only through a provider that declares
+  `asChannelKey`; a message subscription needs a channel that registered a
+  readiness provider, and the kernel ends it when the engine plugin is no
+  longer the usable engine, the agent is disabled or deleted, or it lost its
+  identity; subscription changes reach every machine through NOTIFY
+  (`CONVERSATION_MESSAGES_LISTEN`, `CONVERSATION_MESSAGES_RECONCILE_INTERVAL_MS`;
+  `CONVERSATION_MESSAGES_MAX_AGE_DAYS` must be at least 1); without a usable
+  engine a mentioned facilitator answers with a fixed "not set up" text; a
+  group turn needs `origin.conversationType: 'group'` from the channel;
+  readiness, consent repair and session capabilities answer only for a
+  facilitator bound to the calling engine; a facilitator gets none of the
+  kernel's own tools; each channel plugin gets a CoreApi bound to itself.
+
+### Fixed — Custom-Pattern-Worker: eine laufende Anfrage hält den Prozess offen
+
+2026-11-18. `@omadia/plugin-privacy-guard` 0.16.1. Der Worker, der die
+Operator-Patterns abseits des Main-Threads ausführt (#1553), war immer
+`unref()`ed; offen hielt den Event-Loop nur der Budget-Timer einer Anfrage.
+Feuerte dieser Timer genau dann, wenn der Worker die Anfrage schon als fertig
+markiert, die Antwort aber noch nicht gepostet hatte, trat der Timer ab („die
+Antwort ist unterwegs“) — und ohne weiteren Handle lief der Event-Loop leer,
+bevor die Antwort ankam. Die Anfrage settled nie. Im CI-Lauf unter Last
+meldete `node:test` deshalb jeden Test in
+`test/privacyCustomTermsAndIdnum.test.ts` als „Promise resolution is still
+pending but the event loop has already resolved“. Jetzt ist der Worker
+ge-`ref()`t, solange er eine Anfrage hält, und wird erst im Leerlauf wieder
+`unref()`ed: Antwort, `error` oder `exit` kommen immer an, ein Runaway beendet
+weiterhin der Budget-Timer. Ein Regressionstest erzwingt das Zeitfenster in
+einem Kindprozess.
+
+### Fixed — Setup-Felder des Knowledge Graph speichern ohne Crash-Loop (#1860)
+
+2026-11-17. orchestrator-extras legt mit `replace` einen Wrapper über den
+`knowledgeGraph`-Service. Ein Hot-Restart des Graph-Plugins nach dem Speichern
+von Setup-Feldern ließ den Wrapper stehen, die neue Instanz scheiterte an
+„duplicate provider“, das Plugin wurde `errored` gespeichert, und der nächste
+Boot brach ohne `knowledgeGraph` ab. Jetzt wird ein Plugin, dessen Service ein
+anderes Plugin wrappt, nicht mehr im laufenden Prozess neu gestartet: die
+Werte werden gespeichert, der Status bleibt `active`, und der Store sagt, dass
+sie nach dem nächsten Neustart gelten (`activation.restart_pending`). Bereits
+hängende Einträge mit diesem Fehler setzt `retryErroredPlugins` beim Boot
+zurück, so dass betroffene Instanzen ohne Handarbeit an `installed.json`
+wieder starten.
+
+### Changed — croner 11 mit 9.x-Kompatibilität für gespeicherte Crons
+
+2026-11-18. croner springt von 9.1.0 auf 11.0.0 (#1693). Damit gespeicherte
+Routinen und Plugin-Job-Schedules ihre Bedeutung behalten, läuft jeder
+`new Cron(...)` jetzt über `createCron()` (`src/scheduler/cronerCompat.ts`):
+Schrittweiten mit Zahlen-Präfix (`0/15`, `5/15`, `/10`), die croner 11
+standardmäßig ablehnt, bleiben über `sloppyRanges` gültig und feuern wie
+bisher. `?` wird wie in 9.x beim Anlegen des Jobs durch den aktuellen Wert
+des Feldes ersetzt, statt wie in croner 11 als `*` zu gelten (`0 9 ? * *`
+bleibt monatlich und wird nicht täglich). Ein Differenztest mit 80 000
+Zufallsmustern gegen croner 9.1.0 ergab außerhalb von Sommerzeit-Wechseln
+keine Abweichung; croner 11 akzeptiert lediglich zusätzlich Muster, die 9.x
+abgelehnt hat. Geändert ist nur das DST-Verhalten auf Hosts mit lokaler
+Zeitzone (croner 11: Festzeit-Jobs in einer Sommerzeit-Lücke laufen zur
+ersten gültigen Zeit danach); die Container laufen in UTC.
+
+### Fixed — Conductor `webhook.post` reported a refused delivery as a successful step (#1703)
+
+2026-11-16. A workflow step that delivered nothing looked exactly like one that
+delivered: the run completed, the history showed no error, and the refusal was
+visible only to someone who read the run context out of Postgres.
+
+- **A non-2xx response now fails the step.** `webhook.post` still reports the
+  refusal in its result (`{ ok, status }`) — what changed is that the engine no
+  longer reads that as success. A `webhook.post` step that declares no postcondition
+  of its own now gets `stepResult.data.ok == true`, so a receiver answering 500, or a
+  429 from one out of quota, is an `unmet` postcondition. Keyed on the action id: a
+  plugin tool that happens to answer `{ok:false}` keeps its current meaning.
+- **A graph can take its error path.** `unmet` fires the step's
+  `fallbackTransitionId` (FR-024) like any other postcondition failure, so a
+  workflow can route a failed delivery to a retry or an escalation step. With no
+  fallback declared it surfaces as the `postcondition_unmet_no_fallback` stuck
+  decision and the run ends `failed`.
+- **The history carries it.** The step's recorded `postcondition_outcome` is
+  `unmet` with no transition taken, next to the `status` the result leaves in the
+  run context. Nothing is only in the log.
+- **A step that declares its own postcondition is untouched** — tolerate a 404, or
+  branch on `status`, exactly as before. The default fills an absence; it never
+  overrides.
+- `nextStep` takes an optional `NextStepOptions.defaultPostcondition` for this
+  (`@omadia/conductor-core`). Omitted, the engine's "absent ≡ always met" rule is
+  unchanged, so every other step kind and action behaves as it did.
+
+### Fixed — Conductor: a failed webhook delivery says why, and says it per attempt (#1704)
+
+2026-11-16. Every transport failure of an outbound delivery was stored as the
+same four words. `webhookDispatcher.ts` recorded `err.message`, and undici
+reports a DNS miss, a refused connection and a protocol mismatch all as a bare
+`fetch failed`, keeping the actual reason in `err.cause` — so `last_error` read
+`fetch failed` for an unresolvable host and for a connection to a Postgres port
+alike. There was also no log line per failed attempt, only the final
+`exhausted after 6 attempts`, up to half an hour after the delivery first failed.
+
+- **`last_error` carries the cause chain**: `fetch failed (getaddrinfo ENOTFOUND
+  doesnotexist.invalid)`, `fetch failed (connect ECONNREFUSED 172.18.0.2:5432)`.
+  The rendering moved to `middleware/src/platform/describeError.ts`, shared with
+  the registry client's own one-level version from #1482 (`registryClient.ts`
+  re-exports it, so nothing imported from there breaks).
+- **One log line per failed attempt**, naming the target and the schedule:
+  `[conductor] webhook delivery <id> to subscription <sub-id> (<origin>) attempt 2/6 failed: <cause>;
+  retrying in 60s`. A subscription that can never succeed (`subscription
+  disabled`, `subscription secret missing`) logs too — before, it recorded
+  silently — and is reported as `abandoned`, not as `exhausted after 1 attempts`:
+  no attempt budget was spent, and a grep for the real exhaustion line must not
+  also land on these.
+- **The retry worker is covered too**, not just the inline first attempt — it is
+  what drives attempts 2..6, so it is where most of the issue's missing lines
+  were. Its three catch blocks (reconcile pass, `claimDue`, a crashed attempt)
+  now name the cause via `describeError` instead of `err.message`, and the one
+  terminal outcome it records without going through the dispatcher — a delivery
+  whose subscription has since been deleted — leaves a log line instead of
+  dying silently.
+- **`last_error` is one bounded line.** `postWebhook` passes up to 64 KiB of
+  response body through, and the operator UI renders the value verbatim; it is
+  now whitespace-collapsed and truncated to 500 characters. An empty body gives
+  `http 500` instead of the dangling `http 500: `.
+- **Not changed, deliberately:** the backoff schedule (30s doubling, ≈31 minutes
+  to exhaust) and the SSRF pre-check at subscription-creation time, which only
+  inspects literal addresses. A hostname that resolves to a private address is
+  still accepted at creation and still refused by the guarded undici `Agent` at
+  connect time — that refusal is simply now legible in `last_error` instead of
+  reading as `fetch failed`.
+
+### Changed — web-ui header: minimal signed-out bar, preferences in the user menu, reordered nav
+
+UI only — no route, API or auth-logic change. Signed out (and always on
+`/login` + `/setup`) the header shows no nav and no "Login" link, only a flag
+language menu, a sun/moon light↔dark toggle and the GitHub issue button.
+Signed in, palette, appearance and language moved out of the bar into the user
+chip's menu (new "Preferences" section); the GitHub issue button sits at the
+far right in both shapes. Nav order is now Skills · Chat · Setup · Admin ·
+Plugins · Help: Dashboard was dropped (the logo already links to `/`). Chat is
+now a cluster (`nav.chatCluster`) holding Channels (`/operator/channels`, back
+in the nav after #385 dropped it) and Debug (`/chat`, `nav.debug`; `nav.chat`
+removed). The old
+Admin cluster was split — new Setup cluster (`nav.setupCluster`) holds LLM
+access, Orchestrators, Teams sign-in, Conductor and Routines (moved out of the
+top level); Admin keeps Admin, System, Receipts, Privacy reports and Field classification. Plugin nav
+entries targeting `adminCluster` still land in Admin. Wordmark and tagline sit side by side. The layout
+decides signed-in vs. signed-out from the session cookie with the proxy's
+decode-only check, now shared via `web-ui/app/_lib/sessionToken.ts`. New
+component `HeaderControls`; `ThemeControls` became `useThemePrefs` +
+`AppearanceToggle`/`PaletteSelect`/`AppearanceSelect`. i18n: removed
+`authBadge.loginLink`, `themeControls.menuAriaLabel`, `nav.dashboard`; added
+`authBadge.{preferences,palette,appearance,language}` and
+`themeControls.{switchToDark,switchToLight}`.
+
+### Fixed — Node-Aktivierung nach Amp-Snapshot-Restore
+
+2026-11-16. Neue Orbs hatten die Node-22-/24-Toolchains und alle Pakete,
+starteten aber Shells mit Node 26: Amp verwirft Setup-Änderungen an den
+Shell-Profilen beim Aktivieren eines gemeinsamen Snapshots. Das Setup
+hinterlegt jetzt einen direkten Node-22-PATH für den Snapshot; Resume
+registriert den vorbereiteten Root-/Desktop-Selektor nach der Aktivierung
+idempotent erneut. Ein CI-Regressionstest setzt die Profile wie beim Restore
+zurück und prüft Aktivierung, wiederholtes Resume und erhaltene Profileinträge.
+Keine Pakete werden beim Resume installiert.
+
+### Added — Reproduzierbare Amp-Orb-Umgebung
+
+2026-11-10. `.agents/setup` installiert die gepinnten Node-Toolchains
+(Kernel/Web-UI aus `.nvmrc`, Desktop Node 24), die drei npm-Lockfile-Bäume
+inklusive nativer Addons sowie Docker Compose/Buildx und baut die Middleware-
+Workspace-Exports. Beide Runtimes installieren mit dem npm der Node-22-Toolchain,
+damit Desktop-Install-Skripte nicht still übersprungen werden. Ein ausschließlich an
+Loopback gebundener PostgreSQL-16/pgvector-Container stellt getrennte lokale
+App- und Testdatenbanken bereit; seine Durability ist für Wegwerfdaten reduziert.
+Login-Shells wählen die Toolchain passend zum Checkout-Verzeichnis.
+`.agents/resume` repariert nur den Datenbankstart, ohne Pakete neu zu installieren.
+ENV-Vorlagen werden nur bei fehlenden Dateien kopiert, keine Benutzeranmeldung
+oder Produktions-Credentials werden im Snapshot abgelegt. Portal-Manifeste sind
+jetzt auch im versionierten `.gitignore` ausgeschlossen. Betriebsdetails und
+Test-DSNs stehen im Handoff §14.
+
+### Security — Node 22.23.5 in every shipped image
+
+2026-11-16. The middleware, web-ui and updater images move to Node 22.23.5,
+a security release with eight high-severity fixes in `http`, `http2` and
+`tls` (among them CVE-2026-123864, nested parser execution from empty writes,
+which reaches the updater's `node:http` control plane). The updater sidecar
+was still on 22.23.2 because Dependabot did not watch its Dockerfile. It now
+does, in `.github/dependabot.yml`. The same rollup moves `docx` from 9.7.1 to
+9.15.4. Generated `.docx` files now include a theme part and the TOC1–TOC9
+styles, express table widths in fiftieths of a percent, and drop the control
+characters XML 1.0 forbids. Before this change those characters made Word
+refuse the file.
+
+### Fixed — Conductor: a rejected approval no longer takes an unguarded transition (#1698)
+
+2026-11-10. The approval gate computed the decision and then ignored it: the
+executor normalised `stepResult.approved`, the engine chose the path, and nothing
+on the path read the flag. An outgoing edge without a guard matches
+unconditionally, so a human step with one unguarded edge ran the action it was
+meant to gate on an explicit `{"approved": false}` — and `strictApproval: true`
+did not change that, it only silenced the one warning (`approval_fail_open`) that
+mentioned the shape. Counterpart to #759, which shipped the flag, the
+normalisation and the lint but never touched the transition path.
+
+- **A rejected human step may only leave on a transition whose guard asks for the
+  rejection.** Unguarded happy-path edges are excluded, the declared deadline
+  fallback included — firing it would report an explicit "no" as a missed
+  deadline. Nothing matching ends the run `failed` with the new stuck code
+  `approval_rejected_no_transition`; a terminal rejected step is reported the same
+  way instead of `completed`, which read as an approval everywhere.
+- **An absent or non-boolean `approved` is deliberately not a rejection.** In
+  fail-open mode that case is approval by definition, and under `strictApproval`
+  the executor has already turned it into a literal `false`, so no path changes
+  for a step nobody rejected. Agent and action steps are untouched.
+- **New publish warning `rejection_unguarded_edge`**, raised whenever a human step
+  has an unguarded happy-path edge — regardless of `strictApproval` (the flag
+  never decided the path) and regardless of the target step's kind.
+  `approval_fail_open` is unchanged.
+- **Designer:** an edge drawn out of a human step is pre-filled with the approval
+  guard, the next one with the rejection guard; the checkbox hint for "strict
+  approval" stated the opposite of the behaviour and is corrected in both locales.
+- **Bundled content:** `onboarding-checklist` guards its edges and gains a
+  `halted` step (rejecting the HR step used to open the IT await reading "HR
+  onboarding … is done"); `expense-approval` and `notify-and-escalate` state
+  `{"op":"always"}` on the escalation edge where both outcomes deliberately share
+  a target; the builder agent's prompt now requires a guard per human edge.
+- **Migration, for already-published versions too** (graphs are stored per
+  version and run by the current engine): a graph that routed a rejection through
+  an unguarded edge needs that edge guarded. `{"op":"ne","path":"stepResult.approved","value":true}`
+  on a timeout fallback makes it serve rejections as well (the timeout path itself
+  is fired directly by `expireAwait` and never consults guards);
+  `{"op":"always"}` states "both outcomes, same step".
+
+### Fixed — Conductor: a failed run records why it failed
+
+2026-11-10. #1699. The reason a run failed reached the container log and nothing
+else: neither table had an error column, the run context held only
+`stepAttempts`, and the API served exactly those fields — so "Verlauf" could
+render a red badge and no cause.
+
+- **Every failure path carries its own code.** `step_not_in_graph`,
+  `timer_misconfigured`, `no_role_holder`, `await_timed_out`, `effect_threw`,
+  `step_timeout`, `resume_no_current_step`, `max_steps_exceeded` — plus the
+  engine's own `StuckCode` values (`ambiguous_guards`,
+  `postcondition_unmet_no_fallback`, …), which `@omadia/conductor-core` always
+  produced and the executor always dropped.
+- **A run that exhausted the step budget no longer hangs silently** (US2-AS4):
+  the driver's `MAX_STEPS` exit wrote no step row at all and left the run
+  `running` for ever. It now records `max_steps_exceeded`; a dry run that hits
+  the same budget reports it instead of reading as a clean pass.
+- **Stored on the step and mirrored on the run** (conductor migration `0013`):
+  `error_code`, a redacted and truncated `error_message`, and `error_detail`
+  (the code's typed arguments). The run-level copy is what the run list renders.
+  No backfill: a pre-`0013` row reads "cause not recorded", never a guess — and
+  so does a stored code this build has no vocabulary for, with the message kept
+  beside it as detail.
+- **Recorded on the recovered path too** — a human step skipped for want of a
+  holder, an await that timed out into its fallback. A ticking timer and an
+  operator cancel record none; neither is a fault.
+- **Messages are safe to persist:** credentials and provider correlation handles
+  (`request_id`, `cf-ray`, `sk-…`) are stripped and the text is capped at 2 000
+  characters. Never a stack trace. Credentials, not PII.
+- **Step duration works at all now.** Every step row was written with
+  `started_at == ended_at` (both from the same transaction), so no step ever had
+  a duration. The driver passes the real start; the await paths pass the await's
+  `created_at`.
+- **`run.failed` webhooks carry `errorCode`/`errorMessage`**, a dry run reports
+  its reason (and a throwing agent step no longer 500s the preview route), and
+  the trace shows "Duration" and "Reason" columns plus the boolean actor
+  qualifiers (`noHolder`, `timedOut`, …) it used to swallow. Only the boolean
+  ones: `operator_cancel` carries the requesting principal, which does not
+  belong in the trace table.
+
+### Fixed — Conductor inbound webhook: a disabled endpoint no longer eats the delivery id
+
+2026-11-11. A request to a disabled inbound endpoint was answered
+`200 {"outcome":"disabled"}` and written to `conductor_webhook_inbound_deliveries`.
+The dedupe check looked only at `(endpoint_id, delivery_id)`, so the sender's honest
+redelivery after the endpoint was enabled again was answered
+`200 {"outcome":"duplicate"}`, no run started, and the event was lost silently —
+without a log line, because both answers are plain 200s (#1701).
+
+- **A `'disabled'` row is re-claimable.** `ConductorWebhookEndpointStore.claim()`
+  treats an outcome in the new exported `REDELIVERABLE_OUTCOMES` set as an attempt
+  that never reached `emit()`, re-claims the existing row (no second row is inserted)
+  and answers `'claimed'`. Unlike the abandoned-in-flight recovery there is no
+  staleness window: the endpoint can come back a second after the refusal.
+- **Outcomes that did process the event stay terminal.** `'started'` and
+  `'no_subscribers'` both ran `emit()`, so re-claiming them would re-route a handled
+  event; `'invalid_payload'` is sender-side and the body is covered by the HMAC.
+  `'rate_limited'` already inserts no row. A redelivery arriving while the endpoint is
+  off is answered from the ledger before the enabled check, so a `'started'` row is
+  never overwritten with `'disabled'`.
+- **Two deliberate limits.** The ledger holds one row per
+  `(endpoint_id, delivery_id)`, so a successful redelivery overwrites the `'disabled'`
+  outcome: `conductor_webhook_inbound_deliveries` shows a refusal only while nobody
+  has redelivered that id — the refusals that still matter. And a refusal keeps
+  occupying a rate-limit slot for the rolling window (a re-claim bumps `received_at`),
+  because that is what bounds ledger growth while an endpoint is off; the redelivery
+  of an already-refused id is never throttled, it short-circuits before the window
+  count.
+- No migration, no API change.
+
 ### Added — `captureDisclosure` on the chat stream
 
 2026-11-04. OB-81 declared the field and the chat renders it, but nothing ever
@@ -61,6 +898,57 @@ produced a value, so no turn carried one.
   `TurnIngestResult.embeddingScheduled`.
 - `graphRefs` stays unset: `done` also reaches Public API clients, which have no
   use for internal node ids. Non-streaming replies are unchanged.
+### Fixed — raw-body webhooks: a missing `Content-Type` no longer fails the HMAC
+
+2026-11-10. Reported as #1700: a correctly signed inbound delivery sent without a
+`Content-Type` header answered `401 webhook.bad_signature`, pointing the sender at
+its signing code instead of at the header.
+
+- **The raw parsers now use a FUNCTION content-type matcher.** body-parser's
+  wildcard type *string* goes through `type-is`, which needs a media type to
+  compare against: a request with no `Content-Type` (or an empty one) matched
+  nothing, was never parsed, and the handler HMAC'd an empty buffer. An HMAC is
+  over bytes, so the sender's media type must not decide whether verification
+  sees them. Fixed for `POST /api/hooks/:endpointId`
+  (`routes/conductorWebhooksInbound.ts`) and for every plugin `body: 'raw'` route
+  (`platform/pluginRouteRegistry.ts`, `rawBodyCapture`), whose own doc comment
+  already promised the "sends nothing at all" case worked.
+- **Parsing widened, authorisation unchanged.** A wrong signature still answers
+  the same `401`, an unknown endpoint id still answers byte-for-byte that same
+  `401`, and the 256 kb limit is untouched. With no header, only the JSON parse
+  decides the outcome: valid JSON starts the run, unparseable bytes end as
+  `invalid_payload`.
+
+### Fixed — Conductor: a webhook payload could steer a workflow's loop budget
+
+2026-11-11. The event router handed an inbound payload to the executor as the
+run's initial context untouched, while the ephemeral path stripped the
+executor-owned keys — the two disagreed.
+
+- **Reserved run-context keys are stripped at one gate.** `steps`,
+  `stepAttempts`, `transcript` and `transcriptText` now live in
+  `conductor/runContext.ts` and are removed in `startRun` and `previewRun`, so
+  every trigger kind (event/webhook, manual, cron, agent) is treated alike. A
+  signed `{"stepAttempts":{"a":-5}}` made a step guarded by
+  `lt ctx.stepAttempts.a 3` run eight times and `{"a":99}` made it run once;
+  both now run the designed three. A seeded `steps` map can no longer present
+  results for steps that never ran.
+- **A trigger `filter` is evaluated against the sanitized context** the run
+  will actually see, not against keys the sender added. Behaviour change worth
+  a look before upgrading: a published workflow whose trigger `filter`
+  references `ctx.steps`, `ctx.stepAttempts` or `ctx.transcriptText` stops
+  matching, and the inbound webhook reports `no_subscribers` instead of
+  `started`. Such a filter could only ever have matched on sender-supplied
+  values, which is the bug.
+- **`ctx.stepAttempts` counts only non-negative integers.** Anything else
+  restarts at 0 — the one hardening that also covers run rows persisted before
+  this fix. The resume paths keep trusting their stored context (it legitimately
+  holds `steps`/`transcript` from the first step on), so a run started before
+  the upgrade keeps whatever it was seeded with until it ends.
+- Nested keys of the same name are untouched; only the top level is executor-owned.
+- `ctx.speaker` stays caller-settable on purpose: seeding it picks who speaks
+  first, which a start payload may decide, not what was said.
+
 ### Fixed — Admin API: excerpt duplicates, skill ack, workflow version number
 
 2026-11-04. Found while building the admin interface against the Admin API.

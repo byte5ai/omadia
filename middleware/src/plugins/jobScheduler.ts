@@ -1,4 +1,3 @@
-import { Cron } from 'croner';
 
 import {
   JOB_DEFAULT_TIMEOUT_MS,
@@ -7,6 +6,8 @@ import {
   type JobHandler,
   type JobSpec,
 } from '@omadia/plugin-api';
+
+import { createCron } from '../scheduler/cronerCompat.js';
 
 /**
  * Kernel-internal scheduler for plugin background jobs.
@@ -151,7 +152,7 @@ export class JobScheduler {
     };
     const sched = entry.spec.schedule;
     if ('cron' in sched) {
-      const cron = new Cron(sched.cron, fire);
+      const cron = createCron(sched.cron, {}, fire);
       return { stop: () => cron.stop() };
     }
     const handle = this.timers.setInterval(fire, sched.intervalMs);
@@ -223,7 +224,7 @@ function validateSpec(agentId: string, spec: JobSpec): void {
     }
     // Cheap sanity check via croner constructor — throws on malformed cron.
     try {
-      const probe = new Cron(sched.cron, { paused: true });
+      const probe = createCron(sched.cron, { paused: true });
       probe.stop();
     } catch (err) {
       throw new JobValidationError(

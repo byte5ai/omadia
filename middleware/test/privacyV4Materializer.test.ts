@@ -223,14 +223,31 @@ describe('Materializer — display polish', () => {
     const { datasetId } = store.internToolResult('x', [
       { id: 1, a: [{ inner: 'x1' }], b: [{ inner: 'x2' }] },
     ]);
-    const { text } = materialize(store, {
+    const { text, unrenderedColumns } = materialize(store, {
       datasetId,
       columns: cols('id', 'a'),
       format: 'table',
     });
     assert.ok(!text.includes('"inner"'), 'no raw JSON keys are emitted');
     assert.ok(!text.includes('x1'), 'nested record values are not dumped raw');
-    assert.ok(text.includes('[1 records]'), 'shows a compact structure-only marker');
+    assert.ok(text.includes('[1 Eintrag]'), 'shows a compact structure-only marker');
+    assert.deepEqual(unrenderedColumns, ['a'], 'the marker column is reported as unrendered');
+  });
+
+  it('words the record-count marker in German, singular and plural (#1883)', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('x', [
+      { id: 1, a: [{ inner: 'x1' }], b: [{ inner: 'x2' }, { inner: 'x3' }, { inner: 'x4' }] },
+    ]);
+    const { text, unrenderedColumns } = materialize(store, {
+      datasetId,
+      columns: cols('id', 'a', 'b'),
+      format: 'table',
+    });
+    assert.ok(text.includes('[1 Eintrag]'), 'singular');
+    assert.ok(text.includes('[3 Einträge]'), 'plural');
+    assert.ok(!text.includes('records'), 'no English marker in the German render');
+    assert.deepEqual(unrenderedColumns, ['a', 'b']);
   });
 
   it('joins a scalar array into a readable cell', () => {

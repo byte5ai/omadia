@@ -236,7 +236,7 @@ describe('#470 C15 pre-activate ledger handoff', { skip: !pgAvailable }, () => {
         list: () => [{ id: pluginId, path: root }],
       },
       serviceRegistry,
-      nativeToolRegistry: { register: stub, registerHandler: stub },
+      nativeToolRegistry: { register: stub, registerHandler: stub, unregisterBySource: (): string[] => [] },
       pluginRouteRegistry: { register: stub, disposeBySource: () => 0 },
       notificationRouter: { dispatch: (): void => {}, registerChannel: stub },
       uiRouteCatalog: { register: stub, registerNav: stub },

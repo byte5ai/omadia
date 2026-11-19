@@ -35,6 +35,7 @@ import {
 } from './cliTurnRecord.js';
 // Aliased: `turnContext` is already a parameter name inside this module
 // (the caller's captured async context), and the store is a different thing.
+import { buildToolCallContext, runWithToolCallContext } from './toolCallContext.js';
 import { turnContext as turnContextStore } from './turnContext.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
 import { isPrivacyForceGuarded } from './privacyPolicy.js';
@@ -1152,7 +1153,12 @@ export class CliChatAgent implements ChatAgent {
    * called in. Taking it here binds the snapshot to the actual caller.
    */
   private captureTurnContext(input: ChatTurnInput): CapturedTurnContext {
-    const runInTurnContext = AsyncLocalStorage.snapshot();
+    const snapshot = AsyncLocalStorage.snapshot();
+    // #2043 — the tool call context is bound INSIDE the restored snapshot: the
+    // snapshot predates it, so binding outside would be overwritten.
+    const toolCall = buildToolCallContext(this.deps.dispatch.agentSlug ?? 'default', input);
+    const runInTurnContext = <T>(fn: () => T): T =>
+      snapshot(() => runWithToolCallContext(toolCall, fn));
     const guard = this.deps.turnOwnerGuard?.(input);
     return guard ? { runInTurnContext, assertTurnOwner: guard } : { runInTurnContext };
   }

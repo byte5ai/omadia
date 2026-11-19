@@ -1831,7 +1831,14 @@ export function renderToolResult(res: any): string {
       }
     }
     const joined = parts.join('\n').trim();
-    const out = joined.length > 0 ? joined : JSON.stringify(content);
+    // #1946 — a spec-compliant server may return its data in
+    // `structuredContent` alone (the text mirror is only a SHOULD), and the
+    // SDK schema defaults a missing `content` to `[]`. So when the blocks
+    // yield no text, the structured payload is the result; the raw content
+    // JSON stays the last resort. `null` counts as absent, as in
+    // `extractStructured`.
+    const out =
+      joined.length > 0 ? joined : JSON.stringify(res.structuredContent ?? content);
     return res?.isError ? `Error: ${out}` : out;
   }
   if (typeof res?.structuredContent !== 'undefined') {

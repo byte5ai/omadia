@@ -163,7 +163,54 @@ export function isUsageRecorderReady(): boolean {
  * later price-table edit can't retroactively change historical rows. Returns
  * immediately; never awaits the DB.
  */
+/**
+ * #2090 — count the model calls made inside an async scope.
+ *
+ * Every model call of the kernel ends in one {@link recordUsage} (the main
+ * loop, the subscription CLI, plugin `ctx.llm`, and the verifier and helper
+ * models through `withProviderUsageTracking`), so this is the one place where
+ * "how many model calls did this turn make, helpers and guards included" can
+ * be answered. The count is taken whether or not a database is configured.
+ *
+ * The store is process-wide (a `Symbol.for` slot): a package that got loaded
+ * twice must still feed the meter the kernel opened.
+ */
+interface ModelCallMeter {
+  calls: number;
+}
+
+const METER_SLOT = Symbol.for('omadia.usage.modelCallMeter');
+
+function meterStore(): AsyncLocalStorage<ModelCallMeter> {
+  const slots = globalThis as unknown as Record<symbol, AsyncLocalStorage<ModelCallMeter> | undefined>;
+  const existing = slots[METER_SLOT];
+  if (existing) return existing;
+  const created = new AsyncLocalStorage<ModelCallMeter>();
+  slots[METER_SLOT] = created;
+  return created;
+}
+
+/**
+ * Run `work` and report how many model calls were recorded inside it. Calls
+ * recorded after `work` settled (a check that runs on after the answer) are
+ * not in the count. Meters nest: an inner meter's calls count for the outer
+ * one as well.
+ */
+export async function meterModelCalls<T>(work: () => Promise<T>): Promise<{ value: T; modelCalls: number }> {
+  const store = meterStore();
+  const outer = store.getStore();
+  const meter: ModelCallMeter = { calls: 0 };
+  try {
+    const value = await store.run(meter, work);
+    return { value, modelCalls: meter.calls };
+  } finally {
+    if (outer) outer.calls += meter.calls;
+  }
+}
+
 export function recordUsage(record: UsageRecord): void {
+  const meter = meterStore().getStore();
+  if (meter) meter.calls += 1;
   if (!pool) {
     if (!warnedDroppedNoPool) {
       warnedDroppedNoPool = true;

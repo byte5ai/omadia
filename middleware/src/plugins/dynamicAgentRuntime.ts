@@ -59,6 +59,7 @@ import { topoSortByDependsOn } from './topoSort.js';
 import type { UploadedPackageStore } from './uploadedPackageStore.js';
 import { zodToJsonSchema } from './zodToJsonSchema.js';
 import { describeActivationFailure } from './activationFailure.js';
+import { assertStartable, PluginNotStartableError } from './coreCompat.js';
 
 /**
  * Runtime for uploaded agent packages.
@@ -357,6 +358,12 @@ export class DynamicAgentRuntime {
         const msg = err instanceof Error ? err.message : String(err);
         log(`[dynamic-runtime] activate FAILED for ${id}: ${msg}`);
         try {
+          // A version this core refuses to start is not a transient failure:
+          // record it once, terminally, instead of counting three boots.
+          if (err instanceof PluginNotStartableError) {
+            await this.deps.registry.markActivationBlocked(id, describeActivationFailure(err));
+            continue;
+          }
           await this.deps.registry.markActivationFailed(
             id,
             describeActivationFailure(err),
@@ -395,6 +402,7 @@ export class DynamicAgentRuntime {
     if (!catalogEntry) {
       throw new Error(`dynamic-runtime: ${agentId} not in plugin catalog`);
     }
+    assertStartable(catalogEntry.plugin);
     // OB-29-5: defensive guard mirroring the activateAllInstalled-loop —
     // is_reference_only plugins are never to be wrapped in a LocalSubAgent
     // / DomainTool. activate() is also called from the install flow and

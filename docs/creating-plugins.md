@@ -56,6 +56,46 @@ Zip-Flow, aber der Code-Contract ist verschieden:
 
 ---
 
+### `kind: archetype` — ein Archetyp-Plugin
+
+Neben den drei oben gibt es `tool`, `extension` und seit #2088 `archetype`.
+Ein Archetyp-Plugin liefert **einen Agenten-Archetyp** (das Berufsbild eines
+Agenten, siehe `docs/terminology.md`). Es wird keinem Agenten angehängt; der
+Administrator legt im Agenten-Verzeichnis Agenten dieses Archetyps an. Es
+läuft in der Extension-Runtime.
+
+Das Manifest trägt den Deskriptor, den der Kern durchsetzt:
+
+```yaml
+identity:
+  kind: "archetype"
+archetype:
+  id: "facilitator"                # klein, a-z 0-9 -, nicht "standard"
+  label: { en: "Facilitator", de: "Facilitator" }
+  label_plural: { en: "Facilitators", de: "Facilitatoren" }
+  description: { en: "…", de: "…" }
+  noun: "a facilitator"            # für Ablehnungssätze der API
+  omits: [plugin_grant, tool_grant, memory, default_agent, channel_binding,
+          persona_skill, fast_path, agent_to_agent, consultation, sub_agent,
+          assistance]              # Pflicht, darf leer sein
+  omission_reasons: { memory: "…" }
+  adds: [conversation_messages, agent_turn, own_identity_send,
+         session_capabilities]     # Kern-Dienste nur für Agenten des Archetyps
+  requires: [own_channel_identity]
+  role_contract: |                 # schließt die Identität jedes Agenten ab
+    …
+```
+
+- Der Kern liest den Block **streng**: ein unbekannter Eintrag in `omits`,
+  `adds` oder `requires` weist das Manifest ab, statt ihn zu überspringen.
+- Ein unbekannter `identity.kind` wird beim Ingest abgewiesen (früher wurde er
+  stillschweigend zu `agent`).
+- Die Installation verlangt eine ausdrückliche Bestätigung; der Dialog zeigt
+  genau diese Listen.
+- Zwei installierte Plugins für denselben Archetyp: keines wird registriert.
+- `compat.core` muss den Kern verlangen, der `archetype` kennt (plugin-api
+  ≥ 1.60.0): ein älterer Kern bietet das Plugin aus dem Hub gar nicht an.
+
 ## 2. Scaffold aus der Boilerplate (agent)
 
 Wähle `agent-pure-llm` (kein externes API, reines Prompting) oder

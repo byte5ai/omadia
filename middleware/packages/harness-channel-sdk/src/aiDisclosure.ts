@@ -278,6 +278,27 @@ function foldDisclosure(answer: string, line: string, operatorNote?: string): st
 }
 
 /**
+ * `answer` without the disclosure block {@link applyAiDisclosure} folded into
+ * it: its own paragraph(s) at the end, or the whole answer when the answer
+ * itself was blank. Unchanged when the answer does not end with the block.
+ *
+ * For a path that carries the marking some other way: a channel with a native
+ * AI label, or a text that is handed on to be posted by a send which marks it
+ * itself.
+ */
+export function withoutFoldedAiDisclosure(
+  answer: string,
+  disclosure: AiDisclosure | undefined,
+): string {
+  if (!disclosure) return answer;
+  const block = foldDisclosure('', disclosure.text, disclosure.operatorNote);
+  if (block.length === 0 || !answer.endsWith(block)) return answer;
+  if (answer === block) return '';
+  const paragraph = `\n\n${block}`;
+  return answer.endsWith(paragraph) ? answer.slice(0, -paragraph.length) : answer;
+}
+
+/**
  * The single per-turn derivation: resolve the structured {@link AiDisclosure}
  * (from a pre-resolved value, else the policy — shipping default when none) and
  * fold its line into `text` on the first turn of the scope.

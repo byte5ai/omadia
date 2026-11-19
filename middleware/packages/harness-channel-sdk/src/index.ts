@@ -25,6 +25,9 @@ export {
   type ConversationParticipant,
   type ConversationRoster,
   type ConversationRosterProvider,
+  type ConversationRosterRequest,
+  type ConversationRosterStatus,
+  rosterStatusOf,
 } from './conversationRoster.js';
 // People directory — a channel plugin's searchable "who is <name>?" (Conductor
 // human-step principal resolution). Optional capability like the roster.
@@ -41,14 +44,39 @@ export type {
   MembersRemovedEvent,
 } from './membershipEvent.js';
 export type {
+  SendProviderCapabilities,
   TargetedDeliveryOutcome,
+  TargetedMention,
   TargetedMessage,
+  TargetedPoll,
+  TargetedSendOptions,
   TargetedSendDiagnostic,
   TargetedSendProvider,
   TargetedSendReport,
 } from './targetedSend.js';
+// #2089 - question cards; defined once in plugin-api.
+export { CARD_ID_PATTERN, CARD_QUESTION_KINDS } from '@omadia/plugin-api';
+export type {
+  CardAnswerValue,
+  CardOption,
+  CardQuestion,
+  CardQuestionKind,
+  CardSupport,
+  CardUpdate,
+  CardUpdateOutcome,
+  MessageCardAnswer,
+  QuestionCard,
+} from '@omadia/plugin-api';
 // #330 C3b - conversation-addressed proactive send (group nudges).
 export type { ConversationSendOptions, ConversationSendProvider } from './conversationSend.js';
+// #2043 - native facilitators: authenticated inbound messages, readiness and
+// per-session capabilities.
+export type { ConversationMessageEvent } from './conversationMessage.js';
+export type {
+  ChannelReadinessProvider,
+  MeetingSourceProvider,
+  SessionEvent,
+} from './sessionCapabilities.js';
 
 // Orchestrator access — the typed, blessed way for a channel to resolve the
 // ChatAgent it drives turns with (alternative to CoreApi.handleTurnStream when
@@ -183,6 +211,7 @@ export {
   InMemoryDisclosureSeenStore,
   composeDisclosureText,
   applyAiDisclosure,
+  withoutFoldedAiDisclosure,
   resolveAiDisclosure,
 } from './aiDisclosure.js';
 export type {

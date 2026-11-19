@@ -174,6 +174,10 @@ interface SurrogateForm {
 interface PartForm {
   readonly spellings: ReadonlySet<string>;
   readonly real: string | undefined;
+  /** The full surrogate this part was taken from, and which end of it;
+   *  `undefined` once two surrogates share the part. Lets a lone part be read
+   *  as that person when the full surrogate stands in the same text. */
+  readonly owner: { readonly surrogate: string; readonly position: 'first' | 'last' } | undefined;
 }
 
 interface Forms {
@@ -251,20 +255,25 @@ function surrogateForms(map: PseudonymMap): Forms {
   const looseKeys = new Set(loose.map((f) => f.form.toLowerCase()));
 
   const parts = new Map<string, PartForm>();
-  const addPart = (form: string, real: string | undefined): void => {
+  const addPart = (form: string, real: string | undefined, surrogate: string, position: 'first' | 'last'): void => {
     if (looseKeys.has(form.toLowerCase())) return;
     const key = form.toUpperCase();
     const prior = parts.get(key);
     const spellings = new Set([...(prior?.spellings ?? []), form, key]);
     const ambiguous = prior !== undefined && !sameReal(prior.real, real);
-    parts.set(key, { spellings, real: ambiguous ? undefined : real });
+    parts.set(key, {
+      spellings,
+      real: ambiguous ? undefined : real,
+      // A part two surrogates carry has no single owner, whatever they map to.
+      owner: prior === undefined ? { surrogate, position } : undefined,
+    });
   };
   for (const [surrogate, real] of map.reverse) {
     const minted = personSurrogateParts(surrogate);
     if (minted === undefined) continue;
     const of = realNameParts(real);
-    addPart(minted.first, of.first);
-    addPart(minted.last, of.last);
+    addPart(minted.first, of.first, surrogate, 'first');
+    addPart(minted.last, of.last, surrogate, 'last');
   }
   return { loose, parts };
 }
@@ -343,6 +352,38 @@ function addressesMaskedPerson(text: string, start: number, end: number): boolea
   return initial === initial.toLowerCase() || NAME_NEIGHBOURS.has(after.toLowerCase());
 }
 
+/** True when `needle` stands in `text` as a whole (case-insensitive, word-bounded). */
+function containsWhole(text: string, needle: string): boolean {
+  const haystack = text.toLowerCase();
+  const wanted = needle.toLowerCase();
+  for (let at = haystack.indexOf(wanted); at >= 0; at = haystack.indexOf(wanted, at + 1)) {
+    if (onWordBoundaries(text, at, at + wanted.length)) return true;
+  }
+  return false;
+}
+
+/**
+ * Field report 2026-11-18 — a second way a lone part plainly names the masked
+ * person: the answer itself introduces them by their FULL surrogate and then
+ * goes on with the first (or last) name alone ("Fehlen noch: Laura Schmitt,
+ * Jonas Weber. … Laura und Jonas können zusammen …"). The answer reached the
+ * user with the two first names left as placeholders, naming people nobody
+ * in the chat knew.
+ *
+ * The #1545 concern stays covered: without the full surrogate in the same
+ * text nothing changes, and a part that continues into another name word is
+ * still someone else — a first name followed by a capitalised word ("Laura
+ * Meier"), a last name preceded by one ("Anna Weber"). German capitalises
+ * every noun, so only the side a second NAME word would stand on is checked.
+ */
+function anchoredByFullSurrogate(text: string, start: number, end: number, part: PartForm): boolean {
+  if (part.owner === undefined || !containsWhole(text, part.owner.surrogate)) return false;
+  const neighbour = neighbourWord(text, start, end, part.owner.position === 'first' ? 'after' : 'before');
+  if (neighbour === undefined) return true;
+  const initial = neighbour.charAt(0);
+  return initial === initial.toLowerCase();
+}
+
 function partClaims(text: string, parts: ReadonlyMap<string, PartForm>): Claim[] {
   if (parts.size === 0) return [];
   const spellings = [...parts.values()].flatMap((p) => [...p.spellings]);
@@ -352,7 +393,10 @@ function partClaims(text: string, parts: ReadonlyMap<string, PartForm>): Claim[]
     const part = parts.get(match[0].toUpperCase());
     if (part === undefined || !part.spellings.has(match[0])) return [];
     if (!onWordBoundaries(text, start, end)) return [];
-    if (part.real === undefined || !addressesMaskedPerson(text, start, end)) {
+    if (
+      part.real === undefined ||
+      !(addressesMaskedPerson(text, start, end) || anchoredByFullSurrogate(text, start, end, part))
+    ) {
       return [{ start, end, text: match[0], unresolved: true, rank: 2 }];
     }
     return [{ start, end, text: caseLike(match[0], part.real), unresolved: false, rank: 2 }];
