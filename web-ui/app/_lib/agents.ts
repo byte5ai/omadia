@@ -780,6 +780,9 @@ export const TEAMS_IDENTITY_LAST_ERROR_CODES = [
   // #2043 — the connector refused to create a bot under an app id whose bot
   // was deleted before: it would be rejected by the Bot Connector for good
   'bot_app_id_retired',
+  // #2043 D22 — Graph kept refusing a follow-up call on the new app
+  // registration; replication or ownership, not missing consent
+  'app_registration_not_ready',
   'unknown',
 ] as const;
 

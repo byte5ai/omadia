@@ -418,6 +418,7 @@ export const TEAMS_PROVISIONING_EVENT_DETAILS = [
   'verifying_bot',
   'bot_rejected',
   'bot_app_id_retired',
+  'app_registration_not_ready',
   'rsc_consent_refused',
 ] as const;
 
