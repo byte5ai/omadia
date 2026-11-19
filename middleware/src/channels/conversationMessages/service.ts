@@ -8,6 +8,8 @@
 import type {
   ConversationMessageScope,
   ConversationMessagesService,
+  ProcessConversationMessagesService,
+  ProcessMessageScope,
 } from '@omadia/plugin-api';
 
 import type { ConversationMessageHub } from './hub.js';
@@ -59,6 +61,51 @@ export function createConversationMessagesService(
     async listSince(scope, opts) {
       if (!allowed()) return { events: [] };
       return hub.listSince(scope, callerPluginId, opts);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// conversationMessages@2 (#2089)
+// ---------------------------------------------------------------------------
+
+/**
+ * The second major for one calling plugin. There is no "is the engine" check
+ * here: every operation is bound to a process, and a process is the caller's
+ * only if the caller opened an execution scope for it, which only the plugin
+ * that delivers the agent's archetype can (#2090).
+ */
+export function createProcessConversationMessagesService(deps: {
+  readonly hub: ConversationMessageHub;
+  /** `undefined` = the kernel itself, which runs no process. */
+  readonly callerPluginId: string | undefined;
+}): ProcessConversationMessagesService {
+  const { hub, callerPluginId } = deps;
+  return {
+    async subscribe(scope: ProcessMessageScope, options) {
+      if (callerPluginId === undefined) {
+        return { outcome: 'refused', code: 'unavailable', message: 'only a plugin subscribes a process' };
+      }
+      return hub.subscribeProcess(scope, options?.mode, callerPluginId);
+    },
+    modeOf(scope) {
+      return Promise.resolve(callerPluginId === undefined ? undefined : hub.modeOfProcess(scope, callerPluginId));
+    },
+    onMessage(agentSlug, handler) {
+      if (callerPluginId === undefined) return () => undefined;
+      return hub.onProcessMessage(agentSlug, callerPluginId, handler);
+    },
+    async getEvent(scope, messageId, revision) {
+      return callerPluginId === undefined ? undefined : hub.getProcessEvent(scope, callerPluginId, messageId, revision);
+    },
+    async getEventById(scope, eventId) {
+      return callerPluginId === undefined ? undefined : hub.getProcessEventById(scope, callerPluginId, eventId);
+    },
+    async listSince(scope, opts) {
+      return callerPluginId === undefined ? { events: [] } : hub.listProcessEventsSince(scope, callerPluginId, opts);
+    },
+    async bindMessage(scope, ref) {
+      return callerPluginId === undefined ? false : hub.bindProcessMessage(scope, callerPluginId, ref);
     },
   };
 }

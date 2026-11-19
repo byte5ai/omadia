@@ -36,6 +36,35 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Message subscriptions and reads bound to a process (#2089, epic #2043): K4.3 of the spec alignment
+
+- **`conversationMessages@2`.** A facilitation engine can subscribe a
+  conversation for one process (a facilitation) with a mode: every human
+  message, only messages addressed to the facilitator, or nothing. Every
+  read names the process and returns only what that process received there.
+  A later facilitation in the same conversation has its own subscription and
+  sees none of an earlier one's messages.
+- **Which process a message belongs to is decided before it is stored.** A
+  reply to a message, or an answer to a card, that belongs to a process
+  reaches that process alone, also while another facilitation of the same
+  facilitator reads every message of the conversation. Any other message
+  goes to the facilitation that reads everything and, when it addresses the
+  facilitator, to those in follow-up as well.
+- **Access follows the permission.** Reading every message needs the
+  conversation's reservation and an open execution scope. When the
+  reservation is released the kernel turns the subscription down to
+  addressed messages (the mention gate is back on); when the process has no
+  open scope left it ends the subscription, and reads end with it.
+- **Retention.** Messages of a running process are not removed by the age
+  limit; they go with the grace period after the process's last scope ended.
+- **For channel plugins** (channel-sdk 0.3.5): `conversationDelivery()`
+  tells an adapter whether an identity gets all, addressed or no messages of
+  a conversation, and `addressedToBot` lets it mark a mention. An adapter
+  that does not use them keeps delivering as before: all messages while
+  somebody reads all, nothing otherwise.
+- The first version of the service is unchanged (migration 0075, plugin-api
+  1.66.0).
+
 ### Changed — A turn's model-call reservation is a hard cap (#2090, epic #2043)
 
 - **A gate before every model call.** Every provider implementation

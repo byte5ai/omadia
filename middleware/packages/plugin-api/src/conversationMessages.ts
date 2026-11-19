@@ -70,6 +70,9 @@ export interface ConversationMessageRecord {
   occurredAt: string;
   /** ISO 8601, when the kernel stored it. */
   receivedAt: string;
+  /** #2089 — the channel stated that the message addresses the agent's bot
+   *  (a mention). Absent = it did not say so. */
+  addressedToBot?: boolean;
 }
 
 export interface ConversationMessageScope {
@@ -156,4 +159,95 @@ export interface MessageCardAnswer {
   proposalId?: string;
   proposalVersion?: number;
   answers?: readonly CardAnswerValue[];
+}
+
+// ---------------------------------------------------------------------------
+// conversationMessages@2 (#2089) — reads and subscriptions bound to a process
+// ---------------------------------------------------------------------------
+
+/**
+ * The second major: `ctx.services.get('conversationMessages@2')`, declared
+ * as `conversationMessages@^2` under `optional_requires`.
+ *
+ * A subscription belongs to one PROCESS (a facilitation) and has a mode.
+ * Every read names the process and returns only what that process received in
+ * that conversation; a later process in the same conversation has its own
+ * subscription and sees none of an earlier one's events.
+ *
+ * What the kernel requires (execution scopes and reservations, #2090):
+ *  - `all`: the process holds the conversation's reservation and has an open
+ *    execution scope;
+ *  - `addressed`: the process has an open scope and holds or held the
+ *    reservation;
+ *  - when the reservation is released the kernel turns `all` into
+ *    `addressed`; when the process has no open scope left it ends the
+ *    subscription, and reads end with it.
+ *
+ * Which process an inbound message goes to is decided before it is stored:
+ * a reply to a message, or an answer to a card, that is bound to a process
+ * ({@link ProcessConversationMessagesService.bindMessage}) goes to that
+ * process alone. Any other message goes to the process in `all` mode and,
+ * when it addresses the agent, to every process in `addressed` mode.
+ */
+export const CONVERSATION_MESSAGES_V2_SERVICE_NAME = 'conversationMessages@2';
+
+/** `all`: every human message. `addressed`: a mention, a reply to one of the
+ *  process's messages, an answer to one of its cards. `none`: nothing is
+ *  delivered; what was stored stays readable. */
+export type ConversationMessageMode = 'all' | 'addressed' | 'none';
+
+export interface ProcessMessageScope extends ConversationMessageScope {
+  processId: string;
+}
+
+export interface ProcessConversationMessageRecord extends ConversationMessageRecord {
+  processId: string;
+}
+
+export type ProcessSubscribeOutcome =
+  | { outcome: 'subscribed'; mode: ConversationMessageMode }
+  | {
+      outcome: 'refused';
+      code:
+        | 'no_identity'
+        | 'not_facilitator'
+        | 'not_present'
+        | 'not_ready'
+        | 'unavailable'
+        /** The mode needs the conversation's reservation and the process
+         *  does not hold it (for `addressed`: never held it). */
+        | 'not_reserved'
+        /** The process has no open execution scope. */
+        | 'no_scope'
+        /** The process's subscription for this conversation has ended; a
+         *  process subscribes a conversation once. */
+        | 'ended';
+      message: string;
+    };
+
+export interface ProcessConversationMessagesService {
+  /** Subscribe the process to a conversation, or change the mode of its
+   *  subscription. */
+  subscribe(scope: ProcessMessageScope, options: { mode: ConversationMessageMode }): Promise<ProcessSubscribeOutcome>;
+  /** The mode of the process's subscription; `undefined` when it has none or
+   *  it has ended. */
+  modeOf(scope: ProcessMessageScope): Promise<ConversationMessageMode | undefined>;
+  /** Live delivery of the caller's process subscriptions of one agent. */
+  onMessage(
+    agentSlug: string,
+    handler: (record: ProcessConversationMessageRecord) => void | Promise<void>,
+  ): () => void;
+  getEvent(scope: ProcessMessageScope, messageId: string, revision?: number): Promise<ProcessConversationMessageRecord | undefined>;
+  getEventById(scope: ProcessMessageScope, eventId: string): Promise<ProcessConversationMessageRecord | undefined>;
+  listSince(
+    scope: ProcessMessageScope,
+    opts?: { after?: string; limit?: number },
+  ): Promise<{ events: readonly ProcessConversationMessageRecord[]; nextCursor?: string }>;
+  /**
+   * Tell the kernel that a message the agent sent (`messageId`) or a card it
+   * posted (`cardId`) belongs to this process, so replies and answers reach
+   * this process alone. `false`: it is already bound to another process, or
+   * the process has no subscription here.
+   */
+  bindMessage(scope: ProcessMessageScope, ref: { messageId?: string; cardId?: string }): Promise<boolean>;
 }

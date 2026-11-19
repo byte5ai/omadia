@@ -250,6 +250,17 @@ export interface CoreApi {
   isAllMessagesSubscribed?(channelType: string, conversationId: string, channelKey: string): boolean;
 
   /**
+   * #2089 — what the identity `channelKey` is handed of this conversation:
+   * `all` (every human message, the mention gate is lifted), `addressed`
+   * (emit a message that mentions the bot, replies to one of its messages or
+   * answers one of its cards, with `addressedToBot` set for a mention; the
+   * ordinary mention turn still runs) or `none`. Synchronous and
+   * kernel-cached like `isAllMessagesSubscribed`, which stays `true` exactly
+   * for `all`. Optional — feature-detect.
+   */
+  conversationDelivery?(channelType: string, conversationId: string, channelKey: string): 'all' | 'addressed' | 'none';
+
+  /**
    * Register the channel's readiness check (#2043): installed, may read all
    * messages, can post. Optional — same feature-detect + deactivate lifecycle
    * as {@link registerRosterProvider}.

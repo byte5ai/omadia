@@ -594,6 +594,35 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
     });
   });
 
+  describe('#2089 what a process may read', () => {
+    it('follows its reservation and its open scopes', async () => {
+      const { processId, home, scope } = await activeProcess();
+      const of = (conversationId = home.conversationId) =>
+        store.processAccess({ pluginId: ENGINE, processId, channelType: home.channelType, conversationId });
+      assert.deepEqual(await of(), { reserved: true, everReserved: true, openScope: true });
+      assert.deepEqual(await of('19:never-held@thread.v2'), { reserved: false, everReserved: false, openScope: true });
+      assert.deepEqual(
+        await store.processAccess({ pluginId: OTHER, processId, ...home }),
+        { reserved: false, everReserved: false, openScope: false },
+        'another plugin with the same process id has nothing',
+      );
+      const notified: string[] = [];
+      const withHook = createExecutionAuthorizationService({
+        store,
+        callerPluginId: ENGINE,
+        resolveAgent: (slug) => agents.get(slug),
+        archetypePluginIdFor: () => ENGINE,
+        configuringMaxMs: 72 * HOUR,
+        onAccessChanged: () => void notified.push('changed'),
+      });
+      await withHook.releaseConversation({ processId, ...home, reason: 'closed' });
+      assert.deepEqual(notified, ['changed'], 'the message subscriptions are told at once');
+      assert.deepEqual(await of(), { reserved: false, everReserved: true, openScope: true });
+      await pool.query("UPDATE execution_scopes SET deadline = now() - interval '1 second' WHERE id = $1", [scope.id]);
+      assert.equal((await of()).openScope, false, 'a scope past its deadline is not open, also before the sweep');
+    });
+  });
+
   describe('revocation', () => {
     it('ends every open scope and releases every reservation of an agent, and nothing of another', async () => {
       const a = await activeProcess();

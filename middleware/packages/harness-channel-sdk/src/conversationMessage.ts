@@ -50,6 +50,12 @@ export interface ConversationMessageEvent {
   cardAnswer?: MessageCardAnswer;
   /** ISO 8601 timestamp of the platform event. */
   occurredAt: string;
+  /** #2089 — the message addresses the receiving bot (a mention of it). An
+   *  identity that only gets ADDRESSED messages of a conversation
+   *  (`conversationDelivery` answers `addressed`) is handed the message only
+   *  when this is `true`, or when it replies to one of the bot's messages or
+   *  answers one of its cards. */
+  addressedToBot?: boolean;
   /** The original platform event, opaque to the kernel and not stored. */
   rawEvent?: unknown;
 }

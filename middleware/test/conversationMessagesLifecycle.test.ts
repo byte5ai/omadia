@@ -190,9 +190,13 @@ describe('conversationMessages: CoreApi and retention', () => {
         isSubscribed: () => {
           throw new Error('boom');
         },
+        deliveryMode: () => {
+          throw new Error('boom');
+        },
       },
     });
     assert.equal(throwing.isAllMessagesSubscribed!('teams', CONVERSATION, MARA_KEY), false);
+    assert.equal(throwing.conversationDelivery!('teams', CONVERSATION, MARA_KEY), 'none');
   });
 
   it('purges only after the subscription ended plus the grace period, and by age', async () => {

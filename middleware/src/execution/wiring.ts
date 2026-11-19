@@ -31,6 +31,9 @@ export interface ExecutionWiringDeps {
   readonly legacyEnginePluginId: () => string | undefined;
   readonly configuringMaxHours: number;
   readonly sweepIntervalMs: number;
+  /** #2089 — a reservation was released or a scope ended (by the plugin or by
+   *  the sweep): message subscriptions follow at once. */
+  readonly onAccessChanged?: () => void;
   readonly log: (message: string) => void;
 }
 
@@ -62,6 +65,7 @@ export function wireExecutionAuthorization(deps: ExecutionWiringDeps): Execution
       resolveAgent,
       archetypePluginIdFor,
       configuringMaxMs: deps.configuringMaxHours * 3_600_000,
+      ...(deps.onAccessChanged ? { onAccessChanged: deps.onAccessChanged } : {}),
       log: deps.log,
     });
 
@@ -79,6 +83,7 @@ export function wireExecutionAuthorization(deps: ExecutionWiringDeps): Execution
       .sweepExpired()
       .then((swept) => {
         if (swept.scopesEnded > 0 || swept.reservationsReleased > 0) {
+          deps.onAccessChanged?.();
           deps.log(
             `[execution] sweep: ${String(swept.scopesEnded)} scope(s) past their deadline ended, ${String(swept.reservationsReleased)} reservation(s) without an open scope released`,
           );
