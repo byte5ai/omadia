@@ -7,6 +7,13 @@
 // (including the neutrality block for facilitators), model policy, privacy
 // shield and receipts all apply. Kernel-published, optional.
 
+import type {
+  ExecutionPhase,
+  ExecutionPurpose,
+  ExecutionRefusalCode,
+  ExecutionTarget,
+} from './executionAuthorization.js';
+
 export const AGENT_TURN_SERVICE_NAME = 'agentTurn';
 
 export interface AgentTurnRequest {
@@ -60,4 +67,71 @@ export interface AgentTurnService {
   /** The profile of an agent bound to the calling engine; `undefined` for
    *  any other agent. Optional — feature-detect on older kernels. */
   getProfile?(agentSlug: string): Promise<AgentProfile | undefined>;
+}
+
+// ---------------------------------------------------------------------------
+// agentTurn@2 (#2090) — a turn under an execution scope
+// ---------------------------------------------------------------------------
+
+/**
+ * The second major of the turn service: `ctx.services.get('agentTurn@2')`,
+ * declared as `agentTurn@^2` under `optional_requires`.
+ *
+ * It runs the same turn as the first major, with the same guards. What it
+ * adds: the turn is an authorized action. The request names the execution
+ * scope it runs under, the process, the phase, the purpose and how many model
+ * calls it reserves; the kernel draws the authorization from the scope before
+ * any model is called and refuses the turn otherwise (past the deadline,
+ * without budget, with the kill switch on, in a phase that does not fit).
+ * After the turn the kernel counts the model calls it made, helper and guard
+ * calls included, and returns the unused part of the reservation.
+ *
+ * A turn may make more model calls than it reserved: the excess is charged to
+ * the scope up to its budget, and a scope whose budget is used up authorizes
+ * nothing further.
+ */
+export const AGENT_TURN_V2_SERVICE_NAME = 'agentTurn@2';
+
+export interface ScopedAgentTurnRequest extends AgentTurnRequest {
+  /** The execution scope the turn is drawn from. */
+  readonly scopeId: string;
+  /** The process the scope belongs to; must be the scope's own. */
+  readonly processId: string;
+  readonly phase: ExecutionPhase;
+  readonly purpose: ExecutionPurpose;
+  /** A model turn produces prose. Stated, so every action names its type. */
+  readonly emission: 'prose';
+  /** Model calls reserved for this turn, helper and guard calls included. */
+  readonly budget: { readonly modelCalls: number };
+  /** Where the text is meant to go, if the caller knows; it must be a target
+   *  of the scope. The send itself is authorized separately. */
+  readonly target?: ExecutionTarget;
+}
+
+export type ScopedAgentTurnOutcome =
+  | {
+      outcome: 'completed';
+      text: string;
+      turnId?: string;
+      authorizationId: string;
+      /** Model calls reserved and really made. */
+      modelCalls: { reserved: number; used: number };
+    }
+  | {
+      outcome: 'refused';
+      code: 'unknown_agent' | 'not_bound' | 'budget_exceeded' | 'unavailable' | 'not_authorized';
+      message: string;
+      /** With `not_authorized`: why the execution authorization refused. */
+      executionCode?: ExecutionRefusalCode;
+    }
+  | {
+      outcome: 'failed';
+      message: string;
+      /** The authorization the failed turn consumed, if it got that far. */
+      authorizationId?: string;
+    };
+
+export interface ScopedAgentTurnService {
+  runTurn(request: ScopedAgentTurnRequest): Promise<ScopedAgentTurnOutcome>;
+  getProfile(agentSlug: string): Promise<AgentProfile | undefined>;
 }

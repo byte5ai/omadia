@@ -3,7 +3,11 @@
 // reservation operations.
 
 import { archetypeOf, getArchetype, type OrchestratorRegistry } from '@omadia/orchestrator';
-import { EXECUTION_AUTHORIZATION_SERVICE_NAME, perCallerService } from '@omadia/plugin-api';
+import {
+  EXECUTION_AUTHORIZATION_SERVICE_NAME,
+  perCallerService,
+  type ExecutionAuthorizationService,
+} from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 
 import { KERNEL_SERVICE_CALLER, type ServiceRegistry } from '../platform/serviceRegistry.js';
@@ -12,6 +16,9 @@ import { ExecutionScopeStore } from './scopeStore.js';
 
 export interface ExecutionWiring {
   readonly store: ExecutionScopeStore;
+  /** The execution authorization as the plugin `pluginId` gets it: for kernel
+   *  services that draw an authorization on a plugin's behalf (`agentTurn@2`). */
+  serviceFor(pluginId: string): ExecutionAuthorizationService;
   stop(): void;
 }
 
@@ -48,19 +55,22 @@ export function wireExecutionAuthorization(deps: ExecutionWiringDeps): Execution
     return archetypeId === 'facilitator' ? deps.legacyEnginePluginId() : undefined;
   };
 
+  const serviceFor = (pluginId: string): ExecutionAuthorizationService =>
+    createExecutionAuthorizationService({
+      store,
+      callerPluginId: pluginId,
+      resolveAgent,
+      archetypePluginIdFor,
+      configuringMaxMs: deps.configuringMaxHours * 3_600_000,
+      log: deps.log,
+    });
+
   deps.serviceRegistry.provide(
     EXECUTION_AUTHORIZATION_SERVICE_NAME,
+    // The kernel itself delivers no archetype, so it is refused like any
+    // other caller that does not.
     perCallerService((caller) =>
-      createExecutionAuthorizationService({
-        store,
-        // The kernel itself delivers no archetype, so it is refused like any
-        // other caller that does not.
-        callerPluginId: caller.pluginId === KERNEL_SERVICE_CALLER.pluginId ? '' : caller.pluginId,
-        resolveAgent,
-        archetypePluginIdFor,
-        configuringMaxMs: deps.configuringMaxHours * 3_600_000,
-        log: deps.log,
-      }),
+      serviceFor(caller.pluginId === KERNEL_SERVICE_CALLER.pluginId ? '' : caller.pluginId),
     ),
   );
 
@@ -84,6 +94,7 @@ export function wireExecutionAuthorization(deps: ExecutionWiringDeps): Execution
 
   return {
     store,
+    serviceFor,
     stop: () => {
       clearInterval(timer);
     },

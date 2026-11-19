@@ -145,6 +145,7 @@ remove(_agentId: string, _entryExternalId: string): Promise<void>;
 }
 
 // ===== agentTurn.d.ts =====
+import type { ExecutionPhase, ExecutionPurpose, ExecutionRefusalCode, ExecutionTarget } from './executionAuthorization.js';
 export declare const AGENT_TURN_SERVICE_NAME = "agentTurn";
 export interface AgentTurnRequest {
 agentSlug: string;
@@ -179,6 +180,41 @@ ownIdentityChannelTypes: readonly string[];
 export interface AgentTurnService {
 runTurn(request: AgentTurnRequest): Promise<AgentTurnOutcome>;
 getProfile?(agentSlug: string): Promise<AgentProfile | undefined>;
+}
+export declare const AGENT_TURN_V2_SERVICE_NAME = "agentTurn@2";
+export interface ScopedAgentTurnRequest extends AgentTurnRequest {
+readonly scopeId: string;
+readonly processId: string;
+readonly phase: ExecutionPhase;
+readonly purpose: ExecutionPurpose;
+readonly emission: 'prose';
+readonly budget: {
+readonly modelCalls: number;
+};
+readonly target?: ExecutionTarget;
+}
+export type ScopedAgentTurnOutcome = {
+outcome: 'completed';
+text: string;
+turnId?: string;
+authorizationId: string;
+modelCalls: {
+reserved: number;
+used: number;
+};
+} | {
+outcome: 'refused';
+code: 'unknown_agent' | 'not_bound' | 'budget_exceeded' | 'unavailable' | 'not_authorized';
+message: string;
+executionCode?: ExecutionRefusalCode;
+} | {
+outcome: 'failed';
+message: string;
+authorizationId?: string;
+};
+export interface ScopedAgentTurnService {
+runTurn(request: ScopedAgentTurnRequest): Promise<ScopedAgentTurnOutcome>;
+getProfile(agentSlug: string): Promise<AgentProfile | undefined>;
 }
 
 // ===== archetypeProcesses.d.ts =====
@@ -594,6 +630,7 @@ export declare const EXECUTION_SCOPE_KINDS: readonly ExecutionScopeKind[];
 export type ExecutionPhase = 'configuring' | 'active' | 'concluding' | 'closed' | 'aborted' | 'following_up' | 'ended';
 export declare const EXECUTION_SCOPE_PHASES: Readonly<Record<ExecutionScopeKind, readonly ExecutionPhase[]>>;
 export type ExecutionActionType = 'model_turn' | 'post' | 'direct_message' | 'card_update' | 'check' | 'delivery';
+export type ExecutionEmissionType = 'prose' | 'template' | 'data';
 export type ExecutionPurpose = 'moderation' | 'handshake' | 'link' | 'reminder' | 'status' | 'consent' | 'stop' | 'essential_message' | 'protocol_dispatch' | 'invitation' | 'readiness_check' | 'roster_check' | 'other';
 export type ExecutionTarget = {
 readonly kind: 'conversation';
@@ -651,6 +688,7 @@ readonly phase: ExecutionPhase;
 readonly purpose: ExecutionPurpose;
 readonly action: ExecutionActionType;
 readonly target?: ExecutionTarget;
+readonly emission?: ExecutionEmissionType;
 readonly modelCalls?: number;
 }
 export interface ExecutionAuthorization {

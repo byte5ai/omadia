@@ -7312,6 +7312,7 @@ async function main(): Promise<void> {
     getRegistry,
     ...(conversationMessages ? { messages: conversationMessages.hub } : {}),
     engineSources: facilitationEngineSources,
+    executionFor: (pluginId) => executionRef.current?.serviceFor(pluginId),
     maxTurnsPerMinute: config.AGENT_TURN_MAX_PER_MINUTE,
     language: () => {
       const raw = installedRegistry.get('@omadia/orchestrator')?.config?.['ai_disclosure_locale'];

@@ -2,7 +2,13 @@
 // which plugin asks, and only the facilitation engine is answered.
 
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
-import { AGENT_TURN_SERVICE_NAME, perCallerService } from '@omadia/plugin-api';
+import {
+  AGENT_TURN_SERVICE_NAME,
+  AGENT_TURN_V2_SERVICE_NAME,
+  perCallerService,
+  type ExecutionAuthorizationService,
+} from '@omadia/plugin-api';
+import { meterModelCalls } from '@omadia/usage-telemetry';
 
 import type { ConversationMessageHub } from '../channels/conversationMessages/hub.js';
 import {
@@ -10,13 +16,22 @@ import {
   type FacilitationEngineSources,
 } from '../platform/facilitatorGuard.js';
 import { KERNEL_SERVICE_CALLER, type ServiceRegistry } from '../platform/serviceRegistry.js';
-import { AgentTurnBudget, AgentTurnHistory, createAgentTurnService } from './agentTurnService.js';
+import {
+  AgentTurnBudget,
+  AgentTurnHistory,
+  createAgentTurnService,
+  createScopedAgentTurnService,
+  type AgentTurnServiceDeps,
+} from './agentTurnService.js';
 
 export function publishAgentTurnService(deps: {
   serviceRegistry: ServiceRegistry;
   getRegistry: () => OrchestratorRegistry | undefined;
   messages?: Pick<ConversationMessageHub, 'getEventById'>;
   engineSources: () => FacilitationEngineSources;
+  /** #2090 — the calling plugin's execution authorization, for `agentTurn@2`.
+   *  Answers `undefined` without a database. */
+  executionFor?: (pluginId: string) => ExecutionAuthorizationService | undefined;
   maxTurnsPerMinute: number;
   language?: () => string | undefined;
   log: (message: string) => void;
@@ -24,23 +39,37 @@ export function publishAgentTurnService(deps: {
   // One history and one budget for the process, shared by every facade.
   const history = new AgentTurnHistory();
   const budget = new AgentTurnBudget(deps.maxTurnsPerMinute);
+  const depsFor = (caller: { pluginId: string }): AgentTurnServiceDeps => {
+    const isKernel = caller.pluginId === KERNEL_SERVICE_CALLER.pluginId;
+    return {
+      getRegistry: deps.getRegistry,
+      ...(deps.messages ? { messages: deps.messages } : {}),
+      callerPluginId: isKernel ? undefined : caller.pluginId,
+      isEngine: () => {
+        const engine = resolveFacilitationEngine(deps.engineSources());
+        return engine.state === 'bound' && engine.pluginId === caller.pluginId;
+      },
+      history,
+      budget,
+      ...(deps.language ? { language: deps.language } : {}),
+      log: deps.log,
+    };
+  };
   deps.serviceRegistry.provide(
     AGENT_TURN_SERVICE_NAME,
-    perCallerService((caller) => {
-      const isKernel = caller.pluginId === KERNEL_SERVICE_CALLER.pluginId;
-      return createAgentTurnService({
-        getRegistry: deps.getRegistry,
-        ...(deps.messages ? { messages: deps.messages } : {}),
-        callerPluginId: isKernel ? undefined : caller.pluginId,
-        isEngine: () => {
-          const engine = resolveFacilitationEngine(deps.engineSources());
-          return engine.state === 'bound' && engine.pluginId === caller.pluginId;
-        },
-        history,
-        budget,
-        ...(deps.language ? { language: deps.language } : {}),
-        log: deps.log,
-      });
-    }),
+    perCallerService((caller) => createAgentTurnService(depsFor(caller))),
+  );
+  // #2090 — the second major, next to the first: the same turn as an
+  // authorized action under an execution scope. A plugin asks for it by its
+  // versioned name. The first major stays as it is until the engine moved.
+  deps.serviceRegistry.provide(
+    AGENT_TURN_V2_SERVICE_NAME,
+    perCallerService((caller) =>
+      createScopedAgentTurnService({
+        ...depsFor(caller),
+        execution: () => deps.executionFor?.(caller.pluginId),
+        meter: meterModelCalls,
+      }),
+    ),
   );
 }

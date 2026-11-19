@@ -26,6 +26,9 @@ import {
   type ExecutionAgent,
 } from '../src/execution/executionAuthorizationService.js';
 import { ExecutionScopeStore } from '../src/execution/scopeStore.js';
+import { wrapFacilitatorAgent } from '../packages/harness-orchestrator/src/facilitatorAgent.js';
+import { meterModelCalls, recordUsage } from '../packages/harness-usage-telemetry/src/index.js';
+import { AgentTurnBudget, AgentTurnHistory, createScopedAgentTurnService } from '../src/agents/agentTurnService.js';
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
   label: 'executionScopes',
@@ -94,6 +97,7 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
     await runMultiOrchestratorMigrations(pool, () => undefined, MIGRATIONS_DIR);
     // The CI schema job applies everything twice.
     await pool.query(await readFile(resolve(MIGRATIONS_DIR, '0073_execution_scopes.sql'), 'utf8'));
+    await pool.query(await readFile(resolve(MIGRATIONS_DIR, '0074_execution_authorization_emission.sql'), 'utf8'));
     const config = new ConfigStore(pool);
     for (const [slug, archetype] of [['mara', 'facilitator'], ['finn', 'facilitator'], ['otto', 'other'], ['stan', 'standard']] as const) {
       const agent = await config.createAgent({ slug, name: slug });
@@ -364,6 +368,113 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       if (greedy.outcome !== 'authorized') throw new Error('unreachable');
       await engine.settle(greedy.authorizationId, { modelCalls: 50 });
       assert.equal(await used(), 6);
+    });
+  });
+
+  describe('agentTurn@2 on a real scope', () => {
+    /** A turn service whose model makes `calls` model calls per turn. */
+    function turns(calls: () => number) {
+      let ran = 0;
+      const entry = {
+        agent: { id: agents.get('mara')!.id, slug: 'mara', name: 'mara', status: 'enabled', kind: 'facilitator', archetype: 'facilitator' },
+        plugins: [{ pluginId: ENGINE, enabled: true }],
+        built: {
+          bundle: {
+            agent: wrapFacilitatorAgent(
+              {
+                chat: async () => {
+                  ran += 1;
+                  for (let i = 0; i < calls(); i += 1) {
+                    await Promise.resolve();
+                    recordUsage({ source: 'test', model: 'm', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 });
+                  }
+                  return { text: 'ok' };
+                },
+                chatStream: (() => undefined) as never,
+              },
+              { agentSlug: 'mara' },
+            ),
+          },
+        },
+      };
+      const service = createScopedAgentTurnService({
+        getRegistry: () => ({ get: (slug: string) => (slug === 'mara' ? entry : undefined), channelTypesWithIdentity: () => [] }) as never,
+        callerPluginId: ENGINE,
+        isEngine: () => true,
+        history: new AgentTurnHistory(),
+        budget: new AgentTurnBudget(0),
+        execution: () => engine,
+        meter: meterModelCalls,
+      });
+      return { service, ran: () => ran };
+    }
+    const turn = (scopeId: string, processId: string, modelCalls: number) => ({
+      agentSlug: 'mara',
+      sessionKey: processId,
+      channelType: 'teams',
+      conversationId: '19:x@thread.v2',
+      input: 'go on',
+      scopeId,
+      processId,
+      phase: 'active' as const,
+      purpose: 'moderation' as const,
+      emission: 'prose' as const,
+      budget: { modelCalls },
+    });
+    const usedOf = async (scopeId: string): Promise<{ used_actions: number; used_model_calls: number }> =>
+      (await pool.query<{ used_actions: number; used_model_calls: number }>(
+        'SELECT used_actions, used_model_calls FROM execution_scopes WHERE id = $1',
+        [scopeId],
+      )).rows[0]!;
+
+    it('charges the scope with the model calls the turn really made and records the emission type', async () => {
+      const { scope, processId } = await activeProcess({ actions: 5, modelCalls: 10 });
+      const t = turns(() => 3);
+      const outcome = await t.service.runTurn(turn(scope.id, processId, 6));
+      assert.deepEqual(outcome.outcome === 'completed' && outcome.modelCalls, { reserved: 6, used: 3 });
+      assert.deepEqual(await usedOf(scope.id), { used_actions: 1, used_model_calls: 3 });
+      const row = await pool.query<{ action: string; emission: string; reserved_model_calls: number; used_model_calls: number }>(
+        'SELECT action, emission, reserved_model_calls, used_model_calls FROM execution_authorizations WHERE scope_id = $1',
+        [scope.id],
+      );
+      assert.deepEqual(row.rows, [{ action: 'model_turn', emission: 'prose', reserved_model_calls: 6, used_model_calls: 3 }]);
+    });
+
+    it('two turns racing for the last reservation: exactly one model runs', async () => {
+      const { scope, processId } = await activeProcess({ actions: 10, modelCalls: 4 });
+      const t = turns(() => 1);
+      const outcomes = await Promise.all(Array.from({ length: 5 }, () => t.service.runTurn(turn(scope.id, processId, 4))));
+      assert.equal(outcomes.filter((o) => o.outcome === 'completed').length, 1);
+      assert.equal(t.ran(), 1);
+      assert.ok(
+        outcomes
+          .filter((o) => o.outcome === 'refused')
+          .every((o) => o.outcome === 'refused' && o.code === 'not_authorized' && o.executionCode === 'budget_exhausted'),
+      );
+    });
+
+    it('a turn that overdraws uses the budget up, and the next turn is refused', async () => {
+      const { scope, processId } = await activeProcess({ actions: 10, modelCalls: 5 });
+      const t = turns(() => 12);
+      const first = await t.service.runTurn(turn(scope.id, processId, 2));
+      assert.deepEqual(first.outcome === 'completed' && first.modelCalls, { reserved: 2, used: 12 });
+      assert.equal((await usedOf(scope.id)).used_model_calls, 5, 'never more than the budget');
+      const second = await t.service.runTurn(turn(scope.id, processId, 1));
+      assert.equal(second.outcome === 'refused' && second.executionCode, 'budget_exhausted');
+      assert.equal(t.ran(), 1);
+    });
+
+    it('the kill switch and a passed deadline refuse the turn before the model', async () => {
+      const { scope, processId } = await activeProcess();
+      const t = turns(() => 1);
+      const stop = await store.setKillSwitch({ level: 'process', agentId: agents.get('mara')!.id, processId, reason: '', setBy: 'op' });
+      const stopped = await t.service.runTurn(turn(scope.id, processId, 1));
+      assert.equal(stopped.outcome === 'refused' && stopped.executionCode, 'kill_switch');
+      await store.clearKillSwitch(stop.id, 'op');
+      await pool.query("UPDATE execution_scopes SET deadline = now() - interval '1 second' WHERE id = $1", [scope.id]);
+      const late = await t.service.runTurn(turn(scope.id, processId, 1));
+      assert.equal(late.outcome === 'refused' && late.executionCode, 'deadline_passed');
+      assert.equal(t.ran(), 0);
     });
   });
 
