@@ -18,6 +18,7 @@ import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import {
+  ownDatabaseEdges,
   ownsItsDatabase,
   type ArchetypeDatabase,
   type ArchetypeDatabaseHandle,
@@ -329,11 +330,12 @@ export class ToolPluginRuntime {
       }
     }
 
-    const sorted = topoSortByDependsOn(
-      resolution.resolved,
-      this.deps.catalog,
-      resolution.edges,
-    );
+    const sorted = topoSortByDependsOn(resolution.resolved, this.deps.catalog, [
+      ...resolution.edges,
+      // #2088 — a plugin with its own database starts after the plugin that
+      // publishes the kernel's pool, though it no longer requires it.
+      ...ownDatabaseEdges(resolution.resolved, (id) => this.deps.catalog.get(id)?.plugin),
+    ]);
 
     for (const id of sorted) {
       try {

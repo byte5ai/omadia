@@ -72,6 +72,40 @@ export function ownsItsDatabase(plugin: {
   return !asked.some((ref) => POOL_SHAPED_CAPABILITIES.has(ref.split('@')[0]?.trim() ?? ''));
 }
 
+/**
+ * Boot order: a plugin that owns its database must activate after the plugin
+ * that publishes the kernel's pool, because its schema and roles are set up
+ * through that pool. A plugin on the shared pool gets this edge from its
+ * `requires: graphPool` line; one that owns its database has dropped that
+ * line, and would otherwise start first and find no database.
+ */
+export function ownDatabaseEdges(
+  ids: readonly string[],
+  pluginOf: (id: string) =>
+    | {
+        readonly kind: string;
+        readonly requires?: readonly string[];
+        readonly optional_requires?: readonly string[];
+        readonly provides?: readonly string[];
+        readonly permissions_summary?: { readonly sql?: unknown };
+      }
+    | undefined,
+): { from: string; to: string }[] {
+  const nameOf = (ref: string): string => ref.split('@')[0]?.trim() ?? '';
+  const providers = ids.filter((id) =>
+    (pluginOf(id)?.provides ?? []).some((ref) => POOL_SHAPED_CAPABILITIES.has(nameOf(ref))),
+  );
+  const edges: { from: string; to: string }[] = [];
+  for (const id of ids) {
+    const plugin = pluginOf(id);
+    if (!plugin || !ownsItsDatabase(plugin) || plugin.permissions_summary?.sql === undefined) continue;
+    for (const provider of providers) {
+      if (provider !== id) edges.push({ from: provider, to: id });
+    }
+  }
+  return edges;
+}
+
 /** Advisory-lock namespace of the setup transaction (core migrators: 4410,
  *  plugin migrations: 4420). */
 export const ARCHETYPE_DATABASE_LOCK_NS = 4_421;

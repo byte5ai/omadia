@@ -31,6 +31,7 @@ import {
   ArchetypeDatabaseError,
   archetypeDatabaseNames,
   createArchetypeDatabase,
+  ownDatabaseEdges,
   ownsItsDatabase,
   type ArchetypeDatabase,
 } from '../src/platform/archetypeDatabase.js';
@@ -479,6 +480,24 @@ describe('#2088 which plugin owns its database', () => {
     for (const kind of ['extension', 'tool', 'integration', 'agent', 'channel']) {
       assert.equal(ownsItsDatabase({ kind }), false, kind);
     }
+  });
+});
+
+describe('#2088 boot order of a plugin that owns its database', () => {
+  const plugins: Record<string, Parameters<typeof ownsItsDatabase>[0] & { provides?: string[]; permissions_summary?: { sql?: unknown } }> = {
+    kg: { kind: 'extension', provides: ['graphPool@1', 'knowledgeGraph@1'] },
+    own: { kind: 'archetype', permissions_summary: { sql: { ledger: 'x' } } },
+    ownNoSql: { kind: 'archetype', permissions_summary: {} },
+    shared: { kind: 'archetype', requires: ['graphPool@^1'], permissions_summary: { sql: { ledger: 'y' } } },
+    tool: { kind: 'tool', permissions_summary: { sql: { ledger: 'z' } } },
+  };
+
+  it('puts it after the plugin that publishes the pool; nobody else gets an edge', () => {
+    assert.deepEqual(ownDatabaseEdges(Object.keys(plugins), (id) => plugins[id]), [{ from: 'kg', to: 'own' }]);
+  });
+
+  it('adds nothing when no installed plugin publishes the pool', () => {
+    assert.deepEqual(ownDatabaseEdges(['own', 'tool'], (id) => plugins[id]), []);
   });
 });
 
