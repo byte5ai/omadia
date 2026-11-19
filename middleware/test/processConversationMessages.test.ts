@@ -242,6 +242,80 @@ describe('#2089 no reading across processes (criterion 53)', () => {
   });
 });
 
+describe('#2089 transcript segments (contract, no producer yet)', () => {
+  const segment = (over: Record<string, unknown> = {}) =>
+    messageEvent({
+      kind: 'transcript_segment',
+      messageId: 'seg-1',
+      text: 'I would go with option B.',
+      author: { kind: 'teams-aad', id: 'AAD-Anna', displayName: 'Anna Köhler' },
+      transcript: { sessionId: 'session-3', segmentId: 'seg-1', source: 'participant' },
+      ...over,
+    } as never);
+
+  it('stores a segment like a message: read by event id, revisions counted per segment', async () => {
+    const h = setup();
+    h.grant('f1', {});
+    await h.service.subscribe(h.scope('f1'), { mode: 'all' });
+    const first = await h.hub.ingest(segment());
+    const again = await h.hub.ingest(segment());
+    const corrected = await h.hub.ingest(segment({ text: 'I would go with option D.' }));
+    assert.deepEqual([first?.revision, again, corrected?.revision], [0, undefined, 1], 'the same text again is a redelivery');
+    const read = await h.service.getEventById(h.scope('f1'), corrected!.eventId);
+    assert.deepEqual(
+      [read?.kind, read?.messageId, read?.text, read?.transcript, read?.author.id, read?.processId],
+      ['transcript_segment', 'seg-1', 'I would go with option D.', { sessionId: 'session-3', segmentId: 'seg-1', source: 'participant' }, 'AAD-Anna', 'f1'],
+    );
+    // A message with the same id is a different thing with its own revisions.
+    const message = await h.hub.ingest(messageEvent({ messageId: 'seg-1', text: 'typed' }));
+    assert.equal(message?.revision, 0);
+  });
+
+  it('a shared source has no author: it names the media source and may carry a hint', async () => {
+    const h = setup();
+    h.grant('f1', {});
+    await h.service.subscribe(h.scope('f1'), { mode: 'all' });
+    const shared = await h.hub.ingest(
+      segment({
+        author: { kind: 'custom', id: 'media:room-mic-2' },
+        transcript: { sessionId: 'session-3', segmentId: 'seg-1', source: 'shared', speakerHint: 'probably Bert' },
+      }),
+    );
+    assert.deepEqual(shared?.transcript, { sessionId: 'session-3', segmentId: 'seg-1', source: 'shared', speakerHint: 'probably Bert' });
+    assert.equal(shared?.author.id, 'media:room-mic-2');
+  });
+
+  it('refuses what is not a transcript segment', async () => {
+    const h = setup();
+    h.grant('f1', {});
+    await h.service.subscribe(h.scope('f1'), { mode: 'all' });
+    const bad = [
+      segment({ transcript: undefined }),
+      segment({ transcript: { sessionId: '', segmentId: 'seg-1', source: 'participant' } }),
+      segment({ transcript: { sessionId: 's', segmentId: 'another', source: 'participant' } }),
+      segment({ transcript: { sessionId: 's', segmentId: 'seg-1', source: 'room' } }),
+      segment({ text: '   ' }),
+      // A shared stream that claims a person as its author.
+      segment({ transcript: { sessionId: 's', segmentId: 'seg-1', source: 'shared' } }),
+      // A message that smuggles a transcript in.
+      messageEvent({ messageId: 'm9', transcript: { sessionId: 's', segmentId: 'm9', source: 'participant' } } as never),
+    ];
+    for (const event of bad) assert.equal(await h.hub.ingest(event), undefined);
+    assert.deepEqual(await h.ids('f1'), []);
+    assert.equal(h.logs.filter((l) => l.includes('dropped an invalid event')).length, bad.length);
+  });
+
+  it('goes to the process that reads everything, not to one in follow-up', async () => {
+    const h = setup();
+    h.grant('f1', { reserved: false });
+    h.grant('f2', {});
+    await h.service.subscribe(h.scope('f1'), { mode: 'addressed' });
+    await h.service.subscribe(h.scope('f2'), { mode: 'all' });
+    await h.hub.ingest(segment());
+    assert.deepEqual([await h.ids('f1'), await h.ids('f2')], [[], ['seg-1']]);
+  });
+});
+
 describe('#2089 access ends with the permission', () => {
   it('reservation released: every-message reading is turned down to addressed', async () => {
     const h = setup();

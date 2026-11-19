@@ -346,7 +346,8 @@ at: number;
 import type { SendAuthorization } from './conversationSend.js';
 import type { CardAnswerValue } from './questionCard.js';
 export declare const CONVERSATION_MESSAGES_SERVICE_NAME = "conversationMessages";
-export type ConversationMessageKind = 'created' | 'edited' | 'deleted' | 'reaction' | 'card_answer';
+export type ConversationMessageKind = 'created' | 'edited' | 'deleted' | 'reaction' | 'card_answer'
+| 'transcript_segment';
 export interface ConversationMessageAuthor {
 kind: string;
 id: string;
@@ -375,6 +376,13 @@ cardAnswer?: MessageCardAnswer;
 occurredAt: string;
 receivedAt: string;
 addressedToBot?: boolean;
+transcript?: MessageTranscriptSegment;
+}
+export interface MessageTranscriptSegment {
+sessionId: string;
+segmentId: string;
+source: 'participant' | 'shared';
+speakerHint?: string;
 }
 export interface ConversationMessageScope {
 agentSlug: string;

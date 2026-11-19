@@ -53,6 +53,7 @@ interface EventRow {
   reaction: { name: string; removed: boolean } | null;
   card_answer: NonNullable<NewMessageEvent['cardAnswer']> | null;
   addressed_to_bot: boolean;
+  transcript: NonNullable<NewMessageEvent['transcript']> | null;
   occurred_at: Date;
   received_at: Date;
 }
@@ -63,7 +64,7 @@ const SUBSCRIPTION_COLUMNS =
 const EVENT_COLUMNS =
   'event_seq, message_id, revision, kind, author_kind, author_id, author_display_name, ' +
   'author_principal_id, tenant_id, body, reply_to_message_id, quoted, forwarded, reaction, ' +
-  'card_answer, addressed_to_bot, occurred_at, received_at';
+  'card_answer, addressed_to_bot, transcript, occurred_at, received_at';
 
 /** Rows one purge statement removes, and how many statements one tick runs. */
 const PURGE_BATCH = 5_000;
@@ -112,12 +113,17 @@ function mapEvent(subscription: MessageSubscription, row: EventRow): Conversatio
     occurredAt: row.occurred_at.toISOString(),
     receivedAt: row.received_at.toISOString(),
     ...(row.addressed_to_bot ? { addressedToBot: true } : {}),
+    ...(row.transcript ? { transcript: row.transcript } : {}),
   };
 }
 
 function isRevisionRace(err: unknown): boolean {
   const e = err as { code?: string; constraint?: string } | null;
-  return e?.code === '23505' && e.constraint === 'conversation_message_events_revision_uq';
+  return (
+    e?.code === '23505' &&
+    (e.constraint === 'conversation_message_events_revision_uq' ||
+      e.constraint === 'conversation_message_events_transcript_revision_uq')
+  );
 }
 
 export class PgConversationMessageStore implements ConversationMessageStore {
@@ -253,22 +259,26 @@ export class PgConversationMessageStore implements ConversationMessageStore {
       event.cardAnswer ? JSON.stringify(event.cardAnswer) : null,
       event.occurredAt,
       event.addressedToBot === true,
+      event.transcript ? JSON.stringify(event.transcript) : null,
     ];
     // The revision rule of `assignRevision` (store.ts), in SQL.
     const sql = `
       WITH latest AS (
         SELECT MAX(revision) AS revision FROM conversation_message_events
          WHERE subscription_id = $1 AND message_id = $2
-           AND kind IN ('created', 'edited', 'deleted')
+           -- #2089: a transcript segment counts its revisions apart.
+           AND CASE WHEN $3 = 'transcript_segment' THEN kind = 'transcript_segment'
+                    ELSE kind IN ('created', 'edited', 'deleted') END
       )
       INSERT INTO conversation_message_events
         (subscription_id, message_id, kind, adapter_revision, dedupe_key, author_kind, author_id,
          author_display_name, author_principal_id, tenant_id, body, reply_to_message_id, quoted,
-         forwarded, reaction, card_answer, occurred_at, addressed_to_bot, revision)
+         forwarded, reaction, card_answer, occurred_at, addressed_to_bot, transcript, revision)
       SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16::jsonb,
-             $17::timestamptz, $18::boolean,
+             $17::timestamptz, $18::boolean, $19::jsonb,
              CASE
                WHEN $3 = 'created' THEN 0
+               WHEN $3 = 'transcript_segment' THEN COALESCE(latest.revision + 1, 0)
                WHEN $3 = 'edited' THEN GREATEST(1, COALESCE(latest.revision + 1, 1), COALESCE($4::int, 0))
                WHEN $3 = 'deleted' THEN GREATEST(1, COALESCE(latest.revision + 1, 1))
                ELSE COALESCE(latest.revision, 0)
