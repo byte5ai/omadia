@@ -1,5 +1,4 @@
 import type { PluginCatalog } from './manifestLoader.js';
-import { FACILITATION_ENGINE_CAPABILITY } from '@omadia/plugin-api';
 import type { InstalledRegistry } from './installedRegistry.js';
 
 /**
@@ -36,11 +35,9 @@ export function attachablePluginIds(
     if (plugin?.is_reference_only === true) return false;
     // #2088 — an archetype plugin is attached to no agent by the kernel; it
     // belongs to the agents of its own archetype, never to the default agent.
-    if (plugin?.kind === 'archetype') return false;
-    // #2043 — the facilitation engine belongs to facilitators only. A
-    // standard agent with its tools would be an assistant that also counts
-    // votes, which is the sub-role this epic removes.
-    return !(plugin?.provides ?? []).includes(FACILITATION_ENGINE_CAPABILITY);
+    // (That covers the facilitation engine: a standard agent with its tools
+    // would be an assistant that also counts votes.)
+    return plugin?.kind !== 'archetype';
   });
 }
 

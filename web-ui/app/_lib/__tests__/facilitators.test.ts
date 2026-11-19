@@ -150,7 +150,7 @@ describe('facilitation engine status', () => {
     ).toEqual({ state: 'ready', pluginId: 'engine' });
   });
 
-  it('reads an ungranted candidate as its own state, not as the engine', () => {
+  it('does not know the state `ungranted` any more: a middleware that still sends it reads as "could not be checked"', () => {
     const status = parseFacilitationEngineStatus({
       ...base,
       state: 'ungranted',
@@ -160,8 +160,21 @@ describe('facilitation engine status', () => {
       reason_code: 'ungranted',
       engine_reason: null,
     });
-    expect(status).toEqual({ state: 'ungranted', pluginId: 'engine' });
-    expect(status && facilitationEnginePluginId(status)).toBeNull();
+    expect(status).toBeNull();
+  });
+
+  it('reads an engine that did not start as bound and unusable, with the plugin to open', () => {
+    const status = parseFacilitationEngineStatus({
+      ...base,
+      state: 'bound',
+      plugin_id: 'engine',
+      plugin_ids: ['engine'],
+      available: false,
+      reason_code: 'inactive',
+      engine_reason: null,
+    });
+    expect(status).toEqual({ state: 'unusable', pluginId: 'engine', reason: 'inactive', engineReason: null });
+    expect(status && facilitationEnginePluginId(status)).toBe('engine');
   });
 
   it('reads the reason code of a bound engine that is not usable', () => {

@@ -118,7 +118,7 @@ import {
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
-import { FACILITATOR_ARCHETYPE, archetypeAdds, archetypeOf, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, resolveScopedBundle } from '@omadia/orchestrator';
+import { archetypeAdds, archetypeOf, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, resolveScopedBundle } from '@omadia/orchestrator';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
   OrchestratorRegistry as MultiOrchestratorRegistry,
@@ -417,7 +417,6 @@ import {
   withInstalledParents,
 } from './plugins/defaultOrchestratorAttach.js';
 import {
-  createSqlGrantView,
   facilitatorGrantablePluginIds,
   resolveFacilitationEngine,
   type FacilitationEngineSources,
@@ -1184,14 +1183,7 @@ async function main(): Promise<void> {
     INSTALLED_REGISTRY_PATH,
   );
   await installedRegistry.load();
-  // #2043 — which plugin is the facilitation engine: the one that declares
-  // the capability AND that the operator granted its SQL ledger (the trust
-  // step). One helper, so every consumer resolves the engine the same way.
   const ownIdentityPostLog = createOwnIdentityPostLog();
-  const facilitationSqlGrants = createSqlGrantView({
-    listGranted: async () => (await sqlGrantStore.listAll()).map((row) => row.pluginId),
-    log: (m) => console.log(m),
-  });
   // #2088 — an installed plugin of kind `archetype` registers the archetype
   // its manifest describes; see `platform/archetypeRegistrySync.ts`.
   const archetypeRegistry = createArchetypeRegistrySync({
@@ -1209,13 +1201,7 @@ async function main(): Promise<void> {
     processesFor: (archetypeId) => {
       const source = getArchetype(archetypeId)?.source;
       const name = archetypeProcessesServiceName(archetypeId);
-      if (!source || source === 'kernel' || !serviceRegistry.providedBy(source, name)) {
-        // The engine of the legacy form (`facilitationEngine@1`, no descriptor
-        // of its own) is the plugin for the kernel's `facilitator` descriptor.
-        const engine = resolveFacilitationEngine(facilitationEngineSources());
-        if (archetypeId !== FACILITATOR_ARCHETYPE || engine.state !== 'bound') return undefined;
-        if (!serviceRegistry.providedBy(engine.pluginId, name)) return undefined;
-      }
+      if (!source || source === 'kernel' || !serviceRegistry.providedBy(source, name)) return undefined;
       return serviceRegistry.get<ArchetypeProcessesService>(name);
     },
     endSubscriptionsOf: async (agentSlug, reason) =>
@@ -1238,7 +1224,6 @@ async function main(): Promise<void> {
   const facilitationEngineSources = (): FacilitationEngineSources => ({
     installedRegistry,
     catalog: pluginCatalog,
-    isSqlGranted: (pluginId) => facilitationSqlGrants.isGranted(pluginId),
   });
   // #1620 — Teams SSO for `auth: 'teams-sso'` plugin routes. One verifier for
   // the process, so the per-tenant JWKS cache and its refetch throttle are
@@ -2005,9 +1990,6 @@ async function main(): Promise<void> {
     const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
     if (!store) return;
     try {
-      // The operator's SQL grant is what makes a declared engine THE engine;
-      // read it fresh, since this runs right after an install or a grant.
-      await facilitationSqlGrants.refresh();
       // Which archetypes are delivered, and by whom, before anything is
       // attached or rebuilt on that basis.
       await archetypeRegistry.sync();
@@ -4352,7 +4334,6 @@ async function main(): Promise<void> {
         serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
       getChatSessionStore,
       getFacilitationEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
-      isSqlGranted: (pluginId: string) => facilitationSqlGrants.isGranted(pluginId),
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
       // #2088 — end of service before a disable or a delete; the audit of both.
@@ -4998,10 +4979,6 @@ async function main(): Promise<void> {
       pool: graphPool,
       serviceRegistry,
       getRegistry,
-      legacyEnginePluginId: () => {
-        const engine = resolveFacilitationEngine(facilitationEngineSources());
-        return engine.state === 'bound' ? engine.pluginId : undefined;
-      },
       configuringMaxHours: config.EXECUTION_SCOPE_CONFIGURING_MAX_HOURS,
       sweepIntervalMs: config.EXECUTION_SCOPE_SWEEP_INTERVAL_MS,
       // #2089 — reading follows the reservation and the scopes at once.
@@ -6174,8 +6151,6 @@ async function main(): Promise<void> {
       vault: secretVault,
       catalog: pluginCatalog,
       reactivate: reactivateAgent,
-      // #2043 — a SQL grant is what makes a declared engine THE engine.
-      onGrantsWritten: () => facilitationSqlGrants.refresh(),
       onGrantsChanged: () => attachFacilitationEngine(),
       restartPending: (agentId) => installService.restartPending(agentId),
       dynamicAgentRuntime,

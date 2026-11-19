@@ -14,8 +14,6 @@
 
 import type { Request, Response } from 'express';
 
-import { FACILITATION_ENGINE_CAPABILITY } from '@omadia/plugin-api';
-
 import {
   facilitationEnginePluginIds,
   type FacilitationEngineSources,
@@ -25,35 +23,31 @@ import {
   type EngineUnusableReason,
 } from '../platform/facilitatorRuntimeService.js';
 
-/** Registry key of the engine's state service (the capability without `@1`). */
-export const FACILITATION_ENGINE_SERVICE_NAME =
-  FACILITATION_ENGINE_CAPABILITY.split('@')[0] ?? 'facilitationEngine';
+/** Registry key of the state object the engine plugin publishes about
+ *  itself. A plugin declares it under `provides` (`facilitationEngine@1`) to
+ *  be allowed to publish it; that line no longer makes it the engine. */
+export const FACILITATION_ENGINE_SERVICE_NAME = 'facilitationEngine';
 
 export type FacilitationEngineState =
-  /** One plugin declares the capability and the operator granted it SQL. */
+  /** One installed archetype plugin delivers the archetype `facilitator`. */
   | 'bound'
-  /** One plugin declares the capability; it has no SQL grant yet. Nothing is
-   *  attached to it and it reads nothing until the operator grants it. */
-  | 'ungranted'
-  /** No installed plugin declares the capability. */
+  /** None does. */
   | 'none'
   /** More than one does; nothing takes effect until one is removed. */
   | 'ambiguous';
 
 export interface FacilitationEngineStatusBody {
   readonly state: FacilitationEngineState;
-  /** The manifest capability that makes a plugin the engine. */
-  readonly capability: string;
-  /** The engine plugin (`bound`) or the candidate (`ungranted`), else `null`. */
+  /** The engine plugin (`bound`), else `null`. */
   readonly plugin_id: string | null;
-  /** Every installed plugin that declares the capability. */
+  /** Every installed plugin that delivers the archetype. */
   readonly plugin_ids: readonly string[];
   readonly version: string | null;
   /** Facilitations can be run right now. */
   readonly available: boolean;
   /**
    * Why not, as a code; `null` when available.
-   * `none` | `ambiguous` | `ungranted` | `inactive` (installed, not active) |
+   * `none` | `ambiguous` | `inactive` (installed, not started) |
    * `not_reported` (active, but it published no state) | `engine_reported`
    * (the engine says it is not ready; see `engine_reason`).
    */
@@ -69,12 +63,11 @@ export function facilitationEngineStatus(
   const usability = engineUsability(sources, reported);
   const declared = facilitationEnginePluginIds(sources);
   const state: FacilitationEngineState =
-    usability.reason === 'none' || usability.reason === 'ambiguous' || usability.reason === 'ungranted'
+    usability.reason === 'none' || usability.reason === 'ambiguous'
       ? usability.reason
       : 'bound';
   return {
     state,
-    capability: FACILITATION_ENGINE_CAPABILITY,
     plugin_id: usability.pluginId ?? null,
     plugin_ids: declared,
     version: usability.version ?? null,

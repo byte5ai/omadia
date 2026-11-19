@@ -6,7 +6,7 @@
  * path from the manifest to the enforced descriptor: strict reading (an
  * unknown kind or an unknown descriptor entry rejects the manifest),
  * registration of what is installed, the engine found by kind as well as by
- * the legacy capability, and the explicit confirmation at install.
+ * the archetype it delivers, and the explicit confirmation at install.
  */
 
 import { strict as assert } from 'node:assert';
@@ -319,19 +319,17 @@ describe('the role contract of an archetype', () => {
   });
 });
 
-describe('the facilitation engine: by archetype kind or by the legacy capability', () => {
+describe('the facilitation engine: found by the archetype it delivers', () => {
   const legacy = { id: ENGINE, doc: manifest({ kind: 'extension', archetype: undefined, provides: ['facilitationEngine@1'] }) };
   const byKind = { id: ENGINE, doc: manifest() };
 
-  it('both forms are found, and both need the database grant to be bound', () => {
-    assert.equal(declaresFacilitationEngine(load(legacy.doc).plugin ?? undefined), true);
+  it('an archetype plugin that delivers `facilitator` is the engine; a `provides: facilitationEngine@1` line alone is not', () => {
     assert.equal(declaresFacilitationEngine(load(byKind.doc).plugin ?? undefined), true);
-    for (const installed of [legacy, byKind]) {
-      const s = sources([installed]);
-      assert.deepEqual(facilitationEnginePluginIds(s), [ENGINE]);
-      assert.deepEqual(resolveFacilitationEngine({ ...s, isSqlGranted: () => false }), { state: 'ungranted', pluginId: ENGINE });
-      assert.deepEqual(resolveFacilitationEngine({ ...s, isSqlGranted: () => true }), { state: 'bound', pluginId: ENGINE });
-    }
+    assert.deepEqual(resolveFacilitationEngine(sources([byKind])), { state: 'bound', pluginId: ENGINE });
+    // #2088 (K6): the form of engine plugins 1.0.x.
+    assert.equal(declaresFacilitationEngine(load(legacy.doc).plugin ?? undefined), false);
+    assert.deepEqual(facilitationEnginePluginIds(sources([legacy])), []);
+    assert.deepEqual(resolveFacilitationEngine(sources([legacy])), { state: 'none' });
   });
 
   it('an archetype plugin for another archetype, or any other plugin, is not the engine', () => {
@@ -342,12 +340,14 @@ describe('the facilitation engine: by archetype kind or by the legacy capability
     assert.deepEqual(installedArchetypePlugins(sources([coach, odoo])).map((p) => p.pluginId), ['@acme/archetype-coach']);
   });
 
-  it('one of each form installed side by side is ambiguous, as two engines always were', () => {
-    const second = { id: '@acme/legacy-engine', doc: manifest({ id: '@acme/legacy-engine', kind: 'extension', archetype: undefined, provides: ['facilitationEngine@1'] }) };
+  it('two archetype plugins that deliver `facilitator` are ambiguous; the old form next to one changes nothing', () => {
+    const second = { id: '@acme/second-engine', doc: manifest({ id: '@acme/second-engine' }) };
     assert.deepEqual(resolveFacilitationEngine(sources([byKind, second])), {
       state: 'ambiguous',
-      pluginIds: ['@acme/legacy-engine', ENGINE],
+      pluginIds: ['@acme/second-engine', ENGINE],
     });
+    const old = { id: '@acme/legacy-engine', doc: manifest({ id: '@acme/legacy-engine', kind: 'extension', archetype: undefined, provides: ['facilitationEngine@1'] }) };
+    assert.deepEqual(resolveFacilitationEngine(sources([byKind, old])), { state: 'bound', pluginId: ENGINE });
   });
 });
 

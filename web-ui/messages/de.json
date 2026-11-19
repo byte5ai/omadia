@@ -3095,7 +3095,6 @@
         "ambiguous": "Es sind mehrere Moderations-Engines installiert ({plugins}). Solange nicht alle bis auf eine entfernt sind, erhält kein Facilitator eine Engine.",
         "openStore": "Plugin-Store öffnen",
         "openPlugin": "Plugin öffnen",
-        "openGrants": "Datenbankzugriff freigeben",
         "nothingToGrant": "Es gibt noch keine einzelne Engine zum Anhängen. Sobald genau eine installiert ist, wird sie automatisch angehängt.",
         "attached": "Angehängt",
         "disabled": "Für diesen Facilitator abgeschaltet",
@@ -3103,9 +3102,8 @@
         "repairHint": "Die Engine wird normalerweise ohne Zutun angehängt. Hier ist das nicht geschehen oder wurde rückgängig gemacht; erneutes Anhängen behebt das.",
         "repair": "Engine anhängen",
         "repairing": "Wird angehängt",
-        "ungranted": "Das Plugin „{plugin}“ kann die Moderations-Engine sein, sein Datenbankzugriff ist aber nicht freigegeben. Bis dahin ist es nicht die Engine, und kein Facilitator kann moderieren.",
         "unusable": {
-          "inactive": "Die Moderations-Engine „{plugin}“ ist installiert, aber nicht aktiv.",
+          "inactive": "Die Moderations-Engine „{plugin}“ ist installiert, aber nicht gestartet. Auf ihrer Store-Seite steht der Grund, zum Beispiel ein Datenbankzugriff, der nicht freigegeben ist.",
           "not_reported": "Die Moderations-Engine „{plugin}“ ist aktiv, hat aber noch nicht gemeldet, dass sie bereit ist.",
           "engine_reported": "Die Moderations-Engine „{plugin}“ meldet, dass sie nicht bereit ist.",
           "unknown": "Die Moderations-Engine „{plugin}“ kann gerade keine Moderationen ausführen."
