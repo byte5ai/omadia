@@ -463,6 +463,35 @@ export class ExecutionScopeStore {
     return res.rows.map(toReservation);
   }
 
+  /**
+   * #2089 — what a process may read in a conversation right now: whether it
+   * holds the reservation, ever held it, and has an open scope whose
+   * deadline has not passed. One statement.
+   */
+  async processAccess(input: {
+    pluginId: string;
+    processId: string;
+    channelType: string;
+    conversationId: string;
+  }): Promise<{ reserved: boolean; everReserved: boolean; openScope: boolean }> {
+    const res = await this.pool.query<{ reserved: boolean; ever_reserved: boolean; open_scope: boolean }>(
+      `SELECT
+         EXISTS (SELECT 1 FROM conversation_reservations r
+                  WHERE r.plugin_id = $1 AND r.process_id = $2 AND r.channel_type = $3
+                    AND r.conversation_id = $4 AND r.holder_kind = 'archetype_process'
+                    AND r.released_at IS NULL) AS reserved,
+         EXISTS (SELECT 1 FROM conversation_reservations r
+                  WHERE r.plugin_id = $1 AND r.process_id = $2 AND r.channel_type = $3
+                    AND r.conversation_id = $4 AND r.holder_kind = 'archetype_process') AS ever_reserved,
+         EXISTS (SELECT 1 FROM execution_scopes sc
+                  WHERE sc.plugin_id = $1 AND sc.process_id = $2 AND sc.state = 'open'
+                    AND sc.deadline > now()) AS open_scope`,
+      [input.pluginId, input.processId, input.channelType, input.conversationId],
+    );
+    const row = res.rows[0];
+    return { reserved: row?.reserved === true, everReserved: row?.ever_reserved === true, openScope: row?.open_scope === true };
+  }
+
   // ── revocation ──────────────────────────────────────────────────────────
 
   /** End every open scope and release every reservation of an agent (end of

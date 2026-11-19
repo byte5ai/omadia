@@ -60,6 +60,12 @@ export interface ExecutionAuthorizationDeps {
   readonly archetypePluginIdFor: (archetypeId: string) => string | undefined;
   /** `configuring`: how long it may last at most. */
   readonly configuringMaxMs: number;
+  /**
+   * #2089 — called after a reservation was released or a scope ended: what a
+   * process may read follows from both, and the message subscriptions are
+   * adjusted at once instead of at the next periodic check.
+   */
+  readonly onAccessChanged?: () => void;
   readonly now?: () => Date;
   readonly log?: (message: string) => void;
 }
@@ -380,6 +386,7 @@ export function createExecutionAuthorizationService(
       const scope = await ownScope(scopeId);
       if ('outcome' in scope) return;
       await store.endScope(scope.id, callerPluginId, typeof reason === 'string' && reason ? reason : 'ended');
+      deps.onAccessChanged?.();
     },
 
     async listScopes(processId) {
@@ -433,6 +440,7 @@ export function createExecutionAuthorizationService(
         processId: request.processId,
         reason: typeof request.reason === 'string' && request.reason ? request.reason : 'released',
       });
+      deps.onAccessChanged?.();
     },
 
     async listReservations(processId) {

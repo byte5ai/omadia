@@ -9,6 +9,7 @@ import { formatPrincipal, makePrincipal } from '@omadia/channel-sdk';
 import { ReloadBus, type ConfigStore, type OrchestratorRegistry } from '@omadia/orchestrator';
 import {
   CONVERSATION_MESSAGES_SERVICE_NAME,
+  CONVERSATION_MESSAGES_V2_SERVICE_NAME,
   perCallerService,
   type ChannelReadinessReport,
 } from '@omadia/plugin-api';
@@ -20,10 +21,10 @@ import {
 } from '../../platform/facilitatorGuard.js';
 import type { ObservedConversationInvites } from '../../platform/observedConversationInvites.js';
 import { KERNEL_SERVICE_CALLER, type ServiceRegistry } from '../../platform/serviceRegistry.js';
-import { ConversationMessageHub } from './hub.js';
+import { ConversationMessageHub, type ConversationMessageHubDeps } from './hub.js';
 import { PgConversationMessageStore } from './pgStore.js';
 import { startConversationMessagePurge, type ConversationMessagePurgeJob } from './purgeJob.js';
-import { createConversationMessagesService } from './service.js';
+import { createConversationMessagesService, createProcessConversationMessagesService } from './service.js';
 import { normalizeChannelKey, type MessageSubscription } from './store.js';
 
 /** NOTIFY channel of the subscriptions table (migration 0068). */
@@ -80,13 +81,21 @@ export function createSubscriptionGroundCheck(deps: {
 }): (subscription: MessageSubscription) => Promise<string | undefined> {
   return async (subscription) => {
     const sources = deps.engineSources();
-    const engine = resolveFacilitationEngine(sources);
-    if (engine.state !== 'bound' || engine.pluginId !== subscription.pluginId) {
-      return `plugin '${subscription.pluginId}' is no longer the facilitation engine of this instance`;
+    // #2089 — a process subscription stands on its process's execution
+    // scopes (the hub checks those), which only the plugin that delivers the
+    // agent's archetype can open; "is the facilitation engine" is the ground
+    // of a subscription without a process.
+    if (subscription.processId === undefined) {
+      const engine = resolveFacilitationEngine(sources);
+      if (engine.state !== 'bound' || engine.pluginId !== subscription.pluginId) {
+        return `plugin '${subscription.pluginId}' is no longer the facilitation engine of this instance`;
+      }
     }
-    const installed = sources.installedRegistry?.list().find((entry) => entry.id === engine.pluginId);
+    const installed = sources.installedRegistry?.list().find((entry) => entry.id === subscription.pluginId);
     if (installed && installed.status !== 'active') {
-      return `the facilitation engine plugin is ${installed.status}`;
+      return subscription.processId === undefined
+        ? `the facilitation engine plugin is ${installed.status}`
+        : `the plugin that subscribed is ${installed.status}`;
     }
     const store = deps.getConfigStore();
     if (!store) return undefined;
@@ -129,6 +138,9 @@ export interface ConversationMessagesWiringDeps {
   readonly graceMs: number;
   readonly maxAgeDays: number;
   readonly purgeIntervalMs: number;
+  /** #2089 — what a process may read, from the execution scopes and
+   *  reservations. Absent: process subscriptions are not offered. */
+  readonly processAccess?: ConversationMessageHubDeps['processAccess'];
   readonly log: (message: string) => void;
 }
 
@@ -165,6 +177,7 @@ export async function wireConversationMessages(
       engineSources: deps.engineSources,
       getConfigStore: deps.getConfigStore,
     }),
+    ...(deps.processAccess ? { processAccess: deps.processAccess } : {}),
     log: deps.log,
   });
   let reconcileEnabled = false;
@@ -195,6 +208,17 @@ export async function wireConversationMessages(
         },
       });
     }),
+  );
+  // #2089 — the second major, next to the first: subscriptions and reads
+  // bound to a process.
+  deps.serviceRegistry.provide(
+    CONVERSATION_MESSAGES_V2_SERVICE_NAME,
+    perCallerService((caller) =>
+      createProcessConversationMessagesService({
+        hub,
+        callerPluginId: caller.pluginId === KERNEL_SERVICE_CALLER.pluginId ? undefined : caller.pluginId,
+      }),
+    ),
   );
   const purge = startConversationMessagePurge(store, {
     graceMs: deps.graceMs,

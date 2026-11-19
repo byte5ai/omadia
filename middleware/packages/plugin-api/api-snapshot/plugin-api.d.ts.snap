@@ -373,6 +373,7 @@ removed: boolean;
 cardAnswer?: MessageCardAnswer;
 occurredAt: string;
 receivedAt: string;
+addressedToBot?: boolean;
 }
 export interface ConversationMessageScope {
 agentSlug: string;
@@ -408,6 +409,45 @@ answererVerified?: boolean;
 proposalId?: string;
 proposalVersion?: number;
 answers?: readonly CardAnswerValue[];
+}
+export declare const CONVERSATION_MESSAGES_V2_SERVICE_NAME = "conversationMessages@2";
+export type ConversationMessageMode = 'all' | 'addressed' | 'none';
+export interface ProcessMessageScope extends ConversationMessageScope {
+processId: string;
+}
+export interface ProcessConversationMessageRecord extends ConversationMessageRecord {
+processId: string;
+}
+export type ProcessSubscribeOutcome = {
+outcome: 'subscribed';
+mode: ConversationMessageMode;
+} | {
+outcome: 'refused';
+code: 'no_identity' | 'not_facilitator' | 'not_present' | 'not_ready' | 'unavailable'
+| 'not_reserved'
+| 'no_scope'
+| 'ended';
+message: string;
+};
+export interface ProcessConversationMessagesService {
+subscribe(scope: ProcessMessageScope, options: {
+mode: ConversationMessageMode;
+}): Promise<ProcessSubscribeOutcome>;
+modeOf(scope: ProcessMessageScope): Promise<ConversationMessageMode | undefined>;
+onMessage(agentSlug: string, handler: (record: ProcessConversationMessageRecord) => void | Promise<void>): () => void;
+getEvent(scope: ProcessMessageScope, messageId: string, revision?: number): Promise<ProcessConversationMessageRecord | undefined>;
+getEventById(scope: ProcessMessageScope, eventId: string): Promise<ProcessConversationMessageRecord | undefined>;
+listSince(scope: ProcessMessageScope, opts?: {
+after?: string;
+limit?: number;
+}): Promise<{
+events: readonly ProcessConversationMessageRecord[];
+nextCursor?: string;
+}>;
+bindMessage(scope: ProcessMessageScope, ref: {
+messageId?: string;
+cardId?: string;
+}): Promise<boolean>;
 }
 
 // ===== conversationSend.d.ts =====

@@ -8,6 +8,37 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.66.0 — 2026-11-19
+
+Additive (#2089, epic #2043): message subscriptions and reads bound to a
+process.
+
+### Added
+
+- **`conversationMessages@2`** (`CONVERSATION_MESSAGES_V2_SERVICE_NAME`),
+  next to the first major: `ctx.services.get('conversationMessages@2')`,
+  declared as `conversationMessages@^2` under `optional_requires`.
+  `ProcessConversationMessagesService`:
+  - `subscribe(scope, { mode })` with `scope.processId` and a mode: `all`
+    (every human message), `addressed` (a mention, a reply to one of the
+    process's messages, an answer to one of its cards) or `none`. `all`
+    needs the conversation's reservation, every mode an open execution scope
+    (#2090); refused with `not_reserved`, `no_scope` or `ended` otherwise.
+    Calling it again changes the mode. A process subscribes a conversation
+    once.
+  - `getEvent`, `getEventById`, `listSince`, `onMessage`: every record
+    carries `processId`, and every read returns only what that process
+    received in that conversation.
+  - `bindMessage(scope, { messageId?, cardId? })`: a reply to that message
+    or an answer to that card is delivered to this process alone.
+  - `modeOf(scope)`.
+- `ConversationMessageRecord.addressedToBot`: the channel stated that the
+  message addresses the agent's bot.
+
+The first major (`conversationMessages`) is unchanged. An identity reads a
+conversation either through process subscriptions or through one without a
+process, not both.
+
 ## 1.65.0 — 2026-11-19
 
 Additive type, changed behaviour of `agentTurn@2` (#2090, epic #2043): the
