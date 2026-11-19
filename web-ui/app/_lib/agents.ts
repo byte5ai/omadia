@@ -227,19 +227,75 @@ export interface PatchAgentInput {
   status?: AgentStatus;
 }
 
+/**
+ * #2088 — what ended with an agent when it was disabled or deleted (end of
+ * service). `process_outcome`: `ended` = its archetype plugin closed its
+ * processes; `not_supported` = the archetype has none to close (or no plugin
+ * that could); `failed` = the plugin did not answer, the kernel ended the
+ * agent's message subscriptions anyway.
+ */
+export interface EndOfServiceDto {
+  reason: 'agent_disabled' | 'agent_deleted' | 'archetype_plugin_removed';
+  process_outcome: 'ended' | 'not_supported' | 'failed';
+  process_detail?: string;
+  processes: Array<{
+    process_id: string;
+    channel_type: string;
+    conversation_id: string;
+    outcome: 'aborted' | 'failed';
+    report_posted?: boolean;
+    detail?: string;
+  }>;
+  subscriptions_ended: Array<{ channel_type: string; conversation_id: string }>;
+  system_notices_owed: number;
+}
+
+/** #2088 — a deleted agent: its record is kept until an operator purges it. */
+export interface DeletedAgentDto {
+  id: string;
+  slug: string;
+  name: string;
+  archetype: string;
+  deleted_at: string;
+  deleted_by: string | null;
+  purgeable_from: string;
+  purgeable_without_confirmation: boolean;
+}
+
+export interface AgentChangeResult {
+  ok: boolean;
+  end_of_service?: EndOfServiceDto;
+  tombstone?: DeletedAgentDto;
+}
+
 export async function patchOperatorAgent(
   slug: string,
   patch: PatchAgentInput,
-): Promise<void> {
-  await callJson(`/v1/operator/agents/${encodeURIComponent(slug)}`, {
+): Promise<AgentChangeResult> {
+  return callJson<AgentChangeResult>(`/v1/operator/agents/${encodeURIComponent(slug)}`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
   });
 }
 
-export async function deleteOperatorAgent(slug: string): Promise<void> {
-  await callJson(`/v1/operator/agents/${encodeURIComponent(slug)}`, {
+/** Deletes an agent: it goes out of service and its record is kept as a
+ *  deleted agent (#2088). `purgeDeletedAgent` removes it for good. */
+export async function deleteOperatorAgent(slug: string): Promise<AgentChangeResult> {
+  return callJson<AgentChangeResult>(`/v1/operator/agents/${encodeURIComponent(slug)}`, {
     method: 'DELETE',
+  });
+}
+
+export async function listDeletedAgents(): Promise<{ retention_days: number; agents: DeletedAgentDto[] }> {
+  return callJson('/v1/operator/agents/deleted');
+}
+
+/** `confirm`: the agent's slug, required while it was deleted less than the
+ *  retention period ago (409 `purge_confirmation_required` otherwise). */
+export async function purgeDeletedAgent(id: string, confirm?: string): Promise<{ ok: boolean }> {
+  return callJson(`/v1/operator/agents/deleted/${encodeURIComponent(id)}/purge`, {
+    method: 'POST',
+    body: JSON.stringify(confirm !== undefined ? { confirm } : {}),
   });
 }
 

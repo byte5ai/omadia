@@ -8,6 +8,34 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.61.0 — 2026-11-19
+
+Additive (#2088, epic #2042): end of service.
+
+### Added
+
+- **`ArchetypeProcessesService`** with
+  `endProcessesOfAgent({ agentSlug, reason })` →
+  `ArchetypeProcessEndReport` (`ended: ArchetypeProcessEnded[]`), and
+  **`archetypeProcessesServiceName(archetypeId)`** (`archetypeProcesses:<id>`),
+  `AgentEndOfServiceReason` (`agent_disabled`, `agent_deleted`,
+  `archetype_plugin_removed`). An archetype plugin provides the service
+  under that name. The kernel calls it before an agent of the archetype is
+  disabled or deleted and before the plugin itself is uninstalled, while the
+  agent is still enabled and the plugin still installed, so the plugin can
+  close each process (and tell the conversation in the agent's own voice).
+  The kernel waits 20 s, then ends the agent's message subscriptions itself
+  whatever the answer. Optional: a plugin without it loses its
+  subscriptions, as before.
+
+### Kernel behaviour a plugin can rely on from this version
+
+- A deleted agent is kept as a tombstone: it is in no list, `agentTurn` and
+  `conversationMessages` refuse it as an agent that is not active, and its
+  subscriptions were ended before the delete.
+- Uninstalling an archetype plugin disables the agents of its archetype
+  first (after the call above). Their records stay.
+
 ## 1.60.0 — 2026-11-19
 
 No type change. The version marks a kernel that knows the manifest kind

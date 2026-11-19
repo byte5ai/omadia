@@ -90,6 +90,7 @@ import { createNonPersonalFieldsEditor } from './privacy/fieldClassification/con
 import { PgFieldClassificationStore } from './privacy/fieldClassification/store.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME, perCallerService } from '@omadia/plugin-api';
 import { TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
+import { archetypeProcessesServiceName, type ArchetypeProcessesService } from '@omadia/plugin-api';
 import type { TranscriptionService } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
 import { createReceiptRoutes } from './receipts/routes.js';
@@ -116,7 +117,7 @@ import {
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
-import { archetypeAdds, archetypeOf, directDatabaseUrl, isPooledDatabaseUrl, resolveScopedBundle } from '@omadia/orchestrator';
+import { FACILITATOR_ARCHETYPE, archetypeAdds, archetypeOf, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, resolveScopedBundle } from '@omadia/orchestrator';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
   OrchestratorRegistry as MultiOrchestratorRegistry,
@@ -430,6 +431,8 @@ import { ChannelProviderRegistry } from './channels/sessionCapabilities/provider
 import { wireSessionCapabilities } from './channels/sessionCapabilities/wiring.js';
 import { attachEngineToFacilitators } from './platform/facilitatorEngineAttach.js';
 import { createArchetypeRegistrySync } from './platform/archetypeRegistrySync.js';
+import { createAgentEndOfService, logOwedSystemNotice } from './platform/agentEndOfService.js';
+import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
 import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
 import {
   wireConversationMessages,
@@ -1161,6 +1164,33 @@ async function main(): Promise<void> {
   const archetypeRegistry = createArchetypeRegistrySync({
     sources: () => ({ installedRegistry, catalog: pluginCatalog }),
     rows: () => serviceRegistry.get<Pool>('graphPool'),
+    log: (m) => console.log(m),
+  });
+  // #2088 — end of service: what ends before an agent is disabled or deleted
+  // and before its archetype plugin is removed. `system` notices are owed and
+  // not sent yet (#2045): the seam logs them.
+  const emitSystemNotice = logOwedSystemNotice((m) => console.log(m));
+  const agentEndOfService = createAgentEndOfService({
+    // Only the plugin that delivers the archetype is asked; the same service
+    // name provided by anybody else is not its process service.
+    processesFor: (archetypeId) => {
+      const source = getArchetype(archetypeId)?.source;
+      const name = archetypeProcessesServiceName(archetypeId);
+      if (!source || source === 'kernel' || !serviceRegistry.providedBy(source, name)) {
+        // The engine of the legacy form (`facilitationEngine@1`, no descriptor
+        // of its own) is the plugin for the kernel's `facilitator` descriptor.
+        const engine = resolveFacilitationEngine(facilitationEngineSources());
+        if (archetypeId !== FACILITATOR_ARCHETYPE || engine.state !== 'bound') return undefined;
+        if (!serviceRegistry.providedBy(engine.pluginId, name)) return undefined;
+      }
+      return serviceRegistry.get<ArchetypeProcessesService>(name);
+    },
+    endSubscriptionsOf: async (agentSlug, reason) =>
+      (await conversationMessagesRef.current?.hub.endAllOf(agentSlug, reason)) ?? [],
+    audit: async (entry) => {
+      await adminAudit?.record(entry);
+    },
+    emitSystemNotice,
     log: (m) => console.log(m),
   });
   const facilitationEngineSources = (): FacilitationEngineSources => ({
@@ -1976,9 +2006,7 @@ async function main(): Promise<void> {
     if (pluginId === ORCHESTRATOR_PLUGIN_ID) return;
     // #2043 — an uninstalled engine ends its message subscriptions at once.
     void conversationMessagesRef.current?.reconcileNow();
-    // #2088 — an uninstalled archetype plugin no longer delivers its
-    // archetype (the kernel's own descriptor, where it has one, applies again).
-    await archetypeRegistry.sync();
+
     const store =
       serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
     const reg =
@@ -2107,7 +2135,37 @@ async function main(): Promise<void> {
           await propagatePluginInstall(agentId, attach);
       }
     },
+    // #2088 — an uninstalled archetype plugin no longer delivers its archetype:
+    // the kernel's own descriptor (where it has one) applies again.
+    onUninstalled: async () => {
+      await archetypeRegistry.sync();
+    },
     onUninstall: async (agentId, reason) => {
+      // #2088 — FIRST, while the plugin is still installed and running: the
+      // agents of an archetype plugin go out of service and are disabled.
+      // Not on a reactivation (the plugin comes straight back).
+      if (reason === 'uninstall') {
+        await guardArchetypePluginUninstall(agentId, {
+          sources: () => ({ installedRegistry, catalog: pluginCatalog }),
+          agents: () => {
+            const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+            return store
+              ? {
+                  list: () => store.listAgents(),
+                  disable: async (id) => {
+                    await store.updateAgent(id, { status: 'disabled' });
+                  },
+                }
+              : undefined;
+          },
+          endOfService: agentEndOfService,
+          audit: async (entry) => {
+            await adminAudit?.record(entry);
+          },
+          reload: async () => serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')?.reload(),
+          log: (m) => console.log(m),
+        });
+      }
       // Symmetric to onInstalled: drop a contributed provider + its models so
       // an uninstalled provider plugin disappears from the admin Providers page
       // without a restart. Runs BEFORE runtime deactivation/registry removal.
@@ -4241,6 +4299,12 @@ async function main(): Promise<void> {
       isSqlGranted: (pluginId: string) => facilitationSqlGrants.isGranted(pluginId),
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
+      // #2088 — end of service before a disable or a delete; the audit of both.
+      endOfService: agentEndOfService,
+      recordAudit: async (entry) => {
+        await adminAudit?.record(entry);
+      },
+      tombstoneRetentionDays: config.AGENT_TOMBSTONE_RETENTION_DAYS,
       getPeerChatDirectory: peerChatDirectoryFor,
       // …and how those chats get a name: the plugin's directory (topic /
       // member-derived label) and the live roster as post-restart fallback.

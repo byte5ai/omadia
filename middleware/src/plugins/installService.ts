@@ -159,6 +159,9 @@ export interface InstallServiceDeps {
   /** OM-95 — late-resolved orchestrator config store. Bindings are purged only
    *  on real uninstall; `onUninstall` also runs during `reactivate()`. */
   agentPluginBindingStore?: () => AgentPluginBindingStore | undefined;
+  /** #2088 — after a real uninstall, once the registry entry is gone. A
+   *  failure is logged; the uninstall is complete. */
+  onUninstalled?: (agentId: string) => Promise<void>;
   /** #1481 — uninstalling a package that ships in the image records the id
    *  here so the boot seeders stop re-installing it; installing it again
    *  clears the mark. Optional: without it built-ins come back at boot. */
@@ -960,6 +963,19 @@ export class InstallService {
     this.deps.conductorTemplates?.()?.unregisterPluginTemplates(agentId);
     await this.deps.registry.remove(agentId);
     await this.recordBuiltInOptOut(agentId);
+    // #2088 — the plugin is no longer installed NOW; whoever derives state
+    // from the set of installed plugins (the archetype registry) reads it
+    // here, not in `onUninstall`, which runs while the entry still exists.
+    if (this.deps.onUninstalled) {
+      try {
+        await this.deps.onUninstalled(agentId);
+      } catch (err) {
+        console.error(
+          `[install] onUninstalled hook failed for ${agentId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
   }
 
   /**

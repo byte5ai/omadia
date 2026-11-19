@@ -36,6 +36,43 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — End of service, guarded uninstall and tombstones (#2088, epic #2042): K2 of the spec alignment, second part
+
+- **Deleting an agent keeps a tombstone** (migration `0072`), for every
+  archetype. The row stays, marked deleted, with everything that references
+  it (identity, grants, working modes, internal helpers, schedules, channel
+  policies, bindings, subscriptions): the nine `ON DELETE CASCADE` children
+  are no longer dropped by a delete. The agent is in no list and no lookup,
+  its slug is free for a new agent, and a conversation bound to it is
+  refused by routing instead of being answered by the default agent. A
+  tombstone cannot be restored.
+- **The hard delete is a separate step:** `POST
+  /api/v1/operator/agents/deleted/:id/purge`. Inside the retention period
+  (`AGENT_TOMBSTONE_RETENTION_DAYS`, default 30) it needs the agent's slug as
+  confirmation. `GET /api/v1/operator/agents/deleted` lists the tombstones.
+  The agent directory shows them under "Deleted agents" / "Gelöschte
+  Agenten".
+- **End of service.** Before an agent is disabled or deleted, its archetype
+  plugin ends the processes it was running for the agent (new plugin
+  contract, plugin-api 1.61.0), then the kernel ends every message
+  subscription of the agent, whatever the plugin answered. Re-enabling
+  resumes nothing. The answer of the disable and delete routes says what
+  ended in which conversation, and the directory shows it.
+- **Kernel-guarded uninstall of an archetype plugin.** Before the plugin is
+  unloaded, independently of its own `onUninstall`, every enabled agent of
+  its archetype goes through end of service and is disabled. Records stay;
+  no agent is deleted or converted to another archetype.
+- **Audit:** `agent.end_of_service` (which processes and conversations),
+  `agent.disable`, `agent.delete`, `agent.purge`; filter "Agents" in the
+  audit log.
+- **No `system` notices yet (#2045).** Every place that owes a conversation
+  one ("this agent was deleted", "… disabled", "its archetype plugin was
+  removed") calls a seam that logs `[system-notice] owed, not sent`. Nothing
+  is posted under an agent's identity in its place.
+- A source check (`agentTombstoneReaders.test.ts`) fails when a new query on
+  `agents` or a table that references it neither scopes to one agent nor
+  excludes tombstones.
+
 ### Added — Archetype plugins (#2088, epic #2042): K2 of the spec alignment, first part
 
 - **Manifest kind `archetype`.** A plugin of this kind delivers an agent

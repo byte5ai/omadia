@@ -21,6 +21,7 @@
 
 import {
   getArchetype,
+  listArchetypes,
   registerArchetype,
   type ArchetypeDescriptor,
 } from '@omadia/orchestrator';
@@ -153,9 +154,31 @@ export function createArchetypeRegistrySync(deps: {
         }
         await setSource(archetypeId, plugin.pluginId);
       }
+      await restoreKernelSources();
       return { registered, removed, conflicts };
     },
   };
+
+  /**
+   * The rows of archetypes the kernel itself delivers right now say so. A
+   * plugin that was uninstalled while the process was down left its id in
+   * `source`, and nothing in this process remembers having registered it.
+   */
+  async function restoreKernelSources(): Promise<void> {
+    const rows = deps.rows?.();
+    if (!rows) return;
+    const kernelIds = listArchetypes()
+      .filter((descriptor) => descriptor.source === 'kernel')
+      .map((descriptor) => descriptor.id);
+    if (kernelIds.length === 0) return;
+    try {
+      await rows.query(`UPDATE agent_archetypes SET source = 'kernel' WHERE id = ANY($1::text[]) AND source <> 'kernel'`, [
+        kernelIds,
+      ]);
+    } catch (err) {
+      log(`[archetypes] could not reset agent_archetypes.source: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   /** The row an agent's `archetype` references, with who delivers it. A
    *  failure is logged: the descriptor in the process is what is enforced. */

@@ -153,6 +153,26 @@ export class ConversationMessageHub {
     return ended;
   }
 
+  /**
+   * #2088 — end of service: end every subscription of this agent, now. Used
+   * before an agent is disabled or deleted and before its archetype plugin
+   * is removed; the periodic reconcile would get there too, but only after
+   * the change, and the order matters (nothing may still be delivered for an
+   * agent that is being taken out of service).
+   */
+  async endAllOf(agentSlug: string, reason: string): Promise<readonly MessageSubscription[]> {
+    const ended: MessageSubscription[] = [];
+    for (const subscription of [...this.byIdentity.values()]) {
+      if (subscription.agentSlug !== agentSlug) continue;
+      await this.end(subscription);
+      ended.push(subscription);
+      this.log(
+        `[conversation-messages] ended the subscription of '${subscription.agentSlug}' for ${subscription.channelType}/${subscription.conversationId}: ${reason}`,
+      );
+    }
+    return ended;
+  }
+
   /** Close the gate, then end the row. */
   private end(subscription: MessageSubscription): Promise<void> {
     return this.exclusive(async () => {

@@ -178,18 +178,22 @@ describe('registration: what is installed is what is enforced', () => {
 
   function syncWith(installed: () => Parameters<typeof sources>[0]) {
     const logs: string[] = [];
+    /** `(id, source)` of every upsert of a row. */
     const writes: unknown[][] = [];
+    /** The archetype ids of every "the kernel delivers these again" reset. */
+    const resets: unknown[] = [];
     const sync = createArchetypeRegistrySync({
       sources: () => sources(installed()),
       rows: () => ({
-        query: (_text: string, values?: readonly unknown[]) => {
-          writes.push([...(values ?? [])]);
+        query: (text: string, values?: readonly unknown[]) => {
+          if (/^\s*INSERT/i.test(text)) writes.push([...(values ?? [])]);
+          else resets.push(values?.[0]);
           return Promise.resolve();
         },
       }),
       log: (m) => logs.push(m),
     });
-    return { sync, logs, writes };
+    return { sync, logs, writes, resets };
   }
 
   it('an installed archetype plugin replaces the kernel seed, and an uninstall brings the seed back', async () => {
@@ -220,6 +224,10 @@ describe('registration: what is installed is what is enforced', () => {
     assert.equal(roleContractOf('facilitator'), FACILITATOR_NEUTRALITY_BLOCK);
     assert.deepEqual(h.writes.at(-1), ['facilitator', 'kernel']);
     assert.match(h.logs.join('\n'), /the kernel's own descriptor applies again/);
+    // A plugin uninstalled while the process was down left its id in the row:
+    // every sync resets the rows of what the kernel itself delivers.
+    assert.deepEqual(h.resets.at(-1), ['standard', 'facilitator']);
+    assert.deepEqual(h.resets[0], ['standard'], 'while the plugin delivered facilitator, only standard was the kernel\'s');
   });
 
   it('a stopped or broken plugin still registers: its omissions hold while it is down', async () => {

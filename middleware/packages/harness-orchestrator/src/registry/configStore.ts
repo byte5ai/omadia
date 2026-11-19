@@ -14,6 +14,7 @@ import {
 } from './agentToAgent.js';
 import { parseAgentKind, type AgentKind } from './agentKind.js';
 import { parseArchetype, type ArchetypeId } from './archetype.js';
+import { liveAgentRow, ofLiveAgent, tombstoneSlug, type AgentTombstone } from './tombstones.js';
 import { parseModelPolicy } from './modelPolicy.js';
 import type { ModelPolicy } from '@omadia/plugin-api';
 
@@ -480,6 +481,26 @@ function mapAgentChannelPolicy(row: AgentChannelPolicyDbRow): AgentChannelPolicy
   };
 }
 
+interface TombstoneDbRow {
+  id: string;
+  deleted_slug: string | null;
+  name: string;
+  archetype: string | null;
+  deleted_at: Date;
+  deleted_by: string | null;
+}
+
+function mapTombstone(row: TombstoneDbRow): AgentTombstone {
+  return {
+    id: row.id,
+    slug: row.deleted_slug ?? '',
+    name: row.name,
+    archetype: parseArchetype(row.archetype),
+    deletedAt: row.deleted_at.toISOString(),
+    deletedBy: row.deleted_by,
+  };
+}
+
 function mapAgent(row: AgentDbRow): AgentRow {
   return {
     id: row.id,
@@ -582,7 +603,10 @@ const AGENT_SELECT =
   // has no `language`, and this SELECT runs before any migration check.
   "to_jsonb(i) ->> 'language' AS identity_language, " +
   'i.quality AS identity_quality ' +
-  'FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id';
+  'FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id ' +
+  // #2088 — LIVE agents only. This is the one read of `agents`; a deleted
+  // agent (tombstone, migration 0072) is reached through `listTombstones`.
+  `WHERE ${liveAgentRow('a')}`;
 
 export class ConfigStore {
   constructor(private readonly pool: Pool) {}
@@ -597,7 +621,7 @@ export class ConfigStore {
 
   async getAgentBySlug(slug: string): Promise<AgentRow | undefined> {
     const { rows } = await this.pool.query<AgentDbRow>(
-      `${AGENT_SELECT} WHERE a.slug = $1`,
+      `${AGENT_SELECT} AND a.slug = $1`,
       [slug],
     );
     return rows[0] ? mapAgent(rows[0]) : undefined;
@@ -605,7 +629,7 @@ export class ConfigStore {
 
   async getAgentById(id: string): Promise<AgentRow | undefined> {
     const { rows } = await this.pool.query<AgentDbRow>(
-      `${AGENT_SELECT} WHERE a.id = $1`,
+      `${AGENT_SELECT} AND a.id = $1`,
       [id],
     );
     return rows[0] ? mapAgent(rows[0]) : undefined;
@@ -705,7 +729,7 @@ export class ConfigStore {
     const { rows } = await this.pool.query<AgentChannelPolicyDbRow>(
       `SELECT channel_type, channel_key, agent_id, agent_to_agent, created_at, updated_at
          FROM agent_channel_policies
-        WHERE channel_type = $1 AND channel_key = $2`,
+        WHERE channel_type = $1 AND channel_key = $2 AND ${ofLiveAgent('agent_id')}`,
       [channelType, channelKey],
     );
     return rows.map(mapAgentChannelPolicy);
@@ -758,8 +782,48 @@ export class ConfigStore {
     return (result.rowCount ?? 0) > 0;
   }
 
-  async deleteAgent(id: string): Promise<void> {
-    await this.pool.query('DELETE FROM agents WHERE id = $1', [id]);
+  /**
+   * #2088 — delete an agent: the row becomes a TOMBSTONE (migration 0072).
+   * Nothing that references it is dropped; its slug is replaced by a
+   * placeholder so the name is free for a new agent. Returns the tombstone,
+   * or `undefined` when there is no live agent with that id.
+   *
+   * Ending what the agent was doing (subscriptions, processes of its
+   * archetype) is the caller's job and comes BEFORE this: see
+   * `platform/agentEndOfService.ts`.
+   */
+  async deleteAgent(id: string, deletedBy?: string): Promise<AgentTombstone | undefined> {
+    const { rows } = await this.pool.query<TombstoneDbRow>(
+      `UPDATE agents
+          SET deleted_at = now(), deleted_by = $2, deleted_slug = slug, slug = $3,
+              status = 'disabled', updated_at = now()
+        WHERE id = $1 AND deleted_at IS NULL
+        RETURNING id, deleted_slug, name, archetype, deleted_at, deleted_by`,
+      [id, deletedBy ?? null, tombstoneSlug(id)],
+    );
+    return rows[0] ? mapTombstone(rows[0]) : undefined;
+  }
+
+  /** The deleted agents, newest first. */
+  async listTombstones(): Promise<readonly AgentTombstone[]> {
+    const { rows } = await this.pool.query<TombstoneDbRow>(
+      `SELECT a.id, a.deleted_slug, COALESCE(NULLIF(i.display_name, ''), a.name) AS name, a.archetype,
+              a.deleted_at, a.deleted_by
+         FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id
+        WHERE a.deleted_at IS NOT NULL
+        ORDER BY a.deleted_at DESC`,
+    );
+    return rows.map(mapTombstone);
+  }
+
+  /**
+   * The hard delete of a TOMBSTONE: the row goes, and with it everything
+   * that references it (ON DELETE CASCADE). Only a tombstone can be purged;
+   * a live agent is deleted first. Returns whether a row was removed.
+   */
+  async purgeAgent(id: string): Promise<boolean> {
+    const result = await this.pool.query('DELETE FROM agents WHERE id = $1 AND deleted_at IS NOT NULL', [id]);
+    return (result.rowCount ?? 0) > 0;
   }
 
   /** Agent Builder — set (or clear, with null) the per-agent model routing.
@@ -823,7 +887,7 @@ export class ConfigStore {
 
   async listAllAgentPlugins(): Promise<readonly AgentPluginRow[]> {
     const { rows } = await this.pool.query<AgentPluginDbRow>(
-      'SELECT * FROM agent_plugins ORDER BY agent_id, plugin_id',
+      `SELECT * FROM agent_plugins WHERE ${ofLiveAgent('agent_id')} ORDER BY agent_id, plugin_id`,
     );
     return rows.map(mapAgentPlugin);
   }
@@ -1066,6 +1130,13 @@ export class ConfigStore {
       graph.listAllPersonaSkillLinks(),
       graph.listAllSkillToolBindings(),
     ]);
+    // #2088 — the deleted agents, so routing can tell "bound to a deleted
+    // agent" from "bound to nobody". A database before migration 0072 has no
+    // tombstones.
+    const tombstones = await this.listTombstones().catch((err: unknown) => {
+      if ((err as { code?: unknown } | null)?.code === '42703') return [];
+      throw err;
+    });
     return {
       agents,
       agentPlugins: plugins,
@@ -1079,12 +1150,21 @@ export class ConfigStore {
       mcpServers,
       personaSkillLinks,
       skillToolBindings,
+      tombstones,
     };
   }
 }
 
 export interface ConfigSnapshot {
+  /** LIVE agents. A deleted agent is in {@link tombstones}, never here. */
   readonly agents: readonly AgentRow[];
+  /**
+   * #2088 — deleted agents (migration 0072). Their `channelBindings` and
+   * `channelIdentities` rows are still in this snapshot, on purpose: a
+   * conversation bound to a deleted agent is refused by routing instead of
+   * falling to the default agent. Optional for snapshot literals in tests.
+   */
+  readonly tombstones?: readonly AgentTombstone[];
   readonly agentPlugins: readonly AgentPluginRow[];
   readonly channelBindings: readonly ChannelBindingRow[];
   /**

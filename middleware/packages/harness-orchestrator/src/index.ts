@@ -58,6 +58,7 @@ export type { ReloadBusOptions } from './registry/reloadBus.js';
 export { ChannelResolver } from './routing/channelResolver.js';
 export type {
   ChannelResolverOptions,
+  SystemNoticeRequest,
   ResolveDecision,
   ResolveResult,
 } from './routing/channelResolver.js';
@@ -129,6 +130,9 @@ export {
   parseAgentKind,
 } from './registry/agentKind.js';
 export type { AgentKind, FacilitatorOmission } from './registry/agentKind.js';
+// #2088 — tombstones: a deleted agent's row stays; readers say what they mean.
+export { liveAgentRow, ofLiveAgent, tombstoneSlug } from './registry/tombstones.js';
+export type { AgentTombstone } from './registry/tombstones.js';
 // #2088 — archetypes: the registry and the one question call sites ask.
 export {
   ARCHETYPE_ADDITIONS,

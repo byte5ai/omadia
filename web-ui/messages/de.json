@@ -2161,7 +2161,7 @@
     "actionKill": "Sessions killen",
     "drainTooltip": "Snapshot auf allen an diesen Orchestrator gebundenen Sessions leeren — nächster Turn nimmt frische Config aus der Registry",
     "fallbackProtected": "Das ist der Standard-Orchestrator und kann nicht deaktiviert oder gelöscht werden.",
-    "deleteConfirm": "Orchestrator „{slug}\" wirklich löschen?",
+    "deleteConfirm": "Orchestrator „{slug}“ wirklich löschen? Er geht außer Dienst; sein Datensatz bleibt unter „Gelöschte Agenten“ erhalten, bis du ihn endgültig entfernst.",
     "killConfirm": "Alle Sessions von „{slug}\" killen? History geht verloren.",
     "memoryScopeHeading": "Memory-Scope",
     "memoryScopeEmpty": "Kein Scope (Runtime-Registry nicht aktiv)",
@@ -2981,6 +2981,31 @@
       "memory": "Memory",
       "engine": "Moderation"
     },
+    "endOfService": {
+      "disabled": "„{name}“ ist deaktiviert.",
+      "deleted": "„{name}“ ist gelöscht. Der Datensatz bleibt unter „Gelöschte Agenten“ erhalten, bis du ihn endgültig entfernst.",
+      "processes": "{count, plural, =0 {Es musste kein laufender Vorgang beendet werden.} one {Ein laufender Vorgang wurde beendet:} other {# laufende Vorgänge wurden beendet:}}",
+      "outcomeAborted": "{channel}, Gespräch {conversation}: vom Archetyp-Plugin beendet",
+      "outcomeAbortedReported": "{channel}, Gespräch {conversation}: vom Archetyp-Plugin beendet, das Gespräch wurde informiert",
+      "outcomeFailed": "{channel}, Gespräch {conversation}: konnte vom Archetyp-Plugin nicht abgeschlossen werden",
+      "pluginFailed": "Das Archetyp-Plugin hat die Vorgänge des Agenten nicht beendet ({detail}). omadia stellt für den Agenten keine Nachrichten mehr zu, es kann also nichts weiterlaufen.",
+      "subscriptions": "{count, plural, =0 {Der Agent hat die Nachrichten keines Gesprächs erhalten.} one {Er erhält die Nachrichten eines Gesprächs nicht mehr.} other {Er erhält die Nachrichten von # Gesprächen nicht mehr.}}",
+      "noticesOwed": "{count, plural, =0 {} one {Ein Gespräch wurde von omadia selbst nicht informiert: Systemhinweise gibt es noch nicht.} other {# Gespräche wurden von omadia selbst nicht informiert: Systemhinweise gibt es noch nicht.}}",
+      "dismiss": "Schließen"
+    },
+    "deletedAgents": {
+      "heading": "Gelöschte Agenten",
+      "intro": "Ein gelöschter Agent ist außer Dienst und antwortet nirgends. Sein Datensatz mit Identität, Freigaben, Zuordnungen und Zeitplänen bleibt erhalten, damit ein ihm zugeordnetes Gespräch nicht von einem anderen Agenten übernommen wird. Endgültiges Entfernen löscht das alles.",
+      "loadFailed": "Die gelöschten Agenten ließen sich nicht laden.",
+      "row": "{name} ({slug}) · gelöscht {when}",
+      "rowBy": "{name} ({slug}) · gelöscht {when} von {by}",
+      "purge": "Endgültig entfernen",
+      "purging": "Wird entfernt",
+      "purgeConfirm": "„{slug}“ endgültig entfernen? Identität, Freigaben, Zuordnungen und Zeitpläne werden mitgelöscht. Das lässt sich nicht rückgängig machen.",
+      "purgeTypeSlug": "Dieser Agent wurde vor weniger als {days, plural, one {# Tag} other {# Tagen}} gelöscht. Tippe seinen Slug „{slug}“ ein, um ihn jetzt zu entfernen:",
+      "purgeMismatch": "Das ist nicht der Slug. Es wurde nichts entfernt.",
+      "purgeableFrom": "ohne Eingabe des Slugs entfernbar ab {when}"
+    },
     "archetype": {
       "deliveredBy": "Geliefert vom Archetyp-Plugin „{plugin}“. omadia setzt für jeden Agenten in diesem Abschnitt durch, was der Archetyp hinzufügt und weglässt.",
       "deliveredByKernel": "In omadia eingebaut.",
@@ -2989,7 +3014,7 @@
       "createHeading": "Agent des Archetyps „{name}“ anlegen",
       "createHint": "Der Archetyp steht nach dem Anlegen fest. Identität und Persönlichkeit werden auf der Seite des Agenten eingestellt, die sich danach öffnet.",
       "createSubmit": "Anlegen",
-      "deleteConfirm": "Agent „{slug}“ wirklich löschen?"
+      "deleteConfirm": "Agent „{slug}“ wirklich löschen? Er geht außer Dienst; sein Datensatz bleibt unter „Gelöschte Agenten“ erhalten, bis du ihn endgültig entfernst."
     },
     "facilitator": {
       "heading": "Facilitatoren",
@@ -2999,7 +3024,7 @@
       "createHint": "Der Archetyp steht nach dem Anlegen fest. Avatar, Persönlichkeit und Teams-Identität werden auf der Seite des Facilitators eingestellt, die sich danach öffnet.",
       "createSubmit": "Facilitator anlegen",
       "cardSummary": "Status: {status} · Laufzeit: {runtime}",
-      "deleteConfirm": "Facilitator „{slug}\" wirklich löschen?",
+      "deleteConfirm": "Facilitator „{slug}“ wirklich löschen? Seine laufenden Moderationen werden beendet; sein Datensatz bleibt unter „Gelöschte Agenten“ erhalten, bis du ihn endgültig entfernst.",
       "omittedNote": "Keine Plugins, Tools, MCP-Server, kein Gedächtnis, keine internen Helfer, Arbeitsmodi, Zeitpläne oder Gespräche mit anderen Agenten, und nie der Standard-Ansprechpartner: Zugriff auf Unternehmensdaten oder auf die Interessen einer Person würde einen Moderator parteiisch machen.",
       "contractRejected": "Nicht gespeichert: {count, plural, one {eine Einstellung widerspricht} other {# Einstellungen widersprechen}} dem Neutralitätsvertrag eines Facilitators.",
       "omissionWithPlugins": "{reason} Abgelehnt: {plugins}.",
@@ -5604,6 +5629,7 @@
         "profileSnapshot": "Profil-Snapshots",
         "registry": "Plugin-Registries",
         "channel": "Kanäle",
+        "agent": "Agenten: außer Dienst, löschen, entfernen",
         "privacyFieldClassification": "Entscheidungen zur Feldklassifizierung",
         "privacyFieldPreview": "Einsichten in Feldwerte (Klassifizierung)",
         "privacyFieldAutoApprove": "Automatische Feldfreigaben",

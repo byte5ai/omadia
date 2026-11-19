@@ -63,6 +63,8 @@ vi.mock('next/link', () => ({
 vi.mock('../../../../_lib/agents', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../../_lib/agents')>()),
   listAgentPluginCatalog: vi.fn().mockResolvedValue({ items: [] }),
+  // #2088 — no deleted agents: that section stays away in these tests.
+  listDeletedAgents: vi.fn().mockResolvedValue({ retention_days: 30, agents: [] }),
   createOperatorAgent: mockCreate,
   patchOperatorAgent: mockPatch,
   setFallbackAgent: mockSetFallback,
