@@ -8,6 +8,32 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.62.0 — 2026-11-19
+
+Additive (#2088, epic #2042): the database of an archetype plugin.
+
+### Added
+
+- **`SqlAccessor.schema`**, **`SqlAccessor.query(text, params?)`** and
+  **`SqlAccessor.transaction(work)`**, with `SqlStatementResult` and
+  `SqlTransaction`. Present for a plugin of kind `archetype` that does not
+  list `graphPool` under `requires` and holds the database grant; absent for
+  every other plugin. Statements run as the plugin's own database role,
+  which reaches the tables of `schema` and nothing else; the role's
+  `search_path` is that schema, so table names stay unqualified. No client
+  is handed out: session state (`SET`, `LISTEN`, session-level advisory
+  locks, prepared statements) does not survive a call. Inside `transaction`,
+  `SET LOCAL`, `pg_advisory_xact_lock` and row locks work as usual; the
+  handle is refused after the callback settled.
+
+### For such a plugin
+
+- `ctx.sql.runMigrations()` runs the files as the plugin's migration role
+  inside its schema. A file that names `public.` or a kernel table fails.
+- `ctx.sql.seedLedger` is absent (it reads the core ledger).
+- Tables it created in `public` under its `plg_<plugin id>_` prefix move
+  into the schema at its first activation.
+
 ## 1.61.0 — 2026-11-19
 
 Additive (#2088, epic #2042): end of service.
