@@ -41,9 +41,6 @@ async function forwardCookieHeader(): Promise<Record<string, string>> {
 
 export type PrivacyProfile = 'strict' | 'default';
 export type AgentStatus = 'enabled' | 'disabled';
-/** @deprecated the previous name of the archetype; the API returns it next
- *  to `archetype` until the `agents.kind` column is dropped. */
-export type AgentKind = 'standard' | 'facilitator';
 /** #2088 — the archetype of an agent: `standard`, or one an archetype plugin
  *  registered (today `facilitator`). Fixed at creation, never switched. */
 export type AgentArchetype = string;
@@ -53,14 +50,11 @@ export const FACILITATOR_ARCHETYPE: AgentArchetype = 'facilitator';
 /** What an agent DTO says about its archetype. */
 export interface ArchetypeBearer {
   archetype?: AgentArchetype;
-  /** @deprecated see {@link AgentKind}. */
-  kind?: AgentKind;
 }
 
-/** The archetype of an agent: `archetype`, else the `kind` of a middleware
- *  that predates it, else `standard`. */
+/** The archetype of an agent; an agent without one is a standard agent. */
 export function archetypeOfAgent(agent: ArchetypeBearer): AgentArchetype {
-  return agent.archetype ?? agent.kind ?? STANDARD_ARCHETYPE;
+  return agent.archetype ?? STANDARD_ARCHETYPE;
 }
 
 export interface OperatorAgentPluginDto {
@@ -86,8 +80,6 @@ export interface OperatorAgentDto {
   /** #2088 — absent on a middleware that predates archetypes; read it
    *  through `archetypeOfAgent` / `isFacilitatorAgent`. */
   archetype?: AgentArchetype;
-  /** @deprecated the previous name of {@link archetype}. */
-  kind?: AgentKind;
   created_at: string;
   updated_at: string;
   active: boolean;
@@ -209,8 +201,6 @@ export async function createOperatorAgent(input: CreateAgentInput): Promise<{
   id: string;
   slug: string;
   archetype?: AgentArchetype;
-  /** @deprecated see {@link AgentKind}. */
-  kind?: AgentKind;
 }> {
   return callJson('/v1/operator/agents', {
     method: 'POST',

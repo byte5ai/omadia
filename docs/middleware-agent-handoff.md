@@ -9402,7 +9402,7 @@ Tests: `test/conductorReservedContextKeys.test.ts`.
 
 ## Native Facilitators: Kernel-Seite (Epic #2043, 2026-11-18)
 
-Ein Facilitator ist eine eigene Art von Agent (`agents.kind = 'facilitator'`,
+Ein Facilitator ist eine eigene Art von Agent (`agents.archetype = 'facilitator'`; die Vorgängerspalte `kind` ist seit Migration 0079 entfernt,
 Migration `0067_agent_kind`), der nur moderiert. Aufteilung nach
 Owner-Entscheidung „plugin-first“: Engine (Tabellen, Lebenszyklus, Zählung,
 Scheduler) im Plugin `omadia-agent-facilitator`, der Kernel bleibt dünn und

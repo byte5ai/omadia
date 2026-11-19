@@ -385,7 +385,7 @@ test('#2060: a binding to a facilitator is rejected at resolve time, never answe
   const mara = '00000000-0000-0000-0000-0000000000f1';
   const registry = await buildRegistry({
     ...twoAgentSnap,
-    agents: [...twoAgentSnap.agents, agent('mara', mara, { kind: 'facilitator' })],
+    agents: [...twoAgentSnap.agents, agent('mara', mara, { archetype: 'facilitator' })],
     channelBindings: [
       ...twoAgentSnap.channelBindings,
       // The default bot's key, bound to the facilitator by hand.

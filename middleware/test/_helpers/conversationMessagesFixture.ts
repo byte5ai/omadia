@@ -36,15 +36,15 @@ const READY: ChannelReadinessReport = {
 export interface FixtureAgent {
   readonly id: string;
   readonly slug: string;
-  readonly kind: 'standard' | 'facilitator';
+  readonly archetype: 'standard' | 'facilitator';
   readonly channelKey?: string;
 }
 
 export const DEFAULT_AGENTS: readonly FixtureAgent[] = [
-  { id: '00000000-0000-0000-0000-0000000000f1', slug: 'mara', kind: 'facilitator', channelKey: MARA_KEY },
-  { id: '00000000-0000-0000-0000-0000000000f2', slug: 'nora', kind: 'facilitator', channelKey: NORA_KEY },
-  { id: '00000000-0000-0000-0000-0000000000f3', slug: 'ida', kind: 'facilitator' },
-  { id: '00000000-0000-0000-0000-0000000000a1', slug: 'hr', kind: 'standard', channelKey: '28:cccc-hr' },
+  { id: '00000000-0000-0000-0000-0000000000f1', slug: 'mara', archetype: 'facilitator', channelKey: MARA_KEY },
+  { id: '00000000-0000-0000-0000-0000000000f2', slug: 'nora', archetype: 'facilitator', channelKey: NORA_KEY },
+  { id: '00000000-0000-0000-0000-0000000000f3', slug: 'ida', archetype: 'facilitator' },
+  { id: '00000000-0000-0000-0000-0000000000a1', slug: 'hr', archetype: 'standard', channelKey: '28:cccc-hr' },
 ];
 
 export function hubFixture(

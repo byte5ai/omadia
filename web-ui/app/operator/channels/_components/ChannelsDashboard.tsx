@@ -17,10 +17,10 @@ import { useFacilitatorRefusalMessage } from '../../agents/_components/useFacili
 interface Props {
   initial: ChannelsListDto;
   /**
-   * #2066 — slugs of facilitator-kind agents. A facilitator is never routed
+   * #2066 — slugs of facilitators. A facilitator is never routed
    * to: it joins a conversation under its own Teams identity, and the kernel
    * refuses a binding with 409 `facilitator_omission`. So it is not offered
-   * as a target. The channels route does not report `kind`, hence the prop.
+   * as a target. The channels route does not say which agents are facilitators, hence the prop.
    */
   facilitatorSlugs?: readonly string[];
 }

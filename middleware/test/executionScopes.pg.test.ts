@@ -380,7 +380,7 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
     function turns(calls: () => number) {
       let ran = 0;
       const entry = {
-        agent: { id: agents.get('mara')!.id, slug: 'mara', name: 'mara', status: 'enabled', kind: 'facilitator', archetype: 'facilitator' },
+        agent: { id: agents.get('mara')!.id, slug: 'mara', name: 'mara', status: 'enabled', archetype: 'facilitator' },
         plugins: [{ pluginId: ENGINE, enabled: true }],
         built: {
           bundle: {

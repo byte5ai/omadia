@@ -36,12 +36,12 @@ interface FakeAgent {
   description: string | null;
   privacyProfile: 'default';
   status: 'enabled';
-  kind: 'standard' | 'facilitator';
+  archetype: 'standard' | 'facilitator';
   createdAt: Date;
   updatedAt: Date;
 }
 
-function agent(slug: string, kind: FakeAgent['kind']): FakeAgent {
+function agent(slug: string, archetype: FakeAgent['archetype']): FakeAgent {
   return {
     id: `id-${slug}`,
     slug,
@@ -49,7 +49,7 @@ function agent(slug: string, kind: FakeAgent['kind']): FakeAgent {
     description: null,
     privacyProfile: 'default',
     status: 'enabled',
-    kind,
+    archetype,
     createdAt: new Date(0),
     updatedAt: new Date(0),
   };
@@ -106,9 +106,8 @@ export function routesHarness(): RoutesHarness {
       listChannelIdentities: () => Promise.resolve([]),
       resolveBinding: () => Promise.resolve(undefined),
       getAgentChannelPolicy: () => Promise.resolve(undefined),
-      // The route names the archetype; `kind` is what a fixture row carries.
-      createAgent: (input: { slug: string; name: string; archetype?: string; kind?: FakeAgent['kind'] }) => {
-        const created = agent(input.slug, (input.archetype ?? input.kind ?? 'standard') as FakeAgent['kind']);
+      createAgent: (input: { slug: string; name: string; archetype?: string }) => {
+        const created = agent(input.slug, (input.archetype ?? 'standard') as FakeAgent['archetype']);
         h.agents.push(created);
         return Promise.resolve(created);
       },
