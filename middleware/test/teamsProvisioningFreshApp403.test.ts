@@ -94,6 +94,28 @@ function harness(createAppRegistration: () => Promise<unknown>, opts: Record<str
   return { runner, sleeps, events, row: () => row };
 }
 
+/**
+ * The error exactly as connector 0.9.3 builds it (`teamsProvisioner/errors.ts`,
+ * `DirectoryReplicationError` with a last answer): it has already waited
+ * through its own replication budget.
+ */
+function replicationPending(status: 403 | 404, step = 'applications.addPassword'): Error {
+  const detail = '{"error":{"code":"Authorization_RequestDenied","message":"Insufficient privileges to complete the operation."}}';
+  const message =
+    status === 403
+      ? `directory_replication_pending: graph ${step} still answered 403 after 8 attempts on an app registration this run created or found seconds ago. The permission is in use (the registration was just written with it), so this is not missing admin consent; run provisioning again — ${detail}`
+      : 'directory_replication_pending';
+  return Object.assign(new Error(message), {
+    name: 'DirectoryReplicationError',
+    step,
+    objectId: '0f3c2a8e-1111-4222-8333-444455556666',
+    attempts: 8,
+    waitedMs: 60_500,
+    lastStatus: status,
+    ...(status === 403 ? { lastDetail: detail } : {}),
+  });
+}
+
 describe('a 403 on a follow-up call to the app registration (D22)', () => {
   it('is recognised by the step the connector names, and only for those steps', () => {
     for (const step of ['applications.addPassword', 'servicePrincipals.create', 'applications.get', 'applications.awaitReplication']) {
@@ -175,5 +197,38 @@ describe('a 403 on a follow-up call to the app registration (D22)', () => {
     const result = await h.runner.enqueue({ agentId: 'agent-1', teamId: 'team-42' });
     assert.equal((result as { reason?: string }).reason, 'app_registration_not_ready');
     assert.ok(appRegistrationNotReadyFailure('x'.repeat(5_000)).lastError.length <= 1200);
+  });
+
+  it('connector 0.9.3: DirectoryReplicationError with lastStatus 403 takes the same path', async () => {
+    assert.equal(isFollowUpRefusalOnAppRegistration(replicationPending(403)), true);
+    assert.equal(isFollowUpRefusalOnAppRegistration(replicationPending(403, 'servicePrincipals.create')), true);
+    // The 404 form is the replication wait the runner always had: not this path.
+    assert.equal(isFollowUpRefusalOnAppRegistration(replicationPending(404)), false);
+
+    // Refused once more after the connector's own wait, then accepted.
+    let calls = 0;
+    const recovered = harness(async () => {
+      calls += 1;
+      if (calls === 1) throw replicationPending(403);
+      return { outcome: 'created', value: { appId: 'app-123', registration: { tenantId: 'tenant-9' } } };
+    });
+    await recovered.runner.enqueue({ agentId: 'agent-1', teamId: 'team-42' });
+    assert.equal(calls, 2);
+    assert.equal(recovered.row().appId, 'app-123');
+    assert.ok(recovered.events.some((e) => e.status === 'retrying' && e.detail === 'awaiting_entra_replication'));
+
+    // Refused for good: the code that does not ask for a consent, with the
+    // connector's own sentence as the technical detail.
+    const stuck = harness(async () => {
+      throw replicationPending(403);
+    });
+    const result = await stuck.runner.enqueue({ agentId: 'agent-1', teamId: 'team-42' });
+    assert.equal((result as { reason?: string }).reason, 'app_registration_not_ready');
+    assert.equal(stuck.row().errorCode, 'app_registration_not_ready');
+    assert.match(
+      stuck.row().lastError ?? '',
+      /^app_registration_not_ready: .*directory_replication_pending: graph applications\.addPassword still answered 403 after 8 attempts/,
+    );
+    assert.equal(classifyTeamsProvisioningError(stuck.row().lastError ?? '').code, 'app_registration_not_ready');
   });
 });

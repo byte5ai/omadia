@@ -1551,7 +1551,7 @@ export class TeamsProvisioningJobRunner {
     }
 
     const scopes = missingScopesOf(err);
-    if (scopes !== undefined && isFollowUpRefusalOnAppRegistration(err)) {
+    if (isFollowUpRefusalOnAppRegistration(err)) {
       // #2043 D22 — NOT missing consent. The connector reports every 403 as
       // missing consent, but this one answers a follow-up call (add the
       // secret, create the service principal) on an app registration that
@@ -3308,8 +3308,11 @@ export function appRegistrationNotReadyFailure(connectorText: string): TeamsProv
 
 /**
  * Is this "consent missing" really a 403 on a FOLLOW-UP call to an app
- * registration (#2043 D22)? The connector's HTTP layer names the step in the
- * cause (`graph <step> 403 body=…`). A step that acts on an existing
+ * registration (#2043 D22)? Two shapes, by connector version. Up to 0.9.2 the
+ * HTTP layer reports it as `ConsentMissingError` and names the step in the
+ * cause (`graph <step> 403 body=…`). From 0.9.3 the connector waits through
+ * its own replication budget first and then throws `DirectoryReplicationError`
+ * with `lastStatus: 403`. A step that acts on an existing
  * registration can only be reached after `applications.create` or
  * `applications.findByUniqueName` succeeded with the same application
  * permission, so the permission is granted; what refuses is the object not
@@ -3319,12 +3322,20 @@ const APP_FOLLOW_UP_403 = /^graph (applications\.(addPassword|awaitReplication|g
 /** What Graph said: the connector keeps the step, the status and the body in
  *  the error's cause, the error itself only says "consent_missing". */
 function followUpRefusalText(err: unknown): string {
+  // `DirectoryReplicationError` (connector >= 0.9.3) words it in its message.
+  if (err instanceof Error && err.name === 'DirectoryReplicationError') return fullConnectorErrorText(err);
   const cause = (err as { cause?: unknown } | null)?.cause;
   return cause instanceof Error ? cause.message : fullConnectorErrorText(err);
 }
 
 export function isFollowUpRefusalOnAppRegistration(err: unknown): boolean {
-  if (!(err instanceof Error) || err.name !== 'ConsentMissingError') return false;
+  if (!(err instanceof Error)) return false;
+  // Connector >= 0.9.3 says it itself: it waited through its own replication
+  // budget on the follow-up call and the last answer was still a 403.
+  if (err.name === 'DirectoryReplicationError') {
+    return (err as { lastStatus?: unknown }).lastStatus === 403;
+  }
+  if (err.name !== 'ConsentMissingError') return false;
   const resource = (err as { resource?: unknown }).resource;
   if (resource !== undefined && resource !== 'graph') return false;
   const cause = (err as { cause?: unknown }).cause;
