@@ -5,6 +5,8 @@
 import { archetypeOf, getArchetype, type OrchestratorRegistry } from '@omadia/orchestrator';
 import {
   EXECUTION_AUTHORIZATION_SERVICE_NAME,
+  EXECUTION_GRANTS_SERVICE_NAME,
+  GRANT_VERIFICATION_SERVICE_NAME,
   perCallerService,
   type ExecutionAuthorizationService,
 } from '@omadia/plugin-api';
@@ -12,6 +14,7 @@ import type { Pool } from 'pg';
 
 import { KERNEL_SERVICE_CALLER, type ServiceRegistry } from '../platform/serviceRegistry.js';
 import { createExecutionAuthorizationService, type ExecutionAgent } from './executionAuthorizationService.js';
+import { createExecutionGrantsService, createGrantVerificationService } from './grantService.js';
 import { ExecutionScopeStore } from './scopeStore.js';
 
 export interface ExecutionWiring {
@@ -75,6 +78,25 @@ export function wireExecutionAuthorization(deps: ExecutionWiringDeps): Execution
     // other caller that does not.
     perCallerService((caller) =>
       serviceFor(caller.pluginId === KERNEL_SERVICE_CALLER.pluginId ? '' : caller.pluginId),
+    ),
+  );
+
+  // #2078 — kernel-issued grants: the plugin that runs a process issues them
+  // under its scopes; an integration asks before every operation.
+  deps.serviceRegistry.provide(
+    EXECUTION_GRANTS_SERVICE_NAME,
+    perCallerService((caller) =>
+      createExecutionGrantsService({
+        pool: deps.pool,
+        callerPluginId: caller.pluginId === KERNEL_SERVICE_CALLER.pluginId ? '' : caller.pluginId,
+        log: deps.log,
+      }),
+    ),
+  );
+  deps.serviceRegistry.provide(
+    GRANT_VERIFICATION_SERVICE_NAME,
+    perCallerService((caller) =>
+      createGrantVerificationService({ pool: deps.pool, callerPluginId: caller.pluginId, log: deps.log }),
     ),
   );
 
