@@ -512,7 +512,9 @@ Setup-Feld-PATCH antwortete mit Key-Namen, die Store-Seite zeigte "✓ Saved".
   pro *Handlung des Operators* — `secret_missing`, `config_missing`,
   `capability_not_declared`, `network_not_permitted`,
   `permission_not_granted`, `dependency_unresolved`, `provider_conflict`,
-  `target_unreachable`, `unknown`. Klassifiziert in
+  `target_unreachable`, `database_not_available` (#2088: eigene Datenbank
+  eines Archetyp-Plugins nicht einrichtbar oder nicht isoliert), `unknown`.
+  Klassifiziert in
   `plugins/activationFailure.ts` aus dem Error-**Objekt** (`err.name`,
   `SqlPermissionError.reason`, errno-`code` inkl. undici-`cause`), nie aus der
   Message. `name` statt `instanceof`, weil ein Plugin seine eigene Kopie von

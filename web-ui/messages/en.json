@@ -4587,6 +4587,10 @@
         "what": "A server the plugin needs did not respond while it was starting.",
         "next": "Check the address in the setup fields and that the server is reachable, then save the setup again to retry."
       },
+      "database_not_available": {
+        "what": "The plugin's own database could not be set up.",
+        "next": "The technical detail below names the reason. If it says a role may create objects outside its schema, run the statement it names (usually REVOKE CREATE ON SCHEMA public FROM PUBLIC) as the database owner, then restart omadia."
+      },
       "unknown": {
         "what": "The plugin did not start.",
         "next": "The technical detail below may help. If it does not, report it to the plugin's publisher."

@@ -2659,6 +2659,30 @@ export class SqlPermissionError extends Error {
 }
 
 /**
+ * #2088 — thrown when a plugin of kind `archetype` asks for a pool-shaped
+ * capability (`graphPool`). An archetype plugin never gets the shared pool,
+ * whatever its manifest declares and whatever the operator granted: it
+ * reaches the database through {@link SqlAccessor.query} and
+ * {@link SqlAccessor.transaction} on `ctx.sql`, as its own role, in its own
+ * schema. For that, its manifest must not list the capability under
+ * `requires`.
+ */
+export class SharedPoolRefusedError extends Error {
+  public readonly pluginId: string;
+  public readonly capability: string;
+  constructor(pluginId: string, capability: string) {
+    super(
+      `archetype plugin '${pluginId}' asked for '${capability}': an archetype plugin never gets the shared database pool. ` +
+        `Remove '${capability}' from the manifest's requires and use ctx.sql.query() and ctx.sql.transaction(); ` +
+        'they run as the plugin\'s own database role, limited to its schema (ctx.sql.schema)',
+    );
+    this.name = 'SharedPoolRefusedError';
+    this.pluginId = pluginId;
+    this.capability = capability;
+  }
+}
+
+/**
  * Thrown when a manifest nominates a ledger table this plugin may not own.
  *
  * The name is interpolated into DDL as a quoted identifier, so it is also the

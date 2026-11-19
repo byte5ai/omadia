@@ -269,6 +269,13 @@ const PROCESS_LOCAL_ACTIVATION_ERROR_RE = /ServiceRegistry: duplicate provider f
 function maybeTransientErrorReason(entry: InstalledAgent): string | null {
   const err = entry.last_activation_error;
   if (!err) return null;
+  // #2088 — the plugin's own database could not be set up or was not
+  // isolated. The cause lies in the database, not in the plugin's files, so
+  // nothing else here would notice the operator's fix. The setup is checked
+  // again on every boot and blocks again at once when it still fails.
+  if (entry.last_activation_error_code === 'database_not_available') {
+    return `last activation failed on the plugin's own database; checking it again: "${err}"`;
+  }
   if (TRANSIENT_ACTIVATION_ERROR_RE.test(err)) {
     return `last_activation_error looks transient (infra dependency unreachable): "${err}"`;
   }

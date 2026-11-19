@@ -8,6 +8,21 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.72.0 — 2026-11-19
+
+Additive type, changed behaviour for archetype plugins (#2088, epic #2042).
+
+### Added
+
+- **`SharedPoolRefusedError`**: thrown by `ctx.services.get('graphPool')`
+  for a plugin of kind `archetype`.
+
+### Changed for archetype plugins
+
+- An archetype plugin that lists `graphPool` under `requires` no longer gets
+  the shared pool, and no `ctx.sql`. Remove the line and use
+  `ctx.sql.query()` / `ctx.sql.transaction()` (1.62.0).
+
 ## 1.71.0 — 2026-11-19
 
 Additive (#2091, epic #2043): a delivered private message names the

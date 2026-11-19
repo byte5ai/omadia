@@ -36,6 +36,27 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — An archetype plugin never gets the shared database pool (#2088, epic #2042): K3b of the spec alignment
+
+- A plugin of manifest kind `archetype` that asks for `graphPool` is refused
+  (`SharedPoolRefusedError`, plugin-api 1.72.0), whatever it declares and
+  whatever is granted, and it gets no `ctx.sql` on the shared pool. Its
+  database is its own schema under its own roles (K3a), which it gets by not
+  listing `graphPool` under `requires`. Plugins of every other kind are
+  unchanged.
+- **Before updating the kernel:** an installed archetype plugin that still
+  requires `graphPool` (the facilitation engine before 1.3.0) loses its
+  database with this version. Update the plugin first.
+- The isolation check of a plugin's database roles now also refuses a role
+  that may create objects in a schema other than its own (the default on a
+  database created before PostgreSQL 15, where every role may create in
+  `public`). The plugin's database then stays unavailable until
+  `REVOKE CREATE ON SCHEMA public FROM PUBLIC` has been run. The store shows
+  this as its own activation failure ("The plugin's own database could not be
+  set up.", code `database_not_available`), and the technical detail names
+  the statement. See `docs/upgrading.md`. The roles keep the default USAGE
+  on `public`; it cannot be revoked per role and reads no table.
+
 ### Changed — Running agent discussions move to "Running processes"; the old facilitation panel is removed (#2067, epic #2043)
 
 - **Where to look now:** agent discussions that are running appear on the
