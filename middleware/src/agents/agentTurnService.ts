@@ -1,6 +1,9 @@
-// The kernel-run agent turn ('agentTurn@1', #2043): the facilitation engine
-// asks the kernel to run ONE turn as a facilitator and gets the text back.
-// Nothing is posted; the engine decides what to send, through its own outbox.
+// The kernel-run agent turn ('agentTurn@2', #2043, #2090): the facilitation
+// engine asks the kernel to run ONE turn as a facilitator and gets the text
+// back. Nothing is posted; the engine decides what to send, through its own
+// outbox. Every turn is an authorized action under an execution scope of one
+// of the engine's processes; a turn without a scope (the first major) is gone
+// (#2067).
 //
 // The turn runs through the agent's own `ChatAgent` bundle, so everything
 // that makes it this agent's turn applies without being repeated here: the
@@ -33,7 +36,6 @@ import type {
   AgentProfile,
   AgentTurnOutcome,
   AgentTurnRequest,
-  AgentTurnService,
   ConversationMessageRecord,
 } from '@omadia/plugin-api';
 
@@ -49,7 +51,7 @@ export interface AgentTurnServiceDeps {
   readonly getRegistry: () => OrchestratorRegistry | undefined;
   /** For the stored inbound event a turn answers. Absent = no database; a
    *  request naming an inbound event is then refused. */
-  readonly messages?: Pick<ConversationMessageHub, 'getEventById' | 'getProcessEventById'>;
+  readonly messages?: Pick<ConversationMessageHub, 'getProcessEventById'>;
   /** The calling plugin; `undefined` for the kernel itself. */
   readonly callerPluginId: string | undefined;
   /** Is the caller the instance's facilitation engine right now? */
@@ -117,12 +119,23 @@ function refused(
   return { outcome: 'refused', code, message };
 }
 
-/** The first major's service plus the guarded run `agentTurn@2` builds on. */
-export type GuardedAgentTurnService = AgentTurnService & {
-  /** `processId`: the process the turn belongs to (`agentTurn@2`). The
-   *  inbound event is then looked up among what THAT process received. */
-  runGuarded(request: AgentTurnRequest, accept?: () => boolean, processId?: string): Promise<AgentTurnOutcome>;
-};
+/**
+ * The turn itself, without its authorization: what `agentTurn@2` runs once
+ * the execution scope has granted it. Kernel-internal; no plugin gets this.
+ */
+export interface GuardedAgentTurnService {
+  /**
+   * Run one turn. `processId` is the process the turn belongs to: a named
+   * inbound event is looked up among what THAT process received.
+   *
+   * `accept` is asked once the answer exists and before anything keeps it
+   * (the session history): a turn whose answer must not stand is failed
+   * instead, and leaves no trace for the next turn to build on.
+   */
+  runGuarded(request: AgentTurnRequest, processId: string, accept?: () => boolean): Promise<AgentTurnOutcome>;
+  /** The agent's profile when the caller may run it; `undefined` otherwise. */
+  getProfile(agentSlug: string): Promise<AgentProfile | undefined>;
+}
 
 export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgentTurnService {
   const log = deps.log ?? (() => undefined);
@@ -150,12 +163,7 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
     return { entry };
   }
 
-  /**
-   * `accept` is asked once the answer exists and before anything keeps it
-   * (the session history): a turn whose answer must not stand is failed
-   * instead, and leaves no trace for the next turn to build on.
-   */
-  const run = async (request: AgentTurnRequest, accept?: () => boolean, processId?: string): Promise<AgentTurnOutcome> => {
+  const run = async (request: AgentTurnRequest, processId: string, accept?: () => boolean): Promise<AgentTurnOutcome> => {
       if (
         !isText(request?.agentSlug, 128) ||
         !isText(request.sessionKey, MAX_KEY) ||
@@ -181,12 +189,11 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
           channelType: request.channelType,
           conversationId: request.conversationId,
         };
-        // A process (`agentTurn@2`) reads conversations through subscriptions
-        // of its own (`conversationMessages@2`), so the event is one THAT
-        // process received: never another process's, also not of the same
-        // plugin. (Rollout defect D35: this once looked only among
-        // subscriptions without a process, which no longer exist.)
-        if (processId !== undefined && deps.callerPluginId !== undefined) {
+        // A process reads conversations through subscriptions of its own
+        // (`conversationMessages@2`), so the event is one THAT process
+        // received: never another process's, also not of the same plugin.
+        // The kernel itself runs no process and has no such event.
+        if (deps.callerPluginId !== undefined) {
           inbound = await deps.messages
             ?.getProcessEventById({ ...scope, processId }, deps.callerPluginId, request.inboundEventId)
             .catch(() => undefined);
@@ -261,7 +268,6 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
   };
 
   return {
-    runTurn: (request: AgentTurnRequest) => run(request),
     runGuarded: run,
 
     async getProfile(agentSlug: string): Promise<AgentProfile | undefined> {
@@ -321,7 +327,7 @@ export function createScopedAgentTurnService(deps: ScopedAgentTurnServiceDeps): 
   });
 
   return {
-    getProfile: (agentSlug) => base.getProfile?.(agentSlug) ?? Promise.resolve(undefined),
+    getProfile: (agentSlug) => base.getProfile(agentSlug),
 
     async runTurn(request: ScopedAgentTurnRequest): Promise<ScopedAgentTurnOutcome> {
       if (
@@ -344,7 +350,7 @@ export function createScopedAgentTurnService(deps: ScopedAgentTurnServiceDeps): 
       if (!execution) return refusedV2('unavailable', 'execution authorization needs a database');
       // The caller must be allowed to run this agent at all, before a unit of
       // the scope is spent on finding out.
-      if ((await base.getProfile?.(request.agentSlug)) === undefined) {
+      if ((await base.getProfile(request.agentSlug)) === undefined) {
         return refusedV2('not_bound', `agent '${request.agentSlug}' is not an agent this plugin runs`);
       }
       // The scope must be this process's and this agent's. A scope of another
@@ -375,7 +381,7 @@ export function createScopedAgentTurnService(deps: ScopedAgentTurnServiceDeps): 
       let outcome: AgentTurnOutcome;
       try {
         const metered = await deps.meter(
-          (probe) => base.runGuarded(request, () => probe().refused === 0, request.processId),
+          (probe) => base.runGuarded(request, request.processId, () => probe().refused === 0),
           { limit: reserved },
         );
         used = metered.modelCalls;

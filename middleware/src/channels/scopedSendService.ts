@@ -4,10 +4,10 @@
 // The kernel takes the authorization from the named execution scope first
 // (#2090): the target must be one the scope lists, and the scope must be
 // open, inside its deadline and budget, and not stopped. Only then the action
-// goes through the same own-identity path as the first major. What the first
-// major asked a message subscription ("it only posts where it moderates") is
-// here the scope's answer, so a `closing` scope still posts to a conversation
-// whose reservation was released.
+// goes through the own-identity path (`conversationSendService.ts`). Whether
+// the agent may post somewhere is the scope's answer and nothing else's, so a
+// `closing` scope still posts to a conversation whose reservation was
+// released.
 
 import type { TargetedDeliveryOutcome, TargetedMessage } from '@omadia/channel-sdk';
 import type {
@@ -129,9 +129,8 @@ export function createScopedSendService(deps: ScopedSendServiceDeps): ScopedConv
         channelType: request.channelType,
         conversationId: request.conversationId,
         message: request.message,
-        asOwnIdentity: true,
       };
-      const outcome = await deps.conversation.sendToConversation(input, deps.callerPluginId, {
+      const outcome = await deps.conversation.sendToConversation(input, {
         subscriptions: subscriptionsOf(granted.processId, request.agentSlug),
       });
       if (outcome.outcome !== 'delivered') {
@@ -223,7 +222,6 @@ export function createScopedSendService(deps: ScopedSendServiceDeps): ScopedConv
           cardMessageId: request.cardMessageId,
           update: request.update,
         },
-        deps.callerPluginId,
         { subscriptions: subscriptionsOf(granted.processId, request.agentSlug) },
       );
     },

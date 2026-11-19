@@ -15,7 +15,6 @@ import {
   type MessageSubscription,
   type NewMessageEvent,
   type NewProcessSubscription,
-  type NewSubscription,
   type ProcessMessageBinding,
   type SubscriptionMode,
   type PurgeResult,
@@ -31,7 +30,8 @@ interface SubscriptionRow {
   channel_key: string;
   plugin_id: string;
   created_at: Date;
-  process_id: string | null;
+  /** Never NULL in a row this store reads: every query asks for a process. */
+  process_id: string;
   mode: SubscriptionMode;
   ended_at?: Date | null;
 }
@@ -84,7 +84,7 @@ function mapSubscription(row: SubscriptionRow): MessageSubscription {
     pluginId: row.plugin_id,
     createdAt: row.created_at,
     mode: row.mode,
-    ...(row.process_id !== null ? { processId: row.process_id } : {}),
+    processId: row.process_id,
   };
 }
 
@@ -132,32 +132,9 @@ export class PgConversationMessageStore implements ConversationMessageStore {
   async listActiveSubscriptions(): Promise<readonly MessageSubscription[]> {
     const { rows } = await this.pool.query<SubscriptionRow>(
       `SELECT ${SUBSCRIPTION_COLUMNS} FROM conversation_message_subscriptions
-        WHERE ended_at IS NULL AND ${ofLiveAgent('agent_id')} ORDER BY created_at`,
+        WHERE ended_at IS NULL AND process_id IS NOT NULL AND ${ofLiveAgent('agent_id')} ORDER BY created_at`,
     );
     return rows.map(mapSubscription);
-  }
-
-  async createSubscription(input: NewSubscription): Promise<MessageSubscription> {
-    const channelKey = normalizeChannelKey(input.channelKey);
-    const inserted = await this.pool.query<SubscriptionRow>(
-      `INSERT INTO conversation_message_subscriptions
-         (agent_id, agent_slug, channel_type, conversation_id, channel_key, plugin_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (channel_type, conversation_id, channel_key) WHERE ended_at IS NULL AND process_id IS NULL
-       DO NOTHING
-       RETURNING ${SUBSCRIPTION_COLUMNS}`,
-      [input.agentId, input.agentSlug, input.channelType, input.conversationId, channelKey, input.pluginId],
-    );
-    if (inserted.rows[0]) return mapSubscription(inserted.rows[0]);
-    const existing = await this.pool.query<SubscriptionRow>(
-      `SELECT ${SUBSCRIPTION_COLUMNS} FROM conversation_message_subscriptions
-        WHERE channel_type = $1 AND conversation_id = $2 AND channel_key = $3 AND ended_at IS NULL
-          AND process_id IS NULL`,
-      [input.channelType, input.conversationId, channelKey],
-    );
-    const row = existing.rows[0];
-    if (!row) throw new Error('conversation message subscription vanished between insert and read');
-    return mapSubscription(row);
   }
 
   async createProcessSubscription(
@@ -416,9 +393,10 @@ export class PgConversationMessageStore implements ConversationMessageStore {
       );
       subscriptions = removed.rowCount ?? 0;
     }
-    // #2089 — the maximum age does not apply to a process subscription that
-    // is still active: its process's scopes bound it, and nothing of a
-    // running process is deleted early.
+    // #2089 — the maximum age does not apply to a subscription that is still
+    // active: its process's scopes bound it, and nothing of a running process
+    // is deleted early. (A row without a process is the form migration 0080
+    // ended; its events go by age like those of any ended subscription.)
     if (cutoffs.receivedBefore) {
       await drain(
         `e.received_at < $1 AND NOT EXISTS (

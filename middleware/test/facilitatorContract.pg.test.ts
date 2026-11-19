@@ -5,15 +5,18 @@
  *
  * End to end through the real kernel modules on Postgres, with a simulated
  * channel, a fixture engine plugin and a scripted model at the provider seam
- * (`_helpers/facilitatorKernelHarness.ts`). The engine plugin's own suite
- * runs the mirror image against a fake kernel; this one is what that fake
- * has to be true to. What is refused is in `facilitatorContractGuards.pg.test.ts`.
+ * (`_helpers/facilitatorKernelHarness.ts`). The engine works as a plugin
+ * does since #2067: a facilitation is a process with an execution scope, and
+ * it reads (`conversationMessages@2`), runs turns (`agentTurn@2`) and posts
+ * (`conversationSend@2`) as that process. The engine plugin's own suite runs
+ * the mirror image against a fake kernel; this one is what that fake has to
+ * be true to. What is refused is in `facilitatorContractGuards.pg.test.ts`.
  */
 
 import { strict as assert } from 'node:assert';
 import { it } from 'node:test';
 
-import type { ConversationMessageRecord } from '@omadia/plugin-api';
+import type { ProcessConversationMessageRecord } from '@omadia/plugin-api';
 
 import {
   ANNA,
@@ -67,32 +70,45 @@ await contractSuite('native facilitators: kernel contract (pg)', 'facilitatorCon
       },
     });
 
-    // 3. Subscribed (by the tool). The channel's mention gate is lifted.
-    assert.equal(c.k.channel.core.isAllMessagesSubscribed!(CHANNEL_TYPE, CHAT, maraKey), true);
-    assert.equal(c.k.channel.core.isAllMessagesSubscribed!(CHANNEL_TYPE, CHAT, '28:someone-else'), false);
+    // 3. The tool started a process: an execution scope with the chat as its
+    //    home, which reserves the chat, and a subscription of that process.
+    //    The channel's mention gate is lifted.
+    const process = c.k.engine.started[0]!;
+    assert.ok(process, 'the tool started a process');
+    const reserved = await c.pool.query<{ role: string; conversation_id: string }>(
+      'SELECT role, conversation_id FROM conversation_reservations WHERE process_id = $1 AND released_at IS NULL',
+      [process.processId],
+    );
+    assert.deepEqual(reserved.rows, [{ role: 'home', conversation_id: CHAT }]);
+    assert.equal(await c.k.engine.messages.modeOf(process.scope), 'all');
+    assert.equal(c.readsAll(maraKey), true);
+    assert.equal(c.readsAll('28:someone-else'), false);
 
-    // 4. A message that mentions nobody is stored and delivered live.
-    const live: ConversationMessageRecord[] = [];
+    // 4. A message that mentions nobody is stored and delivered live, as the
+    //    process's.
+    const live: ProcessConversationMessageRecord[] = [];
     c.k.engine.messages.onMessage('mara', (r) => void live.push(r));
     c.k.channel.core.emitConversationMessage!(c.event({}, maraKey));
-    await c.flush();
-    assert.equal(live.length, 1);
+    await c.until('the message is delivered live', () => live.length === 1);
     const vote = live[0]!;
+    assert.equal(vote.processId, process.processId);
     assert.deepEqual(vote.author, {
       kind: 'teams-aad',
       id: ANNA,
       displayName: 'Anna Köhler',
       principalId: `user:${ANNA}`,
     });
-    assert.deepEqual(await c.k.engine.messages.getEvent(c.scope('mara'), 'm1'), vote);
+    assert.deepEqual(await c.k.engine.messages.getEvent(process.scope, 'm1'), vote);
+    assert.deepEqual(await c.k.engine.messages.getEventById(process.scope, vote.eventId), vote);
 
-    // 5. No kernel turn while subscribed, not even for a mention.
+    // 5. No kernel turn while the process reads everything, not even for a mention.
     const modelCalls = c.k.model.requests.length;
     const suppressed = await bundle.chat(c.groupMention('@mara what is the status?'));
     assert.equal(suppressed.text, '');
     assert.equal(c.k.model.requests.length, modelCalls, 'the model was not called');
 
-    // 6. The engine drives the turn: agentTurn with the stored event.
+    // 6. The engine drives the turn: an authorized action under the scope,
+    //    with the stored event and a reservation of model calls.
     c.k.model.script({ tool: 'record_contribution', input: { ranking: ['A', 'C', 'B'] } }, { text: 'Recorded for you: A > C > B.' });
     const turn = await c.k.engine.agentTurn.runTurn({
       agentSlug: 'mara',
@@ -102,11 +118,22 @@ await contractSuite('native facilitators: kernel contract (pg)', 'facilitatorCon
       inboundEventId: vote.eventId,
       input: 'Anna wrote: A > C > B',
       engineContext: 'ENGINE STATE: step prioritise; open contributions: 1.',
+      scopeId: process.scopeId,
+      processId: process.processId,
+      phase: 'active',
+      purpose: 'moderation',
+      emission: 'prose',
+      budget: { modelCalls: 4 },
     });
-    assert.equal(turn.outcome, 'completed');
+    assert.equal(turn.outcome, 'completed', JSON.stringify(turn));
     // The turn runs in the agent's normal envelope, so the text carries what
-    // every answer of this agent carries (here: the AI disclosure line).
+    // every answer of this agent carries.
     assert.ok(turn.outcome === 'completed' && turn.text.startsWith('Recorded for you: A > C > B.'));
+    // Two model calls were made (the tool call, the answer); the other two of
+    // the reservation went back to the scope.
+    assert.deepEqual(turn.outcome === 'completed' && turn.modelCalls, { reserved: 4, used: 2 });
+    const afterTurn = (await c.k.engine.execution.listScopes(process.processId)).find((s) => s.id === process.scopeId)!;
+    assert.deepEqual(afterTurn.used, { actions: 1, modelCalls: 2 });
     const engineRequest = c.k.model.requests[modelCalls]!;
     const engineSystem = systemText(engineRequest);
     assert.ok(engineSystem.includes(NEUTRALITY));
@@ -128,19 +155,26 @@ await contractSuite('native facilitators: kernel contract (pg)', 'facilitatorCon
     });
     assert.deepEqual(c.k.channel.sent, [], 'the turn posted nothing; the engine sends');
 
-    // 7. Send as own identity: mention + poll, ids returned.
+    // 7. Send as own identity, drawn from the scope: mention + poll, ids returned.
     const posted = await c.k.engine.conversationSend.sendToConversation({
       agentSlug: 'mara',
       channelType: CHANNEL_TYPE,
       conversationId: CHAT,
-      asOwnIdentity: true,
       message: {
         text: '@Ben one contribution is still open. Which date?',
         mentions: [{ user: `user:${BEN}`, text: '@Ben' }],
         poll: { pollId: 'poll-1', question: 'Which date?', options: [{ id: 'a', label: '12 May' }, { id: 'b', label: '19 May' }] },
       },
+      authorization: process.authorization,
     });
-    assert.deepEqual(posted, { outcome: 'delivered', messageId: 'sent-1', cardMessageId: 'card-of-sent-1' });
+    assert.equal(posted.outcome, 'delivered', JSON.stringify(posted));
+    assert.ok(posted.authorizationId, 'the post names the authorization it was drawn from');
+    assert.deepEqual(posted, {
+      outcome: 'delivered',
+      authorizationId: posted.authorizationId,
+      messageId: 'sent-1',
+      cardMessageId: 'card-of-sent-1',
+    });
     assert.equal(c.sent()[0]!.asChannelKey, maraKey);
     assert.deepEqual(c.sent()[0]!.message.mentions, [
       { user: { kind: 'teams-aad', id: BEN, displayName: 'Ben' }, text: '@Ben' },
@@ -159,8 +193,9 @@ await contractSuite('native facilitators: kernel contract (pg)', 'facilitatorCon
         maraKey,
       ),
     );
-    await c.flush();
+    await c.until('the poll answer is delivered live', () => live.length === 2);
     assert.deepEqual(live[1]!.cardAnswer, { cardId: 'poll-1', value: { optionId: 'b' }, answererVerified: true });
+    assert.equal(live[1]!.processId, process.processId);
 
     // 8. Direct messages: first contact with the channel reference; provider
     //    outcomes are passed through as they are.
@@ -186,93 +221,156 @@ await contractSuite('native facilitators: kernel contract (pg)', 'facilitatorCon
     // 9. Edits get kernel revisions, whatever the adapter counts.
     c.k.channel.core.emitConversationMessage!(c.event({ kind: 'edited', revision: 1, text: 'A > B > C' }, maraKey));
     c.k.channel.core.emitConversationMessage!(c.event({ kind: 'edited', revision: 1, text: 'B > A > C' }, maraKey));
-    await c.flush();
+    await c.until('both edits are delivered live', () => live.length === 4);
     assert.deepEqual(live.slice(2).map((r) => r.revision), [1, 2]);
     const cursor = live[live.length - 1]!.eventId;
 
-    // 10. Restart: a new kernel over the same database.
+    // 10. Restart: a new kernel over the same database. The process, its
+    //     scope and its subscription are rows, so the engine carries on.
     await c.k.stop();
     c.k = await bootFacilitatorKernel({ pool: c.pool, graceMs: 0 });
-    assert.equal(c.k.channel.core.isAllMessagesSubscribed!(CHANNEL_TYPE, CHAT, maraKey), true, 'the subscription survived');
+    assert.equal(c.readsAll(maraKey), true, 'the subscription survived');
     c.k.channel.core.emitConversationMessage!(c.event({ kind: 'edited', revision: 1, text: 'C > A > B' }, maraKey));
     c.k.channel.core.emitConversationMessage!(c.event({ messageId: 'm2', author: { kind: 'teams-aad', id: BEN }, text: 'B > A > C' }, maraKey));
-    await c.flush();
-    const replay = await c.k.engine.messages.listSince(c.scope('mara'), { after: cursor });
+    await c.until('both events are stored', async () => (await c.k.engine.messages.listSince(process.scope)).events.length === 6);
+    const replay = await c.k.engine.messages.listSince(process.scope, { after: cursor });
     assert.deepEqual(
-      replay.events.map((e) => [e.messageId, e.kind, e.revision]),
+      replay.events.map((e) => [e.messageId, e.kind, e.revision, e.processId]),
       [
-        ['m1', 'edited', 3],
-        ['m2', 'created', 0],
+        ['m1', 'edited', 3, process.processId],
+        ['m2', 'created', 0, process.processId],
       ],
     );
     assert.equal(replay.nextCursor, undefined);
-    const whole = await c.k.engine.messages.listSince(c.scope('mara'));
+    const whole = await c.k.engine.messages.listSince(process.scope);
     assert.equal(whole.events.length, 6, 'vote, poll answer, three edits, second vote');
 
-    // 11. Unsubscribe → the gate applies again, sending is over, events are
-    //     purged after the grace period (0 here).
-    await c.k.engine.messages.unsubscribe(c.scope('mara'));
-    assert.equal(c.k.channel.core.isAllMessagesSubscribed!(CHANNEL_TYPE, CHAT, maraKey), false);
+    // 11. The process ends its scope → the kernel ends the subscription with
+    //     it: the gate applies again, sending is over, events are purged
+    //     after the grace period (0 here).
+    c.k.messagesWiring.enableReconcile();
+    await c.k.engine.execution.endScope(process.scopeId, 'facilitation closed');
+    await c.until('the subscription ends with the last open scope', () => !c.readsAll(maraKey));
+    assert.equal(await c.k.engine.messages.modeOf(process.scope), undefined);
     const late = await c.k.engine.conversationSend.sendToConversation({
       agentSlug: 'mara',
       channelType: CHANNEL_TYPE,
       conversationId: CHAT,
-      asOwnIdentity: true,
       message: { text: 'too late' },
+      authorization: process.authorization,
     });
-    assert.equal(late.outcome === 'unreachable' && late.code, 'not_permitted');
+    assert.deepEqual(
+      [late.outcome, late.outcome === 'unreachable' && late.code, late.outcome === 'unreachable' && late.executionCode],
+      ['unreachable', 'not_authorized', 'scope_ended'],
+    );
+    assert.equal(c.sent().some((s) => s.message.text === 'too late'), false);
     await c.flush();
     await c.k.messagesWiring.purge.tick();
     const left = await c.pool.query('SELECT 1 FROM conversation_message_events');
     assert.equal(left.rows.length, 0);
-    assert.deepEqual((await c.k.engine.messages.listSince(c.scope('mara'))).events, []);
+    assert.deepEqual((await c.k.engine.messages.listSince(process.scope)).events, []);
   });
 
-  it('two facilitators in one conversation each keep their own record', async () => {
+  it('two facilitators in one conversation: one process holds it at a time, each keeps its own record', async () => {
     const maraKey = await c.facilitator('mara', 'aaaa-mara');
     const noraKey = await c.facilitator('nora', 'bbbb-nora');
-    assert.deepEqual(await c.k.engine.messages.subscribe(c.scope('mara')), { outcome: 'subscribed' });
-    assert.deepEqual(await c.k.engine.messages.subscribe(c.scope('nora')), { outcome: 'subscribed' });
-    // Teams delivers one human message once per bot.
+    const mara = await c.moderate('mara');
+
+    // The chat is reserved for mara's process. Nora's cannot start there, and
+    // without a scope it reads nothing.
+    const home = { channelType: CHANNEL_TYPE, conversationId: CHAT };
+    const busy = await c.k.engine.execution.openScope({
+      agentSlug: 'nora',
+      processId: 'nora-too-early',
+      kind: 'configuring',
+      budget: { actions: 5, modelCalls: 5 },
+      home,
+    });
+    assert.equal(busy.outcome === 'refused' && busy.code, 'conversation_busy');
+    const early = await c.k.engine.messages.subscribe({ ...c.scope('nora'), processId: 'nora-too-early' }, { mode: 'all' });
+    assert.equal(early.outcome === 'refused' && early.code, 'no_scope');
+
+    // Teams delivers one human message once per bot; only the copy of the
+    // identity whose process reads the chat is stored.
     const shared = c.event({ messageId: 'shared' }, maraKey);
     c.k.channel.core.emitConversationMessage!(shared);
     c.k.channel.core.emitConversationMessage!({ ...shared, receivedByChannelKey: noraKey });
     c.k.channel.core.emitConversationMessage!({ ...shared, receivedByChannelKey: '28:a-third-bot' });
     await c.flush();
-    const mara = await c.k.engine.messages.listSince(c.scope('mara'));
-    const nora = await c.k.engine.messages.listSince(c.scope('nora'));
-    assert.deepEqual(mara.events.map((e) => [e.messageId, e.receivedByChannelKey]), [['shared', maraKey]]);
-    assert.deepEqual(nora.events.map((e) => [e.messageId, e.receivedByChannelKey]), [['shared', noraKey]]);
-    assert.notEqual(mara.events[0]!.eventId, nora.events[0]!.eventId);
-    assert.equal((await c.pool.query('SELECT 1 FROM conversation_message_events')).rows.length, 2);
-    // Each posts as itself.
-    for (const slug of ['mara', 'nora']) {
-      await c.k.engine.conversationSend.sendToConversation({
-        agentSlug: slug,
+    assert.deepEqual(
+      (await c.k.engine.messages.listSince(mara.scope)).events.map((e) => [e.messageId, e.receivedByChannelKey]),
+      [['shared', maraKey]],
+    );
+    assert.equal((await c.pool.query('SELECT 1 FROM conversation_message_events')).rows.length, 1);
+
+    // Mara's process releases the chat: it keeps its record and from now on
+    // gets addressed messages only. Nora's process can take the chat.
+    c.k.messagesWiring.enableReconcile();
+    await c.k.engine.execution.releaseConversation({ processId: mara.processId, ...home, reason: 'session over' });
+    await c.until('reading follows the released reservation', () => !c.readsAll(maraKey));
+    assert.equal(await c.k.engine.messages.modeOf(mara.scope), 'addressed');
+    const nora = await c.moderate('nora');
+    const second = c.event({ messageId: 'second' }, maraKey);
+    c.k.channel.core.emitConversationMessage!(second);
+    c.k.channel.core.emitConversationMessage!({ ...second, receivedByChannelKey: noraKey });
+    await c.flush();
+    const maraEvents = (await c.k.engine.messages.listSince(mara.scope)).events;
+    const noraEvents = (await c.k.engine.messages.listSince(nora.scope)).events;
+    assert.deepEqual(maraEvents.map((e) => [e.messageId, e.receivedByChannelKey, e.processId]), [['shared', maraKey, mara.processId]]);
+    assert.deepEqual(noraEvents.map((e) => [e.messageId, e.receivedByChannelKey, e.processId]), [['second', noraKey, nora.processId]]);
+    assert.notEqual(maraEvents[0]!.eventId, noraEvents[0]!.eventId);
+    // Neither reads the other's record, also not with the other's process id.
+    assert.deepEqual((await c.k.engine.messages.listSince({ ...mara.scope, agentSlug: 'nora' })).events, []);
+    assert.equal(await c.k.engine.messages.getEvent(nora.scope, 'shared'), undefined);
+
+    // Each posts as itself. Mara's scope still lists the chat, so its process
+    // may still post there after the release (the closing words).
+    for (const process of [mara, nora]) {
+      const post = await c.k.engine.conversationSend.sendToConversation({
+        agentSlug: process.scope.agentSlug,
         channelType: CHANNEL_TYPE,
         conversationId: CHAT,
-        asOwnIdentity: true,
-        message: { text: `hello from ${slug}` },
+        message: { text: `hello from ${process.scope.agentSlug}` },
+        authorization: process.authorization,
       });
+      assert.equal(post.outcome, 'delivered', JSON.stringify(post));
     }
     assert.deepEqual(c.sent().map((s) => s.asChannelKey), [maraKey, noraKey]);
+    // A scope of one agent is not a permission for the other.
+    const crossed = await c.k.engine.conversationSend.sendToConversation({
+      agentSlug: 'nora',
+      channelType: CHANNEL_TYPE,
+      conversationId: CHAT,
+      message: { text: 'as nora, under the scope of mara' },
+      authorization: mara.authorization,
+    });
+    assert.deepEqual(
+      [crossed.outcome === 'unreachable' && crossed.code, crossed.outcome === 'unreachable' && crossed.executionCode],
+      ['not_authorized', 'unknown_scope'],
+    );
+
     // One ending does not end the other.
-    await c.k.engine.messages.unsubscribe(c.scope('mara'));
-    assert.equal(c.k.channel.core.isAllMessagesSubscribed!(CHANNEL_TYPE, CHAT, noraKey), true);
+    await c.k.engine.execution.endScope(mara.scopeId, 'facilitation closed');
+    await c.until('the subscription of the ended process ends', async () => (await c.k.engine.messages.modeOf(mara.scope)) === undefined);
+    assert.equal(c.readsAll(noraKey), true);
+    assert.equal(await c.k.engine.messages.modeOf(nora.scope), 'all');
   });
 
   it('without an identity of its own a facilitator is refused everywhere, never the default bot', async () => {
     const created = await c.k.api('POST', '/agents', { slug: 'ida', name: 'ida', archetype: 'facilitator' });
     assert.equal(created.status, 201);
     c.k.channel.botAdded(CHAT);
-    const subscribe = await c.k.engine.messages.subscribe(c.scope('ida'));
+    // The scope is the engine's permission to act for the agent; the identity
+    // is asked where something would be read or sent.
+    const process = await c.k.engine.openProcess('ida', CHAT);
+    const subscribe = await c.k.engine.messages.subscribe(process.scope, { mode: 'all' });
     assert.equal(subscribe.outcome === 'refused' && subscribe.code, 'no_identity');
     const post = await c.k.engine.conversationSend.sendToConversation({
       agentSlug: 'ida',
       channelType: CHANNEL_TYPE,
       conversationId: CHAT,
-      asOwnIdentity: true,
       message: { text: 'hello' },
+      authorization: process.authorization,
     });
     assert.equal(post.outcome === 'unreachable' && post.code, 'no_identity');
     const dm = await c.k.engine.targetedSend.sendToPrincipal({
@@ -290,7 +388,8 @@ await contractSuite('native facilitators: kernel contract (pg)', 'facilitatorCon
   it('subscribe needs presence and readiness; both are reported with their reason', async () => {
     await c.k.api('POST', '/agents', { slug: 'mara', name: 'mara', archetype: 'facilitator' });
     await c.k.provisionIdentity('mara', 'aaaa-mara');
-    const absent = await c.k.engine.messages.subscribe(c.scope('mara'));
+    const process = await c.k.engine.openProcess('mara', CHAT);
+    const absent = await c.k.engine.messages.subscribe(process.scope, { mode: 'all' });
     assert.equal(absent.outcome === 'refused' && absent.code, 'not_present');
     c.k.channel.botAdded(CHAT);
     c.k.channel.readiness = {
@@ -300,12 +399,22 @@ await contractSuite('native facilitators: kernel contract (pg)', 'facilitatorCon
       canPost: true,
       missing: [{ code: 'consent_missing', message: 'ChatMessage.Read.Chat is not granted in this chat' }],
     };
-    const notReady = await c.k.engine.messages.subscribe(c.scope('mara'));
+    const notReady = await c.k.engine.messages.subscribe(process.scope, { mode: 'all' });
     assert.equal(notReady.outcome === 'refused' && notReady.code, 'not_ready');
     assert.match(notReady.outcome === 'refused' ? notReady.message : '', /consent_missing: ChatMessage\.Read\.Chat/);
     assert.deepEqual(await c.k.engine.readiness.check(c.scope('mara')), c.k.channel.readiness);
+    // The same report through the scoped check, as an authorized action.
+    const checked = await c.k.engine.conversationSend.checkReadiness({
+      ...c.scope('mara'),
+      authorization: { scopeId: process.scopeId, processId: process.processId, phase: 'active' },
+    });
+    assert.deepEqual(checked.outcome === 'checked' && checked.report, c.k.channel.readiness);
+    assert.equal(await c.k.engine.messages.modeOf(process.scope), undefined, 'a refused subscribe left nothing behind');
     c.k.channel.readiness = undefined;
-    assert.deepEqual(await c.k.engine.messages.subscribe(c.scope('mara')), { outcome: 'subscribed' });
+    assert.deepEqual(await c.k.engine.messages.subscribe(process.scope, { mode: 'all' }), {
+      outcome: 'subscribed',
+      mode: 'all',
+    });
   });
 
   it('meeting lifecycle events reach the engine only for a moderated conversation', async () => {
@@ -325,7 +434,7 @@ await contractSuite('native facilitators: kernel contract (pg)', 'facilitatorCon
     emit('session_started', '2026-11-18T10:00:00Z');
     await c.flush();
     assert.deepEqual(seen, []);
-    await c.k.engine.messages.subscribe(c.scope('mara'));
+    await c.moderate('mara');
     emit('session_started', '2026-11-18T10:05:00Z');
     emit('session_started', '2026-11-18T10:05:00Z'); // the second bot's copy
     emit('participant_joined', '2026-11-18T10:06:00Z');

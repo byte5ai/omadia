@@ -30,7 +30,7 @@ import {
   ENGINE,
   hubFixture,
   MARA_KEY,
-  scopeOf,
+  readAll,
 } from './_helpers/conversationMessagesFixture.js';
 
 const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
@@ -173,7 +173,7 @@ describe('channel readiness', () => {
       canPost: true,
       missing: [{ code: 'graph_forbidden', message: 'the instance app may not read installations' }],
     };
-    const refused = await s.messages.hub.subscribe(scopeOf('mara'), ENGINE);
+    const refused = await readAll(s.messages, 'mara');
     assert.equal(refused.outcome === 'refused' && refused.code, 'not_ready');
     assert.match(refused.outcome === 'refused' ? refused.message : '', /graph_forbidden: the instance app may not read installations/);
   });
@@ -260,7 +260,7 @@ describe('session capabilities', () => {
     s.hub.emitSnapshot(online);
     await flush();
     assert.deepEqual(got, [], 'nobody is subscribed yet');
-    await s.messages.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(s.messages, 'mara');
     s.hub.emitSnapshot(online);
     s.hub.emitSnapshot({ ...online, conversationId: '19:other@thread.v2' });
     await flush();
@@ -291,7 +291,7 @@ describe('session events (meeting lifecycle)', () => {
     await flush();
     assert.deepEqual(got, [], 'dropped: no subscription');
 
-    await s.messages.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(s.messages, 'mara');
     const joined = event({
       kind: 'participant_joined',
       occurredAt: '2026-11-18T10:01:00Z',
@@ -338,7 +338,7 @@ describe('session events (meeting lifecycle)', () => {
 
   it('drops malformed events and survives a failing handler', async () => {
     const s = await setup();
-    await s.messages.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(s.messages, 'mara');
     const got: SessionEventRecord[] = [];
     s.hub.onSessionEvent('mara', ENGINE, () => {
       throw new Error('engine hiccup');
@@ -368,7 +368,7 @@ describe('session events (meeting lifecycle)', () => {
 describe('plugin-facing services', () => {
   it('answer the facilitation engine only', async () => {
     const s = await setup();
-    await s.messages.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(s.messages, 'mara');
     s.readiness.register('c', { channelType: 'teams', check: () => Promise.resolve(READY) });
     const engine = { callerPluginId: ENGINE, isEngine: () => true, isBoundFacilitator: (slug: string) => slug === 'mara' };
     const other = { callerPluginId: '@acme/crm', isEngine: () => false, isBoundFacilitator: () => true };
@@ -398,7 +398,7 @@ describe('plugin-facing services', () => {
 
   it('are scoped to a facilitator bound to the calling engine, and decided at delivery', async () => {
     const s = await setup();
-    await s.messages.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(s.messages, 'mara');
     const asked: string[] = [];
     s.readiness.register('c', {
       channelType: 'teams',

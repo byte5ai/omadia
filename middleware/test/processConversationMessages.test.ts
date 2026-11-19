@@ -67,7 +67,7 @@ describe('#2089 subscribing a process', () => {
     assert.deepEqual(await h.service.subscribe(h.scope('f3'), { mode: 'all' }), { outcome: 'subscribed', mode: 'all' });
   });
 
-  it('applies the checks of the first major: archetype, own identity, and readiness for every message only', async () => {
+  it('checks the archetype and the own identity, and readiness for every message only', async () => {
     const h = setup();
     h.grant('f1', {});
     const hr = await h.service.subscribe({ ...h.scope('f1'), agentSlug: 'hr' }, { mode: 'all' });
@@ -76,6 +76,27 @@ describe('#2089 subscribing a process', () => {
     const all = await h.service.subscribe(h.scope('f1'), { mode: 'all' });
     assert.equal(all.outcome === 'refused' && all.code, 'not_ready');
     assert.equal((await h.service.subscribe(h.scope('f1'), { mode: 'addressed' })).outcome, 'subscribed', 'addressed messages need no permission for all');
+  });
+
+  it('turning an existing subscription up to every message needs the same readiness as a new one', async () => {
+    const h = setup();
+    h.grant('f1', {});
+    h.setReady(false);
+    assert.equal((await h.service.subscribe(h.scope('f1'), { mode: 'addressed' })).outcome, 'subscribed');
+    // Without the check the process would "read everything" where the channel
+    // cannot deliver it, and the agent's own turns there would be suppressed.
+    const up = await h.service.subscribe(h.scope('f1'), { mode: 'all' });
+    assert.equal(up.outcome === 'refused' && up.code, 'not_ready');
+    assert.equal(await h.service.modeOf(h.scope('f1')), 'addressed', 'the subscription keeps what it had');
+    assert.equal(h.hub.readsEverything({ agentSlug: 'mara', channelType: 'teams', conversationId: h.scope('f1').conversationId }), false);
+
+    h.setReady(true);
+    assert.equal((await h.service.subscribe(h.scope('f1'), { mode: 'all' })).outcome, 'subscribed');
+    assert.equal(await h.service.modeOf(h.scope('f1')), 'all');
+    // Turning it down, and asking for what it already has, needs no readiness.
+    h.setReady(false);
+    assert.equal((await h.service.subscribe(h.scope('f1'), { mode: 'all' })).outcome, 'subscribed');
+    assert.equal((await h.service.subscribe(h.scope('f1'), { mode: 'addressed' })).outcome, 'subscribed');
   });
 
   it('the channel is told what the identity gets: all, addressed or nothing', async () => {
@@ -113,19 +134,6 @@ describe('#2089 subscribing a process', () => {
     assert.equal(lookup.isEngineDriven('nora', 'teams', CONVERSATION), false);
   });
 
-  it('an identity reads a conversation through processes or without one, never both', async () => {
-    const h = setup();
-    h.grant('f1', {});
-    await h.service.subscribe(h.scope('f1'), { mode: 'all' });
-    const v1 = await h.hub.subscribe({ agentSlug: 'mara', channelType: 'teams', conversationId: CONVERSATION }, ENGINE);
-    assert.equal(v1.outcome === 'refused' && v1.code, 'unavailable');
-
-    const other = setup();
-    assert.equal((await other.hub.subscribe({ agentSlug: 'mara', channelType: 'teams', conversationId: CONVERSATION }, ENGINE)).outcome, 'subscribed');
-    other.grant('f1', {});
-    const v2 = await other.service.subscribe(other.scope('f1'), { mode: 'all' });
-    assert.equal(v2.outcome === 'refused' && v2.code, 'unavailable');
-  });
 });
 
 describe('#2089 no reading across processes (criterion 53)', () => {
@@ -221,12 +229,6 @@ describe('#2089 no reading across processes (criterion 53)', () => {
     await h.hub.ingest(messageEvent({ messageId: 'm2' }));
     await new Promise((r) => setImmediate(r));
     assert.deepEqual(seen, []);
-    // And the first major's handlers get nothing of a process subscription.
-    const v1: unknown[] = [];
-    h.hub.onMessage('mara', ENGINE, (r) => void v1.push(r));
-    await h.hub.ingest(messageEvent({ messageId: 'm3' }));
-    await new Promise((r) => setImmediate(r));
-    assert.deepEqual(v1, []);
   });
 
   it('keeps the order of a message and its edit', async () => {

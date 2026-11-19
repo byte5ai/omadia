@@ -21,7 +21,8 @@ import {
   hubFixture,
   MARA_KEY,
   messageEvent,
-  scopeOf,
+  processOf,
+  readAll,
 } from './_helpers/conversationMessagesFixture.js';
 
 const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
@@ -29,7 +30,7 @@ const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
 describe('CoreApi scoped to one channel plugin', () => {
   async function setup() {
     const messages = hubFixture(new InMemoryConversationMessageStore());
-    await messages.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(messages, 'mara');
     const events = new ConversationEventHub();
     const membership: { channelId: string; channelType?: string; kind: string }[] = [];
     events.subscribe((e) => void membership.push({ channelId: e.channelId, kind: e.kind, ...(e.channelType ? { channelType: e.channelType } : {}) }));
@@ -76,7 +77,7 @@ describe('CoreApi scoped to one channel plugin', () => {
     // A Slack channel plugin forging a Teams vote from Anna.
     s.rogue.emitConversationMessage!(messageEvent({ channelId: '@omadia/channel-teams', messageId: 'forged' }));
     await flush();
-    assert.deepEqual((await s.messages.hub.listSince(scopeOf('mara'), ENGINE)).events, []);
+    assert.deepEqual((await s.messages.hub.listProcessEventsSince(processOf('mara'), ENGINE)).events, []);
     assert.match(
       s.logs[0]!,
       /@acme\/channel-slack tried to emit a message event for channel type 'teams', which belongs to @omadia\/channel-teams/,
@@ -85,7 +86,7 @@ describe('CoreApi scoped to one channel plugin', () => {
     s.teams.emitConversationMessage!(messageEvent({ channelId: 'whatever-it-claims', messageId: 'real' }));
     await flush();
     assert.deepEqual(
-      (await s.messages.hub.listSince(scopeOf('mara'), ENGINE)).events.map((e) => e.messageId),
+      (await s.messages.hub.listProcessEventsSince(processOf('mara'), ENGINE)).events.map((e) => e.messageId),
       ['real'],
     );
   });

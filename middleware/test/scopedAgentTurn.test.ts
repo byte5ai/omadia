@@ -1,8 +1,8 @@
 /**
  * #2090 — `agentTurn@2`: a model turn as an authorized action.
  *
- * The turn itself is the first major's (same guards, same agent bundle). What
- * is tested here is the envelope: the kernel draws the authorization from the
+ * The turn itself (its guards, the agent bundle) is in
+ * `agentTurnService.test.ts`. What is tested here is the envelope: the kernel draws the authorization from the
  * named scope BEFORE any model is called, refuses the turn when it gets none,
  * counts the model calls the turn made (helper and guard calls included) and
  * settles them, whatever the turn's outcome.

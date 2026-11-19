@@ -1,8 +1,9 @@
 /**
- * 'conversationMessages@1' (#2043) — the life of a subscription outside the
- * engine's own subscribe/unsubscribe: the kernel ending it, other machines,
- * the per-plugin service, CoreApi and retention. Storing and reading are in
- * `conversationMessagesHub.test.ts`.
+ * 'conversationMessages@2' (#2043, #2089) — the life of a subscription
+ * outside the plugin's own subscribe: the kernel ending it, other machines,
+ * CoreApi and retention. Storing and reading are in
+ * `conversationMessagesHub.test.ts`; what a process's scopes and reservation
+ * do to it is in `processConversationMessages.test.ts`.
  */
 
 import { strict as assert } from 'node:assert';
@@ -11,7 +12,6 @@ import { describe, it } from 'node:test';
 
 import { createCoreApi } from '../src/channels/coreApi.js';
 import { startConversationMessagePurge } from '../src/channels/conversationMessages/purgeJob.js';
-import { createConversationMessagesService } from '../src/channels/conversationMessages/service.js';
 import {
   InMemoryConversationMessageStore,
 } from '../src/channels/conversationMessages/store.js';
@@ -26,28 +26,32 @@ import {
   MARA_KEY,
   messageEvent,
   NORA_KEY,
-  scopeOf,
+  processOf,
+  readAll,
 } from './_helpers/conversationMessagesFixture.js';
 
 const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
+const MARA = processOf('mara');
+const INACTIVE = 'the plugin that subscribed is inactive';
 
 describe('conversationMessages: the kernel ends a subscription whose ground is gone', () => {
-  it('engine removed with live subscriptions: the gate closes, nothing more is stored, the other agent is untouched', async () => {
+  it('ground lost with live subscriptions: the gate closes, nothing more is stored, the other agent is untouched', async () => {
     const store = new InMemoryConversationMessageStore();
     const f = hubFixture(store);
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
-    await f.hub.subscribe(scopeOf('nora', '19:other@thread.v2'), ENGINE);
+    await readAll(f, 'mara');
+    await readAll(f, 'nora', '19:other@thread.v2');
     await f.hub.ingest(messageEvent());
     assert.deepEqual(await f.hub.reconcile(), [], 'nothing lost its ground yet');
 
-    f.lostGround.set('mara', "plugin '@omadia/agent-facilitator' is no longer the facilitation engine of this instance");
+    f.lostGround.set('mara', INACTIVE);
     const ended = await f.hub.reconcile();
-    assert.deepEqual(ended.map((e) => [e.subscription.agentSlug, e.reason]), [
-      ['mara', "plugin '@omadia/agent-facilitator' is no longer the facilitation engine of this instance"],
+    assert.deepEqual(ended.map((e) => [e.subscription.agentSlug, e.subscription.processId, e.reason]), [
+      ['mara', MARA.processId, INACTIVE],
     ]);
     // The mention gate applies again, so the agent is no longer silenced…
     assert.equal(f.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), false);
-    assert.equal(f.hub.subscriptionFor(scopeOf('mara')), undefined);
+    assert.equal(f.hub.modeOfProcess(MARA, ENGINE), undefined);
+    assert.deepEqual((await f.hub.listProcessEventsSince(MARA, ENGINE)).events, [], 'reads end with it');
     // …and nothing more is stored.
     assert.equal(await f.hub.ingest(messageEvent({ messageId: 'after' })), undefined);
     assert.deepEqual(await store.listActiveSubscriptions().then((l) => l.map((x) => x.agentSlug)), ['nora']);
@@ -58,7 +62,7 @@ describe('conversationMessages: the kernel ends a subscription whose ground is g
 
   it('a ground check that throws ends nothing', async () => {
     const f = hubFixture(new InMemoryConversationMessageStore());
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(f, 'mara');
     f.lostGround.get = () => {
       throw new Error('config store unreachable');
     };
@@ -69,7 +73,7 @@ describe('conversationMessages: the kernel ends a subscription whose ground is g
   it('a subscription row that vanished (agent deleted) closes the gate on the next event instead of failing forever', async () => {
     const store = new InMemoryConversationMessageStore();
     const f = hubFixture(store);
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(f, 'mara');
     // The cascade removed the row on another connection; this cache still has it.
     store.insertEvent = () => Promise.reject(Object.assign(new Error('violates foreign key constraint'), { code: '23503' }));
     assert.equal(await f.hub.ingest(messageEvent()), undefined);
@@ -91,80 +95,33 @@ describe('conversationMessages: the kernel ends a subscription whose ground is g
       return snapshot;
     };
     const refreshing = f.hub.refresh();
-    const subscribing = f.hub.subscribe(scopeOf('mara'), ENGINE);
+    const subscribing = readAll(f, 'mara');
     release();
     await Promise.all([refreshing, subscribing]);
     assert.equal(f.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), true, 'the stale snapshot did not win');
 
     store.listActiveSubscriptions = list;
-    await Promise.all([f.hub.unsubscribe(scopeOf('mara'), ENGINE), f.hub.refresh()]);
+    await Promise.all([f.hub.endAllOf('mara', 'agent disabled'), f.hub.refresh()]);
     assert.equal(f.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), false, 'not resurrected');
   });
 
-  it('a subscribe on another machine is picked up by refresh', async () => {
+  it('a subscribe on another machine is picked up by refresh, and so are a changed mode and its end', async () => {
     const store = new InMemoryConversationMessageStore();
     const here = hubFixture(store);
     const there = hubFixture(store);
-    await there.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(there, 'mara');
     assert.equal(here.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), false);
     await here.hub.refresh();
     assert.equal(here.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), true);
-    await there.hub.unsubscribe(scopeOf('mara'), ENGINE);
+    // The process there reads the stored events here, without subscribing again.
+    await there.hub.ingest(messageEvent());
+    assert.equal((await here.hub.listProcessEventsSince(MARA, ENGINE)).events.length, 1);
+    await there.hub.subscribeProcess(MARA, 'addressed', ENGINE);
     await here.hub.refresh();
-    assert.equal(here.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), false);
-  });
-});
-
-describe('conversationMessages: plugin-facing service', () => {
-  it('live delivery is decided at delivery, in both directions', async () => {
-    const f = hubFixture(new InMemoryConversationMessageStore());
-    let engine = false;
-    const service = createConversationMessagesService({ hub: f.hub, callerPluginId: ENGINE, isEngine: () => engine });
-    const seen: string[] = [];
-    // Registered BEFORE the plugin is the bound engine (activation order).
-    const dispose = service.onMessage('mara', (r) => void seen.push(r.messageId));
-    engine = true;
-    await service.subscribe(scopeOf('mara'));
-    f.hub.emit(messageEvent({ messageId: 'a' }));
-    await flush();
-    await flush();
-    assert.deepEqual(seen, ['a'], 'a handler registered early starts receiving once the plugin is the engine');
-    engine = false; // replaced or deactivated
-    f.hub.emit(messageEvent({ messageId: 'b' }));
-    await flush();
-    await flush();
-    assert.deepEqual(seen, ['a'], 'and stops at once when it is not');
-    engine = true;
-    f.hub.emit(messageEvent({ messageId: 'c' }));
-    await flush();
-    await flush();
-    assert.deepEqual(seen, ['a', 'c']);
-    dispose();
-  });
-
-  it('answers only the facilitation engine', async () => {
-    const f = hubFixture(new InMemoryConversationMessageStore());
-    let engine = true;
-    const forEngine = createConversationMessagesService({ hub: f.hub, callerPluginId: ENGINE, isEngine: () => engine });
-    const forOther = createConversationMessagesService({ hub: f.hub, callerPluginId: '@acme/crm', isEngine: () => false });
-    const refused = await forOther.subscribe(scopeOf('mara'));
-    assert.equal(refused.outcome === 'refused' && refused.code, 'unavailable');
-    assert.match(refused.outcome === 'refused' ? refused.message : '', /only the facilitation engine plugin/);
-
-    assert.deepEqual(await forEngine.subscribe(scopeOf('mara')), { outcome: 'subscribed' });
-    await f.hub.ingest(messageEvent());
-    assert.equal((await forEngine.getEvent(scopeOf('mara'), 'm1'))?.author.id, 'AAD-Anna');
-    assert.equal(await forOther.getEvent(scopeOf('mara'), 'm1'), undefined);
-    assert.deepEqual(await forOther.listSince(scopeOf('mara')), { events: [] });
-    await forOther.unsubscribe(scopeOf('mara'));
-    assert.equal(f.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), true);
-
-    // The plugin stops being the engine (uninstalled, replaced): nothing more.
-    engine = false;
-    assert.equal(await forEngine.getEvent(scopeOf('mara'), 'm1'), undefined);
-    engine = true;
-    await forEngine.unsubscribe(scopeOf('mara'));
-    assert.equal(f.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), false);
+    assert.equal(here.hub.deliveryMode('teams', CONVERSATION, MARA_KEY), 'addressed');
+    await there.hub.endAllOf('mara', 'agent disabled');
+    await here.hub.refresh();
+    assert.equal(here.hub.deliveryMode('teams', CONVERSATION, MARA_KEY), 'none');
   });
 });
 
@@ -177,12 +134,13 @@ describe('conversationMessages: CoreApi and retention', () => {
     const f = hubFixture(new InMemoryConversationMessageStore());
     const api = createCoreApi({ ...baseOptions, conversationMessages: f.hub });
     assert.equal(api.isAllMessagesSubscribed!('teams', CONVERSATION, MARA_KEY), false);
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(f, 'mara');
     assert.equal(api.isAllMessagesSubscribed!('teams', CONVERSATION, MARA_KEY.toLowerCase()), true);
+    assert.equal(api.conversationDelivery!('teams', CONVERSATION, MARA_KEY), 'all');
     assert.equal(api.isAllMessagesSubscribed!(undefined as never, CONVERSATION, MARA_KEY), false, 'never throws');
     api.emitConversationMessage!(messageEvent());
     await flush();
-    assert.equal((await f.hub.listSince(scopeOf('mara'), ENGINE)).events.length, 1);
+    assert.equal((await f.hub.listProcessEventsSince(MARA, ENGINE)).events.length, 1);
     const throwing = createCoreApi({
       ...baseOptions,
       conversationMessages: {
@@ -199,7 +157,7 @@ describe('conversationMessages: CoreApi and retention', () => {
     assert.equal(throwing.conversationDelivery!('teams', CONVERSATION, MARA_KEY), 'none');
   });
 
-  it('purges only after the subscription ended plus the grace period, and by age', async () => {
+  it('purges only after the subscription ended plus the grace period, not by age while its process runs', async () => {
     let now = Date.parse('2026-11-18T09:00:00.000Z');
     const store = new InMemoryConversationMessageStore(() => new Date(now));
     const f = hubFixture(store);
@@ -212,26 +170,28 @@ describe('conversationMessages: CoreApi and retention', () => {
       log: (m) => f.logs.push(m),
     });
     try {
-      await f.hub.subscribe(scopeOf('mara'), ENGINE);
+      await readAll(f, 'mara');
       await f.hub.ingest(messageEvent());
       now += 20 * 24 * HOUR; // a long facilitation: still subscribed, nothing goes
       await job.tick();
-      assert.equal((await f.hub.listSince(scopeOf('mara'), ENGINE)).events.length, 1);
+      assert.equal((await f.hub.listProcessEventsSince(MARA, ENGINE)).events.length, 1);
 
+      // While its process runs, an event does not go by age either: the
+      // process's scopes bound how long it lives, not the calendar.
       await f.hub.ingest(messageEvent({ messageId: 'm2' }));
       now += 11 * 24 * HOUR; // the first event is now older than the maximum age
       await job.tick();
       assert.deepEqual(
-        (await f.hub.listSince(scopeOf('mara'), ENGINE)).events.map((e) => e.messageId),
-        ['m2'],
+        (await f.hub.listProcessEventsSince(MARA, ENGINE)).events.map((e) => e.messageId),
+        ['m1', 'm2'],
       );
 
-      await f.hub.unsubscribe(scopeOf('mara'), ENGINE);
+      await f.hub.endAllOf('mara', 'agent disabled');
       now += 5 * HOUR; // inside the grace period
       assert.deepEqual(await store.purge({ endedBefore: new Date(now - 6 * HOUR) }), { events: 0, subscriptions: 0 });
       now += 2 * HOUR;
       await job.tick();
-      assert.ok(f.logs.some((l) => /purged 1 event\(s\) of 1 ended subscription\(s\)/.test(l)));
+      assert.ok(f.logs.some((l) => /purged 2 event\(s\) of 1 ended subscription\(s\)/.test(l)));
     } finally {
       job.stop();
     }

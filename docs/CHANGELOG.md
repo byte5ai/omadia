@@ -36,6 +36,39 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — A subscription could be turned up to every message without the channel being ready (#2089, epic #2043)
+
+- A process that listened only for messages addressing its facilitator could
+  switch to reading every message of the conversation without the check a
+  new subscription gets: that the channel can deliver every message there
+  (in Teams, the chat's own permission). The facilitation then counted as
+  reading everything, and the facilitator's own answers in that chat were
+  held back, while messages never arrived. The switch is now refused with
+  `not_ready` and the subscription keeps the mode it had.
+
+### Removed — The implementations behind the first majors (#2067, epic #2043): K6.4
+
+- **The code behind `agentTurn`, `conversationMessages` and `conversationSend`
+  without a version is gone.** No plugin could reach it since K6.3. Nothing
+  changes for a plugin that uses the second majors.
+- **A message subscription always belongs to a process.** The kernel no
+  longer creates, reads or ends a subscription without one. Should a row
+  without a process still be active in the database, it is ignored: it does
+  not lift a channel's mention gate and nothing is stored for it.
+- **An agent posts into a conversation only under an execution scope.** The
+  earlier permission, a message subscription for that conversation, is no
+  longer asked anywhere. A direct message through `targetedSend` is unchanged.
+- **A model turn always belongs to a process.** A turn without an execution
+  scope can no longer be run, also not from inside the kernel.
+- **Stored messages of a running process are not removed by age.** The
+  maximum age applies once the subscription has ended, as before for process
+  subscriptions.
+- The kernel's contract tests for native facilitators now run through the
+  second majors, with real execution scopes and reservations.
+- Unchanged: the plugin API and the channel SDK (types and versions),
+  `targetedSend`, `sessionCapabilities`, `channelReadiness`,
+  `conversationRosters`, `conversationEvents`, and the database schema.
+
 ### Removed — The first majors of the facilitator services (#2089, #2090, #2091, epic #2043): K6.3, the contract step
 
 - **`agentTurn`, `conversationMessages` and `conversationSend` without a

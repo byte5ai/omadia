@@ -7298,7 +7298,8 @@ async function main(): Promise<void> {
   // lookup are already set when Postgres is available; deny-by-default for
   // plugins like every other kernel service.
   // #2043 — sending as an agent's OWN identity: identity from the registry
-  // (never the default bot), permission from its message subscription.
+  // (never the default bot). A post into a conversation is authorized by an
+  // execution scope; the message subscriptions are where people are looked up.
   const ownIdentitySend = {
     identityFor: (agentSlug: string, channelType: string) =>
       getRegistry()?.channelIdentityFor(agentSlug, channelType),
@@ -7318,8 +7319,8 @@ async function main(): Promise<void> {
       seen: new InMemoryDisclosureSeenStore(),
     },
   };
-  // #2043 — 'agentTurn@1': the engine runs a turn as a facilitator and gets
-  // the text back unposted.
+  // #2043 — 'agentTurn@2': the engine runs a turn as a facilitator, as an
+  // authorized action under an execution scope, and gets the text back unposted.
   publishAgentTurnService({
     serviceRegistry,
     getRegistry,

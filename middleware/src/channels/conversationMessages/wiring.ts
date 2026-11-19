@@ -1,4 +1,4 @@
-// Boot wiring for 'conversationMessages@1' (#2043), kept out of `index.ts`:
+// Boot wiring for 'conversationMessages@2' (#2043, #2089), kept out of `index.ts`:
 // builds the hub over Postgres, publishes the per-plugin service and starts
 // the retention job. Called once, from inside the database block.
 
@@ -14,10 +14,7 @@ import {
 } from '@omadia/plugin-api';
 
 import type { BotPresenceStore } from '../../conductor/botPresenceStore.js';
-import {
-  resolveFacilitationEngine,
-  type FacilitationEngineSources,
-} from '../../platform/facilitatorGuard.js';
+import type { FacilitationEngineSources } from '../../platform/facilitatorGuard.js';
 import type { ObservedConversationInvites } from '../../platform/observedConversationInvites.js';
 import { KERNEL_SERVICE_CALLER, type ServiceRegistry } from '../../platform/serviceRegistry.js';
 import type { AddressedMessageRouter } from '../addressedMessageRouter.js';
@@ -69,35 +66,28 @@ export function principalOfChannelUser(author: { readonly id: string }): string 
 /**
  * Why a subscription has lost its ground, or `undefined` while it stands.
  *
- * Three things carry a subscription: the engine plugin that made it is still
- * the one usable engine, the agent still exists and is enabled, and the agent
- * still has the identity the subscription was made for. Each is read from its
- * source of truth (installed registry, config store), not from the running
- * registry: an agent that merely failed to build keeps its subscription.
- * Anything that cannot be read right now answers `undefined`.
+ * Three things carry a subscription here: the plugin that made it is
+ * running, the agent still exists and is enabled, and the agent still has the
+ * identity the subscription was made for. Each is read from its source of
+ * truth (installed registry, config store), not from the running registry: an
+ * agent that merely failed to build keeps its subscription. Anything that
+ * cannot be read right now answers `undefined`.
+ *
+ * The fourth, that the subscription's process still has an open execution
+ * scope, is the hub's own check. Only the plugin that delivers the agent's
+ * archetype can open one, so "is the caller that plugin" is not asked again
+ * here; a plugin that was uninstalled had its scopes revoked.
  */
 export function createSubscriptionGroundCheck(deps: {
   engineSources: () => FacilitationEngineSources;
   getConfigStore: () => Pick<ConfigStore, 'getAgentById' | 'listChannelIdentities'> | undefined;
 }): (subscription: MessageSubscription) => Promise<string | undefined> {
   return async (subscription) => {
-    const sources = deps.engineSources();
-    // #2089 — a process subscription stands on its process's execution
-    // scopes (the hub checks those), which only the plugin that delivers the
-    // agent's archetype can open; "is the facilitation engine" is the ground
-    // of a subscription without a process.
-    if (subscription.processId === undefined) {
-      const engine = resolveFacilitationEngine(sources);
-      if (engine.state !== 'bound' || engine.pluginId !== subscription.pluginId) {
-        return `plugin '${subscription.pluginId}' is no longer the facilitation engine of this instance`;
-      }
-    }
-    const installed = sources.installedRegistry?.list().find((entry) => entry.id === subscription.pluginId);
-    if (installed && installed.status !== 'active') {
-      return subscription.processId === undefined
-        ? `the facilitation engine plugin is ${installed.status}`
-        : `the plugin that subscribed is ${installed.status}`;
-    }
+    const installed = deps
+      .engineSources()
+      .installedRegistry?.list()
+      .find((entry) => entry.id === subscription.pluginId);
+    if (installed && installed.status !== 'active') return `the plugin that subscribed is ${installed.status}`;
     const store = deps.getConfigStore();
     if (!store) return undefined;
     const agent = await store.getAgentById(subscription.agentId);
@@ -203,10 +193,9 @@ export async function wireConversationMessages(
     );
   }
 
-  // #2089 — every subscription and read is bound to a process. The first
-  // major (`conversationMessages` without a version: one subscription per
-  // agent and conversation, owned by "the engine") is no longer provided
-  // since K6; a plugin that still asks for it by the bare name gets nothing.
+  // #2089 — every subscription and read is bound to a process. A plugin that
+  // asks for the service by its bare name (the earlier form: one subscription
+  // per agent and conversation, owned by "the engine") gets nothing.
   deps.serviceRegistry.provide(
     CONVERSATION_MESSAGES_V2_SERVICE_NAME,
     perCallerService((caller) =>

@@ -105,7 +105,7 @@ describe('facilitation engine auto-attach', () => {
     assert.deepEqual(two.rows, []);
   });
 
-  it('the ground of a subscription: engine, agent, identity', async () => {
+  it('the ground of a subscription: a running plugin, the agent, its identity', async () => {
     const w = world([ENGINE]);
     let status = 'active';
     let agent: { id: string; status: string; archetype: string } | undefined = { id: 'a-mara', status: 'enabled', archetype: 'facilitator' };
@@ -130,16 +130,21 @@ describe('facilitation engine auto-attach', () => {
       channelKey: '28:aaaa-mara',
       pluginId: ENGINE,
       createdAt: new Date(0),
+      processId: 'facilitation-1',
       mode: 'all' as const,
     };
     assert.equal(await ground(subscription), undefined, 'stands');
     status = 'inactive';
-    assert.match((await ground(subscription))!, /engine plugin is inactive/);
+    assert.equal(await ground(subscription), 'the plugin that subscribed is inactive');
     status = 'active';
+    // Who may run a process of this agent is not asked here: the subscription
+    // stands on its process's execution scope, which the hub checks, and which
+    // was revoked if the plugin was uninstalled. A second engine next to it,
+    // or the plugin missing from the registry, ends nothing by itself.
     w.state.installed = [ENGINE, '@acme/engine-2'];
-    assert.match((await ground(subscription))!, /no longer the facilitation engine/);
+    assert.equal(await ground(subscription), undefined);
     w.state.installed = [];
-    assert.match((await ground(subscription))!, /no longer the facilitation engine/);
+    assert.equal(await ground(subscription), undefined);
     w.state.installed = [ENGINE];
     agent = { id: 'a-mara', status: 'disabled', archetype: 'facilitator' };
     assert.equal(await ground(subscription), 'the agent is disabled');
