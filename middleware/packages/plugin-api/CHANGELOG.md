@@ -8,6 +8,20 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.71.0 — 2026-11-19
+
+Additive (#2091, epic #2043): a delivered private message names the
+conversation it went into.
+
+### Added
+
+- The `delivered` variant of **`ScopedSendOutcome`** and of
+  **`TargetedSendDeliveryOutcome`** gains the optional **`conversationId`**:
+  the private conversation a `sendToPerson` / `sendToPrincipal` message went
+  into, when the channel reports it. With it a plugin can match a later
+  reply in that conversation to the message it sent. Absent on channels
+  that do not report it, and never set on a conversation send.
+
 ## 1.70.0 — 2026-11-19
 
 Additive (#2089, epic #2043): transcript segments as inbound events. A

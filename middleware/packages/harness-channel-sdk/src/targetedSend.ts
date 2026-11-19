@@ -61,8 +61,10 @@ export interface TargetedSendOptions {
 export type TargetedDeliveryOutcome =
   /** `messageId` is the platform id of the sent message when known. A poll
    *  may go out as two messages (text, then card): `cardMessageId` is the
-   *  card, and the `messageId` of every `card_answer` event for it. */
-  | { outcome: 'delivered'; messageId?: string; cardMessageId?: string }
+   *  card, and the `messageId` of every `card_answer` event for it.
+   *  `conversationId` is the private conversation the message went into, when
+   *  the channel reports it: a later reply there can be matched to this send. */
+  | { outcome: 'delivered'; messageId?: string; cardMessageId?: string; conversationId?: string }
   | {
       outcome: 'unreachable';
       /** 'app_not_installed': first contact is impossible because the user

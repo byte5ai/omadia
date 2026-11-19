@@ -192,8 +192,15 @@ export function createScopedSendService(deps: ScopedSendServiceDeps): ScopedConv
       if (outcome.outcome !== 'delivered') {
         return refusal(outcome.code, outcome.message, { authorizationId: granted.authorizationId });
       }
-      const messageId = (outcome as { messageId?: string }).messageId;
-      return { outcome: 'delivered', authorizationId: granted.authorizationId, ...(isText(messageId) ? { messageId } : {}) };
+      const { messageId, conversationId } = outcome;
+      return {
+        outcome: 'delivered',
+        authorizationId: granted.authorizationId,
+        ...(isText(messageId) ? { messageId } : {}),
+        // The private conversation the message went into, as the channel
+        // reported it: what lets the caller match a later reply there.
+        ...(isText(conversationId) ? { conversationId } : {}),
+      };
     },
 
     async updateCard(request: ScopedCardUpdateRequest): Promise<CardUpdateOutcome | Unreachable> {

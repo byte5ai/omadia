@@ -540,11 +540,13 @@ phase: ExecutionPhase;
 purpose: ExecutionPurpose;
 emission: 'prose' | 'template';
 }
-export type ScopedSendOutcome = {
+export type ScopedSendOutcome =
+{
 outcome: 'delivered';
 authorizationId: string;
 messageId?: string;
 cardMessageId?: string;
+conversationId?: string;
 } | {
 outcome: 'unreachable';
 code: string;
@@ -3551,9 +3553,11 @@ kind: string;
 id: string;
 };
 }
-export type TargetedSendDeliveryOutcome = {
+export type TargetedSendDeliveryOutcome =
+{
 outcome: 'delivered';
 messageId?: string;
+conversationId?: string;
 } | {
 outcome: 'unreachable';
 code: string;

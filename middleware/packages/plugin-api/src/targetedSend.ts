@@ -38,7 +38,9 @@ export interface TargetedSendRequest {
 }
 
 export type TargetedSendDeliveryOutcome =
-  | { outcome: 'delivered'; messageId?: string }
+  /** `conversationId` is the private conversation the message went into, when
+   *  the channel reports it. */
+  | { outcome: 'delivered'; messageId?: string; conversationId?: string }
   | { outcome: 'unreachable'; code: string; message: string };
 
 export interface TargetedSendResultDiagnostic {

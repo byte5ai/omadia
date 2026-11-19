@@ -36,6 +36,37 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — Running agent discussions move to "Running processes"; the old facilitation panel is removed (#2067, epic #2043)
+
+- **Where to look now:** agent discussions that are running appear on the
+  Agents page under "Running processes", below the processes of archetype
+  plugins: topic, who opened it, who takes part, the conversation, when it
+  started and when it ends by itself.
+- **Their stop is final.** "End discussion" asks once in the row, then
+  cancels the run and frees the conversation. It cannot be resumed. The
+  kill switches above (everything, one agent, one process) do not reach
+  discussions, because a discussion holds no execution scope.
+- **Removed:** the "Running facilitations" panel on the Conductor page with
+  its details view (goal, definition of done, rounds, verdict table,
+  initiators, participants from the roster), and the routes
+  `GET /api/v1/operator/conductors/facilitations` and
+  `POST /api/v1/operator/conductors/facilitations/:workflowId/terminate`.
+  Native facilitations never appeared there; they are processes of the
+  facilitator plugin.
+- **New:** `GET /api/v1/operator/execution` also returns `discussions` and
+  `discussions_failed`; `POST /api/v1/operator/execution/discussions/:workflowId/stop`
+  stops one. A stop is recorded in the audit trail as
+  `conductor.discussion_stop`; `conductor.facilitation_terminate` stays for
+  the rows already written.
+
+### Added — A delivered private message names its conversation (#2091, epic #2043)
+
+- When a facilitator writes to one person, the result now carries the
+  private conversation the message went into, if the channel reports it
+  (Teams does from 0.39.0). The plugin can use it to match a later reply in
+  that conversation to the reminder it sent. Additive: plugin-api 1.71.0,
+  channel-sdk 0.3.7.
+
 ### Added — Transcript segments as inbound events, contract only (#2089, epic #2043)
 
 - What is said in a live session can be delivered to a facilitation as
@@ -678,7 +709,8 @@ and the neutrality contract. No facilitation tables in the kernel.
   channel and facilitator 1.0.0 together. Kept: ephemeral runs, agent
   discussions and `say`; the operator lens over live ephemeral runs
   (`/api/v1/operator/conductors/facilitations`, the Facilitations panel),
-  which is the only view and stop control for running discussions; the
+  which is the only view and stop control for running discussions (replaced
+  later in this release by "Running processes", see the #2067 entry above); the
   `CONDUCTOR_EPHEMERAL_*` quotas; the audit action
   `conductor.facilitation_terminate` for existing rows.
 - **`GET /api/v1/operator/agents/facilitation-engine`**: `state` (bound |

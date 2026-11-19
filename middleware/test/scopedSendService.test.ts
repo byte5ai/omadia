@@ -23,7 +23,7 @@ const HOME = { channelType: 'teams', conversationId: '19:offsite@thread.v2' };
 const AUTH: SendAuthorization = { scopeId: 'scope-1', processId: 'fac-7', phase: 'active', purpose: 'moderation', emission: 'template' };
 const SCOPE = { id: 'scope-1', agentSlug: 'mara', processId: 'fac-7' } as ExecutionScope;
 
-function harness(options: { refuse?: ExecutionRefusalCode; channelFails?: boolean; noDatabase?: boolean; scopes?: ExecutionScope[] } = {}) {
+function harness(options: { refuse?: ExecutionRefusalCode; channelFails?: boolean; directConversationId?: unknown; noDatabase?: boolean; scopes?: ExecutionScope[] } = {}) {
   const order: string[] = [];
   const authorized: AuthorizeActionRequest[] = [];
   const bound: unknown[] = [];
@@ -67,7 +67,7 @@ function harness(options: { refuse?: ExecutionRefusalCode; channelFails?: boolea
       return Promise.resolve(
         options.channelFails
           ? { outcome: 'unreachable', code: 'not_permitted', message: 'not a person of a conversation it moderates' }
-          : ({ outcome: 'delivered', messageId: 'dm-1' } as never),
+          : ({ outcome: 'delivered', messageId: 'dm-1', ...(options.directConversationId !== undefined ? { conversationId: options.directConversationId } : {}) } as never),
       );
     },
     messages: {
@@ -181,6 +181,21 @@ describe('#2091 direct messages, card updates and readiness under a scope', () =
     });
     assert.deepEqual(h.order, ['authorize(direct_message)', 'direct(user:aad-anna)']);
     assert.deepEqual(h.grounds, [{ subscriptions: h.subscriptions }]);
+  });
+
+  it('a delivered direct message names the private conversation it went into, when the channel reports it', async () => {
+    const send = { agentSlug: 'mara', channelType: 'teams', principal: 'user:aad-anna', message: { text: 'Reminder' }, authorization: AUTH };
+    assert.deepEqual(await harness({ directConversationId: 'a:1on1-anna' }).service.sendToPerson(send), {
+      outcome: 'delivered',
+      authorizationId: 'auth-1',
+      messageId: 'dm-1',
+      conversationId: 'a:1on1-anna',
+    });
+    // A channel that reports something else than a usable id adds nothing.
+    for (const junk of ['', '   ', 7, null]) {
+      const outcome = await harness({ directConversationId: junk }).service.sendToPerson(send);
+      assert.deepEqual(outcome, { outcome: 'delivered', authorizationId: 'auth-1', messageId: 'dm-1' });
+    }
   });
 
   it('a person the kernel does not find in the process\'s conversations is not written to, although the scope listed them', async () => {

@@ -40,7 +40,7 @@ import { ConductorEphemeralAttachmentsStore } from './ephemeralAttachmentsStore.
 import { createTemplateStore } from './templateStore.js';
 import type { ConductorTemplateStore } from './templateStore.js';
 import { createConductorRouter } from './routes.js';
-import { ConductorFacilitationAdmin } from './facilitationAdmin.js';
+import { ConductorDiscussionAdmin } from './discussionAdmin.js';
 import { ConductorSayService } from './sayService.js';
 import type { AgentChannelIdentityResolver, ConductorSayDeps } from './sayService.js';
 import { ConductorDiscussionService, type DiscussionReservations } from './discussionService.js';
@@ -75,8 +75,8 @@ async function buildRunEventPayload(run: ConductorRun, workflowStore: ConductorW
 }
 
 export { runConductorMigrations } from './migrator.js';
-export { ConductorFacilitationAdmin } from './facilitationAdmin.js';
-export type { FacilitationOverview } from './facilitationAdmin.js';
+export { ConductorDiscussionAdmin } from './discussionAdmin.js';
+export type { RunningDiscussion, StopDiscussionResult } from './discussionAdmin.js';
 export { ConductorWorkflowStore } from './workflowStore.js';
 export { ConductorRunStore } from './runStore.js';
 export { ConductorAwaitStore } from './awaitStore.js';
@@ -206,6 +206,8 @@ export interface ConductorWiring {
   /** Starts an agent topic discussion in a bound conversation (the `discussion`
    *  pattern plus the conversation floor its `say` steps speak on). */
   discussionService: ConductorDiscussionService;
+  /** Lists and stops the runs agents started themselves (operator surface). */
+  discussionAdmin: ConductorDiscussionAdmin;
   /** Deps for the unauthenticated `/api/hooks/:endpointId` router, which is mounted
    *  much earlier in `index.ts` (before `express.json()`) via a forward reference —
    *  `index.ts` assigns this once `wireConductor` returns. */
@@ -255,15 +257,6 @@ export async function wireConductor(deps: {
    * external source cannot shadow `conductor-local` and substitute its own approver list.
    */
   roleHolderSources?: readonly RoleHolderSource[];
-  /** #330 round 4 — kernel roster registry accessor for the facilitation
-   *  admin overview (participants column). Best-effort; omit on hosts
-   *  without channel rosters. */
-  getRoster?: (channelType: string, conversationId: string) => Promise<
-    { participants: readonly { userRef: { id: string; displayName?: string }; isBot?: boolean }[]; partial?: boolean } | undefined
-  >;
-  /** #330 round 4 — durable audit trace for the destructive operator
-   *  terminate. Late-bound thunk like auditRoleChange. */
-  auditFacilitationTerminate?: (entry: { actor: string; actorUserId?: string; workflowId: string; slug: string; cancelledRuns: number }) => Promise<void>;
   /** Conversation-send providers, so a `say` step can publish an agent's turn
    *  into the chat. Omit on hosts without a channel plugin — agent dialogue
    *  then degrades to silent turns rather than failing the run. */
@@ -387,7 +380,7 @@ export async function wireConductor(deps: {
       : undefined;
   };
   // Shared disposal path (terminal-state hook, TTL reaper safety net, and the
-  // operator's facilitation terminate — #330 round 4). Idempotent: an already
+  // operator's stop of a discussion — #2067). Idempotent: an already
   // reaped or non-ephemeral workflow is a no-op.
   const disposeEphemeralWorkflow = async (workflowId: string, reason: string): Promise<void> => {
     const workflow = await workflowStore.getById(workflowId);
@@ -585,17 +578,14 @@ export async function wireConductor(deps: {
     log,
   });
 
-  // #330 round 4 — operator lens + stop for live facilitations (invisible in
-  // the library by design). Built on the SAME executor/disposal instances.
-  const facilitationAdmin = new ConductorFacilitationAdmin({
+  // #2067 — what an operator sees and stops of agent-started runs (hidden from
+  // the library by design). Same executor and disposal as the reaper.
+  const discussionAdmin = new ConductorDiscussionAdmin({
     workflowStore,
     runStore,
     ephemeralAttachments,
     executor,
-    disposeWorkflow: (workflowId) => disposeEphemeralWorkflow(workflowId, 'by operator terminate'),
-    ...(deps.auditFacilitationTerminate ? { auditTerminate: deps.auditFacilitationTerminate } : {}),
-    resolveRoleHolders: holdersOnly((key) => roleHolderRegistry.resolveHolders(key)),
-    ...(deps.getRoster ? { getRoster: deps.getRoster } : {}),
+    disposeWorkflow: (workflowId) => disposeEphemeralWorkflow(workflowId, 'stopped by an operator'),
     log,
   });
 
@@ -606,7 +596,6 @@ export async function wireConductor(deps: {
       workflowStore,
       runStore,
       awaitStore,
-      facilitationAdmin,
       discussionService,
       roleStore,
       scheduleStore,
@@ -656,6 +645,6 @@ export async function wireConductor(deps: {
     resumeWorker, scheduleWorker, eventRouter, builderAgent, templateStore, templateCatalog,
     webhookEndpoints, webhookSubscriptions, webhookDispatcher, webhookRetryWorker, webhookInboundDeps,
     patternCatalog, ephemeralStore, ephemeralRunService, ephemeralReaper, roleHolderRegistry,
-    ephemeralAttachments, discussionService,
+    ephemeralAttachments, discussionService, discussionAdmin,
   };
 }

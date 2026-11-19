@@ -35,8 +35,11 @@ export type AuditAction =
   // which Agent answers a group, so the auto-bind lifecycle belongs in the
   // same trail as the role batons.
   | 'channel.binding_change'
-  // #330 round 4 — the operator terminated a live facilitation from the admin lens.
+  // #330 round 4 — the operator terminated a live facilitation from the admin
+  // lens. The lens is gone (#2067); the action stays for the rows it wrote.
   | 'conductor.facilitation_terminate'
+  // #2067 — the operator stopped a run agents started themselves (a discussion).
+  | 'conductor.discussion_stop'
   // #965 — an operator extended their own session ("I'm still here"). One
   // row per renewal keeps a renewal chain visible after the fact.
   | 'auth.session_renew'

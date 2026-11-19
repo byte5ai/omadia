@@ -28,7 +28,6 @@ import {
 import { ConductorCanvas, type CanvasGraphRequest } from './_components/ConductorCanvas';
 import { ConductorChatPane } from './_components/ConductorChatPane';
 import { ConductorEmitSection } from './_components/ConductorEmitSection';
-import { FacilitationsPanel } from './_components/FacilitationsPanel';
 import { ConductorRolesSection } from './_components/ConductorRolesSection';
 import { ConductorRunHistory, ConductorRunTrace } from './_components/ConductorRunTrace';
 import { SaveAsTemplateDialog } from './_components/SaveAsTemplateDialog';
@@ -338,11 +337,6 @@ export default function ConductorPage(): React.JSX.Element {
           )}
         </section>
       )}
-
-      {/* #330 round 4 — live facilitations (invisible in the library by design) */}
-      <section className="mb-10">
-        <FacilitationsPanel />
-      </section>
 
       {/* Workflows list with quick-run */}
       <section className="mb-10">
