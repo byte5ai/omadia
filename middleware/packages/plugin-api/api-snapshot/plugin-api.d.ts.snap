@@ -170,6 +170,7 @@ message: string;
 export interface AgentProfile {
 agentSlug: string;
 kind: 'standard' | 'facilitator';
+archetype?: string;
 displayName: string;
 shortDescription?: string;
 language?: string;

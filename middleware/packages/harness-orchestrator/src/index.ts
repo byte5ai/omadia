@@ -129,6 +129,28 @@ export {
   parseAgentKind,
 } from './registry/agentKind.js';
 export type { AgentKind, FacilitatorOmission } from './registry/agentKind.js';
+// #2088 — archetypes: the registry and the one question call sites ask.
+export {
+  ARCHETYPE_OMISSIONS,
+  ArchetypeOmissionError,
+  FACILITATOR_ARCHETYPE,
+  STANDARD_ARCHETYPE,
+  archetypeOf,
+  archetypeOmits,
+  assertArchetypeAllows,
+  getArchetype,
+  isArchetype,
+  isArchetypeId,
+  listArchetypes,
+  parseArchetype,
+  registerArchetype,
+} from './registry/archetype.js';
+export type {
+  ArchetypeBearer,
+  ArchetypeDescriptor,
+  ArchetypeId,
+  ArchetypeOmission,
+} from './registry/archetype.js';
 // #2043 — kernel-side seams of the facilitator runtime. `runAsEngineTurn` is
 // for the kernel's `agentTurn` service only; it is not a plugin surface.
 export { channelConversationId, conversationIdCandidates } from './channelConversationId.js';
@@ -154,7 +176,7 @@ export {
 export {
   FACILITATOR_NEUTRALITY_BLOCK,
   FACILITATOR_NEUTRALITY_HEADING,
-  applyKindContract,
+  applyArchetypeContract,
   withFacilitatorNeutrality,
 } from './registry/facilitatorNeutrality.js';
 export {

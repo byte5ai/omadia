@@ -1,3 +1,4 @@
+import { archetypeOf } from './archetype.js';
 import {
   buildOrchestratorForAgent,
   type AgentRuntimeConfig,
@@ -423,8 +424,8 @@ export function buildForAgent(
       // to `undefined` (grant everything) — hence the explicit presence check
       // on the argument rather than on its length.
       ...(grantedPluginIds !== undefined ? { grantedPluginIds } : {}),
-      // #2060 — what the factory keys every facilitator omission on.
-      ...(agent.kind !== undefined && agent.kind !== 'standard' ? { kind: agent.kind } : {}),
+      // #2088 — what the factory keys every omission of the archetype on.
+      archetype: archetypeOf(agent),
     },
     deps,
   );

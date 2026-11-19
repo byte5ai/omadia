@@ -8,6 +8,21 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.58.0 — 2026-11-19
+
+Additive (#2088, epic #2042).
+
+### Added
+
+- **`AgentProfile.archetype?`** — the agent's archetype (`agents.archetype`):
+  `standard`, or one an archetype plugin registered (today `facilitator`).
+  Absent on a kernel older than this version: read `kind`.
+
+### Deprecated
+
+- **`AgentProfile.kind`** — the previous name. Still returned; removed
+  together with the `agents.kind` column.
+
 ## 1.57.0 — 2026-11-18
 
 Additive (epic #2043).

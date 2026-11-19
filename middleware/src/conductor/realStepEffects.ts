@@ -1,4 +1,4 @@
-import { assertNotFacilitator, type OrchestratorRegistry } from '@omadia/orchestrator';
+import { assertArchetypeAllows, type OrchestratorRegistry } from '@omadia/orchestrator';
 import { resolveAddressedBot, type DefaultChannelBotKey } from './channelBotOwnership.js';
 import type { JsonObject, JsonValue, Step } from '@omadia/conductor-core';
 
@@ -153,7 +153,7 @@ export class RealStepEffects implements StepEffects {
     }
     // #2060 — a workflow step consults an agent on somebody's behalf. A
     // facilitator is run by its engine only (`agentTurn`), never as a step.
-    assertNotFacilitator(entry.agent, 'consultation');
+    assertArchetypeAllows(entry.agent, 'consultation');
 
     const root: JsonObject = { ctx: context, steps: asObject(context.steps) };
     const userMessage = step.prompt

@@ -671,12 +671,15 @@ export interface OrchestratorOptions {
    */
   grantedPluginIds?: readonly string[];
   /**
-   * #2060 — the agent's kind. A `facilitator` gets no `memory` tool and ONLY
-   * the tools of its granted plugins: a tool without an owning plugin, or any
-   * tool when no grant set was passed, is refused (fail-closed, the inverse
-   * of the legacy "absent means ungated" rule). Absent = `standard`.
+   * #2088 — what the agent's archetype omits, as far as this class enforces
+   * it (the factory decides the rest by not wiring it):
+   *  - `memory`: no `memory` tool, whoever provides the store;
+   *  - `toolGrant`: ONLY the tools of its granted plugins. A tool without an
+   *    owning plugin, or any tool when no grant set was passed, is refused
+   *    (fail-closed, the inverse of the legacy "absent means ungated" rule).
+   * Absent = nothing omitted (a standard agent).
    */
-  agentKind?: 'standard' | 'facilitator';
+  archetypeOmissions?: { readonly memory?: boolean; readonly toolGrant?: boolean };
   /**
    * #332 Layer 2 — Direct Line delivery policy. `'strict'` (default) relays a
    * directed specialist's verbatim answer with no orchestrator generation;
@@ -2940,8 +2943,9 @@ export class Orchestrator {
   private readonly domainToolsByName: Map<string, DomainTool>;
   /** `undefined` = ungated. A Set for O(1) checks on the dispatch path. */
   private readonly grantedPluginIds: ReadonlySet<string> | undefined;
-  /** #2060 — see `OrchestratorOptions.agentKind`. */
-  private readonly facilitator: boolean;
+  /** #2088 — see `OrchestratorOptions.archetypeOmissions`. */
+  private readonly omitsMemory: boolean;
+  private readonly grantedToolsOnly: boolean;
   /** #332 Layer 2 — Direct Line delivery policy (default `'strict'`). */
   private readonly directLineMode: DirectLineMode;
   /** #332 Layer 2 — directive prefix (default `'#'`). */
@@ -3105,7 +3109,8 @@ export class Orchestrator {
     this.memoryToolHandler = options.memoryToolHandler;
     this.memoryBinder = options.memoryBinder;
     this.domainToolsByName = new Map(options.domainTools.map((t) => [t.name, t]));
-    this.facilitator = options.agentKind === 'facilitator';
+    this.omitsMemory = options.archetypeOmissions?.memory === true;
+    this.grantedToolsOnly = options.archetypeOmissions?.toolGrant === true;
     this.grantedPluginIds = options.grantedPluginIds
       ? new Set(options.grantedPluginIds)
       : undefined;
@@ -4102,7 +4107,7 @@ export class Orchestrator {
    * (`bindTurnMemory`'s fallback), not a refusal.
    */
   public async bindCliTurnMemory(input: ChatTurnInput): Promise<CliTurnMemory | undefined> {
-    if (this.facilitator) return undefined;
+    if (this.omitsMemory) return undefined;
     const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
     if (!this.isToolAvailable(memoryAgentId)) return undefined;
     const turnMemory = await this.bindTurnMemoryForTurn(input);
@@ -10515,7 +10520,7 @@ export class Orchestrator {
   private isPluginGranted(pluginId: string | undefined): boolean {
     // #2060 — a facilitator has exactly its granted plugins' tools. No grant
     // set and no owner both mean "not the engine's tool", so: refused.
-    if (this.facilitator) {
+    if (this.grantedToolsOnly) {
       return pluginId !== undefined && this.grantedPluginIds?.has(pluginId) === true;
     }
     if (this.grantedPluginIds === undefined) return true;
@@ -10546,7 +10551,7 @@ export class Orchestrator {
     // tools) is that orchestrator's alone.
     if (orchestratorScope !== undefined && orchestratorScope !== this.agentId) return false;
     // #2060 — a facilitator has no general memory, whoever provides the store.
-    if (name === MEMORY_TOOL_NAME) return !this.facilitator;
+    if (name === MEMORY_TOOL_NAME) return !this.omitsMemory;
     return this.isPluginGranted(pluginId);
   }
 
@@ -11041,7 +11046,7 @@ export class Orchestrator {
    * told about one its granted plugins do not own.
    */
   private isOfferableDomainTool(tool: DomainTool): boolean {
-    return !this.facilitator || this.isPluginGranted(tool.agentId);
+    return !this.grantedToolsOnly || this.isPluginGranted(tool.agentId);
   }
 
   private isToolAvailable(agentId: string | undefined): boolean {
@@ -11167,7 +11172,7 @@ export class Orchestrator {
     // `dispatchToolInner` check: gate on the `agentId` of whichever plugin
     // (if any) registered `memory` via `ctx.tools.registerHandler('memory')`.
     const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
-    if (!this.facilitator && this.isToolAvailable(memoryAgentId)) {
+    if (!this.omitsMemory && this.isToolAvailable(memoryAgentId)) {
       tools.push({ type: MEMORY_TOOL_TYPE, name: MEMORY_TOOL_NAME });
     }
     if (this.knowledgeGraphTool) tools.push(knowledgeGraphToolSpec);

@@ -13,7 +13,7 @@
 
 import {
   isAgentToAgentEnabled,
-  isFacilitatorKind,
+  archetypeOmits,
   type AgentChannelPolicyRow,
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
@@ -96,7 +96,7 @@ export function createPeerGate(deps: PeerPolicyDeps): PeerGate {
     // them, whatever its switches say. This gate sits in front of the roster,
     // every utterance and both ends of a discussion, so one line covers both
     // directions.
-    if (isFacilitatorKind(agent)) return false;
+    if (archetypeOmits(agent, 'agent_to_agent')) return false;
     if (!deps.listChannelPeerPolicies) return false;
     let rows: readonly AgentChannelPolicyRow[];
     try {

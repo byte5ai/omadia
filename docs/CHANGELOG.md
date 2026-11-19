@@ -36,6 +36,40 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Agent archetypes: registry and `agents.archetype` (#2088, #2060, epic #2042)
+
+First of six steps that align native facilitators with the rewritten specs
+(`specs/2042-…` §5.10, `specs/2043-…` §0). Additive: nothing is removed.
+
+- Migration `0070`: table `agent_archetypes` (seeded with `standard` and
+  `facilitator`) and column `agents.archetype`, backfilled from `kind`,
+  fixed at creation. `kind` stays and stays equal: an INSERT that names only
+  one of the two fills the other, so a machine on the previous release still
+  sees a facilitator as one. Dropping `kind` is the last step, not this one.
+- The kernel reads the archetype everywhere. Whether an agent may have
+  something an archetype can leave out (plugin and tool grants, memory, the
+  default-agent role, channel bindings, working modes, the fast lane,
+  agent-to-agent, consultation, internal helpers, assistance) is one
+  question, `archetypeOmits(agent, x)`, answered by the archetype's
+  descriptor. The facilitator's descriptor is seeded by the kernel with
+  exactly the omissions it had. An archetype without a registered descriptor
+  omits everything; it is never run as a standard agent.
+- API: agents carry `archetype` next to `kind`; `POST /operator/agents`
+  accepts `archetype` (and `kind` as before; two different values are
+  refused, an unregistered archetype is refused). plugin-api 1.58.0:
+  `AgentProfile.archetype`.
+- Operator UI and refusal texts use the terms of `docs/terminology.md` on
+  the facilitator pages: archetype / Archetyp, default agent /
+  Standard-Ansprechpartner, working modes / Arbeitsmodi, fast lane /
+  Schnellspur, internal helpers / interne Helfer, archetype plugin /
+  Archetyp-Plugin, Moderation. The persona preset picker says "persona
+  template" / "Persona-Vorlage"; "archetype" now means only the job profile.
+- Roster (#2091, types only): `ConversationRoster.status`
+  (`complete | partial | unknown`), `readAt`, `statusDetail`, and
+  `getRoster(…, { fresh })` on the channel contract (channel-sdk 0.3.3) and
+  on the plugin-facing `conversationRosters` service. A provider that
+  predates `status` gets it derived from `partial`.
+
 ### Fixed — Rollout defects of native facilitators (epic #2043)
 
 - A facilitator's roster is read as the facilitator. The first live

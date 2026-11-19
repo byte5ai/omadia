@@ -99,9 +99,14 @@ import {
   type EngineDrivenConversationLookup,
   type OwnPostCountLookup,
 } from './facilitatorAgent.js';
-import type { AgentKind } from './registry/agentKind.js';
 import {
-  applyKindContract,
+  FACILITATOR_ARCHETYPE,
+  archetypeOmits,
+  type ArchetypeId,
+  type ArchetypeOmission,
+} from './registry/archetype.js';
+import {
+  applyArchetypeContract,
   withFacilitatorNeutrality,
 } from './registry/facilitatorNeutrality.js';
 
@@ -244,15 +249,16 @@ export interface AgentRuntimeConfig {
    */
   readonly grantedPluginIds?: readonly string[];
   /**
-   * #2060 — the agent's kind (`agents.kind`). For a `facilitator` this
-   * factory wires NONE of what would make a moderator partial: no memory tool
-   * or binder, no recall, capture or learning, no knowledge graph, no
-   * calendar tools, no persona skills, no fast path. Its identity ends with
-   * the neutrality contract, its tools are exactly those of its granted
-   * plugins, and outside a group or an engine-run turn its `ChatAgent`
-   * answers with a fixed refusal. Absent = `standard`.
+   * #2088 — the agent's archetype (`agents.archetype`). This factory wires
+   * NOTHING the archetype's descriptor omits (`archetypeOmits`). For a
+   * `facilitator` that is everything that would make a moderator partial: no
+   * memory tool or binder, no recall, capture or learning, no knowledge
+   * graph, no calendar tools, no persona skills, no fast path. Its identity
+   * ends with the neutrality contract, its tools are exactly those of its
+   * granted plugins, and outside a group or an engine-run turn its
+   * `ChatAgent` answers with a fixed refusal. Absent = `standard`.
    */
-  readonly kind?: AgentKind;
+  readonly archetype?: ArchetypeId;
   /** #2043 — the agent's own language (BCP 47), when its identity names one. */
   readonly identityLanguage?: string;
 }
@@ -650,8 +656,12 @@ export function buildOrchestratorForAgent(
   // through THIS bundle's session logger like any other turn.
   // #2060 — a facilitator takes no fast path (it would answer for someone)
   // and is wrapped by the refusal gate instead; see `facilitatorAgent.ts`.
-  const isFacilitator = config.kind === 'facilitator';
-  const fastPathDeps = isFacilitator ? undefined : deps.fastPath;
+  // #2088 — one question per thing left out, answered by the descriptor.
+  const omits = (omission: ArchetypeOmission): boolean => archetypeOmits(config, omission);
+  // The facilitator's own runtime (refusal gate, engine-driven turns,
+  // neutrality contract) is what the archetype ADDS, not an omission.
+  const isFacilitator = config.archetype === FACILITATOR_ARCHETYPE;
+  const fastPathDeps = isFacilitator || omits('fast_path') ? undefined : deps.fastPath;
   const withFastPath = (agent: ChatAgent): ChatAgent =>
     isFacilitator
       ? wrapFacilitatorAgent(agent, {
@@ -772,14 +782,14 @@ export function buildOrchestratorForAgent(
   const askUserChoiceTool = new AskUserChoiceTool();
   const suggestFollowUpsTool = new SuggestFollowUpsTool();
   // #2060 — calendar tools act for a user (delegated tokens); never for a facilitator.
-  const findFreeSlotsTool = deps.microsoft365 && !isFacilitator
+  const findFreeSlotsTool = deps.microsoft365 && !omits('tool_grant')
     ? new FindFreeSlotsTool(
         deps.microsoft365.obo,
         deps.microsoft365.calendar,
         deps.microsoft365.slots,
       )
     : undefined;
-  const bookMeetingTool = deps.microsoft365 && !isFacilitator
+  const bookMeetingTool = deps.microsoft365 && !omits('tool_grant')
     ? new BookMeetingTool(
         deps.microsoft365.obo,
         deps.microsoft365.calendar,
@@ -834,7 +844,7 @@ export function buildOrchestratorForAgent(
   // the name and self-description layered on above, and on every per-family
   // variant. Applied here as well as at compose time so an agent without a
   // stored identity (or with one compiled before the kind existed) has it.
-  const assistantIdentityWithName = applyKindContract(config.kind, layeredIdentity);
+  const assistantIdentityWithName = applyArchetypeContract(config.archetype, layeredIdentity);
   const identityByFamily =
     isFacilitator && config.identityByFamily
       ? Object.fromEntries(
@@ -847,7 +857,7 @@ export function buildOrchestratorForAgent(
   // What a facilitator is built WITHOUT (spec 2043 §2.3). One object so the
   // list is readable in one place; each key is simply not handed to the
   // Orchestrator, which treats absence as "not wired".
-  const memoryAndLearning = isFacilitator
+  const memoryAndLearning = omits('memory')
     ? {}
     : {
         memoryToolHandler,
@@ -877,7 +887,7 @@ export function buildOrchestratorForAgent(
     ...(config.primaryRef ? { primaryRef: config.primaryRef } : {}),
     ...(config.fallbackRef ? { fallbackRef: config.fallbackRef } : {}),
     ...(identityByFamily ? { identityByFamily } : {}),
-    ...(config.kind !== undefined ? { agentKind: config.kind } : {}),
+    archetypeOmissions: { memory: omits('memory'), toolGrant: omits('tool_grant') },
     ...(config.fallbackVisionSupported !== undefined
       ? { fallbackVisionSupported: config.fallbackVisionSupported }
       : {}),
@@ -885,7 +895,7 @@ export function buildOrchestratorForAgent(
     ...(deps.directLineStickyStore
       ? { directLineStickyStore: deps.directLineStickyStore }
       : {}),
-    ...(config.personaSkills?.length && !isFacilitator
+    ...(config.personaSkills?.length && !omits('persona_skill')
       ? { personaSkills: config.personaSkills }
       : {}),
     maxTokens: config.maxTokens,
@@ -909,7 +919,7 @@ export function buildOrchestratorForAgent(
     // #2060 — a facilitator's tools are the engine's and nothing else, on
     // both tool loops: no choice cards, follow-up chips, roster or attachment
     // tool of the kernel (the engine has its own, bound to the facilitation).
-    ...(isFacilitator ? {} : { chatParticipantsTool, askUserChoiceTool }),
+    ...(omits('tool_grant') ? {} : { chatParticipantsTool, askUserChoiceTool }),
     // W2-1 (#544) — both or neither: a store with no replayer would park calls
     // the user can answer but nothing can deliver.
     ...(deps.pendingMcpInput && deps.mcpInputReplay
@@ -918,7 +928,7 @@ export function buildOrchestratorForAgent(
           mcpInputReplay: deps.mcpInputReplay,
         }
       : {}),
-    ...(isFacilitator ? {} : { suggestFollowUpsTool }),
+    ...(omits('tool_grant') ? {} : { suggestFollowUpsTool }),
     ...(findFreeSlotsTool ? { findFreeSlotsTool } : {}),
     ...(bookMeetingTool ? { bookMeetingTool } : {}),
     responseGuard: deps.responseGuard,
@@ -984,7 +994,7 @@ export function buildOrchestratorForAgent(
     ...(deps.turnHookRegistry
       ? { turnHookRegistry: deps.turnHookRegistry }
       : {}),
-    ...(deps.attachmentReader && !isFacilitator
+    ...(deps.attachmentReader && !omits('tool_grant')
       ? { attachmentReader: deps.attachmentReader }
       : {}),
   });

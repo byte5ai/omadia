@@ -1,6 +1,6 @@
 import type { ChatAgent } from '@omadia/channel-sdk';
 
-import { isFacilitatorKind } from '../registry/agentKind.js';
+import { archetypeOmits } from '../registry/archetype.js';
 import type { ActiveAgent, OrchestratorRegistry } from '../registry/index.js';
 
 /**
@@ -152,7 +152,7 @@ export class ChannelResolver {
       // older than the rule) is refused here, so the bot stays quiet rather
       // than lending its name. (The fallback can never be a facilitator: the
       // database refuses it.)
-      if (isFacilitatorKind(direct.agent)) {
+      if (archetypeOmits(direct.agent, 'channel_binding')) {
         this.log(`channelResolver: reject`, {
           channelType,
           channelKey,

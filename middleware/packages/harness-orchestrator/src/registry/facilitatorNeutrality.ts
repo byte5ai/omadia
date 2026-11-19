@@ -17,7 +17,7 @@
  * the block states its own precedence.
  */
 
-import type { AgentKind } from './agentKind.js';
+import { FACILITATOR_ARCHETYPE, type ArchetypeId } from './archetype.js';
 
 export const FACILITATOR_NEUTRALITY_HEADING = '## Neutrality contract (fixed, takes precedence)';
 
@@ -44,10 +44,11 @@ export function withFacilitatorNeutrality(text: string | null | undefined): stri
     : FACILITATOR_NEUTRALITY_BLOCK;
 }
 
-/** The kind-aware form: untouched for a standard agent. */
-export function applyKindContract<T extends string | null | undefined>(
-  kind: AgentKind | undefined,
+/** The role contract of an archetype closes its agents' identity: for the
+ *  facilitator the neutrality block. Untouched for every other archetype. */
+export function applyArchetypeContract<T extends string | null | undefined>(
+  archetype: ArchetypeId | undefined,
   text: T,
 ): T | string {
-  return kind === 'facilitator' ? withFacilitatorNeutrality(text) : text;
+  return archetype === FACILITATOR_ARCHETYPE ? withFacilitatorNeutrality(text) : text;
 }

@@ -14,7 +14,7 @@
  */
 
 import {
-  assertNotFacilitator,
+  assertArchetypeAllows,
   ConfigValidationError,
   type AgentGraphStore,
   type AgentRow,
@@ -565,7 +565,7 @@ export function createAgentBuilderRouter(
     try {
       const agent = await agentOr404(l, str(req.params.slug), res);
       if (!agent) return;
-      assertNotFacilitator(agent, 'sub_agent');
+      assertArchetypeAllows(agent, 'sub_agent');
       const b = req.body ?? {};
       const row = await l.graph.createSubAgent(
         {
@@ -658,7 +658,7 @@ export function createAgentBuilderRouter(
       try {
         const agent = await agentOr404(l, str(req.params.slug), res);
         if (!agent) return;
-        assertNotFacilitator(agent, 'persona_skill');
+        assertArchetypeAllows(agent, 'persona_skill');
         const skillId = str((req.body ?? {}).skillId);
         if (!isUuid(skillId)) {
           res.status(400).json({ error: 'invalid_skill_id' });
@@ -2023,7 +2023,7 @@ export function createAgentBuilderRouter(
         res.status(404).json({ error: 'orchestrator_not_found', agentSlug });
         return;
       }
-      assertNotFacilitator(agent, 'tool_grant');
+      assertArchetypeAllows(agent, 'tool_grant');
       const server = (await l.graph.listMcpServers()).find((s) => s.id === mcpServerId);
       if (!server) {
         res.status(404).json({ error: 'mcp_server_not_found' });
@@ -2658,7 +2658,7 @@ export function createAgentBuilderRouter(
       const agent = await agentOr404(l, str(req.params.slug), res);
       if (!agent) return;
       // A scheduled turn is the agent working on someone's standing order.
-      assertNotFacilitator(agent, 'assistance');
+      assertArchetypeAllows(agent, 'assistance');
       const b = req.body ?? {};
       const row = await l.graph.createSchedule({
         agentId: agent.id,
@@ -2747,7 +2747,7 @@ async function createEdge(
 
   switch (kind) {
     case 'channel_bind': {
-      assertNotFacilitator(agent, 'channel_binding');
+      assertArchetypeAllows(agent, 'channel_binding');
       const { channelType, channelKey } = parseChannel(source);
       await l.config.createChannelBinding(agent.id, { channelType, channelKey });
       return { id: `channel_bind:${channelType}:${channelKey}`, kind, source, target };
@@ -2759,7 +2759,7 @@ async function createEdge(
       return { id: `skill:${subId}`, kind, source: `subagent:${subId}`, target };
     }
     case 'tool_grant': {
-      assertNotFacilitator(agent, 'tool_grant');
+      assertArchetypeAllows(agent, 'tool_grant');
       const onAgent = source.startsWith('agent:');
       const subAgentId = onAgent ? null : idAfter(source, 'subagent');
       const toolKind = (config['toolKind'] as 'native' | 'mcp') ?? 'native';

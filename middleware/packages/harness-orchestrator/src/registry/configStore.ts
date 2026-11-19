@@ -13,6 +13,7 @@ import {
   type AgentToAgentMode,
 } from './agentToAgent.js';
 import { parseAgentKind, type AgentKind } from './agentKind.js';
+import { parseArchetype, type ArchetypeId } from './archetype.js';
 import { parseModelPolicy } from './modelPolicy.js';
 import type { ModelPolicy } from '@omadia/plugin-api';
 
@@ -69,8 +70,17 @@ export interface AgentRow {
    * #2060 — `agents.kind` (migration 0067), fixed at creation. Optional on
    * the row type so pre-existing `AgentRow` fixtures stay valid; absent reads
    * as `'standard'` (see {@link parseAgentKind}).
+   *
+   * @deprecated the legacy column next to {@link archetype}; for output to
+   * clients of the previous contract only. Decide on the archetype.
    */
   readonly kind?: AgentKind;
+  /**
+   * #2088 — `agents.archetype` (migration 0070), fixed at creation. Optional
+   * on the row type for fixtures; read it through `archetypeOf(agent)`,
+   * which falls back to `kind` and then to `'standard'`.
+   */
+  readonly archetype?: ArchetypeId;
   /** Per-agent model routing (Agent Builder P0). Raw JSONB; shaped to
    *  `ModelRoutingConfig` at the API boundary. `null`/absent = inherit
    *  platform default. Optional so pre-existing AgentRow fixtures stay valid. */
@@ -235,7 +245,9 @@ export interface AgentInput {
   /** Reserved, not enforced (#978) — see {@link PrivacyProfile}. */
   readonly privacyProfile?: PrivacyProfile;
   readonly status?: AgentStatus;
-  /** #2060 — only settable here: the kind is fixed at creation. */
+  /** #2088 — only settable here: the archetype is fixed at creation. */
+  readonly archetype?: ArchetypeId;
+  /** @deprecated the previous name of {@link archetype}; used when that is absent. */
   readonly kind?: AgentKind;
 }
 
@@ -379,6 +391,8 @@ interface AgentDbRow {
   status: AgentStatus;
   /** #2060 — `agents.kind`; absent on a DB that predates migration 0067. */
   kind?: string | null;
+  /** #2088 — `agents.archetype`; absent on a DB that predates migration 0070. */
+  archetype?: string | null;
   model_routing: Record<string, unknown> | null;
   canvas_position: CanvasPosition | null;
   /** W5 — `agents.context_memory`; absent on a DB that predates migration 0050. */
@@ -474,7 +488,8 @@ function mapAgent(row: AgentDbRow): AgentRow {
     description: row.description,
     privacyProfile: row.privacy_profile,
     status: row.status,
-    kind: parseAgentKind(row.kind),
+    kind: parseAgentKind(parseArchetype(row.archetype, row.kind)),
+    archetype: parseArchetype(row.archetype, row.kind),
     modelRouting: row.model_routing ?? null,
     canvasPosition: row.canvas_position ?? null,
     contextMemory: parseContextMemoryMode(row.context_memory),
@@ -604,7 +619,8 @@ export class ConfigStore {
     }
     try {
       const { rows } = await this.pool.query<AgentDbRow>(
-        `INSERT INTO agents (slug, name, description, privacy_profile, status, kind)
+        // `archetype` only: the sync trigger of 0070 fills the legacy `kind`.
+        `INSERT INTO agents (slug, name, description, privacy_profile, status, archetype)
          VALUES ($1, $2, $3, COALESCE($4, 'default'), COALESCE($5, 'enabled'), COALESCE($6, 'standard'))
          RETURNING *`,
         [
@@ -613,7 +629,7 @@ export class ConfigStore {
           input.description ?? null,
           input.privacyProfile ?? null,
           input.status ?? null,
-          input.kind ?? null,
+          input.archetype ?? input.kind ?? null,
         ],
       );
       // INSERT ... RETURNING with non-zero rowcount always yields exactly

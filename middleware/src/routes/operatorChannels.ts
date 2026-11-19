@@ -3,7 +3,9 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 
 import {
-  assertNotFacilitator,
+  archetypeOf,
+  assertArchetypeAllows,
+  parseAgentKind,
   ConfigValidationError,
   type ChannelIdentityRow,
   type ConfigStore,
@@ -206,7 +208,12 @@ export function createOperatorChannelsRouter(
           // #2043 — `kind` rides along so the dashboard can leave
           // facilitators out of the binding picker without a second request
           // (a binding to one is refused anyway).
-          .map((a) => ({ slug: a.slug, name: a.name, kind: a.kind ?? 'standard' })),
+          .map((a) => ({
+            slug: a.slug,
+            name: a.name,
+            kind: parseAgentKind(archetypeOf(a)),
+            archetype: archetypeOf(a),
+          })),
         fallback_slug,
         directory_types: live.directory.types(),
       });
@@ -248,7 +255,7 @@ export function createOperatorChannelsRouter(
         return;
       }
       // #2060 — never a binding to a facilitator; it has its own bot or none.
-      assertNotFacilitator(target, 'channel_binding');
+      assertArchetypeAllows(target, 'channel_binding');
 
       // A PROVISIONED BOT IS NOT A FREE CHANNEL KEY.
       //
