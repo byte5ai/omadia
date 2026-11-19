@@ -12,6 +12,7 @@
 // feature-detect (older kernels and installs without Postgres do not have it).
 // Shapes are plugin-api-own (dependency direction: channel-sdk -> plugin-api).
 
+import type { SendAuthorization } from './conversationSend.js';
 import type { CardAnswerValue } from './questionCard.js';
 
 export const CONVERSATION_MESSAGES_SERVICE_NAME = 'conversationMessages';
@@ -250,4 +251,45 @@ export interface ProcessConversationMessagesService {
    * the process has no subscription here.
    */
   bindMessage(scope: ProcessMessageScope, ref: { messageId?: string; cardId?: string }): Promise<boolean>;
+  /**
+   * #2089 (spec 2043 §5.3) — private messages to the agent. Optional —
+   * feature-detect.
+   *
+   * A message a person writes to the agent in a private chat reaches the
+   * handler only when that person is a person target of an open execution
+   * scope of one of the caller's processes of this agent. The handler decides
+   * what it is: a status request it answers (`handled: true` with the text
+   * and the scope the answer is drawn from), or nothing of the facilitation
+   * (`handled: false`). The kernel takes the authorization for the answer
+   * (a direct message to that person under that scope; a `status_only`
+   * person gets a `status` answer only) and gives the text as the agent's
+   * answer in that private chat. Declined, not authorized, or from anybody
+   * else: the agent's ordinary answer to a private request, as before.
+   */
+  onPrivateMessage?(
+    agentSlug: string,
+    handler: (request: PrivateMessageRequest) => Promise<PrivateMessageReply>,
+  ): () => void;
 }
+
+export interface PrivateMessageRequest {
+  agentSlug: string;
+  channelType: string;
+  /** The author's platform id, as the turn states it (compare lower-cased). */
+  principalId: string;
+  text: string;
+  /** The caller's processes of this agent whose open scopes list the author.
+   *  Several: the handler asks which one is meant, or answers for each. */
+  processIds: readonly string[];
+}
+
+export type PrivateMessageReply =
+  | { handled: false }
+  | {
+      handled: true;
+      /** The answer, given in the private chat as the agent. */
+      text: string;
+      /** The scope the answer is drawn from; `purpose` is `status` for a
+       *  status answer. */
+      authorization: SendAuthorization;
+    };

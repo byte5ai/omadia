@@ -433,6 +433,7 @@ import { wireSessionCapabilities } from './channels/sessionCapabilities/wiring.j
 import { attachEngineToFacilitators } from './platform/facilitatorEngineAttach.js';
 import { createArchetypeRegistrySync } from './platform/archetypeRegistrySync.js';
 import { wireExecutionAuthorization, type ExecutionWiring } from './execution/wiring.js';
+import { PrivateMessageRouter } from './channels/privateMessageRouter.js';
 import { createArchetypeDatabase } from './platform/archetypeDatabase.js';
 import { pluginRuntimeOf } from './plugins/pluginRuntimeOf.js';
 import { createAgentEndOfService, logOwedSystemNotice } from './platform/agentEndOfService.js';
@@ -843,6 +844,14 @@ async function main(): Promise<void> {
   const conversationMessagesRef: { current?: ConversationMessagesWiring } = {};
   // #2090 — set once the database pool exists (execution scopes, reservations).
   const executionRef: { current?: ExecutionWiring } = {};
+  // #2089 — private messages of a running process's participants to its
+  // agent. Without a database nobody is listed by a scope, so nothing routes.
+  const privateMessageRouter = new PrivateMessageRouter({
+    processesListingPerson: async (input) =>
+      (await executionRef.current?.store.processesListingPerson(input)) ?? [],
+    executionFor: (pluginId) => executionRef.current?.serviceFor(pluginId),
+    log: (m) => console.log(m),
+  });
   // #2043 — channel readiness providers and meeting sources (same lifecycle).
   const readinessProviderRegistry = new ChannelProviderRegistry<ChannelReadinessProvider>(
     'readiness',
@@ -4896,6 +4905,7 @@ async function main(): Promise<void> {
       engineSources: facilitationEngineSources,
       reportedEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
       ownPosts: ownIdentityPostLog,
+      getPrivateMessages: () => privateMessageRouter,
     }),
   );
   const sessionCapabilityHub = wireSessionCapabilities({
@@ -5102,6 +5112,7 @@ async function main(): Promise<void> {
       purgeIntervalMs: config.CONVERSATION_MESSAGES_PURGE_INTERVAL_MS,
       // #2089 — a process reads a conversation by its execution scopes and
       // its reservation.
+      privateMessages: privateMessageRouter,
       processAccess: (process) => {
         const store = executionRef.current?.store;
         if (!store) return Promise.reject(new Error('the execution store is not available'));

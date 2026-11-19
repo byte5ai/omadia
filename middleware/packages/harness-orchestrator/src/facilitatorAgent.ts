@@ -162,7 +162,20 @@ export interface FacilitatorRuntimeLookup {
    *  identity so far (a counter, only ever compared with itself). Optional:
    *  an older kernel does not count. */
   ownPostCount?: OwnPostCountLookup;
+  /** #2089 — see {@link PrivateTurnLookup}. Optional: an older kernel
+   *  answers every private request with the fixed refusal. */
+  privateTurn?: PrivateTurnLookup;
 }
+
+/**
+ * #2089 — a private message to the facilitator from a person who takes part
+ * in one of its running processes: the answer of that process, or
+ * `undefined` when none takes the message (then the fixed refusal is given).
+ */
+export type PrivateTurnLookup = (
+  agentSlug: string,
+  message: { channelType: string; principalId: string; text: string },
+) => Promise<string | undefined>;
 
 export type OwnPostCountLookup = (
   agentSlug: string,
@@ -199,6 +212,12 @@ export interface FacilitatorAgentDeps {
    * nothing (the setup is still being agreed) keeps its answer.
    */
   readonly ownPostCount?: OwnPostCountLookup;
+  /**
+   * #2089 — asked for a request that is not from a group, before the fixed
+   * refusal: a participant of a running facilitation gets that
+   * facilitation's status in the private chat (spec 2043 §5.3).
+   */
+  readonly privateTurn?: PrivateTurnLookup;
   /**
    * The AI disclosure of this agent's turn answers (resolution and first-turn
    * fold of its orchestrator). The fixed texts below never reach the model or
@@ -315,6 +334,34 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
     );
     return true;
   };
+  /** The answer of a running process to a private message, marked like every
+   *  other answer of this agent; `undefined` when no process takes it. */
+  const privateAnswer = async (
+    input: ChatTurnInput,
+  ): Promise<{ readonly answer: string; readonly aiDisclosure?: AiDisclosure } | undefined> => {
+    const { privateTurn, agentSlug } = deps;
+    const principal = input.origin?.principal;
+    if (!privateTurn || !agentSlug || !input.origin || principal?.kind !== 'user') return undefined;
+    let answer: string | undefined;
+    try {
+      answer = await privateTurn(agentSlug, {
+        channelType: input.origin.channelType,
+        principalId: principal.userId,
+        text: input.userMessage,
+      });
+    } catch (err) {
+      deps.log?.(`[facilitator] private message lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+    if (answer === undefined || answer.length === 0) return undefined;
+    deps.log?.(`[facilitator] '${agentSlug}' answered a participant's private message from a running process`);
+    if (!deps.disclose) return { answer };
+    try {
+      return deps.disclose(answer, input);
+    } catch {
+      return { answer };
+    }
+  };
   return {
     async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
       const disposition = dispose(input);
@@ -324,7 +371,7 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
         const answer = await inner.chat(withGroupStatement(input));
         return watch && enginePostedSince(input, before) ? { ...answer, text: '' } : answer;
       }
-      const fixed = fixedAnswer(disposition, input);
+      const fixed = (disposition === 'refuse' ? await privateAnswer(input) : undefined) ?? fixedAnswer(disposition, input);
       return {
         ...toSemanticAnswer({ answer: fixed.answer, toolCalls: 0, iterations: 0 }),
         ...(fixed.aiDisclosure ? { aiDisclosure: fixed.aiDisclosure } : {}),
@@ -351,7 +398,7 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
         }
         return;
       }
-      const fixed = fixedAnswer(disposition, input);
+      const fixed = (disposition === 'refuse' ? await privateAnswer(input) : undefined) ?? fixedAnswer(disposition, input);
       if (fixed.answer.length > 0) yield { type: 'text_delta', text: fixed.answer };
       yield {
         type: 'done',

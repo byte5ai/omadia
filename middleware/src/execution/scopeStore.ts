@@ -492,6 +492,28 @@ export class ExecutionScopeStore {
     return { reserved: row?.reserved === true, everReserved: row?.ever_reserved === true, openScope: row?.open_scope === true };
   }
 
+  /**
+   * #2089 — the processes of an agent whose open scopes list this person as a
+   * target: who may be answered in a private chat, and about which process.
+   */
+  async processesListingPerson(input: {
+    agentId: string;
+    channelType: string;
+    principalId: string;
+  }): Promise<{ pluginId: string; processId: string }[]> {
+    const res = await this.pool.query<{ plugin_id: string; process_id: string }>(
+      `SELECT DISTINCT sc.plugin_id, sc.process_id FROM execution_scopes sc
+        WHERE sc.agent_id = $1 AND sc.state = 'open' AND sc.deadline > now()
+          AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(sc.targets) t
+             WHERE t->>'kind' = 'person' AND t->>'channelType' = $2
+               AND lower(t->>'principalId') = lower($3))
+        ORDER BY 1, 2`,
+      [input.agentId, input.channelType, input.principalId],
+    );
+    return res.rows.map((r) => ({ pluginId: r.plugin_id, processId: r.process_id }));
+  }
+
   // ── revocation ──────────────────────────────────────────────────────────
 
   /** End every open scope and release every reservation of an agent (end of
