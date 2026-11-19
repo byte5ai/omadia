@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,7 +11,8 @@ import { ExecutionControlSection } from '../ExecutionControl';
  * #2090 — the operator sees what archetype plugins are currently allowed to
  * do, and stops it for the instance, one agent or one process.
  */
-const { mockOverview, mockSet, mockClear, mockStopDiscussion } = vi.hoisted(() => ({
+const { mockOverview, mockSet, mockClear, mockStopDiscussion, mockRelease } = vi.hoisted(() => ({
+  mockRelease: vi.fn(),
   mockStopDiscussion: vi.fn(),
   mockOverview: vi.fn(),
   mockSet: vi.fn(),
@@ -24,6 +25,7 @@ vi.mock('../../../../_lib/agents', async (importOriginal) => ({
   setKillSwitch: mockSet,
   clearKillSwitch: mockClear,
   stopDiscussion: mockStopDiscussion,
+  releaseReservation: mockRelease,
 }));
 
 const scope = (over: Partial<ExecutionScopeDto> = {}): ExecutionScopeDto => ({
@@ -220,5 +222,58 @@ describe('<ExecutionControlSection />', () => {
     mockOverview.mockResolvedValue(overview({ discussions_failed: true }));
     renderWithIntl(<ExecutionControlSection refreshKey={0} />);
     expect(await screen.findByText('The running agent discussions could not be loaded.')).toBeInTheDocument();
+  });
+
+  it('lists a held conversation although nothing runs, and releases it only after the operator confirmed (D34)', async () => {
+    mockOverview.mockResolvedValue(
+      overview({
+        reservations: [
+          {
+            id: 'res-1',
+            channel_type: 'teams',
+            conversation_id: '19:stale@thread.v2',
+            holder_kind: 'agent_discussion',
+            agent_slug: null,
+            plugin_id: null,
+            process_id: 'discussion:17',
+            role: 'home',
+            reserved_at: '2026-11-19T06:00:00.000Z',
+          },
+          {
+            id: 'res-2',
+            channel_type: 'teams',
+            conversation_id: '19:offsite@thread.v2',
+            holder_kind: 'archetype_process',
+            agent_slug: 'mara',
+            plugin_id: '@omadia/agent-facilitator',
+            process_id: 'fac-7',
+            role: 'home',
+            reserved_at: '2026-11-19T06:00:00.000Z',
+          },
+        ],
+      }),
+    );
+    mockRelease.mockResolvedValue({ ok: true });
+    const user = userEvent.setup();
+    renderWithIntl(<ExecutionControlSection refreshKey={0} />);
+    expect(await screen.findByText('Held conversations')).toBeInTheDocument();
+    expect(screen.getByText(/held by an agent discussion since/)).toBeInTheDocument();
+    expect(screen.getByText(/held by mara, process fac-7, since/)).toBeInTheDocument();
+
+    const row = screen.getByTestId('held-reservation-res-1');
+    await user.click(within(row).getByRole('button', { name: 'Release' }));
+    await user.click(within(row).getByRole('button', { name: 'Keep it held' }));
+    expect(mockRelease).not.toHaveBeenCalled();
+    await user.click(within(row).getByRole('button', { name: 'Release' }));
+    await user.click(within(row).getByRole('button', { name: 'Yes, release' }));
+    expect(mockRelease).toHaveBeenCalledWith('res-1');
+    await waitFor(() => expect(mockOverview).toHaveBeenCalledTimes(2));
+  });
+
+  it('shows no held conversations on a middleware that does not list them', async () => {
+    mockOverview.mockResolvedValue(overview({ scopes: [scope()] }));
+    renderWithIntl(<ExecutionControlSection refreshKey={0} />);
+    await screen.findByText('mara: active (process fac-7)');
+    expect(screen.queryByTestId('held-reservations')).toBeNull();
   });
 });

@@ -36,6 +36,29 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Two findings of the rollout of facilitator 1.5.0 (#2089, #2090, epic #2043): D35, D34
+
+- **A facilitation's model turns were refused (D35).** Every model turn
+  that answered a message was refused with "the inbound event is not a
+  stored message of this conversation for this agent". The kernel looked the
+  message up only among subscriptions that belong to no process; an engine
+  that reads through its processes' own subscriptions (facilitator 1.5.0) has
+  none of those. The message is now looked up among the events of the turn's
+  own process. Another process's event is still refused, also for the same
+  plugin.
+- **Conversations held by discussions that were not running (D34).** The
+  migration that introduced conversation reservations gave one to every
+  leftover row of the old facilitation path, so a facilitation could not
+  start there until the rows expired, and nothing listed them. Migration
+  0078 releases every discussion reservation no running discussion stands
+  behind; the periodic sweep does the same from now on.
+- **Every held conversation is visible and can be released.** "Running
+  processes" on the Agents page lists the conversations that are held right
+  now, by a process or by a discussion, with "Release". Releasing frees the
+  conversation and ends nothing. `GET /api/v1/operator/execution` returns
+  `reservations`; `POST /api/v1/operator/execution/reservations/:id/release`
+  releases one (audit action `execution.reservation_release`).
+
 ### Fixed — Rollout findings around archetype plugins and the agent directory (#2088, epic #2042): D32, D33
 
 - **An update that changes what a plugin is asks first (D32).** Updating an

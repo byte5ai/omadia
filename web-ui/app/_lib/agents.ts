@@ -355,12 +355,28 @@ export interface RunningDiscussionDto {
   incomplete: boolean;
 }
 
+/** A conversation that is held right now: no other process or discussion
+ *  starts there until it is released. */
+export interface HeldReservationDto {
+  id: string;
+  channel_type: string;
+  conversation_id: string;
+  holder_kind: 'archetype_process' | 'agent_discussion';
+  agent_slug: string | null;
+  plugin_id: string | null;
+  process_id: string;
+  role: 'home' | 'session';
+  reserved_at: string;
+}
+
 export interface ExecutionOverviewDto {
   kill_switches: KillSwitchDto[];
   scopes: ExecutionScopeDto[];
   discussions: RunningDiscussionDto[];
   /** The discussion listing failed; `discussions` is empty for that reason. */
   discussions_failed: boolean;
+  /** Absent on a middleware that predates the listing. */
+  reservations?: HeldReservationDto[];
 }
 
 export async function getExecutionOverview(): Promise<ExecutionOverviewDto> {
@@ -380,6 +396,12 @@ export async function setKillSwitch(input: {
 
 export async function clearKillSwitch(id: string): Promise<{ ok: boolean }> {
   return callJson(`/v1/operator/execution/kill-switches/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** Frees a held conversation for the next process. Ends no process and no
+ *  discussion. */
+export async function releaseReservation(id: string): Promise<{ ok: boolean }> {
+  return callJson(`/v1/operator/execution/reservations/${encodeURIComponent(id)}/release`, { method: 'POST' });
 }
 
 /** Cancels a running agent discussion and releases its conversation. Final. */

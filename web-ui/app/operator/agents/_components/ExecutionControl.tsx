@@ -9,11 +9,13 @@ import {
   clearKillSwitch,
   getExecutionOverview,
   setKillSwitch,
+  releaseReservation,
   stopDiscussion,
   type ExecutionOverviewDto,
   type ExecutionScopeDto,
   type KillSwitchDto,
 } from '../../../_lib/agents';
+import { HeldReservations } from './HeldReservations';
 import { RunningDiscussions } from './RunningDiscussions';
 
 const KIND_KEY = {
@@ -69,7 +71,10 @@ export function ExecutionControlSection({ refreshKey }: { refreshKey: number }):
   if (state.kind === 'loading') return null;
   if (state.kind === 'loaded') {
     const { scopes, kill_switches: switches, discussions, discussions_failed: discussionsFailed } = state.data;
-    if (scopes.length === 0 && switches.length === 0 && discussions.length === 0 && !discussionsFailed) return null;
+    const reservations = state.data.reservations ?? [];
+    if (scopes.length === 0 && switches.length === 0 && discussions.length === 0 && !discussionsFailed && reservations.length === 0) {
+      return null;
+    }
   }
 
   function act(work: () => Promise<unknown>): void {
@@ -190,6 +195,11 @@ export function ExecutionControlSection({ refreshKey }: { refreshKey: number }):
             loadFailed={data.discussions_failed}
             busy={busy}
             onStop={(workflowId) => act(() => stopDiscussion(workflowId))}
+          />
+          <HeldReservations
+            reservations={data.reservations ?? []}
+            busy={busy}
+            onRelease={(id) => act(() => releaseReservation(id))}
           />
         </>
       )}

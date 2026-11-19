@@ -4570,6 +4570,13 @@ async function main(): Promise<void> {
         return new Map((store ? await store.listAgents() : []).map((agent) => [agent.id, agent.slug]));
       },
       discussions: () => discussionAdminRef.current,
+      onAccessChanged: () => {
+        void conversationMessagesRef.current?.reconcileNow().catch((err: unknown) => {
+          console.log(
+            `[conversation-messages] reconcile after a released reservation failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+      },
       audit: async (entry) => {
         await adminAudit?.record(entry);
       },

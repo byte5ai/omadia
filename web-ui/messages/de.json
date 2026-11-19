@@ -2997,7 +2997,15 @@
       "discussionStop": "Diskussion beenden",
       "discussionStopConfirm": "Diese Diskussion endgültig beenden?",
       "discussionStopYes": "Ja, beenden",
-      "discussionStopNo": "Weiterlaufen lassen"
+      "discussionStopNo": "Weiterlaufen lassen",
+      "reservationsHeading": "Belegte Unterhaltungen",
+      "reservationsIntro": "Eine Unterhaltung hat immer nur einen Inhaber: einen laufenden Prozess oder eine Agenten-Diskussion. Solange sie belegt ist, startet dort nichts anderes. Freigeben macht die Unterhaltung frei und beendet nichts; ein Prozess, der dort alle Nachrichten gelesen hat, bekommt danach nur noch die, die seinen Agenten ansprechen.",
+      "reservationHeldByDiscussion": "belegt durch eine Agenten-Diskussion seit {when}",
+      "reservationHeldByProcess": "belegt durch {agent}, Prozess {process}, seit {when}",
+      "reservationRelease": "Freigeben",
+      "reservationReleaseConfirm": "Diese Unterhaltung für andere Prozesse freigeben?",
+      "reservationReleaseYes": "Ja, freigeben",
+      "reservationReleaseNo": "Belegt lassen"
     },
     "deletedAgents": {
       "heading": "Gelöschte Agenten",

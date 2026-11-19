@@ -74,6 +74,8 @@ export type AuditAction =
   // #2090 — the operator's kill switch for the actions of archetype plugins
   // (instance, one agent, one process): set and cleared.
   | 'execution.kill_switch_set'
+  // D34 — an operator released a held conversation reservation.
+  | 'execution.reservation_release'
   | 'execution.kill_switch_clear'
   | 'plugin.uninstall'
   // #1510/#1508 — a plugin's Privacy Shield setting (`_privacy_mode`,
