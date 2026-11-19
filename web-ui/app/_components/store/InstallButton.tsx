@@ -52,6 +52,7 @@ import {
 } from './setupForm';
 import { Markdown } from '../Markdown';
 import { Button } from '@/app/_components/ui/Button';
+import { ConfirmDialog } from '@/app/_components/ConfirmDialog';
 import { parsePluginArchetype, type PluginArchetype } from '@/app/_lib/archetypes';
 
 import { ArchetypeInstallConfirm } from './ArchetypeInstallConfirm';
@@ -595,12 +596,17 @@ function InstalledPanel({
     | null
   >(null);
 
-  async function doUpdate(): Promise<void> {
+  // #2088 (D32) — an update that changes what the plugin is to the instance
+  // is refused until confirmed; the refusal says what is being confirmed.
+  const [updateConfirm, setUpdateConfirm] = useState<{ reasons: ArchetypeUpdateReason[] } | null>(null);
+
+  async function doUpdate(confirmArchetype = false): Promise<void> {
     if (!update) return;
     setUpdating(true);
     setUpdateError(null);
     try {
-      const res = await installFromRegistry(pluginId, update.to);
+      const res = await installFromRegistry(pluginId, update.to, confirmArchetype ? { confirmArchetype: true } : {});
+      setUpdateConfirm(null);
       // #1452 — the ingest succeeded and the new version did not come up. The
       // middleware has flipped the registry entry to `errored`, so the refresh
       // below now repaints an honest badge; naming the reason here is what
@@ -622,6 +628,14 @@ function InstalledPanel({
       }
       router.refresh();
     } catch (err) {
+      if (err instanceof ApiError && err.status === 409 && !confirmArchetype) {
+        const parsed = tryParseErrorBody(err.body);
+        if (parsed?.code === 'package.archetype_confirmation_required') {
+          setUpdateConfirm({ reasons: parseArchetypeUpdateReasons(parsed.details) });
+          return;
+        }
+      }
+      setUpdateConfirm(null);
       // #1477 — e.g. a refused downgrade or an incompatible core, now with
       // the same code + params as the upload, in the operator's locale.
       // #1518 — an unreachable registry has its own copy, checked first.
@@ -713,6 +727,26 @@ function InstalledPanel({
         <p className="font-mono-num text-[11px] text-[color:var(--danger,#b03030)]">
           {updateError.message}
         </p>
+      ) : null}
+      {update ? (
+        <ConfirmDialog
+          open={updateConfirm !== null}
+          tone="danger"
+          title={t('updateConfirmTitle', { name: pluginName, version: update.to })}
+          confirmLabel={t('updateConfirmYes')}
+          cancelLabel={t('updateConfirmNo')}
+          busy={updating}
+          busyLabel={t('updating')}
+          onConfirm={() => void doUpdate(true)}
+          onCancel={() => setUpdateConfirm(null)}
+        >
+          <p className="text-[13px]">{t('updateConfirmIntro')}</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-[13px]" data-testid="archetype-update-reasons">
+            {(updateConfirm?.reasons ?? []).map((reason) => (
+              <li key={reason}>{t(UPDATE_REASON_KEY[reason])}</li>
+            ))}
+          </ul>
+        </ConfirmDialog>
       ) : null}
       {update ? (
         <div className="rounded-md border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-4 py-3">
@@ -1226,6 +1260,22 @@ function InstallErrorBlock({
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+type ArchetypeUpdateReason = 'becomes_archetype' | 'descriptor_changed' | 'moves_database';
+
+const UPDATE_REASON_KEY = {
+  becomes_archetype: 'updateReasonBecomesArchetype',
+  descriptor_changed: 'updateReasonDescriptorChanged',
+  moves_database: 'updateReasonMovesDatabase',
+} as const;
+
+/** The reasons the middleware names; one it does not know is dropped, and an
+ *  empty list still opens the dialog (the confirmation is required either way). */
+function parseArchetypeUpdateReasons(details: unknown): ArchetypeUpdateReason[] {
+  const raw = (details as { reasons?: unknown } | undefined)?.reasons;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((r): r is ArchetypeUpdateReason => typeof r === 'string' && r in UPDATE_REASON_KEY);
+}
 
 function tryParseErrorBody(body: string): {
   code?: string;

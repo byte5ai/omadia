@@ -4723,7 +4723,14 @@
       "removePackageYes": "Yes, remove",
       "removingPackage": "Removing …",
       "removePackageFailed": "The package could not be removed: {message}",
-      "uninstallBlockedByPolicy": "Uninstall is blocked: this is the only Privacy Shield, and the org policy OMADIA_PRIVACY_FORCE_GUARDED requires masking."
+      "uninstallBlockedByPolicy": "Uninstall is blocked: this is the only Privacy Shield, and the org policy OMADIA_PRIVACY_FORCE_GUARDED requires masking.",
+      "updateConfirmTitle": "Update {name} to {version}?",
+      "updateConfirmIntro": "This update changes more than the version. Confirm that you want it:",
+      "updateReasonBecomesArchetype": "The plugin becomes an archetype plugin: it adds a kind of agent to this instance, and what those agents may do and never get is decided by the plugin, not by per-agent grants.",
+      "updateReasonDescriptorChanged": "The plugin changes what agents of its archetype may do and what they never get.",
+      "updateReasonMovesDatabase": "The plugin moves its tables into its own database schema. This happens once and cannot be undone: the version installed now cannot read them afterwards.",
+      "updateConfirmYes": "Update now",
+      "updateConfirmNo": "Do not update"
     },
     "auditMode": {
       "singleHostHelp": "Only the hosts declared in the manifest.",
@@ -4853,9 +4860,11 @@
         "zipForbiddenExtension": "The archive contains a file type that is not allowed in a plugin package: {entry}.",
         "zipTooManyEntries": "The archive contains too many files.",
         "zipFileTooLarge": "A file in the archive is too large once unpacked.",
-        "zipTotalTooLarge": "The unpacked archive exceeds the size limit."
+        "zipTotalTooLarge": "The unpacked archive exceeds the size limit.",
+        "archetypeConfirmationRequired": "Version {toVersion} of {pluginId} changes more than the version of the installed {fromVersion}: it makes the plugin an archetype plugin, changes what agents of its archetype may do, or moves its tables into its own database schema for good. Confirm the update explicitly."
       },
-      "replacedVersion": "Replaced the previously uploaded version {previous}."
+      "replacedVersion": "Replaced the previously uploaded version {previous}.",
+      "confirmArchetypeUpdate": "Update anyway"
     },
     "setupForm": {
       "enable": "Enable",

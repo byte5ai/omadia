@@ -4723,7 +4723,14 @@
       "removePackageYes": "Ja, entfernen",
       "removingPackage": "Wird entfernt …",
       "removePackageFailed": "Das Paket konnte nicht entfernt werden: {message}",
-      "uninstallBlockedByPolicy": "Deinstallation gesperrt: Das ist der einzige Privacy Shield, und die Org-Richtlinie OMADIA_PRIVACY_FORCE_GUARDED verlangt Maskierung."
+      "uninstallBlockedByPolicy": "Deinstallation gesperrt: Das ist der einzige Privacy Shield, und die Org-Richtlinie OMADIA_PRIVACY_FORCE_GUARDED verlangt Maskierung.",
+      "updateConfirmTitle": "{name} auf {version} aktualisieren?",
+      "updateConfirmIntro": "Dieses Update ändert mehr als die Version. Bestätige, dass du das willst:",
+      "updateReasonBecomesArchetype": "Das Plugin wird zum Archetyp-Plugin: Es fügt dieser Instanz eine Art von Agenten hinzu, und was diese Agenten dürfen und nie bekommen, legt das Plugin fest, nicht einzelne Freigaben pro Agent.",
+      "updateReasonDescriptorChanged": "Das Plugin ändert, was Agenten seines Archetyps dürfen und was sie nie bekommen.",
+      "updateReasonMovesDatabase": "Das Plugin verschiebt seine Tabellen in ein eigenes Datenbankschema. Das passiert einmal und lässt sich nicht rückgängig machen: Die jetzt installierte Version kann sie danach nicht mehr lesen.",
+      "updateConfirmYes": "Jetzt aktualisieren",
+      "updateConfirmNo": "Nicht aktualisieren"
     },
     "auditMode": {
       "singleHostHelp": "Nur die im Manifest deklarierten Hosts.",
@@ -4853,9 +4860,11 @@
         "zipForbiddenExtension": "Das Archiv enthält einen Dateityp, der in einem Plugin-Paket nicht erlaubt ist: {entry}.",
         "zipTooManyEntries": "Das Archiv enthält zu viele Dateien.",
         "zipFileTooLarge": "Eine Datei im Archiv ist entpackt zu groß.",
-        "zipTotalTooLarge": "Das entpackte Archiv überschreitet die Größengrenze."
+        "zipTotalTooLarge": "Das entpackte Archiv überschreitet die Größengrenze.",
+        "archetypeConfirmationRequired": "Version {toVersion} von {pluginId} ändert mehr als die Version der installierten {fromVersion}: Sie macht das Plugin zum Archetyp-Plugin, ändert, was Agenten seines Archetyps dürfen, oder verschiebt seine Tabellen endgültig in ein eigenes Datenbankschema. Bestätige das Update ausdrücklich."
       },
-      "replacedVersion": "Die zuvor hochgeladene Version {previous} wurde ersetzt."
+      "replacedVersion": "Die zuvor hochgeladene Version {previous} wurde ersetzt.",
+      "confirmArchetypeUpdate": "Trotzdem aktualisieren"
     },
     "setupForm": {
       "enable": "Aktivieren",

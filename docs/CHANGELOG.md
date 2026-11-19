@@ -38,6 +38,15 @@ changelog.
 
 ### Fixed — Rollout findings around archetype plugins and the agent directory (#2088, epic #2042): D32, D33
 
+- **An update that changes what a plugin is asks first (D32).** Updating an
+  installed plugin used to swap the running version at once, also when the
+  new version made it an archetype plugin, changed what agents of its
+  archetype may do, or moved its tables into its own database schema for
+  good. Such an update is now refused until confirmed
+  (`package.archetype_confirmation_required`, 409), from the Hub and from a
+  ZIP alike. The store names what is being confirmed and offers "Update now"
+  or "Do not update". A plain version bump of an archetype plugin asks
+  nothing. API callers send `confirm_archetype=1`.
 - **The agent directory uses the app's own dialogs (D33).** Deleting an
   agent, removing a deleted agent for good, ending an agent's sessions and
   rehydrating the standard orchestrator asked through the browser's
