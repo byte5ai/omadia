@@ -55,7 +55,11 @@ jobs:
   middleware:
     name: middleware (lint + typecheck + test)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 15 minutes was too tight: the unit suite alone runs 9 to 10 minutes on
+    # the runner, and `test:pg` starts after it. Two runs were cancelled by
+    # the limit in the middle of `test:pg` (2026-11-19), which reads as a hang
+    # and is not a test failure.
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: middleware
