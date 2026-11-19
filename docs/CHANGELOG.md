@@ -36,6 +36,15 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Rollout findings around archetype plugins and the agent directory (#2088, epic #2042): D32, D33
+
+- **The agent directory uses the app's own dialogs (D33).** Deleting an
+  agent, removing a deleted agent for good, ending an agent's sessions and
+  rehydrating the standard orchestrator asked through the browser's
+  `confirm()` and `prompt()`. They now ask in the app's dialog. Removing a
+  recently deleted agent still needs its slug typed; the button stays
+  disabled until it matches.
+
 ### Added — One answer to a mention while a facilitation is in follow-up (#2089, epic #2043): K4.8
 
 - **The problem:** a facilitation in follow-up listens for messages that

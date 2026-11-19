@@ -3009,7 +3009,6 @@
       "purging": "Wird entfernt",
       "purgeConfirm": "„{slug}“ endgültig entfernen? Identität, Freigaben, Zuordnungen und Zeitpläne werden mitgelöscht. Das lässt sich nicht rückgängig machen.",
       "purgeTypeSlug": "Dieser Agent wurde vor weniger als {days, plural, one {# Tag} other {# Tagen}} gelöscht. Tippe seinen Slug „{slug}“ ein, um ihn jetzt zu entfernen:",
-      "purgeMismatch": "Das ist nicht der Slug. Es wurde nichts entfernt.",
       "purgeableFrom": "ohne Eingabe des Slugs entfernbar ab {when}"
     },
     "archetype": {
@@ -3109,7 +3108,12 @@
         "kindHeading": "Facilitator"
       },
       "facilitationsViewLink": "Laufende Moderationen öffnen ({label})"
-    }
+    },
+    "confirmAction": {
+      "cancel": "Abbrechen",
+      "typedMismatch": "Das ist nicht der Slug."
+    },
+    "rehydrateConfirmYes": "Rehydrieren"
   },
   "builder": {
     "issueReport": {

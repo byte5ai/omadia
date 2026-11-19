@@ -11,6 +11,7 @@ import {
   type DeletedAgentDto,
   type EndOfServiceDto,
 } from '../../../_lib/agents';
+import { useConfirmAction } from './useConfirmAction';
 
 /**
  * #2088 — what ended with an agent that was just disabled or deleted.
@@ -82,6 +83,7 @@ export function EndOfServiceNotice({
  */
 export function DeletedAgentsSection({ refreshKey }: { refreshKey: number }): React.ReactElement | null {
   const t = useTranslations('operatorAgents.deletedAgents');
+  const confirmAction = useConfirmAction();
   const format = useFormatter();
   const [state, setState] = useState<
     | { kind: 'loading' }
@@ -107,20 +109,8 @@ export function DeletedAgentsSection({ refreshKey }: { refreshKey: number }): Re
   if (state.kind === 'loading') return null;
   if (state.kind === 'loaded' && state.agents.length === 0) return null;
 
-  function purge(agent: DeletedAgentDto, retentionDays: number): void {
+  function run(agent: DeletedAgentDto, confirmation?: string): void {
     setMessage(null);
-    let confirmation: string | undefined;
-    if (agent.purgeable_without_confirmation) {
-      if (!confirm(t('purgeConfirm', { slug: agent.slug }))) return;
-    } else {
-      const typed = prompt(t('purgeTypeSlug', { days: retentionDays, slug: agent.slug }));
-      if (typed === null) return;
-      if (typed.trim() !== agent.slug) {
-        setMessage(t('purgeMismatch'));
-        return;
-      }
-      confirmation = agent.slug;
-    }
     setBusy(agent.id);
     purgeDeletedAgent(agent.id, confirmation)
       .catch(() => setMessage(t('loadFailed')))
@@ -130,8 +120,24 @@ export function DeletedAgentsSection({ refreshKey }: { refreshKey: number }): Re
       });
   }
 
+  /** Before the retention period is over the operator types the slug; after
+   *  it a plain confirmation is enough. Both in the app's own dialog. */
+  function purge(agent: DeletedAgentDto, retentionDays: number): void {
+    confirmAction.ask({
+      title: t('purgeConfirm', { slug: agent.slug }),
+      confirmLabel: t('purge'),
+      ...(agent.purgeable_without_confirmation
+        ? { onConfirm: () => run(agent) }
+        : {
+            typed: { expected: agent.slug, prompt: t('purgeTypeSlug', { days: retentionDays, slug: agent.slug }) },
+            onConfirm: () => run(agent, agent.slug),
+          }),
+    });
+  }
+
   return (
     <section className="space-y-3" data-testid="deleted-agents-section">
+      {confirmAction.dialog}
       <div>
         <h2 className="text-lg font-medium">{t('heading')}</h2>
         <p className="mt-1 max-w-3xl text-xs text-[color:var(--fg-muted)]">{t('intro')}</p>

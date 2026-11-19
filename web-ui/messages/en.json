@@ -3009,7 +3009,6 @@
       "purging": "Removing",
       "purgeConfirm": "Remove “{slug}” for good? Its identity, grants, bindings and schedules are deleted with it. This cannot be undone.",
       "purgeTypeSlug": "This agent was deleted less than {days, plural, one {# day} other {# days}} ago. Type its slug “{slug}” to remove it now:",
-      "purgeMismatch": "That is not the slug. Nothing was removed.",
       "purgeableFrom": "can be removed without typing the slug from {when}"
     },
     "archetype": {
@@ -3109,7 +3108,12 @@
         "kindHeading": "Facilitator"
       },
       "facilitationsViewLink": "Open running facilitations ({label})"
-    }
+    },
+    "confirmAction": {
+      "cancel": "Cancel",
+      "typedMismatch": "That is not the slug."
+    },
+    "rehydrateConfirmYes": "Rehydrate"
   },
   "builder": {
     "issueReport": {

@@ -7,6 +7,7 @@ import { useLocale, useTranslations } from 'next-intl';
 import { Button } from '@/app/_components/ui/Button';
 import type { OperatorAgentDto } from '../../../_lib/agents';
 import { archetypeText, type OperatorArchetypeDto } from '../../../_lib/archetypes';
+import { useConfirmAction } from './useConfirmAction';
 
 /**
  * #2088 — the directory section of ONE archetype (spec 2042 §5.10: "the
@@ -45,8 +46,10 @@ export function ArchetypeSection(props: ArchetypeSectionProps): React.ReactEleme
   const heading = archetypeText(archetype?.label_plural, locale) ?? name;
   const description = archetypeText(archetype?.description, locale);
 
+  const confirmAction = useConfirmAction();
   return (
     <section className="space-y-4" data-testid={`archetype-section-${archetypeId}`}>
+      {confirmAction.dialog}
       <div>
         <h2 className="text-lg font-medium">
           {heading}{' '}
@@ -110,9 +113,13 @@ export function ArchetypeSection(props: ArchetypeSectionProps): React.ReactEleme
                   variant="danger"
                   size="sm"
                   disabled={props.disabled}
-                  onClick={() => {
-                    if (confirm(t('archetype.deleteConfirm', { slug: agent.slug }))) props.onDelete(agent);
-                  }}
+                  onClick={() =>
+                    confirmAction.ask({
+                      title: t('archetype.deleteConfirm', { slug: agent.slug }),
+                      confirmLabel: t('actionDelete'),
+                      onConfirm: () => props.onDelete(agent),
+                    })
+                  }
                 >
                   {t('actionDelete')}
                 </Button>
