@@ -55,6 +55,7 @@ describe('conversationMessages (pg, migration 0068)', { skip: !pgAvailable }, ()
       '0070_agent_archetypes.sql',
       // #2089 — process-bound subscriptions; the store reads the new columns.
       '0075_process_bound_messages.sql',
+      '0077_transcript_segments.sql',
     ]) {
       const sql = await readFile(resolve(MIGRATIONS_DIR, file), 'utf8');
       await pool.query(sql);
@@ -407,6 +408,30 @@ describe('conversationMessages (pg, migration 0068)', { skip: !pgAvailable }, ()
         ],
       );
       assert.deepEqual(await store.findProcessBindings('teams', '19:elsewhere', ['reminder-1']), []);
+    });
+
+    it('#2089 transcript segments: revisions per segment, apart from a message with the same id', async () => {
+      const store = new PgConversationMessageStore(pool);
+      const f1 = (await store.createProcessSubscription({ ...base, processId: 'f1', mode: 'all' })).subscription;
+      const transcript = { sessionId: 'session-3', segmentId: 'seg-1', source: 'shared' as const, speakerHint: 'Bert?' };
+      const seg = (text: string) => ({
+        messageId: 'seg-1',
+        kind: 'transcript_segment' as const,
+        author: { kind: 'custom', id: 'media:room-mic-2' },
+        text,
+        transcript,
+        occurredAt: new Date().toISOString(),
+      });
+      const first = await store.insertEvent(f1, seg('option B'));
+      const redelivered = await store.insertEvent(f1, seg('option B'));
+      const corrected = await store.insertEvent(f1, seg('option D'));
+      const message = await store.insertEvent(f1, event('seg-1'));
+      assert.deepEqual([first?.revision, redelivered, corrected?.revision, message?.revision], [0, undefined, 1, 0]);
+      const read = await store.getEventById(f1, corrected!.eventId);
+      assert.deepEqual([read?.kind, read?.text, read?.transcript], ['transcript_segment', 'option D', transcript]);
+      // Two workers storing two corrections at once: both are kept, in order.
+      const raced = await Promise.all([store.insertEvent(f1, seg('option E')), store.insertEvent(f1, seg('option F'))]);
+      assert.deepEqual(raced.map((r) => r?.revision).sort(), [2, 3]);
     });
 
     it('the age limit spares a running process and still applies to a subscription without one', async () => {

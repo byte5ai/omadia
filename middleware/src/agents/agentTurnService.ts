@@ -49,7 +49,7 @@ export interface AgentTurnServiceDeps {
   readonly getRegistry: () => OrchestratorRegistry | undefined;
   /** For the stored inbound event a turn answers. Absent = no database; a
    *  request naming an inbound event is then refused. */
-  readonly messages?: Pick<ConversationMessageHub, 'getEventById'>;
+  readonly messages?: Pick<ConversationMessageHub, 'getEventById' | 'getProcessEventById'>;
   /** The calling plugin; `undefined` for the kernel itself. */
   readonly callerPluginId: string | undefined;
   /** Is the caller the instance's facilitation engine right now? */
@@ -119,7 +119,9 @@ function refused(
 
 /** The first major's service plus the guarded run `agentTurn@2` builds on. */
 export type GuardedAgentTurnService = AgentTurnService & {
-  runGuarded(request: AgentTurnRequest, accept?: () => boolean): Promise<AgentTurnOutcome>;
+  /** `processId`: the process the turn belongs to (`agentTurn@2`). The
+   *  inbound event is then looked up among what THAT process received. */
+  runGuarded(request: AgentTurnRequest, accept?: () => boolean, processId?: string): Promise<AgentTurnOutcome>;
 };
 
 export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgentTurnService {
@@ -153,7 +155,7 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
    * (the session history): a turn whose answer must not stand is failed
    * instead, and leaves no trace for the next turn to build on.
    */
-  const run = async (request: AgentTurnRequest, accept?: () => boolean): Promise<AgentTurnOutcome> => {
+  const run = async (request: AgentTurnRequest, accept?: () => boolean, processId?: string): Promise<AgentTurnOutcome> => {
       if (
         !isText(request?.agentSlug, 128) ||
         !isText(request.sessionKey, MAX_KEY) ||
@@ -174,16 +176,26 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
       // the turn is whoever the PLATFORM said wrote the message.
       let inbound: ConversationMessageRecord | undefined;
       if (request.inboundEventId !== undefined) {
-        inbound = await deps.messages
-          ?.getEventById(
-            {
-              agentSlug: request.agentSlug,
-              channelType: request.channelType,
-              conversationId: request.conversationId,
-            },
-            deps.callerPluginId,
-            request.inboundEventId,
-          )
+        const scope = {
+          agentSlug: request.agentSlug,
+          channelType: request.channelType,
+          conversationId: request.conversationId,
+        };
+        // A process (`agentTurn@2`) reads conversations through subscriptions
+        // of its own (`conversationMessages@2`), so the event is one THAT
+        // process received: never another process's, also not of the same
+        // plugin. Rollout defect D35: this looked only among subscriptions
+        // without a process, where a process-bound engine has none.
+        if (processId !== undefined && deps.callerPluginId !== undefined) {
+          inbound = await deps.messages
+            ?.getProcessEventById({ ...scope, processId }, deps.callerPluginId, request.inboundEventId)
+            .catch(() => undefined);
+        }
+        // A subscription without a process (the first major) belongs to the
+        // plugin and the agent as a whole; an engine that still reads that
+        // way keeps its events.
+        inbound ??= await deps.messages
+          ?.getEventById(scope, deps.callerPluginId, request.inboundEventId)
           .catch(() => undefined);
         if (!inbound) {
           return refused(
@@ -369,7 +381,7 @@ export function createScopedAgentTurnService(deps: ScopedAgentTurnServiceDeps): 
       let outcome: AgentTurnOutcome;
       try {
         const metered = await deps.meter(
-          (probe) => base.runGuarded(request, () => probe().refused === 0),
+          (probe) => base.runGuarded(request, () => probe().refused === 0, request.processId),
           { limit: reserved },
         );
         used = metered.modelCalls;

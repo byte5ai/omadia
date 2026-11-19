@@ -433,12 +433,15 @@ import { wireSessionCapabilities } from './channels/sessionCapabilities/wiring.j
 import { attachEngineToFacilitators } from './platform/facilitatorEngineAttach.js';
 import { createArchetypeRegistrySync } from './platform/archetypeRegistrySync.js';
 import { wireExecutionAuthorization, type ExecutionWiring } from './execution/wiring.js';
+import { AddressedMessageRouter } from './channels/addressedMessageRouter.js';
+import { PrivateMessageRouter } from './channels/privateMessageRouter.js';
 import { createArchetypeDatabase } from './platform/archetypeDatabase.js';
 import { pluginRuntimeOf } from './plugins/pluginRuntimeOf.js';
 import { createAgentEndOfService, logOwedSystemNotice } from './platform/agentEndOfService.js';
 import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
 import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
 import { createOperatorExecutionRouter } from './routes/operatorExecution.js';
+import type { ConductorDiscussionAdmin } from './conductor/discussionAdmin.js';
 import {
   wireConversationMessages,
   type ConversationMessagesWiring,
@@ -843,6 +846,28 @@ async function main(): Promise<void> {
   const conversationMessagesRef: { current?: ConversationMessagesWiring } = {};
   // #2090 — set once the database pool exists (execution scopes, reservations).
   const executionRef: { current?: ExecutionWiring } = {};
+  // #2067 — set once the Conductor is wired; the operator routes mount earlier.
+  const discussionAdminRef: { current?: ConductorDiscussionAdmin } = {};
+  // #2089 — private messages of a running process's participants to its
+  // agent. Without a database nobody is listed by a scope, so nothing routes.
+  const privateMessageRouter = new PrivateMessageRouter({
+    processesListingPerson: async (input) =>
+      (await executionRef.current?.store.processesListingPerson(input)) ?? [],
+    executionFor: (pluginId) => executionRef.current?.serviceFor(pluginId),
+    log: (m) => console.log(m),
+  });
+  // #2089 — who answers a message that addresses a facilitator while one of
+  // its processes listens for such messages (follow-up): the turn asks the
+  // process's plugin first.
+  const addressedMessageRouter = new AddressedMessageRouter({
+    listeners: (scope) => conversationMessagesRef.current?.hub.addressedListeners(scope) ?? [],
+    eventIdOf: async (scope, pluginId, messageId) => {
+      const record = await conversationMessagesRef.current?.hub.getProcessEvent(scope, pluginId, messageId, 0);
+      // Only the message itself: a card answer shares its card's message id.
+      return record?.kind === 'created' ? record.eventId : undefined;
+    },
+    log: (m) => console.log(m),
+  });
   // #2043 — channel readiness providers and meeting sources (same lifecycle).
   const readinessProviderRegistry = new ChannelProviderRegistry<ChannelReadinessProvider>(
     'readiness',
@@ -4544,6 +4569,14 @@ async function main(): Promise<void> {
         const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
         return new Map((store ? await store.listAgents() : []).map((agent) => [agent.id, agent.slug]));
       },
+      discussions: () => discussionAdminRef.current,
+      onAccessChanged: () => {
+        void conversationMessagesRef.current?.reconcileNow().catch((err: unknown) => {
+          console.log(
+            `[conversation-messages] reconcile after a released reservation failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+      },
       audit: async (entry) => {
         await adminAudit?.record(entry);
       },
@@ -4698,7 +4731,7 @@ async function main(): Promise<void> {
       ...(mcpConfigService ? { mcpConfig: mcpConfigService } : {}),
       ...(mcpRegistrySecrets ? { mcpRegistrySecrets } : {}),
       // Issue #1342 — stdio switch + durable trace of saved stdio servers.
-      // Closure like auditFacilitationTerminate: adminAudit is constructed
+      // Closure: adminAudit is constructed
       // further down, and stays undefined without Postgres (log line only).
       mcpStdioEnabled: config.MCP_STDIO_ENABLED,
       auditMcpStdioServerSaved: async (entry) => {
@@ -4896,6 +4929,8 @@ async function main(): Promise<void> {
       engineSources: facilitationEngineSources,
       reportedEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
       ownPosts: ownIdentityPostLog,
+      getPrivateMessages: () => privateMessageRouter,
+      getAddressedMessages: () => addressedMessageRouter,
     }),
   );
   const sessionCapabilityHub = wireSessionCapabilities({
@@ -5102,6 +5137,8 @@ async function main(): Promise<void> {
       purgeIntervalMs: config.CONVERSATION_MESSAGES_PURGE_INTERVAL_MS,
       // #2089 — a process reads a conversation by its execution scopes and
       // its reservation.
+      privateMessages: privateMessageRouter,
+      addressedMessages: addressedMessageRouter,
       processAccess: (process) => {
         const store = executionRef.current?.store;
         if (!store) return Promise.reject(new Error('the execution store is not available'));
@@ -5182,8 +5219,6 @@ async function main(): Promise<void> {
           typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : config.MICROSOFT_APP_ID;
         return appId ? `28:${appId}` : undefined;
       },
-      // #330 round 4 — participants column of the facilitation admin lens.
-      getRoster: (channelType, conversationId) => conversationRosterRegistry.getRoster(channelType, conversationId),
       // People directory union for the builder's person suggestions + `GET /people`.
       searchPeople: (query, opts) => peopleDirectoryRegistry.search(query, opts),
       peopleChannelTypes: () => peopleDirectoryRegistry.types(),
@@ -5194,19 +5229,6 @@ async function main(): Promise<void> {
       // #1018 — re-checked on every utterance, so an operator's flip bites at
       // the agent's next turn rather than at the end of the run.
       peerGate,
-      // #330 round 4 — the destructive terminate leaves a durable trace.
-      // Closure like auditRoleChange: adminAudit is constructed further down.
-      auditFacilitationTerminate: async (entry) => {
-        // #775 lesson — the SUB is an email and must NEVER land in the uuid
-        // actor_id column; the uuid rides separately when the session has one.
-        await adminAudit?.record({
-          actor: { id: entry.actorUserId, email: entry.actor },
-          action: 'conductor.facilitation_terminate',
-          target: `conductor-workflow:${entry.slug}`,
-          before: { workflowId: entry.workflowId },
-          after: { cancelledRuns: entry.cancelledRuns },
-        });
-      },
       // `webhook.post` (issue #437) is a built-in action, not a plugin tool — special-cased
       // ahead of the dynamicAgentRuntime dispatch so a Designer action step can fire an
       // ad-hoc outbound webhook without an installed connector.
@@ -5264,6 +5286,7 @@ async function main(): Promise<void> {
     // Issue #437 — resolve the inbound-webhook forward reference mounted earlier
     // (before express.json()); requests arriving from here on reach the real deps.
     conductorWebhookInboundDepsRef = conductorWiring.webhookInboundDeps;
+    discussionAdminRef.current = conductorWiring.discussionAdmin;
     // Expose the event router so plugin contexts (ctx.events.emit) resolve it lazily — US4.
     serviceRegistry.provide('conductorEventRouter', conductorWiring.eventRouter);
     // Expose the channel-binding store so the routines turn-capture hook can populate it — US5.

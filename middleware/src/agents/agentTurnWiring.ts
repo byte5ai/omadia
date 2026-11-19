@@ -27,7 +27,7 @@ import {
 export function publishAgentTurnService(deps: {
   serviceRegistry: ServiceRegistry;
   getRegistry: () => OrchestratorRegistry | undefined;
-  messages?: Pick<ConversationMessageHub, 'getEventById'>;
+  messages?: Pick<ConversationMessageHub, 'getEventById' | 'getProcessEventById'>;
   engineSources: () => FacilitationEngineSources;
   /** #2090 — the calling plugin's execution authorization, for `agentTurn@2`.
    *  Answers `undefined` without a database. */

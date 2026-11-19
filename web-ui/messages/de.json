@@ -842,39 +842,6 @@
     "templateRejecting": "Wird abgelehnt",
     "templatePendingEmpty": "Keine Vorlagen warten auf Review",
     "templateNoMatches": "Keine Vorlagen entsprechen deinen Filtern.",
-    "facilitationsHeading": "Laufende Facilitations",
-    "facilitationsEmpty": "Es läuft keine Facilitation.",
-    "facilitationsLoadFailed": "Die Facilitations konnten nicht geladen werden",
-    "facilitationTerminateFailed": "Die Facilitation konnte nicht beendet werden",
-    "facilitationTerminateButton": "Stoppen & entfernen",
-    "facilitationTerminateBusy": "Wird gestoppt",
-    "facilitationTerminateConfirmTitle": "Diese Facilitation stoppen?",
-    "facilitationTerminateConfirmBody": "Aktive Läufe werden abgebrochen, das automatisch angelegte Binding und die Initiator-Rolle werden entfernt. Der Verlauf bleibt als Audit-Spur erhalten. Das lässt sich nicht rückgängig machen.",
-    "facilitationConversation": "Konversation",
-    "facilitationDod": "Definition of Done",
-    "facilitationRounds": "Assess-Runden",
-    "facilitationLastVerdict": "Letzte Einschätzung",
-    "facilitationDodMet": "DoD erfüllt",
-    "facilitationDodOpen": "DoD noch offen",
-    "facilitationParticipants": "Teilnehmer",
-    "facilitationRosterPartial": "(Liste evtl. unvollständig)",
-    "facilitationInitiator": "Initiator",
-    "facilitationExpires": "Läuft ab",
-    "facilitationsLoading": "Facilitations werden geladen…",
-    "facilitationIncomplete": "Einige Details konnten nicht geladen werden — diese Zeile kann unvollständig sein.",
-    "facilitationDetailsButton": "Details",
-    "facilitationDetailsHeading": "Facilitation-Details",
-    "facilitationDetailsClose": "Schließen",
-    "facilitationTraceHeading": "Verlauf (Assess-Runden)",
-    "facilitationTraceFailed": "Der Verlauf konnte nicht geladen werden",
-    "facilitationNoRun": "Für diese Facilitation existiert noch kein Lauf.",
-    "facilitationResultsHeading": "Zwischenstand der Ergebnisse (je DoD-Punkt)",
-    "facilitationResultsPoint": "Punkt",
-    "facilitationResultsStatus": "Status",
-    "facilitationResultsNote": "Aktueller Stand",
-    "facilitationStatusDone": "erledigt",
-    "facilitationStatusPartial": "teilweise",
-    "facilitationStatusOpen": "offen",
     "personPicker": {
       "placeholder": "Person suchen oder Principal-Referenz eingeben",
       "partialHint": "Einige Verzeichnisse waren nicht erreichbar. Die Ergebnisse sind möglicherweise unvollständig.",
@@ -3015,7 +2982,30 @@
       "switchProcess": "Prozess {process} von Agent {agent} ist gestoppt (von {by}, {when}).",
       "nothingRunning": "Es läuft kein Prozess.",
       "loadFailed": "Die laufenden Prozesse konnten nicht geladen werden.",
-      "actionFailed": "Das hat nicht funktioniert. Es wurde nichts geändert; versuch es noch einmal."
+      "actionFailed": "Das hat nicht funktioniert. Es wurde nichts geändert; versuch es noch einmal.",
+      "discussionsHeading": "Laufende Agenten-Diskussionen",
+      "discussionsIntro": "Agenten, die in einer Unterhaltung miteinander ein Thema besprechen. Die Stopps oben erreichen sie nicht. Eine Diskussion zu stoppen beendet sie endgültig und gibt die Unterhaltung frei; sie lässt sich nicht fortsetzen.",
+      "discussionsLoadFailed": "Die laufenden Agenten-Diskussionen konnten nicht geladen werden.",
+      "discussionNoTopic": "Kein Thema hinterlegt ({slug})",
+      "discussionOpenedBy": "eröffnet von {agent}",
+      "discussionParticipants": "beteiligt: {agents}",
+      "discussionStarted": "gestartet {when}",
+      "discussionExpires": "endet von selbst {when}",
+      "discussionConversation": "{channel}-Unterhaltung {conversation}",
+      "discussionIncomplete": "Einige Angaben zu dieser Diskussion konnten nicht geladen werden.",
+      "discussionStopRequested": "Stopp angefordert",
+      "discussionStop": "Diskussion beenden",
+      "discussionStopConfirm": "Diese Diskussion endgültig beenden?",
+      "discussionStopYes": "Ja, beenden",
+      "discussionStopNo": "Weiterlaufen lassen",
+      "reservationsHeading": "Belegte Unterhaltungen",
+      "reservationsIntro": "Eine Unterhaltung hat immer nur einen Inhaber: einen laufenden Prozess oder eine Agenten-Diskussion. Solange sie belegt ist, startet dort nichts anderes. Freigeben macht die Unterhaltung frei und beendet nichts; ein Prozess, der dort alle Nachrichten gelesen hat, bekommt danach nur noch die, die seinen Agenten ansprechen.",
+      "reservationHeldByDiscussion": "belegt durch eine Agenten-Diskussion seit {when}",
+      "reservationHeldByProcess": "belegt durch {agent}, Prozess {process}, seit {when}",
+      "reservationRelease": "Freigeben",
+      "reservationReleaseConfirm": "Diese Unterhaltung für andere Prozesse freigeben?",
+      "reservationReleaseYes": "Ja, freigeben",
+      "reservationReleaseNo": "Belegt lassen"
     },
     "deletedAgents": {
       "heading": "Gelöschte Agenten",
@@ -3027,7 +3017,6 @@
       "purging": "Wird entfernt",
       "purgeConfirm": "„{slug}“ endgültig entfernen? Identität, Freigaben, Zuordnungen und Zeitpläne werden mitgelöscht. Das lässt sich nicht rückgängig machen.",
       "purgeTypeSlug": "Dieser Agent wurde vor weniger als {days, plural, one {# Tag} other {# Tagen}} gelöscht. Tippe seinen Slug „{slug}“ ein, um ihn jetzt zu entfernen:",
-      "purgeMismatch": "Das ist nicht der Slug. Es wurde nichts entfernt.",
       "purgeableFrom": "ohne Eingabe des Slugs entfernbar ab {when}"
     },
     "archetype": {
@@ -3126,8 +3115,14 @@
       "detail": {
         "kindHeading": "Facilitator"
       },
-      "facilitationsViewLink": "Laufende Moderationen öffnen ({label})"
-    }
+      "facilitationsViewLink": "Laufende Moderationen öffnen ({label})",
+      "archetypePluginNotRunning": "Das Plugin {plugin}, das Agenten dieser Art betreibt, ist installiert, aber nicht gestartet. Öffne es im Store, sieh nach dem Grund und behebe ihn zuerst; bis dahin lässt sich kein solcher Agent anlegen oder aktivieren."
+    },
+    "confirmAction": {
+      "cancel": "Abbrechen",
+      "typedMismatch": "Das ist nicht der Slug."
+    },
+    "rehydrateConfirmYes": "Rehydrieren"
   },
   "builder": {
     "issueReport": {
@@ -4605,6 +4600,10 @@
         "what": "Ein Server, den das Plugin braucht, hat beim Start nicht geantwortet.",
         "next": "Prüfe die Adresse in den Setup-Feldern und ob der Server erreichbar ist, und speichere das Setup dann erneut, um es noch einmal zu versuchen."
       },
+      "database_not_available": {
+        "what": "Die eigene Datenbank des Plugins konnte nicht eingerichtet werden.",
+        "next": "Das technische Detail unten nennt den Grund. Steht dort, dass eine Rolle außerhalb ihres Schemas Objekte anlegen darf, führe die genannte Anweisung (meist REVOKE CREATE ON SCHEMA public FROM PUBLIC) als Eigentümer der Datenbank aus und starte omadia danach neu."
+      },
       "unknown": {
         "what": "Das Plugin ist nicht gestartet.",
         "next": "Das technische Detail unten hilft vielleicht weiter. Wenn nicht, melde es dem Herausgeber des Plugins."
@@ -4733,7 +4732,14 @@
       "removePackageYes": "Ja, entfernen",
       "removingPackage": "Wird entfernt …",
       "removePackageFailed": "Das Paket konnte nicht entfernt werden: {message}",
-      "uninstallBlockedByPolicy": "Deinstallation gesperrt: Das ist der einzige Privacy Shield, und die Org-Richtlinie OMADIA_PRIVACY_FORCE_GUARDED verlangt Maskierung."
+      "uninstallBlockedByPolicy": "Deinstallation gesperrt: Das ist der einzige Privacy Shield, und die Org-Richtlinie OMADIA_PRIVACY_FORCE_GUARDED verlangt Maskierung.",
+      "updateConfirmTitle": "{name} auf {version} aktualisieren?",
+      "updateConfirmIntro": "Dieses Update ändert mehr als die Version. Bestätige, dass du das willst:",
+      "updateReasonBecomesArchetype": "Das Plugin wird zum Archetyp-Plugin: Es fügt dieser Instanz eine Art von Agenten hinzu, und was diese Agenten dürfen und nie bekommen, legt das Plugin fest, nicht einzelne Freigaben pro Agent.",
+      "updateReasonDescriptorChanged": "Das Plugin ändert, was Agenten seines Archetyps dürfen und was sie nie bekommen.",
+      "updateReasonMovesDatabase": "Das Plugin verschiebt seine Tabellen in ein eigenes Datenbankschema. Das passiert einmal und lässt sich nicht rückgängig machen: Die jetzt installierte Version kann sie danach nicht mehr lesen.",
+      "updateConfirmYes": "Jetzt aktualisieren",
+      "updateConfirmNo": "Nicht aktualisieren"
     },
     "auditMode": {
       "singleHostHelp": "Nur die im Manifest deklarierten Hosts.",
@@ -4863,9 +4869,11 @@
         "zipForbiddenExtension": "Das Archiv enthält einen Dateityp, der in einem Plugin-Paket nicht erlaubt ist: {entry}.",
         "zipTooManyEntries": "Das Archiv enthält zu viele Dateien.",
         "zipFileTooLarge": "Eine Datei im Archiv ist entpackt zu groß.",
-        "zipTotalTooLarge": "Das entpackte Archiv überschreitet die Größengrenze."
+        "zipTotalTooLarge": "Das entpackte Archiv überschreitet die Größengrenze.",
+        "archetypeConfirmationRequired": "Version {toVersion} von {pluginId} ändert mehr als die Version der installierten {fromVersion}: Sie macht das Plugin zum Archetyp-Plugin, ändert, was Agenten seines Archetyps dürfen, oder verschiebt seine Tabellen endgültig in ein eigenes Datenbankschema. Bestätige das Update ausdrücklich."
       },
-      "replacedVersion": "Die zuvor hochgeladene Version {previous} wurde ersetzt."
+      "replacedVersion": "Die zuvor hochgeladene Version {previous} wurde ersetzt.",
+      "confirmArchetypeUpdate": "Trotzdem aktualisieren"
     },
     "setupForm": {
       "enable": "Aktivieren",

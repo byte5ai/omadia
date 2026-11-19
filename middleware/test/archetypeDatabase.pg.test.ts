@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 
-import { ServiceNotDeclaredError } from '@omadia/plugin-api';
+import { ServiceNotDeclaredError, SharedPoolRefusedError } from '@omadia/plugin-api';
 import { Pool } from 'pg';
 
 import { probePgTest } from './_helpers/pgTestDb.js';
@@ -29,6 +29,7 @@ import { adaptManifestV1 } from '../src/plugins/manifestLoader.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import {
   ArchetypeDatabaseError,
+  revokeCreateStatement,
   archetypeDatabaseNames,
   createArchetypeDatabase,
   ownDatabaseEdges,
@@ -365,15 +366,15 @@ describe('#2088 archetype plugin database', { skip: !pgAvailable }, () => {
     }
   });
 
-  it('a version that still requires graphPool keeps the shared pool and gets no query or transaction', async () => {
+  it('a version that still requires graphPool is refused the pool and has no ctx.sql', async () => {
     const ctx = await context(false, { requiresPool: true });
-    const pool = ctx.services.get<{ query: (text: string) => Promise<{ rows: { cu: string }[] }> }>('graphPool');
-    assert.ok(pool, 'the shared pool, as before');
-    assert.equal((await pool.query('SELECT current_user AS cu')).rows[0]?.cu, adminRole);
-    assert.ok(ctx.sql, 'ctx.sql for its migrations, as before');
-    assert.equal(ctx.sql.schema, undefined);
-    assert.equal(ctx.sql.query, undefined);
-    assert.equal(ctx.sql.transaction, undefined);
+    assert.throws(
+      () => ctx.services.get('graphPool'),
+      (err: unknown) =>
+        err instanceof SharedPoolRefusedError &&
+        /Remove 'graphPool' from the manifest's requires/.test(err.message),
+    );
+    assert.equal(ctx.sql, undefined, 'no migrations on the shared pool either');
   });
 
   it('commits a transaction, rolls one back on a throw, and refuses a statement after it ended', async () => {
@@ -436,6 +437,39 @@ describe('#2088 archetype plugin database', { skip: !pgAvailable }, () => {
       );
     } finally {
       await admin.query(`REVOKE SELECT ON agents FROM ${NAMES.runtimeRole}`);
+    }
+    await db.ensure(PLUGIN);
+  });
+
+  it('names the statement that takes the create right away, from every role or from the one that holds it', () => {
+    assert.equal(revokeCreateStatement('public'), 'REVOKE CREATE ON SCHEMA "public" FROM PUBLIC');
+    assert.equal(revokeCreateStatement('public', 'omadia_plg_x_rt'), 'REVOKE CREATE ON SCHEMA "public" FROM "omadia_plg_x_rt"');
+  });
+
+  it('fails closed when a plugin role may create objects in public, and tolerates plain USAGE there', async () => {
+    // USAGE on public is what every role has by default; it is not a finding.
+    const usage = await admin.query<{ usage: boolean; create: boolean }>(
+      `SELECT has_schema_privilege($1, 'public', 'USAGE') AS usage, has_schema_privilege($1, 'public', 'CREATE') AS create`,
+      [NAMES.runtimeRole],
+    );
+    assert.deepEqual(usage.rows[0], { usage: true, create: false });
+    await db.ensure(PLUGIN);
+
+    await admin.query(`GRANT CREATE ON SCHEMA public TO ${NAMES.migrationRole}`);
+    try {
+      await assert.rejects(
+        () => db.ensure(PLUGIN),
+        (err: unknown) =>
+          err instanceof ArchetypeDatabaseError &&
+          err.code === 'not_isolated' &&
+          err.message.includes(NAMES.migrationRole) &&
+          err.message.includes('in schema public') &&
+          // The operator can run the fix as it stands.
+          err.message.includes(`REVOKE CREATE ON SCHEMA "public" FROM "${NAMES.migrationRole}"`) &&
+          err.message.length <= 500,
+      );
+    } finally {
+      await admin.query(`REVOKE CREATE ON SCHEMA public FROM ${NAMES.migrationRole}`);
     }
     await db.ensure(PLUGIN);
   });

@@ -43,6 +43,7 @@ import { ExecutionControlSection } from './ExecutionControl';
 import { FacilitatorsSection, type PluginNavLink } from './FacilitatorsSection';
 import { PluginsDnd } from './PluginsDnd';
 import { useFacilitatorRefusalMessage } from './useFacilitatorCopy';
+import { useConfirmAction } from './useConfirmAction';
 
 interface AgentsDashboardProps {
   initial: OperatorAgentsListDto;
@@ -77,6 +78,7 @@ export function AgentsDashboard({
   archetypes,
 }: AgentsDashboardProps): React.ReactElement {
   const t = useTranslations('operatorAgents');
+  const confirmAction = useConfirmAction();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -181,6 +183,7 @@ export function AgentsDashboard({
 
   return (
     <div className="space-y-8">
+      {confirmAction.dialog}
       {error && (
         <div className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-3 text-sm text-[color:var(--danger)]">
           {error}
@@ -203,18 +206,22 @@ export function AgentsDashboard({
               variant="secondary"
               size="sm"
               disabled={pending || !!busy || !fallbackSlug}
-              onClick={() => {
-                if (!confirm(t('rehydrateConfirm'))) return;
-                run('rehydrate', async () => {
-                  const res = await rehydrateFallback();
-                  setError(
-                    t('rehydrateDone', {
-                      attached: res.attached,
-                      requested: res.requested,
+              onClick={() =>
+                confirmAction.ask({
+                  title: t('rehydrateConfirm'),
+                  confirmLabel: t('rehydrateConfirmYes'),
+                  onConfirm: () =>
+                    run('rehydrate', async () => {
+                      const res = await rehydrateFallback();
+                      setError(
+                        t('rehydrateDone', {
+                          attached: res.attached,
+                          requested: res.requested,
+                        }),
+                      );
                     }),
-                  );
-                });
-              }}
+                })
+              }
               title={t('rehydrateTooltip')}
             >
               {t('actionRehydrateFallback')}
@@ -617,6 +624,7 @@ function AgentCard(props: {
   onKill: () => void;
 }): React.ReactElement {
   const t = useTranslations('operatorAgents');
+  const confirmAction = useConfirmAction();
   const { agent } = props;
   // Default-collapsed (per operator request): the page starts compact and
   // expands per-Agent only when the operator clicks the chevron. Local
@@ -628,6 +636,7 @@ function AgentCard(props: {
 
   return (
     <article className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)]">
+      {confirmAction.dialog}
       <header className="flex items-start justify-between gap-4 px-4 py-3">
         {/* eslint-disable-next-line no-restricted-syntax -- chevron expand/collapse card-header toggle (aria-expanded), not a §4.2 CTA */}
         <button
@@ -716,10 +725,13 @@ function AgentCard(props: {
                 variant="danger"
                 size="sm"
                 disabled={props.disabled}
-                onClick={() => {
-                  if (confirm(t('deleteConfirm', { slug: agent.slug })))
-                    props.onDelete();
-                }}
+                onClick={() =>
+                  confirmAction.ask({
+                    title: t('deleteConfirm', { slug: agent.slug }),
+                    confirmLabel: t('actionDelete'),
+                    onConfirm: props.onDelete,
+                  })
+                }
               >
                 {t('actionDelete')}
               </Button>
@@ -760,10 +772,13 @@ function AgentCard(props: {
               variant="danger"
               size="sm"
               disabled={props.disabled}
-              onClick={() => {
-                if (confirm(t('killConfirm', { slug: agent.slug })))
-                  props.onKill();
-              }}
+              onClick={() =>
+                confirmAction.ask({
+                  title: t('killConfirm', { slug: agent.slug }),
+                  confirmLabel: t('actionKill'),
+                  onConfirm: props.onKill,
+                })
+              }
             >
               {t('actionKill')}
             </Button>

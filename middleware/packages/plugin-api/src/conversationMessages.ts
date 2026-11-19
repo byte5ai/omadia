@@ -12,6 +12,7 @@
 // feature-detect (older kernels and installs without Postgres do not have it).
 // Shapes are plugin-api-own (dependency direction: channel-sdk -> plugin-api).
 
+import type { SendAuthorization } from './conversationSend.js';
 import type { CardAnswerValue } from './questionCard.js';
 
 export const CONVERSATION_MESSAGES_SERVICE_NAME = 'conversationMessages';
@@ -21,7 +22,10 @@ export type ConversationMessageKind =
   | 'edited'
   | 'deleted'
   | 'reaction'
-  | 'card_answer';
+  | 'card_answer'
+  /** #2089 — what was said in a live session, as text from an authenticated
+   *  media source ({@link MessageTranscriptSegment}). `messageId` is the segment id. */
+  | 'transcript_segment';
 
 export interface ConversationMessageAuthor {
   /** Channel-user namespace of the author (e.g. 'teams-aad'). */
@@ -73,6 +77,29 @@ export interface ConversationMessageRecord {
   /** #2089 — the channel stated that the message addresses the agent's bot
    *  (a mention). Absent = it did not say so. */
   addressedToBot?: boolean;
+  /** 'transcript_segment': the session and the media source it came from.
+   *  `text` is the transcribed text of this revision of the segment. */
+  transcript?: MessageTranscriptSegment;
+}
+
+/**
+ * #2089 (spec 2043 §5.3) — where a transcript segment comes from.
+ *
+ * `participant`: the platform delivered a media channel bound to one
+ * participant's account; the record's `author` is that principal, and the
+ * segment counts as their contribution only after they confirm exactly this
+ * revision. `shared`: a room microphone or a mixed stream; nobody is the
+ * author (the record's `author` names the media source: kind `custom`, id
+ * `media:<source>`), `speakerHint` is a hint only, and a participant may adopt
+ * exactly this revision by an authenticated message or card.
+ */
+export interface MessageTranscriptSegment {
+  sessionId: string;
+  /** Stable for the segment; equals the record's `messageId`. */
+  segmentId: string;
+  source: 'participant' | 'shared';
+  /** Speaker recognition's guess. Never authorship. */
+  speakerHint?: string;
 }
 
 export interface ConversationMessageScope {
@@ -250,4 +277,99 @@ export interface ProcessConversationMessagesService {
    * the process has no subscription here.
    */
   bindMessage(scope: ProcessMessageScope, ref: { messageId?: string; cardId?: string }): Promise<boolean>;
+  /**
+   * #2089 (spec 2043 §5.3) — private messages to the agent. Optional —
+   * feature-detect.
+   *
+   * A message a person writes to the agent in a private chat reaches the
+   * handler only when that person is a person target of an open execution
+   * scope of one of the caller's processes of this agent. The handler decides
+   * what it is: a status request it answers (`handled: true` with the text
+   * and the scope the answer is drawn from), or nothing of the facilitation
+   * (`handled: false`). The kernel takes the authorization for the answer
+   * (a direct message to that person under that scope; a `status_only`
+   * person gets a `status` answer only) and gives the text as the agent's
+   * answer in that private chat. Declined, not authorized, or from anybody
+   * else: the agent's ordinary answer to a private request, as before.
+   */
+  onPrivateMessage?(
+    agentSlug: string,
+    handler: (request: PrivateMessageRequest) => Promise<PrivateMessageReply>,
+  ): () => void;
+
+  /**
+   * Who answers a message that ADDRESSES the agent in a group conversation
+   * where one of the caller's processes listens in `addressed` mode (a
+   * facilitation in follow-up)? Optional: absent on a kernel that predates
+   * it.
+   *
+   * Without a handler such a mention has two takers: the agent's ordinary
+   * turn (its model) and the process, which gets it as an event. With a
+   * handler the kernel asks it first and exactly one of them answers:
+   * `handled: true` and the agent's turn stays silent, the process answers
+   * through its own sends; `handled: false` and the agent's ordinary turn
+   * runs, as if no process listened.
+   *
+   * What changes for `onMessage` once a handler is registered for the agent:
+   * a plain message that addresses the agent is still stored for the
+   * caller's `addressed` subscriptions (readable with `getEvent` and
+   * `listSince`, usable as the inbound event of an agent turn), but it is no
+   * longer pushed to `onMessage`. Replies and card answers bound to a process
+   * are pushed as before. A consumer that also reads with `listSince`
+   * dedupes on `eventId`.
+   *
+   * The handler must decide quickly and do its work after it returned: the
+   * kernel waits 20 seconds, then lets the agent's ordinary turn answer. A
+   * handler that answers later than that produces a second answer.
+   */
+  onAddressedMessage?(
+    agentSlug: string,
+    handler: (request: AddressedMessageRequest) => Promise<AddressedMessageReply>,
+  ): () => void;
 }
+
+export interface AddressedMessageRequest {
+  agentSlug: string;
+  channelType: string;
+  /** The channel-native conversation, as on the processes' subscriptions. */
+  conversationId: string;
+  /** The author's platform id, as the turn states it (compare lower-cased). */
+  principalId: string;
+  text: string;
+  /** The platform id of the message, when the channel states it on the turn. */
+  messageId?: string;
+  /** The stored event of that message for one of `processIds`, when the
+   *  channel states the message id and the event had been stored by the time
+   *  the turn arrived. Absent otherwise; it can still arrive in `listSince`. */
+  eventId?: string;
+  /** The caller's processes of this agent that listen in `addressed` mode in
+   *  this conversation. Never empty. */
+  processIds: readonly string[];
+}
+
+export interface AddressedMessageReply {
+  /** `true`: a process takes the message and the agent's turn stays silent. */
+  handled: boolean;
+}
+
+export interface PrivateMessageRequest {
+  agentSlug: string;
+  channelType: string;
+  /** The author's platform id, as the turn states it (compare lower-cased). */
+  principalId: string;
+  text: string;
+  /** The caller's processes of this agent whose open scopes list the author.
+   *  Several: the handler asks which one is meant, or answers for each. */
+  processIds: readonly string[];
+}
+
+export type PrivateMessageReply =
+  | { handled: false }
+  | {
+      handled: true;
+      /** The answer, given in the private chat as the agent. */
+      text: string;
+      /** The scope the answer is drawn from; `purpose` is `status` for a
+       *  status answer. */
+      authorization: SendAuthorization;
+    };

@@ -21,7 +21,7 @@ import { auditActorFromRequest, type AdminAuditLog } from '../auth/adminAuditLog
  * router (endpoint absent → 404 instead of 503, so scrapers learn nothing).
  *
  * Endpoints:
- *   POST   /packages/upload      multipart file=<zip> [, allow_downgrade=1]
+ *   POST   /packages/upload      multipart file=<zip> [, allow_downgrade=1] [, confirm_archetype=1]
  *   GET    /packages             list uploaded
  *   DELETE /packages/:id         remove uploaded (reject if installed)
  */
@@ -114,11 +114,20 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
           (req.body as Record<string, unknown> | undefined)?.['allow_downgrade'],
         ) || isTruthyFlag(req.query['allow_downgrade'], { bareFlag: true });
 
+      // #2088 — the same kind of consent for an update that changes what an
+      // installed plugin is to the instance (archetype, its descriptor, its
+      // own database).
+      const confirmArchetype =
+        isTruthyFlag(
+          (req.body as Record<string, unknown> | undefined)?.['confirm_archetype'],
+        ) || isTruthyFlag(req.query['confirm_archetype'], { bareFlag: true });
+
       const result = await deps.service.ingest({
         fileBuffer: file.buffer,
         originalFilename: file.originalname,
         uploadedBy,
         ...(allowDowngrade ? { allowDowngrade: true } : {}),
+        ...(confirmArchetype ? { confirmArchetype: true } : {}),
       });
 
       if (!result.ok) {

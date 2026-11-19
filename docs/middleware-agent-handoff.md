@@ -512,7 +512,9 @@ Setup-Feld-PATCH antwortete mit Key-Namen, die Store-Seite zeigte "✓ Saved".
   pro *Handlung des Operators* — `secret_missing`, `config_missing`,
   `capability_not_declared`, `network_not_permitted`,
   `permission_not_granted`, `dependency_unresolved`, `provider_conflict`,
-  `target_unreachable`, `unknown`. Klassifiziert in
+  `target_unreachable`, `database_not_available` (#2088: eigene Datenbank
+  eines Archetyp-Plugins nicht einrichtbar oder nicht isoliert), `unknown`.
+  Klassifiziert in
   `plugins/activationFailure.ts` aus dem Error-**Objekt** (`err.name`,
   `SqlPermissionError.reason`, errno-`code` inkl. undici-`cause`), nie aus der
   Message. `name` statt `instanceof`, weil ein Plugin seine eigene Kopie von
@@ -2815,54 +2817,51 @@ Privacy-Choke-Points. Tests: `test/transcribeRecordingTool.test.ts`,
 `packages/plugin-api/test/transcriptionGuardrails.test.ts`, Adapter-Suite in
 `packages/transcription-adapter-openai/test/`.
 
-### Facilitation-Admin-Lens (#330 Runde 4)
+### Laufende Agenten-Diskussionen: Sicht und Stopp für Operatoren (#2067)
 
-> **Bleibt (#2043).** Die Lens listet jeden laufenden Ephemeral-Run, also
-> auch Agenten-Diskussionen, und ist deren einziger Stopp-Weg für Operatoren.
-> Native Facilitations erscheinen hier nicht mehr (sie sind keine
-> Conductor-Runs); ihre Ansicht liefert das Engine-Plugin. Name und Routen
-> (`/facilitations`) sind historisch.
+> **Ersetzt die Facilitation-Admin-Lens (#330 Runde 4).** Die Lens, ihre
+> Routen (`/api/v1/operator/conductors/facilitations…`), `facilitationAdmin.ts`
+> und das `FacilitationsPanel` samt Details-Modal sind entfernt. Native
+> Facilitations sind Prozesse des Engine-Plugins und erscheinen als
+> Execution-Scopes; was die Lens darüber hinaus zeigte (Goal/DoD, Runden,
+> Verdict-Tabelle, Initiator-Rolle, Roster) gehörte zum alten Plugin-Pfad und
+> hat keinen Nachfolger im Kernel.
 
-Ephemere Workflows sind bewusst aus der Library gefiltert — laufende
-Facilitations waren dadurch im Admin unsichtbar (Feldbefund: zwei Instanzen
-im selben Meeting, nicht stoppbar). Neue Operator-Routen (beide hinter
-requireAuth unter `/api/v1/operator/conductors`, VOR den `/:slug`-Routen
-deklariert):
+Ephemere Workflows sind bewusst aus der Library gefiltert. Damit ein
+Operator von Agenten selbst gestartete Runs (heute: Diskussionen) sieht und
+beenden kann, hängen sie am Abschnitt „Laufende Prozesse“ der Agenten-Seite:
 
-- **`GET /facilitations`** — Overview aller nicht gereapten ephemeren
-  Workflows aus rein durablem State: Conversation (Attachment-Row), Goal/DoD
-  + Assess-Runden (`ctx.stepAttempts.moderate`) + letztes Verdict
-  (`ctx.steps.moderate.data` — accumulate() persistiert pro Step-Id;
-  `ctx.stepResult` existiert nur transient als Guard-Argument, NIE im
-  durablen Context), Initiator-Role-Holder, Teilnehmer via
-  Roster-Registry (best-effort, 30s-TTL-Cache — jeder Roster-Read öffnet
-  einen proaktiven Channel-Turn). Store-Fehler beim Zusammenbau ⇒ Row-Flag
-  `incomplete: true` + Log (unter-reporten ja, erfinden nie).
-- **`POST /facilitations/:workflowId/terminate`** — cancelt aktive Runs
-  (#759-Semantik) und disposed das Scaffold über DENSELBEN Cleanup-Pfad wie
-  der Reaper (`disposeEphemeralWorkflow` in `src/conductor/index.ts`;
-  Binding + Rolle gehen mit). Schlägt EIN Cancel fehl, wird die Disposal
-  ÜBERSPRUNGEN (502 `conductor.facilitation_cancel_failed`) — reaped_at auf
-  einem lebenden Run würde ihn aus genau dieser Lens verstecken. Non-ephemeral
-  ⇒ 404. Jede erfolgreiche Terminierung landet als
-  `conductor.facilitation_terminate` im admin_audit (actor-uuid/email nach
-  #775-Regel getrennt).
+- **`GET /api/v1/operator/execution`** liefert zusätzlich `discussions[]`
+  (jeder nicht gereapte ephemere Workflow: `workflow_id`, `slug`,
+  `opened_by` = `created_by_agent`, `participants` und `topic` aus dem
+  Run-Context, `conversation` aus der Attachment-Zeile mit Fallback auf den
+  Run-Context, `status`, `started_at`, `stop_requested_at`, `expires_at`,
+  `incomplete`) und `discussions_failed`. Schlägt nur die
+  Diskussions-Abfrage fehl, bleiben Scopes und Kill-Switches sichtbar und
+  `discussions_failed` ist `true` (nie „keine“). Ein Lookup-Fehler pro Zeile
+  ⇒ `incomplete: true` + Log (weniger zeigen ja, erfinden nie). Ein Run, der
+  keine Diskussion ist, erscheint ohne Thema und ohne Beteiligte.
+- **`POST /api/v1/operator/execution/discussions/:workflowId/stop`** cancelt
+  die aktiven Runs (#759-Semantik) und entsorgt den Workflow über denselben
+  Pfad wie der Reaper (`disposeEphemeralWorkflow` in `src/conductor/index.ts`;
+  Binding und Konversations-Reservierung gehen mit). Schlägt EIN Cancel
+  fehl, wird nichts entsorgt (502 `execution.discussion_stop_failed`):
+  `reaped_at` auf einem lebenden Run würde ihn aus genau dieser Liste
+  verstecken. Unbekannt oder nicht ephemer ⇒ 404
+  `execution.unknown_discussion`; Conductor noch nicht verdrahtet ⇒ 503.
+  Jeder erfolgreiche Stopp landet als `conductor.discussion_stop` im
+  admin_audit.
+- **Kein Kill-Switch:** Diskussionen halten keinen Execution-Scope. Die
+  Kill-Switches (Instanz, Agent, Prozess) erreichen sie nicht; ihr Stopp ist
+  endgültig und nicht fortsetzbar.
 
-Web-UI: Panel „Laufende Facilitations" auf der Conductor-Seite
-(`web-ui/app/conductor/_components/FacilitationsPanel.tsx`), Stop & remove
-hinter ConfirmDialog. Modul: `src/conductor/facilitationAdmin.ts`, Tests:
-`test/conductorFacilitationAdmin.test.ts`.
-
-**Zwischenstand-Tabelle (Pattern v3):** Das Moderate-Verdict trägt zusätzlich
-`items[]` — pro nummeriertem DoD-Punkt `{point, label, status:
-done|partial|open, note}`. Der Kernel validiert die Model-Ausgabe defensiv
-(`verdictItems()` in `facilitationAdmin.ts`: Nicht-Objekte fliegen raus,
-falsch getypte Felder werden genullt) und reicht sie als
-`run.lastVerdict.items` durch (Strings auf 300 Zeichen gekappt, `point` nur
-als positive Ganzzahl); das Details-Modal (`FacilitationDetailsModal.tsx`)
-rendert daraus die Tabelle #/Punkt/Status/Stand. Die Labels sind eine
-Model-Paraphrase — der autoritative DoD-Text bleibt daneben stehen. Läufe,
-die vor Pattern v3 gestartet sind, liefern `items: null` → nur DoD-Liste.
+Modul: `src/conductor/discussionAdmin.ts` (`ConductorDiscussionAdmin`, über
+`ConductorWiring.discussionAdmin` an die Operator-Routen gereicht, die früher
+gemountet werden und deshalb über eine Ref lesen). Web-UI:
+`web-ui/app/operator/agents/_components/RunningDiscussions.tsx` innerhalb von
+`ExecutionControl.tsx`; der Stopp fragt in der Zeile nach, ohne Dialog. Tests:
+`test/conductorDiscussionAdmin.test.ts`, `test/executionKernelSeams.test.ts`,
+`ExecutionControl.test.tsx`.
 
 ### Timer-Steps + DoD-Loops + conversationSend (#330 C3)
 
@@ -9648,9 +9647,11 @@ Pushes hängen an Message-Subscriptions.
   `conductorRoleAssignments`; Module `agentSetupService.ts`,
   `scopedRoleAssignments.ts`.
 - Der Ephemeral-Attachment-Scope von `conversationSend` (Default-Bot).
+- **Später entfernt (K5):** die Admin-Lens samt `FacilitationsPanel`. Sicht
+  und Stopp für laufende Diskussionen liegen jetzt unter „Laufende Prozesse“
+  (siehe „Laufende Agenten-Diskussionen“ oben).
 - **Geblieben, mit Grund:** Ephemeral Runs, Diskussionen und `say`; die
-  Admin-Lens samt `FacilitationsPanel` im Web-UI (einzige Sicht und einziger
-  Stopp für laufende Diskussionen); die `CONDUCTOR_EPHEMERAL_*`-Quoten
+  `CONDUCTOR_EPHEMERAL_*`-Quoten
   (gelten für jeden Ephemeral-Run); die Audit-Aktion
   `conductor.facilitation_terminate` für historische Zeilen;
   Rollenhalter-Bereinigung für Attachment-Zeilen, die noch eine Rolle tragen.

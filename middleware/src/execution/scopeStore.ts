@@ -40,6 +40,7 @@ export interface KillSwitch {
 }
 
 export interface ReservationRow extends ConversationReservation {
+  readonly id: string;
   readonly holderKind: 'archetype_process' | 'agent_discussion';
   readonly agentId?: string;
   readonly pluginId?: string;
@@ -125,6 +126,7 @@ function toScope(r: ScopeDbRow): ScopeRow {
 }
 
 interface ReservationDbRow {
+  id: string;
   channel_type: string;
   conversation_id: string;
   holder_kind: 'archetype_process' | 'agent_discussion';
@@ -137,10 +139,11 @@ interface ReservationDbRow {
 }
 
 const RESERVATION_COLS =
-  'channel_type, conversation_id, holder_kind, agent_id, plugin_id, process_id, role, reserved_at, released_at';
+  'id, channel_type, conversation_id, holder_kind, agent_id, plugin_id, process_id, role, reserved_at, released_at';
 
 function toReservation(r: ReservationDbRow): ReservationRow {
   return {
+    id: r.id,
     channelType: r.channel_type,
     conversationId: r.conversation_id,
     holderKind: r.holder_kind,
@@ -454,6 +457,27 @@ export class ExecutionScopeStore {
     return res.rowCount ?? 0;
   }
 
+  /** Every conversation that is held right now, oldest first (operator view). */
+  async listHeldReservations(limit: number): Promise<ReservationRow[]> {
+    const res = await this.pool.query<ReservationDbRow>(
+      `SELECT ${RESERVATION_COLS} FROM conversation_reservations
+        WHERE released_at IS NULL ORDER BY reserved_at, id LIMIT $1`,
+      [limit],
+    );
+    return res.rows.map(toReservation);
+  }
+
+  /** Release one held reservation by its id (operator). `undefined`: no such
+   *  reservation, or it was released already. */
+  async releaseReservation(id: string, reason: string): Promise<ReservationRow | undefined> {
+    const res = await this.pool.query<ReservationDbRow>(
+      `UPDATE conversation_reservations SET released_at = now(), release_reason = $2
+        WHERE id = $1 AND released_at IS NULL RETURNING ${RESERVATION_COLS}`,
+      [id, reason.slice(0, 200)],
+    );
+    return res.rows[0] ? toReservation(res.rows[0]) : undefined;
+  }
+
   async listReservationsOfProcess(pluginId: string, processId: string): Promise<ReservationRow[]> {
     const res = await this.pool.query<ReservationDbRow>(
       `SELECT ${RESERVATION_COLS} FROM conversation_reservations
@@ -492,6 +516,28 @@ export class ExecutionScopeStore {
     return { reserved: row?.reserved === true, everReserved: row?.ever_reserved === true, openScope: row?.open_scope === true };
   }
 
+  /**
+   * #2089 — the processes of an agent whose open scopes list this person as a
+   * target: who may be answered in a private chat, and about which process.
+   */
+  async processesListingPerson(input: {
+    agentId: string;
+    channelType: string;
+    principalId: string;
+  }): Promise<{ pluginId: string; processId: string }[]> {
+    const res = await this.pool.query<{ plugin_id: string; process_id: string }>(
+      `SELECT DISTINCT sc.plugin_id, sc.process_id FROM execution_scopes sc
+        WHERE sc.agent_id = $1 AND sc.state = 'open' AND sc.deadline > now()
+          AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(sc.targets) t
+             WHERE t->>'kind' = 'person' AND t->>'channelType' = $2
+               AND lower(t->>'principalId') = lower($3))
+        ORDER BY 1, 2`,
+      [input.agentId, input.channelType, input.principalId],
+    );
+    return res.rows.map((r) => ({ pluginId: r.plugin_id, processId: r.process_id }));
+  }
+
   // ── revocation ──────────────────────────────────────────────────────────
 
   /** End every open scope and release every reservation of an agent (end of
@@ -520,7 +566,9 @@ export class ExecutionScopeStore {
   /**
    * End scopes whose deadline passed, and release the reservations of
    * processes that have no open scope left: a plugin that stopped answering
-   * must not hold a conversation forever.
+   * must not hold a conversation forever. The same for an agent discussion
+   * whose attachment is gone or ran out. A discussion takes its reservation
+   * a moment BEFORE it writes its attachment, hence the minute of grace.
    */
   async sweepExpired(): Promise<{ scopesEnded: number; reservationsReleased: number }> {
     return this.inTransaction(async (client) => {
@@ -535,7 +583,28 @@ export class ExecutionScopeStore {
               SELECT 1 FROM execution_scopes sc
                WHERE sc.plugin_id = r.plugin_id AND sc.process_id = r.process_id AND sc.state = 'open')`,
       );
-      return { scopesEnded: scopes.rowCount ?? 0, reservationsReleased: reservations.rowCount ?? 0 };
+      // An agent discussion holds its conversation only while its attachment
+      // is alive (rollout defect D34: reservations of discussions that were
+      // not running blocked facilitations). The Conductor's table comes from
+      // its own migrator and may not exist yet.
+      const conductor = await client.query<{ present: boolean }>(
+        "SELECT to_regclass('conductor_ephemeral_attachments') IS NOT NULL AS present",
+      );
+      const discussions = conductor.rows[0]?.present
+        ? await client.query(
+            `UPDATE conversation_reservations r SET released_at = now(), release_reason = 'no_running_discussion'
+              WHERE r.released_at IS NULL AND r.holder_kind = 'agent_discussion'
+                AND r.reserved_at < now() - interval '1 minute'
+                AND NOT EXISTS (
+                  SELECT 1 FROM conductor_ephemeral_attachments a
+                   WHERE a.channel_type = r.channel_type AND a.channel_key = r.conversation_id
+                     AND a.expires_at > now())`,
+          )
+        : { rowCount: 0 };
+      return {
+        scopesEnded: scopes.rowCount ?? 0,
+        reservationsReleased: (reservations.rowCount ?? 0) + (discussions.rowCount ?? 0),
+      };
     });
   }
 

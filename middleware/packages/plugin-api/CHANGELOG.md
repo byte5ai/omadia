@@ -8,6 +8,127 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.73.0 — 2026-11-19
+
+Additive (#2089, epic #2043): one owner for a message that addresses the
+agent while a process listens for such messages.
+
+### Added
+
+- `ProcessConversationMessagesService` gains the optional
+  **`onAddressedMessage(agentSlug, handler)`**, with
+  **`AddressedMessageRequest`** (`agentSlug`, `channelType`,
+  `conversationId`, `principalId`, `text`, optional `messageId` and
+  `eventId`, `processIds`) and **`AddressedMessageReply`** (`handled`). The
+  kernel asks the handler before the agent's model runs for a group turn in
+  a conversation where one of the caller's processes listens in `addressed`
+  mode. `handled: true`: the turn stays silent and the process answers
+  through its own sends. `handled: false`, a failure, or no answer within 20
+  seconds: the agent's ordinary turn answers. Decide quickly and do the work
+  after returning.
+
+### Changed for a plugin that registers the handler
+
+- A plain message that addresses the agent is still stored for the plugin's
+  `addressed` subscriptions (`getEvent`, `listSince`, inbound event of an
+  agent turn) but no longer pushed to `onMessage`: the handler is its live
+  path. Replies and card answers bound to a process are pushed as before,
+  and so is every message in a conversation where one of the agent's
+  processes reads everything. A plugin without the handler sees no change.
+- `messageId` and `eventId` are present only when the channel states the
+  message id on the turn (channel-sdk 0.3.8, `TurnOrigin.messageId`) and, for
+  `eventId`, the event was stored when the turn arrived.
+
+## 1.72.0 — 2026-11-19
+
+Additive type, changed behaviour for archetype plugins (#2088, epic #2042).
+
+### Added
+
+- **`SharedPoolRefusedError`**: thrown by `ctx.services.get('graphPool')`
+  for a plugin of kind `archetype`.
+
+### Changed for archetype plugins
+
+- An archetype plugin that lists `graphPool` under `requires` no longer gets
+  the shared pool, and no `ctx.sql`. Remove the line and use
+  `ctx.sql.query()` / `ctx.sql.transaction()` (1.62.0).
+
+## 1.71.0 — 2026-11-19
+
+Additive (#2091, epic #2043): a delivered private message names the
+conversation it went into.
+
+### Added
+
+- The `delivered` variant of **`ScopedSendOutcome`** and of
+  **`TargetedSendDeliveryOutcome`** gains the optional **`conversationId`**:
+  the private conversation a `sendToPerson` / `sendToPrincipal` message went
+  into, when the channel reports it. With it a plugin can match a later
+  reply in that conversation to the message it sent. Absent on channels
+  that do not report it, and never set on a conversation send.
+
+## 1.70.0 — 2026-11-19
+
+Additive (#2089, epic #2043): transcript segments as inbound events. A
+contract without a producer: no channel delivers them yet.
+
+### Added
+
+- `ConversationMessageKind` gains **`'transcript_segment'`**, and
+  `ConversationMessageRecord` the field **`transcript`**
+  (`MessageTranscriptSegment`: `sessionId`, `segmentId`, `source`
+  `'participant' | 'shared'`, optional `speakerHint`). `messageId` is the
+  segment id, `text` the transcribed text, `revision` 0 for a segment's
+  first text and one higher for each corrected text. For a `participant`
+  source `author` is that participant's principal; for a `shared` source it
+  names the media source (kind `custom`, id `media:<source>`) and nobody is
+  the author. A consumer that switches over the kinds has one more case.
+
+## 1.69.0 — 2026-11-19
+
+Additive (#2078, epic #2043): kernel-issued grants for mail and calendar.
+
+### Added
+
+- **`ExecutionGrantsService`** (`EXECUTION_GRANTS_SERVICE_NAME`,
+  `executionGrants`), for the plugin that runs a process: `issueGrant`
+  (`protocol_dispatch` under a `closing` scope, `followup_scheduling` under a
+  `scheduling` scope, `followup_reminders` under a `follow_up` scope; named
+  mail recipients; an expiry of at most the scope's deadline, and at most 7
+  days for a protocol dispatch), `revokeGrant`, `listGrants` (with every use
+  made of each grant). A grant is live only while its scope is.
+- **`GrantVerificationService`** (`GRANT_VERIFICATION_SERVICE_NAME`,
+  `grantVerification`), for the integration that sends: `verify({ grantId,
+  operation, recipients })` before every operation. Refused with a code
+  (`revoked`, `expired`, `scope_ended`, `kill_switch`,
+  `operation_not_covered`, `recipient_not_covered` with the addresses,
+  `unknown_grant`, `unavailable`). Every answer is recorded as a use.
+- `EXECUTION_GRANT_RULES`, `ExecutionGrant`, `ExecutionGrantKind`,
+  `GrantOperation`, `ExecutionGrantUse`, `GrantRefusalCode`.
+- `FollowupGrant.grantId` (optional) and the refusal code `grant_refused`
+  on `FollowupRefusal`: a follow-up provider that knows `grantVerification`
+  asks the kernel with it and keeps `allowed` as its own second check.
+
+## 1.68.0 — 2026-11-19
+
+Additive (#2089, epic #2043): private messages of participants.
+
+### Added
+
+- **`ProcessConversationMessagesService.onPrivateMessage(agentSlug,
+  handler)`** (optional, on `conversationMessages@2`), with
+  `PrivateMessageRequest` and `PrivateMessageReply`. A message a person
+  writes to the agent in a private chat reaches the handler only when that
+  person is a person target of an open execution scope of one of the
+  caller's processes of that agent; `processIds` names them. The handler
+  answers (`handled: true`, the text, and the `authorization` the answer is
+  drawn from) or declines. The kernel takes the authorization as a direct
+  message to that person (a `status_only` person gets a `status` answer
+  only) and gives the text as the agent's answer in the private chat.
+  Declined, not authorized, not answered within 20 s, or from anybody else:
+  the agent's fixed refusal, as before.
+
 ## 1.67.0 — 2026-11-19
 
 Additive (#2091, epic #2043): sends drawn from an execution scope.

@@ -3,6 +3,8 @@
 import { useCallback } from 'react';
 import { useTranslations } from 'next-intl';
 
+import { ApiError } from '../../../_lib/api';
+
 import {
   FACILITATOR_PERSONA_MAX,
   FACILITATOR_PERSONA_MIN,
@@ -22,11 +24,25 @@ import { PERSONA_AXIS_LABELS } from '../../../_lib/personaTypes';
  * this client has no copy for yet (web-ui i18n hard rule).
  */
 
+/** The plugin id of a 409 `archetype_plugin_not_running`, or `null`. */
+function parseArchetypePluginNotRunning(err: unknown): string | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null;
+  try {
+    const body = JSON.parse(err.body) as { error?: unknown; plugin_id?: unknown };
+    return body.error === 'archetype_plugin_not_running' && typeof body.plugin_id === 'string' ? body.plugin_id : null;
+  } catch {
+    return null;
+  }
+}
+
 /** `(err) => sentence`, or `null` when the error is not a facilitator refusal. */
 export function useFacilitatorRefusalMessage(): (err: unknown) => string | null {
   const t = useTranslations('operatorAgents.facilitator');
   return useCallback(
     (err: unknown): string | null => {
+      // #2088 — the archetype's plugin is installed but did not start.
+      const notRunning = parseArchetypePluginNotRunning(err);
+      if (notRunning) return t('archetypePluginNotRunning', { plugin: notRunning });
       const refusal = parseFacilitatorRefusal(err);
       if (!refusal) return null;
       if (refusal.kind === 'contract') {

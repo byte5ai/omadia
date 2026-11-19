@@ -356,6 +356,46 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.210.0 — a facilitation engine never gets the shared database pool
+
+Applies to instances with a plugin of kind `archetype` installed (the
+facilitation engine `omadia-agent-facilitator`). Instances without one need
+nothing.
+
+1. **Update the plugin before the kernel.** A plugin of kind `archetype` that
+   still lists `graphPool` under `requires` (the facilitation engine before
+   1.3.0) is refused the shared pool by this kernel and has no database. Install
+   1.3.0 or later first; it keeps its tables in its own schema `plg_<plugin>`
+   under its own database roles.
+2. **Check that no role may create objects in `public`.** The kernel refuses a
+   plugin database whose roles could create objects outside their schema. That
+   right is the default on a database that was created before PostgreSQL 15
+   (also after a later upgrade of the server). Check as any user:
+
+   ```sql
+   SELECT has_schema_privilege('public', 'public', 'CREATE');
+   ```
+
+   If it answers `true`, run as the database owner:
+
+   ```sql
+   REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+   ```
+
+   The kernel's own user must keep its right to create there. It has it as
+   the owner of the database; if your kernel connects as a user that is not
+   the owner, grant the right by name **first**
+   (`GRANT CREATE ON SCHEMA public TO <kernel user>`), and do the same for any
+   other application that shares the database and relied on the default.
+3. **If you skipped step 2**, the plugin shows "The plugin's own database could
+   not be set up." in the store, and the technical detail names the statement to
+   run. Run it and restart omadia: the kernel checks the plugin's database
+   again on every start. Nothing is lost in between, the plugin simply does
+   not run.
+
+The plugin's roles keep the default `USAGE` on `public`. It cannot be taken
+from one role only, and without a right on a table it reads nothing.
+
 ## Upgrading past v0.200.2 — the canvas (Omadia UI) ships as plugins
 
 The canvas packages are no longer part of the core image. They live in

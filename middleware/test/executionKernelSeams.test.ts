@@ -19,8 +19,33 @@ import {
   DiscussionConversationBusyError,
   type DiscussionReservations,
 } from '../src/conductor/discussionService.js';
-import type { ExecutionScopeStore, KillSwitch, ScopeRow } from '../src/execution/scopeStore.js';
+import type { ExecutionScopeStore, KillSwitch, ReservationRow, ScopeRow } from '../src/execution/scopeStore.js';
+import type { RunningDiscussion, StopDiscussionResult } from '../src/conductor/discussionAdmin.js';
 import { createOperatorExecutionRouter } from '../src/routes/operatorExecution.js';
+
+const RESERVATION: ReservationRow = {
+  id: '44444444-4444-4444-8444-444444444444',
+  channelType: 'teams',
+  conversationId: '19:stale@thread.v2',
+  holderKind: 'agent_discussion',
+  processId: 'discussion:17',
+  role: 'home',
+  reservedAt: '2026-11-19T06:00:00.000Z',
+};
+
+const DISCUSSION: RunningDiscussion = {
+  workflowId: '33333333-3333-4333-8333-333333333333',
+  slug: 'eph-discussion-ab12cd34',
+  openedBy: 'hr',
+  participants: ['hr', 'accounting'],
+  topic: 'Budget 2027',
+  conversation: { channelType: 'teams', conversationId: 'conv-1' },
+  status: 'running',
+  startedAt: '2026-11-19T07:00:00.000Z',
+  stopRequestedAt: null,
+  expiresAt: '2026-11-20T07:00:00.000Z',
+  incomplete: false,
+};
 
 const START = { channelType: 'teams', conversationId: 'conv-1', participants: ['hr', 'accounting'], topic: 'Budget' };
 
@@ -109,6 +134,13 @@ describe('#2090 operator routes: open scopes and the kill switch', () => {
   let switches: KillSwitch[];
   let audits: AuditEntryInput[];
   let hasStore: boolean;
+  let discussionsWired: boolean;
+  let discussionListFails: boolean;
+  let stopOutcome: StopDiscussionResult;
+  let stops: string[];
+  let reservations: ReservationRow[];
+  let releaseReasons: string[];
+  let accessChanges: number;
 
   const call = async (method: string, path: string, body?: unknown) => {
     const res = await fetch(`${base}${path}`, {
@@ -121,6 +153,13 @@ describe('#2090 operator routes: open scopes and the kill switch', () => {
   before(async () => {
     const store = {
       listKillSwitches: () => Promise.resolve(switches),
+      listHeldReservations: () => Promise.resolve(reservations),
+      releaseReservation: (id: string, reason: string) => {
+        const found = reservations.find((r) => r.id === id);
+        reservations = reservations.filter((r) => r.id !== id);
+        if (found) releaseReasons.push(reason);
+        return Promise.resolve(found);
+      },
       listOpenScopes: () => Promise.resolve([SCOPE, { ...SCOPE, id: '2', agentId: 'id-finn', agentSlug: 'finn', processId: 'fac-9' }]),
       setKillSwitch: (input: { level: KillSwitch['level']; agentId?: string; processId?: string; reason: string; setBy: string }) => {
         const made: KillSwitch = {
@@ -153,6 +192,19 @@ describe('#2090 operator routes: open scopes and the kill switch', () => {
         store: () => (hasStore ? store : undefined),
         agentBySlug: (slug) => Promise.resolve(slug === 'mara' ? { id: 'id-mara', slug } : undefined),
         agentSlugs: () => Promise.resolve(new Map([['id-mara', 'mara'], ['id-finn', 'finn']])),
+        discussions: () =>
+          discussionsWired
+            ? {
+                list: () => (discussionListFails ? Promise.reject(new Error('conductor down')) : Promise.resolve([DISCUSSION])),
+                stop: (workflowId, actor) => {
+                  stops.push(`${workflowId} by ${actor}`);
+                  return Promise.resolve(stopOutcome);
+                },
+              }
+            : undefined,
+        onAccessChanged: () => {
+          accessChanges += 1;
+        },
         audit: (entry) => {
           audits.push(entry);
           return Promise.resolve();
@@ -171,6 +223,13 @@ describe('#2090 operator routes: open scopes and the kill switch', () => {
     switches = [];
     audits = [];
     hasStore = true;
+    discussionsWired = true;
+    discussionListFails = false;
+    stopOutcome = { outcome: 'stopped', slug: DISCUSSION.slug, cancelledRuns: 1 };
+    stops = [];
+    reservations = [RESERVATION];
+    releaseReasons = [];
+    accessChanges = 0;
   });
 
   it('lists open scopes with their budgets and no participant ids', async () => {
@@ -244,5 +303,112 @@ describe('#2090 operator routes: open scopes and the kill switch', () => {
       assert.equal(res.status, 503);
       assert.equal(res.json['code'], 'execution.unavailable');
     }
+  });
+
+  it('lists running agent discussions next to the scopes', async () => {
+    const res = await call('GET', '/');
+    assert.equal(res.json['discussions_failed'], false);
+    assert.deepEqual(res.json['discussions'], [
+      {
+        workflow_id: DISCUSSION.workflowId,
+        slug: DISCUSSION.slug,
+        opened_by: 'hr',
+        participants: ['hr', 'accounting'],
+        topic: 'Budget 2027',
+        conversation: { channel_type: 'teams', conversation_id: 'conv-1' },
+        status: 'running',
+        started_at: DISCUSSION.startedAt,
+        stop_requested_at: null,
+        expires_at: DISCUSSION.expiresAt,
+        incomplete: false,
+      },
+    ]);
+  });
+
+  it('keeps scopes and switches when the discussion listing fails, and says so', async () => {
+    discussionListFails = true;
+    const res = await call('GET', '/');
+    assert.equal(res.status, 200);
+    assert.equal(res.json['scopes'].length, 2);
+    assert.deepEqual(res.json['discussions'], []);
+    assert.equal(res.json['discussions_failed'], true);
+  });
+
+  it('lists no discussions before the Conductor is wired, and its stop answers 503', async () => {
+    discussionsWired = false;
+    const list = await call('GET', '/');
+    assert.deepEqual(list.json['discussions'], []);
+    assert.equal(list.json['discussions_failed'], false);
+    assert.equal((await call('POST', `/discussions/${DISCUSSION.workflowId}/stop`)).status, 503);
+  });
+
+  it('stops a discussion as the signed-in operator, with an audit entry', async () => {
+    const res = await call('POST', `/discussions/${DISCUSSION.workflowId}/stop`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.json, { ok: true, cancelled_runs: 1 });
+    assert.deepEqual(stops, [`${DISCUSSION.workflowId} by op@example.test`]);
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0]?.action, 'conductor.discussion_stop');
+    assert.equal(audits[0]?.target, `conductor-workflow:${DISCUSSION.slug}`);
+    assert.deepEqual(audits[0]?.after, { cancelledRuns: 1 });
+  });
+
+  it('answers 404 for an unknown discussion and 502 when a cancel failed, without an audit entry', async () => {
+    assert.equal((await call('POST', '/discussions/not-a-uuid/stop')).status, 404);
+    assert.deepEqual(stops, []);
+    stopOutcome = { outcome: 'not_found' };
+    assert.equal((await call('POST', `/discussions/${DISCUSSION.workflowId}/stop`)).status, 404);
+    stopOutcome = { outcome: 'cancel_failed', cancelledRuns: 0, failedRuns: 1 };
+    const failed = await call('POST', `/discussions/${DISCUSSION.workflowId}/stop`);
+    assert.equal(failed.status, 502);
+    assert.equal(failed.json['code'], 'execution.discussion_stop_failed');
+    assert.deepEqual(audits, []);
+  });
+
+  it('lists every held conversation, also one no running discussion stands behind (D34)', async () => {
+    reservations = [RESERVATION, { ...RESERVATION, id: '55555555-5555-4555-8555-555555555555', holderKind: 'archetype_process', agentId: 'id-mara', pluginId: '@omadia/agent-facilitator', processId: 'fac-7' }];
+    const res = await call('GET', '/');
+    assert.deepEqual(res.json['reservations'], [
+      {
+        id: RESERVATION.id,
+        channel_type: 'teams',
+        conversation_id: '19:stale@thread.v2',
+        holder_kind: 'agent_discussion',
+        agent_slug: null,
+        plugin_id: null,
+        process_id: 'discussion:17',
+        role: 'home',
+        reserved_at: RESERVATION.reservedAt,
+      },
+      {
+        id: '55555555-5555-4555-8555-555555555555',
+        channel_type: 'teams',
+        conversation_id: '19:stale@thread.v2',
+        holder_kind: 'archetype_process',
+        agent_slug: 'mara',
+        plugin_id: '@omadia/agent-facilitator',
+        process_id: 'fac-7',
+        role: 'home',
+        reserved_at: RESERVATION.reservedAt,
+      },
+    ]);
+  });
+
+  it('releases a held conversation once, as the signed-in operator, with an audit entry', async () => {
+    const res = await call('POST', `/reservations/${RESERVATION.id}/release`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(releaseReasons, ['released by op@example.test']);
+    assert.equal(accessChanges, 1);
+    assert.equal(audits[0]?.action, 'execution.reservation_release');
+    assert.deepEqual(audits[0]?.before, {
+      channel_type: 'teams',
+      conversation_id: '19:stale@thread.v2',
+      holder_kind: 'agent_discussion',
+      process_id: 'discussion:17',
+    });
+    assert.equal((await call('POST', `/reservations/${RESERVATION.id}/release`)).status, 404);
+    assert.equal((await call('POST', '/reservations/not-a-uuid/release')).status, 404);
+    assert.equal(audits.length, 1);
+    assert.equal(accessChanges, 1);
   });
 });

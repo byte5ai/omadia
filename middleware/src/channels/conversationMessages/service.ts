@@ -12,6 +12,8 @@ import type {
   ProcessMessageScope,
 } from '@omadia/plugin-api';
 
+import type { AddressedMessageRouter } from '../addressedMessageRouter.js';
+import type { PrivateMessageRouter } from '../privateMessageRouter.js';
 import type { ConversationMessageHub } from './hub.js';
 
 export interface ConversationMessagesServiceDeps {
@@ -79,9 +81,27 @@ export function createProcessConversationMessagesService(deps: {
   readonly hub: ConversationMessageHub;
   /** `undefined` = the kernel itself, which runs no process. */
   readonly callerPluginId: string | undefined;
+  /** #2089 — private messages of participants; absent: not offered. */
+  readonly privateMessages?: Pick<PrivateMessageRouter, 'register'>;
+  /** #2089 — who answers a message that addresses the agent; absent: not offered. */
+  readonly addressedMessages?: Pick<AddressedMessageRouter, 'register'>;
 }): ProcessConversationMessagesService {
   const { hub, callerPluginId } = deps;
+  const router = deps.privateMessages;
+  const addressed = deps.addressedMessages;
   return {
+    ...(addressed && callerPluginId !== undefined
+      ? {
+          onAddressedMessage: (agentSlug: string, handler: Parameters<AddressedMessageRouter['register']>[2]) =>
+            addressed.register(callerPluginId, agentSlug, handler),
+        }
+      : {}),
+    ...(router && callerPluginId !== undefined
+      ? {
+          onPrivateMessage: (agentSlug: string, handler: Parameters<PrivateMessageRouter['register']>[2]) =>
+            router.register(callerPluginId, agentSlug, handler),
+        }
+      : {}),
     async subscribe(scope: ProcessMessageScope, options) {
       if (callerPluginId === undefined) {
         return { outcome: 'refused', code: 'unavailable', message: 'only a plugin subscribes a process' };

@@ -202,3 +202,6 @@ export * from './facilitation.js';
 
 // #2090 — execution scopes and authorization for archetype plugins.
 export * from './executionAuthorization.js';
+
+// #2078 — kernel-issued grants for mail and calendar, bound to execution scopes.
+export * from './executionGrants.js';

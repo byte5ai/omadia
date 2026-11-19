@@ -21,6 +21,8 @@ import {
 } from '../../platform/facilitatorGuard.js';
 import type { ObservedConversationInvites } from '../../platform/observedConversationInvites.js';
 import { KERNEL_SERVICE_CALLER, type ServiceRegistry } from '../../platform/serviceRegistry.js';
+import type { AddressedMessageRouter } from '../addressedMessageRouter.js';
+import type { PrivateMessageRouter } from '../privateMessageRouter.js';
 import { ConversationMessageHub, type ConversationMessageHubDeps } from './hub.js';
 import { PgConversationMessageStore } from './pgStore.js';
 import { startConversationMessagePurge, type ConversationMessagePurgeJob } from './purgeJob.js';
@@ -141,6 +143,10 @@ export interface ConversationMessagesWiringDeps {
   /** #2089 — what a process may read, from the execution scopes and
    *  reservations. Absent: process subscriptions are not offered. */
   readonly processAccess?: ConversationMessageHubDeps['processAccess'];
+  /** #2089 — where a plugin registers for private messages of participants. */
+  readonly privateMessages?: Pick<PrivateMessageRouter, 'register'>;
+  /** #2089 — where a plugin registers to decide turns that address its agent. */
+  readonly addressedMessages?: Pick<AddressedMessageRouter, 'register' | 'owns'>;
   readonly log: (message: string) => void;
 }
 
@@ -178,6 +184,9 @@ export async function wireConversationMessages(
       getConfigStore: deps.getConfigStore,
     }),
     ...(deps.processAccess ? { processAccess: deps.processAccess } : {}),
+    ...(deps.addressedMessages
+      ? { ownsAddressedTurns: (pluginId: string, agentSlug: string) => deps.addressedMessages!.owns(pluginId, agentSlug) }
+      : {}),
     log: deps.log,
   });
   let reconcileEnabled = false;
@@ -217,6 +226,8 @@ export async function wireConversationMessages(
       createProcessConversationMessagesService({
         hub,
         callerPluginId: caller.pluginId === KERNEL_SERVICE_CALLER.pluginId ? undefined : caller.pluginId,
+        ...(deps.privateMessages ? { privateMessages: deps.privateMessages } : {}),
+        ...(deps.addressedMessages ? { addressedMessages: deps.addressedMessages } : {}),
       }),
     ),
   );

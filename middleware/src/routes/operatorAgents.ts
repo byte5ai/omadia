@@ -53,6 +53,7 @@ import {
   type FacilitationEngineSources,
 } from '../platform/facilitatorGuard.js';
 import { attachEngineToFacilitator } from '../platform/facilitatorEngineAttach.js';
+import { erroredArchetypePlugin } from '../platform/archetypeRegistrySync.js';
 import { assertFacilitatorIdentity } from '../services/facilitatorContract.js';
 import { createFacilitationEngineStatusHandler } from './facilitationEngineStatus.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
@@ -1995,6 +1996,24 @@ export function createOperatorAgentsRouter(
     return deps;
   }
 
+  /**
+   * #2088 — an agent of an archetype whose plugin is installed but did not
+   * start is neither created nor enabled: nothing would run it. Answers 409
+   * with the plugin and the reason it gave, and returns `true`.
+   */
+  function refuseErroredArchetypePlugin(res: Response, archetype: string): boolean {
+    const errored = erroredArchetypePlugin(engineSources(), archetype);
+    if (!errored) return false;
+    res.status(409).json({
+      error: 'archetype_plugin_not_running',
+      archetype,
+      plugin_id: errored.pluginId,
+      message: `the plugin '${errored.pluginId}' that delivers the archetype '${archetype}' did not start${errored.reason ? `: ${errored.reason}` : ''}; fix it in the store first`,
+      ...(errored.reason ? { detail: errored.reason } : {}),
+    });
+    return true;
+  }
+
   function badRequest(res: Response, err: unknown): void {
     // #2060 — one mapping for every facilitator refusal on this router.
     if (respondFacilitatorRefusal(res, err)) return;
@@ -2195,6 +2214,7 @@ export function createOperatorAgentsRouter(
       if (!getArchetype(archetype)) {
         throw new ConfigValidationError(`archetype "${archetype}" is not registered on this instance`);
       }
+      if (refuseErroredArchetypePlugin(res, archetype)) return;
       const created = await live.store.createAgent({
         slug: body.slug,
         name: body.name,
@@ -2248,6 +2268,9 @@ export function createOperatorAgentsRouter(
           res.status(409).json({ error: 'fallback_protected' });
           return;
         }
+      }
+      if (body.status === 'enabled' && existing.status !== 'enabled' && refuseErroredArchetypePlugin(res, archetypeOf(existing))) {
+        return;
       }
       // #2088 — END OF SERVICE comes before the status changes: what the agent
       // was doing ends while it is still enabled (its archetype plugin can

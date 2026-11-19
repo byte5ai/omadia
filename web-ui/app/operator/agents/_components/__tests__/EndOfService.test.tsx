@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -97,35 +97,55 @@ describe('<DeletedAgentsSection />', () => {
     expect(screen.queryByTestId('deleted-agents-section')).toBeNull();
   });
 
-  it('inside the retention period the slug must be typed; a wrong one removes nothing', async () => {
+  it('inside the retention period the slug must be typed in the app\'s dialog; a wrong one offers nothing', async () => {
     mockList.mockResolvedValue({ retention_days: 30, agents: [tombstone()] });
     mockPurge.mockResolvedValue({ ok: true });
-    const prompt = vi.fn().mockReturnValueOnce('hr').mockReturnValueOnce('mara');
-    vi.stubGlobal('prompt', prompt);
+    const native = vi.fn();
+    vi.stubGlobal('prompt', native);
+    vi.stubGlobal('confirm', native);
+    const user = userEvent.setup();
     renderWithIntl(<DeletedAgentsSection refreshKey={0} />);
     const row = await screen.findByTestId('deleted-agent-mara');
     expect(row.textContent).toContain('Mara (mara) · deleted');
     expect(row.textContent).toContain('by marcel@example.test');
     expect(row.textContent).toContain('can be removed without typing the slug from');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Remove for good' }));
-    expect(prompt.mock.calls[0]?.[0]).toContain('deleted less than 30 days ago. Type its slug “mara”');
-    expect(mockPurge).not.toHaveBeenCalled();
-    expect(screen.getByText('That is not the slug. Nothing was removed.')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Remove for good' }));
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.textContent).toContain('deleted less than 30 days ago. Type its slug “mara”');
+    const confirmButton = within(dialog).getByRole('button', { name: 'Remove for good' });
+    expect(confirmButton).toBeDisabled();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Remove for good' }));
+    await user.type(within(dialog).getByRole('textbox'), 'hr');
+    expect(within(dialog).getByText('That is not the slug.')).toBeTruthy();
+    expect(confirmButton).toBeDisabled();
+    expect(mockPurge).not.toHaveBeenCalled();
+
+    await user.clear(within(dialog).getByRole('textbox'));
+    await user.type(within(dialog).getByRole('textbox'), 'mara');
+    await user.click(confirmButton);
     await waitFor(() => expect(mockPurge).toHaveBeenCalledWith('id-mara', 'mara'));
     await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(native).not.toHaveBeenCalled();
   });
 
-  it('after the retention period a plain confirmation is enough', async () => {
+  it('after the retention period a plain confirmation is enough, and cancelling removes nothing', async () => {
     mockList.mockResolvedValue({ retention_days: 30, agents: [tombstone({ purgeable_without_confirmation: true, deleted_by: null })] });
     mockPurge.mockResolvedValue({ ok: true });
-    const confirm = vi.fn().mockReturnValue(true);
-    vi.stubGlobal('confirm', confirm);
+    const user = userEvent.setup();
     renderWithIntl(<DeletedAgentsSection refreshKey={0} />);
-    await userEvent.click(await screen.findByRole('button', { name: 'Remove for good' }));
-    expect(confirm.mock.calls[0]?.[0]).toContain('Remove “mara” for good? Its identity, grants, bindings and schedules are deleted with it.');
+    await user.click(await screen.findByRole('button', { name: 'Remove for good' }));
+    let dialog = screen.getByRole('dialog');
+    expect(dialog.textContent).toContain('Remove “mara” for good? Its identity, grants, bindings and schedules are deleted with it.');
+    expect(within(dialog).queryByRole('textbox')).toBeNull();
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(mockPurge).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Remove for good' }));
+    dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Remove for good' }));
     await waitFor(() => expect(mockPurge).toHaveBeenCalledWith('id-mara', undefined));
   });
 });

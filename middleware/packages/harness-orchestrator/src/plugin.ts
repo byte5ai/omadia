@@ -1226,6 +1226,16 @@ export async function activate(
       ctx.services
         .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
         ?.ownPostCount?.(agentSlug, channelType, conversationId) ?? 0,
+    // #2089 — a participant's private message to a facilitator.
+    facilitatorPrivateTurn: async (agentSlug, message) =>
+      ctx.services
+        .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
+        ?.privateTurn?.(agentSlug, message),
+    // #2089 — a mention in a conversation where a process listens for them.
+    facilitatorAddressedTurn: async (agentSlug, message) =>
+      (await ctx.services
+        .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
+        ?.addressedTurn?.(agentSlug, message)) === true,
     ...(contextRetriever ? { contextRetriever } : {}),
     ...(sessionBriefing ? { sessionBriefing } : {}),
     ...(factExtractor ? { factExtractor } : {}),

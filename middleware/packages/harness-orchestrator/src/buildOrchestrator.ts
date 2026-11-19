@@ -98,6 +98,8 @@ import {
   wrapFacilitatorAgent,
   type EngineDrivenConversationLookup,
   type OwnPostCountLookup,
+  type PrivateTurnLookup,
+  type AddressedTurnLookup,
 } from './facilitatorAgent.js';
 import {
   FACILITATOR_ARCHETYPE,
@@ -349,6 +351,10 @@ export interface OrchestratorDeps {
   readonly isFacilitationEngineUsable?: (agentSlug: string) => boolean;
   /** #2043 — see `FacilitatorAgentDeps.ownPostCount`. */
   readonly facilitatorOwnPostCount?: OwnPostCountLookup;
+  /** #2089 — see `FacilitatorAgentDeps.privateTurn`. */
+  readonly facilitatorPrivateTurn?: PrivateTurnLookup;
+  /** #2089 — see `FacilitatorAgentDeps.addressedTurn`. */
+  readonly facilitatorAddressedTurn?: AddressedTurnLookup;
   /**
    * #1018 — resolves the peer AGENTS the calling agent may see in the current
    * chat, merged into `get_chat_participants` as `kind: 'agent'` entries.
@@ -674,6 +680,8 @@ export function buildOrchestratorForAgent(
             ? { isEngineUsable: deps.isFacilitationEngineUsable }
             : {}),
           ...(deps.facilitatorOwnPostCount ? { ownPostCount: deps.facilitatorOwnPostCount } : {}),
+          ...(deps.facilitatorPrivateTurn ? { privateTurn: deps.facilitatorPrivateTurn } : {}),
+          ...(deps.facilitatorAddressedTurn ? { addressedTurn: deps.facilitatorAddressedTurn } : {}),
           // The fixed answers are marked by this Agent's own disclosure rule.
           disclose: (answer, input) => orchestrator.discloseCliAnswer(answer, input),
           log: (m) => console.log(m),

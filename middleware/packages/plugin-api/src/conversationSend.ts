@@ -158,7 +158,10 @@ export interface SendAuthorization {
 }
 
 export type ScopedSendOutcome =
-  | { outcome: 'delivered'; authorizationId: string; messageId?: string; cardMessageId?: string }
+  /** `conversationId` is set on a delivered `sendDirect` when the channel
+   *  reports the private conversation the message went into, so a later reply
+   *  there can be matched to it. A conversation send never sets it. */
+  | { outcome: 'delivered'; authorizationId: string; messageId?: string; cardMessageId?: string; conversationId?: string }
   | {
       outcome: 'unreachable';
       /** `not_authorized`: the execution authorization refused (see

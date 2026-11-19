@@ -178,6 +178,8 @@ export type {
   EngineTurnScope,
   FacilitatorRuntimeLookup,
   OwnPostCountLookup,
+  PrivateTurnLookup,
+  AddressedTurnLookup,
 } from './facilitatorAgent.js';
 export {
   buildToolCallContext,
