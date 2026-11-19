@@ -243,6 +243,13 @@ export function createExecutionAuthorizationService(
       if (!ACTIONS.has(request.action) || !PURPOSES.has(request.purpose)) {
         return refuse('invalid_request', 'unknown action or purpose');
       }
+      const emission = request.emission;
+      if (emission !== undefined && emission !== 'prose' && emission !== 'template' && emission !== 'data') {
+        return refuse('invalid_request', "emission is 'prose', 'template' or 'data'");
+      }
+      if (request.action === 'model_turn' && emission !== undefined && emission !== 'prose') {
+        return refuse('invalid_request', 'a model_turn produces prose');
+      }
       const modelCalls = request.modelCalls ?? 0;
       if (!isCount(modelCalls)) return refuse('invalid_request', 'modelCalls is a whole number from 0');
       if (request.action === 'model_turn' ? modelCalls < 1 : modelCalls !== 0) {
@@ -288,6 +295,7 @@ export function createExecutionAuthorizationService(
         phase: request.phase,
         modelCalls,
         ...(target ? { target } : {}),
+        ...(emission ? { emission } : request.action === 'model_turn' ? { emission: 'prose' as const } : {}),
       });
       if (taken.ok) {
         return {

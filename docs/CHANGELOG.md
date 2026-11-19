@@ -36,6 +36,24 @@ changelog.
 
 ## [Unreleased]
 
+### Added — A facilitator's model turn as an authorized action (#2090, epic #2043): K4.2 of the spec alignment
+
+- **`agentTurn@2`.** An archetype plugin can run a turn under an execution
+  scope: it names the scope, the process, the phase, the purpose and how
+  many model calls it reserves. The kernel takes the authorization before
+  any model is called and refuses the turn past the deadline, without
+  budget, with the kill switch on, or in a phase that does not fit the
+  scope. The turn itself and its guards are the same as before.
+- **Model calls are counted where they are recorded.** Every model call of
+  the kernel (main loop, helper models, verifier, a plugin's own calls) is
+  counted for the turn that caused it, and the scope is charged with the
+  real number; what was reserved and not used goes back. A turn that makes
+  more calls than it reserved uses the budget up, and the next action is
+  refused. The kernel cannot stop a turn in the middle.
+- The first version of the service is unchanged and still runs a turn
+  without a scope, until the facilitation engine has moved (migration 0074,
+  plugin-api 1.64.0).
+
 ### Added — Execution scopes, conversation reservations and a kill switch for archetype plugins (#2090, epic #2043): K4.1 of the spec alignment
 
 - **Execution scopes.** An archetype plugin (the facilitation engine) acts

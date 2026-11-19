@@ -8,6 +8,31 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.64.0 — 2026-11-19
+
+Additive (#2090, epic #2043): a model turn as an authorized action.
+
+### Added
+
+- **`agentTurn@2`** (`AGENT_TURN_V2_SERVICE_NAME`), next to the first major:
+  `ctx.services.get('agentTurn@2')`, declared as `agentTurn@^2` under
+  `optional_requires`. `ScopedAgentTurnService.runTurn` takes a
+  `ScopedAgentTurnRequest`: the first major's request plus `scopeId`,
+  `processId`, `phase`, `purpose`, `emission: 'prose'`, `budget.modelCalls`
+  and an optional `target`. The kernel draws the authorization from the
+  scope before any model is called and answers `refused` with
+  `code: 'not_authorized'` and the `executionCode` otherwise. A completed
+  turn carries `authorizationId` and `modelCalls: { reserved, used }`; the
+  kernel counts the model calls of the turn, helper and guard calls
+  included, and returns the unused part of the reservation to the scope. A
+  turn can make more calls than it reserved: the excess is charged up to the
+  scope's budget.
+- **`ExecutionEmissionType`** (`prose`, `template`, `data`) and the optional
+  `emission` on `AuthorizeActionRequest`; recorded with the authorization.
+
+The first major (`agentTurn`) is unchanged and still runs a turn without a
+scope.
+
 ## 1.63.0 — 2026-11-19
 
 Additive (#2090, epic #2043): execution authorization for archetype plugins.

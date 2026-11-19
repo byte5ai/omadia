@@ -11,6 +11,7 @@
 import type {
   ConversationReservation,
   ExecutionActionType,
+  ExecutionEmissionType,
   ExecutionPhase,
   ExecutionPurpose,
   ExecutionScope,
@@ -313,6 +314,7 @@ export class ExecutionScopeStore {
     purpose: ExecutionPurpose;
     phase: ExecutionPhase;
     target?: ExecutionTarget;
+    emission?: ExecutionEmissionType;
     modelCalls: number;
   }): Promise<AuthorizeResult> {
     const res = await this.pool.query<ScopeDbRow & { authorization_id: string }>(
@@ -326,8 +328,8 @@ export class ExecutionScopeStore {
             AND NOT ${KILLED}
           RETURNING ${SCOPE_COLS}
        ), made AS (
-         INSERT INTO execution_authorizations (scope_id, action, purpose, phase, target, reserved_model_calls)
-         SELECT taken.id, $4, $5, $6, $7::jsonb, $3 FROM taken
+         INSERT INTO execution_authorizations (scope_id, action, purpose, phase, target, reserved_model_calls, emission)
+         SELECT taken.id, $4, $5, $6, $7::jsonb, $3, $8 FROM taken
          RETURNING id
        )
        SELECT taken.*, made.id AS authorization_id FROM taken, made`,
@@ -339,6 +341,7 @@ export class ExecutionScopeStore {
         input.purpose,
         input.phase,
         input.target ? JSON.stringify(input.target) : null,
+        input.emission ?? null,
       ],
     );
     const row = res.rows[0];

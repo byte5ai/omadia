@@ -25,6 +25,11 @@ import {
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
 import type {
+  ExecutionAuthorizationService,
+  ExecutionRefusalCode,
+  ScopedAgentTurnOutcome,
+  ScopedAgentTurnRequest,
+  ScopedAgentTurnService,
   AgentProfile,
   AgentTurnOutcome,
   AgentTurnRequest,
@@ -255,6 +260,113 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnSer
         ...(language ? { language } : {}),
         ownIdentityChannelTypes: registry?.channelTypesWithIdentity?.(agent.slug) ?? [],
       };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// agentTurn@2 (#2090) — the same turn, as an authorized action
+// ---------------------------------------------------------------------------
+
+export interface ScopedAgentTurnServiceDeps extends AgentTurnServiceDeps {
+  /** The calling plugin's execution authorization; absent without a database. */
+  readonly execution: () => ExecutionAuthorizationService | undefined;
+  /** Counts the model calls made inside the turn. Injected so the count is
+   *  the usage recorder's, the one place every model call passes. */
+  readonly meter: <T>(work: () => Promise<T>) => Promise<{ value: T; modelCalls: number }>;
+}
+
+const MAX_RESERVED_MODEL_CALLS = 200;
+
+export function createScopedAgentTurnService(deps: ScopedAgentTurnServiceDeps): ScopedAgentTurnService {
+  const base = createAgentTurnService(deps);
+  const log = deps.log ?? (() => undefined);
+  const refusedV2 = (
+    code: Extract<ScopedAgentTurnOutcome, { outcome: 'refused' }>['code'],
+    message: string,
+    executionCode?: ExecutionRefusalCode,
+  ): ScopedAgentTurnOutcome => ({
+    outcome: 'refused',
+    code,
+    message,
+    ...(executionCode ? { executionCode } : {}),
+  });
+
+  return {
+    getProfile: (agentSlug) => base.getProfile?.(agentSlug) ?? Promise.resolve(undefined),
+
+    async runTurn(request: ScopedAgentTurnRequest): Promise<ScopedAgentTurnOutcome> {
+      if (
+        !isText(request?.scopeId, 128) ||
+        !isText(request.processId, MAX_KEY) ||
+        !isText(request.agentSlug, 128) ||
+        typeof request.phase !== 'string' ||
+        typeof request.purpose !== 'string'
+      ) {
+        return refusedV2('unavailable', 'scopeId, processId, agentSlug, phase and purpose are required');
+      }
+      if (request.emission !== 'prose') {
+        return refusedV2('unavailable', "a turn's emission type is 'prose'");
+      }
+      const reserved = request.budget?.modelCalls;
+      if (!Number.isInteger(reserved) || reserved < 1 || reserved > MAX_RESERVED_MODEL_CALLS) {
+        return refusedV2('unavailable', `budget.modelCalls is a whole number from 1 to ${String(MAX_RESERVED_MODEL_CALLS)}`);
+      }
+      const execution = deps.execution();
+      if (!execution) return refusedV2('unavailable', 'execution authorization needs a database');
+      // The caller must be allowed to run this agent at all, before a unit of
+      // the scope is spent on finding out.
+      if ((await base.getProfile?.(request.agentSlug)) === undefined) {
+        return refusedV2('not_bound', `agent '${request.agentSlug}' is not an agent this plugin runs`);
+      }
+      // The scope must be this process's and this agent's. A scope of another
+      // plugin is not in the list, so it reads as unknown.
+      const scope = (await execution.listScopes(request.processId)).find((s) => s.id === request.scopeId);
+      if (!scope || scope.agentSlug !== request.agentSlug) {
+        return refusedV2('not_authorized', 'no such scope for this process and agent', 'unknown_scope');
+      }
+
+      const authorization = await execution.authorize({
+        scopeId: scope.id,
+        phase: request.phase,
+        purpose: request.purpose,
+        action: 'model_turn',
+        emission: 'prose',
+        modelCalls: reserved,
+        ...(request.target !== undefined ? { target: request.target } : {}),
+      });
+      if (authorization.outcome === 'refused') {
+        return refusedV2('not_authorized', authorization.message, authorization.code);
+      }
+
+      let used = 0;
+      let outcome: AgentTurnOutcome;
+      try {
+        const metered = await deps.meter(() => base.runTurn(request));
+        used = metered.modelCalls;
+        outcome = metered.value;
+      } catch (err) {
+        outcome = { outcome: 'failed', message: err instanceof Error ? err.message : String(err) };
+      }
+      // Whatever happened: what was not used goes back, what was used beyond
+      // the reservation is charged.
+      await execution.settle(authorization.authorizationId, { modelCalls: used });
+      if (used > reserved) {
+        log(
+          `[agent-turn] turn as '${request.agentSlug}' (process ${request.processId}) made ${String(used)} model calls, ${String(reserved)} were reserved`,
+        );
+      }
+      if (outcome.outcome === 'completed') {
+        return {
+          ...outcome,
+          authorizationId: authorization.authorizationId,
+          modelCalls: { reserved, used },
+        };
+      }
+      if (outcome.outcome === 'failed') {
+        return { ...outcome, authorizationId: authorization.authorizationId };
+      }
+      return outcome;
     },
   };
 }

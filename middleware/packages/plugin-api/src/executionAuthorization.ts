@@ -80,6 +80,13 @@ export type ExecutionActionType =
   | 'check'
   | 'delivery';
 
+/**
+ * The emission type of what an action produces (spec 2042 §5.5): `prose` is
+ * model-written text, `template` a registered template filled with engine
+ * values, `data` side-channel data. Recorded with the authorization.
+ */
+export type ExecutionEmissionType = 'prose' | 'template' | 'data';
+
 /** What the action is for. Past the deadline of an `active` scope in its
  *  deadline wait, only `consent`, `status` and `stop` are authorized. */
 export type ExecutionPurpose =
@@ -183,6 +190,8 @@ export interface AuthorizeActionRequest {
   readonly action: ExecutionActionType;
   /** Required for `post`, `direct_message`, `card_update` and `delivery`. */
   readonly target?: ExecutionTarget;
+  /** What the action produces. A `model_turn` is always `prose`. */
+  readonly emission?: ExecutionEmissionType;
   /** Model calls to reserve for a `model_turn`; unused ones are returned by
    *  {@link ExecutionAuthorizationService.settle}. */
   readonly modelCalls?: number;
