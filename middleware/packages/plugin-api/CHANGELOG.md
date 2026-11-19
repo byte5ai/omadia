@@ -8,6 +8,88 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.67.0 — 2026-11-19
+
+Additive (#2091, epic #2043): sends drawn from an execution scope.
+
+### Added
+
+- **`conversationSend@2`** (`CONVERSATION_SEND_V2_SERVICE_NAME`), next to
+  the first major: `ctx.services.get('conversationSend@2')`, declared as
+  `conversationSend@^2` under `optional_requires`.
+  `ScopedConversationSendService`:
+  - `sendToConversation`, `sendToPerson`, `updateCard`: each request carries
+    `authorization` (`scopeId`, `processId`, `phase`, `purpose`,
+    `emission: 'prose' | 'template'`). The kernel draws the authorization
+    from the scope first; the target must be one the scope lists. Refused:
+    `unreachable` with `code: 'not_authorized'` and `executionCode`. A
+    channel failure after the authorization carries `authorizationId`.
+  - The target comes from the scope, not from a message subscription: a
+    `closing` scope still posts to a conversation whose reservation was
+    released.
+  - `sendToPerson` additionally requires the person to be a member or an
+    author of a conversation of the process.
+  - A delivered post is recorded as the process's (message, card message and
+    card id), so replies and card answers reach that process alone;
+    `bindMessage` of `conversationMessages@2` is only needed for messages
+    sent another way.
+  - `checkReadiness`: readiness of the agent's identity in one conversation,
+    as an authorized check; also for a conversation that is about to be
+    linked.
+  - `capabilities(channelType)` as in the first major.
+
+The first major (`conversationSend`, `targetedSend`) is unchanged.
+
+## 1.66.0 — 2026-11-19
+
+Additive (#2089, epic #2043): message subscriptions and reads bound to a
+process.
+
+### Added
+
+- **`conversationMessages@2`** (`CONVERSATION_MESSAGES_V2_SERVICE_NAME`),
+  next to the first major: `ctx.services.get('conversationMessages@2')`,
+  declared as `conversationMessages@^2` under `optional_requires`.
+  `ProcessConversationMessagesService`:
+  - `subscribe(scope, { mode })` with `scope.processId` and a mode: `all`
+    (every human message), `addressed` (a mention, a reply to one of the
+    process's messages, an answer to one of its cards) or `none`. `all`
+    needs the conversation's reservation, every mode an open execution scope
+    (#2090); refused with `not_reserved`, `no_scope` or `ended` otherwise.
+    Calling it again changes the mode. A process subscribes a conversation
+    once.
+  - `getEvent`, `getEventById`, `listSince`, `onMessage`: every record
+    carries `processId`, and every read returns only what that process
+    received in that conversation.
+  - `bindMessage(scope, { messageId?, cardId? })`: a reply to that message
+    or an answer to that card is delivered to this process alone.
+  - `modeOf(scope)`.
+- `ConversationMessageRecord.addressedToBot`: the channel stated that the
+  message addresses the agent's bot.
+
+The first major (`conversationMessages`) is unchanged. An identity reads a
+conversation either through process subscriptions or through one without a
+process, not both.
+
+## 1.65.0 — 2026-11-19
+
+Additive type, changed behaviour of `agentTurn@2` (#2090, epic #2043): the
+reservation of a turn is a hard cap.
+
+### Changed
+
+- **`agentTurn@2`:** a model call of the turn that `budget.modelCalls` does
+  not cover is not made, whoever in the turn asked for it (the main model, a
+  helper, a guard). The turn then answers `refused` with the new code
+  **`reservation_exceeded`**, `authorizationId` and
+  `modelCalls: { reserved, used, refused }`, and returns no text, also when
+  the refused call belonged to a helper that would have carried on without
+  it. Nothing of such a turn is kept in the turn history. What the turn used
+  is charged to the scope. In 1.64.0 a turn could overrun its reservation
+  and the excess was charged afterwards.
+- `modelCalls.used` is now counted at the provider (every call that reaches a
+  model backend), not at the usage recorder.
+
 ## 1.64.0 — 2026-11-19
 
 Additive (#2090, epic #2043): a model turn as an authorized action.

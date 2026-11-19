@@ -4969,6 +4969,14 @@ async function main(): Promise<void> {
       },
       configuringMaxHours: config.EXECUTION_SCOPE_CONFIGURING_MAX_HOURS,
       sweepIntervalMs: config.EXECUTION_SCOPE_SWEEP_INTERVAL_MS,
+      // #2089 — reading follows the reservation and the scopes at once.
+      onAccessChanged: () => {
+        void conversationMessagesRef.current?.reconcileNow().catch((err: unknown) => {
+          console.log(
+            `[conversation-messages] reconcile after an access change failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+      },
       log: (m) => console.log(m),
     });
     const disposeEphemeralAttachment = async (
@@ -5092,6 +5100,13 @@ async function main(): Promise<void> {
       graceMs: config.CONVERSATION_MESSAGES_GRACE_MS,
       maxAgeDays: config.CONVERSATION_MESSAGES_MAX_AGE_DAYS,
       purgeIntervalMs: config.CONVERSATION_MESSAGES_PURGE_INTERVAL_MS,
+      // #2089 — a process reads a conversation by its execution scopes and
+      // its reservation.
+      processAccess: (process) => {
+        const store = executionRef.current?.store;
+        if (!store) return Promise.reject(new Error('the execution store is not available'));
+        return store.processAccess(process);
+      },
       log: (m) => console.log(m),
     });
     conversationMessagesRef.current = conversationMessages;
@@ -7336,6 +7351,19 @@ async function main(): Promise<void> {
       onOwnIdentityDelivered: ownIdentityPostLog.record,
       log: (m) => console.log(m),
     }),
+    // #2091 — 'conversationSend@2': sends drawn from an execution scope.
+    scoped: {
+      executionFor: (pluginId) => executionRef.current?.serviceFor(pluginId),
+      direct: {
+        providers: targetedSendRegistry,
+        ...(targetedBindingLookup ? { lookupConversationRefs: targetedBindingLookup } : {}),
+        ownIdentity: ownIdentitySend,
+        log: (m) => console.log(m),
+      },
+      messages: () => conversationMessages?.hub,
+      readiness: (request) => sessionCapabilityHub.check(request),
+      log: (m) => console.log(m),
+    },
   });
 
   const channelCoreApi = createCoreApi({

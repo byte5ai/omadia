@@ -36,12 +36,77 @@ changelog.
 
 ## [Unreleased]
 
-### Fixed — Conductor previews no longer execute agent steps
+### Added — Posts and direct messages drawn from an execution scope (#2091, epic #2043): K4.4 of the spec alignment
 
-2026-11-15. Conductor previews now stub agent steps alongside action steps, so
-previewing a workflow cannot start a real LLM turn, create token usage, or run
-agent tools and side effects. Normal conductor runs continue to execute agent
-steps normally.
+- **`conversationSend@2`.** A facilitation engine posts, writes to one
+  person, updates a card and checks readiness as an authorized action: each
+  request names the execution scope, and the kernel takes the authorization
+  before anything leaves. The scope must list the conversation or the
+  person, be inside its deadline and budget and not be stopped by an
+  operator. Sending as the agent's own identity is unchanged (`no_identity`
+  instead of another bot).
+- **Targets come from the scope.** The first version allowed a post where
+  the agent held a message subscription. A closing scope can now still post
+  the protocol or the abort report to a conversation whose reservation was
+  released, and nothing can be posted to a conversation the scope does not
+  list.
+- **Direct messages:** the person must be listed by the scope and, as a
+  second check from the kernel's own records, be a member or an author of a
+  conversation of that process.
+- **The kernel records which process a post belongs to,** so a reply to it
+  or an answer to its card reaches that process alone.
+- **Readiness per conversation** is asked through the same service, also for
+  a conversation that is about to be linked.
+- The first version of the services is unchanged (plugin-api 1.67.0).
+
+### Added — Message subscriptions and reads bound to a process (#2089, epic #2043): K4.3 of the spec alignment
+
+- **`conversationMessages@2`.** A facilitation engine can subscribe a
+  conversation for one process (a facilitation) with a mode: every human
+  message, only messages addressed to the facilitator, or nothing. Every
+  read names the process and returns only what that process received there.
+  A later facilitation in the same conversation has its own subscription and
+  sees none of an earlier one's messages.
+- **Which process a message belongs to is decided before it is stored.** A
+  reply to a message, or an answer to a card, that belongs to a process
+  reaches that process alone, also while another facilitation of the same
+  facilitator reads every message of the conversation. Any other message
+  goes to the facilitation that reads everything and, when it addresses the
+  facilitator, to those in follow-up as well.
+- **Access follows the permission.** Reading every message needs the
+  conversation's reservation and an open execution scope. When the
+  reservation is released the kernel turns the subscription down to
+  addressed messages (the mention gate is back on); when the process has no
+  open scope left it ends the subscription, and reads end with it.
+- **Retention.** Messages of a running process are not removed by the age
+  limit; they go with the grace period after the process's last scope ended.
+- **For channel plugins** (channel-sdk 0.3.5): `conversationDelivery()`
+  tells an adapter whether an identity gets all, addressed or no messages of
+  a conversation, and `addressedToBot` lets it mark a mention. An adapter
+  that does not use them keeps delivering as before: all messages while
+  somebody reads all, nothing otherwise.
+- The first version of the service is unchanged (migration 0075, plugin-api
+  1.66.0).
+
+### Changed — A turn's model-call reservation is a hard cap (#2090, epic #2043)
+
+- **A gate before every model call.** Every provider implementation
+  (Anthropic, OpenAI chat, OpenAI responses, the subscription CLI as provider
+  and as chat agent) asks the kernel before it reaches its backend. Inside a
+  turn that runs under an execution scope (`agentTurn@2`), the call the
+  turn's reservation does not cover is refused and never made, whether the
+  main model, a helper or a guard asked for it.
+- **No answer from a turn that was cut short.** Many helpers carry on when
+  their model call fails. A turn in which any call was refused therefore ends
+  refused (`reservation_exceeded`) and returns no text; nothing of it is kept
+  in the turn history. It is charged with the calls it made.
+- **The count is exact now.** Model calls are counted at the provider, where
+  every call passes. The first version counted at the usage recorder, which a
+  few calls do not reach.
+- Outside such a turn nothing changes: the gate lets every call through.
+- For authors of provider plugins: the provider contract is 1.5.0; an
+  implementation calls `admitModelCall()` before its backend call. A
+  third-party provider that does not is not bounded by a reservation.
 
 ### Added — A facilitator's model turn as an authorized action (#2090, epic #2043): K4.2 of the spec alignment
 
@@ -13289,6 +13354,13 @@ Three live defects in the MCP OAuth path, one migration
   stream toast now finishes that turn as a failure showing the same humanized
   sentence, instead of reporting it as 'done' (a successful turn) as it did
   before (#403).
+
+### Fixed — Conductor previews no longer execute agent steps
+
+2026-11-15. Conductor previews now stub agent steps alongside action steps, so
+previewing a workflow cannot start a real LLM turn, create token usage, or run
+agent tools and side effects. Normal conductor runs continue to execute agent
+steps normally.
 
 ---
 

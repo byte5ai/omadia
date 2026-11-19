@@ -172,6 +172,7 @@ describe('facilitation engine auto-attach', () => {
       channelKey: '28:aaaa-mara',
       pluginId: ENGINE,
       createdAt: new Date(0),
+      mode: 'all' as const,
     };
     assert.equal(await ground(subscription), undefined, 'stands');
     status = 'inactive';

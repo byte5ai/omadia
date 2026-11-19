@@ -80,7 +80,7 @@ export function engineUsability(sources: FacilitationEngineSources, reported: un
 
 export function createFacilitatorRuntimeLookup(deps: {
   getRegistry: () => OrchestratorRegistry | undefined;
-  getMessages: () => Pick<ConversationMessageHub, 'subscriptionFor'> | undefined;
+  getMessages: () => Pick<ConversationMessageHub, 'readsEverything'> | undefined;
   engineSources: () => FacilitationEngineSources;
   /** The state object the engine plugin publishes, or `undefined`. */
   reportedEngineState: () => unknown;
@@ -90,7 +90,10 @@ export function createFacilitatorRuntimeLookup(deps: {
   return {
     ...(deps.ownPosts ? { ownPostCount: deps.ownPosts.count } : {}),
     isEngineDriven: (agentSlug, channelType, conversationId) =>
-      deps.getMessages()?.subscriptionFor({ agentSlug, channelType, conversationId }) !== undefined,
+      // #2089 — a subscription of either major that reads every message. A
+      // process that only gets ADDRESSED messages (its follow-up) does not
+      // drive the conversation: the facilitator's ordinary turn still runs.
+      deps.getMessages()?.readsEverything({ agentSlug, channelType, conversationId }) === true,
     isEngineUsable: (agentSlug) => {
       const usability = engineUsability(deps.engineSources(), deps.reportedEngineState());
       if (!usability.usable) return false;

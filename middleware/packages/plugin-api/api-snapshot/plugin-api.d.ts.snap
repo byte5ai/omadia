@@ -204,9 +204,15 @@ used: number;
 };
 } | {
 outcome: 'refused';
-code: 'unknown_agent' | 'not_bound' | 'budget_exceeded' | 'unavailable' | 'not_authorized';
+code: 'unknown_agent' | 'not_bound' | 'budget_exceeded' | 'unavailable' | 'not_authorized' | 'reservation_exceeded';
 message: string;
 executionCode?: ExecutionRefusalCode;
+authorizationId?: string;
+modelCalls?: {
+reserved: number;
+used: number;
+refused: number;
+};
 } | {
 outcome: 'failed';
 message: string;
@@ -367,6 +373,7 @@ removed: boolean;
 cardAnswer?: MessageCardAnswer;
 occurredAt: string;
 receivedAt: string;
+addressedToBot?: boolean;
 }
 export interface ConversationMessageScope {
 agentSlug: string;
@@ -403,9 +410,50 @@ proposalId?: string;
 proposalVersion?: number;
 answers?: readonly CardAnswerValue[];
 }
+export declare const CONVERSATION_MESSAGES_V2_SERVICE_NAME = "conversationMessages@2";
+export type ConversationMessageMode = 'all' | 'addressed' | 'none';
+export interface ProcessMessageScope extends ConversationMessageScope {
+processId: string;
+}
+export interface ProcessConversationMessageRecord extends ConversationMessageRecord {
+processId: string;
+}
+export type ProcessSubscribeOutcome = {
+outcome: 'subscribed';
+mode: ConversationMessageMode;
+} | {
+outcome: 'refused';
+code: 'no_identity' | 'not_facilitator' | 'not_present' | 'not_ready' | 'unavailable'
+| 'not_reserved'
+| 'no_scope'
+| 'ended';
+message: string;
+};
+export interface ProcessConversationMessagesService {
+subscribe(scope: ProcessMessageScope, options: {
+mode: ConversationMessageMode;
+}): Promise<ProcessSubscribeOutcome>;
+modeOf(scope: ProcessMessageScope): Promise<ConversationMessageMode | undefined>;
+onMessage(agentSlug: string, handler: (record: ProcessConversationMessageRecord) => void | Promise<void>): () => void;
+getEvent(scope: ProcessMessageScope, messageId: string, revision?: number): Promise<ProcessConversationMessageRecord | undefined>;
+getEventById(scope: ProcessMessageScope, eventId: string): Promise<ProcessConversationMessageRecord | undefined>;
+listSince(scope: ProcessMessageScope, opts?: {
+after?: string;
+limit?: number;
+}): Promise<{
+events: readonly ProcessConversationMessageRecord[];
+nextCursor?: string;
+}>;
+bindMessage(scope: ProcessMessageScope, ref: {
+messageId?: string;
+cardId?: string;
+}): Promise<boolean>;
+}
 
 // ===== conversationSend.d.ts =====
+import type { ExecutionPhase, ExecutionPurpose, ExecutionRefusalCode } from './executionAuthorization.js';
 import type { CardSupport, CardUpdate, CardUpdateOutcome, QuestionCard } from './questionCard.js';
+import type { ChannelReadinessReport } from './sessionCapabilities.js';
 export declare const CONVERSATION_SEND_SERVICE_NAME = "conversationSend";
 export interface ConversationSendRequest {
 agentSlug: string;
@@ -459,6 +507,70 @@ export interface ConversationSendService {
 sendToConversation(request: ConversationSendRequest): Promise<ConversationSendOutcome>;
 capabilities?(channelType: string): ConversationSendCapabilities | undefined;
 updateCard?(request: ConversationCardUpdateRequest): Promise<CardUpdateOutcome>;
+}
+export declare const CONVERSATION_SEND_V2_SERVICE_NAME = "conversationSend@2";
+export interface SendAuthorization {
+scopeId: string;
+processId: string;
+phase: ExecutionPhase;
+purpose: ExecutionPurpose;
+emission: 'prose' | 'template';
+}
+export type ScopedSendOutcome = {
+outcome: 'delivered';
+authorizationId: string;
+messageId?: string;
+cardMessageId?: string;
+} | {
+outcome: 'unreachable';
+code: string;
+message: string;
+executionCode?: ExecutionRefusalCode;
+authorizationId?: string;
+};
+export interface ScopedConversationSendRequest {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+message: ConversationSendRequest['message'];
+authorization: SendAuthorization;
+}
+export interface ScopedDirectSendRequest {
+agentSlug: string;
+channelType: string;
+principal: string;
+userRef?: {
+kind: string;
+id: string;
+};
+message: {
+text: string;
+};
+authorization: SendAuthorization;
+}
+export interface ScopedCardUpdateRequest extends ConversationCardUpdateRequest {
+authorization: SendAuthorization;
+}
+export interface ScopedReadinessRequest {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+authorization: Omit<SendAuthorization, 'emission' | 'purpose'>;
+}
+export interface ScopedConversationSendService {
+sendToConversation(request: ScopedConversationSendRequest): Promise<ScopedSendOutcome>;
+sendToPerson(request: ScopedDirectSendRequest): Promise<ScopedSendOutcome>;
+updateCard(request: ScopedCardUpdateRequest): Promise<CardUpdateOutcome | Extract<ScopedSendOutcome, {
+outcome: 'unreachable';
+}>>;
+capabilities(channelType: string): ConversationSendCapabilities | undefined;
+checkReadiness(request: ScopedReadinessRequest): Promise<{
+outcome: 'checked';
+report: ChannelReadinessReport;
+authorizationId: string;
+} | Extract<ScopedSendOutcome, {
+outcome: 'unreachable';
+}>>;
 }
 
 // ===== datasetId.d.ts =====

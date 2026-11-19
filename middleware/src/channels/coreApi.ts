@@ -164,7 +164,7 @@ export interface CreateCoreApiOptions {
    * (subscriptions and events are stored); absent leaves both CoreApi methods
    * undefined, so an adapter's mention gate always applies.
    */
-  conversationMessages?: Pick<ConversationMessageHub, 'emit' | 'isSubscribed'>;
+  conversationMessages?: Pick<ConversationMessageHub, 'emit' | 'isSubscribed' | 'deliveryMode'>;
   /** #2043 — readiness providers and meeting sources, same lifecycle as the
    *  roster registry; and where pushed snapshots and session events go. */
   readinessProviders?: ChannelProviderRegistry<ChannelReadinessProvider>;
@@ -362,6 +362,18 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
         return messages.isSubscribed(channelType, conversationId, channelKey);
       } catch {
         return false;
+      }
+    };
+    // #2089 — every message, addressed ones only, or nothing. Same hot path.
+    api.conversationDelivery = (
+      channelType: string,
+      conversationId: string,
+      channelKey: string,
+    ): 'all' | 'addressed' | 'none' => {
+      try {
+        return messages.deliveryMode(channelType, conversationId, channelKey);
+      } catch {
+        return 'none';
       }
     };
   }

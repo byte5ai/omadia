@@ -26,8 +26,10 @@ import {
   type ExecutionAgent,
 } from '../src/execution/executionAuthorizationService.js';
 import { ExecutionScopeStore } from '../src/execution/scopeStore.js';
+import { createScopedSendService } from '../src/channels/scopedSendService.js';
 import { wrapFacilitatorAgent } from '../packages/harness-orchestrator/src/facilitatorAgent.js';
-import { meterModelCalls, recordUsage } from '../packages/harness-usage-telemetry/src/index.js';
+import { admitModelCall } from '../packages/llm-provider-api/src/index.js';
+import { meterModelCalls } from '../packages/harness-usage-telemetry/src/index.js';
 import { AgentTurnBudget, AgentTurnHistory, createScopedAgentTurnService } from '../src/agents/agentTurnService.js';
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
@@ -386,7 +388,7 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
                   ran += 1;
                   for (let i = 0; i < calls(); i += 1) {
                     await Promise.resolve();
-                    recordUsage({ source: 'test', model: 'm', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 });
+                    admitModelCall(); // what every provider does before its backend call
                   }
                   return { text: 'ok' };
                 },
@@ -453,15 +455,20 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       );
     });
 
-    it('a turn that overdraws uses the budget up, and the next turn is refused', async () => {
+    it('a turn cannot overrun its reservation: the scope is charged with the reserved calls and the rest stays', async () => {
       const { scope, processId } = await activeProcess({ actions: 10, modelCalls: 5 });
       const t = turns(() => 12);
       const first = await t.service.runTurn(turn(scope.id, processId, 2));
-      assert.deepEqual(first.outcome === 'completed' && first.modelCalls, { reserved: 2, used: 12 });
-      assert.equal((await usedOf(scope.id)).used_model_calls, 5, 'never more than the budget');
-      const second = await t.service.runTurn(turn(scope.id, processId, 1));
-      assert.equal(second.outcome === 'refused' && second.executionCode, 'budget_exhausted');
-      assert.equal(t.ran(), 1);
+      assert.equal(first.outcome === 'refused' && first.code, 'reservation_exceeded');
+      assert.deepEqual(first.outcome === 'refused' && first.modelCalls, { reserved: 2, used: 2, refused: 1 });
+      assert.deepEqual(await usedOf(scope.id), { used_actions: 1, used_model_calls: 2 });
+      // The scope still has 3 calls: a turn that fits runs.
+      const fits = turns(() => 3);
+      const second = await fits.service.runTurn(turn(scope.id, processId, 3));
+      assert.deepEqual(second.outcome === 'completed' && second.modelCalls, { reserved: 3, used: 3 });
+      assert.equal((await usedOf(scope.id)).used_model_calls, 5);
+      const third = await fits.service.runTurn(turn(scope.id, processId, 1));
+      assert.equal(third.outcome === 'refused' && third.executionCode, 'budget_exhausted');
     });
 
     it('the kill switch and a passed deadline refuse the turn before the model', async () => {
@@ -585,6 +592,118 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       // One process cannot release another's.
       await engine.releaseConversation({ processId, ...other.home, reason: 'hostile' });
       assert.equal((await store.holder(other.home.channelType, other.home.conversationId))?.processId, other.processId);
+    });
+  });
+
+  describe('#2091 sends drawn from a real scope', () => {
+    function sends() {
+      const posted: string[] = [];
+      const service = createScopedSendService({
+        callerPluginId: ENGINE,
+        execution: () => engine,
+        conversation: {
+          capabilities: () => undefined,
+          sendToConversation: (input: { conversationId: string }) => {
+            posted.push(input.conversationId);
+            return Promise.resolve({ outcome: 'delivered', messageId: `m-${String(posted.length)}` });
+          },
+          updateCard: () => Promise.resolve({ outcome: 'updated' }),
+        } as never,
+        direct: (input) => {
+          posted.push(input.principal);
+          return Promise.resolve({ outcome: 'delivered' } as never);
+        },
+      });
+      return { service, posted };
+    }
+    const auth = (scopeId: string, processId: string, over: Record<string, unknown> = {}) => ({
+      scopeId,
+      processId,
+      phase: 'active' as const,
+      purpose: 'moderation' as const,
+      emission: 'template' as const,
+      ...over,
+    });
+
+    it('posts to a conversation of the scope and to nobody else, and counts each post', async () => {
+      const { scope, processId, home } = await activeProcess({ actions: 2, modelCalls: 0 });
+      const s = sends();
+      const ok = await s.service.sendToConversation({ agentSlug: 'mara', ...home, message: { text: 'hi' }, authorization: auth(scope.id, processId) });
+      assert.equal(ok.outcome, 'delivered');
+      const foreign = await s.service.sendToConversation({
+        agentSlug: 'mara', channelType: 'teams', conversationId: '19:someone-elses@thread.v2', message: { text: 'hi' }, authorization: auth(scope.id, processId),
+      });
+      assert.equal(foreign.outcome === 'unreachable' && foreign.executionCode, 'target_not_allowed');
+      await s.service.sendToConversation({ agentSlug: 'mara', ...home, message: { text: 'again' }, authorization: auth(scope.id, processId) });
+      const third = await s.service.sendToConversation({ agentSlug: 'mara', ...home, message: { text: 'once more' }, authorization: auth(scope.id, processId) });
+      assert.equal(third.outcome === 'unreachable' && third.executionCode, 'budget_exhausted');
+      assert.deepEqual(s.posted, [home.conversationId, home.conversationId]);
+    });
+
+    it('a closing scope still posts to the home conversation after its reservation was released', async () => {
+      const { processId, home, scope } = await activeProcess();
+      await engine.releaseConversation({ processId, ...home, reason: 'closed' });
+      await engine.endScope(scope.id, 'closed');
+      const closing = await engine.openScope({
+        agentSlug: 'mara', processId, kind: 'closing', eventId: 'final', deadline: inHours(24 * 7),
+        budget: { actions: 3, modelCalls: 0 }, targets: [{ kind: 'conversation', ...home }],
+      });
+      if (closing.outcome !== 'opened') throw new Error(JSON.stringify(closing));
+      const s = sends();
+      const moderation = await s.service.sendToConversation({ agentSlug: 'mara', ...home, message: { text: 'more votes?' }, authorization: auth(scope.id, processId) });
+      assert.equal(moderation.outcome === 'unreachable' && moderation.executionCode, 'scope_ended', 'the active scope is over');
+      const protocol = await s.service.sendToConversation({
+        agentSlug: 'mara', ...home, message: { text: 'The protocol.' },
+        authorization: auth(closing.scope.id, processId, { phase: 'closed', purpose: 'essential_message' }),
+      });
+      assert.equal(protocol.outcome, 'delivered');
+    });
+
+    it('writes only to people the scope lists, and a status-only person gets the status only', async () => {
+      const { scope, processId } = await activeProcess();
+      await engine.setPeople(scope.id, [
+        { kind: 'person', channelType: 'teams', principalId: 'aad-anna' },
+        { kind: 'person', channelType: 'teams', principalId: 'aad-guest', restriction: 'status_only' },
+      ]);
+      const s = sends();
+      const dm = (principal: string, purpose: string) =>
+        s.service.sendToPerson({ agentSlug: 'mara', channelType: 'teams', principal, message: { text: 'x' }, authorization: auth(scope.id, processId, { purpose }) });
+      assert.equal((await dm('user:aad-anna', 'reminder')).outcome, 'delivered');
+      const stranger = await dm('user:aad-bert', 'reminder');
+      assert.equal(stranger.outcome === 'unreachable' && stranger.executionCode, 'target_not_allowed');
+      const guest = await dm('user:aad-guest', 'reminder');
+      assert.equal(guest.outcome === 'unreachable' && guest.executionCode, 'target_not_allowed');
+      assert.equal((await dm('user:aad-guest', 'status')).outcome, 'delivered');
+      assert.deepEqual(s.posted, ['user:aad-anna', 'user:aad-guest']);
+    });
+  });
+
+  describe('#2089 what a process may read', () => {
+    it('follows its reservation and its open scopes', async () => {
+      const { processId, home, scope } = await activeProcess();
+      const of = (conversationId = home.conversationId) =>
+        store.processAccess({ pluginId: ENGINE, processId, channelType: home.channelType, conversationId });
+      assert.deepEqual(await of(), { reserved: true, everReserved: true, openScope: true });
+      assert.deepEqual(await of('19:never-held@thread.v2'), { reserved: false, everReserved: false, openScope: true });
+      assert.deepEqual(
+        await store.processAccess({ pluginId: OTHER, processId, ...home }),
+        { reserved: false, everReserved: false, openScope: false },
+        'another plugin with the same process id has nothing',
+      );
+      const notified: string[] = [];
+      const withHook = createExecutionAuthorizationService({
+        store,
+        callerPluginId: ENGINE,
+        resolveAgent: (slug) => agents.get(slug),
+        archetypePluginIdFor: () => ENGINE,
+        configuringMaxMs: 72 * HOUR,
+        onAccessChanged: () => void notified.push('changed'),
+      });
+      await withHook.releaseConversation({ processId, ...home, reason: 'closed' });
+      assert.deepEqual(notified, ['changed'], 'the message subscriptions are told at once');
+      assert.deepEqual(await of(), { reserved: false, everReserved: true, openScope: true });
+      await pool.query("UPDATE execution_scopes SET deadline = now() - interval '1 second' WHERE id = $1", [scope.id]);
+      assert.equal((await of()).openScope, false, 'a scope past its deadline is not open, also before the sweep');
     });
   });
 

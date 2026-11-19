@@ -94,5 +94,6 @@ export function toStoredEvent(event: ConversationMessageEvent, principalId: stri
       : {}),
     ...(event.kind === 'card_answer' && event.cardAnswer ? { cardAnswer: readCardAnswer(event.cardAnswer) } : {}),
     occurredAt: new Date(event.occurredAt).toISOString(),
+    ...(event.addressedToBot === true ? { addressedToBot: true } : {}),
   };
 }

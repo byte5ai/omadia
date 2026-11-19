@@ -27,6 +27,7 @@
  * Auth is host capability: if the CLI is not logged in, `complete()` rejects and
  * `classifyError` reports a non-retryable auth error.
  */
+import { admitModelCall } from '@omadia/llm-provider';
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -181,6 +182,8 @@ function parseFirstJsonObject(text: string): Record<string, unknown> | undefined
 }
 
 async function runClaude(req: LlmRequest): Promise<LlmResponse> {
+  // #2090 — refused when the turn's reservation does not cover the call.
+  admitModelCall();
   const forced = forcedTool(req);
   // Fail CLOSED on GENERAL/auto tool use — only the forced single-tool
   // structured-output pattern is served (via JSON-schema prompt). General

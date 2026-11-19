@@ -53,6 +53,8 @@ describe('conversationMessages (pg, migration 0068)', { skip: !pgAvailable }, ()
       '0067_agent_kind.sql',
       '0068_conversation_messages.sql',
       '0070_agent_archetypes.sql',
+      // #2089 — process-bound subscriptions; the store reads the new columns.
+      '0075_process_bound_messages.sql',
     ]) {
       const sql = await readFile(resolve(MIGRATIONS_DIR, file), 'utf8');
       await pool.query(sql);
@@ -257,7 +259,7 @@ describe('conversationMessages (pg, migration 0068)', { skip: !pgAvailable }, ()
          VALUES ($1, 'mara', 'teams', $2, $3, $4)`,
         [input.agentId, CONVERSATION, MARA_KEY.toLowerCase(), ENGINE],
       ),
-      (err: { constraint?: string }) => err.constraint === 'conversation_message_subscriptions_active_uq',
+      (err: { constraint?: string }) => err.constraint === 'conversation_message_subscriptions_active_v1_uq',
     );
     await assert.rejects(
       pool.query(
@@ -331,5 +333,93 @@ describe('conversationMessages (pg, migration 0068)', { skip: !pgAvailable }, ()
     } finally {
       listener.release(true);
     }
+  });
+
+  describe('#2089 process subscriptions (migration 0075)', () => {
+    const MARA = DEFAULT_AGENTS[0]!;
+    const base = {
+      agentId: MARA.id,
+      agentSlug: 'mara',
+      channelType: 'teams',
+      conversationId: CONVERSATION,
+      channelKey: MARA_KEY,
+      pluginId: ENGINE,
+    };
+    const event = (messageId: string) => ({
+      messageId,
+      kind: 'created' as const,
+      author: { kind: 'teams-aad', id: 'AAD-Anna' },
+      text: messageId,
+      occurredAt: new Date().toISOString(),
+    });
+
+    it('one identity holds one row per process in a conversation; a process subscribes it once', async () => {
+      const store = new PgConversationMessageStore(pool);
+      const f1 = await store.createProcessSubscription({ ...base, processId: 'f1', mode: 'addressed' });
+      const f2 = await store.createProcessSubscription({ ...base, processId: 'f2', mode: 'all' });
+      assert.deepEqual([f1.existed, f2.existed, f1.subscription.mode, f2.subscription.processId], [false, false, 'addressed', 'f2']);
+      assert.notEqual(f1.subscription.id, f2.subscription.id);
+      const again = await store.createProcessSubscription({ ...base, processId: 'f1', mode: 'all' });
+      assert.deepEqual([again.existed, again.ended, again.subscription.id, again.subscription.mode], [true, false, f1.subscription.id, 'addressed']);
+      assert.equal((await store.listActiveSubscriptions()).length, 2);
+
+      assert.equal((await store.setSubscriptionMode(f1.subscription.id, 'none'))?.mode, 'none');
+      await store.endSubscription(f1.subscription.id);
+      assert.equal(await store.setSubscriptionMode(f1.subscription.id, 'all'), undefined, 'ended');
+      const ended = await store.createProcessSubscription({ ...base, processId: 'f1', mode: 'all' });
+      assert.deepEqual([ended.existed, ended.ended], [true, true], 'never re-opened');
+      // A subscription without a process cannot carry a mode other than all.
+      await assert.rejects(
+        pool.query(
+          `INSERT INTO conversation_message_subscriptions (agent_id, agent_slug, channel_type, conversation_id, channel_key, plugin_id, mode)
+           VALUES ($1, 'mara', 'teams', 'c-x', '28:k', $2, 'addressed')`,
+          [MARA.id, ENGINE],
+        ),
+        (err: { constraint?: string }) => err.constraint === 'conversation_message_subscriptions_mode_check',
+      );
+    });
+
+    it('each process reads only its own row\'s events', async () => {
+      const store = new PgConversationMessageStore(pool);
+      const f1 = (await store.createProcessSubscription({ ...base, processId: 'f1', mode: 'all' })).subscription;
+      const f2 = (await store.createProcessSubscription({ ...base, processId: 'f2', mode: 'all' })).subscription;
+      await store.insertEvent(f1, event('m1'));
+      await store.insertEvent(f2, { ...event('m2'), addressedToBot: true });
+      assert.deepEqual((await store.listSince(f1, undefined, 10)).map((e) => e.messageId), ['m1']);
+      const second = await store.listSince(f2, undefined, 10);
+      assert.deepEqual(second.map((e) => [e.messageId, e.addressedToBot]), [['m2', true]]);
+      assert.equal(await store.getEvent(f2, 'm1'), undefined);
+    });
+
+    it('the first binding of a message or card stands', async () => {
+      const store = new PgConversationMessageStore(pool);
+      const bind = (ref: string, processId: string): Promise<boolean> =>
+        store.bindProcessMessage({ channelType: 'teams', conversationId: CONVERSATION, ref, agentId: MARA.id, pluginId: ENGINE, processId });
+      assert.equal(await bind('reminder-1', 'f1'), true);
+      assert.equal(await bind('reminder-1', 'f1'), true);
+      assert.equal(await bind('reminder-1', 'f2'), false);
+      assert.equal(await bind('card:c1', 'f2'), true);
+      assert.deepEqual(
+        [...(await store.findProcessBindings('teams', CONVERSATION, ['reminder-1', 'card:c1', 'unknown']))].sort((a, b) => a.ref.localeCompare(b.ref)),
+        [
+          { ref: 'card:c1', pluginId: ENGINE, processId: 'f2' },
+          { ref: 'reminder-1', pluginId: ENGINE, processId: 'f1' },
+        ],
+      );
+      assert.deepEqual(await store.findProcessBindings('teams', '19:elsewhere', ['reminder-1']), []);
+    });
+
+    it('the age limit spares a running process and still applies to a subscription without one', async () => {
+      const store = new PgConversationMessageStore(pool);
+      const f1 = (await store.createProcessSubscription({ ...base, processId: 'f1', mode: 'all' })).subscription;
+      const plain = await store.createSubscription({ ...base, conversationId: '19:plain@thread.v2' });
+      await store.insertEvent(f1, event('m1'));
+      await store.insertEvent(plain, event('m2'));
+      await pool.query("UPDATE conversation_message_events SET received_at = now() - interval '40 days'");
+      const cutoffs = { endedBefore: new Date(Date.now() - 6 * 3_600_000), receivedBefore: new Date(Date.now() - 30 * 24 * 3_600_000) };
+      assert.equal((await store.purge(cutoffs)).events, 1);
+      assert.deepEqual((await store.listSince(f1, undefined, 10)).map((e) => e.messageId), ['m1']);
+      assert.deepEqual(await store.listSince(plain, undefined, 10), []);
+    });
   });
 });

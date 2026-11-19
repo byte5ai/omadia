@@ -14,7 +14,10 @@ import {
   type ConversationMessageStore,
   type MessageSubscription,
   type NewMessageEvent,
+  type NewProcessSubscription,
   type NewSubscription,
+  type ProcessMessageBinding,
+  type SubscriptionMode,
   type PurgeResult,
   type StoredAuthor,
 } from './store.js';
@@ -28,6 +31,9 @@ interface SubscriptionRow {
   channel_key: string;
   plugin_id: string;
   created_at: Date;
+  process_id: string | null;
+  mode: SubscriptionMode;
+  ended_at?: Date | null;
 }
 
 interface EventRow {
@@ -46,17 +52,18 @@ interface EventRow {
   forwarded: boolean;
   reaction: { name: string; removed: boolean } | null;
   card_answer: NonNullable<NewMessageEvent['cardAnswer']> | null;
+  addressed_to_bot: boolean;
   occurred_at: Date;
   received_at: Date;
 }
 
 const SUBSCRIPTION_COLUMNS =
-  'id, agent_id, agent_slug, channel_type, conversation_id, channel_key, plugin_id, created_at';
+  'id, agent_id, agent_slug, channel_type, conversation_id, channel_key, plugin_id, created_at, process_id, mode';
 
 const EVENT_COLUMNS =
   'event_seq, message_id, revision, kind, author_kind, author_id, author_display_name, ' +
   'author_principal_id, tenant_id, body, reply_to_message_id, quoted, forwarded, reaction, ' +
-  'card_answer, occurred_at, received_at';
+  'card_answer, addressed_to_bot, occurred_at, received_at';
 
 /** Rows one purge statement removes, and how many statements one tick runs. */
 const PURGE_BATCH = 5_000;
@@ -75,6 +82,8 @@ function mapSubscription(row: SubscriptionRow): MessageSubscription {
     channelKey: row.channel_key,
     pluginId: row.plugin_id,
     createdAt: row.created_at,
+    mode: row.mode,
+    ...(row.process_id !== null ? { processId: row.process_id } : {}),
   };
 }
 
@@ -102,6 +111,7 @@ function mapEvent(subscription: MessageSubscription, row: EventRow): Conversatio
     ...(row.card_answer ? { cardAnswer: row.card_answer } : {}),
     occurredAt: row.occurred_at.toISOString(),
     receivedAt: row.received_at.toISOString(),
+    ...(row.addressed_to_bot ? { addressedToBot: true } : {}),
   };
 }
 
@@ -127,7 +137,7 @@ export class PgConversationMessageStore implements ConversationMessageStore {
       `INSERT INTO conversation_message_subscriptions
          (agent_id, agent_slug, channel_type, conversation_id, channel_key, plugin_id)
        VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (channel_type, conversation_id, channel_key) WHERE ended_at IS NULL
+       ON CONFLICT (channel_type, conversation_id, channel_key) WHERE ended_at IS NULL AND process_id IS NULL
        DO NOTHING
        RETURNING ${SUBSCRIPTION_COLUMNS}`,
       [input.agentId, input.agentSlug, input.channelType, input.conversationId, channelKey, input.pluginId],
@@ -135,12 +145,81 @@ export class PgConversationMessageStore implements ConversationMessageStore {
     if (inserted.rows[0]) return mapSubscription(inserted.rows[0]);
     const existing = await this.pool.query<SubscriptionRow>(
       `SELECT ${SUBSCRIPTION_COLUMNS} FROM conversation_message_subscriptions
-        WHERE channel_type = $1 AND conversation_id = $2 AND channel_key = $3 AND ended_at IS NULL`,
+        WHERE channel_type = $1 AND conversation_id = $2 AND channel_key = $3 AND ended_at IS NULL
+          AND process_id IS NULL`,
       [input.channelType, input.conversationId, channelKey],
     );
     const row = existing.rows[0];
     if (!row) throw new Error('conversation message subscription vanished between insert and read');
     return mapSubscription(row);
+  }
+
+  async createProcessSubscription(
+    input: NewProcessSubscription,
+  ): Promise<{ subscription: MessageSubscription; existed: boolean; ended: boolean }> {
+    const channelKey = normalizeChannelKey(input.channelKey);
+    const inserted = await this.pool.query<SubscriptionRow>(
+      `INSERT INTO conversation_message_subscriptions
+         (agent_id, agent_slug, channel_type, conversation_id, channel_key, plugin_id, process_id, mode)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (channel_type, conversation_id, channel_key, plugin_id, process_id) WHERE process_id IS NOT NULL
+       DO NOTHING
+       RETURNING ${SUBSCRIPTION_COLUMNS}`,
+      [input.agentId, input.agentSlug, input.channelType, input.conversationId, channelKey, input.pluginId, input.processId, input.mode],
+    );
+    if (inserted.rows[0]) return { subscription: mapSubscription(inserted.rows[0]), existed: false, ended: false };
+    const existing = await this.pool.query<SubscriptionRow>(
+      `SELECT ${SUBSCRIPTION_COLUMNS}, ended_at FROM conversation_message_subscriptions
+        WHERE channel_type = $1 AND conversation_id = $2 AND channel_key = $3 AND plugin_id = $4 AND process_id = $5`,
+      [input.channelType, input.conversationId, channelKey, input.pluginId, input.processId],
+    );
+    const row = existing.rows[0];
+    if (!row) throw new Error('conversation message subscription vanished between insert and read');
+    return { subscription: mapSubscription(row), existed: true, ended: row.ended_at != null };
+  }
+
+  async setSubscriptionMode(subscriptionId: string, mode: SubscriptionMode): Promise<MessageSubscription | undefined> {
+    const { rows } = await this.pool.query<SubscriptionRow>(
+      `UPDATE conversation_message_subscriptions SET mode = $2
+        WHERE id = $1 AND ended_at IS NULL AND process_id IS NOT NULL
+        RETURNING ${SUBSCRIPTION_COLUMNS}`,
+      [subscriptionId, mode],
+    );
+    return rows[0] ? mapSubscription(rows[0]) : undefined;
+  }
+
+  async bindProcessMessage(input: {
+    channelType: string;
+    conversationId: string;
+    ref: string;
+    agentId: string;
+    pluginId: string;
+    processId: string;
+  }): Promise<boolean> {
+    // The first binding stands; binding the same ref to the same process
+    // again is fine.
+    const { rows } = await this.pool.query<{ plugin_id: string; process_id: string }>(
+      `INSERT INTO conversation_process_messages (channel_type, conversation_id, ref, agent_id, plugin_id, process_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (channel_type, conversation_id, ref) DO UPDATE SET bound_at = conversation_process_messages.bound_at
+       RETURNING plugin_id, process_id`,
+      [input.channelType, input.conversationId, input.ref, input.agentId, input.pluginId, input.processId],
+    );
+    return rows[0]?.plugin_id === input.pluginId && rows[0]?.process_id === input.processId;
+  }
+
+  async findProcessBindings(
+    channelType: string,
+    conversationId: string,
+    refs: readonly string[],
+  ): Promise<readonly ProcessMessageBinding[]> {
+    if (refs.length === 0) return [];
+    const { rows } = await this.pool.query<{ ref: string; plugin_id: string; process_id: string }>(
+      `SELECT ref, plugin_id, process_id FROM conversation_process_messages
+        WHERE channel_type = $1 AND conversation_id = $2 AND ref = ANY($3::text[])`,
+      [channelType, conversationId, [...refs]],
+    );
+    return rows.map((r) => ({ ref: r.ref, pluginId: r.plugin_id, processId: r.process_id }));
   }
 
   async endSubscription(subscriptionId: string): Promise<void> {
@@ -173,6 +252,7 @@ export class PgConversationMessageStore implements ConversationMessageStore {
       event.reaction ? JSON.stringify(event.reaction) : null,
       event.cardAnswer ? JSON.stringify(event.cardAnswer) : null,
       event.occurredAt,
+      event.addressedToBot === true,
     ];
     // The revision rule of `assignRevision` (store.ts), in SQL.
     const sql = `
@@ -184,9 +264,9 @@ export class PgConversationMessageStore implements ConversationMessageStore {
       INSERT INTO conversation_message_events
         (subscription_id, message_id, kind, adapter_revision, dedupe_key, author_kind, author_id,
          author_display_name, author_principal_id, tenant_id, body, reply_to_message_id, quoted,
-         forwarded, reaction, card_answer, occurred_at, revision)
+         forwarded, reaction, card_answer, occurred_at, addressed_to_bot, revision)
       SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16::jsonb,
-             $17::timestamptz,
+             $17::timestamptz, $18::boolean,
              CASE
                WHEN $3 = 'created' THEN 0
                WHEN $3 = 'edited' THEN GREATEST(1, COALESCE(latest.revision + 1, 1), COALESCE($4::int, 0))
@@ -326,7 +406,17 @@ export class PgConversationMessageStore implements ConversationMessageStore {
       );
       subscriptions = removed.rowCount ?? 0;
     }
-    if (cutoffs.receivedBefore) await drain('e.received_at < $1', cutoffs.receivedBefore);
+    // #2089 — the maximum age does not apply to a process subscription that
+    // is still active: its process's scopes bound it, and nothing of a
+    // running process is deleted early.
+    if (cutoffs.receivedBefore) {
+      await drain(
+        `e.received_at < $1 AND NOT EXISTS (
+           SELECT 1 FROM conversation_message_subscriptions s
+            WHERE s.id = e.subscription_id AND s.process_id IS NOT NULL AND s.ended_at IS NULL)`,
+        cutoffs.receivedBefore,
+      );
+    }
     return { events, subscriptions };
   }
 }
