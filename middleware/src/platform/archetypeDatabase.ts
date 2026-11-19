@@ -178,7 +178,8 @@ export type ArchetypeSql = Required<Pick<SqlAccessor, 'schema' | 'query' | 'tran
 
 export interface ArchetypeDatabaseHandle extends ArchetypeDatabaseNames {
   readonly sql: ArchetypeSql;
-  /** Tables moved out of `public` by THIS call (empty on every later one). */
+  /** What THIS call moved out of `public` (empty on every later one): table
+   *  names as they are, other objects with their kind (`function f()`). */
   readonly moved: readonly string[];
   /** Run `work` with a pool that is logged in as the migration role. The pool
    *  is closed afterwards; migrations are the only thing it is for. */
@@ -408,14 +409,14 @@ async function setUp(
       // schema and the moved tables. The reverse membership never exists.
       await client.query(`GRANT ${q(names.migrationRole)} TO CURRENT_USER WITH SET TRUE, INHERIT FALSE`);
       await ensureSchema(client, names);
-      const moved = await moveOwnTables(client, pluginId, names);
-      await grantRuntime(client, names, moved);
+      const moved = await moveOwnObjects(client, pluginId, names);
+      await grantRuntime(client, names, moved.tables);
       await assertIsolated(client, pluginId, names);
       await client.query('COMMIT');
-      if (moved.length > 0) {
-        log(`[archetype-db] ${pluginId}: moved ${String(moved.length)} table(s) from public to ${names.schema}: ${moved.join(', ')}`);
+      if (moved.all.length > 0) {
+        log(`[archetype-db] ${pluginId}: moved ${String(moved.all.length)} object(s) from public to ${names.schema}: ${moved.all.join(', ')}`);
       }
-      return moved;
+      return moved.all;
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
       if (err instanceof ArchetypeDatabaseError) throw err;
@@ -505,37 +506,81 @@ async function ensureSchema(client: PoolClient, names: ArchetypeDatabaseNames): 
 }
 
 /**
- * The one-time move. Tables the plugin created in `public` while it still ran
- * on the shared pool carry its reserved prefix (`plg_<plugin id>_`, a
- * namespace no kernel table can be in); they move into the schema and to the
- * migration role. Indexes, constraints and owned sequences travel with their
- * table. Rows are not touched.
+ * The one-time move. What the plugin created in `public` while it still ran
+ * on the shared pool carries its reserved prefix (`plg_<plugin id>_`, a
+ * namespace no kernel object can be in). All of it moves into the schema and
+ * to the migration role, before the plugin's migrations run: types, free
+ * sequences, tables (their indexes, constraints, triggers and owned sequences
+ * travel with them), views, and functions. A trigger function left behind in
+ * `public` would stay owned by the kernel's user, out of reach of the
+ * plugin's own migrations. Rows are not touched.
  */
-async function moveOwnTables(
+async function moveOwnObjects(
   client: PoolClient,
   pluginId: string,
   names: ArchetypeDatabaseNames,
-): Promise<string[]> {
-  const found = await client.query<{ relname: string }>(
-    `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-      WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
-        AND left(c.relname, $2) = $1
-      ORDER BY c.relname`,
-    [names.tablePrefix, names.tablePrefix.length],
-  );
+): Promise<{ tables: string[]; all: string[] }> {
+  const prefix = [names.tablePrefix, names.tablePrefix.length];
   const foreign = await longerPrefixesOfOtherPlugins(client, pluginId, names.tablePrefix);
-  const moved: string[] = [];
-  for (const { relname } of found.rows) {
-    // `plg_acme_arch_` is also how the tables of `@acme/arch-x` begin. A
-    // table under another plugin's longer prefix is that plugin's.
-    if (foreign.some((prefix) => relname.startsWith(prefix))) continue;
-    await client.query(`ALTER TABLE public.${q(relname)} SET SCHEMA ${q(names.schema)}`);
-    await client.query(
-      `ALTER TABLE ${q(names.schema)}.${q(relname)} OWNER TO ${q(names.migrationRole)}`,
-    );
-    moved.push(relname);
+  // `plg_acme_arch_` is also how the objects of `@acme/arch-x` begin. One
+  // under another plugin's longer prefix is that plugin's.
+  const own = <T extends { name: string }>(rows: T[]): T[] =>
+    rows.filter((row) => !foreign.some((other) => row.name.startsWith(other)));
+  const schema = q(names.schema);
+  const owner = q(names.migrationRole);
+  const all: string[] = [];
+  const move = async (keyword: string, from: string, to: string, label: string): Promise<void> => {
+    await client.query(`ALTER ${keyword} ${from} SET SCHEMA ${schema}`);
+    await client.query(`ALTER ${keyword} ${to} OWNER TO ${owner}`);
+    all.push(label);
+  };
+
+  // Stand-alone types: enums, domains, ranges and declared composites. The
+  // row type of a table and array types follow their base object.
+  const types = await client.query<{ name: string; typtype: string }>(
+    `SELECT t.typname AS name, t.typtype FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+      WHERE n.nspname = 'public' AND left(t.typname, $2) = $1
+        AND (t.typtype IN ('e', 'd', 'r')
+             OR (t.typtype = 'c' AND (SELECT c.relkind FROM pg_class c WHERE c.oid = t.typrelid) = 'c'))
+      ORDER BY 1`,
+    prefix,
+  );
+  for (const { name, typtype } of own(types.rows)) {
+    const keyword = typtype === 'd' ? 'DOMAIN' : 'TYPE';
+    await move(keyword, `public.${q(name)}`, `${schema}.${q(name)}`, `type ${name}`);
   }
-  return moved;
+
+  const relations = await client.query<{ name: string; relkind: string }>(
+    `SELECT c.relname AS name, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND left(c.relname, $2) = $1 AND NOT c.relispartition
+        AND (c.relkind IN ('r', 'p', 'v', 'm')
+             OR (c.relkind = 'S' AND NOT EXISTS (
+                   SELECT 1 FROM pg_depend d
+                    WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype IN ('a', 'i'))))
+      ORDER BY CASE c.relkind WHEN 'S' THEN 0 WHEN 'r' THEN 1 WHEN 'p' THEN 1 ELSE 2 END, c.relname`,
+    prefix,
+  );
+  const tables: string[] = [];
+  const KEYWORD: Record<string, string> = { r: 'TABLE', p: 'TABLE', v: 'VIEW', m: 'MATERIALIZED VIEW', S: 'SEQUENCE' };
+  for (const { name, relkind } of own(relations.rows)) {
+    const keyword = KEYWORD[relkind] ?? 'TABLE';
+    await move(keyword, `public.${q(name)}`, `${schema}.${q(name)}`, relkind === 'r' || relkind === 'p' ? name : `${keyword.toLowerCase()} ${name}`);
+    if (relkind !== 'S') tables.push(name);
+  }
+
+  const routines = await client.query<{ name: string; args: string; prokind: string }>(
+    `SELECT p.proname AS name, pg_get_function_identity_arguments(p.oid) AS args, p.prokind
+       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public' AND left(p.proname, $2) = $1
+        AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
+      ORDER BY 1, 2`,
+    prefix,
+  );
+  for (const { name, args, prokind } of own(routines.rows)) {
+    const keyword = prokind === 'a' ? 'AGGREGATE' : 'ROUTINE';
+    await move(keyword, `public.${q(name)}(${args})`, `${schema}.${q(name)}(${args})`, `function ${name}(${args})`);
+  }
+  return { tables, all };
 }
 
 /** Table prefixes of other plugins with a database grant that start with this

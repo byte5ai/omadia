@@ -117,6 +117,15 @@ describe('#2088 archetype plugin database', { skip: !pgAvailable }, () => {
       CREATE INDEX ${NAMES.tablePrefix}things_label ON ${NAMES.tablePrefix}things (label);
       INSERT INTO ${NAMES.tablePrefix}things (label) VALUES ('before the move');
       CREATE TABLE ${NAMES.tablePrefix}x_other (id int);
+      -- Everything else a plugin may have created under its prefix.
+      CREATE TYPE ${NAMES.tablePrefix}mood AS ENUM ('calm', 'loud');
+      CREATE SEQUENCE ${NAMES.tablePrefix}ticket;
+      CREATE VIEW ${NAMES.tablePrefix}labels AS SELECT label FROM ${NAMES.tablePrefix}things;
+      CREATE FUNCTION ${NAMES.tablePrefix}no_delete() RETURNS trigger LANGUAGE plpgsql AS
+        $fn$ BEGIN RAISE EXCEPTION 'append only'; END $fn$;
+      CREATE TRIGGER no_delete BEFORE DELETE ON ${NAMES.tablePrefix}things
+        FOR EACH ROW EXECUTE FUNCTION ${NAMES.tablePrefix}no_delete();
+      CREATE FUNCTION ${NAMES.tablePrefix}x_theirs() RETURNS int LANGUAGE sql AS 'SELECT 1';
     `);
     root = await mkdtemp(join(tmpdir(), 'k3-arch-'));
     await mkdir(join(root, 'migrations'));
@@ -188,8 +197,53 @@ describe('#2088 archetype plugin database', { skip: !pgAvailable }, () => {
 
   it('moves the plugin\'s tables out of public once, with their rows, and leaves a sibling plugin\'s alone', async () => {
     const first = await db.ensure(PLUGIN);
-    assert.deepEqual([...first.moved].sort(), [LEDGER, `${NAMES.tablePrefix}things`].sort());
     assert.equal(first.schema, NAMES.schema);
+    // The very first statement of the freshly created role, outside any
+    // transaction: its path is its schema, set before it ever logged in.
+    const path = await first.sql.query<{ sp: string }>("SELECT current_setting('search_path') AS sp");
+    assert.equal(path.rows[0]?.sp, NAMES.schema);
+    assert.deepEqual(
+      [...first.moved].sort(),
+      [
+        LEDGER,
+        `${NAMES.tablePrefix}things`,
+        `function ${NAMES.tablePrefix}no_delete()`,
+        `sequence ${NAMES.tablePrefix}ticket`,
+        `type ${NAMES.tablePrefix}mood`,
+        `view ${NAMES.tablePrefix}labels`,
+      ].sort(),
+    );
+
+    // Nothing of the plugin is left in public, and all of it is the migration
+    // role's: its own migrations can alter or drop it.
+    const others = await admin.query<{ kind: string; nspname: string; owner: string }>(
+      `SELECT 'function' AS kind, n.nspname, r.rolname AS owner FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_roles r ON r.oid = p.proowner
+        WHERE p.proname = $1
+       UNION ALL
+       SELECT 'type', n.nspname, r.rolname FROM pg_type t
+         JOIN pg_namespace n ON n.oid = t.typnamespace JOIN pg_roles r ON r.oid = t.typowner
+        WHERE t.typname = $2
+       UNION ALL
+       SELECT c.relkind::text, n.nspname, r.rolname FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_roles r ON r.oid = c.relowner
+        WHERE c.relname IN ($3, $4)
+       ORDER BY 1`,
+      [`${NAMES.tablePrefix}no_delete`, `${NAMES.tablePrefix}mood`, `${NAMES.tablePrefix}ticket`, `${NAMES.tablePrefix}labels`],
+    );
+    assert.deepEqual(
+      others.rows.map((r) => `${r.kind}:${r.nspname}:${r.owner}`).sort(),
+      ['S', 'function', 'type', 'v'].map((kind) => `${kind}:${NAMES.schema}:${NAMES.migrationRole}`).sort(),
+    );
+    const theirs = await admin.query<{ nspname: string }>(
+      'SELECT n.nspname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE p.proname = $1',
+      [`${NAMES.tablePrefix}x_theirs`],
+    );
+    assert.deepEqual(theirs.rows, [{ nspname: 'public' }], "a sibling plugin's function stays");
+    // The trigger still fires through the moved function; the view still reads.
+    await assert.rejects(() => first.sql.query(`DELETE FROM ${NAMES.tablePrefix}things`), /append only/);
+    assert.equal((await first.sql.query(`SELECT label FROM ${NAMES.tablePrefix}labels`)).rowCount, 1);
+    assert.equal((await first.sql.query(`SELECT nextval('${NAMES.tablePrefix}ticket') AS n`)).rowCount, 1);
 
     const where = await admin.query<{ nspname: string; relname: string; owner: string }>(
       `SELECT n.nspname, c.relname, r.rolname AS owner FROM pg_class c
@@ -270,6 +324,21 @@ describe('#2088 archetype plugin database', { skip: !pgAvailable }, () => {
       await codeOf(() => ctx.sql!.query!(`INSERT INTO ${LEDGER} (filename, checksum) VALUES ('9999_fake.sql', 'x')`)),
       '42501',
     );
+  });
+
+  it('the plugin\'s own migration can replace the moved trigger function', async () => {
+    const dir = join(root, 'refn');
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, '0001_refn.sql'),
+      `CREATE OR REPLACE FUNCTION ${NAMES.tablePrefix}no_delete() RETURNS trigger LANGUAGE plpgsql AS
+         $fn$ BEGIN RAISE EXCEPTION 'append only (v2)'; END $fn$;`,
+    );
+    const ctx = await context(true);
+    // Its own ledger for this directory would be the same table; the file
+    // name is new to it, so it applies.
+    assert.deepEqual((await ctx.sql!.runMigrations({ dir: 'refn', allowChecksumDrift: true })).applied, ['0001_refn.sql']);
+    await assert.rejects(() => ctx.sql!.query!(`DELETE FROM ${NAMES.tablePrefix}things`), /append only \(v2\)/);
   });
 
   it('a migration cannot reach kernel tables, and its failure leaves nothing behind', async () => {
