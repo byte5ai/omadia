@@ -71,10 +71,10 @@ describe('conversationMessages (pg, migration 0068)', { skip: !pgAvailable }, ()
   beforeEach(async () => {
     await pool.query('DELETE FROM agents');
     for (const agent of DEFAULT_AGENTS) {
-      await pool.query('INSERT INTO agents (id, slug, name, kind) VALUES ($1, $2, $2, $3)', [
+      await pool.query('INSERT INTO agents (id, slug, name, archetype) VALUES ($1, $2, $2, $3)', [
         agent.id,
         agent.slug,
-        agent.kind,
+        agent.archetype,
       ]);
     }
   });

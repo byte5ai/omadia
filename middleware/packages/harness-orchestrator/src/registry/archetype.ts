@@ -229,26 +229,18 @@ export function listArchetypes(): ArchetypeDescriptor[] {
   return [...registry().values()];
 }
 
-/** What an agent row says about its archetype. `kind` is the column of
- *  migration 0067, still written next to `archetype` until it is dropped. */
+/** What an agent row says about its archetype. */
 export interface ArchetypeBearer {
   readonly archetype?: ArchetypeId | undefined;
-  readonly kind?: string | undefined;
 }
 
-/**
- * The archetype stored for a row. A database before migration 0070 has only
- * `kind`; a database before 0067 has neither, and every agent that existed
- * then is a standard agent.
- */
-export function parseArchetype(rawArchetype: unknown, rawKind?: unknown): ArchetypeId {
-  if (isArchetypeId(rawArchetype) && rawArchetype !== STANDARD_ARCHETYPE) return rawArchetype;
-  if (isArchetypeId(rawKind)) return rawKind;
-  return STANDARD_ARCHETYPE;
+/** The archetype stored for a row; a row without one is a standard agent. */
+export function parseArchetype(rawArchetype: unknown): ArchetypeId {
+  return isArchetypeId(rawArchetype) ? rawArchetype : STANDARD_ARCHETYPE;
 }
 
 export function archetypeOf(agent: ArchetypeBearer | undefined | null): ArchetypeId {
-  return parseArchetype(agent?.archetype, agent?.kind);
+  return parseArchetype(agent?.archetype);
 }
 
 export function isArchetype(agent: ArchetypeBearer | undefined | null, id: ArchetypeId): boolean {

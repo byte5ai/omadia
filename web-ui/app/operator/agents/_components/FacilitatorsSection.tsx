@@ -25,7 +25,7 @@ import { useConfirmAction } from './useConfirmAction';
  * memory scope — those are not hidden features, the kernel refuses them —
  * and says so in one line instead of leaving a gap.
  *
- * Creating one here writes the agent row with `kind: 'facilitator'`, which
+ * Creating one here writes the agent row with the archetype `facilitator`, which
  * is fixed for its lifetime. Avatar, personality and the Teams identity are
  * set on its own page, where the same editors a standard agent uses run
  * inside the facilitator's bounds; the parent navigates there after create.

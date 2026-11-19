@@ -25,10 +25,7 @@ import {
   wrapFacilitatorAgent,
 } from '../packages/harness-orchestrator/src/facilitatorAgent.js';
 import { NativeToolRegistry } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
-import {
-  assertNotFacilitator,
-  FacilitatorOmissionError,
-} from '../packages/harness-orchestrator/src/registry/agentKind.js';
+import { ArchetypeOmissionError, assertArchetypeAllows } from '../packages/harness-orchestrator/src/registry/archetype.js';
 import { buildForAgent } from '../packages/harness-orchestrator/src/registry/applyDiff.js';
 import type {
   AgentPluginRow,
@@ -50,7 +47,7 @@ function row(overrides: Partial<AgentRow> = {}): AgentRow {
     description: null,
     privacyProfile: 'default',
     status: 'enabled',
-    kind: 'facilitator',
+    archetype: 'facilitator',
     createdAt: new Date(0),
     updatedAt: new Date(0),
     ...overrides,
@@ -123,7 +120,7 @@ describe('facilitator runtime omissions', () => {
   it('memory tool: not offered, not granted, not dispatched', async () => {
     const { deps, calls } = setup();
     const fac = buildForAgent(row(), deps, RUNTIME, undefined, [ENGINE]);
-    const std = buildForAgent(row({ slug: 'hr', kind: 'standard' }), deps, RUNTIME, undefined, []);
+    const std = buildForAgent(row({ slug: 'hr', archetype: 'standard' }), deps, RUNTIME, undefined, []);
     assert.equal(probe(fac).isToolGranted('memory', '@omadia/memory'), false);
     assert.equal(probe(std).isToolGranted('memory', '@omadia/memory'), true, 'unchanged for a standard agent');
     assert.equal(probe(fac).offeredToolNames().has('memory'), false);
@@ -139,7 +136,7 @@ describe('facilitator runtime omissions', () => {
   it('recall, capture and learning jobs are not wired', () => {
     const { deps } = setup();
     const fac = buildForAgent(row(), deps, RUNTIME, undefined, [ENGINE]);
-    const std = buildForAgent(row({ slug: 'hr', kind: 'standard' }), deps, RUNTIME, undefined, []);
+    const std = buildForAgent(row({ slug: 'hr', archetype: 'standard' }), deps, RUNTIME, undefined, []);
     for (const name of [
       'contextRetriever', // recall
       'sessionBriefing', // recall
@@ -167,7 +164,7 @@ describe('facilitator runtime omissions', () => {
   it('persona skills are dropped at build', () => {
     const { deps } = setup();
     const fac = buildForAgent(row(), deps, RUNTIME, PERSONA_SKILL, [ENGINE]);
-    const std = buildForAgent(row({ slug: 'hr', kind: 'standard' }), deps, RUNTIME, PERSONA_SKILL, []);
+    const std = buildForAgent(row({ slug: 'hr', archetype: 'standard' }), deps, RUNTIME, PERSONA_SKILL, []);
     assert.deepEqual(field(fac, 'personaSkills'), []);
     assert.equal((field(std, 'personaSkills') as unknown[]).length, 1);
   });
@@ -203,7 +200,7 @@ describe('facilitator runtime omissions', () => {
     const { deps } = setup();
     const withReader = { ...deps, attachmentReader: {} } as OrchestratorDeps;
     const fac = buildForAgent(row(), withReader, RUNTIME, undefined, [ENGINE]);
-    const std = buildForAgent(row({ slug: 'hr', kind: 'standard' }), withReader, RUNTIME, undefined, []);
+    const std = buildForAgent(row({ slug: 'hr', archetype: 'standard' }), withReader, RUNTIME, undefined, []);
     for (const name of ['askUserChoiceTool', 'suggestFollowUpsTool', 'chatParticipantsTool', 'attachmentReader', 'readAttachmentTool']) {
       assert.equal(field(fac, name), undefined, `${name} must not exist for a facilitator`);
       assert.notEqual(field(std, name), undefined, `${name} stays for a standard agent`);
@@ -221,7 +218,7 @@ describe('facilitator runtime omissions', () => {
     const { deps } = setup();
     const fac = buildForAgent(row(), deps, RUNTIME);
     assert.equal(probe(fac).offeredToolNames().has('facilitation_start'), false);
-    const std = buildForAgent(row({ slug: 'legacy', kind: 'standard' }), deps, RUNTIME);
+    const std = buildForAgent(row({ slug: 'legacy', archetype: 'standard' }), deps, RUNTIME);
     assert.equal(probe(std).offeredToolNames().has('odoo_version'), true, 'legacy ungated path unchanged');
   });
 
@@ -244,8 +241,8 @@ describe('facilitator runtime omissions', () => {
     assert.deepEqual(grantsFor(make([]), row()), [], 'no engine installed');
     assert.deepEqual(grantsFor(make(undefined), row()), [], 'no lookup wired');
     // The other direction: the engine's tools are for facilitators only.
-    assert.deepEqual(grantsFor(make([ENGINE]), row({ kind: 'standard' })), [ODOO]);
-    assert.deepEqual(grantsFor(make(undefined), row({ kind: 'standard' })), [ENGINE, ODOO], 'no lookup: unchanged');
+    assert.deepEqual(grantsFor(make([ENGINE]), row({ archetype: 'standard' })), [ODOO]);
+    assert.deepEqual(grantsFor(make(undefined), row({ archetype: 'standard' })), [ENGINE, ODOO], 'no lookup: unchanged');
   });
 
   it('plugin grants: a reload rebuilds a facilitator when the engine binding changed, rows unchanged', async () => {
@@ -478,7 +475,7 @@ describe('facilitator and other agents', () => {
     const policies = (agentId: string) => () =>
       Promise.resolve([{ channelType: 'teams', channelKey: 'c1', agentId, agentToAgent: true, createdAt: new Date(0), updatedAt: new Date(0) }]);
     const fac = row({ agentToAgent: 'on' });
-    const std = row({ slug: 'hr', kind: 'standard', agentToAgent: 'on', id: '00000000-0000-0000-0000-0000000000a1' });
+    const std = row({ slug: 'hr', archetype: 'standard', agentToAgent: 'on', id: '00000000-0000-0000-0000-0000000000a1' });
     const gateFor = (agent: AgentRow) =>
       createPeerGate({ getRegistry: () => registryWith(agent), listChannelPeerPolicies: policies(agent.id) });
     assert.equal(await gateFor(fac)('teams', 'c1', 'mara'), false);
@@ -501,16 +498,16 @@ describe('facilitator and other agents', () => {
     );
   });
 
-  it('assertNotFacilitator is the shared seam', () => {
+  it('assertArchetypeAllows is the shared seam', () => {
     assert.throws(
-      () => assertNotFacilitator(row(), 'consultation'),
+      () => assertArchetypeAllows(row(), 'consultation'),
       (err: unknown) =>
-        err instanceof FacilitatorOmissionError &&
+        err instanceof ArchetypeOmissionError &&
         err.code === 'facilitator_omission' &&
         err.agentSlug === 'mara' &&
         /neither consults other agents nor is consulted/.test(err.message),
     );
-    assert.doesNotThrow(() => assertNotFacilitator(row({ kind: 'standard' }), 'consultation'));
-    assert.doesNotThrow(() => assertNotFacilitator(undefined, 'consultation'));
+    assert.doesNotThrow(() => assertArchetypeAllows(row({ archetype: 'standard' }), 'consultation'));
+    assert.doesNotThrow(() => assertArchetypeAllows(undefined, 'consultation'));
   });
 });

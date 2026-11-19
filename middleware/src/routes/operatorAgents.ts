@@ -13,13 +13,11 @@ import {
   FALLBACK_AGENT_SLUG,
   mcpToolNameFromRef,
   type AgentGraphStore,
-  AGENT_KINDS,
   AGENT_TO_AGENT_MODES,
   assertArchetypeAllows,
   FACILITATOR_ARCHETYPE,
   STANDARD_ARCHETYPE,
   archetypeOf,
-  parseAgentKind,
   getArchetype,
   isArchetype,
   isArchetypeId,
@@ -201,8 +199,10 @@ const AgentCreateSchema = z.object({
   status: z.enum(['enabled', 'disabled']).optional(),
   // #2088 — only on create: the archetype is fixed for the agent's lifetime.
   archetype: z.string().refine(isArchetypeId, 'archetype must be a registered archetype id').optional(),
-  // The previous name of `archetype`; accepted until the `kind` column goes.
-  kind: z.enum(AGENT_KINDS).optional(),
+  // The name of `archetype` before #2088. Not accepted any more, and named
+  // here so a client that still sends it is told, instead of getting a
+  // standard agent where it asked for another archetype.
+  kind: z.unknown().optional(),
 });
 
 /** Slugs that collide with a static segment of this router. */
@@ -2076,7 +2076,6 @@ export function createOperatorAgentsRouter(
             name: a.name,
             description: a.description,
             privacy_profile: a.privacyProfile,
-            kind: parseAgentKind(archetypeOf(a)),
             archetype: archetypeOf(a),
             is_fallback: a.id === settings.fallbackAgentId,
           })),
@@ -2110,7 +2109,6 @@ export function createOperatorAgentsRouter(
           description: a.description,
           privacy_profile: a.privacyProfile,
           status: a.status,
-          kind: parseAgentKind(archetypeOf(a)),
           archetype: archetypeOf(a),
           created_at: a.createdAt,
           updated_at: a.updatedAt,
@@ -2203,14 +2201,10 @@ export function createOperatorAgentsRouter(
       if (RESERVED_AGENT_SLUGS.has(body.slug)) {
         throw new ConfigValidationError(`agent slug "${body.slug}" is reserved`);
       }
-      // `archetype` is the name; `kind` its predecessor. Naming both with
-      // different values is a client error, not something to pick from.
-      if (body.archetype !== undefined && body.kind !== undefined && body.archetype !== body.kind) {
-        throw new ConfigValidationError(
-          `archetype "${body.archetype}" and kind "${body.kind}" disagree; send archetype only`,
-        );
+      if (body.kind !== undefined) {
+        throw new ConfigValidationError('"kind" was replaced by "archetype"; send archetype');
       }
-      const archetype = body.archetype ?? body.kind ?? STANDARD_ARCHETYPE;
+      const archetype = body.archetype ?? STANDARD_ARCHETYPE;
       if (!getArchetype(archetype)) {
         throw new ConfigValidationError(`archetype "${archetype}" is not registered on this instance`);
       }
@@ -2234,7 +2228,6 @@ export function createOperatorAgentsRouter(
       res.status(201).json({
         id: created.id,
         slug: created.slug,
-        kind: parseAgentKind(archetypeOf(created)),
         archetype: archetypeOf(created),
       });
     } catch (err) {

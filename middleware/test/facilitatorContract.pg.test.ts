@@ -262,7 +262,7 @@ await contractSuite('native facilitators: kernel contract (pg)', 'facilitatorCon
   });
 
   it('without an identity of its own a facilitator is refused everywhere, never the default bot', async () => {
-    const created = await c.k.api('POST', '/agents', { slug: 'ida', name: 'ida', kind: 'facilitator' });
+    const created = await c.k.api('POST', '/agents', { slug: 'ida', name: 'ida', archetype: 'facilitator' });
     assert.equal(created.status, 201);
     c.k.channel.botAdded(CHAT);
     const subscribe = await c.k.engine.messages.subscribe(c.scope('ida'));
@@ -288,7 +288,7 @@ await contractSuite('native facilitators: kernel contract (pg)', 'facilitatorCon
   });
 
   it('subscribe needs presence and readiness; both are reported with their reason', async () => {
-    await c.k.api('POST', '/agents', { slug: 'mara', name: 'mara', kind: 'facilitator' });
+    await c.k.api('POST', '/agents', { slug: 'mara', name: 'mara', archetype: 'facilitator' });
     await c.k.provisionIdentity('mara', 'aaaa-mara');
     const absent = await c.k.engine.messages.subscribe(c.scope('mara'));
     assert.equal(absent.outcome === 'refused' && absent.code, 'not_present');

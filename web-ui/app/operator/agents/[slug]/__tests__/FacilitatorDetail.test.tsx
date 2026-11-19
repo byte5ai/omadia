@@ -97,7 +97,7 @@ function agent(over: Partial<OperatorAgentDto> = {}): OperatorAgentDto {
     description: null,
     privacy_profile: 'default',
     status: 'enabled',
-    kind: 'facilitator',
+    archetype: 'facilitator',
     created_at: '2026-11-18T00:00:00Z',
     updated_at: '2026-11-18T00:00:00Z',
     active: true,
@@ -243,7 +243,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
   it('keeps every tab for a standard agent and adds no engine tab', async () => {
     mockCatalog.mockResolvedValue({ items: [] });
     renderWithIntl(
-      <AgentDetail agent={agent({ slug: 'sales', kind: 'standard' })} isFallback={false} />,
+      <AgentDetail agent={agent({ slug: 'sales', archetype: 'standard' })} isFallback={false} />,
     );
     expect(tabIds()).toEqual([
       'agent-detail-tab-identity',

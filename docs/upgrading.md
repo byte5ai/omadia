@@ -356,6 +356,22 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.210.0 — `kind` of an agent is gone; say `archetype`
+
+For anything that calls the operator API for agents. The web-ui needs
+nothing.
+
+- Read `archetype` where you read `kind` in the answers of
+  `GET /api/v1/operator/agents`, `GET /api/v1/operator/agents/enabled`,
+  `GET /api/v1/operator/channels` and `POST /api/v1/operator/agents`. The
+  values are the same for the two archetypes `kind` knew (`standard`,
+  `facilitator`).
+- Send `archetype` where you sent `kind` to `POST /api/v1/operator/agents`.
+  A body that still carries `kind` is refused with 409.
+- The database column `agents.kind` is dropped at boot (migration 0079).
+  Nothing has to be done by hand. Rolling the image back afterwards works;
+  the column stays gone.
+
 ## Upgrading past v0.210.0 — a facilitation engine never gets the shared database pool
 
 Applies to instances with a plugin of kind `archetype` installed (the

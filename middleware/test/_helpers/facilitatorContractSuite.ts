@@ -96,7 +96,7 @@ export async function contractSuite(
         },
       }),
       async facilitator(slug: string, appId: string): Promise<string> {
-        const created = await c.k.api('POST', '/agents', { slug, name: slug, kind: 'facilitator' });
+        const created = await c.k.api('POST', '/agents', { slug, name: slug, archetype: 'facilitator' });
         assert.equal(created.status, 201, JSON.stringify(created.json));
         const key = await c.k.provisionIdentity(slug, appId);
         c.k.channel.botAdded(CHAT);

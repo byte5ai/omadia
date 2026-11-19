@@ -174,10 +174,10 @@ describe('agent tombstones (pg, migration 0072)', { skip: !pgAvailable }, () => 
     const mara = await store.createAgent({ slug: 'mara', name: 'Mara', archetype: 'facilitator' });
     const tombstone = await store.deleteAgent(mara.id);
     assert.equal(tombstone?.archetype, 'facilitator');
-    const row = await pool.query<{ kind: string; archetype: string; status: string }>(
-      'SELECT kind, archetype, status FROM agents WHERE id = $1',
+    const row = await pool.query<{ archetype: string; status: string }>(
+      'SELECT archetype, status FROM agents WHERE id = $1',
       [mara.id],
     );
-    assert.deepEqual(row.rows[0], { kind: 'facilitator', archetype: 'facilitator', status: 'disabled' });
+    assert.deepEqual(row.rows[0], { archetype: 'facilitator', status: 'disabled' });
   });
 });
