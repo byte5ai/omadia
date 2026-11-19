@@ -1757,6 +1757,7 @@ async function resolveChatName(
   channelType: string,
   conversationId: string,
   directoryEntries: ReadonlyMap<string, { label: string; members?: readonly string[] }>,
+  asChannelKey: string,
 ): Promise<{ label: string | null; members: readonly string[] }> {
   const fromDirectory = directoryEntries.get(`${channelType}|${conversationId}`);
   if (fromDirectory) {
@@ -1765,7 +1766,9 @@ async function resolveChatName(
       members: (fromDirectory.members ?? []).slice(0, CHAT_MEMBERS_CAP),
     };
   }
-  const roster = await sources.rosters?.getRoster(channelType, conversationId);
+  // Read as the agent's own bot (#2043): it is the one that is in this chat;
+  // the channel's default bot usually is not, and would name nobody.
+  const roster = await sources.rosters?.getRoster(channelType, conversationId, { asChannelKey });
   const members = (roster?.participants ?? [])
     .filter((p) => !p.isBot)
     .map((p) => p.userRef.displayName?.trim() ?? '')
@@ -1824,7 +1827,13 @@ async function listPeerChatCandidates(
       }
       // The reference's own `conversation.name` is the cheapest source (a
       // titled chat), then the plugin's directory / roster — see resolveChatName.
-      const named = await resolveChatName(names, identity.channelType, conv.conversationId, directoryEntries);
+      const named = await resolveChatName(
+        names,
+        identity.channelType,
+        conv.conversationId,
+        directoryEntries,
+        identity.channelKey,
+      );
       available.push({
         channelType: identity.channelType,
         channelKey: conv.conversationId,

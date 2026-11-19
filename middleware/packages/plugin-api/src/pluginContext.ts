@@ -833,7 +833,13 @@ export interface NativeToolCallContext {
   /** The caller in the channel's own namespace, as the platform stated it
    *  (the same `kind` / `id` as `ConversationMessageRecord.author` and roster
    *  participants). Absent when the turn has no channel user. */
-  readonly callerUserRef?: { readonly kind: string; readonly id: string };
+  readonly callerUserRef?: {
+    readonly kind: string;
+    readonly id: string;
+    /** The person's name as the channel stated it for this turn (1.57.0).
+     *  Absent when the channel gave none: fall back to the id, never guess. */
+    readonly displayName?: string;
+  };
 }
 
 /**

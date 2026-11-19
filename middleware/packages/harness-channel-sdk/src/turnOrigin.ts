@@ -90,6 +90,18 @@ export interface TurnOrigin {
    * fall back to reading the scope.
    */
   readonly channelConversationId?: string;
+  /**
+   * Who spoke, as the CHANNEL names them (#2043): the channel's user kind and
+   * id and, when the platform gave one, the display name. The same person as
+   * {@link principal}, in the channel's own terms. It reaches a tool as
+   * `NativeToolCallContext.callerUserRef`, so an engine can name the person
+   * who started something without a roster lookup.
+   */
+  readonly speaker?: {
+    readonly kind: string;
+    readonly id: string;
+    readonly displayName?: string;
+  };
 }
 
 /** The memory axes a turn may reach, in the scope grammar of design §3. */

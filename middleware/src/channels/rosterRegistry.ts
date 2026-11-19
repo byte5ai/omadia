@@ -56,11 +56,21 @@ export class ConversationRosterRegistry {
    * channel type, the provider cannot resolve the conversation, or it threw
    * (logged) — callers treat all three as "roster unknown", never invent one.
    */
-  async getRoster(channelType: string, conversationId: string): Promise<ConversationRoster | undefined> {
+  async getRoster(
+    channelType: string,
+    conversationId: string,
+    /** #2043 — which of the channel's identities asks (see the provider). */
+    opts?: { readonly asChannelKey?: string },
+  ): Promise<ConversationRoster | undefined> {
     const provider = this.providers.get(channelType);
     if (!provider) return undefined;
     try {
-      return await provider.getRoster(conversationId);
+      // The second argument is passed only when there is something in it, so
+      // a provider written against the one-argument contract sees exactly
+      // the call it always got.
+      return opts?.asChannelKey !== undefined && opts.asChannelKey !== ''
+        ? await provider.getRoster(conversationId, { asChannelKey: opts.asChannelKey })
+        : await provider.getRoster(conversationId);
     } catch (err) {
       this.log(`rosterRegistry: ${channelType} getRoster FAILED — treating as unknown`, {
         channelType,

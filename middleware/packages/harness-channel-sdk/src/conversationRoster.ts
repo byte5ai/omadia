@@ -43,7 +43,18 @@ export interface ConversationRoster {
 export interface ConversationRosterProvider {
   /** The `channel_bindings.channel_type` this provider serves (e.g. 'teams'). */
   channelType: string;
-  getRoster(conversationId: string): Promise<ConversationRoster | undefined>;
+  /**
+   * `opts.asChannelKey` (#2043, additive): WHICH of the channel's identities
+   * asks, the same string as `asChannelKey` on sends (Teams: `28:<appId>`).
+   * A roster is what that bot can see, so a channel with several bots must
+   * read it through that bot's own conversation reference and credentials,
+   * and answer `undefined` when that bot is not in the conversation, never
+   * another bot's view. Absent = the adapter's default identity, as before.
+   */
+  getRoster(
+    conversationId: string,
+    opts?: { readonly asChannelKey?: string },
+  ): Promise<ConversationRoster | undefined>;
 }
 
 /**

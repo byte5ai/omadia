@@ -754,6 +754,9 @@ export const TEAMS_IDENTITY_LAST_ERROR_CODES = [
   // #2043 — the Bot Connector answers 401 to the bot's own credentials: the
   // run was green in Azure and the bot is invalid in Teams
   'bot_rejected',
+  // #2043 — the connector refused to create a bot under an app id whose bot
+  // was deleted before: it would be rejected by the Bot Connector for good
+  'bot_app_id_retired',
   'unknown',
 ] as const;
 

@@ -123,7 +123,7 @@ await contractSuite('native facilitators: kernel contract (pg)', 'facilitatorCon
         conversationId: CHAT,
         inboundEventId: vote.eventId,
         callerPrincipalId: `user:${ANNA}`,
-        callerUserRef: { kind: 'teams-aad', id: ANNA },
+        callerUserRef: { kind: 'teams-aad', id: ANNA, displayName: 'Anna Köhler' },
       },
     });
     assert.deepEqual(c.k.channel.sent, [], 'the turn posted nothing; the engine sends');

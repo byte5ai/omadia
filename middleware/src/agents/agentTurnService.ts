@@ -12,7 +12,12 @@
 // Who may ask: the instance's facilitation engine plugin, for a
 // facilitator-kind agent that plugin is granted to. Nothing else.
 
-import { formatPrincipal, makePrincipal, type ChatTurnInput } from '@omadia/channel-sdk';
+import {
+  formatPrincipal,
+  makePrincipal,
+  withoutFoldedAiDisclosure,
+  type ChatTurnInput,
+} from '@omadia/channel-sdk';
 import {
   isFacilitatorKind,
   runAsEngineTurn,
@@ -198,16 +203,29 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnSer
               conversationId: request.conversationId,
               ...(inbound ? { inboundEventId: inbound.eventId } : {}),
               ...(principal ? { callerPrincipalId: formatPrincipal(principal) } : {}),
-              ...(inbound ? { callerUserRef: { kind: inbound.author.kind, id: inbound.author.id } } : {}),
+              ...(inbound
+                ? {
+                    callerUserRef: {
+                      kind: inbound.author.kind,
+                      id: inbound.author.id,
+                      ...(inbound.author.displayName ? { displayName: inbound.author.displayName } : {}),
+                    },
+                  }
+                : {}),
             },
           },
           () => resolved.entry.built.bundle.agent.chat(turn),
         );
-        deps.history.append(sessionScope, request.input, answer.text);
+        // The engine gets the text WITHOUT the AI disclosure sentence a turn
+        // folds into its answer. It posts this text through an own-identity
+        // send, and the marking is decided there: the channel's AI label, or
+        // the sentence once. Left in, a labelling channel showed both.
+        const text = withoutFoldedAiDisclosure(answer.text, answer.aiDisclosure);
+        deps.history.append(sessionScope, request.input, text);
         const turnId = (answer as { turnId?: unknown }).turnId;
         return {
           outcome: 'completed',
-          text: answer.text,
+          text,
           ...(typeof turnId === 'string' ? { turnId } : {}),
         };
       } catch (err) {

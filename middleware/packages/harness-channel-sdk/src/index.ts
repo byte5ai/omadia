@@ -195,6 +195,7 @@ export {
   InMemoryDisclosureSeenStore,
   composeDisclosureText,
   applyAiDisclosure,
+  withoutFoldedAiDisclosure,
   resolveAiDisclosure,
 } from './aiDisclosure.js';
 export type {

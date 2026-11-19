@@ -417,6 +417,7 @@ export const TEAMS_PROVISIONING_EVENT_DETAILS = [
   // itself can end in.
   'verifying_bot',
   'bot_rejected',
+  'bot_app_id_retired',
   'rsc_consent_refused',
 ] as const;
 

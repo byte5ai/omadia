@@ -665,6 +665,8 @@ export function buildOrchestratorForAgent(
             ? { isEngineUsable: deps.isFacilitationEngineUsable }
             : {}),
           ...(deps.facilitatorOwnPostCount ? { ownPostCount: deps.facilitatorOwnPostCount } : {}),
+          // The fixed answers are marked by this Agent's own disclosure rule.
+          disclose: (answer, input) => orchestrator.discloseCliAnswer(answer, input),
           log: (m) => console.log(m),
         })
       : fastPathDeps === undefined

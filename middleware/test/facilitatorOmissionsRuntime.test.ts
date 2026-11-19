@@ -176,7 +176,13 @@ describe('facilitator runtime omissions', () => {
     const { deps, fastPathAsked } = setup();
     const fac = buildForAgent(row({ identityName: 'Mara' }), deps, RUNTIME, undefined, [ENGINE]);
     const answer = await fac.bundle.agent.chat({ userMessage: 'What was our revenue in May?' });
-    assert.equal(answer.text, facilitatorRefusalText({ name: 'Mara' }));
+    // The fixed text, marked like every other answer of this agent (#2043):
+    // the instance's disclosure line, carried for a channel that labels.
+    assert.equal(
+      answer.text,
+      `${facilitatorRefusalText({ name: 'Mara' })}\n\nDiese Antwort wurde von Mara, einem KI-System, erzeugt.`,
+    );
+    assert.equal(answer.aiDisclosure?.text, 'Diese Antwort wurde von Mara, einem KI-System, erzeugt.');
     assert.equal(fastPathAsked.value, 0, 'the fast path was never asked');
   });
 

@@ -9,14 +9,18 @@
 // and DM the people of such a conversation.
 
 import type {
+  AiDisclosure,
   ChannelUserKind,
   ChannelUserRef,
   ConversationRoster,
+  DisclosureSeenStore,
+  SendProviderCapabilities,
   TargetedDeliveryOutcome,
   TargetedMention,
+  TargetedMessage,
   TargetedPoll,
 } from '@omadia/channel-sdk';
-import { parsePrincipal } from '@omadia/channel-sdk';
+import { applyAiDisclosure, parsePrincipal, resolveAiDisclosure } from '@omadia/channel-sdk';
 
 import type { ConversationMessageHub } from './conversationMessages/hub.js';
 import type { MessageSubscription } from './conversationMessages/store.js';
@@ -27,7 +31,74 @@ export interface OwnIdentityDeps {
   /** The subscriptions that carry the permission. Absent (no database) =
    *  no own-identity send is permitted. */
   readonly subscriptions?: Pick<ConversationMessageHub, 'subscriptionFor' | 'subscriptionsOf' | 'findAuthor'>;
-  readonly getRoster?: (channelType: string, conversationId: string) => Promise<ConversationRoster | undefined>;
+  /** `asChannelKey`: the roster is read as the agent's own identity (the
+   *  subscription's), never as the channel's default bot. */
+  readonly getRoster?: (
+    channelType: string,
+    conversationId: string,
+    opts?: { readonly asChannelKey?: string },
+  ) => Promise<ConversationRoster | undefined>;
+  /** The AI marking of what an agent posts as itself; see
+   *  {@link markOwnIdentityMessage}. Absent = the text goes out as given. */
+  readonly disclosure?: OwnIdentityDisclosure;
+}
+
+export interface OwnIdentityDisclosure {
+  /** The instance's disclosure for this agent on this channel, by the same
+   *  rule as its turn answers. `undefined` = the operator turned it off. */
+  readonly disclosureFor: (agentSlug: string, channelType: string) => AiDisclosure | undefined;
+  /** Where the sentence was already posted (per agent, channel and target). */
+  readonly seen: DisclosureSeenStore;
+}
+
+/**
+ * The AI marking of a message an agent posts as itself (#2043), by the one
+ * rule every message under an agent's name follows: the channel's own AI
+ * label where it has one, the instance's disclosure sentence otherwise, once,
+ * never both.
+ *
+ * - The channel declares `supports.aiLabel`: it labels every such message
+ *   itself. The text goes out as it is.
+ * - Otherwise the instance's disclosure line is folded into the FIRST message
+ *   the agent posts to that target, as a turn answer folds it into the first
+ *   answer of a conversation. `delivered()` records that it went out: a send
+ *   the channel refused does not use up the marking.
+ *
+ * Deterministic engine texts and texts from `agentTurn` are treated alike:
+ * `agentTurn` returns its text without the sentence, so the marking is
+ * decided here, at the send, and only here.
+ */
+export function markOwnIdentityMessage(
+  disclosure: OwnIdentityDisclosure | undefined,
+  at: { readonly agentSlug: string; readonly channelType: string; readonly target: string },
+  message: TargetedMessage,
+  supports: SendProviderCapabilities | undefined,
+): { readonly message: TargetedMessage; readonly delivered: () => void } {
+  const unchanged = { message, delivered: () => undefined };
+  if (!disclosure || supports?.aiLabel === true) return unchanged;
+  let line: AiDisclosure | undefined;
+  let alreadyShown: boolean;
+  const scope = `own-identity::${at.agentSlug}::${at.channelType}::${at.target}`;
+  try {
+    line = disclosure.disclosureFor(at.agentSlug, at.channelType);
+    alreadyShown = disclosure.seen.hasSeen(scope);
+  } catch {
+    // Undeterminable = mark, with the shipping default: a repeated sentence
+    // is noise, a missing one is the gap.
+    line = resolveAiDisclosure();
+    alreadyShown = false;
+  }
+  if (!line || alreadyShown) return unchanged;
+  return {
+    message: { ...message, text: applyAiDisclosure(message.text, { disclosure: line }).text },
+    delivered: () => {
+      try {
+        disclosure.seen.markSeen(scope);
+      } catch {
+        // The next message is marked again.
+      }
+    },
+  };
 }
 
 export function unreachable(
@@ -74,7 +145,9 @@ export async function resolveChannelUser(
   for (const subscription of subscriptions) {
     let roster: ConversationRoster | undefined;
     try {
-      roster = await deps.getRoster?.(subscription.channelType, subscription.conversationId);
+      roster = await deps.getRoster?.(subscription.channelType, subscription.conversationId, {
+        asChannelKey: subscription.channelKey,
+      });
     } catch {
       roster = undefined;
     }

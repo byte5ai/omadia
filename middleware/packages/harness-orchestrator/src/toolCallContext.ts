@@ -46,11 +46,23 @@ export function buildToolCallContext(agentSlug: string, input: ChatTurnInput): N
   const conversationId = engine.conversationId ?? channelConversationId(input);
   const channelType = engine.channelType ?? input.origin?.channelType;
   const callerPrincipalId = engine.callerPrincipalId ?? principalOf(input);
+  // Who spoke, in the channel's terms: what an engine turn states, else what
+  // the channel stated on the origin (with the display name when it gave
+  // one), else the knowledge-graph identity of the turn (never a name).
+  const speaker = input.origin?.speaker;
   const callerUserRef =
     engine.callerUserRef ??
-    (input.channelIdentity
-      ? { kind: input.channelIdentity.channelKind, id: input.channelIdentity.channelUserId }
-      : undefined);
+    (speaker && typeof speaker.kind === 'string' && typeof speaker.id === 'string' && speaker.id !== ''
+      ? {
+          kind: speaker.kind,
+          id: speaker.id,
+          ...(typeof speaker.displayName === 'string' && speaker.displayName.trim() !== ''
+            ? { displayName: speaker.displayName.trim().slice(0, 256) }
+            : {}),
+        }
+      : input.channelIdentity
+        ? { kind: input.channelIdentity.channelKind, id: input.channelIdentity.channelUserId }
+        : undefined);
   return {
     agentSlug,
     ...(channelType !== undefined ? { channelType } : {}),
