@@ -92,6 +92,17 @@ First of six steps that align native facilitators with the rewritten specs
 
 ### Fixed — Rollout defects of native facilitators (epic #2043)
 
+- A 403 right after creating the app registration is no longer reported as
+  missing admin consent (D22). Entra ID refuses a follow-up call on a new
+  registration (add the secret, create the service principal) for a short
+  time; the connector reports every 403 as `consent_missing`, and the panel
+  told the operator to grant a permission that was granted. The run now
+  waits 5, 10, 20 and 20 seconds (shown as "waiting for Entra replication")
+  and continues on the existing registration. If Graph still refuses, the
+  run ends with the new code `app_registration_not_ready`, whose text says
+  that this is not a consent problem and what to do. A 403 on the create
+  itself stays `consent_missing`; its text now also covers a permission that
+  was granted moments ago.
 - A facilitator's roster is read as the facilitator. The first live
   facilitation opened with an empty participant list: a roster request said
   neither which agent nor which bot asks, so the Teams adapter answered with
