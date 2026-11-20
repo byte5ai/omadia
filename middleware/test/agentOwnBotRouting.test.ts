@@ -240,7 +240,7 @@ test("the routed agent receives the turn's language (for its identity-guard noti
   const resolver = await resolverFor(teamsSnapshot());
   const viaBot = resolver.resolve('teams', MONA_BOT, { principal: SENDER, locale: 'en' });
   const seen: Array<string | undefined> = [];
-  const inner = viaBot.agent!.built.bundle.agent as { chat: (i: { locale?: string }) => Promise<unknown> };
+  const inner = viaBot.agent!.built.bundle.agent as unknown as { chat: (i: { locale?: string }) => Promise<unknown> };
   const original = inner.chat;
   inner.chat = async (input) => {
     seen.push(input.locale);
