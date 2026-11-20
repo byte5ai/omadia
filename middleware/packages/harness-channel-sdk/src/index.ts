@@ -70,10 +70,13 @@ export type {
 // #330 C3b - conversation-addressed proactive send (group nudges).
 export type { ConversationSendOptions, ConversationSendProvider } from './conversationSend.js';
 export type {
+  AgentIdentityDescription,
   AgentIdentityField,
+  AgentIdentityIdentifyOutcome,
   AgentIdentityProvider,
   AgentIdentityProvisionInput,
   AgentIdentityProvisionOutcome,
+  AgentIdentityRefusal,
   AgentIdentityRefusalCode,
   AgentIdentityStatus,
 } from './agentIdentity.js';

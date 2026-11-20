@@ -66,15 +66,22 @@ function memoryStore(): AgentChannelIdentityStore & { rows: AgentChannelIdentity
   return store;
 }
 
-function telegram(over: Partial<AgentIdentityProvider> = {}): AgentIdentityProvider & { provisioned: AgentIdentityProvisionInput[]; released: string[] } {
+function telegram(over: Partial<AgentIdentityProvider> = {}): AgentIdentityProvider & { identified: AgentIdentityProvisionInput[]; provisioned: AgentIdentityProvisionInput[]; provisionedKeys: string[]; released: string[] } {
   const provider = {
     channelType: 'telegram',
     fields: [{ key: 'bot_token', label: { en: 'Bot token' }, secret: true }],
+    identified: [] as AgentIdentityProvisionInput[],
     provisioned: [] as AgentIdentityProvisionInput[],
+    provisionedKeys: [] as string[],
     released: [] as string[],
-    provision: (input: AgentIdentityProvisionInput) => {
-      provider.provisioned.push(input);
+    identify: (input: AgentIdentityProvisionInput) => {
+      provider.identified.push(input);
       return Promise.resolve({ ok: true as const, channelKey: 'TG:7000000001', externalRef: '@mira_bot' });
+    },
+    provision: (input: AgentIdentityProvisionInput, key: string) => {
+      provider.provisioned.push(input);
+      provider.provisionedKeys.push(key);
+      return Promise.resolve({ ok: true as const });
     },
     release: (key: string) => {
       provider.released.push(key);
@@ -109,6 +116,7 @@ describe('agent channel identities — provisioning', () => {
     const result = await h.service.provision(MIRA, 'telegram', { bot_token: ` ${TOKEN} ` });
     assert.equal(result.ok, true);
     assert.deepEqual(h.provider.provisioned[0]?.credentials, { bot_token: TOKEN });
+    assert.deepEqual(h.provider.provisionedKeys, ['tg:7000000001'], 'provision is told the key identify named');
     assert.equal(h.provider.provisioned[0]?.agentDisplayName, 'Mira');
     assert.equal(h.store.rows[0]?.channelKey, 'tg:7000000001');
     assert.equal(h.store.rows[0]?.externalRef, '@mira_bot');
@@ -123,6 +131,7 @@ describe('agent channel identities — provisioning', () => {
     assert.equal((await h.service.provision(MIRA, 'telegram', {})).ok, false);
     assert.equal((await h.service.provision(MIRA, 'telegram', { bot_token: TOKEN, extra: 'x' })).ok, false);
     assert.equal((await h.service.provision(MIRA, 'telegram', 'token')).ok, false);
+    assert.equal(h.provider.identified.length, 0);
     assert.equal(h.provider.provisioned.length, 0);
   });
 
@@ -132,19 +141,21 @@ describe('agent channel identities — provisioning', () => {
     assert.deepEqual(result.ok ? null : [result.status, result.error], [404, 'channel_not_available']);
   });
 
-  it("refuses the plugin's default bot without stopping it", async () => {
+  it("refuses the plugin's default bot before the plugin does anything to it", async () => {
     const h = harness(telegram({ defaultChannelKey: () => 'tg:7000000001' }));
     const result = await h.service.provision(MIRA, 'telegram', { bot_token: TOKEN });
     assert.deepEqual(result.ok ? null : [result.status, result.error], [409, 'already_in_use']);
+    assert.equal(h.provider.provisioned.length, 0, 'not provisioned');
     assert.deepEqual(h.provider.released, []);
     assert.equal(h.store.rows.length, 0);
   });
 
-  it("refuses another agent's bot without stopping it", async () => {
+  it("refuses another agent's bot before the plugin does anything to it", async () => {
     const h = harness();
     assert.equal((await h.service.provision(OTTO, 'telegram', { bot_token: TOKEN })).ok, true);
     const result = await h.service.provision(MIRA, 'telegram', { bot_token: TOKEN });
     assert.deepEqual(result.ok ? null : [result.status, result.error], [409, 'bot_taken']);
+    assert.equal(h.provider.provisioned.length, 1, 'only Otto’s provision ran');
     assert.deepEqual(h.provider.released, []);
   });
 
@@ -158,7 +169,7 @@ describe('agent channel identities — provisioning', () => {
   it('maps a plugin refusal and scrubs a credential it echoed', async () => {
     const h = harness(
       telegram({
-        provision: () => Promise.resolve({ ok: false, code: 'invalid_credentials', message: `token ${TOKEN} was rejected` }),
+        identify: () => Promise.resolve({ ok: false, code: 'invalid_credentials', message: `token ${TOKEN} was rejected` }),
       }),
     );
     const result = await h.service.provision(MIRA, 'telegram', { bot_token: TOKEN });
@@ -169,7 +180,7 @@ describe('agent channel identities — provisioning', () => {
   });
 
   it('a plugin that throws is a 502 and its message never leaks the credential', async () => {
-    const h = harness(telegram({ provision: () => Promise.reject(new Error(`boom ${TOKEN}`)) }));
+    const h = harness(telegram({ identify: () => Promise.reject(new Error(`boom ${TOKEN}`)) }));
     const result = await h.service.provision(MIRA, 'telegram', { bot_token: TOKEN });
     assert.deepEqual(result.ok ? null : [result.status, result.error], [502, 'unreachable']);
     assert.equal(h.logs.join('\n').includes(TOKEN), false);
@@ -182,12 +193,39 @@ describe('agent channel identities — provisioning', () => {
     assert.deepEqual(h.provider.released, ['tg:7000000001']);
   });
 
-  it('a conflict raised by the database is a 409, and the bot is kept', async () => {
-    const h = harness();
-    h.store.failNext = new AgentChannelIdentityConflict('bot_taken', 'taken');
-    const result = await h.service.provision(MIRA, 'telegram', { bot_token: TOKEN });
-    assert.deepEqual(result.ok ? null : [result.status, result.error], [409, 'bot_taken']);
-    assert.deepEqual(h.provider.released, []);
+  it('a race the database caught: the bot is kept when an agent owns it now, stopped when nobody does', async () => {
+    const owned = harness();
+    owned.store.failNext = new AgentChannelIdentityConflict('bot_taken', 'taken');
+    const realOwner = owned.store.ownerOf;
+    let calls = 0;
+    owned.store.ownerOf = (type, key) => (calls++ === 0 ? realOwner(type, key) : Promise.resolve(OTTO.id));
+    const a = await owned.service.provision(MIRA, 'telegram', { bot_token: TOKEN });
+    assert.deepEqual(a.ok ? null : [a.status, a.error], [409, 'bot_taken']);
+    assert.deepEqual(owned.provider.released, [], 'another agent owns it now: kept');
+
+    const orphan = harness();
+    orphan.store.failNext = new AgentChannelIdentityConflict('agent_has_identity', 'has one');
+    const b = await orphan.service.provision(MIRA, 'telegram', { bot_token: TOKEN });
+    assert.deepEqual(b.ok ? null : [b.status, b.error], [409, 'agent_has_identity']);
+    assert.deepEqual(orphan.provider.released, ['tg:7000000001'], 'nobody owns it: stopped');
+  });
+
+  it('an unknown refusal code, a malformed answer and a throwing default key are handled', async () => {
+    const unknown = harness(telegram({ identify: () => Promise.resolve({ ok: false, code: 'weird' as never, message: 'x' }) }));
+    const a = await unknown.service.provision(MIRA, 'telegram', { bot_token: TOKEN });
+    assert.deepEqual(a.ok ? null : [a.status, a.error], [502, 'unreachable']);
+    const malformed = harness(telegram({ identify: () => Promise.resolve({ ok: true, channelKey: 42 } as never) }));
+    const b = await malformed.service.provision(MIRA, 'telegram', { bot_token: TOKEN });
+    assert.equal(b.ok, false);
+    assert.equal(malformed.provider.provisioned.length, 0);
+    const throwing = harness(telegram({ defaultChannelKey: () => { throw new Error('not ready'); } }));
+    assert.equal((await throwing.service.provision(MIRA, 'telegram', { bot_token: TOKEN })).ok, true);
+  });
+
+  it('names are capped before they are stored', async () => {
+    const h = harness(telegram({ identify: () => Promise.resolve({ ok: true, channelKey: 'tg:1', externalRef: 'x'.repeat(500) }) }));
+    await h.service.provision(MIRA, 'telegram', { bot_token: TOKEN });
+    assert.equal(h.store.rows[0]?.externalRef?.length, 200);
   });
 });
 
@@ -208,6 +246,25 @@ describe('agent channel identities — removal and overview', () => {
     const result = await h.service.remove(MIRA, 'telegram');
     assert.deepEqual(result.ok ? null : [result.status, result.error], [502, 'unreachable']);
     assert.equal(h.store.rows.length, 1);
+  });
+
+  it('a release error is not logged with the plugin’s text (it may carry a credential)', async () => {
+    const h = harness(telegram({ release: () => Promise.reject(new Error(`deleteWebhook on bot${TOKEN} failed`)) }));
+    await h.service.provision(MIRA, 'telegram', { bot_token: TOKEN });
+    await h.service.remove(MIRA, 'telegram');
+    assert.equal(h.logs.join('\n').includes(TOKEN), false);
+  });
+
+  it('releaseAll stops every bot of an agent before a purge and reports what it could not', async () => {
+    const h = harness();
+    await h.service.provision(MIRA, 'telegram', { bot_token: TOKEN });
+    await h.store.insert({ agentId: MIRA.id, channelType: 'slack', channelKey: 'slack-bot:u1' });
+    const out = await h.service.releaseAll(MIRA.id);
+    assert.deepEqual(out, { ok: true, failed: [], notReleased: ['slack:slack-bot:u1'] });
+    assert.deepEqual(h.provider.released, ['tg:7000000001']);
+    const failing = harness(telegram({ release: () => Promise.reject(new Error('down')) }));
+    await failing.service.provision(MIRA, 'telegram', { bot_token: TOKEN });
+    assert.deepEqual((await failing.service.releaseAll(MIRA.id)).failed, ['telegram:tg:7000000001']);
   });
 
   it('removes the row of an uninstalled plugin (nothing to stop)', async () => {

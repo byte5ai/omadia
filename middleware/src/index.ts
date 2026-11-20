@@ -4462,6 +4462,10 @@ async function main(): Promise<void> {
       getRegistry: () =>
         serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
       getChatSessionStore,
+      // Spec 2042 §5.3 — a purged agent's own bots are stopped first.
+      ...(agentChannelIdentities
+        ? { releaseChannelIdentities: (agentId: string) => agentChannelIdentities.releaseAll(agentId) }
+        : {}),
       getFacilitationEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
@@ -5216,6 +5220,7 @@ async function main(): Promise<void> {
     // roster API returns people, never bots, so a roster-based check finds
     // nothing in a chat full of bots (which is exactly what it did on the
     // first live run).
+    const AGENT_BOT_PRESENCE_TIMEOUT_MS = 3_000;
     // Spec 2042 §5.3 — other channels: the plugin knows which agent bots are
     // members of the group (`agentIdentities@1.presentIn`).
     const presentAgentBots = async (
@@ -5225,7 +5230,14 @@ async function main(): Promise<void> {
     ): Promise<{ slug: string; name: string; channelKey: string }[]> => {
       const provider = agentIdentityProviderRegistry.get(channelType);
       if (!provider?.presentIn) return [];
-      const keys = await provider.presentIn(conversationId).catch(() => [] as readonly string[]);
+      // A plugin that hangs here must not stall `get_chat_participants`.
+      let timer: NodeJS.Timeout | undefined;
+      const keys = await Promise.race([
+        provider.presentIn(conversationId).catch(() => [] as readonly string[]),
+        new Promise<readonly string[]>((resolve) => {
+          timer = setTimeout(() => resolve([]), AGENT_BOT_PRESENCE_TIMEOUT_MS);
+        }),
+      ]).finally(() => clearTimeout(timer));
       const bots: { slug: string; name: string; channelKey: string }[] = [];
       for (const raw of keys) {
         const channelKey = normalizeAgentIdentityKey(raw);

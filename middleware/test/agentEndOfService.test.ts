@@ -350,6 +350,8 @@ describe('agent routes: disable, delete, deleted agents, purge', () => {
   let order: string[];
   let audits: AuditEntryInput[];
   let retentionDays: number;
+  /** What the channel plugins answer when a purged agent's own bots are stopped. */
+  let botRelease: { ok: boolean; failed: string[]; notReleased: string[] } = { ok: true, failed: [], notReleased: [] };
 
   const call = async (method: string, path: string, body?: unknown) => {
     const res = await fetch(`${base}${path}`, {
@@ -427,6 +429,10 @@ describe('agent routes: disable, delete, deleted agents, purge', () => {
         },
         get tombstoneRetentionDays() {
           return retentionDays;
+        },
+        releaseChannelIdentities: (agentId: string) => {
+          order.push(`releaseBots(${agentId})`);
+          return Promise.resolve(botRelease);
         },
       } as never),
     );
@@ -516,6 +522,23 @@ describe('agent routes: disable, delete, deleted agents, purge', () => {
     );
   });
 
+  it("purge: the agent's own bots are stopped first; a bot an active plugin cannot stop holds the purge", async () => {
+    agents = [{ ...MARA }, { ...HR }];
+    tombstones = [];
+    retentionDays = 0;
+    await call('DELETE', '/mara');
+    order = [];
+    botRelease = { ok: false, failed: ['telegram:tg:7000000001'], notReleased: [] };
+    const held = await call('POST', '/deleted/id-mara/purge', {});
+    assert.deepEqual([held.status, held.json['error']], [502, 'channel_identity_release_failed']);
+    assert.deepEqual(order, ['releaseBots(id-mara)'], 'nothing was purged');
+    botRelease = { ok: true, failed: [], notReleased: ['slack:slack-bot:u1'] };
+    const purged = await call('POST', '/deleted/id-mara/purge', {});
+    assert.deepEqual([purged.status, purged.json['bots_not_released']], [200, ['slack:slack-bot:u1']]);
+    botRelease = { ok: true, failed: [], notReleased: [] };
+    retentionDays = 30;
+  });
+
   it('purge: inside the retention period it needs the slug typed out; after it, or with the slug, it is the hard delete', async () => {
     await call('DELETE', '/mara');
     order = [];
@@ -529,7 +552,7 @@ describe('agent routes: disable, delete, deleted agents, purge', () => {
 
     const purged = await call('POST', '/deleted/id-mara/purge', { confirm: 'mara' });
     assert.deepEqual([purged.status, purged.json['ok']], [200, true]);
-    assert.deepEqual(order, ['store.purgeAgent(id-mara)', 'audit(agent.purge)']);
+    assert.deepEqual(order, ['releaseBots(id-mara)', 'store.purgeAgent(id-mara)', 'audit(agent.purge)']);
     assert.deepEqual(audits[0]?.after, { purged: true });
     assert.equal((await call('POST', '/deleted/id-mara/purge', { confirm: 'mara' })).status, 404);
 

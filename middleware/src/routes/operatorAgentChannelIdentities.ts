@@ -97,6 +97,16 @@ export function createOperatorAgentChannelIdentitiesRouter(options: OperatorAgen
       const body = (req.body ?? {}) as { credentials?: unknown };
       const result = await ctx.service.provision(ctx.agent, channelType, body.credentials);
       if (!result.ok) {
+        // A refused attempt is in the trail too (someone tried another
+        // agent's bot or the default bot); the code only, no credential.
+        if (result.error !== 'invalid_input') {
+          await audit({
+            actor: auditActorFromRequest(req),
+            action: 'agent.channel_identity.set',
+            target: `agent:${ctx.agent.id}`,
+            after: { channelType, refused: result.error },
+          });
+        }
         res.status(result.status).json({ error: result.error, message: result.message });
         return;
       }
@@ -128,6 +138,7 @@ export function createOperatorAgentChannelIdentitiesRouter(options: OperatorAgen
         action: 'agent.channel_identity.delete',
         target: `agent:${ctx.agent.id}`,
         before: { channelType, channelKey: result.removed.channelKey },
+        after: { released: result.released },
       });
       res.json({ ok: true, released: result.released });
     } catch (err) {

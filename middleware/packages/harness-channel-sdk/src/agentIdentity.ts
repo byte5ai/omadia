@@ -5,8 +5,9 @@
 // that agent's name and avatar in the client. A channel plugin that can run
 // several bots side by side registers an {@link AgentIdentityProvider}; the
 // kernel's operator surface hands it the credentials an operator entered for
-// an agent, the plugin starts the bot and returns its routing key, and the
-// kernel stores (agent, channel type, key).
+// an agent; the plugin says which bot they are (`identify`, no side effect),
+// the kernel checks that the bot is free, the plugin starts it (`provision`),
+// and the kernel stores (agent, channel type, key).
 //
 // From then on the key is routed exactly like a provisioned Teams bot:
 //
@@ -20,7 +21,7 @@
 //     refuses (`supports.asChannelKey`).
 //
 // The credentials cross the kernel exactly once, from the operator's request
-// to {@link AgentIdentityProvider.provision}. The plugin keeps them in its own
+// to {@link AgentIdentityProvider.identify} / `provision`. The plugin keeps them in its own
 // vault; the kernel never stores or logs them.
 
 /** One input the operator fills in for an agent's bot (a token, an app id). */
@@ -52,32 +53,37 @@ export type AgentIdentityRefusalCode =
   | 'invalid_credentials'
   /** A required field is missing or malformed. */
   | 'invalid_input'
-  /** The bot is the channel's own default bot or already runs in this plugin. */
+  /** The bot is the channel's own default bot. */
   | 'already_in_use'
   /** The platform could not be reached; trying again may work. */
   | 'unreachable';
 
-export type AgentIdentityProvisionOutcome =
-  | {
-      readonly ok: true;
-      /**
-       * The bot's routing key, the SAME string the adapter resolves inbound
-       * turns on and honours as `asChannelKey`. Lowercase; it must not be a
-       * conversation id. Telegram `tg:<botId>`, Discord `discord-app:<appId>`,
-       * Slack `slack-bot:<botUserId>`.
-       */
-      readonly channelKey: string;
-      /** The bot's public name on the platform (`@mira_bot`), for display. */
-      readonly externalRef?: string;
-      /** The name the bot shows in the client, when it differs from the agent's. */
-      readonly displayName?: string;
-    }
-  | {
-      readonly ok: false;
-      readonly code: AgentIdentityRefusalCode;
-      /** Operator-readable, no secret in it. */
-      readonly message: string;
-    };
+/** Who a set of credentials is: the bot's routing key and public name. */
+export interface AgentIdentityDescription {
+  /**
+   * The bot's routing key, the SAME string the adapter resolves inbound
+   * turns on and honours as `asChannelKey`. Lowercase; it must not be a
+   * conversation id. Telegram `tg:<botId>`, Discord `discord-app:<appId>`,
+   * Slack `slack-bot:<botUserId>`.
+   */
+  readonly channelKey: string;
+  /** The bot's public name on the platform (`@mira_bot`), for display. */
+  readonly externalRef?: string;
+  /** The name the bot shows in the client, when it differs from the agent's. */
+  readonly displayName?: string;
+}
+
+/** Why credentials were refused. Never contains a credential. */
+export interface AgentIdentityRefusal {
+  readonly ok: false;
+  readonly code: AgentIdentityRefusalCode;
+  /** Operator-readable, no secret in it. */
+  readonly message: string;
+}
+
+export type AgentIdentityIdentifyOutcome = ({ readonly ok: true } & AgentIdentityDescription) | AgentIdentityRefusal;
+
+export type AgentIdentityProvisionOutcome = { readonly ok: true } | AgentIdentityRefusal;
 
 /** What the provider can say about a registered bot right now. */
 export interface AgentIdentityStatus {
@@ -93,11 +99,19 @@ export interface AgentIdentityProvider {
   /** What the operator enters for one agent's bot. */
   readonly fields: readonly AgentIdentityField[];
   /**
-   * Check the credentials with the platform, store them in the plugin's
-   * vault and start serving the bot. Idempotent for the same bot: a second
-   * call with the same credentials returns the same key.
+   * Check the credentials with the platform and say which bot they are.
+   * MUST have no side effect: nothing is stored, started or renamed. The
+   * kernel then refuses the channel's default bot and a bot that belongs to
+   * another agent BEFORE anything happens to it, and only otherwise calls
+   * {@link provision}.
    */
-  provision(input: AgentIdentityProvisionInput): Promise<AgentIdentityProvisionOutcome>;
+  identify(input: AgentIdentityProvisionInput): Promise<AgentIdentityIdentifyOutcome>;
+  /**
+   * Store the credentials in the plugin's vault and start serving the bot
+   * `channelKey` (the key {@link identify} returned for the same input).
+   * Called only for a bot no agent owns and that is not the default bot.
+   */
+  provision(input: AgentIdentityProvisionInput, channelKey: string): Promise<AgentIdentityProvisionOutcome>;
   /**
    * Stop serving the bot and forget its credentials. Idempotent; an unknown
    * key is not an error. The kernel deletes its row only after this resolved.

@@ -3749,18 +3749,30 @@ If it does, that is a bug — file an issue and rotate.
 
 An agent's own Telegram, Discord or Slack bot is registered through
 `PUT /api/v1/operator/agents/:slug/channel-identities/:channelType`. The
-credentials pass through the kernel exactly once, from the request to the
-channel plugin's `AgentIdentityProvider.provision`; the plugin checks them with
-the platform and stores them in ITS vault namespace (`agent_bot_token_<id>`,
-`agent_app_<member id>`). The kernel stores only (agent, channel type, routing
-key) in `agent_channel_identities` (migration 0105, no credential column), never
-logs a credential (the service scrubs every credential value from a plugin's
-error text before logging or answering), and the audit entries
-(`agent.channel_identity.set|delete`) carry the channel type and the routing key
-only. Removing the bot asks the plugin to stop it and delete the credentials
-before the row goes. A bot whose agent is deleted keeps its row (tombstone) and
-is refused, never answered by another agent with other permissions; an agent bot
-the kernel does not know as an identity answers only with a `system` notice.
+credentials pass through the kernel once, from the request to the channel
+plugin: `AgentIdentityProvider.identify` checks them with the platform and names
+the bot WITHOUT a side effect; the kernel then refuses the channel's default bot
+and a bot another agent owns, and only for a free bot calls `provision`, which
+stores the credentials in the plugin's OWN vault namespace
+(`agent_bot_token_<id>`, `agent_app_<member id>`) and starts it. So typing agent
+A's token on agent B's page cannot touch A's bot or its stored credentials.
+
+The kernel stores only (agent, channel type, routing key) in
+`agent_channel_identities` (migration 0105, no credential column). It does not
+log credentials: a plugin's refusal or `identify`/`provision` error text is
+scrubbed of every credential value before it is logged or answered, and a
+`release` error is logged by its class only. The audit entries
+(`agent.channel_identity.set|delete`, refused attempts included) carry the
+channel type, the routing key or the refusal code, never a credential.
+
+Removing a bot asks the plugin to stop it and delete the credentials; if the
+plugin fails, nothing is removed. If the plugin is not active, the row goes and
+the answer says `released: false` (the UI then asks the operator to revoke the
+token on the platform, since the inactive plugin may still hold it). Purging a
+deleted agent first stops its bots the same way and is held when an active
+plugin cannot. Until then a bot whose agent is deleted keeps its row (tombstone)
+and is refused, never answered by another agent with other permissions; an agent
+bot the kernel does not know as an identity answers only with a `system` notice.
 
 ### Master-key posture is not on the public `/health` (#1385, #1387, #1332)
 

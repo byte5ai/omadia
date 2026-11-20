@@ -169,9 +169,11 @@ src/
   Slack `slack-bot:<member id>` (lowercase). Derselbe String ist Routing-Key,
   `asChannelKey` und `receivedByChannelKey`.
 - **SDK-Vertrag:** `CoreApi.registerAgentIdentityProvider(channelId, AgentIdentityProvider)`
-  (`harness-channel-sdk/src/agentIdentity.ts`): `fields`, `provision` (prüft und
-  startet den Bot, liefert den Key), `release`, `status?`, `defaultChannelKey?`,
-  `presentIn?`. Kanal-Claim und Deactivate wie bei den anderen Providern; `teams`
+  (`harness-channel-sdk/src/agentIdentity.ts`): `fields`, `identify` (prüft die
+  Zugangsdaten und nennt den Key, **ohne** Seiteneffekt), `provision(input, key)`
+  (speichert und startet; nur für einen freien Bot, nachdem der Kernel Default-Bot
+  und Besitzer geprüft hat), `release`, `status?`, `defaultChannelKey?`,
+  `presentIn?` (3 s Timeout im Kernel). Kanal-Claim und Deactivate wie bei den anderen Providern; `teams`
   wird abgelehnt. Die Kernel-Registry ist `ChannelProviderRegistry<AgentIdentityProvider>`
   (`src/index.ts`); `defaultChannelBotKey` (Conductor) und `presentBots`
   (`get_chat_participants`) fragen außerhalb von Teams den Provider.
@@ -181,7 +183,11 @@ src/
   Status), `PUT …/:channelType` `{credentials}` (201 / 400 invalid_input / 404
   channel_not_available / 409 agent_has_identity|bot_taken|already_in_use / 422
   invalid_credentials / 502 unreachable), `DELETE …/:channelType` (stoppt den Bot
-  zuerst, dann geht die Zeile). Audit `agent.channel_identity.set|delete`.
+  zuerst, dann geht die Zeile; `released: false`, wenn das Plugin nicht aktiv war).
+  Audit `agent.channel_identity.set|delete`, auch abgelehnte Versuche (nur Code).
+  Der Purge eines gelöschten Agenten (`POST /deleted/:id/purge`) stoppt zuerst
+  seine Bots (`releaseAll`) und wartet (502 `channel_identity_release_failed`),
+  wenn ein aktives Plugin einen Bot nicht stoppen kann.
 - **web-ui:** Tab „Kanäle“ der Agent-Seite, Abschnitt „Eigene Bots“
   (`AgentChannelIdentities.tsx`, Felder vom Plugin, Secrets nur schreibbar).
 - **Plugins:** omadia-channel-telegram, -discord, -slack, je Branch

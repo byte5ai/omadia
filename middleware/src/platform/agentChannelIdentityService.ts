@@ -12,6 +12,7 @@
 
 import {
   normalizeAgentIdentityKey,
+  type AgentIdentityDescription,
   type AgentIdentityField,
   type AgentIdentityProvider,
   type AgentIdentityStatus,
@@ -28,6 +29,23 @@ export const MAX_CREDENTIAL_LENGTH = 4096;
 /** The longest routing key the table accepts (migration 0105). */
 const MAX_CHANNEL_KEY_LENGTH = 200;
 const STATUS_TIMEOUT_MS = 3000;
+/** The longest name of a bot the kernel stores for display. */
+const MAX_NAME_LENGTH = 200;
+
+/** A plugin's `identify` answer narrowed: a key and display names, or undefined. */
+function describedBot(outcome: unknown): AgentIdentityDescription | undefined {
+  const o = (outcome ?? {}) as { ok?: unknown; channelKey?: unknown; externalRef?: unknown; displayName?: unknown };
+  if (o.ok !== true || typeof o.channelKey !== 'string') return undefined;
+  const text = (value: unknown): string | undefined =>
+    typeof value === 'string' && value.trim() !== '' ? value.trim().slice(0, MAX_NAME_LENGTH) : undefined;
+  const externalRef = text(o.externalRef);
+  const displayName = text(o.displayName);
+  return {
+    channelKey: normalizeAgentIdentityKey(o.channelKey),
+    ...(externalRef ? { externalRef } : {}),
+    ...(displayName ? { displayName } : {}),
+  };
+}
 
 export interface AgentIdentityProviders {
   get(channelType: string): AgentIdentityProvider | undefined;
@@ -179,6 +197,33 @@ export function createAgentChannelIdentityService(deps: AgentChannelIdentityServ
     return { channels };
   }
 
+  /** The plugin's default bot key, or undefined (also when the plugin throws). */
+  function defaultKeyOf(provider: AgentIdentityProvider): string | undefined {
+    try {
+      const key = provider.defaultChannelKey?.();
+      return typeof key === 'string' && key.trim() !== '' ? normalizeAgentIdentityKey(key) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** A plugin refusal as the route answers it: known codes only, scrubbed text. */
+  function refusalOf(outcome: unknown, credentials: Readonly<Record<string, string>>): ProvisionResult {
+    const o = (outcome ?? {}) as { code?: unknown; message?: unknown };
+    const code = typeof o.code === 'string' && o.code in REFUSAL_STATUS ? o.code : 'unreachable';
+    const message = typeof o.message === 'string' ? o.message : 'the channel plugin refused the bot';
+    return refusal(REFUSAL_STATUS[code] ?? 502, code, scrubCredentials(message, credentials));
+  }
+
+  /** Stop a bot nobody owns; a failure is logged without the plugin's text. */
+  async function releaseOrphan(provider: AgentIdentityProvider, channelKey: string, why: string): Promise<void> {
+    try {
+      await provider.release(channelKey);
+    } catch {
+      log(`[agent-identities] the ${provider.channelType} bot ${channelKey} (${why}) could not be stopped; it may still run in the plugin`);
+    }
+  }
+
   async function provision(agent: IdentityAgent, channelType: string, rawCredentials: unknown): Promise<ProvisionResult> {
     const provider = deps.providers.get(channelType);
     if (!provider) {
@@ -190,51 +235,60 @@ export function createAgentChannelIdentityService(deps: AgentChannelIdentityServ
       return refusal(409, 'agent_has_identity', `the agent has a ${channelType} bot already — remove it first`);
     }
     const { credentials } = checked;
-    let outcome;
-    try {
-      outcome = await provider.provision({ agentSlug: agent.slug, agentDisplayName: agent.name, credentials });
-    } catch (err) {
+    const input = { agentSlug: agent.slug, agentDisplayName: agent.name, credentials };
+    const pluginFailed = (step: string, err: unknown): ProvisionResult => {
       const message = scrubCredentials(err instanceof Error ? err.message : String(err), credentials);
-      log(`[agent-identities] ${channelType} bot for '${agent.slug}' failed in the plugin: ${message}`);
+      log(`[agent-identities] ${channelType} bot for '${agent.slug}' failed in the plugin (${step}): ${message}`);
       return refusal(502, 'unreachable', 'the channel plugin could not register the bot');
+    };
+
+    // 1. Which bot is it? No side effect in the plugin yet.
+    let identified: unknown;
+    try {
+      identified = await provider.identify(input);
+    } catch (err) {
+      return pluginFailed('identify', err);
     }
-    if (!outcome.ok) {
-      return refusal(
-        REFUSAL_STATUS[outcome.code] ?? 502,
-        outcome.code,
-        scrubCredentials(outcome.message, credentials),
-      );
-    }
-    const channelKey = normalizeAgentIdentityKey(outcome.channelKey);
-    // Never release in the two refusals below: the key names a bot that is
-    // somebody else's (the default bot, or another agent's).
+    const described = describedBot(identified);
+    if (!described) return refusalOf(identified, credentials);
+    const { channelKey } = described;
     if (channelKey === '' || channelKey.length > MAX_CHANNEL_KEY_LENGTH) {
-      log(`[agent-identities] ${channelType} plugin returned an unusable bot key for '${agent.slug}'`);
+      log(`[agent-identities] ${channelType} plugin named an unusable bot key for '${agent.slug}'`);
       return refusal(502, 'invalid_key', 'the channel plugin returned an unusable bot key');
     }
-    const defaultKey = provider.defaultChannelKey?.();
-    if (defaultKey !== undefined && normalizeAgentIdentityKey(defaultKey) === channelKey) {
+    // 2. Is it free? The default bot and another agent's bot are refused
+    //    before the plugin does anything to them.
+    if (defaultKeyOf(provider) === channelKey) {
       return refusal(409, 'already_in_use', `this is the ${channelType} channel's default bot — give the agent a bot of its own`);
     }
     const owner = await deps.store.ownerOf(channelType, channelKey);
     if (owner !== undefined) {
       return refusal(409, 'bot_taken', `this ${channelType} bot belongs to ${owner === agent.id ? 'this' : 'another'} agent`);
     }
+    // 3. Start it.
+    let started: unknown;
+    try {
+      started = await provider.provision(input, channelKey);
+    } catch (err) {
+      return pluginFailed('provision', err);
+    }
+    if ((started as { ok?: unknown } | null)?.ok !== true) return refusalOf(started, credentials);
     let record: AgentChannelIdentityRecord;
     try {
       record = await deps.store.insert({
         agentId: agent.id,
         channelType,
         channelKey,
-        displayName: outcome.displayName ?? null,
-        externalRef: outcome.externalRef ?? null,
+        displayName: described.displayName ?? null,
+        externalRef: described.externalRef ?? null,
       });
     } catch (err) {
-      if (err instanceof AgentChannelIdentityConflict) {
-        return refusal(409, err.reason, err.message);
+      // A concurrent request may have taken the agent or the bot meanwhile.
+      // Stop the bot unless an agent now owns it (then it is that agent's).
+      if ((await deps.store.ownerOf(channelType, channelKey).catch(() => 'unknown')) === undefined) {
+        await releaseOrphan(provider, channelKey, 'not stored');
       }
-      // The plugin serves a bot nobody owns now: stop it again.
-      await provider.release(channelKey).catch(() => undefined);
+      if (err instanceof AgentChannelIdentityConflict) return refusal(409, err.reason, err.message);
       throw err;
     }
     await deps.reload();
@@ -245,30 +299,54 @@ export function createAgentChannelIdentityService(deps: AgentChannelIdentityServ
   async function remove(agent: IdentityAgent, channelType: string): Promise<RemoveResult> {
     const record = await deps.store.get(agent.id, channelType);
     if (!record) return refusal(404, 'identity_not_found', `the agent has no ${channelType} bot`);
-    const provider = deps.providers.get(channelType);
-    // Without the plugin there is nothing to stop; the row goes anyway, so an
-    // uninstalled plugin cannot pin an identity forever.
-    let released = false;
-    if (provider) {
-      try {
-        await provider.release(record.channelKey);
-        released = true;
-      } catch (err) {
-        log(
-          `[agent-identities] releasing ${channelType} bot ${record.channelKey} of '${agent.slug}' failed: ${
-            err instanceof Error ? err.message.slice(0, 300) : String(err)
-          }`,
-        );
-        return refusal(502, 'unreachable', 'the channel plugin could not stop the bot — nothing was removed');
-      }
+    const released = await releaseRecord(record);
+    if (released === 'failed') {
+      return refusal(502, 'unreachable', 'the channel plugin could not stop the bot — nothing was removed');
     }
     await deps.store.delete(agent.id, channelType);
     await deps.reload();
     log(`[agent-identities] '${agent.slug}' no longer has its own ${channelType} bot (${record.channelKey})`);
-    return { ok: true, removed: record, released };
+    return { ok: true, removed: record, released: released === 'released' };
   }
 
-  return { overview, provision, remove };
+  /**
+   * Ask the plugin to stop the bot and forget its credentials. `skipped`
+   * when the plugin is not active: there is nothing to stop, but the
+   * credentials may still be in its vault (the operator should revoke them).
+   * A plugin's error text is not logged: it may carry a credential.
+   */
+  async function releaseRecord(record: AgentChannelIdentityRecord): Promise<'released' | 'skipped' | 'failed'> {
+    const provider = deps.providers.get(record.channelType);
+    if (!provider) return 'skipped';
+    try {
+      await provider.release(record.channelKey);
+      return 'released';
+    } catch (err) {
+      log(
+        `[agent-identities] releasing ${record.channelType} bot ${record.channelKey} failed (${err instanceof Error ? err.name : 'error'})`,
+      );
+      return 'failed';
+    }
+  }
+
+  /**
+   * #2088 purge — stop every bot of an agent before its row (and with it,
+   * by `ON DELETE CASCADE`, its identities) is gone for good. `ok: false`
+   * names the bots an active plugin could not stop; the purge then waits.
+   */
+  async function releaseAll(agentId: string): Promise<{ ok: boolean; failed: readonly string[]; notReleased: readonly string[] }> {
+    const records = await deps.store.listForAgent(agentId);
+    const failed: string[] = [];
+    const notReleased: string[] = [];
+    for (const record of records) {
+      const outcome = await releaseRecord(record);
+      if (outcome === 'failed') failed.push(`${record.channelType}:${record.channelKey}`);
+      if (outcome === 'skipped') notReleased.push(`${record.channelType}:${record.channelKey}`);
+    }
+    return { ok: failed.length === 0, failed, notReleased };
+  }
+
+  return { overview, provision, remove, releaseAll };
 }
 
 export type AgentChannelIdentityService = ReturnType<typeof createAgentChannelIdentityService>;
