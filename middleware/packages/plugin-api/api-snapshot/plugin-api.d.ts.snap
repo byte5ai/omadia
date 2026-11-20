@@ -776,13 +776,14 @@ export declare const BULK_EXCERPT_MERGE_DETECT_SERVICE_NAME = "bulkExcerptMergeD
 export declare const BULK_EXCERPT_MERGE_DETECT_CAPABILITY = "bulkExcerptMergeDetect@1";
 
 // ===== executionAuthorization.d.ts =====
+import type { EmissionType } from './speaker.js';
 export declare const EXECUTION_AUTHORIZATION_SERVICE_NAME = "executionAuthorization";
 export type ExecutionScopeKind = 'configuring' | 'active' | 'closing' | 'scheduling' | 'follow_up';
 export declare const EXECUTION_SCOPE_KINDS: readonly ExecutionScopeKind[];
 export type ExecutionPhase = 'configuring' | 'active' | 'concluding' | 'closed' | 'aborted' | 'following_up' | 'ended';
 export declare const EXECUTION_SCOPE_PHASES: Readonly<Record<ExecutionScopeKind, readonly ExecutionPhase[]>>;
 export type ExecutionActionType = 'model_turn' | 'post' | 'direct_message' | 'card_update' | 'check' | 'delivery';
-export type ExecutionEmissionType = 'prose' | 'template' | 'data';
+export type ExecutionEmissionType = Exclude<EmissionType, 'system'>;
 export type ExecutionPurpose = 'moderation' | 'handshake' | 'link' | 'reminder' | 'status' | 'consent' | 'stop' | 'essential_message' | 'protocol_dispatch' | 'invitation' | 'readiness_check' | 'roster_check' | 'other';
 export type ExecutionTarget = {
 readonly kind: 'conversation';
@@ -1112,6 +1113,7 @@ export * from './sessionCapabilities.js';
 export * from './facilitation.js';
 export * from './executionAuthorization.js';
 export * from './executionGrants.js';
+export * from './speaker.js';
 export * from './maintenanceRun.js';
 export * from './modelPassthrough.js';
 
@@ -3526,6 +3528,87 @@ sessionRef: string;
 kind: SessionEventKind;
 participants?: readonly SessionEventParticipant[];
 occurredAt: string;
+}
+
+// ===== speaker.d.ts =====
+export interface AgentSpeaker {
+readonly kind: 'agent';
+readonly agentId: string;
+readonly slug: string;
+readonly displayName: string;
+readonly avatarUrl?: string;
+}
+export interface SystemSpeaker {
+readonly kind: 'system';
+}
+export type Speaker = AgentSpeaker | SystemSpeaker;
+export declare const SYSTEM_SPEAKER: SystemSpeaker;
+export declare function isAgentSpeaker(speaker: Speaker | undefined): speaker is AgentSpeaker;
+export declare function isSystemSpeaker(speaker: Speaker | undefined): speaker is SystemSpeaker;
+export declare const EMISSION_TYPES: readonly ["prose", "template", "data", "system"];
+export type EmissionType = (typeof EMISSION_TYPES)[number];
+export declare const SYSTEM_NOTICE_CODES: readonly ["agent_disabled", "agent_deleted", "agent_unknown", "agent_not_available", "no_agent", "agent_selected", "agent_selection_cleared", "agent_directory", "agent_error", "missing_grant", "quota_exceeded", "identity_guard_blocked", "identity_guard_unavailable"];
+export type SystemNoticeCode = (typeof SYSTEM_NOTICE_CODES)[number];
+export interface NoticeAgentRef {
+readonly slug: string;
+readonly displayName: string;
+readonly agentId?: string;
+}
+export interface SystemNotice {
+readonly code: SystemNoticeCode;
+readonly agent?: NoticeAgentRef;
+readonly text: string;
+readonly locale: string;
+}
+export interface Contribution {
+readonly id: string;
+readonly speaker: AgentSpeaker;
+readonly text: string;
+readonly status: ContributionStatus;
+}
+export type ContributionStatus = 'delivered' | 'failed';
+export type TemplateValue = string | number | boolean;
+export interface TableData {
+readonly kind: 'table';
+readonly columns: readonly string[];
+readonly rows: readonly (readonly (string | number | boolean | null)[])[];
+readonly caption?: string;
+}
+export type DataPayload = TableData;
+export interface ProseEmission {
+readonly type: 'prose';
+readonly speaker: AgentSpeaker;
+readonly text: string;
+readonly restoredValues?: readonly string[];
+}
+export interface TemplateEmission {
+readonly type: 'template';
+readonly speaker: AgentSpeaker;
+readonly templateId: string;
+readonly values: Readonly<Record<string, TemplateValue>>;
+}
+export interface DataEmission {
+readonly type: 'data';
+readonly speaker: AgentSpeaker;
+readonly data: DataPayload;
+}
+export interface SystemEmission {
+readonly type: 'system';
+readonly speaker: SystemSpeaker;
+readonly notice: SystemNotice;
+}
+export type Emission = ProseEmission | TemplateEmission | DataEmission | SystemEmission;
+export type EmissionRefusalReason = 'identity_guard_blocked' | 'identity_guard_unavailable' | 'template_unknown' | 'template_values_invalid' | 'speaker_missing';
+export type EmitOutcome = {
+readonly published: true;
+readonly emission: Emission;
+} | {
+readonly published: false;
+readonly reason: EmissionRefusalReason;
+readonly replacement: SystemEmission;
+};
+export interface AnswerEmitter {
+emit(emission: Emission): Promise<EmitOutcome>;
 }
 
 // ===== targetRef.d.ts =====

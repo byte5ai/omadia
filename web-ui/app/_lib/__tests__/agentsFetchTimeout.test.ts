@@ -59,7 +59,7 @@ afterEach(() => {
 
 describe('agents.ts server-side reads (OM-96)', () => {
   it('gives listOperatorAgents a deadline', async () => {
-    const spy = stubFetch({ agents: [], fallback_agent_id: null });
+    const spy = stubFetch({ agents: [], default_agent_id: null });
     const { listOperatorAgents } = await import('../agents');
 
     await listOperatorAgents();
@@ -97,7 +97,7 @@ describe('agents.ts server-side reads (OM-96)', () => {
     if (ORIGINAL_WINDOW) {
       Object.defineProperty(globalThis, 'window', ORIGINAL_WINDOW);
     }
-    const spy = stubFetch({ agents: [], fallback_agent_id: null });
+    const spy = stubFetch({ agents: [], default_agent_id: null });
     const { listOperatorAgents } = await import('../agents');
 
     await listOperatorAgents();

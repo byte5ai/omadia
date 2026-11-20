@@ -350,7 +350,13 @@ describe('#1491 / #1498 — attach to the default orchestrator', () => {
   it('attaches only ids without a row and never the orchestrator itself', async () => {
     const upserts: Array<{ agentId: string; pluginId: string; enabled?: boolean }> = [];
     const store = {
-      getPlatformSettings: async () => ({ fallbackAgentId: 'agent-1' }),
+      // #2055 — the former fallback is the instance entry of the default-agent table.
+      routing: {
+        listDefaultEntries: async () => [
+          { id: 'e-user', principal: 'user:anna@example.com', channelType: null, agentId: 'agent-2' },
+          { id: 'e-instance', principal: null, channelType: null, agentId: 'agent-1' },
+        ],
+      },
       listAgentPlugins: async () => [
         // The operator disabled this one on purpose — it must stay disabled.
         { agentId: 'agent-1', pluginId: '@test/parent', enabled: false, config: { k: 1 } },
@@ -376,10 +382,14 @@ describe('#1491 / #1498 — attach to the default orchestrator', () => {
     ]);
   });
 
-  it('attaches nothing when no fallback Agent is set', async () => {
+  it('attaches nothing when the instance default entry is off', async () => {
     let upserted = false;
     const store = {
-      getPlatformSettings: async () => ({ fallbackAgentId: null }),
+      routing: {
+        listDefaultEntries: async () => [
+          { id: 'e-instance', principal: null, channelType: null, agentId: null },
+        ],
+      },
       listAgentPlugins: async () => [],
       upsertAgentPlugin: async () => {
         upserted = true;

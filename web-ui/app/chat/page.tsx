@@ -26,8 +26,6 @@ import { AgentsConsultedFooter } from '../_components/chat/AgentsConsultedFooter
 import { AutoPromotedBanner } from '../_components/chat/AutoPromotedBanner';
 import { CaptureDisclosure } from '../_components/chat/CaptureDisclosure';
 import { ConfirmDialog } from '../_components/ConfirmDialog';
-import { DelegatedAnswerCard } from '../_components/chat/DelegatedAnswerCard';
-import { DirectLineStickyBanner } from '../_components/chat/DirectLineStickyBanner';
 import { NudgeCard, parseNudgeBlock } from '../_components/chat/NudgeCard';
 import {
   McpAuthRequiredCard,
@@ -38,6 +36,7 @@ import { PlanProgressCard } from '../_components/chat/PlanProgressCard';
 import { RecalledContextCard } from '../_components/chat/RecalledContextCard';
 import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from '../_components/chat/SaveMemoryButton';
+import { MessageSpeakerLine } from '../_components/chat/MessageSpeakerLine';
 import { TurnIncompleteNotice } from '../_components/chat/TurnIncompleteNotice';
 import { SystemDataBadge, VerifierBadge } from '../_components/chat/VerifierBadge';
 import { DecisionBadge } from '../_components/chat/DecisionBadge';
@@ -72,7 +71,6 @@ import {
 import { KgWalkPane } from '../_components/KgWalkPane';
 import { PlanDagPane } from '../_components/PlanDagPane';
 import type {
-  DirectLineSessionState,
   KgWalkPayload,
   PlanSnapshot,
 } from '../_lib/chatSessions';
@@ -232,18 +230,6 @@ export default function ChatPage(): React.ReactElement {
     }
     return kgMockEnabled ? MOCK_KG_WALK : null;
   }, [activeSession.messages, kgMockEnabled]);
-
-  // #445 — the sticky Direct-Line binding = whatever the most recent carrier
-  // says. The server stamps EVERY turn while the feature is on (including
-  // `{active:false}`), so scanning back to the newest carrier and trusting it
-  // is what keeps the banner from outliving the binding it describes.
-  const activeDirectLine = useMemo<DirectLineSessionState | null>(() => {
-    for (let i = activeSession.messages.length - 1; i >= 0; i -= 1) {
-      const m = activeSession.messages[i];
-      if (m?.directLineSession) return m.directLineSession;
-    }
-    return null;
-  }, [activeSession.messages]);
 
   // The live plan surfaced in the left pane = the most recent assistant message
   // carrying a plan snapshot (re-emitted on every step change / replan).
@@ -712,17 +698,6 @@ export default function ChatPage(): React.ReactElement {
 
       <footer className="border-t border-[color:var(--border)] bg-[color:var(--bg-elevated)]/85 px-6 py-4 backdrop-blur">
         <div className="mx-auto flex max-w-4xl flex-col gap-2">
-          {/* #445 — persistent "you are talking to X" indicator, directly above
-              the composer. Exits via the normal turn path (no new endpoint). */}
-          {activeDirectLine && (
-            <DirectLineStickyBanner
-              session={activeDirectLine}
-              onExit={() => {
-                send('#end');
-              }}
-              disabled={sending || hydrating}
-            />
-          )}
           {/* Mid-turn steering hint / feedback — only while a turn streams. */}
           {sending && (
             <div className="flex items-center gap-2 text-[11px]">
@@ -996,23 +971,10 @@ export function MessageRow({
   const liveElapsedSec = showLiveness
     ? Math.max(0, Math.round((liveNow - message.startedAt) / 1000))
     : null;
-  // #332 Layer 2 (gap-closure) — `content` already carries the delegated
-  // answer's verbatim text (backend graceful-degrade design: even a
-  // connector that ignores `delegatedAnswer` shows the specialist's words).
-  // `<DelegatedAnswerCard>` renders that verbatim block attributed; render
-  // the ordinary content block ONLY for whatever the orchestrator added
-  // beyond it (the guarded-mode `▸ omadia note: …` suffix), so the answer
-  // never appears twice. Falls back to the full content if it doesn't start
-  // with the expected prefix (defensive — never silently drops text).
-  const rawNote =
-    message.delegatedAnswer &&
-    message.content.startsWith(message.delegatedAnswer.text)
-      ? message.content.slice(message.delegatedAnswer.text.length).replace(/^\s+/, '')
-      : message.content;
   // A sub-agent's MCP auth-required tool result can bubble the machine
   // <mcp-auth-required> block into the final answer text — strip it from the
   // prose (it renders as the Connect card via McpAuthRequiredList instead).
-  const authFromNote = parseMcpAuthRequired(rawNote);
+  const authFromNote = parseMcpAuthRequired(message.content);
   // #1094 — a DEGRADED turn: the tools it names really did commit, but the
   // turn threw before any answer existed. The `done` event carries the facts
   // (`message.degradedTurn`); parsing the answer covers a session restored
@@ -1030,7 +992,7 @@ export function MessageRow({
             : {}),
         }
       : undefined);
-  const delegatedNote = incompleteFromText
+  const answerProse = incompleteFromText
     ? incompleteFromText.cleaned
     : authFromNote.cleaned;
 
@@ -1051,6 +1013,10 @@ export function MessageRow({
                 // the verifier withheld: the bubble holds its notice.
                 degradedTurn || message.verifierBlocked
                 ? 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-strong)] ring-1 ring-[color:var(--warning)]'
+                : // #2045 — a management-layer notice is not an agent's
+                  // answer: muted and dashed, never in agent styling.
+                  message.speaker?.kind === 'system'
+                ? 'bg-[color:var(--bg)] text-[color:var(--fg-muted)] border border-dashed border-[color:var(--border)]'
                 : 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-strong)] ring-1 ring-[color:var(--border)]',
         ].join(' ')}
       >
@@ -1058,6 +1024,7 @@ export function MessageRow({
           <div className="whitespace-pre-wrap text-sm">{message.content}</div>
         ) : (
           <>
+            {message.speaker && <MessageSpeakerLine speaker={message.speaker} />}
             {message.proactive && <ProactiveBadge proactive={message.proactive} />}
             {message.fastPathDecision !== undefined && <DecisionBadge decision={message.fastPathDecision} />}
             {message.routing && <TriageBadge routing={message.routing} />}
@@ -1074,20 +1041,17 @@ export function MessageRow({
             {(message.tools?.length ?? 0) > 0 && (
               <ToolTrace tools={message.tools ?? []} />
             )}
-            <McpAuthRequiredList tools={message.tools ?? []} content={rawNote} />
+            <McpAuthRequiredList tools={message.tools ?? []} content={message.content} />
             {(message.nudges?.length ?? 0) > 0 && (
               <NudgeList nudges={message.nudges ?? []} />
             )}
             {(message.steers?.length ?? 0) > 0 && (
               <SteerList steers={message.steers ?? []} />
             )}
-            {message.delegatedAnswer && (
-              <DelegatedAnswerCard answer={message.delegatedAnswer} />
-            )}
             {degradedTurn && (
               <TurnIncompleteNotice
                 committedTools={degradedTurn.committedTools}
-                hasAnswerText={delegatedNote.length > 0}
+                hasAnswerText={answerProse.length > 0}
                 {...(degradedTurn.correlationId
                   ? { correlationId: degradedTurn.correlationId }
                   : {})}
@@ -1095,17 +1059,17 @@ export function MessageRow({
             )}
             {message.verifierBlocked && (
               <VerifierBlockedNotice
-                hasAnswerText={delegatedNote.length > 0}
+                hasAnswerText={answerProse.length > 0}
                 cause={message.verifier?.withheldCause}
                 contradictionCount={message.verifier?.contradictionCount}
               />
             )}
-            {delegatedNote.length > 0 ? (
+            {answerProse.length > 0 ? (
               /* §2.7: agent narration renders in the prose register
                  (Source Serif 4); headings/tables/code stay structural. */
               <div className="lume-prose">
                 <Markdown
-                  source={delegatedNote}
+                  source={answerProse}
                   highlightTerms={message.maskedValues}
                 />
               </div>

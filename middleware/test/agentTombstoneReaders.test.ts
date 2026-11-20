@@ -35,6 +35,10 @@ const TABLES = [
   'channel_bindings',
   'conversation_message_subscriptions',
   'agent_teams_identities',
+  // #2055 — the management layer's tables (migrations 0081–0083).
+  'agent_default_entries',
+  'agent_selections',
+  'agent_availability_principals',
 ];
 
 /** A query that is about ONE agent, row or key: its id came from a caller
@@ -70,6 +74,10 @@ const DELIBERATE: Record<string, string> = {
     'the tombstone condition itself',
   'src/channels/conversationMessages/pgStore.ts::conversation_message_subscriptions::channel_type = $1':
     'a subscription is addressed by conversation and identity; it was ended when its agent was deleted',
+  'packages/harness-orchestrator/src/registry/routingTables.ts::agent_default_entries::ORDER BY principal NULLS LAST':
+    'a default-agent entry that names a deleted agent keeps naming it: the message gets "<name> was deleted", never another agent (#2055, spec 2042 §5.10)',
+  'packages/harness-orchestrator/src/registry/routingTables.ts::agent_selections::conversation_key, principal, agent_id, selected_at':
+    'a selection that names a deleted agent keeps naming it until the user chooses again: "<name> was deleted", never another agent (#2055)',
   'src/channels/conversationMessages/pgStore.ts::conversation_message_subscriptions::ended_at IS NOT NULL':
     'the purge of ended subscriptions, whoever they belonged to',
 };

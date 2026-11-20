@@ -1,16 +1,12 @@
 /**
  * OM-76 (#996) — "no orchestrator at all" vs "this one is gone".
  *
- * When the requested slug does not resolve, the 503 must distinguish two
- * states so the chat UI can react correctly:
- *   - some agents ARE active, the pinned one is gone → `agent_unavailable`
- *     (the recovery banner offers "re-bind to default").
- *   - NO agent is active (fresh install, no LLM provider assigned) →
- *     `no_agents_active` (the banner points at LLM access; re-binding to
- *     "default" would just 503 again, because default is the missing thing).
- *
- * `hasActiveAgents` is optional; when omitted the route keeps the old
- * `agent_unavailable` behaviour, which test 4 in chatRouterAgentRouting covers.
+ * Two states the chat UI must tell apart:
+ *   - NO agent is active (fresh install, no LLM provider assigned) → 503
+ *     `no_agents_active` (the banner points at LLM access).
+ *   - some agents ARE active, the requested one is gone → since #2055 the
+ *     management layer answers: 200 with a `system` notice naming the agent,
+ *     on both the JSON and the NDJSON route. Never another agent, never 503.
  */
 import { strict as assert } from 'node:assert';
 import { after, afterEach, before, describe, it } from 'node:test';
@@ -22,12 +18,14 @@ import express from 'express';
 import type { ChatAgent } from '@omadia/orchestrator';
 import { createChatRouter } from '../src/routes/chat.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
+import { routeTurnFrom } from './_helpers/webRouteTurn.js';
 
 const SLUG = 'default';
 
-describe('createChatRouter — OM-76 no_agents_active vs agent_unavailable', () => {
+describe('createChatRouter — OM-76 no_agents_active vs a notice for a missing agent', () => {
   let server: Server;
   let baseUrl: string;
+  let streamUrl: string;
   let activeAgents: Map<string, ChatAgent>;
   let hasActive: boolean;
 
@@ -39,14 +37,17 @@ describe('createChatRouter — OM-76 no_agents_active vs agent_unavailable', () 
     app.use(
       '/api',
       createChatRouter({
-        resolveChatAgent: (slug) => activeAgents.get(slug),
-        getDefaultSlug: () => SLUG,
+        routeTurn: routeTurnFrom(
+          (slug) => activeAgents.get(slug),
+          () => SLUG,
+        ),
         hasActiveAgents: () => hasActive,
       }),
     );
     server = await listenLoopback(app);
     const addr = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${String(addr.port)}/api/chat`;
+    streamUrl = `${baseUrl}/stream`;
   });
 
   after(async () => {
@@ -58,8 +59,8 @@ describe('createChatRouter — OM-76 no_agents_active vs agent_unavailable', () 
     hasActive = true;
   });
 
-  async function post(): Promise<Response> {
-    return fetch(baseUrl, {
+  async function post(url = baseUrl): Promise<Response> {
+    return fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ message: 'hi' }),
@@ -70,16 +71,38 @@ describe('createChatRouter — OM-76 no_agents_active vs agent_unavailable', () 
     hasActive = false; // registry empty, nothing published
     const res = await post();
     assert.equal(res.status, 503);
-    const body = (await res.json()) as { error: string; slug?: string };
+    const body = (await res.json()) as { error: string };
     assert.equal(body.error, 'no_agents_active');
-    assert.equal(body.slug, SLUG);
   });
 
-  it('agents active but the requested one is gone → 503 agent_unavailable', async () => {
+  it('agents active but the default one is gone → 200 system notice naming it', async () => {
     hasActive = true; // some agent exists, just not `default`
     const res = await post();
-    assert.equal(res.status, 503);
-    const body = (await res.json()) as { error: string };
-    assert.equal(body.error, 'agent_unavailable');
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      answer: string;
+      speaker: { kind: string };
+      systemNotice: { code: string; agent?: { slug: string } };
+    };
+    assert.deepEqual(body.speaker, { kind: 'system' });
+    assert.equal(body.systemNotice.agent?.slug, SLUG);
+    assert.equal(body.answer, (body.systemNotice as { text?: string }).text);
+  });
+
+  it('stream: a notice is one `done` event from system, no agent_bound', async () => {
+    hasActive = true;
+    const res = await post(streamUrl);
+    assert.equal(res.status, 200);
+    const events = (await res.text())
+      .split('\n')
+      .filter((line) => line.trim() !== '')
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    assert.equal(events.length, 1, JSON.stringify(events));
+    const [done] = events;
+    assert.equal(done?.['type'], 'done');
+    assert.deepEqual(done?.['speaker'], { kind: 'system' });
+    const notice = done?.['systemNotice'] as { code: string; text: string } | undefined;
+    assert.ok(notice);
+    assert.equal(done?.['answer'], notice.text);
   });
 });

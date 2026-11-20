@@ -7,8 +7,9 @@
  * (app_id ↔ agent_id) and nothing else. Routing reads `channel_bindings`,
  * which provisioning never touches — so every provisioned bot missed on its
  * own `28:<appId>` key and the registry handed the turn to the platform
- * fallback Agent. Three bots, three Entra apps, three agents, one answering
- * agent. The mapping existed; the resolver was never shown it.
+ * fallback Agent (since #2055: the instance default agent). Three bots, three
+ * Entra apps, three agents, one answering agent. The mapping existed; the
+ * resolver was never shown it.
  *
  * The fix makes the identity a first-class, EXCLUSIVE routing input:
  *   - it is matched before any `channel_bindings` row, and
@@ -43,7 +44,7 @@ import { ChannelResolver } from '../packages/harness-orchestrator/src/routing/ch
 /** The three ids from the field report, shortened. */
 const HR_ID = '3f50d98d-5349-49e1-a3fb-a8d61cb0329e';
 const MESSIAS_ID = '8b6a1010-da77-4d4f-b789-88b244aa1598';
-const FALLBACK_ID = '28e47b63-d9db-4c4a-b3e6-0b51c89c4f99';
+const DEFAULT_ID = '28e47b63-d9db-4c4a-b3e6-0b51c89c4f99';
 
 /** `activity.recipient.id` of each provisioned bot: `28:` + Entra app id. */
 const HR_BOT_KEY = '28:3d78d742-eefb-4fb2-bae5-3687f24c46fc';
@@ -83,6 +84,7 @@ function agent(slug: string, id: string): AgentRow {
     description: null,
     privacyProfile: 'default',
     status: 'enabled',
+    availableToEveryone: true,
     createdAt: new Date(0),
     updatedAt: new Date(0),
   };
@@ -91,7 +93,7 @@ function agent(slug: string, id: string): AgentRow {
 const AGENTS: readonly AgentRow[] = [
   agent('hr', HR_ID),
   agent('messias', MESSIAS_ID),
-  agent('fallback', FALLBACK_ID),
+  agent('standard', DEFAULT_ID),
 ];
 
 function snapshot(over: Partial<ConfigSnapshot> = {}): ConfigSnapshot {
@@ -99,7 +101,17 @@ function snapshot(over: Partial<ConfigSnapshot> = {}): ConfigSnapshot {
     agents: AGENTS,
     agentPlugins: [],
     channelBindings: [],
-    platformSettings: { fallbackAgentId: FALLBACK_ID, updatedAt: new Date(0) },
+    // #2055 — the instance entry of the default-agent table.
+    defaultEntries: [
+      {
+        id: 'entry-instance',
+        principal: null,
+        channelType: null,
+        agentId: DEFAULT_ID,
+        updatedBy: null,
+        updatedAt: new Date(0),
+      },
+    ],
     ...over,
   };
 }
@@ -182,14 +194,15 @@ test('a group-chat binding does not steal a provisioned bot key', async () => {
   assert.equal(messias.exclusive, true);
 });
 
-test('an unknown bot key still falls back to the default agent', async () => {
+test('an unknown bot key still reaches the default agent', async () => {
   const resolver = await resolverFor(
     snapshot({ channelIdentities: PROVISIONED }),
   );
 
   const unknown = resolver.resolve('teams', '28:00000000-0000-0000-0000-000000000000');
-  assert.equal(unknown.decision, 'fallback');
-  assert.equal(unknown.agent?.agent.slug, 'fallback');
+  assert.equal(unknown.decision, 'bound');
+  assert.equal(unknown.match, 'default');
+  assert.equal(unknown.agent?.agent.slug, 'standard');
   assert.notEqual(unknown.exclusive, true);
 });
 
@@ -199,11 +212,12 @@ test('an identity only claims its own channel type', async () => {
   );
 
   const wrongType = resolver.resolve('telegram', HR_BOT_KEY);
-  assert.equal(wrongType.decision, 'fallback');
-  assert.equal(wrongType.agent?.agent.slug, 'fallback');
+  assert.equal(wrongType.decision, 'bound');
+  assert.equal(wrongType.match, 'default');
+  assert.equal(wrongType.agent?.agent.slug, 'standard');
 });
 
-test('a provisioned bot whose agent is gone is REFUSED, never served by the fallback', async () => {
+test('a provisioned bot whose agent is gone is REFUSED, never served by the default agent', async () => {
   // INVERTED DELIBERATELY. This test used to assert the opposite — "degrades
   // to the old path", i.e. bindings and then the platform fallback — on the
   // reasoning that a bot must not dead-end. That reasoning was wrong about
@@ -227,7 +241,11 @@ test('a provisioned bot whose agent is gone is REFUSED, never served by the fall
   const hr = resolver.resolve('teams', HR_BOT_KEY);
   assert.equal(hr.decision, 'reject');
   assert.equal(hr.agent, undefined);
-  assert.equal(hr.chatAgent, undefined);
+  // The ChatAgent handed out is the management layer answering with the
+  // notice — never another agent's.
+  assert.ok(hr.notice);
+  // Exclusive: an adapter probing the group chat key too must not prefer it.
+  assert.equal(hr.exclusive, true);
 });
 
 test('the refusal names the agent that is missing', async () => {
@@ -251,18 +269,21 @@ test('the refusal names the agent that is missing', async () => {
     log: (msg, fields) => lines.push({ msg, ...(fields ? { fields } : {}) }),
   });
 
-  resolver.resolve('teams', HR_BOT_KEY);
+  const result = resolver.resolve('teams', HR_BOT_KEY);
 
   const refusal = lines.at(-1);
   assert.equal(refusal?.fields?.['decision'], 'reject');
-  assert.equal(refusal?.fields?.['match'], 'identity-unavailable');
-  assert.equal(refusal?.fields?.['agentId'], 'ghost');
+  assert.equal(refusal?.fields?.['match'], 'identity');
+  assert.equal(refusal?.fields?.['notice'], 'agent_unknown');
+  // The sender's notice names the missing agent too (INV-7).
+  assert.equal(result.notice?.code, 'agent_unknown');
+  assert.equal(result.notice?.agent?.slug, 'ghost');
 });
 
-test('an unknown key still falls back — only OWNED keys are refused', async () => {
-  // The guard must not turn into "nothing falls back any more". A key that
-  // belongs to no provisioned bot has no owner whose permissions could be
-  // exceeded, so the platform fallback stays exactly as it was.
+test('an unknown key still reaches the default agent — only OWNED keys are refused', async () => {
+  // The guard must not turn into "nothing reaches the default any more". A key
+  // that belongs to no provisioned bot has no owner whose permissions could be
+  // exceeded, so the default-agent table applies as usual.
   const resolver = await resolverFor(
     snapshot({
       channelIdentities: [
@@ -272,8 +293,9 @@ test('an unknown key still falls back — only OWNED keys are refused', async ()
   );
 
   const unknown = resolver.resolve('teams', GROUP_CHAT);
-  assert.equal(unknown.decision, 'fallback');
-  assert.equal(unknown.agent?.agent.slug, 'fallback');
+  assert.equal(unknown.decision, 'bound');
+  assert.equal(unknown.match, 'default');
+  assert.equal(unknown.agent?.agent.slug, 'standard');
 });
 
 test('a deployment without provisioned identities behaves exactly as before', async () => {
@@ -293,12 +315,13 @@ test('a deployment without provisioned identities behaves exactly as before', as
   const bound = resolver.resolve('teams', GROUP_CHAT);
   assert.equal(bound.decision, 'bound');
   assert.equal(bound.agent?.agent.slug, 'messias');
-  assert.equal(bound.exclusive, undefined);
+  assert.notEqual(bound.exclusive, true);
 
   const unbound = resolver.resolve('teams', HR_BOT_KEY);
-  assert.equal(unbound.decision, 'fallback');
-  assert.equal(unbound.agent?.agent.slug, 'fallback');
-  assert.equal(unbound.exclusive, undefined);
+  assert.equal(unbound.decision, 'bound');
+  assert.equal(unbound.match, 'default');
+  assert.equal(unbound.agent?.agent.slug, 'standard');
+  assert.notEqual(unbound.exclusive, true);
 });
 
 test('identity routing survives a reload that changes nothing else', async () => {
@@ -315,7 +338,7 @@ test('identity routing survives a reload that changes nothing else', async () =>
   await registry.start();
   const resolver = new ChannelResolver({ registry });
 
-  assert.equal(resolver.resolve('teams', HR_BOT_KEY).agent?.agent.slug, 'fallback');
+  assert.equal(resolver.resolve('teams', HR_BOT_KEY).agent?.agent.slug, 'standard');
 
   snap = snapshot({ channelIdentities: PROVISIONED });
   const plan = await registry.reload();

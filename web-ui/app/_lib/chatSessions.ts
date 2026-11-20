@@ -428,36 +428,6 @@ export interface AgentConsultation {
   toolCalls?: number;
 }
 
-/**
- * #332 Layer 2 (gap-closure) — the harness-owned verbatim sub-agent segment
- * for a Direct-Line turn (`#<agent> <question>`). Delivered independently of
- * the orchestrator's own `content`; the orchestrator can neither remove nor
- * reword it. Mirrors `DelegatedAnswer` in `harness-channel-sdk/src/outgoing.ts`.
- */
-export interface DelegatedAnswer {
-  agentId: string;
-  label: string;
-  /** The sub-agent's verbatim answer (PII-masked when a privacy guard is
-   *  active), or a faithful failure line when `status === 'error'`. */
-  text: string;
-  status: 'success' | 'error';
-}
-
-/**
- * #445 — which specialist, if any, this conversation is bound to at the end of
- * a turn. Mirrors `DirectLineSessionState` in
- * `harness-channel-sdk/src/outgoing.ts`. The server sends it on EVERY turn
- * while sticky mode is on — including `{ active: false }` — so the banner is
- * self-correcting and can never outlive the binding it describes.
- */
-export interface DirectLineSessionState {
-  active: boolean;
-  agentId?: string;
-  label?: string;
-  transition?: 'entered' | 'switched' | 'continued' | 'left' | 'unavailable' | 'refused';
-  refusedReason?: 'no-scope' | 'shared-scope' | 'synthetic-scope';
-}
-
 /** #1556 — one entry in `PrivacyReceipt.operatorClearedFields`. */
 export interface OperatorClearedFieldEntry {
   toolName: string;
@@ -590,10 +560,34 @@ export interface KgWalkPayload {
   edges: KgWalkEdge[];
 }
 
+/**
+ * #2045 — who a message is from: the agent the management layer routed the
+ * turn to, or `system` for a notice. Stamped by the harness, never by a model.
+ */
+export type MessageSpeaker =
+  | {
+      kind: 'agent';
+      agentId: string;
+      slug: string;
+      displayName: string;
+      avatarUrl?: string;
+    }
+  | { kind: 'system' };
+
+/** #2045 — a management-layer notice (agent disabled, not available, …). */
+export interface MessageSystemNotice {
+  code: string;
+  text: string;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** #2045 — the speaker of an assistant message. */
+  speaker?: MessageSpeaker;
+  /** #2045 — set when the message is (or ends with) a `system` notice. */
+  systemNotice?: MessageSystemNotice;
   /** #133 (E9) — live plan DAG for this turn, streamed in as a `plan`
    *  annotation: present from the first event and re-emitted on every step
    *  change + replan. Persisted, so a reloaded session keeps the plan. */
@@ -721,20 +715,6 @@ export interface Message {
    * middleware that predates the field, which simply hides them.
    */
   answerVerbosity?: AnswerVerbosityInfo;
-  /**
-   * #332 Layer 2 (gap-closure) — the harness-owned, attributed verbatim
-   * answer for a Direct-Line turn. Rendered as a visually distinct block,
-   * separate from `content`. Absent on ordinary turns.
-   */
-  delegatedAnswer?: DelegatedAnswer;
-  /**
-   * #445 — sticky Direct Line state as of this turn. Message-level, not
-   * session-level: `coerceMessage` spreads unknown fields through, whereas
-   * `coerceSession` is an explicit field whitelist that would silently drop a
-   * session-level field on the next reload. The banner reads the most recent
-   * message that carries one.
-   */
-  directLineSession?: DirectLineSessionState;
   error?: boolean;
   /**
    * #1094 — set when the turn ended DEGRADED: a tool call had already

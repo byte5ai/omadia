@@ -206,6 +206,9 @@ export * from './executionAuthorization.js';
 // #2078 — kernel-issued grants for mail and calendar, bound to execution scopes.
 export * from './executionGrants.js';
 
+// #2045 (epic #2042) — speaker, typed emissions, system notices and
+// contributions: who speaks, and what kind of output reaches a person.
+export * from './speaker.js';
 // Spec 2042 §5.10 — maintenance runs of the model gateway (`maintenanceRun@1`).
 export * from './maintenanceRun.js';
 // Spec 2042 §5.10 — operator jobs and model passthrough for system modules
