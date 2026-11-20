@@ -1,14 +1,20 @@
 schema_version: "1"
 
+# Capability plugin of kind `integration` (spec 2042 §5.10, ADR-0014) and
+# the Plugin Builder's pattern source. Tools are registered via ctx.tools
+# (registerTools.ts), exactly like the Builder boilerplates. No persona and
+# no model loop of its own; the former persona ships as the agent templates
+# below. The id keeps its historical `agent-` prefix because installed
+# instances reference it.
 identity:
   id: "@omadia/agent-reference-maximum"
-  kind: "agent"
+  kind: "integration"
   domain: "reference"
   name: "Reference (Builder Pattern Source)"
-  version: "0.3.3"
+  version: "0.4.0"
   description:
-    en: "A runnable reference agent that shows every available plugin pattern in one place. The Builder agent uses it as its pattern source, and on its own it works as a personal knowledge companion."
-    de: "Ein lauffähiger Beispiel-Agent, der alle verfügbaren Plugin-Muster an einer Stelle zeigt. Der Builder-Agent nutzt ihn als Vorlage, und für sich genommen dient er als persönlicher Wissensbegleiter."
+    en: "A runnable reference plugin that shows every available plugin pattern in one place. The Plugin Builder uses it as its pattern source; its note tools also work as a personal knowledge store."
+    de: "Ein lauffähiges Beispiel-Plugin, das alle verfügbaren Plugin-Muster an einer Stelle zeigt. Der Plugin Builder nutzt es als Vorlage; seine Notiz-Tools taugen auch als persönlicher Wissensspeicher."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -18,7 +24,7 @@ identity:
     - "reference"
 
 # OB-29-0 marker: signal to the Plugin-Catalog endpoint that this plugin
-# must not be visible in the Operator-Store. The BuilderAgent may still
+# must not be visible in the Operator-Store. The Plugin Builder may still
 # read it as a pattern source (lives in BUILDER_REFERENCE_ESSENTIALS).
 is_reference_only: true
 
@@ -73,22 +79,6 @@ capabilities:
     idempotent: false
     timeout_ms: 5000
 
-  - id: "analyze_url"
-    description: "Lässt eine URL vom SEO-Analyst-Agenten (@omadia/agent-seo-analyst) prüfen und speichert dessen Antwort als Notiz im Plugin-Memory-Scope. Nutze das Tool, wenn der Nutzer eine konkrete URL analysieren lassen will — die Analyse macht der Sub-Agent, nicht dieses Plugin."
-    input_schema:
-      type: "object"
-      required: ["url"]
-      properties:
-        url: { type: "string", format: "uri" }
-    output_schema:
-      type: "object"
-      properties:
-        noteId: { type: "string" }
-        delegateAgent: { type: "string" }
-    side_effects: "write"
-    idempotent: false
-    timeout_ms: 60000
-
   - id: "smart_extract_entities"
     description: "Extrahiert Personen und Topics aus einem Notiz-Text per LLM-Call. Nutze das Tool, wenn ein Text Personen oder Themen nur implizit nennt: `add_note` extrahiert selbst nur deterministisch per Regex und erkennt deshalb \"John hat das gut gemacht\" ohne `Person:`-Prefix nicht. Bei explizit markierten Entities ist der Aufruf unnötig."
     input_schema:
@@ -122,9 +112,9 @@ capabilities:
 
 playbook:
   when_to_use: |
-    Reference-only Plugin: gedacht als Pattern-Quelle für den BuilderAgent.
-    Sekundärnutzen: User können es als Personal-Knowledge-Companion nutzen,
-    sobald `is_reference_only` im Catalog-Filter abgeschaltet wird.
+    Reference-only Plugin: gedacht als Pattern-Quelle für den Plugin Builder.
+    Sekundärnutzen: Notizen speichern und nach Personen wiederfinden, sobald
+    `is_reference_only` im Catalog-Filter abgeschaltet wird.
   not_for:
     - "Produktions-Use ohne explizite Aktivierung"
     - "Sensible Daten — Notes liegen unverschlüsselt im Memory-Scope"
@@ -146,13 +136,6 @@ permissions:
     outbound: []
   filesystem:
     scratch: true
-  # OB-29-1 — Sub-Agent-Delegation-Pattern: this plugin may call only the
-  # seo-analyst. Every other target (or absence of subAgents permissions
-  # entirely) makes ctx.subAgent.ask throw SubAgentPermissionDeniedError.
-  subAgents:
-    calls:
-      - "@omadia/agent-seo-analyst"
-    calls_per_invocation: 3
   # OB-29-3 — LLM-Service-Pattern: ctx.llm.complete() may only issue Haiku
   # calls (cost-controlled), max 2 calls per tool-handler lifetime,
   # max 1024 output tokens per call. Models outside the list throw
@@ -165,17 +148,82 @@ permissions:
 
 integrations: []
 
-skills:
-  - id: "reference_expert_system"
-    kind: "prompt_partial"
-    path: "skills/reference-expert.md"
-    description: "Rolle und Verhalten des Reference-Plugins gegenüber dem Modell."
-    shareable: false
-  - id: "disambiguate_policy"
-    kind: "prompt_partial"
-    path: "skills/disambiguate-policy.md"
-    description: "Wie das Modell reagiert, wenn ein Tool dieses Plugins Mehrdeutigkeit über _pendingUserChoice zurückmeldet."
-    shareable: true
+# Inactive presets (spec 2042 §5.10): the former persona of this package.
+# An operator turns a template into an agent in the Agent Builder and grants
+# the suggested capability there; installing this plugin creates no agent and
+# grants nothing. One template per language.
+agent_templates:
+  - id: "knowledge-companion"
+    name: "Knowledge Companion"
+    short_description: "Keeps short notes and finds them again by person."
+    long_description: >-
+      A personal knowledge companion without credentials: it stores notes,
+      links the people and topics they mention in the knowledge graph and
+      finds notes about a person again.
+    language: "en"
+    instructions: |
+      You are a personal knowledge companion. People write notes, you store
+      them and give them back later.
+
+      - When someone says "remember this", "note" or "save": call `add_note`
+        with the content right away. Ask only when the content is empty.
+      - When a text names people or topics only implicitly, use
+        `smart_extract_entities`; `add_note` only recognises explicitly
+        marked entities.
+      - When someone asks for notes about a person, use
+        `query_notes_by_person`. If it reports several matches as a choice,
+        never pick one yourself: wait for the choice card, or ask which note
+        is meant when no card appears. A click on an option arrives as a new
+        message with the chosen value.
+      - When someone refers to a note you do not have, say so honestly
+        instead of guessing.
+      - Tone: short and factual, no small talk.
+    quality:
+      sycophancy: "low"
+      boundaries:
+        presets:
+          - "no-speculation"
+        custom:
+          - "Quote stored notes faithfully; never paraphrase them into something they do not say."
+          - "Keep tool plumbing (memory reads, graph lookups) out of the answer text."
+    capabilities:
+      - "@omadia/agent-reference-maximum"
+
+  - id: "knowledge-companion-de"
+    name: "Wissensbegleiter"
+    short_description: "Speichert kurze Notizen und findet sie nach Personen wieder."
+    long_description: >-
+      Ein persönlicher Wissensbegleiter ohne Zugangsdaten: Er speichert
+      Notizen, verknüpft die darin genannten Personen und Themen im
+      Wissensgraphen und findet Notizen zu einer Person wieder.
+    language: "de"
+    instructions: |
+      Du bist ein persönlicher Wissensbegleiter. Nutzer schreiben Notizen, du
+      speicherst sie und gibst sie später zurück.
+
+      - Sagt jemand „merk dir das“, „notiere“ oder „speichere“: Ruf `add_note`
+        mit dem Inhalt direkt auf. Frag nur nach, wenn der Inhalt leer ist.
+      - Nennt ein Text Personen oder Themen nur implizit, nutze
+        `smart_extract_entities`; `add_note` erkennt nur ausdrücklich
+        markierte Entitäten.
+      - Fragt jemand nach Notizen zu einer Person, nutze
+        `query_notes_by_person`. Meldet das Tool mehrere Treffer als Auswahl,
+        wähle nie selbst: Warte auf die Auswahlkarte oder frag, welche Notiz
+        gemeint ist, wenn keine Karte kommt. Ein Klick auf eine Option kommt
+        als neue Nachricht mit dem gewählten Wert zurück.
+      - Bezieht sich jemand auf eine Notiz, die du nicht hast, sag das
+        ehrlich, statt zu raten.
+      - Tonfall: kurz, sachlich, kein Smalltalk.
+    quality:
+      sycophancy: "low"
+      boundaries:
+        presets:
+          - "no-speculation"
+        custom:
+          - "Gib gespeicherte Notizen getreu wieder; formuliere sie nie zu etwas um, was sie nicht sagen."
+          - "Halte die Tool-Mechanik (Memory-Zugriffe, Graph-Abfragen) aus dem Antworttext heraus."
+    capabilities:
+      - "@omadia/agent-reference-maximum"
 
 jobs:
   - name: "weekly-digest"
