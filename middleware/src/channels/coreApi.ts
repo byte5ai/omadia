@@ -178,7 +178,8 @@ export interface CreateCoreApiOptions {
    * (subscriptions and events are stored); absent leaves both CoreApi methods
    * undefined, so an adapter's mention gate always applies.
    */
-  conversationMessages?: Pick<ConversationMessageHub, 'emit' | 'report' | 'isSubscribed' | 'deliveryMode'>;
+  conversationMessages?: Pick<ConversationMessageHub, 'emit' | 'isSubscribed' | 'deliveryMode'> &
+    Partial<Pick<ConversationMessageHub, 'report'>>;
   /** #2043 — readiness providers and meeting sources, same lifecycle as the
    *  roster registry; and where pushed snapshots and session events go. */
   readinessProviders?: ChannelProviderRegistry<ChannelReadinessProvider>;
@@ -365,8 +366,11 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
     api.emitConversationMessage = (event: ConversationMessageEvent): void => {
       messages.emit(event);
     };
-    api.reportConversationMessage = (event: ConversationMessageEvent): Promise<{ answeredCard: boolean }> =>
-      messages.report(event);
+    if (messages.report) {
+      const report = messages.report.bind(messages);
+      api.reportConversationMessage = (event: ConversationMessageEvent): Promise<{ answeredCard: boolean }> =>
+        report(event);
+    }
     // Asked synchronously for every inbound activity: a cache lookup that
     // never throws. Anything not positively subscribed is `false`.
     api.isAllMessagesSubscribed = (
