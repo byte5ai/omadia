@@ -18,7 +18,7 @@ import {
   type ChatStreamEvent,
   type SemanticAnswer,
 } from '@omadia/channel-sdk';
-import { SYSTEM_SPEAKER, type SystemNotice } from '@omadia/plugin-api';
+import { SYSTEM_SPEAKER, type NoticeAgentRef, type SystemNotice } from '@omadia/plugin-api';
 
 import { buildSystemNotice } from './systemNotices.js';
 
@@ -28,6 +28,12 @@ export interface ManagementTurnContext {
   readonly principal?: string;
   readonly locale?: string;
   readonly selection?: AgentSelectionService;
+  /**
+   * Spec 2042 §5.3 — the turn arrived through this agent's OWN bot. Routing
+   * gives that bot to its agent before any selection, so `/agent` here would
+   * store a choice that can never apply; the sender is told whose bot it is.
+   */
+  readonly ownBotOf?: NoticeAgentRef;
 }
 
 /** A turn the management layer answers: speaker `system`, no model. */
@@ -48,7 +54,14 @@ export function systemNoticeAnswer(notice: SystemNotice): SemanticAnswer {
 
 async function commandNotice(text: string, context: ManagementTurnContext): Promise<SystemNotice | undefined> {
   const command = parseAgentCommand(text);
-  if (!command || !context.selection) return undefined;
+  if (!command) return undefined;
+  if (context.ownBotOf) {
+    return buildSystemNotice('agent_own_bot', {
+      agent: context.ownBotOf,
+      ...(context.locale ? { locale: context.locale } : {}),
+    });
+  }
+  if (!context.selection) return undefined;
   if (context.principal === undefined && command.kind !== 'list') {
     // A selection is kept per person; without knowing the sender there is no
     // one to keep it for.

@@ -8,6 +8,16 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## Unreleased
+
+Additive (spec 2042 §5.3, §8 item 20): an agent's own bot on every channel.
+
+### Added
+
+- **`SystemNoticeCode` `agent_own_bot`**: the management layer's answer to
+  `/agent` sent to an agent's own bot (Teams, Telegram, Discord, Slack). That
+  bot is always its agent, so nothing is selected.
+
 ## 1.74.0 — 2026-11-20
 
 Additive (#2045, epic #2042, spec 2042 §5.5, ADR-0013): who speaks, and

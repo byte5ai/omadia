@@ -72,6 +72,10 @@ const TEMPLATES: Record<SystemNoticeCode, Record<NoticeLocale, Template>> = {
     de: (a) => `Die Antwort von ${a} wurde zurückgehalten, weil sie im Namen eines anderen Agenten oder einer Person sprach.`,
     en: (a) => `${a}'s answer was withheld because it spoke in the name of another agent or a person.`,
   },
+  agent_own_bot: {
+    de: (a) => `Das ist der eigene Bot von ${a}: Hier antwortet immer ${a}. Andere Agenten erreichst du über ihren eigenen Bot oder den gemeinsamen Bot.`,
+    en: (a) => `This is ${a}'s own bot: ${a} always answers here. Reach other agents through their own bot or the shared bot.`,
+  },
   identity_guard_unavailable: {
     de: (a) => `Die Antwort von ${a} wurde zurückgehalten, weil die Identitätsprüfung nicht abgeschlossen werden konnte. Bitte versuche es erneut.`,
     en: (a) => `${a}'s answer was withheld because the identity check could not be completed. Please try again.`,

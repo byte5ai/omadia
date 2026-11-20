@@ -91,6 +91,9 @@ export const SYSTEM_NOTICE_CODES = [
   'quota_exceeded',
   'identity_guard_blocked',
   'identity_guard_unavailable',
+  // Spec 2042 §5.3 — `/agent` sent to an agent's own bot: that bot is always
+  // this agent, there is nothing to select.
+  'agent_own_bot',
 ] as const;
 
 export type SystemNoticeCode = (typeof SYSTEM_NOTICE_CODES)[number];
