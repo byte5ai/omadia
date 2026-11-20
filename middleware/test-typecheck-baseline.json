@@ -42,7 +42,7 @@
   "test/builder/slotTypecheckPipeline.test.ts": 9,
   "test/builder/specEventBus.test.ts": 5,
   "test/builder/specPatcher.test.ts": 3,
-  "test/builder/tools/lintSpec.test.ts": 4,
+  "test/builder/tools/lintSpec.test.ts": 1,
   "test/builder/tools/patchSpec.test.ts": 4,
   "test/builder/uiRouteSmoke.test.ts": 1,
   "test/buildForAgentPersonaSkills.test.ts": 1,
