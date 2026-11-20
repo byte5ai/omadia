@@ -152,14 +152,62 @@ export type PluginInstallState =
   | 'update-available'
   | 'incompatible';
 
+/** What a plugin delivers (spec 2042 §5.10). `agent` and `extension` are
+ *  retired kinds a package installed before the release train may still
+ *  carry. */
 export type PluginKind =
-  | 'agent'
   | 'integration'
-  | 'channel'
   | 'tool'
-  | 'extension'
+  | 'skill'
+  | 'channel'
+  | 'model'
   /** #2088 — delivers an agent archetype; see `Plugin.archetype`. */
-  | 'archetype';
+  | 'archetype'
+  | 'system-module'
+  | 'agent-template'
+  | 'agent'
+  | 'extension';
+
+/** The Hub categories (spec 2042 §5.10): one per kind of delivery. */
+export type StoreCategory =
+  | 'capabilities'
+  | 'channels'
+  | 'models'
+  | 'archetypes'
+  | 'systemModules'
+  | 'templates';
+
+export const STORE_CATEGORIES: readonly StoreCategory[] = [
+  'capabilities',
+  'channels',
+  'models',
+  'archetypes',
+  'systemModules',
+  'templates',
+];
+
+/** The category a plugin is listed under. A retired `agent` package is about
+ *  to become a capability, an `extension` a system module. */
+export function storeCategoryOf(kind: PluginKind): StoreCategory {
+  switch (kind) {
+    case 'integration':
+    case 'tool':
+    case 'skill':
+    case 'agent':
+      return 'capabilities';
+    case 'channel':
+      return 'channels';
+    case 'model':
+      return 'models';
+    case 'archetype':
+      return 'archetypes';
+    case 'system-module':
+    case 'extension':
+      return 'systemModules';
+    case 'agent-template':
+      return 'templates';
+  }
+}
 
 export type ChannelTransportKind = 'webhook' | 'websocket' | 'long-poll';
 

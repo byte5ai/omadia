@@ -37,7 +37,10 @@ export function attachablePluginIds(
     // belongs to the agents of its own archetype, never to the default agent.
     // (That covers the facilitation engine: a standard agent with its tools
     // would be an assistant that also counts votes.)
-    return plugin?.kind !== 'archetype';
+    if (plugin?.kind === 'archetype') return false;
+    // Spec 2042 §5.10 — agent templates are inactive presets the operator
+    // turns into agents; there is nothing to attach.
+    return plugin?.kind !== 'agent-template';
   });
 }
 

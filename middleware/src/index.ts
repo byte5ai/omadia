@@ -2124,8 +2124,8 @@ async function main(): Promise<void> {
       // runtime, which crashes (channel: wrong handle shape; integration:
       // no toolkit). Built-ins return early from each runtime's activate()
       // when the agent isn't in their store, so the dispatch is safe.
-      const kind = pluginCatalog.get(agentId)?.plugin.kind ?? 'agent';
-      switch (kind) {
+      const kind = pluginCatalog.get(agentId)?.plugin.kind;
+      switch (pluginRuntimeOf(kind)) {
         case 'channel':
           if (!channelRegistryRef) {
             console.warn(
@@ -2139,20 +2139,19 @@ async function main(): Promise<void> {
           // #1491 — every kind is attached, like first boot does.
           await propagatePluginInstall(agentId, attach);
           return;
-        case 'archetype':
-          // #2088 — runs in the extension runtime. Its archetype is registered
-          // BEFORE the activation and whatever the activation's outcome: the
-          // descriptor says what agents of the archetype never get, and that
-          // holds for a plugin that did not start (it usually has no database
-          // grant yet at this point).
-          await archetypeRegistry.sync();
-          await toolPluginRuntime.activate(agentId);
-          // Never attached to the default agent (`attachablePluginIds`).
-          await propagatePluginInstall(agentId, { attach: false });
-          return;
         case 'tool':
-        case 'extension':
-        case 'integration':
+          if (kind === 'archetype') {
+            // #2088 — its archetype is registered BEFORE the activation and
+            // whatever the activation's outcome: the descriptor says what
+            // agents of the archetype never get, and that holds for a plugin
+            // that did not start (it usually has no database grant yet at
+            // this point).
+            await archetypeRegistry.sync();
+            await toolPluginRuntime.activate(agentId);
+            // Never attached to the default agent (`attachablePluginIds`).
+            await propagatePluginInstall(agentId, { attach: false });
+            return;
+          }
           await toolPluginRuntime.activate(agentId);
           // #1070 — a key-less boot activates the orchestrator without its
           // `configStore`; the store appears on this (re)activation, so drain
@@ -2165,7 +2164,6 @@ async function main(): Promise<void> {
           await propagatePluginInstall(agentId, attach);
           return;
         case 'agent':
-        default:
           await dynamicAgentRuntime.activate(agentId);
           // Make the freshly-activated agent's tool reachable on the per-Agent
           // orchestrators (incl. the fallback Agent) without a restart.
@@ -5954,6 +5952,18 @@ async function main(): Promise<void> {
       // entry this hook silently declined to touch.
       onPackageReady: async (agentId) => {
         const kind = pluginCatalog.get(agentId)?.plugin.kind;
+        // Spec 2042 §5.10 — the release train moves `agent` packages to a
+        // capability or template kind. The old version still runs in the
+        // agent runtime as a `query_<short>` tool; that tool goes from every
+        // agent before the new version starts in its own runtime. The
+        // operator's grants of the plugin stay: the id is the same, and the
+        // capabilities it now delivers are what those grants were for.
+        const retireAgentRuntimeOf = async (id: string): Promise<void> => {
+          if (!dynamicAgentRuntime.isActive(id)) return;
+          const removedToolName = dynamicAgentRuntime.domainToolFor(id)?.name;
+          await dynamicAgentRuntime.deactivate(id);
+          reconcileRuntimeDomainTool(id, removedToolName);
+        };
         switch (pluginRuntimeOf(kind)) {
           case 'channel': {
             if (!channelRegistryRef) {
@@ -5976,6 +5986,7 @@ async function main(): Promise<void> {
             // records the verdict, file it as a fresh success. `deactivate`
             // returns early for a channel without a handle, so this is cheap.
             await channelRegistryRef.deactivate(agentId);
+            await retireAgentRuntimeOf(agentId);
             await channelRegistryRef.activate(agentId);
             // `channelRegistry.activate()` warns and returns when the resolver
             // yields no usable `ChannelPlugin` — a broken export in the new
@@ -5994,6 +6005,7 @@ async function main(): Promise<void> {
             if (toolPluginRuntime.isActive(agentId)) {
               await toolPluginRuntime.deactivate(agentId);
             }
+            await retireAgentRuntimeOf(agentId);
             // #2088 — an update may be the version that turns the plugin into
             // an archetype plugin, or one that changes its descriptor. Same
             // order as a first install: the registry first, whatever the

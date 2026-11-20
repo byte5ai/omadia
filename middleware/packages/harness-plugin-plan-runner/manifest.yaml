@@ -4,7 +4,7 @@ identity:
   id: "@omadia/plugin-plan-runner"
   name: "Plan Runner"
   version: "0.2.1"
-  kind: "extension"
+  kind: "system-module"
   domain: "orchestrator.plan-runner"
   description:
     en: "Writes down a plan for a task with several steps and tracks progress against those named steps, instead of trusting the model to remember them. A cheap check keeps it out of the way on simple questions."

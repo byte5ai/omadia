@@ -19,12 +19,16 @@ describe('#2088 runtime of a plugin kind', () => {
   it('maps every kind the manifest loader accepts', () => {
     const mapped = Object.fromEntries(PLUGIN_KINDS.map((kind) => [kind, pluginRuntimeOf(kind)]));
     assert.deepEqual(mapped, {
-      agent: 'agent',
       integration: 'tool',
-      channel: 'channel',
       tool: 'tool',
-      extension: 'tool',
+      skill: 'tool',
+      channel: 'channel',
+      model: 'tool',
       archetype: 'tool',
+      'system-module': 'tool',
+      'agent-template': 'tool',
+      agent: 'agent',
+      extension: 'tool',
     });
   });
 
@@ -39,11 +43,15 @@ describe('#2088 runtime of a plugin kind', () => {
       assert.ok(from > 0, `${start} not found`);
       return source.slice(from, from + 6_000);
     };
-    for (const start of ['onPackageReady: async (agentId) => {', 'onUninstall: async (agentId, reason) => {']) {
+    for (const start of [
+      'onInstalled: async (agentId, reason) => {',
+      'onPackageReady: async (agentId) => {',
+      'onUninstall: async (agentId, reason) => {',
+    ]) {
       const text = body(start);
       const dispatch = text.indexOf('switch (pluginRuntimeOf(');
       assert.ok(dispatch > 0, `${start} must switch on pluginRuntimeOf()`);
-      const end = text.indexOf("case 'agent': {", dispatch);
+      const end = text.indexOf("case 'agent':", dispatch);
       assert.ok(end > dispatch, `${start} has no agent branch`);
       assert.ok(!text.slice(dispatch, end + 40).includes('default:'), `${start} must not have a default runtime`);
     }

@@ -36,6 +36,41 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Plugin kinds name what a plugin delivers; the agent/plugin boundary at ingest (#2053, epic #2042): S3 expand step
+
+- Spec 2042 §5.10, ADR-0014. The kernel accepts the manifest kinds
+  `integration`, `tool`, `skill` (capabilities), `channel`, `model`,
+  `archetype`, `system-module` and `agent-template`
+  (`middleware/src/api/admin-v1.ts`, `PluginKind`, `PLUGIN_KINDS`,
+  `CAPABILITY_PLUGIN_KINDS`, `effectiveKind`). `provider` and `ui` were never
+  kernel kinds and stay rejected.
+- Expand step of the plugin release train: the retired `agent` and
+  `extension` still load for packages that are installed, so the live
+  instance keeps running. `extension` is read as `system-module`. A package
+  of kind `agent` is never installed anew: the upload answers
+  `422 package.retired_kind`, the install `422 install.retired_kind`. An
+  update of an installed `agent` package still enters, and when the update
+  changes its kind (the migrated version), the old agent runtime and its
+  `query_<short>` tool go first; the operator's grants of the plugin id stay.
+- Ingest refuses a manifest with a persona, speaker, personality or system
+  prompt of its own, a `prompt_partial` skill, or an `AGENT.md` outside an
+  agent template: `422 package.persona_declared` with the field
+  (`middleware/src/plugins/pluginBoundary.ts`). Agent templates (kind
+  `agent-template`, or an `agent_templates:` block in a capability plugin)
+  carry identity and personality as inactive metadata and load; channel
+  plugins transporting several agents' bots load. Spec §6 criterion 15.
+- Kind `agent-template` (and `skill` without code) is data only: no entry
+  file at upload, the tool runtime imports nothing and marks it active.
+- Installing a `system-module` asks for an explicit confirmation like an
+  archetype (`409 install.system_module_confirmation_required`; the store's
+  install dialog shows it). The retired `extension` is not asked about.
+- Built-in packages use the new kinds: 9 × `system-module` (orchestrator,
+  verifier, fast lane, plan runner, memory, knowledge graphs,
+  orchestrator-extras), 4 × `model` (embeddings, embedding and
+  transcription adapters).
+- Store: the category pills are the Hub categories capabilities, channels,
+  models, archetypes, system modules and templates (`?kind=capabilities` …).
+
 ### Fixed — Stopping a single process no longer needs the agent's name (#2090, epic #2043)
 
 - `POST /api/v1/operator/execution/kill-switches` with `level: "process"`

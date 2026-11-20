@@ -1177,6 +1177,14 @@
       "privacy_guard_required": {
         "what": "This plugin is the only Privacy Shield, and the org policy OMADIA_PRIVACY_FORCE_GUARDED requires masking, so it cannot be uninstalled.",
         "next": "Install another Privacy Shield provider first, or turn the org policy off in the middleware environment."
+      },
+      "retired_kind": {
+        "what": "This package is of the retired kind 'agent'. A plugin delivers capabilities and may ship agent templates; it is never an agent of its own.",
+        "next": "Install the version of the plugin that delivers capabilities (or agent templates) instead, then create the agent in the Agent Builder."
+      },
+      "system_module_confirmation_required": {
+        "what": "This plugin is a system module: infrastructure of omadia itself. It is installed only after an explicit confirmation, and this request did not carry one.",
+        "next": "Start the install from the plugin's page in the store and confirm it there."
       }
     },
     "cli_install": {
@@ -4428,18 +4436,18 @@
     "hero": {
       "eyebrow": "Hub",
       "headline": "Plugins for the omadia platform.",
-      "lead": "The Hub is our catalog of ready-made plugins. It bundles integrations (credential containers), agents (domain capabilities) and channels (user channels like Teams and Telegram). Click a tile to see permissions, secrets and dependencies before you install."
+      "lead": "The Hub is our catalog of ready-made plugins. A plugin is only the delivery form: it brings capabilities (access to a system, a tool or know-how) that you grant to agents, a channel, a model, an archetype, a system module or agent templates. Click a tile to see permissions, secrets and dependencies before you install."
     },
     "page": {
       "metaTitle": "Hub · omadia",
       "filters": {
         "all": "All",
-        "integration": "Integrations",
-        "agent": "Agents",
-        "channel": "Channels",
-        "tool": "Tools",
-        "extension": "Extensions",
-        "archetype": "Archetypes"
+        "capabilities": "Capabilities",
+        "channels": "Channels",
+        "models": "Models",
+        "archetypes": "Archetypes",
+        "systemModules": "System modules",
+        "templates": "Agent templates"
       },
       "unknownLoadError": "Unknown error while loading the catalog.",
       "filterCategoryAria": "Filter by category",
@@ -4697,6 +4705,13 @@
           "own_channel_identity": "Its own identity in the channel it works in (for Teams its own bot). It never speaks through another agent's identity."
         }
       },
+      "systemModuleConfirm": {
+        "title": "Install the system module {plugin}?",
+        "lead": "{plugin} is a system module: infrastructure of omadia itself that serves every agent and operator. It is attached to no agent. Install it only if you want this infrastructure on this instance.",
+        "confirm": "Install system module",
+        "confirming": "Installing…",
+        "cancel": "Cancel"
+      },
       "setupGuide": "Setup guide",
       "noConfigNeeded": "This plugin requires no configuration — confirm the installation at the bottom right.",
       "secretsNote1": "Secrets are stored exclusively in the per-agent vault.",
@@ -4880,7 +4895,9 @@
         "zipTooManyEntries": "The archive contains too many files.",
         "zipFileTooLarge": "A file in the archive is too large once unpacked.",
         "zipTotalTooLarge": "The unpacked archive exceeds the size limit.",
-        "archetypeConfirmationRequired": "Version {toVersion} of {pluginId} changes more than the version of the installed {fromVersion}: it makes the plugin an archetype plugin, changes what agents of its archetype may do, or moves its tables into its own database schema for good. Confirm the update explicitly."
+        "archetypeConfirmationRequired": "Version {toVersion} of {pluginId} changes more than the version of the installed {fromVersion}: it makes the plugin an archetype plugin, changes what agents of its archetype may do, or moves its tables into its own database schema for good. Confirm the update explicitly.",
+        "retiredKind": "{pluginId} is of the retired kind 'agent'. A plugin delivers capabilities and may ship agent templates, never an agent of its own.",
+        "personaDeclared": "{pluginId} declares a persona or speaker of its own ({field}). Identity and personality belong to an agent, or to an agent template as inactive presets."
       },
       "replacedVersion": "Replaced the previously uploaded version {previous}.",
       "confirmArchetypeUpdate": "Update anyway"

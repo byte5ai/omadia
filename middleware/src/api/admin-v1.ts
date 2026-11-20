@@ -337,27 +337,99 @@ export type PluginInstallState =
   | 'update-available'
   | 'incompatible';
 
+/**
+ * What a plugin delivers (spec 2042 §5.10, ADR-0014). A plugin is only the
+ * delivery form; its manifest `kind` names the one thing it delivers.
+ */
 export type PluginKind =
-  | 'agent'
+  /** Capability: access to a system. Granted per agent. */
   | 'integration'
-  | 'channel'
-  /** Headless native-tool package. activate() registers via ctx.tools /
-   *  ctx.routes and returns a close-only handle (no toolkit). Example:
+  /** Capability: a tool. Headless native-tool package; activate() registers
+   *  via ctx.tools / ctx.routes and returns a close-only handle. Example:
    *  @omadia/diagrams contributes `render_diagram` + the `/diagrams`
-   *  signed-url proxy. */
+   *  signed-url proxy. Granted per agent. */
   | 'tool'
-  /** Cross-cutting extension (turn-hooks, background jobs, prompt blocks).
-   *  Reserved for Phase 4 (Verifier + KG). No runtime support yet. */
-  | 'extension'
-  /** #2088 — delivers an agent archetype (spec 2042 §5.10): its manifest
-   *  carries the descriptor the kernel enforces (`Plugin.archetype`). Never
-   *  attached to an agent; the operator creates agents OF the archetype.
-   *  Runs in the extension runtime. Installing it needs a confirmation. */
-  | 'archetype';
+  /** Capability: know-how. Granted per agent. */
+  | 'skill'
+  /** Where people reach agents. Transports messages for kernel-managed agent
+   *  identities; never attached to an agent. */
+  | 'channel'
+  /** A model (also embeddings and transcription). Only model plugins hold
+   *  model credentials, and only the kernel's model gateway calls them. */
+  | 'model'
+  /** #2088 — delivers an agent archetype: its manifest carries the
+   *  descriptor the kernel enforces (`Plugin.archetype`). Never attached to
+   *  an agent; the operator creates agents OF the archetype. Installing it
+   *  needs a confirmation. */
+  | 'archetype'
+  /** Infrastructure of omadia itself (agent runtime, verifier, fast lane,
+   *  memory system, Conductor …). Never attached to an agent; installing it
+   *  needs a confirmation. */
+  | 'system-module'
+  /** Presets of identity, personality and suggested capabilities that the
+   *  operator turns into agents. Inactive metadata; never runs itself. */
+  | 'agent-template'
+  /** Retired (spec 2042 §5.10): a persona-bearing plugin. Still LOADED for a
+   *  package that is already installed, so a live instance keeps working
+   *  until its packages are migrated; never installed anew
+   *  (`isInstallableKind`). Removed in the contract step. */
+  | 'agent'
+  /** Retired: became `system-module`, and `model` for the LLM plugins. Still
+   *  loaded and installed until the plugin release train has moved every
+   *  package; read as `system-module` everywhere ({@link effectiveKind}). */
+  | 'extension';
 
 /** Every manifest `kind` this kernel accepts. Anything else is rejected at
- *  ingest: a kind the kernel does not know is not silently run as another. */
-export const PLUGIN_KINDS = ['agent', 'integration', 'channel', 'tool', 'extension', 'archetype'] as const;
+ *  ingest: a kind the kernel does not know is not silently run as another.
+ *  `provider` and `ui` were never kernel kinds and stay rejected. */
+export const PLUGIN_KINDS = [
+  'integration',
+  'tool',
+  'skill',
+  'channel',
+  'model',
+  'archetype',
+  'system-module',
+  'agent-template',
+  'agent',
+  'extension',
+] as const;
+
+/** Kinds that deliver capabilities — the only ones an agent can be granted. */
+export const CAPABILITY_PLUGIN_KINDS: ReadonlySet<PluginKind> = new Set<PluginKind>([
+  'integration',
+  'tool',
+  'skill',
+]);
+
+/** Retired kinds, kept loadable for packages already installed. */
+export const RETIRED_PLUGIN_KINDS: ReadonlySet<PluginKind> = new Set<PluginKind>(['agent', 'extension']);
+
+/**
+ * The kind a plugin is treated as. `extension` reads as `system-module`; every
+ * other kind is itself. Use this wherever behaviour depends on the kind, so
+ * a package that still says `extension` behaves exactly like one that says
+ * `system-module`.
+ */
+export function effectiveKind(kind: PluginKind): Exclude<PluginKind, 'extension'> {
+  return kind === 'extension' ? 'system-module' : kind;
+}
+
+/** Whether a package of this kind may be installed anew. A kind `agent`
+ *  package is refused (spec 2042 §6 criterion 15); one already installed
+ *  keeps running until it is migrated. */
+export function isInstallableKind(kind: PluginKind): boolean {
+  return kind !== 'agent';
+}
+
+/** Kinds whose install adds something the operator confirms explicitly: a
+ *  new kind of agent, or infrastructure of omadia itself. The retired
+ *  `extension` is not asked about — the release train moves those packages
+ *  to `model` or `system-module`, and the store keeps installing them as
+ *  before until then. */
+export function installNeedsConfirmation(kind: PluginKind): boolean {
+  return kind === 'archetype' || kind === 'system-module';
+}
 
 /**
  * The archetype a plugin of kind `archetype` delivers, as its manifest states
