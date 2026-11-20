@@ -362,16 +362,14 @@ export const KERNEL_ONLY_SERVICE_NAMES: ReadonlySet<string> = new Set([
 export const RAW_MODEL_SERVICE_NAMES: ReadonlySet<string> = new Set(['anthropicClient', 'llm', 'llmProviderPool']);
 
 /**
- * What a plugin's request for a raw model service gets:
+ * What a plugin's request for a raw model service gets (the contract step,
+ * S3b):
  *
  *   - `allow`   — not a raw model service; a model plugin (it is one); or one
  *     of the kernel's own system modules (agent runtime, verifier, fast lane
  *     …), the gateway's trusted callers;
- *   - `refuse`  — an archetype plugin, always; every other plugin once the
- *     gateway enforces;
- *   - `observe` — every other plugin in the expand step: still handed out,
- *     and logged, so the plugins that need migrating are known before the
- *     contract step (channel-teams asks for `anthropicClient@1` today).
+ *   - `refuse`  — every other plugin: it reaches models through `ctx.llm`, in
+ *     its caller's context.
  */
 /** Whether `name` is a raw model client or provider pool (spec 2042 §5.10). */
 export function isRawModelServiceName(name: string): boolean {
@@ -382,13 +380,11 @@ export function rawModelServiceAccess(input: {
   readonly name: string;
   readonly kind: PluginKind | undefined;
   readonly bundled: boolean;
-  readonly mode: 'observe' | 'enforce';
-}): 'allow' | 'refuse' | 'observe' {
+}): 'allow' | 'refuse' {
   if (!RAW_MODEL_SERVICE_NAMES.has(input.name)) return 'allow';
   if (input.kind === 'model') return 'allow';
-  if (input.kind === 'archetype') return 'refuse';
   if (input.bundled && input.kind !== undefined && effectiveKind(input.kind) === 'system-module') return 'allow';
-  return input.mode === 'enforce' ? 'refuse' : 'observe';
+  return 'refuse';
 }
 
 /** Why a `services.get` call was allowed — or wasn't. */

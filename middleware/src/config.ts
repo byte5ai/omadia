@@ -753,20 +753,11 @@ export const ConfigSchema = z.object({
     .transform((v) => v === 'true')
     .default(false),
   VERIFIER_MODE: z.enum(['shadow', 'enforce']).default('shadow'),
-  // Spec 2042 §5.10 — the model gateway. Every model call runs in an
-  // execution context (agent turn, execution scope, inbound processing,
-  // operator job, maintenance run). `observe` (the expand step) admits a call
-  // outside any context and logs its call site once; `enforce` refuses it.
-  // Operations a context does not allow, deadlines, cancels and kill
-  // switches are refused in both modes.
-  MODEL_GATEWAY_MODE: z.enum(['observe', 'enforce']).default('observe'),
-  // Spec 2042 §5.10 — the network sandbox of installed plugins: a request
-  // their own code makes through the global `fetch` or `node:http(s)` must be
-  // covered by their network permission (manifest hosts, operator hosts,
-  // `public-web`), and never reaches a model provider unless the plugin is a
-  // model plugin. `observe` (the expand step) lets it through and logs it once
-  // per plugin and host; `enforce` refuses it.
-  PLUGIN_EGRESS_MODE: z.enum(['observe', 'enforce']).default('observe'),
+  // Spec 2042 §5.10 — the model gateway and the plugin network sandbox are
+  // always enforced since the contract step (S3b): a model call outside an
+  // execution context and a plugin request outside its network permission
+  // are refused. There is no observe mode any more; what was refused is
+  // listed at GET /api/v1/admin/model-gateway.
   // Spec 2042 §5.10 — the instance's daily budgets of the two execution
   // contexts that belong to no agent: operator jobs (admin functions an
   // operator starts: issue preview, skill verification, topic regrouping,

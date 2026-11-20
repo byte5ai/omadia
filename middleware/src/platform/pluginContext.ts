@@ -121,7 +121,7 @@ import {
   rawModelServiceAccess,
   versionedServiceRef,
 } from './pluginServiceGrants.js';
-import { executionContextChain, modelGatewayMode } from '@omadia/usage-telemetry';
+import { executionContextChain } from '@omadia/usage-telemetry';
 import { inboundProcessing, isInboundProcessingService } from './modelGatewayServices.js';
 import {
   createSqlGate,
@@ -361,7 +361,6 @@ export function createPluginContext(
     pluginId: agentId,
   });
 
-  const observedRawModelServices = new Set<string>();
   const services: ServicesAccessor = {
     get<T>(requested: string): T | undefined {
       // #2090 — `name@2` asks for that major, registered under that key. The
@@ -390,16 +389,9 @@ export function createPluginContext(
             name,
             kind: catalogEntry?.plugin.kind,
             bundled: catalogEntry?.origin === 'bundled' || catalog.isBundledId(agentId),
-            mode: modelGatewayMode(),
           })
         : 'allow';
       if (modelAccess === 'refuse') throw new RawModelServiceRefusedError(agentId, name);
-      if (modelAccess === 'observe' && !observedRawModelServices.has(name)) {
-        observedRawModelServices.add(name);
-        console.warn(
-          `[model-gateway] plugin '${agentId}' resolved the raw model service '${name}'; it is refused once the gateway enforces (spec 2042 §5.10)`,
-        );
-      }
       const found = serviceRegistry.get<T>(requested, serviceCaller);
       // Spec 2042 §5.10 — what a channel does with a message before the turn
       // (transcribe a voice message, detect a topic change) runs in an

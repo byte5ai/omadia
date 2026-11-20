@@ -766,11 +766,10 @@ async function main(): Promise<void> {
   // plugin would miss those registrations.
   const nativeToolRegistry = new NativeToolRegistry();
   serviceRegistry.provide('nativeToolRegistry', nativeToolRegistry);
-  // Spec 2042 §5.10 — the model gateway's mode, set before any plugin can
-  // make a model call. In `observe` every call site found outside an
-  // execution context is logged once, so the last ones can be found before
-  // the contract step switches to `enforce`.
-  setModelGatewayMode(config.MODEL_GATEWAY_MODE);
+  // Spec 2042 §5.10 — the model gateway refuses every model call outside an
+  // execution context (the contract step; set before any plugin can make a
+  // model call). Each refused call site is logged once.
+  setModelGatewayMode('enforce');
   // Spec 2042 §5.10 — every Claude CLI spawn runs in an isolated profile
   // (HOME and CLAUDE_CONFIG_DIR = a directory holding only the login).
   try {
@@ -790,7 +789,7 @@ async function main(): Promise<void> {
   }
   onUncoveredModelCall((report) => {
     console.warn(
-      `[model-gateway] ${config.MODEL_GATEWAY_MODE === 'enforce' ? 'refused' : 'observed'} a '${report.operation}' call outside any execution context at ${report.site}`,
+      `[model-gateway] refused a '${report.operation}' call outside any execution context at ${report.site}`,
     );
   });
   // W2-2 (issue #543) — the store + orphan reaper backing deferred sub-agent
@@ -1316,14 +1315,14 @@ async function main(): Promise<void> {
   await installedRegistry.load();
   // Spec 2042 §5.10 — the network sandbox of installed plugins, before any
   // of them activates: their own requests through the global `fetch` and
-  // `node:http(s)` are checked against their network permission, and model
-  // providers are reached only through the gateway.
+  // `node:http(s)` are refused outside their network permission, and model
+  // providers are reached only through the gateway (enforced since S3b).
   installPluginEgressGuard({
-    mode: config.PLUGIN_EGRESS_MODE,
+    mode: 'enforce',
     source: createPluginEgressSource({ catalog: pluginCatalog, installedRegistry, llmProviderCatalog }),
     onObservation: (o) => {
       console.warn(
-        `[plugin-egress] ${o.mode === 'enforce' ? 'refused' : 'observed'}: plugin '${o.pluginId}' reached '${o.host}' (${o.reason})${o.mode === 'observe' ? '; refused once PLUGIN_EGRESS_MODE=enforce' : ''}`,
+        `[plugin-egress] ${o.mode === 'enforce' ? 'refused' : 'observed'}: plugin '${o.pluginId}' reached '${o.host}' (${o.reason})`,
       );
     },
   });

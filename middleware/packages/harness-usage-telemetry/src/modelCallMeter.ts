@@ -339,7 +339,8 @@ export async function* runGeneratorInExecutionContext<T>(
   }
 }
 
-/** Set by the kernel at boot from `MODEL_GATEWAY_MODE`. Default `observe`. */
+/** Set by the kernel at boot: `enforce` since the contract step (S3b). The
+ *  default `observe` is for code that runs without a kernel (tests). */
 export function setModelGatewayMode(mode: ModelGatewayMode): void {
   installModelCallGate();
   state().mode = mode;
