@@ -7161,7 +7161,8 @@
     "spend": {
       "heading": "Spend this month",
       "instance": "Instance: {spent} spent, {reserved} reserved, cap {cap}",
-      "caps": "Caps: {agent} per agent and month, {trigger} per trigger, {firing} per firing"
+      "caps": "Caps: {agent} per agent and month, {trigger} per trigger, {firing} per firing",
+      "agent": "{agent}: {spent} of {cap}"
     },
     "list": {
       "heading": "Active triggers ({count})",
@@ -7174,7 +7175,8 @@
       "state": "State",
       "runs": "{runs} of {max, plural, =0 {unlimited} other {#}} runs",
       "lastFired": "last {at}",
-      "costOf": "{spent} of {budget}"
+      "costOf": "{spent} of {budget}",
+      "lastError": "Last error (details)"
     },
     "schedule": {
       "event": "on {event}",
@@ -7202,6 +7204,24 @@
       "empty": "No plugin background job is registered.",
       "ok": "last run {at}",
       "failing": "failing ({failures} in a row), next probe {next}"
+    },
+    "steps": {
+      "newActivity": "check for news",
+      "contextLive": "check meeting is live",
+      "dataCheck": "check data",
+      "post": "post",
+      "deliver": "send data",
+      "turn": "agent turn",
+      "batch": "batch job",
+      "other": "other step"
+    },
+    "pauseReasons": {
+      "breaker_failures": "failed several times in a row",
+      "breaker_ineffective": "runs had no effect",
+      "budget": "budget reached",
+      "owner": "by its owner",
+      "operator": "by an operator",
+      "other": "other reason"
     }
   }
 }

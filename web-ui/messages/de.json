@@ -7161,7 +7161,8 @@
     "spend": {
       "heading": "Ausgaben in diesem Monat",
       "instance": "Instanz: {spent} ausgegeben, {reserved} reserviert, Obergrenze {cap}",
-      "caps": "Obergrenzen: {agent} pro Agent und Monat, {trigger} pro Trigger, {firing} pro Auslösung"
+      "caps": "Obergrenzen: {agent} pro Agent und Monat, {trigger} pro Trigger, {firing} pro Auslösung",
+      "agent": "{agent}: {spent} von {cap}"
     },
     "list": {
       "heading": "Aktive Trigger ({count})",
@@ -7174,7 +7175,8 @@
       "state": "Status",
       "runs": "{runs} von {max, plural, =0 {unbegrenzt} other {#}} Läufen",
       "lastFired": "zuletzt {at}",
-      "costOf": "{spent} von {budget}"
+      "costOf": "{spent} von {budget}",
+      "lastError": "Letzter Fehler (Details)"
     },
     "schedule": {
       "event": "bei {event}",
@@ -7202,6 +7204,24 @@
       "empty": "Kein Plugin hat einen Hintergrund-Job registriert.",
       "ok": "zuletzt gelaufen {at}",
       "failing": "schlägt fehl ({failures} in Folge), nächster Versuch {next}"
+    },
+    "steps": {
+      "newActivity": "auf Neues prüfen",
+      "contextLive": "prüfen, ob das Meeting läuft",
+      "dataCheck": "Daten prüfen",
+      "post": "posten",
+      "deliver": "Daten senden",
+      "turn": "Agenten-Zug",
+      "batch": "Batch-Job",
+      "other": "anderer Schritt"
+    },
+    "pauseReasons": {
+      "breaker_failures": "mehrmals hintereinander fehlgeschlagen",
+      "breaker_ineffective": "Läufe ohne Wirkung",
+      "budget": "Budget erreicht",
+      "owner": "vom Besitzer",
+      "operator": "von einem Operator",
+      "other": "anderer Grund"
     }
   }
 }

@@ -84,6 +84,7 @@ export function createOperatorTriggersRouter(deps: OperatorTriggersDeps): Router
         triggers: triggers.map((x) => ({
           ...triggerSummary(x),
           agent: x.agentSlug,
+          agentId: x.agentId,
           origin: x.origin,
           contextId: x.contextId,
           createdBy: x.createdBy,

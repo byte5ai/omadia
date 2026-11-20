@@ -33,6 +33,8 @@ export type TriggerOrigin = 'agent' | 'routine' | 'system';
 export interface TriggerDto {
   id: string;
   agent: string;
+  /** Keys `TriggerOverviewDto.agents` (the agent's month). */
+  agentId: string;
   kind: 'on_event' | 'wake_at' | 'wake_every';
   origin: TriggerOrigin;
   purpose: string;

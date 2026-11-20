@@ -20,6 +20,25 @@ interface TriggerOverviewProps {
 
 type Action = 'pause' | 'resume' | 'end';
 
+/** The engine's step codes (`check:new_activity`, `deliver`, …) → catalog keys. */
+const STEP_KEYS: Readonly<Record<string, string>> = {
+  'check:new_activity': 'newActivity',
+  'check:context_live': 'contextLive',
+  'check:data': 'dataCheck',
+  post: 'post',
+  deliver: 'deliver',
+  turn: 'turn',
+  batch: 'batch',
+};
+
+const PAUSE_REASONS: ReadonlySet<string> = new Set([
+  'breaker_failures',
+  'breaker_ineffective',
+  'budget',
+  'owner',
+  'operator',
+]);
+
 const ACTIONS: Record<Action, (id: string) => Promise<void>> = {
   pause: pauseTrigger,
   resume: resumeTrigger,
@@ -58,6 +77,13 @@ export function TriggerOverview(props: TriggerOverviewProps): React.ReactElement
     [t],
   );
 
+  const stepLabel = (step: string): string => {
+    const key = STEP_KEYS[step];
+    return key ? t(`steps.${key}`) : t('steps.other');
+  };
+  const pauseLabel = (reason: string | undefined): string =>
+    reason && PAUSE_REASONS.has(reason) ? t(`pauseReasons.${reason}`) : t('pauseReasons.other');
+
   const schedule = (x: TriggerDto): string => {
     if (x.event) return t('schedule.event', { event: x.event });
     if (x.cron) return t('schedule.cron', { cron: x.cron, timezone: x.timezone ?? 'UTC' });
@@ -79,6 +105,19 @@ export function TriggerOverview(props: TriggerOverviewProps): React.ReactElement
             cap: usd(data.caps.monthlyInstanceUsd),
           })}
         </p>
+        {Object.keys(data.agents).length > 0 && (
+          <ul className="my-2 flex flex-col gap-0.5">
+            {Object.entries(data.agents).map(([agentId, spend]) => (
+              <li key={agentId}>
+                {t('spend.agent', {
+                  agent: data.triggers.find((x) => x.agentId === agentId)?.agent ?? agentId,
+                  spent: usd(spend.spentUsd),
+                  cap: usd(data.caps.monthlyAgentUsd),
+                })}
+              </li>
+            ))}
+          </ul>
+        )}
         <p className="text-[color:var(--fg-muted)]">
           {t('spend.caps', {
             agent: usd(data.caps.monthlyAgentUsd),
@@ -123,9 +162,14 @@ export function TriggerOverview(props: TriggerOverviewProps): React.ReactElement
                   <td className="py-2 pr-3">
                     <div>{x.purpose}</div>
                     <div className="text-xs text-[color:var(--fg-muted)]">
-                      {t(`origin.${x.origin}`)} · {x.actions.join(' → ')}
+                      {t(`origin.${x.origin}`)} · {x.actions.map(stepLabel).join(' → ')}
                     </div>
-                    {x.lastError && <div className="text-xs text-[color:var(--danger)]">{x.lastError}</div>}
+                    {x.lastError && (
+                      <details className="text-xs text-[color:var(--danger)]">
+                        <summary>{t('list.lastError')}</summary>
+                        <span className="font-mono">{x.lastError}</span>
+                      </details>
+                    )}
                   </td>
                   <td className="py-2 pr-3">
                     <div>{schedule(x)}</div>
@@ -137,7 +181,7 @@ export function TriggerOverview(props: TriggerOverviewProps): React.ReactElement
                   <td className="py-2 pr-3">{t('list.costOf', { spent: usd(x.spentUsd), budget: usd(x.budgetUsd) })}</td>
                   <td className="py-2 pr-3">
                     {x.state === 'paused'
-                      ? t('state.paused', { reason: x.pausedBecause ?? '—' })
+                      ? t('state.paused', { reason: pauseLabel(x.pausedBecause) })
                       : t('state.active')}
                   </td>
                   <td className="py-2 whitespace-nowrap">
