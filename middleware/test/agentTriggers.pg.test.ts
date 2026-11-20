@@ -42,7 +42,7 @@ const DAY = 24 * HOUR;
 
 interface Script {
   /** What the scripted model does on a turn. */
-  turn: (trigger: Trigger) => TurnOutcome;
+  turn: (trigger: Trigger) => TurnOutcome | Promise<TurnOutcome>;
   data: (trigger: Trigger) => DataActionResult;
   newActivity?: boolean;
 }
@@ -178,6 +178,7 @@ describe('#2082 agent triggers (pg, migration 0093)', { skip: !pgAvailable }, ()
     };
     await pool.query('DELETE FROM agent_triggers');
     await pool.query('DELETE FROM agent_trigger_spend');
+    await pool.query('DELETE FROM agent_trigger_reservations');
     await pool.query('DELETE FROM agent_trigger_context_activity');
     await pool.query('DELETE FROM execution_kill_switches');
   });
@@ -486,6 +487,56 @@ describe('#2082 agent triggers (pg, migration 0093)', { skip: !pgAvailable }, ()
       await create(service, 'wake_at', raw('a2'), env);
       const third = await service.create('wake_at', raw('a3'), env);
       assert.equal(third.ok === false && third.code, 'too_many_active');
+    });
+  });
+
+  describe('reservations', () => {
+    const spendOf = async (scope: string): Promise<{ spent: number; reserved: number }> => {
+      const { rows } = await pool.query<{ spent_usd: string; reserved_usd: string }>(
+        'SELECT spent_usd, reserved_usd FROM agent_trigger_spend WHERE scope = $1',
+        [scope],
+      );
+      return { spent: Number(rows[0]?.spent_usd ?? 0), reserved: Number(rows[0]?.reserved_usd ?? 0) };
+    };
+    const turnTrigger = (service: TriggerService, ctx: string) =>
+      create(
+        service,
+        'wake_at',
+        { purpose: 'p', time: at(MIN), until: at(HOUR), actions: [{ type: 'turn', instruction: 'x' }] },
+        envFor('erika', { contextId: `teams:19:${ctx}` }),
+      );
+
+    it('a trigger ended mid-firing still settles its agent\'s month', async () => {
+      const r = rig();
+      const t = await turnTrigger(r.service, 'res-1');
+      script.turn = async () => {
+        await r.service.end(t.id, 'cancelled', {});
+        return { delivered: true, costUsd: 0.05, modelCalls: 1 };
+      };
+      clock = new Date(clock.getTime() + 2 * MIN);
+      await r.worker.tick();
+      assert.equal(calls.turns, 1);
+      const agent = await spendOf(t.agentId);
+      assert.equal(agent.reserved, 0, 'nothing stays reserved for the agent');
+      assert.ok(Math.abs(agent.spent - 0.05) < 1e-9, 'the cost is booked on the agent');
+      assert.equal((await spendOf('instance')).reserved, 0);
+    });
+
+    it('a firing whose lease ran out books its cost and leaves the run to the recovery', async () => {
+      const r = rig();
+      const t = await turnTrigger(r.service, 'res-2');
+      script.turn = async () => {
+        // Another replica sees the lease expired and recovers it meanwhile.
+        await r.store.recoverExpiredLeases(new Date(clock.getTime() + 11 * MIN), 3);
+        return { delivered: true, costUsd: 0.02, modelCalls: 1 };
+      };
+      clock = new Date(clock.getTime() + 2 * MIN);
+      await r.worker.tick();
+      const after = await r.service.get(t.id);
+      assert.equal(after?.runs, 0, 'the run is not counted by the worker that lost the lease');
+      assert.ok(Math.abs((after?.spentUsd ?? 0) - 0.02) < 1e-9);
+      assert.equal(after?.reservedUsd, 0);
+      assert.equal((await spendOf(t.agentId)).reserved, 0);
     });
   });
 });

@@ -63,7 +63,8 @@ export type FireOutcome =
   | 'refused'
   | 'deferred'
   | 'dropped'
-  | 'ended';
+  | 'ended'
+  | 'lease_lost';
 
 export class TriggerEngine {
   constructor(private readonly deps: TriggerEngineDeps) {}
@@ -98,12 +99,12 @@ export class TriggerEngine {
       occurrenceId: occ.id,
       leaseOwner: occ.leaseOwner,
       triggerId: trigger.id,
+      agentId: trigger.agentId,
       month: spendMonth(now),
       breaker: { failures: this.deps.limits.breakerFailures, ineffective: this.deps.limits.breakerIneffective },
       ineffectiveTurn: false,
       effectiveTurn: false,
       costUsd: 0,
-      reservedUsd: 0,
     } as const;
     const next = nextDue(trigger, occ.dueAt, now);
 
@@ -158,18 +159,22 @@ export class TriggerEngine {
       });
     }
 
-    let reservedUsd = 0;
     if (chainUsesModel(trigger.actions) && trigger.budgetPerFiringUsd > 0) {
-      const reserved = await store.reserve(trigger, trigger.budgetPerFiringUsd, base.month, {
-        monthlyAgentUsd: this.deps.limits.monthlyAgentUsd,
-        monthlyInstanceUsd: this.deps.limits.monthlyInstanceUsd,
-      });
+      const reserved = await store.reserve(
+        trigger,
+        trigger.budgetPerFiringUsd,
+        base.month,
+        {
+          monthlyAgentUsd: this.deps.limits.monthlyAgentUsd,
+          monthlyInstanceUsd: this.deps.limits.monthlyInstanceUsd,
+        },
+        occ.id,
+      );
       if (!reserved.ok) {
         await store.drop(occ.id, occ.leaseOwner, `budget_${reserved.scope}`);
         await this.pauseWithNotice(trigger, 'budget', `the ${reserved.scope} budget would be exceeded`);
         return 'refused';
       }
-      reservedUsd = trigger.budgetPerFiringUsd;
     }
 
     const chain = await runChain(trigger, occ, this.deps.executors, now);
@@ -181,7 +186,6 @@ export class TriggerEngine {
       ineffectiveTurn: chain.turnRan && !chain.turnEffective && chain.outcome !== 'failed',
       effectiveTurn: chain.turnEffective,
       costUsd: chain.costUsd,
-      reservedUsd,
       ...(chain.error ? { error: chain.error } : {}),
       ...(chain.fingerprint ? { fingerprint: chain.fingerprint } : {}),
       ...(chain.contextEnded ? { end: 'context_ended' as const } : {}),
@@ -192,6 +196,10 @@ export class TriggerEngine {
 
   private async settle(trigger: Trigger, input: FinishInput): Promise<FireOutcome> {
     const res = await this.deps.store.finish(input);
+    if (res.leaseLost) {
+      this.log(`[triggers] ${trigger.id} (${trigger.agentSlug}): lease lost while firing; spend booked, nothing else settled`);
+      return 'lease_lost';
+    }
     if (res.paused) {
       this.notifyPaused(trigger, res.paused);
     }

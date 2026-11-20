@@ -66,6 +66,12 @@ export class TriggerWorker {
       const claimed = await this.deps.store.claimDue(this.leaseOwner, now, this.deps.leaseMs, this.deps.batch);
       for (const occ of claimed) {
         try {
+          const at = (this.deps.now ?? (() => new Date()))();
+          const held = await this.deps.store.extendLease(occ.id, this.leaseOwner, at, new Date(at.getTime() + this.deps.leaseMs));
+          if (!held) {
+            this.deps.log?.(`[triggers] lease of ${occ.id} ran out before its turn in the batch; another worker has it`);
+            continue;
+          }
           await this.deps.engine.fire(occ);
           fired += 1;
         } catch (err) {

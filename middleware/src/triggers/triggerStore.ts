@@ -69,6 +69,8 @@ export interface FinishInput {
   readonly occurrenceId: string;
   readonly leaseOwner: string;
   readonly triggerId: string;
+  /** The trigger's agent: its month is settled even if the trigger is gone. */
+  readonly agentId: string;
   /** `acted`: an effect happened. `nothing`: a check found nothing to do
    *  (a success). `failed`: an error. `refused`: a guard refused the firing
    *  before anything ran. */
@@ -80,7 +82,6 @@ export interface FinishInput {
   /** A model turn ran and had an effect. */
   readonly effectiveTurn: boolean;
   readonly costUsd: number;
-  readonly reservedUsd: number;
   readonly month: string;
   readonly error?: string;
   /** The data fingerprint to remember for a `changed` check. */
@@ -95,6 +96,8 @@ export interface FinishInput {
 export interface FinishResult {
   readonly ended?: TriggerEndReason;
   readonly paused?: TriggerPauseReason;
+  /** The occurrence was no longer this worker's lease (it expired). */
+  readonly leaseLost?: true;
 }
 
 interface TriggerRowDb {
@@ -396,6 +399,20 @@ export class TriggerStore {
     return (rowCount ?? 0) > 0;
   }
 
+  /**
+   * Renew a held lease right before its firing starts: a batch is fired one
+   * after another, and the last one must not start on a lease that ran out
+   * (and another replica may already have taken). False = lost; skip it.
+   */
+  async extendLease(occurrenceId: string, leaseOwner: string, now: Date, leaseUntil: Date): Promise<boolean> {
+    const { rowCount } = await this.pool.query(
+      `UPDATE agent_trigger_occurrences SET lease_until = $4
+        WHERE id = $1 AND lease_owner = $2 AND state = 'leased' AND lease_until >= $3`,
+      [occurrenceId, leaseOwner, now, leaseUntil],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
   /** Claim due occurrences under a lease, in one statement. */
   async claimDue(leaseOwner: string, now: Date, leaseMs: number, limit: number): Promise<ClaimedOccurrence[]> {
     const { rows } = await this.pool.query<OccurrenceRowDb>(
@@ -434,6 +451,7 @@ export class TriggerStore {
           WHERE o.state = 'leased' AND o.lease_until < $1`,
         [now],
       );
+      await this.releaseOrphanReservationsIn(client, now);
       return { retried: retried.rowCount ?? 0, dropped: dropped.rowCount ?? 0 };
     });
   }
@@ -470,7 +488,7 @@ export class TriggerStore {
    * Reserve `amount` for one firing against the trigger's own budget, the
    * agent's month and the instance's month. All or nothing.
    */
-  async reserve(trigger: Trigger, amount: number, month: string, caps: SpendCaps): Promise<ReserveResult> {
+  async reserve(trigger: Trigger, amount: number, month: string, caps: SpendCaps, occurrenceId: string): Promise<ReserveResult> {
     if (amount <= 0) return { ok: true };
     return this.inTransaction(async (client) => {
       const { rows } = await client.query<{ ok: boolean }>(
@@ -494,6 +512,11 @@ export class TriggerStore {
         );
         if (spend.length === 0) throw new SpendRefused(name);
       }
+      await client.query(
+        `INSERT INTO agent_trigger_reservations (occurrence_id, trigger_id, agent_id, month, amount_usd)
+         VALUES ($1, $2, $3, $4::date, $5)`,
+        [occurrenceId, trigger.id, trigger.agentId, month, amount],
+      );
       return { ok: true as const };
     }).catch((err: unknown) => {
       if (err instanceof SpendRefused) return { ok: false as const, scope: err.scope };
@@ -516,11 +539,24 @@ export class TriggerStore {
    */
   async finish(input: FinishInput): Promise<FinishResult> {
     return this.inTransaction(async (client) => {
-      await client.query(
+      const held = await client.query(
         `UPDATE agent_trigger_occurrences SET state = 'done', outcome = $3, finished_at = now()
           WHERE id = $1 AND lease_owner = $2 AND state = 'leased'`,
         [input.occurrenceId, input.leaseOwner, input.outcome],
       );
+      const released = await this.takeReservationIn(client, input.occurrenceId);
+      if ((held.rowCount ?? 0) === 0) {
+        // The lease ran out mid-firing and the recovery took the occurrence
+        // (dropped, or back to pending for another worker). What this firing
+        // spent is still booked; the run, the breaker and the next
+        // occurrence belong to whoever holds it now.
+        await client.query(
+          'UPDATE agent_triggers SET spent_usd = spent_usd + $2, reserved_usd = GREATEST(reserved_usd - $3, 0) WHERE id = $1',
+          [input.triggerId, input.costUsd, released],
+        );
+        await this.settleSpendIn(client, input, released);
+        return { leaseLost: true };
+      }
       const { rows } = await client.query<TriggerRowDb>(
         `UPDATE agent_triggers SET
             runs = LEAST(runs + $2::int, COALESCE(max_runs, runs + $2::int)),
@@ -543,13 +579,13 @@ export class TriggerStore {
           input.ineffectiveTurn,
           input.effectiveTurn,
           input.costUsd,
-          input.reservedUsd,
+          released,
           input.outcome,
           input.error ?? null,
           input.fingerprint ?? null,
         ],
       );
-      await this.settleSpendIn(client, input);
+      await this.settleSpendIn(client, input, released);
       const row = rows[0];
       if (!row) return {};
       const trigger = toTrigger(row);
@@ -582,19 +618,55 @@ export class TriggerStore {
     });
   }
 
-  private async settleSpendIn(client: PoolClient, input: FinishInput): Promise<void> {
-    if (input.costUsd <= 0 && input.reservedUsd <= 0) return;
-    const { rows } = await client.query<{ agent_id: string }>('SELECT agent_id FROM agent_triggers WHERE id = $1', [input.triggerId]);
-    const scopes = ['instance', ...(rows[0] ? [rows[0].agent_id] : [])];
-    for (const scope of scopes) {
+  /** Remove a firing's reservation; what it held, or 0 when none is left. */
+  private async takeReservationIn(client: PoolClient, occurrenceId: string): Promise<number> {
+    const { rows } = await client.query<{ amount_usd: string }>(
+      'DELETE FROM agent_trigger_reservations WHERE occurrence_id = $1 RETURNING amount_usd',
+      [occurrenceId],
+    );
+    return rows[0] ? Number(rows[0].amount_usd) : 0;
+  }
+
+  private async settleSpendIn(client: PoolClient, input: FinishInput, released: number): Promise<void> {
+    if (input.costUsd <= 0 && released <= 0) return;
+    for (const scope of ['instance', input.agentId]) {
       await client.query(
         `INSERT INTO agent_trigger_spend AS s (scope, month, spent_usd) VALUES ($1, $2::date, $3)
          ON CONFLICT (scope, month) DO UPDATE
            SET spent_usd = s.spent_usd + EXCLUDED.spent_usd,
                reserved_usd = GREATEST(s.reserved_usd - $4, 0)`,
-        [scope, input.month, input.costUsd, input.reservedUsd],
+        [scope, input.month, input.costUsd, released],
       );
     }
+  }
+
+  /**
+   * Release reservations whose firing will never settle: the occurrence is
+   * gone (its trigger was deleted) or no longer leased (the lease expired).
+   */
+  private async releaseOrphanReservationsIn(client: PoolClient, now: Date): Promise<number> {
+    const { rows } = await client.query<{ trigger_id: string; agent_id: string; month: Date; amount_usd: string }>(
+      `DELETE FROM agent_trigger_reservations r
+        WHERE NOT EXISTS (
+          SELECT 1 FROM agent_trigger_occurrences o
+           WHERE o.id = r.occurrence_id AND o.state = 'leased' AND o.lease_until >= $1)
+        RETURNING r.trigger_id, r.agent_id, r.month, r.amount_usd`,
+      [now],
+    );
+    for (const r of rows) {
+      const amount = Number(r.amount_usd);
+      await client.query('UPDATE agent_triggers SET reserved_usd = GREATEST(reserved_usd - $2, 0) WHERE id = $1', [
+        r.trigger_id,
+        amount,
+      ]);
+      for (const scope of ['instance', r.agent_id]) {
+        await client.query(
+          'UPDATE agent_trigger_spend SET reserved_usd = GREATEST(reserved_usd - $3, 0) WHERE scope = $1 AND month = $2',
+          [scope, r.month, amount],
+        );
+      }
+    }
+    return rows.length;
   }
 
   private async deleteIn(client: PoolClient, trigger: Trigger, reason: TriggerEndReason, detail: Record<string, unknown>): Promise<void> {

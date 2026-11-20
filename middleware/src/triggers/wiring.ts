@@ -186,7 +186,9 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
     intervalMs: deps.tickMs,
     leaseMs: deps.leaseMs,
     maxAttempts: 3,
-    batch: 25,
+    // Fired one after another under one lease each (renewed before each):
+    // a small batch keeps the tail of it from waiting long.
+    batch: 5,
     enabled: () => deps.enabled,
     now: clock,
     log: deps.log,

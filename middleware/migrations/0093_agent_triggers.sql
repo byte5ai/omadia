@@ -124,6 +124,19 @@ CREATE TABLE IF NOT EXISTS agent_trigger_occurrences (
     CHECK (state IN ('pending', 'leased', 'done', 'dropped'))
 );
 
+-- One firing's budget reservation, held until the firing settles. Kept apart
+-- from the occurrence (no FK): a trigger deleted mid-firing must not take the
+-- record of what its agent and the instance still hold reserved with it. A
+-- reservation whose occurrence is no longer leased is released by the worker.
+CREATE TABLE IF NOT EXISTS agent_trigger_reservations (
+  occurrence_id UUID PRIMARY KEY,
+  trigger_id    UUID NOT NULL,
+  agent_id      UUID NOT NULL,
+  month         DATE NOT NULL,
+  amount_usd    NUMERIC(12, 6) NOT NULL CHECK (amount_usd >= 0),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Once per occurrence: the same due time or event never gets a second row.
 CREATE UNIQUE INDEX IF NOT EXISTS agent_trigger_occurrences_once_idx
   ON agent_trigger_occurrences (trigger_id, occurrence_key);
