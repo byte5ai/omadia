@@ -255,8 +255,8 @@ import {
   type ConsultationPort,
 } from './consultation/consultTool.js';
 import type { DiscretionPort } from './discretion/port.js';
-import { UNKNOWN_READERS, readersOf, type Readers } from './discretion/labels.js';
-import { guardIntegrationEgress, labelToolRead, type ToolSystem } from './discretion/toolFlow.js';
+import { UNKNOWN_READERS, readersOf, unionLabels, type DiscretionLabel, type Readers } from './discretion/labels.js';
+import { guardIntegrationEgress, guardMemoryEgress, labelToolRead, type ToolSystem } from './discretion/toolFlow.js';
 import { violationSummary } from './discretion/flowRule.js';
 import { peopleEgressDecision } from './discretion/turnLabels.js';
 import { answerWithheldText } from './discretion/disclosure.js';
@@ -3368,6 +3368,15 @@ export class Orchestrator {
     if (!this.graphPool || !this.graphTenantId) return undefined;
     if (!opts.turnId || !opts.userId) return undefined;
     if (!this.knowledgeGraph) return undefined;
+    // Spec 2042 §5.11 — a promoted memorable is a memory write: only into a
+    // tier whose readers may know what the turn read (members: the owners;
+    // otherwise the agent's own memory, whose readers are not known, so only
+    // the turn's own conversation may go there).
+    const tierReaders = opts.owners !== undefined ? readersOf(opts.owners) : UNKNOWN_READERS;
+    if (await guardMemoryEgress(this.discretion, tierReaders, 'auto-promotion')) {
+      console.warn(`[discretion] auto-promotion of turn ${opts.turnId} skipped: the turn carries another conversation's knowledge`);
+      return undefined;
+    }
     const promotionInput = {
       pool: this.graphPool,
       tenantId: this.graphTenantId,
@@ -3396,6 +3405,7 @@ export class Orchestrator {
     };
     try {
       const result = await promoteTurnIfSignificant(promotionInput);
+      if (result.mkId) await this.labelMemorable(result.mkId);
       return result.mkId;
     } catch (err) {
       console.error(
@@ -4535,6 +4545,8 @@ export class Orchestrator {
       });
       // Spec 2042 §5.11 — reusing a written turn adds the labels it kept.
       await this.labelRecalledTurns(result.included.map((hit) => hit.turnId));
+      // … and so does reusing a memorable.
+      await this.labelRecalledMemorables(result.recalled?.insights.map((insight) => insight.mkId) ?? []);
       console.error(
         `[context] assembled scope=${input.sessionScope ?? '-'} user=${input.userId ?? '-'} pool=${String(result.stats.candidatePool)} included=${String(result.included.length)} excluded=${String(result.excluded.length)} compact=${String(result.stats.compactMode)} tokens=${String(result.stats.tokensUsed)} rendered=${String(result.text.length)}B`,
       );
@@ -10088,6 +10100,15 @@ export class Orchestrator {
               // the per-turn uuid), so the stamp is the only record of it.
               ...(bypassed ? { unprotected: true } : {}),
             })
+            // Spec 2042 §5.11 — the memorable keeps the turn's labels and the
+            // server it came from.
+            .then(async (ingested) => {
+              const system = `mcp:${kgTool.mcpServerId ?? ''}`;
+              const declared = await this.discretion?.declarationOf(system).catch(() => undefined);
+              await this.labelMemorable(ingested.memorableKnowledgeNodeId, [
+                { kind: 'source', system, restricted: declared?.sensitivity === 'restricted' },
+              ]);
+            })
             .catch(() => {
               /* KG ingestion is best-effort — never break the tool call */
             });
@@ -10299,6 +10320,13 @@ export class Orchestrator {
         return refuse(
           `Error: tool \`${name}\` is unavailable — plugin \`${memoryAgentId}\` has not completed its connection/auth setup.`,
         );
+      }
+      // Spec 2042 §5.11 — a write lands in a tier whose readers may all know
+      // what the turn has read; the note then keeps the turn's labels
+      // (`LabelledMemoryStore`).
+      if (!isMemoryViewCall(input)) {
+        const refusal = await guardMemoryEgress(this.discretion, await this.memoryTierReaders(turnMemory), 'memory');
+        if (refusal) return refuse(refusal);
       }
       const result = await memoryHandler.handle(input);
       // Arm the Fresh-Check gate only on a read that actually DELIVERED a file.
@@ -11326,6 +11354,45 @@ export class Orchestrator {
       console.error('[discretion] recalled-turn label lookup failed — labelling the turn unreadable:', err);
       addTurnLabels([{ kind: 'context', key: 'unreadable', readers: UNKNOWN_READERS }]);
     }
+  }
+
+  /** Spec 2042 §5.11 — recalled memorables bring the labels they were written with. */
+  private async labelRecalledMemorables(mkIds: readonly string[]): Promise<void> {
+    if (!this.discretion || mkIds.length === 0 || !currentDiscretion()) return;
+    try {
+      const found = await this.discretion.labelsOf('memorable', mkIds);
+      for (const labels of found.values()) addTurnLabels(labels);
+    } catch (err) {
+      console.error('[discretion] recalled-memorable label lookup failed — labelling the turn unreadable:', err);
+      addTurnLabels([{ kind: 'context', key: 'unreadable', readers: UNKNOWN_READERS }]);
+    }
+  }
+
+  /** Spec 2042 §5.11 — a memorable keeps the labels of the turn that wrote it. */
+  private async labelMemorable(mkId: string, extra: readonly DiscretionLabel[] = []): Promise<void> {
+    const state = currentDiscretion();
+    if (!this.discretion || !state) return;
+    const labels = unionLabels(await resolvedTurnLabels(state), extra);
+    if (labels.labels.length === 0) return;
+    await this.discretion.persistLabels('memorable', mkId, this.agentId, labels).catch((err: unknown) => {
+      console.error(`[discretion] persisting the labels of memorable ${mkId} failed:`, err);
+    });
+  }
+
+  /**
+   * Spec 2042 §5.11 — who reads the memory tier a `memory` write of this turn
+   * lands in: the owners (`members`), the conversation (a context-bound
+   * turn), else the agent's own memory, whose readers are not known.
+   */
+  private async memoryTierReaders(turnMemory: TurnMemoryBinding | undefined): Promise<Readers> {
+    const isolation = turnMemory?.isolation;
+    if (isolation?.kind === 'members') {
+      return isolation.audience ? readersOf(isolation.audience) : UNKNOWN_READERS;
+    }
+    if (turnMemory?.contextBound === true) {
+      return (await currentDiscretion()?.resolveReaders()) ?? UNKNOWN_READERS;
+    }
+    return UNKNOWN_READERS;
   }
 
   /** Spec 2042 §5.4 — recall in a consultation run: `discreet` + `members` only. */

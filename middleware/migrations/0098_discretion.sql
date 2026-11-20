@@ -1,10 +1,11 @@
 -- Spec 2042 §5.11 / ADR-0019 (#2079) — discretion as information flow control.
 --
 -- 1. `discretion_labels` — labels persisted transitively: whatever a turn
---    writes (its graph turn, a promoted memory entry) keeps the turn's label
---    set, and reusing it later adds those labels to the new turn. Keyed by
---    the written subject; holds label shapes (context keys, reader ids,
---    source systems, classifications), never content.
+--    writes (its graph turn `turn`, a memorable `memorable`, a note of the
+--    memory tool `memory_file`, keyed by its physical store path) keeps the
+--    turn's label set, and reusing it later adds those labels to the new
+--    turn. Holds label shapes (context keys, reader ids, source systems,
+--    classifications), never content.
 -- 2. `integration_readerships` — what the operator declared per integration
 --    (a plugin id or `mcp:<serverId>`):
 --    - `sensitivity`: `restricted` marks a system whose data reaches no
@@ -39,7 +40,7 @@ BEGIN
   ) THEN
     ALTER TABLE discretion_labels
       ADD CONSTRAINT discretion_labels_shape_check
-      CHECK (subject_kind IN ('turn', 'memorable') AND jsonb_typeof(labels) = 'array');
+      CHECK (subject_kind IN ('turn', 'memorable', 'memory_file') AND jsonb_typeof(labels) = 'array');
   END IF;
 END
 $$;

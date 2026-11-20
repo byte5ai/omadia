@@ -158,6 +158,12 @@ export class DiscretionStore implements DiscretionPort {
     );
   }
 
+  async dropLabels(kind: LabelSubjectKind, id: string): Promise<void> {
+    const pool = this.pool;
+    if (!pool) return;
+    await pool.query('DELETE FROM discretion_labels WHERE subject_kind = $1 AND subject_id = $2', [kind, id]);
+  }
+
   audit(entry: DiscretionAuditEntry): void {
     const pool = this.pool;
     if (!pool) return;

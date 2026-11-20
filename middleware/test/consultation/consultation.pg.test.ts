@@ -193,6 +193,16 @@ describe('consultation and discretion stores (pg, migrations 0097–0099)', { sk
     assert.deepEqual(found.get('turn-1'), labels);
     assert.deepEqual(found.get('turn-bad')?.labels, [{ kind: 'context', key: 'unreadable', readers: { kind: 'unknown' } }]);
     assert.equal(found.has('turn-missing'), false);
+    // Memorables and memory notes keep labels the same way; a deleted note's go.
+    await discretion.persistLabels('memorable', 'mk:1', 'anna', labels);
+    await discretion.persistLabels('memory_file', '/memories/orchestrator/anna/p.md', 'anna', labels);
+    assert.deepEqual((await discretion.labelsOf('memorable', ['mk:1'])).get('mk:1'), labels);
+    await discretion.dropLabels('memory_file', '/memories/orchestrator/anna/p.md');
+    assert.equal((await discretion.labelsOf('memory_file', ['/memories/orchestrator/anna/p.md'])).size, 0);
+    // More ids than one lookup takes: none is dropped.
+    const many = Array.from({ length: 501 }, (_, i) => `turn-many-${String(i)}`);
+    await discretion.persistLabels('turn', 'turn-many-500', 'anna', labels);
+    assert.ok((await discretion.labelsOf('turn', many)).has('turn-many-500'));
   });
 
   it('the audit stores label ids and reasons only', async () => {

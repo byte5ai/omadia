@@ -14,7 +14,7 @@
 
 import { turnContext } from '../turnContext.js';
 import { checkFlow, violationSummary } from './flowRule.js';
-import { labelSummary, type DiscretionLabel } from './labels.js';
+import { labelSummary, type DiscretionLabel, type Readers } from './labels.js';
 import type { DiscretionPort } from './port.js';
 import { addTurnLabels, currentDiscretion, resolvedTurnLabels } from './turnLabels.js';
 
@@ -86,4 +86,48 @@ export async function labelToolRead(
     labels.push({ kind: 'classification', class: 'personal' });
   }
   addTurnLabels(labels);
+}
+
+/** The refusal text the model gets for a memory write that would carry too much. */
+export function memoryRefusal(): string {
+  return (
+    'Error: nothing was written to memory. This turn holds information from another conversation ' +
+    'that not everyone who can read this memory may know (discretion). Do not try to store it in other words.'
+  );
+}
+
+/**
+ * Spec 2042 §5.11 "Memory write" — may what this turn has read be written
+ * into a memory tier read by `readers`? The turn's own conversation always
+ * passes into its own tiers; knowledge from elsewhere passes only when every
+ * reader of the tier may know it. Returns the refusal, or undefined.
+ * Outside a labelled turn: undefined.
+ */
+export async function guardMemoryEgress(
+  port: DiscretionPort | undefined,
+  readers: Readers,
+  target: string,
+): Promise<string | undefined> {
+  const state = currentDiscretion();
+  if (!state) return undefined;
+  const labels = await resolvedTurnLabels(state);
+  const decision = checkFlow(labels, {
+    kind: 'memory',
+    ...(state.contextKey !== undefined ? { contextKey: state.contextKey } : {}),
+    readers,
+  });
+  const crossContext = labels.labels.some((l) => l.kind === 'context' && l.key !== state.contextKey);
+  if (!decision.allowed || crossContext) {
+    const ctx = turnContext.current();
+    port?.audit({
+      ...(ctx?.turnId ? { turnId: ctx.turnId } : {}),
+      ...(ctx?.agentSlug ? { agentSlug: ctx.agentSlug } : {}),
+      egress: 'memory',
+      target,
+      allowed: decision.allowed,
+      labels: labelSummary(labels),
+      violations: violationSummary(decision),
+    });
+  }
+  return decision.allowed ? undefined : memoryRefusal();
 }

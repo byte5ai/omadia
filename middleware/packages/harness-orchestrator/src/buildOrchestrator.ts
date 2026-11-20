@@ -16,6 +16,7 @@
 
 import type { ConsultationPort } from './consultation/consultTool.js';
 import type { DiscretionPort } from './discretion/port.js';
+import { LabelledMemoryStore } from './discretion/labelledMemoryStore.js';
 import type {
   ChatAgent,
   ChatTurnInput,
@@ -761,7 +762,11 @@ export function buildOrchestratorForAgent(
   // (decision A3a) and must not be partitioned by chat context.
   const memoryBinder = new MemoryBinder({
     agentSlug: config.agentId,
-    root: deps.memoryStore,
+    // Spec 2042 §5.11 — notes keep the labels of the turn that wrote them,
+    // keyed by physical path (below the binder's scoping).
+    root: deps.discretion
+      ? new LabelledMemoryStore(deps.memoryStore, deps.discretion, config.agentId)
+      : deps.memoryStore,
     mode: config.contextMemory ?? 'off',
     shieldActive,
     noteProvenance: TURN_NOTE_PROVENANCE,

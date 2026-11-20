@@ -16,7 +16,12 @@ export interface IntegrationDeclaration {
   readonly readership: IntegrationReadership;
 }
 
-export type LabelSubjectKind = 'turn' | 'memorable';
+/**
+ * What a persisted label set belongs to: a written turn, a memorable, or a
+ * note of the memory tool (by its physical store path, so every tier that
+ * reads the same file finds its labels).
+ */
+export type LabelSubjectKind = 'turn' | 'memorable' | 'memory_file';
 
 export interface DiscretionAuditEntry {
   readonly turnId?: string;
@@ -36,6 +41,8 @@ export interface DiscretionPort {
   labelsOf(kind: LabelSubjectKind, ids: readonly string[]): Promise<ReadonlyMap<string, LabelSet>>;
   /** Persist the label set a written subject keeps. */
   persistLabels(kind: LabelSubjectKind, id: string, agentSlug: string, labels: LabelSet): Promise<void>;
+  /** Drop a subject's labels (a deleted or renamed note). Optional: absent = kept. */
+  dropLabels?(kind: LabelSubjectKind, id: string): Promise<void>;
   /** Record a flow decision. Never throws; never receives content. */
   audit(entry: DiscretionAuditEntry): void;
 }
