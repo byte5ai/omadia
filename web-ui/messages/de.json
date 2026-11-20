@@ -7209,7 +7209,10 @@
       "submitting": "Wird angelegt…",
       "failed": "Der Agent konnte nicht angelegt werden: {detail}",
       "loadFailed": "Die Ersteinrichtung konnte nicht geladen werden: {detail}"
-    }
+    },
+    "confirmDefaultTitle": "{agent} zum Default-Agenten machen?",
+    "confirmDefaultBody": "{agent} erreicht alle {count} angebundenen Systeme. Als Default-Agent beantwortet er Nachrichten, die an keinen Agenten gerichtet sind; wer schreibt, ohne einen Agenten zu nennen, erreicht damit jedes dieser Systeme. Die Änderung wird im Audit-Log festgehalten.",
+    "confirmDefaultYes": "Zum Default-Agenten machen"
   },
   "agentAvailability": {
     "legend": "Wer diesen Agenten erreichen kann",

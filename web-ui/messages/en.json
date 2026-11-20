@@ -7209,7 +7209,10 @@
       "submitting": "Creating…",
       "failed": "The agent could not be created: {detail}",
       "loadFailed": "The first-run setup could not be loaded: {detail}"
-    }
+    },
+    "confirmDefaultTitle": "Make {agent} a default agent?",
+    "confirmDefaultBody": "{agent} can reach all {count} connected systems. As a default agent it answers messages addressed to no agent, so everyone who writes without naming an agent reaches every one of these systems. The change is recorded in the audit log.",
+    "confirmDefaultYes": "Make it the default agent"
   },
   "agentAvailability": {
     "legend": "Who can reach this agent",

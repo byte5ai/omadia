@@ -30,12 +30,18 @@ import {
 } from '@omadia/orchestrator';
 
 import { auditActorFromRequest, type AuditEntryInput } from '../auth/adminAuditLog.js';
+import { requireBroadReachConfirmation } from '../agents/broadReachGate.js';
+import type { ReachSources } from '../agents/agentReachSources.js';
 import { respondFacilitatorRefusal } from '../platform/facilitatorGuard.js';
 
 export interface ManagementLayerRouterOptions {
   readonly getConfigStore: () => ConfigStore | undefined;
   readonly getRegistry: () => OrchestratorRegistry | undefined;
   readonly audit?: (entry: AuditEntryInput) => Promise<void>;
+  /** #2054 — what an agent's reach is computed from (spec 2042 §5.7):
+   *  making an agent with every connected system a default agent needs the
+   *  operator's confirmation. Absent (tests) = no reach check. */
+  readonly reachSources?: () => ReachSources;
 }
 
 const DefaultEntrySchema = z.object({
@@ -45,6 +51,8 @@ const DefaultEntrySchema = z.object({
   channel_type: z.string().min(1).max(64).nullable(),
   /** The agent, or null for `off`. */
   agent_slug: z.string().min(1).max(64).nullable(),
+  /** #2054 — confirms making an agent with every connected system a default agent. */
+  confirmBroadReach: z.boolean().optional(),
 });
 
 const DirectoryQuerySchema = z.object({
@@ -179,6 +187,24 @@ export function createOperatorDefaultAgentsRouter(options: ManagementLayerRouter
         agentId = agent.id;
       }
       const actor = auditActorFromRequest(req);
+      // #2054 — spec 2042 §5.7: a default agent with access to every
+      // connected system is confirmed explicitly, and audited.
+      let broadReachAudit: AuditEntryInput | undefined;
+      if (agentId !== null && options.reachSources) {
+        const gate = await requireBroadReachConfirmation({
+          sources: options.reachSources(),
+          agent: { id: agentId, slug: body.agent_slug ?? '' },
+          change: 'default_agent',
+          currentPlugins: await svc.store.listAgentPlugins(agentId),
+          confirmed: body.confirmBroadReach === true,
+          actor,
+        });
+        if (!gate.ok) {
+          res.status(gate.status).json(gate.body);
+          return;
+        }
+        broadReachAudit = gate.audit;
+      }
       const previous = (await svc.store.routing.listDefaultEntries()).find(
         (e) => e.principal === principal && e.channelType === body.channel_type,
       );
@@ -195,6 +221,7 @@ export function createOperatorDefaultAgentsRouter(options: ManagementLayerRouter
         before: previous ? { agent_id: previous.agentId, off: previous.agentId === null } : null,
         after: { agent_slug: body.agent_slug, off: agentId === null },
       });
+      if (broadReachAudit) await options.audit?.(broadReachAudit);
       await svc.registry.reload();
       res.json({ ok: true, entry: entryDto(entry, svc.registry) });
     } catch (err) {

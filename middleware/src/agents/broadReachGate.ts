@@ -23,9 +23,9 @@ import {
  * (`PATCH|PUT /api/v1/operator/agents/:slug/plugins`), the MCP tool grant
  * routes (`PUT /api/v1/operator/mcp-grants`, Agent Builder `tool_grant`
  * edges), the plugin MCP grant (`PUT /plugin-mcp-grants`, checked for every
- * agent holding the plugin) and the first-run flow. The default-agent check
- * (change `default_agent`) is for the default-agent assignment of stream S1;
- * no route on this branch calls it yet. A refusal is HTTP 409
+ * agent holding the plugin), the first-run flow, and the default-agent table
+ * (`PUT /api/v1/operator/default-agents`, change `default_agent`). A refusal
+ * is HTTP 409
  * with the typed error {@link BROAD_REACH_CONFIRMATION_REQUIRED}; the request
  * passes when it carries `confirmBroadReach: true`. A confirmed change comes
  * back with the admin audit entry the caller records AFTER its write

@@ -4140,10 +4140,10 @@ reach }`. Gilt für `PUT|PATCH /api/v1/operator/agents/:slug/plugins`,
 `PUT /api/v1/operator/plugin-mcp-grants` (geprüft für jeden Agenten, der das
 Plugin hält; die 409 nennt die Agenten) und den Erststart-Flow. Audit
 `agent.broad_reach_grant` erst nach erfolgreichem Write; ein fehlgeschlagener
-Audit-Write wird geloggt, der Grant nicht zurückgerollt. Die
-Default-Agent-Variante (`change: 'default_agent'`, Audit
-`agent.broad_reach_default`) ist für die Default-Agent-Tabelle von S1
-exportiert und auf diesem Branch an keine Route gebunden.
+Audit-Write wird geloggt, der Grant nicht zurückgerollt. Dieselbe
+Bestätigung gilt, wenn ein solcher Agent Default-Agent wird
+(`PUT /api/v1/operator/default-agents` mit `confirmBroadReach`,
+`change: 'default_agent'`, Audit `agent.broad_reach_default`).
 
 **Nur Capability-Plugins.** Die Plugin-Grant-Routen (`PUT|PATCH
 /:slug/plugins`) antworten auf einen **neuen** Grant eines Plugins, das kein

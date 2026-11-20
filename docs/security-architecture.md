@@ -1452,10 +1452,10 @@ one agent everything needs a second, explicit yes.
   the directory, the first-run flow and every grant offer. It holds no grant
   row; the preview turn gets only the draft plugin's captured tools.
 
-**Not wired yet.** The default-agent designation check
-(`change: 'default_agent'`, audited as `agent.broad_reach_default`) is exported
-for the S1 stream's default-agent table and is not called by any route on this
-branch. Existing grants on a live instance are unchanged by #2054; only new
+**Default agents.** Making an agent with every connected system a default
+agent (`PUT /api/v1/operator/default-agents`, `change: 'default_agent'`) needs
+the same confirmation and is audited as `agent.broad_reach_default`. Existing
+grants on a live instance are unchanged by #2054; only new
 installs stop attaching.
 
 ## 6. Defence in depth for cached data

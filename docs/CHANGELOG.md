@@ -101,9 +101,9 @@ changelog.
   `PUT /api/v1/operator/plugin-mcp-grants`, the first-run flow) answers
   `409 broad_reach_confirmation_required` unless the request carries
   `confirmBroadReach: true`; a confirmed change is audited as
-  `agent.broad_reach_grant` after the write succeeded. The default-agent check
-  (`agent.broad_reach_default`) is provided for the default-agent table of the
-  S1 stream and not wired to a route yet.
+  `agent.broad_reach_grant` after the write succeeded. Making such an agent a
+  default agent (`PUT /api/v1/operator/default-agents`) asks the same way and
+  is audited as `agent.broad_reach_default`.
 - **Only capability plugins are granted:** the plugin grant routes answer
   `400 not_a_capability_plugin` for a new grant of a plugin that is not a
   capability plugin (`integration`, `tool`, `skill`; a still installed `agent`

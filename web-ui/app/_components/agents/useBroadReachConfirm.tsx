@@ -9,6 +9,8 @@ import { BROAD_REACH_CONFIRMATION_REQUIRED } from '../../_lib/agents';
 
 interface BroadReachRefusal {
   slug: string;
+  /** `default_agent`: the agent would become a default agent (#2054). */
+  change: 'grant' | 'default_agent';
   connectedSystems: number;
   systems: string[];
 }
@@ -19,17 +21,19 @@ export function broadReachRefusalOf(err: unknown): BroadReachRefusal | null {
   try {
     const body = JSON.parse(err.body) as {
       slug?: unknown;
+      change?: unknown;
       reach?: { connected_systems?: unknown; systems?: Array<{ name?: unknown }> };
     };
     return {
       slug: typeof body.slug === 'string' ? body.slug : '',
+      change: body.change === 'default_agent' ? 'default_agent' : 'grant',
       connectedSystems: typeof body.reach?.connected_systems === 'number' ? body.reach.connected_systems : 0,
       systems: (body.reach?.systems ?? [])
         .map((s) => s.name)
         .filter((n): n is string => typeof n === 'string'),
     };
   } catch {
-    return { slug: '', connectedSystems: 0, systems: [] };
+    return { slug: '', change: 'grant', connectedSystems: 0, systems: [] };
   }
 }
 
@@ -83,17 +87,19 @@ export function useBroadReachConfirm(): {
     current?.answer(confirmed);
   };
 
+  // #2054 — making a broad agent a default agent reads differently from a grant.
+  const isDefault = pending?.refusal.change === 'default_agent';
   const dialog = (
     <ConfirmDialog
       open={pending !== null}
       tone="danger"
       wide
-      title={t('confirmTitle', { agent: pending?.agentName ?? '' })}
-      body={t('confirmBody', {
+      title={t(isDefault ? 'confirmDefaultTitle' : 'confirmTitle', { agent: pending?.agentName ?? '' })}
+      body={t(isDefault ? 'confirmDefaultBody' : 'confirmBody', {
         agent: pending?.agentName ?? '',
         count: pending?.refusal.connectedSystems ?? 0,
       })}
-      confirmLabel={t('confirmYes')}
+      confirmLabel={t(isDefault ? 'confirmDefaultYes' : 'confirmYes')}
       cancelLabel={t('cancel')}
       onConfirm={() => settle(true)}
       onCancel={() => settle(false)}

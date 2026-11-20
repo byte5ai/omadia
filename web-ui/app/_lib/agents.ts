@@ -1370,10 +1370,16 @@ export async function replaceAgentBindings(
  * `null` = off. The server answers 409 when the agent is not available to
  * everyone in every channel, or is a facilitator.
  */
-export async function setInstanceDefaultAgent(slug: string | null): Promise<void> {
+export async function setInstanceDefaultAgent(slug: string | null, opts?: GrantWriteOptions): Promise<void> {
   await callJson('/v1/operator/default-agents', {
     method: 'PUT',
-    body: JSON.stringify({ principal: null, channel_type: null, agent_slug: slug }),
+    body: JSON.stringify({
+      principal: null,
+      channel_type: null,
+      agent_slug: slug,
+      // #2054 — the operator confirmed a default agent with every connected system.
+      ...(opts?.confirmBroadReach ? { confirmBroadReach: true } : {}),
+    }),
   });
 }
 

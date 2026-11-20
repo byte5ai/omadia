@@ -4613,6 +4613,12 @@ async function main(): Promise<void> {
   const managementLayerOptions = {
     getConfigStore: () => serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
     getRegistry: () => serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+    // #2054 — the broad-reach check of a default-agent entry.
+    reachSources: () => ({
+      catalog: pluginCatalog,
+      installed: installedRegistry,
+      graph: graphPool ? new AgentGraphStore(graphPool) : undefined,
+    }),
     audit: async (entry: AuditEntryInput) => {
       await adminAudit?.record(entry);
     },

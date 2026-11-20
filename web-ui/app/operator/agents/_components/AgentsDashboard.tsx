@@ -230,7 +230,13 @@ export function AgentsDashboard({
           agents={standardAgents}
           currentSlug={defaultSlug}
           disabled={pending || !!busy}
-          onChange={(slug) => run(DEFAULT_AGENT_LABEL, () => setInstanceDefaultAgent(slug))}
+          onChange={(slug) =>
+            run(DEFAULT_AGENT_LABEL, () =>
+              broadReach.guard(standardAgents.find((a) => a.slug === slug)?.name ?? '', (confirm) =>
+                setInstanceDefaultAgent(slug, { confirmBroadReach: confirm }),
+              ),
+            )
+          }
         />
       </section>
 
