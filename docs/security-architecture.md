@@ -953,7 +953,8 @@ of the turn carries all of it.
 |---|---|---|
 | Answer to people | every reader may know every label; otherwise the result is rebuilt from bookkeeping fields only (no attachments, files, cards, canvas, recall or contributions) and the session row stores only the replacement. Non-streaming path; a streamed answer is protected only in what is stored | `guardAnswerEgress`, `beforeTurnWritten` |
 | Contribution to an agent | the receiver's grants cover every source and its readers may know it; then the grant's disclosure level caps what is new to the receiver | consultation broker |
-| Persistence | a written turn keeps its label set (memory writes themselves are not checked against the rule yet) | `onTurnWritten` |
+| Persistence | a written turn keeps its label set | `onTurnWritten` |
+| Memory write | another conversation's knowledge only into a tier whose readers may all know it (members: the owners; context-bound: the room; else the agent's memory, readers unknown, which only the turn's own conversation may enter). Notes keep the writer's labels by physical path, memorables (auto-promotion, MCP→KG ingestion) keep them too; reading or recalling them adds them back | `guardMemoryEgress`, `LabelledMemoryStore`, `maybePromoteTurn` |
 | Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Applies to tools recognised as writing: a declared `writeCapabilities` or an MCP tool without `readOnlyHint` — plugin tools declare neither today | `guardIntegrationEgress`, before the call runs |
 
 A refused flow is never redacted afterwards. The agent gets a structured refusal;
@@ -971,8 +972,8 @@ for an agent that holds capability grants. Existing agents keep their mode.
 
 Known residuals: the subscription-CLI path and sub-agent inner calls carry no
 discretion state yet; streamed answers are protected only in what is stored; reads
-through the `memory` and `query_knowledge_graph` tools are not labelled and memory
-writes are not checked against the flow rule; plugin tools are not recognised as
+of memorables through `query_knowledge_graph` and the session briefing bring no
+labels; plugin tools are not recognised as
 writing (no declaration exists yet, S3); a turn whose label write failed is recalled
 without labels; `off` is refused only on the context-memory switch, not when
 plugins are granted to an agent that already runs `off`; `say` re-checks consultation

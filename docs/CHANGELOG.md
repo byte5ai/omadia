@@ -73,6 +73,15 @@ changelog.
   what is stored. Every refusal is audited without content (`discretion_flow_audit`).
 - Web chat and API turns are the owner's private context (`owner:<id>`): what they
   read does not resurface in a room with other readers.
+- Memory keeps labels too: a `memory` note keeps the labels of the turn that wrote it
+  and a later reader carries them; memorables (auto-promotion, MCP→KG ingestion) do
+  the same on recall. `memory` writes and auto-promotion move another conversation's
+  knowledge only into a tier whose readers may all know it (criterion 27).
+- Migration 0100: agents enabled for agent-to-agent talk in the same chat (#1018) get
+  consultation grants in both directions for that channel type and both consultation
+  switches, so configured discussions keep working.
+- Availability groups: the Conductor's roles answer `role:<key>` synchronously from a
+  snapshot (30 s and after every role write; a partial lookup admits nobody).
 - New agents start with context memory `members` (migration 0099; facilitators
   `off`); existing agents keep their mode. Context memory can no longer be switched `off` for an agent
   that holds capability grants (`409 context_memory_required`).

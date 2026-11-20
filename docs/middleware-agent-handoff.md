@@ -9778,6 +9778,11 @@ Leserkreis, Offenlegungsstufe).
   maskierte Sicht nur, wenn B's Lauf einen Shield hatte; sonst `existence`.
 - **Kosten:** B's Modellaufrufe laufen unter B's eigener Turn-ID; das Ledger
   verknüpft `from_turn_id` ↔ `to_turn_id`.
+- **Rollout** (Migration 0100): je zwei lebende Nicht-Facilitator-Agenten, die nach
+  #1018 im selben Chat für Agent-zu-Agent freigeschaltet sind, bekommen Grants in
+  beide Richtungen (nur der Kanaltyp, keine Capabilities, Memory `none`, Offenlegung
+  `none`) und beide Rückfrage-Schalter; bestehende Grants bleiben. So bleibt keine
+  konfigurierte Diskussion stehen.
 - **Diskussionen** (`discussion_start`): zusätzlich zu Agent-Schalter und Chat-Policy
   (#1018) brauchen je zwei Teilnehmer Grants in beide Richtungen, die den Kanaltyp
   abdecken (`createDiscussionsCapability({ mutualGrant })`,
@@ -9807,8 +9812,16 @@ Leserkreis, Offenlegungsstufe).
     Anhänge, Dateien, Karten, Canvas, Recall, Beiträge), und die Session-Zeile
     speichert nur die Ersatzzeile (`beforeTurnWritten`);
   - Persistenz: jeder geschriebene Turn behält sein Label-Set (`discretion_labels`,
-    Migration 0098), Recall bringt es zurück. Memory-Schreibvorgänge selbst werden
-    nicht gegen die Flussregel geprüft (siehe Offen);
+    Migration 0098), Recall bringt es zurück;
+  - Memory: `memory`-Schreibvorgänge und die Auto-Promotion laufen vorher durch die
+    Flussregel `memory` (Wissen aus einem anderen Gespräch nur in eine Stufe, deren
+    Leser es alle kennen dürfen: `members` = die Owner, kontextgebunden = der Raum,
+    sonst das Agenten-Memory mit unbekannten Lesern, in das nur das eigene Gespräch
+    darf). Notizen behalten die Labels des schreibenden Turns, nach physischem Pfad
+    (`LabelledMemoryStore` unter dem Binder, Subjekt `memory_file`; Umbenennen nimmt
+    sie mit, Löschen entfernt sie), Lesen fügt sie dem lesenden Turn hinzu.
+    memorables (Auto-Promotion, MCP→KG-Ingestion mit dem Server als Quelle)
+    behalten die Labels (`memorable`), Recall eines memorable bringt sie zurück;
   - Beiträge an andere Agenten im Broker.
 - **Leserschaft** (`integration_readerships`): `sensitivity` internal|restricted,
   `readers` everyone|Menge, akzeptierte Systeme und Klassifizierungen. Ohne
@@ -9823,6 +9836,18 @@ Leserkreis, Offenlegungsstufe).
   `PUT …/context-memory` mit `off` → 409 `context_memory_required`, wenn der Agent
   Capability-Grants hält. Neue Facilitators werden beim Anlegen auf `off` gesetzt
   (kein Memory, die Route erlaubt für sie nur `off`).
+
+### Rollen für die Verfügbarkeit (`hasRole`)
+
+`src/conductor/roleMembership.ts` (`RoleMembershipSnapshot`, Feld `roleMembership` von
+`wireConductor`): synchrone Antwort auf „hat Principal `user:<id>` die Rolle `<key>`?“
+für Verfügbarkeitseinträge `role:<key>`. Halter kommen aus der `RoleHolderRegistry`
+des Conductors (Zuweisungstabelle + aktivierte Quellen), Refresh alle 30 s und sofort
+nach jeder Rollen-/Zuweisungsänderung dieses Prozesses
+(`ConductorRoleStore.onChange`). Eine teilweise Auflösung zählt als „niemand“, ein
+fehlgeschlagener Refresh behält den letzten Stand, vor dem ersten Refresh hat niemand
+eine Rolle. Rollen gelten nur für die Verfügbarkeit, nicht für die Default-Tabelle
+(§5.6) und nicht für Leserschaften.
 
 ### Operator-API (`middleware/src/routes/operatorConsultation.ts`)
 
@@ -9854,10 +9879,10 @@ Audit-Aktionen: `agent.consultation_change` (je Agent eine Zeile),
   nicht gegen die Leserschaft geprüft. Den Standard umzudrehen würde jedes
   Plugin-Tool nach einem kontextübergreifenden Recall sperren, auch reine Lesetools;
   gehört zu S3 (Plugin-Kinds/Gateway: Tools deklarieren lesend/schreibend).
-- **Memory-Ausgang:** der Zweig `memory` der Flussregel wird nicht aufgerufen;
-  `memory`-Tool-Schreibvorgänge, Auto-Promotion und Session-Briefing-Recall tragen
-  keine Labels, `memorable`-Labels werden nicht persistiert. Die Context-Memory-ACL
-  (Schreibregeln der Tiers) gilt weiter.
+- **Memory-Reste:** memorables, die `query_knowledge_graph` liefert, und das
+  Session-Briefing bringen keine Labels mit (nur der automatische Recall); ein
+  umbenanntes Verzeichnis lässt die Labels seiner Dateien unter den alten Pfaden;
+  schlägt das Speichern der Labels einer Notiz fehl, bleibt sie ungelabelt.
 - **`off` mit Grants:** verhindert wird nur das Umschalten auf `off`. Bestehende
   Agenten (kein Backfill) und die Reihenfolge „erst `off`, dann Plugins zuweisen“
   bleiben möglich; das Zuweisen zu sperren würde bestehende `off`-Agenten
