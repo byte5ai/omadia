@@ -1,3 +1,4 @@
+import { parseOperatorArchetypes, type OperatorArchetypeDto } from './archetypes';
 import { ApiError, rscTimeoutSignal } from './api';
 import type { LocalizedMarkdown } from './storeTypes';
 import type { TeamsTargetKind } from './teamsInstallTarget';
@@ -40,9 +41,6 @@ async function forwardCookieHeader(): Promise<Record<string, string>> {
 
 export type PrivacyProfile = 'strict' | 'default';
 export type AgentStatus = 'enabled' | 'disabled';
-/** @deprecated the previous name of the archetype; the API returns it next
- *  to `archetype` until the `agents.kind` column is dropped. */
-export type AgentKind = 'standard' | 'facilitator';
 /** #2088 — the archetype of an agent: `standard`, or one an archetype plugin
  *  registered (today `facilitator`). Fixed at creation, never switched. */
 export type AgentArchetype = string;
@@ -52,14 +50,11 @@ export const FACILITATOR_ARCHETYPE: AgentArchetype = 'facilitator';
 /** What an agent DTO says about its archetype. */
 export interface ArchetypeBearer {
   archetype?: AgentArchetype;
-  /** @deprecated see {@link AgentKind}. */
-  kind?: AgentKind;
 }
 
-/** The archetype of an agent: `archetype`, else the `kind` of a middleware
- *  that predates it, else `standard`. */
+/** The archetype of an agent; an agent without one is a standard agent. */
 export function archetypeOfAgent(agent: ArchetypeBearer): AgentArchetype {
-  return agent.archetype ?? agent.kind ?? STANDARD_ARCHETYPE;
+  return agent.archetype ?? STANDARD_ARCHETYPE;
 }
 
 export interface OperatorAgentPluginDto {
@@ -85,8 +80,6 @@ export interface OperatorAgentDto {
   /** #2088 — absent on a middleware that predates archetypes; read it
    *  through `archetypeOfAgent` / `isFacilitatorAgent`. */
   archetype?: AgentArchetype;
-  /** @deprecated the previous name of {@link archetype}. */
-  kind?: AgentKind;
   created_at: string;
   updated_at: string;
   active: boolean;
@@ -147,6 +140,19 @@ export async function listOperatorAgents(): Promise<OperatorAgentsListDto> {
   return callJson<OperatorAgentsListDto>('/v1/operator/agents');
 }
 
+/**
+ * #2088 — the archetypes agents can be created of. `null` when the
+ * middleware does not have the endpoint (it predates it) or does not answer:
+ * the directory then shows what it always showed.
+ */
+export async function listOperatorArchetypes(): Promise<OperatorArchetypeDto[] | null> {
+  try {
+    return parseOperatorArchetypes(await callJson<unknown>('/v1/operator/archetypes'));
+  } catch {
+    return null;
+  }
+}
+
 /** Dashboard MCP health summary (epic #459): how many servers are registered,
  *  how many are enabled, how many discovered tools they expose, and how many
  *  enabled servers still need a Discover run. Best-effort — a rejection just
@@ -195,8 +201,6 @@ export async function createOperatorAgent(input: CreateAgentInput): Promise<{
   id: string;
   slug: string;
   archetype?: AgentArchetype;
-  /** @deprecated see {@link AgentKind}. */
-  kind?: AgentKind;
 }> {
   return callJson('/v1/operator/agents', {
     method: 'POST',
@@ -213,20 +217,186 @@ export interface PatchAgentInput {
   status?: AgentStatus;
 }
 
+/**
+ * #2088 — what ended with an agent when it was disabled or deleted (end of
+ * service). `process_outcome`: `ended` = its archetype plugin closed its
+ * processes; `not_supported` = the archetype has none to close (or no plugin
+ * that could); `failed` = the plugin did not answer, the kernel ended the
+ * agent's message subscriptions anyway.
+ */
+export interface EndOfServiceDto {
+  reason: 'agent_disabled' | 'agent_deleted' | 'archetype_plugin_removed';
+  process_outcome: 'ended' | 'not_supported' | 'failed';
+  process_detail?: string;
+  processes: Array<{
+    process_id: string;
+    channel_type: string;
+    conversation_id: string;
+    outcome: 'aborted' | 'failed';
+    report_posted?: boolean;
+    detail?: string;
+  }>;
+  subscriptions_ended: Array<{ channel_type: string; conversation_id: string }>;
+  /** #2090 — execution scopes the kernel ended, and conversations whose
+   *  reservation it released. Absent on an older middleware. */
+  execution_scopes_ended?: number;
+  reservations_released?: { channel_type: string; conversation_id: string }[];
+  system_notices_owed: number;
+}
+
+/** #2088 — a deleted agent: its record is kept until an operator purges it. */
+export interface DeletedAgentDto {
+  id: string;
+  slug: string;
+  name: string;
+  archetype: string;
+  deleted_at: string;
+  deleted_by: string | null;
+  purgeable_from: string;
+  purgeable_without_confirmation: boolean;
+}
+
+export interface AgentChangeResult {
+  ok: boolean;
+  end_of_service?: EndOfServiceDto;
+  tombstone?: DeletedAgentDto;
+}
+
 export async function patchOperatorAgent(
   slug: string,
   patch: PatchAgentInput,
-): Promise<void> {
-  await callJson(`/v1/operator/agents/${encodeURIComponent(slug)}`, {
+): Promise<AgentChangeResult> {
+  return callJson<AgentChangeResult>(`/v1/operator/agents/${encodeURIComponent(slug)}`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
   });
 }
 
-export async function deleteOperatorAgent(slug: string): Promise<void> {
-  await callJson(`/v1/operator/agents/${encodeURIComponent(slug)}`, {
+/** Deletes an agent: it goes out of service and its record is kept as a
+ *  deleted agent (#2088). `purgeDeletedAgent` removes it for good. */
+export async function deleteOperatorAgent(slug: string): Promise<AgentChangeResult> {
+  return callJson<AgentChangeResult>(`/v1/operator/agents/${encodeURIComponent(slug)}`, {
     method: 'DELETE',
   });
+}
+
+export async function listDeletedAgents(): Promise<{ retention_days: number; agents: DeletedAgentDto[] }> {
+  return callJson('/v1/operator/agents/deleted');
+}
+
+/** `confirm`: the agent's slug, required while it was deleted less than the
+ *  retention period ago (409 `purge_confirmation_required` otherwise). */
+export async function purgeDeletedAgent(id: string, confirm?: string): Promise<{ ok: boolean }> {
+  return callJson(`/v1/operator/agents/deleted/${encodeURIComponent(id)}/purge`, {
+    method: 'POST',
+    body: JSON.stringify(confirm !== undefined ? { confirm } : {}),
+  });
+}
+
+// ── #2090 — execution scopes of archetype plugins and the kill switch ───
+
+export type ExecutionScopeKind = 'configuring' | 'active' | 'closing' | 'scheduling' | 'follow_up';
+export type KillSwitchLevel = 'instance' | 'agent' | 'process';
+
+export interface ExecutionScopeDto {
+  id: string;
+  agent_slug: string;
+  plugin_id: string;
+  process_id: string;
+  kind: ExecutionScopeKind;
+  event_id: string | null;
+  deadline: string;
+  absolute_limit: string;
+  deadline_wait: boolean;
+  budget: { actions: number; model_calls: number };
+  used: { actions: number; model_calls: number };
+  conversations: number;
+  people: number;
+  opened_at: string;
+  /** A set kill switch reaches this scope: nothing is authorized under it. */
+  stopped: boolean;
+}
+
+export interface KillSwitchDto {
+  id: string;
+  level: KillSwitchLevel;
+  agent_slug: string | null;
+  process_id: string | null;
+  reason: string;
+  set_by: string;
+  set_at: string;
+}
+
+/** #2067 — a run agents started themselves (a discussion in a conversation).
+ *  It holds no execution scope; its stop is final. */
+export interface RunningDiscussionDto {
+  workflow_id: string;
+  slug: string;
+  opened_by: string | null;
+  participants: string[];
+  topic: string | null;
+  conversation: { channel_type: string; conversation_id: string } | null;
+  status: string | null;
+  started_at: string | null;
+  /** A stop was requested and takes effect at the run's next step. */
+  stop_requested_at: string | null;
+  expires_at: string | null;
+  /** A lookup failed: the row may show less than there is. */
+  incomplete: boolean;
+}
+
+/** A conversation that is held right now: no other process or discussion
+ *  starts there until it is released. */
+export interface HeldReservationDto {
+  id: string;
+  channel_type: string;
+  conversation_id: string;
+  holder_kind: 'archetype_process' | 'agent_discussion';
+  agent_slug: string | null;
+  plugin_id: string | null;
+  process_id: string;
+  role: 'home' | 'session';
+  reserved_at: string;
+}
+
+export interface ExecutionOverviewDto {
+  kill_switches: KillSwitchDto[];
+  scopes: ExecutionScopeDto[];
+  discussions: RunningDiscussionDto[];
+  /** The discussion listing failed; `discussions` is empty for that reason. */
+  discussions_failed: boolean;
+  /** Absent on a middleware that predates the listing. */
+  reservations?: HeldReservationDto[];
+}
+
+export async function getExecutionOverview(): Promise<ExecutionOverviewDto> {
+  return callJson('/v1/operator/execution');
+}
+
+/** Refuses every further action in the switch's reach until it is cleared.
+ *  Ends nothing. */
+export async function setKillSwitch(input: {
+  level: KillSwitchLevel;
+  agent_slug?: string;
+  process_id?: string;
+  reason?: string;
+}): Promise<{ kill_switch: KillSwitchDto }> {
+  return callJson('/v1/operator/execution/kill-switches', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export async function clearKillSwitch(id: string): Promise<{ ok: boolean }> {
+  return callJson(`/v1/operator/execution/kill-switches/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** Frees a held conversation for the next process. Ends no process and no
+ *  discussion. */
+export async function releaseReservation(id: string): Promise<{ ok: boolean }> {
+  return callJson(`/v1/operator/execution/reservations/${encodeURIComponent(id)}/release`, { method: 'POST' });
+}
+
+/** Cancels a running agent discussion and releases its conversation. Final. */
+export async function stopDiscussion(workflowId: string): Promise<{ ok: boolean; cancelled_runs: number }> {
+  return callJson(`/v1/operator/execution/discussions/${encodeURIComponent(workflowId)}/stop`, { method: 'POST' });
 }
 
 // ── W0c (#861) — per-agent plugin assignment + grant read model ─────────
@@ -1198,7 +1368,8 @@ export type PluginKind =
   | 'integration'
   | 'channel'
   | 'tool'
-  | 'extension';
+  | 'extension'
+  | 'archetype';
 
 export type SetupFieldType =
   | 'string'

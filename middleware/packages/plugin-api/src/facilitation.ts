@@ -23,11 +23,19 @@ export interface FollowupGrant {
   facilitationId: string;
   /** Mail addresses of participants and confirmed stakeholders. */
   allowed: readonly string[];
+  /**
+   * #2078 — the kernel-issued grant the operation runs under
+   * (`executionGrants.issueGrant`). A provider that knows the
+   * `grantVerification` service asks the kernel with it before every
+   * operation and refuses when the kernel does; `allowed` stays the
+   * provider's own second check. Absent: a caller from before kernel grants.
+   */
+  grantId?: string;
 }
 
 export type FollowupRefusal = {
   outcome: 'refused';
-  code: 'recipient_not_allowed' | 'not_configured' | 'provider_error';
+  code: 'recipient_not_allowed' | 'not_configured' | 'provider_error' | 'grant_refused';
   message: string;
   /** The addresses that were outside the grant. */
   rejected?: readonly string[];

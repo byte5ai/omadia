@@ -13,6 +13,7 @@ import {
   useFacilitatorTeamsState,
   type FacilitationEngineLoad,
 } from './facilitatorReadiness';
+import { useConfirmAction } from './useConfirmAction';
 
 /**
  * #2066 — "Facilitators" next to "Orchestrators" in the agent directory
@@ -24,7 +25,7 @@ import {
  * memory scope — those are not hidden features, the kernel refuses them —
  * and says so in one line instead of leaving a gap.
  *
- * Creating one here writes the agent row with `kind: 'facilitator'`, which
+ * Creating one here writes the agent row with the archetype `facilitator`, which
  * is fixed for its lifetime. Avatar, personality and the Teams identity are
  * set on its own page, where the same editors a standard agent uses run
  * inside the facilitator's bounds; the parent navigates there after create.
@@ -204,12 +205,14 @@ function FacilitatorCard(props: {
   const t = useTranslations('operatorAgents');
   const { agent } = props;
   const teams = useFacilitatorTeamsState(agent.slug);
+  const confirmAction = useConfirmAction();
 
   return (
     <article
       data-testid={`facilitator-card-${agent.slug}`}
       className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-4 py-3"
     >
+      {confirmAction.dialog}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-[16rem] flex-1 space-y-1">
           <p className="text-base font-semibold">
@@ -252,10 +255,13 @@ function FacilitatorCard(props: {
             variant="danger"
             size="sm"
             disabled={props.disabled}
-            onClick={() => {
-              if (confirm(t('facilitator.deleteConfirm', { slug: agent.slug })))
-                props.onDelete();
-            }}
+            onClick={() =>
+              confirmAction.ask({
+                title: t('facilitator.deleteConfirm', { slug: agent.slug }),
+                confirmLabel: t('actionDelete'),
+                onConfirm: props.onDelete,
+              })
+            }
           >
             {t('actionDelete')}
           </Button>

@@ -2568,6 +2568,58 @@ export interface SqlAccessor {
    * core's own migrator re-run them on the next boot.
    */
   seedLedger?(opts: SeedLedgerOptions): Promise<LedgerSeedReport>;
+  /**
+   * #2088 — the Postgres schema this plugin's tables live in. Present for a
+   * plugin of kind `archetype` whose manifest does not require `graphPool`:
+   * such a plugin has a database of its own instead of the shared pool. It
+   * reaches it as its own role, which can read and write this schema and
+   * nothing else.
+   *
+   * The role's `search_path` is this schema, so unqualified table names
+   * resolve to it. Name no schema in a statement.
+   */
+  readonly schema?: string;
+  /**
+   * #2088 — run ONE statement as the plugin's own database role. Present
+   * together with {@link SqlAccessor.schema}.
+   *
+   * There is no client to hold: the instance may sit behind a pooler that
+   * hands every transaction a different server session, so nothing set on a
+   * session (`SET`, `LISTEN`, a session-level advisory lock, a prepared
+   * statement) survives the call. Use {@link SqlAccessor.transaction} for
+   * statements that belong together.
+   */
+  query?<R extends Record<string, unknown> = Record<string, unknown>>(
+    text: string,
+    params?: readonly unknown[],
+  ): Promise<SqlStatementResult<R>>;
+  /**
+   * #2088 — run `work` inside one transaction as the plugin's own database
+   * role: committed when it resolves, rolled back when it throws. Present
+   * together with {@link SqlAccessor.schema}.
+   *
+   * `tx` is only valid until `work` settles; a statement sent afterwards is
+   * refused. Transaction-scoped state (`SET LOCAL`, `pg_advisory_xact_lock`,
+   * row locks) works and ends with the transaction.
+   */
+  transaction?<T>(work: (tx: SqlTransaction) => Promise<T>): Promise<T>;
+}
+
+/** #2088 — what one statement answered. */
+export interface SqlStatementResult<
+  R extends Record<string, unknown> = Record<string, unknown>,
+> {
+  readonly rows: readonly R[];
+  /** Rows affected or returned; 0 when the server reported none. */
+  readonly rowCount: number;
+}
+
+/** #2088 — the handle {@link SqlAccessor.transaction} passes to its callback. */
+export interface SqlTransaction {
+  query<R extends Record<string, unknown> = Record<string, unknown>>(
+    text: string,
+    params?: readonly unknown[],
+  ): Promise<SqlStatementResult<R>>;
 }
 
 /**
@@ -2603,6 +2655,30 @@ export class SqlPermissionError extends Error {
     this.pluginId = pluginId;
     this.capability = capability;
     this.reason = reason;
+  }
+}
+
+/**
+ * #2088 — thrown when a plugin of kind `archetype` asks for a pool-shaped
+ * capability (`graphPool`). An archetype plugin never gets the shared pool,
+ * whatever its manifest declares and whatever the operator granted: it
+ * reaches the database through {@link SqlAccessor.query} and
+ * {@link SqlAccessor.transaction} on `ctx.sql`, as its own role, in its own
+ * schema. For that, its manifest must not list the capability under
+ * `requires`.
+ */
+export class SharedPoolRefusedError extends Error {
+  public readonly pluginId: string;
+  public readonly capability: string;
+  constructor(pluginId: string, capability: string) {
+    super(
+      `archetype plugin '${pluginId}' asked for '${capability}': an archetype plugin never gets the shared database pool. ` +
+        `Remove '${capability}' from the manifest's requires and use ctx.sql.query() and ctx.sql.transaction(); ` +
+        'they run as the plugin\'s own database role, limited to its schema (ctx.sql.schema)',
+    );
+    this.name = 'SharedPoolRefusedError';
+    this.pluginId = pluginId;
+    this.capability = capability;
   }
 }
 

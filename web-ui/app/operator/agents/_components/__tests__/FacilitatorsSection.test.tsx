@@ -17,7 +17,7 @@ import { AgentsDashboard } from '../AgentsDashboard';
  *   1. LISTED BY KIND. A facilitator is not an orchestrator: it is not in
  *      that list, not in its count and cannot be picked as the standard
  *      orchestrator.
- *   2. CREATE sends `kind: 'facilitator'` and continues on the new page.
+ *   2. CREATE sends `archetype: 'facilitator'` and continues on the new page.
  *   3. NOT READY WITHOUT ITS OWN TEAMS IDENTITY, with a link to provisioning.
  *   4. THE ENGINE NOTICE says what is missing — no engine, or no SQL grant.
  *   5. A 409 `facilitator_omission` is a sentence, not a machine code.
@@ -63,6 +63,8 @@ vi.mock('next/link', () => ({
 vi.mock('../../../../_lib/agents', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../../_lib/agents')>()),
   listAgentPluginCatalog: vi.fn().mockResolvedValue({ items: [] }),
+  // #2088 — no deleted agents: that section stays away in these tests.
+  listDeletedAgents: vi.fn().mockResolvedValue({ retention_days: 30, agents: [] }),
   createOperatorAgent: mockCreate,
   patchOperatorAgent: mockPatch,
   setFallbackAgent: mockSetFallback,
@@ -105,7 +107,7 @@ function list(...agents: OperatorAgentDto[]): OperatorAgentsListDto {
 
 const FALLBACK = agent({ slug: 'fallback', name: 'Standard' });
 const SALES = agent({ slug: 'sales', name: 'Sales' });
-const MONA = agent({ slug: 'mona', name: 'Mona', kind: 'facilitator' });
+const MONA = agent({ slug: 'mona', name: 'Mona', archetype: 'facilitator' });
 
 function teamsMissing(): ApiError {
   return new ApiError(404, 'GET failed: 404', JSON.stringify({ error: 'teams_identity_not_found' }));
@@ -158,7 +160,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
     const granted = agent({
       slug: 'mona',
       name: 'Mona',
-      kind: 'facilitator',
+      archetype: 'facilitator',
       plugins: [{ id: ENGINE.id, enabled: true, config: {} }],
     });
     renderWithIntl(<AgentsDashboard initial={list(FALLBACK, granted)} />);
@@ -193,22 +195,18 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
     );
   });
 
-  it('asks for the SQL grant of an ungranted candidate and links to its grants', async () => {
-    mockEngine.mockResolvedValue({ state: 'ungranted', pluginId: ENGINE.id });
+  it('says that an installed engine did not start, where to look, and links to its store page', async () => {
+    mockEngine.mockResolvedValue({ state: 'unusable', pluginId: ENGINE.id, reason: 'inactive', engineReason: null });
     mockTeams.mockRejectedValue(teamsMissing());
     renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} />);
     const notice = await screen.findByTestId('facilitation-engine-notice');
-    expect(notice.textContent).toContain('database access has not been granted');
-    expect(notice.querySelector('a')?.getAttribute('href')).toBe(
-      `/store/${encodeURIComponent(ENGINE.id)}#grants`,
-    );
-    expect(screen.getByTestId('facilitator-readiness-engine')).toBeTruthy();
-    // Nothing is attached to a candidate, so no repair is offered for it.
-    expect(screen.queryByTestId('facilitator-readiness-grant')).toBeNull();
+    expect(notice.textContent).toContain('is installed but did not start');
+    expect(notice.textContent).toContain('database access that has not been granted');
+    expect(notice.querySelector('a')?.getAttribute('href')).toBe(`/store/${encodeURIComponent(ENGINE.id)}`);
   });
 
   it.each([
-    ['inactive', 'installed but not active'],
+    ['inactive', 'installed but did not start'],
     ['not_reported', 'has not reported that it is ready'],
     ['unknown', 'cannot run facilitations right now'],
   ] as const)('has a sentence for the reason code %s', async (reason, text) => {
@@ -271,7 +269,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
   });
 
   it('offers no facilitations link while the engine is not usable', async () => {
-    mockEngine.mockResolvedValue({ state: 'ungranted', pluginId: ENGINE.id });
+    mockEngine.mockResolvedValue({ state: 'unusable', pluginId: ENGINE.id, reason: 'inactive', engineReason: null });
     mockTeams.mockRejectedValue(teamsMissing());
     renderWithIntl(
       <AgentsDashboard
@@ -294,7 +292,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
 
   it('creates with the archetype facilitator and opens the new page', async () => {
     mockEngine.mockResolvedValue(READY);
-    mockCreate.mockResolvedValue({ id: 'id-rita', slug: 'rita', archetype: 'facilitator', kind: 'facilitator' });
+    mockCreate.mockResolvedValue({ id: 'id-rita', slug: 'rita', archetype: 'facilitator' });
     renderWithIntl(<AgentsDashboard initial={list(FALLBACK)} />);
 
     await userEvent.type(screen.getByTestId('facilitator-create-slug'), 'rita');
@@ -337,5 +335,79 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
     );
     expect(document.body.textContent).not.toContain('server prose');
     expect(document.body.textContent).not.toContain('facilitator_omission');
+  });
+});
+
+describe('AgentsDashboard — one section per archetype (#2088)', () => {
+  const COACH = agent({ slug: 'cora', name: 'Cora', archetype: 'coach' });
+  const archetype = (over: Record<string, unknown>) => ({
+    source: 'kernel',
+    built_in: false,
+    label: null,
+    label_plural: null,
+    description: null,
+    omits: [],
+    adds: [],
+    requires: [],
+    plugin: null,
+    agent_count: null,
+    ...over,
+  });
+  const REGISTERED = [
+    archetype({ id: 'standard', built_in: true }),
+    archetype({ id: 'facilitator' }),
+    archetype({
+      id: 'coach',
+      source: '@acme/archetype-coach',
+      label: { en: 'Coach' },
+      label_plural: { en: 'Coaches', de: 'Coaches' },
+      description: { en: 'Coaches one team at a time.' },
+      plugin: { id: '@acme/archetype-coach', status: 'active' },
+    }),
+  ] as never;
+
+  it('a registered archetype gets its own section, named by its descriptor, and creates agents of it', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockRejectedValue(teamsMissing());
+    mockCreate.mockResolvedValue({ id: 'id-nina', slug: 'nina', archetype: 'coach' });
+    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA, COACH)} archetypes={REGISTERED} />);
+
+    const section = screen.getByTestId('archetype-section-coach');
+    expect(section.textContent).toContain('Coaches (1)');
+    expect(section.textContent).toContain('Coaches one team at a time.');
+    expect(section.textContent).toContain('Delivered by the archetype plugin “@acme/archetype-coach”');
+    expect(screen.getByTestId('archetype-agent-card-cora')).toBeTruthy();
+    // The facilitator keeps its own section, and a coach is not an orchestrator.
+    expect(screen.getByTestId('facilitators-section').textContent).toContain('Facilitators (1)');
+    expect(screen.getByRole('heading', { name: /Orchestrators \(1\)/ })).toBeTruthy();
+
+    const form = screen.getByTestId('archetype-create-form-coach');
+    const [slug, name] = Array.from(form.querySelectorAll('input'));
+    await userEvent.type(slug!, 'nina');
+    await userEvent.type(name!, 'Nina');
+    await userEvent.click(form.querySelector('button[type="submit"]')!);
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledWith({ slug: 'nina', name: 'Nina', archetype: 'coach' }));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/operator/agents/nina'));
+  });
+
+  it('agents of an archetype nobody delivers any more stay visible, with the reason and no create form', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(
+      <AgentsDashboard initial={list(FALLBACK, COACH)} archetypes={[REGISTERED[0], REGISTERED[1]] as never} />,
+    );
+    const section = screen.getByTestId('archetype-section-coach');
+    expect(section.textContent).toContain('coach (1)');
+    expect(section.textContent).toContain('No installed plugin delivers the archetype “coach” any more');
+    expect(screen.queryByTestId('archetype-create-form-coach')).toBeNull();
+    expect(screen.getByTestId('archetype-agent-card-cora')).toBeTruthy();
+  });
+
+  it('a middleware that does not report archetypes: the facilitator section as before', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} archetypes={null} />);
+    expect(screen.getByTestId('facilitators-section').textContent).toContain('Facilitators (1)');
+    expect(screen.queryByTestId('archetype-section-coach')).toBeNull();
   });
 });

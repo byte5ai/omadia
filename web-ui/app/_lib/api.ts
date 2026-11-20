@@ -10,6 +10,7 @@ import type {
   StoreListResponse,
   UploadPackageResponse,
 } from './storeTypes';
+import type { RuntimeInstalledRow } from './packagelessEntries';
 import type { PersonaConfig } from './personaTypes';
 import type { UiPrefs } from './uiPrefs';
 import type {
@@ -855,10 +856,14 @@ export async function getStorePlugin(id: string): Promise<StoreGetResponse> {
 
 export async function createInstallJob(
   pluginId: string,
+  /** #2088 — `confirmArchetype`: the operator's explicit confirmation that a
+   *  plugin of kind `archetype` adds a new kind of agent. Without it the
+   *  middleware answers 409 `install.archetype_confirmation_required`. */
+  opts: { confirmArchetype?: boolean } = {},
 ): Promise<InstallCreateResponse> {
   return postJson<InstallCreateResponse>(
     `/v1/install/plugins/${encodeURIComponent(pluginId)}`,
-    undefined,
+    opts.confirmArchetype === true ? { confirm_archetype: true } : undefined,
   );
 }
 
@@ -905,6 +910,11 @@ export interface InstalledPluginDetail {
   activation_failure_count: number;
   last_activation_error: string | null;
   last_activation_error_at: string | null;
+}
+
+/** Every entry of the installed registry as the runtime sees it. */
+export async function listRuntimeInstalled(): Promise<{ items: RuntimeInstalledRow[] }> {
+  return getJson<{ items: RuntimeInstalledRow[] }>('/v1/admin/runtime/installed');
 }
 
 export async function getInstalledPlugin(
@@ -1418,12 +1428,17 @@ export async function uploadPackage(
     /** #1455 — confirm replacing the installed version with an older one.
      *  Without it the route answers 409 `package.downgrade_blocked`. */
     allowDowngrade?: boolean;
+    /** #2088 — confirm an update that makes the installed plugin an archetype
+     *  plugin, changes its descriptor or moves its tables. Without it the
+     *  route answers 409 `package.archetype_confirmation_required`. */
+    confirmArchetype?: boolean;
   } = {},
 ): Promise<UploadPackageResponse> {
   const forwarded = await forwardCookieHeader();
   const form = new FormData();
   form.append('file', file, file.name);
   if (opts.allowDowngrade === true) form.append('allow_downgrade', '1');
+  if (opts.confirmArchetype === true) form.append('confirm_archetype', '1');
 
   // fetch() has no upload-progress in the browser; XHR is the only path that
   // exposes xhr.upload.onprogress. We fall back to fetch() in non-DOM
@@ -1726,8 +1741,16 @@ export interface RegistryInstallResponse {
 export async function installFromRegistry(
   id: string,
   version?: string,
+  /** #2088 — `confirmArchetype`: the operator confirmed an update that makes
+   *  the installed plugin an archetype plugin, changes its descriptor or
+   *  moves its tables. Without it the middleware answers 409
+   *  `package.archetype_confirmation_required`. */
+  opts: { confirmArchetype?: boolean } = {},
 ): Promise<RegistryInstallResponse> {
-  const suffix = version ? `?version=${encodeURIComponent(version)}` : '';
+  const query = new URLSearchParams();
+  if (version) query.set('version', version);
+  if (opts.confirmArchetype === true) query.set('confirm_archetype', '1');
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
   return postJson<RegistryInstallResponse>(
     `/v1/install/registry/${encodeURIComponent(id)}${suffix}`,
     undefined,
@@ -5639,55 +5662,6 @@ const CONDUCTOR_BASE = '/v1/operator/conductors';
 
 export async function listConductorWorkflows(): Promise<{ workflows: ConductorWorkflow[] }> {
   return getJson(CONDUCTOR_BASE);
-}
-
-// #330 round 4 — operator lens over LIVE facilitations (ephemeral workflows
-// are hidden from the library by design). Wire shape mirrors the kernel's
-// FacilitationOverview.
-export interface FacilitationOverview {
-  workflowId: string;
-  slug: string;
-  name: string;
-  createdByAgent: string | null;
-  expiresAt: string | null;
-  conversation: { channelType: string; conversationId: string } | null;
-  roleKey: string | null;
-  initiators: string[];
-  /** True when the kernel could not load every detail — the row may under-report. */
-  incomplete: boolean;
-  run: {
-    id: string;
-    status: 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
-    startedAt: string | null;
-    endedAt: string | null;
-    cancelRequestedAt: string | null;
-    currentStepId: string | null;
-    goal: string | null;
-    definitionOfDone: string | null;
-    rounds: number;
-    lastVerdict: {
-      dodMet: boolean | null;
-      summary: string | null;
-      /** Per-DoD-point interim state (pattern v3+); null on runs started before it. */
-      items: Array<{
-        point: number | null;
-        label: string | null;
-        status: 'done' | 'partial' | 'open' | null;
-        note: string | null;
-      }> | null;
-    } | null;
-  } | null;
-  participants: Array<{ displayName: string; isBot: boolean }> | null;
-  participantsPartial: boolean;
-}
-
-export async function listFacilitations(): Promise<{ facilitations: FacilitationOverview[] }> {
-  return getJson(`${CONDUCTOR_BASE}/facilitations`);
-}
-
-/** Cancel the facilitation's active runs and dispose of its scaffold (binding + initiator role go with it). */
-export async function terminateFacilitation(workflowId: string): Promise<{ cancelledRuns: number; disposed: boolean }> {
-  return postJson(`${CONDUCTOR_BASE}/facilitations/${encodeURIComponent(workflowId)}/terminate`, {});
 }
 
 export async function getConductorWorkflowGraph(

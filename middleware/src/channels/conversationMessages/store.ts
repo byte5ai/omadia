@@ -1,5 +1,5 @@
 // Storage for authenticated inbound conversation messages (#2043,
-// 'conversationMessages@1'): the store contract, the pure rules both
+// 'conversationMessages@2'): the store contract, the pure rules both
 // implementations share, and an in-memory implementation.
 //
 // The Postgres implementation (`pgStore.ts`, migration 0068) is what a
@@ -10,7 +10,12 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 
-import type { CardAnswerValue, ConversationMessageKind, ConversationMessageRecord } from '@omadia/plugin-api';
+import type {
+  CardAnswerValue,
+  ConversationMessageKind,
+  ConversationMessageRecord,
+  MessageTranscriptSegment,
+} from '@omadia/plugin-api';
 
 /** Kinds that are a revision of the message itself. Reactions and card
  *  answers refer to a message; they do not change it. */
@@ -34,18 +39,37 @@ export interface MessageSubscription {
   readonly conversationId: string;
   /** Lower-cased. */
   readonly channelKey: string;
-  /** The engine plugin that subscribed. */
+  /** The plugin that subscribed. */
   readonly pluginId: string;
   readonly createdAt: Date;
+  /** #2089 — the process (of that plugin) the subscription belongs to. */
+  readonly processId: string;
+  /** What is delivered: every human message, only messages addressed to the
+   *  agent, or nothing. */
+  readonly mode: SubscriptionMode;
 }
 
-export interface NewSubscription {
+export type SubscriptionMode = 'all' | 'addressed' | 'none';
+
+/** Which process a message or a card of the agent belongs to. */
+export interface ProcessMessageBinding {
+  /** A message id, or `card:<card id>`. */
+  readonly ref: string;
+  readonly pluginId: string;
+  readonly processId: string;
+}
+
+export const cardRef = (cardId: string): string => `card:${cardId}`;
+
+export interface NewProcessSubscription {
   readonly agentId: string;
   readonly agentSlug: string;
   readonly channelType: string;
   readonly conversationId: string;
   readonly channelKey: string;
   readonly pluginId: string;
+  readonly processId: string;
+  readonly mode: SubscriptionMode;
 }
 
 export interface NewMessageEvent {
@@ -76,6 +100,11 @@ export interface NewMessageEvent {
   };
   /** ISO 8601, platform time. */
   readonly occurredAt: string;
+  /** #2089 — the channel states that the message addresses the agent's bot
+   *  (a mention). */
+  readonly addressedToBot?: boolean;
+  /** #2089 — 'transcript_segment': session and media source. */
+  readonly transcript?: MessageTranscriptSegment;
 }
 
 export interface StoredAuthor {
@@ -91,10 +120,9 @@ export interface PurgeResult {
 }
 
 export interface ConversationMessageStore {
+  /** The active subscriptions of processes. A row without a process is the
+   *  earlier form's (ended by migration 0080) and is never returned. */
   listActiveSubscriptions(): Promise<readonly MessageSubscription[]>;
-  /** Idempotent: an active subscription for the same (type, conversation,
-   *  identity) is returned as it is. */
-  createSubscription(input: NewSubscription): Promise<MessageSubscription>;
   endSubscription(subscriptionId: string): Promise<void>;
   /** Stores the event with a kernel-assigned revision. `undefined` when the
    *  same platform event was already stored (redelivery). */
@@ -125,8 +153,37 @@ export interface ConversationMessageStore {
     userIdLowerCase: string,
   ): Promise<StoredAuthor | undefined>;
   /** Remove events (and the rows) of subscriptions that ended before
-   *  `endedBefore`, and any event received before `receivedBefore`. */
+   *  `endedBefore`, and any event received before `receivedBefore`. Events
+   *  of a subscription that has not ended are kept whatever their age: its
+   *  process's scopes bound it (#2089, spec 2043 §9 criterion 61). */
   purge(cutoffs: { endedBefore: Date; receivedBefore?: Date }): Promise<PurgeResult>;
+
+  /**
+   * The one subscription of a process for a conversation and identity. A
+   * process subscribes a conversation once: an existing row is returned as it
+   * is (`existed`), also when it has ended (`ended`), and never re-opened.
+   */
+  createProcessSubscription(
+    input: NewProcessSubscription,
+  ): Promise<{ subscription: MessageSubscription; existed: boolean; ended: boolean }>;
+  /** Change the mode of an active subscription. `undefined`: it has ended. */
+  setSubscriptionMode(subscriptionId: string, mode: SubscriptionMode): Promise<MessageSubscription | undefined>;
+  /** Record that a message or card belongs to a process. `false`: the ref is
+   *  already bound to another process (the first binding stands). */
+  bindProcessMessage(input: {
+    channelType: string;
+    conversationId: string;
+    ref: string;
+    agentId: string;
+    pluginId: string;
+    processId: string;
+  }): Promise<boolean>;
+  /** The bindings of the given refs in a conversation. */
+  findProcessBindings(
+    channelType: string,
+    conversationId: string,
+    refs: readonly string[],
+  ): Promise<readonly ProcessMessageBinding[]>;
 }
 
 /**
@@ -150,6 +207,11 @@ export function dedupeKeyFor(event: NewMessageEvent): string {
     case 'card_answer':
       parts.push(event.author.id, event.occurredAt, event.cardAnswer ?? null);
       break;
+    case 'transcript_segment':
+      // The same text of a segment again is a redelivery; a changed text is
+      // its next revision.
+      parts.push(event.text ?? '');
+      break;
   }
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 }
@@ -171,6 +233,8 @@ export function assignRevision(
   adapterRevision: number | undefined,
 ): number {
   if (kind === 'created') return 0;
+  // A segment's revisions are its own count: 0, then +1 per corrected text.
+  if (kind === 'transcript_segment') return latest === undefined ? 0 : latest + 1;
   if (kind === 'edited' || kind === 'deleted') {
     const next = latest === undefined ? 1 : latest + 1;
     const hint = kind === 'edited' && Number.isInteger(adapterRevision) ? adapterRevision! : 0;
@@ -224,6 +288,8 @@ export function toRecord(
       : {}),
     occurredAt: event.occurredAt,
     receivedAt: receivedAt.toISOString(),
+    ...(event.addressedToBot ? { addressedToBot: true } : {}),
+    ...(event.transcript ? { transcript: event.transcript } : {}),
   };
 }
 
@@ -239,27 +305,13 @@ interface MemoryEvent {
 export class InMemoryConversationMessageStore implements ConversationMessageStore {
   private subscriptions: (MessageSubscription & { endedAt?: Date })[] = [];
   private events: MemoryEvent[] = [];
+  private bindings: (ProcessMessageBinding & { channelType: string; conversationId: string })[] = [];
   private seq = 0;
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
   listActiveSubscriptions(): Promise<readonly MessageSubscription[]> {
     return Promise.resolve(this.subscriptions.filter((s) => s.endedAt === undefined));
-  }
-
-  createSubscription(input: NewSubscription): Promise<MessageSubscription> {
-    const channelKey = normalizeChannelKey(input.channelKey);
-    const existing = this.subscriptions.find(
-      (s) =>
-        s.endedAt === undefined &&
-        s.channelType === input.channelType &&
-        s.conversationId === input.conversationId &&
-        s.channelKey === channelKey,
-    );
-    if (existing) return Promise.resolve(existing);
-    const created: MessageSubscription = { ...input, channelKey, id: randomUUID(), createdAt: this.now() };
-    this.subscriptions = [...this.subscriptions, created];
-    return Promise.resolve(created);
   }
 
   endSubscription(subscriptionId: string): Promise<void> {
@@ -276,8 +328,11 @@ export class InMemoryConversationMessageStore implements ConversationMessageStor
     const dedupeKey = dedupeKeyFor(event);
     const own = this.events.filter((e) => e.subscriptionId === subscription.id);
     if (own.some((e) => e.dedupeKey === dedupeKey)) return Promise.resolve(undefined);
+    // Messages and transcript segments count their revisions apart.
+    const sameFamily = (kind: ConversationMessageKind): boolean =>
+      event.kind === 'transcript_segment' ? kind === 'transcript_segment' : isRevisionKind(kind);
     const revisions = own
-      .filter((e) => e.record.messageId === event.messageId && isRevisionKind(e.record.kind))
+      .filter((e) => e.record.messageId === event.messageId && sameFamily(e.record.kind))
       .map((e) => e.record.revision);
     const latest = revisions.length > 0 ? Math.max(...revisions) : undefined;
     const revision = assignRevision(event.kind, latest, event.adapterRevision);
@@ -339,7 +394,77 @@ export class InMemoryConversationMessageStore implements ConversationMessageStor
     return Promise.resolve({ kind, id, ...(displayName !== undefined ? { displayName } : {}) });
   }
 
+  createProcessSubscription(
+    input: NewProcessSubscription,
+  ): Promise<{ subscription: MessageSubscription; existed: boolean; ended: boolean }> {
+    const channelKey = normalizeChannelKey(input.channelKey);
+    const existing = this.subscriptions.find(
+      (s) =>
+        s.processId === input.processId &&
+        s.pluginId === input.pluginId &&
+        s.channelType === input.channelType &&
+        s.conversationId === input.conversationId &&
+        s.channelKey === channelKey,
+    );
+    if (existing) {
+      return Promise.resolve({ subscription: existing, existed: true, ended: existing.endedAt !== undefined });
+    }
+    const created: MessageSubscription = { ...input, channelKey, id: randomUUID(), createdAt: this.now() };
+    this.subscriptions = [...this.subscriptions, created];
+    return Promise.resolve({ subscription: created, existed: false, ended: false });
+  }
+
+  setSubscriptionMode(subscriptionId: string, mode: SubscriptionMode): Promise<MessageSubscription | undefined> {
+    let changed: MessageSubscription | undefined;
+    this.subscriptions = this.subscriptions.map((s) => {
+      if (s.id !== subscriptionId || s.endedAt !== undefined) return s;
+      changed = { ...s, mode };
+      return changed;
+    });
+    return Promise.resolve(changed);
+  }
+
+  bindProcessMessage(input: {
+    channelType: string;
+    conversationId: string;
+    ref: string;
+    agentId: string;
+    pluginId: string;
+    processId: string;
+  }): Promise<boolean> {
+    const existing = this.bindings.find(
+      (b) => b.channelType === input.channelType && b.conversationId === input.conversationId && b.ref === input.ref,
+    );
+    if (existing) {
+      return Promise.resolve(existing.pluginId === input.pluginId && existing.processId === input.processId);
+    }
+    this.bindings = [
+      ...this.bindings,
+      {
+        channelType: input.channelType,
+        conversationId: input.conversationId,
+        ref: input.ref,
+        pluginId: input.pluginId,
+        processId: input.processId,
+      },
+    ];
+    return Promise.resolve(true);
+  }
+
+  findProcessBindings(
+    channelType: string,
+    conversationId: string,
+    refs: readonly string[],
+  ): Promise<readonly ProcessMessageBinding[]> {
+    return Promise.resolve(
+      this.bindings
+        .filter((b) => b.channelType === channelType && b.conversationId === conversationId && refs.includes(b.ref))
+        .map(({ ref, pluginId, processId }) => ({ ref, pluginId, processId })),
+    );
+  }
+
   purge(cutoffs: { endedBefore: Date; receivedBefore?: Date }): Promise<PurgeResult> {
+    const live = new Set(this.subscriptions.filter((s) => s.endedAt === undefined).map((s) => s.id));
     const dead = new Set(
       this.subscriptions
         .filter((s) => s.endedAt !== undefined && s.endedAt.getTime() < cutoffs.endedBefore.getTime())
@@ -349,7 +474,9 @@ export class InMemoryConversationMessageStore implements ConversationMessageStor
     this.events = this.events.filter(
       (e) =>
         !dead.has(e.subscriptionId) &&
-        (cutoffs.receivedBefore === undefined || e.receivedAt.getTime() >= cutoffs.receivedBefore.getTime()),
+        (cutoffs.receivedBefore === undefined ||
+          live.has(e.subscriptionId) ||
+          e.receivedAt.getTime() >= cutoffs.receivedBefore.getTime()),
     );
     this.subscriptions = this.subscriptions.filter((s) => !dead.has(s.id));
     return Promise.resolve({ events: before - this.events.length, subscriptions: dead.size });

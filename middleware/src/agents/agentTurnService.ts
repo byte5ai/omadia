@@ -1,6 +1,9 @@
-// The kernel-run agent turn ('agentTurn@1', #2043): the facilitation engine
-// asks the kernel to run ONE turn as a facilitator and gets the text back.
-// Nothing is posted; the engine decides what to send, through its own outbox.
+// The kernel-run agent turn ('agentTurn@2', #2043, #2090): the facilitation
+// engine asks the kernel to run ONE turn as a facilitator and gets the text
+// back. Nothing is posted; the engine decides what to send, through its own
+// outbox. Every turn is an authorized action under an execution scope of one
+// of the engine's processes; a turn without a scope (the first major) is gone
+// (#2067).
 //
 // The turn runs through the agent's own `ChatAgent` bundle, so everything
 // that makes it this agent's turn applies without being repeated here: the
@@ -19,17 +22,20 @@ import {
   type ChatTurnInput,
 } from '@omadia/channel-sdk';
 import {
-  FACILITATOR_ARCHETYPE,
+  archetypeAdds,
   archetypeOf,
-  isArchetype,
   runAsEngineTurn,
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
 import type {
+  ExecutionAuthorizationService,
+  ExecutionRefusalCode,
+  ScopedAgentTurnOutcome,
+  ScopedAgentTurnRequest,
+  ScopedAgentTurnService,
   AgentProfile,
   AgentTurnOutcome,
   AgentTurnRequest,
-  AgentTurnService,
   ConversationMessageRecord,
 } from '@omadia/plugin-api';
 
@@ -45,7 +51,7 @@ export interface AgentTurnServiceDeps {
   readonly getRegistry: () => OrchestratorRegistry | undefined;
   /** For the stored inbound event a turn answers. Absent = no database; a
    *  request naming an inbound event is then refused. */
-  readonly messages?: Pick<ConversationMessageHub, 'getEventById'>;
+  readonly messages?: Pick<ConversationMessageHub, 'getProcessEventById'>;
   /** The calling plugin; `undefined` for the kernel itself. */
   readonly callerPluginId: string | undefined;
   /** Is the caller the instance's facilitation engine right now? */
@@ -113,7 +119,25 @@ function refused(
   return { outcome: 'refused', code, message };
 }
 
-export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnService {
+/**
+ * The turn itself, without its authorization: what `agentTurn@2` runs once
+ * the execution scope has granted it. Kernel-internal; no plugin gets this.
+ */
+export interface GuardedAgentTurnService {
+  /**
+   * Run one turn. `processId` is the process the turn belongs to: a named
+   * inbound event is looked up among what THAT process received.
+   *
+   * `accept` is asked once the answer exists and before anything keeps it
+   * (the session history): a turn whose answer must not stand is failed
+   * instead, and leaves no trace for the next turn to build on.
+   */
+  runGuarded(request: AgentTurnRequest, processId: string, accept?: () => boolean): Promise<AgentTurnOutcome>;
+  /** The agent's profile when the caller may run it; `undefined` otherwise. */
+  getProfile(agentSlug: string): Promise<AgentProfile | undefined>;
+}
+
+export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgentTurnService {
   const log = deps.log ?? (() => undefined);
 
   /** The registry entry when the caller may run this agent, else a refusal. */
@@ -126,7 +150,8 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnSer
     if (!registry) return refused('unavailable', 'the agent registry is not available');
     const entry = registry.get(agentSlug);
     if (!entry) return refused('unknown_agent', `agent '${agentSlug}' is not active`);
-    if (!isArchetype(entry.agent, FACILITATOR_ARCHETYPE)) {
+    // #2088 — the archetype's descriptor must add `agent_turn`.
+    if (!archetypeAdds(entry.agent, 'agent_turn')) {
       return refused('not_bound', `agent '${agentSlug}' is not a facilitator; an engine runs facilitators only`);
     }
     if (
@@ -138,8 +163,7 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnSer
     return { entry };
   }
 
-  return {
-    async runTurn(request: AgentTurnRequest): Promise<AgentTurnOutcome> {
+  const run = async (request: AgentTurnRequest, processId: string, accept?: () => boolean): Promise<AgentTurnOutcome> => {
       if (
         !isText(request?.agentSlug, 128) ||
         !isText(request.sessionKey, MAX_KEY) ||
@@ -160,17 +184,20 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnSer
       // the turn is whoever the PLATFORM said wrote the message.
       let inbound: ConversationMessageRecord | undefined;
       if (request.inboundEventId !== undefined) {
-        inbound = await deps.messages
-          ?.getEventById(
-            {
-              agentSlug: request.agentSlug,
-              channelType: request.channelType,
-              conversationId: request.conversationId,
-            },
-            deps.callerPluginId,
-            request.inboundEventId,
-          )
-          .catch(() => undefined);
+        const scope = {
+          agentSlug: request.agentSlug,
+          channelType: request.channelType,
+          conversationId: request.conversationId,
+        };
+        // A process reads conversations through subscriptions of its own
+        // (`conversationMessages@2`), so the event is one THAT process
+        // received: never another process's, also not of the same plugin.
+        // The kernel itself runs no process and has no such event.
+        if (deps.callerPluginId !== undefined) {
+          inbound = await deps.messages
+            ?.getProcessEventById({ ...scope, processId }, deps.callerPluginId, request.inboundEventId)
+            .catch(() => undefined);
+        }
         if (!inbound) {
           return refused(
             'unavailable',
@@ -223,6 +250,9 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnSer
         // send, and the marking is decided there: the channel's AI label, or
         // the sentence once. Left in, a labelling channel showed both.
         const text = withoutFoldedAiDisclosure(answer.text, answer.aiDisclosure);
+        if (accept && !accept()) {
+          return { outcome: 'failed', message: 'the answer was not accepted' };
+        }
         deps.history.append(sessionScope, request.input, text);
         const turnId = (answer as { turnId?: unknown }).turnId;
         return {
@@ -235,7 +265,10 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnSer
         log(`[agent-turn] turn as '${request.agentSlug}' failed: ${message}`);
         return { outcome: 'failed', message };
       }
-    },
+  };
+
+  return {
+    runGuarded: run,
 
     async getProfile(agentSlug: string): Promise<AgentProfile | undefined> {
       if (!isText(agentSlug, 128)) return undefined;
@@ -255,6 +288,133 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnSer
         ...(language ? { language } : {}),
         ownIdentityChannelTypes: registry?.channelTypesWithIdentity?.(agent.slug) ?? [],
       };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// agentTurn@2 (#2090) — the same turn, as an authorized action
+// ---------------------------------------------------------------------------
+
+export interface ScopedAgentTurnServiceDeps extends AgentTurnServiceDeps {
+  /** The calling plugin's execution authorization; absent without a database. */
+  readonly execution: () => ExecutionAuthorizationService | undefined;
+  /**
+   * Counts the model calls made inside the turn and refuses every call
+   * beyond `limit` (the provider gate, `meterModelCalls`). `probe` gives the
+   * counts so far.
+   */
+  readonly meter: <T>(
+    work: (probe: () => { modelCalls: number; refused: number }) => Promise<T>,
+    options: { limit: number },
+  ) => Promise<{ value: T; modelCalls: number; refused: number }>;
+}
+
+const MAX_RESERVED_MODEL_CALLS = 200;
+
+export function createScopedAgentTurnService(deps: ScopedAgentTurnServiceDeps): ScopedAgentTurnService {
+  const base = createAgentTurnService(deps);
+  const log = deps.log ?? (() => undefined);
+  const refusedV2 = (
+    code: Extract<ScopedAgentTurnOutcome, { outcome: 'refused' }>['code'],
+    message: string,
+    executionCode?: ExecutionRefusalCode,
+  ): ScopedAgentTurnOutcome => ({
+    outcome: 'refused',
+    code,
+    message,
+    ...(executionCode ? { executionCode } : {}),
+  });
+
+  return {
+    getProfile: (agentSlug) => base.getProfile(agentSlug),
+
+    async runTurn(request: ScopedAgentTurnRequest): Promise<ScopedAgentTurnOutcome> {
+      if (
+        !isText(request?.scopeId, 128) ||
+        !isText(request.processId, MAX_KEY) ||
+        !isText(request.agentSlug, 128) ||
+        typeof request.phase !== 'string' ||
+        typeof request.purpose !== 'string'
+      ) {
+        return refusedV2('unavailable', 'scopeId, processId, agentSlug, phase and purpose are required');
+      }
+      if (request.emission !== 'prose') {
+        return refusedV2('unavailable', "a turn's emission type is 'prose'");
+      }
+      const reserved = request.budget?.modelCalls;
+      if (!Number.isInteger(reserved) || reserved < 1 || reserved > MAX_RESERVED_MODEL_CALLS) {
+        return refusedV2('unavailable', `budget.modelCalls is a whole number from 1 to ${String(MAX_RESERVED_MODEL_CALLS)}`);
+      }
+      const execution = deps.execution();
+      if (!execution) return refusedV2('unavailable', 'execution authorization needs a database');
+      // The caller must be allowed to run this agent at all, before a unit of
+      // the scope is spent on finding out.
+      if ((await base.getProfile(request.agentSlug)) === undefined) {
+        return refusedV2('not_bound', `agent '${request.agentSlug}' is not an agent this plugin runs`);
+      }
+      // The scope must be this process's and this agent's. A scope of another
+      // plugin is not in the list, so it reads as unknown.
+      const scope = (await execution.listScopes(request.processId)).find((s) => s.id === request.scopeId);
+      if (!scope || scope.agentSlug !== request.agentSlug) {
+        return refusedV2('not_authorized', 'no such scope for this process and agent', 'unknown_scope');
+      }
+
+      const authorization = await execution.authorize({
+        scopeId: scope.id,
+        phase: request.phase,
+        purpose: request.purpose,
+        action: 'model_turn',
+        emission: 'prose',
+        modelCalls: reserved,
+        ...(request.target !== undefined ? { target: request.target } : {}),
+      });
+      if (authorization.outcome === 'refused') {
+        return refusedV2('not_authorized', authorization.message, authorization.code);
+      }
+
+      // The reservation is a hard cap: the gate refuses every model call
+      // beyond it. An answer produced although a call was refused (a helper
+      // or a guard that carried on without its model) does not stand.
+      let used = 0;
+      let refusedCalls = 0;
+      let outcome: AgentTurnOutcome;
+      try {
+        const metered = await deps.meter(
+          (probe) => base.runGuarded(request, request.processId, () => probe().refused === 0),
+          { limit: reserved },
+        );
+        used = metered.modelCalls;
+        refusedCalls = metered.refused;
+        outcome = metered.value;
+      } catch (err) {
+        outcome = { outcome: 'failed', message: err instanceof Error ? err.message : String(err) };
+      }
+      // Whatever happened: what was not used goes back to the scope.
+      await execution.settle(authorization.authorizationId, { modelCalls: used });
+      if (refusedCalls > 0) {
+        log(
+          `[agent-turn] turn as '${request.agentSlug}' (process ${request.processId}) needed more than the ${String(reserved)} model calls it reserved; ${String(refusedCalls)} call(s) refused, no text returned`,
+        );
+        return {
+          outcome: 'refused',
+          code: 'reservation_exceeded',
+          message: `the turn needed more than the ${String(reserved)} model calls it reserved; it was ended and returned no text`,
+          authorizationId: authorization.authorizationId,
+          modelCalls: { reserved, used, refused: refusedCalls },
+        };
+      }
+      if (outcome.outcome === 'completed') {
+        return {
+          ...outcome,
+          authorizationId: authorization.authorizationId,
+          modelCalls: { reserved, used },
+        };
+      }
+      if (outcome.outcome === 'failed') {
+        return { ...outcome, authorizationId: authorization.authorizationId };
+      }
+      return outcome;
     },
   };
 }

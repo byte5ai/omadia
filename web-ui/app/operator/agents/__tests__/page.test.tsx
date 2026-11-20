@@ -40,7 +40,11 @@ vi.mock('next/link', () => ({
   ),
 }));
 
-vi.mock('../../../_lib/agents', () => ({ listOperatorAgents: mockListAgents }));
+vi.mock('../../../_lib/agents', () => ({
+  listOperatorAgents: mockListAgents,
+  // #2088 — a middleware without the endpoint: the directory falls back.
+  listOperatorArchetypes: () => Promise.resolve(null),
+}));
 vi.mock('../../../_lib/channels', () => ({ listOperatorChannels: mockListChannels }));
 vi.mock('../../../_lib/authRedirect', () => ({ redirectIfUnauthorized: mockRedirect }));
 vi.mock('../_components/AgentsDashboard', () => ({

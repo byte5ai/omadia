@@ -4,9 +4,10 @@
 // A facilitator never speaks through another agent's bot. So an own-identity
 // send resolves the agent's identity and stops with `no_identity` when there
 // is none; there is no fallback to the default bot. Permission does not come
-// from an ephemeral attachment (the discussion relay's scope) but from the
-// agent's message subscription: it may post into a conversation it moderates,
-// and DM the people of such a conversation.
+// from an ephemeral attachment (the discussion relay's scope): a post into a
+// conversation is authorized by an execution scope (`scopedSendService.ts`),
+// and a person is only written to when they are part of a conversation one
+// of the agent's processes is subscribed to.
 
 import type {
   AiDisclosure,
@@ -28,9 +29,9 @@ import type { MessageSubscription } from './conversationMessages/store.js';
 export interface OwnIdentityDeps {
   /** The agent's OWN identity on a channel; never the default bot. */
   readonly identityFor: (agentSlug: string, channelType: string) => { channelKey: string } | undefined;
-  /** The subscriptions that carry the permission. Absent (no database) =
-   *  no own-identity send is permitted. */
-  readonly subscriptions?: Pick<ConversationMessageHub, 'subscriptionFor' | 'subscriptionsOf' | 'findAuthor'>;
+  /** The message subscriptions people are looked up in. Absent (no
+   *  database) = nobody is found, so no person is mentioned or written to. */
+  readonly subscriptions?: Pick<ConversationMessageHub, 'subscriptionsOf' | 'findAuthor'>;
   /** `asChannelKey`: the roster is read as the agent's own identity (the
    *  subscription's), never as the channel's default bot. */
   readonly getRoster?: (
@@ -38,6 +39,12 @@ export interface OwnIdentityDeps {
     conversationId: string,
     opts?: { readonly asChannelKey?: string },
   ) => Promise<ConversationRoster | undefined>;
+  /**
+   * #2088 — does the agent's archetype add posting as its own identity
+   * (`own_identity_send` in its descriptor)? Absent = not asked (hosts
+   * without an agent registry, unit tests).
+   */
+  readonly archetypeAddsOwnIdentitySend?: (agentSlug: string) => boolean;
   /** The AI marking of what an agent posts as itself; see
    *  {@link markOwnIdentityMessage}. Absent = the text goes out as given. */
   readonly disclosure?: OwnIdentityDisclosure;
@@ -99,6 +106,12 @@ export function markOwnIdentityMessage(
       }
     },
   };
+}
+
+/** The refusal for an agent whose archetype does not add own-identity sends. */
+export function ownIdentitySendNotAdded(deps: OwnIdentityDeps | undefined, agentSlug: string): string | undefined {
+  if (!deps?.archetypeAddsOwnIdentitySend || deps.archetypeAddsOwnIdentitySend(agentSlug)) return undefined;
+  return `the archetype of agent '${agentSlug}' does not add posting as its own identity`;
 }
 
 export function unreachable(

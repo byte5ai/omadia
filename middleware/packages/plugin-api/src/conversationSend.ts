@@ -6,7 +6,9 @@
 // consumer from ever activating). Shapes are plugin-api-own on purpose
 // (dependency direction: channel-sdk → plugin-api).
 
+import type { ExecutionPhase, ExecutionPurpose, ExecutionRefusalCode } from './executionAuthorization.js';
 import type { CardSupport, CardUpdate, CardUpdateOutcome, QuestionCard } from './questionCard.js';
+import type { ChannelReadinessReport } from './sessionCapabilities.js';
 
 export const CONVERSATION_SEND_SERVICE_NAME = 'conversationSend';
 
@@ -117,4 +119,110 @@ export interface ConversationSendService {
    * send. Optional member: feature-detect it.
    */
   updateCard?(request: ConversationCardUpdateRequest): Promise<CardUpdateOutcome>;
+}
+
+// ---------------------------------------------------------------------------
+// conversationSend@2 (#2091) — every send is an authorized action
+// ---------------------------------------------------------------------------
+
+/**
+ * The second major: `ctx.services.get('conversationSend@2')`, declared as
+ * `conversationSend@^2` under `optional_requires`.
+ *
+ * Every send, direct message, card update and readiness check names the
+ * execution scope it is drawn from (#2090). The kernel takes the
+ * authorization first: the target must be one the scope lists, the scope must
+ * be open, inside its deadline and budget, and not stopped. Only then it
+ * sends, as the agent's own identity as before (`no_identity` instead of
+ * another bot).
+ *
+ * The target comes from the scope, not from a message subscription: a
+ * `closing` scope still posts the protocol to a conversation whose
+ * reservation was released.
+ *
+ * The kernel records which process a posted message and card belong to, so a
+ * reply or a card answer reaches that process alone
+ * (`conversationMessages@2`).
+ */
+export const CONVERSATION_SEND_V2_SERVICE_NAME = 'conversationSend@2';
+
+/** The scope an action is drawn from, and what it is. */
+export interface SendAuthorization {
+  scopeId: string;
+  processId: string;
+  phase: ExecutionPhase;
+  purpose: ExecutionPurpose;
+  /** `prose`: text a model wrote (from an agent turn). `template`: text the
+   *  engine filled into a template. */
+  emission: 'prose' | 'template';
+}
+
+export type ScopedSendOutcome =
+  /** `conversationId` is set on a delivered `sendDirect` when the channel
+   *  reports the private conversation the message went into, so a later reply
+   *  there can be matched to it. A conversation send never sets it. */
+  | { outcome: 'delivered'; authorizationId: string; messageId?: string; cardMessageId?: string; conversationId?: string }
+  | {
+      outcome: 'unreachable';
+      /** `not_authorized`: the execution authorization refused (see
+       *  `executionCode`); nothing was sent. Otherwise the code of the first
+       *  major (`no_identity`, `not_permitted`, `channel_error`, …). */
+      code: string;
+      message: string;
+      executionCode?: ExecutionRefusalCode;
+      /** Set when the action was authorized and the channel then failed: the
+       *  action is spent. */
+      authorizationId?: string;
+    };
+
+export interface ScopedConversationSendRequest {
+  agentSlug: string;
+  channelType: string;
+  conversationId: string;
+  message: ConversationSendRequest['message'];
+  authorization: SendAuthorization;
+}
+
+export interface ScopedDirectSendRequest {
+  agentSlug: string;
+  channelType: string;
+  /** `user:<id>`: the platform principal, as inbound events state it. It must
+   *  be a person target of the scope AND a member or author of a conversation
+   *  of the process. */
+  principal: string;
+  /** The recipient's channel reference when the caller knows it. */
+  userRef?: { kind: string; id: string };
+  message: { text: string };
+  authorization: SendAuthorization;
+}
+
+export interface ScopedCardUpdateRequest extends ConversationCardUpdateRequest {
+  authorization: SendAuthorization;
+}
+
+export interface ScopedReadinessRequest {
+  agentSlug: string;
+  channelType: string;
+  conversationId: string;
+  /** `purpose` is `readiness_check`; no target: readiness is also checked for
+   *  a conversation the process is about to link. */
+  authorization: Omit<SendAuthorization, 'emission' | 'purpose'>;
+}
+
+export interface ScopedConversationSendService {
+  sendToConversation(request: ScopedConversationSendRequest): Promise<ScopedSendOutcome>;
+  sendToPerson(request: ScopedDirectSendRequest): Promise<ScopedSendOutcome>;
+  updateCard(request: ScopedCardUpdateRequest): Promise<CardUpdateOutcome | Extract<ScopedSendOutcome, { outcome: 'unreachable' }>>;
+  capabilities(channelType: string): ConversationSendCapabilities | undefined;
+  /**
+   * Readiness of the agent's identity in ONE conversation: installed, may
+   * read all messages where needed, can post. Asked when a conversation is
+   * linked and again before a session goes live (spec 2043 §5.3).
+   */
+  checkReadiness(
+    request: ScopedReadinessRequest,
+  ): Promise<
+    | { outcome: 'checked'; report: ChannelReadinessReport; authorizationId: string }
+    | Extract<ScopedSendOutcome, { outcome: 'unreachable' }>
+  >;
 }

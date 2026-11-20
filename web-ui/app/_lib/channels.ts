@@ -46,9 +46,7 @@ export interface OperatorChannelDto {
 
 export interface ChannelsListDto {
   channels: OperatorChannelDto[];
-  /** `kind` is read when the route sends it (#2066); today it does not, so
-   *  pages pass the facilitator slugs from the agents list instead. */
-  agents: Array<{ slug: string; name: string; archetype?: string; kind?: 'standard' | 'facilitator' }>;
+  agents: Array<{ slug: string; name: string; archetype?: string }>;
   fallback_slug: string | null;
   directory_types: string[];
 }

@@ -98,6 +98,8 @@ import {
   wrapFacilitatorAgent,
   type EngineDrivenConversationLookup,
   type OwnPostCountLookup,
+  type PrivateTurnLookup,
+  type AddressedTurnLookup,
 } from './facilitatorAgent.js';
 import {
   FACILITATOR_ARCHETYPE,
@@ -107,7 +109,6 @@ import {
 } from './registry/archetype.js';
 import {
   applyArchetypeContract,
-  withFacilitatorNeutrality,
 } from './registry/facilitatorNeutrality.js';
 
 /**
@@ -350,6 +351,10 @@ export interface OrchestratorDeps {
   readonly isFacilitationEngineUsable?: (agentSlug: string) => boolean;
   /** #2043 — see `FacilitatorAgentDeps.ownPostCount`. */
   readonly facilitatorOwnPostCount?: OwnPostCountLookup;
+  /** #2089 — see `FacilitatorAgentDeps.privateTurn`. */
+  readonly facilitatorPrivateTurn?: PrivateTurnLookup;
+  /** #2089 — see `FacilitatorAgentDeps.addressedTurn`. */
+  readonly facilitatorAddressedTurn?: AddressedTurnLookup;
   /**
    * #1018 — resolves the peer AGENTS the calling agent may see in the current
    * chat, merged into `get_chat_participants` as `kind: 'agent'` entries.
@@ -675,6 +680,8 @@ export function buildOrchestratorForAgent(
             ? { isEngineUsable: deps.isFacilitationEngineUsable }
             : {}),
           ...(deps.facilitatorOwnPostCount ? { ownPostCount: deps.facilitatorOwnPostCount } : {}),
+          ...(deps.facilitatorPrivateTurn ? { privateTurn: deps.facilitatorPrivateTurn } : {}),
+          ...(deps.facilitatorAddressedTurn ? { addressedTurn: deps.facilitatorAddressedTurn } : {}),
           // The fixed answers are marked by this Agent's own disclosure rule.
           disclose: (answer, input) => orchestrator.discloseCliAnswer(answer, input),
           log: (m) => console.log(m),
@@ -845,15 +852,14 @@ export function buildOrchestratorForAgent(
   // variant. Applied here as well as at compose time so an agent without a
   // stored identity (or with one compiled before the kind existed) has it.
   const assistantIdentityWithName = applyArchetypeContract(config.archetype, layeredIdentity);
-  const identityByFamily =
-    isFacilitator && config.identityByFamily
-      ? Object.fromEntries(
-          Object.entries(config.identityByFamily).map(([family, text]) => [
-            family,
-            withFacilitatorNeutrality(text),
-          ]),
-        )
-      : config.identityByFamily;
+  const identityByFamily = config.identityByFamily
+    ? Object.fromEntries(
+        Object.entries(config.identityByFamily).map(([family, text]) => [
+          family,
+          applyArchetypeContract(config.archetype, text),
+        ]),
+      )
+    : config.identityByFamily;
   // What a facilitator is built WITHOUT (spec 2043 §2.3). One object so the
   // list is readable in one place; each key is simply not handed to the
   // Orchestrator, which treats absence as "not wired".

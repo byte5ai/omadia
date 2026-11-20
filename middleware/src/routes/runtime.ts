@@ -88,6 +88,10 @@ interface RuntimeDeps {
    *  existing test wiring without a catalog keeps compiling — the PATCH
    *  handler falls back to vault-only behaviour when absent. */
   catalog?: PluginCatalog;
+  /** Whether a package for this id is on disk (uploaded or built-in).
+   *  Without it `GET /installed` cannot tell and reports every entry as it
+   *  is stored. */
+  hasPackage?: (id: string) => boolean;
   /** Called after a successful config or secret edit. Tears down the
    *  current runtime instance and re-activates it so the plugin reads
    *  the fresh values — most plugins cache config at activate-time. */
@@ -146,25 +150,36 @@ interface RuntimeDeps {
   countOpenFieldClassification?: (visitor?: string) => Promise<OpenFieldClassificationCounts>;
 }
 
+/** `status` of an installed entry without a package in `GET /installed`. */
+export const PACKAGE_MISSING_STATUS = 'package_missing';
+
 export function createRuntimeRouter(deps: RuntimeDeps): Router {
   const router = Router();
 
   router.get('/installed', (_req: Request, res: Response) => {
-    const rows = deps.installedRegistry.list().map((entry) => ({
-      id: entry.id,
-      installed_version: entry.installed_version,
-      installed_at: entry.installed_at,
-      status: entry.status,
-      activation_failure_count: entry.activation_failure_count ?? 0,
-      last_activation_error: entry.last_activation_error ?? null,
-      last_activation_error_at: entry.last_activation_error_at ?? null,
-      last_activation_error_code: activationResultOf(entry)?.error_code ?? null,
-      // #1453 — a plugin can activate perfectly and still be unusable because
-      // the target system refuses its credentials. That verdict lives in the
-      // status channel, so an operator reading this endpoint alone used to see
-      // `active` / `last_activation_error: null` and nothing else.
-      action_status: deps.pluginStatusRegistry?.get(entry.id) ?? null,
-    }));
+    const rows = deps.installedRegistry.list().map((entry) => {
+      // An entry whose package is gone is visited by no runtime: it is not
+      // running, and the status the registry still holds says nothing. The
+      // answer is derived here; the registry is not rewritten.
+      const packageMissing = deps.hasPackage ? !deps.hasPackage(entry.id) : false;
+      return {
+        id: entry.id,
+        installed_version: entry.installed_version,
+        installed_at: entry.installed_at,
+        status: packageMissing ? PACKAGE_MISSING_STATUS : entry.status,
+        registry_status: entry.status,
+        package_missing: packageMissing,
+        activation_failure_count: entry.activation_failure_count ?? 0,
+        last_activation_error: entry.last_activation_error ?? null,
+        last_activation_error_at: entry.last_activation_error_at ?? null,
+        last_activation_error_code: activationResultOf(entry)?.error_code ?? null,
+        // #1453 — a plugin can activate perfectly and still be unusable because
+        // the target system refuses its credentials. That verdict lives in the
+        // status channel, so an operator reading this endpoint alone used to see
+        // `active` / `last_activation_error: null` and nothing else.
+        action_status: deps.pluginStatusRegistry?.get(entry.id) ?? null,
+      };
+    });
     res.json({ items: rows, total: rows.length });
   });
 
@@ -211,11 +226,15 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       });
       return;
     }
+    // The same derived answer as the list: an entry without a package.
+    const packageMissing = deps.hasPackage ? !deps.hasPackage(entry.id) : false;
     res.json({
       id: entry.id,
       installed_version: entry.installed_version,
       installed_at: entry.installed_at,
-      status: entry.status,
+      status: packageMissing ? PACKAGE_MISSING_STATUS : entry.status,
+      registry_status: entry.status,
+      package_missing: packageMissing,
       config: entry.config,
       activation_failure_count: entry.activation_failure_count ?? 0,
       last_activation_error: entry.last_activation_error ?? null,

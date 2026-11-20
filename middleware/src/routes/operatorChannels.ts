@@ -5,7 +5,6 @@ import { z } from 'zod';
 import {
   archetypeOf,
   assertArchetypeAllows,
-  parseAgentKind,
   ConfigValidationError,
   type ChannelIdentityRow,
   type ConfigStore,
@@ -211,7 +210,6 @@ export function createOperatorChannelsRouter(
           .map((a) => ({
             slug: a.slug,
             name: a.name,
-            kind: parseAgentKind(archetypeOf(a)),
             archetype: archetypeOf(a),
           })),
         fallback_slug,

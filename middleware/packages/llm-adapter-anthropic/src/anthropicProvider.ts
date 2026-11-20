@@ -7,6 +7,7 @@
  * mapping, `cache_control`, stop_reason normalisation, and the retryable
  * error taxonomy that `streaming.ts` historically owned.
  */
+import { admitModelCall } from '@omadia/llm-provider-api';
 import type Anthropic from '@anthropic-ai/sdk';
 
 import type {
@@ -848,6 +849,8 @@ export function createAnthropicProvider(
     },
 
     async complete(req: LlmRequest): Promise<LlmResponse> {
+      // #2090 — refused when the turn's reservation does not cover the call.
+      admitModelCall();
       const started = Date.now();
       const options = toRequestOptions(req);
       const response = requiresStreaming(req.maxTokens)
@@ -862,6 +865,8 @@ export function createAnthropicProvider(
     },
 
     async *stream(req: LlmRequest): AsyncIterable<LlmStreamEvent> {
+      // #2090 — refused when the turn's reservation does not cover the call.
+      admitModelCall();
       const params = buildParams(req) as unknown as Parameters<
         typeof client.messages.stream
       >[0];

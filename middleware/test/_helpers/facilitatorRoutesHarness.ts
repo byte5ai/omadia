@@ -36,12 +36,12 @@ interface FakeAgent {
   description: string | null;
   privacyProfile: 'default';
   status: 'enabled';
-  kind: 'standard' | 'facilitator';
+  archetype: 'standard' | 'facilitator';
   createdAt: Date;
   updatedAt: Date;
 }
 
-function agent(slug: string, kind: FakeAgent['kind']): FakeAgent {
+function agent(slug: string, archetype: FakeAgent['archetype']): FakeAgent {
   return {
     id: `id-${slug}`,
     slug,
@@ -49,7 +49,7 @@ function agent(slug: string, kind: FakeAgent['kind']): FakeAgent {
     description: null,
     privacyProfile: 'default',
     status: 'enabled',
-    kind,
+    archetype,
     createdAt: new Date(0),
     updatedAt: new Date(0),
   };
@@ -67,9 +67,11 @@ export interface RoutesHarness {
   installed: { id: string; status: string }[];
   /** What the engine plugin reports about itself. */
   engineState: unknown;
-  /** Has the operator granted the engine its SQL ledger? */
-  sqlGranted: boolean;
   identitySaves: number;
+  /** Plugin ids the catalog describes as archetype plugins, with the
+   *  archetype each delivers. Default: the engine and the second engine
+   *  deliver `facilitator`. */
+  archetypePlugins: Record<string, string>;
   call(method: string, path: string, body?: unknown): Promise<RouteResponse>;
   assertRefused(res: RouteResponse, omission: string, messagePattern: RegExp): void;
 }
@@ -103,9 +105,8 @@ export function routesHarness(): RoutesHarness {
       listChannelIdentities: () => Promise.resolve([]),
       resolveBinding: () => Promise.resolve(undefined),
       getAgentChannelPolicy: () => Promise.resolve(undefined),
-      // The route names the archetype; `kind` is what a fixture row carries.
-      createAgent: (input: { slug: string; name: string; archetype?: string; kind?: FakeAgent['kind'] }) => {
-        const created = agent(input.slug, (input.archetype ?? input.kind ?? 'standard') as FakeAgent['kind']);
+      createAgent: (input: { slug: string; name: string; archetype?: string }) => {
+        const created = agent(input.slug, (input.archetype ?? 'standard') as FakeAgent['archetype']);
         h.agents.push(created);
         return Promise.resolve(created);
       },
@@ -156,10 +157,22 @@ export function routesHarness(): RoutesHarness {
         getRegistry: () => registry,
         getChatSessionStore: () => undefined,
         getFacilitationEngineState: () => h.engineState,
-        isSqlGranted: () => h.sqlGranted,
         getInstalledRegistry: () => ({ list: () => h.installed }) as never,
         getPluginCatalog: () =>
-          ({ get: (id: string) => (id in provides ? { plugin: { provides: provides[id] } } : undefined) }) as never,
+          ({
+            get: (id: string) => {
+              if (!(id in provides)) return undefined;
+              const archetypeId = h.archetypePlugins[id];
+              return {
+                plugin: {
+                  provides: provides[id],
+                  ...(archetypeId
+                    ? { kind: 'archetype', archetype: { id: archetypeId, omits: [], adds: [], requires: [], noun: archetypeId } }
+                    : {}),
+                },
+              };
+            },
+          }) as never,
         getAgentIdentity: () => ({
           store: {
             getByAgentId: () => Promise.resolve(undefined),
@@ -198,7 +211,7 @@ export function routesHarness(): RoutesHarness {
   beforeEach(() => {
     h.writes = [];
     h.identitySaves = 0;
-    h.sqlGranted = true;
+    h.archetypePlugins = { [ENGINE]: 'facilitator', '@acme/second-engine': 'facilitator' };
     h.agents = [agent('mara', 'facilitator'), agent('hr', 'standard')];
     h.installed = [
       { id: ENGINE, status: 'active' },

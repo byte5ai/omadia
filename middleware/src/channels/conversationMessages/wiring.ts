@@ -1,29 +1,28 @@
-// Boot wiring for 'conversationMessages@1' (#2043), kept out of `index.ts`:
+// Boot wiring for 'conversationMessages@2' (#2043, #2089), kept out of `index.ts`:
 // builds the hub over Postgres, publishes the per-plugin service and starts
 // the retention job. Called once, from inside the database block.
 
-import { FACILITATOR_ARCHETYPE, isArchetype } from '@omadia/orchestrator';
+import { archetypeAdds } from '@omadia/orchestrator';
 import type { Pool } from 'pg';
 
 import { formatPrincipal, makePrincipal } from '@omadia/channel-sdk';
 import { ReloadBus, type ConfigStore, type OrchestratorRegistry } from '@omadia/orchestrator';
 import {
-  CONVERSATION_MESSAGES_SERVICE_NAME,
+  CONVERSATION_MESSAGES_V2_SERVICE_NAME,
   perCallerService,
   type ChannelReadinessReport,
 } from '@omadia/plugin-api';
 
 import type { BotPresenceStore } from '../../conductor/botPresenceStore.js';
-import {
-  resolveFacilitationEngine,
-  type FacilitationEngineSources,
-} from '../../platform/facilitatorGuard.js';
+import type { FacilitationEngineSources } from '../../platform/facilitatorGuard.js';
 import type { ObservedConversationInvites } from '../../platform/observedConversationInvites.js';
 import { KERNEL_SERVICE_CALLER, type ServiceRegistry } from '../../platform/serviceRegistry.js';
-import { ConversationMessageHub } from './hub.js';
+import type { AddressedMessageRouter } from '../addressedMessageRouter.js';
+import type { PrivateMessageRouter } from '../privateMessageRouter.js';
+import { ConversationMessageHub, type ConversationMessageHubDeps } from './hub.js';
 import { PgConversationMessageStore } from './pgStore.js';
 import { startConversationMessagePurge, type ConversationMessagePurgeJob } from './purgeJob.js';
-import { createConversationMessagesService } from './service.js';
+import { createProcessConversationMessagesService } from './service.js';
 import { normalizeChannelKey, type MessageSubscription } from './store.js';
 
 /** NOTIFY channel of the subscriptions table (migration 0068). */
@@ -67,33 +66,34 @@ export function principalOfChannelUser(author: { readonly id: string }): string 
 /**
  * Why a subscription has lost its ground, or `undefined` while it stands.
  *
- * Three things carry a subscription: the engine plugin that made it is still
- * the one usable engine, the agent still exists and is enabled, and the agent
- * still has the identity the subscription was made for. Each is read from its
- * source of truth (installed registry, config store), not from the running
- * registry: an agent that merely failed to build keeps its subscription.
- * Anything that cannot be read right now answers `undefined`.
+ * Three things carry a subscription here: the plugin that made it is
+ * running, the agent still exists and is enabled, and the agent still has the
+ * identity the subscription was made for. Each is read from its source of
+ * truth (installed registry, config store), not from the running registry: an
+ * agent that merely failed to build keeps its subscription. Anything that
+ * cannot be read right now answers `undefined`.
+ *
+ * The fourth, that the subscription's process still has an open execution
+ * scope, is the hub's own check. Only the plugin that delivers the agent's
+ * archetype can open one, so "is the caller that plugin" is not asked again
+ * here; a plugin that was uninstalled had its scopes revoked.
  */
 export function createSubscriptionGroundCheck(deps: {
   engineSources: () => FacilitationEngineSources;
   getConfigStore: () => Pick<ConfigStore, 'getAgentById' | 'listChannelIdentities'> | undefined;
 }): (subscription: MessageSubscription) => Promise<string | undefined> {
   return async (subscription) => {
-    const sources = deps.engineSources();
-    const engine = resolveFacilitationEngine(sources);
-    if (engine.state !== 'bound' || engine.pluginId !== subscription.pluginId) {
-      return `plugin '${subscription.pluginId}' is no longer the facilitation engine of this instance`;
-    }
-    const installed = sources.installedRegistry?.list().find((entry) => entry.id === engine.pluginId);
-    if (installed && installed.status !== 'active') {
-      return `the facilitation engine plugin is ${installed.status}`;
-    }
+    const installed = deps
+      .engineSources()
+      .installedRegistry?.list()
+      .find((entry) => entry.id === subscription.pluginId);
+    if (installed && installed.status !== 'active') return `the plugin that subscribed is ${installed.status}`;
     const store = deps.getConfigStore();
     if (!store) return undefined;
     const agent = await store.getAgentById(subscription.agentId);
     if (!agent) return 'the agent was deleted';
     if (agent.status !== 'enabled') return 'the agent is disabled';
-    if (!isArchetype(agent, FACILITATOR_ARCHETYPE)) return 'the agent is not a facilitator';
+    if (!archetypeAdds(agent, 'conversation_messages')) return 'the agent is not a facilitator';
     const identities = await store.listChannelIdentities();
     const own = identities.find(
       (identity) => identity.agentId === agent.id && identity.channelType === subscription.channelType,
@@ -129,6 +129,13 @@ export interface ConversationMessagesWiringDeps {
   readonly graceMs: number;
   readonly maxAgeDays: number;
   readonly purgeIntervalMs: number;
+  /** #2089 — what a process may read, from the execution scopes and
+   *  reservations. Absent: process subscriptions are not offered. */
+  readonly processAccess?: ConversationMessageHubDeps['processAccess'];
+  /** #2089 — where a plugin registers for private messages of participants. */
+  readonly privateMessages?: Pick<PrivateMessageRouter, 'register'>;
+  /** #2089 — where a plugin registers to decide turns that address its agent. */
+  readonly addressedMessages?: Pick<AddressedMessageRouter, 'register' | 'owns'>;
   readonly log: (message: string) => void;
 }
 
@@ -165,6 +172,10 @@ export async function wireConversationMessages(
       engineSources: deps.engineSources,
       getConfigStore: deps.getConfigStore,
     }),
+    ...(deps.processAccess ? { processAccess: deps.processAccess } : {}),
+    ...(deps.addressedMessages
+      ? { ownsAddressedTurns: (pluginId: string, agentSlug: string) => deps.addressedMessages!.owns(pluginId, agentSlug) }
+      : {}),
     log: deps.log,
   });
   let reconcileEnabled = false;
@@ -182,19 +193,19 @@ export async function wireConversationMessages(
     );
   }
 
+  // #2089 — every subscription and read is bound to a process. A plugin that
+  // asks for the service by its bare name (the earlier form: one subscription
+  // per agent and conversation, owned by "the engine") gets nothing.
   deps.serviceRegistry.provide(
-    CONVERSATION_MESSAGES_SERVICE_NAME,
-    perCallerService((caller) => {
-      const isKernel = caller.pluginId === KERNEL_SERVICE_CALLER.pluginId;
-      return createConversationMessagesService({
+    CONVERSATION_MESSAGES_V2_SERVICE_NAME,
+    perCallerService((caller) =>
+      createProcessConversationMessagesService({
         hub,
-        callerPluginId: isKernel ? undefined : caller.pluginId,
-        isEngine: () => {
-          const engine = resolveFacilitationEngine(deps.engineSources());
-          return engine.state === 'bound' && engine.pluginId === caller.pluginId;
-        },
-      });
-    }),
+        callerPluginId: caller.pluginId === KERNEL_SERVICE_CALLER.pluginId ? undefined : caller.pluginId,
+        ...(deps.privateMessages ? { privateMessages: deps.privateMessages } : {}),
+        ...(deps.addressedMessages ? { addressedMessages: deps.addressedMessages } : {}),
+      }),
+    ),
   );
   const purge = startConversationMessagePurge(store, {
     graceMs: deps.graceMs,

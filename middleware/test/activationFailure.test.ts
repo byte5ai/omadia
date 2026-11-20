@@ -80,6 +80,17 @@ describe('classifyActivationError (#1456)', () => {
     );
   });
 
+  it('names a plugin database that could not be set up, by the error name', () => {
+    // #2088 — by name, like the others: the class lives in the kernel, the
+    // registry only sees the thrown object.
+    const err = Object.assign(new Error("archetype plugin 'x': database not available (not_isolated): …"), {
+      name: 'ArchetypeDatabaseError',
+      code: 'not_isolated',
+    });
+    assert.equal(classifyActivationError(err), 'database_not_available');
+    assert.equal(describeActivationFailure(err).code, 'database_not_available');
+  });
+
   it('falls back to unknown for anything else, including non-errors', () => {
     assert.equal(classifyActivationError(new Error('boom')), 'unknown');
     assert.equal(classifyActivationError('a string'), 'unknown');

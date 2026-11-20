@@ -54,6 +54,7 @@ export const ERROR_HELP_CODES = [
   // install.ts — the four it emits as literals, plus the eleven its handleError
   // re-emits from an InstallError thrown in plugins/installService.ts.
   'install.already_installed',
+  'install.archetype_confirmation_required',
   'install.blocked',
   'install.capability_already_provided',
   'install.has_dependents',

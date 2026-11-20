@@ -36,6 +36,584 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Stopping a single process no longer needs the agent's name (#2090, epic #2043)
+
+- `POST /api/v1/operator/execution/kill-switches` with `level: "process"`
+  answered `404 no such agent` when `agent_slug` was left out. The kernel now
+  takes the agent from the process's execution scopes. `agent_slug` stays
+  optional and is only needed when two plugins use the same process id for
+  different agents: that case answers `400 execution.ambiguous_process` and
+  names the agents. A process id without any execution scope answers
+  `404 execution.unknown_process`.
+- `level: "agent"` without `agent_slug` answers `400 execution.invalid`
+  ("agent_slug is required for level agent") instead of `404`.
+
+### Fixed — A subscription could be turned up to every message without the channel being ready (#2089, epic #2043)
+
+- A process that listened only for messages addressing its facilitator could
+  switch to reading every message of the conversation without the check a
+  new subscription gets: that the channel can deliver every message there
+  (in Teams, the chat's own permission). The facilitation then counted as
+  reading everything, and the facilitator's own answers in that chat were
+  held back, while messages never arrived. The switch is now refused with
+  `not_ready` and the subscription keeps the mode it had.
+
+### Fixed — A stopped reload bus could run one more reload (#2043)
+
+- `ReloadBus.stop()` returned before its LISTEN session had ended, so a
+  notification already on its way still ran a reload afterwards, and a reload
+  queued behind a running one ran after the stop as well. A stopped bus now
+  reloads nothing, and `stop()` waits for a session of its own to end (at most
+  two seconds), also when it is called while the bus is still connecting. This
+  was the cause of the occasional failure of `reloadBusListen.pg.test.ts` in
+  full runs (two reloads counted where one was expected).
+
+### Removed — The implementations behind the first majors (#2067, epic #2043): K6.4
+
+- **The code behind `agentTurn`, `conversationMessages` and `conversationSend`
+  without a version is gone.** No plugin could reach it since K6.3. Nothing
+  changes for a plugin that uses the second majors.
+- **A message subscription always belongs to a process.** The kernel no
+  longer creates, reads or ends a subscription without one. Should a row
+  without a process still be active in the database, it is ignored: it does
+  not lift a channel's mention gate and nothing is stored for it.
+- **An agent posts into a conversation only under an execution scope.** The
+  earlier permission, a message subscription for that conversation, is no
+  longer asked anywhere. A direct message through `targetedSend` is unchanged.
+- **A model turn always belongs to a process.** A turn without an execution
+  scope can no longer be run, also not from inside the kernel.
+- **Stored messages of a running process are not removed by age.** The
+  maximum age applies once the subscription has ended, as before for process
+  subscriptions.
+- The kernel's contract tests for native facilitators now run through the
+  second majors, with real execution scopes and reservations.
+- Unchanged: the plugin API and the channel SDK (types and versions),
+  `targetedSend`, `sessionCapabilities`, `channelReadiness`,
+  `conversationRosters`, `conversationEvents`, and the database schema.
+
+### Security — A database notification is only a hint to the kernel (#2088, epic #2043)
+
+- Postgres has no privilege for `NOTIFY`: every role that can log in, the
+  database role of an archetype plugin included, can send on the channels the
+  kernel listens on (`agents_changed`,
+  `conversation_message_subscriptions_changed`) with any payload. The kernel's
+  listener (`ReloadBus`, the only one) never read the payload to decide
+  anything, and that is now stated and tested: a notification means
+  "something may have changed" and the state is read from the tables. Scopes,
+  reservations, kill switches and grants use no notification at all; they are
+  read from the database at every authorization.
+- **The payload is no longer written to the log.** It was logged in full with
+  every notification, so anyone who could log in to the database could write
+  lines of their choice into the kernel's log. One line per reload now states
+  how many notifications it answers.
+- **A flood of notifications no longer keeps the kernel reloading.** The first
+  notification reloads at once; those that follow within 250 ms
+  (`minNotifyIntervalMs`) are answered by one reload at the end of the
+  interval. The last notification is never dropped.
+
+### Removed — The first majors of the facilitator services (#2089, #2090, #2091, epic #2043): K6.3, the contract step
+
+- **`agentTurn`, `conversationMessages` and `conversationSend` without a
+  version are no longer provided.** Each has had a second major since K4
+  (`agentTurn@2`, `conversationMessages@2`, `conversationSend@2`), under
+  which every turn, subscription, read and post belongs to a process and is
+  drawn from an execution scope. A plugin asks for those by their versioned
+  name. The bare name means the first major and now answers nothing.
+- **What that means for a plugin:** one that lists a first major under
+  `optional_requires` gets nothing for it and keeps working if it handles
+  that (facilitator 1.5.3 does). One that lists it under `requires` no longer
+  starts. Install is not refused for an optional requirement nobody provides.
+- **Subscriptions without a process are ended.** Migration 0080 ends every
+  active one; they belonged to the first major and nothing could read or end
+  them any more.
+- **A model turn finds its inbound message only among the events of its own
+  process.** The lookup among subscriptions without a process, kept as a
+  second step since D35, is gone.
+- Unchanged: `targetedSend`, `sessionCapabilities`, `channelReadiness`,
+  `conversationRosters` and `conversationEvents` have one major each and
+  stay. The plugin API's types are unchanged; the first-major types stay
+  exported and deprecated.
+
+### Fixed — Interrupted Teams provisioning was not resumed at boot (D40, #2088)
+
+- Since tombstones for deleted agents (K2b, v0.210.0 line) every boot logged
+  `teams-identity provisioning resume scan failed: error: operator does not
+  exist: text = uuid`. The scan compared `agent_teams_identities.agent_id`
+  (text) with `agents.id` (uuid), Postgres refused the statement, and no
+  interrupted provisioning run was picked up again after a restart. Nothing
+  was lost: the rows kept their state, and the first boot with this fix
+  resumes them. A run an operator started again by hand in the meantime is
+  unaffected.
+
+### Removed — The old way a plugin became the facilitation engine (#2088, epic #2042): K6.2, the contract step
+
+- **The engine is found by what it delivers, and by nothing else.** The
+  facilitation engine is the one installed plugin of kind `archetype` whose
+  descriptor delivers the archetype `facilitator`. A plugin that only lists
+  `facilitationEngine@1` under `provides` (the form of engine plugins before
+  1.2.0) is no longer the engine.
+- **The database grant is no longer the trust step.** Trust is the
+  operator's confirmation when an archetype plugin is installed or updated
+  into one. The engine state `ungranted` is gone. A plugin without its
+  database grant has no database and does not start; the status then says
+  that the engine is installed but did not start, and its store page says
+  why.
+- `GET /api/v1/operator/agents/facilitation-engine` no longer returns
+  `capability`, and `state` is `bound`, `none` or `ambiguous`.
+- Facilitator 1.2.0 and later are unaffected. They may keep the `provides`
+  line: it is what lets the plugin publish its own status.
+
+### Fixed — An installed entry without a package stayed "active" unseen
+
+- Every runtime activates by walking the packages on disk. An entry of the
+  installed registry whose package is gone was therefore visited by nobody: it
+  was never activated, never failed, kept the status it had (usually
+  `active`), and appeared nowhere in the web-ui, because the store lists what
+  the catalogue has packages for.
+- **One warning per boot** names every such entry:
+  `[plugins] N installed entries have no package and are not running, …`.
+- **`GET /api/v1/admin/runtime/installed`** (and `/installed/:id`) reports them with
+  `status: "package_missing"` and `package_missing: true`; the status the
+  registry holds is next to it as `registry_status`. Both fields are new on
+  every row.
+- **The store's "Installed" tab** lists them in a notice with the badge
+  "Package missing" and an "Uninstall entry" button per entry (confirmed, one
+  at a time).
+- The state is derived on every read. The registry is not rewritten and
+  nothing is removed automatically; an entry whose package comes back is
+  ordinary again. Uninstalling such an entry works as for any other.
+
+### Removed — `kind`, the predecessor of an agent's archetype (#2088, epic #2042): K6.1, the contract step
+
+- **The column is gone.** Migration 0079 drops `agents.kind` together with
+  the trigger that kept it equal to `agents.archetype` and the guard that
+  made it immutable. Every agent keeps its archetype, which stays fixed at
+  creation.
+- **The operator API names the archetype only.** `GET /api/v1/operator/agents`,
+  `GET /api/v1/operator/agents/enabled`, `GET /api/v1/operator/channels` and
+  the answer to `POST /api/v1/operator/agents` no longer carry `kind`.
+  `POST /api/v1/operator/agents` refuses a body that still sends `kind` with
+  409 (`"kind" was replaced by "archetype"`), instead of creating a standard
+  agent where another archetype was asked for.
+- **For plugins nothing changes.** `AgentProfile.kind` stays in the plugin
+  API, marked deprecated, and is still answered; read `archetype`.
+- An image from before this change still runs against the migrated
+  database, so the image can be rolled back; the column does not come back.
+
+### Fixed — Two findings of the rollout of facilitator 1.5.0 (#2089, #2090, epic #2043): D35, D34
+
+- **A facilitation's model turns were refused (D35).** Every model turn
+  that answered a message was refused with "the inbound event is not a
+  stored message of this conversation for this agent". The kernel looked the
+  message up only among subscriptions that belong to no process; an engine
+  that reads through its processes' own subscriptions (facilitator 1.5.0) has
+  none of those. The message is now looked up among the events of the turn's
+  own process. Another process's event is still refused, also for the same
+  plugin.
+- **Conversations held by discussions that were not running (D34).** The
+  migration that introduced conversation reservations gave one to every
+  leftover row of the old facilitation path, so a facilitation could not
+  start there until the rows expired, and nothing listed them. Migration
+  0078 releases every discussion reservation no running discussion stands
+  behind; the periodic sweep does the same from now on.
+- **Every held conversation is visible and can be released.** "Running
+  processes" on the Agents page lists the conversations that are held right
+  now, by a process or by a discussion, with "Release". Releasing frees the
+  conversation and ends nothing. `GET /api/v1/operator/execution` returns
+  `reservations`; `POST /api/v1/operator/execution/reservations/:id/release`
+  releases one (audit action `execution.reservation_release`).
+
+### Fixed — Rollout findings around archetype plugins and the agent directory (#2088, epic #2042): D32, D33
+
+- **An update that changes what a plugin is asks first (D32).** Updating an
+  installed plugin used to swap the running version at once, also when the
+  new version made it an archetype plugin, changed what agents of its
+  archetype may do, or moved its tables into its own database schema for
+  good. Such an update is now refused until confirmed
+  (`package.archetype_confirmation_required`, 409), from the Hub and from a
+  ZIP alike. The store names what is being confirmed and offers "Update now"
+  or "Do not update". A plain version bump of an archetype plugin asks
+  nothing. API callers send `confirm_archetype=1`.
+- **The agent directory uses the app's own dialogs (D33).** Deleting an
+  agent, removing a deleted agent for good, ending an agent's sessions and
+  rehydrating the standard orchestrator asked through the browser's
+  `confirm()` and `prompt()`. They now ask in the app's dialog. Removing a
+  recently deleted agent still needs its slug typed; the button stays
+  disabled until it matches.
+- **No agent of an archetype whose plugin did not start.** Creating an
+  agent, or enabling a disabled one, is refused with 409
+  `archetype_plugin_not_running` while the plugin that delivers its
+  archetype is installed but in the errored state. The message names the
+  plugin and its reason. Disabling and deleting stay possible.
+
+### Added — One answer to a mention while a facilitation is in follow-up (#2089, epic #2043): K4.8
+
+- **The problem:** a facilitation in follow-up listens for messages that
+  address its facilitator. Such a mention reached two takers, the
+  facilitator's ordinary turn (its model) and the facilitation, and both
+  could answer.
+- **Now one of them answers.** Before the model runs, the kernel asks the
+  facilitation plugin whether one of its processes takes the message. If it
+  does, the turn stays silent and the facilitation answers. If it declines,
+  fails or does not answer within 20 seconds, the facilitator's ordinary turn
+  answers, as if no facilitation listened.
+- The mention is still stored for the facilitation, but no longer pushed to
+  it as an event when its plugin decides these turns. Replies and card
+  answers that belong to a facilitation are delivered as before.
+- A channel can state which message a turn answers
+  (`TurnOrigin.messageId`, channel-sdk 0.3.8); the plugin then gets the
+  stored event of that message with the question. plugin-api 1.73.0.
+- Nothing changes for a plugin that does not register the new handler.
+
+### Changed — An archetype plugin never gets the shared database pool (#2088, epic #2042): K3b of the spec alignment
+
+- A plugin of manifest kind `archetype` that asks for `graphPool` is refused
+  (`SharedPoolRefusedError`, plugin-api 1.72.0), whatever it declares and
+  whatever is granted, and it gets no `ctx.sql` on the shared pool. Its
+  database is its own schema under its own roles (K3a), which it gets by not
+  listing `graphPool` under `requires`. Plugins of every other kind are
+  unchanged.
+- **Before updating the kernel:** an installed archetype plugin that still
+  requires `graphPool` (the facilitation engine before 1.3.0) loses its
+  database with this version. Update the plugin first.
+- The isolation check of a plugin's database roles now also refuses a role
+  that may create objects in a schema other than its own (the default on a
+  database created before PostgreSQL 15, where every role may create in
+  `public`). The plugin's database then stays unavailable until
+  `REVOKE CREATE ON SCHEMA public FROM PUBLIC` has been run. The store shows
+  this as its own activation failure ("The plugin's own database could not be
+  set up.", code `database_not_available`), and the technical detail names
+  the statement. See `docs/upgrading.md`. The roles keep the default USAGE
+  on `public`; it cannot be revoked per role and reads no table.
+
+### Changed — Running agent discussions move to "Running processes"; the old facilitation panel is removed (#2067, epic #2043)
+
+- **Where to look now:** agent discussions that are running appear on the
+  Agents page under "Running processes", below the processes of archetype
+  plugins: topic, who opened it, who takes part, the conversation, when it
+  started and when it ends by itself.
+- **Their stop is final.** "End discussion" asks once in the row, then
+  cancels the run and frees the conversation. It cannot be resumed. The
+  kill switches above (everything, one agent, one process) do not reach
+  discussions, because a discussion holds no execution scope.
+- **Removed:** the "Running facilitations" panel on the Conductor page with
+  its details view (goal, definition of done, rounds, verdict table,
+  initiators, participants from the roster), and the routes
+  `GET /api/v1/operator/conductors/facilitations` and
+  `POST /api/v1/operator/conductors/facilitations/:workflowId/terminate`.
+  Native facilitations never appeared there; they are processes of the
+  facilitator plugin.
+- **New:** `GET /api/v1/operator/execution` also returns `discussions` and
+  `discussions_failed`; `POST /api/v1/operator/execution/discussions/:workflowId/stop`
+  stops one. A stop is recorded in the audit trail as
+  `conductor.discussion_stop`; `conductor.facilitation_terminate` stays for
+  the rows already written.
+
+### Added — A delivered private message names its conversation (#2091, epic #2043)
+
+- When a facilitator writes to one person, the result now carries the
+  private conversation the message went into, if the channel reports it
+  (Teams does from 0.39.0). The plugin can use it to match a later reply in
+  that conversation to the reminder it sent. Additive: plugin-api 1.71.0,
+  channel-sdk 0.3.7.
+
+### Added — Transcript segments as inbound events, contract only (#2089, epic #2043)
+
+- What is said in a live session can be delivered to a facilitation as
+  text: a transcript segment from a media source of that session, stored and
+  read like a message, with its own revisions when the text is corrected.
+- A segment from a media channel bound to one participant's account carries
+  that participant as its author. A segment from a shared source (a room
+  microphone, a mixed stream) has no author: the record names the source,
+  and a recognised speaker is a hint only.
+- The kernel refuses a segment without a session, with an unknown source, or
+  from a shared source that names a person as its author.
+- No channel delivers transcript segments yet; this is the contract and its
+  storage (migration 0077, plugin-api 1.70.0, channel-sdk 0.3.6).
+
+### Added — Kernel-issued grants for a facilitation's mail and calendar operations (#2078, epic #2043): K4.5 of the spec alignment
+
+- **Three grants, each bound to one execution scope:** protocol dispatch
+  (send one final protocol by mail), follow-up scheduling (free/busy and the
+  invitations of one agreed meeting) and follow-up reminders. A grant names
+  its recipients and ends at the latest with its scope; a protocol dispatch
+  at the latest 7 days after it was issued.
+- **The integration asks the kernel before every operation.** Until now the
+  facilitation engine told the connector which recipients are allowed, and
+  the connector checked them: the party that wanted to send also said to
+  whom it may. Now the connector asks the kernel whether the grant is live
+  and covers the operation and every recipient. Its own recipient check
+  stays as a second line.
+- **Revocation needs no extra step.** A grant is live only while its scope
+  is open: a stop or abort, the end of service of the agent and the
+  uninstall of the plugin end the scope and with it the grant. An operator
+  stop refuses the use without ending anything. A revoked or expired grant
+  is never issued again.
+- **Every use is recorded,** allowed or refused, with the operation, the
+  recipients and who asked; the engine reads the list for the protocol.
+- The connector has to be updated to ask (see its repository); until then
+  nothing changes for it (migration 0076, plugin-api 1.69.0).
+
+### Added — A participant can ask a facilitator for the status in a private chat (#2089, epic #2043)
+
+- A facilitator refuses private requests: it is a moderator, not an
+  assistant. The exception the specification makes is now possible: a person
+  who takes part in a running facilitation of that facilitator can ask it
+  privately, and gets that facilitation's answer there.
+- **Who takes part** is checked by the kernel: the person is listed by an
+  open execution scope of that facilitator. **What the message is** is the
+  facilitation engine's judgement: it gets the message, answers or declines.
+  Its answer is drawn from the scope like every other direct message
+  (deadline, budget, operator stop; a person listed for status only gets a
+  status answer only).
+- Anybody else, and a message the engine declines, gets the fixed refusal as
+  before. No model runs for such a request.
+- Not yet: recognising a private reply as the answer to one particular
+  reminder. A turn carries no reply reference; that needs the channel plugin
+  to deliver private messages as events (plugin-api 1.68.0).
+
+### Added — Posts and direct messages drawn from an execution scope (#2091, epic #2043): K4.4 of the spec alignment
+
+- **`conversationSend@2`.** A facilitation engine posts, writes to one
+  person, updates a card and checks readiness as an authorized action: each
+  request names the execution scope, and the kernel takes the authorization
+  before anything leaves. The scope must list the conversation or the
+  person, be inside its deadline and budget and not be stopped by an
+  operator. Sending as the agent's own identity is unchanged (`no_identity`
+  instead of another bot).
+- **Targets come from the scope.** The first version allowed a post where
+  the agent held a message subscription. A closing scope can now still post
+  the protocol or the abort report to a conversation whose reservation was
+  released, and nothing can be posted to a conversation the scope does not
+  list.
+- **Direct messages:** the person must be listed by the scope and, as a
+  second check from the kernel's own records, be a member or an author of a
+  conversation of that process.
+- **The kernel records which process a post belongs to,** so a reply to it
+  or an answer to its card reaches that process alone.
+- **Readiness per conversation** is asked through the same service, also for
+  a conversation that is about to be linked.
+- The first version of the services is unchanged (plugin-api 1.67.0).
+
+### Added — Message subscriptions and reads bound to a process (#2089, epic #2043): K4.3 of the spec alignment
+
+- **`conversationMessages@2`.** A facilitation engine can subscribe a
+  conversation for one process (a facilitation) with a mode: every human
+  message, only messages addressed to the facilitator, or nothing. Every
+  read names the process and returns only what that process received there.
+  A later facilitation in the same conversation has its own subscription and
+  sees none of an earlier one's messages.
+- **Which process a message belongs to is decided before it is stored.** A
+  reply to a message, or an answer to a card, that belongs to a process
+  reaches that process alone, also while another facilitation of the same
+  facilitator reads every message of the conversation. Any other message
+  goes to the facilitation that reads everything and, when it addresses the
+  facilitator, to those in follow-up as well.
+- **Access follows the permission.** Reading every message needs the
+  conversation's reservation and an open execution scope. When the
+  reservation is released the kernel turns the subscription down to
+  addressed messages (the mention gate is back on); when the process has no
+  open scope left it ends the subscription, and reads end with it.
+- **Retention.** Messages of a running process are not removed by the age
+  limit; they go with the grace period after the process's last scope ended.
+- **For channel plugins** (channel-sdk 0.3.5): `conversationDelivery()`
+  tells an adapter whether an identity gets all, addressed or no messages of
+  a conversation, and `addressedToBot` lets it mark a mention. An adapter
+  that does not use them keeps delivering as before: all messages while
+  somebody reads all, nothing otherwise.
+- The first version of the service is unchanged (migration 0075, plugin-api
+  1.66.0).
+
+### Changed — A turn's model-call reservation is a hard cap (#2090, epic #2043)
+
+- **A gate before every model call.** Every provider implementation
+  (Anthropic, OpenAI chat, OpenAI responses, the subscription CLI as provider
+  and as chat agent) asks the kernel before it reaches its backend. Inside a
+  turn that runs under an execution scope (`agentTurn@2`), the call the
+  turn's reservation does not cover is refused and never made, whether the
+  main model, a helper or a guard asked for it.
+- **No answer from a turn that was cut short.** Many helpers carry on when
+  their model call fails. A turn in which any call was refused therefore ends
+  refused (`reservation_exceeded`) and returns no text; nothing of it is kept
+  in the turn history. It is charged with the calls it made.
+- **The count is exact now.** Model calls are counted at the provider, where
+  every call passes. The first version counted at the usage recorder, which a
+  few calls do not reach.
+- Outside such a turn nothing changes: the gate lets every call through.
+- For authors of provider plugins: the provider contract is 1.5.0; an
+  implementation calls `admitModelCall()` before its backend call. A
+  third-party provider that does not is not bounded by a reservation.
+
+### Added — A facilitator's model turn as an authorized action (#2090, epic #2043): K4.2 of the spec alignment
+
+- **`agentTurn@2`.** An archetype plugin can run a turn under an execution
+  scope: it names the scope, the process, the phase, the purpose and how
+  many model calls it reserves. The kernel takes the authorization before
+  any model is called and refuses the turn past the deadline, without
+  budget, with the kill switch on, or in a phase that does not fit the
+  scope. The turn itself and its guards are the same as before.
+- **Model calls are counted where they are recorded.** Every model call of
+  the kernel (main loop, helper models, verifier, a plugin's own calls) is
+  counted for the turn that caused it, and the scope is charged with the
+  real number; what was reserved and not used goes back. A turn that makes
+  more calls than it reserved uses the budget up, and the next action is
+  refused. The kernel cannot stop a turn in the middle.
+- The first version of the service is unchanged and still runs a turn
+  without a scope, until the facilitation engine has moved (migration 0074,
+  plugin-api 1.64.0).
+
+### Added — Execution scopes, conversation reservations and a kill switch for archetype plugins (#2090, epic #2043): K4.1 of the spec alignment
+
+- **Execution scopes.** An archetype plugin (the facilitation engine) acts
+  on its own schedule. The kernel now offers it bounded permissions per
+  process: five kinds of scope (`configuring`, `active`, `closing`,
+  `scheduling`, `follow_up`), each with a deadline, a budget of actions and
+  of model calls, and the conversations and people it may address. Every
+  action is drawn from a scope in one database statement, so two workers
+  cannot both take the last unit and a restart keeps the counters. An ended
+  scope never re-opens (migration 0073, plugin-api 1.63.0,
+  `executionAuthorization`).
+- **Not enforced yet.** The existing services do not ask for an
+  authorization in this version; the facilitation engine keeps working
+  unchanged. The services that require a scope follow.
+- **One process per conversation.** A facilitation that starts through the
+  new contract and an agent discussion now hold the same reservation: a
+  discussion is refused while a facilitation holds the conversation, and
+  the other way round. A discussion that is running when the migration is
+  applied gets its reservation.
+- **Kill switch.** An operator can stop every action of archetype plugins
+  for the instance, one agent or one process (`/api/v1/operator/execution`,
+  and "Running processes" in the agent directory). A stop refuses further
+  authorizations until it is cleared; it ends and deletes nothing. Setting
+  and clearing are in the audit log.
+- **End of service.** Disabling or deleting an agent, and uninstalling its
+  archetype plugin, now also end the agent's execution scopes and release
+  its conversation reservations, after the plugin had its chance to close
+  its processes.
+- **Two versions of a kernel service.** A plugin can ask for a second major
+  of a service by name (`agentTurn@2`) once its manifest declares it; the
+  bare name keeps meaning the first.
+- New settings: `EXECUTION_SCOPE_CONFIGURING_MAX_HOURS` (default 72),
+  `EXECUTION_SCOPE_SWEEP_INTERVAL_MS` (default 60000).
+
+### Added — An archetype plugin can have its database in its own schema under its own roles (#2088, epic #2042): K3a of the spec alignment
+
+- **Opt-in by manifest.** A plugin of manifest kind `archetype` that does
+  not list `graphPool` under `requires` no longer runs on the shared
+  database pool. With the database grant it gets `ctx.sql.query()` and
+  `ctx.sql.transaction()` (plugin-api 1.62.0). An archetype plugin that
+  still requires `graphPool`, and every plugin of another kind, is unchanged.
+- **Own schema, two login roles.** When such a plugin activates, the kernel
+  creates the schema `plg_<plugin id>`, a runtime role that reads and writes
+  the tables of that schema and nothing else, and a migration role that owns
+  the schema; the plugin's migration files run as the migration role. Both
+  are roles the connection logs in as, so SQL the plugin sends cannot leave
+  them, and they work behind a transaction-mode pooler. The runtime role may
+  read the migration ledger but not write it. Before the plugin runs, the
+  kernel checks that neither role holds a right on a table outside the
+  schema and refuses the activation otherwise.
+- **One-time move.** Tables the plugin created in `public` while it ran on
+  the shared pool (`plg_<plugin id>_*`) move into its schema, with their rows,
+  the first time a version without `graphPool` activates. There is no way
+  back: a version that expects the shared pool no longer finds them.
+- **What the database user needs.** Postgres 16 or newer, and the kernel's
+  database user must be allowed to create roles and schemas. Where it is
+  not, the activation fails with `cannot_create_roles` and the statement an
+  administrator runs once.
+- **Limit.** Plugin code runs in the kernel's process. This limits the
+  connection the kernel hands out; it does not stop code in the same process
+  from opening its own connection with credentials it finds there.
+- **Not yet:** an archetype plugin that still requires `graphPool` is not
+  refused. That follows once the facilitation engine has moved.
+### Fixed — An archetype plugin is updated and stopped in the runtime it runs in (#2088)
+
+- **Update to an archetype version.** Uploading or installing from the Hub a
+  version of an installed plugin whose manifest kind is `archetype` started
+  that version as an agent plugin next to the running one: the activation
+  failed with "duplicate provider" and the previous version was kept. The
+  update now stops the running version, registers the archetype and starts
+  the new version in the extension runtime, as a first install does.
+- **Uninstall and reactivation.** Deactivating an archetype plugin went to
+  the agent runtime, which knows no such plugin; its tools, routes and
+  services stayed registered. It is now stopped where it runs.
+- Every manifest kind has one entry in a single mapping to its runtime; a
+  kind without one no longer compiles.
+
+### Changed — End of service, guarded uninstall and tombstones (#2088, epic #2042): K2 of the spec alignment, second part
+
+- **Deleting an agent keeps a tombstone** (migration `0072`), for every
+  archetype. The row stays, marked deleted, with everything that references
+  it (identity, grants, working modes, internal helpers, schedules, channel
+  policies, bindings, subscriptions): the nine `ON DELETE CASCADE` children
+  are no longer dropped by a delete. The agent is in no list and no lookup,
+  its slug is free for a new agent, and a conversation bound to it is
+  refused by routing instead of being answered by the default agent. A
+  tombstone cannot be restored.
+- **The hard delete is a separate step:** `POST
+  /api/v1/operator/agents/deleted/:id/purge`. Inside the retention period
+  (`AGENT_TOMBSTONE_RETENTION_DAYS`, default 30) it needs the agent's slug as
+  confirmation. `GET /api/v1/operator/agents/deleted` lists the tombstones.
+  The agent directory shows them under "Deleted agents" / "Gelöschte
+  Agenten".
+- **End of service.** Before an agent is disabled or deleted, its archetype
+  plugin ends the processes it was running for the agent (new plugin
+  contract, plugin-api 1.61.0), then the kernel ends every message
+  subscription of the agent, whatever the plugin answered. Re-enabling
+  resumes nothing. The answer of the disable and delete routes says what
+  ended in which conversation, and the directory shows it.
+- **Kernel-guarded uninstall of an archetype plugin.** Before the plugin is
+  unloaded, independently of its own `onUninstall`, every enabled agent of
+  its archetype goes through end of service and is disabled. Records stay;
+  no agent is deleted or converted to another archetype.
+- **Audit:** `agent.end_of_service` (which processes and conversations),
+  `agent.disable`, `agent.delete`, `agent.purge`; filter "Agents" in the
+  audit log.
+- **No `system` notices yet (#2045).** Every place that owes a conversation
+  one ("this agent was deleted", "… disabled", "its archetype plugin was
+  removed") calls a seam that logs `[system-notice] owed, not sent`. Nothing
+  is posted under an agent's identity in its place.
+- A source check (`agentTombstoneReaders.test.ts`) fails when a new query on
+  `agents` or a table that references it neither scopes to one agent nor
+  excludes tombstones.
+
+### Added — Archetype plugins (#2088, epic #2042): K2 of the spec alignment, first part
+
+- **Manifest kind `archetype`.** A plugin of this kind delivers an agent
+  archetype: its manifest carries the descriptor the kernel enforces (what
+  agents of the archetype never get, what the archetype adds, what such an
+  agent needs, the role contract). The block is read strictly; an entry the
+  kernel does not know rejects the manifest. It runs in the extension
+  runtime and is granted only to agents of its own archetype.
+- **An unknown manifest kind is rejected at ingest** instead of being loaded
+  as an `agent` plugin. Every plugin on the public Hub (35) and every bundled
+  manifest (23) uses a known kind; none is refused by this.
+- **Registration.** An installed archetype plugin registers its archetype:
+  its descriptor replaces the kernel's own for `facilitator`, and
+  `agent_archetypes.source` names the plugin. An uninstall brings the
+  kernel's descriptor back; an archetype with no descriptor at all leaves its
+  agents with nothing. Two plugins for one archetype: neither is registered.
+- **Migration `0071`** removes the closed list on `agents.kind`, so an agent
+  of a third archetype can be created once the archetype is registered.
+  `kind` stays equal to `archetype` for every row.
+- **The facilitation engine is found by archetype kind or by the
+  `facilitationEngine@1` capability** (both until the capability is retired).
+  The role contract and the kernel services for the engine (`agentTurn`,
+  message subscription, own-identity sends, session capabilities) follow the
+  descriptor.
+- **Install confirmation.** Installing an archetype plugin is refused with
+  `install.archetype_confirmation_required` until the operator confirms; the
+  store shows what the archetype adds, what its agents never get and what
+  such an agent needs before anything is installed.
+- **Agent directory:** one section per registered archetype
+  (`GET /api/v1/operator/archetypes`) instead of the hard-coded Facilitators
+  section. The facilitator keeps its own section with engine and Teams
+  readiness; agents of an archetype nobody delivers any more stay visible
+  with the reason. Store: filter "Archetypes" / "Archetypen".
+- plugin-api 1.60.0 (no type change; marks a kernel that knows the kind).
+
+Not in this part: the kernel-guarded uninstall, end of service for a single
+agent and the tombstone delete follow as the second part.
+
 ### Fixed — Session state behind a transaction-mode connection pooler
 
 Found by auditing the kernel after the facilitator plugin's lock defect: the
@@ -381,7 +959,8 @@ and the neutrality contract. No facilitation tables in the kernel.
   channel and facilitator 1.0.0 together. Kept: ephemeral runs, agent
   discussions and `say`; the operator lens over live ephemeral runs
   (`/api/v1/operator/conductors/facilitations`, the Facilitations panel),
-  which is the only view and stop control for running discussions; the
+  which is the only view and stop control for running discussions (replaced
+  later in this release by "Running processes", see the #2067 entry above); the
   `CONDUCTOR_EPHEMERAL_*` quotas; the audit action
   `conductor.facilitation_terminate` for existing rows.
 - **`GET /api/v1/operator/agents/facilitation-engine`**: `state` (bound |

@@ -429,8 +429,9 @@ export const ConfigSchema = z.object({
   // scope are personal-data linkage, so rows are reaped after this many days.
   RECEIPT_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
   // #2043 — retention of stored inbound conversation messages
-  // ('conversationMessages@1'). Events outlive the END of their subscription
-  // by the grace period and are removed after the maximum age regardless.
+  // ('conversationMessages@2'). Events outlive the END of their subscription
+  // by the grace period; once it has ended they also go after the maximum
+  // age. Nothing of a running process is removed by age.
   // The engine plugin keeps its own record.
   CONVERSATION_MESSAGES_GRACE_MS: z.coerce.number().int().nonnegative().default(6 * 60 * 60 * 1000),
   // Always bounded: there is no "keep forever" (a subscription that is never
@@ -445,7 +446,14 @@ export const ConfigSchema = z.object({
     .transform((v) => v === 'true'),
   CONVERSATION_MESSAGES_RECONCILE_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   CONVERSATION_MESSAGES_PURGE_INTERVAL_MS: z.coerce.number().int().positive().default(10 * 60 * 1000),
-  // #2043 — ceiling on kernel-run turns ('agentTurn@1') per agent and minute;
+  // #2090 — execution scopes of archetype plugins. A `configuring` scope (the
+  // time between the start request and the handshake) lasts at most this
+  // long; then the facilitation ends as aborted (spec 2043 §0, default 72 h).
+  EXECUTION_SCOPE_CONFIGURING_MAX_HOURS: z.coerce.number().int().positive().max(24 * 30).default(72),
+  // How often scopes past their deadline are ended and reservations of
+  // processes without an open scope released.
+  EXECUTION_SCOPE_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
+  // #2043 — ceiling on kernel-run turns ('agentTurn@2') per agent and minute;
   // a loop in an engine plugin must not spend without bound. 0 = no ceiling.
   AGENT_TURN_MAX_PER_MINUTE: z.coerce.number().int().nonnegative().default(60),
 
@@ -479,6 +487,11 @@ export const ConfigSchema = z.object({
   // a Neon `-pooler` address the direct host is derived when this is unset;
   // behind any other pooler set it, or set CONVERSATION_MESSAGES_LISTEN=false
   // (the periodic reconcile then carries subscription changes alone).
+  // #2088 — how long a deleted agent's tombstone (its row and everything that
+  // references it) is kept before the operator can purge it without typing a
+  // confirmation. A purge is always an explicit action; this is not a timer
+  // that deletes anything.
+  AGENT_TOMBSTONE_RETENTION_DAYS: z.coerce.number().int().min(0).default(30),
   DATABASE_URL_DIRECT: z
     .string()
     .optional()

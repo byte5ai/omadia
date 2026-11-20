@@ -38,16 +38,63 @@ export const ARCHETYPE_OMISSIONS = [
 ] as const;
 export type ArchetypeOmission = (typeof ARCHETYPE_OMISSIONS)[number];
 
+/**
+ * What an archetype ADDS to the agent model: kernel services its plugin may
+ * use for agents of the archetype, and for nobody else. The kernel gives a
+ * service only when the descriptor lists it.
+ *  - `conversation_messages`: every human message of a conversation the
+ *    agent moderates, with platform-stated authorship;
+ *  - `agent_turn`: model turns of the agent, run by the kernel for the plugin;
+ *  - `own_identity_send`: posts and direct messages as the agent's own
+ *    channel identity;
+ *  - `session_capabilities`: what a live session's channel can do.
+ */
+export const ARCHETYPE_ADDITIONS = [
+  'conversation_messages',
+  'agent_turn',
+  'own_identity_send',
+  'session_capabilities',
+] as const;
+export type ArchetypeAddition = (typeof ARCHETYPE_ADDITIONS)[number];
+
+/**
+ * What an agent of the archetype must have before it can work.
+ *  - `own_channel_identity`: its own identity on the channel it works in; it
+ *    never speaks through another agent's.
+ */
+export const ARCHETYPE_REQUIREMENTS = ['own_channel_identity'] as const;
+export type ArchetypeRequirement = (typeof ARCHETYPE_REQUIREMENTS)[number];
+
+/** A text in the operator's languages; a plain string is shown as written. */
+export type ArchetypeText = string | Readonly<Partial<Record<'en' | 'de', string>>>;
+
 export interface ArchetypeDescriptor {
   readonly id: ArchetypeId;
   /** Who registered it: `'kernel'` (built in or kernel-seeded) or a plugin id. */
   readonly source: string;
   /** What agents of this archetype never get. */
   readonly omits: readonly ArchetypeOmission[];
+  /** What the archetype adds; absent = nothing. */
+  readonly adds?: readonly ArchetypeAddition[];
+  /** What an agent of it needs before it can work; absent = nothing. */
+  readonly requires?: readonly ArchetypeRequirement[];
   /** How a refusal names such an agent ("a facilitator"). */
   readonly noun: string;
+  /** Name of the archetype for the operator ("Facilitator"), plural form
+   *  for the directory section ("Facilitators"), and one paragraph on what
+   *  agents of it do. Absent = the kernel's own texts, or the id. */
+  readonly label?: ArchetypeText;
+  readonly labelPlural?: ArchetypeText;
+  readonly description?: ArchetypeText;
   /** Why, per omission; said to the operator in the refusal. */
   readonly omissionReasons?: Readonly<Partial<Record<ArchetypeOmission, string>>>;
+  /**
+   * The role contract: a fixed block that closes the identity of every agent
+   * of the archetype, after the operator's own sections, and that no identity
+   * setting removes (for the facilitator the neutrality contract). Absent =
+   * the kernel's own block for that archetype, if it has one.
+   */
+  readonly roleContract?: string;
 }
 
 const STANDARD_DESCRIPTOR: ArchetypeDescriptor = Object.freeze({
@@ -62,6 +109,8 @@ const FACILITATOR_DESCRIPTOR: ArchetypeDescriptor = Object.freeze({
   id: FACILITATOR_ARCHETYPE,
   source: 'kernel',
   omits: Object.freeze([...ARCHETYPE_OMISSIONS]),
+  adds: Object.freeze([...ARCHETYPE_ADDITIONS]),
+  requires: Object.freeze([...ARCHETYPE_REQUIREMENTS]),
   noun: 'a facilitator',
   omissionReasons: Object.freeze({
     plugin_grant:
@@ -86,6 +135,12 @@ const FACILITATOR_DESCRIPTOR: ArchetypeDescriptor = Object.freeze({
   }),
 });
 
+/** What the kernel ships itself, restored when a plugin's descriptor goes. */
+const SEEDED: ReadonlyMap<ArchetypeId, ArchetypeDescriptor> = new Map([
+  [STANDARD_DESCRIPTOR.id, STANDARD_DESCRIPTOR],
+  [FACILITATOR_DESCRIPTOR.id, FACILITATOR_DESCRIPTOR],
+]);
+
 // One registry per process, also when this package is loaded twice (source
 // and build): a descriptor registered through one copy must hold for the other.
 const REGISTRY_KEY = Symbol.for('omadia.agentArchetypes');
@@ -95,10 +150,7 @@ function registry(): Registry {
   const holder = globalThis as unknown as Record<symbol, Registry | undefined>;
   let map = holder[REGISTRY_KEY];
   if (!map) {
-    map = new Map([
-      [STANDARD_DESCRIPTOR.id, STANDARD_DESCRIPTOR],
-      [FACILITATOR_DESCRIPTOR.id, FACILITATOR_DESCRIPTOR],
-    ]);
+    map = new Map(SEEDED);
     holder[REGISTRY_KEY] = map;
   }
   return map;
@@ -126,11 +178,47 @@ export function registerArchetype(descriptor: ArchetypeDescriptor): () => void {
   if (unknown.length > 0) {
     throw new Error(`archetype '${descriptor.id}' names unknown omissions: ${unknown.join(', ')}`);
   }
-  const frozen: ArchetypeDescriptor = Object.freeze({ ...descriptor, omits: Object.freeze([...descriptor.omits]) });
+  const unknownAdds = (descriptor.adds ?? []).filter((a) => !ARCHETYPE_ADDITIONS.includes(a));
+  if (unknownAdds.length > 0) {
+    throw new Error(`archetype '${descriptor.id}' names unknown additions: ${unknownAdds.join(', ')}`);
+  }
+  const unknownRequires = (descriptor.requires ?? []).filter((r) => !ARCHETYPE_REQUIREMENTS.includes(r));
+  if (unknownRequires.length > 0) {
+    throw new Error(`archetype '${descriptor.id}' names unknown requirements: ${unknownRequires.join(', ')}`);
+  }
+  const frozen: ArchetypeDescriptor = Object.freeze({
+    ...descriptor,
+    omits: Object.freeze([...descriptor.omits]),
+    adds: Object.freeze([...(descriptor.adds ?? [])]),
+    requires: Object.freeze([...(descriptor.requires ?? [])]),
+  });
+  const previous = registry().get(frozen.id);
   registry().set(frozen.id, frozen);
   return () => {
-    if (registry().get(frozen.id) === frozen) registry().delete(frozen.id);
+    if (registry().get(frozen.id) !== frozen) return;
+    // What was there before comes back: for `facilitator` the kernel's seed,
+    // which stays the fallback while an engine plugin without a descriptor of
+    // its own is still supported. Anything else is gone, and its agents omit
+    // everything.
+    const seed = SEEDED.get(frozen.id);
+    if (seed) registry().set(frozen.id, seed);
+    else if (previous && previous.source === 'kernel') registry().set(frozen.id, previous);
+    else registry().delete(frozen.id);
   };
+}
+
+/** Does the archetype of this agent add `addition`? Unknown archetype = no. */
+export function archetypeAdds(agent: ArchetypeBearer | undefined | null, addition: ArchetypeAddition): boolean {
+  if (!agent) return false;
+  return getArchetype(archetypeOf(agent))?.adds?.includes(addition) === true;
+}
+
+export function archetypeRequires(
+  agent: ArchetypeBearer | undefined | null,
+  requirement: ArchetypeRequirement,
+): boolean {
+  if (!agent) return false;
+  return getArchetype(archetypeOf(agent))?.requires?.includes(requirement) === true;
 }
 
 export function getArchetype(id: ArchetypeId): ArchetypeDescriptor | undefined {
@@ -141,26 +229,18 @@ export function listArchetypes(): ArchetypeDescriptor[] {
   return [...registry().values()];
 }
 
-/** What an agent row says about its archetype. `kind` is the column of
- *  migration 0067, still written next to `archetype` until it is dropped. */
+/** What an agent row says about its archetype. */
 export interface ArchetypeBearer {
   readonly archetype?: ArchetypeId | undefined;
-  readonly kind?: string | undefined;
 }
 
-/**
- * The archetype stored for a row. A database before migration 0070 has only
- * `kind`; a database before 0067 has neither, and every agent that existed
- * then is a standard agent.
- */
-export function parseArchetype(rawArchetype: unknown, rawKind?: unknown): ArchetypeId {
-  if (isArchetypeId(rawArchetype) && rawArchetype !== STANDARD_ARCHETYPE) return rawArchetype;
-  if (isArchetypeId(rawKind)) return rawKind;
-  return STANDARD_ARCHETYPE;
+/** The archetype stored for a row; a row without one is a standard agent. */
+export function parseArchetype(rawArchetype: unknown): ArchetypeId {
+  return isArchetypeId(rawArchetype) ? rawArchetype : STANDARD_ARCHETYPE;
 }
 
 export function archetypeOf(agent: ArchetypeBearer | undefined | null): ArchetypeId {
-  return parseArchetype(agent?.archetype, agent?.kind);
+  return parseArchetype(agent?.archetype);
 }
 
 export function isArchetype(agent: ArchetypeBearer | undefined | null, id: ArchetypeId): boolean {

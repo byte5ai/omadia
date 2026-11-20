@@ -159,6 +159,9 @@ export interface InstallServiceDeps {
   /** OM-95 — late-resolved orchestrator config store. Bindings are purged only
    *  on real uninstall; `onUninstall` also runs during `reactivate()`. */
   agentPluginBindingStore?: () => AgentPluginBindingStore | undefined;
+  /** #2088 — after a real uninstall, once the registry entry is gone. A
+   *  failure is logged; the uninstall is complete. */
+  onUninstalled?: (agentId: string) => Promise<void>;
   /** #1481 — uninstalling a package that ships in the image records the id
    *  here so the boot seeders stop re-installing it; installing it again
    *  clears the mark. Optional: without it built-ins come back at boot. */
@@ -216,7 +219,12 @@ export class InstallService {
   // Create — derives the setup schema from the plugin manifest
   // -------------------------------------------------------------------------
 
-  create(pluginId: string): InstallJob {
+  /**
+   * `opts.confirmedArchetype` (#2088): the operator's explicit confirmation
+   * that a new kind of agent is added. Required for a plugin of kind
+   * `archetype`, ignored for every other kind.
+   */
+  create(pluginId: string, opts: { readonly confirmedArchetype?: boolean } = {}): InstallJob {
     const entry = this.deps.catalog.get(pluginId);
     if (!entry) {
       throw new InstallError(
@@ -253,6 +261,20 @@ export class InstallService {
         compat_core: coreRefusal.compat_core,
         host_plugin_api: coreRefusal.host_plugin_api,
       });
+    }
+
+    // #2088 — an archetype plugin adds a new kind of agent to the instance:
+    // what agents of it may do and never get is decided by its descriptor,
+    // not by per-agent grants. That is installed only on an explicit
+    // confirmation, and the refusal carries what is being confirmed so the
+    // UI shows exactly the descriptor the kernel will enforce.
+    if (entry.plugin.kind === 'archetype' && opts.confirmedArchetype !== true) {
+      throw new InstallError(
+        'install.archetype_confirmation_required',
+        `'${pluginId}' adds the agent archetype '${entry.plugin.archetype?.id ?? '?'}' to this instance; confirm the install explicitly`,
+        409,
+        { archetype: entry.plugin.archetype ?? null },
+      );
     }
 
     // Dependency gate: every parent in depends_on must already be installed.
@@ -941,6 +963,19 @@ export class InstallService {
     this.deps.conductorTemplates?.()?.unregisterPluginTemplates(agentId);
     await this.deps.registry.remove(agentId);
     await this.recordBuiltInOptOut(agentId);
+    // #2088 — the plugin is no longer installed NOW; whoever derives state
+    // from the set of installed plugins (the archetype registry) reads it
+    // here, not in `onUninstall`, which runs while the entry still exists.
+    if (this.deps.onUninstalled) {
+      try {
+        await this.deps.onUninstalled(agentId);
+      } catch (err) {
+        console.error(
+          `[install] onUninstalled hook failed for ${agentId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
   }
 
   /**

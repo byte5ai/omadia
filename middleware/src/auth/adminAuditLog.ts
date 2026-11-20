@@ -35,8 +35,11 @@ export type AuditAction =
   // which Agent answers a group, so the auto-bind lifecycle belongs in the
   // same trail as the role batons.
   | 'channel.binding_change'
-  // #330 round 4 — the operator terminated a live facilitation from the admin lens.
+  // #330 round 4 — the operator terminated a live facilitation from the admin
+  // lens. The lens is gone (#2067); the action stays for the rows it wrote.
   | 'conductor.facilitation_terminate'
+  // #2067 — the operator stopped a run agents started themselves (a discussion).
+  | 'conductor.discussion_stop'
   // #965 — an operator extended their own session ("I'm still here"). One
   // row per renewal keeps a renewal chain visible after the fact.
   | 'auth.session_renew'
@@ -61,6 +64,19 @@ export type AuditAction =
   // #1347 — a plugin finished its install wizard / was removed. The uninstall
   // row lists the grants that left with it.
   | 'plugin.install'
+  // #2088 — end of service of an agent: what ended with it (processes of its
+  // archetype, message subscriptions), then the change itself. A delete
+  // keeps a tombstone; the purge is the hard delete of one.
+  | 'agent.end_of_service'
+  | 'agent.disable'
+  | 'agent.delete'
+  | 'agent.purge'
+  // #2090 — the operator's kill switch for the actions of archetype plugins
+  // (instance, one agent, one process): set and cleared.
+  | 'execution.kill_switch_set'
+  // D34 — an operator released a held conversation reservation.
+  | 'execution.reservation_release'
+  | 'execution.kill_switch_clear'
   | 'plugin.uninstall'
   // #1510/#1508 — a plugin's Privacy Shield setting (`_privacy_mode`,
   // `_privacy_bypass_scopes`) changed. A switch to `bypass` sends that

@@ -348,7 +348,34 @@ export type PluginKind =
   | 'tool'
   /** Cross-cutting extension (turn-hooks, background jobs, prompt blocks).
    *  Reserved for Phase 4 (Verifier + KG). No runtime support yet. */
-  | 'extension';
+  | 'extension'
+  /** #2088 — delivers an agent archetype (spec 2042 §5.10): its manifest
+   *  carries the descriptor the kernel enforces (`Plugin.archetype`). Never
+   *  attached to an agent; the operator creates agents OF the archetype.
+   *  Runs in the extension runtime. Installing it needs a confirmation. */
+  | 'archetype';
+
+/** Every manifest `kind` this kernel accepts. Anything else is rejected at
+ *  ingest: a kind the kernel does not know is not silently run as another. */
+export const PLUGIN_KINDS = ['agent', 'integration', 'channel', 'tool', 'extension', 'archetype'] as const;
+
+/**
+ * The archetype a plugin of kind `archetype` delivers, as its manifest states
+ * it (`archetype:` block). Mirrors the kernel's `ArchetypeDescriptor` without
+ * `source`; the lists are closed vocabularies the kernel enforces.
+ */
+export interface PluginArchetype {
+  id: string;
+  omits: string[];
+  adds: string[];
+  requires: string[];
+  noun: string;
+  label?: string | { en?: string; de?: string };
+  labelPlural?: string | { en?: string; de?: string };
+  description?: string | { en?: string; de?: string };
+  omissionReasons?: Record<string, string>;
+  roleContract?: string;
+}
 
 export type ChannelTransportKind = 'webhook' | 'websocket' | 'long-poll';
 
@@ -531,6 +558,8 @@ export type PluginInstallOrigin = 'bundled' | 'operator';
 export interface Plugin {
   id: AgentId;
   kind: PluginKind;
+  /** #2088 — present exactly when `kind === 'archetype'`. */
+  archetype?: PluginArchetype;
   name: string;
   version: string;
   latest_version: string;
@@ -960,6 +989,9 @@ export type ActivationErrorCode =
   | 'dependency_unresolved'
   | 'provider_conflict'
   | 'target_unreachable'
+  // #2088 — the plugin's own database (schema and roles) could not be set up,
+  // or its roles are not limited to its schema.
+  | 'database_not_available'
   | 'unknown';
 
 /**

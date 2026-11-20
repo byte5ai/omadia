@@ -17,6 +17,13 @@ import type { NotificationRouter } from '../platform/notificationRouter.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
+import {
+  ArchetypeDatabaseError,
+  ownDatabaseEdges,
+  ownsItsDatabase,
+  type ArchetypeDatabase,
+  type ArchetypeDatabaseHandle,
+} from '../platform/archetypeDatabase.js';
 import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { OAuthReadinessTracker } from './oauth/oauthReadinessTracker.js';
@@ -143,6 +150,10 @@ export interface ToolPluginRuntimeDeps {
    *  once per activate. Optional so narrow test contexts can omit it; absent
    *  means ungranted, so a context built without it gets no database access. */
   sqlGrantStore?: PluginSqlGrantStore;
+  /** #2088 — sets up the schema and the two database roles of an archetype
+   *  plugin that owns its database, before its context is built. Absent (no
+   *  database, narrow test contexts): such a plugin gets no `ctx.sql`. */
+  archetypeDatabase?: ArchetypeDatabase;
   /** Event-catalog autodiscovery (US4 Conductor Surface): capability entries declaring
    *  `event_emit: true` are resolved into this registry on (de)activation. This runtime is the
    *  ONLY resolve site for built-in/static tool plugins (landmine K — the dynamic runtime has its
@@ -250,6 +261,9 @@ export class ToolPluginRuntime {
       if (
         catalogEntry.plugin.kind !== 'tool' &&
         catalogEntry.plugin.kind !== 'extension' &&
+        // #2088 — an archetype plugin runs like an extension: it registers
+        // tools and jobs for the agents of its archetype.
+        catalogEntry.plugin.kind !== 'archetype' &&
         catalogEntry.plugin.kind !== 'integration'
       ) {
         continue;
@@ -317,11 +331,12 @@ export class ToolPluginRuntime {
       }
     }
 
-    const sorted = topoSortByDependsOn(
-      resolution.resolved,
-      this.deps.catalog,
-      resolution.edges,
-    );
+    const sorted = topoSortByDependsOn(resolution.resolved, this.deps.catalog, [
+      ...resolution.edges,
+      // #2088 — a plugin with its own database starts after the plugin that
+      // publishes the kernel's pool, though it no longer requires it.
+      ...ownDatabaseEdges(resolution.resolved, (id) => this.deps.catalog.get(id)?.plugin),
+    ]);
 
     for (const id of sorted) {
       try {
@@ -333,6 +348,13 @@ export class ToolPluginRuntime {
           // A version this core refuses to start is not a transient failure:
           // record it once, terminally, instead of counting three boots.
           if (err instanceof PluginNotStartableError) {
+            await this.deps.registry.markActivationBlocked(id, describeActivationFailure(err));
+            continue;
+          }
+          // #2088 — a plugin without its database does not run, and waiting
+          // for three failed boots would show it as active meanwhile. Recorded
+          // at once; the next boot tries again (see retryErroredPlugins).
+          if (err instanceof ArchetypeDatabaseError) {
             await this.deps.registry.markActivationBlocked(id, describeActivationFailure(err));
             continue;
           }
@@ -431,6 +453,26 @@ export class ToolPluginRuntime {
       }
     }
 
+    // #2088 — an archetype plugin that does not require `graphPool` has its
+    // database in its own schema under its own roles. Set up here, before the
+    // context exists, for the same reason the grant is read here. A failure
+    // fails the activation: the plugin has no other database.
+    let archetypeDatabase: ArchetypeDatabaseHandle | undefined;
+    if (
+      ownsItsDatabase(catalogEntry.plugin) &&
+      sqlGranted &&
+      this.deps.archetypeDatabase
+    ) {
+      archetypeDatabase = await withTimeout(
+        this.deps.archetypeDatabase.ensure(agentId),
+        MIGRATION_TIMEOUT_MS,
+        `database setup of ${agentId} timed out after ${String(MIGRATION_TIMEOUT_MS / 1000)}s`,
+      );
+      log(
+        `[tool-runtime] ${agentId}: database is schema '${archetypeDatabase.schema}' as role '${archetypeDatabase.runtimeRole}' (migrations as '${archetypeDatabase.migrationRole}')`,
+      );
+    }
+
     const ctx = createPluginContext({
       agentId,
       vault: this.deps.vault,
@@ -438,6 +480,7 @@ export class ToolPluginRuntime {
       catalog: this.deps.catalog,
       serviceRegistry: this.deps.serviceRegistry,
       sqlGranted,
+      ...(archetypeDatabase ? { archetypeDatabase } : {}),
       packageRoot: packagePath,
       nativeToolRegistry: this.deps.nativeToolRegistry,
       routeRegistry: this.deps.pluginRouteRegistry,
@@ -599,6 +642,7 @@ export class ToolPluginRuntime {
       this.deps.nativeToolRegistry.unregisterBySource(agentId);
       this.deps.jobScheduler.stopForPlugin(agentId);
       this.deps.pluginStatusRegistry?.clear(agentId);
+      await this.deps.archetypeDatabase?.release(agentId);
       throw err;
     }
 
@@ -838,6 +882,9 @@ export class ToolPluginRuntime {
     this.deps.jobScheduler.stopForPlugin(agentId);
     this.deps.pluginStatusRegistry?.clear(agentId);
     this.deps.oauthConnectionTracker?.clear(agentId);
+    // #2088 — close the plugin's own database pool. Schema, tables and roles
+    // stay: they are the plugin's last state, kept for the operator.
+    await this.deps.archetypeDatabase?.release(agentId);
     this.active.delete(agentId);
 
     if (this.deps.onDeactivated) {

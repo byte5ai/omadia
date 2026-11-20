@@ -1,6 +1,11 @@
-// The kernel side of 'conversationMessages@1' (#2043): which identity
-// receives every message of which conversation, storing what the channel
-// reports, and handing it to the facilitation engine.
+// The kernel side of 'conversationMessages@2' (#2043, #2089): which identity
+// receives which messages of which conversation, storing what the channel
+// reports, and handing it to the plugin whose process reads there.
+//
+// Every subscription belongs to a PROCESS of the plugin that created it (a
+// facilitation). What a process may read follows its execution scopes and the
+// conversation's reservation (`processAccess`). The earlier form, one
+// subscription per agent and conversation without a process, is gone (#2067).
 //
 // Three properties the rest of the design leans on:
 //
@@ -14,29 +19,43 @@
 //      the conversation is dropped before it reaches the store.
 //
 //   3. AUTHORSHIP IS THE PLATFORM'S. The record is built from the adapter's
-//      event only. The engine reads it by id; no argument of a model or a
+//      event only. The plugin reads it by id; no argument of a model or a
 //      plugin can stand in for "who wrote this".
 //
 // Events of one subscription are stored in arrival order (a per-subscription
 // queue), so "created, then edited" cannot be stored the other way round.
 
-import { FACILITATOR_ARCHETYPE, isArchetype, type ArchetypeBearer } from '@omadia/orchestrator';
+import { archetypeAdds, type ArchetypeBearer } from '@omadia/orchestrator';
 import type { ConversationMessageEvent } from '@omadia/channel-sdk';
 import type {
   ChannelReadinessReport,
-  ConversationMessagePage,
+  ConversationMessageMode,
   ConversationMessageRecord,
   ConversationMessageScope,
-  ConversationMessageSubscribeOutcome,
+  ProcessConversationMessageRecord,
+  ProcessMessageScope,
+  ProcessSubscribeOutcome,
 } from '@omadia/plugin-api';
 
 import { isBoundedText, MAX_ID_LENGTH, toStoredEvent, validateMessageEvent } from './eventIntake.js';
 import {
+  cardRef,
   normalizeChannelKey,
   type ConversationMessageStore,
   type MessageSubscription,
   type StoredAuthor,
 } from './store.js';
+
+/** #2089 — what a process may read in a conversation right now, from the
+ *  execution scopes and reservations (#2090). */
+export interface ProcessAccess {
+  /** The process holds the conversation's reservation. */
+  readonly reserved: boolean;
+  /** It holds or held it. */
+  readonly everReserved: boolean;
+  /** It has an open execution scope. */
+  readonly openScope: boolean;
+}
 
 const DEFAULT_PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 500;
@@ -74,19 +93,33 @@ export interface ConversationMessageHubDeps {
     channelType: string,
     author: { readonly kind: string; readonly id: string },
   ) => Promise<string | undefined>;
+  /**
+   * #2089 — what the process of a subscription may read. Absent (no
+   * execution store): process subscriptions are not offered. Rejects when it
+   * cannot be decided right now.
+   */
+  readonly processAccess?: (process: {
+    pluginId: string;
+    processId: string;
+    channelType: string;
+    conversationId: string;
+  }) => Promise<ProcessAccess>;
+  /**
+   * #2089 — does this plugin decide the turns that address this agent
+   * (`onAddressedMessage`)? Then a plain message that addresses the agent is
+   * stored for the plugin's `addressed` subscriptions but not pushed: the
+   * turn the channel starts for the same message is its one live path.
+   */
+  readonly ownsAddressedTurns?: (pluginId: string, agentSlug: string) => boolean;
   readonly log?: (message: string) => void;
 }
 
-type LiveHandler = (record: ConversationMessageRecord) => void | Promise<void>;
+type LiveHandler = (record: ProcessConversationMessageRecord) => void | Promise<void>;
 
 interface LiveRegistration {
   readonly agentSlug: string;
-  /** `undefined` = the kernel itself; it sees every subscription. */
-  readonly pluginId: string | undefined;
-  /** Asked at EVERY delivery: a plugin that stopped being the engine gets
-   *  nothing more, and one that became it again gets events again, without
-   *  registering anew. */
-  readonly allowed: () => boolean;
+  /** Only records of this plugin's own subscriptions reach the handler. */
+  readonly pluginId: string;
   readonly handler: LiveHandler;
 }
 
@@ -95,7 +128,9 @@ function lookupKey(channelType: string, conversationId: string, channelKey: stri
 }
 
 export class ConversationMessageHub {
-  private byIdentity = new Map<string, MessageSubscription>();
+  /** Active subscriptions per (channel type, conversation, identity): one
+   *  per process that reads there. */
+  private byIdentity = new Map<string, readonly MessageSubscription[]>();
   private live: LiveRegistration[] = [];
   private readonly queues = new Map<string, Promise<unknown>>();
   /** Serialises everything that reads the table into the cache or changes
@@ -120,32 +155,129 @@ export class ConversationMessageHub {
   refresh(): Promise<void> {
     return this.exclusive(async () => {
       const active = await this.deps.store.listActiveSubscriptions();
-      this.byIdentity = new Map(
-        active.map((s) => [lookupKey(s.channelType, s.conversationId, s.channelKey), s]),
-      );
+      const next = new Map<string, MessageSubscription[]>();
+      for (const subscription of active) {
+        const key = lookupKey(subscription.channelType, subscription.conversationId, subscription.channelKey);
+        next.set(key, [...(next.get(key) ?? []), subscription]);
+      }
+      this.byIdentity = next;
     });
   }
 
+  private all(): MessageSubscription[] {
+    return [...this.byIdentity.values()].flat();
+  }
+
+  private at(channelType: string, conversationId: string, channelKey: string): readonly MessageSubscription[] {
+    return this.byIdentity.get(lookupKey(channelType, conversationId, channelKey)) ?? [];
+  }
+
+  private isActive(subscription: MessageSubscription): MessageSubscription | undefined {
+    return this.at(subscription.channelType, subscription.conversationId, subscription.channelKey).find(
+      (s) => s.id === subscription.id,
+    );
+  }
+
+  /** Add the subscription to the cache, or replace its cached copy. */
+  private put(subscription: MessageSubscription): void {
+    const key = lookupKey(subscription.channelType, subscription.conversationId, subscription.channelKey);
+    const next = new Map(this.byIdentity);
+    next.set(key, [...(next.get(key) ?? []).filter((s) => s.id !== subscription.id), subscription]);
+    this.byIdentity = next;
+  }
+
   /**
-   * End every subscription whose ground is gone: the engine plugin is no
-   * longer the usable engine, the agent was disabled or deleted, or it lost
-   * the identity the subscription was made for. From then on nothing is
-   * stored and the channel's mention gate applies again.
+   * End every subscription whose ground is gone: the plugin that subscribed
+   * is not running, the agent was disabled or deleted, it lost the identity
+   * the subscription was made for, or its process has no open execution
+   * scope left. From then on nothing is stored and the channel's mention gate
+   * applies again.
    */
   async reconcile(): Promise<readonly { subscription: MessageSubscription; reason: string }[]> {
     const groundFor = this.deps.groundFor;
     if (!groundFor) return [];
     const ended: { subscription: MessageSubscription; reason: string }[] = [];
-    for (const subscription of [...this.byIdentity.values()]) {
+    for (const subscription of this.all()) {
       let reason: string | undefined;
       try {
-        reason = await groundFor(subscription);
+        reason = (await groundFor(subscription)) ?? (await this.processGround(subscription));
       } catch {
         reason = undefined; // not decidable: never end on doubt
       }
       if (reason === undefined) continue;
       await this.end(subscription);
       ended.push({ subscription, reason });
+      this.log(
+        `[conversation-messages] ended the subscription of '${subscription.agentSlug}' for ${subscription.channelType}/${subscription.conversationId}: ${reason}`,
+      );
+    }
+    return ended;
+  }
+
+  /**
+   * #2088 — end of service: end every subscription of this agent, now. Used
+   * before an agent is disabled or deleted and before its archetype plugin
+   * is removed; the periodic reconcile would get there too, but only after
+   * the change, and the order matters (nothing may still be delivered for an
+   * agent that is being taken out of service).
+   */
+  /**
+   * #2089 — a process subscription stands on its process's execution scopes
+   * and reservation. No open scope: the reason that ends it. Reservation
+   * released while it reads every message: the mode is turned down to
+   * `addressed` here, and the subscription stays.
+   */
+  private async processGround(subscription: MessageSubscription): Promise<string | undefined> {
+    if (!this.deps.processAccess) return undefined;
+    const access = await this.deps.processAccess({
+      pluginId: subscription.pluginId,
+      processId: subscription.processId,
+      channelType: subscription.channelType,
+      conversationId: subscription.conversationId,
+    });
+    if (!access.openScope) return 'its process has no open execution scope';
+    if (subscription.mode === 'all' && !access.reserved) {
+      await this.changeMode(subscription, 'addressed');
+      this.log(
+        `[conversation-messages] '${subscription.agentSlug}' (process ${subscription.processId}) no longer holds ${subscription.channelType}/${subscription.conversationId}: it now gets addressed messages only`,
+      );
+    }
+    return undefined;
+  }
+
+  /**
+   * Why every message of this conversation cannot be read through this
+   * identity, or `undefined` when it can. Only reading EVERY message needs
+   * what the channel's readiness states (Teams: the chat-specific
+   * permission); addressed messages reach a bot that is present.
+   */
+  private async notReadyForAll(channelType: string, conversationId: string, channelKey: string): Promise<string | undefined> {
+    let report: ChannelReadinessReport | undefined;
+    try {
+      report = await this.deps.checkReadiness?.(channelType, conversationId, channelKey);
+    } catch (err) {
+      return `the readiness check failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    if (!report) return `channel '${channelType}' does not declare delivery of all messages`;
+    if (report.ready) return undefined;
+    const reasons = report.missing.map((m) => `${m.code}: ${m.message}`).join('; ');
+    return reasons || 'the channel reported it cannot deliver all messages';
+  }
+
+  private changeMode(subscription: MessageSubscription, mode: ConversationMessageMode): Promise<MessageSubscription | undefined> {
+    return this.exclusive(async () => {
+      const updated = await this.deps.store.setSubscriptionMode(subscription.id, mode);
+      if (updated && this.isActive(subscription)) this.put(updated);
+      return updated;
+    });
+  }
+
+  async endAllOf(agentSlug: string, reason: string): Promise<readonly MessageSubscription[]> {
+    const ended: MessageSubscription[] = [];
+    for (const subscription of this.all()) {
+      if (subscription.agentSlug !== agentSlug) continue;
+      await this.end(subscription);
+      ended.push(subscription);
       this.log(
         `[conversation-messages] ended the subscription of '${subscription.agentSlug}' for ${subscription.channelType}/${subscription.conversationId}: ${reason}`,
       );
@@ -163,9 +295,12 @@ export class ConversationMessageHub {
 
   private forget(subscription: MessageSubscription): void {
     const key = lookupKey(subscription.channelType, subscription.conversationId, subscription.channelKey);
-    if (this.byIdentity.get(key)?.id !== subscription.id) return;
+    const current = this.byIdentity.get(key);
+    if (!current?.some((s) => s.id === subscription.id)) return;
     const next = new Map(this.byIdentity);
-    next.delete(key);
+    const rest = current.filter((s) => s.id !== subscription.id);
+    if (rest.length > 0) next.set(key, rest);
+    else next.delete(key);
     this.byIdentity = next;
   }
 
@@ -175,33 +310,45 @@ export class ConversationMessageHub {
     if (typeof channelType !== 'string' || typeof conversationId !== 'string' || typeof channelKey !== 'string') {
       return false;
     }
-    return this.byIdentity.has(lookupKey(channelType, conversationId, channelKey));
+    return this.at(channelType, conversationId, channelKey).some((s) => s.mode === 'all');
   }
 
-  /** The agent's active subscription for a conversation, from the cache. */
-  subscriptionFor(scope: ConversationMessageScope): MessageSubscription | undefined {
-    for (const subscription of this.byIdentity.values()) {
-      if (
-        subscription.agentSlug === scope.agentSlug &&
-        subscription.channelType === scope.channelType &&
-        subscription.conversationId === scope.conversationId
-      ) {
-        return subscription;
-      }
+  /** #2089 — what the identity is handed of the conversation: every human
+   *  message, only addressed ones, or nothing. Hot path, like `isSubscribed`. */
+  deliveryMode(channelType: string, conversationId: string, channelKey: string): ConversationMessageMode {
+    if (typeof channelType !== 'string' || typeof conversationId !== 'string' || typeof channelKey !== 'string') {
+      return 'none';
     }
-    return undefined;
+    const subscriptions = this.at(channelType, conversationId, channelKey);
+    if (subscriptions.some((s) => s.mode === 'all')) return 'all';
+    return subscriptions.some((s) => s.mode === 'addressed') ? 'addressed' : 'none';
+  }
+
+  /**
+   * Does a process read EVERY message of this conversation for this agent?
+   * Then its plugin answers what is said there itself, and a turn the channel
+   * starts for the same message (a mention) must not produce a second answer.
+   */
+  readsEverything(scope: ConversationMessageScope): boolean {
+    return this.all().some(
+      (s) =>
+        s.mode === 'all' &&
+        s.agentSlug === scope.agentSlug &&
+        s.channelType === scope.channelType &&
+        s.conversationId === scope.conversationId,
+    );
   }
 
   /** Every active subscription for a conversation, whichever agent holds it. */
   subscriptionsIn(channelType: string, conversationId: string): readonly MessageSubscription[] {
-    return [...this.byIdentity.values()].filter(
+    return this.all().filter(
       (s) => s.channelType === channelType && s.conversationId === conversationId,
     );
   }
 
   /** Every active subscription of an agent on a channel type. */
   subscriptionsOf(agentSlug: string, channelType: string): readonly MessageSubscription[] {
-    return [...this.byIdentity.values()].filter(
+    return this.all().filter(
       (s) => s.agentSlug === agentSlug && s.channelType === channelType,
     );
   }
@@ -221,38 +368,119 @@ export class ConversationMessageHub {
     });
   }
 
-  /** Store one event and deliver it. Resolves the stored record, or
-   *  `undefined` when it was dropped (no subscription, invalid, redelivery). */
+  /** Store one event and deliver it. Resolves the stored record (the first
+   *  one, when several processes get the event), or `undefined` when it was
+   *  dropped (no subscription takes it, invalid, redelivery). */
   ingest(event: ConversationMessageEvent): Promise<ConversationMessageRecord | undefined> {
     const invalid = validateMessageEvent(event);
     if (invalid) {
       this.log(`[conversation-messages] dropped an invalid event: ${invalid}`);
       return Promise.resolve(undefined);
     }
-    const subscription = this.byIdentity.get(
-      lookupKey(event.channelType, event.conversationId, event.receivedByChannelKey),
-    );
-    if (!subscription) return Promise.resolve(undefined);
-    const previous = this.queues.get(subscription.id) ?? Promise.resolve();
-    const next = previous.then(
-      () => this.store(subscription, event),
-      () => this.store(subscription, event),
-    );
-    this.queues.set(subscription.id, next);
+    const key = lookupKey(event.channelType, event.conversationId, event.receivedByChannelKey);
+    if (!this.byIdentity.has(key)) return Promise.resolve(undefined);
+    // One queue per conversation and identity: routing reads the bindings, and
+    // "created, then edited" must not be stored the other way round.
+    const work = (): Promise<ConversationMessageRecord | undefined> => this.routeAndStore(key, event);
+    const previous = this.queues.get(key) ?? Promise.resolve();
+    const next = previous.then(work, work);
+    this.queues.set(key, next);
     void next.finally(() => {
-      if (this.queues.get(subscription.id) === next) this.queues.delete(subscription.id);
+      if (this.queues.get(key) === next) this.queues.delete(key);
     }).catch(() => undefined);
     return next;
+  }
+
+  /**
+   * #2089 — which subscriptions take the event. The process mapping happens
+   * here, before anything is stored or delivered:
+   *  - a reply to a message, a reaction on it or an answer to a card that is
+   *    bound to a process goes to that process alone;
+   *  - anything else goes to every subscription in `all` mode, and to those
+   *    in `addressed` mode when the channel says it addresses the agent.
+   */
+  private async recipients(
+    subscriptions: readonly MessageSubscription[],
+    event: ConversationMessageEvent,
+  ): Promise<{ recipients: readonly MessageSubscription[]; bound: boolean }> {
+    const refs = [
+      typeof event.replyToMessageId === 'string' ? event.replyToMessageId : undefined,
+      event.kind === 'card_answer' && event.cardAnswer ? cardRef(event.cardAnswer.cardId) : undefined,
+      event.kind === 'card_answer' || event.kind === 'reaction' ? event.messageId : undefined,
+    ].filter((ref): ref is string => typeof ref === 'string' && ref.length > 0);
+    const bindings = await this.deps.store.findProcessBindings(event.channelType, event.conversationId, refs);
+    const bound = refs.map((ref) => bindings.find((b) => b.ref === ref)).find((b) => b !== undefined);
+    if (bound) {
+      return {
+        recipients: subscriptions.filter(
+          (s) => s.processId === bound.processId && s.pluginId === bound.pluginId && s.mode !== 'none',
+        ),
+        bound: true,
+      };
+    }
+    return {
+      recipients: subscriptions.filter(
+        (s) => s.mode === 'all' || (s.mode === 'addressed' && event.addressedToBot === true),
+      ),
+      bound: false,
+    };
+  }
+
+  private async routeAndStore(
+    key: string,
+    event: ConversationMessageEvent,
+  ): Promise<ConversationMessageRecord | undefined> {
+    const subscriptions = this.byIdentity.get(key) ?? [];
+    if (subscriptions.length === 0) return undefined;
+    let first: ConversationMessageRecord | undefined;
+    const { recipients, bound } = await this.recipients(subscriptions, event);
+    // Where a process reads everything, the channel's turn is suppressed
+    // before anybody is asked; the event is then the only path and is pushed.
+    const turnAsks = !bound && !subscriptions.some((s) => s.mode === 'all');
+    for (const subscription of recipients) {
+      const record = await this.store(subscription, event, !(turnAsks && this.leftToTheTurn(subscription, event)));
+      first ??= record;
+    }
+    return first;
+  }
+
+  /**
+   * #2089 — a plain message that addresses the agent, for a process that
+   * listens in `addressed` mode and whose plugin decides addressed turns: the
+   * channel starts a turn for the same message, and that turn asks the
+   * plugin. Stored, not pushed. A reply or card answer bound to the process
+   * is not such a message, and neither is one in a conversation where a
+   * process reads everything (see the caller).
+   */
+  private leftToTheTurn(subscription: MessageSubscription, event: ConversationMessageEvent): boolean {
+    if (subscription.mode !== 'addressed' || event.kind !== 'created' || event.addressedToBot !== true) return false;
+    try {
+      return this.deps.ownsAddressedTurns?.(subscription.pluginId, subscription.agentSlug) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The processes of an agent that listen in `addressed` mode in a
+   *  conversation, from the cache. */
+  addressedListeners(scope: ConversationMessageScope): readonly { pluginId: string; processId: string }[] {
+    return this.all().flatMap((s) =>
+      s.mode === 'addressed' &&
+      s.agentSlug === scope.agentSlug &&
+      s.channelType === scope.channelType &&
+      s.conversationId === scope.conversationId
+        ? [{ pluginId: s.pluginId, processId: s.processId }]
+        : [],
+    );
   }
 
   private async store(
     subscription: MessageSubscription,
     event: ConversationMessageEvent,
+    push = true,
   ): Promise<ConversationMessageRecord | undefined> {
     // Unsubscribed while the event waited in the queue: the gate is closed.
-    if (this.byIdentity.get(lookupKey(subscription.channelType, subscription.conversationId, subscription.channelKey))?.id !== subscription.id) {
-      return undefined;
-    }
+    if (!this.isActive(subscription)) return undefined;
     let principalId: string | undefined;
     try {
       principalId = await this.deps.resolvePrincipal?.(event.channelType, event.author);
@@ -276,18 +504,18 @@ export class ConversationMessageHub {
       }
       throw err;
     }
-    if (record) this.deliver(subscription, record);
+    if (record && push) this.deliver(subscription, record);
     return record;
   }
 
   private deliver(subscription: MessageSubscription, record: ConversationMessageRecord): void {
+    const delivered: ProcessConversationMessageRecord = { ...record, processId: subscription.processId };
     for (const registration of this.live) {
       if (registration.agentSlug !== subscription.agentSlug) continue;
-      if (registration.pluginId !== undefined && registration.pluginId !== subscription.pluginId) continue;
-      if (!registration.allowed()) continue;
+      if (registration.pluginId !== subscription.pluginId) continue;
       // At-least-once: a handler that fails catches up through `listSince`.
       void Promise.resolve()
-        .then(() => registration.handler(record))
+        .then(() => registration.handler(delivered))
         .catch((err: unknown) => {
           this.log(
             `[conversation-messages] live handler for '${subscription.agentSlug}' failed on event ${record.eventId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -296,31 +524,69 @@ export class ConversationMessageHub {
     }
   }
 
-  // ── engine side ──────────────────────────────────────────────────────────
+  // ── plugin side: process subscriptions ('conversationMessages@2') ────────
 
-  async subscribe(
-    scope: ConversationMessageScope,
+  /** The caller's active subscription of a process for a conversation. */
+  private processSubscription(scope: ProcessMessageScope, pluginId: string): MessageSubscription | undefined {
+    if (!scope || typeof scope.processId !== 'string' || typeof scope.agentSlug !== 'string') return undefined;
+    return this.all().find(
+      (s) =>
+        s.processId === scope.processId &&
+        s.pluginId === pluginId &&
+        s.agentSlug === scope.agentSlug &&
+        s.channelType === scope.channelType &&
+        s.conversationId === scope.conversationId,
+    );
+  }
+
+  /** #2091 — every active subscription of a process (any conversation): what
+   *  a scoped send resolves mentions and recipients against. */
+  subscriptionsOfProcess(pluginId: string, processId: string, agentSlug: string): readonly MessageSubscription[] {
+    return this.all().filter((s) => s.processId === processId && s.pluginId === pluginId && s.agentSlug === agentSlug);
+  }
+
+  private asProcessRecord(
+    subscription: MessageSubscription,
+    record: ConversationMessageRecord | undefined,
+  ): ProcessConversationMessageRecord | undefined {
+    return record ? { ...record, processId: subscription.processId } : undefined;
+  }
+
+  /**
+   * Subscribe a process to a conversation, or change the mode of its
+   * subscription. `all` needs the reservation, every mode an open scope. The
+   * agent's archetype must add conversation messages, the agent needs an
+   * identity of its own that was observed in the conversation, and for `all`
+   * the channel must state that it can deliver every message (readiness).
+   */
+  async subscribeProcess(
+    scope: ProcessMessageScope,
+    mode: ConversationMessageMode,
     pluginId: string,
-  ): Promise<ConversationMessageSubscribeOutcome> {
+  ): Promise<ProcessSubscribeOutcome> {
     const refused = (
-      code: Extract<ConversationMessageSubscribeOutcome, { outcome: 'refused' }>['code'],
+      code: Extract<ProcessSubscribeOutcome, { outcome: 'refused' }>['code'],
       message: string,
-    ): ConversationMessageSubscribeOutcome => ({ outcome: 'refused', code, message });
+    ): ProcessSubscribeOutcome => ({ outcome: 'refused', code, message });
 
     if (
       !isBoundedText(scope?.agentSlug, 128) ||
       !isBoundedText(scope.channelType, 64) ||
-      !isBoundedText(scope.conversationId, MAX_ID_LENGTH)
+      !isBoundedText(scope.conversationId, MAX_ID_LENGTH) ||
+      !isBoundedText(scope.processId, 200)
     ) {
-      return refused('unavailable', 'agentSlug, channelType and conversationId are required');
+      return refused('unavailable', 'agentSlug, channelType, conversationId and processId are required');
+    }
+    if (mode !== 'all' && mode !== 'addressed' && mode !== 'none') {
+      return refused('unavailable', "mode is 'all', 'addressed' or 'none'");
+    }
+    if (!this.deps.processAccess) {
+      return refused('unavailable', 'process subscriptions need the execution store (a database)');
     }
     const agent = this.deps.resolveAgent(scope.agentSlug);
     if (!agent) return refused('unavailable', `agent '${scope.agentSlug}' is not active`);
-    if (!isArchetype(agent, FACILITATOR_ARCHETYPE)) {
-      return refused(
-        'not_facilitator',
-        `agent '${scope.agentSlug}' is not a facilitator; only a facilitator may receive every message of a conversation`,
-      );
+    if (!archetypeAdds(agent, 'conversation_messages')) {
+      return refused('not_facilitator', `the archetype of agent '${scope.agentSlug}' does not add conversation messages`);
     }
     const identity = this.deps.identityFor(scope.agentSlug, scope.channelType);
     if (!identity) {
@@ -330,12 +596,47 @@ export class ConversationMessageHub {
       );
     }
     const channelKey = normalizeChannelKey(identity.channelKey);
-    const existing = this.byIdentity.get(lookupKey(scope.channelType, scope.conversationId, channelKey));
-    if (existing) {
-      return existing.pluginId === pluginId
-        ? { outcome: 'subscribed' }
-        : refused('unavailable', 'another plugin already holds the subscription for this conversation');
+
+    let access: ProcessAccess;
+    try {
+      access = await this.deps.processAccess({
+        pluginId,
+        processId: scope.processId,
+        channelType: scope.channelType,
+        conversationId: scope.conversationId,
+      });
+    } catch (err) {
+      return refused('unavailable', `the process's permissions could not be read: ${err instanceof Error ? err.message : String(err)}`);
     }
+    if (!access.openScope) return refused('no_scope', 'this process has no open execution scope');
+    if (mode === 'all' && !access.reserved) {
+      return refused('not_reserved', 'every message of a conversation is read only by the process that holds its reservation');
+    }
+    if (!access.everReserved) {
+      return refused('not_reserved', 'this process never held the reservation of this conversation');
+    }
+
+    const existing = this.processSubscription(scope, pluginId);
+    if (existing) {
+      if (existing.mode !== mode) {
+        // Turning an existing subscription UP to every message needs what a
+        // new one needs: without this, a process could subscribe `addressed`
+        // (no readiness asked) and then read "everything" in a conversation
+        // whose channel cannot deliver it, while the agent's own turns there
+        // are already suppressed as engine-driven.
+        if (mode === 'all') {
+          const notReady = await this.notReadyForAll(scope.channelType, scope.conversationId, channelKey);
+          if (notReady) return refused('not_ready', notReady);
+        }
+        const updated = await this.changeMode(existing, mode);
+        if (!updated) return refused('ended', "this process's subscription for the conversation has ended");
+        this.log(
+          `[conversation-messages] '${existing.agentSlug}' (process ${scope.processId}): ${existing.mode} -> ${mode} in ${existing.channelType}/${existing.conversationId}`,
+        );
+      }
+      return { outcome: 'subscribed', mode };
+    }
+
     let present: boolean;
     try {
       present = await this.deps.isBotPresent(scope.channelType, scope.conversationId, channelKey);
@@ -343,140 +644,125 @@ export class ConversationMessageHub {
       present = false;
     }
     if (!present) {
-      return refused(
-        'not_present',
-        `the bot of agent '${scope.agentSlug}' was not observed in this conversation; add it to the conversation first`,
-      );
+      return refused('not_present', `the bot of agent '${scope.agentSlug}' was not observed in this conversation; add it to the conversation first`);
     }
-    if (this.deps.checkReadiness) {
-      let report: ChannelReadinessReport | undefined;
-      try {
-        report = await this.deps.checkReadiness(scope.channelType, scope.conversationId, channelKey);
-      } catch (err) {
-        return refused('not_ready', `the readiness check failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      if (!report) {
-        // No readiness provider = the channel never declared that it can
-        // hand over messages that do not mention the bot. Subscribing would
-        // silence the agent's ordinary turns and deliver nothing instead.
-        return refused(
-          'not_ready',
-          `channel '${scope.channelType}' does not declare delivery of all messages (it registered no readiness provider)`,
-        );
-      }
-      if (!report.ready) {
-        const reasons = report.missing.map((m) => `${m.code}: ${m.message}`).join('; ');
-        return refused('not_ready', reasons || 'the channel reported it cannot deliver all messages');
-      }
-    } else {
-      return refused('not_ready', 'no channel readiness is wired on this host');
+    if (mode === 'all') {
+      const notReady = await this.notReadyForAll(scope.channelType, scope.conversationId, channelKey);
+      if (notReady) return refused('not_ready', notReady);
     }
-    let created: MessageSubscription | undefined;
+
+    let created: { subscription: MessageSubscription; existed: boolean; ended: boolean };
     try {
       created = await this.exclusive(async () => {
-        const row = await this.deps.store.createSubscription({
+        const row = await this.deps.store.createProcessSubscription({
           agentId: agent.id,
           agentSlug: agent.slug,
           channelType: scope.channelType,
           conversationId: scope.conversationId,
           channelKey,
           pluginId,
+          processId: scope.processId,
+          mode,
         });
-        if (row.pluginId === pluginId) {
-          const next = new Map(this.byIdentity);
-          next.set(lookupKey(row.channelType, row.conversationId, row.channelKey), row);
-          this.byIdentity = next;
-        }
+        if (!row.ended) this.put(row.subscription);
         return row;
       });
     } catch (err) {
       this.log(`[conversation-messages] subscribe failed: ${err instanceof Error ? err.message : String(err)}`);
       return refused('unavailable', 'the subscription could not be stored');
     }
-    if (created.pluginId !== pluginId) {
-      return refused('unavailable', 'another plugin already holds the subscription for this conversation');
+    if (created.ended) return refused('ended', "this process's subscription for the conversation has ended");
+    if (created.existed && created.subscription.mode !== mode) {
+      // Another machine created it a moment ago with another mode.
+      await this.changeMode(created.subscription, mode);
     }
-    this.log(`[conversation-messages] '${created.agentSlug}' receives all messages of ${created.channelType}/${created.conversationId}`);
-    return { outcome: 'subscribed' };
+    this.log(
+      `[conversation-messages] '${agent.slug}' (process ${scope.processId}) receives ${mode === 'all' ? 'all' : mode === 'addressed' ? 'addressed' : 'no'} messages of ${scope.channelType}/${scope.conversationId}`,
+    );
+    return { outcome: 'subscribed', mode };
   }
 
-  async unsubscribe(scope: ConversationMessageScope, pluginId: string | undefined): Promise<void> {
-    const subscription = this.owned(scope, pluginId);
-    if (!subscription) return;
-    await this.end(subscription);
+  modeOfProcess(scope: ProcessMessageScope, pluginId: string): ConversationMessageMode | undefined {
+    return this.processSubscription(scope, pluginId)?.mode;
   }
 
-  onMessage(
+  onProcessMessage(
     agentSlug: string,
-    pluginId: string | undefined,
+    pluginId: string,
     handler: LiveHandler,
-    allowed: () => boolean = () => true,
   ): () => void {
-    const registration: LiveRegistration = { agentSlug, pluginId, allowed, handler };
+    const registration: LiveRegistration = { agentSlug, pluginId, handler };
     this.live = [...this.live, registration];
     return () => {
       this.live = this.live.filter((r) => r !== registration);
     };
   }
 
-  async getEvent(
-    scope: ConversationMessageScope,
-    pluginId: string | undefined,
+  async getProcessEvent(
+    scope: ProcessMessageScope,
+    pluginId: string,
     messageId: string,
     revision?: number,
-  ): Promise<ConversationMessageRecord | undefined> {
-    const subscription = this.owned(scope, pluginId);
+  ): Promise<ProcessConversationMessageRecord | undefined> {
+    const subscription = this.processSubscription(scope, pluginId);
     if (!subscription || !isBoundedText(messageId, MAX_ID_LENGTH)) return undefined;
-    return this.deps.store.getEvent(
+    return this.asProcessRecord(
       subscription,
-      messageId,
-      Number.isInteger(revision) ? revision : undefined,
+      await this.deps.store.getEvent(subscription, messageId, Number.isInteger(revision) ? revision : undefined),
     );
   }
 
-  async getEventById(
-    scope: ConversationMessageScope,
-    pluginId: string | undefined,
+  async getProcessEventById(
+    scope: ProcessMessageScope,
+    pluginId: string,
     eventId: string,
-  ): Promise<ConversationMessageRecord | undefined> {
-    const subscription = this.owned(scope, pluginId);
+  ): Promise<ProcessConversationMessageRecord | undefined> {
+    const subscription = this.processSubscription(scope, pluginId);
     if (!subscription || !isBoundedText(eventId, 64)) return undefined;
-    return this.deps.store.getEventById(subscription, eventId);
+    return this.asProcessRecord(subscription, await this.deps.store.getEventById(subscription, eventId));
   }
 
-  async listSince(
-    scope: ConversationMessageScope,
-    pluginId: string | undefined,
+  async listProcessEventsSince(
+    scope: ProcessMessageScope,
+    pluginId: string,
     opts?: { after?: string; limit?: number },
-  ): Promise<ConversationMessagePage> {
-    const subscription = this.owned(scope, pluginId);
+  ): Promise<{ events: readonly ProcessConversationMessageRecord[]; nextCursor?: string }> {
+    const subscription = this.processSubscription(scope, pluginId);
     if (!subscription) return { events: [] };
+    const processId = subscription.processId;
     const requested = Number.isInteger(opts?.limit) ? opts!.limit! : DEFAULT_PAGE_SIZE;
     const limit = Math.min(Math.max(requested, 1), MAX_PAGE_SIZE);
-    // One more than asked for: `nextCursor` is present only when there IS a
-    // next page, so a consumer can stop at the first page without a cursor.
     const rows = await this.deps.store.listSince(subscription, opts?.after, limit + 1);
-    const events = rows.slice(0, limit);
+    const events = rows.slice(0, limit).map((record) => ({ ...record, processId }));
     const last = events[events.length - 1];
-    return {
-      events,
-      ...(rows.length > limit && last ? { nextCursor: last.eventId } : {}),
-    };
+    return { events, ...(rows.length > limit && last ? { nextCursor: last.eventId } : {}) };
   }
 
-  /** Exact, for the engine's own reconcile: re-reads the store first, so the
-   *  answer does not depend on a boot refresh or a notification having run. */
-  async holdsSubscription(scope: ConversationMessageScope, pluginId: string): Promise<boolean> {
-    await this.refresh();
-    return this.owned(scope, pluginId) !== undefined;
-  }
-
-  /** The caller's own active subscription for the scope, or nothing. */
-  private owned(scope: ConversationMessageScope, pluginId: string | undefined): MessageSubscription | undefined {
-    if (!scope || typeof scope.agentSlug !== 'string') return undefined;
-    const subscription = this.subscriptionFor(scope);
-    if (!subscription) return undefined;
-    if (pluginId !== undefined && subscription.pluginId !== pluginId) return undefined;
-    return subscription;
+  /** Record that a message or card of the agent belongs to the process. */
+  async bindProcessMessage(
+    scope: ProcessMessageScope,
+    pluginId: string,
+    ref: { messageId?: string; cardId?: string },
+  ): Promise<boolean> {
+    const subscription = this.processSubscription(scope, pluginId);
+    if (!subscription) return false;
+    const refs = [
+      isBoundedText(ref?.messageId, MAX_ID_LENGTH) ? ref.messageId : undefined,
+      isBoundedText(ref?.cardId, MAX_ID_LENGTH) ? cardRef(ref.cardId) : undefined,
+    ].filter((r): r is string => r !== undefined);
+    if (refs.length === 0) return false;
+    let bound = true;
+    for (const one of refs) {
+      const ok = await this.deps.store.bindProcessMessage({
+        channelType: subscription.channelType,
+        conversationId: subscription.conversationId,
+        ref: one,
+        agentId: subscription.agentId,
+        pluginId,
+        processId: subscription.processId,
+      });
+      bound = bound && ok;
+    }
+    return bound;
   }
 }

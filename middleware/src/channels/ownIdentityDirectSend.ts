@@ -22,10 +22,12 @@ import { parsePrincipal } from '@omadia/channel-sdk';
 
 import {
   markOwnIdentityMessage,
+  ownIdentitySendNotAdded,
   resolveChannelUser,
   unreachable,
   type OwnIdentityDeps,
 } from './ownIdentitySend.js';
+import type { MessageSubscription } from './conversationMessages/store.js';
 import type { TargetedSendRegistry } from './targetedSendRegistry.js';
 
 export interface OwnIdentityDirectSendInput {
@@ -67,6 +69,10 @@ export async function sendDirectAsOwnIdentity(
   deps: OwnIdentityDirectSendDeps,
   input: OwnIdentityDirectSendInput,
   callerPluginId: string | undefined,
+  /** #2091 — an execution scope authorized the message: the recipient is
+   *  looked up in these subscriptions (the process's) instead of all the
+   *  caller's subscriptions of the agent. */
+  ground?: { readonly subscriptions: readonly MessageSubscription[] },
 ): Promise<TargetedSendReport> {
   const principal = parsePrincipal(input.principal);
   if (!principal || principal.kind !== 'user') {
@@ -83,6 +89,8 @@ export async function sendDirectAsOwnIdentity(
   }
   const principalId = principal.userId;
   const own = deps.ownIdentity;
+  const notAdded = ownIdentitySendNotAdded(own, input.asAgentSlug);
+  if (notAdded) return report(principalId, unreachable('not_permitted', notAdded));
   const identity = own?.identityFor(input.asAgentSlug, input.channelType);
   if (!own || !identity) {
     return report(
@@ -93,9 +101,11 @@ export async function sendDirectAsOwnIdentity(
       ),
     );
   }
-  const subscriptions = (own.subscriptions?.subscriptionsOf(input.asAgentSlug, input.channelType) ?? []).filter(
-    (s) => callerPluginId === undefined || s.pluginId === callerPluginId,
-  );
+  const subscriptions = ground
+    ? ground.subscriptions
+    : (own.subscriptions?.subscriptionsOf(input.asAgentSlug, input.channelType) ?? []).filter(
+        (s) => callerPluginId === undefined || s.pluginId === callerPluginId,
+      );
   const known = subscriptions.length > 0 ? await resolveChannelUser(own, subscriptions, principalId) : undefined;
   if (!known) {
     deps.log(

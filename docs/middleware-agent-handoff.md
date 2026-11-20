@@ -467,6 +467,18 @@ Credential-Änderung automatisch mit.
 - `GET /api/v1/admin/runtime/installed` trägt zusätzlich `action_status`.
   Vorher sagte die Runtime-API `status: "active"` /
   `last_activation_error: null` und sonst nichts, auch wenn jeder Call 401 bekam.
+- **Einträge ohne Paket** (`src/plugins/packagelessEntries.ts`): jede Runtime
+  aktiviert über die Pakete auf der Platte, ein Registry-Eintrag ohne Paket
+  wird also von keiner besucht und behielt früher für immer seinen Status
+  (meist `active`). Jetzt: eine Warnzeile pro Boot (`[plugins] N installed
+  entries have no package …`, nach `toolPluginRuntime.activateAllInstalled()`),
+  `GET /api/v1/admin/runtime/installed` und `/installed/:id` melden `status: "package_missing"`,
+  `package_missing: true` und den gespeicherten Status als `registry_status`
+  (beide Felder neu auf jeder Zeile), und der Tab „Installiert“ im Store listet
+  sie (`PackagelessEntries.tsx`). Abgeleitet bei jedem Lesen: die Registry wird
+  nicht umgeschrieben, nichts wird automatisch gelöscht; „Paket“ heißt
+  Uploaded- oder Built-in-Store, nicht Katalog (ein Manifest ohne Code zählt
+  nicht).
 - **Eigener Readiness-State.** `computeReadiness` (`plugins/readiness.ts`)
   liest zusätzlich die gepushte Status-Lage und liefert
   **`connection_failed`**, wenn `ctx.status` auf `error` steht — egal ob aus
@@ -512,7 +524,9 @@ Setup-Feld-PATCH antwortete mit Key-Namen, die Store-Seite zeigte "✓ Saved".
   pro *Handlung des Operators* — `secret_missing`, `config_missing`,
   `capability_not_declared`, `network_not_permitted`,
   `permission_not_granted`, `dependency_unresolved`, `provider_conflict`,
-  `target_unreachable`, `unknown`. Klassifiziert in
+  `target_unreachable`, `database_not_available` (#2088: eigene Datenbank
+  eines Archetyp-Plugins nicht einrichtbar oder nicht isoliert), `unknown`.
+  Klassifiziert in
   `plugins/activationFailure.ts` aus dem Error-**Objekt** (`err.name`,
   `SqlPermissionError.reason`, errno-`code` inkl. undici-`cause`), nie aus der
   Message. `name` statt `instanceof`, weil ein Plugin seine eigene Kopie von
@@ -2815,54 +2829,60 @@ Privacy-Choke-Points. Tests: `test/transcribeRecordingTool.test.ts`,
 `packages/plugin-api/test/transcriptionGuardrails.test.ts`, Adapter-Suite in
 `packages/transcription-adapter-openai/test/`.
 
-### Facilitation-Admin-Lens (#330 Runde 4)
+### Laufende Agenten-Diskussionen: Sicht und Stopp für Operatoren (#2067)
 
-> **Bleibt (#2043).** Die Lens listet jeden laufenden Ephemeral-Run, also
-> auch Agenten-Diskussionen, und ist deren einziger Stopp-Weg für Operatoren.
-> Native Facilitations erscheinen hier nicht mehr (sie sind keine
-> Conductor-Runs); ihre Ansicht liefert das Engine-Plugin. Name und Routen
-> (`/facilitations`) sind historisch.
+> **Ersetzt die Facilitation-Admin-Lens (#330 Runde 4).** Die Lens, ihre
+> Routen (`/api/v1/operator/conductors/facilitations…`), `facilitationAdmin.ts`
+> und das `FacilitationsPanel` samt Details-Modal sind entfernt. Native
+> Facilitations sind Prozesse des Engine-Plugins und erscheinen als
+> Execution-Scopes; was die Lens darüber hinaus zeigte (Goal/DoD, Runden,
+> Verdict-Tabelle, Initiator-Rolle, Roster) gehörte zum alten Plugin-Pfad und
+> hat keinen Nachfolger im Kernel.
 
-Ephemere Workflows sind bewusst aus der Library gefiltert — laufende
-Facilitations waren dadurch im Admin unsichtbar (Feldbefund: zwei Instanzen
-im selben Meeting, nicht stoppbar). Neue Operator-Routen (beide hinter
-requireAuth unter `/api/v1/operator/conductors`, VOR den `/:slug`-Routen
-deklariert):
+Ephemere Workflows sind bewusst aus der Library gefiltert. Damit ein
+Operator von Agenten selbst gestartete Runs (heute: Diskussionen) sieht und
+beenden kann, hängen sie am Abschnitt „Laufende Prozesse“ der Agenten-Seite:
 
-- **`GET /facilitations`** — Overview aller nicht gereapten ephemeren
-  Workflows aus rein durablem State: Conversation (Attachment-Row), Goal/DoD
-  + Assess-Runden (`ctx.stepAttempts.moderate`) + letztes Verdict
-  (`ctx.steps.moderate.data` — accumulate() persistiert pro Step-Id;
-  `ctx.stepResult` existiert nur transient als Guard-Argument, NIE im
-  durablen Context), Initiator-Role-Holder, Teilnehmer via
-  Roster-Registry (best-effort, 30s-TTL-Cache — jeder Roster-Read öffnet
-  einen proaktiven Channel-Turn). Store-Fehler beim Zusammenbau ⇒ Row-Flag
-  `incomplete: true` + Log (unter-reporten ja, erfinden nie).
-- **`POST /facilitations/:workflowId/terminate`** — cancelt aktive Runs
-  (#759-Semantik) und disposed das Scaffold über DENSELBEN Cleanup-Pfad wie
-  der Reaper (`disposeEphemeralWorkflow` in `src/conductor/index.ts`;
-  Binding + Rolle gehen mit). Schlägt EIN Cancel fehl, wird die Disposal
-  ÜBERSPRUNGEN (502 `conductor.facilitation_cancel_failed`) — reaped_at auf
-  einem lebenden Run würde ihn aus genau dieser Lens verstecken. Non-ephemeral
-  ⇒ 404. Jede erfolgreiche Terminierung landet als
-  `conductor.facilitation_terminate` im admin_audit (actor-uuid/email nach
-  #775-Regel getrennt).
+- **`GET /api/v1/operator/execution`** liefert zusätzlich `discussions[]`
+  (jeder nicht gereapte ephemere Workflow: `workflow_id`, `slug`,
+  `opened_by` = `created_by_agent`, `participants` und `topic` aus dem
+  Run-Context, `conversation` aus der Attachment-Zeile mit Fallback auf den
+  Run-Context, `status`, `started_at`, `stop_requested_at`, `expires_at`,
+  `incomplete`) und `discussions_failed`. Schlägt nur die
+  Diskussions-Abfrage fehl, bleiben Scopes und Kill-Switches sichtbar und
+  `discussions_failed` ist `true` (nie „keine“). Ein Lookup-Fehler pro Zeile
+  ⇒ `incomplete: true` + Log (weniger zeigen ja, erfinden nie). Ein Run, der
+  keine Diskussion ist, erscheint ohne Thema und ohne Beteiligte.
+- **`POST /api/v1/operator/execution/discussions/:workflowId/stop`** cancelt
+  die aktiven Runs (#759-Semantik) und entsorgt den Workflow über denselben
+  Pfad wie der Reaper (`disposeEphemeralWorkflow` in `src/conductor/index.ts`;
+  Binding und Konversations-Reservierung gehen mit). Schlägt EIN Cancel
+  fehl, wird nichts entsorgt (502 `execution.discussion_stop_failed`):
+  `reaped_at` auf einem lebenden Run würde ihn aus genau dieser Liste
+  verstecken. Unbekannt oder nicht ephemer ⇒ 404
+  `execution.unknown_discussion`; Conductor noch nicht verdrahtet ⇒ 503.
+  Jeder erfolgreiche Stopp landet als `conductor.discussion_stop` im
+  admin_audit.
+- **`POST /api/v1/operator/execution/kill-switches`** `{ level, agent_slug?,
+  process_id?, reason? }`: `level: agent` braucht `agent_slug` (fehlt er ⇒ 400
+  `execution.invalid`), `level: process` braucht `process_id`. Fehlt bei
+  `process` der `agent_slug`, nimmt der Kernel den Agenten aus den
+  Execution-Scopes des Prozesses (`ExecutionScopeStore.agentsOfProcess`).
+  Kein Scope mit dieser Prozess-Id ⇒ 404 `execution.unknown_process`; dieselbe
+  Prozess-Id bei mehreren Agenten (zwei Plugins) ⇒ 400
+  `execution.ambiguous_process` mit den Slugs; unbekannter `agent_slug` ⇒ 404
+  `execution.unknown_agent`.
+- **Kein Kill-Switch:** Diskussionen halten keinen Execution-Scope. Die
+  Kill-Switches (Instanz, Agent, Prozess) erreichen sie nicht; ihr Stopp ist
+  endgültig und nicht fortsetzbar.
 
-Web-UI: Panel „Laufende Facilitations" auf der Conductor-Seite
-(`web-ui/app/conductor/_components/FacilitationsPanel.tsx`), Stop & remove
-hinter ConfirmDialog. Modul: `src/conductor/facilitationAdmin.ts`, Tests:
-`test/conductorFacilitationAdmin.test.ts`.
-
-**Zwischenstand-Tabelle (Pattern v3):** Das Moderate-Verdict trägt zusätzlich
-`items[]` — pro nummeriertem DoD-Punkt `{point, label, status:
-done|partial|open, note}`. Der Kernel validiert die Model-Ausgabe defensiv
-(`verdictItems()` in `facilitationAdmin.ts`: Nicht-Objekte fliegen raus,
-falsch getypte Felder werden genullt) und reicht sie als
-`run.lastVerdict.items` durch (Strings auf 300 Zeichen gekappt, `point` nur
-als positive Ganzzahl); das Details-Modal (`FacilitationDetailsModal.tsx`)
-rendert daraus die Tabelle #/Punkt/Status/Stand. Die Labels sind eine
-Model-Paraphrase — der autoritative DoD-Text bleibt daneben stehen. Läufe,
-die vor Pattern v3 gestartet sind, liefern `items: null` → nur DoD-Liste.
+Modul: `src/conductor/discussionAdmin.ts` (`ConductorDiscussionAdmin`, über
+`ConductorWiring.discussionAdmin` an die Operator-Routen gereicht, die früher
+gemountet werden und deshalb über eine Ref lesen). Web-UI:
+`web-ui/app/operator/agents/_components/RunningDiscussions.tsx` innerhalb von
+`ExecutionControl.tsx`; der Stopp fragt in der Zeile nach, ohne Dialog. Tests:
+`test/conductorDiscussionAdmin.test.ts`, `test/executionKernelSeams.test.ts`,
+`ExecutionControl.test.tsx`.
 
 ### Timer-Steps + DoD-Loops + conversationSend (#330 C3)
 
@@ -9403,7 +9423,7 @@ Tests: `test/conductorReservedContextKeys.test.ts`.
 
 ## Native Facilitators: Kernel-Seite (Epic #2043, 2026-11-18)
 
-Ein Facilitator ist eine eigene Art von Agent (`agents.kind = 'facilitator'`,
+Ein Facilitator ist eine eigene Art von Agent (`agents.archetype = 'facilitator'`; die Vorgängerspalte `kind` ist seit Migration 0079 entfernt,
 Migration `0067_agent_kind`), der nur moderiert. Aufteilung nach
 Owner-Entscheidung „plugin-first“: Engine (Tabellen, Lebenszyklus, Zählung,
 Scheduler) im Plugin `omadia-agent-facilitator`, der Kernel bleibt dünn und
@@ -9417,9 +9437,11 @@ enthält **keine** Facilitation-Tabellen. Spec: `specs/2043-native-facilitators/
   `FacilitatorOmissionError` (`code: 'facilitator_omission'`).
 - Die Art ist nach dem Anlegen fix (DB-Trigger). Ein Facilitator ist nie der
   Default-Agent (DB-Trigger plus Route).
-- **Engine-Bindung per Manifest-Capability, keine Plugin-ID im Kernel:**
+- **Engine-Bindung über das Manifest, keine Plugin-ID im Kernel:**
   `src/platform/facilitatorGuard.ts` sucht das eine installierte, nicht
-  fehlerhafte Plugin, das `facilitationEngine@1` unter `provides` deklariert.
+  fehlerhafte Plugin der Art `archetype`, dessen Deskriptor den Archetyp
+  `facilitator` liefert (seit K6 die einzige Form; die Zeile
+  `provides: facilitationEngine@1` macht kein Plugin mehr zur Engine).
   Kein oder mehr als ein Provider: es lässt sich nichts granten. Die Registry
   schneidet die Grant-Zeilen eines Facilitators zusätzlich mit diesem Plugin
   (`PluginCapabilityLookup.facilitatorGrantable`).
@@ -9457,7 +9479,7 @@ enthält **keine** Facilitation-Tabellen. Spec: `specs/2043-native-facilitators/
   `422 facilitator_contract_violation` mit `issues[]`. Der Katalog ist eine
   Hilfe beim Speichern, nicht die Durchsetzung: die leistet der Block.
 
-### Authentifizierte eingehende Nachrichten (`conversationMessages@1`)
+### Authentifizierte eingehende Nachrichten (`conversationMessages@2`)
 
 Code: `middleware/src/channels/conversationMessages/` (`store.ts` Regeln und
 In-Memory-Store, `pgStore.ts`, `hub.ts`, `service.ts`, `purgeJob.ts`,
@@ -9477,7 +9499,7 @@ der Adapter gilt immer.
   Conversation-Reference im Chat, `botPresenceStore`; sonst der Invite-Index
   `observedConversationInvites`), `not_ready` (Readiness-Provider des Kanals,
   falls vorhanden; die fehlenden Codes stehen in der Message), `unavailable`.
-  Nur das Engine-Plugin (Capability `facilitationEngine@1`) wird bedient und
+  Nur das Engine-Plugin (Archetyp-Plugin für `facilitator`) wird bedient und
   nur für eigene Subscriptions.
 - **Autorschaft** kommt ausschließlich aus dem Plattform-Event.
   `author.principalId` ist `user:<channel-user-id kleingeschrieben>`; das ist
@@ -9494,10 +9516,15 @@ der Adapter gilt immer.
   und sieht nichts von der vorigen). `listSince({after})` liefert strikt nach
   dem Cursor in Speicherreihenfolge, `nextCursor` nur wenn es eine weitere
   Seite gibt. Live-Zustellung at-least-once (`onMessage`), ein fehlgeschlagener
-  Handler holt über `listSince` auf.
-- **Aufbewahrung:** Die Frist beginnt erst mit `unsubscribe`
-  (`CONVERSATION_MESSAGES_GRACE_MS`), zusätzlich ein Höchstalter je Event
-  (`CONVERSATION_MESSAGES_MAX_AGE_DAYS`). Der Purge-Tick lädt auch den
+  Handler holt über `listSince` auf. Jede Subscription und jeder Lesezugriff
+  nennt einen Prozess (`processId`); die Form ohne Prozess (erste
+  Major-Version) gibt es seit K6.4 nicht mehr, auch nicht im Kernel.
+- **Aufbewahrung:** Die Frist beginnt erst mit dem Ende der Subscription
+  (der Prozess hat keinen offenen Execution Scope mehr, oder der Agent geht
+  außer Dienst; ein `unsubscribe` gibt es nicht)
+  (`CONVERSATION_MESSAGES_GRACE_MS`). Das Höchstalter je Event
+  (`CONVERSATION_MESSAGES_MAX_AGE_DAYS`) gilt erst danach: von einem laufenden
+  Prozess wird nichts nach Alter gelöscht. Der Purge-Tick lädt auch den
   Subscription-Cache neu (mehrere Maschinen).
 - **Kein zweiter Turn:** Hält die Engine die Subscription, unterdrückt der
   Kernel den vom Kanal gestarteten Turn dieses Agents in dieser Konversation
@@ -9510,18 +9537,24 @@ der Adapter gilt immer.
 ### Senden als eigene Identität
 
 Code: `middleware/src/channels/ownIdentitySend.ts` (gemeinsame Regeln),
-`conversationSendService.ts` (`asOwnIdentity`), `ownIdentityDirectSend.ts`
-(`targetedSend` mit `asAgentSlug`), `sendServicesWiring.ts` (beide Services
-als Per-Caller-Fassade, damit der Kernel weiß, welches Plugin ruft).
+`conversationSendService.ts` (die Zustellung hinter `conversationSend@2`;
+ein Aufruf ohne den Grund, den eine Autorisierung hinterlässt, postet nichts),
+`scopedSendService.ts` (die Autorisierung aus dem Execution Scope),
+`ownIdentityDirectSend.ts` (`targetedSend` mit `asAgentSlug`),
+`sendServicesWiring.ts` (beide Services als Per-Caller-Fassade, damit der
+Kernel weiß, welches Plugin ruft).
 
 - Die Identität kommt aus `registry.channelIdentityFor(slug, channelType)`,
   also nur die eigene. Ohne eigene Identität: `no_identity`. Es gibt keinen
   Rückfall auf den Default-Bot, auch nicht mit Ephemeral-Attachment.
-- **Berechtigung = Message-Subscription** des rufenden Plugins für genau diese
-  Konversation (Gruppenpost) bzw. für irgendeine Konversation, in der der
-  Empfänger vorkommt (DM): Roster des Kanals oder Autor einer gespeicherten
-  Nachricht. Sonst `not_permitted`. Rollen-Principals sind für
-  Eigen-Identitäts-DMs ungültig.
+- **Berechtigung:** Ein Gruppenpost wird aus einem Execution Scope des
+  Prozesses autorisiert (`conversationSend@2`; die Konversation muss ein Ziel
+  des Scopes sein), nicht mehr durch eine Message-Subscription. Eine DM über
+  `targetedSend` (`asAgentSlug`) geht an eine Person, die in irgendeiner
+  Konversation vorkommt, die ein Prozess des rufenden Plugins für diesen Agent
+  abonniert hat: Roster des Kanals oder Autor einer gespeicherten Nachricht.
+  Sonst `not_permitted`. Rollen-Principals sind für Eigen-Identitäts-DMs
+  ungültig.
 - **Mentions:** `user` als `user:<id>` oder kanal-native ID; der Kernel löst
   auf die `ChannelUserRef` des Rosters auf (Teams: Entra-Objekt-ID, auch wenn
   die bot-spezifische `29:`-ID genannt wurde). Unbekannte Personen bleiben
@@ -9535,7 +9568,7 @@ als Per-Caller-Fassade, damit der Kernel weiß, welches Plugin ruft).
 - Ohne die neuen Flags verhalten sich beide Services wie vorher (Diskussionen,
   Facilitator 0.7.x).
 
-### Tool-Call-Kontext und `agentTurn@1`
+### Tool-Call-Kontext und `agentTurn@2`
 
 - **`NativeToolCallContext`** (zweites Argument jedes Plugin-Tool-Handlers):
   `agentSlug`, `channelType`, `conversationId` (kanal-nativ, ohne
@@ -9553,8 +9586,11 @@ als Per-Caller-Fassade, damit der Kernel weiß, welches Plugin ruft).
   (Neutralitätsblock, Model-Policy, Privacy Shield, Receipts, Verifier);
   `engineContext` ist der `extraSystemHint` des Turns, steht also hinter der
   Identität und wird maskiert. Rückgabe ist der Text, gepostet wird nichts.
-  Mit `inboundEventId` liest der Kernel das gespeicherte Event; der Aufrufer
-  des Turns ist dessen Autor. Verlauf je `sessionKey` nur im Speicher
+  Jeder Turn ist eine autorisierte Aktion unter einem Execution Scope eines
+  Prozesses (`createScopedAgentTurnService`); einen Turn ohne Scope gibt es
+  seit K6.4 nicht mehr. Mit `inboundEventId` liest der Kernel das gespeicherte
+  Event unter den Events genau dieses Prozesses; der Aufrufer des Turns ist
+  dessen Autor. Verlauf je `sessionKey` nur im Speicher
   (20 Turns); der dauerhafte Zustand ist der der Engine.
   Budget: `AGENT_TURN_MAX_PER_MINUTE`.
 - **Profil:** `agentTurn.getProfile(slug)` liefert Anzeigename, Sprache
@@ -9614,18 +9650,31 @@ Pushes hängen an Message-Subscriptions.
   Plugin ein Objekt übergibt.
 - **Subscription nur bei deklarierter Zustellung:** ohne registrierten
   Readiness-Provider `not_ready`. **Kernel-seitiges Ende**
-  (`hub.reconcile`, `createSubscriptionGroundCheck`): Engine nicht mehr die
-  gebundene/aktive Engine, Agent deaktiviert oder gelöscht, eigene Identität
-  weg. Erst nach dem Boot scharf (`enableReconcile`), danach alle
+  (`hub.reconcile`, `createSubscriptionGroundCheck`): das Plugin, das
+  abonniert hat, ist nicht aktiv, Agent deaktiviert oder gelöscht, eigene
+  Identität weg, oder der Prozess hat keinen offenen Execution Scope mehr
+  (bei einem Uninstall werden die Scopes des Plugins widerrufen). Erst nach dem Boot scharf (`enableReconcile`), danach alle
   `CONVERSATION_MESSAGES_RECONCILE_INTERVAL_MS` und bei Install/Uninstall.
   Eine per Cascade verschwundene Zeile schließt das Gate beim nächsten Event.
 - **Mehrere Maschinen:** NOTIFY-Trigger auf der Subscription-Tabelle,
   `ReloadBus` mit Kanal `conversation_message_subscriptions_changed`
-  (`CONVERSATION_MESSAGES_LISTEN`). `refresh`, `subscribe` und `unsubscribe`
-  laufen über einen gemeinsamen Mutex im Hub.
-- **Engine = deklariert UND SQL-Grant** (`facilitatorGuard.ts`,
-  `createSqlGrantView`): bis zum Grant ist der Zustand `ungranted`, es wird
-  nichts angehängt. `facilitatorRuntimeService.ts` beantwortet dem
+  (`CONVERSATION_MESSAGES_LISTEN`). `refresh`, `subscribeProcess` und das
+  Beenden einer Subscription laufen über einen gemeinsamen Mutex im Hub.
+- **Ein NOTIFY ist nur ein Hinweis.** Postgres kennt kein Recht für NOTIFY:
+  jede Rolle mit Login (auch die Datenbank-Rolle eines Archetyp-Plugins) kann
+  auf `agents_changed` und `conversation_message_subscriptions_changed` mit
+  beliebigem Payload senden. `ReloadBus` ist der einzige Listener des Kernels;
+  er liest den Payload nie, loggt ihn nie (nur die Größe über `debug`) und
+  liest den Zustand über `reload` aus den Tabellen. Notifications lösen
+  höchstens einen Reload je `minNotifyIntervalMs` (250 ms) aus, der erste
+  sofort, der letzte geht nie verloren. Wer einen neuen Listener baut: der
+  Payload ist höchstens ein Schlüssel zum Nachlesen, nie eine Tatsache.
+  Scopes, Reservierungen, Kill-Switches und Grants hängen an keinem NOTIFY.
+- **Engine = Archetyp-Plugin, Vertrauen durch die bestätigte Installation**
+  (`facilitatorGuard.ts`). Der SQL-Grant ist seit K6 kein Vertrauensschritt
+  mehr und `ungranted` kein Zustand: ohne Grant hat das Plugin keine
+  Datenbank und startet nicht, der Status meldet `inactive`.
+  `facilitatorRuntimeService.ts` beantwortet dem
   Orchestrator `isEngineUsable`; ohne nutzbare Engine sagt ein erwähnter
   Facilitator fest „nicht eingerichtet“, ohne Modellaufruf.
 - **Gruppen-Turn nur mit positiver Aussage:** `TurnOrigin.conversationType:
@@ -9648,9 +9697,11 @@ Pushes hängen an Message-Subscriptions.
   `conductorRoleAssignments`; Module `agentSetupService.ts`,
   `scopedRoleAssignments.ts`.
 - Der Ephemeral-Attachment-Scope von `conversationSend` (Default-Bot).
+- **Später entfernt (K5):** die Admin-Lens samt `FacilitationsPanel`. Sicht
+  und Stopp für laufende Diskussionen liegen jetzt unter „Laufende Prozesse“
+  (siehe „Laufende Agenten-Diskussionen“ oben).
 - **Geblieben, mit Grund:** Ephemeral Runs, Diskussionen und `say`; die
-  Admin-Lens samt `FacilitationsPanel` im Web-UI (einzige Sicht und einziger
-  Stopp für laufende Diskussionen); die `CONDUCTOR_EPHEMERAL_*`-Quoten
+  `CONDUCTOR_EPHEMERAL_*`-Quoten
   (gelten für jeden Ephemeral-Run); die Audit-Aktion
   `conductor.facilitation_terminate` für historische Zeilen;
   Rollenhalter-Bereinigung für Attachment-Zeilen, die noch eine Rolle tragen.

@@ -25,6 +25,9 @@ import {
   triggerAgentReload,
   FALLBACK_AGENT_SLUG,
   FACILITATOR_ARCHETYPE,
+  STANDARD_ARCHETYPE,
+  type AgentChangeResult,
+  archetypeOfAgent,
   isFacilitatorAgent,
   isModelRef,
   type OperatorAgentDto,
@@ -33,14 +36,25 @@ import {
   type ResolveChannelResponse,
 } from '../../../_lib/agents';
 
+import type { OperatorArchetypeDto } from '../../../_lib/archetypes';
+import { ArchetypeSection } from './ArchetypeSection';
+import { DeletedAgentsSection, EndOfServiceNotice, type EndOfServiceResult } from './EndOfService';
+import { ExecutionControlSection } from './ExecutionControl';
 import { FacilitatorsSection, type PluginNavLink } from './FacilitatorsSection';
 import { PluginsDnd } from './PluginsDnd';
 import { useFacilitatorRefusalMessage } from './useFacilitatorCopy';
+import { useConfirmAction } from './useConfirmAction';
 
 interface AgentsDashboardProps {
   initial: OperatorAgentsListDto;
   /** #2066 — plugin nav entries, for the link to the engine's facilitations view. */
   pluginNav?: readonly PluginNavLink[];
+  /**
+   * #2088 — the archetypes registered on this instance, one directory section
+   * each. `null`/absent = the middleware does not report them (it predates
+   * the endpoint): the facilitator section is shown as it always was.
+   */
+  archetypes?: readonly OperatorArchetypeDto[] | null;
 }
 
 /**
@@ -61,12 +75,16 @@ interface AgentsDashboardProps {
 export function AgentsDashboard({
   initial,
   pluginNav,
+  archetypes,
 }: AgentsDashboardProps): React.ReactElement {
   const t = useTranslations('operatorAgents');
+  const confirmAction = useConfirmAction();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [endOfService, setEndOfService] = useState<EndOfServiceResult | null>(null);
+  const [deletedRefresh, setDeletedRefresh] = useState(0);
   const [catalog, setCatalog] = useState<PluginCatalogEntryDto[] | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
 
@@ -92,13 +110,33 @@ export function AgentsDashboard({
   // standard orchestrator and never gets plugins, so it does not appear in
   // the orchestrator list, its count or the fallback picker.
   const standardAgents = useMemo(
-    () => initial.agents.filter((a) => !isFacilitatorAgent(a)),
+    () => initial.agents.filter((a) => archetypeOfAgent(a) === STANDARD_ARCHETYPE),
     [initial.agents],
   );
   const facilitators = useMemo(
     () => initial.agents.filter((a) => isFacilitatorAgent(a)),
     [initial.agents],
   );
+  // #2088 — one section per archetype other than `standard`: every archetype
+  // the instance registers, and every archetype an existing agent still has
+  // (its plugin may be gone; the agents are not).
+  const archetypeSections = useMemo(() => {
+    const registered = new Map((archetypes ?? []).map((a) => [a.id, a]));
+    const ids = new Set<string>(
+      archetypes ? archetypes.filter((a) => !a.built_in).map((a) => a.id) : [FACILITATOR_ARCHETYPE],
+    );
+    for (const agent of initial.agents) {
+      const id = archetypeOfAgent(agent);
+      if (id !== STANDARD_ARCHETYPE) ids.add(id);
+    }
+    return [...ids]
+      .sort((a, b) => Number(b === FACILITATOR_ARCHETYPE) - Number(a === FACILITATOR_ARCHETYPE) || a.localeCompare(b))
+      .map((id) => ({
+        id,
+        archetype: registered.get(id),
+        agents: initial.agents.filter((agent) => archetypeOfAgent(agent) === id),
+      }));
+  }, [archetypes, initial.agents]);
 
   const fallbackSlug =
     initial.agents.find((a) => a.id === initial.fallback_agent_id)?.slug ??
@@ -120,7 +158,19 @@ export function AgentsDashboard({
     setError(null);
     setBusy(label);
     op()
-      .then(() => {
+      .then((result) => {
+        // #2088 — a disable or a delete answers with what ended with the
+        // agent; show it instead of a silent status flip.
+        const change = result as AgentChangeResult | undefined;
+        if (change?.end_of_service) {
+          const slug = label.slice(label.indexOf(':') + 1);
+          setEndOfService({
+            agentName: initial.agents.find((a) => a.slug === slug)?.name ?? slug,
+            change: change.end_of_service.reason === 'agent_deleted' ? 'deleted' : 'disabled',
+            report: change.end_of_service,
+          });
+        }
+        if (label.startsWith('delete:')) setDeletedRefresh((n) => n + 1);
         startTransition(() => router.refresh());
       })
       .catch((err: unknown) => {
@@ -133,10 +183,14 @@ export function AgentsDashboard({
 
   return (
     <div className="space-y-8">
+      {confirmAction.dialog}
       {error && (
         <div className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-3 text-sm text-[color:var(--danger)]">
           {error}
         </div>
+      )}
+      {endOfService && (
+        <EndOfServiceNotice result={endOfService} onDismiss={() => setEndOfService(null)} />
       )}
       {catalogError && (
         <div className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 p-3 text-sm text-[color:var(--warning)]">
@@ -152,18 +206,22 @@ export function AgentsDashboard({
               variant="secondary"
               size="sm"
               disabled={pending || !!busy || !fallbackSlug}
-              onClick={() => {
-                if (!confirm(t('rehydrateConfirm'))) return;
-                run('rehydrate', async () => {
-                  const res = await rehydrateFallback();
-                  setError(
-                    t('rehydrateDone', {
-                      attached: res.attached,
-                      requested: res.requested,
+              onClick={() =>
+                confirmAction.ask({
+                  title: t('rehydrateConfirm'),
+                  confirmLabel: t('rehydrateConfirmYes'),
+                  onConfirm: () =>
+                    run('rehydrate', async () => {
+                      const res = await rehydrateFallback();
+                      setError(
+                        t('rehydrateDone', {
+                          attached: res.attached,
+                          requested: res.requested,
+                        }),
+                      );
                     }),
-                  );
-                });
-              }}
+                })
+              }
               title={t('rehydrateTooltip')}
             >
               {t('actionRehydrateFallback')}
@@ -250,32 +308,63 @@ export function AgentsDashboard({
         )}
       </section>
 
-      <FacilitatorsSection
-        facilitators={facilitators}
-        {...(pluginNav ? { pluginNav } : {})}
-        disabled={pending || !!busy}
-        onCreate={(input) =>
-          run('create-facilitator', async () => {
-            const created = await createOperatorAgent({
-              ...input,
-              archetype: FACILITATOR_ARCHETYPE,
-            });
-            // Avatar, personality and the Teams identity are set on the
-            // facilitator's own page — that is the rest of "create".
-            router.push(`/operator/agents/${encodeURIComponent(created.slug)}`);
-          })
-        }
-        onToggleStatus={(agent) =>
-          run(`patch:${agent.slug}`, () =>
-            patchOperatorAgent(agent.slug, {
-              status: agent.status === 'enabled' ? 'disabled' : 'enabled',
-            }),
-          )
-        }
-        onDelete={(agent) =>
-          run(`delete:${agent.slug}`, () => deleteOperatorAgent(agent.slug))
-        }
-      />
+      {archetypeSections.map((section) =>
+        section.id === FACILITATOR_ARCHETYPE ? (
+              <FacilitatorsSection
+            key={section.id}
+            facilitators={facilitators}
+            {...(pluginNav ? { pluginNav } : {})}
+            disabled={pending || !!busy}
+            onCreate={(input) =>
+              run('create-facilitator', async () => {
+                const created = await createOperatorAgent({
+                  ...input,
+                  archetype: FACILITATOR_ARCHETYPE,
+                });
+                // Avatar, personality and the Teams identity are set on the
+                // facilitator's own page — that is the rest of "create".
+                router.push(`/operator/agents/${encodeURIComponent(created.slug)}`);
+              })
+            }
+            onToggleStatus={(agent) =>
+              run(`patch:${agent.slug}`, () =>
+                patchOperatorAgent(agent.slug, {
+                  status: agent.status === 'enabled' ? 'disabled' : 'enabled',
+                }),
+              )
+            }
+            onDelete={(agent) =>
+              run(`delete:${agent.slug}`, () => deleteOperatorAgent(agent.slug))
+            }
+          />
+        ) : (
+          <ArchetypeSection
+            key={section.id}
+            archetypeId={section.id}
+            {...(section.archetype ? { archetype: section.archetype } : {})}
+            agents={section.agents}
+            disabled={pending || !!busy}
+            onCreate={(input) =>
+              run(`create-archetype:${section.id}`, async () => {
+                const created = await createOperatorAgent({ ...input, archetype: section.id });
+                router.push(`/operator/agents/${encodeURIComponent(created.slug)}`);
+              })
+            }
+            onToggleStatus={(agent) =>
+              run(`patch:${agent.slug}`, () =>
+                patchOperatorAgent(agent.slug, {
+                  status: agent.status === 'enabled' ? 'disabled' : 'enabled',
+                }),
+              )
+            }
+            onDelete={(agent) => run(`delete:${agent.slug}`, () => deleteOperatorAgent(agent.slug))}
+          />
+        ),
+      )}
+
+      <ExecutionControlSection refreshKey={deletedRefresh} />
+
+      <DeletedAgentsSection refreshKey={deletedRefresh} />
     </div>
   );
 }
@@ -535,6 +624,7 @@ function AgentCard(props: {
   onKill: () => void;
 }): React.ReactElement {
   const t = useTranslations('operatorAgents');
+  const confirmAction = useConfirmAction();
   const { agent } = props;
   // Default-collapsed (per operator request): the page starts compact and
   // expands per-Agent only when the operator clicks the chevron. Local
@@ -546,6 +636,7 @@ function AgentCard(props: {
 
   return (
     <article className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)]">
+      {confirmAction.dialog}
       <header className="flex items-start justify-between gap-4 px-4 py-3">
         {/* eslint-disable-next-line no-restricted-syntax -- chevron expand/collapse card-header toggle (aria-expanded), not a §4.2 CTA */}
         <button
@@ -634,10 +725,13 @@ function AgentCard(props: {
                 variant="danger"
                 size="sm"
                 disabled={props.disabled}
-                onClick={() => {
-                  if (confirm(t('deleteConfirm', { slug: agent.slug })))
-                    props.onDelete();
-                }}
+                onClick={() =>
+                  confirmAction.ask({
+                    title: t('deleteConfirm', { slug: agent.slug }),
+                    confirmLabel: t('actionDelete'),
+                    onConfirm: props.onDelete,
+                  })
+                }
               >
                 {t('actionDelete')}
               </Button>
@@ -678,10 +772,13 @@ function AgentCard(props: {
               variant="danger"
               size="sm"
               disabled={props.disabled}
-              onClick={() => {
-                if (confirm(t('killConfirm', { slug: agent.slug })))
-                  props.onKill();
-              }}
+              onClick={() =>
+                confirmAction.ask({
+                  title: t('killConfirm', { slug: agent.slug }),
+                  confirmLabel: t('actionKill'),
+                  onConfirm: props.onKill,
+                })
+              }
             >
               {t('actionKill')}
             </Button>

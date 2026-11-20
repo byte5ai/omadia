@@ -2,19 +2,22 @@ import { Router, raw } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 
+import type { AgentTombstone } from '@omadia/orchestrator';
+
+import { auditActorFromRequest, type AuditEntryInput } from '../auth/adminAuditLog.js';
+import type { AgentEndOfService, EndOfServiceReport } from '../platform/agentEndOfService.js';
+
 import {
   attachAllPlugins,
   ConfigValidationError,
   FALLBACK_AGENT_SLUG,
   mcpToolNameFromRef,
   type AgentGraphStore,
-  AGENT_KINDS,
   AGENT_TO_AGENT_MODES,
   assertArchetypeAllows,
   FACILITATOR_ARCHETYPE,
   STANDARD_ARCHETYPE,
   archetypeOf,
-  parseAgentKind,
   getArchetype,
   isArchetype,
   isArchetypeId,
@@ -48,6 +51,7 @@ import {
   type FacilitationEngineSources,
 } from '../platform/facilitatorGuard.js';
 import { attachEngineToFacilitator } from '../platform/facilitatorEngineAttach.js';
+import { erroredArchetypePlugin } from '../platform/archetypeRegistrySync.js';
 import { assertFacilitatorIdentity } from '../services/facilitatorContract.js';
 import { createFacilitationEngineStatusHandler } from './facilitationEngineStatus.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
@@ -195,12 +199,16 @@ const AgentCreateSchema = z.object({
   status: z.enum(['enabled', 'disabled']).optional(),
   // #2088 — only on create: the archetype is fixed for the agent's lifetime.
   archetype: z.string().refine(isArchetypeId, 'archetype must be a registered archetype id').optional(),
-  // The previous name of `archetype`; accepted until the `kind` column goes.
-  kind: z.enum(AGENT_KINDS).optional(),
+  // The name of `archetype` before #2088. Not accepted any more, and named
+  // here so a client that still sends it is told, instead of getting a
+  // standard agent where it asked for another archetype.
+  kind: z.unknown().optional(),
 });
 
 /** Slugs that collide with a static segment of this router. */
-const RESERVED_AGENT_SLUGS: ReadonlySet<string> = new Set(['facilitation-engine']);
+// `deleted`: the list of tombstones and their purge (#2088). The placeholder
+// slug of a tombstone starts with `deleted-`, which no route addresses.
+const RESERVED_AGENT_SLUGS: ReadonlySet<string> = new Set(['facilitation-engine', 'deleted']);
 
 const AgentPatchSchema = z.object({
   name: z.string().min(1).max(120).optional(),
@@ -1642,6 +1650,16 @@ export interface OperatorAgentsRouterOptions {
    *  before migrations) — routes 503 in that case. */
   readonly getConfigStore: () => ConfigStore | undefined;
   readonly getRegistry: () => OrchestratorRegistry | undefined;
+  /**
+   * #2088 — end of service (`platform/agentEndOfService.ts`): what ends
+   * before an agent is disabled or deleted. Absent (minimal mounts, unit
+   * tests) = the change happens without it.
+   */
+  readonly endOfService?: AgentEndOfService;
+  /** The admin audit; absent = no database for it, the change is logged only. */
+  readonly recordAudit?: (entry: AuditEntryInput) => Promise<void>;
+  /** A tombstone younger than this needs a typed confirmation to be purged. Default 30. */
+  readonly tombstoneRetentionDays?: number;
   readonly getChatSessionStore: () => ChatSessionStore | undefined;
   /** Phase B — kernel-owned plugin catalog + installed-registry pair.
    *  Used by `/plugin-catalog` (B3a multi-select), `/resolve-channel`
@@ -1653,10 +1671,6 @@ export interface OperatorAgentsRouterOptions {
   /** #2043 — the state object the facilitation engine plugin publishes
    *  (`facilitationEngine` service), for `GET /facilitation-engine`. */
   readonly getFacilitationEngineState?: () => unknown;
-  /** #2043 — has the operator granted this plugin its SQL ledger? The trust
-   *  step that turns a plugin declaring the engine capability into the
-   *  engine. Absent (tests, minimal mounts) = the declaration alone decides. */
-  readonly isSqlGranted?: (pluginId: string) => boolean;
   /** W0c (#861) — grant read model for the agent detail page. Late-bound like
    *  the config store; `GET /:slug/grants` 503s when absent (tests / minimal
    *  mounts, or no DATABASE_URL). Read-only: this router never writes through
@@ -1855,10 +1869,64 @@ async function listPeerChatCandidates(
   return { channelTypes, available };
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A tombstone for the operator: when it may be purged without typing its slug. */
+function tombstoneDto(tombstone: AgentTombstone, retentionDays: number) {
+  const purgeableFrom = new Date(Date.parse(tombstone.deletedAt) + retentionDays * DAY_MS);
+  return {
+    id: tombstone.id,
+    slug: tombstone.slug,
+    name: tombstone.name,
+    archetype: tombstone.archetype,
+    deleted_at: tombstone.deletedAt,
+    deleted_by: tombstone.deletedBy,
+    purgeable_from: purgeableFrom.toISOString(),
+    purgeable_without_confirmation: purgeableFrom.getTime() <= Date.now(),
+  };
+}
+
+/** What ended with an agent, in the wire names of this API. */
+function endOfServiceDto(report: EndOfServiceReport) {
+  return {
+    reason: report.reason,
+    process_outcome: report.processOutcome,
+    ...(report.processDetail !== undefined ? { process_detail: report.processDetail } : {}),
+    processes: report.processes.map((p) => ({
+      process_id: p.processId,
+      channel_type: p.channelType,
+      conversation_id: p.conversationId,
+      outcome: p.outcome,
+      ...(p.reportPosted !== undefined ? { report_posted: p.reportPosted } : {}),
+      ...(p.detail !== undefined ? { detail: p.detail } : {}),
+    })),
+    subscriptions_ended: report.subscriptionsEnded.map((s) => ({
+      channel_type: s.channelType,
+      conversation_id: s.conversationId,
+    })),
+    execution_scopes_ended: report.scopesEnded,
+    reservations_released: report.reservationsReleased.map((r) => ({
+      channel_type: r.channelType,
+      conversation_id: r.conversationId,
+    })),
+    system_notices_owed: report.noticesOwed,
+  };
+}
+
 export function createOperatorAgentsRouter(
   options: OperatorAgentsRouterOptions,
 ): Router {
   const router = Router();
+  const retentionDays = (): number => options.tombstoneRetentionDays ?? 30;
+  /** The audit never fails a request: without it the change is logged. */
+  const recordAudit = async (entry: AuditEntryInput): Promise<void> => {
+    try {
+      if (options.recordAudit) await options.recordAudit(entry);
+      else console.log(`[security-audit] ${entry.action} ${entry.target}`);
+    } catch (err) {
+      console.error(`[security-audit] ${entry.action} ${entry.target} could not be recorded:`, err instanceof Error ? err.message : String(err));
+    }
+  };
 
   function svc(): {
     store: ConfigStore;
@@ -1895,7 +1963,6 @@ export function createOperatorAgentsRouter(
     return {
       installedRegistry: options.getInstalledRegistry?.(),
       catalog: options.getPluginCatalog?.(),
-      ...(options.isSqlGranted ? { isSqlGranted: options.isSqlGranted } : {}),
     };
   }
 
@@ -1922,6 +1989,24 @@ export function createOperatorAgentsRouter(
       return undefined;
     }
     return deps;
+  }
+
+  /**
+   * #2088 — an agent of an archetype whose plugin is installed but did not
+   * start is neither created nor enabled: nothing would run it. Answers 409
+   * with the plugin and the reason it gave, and returns `true`.
+   */
+  function refuseErroredArchetypePlugin(res: Response, archetype: string): boolean {
+    const errored = erroredArchetypePlugin(engineSources(), archetype);
+    if (!errored) return false;
+    res.status(409).json({
+      error: 'archetype_plugin_not_running',
+      archetype,
+      plugin_id: errored.pluginId,
+      message: `the plugin '${errored.pluginId}' that delivers the archetype '${archetype}' did not start${errored.reason ? `: ${errored.reason}` : ''}; fix it in the store first`,
+      ...(errored.reason ? { detail: errored.reason } : {}),
+    });
+    return true;
   }
 
   function badRequest(res: Response, err: unknown): void {
@@ -1986,7 +2071,6 @@ export function createOperatorAgentsRouter(
             name: a.name,
             description: a.description,
             privacy_profile: a.privacyProfile,
-            kind: parseAgentKind(archetypeOf(a)),
             archetype: archetypeOf(a),
             is_fallback: a.id === settings.fallbackAgentId,
           })),
@@ -2020,7 +2104,6 @@ export function createOperatorAgentsRouter(
           description: a.description,
           privacy_profile: a.privacyProfile,
           status: a.status,
-          kind: parseAgentKind(archetypeOf(a)),
           archetype: archetypeOf(a),
           created_at: a.createdAt,
           updated_at: a.updatedAt,
@@ -2047,6 +2130,61 @@ export function createOperatorAgentsRouter(
     }
   });
 
+  // ── deleted agents (#2088) ──────────────────────────────────────────
+  // A delete keeps a tombstone. These two routes are the only way to see
+  // them and the only way to remove one for good. Registered before the
+  // `/:slug` routes; `deleted` is a reserved slug.
+  router.get('/deleted', async (_req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const tombstones = await live.store.listTombstones();
+      res.json({
+        retention_days: retentionDays(),
+        agents: tombstones.map((t) => tombstoneDto(t, retentionDays())),
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.post('/deleted/:id/purge', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const id = typeof req.params['id'] === 'string' ? req.params['id'] : '';
+      const tombstone = (await live.store.listTombstones()).find((t) => t.id === id);
+      if (!tombstone) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Inside the retention period the purge needs the slug typed out: it
+      // removes the agent's identity, grants, bindings and schedules with it.
+      const dto = tombstoneDto(tombstone, retentionDays());
+      const confirm = (req.body as { confirm?: unknown } | undefined)?.confirm;
+      if (!dto.purgeable_without_confirmation && confirm !== tombstone.slug) {
+        res.status(409).json({
+          error: 'purge_confirmation_required',
+          message: `agent "${tombstone.slug}" was deleted less than ${String(retentionDays())} days ago; send { "confirm": "${tombstone.slug}" } to purge it now`,
+          agent: dto,
+        });
+        return;
+      }
+      const purged = await live.store.purgeAgent(tombstone.id);
+      await recordAudit({
+        actor: auditActorFromRequest(req),
+        action: 'agent.purge',
+        target: `agent:${tombstone.id}`,
+        before: { slug: tombstone.slug, name: tombstone.name, archetype: tombstone.archetype, deleted_at: tombstone.deletedAt },
+        after: { purged },
+      });
+      await live.registry.reload();
+      res.json({ ok: purged });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
   // ── create ──────────────────────────────────────────────────────────
   router.post('/', async (req: Request, res: Response) => {
     const live = svc();
@@ -2058,17 +2196,14 @@ export function createOperatorAgentsRouter(
       if (RESERVED_AGENT_SLUGS.has(body.slug)) {
         throw new ConfigValidationError(`agent slug "${body.slug}" is reserved`);
       }
-      // `archetype` is the name; `kind` its predecessor. Naming both with
-      // different values is a client error, not something to pick from.
-      if (body.archetype !== undefined && body.kind !== undefined && body.archetype !== body.kind) {
-        throw new ConfigValidationError(
-          `archetype "${body.archetype}" and kind "${body.kind}" disagree; send archetype only`,
-        );
+      if (body.kind !== undefined) {
+        throw new ConfigValidationError('"kind" was replaced by "archetype"; send archetype');
       }
-      const archetype = body.archetype ?? body.kind ?? STANDARD_ARCHETYPE;
+      const archetype = body.archetype ?? STANDARD_ARCHETYPE;
       if (!getArchetype(archetype)) {
         throw new ConfigValidationError(`archetype "${archetype}" is not registered on this instance`);
       }
+      if (refuseErroredArchetypePlugin(res, archetype)) return;
       const created = await live.store.createAgent({
         slug: body.slug,
         name: body.name,
@@ -2088,7 +2223,6 @@ export function createOperatorAgentsRouter(
       res.status(201).json({
         id: created.id,
         slug: created.slug,
-        kind: parseAgentKind(archetypeOf(created)),
         archetype: archetypeOf(created),
       });
     } catch (err) {
@@ -2123,6 +2257,17 @@ export function createOperatorAgentsRouter(
           return;
         }
       }
+      if (body.status === 'enabled' && existing.status !== 'enabled' && refuseErroredArchetypePlugin(res, archetypeOf(existing))) {
+        return;
+      }
+      // #2088 — END OF SERVICE comes before the status changes: what the agent
+      // was doing ends while it is still enabled (its archetype plugin can
+      // close its processes), then nothing is delivered for it any more.
+      const disabling = body.status === 'disabled' && existing.status === 'enabled';
+      const actor = auditActorFromRequest(req);
+      const endOfService = disabling
+        ? await options.endOfService?.run(existing, 'agent_disabled', actor)
+        : undefined;
       await live.store.updateAgent(existing.id, {
         ...(body.name !== undefined ? { name: body.name } : {}),
         ...(body.description !== undefined
@@ -2133,8 +2278,17 @@ export function createOperatorAgentsRouter(
           : {}),
         ...(body.status ? { status: body.status } : {}),
       });
+      if (body.status && body.status !== existing.status) {
+        await recordAudit({
+          actor,
+          action: 'agent.disable',
+          target: `agent:${existing.id}`,
+          before: { status: existing.status },
+          after: { status: body.status, slug: existing.slug, archetype: archetypeOf(existing) },
+        });
+      }
       await live.registry.reload();
-      res.json({ ok: true });
+      res.json({ ok: true, ...(endOfService ? { end_of_service: endOfServiceDto(endOfService) } : {}) });
     } catch (err) {
       badRequest(res, err);
     }
@@ -2163,9 +2317,28 @@ export function createOperatorAgentsRouter(
         res.status(409).json({ error: 'fallback_protected' });
         return;
       }
-      await live.store.deleteAgent(existing.id);
+      // #2088 — end of service first (see PATCH), then the row becomes a
+      // TOMBSTONE: it stays, with everything that references it, hidden from
+      // every list and from routing. The hard delete is `POST
+      // /deleted/:id/purge`.
+      const actor = auditActorFromRequest(req);
+      const endOfService = await options.endOfService?.run(existing, 'agent_deleted', actor);
+      const tombstone = await live.store.deleteAgent(existing.id, actor.email ?? actor.id);
+      await recordAudit({
+        actor,
+        action: 'agent.delete',
+        target: `agent:${existing.id}`,
+        before: { slug: existing.slug, name: existing.name, status: existing.status, archetype: archetypeOf(existing) },
+        after: { tombstone: true, deleted_at: tombstone?.deletedAt ?? null },
+      });
       await live.registry.reload();
-      res.json({ ok: true });
+      res.json({
+        ok: true,
+        ...(tombstone && typeof tombstone.deletedAt === 'string'
+          ? { tombstone: tombstoneDto(tombstone, retentionDays()) }
+          : {}),
+        ...(endOfService ? { end_of_service: endOfServiceDto(endOfService) } : {}),
+      });
     } catch (err) {
       badRequest(res, err);
     }

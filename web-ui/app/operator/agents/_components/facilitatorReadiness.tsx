@@ -172,17 +172,6 @@ export function FacilitationEngineNotice(props: {
       )}
       {status.state === 'ambiguous' &&
         t('ambiguous', { plugins: status.pluginIds.join(', ') })}
-      {status.state === 'ungranted' && (
-        <>
-          {t('ungranted', { plugin: status.pluginId })}
-          <Link
-            href={`/store/${encodeURIComponent(status.pluginId)}#grants`}
-            className={NOTICE_LINK_CLASS}
-          >
-            {t('openGrants')}
-          </Link>
-        </>
-      )}
       {status.state === 'unusable' && (
         <>
           {t(`unusable.${status.reason}`, { plugin: status.pluginId })}
