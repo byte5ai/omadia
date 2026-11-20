@@ -783,7 +783,16 @@ async function main(): Promise<void> {
   // bounded agent batch triggers (deadline, budget, breaker), never as a
   // free-running plugin interval.
   const batchJobRegistry = new KernelBatchJobRegistry();
-  serviceRegistry.provide(BATCH_JOB_REGISTRY_SERVICE, batchJobRegistry);
+  serviceRegistry.provide(
+    BATCH_JOB_REGISTRY_SERVICE,
+    // A batch job spends every agent's trigger budget: built-in plugins only.
+    perCallerService((caller) =>
+      batchJobRegistry.forCaller(
+        caller.pluginId,
+        caller.pluginId === KERNEL_SERVICE_CALLER.pluginId || builtInPackageStore.has(caller.pluginId),
+      ),
+    ),
+  );
   // #133 E0 — expose the kernel turn-hook registry to the orchestrator plugin
   // so it can fire onBeforeTurn / onAfterToolCall / onAfterTurn during turns.
   serviceRegistry.provide('turnHookRegistry', turnHookRegistry);

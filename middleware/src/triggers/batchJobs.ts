@@ -39,6 +39,22 @@ export class KernelBatchJobRegistry implements BatchJobRegistry {
     };
   }
 
+  /**
+   * The registry as one plugin sees it. A batch job spends every agent's
+   * trigger budget, so only a built-in plugin (shipped with the kernel) may
+   * register one; any other plugin is refused.
+   */
+  forCaller(pluginId: string, mayRegister: boolean): BatchJobRegistry {
+    return {
+      register: (job) => {
+        if (!mayRegister) {
+          throw new Error(`plugin '${pluginId}' may not register batch jobs (built-in plugins only)`);
+        }
+        return this.register(job);
+      },
+    };
+  }
+
   get(id: string): BatchJob | undefined {
     return this.jobs.get(id);
   }

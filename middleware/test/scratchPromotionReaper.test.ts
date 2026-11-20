@@ -359,6 +359,20 @@ if (pgUp) {
       assert.equal(createCalls[0]!.originAgent, 'a');
       assert.equal(await reaper.due('a'), 1, 'one batch of one row');
       assert.equal(await reaper.due('a_b'), 1, 'another agent untouched');
+
+      // A row scored below the threshold is not due again until rewritten.
+      await pool.query(
+        `INSERT INTO memory_files (virtual_path, content, size_bytes, created_at, updated_at)
+         VALUES ($1, $2, $3, now() - interval '2 days', now() - interval '2 days')`,
+        ['/memories/orchestrators/c/low.md', TRIVIAL_BODY.repeat(3), TRIVIAL_BODY.length * 3],
+      );
+      assert.equal(await reaper.due('c'), 1);
+      await job.run('c', { limit: 5, signal: new AbortController().signal });
+      assert.equal(await reaper.due('c'), 0, 'scored once, then not due');
+      await pool.query(`UPDATE memory_files SET updated_at = now() - interval '25 hours' WHERE virtual_path = $1`, [
+        '/memories/orchestrators/c/low.md',
+      ]);
+      assert.equal(await reaper.due('c'), 1, 'due again once rewritten');
     });
   });
 

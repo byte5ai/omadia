@@ -41,6 +41,25 @@ describe('policy: a batch action is the system\'s alone', () => {
   });
 });
 
+describe('registry: built-in plugins only', () => {
+  it('refuses a batch job from any other plugin', () => {
+    const reg = new KernelBatchJobRegistry();
+    const job: BatchJob = {
+      id: 'hub.plugin.job',
+      purpose: 'x',
+      intervalMinutes: 60,
+      batchSize: 1,
+      due: async () => 0,
+      run: async () => ({ processed: 0, failed: 0 }),
+    };
+    assert.throws(() => reg.forCaller('@acme/hub-plugin', false).register(job), /built-in plugins only/);
+    const dispose = reg.forCaller('@omadia/orchestrator-extras', true).register(job);
+    assert.equal(reg.get('hub.plugin.job'), job);
+    dispose();
+    assert.equal(reg.get('hub.plugin.job'), undefined);
+  });
+});
+
 describe('#2082 batch jobs as agent batch triggers (pg)', { skip: !pgAvailable }, () => {
   let pool: Pool;
   let clock = new Date('2026-11-23T07:00:00Z');

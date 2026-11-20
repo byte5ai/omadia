@@ -139,7 +139,11 @@ export interface ScratchPromotionReaper {
 interface ScratchRow {
   virtual_path: string;
   content: string;
+  updated_at: Date;
 }
+
+/** Rows kept in memory as already scored below the threshold. */
+const MAX_EVALUATED = 10_000;
 
 /** Derive the orchestrator/agent slug from a scratch virtual path.
  *  `/memories/orchestrators/<slug>/note.md` → `<slug>`. Returns the empty
@@ -171,14 +175,38 @@ export function createScratchPromotionReaper(
 
   const ageSeconds = Math.max(0, deps.ageMs) / 1000;
 
+  // #2082 — rows scored below the threshold and left in place (no
+  // `dropUnpromoted`): path → the `updated_at` they were scored at. They are
+  // not due again until written again, so `due` reaches 0 and a run does not
+  // re-score the same oldest rows forever. In memory: a restart scores them
+  // once more.
+  const evaluated = new Map<string, number>();
+  const remember = (row: ScratchRow): void => {
+    evaluated.delete(row.virtual_path);
+    evaluated.set(row.virtual_path, row.updated_at.getTime());
+    while (evaluated.size > MAX_EVALUATED) {
+      const oldest = evaluated.keys().next().value;
+      if (oldest === undefined) break;
+      evaluated.delete(oldest);
+    }
+  };
+  const notEvaluated = (): [string[], Date[]] => [
+    [...evaluated.keys()],
+    [...evaluated.values()].map((ms) => new Date(ms)),
+  ];
+  // Compared at millisecond precision: that is what a JS Date keeps.
+  const NOT_EVALUATED_SQL = `(virtual_path, date_trunc('milliseconds', updated_at)) NOT IN (SELECT * FROM unnest($3::text[], $4::timestamptz[]))`;
+
   async function due(agentSlug: string): Promise<number> {
     try {
+      const [paths, stamps] = notEvaluated();
       const res = await deps.pool.query<{ n: string }>(
         `SELECT count(*)::text AS n
            FROM memory_files
           WHERE virtual_path LIKE $1
-            AND updated_at < now() - make_interval(secs => $2)`,
-        [`${agentScratchPrefix(agentSlug)}%`, ageSeconds],
+            AND updated_at < now() - make_interval(secs => $2)
+            AND ${NOT_EVALUATED_SQL}`,
+        [`${agentScratchPrefix(agentSlug)}%`, ageSeconds, paths, stamps],
       );
       return Number(res.rows[0]?.n ?? 0);
     } catch {
@@ -203,14 +231,16 @@ export function createScratchPromotionReaper(
       // virtual_path serves the LIKE prefix scan.
       const prefix = scope ? agentScratchPrefix(scope.agentSlug) : SCRATCH_PREFIX;
       const limit = scope ? Math.max(1, Math.min(scope.limit, batchSize)) : batchSize;
+      const [paths, stamps] = notEvaluated();
       const res = await deps.pool.query<ScratchRow>(
-        `SELECT virtual_path, content
+        `SELECT virtual_path, content, updated_at
            FROM memory_files
           WHERE virtual_path LIKE $1
             AND updated_at < now() - make_interval(secs => $2)
+            AND ${NOT_EVALUATED_SQL}
           ORDER BY updated_at ASC
-          LIMIT $3`,
-        [`${prefix}%`, ageSeconds, limit],
+          LIMIT $5`,
+        [`${prefix}%`, ageSeconds, paths, stamps, limit],
       );
       rows = res.rows;
     } catch (err) {
@@ -228,16 +258,17 @@ export function createScratchPromotionReaper(
     // it (true TTL) and count it as dropped; otherwise leave it untouched
     // and count it as skipped (historical default). Mutually exclusive with
     // the promotion branch, which deletes the row itself.
-    const reapUnpromoted = async (virtualPath: string): Promise<void> => {
+    const reapUnpromoted = async (row: ScratchRow): Promise<void> => {
       if (deps.dropUnpromoted) {
         await deps.pool.query(
           `DELETE FROM memory_files WHERE virtual_path = $1`,
-          [virtualPath],
+          [row.virtual_path],
         );
         result.dropped++;
-        log(`[scratch-reaper] dropped path=${virtualPath} (unpromoted, ttl)`);
+        log(`[scratch-reaper] dropped path=${row.virtual_path} (unpromoted, ttl)`);
       } else {
         result.skipped++;
+        remember(row);
       }
     };
 
@@ -255,13 +286,13 @@ export function createScratchPromotionReaper(
         const trimmed = content.trim();
 
         if (trimmed.length < MIN_NON_TRIVIAL_LEN) {
-          await reapUnpromoted(row.virtual_path);
+          await reapUnpromoted(row);
           continue;
         }
 
         const { score } = await deps.scorer.score(trimmed);
         if (score < deps.threshold) {
-          await reapUnpromoted(row.virtual_path);
+          await reapUnpromoted(row);
           continue;
         }
 
