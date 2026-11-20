@@ -18,6 +18,7 @@ import type { Request, Response } from 'express';
 
 import { auditActorFromRequest, type AuditEntryInput } from '../auth/adminAuditLog.js';
 import type { AgentChannelIdentityService, IdentityAgent } from '../platform/agentChannelIdentityService.js';
+import { isPreviewDraftAgentSlug } from '../plugins/builder/previewDraftAgents.js';
 
 const CHANNEL_TYPE_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 
@@ -54,6 +55,15 @@ export function createOperatorAgentChannelIdentitiesRouter(options: OperatorAgen
     const slug = req.params['slug'];
     if (typeof slug !== 'string' || slug === '') {
       res.status(400).json({ error: 'invalid_slug' });
+      return undefined;
+    }
+    // #2049 — the draft agent of a Plugin Builder preview is read and deleted,
+    // never configured; it never gets a bot of its own.
+    if (req.method === 'PUT' && isPreviewDraftAgentSlug(slug)) {
+      res.status(409).json({
+        error: 'preview_draft_agent',
+        message: `"${slug}" is the draft agent of a Plugin Builder preview; it cannot have a bot of its own`,
+      });
       return undefined;
     }
     const agent = await options.findAgent(slug);
