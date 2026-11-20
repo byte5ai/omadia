@@ -326,19 +326,19 @@
     },
     "builder": {
       "title": "Agent-Builder",
-      "subtitle": "Kanäle, Sub-Agenten, Skills und Tools auf einer editierbaren Leinwand verdrahten.",
+      "subtitle": "Kanäle, Helfer, Skills und Tools auf einer editierbaren Leinwand verdrahten.",
       "agentPicker": "Agent",
       "loading": "Lädt …",
       "loadError": "Laden fehlgeschlagen",
       "noAgents": "Noch keine Agenten verfügbar.",
       "card": {
         "title": "Agent-Builder",
-        "description": "Visuelle Node-Graph-Leinwand: Kanäle, Sub-Agenten, Skills, Tools/MCP und Zeitpläne verdrahten. Eine gezogene Verbindung schreibt die Verdrahtung; eine gelöschte Kante entfernt sie."
+        "description": "Visuelle Node-Graph-Leinwand: Kanäle, Helfer, Skills, Tools/MCP und Zeitpläne verdrahten. Eine gezogene Verbindung schreibt die Verdrahtung; eine gelöschte Kante entfernt sie."
       },
       "nodes": {
         "channel": "Kanal",
         "agent": "Agent",
-        "subagent": "Sub-Agent",
+        "subagent": "Helfer",
         "skill": "Skill",
         "tool": "Tool",
         "mcp": "MCP-Server",
@@ -387,7 +387,7 @@
         "noTools": "Noch keine erkannten Tools."
       },
       "defaults": {
-        "subAgentName": "Neuer Sub-Agent",
+        "subAgentName": "Neuer Helfer",
         "skillName": "Neuer Skill",
         "mcpName": "Neuer MCP-Server"
       },
@@ -420,7 +420,14 @@
         "transport": "Transport",
         "endpoint": "Endpoint",
         "cron": "Cron",
-        "timezone": "Zeitzone"
+        "timezone": "Zeitzone",
+        "helperExplain": "Ein Helfer gehört intern zu diesem Agenten: Er erledigt einen Teil der Arbeit des Agenten auf einem eigenen, oft günstigeren Modell, nutzt nur Tools, die der Agent selbst hat, und wird Menschen gegenüber nie genannt. Seine Antwort ist die Arbeit des Agenten.",
+        "helperSpecialistHint": "Soll ein Spezialist direkt ansprechbar sein? Lege ihn als eigenen Agenten an."
+      },
+      "helperErrors": {
+        "helper_name_collision": "Dieser Name ist schon vergeben: Ein anderer Helfer oder ein Tool dieses Agenten nutzt denselben Tool-Namen. Wähle einen anderen Namen.",
+        "helper_grant_not_held_by_agent": "Der Agent hat dieses Tool selbst nicht. Weise es zuerst dem Agenten zu; ein Helfer nutzt nur Tools seines Agenten.",
+        "helper_model_not_allowed": "Die Modellrichtlinie des Agenten erlaubt dieses Modell für einen Helfer nicht. Wähle das Modell des Agenten oder ein günstigeres."
       },
       "apiError": "Fehler {status}",
       "persona": {
@@ -435,7 +442,7 @@
         "confirmAttachAction": "Trotzdem anhängen",
         "confirmAttachHighRisk": "Der heuristische Scan dieses Skills zeigt hohes Risiko ({codes}). Als Arbeitsmodus prägt er, wie der Agent arbeitet, mit dessen vollem Tool-Zugriff. Bestätige, dass du ihn geprüft hast, bevor du ihn anhängst."
       },
-      "facilitatorsNote": "Facilitatoren sind hier nicht aufgeführt: Channels, Sub-Agenten, Tools, MCP-Server und Zeitpläne lassen sich mit ihnen nicht verdrahten."
+      "facilitatorsNote": "Facilitatoren sind hier nicht aufgeführt: Channels, Helfer, Tools, MCP-Server und Zeitpläne lassen sich mit ihnen nicht verdrahten."
     }
   },
   "selfExtension": {
@@ -1649,7 +1656,7 @@
       "label": "Modus: {name}",
       "title": "Arbeitsmodus für diese Antwort, gewählt von {classifier}. Er ändert, wie der Agent arbeitet, nicht wer antwortet."
     },
-    "subAgentTrace": "Sub-Agent-Trace",
+    "subAgentTrace": "Interne Schritte",
     "mcpAuth": {
       "kicker": "Autorisierung erforderlich",
       "body": "{server} muss verbunden werden, bevor es genutzt werden kann.",
@@ -5195,7 +5202,7 @@
       "revokeConfirm": "Grant entziehen",
       "kind": {
         "agent": "Orchestrator",
-        "subagent": "Sub-Agent",
+        "subagent": "Helfer",
         "skill": "Skill",
         "plugin": "Plugin"
       },
@@ -5219,7 +5226,7 @@
       "unresolved": "nicht aufgelöst",
       "kind": {
         "agent": "Orchestrator",
-        "subagent": "Sub-Agent",
+        "subagent": "Helfer",
         "skill": "Skill",
         "plugin": "Plugin",
         "unattributed": "Nicht zugeordnet",
