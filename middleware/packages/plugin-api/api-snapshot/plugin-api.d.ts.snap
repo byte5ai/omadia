@@ -1,6 +1,16 @@
 // Golden API snapshot for @omadia/plugin-api — generated, do not hand-edit.
 // Regenerate deliberately: npm run api:update -w packages/plugin-api
 
+// ===== agentEnvelope.d.ts =====
+export declare const AGENT_ENVELOPE_SERVICE_NAME = "agentEnvelope";
+export interface AgentEnvelope<TAgent = unknown> {
+readonly agentId: string;
+readonly agent: TAgent;
+}
+export interface AgentEnvelopeResolver<TAgent = unknown> {
+resolve(agentId: string): AgentEnvelope<TAgent> | undefined;
+}
+
 // ===== agentGraph.d.ts =====
 export interface CanvasPosition {
 readonly x: number;
@@ -1167,6 +1177,7 @@ export * from './executionGrants.js';
 export * from './speaker.js';
 export * from './maintenanceRun.js';
 export * from './modelPassthrough.js';
+export * from './agentEnvelope.js';
 export * from './batchJobs.js';
 
 // ===== knowledgeGraph.d.ts =====
@@ -2249,6 +2260,7 @@ export declare function computeCodeChallenge(verifier: string): string;
 
 // ===== pluginContext.d.ts =====
 import type { Socket } from 'node:net';
+import type { ToolPIIField } from './piiAnnotation.js';
 import type { WriteCapability } from './writeCapabilities.js';
 import type { EntityCapturedTurnsHit, EntityCapturedTurnsOptions, EntityIngest, EntityIngestResult, FactIngest, FactIngestResult, GraphNode, GraphStats, SearchTurnsOptions, TurnSearchHit } from './knowledgeGraph.js';
 export interface PluginContext {
@@ -2400,6 +2412,7 @@ export interface ToolRegistrationOptions {
 readonly promptDoc?: string;
 readonly attachmentSink?: NativeToolAttachmentSink;
 readonly writeCapabilities?: readonly WriteCapability[];
+readonly piiFields?: readonly ToolPIIField[];
 readonly isAvailable?: () => boolean;
 }
 export type RouteAuthMode = 'session' | 'public' | 'custom' | 'teams-sso';
@@ -2872,6 +2885,7 @@ export declare function parseScopes(stored: unknown): readonly string[];
 
 // ===== privacyReceipt.d.ts =====
 import type { FieldKey, FieldObservation, FieldSampleVerdict, ModelClassificationRequest, ModelClassificationResult } from './privacyFieldClassification.js';
+import type { ToolPIIField } from './piiAnnotation.js';
 export declare const PRIVACY_REDACT_SERVICE_NAME = "privacyRedact";
 export declare const PRIVACY_REDACT_CAPABILITY = "privacy.redact@1";
 export interface OperatorClearedFieldEntry {
@@ -2935,6 +2949,7 @@ readonly toolName: string;
 readonly rawResult: string;
 readonly toolInput?: unknown;
 readonly audience?: PrivacyDigestAudience;
+readonly piiFields?: readonly ToolPIIField[];
 }
 export type PrivacyDigestAudience = 'chat' | 'public-api';
 export interface PrivacyDatasetVerbStep {
