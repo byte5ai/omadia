@@ -336,6 +336,7 @@ export function toSemanticAnswer(
           ...(disclosure?.agentId !== undefined ? { agentId: disclosure.agentId } : {}),
           ...(disclosure?.pauseMinutes !== undefined ? { pauseMinutes: disclosure.pauseMinutes } : {}),
           ...(disclosure?.markerStore !== undefined ? { markerStore: disclosure.markerStore } : {}),
+          ...(disclosure?.markerScope !== undefined ? { markerScope: disclosure.markerScope } : {}),
           ...(disclosure?.now !== undefined ? { now: disclosure.now } : {}),
         })
       : { text: baseText };

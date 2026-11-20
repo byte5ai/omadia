@@ -1,4 +1,5 @@
 import {
+  InMemoryDisclosureMarkerStore,
   InMemoryDisclosureSeenStore,
   isAiDisclosureFrequency,
   POSTURE_ORDER,
@@ -1276,6 +1277,9 @@ export async function activate(
     // the registry builds: a per-instance store would re-fold the marking into
     // a live conversation whenever an unrelated config tweak rebuilt the Agent.
     aiDisclosureSeenStore: new InMemoryDisclosureSeenStore(),
+    // #2087 — likewise one marker store: a speaker change is only visible to a
+    // store that sees every agent of the conversation.
+    aiDisclosureMarkerStore: new InMemoryDisclosureMarkerStore(),
     ...(turnHookRegistry ? { turnHookRegistry } : {}),
     runTraceStats,
     // W2-1 (#544) — the SAME store instance the kernel's `McpManager` parks

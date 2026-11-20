@@ -1030,6 +1030,15 @@ export interface OrchestratorOptions {
    */
   aiDisclosureSeenStore?: DisclosureSeenStore;
   /**
+   * #2087 — `per_conversation` marker state. One instance per process, shared
+   * across the Agents the registry builds: "again when another agent speaks"
+   * compares an answer with the PREVIOUS speaker of the conversation, which a
+   * per-Agent store can never see. Absent → a private
+   * {@link InMemoryDisclosureMarkerStore} (a restart marks again, the
+   * fail-safe direction).
+   */
+  aiDisclosureMarkerStore?: DisclosureMarkerStore;
+  /**
    * #579 — org security posture (org floor + optional scope tightening + shadow/
    * enforce mode + optional external screen URL). Absent → the shipping default
    * (`auto`: screen non-human inbound content, enforce). See
@@ -3029,7 +3038,7 @@ export class Orchestrator {
   /** #644 — first-turn-per-scope fold-dedup store (see OrchestratorOptions). */
   private readonly disclosureSeen: DisclosureSeenStore;
   /** #2087 — `per_conversation` marker state; process-local, a restart marks again. */
-  private readonly disclosureMarkers: DisclosureMarkerStore = new InMemoryDisclosureMarkerStore();
+  private readonly disclosureMarkers: DisclosureMarkerStore;
   /** #579 — org security posture setup (undefined → shipping default `auto`). */
   private readonly securityPosture: SecurityPostureSetup | undefined;
   /** #579 — late-bound screener factory (see OrchestratorOptions). */
@@ -3144,6 +3153,8 @@ export class Orchestrator {
     this.aiDisclosure = options.aiDisclosure;
     this.disclosureSeen =
       options.aiDisclosureSeenStore ?? new InMemoryDisclosureSeenStore();
+    this.disclosureMarkers =
+      options.aiDisclosureMarkerStore ?? new InMemoryDisclosureMarkerStore();
     this.securityPosture = options.securityPosture;
     this.securityScreener = options.securityScreener;
     this.securityAuditSink = options.securityAuditSink;
@@ -4621,6 +4632,7 @@ export class Orchestrator {
             seen: this.disclosureSeen,
             agentId: this.agentId,
             markerStore: this.disclosureMarkers,
+            ...(input.sessionScope ? { markerScope: input.sessionScope } : {}),
           }
         : undefined,
     );
@@ -4779,6 +4791,7 @@ export class Orchestrator {
       seen: requestDisclosureSeen(this.disclosureSeen, ledger),
       agentId: this.agentId,
       markerStore: requestDisclosureMarkers(this.disclosureMarkers, ledger),
+      ...(input.sessionScope ? { markerScope: input.sessionScope } : {}),
     });
     // The carrier that goes out is the applied one: it states which visible
     // markers this answer carries (#2087), the pre-resolved one does not.
@@ -4807,6 +4820,7 @@ export class Orchestrator {
       seen: this.disclosureSeen,
       agentId: this.agentId,
       markerStore: this.disclosureMarkers,
+      ...(input.sessionScope ? { markerScope: input.sessionScope } : {}),
     });
     return { answer: applied.text, aiDisclosure: applied.aiDisclosure ?? aiDisclosure };
   }

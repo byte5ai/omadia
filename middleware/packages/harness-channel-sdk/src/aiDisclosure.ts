@@ -226,6 +226,13 @@ export interface ApplyAiDisclosureContext {
   readonly pauseMinutes?: number;
   /** #2087 — backing store for `per_conversation`. */
   readonly markerStore?: DisclosureMarkerStore;
+  /**
+   * #2087 — the conversation key `per_conversation` remembers its last speaker
+   * under. It must NOT contain the speaking agent: "again when another agent
+   * speaks" compares with the previous speaker, so every agent of the
+   * conversation has to read and write the same entry. Absent → `scope`.
+   */
+  readonly markerScope?: string;
   /** #2087 — clock, epoch ms. Tests inject it. */
   readonly now?: number;
   /**
@@ -372,7 +379,7 @@ export function applyAiDisclosure(
   const markers = decideDisclosureMarkers({
     frequency,
     firstTurnOfScope: shouldFold(ctx.scope, ctx.seen),
-    scope: ctx.scope,
+    scope: ctx.markerScope ?? ctx.scope,
     agentId: ctx.agentId,
     now: ctx.now ?? Date.now(),
     pauseMinutes: ctx.pauseMinutes ?? ctx.policy?.pauseMinutes ?? resolved.pauseMinutes,

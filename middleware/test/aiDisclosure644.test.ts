@@ -14,6 +14,8 @@ import {
   resolveAiDisclosure,
   applyAiDisclosure,
   toSemanticAnswer,
+  InMemoryDisclosureMarkerStore,
+  type DisclosureMarkerStore,
   type ChatStreamEvent,
   type ChatTurnInput,
 } from '@omadia/channel-sdk';
@@ -149,6 +151,8 @@ function makeOrchestrator(opts: {
   answer: string;
   assistantIdentity?: string;
   aiDisclosure?: AiDisclosureSetup;
+  agentId?: string;
+  markerStore?: DisclosureMarkerStore;
 }): Orchestrator {
   return new Orchestrator({
     provider: textProvider(opts.answer),
@@ -159,6 +163,8 @@ function makeOrchestrator(opts: {
     nativeToolRegistry: new NativeToolRegistry(),
     ...(opts.assistantIdentity ? { assistantIdentity: opts.assistantIdentity } : {}),
     ...(opts.aiDisclosure ? { aiDisclosure: opts.aiDisclosure } : {}),
+    ...(opts.agentId ? { agentId: opts.agentId } : {}),
+    ...(opts.markerStore ? { aiDisclosureMarkerStore: opts.markerStore } : {}),
   });
 }
 
@@ -490,6 +496,22 @@ describe('#2087 orchestrator — disclosure frequency', () => {
     // another conversation is marked again
     const other = await o.chat({ userMessage: 'a', sessionScope: 'c-pc-2' });
     assert.equal(folded(other.text), true);
+  });
+
+  it('per_conversation marks again when another agent speaks (agents share one marker store)', async () => {
+    const markerStore = new InMemoryDisclosureMarkerStore();
+    const setup = { level: 'standard', frequency: 'per_conversation' } as const;
+    const mira = makeOrchestrator({ answer: 'Hallo.', agentId: 'a-mira', aiDisclosure: setup, markerStore });
+    const tom = makeOrchestrator({ answer: 'Hallo.', agentId: 'a-tom', aiDisclosure: setup, markerStore });
+    const turn = { userMessage: 'x', sessionScope: 'c-pc-multi' };
+    const first = await mira.chat(turn);
+    const again = await mira.chat(turn);
+    const other = await tom.chat(turn);
+    const back = await mira.chat(turn);
+    assert.deepEqual(
+      [first, again, other, back].map((a) => folded(a.text)),
+      [true, false, true, true],
+    );
   });
 
   it('channel_default keeps today: line once, chip every answer', async () => {
