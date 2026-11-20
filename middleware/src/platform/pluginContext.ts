@@ -2068,7 +2068,7 @@ function memoryDeclared(agentId: string, catalog: PluginCatalog): boolean {
   return reads.length > 0 || writes.length > 0;
 }
 
-function extractOutboundAllowlist(
+export function extractOutboundAllowlist(
   agentId: string,
   catalog: PluginCatalog,
   configGet: (key: string) => unknown,
@@ -2172,7 +2172,7 @@ function resolveTcpTargets(
  * mode-switch UI); unset or malformed entries are simply ignored, so a
  * fresh install defaults to `single-host` with no extra hosts.
  */
-function extractAuditConfig(
+export function extractAuditConfig(
   agentId: string,
   catalog: PluginCatalog,
   registry: InstalledRegistry,

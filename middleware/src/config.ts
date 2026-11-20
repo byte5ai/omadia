@@ -735,6 +735,13 @@ export const ConfigSchema = z.object({
   // Operations a context does not allow, deadlines, cancels and kill
   // switches are refused in both modes.
   MODEL_GATEWAY_MODE: z.enum(['observe', 'enforce']).default('observe'),
+  // Spec 2042 §5.10 — the network sandbox of installed plugins: a request
+  // their own code makes through the global `fetch` or `node:http(s)` must be
+  // covered by their network permission (manifest hosts, operator hosts,
+  // `public-web`), and never reaches a model provider unless the plugin is a
+  // model plugin. `observe` (the expand step) lets it through and logs it once
+  // per plugin and host; `enforce` refuses it.
+  PLUGIN_EGRESS_MODE: z.enum(['observe', 'enforce']).default('observe'),
   // Spec 2042 §5.10 — the instance's daily budgets of the two execution
   // contexts that belong to no agent: operator jobs (admin functions an
   // operator starts: issue preview, skill verification, topic regrouping,

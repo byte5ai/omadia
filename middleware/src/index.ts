@@ -445,6 +445,7 @@ import { createModelCallHaltMirror } from './execution/modelCallHalts.js';
 import { createModelWorkRuns } from './platform/modelWorkRuns.js';
 import { createModelWorkRouter } from './routes/modelWork.js';
 import { createAgentTemplatesRouter } from './routes/agentTemplates.js';
+import { createModelGatewayStatusRouter } from './routes/modelGatewayStatus.js';
 import {
   BULK_PROMOTION,
   EMBEDDING_BACKFILL,
@@ -502,6 +503,8 @@ import { createLazyPublicPathGrantStore } from './platform/publicPathGrantStore.
 import { createPluginRawBodyMount } from './platform/pluginRawBodyMount.js';
 import { createPublicPathMount } from './platform/publicPathMount.js';
 import { buildResolutionChain } from './platform/pluginContext.js';
+import { installPluginEgressGuard } from './platform/pluginEgressGuard.js';
+import { createPluginEgressSource } from './platform/pluginEgressSource.js';
 import { createTeamsSsoAudienceSource } from './platform/teamsSsoAudiences.js';
 import { createTeamsSsoGate } from './auth/teamsSsoGate.js';
 import { createTeamsSsoVerifier } from './auth/teamsSsoVerifier.js';
@@ -1230,6 +1233,19 @@ async function main(): Promise<void> {
     INSTALLED_REGISTRY_PATH,
   );
   await installedRegistry.load();
+  // Spec 2042 §5.10 — the network sandbox of installed plugins, before any
+  // of them activates: their own requests through the global `fetch` and
+  // `node:http(s)` are checked against their network permission, and model
+  // providers are reached only through the gateway.
+  installPluginEgressGuard({
+    mode: config.PLUGIN_EGRESS_MODE,
+    source: createPluginEgressSource({ catalog: pluginCatalog, installedRegistry, llmProviderCatalog }),
+    onObservation: (o) => {
+      console.warn(
+        `[plugin-egress] ${o.mode === 'enforce' ? 'refused' : 'observed'}: plugin '${o.pluginId}' reached '${o.host}' (${o.reason})${o.mode === 'observe' ? '; refused once PLUGIN_EGRESS_MODE=enforce' : ''}`,
+      );
+    },
+  });
   const ownIdentityPostLog = createOwnIdentityPostLog();
   // #2088 — an installed plugin of kind `archetype` registers the archetype
   // its manifest describes; see `platform/archetypeRegistrySync.ts`.
@@ -3849,6 +3865,7 @@ async function main(): Promise<void> {
     app.post(route, requireAuth, modelWork.middleware(kind));
   }
   app.use('/api/v1/admin/model-work', requireAuth, createModelWorkRouter({ runs: modelWork }));
+  app.use('/api/v1/admin/model-gateway', requireAuth, createModelGatewayStatusRouter());
   // Spec 2042 §5.10 — agent templates of the installed plugins, as prefills
   // for the Agent Builder. Read-only: the Builder creates the agent.
   app.use(
