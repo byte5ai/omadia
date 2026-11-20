@@ -20,6 +20,12 @@ export type BackfillableNodeType =
   | 'PalaiaExcerpt';
 
 export interface EmbeddingBackfillOptions {
+  /**
+   * Spec 2042 §5.10 — runs one sweep as a maintenance run of the model
+   * gateway (embed only, maintenance budget, deadline per run). Absent: the
+   * sweep runs as it is (a kernel without the service).
+   */
+  asMaintenanceRun?: <T>(sweep: () => Promise<T>) => Promise<T>;
   pool: Pool;
   embeddingClient: EmbeddingClient;
   tenantId: string;
@@ -389,7 +395,9 @@ export function startEmbeddingBackfill(
     }
   };
 
-  const runSweep = async (): Promise<EmbeddingBackfillStats> => {
+  const runSweep = async (): Promise<EmbeddingBackfillStats> =>
+    opts.asMaintenanceRun ? opts.asMaintenanceRun(sweepOnce) : sweepOnce();
+  const sweepOnce = async (): Promise<EmbeddingBackfillStats> => {
     if (running) {
       // A previous sweep is still in flight — skip this tick rather than
       // stack calls. Common when Ollama is slow: one sweep of batchSize=20
