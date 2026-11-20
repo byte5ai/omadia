@@ -113,6 +113,37 @@ src/
 
 ## 3. Die Execution-Layer im Detail
 
+### Management-Layer, Speaker und Identity-Guard (Spec 2042, #2045 #2046 #2055 #2056 #1880)
+
+- **Routing** (`harness-orchestrator/src/routing/managementRouter.ts`, rein,
+  ohne Modell): eigene Kanalidentität → explizite Ansprache (Slug, `resolveAgent`
+  per ID) → Auswahl des Absenders (`agent_selections`) → Bindung → Default-Agent-
+  Tabelle (`agent_default_entries`: (User, Kanal) > (User) > (Kanal) > Instanz,
+  `agent_id NULL` = `off`) → `system`-Notice `no_agent`. Nur `status = 'enabled'`
+  ist adressierbar; Verfügbarkeit (`available_to_everyone`, `available_channels`,
+  `agent_availability_principals`) wird vor jedem Turn geprüft. Tombstones bleiben
+  Ziel und ergeben `agent_deleted`. Kein Fallback-Agent.
+- **`ChannelResolver.resolve(type, key, {principal, explicitSlug, locale})`**
+  liefert immer einen ChatAgent (`management/managementChatAgent.ts`): er
+  behandelt `/agent <Name>`, `/agent`, `/agents` (`management/agentSelection.ts`)
+  und beantwortet ein `reject` mit der Notice. Principal pro Kanal:
+  `channelUserPrincipal` / `turnPrincipal` aus `@omadia/channel-sdk`.
+- **Notices:** `management/systemNotices.ts` (registrierte Vorlagen de/en,
+  Speaker `system`).
+- **Speaker:** `buildOrchestratorForAgent` wickelt jedes Agent-Bundle außen in
+  `withSpeaker(withIdentityGuard(…))`; `AgentAnswerEmitter`
+  (`management/answerEmitter.ts`) ist der typisierte Emitter pro Agent
+  (`emitterOf(bundle.agent)`), auch für Routinen. `test/speakerEmission.test.ts`
+  zählt alle Emitter und schlägt bei neuen ohne Speaker fehl.
+- **Identity-Guard:** `identityGuard/deterministic.ts` (Namen/Aliasse,
+  Menschen-Behauptungen), `identityGuard/llmJudge.ts` (Modellschicht, Klassifizier-
+  Modell des Agenten, nur bei verdächtigem Text), `identityGuard/guard.ts`
+  (`SentenceGate`: satzweise Freigabe beim Streaming, Timeout 8 s → fail-closed).
+- **Prompt:** `management/agentIdentityPrompt.ts` (`DEFAULT_AGENT_IDENTITY`,
+  `identityRules`), Snapshots in `test/fixtures/agentPrompt/` (`test/agentIdentityRules.test.ts`).
+- **Endpoints:** `/api/v1/operator/default-agents`,
+  `/api/v1/operator/agents/:slug/availability`, `/api/v1/agents/directory`.
+
 ### Orchestrator
 
 - **Datei:** `services/orchestrator.ts`
@@ -5606,6 +5637,12 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   Abschnitte dieses Dokuments zu Sub-Agents, Persona-Skills und
   Fallback-Agent beschreiben den Stand vor dem Umbau.
 
+- **Offen (S1, Spec 2042):** Gruppen (`role:<key>`) in der Verfügbarkeit
+  brauchen eine synchrone Rollenmitgliedschaft (`ChannelResolver`-Option
+  `hasRole`, heute nicht verdrahtet → Rollen-Einträge greifen nicht); UI für
+  Verfügbarkeit und Default-Agent-Tabelle (S6/Agent Builder); Persona-Skills
+  ersetzen pro Turn noch die Identität samt Identitätsregeln (Arbeitsmodi, S2);
+  der Prompt spricht weiter von „Fach-Agenten“ für Domain-Tools (Plugin-Kinds, S3).
 - **Entfernt: Direct Line (#2052, Spec 2042 §5.2/§7).** Owner-Entscheidung:
   `#token`-Adressierung (`#strategist Frage`) und der Sticky-Modus sind ganz
   weg; die direkte Adressierung eines Agenten ersetzt sie. `#name Text` ist

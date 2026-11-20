@@ -6686,6 +6686,33 @@ socket, whoever installed the package under that id; without the channel the
 upgrade on `/omadia-ui/canvas` is a raw 404. Pairing discovery
 (`/.well-known/omadia-ui`) keeps advertising that path either way.
 
+## 10z. One agent speaks: routing, speaker, identity guard (spec 2042, #2045 #2046 #2055 #1880)
+
+**Routing never hands a turn to a broader agent.** Before #2055 a binding to a
+disabled agent, an unknown channel key or an unbound conversation reached the
+fallback agent, which typically held every installed plugin: a quiet privilege
+escalation. Routing is now deterministic and closed: the addressed, selected,
+bound or default-table agent answers, or nobody does and the sender gets a
+`system` notice naming the agent. There is no fallback agent. Only
+`status = 'enabled'` agents are addressable; availability (who, which
+channels) is checked before every turn, also for explicit addressing; a fresh
+agent is available to nobody. A purge of a deleted agent is refused while a
+default-agent entry or a selection still names it (`ON DELETE RESTRICT`).
+
+**Speaker is structural.** Every answer carries the speaker the harness stamped
+from routing (`withSpeaker` around every agent bundle); no model output can set
+it.
+
+**Identity guard (textual, fail-closed).** Every `prose` emission passes
+`identityGuard/` before publication, independent of the fact verifier's
+settings: a deterministic layer against all agents' names and aliases and
+claims to be human, then a model layer on the masked text (values the privacy
+shield restored are masked again) for text that mentions a colleague or
+introduces someone. A judge error, timeout (8 s) or missing judge withholds the
+text. Streaming releases complete sentences only, each checked with all text
+so far. The guard is a strong guard with test-defined coverage, not a proof
+(ADR-0013).
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
