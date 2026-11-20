@@ -50,6 +50,7 @@ decision, write a new ADR and mark the old one **Superseded by …**.
 | 0020 | [Proactive agents through bounded triggers, no heartbeats](0020-proactive-agents-with-bounded-triggers.md) | Accepted | 2026-11-19 |
 | 0021 | [Deterministic first, side channels for data, natural chat answers](0021-deterministic-first-side-channels-and-uncluttered-answers.md) | Accepted | 2026-11-19 |
 | 0022 | [Native facilitators: an archetype delivered by an archetype plugin](0022-native-facilitators-as-an-archetype-plugin.md) | Accepted | 2026-11-19 |
+| 0023 | [Facilitators: moderation working modes, per-facilitator defaults, readiness per channel](0023-facilitator-working-modes-settings-and-channel-readiness.md) | Accepted | 2026-11-20 |
 | 0024 | [Facilitation closing procedure, result status and retention](0024-facilitation-closing-procedure-and-result-status.md) | Accepted | 2026-11-20 |
 
 ### The agent model (0012–0022)
