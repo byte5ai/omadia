@@ -134,6 +134,17 @@ changelog.
   stay. The plugin API's types are unchanged; the first-major types stay
   exported and deprecated.
 
+### Fixed — Interrupted Teams provisioning was not resumed at boot (D40, #2088)
+
+- Since tombstones for deleted agents (K2b, v0.210.0 line) every boot logged
+  `teams-identity provisioning resume scan failed: error: operator does not
+  exist: text = uuid`. The scan compared `agent_teams_identities.agent_id`
+  (text) with `agents.id` (uuid), Postgres refused the statement, and no
+  interrupted provisioning run was picked up again after a restart. Nothing
+  was lost: the rows kept their state, and the first boot with this fix
+  resumes them. A run an operator started again by hand in the meantime is
+  unaffected.
+
 ### Removed — The old way a plugin became the facilitation engine (#2088, epic #2042): K6.2, the contract step
 
 - **The engine is found by what it delivers, and by nothing else.** The
@@ -151,6 +162,26 @@ changelog.
   `capability`, and `state` is `bound`, `none` or `ambiguous`.
 - Facilitator 1.2.0 and later are unaffected. They may keep the `provides`
   line: it is what lets the plugin publish its own status.
+
+### Fixed — An installed entry without a package stayed "active" unseen
+
+- Every runtime activates by walking the packages on disk. An entry of the
+  installed registry whose package is gone was therefore visited by nobody: it
+  was never activated, never failed, kept the status it had (usually
+  `active`), and appeared nowhere in the web-ui, because the store lists what
+  the catalogue has packages for.
+- **One warning per boot** names every such entry:
+  `[plugins] N installed entries have no package and are not running, …`.
+- **`GET /api/v1/admin/runtime/installed`** (and `/installed/:id`) reports them with
+  `status: "package_missing"` and `package_missing: true`; the status the
+  registry holds is next to it as `registry_status`. Both fields are new on
+  every row.
+- **The store's "Installed" tab** lists them in a notice with the badge
+  "Package missing" and an "Uninstall entry" button per entry (confirmed, one
+  at a time).
+- The state is derived on every read. The registry is not rewritten and
+  nothing is removed automatically; an entry whose package comes back is
+  ordinary again. Uninstalling such an entry works as for any other.
 
 ### Removed — `kind`, the predecessor of an agent's archetype (#2088, epic #2042): K6.1, the contract step
 

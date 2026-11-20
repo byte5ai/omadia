@@ -4413,6 +4413,18 @@
     "errorGeneric": "Etwas ist schiefgelaufen. Bitte erneut versuchen."
   },
   "store": {
+    "packageless": {
+      "title": "{count, plural, one {Ein installierter Eintrag hat kein Paket.} other {# installierte Einträge haben kein Paket.}}",
+      "body": "Sie sind als installiert vermerkt, ihr Paket liegt aber nicht mehr auf dieser Instanz. Sie laufen nicht, gleich welcher Status zuletzt für sie vermerkt wurde.",
+      "version": "Version {version}",
+      "badge": "Paket fehlt",
+      "hint": "Installiere das Paket erneut, um einen Eintrag zurückzuholen, oder deinstalliere den Eintrag hier. Nichts wird automatisch entfernt.",
+      "remove": "Eintrag deinstallieren",
+      "removeConfirmTitle": "Den Eintrag {id} deinstallieren?",
+      "removeConfirmBody": "Der Eintrag, seine Konfiguration, seine gespeicherten Secrets und seine Freigaben werden entfernt. Es gibt kein Paket, das laufen könnte, also fällt nichts aus. Um das Plugin wieder zu nutzen, installiere sein Paket neu.",
+      "removeFailed": "Der Eintrag konnte nicht deinstalliert werden. Möglicherweise benötigt ihn ein anderes installiertes Plugin noch.",
+      "cancel": "Abbrechen"
+    },
     "hero": {
       "eyebrow": "Hub",
       "headline": "Plugins für die omadia-Plattform.",
