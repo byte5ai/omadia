@@ -50,13 +50,28 @@ export function CulturePresetDropdown({
   const handleConfirm = useCallback(() => {
     if (!selectedId || !getCulturePreset(selectedId)) return;
     setError(null);
+    let result: void | Promise<void>;
+    try {
+      result = onApply({
+        ...(persona ?? {}),
+        axes: applyCulturePreset(persona?.axes, selectedId),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    // Same as the template gallery: a synchronous apply and the closed
+    // confirmation commit together; an async one is awaited in a transition
+    // and the follow-up update stays in a transition too.
+    if (!(result instanceof Promise)) {
+      setSelectedId('');
+      return;
+    }
+    const pendingApply = result;
     startTransition(async () => {
       try {
-        await onApply({
-          ...(persona ?? {}),
-          axes: applyCulturePreset(persona?.axes, selectedId),
-        });
-        setSelectedId('');
+        await pendingApply;
+        startTransition(() => setSelectedId(''));
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }

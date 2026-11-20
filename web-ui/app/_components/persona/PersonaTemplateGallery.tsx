@@ -52,14 +52,30 @@ export function PersonaTemplateGallery({
   const handleApply = useCallback(() => {
     if (!selected) return;
     setError(null);
+    let result: void | Promise<void>;
+    try {
+      result = onApply({
+        ...(persona ?? {}),
+        template: selected.id,
+        axes: axesForTemplate(persona, selected),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    // A synchronous apply (the agent's persona editor sets local state)
+    // closes in the same event, so the new persona and the closed gallery
+    // commit together. Closing after an `await` inside the transition used
+    // to run outside it: the gallery could close before the persona showed.
+    if (!(result instanceof Promise)) {
+      onClose();
+      return;
+    }
+    const pendingApply = result;
     startTransition(async () => {
       try {
-        await onApply({
-          ...(persona ?? {}),
-          template: selected.id,
-          axes: axesForTemplate(persona, selected),
-        });
-        onClose();
+        await pendingApply;
+        startTransition(() => onClose());
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
