@@ -457,7 +457,7 @@ import { publishSendServices } from './channels/sendServicesWiring.js';
 import { publishAgentTurnService } from './agents/agentTurnWiring.js';
 import { ChannelProviderRegistry } from './channels/sessionCapabilities/providerRegistry.js';
 import { wireSessionCapabilities } from './channels/sessionCapabilities/wiring.js';
-import { attachEngineToFacilitators } from './platform/facilitatorEngineAttach.js';
+import { attachEngineToFacilitators, syncArchetypesAndAttachEngine } from './platform/facilitatorEngineAttach.js';
 import { createArchetypeRegistrySync } from './platform/archetypeRegistrySync.js';
 import { wireExecutionAuthorization, type ExecutionWiring } from './execution/wiring.js';
 import { AddressedMessageRouter } from './channels/addressedMessageRouter.js';
@@ -2117,24 +2117,16 @@ async function main(): Promise<void> {
   // facilitation engine goes to the facilitators (`attachFacilitationEngine`).
 
   /** #2043 — see `platform/facilitatorEngineAttach.ts`. Never throws. */
-  const attachFacilitationEngine = async (): Promise<void> => {
-    const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
-    if (!store) return;
-    try {
-      // Which archetypes are delivered, and by whom, before anything is
-      // attached or rebuilt on that basis.
-      await archetypeRegistry.sync();
-      await attachEngineToFacilitators(store, facilitationEngineSources(), (m) => console.log(m));
-      // Always: the registry rebuilds the facilitators whose effective engine
-      // grant changed, with or without a new row (boot, grant, revoke).
-      await serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')?.reload();
-    } catch (err) {
-      console.error(
-        '[middleware] facilitation engine attach FAILED:',
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-  };
+  const attachFacilitationEngine = (): Promise<void> =>
+    syncArchetypesAndAttachEngine({
+      // Which archetypes are delivered, and by whom: always, also without a
+      // config store (no LLM access yet), before anything is attached.
+      sync: () => archetypeRegistry.sync(),
+      getStore: () => serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+      attach: (store) => attachEngineToFacilitators(store, facilitationEngineSources(), (m) => console.log(m)),
+      reload: () => serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')?.reload(),
+      log: (m) => console.error(m),
+    });
 
   const propagatePluginInstall = async (pluginId: string): Promise<void> => {
     if (pluginId === ORCHESTRATOR_PLUGIN_ID) return;
