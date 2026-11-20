@@ -56,6 +56,10 @@ describe('model gateway — execution contexts', () => {
   it('enforce: a call outside any context is refused, inside one it is admitted', async () => {
     setModelGatewayMode('enforce');
     assert.equal(refusalCode(() => admitModelCall('complete')), 'no_context');
+    // The refused site is recorded too: the admin list finds what is left.
+    const recorded = [...uncoveredModelCalls()];
+    assert.equal(recorded.length, 1);
+    assert.match(recorded[0]![0], /^complete /);
     await runInExecutionContext(turn, async () => {
       admitModelCall('complete');
       admitModelCall('run_loop');

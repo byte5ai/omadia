@@ -19,6 +19,7 @@ import {
 } from '@omadia/usage-telemetry';
 
 import { InMemoryTaskStore } from '../packages/harness-orchestrator/src/tasks/inMemoryTaskStore.js';
+import { carryTaskContext } from '../packages/harness-orchestrator/src/tasks/taskTypes.js';
 import {
   defineLongRunningTool,
   splitTaskContext,
@@ -104,6 +105,51 @@ describe('long-running task execution context', () => {
     for (let i = 0; i < 50 && seen.length === 0; i += 1) await new Promise((r) => setTimeout(r, 5));
     assert.deepEqual(seen[0]?.input, { month: '2026-08' });
     assert.equal(seen[0]?.context, undefined);
+  });
+
+  it('the runner is detached from the turn: the turn’s deadline does not end the task', async () => {
+    setModelGatewayMode('enforce');
+    const store = new InMemoryTaskStore();
+    let admitted = false;
+    const handle = defineLongRunningTool({
+      toolName: 'hr_slow',
+      longRunning: true,
+      kind: 'hr_slow',
+      startDescription: 'Start a slow report.',
+      inputProperties: {},
+      cardLabel: 'Slow report',
+      store,
+      execute: async () => {
+        await new Promise((r) => setTimeout(r, 40));
+        admitModelCall('complete');
+        admitted = true;
+        return 'done';
+      },
+    });
+    const start = handle.registrations.find((r) => r.name === 'hr_slow_start');
+    assert.ok(start);
+    await runInExecutionContext({ ...AGENT_TURN, deadlineAt: Date.now() + 10 }, () => start.handler({}));
+    for (let i = 0; i < 60 && !admitted; i += 1) await new Promise((r) => setTimeout(r, 5));
+    assert.equal(admitted, true);
+  });
+
+  it('only an agent turn is carried; what it may do is kept', () => {
+    assert.equal(
+      splitTaskContext({ a: 1, __omadia_execution_context: { kind: 'operator_job', ownerId: 'job-1' } }).context,
+      undefined,
+    );
+    assert.deepEqual(
+      splitTaskContext({ __omadia_execution_context: { ...AGENT_TURN, operations: ['complete'] } }).context,
+      { kind: 'agent_turn', ownerId: 'hr-agent', agentSlug: 'hr-agent', operations: ['complete'] },
+    );
+  });
+
+  it('a resumed task keeps its context; the answer cannot bring one', () => {
+    const stored = { month: '2026-07', __omadia_execution_context: AGENT_TURN };
+    const forged = { answer: 'yes', __omadia_execution_context: { kind: 'agent_turn', ownerId: 'other' } };
+    assert.deepEqual(carryTaskContext(stored, forged), { answer: 'yes', __omadia_execution_context: AGENT_TURN });
+    assert.deepEqual(carryTaskContext({ month: '2026-07' }, forged), { answer: 'yes' });
+    assert.equal(carryTaskContext(stored, 'plain'), 'plain');
   });
 
   it('splitTaskContext ignores a malformed stored context', () => {

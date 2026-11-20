@@ -984,7 +984,9 @@ export { toSemanticAnswer } from '@omadia/channel-sdk';
 export {
   TASK_LIFECYCLE_STATUSES,
   TERMINAL_TASK_STATUSES,
+  TASK_CONTEXT_KEY,
   TASK_LEASE_UUID_RE,
+  carryTaskContext,
   TaskLeaseLostError,
   isTaskLifecycleStatus,
   isTerminalTaskStatus,

@@ -37,6 +37,7 @@
 import type { Pool } from 'pg';
 
 import {
+  TASK_CONTEXT_KEY,
   TASK_LEASE_UUID_RE,
   TaskLeaseLostError,
   type NewTaskInput,
@@ -309,7 +310,13 @@ export class DurableTaskStore implements TaskStore {
     // resumed row is as live as a freshly claimed one — full window from NOW.
     const r = await this.pool.query<Row>(
       `UPDATE tasks
-          SET status = 'working', input = $2::jsonb,
+          SET status = 'working',
+              -- spec 2042 §5.10: the answer brings no execution context of
+              -- its own; the task keeps the one it was started in.
+              input = CASE WHEN jsonb_typeof($2::jsonb) = 'object'
+                        THEN ($2::jsonb - '${TASK_CONTEXT_KEY}')
+                             || jsonb_strip_nulls(jsonb_build_object('${TASK_CONTEXT_KEY}', input -> '${TASK_CONTEXT_KEY}'))
+                        ELSE $2::jsonb END,
               last_heartbeat_at = now(), updated_at = now()
         WHERE id = $1 AND status = 'input_required'
         RETURNING ${TASK_COLS}`,

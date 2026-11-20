@@ -181,14 +181,16 @@ function check(operation: ModelOperation = 'complete'): void {
   }
 
   if (!context) {
-    if (gateway.mode === 'enforce') {
-      refuse(innermost, new ModelCallRefusedError('no_context', `a '${operation}' call outside any execution context`));
-    }
+    // Recorded in both modes, before an enforced refusal: the list at
+    // GET /api/v1/admin/model-gateway is how remaining call sites are found.
     const site = callSite();
     const key = `${operation} ${site}`;
     const seen = gateway.uncovered.get(key) ?? 0;
     gateway.uncovered.set(key, seen + 1);
     if (seen === 0) gateway.onUncovered?.({ operation, site });
+    if (gateway.mode === 'enforce') {
+      refuse(innermost, new ModelCallRefusedError('no_context', `a '${operation}' call outside any execution context`));
+    }
   } else {
     const chain: ModelExecutionContext[] = [];
     for (let m: Meter | undefined = innermost; m; m = m.parent) if (m.context) chain.push(m.context);
@@ -271,6 +273,21 @@ export async function runInExecutionContext<T>(
   work: () => Promise<T>,
 ): Promise<T> {
   return (await meterModelCalls(() => work(), { context })).value;
+}
+
+/**
+ * Run `work` in `context` from a fresh root: no enclosing meter is its
+ * parent, so the budget, deadline and abort signal of whatever started it do
+ * not apply and its calls are not counted there. For work that outlives the
+ * code that started it (a long-running task's detached runner).
+ */
+export async function runDetachedInExecutionContext<T>(
+  context: ModelExecutionContext,
+  work: () => Promise<T>,
+): Promise<T> {
+  installModelCallGate();
+  const meter: Meter = { admitted: 0, refused: 0, limit: undefined, context, parent: undefined };
+  return store().run(meter, work);
 }
 
 /**

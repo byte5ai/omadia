@@ -77,6 +77,7 @@ export {
   modelGatewayMode,
   onUncoveredModelCall,
   resetModelGatewayForTests,
+  runDetachedInExecutionContext,
   runInExecutionContext,
   runGeneratorInExecutionContext,
   runInExecutionContextSync,

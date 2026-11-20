@@ -44,6 +44,7 @@ import type { NativeToolHandler, NativeToolSpec } from '@omadia/plugin-api';
 import { toolErrorFromException } from '@omadia/plugin-api';
 
 import {
+  TASK_CONTEXT_KEY,
   TaskLeaseLostError,
   isTerminalTaskStatus,
   type TaskCardPayload,
@@ -58,7 +59,7 @@ import { runDetachedFromRequestLedger } from '../toolReplayLedger.js';
 import { turnContext } from '../turnContext.js';
 import {
   currentExecutionContext,
-  runInExecutionContext,
+  runDetachedInExecutionContext,
   type ModelExecutionContext,
 } from '@omadia/usage-telemetry';
 
@@ -75,36 +76,29 @@ import {
 const UNIDENTIFIED_OWNER = 'unidentified';
 
 /**
- * Who is asking, for `createdBy`.
- *
- * `currentDispatchCaller()` is set on the public MCP path (the API-key id);
- * `turnContext` carries the per-user MCP key on chat and channel turns. Both are
- * server-attested — neither is derived from anything a client sends — so neither
- * can be spoofed into reading someone else's task.
- */
-/**
  * Spec 2042 §5.10 — the execution context a task carries. A task outlives the
  * turn that started it (its runner is detached; a restart re-drives it from
- * the store), so the context of that turn is stored with its input and the
- * runner executes inside it: the task's model calls stay the starting agent's.
- * Without it a re-driven task would run in no context, and the gateway refuses
- * every model call there. Only who it belongs to is kept: the turn's deadline
- * and abort signal end with the turn.
+ * the store), so the agent turn that started it is stored with its input and
+ * the runner executes inside it, from a fresh root: the task's model calls
+ * stay the starting agent's, but the turn's deadline, abort signal and budget
+ * end with the turn. Only an agent turn is carried (what it may do, too); a
+ * task started in any other context runs in none, and the gateway refuses
+ * its model calls.
  */
-const TASK_CONTEXT_KEY = '__omadia_execution_context';
 
-type StoredTaskContext = Pick<ModelExecutionContext, 'kind' | 'ownerId' | 'agentSlug'>;
+type StoredTaskContext = Pick<ModelExecutionContext, 'kind' | 'ownerId' | 'agentSlug' | 'operations'>;
 
 function withTaskContext(raw: object): object {
   // The input comes from the model: a context key in it is never trusted,
   // only the one this turn really runs in is stored.
   const { [TASK_CONTEXT_KEY]: _forged, ...input } = raw as Record<string, unknown>;
   const context = currentExecutionContext();
-  if (context === undefined) return input;
+  if (context?.kind !== 'agent_turn') return input;
   const stored: StoredTaskContext = {
     kind: context.kind,
     ownerId: context.ownerId,
     ...(context.agentSlug !== undefined ? { agentSlug: context.agentSlug } : {}),
+    ...(context.operations !== undefined ? { operations: [...context.operations] } : {}),
   };
   return { ...input, [TASK_CONTEXT_KEY]: stored };
 }
@@ -119,19 +113,31 @@ export function splitTaskContext(stored: unknown): {
   }
   const { [TASK_CONTEXT_KEY]: raw, ...input } = stored as Record<string, unknown>;
   const ctx = raw as Partial<StoredTaskContext> | undefined;
-  const valid = typeof ctx?.kind === 'string' && typeof ctx.ownerId === 'string';
+  const valid = ctx?.kind === 'agent_turn' && typeof ctx.ownerId === 'string';
+  const operations = Array.isArray(ctx?.operations)
+    ? ctx.operations.filter((o): o is NonNullable<StoredTaskContext['operations']>[number] => typeof o === 'string')
+    : undefined;
   return {
     input,
     context: valid
       ? {
-          kind: ctx.kind as StoredTaskContext['kind'],
+          kind: 'agent_turn',
           ownerId: ctx.ownerId as string,
           ...(typeof ctx.agentSlug === 'string' ? { agentSlug: ctx.agentSlug } : {}),
+          ...(operations !== undefined ? { operations } : {}),
         }
       : undefined,
   };
 }
 
+/**
+ * Who is asking, for `createdBy`.
+ *
+ * `currentDispatchCaller()` is set on the public MCP path (the API-key id);
+ * `turnContext` carries the per-user MCP key on chat and channel turns. Both are
+ * server-attested — neither is derived from anything a client sends — so neither
+ * can be spoofed into reading someone else's task.
+ */
 function currentTaskOwner(): string {
   return (
     currentDispatchCaller()?.principal ??
@@ -569,7 +575,7 @@ export function defineLongRunningTool(
     try {
       const { input, context } = splitTaskContext(claimed.input);
       const run = (): Promise<string> => def.execute(input, handle);
-      result = context !== undefined ? await runInExecutionContext(context, run) : await run();
+      result = context !== undefined ? await runDetachedInExecutionContext(context, run) : await run();
     } catch (err: unknown) {
       if (parked) return true; // parked-then-threw: the park stands, do not finalize
       const message = err instanceof Error ? err.message : String(err);
