@@ -374,7 +374,7 @@ describe('W5 memoryAxesForOrigin — §2 row 1: fail-closed', () => {
   });
 
   it('refuses a channel type nobody has written a §2 row for', () => {
-    for (const channelType of ['discord', 'canvas', 'cli', '', '   ']) {
+    for (const channelType of ['signal', 'canvas', 'cli', '', '   ']) {
       assertContextFree(
         memoryAxesForOrigin({
           channelType,
@@ -469,9 +469,13 @@ describe('W5 memoryAxesForOrigin — grammar and purity', () => {
   it('documents its allowlist as data the §4 recipes can be checked against', () => {
     assert.deepEqual([...CONTEXT_MEMORY_CHANNEL_TYPES].sort(), [
       'api',
+      'discord',
       'http',
+      'imessage',
+      'slack',
       'teams',
       'telegram',
+      'whatsapp',
     ]);
   });
 });
