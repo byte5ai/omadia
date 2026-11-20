@@ -93,7 +93,9 @@ export function createScheduleTriggerScheduler(deps: ScheduleTriggerDeps): Sched
     const now = clock();
     const gap = cronMinGapSeconds(row.cron, row.timezone, now);
     if (gap === undefined || gap < limits.minIntervalSeconds) {
-      deps.log(`[schedules/triggers] schedule ${row.id}: cron '${row.cron}' runs more often than every ${String(limits.minIntervalSeconds / 60)} minutes; not armed`);
+      const why = `cron '${row.cron}' runs more often than every ${String(limits.minIntervalSeconds / 60)} minutes`;
+      deps.log(`[schedules/triggers] schedule ${row.id}: ${why}; not armed`);
+      deps.notice(row.id, `schedule ${row.id} could not be armed: ${why}`);
       return false;
     }
     const until = row.until ?? new Date(now.getTime() + limits.recurringMaxDays * DAY_MS);
@@ -135,6 +137,7 @@ export function createScheduleTriggerScheduler(deps: ScheduleTriggerDeps): Sched
       });
     if (res && !res.ok) {
       deps.log(`[schedules/triggers] schedule ${row.id} not armed: ${res.code}: ${res.message}`);
+      deps.notice(row.id, `schedule ${row.id} could not be armed: ${res.message}`);
       return false;
     }
     return res !== undefined;

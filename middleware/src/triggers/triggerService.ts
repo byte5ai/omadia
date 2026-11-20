@@ -9,7 +9,7 @@ import { evaluatePredicate } from '@omadia/conductor-core';
 import type { JsonObject, Predicate } from '@omadia/conductor-core';
 
 import { validateTriggerRequest, type TriggerEnvelope, type TriggerLimits } from './triggerPolicy.js';
-import { eventOccurrenceKey, firstDue, nextDue } from './triggerSchedule.js';
+import { eventOccurrenceKey, firstDue, nextDue, runsUntil } from './triggerSchedule.js';
 import type { CreateResult, TriggerStore } from './triggerStore.js';
 import type {
   DataActionSpec,
@@ -185,7 +185,14 @@ export class TriggerService {
     if (until.getTime() - now.getTime() > capDays * 86_400_000) {
       return { ok: false, code: 'deadline_too_far', message: `until may lie at most ${String(capDays)} days ahead` };
     }
-    const renewed = await this.deps.store.renew(id, until, by);
+    // A recurring timer's run cap covers the new period: runs so far plus
+    // the occurrences until the new deadline (a renewed daily routine would
+    // otherwise hit its old cap mid-period and stop).
+    const maxRuns =
+      t.kind === 'wake_every'
+        ? Math.min(this.deps.limits.maxRunsCap, t.runs + runsUntil(t, now, until, this.deps.limits.maxRunsCap))
+        : undefined;
+    const renewed = await this.deps.store.renew(id, until, by, maxRuns);
     return renewed ? { ok: true, trigger: renewed } : { ok: false, code: 'invalid', message: 'the trigger could not be renewed' };
   }
 

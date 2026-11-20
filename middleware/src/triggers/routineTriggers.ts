@@ -151,7 +151,11 @@ export function createRoutineTriggerScheduler(deps: RoutineTriggerDeps): Routine
       if ((err as { code?: string }).code === '23505') return undefined;
       throw err;
     });
-    if (res && !res.ok) deps.log(`[routines/triggers] routine ${routine.id} not scheduled: ${res.code}: ${res.message}`);
+    if (res && !res.ok) {
+      deps.log(`[routines/triggers] routine ${routine.id} not scheduled: ${res.code}: ${res.message}`);
+      // The owner sees why it does not run instead of an "active" row that never fires.
+      await routines.markExpired(routine.id, `Die Routine konnte nicht eingeplant werden: ${res.message}`);
+    }
   }
 
   async function expire(routine: Routine): Promise<void> {
@@ -191,7 +195,15 @@ export function createRoutineTriggerScheduler(deps: RoutineTriggerDeps): Routine
       const gap = cronMinGapSeconds(cron, undefined, clock());
       const min = deps.limits().minIntervalSeconds;
       if (gap === undefined) throw new Error(`invalid cron pattern '${cron}'`);
-      if (gap < min) throw new Error(`a routine runs at most every ${String(min / 60)} minutes`);
+      if (gap < min) {
+        // An existing routine that ran more often stops here on upgrade: its
+        // owner sees why on the row instead of a silent "active".
+        void deps
+          .routines()
+          ?.markExpired(routineId, `Die Routine läuft öfter als alle ${String(min / 60)} Minuten; wähle einen langsameren Takt.`)
+          .catch(report(`marking ${routineId}`));
+        throw new Error(`a routine runs at most every ${String(min / 60)} minutes`);
+      }
       armed.set(routineId, { handler, timeoutMs: spec.timeoutMs ?? 600_000 });
       void ensure(routineId).catch(report(`scheduling ${routineId}`));
       return () => {
@@ -242,6 +254,11 @@ export function createRoutineTriggerScheduler(deps: RoutineTriggerDeps): Routine
     async sweep(): Promise<void> {
       const routines = deps.routines();
       if (!routines) return;
+      // An armed routine whose trigger ended (max runs, a cancellation) gets
+      // it back: the row is the truth while it is active.
+      for (const routineId of [...armed.keys()]) {
+        await ensure(routineId).catch(report(`re-arming ${routineId}`));
+      }
       const now = clock();
       for (const r of await routines.listActiveEndingBefore(new Date(now.getTime() + RENEWAL_LEAD_MS))) {
         const until = r.until as Date;

@@ -251,10 +251,16 @@ export class TriggerStore {
   async create(input: NewTrigger, firstDueAt: Date | undefined, maxActivePerAgent: number): Promise<CreateResult> {
     return this.inTransaction(async (client) => {
       await client.query('SELECT pg_advisory_xact_lock($1::int, hashtext($2)::int)', [LOCK_NAMESPACE, input.agentId]);
-      const { rows: countRows } = await client.query<{ n: string }>(
-        'SELECT count(*)::text AS n FROM agent_triggers WHERE agent_id = $1',
-        [input.agentId],
-      );
+      // The cap bounds what the agent sets itself. A person's routine, an
+      // Agent Builder schedule or a system batch job is bounded by its own
+      // owner (routine quota, Builder, kernel) and never crowds the agent out.
+      const { rows: countRows } =
+        input.origin === 'agent'
+          ? await client.query<{ n: string }>(
+              "SELECT count(*)::text AS n FROM agent_triggers WHERE agent_id = $1 AND origin = 'agent'",
+              [input.agentId],
+            )
+          : { rows: [{ n: '0' }] };
       if (Number(countRows[0]?.n ?? '0') >= maxActivePerAgent) {
         return {
           ok: false as const,
@@ -679,16 +685,17 @@ export class TriggerStore {
   }
 
   /** Move the deadline (a routine's renewal). */
-  async renew(id: string, until: Date, by: string): Promise<Trigger | undefined> {
+  /** Move the deadline; `maxRuns` (a timer's grown run cap) moves with it. */
+  async renew(id: string, until: Date, by: string, maxRuns?: number): Promise<Trigger | undefined> {
     return this.inTransaction(async (client) => {
       const { rows } = await client.query<TriggerRowDb>(
-        `UPDATE agent_triggers SET until = $2, updated_at = now()
+        `UPDATE agent_triggers SET until = $2, max_runs = GREATEST(COALESCE($3, max_runs), runs, 1), updated_at = now()
           WHERE id = $1 AND (fire_at IS NULL OR fire_at <= $2) RETURNING *`,
-        [id, until],
+        [id, until, maxRuns ?? null],
       );
       if (!rows[0]) return undefined;
       const t = toTrigger(rows[0]);
-      await this.auditIn(client, t, 'renewed', { until: until.toISOString(), by });
+      await this.auditIn(client, t, 'renewed', { until: until.toISOString(), maxRuns: t.maxRuns, by });
       return t;
     });
   }

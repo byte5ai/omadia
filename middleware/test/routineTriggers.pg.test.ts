@@ -219,6 +219,9 @@ describe('#2082 routines as triggers (pg)', { skip: !pgAvailable }, () => {
     }, 'the renewed deadline');
     assert.equal(renewed.until.getTime() - clock.getTime(), 30 * DAY);
     assert.equal((await store.get(routine.id))?.renewalAskedAt, null, 'asked again before the new deadline');
+    // The run cap grows with the period: a daily routine renewed two days
+    // before its deadline still fires every day of the new period.
+    assert.ok((renewed.maxRuns ?? 0) >= renewed.runs + 30, `max_runs ${String(renewed.maxRuns)} covers the new period`);
 
     clock = new Date(renewed.until.getTime() + 60_000);
     await scheduler.sweep();
@@ -226,6 +229,16 @@ describe('#2082 routines as triggers (pg)', { skip: !pgAvailable }, () => {
     assert.equal(expired?.status, 'paused');
     assert.match(expired?.lastRunError ?? '', /abgelaufen/);
     assert.equal(await triggerOf(routine.id), undefined, 'an expired trigger is deleted');
+  });
+
+  it('an armed routine whose trigger ended gets it back on the next sweep', async () => {
+    const routine = await create('Wochenplan');
+    const t = await waitFor(() => triggerOf(routine.id), 'the routine trigger');
+    await wiring.service.end(t.id, 'max_runs', {});
+    assert.equal(await triggerOf(routine.id), undefined);
+    await scheduler.sweep();
+    const again = await triggerOf(routine.id);
+    assert.ok(again && again.id !== t.id, 're-armed');
   });
 
   it('a restart arms routines again without a second trigger or a catch-up storm', async () => {

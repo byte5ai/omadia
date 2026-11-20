@@ -62,3 +62,19 @@ function nextAfter(t: TimerShape, from: Date): Date | undefined {
   }
   return due && due <= t.until ? due : undefined;
 }
+
+/**
+ * How many times a recurring timer fires after `from` up to `until` (at most
+ * `cap`). Used when a deadline moves: the run cap grows with the period.
+ */
+export function runsUntil(t: TimerShape, from: Date, until: Date, cap: number): number {
+  if (t.kind !== 'wake_every') return 0;
+  const shape: TimerShape = { ...t, until };
+  let count = 0;
+  let due = nextAfter(shape, from);
+  while (due && count < cap) {
+    count += 1;
+    due = nextAfter(shape, due);
+  }
+  return count;
+}

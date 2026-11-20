@@ -81,6 +81,7 @@ describe('#2082 agent triggers (pg, migration 0093)', { skip: !pgAvailable }, ()
         calls.turns += 1;
         return script.turn(t);
       },
+      batch: async () => ({ due: 0, processed: 0, costUsd: 0, modelCalls: 0 }),
     };
     const engine = new TriggerEngine({
       store,
@@ -470,6 +471,21 @@ describe('#2082 agent triggers (pg, migration 0093)', { skip: !pgAvailable }, ()
       clock = new Date(morning.getTime() + MIN);
       await r.worker.tick();
       assert.equal(calls.turns, 1);
+    });
+  });
+
+  describe('the per-agent cap', () => {
+    it('bounds what the agent sets itself; system and routine triggers do not count', async () => {
+      const { service } = rig(limits({ maxActivePerAgent: 2 }));
+      const env = envFor('max', { contextId: 'teams:19:cap' });
+      const raw = (purpose: string) => ({ purpose, time: at(HOUR), until: at(2 * HOUR), actions: [{ type: 'post', template: 'x' }] });
+      for (const purpose of ['s1', 's2', 's3']) {
+        await create(service, 'wake_at', raw(purpose), { ...env, origin: 'system', contextKind: 'schedule', contextId: `cap-${purpose}`, deliveryChannel: null });
+      }
+      await create(service, 'wake_at', raw('a1'), env);
+      await create(service, 'wake_at', raw('a2'), env);
+      const third = await service.create('wake_at', raw('a3'), env);
+      assert.equal(third.ok === false && third.code, 'too_many_active');
     });
   });
 });
