@@ -9792,7 +9792,7 @@ Plugin-Release-Train (§13).
   Plugins mit `archetype_available` und `suggested_capabilities`
   (`installed`, `grantable`).
 - `GET /api/v1/admin/agent-templates/prefill?plugin=<id>&template=<id>`:
-  `{ template, agent, identity }`; `agent` ist der Body von
+  `{ template, agent, identity }` (`identity` mit `verbosity`); `agent` ist der Body von
   `POST /api/v1/operator/agents` ohne `slug`/`status`, `identity` der von
   `PUT /api/v1/operator/agents/:slug/identity`. Die Route legt nichts an und
   gewährt nichts; den Entwurfs-Agenten legt der Agent Builder an.

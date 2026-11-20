@@ -30,6 +30,7 @@ const HANNA = {
   long_description: 'Answers questions about leave and payroll.',
   instructions: 'You are the HR colleague of the team.',
   language: 'de',
+  verbosity: 'brief',
   persona: { axes: { warmth: 80, formality: 40 } },
   capabilities: ['@omadia/integration-odoo', '@omadia/integration-odoo', '@omadia/unknown'],
 };
@@ -81,6 +82,7 @@ describe('agent_templates: manifest block', () => {
       [{ ...HANNA, name: '' }],
       [{ ...HANNA, persona: { axes: { warmth: 300 } } }],
       [{ ...HANNA, language: 'not a tag!' }],
+      [{ ...HANNA, verbosity: 'verbose-ish' }],
       [HANNA, HANNA],
     ];
     for (const templates of cases) {
@@ -160,6 +162,7 @@ describe('GET /api/v1/admin/agent-templates', () => {
       long_description: 'Answers questions about leave and payroll.',
       instructions: 'You are the HR colleague of the team.',
       language: 'de',
+      verbosity: 'brief',
       persona: { axes: { warmth: 80, formality: 40 } },
       quality: null,
     });

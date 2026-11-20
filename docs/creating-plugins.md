@@ -90,6 +90,7 @@ agent_templates:
     long_description: "Beantwortet Fragen zu Urlaub und Abrechnung."
     instructions: "Du bist die HR-Kollegin des Teams. …"
     language: "de"                # BCP 47, optional
+    verbosity: "brief"            # Antwortumfang: tldr | brief | standard | detailed | max
     persona: { axes: { warmth: 80, formality: 40 } }   # wie im Agent Builder
     quality: { sycophancy: "low" }
     capabilities: ["@omadia/integration-odoo"]         # nur Vorschläge

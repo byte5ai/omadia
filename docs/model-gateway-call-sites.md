@@ -110,14 +110,14 @@ removed) before the contract step switches to `enforce`.
 | 1 | Scratch-promotion reaper (interval) | S4: unattended work as a batch trigger with caps and circuit breaker; not a maintenance run (it calls `complete`) |
 | 2 | Field-classification recompute (boot, activation, 6 h, POST route) | S3b: operator job for the POST route; the scheduled runs as a bounded kernel job (S4 trigger caps) |
 | 3 | channel-teams `topicDetector.classify` before the turn | plugin train (channel-teams): move into the turn or an inbound-processing context |
-| 5 | Security screener on routine turns | S4 (routines become triggers of an agent turn) |
-| 6 | Boot graph backfill (`BACKFILL_AT_STARTUP=1`) | S3b: maintenance run like the embedding backfill |
-| 7 | Public MCP server tool dispatch | S3b: run each dispatch in the agent turn of the agent the API key is bound to |
-| 8 | Long-running sub-agent tasks re-driven at boot / interval | S3b: carry the originating agent turn's context on the task |
-| 9 | Plugin Builder auto-fix, smoke, preview refresh, rebuilds | S2 (Plugin Builder): wire `PLUGIN_BUILDER_AUTOFIX` and the preview kinds |
-| 10 | Plugin background code (`activate()`, `ctx.jobs`, timers) calling `ctx.llm` / `embeddingClient` | S3b: `ctx.jobs` handlers as maintenance runs or refused; plugin train moves the rest |
-| 11 | A channel's `transcribeStream` outside a turn | live sessions run in their execution scope; anything else is refused in `enforce` |
-| 12 | Embedding backfill when `maintenanceRun@1` is missing | S3b: refuse the sweep instead of running it without a context |
+| 4 | Security screener on routine turns | S4 (routines become triggers of an agent turn) |
+| 5 | Boot graph backfill (`BACKFILL_AT_STARTUP=1`) | S3b: maintenance run like the embedding backfill |
+| 6 | Public MCP server tool dispatch | S3b: run each dispatch in the agent turn of the agent the API key is bound to |
+| 7 | Long-running sub-agent tasks re-driven at boot / interval | S3b: carry the originating agent turn's context on the task |
+| 8 | Plugin Builder auto-fix, smoke, preview refresh, rebuilds | S2 (Plugin Builder): wire `PLUGIN_BUILDER_AUTOFIX` and the preview kinds |
+| 9 | Plugin background code (`activate()`, `ctx.jobs`, timers) calling `ctx.llm` / `embeddingClient` | S3b: `ctx.jobs` handlers as maintenance runs or refused; plugin train moves the rest |
+| 10 | A channel's `transcribeStream` outside a turn | live sessions run in their execution scope; anything else is refused in `enforce` |
+| 11 | Embedding backfill when `maintenanceRun@1` is missing | S3b: refuse the sweep instead of running it without a context |
 
 ## Not gated in any mode
 
