@@ -9904,6 +9904,17 @@ Leserkreis, Offenlegungsstufe).
   Capability-Grants hält. Neue Facilitators werden beim Anlegen auf `off` gesetzt
   (kein Memory, die Route erlaubt für sie nur `off`).
 
+### Kollegen im Prompt (`consultableColleagues`)
+
+Der Registry-Snapshot trägt die aktiven Rückfrage-Paare (`ConfigSnapshot.consultationPairs`,
+`ConfigStore.listConsultationPairs`: Grant zwischen zwei lebenden Agenten, beide Schalter
+an). `consultableColleaguesOf` (`registry/consultationColleagues.ts`) macht daraus die
+Anzeigenamen (ohne Facilitators und deaktivierte Agenten), die `buildForAgent` als
+`consultableColleagues` in die Identitätsregeln von S1 gibt. Ändert sich die Liste eines
+Agenten (Grant, Schalter, Name), baut der Diff ihn neu (Grund `consultation_colleagues`).
+Ein Trigger auf `agent_consultation_grants` (0097) meldet `agents_changed`, damit jede
+Replika neu lädt; die Schalter liegen auf `agents` und melden sich über deren Trigger.
+
 ### Rollen für die Verfügbarkeit (`hasRole`)
 
 `src/conductor/roleMembership.ts` (`RoleMembershipSnapshot`, Feld `roleMembership` von

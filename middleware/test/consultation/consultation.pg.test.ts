@@ -120,6 +120,10 @@ describe('consultation and discretion stores (pg, migrations 0097–0099)', { sk
     assert.deepEqual(await consultation.listActivePairs(), []);
     await consultation.setSwitches(ids['ben']!, { consultable: true });
     assert.deepEqual(await consultation.listActivePairs(), [{ fromSlug: 'anna', toSlug: 'ben' }]);
+    // The registry snapshot carries the same pair (the colleagues in the prompt).
+    assert.deepEqual((await config.loadSnapshot()).consultationPairs, [
+      { fromAgentId: ids['anna'], toAgentId: ids['ben'] },
+    ]);
     assert.equal(await consultation.hasMutualGrants(ids['anna']!, ids['ben']!, 'teams'), false);
     await consultation.upsertGrant(ids['ben']!, ids['anna']!, {}, 'op');
     assert.equal(await consultation.hasMutualGrants(ids['anna']!, ids['ben']!, 'teams'), false, 'ben may not consult yet');

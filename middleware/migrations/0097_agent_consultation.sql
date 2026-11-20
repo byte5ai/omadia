@@ -76,6 +76,25 @@ BEGIN
 END
 $$;
 
+-- A grant change rebuilds both agents' prompts (the colleagues an agent may
+-- consult are named there): the registry reloads on `agents_changed`. The
+-- payload is a hint only (the reload bus reads the tables, #2134).
+CREATE OR REPLACE FUNCTION notify_consultation_grants_changed() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    PERFORM pg_notify('agents_changed', OLD.from_agent_id::text);
+  ELSE
+    PERFORM pg_notify('agents_changed', NEW.from_agent_id::text);
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS agent_consultation_grants_notify ON agent_consultation_grants;
+CREATE TRIGGER agent_consultation_grants_notify
+  AFTER INSERT OR UPDATE OR DELETE ON agent_consultation_grants
+  FOR EACH ROW EXECUTE FUNCTION notify_consultation_grants_changed();
+
 CREATE TABLE IF NOT EXISTS agent_consultation_calls (
   id            UUID        PRIMARY KEY,
   from_agent_id UUID        NOT NULL REFERENCES agents(id) ON DELETE CASCADE,

@@ -89,6 +89,9 @@ changelog.
 - Migration 0100: agents enabled for agent-to-agent talk in the same chat (#1018) get
   consultation grants in both directions for that channel type and both consultation
   switches, so configured discussions keep working.
+- Each agent's prompt names the colleagues it may consult (active grants), and a
+  changed grant, switch or colleague name rebuilds the agent; grant writes notify
+  `agents_changed` (trigger in 0097).
 - Availability groups: `PUT /api/v1/operator/agents/:slug/availability` accepts
   `role:<key>` (Conductor roles); every router answers it synchronously from a
   snapshot of the Conductor's role holders (30 s and after every role write; a
