@@ -458,8 +458,10 @@ export const ConfigSchema = z.object({
   AGENT_TURN_MAX_PER_MINUTE: z.coerce.number().int().nonnegative().default(60),
   // #2082 — agent-owned triggers (spec 2042 §5.12). Instance caps the harness
   // enforces on every hook, wakeup and timer; no prompt or plugin can lift
-  // them. TRIGGERS_ENABLED=false is a config-level stop: nothing fires (the
-  // operator's live kill switch is /api/v1/operator/execution).
+  // them. TRIGGERS_ENABLED=false is a config-level stop: nothing fires —
+  // also no routine, Agent Builder schedule or memory consolidation, which
+  // fire through triggers (the operator's live kill switch is
+  // /api/v1/operator/execution).
   TRIGGERS_ENABLED: z
     .enum(['true', 'false'])
     .default('true')

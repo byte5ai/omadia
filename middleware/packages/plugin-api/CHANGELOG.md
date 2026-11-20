@@ -48,6 +48,10 @@ version when it lands.
 
 - `ExecutionEmissionType` is now `Exclude<EmissionType, 'system'>`: the same
   three members as before.
+- `JobHandler` runs (`ctx.jobs`) are refused every model call (#2082, spec
+  §5.12): a job is deterministic work. A failing job backs off to bounded
+  recovery probes (at most one hour apart) instead of running every tick.
+  Model-backed learning or consolidation registers a `BatchJob`.
 
 ## 1.73.0 — 2026-11-19
 
