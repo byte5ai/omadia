@@ -67,6 +67,19 @@ function isConversationIdHost(match: string): boolean {
   return CONVERSATION_ID_HOSTS.includes(host);
 }
 
+// The phone regex below only fixes the SHAPE of a number (prefix, then digit
+// groups); on its own it accepts a zero-led run of four digits. Customer
+// numbers ("K-0001"), postcodes with a leading zero ("01067") and short codes
+// ("0815") were masked as phone numbers, and a dataset import encrypted those
+// cells at rest, which took them out of every filter and grouping. Seven
+// digits, trunk zero or country code included, is the shortest number the
+// pattern is meant for.
+const PHONE_MIN_DIGITS = 7;
+
+function isTooShortForPhone(match: string): boolean {
+  return match.replace(/\D/g, '').length < PHONE_MIN_DIGITS;
+}
+
 // Written-out month names across the six shipped locales (de/en/es/fr/it/nl),
 // deduplicated. Feeds the written-date branch below; matched case-insensitively
 // so a sentence-initial capitalised month ("Le 17 Septembre 1984") is caught.
@@ -104,10 +117,12 @@ const C0_PATTERNS: readonly C0Pattern[] = [
     re: /\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?\b/g,
   },
   {
-    // Phone — international (+49 30 …) or local (030 / 0171 …) forms with
-    // ≥7 digits total, tolerant of space/dash/paren grouping.
+    // Phone — international (+49 30 …) or local (030 / 0171 …) forms,
+    // tolerant of space/dash/slash grouping. The ≥7-digit minimum is not in
+    // the regex; `isTooShortForPhone` enforces it on the match.
     type: 'phone',
     re: /(?:\+\d{1,3}[\s-]?|\b0)\d{1,4}(?:[\s\-/]?\d{2,6}){1,4}\b/g,
+    isFalsePositive: isTooShortForPhone,
   },
   {
     // Spanish local mobile/landline: nine digits grouped 3-3-3 with no
@@ -643,9 +658,17 @@ export interface ResolvedSpan {
 }
 
 const WORD_CHAR = /[\p{L}\p{N}_@.-]/u;
+/** Letters and digits: the part of a word that can identify anyone. */
+const IDENTIFYING_CHAR = /[\p{L}\p{N}]/u;
+/** Word characters that also close a sentence or a clause. */
+const TRAILING_SEPARATOR = /[.-]/;
 
 /** Extend a span outward while it splits a word-like run — a half-masked
- *  identifier is a leak (the RFC's word-boundary-extension trick). */
+ *  identifier is a leak (the RFC's word-boundary-extension trick). A `.` or
+ *  `-` at the very end is sentence punctuation, not part of the value
+ *  ("Mail anna@firma.de. Danke"): it stays outside the span, so the same
+ *  value gets one pseudonym with or without a full stop after it, and the
+ *  stop survives in the masked text (#1868). */
 function extendToWordBoundaries(
   text: string,
   start: number,
@@ -655,6 +678,7 @@ function extendToWordBoundaries(
   let e = end;
   while (s > 0 && WORD_CHAR.test(text[s - 1]!) && WORD_CHAR.test(text[s]!)) s--;
   while (e < text.length && WORD_CHAR.test(text[e]!) && WORD_CHAR.test(text[e - 1]!)) e++;
+  while (e - 1 > s && TRAILING_SEPARATOR.test(text[e - 1]!)) e--;
   return { start: s, end: e };
 }
 
@@ -688,12 +712,13 @@ function uncoveredParts(
   return parts;
 }
 
-/** True when the slice holds at least one word-like character — a remainder
- *  of pure whitespace/punctuation carries nothing identifying and masking it
- *  would substitute separators. */
-function hasWordChar(text: string, start: number, end: number): boolean {
+/** True when the slice holds at least one letter or digit — a remainder of
+ *  pure whitespace/punctuation (incl. a full stop a winning span left
+ *  outside itself) carries nothing identifying and masking it would
+ *  substitute separators. */
+function hasIdentifyingChar(text: string, start: number, end: number): boolean {
   for (let i = start; i < end; i++) {
-    if (WORD_CHAR.test(text[i]!)) return true;
+    if (IDENTIFYING_CHAR.test(text[i]!)) return true;
   }
   return false;
 }
@@ -767,7 +792,7 @@ export function dedupSpans(
     // re-enter a kept span; if it ever would, fall back to the exact
     // remainder, which is non-overlapping by construction).
     for (const part of uncoveredParts(candidate, overlapping)) {
-      if (!hasWordChar(text, part.start, part.end)) continue;
+      if (!hasIdentifyingChar(text, part.start, part.end)) continue;
       const grown = extendToWordBoundaries(text, part.start, part.end);
       const collides = kept.some((k) => grown.start < k.end && k.start < grown.end);
       const bounds = collides ? part : grown;
