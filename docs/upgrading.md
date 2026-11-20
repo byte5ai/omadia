@@ -356,6 +356,40 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.210.0 — plugin kinds, the model gateway and the plugin network sandbox
+
+Spec 2042 §5.10 (#2053), plugin-api 1.77.0, expand step: everything new is
+accepted, the old paths keep working and are observed.
+
+1. **Plugin authors:** the manifest `kind` says what a plugin delivers
+   (`integration`, `tool`, `skill`, `channel`, `model`, `archetype`,
+   `system-module`, `agent-template`). A new package of kind `agent`, or one
+   with a persona, speaker, `prompt_partial` skill or `AGENT.md`, is refused at
+   upload (`422 package.retired_kind`, `package.persona_declared`); a package
+   already installed keeps running until its migrated version replaces it.
+   Personas ship as `agent_templates:`. Declare every tool's
+   `capabilities[].side_effects`. Packages that use any of this declare
+   `compat.core: ">=1.77.0 <2.0"`. See `docs/creating-plugins.md`.
+2. **Operators, new settings (all optional):** `MODEL_GATEWAY_MODE` and
+   `PLUGIN_EGRESS_MODE` (`observe`, the default, logs model calls outside an
+   execution context and plugins' own network requests outside their
+   permission; `enforce` refuses them), `OPERATOR_TOOLS_DAILY_MODEL_CALLS`,
+   `MAINTENANCE_DAILY_MODEL_CALLS`, `OMADIA_CLI_PROFILE`. What observe saw:
+   `GET /api/v1/admin/model-gateway`. Migration `0089_model_work_runs` runs on
+   boot.
+3. **Check before you deploy:**
+   - an instance or agent kill switch that is still set now halts every model
+     call of the instance or agent (chat, verifier, embeddings), not only
+     execution scopes: clear stale ones (`execution_kill_switches`);
+   - every Claude CLI spawn runs in one profile directory (`CLAUDE_CONFIG_DIR`,
+     in the image `/data/claude-cli`); a `CLAUDE.md` or `.claude/CLAUDE.md`
+     there refuses every spawn. Locally, set `OMADIA_CLI_PROFILE=inherit` if
+     your shell's `CLAUDE_CONFIG_DIR` points at a personal configuration;
+   - the CLI's tool list must match the offered loopback tools exactly, or the
+     turn is refused.
+4. **Dev platform 0.4.0** holds no provider key any more: it needs the
+   instance's Anthropic model provider configured.
+
 ## Upgrading past v0.210.0 — Direct Line (`#agent` addressing) is gone
 
 Spec 2042 (§5.2, #2052) replaces Direct Line with direct addressing of an

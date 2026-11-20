@@ -8,6 +8,33 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.77.0 — 2026-11-20
+
+Additive (#2053, epic #2042, spec 2042 §5.10, ADR-0014/0017): the plugin
+boundary and the model gateway, step S3a (expand). This version marks a
+kernel that loads the plugin kinds `integration`, `tool`, `skill`, `model`,
+`system-module` and `agent-template` (beside `channel` and `archetype`),
+reads `agent_templates:` and `capabilities[].side_effects`, runs every model
+call in an execution context and sandboxes plugins' own network access.
+Plugins that use any of it declare `compat.core: ">=1.77.0 <2.0"`.
+
+### Added
+
+- **`MaintenanceRunService`**, `MAINTENANCE_RUN_SERVICE_NAME`
+  (`maintenanceRun@1`): index upkeep (e.g. an embedding backfill) runs as a
+  maintenance run, embed only, under the instance's maintenance budget.
+- **`OperatorJobsService`**, **`OperatorJob`**, **`ModelPassthroughService`**,
+  `OPERATOR_JOBS_SERVICE_NAME`, `MODEL_PASSTHROUGH_SERVICE_NAME`
+  (`operatorJobs@1`, `modelPassthrough@1`): a system module with a model
+  loop of its own opens an operator job and forwards Anthropic Messages
+  requests through the kernel, which holds the credentials. Given only to
+  plugins of kind `system-module`.
+- **`LlmScopeRequiredError`**: an archetype plugin's `ctx.llm` outside an
+  execution scope.
+- **`RawModelServiceRefusedError`**: a raw model client or provider pool
+  (`anthropicClient`, `llm`, `llmProviderPool`) asked for by a plugin that
+  may not hold one.
+
 ## 1.76.0 — 2026-11-20
 
 Additive (#2051, epic #2042, spec 2042 §5.2): persona skills became working

@@ -36,6 +36,15 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — plugin-api 1.77.0 (#2053, epic #2042): S3 expand step
+
+- `@omadia/plugin-api` 1.77.0 (additive): `MaintenanceRunService`,
+  `OperatorJobsService`, `OperatorJob`, `ModelPassthroughService`,
+  `LlmScopeRequiredError`, `RawModelServiceRefusedError`. It marks the kernel
+  that loads the new plugin kinds, `agent_templates:` and
+  `capabilities[].side_effects`; plugins using them declare
+  `compat.core: ">=1.77.0 <2.0"`. Upgrade notes: `docs/upgrading.md`.
+
 ### Changed — The system prompt speaks of domain tools of capabilities, not "Fach-Agenten" (#2053, epic #2042)
 
 - Spec 2042 §5.10: a plugin delivers capabilities and is never an agent.

@@ -24,6 +24,8 @@ weist der Kern beim Upload ab (`422 package.persona_declared`). Der frühere
 `kind: agent` ist **ausgemustert**: Neu-Uploads antworten `422
 package.retired_kind`; bereits installierte Pakete laufen weiter, bis ihre
 migrierte Version sie ersetzt. `extension` wird als `system-module` gelesen.
+Plugins mit den neuen Kinds, `agent_templates:` oder `side_effects` verlangen
+den Kern mit plugin-api 1.77.0: `compat.core: ">=1.77.0 <2.0"`.
 `agent` und `extension` sind ausgemustert: ein Plugin hat keine Persona und
 keinen System-Prompt; Persona-Vorlagen liefert es als `agent_templates:`.
 
