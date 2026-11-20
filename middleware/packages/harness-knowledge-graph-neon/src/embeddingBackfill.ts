@@ -395,8 +395,22 @@ export function startEmbeddingBackfill(
     }
   };
 
-  const runSweep = async (): Promise<EmbeddingBackfillStats> =>
-    opts.asMaintenanceRun ? opts.asMaintenanceRun(sweepOnce) : sweepOnce();
+  // A tick that will skip (a sweep still in flight) opens no maintenance run:
+  // each run is a recorded row holding its budget. A run that cannot start
+  // (the daily maintenance budget is used up, its store unreachable) is this
+  // tick's error, logged like a sweep error; the next tick tries again.
+  const runSweep = async (): Promise<EmbeddingBackfillStats> => {
+    if (running) return { tried: 0, succeeded: 0, failed: 0 };
+    if (!opts.asMaintenanceRun) return sweepOnce();
+    try {
+      return await opts.asMaintenanceRun(sweepOnce);
+    } catch (err) {
+      log(
+        `[graph-embedding-backfill] maintenance run not started: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { tried: 0, succeeded: 0, failed: 0 };
+    }
+  };
   const sweepOnce = async (): Promise<EmbeddingBackfillStats> => {
     if (running) {
       // A previous sweep is still in flight — skip this tick rather than

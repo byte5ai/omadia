@@ -103,6 +103,7 @@ export function decideEgress(
   if (!permission.isModelPlugin && modelHosts.has(h)) return 'model_provider';
   if (permission.hosts.some((pattern) => buildHostMatcher(pattern)(h))) return undefined;
   if (permission.publicWeb) {
+    if (h === 'localhost' || h.endsWith('.localhost')) return 'private_address';
     return isIP(h) !== 0 && !isPublicIp(h) ? 'private_address' : undefined;
   }
   return 'not_allowed';
@@ -128,6 +129,8 @@ function framePath(frame: string): string | undefined {
   return raw;
 }
 
+const KERNEL_PACKAGES = `${path.sep}node_modules${path.sep}@omadia${path.sep}`;
+
 /** This module's own frames say nothing about who called. */
 const OWN_FILE = /pluginEgressGuard\.[cm]?[jt]s$/;
 
@@ -145,12 +148,19 @@ export function attributeStack(
     if (!file || OWN_FILE.test(file)) continue;
     const owner = withSep.find((r) => file.startsWith(r.prefix));
     if (owner) return owner.pluginId;
+    // The kernel's own packages, wherever they are installed (the desktop
+    // runtime copies them into `node_modules`), are kernel code.
+    if (file.includes(KERNEL_PACKAGES)) return undefined;
     // A dependency of the kernel (undici, an SDK) carries on to its caller.
     if (file.includes(`${path.sep}node_modules${path.sep}`)) continue;
     return undefined;
   }
   return undefined;
 }
+
+/** Distinct plugin × host × reason entries kept; beyond, only the log and
+ *  `enforce` still see a request (a scanner in `public-web` meets many hosts). */
+const MAX_OBSERVATIONS = 1_000;
 
 /** Frames enough to reach past an SDK's own layers to the plugin's code. */
 const STACK_FRAMES = 64;
@@ -243,7 +253,7 @@ function check(host: string | undefined): void {
   const key = `${refusal.pluginId} ${refusal.host} ${refusal.reason}`;
   const seen = s.observed.get(key);
   if (seen) seen.count += 1;
-  else {
+  else if (s.observed.size < MAX_OBSERVATIONS) {
     s.observed.set(key, { observation: refusal, count: 1 });
     s.onObservation?.({ ...refusal, mode: s.mode });
   }

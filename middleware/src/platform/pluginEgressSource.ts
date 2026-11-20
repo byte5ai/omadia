@@ -9,6 +9,8 @@ import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import { extractAuditConfig, extractOutboundAllowlist } from './pluginContext.js';
 import type { PluginEgressPermission, PluginEgressSource } from './pluginEgressGuard.js';
 
+const ROOTS_TTL_MS = 5_000;
+
 /**
  * Spec 2042 §5.10 — what the plugin egress guard knows about the instance:
  * where installed packages live, each plugin's effective network permission
@@ -45,17 +47,27 @@ export function createPluginEgressSource(deps: {
     return manifest?.['llm_provider'] !== undefined && manifest['llm_provider'] !== null;
   };
 
+  // Asked on every outbound request of the process, the kernel's included:
+  // the roots are rebuilt at most once per interval, so an install shows up
+  // within it and a request costs no catalog walk.
+  let roots: { at: number; value: ReadonlyArray<{ root: string; pluginId: string }> } | undefined;
+  const buildRoots = (): ReadonlyArray<{ root: string; pluginId: string }> =>
+    deps.catalog
+      .list()
+      .filter((entry) => entry.origin === 'installed')
+      .flatMap((entry) => {
+        const dir = path.dirname(entry.source_path);
+        const resolved = real(dir);
+        const own = [{ root: dir, pluginId: entry.plugin.id }];
+        return resolved === dir ? own : [...own, { root: resolved, pluginId: entry.plugin.id }];
+      });
+
   return {
-    pluginRoots: () =>
-      deps.catalog
-        .list()
-        .filter((entry) => entry.origin === 'installed')
-        .flatMap((entry) => {
-          const dir = path.dirname(entry.source_path);
-          const resolved = real(dir);
-          const roots = [{ root: dir, pluginId: entry.plugin.id }];
-          return resolved === dir ? roots : [...roots, { root: resolved, pluginId: entry.plugin.id }];
-        }),
+    pluginRoots: () => {
+      const at = Date.now();
+      if (!roots || at - roots.at > ROOTS_TTL_MS) roots = { at, value: buildRoots() };
+      return roots.value;
+    },
 
     permissionOf: (pluginId): PluginEgressPermission | undefined => {
       const entry = deps.catalog.get(pluginId);

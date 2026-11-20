@@ -64,6 +64,8 @@ describe('effective network permission', () => {
     assert.equal(decideEgress(p, '93.184.216.34', MODEL_HOSTS), undefined);
     assert.equal(decideEgress(p, '10.0.0.5', MODEL_HOSTS), 'private_address');
     assert.equal(decideEgress(p, '[::1]', MODEL_HOSTS), 'private_address');
+    assert.equal(decideEgress(p, 'localhost', MODEL_HOSTS), 'private_address');
+    assert.equal(decideEgress(p, 'app.localhost', MODEL_HOSTS), 'private_address');
   });
 });
 
@@ -100,6 +102,16 @@ describe('who makes the request', () => {
     assert.equal(attributeStack(stack, roots), undefined);
   });
 
+  it('takes the kernel’s own packages for kernel code, wherever they are installed', () => {
+    const stack = [
+      'Error',
+      '    at Anthropic.post (/opt/omadia/node_modules/@anthropic-ai/sdk/client.js:1:1)',
+      '    at async chat (/opt/omadia/node_modules/@omadia/orchestrator/dist/orchestrator.js:9:1)',
+      '    at async onMessage (/data/plugins/@acme/notion/1.0.0/dist/plugin.js:3:1)',
+    ].join('\n');
+    assert.equal(attributeStack(stack, roots), undefined);
+  });
+
   it('does not take a sibling directory for the package', () => {
     const stack = ['Error', '    at x (/data/plugins/@acme/notion/1.0.0-evil/plugin.js:1:1)'].join('\n');
     assert.equal(attributeStack(stack, roots), undefined);
@@ -112,6 +124,7 @@ describe('the guard on fetch and node:http', () => {
   let dir = '';
   let plugin: {
     callFetch: (url: string) => Promise<Response>;
+    callFetchLater: (url: string) => Promise<Response>;
     callHttp: (url: string) => Promise<number>;
   };
 
@@ -126,6 +139,7 @@ describe('the guard on fetch and node:http', () => {
       [
         "import { get } from 'node:http';",
         'export async function callFetch(url) { return fetch(url); }',
+        'export async function callFetchLater(url) { await new Promise((r) => setTimeout(r, 5)); await null; return fetch(url); }',
         'export function callHttp(url) {',
         '  return new Promise((resolve, reject) => {',
         '    try { get(url, (res) => { res.resume(); resolve(res.statusCode); }).on("error", reject); }',
@@ -171,6 +185,25 @@ describe('the guard on fetch and node:http', () => {
   it('enforce: refuses node:http to a host outside the permission', async () => {
     install('enforce');
     await assert.rejects(plugin.callHttp(base), (err: unknown) => err instanceof PluginEgressRefusedError && err.reason === 'not_allowed');
+  });
+
+  it('enforce: attributes a request made after awaits inside the plugin', async () => {
+    install('enforce');
+    await assert.rejects(plugin.callFetchLater(base), (err: unknown) => err instanceof PluginEgressRefusedError);
+  });
+
+  it('a fault of the guard itself lets the request through', async () => {
+    installPluginEgressGuard({
+      mode: 'enforce',
+      source: {
+        pluginRoots: () => {
+          throw new Error('catalog unavailable');
+        },
+        permissionOf: () => undefined,
+        modelProviderHosts: () => MODEL_HOSTS,
+      },
+    });
+    assert.equal((await plugin.callFetch(base)).status, 200);
   });
 
   it('enforce: lets a covered host through', async () => {

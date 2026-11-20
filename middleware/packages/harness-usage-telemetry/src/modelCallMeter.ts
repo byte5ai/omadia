@@ -277,6 +277,19 @@ export function currentExecutionContext(): ModelExecutionContext | undefined {
   return ambientContext(state());
 }
 
+/** Every execution context around the caller, innermost first (the ambient
+ *  one last, when there is one). A scoped agent turn is an agent turn inside
+ *  an execution scope; a rule about the scope looks along this chain. */
+export function executionContextChain(): readonly ModelExecutionContext[] {
+  const chain: ModelExecutionContext[] = [];
+  for (let m: Meter | undefined = store().getStore(); m; m = m.parent) {
+    if (m.context) chain.push(m.context);
+  }
+  const ambient = ambientContext(state());
+  if (ambient) chain.push(ambient);
+  return chain;
+}
+
 /** Registered once by the agent runtime: the agent turn around the caller. */
 export function setAmbientExecutionContext(provider: (() => ModelExecutionContext | undefined) | undefined): void {
   installModelCallGate();

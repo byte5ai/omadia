@@ -207,6 +207,8 @@ export function storeCategoryOf(kind: PluginKind): StoreCategory {
     case 'agent-template':
       return 'templates';
   }
+  // A kind a newer Hub lists that this UI does not know yet.
+  return 'systemModules';
 }
 
 export type ChannelTransportKind = 'webhook' | 'websocket' | 'long-poll';

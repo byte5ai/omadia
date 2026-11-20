@@ -68,6 +68,7 @@ export const CLI_COMPLETION_USAGE_SOURCE: (typeof SUBSCRIPTION_SOURCES)[1] =
 // Spec 2042 §5.10 — the model gateway's execution contexts, mode and halts.
 export {
   currentExecutionContext,
+  executionContextChain,
   installModelCallGate,
   meterModelCalls,
   modelCallHaltFor,

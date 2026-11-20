@@ -4012,6 +4012,22 @@ Session-Cookie öffnet sie nicht. Dateien: `auth/teamsSsoVerifier.ts`,
 der `ui_routes` (`/p/<slug>/teams`, siehe `docs/security-architecture.md`
 §5b-1).
 
+### Plugin-Grenze, Modell-Gateway, Netz-Sandbox — Routen (Epic #2042 S3a)
+
+Details im gleichnamigen Abschnitt am Ende dieses Dokuments. Neue Routen
+(alle hinter der Admin-Session):
+
+- `GET /api/v1/admin/model-work`, `POST /api/v1/admin/model-work/:id/cancel`:
+  Operator-Jobs und Maintenance-Runs. Die Admin-Funktionen mit Modellaufrufen
+  laufen über die Middleware `modelWork.middleware(kind)` als Job; sie
+  antwortet `429 model_work.daily_budget_exhausted`, wenn das Tagesbudget
+  verbraucht ist, und `503 model_work.unavailable`, wenn der Job nicht
+  angelegt werden kann (die Route läuft dann nicht).
+- `GET /api/v1/admin/model-gateway`: Aufrufe ohne Ausführungskontext und
+  Beobachtungen der Netz-Sandbox seit Boot.
+- `GET /api/v1/admin/agent-templates`, `GET /api/v1/admin/agent-templates/prefill`.
+- Kernel-Service `maintenanceRun@1` (Embedding-Backfill als Maintenance-Run).
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -4605,7 +4621,7 @@ und `docs/security-architecture.md` §4.
 | `PLUGIN_EGRESS_MODE` | `observe` (Default) oder `enforce`. Netz-Sandbox installierter Plugins: eigene Anfragen über den globalen `fetch` und `node:http(s)` müssen von der Netzerlaubnis gedeckt sein, Modell-Provider-Endpunkte sind für Nicht-`model`-Plugins gesperrt. `observe` loggt einmal pro Plugin, Host und Grund (`[plugin-egress] observed …`), `enforce` verweigert (`PluginEgressRefusedError`). |
 | `OPERATOR_TOOLS_DAILY_MODEL_CALLS` | Tagesbudget (Modellaufrufe pro 24 h) aller Operator-Jobs zusammen. Default `20000`. |
 | `MAINTENANCE_DAILY_MODEL_CALLS` | Tagesbudget aller Maintenance-Runs zusammen (nur `embed`). Default `200000`. |
-| `OMADIA_CLI_PROFILE` | `auto` (Default), `isolated` oder `inherit`: Profil (`HOME` + `CLAUDE_CONFIG_DIR`) jedes Claude-CLI-Spawns. `auto` isoliert, wo der Login mitkommt (im Image ist `CLAUDE_CONFIG_DIR=/data/claude-cli` das Profil); bei einem macOS-Keychain-Login bleibt die Umgebung, der Boot sagt es (`[cli-profile] …`). |
+| `OMADIA_CLI_PROFILE` | `auto` (Default), `isolated` oder `inherit`: Profil (`HOME` + `CLAUDE_CONFIG_DIR`) jedes Claude-CLI-Spawns. `auto` isoliert, wo der Login mitkommt (im Image ist `CLAUDE_CONFIG_DIR=/data/claude-cli` das Profil); bei einem macOS-Keychain-Login bleibt die Umgebung, der Boot sagt es (`[cli-profile] …`). Eine Instruktionsdatei (`CLAUDE.md`, `.claude/CLAUDE.md`) im Profil verweigert jeden Spawn. **Lokale Entwicklung:** läuft die Middleware in einer Shell, deren `CLAUDE_CONFIG_DIR` auf ein persönliches Claude-Verzeichnis mit `CLAUDE.md` zeigt (etwa aus einer Agent-Sitzung), `OMADIA_CLI_PROFILE=inherit` setzen oder `CLAUDE_CONFIG_DIR` leeren. **Vor dem Deploy:** prüfen, dass `/data/claude-cli` keine `CLAUDE.md` enthält. |
 
 ### Answer-Verifier (`VERIFIER_*`)
 

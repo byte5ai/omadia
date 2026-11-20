@@ -115,6 +115,14 @@ describe('criterion 37 — a test archetype plugin', () => {
     assert.equal(provider.calls.length, 0);
   });
 
+  it('calls in its own scoped turn: an agent turn nested in the execution scope', async () => {
+    const { ctx, provider } = contextFor('@test/archetype-coach', 'archetype');
+    await runInExecutionContext(scope, () =>
+      runInExecutionContext({ kind: 'agent_turn', ownerId: 'coach-1', agentSlug: 'coach-1' }, () => ctx.llm!.complete(ask)),
+    );
+    assert.deepEqual(provider.calls.map((c) => c.kind), ['agent_turn']);
+  });
+
   it('never gets the raw model services, declared or not, in observe and enforce', () => {
     for (const mode of ['observe', 'enforce'] as const) {
       setModelGatewayMode(mode);

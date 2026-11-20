@@ -10,7 +10,12 @@
  */
 
 import { strict as assert } from 'node:assert';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { afterEach, describe, it } from 'node:test';
+
+import express from 'express';
+import type { Pool } from 'pg';
 
 import { admitModelCall, isModelCallNotCovered } from '@omadia/llm-provider';
 import { resetModelGatewayForTests, setModelGatewayMode } from '@omadia/usage-telemetry';
@@ -172,5 +177,81 @@ describe('raw model services', () => {
 
   it('leave every other service alone', () => {
     assert.equal(access('knowledgeGraph', 'archetype', false, 'enforce'), 'allow');
+  });
+});
+
+describe('operator jobs — the route middleware', () => {
+  async function serve(runs: ReturnType<typeof createModelWorkRuns>, handler: express.RequestHandler): Promise<{ url: string; close: () => Promise<void> }> {
+    const app = express();
+    app.post('/job', runs.middleware(job(5)), handler);
+    const server = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    return {
+      url: `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/job`,
+      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    };
+  }
+
+  it('runs the route as a job and names it in a header', async () => {
+    setModelGatewayMode('enforce');
+    const runs = createModelWorkRuns({ operatorDailyCalls: 100, maintenanceDailyCalls: 100 });
+    const h = await serve(runs, (_req, res) => {
+      admitModelCall();
+      res.json({ ok: true });
+    });
+    try {
+      const res = await fetch(h.url, { method: 'POST' });
+      assert.equal(res.status, 200);
+      assert.ok(res.headers.get('x-omadia-operator-job'));
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('answers 429 when the daily budget is used up, without running the route', async () => {
+    const runs = createModelWorkRuns({ operatorDailyCalls: 0, maintenanceDailyCalls: 100 });
+    let ran = false;
+    const h = await serve(runs, (_req, res) => {
+      ran = true;
+      res.json({ ok: true });
+    });
+    try {
+      const res = await fetch(h.url, { method: 'POST' });
+      assert.equal(res.status, 429);
+      assert.equal(ran, false);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('answers 503 when the run store is unreachable, instead of leaving the request open', async () => {
+    const pool = { query: async () => Promise.reject(new Error('pooler hiccup')) } as unknown as Pool;
+    const runs = createModelWorkRuns({ pool, operatorDailyCalls: 100, maintenanceDailyCalls: 100, log: () => undefined });
+    let ran = false;
+    const h = await serve(runs, (_req, res) => {
+      ran = true;
+      res.json({ ok: true });
+    });
+    try {
+      const res = await fetch(h.url, { method: 'POST', signal: AbortSignal.timeout(5_000) });
+      assert.equal(res.status, 503);
+      assert.equal(((await res.json()) as { code: string }).code, 'model_work.unavailable');
+      assert.equal(ran, false);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('a run that died while running stops holding its budget once past its deadline', async () => {
+    let t = Date.parse('2026-11-20T10:00:00Z');
+    const runs = createModelWorkRuns({ operatorDailyCalls: 10, maintenanceDailyCalls: 100, now: () => new Date(t) });
+    // A run that never finishes holds its whole budget …
+    void runs.run(job(10, 1_000), 'op', () => new Promise(() => undefined));
+    await new Promise((r) => setTimeout(r, 10));
+    await assert.rejects(runs.run(job(1), 'op', async () => 'x'), ModelWorkBudgetError);
+    // … until its deadline passed: then it counts what it recorded.
+    t += 2_000;
+    assert.equal(await runs.run(job(1), 'op', async () => 'x'), 'x');
   });
 });

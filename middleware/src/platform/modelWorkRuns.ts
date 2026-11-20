@@ -100,8 +100,8 @@ export interface ModelWorkRuns {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function createModelWorkRuns(options: ModelWorkRunsOptions): ModelWorkRuns {
-  const store = options.pool ? pgStore(options.pool) : memoryStore();
   const now = options.now ?? (() => new Date());
+  const store = options.pool ? pgStore(options.pool) : memoryStore(now);
   const log = options.log ?? (() => undefined);
   const running = new Map<string, { controller: AbortController; context: ModelWorkContextKind }>();
 
@@ -121,9 +121,6 @@ export function createModelWorkRuns(options: ModelWorkRunsOptions): ModelWorkRun
     const id = randomUUID();
     const deadlineAt = started.getTime() + kind.deadlineMs;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), kind.deadlineMs);
-    timer.unref();
-    running.set(id, { controller, context: kind.context });
     await store.insert({
       id,
       contextKind: kind.context,
@@ -139,6 +136,11 @@ export function createModelWorkRuns(options: ModelWorkRunsOptions): ModelWorkRun
       cancelledBy: undefined,
       message: undefined,
     });
+    // Only a run that is recorded is running: a failed insert leaves no timer
+    // and no cancel handle behind.
+    const timer = setTimeout(() => controller.abort(), kind.deadlineMs);
+    timer.unref();
+    running.set(id, { controller, context: kind.context });
     const context: ModelExecutionContext = {
       kind: kind.context,
       ownerId: id,
@@ -194,18 +196,29 @@ export function createModelWorkRuns(options: ModelWorkRunsOptions): ModelWorkRun
         }
         const actor = auditActorFromRequest(req);
         const startedBy = actor.email ?? actor.id;
+        let handedOn = false;
         run(kind, startedBy, ({ id }) => {
           res.setHeader('x-omadia-operator-job', id);
           return new Promise<void>((resolve) => {
             res.once('close', resolve);
+            handedOn = true;
             next();
           });
         }).catch((err: unknown) => {
-          if (err instanceof ModelWorkBudgetError && !res.headersSent) {
+          const reason = err instanceof Error ? err.message : String(err);
+          log(`[model-work] operator job ${kind.kind} failed: ${reason}`);
+          // After the hand-off the route owns the response; before it, the
+          // job could not start (daily budget, the run store unreachable) and
+          // the request must still get an answer.
+          if (handedOn || res.headersSent) return;
+          if (err instanceof ModelWorkBudgetError) {
             res.status(429).json({ code: err.code, message: err.message });
             return;
           }
-          log(`[model-work] operator job ${kind.kind} failed: ${err instanceof Error ? err.message : String(err)}`);
+          res.status(503).json({
+            code: 'model_work.unavailable',
+            message: 'the operator job could not be started; try again',
+          });
         });
       };
     },
@@ -221,7 +234,7 @@ export function createModelWorkRuns(options: ModelWorkRunsOptions): ModelWorkRun
 
 // --- stores ------------------------------------------------------------------
 
-function memoryStore(): ModelWorkStore {
+function memoryStore(now: () => Date): ModelWorkStore {
   const rows = new Map<string, ModelWorkRun>();
   return {
     insert: async (run) => {
@@ -234,7 +247,11 @@ function memoryStore(): ModelWorkStore {
     callsSince: async (context, since) =>
       [...rows.values()]
         .filter((r) => r.contextKind === context && Date.parse(r.startedAt) >= since.getTime())
-        .reduce((sum, r) => sum + (r.status === 'running' ? r.budgetCalls : r.modelCalls), 0),
+        .reduce(
+          (sum, r) =>
+            sum + (r.status === 'running' && Date.parse(r.deadlineAt) > now().getTime() ? r.budgetCalls : r.modelCalls),
+          0,
+        ),
     list: async (limit) => [...rows.values()].sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, limit),
   };
 }
@@ -279,10 +296,12 @@ function pgStore(pool: Pool): ModelWorkStore {
       );
     },
     // A running run counts with its whole budget: two jobs started at once
-    // cannot both spend what is left.
+    // cannot both spend what is left. Past its deadline it can make no call,
+    // so a run whose process died while running counts what it recorded,
+    // not its budget for the rest of the day.
     callsSince: async (context, since) => {
       const { rows } = await pool.query<{ used: string | null }>(
-        `SELECT COALESCE(SUM(CASE WHEN status = 'running' THEN budget_calls ELSE model_calls END), 0) AS used
+        `SELECT COALESCE(SUM(CASE WHEN status = 'running' AND deadline_at > now() THEN budget_calls ELSE model_calls END), 0) AS used
            FROM model_work_runs
           WHERE context_kind = $1 AND started_at >= $2`,
         [context, since],

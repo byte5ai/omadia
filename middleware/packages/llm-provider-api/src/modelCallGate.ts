@@ -70,7 +70,12 @@ export function admitModelCall(operation: ModelOperation = 'complete'): void {
 
 /** Names of every error the gate throws: none of them is retried, and none
  *  may become a helper's silent fallback. */
-const REFUSAL_NAMES: ReadonlySet<string> = new Set(['ModelCallNotCoveredError', 'ModelCallRefusedError']);
+const REFUSAL_NAMES: ReadonlySet<string> = new Set([
+  'ModelCallNotCoveredError',
+  'ModelCallRefusedError',
+  // plugin-api: an archetype plugin's `ctx.llm` outside an execution scope.
+  'LlmScopeRequiredError',
+]);
 
 /** Whether `err` is (or was caused by) a refused model call. */
 export function isModelCallNotCovered(err: unknown): boolean {

@@ -121,7 +121,7 @@ import {
   rawModelServiceAccess,
   versionedServiceRef,
 } from './pluginServiceGrants.js';
-import { currentExecutionContext, modelGatewayMode } from '@omadia/usage-telemetry';
+import { executionContextChain, modelGatewayMode } from '@omadia/usage-telemetry';
 import { inboundTranscription } from './modelGatewayServices.js';
 import {
   createSqlGate,
@@ -1895,7 +1895,9 @@ function createLlmAccessor(
       // the agent turn whose capability called it (charged to and limited by
       // that agent's envelope, recorded under its turn), or for an archetype
       // plugin only the execution scope of its process.
-      if (requiresScope && currentExecutionContext()?.kind !== 'execution_scope') {
+      // A scoped turn is an agent turn nested in the scope: the scope may sit
+      // anywhere along the chain.
+      if (requiresScope && !executionContextChain().some((c) => c.kind === 'execution_scope')) {
         throw new LlmScopeRequiredError(callerAgentId);
       }
       if (callsUsed >= permissions.callsPerInvocation) {

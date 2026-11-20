@@ -36,6 +36,25 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Operator jobs answer when they cannot start; scoped archetype turns reach ctx.llm (#2053, epic #2042): S3 expand step
+
+- An admin route wrapped as an operator job left the request open when the
+  run could not be recorded (database unreachable): it now answers
+  `503 model_work.unavailable` without running the route; the daily budget
+  still answers `429`. A run whose process died while `running` stops
+  holding its budget at its deadline instead of for 24 h.
+- An archetype plugin's `ctx.llm` accepts an execution scope anywhere along
+  the context chain (`executionContextChain`, `@omadia/usage-telemetry`):
+  its own scoped turn is an agent turn nested in the scope.
+- The embedding backfill opens no maintenance run for a tick that skips,
+  and logs a run that cannot start instead of an unhandled rejection.
+- Network sandbox: the kernel's own `@omadia/*` packages count as kernel
+  code wherever they are installed (desktop runtime), `localhost` is a
+  private address in `public-web`, the observation list is bounded (1000),
+  and the package roots are rebuilt at most every 5 s.
+- `LlmScopeRequiredError` counts as a gate refusal (`isModelCallNotCovered`),
+  so no helper turns it into a silent fallback.
+
 ### Added — Network sandbox of installed plugins; agent templates; inbound transcription context (#2053, epic #2042): S3 expand step
 
 - Spec 2042 §5.10. **Network sandbox** (`src/platform/pluginEgressGuard.ts`):
