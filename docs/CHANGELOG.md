@@ -92,6 +92,17 @@ changelog.
   stay. The plugin API's types are unchanged; the first-major types stay
   exported and deprecated.
 
+### Fixed — Interrupted Teams provisioning was not resumed at boot (D40, #2088)
+
+- Since tombstones for deleted agents (K2b, v0.210.0 line) every boot logged
+  `teams-identity provisioning resume scan failed: error: operator does not
+  exist: text = uuid`. The scan compared `agent_teams_identities.agent_id`
+  (text) with `agents.id` (uuid), Postgres refused the statement, and no
+  interrupted provisioning run was picked up again after a restart. Nothing
+  was lost: the rows kept their state, and the first boot with this fix
+  resumes them. A run an operator started again by hand in the meantime is
+  unaffected.
+
 ### Removed — The old way a plugin became the facilitation engine (#2088, epic #2042): K6.2, the contract step
 
 - **The engine is found by what it delivers, and by nothing else.** The

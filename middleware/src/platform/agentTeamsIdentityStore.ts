@@ -528,11 +528,14 @@ export class AgentTeamsIdentityStore {
     // tombstone). This table has no foreign key to `agents` and can exist in
     // a database without it (a host that mounts only the Teams identity
     // store); no `agents` table means no tombstones.
+    // `agent_id` is TEXT here (migration 0049) and `agents.id` a uuid: the
+    // filter has to say so, or Postgres refuses the statement (`text = uuid`),
+    // which is what every boot logged from K2b until this was fixed (D40).
     const resumable = (liveOnly: boolean): Promise<{ rows: AgentTeamsIdentityRow[] }> =>
       this.pool.query<AgentTeamsIdentityRow>(
         `SELECT ${COLUMNS} FROM agent_teams_identities
          WHERE state NOT IN ('installed', 'failed') AND team_id IS NOT NULL
-           ${liveOnly ? `AND ${ofLiveAgent('agent_id')}` : ''}
+           ${liveOnly ? `AND ${ofLiveAgent('agent_id', { textColumn: true })}` : ''}
          ORDER BY created_at ASC`,
       );
     const res = await resumable(true).catch((err: unknown) => {
