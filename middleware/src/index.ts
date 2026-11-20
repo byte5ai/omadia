@@ -94,8 +94,17 @@ import {
 import { createFieldClassificationRoutes } from './privacy/fieldClassification/routes.js';
 import { createNonPersonalFieldsEditor } from './privacy/fieldClassification/configEditor.js';
 import { PgFieldClassificationStore } from './privacy/fieldClassification/store.js';
-import { TURN_RECEIPT_STORE_SERVICE_NAME, perCallerService } from '@omadia/plugin-api';
-import { BATCH_JOB_REGISTRY_SERVICE, TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
+import {
+  BATCH_JOB_REGISTRY_SERVICE,
+  MAINTENANCE_RUN_SERVICE_NAME,
+  MODEL_PASSTHROUGH_SERVICE_NAME,
+  OPERATOR_JOBS_SERVICE_NAME,
+  TRANSCRIPTION_SERVICE_NAME,
+  TURN_RECEIPT_STORE_SERVICE_NAME,
+  perCallerService,
+  type MaintenanceRunService,
+} from '@omadia/plugin-api';
+import { createModelPassthrough, systemModuleOnlyService } from './platform/modelPassthrough.js';
 import { archetypeProcessesServiceName, type ArchetypeProcessesService } from '@omadia/plugin-api';
 import type { TranscriptionService } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
@@ -453,8 +462,27 @@ import { createAgentEndOfService, logOwedSystemNotice } from './platform/agentEn
 import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
 import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
 import { createOperatorExecutionRouter } from './routes/operatorExecution.js';
+import { createModelCallHaltMirror } from './execution/modelCallHalts.js';
+import { createModelWorkRuns } from './platform/modelWorkRuns.js';
+import { createModelWorkRouter } from './routes/modelWork.js';
 import { createOperatorTriggersRouter } from './routes/operatorTriggers.js';
 import { createAgentTemplatesRouter } from './routes/agentTemplates.js';
+import { createSetupOptionsResolver } from './plugins/setupOptionsResolver.js';
+import { createModelGatewayStatusRouter } from './routes/modelGatewayStatus.js';
+import {
+  BULK_PROMOTION,
+  EMBEDDING_BACKFILL,
+  ISSUE_PREVIEW,
+  MEMORY_EDIT,
+  MEMORY_REVIEW_DETECTION,
+  PLUGIN_BUILDER_PREVIEW,
+  PLUGIN_BUILDER_TURN,
+  SKILL_VERIFICATION,
+  TOPIC_REGROUPING,
+  WORKFLOW_DESIGNER_TURN,
+} from './platform/modelWorkKinds.js';
+import { onUncoveredModelCall, setModelGatewayMode } from '@omadia/usage-telemetry';
+import { decideCliProfile, setCliProfileDir } from '@omadia/orchestrator';
 import type { ConductorDiscussionAdmin } from './conductor/discussionAdmin.js';
 import {
   wireConversationMessages,
@@ -499,6 +527,8 @@ import { createLazyPublicPathGrantStore } from './platform/publicPathGrantStore.
 import { createPluginRawBodyMount } from './platform/pluginRawBodyMount.js';
 import { createPublicPathMount } from './platform/publicPathMount.js';
 import { buildResolutionChain } from './platform/pluginContext.js';
+import { installPluginEgressGuard } from './platform/pluginEgressGuard.js';
+import { createPluginEgressSource } from './platform/pluginEgressSource.js';
 import { createTeamsSsoAudienceSource } from './platform/teamsSsoAudiences.js';
 import { createTeamsSsoGate } from './auth/teamsSsoGate.js';
 import { createTeamsSsoVerifier } from './auth/teamsSsoVerifier.js';
@@ -662,6 +692,8 @@ interface Microsoft365AccessorShim {
  * English, never a failure.
  */
 const WEB_UI_LOCALES = ['en', 'de'] as const;
+/** How often the model gateway re-reads the kill switches (spec 2042 §5.10). */
+const MODEL_CALL_HALT_REFRESH_MS = 10_000;
 const WEB_UI_DEFAULT_LOCALE = 'en';
 
 /**
@@ -724,6 +756,33 @@ async function main(): Promise<void> {
   // plugin would miss those registrations.
   const nativeToolRegistry = new NativeToolRegistry();
   serviceRegistry.provide('nativeToolRegistry', nativeToolRegistry);
+  // Spec 2042 §5.10 — the model gateway's mode, set before any plugin can
+  // make a model call. In `observe` every call site found outside an
+  // execution context is logged once, so the last ones can be found before
+  // the contract step switches to `enforce`.
+  setModelGatewayMode(config.MODEL_GATEWAY_MODE);
+  // Spec 2042 §5.10 — every Claude CLI spawn runs in an isolated profile
+  // (HOME and CLAUDE_CONFIG_DIR = a directory holding only the login).
+  try {
+    const cliProfile = decideCliProfile({
+      mode: config.OMADIA_CLI_PROFILE,
+      configuredDir: process.env['CLAUDE_CONFIG_DIR'],
+      home: process.env['HOME'],
+      dataDir: DATA_DIR,
+    });
+    setCliProfileDir(cliProfile.dir);
+    console.log(`[cli-profile] ${cliProfile.reason}`);
+  } catch (err) {
+    setCliProfileDir(undefined);
+    console.warn(
+      `[cli-profile] the isolated CLI profile could not be prepared, spawns inherit the environment: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  onUncoveredModelCall((report) => {
+    console.warn(
+      `[model-gateway] ${config.MODEL_GATEWAY_MODE === 'enforce' ? 'refused' : 'observed'} a '${report.operation}' call outside any execution context at ${report.site}`,
+    );
+  });
   // W2-2 (issue #543) — the store + orphan reaper backing deferred sub-agent
   // dispatch. Process-local by design: this unit ships no migration (0031/0032
   // are taken by parallel units), so a restart drops in-flight deferred tasks
@@ -1240,6 +1299,19 @@ async function main(): Promise<void> {
     INSTALLED_REGISTRY_PATH,
   );
   await installedRegistry.load();
+  // Spec 2042 §5.10 — the network sandbox of installed plugins, before any
+  // of them activates: their own requests through the global `fetch` and
+  // `node:http(s)` are checked against their network permission, and model
+  // providers are reached only through the gateway.
+  installPluginEgressGuard({
+    mode: config.PLUGIN_EGRESS_MODE,
+    source: createPluginEgressSource({ catalog: pluginCatalog, installedRegistry, llmProviderCatalog }),
+    onObservation: (o) => {
+      console.warn(
+        `[plugin-egress] ${o.mode === 'enforce' ? 'refused' : 'observed'}: plugin '${o.pluginId}' reached '${o.host}' (${o.reason})${o.mode === 'observe' ? '; refused once PLUGIN_EGRESS_MODE=enforce' : ''}`,
+      );
+    },
+  });
   const ownIdentityPostLog = createOwnIdentityPostLog();
   // #2088 — an installed plugin of kind `archetype` registers the archetype
   // its manifest describes; see `platform/archetypeRegistrySync.ts`.
@@ -2640,6 +2712,53 @@ async function main(): Promise<void> {
   const graphPool = serviceRegistry.get<Pool>('graphPool');
   const graphTenantId = process.env['GRAPH_TENANT_ID'] ?? 'default';
 
+  // Spec 2042 §5.10 — operator jobs and maintenance runs of the model
+  // gateway: budget, deadline and (operator jobs) cancel per run, a daily
+  // budget per context, recorded in `model_work_runs` (migration 0089).
+  const modelWork = createModelWorkRuns({
+    ...(graphPool ? { pool: graphPool } : {}),
+    operatorDailyCalls: config.OPERATOR_TOOLS_DAILY_MODEL_CALLS,
+    maintenanceDailyCalls: config.MAINTENANCE_DAILY_MODEL_CALLS,
+    log: (m) => console.log(m),
+  });
+  // A plugin's index upkeep runs as a maintenance run through this narrow
+  // service (embed only, maintenance budget); the run is named after the
+  // plugin that asked.
+  serviceRegistry.provide(
+    MAINTENANCE_RUN_SERVICE_NAME,
+    perCallerService(
+      (caller): MaintenanceRunService => ({
+        run: (name, work) =>
+          modelWork.run(
+            { ...EMBEDDING_BACKFILL, kind: `${caller.pluginId}:${String(name).slice(0, 60)}` },
+            undefined,
+            () => work(),
+          ),
+      }),
+    ),
+  );
+
+  // Spec 2042 §5.10 — a system module running a model loop of its own (the
+  // dev platform's coding jobs) opens an operator job and forwards its model
+  // requests through the kernel, which holds the credentials. Only plugins
+  // of kind `system-module` get either service.
+  const modelPassthrough = createModelPassthrough({
+    runs: modelWork,
+    anthropic: () => {
+      const current = currentAnthropicClient();
+      return { apiKey: current.apiKey, baseURL: current.baseURL };
+    },
+  });
+  const kindOfPlugin = (pluginId: string) => pluginCatalog.get(pluginId)?.plugin.kind;
+  serviceRegistry.provide(
+    OPERATOR_JOBS_SERVICE_NAME,
+    systemModuleOnlyService(OPERATOR_JOBS_SERVICE_NAME, kindOfPlugin, modelPassthrough.operatorJobsFor),
+  );
+  serviceRegistry.provide(
+    MODEL_PASSTHROUGH_SERVICE_NAME,
+    systemModuleOnlyService(MODEL_PASSTHROUGH_SERVICE_NAME, kindOfPlugin, modelPassthrough.passthroughFor),
+  );
+
   // Spec 2042 §5.4 — the pool exists now: read the consultation offering
   // once, so `consult` is offered from the first turn (not only after the
   // first background refresh). A failure keeps the empty snapshot.
@@ -3845,6 +3964,37 @@ async function main(): Promise<void> {
   app.use(express.json({ limit: '10mb', verify: recordRawBodyBytes }));
   app.use(cookieParser());
 
+  // Each admin function that calls a model is one operator job. Mounted
+  // ahead of the routers that implement them: the job wraps the rest of the
+  // request, and only POSTs start one.
+  for (const [route, kind] of [
+    ['/api/v1/issues/preview', ISSUE_PREVIEW],
+    ['/api/v1/admin/bulk-promote', BULK_PROMOTION],
+    ['/api/v1/admin/topics/recluster', TOPIC_REGROUPING],
+    ['/api/v1/admin/inconsistencies/bulk-detect', MEMORY_REVIEW_DETECTION],
+    ['/api/v1/admin/inconsistencies/detect', MEMORY_REVIEW_DETECTION],
+    ['/api/v1/admin/duplicates/bulk-detect', MEMORY_REVIEW_DETECTION],
+    ['/api/v1/admin/duplicates/detect', MEMORY_REVIEW_DETECTION],
+    ['/api/v1/admin/duplicates/excerpts/bulk-detect', MEMORY_REVIEW_DETECTION],
+    ['/api/v1/admin/duplicates/excerpts/detect', MEMORY_REVIEW_DETECTION],
+    ['/api/v1/operator/skills/:id/verdict/llm-scan', SKILL_VERIFICATION],
+    ['/api/v1/operator/skills/import', SKILL_VERIFICATION],
+    ['/api/v1/operator/skills', SKILL_VERIFICATION],
+    ['/api/v1/operator/skills/:id/fork', SKILL_VERIFICATION],
+    ['/api/v1/builder/drafts/:id/turn', PLUGIN_BUILDER_TURN],
+    ['/api/v1/builder/drafts/:id/preview/chat/turn', PLUGIN_BUILDER_PREVIEW],
+    ['/api/v1/builder/drafts/:id/preview/tool-call', PLUGIN_BUILDER_PREVIEW],
+    ['/api/v1/operator/conductors/builder/turn', WORKFLOW_DESIGNER_TURN],
+  ] as const) {
+    app.post(route, requireAuth, modelWork.middleware(kind));
+  }
+  // Memory REST writes embed the entry and run the review detectors: an
+  // operator job with the writing user as its actor.
+  app.post('/api/v1/memory', requireAuth, modelWork.middleware(MEMORY_EDIT));
+  app.patch('/api/v1/memory/:id', requireAuth, modelWork.middleware(MEMORY_EDIT));
+  app.patch('/api/v1/memory/:id/excerpts/:position', requireAuth, modelWork.middleware(MEMORY_EDIT));
+  app.use('/api/v1/admin/model-work', requireAuth, createModelWorkRouter({ runs: modelWork }));
+  app.use('/api/v1/admin/model-gateway', requireAuth, createModelGatewayStatusRouter());
   // Spec 2042 §5.10 — agent templates of the installed plugins, as prefills
   // for the Agent Builder. Read-only: the Builder creates the agent.
   app.use(
@@ -4709,12 +4859,25 @@ async function main(): Promise<void> {
       },
     }),
   );
+  // Spec 2042 §5.10 — the kill switches halt model calls at the gateway's
+  // gate: right after an operator sets one here, and every few seconds for
+  // one set through another machine.
+  const modelCallHaltMirror = createModelCallHaltMirror({
+    store: () => executionRef.current?.store,
+    agentSlugs: async () => {
+      const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+      return new Map((store ? await store.listAgents() : []).map((agent) => [agent.id, agent.slug]));
+    },
+    log: (m) => console.log(m),
+  });
+  modelCallHaltMirror.start(MODEL_CALL_HALT_REFRESH_MS);
   // #2090 — open execution scopes of archetype plugins and the kill switch.
   app.use(
     '/api/v1/operator/execution',
     requireAuth,
     createOperatorExecutionRouter({
       store: () => executionRef.current?.store,
+      onKillSwitchesChanged: () => modelCallHaltMirror.refresh(),
       agentBySlug: async (slug) => {
         const agent = await serviceRegistry.get<MultiOrchestratorConfigStore>('configStore')?.getAgentBySlug(slug);
         return agent ? { id: agent.id, slug: agent.slug } : undefined;
@@ -6491,7 +6654,10 @@ async function main(): Promise<void> {
       reactivate: reactivateAgent,
       onGrantsChanged: () => attachFacilitationEngine(),
       restartPending: (agentId) => installService.restartPending(agentId),
-      dynamicAgentRuntime,
+      // Spec 2042 §5.10 — setup options come from the plugin's tool, whether
+      // it registered it with the kernel (capability plugin) or still runs
+      // in the retired agent runtime.
+      dynamicAgentRuntime: createSetupOptionsResolver({ agentRuntime: dynamicAgentRuntime, tools: nativeToolRegistry }),
       // #1453 — the operator-facing half of the credential check: `GET
       // /installed` reports what a plugin pushed through `ctx.status`, and
       // `POST /installed/:id/verify` re-runs that plugin's own probe.

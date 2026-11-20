@@ -46,6 +46,9 @@ export interface OperatorExecutionDeps {
   /** Told after a reservation was released: message subscriptions follow. */
   readonly onAccessChanged?: () => void;
   readonly audit?: (entry: AuditEntryInput) => Promise<void>;
+  /** Told after a kill switch was set or cleared: the model gateway's gate
+   *  follows at once (spec 2042 §5.10). */
+  readonly onKillSwitchesChanged?: () => Promise<void>;
 }
 
 type ProcessAgent =
@@ -250,6 +253,7 @@ export function createOperatorExecutionRouter(deps: OperatorExecutionDeps): Rout
           after: { level, agent: agent?.slug ?? null, process_id: processId ?? null, reason },
         })
         .catch(() => undefined);
+      await deps.onKillSwitchesChanged?.().catch(() => undefined);
       res.status(201).json({ kill_switch: killSwitchDto(set, new Map(agent ? [[agent.id, agent.slug]] : [])) });
     } catch (err) {
       res.status(500).json({ code: 'execution.failed', message: err instanceof Error ? err.message : String(err) });
@@ -279,6 +283,7 @@ export function createOperatorExecutionRouter(deps: OperatorExecutionDeps): Rout
           before: { level: cleared.level, process_id: cleared.processId ?? null, reason: cleared.reason },
         })
         .catch(() => undefined);
+      await deps.onKillSwitchesChanged?.().catch(() => undefined);
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ code: 'execution.failed', message: err instanceof Error ? err.message : String(err) });

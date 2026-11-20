@@ -556,7 +556,6 @@ export function adaptManifestV1(
       `[manifest:${id}] an \`archetype:\` block is only read for identity.kind 'archetype' (this plugin is '${kind}') — ignored.`,
     );
   }
-  const toolSideEffects = extractToolSideEffects(doc['capabilities'], id);
   // Spec 2042 §5.10 — inactive presets the operator turns into agents. Read
   // strictly for the same reason as the archetype block above.
   const templatesRead = readAgentTemplates(doc['agent_templates'], kind);
@@ -565,6 +564,7 @@ export function adaptManifestV1(
     return null;
   }
   const agentTemplates: readonly AgentTemplate[] = templatesRead.templates;
+  const toolSideEffects = extractToolSideEffects(doc['capabilities'], id);
   const dependsOn = extractStringArray(doc['depends_on']);
   const jobs = extractJobs(doc['jobs']);
   const provides = extractCapabilityList(doc['provides'], id, 'provides');
@@ -712,8 +712,8 @@ export function adaptManifestV1(
   if (setupProfile) result = { ...result, setup_profile: setupProfile };
   if (channel) result = { ...result, channel };
   if (archetype) result = { ...result, archetype: toPluginArchetype(archetype) };
-  if (Object.keys(toolSideEffects).length > 0) result = { ...result, tool_side_effects: toolSideEffects };
   if (agentTemplates.length > 0) result = { ...result, agent_templates: [...agentTemplates] };
+  if (Object.keys(toolSideEffects).length > 0) result = { ...result, tool_side_effects: toolSideEffects };
   if (adminUiPath) result = { ...result, admin_ui_path: adminUiPath };
   if (isReferenceOnly) result = { ...result, is_reference_only: true };
   if (multiInstanceJustification) {

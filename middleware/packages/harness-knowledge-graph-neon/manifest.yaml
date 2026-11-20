@@ -54,6 +54,12 @@ provides:
 requires:
   - "embeddingClient@^1"
 
+# Spec 2042 §5.10 — each embedding backfill sweep is a maintenance run of the
+# model gateway (embed only, maintenance budget). Published by the kernel
+# after this plugin activates, so resolved per sweep.
+optional_requires:
+  - "maintenanceRun@1"
+
 setup:
   fields:
     - key: "database_url"

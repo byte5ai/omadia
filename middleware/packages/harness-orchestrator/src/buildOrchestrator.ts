@@ -54,6 +54,7 @@ import type { Pool } from 'pg';
 
 import { MemoryToolHandler } from '@omadia/memory';
 
+import { withAgentTurnExecution } from './agentTurnExecution.js';
 import { ChatSessionStore, chatSessionTailTurns } from './chatSessionStore.js';
 import { wrapChatAgentWithFastPath, type FastPathTriagePort } from './fastPathAgent.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
@@ -841,8 +842,14 @@ export function buildOrchestratorForAgent(
       }
     },
   });
+  // Spec 2042 §5.10 — the outermost layer: everything this agent's chat
+  // agent runs (fast lane, loop, verifier, identity guard) is this agent's
+  // turn for the model gateway.
   const finalize = (agent: ChatAgent): ChatAgent =>
-    withSpeaker(withIdentityGuard(withFastPath(agent), emitter), agentSpeaker, emitter);
+    withAgentTurnExecution(
+      withSpeaker(withIdentityGuard(withFastPath(agent), emitter), agentSpeaker, emitter),
+      config.agentId,
+    );
 
   // W5 memory-ACL — the per-CHAT-CONTEXT binder. `memoryToolHandler` above is
   // resolved once, here, for the whole process lifetime; the binder resolves a

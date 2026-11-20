@@ -2246,6 +2246,44 @@ export class LlmModelNotAllowedError extends Error {
   }
 }
 
+/**
+ * Spec 2042 §5.10 — thrown by `ctx.llm` of an archetype plugin outside an
+ * execution scope. Every model call of an archetype plugin's process runs
+ * through the kernel under a scope (deadline, budget, kill switch); the
+ * plugin runs it through `agentTurn@2`, or calls `ctx.llm` while one of its
+ * scope's actions runs.
+ */
+export class LlmScopeRequiredError extends Error {
+  constructor(callerAgentId: string) {
+    super(
+      `archetype plugin '${callerAgentId}' called ctx.llm outside an execution scope; an archetype plugin's model calls run only under a scope (spec 2042 §5.10)`,
+    );
+    this.name = 'LlmScopeRequiredError';
+  }
+}
+
+/**
+ * Spec 2042 §5.10 — thrown when a plugin asks for a raw model service
+ * (`anthropicClient`, `llm`, `llmProviderPool`). Raw model clients and
+ * provider pools are never granted to plugins: a plugin reaches models only
+ * through `ctx.llm`, inside the calling agent's execution context. Model
+ * plugins (kind `model`) and the kernel's own system modules are the
+ * exceptions.
+ */
+export class RawModelServiceRefusedError extends Error {
+  public readonly pluginId: string;
+  public readonly capability: string;
+  constructor(pluginId: string, capability: string) {
+    super(
+      `plugin '${pluginId}' asked for the raw model service '${capability}': plugins reach models only through ctx.llm, ` +
+        "inside the calling agent's execution context (spec 2042 §5.10). Remove it from the manifest and declare permissions.llm",
+    );
+    this.name = 'RawModelServiceRefusedError';
+    this.pluginId = pluginId;
+    this.capability = capability;
+  }
+}
+
 export class LlmBudgetExceededError extends Error {
   constructor(callerAgentId: string, budget: number) {
     super(

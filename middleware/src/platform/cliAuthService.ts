@@ -245,7 +245,7 @@ export async function startCliLogin(cliId: string): Promise<StartLoginResult> {
   // Resolve through the runtime install dir so a CLI installed in-app is
   // spawnable even when it is not on PATH.
   const child = io.spawn(io.resolveCliBin(backend.bin), ['auth', 'login', '--claudeai'], {
-    env: scrubbedEnv(),
+    env: scrubbedEnv(cliId),
     windowsHide: true,
   });
 
@@ -502,7 +502,7 @@ export async function cliLogout(cliId: string): Promise<{ ok: boolean }> {
   const backend = snap.backends.find((b) => b.id === cliId);
   if (!backend?.installed) return { ok: true };
   await new Promise<void>((resolve) => {
-    const c = io.spawn(io.resolveCliBin(backend.bin), ['auth', 'logout'], { env: scrubbedEnv(), windowsHide: true });
+    const c = io.spawn(io.resolveCliBin(backend.bin), ['auth', 'logout'], { env: scrubbedEnv(cliId), windowsHide: true });
     c.on('error', () => resolve());
     c.on('exit', () => resolve());
     setTimeout(() => {

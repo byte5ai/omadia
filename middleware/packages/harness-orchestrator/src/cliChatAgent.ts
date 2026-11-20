@@ -1,4 +1,7 @@
-import { admitModelCall } from '@omadia/llm-provider';
+import { admitModelCall, ModelCallRefusedError } from '@omadia/llm-provider';
+import { modelCallHaltFor } from '@omadia/usage-telemetry';
+
+import { assertCliProfileClean } from './cliProfile.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { spawn as nodeSpawn } from 'node:child_process';
@@ -489,22 +492,55 @@ export interface CliInitReport {
   readonly omadiaServerStatus: string;
 }
 
+/** How often a running CLI turn checks the kill switches (spec 2042 §5.10). */
+const CLI_HALT_POLL_MS = 1_000;
+
 /**
- * #1581 — the error that ends a turn whose CLI loaded none of the tools
- * omadia offered, or `undefined` when the turn may go on. A CLI that sends
- * its first model request before the loopback MCP handshake finished (2.1.187
- * waited only a few seconds) gave the model no tools at all, and the model
- * then faked a `memory` call in its answer text.
+ * #1581, spec 2042 §5.10 — the error that ends a turn whose CLI did not load
+ * exactly the tools omadia offered, or `undefined` when the turn may go on.
+ *
+ * `run_loop` runs every tool call through the kernel's tool dispatch, with
+ * the agent's grants and the privacy shield. That only holds when the CLI's
+ * tool list IS the loopback server's list for this turn: so the loopback
+ * server must be connected, every offered tool must be there, and nothing
+ * else may be — no tool of the CLI's own, no omadia tool that was not
+ * offered this turn. (#1581 began this: a CLI that sent its first model
+ * request before the loopback handshake finished gave the model no tools,
+ * and the model faked a `memory` call in its answer text.)
+ *
+ * `offered` are the names of the tools offered this turn, without the
+ * loopback prefix; a number is read as "that many, names unknown" and only
+ * checks that some omadia tool loaded (callers that predate the exact check).
  */
 export function checkCliInit(
   init: CliInitReport,
-  offered: number,
+  offered: number | readonly string[],
   locale?: string,
 ): Error | undefined {
-  if (offered === 0) return undefined;
-  if (init.tools.some((t) => t.startsWith(OMADIA_MCP_TOOL_PREFIX))) return undefined;
+  const offeredCount = typeof offered === 'number' ? offered : offered.length;
   // Same locale rule as every notice: `en*` → English, anything else → German.
   const en = locale !== undefined && /^en\b/i.test(locale);
+  const loaded = init.tools.filter((t) => t.startsWith(OMADIA_MCP_TOOL_PREFIX));
+  const foreign = init.tools.filter((t) => !t.startsWith(OMADIA_MCP_TOOL_PREFIX));
+  if (foreign.length > 0) {
+    return new Error(
+      en
+        ? `The Claude CLI started with tools omadia did not offer (${foreign.slice(0, 5).join(', ')}), so this turn was refused. Nothing was run.`
+        : `Die Claude-CLI ist mit Werkzeugen gestartet, die omadia nicht angeboten hat (${foreign.slice(0, 5).join(', ')}). Der Turn wurde deshalb abgelehnt, es wurde nichts ausgeführt.`,
+    );
+  }
+  if (offeredCount === 0) {
+    return loaded.length === 0 ? undefined : unexpectedOmadiaTools(loaded, en);
+  }
+  if (typeof offered !== 'number') {
+    const expected = new Set(offered.map((name) => `${OMADIA_MCP_TOOL_PREFIX}${name}`));
+    const extra = loaded.filter((t) => !expected.has(t));
+    if (extra.length > 0) return unexpectedOmadiaTools(extra, en);
+    const complete = loaded.length === expected.size && init.omadiaServerStatus === 'connected';
+    if (complete) return undefined;
+  } else if (loaded.length > 0) {
+    return undefined;
+  }
   return new Error(
     en
       ? `The Claude CLI started without omadia's tools (MCP server ${init.omadiaServerStatus}), ` +
@@ -513,6 +549,15 @@ export function checkCliInit(
       : `Die Claude-CLI ist ohne die Werkzeuge von omadia gestartet (MCP-Server ${init.omadiaServerStatus}). ` +
           'Dieser Turn konnte deshalb weder das Gedächtnis noch ein anderes Werkzeug nutzen, und es wurde ' +
           'nichts gespeichert. Bitte sende die Nachricht noch einmal.',
+  );
+}
+
+function unexpectedOmadiaTools(tools: readonly string[], en: boolean): Error {
+  const names = tools.slice(0, 5).join(', ');
+  return new Error(
+    en
+      ? `The Claude CLI reported omadia tools that were not offered this turn (${names}), so this turn was refused. Nothing was run.`
+      : `Die Claude-CLI meldete omadia-Werkzeuge, die in diesem Turn nicht angeboten waren (${names}). Der Turn wurde deshalb abgelehnt, es wurde nichts ausgeführt.`,
   );
 }
 
@@ -1269,8 +1314,9 @@ export class CliChatAgent implements ChatAgent {
     _observer?: ChatStreamObserver,
   ): AsyncGenerator<ChatStreamEvent> {
     // #2090 — one CLI run is one model call for the gate: the CLI owns its
-    // loop, and the kernel cannot see inside it.
-    admitModelCall();
+    // loop, and the kernel cannot see inside it. Spec 2042 §5.10: the
+    // gateway operation `run_loop`, only ever inside an agent turn.
+    admitModelCall('run_loop');
     const lifecycle = this.runLifecycle(input, turnContext);
     let finished = false;
     // #1102 — the interactive cards are drained exactly once per turn: on the
@@ -1659,6 +1705,9 @@ export class CliChatAgent implements ChatAgent {
     let closePromise: Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }> | undefined;
     let overallTimer: NodeJS.Timeout | undefined;
     let idleTimer: NodeJS.Timeout | undefined;
+    // Spec 2042 §5.10 — the kernel cannot see inside the CLI's loop, so a
+    // running turn polls the kill switches and ends itself.
+    let haltTimer: NodeJS.Timeout | undefined;
     let pendingFailure: Error | undefined;
     let stderr = '';
     let stdoutBuffer = '';
@@ -1823,6 +1872,9 @@ export class CliChatAgent implements ChatAgent {
         toolNames: tools.map((tool) => tool.name),
       });
 
+      // Spec 2042 §5.10 — the CLI runs in the kernel's profile, which holds
+      // only the login; an instruction file in it refuses the spawn.
+      assertCliProfileClean();
       child = (this.deps.spawnFn ?? nodeSpawn)(
         cliBinary,
         argv,
@@ -1891,6 +1943,17 @@ export class CliChatAgent implements ChatAgent {
         );
       }, spawnTimeoutMs);
 
+      // Spec 2042 §5.10 — runaway protection: an instance or agent kill switch
+      // ends a running CLI turn, which the gate cannot do from inside.
+      const haltedAgent = this.deps.dispatch.agentSlug;
+      haltTimer = setInterval(() => {
+        const halt = modelCallHaltFor(haltedAgent);
+        if (halt === undefined) return;
+        logger.warn('claude CLI turn stopped by a kill switch', { agent: haltedAgent ?? 'default' });
+        failRuntime(new ModelCallRefusedError('kill_switch', `stopped by an operator (${halt})`));
+      }, CLI_HALT_POLL_MS);
+      haltTimer.unref();
+
       resetIdleTimer();
 
       // We send one fully composed plain-text prompt so the child process stays stateless and
@@ -1921,7 +1984,11 @@ export class CliChatAgent implements ChatAgent {
           // here with an honest error instead.
           const init = parser.takeInit();
           if (init !== undefined) {
-            const missing = checkCliInit(init, tools.length, this.deps.noticeLocale?.(input));
+            const missing = checkCliInit(
+              init,
+              tools.map((tool) => tool.name),
+              this.deps.noticeLocale?.(input),
+            );
             logger.info('claude CLI loaded tools', {
               omadiaServer: init.omadiaServerStatus,
               omadiaTools: init.tools.filter((t) => t.startsWith(OMADIA_MCP_TOOL_PREFIX)).length,
@@ -1959,6 +2026,10 @@ export class CliChatAgent implements ChatAgent {
       if (overallTimer !== undefined) {
         clearTimeout(overallTimer);
         overallTimer = undefined;
+      }
+      if (haltTimer !== undefined) {
+        clearInterval(haltTimer);
+        haltTimer = undefined;
       }
       if (idleTimer !== undefined) {
         clearTimeout(idleTimer);
@@ -2062,6 +2133,9 @@ export class CliChatAgent implements ChatAgent {
       }
       if (idleTimer !== undefined) {
         clearTimeout(idleTimer);
+      }
+      if (haltTimer !== undefined) {
+        clearInterval(haltTimer);
       }
       // `permitAcquired` flips true only after a successful acquire, and this
       // finally runs exactly once per lifecycle, so the release happens once on

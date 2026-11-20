@@ -572,6 +572,21 @@ export function currentUsageContext(): TurnUsageAttribution | undefined {
 }
 
 /**
+ * Spec 2042 §5.10 — the agent turn around the caller as the model gateway's
+ * execution context: every model call inside an agent's turn (its helpers,
+ * turn hooks, plugin `ctx.llm`, memory and embeddings) runs in that agent's
+ * envelope. Only a real turn counts — the placeholder scopes routes open
+ * around a turn carry no turn id and no agent.
+ */
+export function currentAgentTurnExecutionContext():
+  | { readonly kind: 'agent_turn'; readonly ownerId: string; readonly agentSlug: string }
+  | undefined {
+  const ctx = storage.getStore();
+  if (!ctx || ctx.turnId === '' || !ctx.agentSlug) return undefined;
+  return { kind: 'agent_turn', ownerId: ctx.agentSlug, agentSlug: ctx.agentSlug };
+}
+
+/**
  * Implementation of {@link turnContext.runGenerator}. Kept as a module-level
  * generator function (rather than inline) so it can `yield` while still owning
  * the `storage.run` wrapping of every `next()`.

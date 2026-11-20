@@ -28,6 +28,7 @@ import {
   type NativeToolRegistry,
 } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
 import { RunTraceOutcomeStats } from '../packages/harness-orchestrator/src/runTraceObservability.js';
+import { innerChatAgent } from '../packages/harness-orchestrator/src/agentTurnExecution.js';
 
 /** Minimal NativeToolRegistry — the Orchestrator constructor only calls
  *  `has` and `register` while seeding the kernel native-tool names. */
@@ -89,6 +90,9 @@ test('the built bundle exposes the orchestrator as its raw + bare agent', () => 
     displayName: 'solo',
   });
   assert.notEqual(emitterOf(built.bundle.agent), undefined);
+  // Spec 2042 §5.10 — the model gateway's agent-turn wrapper is outermost,
+  // so the identity guard's and the speaker's model calls are this turn's.
+  assert.notEqual(innerChatAgent(built.bundle.agent), built.bundle.agent);
 });
 
 /**
