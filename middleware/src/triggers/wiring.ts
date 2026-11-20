@@ -5,7 +5,7 @@
  */
 
 import { currentDispatchCaller, turnContext } from '@omadia/orchestrator';
-import type { NativeToolSpec } from '@omadia/plugin-api';
+import type { DataPlanGuard, NativeToolSpec } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 
 import type { AuditEntryInput } from '../auth/adminAuditLog.js';
@@ -49,6 +49,8 @@ export interface TriggerWiringDeps {
   /** The agent's own bot on a channel, to keep its messages off its hooks. */
   readonly ownChannelKey?: (slug: string, channel: string) => string | undefined;
   readonly readToolsOf: ReadToolsOf;
+  /** The agent's boundary check of a data plan (spec 2042 §5.13 1a). */
+  readonly dataPlanGuardOf?: (slug: string) => DataPlanGuard | undefined;
   /** The plugin ids granted to an agent (enabled grants). */
   readonly grantedPluginIds: (slug: string) => readonly string[];
   /** Declared emittable events per plugin id. */
@@ -108,7 +110,7 @@ function currentTurn(deps: TriggerWiringDeps): TriggerToolTurn | undefined {
 export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
   const store = new TriggerStore(deps.pool);
   const profiles = new RecipientProfileStore(deps.pool);
-  const dataActions = createDataActionRunner(deps.readToolsOf);
+  const dataActions = createDataActionRunner(deps.readToolsOf, deps.dataPlanGuardOf);
   const clock = deps.now ?? (() => new Date());
   const gate = createProactiveGate({ profiles, defaults: deps.recipientDefaults, senders: deps.senders, now: clock, log: deps.log });
 

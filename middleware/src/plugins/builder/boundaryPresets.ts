@@ -47,6 +47,7 @@ export const BOUNDARY_LABELS_DE: Readonly<Record<string, string>> = {
   presetNoFinancial: 'Keine Finanzdaten',
   presetNoPii: 'Keine personenbezogenen Daten (PII)',
   presetNoMedical: 'Keine medizinischen Daten',
+  presetNoIndividualRankings: 'Keine Ranglisten einzelner Kunden oder Personen',
   presetNoLegal: 'Keine Rechtsberatung',
   presetOwnDomain: 'Nur eigene Domäne',
   presetNoCode: 'Keine Code-Ausführung',

@@ -12,7 +12,7 @@ const render = (ui: ReactElement) => renderWithIntl(ui, { locale: 'de' });
  * Issue #54 — BoundariesSection component tests.
  *
  * Coverage:
- *   - 12 preset checkboxes render, grouped by category
+ *   - 13 preset checkboxes render, grouped by category
  *   - Toggling a checkbox + Speichern persists via setQualityConfig
  *   - Custom textarea lines are trimmed and split on newlines
  *   - Unknown preset IDs in initialQuality surface a warning badge
@@ -32,11 +32,11 @@ describe('<BoundariesSection />', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders all 12 preset checkboxes grouped by 4 categories', () => {
+  it('renders all 13 preset checkboxes grouped by 4 categories', () => {
     render(<BoundariesSection draftId="draft-1" />);
-    // 12 preset checkboxes
+    // 13 preset checkboxes
     const checkboxes = screen.getAllByRole('checkbox');
-    expect(checkboxes).toHaveLength(12);
+    expect(checkboxes).toHaveLength(13);
     // category headers (regex anchored to exact match — the labels are
     // single-word, no overlap with preset labels)
     expect(screen.getByText('Daten')).toBeInTheDocument();

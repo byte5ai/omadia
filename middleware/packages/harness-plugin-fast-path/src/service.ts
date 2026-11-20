@@ -1,4 +1,4 @@
-import type { DecisionModelService, PrivacyGuardService } from '@omadia/plugin-api';
+import type { DataPlanGuard, DecisionModelService, PrivacyGuardService } from '@omadia/plugin-api';
 
 import {
   ANSWER_CACHE_PRIVACY_JOB,
@@ -29,7 +29,7 @@ import {
   type LearnedPlanStore,
   type PlanMemory,
 } from './learnedPlanStore.js';
-import { resolveTimeZone, type RefreshSource } from './refreshRecipes.js';
+import { describeRefreshSource, resolveTimeZone, type RefreshSource } from './refreshRecipes.js';
 import { openStoredTextPrivacy, TRIAGE_PRIVACY_JOB } from './storedTextPrivacy.js';
 import type { DecisionTrace } from './router.js';
 import type { PreviousQuery, TriageRoute } from './triage.js';
@@ -63,6 +63,9 @@ export interface ChatTriageRequest {
   permittedTools: ReadonlySet<string>;
   /** #1876 — the agent whose fast lane asks: its answer cache is its own */
   agentSlug?: string;
+  /** #2085 — the agent's boundary check: every plan, new or from the cache,
+   *  passes it before it runs; a refusal hands the turn to the agent. */
+  checkPlan?: DataPlanGuard;
   /** the agent's own definitions of those tools (`ChatAgent.
    *  offeredToolDefinitions`): every read tool among them without a catalog
    *  spec gets a generic planner spec (genericToolSpecs.ts). Absent → only
@@ -330,6 +333,17 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
         return { ...agent(reason), ...traced };
       };
       if (!permitted.has(decision.fetch.tool)) return miss('tool-not-permitted');
+      if (req.checkPlan) {
+        const verdict = await req.checkPlan(describeRefreshSource(decision.fetch)).catch(() => ({
+          allowed: false as const,
+          reason: 'the boundary check failed',
+          layer: 'model' as const,
+        }));
+        if (!verdict.allowed) {
+          deps.log(`[fast-path] miss channel=${channel} reason=boundary (${verdict.layer})`);
+          return miss('boundary');
+        }
+      }
       const fetched = await fetchRecipeRows(invoke, decision.fetch, { rejectTruncated: true, timeZone });
       if (!fetched.ok) {
         if (fetched.detail !== undefined) {

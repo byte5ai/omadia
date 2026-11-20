@@ -101,6 +101,14 @@ changelog.
   model tab), only the agent's own read tools (no sub-agent `via` tools), the
   agent's AI disclosure on every fast-lane answer, and an answer cache keyed
   by agent; older entries are dropped (fast-path 0.6.0).
+- **Boundaries on data paths (spec §5.13 1a, criterion 35).** Before a
+  fast-lane plan runs (new or from the cache), and before `deliver_data` or
+  a trigger's data action runs, its description (tool, identifiers, filter
+  fields, order, top-N; no values) is checked against the agent's
+  boundaries: presets deterministically (new preset
+  `no-individual-rankings`), free-text rules by the agent's classifier
+  model; an error or timeout refuses. A refused fast-lane plan hands the
+  turn to the agent.
 - **Operator view.** `/operator/triggers` (Setup menu, backed by
   `/api/v1/operator/triggers`) lists every trigger with purpose, schedule,
   deadline, runs and cost against its budget, the month's spend against the

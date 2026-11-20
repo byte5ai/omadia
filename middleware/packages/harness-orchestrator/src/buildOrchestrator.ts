@@ -14,6 +14,8 @@
  * than once in one process.
  */
 
+import type { DataPlanGuard } from '@omadia/plugin-api';
+import { createDataPlanGuard, createLlmDataPlanJudge } from './dataPlanGuard.js';
 import type {
   ChatAgent,
   ChatTurnInput,
@@ -474,6 +476,12 @@ export interface BuiltOrchestrator {
   /** Same as `config.modelRouting` — surfaced so callers can describe the
    *  per-turn routing the Agent is on without inspecting the orchestrator. */
   readonly effectiveModelRouting?: ModelRoutingConfig;
+  /**
+   * #2085 — this agent's boundary check of a data plan (spec 2042 §5.13 1a):
+   * the fast lane, `deliver_data` and trigger data actions run a plan only
+   * when it passes.
+   */
+  readonly dataPlanGuard: DataPlanGuard;
 }
 
 /**
@@ -671,6 +679,19 @@ export function buildOrchestratorForAgent(
   // #1876 — the fast lane is the agent's own, switchable per agent.
   const fastPathDeps =
     isFacilitator || omits('fast_path') || config.fastLane === false ? undefined : deps.fastPath;
+  // #2085 — the agent's boundaries over its data plans: presets checked
+  // deterministically, free-text rules by its classifier model.
+  const dataPlanGuard = createDataPlanGuard({
+    boundaries: config.quality?.boundaries,
+    ...(deps.provider
+      ? {
+          judge: createLlmDataPlanJudge({
+            provider: deps.provider,
+            model: config.modelRouting?.classifierModel ?? config.model,
+          }),
+        }
+      : {}),
+  });
   const withFastPath = (agent: ChatAgent): ChatAgent =>
     isFacilitator
       ? wrapFacilitatorAgent(agent, {
@@ -707,6 +728,8 @@ export function buildOrchestratorForAgent(
           disclose: (answer, input) => orchestrator.discloseCliAnswer(answer, input),
           // #1876 — learned plans and the answer cache are this agent's.
           agentSlug: config.agentId,
+          // #2085 — every plan, new or cached, passes this agent's boundaries.
+          checkPlan: dataPlanGuard,
           logSession: (entry) => sessionLogger.log(entry),
           privacyGuarded: () => deps.privacyGuard() !== undefined,
           log: (m) => console.log(m),
@@ -1150,6 +1173,7 @@ export function buildOrchestratorForAgent(
       },
       effectiveModel: config.model,
       ...(config.modelRouting ? { effectiveModelRouting: config.modelRouting } : {}),
+      dataPlanGuard,
     };
   }
 
@@ -1186,5 +1210,6 @@ export function buildOrchestratorForAgent(
     bundle: { agent: withFastPath(agent), raw: orchestrator, sessionLogger, chatSessionStore },
     effectiveModel: config.model,
     ...(config.modelRouting ? { effectiveModelRouting: config.modelRouting } : {}),
+    dataPlanGuard,
   };
 }

@@ -3692,6 +3692,7 @@
           "presetNoFinancial": "No financial data",
           "presetNoPii": "No personal data (PII)",
           "presetNoMedical": "No medical data",
+          "presetNoIndividualRankings": "No rankings of individual customers or people",
           "presetNoLegal": "No legal advice",
           "presetOwnDomain": "Own domain only",
           "presetNoCode": "No code execution",

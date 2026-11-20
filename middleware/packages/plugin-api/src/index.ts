@@ -52,6 +52,8 @@ export * from './responseGuard.js';
 // "Boundaries" and the `responseGuard@1` provider's install-wide defaults read
 // the same ids and rule wording.
 export * from './boundaryPresets.js';
+// #2085 (epic #2042) — the boundary check of a data plan (spec 2042 §5.13 1a).
+export * from './dataPlanBoundaries.js';
 
 // Palaia-Phase-5 (OB-74): per-agent block/boost list, consumed by the
 // `ContextRetriever.assembleForBudget` assembler. Provider:

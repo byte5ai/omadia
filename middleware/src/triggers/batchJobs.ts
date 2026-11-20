@@ -145,13 +145,10 @@ export function createBatchTriggerSync(deps: BatchTriggerSyncDeps): () => Promis
         const contextId = batchContextId(job.id, agent.slug);
         wanted.add(contextId);
         if (byContext.has(contextId)) continue;
-        let due = 0;
-        try {
-          due = await job.due(agent.slug);
-        } catch (err) {
+        const due = await job.due(agent.slug).catch((err: unknown) => {
           deps.log(`[batch] ${job.id} due check for '${agent.slug}' failed: ${err instanceof Error ? err.message : String(err)}`);
-          continue;
-        }
+          return 0;
+        });
         if (due <= 0) continue;
         const now = clock();
         const until = new Date(now.getTime() + limits.recurringMaxDays * DAY_MS);

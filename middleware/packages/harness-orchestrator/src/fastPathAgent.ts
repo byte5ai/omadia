@@ -10,7 +10,7 @@ import {
   type SemanticAnswer,
 } from '@omadia/channel-sdk';
 import type { ChatTriageOutcome, ChatTriageRequest } from '@omadia/fast-path';
-import type { CaptureDisclosure } from '@omadia/plugin-api';
+import type { CaptureDisclosure, DataPlanGuard } from '@omadia/plugin-api';
 
 import { isValidSessionId } from './chatSessionStore.js';
 import type { SessionLogEntry } from './sessionLogger.js';
@@ -79,6 +79,9 @@ export interface FastPathAgentDeps {
   /** #1876 — the agent whose fast lane this is: learned plans and the answer
    *  cache are keyed by it. */
   agentSlug?: string;
+  /** #2085 — the agent's boundary check, applied to every plan (new or
+   *  cached) before it runs (spec 2042 §5.13 1a). */
+  checkPlan?: DataPlanGuard;
   log: (message: string) => void;
 }
 
@@ -232,6 +235,7 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
         ...(toolDefinitions !== undefined ? { toolDefinitions } : {}),
         ...(input.sessionScope !== undefined ? { sessionKey: input.sessionScope } : {}),
         ...(deps.agentSlug !== undefined ? { agentSlug: deps.agentSlug } : {}),
+        ...(deps.checkPlan !== undefined ? { checkPlan: deps.checkPlan } : {}),
         userMessage: input.userMessage,
       });
     } catch (err) {

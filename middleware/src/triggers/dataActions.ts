@@ -9,7 +9,7 @@
  * model gets only a status (row count, columns).
  */
 
-import type { TableData } from '@omadia/plugin-api';
+import { describeToolCall, type DataPlanGuard, type TableData } from '@omadia/plugin-api';
 
 import type { DataActionResult } from './triggerChain.js';
 import type { DataActionSpec } from './types.js';
@@ -63,7 +63,16 @@ export interface DataActionRunner {
   run(agentSlug: string, action: DataActionSpec): Promise<DataActionResult>;
 }
 
-export function createDataActionRunner(readToolsOf: ReadToolsOf): DataActionRunner {
+/**
+ * `guardOf` — the agent's boundary check of a data plan (spec 2042 §5.13
+ * 1a): every run is described (tool, identifiers, order; no values) and
+ * checked before the tool runs. Undefined for an agent → the run is refused
+ * (fail-closed); a deployment without the guard passes none at all.
+ */
+export function createDataActionRunner(
+  readToolsOf: ReadToolsOf,
+  guardOf?: (agentSlug: string) => DataPlanGuard | undefined,
+): DataActionRunner {
   const check = (agentSlug: string, action: DataActionSpec): string | undefined => {
     const tools = readToolsOf(agentSlug);
     if (!tools) return `agent '${agentSlug}' is not in service`;
@@ -78,6 +87,13 @@ export function createDataActionRunner(readToolsOf: ReadToolsOf): DataActionRunn
       if (why) return { ok: false, error: why };
       const invoke = readToolsOf(agentSlug)?.get(action.tool);
       if (!invoke) return { ok: false, error: `'${action.tool}' is no longer available` };
+      if (guardOf) {
+        const guard = guardOf(agentSlug);
+        const verdict = guard
+          ? await guard(describeToolCall(action.tool, action.input)).catch(() => ({ allowed: false as const, reason: 'the boundary check failed' }))
+          : { allowed: false as const, reason: 'no boundary check for this agent' };
+        if (!verdict.allowed) return { ok: false, error: `refused by the agent's boundaries: ${verdict.reason}` };
+      }
       let raw: string;
       try {
         raw = await invoke(action.input);
