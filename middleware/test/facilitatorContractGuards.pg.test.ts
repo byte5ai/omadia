@@ -374,4 +374,43 @@ await contractSuite('native facilitators: kernel contract, guards (pg)', 'facili
       await other.stop();
     }
   });
+
+  it('a forged NOTIFY changes nothing: the listener reads its state from the tables', async () => {
+    // Any role that can log in may NOTIFY on the kernel's channels (a
+    // plugin's database role too), with any payload.
+    const maraKey = await c.facilitator('mara', 'aaaa-mara');
+    const other = await bootFacilitatorKernel({ pool: c.pool, listen: true });
+    try {
+      const seenThere = (): boolean => other.channel.core.isAllMessagesSubscribed!(CHANNEL_TYPE, CHAT, maraKey);
+      const rows = async (): Promise<unknown[]> =>
+        (await c.pool.query('SELECT id, agent_id, process_id, mode, ended_at FROM conversation_message_subscriptions ORDER BY id')).rows;
+      const before = await rows();
+      const forged = [
+        JSON.stringify({ op: 'INSERT', agent: 'mara', channel_type: CHANNEL_TYPE, conversation_id: CHAT, mode: 'all' }),
+        JSON.stringify({ subscribed: true, bot: maraKey, conversation: CHAT }),
+        'mara',
+        '',
+      ];
+      for (const payload of forged) {
+        await c.pool.query(`SELECT pg_notify('conversation_message_subscriptions_changed', $1)`, [payload]);
+        await c.pool.query(`SELECT pg_notify('agents_changed', $1)`, [payload]);
+      }
+      for (let i = 0; i < 10; i += 1) await c.flush();
+      assert.equal(seenThere(), false, 'the claimed subscription does not exist for the listener');
+      assert.deepEqual(await rows(), before, 'and nothing was written');
+
+      // The bus still works after the forged ones: a real subscribe arrives.
+      await c.moderate('mara');
+      for (let i = 0; i < 200 && !seenThere(); i += 1) await c.flush();
+      assert.equal(seenThere(), true);
+      // A forged "ended" does not end it either.
+      await c.pool.query(`SELECT pg_notify('conversation_message_subscriptions_changed', $1)`, [
+        JSON.stringify({ op: 'UPDATE', ended: true, bot: maraKey, conversation: CHAT }),
+      ]);
+      for (let i = 0; i < 10; i += 1) await c.flush();
+      assert.equal(seenThere(), true);
+    } finally {
+      await other.stop();
+    }
+  });
 });

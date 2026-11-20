@@ -1,3 +1,5 @@
+import { performance } from 'node:perf_hooks';
+
 import pg from 'pg';
 import type { Pool } from 'pg';
 
@@ -92,14 +94,27 @@ export interface ReloadBusOptions {
    *  for why; flip to `true` only when the kg pool max is raised or a
    *  dedicated DATABASE_URL is wired. */
   readonly enableListen?: boolean;
+  /**
+   * The shortest time between two reloads that notifications cause. Default
+   * 250 ms. The first notification reloads at once; those that follow within
+   * the interval are answered by ONE reload at its end. Anyone who can log in
+   * to the database can NOTIFY, so without it a flood keeps the kernel
+   * reloading without a pause.
+   */
+  readonly minNotifyIntervalMs?: number;
   /** Structured log sink. */
   readonly log?: (msg: string, fields?: Record<string, unknown>) => void;
+  /** Sink for one line per notification (channel and payload size, never the
+   *  payload). Absent: not logged. */
+  readonly debug?: (msg: string, fields?: Record<string, unknown>) => void;
 }
 
 const DEFAULT_RECONCILE_MS = 60_000;
 const DEFAULT_RECONNECT_MS = 5_000;
 const MAX_RECONNECT_MS = 30_000;
 const DEFAULT_NOTIFY_CHANNEL = 'agents_changed';
+/** Four reloads a second is the most a flood of notifications can cause. */
+const DEFAULT_MIN_NOTIFY_INTERVAL_MS = 250;
 const CHANNEL_NAME_RE = /^[a-z_][a-z0-9_]{0,62}$/;
 
 export class ReloadBus {
@@ -112,6 +127,10 @@ export class ReloadBus {
   private pending = false;
 
   private readonly channel: string;
+  private readonly minNotifyIntervalMs: number;
+  private notifyTimer: NodeJS.Timeout | undefined;
+  private lastNotifyReloadAt: number | undefined;
+  private notificationsSinceReload = 0;
 
   constructor(private readonly options: ReloadBusOptions) {
     const channel = options.channel ?? DEFAULT_NOTIFY_CHANNEL;
@@ -119,6 +138,7 @@ export class ReloadBus {
       throw new Error(`ReloadBus: '${channel}' is not a valid NOTIFY channel name`);
     }
     this.channel = channel;
+    this.minNotifyIntervalMs = Math.max(0, options.minNotifyIntervalMs ?? DEFAULT_MIN_NOTIFY_INTERVAL_MS);
     this.reconnectDelayMs =
       options.reconnectInitialMs ?? DEFAULT_RECONNECT_MS;
   }
@@ -179,6 +199,47 @@ export class ReloadBus {
     return this.fire('manual');
   }
 
+  /**
+   * A notification is a hint that something may have changed, and nothing
+   * more. Postgres has no privilege for NOTIFY: every role that can log in,
+   * a plugin's database role included, can send on this channel with any
+   * payload. So the payload is never read and never written to the log (only
+   * its size, for debugging), and what changed is read from the tables by
+   * `reload`. A flood of notifications runs at most one reload per
+   * `minNotifyIntervalMs`; the last notification is never dropped.
+   */
+  private onNotification(payload: string | undefined): void {
+    if (this.stopped) return;
+    this.options.debug?.(`reloadBus: notification`, {
+      channel: this.channel,
+      payloadBytes: payload ? Buffer.byteLength(payload) : 0,
+    });
+    this.notificationsSinceReload += 1;
+    if (this.notifyTimer) return;
+    // A monotonic clock: a wall clock set back must not hold reloads off.
+    const wait =
+      this.lastNotifyReloadAt === undefined ? 0 : this.lastNotifyReloadAt + this.minNotifyIntervalMs - performance.now();
+    if (wait <= 0) {
+      this.reloadForNotifications();
+      return;
+    }
+    this.notifyTimer = setTimeout(() => {
+      this.notifyTimer = undefined;
+      if (!this.stopped) this.reloadForNotifications();
+    }, wait);
+    this.notifyTimer.unref?.();
+  }
+
+  private reloadForNotifications(): void {
+    this.lastNotifyReloadAt = performance.now();
+    this.log(`reloadBus: notify received`, {
+      channel: this.channel,
+      notifications: this.notificationsSinceReload,
+    });
+    this.notificationsSinceReload = 0;
+    void this.fire('notify');
+  }
+
   private async connect(): Promise<void> {
     const client = await this.openListenConnection();
     client.on('error', (err) => {
@@ -189,11 +250,7 @@ export class ReloadBus {
     });
     client.on('notification', (msg) => {
       if (msg.channel !== this.channel) return;
-      this.log(`reloadBus: notify received`, {
-        channel: msg.channel,
-        payload: msg.payload ?? null,
-      });
-      void this.fire('notify');
+      this.onNotification(msg.payload);
     });
 
     await client.query(`LISTEN ${this.channel}`);
