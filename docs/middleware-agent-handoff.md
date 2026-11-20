@@ -10016,7 +10016,7 @@ enthält **keine** Facilitation-Tabellen. Spec: `specs/2043-native-facilitators/
   422 `invalid_archetype_settings`, Audit `agent.archetype_settings_change`.
   Jeder Save feuert den `agents`-Notify-Trigger und damit ein Registry-Reload.
 - `agentTurn@2` `getProfile` gibt die Werte, die noch zu den Feldern passen,
-  als `AgentProfile.archetypeSettings` ans Plugin (plugin-api 1.81.0);
+  als `AgentProfile.archetypeSettings` ans Plugin (plugin-api 1.80.0);
   nicht gesetzt = Instanz-Einstellung des Plugins.
 - `GET /api/v1/operator/agents` trägt `own_identity_channels`
   (`ConfigStore.listChannelIdentities`). Die web-ui nennt einen Facilitator

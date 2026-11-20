@@ -1,6 +1,6 @@
 /**
  * #2066 (spec 2043 §7) — per-agent archetype settings (`agents.archetype_settings`,
- * migration 0107): empty by default, merged per key, `null` removes a key, the
+ * migration 0106): empty by default, merged per key, `null` removes a key, the
  * column only holds an object, and a deleted agent has none.
  */
 

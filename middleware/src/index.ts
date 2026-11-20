@@ -2736,7 +2736,7 @@ async function main(): Promise<void> {
     );
   }
   const graphPool = serviceRegistry.get<Pool>('graphPool');
-  // #2066 — per-agent archetype settings (migration 0107); none without a database.
+  // #2066 — per-agent archetype settings (migration 0106); none without a database.
   const agentArchetypeSettingsStore = graphPool ? createAgentArchetypeSettingsStore(graphPool) : undefined;
   const graphTenantId = process.env['GRAPH_TENANT_ID'] ?? 'default';
 
