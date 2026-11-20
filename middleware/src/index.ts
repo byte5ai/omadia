@@ -118,7 +118,7 @@ import {
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
-import { archetypeAdds, archetypeOf, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, resolveScopedBundle } from '@omadia/orchestrator';
+import { archetypeAdds, archetypeOf, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, MemberBaselineGrantStore, resolveScopedBundle } from '@omadia/orchestrator';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
   OrchestratorRegistry as MultiOrchestratorRegistry,
@@ -1412,36 +1412,52 @@ async function main(): Promise<void> {
     registerProviderFromPlugin(entry.plugin.id);
   }
 
-  // #575 — the audience floor's grant store. Published HERE, before
+  // #575 / #2048 — the audience floor's grant store. Published HERE, before
   // `activateAllInstalled()`, because the orchestrator plugin reads the
-  // services it consumes at its own activate(); published as a LATE-BOUND
-  // wrapper because the Postgres pool it needs is itself published by the
+  // services it consumes at its own activate(); the Postgres part is
+  // LATE-BOUND because the pool it needs is itself published by the
   // knowledge-graph plugin during that same activation pass and is only
   // readable afterwards. `audienceGrantStoreRef` is filled in below, where
   // `graphPool` resolves — the same forward-reference shape the conductor's
   // template registrar uses.
   //
-  // Nothing is published when the flag is off, and that absence is what keeps
-  // the three guards inert: the orchestrator installs an audience provider only
-  // when it received a grant store, so an unconfigured deployment behaves
-  // exactly as before ("not enforced ≠ closed").
+  // Since #2048 the floor is on by default. `MemberBaselineGrantStore` gives
+  // every resolved person the member baseline (`AUDIENCE_BASELINE_GRANTS`) on
+  // top of the stored grants, so an instance without a seeded grant table
+  // keeps working while unresolvable participants and explicit prohibitions
+  // still bind the room. Without Postgres only the baseline applies.
+  //
+  // Nothing is published when the operator switched the floor off, and that
+  // absence is what keeps the three guards inert ("not enforced ≠ closed").
   let audienceGrantStoreRef: PostgresGrantStore | undefined;
   let attachmentBindingStoreRef: PostgresAttachmentBindingStore | undefined;
   if (config.AUDIENCE_FLOOR_ENABLED) {
-    serviceRegistry.provide(
-      'audienceGrants',
-      createLateBoundGrantStore(() => audienceGrantStoreRef),
-    );
+    const storedGrants = config.DATABASE_URL
+      ? createLateBoundGrantStore(() => audienceGrantStoreRef)
+      : undefined;
+    const audienceGrants =
+      config.AUDIENCE_BASELINE_GRANTS === 'member'
+        ? new MemberBaselineGrantStore(storedGrants)
+        : storedGrants;
+    if (!audienceGrants) {
+      throw new Error(
+        '[middleware] AUDIENCE_BASELINE_GRANTS=none requires Postgres (DATABASE_URL) — ' +
+          'without stored grants the floor would refuse every tool call in every room.',
+      );
+    }
+    serviceRegistry.provide('audienceGrants', audienceGrants);
     // #575 — pins each attachment handle to the room that minted it. Same flag,
-    // because it is the same policy: without the floor there is no notion of a
-    // room to bind to, and enforcing one alone would refuse handles for a
-    // deployment that never opted into audience control at all.
-    serviceRegistry.provide(
-      'attachmentBindings',
-      createLateBoundAttachmentBindingStore(() => attachmentBindingStoreRef),
-    );
+    // because it is the same policy; it needs Postgres to remember the pins.
+    if (config.DATABASE_URL) {
+      serviceRegistry.provide(
+        'attachmentBindings',
+        createLateBoundAttachmentBindingStore(() => attachmentBindingStoreRef),
+      );
+    }
     console.log(
-      '[middleware] #575 audience floor ENABLED — grants read from Postgres; rooms are limited to what every participant is granted, and attachment handles only redeem in the room that minted them',
+      `[middleware] audience floor ENABLED (baseline=${config.AUDIENCE_BASELINE_GRANTS}, grants=${
+        config.DATABASE_URL ? 'Postgres' : 'baseline only'
+      }) — rooms are limited to what every participant may do`,
     );
   }
 
@@ -2656,15 +2672,20 @@ async function main(): Promise<void> {
   // empty table first.
   const audienceGrantStore = graphPool ? new PostgresGrantStore(graphPool) : undefined;
   if (config.AUDIENCE_FLOOR_ENABLED) {
-    if (!graphPool || !audienceGrantStore) {
+    // The strict reading (`AUDIENCE_BASELINE_GRANTS=none`) has no answer
+    // without stored grants: every room would refuse every tool, recall
+    // nothing and read no attachment, while looking configured.
+    if (config.AUDIENCE_BASELINE_GRANTS === 'none' && (!graphPool || !audienceGrantStore)) {
       throw new Error(
-        '[middleware] AUDIENCE_FLOOR_ENABLED=true requires Postgres (DATABASE_URL) — ' +
+        '[middleware] AUDIENCE_BASELINE_GRANTS=none requires Postgres (DATABASE_URL) — ' +
           'the in-memory backend has nowhere to store grants, and the floor fails closed, ' +
           'so booting like this would silently refuse every tool call in every room.',
       );
     }
-    audienceGrantStoreRef = audienceGrantStore;
-    attachmentBindingStoreRef = new PostgresAttachmentBindingStore(graphPool);
+    if (graphPool && audienceGrantStore) {
+      audienceGrantStoreRef = audienceGrantStore;
+      attachmentBindingStoreRef = new PostgresAttachmentBindingStore(graphPool);
+    }
   }
 
   /**
@@ -7335,6 +7356,15 @@ async function main(): Promise<void> {
     engineSources: facilitationEngineSources,
     executionFor: (pluginId) => executionRef.current?.serviceFor(pluginId),
     maxTurnsPerMinute: config.AGENT_TURN_MAX_PER_MINUTE,
+    // #2048 — the audience of a facilitator's turn is the conversation, read
+    // as the agent's OWN identity (never the default bot's view).
+    roster: async (channelType, conversationId, agentSlug) => {
+      const identity = getRegistry()?.channelIdentityFor(agentSlug, channelType);
+      if (!identity) return undefined;
+      return conversationRosterRegistry.getRoster(channelType, conversationId, {
+        asChannelKey: identity.channelKey,
+      });
+    },
     language: () => {
       const raw = installedRegistry.get('@omadia/orchestrator')?.config?.['ai_disclosure_locale'];
       return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : undefined;

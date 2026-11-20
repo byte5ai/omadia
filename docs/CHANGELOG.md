@@ -36,6 +36,30 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — The audience floor is on by default (#2048, epic #2042)
+
+- **Before:** the floor that limits a room to what every person present may do
+  ran only with `AUDIENCE_FLOOR_ENABLED=true` and a seeded grant table, and
+  even then never on the streaming turn path (web chat, every channel).
+  Consultations between agents (#2047) need it active (spec 2042 G15, §5.4).
+- **Now:** `AUDIENCE_FLOOR_ENABLED` defaults to `true` and is installed on both
+  turn paths. Every resolved person holds a member baseline
+  (`AUDIENCE_BASELINE_GRANTS=member`: any tool the agent itself holds via the
+  new `tool:*` capability, recall, attachment reads); explicit prohibitions per
+  person or role still bind the whole room and beat the baseline. Works without
+  Postgres (baseline only); `AUDIENCE_BASELINE_GRANTS=none` keeps the strict
+  #575 reading and still needs Postgres.
+- **Who the audience is:** web, desktop, CLI, API and 1:1 channel turns: the
+  turn owner. Group turns: the channel's participant list, without other
+  agents' bots. Facilitator turns (`agentTurn@2`) read the conversation's
+  roster as the agent's own identity. Schedules and Conductor steps have no
+  reader and no floor.
+- **Fail-closed, by design:** a group in a channel that provides no
+  participant list (today Slack, Discord, WhatsApp, iMessage — S6 adds them),
+  or a participant who cannot be resolved, refuses every tool. The refusal now
+  says why ("this channel does not tell omadia who is in the conversation …").
+  Switch off with `AUDIENCE_FLOOR_ENABLED=false`.
+
 ### Fixed — Stopping a single process no longer needs the agent's name (#2090, epic #2043)
 
 - `POST /api/v1/operator/execution/kill-switches` with `level: "process"`

@@ -32,6 +32,8 @@ export function publishAgentTurnService(deps: {
   executionFor?: (pluginId: string) => ExecutionAuthorizationService | undefined;
   maxTurnsPerMinute: number;
   language?: () => string | undefined;
+  /** #2048 — the conversation roster as the agent's own identity. */
+  roster?: AgentTurnServiceDeps['roster'];
   log: (message: string) => void;
 }): void {
   // One history and one budget for the process, shared by every facade.
@@ -50,6 +52,7 @@ export function publishAgentTurnService(deps: {
       history,
       budget,
       ...(deps.language ? { language: deps.language } : {}),
+      ...(deps.roster ? { roster: deps.roster } : {}),
       log: deps.log,
     };
   };

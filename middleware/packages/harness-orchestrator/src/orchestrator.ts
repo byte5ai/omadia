@@ -310,11 +310,13 @@ import {
   guardToolEgress,
 } from './audienceFloorGuard.js';
 import {
+  audienceRoomFor,
   createAudienceFloorProvider,
   knowledgeGraphPrincipalResolver,
 } from './audienceFloorProvider.js';
 import { guardToolCommands } from './commandPolicyGuard.js';
 import {
+  CHANNEL_KIND_BY_ORIGIN,
   resolveRunTraceOwner,
   resolveTurnOwnerIdentity,
   runTraceOwnerId,
@@ -5240,6 +5242,40 @@ export class Orchestrator {
   }
 
   /**
+   * #575 / #2048 — the audience floor provider for one turn, as a spread for
+   * the turn context. Installed whenever the deployment supplied a grant store,
+   * which since #2048 is every deployment unless the operator switched the
+   * floor off (`AUDIENCE_FLOOR_ENABLED=false`); without one the three guards
+   * short-circuit ("not enforced ≠ closed").
+   *
+   * Deliberately not memoized: the egress guard re-evaluates per tool call so
+   * a mid-turn joiner narrows the floor, and caching here would hand it the
+   * turn's opening answer every time.
+   */
+  private audienceFloorFor(
+    input: ChatTurnInput,
+    parent: TurnContextValue | undefined,
+    turnOwnerId: string | undefined,
+  ): Pick<TurnContextValue, 'audienceFloor'> {
+    if (!this.audienceGrants) return {};
+    const room = audienceRoomFor(input, turnOwnerId);
+    if (!room) return {};
+    return {
+      audienceFloor: createAudienceFloorProvider({
+        participants: parent?.chatParticipants,
+        resolvePrincipal: knowledgeGraphPrincipalResolver(
+          this.knowledgeGraph,
+          input.channelIdentity?.channelKind ??
+            (input.origin ? CHANNEL_KIND_BY_ORIGIN[input.origin.channelType] : undefined),
+        ),
+        roles: this.audienceRoleSources,
+        grants: this.audienceGrants,
+        room,
+      }),
+    };
+  }
+
+  /**
    * The turn's binding, with the room's audience resolved first when the
    * agent runs `members` context memory. The audience is async (roster and
    * identity lookups), the binding itself is not, so this is the one await in
@@ -5541,25 +5577,7 @@ export class Orchestrator {
         // every call as `unresolved` and then fails closed. See the W4-1 block
         // above for where the value comes from.
         ...(mcpUserKey ? { mcpUserKey } : {}),
-        // #575 — installed ONLY when the deployment supplied a grant store.
-        // Without it the three guards short-circuit and behaviour is unchanged,
-        // which is the "not enforced ≠ closed" rule the guards are built on.
-        // Deliberately not memoized: the egress guard re-evaluates per tool
-        // call so a mid-turn joiner narrows the floor, and caching here would
-        // hand it the turn's opening answer every time.
-        ...(this.audienceGrants
-          ? {
-              audienceFloor: createAudienceFloorProvider({
-                participants: parent?.chatParticipants,
-                resolvePrincipal: knowledgeGraphPrincipalResolver(
-                  this.knowledgeGraph,
-                  input.channelIdentity?.channelKind,
-                ),
-                roles: this.audienceRoleSources,
-                grants: this.audienceGrants,
-              }),
-            }
-          : {}),
+        ...this.audienceFloorFor(input, parent, runTraceUserId),
         ...(privacyHandle ? { privacyHandle } : {}),
         ...(parent?.captureRawToolResult
           ? { captureRawToolResult: parent.captureRawToolResult }
@@ -7839,6 +7857,10 @@ export class Orchestrator {
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
+      // #2048 — the streaming path is what channel adapters and the web chat
+      // call; it carried no floor at all before, so every guard stood down
+      // on exactly the turns that have an audience.
+      ...this.audienceFloorFor(input, parent, runTraceUserId),
       // W3-A / W4-1 — see the matching `turnContext.run` above.
       ...(mcpUserKey ? { mcpUserKey } : {}),
       ...(privacyHandle ? { privacyHandle } : {}),

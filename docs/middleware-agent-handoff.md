@@ -4390,6 +4390,13 @@ Admin-Passwort-Reset, Deaktivieren und Löschen beenden alle Sitzungen des
 Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf“)
 — ohne eigene Env-Variable.
 
+### Audience-Floor standardmäßig an (#575, #2048, Epic #2042)
+
+| Variable | Wirkung |
+|---|---|
+| `AUDIENCE_FLOOR_ENABLED` | Default **`true`** seit #2048 (Spec 2042 G15). Ein Raum darf einen Agenten nur tun lassen, was **jede** anwesende Person darf (Egress-, Recall- und Attachment-Guard in `audienceFloorGuard.ts`). Installiert auf beiden Turn-Pfaden (`runTurn` und `chatStream`; der Streaming-Pfad hatte vorher gar keinen Floor). Raumart aus `audienceRoomFor`: Web/Desktop/CLI/API und 1:1-Kanalturns = nur der Turn-Owner; Gruppen = Teilnehmerliste des Kanals (Agenten-Bots zählen nicht); Turns ohne Kanal und ohne Owner (Schedules, Conductor-Steps) = kein Floor. Fail-closed: Kanal ohne Teilnehmerliste in Gruppen (heute Slack, Discord, WhatsApp, iMessage) oder eine nicht auflösbare Person ⇒ jedes Tool wird mit Begründung verweigert. Facilitator-Turns (`agentTurn@2`) lesen die Teilnehmerliste der Konversation als eigene Identität des Agenten. `false` schaltet alle Guards ab; Rückfragen zwischen Agenten (#2047) brauchen den Floor. |
+| `AUDIENCE_BASELINE_GRANTS` | `member` (Default): jede aufgelöste Person hält `tool:*` (jedes Tool, das der Agent selbst hat), `memory:recall`, `memory:recall:cross_scope`, `attachment:read` (`MemberBaselineGrantStore`); Verbote pro Person/Rolle über `/api/v1/admin/audience-grants/{direct,roles}/deny` schlagen die Basis. Läuft auch ohne Postgres (dann nur Basis). `none`: strikte #575-Lesart, nur explizite Grants; braucht Postgres, sonst Boot-Abbruch. |
+
 ### Request-Trust-Boundary (#1310, security-architecture §10o)
 
 | Variable | Wirkung |

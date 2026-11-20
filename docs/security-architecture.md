@@ -850,6 +850,23 @@ registry handler (`src/platform/pluginContext.ts`):
   A new native tool bound to shared or unscoped state must be routed or denied
   the same way before it is registered.
 
+### The audience floor is on by default (#2048)
+
+Since #2048 every deployment enforces the audience floor (#575) unless the
+operator sets `AUDIENCE_FLOOR_ENABLED=false`. The default answer to "what may a
+person do" is the member baseline (`MemberBaselineGrantStore`): `tool:*`,
+recall and attachment reads for every person resolved to a `user:` principal.
+That is never more than the agent itself may do — the floor is only consulted
+for tools the agent holds (INV-8) — and explicit prohibitions beat it.
+
+What closes a room, deliberately: a group in a channel without a participant
+list, a roster that cannot be read, a participant who cannot be resolved, a 1:1
+whose owner cannot be resolved. Turns with no channel and no owner (schedules,
+Conductor steps) have no reader, so the floor does not apply; they stay bounded
+by the agent's own grants. Known gap: a channel roster that lists only part of
+the members (Telegram administrators) still bounds the room by the listed part;
+member-scoped memory (`completeRoster`) is stricter.
+
 ### Context memory: what a turn may recall (`enforce-strict`, `members`)
 
 Per-agent switch `agents.context_memory`. Two modes put a boundary around

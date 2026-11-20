@@ -799,6 +799,18 @@ export type { AttachmentByteStore } from './attachmentReaderFactory.js';
 // #575 — the handle→room binding contract. Exported so the kernel can supply a
 // Postgres implementation; the enforcement itself stays inside the reader
 // wrapper, where every resolution path is covered by construction.
+// #2048 — the audience floor on by default: the member baseline every resolved
+// person holds, and the room classification the per-turn provider uses.
+export {
+  MEMBER_BASELINE_CAPABILITIES,
+  MemberBaselineGrantStore,
+} from './memberBaselineGrantStore.js';
+export {
+  audienceRoomFor,
+  chatParticipantsFromRoster,
+  createAudienceFloorProvider,
+  type AudienceRoom,
+} from './audienceFloorProvider.js';
 export {
   bindingForRawScope,
   bindingForScope,
