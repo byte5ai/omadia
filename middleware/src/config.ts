@@ -326,19 +326,27 @@ export const ConfigSchema = z.object({
     .transform((v) => v === 'true')
     .default(true),
 
-  // #575 — enforce the audience floor: a room may only do what EVERY
-  // participant is granted. Off by default, and that default is load-bearing
-  // rather than cautious. The floor fails closed by design, so switching it on
-  // against an empty grant table does not mean "no policy yet" — it means every
-  // tool refused, no context recalled and no attachment readable, in every
-  // room, at once. Seed and review the grants through
-  // /api/v1/admin/audience-grants (available whenever Postgres is), THEN set
-  // this. It also needs Postgres: with the in-memory backend there is nowhere
-  // durable for grants to live, and a restart would shut the rooms.
+  // #575 / #2048 — enforce the audience floor: a room may only do what EVERY
+  // participant may do. ON by default since #2048 (spec 2042 G15): a person
+  // who cannot be resolved closes the room, and an explicit prohibition from
+  // /api/v1/admin/audience-grants binds the whole room. What an ordinary,
+  // resolved person may do by default is AUDIENCE_BASELINE_GRANTS below.
+  // `false` switches every guard off (the pre-#2048 behaviour); consultations
+  // between agents need the floor and are refused without it (spec §5.4).
   AUDIENCE_FLOOR_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
-    .default(false),
+    .default(true),
+
+  // #2048 — what every resolved person holds before any explicit grant:
+  //  - `member` (default): any tool the agent itself was granted (`tool:*`),
+  //    recall and attachment reads; narrowed per person or role by explicit
+  //    prohibitions. Works without Postgres (prohibitions then cannot be
+  //    stored, so only the baseline applies).
+  //  - `none`: the strict #575 reading — only explicit grants count, so an
+  //    empty grant table refuses every tool in every room. Needs Postgres;
+  //    seed the grants BEFORE switching to it.
+  AUDIENCE_BASELINE_GRANTS: z.enum(['member', 'none']).default('member'),
 
   // #575 — read the audience floor's host policy as an ALLOW-LIST rather than
   // as prohibitions only.

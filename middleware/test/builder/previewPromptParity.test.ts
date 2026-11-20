@@ -14,10 +14,11 @@ import { composePersonaSection } from '../../src/plugins/personaCompose.js';
 import { compileSycophancyGuard } from '../../src/plugins/sycophancyGuard.js';
 
 /**
- * Issue #55 follow-up — byte-identical guarantee between the runtime
- * compose path (reads AGENT.md → parse → call inner helpers) and the
- * preview-prompt route (calls the same inner helpers directly with the
- * draft spec).
+ * Issue #55 follow-up — byte-identical guarantee between the AGENT.md
+ * compose path (reads AGENT.md → parse → call inner helpers) and a caller
+ * that passes the same settings to the inner helpers directly, as the
+ * agent identity prompt does (`services/agentIdentityPrompt.ts`). The
+ * Plugin Builder's preview-prompt route this once guarded is gone (#2049).
  *
  * Both paths share the inner helpers `composePersonaSection`,
  * `compileBoundariesSection`, `compileSycophancyGuard`. This test

@@ -16,10 +16,10 @@ import { emptyAgentSpec, type AgentSpecSkeleton } from './types.js';
  *
  *   2. Source-only: legacy / hand-authored bundles ship only `agent.md`
  *      (no spec.json). We seed an empty spec with the bundle's name as
- *      identity placeholder and the rendered agent.md as `skill.role`
- *      so the operator gets something visible in the Builder UI. The
- *      operator must then complete identity (`id`, `version`, `category`)
- *      before re-installing.
+ *      identity placeholder. The agent.md body is not carried over: it is
+ *      an agent's role text, and a Plugin Builder draft is a capability
+ *      plugin without a persona (spec 2042 §5.10). The operator completes
+ *      the plugin in the Builder; the result's `source` says so.
  */
 export interface ReconstructSpecInput {
   bundleAgentMd: Buffer;
@@ -78,29 +78,9 @@ export function reconstructSpecFromBundle(
     };
   }
 
-  const skeleton = emptyAgentSpec();
-  const role = stripFrontmatter(input.bundleAgentMd.toString('utf8')).trim();
-  if (role.length > 0) {
-    skeleton.skill = { role };
-  }
   return {
-    spec: skeleton,
+    spec: emptyAgentSpec(),
     name: input.fallbackName,
     source: 'agent_md_fallback',
   };
-}
-
-/**
- * Strip a leading YAML frontmatter block (delimited by `---` lines) so the
- * markdown body alone can be used as a `skill.role` seed. The Bundle's
- * `agent.md` may contain a frontmatter (Persona-UI Phase 3+ convention),
- * but the `skill.role` field is meant to be plain text — leaving the
- * frontmatter in place would surface as raw YAML in the Builder UI.
- */
-function stripFrontmatter(content: string): string {
-  if (!content.startsWith('---')) return content;
-  const closing = content.indexOf('\n---', 3);
-  if (closing === -1) return content;
-  const after = content.slice(closing + 4);
-  return after.startsWith('\n') ? after.slice(1) : after;
 }

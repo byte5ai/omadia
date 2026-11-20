@@ -18,6 +18,7 @@
 import type {
   ChatAgent,
   ChatTurnInput,
+  DisclosureMarkerStore,
   DisclosureSeenStore,
   GrantStore,
 } from '@omadia/channel-sdk';
@@ -175,8 +176,9 @@ export interface AgentRuntimeConfig {
    * silently overruled by a stale deployment variable.
    */
   readonly cliTurnSeconds?: number;
-  /** Wave 8 — this Agent's direct-answer persona-skill candidates, resolved
-   *  by the caller from `agent_persona_skills` (see {@link OrchestratorOptions}).
+  /** #2051 — this Agent's working-mode candidates, resolved by the caller
+   *  from `agent_persona_skills` (see {@link OrchestratorOptions}). A mode is
+   *  composed beneath the identity for one turn; it never replaces it.
    *  Per-agent, unlike the platform-shared `OrchestratorDeps` fields below. */
   readonly personaSkills?: readonly OrchestratorPersonaSkill[];
   /**
@@ -189,8 +191,8 @@ export interface AgentRuntimeConfig {
    * behaviour down means that text, not that text appended to a generic
    * one. Absent/blank → the platform identity, exactly as before.
    *
-   * Per-turn persona skills (Wave 8) still win over both — they replace this
-   * slot for one turn, which is what they always did.
+   * A per-turn working mode (#2051) never touches this slot: it is composed
+   * beneath whichever identity applies, for one turn.
    */
   readonly identityInstructions?: string;
   /**
@@ -447,6 +449,12 @@ export interface OrchestratorDeps {
    * whenever an operator changed something unrelated.
    */
   readonly aiDisclosureSeenStore?: DisclosureSeenStore;
+  /**
+   * #2087 — process-shared `per_conversation` marker state, for the same
+   * reason: a speaker change is only visible to a store that sees every agent
+   * of the conversation.
+   */
+  readonly aiDisclosureMarkerStore?: DisclosureMarkerStore;
   /**
    * #579 — resolved org security posture (org floor + optional scope tighten +
    * shadow/enforce mode + optional external screen URL). Absent → the shipping
@@ -1054,6 +1062,9 @@ export function buildOrchestratorForAgent(
     ...(deps.aiDisclosure ? { aiDisclosure: deps.aiDisclosure } : {}),
     ...(deps.aiDisclosureSeenStore
       ? { aiDisclosureSeenStore: deps.aiDisclosureSeenStore }
+      : {}),
+    ...(deps.aiDisclosureMarkerStore
+      ? { aiDisclosureMarkerStore: deps.aiDisclosureMarkerStore }
       : {}),
     // #579 — org security posture + its screener/audit sink. Posture absent →
     // orchestrator applies the shipping default (`auto`); the screener + sink

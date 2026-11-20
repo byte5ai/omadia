@@ -1,5 +1,7 @@
 import {
+  InMemoryDisclosureMarkerStore,
   InMemoryDisclosureSeenStore,
+  isAiDisclosureFrequency,
   POSTURE_ORDER,
   RoleSourceRegistry as RoleSourceRegistryImpl,
   type ChatAgent,
@@ -410,6 +412,12 @@ function resolveAiDisclosureSetup(
     typeof nameRaw === 'string' && nameRaw.trim().length > 0
       ? nameRaw.trim()
       : undefined;
+  const frequencyRaw = read('ai_disclosure_frequency');
+  const frequency = isAiDisclosureFrequency(frequencyRaw) ? frequencyRaw : undefined;
+  const pauseRaw = read('ai_disclosure_pause_minutes');
+  const pauseParsed = parseNumberOrDefault(pauseRaw, Number.NaN);
+  const pauseMinutes =
+    Number.isFinite(pauseParsed) && pauseParsed >= 1 ? Math.floor(pauseParsed) : undefined;
   const noteRaw = read('ai_disclosure_operator_note');
   const operatorNote =
     typeof noteRaw === 'string' && noteRaw.trim().length > 0
@@ -421,7 +429,9 @@ function resolveAiDisclosureSetup(
     overrides === undefined &&
     locale === undefined &&
     assistantName === undefined &&
-    operatorNote === undefined
+    operatorNote === undefined &&
+    frequency === undefined &&
+    pauseMinutes === undefined
   ) {
     return undefined;
   }
@@ -434,6 +444,8 @@ function resolveAiDisclosureSetup(
     ...(locale ? { locale } : {}),
     ...(assistantName ? { assistantName } : {}),
     ...(operatorNote ? { operatorNote } : {}),
+    ...(frequency ? { frequency } : {}),
+    ...(pauseMinutes !== undefined ? { pauseMinutes } : {}),
   };
 }
 
@@ -1268,6 +1280,9 @@ export async function activate(
     // the registry builds: a per-instance store would re-fold the marking into
     // a live conversation whenever an unrelated config tweak rebuilt the Agent.
     aiDisclosureSeenStore: new InMemoryDisclosureSeenStore(),
+    // #2087 — likewise one marker store: a speaker change is only visible to a
+    // store that sees every agent of the conversation.
+    aiDisclosureMarkerStore: new InMemoryDisclosureMarkerStore(),
     ...(turnHookRegistry ? { turnHookRegistry } : {}),
     runTraceStats,
     // W2-1 (#544) — the SAME store instance the kernel's `McpManager` parks

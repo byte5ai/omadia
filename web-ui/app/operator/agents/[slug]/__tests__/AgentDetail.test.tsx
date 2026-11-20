@@ -248,7 +248,7 @@ describe('AgentDetail plugin assignment', () => {
       <AgentDetail agent={agent({ plugins: [] })} />,
     );
     expect(
-      await screen.findByText(/No plugins are assigned to this orchestrator/),
+      await screen.findByText(/No plugins are assigned to this agent/),
     ).toBeInTheDocument();
   });
 
@@ -261,7 +261,39 @@ describe('AgentDetail plugin assignment', () => {
     });
     await user.click(odoo);
 
-    expect(mockToggle).toHaveBeenCalledWith('hr', '@omadia/odoo', false);
+    expect(mockToggle).toHaveBeenCalledWith('hr', '@omadia/odoo', false, {
+      confirmBroadReach: false,
+    });
+    await waitFor(() => expect(mockRefresh).toHaveBeenCalled());
+  });
+
+  it('#2054 — a grant into every connected system asks first and repeats it confirmed', async () => {
+    mockToggle.mockRejectedValueOnce(
+      new ApiError(
+        409,
+        'PATCH /v1/operator/agents/hr/plugins failed: 409',
+        JSON.stringify({
+          error: 'broad_reach_confirmation_required',
+          slug: 'hr',
+          reach: { connected_systems: 2, systems: [{ name: 'Odoo' }, { name: 'Jira' }] },
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    await renderOnPluginsTab(<AgentDetail agent={agent()} />);
+
+    await user.click(await screen.findByRole('checkbox', { name: 'Enable or disable Odoo' }));
+
+    expect(await screen.findByText(/access to every connected system\?/)).toBeInTheDocument();
+    expect(screen.getByTestId('broad-reach-systems').textContent).toContain('Jira');
+    expect(mockRefresh).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Grant access to everything' }));
+
+    await waitFor(() =>
+      expect(mockToggle).toHaveBeenLastCalledWith('hr', '@omadia/odoo', false, {
+        confirmBroadReach: true,
+      }),
+    );
     await waitFor(() => expect(mockRefresh).toHaveBeenCalled());
   });
 
@@ -282,7 +314,7 @@ describe('AgentDetail plugin assignment', () => {
 
     expect(
       await screen.findByText(
-        /This plugin is not assigned to the orchestrator anymore/,
+        /This plugin is not assigned to the agent anymore/,
       ),
     ).toBeInTheDocument();
     // The raw machine code must never surface as UI text.
@@ -296,9 +328,11 @@ describe('AgentDetail plugin assignment', () => {
 
     await user.click(await screen.findByTestId('plugins-dnd-save'));
 
-    expect(mockReplace).toHaveBeenCalledWith('hr', [
-      { id: '@omadia/odoo', enabled: true, config: {} },
-    ]);
+    expect(mockReplace).toHaveBeenCalledWith(
+      'hr',
+      [{ id: '@omadia/odoo', enabled: true, config: {} }],
+      { confirmBroadReach: false },
+    );
     await waitFor(() => expect(mockRefresh).toHaveBeenCalled());
   });
 

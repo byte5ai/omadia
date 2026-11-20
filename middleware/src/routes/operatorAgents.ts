@@ -53,10 +53,32 @@ import {
 } from '../platform/facilitatorGuard.js';
 import { attachEngineToFacilitator } from '../platform/facilitatorEngineAttach.js';
 import { erroredArchetypePlugin } from '../platform/archetypeRegistrySync.js';
+import {
+  PREVIEW_DRAFT_AGENT_SLUG_PREFIX,
+  isPreviewDraftAgentSlug,
+} from '../plugins/builder/previewDraftAgents.js';
 import { assertFacilitatorIdentity } from '../services/facilitatorContract.js';
 import { createFacilitationEngineStatusHandler } from './facilitationEngineStatus.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
+import { isCapabilityPlugin } from '../plugins/capabilityPlugins.js';
+import {
+  loadAgentReach,
+  loadReachEnvironment,
+  reachDto,
+  type ReachSources,
+} from '../agents/agentReachSources.js';
+import {
+  requireBroadReachConfirmation,
+  withPluginRow,
+  type BroadReachConfirmation,
+} from '../agents/broadReachGate.js';
+import { firstAgentSlug, onboardingTarget } from '../agents/firstAgentOnboarding.js';
+import {
+  AgentTemplateExportError,
+  agentTemplateFromAgent,
+  agentTemplateYaml,
+} from '../agents/agentTemplateExport.js';
 import {
   buildBotHandle,
   TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION,
@@ -154,6 +176,9 @@ interface AgentPluginCatalogEntry {
    *  operator dashboard to indent dependants under their parent in the
    *  plugin multi-select. */
   readonly depends_on: readonly string[];
+  /** #2054 — a capability plugin (`capabilityPlugins.ts`): the only kind the
+   *  install flow offers to grant to agents. */
+  readonly capability: boolean;
 }
 
 /**
@@ -171,6 +196,7 @@ interface AgentPluginCatalogEntry {
  *   PUT    /api/v1/operator/agents/:slug/plugins         replace agent plugin set
  *   PATCH  /api/v1/operator/agents/:slug/plugins         enable/disable ONE plugin (body: { id, enabled })
  *   GET    /api/v1/operator/agents/:slug/grants          per-agent tool grants + plugin MCP grants + grant epoch
+ *   GET    /api/v1/operator/agents/:slug/template        the agent as one agent_templates entry (#2049; ?format=yaml)
  *   GET    /api/v1/operator/agents/:slug/context-memory  read the W5 memory-ACL rollout mode (#899)
  *   PUT    /api/v1/operator/agents/:slug/context-memory  set the W5 memory-ACL rollout mode (body: { mode })
  *   POST   /api/v1/operator/agents/:slug/teams-identity   create-or-provision Teams identity (async, W1a #860)
@@ -196,7 +222,9 @@ const AgentCreateSchema = z.object({
   name: z.string().min(1).max(120),
   description: z.string().max(2000).optional(),
   privacy_profile: z.enum(['strict', 'default']).optional(),
-  status: z.enum(['enabled', 'disabled']).optional(),
+  // #2049 — `draft` only on create: a preview agent that is never addressable
+  // until an operator enables it. An existing agent never goes back to draft.
+  status: z.enum(['enabled', 'disabled', 'draft']).optional(),
   // #2088 — only on create: the archetype is fixed for the agent's lifetime.
   archetype: z.string().refine(isArchetypeId, 'archetype must be a registered archetype id').optional(),
   // The name of `archetype` before #2088. Not accepted any more, and named
@@ -208,7 +236,8 @@ const AgentCreateSchema = z.object({
 /** Slugs that collide with a static segment of this router. */
 // `deleted`: the list of tombstones and their purge (#2088). The placeholder
 // slug of a tombstone starts with `deleted-`, which no route addresses.
-const RESERVED_AGENT_SLUGS: ReadonlySet<string> = new Set(['facilitation-engine', 'deleted']);
+// `onboarding`: the first-run flow (#2054).
+const RESERVED_AGENT_SLUGS: ReadonlySet<string> = new Set(['facilitation-engine', 'deleted', 'onboarding']);
 
 const AgentPatchSchema = z.object({
   name: z.string().min(1).max(120).optional(),
@@ -272,6 +301,8 @@ const AgentPluginsSchema = z.object({
       enabled: z.boolean().optional(),
     }),
   ),
+  /** #2054 — confirms a set that gives the agent every connected system. */
+  confirmBroadReach: z.boolean().optional(),
 });
 
 /** W0c (#861) — single-plugin toggle. The plugin id lives in the BODY, not
@@ -280,6 +311,8 @@ const AgentPluginsSchema = z.object({
 const AgentPluginToggleSchema = z.object({
   id: z.string().min(1).max(200),
   enabled: z.boolean(),
+  /** #2054 — confirms a grant that gives the agent every connected system. */
+  confirmBroadReach: z.boolean().optional(),
 });
 
 const AgentBindingsSchema = z.object({
@@ -289,6 +322,15 @@ const AgentBindingsSchema = z.object({
       channel_key: z.string().min(1).max(500),
     }),
   ),
+});
+
+/** #2054 — the first-run flow: the first agent and its explicitly chosen
+ *  capabilities (none preselected, zero allowed). */
+const FirstAgentSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().max(2000).optional(),
+  plugin_ids: z.array(z.string().min(1).max(200)).max(200),
+  confirmBroadReach: z.boolean().optional(),
 });
 
 const ResolveChannelSchema = z.object({
@@ -1700,8 +1742,8 @@ export interface OperatorAgentsRouterOptions {
   readonly getChatSessionStore: () => ChatSessionStore | undefined;
   /** Phase B — kernel-owned plugin catalog + installed-registry pair.
    *  Used by `/plugin-catalog` (B3a multi-select), `/resolve-channel`
-   *  (B3b routing tester surfaces installed channel-kind ids), and
-   *  `/fallback/rehydrate` (B3d). Optional so the router stays usable
+   *  (B3b routing tester surfaces installed channel-kind ids), the first-run
+   *  flow and `/:slug/template` (#2054, #2049). Optional so the router stays usable
    *  in tests that build it with a bare config store. */
   readonly getPluginCatalog?: () => PluginCatalog | undefined;
   readonly getInstalledRegistry?: () => InstalledRegistry | undefined;
@@ -1954,6 +1996,20 @@ export function createOperatorAgentsRouter(
   options: OperatorAgentsRouterOptions,
 ): Router {
   const router = Router();
+  // #2049 — the draft agent of a Plugin Builder preview is the preview's, not
+  // the operator's: it is read and deleted here, never configured (grants,
+  // bindings, identity, status).
+  router.use('/:slug', (req: Request, res: Response, next) => {
+    const slug = req.params['slug'];
+    if (typeof slug === 'string' && isPreviewDraftAgentSlug(slug) && !['GET', 'HEAD', 'DELETE'].includes(req.method)) {
+      res.status(409).json({
+        error: 'preview_draft_agent',
+        message: `"${slug}" is the draft agent of a Plugin Builder preview; it can only be read or deleted`,
+      });
+      return;
+    }
+    next();
+  });
   const retentionDays = (): number => options.tombstoneRetentionDays ?? 30;
   /** The audit never fails a request: without it the change is logged. */
   const recordAudit = async (entry: AuditEntryInput): Promise<void> => {
@@ -1963,6 +2019,56 @@ export function createOperatorAgentsRouter(
     } catch (err) {
       console.error(`[security-audit] ${entry.action} ${entry.target} could not be recorded:`, err instanceof Error ? err.message : String(err));
     }
+  };
+
+  /** #2054 — what an agent's reach is computed from; every source optional. */
+  const reachSources = (): ReachSources => ({
+    catalog: options.getPluginCatalog?.(),
+    installed: options.getInstalledRegistry?.(),
+    graph: options.getAgentGraphStore?.(),
+  });
+
+  /**
+   * #2054 — spec 2042 §5.10: an agent is granted capability plugins (and an
+   * archetype plugin of its own archetype, the facilitator's engine). A NEW
+   * grant of anything else (channel, model, system module, template) is
+   * refused with 400 `not_a_capability_plugin`; rows the agent already has
+   * stay as they are. Answers and returns `true` when refused. Without a
+   * plugin catalog wired (test seams) nothing can be classified and the
+   * archetype guards above are the only check.
+   */
+  const refusedNonCapabilityGrant = (
+    res: Response,
+    agent: AgentRow,
+    requested: readonly { readonly pluginId: string; readonly enabled?: boolean | undefined }[],
+    current: readonly { readonly pluginId: string }[],
+  ): boolean => {
+    const catalog = options.getPluginCatalog?.();
+    if (!catalog) return false;
+    const held = new Set(current.map((r) => r.pluginId));
+    const own = archetypeOf(agent);
+    const refused = requested
+      .filter((g) => g.enabled !== false && !held.has(g.pluginId))
+      .map((g) => g.pluginId)
+      .filter((id) => {
+        const plugin = catalog.get(id)?.plugin;
+        if (isCapabilityPlugin(plugin)) return false;
+        return !(plugin?.kind === 'archetype' && plugin.archetype?.id === own);
+      });
+    if (refused.length === 0) return false;
+    res.status(400).json({
+      error: 'not_a_capability_plugin',
+      message: `only capability plugins can be granted to an agent; refused: ${refused.join(', ')}`,
+      plugin_ids: refused,
+    });
+    return true;
+  };
+
+  /** #2054 — answers a refused broad-reach change; `true` = refused. */
+  const refusedBroadReach = (res: Response, gate: BroadReachConfirmation): boolean => {
+    if (gate.ok) return false;
+    res.status(gate.status).json(gate.body);
+    return true;
   };
 
   function svc(): {
@@ -2077,6 +2183,157 @@ export function createOperatorAgentsRouter(
     res.status(500).json({ error: 'internal', message: (err as Error).message });
   }
 
+  /**
+   * #2054 — the reach of every listed agent. The directory must not fail
+   * because the graph store hiccups: an agent whose reach could not be
+   * computed is listed with `reach: null` (the UI says so), and the cause is
+   * logged.
+   */
+  const directoryReach = async (
+    agents: readonly { id: string; plugins: readonly { pluginId: string; enabled: boolean }[] }[],
+  ): Promise<Map<string, ReturnType<typeof reachDto>>> => {
+    const out = new Map<string, ReturnType<typeof reachDto>>();
+    try {
+      const sources = reachSources();
+      const env = await loadReachEnvironment(sources);
+      for (const a of agents) {
+        out.set(a.id, reachDto(await loadAgentReach(sources, env, a.id, a.plugins)));
+      }
+    } catch (err) {
+      console.error(
+        '[operator-agents] agent reach for the directory FAILED:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    return out;
+  };
+
+  // ── first-run flow (#2054, spec 2042 §7 "Onboarding") ───────────────
+  // Due while the instance has no agent of the operator's making (see
+  // `firstAgentOnboarding.ts`). Offers the installed capability plugins with
+  // nothing preselected; the operator may choose none.
+  const installedCapabilities = (): Array<{ id: string; name: string; kind: string }> => {
+    const catalog = options.getPluginCatalog?.();
+    const installed = options.getInstalledRegistry?.();
+    if (!catalog || !installed) return [];
+    return installed
+      .list()
+      .flatMap((entry) => {
+        const plugin = catalog.get(entry.id)?.plugin;
+        return plugin && isCapabilityPlugin(plugin)
+          ? [{ id: plugin.id, name: plugin.name, kind: plugin.kind }]
+          : [];
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  };
+
+  const currentOnboardingTarget = async (store: ConfigStore) => {
+    // A Plugin Builder preview's draft agent is no agent of the operator's.
+    return onboardingTarget((await store.listAgents()).filter((a) => !isPreviewDraftAgentSlug(a.slug)));
+  };
+
+  router.get('/onboarding', async (_req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const target = await currentOnboardingTarget(live.store);
+      res.json({
+        required: target !== undefined,
+        capabilities: target ? installedCapabilities() : [],
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.post('/onboarding/first-agent', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const body = FirstAgentSchema.parse(req.body);
+      const target = await currentOnboardingTarget(live.store);
+      if (!target) {
+        res.status(409).json({
+          error: 'onboarding_not_required',
+          message: 'the instance already has an agent of the operator\'s making',
+        });
+        return;
+      }
+      const offered = new Set(installedCapabilities().map((c) => c.id));
+      const pluginIds = [...new Set(body.plugin_ids)];
+      const notOffered = pluginIds.filter((id) => !offered.has(id));
+      if (notOffered.length > 0) {
+        res.status(400).json({
+          error: 'not_a_capability_plugin',
+          message: `not an installed capability plugin: ${notOffered.join(', ')}`,
+          plugin_ids: notOffered,
+        });
+        return;
+      }
+      // The reach check runs against the agent the flow writes; a new agent
+      // does not exist yet and has no tool grants (`id: undefined`).
+      const agentRef = { id: undefined, slug: firstAgentSlug(body.name, RESERVED_AGENT_SLUGS) };
+      const gate = await requireBroadReachConfirmation({
+        sources: reachSources(),
+        agent: agentRef,
+        change: 'grant',
+        currentPlugins: [],
+        proposed: { plugins: pluginIds.map((pluginId) => ({ pluginId, enabled: true })) },
+        confirmed: body.confirmBroadReach === true,
+        actor: auditActorFromRequest(req),
+      });
+      if (refusedBroadReach(res, gate)) return;
+      const agent = await live.store.createAgent({
+        slug: agentRef.slug,
+        name: body.name,
+        ...(body.description !== undefined ? { description: body.description } : {}),
+        status: 'enabled',
+        archetype: STANDARD_ARCHETYPE,
+      });
+      for (const pluginId of pluginIds) {
+        await live.store.upsertAgentPlugin(agent.id, { pluginId, config: {}, enabled: true });
+      }
+      if (gate.ok && gate.audit) {
+        await recordAudit({ ...gate.audit, target: `agent:${agent.id}` });
+      }
+      await live.registry.reload();
+      res.status(201).json({
+        slug: agent.slug,
+        name: agent.name,
+        plugins: pluginIds,
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── reach of one agent (#2054, spec 2042 §5.7) ──────────────────────
+  // Every connected system the agent can read or write through its grants
+  // (plugin grants + MCP grants), read and write marked separately; derived
+  // deterministically by `computeAgentReach`.
+  router.get('/:slug/reach', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const existing = await live.store.getAgentBySlug(slug);
+      if (!existing) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const sources = reachSources();
+      const env = await loadReachEnvironment(sources);
+      const rows = await live.store.listAgentPlugins(existing.id);
+      res.json({
+        slug: existing.slug,
+        ...reachDto(await loadAgentReach(sources, env, existing.id, rows)),
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
   // ── facilitation engine state (#2043) ────────────────────────────────
   // Registered before every `/:slug/...` route; it has no slug of its own.
   router.get(
@@ -2121,16 +2378,23 @@ export function createOperatorAgentsRouter(
     const live = svc();
     if (!live) return unavailable(res);
     try {
-      const [agents, plugins, bindings, availabilityPrincipals] = await Promise.all([
+      const [allAgents, plugins, bindings, availabilityPrincipals] = await Promise.all([
         live.store.listAgents(),
         live.store.listAllAgentPlugins(),
         live.store.listChannelBindings(),
         live.store.routing.listAvailabilityPrincipals(),
       ]);
+      // #2049 — the directory lists the operator's agents; a Plugin Builder
+      // preview's draft agent belongs to the preview (Plugin Builder only).
+      const agents = allAgents.filter((a) => !isPreviewDraftAgentSlug(a.slug));
       const pluginsByAgent = groupBy(plugins, (p) => p.agentId);
       const bindingsByAgent = groupBy(bindings, (b) => b.agentId);
       const principalsByAgent = groupBy(availabilityPrincipals, (p) => p.agentId);
       const active = new Set(live.registry.list().map((a) => a.agent.id));
+      // #2054 — the directory shows every agent's reach (spec 2042 §5.7).
+      const reachByAgent = await directoryReach(
+        agents.map((a) => ({ id: a.id, plugins: pluginsByAgent.get(a.id) ?? [] })),
+      );
       res.json({
         agents: agents.map((a) => ({
           id: a.id,
@@ -2157,6 +2421,7 @@ export function createOperatorAgentsRouter(
             channel_type: b.channelType,
             channel_key: b.channelKey,
           })),
+          reach: reachByAgent.get(a.id) ?? null,
           // #2055 — who may use the agent, where (spec 2042 §5.3).
           availability: availabilityDto(a, principalsByAgent.get(a.id) ?? []),
         })),
@@ -2239,6 +2504,12 @@ export function createOperatorAgentsRouter(
       // addressed: `/facilitation-engine/...` answers the engine status.
       if (RESERVED_AGENT_SLUGS.has(body.slug)) {
         throw new ConfigValidationError(`agent slug "${body.slug}" is reserved`);
+      }
+      // #2049 — the draft agents of Plugin Builder previews own this prefix.
+      if (isPreviewDraftAgentSlug(body.slug)) {
+        throw new ConfigValidationError(
+          `agent slugs starting with "${PREVIEW_DRAFT_AGENT_SLUG_PREFIX}" are reserved for Plugin Builder previews`,
+        );
       }
       if (body.kind !== undefined) {
         throw new ConfigValidationError('"kind" was replaced by "archetype"; send archetype');
@@ -2752,6 +3023,72 @@ export function createOperatorAgentsRouter(
     }
   });
 
+  // ── export as agent template (#2049, spec 2042 §5.2) ────────────────
+  // The agent as ONE `agent_templates:` entry in the format the manifest
+  // reader takes (`agents/agentTemplateExport.ts`): identity, persona,
+  // quality and the granted capability plugin ids. Never secrets (plugin
+  // configuration), memory, bindings or availability. `?format=yaml` is the
+  // download, JSON the default.
+  router.get('/:slug/template', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    const deps = agentIdentity(res);
+    if (!deps) return;
+    const catalog = options.getPluginCatalog?.();
+    if (!catalog) {
+      res.status(503).json({
+        error: 'plugin_catalog_unavailable',
+        message: 'the plugin catalog is not wired into the operator-agents router.',
+      });
+      return;
+    }
+    try {
+      const format = req.query['format'] ?? 'json';
+      if (format !== 'json' && format !== 'yaml') {
+        res.status(400).json({ error: 'invalid_format', message: 'format must be "json" or "yaml"' });
+        return;
+      }
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [identity, rows] = await Promise.all([
+        deps.store.getByAgentId(agent.id),
+        live.store.listAgentPlugins(agent.id),
+      ]);
+      const capabilities = rows
+        .filter((r) => r.enabled && isCapabilityPlugin(catalog.get(r.pluginId)?.plugin))
+        .map((r) => r.pluginId)
+        .sort();
+      const entry = agentTemplateFromAgent({
+        slug: agent.slug,
+        name: agent.name,
+        archetype: archetypeOf(agent),
+        identity,
+        capabilities,
+      });
+      if (format === 'yaml') {
+        res.setHeader('content-type', 'application/yaml; charset=utf-8');
+        res.setHeader(
+          'content-disposition',
+          `attachment; filename="${entry.id}.agent-template.yaml"`,
+        );
+        res.send(agentTemplateYaml(entry));
+        return;
+      }
+      res.json({ agent_templates: [entry] });
+    } catch (err) {
+      if (err instanceof AgentTemplateExportError) {
+        res.status(409).json({ error: 'template_export_invalid', message: err.message, reason: err.reason });
+        return;
+      }
+      badRequest(res, err);
+    }
+  });
+
   router.put('/:slug/identity', async (req: Request, res: Response) => {
     const live = svc();
     if (!live) return unavailable(res);
@@ -3068,11 +3405,25 @@ export function createOperatorAgentsRouter(
       const toggled = [{ pluginId: body.id, enabled: body.enabled }];
       assertFacilitatorPluginGrants(existing, toggled, engineSources());
       assertEngineOnlyForFacilitators(existing, toggled, engineSources());
+      if (refusedNonCapabilityGrant(res, existing, toggled, current)) return;
+      // #2054 — a grant that gives the agent every connected system needs
+      // the operator's explicit confirmation, and is audited.
+      const gate = await requireBroadReachConfirmation({
+        sources: reachSources(),
+        agent: existing,
+        change: 'grant',
+        currentPlugins: current,
+        proposed: { plugins: withPluginRow(current, { pluginId: body.id, enabled: body.enabled }) },
+        confirmed: body.confirmBroadReach === true,
+        actor: auditActorFromRequest(req),
+      });
+      if (refusedBroadReach(res, gate)) return;
       await live.store.upsertAgentPlugin(existing.id, {
         pluginId: body.id,
         config,
         enabled: body.enabled,
       });
+      if (gate.ok && gate.audit) await recordAudit(gate.audit);
       await live.registry.reload();
       res.json({
         ok: true,
@@ -4209,6 +4560,19 @@ export function createOperatorAgentsRouter(
       assertFacilitatorPluginGrants(existing, requested, engineSources());
       assertEngineOnlyForFacilitators(existing, requested, engineSources());
       const current = await live.store.listAgentPlugins(existing.id);
+      if (refusedNonCapabilityGrant(res, existing, requested, current)) return;
+      // #2054 — see the PATCH above.
+      const gate = await requireBroadReachConfirmation({
+        sources: reachSources(),
+        agent: existing,
+        change: 'grant',
+        currentPlugins: current,
+        // `upsertAgentPlugin` writes `enabled: true` when none is given.
+        proposed: { plugins: body.plugins.map((p) => ({ pluginId: p.id, enabled: p.enabled ?? true })) },
+        confirmed: body.confirmBroadReach === true,
+        actor: auditActorFromRequest(req),
+      });
+      if (refusedBroadReach(res, gate)) return;
       const desired = new Set(body.plugins.map((p) => p.id));
       for (const p of current) {
         if (!desired.has(p.pluginId)) {
@@ -4223,6 +4587,7 @@ export function createOperatorAgentsRouter(
           ...(p.enabled !== undefined ? { enabled: p.enabled } : {}),
         });
       }
+      if (gate.ok && gate.audit) await recordAudit(gate.audit);
       await live.registry.reload();
       res.json({ ok: true });
     } catch (err) {
@@ -4393,6 +4758,7 @@ export function createOperatorAgentsRouter(
             network_outbound: summary?.network_outbound ?? [],
             setup_fields: p.setup_fields ?? [],
             depends_on: p.depends_on ?? [],
+            capability: isCapabilityPlugin(p),
           } satisfies AgentPluginCatalogEntry;
         });
       res.json({ items: entries });

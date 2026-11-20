@@ -262,6 +262,8 @@ export class ToolPluginRuntime {
       // Every kind this runtime runs (`pluginRuntimeOf`), archetype plugins
       // included (#2088): they register tools and jobs for their agents.
       if (pluginRuntimeOf(catalogEntry.plugin.kind) !== 'tool') continue;
+      // OB-29-5 — builder-reference plugins never run (see activate()).
+      if (catalogEntry.plugin.is_reference_only === true) continue;
       const reg = this.deps.registry.get(id);
       if (!reg || reg.status !== 'active') continue;
       eligible.push(id);
@@ -380,6 +382,13 @@ export class ToolPluginRuntime {
       throw new Error(`tool-runtime: ${agentId} not in plugin catalog`);
     }
     assertStartable(catalogEntry.plugin);
+    // OB-29-5 — a builder-reference plugin (now a capability plugin, spec
+    // 2042 §5.10) is a read_reference pattern source only; it never runs.
+    if (catalogEntry.plugin.is_reference_only === true) {
+      throw new Error(
+        `tool-runtime: cannot activate '${agentId}' — plugin is marked is_reference_only=true (Builder-Reference, read_reference-only)`,
+      );
+    }
 
     // Issue #474 (round 5) — refresh the automatic OAuth-connection signal
     // BEFORE the plugin's own activate() runs, so a plugin that separately

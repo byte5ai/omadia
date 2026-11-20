@@ -5,8 +5,11 @@ import { Check, KeyRound, MessageSquare, Plug, Sparkles } from 'lucide-react';
 import { useFormatter, useTranslations } from 'next-intl';
 
 import type { PluginKind, PluginReadiness } from '../../_lib/storeTypes';
+import { GrantToAgentsStep } from './GrantToAgentsStep';
 
 interface PostInstallNextStepsProps {
+  /** #2054 — offers the plugin for a grant to agents (capability plugins only). */
+  pluginId?: string;
   pluginName: string;
   /** OM-16 — when the freshly-installed plugin still needs credentials, the
    *  setup link is the FIRST thing offered and carries the missing count.
@@ -43,6 +46,7 @@ const ATTACHABLE: ReadonlySet<PluginKind> = new Set<PluginKind>(['agent', 'tool'
  * orchestrator", and to try integrations and extensions in chat.
  */
 export function PostInstallNextSteps({
+  pluginId,
   pluginName,
   readiness,
   kind,
@@ -109,6 +113,12 @@ export function PostInstallNextSteps({
             <MessageSquare className="size-3.5" aria-hidden />
             {t('toChat')}
           </Link>
+        </div>
+      ) : null}
+      {/* #2054 — installing granted it to no agent; the operator picks. */}
+      {pluginId ? (
+        <div className="mt-3">
+          <GrantToAgentsStep pluginIds={[pluginId]} />
         </div>
       ) : null}
     </div>

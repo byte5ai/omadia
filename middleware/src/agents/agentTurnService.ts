@@ -20,11 +20,14 @@ import {
   makePrincipal,
   withoutFoldedAiDisclosure,
   type ChatTurnInput,
+  type ConversationRoster,
 } from '@omadia/channel-sdk';
 import {
   archetypeAdds,
   archetypeOf,
+  chatParticipantsFromRoster,
   runAsEngineTurn,
+  turnContext,
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
 import type {
@@ -60,6 +63,17 @@ export interface AgentTurnServiceDeps {
   readonly budget: AgentTurnBudget;
   /** The language the instance answers in, when configured. */
   readonly language?: () => string | undefined;
+  /**
+   * #2048 — the conversation's roster, read as the agent's own identity. Gives
+   * the turn an audience, so the audience floor bounds it by the people in
+   * the conversation. Absent (or unreadable) = no roster: the floor closes for
+   * a group turn and every tool is refused, never widened.
+   */
+  readonly roster?: (
+    channelType: string,
+    conversationId: string,
+    agentSlug: string,
+  ) => Promise<ConversationRoster | undefined>;
   readonly log?: (message: string) => void;
 }
 
@@ -243,7 +257,17 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
                 : {}),
             },
           },
-          () => resolved.entry.built.bundle.agent.chat(turn),
+          () => {
+            const run = () => resolved.entry.built.bundle.agent.chat(turn);
+            const readRoster = deps.roster;
+            if (!readRoster) return run();
+            return turnContext.runWithChatParticipants(
+              chatParticipantsFromRoster(() =>
+                readRoster(request.channelType, request.conversationId, request.agentSlug),
+              ),
+              run,
+            );
+          },
         );
         // The engine gets the text WITHOUT the AI disclosure sentence a turn
         // folds into its answer. It posts this text through an own-identity

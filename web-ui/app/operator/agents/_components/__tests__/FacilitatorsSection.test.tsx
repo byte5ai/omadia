@@ -126,7 +126,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
     const section = screen.getByTestId('facilitators-section');
     expect(section.textContent).toContain('Facilitators (1)');
     expect(screen.getByTestId('facilitator-card-mona')).toBeTruthy();
-    expect(screen.getByRole('heading', { name: /Orchestrators \(2\)/ })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /Standard agents \(2\)/ })).toBeTruthy();
 
     // Not offered as the default agent.
     const picker = screen.getByRole('combobox', { name: /Default agent/ });
@@ -379,7 +379,7 @@ describe('AgentsDashboard — one section per archetype (#2088)', () => {
     expect(screen.getByTestId('archetype-agent-card-cora')).toBeTruthy();
     // The facilitator keeps its own section, and a coach is not an orchestrator.
     expect(screen.getByTestId('facilitators-section').textContent).toContain('Facilitators (1)');
-    expect(screen.getByRole('heading', { name: /Orchestrators \(1\)/ })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /Standard agents \(1\)/ })).toBeTruthy();
 
     const form = screen.getByTestId('archetype-create-form-coach');
     const [slug, name] = Array.from(form.querySelectorAll('input'));

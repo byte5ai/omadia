@@ -826,10 +826,12 @@ function InstalledPanel({
         />
       ) : null}
 
-      {/* OM-06/07 — installing is not the finish line: a plugin does nothing
-          until it is attached to an orchestrator. Mirrors the skill-import
-          success flow in DashboardOnboarding → BringYourSkills. */}
+      {/* OM-06/07 — installing is not the finish line: a capability does
+          nothing until it is granted to an agent (#2054: the install itself
+          grants it to none). Mirrors the skill-import success flow in
+          DashboardOnboarding → BringYourSkills. */}
       <PostInstallNextSteps
+        pluginId={pluginId}
         pluginName={pluginName}
         {...(readiness ? { readiness } : {})}
         {...(kind ? { kind } : {})}

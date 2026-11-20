@@ -213,7 +213,7 @@ async function makeHarness(opts: {
     name: 'Install Test',
     description: 'fixture',
     category: 'analysis',
-    template: 'agent-integration',
+    template: 'integration',
     ...(opts.specOverrides ?? {}),
   };
   await store.update(userEmail, draft.id, {

@@ -205,7 +205,7 @@ function toToolChoice(
  * Here because it is the chokepoint of the two paths that carry a turn's real
  * budget: `Orchestrator`'s own `complete`/`stream` calls and every local
  * sub-agent (via `streamMessageWithObserver` → `streamMessageEvents`). It is NOT
- * every sender in this package — `personaRouter`, `modelRouter` and
+ * every sender in this package — `workingModes`, `modelRouter` and
  * `securityScreener` hand-build an `LlmRequest` and call `provider.complete`
  * directly, bypassing this function. They need no clamp: each sets its own
  * small budget, well below every ceiling any provider publishes. A new sender that

@@ -38,7 +38,7 @@ import {
   resolveFacilitationEngine,
 } from '../src/platform/facilitatorGuard.js';
 import { readArchetypeManifest } from '../src/plugins/archetypeManifest.js';
-import { attachablePluginIds } from '../src/plugins/defaultOrchestratorAttach.js';
+import { capabilityPluginIds } from '../src/plugins/capabilityPlugins.js';
 import { InstallError, InstallService } from '../src/plugins/installService.js';
 import { adaptManifestV1 } from '../src/plugins/manifestLoader.js';
 import { buildOperatorArchetypes } from '../src/routes/operatorArchetypes.js';
@@ -374,11 +374,11 @@ describe('an archetype plugin is attached only to agents of its archetype', () =
     assert.throws(() => assertEngineOnlyForFacilitators({ slug: 'cora', archetype: 'coach' }, grant(ENGINE), s), /refused: @omadia\/agent-facilitator/);
   });
 
-  it('the kernel never attaches it to the default agent, on install, at boot or on a reset', () => {
+  it('is no capability plugin: never offered for a grant to agents (#2054)', () => {
     const odoo = { id: '@omadia/integration-odoo', doc: manifest({ id: '@omadia/integration-odoo', kind: 'integration', archetype: undefined }) };
     const all = sources([coach, facilitation, odoo]);
     assert.deepEqual(
-      attachablePluginIds(['@acme/archetype-coach', ENGINE, '@omadia/integration-odoo'], all.catalog),
+      capabilityPluginIds(['@acme/archetype-coach', ENGINE, '@omadia/integration-odoo'], all.catalog),
       ['@omadia/integration-odoo'],
     );
   });

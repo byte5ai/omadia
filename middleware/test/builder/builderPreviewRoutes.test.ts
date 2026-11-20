@@ -25,6 +25,7 @@ import type {
 import { createBuilderRouter } from '../../src/routes/builder.js';
 import type { BuildPipeline } from '../../src/plugins/builder/buildPipeline.js';
 import { listenLoopback } from '../_helpers/listenLoopback.js';
+import { fakePreviewDraftAgents } from '../_helpers/fakePreviewDraftAgents.js';
 
 // Augment express Request with the session shape the production code expects.
 declare module 'express-serve-static-core' {
@@ -191,12 +192,13 @@ async function startHarness(opts: {
   });
 
   const chatService = new PreviewChatService({
+    draftAgents: fakePreviewDraftAgents(),
     resolveProvider: async () => ({
       provider: {} as never,
       modelId: 'claude-haiku-4-5-20251001',
     }),
     draftStore: store,
-    systemPromptFor: async () => 'sp',
+    systemPromptFor: () => 'sp',
     buildSubAgent: () => ({
       ask: async (
         _q: string,
@@ -767,7 +769,7 @@ describe('builder preview routes', () => {
       };
       assert.equal(typeof body.template, 'string');
       assert.ok(Array.isArray(body.slots));
-      // The bundled `agent-integration` template declares the
+      // The bundled `integration` template declares the
       // client-impl / toolkit-impl / skill-prompt slots that the
       // workspace review surfaced.
       const required = body.slots.filter((s) => s.required).map((s) => s.key);

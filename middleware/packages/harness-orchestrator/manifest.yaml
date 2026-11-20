@@ -386,6 +386,42 @@ setup:
       help:
         en: "Optional operator text, appended verbatim (e.g. a contact or compliance notice). ALWAYS output AFTER the disclosure as a separate paragraph; it can only supplement the disclosure, never replace it: at level 'off' the note is dropped as well. Follows the pattern of a static Markdown section — no LLM, no data."
         de: "Optionaler, wortgetreu angehängter Betreiber-Text (z. B. Kontakt- oder Compliance-Hinweis). Wird IMMER NACH der Kennzeichnung als eigener Absatz ausgegeben und kann sie nur ergänzen, nie ersetzen: bei Stufe 'off' entfällt auch der Zusatztext. Folgt dem Muster einer statischen Markdown-Sektion — kein LLM, keine Daten."
+    # #2087 — wie oft die SICHTBAREN Kennzeichnungen erscheinen. Das
+    # strukturierte Feld und maschinenlesbare Markierungen bleiben bei jeder
+    # Einstellung auf jeder Antwort.
+    - key: "ai_disclosure_frequency"
+      label:
+        en: "AI disclosure: how often visible markers appear"
+        de: "KI-Kennzeichnung: Häufigkeit der sichtbaren Marker"
+      type: "enum"
+      required: false
+      default: "channel_default"
+      enum:
+        - value: "channel_default"
+          label:
+            en: "Channel default — today's behaviour (text line once per conversation, channel chips on every answer)"
+            de: "Kanal-Standard — heutiges Verhalten (Textzeile einmal pro Konversation, Kanal-Chips bei jeder Antwort)"
+        - value: "per_answer"
+          label:
+            en: "On every answer"
+            de: "Bei jeder Antwort"
+        - value: "per_conversation"
+          label:
+            en: "Once per conversation (again when another agent speaks or after a pause)"
+            de: "Einmal pro Konversation (erneut, wenn ein anderer Agent spricht oder nach einer Pause)"
+      help:
+        en: "Governs every visible marker: the text line and channel chips such as the Teams card chip. Leave empty = channel default. The structured aiDisclosure field and machine-readable markings stay on every answer. Switch the disclosure off entirely with the level setting above. Any deviation from the default is shown in /health, the operator dashboard and the boot log."
+        de: "Steuert jeden sichtbaren Marker: die Textzeile und Kanal-Chips wie den Teams-Karten-Chip. Leer lassen = Kanal-Standard. Das strukturierte Feld aiDisclosure und maschinenlesbare Markierungen bleiben bei jeder Antwort erhalten. Die Kennzeichnung ganz abschalten geht über die Stufe oben. Jede Abweichung vom Standard steht in /health, im Operator-Dashboard und im Boot-Log."
+    - key: "ai_disclosure_pause_minutes"
+      label:
+        en: "AI disclosure: pause for 'once per conversation' (minutes)"
+        de: "KI-Kennzeichnung: Pause für 'einmal pro Konversation' (Minuten)"
+      type: "number"
+      required: false
+      default: 60
+      help:
+        en: "Only used with 'once per conversation': after this many minutes without an answer the marker appears again. Default 60."
+        de: "Nur bei 'einmal pro Konversation': nach so vielen Minuten ohne Antwort erscheint der Marker erneut. Standard 60."
     # Org-Sicherheits-Postures + Provenance-Screening (#579). Zwei Achsen:
     # Eingangs-Screening (nicht-menschlicher Input wird geprüft) und Tool-
     # Freigaben. 'dangerous' = kein Screening, keine Freigaben; 'auto'

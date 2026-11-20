@@ -1,0 +1,787 @@
+# Capability-Plugin-Boilerplate — Claude Entwickler-Guide
+
+Dieses Verzeichnis ist das **kanonische Template** für Capability-Plugins vom
+kind `integration` (externes System mit Zugangsdaten); das Schwester-Template
+`../tool/` deckt kind `tool` ab (lokale Logik, kein externes System). Die
+Referenz-Implementierungen sind `middleware/packages/agent-reference-maximum/`
+(kind `integration`, alle Patterns) und `middleware/packages/agent-seo-analyst/`
+(kind `tool`, kompakt) — im Zweifel dort nachschauen.
+
+Ein Capability-Plugin liefert **Tools**, die der Operator einzelnen Agenten
+gewährt (Spec 2042 §5.10, ADR-0014). Es hat **keine Persona, keinen
+System-Prompt, keine eigene Model-Loop** und spricht nie mit Menschen. Rolle,
+Charakter und Tonfall gehören einem Agenten (Agent Builder, `/admin/builder`);
+ein Plugin kann solche Vorlagen höchstens als inaktive `agent_templates:` im
+Manifest mitliefern.
+
+## Wann dieser Guide greift
+
+Trigger-Phrasen:
+- "Neues Plugin / neue Capability für X"
+- "Boilerplate / Plugin-Package für Capability Z"
+- "Scaffold + Manifest für eine neue Integration"
+
+Wünscht jemand einen „Agenten" mit eigener Rolle: das ist ein Agent aus dem
+Agent Builder; hier entsteht nur die Fähigkeit, die er danach bekommt.
+
+## Quellen der Wahrheit (NICHT halluzinieren)
+
+- **Referenz-Impl**: `middleware/packages/agent-reference-maximum/` (Patterns)
+  und `middleware/packages/agent-seo-analyst/` (kompakt).
+- **Manifest-Kinds**: `PLUGIN_KINDS` in `middleware/src/api/admin-v1.ts`. Der
+  Plugin Builder erzeugt nur `integration` und `tool`; `depends_on`-Graph,
+    `required_secrets` + `setup.fields`, permissions summary, `compat.core`-Guard.
+- **Entity-Registry**: `middleware/assets/entity-registry.v1.yaml`.
+- **Admin-API v1** (alle JWT-gated außer `/auth/*`):
+  - `middleware/src/routes/store.ts`       — `GET /api/v1/store/plugins`
+  - `middleware/src/routes/install.ts`     — job-basiert:
+    `POST /api/v1/install/plugins/:id` → `POST /api/v1/install/jobs/:id/configure`
+  - `middleware/src/routes/auth.ts`        — `/api/v1/auth/{login,callback,me,logout}`
+  - `middleware/src/routes/vaultStatus.ts` — `GET /api/v1/admin/vault-status`
+  - Typen: `middleware/src/api/admin-v1.ts`.
+- **Runtime-Contract**: `middleware/src/platform/pluginContext.ts` —
+  Surface ist `agentId`, `secrets.{get,require,keys}` (async), `config.{get,require}<T>`
+  (sync), `log(...)`. `vault`/`registry`/`catalog` sind Factory-intern und bleiben
+  das — strukturelle Boundary, kein "coming".
+- **Vault**: `middleware/src/secrets/vault.ts` — AES-256-GCM,
+  `/data/vault/vault.enc.json`, agentId-namespaced, `VAULT_KEY` als Fly-Secret,
+  nightly Tigris-Backup. Platform-Scope `core:auth` hält Session-Signing-Key +
+  per-user Refresh-Tokens.
+- **Admin-UI**: `<your-omadia-host>` — Store + Install-Drawer rendern
+  automatisch aus `setup.fields`.
+
+Feld nicht im Schema → **nicht rein**. Lieber kurz fragen.
+
+---
+
+## Die 10 Checkliste-Punkte (Package-Contract)
+
+Jeder Punkt ist harter Contract gegen die Host-Runtime. Abweichung = Install/
+Ingest schlägt fehl oder das Plugin ist zur Laufzeit kaputt.
+
+### 1. `PluginContext` lokal in `types.ts`
+KEIN Cross-Import von `middleware/src/platform/pluginContext.ts`. Das Package
+muss standalone kompilieren (Zip-Upload-Flow). Die Interface-Definition wird
+bewusst in `./types.ts` dupliziert — strukturell identisch zur Host-Version.
+Bei Breaking Changes: in allen Packages mitziehen, Absicht nicht Bug.
+
+### 2. PluginContext-API exakt
+```ts
+ctx.agentId                                     // readonly string
+await ctx.secrets.get(key)    / .require(key)   / .keys()    // async
+ctx.config.get<T>(key)        / .require<T>(key)             // sync
+ctx.log(...args)                                             // auto-prefix [agentId]
+```
+`ctx.config('KEY')` oder `ctx.secret('KEY')` als Funktionsaufrufe sind FALSCH —
+das Template-Original hatte den Fehler, seo-analyst ist korrekt.
+
+Beide Accessors resolven entlang der `depends_on`-Chain (DFS, first-hit-wins,
+cycle-safe). `de.byte5.agent.odoo-hr` greift mit `ctx.secrets.require('odoo_api_key')`
+direkt auf den Parent `de.byte5.integration.odoo` durch — ohne Parent-ID zu
+kennen. Folge: eigene `setup.fields` **nur** deklarieren wenn Parent sie nicht hat
+(sonst silent override).
+
+### 3. `package.json` am Package-Root
+- `name` === `manifest.identity.id`
+- `version` === `manifest.identity.version`
+- `"type": "module"`
+- `"main": "dist/index.js"`
+- Deps via `peerDependencies` (nicht `dependencies`) — Supply-Chain-Schutz,
+  Ingest warnt via `peers_missing`.
+- `"private": true` (nie an npm publishen).
+
+### 4. `tsconfig.json` am Package-Root
+- `module` + `moduleResolution`: `"NodeNext"`
+- `rootDir`: `"./"`, `outDir`: `"./dist"`
+- `strict: true` + `noUnused{Locals,Parameters}`
+- `include` listet nur Package-interne Files; `exclude` listet `node_modules`,
+  `dist`, `assets`, `scripts`, `out`.
+- Keine Includes außerhalb des Package-Baums.
+
+### 5. Zip-Inhalt = NUR Runtime-Artefakte
+**Drin**: `manifest.yaml`, `package.json`, `dist/` (JS + `.d.ts`),
+`assets/` (optional), `README.md`, `LICENSE` (optional). Kein `AGENT.md`, keine
+`prompt_partial`-Skills — der Ingest lehnt sie ab.
+**Nicht drin**: TS-Quellen (`*.ts` außerhalb `dist/`), `node_modules/`, `.env`,
+`out/`, `.git`.
+
+Extension-Allowlist im Host-Extractor:
+`.yaml .md .json .js .mjs .cjs .map .png .svg .jpg .txt` + `LICENSE / README / NOTICE`.
+
+### 6. Tools über `ctx.tools.register`, `activate(ctx)` gibt `{ close }` zurück
+```ts
+const disposeTools = registerToolkit(ctx, toolkit); // registerTools.ts
+return { async close() { disposeTools(); await toolkit.close(); } };
+```
+`ToolDescriptor = { id, description, input: ZodSchema, run(input) }`.
+`registerTools.ts` (fester Boilerplate-Code, kein Slot) registriert jedes Tool
+beim Kernel: Name = `id`, Input-Schema aus `z.toJSONSchema(input)`, Ergebnis
+als Text (Strings 1:1, sonst JSON). Der Kernel bietet die Tools den Agenten
+an, denen der Operator das Plugin gewährt hat.
+
+Das Plugin baut **keinen** eigenen LLM-Client, keine eigene Anthropic-SDK-
+Instanz, keine eigene Tool-Loop.
+
+### 7. Kein System-Prompt
+Ein Capability-Plugin hat keine Rolle und keinen Tonfall. Was ein Agent
+wissen muss, steht in den **Tool-Beschreibungen** (was das Tool tut, welche
+Eingaben, welches Ergebnis) und im **`playbook:`** des Manifests (wann die
+Capability passt, wofür nicht). Keine `skills:` mit `prompt_partial`, kein
+`AGENT.md`, keine Manifest-Keys `persona`/`speaker`/`personality`/
+`system_prompt` — der Ingest lehnt das Paket sonst ab.
+
+### 8. Zod-Support-Matrix
+Tool-Bridge versteht:
+- **OK**: Object, String (+ `.url`/`.email`/`.uuid`/`.min`/`.max`/`.regex`),
+  Number (+ `.int`/`.min`/`.max`), Boolean, Enum, Array, Optional, Nullable,
+  Default, Literal, Effects.
+- **FALLBACK** → `{}`: Union, DiscriminatedUnion, Intersection, Record, Tuple.
+  → Claude bekommt kein strukturiertes Input-Schema → deutlich schwächere
+    Tool-Use-UX. Bei den unterstützten Typen bleiben.
+
+### 9. Lifecycle-Budgets
+- `activate(ctx)`: **10s**. Kein Vollcrawl, kein Bulk-Sync. Der Credential-Check
+  gehört **nicht** hierher, sondern in `verifyConnection` (siehe unten) — eine
+  Aktivierung darf an einer Störung des Zielsystems nicht scheitern.
+- `verifyConnection(ctx)` (optional, #1453): **5s**. Ein billiger
+  authentifizierter Request, der beantwortet, ob die Credentials akzeptiert
+  werden. Läuft **nach** `activate()`, bei jeder Aktivierung (Install, Boot,
+  Reaktivierung nach Secret-Edit) und über
+  `POST /api/v1/admin/runtime/installed/:id/verify`. Rückgabe:
+
+  ```ts
+  import {
+    classifyHttpAuthFailure,
+    type PluginConnectionVerdict,
+    type PluginContext,
+  } from '@omadia/plugin-api';
+
+  export async function verifyConnection(
+    ctx: PluginContext,
+  ): Promise<PluginConnectionVerdict> {
+    try {
+      // ctx.http, nicht globales fetch: Allowlist, SSRF-Guard, Rate-Limit.
+      // Der Probe-Host muss in permissions.network.outbound stehen.
+      if (!ctx.http) return { status: 'inconclusive' };
+      const res = await ctx.http.fetch(whoamiUrl, { headers });  // ein GET, kein Sync
+      // HTTP-Fall: Core hält die Regeln, nicht jedes Plugin neu.
+      const cause = classifyHttpAuthFailure(res.status, await res.text());
+      if (cause) {
+        return { status: 'rejected', cause, title: 'Nicht verbunden',
+                 detail: 'Zielsystem hat den API-Key abgelehnt' };
+      }
+      if (!res.ok) return { status: 'inconclusive' };   // 5xx, 429, 404 …
+      return { status: 'connected', title: 'Verbunden' };
+    } catch {
+      // Timeout, DNS, Air-Gap → der Operator behält seinen Status.
+      return { status: 'inconclusive' };
+    }
+  }
+  ```
+
+  **`rejected` braucht ein `cause`.** Der Kernel kann den Austausch nicht
+  selbst sehen (Odoo lehnt mit `authenticate → false` über HTTP 200 ab), also
+  verlangt er, dass das Plugin die konkrete Ablehnung benennt:
+  `http_401`, `http_403_auth` (nur ein 403, dessen Body selbst von
+  Authentifizierung spricht) oder `protocol_auth_failure` (Ablehnung außerhalb
+  des HTTP-Status, z. B. Odoos `false`). Ein `rejected` **ohne** erkanntes
+  `cause` wird zu `inconclusive` degradiert — ein blankes
+  `catch { return { status: 'rejected' } }` kann also keine Störung als toten
+  Key anmalen. Für den HTTP-Fall nimm `classifyHttpAuthFailure` statt eigener
+  Statuslogik.
+
+  Warum so streng: `rejected` färbt das Plugin rot **und** nimmt seine Tools
+  aus dem Orchestrator — eine als `rejected` fehlgedeutete Störung entzieht dem
+  Modell stillschweigend Werkzeuge. `title`/`detail` sind die lokalisierten
+  Strings des Plugins; der Kernel liefert keine eigene Copy.
+
+  Verdicts werden pro Credential-Fingerprint **5 Minuten gecacht** (nur
+  entschiedene, nie `inconclusive`). Der Fingerprint deckt Secrets **und**
+  Nicht-Secret-Setup-Felder ab, also probt jede Reaktivierung nach einer
+  Credential- oder Config-Änderung neu; der Operator-Button probt mit
+  `force`. Wer zur Laufzeit einen 401 sieht (Key upstream widerrufen), meldet
+  ihn zusätzlich selbst per `ctx.status.report({ state: 'error', … })` — die
+  Probe läuft nur bei Aktivierung und auf Anforderung.
+- `close()`: **5s**. Timer, Sockets, Watches, Intervals **wirklich** freigeben —
+  wird beim Uninstall aufgerufen; hängende Handles blockieren Hot-Uninstall.
+
+### 10. Build-Script `scripts/build-zip.mjs`
+Im Template mitgeliefert. Pipeline:
+1. `npx tsc --project ./tsconfig.json` → `dist/`
+2. Copy `manifest.yaml` + `package.json` + `README.md` + `dist/` +
+   `assets/` nach `out/<id>-<version>-package/`
+3. Verifiziert `dist/<entry>` existiert (sonst Abbruch)
+4. Zippt → `out/<id>-<version>.zip`
+
+User-seitig: `node scripts/build-zip.mjs` → `out/<id>-<version>.zip` ist das
+uploadbare Artefakt.
+
+### Sichtbarer Manifest-Text ist `{ en, de }` (#1401)
+
+`identity.description`, `setup.guide`, `setup.fields[].label` / `help` /
+`pattern_hint` und `setup.fields[].enum[].label` werden als Map geschrieben:
+
+```yaml
+label:
+  en: "Public base URL"
+  de: "Öffentliche Basis-URL"
+```
+
+Ein nackter String lädt weiter (wird als Englisch gelesen), erscheint aber in
+jeder UI-Sprache so, wie er geschrieben wurde — der Loader warnt dann einmal pro
+Plugin-Version. `identity.name` bleibt sprachneutral (Produktname). In-Tree-Pakete
+prüft CI (`npm run manifest:i18n:check`).
+
+---
+
+## Optional: Operator-Admin-UI (Web-Frontend im Plugin)
+
+Wenn das Plugin eine Web-UI braucht (z.B. um manuell Daten zu pflegen die
+nicht aus der API kommen — MAC↔Person-Zuordnungen, Custom-Tags, etc.),
+schippe sie als Teil des Packages via drei zusammenwirkenden Bausteinen.
+Optional und nur sinnvoll für Agents, die operator-pflegte Daten brauchen
+— 80% kommen ohne aus.
+
+### Baustein 1: Slot `admin-ui-body` in `assets/admin-ui/index.html`
+
+> **PFLICHT-LESEN beim Bearbeiten dieses Slots:**
+> [`assets/admin-ui/CLAUDE.md`](assets/admin-ui/CLAUDE.md) — Container-Maße
+> (812/720/327 px × 1000 px fix), Token-Inventar (`var(--accent)` etc.),
+> Helper-Klassen (`.harness-btn` etc.), Tabellen-/Form-Patterns für narrow
+> Viewports, verbotene Patterns (`position: fixed`, hardcoded Hex,
+> externe Webfonts, …). Das ist die Source-of-Truth fürs Admin-UI-Styling
+> — analog zum INTEGRATION.md-Pattern für Cross-Plugin-Reads.
+
+Das Boilerplate ships eine fertige `assets/admin-ui/index.html` die das
+Harness-Baseline-Stylesheet (`/bot-api/_harness/admin-ui.css`, byte5-
+Tokens + Light/Dark + Tabellen/Forms styled, `.harness-*` Helper-Klassen)
+per `<link>` einbindet, plus eine Marker-Region für den Body-Inhalt:
+
+```html
+<!-- #region builder:admin-ui-body -->
+<!-- HTML-Inhalt, inline <style> + <script> erlaubt -->
+<!-- #endregion -->
+```
+
+`{{AGENT_NAME}}`, `{{AGENT_DESCRIPTION_DE}}`, `{{AGENT_SLUG}}` werden im
+HTML automatisch substituiert. **Single-file ist die unterstützte Form**
+— keine separaten `app.js`/`styles.css`.
+
+Wenn der Slot nicht gefüllt wird, zeigt die Default-Page einen Hinweis-
+Text — die Plugin-Routes funktionieren trotzdem.
+
+> **KRITISCH — fetch-URLs: immer relativ, niemals absolut.** Die Admin-
+> UI läuft im iframe der Workspace-UI, deren Browser-URL ist
+> `/bot-api{admin_ui_path}` (z.B. `/bot-api/<slug>/admin/index.html`).
+> Web-dev rewritet `/bot-api/*` → middleware. `fetch()`-Calls aus dem
+> Slot müssen daher relativ formuliert werden, damit sie durch den
+> Rewrite gehen:
+>
+> - ✅ `fetch('api/devices')` — relativ, resolved zu
+>   `/bot-api/<slug>/admin/api/devices` → middleware sieht
+>   `/api/<slug>/admin/api/devices` ✓
+> - ❌ `fetch('/api/<slug>/admin/api/devices')` — absolut, geht direkt
+>   auf die web-ui-Origin (NICHT durch den Rewrite) → 404
+>
+> Pattern für Builder-generierte UI:
+> ```js
+> const BASE = 'api'; // relativ! Plugin-Slug + /admin sind iframe-implizit
+> const devices = await fetch(`${BASE}/devices`).then(r => r.json());
+> ```
+
+### Baustein 2: `ctx.routes.register()` im `activate-body`-Slot
+
+Im `activate(ctx)` einen Express-Router mit `express.static` mounten + die
+Optionalen API-Routes (für Reads/Writes vom Frontend) im selben Prefix
+registrieren:
+
+```typescript
+import express from 'express';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// im activate-body Slot:
+const here = path.dirname(fileURLToPath(import.meta.url));
+const uiAssetsPath = path.resolve(here, '../assets/admin-ui');
+
+const router = express.Router();
+
+// Static UI files. `redirect: false` ist KRITISCH — sonst killen
+// Trailing-Slash + Next-rewrite + express.static-Default die iframe-Ladung
+// in einer 3-fach-Redirect-Kette.
+router.use(express.static(uiAssetsPath, { redirect: false }));
+
+// JSON-API für Reads/Writes vom Frontend. Pfad-Konvention:
+// `/api/<slug>/admin/api/<resource>` damit's vom UI-Pfad disjunkt ist.
+//
+// VERBINDLICHES RESPONSE-SCHEMA — Frontend und Backend müssen sich
+// daran halten, sonst zerlegt sich der Roundtrip silent (siehe
+// "KRITISCH"-Box unten):
+//   Success:  res.json({ ok: true, ...payload })
+//   Failure:  res.status(<4xx|5xx>).json({ ok: false, error: '<msg>' })
+router.get('/api/macs', async (_req, res) => {
+  try {
+    const items = await loadMacsFromKnowledgeGraph();
+    res.json({ ok: true, items });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: (err as Error).message });
+  }
+});
+router.post('/api/macs', express.json(), async (req, res) => {
+  try {
+    await persistMacAssignment(req.body);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: (err as Error).message });
+  }
+});
+
+ctx.routes.register('/api/<slug>/admin', router);
+ctx.log('admin UI mounted at /api/<slug>/admin/ui/');
+```
+
+`ctx.routes.register(prefix, router)` ist Teil der PluginContext-Surface
+(siehe `pluginContext.ts:74`). Auto-unmount bei `close()`, hot-uninstall-safe.
+
+#### Der dritte Parameter: `auth` und `body`
+
+```typescript
+ctx.routes.register(prefix, router, { auth, body, bodyLimit });
+```
+
+Der Kernel legt eine feste Middleware-Kette um den Router — **in dieser
+Reihenfolge**:
+
+```
+[Deaktivierungs-Guard] → [auth] → [Body-Parser] → dein Router
+```
+
+Der Guard steht vorn: ein deaktiviertes Plugin antwortet **404, bevor
+irgendeine Auth-Logik läuft**. CORS und Rate-Limiting bleiben Sache des
+Plugins.
+
+**`auth`** — Default `'session'`.
+
+| Wert | Bedeutung |
+|---|---|
+| `'session'` | Der Kernel prüft die Operator-Session — dieselbe Session-Prüfung wie Core an `/api`, aber **ohne** die statische Public-Path-Ausnahme (#1596): kein Prefix, auch nicht `/p/…`, öffnet eine `'session'`-Route. Eine Teams-Tab-Seite ohne omadia-Session braucht `'teams-sso'` (Daten) + `'public'` (datenfreie Shell) unter einem freigegebenen `public_paths`-Eintrag. Unter `/api` ist das Defense-in-Depth, **außerhalb** von `/api` (z.B. `/diagrams`) ist es das einzige Session-Gate. CSRF-Haltung = die von Core: `SameSite=Lax`-Cookie, kein Token-Layer. |
+| `'public'` | Kein Kernel-Auth. **Registrierung wirft**, wenn das Prefix nicht unterhalb eines in `permissions.public_paths` deklarierten Pfads liegt. Die Route wird **ausschließlich** über den Public-Path-Mount ausgeliefert — also nur, solange die Zustimmung des Operators für dieses Prefix steht. |
+| `'custom'` | Wie `'public'` — gleiche Deklarationspflicht, gleiche Erreichbarkeitsregel —, aber du sagst damit zu, **jeden** Request selbst zu authentifizieren (HMAC, Bearer, mTLS-Header). |
+| `'teams-sso'` | (#1620) Gleiche Deklarationspflicht und gleiche Operator-Freigabe wie `'public'`, aber der **Kernel** authentifiziert: `Authorization: Bearer <Teams-SSO-Token>` (aus `microsoftTeams.authentication.getAuthToken()`), RS256-Signatur gegen Entras Schlüssel, Tenant + App-ID eines Bots der installierten `@omadia/channel-teams`, ausgestellt an einen Teams-/M365-Client, delegiertes User-Token, nicht abgelaufen. Der Handler bekommt den User als `req.teamsSsoUser` (`{ oid, tenantId, appId, upn? }`, Typ `TeamsSsoUser` in `types.ts`). Jeder Fehler ist derselbe 401 ohne Begründung. **Rein:** ein omadia-Session-Cookie öffnet die Route **nicht**. Gast-Konten (B2B, private Microsoft-Konten) werden abgewiesen; jedes **Mitglied** des Tenants kommt durch — autorisiere im Handler auf `oid`, wenn nicht jeder Tenant-User alles sehen darf (oder der Operator setzt in Entra „Zuweisung erforderlich“ an der Bot-App). |
+
+Es gibt kein `'none'`. Ein Plugin kann sich nicht selbst aus der
+Authentifizierung herausdeklarieren — es kann ein Prefix nur **beantragen**
+(`permissions.public_paths` im Manifest) und braucht dafür die Zustimmung des
+Operators.
+
+**Welche Routen brauchen `'custom'`?** Nur solche, die ein Aufrufer **ohne**
+omadia-Session erreichen muss *und* die jeden Request selbst prüfen:
+Webhooks (HMAC), OAuth-Callbacks (`state`), signierte Download-Links. Im
+Builder deklarierst du den Pfad in `spec.permissions.public_paths`; Codegen
+schreibt ihn nach `manifest.permissions.public_paths`. Der Operator muss ihn
+nach dem Install freigeben, vorher antwortet der Pfad 401.
+
+**UI-Routen: Browser per Session, Teams per Teams-SSO (#1620).** Codegen
+mountet jede `spec.ui_routes[i]` zweimal:
+
+| Pfad | Auth | Inhalt |
+|---|---|---|
+| `/p/<slug><path>` | `'session'` | die Seite für Operatoren im Browser |
+| `/p/<slug>/teams<path>` | `'public'` | **datenfreie** Shell: holt per `getAuthToken()` ein Teams-SSO-Token und lädt damit die Seite nach |
+| `/p/<slug>/teams/_data<path>` | `'teams-sso'` | dieselbe Seite, nur mit gültigem Teams-Token |
+
+Ein Teams-Tab lädt seine URL als nackten GET ohne Bearer, deshalb braucht es
+die Shell; die Daten verlassen den Server nur über den `'teams-sso'`-Mount.
+Codegen schreibt `/p/<slug>/teams` selbst nach
+`manifest.permissions.public_paths`, und der `ctx.uiRoutes`-Eintrag zeigt auf
+die Shell. Bis der Operator den Pfad freigibt, antwortet die Shell 401 (sie
+fällt auf die Session-Route zurück). **Nie** eine Daten-Route auf `'public'`
+oder `'custom'` stellen, um einen 401 im Teams-Tab zu „reparieren“ — dafür
+gibt es `'teams-sso'`. `'custom'` ohne eigene Prüfung in jedem Handler macht
+Daten öffentlich.
+
+Handgeschrieben gilt dasselbe Muster: die Shell auf `'public'` darf nur HTML
+ohne Daten ausliefern, jeder Datenpfad liegt unter `'teams-sso'`, beide
+unterhalb **einer** deklarierten und freigegebenen `public_paths`-Zeile. Ein
+Prefix pro Router: der Kernel löst einen freigegebenen Pfad auf **einen**
+Routen-Eintrag auf, mehrere Router unter demselben Prefix also zu einem
+zusammenfassen.
+
+> **Richtung der Prüfung:** Das **registrierte Prefix** muss **innerhalb** eines
+> deklarierten Pfads liegen — nicht umgekehrt. `public_paths:
+> ['/api/plugins/acme/hooks']` erlaubt `register('/api/plugins/acme/hooks', …,
+> { auth: 'custom' })`, aber **nicht** `register('/api/plugins/acme', …)` —
+> sonst würde eine Deklaration für einen Webhook die ganze Admin-Oberfläche
+> öffnen.
+
+**`body`** — Default `'json'`.
+
+| Wert | Bedeutung |
+|---|---|
+| `'json'` | Geparstes JSON, Limit wie Core (10 MB). |
+| `'raw'` | Unveränderte Bytes als `Buffer` — auf `req.body` **und** `req.rawBody`. Limit default 512 KB. **Braucht dieselbe `permissions.public_paths`-Deklaration wie `auth: 'public'`** (siehe Kasten unten). |
+| `'none'` | Der Kernel mountet **keinen** Parser für diese Route; der Stream gehört dem Plugin (Uploads, Proxying, Streaming). |
+
+> **`'none'` schaltet den globalen JSON-Parser nicht ab.** Ein Request mit
+> `Content-Type: application/json` ist stromaufwärts trotzdem schon gelesen und
+> geparst worden. `'none'` heißt „der Kernel legt hier nichts drauf", nicht
+> „diesen Request hat niemand angefasst". Wer die Bytes so braucht, wie sie
+> ankamen, nimmt `'raw'` — genau dafür hat `'raw'` einen eigenen Mount vor dem
+> globalen Parser.
+>
+> `bodyLimit` wirkt aus demselben Grund nur bei `'raw'` wirklich. Bei `'json'`
+> hat der globale 10-MB-Parser schon zugeschlagen; ein größerer Wert hebt die
+> effektive Grenze nicht an.
+
+> **`'raw'` ist deklarationspflichtig — und zwar aus demselben Grund wie
+> `auth: 'public'`.** Der Raw-Parser läuft **nicht** lokal an deinem Router,
+> sondern in einem **globalen Mount vor `express.json` und vor der
+> Authentifizierung**. Er puffert also Bytes für anonyme Aufrufer und verändert,
+> wie jeder Request unter diesem Prefix aussieht. Das ist genauso eine
+> Grenzentscheidung wie das Abschalten des Session-Gates — deshalb muss das
+> Prefix in `permissions.public_paths` stehen, damit der Operator es im
+> Install-Dialog gesehen hat. Ein nicht deklariertes `body: 'raw'` **wirft bei
+> der Registrierung**.
+>
+> Zwei Prefixe, zwei Modi: Es gewinnt immer der **längste** Prefix, der den Pfad
+> besitzt — erst dann wird gefragt, ob er `'raw'` ist. Ein `'json'`-Router
+> unterhalb eines `'raw'`-Prefixes bekommt also weiterhin geparstes JSON.
+
+**Webhook mit HMAC — das kanonische `raw`-Beispiel:**
+
+```typescript
+import crypto from 'node:crypto';
+
+const hooks = express.Router();
+hooks.post('/webhook', (req, res) => {
+  const raw = req.rawBody;                       // Buffer, exakt wie geliefert
+  if (!Buffer.isBuffer(raw)) return res.status(500).json({ ok: false });
+
+  const expected = Buffer.from(
+    `sha256=${crypto.createHmac('sha256', secret).update(raw).digest('hex')}`,
+  );
+  const given = Buffer.from(req.get('X-Hub-Signature-256') ?? '');
+  const ok =
+    given.length === expected.length && crypto.timingSafeEqual(given, expected);
+  if (!ok) return res.status(401).json({ ok: false, error: 'bad signature' });
+
+  res.json({ ok: true });
+});
+
+ctx.routes.register('/api/<slug>/hooks', hooks, {
+  auth: 'custom',
+  body: 'raw',
+});
+```
+
+> **Niemals `JSON.stringify(req.body)` signieren.** Der Sinn von `'raw'` ist,
+> dass genau die Bytes ankommen, über die der Absender signiert hat. Parsen +
+> Neu-Serialisieren ändert Whitespace, Key-Reihenfolge und Zahlenformat — die
+> HMAC stimmt dann nie wieder.
+>
+> Und: `timingSafeEqual` wirft, wenn die Längen sich unterscheiden — deshalb der
+> `length`-Vergleich davor.
+
+> **Warum das 512-KB-Default kleiner ist als das globale 10-MB-Limit:** Ein
+> `raw`-Body muss **vor** dem globalen JSON-Parser gepuffert werden (danach hat
+> body-parser den Stream schon gelesen und liefert ein Objekt statt Bytes) — und
+> damit auch vor der Authentifizierung. Was vor der Auth gepuffert wird, zahlt
+> der Server für **anonyme** Aufrufer. `bodyLimit` hochzusetzen ist erlaubt, aber
+> eine bewusste Entscheidung.
+
+> **KRITISCH — Response-Schema: Frontend prüft IMMER `data.ok`.** Backend
+> und Frontend müssen denselben Vertrag fahren. Schreibt der Endpoint
+> `res.json({ devices: [...] })` ohne `ok`, wertet das Frontend mit
+> `if (!data.ok) throw ...` jeden Erfolg als Fehler — und jede Seite hält
+> die andere für kaputt.
+>
+> Pflicht-Pattern in jedem Endpoint:
+> ```js
+> // Backend (Endpoint-Body):
+> res.json({ ok: true, items });               // Success
+> res.status(500).json({ ok: false, error });  // Failure
+>
+> // Frontend (im Slot admin-ui-body):
+> const data = await fetch('api/macs').then(r => r.json());
+> if (!data.ok) throw new Error(data.error || 'Unbekannter Fehler');
+> renderTable(data.items);
+> ```
+> Niemals nackte `res.json({ items: ... })` ohne `ok: true` — und niemals
+> `if (data.items)` ohne vorigen `data.ok`-Check.
+
+### Daten aus anderen Plugins ziehen (Service-Registry)
+
+Der `client.ts`-Slot ist für die EIGENE Integration des Plugins (z.B.
+UniFi-Cloud-API). **Daten aus anderen Plugins** (Odoo-HR, Confluence,
+Microsoft 365, etc.) NICHT über `client` laufen lassen — der weiß nichts
+davon. Stattdessen über die Service-Registry konsumieren.
+
+> **BEVORZUGT — Theme A: deklarative `spec.external_reads`-Einträge.** Für
+> einfache Reads (Liste-X-aus-Service-Y, Ein-Lookup-pro-Tool) den Eintrag
+> in `spec.external_reads` über `patch_spec` setzen — codegen synthesiert
+> dann sowohl den `ctx.services.get(...)`-Lookup als auch das Tool-Stub
+> automatisch. Du tippst KEINEN Service-Lookup-Code mehr. Schema:
+>
+> ```yaml
+> external_reads:
+>   - id: list_employees
+>     description: "Mitarbeiterliste aus Odoo HR"
+>     service: odoo.client          # aus serviceTypeRegistry.ts
+>     model: hr.employee             # Odoo-spezifisch (optional)
+>     method: execute                # 1:1 aus INTEGRATION.md
+>     args:
+>       - { model: "hr.employee", method: "search_read", positionalArgs: [], kwargs: {} }
+>     kwargs: {}
+>     result_mapping: {}             # optional: Output-Reshape
+> ```
+>
+> Codegen schreibt `import type { OdooClient } from '@byte5/...'`,
+> `peerDependencies` in der package.json, den Service-Lookup-Block UND
+> einen Tool-Descriptor mit `id: 'list_employees'`. Service-NAME-Tippfehler
+> fängt der manifestLinter (violation `external_read_unknown_service`),
+> Method-Existenz fängt der tsc-Gate.
+>
+> **Wenn external_reads NICHT passt** (z.B. dynamische args aus LLM-Input,
+> Aggregation/Filter-Logik post-call, Multi-Service-Joins): auf den
+> klassischen Weg unten ausweichen.
+
+> **PFLICHT-WORKFLOW (klassisch) vor jedem Cross-Integration-Code:**
+>
+> 1. **`patch_spec`**: ergänze `spec.depends_on` um die jeweilige
+>    Integration-Plugin-ID (z.B. `de.byte5.integration.odoo`).
+> 2. **`read_reference`**: lies das `INTEGRATION.md` des dependency-Plugins —
+>    `read_reference({ name: 'integration-<name>', file: 'INTEGRATION.md' })`.
+>    Bekannte Catalog-Namen: `integration-odoo`, `integration-confluence`,
+>    `integration-microsoft365`. Das `INTEGRATION.md` ist die **alleinige
+>    Source of Truth** für Service-Names, TypeScript-Type-Imports,
+>    Method-Signaturen und Code-Snippets.
+> 3. **`fill_slot` `activate-body`**: Code schreiben — Method-Signaturen
+>    1:1 aus `INTEGRATION.md` übernehmen. **NICHT** aus deinem Trainings-
+>    Wissen rekonstruieren: rekonstruierte Signaturen driften von der
+>    echten Client-Surface ab, und der Fehler bleibt stumm — das Plugin
+>    baut, läuft an und liefert leere Ergebnisse. Beispiel:
+>    `odoo.execute_kw(...)` existiert nicht, die echte API ist
+>    `odoo.execute({ model, method, positionalArgs, kwargs })` — und die
+>    steht nur in `INTEGRATION.md`, nicht in dieser CLAUDE.md.
+>
+> **WICHTIG bei klassischem `activate-body`-Slot**: Der Slot deklariert
+> nur `const toolkit = createToolkit(...)`. Das `return { ... }` steht
+> AUSSERHALB der activate-body-Marker-Region und gehört dem Boilerplate:
+> Nach dem Slot laufen die Codegen-Blöcke `external-reads-init` und
+> `ui-routes-init` (dazwischen registriert `registerToolkit` alle Tools),
+> danach gibt das Boilerplate `{ close }` zurück.
+> Schreib im Slot kein eigenes `return` — sonst ist alles danach
+> unreachable, auch der `external-reads-init`-Block.
+
+Skelett (mit dem konkreten Pattern aus `INTEGRATION.md` füllen):
+
+```typescript
+import type { /* TypeForService */ } from '@omadia/integration-<name>';
+
+// im activate-body-Slot:
+const svc = ctx.services.get</* TypeForService */>('<service.name>');
+if (!svc) {
+  throw new Error(
+    "'<service.name>' unavailable — depends_on includes " +
+    "'de.byte5.integration.<name>'?",
+  );
+}
+// Konkrete Calls mit Method-Signaturen aus INTEGRATION.md.
+```
+
+`peerDependencies` in `package.json` muss die Integration referenzieren
+(z.B. `"@omadia/integration-odoo": "*"`) damit die Type-Imports
+auflösen — siehe Checkliste-Punkt 3.
+
+`client.ts` bleibt für die EIGENE API. Mehrere fremde Integrationen sind
+fine — `ctx.services.get(...)` mehrfach pro `activate()` ist OK.
+
+> **Preview vs. Install**: Im Preview-Iframe ist `ctx.routes.register` ein
+> No-op-Stub — der Aufruf läuft durch ohne zu crashen, aber die Routes werden
+> NICHT gemountet. Die Admin-UI ist erst nach einem echten Install über den
+> Store erreichbar (Kernel registriert die Routes dann am Plugin-Slug-Mount).
+> Im Preview-Mode also nicht versuchen, die `/api/<slug>/admin/...`-URL
+> aufzurufen — sie existiert dort nicht.
+
+### Runtime-Smoke-Contract (Theme D)
+
+Nach jedem `build_status: ok` probiert der Builder die registrierten
+Admin-GET-Routes per HTTP. Was geprüft wird:
+
+1. **`{ ok: boolean, ... }`-Schema (PFLICHT).** Body ohne `ok`-Field
+   oder mit `ok: <kein-boolean>` → `runtime_smoke_status:failed`
+   `kind=admin_route_schema_violation`. AutoFix triggert.
+2. **HTTP-Status.** 4xx/5xx → `http_error`. Auch `200 + ok:false` zählt
+   als Failure (Endpoint berichtet sich selbst kaputt).
+3. **Timeout.** > 5s pro Route → `timeout`.
+4. **Empty-Detection für `external_reads`.** Wenn der Endpoint-Name
+   einem deklarierten `external_reads.id` matched (z.B.
+   `/api/employees` ↔ `list_employees`) und das Wrapper-Objekt nur ein
+   leeres Array enthält, fliegt eine **Warning** (kein Fail) — leere
+   Daten können legitim sein (frische Odoo-Instanz).
+
+**Smoke-Mode-Branch (optional):** während der Smoke setzt der Probe-
+Server den Header `x-smoke-mode: 1` und der Kernel aktiviert das
+Plugin mit `ctx.smokeMode === true`. Wenn dein Endpoint
+non-idempotent ist (POST/teure-Aggregation/etc.) oder du Mock-Daten
+zurückgeben willst, kannst du im Handler darauf branchen:
+
+```typescript
+router.get('/api/devices', (req, res) => {
+  if (ctx.smokeMode || req.headers['x-smoke-mode'] === '1') {
+    return res.json({ ok: true, items: [{ id: 'mock', mac: 'aa:bb:cc:dd:ee:ff' }] });
+  }
+  // ... echte Logik
+});
+```
+
+**Default ist: nichts tun.** Most plugins ignorieren `smokeMode` und
+lassen den Probe einfach gegen die echte API laufen — bei einer 5s-
+Timeout-Budget und idempotenten GETs ist das billig.
+
+### Baustein 3: `admin_ui_path` im manifest.yaml (Top-Level)
+
+```yaml
+schema_version: "1"
+identity:
+  id: "{{AGENT_ID}}"
+  ...
+
+# Top-Level (NICHT unter identity), Pfad MUSS auf /index.html enden:
+admin_ui_path: "/api/<slug>/admin/index.html"
+```
+
+Web-dev rendert dann automatisch eine `<iframe src="/bot-api{admin_ui_path}">`-
+Section auf der Store-Detail-Page (`/store/<plugin-id>`), conditional auf
+`install_state ∈ { 'installed', 'update-available' }`. **Keine web-ui-Änderung
+nötig** — der Pattern ist generisch (Phase 3.2.7).
+
+### Reference-Implementation
+
+`middleware/packages/harness-channel-telegram/src/plugin.ts:200-260` macht
+genau dieses Pattern (single-file vanilla HTML als admin-UI). Sauber zum
+Abgucken.
+
+### Was NICHT geht
+
+- **Absolute `/api/...`-URLs in `fetch()`-Calls**: die UI ist hinter
+  einem `/bot-api`-Rewrite — absolute Pfade verlassen das Plugin-Mount
+  und ergeben 404. Siehe KRITISCH-Block oben in Baustein 1.
+- **Backend `res.json({ items })` ohne `ok: true`**: Frontend prüft
+  `data.ok` — fehlt das Feld, sieht es jeden Erfolg als Fehler. Siehe
+  Response-Schema-Block in Baustein 2.
+- **Eigenen `client.ts` für FREMDE Daten missbrauchen**: `client.search('__employees')`
+  gegen den UniFi-Client geht nirgendwohin. Fremde Daten = Service-Registry
+  + `depends_on` (siehe "Daten aus anderen Plugins ziehen" oben).
+- **API-Signaturen für fremde Integrationen aus dem Trainings-Wissen
+  oder aus dieser Datei übernehmen**: dieses CLAUDE.md dokumentiert
+  bewusst keine konkreten Method-Signaturen für `OdooClient`,
+  `ConfluenceClient` etc., denn hier hart kodierte Signaturen driften bei
+  jedem Integration-Patch. Die Signaturen stehen im `INTEGRATION.md` des
+  Dependency-Plugins — lies es per `read_reference`.
+- **Separate `app.js`/`styles.css`-Dateien**: codegen kann nur Marker-
+  Regions in vordefinierten Files füllen, keine neuen Files erzeugen.
+  Inline `<script>` und `<style>` im `admin-ui-body`-Slot sind die
+  unterstützte Form.
+- **`ctx.http.register(...)`**: `ctx.http` ist die OUTBOUND-fetch-Surface
+  (für API-Calls AUS dem Plugin). Inbound-Routes laufen über `ctx.routes`.
+- **Build-Step im Plugin** (npm-script o.ä.): das Boilerplate-`build-zip.mjs`
+  läuft NUR `tsc`, nicht webpack/vite. UI-Source vorab bauen, gebaute
+  Artefakte committen.
+
+---
+
+## Bonus-Fakten
+
+- **Tool-Namen** sind die `id`s der Toolkit-Tools (snake_case), global
+  eindeutig — `list_catalog_tools` im Builder zeigt belegte Namen.
+- **„Wann nutze ich das"** gehört ins `playbook:` des Manifests und in die
+  Tool-Beschreibungen, nicht in den Tool-Code.
+- **`ctx.log(...)`** wird automatisch mit `[<agentId>]` geprefixt. Kein
+  manuelles Prefixing.
+- **Hot-Install/Uninstall**: nach erfolgreichem `configure` feuert der
+  `onInstalled`-Hook → Runtime aktiviert sofort ohne Middleware-Restart.
+  `DELETE /install/installed/:id` → `onUninstall` → `handle.close()` + Unregister
+  im Orchestrator, live. Darauf verlassen, nicht umgehen.
+
+---
+
+## Scaffolding-Rezept
+
+User sagt: "Bau mir ein Plugin `@omadia/sharepoint` für Dokument-Suche."
+
+1. **Kopieren**
+   ```bash
+   cp -R middleware/assets/boilerplate/integration \
+         middleware/packages/sharepoint
+   ```
+
+2. **Platzhalter ersetzen** — über Edit-Tool, IDs doppelt prüfen (Typos in
+   `depends_on` scheitern erst zur Install-Zeit):
+
+   | Platzhalter | Beispiel |
+   |---|---|
+   | `{{AGENT_ID}}` | `@omadia/sharepoint` |
+   | `{{AGENT_NAME}}` | `Microsoft SharePoint` |
+   | `{{AGENT_SLUG}}` | `sharepoint` |
+   | `{{AGENT_DESCRIPTION_DE}}` | "Durchsucht SharePoint-Sites …" |
+   | `{{AGENT_DESCRIPTION_EN}}` | "Searches SharePoint sites …" (siehe Hinweis unten) |
+   | `{{INTEGRATION_ID}}` | `de.byte5.integration.microsoft365` |
+   | `{{CAPABILITY_ID}}` | `search_documents` |
+
+   > **`identity.description` ist eine Locale-Map, kein einzelner String.**
+   > Ein blanker String wird als Englisch gelesen — deutscher Text darin
+   > erscheint im Hub als englische Beschreibung. Die beiden Platzhalter
+   > kommen aus **zwei getrennten Spec-Feldern**: `spec.description`
+   > ist der deutsche Text, `spec.description_en` der englische. Der Builder
+   > setzt beide selbst — den englischen formuliert er aus dem deutschen,
+   > ohne dafür nachzufragen. Von Hand zu übersetzen ist also nichts. Fehlt
+   > `description_en` (alte Spec, Clone-from-installed), fällt Codegen auf
+   > die deutsche Zeile zurück und `lint_spec` warnt.
+
+3. **Capabilities verdichten** — `client.ts` (reiner HTTP-Client) + `toolkit.ts`
+   (Capability→Zod→Handler). Pro Capability: `side_effects`, `idempotent`,
+   `autonomous`, `timeout_ms` realistisch.
+
+4. **Playbook + Tool-Beschreibungen** präzise schreiben — sie sind alles,
+   was der aufrufende Agent über das Plugin liest.
+
+5. **Build + Install**
+   ```bash
+   cd middleware/packages/sharepoint
+   npm install          # oder bun install
+   node scripts/build-zip.mjs
+   # → out/omadia-sharepoint-0.1.0.zip
+
+   # Upload via Admin-UI (<your-omadia-host> → Store → Upload)
+   # oder via Admin-API POST /api/v1/install/plugins/:id (job-basiert).
+   ```
+
+6. **Lint + Typecheck** im Middleware-Root, nicht bauen:
+   ```bash
+   npm run lint:fix && npm run typecheck
+   ```
+
+---
+
+## Stolperfallen
+
+1. **Hardcoded paths / URLs**: alles über `ctx.config` — keine Magic Strings.
+2. **Fly-Secrets**: write-only. Lokal `echo "$VAL" > /tmp/x`, `fly secrets set
+   KEY=$(cat /tmp/x)`, Datei löschen. Nie im Chat leaken.
+3. **i18nexus**: UI-Strings (Manifest `ui.commands[].label`) nicht direkt in
+   JSON — werden überschrieben.
+4. **`[0]` nicht verwenden** → Lodash `_.first()` / `_.head()`.
+5. **`npm run lint:fix` + `typecheck`** nach jeder Änderung — nicht `npm run build`.
+6. **Kein `any`** — `unknown` + Zod-Parse bei externen Payloads.
+7. **Keine Tests/Docs/PR-Marker** generieren die nicht explizit gefragt sind.
+8. **Keine Feature-Flags / Backwards-Compat-Shims** auf Vorrat.
+
+---
+
+## Antwort-Format beim Scaffolden
+
+Knapp. Tabelle mit erstellten Files + Pfaden. Nächster Schritt (Secrets setzen,
+Upload, Configure-Call) als 1-Zeiler. Architektur-Gabeln (z.B. "Memory-Scope
+pro User oder pro Session?") vorher explizit abfragen, nicht einseitig
+entscheiden.

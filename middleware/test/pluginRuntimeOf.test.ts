@@ -44,7 +44,7 @@ describe('#2088 runtime of a plugin kind', () => {
       return source.slice(from, from + 6_000);
     };
     for (const start of [
-      'onInstalled: async (agentId, reason) => {',
+      'onInstalled: async (agentId) => {',
       'onPackageReady: async (agentId) => {',
       'onUninstall: async (agentId, reason) => {',
     ]) {

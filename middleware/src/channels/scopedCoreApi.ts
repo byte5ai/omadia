@@ -95,6 +95,18 @@ export function scopeCoreApiToChannel(
       emit({ ...event, channelId });
     };
   }
+  if (core.reportConversationMessage) {
+    const report = core.reportConversationMessage;
+    // Same rule as `emitConversationMessage`: a channel reports its own
+    // messages only, stamped with its own id. A refused or malformed event is
+    // not an answer, so the channel starts its turn as usual.
+    scoped.reportConversationMessage = (event: ConversationMessageEvent): Promise<{ answeredCard: boolean }> => {
+      if (event === null || typeof event !== 'object' || foreign('report a message event', event.channelType)) {
+        return Promise.resolve({ answeredCard: false });
+      }
+      return report({ ...event, channelId });
+    };
+  }
   if (core.emitSessionEvent) {
     const emit = core.emitSessionEvent;
     scoped.emitSessionEvent = (event: SessionEvent): void => {

@@ -1443,7 +1443,7 @@ entityIds: string[];
 inserted: number;
 updated: number;
 }
-export type ChannelKind = 'teams' | 'telegram' | 'slack' | 'email' | 'web' | 'api';
+export type ChannelKind = 'teams' | 'telegram' | 'slack' | 'discord' | 'whatsapp' | 'imessage' | 'email' | 'web' | 'api';
 export interface ChannelIdentityIngest {
 channelKind: ChannelKind;
 channelUserId: string;
@@ -1642,6 +1642,10 @@ agentInvocations: RunAgentInvocation[];
 error?: string;
 model?: string;
 provider?: string;
+workingMode?: {
+skillId: string;
+name: string;
+};
 }
 export interface RunIngestResult {
 runId: string;

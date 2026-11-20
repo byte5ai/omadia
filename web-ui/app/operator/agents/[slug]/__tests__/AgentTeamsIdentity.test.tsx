@@ -331,7 +331,7 @@ describe('AgentTeamsIdentity (#860 W2a)', () => {
 
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toBe(
-      'That bot slug already belongs to another orchestrator — pick a different one.',
+      'That bot slug already belongs to another agent — pick a different one.',
     );
     expect(alert.textContent).not.toContain('bot_slug_taken');
     // The operator's input survives so they can edit it.

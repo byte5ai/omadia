@@ -8,6 +8,13 @@ import {
 } from '../../packages/agent-reference-maximum/toolkit.js';
 import type { NoteRecord } from '../../packages/agent-reference-maximum/types.js';
 
+/** Runs a toolkit tool and returns its result as the tool runtime sends it. */
+async function callTool(toolkit: Toolkit, id: string, input: unknown): Promise<string> {
+  const tool = toolkit.getTool(id);
+  assert.ok(tool, `tool ${id} present`);
+  return JSON.stringify(await tool.run(input));
+}
+
 function makePopulatedStore(records: NoteRecord[]): NotesStore {
   return {
     async add({ title, body }) {
@@ -60,7 +67,7 @@ describe('agent-reference / Toolkit query_notes_by_person (OB-29-4)', () => {
   });
 
   it('single match → returns plain matches array', async () => {
-    const result = await toolkit.handlers.queryNotesByPerson({
+    const result = await callTool(toolkit, 'query_notes_by_person', {
       personName: 'Anna',
     });
     const parsed = JSON.parse(result) as {
@@ -73,7 +80,7 @@ describe('agent-reference / Toolkit query_notes_by_person (OB-29-4)', () => {
   });
 
   it('zero matches → empty array (no _pendingUserChoice)', async () => {
-    const result = await toolkit.handlers.queryNotesByPerson({
+    const result = await callTool(toolkit, 'query_notes_by_person', {
       personName: 'Bob',
     });
     const parsed = JSON.parse(result) as {
@@ -87,7 +94,7 @@ describe('agent-reference / Toolkit query_notes_by_person (OB-29-4)', () => {
   });
 
   it('multi match → emits _pendingUserChoice with question + options', async () => {
-    const result = await toolkit.handlers.queryNotesByPerson({
+    const result = await callTool(toolkit, 'query_notes_by_person', {
       personName: 'John',
     });
     const parsed = JSON.parse(result) as {
@@ -121,7 +128,7 @@ describe('agent-reference / Toolkit query_notes_by_person (OB-29-4)', () => {
         createdAt: '2026-05-05T00:00:00.000Z',
       });
     }
-    const result = await toolkit.handlers.queryNotesByPerson({
+    const result = await callTool(toolkit, 'query_notes_by_person', {
       personName: 'John',
     });
     const parsed = JSON.parse(result) as {
@@ -133,7 +140,7 @@ describe('agent-reference / Toolkit query_notes_by_person (OB-29-4)', () => {
 
   it('rejects empty personName', async () => {
     await assert.rejects(() =>
-      toolkit.handlers.queryNotesByPerson({ personName: '' }),
+      callTool(toolkit, 'query_notes_by_person', { personName: '' }),
     );
   });
 });

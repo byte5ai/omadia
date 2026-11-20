@@ -21,6 +21,7 @@ import {
   resolveAiDisclosure,
   DEFAULT_AI_DISCLOSURE_POLICY,
   InMemoryDisclosureSeenStore,
+  InMemoryDisclosureMarkerStore,
   type ChatStreamEvent,
   type AnswerVerbosityInfo,
   type ChatTurnInput,
@@ -35,6 +36,9 @@ import {
   type ChatAgentToolDefinition,
   type AiDisclosurePolicy,
   type DisclosureSeenStore,
+  type AiDisclosureFrequency,
+  type DisclosureMarkerState,
+  type DisclosureMarkerStore,
   bundleProvenance,
   hasScreenableContent,
   screeningEnabled,
@@ -236,10 +240,12 @@ import {
   routeTurnModel,
 } from './modelRouter.js';
 import {
-  type PersonaCandidate,
-  type PersonaRoutingBucket,
-  routeTurnPersona,
-} from './personaRouter.js';
+  type WorkingModeBucket,
+  type WorkingModeCandidate,
+  type SelectedWorkingMode,
+  routeTurnWorkingMode,
+  withWorkingMode,
+} from './workingModes.js';
 import { fromLlmResponse, toLlmRequest } from './llmProviderSeam.js';
 import type {
   AnthropicBlock,
@@ -293,11 +299,13 @@ import {
   guardToolEgress,
 } from './audienceFloorGuard.js';
 import {
+  audienceRoomFor,
   createAudienceFloorProvider,
   knowledgeGraphPrincipalResolver,
 } from './audienceFloorProvider.js';
 import { guardToolCommands } from './commandPolicyGuard.js';
 import {
+  CHANNEL_KIND_BY_ORIGIN,
   resolveRunTraceOwner,
   resolveTurnOwnerIdentity,
   runTraceOwnerId,
@@ -561,6 +569,14 @@ export interface AiDisclosureSetup {
   /** Verbatim operator addendum appended after the marking line; never replaces
    *  it (AC5). Follows the `RoutineStaticMarkdownSection` verbatim contract. */
   readonly operatorNote?: string;
+  /**
+   * #2087 — how often the VISIBLE markers (text line, channel chips) appear.
+   * Absent → `channel_default` (today's behaviour). The structured field and
+   * machine-readable markings stay on every answer whatever this says.
+   */
+  readonly frequency?: AiDisclosureFrequency;
+  /** #2087 — pause in minutes after which `per_conversation` marks again. */
+  readonly pauseMinutes?: number;
 }
 
 export interface OrchestratorOptions {
@@ -987,12 +1003,14 @@ export interface OrchestratorOptions {
    */
   identityName?: string;
   /**
-   * Wave 8 — skills attached to this Agent as direct-answer persona
-   * candidates. When non-empty, each turn runs a Haiku classifier
-   * ({@link routeTurnPersona}) that picks at most one candidate whose `body`
-   * replaces `assistantIdentity` for that turn only — the rest of the system
-   * prompt (tool docs, privacy rules, routing block) is unchanged. Absent/
-   * empty → behaviour is identical to pre-Wave-8 (no classifier call).
+   * #2051 — skills attached to this Agent as working modes (the field keeps
+   * the `agent_persona_skills` table's name). When non-empty, each turn runs a
+   * cheap classifier ({@link routeTurnWorkingMode}) on a model the agent's
+   * policy allows; it picks at most one mode, whose `body` is composed
+   * BENEATH `assistantIdentity` for that turn only ({@link withWorkingMode}).
+   * The identity, personality and boundaries stay first and unchanged; the
+   * rest of the system prompt is unchanged too. Absent/empty → no classifier
+   * call, the agent's default prompt.
    */
   personaSkills?: readonly OrchestratorPersonaSkill[];
   /**
@@ -1018,6 +1036,15 @@ export interface OrchestratorOptions {
    */
   aiDisclosureSeenStore?: DisclosureSeenStore;
   /**
+   * #2087 — `per_conversation` marker state. One instance per process, shared
+   * across the Agents the registry builds: "again when another agent speaks"
+   * compares an answer with the PREVIOUS speaker of the conversation, which a
+   * per-Agent store can never see. Absent → a private
+   * {@link InMemoryDisclosureMarkerStore} (a restart marks again, the
+   * fail-safe direction).
+   */
+  aiDisclosureMarkerStore?: DisclosureMarkerStore;
+  /**
    * #579 — org security posture (org floor + optional scope tightening + shadow/
    * enforce mode + optional external screen URL). Absent → the shipping default
    * (`auto`: screen non-human inbound content, enforce). See
@@ -1042,10 +1069,10 @@ export interface OrchestratorOptions {
   securityAuditSink?: () => (event: SecurityAuditEvent) => void;
 }
 
-/** A persona candidate resolved with its full body (Orchestrator-internal —
- *  the classifier itself only ever sees {@link PersonaCandidate}'s cheap
+/** A working-mode candidate resolved with its full body (Orchestrator-internal
+ *  — the classifier itself only ever sees {@link WorkingModeCandidate}'s cheap
  *  `name`/`description` fields, never `body`). */
-export interface OrchestratorPersonaSkill extends PersonaCandidate {
+export interface OrchestratorPersonaSkill extends WorkingModeCandidate {
   readonly body: string;
 }
 
@@ -2263,6 +2290,31 @@ function requestDisclosureSeen(
   };
 }
 
+/**
+ * #2087 — the `per_conversation` marker store as one verifier request sees it:
+ * the first read of a scope freezes the state before this request, every later
+ * pass of the request decides from that same state (see
+ * `ToolReplayLedger.disclosureMarkerPrior`).
+ */
+function requestDisclosureMarkers(
+  store: DisclosureMarkerStore,
+  ledger: ToolReplayLedger | undefined,
+): DisclosureMarkerStore {
+  if (ledger === undefined) return store;
+  return {
+    getMarker: (scope) => {
+      const prior = ledger.disclosureMarkerPrior;
+      if (prior !== undefined && prior.scope === scope) {
+        return prior.state as DisclosureMarkerState | undefined;
+      }
+      const state = store.getMarker(scope);
+      ledger.disclosureMarkerPrior = { scope, state };
+      return state;
+    },
+    setMarker: (scope, state) => store.setMarker(scope, state),
+  };
+}
+
 /** The pass of `ledger` that starts now, or undefined for an unbound turn. */
 function boundPassOf(ledger: ToolReplayLedger | undefined): BoundPass | undefined {
   return ledger === undefined ? undefined : { ledger, pass: ledger.pass };
@@ -2878,7 +2930,7 @@ export class Orchestrator {
   private readonly fallbackRef: ModelRef | undefined;
   private readonly identityByFamily: Readonly<Record<string, string>> | undefined;
   private readonly fallbackVisionSupported: boolean | undefined;
-  /** Wave 8 — direct-answer persona candidates; empty when none attached. */
+  /** #2051 — working-mode candidates; empty when none attached. */
   private readonly personaSkills: readonly OrchestratorPersonaSkill[];
   private readonly maxTokens: number;
   /** #504/#505 — active model's vision support, if the caller resolved it
@@ -2991,6 +3043,8 @@ export class Orchestrator {
   private readonly aiDisclosure: AiDisclosureSetup | undefined;
   /** #644 — first-turn-per-scope fold-dedup store (see OrchestratorOptions). */
   private readonly disclosureSeen: DisclosureSeenStore;
+  /** #2087 — `per_conversation` marker state; process-local, a restart marks again. */
+  private readonly disclosureMarkers: DisclosureMarkerStore;
   /** #579 — org security posture setup (undefined → shipping default `auto`). */
   private readonly securityPosture: SecurityPostureSetup | undefined;
   /** #579 — late-bound screener factory (see OrchestratorOptions). */
@@ -3105,6 +3159,8 @@ export class Orchestrator {
     this.aiDisclosure = options.aiDisclosure;
     this.disclosureSeen =
       options.aiDisclosureSeenStore ?? new InMemoryDisclosureSeenStore();
+    this.disclosureMarkers =
+      options.aiDisclosureMarkerStore ?? new InMemoryDisclosureMarkerStore();
     this.securityPosture = options.securityPosture;
     this.securityScreener = options.securityScreener;
     this.securityAuditSink = options.securityAuditSink;
@@ -4580,6 +4636,9 @@ export class Orchestrator {
               ? { scope: this.disclosureFoldScope(input.sessionScope) }
               : {}),
             seen: this.disclosureSeen,
+            agentId: this.agentId,
+            markerStore: this.disclosureMarkers,
+            ...(input.sessionScope ? { markerScope: input.sessionScope } : {}),
           }
         : undefined,
     );
@@ -4648,6 +4707,8 @@ export class Orchestrator {
       level,
       source,
       ...(setup?.locale ? { locale: setup.locale } : {}),
+      ...(setup?.frequency ? { frequency: setup.frequency } : {}),
+      ...(setup?.pauseMinutes !== undefined ? { pauseMinutes: setup.pauseMinutes } : {}),
     };
     // #967 — THIS Agent's authored name outranks the platform-wide
     // `ai_disclosure_assistant_name`. The setup field is one string for the
@@ -4728,14 +4789,19 @@ export class Orchestrator {
     };
     const aiDisclosure = this.resolveTurnDisclosure(input);
     if (!aiDisclosure) return delivered;
-    const { text } = applyAiDisclosure(delivered.answer, {
+    const applied = applyAiDisclosure(delivered.answer, {
       disclosure: aiDisclosure,
       ...(input.sessionScope
         ? { scope: this.disclosureFoldScope(input.sessionScope) }
         : {}),
       seen: requestDisclosureSeen(this.disclosureSeen, ledger),
+      agentId: this.agentId,
+      markerStore: requestDisclosureMarkers(this.disclosureMarkers, ledger),
+      ...(input.sessionScope ? { markerScope: input.sessionScope } : {}),
     });
-    return { ...delivered, answer: text, aiDisclosure };
+    // The carrier that goes out is the applied one: it states which visible
+    // markers this answer carries (#2087), the pre-resolved one does not.
+    return { ...delivered, answer: applied.text, aiDisclosure: applied.aiDisclosure ?? aiDisclosure };
   }
 
   /**
@@ -4752,14 +4818,17 @@ export class Orchestrator {
   ): { readonly answer: string; readonly aiDisclosure?: AiDisclosure } {
     const aiDisclosure = this.resolveTurnDisclosure(input);
     if (!aiDisclosure) return { answer };
-    const { text } = applyAiDisclosure(answer, {
+    const applied = applyAiDisclosure(answer, {
       disclosure: aiDisclosure,
       ...(input.sessionScope
         ? { scope: this.disclosureFoldScope(input.sessionScope) }
         : {}),
       seen: this.disclosureSeen,
+      agentId: this.agentId,
+      markerStore: this.disclosureMarkers,
+      ...(input.sessionScope ? { markerScope: input.sessionScope } : {}),
     });
-    return { answer: text, aiDisclosure };
+    return { answer: applied.text, aiDisclosure: applied.aiDisclosure ?? aiDisclosure };
   }
 
   /**
@@ -5160,6 +5229,40 @@ export class Orchestrator {
   }
 
   /**
+   * #575 / #2048 — the audience floor provider for one turn, as a spread for
+   * the turn context. Installed whenever the deployment supplied a grant store,
+   * which since #2048 is every deployment unless the operator switched the
+   * floor off (`AUDIENCE_FLOOR_ENABLED=false`); without one the three guards
+   * short-circuit ("not enforced ≠ closed").
+   *
+   * Deliberately not memoized: the egress guard re-evaluates per tool call so
+   * a mid-turn joiner narrows the floor, and caching here would hand it the
+   * turn's opening answer every time.
+   */
+  private audienceFloorFor(
+    input: ChatTurnInput,
+    parent: TurnContextValue | undefined,
+    turnOwnerId: string | undefined,
+  ): Pick<TurnContextValue, 'audienceFloor'> {
+    if (!this.audienceGrants) return {};
+    const room = audienceRoomFor(input, turnOwnerId);
+    if (!room) return {};
+    return {
+      audienceFloor: createAudienceFloorProvider({
+        participants: parent?.chatParticipants,
+        resolvePrincipal: knowledgeGraphPrincipalResolver(
+          this.knowledgeGraph,
+          input.channelIdentity?.channelKind ??
+            (input.origin ? CHANNEL_KIND_BY_ORIGIN[input.origin.channelType] : undefined),
+        ),
+        roles: this.audienceRoleSources,
+        grants: this.audienceGrants,
+        room,
+      }),
+    };
+  }
+
+  /**
    * The turn's binding, with the room's audience resolved first when the
    * agent runs `members` context memory. The audience is async (roster and
    * identity lookups), the binding itself is not, so this is the one await in
@@ -5461,25 +5564,7 @@ export class Orchestrator {
         // every call as `unresolved` and then fails closed. See the W4-1 block
         // above for where the value comes from.
         ...(mcpUserKey ? { mcpUserKey } : {}),
-        // #575 — installed ONLY when the deployment supplied a grant store.
-        // Without it the three guards short-circuit and behaviour is unchanged,
-        // which is the "not enforced ≠ closed" rule the guards are built on.
-        // Deliberately not memoized: the egress guard re-evaluates per tool
-        // call so a mid-turn joiner narrows the floor, and caching here would
-        // hand it the turn's opening answer every time.
-        ...(this.audienceGrants
-          ? {
-              audienceFloor: createAudienceFloorProvider({
-                participants: parent?.chatParticipants,
-                resolvePrincipal: knowledgeGraphPrincipalResolver(
-                  this.knowledgeGraph,
-                  input.channelIdentity?.channelKind,
-                ),
-                roles: this.audienceRoleSources,
-                grants: this.audienceGrants,
-              }),
-            }
-          : {}),
+        ...this.audienceFloorFor(input, parent, runTraceUserId),
         ...(privacyHandle ? { privacyHandle } : {}),
         ...(parent?.captureRawToolResult
           ? { captureRawToolResult: parent.captureRawToolResult }
@@ -5925,21 +6010,13 @@ export class Orchestrator {
     turnModel: string,
     hasImages: boolean,
   ): Promise<TurnExecution> {
-    let provider = this.provider;
-    let model = turnModel;
-    let effort = this.effort;
-    if (this.primaryRef && this.providerPool && this.primaryRef.provider !== this.provider.id) {
-      const resolved = await this.providerPool.get(this.primaryRef.provider).catch(() => undefined);
-      if (resolved) {
-        provider = resolved;
-        model = this.primaryRef.model;
-        effort = this.primaryRef.effort ?? effort;
-      } else {
-        console.warn(
-          `[orchestrator] agent '${this.agentId}': primary provider '${this.primaryRef.provider}' is not available (no key?) — running on '${this.provider.id}'`,
-        );
-      }
+    const primary = await this.resolvePrimaryExecution(turnModel);
+    if (primary.primaryUnavailable !== undefined) {
+      console.warn(
+        `[orchestrator] agent '${this.agentId}': primary provider '${primary.primaryUnavailable}' is not available (no key?) — running on '${this.provider.id}'`,
+      );
     }
+    const { provider, model, effort } = primary;
     let fallback: TurnFallback | undefined;
     if (this.fallbackRef && this.providerPool) {
       if (hasImages && this.fallbackVisionSupported === false) {
@@ -5965,6 +6042,36 @@ export class Orchestrator {
       }
     }
     return { provider, model, ...(effort !== undefined ? { effort } : {}), ...(fallback ? { fallback } : {}) };
+  }
+
+  /**
+   * #1033 W3 — the provider/model the agent's policy puts the turn on: the
+   * policy's primary when it names another provider the pool can serve, else
+   * the agent's own provider with `turnModel`. `primaryUnavailable` names a
+   * policy provider the pool could not serve (the caller logs it). Shared by
+   * the turn loop and the working-mode classifier (#2051), so both run under
+   * the same policy.
+   */
+  private async resolvePrimaryExecution(turnModel: string): Promise<{
+    provider: LlmProvider;
+    model: string;
+    effort: EffortLevel | undefined;
+    primaryUnavailable?: string;
+  }> {
+    const ref = this.primaryRef;
+    if (!ref || !this.providerPool || ref.provider === this.provider.id) {
+      return { provider: this.provider, model: turnModel, effort: this.effort };
+    }
+    const resolved = await this.providerPool.get(ref.provider).catch(() => undefined);
+    if (!resolved) {
+      return {
+        provider: this.provider,
+        model: turnModel,
+        effort: this.effort,
+        primaryUnavailable: ref.provider,
+      };
+    }
+    return { provider: resolved, model: ref.model, effort: ref.effort ?? this.effort };
   }
 
   /**
@@ -6245,57 +6352,57 @@ export class Orchestrator {
   }
 
   /**
-   * Wave 8 — resolves the direct-answer persona for a single turn. With
-   * persona skills attached, a Haiku classifier picks at most one candidate;
-   * its `body` should replace `assistantIdentity` for this turn only. Empty
-   * candidate list short-circuits before any classifier call — an Agent with
-   * no persona skills pays nothing extra. Never throws — falls back to the
-   * default identity (`skillBody: undefined`).
+   * #2051 — resolves the working mode for a single turn. With modes attached,
+   * a classifier picks at most one; its body is composed BENEATH the agent's
+   * identity ({@link withWorkingMode}), never in its place. Empty candidate
+   * list short-circuits before any classifier call — an Agent without working
+   * modes pays nothing extra. Never throws — falls back to no mode
+   * (`mode: undefined`, the agent's default behaviour).
+   *
+   * The selection is the agent's internal helper (INV-1): it runs inside the
+   * agent's turn context (usage booked on the turn) and on a model the
+   * agent's policy allows — the routing classifier tier when the policy is
+   * `auto` and triage is configured, otherwise the policy's primary
+   * ({@link resolvePrimaryExecution}), never a hardcoded vendor id.
    */
-  private async resolveTurnPersona(userMessage: string): Promise<{
-    skillBody: string | undefined;
-    persona?: {
-      bucket: PersonaRoutingBucket;
+  private async resolveTurnWorkingMode(userMessage: string): Promise<{
+    mode: SelectedWorkingMode | undefined;
+    verdict?: {
+      bucket: WorkingModeBucket;
       classifierModel: string;
       skillId: string | null;
-      skillName: string | null;
+      modeName: string | null;
     };
   }> {
-    if (this.personaSkills.length === 0) return { skillBody: undefined };
-    const r = await routeTurnPersona(
-      this.provider,
+    if (this.personaSkills.length === 0) return { mode: undefined };
+    const classifier = this.modelRouting
+      ? { provider: this.provider, model: this.modelRouting.classifierModel }
+      : await this.resolvePrimaryExecution(this.model);
+    const r = await routeTurnWorkingMode(
+      classifier.provider,
       this.personaSkills,
       userMessage,
-      // Reuses the model-routing classifier tier when configured (same
-      // Haiku-class model already paid for/warmed). Otherwise falls back to
-      // `this.model` (this Agent's own production model) rather than a
-      // hardcoded Anthropic id — `this.provider` may be bound to any vendor
-      // (OpenAI/Mistral/Ollama/…), and a hardcoded `claude-*` classifier
-      // model would 404/reject on every call, silently defeating the whole
-      // feature (every turn falls back to the default identity). `this.model`
-      // is guaranteed provider-compatible by construction; it costs more
-      // than a dedicated cheap-tier classifier, but it always works.
-      this.modelRouting?.classifierModel ?? this.model,
+      classifier.model,
     );
     const picked = r.skillId
       ? this.personaSkills.find((p) => p.skillId === r.skillId)
       : undefined;
-    // Publish the routed persona on the live turn context (epic #459 W4
-    // codex fold): skill-bound MCP tools gate on it at dispatch, so a tool
-    // bound to skill X is unusable on turns where X is not the acting
-    // persona. Mutation (not re-run) so every scope of this turn sees it.
+    // Publish the selected mode on the live turn context (epic #459 W4 codex
+    // fold): skill-bound MCP tools gate on it at dispatch, so a tool bound to
+    // skill X is unusable on turns where X is not the active working mode.
+    // Mutation (not re-run) so every scope of this turn sees it.
     const activeTurn = turnContext.current();
     if (activeTurn) {
-      if (picked?.skillId !== undefined) activeTurn.activePersonaSkillId = picked.skillId;
-      else delete activeTurn.activePersonaSkillId;
+      if (picked?.skillId !== undefined) activeTurn.activeWorkingModeSkillId = picked.skillId;
+      else delete activeTurn.activeWorkingModeSkillId;
     }
     return {
-      skillBody: picked?.body,
-      persona: {
+      mode: picked ? { name: picked.name, body: picked.body } : undefined,
+      verdict: {
         bucket: r.bucket,
         classifierModel: r.classifierModel,
         skillId: picked?.skillId ?? null,
-        skillName: picked?.name ?? null,
+        modeName: picked?.name ?? null,
       },
     };
   }
@@ -6473,19 +6580,22 @@ export class Orchestrator {
     let obligationEscalationsUsed = 0;
     let forceObligationNext = false;
 
-    // Per-turn model routing (no-op unless configured) + Wave 8 persona
-    // routing (no-op unless persona skills are attached), resolved together
-    // — independent classifier calls, run in parallel so persona routing
+    // Per-turn model routing (no-op unless configured) + #2051 working-mode
+    // selection (no-op unless working modes are attached), resolved together
+    // — independent classifier calls, run in parallel so mode selection
     // adds no serial latency on top of model routing. Both resolved once so
     // the whole turn — every tool-loop iteration — is stable. The
-    // non-streaming path has no event channel, so both decisions are simply
-    // applied (channels that want to surface them use chatStream).
-    const [turnModelResolved, turnPersonaResolved] = await Promise.all([
+    // non-streaming path has no event channel; the mode still reaches the
+    // run trace (channels that want the live verdict use chatStream).
+    const [turnModelResolved, turnModeResolved] = await Promise.all([
       this.resolveTurnModel(wireUserMessage, input.routeHint),
-      this.resolveTurnPersona(wireUserMessage),
+      this.resolveTurnWorkingMode(wireUserMessage),
     ]);
     const turnModel = turnModelResolved.model;
-    const turnPersonaBody = turnPersonaResolved.skillBody;
+    const turnWorkingMode = turnModeResolved.mode;
+    if (turnModeResolved.verdict?.skillId && turnWorkingMode) {
+      traceCollector?.recordWorkingMode(turnModeResolved.verdict.skillId, turnWorkingMode.name);
+    }
     // #1033 W3 — which provider/model this turn runs on and where it may hop.
     let turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
     Orchestrator.publishTurnExecution(turnExec);
@@ -6509,12 +6619,17 @@ export class Orchestrator {
         const forceObligation = forceObligationNext && !obligationMet;
         forceObligationNext = false;
         const finalizePass = finalizeThisIter && !forceObligation;
-        // #1033 W3 — the system prompt for a given persona: the routed
-        // persona skill outranks everything; otherwise the execution's own
-        // identity (the fallback family's compiled prompt after a hop).
-        const systemFor = (persona: string | undefined) =>
+        // #1033 W3 — the system prompt for an execution's identity (the
+        // fallback family's compiled prompt after a hop, else the agent's
+        // own); #2051 — the turn's working mode is composed beneath it.
+        const systemFor = (identity: string | undefined) =>
           buildSystemBlocks(
-            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.memoryPrompt),
+            this.composeStableSystemPrompt(
+              prependRules,
+              identity,
+              turnMemory?.memoryPrompt,
+              turnWorkingMode,
+            ),
             priorContext,
             withFinalizeHint(effectiveExtraSystemHint, finalizePass),
           );
@@ -6535,7 +6650,7 @@ export class Orchestrator {
           model: turnExec.model,
           ...(turnExec.effort !== undefined ? { effort: turnExec.effort } : {}),
           max_tokens: this.maxTokens,
-          system: systemFor(turnPersonaBody ?? turnExec.identity),
+          system: systemFor(turnExec.identity),
           messages,
         };
         // Last-resort guard: repair any lone UTF-16 surrogate before the
@@ -6574,7 +6689,7 @@ export class Orchestrator {
                       ...baseParams,
                       model: fb.model,
                       ...(fb.effort !== undefined ? { effort: fb.effort } : {}),
-                      system: systemFor(turnPersonaBody ?? fb.identity),
+                      system: systemFor(fb.identity),
                       ...toolParamsForProvider(fb.provider),
                     }),
                     [MEMORY_BETA_HEADER],
@@ -6819,10 +6934,7 @@ export class Orchestrator {
         const invocations = toolUses.map((use: ContentBlock) => {
           const isNative = this.nativeTools.has(use.name);
           return !isNative && traceCollector
-            ? traceCollector.beginInvocation(
-                use.name,
-                this.domainToolsByName.get(use.name)?.agentId,
-              )
+            ? this.beginDomainInvocation(traceCollector, use.name)
             : undefined;
         });
         const metas: ToolDispatchMeta[] = toolUses.map(() => ({ replayed: false }));
@@ -7272,6 +7384,10 @@ export class Orchestrator {
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
+      // #2048 — the streaming path is what channel adapters and the web chat
+      // call; it carried no floor at all before, so every guard stood down
+      // on exactly the turns that have an audience.
+      ...this.audienceFloorFor(input, parent, runTraceUserId),
       // W3-A / W4-1 — see the matching `turnContext.run` above.
       ...(mcpUserKey ? { mcpUserKey } : {}),
       ...(privacyHandle ? { privacyHandle } : {}),
@@ -7799,16 +7915,19 @@ export class Orchestrator {
     // Mid-turn steering — same key the route enqueues under (see chatStream:
     // `sessionId`). Drained at the top of every iteration below.
     const steerKey = input.sessionScope ?? turnId;
-    // Per-turn model routing (no-op unless configured) + Wave 8 persona
-    // routing (no-op unless persona skills are attached). Independent
-    // classifier calls — run in parallel so persona routing adds no serial
+    // Per-turn model routing (no-op unless configured) + #2051 working-mode
+    // selection (no-op unless working modes are attached). Independent
+    // classifier calls — run in parallel so mode selection adds no serial
     // latency. Resolved once so the whole streamed turn runs on one model.
-    const [resolved, resolvedPersona] = await Promise.all([
+    const [resolved, resolvedMode] = await Promise.all([
       this.resolveTurnModel(wireUserMessage, input.routeHint),
-      this.resolveTurnPersona(wireUserMessage),
+      this.resolveTurnWorkingMode(wireUserMessage),
     ]);
     const turnModel = resolved.model;
-    const turnPersonaBody = resolvedPersona.skillBody;
+    const turnWorkingMode = resolvedMode.mode;
+    if (resolvedMode.verdict?.skillId && turnWorkingMode) {
+      traceCollector?.recordWorkingMode(resolvedMode.verdict.skillId, turnWorkingMode.name);
+    }
     // #1033 W3 — which provider/model this turn runs on and where it may hop.
     let turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
     Orchestrator.publishTurnExecution(turnExec);
@@ -7828,16 +7947,18 @@ export class Orchestrator {
         model: resolved.routing.model,
       };
     }
-    // Wave 8 — surface the persona verdict the same way, only when at least
-    // one persona skill is attached (resolvedPersona.persona is undefined
-    // otherwise, matching turn_routing's own "only when configured" shape).
-    if (resolvedPersona.persona) {
+    // #2051 — surface the working-mode verdict the same way, only when at
+    // least one working mode is attached (`verdict` is undefined otherwise,
+    // matching turn_routing's own "only when configured" shape). Data for
+    // the answer's details and trace (§5.14): it names the mode, never a
+    // speaker — the agent answering this turn does not change with it.
+    if (resolvedMode.verdict) {
       yield {
-        type: 'turn_persona',
-        bucket: resolvedPersona.persona.bucket,
-        classifierModel: resolvedPersona.persona.classifierModel,
-        skillId: resolvedPersona.persona.skillId,
-        skillName: resolvedPersona.persona.skillName,
+        type: 'turn_working_mode',
+        bucket: resolvedMode.verdict.bucket,
+        classifierModel: resolvedMode.verdict.classifierModel,
+        skillId: resolvedMode.verdict.skillId,
+        modeName: resolvedMode.verdict.modeName,
       };
     }
     try {
@@ -7903,11 +8024,17 @@ export class Orchestrator {
         // shared `toolParamsFor`, computed per provider (the fallback gets its
         // own pair).
         const finalizePass = finalizeThisIter && !forceObligation;
-        // #1033 W3 — see the buffered path: persona skill first, else the
-        // execution's own identity (the fallback family's prompt after a hop).
-        const systemFor = (persona: string | undefined) =>
+        // #1033 W3 — see the buffered path: the execution's own identity
+        // (the fallback family's prompt after a hop), with the #2051 working
+        // mode composed beneath it.
+        const systemFor = (identity: string | undefined) =>
           buildSystemBlocks(
-            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.memoryPrompt),
+            this.composeStableSystemPrompt(
+              prependRules,
+              identity,
+              turnMemory?.memoryPrompt,
+              turnWorkingMode,
+            ),
             priorContext,
             withFinalizeHint(effectiveExtraSystemHint, finalizePass),
           );
@@ -7925,7 +8052,7 @@ export class Orchestrator {
           model: turnExec.model,
           ...(turnExec.effort !== undefined ? { effort: turnExec.effort } : {}),
           max_tokens: this.maxTokens,
-          system: systemFor(turnPersonaBody ?? turnExec.identity),
+          system: systemFor(turnExec.identity),
           messages,
         };
         // #1033 W3 — a hop to ANOTHER provider is only taken before the first
@@ -7953,7 +8080,7 @@ export class Orchestrator {
                     ...streamParams,
                     model: fb.model,
                     ...(fb.effort !== undefined ? { effort: fb.effort } : {}),
-                    system: systemFor(turnPersonaBody ?? fb.identity),
+                    system: systemFor(fb.identity),
                     ...toolParamsForProvider(fb.provider),
                   },
                   ...(this.providerPool?.health ? { health: this.providerPool.health } : {}),
@@ -8693,10 +8820,7 @@ export class Orchestrator {
     const isNative = this.nativeTools.has(use.name);
     const invocation =
       !isNative && traceCollector
-        ? traceCollector.beginInvocation(
-            use.name,
-            this.domainToolsByName.get(use.name)?.agentId,
-          )
+        ? this.beginDomainInvocation(traceCollector, use.name)
         : undefined;
     const observer = this.makeSlotObserver(use.id, subEvents, invocation);
     const started = Date.now();
@@ -9686,15 +9810,18 @@ export class Orchestrator {
    * turn; stable feature flags come from the readonly fields, the
    * DomainTool list is live.
    *
-   * `personaOverride` (Wave 8) replaces `assistantIdentity` for this call
-   * only — the resolved body of the turn's chosen direct-answer persona
-   * skill, when one was matched. Every other block (tool docs, privacy
-   * rules, domain-tool routing) is unaffected, so a persona skill can change
-   * *who* answers but never *how* tools/privacy rules are enforced.
+   * `identityOverride` (#1033 W3) replaces `assistantIdentity` for this call
+   * only — the identity compiled for a fallback model's family after a hop.
+   * `workingMode` (#2051) is composed BENEATH whichever identity applies
+   * ({@link withWorkingMode}): the identity, personality and boundaries stay
+   * the opening section, unchanged, and every other block (tool docs, privacy
+   * rules, domain-tool routing) is unaffected. A mode changes how the agent
+   * works, never who answers.
    */
   private getSystemPrompt(
-    personaOverride?: string,
+    identityOverride?: string,
     memoryPrompt?: MemoryPromptKind,
+    workingMode?: SelectedWorkingMode,
   ): string {
     // Plugin-contributed prompt docs, collected from the registry. The
     // kernel's hardcoded blocks (graph/diagram/…) remain in buildSystemPrompt
@@ -9726,7 +9853,7 @@ export class Orchestrator {
       (tool) => this.isToolAvailable(tool.agentId) && this.isOfferableDomainTool(tool),
     );
     return buildSystemPrompt(
-      personaOverride ?? this.assistantIdentity,
+      withWorkingMode(identityOverride ?? this.assistantIdentity, workingMode),
       availableDomainTools,
       this.knowledgeGraphTool !== undefined,
       // Diagrams is now plugin-contributed — its doc ships via extraDocs.
@@ -9792,15 +9919,16 @@ export class Orchestrator {
   /**
    * Combine the Phase-1 prependRules with the body system prompt. Empty
    * rules → returns the body unchanged so the prompt-cache key is byte-
-   * identical to pre-plugin runs. `personaOverride` (Wave 8) is threaded
-   * straight to {@link getSystemPrompt}.
+   * identical to pre-plugin runs. `identityOverride` and `workingMode`
+   * (#2051) are threaded straight to {@link getSystemPrompt}.
    */
   private composeStableSystemPrompt(
     prependRules: string,
-    personaOverride?: string,
+    identityOverride?: string,
     memoryPrompt?: MemoryPromptKind,
+    workingMode?: SelectedWorkingMode,
   ): string {
-    const body = this.getSystemPrompt(personaOverride, memoryPrompt);
+    const body = this.getSystemPrompt(identityOverride, memoryPrompt, workingMode);
     if (prependRules.length === 0) return body;
     return `${prependRules}\n\n---\n\n${body}`;
   }
@@ -9891,6 +10019,44 @@ export class Orchestrator {
 
   hasDomainTool(name: string): boolean {
     return this.domainToolsByName.has(name);
+  }
+
+  /**
+   * #2050 — does this agent hold the native tool `name` itself: registered,
+   * and its owning plugin (if any) granted here? The subset rule for its
+   * internal helpers' native grants, asked by the Agent Builder on save and by
+   * every helper tool call (`subAgentToolHydration.ts`).
+   */
+  holdsNativeTool(name: string): boolean {
+    const reg = this.nativeTools.get(name);
+    if (reg === undefined) return false;
+    return this.isToolGranted(name, reg.agentId, reg.orchestratorScope);
+  }
+
+  /** #2050 — names of every native tool this agent's registry knows; a helper
+   *  tool name must not collide with one. */
+  listNativeToolNames(): readonly string[] {
+    return this.nativeTools.list();
+  }
+
+  /** #2050 — this agent's per-call output budget and step cap; its internal
+   *  helpers' own budgets never exceed them. */
+  turnBudget(): { readonly maxTokens: number; readonly maxIterations: number } {
+    return { maxTokens: this.maxTokens, maxIterations: this.maxIterations };
+  }
+
+  /** Opens a run-trace invocation for a domain tool; an internal helper's run
+   *  is flagged so it is never listed as a consulted agent (#2050). */
+  private beginDomainInvocation(
+    collector: RunTraceCollector,
+    toolName: string,
+  ): InvocationHandle {
+    const tool = this.domainToolsByName.get(toolName);
+    return collector.beginInvocation(
+      toolName,
+      tool?.agentId,
+      tool?.internalHelper ? { internalHelper: true } : undefined,
+    );
   }
 
   /**

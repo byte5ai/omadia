@@ -164,7 +164,7 @@ async function createTestApp(opts: {
       name: 'Install Route Test',
       description: 'fixture',
       category: 'analysis',
-      template: 'agent-integration',
+      template: 'integration',
     } as never,
   });
   const draftQuota = new DraftQuota({ store: draftStore, max: 50 });
@@ -366,7 +366,7 @@ describe('POST /api/v1/builder/drafts/:id/install (B.6-1)', () => {
         name: 'tsc-fail',
         description: 'fixture',
         category: 'analysis',
-        template: 'agent-integration',
+        template: 'integration',
       } as never,
     });
     const draftQuota = new DraftQuota({ store: draftStore, max: 50 });

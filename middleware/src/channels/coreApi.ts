@@ -19,6 +19,7 @@ import type {
   PlatformIdentity,
   TargetedSendProvider,
 } from '@omadia/channel-sdk';
+import { channelUserPrincipal } from '@omadia/channel-sdk';
 import { deriveChannelType } from './channelType.js';
 import type { ExpressRouteRegistry } from './routeRegistry.js';
 import type { WebSocketRegistry } from './webSocketRegistry.js';
@@ -68,6 +69,19 @@ export interface TurnDispatcher {
      */
     target?: unknown;
   }): AsyncIterable<ChatStreamEvent>;
+}
+
+/**
+ * The operator-addressable id a turn registers for the Conductor binding: the
+ * verified e-mail when the channel states one, else — for a channel whose
+ * people directory lists people in the canonical principal form (Slack) — that
+ * form without its `user:` prefix, so a directory entry and a turn meet on one
+ * key. Every other channel keeps its channel-native id (`userId`).
+ */
+export function conductorPrincipalRef(ref: ChannelUserRef): string | undefined {
+  if (ref.email?.includes('@')) return ref.email;
+  if (ref.kind === 'slack-user') return channelUserPrincipal(ref).replace(/^user:/, '');
+  return undefined;
 }
 
 /**
@@ -164,7 +178,8 @@ export interface CreateCoreApiOptions {
    * (subscriptions and events are stored); absent leaves both CoreApi methods
    * undefined, so an adapter's mention gate always applies.
    */
-  conversationMessages?: Pick<ConversationMessageHub, 'emit' | 'isSubscribed' | 'deliveryMode'>;
+  conversationMessages?: Pick<ConversationMessageHub, 'emit' | 'isSubscribed' | 'deliveryMode'> &
+    Partial<Pick<ConversationMessageHub, 'report'>>;
   /** #2043 — readiness providers and meeting sources, same lifecycle as the
    *  roster registry; and where pushed snapshots and session events go. */
   readinessProviders?: ChannelProviderRegistry<ChannelReadinessProvider>;
@@ -239,6 +254,7 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
       // guard's documented "absent context ⇒ pass" row is the correct outcome
       // for an anonymous turn, and skipping here is what preserves it.
       const principal = turn.userRef.id.trim();
+      const principalRef = conductorPrincipalRef(turn.userRef);
       if (!routineTurn || !principal || routineTurn.hasContextFor(turn.userRef.id)) {
         return dispatch();
       }
@@ -251,7 +267,7 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
         {
           ...(declaredTenant ? { tenant: declaredTenant } : {}),
           userId: turn.userRef.id,
-          ...(turn.userRef.email ? { principalRef: turn.userRef.email } : {}),
+          ...(principalRef ? { principalRef } : {}),
           // The routine is stored against the SHORT binding type, because that
           // is what a channel plugin registers its ProactiveSender under
           // ('telegram'), not the reverse-DNS catalog id.
@@ -351,6 +367,11 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
     api.emitConversationMessage = (event: ConversationMessageEvent): void => {
       messages.emit(event);
     };
+    if (messages.report) {
+      const report = messages.report.bind(messages);
+      api.reportConversationMessage = (event: ConversationMessageEvent): Promise<{ answeredCard: boolean }> =>
+        report(event);
+    }
     // Asked synchronously for every inbound activity: a cache lookup that
     // never throws. Anything not positively subscribed is `false`.
     api.isAllMessagesSubscribed = (
