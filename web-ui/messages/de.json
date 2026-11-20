@@ -948,7 +948,11 @@
       "inert": "Konfiguriert, aber noch nicht wirksam: {channels}. Turns auf diesen Channels melden ihren Channel-Typ nicht, daher gilt dort die globale Einstellung.",
       "note": "Das ist deine Entscheidung als Betreiber — es wird nichts blockiert. Angezeigt, damit eine Einstellung aus einem Test-Setup nicht unbemerkt bleibt.",
       "frequency": "Sichtbare KI-Marker erscheinen {frequency}.",
-      "frequencyValue": {"channel_default": "wie ausgeliefert", "per_answer": "bei jeder Antwort", "per_conversation": "einmal pro Konversation"},
+      "frequencyValue": {
+        "channel_default": "wie ausgeliefert",
+        "per_answer": "bei jeder Antwort",
+        "per_conversation": "einmal pro Konversation"
+      },
       "level": {
         "standard": "volle Kennzeichnung",
         "concise": "kurze Kennzeichnung",
@@ -3182,6 +3186,7 @@
       "cancel": "Abbrechen",
       "removeConfirmTitle": "{channel}-Bot dieses Agenten entfernen?",
       "removeConfirmBody": "Das Kanal-Plugin hält den Bot an und vergisst seine Zugangsdaten. Danach erreicht man den Agenten wieder über den gemeinsamen Bot.",
+      "removedNotReleased": "Der Bot gehört nicht mehr zu diesem Agenten. Das {channel}-Plugin war nicht aktiv und hat den Token womöglich noch: Widerrufe den Token auf der Plattform.",
       "state": {
         "running": "Läuft",
         "stopped": "Angehalten",

@@ -103,6 +103,8 @@ function ChannelCard(props: ChannelCardProps): React.ReactElement {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  /** The row went, but the plugin was not active to forget the credentials. */
+  const [notReleased, setNotReleased] = useState(false);
   const channelName = t.has(`channelNames.${channel.channelType}`)
     ? t(`channelNames.${channel.channelType}`)
     : channel.channelType;
@@ -128,7 +130,8 @@ function ChannelCard(props: ChannelCardProps): React.ReactElement {
     setConfirmRemove(false);
     setBusy(true);
     try {
-      await removeAgentChannelIdentity(props.slug, channel.channelType);
+      const res = await removeAgentChannelIdentity(props.slug, channel.channelType);
+      setNotReleased(res.released === false);
       setError(null);
       await props.onChanged();
     } catch (err: unknown) {
@@ -196,6 +199,11 @@ function ChannelCard(props: ChannelCardProps): React.ReactElement {
       {error !== null ? (
         <p role="alert" className="mt-2 text-xs text-[color:var(--danger)]">
           {error}
+        </p>
+      ) : null}
+      {notReleased ? (
+        <p role="status" className="mt-2 text-xs text-[color:var(--fg-muted)]">
+          {t('removedNotReleased', { channel: channelName })}
         </p>
       ) : null}
       <ConfirmDialog

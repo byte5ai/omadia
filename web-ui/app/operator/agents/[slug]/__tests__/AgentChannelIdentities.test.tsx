@@ -107,6 +107,18 @@ describe('AgentChannelIdentities', () => {
     const dialog = await screen.findByRole('dialog');
     await userEvent.click(within(dialog).getByRole('button', { name: /Remove bot/ }));
     await waitFor(() => expect(mockRemove).toHaveBeenCalledWith('mira', 'telegram'));
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('says so when the plugin was not active to forget the token', async () => {
+    mockGet.mockResolvedValueOnce(withBot()).mockResolvedValueOnce(withoutBot());
+    mockRemove.mockResolvedValue({ ok: true, released: false });
+    renderWithIntl(<AgentChannelIdentities slug="mira" />);
+    const card = await screen.findByTestId('channel-identity-telegram');
+    await userEvent.click(within(card).getByRole('button', { name: /Remove bot/ }));
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: /Remove bot/ }));
+    expect(await screen.findByRole('status')).toHaveTextContent(/revoke the token/);
   });
 
   it('says so when no channel plugin runs agent bots', async () => {
