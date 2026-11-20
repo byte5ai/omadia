@@ -196,3 +196,60 @@ test('an identity only claims its own channel type', async () => {
   assert.equal(discord.match, 'default');
   assert.equal(discord.agent?.agent.slug, 'standard');
 });
+
+// ── Teams: the identity comes from `agent_teams_identities` (`28:<appId>`) ──
+
+const MONA_ID = '0b6f4c6e-4444-4c4a-b3e6-0b51c89c4f04';
+const MONA_BOT = '28:3d78d742-eefb-4fb2-bae5-3687f24c46fc';
+const PERSONAL_CHAT = 'a:1xyzpersonalchat';
+
+function teamsSnapshot(): ConfigSnapshot {
+  const base = snapshot();
+  return {
+    ...base,
+    agents: [...base.agents, { ...agent('mona', MONA_ID), name: 'Mona' }],
+    // The projection `ConfigStore.listChannelIdentities` builds from 0049.
+    channelIdentities: [{ channelType: 'teams', channelKey: MONA_BOT, agentId: MONA_ID }],
+    // A selection someone stored in Mona's personal bot chat before S7.
+    selections: [
+      { channelType: 'teams', conversationKey: PERSONAL_CHAT, principal: SENDER, agentId: OTTO_ID, selectedAt: new Date(0) },
+    ],
+  };
+}
+
+test("Teams: /agent in a provisioned agent's own bot chat says whose bot it is and selects nothing (live finding)", async () => {
+  const selection = recordingSelection();
+  const resolver = await resolverFor(teamsSnapshot(), selection);
+  // What channel-teams does (`pickTurnDecision`): the bot key first; an
+  // exclusive hit wins and its ChatAgent also carries out `/agent`.
+  const viaBot = resolver.resolve('teams', MONA_BOT, { principal: SENDER, locale: 'en' });
+  assert.equal(viaBot.exclusive, true);
+  assert.equal(viaBot.agent?.agent.slug, 'mona');
+  const answer = await viaBot.chatAgent!.chat({ userMessage: '/agent otto', sessionScope: 's', userId: 'u' } as never);
+  assert.equal(answer.systemNotice?.code, 'agent_own_bot');
+  assert.equal(answer.systemNotice?.agent?.slug, 'mona');
+  assert.equal(answer.systemNotice?.locale, 'en');
+  assert.match(answer.text, /Mona's own bot/);
+  assert.equal(selection.calls, 0);
+  // The stale selection on the chat does not take the bot either.
+  assert.equal(resolver.resolve('teams', PERSONAL_CHAT, { principal: SENDER }).agent?.agent.slug, 'otto');
+  assert.equal(viaBot.agent?.agent.slug, 'mona');
+});
+
+test("the routed agent receives the turn's language (for its identity-guard notice)", async () => {
+  const resolver = await resolverFor(teamsSnapshot());
+  const viaBot = resolver.resolve('teams', MONA_BOT, { principal: SENDER, locale: 'en' });
+  const seen: Array<string | undefined> = [];
+  const inner = viaBot.agent!.built.bundle.agent as { chat: (i: { locale?: string }) => Promise<unknown> };
+  const original = inner.chat;
+  inner.chat = async (input) => {
+    seen.push(input.locale);
+    return { text: 'ok' };
+  };
+  try {
+    await viaBot.chatAgent!.chat({ userMessage: 'hello', sessionScope: 's', userId: 'u' } as never);
+  } finally {
+    inner.chat = original;
+  }
+  assert.deepEqual(seen, ['en']);
+});

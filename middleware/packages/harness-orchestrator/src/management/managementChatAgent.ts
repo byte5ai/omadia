@@ -86,10 +86,13 @@ export function managementChatAgent(
 ): ChatAgent {
   const fallbackNotice = (): SystemNotice =>
     refusal ?? buildSystemNotice('no_agent', context.locale ? { locale: context.locale } : {});
+  // The sender's language reaches the agent's own notices (identity guard).
+  const withLocale = <I extends { locale?: string }>(input: I): I =>
+    input.locale === undefined && context.locale !== undefined ? { ...input, locale: context.locale } : input;
   const chat = async (input: Parameters<ChatAgent['chat']>[0]): Promise<SemanticAnswer> => {
     const notice = await commandNotice(input.userMessage, context);
     if (notice) return systemNoticeAnswer(notice);
-    return inner ? inner.chat(input) : systemNoticeAnswer(fallbackNotice());
+    return inner ? inner.chat(withLocale(input)) : systemNoticeAnswer(fallbackNotice());
   };
   async function* chatStream(
     input: Parameters<ChatAgent['chatStream']>[0],
@@ -104,7 +107,7 @@ export function managementChatAgent(
       yield systemNoticeDone(fallbackNotice());
       return;
     }
-    yield* inner.chatStream(input, observer);
+    yield* inner.chatStream(withLocale(input), observer);
   }
   if (!inner) return { chat, chatStream };
   return new Proxy(inner, {

@@ -69,7 +69,13 @@ export function withIdentityGuard<A extends ChatAgent>(inner: A, emitter: AgentA
       ...(answer.maskedValues ? { restoredValues: answer.maskedValues } : {}),
     });
     if (outcome.published) return answer;
-    const notice = outcome.replacement.notice;
+    // The sender's language, when the turn names it, outranks the agent's.
+    const notice = input.locale
+      ? buildSystemNotice(outcome.replacement.notice.code, {
+          ...(outcome.replacement.notice.agent ? { agent: outcome.replacement.notice.agent } : {}),
+          locale: input.locale,
+        })
+      : outcome.replacement.notice;
     return {
       text: notice.text,
       speaker: SYSTEM_SPEAKER,
@@ -132,7 +138,7 @@ export function withIdentityGuard<A extends ChatAgent>(inner: A, emitter: AgentA
         yield event;
         continue;
       }
-      const notice = guardNotice(failure, speaker, emitter.noticeLocale());
+      const notice = guardNotice(failure, speaker, input.locale ?? emitter.noticeLocale());
       const { answer, system } = withheld(gate.releasedText, notice);
       yield {
         type: 'done',
