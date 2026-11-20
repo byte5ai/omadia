@@ -14,6 +14,7 @@ import {
   mcpToolNameFromRef,
   type AgentGraphStore,
   AGENT_TO_AGENT_MODES,
+  archetypeOmits,
   assertArchetypeAllows,
   FACILITATOR_ARCHETYPE,
   STANDARD_ARCHETYPE,
@@ -2391,6 +2392,20 @@ export function createOperatorAgentsRouter(
       const previous = normalizeContextMemoryMode(agent.contextMemory);
       // #2060 — every mode other than `off` scopes a memory a facilitator does not have.
       if (body.mode !== 'off') assertArchetypeAllows(agent, 'memory');
+      // Spec 2042 §5.11 "Defaults" — never `off` for an agent with access to
+      // classified data: any capability grant can return such data, so an
+      // agent that holds one keeps a context-memory boundary.
+      if (body.mode === 'off' && !archetypeOmits(agent, 'memory')) {
+        const grants = (await live.store.listAgentPlugins(agent.id)).filter((p) => p.enabled);
+        if (grants.length > 0) {
+          res.status(409).json({
+            error: 'context_memory_required',
+            message:
+              'context memory cannot be off for an agent that holds capability grants; choose members, enforce or enforce-strict',
+          });
+          return;
+        }
+      }
       await live.store.updateAgent(agent.id, { contextMemory: body.mode });
       // Same reload contract as every other write on this router: the running
       // registry rebuilds the agent's `MemoryBinder` with the new mode, so the
@@ -2403,6 +2418,13 @@ export function createOperatorAgentsRouter(
         console.warn(
           `[security-audit] context_memory ${previous} -> ${body.mode} for agent ${agent.slug}`,
         );
+        await recordAudit({
+          actor: auditActorFromRequest(req),
+          action: 'agent.context_memory_change',
+          target: `agent:${agent.slug}`,
+          before: { mode: previous },
+          after: { mode: body.mode },
+        });
       }
       res.json({ ok: true, mode: body.mode });
     } catch (err) {

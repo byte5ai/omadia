@@ -146,6 +146,22 @@ export class DiscussionPeerDisabledError extends Error {
 }
 
 /**
+ * Spec 2042 §5.4 — two named partners do not hold consultation grants for
+ * each other, so they may not discuss with each other.
+ */
+export class DiscussionNotGrantedError extends Error {
+  constructor(
+    readonly agentA: string,
+    readonly agentB: string,
+  ) {
+    super(
+      `agents '${agentA}' and '${agentB}' may not discuss with each other — an operator must grant consultation in both directions`,
+    );
+    this.name = 'DiscussionNotGrantedError';
+  }
+}
+
+/**
  * The named partner is not someone this chat can hear from. Carries the real
  * candidates so the caller can correct itself in one step — the first live
  * attempt died because the model guessed a roster, guessed wrong, and stopped.
@@ -184,6 +200,14 @@ export function createDiscussionsCapability(deps: {
    * gets; production always wires one.
    */
   peerGate?: PeerGate;
+  /**
+   * Spec 2042 §5.4 "One authorization" — two agents may discuss only when
+   * each holds a consultation grant for the other (and all four switches are
+   * on), on top of the peer gate. Applied between the opener and every
+   * candidate, and between every two named partners. Absent = no grant check
+   * (a test harness without a store); production always wires it.
+   */
+  mutualGrant?: (agentSlugA: string, agentSlugB: string) => Promise<boolean>;
   log?: (msg: string) => void;
 }): ConductorDiscussionsCapability {
   /** The turn's conversation + the agent that answered it, or a typed refusal. */
@@ -210,10 +234,13 @@ export function createDiscussionsCapability(deps: {
     const present = (await deps.listPartners(turn.channelType, turn.conversationId)).filter(
       (p) => p.slug !== opener,
     );
-    if (!deps.peerGate) return present;
     const gate = deps.peerGate;
+    const mutual = deps.mutualGrant;
     const verdicts = await Promise.all(
-      present.map((p) => gate(turn.channelType, turn.conversationId, p.slug)),
+      present.map(async (p) => {
+        if (gate && !(await gate(turn.channelType, turn.conversationId, p.slug))) return false;
+        return mutual ? mutual(opener, p.slug).catch(() => false) : true;
+      }),
     );
     return present.filter((_, i) => verdicts[i] === true);
   };
@@ -250,6 +277,18 @@ export function createDiscussionsCapability(deps: {
         // the discussion they asked for.
         if (!partner) throw new DiscussionUnknownPartnerError(wanted, candidates);
         if (!resolved.includes(partner.slug)) resolved.push(partner.slug);
+      }
+
+      // Every two partners must hold grants for each other as well, not only
+      // for the opener: each of them speaks to all the others.
+      if (deps.mutualGrant) {
+        for (const [i, a] of resolved.entries()) {
+          for (const b of resolved.slice(i + 1)) {
+            if (!(await deps.mutualGrant(a, b).catch(() => false))) {
+              throw new DiscussionNotGrantedError(a, b);
+            }
+          }
+        }
       }
 
       deps.log?.(

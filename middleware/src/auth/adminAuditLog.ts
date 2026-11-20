@@ -127,7 +127,16 @@ export type AuditAction =
   | 'memory.purge'
   | 'api_key.create'
   | 'api_key.revoke'
-  | 'api_key.delete';
+  | 'api_key.delete'
+  // Spec 2042 §5.4 (#2047) — consultation switches and directed grants. A
+  // grant change is written twice, once per agent (`target` `agent:<slug>`),
+  // so the trail of either agent shows it. `before`/`after` carry the grant.
+  | 'agent.consultation_change'
+  // Spec 2042 §5.11 (#2079) — an integration's declared readership and
+  // sensitivity (`target` `integration:<id>`), and an agent's context-memory
+  // mode (`target` `agent:<slug>`).
+  | 'discretion.readership_change'
+  | 'agent.context_memory_change';
 
 /**
  * #1329 — the actions a PLUGIN may write via

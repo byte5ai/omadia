@@ -1,0 +1,75 @@
+/**
+ * Spec 2042 §5.4 "One authorization" / §6 criterion 4 — a discussion between
+ * agents without consultation grants in both directions is refused. The
+ * existing per-agent and per-chat switches (peer gate) still apply on top.
+ */
+
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+
+import {
+  createDiscussionsCapability,
+  DiscussionNotGrantedError,
+  type DiscussionPartner,
+} from '../../src/conductor/discussionHere.js';
+
+const PARTNERS: DiscussionPartner[] = [
+  { slug: 'hr', name: 'Karen' },
+  { slug: 'accounting', name: 'FiBu' },
+  { slug: 'sales', name: 'Mira' },
+];
+
+function harness(granted: ReadonlyArray<readonly [string, string]>) {
+  const started: Array<{ participants: string[] }> = [];
+  const mutual = (a: string, b: string) =>
+    Promise.resolve(granted.some(([x, y]) => (x === a && y === b) || (x === b && y === a)));
+  const capability = createDiscussionsCapability({
+    discussions: {
+      start: async (input: { participants: string[] }) => {
+        started.push(input);
+        return { runId: 'r', workflowId: 'w', workflowSlug: 's', expiresAt: new Date(0).toISOString() };
+      },
+    } as never,
+    resolveTurn: () => ({ channelType: 'teams', conversationId: '19:c@thread.v2', botChannelKey: '28:hr' }),
+    resolveOpener: () => 'hr',
+    listPartners: async () => PARTNERS,
+    peerGate: async () => true,
+    mutualGrant: mutual,
+  });
+  return { capability, started };
+}
+
+describe('discussions need mutual consultation grants', () => {
+  it('without mutual grants the partner is not a candidate and the start is refused', async () => {
+    const { capability, started } = harness([['hr', 'sales']]);
+    assert.deepEqual((await capability.partnersHere()).map((p) => p.slug), ['sales']);
+    await assert.rejects(() => capability.startHere({ partners: ['accounting'], topic: 'T' }), {
+      name: 'DiscussionUnknownPartnerError',
+    });
+    await capability.startHere({ partners: ['Mira'], topic: 'T' });
+    assert.deepEqual(started[0]?.participants, ['hr', 'sales']);
+  });
+
+  it('every two partners need grants for each other, not only for the opener', async () => {
+    const { capability, started } = harness([
+      ['hr', 'sales'],
+      ['hr', 'accounting'],
+    ]);
+    await assert.rejects(
+      () => capability.startHere({ partners: ['sales', 'accounting'], topic: 'T' }),
+      (err: unknown) => err instanceof DiscussionNotGrantedError && err.agentA === 'sales' && err.agentB === 'accounting',
+    );
+    assert.equal(started.length, 0);
+  });
+
+  it('a failing grant lookup counts as not granted', async () => {
+    const capability = createDiscussionsCapability({
+      discussions: { start: async () => ({}) } as never,
+      resolveTurn: () => ({ channelType: 'teams', conversationId: 'c', botChannelKey: 'k' }),
+      resolveOpener: () => 'hr',
+      listPartners: async () => PARTNERS,
+      mutualGrant: () => Promise.reject(new Error('db down')),
+    });
+    assert.deepEqual(await capability.partnersHere(), []);
+  });
+});
