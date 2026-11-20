@@ -47,7 +47,10 @@ export type TriggerStep =
     }
   | { readonly type: 'post'; readonly template: string }
   | { readonly type: 'deliver'; readonly action: DataActionSpec; readonly title?: string }
-  | { readonly type: 'turn'; readonly instruction: string };
+  | { readonly type: 'turn'; readonly instruction: string }
+  /** A registered batch job (`BatchJob`), only for origin `system`: finds
+   *  due items without a model, then handles a bounded batch. */
+  | { readonly type: 'batch'; readonly job: string };
 
 export type TriggerStepType = TriggerStep['type'];
 

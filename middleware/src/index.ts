@@ -90,7 +90,7 @@ import { createFieldClassificationRoutes } from './privacy/fieldClassification/r
 import { createNonPersonalFieldsEditor } from './privacy/fieldClassification/configEditor.js';
 import { PgFieldClassificationStore } from './privacy/fieldClassification/store.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME, perCallerService } from '@omadia/plugin-api';
-import { TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
+import { BATCH_JOB_REGISTRY_SERVICE, TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
 import { archetypeProcessesServiceName, type ArchetypeProcessesService } from '@omadia/plugin-api';
 import type { TranscriptionService } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
@@ -587,6 +587,7 @@ import { parseQuietHours } from './triggers/proactiveGate.js';
 import { DEFAULT_TRIGGER_LIMITS } from './triggers/triggerPolicy.js';
 import { createRoutineTriggerScheduler } from './triggers/routineTriggers.js';
 import { createScheduleTriggerScheduler } from './triggers/scheduleTriggers.js';
+import { KernelBatchJobRegistry } from './triggers/batchJobs.js';
 import { TargetedSendRegistry } from './channels/targetedSendRegistry.js';
 import { createTargetedDeliveryService } from './channels/targetedDeliveryService.js';
 import { ConversationSendRegistry } from './channels/conversationSendRegistry.js';
@@ -778,6 +779,11 @@ async function main(): Promise<void> {
   // so the Designer can list emittable events and ctx.events.emit enforces deny-by-default.
   const eventCatalogRegistry = new EventCatalogRegistry();
   serviceRegistry.provide('eventCatalogRegistry', eventCatalogRegistry);
+  // #2082 — plugins register learning/consolidation jobs here; they run as
+  // bounded agent batch triggers (deadline, budget, breaker), never as a
+  // free-running plugin interval.
+  const batchJobRegistry = new KernelBatchJobRegistry();
+  serviceRegistry.provide(BATCH_JOB_REGISTRY_SERVICE, batchJobRegistry);
   // #133 E0 — expose the kernel turn-hook registry to the orchestrator plugin
   // so it can fire onBeforeTurn / onAfterToolCall / onAfterTurn during turns.
   serviceRegistry.provide('turnHookRegistry', turnHookRegistry);
@@ -5137,6 +5143,11 @@ async function main(): Promise<void> {
       senders: () => routinesHandle?.senderRegistry,
       routines: () => routineTriggerScheduler,
       schedules: () => scheduleTriggerScheduler,
+      batchJobs: batchJobRegistry,
+      enabledAgents: () =>
+        (getRegistry()?.list() ?? [])
+          .filter((a) => a.agent.status === 'enabled')
+          .map((a) => ({ id: a.agent.id, slug: a.agent.slug })),
       registerNativeTool: (name, handler, options) =>
         nativeToolRegistry.register(name, { handler, spec: options.spec, isAvailable: options.isAvailable }),
       audit: () => async (entry) => {

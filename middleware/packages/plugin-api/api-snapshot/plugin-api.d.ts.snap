@@ -246,6 +246,28 @@ export interface ArchetypeProcessesService {
 endProcessesOfAgent(request: ArchetypeProcessEndRequest): Promise<ArchetypeProcessEndReport>;
 }
 
+// ===== batchJobs.d.ts =====
+export declare const BATCH_JOB_REGISTRY_SERVICE = "batchJobRegistry";
+export interface BatchJobRunOptions {
+readonly limit: number;
+readonly signal: AbortSignal;
+}
+export interface BatchJobResult {
+readonly processed: number;
+readonly failed: number;
+}
+export interface BatchJob {
+readonly id: string;
+readonly purpose: string;
+readonly intervalMinutes: number;
+readonly batchSize: number;
+due(agentSlug: string): Promise<number>;
+run(agentSlug: string, options: BatchJobRunOptions): Promise<BatchJobResult>;
+}
+export interface BatchJobRegistry {
+register(job: BatchJob): () => void;
+}
+
 // ===== boundaryPresets.d.ts =====
 export type BoundaryPresetCategory = 'data' | 'scope' | 'authority' | 'communication';
 export interface BoundaryPreset {
@@ -1115,6 +1137,7 @@ export * from './facilitation.js';
 export * from './executionAuthorization.js';
 export * from './executionGrants.js';
 export * from './speaker.js';
+export * from './batchJobs.js';
 
 // ===== knowledgeGraph.d.ts =====
 import type { EntityRef } from './entityRef.js';

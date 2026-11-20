@@ -209,3 +209,7 @@ export * from './executionGrants.js';
 // #2045 (epic #2042) — speaker, typed emissions, system notices and
 // contributions: who speaks, and what kind of output reaches a person.
 export * from './speaker.js';
+
+// #2082 (epic #2042) — bounded batch jobs: learning and consolidation run as
+// agent batch triggers, not as free-running plugin intervals.
+export * from './batchJobs.js';

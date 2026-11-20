@@ -163,8 +163,8 @@ if (pgUp) {
       assert.equal(mk.createdBy, 'scratch-reaper');
       assert.deepEqual(mk.aclOwners, []);
       assert.deepEqual(mk.involvedOmadiaUserIds, []);
-      // Part A — promoted scratch is published team-visible.
-      assert.equal(mk.visibility, 'team');
+      // #2082 — promoted scratch stays the agent's own, never team knowledge.
+      assert.equal(mk.visibility, 'private');
       assert.ok(mk.summary.includes('SIGNIFICANT'));
 
       // Significant scratch row deleted; trivial + fresh still present.
@@ -307,7 +307,7 @@ if (pgUp) {
       assert.equal(res.skipped, 0, 'sub-threshold dropped, not skipped');
       assert.equal(res.failed, 0);
       assert.equal(createCalls.length, 1);
-      assert.equal(createCalls[0]!.visibility, 'team');
+      assert.equal(createCalls[0]!.visibility, 'private');
 
       // Only the fresh row survives: promoted + dropped both gone.
       const remaining = await pool.query<{ virtual_path: string }>(
@@ -315,6 +315,50 @@ if (pgUp) {
       );
       const paths = remaining.rows.map((r) => r.virtual_path);
       assert.deepEqual(paths, [FRESH_PATH], 'only fresh row untouched');
+    });
+  });
+
+  describe('#2082 · the reaper as a per-agent batch job (real PG)', () => {
+    it('counts and consolidates one agent\'s scratch only, at most the limit', async () => {
+      await pool.query('DROP TABLE IF EXISTS memory_files');
+      await pool.query(MEMORY_FILES_DDL);
+      const rows: [string, string][] = [
+        ['/memories/orchestrators/a/one.md', SIGNIFICANT_BODY],
+        ['/memories/orchestrators/a/two.md', SIGNIFICANT_BODY],
+        ['/memories/orchestrators/a_b/other.md', SIGNIFICANT_BODY],
+        ['/memories/orchestrators/b/chitchat.md', TRIVIAL_BODY],
+      ];
+      for (const [path, body] of rows) {
+        await pool.query(
+          `INSERT INTO memory_files (virtual_path, content, size_bytes, created_at, updated_at)
+           VALUES ($1, $2, $3, now() - interval '2 days', now() - interval '2 days')`,
+          [path, body, body.length],
+        );
+      }
+      const { kg, createCalls } = makeFakeKg();
+      const reaper = createScratchPromotionReaper({
+        pool,
+        tenantId: 'default',
+        kg,
+        scorer: makeFakeScorer(),
+        threshold: 0.6,
+        ageMs: 24 * 3_600_000,
+        intervalMs: 60 * 60_000,
+        defaultVisibility: 'team',
+        log: () => {},
+      });
+      assert.equal(await reaper.due('a'), 2, "'a_b' is not under 'a' (LIKE escaped)");
+      assert.equal(await reaper.due('nobody'), 0);
+
+      const job = reaper.asBatchJob();
+      assert.equal(job.id, 'orchestrator-extras.scratch-promotion');
+      assert.equal(job.intervalMinutes, 60);
+      const out = await job.run('a', { limit: 1, signal: new AbortController().signal });
+      assert.deepEqual(out, { processed: 1, failed: 0 });
+      assert.equal(createCalls.length, 1);
+      assert.equal(createCalls[0]!.originAgent, 'a');
+      assert.equal(await reaper.due('a'), 1, 'one batch of one row');
+      assert.equal(await reaper.due('a_b'), 1, 'another agent untouched');
     });
   });
 

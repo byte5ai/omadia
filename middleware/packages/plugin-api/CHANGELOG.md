@@ -37,6 +37,12 @@ version when it lands.
 - `ScheduleNode` gains the optional **`until`** (#2082, spec §5.12,
   ADR-0020): the deadline an Agent Builder schedule runs to; past it the
   schedule is disabled until an operator renews it.
+- **`BatchJob`**, **`BatchJobRegistry`**, **`BatchJobResult`**,
+  **`BatchJobRunOptions`** and the service name
+  **`BATCH_JOB_REGISTRY_SERVICE`** (`batchJobRegistry@1`, #2082, spec §5.12):
+  a plugin registers periodic learning or consolidation as a job; the kernel
+  runs it as a bounded batch trigger per agent (deadline, budget, breaker)
+  instead of a plugin's own interval.
 
 ### Changed
 

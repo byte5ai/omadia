@@ -19,7 +19,7 @@ import { storeContextChecks, type ContextLivenessProbe } from './contextChecks.j
 import { toTableData, type DataActionRunner } from './dataActions.js';
 import { isHeadless } from './headless.js';
 import type { ProactiveGate } from './proactiveGate.js';
-import type { FiringStatus, StepExecutors, TurnOutcome } from './triggerChain.js';
+import type { BatchOutcome, FiringStatus, StepExecutors, TurnOutcome } from './triggerChain.js';
 import type { TriggerStore } from './triggerStore.js';
 import type { Trigger } from './types.js';
 
@@ -47,6 +47,8 @@ export interface KernelExecutorDeps {
   /** Is the schedule behind a headless trigger still enabled? A deleted or
    *  disabled schedule never runs a turn, even before its trigger is ended. */
   readonly scheduleLive?: (trigger: Trigger) => Promise<boolean>;
+  /** A registered batch job's step (`batchJobs.ts`). */
+  readonly batch?: (trigger: Trigger, job: string) => Promise<BatchOutcome>;
 }
 
 
@@ -87,6 +89,10 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
       const table = toTableData(result.rows, result.columns, title);
       return send(trigger, { text: renderTableText(table), data: [table], textWithoutData: '' });
     },
+    batch: (trigger, job) =>
+      deps.batch
+        ? deps.batch(trigger, job)
+        : Promise.resolve({ due: 0, processed: 0, costUsd: 0, modelCalls: 0, error: 'batch jobs are not wired' }),
     async turn(trigger, instruction, status): Promise<TurnOutcome> {
       if (trigger.origin === 'routine' && deps.routineTurn) return deps.routineTurn(trigger);
       if (isHeadless(trigger) && deps.scheduleLive && !(await deps.scheduleLive(trigger))) {

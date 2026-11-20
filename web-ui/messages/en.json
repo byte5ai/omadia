@@ -50,6 +50,7 @@
             "no_graph_pool": "no graph storage",
             "disabled_by_config": "disabled by configuration",
             "plugin_inactive": "plugin not active",
+            "no_batch_job_registry": "no batch scheduler in the kernel",
             "unknown": "reason unknown"
           }
         }

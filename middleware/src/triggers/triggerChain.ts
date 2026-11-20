@@ -11,6 +11,9 @@
  *   turn     a model turn under the agent's policy and budget, only where
  *            judgement or language is needed. It gets a status of what the
  *            checks found, never the rows.
+ *   batch    a registered batch job (system only): due items are found
+ *            without a model; nothing due ends the firing quietly; else a
+ *            bounded batch runs under the same meters as a turn.
  */
 
 import { createHash } from 'node:crypto';
@@ -48,6 +51,15 @@ export interface TurnOutcome {
   readonly error?: string;
 }
 
+export interface BatchOutcome {
+  /** Items due before the run (found without a model). */
+  readonly due: number;
+  readonly processed: number;
+  readonly costUsd: number;
+  readonly modelCalls: number;
+  readonly error?: string;
+}
+
 export interface StepExecutors {
   /** Anything new in the trigger's context since its last firing. */
   newActivity(trigger: Trigger, occurrence: Occurrence): Promise<boolean>;
@@ -57,6 +69,7 @@ export interface StepExecutors {
   post(trigger: Trigger, text: string): Promise<DeliveryOutcome>;
   deliver(trigger: Trigger, result: Extract<DataActionResult, { ok: true }>, title: string | undefined): Promise<DeliveryOutcome>;
   turn(trigger: Trigger, instruction: string, status: FiringStatus): Promise<TurnOutcome>;
+  batch(trigger: Trigger, job: string): Promise<BatchOutcome>;
 }
 
 export interface ChainResult {
@@ -228,6 +241,20 @@ export async function runChain(
         if (!out.delivered) return result('failed', { error: `delivery failed: ${out.reason}` });
         acted = true;
         delivered.push(`deliver:${step.action.tool}`);
+        return undefined;
+      }
+      case 'batch': {
+        const out = await exec.batch(trigger, step.job);
+        costUsd += out.costUsd;
+        modelCalls += out.modelCalls;
+        checks.push({ check: `batch:${step.job}`, rows: out.due });
+        if (out.error) return result('failed', { error: out.error });
+        if (out.due === 0) return result(acted ? 'acted' : 'nothing');
+        turnRan = true;
+        if (out.processed > 0) {
+          turnEffective = true;
+          acted = true;
+        }
         return undefined;
       }
       case 'turn': {

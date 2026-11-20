@@ -202,6 +202,11 @@ function parseStep(v: unknown): Result<TriggerStep> {
       if (!instruction) return refuse('invalid', 'a turn needs an instruction');
       return { ok: true, value: { type: 'turn', instruction } };
     }
+    case 'batch': {
+      const job = text(v['job'], 120);
+      if (!job) return refuse('invalid', 'a batch needs a job id');
+      return { ok: true, value: { type: 'batch', job } };
+    }
     default:
       return refuse('invalid', "an action's type is one of 'check', 'post', 'deliver', 'turn'");
   }
@@ -226,6 +231,11 @@ export function parseActions(
     const step = parseStep(item);
     if (!step.ok) return step;
     steps.push(step.value);
+  }
+  // A batch job is the kernel's own (learning, consolidation): no agent and
+  // no routine owner can ask for one.
+  if (origin !== 'system' && steps.some((s) => s.type === 'batch')) {
+    return refuse('invalid', 'a batch action is reserved for the system');
   }
   const firstTurn = steps.findIndex((s) => s.type === 'turn');
   const hasCheckBeforeTurn = firstTurn > 0 && steps.slice(0, firstTurn).some((s) => s.type === 'check');
@@ -435,5 +445,5 @@ export function validateTriggerRequest(
 
 /** Whether a chain can reach a model at all: only a `turn` does. */
 export function chainUsesModel(actions: readonly TriggerStep[]): boolean {
-  return actions.some((s) => s.type === 'turn');
+  return actions.some((s) => s.type === 'turn' || s.type === 'batch');
 }

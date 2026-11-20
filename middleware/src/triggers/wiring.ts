@@ -17,6 +17,7 @@ import { createDeliverDataHandler, DELIVER_DATA_TOOL_NAME, deliverDataToolSpec }
 import { createKernelExecutors, type AgentChat } from './kernelExecutors.js';
 import type { RoutineTriggerScheduler } from './routineTriggers.js';
 import type { ScheduleTriggerScheduler } from './scheduleTriggers.js';
+import { createBatchExecutor, createBatchTriggerSync, type KernelBatchJobRegistry } from './batchJobs.js';
 import { createProactiveGate, RecipientProfileStore, type RecipientProfile } from './proactiveGate.js';
 import { TriggerEngine, type OperatorNotice, type TriggerAgentView } from './triggerEngine.js';
 import type { TriggerLimits } from './triggerPolicy.js';
@@ -63,6 +64,10 @@ export interface TriggerWiringDeps {
   readonly routines?: () => RoutineTriggerScheduler | undefined;
   /** Agent Builder schedules fire through their triggers (spec 2042 §5.12). */
   readonly schedules?: () => ScheduleTriggerScheduler | undefined;
+  /** Plugins' batch jobs (learning, consolidation) run as agent batch triggers. */
+  readonly batchJobs?: KernelBatchJobRegistry;
+  /** The agents in service, for batch triggers. */
+  readonly enabledAgents?: () => readonly { readonly id: string; readonly slug: string }[];
   /** Injectable clock for tests. */
   readonly now?: () => Date;
   readonly log: (message: string) => void;
@@ -158,6 +163,7 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
           ? { kind: 'agent', agentId: agent.id, slug: agent.slug, displayName: agent.displayName ?? agent.slug }
           : undefined;
       },
+      ...(deps.batchJobs ? { batch: createBatchExecutor(deps.batchJobs) } : {}),
       scheduleRan: async (trigger) => deps.schedules?.()?.ran(trigger),
       scheduleLive: async (trigger) => (await deps.schedules?.()?.isLive(trigger)) ?? false,
       routineTurn: async (trigger) => {
@@ -209,6 +215,17 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
     }),
   );
 
+  const batchSync = deps.batchJobs
+    ? createBatchTriggerSync({
+        registry: deps.batchJobs,
+        service: () => service,
+        agents: () => deps.enabledAgents?.() ?? [],
+        limits: () => deps.limits,
+        now: clock,
+        log: deps.log,
+      })
+    : undefined;
+
   let purgeTimer: ReturnType<typeof setInterval> | undefined;
   let routineTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -245,9 +262,17 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
           deps.log(`[triggers] schedule sync failed: ${err instanceof Error ? err.message : String(err)}`);
         });
       };
+      const syncBatches = batchSync
+        ? (): void => {
+            void batchSync().catch((err: unknown) => {
+              deps.log(`[triggers] batch sync failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }
+        : (): void => undefined;
       const sweep = (): void => {
         sweepRoutines();
         syncSchedules();
+        syncBatches();
       };
       sweep();
       routineTimer = setInterval(sweep, ROUTINE_SWEEP_MS);

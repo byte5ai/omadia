@@ -100,9 +100,12 @@ CREATE INDEX IF NOT EXISTS agent_triggers_owner_idx ON agent_triggers (owner_key
 -- cannot create a second one).
 CREATE UNIQUE INDEX IF NOT EXISTS agent_triggers_routine_once_idx
   ON agent_triggers (context_id) WHERE context_kind = 'routine';
--- Likewise an Agent Builder schedule (`agent_schedules`, migration 0095).
+-- Likewise an Agent Builder schedule (`agent_schedules`, migration 0095),
+-- and a batch job per agent (`<job>:<agent>`).
 CREATE UNIQUE INDEX IF NOT EXISTS agent_triggers_schedule_once_idx
   ON agent_triggers (context_id) WHERE context_kind = 'schedule';
+CREATE UNIQUE INDEX IF NOT EXISTS agent_triggers_memory_once_idx
+  ON agent_triggers (context_id) WHERE context_kind = 'memory';
 
 CREATE TABLE IF NOT EXISTS agent_trigger_occurrences (
   id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),

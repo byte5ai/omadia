@@ -50,6 +50,7 @@
             "no_graph_pool": "kein Graph-Speicher",
             "disabled_by_config": "per Konfiguration deaktiviert",
             "plugin_inactive": "Plugin nicht aktiv",
+            "no_batch_job_registry": "kein Batch-Planer im Kernel",
             "unknown": "Grund unbekannt"
           }
         }
