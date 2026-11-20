@@ -783,6 +783,64 @@ This keeps the supply chain explicit:
   unless the step sets `human.strictApproval` (§7a); an EXPLICIT rejection
   never advances on an unguarded transition in either mode (#1698, §7a).
 
+### The agent/plugin boundary, the model gateway and the plugin network sandbox (spec 2042 §5.10, ADR-0014/0017)
+
+Only agents are actors. These rules hold for every plugin; the expand step
+(this kernel) observes where the contract step will refuse, so the live
+instance keeps working while the plugin release train moves the packages.
+
+- **No persona at ingest.** `checkPluginBoundary`
+  (`src/plugins/pluginBoundary.ts`) refuses a manifest with a persona,
+  speaker, personality or system prompt of its own, a `prompt_partial`
+  skill or an `AGENT.md` outside an agent template
+  (`422 package.persona_declared`), and a new package of the retired kind
+  `agent` (`422 package.retired_kind`). Agent templates
+  (`agent_templates:`, `src/plugins/agentTemplateManifest.ts`) are inactive
+  data, read strictly; the admin API only serves them as a prefill and
+  creates and grants nothing.
+- **Every model call in one execution context.** The gate every provider
+  adapter passes (`admitModelCall(operation)`) sees the context around the
+  call (agent turn, execution scope, inbound processing, operator job,
+  maintenance run) and refuses operations the context does not allow, past
+  deadlines, cancels and kill switches in every mode; a call outside any
+  context is logged in `MODEL_GATEWAY_MODE=observe` and refused in `enforce`.
+  Embedding and transcription services are held only behind the gate
+  (`src/platform/modelGatewayServices.ts`). A channel plugin's
+  `transcribeFile` runs as inbound processing set by the kernel, never by
+  the plugin. The call sites and their contexts: `docs/model-gateway-call-sites.md`.
+- **No raw model service for an archetype plugin**, and its `ctx.llm` only
+  inside an execution scope. Other plugins still get `anthropicClient`,
+  `llm` and `llmProviderPool` in `observe` (logged once per plugin and
+  service); `enforce` refuses them.
+- **Network sandbox** (`src/platform/pluginEgressGuard.ts`). `ctx.http` has
+  always enforced the allow-list, but the global `fetch` and `node:http(s)`
+  were reachable past it. The guard sits on those entries and attributes a
+  request to the plugin whose code made it, read from the call stack: the
+  innermost frame that is neither Node's nor a kernel dependency. A frame in
+  an installed package's directory (its code or its own `node_modules`)
+  makes it that plugin's; kernel code acting on a plugin's behalf (`ctx.http`,
+  `ctx.llm`, kernel services) stays the kernel's. The request must be
+  covered by the plugin's effective permission (the same resolution as
+  `ctx.http`: manifest hosts, `$config.*` hosts, the operator's hosts in
+  `allowlist` mode, any public host in `public-web` with literal private
+  addresses refused), and **model provider endpoints** (the provider
+  catalog's base URLs and the literal hosts of model plugins) are refused to
+  every plugin that is not a model plugin, before any allow-list entry.
+  `PLUGIN_EGRESS_MODE=observe` (default) logs and counts, `enforce` refuses
+  (`PluginEgressRefusedError`). A fault of the guard itself lets the
+  request through, so it never takes the kernel's own network down.
+  `GET /api/v1/admin/model-gateway` lists what the gateway and the guard
+  saw since boot; both lists must be empty on the live instance before the
+  contract step switches to `enforce`.
+
+Residual risks of the sandbox (in-process, a policy, not a boundary against
+hostile code): a plugin that imports its own `undici` or opens sockets with
+`node:net`/`node:tls` directly is not seen; the DNS-rebinding check runs
+only in `ctx.http`'s guarded dispatcher; bundled packages (system modules,
+built-in adapters) count as kernel code; a plugin that hands the kernel a
+bare `fetch` reference to call for it is not seen. A plugin can also patch
+the guard away, like any in-process check.
+
 ### Plugin-borne workflow templates (#478)
 
 Plugins may contribute Conductor workflow templates, and the capability is

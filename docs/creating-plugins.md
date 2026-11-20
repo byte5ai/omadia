@@ -3,14 +3,27 @@
 Diese Anleitung führt von „leeres Verzeichnis" bis „installierbar aus dem Hub".
 Ein Plugin ist ein **standalone Package**, das als `.zip` hochgeladen wird — der
 Server validiert das Manifest, prüft Peer-Dependencies und registriert es im
-Katalog. Es gibt drei `kind`s, und sie unterscheiden sich **nicht nur im
-Manifest, sondern auch im Code-Contract**:
+Katalog. Der Manifest-`kind` sagt, **was** das Plugin liefert (Spec 2042 §5.10,
+ADR-0014); ein Plugin liefert genau eines davon:
 
-| kind | Was es ist | `activate()` gibt zurück | Beispiel |
+| kind | Liefert | `activate()` gibt zurück | Beispiel |
 |---|---|---|---|
-| `agent` | Capability-Anbieter mit Toolkit (Zod-Tools) + System-Prompt | `{ toolkit, close }` | `agent-seo-analyst` |
-| `integration` | reiner Credential-/HTTP-Client, kein Toolkit | (kein Toolkit; nur Secrets/Config-Container) | `de.byte5.integration.odoo` |
-| `channel` | User-Surface (WhatsApp, Teams, Telegram, …) mit Transport + Adaptern | **`ChannelHandle` über `activate(ctx, core)`** | `@omadia/channel-whatsapp` |
+| `integration` | Capability: Zugang zu einem System (Credentials, Client, Tools) | Tools über `ctx.tools` | `@omadia/integration-odoo` |
+| `tool` | Capability: ein Werkzeug (Zod-Tools) | Tools über `ctx.tools` | `@omadia/plugin-web-search` |
+| `skill` | Capability: Know-how, auch ohne Code | – (reine Daten möglich) | |
+| `channel` | Wo Menschen Agenten erreichen (Transport + Adapter) | **`ChannelHandle` über `activate(ctx, core)`** | `@omadia/channel-whatsapp` |
+| `model` | Ein Modell (Text, Embeddings, Transkription); nur der Modell-Gateway ruft es | Provider über `llm_provider:` / `ctx.services.provide` | `omadia-llm-mistral` |
+| `archetype` | Ein Agenten-Archetyp (§1) | Prozess-Dienste | `omadia-agent-facilitator` |
+| `system-module` | Infrastruktur von omadia selbst | beliebig | `@omadia/verifier` |
+| `agent-template` | Vorlagen für Agenten (inaktive Metadaten, §1) | – (reine Daten, kein Code) | |
+
+Kein Plugin ist ein Akteur: keine Persona, kein Speaker, keine eigene Identität.
+Ein Manifest mit `persona`/`speaker`/`personality`/`system_prompt`, einem
+`prompt_partial`-Skill oder einem `AGENT.md` (außer in einer Agent-Vorlage)
+weist der Kern beim Upload ab (`422 package.persona_declared`). Der frühere
+`kind: agent` ist **ausgemustert**: Neu-Uploads antworten `422
+package.retired_kind`; bereits installierte Pakete laufen weiter, bis ihre
+migrierte Version sie ersetzt. `extension` wird als `system-module` gelesen.
 
 > **Quellen der Wahrheit (nicht halluzinieren):**
 > - Agent: Referenz `middleware/packages/agent-seo-analyst/`, Boilerplate
@@ -43,22 +56,76 @@ Manifest, sondern auch im Code-Contract**:
 
 ## 1. Welchen `kind` baust du?
 
-Bei vagem „Plugin" zuerst klären — die drei kinds teilen Manifest-Schema +
-Zip-Flow, aber der Code-Contract ist verschieden:
+Bei vagem „Plugin" zuerst klären, was es liefern soll (Tabelle oben):
 
-- **`agent`** — liefert Tools (Zod-Toolkit) + einen System-Prompt-Partial. Die
-  Runtime macht SubAgent-Wrap, Tool-Bridge und Prompt-Concat. → §2–§4a.
-- **`integration`** — nur Secrets/Config-Container, von dem `agent`s via
-  `depends_on` erben. Kein Toolkit.
+- **Capability** (`integration`, `tool`, `skill`): Tools, die ein Agent nutzt,
+  dem der Operator sie gewährt. Das Ergebnis geht als **Daten** an den
+  aufrufenden Agenten, nie als Text an einen Menschen. Installieren hängt das
+  Plugin an keinen Agenten (INV-8).
 - **`channel`** — User-Surface. Empfängt native Events, übersetzt sie in den
-  `IncomingTurn`-Shape, fährt einen Orchestrator-Turn und rendert die Antwort
-  zurück. **Keine** `capabilities`/`playbook`/`skills`. → §4b.
+  `IncomingTurn`-Shape, fährt einen Agenten-Turn und rendert die Antwort
+  zurück. Ein Kanal darf die Bots mehrerer Agenten transportieren; deren
+  Identität gehört dem Kern. **Keine** `capabilities`/`playbook`/`skills`. → §4b.
+- **`model`** — hält Modell-Credentials und spricht mit Modell-APIs. Nur
+  Modell-Plugins dürfen das (siehe „Modellzugriff und Netz“ unten).
+- **`archetype`**, **`system-module`**: Installation verlangt eine
+  ausdrückliche Bestätigung.
+- **`agent-template`** — nur Vorlagen (siehe unten).
+
+### Agent-Vorlagen: `agent_templates:`
+
+Eine Vorlage ist ein Preset aus Identität, Persönlichkeit und vorgeschlagenen
+Capabilities für einen Agenten eines bestehenden Archetyps. Sie ist
+**inaktive Metadaten**: sie läuft nicht, gewährt nichts und spricht nie. Erst
+der Operator macht im Agent Builder einen Agenten daraus. Ein Paket vom
+`kind: agent-template` trägt nur Vorlagen (mindestens eine); Capability- und
+Archetyp-Plugins dürfen zusätzlich Vorlagen mitliefern, die sie nutzen.
+
+```yaml
+agent_templates:
+  - id: "hr-assistant"            # a-z 0-9 -, eindeutig im Paket
+    archetype: "standard"         # optional, Default standard
+    name: "Hanna"                 # vorgeschlagener Name
+    short_description: "HR-Kollegin"        # ≤ 80 Zeichen
+    long_description: "Beantwortet Fragen zu Urlaub und Abrechnung."
+    instructions: "Du bist die HR-Kollegin des Teams. …"
+    language: "de"                # BCP 47, optional
+    persona: { axes: { warmth: 80, formality: 40 } }   # wie im Agent Builder
+    quality: { sycophancy: "low" }
+    capabilities: ["@omadia/integration-odoo"]         # nur Vorschläge
+```
+
+Der Kern liest den Block **streng**: ein unbekanntes Feld oder ein Wert über
+dem Limit weist das Manifest ab. `channel`-, `model`- und
+`system-module`-Pakete dürfen keine Vorlagen tragen. Der Agent Builder liest
+die Vorlagen installierter Plugins über `GET /api/v1/admin/agent-templates`
+und die Vorbelegung über `GET /api/v1/admin/agent-templates/prefill?plugin=…&template=…`.
+
+### Modellzugriff und Netz
+
+- **Modelle nur über `ctx.llm`.** Der Aufruf läuft im Kontext dessen, der das
+  Plugin gerade nutzt: im Turn des aufrufenden Agenten (dessen Modell-Policy,
+  Budget und Trace), für ein Archetyp-Plugin nur in einem Execution Scope
+  (sonst `LlmScopeRequiredError`). Rohe Modell-Services (`anthropicClient`,
+  `llm`, `llmProviderPool`) bekommt ein Archetyp-Plugin nie
+  (`RawModelServiceRefusedError`); anderen Plugins werden sie in der
+  Übergangsphase noch ausgehändigt und geloggt, mit
+  `MODEL_GATEWAY_MODE=enforce` verweigert. `embeddingClient` und
+  `transcription` sind immer durch den Gateway gebunden.
+- **Netz nur über `ctx.http`** (Allow-List aus `permissions.network.outbound`,
+  `$config.*`-Hosts, `web_scanner`-Modi). Der globale `fetch` und `node:http(s)`
+  sind für Plugin-Code sandboxed: eine Anfrage, die das Plugin selbst stellt,
+  muss von seiner Netzerlaubnis gedeckt sein, und **Modell-Provider-Endpunkte
+  sind für jedes Nicht-`model`-Plugin gesperrt**, auch wenn sie in der
+  Allow-List stehen. `PLUGIN_EGRESS_MODE=observe` loggt das heute
+  (`[plugin-egress] observed …`), `enforce` verweigert es
+  (`PluginEgressRefusedError`). Was der Kern gesehen hat:
+  `GET /api/v1/admin/model-gateway`.
 
 ---
 
 ### `kind: archetype` — ein Archetyp-Plugin
 
-Neben den drei oben gibt es `tool`, `extension` und seit #2088 `archetype`.
 Ein Archetyp-Plugin liefert **einen Agenten-Archetyp** (das Berufsbild eines
 Agenten, siehe `docs/terminology.md`). Es wird keinem Agenten angehängt; der
 Administrator legt im Agenten-Verzeichnis Agenten dieses Archetyps an. Es

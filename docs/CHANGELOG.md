@@ -36,6 +36,32 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Network sandbox of installed plugins; agent templates; inbound transcription context (#2053, epic #2042): S3 expand step
+
+- Spec 2042 §5.10. **Network sandbox** (`src/platform/pluginEgressGuard.ts`):
+  a request an installed plugin's own code makes through the global `fetch`
+  or `node:http(s)` is attributed to it from the call stack and checked
+  against the permission `ctx.http` already enforced (manifest and
+  `$config.*` hosts, operator hosts, `public-web`), with model provider
+  endpoints refused to every plugin that is not a model plugin.
+  `PLUGIN_EGRESS_MODE=observe|enforce` (new, default `observe`: logged once
+  per plugin and host as `[plugin-egress] observed …`). Kernel code acting
+  for a plugin (`ctx.http`, `ctx.llm`) stays the kernel's.
+- `GET /api/v1/admin/model-gateway`: model calls seen outside any execution
+  context and the sandbox's observations since boot. Both must be empty on
+  the live instance before the contract step switches to `enforce`.
+- **Agent templates**: the manifest block `agent_templates:` (inactive
+  presets of identity, personality and suggested capabilities, read
+  strictly) on capability, archetype and `agent-template` packages;
+  `GET /api/v1/admin/agent-templates` and
+  `GET /api/v1/admin/agent-templates/prefill?plugin=&template=` serve them
+  to the Agent Builder as the bodies of the existing create and identity
+  routes. Nothing is created or granted by them.
+- **Inbound processing**: a channel plugin's `transcription.transcribeFile`
+  runs in an `inbound_processing` context (transcribe only) when no other
+  context is around the call.
+- Model call sites and their contexts: `docs/model-gateway-call-sites.md`.
+
 ### Added — The model gateway: every model call in one execution context (#2053, epic #2042): S3 expand step
 
 - Spec 2042 §5.10, ADR-0017. The gate every provider already passed
