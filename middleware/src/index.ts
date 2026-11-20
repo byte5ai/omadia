@@ -89,7 +89,15 @@ import {
 import { createFieldClassificationRoutes } from './privacy/fieldClassification/routes.js';
 import { createNonPersonalFieldsEditor } from './privacy/fieldClassification/configEditor.js';
 import { PgFieldClassificationStore } from './privacy/fieldClassification/store.js';
-import { MAINTENANCE_RUN_SERVICE_NAME, TURN_RECEIPT_STORE_SERVICE_NAME, perCallerService, type MaintenanceRunService } from '@omadia/plugin-api';
+import {
+  MAINTENANCE_RUN_SERVICE_NAME,
+  MODEL_PASSTHROUGH_SERVICE_NAME,
+  OPERATOR_JOBS_SERVICE_NAME,
+  TURN_RECEIPT_STORE_SERVICE_NAME,
+  perCallerService,
+  type MaintenanceRunService,
+} from '@omadia/plugin-api';
+import { createModelPassthrough, systemModuleOnlyService } from './platform/modelPassthrough.js';
 import { TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
 import { archetypeProcessesServiceName, type ArchetypeProcessesService } from '@omadia/plugin-api';
 import type { TranscriptionService } from '@omadia/plugin-api';
@@ -2726,6 +2734,27 @@ async function main(): Promise<void> {
           ),
       }),
     ),
+  );
+
+  // Spec 2042 §5.10 — a system module running a model loop of its own (the
+  // dev platform's coding jobs) opens an operator job and forwards its model
+  // requests through the kernel, which holds the credentials. Only plugins
+  // of kind `system-module` get either service.
+  const modelPassthrough = createModelPassthrough({
+    runs: modelWork,
+    anthropic: () => {
+      const current = currentAnthropicClient();
+      return { apiKey: current.apiKey, baseURL: current.baseURL };
+    },
+  });
+  const kindOfPlugin = (pluginId: string) => pluginCatalog.get(pluginId)?.plugin.kind;
+  serviceRegistry.provide(
+    OPERATOR_JOBS_SERVICE_NAME,
+    systemModuleOnlyService(OPERATOR_JOBS_SERVICE_NAME, kindOfPlugin, modelPassthrough.operatorJobsFor),
+  );
+  serviceRegistry.provide(
+    MODEL_PASSTHROUGH_SERVICE_NAME,
+    systemModuleOnlyService(MODEL_PASSTHROUGH_SERVICE_NAME, kindOfPlugin, modelPassthrough.passthroughFor),
   );
 
   // #575 — hydrate the forward reference published before activation.

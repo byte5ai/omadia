@@ -86,10 +86,28 @@ export interface ModelWorkRunsOptions {
   readonly now?: () => Date;
 }
 
+/**
+ * One open run whose model calls come over time (a dev job's proxied calls,
+ * each its own request): every `admit` runs one piece of work inside the
+ * run's execution context, and the run's budget counts across all of them.
+ */
+export interface ModelWorkHandle {
+  readonly id: string;
+  /** Aborted on cancel and at the deadline. */
+  readonly signal: AbortSignal;
+  /** Run `work` in the run's context; its model calls count against the run. */
+  admit<T>(work: () => Promise<T>): Promise<T>;
+  /** End the run. Idempotent; a run not finished ends at its deadline. */
+  finish(outcome?: { readonly failed?: boolean; readonly message?: string }): Promise<void>;
+}
+
 export interface ModelWorkRuns {
   /** Run `work` as one run of `kind`. Throws {@link ModelWorkBudgetError}
    *  when the instance's daily budget for its context is used up. */
   run<T>(kind: ModelWorkKind, startedBy: string | undefined, work: (run: { id: string; signal: AbortSignal }) => Promise<T>): Promise<T>;
+  /** Open a run of `kind` whose work comes in pieces ({@link ModelWorkHandle}).
+   *  Throws {@link ModelWorkBudgetError} like `run`. */
+  open(kind: ModelWorkKind, startedBy: string | undefined): Promise<ModelWorkHandle>;
   /** Express middleware: the rest of the request is one operator job. */
   middleware(kind: ModelWorkKind): RequestHandler;
   /** Cancel a running operator job. `false` when there is none. */
@@ -108,11 +126,7 @@ export function createModelWorkRuns(options: ModelWorkRunsOptions): ModelWorkRun
   const dailyLimit = (context: ModelWorkContextKind): number =>
     context === 'operator_job' ? options.operatorDailyCalls : options.maintenanceDailyCalls;
 
-  async function run<T>(
-    kind: ModelWorkKind,
-    startedBy: string | undefined,
-    work: (run: { id: string; signal: AbortSignal }) => Promise<T>,
-  ): Promise<T> {
+  async function open(kind: ModelWorkKind, startedBy: string | undefined): Promise<ModelWorkHandle> {
     const started = now();
     const usedToday = await store.callsSince(kind.context, new Date(started.getTime() - DAY_MS));
     const left = dailyLimit(kind.context) - usedToday;
@@ -138,9 +152,6 @@ export function createModelWorkRuns(options: ModelWorkRunsOptions): ModelWorkRun
     });
     // Only a run that is recorded is running: a failed insert leaves no timer
     // and no cancel handle behind.
-    const timer = setTimeout(() => controller.abort(), kind.deadlineMs);
-    timer.unref();
-    running.set(id, { controller, context: kind.context });
     const context: ModelExecutionContext = {
       kind: kind.context,
       ownerId: id,
@@ -148,44 +159,83 @@ export function createModelWorkRuns(options: ModelWorkRunsOptions): ModelWorkRun
       signal: controller.signal,
       ...(kind.context === 'maintenance_run' ? { operations: ['embed'] as const } : {}),
     };
-    const metered = await meterModelCalls(
-      async (): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> => {
-        try {
-          return { ok: true, value: await work({ id, signal: controller.signal }) };
-        } catch (error) {
-          return { ok: false, error };
-        }
+    let used = 0;
+    let refused = 0;
+    let finished: Promise<void> | undefined;
+    const finish = (outcome: { readonly failed?: boolean; readonly message?: string } = {}): Promise<void> => {
+      finished ??= (async () => {
+        clearTimeout(timer);
+        running.delete(id);
+        const cancelledBy = (controller.signal.reason as { by?: string } | undefined)?.by;
+        const status: ModelWorkStatus =
+          cancelledBy !== undefined
+            ? 'cancelled'
+            : Date.now() > deadlineAt
+              ? 'deadline'
+              : refused > 0
+                ? 'budget_exhausted'
+                : outcome.failed === true
+                  ? 'failed'
+                  : 'succeeded';
+        await store
+          .finish(id, { status, modelCalls: used, message: outcome.message?.slice(0, 1000), cancelledBy })
+          .catch((err: unknown) =>
+            log(`[model-work] recording the end of run ${id} failed: ${err instanceof Error ? err.message : String(err)}`),
+          );
+      })();
+      return finished;
+    };
+    // At the deadline the run stops admitting and is recorded as ended, also
+    // when its owner never calls `finish` (a process that went away).
+    const timer = setTimeout(() => {
+      controller.abort();
+      void finish();
+    }, kind.deadlineMs);
+    timer.unref();
+    running.set(id, { controller, context: kind.context });
+    return {
+      id,
+      signal: controller.signal,
+      async admit<T>(work: () => Promise<T>): Promise<T> {
+        const metered = await meterModelCalls(
+          async (): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> => {
+            try {
+              return { ok: true, value: await work() };
+            } catch (error) {
+              return { ok: false, error };
+            }
+          },
+          // A finished run admits nothing: its whole budget is spent.
+          { limit: finished ? 0 : Math.max(0, budget - used), context },
+        );
+        used += metered.modelCalls;
+        refused += metered.refused;
+        if (!metered.value.ok) throw metered.value.error;
+        return metered.value.value;
       },
-      { limit: budget, context },
-    );
-    clearTimeout(timer);
-    running.delete(id);
-    const cancelledBy = (controller.signal.reason as { by?: string } | undefined)?.by;
-    const outcome = metered.value;
-    const status: ModelWorkStatus =
-      cancelledBy !== undefined
-        ? 'cancelled'
-        : Date.now() > deadlineAt
-          ? 'deadline'
-          : metered.refused > 0
-            ? 'budget_exhausted'
-            : outcome.ok
-              ? 'succeeded'
-              : 'failed';
-    const message = outcome.ok
-      ? undefined
-      : (outcome.error instanceof Error ? outcome.error.message : String(outcome.error)).slice(0, 1000);
-    await store
-      .finish(id, { status, modelCalls: metered.modelCalls, message, cancelledBy })
-      .catch((err: unknown) =>
-        log(`[model-work] recording the end of run ${id} failed: ${err instanceof Error ? err.message : String(err)}`),
-      );
-    if (!outcome.ok) throw outcome.error;
-    return outcome.value;
+      finish,
+    };
+  }
+
+  async function run<T>(
+    kind: ModelWorkKind,
+    startedBy: string | undefined,
+    work: (run: { id: string; signal: AbortSignal }) => Promise<T>,
+  ): Promise<T> {
+    const handle = await open(kind, startedBy);
+    try {
+      const value = await handle.admit(() => work({ id: handle.id, signal: handle.signal }));
+      await handle.finish();
+      return value;
+    } catch (error) {
+      await handle.finish({ failed: true, message: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
   }
 
   return {
     run,
+    open,
     middleware(kind) {
       return (req: Request, res: Response, next: NextFunction): void => {
         // Reading a job's state starts nothing; only a request that runs the

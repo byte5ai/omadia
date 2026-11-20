@@ -36,6 +36,26 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Operator jobs and model passthrough for system modules (#2053, epic #2042): S3 expand step
+
+- Kernel services `operatorJobs@1` and `modelPassthrough@1` (plugin-api
+  `modelPassthrough.ts`, additive), given only to plugins of kind
+  `system-module` (`model_passthrough.not_system_module` otherwise).
+- `operatorJobs.open({ kind, startedBy, budgetCalls, deadlineMs, effects })`
+  opens a recorded operator job (`model_work_runs`, kind
+  `<plugin id>:<kind>`, at most 10000 calls and 24 h) whose model calls
+  arrive over time; cancel and deadline abort `job.signal`.
+- `modelPassthrough.forwardAnthropicMessages({ job, query, headers, body })`
+  forwards one Anthropic Messages request with the instance's Anthropic
+  credentials, admitted in the job's context (budget across calls, deadline,
+  cancel, kill switch), and returns the provider's response as it is. Only
+  `anthropic-version`, `anthropic-beta`, `accept` and `content-type` are
+  forwarded; a job the kernel did not issue to that plugin is refused.
+- For the dev platform's coding jobs: the Claude CLI in a job container
+  keeps talking to the dev platform's proxy, which no longer holds a
+  provider key or calls `api.anthropic.com` itself. `ModelWorkRuns.open`
+  is the handle form of `run` (`src/platform/modelWorkRuns.ts`).
+
 ### Fixed — Setup options come from a capability plugin's registered tool (#2053, epic #2042): S3 expand step
 
 - A setup field's `options_provider` (e.g. Notion's `list_notion_roots`) was

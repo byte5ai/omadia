@@ -812,6 +812,14 @@ instance keeps working while the plugin release train moves the packages.
   inside an execution scope. Other plugins still get `anthropicClient`,
   `llm` and `llmProviderPool` in `observe` (logged once per plugin and
   service); `enforce` refuses them.
+- **A system module's own model loop goes through the kernel.** The dev
+  platform's coding jobs run the Claude CLI in a container against the
+  module's Anthropic-compatible proxy. The proxy holds no provider key: it
+  opens an operator job (`operatorJobs@1`) and forwards each request through
+  `modelPassthrough@1`, which adds the instance's credentials, forwards only
+  four protocol headers and admits the call in the job's context. Both
+  services are given only to `system-module` plugins, and a job object is
+  valid only for the plugin the kernel issued it to.
 - **Network sandbox** (`src/platform/pluginEgressGuard.ts`). `ctx.http` has
   always enforced the allow-list, but the global `fetch` and `node:http(s)`
   were reachable past it. The guard sits on those entries and attributes a

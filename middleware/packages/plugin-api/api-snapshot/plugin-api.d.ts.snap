@@ -1113,6 +1113,7 @@ export * from './facilitation.js';
 export * from './executionAuthorization.js';
 export * from './executionGrants.js';
 export * from './maintenanceRun.js';
+export * from './modelPassthrough.js';
 
 // ===== knowledgeGraph.d.ts =====
 import type { EntityRef } from './entityRef.js';
@@ -2001,6 +2002,36 @@ run(options?: BulkMergeDetectRunOptions): Promise<BulkMergeDetectResult>;
 }
 export declare const BULK_MERGE_DETECT_SERVICE_NAME = "bulkMergeDetect";
 export declare const BULK_MERGE_DETECT_CAPABILITY = "bulkMergeDetect@1";
+
+// ===== modelPassthrough.d.ts =====
+export interface OperatorJob {
+readonly id: string;
+readonly signal: AbortSignal;
+end(outcome?: {
+readonly failed?: boolean;
+readonly message?: string;
+}): Promise<void>;
+}
+export interface OperatorJobsService {
+open(input: {
+readonly kind: string;
+readonly startedBy?: string;
+readonly budgetCalls: number;
+readonly deadlineMs: number;
+readonly effects: readonly string[];
+}): Promise<OperatorJob>;
+}
+export interface ModelPassthroughService {
+forwardAnthropicMessages(input: {
+readonly job: OperatorJob;
+readonly query?: string;
+readonly headers: Readonly<Record<string, string | undefined>>;
+readonly body: Uint8Array | string;
+readonly signal?: AbortSignal;
+}): Promise<Response>;
+}
+export declare const OPERATOR_JOBS_SERVICE_NAME = "operatorJobs";
+export declare const MODEL_PASSTHROUGH_SERVICE_NAME = "modelPassthrough";
 
 // ===== nudge.d.ts =====
 import type { ProcessMemoryService } from './processMemory.js';

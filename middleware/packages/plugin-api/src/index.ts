@@ -208,3 +208,6 @@ export * from './executionGrants.js';
 
 // Spec 2042 §5.10 — maintenance runs of the model gateway (`maintenanceRun@1`).
 export * from './maintenanceRun.js';
+// Spec 2042 §5.10 — operator jobs and model passthrough for system modules
+// (`operatorJobs@1`, `modelPassthrough@1`).
+export * from './modelPassthrough.js';

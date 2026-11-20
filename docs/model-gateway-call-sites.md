@@ -99,6 +99,7 @@ Line numbers drift; the names are what to search for.
 | `src/platform/pluginContext.ts` `ctx.llm` | complete | the caller's; archetype plugins only ES | **NONE from a plugin's `activate()`, `ctx.jobs` handler or timer** |
 | channel plugins' `transcription.transcribeFile`, `topicDetector.classify` | transcribe; embed, complete | IP | `inboundProcessing`; `transcribeStream` is not wrapped |
 | `src/mcp/publicMcpServer.ts` tool dispatch | any | **NONE** | |
+| `src/platform/modelPassthrough.ts` `forwardAnthropicMessages` (dev platform's coding jobs) | complete | OJ:`<plugin>:<kind>` (`operatorJobs@1`) | the system module's proxy, no provider key of its own |
 
 ## Gaps: calls with no context today
 

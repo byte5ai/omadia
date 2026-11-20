@@ -4027,6 +4027,10 @@ Details im gleichnamigen Abschnitt am Ende dieses Dokuments. Neue Routen
   Beobachtungen der Netz-Sandbox seit Boot.
 - `GET /api/v1/admin/agent-templates`, `GET /api/v1/admin/agent-templates/prefill`.
 - Kernel-Service `maintenanceRun@1` (Embedding-Backfill als Maintenance-Run).
+- Kernel-Services `operatorJobs@1` und `modelPassthrough@1`, nur für
+  `system-module` (`src/platform/modelPassthrough.ts`): ein System-Modul mit
+  eigener Modell-Schleife (dev-platform) öffnet einen Operator-Job und leitet
+  Anthropic-Messages-Anfragen über den Kernel, der die Credentials hält.
 
 ## 4. Migration Managed Agents → Lokal
 
