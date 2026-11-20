@@ -46,6 +46,16 @@ changelog.
   held back, while messages never arrived. The switch is now refused with
   `not_ready` and the subscription keeps the mode it had.
 
+### Fixed — A stopped reload bus could run one more reload (#2043)
+
+- `ReloadBus.stop()` returned before its LISTEN session had ended, so a
+  notification already on its way still ran a reload afterwards, and a reload
+  queued behind a running one ran after the stop as well. A stopped bus now
+  reloads nothing, and `stop()` waits for a session of its own to end (at most
+  two seconds), also when it is called while the bus is still connecting. This
+  was the cause of the occasional failure of `reloadBusListen.pg.test.ts` in
+  full runs (two reloads counted where one was expected).
+
 ### Removed — The implementations behind the first majors (#2067, epic #2043): K6.4
 
 - **The code behind `agentTurn`, `conversationMessages` and `conversationSend`
