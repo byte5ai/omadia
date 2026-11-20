@@ -449,6 +449,12 @@ export interface PluginArchetype {
   roleContract?: string;
 }
 
+/** A tool's declared effect: `read` reads a system, `write` changes one,
+ *  `none` touches no system (a computation). */
+export type ToolSideEffect = 'read' | 'write' | 'none';
+
+export const TOOL_SIDE_EFFECTS: readonly ToolSideEffect[] = ['read', 'write', 'none'];
+
 /**
  * One agent template of a plugin (`agent_templates:` block, spec 2042
  * §5.10): a preset of identity, personality and suggested capabilities for
@@ -660,6 +666,11 @@ export interface Plugin {
    *  operator turns into agents in the Agent Builder. Absent when the
    *  manifest declares none. */
   agent_templates?: PluginAgentTemplate[];
+  /** Spec 2042 §5.10/§5.11 — what each tool of the plugin declares it does,
+   *  from `capabilities[].side_effects`, keyed by the tool id. A tool not
+   *  listed declared nothing (`declaredToolEffect` → `unknown`). Absent when
+   *  no tool declares one. */
+  tool_side_effects?: Readonly<Record<string, ToolSideEffect>>;
   name: string;
   version: string;
   latest_version: string;

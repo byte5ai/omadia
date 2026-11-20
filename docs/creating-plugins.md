@@ -72,6 +72,23 @@ Bei vagem „Plugin" zuerst klären, was es liefern soll (Tabelle oben):
   ausdrückliche Bestätigung.
 - **`agent-template`** — nur Vorlagen (siehe unten).
 
+### Was ein Tool tut: `capabilities[].side_effects`
+
+Jedes Tool eines Capability-Plugins deklariert im `capabilities:`-Eintrag
+mit seiner `id` (= Tool-Name), was es tut: `read` (liest ein System), `write`
+(ändert eines) oder `none` (berührt kein System). Der Kern liest das als
+`Plugin.tool_side_effects` (`declaredToolEffect`, `src/plugins/toolSideEffects.ts`).
+Schreibzugriffe über ein Plugin-Tool werden gegen die Leserschaft des Ziels
+geprüft (Spec 2042 §5.11, Kriterium 17). Ein Tool ohne Deklaration gilt als
+`unknown` — nie als `read`; ein Wert außerhalb der drei wird mit Warnung
+verworfen.
+
+```yaml
+capabilities:
+  - id: "crm_create_note"
+    side_effects: "write"     # read | write | none
+```
+
 ### Agent-Vorlagen: `agent_templates:`
 
 Eine Vorlage ist ein Preset aus Identität, Persönlichkeit und vorgeschlagenen

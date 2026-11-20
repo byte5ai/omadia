@@ -36,6 +36,19 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Tools declare their effect; templates carry the answer size; memory writes as an operator job (#2053, epic #2042): S3 expand step
+
+- The kernel reads `capabilities[].side_effects` (`read | write | none`, the
+  field the boilerplates and the Plugin Builder already write) as
+  `Plugin.tool_side_effects`; `declaredToolEffect(plugin, toolId)`
+  (`src/plugins/toolSideEffects.ts`) answers `unknown` for a tool without a
+  declaration. Basis for the readership check of writes (§6 criterion 17).
+- `agent_templates[].verbosity` (one of `ANSWER_VERBOSITY_LEVELS`), served in
+  the identity prefill.
+- `POST /api/v1/memory`, `PATCH /api/v1/memory/:id` and
+  `PATCH /api/v1/memory/:id/excerpts/:position` run as the operator job
+  `memory_edit` (50 calls, 5 min) with the writing user as its actor.
+
 ### Fixed — Operator jobs answer when they cannot start; scoped archetype turns reach ctx.llm (#2053, epic #2042): S3 expand step
 
 - An admin route wrapped as an operator job left the request open when the
