@@ -162,7 +162,9 @@ export function createModelWorkRuns(options: ModelWorkRunsOptions): ModelWorkRun
     let used = 0;
     let refused = 0;
     let finished: Promise<void> | undefined;
-    const finish = (outcome: { readonly failed?: boolean; readonly message?: string } = {}): Promise<void> => {
+    const finish = (
+      outcome: { readonly failed?: boolean; readonly message?: string; readonly deadline?: boolean } = {},
+    ): Promise<void> => {
       finished ??= (async () => {
         clearTimeout(timer);
         running.delete(id);
@@ -170,7 +172,7 @@ export function createModelWorkRuns(options: ModelWorkRunsOptions): ModelWorkRun
         const status: ModelWorkStatus =
           cancelledBy !== undefined
             ? 'cancelled'
-            : Date.now() > deadlineAt
+            : outcome.deadline === true || Date.now() > deadlineAt
               ? 'deadline'
               : refused > 0
                 ? 'budget_exhausted'
@@ -189,7 +191,7 @@ export function createModelWorkRuns(options: ModelWorkRunsOptions): ModelWorkRun
     // when its owner never calls `finish` (a process that went away).
     const timer = setTimeout(() => {
       controller.abort();
-      void finish();
+      void finish({ deadline: true });
     }, kind.deadlineMs);
     timer.unref();
     running.set(id, { controller, context: kind.context });
