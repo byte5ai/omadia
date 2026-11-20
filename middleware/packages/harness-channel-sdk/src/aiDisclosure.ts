@@ -23,6 +23,13 @@
  */
 
 import { isNoReply } from './noReply.js';
+import {
+  DEFAULT_AI_DISCLOSURE_FREQUENCY,
+  decideDisclosureMarkers,
+  type AiDisclosureFrequency,
+  type DisclosureMarkers,
+  type DisclosureMarkerStore,
+} from './disclosureFrequency.js';
 
 /**
  * Disclosure verbosity. `'off'` is reachable ONLY through explicit operator
@@ -66,6 +73,18 @@ export interface AiDisclosure {
    * carrier for a note to ride (AC5).
    */
   readonly operatorNote?: string;
+  /**
+   * #2087 — the operator's frequency setting this answer was decided under.
+   * Absent on a disclosure that was resolved before the answer was decided.
+   */
+  readonly frequency?: AiDisclosureFrequency;
+  /**
+   * #2087 — which VISIBLE markers are due on this answer. Channels render
+   * their own chip / native label only when `chip` is true; the text line is
+   * already folded into `text` when `textLine` is true. The structured field
+   * itself stays on every answer regardless.
+   */
+  readonly markers?: DisclosureMarkers;
 }
 
 /**
@@ -81,6 +100,10 @@ export interface AiDisclosurePolicy {
   readonly source: 'default' | 'operator';
   /** Operator locale override; absent → the per-turn / channel locale, then `'de'`. */
   readonly locale?: string;
+  /** #2087 — how often the visible markers appear; absent → `channel_default`. */
+  readonly frequency?: AiDisclosureFrequency;
+  /** #2087 — pause (minutes) after which `per_conversation` shows the marker again. */
+  readonly pauseMinutes?: number;
 }
 
 /**
@@ -193,6 +216,16 @@ export interface ApplyAiDisclosureContext {
   readonly seen?: DisclosureSeenStore;
   /** Assistant display name to weave into the line. */
   readonly assistantName?: string;
+  /** #2087 — frequency override; absent → the policy's, then `channel_default`. */
+  readonly frequency?: AiDisclosureFrequency;
+  /** #2087 — the speaking agent, for `per_conversation`. */
+  readonly agentId?: string;
+  /** #2087 — pause for `per_conversation`; absent → the policy's, then 60. */
+  readonly pauseMinutes?: number;
+  /** #2087 — backing store for `per_conversation`. */
+  readonly markerStore?: DisclosureMarkerStore;
+  /** #2087 — clock, epoch ms. Tests inject it. */
+  readonly now?: number;
   /**
    * #644 — verbatim operator-authored addendum appended after the marking line
    * when the line is folded. Ignored when a pre-resolved {@link disclosure} is
@@ -311,21 +344,42 @@ export function applyAiDisclosure(
   answer: string,
   ctx: ApplyAiDisclosureContext = {},
 ): ApplyAiDisclosureResult {
-  const aiDisclosure = ctx.disclosure ?? resolveFromPolicy(ctx);
-  if (aiDisclosure === undefined) return { text: answer };
+  const resolved = ctx.disclosure ?? resolveFromPolicy(ctx);
+  if (resolved === undefined) return { text: answer };
+  const frequency =
+    ctx.frequency ?? ctx.policy?.frequency ?? resolved.frequency ?? DEFAULT_AI_DISCLOSURE_FREQUENCY;
   // Suppression precedes decoration. `isNoReply` anchors the sentinel at the
   // END of the message, so folding a marking line onto a NO_REPLY answer makes
   // the anchor stop matching and delivers a message the agent deliberately
   // wanted withheld. There is also nothing to disclose: the text never reaches
-  // a human. Short-circuit BEFORE `shouldFold`, which marks the scope seen —
-  // a withheld message must not consume the scope's first-turn marking slot,
-  // or the next delivered answer would ship unmarked.
+  // a human. Short-circuit BEFORE any state is consumed — a withheld message
+  // must not use up the scope's marking slot, or the next delivered answer
+  // would ship unmarked.
+  if (isNoReply({ text: answer })) {
+    return {
+      text: answer,
+      aiDisclosure: Object.freeze({
+        ...resolved,
+        frequency,
+        markers: Object.freeze({ textLine: false, chip: false }),
+      }),
+    };
+  }
+  const markers = decideDisclosureMarkers({
+    frequency,
+    firstTurnOfScope: shouldFold(ctx.scope, ctx.seen),
+    scope: ctx.scope,
+    agentId: ctx.agentId,
+    now: ctx.now ?? Date.now(),
+    pauseMinutes: ctx.pauseMinutes ?? ctx.policy?.pauseMinutes,
+    store: ctx.markerStore,
+  });
+  const aiDisclosure: AiDisclosure = Object.freeze({ ...resolved, frequency, markers });
   // The note rides the carrier (`aiDisclosure.operatorNote`), so a pre-resolved
   // marker folds its own note and a policy-resolved one folds the note the
   // policy carried — both without re-reading `ctx.operatorNote` here.
-  const text =
-    !isNoReply({ text: answer }) && shouldFold(ctx.scope, ctx.seen)
-      ? foldDisclosure(answer, aiDisclosure.text, aiDisclosure.operatorNote)
-      : answer;
+  const text = markers.textLine
+    ? foldDisclosure(answer, aiDisclosure.text, aiDisclosure.operatorNote)
+    : answer;
   return { text, aiDisclosure };
 }

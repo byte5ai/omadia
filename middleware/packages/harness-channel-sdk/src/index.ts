@@ -487,3 +487,44 @@ export {
   type AgentSelectionContext,
   type AgentSelectionService,
 } from './agentCommand.js';
+
+// #2086 / #2087 — decoration registry, name line, plain-text renderer,
+// plain-text cards, AI-disclosure frequency (spec 2042 §5.14).
+export {
+  DECORATION_REGISTRY,
+  REMOVED_DECORATIONS,
+  admitDecorations,
+  decorationsFor,
+  getDecoration,
+  isDecorationAllowed,
+} from './decorations.js';
+export type {
+  AdmittedDecorations,
+  DecorationDeclaration,
+  DecorationId,
+  DecorationJustification,
+  DecorationKind,
+  DecorationRefusal,
+  DecorationRefusalReason,
+  RemovedDecorationId,
+} from './decorations.js';
+export {
+  AI_DISCLOSURE_FREQUENCIES,
+  DEFAULT_AI_DISCLOSURE_FREQUENCY,
+  DEFAULT_DISCLOSURE_PAUSE_MINUTES,
+  InMemoryDisclosureMarkerStore,
+  decideDisclosureMarkers,
+  isAiDisclosureFrequency,
+} from './disclosureFrequency.js';
+export type {
+  AiDisclosureFrequency,
+  DisclosureMarkerState,
+  DisclosureMarkerStore,
+  DisclosureMarkers,
+} from './disclosureFrequency.js';
+export { InMemorySpeakerHistoryStore, speakerLine, speakerLineFor } from './speakerLine.js';
+export type { SpeakerHistoryStore, SpeakerLineContext } from './speakerLine.js';
+export { renderPlainAnswer } from './plainAnswer.js';
+export type { PlainAnswerOptions } from './plainAnswer.js';
+export { parseCardReply, renderCardAsText } from './questionCardText.js';
+export type { CardReplyParse } from './questionCardText.js';
