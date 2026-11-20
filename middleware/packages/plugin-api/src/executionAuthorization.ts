@@ -33,6 +33,8 @@
  * scope may address; the kernel enforces that list and records it.
  */
 
+import type { EmissionType } from './speaker.js';
+
 export const EXECUTION_AUTHORIZATION_SERVICE_NAME = 'executionAuthorization';
 
 /** The five scopes of spec 2043 §0. */
@@ -85,7 +87,7 @@ export type ExecutionActionType =
  * model-written text, `template` a registered template filled with engine
  * values, `data` side-channel data. Recorded with the authorization.
  */
-export type ExecutionEmissionType = 'prose' | 'template' | 'data';
+export type ExecutionEmissionType = Exclude<EmissionType, 'system'>;
 
 /** What the action is for. Past the deadline of an `active` scope in its
  *  deadline wait, only `consent`, `status` and `stop` are authorized. */
