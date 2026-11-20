@@ -254,6 +254,9 @@ export function createAgentDirectoryRouter(options: ManagementLayerRouterOptions
           const row = svc.registry.getById(a.id)?.agent;
           const speaker = row ? speakerFor(row) : undefined;
           return {
+            // The agent id: what explicit addressing by id (`resolveAgent`,
+            // a canvas turn's `metadata.agentId`) takes.
+            id: a.id,
             slug: a.slug,
             display_name: a.displayName,
             short_description: row?.identityShortDescription ?? null,
