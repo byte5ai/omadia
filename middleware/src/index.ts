@@ -47,6 +47,12 @@ import {
   type WebRouteRequest,
   type WebRouteResult,
 } from './routes/chat.js';
+import { createOperatorAgentChannelIdentitiesRouter } from './routes/operatorAgentChannelIdentities.js';
+import { createAgentChannelIdentityStore } from './platform/agentChannelIdentityStore.js';
+import {
+  createAgentChannelIdentityService,
+  type AgentChannelIdentityService,
+} from './platform/agentChannelIdentityService.js';
 import {
   createOperatorAgentsRouter,
   type OperatorAgentIdentityStore,
@@ -610,8 +616,8 @@ import { PgObservedInvitePersistence } from './platform/observedInvitePersistenc
 import { startEphemeralAttachmentSweep } from './platform/ephemeralAttachmentSweep.js';
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
 import type { AggregateHolderLookup, ChannelRegistry, ChannelBindingResolver } from '@omadia/channel-sdk';
-import type { ChannelReadinessProvider, MeetingSourceProvider } from '@omadia/channel-sdk';
-import { InMemoryDisclosureSeenStore } from '@omadia/channel-sdk';
+import type { AgentIdentityProvider, ChannelReadinessProvider, MeetingSourceProvider } from '@omadia/channel-sdk';
+import { InMemoryDisclosureSeenStore, normalizeAgentIdentityKey } from '@omadia/channel-sdk';
 import { DynamicChannelPluginResolver } from './channels/dynamicChannelResolver.js';
 import type { TurnDispatcher } from './channels/coreApi.js';
 import { createOrchestratorDispatcher } from './channels/orchestratorDispatcher.js';
@@ -892,6 +898,11 @@ async function main(): Promise<void> {
   );
   const meetingSourceRegistry = new ChannelProviderRegistry<MeetingSourceProvider>(
     'meetingSource',
+    registryLog,
+  );
+  // Spec 2042 §5.3 — channel plugins that run one bot per agent.
+  const agentIdentityProviderRegistry = new ChannelProviderRegistry<AgentIdentityProvider>(
+    'agentIdentity',
     registryLog,
   );
   // #330 C2a — kernel-side invite index: subscribes directly at the hub (before
@@ -4408,6 +4419,34 @@ async function main(): Promise<void> {
     : undefined;
   const peerChatDirectoryFor = () => peerChatDirectory;
 
+  // Spec 2042 §5.3 — an agent's own bot on Telegram, Discord, Slack: the
+  // channel plugin runs it (`agentIdentities@1`), the kernel stores the key.
+  const agentChannelIdentities: AgentChannelIdentityService | undefined = graphPool
+    ? createAgentChannelIdentityService({
+        providers: agentIdentityProviderRegistry,
+        store: createAgentChannelIdentityStore(graphPool),
+        reload: async () => {
+          await serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')?.reload();
+        },
+        log: (m) => console.log(m),
+      })
+    : undefined;
+  app.use(
+    '/api/v1/operator/agents',
+    requireAuth,
+    createOperatorAgentChannelIdentitiesRouter({
+      getService: () =>
+        serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry') ? agentChannelIdentities : undefined,
+      findAgent: async (slug) => {
+        const agent = await serviceRegistry.get<MultiOrchestratorConfigStore>('configStore')?.getAgentBySlug(slug);
+        return agent ? { id: agent.id, slug: agent.slug, name: agent.name ?? agent.slug } : undefined;
+      },
+      recordAudit: async (entry) => {
+        await adminAudit?.record(entry);
+      },
+    }),
+  );
+
   // US9 / T037 — operator-facing Agents dashboard backend. Mounts at
   // /api/v1/operator/agents/*. 503s when the orchestratorRegistry@1
   // service is not published (no DATABASE_URL / orchestrator plugin not
@@ -5177,13 +5216,32 @@ async function main(): Promise<void> {
     // roster API returns people, never bots, so a roster-based check finds
     // nothing in a chat full of bots (which is exactly what it did on the
     // first live run).
+    // Spec 2042 §5.3 — other channels: the plugin knows which agent bots are
+    // members of the group (`agentIdentities@1.presentIn`).
+    const presentAgentBots = async (
+      registry: MultiOrchestratorRegistry,
+      channelType: string,
+      conversationId: string,
+    ): Promise<{ slug: string; name: string; channelKey: string }[]> => {
+      const provider = agentIdentityProviderRegistry.get(channelType);
+      if (!provider?.presentIn) return [];
+      const keys = await provider.presentIn(conversationId).catch(() => [] as readonly string[]);
+      const bots: { slug: string; name: string; channelKey: string }[] = [];
+      for (const raw of keys) {
+        const channelKey = normalizeAgentIdentityKey(raw);
+        const owner = registry.identityForChannel(channelType, channelKey);
+        if (!owner || bots.some((b) => b.slug === owner.agent.slug)) continue;
+        bots.push({ slug: owner.agent.slug, name: owner.agent.name ?? owner.agent.slug, channelKey });
+      }
+      return bots;
+    };
     const presentBots = async (
       channelType: string,
       conversationId: string,
     ): Promise<{ slug: string; name: string; channelKey: string }[]> => {
-      if (channelType !== 'teams') return [];
       const registry = getRegistry();
       if (!registry) return [];
+      if (channelType !== 'teams') return presentAgentBots(registry, channelType, conversationId);
       const present = await botPresence.botAppIdsIn(conversationId);
       const seen = new Set<string>();
       const bots: { slug: string; name: string; channelKey: string }[] = [];
@@ -5297,8 +5355,9 @@ async function main(): Promise<void> {
       // an operator's change applies without a restart. Only this explicitly
       // configured bot may route to its binding / the fallback agent in the
       // Conductor; any other unknown bot stays refused.
+      // Other channels: the plugin's own default bot (`agentIdentities@1`).
       defaultChannelBotKey: (channelType) => {
-        if (channelType !== 'teams') return undefined;
+        if (channelType !== 'teams') return agentIdentityProviderRegistry.get(channelType)?.defaultChannelKey?.();
         const raw = installedRegistry.get(ms365IntegrationId)?.config?.['microsoft_app_id'];
         const appId =
           typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : config.MICROSOFT_APP_ID;
@@ -7485,6 +7544,7 @@ async function main(): Promise<void> {
     ...(conversationMessages ? { conversationMessages: conversationMessages.hub } : {}),
     readinessProviders: readinessProviderRegistry,
     meetingSources: meetingSourceRegistry,
+    agentIdentities: agentIdentityProviderRegistry,
     sessionCapabilities: sessionCapabilityHub,
     // #1086 — the channel-agnostic producer of the routines principal, for
     // every channel that drives its turn through `handleTurnStream` (in-tree:
@@ -7546,6 +7606,7 @@ async function main(): Promise<void> {
     conversationSends: conversationSendRegistry,
     readinessProviders: readinessProviderRegistry,
     meetingSources: meetingSourceRegistry,
+    agentIdentities: agentIdentityProviderRegistry,
   });
   channelRegistryRef = channelRegistry;
   await channelRegistry.activateAllInstalled();

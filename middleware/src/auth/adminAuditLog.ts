@@ -82,6 +82,11 @@ export type AuditAction =
   | 'agent.default_entry.set'
   | 'agent.default_entry.delete'
   | 'agent.availability_change'
+  // Spec 2042 §5.3 — an agent's own bot on a channel was registered or
+  // removed: who gave an agent a face (and its token) belongs in the trail.
+  // `before`/`after` carry the channel type and the routing key, never a credential.
+  | 'agent.channel_identity.set'
+  | 'agent.channel_identity.delete'
   | 'plugin.uninstall'
   // #1510/#1508 — a plugin's Privacy Shield setting (`_privacy_mode`,
   // `_privacy_bypass_scopes`) changed. A switch to `bypass` sends that
