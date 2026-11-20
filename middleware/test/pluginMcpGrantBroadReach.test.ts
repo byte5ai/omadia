@@ -71,7 +71,7 @@ async function harness(holders: string[]): Promise<Harness> {
       getConfigStore: () => config,
       getGraphStore: () => graph,
       getRegistry: () => ({ reload: () => Promise.resolve() }) as unknown as OrchestratorRegistry,
-      listMcpPluginCandidates: () => [{ id: ODOO, name: 'Odoo', mcp: true }],
+      listMcpPluginCandidates: () => [{ id: ODOO, name: 'Odoo', mcp: true, serversHint: [] }],
       getReachPluginSources: () => ({ catalog, installed }),
       recordAudit: (entry) => {
         audits.push(entry);

@@ -48,7 +48,6 @@ function snap(overrides: Partial<ConfigSnapshot> = {}): ConfigSnapshot {
     agents: [agent()],
     agentPlugins: [],
     channelBindings: [],
-    platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
     subAgents: [],
     toolGrants: [],
     schedules: [],

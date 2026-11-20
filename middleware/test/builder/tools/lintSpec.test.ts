@@ -213,8 +213,8 @@ describe('lintSpecTool', () => {
     const result = await lintSpecTool.run({}, harness.context());
     const errors = result.issues.filter((i) => i.code === 'retired_accessor');
     assert.equal(errors.length, 1);
-    assert.equal(errors[0].severity, 'error');
-    assert.match(errors[0].message, /ctx\.subAgent/);
+    assert.equal(errors[0]!.severity, 'error');
+    assert.match(errors[0]!.message, /ctx\.subAgent/);
     assert.equal(result.ok, false);
   });
 
@@ -238,9 +238,9 @@ describe('lintSpecTool', () => {
     const result = await lintSpecTool.run({}, harness.context());
     const warns = result.issues.filter((i) => i.code === 'accessor_permission_undeclared');
     assert.equal(warns.length, 1);
-    assert.equal(warns[0].severity, 'warning');
-    assert.match(warns[0].message, /ctx\.llm/);
-    assert.match(warns[0].message, /permissions\.llm\.models_allowed/);
+    assert.equal(warns[0]!.severity, 'warning');
+    assert.match(warns[0]!.message, /ctx\.llm/);
+    assert.match(warns[0]!.message, /permissions\.llm\.models_allowed/);
     // It's a smell, not a build-breaker.
     assert.equal(result.ok, true);
   });

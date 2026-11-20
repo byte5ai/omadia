@@ -5,7 +5,8 @@
  *
  * WHAT USED TO HAPPEN
  * First boot hydrated the seeded fallback agent with every installed plugin
- * (`ensureFallbackAgent` + `attachAllPlugins`), and every later kernel install
+ * (`ensureFallbackAgent` + `attachAllPlugins`; the seed itself is gone with
+ * #2055), and every later kernel install
  * path (Hub install, upload, store reinstall, profile apply, built-ins the
  * boot seeded) attached the new plugin to it (`attachToDefaultOrchestrator`,
  * `pendingDefaultAttach`). Whoever reached that agent held the master key to
@@ -13,12 +14,10 @@
  *
  * WHAT THESE TESTS PIN
  * 1. Boot: the real built-in seeding (`runLegacyBootstrap`) installs five
- *    plugins of every capability kind and more, the real first-boot seed
- *    (`ensureFallbackAgent`) creates the first agent — and no agent holds a
- *    plugin.
+ *    plugins of every capability kind and more — and no agent holds a
+ *    plugin, also not the first agent the operator creates.
  * 2. Install: a sixth plugin installed through the real `InstallService`
- *    (create → configure → active) is granted to no agent, and a restart
- *    (the seed runs again) grants nothing either.
+ *    (create → configure → active) is granted to no agent.
  * 3. Every install path: the auto-attach machinery is gone from the kernel,
  *    and the only kernel code that writes an agent's plugin grant is the
  *    operator's explicit grant API and the facilitation engine's
@@ -32,12 +31,6 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, wr
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { describe, it } from 'node:test';
-
-import {
-  ensureFallbackAgent,
-  FALLBACK_AGENT_SLUG,
-  type ConfigStore,
-} from '@omadia/orchestrator';
 
 import type { Config } from '../src/config.js';
 import { runLegacyBootstrap } from '../src/plugins/bootstrap.js';
@@ -162,9 +155,8 @@ describe('#2054 — spec 2042 §6.9: no super-agent out of the box', () => {
         FIVE.map((p) => p.id).sort(),
         'the boot installed the five plugins',
       );
-      const slug = await ensureFallbackAgent(store as unknown as ConfigStore);
-      assert.equal(slug, FALLBACK_AGENT_SLUG, 'the first agent exists');
-      assert.equal(store.agents.length, 1);
+      assert.equal(store.agents.length, 0, 'no agent is seeded (#2055)');
+      await store.createAgent({ slug: 'mira', name: 'Mira' });
       assert.deepEqual(await store.listAllAgentPlugins(), [], 'no agent holds any of the five');
 
       // ── a sixth plugin is installed ──────────────────────────────────
@@ -180,9 +172,6 @@ describe('#2054 — spec 2042 §6.9: no super-agent out of the box', () => {
       assert.ok(registry.has(SIXTH.id));
       assert.deepEqual(await store.listAllAgentPlugins(), [], 'the sixth attaches to no agent');
 
-      // ── the next boot grants nothing either ──────────────────────────
-      await ensureFallbackAgent(store as unknown as ConfigStore);
-      assert.deepEqual(await store.listAllAgentPlugins(), []);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

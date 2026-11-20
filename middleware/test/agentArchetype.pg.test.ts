@@ -21,7 +21,7 @@ import { Pool } from 'pg';
 
 import { probePgTest } from './_helpers/pgTestDb.js';
 
-import { ConfigStore, ConfigValidationError } from '../packages/harness-orchestrator/src/registry/configStore.js';
+import { ConfigStore } from '../packages/harness-orchestrator/src/registry/configStore.js';
 import { archetypeOf, archetypeOmits } from '../packages/harness-orchestrator/src/registry/archetype.js';
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
@@ -168,14 +168,20 @@ describe('agents.archetype (pg, migration 0070)', { skip: !pgAvailable }, () => 
   });
 
   it('refuses a facilitator as the default agent, read from the archetype', async () => {
+    // The 0070 guard on the single-row fallback setting. #2055 (migration
+    // 0081) replaces the setting with the default-agent table and moves the
+    // guard there (`default_agent_not_facilitator`, agentTombstone.pg.test.ts).
     const plain = await store.createAgent({ slug: 'hr', name: 'HR' });
     const moderator = await store.createAgent({ slug: 'mara', name: 'Mara', archetype: 'facilitator' });
     await assert.rejects(
       pool.query('UPDATE multi_orchestrator_settings SET fallback_agent_id = $1', [moderator.id]),
       (err: { constraint?: string }) => err.constraint === 'fallback_agent_not_facilitator',
     );
-    await assert.rejects(store.setFallbackAgentId(moderator.id), ConfigValidationError);
-    assert.equal((await store.setFallbackAgentId(plain.id)).fallbackAgentId, plain.id);
+    const ok = await pool.query<{ fallback_agent_id: string }>(
+      'UPDATE multi_orchestrator_settings SET fallback_agent_id = $1 RETURNING fallback_agent_id',
+      [plain.id],
+    );
+    assert.equal(ok.rows[0]?.fallback_agent_id, plain.id);
   });
 
   it('0071: a third archetype can exist once it is registered; kind follows it; unregistered stays refused', async () => {

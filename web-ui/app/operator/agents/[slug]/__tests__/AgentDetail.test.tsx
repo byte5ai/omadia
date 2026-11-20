@@ -223,7 +223,6 @@ beforeEach(() => {
   });
   mockToggle.mockResolvedValue({
     ok: true,
-    fallback: false,
     plugin: { id: '@omadia/odoo', enabled: false },
   });
   mockReplace.mockResolvedValue(undefined);
@@ -231,7 +230,7 @@ beforeEach(() => {
 
 describe('AgentDetail plugin assignment', () => {
   it('renders one row per assigned plugin with its enabled state', async () => {
-    await renderOnPluginsTab(<AgentDetail agent={agent()} isFallback={false} />);
+    await renderOnPluginsTab(<AgentDetail agent={agent()} />);
 
     // Catalog names join in after the async catalog load.
     const odoo = await screen.findByRole('checkbox', {
@@ -246,7 +245,7 @@ describe('AgentDetail plugin assignment', () => {
 
   it('renders the empty state when the agent has no plugins assigned', async () => {
     await renderOnPluginsTab(
-      <AgentDetail agent={agent({ plugins: [] })} isFallback={false} />,
+      <AgentDetail agent={agent({ plugins: [] })} />,
     );
     expect(
       await screen.findByText(/No plugins are assigned to this orchestrator/),
@@ -255,7 +254,7 @@ describe('AgentDetail plugin assignment', () => {
 
   it('toggling a row calls toggleAgentPlugin with the inverted flag and refreshes', async () => {
     const user = userEvent.setup();
-    await renderOnPluginsTab(<AgentDetail agent={agent()} isFallback={false} />);
+    await renderOnPluginsTab(<AgentDetail agent={agent()} />);
 
     const odoo = await screen.findByRole('checkbox', {
       name: 'Enable or disable Odoo',
@@ -281,7 +280,7 @@ describe('AgentDetail plugin assignment', () => {
       ),
     );
     const user = userEvent.setup();
-    await renderOnPluginsTab(<AgentDetail agent={agent()} isFallback={false} />);
+    await renderOnPluginsTab(<AgentDetail agent={agent()} />);
 
     await user.click(await screen.findByRole('checkbox', { name: 'Enable or disable Odoo' }));
 
@@ -307,7 +306,7 @@ describe('AgentDetail plugin assignment', () => {
       ),
     );
     const user = userEvent.setup();
-    await renderOnPluginsTab(<AgentDetail agent={agent()} isFallback={false} />);
+    await renderOnPluginsTab(<AgentDetail agent={agent()} />);
 
     await user.click(
       await screen.findByRole('checkbox', { name: 'Enable or disable Odoo' }),
@@ -323,25 +322,9 @@ describe('AgentDetail plugin assignment', () => {
     expect(mockRefresh).not.toHaveBeenCalled();
   });
 
-  it('shows the store-config notice only for the fallback agent', async () => {
-    const { unmount } = await renderOnPluginsTab(
-      <AgentDetail agent={agent()} isFallback />,
-    );
-    expect(
-      await screen.findByText(/always runs plugins with the global store config/),
-    ).toBeInTheDocument();
-    unmount();
-
-    await renderOnPluginsTab(<AgentDetail agent={agent()} isFallback={false} />);
-    await screen.findByTestId('plugins-dnd-save');
-    expect(
-      screen.queryByText(/always runs plugins with the global store config/),
-    ).toBeNull();
-  });
-
   it('forwards PluginsDnd saves to replaceAgentPlugins for this slug', async () => {
     const user = userEvent.setup();
-    await renderOnPluginsTab(<AgentDetail agent={agent()} isFallback={false} />);
+    await renderOnPluginsTab(<AgentDetail agent={agent()} />);
 
     await user.click(await screen.findByTestId('plugins-dnd-save'));
 
@@ -360,7 +343,7 @@ describe('AgentDetail plugin assignment', () => {
     // edit below it. The stub's mount-local "dirty" flag stands in for that
     // unsaved state.
     const user = userEvent.setup();
-    await renderOnPluginsTab(<AgentDetail agent={agent()} isFallback={false} />);
+    await renderOnPluginsTab(<AgentDetail agent={agent()} />);
 
     await user.click(await screen.findByTestId('plugins-dnd-edit'));
     expect(screen.getByTestId('plugins-dnd-state').textContent).toBe('dirty');
@@ -375,7 +358,7 @@ describe('AgentDetail plugin assignment', () => {
 
   it("the editor's own save DOES remount it so it reseeds from fresh props", async () => {
     const user = userEvent.setup();
-    await renderOnPluginsTab(<AgentDetail agent={agent()} isFallback={false} />);
+    await renderOnPluginsTab(<AgentDetail agent={agent()} />);
 
     await user.click(await screen.findByTestId('plugins-dnd-edit'));
     expect(screen.getByTestId('plugins-dnd-state').textContent).toBe('dirty');
@@ -395,7 +378,7 @@ describe('AgentDetail identity section (#914)', () => {
   });
 
   it('mounts the agent identity section', async () => {
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    renderWithIntl(<AgentDetail agent={agent()} />);
 
     expect(await screen.findByTestId('agent-identity')).toBeTruthy();
   });
@@ -406,7 +389,7 @@ describe('AgentDetail identity section (#914)', () => {
     // /store/builder — for most agents, into the builder OVERVIEW, which has
     // nothing to do with the agent in front of the operator.
     const { container } = renderWithIntl(
-      <AgentDetail agent={agent()} isFallback={false} />,
+      <AgentDetail agent={agent()} />,
     );
     await screen.findByTestId('agent-identity');
 
@@ -422,7 +405,7 @@ describe('AgentDetail tabs', () => {
   });
 
   it('opens on Identity and mounts only that panel', async () => {
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    renderWithIntl(<AgentDetail agent={agent()} />);
     expect(await screen.findByTestId('agent-identity')).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Identity' })).toHaveAttribute('aria-selected', 'true');
     // The other panels are not in the tree — a tab fetches when opened, not
@@ -435,7 +418,7 @@ describe('AgentDetail tabs', () => {
 
   it('switches panels and writes the tab into the URL without navigating', async () => {
     const user = userEvent.setup();
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    renderWithIntl(<AgentDetail agent={agent()} />);
     await screen.findByTestId('agent-identity');
 
     await user.click(screen.getByRole('tab', { name: 'Conversations' }));
@@ -455,19 +438,19 @@ describe('AgentDetail tabs', () => {
 
   it('a ?tab= deep link lands on that tab; an unknown value falls back to Identity', async () => {
     window.history.replaceState(null, '', '/operator/agents/hr?tab=model');
-    const first = renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    const first = renderWithIntl(<AgentDetail agent={agent()} />);
     expect(await screen.findByTestId('agent-model-policy')).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Model' })).toHaveAttribute('aria-selected', 'true');
     first.unmount();
 
     window.history.replaceState(null, '', '/operator/agents/hr?tab=nope');
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    renderWithIntl(<AgentDetail agent={agent()} />);
     expect(await screen.findByTestId('agent-identity')).toBeTruthy();
   });
 
   it('arrow keys move between tabs', async () => {
     const user = userEvent.setup();
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    renderWithIntl(<AgentDetail agent={agent()} />);
     await screen.findByTestId('agent-identity');
     screen.getByRole('tab', { name: 'Identity' }).focus();
     await user.keyboard('{ArrowRight}');

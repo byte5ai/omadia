@@ -356,6 +356,26 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.210.0 — Direct Line (`#agent` addressing) is gone
+
+Spec 2042 (§5.2, #2052) replaces Direct Line with direct addressing of an
+agent. For operators, channel authors and anybody who reads the chat stream.
+
+1. **Users:** `#strategist <question>` is no longer routed to a specialist and
+   sticky mode (`#strategist`, `#end`, `#orchestrator`) no longer exists. The
+   text goes to the agent the user is talking to, unchanged.
+2. **Operators:** `ORCHESTRATOR_DIRECT_LINE_STICKY` and the orchestrator setup
+   field `orchestrator_direct_line_sticky` are gone. A value that is still set
+   is ignored; remove it at your convenience.
+3. **Channel and client code (`@omadia/channel-sdk`):** `SemanticAnswer`,
+   `ChatTurnResult` and the stream `done` event no longer carry
+   `delegatedAnswer` or `directLineSession`, and the types `DelegatedAnswer`
+   and `DirectLineSessionState` are no longer exported. What a colleague
+   contributed now arrives in `SemanticAnswer.contributions[]` (types in
+   `@omadia/plugin-api`, `speaker.ts`). `agentsConsulted` stays.
+4. Stored web chats: a `directLineSession` on an old message is dropped the
+   next time the session is saved. Nothing to migrate.
+
 ## Upgrading past v0.210.0 — facilitator plugins: the first majors of three services are gone
 
 For an instance with the facilitation engine installed, and for anybody
@@ -597,9 +617,10 @@ do not combine" point under v0.167.13 below.
   any tool query) and the column labels and rank header it writes into the
   table.
 - **Still withheld in `enforce`:** a rendered tool error or sign-in prompt
-  (`answerIsError`), a render from a privacy guard older than 0.9.0 (it
-  reports no `prose`, so prose and values cannot be told apart), and behind
-  the shield a Direct Line relay. Upgrade the privacy guard together with the
+  (`answerIsError`) and a render from a privacy guard older than 0.9.0 (it
+  reports no `prose`, so prose and values cannot be told apart). (Behind the
+  shield a Direct Line relay was withheld too; Direct Line was removed with
+  spec 2042.) Upgrade the privacy guard together with the
   core.
 - **`shadow` costs more.** Rendered answers with prose now run the full
   pipeline in `shadow` too: extra verifier model calls and rows that were not
@@ -927,9 +948,9 @@ know and show no badge for turns without evidence.
   shield renders server-side holds real values the model never saw, so it is
   never sent to the verifier; `enforce` withholds it (summary `unavailable`,
   reason `privacy_shield`, a `verifier_verdicts` row with status
-  `unavailable`). That includes rendered tool errors and sign-in prompts, and
-  behind the shield a Direct Line relay, which hands over no privacy view to
-  verify through. With v4 rendering active, expect no rendered answer to
+  `unavailable`). That includes rendered tool errors and sign-in prompts (and,
+  until Direct Line was removed with spec 2042, a Direct Line relay behind the
+  shield). With v4 rendering active, expect no rendered answer to
   reach users in `enforce`, except on a turn that also carries an input card:
   that exemption (next point) is checked first and releases the turn
   unchecked, rendered answer included. The shield's own refusal of a prompt

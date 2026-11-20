@@ -49,7 +49,6 @@ function result(extra: Partial<ChatTurnResult> = {}, answer = ANSWER): ChatTurnR
     fileAttachments: [{ kind: 'file', url: 'https://files.example/u.xlsx', altText: 'Umsatz', mediaType: 'application/vnd.ms-excel' }],
     followUpOptions: [{ label: 'Q4?', prompt: `Und Q4 nach ${AMOUNT_TEXT}?` }],
     maskedValues: [AMOUNT_TEXT],
-    delegatedAnswer: { agentId: 'a', label: 'Buchhaltung', text: AMOUNT_TEXT, status: 'success' },
     pendingRoutineList: { filter: 'all', totals: { all: 0, active: 0, paused: 0 }, routines: [] },
     ...extra,
   };
@@ -71,7 +70,7 @@ function assertWithheld(sa: SemanticAnswer, label: string): void {
   assert.match(sa.text, /zurückgehalten|withheld/, label);
   assert.equal(sa.answerSource, 'verifier-blocked', label);
   assert.equal(sa.answerIsError, true, label);
-  for (const key of ['attachments', 'followUps', 'interactive', 'maskedValues', 'delegatedAnswer']) {
+  for (const key of ['attachments', 'followUps', 'interactive', 'maskedValues']) {
     assert.equal(key in sa, false, `${label}: ${key} is stripped`);
   }
 }

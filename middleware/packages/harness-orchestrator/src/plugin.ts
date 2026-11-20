@@ -8,6 +8,7 @@ import {
   type GrantStore,
   type SecurityPosture,
 } from '@omadia/channel-sdk';
+import { KernelAgentSelectionService } from './management/agentSelection.js';
 import type { FacilitatorRuntimeLookup } from './facilitatorAgent.js';
 import type {
   SecurityPostureSetup,
@@ -89,7 +90,6 @@ import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatSessionStore } from './chatSessionStore.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { Orchestrator, AiDisclosureSetup } from './orchestrator.js';
-import { InMemoryDirectLineStickyStore } from './directLineSticky.js';
 import {
   sharedMcpInputReplayer,
   sharedPendingMcpInputStore,
@@ -104,7 +104,6 @@ import {
   type PluginCapabilityLookup,
 } from './registry/index.js';
 import { runMultiOrchestratorMigrations } from './registry/migrator.js';
-import { ensureFallbackAgent } from './registry/onboarding.js';
 import { ReloadBus } from './registry/reloadBus.js';
 import { ChannelResolver } from './routing/channelResolver.js';
 import type { FastPathTriagePort } from './fastPathAgent.js';
@@ -1263,17 +1262,10 @@ export async function activate(
     // the guards stay inert; see `OrchestratorDeps.audienceGrants`.
     ...(audienceGrants ? { audienceGrants } : {}),
     // #644 — one fold-dedup store for the whole process, shared by every Agent
-    // the registry builds (same lifetime rationale as `directLineStickyStore`
-    // below): a per-instance store would re-fold the marking into a live
-    // conversation whenever an unrelated config tweak rebuilt the Agent.
+    // the registry builds: a per-instance store would re-fold the marking into
+    // a live conversation whenever an unrelated config tweak rebuilt the Agent.
     aiDisclosureSeenStore: new InMemoryDisclosureSeenStore(),
     ...(turnHookRegistry ? { turnHookRegistry } : {}),
-    // #445 — one binding store for the whole process, shared by every Agent
-    // the registry builds and rebuilt by none of them. Constructed
-    // unconditionally: it is an empty Map until the flag is on, and holding it
-    // in deps means toggling the flag at runtime never strands a binding in a
-    // store that has been thrown away.
-    directLineStickyStore: new InMemoryDirectLineStickyStore(),
     runTraceStats,
     // W2-1 (#544) — the SAME store instance the kernel's `McpManager` parks
     // into, plus the replayer the kernel registered once it had a manager and a
@@ -1330,24 +1322,11 @@ export async function activate(
     );
   }
 
-  // #445 — sticky Direct Line (see `readBooleanSetting` for why it is read
-  // defensively).
-  const directLineSticky = readBooleanSetting(
-    ctx.config.get<unknown>('orchestrator_direct_line_sticky'),
-  );
-  if (directLineSticky) {
-    console.log(
-      '[harness-orchestrator] direct-line sticky mode ON — a bare `#<agent>` binds the ' +
-        'conversation until `#end`.',
-    );
-  }
-
   const built = buildOrchestratorForAgent(
     {
       agentId: 'default',
       model,
       ...(modelRouting ? { modelRouting } : {}),
-      ...(directLineSticky ? { directLineSticky: true } : {}),
       maxTokens,
       maxToolIterations: maxIterations,
       ...(maxTurnSeconds > 0 ? { maxTurnSeconds } : {}),
@@ -1407,17 +1386,6 @@ export async function activate(
       // through the same trigger → reload-bus pipeline).
       disposeServices.push(ctx.services.provide(CONFIG_STORE_SERVICE, store));
 
-      // US7 / T029 — first-boot fallback Agent seed. Runs before the
-      // registry's `start()` so the very first boot already has a fallback
-      // available for unbound channel keys. #2054 / INV-8 — seeded with no
-      // plugin: the operator grants its capabilities explicitly.
-      await ensureFallbackAgent(store, {
-        log: (msg, fields) =>
-          ctx.log(
-            `[harness-orchestrator] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`,
-          ),
-      });
-
       // SEAM (M3-followup): the `claude-cli` -> CliChatAgent swap lives in
       // buildOrchestratorForAgent (buildOrchestrator.ts), which both the
       // default `chatAgent@1` path and the US4 registry call via buildForAgent.
@@ -1427,7 +1395,6 @@ export async function activate(
         defaultRuntimeConfig: {
           model,
           ...(modelRouting ? { modelRouting } : {}),
-          ...(directLineSticky ? { directLineSticky: true } : {}),
           maxTokens,
           maxToolIterations: maxIterations,
           ...(maxTurnSeconds > 0 ? { maxTurnSeconds } : {}),
@@ -1452,17 +1419,14 @@ export async function activate(
       // US7 / T028 — publish the channel resolver so channel plugins can
       // route inbound webhooks per-binding. Opt-in: the legacy
       // `chatAgent@1` keeps serving anything that does not consume it.
+      // #2055 — the resolver's ChatAgent handles `/agent` in every channel.
+      const routedRegistry = registry;
       const resolver = new ChannelResolver({
         registry,
+        selection: new KernelAgentSelectionService({ registry: routedRegistry, tables: store.routing }),
         log: (msg, fields) =>
           ctx.log(
             `[harness-orchestrator] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`,
-          ),
-        // #2045 seam: a `system` notice that is owed and cannot be sent yet
-        // is logged. It is never posted under an agent's identity.
-        emitSystemNotice: (notice) =>
-          ctx.log(
-            `[system-notice] owed, not sent (#2045): ${notice.kind} for '${notice.agentName}' in ${notice.channelType}/${notice.channelKey}`,
           ),
       });
       disposeServices.push(

@@ -30,15 +30,21 @@ describe('facilitator omissions: operator routes', () => {
     assert.equal((await h.call('PATCH', '/agents/hr/plugins', { id: ODOO, enabled: true })).status, 200);
     assert.equal((await h.call('PUT', '/agents/hr/agent-to-agent', { mode: 'on' })).status, 200);
     assert.equal((await h.call('PUT', '/agents/hr/context-memory', { mode: 'enforce' })).status, 200);
-    assert.equal((await h.call('PUT', '/agents/fallback', { slug: 'hr' })).status, 200);
+    // #2055 — the default agent is an entry of the default-agent table.
+    const designated = await h.call('PUT', '/default-agents', { principal: null, channel_type: null, agent_slug: 'hr' });
+    assert.equal(designated.status, 200, JSON.stringify(designated.json));
   });
 
   it('default agent designation is refused', async () => {
-    h.assertRefused(
-      await h.call('PUT', '/agents/fallback', { slug: 'mara' }),
-      'default_agent',
-      /cannot be the default agent/,
-    );
+    // #2055 — no `PUT /agents/fallback` any more: the default-agent table
+    // refuses a facilitator entry before writing (and migration 0081's
+    // trigger `default_agent_not_facilitator` refuses it in the database).
+    const res = await h.call('PUT', '/default-agents', { principal: null, channel_type: null, agent_slug: 'mara' });
+    assert.equal(res.status, 409, JSON.stringify(res.json));
+    // #2060's stable refusal contract, as `PUT /fallback` answered it.
+    assert.equal(res.json['error'], 'facilitator_omission');
+    assert.equal(res.json['omission'], 'default_agent');
+    assert.deepEqual(h.writes, [], 'a refusal writes nothing');
   });
 
   it('memory: a context-memory mode is refused', async () => {

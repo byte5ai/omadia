@@ -4,14 +4,14 @@ import type { AnswerVerbosityInfo } from './agentIdentity';
 import type {
   AgentConsultation,
   ChatSession,
-  DelegatedAnswer,
   DiagramAttachment,
-  DirectLineSessionState,
   FollowUpOption,
   KgWalkEdge,
   KgWalkNode,
   KgWalkPayload,
   Message,
+  MessageSpeaker,
+  MessageSystemNotice,
   NudgeEvent,
   OutgoingFileAttachment,
   PalaiaExcerpt,
@@ -162,10 +162,10 @@ export type ChatStreamEvent =
       agentsConsulted?: AgentConsultation[];
       /** Phase 3 — see `Message.answerVerbosity`. */
       answerVerbosity?: AnswerVerbosityInfo;
-      /** #332 Layer 2 (gap-closure) — see `Message.delegatedAnswer`. */
-      delegatedAnswer?: DelegatedAnswer;
-      /** #445 — see `Message.directLineSession`. */
-      directLineSession?: DirectLineSessionState;
+      /** #2045 — the agent this answer is from, or `system` for a notice. */
+      speaker?: MessageSpeaker;
+      /** #2045 — the notice `answer` renders or ends with. */
+      systemNotice?: MessageSystemNotice;
       /**
        * #1094 — `true` when the turn threw AFTER a tool call had already
        * committed. The terminal stays `done` on purpose (an `error` would make
@@ -215,7 +215,9 @@ export type ChatStreamEvent =
    * Optional because middleware older than this change does not send it; the
    * renderer then behaves exactly as before.
    */
-  | { type: 'error'; message: string; correlationId?: string };
+  | { type: 'error'; message: string; correlationId?: string; speaker?: MessageSpeaker }
+  /** #2045 — the agent the turn is routed to, before the first token. */
+  | { type: 'agent_bound'; slug: string; speaker?: MessageSpeaker };
 
 /**
  * Fold one stream event into the session that owns the pending assistant
@@ -471,15 +473,11 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           ? { agentsConsulted: event.agentsConsulted }
           : {}),
         ...(event.answerVerbosity ? { answerVerbosity: event.answerVerbosity } : {}),
-        ...(event.delegatedAnswer
-          ? { delegatedAnswer: event.delegatedAnswer }
-          : {}),
-        // #445 — guard on PRESENCE, never on `.active`. `{active:false}` is
-        // precisely the payload that tells the banner a binding has ended;
-        // dropping it would leave a stale "you are talking to X" on screen
-        // after a restart, a registry rebuild or a TTL expiry.
-        ...(event.directLineSession
-          ? { directLineSession: event.directLineSession }
+        // #2045 — the speaker the harness stamped; `done` is authoritative
+        // over the `agent_bound` header (a notice turns it into `system`).
+        ...(event.speaker ? { speaker: event.speaker } : {}),
+        ...(event.systemNotice
+          ? { systemNotice: { code: event.systemNotice.code, text: event.systemNotice.text } }
           : {}),
         // Enforce-mode verifier: the verdict rides `done`, and a withheld
         // answer is marked so the bubble says so (`VerifierBlockedNotice`)
@@ -498,9 +496,13 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
         streaming: false,
       };
     }
+    case 'agent_bound':
+      // #2045 — name and avatar show before the first token lands.
+      return event.speaker ? { ...m, speaker: event.speaker } : m;
     case 'error':
       return {
         ...m,
+        ...(event.speaker ? { speaker: event.speaker } : {}),
         content: m.content + (m.content ? '\n\n' : '') + event.message,
         error: true,
         finishedAt: Date.now(),

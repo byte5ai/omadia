@@ -133,7 +133,10 @@ export interface GrantWriteOptions {
 
 export interface OperatorAgentsListDto {
   agents: OperatorAgentDto[];
-  fallback_agent_id: string | null;
+  /** #2055 — the agent of the instance entry of the default-agent table
+   *  (`null` = off): who answers an unaddressed message when no user or
+   *  channel entry applies. */
+  default_agent_id: string | null;
 }
 
 /** Shared by the typed clients of the same surface (`agentTemplates.ts`,
@@ -444,9 +447,6 @@ export async function stopDiscussion(workflowId: string): Promise<{ ok: boolean;
 
 export interface AgentPluginsDto {
   slug: string;
-  /** True when this agent is the platform fallback (its plugins always run
-   *  with the global store config). */
-  fallback: boolean;
   plugins: OperatorAgentPluginDto[];
 }
 
@@ -463,7 +463,6 @@ export async function getAgentPlugins(slug: string): Promise<AgentPluginsDto> {
 
 export interface ToggleAgentPluginResponse {
   ok: boolean;
-  fallback: boolean;
   plugin: { id: string; enabled: boolean };
 }
 
@@ -923,7 +922,7 @@ export function parseOperatorAgentErrorCode(
  * Provisioning-chain vocabulary, mirroring `TEAMS_PROVISIONING_STATES` in
  * `middleware/src/platform/agentTeamsIdentityStore.ts` (itself the CHECK
  * constraint of migration 0049, verbatim). Structural contract, same
- * arrangement as {@link FALLBACK_AGENT_SLUG}: the middleware owns the
+ * arrangement as the service-name literals: the middleware owns the
  * vocabulary, this module only recognises it, neither imports the other.
  *
  * Order is significant — the panel renders the array as the progress chain,
@@ -1365,10 +1364,16 @@ export async function replaceAgentBindings(
   });
 }
 
-export async function setFallbackAgent(slug: string | null): Promise<void> {
-  await callJson('/v1/operator/agents/fallback', {
+/**
+ * #2055 — set the instance entry of the default-agent table: the agent that
+ * answers an unaddressed message when no user or channel entry applies.
+ * `null` = off. The server answers 409 when the agent is not available to
+ * everyone in every channel, or is a facilitator.
+ */
+export async function setInstanceDefaultAgent(slug: string | null): Promise<void> {
+  await callJson('/v1/operator/default-agents', {
     method: 'PUT',
-    body: JSON.stringify({ slug }),
+    body: JSON.stringify({ principal: null, channel_type: null, agent_slug: slug }),
   });
 }
 
@@ -1400,12 +1405,12 @@ export interface EnabledAgentDto {
   /** Reserved, not enforced (#978): persisted and reported, read by no
    *  runtime path — `strict` behaves like `default`. */
   privacy_profile: PrivacyProfile;
-  is_fallback: boolean;
 }
 
 export interface EnabledAgentsListDto {
   agents: EnabledAgentDto[];
-  fallback_slug: string | null;
+  /** #2055 — slug of the instance default agent (`null` = off). */
+  default_slug: string | null;
 }
 
 /**
@@ -1491,8 +1496,9 @@ export interface ResolveChannelResponse {
     privacy_profile: PrivacyProfile;
   } | null;
   /** `identity` — the key IS an agent's provisioned bot, which outranks
-   *  every binding. See the orchestrator's ChannelResolver. */
-  via: 'identity' | 'binding' | 'fallback' | 'none';
+   *  every binding; `default` — the default-agent table (#2055). See the
+   *  orchestrator's ChannelResolver. */
+  via: 'identity' | 'explicit' | 'selection' | 'binding' | 'default' | 'none';
   message?: string;
 }
 
@@ -1527,8 +1533,6 @@ export interface FirstRunCapabilityDto {
 export interface FirstRunOnboardingDto {
   /** The instance has no agent of the operator's making yet. */
   required: boolean;
-  /** The boot seed the flow turns into the first agent; `null` = it creates one. */
-  agent: { slug: string; name: string } | null;
   /** The installed capability plugins, offered with nothing preselected. */
   capabilities: FirstRunCapabilityDto[];
 }
@@ -1556,18 +1560,6 @@ export async function createFirstAgent(
     }),
   });
 }
-
-/**
- * Slug of the auto-seeded fallback orchestrator (kept in sync with
- * `FALLBACK_AGENT_SLUG` in `@omadia/orchestrator`). The fallback orchestrator
- * is the catch-all for unbound channel traffic, so its Disable/Delete actions
- * are blocked in the UI (and server-side). Treat an orchestrator as the
- * protected fallback when it carries this slug OR is the active platform
- * fallback pointer — the platform pointer may be intentionally unset while the
- * seeded `fallback` row still exists. Shared by the dashboard and the agent
- * detail route (issue #861) so the two never disagree on who the fallback is.
- */
-export const FALLBACK_AGENT_SLUG = 'fallback';
 
 /**
  * #679 / I5 — the description the middleware seeds into the fallback Agent on

@@ -8,6 +8,43 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.74.0 — 2026-11-20
+
+Additive (#2045, epic #2042, spec 2042 §5.5, ADR-0013): who speaks, and
+what kind of output reaches a person. Released with the agent model, step S1.
+
+### Added
+
+- **`Speaker`** = **`AgentSpeaker`** (`kind: 'agent'`, `agentId`, `slug`,
+  `displayName`, optional `avatarUrl`) | **`SystemSpeaker`**
+  (`kind: 'system'`), with **`SYSTEM_SPEAKER`**, **`isAgentSpeaker`** and
+  **`isSystemSpeaker`**. Stamped by the harness from the routing decision,
+  never from model output.
+- **`EmissionType`** (`EMISSION_TYPES`: `prose`, `template`, `data`,
+  `system`) and the typed emissions **`ProseEmission`**,
+  **`TemplateEmission`** (`templateId`, `values: Record<string,
+  TemplateValue>`), **`DataEmission`** (`data: DataPayload`, today
+  **`TableData`**) and **`SystemEmission`** (`notice`), joined as
+  **`Emission`**; the kernel's single emitter is **`AnswerEmitter`**
+  (`emit(emission) → EmitOutcome`, refused with an
+  **`EmissionRefusalReason`** and a `system` replacement).
+- **`SystemNotice`** (`code: SystemNoticeCode`, optional `agent:
+  NoticeAgentRef`, rendered `text`, `locale`) and **`SYSTEM_NOTICE_CODES`**.
+- **`Contribution`** (`id`, `speaker: AgentSpeaker`, `text`, `status:
+  ContributionStatus`): a colleague's delivered block (spec §5.4); replaces
+  the singular `delegatedAnswer` of the channel SDK.
+
+- (#2055) `SYSTEM_NOTICE_CODES` gains `agent_selection_cleared` and
+  `agent_directory` (the answers to `/agent` and `/agents`).
+- (#2046) `ProseEmission.restoredValues`: values the privacy shield restored
+  into the text server-side; the identity guard's model layer sees them
+  masked.
+
+### Changed
+
+- `ExecutionEmissionType` is now `Exclude<EmissionType, 'system'>`: the same
+  three members as before.
+
 ## 1.73.0 — 2026-11-19
 
 Additive (#2089, epic #2043): one owner for a message that addresses the

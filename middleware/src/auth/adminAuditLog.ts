@@ -83,6 +83,11 @@ export type AuditAction =
   // D34 — an operator released a held conversation reservation.
   | 'execution.reservation_release'
   | 'execution.kill_switch_clear'
+  // #2055 — the default-agent table and an agent's availability decide who
+  // answers whom: who may reach which agent belongs in the trail.
+  | 'agent.default_entry.set'
+  | 'agent.default_entry.delete'
+  | 'agent.availability_change'
   | 'plugin.uninstall'
   // #1510/#1508 — a plugin's Privacy Shield setting (`_privacy_mode`,
   // `_privacy_bypass_scopes`) changed. A switch to `bypass` sends that

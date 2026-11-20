@@ -1,9 +1,3 @@
-import {
-  FALLBACK_AGENT_SEED_DESCRIPTION,
-  FALLBACK_AGENT_SEED_NAME,
-  FALLBACK_AGENT_SLUG,
-} from '@omadia/orchestrator';
-
 import { isPreviewDraftAgentSlug } from '../plugins/builder/previewDraftAgents.js';
 
 /**
@@ -11,41 +5,21 @@ import { isPreviewDraftAgentSlug } from '../plugins/builder/previewDraftAgents.j
  * holding any capability; the first-run flow creates the first agent with an
  * explicit choice of capabilities (no preselection, zero allowed).
  *
- * The first-run flow is due while the instance has no agent of the operator's
- * making:
- *  - no agent at all → the flow creates one;
- *  - only the boot seed, untouched (seed slug, name and description, no plugin
- *    row) → the flow turns the seed into the first agent. The seed exists for
- *    routing (`ensureFallbackAgent`); its name and description are the
- *    kernel's, so changing them is what marks it as the operator's.
- * Anything else — a second agent, a renamed seed, a seed with a grant — is
- * the operator's configuration and the flow is not offered.
+ * The flow is due while the instance has no agent of the operator's making.
+ * There is no boot seed any more (#2055 removed the fallback agent), so that
+ * means: no agent at all (a Plugin Builder preview's draft agent does not
+ * count; the caller leaves those out).
  */
 
 export interface OnboardingAgent {
   readonly id: string;
   readonly slug: string;
-  readonly name: string;
-  readonly description: string | null;
 }
 
-export type OnboardingTarget =
-  | { readonly kind: 'create' }
-  | { readonly kind: 'seed'; readonly agent: OnboardingAgent };
+export type OnboardingTarget = { readonly kind: 'create' };
 
-export function onboardingTarget(
-  agents: readonly OnboardingAgent[],
-  pluginRowsOf: (agentId: string) => number,
-): OnboardingTarget | undefined {
-  if (agents.length === 0) return { kind: 'create' };
-  const [only] = agents;
-  if (agents.length !== 1 || !only) return undefined;
-  const untouched =
-    only.slug === FALLBACK_AGENT_SLUG &&
-    only.name === FALLBACK_AGENT_SEED_NAME &&
-    only.description === FALLBACK_AGENT_SEED_DESCRIPTION &&
-    pluginRowsOf(only.id) === 0;
-  return untouched ? { kind: 'seed', agent: only } : undefined;
+export function onboardingTarget(agents: readonly OnboardingAgent[]): OnboardingTarget | undefined {
+  return agents.length === 0 ? { kind: 'create' } : undefined;
 }
 
 const MAX_SLUG_LENGTH = 64;

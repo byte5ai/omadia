@@ -23,9 +23,6 @@ import type { Server } from 'node:http';
 import express from 'express';
 
 import {
-  FALLBACK_AGENT_SEED_DESCRIPTION,
-  FALLBACK_AGENT_SEED_NAME,
-  FALLBACK_AGENT_SLUG,
   type AgentGraphStore,
   type ChatSessionStore,
   type ConfigStore,
@@ -62,6 +59,11 @@ interface PluginMem {
 }
 
 class FakeStore {
+  // #2055 — the directory reads the availability principals.
+  routing = {
+    listAvailabilityPrincipals: (): Promise<never[]> => Promise.resolve([]),
+    listDefaultEntries: (): Promise<never[]> => Promise.resolve([]),
+  };
   agents: AgentMem[] = [];
   plugins: PluginMem[] = [];
   fallbackId: string | null = null;
@@ -337,13 +339,8 @@ describe('#2054 — reach, broad-reach confirmation and first-run flow', () => {
     );
   });
 
-  it('first run: the untouched seed becomes the first agent with exactly the chosen capabilities', async () => {
+  it('first run: the first agent gets exactly the chosen capabilities; offered once', async () => {
     h = await harness();
-    const seed = await h.store.createAgent({
-      slug: FALLBACK_AGENT_SLUG,
-      name: FALLBACK_AGENT_SEED_NAME,
-      description: FALLBACK_AGENT_SEED_DESCRIPTION,
-    });
     const offer = await call(h, 'GET', '/onboarding');
     assert.equal(offer.json['required'], true);
     assert.deepEqual(
@@ -357,16 +354,23 @@ describe('#2054 — reach, broad-reach confirmation and first-run flow', () => {
     assert.equal(notCapability.json['error'], 'not_a_capability_plugin');
 
     const done = await call(h, 'POST', '/onboarding/first-agent', { name: 'Mira', plugin_ids: [SEARCH] });
-    assert.equal(done.status, 200);
+    assert.equal(done.status, 201);
     assert.equal(h.store.agents.length, 1);
     assert.equal(h.store.agents[0]!.name, 'Mira');
-    assert.deepEqual(h.store.plugins.map((p) => [p.agentId, p.pluginId]), [[seed.id, SEARCH]]);
+    assert.deepEqual(h.store.plugins.map((p) => [p.agentId, p.pluginId]), [[h.store.agents[0]!.id, SEARCH]]);
 
     const after = await call(h, 'GET', '/onboarding');
     assert.equal(after.json['required'], false);
     const twice = await call(h, 'POST', '/onboarding/first-agent', { name: 'Again', plugin_ids: [] });
     assert.equal(twice.status, 409);
     assert.equal(twice.json['error'], 'onboarding_not_required');
+  });
+
+  it('a Plugin Builder preview draft does not count as the operator\'s first agent', async () => {
+    h = await harness();
+    await h.store.createAgent({ slug: 'builder-preview-d1', name: 'Preview: Weather' });
+    const offer = await call(h, 'GET', '/onboarding');
+    assert.equal(offer.json['required'], true);
   });
 
   it('first run without any agent creates one; zero capabilities is allowed', async () => {
