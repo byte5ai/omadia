@@ -8,6 +8,17 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.75.0 — 2026-11-20
+
+Additive (#2051, epic #2042, spec 2042 §5.2): persona skills became working
+modes beneath the agent's identity. Released with the agent model, step S2.
+
+### Added
+
+- **`RunTrace.workingMode`** (optional `{ skillId, name }`): the working mode a
+  turn ran in. Trace data only, never a speaker; absent when no mode was
+  selected, so older traces stay readable.
+
 ## 1.74.0 — 2026-11-20
 
 Additive (#2045, epic #2042, spec 2042 §5.5, ADR-0013): who speaks, and
