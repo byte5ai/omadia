@@ -23,8 +23,6 @@ import type { DeliveryOutcome } from './triggerChain.js';
 import type { Trigger } from './types.js';
 
 const HOUR_MS = 3_600_000;
-const MAX_TABLE_ROWS = 50;
-const MAX_CELL = 200;
 
 export interface QuietHours {
   /** `HH:MM`, local to `timezone`. */
@@ -191,27 +189,4 @@ export function createProactiveGate(deps: ProactiveGateDeps): ProactiveGate {
       return { delivered: true };
     },
   };
-}
-
-const cell = (v: unknown): string => {
-  const s = v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
-  const flat = s.replace(/\r?\n/g, ' ').replace(/\|/g, '\\|');
-  return flat.length > MAX_CELL ? `${flat.slice(0, MAX_CELL - 1)}…` : flat;
-};
-
-/**
- * The side-channel rendering of a data result as plain markdown: the rows go
- * from the tool straight to the recipients, no model in between.
- */
-export function renderDataTable(rows: readonly unknown[], columns: readonly string[], title: string | undefined): string {
-  const head = title ? `**${title}**\n\n` : '';
-  if (rows.length === 0) return `${head}—`;
-  const cols = columns.length > 0 ? columns : ['value'];
-  const lines = [`| ${cols.map(cell).join(' | ')} |`, `| ${cols.map(() => '---').join(' | ')} |`];
-  for (const row of rows.slice(0, MAX_TABLE_ROWS)) {
-    const rec = typeof row === 'object' && row !== null && !Array.isArray(row) ? (row as Record<string, unknown>) : { value: row };
-    lines.push(`| ${cols.map((c) => cell(rec[c])).join(' | ')} |`);
-  }
-  const more = rows.length > MAX_TABLE_ROWS ? `\n\n_… ${String(rows.length - MAX_TABLE_ROWS)} weitere_` : '';
-  return `${head}${lines.join('\n')}${more}`;
 }

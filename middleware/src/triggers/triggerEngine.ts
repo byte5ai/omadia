@@ -23,6 +23,8 @@ export interface TriggerAgentView {
   readonly id: string;
   readonly slug: string;
   readonly enabled: boolean;
+  /** The agent's display name (its authored identity name, else the slug). */
+  readonly displayName?: string;
 }
 
 /** Before anything runs: may a proactive message go out now? */

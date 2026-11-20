@@ -11,12 +11,13 @@
  * cannot breed triggers.
  */
 
-import type { ChatTurnInput, SemanticAnswer } from '@omadia/channel-sdk';
+import { renderTableText, type ChatTurnInput, type SemanticAnswer } from '@omadia/channel-sdk';
+import type { AgentSpeaker } from '@omadia/plugin-api';
 import { meterModelCalls, meterUsageCost } from '@omadia/usage-telemetry';
 
 import { storeContextChecks, type ContextLivenessProbe } from './contextChecks.js';
-import type { DataActionRunner } from './dataActions.js';
-import { renderDataTable, type ProactiveGate } from './proactiveGate.js';
+import { toTableData, type DataActionRunner } from './dataActions.js';
+import type { ProactiveGate } from './proactiveGate.js';
 import type { FiringStatus, StepExecutors, TurnOutcome } from './triggerChain.js';
 import type { TriggerStore } from './triggerStore.js';
 import type { Trigger } from './types.js';
@@ -38,6 +39,8 @@ export interface KernelExecutorDeps {
   /** A routine's turn runs through the routine runner (owner identity,
    *  output templates, run history). */
   readonly routineTurn?: (trigger: Trigger) => Promise<TurnOutcome>;
+  /** Who a proactive message is from (#2045), or undefined when unknown. */
+  readonly speakerOf?: (agentSlug: string) => AgentSpeaker | undefined;
 }
 
 /** The system hint of a trigger turn: purpose and status, never data rows. */
@@ -59,12 +62,22 @@ export function triggerTurnHint(trigger: Trigger, status: FiringStatus): string 
 
 export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
   const checks = storeContextChecks(deps.store, deps.liveness);
+  // Every proactive message names its agent (#2045 INV-4), stamped here from
+  // the trigger's owner, never from model output.
+  const send = (trigger: Trigger, message: SemanticAnswer) => {
+    const speaker = deps.speakerOf?.(trigger.agentSlug);
+    return deps.gate.send(trigger, speaker ? { ...message, speaker } : message);
+  };
   return {
     ...checks,
     runDataAction: (trigger, action) => deps.dataActions.run(trigger.agentSlug, action),
-    post: (trigger, text) => deps.gate.send(trigger, { text }),
-    deliver: (trigger, result, title) =>
-      deps.gate.send(trigger, { text: renderDataTable(result.rows, result.columns, title) }),
+    post: (trigger, text) => send(trigger, { text }),
+    // The side channel (§5.13): the rows go from the tool to the people as
+    // `data`, rendered into `text` for channels that show only text.
+    deliver: (trigger, result, title) => {
+      const table = toTableData(result.rows, result.columns, title);
+      return send(trigger, { text: renderTableText(table), data: [table], textWithoutData: '' });
+    },
     async turn(trigger, instruction, status): Promise<TurnOutcome> {
       if (trigger.origin === 'routine' && deps.routineTurn) return deps.routineTurn(trigger);
       const agent = deps.agentChat(trigger.agentSlug);
@@ -98,7 +111,7 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
         // not what the agent would have said with its full turn.
         return { delivered: false, costUsd, modelCalls, error: 'the turn reached its model-call limit' };
       }
-      const sent = await deps.gate.send(trigger, result.answer);
+      const sent = await send(trigger, result.answer);
       return sent.delivered
         ? { delivered: true, costUsd, modelCalls }
         : { delivered: false, costUsd, modelCalls, error: `answer not delivered: ${sent.reason}` };

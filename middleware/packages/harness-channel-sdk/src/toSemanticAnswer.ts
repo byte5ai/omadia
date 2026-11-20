@@ -16,6 +16,7 @@ import {
   type ApplyAiDisclosureContext,
 } from './aiDisclosure.js';
 import { stripCitationMarkers } from './citationMarkers.js';
+import { withDataText, withoutDataText } from './sideChannelData.js';
 
 /** Claims the verifier confirmed: every claim it neither found contradicted
  *  nor left unconfirmed. */
@@ -329,7 +330,13 @@ export function toSemanticAnswer(
   // `text`, which every connector MUST render.
   // #131 — the `[ref:…]` markers the verifier checked are not for the reader;
   // removed here, the one text every connector renders.
-  const baseText = withMcpInputPrompt(stripCitationMarkers(r.answer), r.pendingMcpInput);
+  // #2085 — side-channel data goes after the prose and before the disclosure
+  // fold, so a connector that renders only `text` still shows it, marked.
+  const data = r.data && r.data.length > 0 ? r.data : undefined;
+  const baseText = withDataText(
+    withMcpInputPrompt(stripCitationMarkers(r.answer), r.pendingMcpInput),
+    data,
+  );
 
   // #643 (epic #642) — AI-Act Art. 50 disclosure. Fold the harness-owned
   // marking into `text` (the one field every connector renders) and forward the
@@ -367,6 +374,7 @@ export function toSemanticAnswer(
       ? { agentsConsulted }
       : {}),
     ...(r.delegatedAnswer ? { delegatedAnswer: r.delegatedAnswer } : {}),
+    ...(data ? { data, textWithoutData: withoutDataText(disclosed.text, data) } : {}),
     // #445 — forward the sticky indicator verbatim. Guarded on PRESENCE, not
     // on `.active`: `{ active: false }` is the signal that clears a stale
     // banner, so dropping it would be the one bug this field exists to prevent.

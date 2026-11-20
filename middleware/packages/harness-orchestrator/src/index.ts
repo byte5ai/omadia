@@ -737,6 +737,15 @@ export type {
   TurnContextValue,
   GraphReadScope,
 } from './turnContext.js';
+// #2085 — a data action run on the agent's behalf passes the same audience
+// floor as a tool the model dispatches.
+export { guardToolEgress } from './audienceFloorGuard.js';
+// #2085 — per-turn side-channel data collector (spec 2042 §5.13).
+export {
+  MAX_DATA_PAYLOADS_PER_TURN,
+  TurnDataCollector,
+  type CollectOutcome,
+} from './turnDataCollector.js';
 export {
   setMcpPrivacyBypassServers,
   isMcpServerPrivacyBypassed,

@@ -13,6 +13,7 @@
 import type {
   CaptureDisclosure,
   Contribution,
+  DataPayload,
   PrivacyReceipt,
   RecalledContext,
   Speaker,
@@ -27,9 +28,11 @@ export type {
   AgentSpeaker,
   Contribution,
   ContributionStatus,
+  DataPayload,
   Speaker,
   SystemNotice,
   SystemSpeaker,
+  TableData,
 } from '@omadia/plugin-api';
 export type { AiDisclosure } from './aiDisclosure.js';
 
@@ -96,6 +99,22 @@ export interface SemanticAnswer {
    * contribution is shown as failed, never dropped.
    */
   contributions?: readonly Contribution[];
+
+  /**
+   * #2085 — side-channel data (spec 2042 §5.13): what a data action the
+   * agent ran returned, in order, under the agent's identity. No model saw
+   * it. `text` already carries a plain markdown rendering of it, so a
+   * connector that ignores this field still shows the data; one that renders
+   * `data` natively shows `textWithoutData` beside it instead.
+   */
+  data?: readonly DataPayload[];
+
+  /**
+   * #2085 — `text` without the rendering of `data` (AI disclosure included).
+   * Present exactly when `data` is. A connector that renders `data` itself
+   * shows this instead of `text`, so the data does not appear twice.
+   */
+  textWithoutData?: string;
 
   /** Visual verifier state — connectors may render as badge / icon / colour. */
   verifier?: VerifierBadge;

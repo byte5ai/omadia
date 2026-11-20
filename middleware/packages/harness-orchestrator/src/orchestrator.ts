@@ -41,7 +41,13 @@ import {
   screeningEnabled,
   UNSCREENED_MARKER,
   DEFAULT_SECURITY_POSTURE_POLICY,
+  withDataText,
 } from '@omadia/channel-sdk';
+import {
+  TurnDataCollector,
+  withSideChannelData,
+  withTextWithoutData,
+} from './turnDataCollector.js';
 import {
   screenProvenance,
   resolveEffectivePosture,
@@ -167,6 +173,7 @@ import type {
   SessionBriefingService,
   TurnMaskedView,
   TurnReceiptStore,
+  DataPayload,
 } from '@omadia/plugin-api';
 import { responseGuardProfileFor } from './agentQuality.js';
 import {
@@ -3044,6 +3051,8 @@ export class Orchestrator {
   private readonly aiDisclosure: AiDisclosureSetup | undefined;
   /** #644 — first-turn-per-scope fold-dedup store (see OrchestratorOptions). */
   private readonly disclosureSeen: DisclosureSeenStore;
+  /** #2085 — one side-channel collector per verifier-bound request. */
+  private readonly requestDataCollectors = new WeakMap<ToolReplayLedger, TurnDataCollector>();
   /** #579 — org security posture setup (undefined → shipping default `auto`). */
   private readonly securityPosture: SecurityPostureSetup | undefined;
   /** #579 — late-bound screener factory (see OrchestratorOptions). */
@@ -4800,14 +4809,18 @@ export class Orchestrator {
     // OB-81 — a row written inside the turn; a deferred row's disclosure comes
     // with its commit instead (`finishRequestDone`).
     const captureDisclosure = this.turnRecords.takeCaptureDisclosure(expanded.turnId);
+    const data = this.attachSideChannelData();
     const delivered = {
       ...expanded,
-      answer: localizeRefusalNotice(expanded.answer, this.turnLocale(input)),
+      answer: withDataText(
+        localizeRefusalNotice(expanded.answer, this.turnLocale(input)),
+        data,
+      ),
       answerVerbosity: this.resolveAnswerVerbosity(input),
       ...(captureDisclosure ? { captureDisclosure } : {}),
     };
     const aiDisclosure = this.resolveTurnDisclosure(input);
-    if (!aiDisclosure) return delivered;
+    if (!aiDisclosure) return withTextWithoutData(delivered, data);
     const { text } = applyAiDisclosure(delivered.answer, {
       disclosure: aiDisclosure,
       ...(input.sessionScope
@@ -4815,7 +4828,36 @@ export class Orchestrator {
         : {}),
       seen: requestDisclosureSeen(this.disclosureSeen, ledger),
     });
-    return { ...delivered, answer: text, aiDisclosure };
+    return withTextWithoutData({ ...delivered, answer: text, aiDisclosure }, data);
+  }
+
+  /**
+   * #2085 — THE place side-channel data joins a streamed answer (spec 2042
+   * §5.13): what `deliver_data` collected during this turn, read from the
+   * live turn context (`discloseDoneEvent` runs inside the turn's generator
+   * scope). `undefined` outside a turn or when nothing was delivered — the
+   * `done` then stays byte-identical. The buffered path puts the same
+   * collector's payloads on `ChatTurnResult.data` (`runTurnCore`) and
+   * `toSemanticAnswer` renders them. The emitter (#2045) attaches here.
+   */
+  private attachSideChannelData(): readonly DataPayload[] | undefined {
+    const data = turnContext.current()?.dataSideChannel?.list();
+    return data && data.length > 0 ? data : undefined;
+  }
+
+  /**
+   * #2085 — one collector per request: a verifier re-entry replays
+   * `deliver_data` from the request's ledger without running it, so its
+   * answer must find the data the first pass delivered. A turn without a
+   * bound ledger gets its own.
+   */
+  private dataCollectorFor(boundLedger: ToolReplayLedger | undefined): TurnDataCollector {
+    if (!boundLedger) return new TurnDataCollector();
+    const known = this.requestDataCollectors.get(boundLedger);
+    if (known) return known;
+    const created = new TurnDataCollector();
+    this.requestDataCollectors.set(boundLedger, created);
+    return created;
   }
 
   /**
@@ -5505,12 +5547,15 @@ export class Orchestrator {
       ? { handle: privacyHandle, turnId, input, bound }
       : undefined;
 
-    return turnContext.run(
+    // #2085 — the turn's side-channel data, put on the result below.
+    const dataSideChannel = this.dataCollectorFor(boundLedger);
+    const core = await turnContext.run(
       {
         turnId,
         turnDate: today(),
         // #2043 — what this turn's tool handlers are told about their caller.
         toolCall: buildToolCallContext(this.agentId, input),
+        dataSideChannel,
         // Per-orchestrator isolation: expose THIS Agent's identity to the
         // per-call MemoryAccessor (plugin/sub-agent memory namespacing).
         agentSlug: this.agentId,
@@ -5729,6 +5774,7 @@ export class Orchestrator {
         return result;
       }),
     );
+    return withSideChannelData(core, dataSideChannel);
   }
 
   /** Run a turn body; a throw that escapes it never reached the finalize
@@ -7821,6 +7867,8 @@ export class Orchestrator {
       turnId,
       turnDate: today(),
       toolCall: buildToolCallContext(this.agentId, input),
+      // #2085 — read back by `attachSideChannelData` on the `done` event.
+      dataSideChannel: this.dataCollectorFor(boundLedger),
       // Per-orchestrator isolation: see the matching `turnContext.run` above.
       agentSlug: this.agentId,
       // The streaming path never set `userId` — W2-1 needs it, because the MCP

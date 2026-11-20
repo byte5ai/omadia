@@ -8,6 +8,7 @@ import type {
   VerifierStore,
   VerifierVerdict,
 } from '@omadia/verifier';
+import { withoutDataText } from '@omadia/channel-sdk';
 import { runWithUsageContext } from '@omadia/usage-telemetry';
 import { bindVerdictToClaims } from '@omadia/verifier';
 import { privacyShieldVerdict, systemDataVerdict } from './verifierDelivery.js';
@@ -119,7 +120,7 @@ export class VerifierJudge {
   async verdictFor(
     runId: string,
     input: ChatTurnInput,
-    turn: Pick<ChatTurnResult, 'answer' | 'runTrace' | 'answerSource'>,
+    turn: Pick<ChatTurnResult, 'answer' | 'runTrace' | 'answerSource' | 'data'>,
     egress: PrivacyEgressContinuation | undefined,
   ): Promise<VerifierVerdict | undefined> {
     const run = this.noteRun(runId, turn);
@@ -133,10 +134,12 @@ export class VerifierJudge {
     }
     // A server-rendered answer: the pipeline checks the prose its model
     // wrote, never `turn.answer`, which holds the rendered real values.
+    // #2085 — likewise side-channel data: a streamed `done` carries its
+    // rendering in `answer`; those rows are system data, never checked.
     const answer =
       gate.renderedProse === true && gate.privacy !== undefined
         ? await this.restoredProse(gate.privacy)
-        : turn.answer;
+        : withoutDataText(turn.answer, turn.data);
     // #1571 — the verifier's model calls run after the turn's own context
     // closed; their token-usage rows carry the request's turn id explicitly.
     const verify = (): Promise<VerifierVerdict> =>

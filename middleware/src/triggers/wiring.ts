@@ -13,6 +13,7 @@ import { systemAuditActor } from '../auth/adminAuditLog.js';
 import type { ProactiveSenderRegistry } from '../plugins/routines/proactiveSender.js';
 import { routineTurnContext } from '../plugins/routines/routineTurnContext.js';
 import { createDataActionRunner, type ReadToolsOf } from './dataActions.js';
+import { createDeliverDataHandler, DELIVER_DATA_TOOL_NAME, deliverDataToolSpec } from './deliverDataTool.js';
 import { createKernelExecutors, type AgentChat } from './kernelExecutors.js';
 import type { RoutineTriggerScheduler } from './routineTriggers.js';
 import { createProactiveGate, RecipientProfileStore, type RecipientProfile } from './proactiveGate.js';
@@ -148,6 +149,12 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
       dataActions,
       gate,
       agentChat: deps.agentChat,
+      speakerOf: (slug) => {
+        const agent = deps.agentBySlug(slug);
+        return agent
+          ? { kind: 'agent', agentId: agent.id, slug: agent.slug, displayName: agent.displayName ?? agent.slug }
+          : undefined;
+      },
       routineTurn: async (trigger) => {
         const routines = deps.routines?.();
         return routines
@@ -185,6 +192,17 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
       }),
     );
   }
+
+  // #2085 — the side channel inside a person's turn (spec 2042 §5.13). Not
+  // tied to TRIGGERS_ENABLED: it is how an answer shows data, not a trigger.
+  // Offered on every orchestrator turn (the only place a collector exists);
+  // an agent without own read tools gets an honest refusal from the handler.
+  disposers.push(
+    deps.registerNativeTool(DELIVER_DATA_TOOL_NAME, createDeliverDataHandler({ dataActions }), {
+      spec: deliverDataToolSpec,
+      isAvailable: () => turnContext.current()?.dataSideChannel !== undefined,
+    }),
+  );
 
   let purgeTimer: ReturnType<typeof setInterval> | undefined;
   let routineTimer: ReturnType<typeof setInterval> | undefined;

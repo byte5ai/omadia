@@ -9,13 +9,13 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import type { ChatTurnInput, SemanticAnswer } from '@omadia/channel-sdk';
+import { renderTableText, type ChatTurnInput, type SemanticAnswer } from '@omadia/channel-sdk';
 
 import { recordUsage } from '../packages/harness-usage-telemetry/src/index.js';
 import { ConductorEventRouter } from '../src/conductor/eventRouter.js';
-import { columnsOf, createDataActionRunner, extractRows } from '../src/triggers/dataActions.js';
+import { columnsOf, createDataActionRunner, extractRows, toTableData } from '../src/triggers/dataActions.js';
 import { createKernelExecutors, NOTHING_TO_SAY, triggerTurnHint } from '../src/triggers/kernelExecutors.js';
-import { parseQuietHours, quietUntil, recipientKey, renderDataTable } from '../src/triggers/proactiveGate.js';
+import { parseQuietHours, quietUntil, recipientKey } from '../src/triggers/proactiveGate.js';
 import type { TriggerStore } from '../src/triggers/triggerStore.js';
 import { conversationIdOf } from '../src/triggers/triggerTools.js';
 import type { Trigger } from '../src/triggers/types.js';
@@ -113,8 +113,10 @@ describe('#2085 data actions', () => {
   });
 
   it('renders a table for the side channel without a model', () => {
-    const md = renderDataTable([{ id: 'R|1', note: 'a\nb' }], ['id', 'note'], 'Offen');
-    assert.equal(md, '**Offen**\n\n| id | note |\n| --- | --- |\n| R\\|1 | a b |');
+    const table = toTableData([{ id: 'R|1', note: 'a\nb' }], ['id', 'note'], 'Offen');
+    assert.deepEqual(table, { kind: 'table', columns: ['id', 'note'], rows: [['R|1', 'a\nb']], caption: 'Offen' });
+    assert.equal(renderTableText(table), '**Offen**\n\n| id | note |\n| --- | --- |\n| R\\|1 | a b |');
+    assert.deepEqual(toTableData([1, 'x'], [], undefined), { kind: 'table', columns: ['value'], rows: [[1], ['x']] });
   });
 });
 

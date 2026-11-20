@@ -5080,7 +5080,14 @@ async function main(): Promise<void> {
       leaseMs: config.TRIGGER_LEASE_MS,
       agentBySlug: (slug) => {
         const agent = getRegistry()?.get(slug)?.agent;
-        return agent ? { id: agent.id, slug: agent.slug, enabled: agent.status === 'enabled' } : undefined;
+        return agent
+          ? {
+              id: agent.id,
+              slug: agent.slug,
+              enabled: agent.status === 'enabled',
+              displayName: agent.identityName?.trim() || agent.slug,
+            }
+          : undefined;
       },
       agentChat: (slug) => getRegistry()?.get(slug)?.built.bundle.agent,
       // The agent's OWN read tools: granted plugin tools without write

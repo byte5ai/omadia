@@ -1,6 +1,7 @@
 import type {
   CaptureDisclosure,
   ChannelKind,
+  DataPayload,
   PrivacyReceipt,
   RecalledContext,
 } from '@omadia/plugin-api';
@@ -878,6 +879,14 @@ export interface ChatTurnResult {
    */
   delegatedAnswer?: DelegatedAnswer;
   /**
+   * #2085 — side-channel data this turn delivered (spec 2042 §5.13), from
+   * the turn's data collector, never from model output. `answer` stays the
+   * agent's prose: `toSemanticAnswer` renders the data into
+   * `SemanticAnswer.text` and forwards `data` + `textWithoutData`. Omitted
+   * when the turn delivered none.
+   */
+  data?: readonly DataPayload[];
+  /**
    * #445 — sticky Direct Line indicator for this turn. Set by the harness in
    * `executeDirectLine`; `toSemanticAnswer` forwards it to
    * `SemanticAnswer.directLineSession`. Present on every turn while the
@@ -1271,6 +1280,15 @@ export type ChatStreamEvent =
        * The orchestrator cannot suppress or reword it.
        */
       delegatedAnswer?: DelegatedAnswer;
+      /**
+       * #2085 — side-channel data (spec 2042 §5.13); see
+       * `SemanticAnswer.data`. `answer` above already holds its markdown
+       * rendering (after the prose, before the disclosure fold);
+       * `textWithoutData` is `answer` without it. Both omitted when the turn
+       * delivered no data.
+       */
+      data?: readonly DataPayload[];
+      textWithoutData?: string;
       /**
        * #445 — sticky Direct Line indicator; see ChatTurnResult.directLineSession.
        * Rides the existing `done` event exactly like `delegatedAnswer` rather

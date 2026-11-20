@@ -9,6 +9,8 @@
  * model gets only a status (row count, columns).
  */
 
+import type { TableData } from '@omadia/plugin-api';
+
 import type { DataActionResult } from './triggerChain.js';
 import type { DataActionSpec } from './types.js';
 
@@ -87,4 +89,33 @@ export function createDataActionRunner(readToolsOf: ReadToolsOf): DataActionRunn
       return { ok: true, rows: extracted.rows, columns: columnsOf(extracted.rows), raw: extracted.parsed };
     },
   };
+}
+
+/** Rows a side-channel table carries; the rest is counted, not sent. */
+export const MAX_TABLE_ROWS = 500;
+
+type Cell = string | number | boolean | null;
+
+const toCell = (v: unknown): Cell => {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return v;
+  return JSON.stringify(v);
+};
+
+/**
+ * A data action's rows as a side-channel table (spec 2042 §5.13): the rows go
+ * from the tool to the people, never through a model. Non-object rows become
+ * a one-column `value` table; a result over {@link MAX_TABLE_ROWS} is cut and
+ * the caption says how many rows there were.
+ */
+export function toTableData(rows: readonly unknown[], columns: readonly string[], title: string | undefined): TableData {
+  const objectRows = rows.some(isRecord);
+  const cols = objectRows && columns.length > 0 ? [...columns] : ['value'];
+  const kept = rows.slice(0, MAX_TABLE_ROWS).map((row): Cell[] => {
+    if (!objectRows || !isRecord(row)) return cols.length === 1 && cols[0] === 'value' ? [toCell(row)] : cols.map(() => null);
+    return cols.map((c) => toCell(row[c]));
+  });
+  const cut = rows.length > MAX_TABLE_ROWS ? ` (${String(MAX_TABLE_ROWS)} / ${String(rows.length)})` : '';
+  const caption = title ? `${title}${cut}` : cut.trim();
+  return { kind: 'table', columns: cols, rows: kept, ...(caption ? { caption } : {}) };
 }
