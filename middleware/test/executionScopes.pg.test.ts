@@ -528,6 +528,11 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       const finn = await activeProcess(undefined, 'finn');
       const maraId = agents.get('mara')!.id;
 
+      // A process id names its agent (what the operator route asks without agent_slug).
+      assert.deepEqual(await store.agentsOfProcess(mara1.processId), [maraId]);
+      assert.deepEqual(await store.agentsOfProcess(finn.processId), [agents.get('finn')!.id]);
+      assert.deepEqual(await store.agentsOfProcess('no-such-process'), []);
+
       const processSwitch = await store.setKillSwitch({ level: 'process', agentId: maraId, processId: mara1.processId, reason: 'runaway', setBy: 'op@example.test' });
       assert.equal(code(await engine.authorize(check(mara1.scope.id))), 'kill_switch');
       assert.equal((await engine.authorize(check(mara2.scope.id))).outcome, 'authorized');

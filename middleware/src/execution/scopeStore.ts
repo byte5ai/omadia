@@ -296,6 +296,16 @@ export class ExecutionScopeStore {
     return res.rows.map(toScope);
   }
 
+  /** The agents that ever held a scope of this process id, across plugins.
+   *  A process id is unique per plugin only, so more than one is possible. */
+  async agentsOfProcess(processId: string): Promise<string[]> {
+    const res = await this.pool.query<{ agent_id: string }>(
+      'SELECT DISTINCT agent_id FROM execution_scopes WHERE process_id = $1 ORDER BY agent_id',
+      [processId],
+    );
+    return res.rows.map((r) => r.agent_id);
+  }
+
   /** Open scopes of every agent, for the operator. */
   async listOpenScopes(limit: number): Promise<ScopeRow[]> {
     const res = await this.pool.query<ScopeDbRow>(

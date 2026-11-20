@@ -36,6 +36,18 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Stopping a single process no longer needs the agent's name (#2090, epic #2043)
+
+- `POST /api/v1/operator/execution/kill-switches` with `level: "process"`
+  answered `404 no such agent` when `agent_slug` was left out. The kernel now
+  takes the agent from the process's execution scopes. `agent_slug` stays
+  optional and is only needed when two plugins use the same process id for
+  different agents: that case answers `400 execution.ambiguous_process` and
+  names the agents. A process id without any execution scope answers
+  `404 execution.unknown_process`.
+- `level: "agent"` without `agent_slug` answers `400 execution.invalid`
+  ("agent_slug is required for level agent") instead of `404`.
+
 ### Fixed — A subscription could be turned up to every message without the channel being ready (#2089, epic #2043)
 
 - A process that listened only for messages addressing its facilitator could
