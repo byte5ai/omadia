@@ -441,43 +441,6 @@ export type {
   FetchLike,
 } from './securityScreener.js';
 
-// #332 Layer 2 — Direct Line directive parsing & target resolution (exported
-// for unit coverage and reuse by deterministic routers / the Conductor).
-export {
-  parseDirectLineDirective,
-  resolveDirectLineTarget,
-  directLineLabel,
-  DEFAULT_DIRECTIVE_PREFIX,
-} from './directLine.js';
-export type {
-  DirectLineDirective,
-  DirectLineCandidate,
-  DirectLineResolution,
-  DirectLineMode,
-} from './directLine.js';
-
-// #445 — sticky Direct Line: the pure target-selection layer. Exported so the
-// decision table, the scope allow-gate and the binding store can be unit-tested
-// without an Orchestrator, and so the store can be constructed once at boot and
-// injected (it must outlive any single Orchestrator instance).
-export {
-  classifyStickyScope,
-  decideDirectLineTurn,
-  isDirectLineExitMessage,
-  stickyKeyFor,
-  InMemoryDirectLineStickyStore,
-  DIRECT_LINE_EXIT_TOKENS,
-  STICKY_IDLE_TTL_MS,
-  STICKY_MAX_BINDINGS,
-} from './directLineSticky.js';
-export type {
-  DirectLineBinding,
-  DirectLineDecision,
-  DirectLineStickyStore,
-  StickyScopeClassification,
-  StickyScopeRefusal,
-} from './directLineSticky.js';
-
 // Round-loop guard — exported so it can be unit-tested in isolation and reused
 // by other agentic loops (e.g. the Builder).
 export { LoopGuard, canonicalize } from './loopGuard.js';

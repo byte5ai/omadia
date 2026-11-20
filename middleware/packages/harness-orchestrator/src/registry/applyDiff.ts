@@ -370,10 +370,6 @@ export function buildForAgent(
       ...(runtime.cliTurnSeconds !== undefined
         ? { cliTurnSeconds: runtime.cliTurnSeconds }
         : {}),
-      // #445 — registry-managed Agents inherit the platform sticky flag, so
-      // the knob means the same thing for the legacy default Agent and for
-      // every Agent the registry builds.
-      ...(runtime.directLineSticky ? { directLineSticky: true } : {}),
       ...(personaSkills?.length ? { personaSkills } : {}),
       // #914 — the agent's authored behaviour text. Blank/absent falls
       // through to the platform-wide assistant identity, so an agent that

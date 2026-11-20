@@ -89,7 +89,6 @@ import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatSessionStore } from './chatSessionStore.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { Orchestrator, AiDisclosureSetup } from './orchestrator.js';
-import { InMemoryDirectLineStickyStore } from './directLineSticky.js';
 import {
   sharedMcpInputReplayer,
   sharedPendingMcpInputStore,
@@ -1263,17 +1262,10 @@ export async function activate(
     // the guards stay inert; see `OrchestratorDeps.audienceGrants`.
     ...(audienceGrants ? { audienceGrants } : {}),
     // #644 — one fold-dedup store for the whole process, shared by every Agent
-    // the registry builds (same lifetime rationale as `directLineStickyStore`
-    // below): a per-instance store would re-fold the marking into a live
-    // conversation whenever an unrelated config tweak rebuilt the Agent.
+    // the registry builds: a per-instance store would re-fold the marking into
+    // a live conversation whenever an unrelated config tweak rebuilt the Agent.
     aiDisclosureSeenStore: new InMemoryDisclosureSeenStore(),
     ...(turnHookRegistry ? { turnHookRegistry } : {}),
-    // #445 — one binding store for the whole process, shared by every Agent
-    // the registry builds and rebuilt by none of them. Constructed
-    // unconditionally: it is an empty Map until the flag is on, and holding it
-    // in deps means toggling the flag at runtime never strands a binding in a
-    // store that has been thrown away.
-    directLineStickyStore: new InMemoryDirectLineStickyStore(),
     runTraceStats,
     // W2-1 (#544) — the SAME store instance the kernel's `McpManager` parks
     // into, plus the replayer the kernel registered once it had a manager and a
@@ -1330,24 +1322,11 @@ export async function activate(
     );
   }
 
-  // #445 — sticky Direct Line (see `readBooleanSetting` for why it is read
-  // defensively).
-  const directLineSticky = readBooleanSetting(
-    ctx.config.get<unknown>('orchestrator_direct_line_sticky'),
-  );
-  if (directLineSticky) {
-    console.log(
-      '[harness-orchestrator] direct-line sticky mode ON — a bare `#<agent>` binds the ' +
-        'conversation until `#end`.',
-    );
-  }
-
   const built = buildOrchestratorForAgent(
     {
       agentId: 'default',
       model,
       ...(modelRouting ? { modelRouting } : {}),
-      ...(directLineSticky ? { directLineSticky: true } : {}),
       maxTokens,
       maxToolIterations: maxIterations,
       ...(maxTurnSeconds > 0 ? { maxTurnSeconds } : {}),
@@ -1435,7 +1414,6 @@ export async function activate(
         defaultRuntimeConfig: {
           model,
           ...(modelRouting ? { modelRouting } : {}),
-          ...(directLineSticky ? { directLineSticky: true } : {}),
           maxTokens,
           maxToolIterations: maxIterations,
           ...(maxTurnSeconds > 0 ? { maxTurnSeconds } : {}),

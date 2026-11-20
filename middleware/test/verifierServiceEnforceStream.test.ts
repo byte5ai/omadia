@@ -158,9 +158,7 @@ describe('VerifierService.chatStream — enforce withholds an answer it found wr
       fileAttachments: [{ kind: 'file', url: 'https://files.example/u.xlsx', altText: 'Umsatz', mediaType: 'application/vnd.ms-excel' }],
       followUpOptions: [{ label: 'Q4?', prompt: `Und Q4 nach ${AMOUNT_TEXT}?` }],
       maskedValues: [AMOUNT_TEXT],
-      delegatedAnswer: { agentId: 'a', label: 'Buchhaltung', text: AMOUNT_TEXT, status: 'success' },
       agentsConsulted: [{ label: 'Buchhaltung', status: 'success', toolCalls: 1 }],
-      directLineSession: { active: false },
       // The orchestrator also sets these two, outside the SDK type.
       ...({ palaiaExcerpt: { text: AMOUNT_TEXT }, autoPromotedMkId: 'mk-1' } as unknown as Partial<DoneEvent>),
     });
@@ -176,7 +174,6 @@ describe('VerifierService.chatStream — enforce withholds an answer it found wr
       'fileAttachments',
       'followUpOptions',
       'maskedValues',
-      'delegatedAnswer',
       'palaiaExcerpt',
       'autoPromotedMkId',
     ]) {
@@ -187,7 +184,6 @@ describe('VerifierService.chatStream — enforce withholds an answer it found wr
     assert.equal(withheld.receiptId, 'r-1');
     assert.equal(withheld.toolCalls, 1);
     assert.deepEqual(withheld.agentsConsulted, terminal.agentsConsulted);
-    assert.deepEqual(withheld.directLineSession, { active: false });
 
     // The stream path records the block, runs ONE correction retry (here
     // contradicted again, so the notice goes out) and stores the final

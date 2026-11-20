@@ -4,9 +4,7 @@ import type { AnswerVerbosityInfo } from './agentIdentity';
 import type {
   AgentConsultation,
   ChatSession,
-  DelegatedAnswer,
   DiagramAttachment,
-  DirectLineSessionState,
   FollowUpOption,
   KgWalkEdge,
   KgWalkNode,
@@ -161,10 +159,6 @@ export type ChatStreamEvent =
       agentsConsulted?: AgentConsultation[];
       /** Phase 3 — see `Message.answerVerbosity`. */
       answerVerbosity?: AnswerVerbosityInfo;
-      /** #332 Layer 2 (gap-closure) — see `Message.delegatedAnswer`. */
-      delegatedAnswer?: DelegatedAnswer;
-      /** #445 — see `Message.directLineSession`. */
-      directLineSession?: DirectLineSessionState;
       /**
        * #1094 — `true` when the turn threw AFTER a tool call had already
        * committed. The terminal stays `done` on purpose (an `error` would make
@@ -470,16 +464,6 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           ? { agentsConsulted: event.agentsConsulted }
           : {}),
         ...(event.answerVerbosity ? { answerVerbosity: event.answerVerbosity } : {}),
-        ...(event.delegatedAnswer
-          ? { delegatedAnswer: event.delegatedAnswer }
-          : {}),
-        // #445 — guard on PRESENCE, never on `.active`. `{active:false}` is
-        // precisely the payload that tells the banner a binding has ended;
-        // dropping it would leave a stale "you are talking to X" on screen
-        // after a restart, a registry rebuild or a TTL expiry.
-        ...(event.directLineSession
-          ? { directLineSession: event.directLineSession }
-          : {}),
         // Enforce-mode verifier: the verdict rides `done`, and a withheld
         // answer is marked so the bubble says so (`VerifierBlockedNotice`)
         // instead of presenting the notice as an ordinary reply. Not an

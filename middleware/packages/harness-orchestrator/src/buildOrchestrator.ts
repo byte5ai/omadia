@@ -64,7 +64,6 @@ import {
   type SecurityPostureSetup,
   type SecurityAuditEvent,
 } from './securityScreener.js';
-import type { DirectLineStickyStore } from './directLineSticky.js';
 import type {
   McpInputReplayer,
   PendingMcpInputStore,
@@ -145,8 +144,6 @@ export interface AgentRuntimeConfig {
    * silently overruled by a stale deployment variable.
    */
   readonly cliTurnSeconds?: number;
-  /** #445 — sticky Direct Line for this Agent (see {@link OrchestratorOptions}). */
-  readonly directLineSticky?: boolean;
   /** Wave 8 — this Agent's direct-answer persona-skill candidates, resolved
    *  by the caller from `agent_persona_skills` (see {@link OrchestratorOptions}).
    *  Per-agent, unlike the platform-shared `OrchestratorDeps` fields below. */
@@ -282,25 +279,18 @@ export interface OrchestratorDeps {
   readonly nativeToolRegistry: NativeToolRegistry;
   readonly nudgeRegistry: NudgeRegistry;
   /**
-   * #445 — process-shared sticky Direct Line binding store. Deps, not
-   * per-Agent config, because the registry REPLACES an Orchestrator instance
-   * on any config diff: a per-instance store would silently unbind every live
-   * conversation whenever an operator tweaked something unrelated.
-   */
-  readonly directLineStickyStore?: DirectLineStickyStore;
-  /**
    * #1082 — process-shared run-trace / capture tallies, handed to every
-   * `SessionLogger` this factory builds. Deps for the SAME reason as
-   * `directLineStickyStore`: a per-instance tally would split the counts per
-   * Agent and reset whenever a config diff rebuilt one. Absent ⇒ each logger
-   * keeps its own.
+   * `SessionLogger` this factory builds. Deps, not per-Agent config, because
+   * the registry REPLACES an Orchestrator instance on any config diff: a
+   * per-instance tally would split the counts per Agent and reset whenever a
+   * config diff rebuilt one. Absent ⇒ each logger keeps its own.
    */
   readonly runTraceStats?: RunTraceOutcomeStats;
   /**
    * W2-1 (#544) — process-shared MCP pending-input store + replayer.
    *
-   * Deps, not per-Agent config, for the SAME reason as
-   * `directLineStickyStore`: the registry replaces an Orchestrator instance on
+   * Deps, not per-Agent config, for the SAME reason as `runTraceStats`: the
+   * registry replaces an Orchestrator instance on
    * any config diff, and a per-instance store would drop every parked call
    * whenever an operator changed something unrelated — after the user had
    * already seen the card. Must be the same store instance the kernel's
@@ -420,7 +410,7 @@ export interface OrchestratorDeps {
   readonly aiDisclosure?: AiDisclosureSetup;
   /**
    * #644 — process-shared first-turn-per-scope fold-dedup store. Deps, not
-   * per-Agent config, for the SAME reason as `directLineStickyStore`: the
+   * per-Agent config, for the SAME reason as `runTraceStats`: the
    * registry replaces an Orchestrator instance on any config diff, and a
    * per-instance store would re-fold the marking into every live conversation
    * whenever an operator changed something unrelated.
@@ -896,10 +886,6 @@ export function buildOrchestratorForAgent(
     archetypeOmissions: { memory: omits('memory'), toolGrant: omits('tool_grant') },
     ...(config.fallbackVisionSupported !== undefined
       ? { fallbackVisionSupported: config.fallbackVisionSupported }
-      : {}),
-    ...(config.directLineSticky ? { directLineSticky: true } : {}),
-    ...(deps.directLineStickyStore
-      ? { directLineStickyStore: deps.directLineStickyStore }
       : {}),
     ...(config.personaSkills?.length && !omits('persona_skill')
       ? { personaSkills: config.personaSkills }

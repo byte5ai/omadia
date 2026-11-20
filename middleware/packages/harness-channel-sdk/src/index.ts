@@ -300,8 +300,6 @@ export type {
   OutgoingMcpInputForm,
   CaptureDisclosure,
   AgentConsultation,
-  DelegatedAnswer,
-  DirectLineSessionState,
   // #2045 — speaker, system notices, contributions (types live in plugin-api).
   AgentSpeaker,
   Contribution,

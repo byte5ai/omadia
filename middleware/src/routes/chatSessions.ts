@@ -104,22 +104,8 @@ const MessageSchema = z.object({
   error: z.boolean().optional(),
   startedAt: z.number(),
   finishedAt: z.number().optional(),
-  // #445 — persist the sticky Direct-Line indicator so the banner survives a
-  // reload or a cross-device resume. zod strips unknown keys, so without this
-  // the field would be silently dropped by the client's own periodic PUT.
-  directLineSession: z
-    .object({
-      active: z.boolean(),
-      agentId: z.string().optional(),
-      label: z.string().optional(),
-      transition: z
-        .enum(['entered', 'switched', 'continued', 'left', 'unavailable', 'refused'])
-        .optional(),
-      refusedReason: z.enum(['no-scope', 'shared-scope', 'synthetic-scope']).optional(),
-    })
-    .optional(),
   // #1071 — marker of a server-written routine delivery. Accepted so a
-  // client round-trip does not strip it (same trap as #445 above); the store
+  // client round-trip does not strip it (zod strips unknown keys); the store
   // trusts it only when the server's own copy carries it.
   proactive: z
     .object({

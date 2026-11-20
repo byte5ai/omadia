@@ -24,8 +24,6 @@ import {
   type AnswerVerbosityInfo,
   type ChatTurnInput,
   type ChatTurnResult,
-  type DelegatedAnswer,
-  type DirectLineSessionState,
   type DiagramAttachment,
   type OutgoingFileAttachment,
   type PendingMcpInputCard,
@@ -206,22 +204,6 @@ import {
   type TurnWireView,
 } from './privacyEgress.js';
 import { RunTraceCollector, shareEntityRefs, type InvocationHandle } from './runTraceCollector.js';
-import {
-  resolveDirectLineTarget,
-  directLineLabel,
-  type DirectLineCandidate,
-  type DirectLineMode,
-} from './directLine.js';
-import {
-  DIRECT_LINE_EXIT_TOKENS,
-  InMemoryDirectLineStickyStore,
-  classifyStickyScope,
-  decideDirectLineTurn,
-  type DirectLineBinding,
-  type DirectLineDecision,
-  type DirectLineStickyStore,
-  type StickyScopeClassification,
-} from './directLineSticky.js';
 import { isOfferedThisTurn, type NativeToolRegistry } from './nativeToolRegistry.js';
 // #1102 — type-only, so no runtime cycle: the CLI agent owns the card-drain
 // shape; `drainCliTurnCards` returns it verbatim onto the `done` event.
@@ -681,37 +663,9 @@ export interface OrchestratorOptions {
    */
   archetypeOmissions?: { readonly memory?: boolean; readonly toolGrant?: boolean };
   /**
-   * #332 Layer 2 — Direct Line delivery policy. `'strict'` (default) relays a
-   * directed specialist's verbatim answer with no orchestrator generation;
-   * `'guarded'` additionally lets the orchestrator append an attributed,
-   * additive note (never a redaction). Absent → `'strict'`.
-   */
-  directLineMode?: DirectLineMode;
-  /**
-   * #332 Layer 2 — directive prefix the user puts before a specialist name
-   * (`@omadia #strategist …`). Absent → `'#'`. Must survive the channel's own
-   * mention/markup parsing (see directLine.ts).
-   */
-  directLinePrefix?: string;
-  /**
-   * #445 — sticky Direct Line. When true, a bare `#<agent>` binds the
-   * conversation to that specialist until the user sends `#end` /
-   * `#orchestrator`. Off by default: while it is off, `executeDirectLine`
-   * behaves byte-for-byte as #332 did.
-   */
-  directLineSticky?: boolean;
-  /**
-   * #445 — binding store. Injected so it OUTLIVES this Orchestrator instance:
-   * the registry replaces the instance on any config diff, and an instance
-   * field would silently unbind every live session on an unrelated operator
-   * tweak. Absent → a private instance (keeps `new Orchestrator({…})`
-   * unit-testable without boot wiring).
-   */
-  directLineStickyStore?: DirectLineStickyStore;
-  /**
    * #332 Layer 3 (gap-closure) — standing, per-orchestrator forced-delegation
    * obligation. When set to one of this orchestrator's whitelisted domain
-   * tool names, EVERY ordinary (non-direct-line) turn carries that turn's
+   * tool names, EVERY turn carries that turn's
    * obligation automatically — equivalent to the caller passing
    * `expectedDomainTool` on every `ChatTurnInput`, without requiring the
    * caller to wire it per turn. Opt-in; absent → no standing obligation (byte
@@ -833,7 +787,7 @@ export interface OrchestratorOptions {
    * orchestrator can drain the turn slot the manager just filled.
    *
    * Injected rather than owned because the manager lives kernel-side; same
-   * shape as the sticky Direct Line store (#445). Absent → the whole MRTR path
+   * shape as `aiDisclosureSeenStore`. Absent → the whole MRTR path
    * is inert and `callTool` degrades an `input_required` result to a plain tool
    * error, which is deliberate: half-wired is worse than off.
    */
@@ -1056,7 +1010,7 @@ export interface OrchestratorOptions {
   /**
    * #644 — first-turn-per-scope fold-dedup backing store. One instance per
    * process, shared across the Agents the registry builds (same lifetime
-   * rationale as `directLineStickyStore`), so re-building an Agent never
+   * rationale as `pendingMcpInput`), so re-building an Agent never
    * re-folds the marking into an ongoing conversation. Absent → a private
    * {@link InMemoryDisclosureSeenStore} (a restart re-folds, the fail-safe
    * direction).
@@ -1363,8 +1317,8 @@ export const PROMPT_MASK_BLOCKED_ANSWER = `${PROMPT_MASK_BLOCKED_ANSWER_DE} / ${
 /**
  * #1535 — the org policy `OMADIA_PRIVACY_FORCE_GUARDED` requires the Privacy
  * Shield, but no `privacy.redact@1` provider is running. Failure-closed like a
- * blocked mask: the turn is refused before the screener, a Direct Line
- * dispatch or the model see anything. A subclass, so every seam that already
+ * blocked mask: the turn is refused before the screener or the model see
+ * anything. A subclass, so every seam that already
  * turns a {@link PromptMaskBlockedError} into a refusal handles this one too.
  */
 export class PrivacyShieldRequiredError extends PromptMaskBlockedError {
@@ -2946,14 +2900,6 @@ export class Orchestrator {
   /** #2088 — see `OrchestratorOptions.archetypeOmissions`. */
   private readonly omitsMemory: boolean;
   private readonly grantedToolsOnly: boolean;
-  /** #332 Layer 2 — Direct Line delivery policy (default `'strict'`). */
-  private readonly directLineMode: DirectLineMode;
-  /** #332 Layer 2 — directive prefix (default `'#'`). */
-  private readonly directLinePrefix: string;
-  /** #445 — sticky Direct Line enabled for this Agent (default off). */
-  private readonly directLineSticky: boolean;
-  /** #445 — binding store; injected at boot so it survives a registry rebuild. */
-  private readonly directLineStickyStore: DirectLineStickyStore;
   /** #332 Layer 3 (gap-closure) — standing forced-consult tool name, if any. */
   private readonly requiredConsultToolName: string | undefined;
   // systemPrompt is rebuilt live per turn from `buildSystemPrompt()` —
@@ -3114,33 +3060,6 @@ export class Orchestrator {
     this.grantedPluginIds = options.grantedPluginIds
       ? new Set(options.grantedPluginIds)
       : undefined;
-    this.directLineMode = options.directLineMode ?? 'strict';
-    this.directLinePrefix = options.directLinePrefix ?? '#';
-    this.directLineSticky = options.directLineSticky ?? false;
-    this.directLineStickyStore =
-      options.directLineStickyStore ?? new InMemoryDirectLineStickyStore();
-    // #445 — a deployment whose specialist normalizes to a reserved exit token
-    // keeps its agent (resolution wins) and loses only that one exit spelling.
-    // Say so once at construction rather than leaving an operator to discover
-    // it from a conversation that will not end.
-    if (this.directLineSticky) {
-      for (const tool of this.domainToolsByName.values()) {
-        const label = directLineLabel(tool.agentId ?? tool.name);
-        for (const token of DIRECT_LINE_EXIT_TOKENS) {
-          if (
-            resolveDirectLineTarget(token, [
-              { toolName: tool.name, ...(tool.agentId ? { agentId: tool.agentId } : {}), label },
-            ]).kind === 'resolved'
-          ) {
-            console.warn(
-              `[orchestrator] direct-line sticky: specialist "${label}" shadows the reserved ` +
-                `exit token "${this.directLinePrefix}${token}" — use ` +
-                `"${this.directLinePrefix}${token === 'end' ? 'orchestrator' : 'end'}" to leave.`,
-            );
-          }
-        }
-      }
-    }
     this.requiredConsultToolName = options.requiredConsultToolName;
     this.knowledgeGraph = options.knowledgeGraph;
     this.knowledgeGraphTool = options.knowledgeGraph
@@ -4635,7 +4554,7 @@ export class Orchestrator {
   async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
     const turn = await this.runTurn(input);
     // Phase 3 — the level this answer was generated under, on EVERY answer
-    // this path returns (choice cards, direct-line, gate returns included),
+    // this path returns (choice cards and gate returns included),
     // so a channel can always offer the neighbouring steps. Resolved here,
     // once, at the boundary; the inner success path sets the same value.
     const verbosityResolved: ChatTurnResult = turn.answerVerbosity
@@ -5579,11 +5498,6 @@ export class Orchestrator {
         if (mcpInputReply && !screeningBlocked) {
           await this.applyMcpInputReplay(mcpInputReply, input, turnId);
         }
-        // #332 Layer 2 — Direct Line short-circuit (non-streaming / Teams
-        // path). A user-directed specialist turn is dispatched deterministically
-        // by the harness; the orchestrator LLM never runs. Still flows through
-        // the privacy-finalize block below so the verbatim answer is PII-masked
-        // (Pitfall 3) and a receipt is attached.
         // W5 memory-ACL — resolve THIS turn's memory binding exactly once, at
         // the turn's start, and hand the result down as an explicit parameter.
         // `input` is final here: the MCP-envelope normalisation and the
@@ -5593,21 +5507,12 @@ export class Orchestrator {
         // Commit-on-delivery: the request's `onAfterTurn` runs in the first
         // run's hook context, whichever pass the verifier delivers.
         this.bindRequestAfterTurn(boundLedger, turnId, input);
-        const direct = screeningBlocked
-          ? undefined
-          : await this.executeDirectLine(input, turnId, turnMemory);
         let result: ChatTurnResult | undefined;
         let promptMaskBlocked = false;
         try {
           // The screening gate could not mask: fail closed right here.
           if (screeningBlocked) throw screeningBlocked;
-          result = direct ?? (await this.chatInContext(input, turnId, turnMemory));
-          // #445 — an ordinary turn is by definition an UNBOUND turn (a live
-          // binding would have produced a sticky dispatch), so stamp the
-          // negative. Without it a client could never learn a binding ended.
-          if (!direct && this.directLineSticky) {
-            result = { ...result, directLineSession: { active: false } };
-          }
+          result = await this.chatInContext(input, turnId, turnMemory);
         } catch (err) {
           // #361 — failure-closed prompt masking: the prompt never reached
           // the model; answer with a generic privacy error instead of a raw
@@ -5629,8 +5534,8 @@ export class Orchestrator {
         }
         // The ONE authoritative check that a verifier re-entry stayed inside
         // the first run's results. The tool loop stops at the first refused
-        // miss (post-batch), but a direct-line dispatch and a sub-agent loop
-        // fold the refusal into an answer of their own — this catches those.
+        // miss (post-batch), but a sub-agent loop folds the refusal into an
+        // answer of its own — this catches that.
         // The pass's privacy scope is closed here, exactly once: the abort
         // below is not closed again by `closePassOnThrow`.
         if (result === undefined || toolReplayLedger.abortedTool !== undefined) {
@@ -5667,10 +5572,9 @@ export class Orchestrator {
         // the answer loop restored the text. For a server-rendered v4 answer
         // only the prose its model wrote — never the rendered rows, real
         // values the model never saw (`renderedVerifierHandOver`). Nothing for
-        // a Direct Line relay (restored inside executeDirectLine) or the
-        // privacy refusal. Nothing recorded ⇒ nothing to verify.
+        // the privacy refusal. Nothing recorded ⇒ nothing to verify.
         const verifierWireView =
-          direct !== undefined || promptMaskBlocked
+          promptMaskBlocked
             ? undefined
             : rendered !== undefined
               ? rendered.wireView
@@ -5700,8 +5604,7 @@ export class Orchestrator {
             turnId,
             input,
             wireView: verifierWireView,
-            // A Direct Line relay is the specialist's answer, never system data.
-            systemDataOnly: direct === undefined && rendered?.systemDataOnly === true,
+            systemDataOnly: rendered?.systemDataOnly === true,
             bound,
           });
           return result;
@@ -5818,48 +5721,6 @@ export class Orchestrator {
    *  fired its turn hooks, and its record is the verifier's to commit. */
   private isReentryPass(): boolean {
     return turnContext.current()?.toolReplayLedger?.mode === 'replay';
-  }
-
-  /**
-   * #361 — a direct-line turn's texts for its LLM-bound extra passes (fact
-   * extraction, the capture filter's scorer), masked through the turn's map
-   * (a direct-line turn masked nothing up to here): the user message like the
-   * turn's prompt, the restored specialist answer like a replayed answer —
-   * whatever `mask_user_prompt` says, since it carries real values. Without a
-   * handle, the texts as they are. Undefined when masking is `blocked`: both
-   * passes are then skipped (audited) rather than sent unmasked; the
-   * user-visible answer is unaffected.
-   */
-  private async directLineWireTexts(
-    privacy: PrivacyTurnHandle | undefined,
-    userMessage: string,
-    answer: string,
-  ): Promise<TurnMaskedView | undefined> {
-    try {
-      return {
-        userMessage: await maskPromptForWire(privacy, userMessage),
-        assistantAnswer: await maskReplayedAnswerForWire(privacy, answer),
-      };
-    } catch (err) {
-      if (!(err instanceof PromptMaskBlockedError)) throw err;
-      console.error(
-        `[orchestrator] direct-line fact extraction and scoring skipped — prompt masking blocked: ${err.message}`,
-      );
-      return undefined;
-    }
-  }
-
-  /** #361 — the direct-line fact-extraction prompt over the turn's masked
-   *  texts ({@link directLineWireTexts}), with the restorer snapshot that turns
-   *  extracted facts back into real values. Undefined without a fact
-   *  extractor, or when masking was `blocked`. */
-  private directLineFacts(
-    privacy: PrivacyTurnHandle | undefined,
-    wire: TurnMaskedView | undefined,
-  ): TurnFacts | undefined {
-    if (!this.factExtractor || wire === undefined) return undefined;
-    const restoreFacts = privacy?.snapshotPromptRestorer();
-    return { ...wire, ...(restoreFacts ? { restoreFacts } : {}) };
   }
 
   /**
@@ -6020,7 +5881,7 @@ export class Orchestrator {
   /**
    * #757 — persist the turn's privacy receipt into the kernel-provided
    * store, when one is wired. Called at every site that obtains a receipt
-   * from `finalizeTurn` (non-streaming, direct-line, streaming done) so a
+   * from `finalizeTurn` (non-streaming, streaming done) so a
    * receipt that reaches the user also reaches the record. Never fails the
    * turn: the user's answer outranks the audit row; the store counts the
    * failure (`persistFailures`) and this logs it greppably — the exact
@@ -6179,389 +6040,13 @@ export class Orchestrator {
   }
 
   /**
-   * #332 Layer 2 — Direct Line. When the USER directs input at a named
-   * specialist (`@omadia #strategist <payload>`), the HARNESS — not the LLM —
-   * binds the sub-agent's input to the verbatim payload, dispatches it through
-   * the deterministic choke point, captures the verbatim answer, and delivers
-   * it as a harness-owned, attributed `delegatedAnswer` the orchestrator can
-   * neither suppress nor reword.
-   *
-   * Returns a finished `ChatTurnResult` for a direct-line turn (so both the
-   * non-streaming `runTurn`/Teams path and the streaming `chatStream`/web-ui
-   * path can short-circuit), or `undefined` for an ordinary turn (the caller
-   * proceeds with the normal LLM loop).
-   *
-   * Awareness (the orchestrator "stays aware", Pitfall 5): the verbatim block
-   * becomes the turn's `answer` AND is persisted via the same `sessionLogger`
-   * as a normal turn, so it re-enters the orchestrator's context next turn both
-   * via the channel's prior-turn buffer AND via cross-session recall / KG
-   * continuity — no hidden generation needed.
-   */
-  private async executeDirectLine(
-    input: ChatTurnInput,
-    turnId: string,
-    turnMemory: TurnMemoryBinding | undefined,
-  ): Promise<ChatTurnResult | undefined> {
-    // Candidates = THIS orchestrator's whitelisted sub-agents (OB-29-1 gating).
-    const candidates: DirectLineCandidate[] = Array.from(
-      this.domainToolsByName.values(),
-    ).map((t) => ({
-      toolName: t.name,
-      ...(t.agentId ? { agentId: t.agentId } : {}),
-      label: directLineLabel(t.agentId ?? t.name),
-    }));
-
-    // #445 — TARGET SELECTION. This block is the entire sticky feature: it
-    // decides WHICH `{candidate, payload}` the unchanged #332 dispatch body
-    // below receives. With sticky off, `decideDirectLineTurn` reproduces #332's
-    // rules exactly (unknown ⇒ fall through to the LLM, ambiguous ⇒ notice,
-    // empty payload ⇒ notice, else dispatch), so this is a refactor, not a
-    // behaviour change, until an operator turns the flag on.
-    const scope: StickyScopeClassification = this.directLineSticky
-      ? classifyStickyScope({
-          agentSlug: this.agentId,
-          ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
-          ...(input.userId ? { userId: input.userId } : {}),
-        })
-      : { kind: 'refused', reason: 'no-scope' };
-    const stickyKey = scope.kind === 'eligible' ? scope.key : undefined;
-    const binding = stickyKey ? this.directLineStickyStore.get(stickyKey) : undefined;
-
-    const decision = decideDirectLineTurn({
-      userMessage: input.userMessage,
-      prefix: this.directLinePrefix,
-      candidates,
-      binding,
-      stickyEnabled: this.directLineSticky,
-      scope,
-    });
-
-    // Ordinary turn — proceed with the LLM. The caller stamps `{active:false}`.
-    if (decision.kind === 'ordinary') return undefined;
-
-    if (decision.kind === 'exit') {
-      if (stickyKey) this.directLineStickyStore.clear(stickyKey);
-      const label = binding?.label ?? 'The specialist';
-      return this.directLineNotice(
-        `Back to the orchestrator — ${label} is no longer answering directly.`,
-        { active: false, transition: 'left' },
-      );
-    }
-
-    if (decision.kind === 'notice') return this.directLineDecisionNotice(decision, binding);
-
-    if (decision.kind === 'enter') {
-      const target = this.domainToolsByName.get(decision.candidate.toolName);
-      if (!target || !this.isToolAvailable(target.agentId)) {
-        return this.directLineNotice(
-          `Specialist "${decision.candidate.label}" is no longer available.`,
-          this.directLineStateFor(binding),
-        );
-      }
-      if (!stickyKey) {
-        // Unreachable via `decideDirectLineTurn` (an ineligible scope yields a
-        // 'sticky-refused' notice), but binding without a key would silently
-        // drop the binding and strand the user in a mode that never engages.
-        return this.directLineNotice(
-          `Direct mode is not available in this conversation.`,
-          { active: false, transition: 'refused', refusedReason: 'no-scope' },
-        );
-      }
-      const bound = this.directLineStickyStore.bind(stickyKey, {
-        toolName: decision.candidate.toolName,
-        ...(decision.candidate.agentId ? { agentId: decision.candidate.agentId } : {}),
-        label: decision.candidate.label,
-      });
-      return this.directLineNotice(
-        `You are now talking to ${bound.label}. Every message goes straight there — ` +
-          `send \`${this.directLinePrefix}end\` to come back to the orchestrator.`,
-        {
-          active: true,
-          ...(bound.agentId ? { agentId: bound.agentId } : {}),
-          label: bound.label,
-          transition: binding ? 'switched' : 'entered',
-        },
-      );
-    }
-
-    const candidate = decision.candidate;
-    const tool = this.domainToolsByName.get(candidate.toolName);
-    // Issue #474 (round 4) — a not-ready plugin's domain tool must resolve
-    // the same as a deleted one: `dispatchToolInner` already blocks the
-    // handler safely (no capability leak), but without this check its raw
-    // `Error: tool … is unavailable …` string would be wrapped into a
-    // delegatedAnswer and shown to the user as if the specialist itself had
-    // answered. Reuse the SAME notice as the deleted-tool branch above
-    // instead of surfacing that internal dispatch-error string.
-    // #445 — this now re-runs on EVERY sticky turn, so a mid-session uninstall
-    // unbinds the conversation instead of stranding it on a dead specialist.
-    if (!tool || !this.isToolAvailable(tool.agentId)) {
-      if (decision.sticky && stickyKey) this.directLineStickyStore.clear(stickyKey);
-      return this.directLineNotice(
-        `Specialist "${candidate.label}" is no longer available.`,
-        decision.sticky
-          ? { active: false, transition: 'unavailable' }
-          : this.directLineStateFor(binding),
-      );
-    }
-
-    // #361 second-review fix — the relayed payload is LLM-bound wire
-    // content: `dispatchTool` hands it to an LLM-backed sub-agent verbatim.
-    // Mask it through the SAME turn map as a normal prompt; the sub-agent's
-    // answer is restored surrogate→real below, so the user still sees the
-    // real values (the no-redaction invariant holds on the restored text).
-    // Failure-closed: a `blocked` outcome answers with the generic privacy
-    // error (audited by the guard) instead of dispatching unmasked.
-    // #445 — slide the idle window BEFORE dispatch, so a long specialist call
-    // cannot let the binding expire underneath the very turn that is using it.
-    if (decision.sticky && stickyKey) this.directLineStickyStore.touch(stickyKey);
-    const directLineSession: DirectLineSessionState | undefined = decision.sticky
-      ? {
-          active: true,
-          ...(candidate.agentId ? { agentId: candidate.agentId } : {}),
-          label: candidate.label,
-          transition: 'continued',
-        }
-      : this.directLineStateFor(binding);
-
-    const privacyForPrompt = turnContext.current()?.privacyHandle;
-    let wirePayload: string;
-    try {
-      wirePayload = await maskPromptForWire(privacyForPrompt, decision.payload);
-    } catch (err) {
-      if (err instanceof PromptMaskBlockedError) {
-        console.error(`[orchestrator] direct-line dispatch blocked — ${err.message}`);
-        return { answer: PROMPT_MASK_BLOCKED_ANSWER, toolCalls: 0, iterations: 0 };
-      }
-      throw err;
-    }
-
-    // Deterministic harness invocation through the choke point. Input is bound
-    // to the user payload — the orchestrator never reshapes it beyond the
-    // #361 privacy masking above (flag off ⇒ byte-identical verbatim relay).
-    const collector = new RunTraceCollector({
-      scope: input.sessionScope ?? turnId,
-      ...runTraceUserSpread(input),
-    });
-    const handle = collector.beginInvocation(tool.name, candidate.agentId);
-    const startedAt = Date.now();
-    let verbatim: string;
-    let status: 'success' | 'error';
-    try {
-      // The domain-tool contract takes `{ question }` (see createDomainTool);
-      // bind it to the user's payload (masked when the #361 flag is on,
-      // byte-identical otherwise). Routed through the SAME `dispatchTool`
-      // choke point as every other domain-tool dispatch (not a raw
-      // `tool.handle` call) so the Privacy Shield v4 masking cascade applies
-      // here too — #332 gap-closure: a raw `tool.handle` call bypassed
-      // `dispatchTool` entirely, so a verbatim delegated answer was never
-      // interned even when a privacy guard was active.
-      verbatim = await this.dispatchTool(
-        tool.name,
-        { question: wirePayload },
-        handle.observer,
-        turnMemory,
-      );
-      // `createDomainTool.handle` does not throw on a sub-agent failure — it
-      // returns the `Error:`-prefixed withheld notice — and `dispatchTool`
-      // resolves any other throw the same way. Treat both as a faithful
-      // failure too.
-      status = /^error\b/i.test(verbatim.trimStart()) ? 'error' : 'success';
-    } catch (err) {
-      // Backstop only: `dispatchTool` does not reject. Faithful failure —
-      // never a cover-up or a hallucinated answer — but no exception text in
-      // the segment the user sees and the session persists.
-      const ref = toolErrorRef();
-      console.error(
-        `[orchestrator.directLine:${tool.name}] dispatch rejected (ref=${ref}):`,
-        err,
-      );
-      verbatim = `${candidate.label} could not respond [ref ${ref}].`;
-      status = 'error';
-    }
-    handle.finish({ durationMs: Date.now() - startedAt, status });
-    const runTrace = collector.finish({ iterations: 1, status });
-
-    // #361 — the sub-agent may echo the masked payload's surrogates back;
-    // restore them to real values (identity when nothing was masked) before
-    // the text is rendered, persisted, or attributed.
-    verbatim = await restorePromptForPersistence(privacyForPrompt, verbatim);
-
-    // Harness-owned, attributed segment — byte-for-byte the sub-agent's words
-    // (post surrogate-restore, which only inverts the #361 pseudonym map).
-    const delegatedAnswer: DelegatedAnswer = {
-      agentId: candidate.agentId ?? candidate.toolName,
-      label: candidate.label,
-      text: verbatim,
-      status,
-    };
-
-    // `answer` carries the verbatim block so even connectors that don't yet
-    // know `delegatedAnswer` show the specialist's words (graceful degrade).
-    // In strict passthrough the orchestrator LLM never runs → nothing can
-    // distort it. In guarded mode we MAY append an attributed note; the
-    // verbatim block in `delegatedAnswer` stays intact regardless (the
-    // no-redaction invariant is structural).
-    let answer = verbatim;
-    // Guarded-additive note runs an extra LLM completion over the verbatim
-    // answer. That direct `provider.complete` is NOT routed through the privacy
-    // interning path, so when a privacy guard is active the raw payload/answer
-    // could carry un-masked PII to the model provider. To avoid that leak we
-    // degrade to strict passthrough whenever a privacy guard is installed; the
-    // verbatim block is still delivered intact. (A privacy-aware note that
-    // interns its input first is a follow-up.)
-    if (
-      this.directLineMode === 'guarded' &&
-      status === 'success' &&
-      this.privacyGuard?.() === undefined
-    ) {
-      const note = await this.maybeDirectLineNote(
-        candidate.label,
-        decision.payload,
-        verbatim,
-      );
-      if (note) answer = `${verbatim}\n\n▸ omadia note: ${note}`;
-    }
-
-    // Awareness / continuity (#332 Pitfall 5): persist the verbatim exchange
-    // through the SAME session logger as a normal turn, so the orchestrator
-    // sees it on later turns (memory, cross-session recall, KG continuity) —
-    // not only via the channel's own prior-turn buffer. Best-effort: a logging
-    // failure must never swallow the already-captured answer. While a verifier
-    // may re-enter the request, the row is offered instead and written for the
-    // pass it delivers (`requestTurnRecord.ts`).
-    //
-    // Fact extraction parity (#332 review follow-up): a direct-line turn skips
-    // chatInContext*, so without this the KG would never learn from a delegated
-    // answer. Fire-and-forget against Haiku, after the session log lands so the
-    // Fact → Turn edge has an anchor. Never awaited; entityRefs are empty (the
-    // relay issues no orchestrator-level tool calls of its own).
-    let persistedTurnId: string | undefined;
-    if (this.sessionLogger && input.sessionScope) {
-      // Masked now: the prompt map belongs to this pass and ends with it. The
-      // fact extraction and the row's masked view (the capture filter's
-      // scorer) get the same texts; a blocked mask leaves both empty-handed.
-      const wire = await this.directLineWireTexts(privacyForPrompt, input.userMessage, answer);
-      const entry = {
-        scope: input.sessionScope,
-        userMessage: input.userMessage,
-        assistantAnswer: answer,
-        toolCalls: 1,
-        iterations: 1,
-        ...(input.userId ? { userId: input.userId } : {}),
-        ...turnOwnersField(turnMemory),
-        runTrace,
-        ...maskedRowView(privacyForPrompt, wire?.userMessage ?? '', wire?.assistantAnswer ?? ''),
-      };
-      const facts = this.directLineFacts(privacyForPrompt, wire);
-      const ledger = this.turnRecords.deferringLedger();
-      if (ledger !== undefined) {
-        this.turnRecords.offerRow(ledger, { entry, entityRefs: [] }, 'direct-line answer', (turnId, refs) => {
-          this.turnRecords.startFactExtraction(turnId, facts, refs);
-          return Promise.resolve({});
-        });
-      } else {
-        persistedTurnId = await this.turnRecords.writeRow(entry, 'direct-line answer');
-        this.turnRecords.startFactExtraction(persistedTurnId, facts, []);
-      }
-    }
-
-    return {
-      answer,
-      toolCalls: 1,
-      iterations: 1,
-      runTrace,
-      delegatedAnswer,
-      ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
-      ...(directLineSession ? { directLineSession } : {}),
-    };
-  }
-
-  /**
-   * #445 — the indicator for a turn that did not change the binding. Returns
-   * `undefined` while the feature is off so the field never appears at all;
-   * once on, EVERY turn carries a state (including `{active:false}`), which is
-   * what lets a client clear a stale banner after a restart or a TTL expiry.
-   */
-  private directLineStateFor(
-    binding: DirectLineBinding | undefined,
-  ): DirectLineSessionState | undefined {
-    if (!this.directLineSticky) return undefined;
-    if (!binding) return { active: false };
-    return {
-      active: true,
-      ...(binding.agentId ? { agentId: binding.agentId } : {}),
-      label: binding.label,
-      transition: 'continued',
-    };
-  }
-
-  /** #445 — render a non-dispatching decision as a faithful notice turn. */
-  private directLineDecisionNotice(
-    decision: Extract<DirectLineDecision, { kind: 'notice' }>,
-    binding: DirectLineBinding | undefined,
-  ): ChatTurnResult {
-    switch (decision.reason) {
-      case 'ambiguous': {
-        const names = (decision.matches ?? []).map((c) => c.label).join(', ');
-        return this.directLineNotice(
-          `That name is ambiguous — it matches ${names}. Please name one specifically.`,
-          this.directLineStateFor(binding),
-        );
-      }
-      case 'no-question':
-        return this.directLineNotice(
-          `You addressed ${decision.candidate?.label ?? 'a specialist'} but didn't include a ` +
-            `question. Try \`${this.directLinePrefix}<agent> <your question>\`.`,
-          this.directLineStateFor(binding),
-        );
-      case 'already-bound':
-        return this.directLineNotice(
-          `You are already talking to ${decision.candidate?.label ?? 'that specialist'}. ` +
-            `Send \`${this.directLinePrefix}end\` to come back to the orchestrator.`,
-          this.directLineStateFor(binding),
-        );
-      case 'sticky-refused':
-        return this.directLineNotice(
-          `Direct mode is not available in this conversation. You can still ask ` +
-            `${decision.candidate?.label ?? 'a specialist'} one question at a time with ` +
-            `\`${this.directLinePrefix}<agent> <your question>\`.`,
-          {
-            active: false,
-            transition: 'refused',
-            ...(decision.refusedReason ? { refusedReason: decision.refusedReason } : {}),
-          },
-        );
-    }
-  }
-
-  /**
-   * #332 Layer 2 — a faithful, non-dispatching direct-line response (a resolved
-   * specialist named with no question, or an ambiguous token). No sub-agent
-   * ran, so there is no `delegatedAnswer` and the consulted-footer stays empty.
-   * Never silently routes to the wrong agent (Pitfall 7). An UNKNOWN token is
-   * not handled here — it falls through to the normal LLM turn (collision rule).
-   */
-  private directLineNotice(
-    text: string,
-    directLineSession?: DirectLineSessionState,
-  ): ChatTurnResult {
-    return {
-      answer: text,
-      toolCalls: 0,
-      iterations: 0,
-      ...(directLineSession ? { directLineSession } : {}),
-    };
-  }
-
-  /**
    * #332 Layer 3 — resolve the per-turn forced-delegation obligation. Returns
    * the obligation tool name (only when it is one of THIS orchestrator's
    * whitelisted sub-agents — unknown names are ignored) and the matching
    * `tool_choice` payload to force it. Shared by both the streaming and
    * non-streaming loops.
    */
-  private directLineObligationState(input: ChatTurnInput): {
+  private consultObligationState(input: ChatTurnInput): {
     obligationTool: string | undefined;
     forceObligation: { type: 'tool'; name: string } | undefined;
   } {
@@ -6597,59 +6082,6 @@ export class Orchestrator {
       `(\`${toolName}\`) zu konsultieren. Dieser Consult ist für diesen Turn ` +
       `verpflichtend. Rufe \`${toolName}\` jetzt auf, bevor du dem Nutzer antwortest.`
     );
-  }
-
-  /**
-   * #332 Layer 2 (guarded mode) — best-effort, bounded single-shot completion
-   * that lets the orchestrator add a two-sentence attributed cross-cutting
-   * note to a specialist's verbatim answer. Additive only: the caller keeps
-   * the verbatim block intact. Fail-open (any error / empty → no note).
-   * Mirrors the self-contained extra-pass shape of `maybeRouteCardsFromText`,
-   * module-level prompt constant included.
-   */
-  private async maybeDirectLineNote(
-    label: string,
-    userPayload: string,
-    verbatimAnswer: string,
-  ): Promise<string | undefined> {
-    const params: AnthropicParams = {
-      model: this.model,
-      // Headroom, not a length target — the note's length is bounded by the
-      // prompt (two sentences), not by this. A model that reasons before it
-      // answers bills those tokens against `max_tokens`, so a tight cap is
-      // spent before any text is emitted and the empty-text branch below
-      // drops the note on every turn. Clamped to the caller's resolved budget
-      // (see `maxTokens` on the options type): asking for more than the
-      // active model allows would fail the request, and the fail-open `catch`
-      // would swallow that into the same silent no-note.
-      max_tokens: Math.min(this.maxTokens, DIRECT_LINE_NOTE_MAX_TOKENS),
-      system: DIRECT_LINE_NOTE_SYSTEM,
-      messages: [
-        {
-          role: 'user',
-          content: `User asked the ${label} specialist:\n${userPayload}\n\n${label}'s verbatim answer:\n${verbatimAnswer}\n\nYour optional additive note (or empty):`,
-        },
-      ],
-    };
-    try {
-      const response = fromLlmResponse(
-        await this.provider.complete(
-          toLlmRequest(params, undefined, this.provider.id),
-        ),
-      );
-      const text = response.content
-        .filter((b) => b['type'] === 'text')
-        .map((b) => String(b['text'] ?? ''))
-        .join('')
-        .trim();
-      return text.length > 0 ? text : undefined;
-    } catch (err) {
-      console.error(
-        '[orchestrator] direct-line guarded-note pass failed (continuing without note):',
-        err instanceof Error ? err.message : err,
-      );
-      return undefined;
-    }
   }
 
   /**
@@ -7035,7 +6467,7 @@ export class Orchestrator {
     // consulted, the harness escalates ONCE with a forced tool_choice + a
     // synthetic reminder if the turn would otherwise end without it.
     const { obligationTool, forceObligation: forceObligationFor } =
-      this.directLineObligationState(input);
+      this.consultObligationState(input);
     let obligationMet = obligationTool === undefined;
     let obligationEscalationsUsed = 0;
     let forceObligationNext = false;
@@ -7969,93 +7401,8 @@ export class Orchestrator {
       // streaming turn before W3-A (see the comment at the top of
       // `chatStream`). A binding lost that way would not fail; it would
       // quietly fall back to the agent-global tree.
-      // Bound before the Direct-Line decision and `onBeforeTurn` (it was
-      // bound between the hook and that decision before the recall below
-      // needed it first).
+      // Bound before `onBeforeTurn`: the recall below needs it first.
       const turnMemory = await this.bindTurnMemoryForTurn(input);
-      // #332 Layer 2 — Direct Line short-circuit (streaming / web-ui path).
-      // Decided BEFORE `onBeforeTurn` and the recall, as `runTurnCore` does
-      // on the buffered path: a direct-line turn never runs the orchestrator
-      // model, so neither a plan nor a recall (and its C1 scan on the turn's
-      // privacy receipt) belongs to it.
-      // A user-directed specialist turn is dispatched deterministically by the
-      // harness; the orchestrator LLM never runs. We synthesize the `done`
-      // event and decorate it with the privacy receipt + onAfterTurn hook,
-      // exactly like the normal done branch below.
-      const direct = screeningBlocked
-        ? undefined
-        : await this.executeDirectLine(input, turnId, turnMemory);
-      if (direct && toolReplayLedger.abortedTool !== undefined) {
-        // A direct-line dispatch folds a refused re-entry miss into its own
-        // answer; the authoritative check ends the pass here instead.
-        await this.closeAbandonedReentry(toolReplayLedger, bound, privacyHandle, turnId, input);
-        privacySettled = true;
-        const abandoned = this.abandonedReentryEvent();
-        if (abandoned) yield abandoned;
-        return;
-      }
-      if (direct) {
-        const directAgentsConsulted = deriveAgentsConsulted(direct.runTrace);
-        let doneEvent: Extract<ChatStreamEvent, { type: 'done' }> = {
-          type: 'done',
-          answer: direct.answer,
-          toolCalls: direct.toolCalls,
-          iterations: direct.iterations,
-          ...(direct.runTrace ? { runTrace: direct.runTrace } : {}),
-          ...(direct.turnId ? { turnId: direct.turnId } : {}),
-          ...(direct.delegatedAnswer
-            ? { delegatedAnswer: direct.delegatedAnswer }
-            : {}),
-          ...(directAgentsConsulted && directAgentsConsulted.length > 0
-            ? { agentsConsulted: directAgentsConsulted }
-            : {}),
-          // #445 — guarded on PRESENCE, never on `.active`: `{active:false}` is
-          // exactly the payload that clears a stale banner.
-          ...(direct.directLineSession
-            ? { directLineSession: direct.directLineSession }
-            : {}),
-        };
-        if (privacyHandle && args.holdPrivacyFinalize) {
-          // A Direct Line relay is restored before it gets here: nothing the
-          // verifier may see, but the wrapper still owns the finalisation.
-          handOver(privacyHandle, undefined);
-        } else if (privacyHandle) {
-          try {
-            const receipt = await privacyHandle.finalize(input.userMessage);
-            if (receipt) {
-              const rowed = await this.settleTurnReceipt(
-                turnId,
-                input,
-                receipt,
-                bound,
-                this.takeTurnAttribution(turnId),
-              );
-              // #1107 — surface the receipt-store key (== turnId) so an API
-              // caller can correlate this turn with `GET .../receipts/:id`.
-              // Emitted only when a row is written under this turn's id (under
-              // a request ledger: when this pass owns the request's row).
-              doneEvent = {
-                ...doneEvent,
-                privacyReceipt: receipt,
-                ...(rowed ? { receiptId: turnId } : {}),
-              };
-            }
-          } catch (err) {
-            console.warn(
-              '[orchestrator] privacyGuard.finalizeTurn threw — receipt dropped:',
-              err,
-            );
-          }
-          privacySettled = true;
-        }
-        // Parity with the normal done branch — graph-linking observers
-        // (#133 E8) need the persisted Turn id on direct-line turns too.
-        yield* this.toAnnotationEvents(
-          await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
-        );
-        yield this.discloseDoneEvent(doneEvent, input, bound?.ledger);
-        return;
-      }
       // The prior-context recall overlaps `onBeforeTurn` (see
       // `startPriorContextRecall`); `chatStreamInner` awaits it. The user-
       // message mask here reuses the pre-hook mask's surrogate map, so on a
@@ -8443,7 +7790,7 @@ export class Orchestrator {
 
     // #332 Layer 3 — forced-delegation obligation (OB-31), streaming path.
     const { obligationTool, forceObligation: forceObligationFor } =
-      this.directLineObligationState(input);
+      this.consultObligationState(input);
     let obligationMet = obligationTool === undefined;
     let obligationEscalationsUsed = 0;
     let forceObligationNext = false;
@@ -8876,11 +8223,6 @@ export class Orchestrator {
             ...(finalAgentsConsulted && finalAgentsConsulted.length > 0
               ? { agentsConsulted: finalAgentsConsulted }
               : {}),
-            // #445 — reached only on an ordinary (unbound) turn; stamp the
-            // negative so a client can clear a banner it is still showing.
-            ...(this.directLineSticky
-              ? { directLineSession: { active: false } as const }
-              : {}),
           };
           return;
         }
@@ -9137,9 +8479,6 @@ export class Orchestrator {
             ...(choiceAgentsConsulted && choiceAgentsConsulted.length > 0
               ? { agentsConsulted: choiceAgentsConsulted }
               : {}),
-            ...(this.directLineSticky
-              ? { directLineSession: { active: false } as const }
-              : {}),
           };
           return;
         }
@@ -9196,9 +8535,6 @@ export class Orchestrator {
             ...(runTrace ? { runTrace } : {}),
             ...(mcpAgentsConsulted && mcpAgentsConsulted.length > 0
               ? { agentsConsulted: mcpAgentsConsulted }
-              : {}),
-            ...(this.directLineSticky
-              ? { directLineSession: { active: false } as const }
               : {}),
           };
           return;
@@ -9264,8 +8600,8 @@ export class Orchestrator {
         const iterations = lastIterationIndex + 1;
         // Issue #506 (review follow-up) — every OTHER `done`-emission site
         // in this function persists the exchange via `sessionLogger.log()`
-        // BEFORE yielding (see the success path above, the choice-card
-        // path, and direct-line). This emergency path is specifically for
+        // BEFORE yielding (see the success path above and the choice-card
+        // path). This emergency path is specifically for
         // the case where a tool already committed a real side effect, so
         // skipping the log here would be the one `done` path that leaves
         // that commitment unrecorded — the next turn's model would have no
@@ -9323,9 +8659,6 @@ export class Orchestrator {
           ...(correlationId ? { correlationId } : {}),
           ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
           ...(runTrace ? { runTrace } : {}),
-          ...(this.directLineSticky
-            ? { directLineSession: { active: false } as const }
-            : {}),
         };
       } else {
         yield {
@@ -9490,7 +8823,7 @@ export class Orchestrator {
 
   /**
    * The ONE choke point every tool dispatch passes through (the tool loops,
-   * the streaming slots, the direct-line relay). It never rejects: a handler
+   * the streaming slots). It never rejects: a handler
    * exception — or any other throw beneath this point — resolves through
    * `withholdThrownToolError` (`toolErrorRedaction.ts`), so no caller folds an
    * exception MESSAGE into a tool result on its own. Under the turn's privacy
@@ -11391,31 +10724,6 @@ const CARD_ROUTER_SYSTEM =
 
 const CARD_ROUTER_INSTRUCTION =
   'Entscheide jetzt für die obige Assistenten-Antwort: Rufe genau eines von `ask_user_choice`, `suggest_follow_ups` oder `no_card` auf.';
-
-/**
- * #332 Layer 2 / #1209 — system prompt of the guarded direct-line note pass
- * ({@link Orchestrator.maybeDirectLineNote}). Plain register on purpose: the
- * all-caps imperatives this replaced read as pressure the current models
- * over-apply, so they withheld notes a cross-domain risk warranted. The
- * two-sentence bound stays — it is the only thing that keeps an appended note
- * from competing with the specialist's own answer.
- */
-const DIRECT_LINE_NOTE_SYSTEM =
-  'You are the omadia orchestrator. A specialist sub-agent has already ' +
-  'answered the user directly and their verbatim answer is delivered ' +
-  'independently — you cannot edit or remove it; you can only append. Add a ' +
-  'cross-cutting note of at most two sentences, and only when you see a ' +
-  'concrete cross-domain risk, policy concern, or missing prior context the ' +
-  'specialist could not see. If you have nothing material to add, reply with ' +
-  'exactly an empty message. Never restate or contradict the specialist; ' +
-  'only add.';
-
-/**
- * Upper bound for the note pass, clamped against the caller's resolved
- * `maxTokens` at the call site. See the comment there for why it is this far
- * above the note's own two-sentence length.
- */
-const DIRECT_LINE_NOTE_MAX_TOKENS = 4096;
 
 /**
  * #1211 — the `tools` / `tool_choice` pair for ONE request of either tool

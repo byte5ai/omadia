@@ -28,15 +28,15 @@ interface AgentsConsultedFooterProps {
  *
  * Rendered as a collapsible list (default collapsed): expand to see the used
  * tools; each tool that maps to a real tool event expands again to reveal its
- * stacktrace (input + output/error). The label→tool match mirrors the backend
- * `normalizeKey` (directLine.ts) — same comparable key on both sides.
+ * stacktrace (input + output/error). The label→tool match reduces both sides
+ * to the same comparable key ({@link consultedKey}).
  */
 export function AgentsConsultedFooter({
   agents,
   tools = [],
   className,
 }: AgentsConsultedFooterProps): React.ReactElement | null {
-  const t = useTranslations('directLine');
+  const t = useTranslations('agentsConsulted');
   const tChat = useTranslations('chat');
   if (agents.length === 0) return null;
 
@@ -143,8 +143,7 @@ export function AgentsConsultedFooter({
   );
 }
 
-/** Frontend mirror of `normalizeKey` in harness-orchestrator/src/directLine.ts:
- *  reduce a label / agent id / tool name to a comparable lowercase-alnum key so
+/** Reduce a label / agent id / tool name to a comparable lowercase-alnum key so
  *  a consulted entry's prettified label matches its raw tool event name. */
 function consultedKey(value: string): string {
   const last = value.split(/[./]/).pop() ?? value;
