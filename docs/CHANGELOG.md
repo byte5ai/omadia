@@ -45,9 +45,12 @@ changelog.
   and the grant allows, writes nothing to its memory and cannot consult further.
   Its answer reaches the user as its own contribution
   (`SemanticAnswer.contributions`); the asking agent sees a masked copy.
-- A consultation needs an active audience floor; without one it is refused.
+- A consultation needs an active audience floor; without one it is refused. The
+  request carries what the asking turn has read and reaches the colleague only when
+  the colleague's grants cover it.
 - Agent discussions (`discussion_start`) now need consultation grants in both
-  directions, in addition to the existing per-agent and per-chat switches.
+  directions (each covering the channel), in addition to the existing per-agent and
+  per-chat switches.
   **Behaviour change:** a discussion between agents without grants is refused
   until an operator grants the pairs.
 - Operator API: `/api/v1/operator/agents/:slug/consultation` (switches, grants);
@@ -62,11 +65,16 @@ changelog.
   readers, classified data seen unmasked); written turns keep them
   (`discretion_labels`, migration 0098) and recall brings them back.
 - Writes to an integration are checked against its declared readership before
-  they run (`/api/v1/operator/discretion/readerships`, `integration_readerships`);
-  an answer whose labels exceed the room's readers is replaced as a whole and
-  never stored. Every refusal is audited without content (`discretion_flow_audit`).
-- New agents start with context memory `members` (migration 0099); existing agents
-  keep their mode. Context memory can no longer be switched `off` for an agent
+  they run (`/api/v1/operator/discretion/readerships`, `integration_readerships`) —
+  for tools recognised as writing (declared write capability, MCP without
+  `readOnlyHint`); plugin tools are not recognised yet. A non-streamed answer whose
+  labels exceed the room's readers is replaced as a whole (no attachments, cards or
+  contributions go with it) and never stored; a streamed one is protected only in
+  what is stored. Every refusal is audited without content (`discretion_flow_audit`).
+- Web chat and API turns are the owner's private context (`owner:<id>`): what they
+  read does not resurface in a room with other readers.
+- New agents start with context memory `members` (migration 0099; facilitators
+  `off`); existing agents keep their mode. Context memory can no longer be switched `off` for an agent
   that holds capability grants (`409 context_memory_required`).
 
 ### Fixed — Stopping a single process no longer needs the agent's name (#2090, epic #2043)

@@ -911,16 +911,24 @@ Agent A may ask agent B through the harness tool `consult`. The boundary:
 
 - **Authorization, fresh on every call:** A's `may_consult`, B's `consultable`, a
   directed operator grant A→B (`agent_consultation_grants`, migration 0097), its
-  channel scope, per-turn and per-day budgets, and an **active audience floor** for
-  A's turn. A revoked grant is refused on the next call. Facilitators neither hold
-  nor receive grants.
+  channel scope, per-turn and per-day budgets (the per-turn slot is reserved before
+  the first await, so parallel calls cannot overrun it; the day budget is counted
+  and recorded in one transaction under a transaction-scoped advisory lock), depth 1
+  (no consultation starts inside a consultation run), and an **active audience
+  floor** for A's turn. A revoked grant is refused on the next call. Facilitators
+  neither hold nor receive grants.
+- **A's request is an agent egress:** it carries A's turn label set and reaches B
+  only when B's grants cover every source and the room may know every context;
+  otherwise it is refused (`discretion`). B's turn starts with A's labels, so B
+  cannot write to an integration what A was refused.
 - **B's envelope** (`runAsConsultation`, `consultationAllowsTool`): tools only from
   `grant.allowed_capabilities ∩ B's grants ∩ A's grants`; no memory writes, no
   further consultation, no interactive kernel tools; memory only with
   `memory_access: discreet` and only through `members` recall bounded by A's
   audience. Enforced in the offered list, at dispatch and in `isToolGranted` (the
   subscription CLI's only question). B's run has no session scope: nothing is
-  logged, ingested or promoted.
+  logged, ingested or promoted. Past its deadline B gets no tool at all (the run
+  cannot be aborted) and its answer is discarded.
 - **What comes back:** the user view (B's restored answer) is delivered as B's
   contribution; A's model gets the same text through A's privacy shield (masked).
   The discretion rule and the grant's disclosure levels decide what may reach A at
@@ -938,19 +946,22 @@ of the turn carries all of it.
 |---|---|
 | Tool result | its plugin or MCP server; `restricted` when the operator declared the integration so; `classification:personal` when the shield let fields through unmasked (bypass) |
 | Recall | the label set the recalled turn was written with (`discretion_labels`, persisted transitively) |
-| The conversation | its key and the room's readers |
+| The conversation | its key and the room's readers; a turn without origin (web chat, API) is the owner's private context `owner:<id>` |
 | A colleague's contribution | B's labels |
 
 | Egress | Rule | Where |
 |---|---|---|
-| Answer to people | every reader may know every label; otherwise the answer is replaced as a whole and the session row stores only the replacement | `guardAnswerEgress`, `beforeTurnWritten` |
+| Answer to people | every reader may know every label; otherwise the result is rebuilt from bookkeeping fields only (no attachments, files, cards, canvas, recall or contributions) and the session row stores only the replacement. Non-streaming path; a streamed answer is protected only in what is stored | `guardAnswerEgress`, `beforeTurnWritten` |
 | Contribution to an agent | the receiver's grants cover every source and its readers may know it; then the grant's disclosure level caps what is new to the receiver | consultation broker |
-| Memory | a written turn keeps its label set | `onTurnWritten` |
-| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields | `guardIntegrationEgress`, before the call runs |
+| Persistence | a written turn keeps its label set (memory writes themselves are not checked against the rule yet) | `onTurnWritten` |
+| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Applies to tools recognised as writing: a declared `writeCapabilities` or an MCP tool without `readOnlyHint` — plugin tools declare neither today | `guardIntegrationEgress`, before the call runs |
 
 A refused flow is never redacted afterwards. The agent gets a structured refusal;
-at disclosure level `none` a consultation is regenerated without the withheld
-context so the visible answer does not reveal that something was withheld.
+at disclosure level `none` a consultation is regenerated without memory and without
+tools (so no write runs twice) so the visible answer does not reveal that something
+was withheld. `redacted` delivers the masked view only when B ran with a privacy
+shield; otherwise A gets `existence`. While the integration declarations were never
+loaded, every integration counts as restricted with no known reader (fail closed).
 `discretion_flow_audit` records every refusal and every allowed cross-context flow
 with label ids and reasons, never content. Damaged persisted labels parse as a
 label nobody may read (fail closed).
@@ -960,8 +971,13 @@ for an agent that holds capability grants. Existing agents keep their mode.
 
 Known residuals: the subscription-CLI path and sub-agent inner calls carry no
 discretion state yet; streamed answers are protected only in what is stored; reads
-through the `memory` and `query_knowledge_graph` tools are not labelled; there is no
-existence probe for knowledge B never saw.
+through the `memory` and `query_knowledge_graph` tools are not labelled and memory
+writes are not checked against the flow rule; plugin tools are not recognised as
+writing (no declaration exists yet, S3); a turn whose label write failed is recalled
+without labels; `off` is refused only on the context-memory switch, not when
+plugins are granted to an agent that already runs `off`; `say` re-checks consultation
+grants only at the start of a discussion; there is no existence probe for knowledge
+B never saw.
 
 ## 4a. Third-party npm dependencies: audit gate, Dependabot scope, the desktop runtime
 
