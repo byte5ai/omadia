@@ -36,6 +36,36 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Agents consult colleagues without gaining access (#2047, epic #2042)
+
+- New harness tool `consult(agent, request)`. An agent may ask a colleague only
+  when the operator switched on `may_consult` for it and `consultable` for the
+  colleague and granted the pair (`agent_consultation_grants`, migration 0097).
+  The colleague answers as itself, with at most the capabilities both agents hold
+  and the grant allows, writes nothing to its memory and cannot consult further.
+  Its answer reaches the user as its own contribution
+  (`SemanticAnswer.contributions`); the asking agent sees a masked copy.
+- A consultation needs an active audience floor; without one it is refused.
+- Agent discussions (`discussion_start`) now need consultation grants in both
+  directions, in addition to the existing per-agent and per-chat switches.
+  **Behaviour change:** a discussion between agents without grants is refused
+  until an operator grants the pairs.
+- Operator API: `/api/v1/operator/agents/:slug/consultation` (switches, grants);
+  audit action `agent.consultation_change`.
+
+### Added — Discretion: information flows only to those who may know it (#2079, epic #2042)
+
+- Every turn carries labels of what it read (source system, conversation and its
+  readers, classified data seen unmasked); written turns keep them
+  (`discretion_labels`, migration 0098) and recall brings them back.
+- Writes to an integration are checked against its declared readership before
+  they run (`/api/v1/operator/discretion/readerships`, `integration_readerships`);
+  an answer whose labels exceed the room's readers is replaced as a whole and
+  never stored. Every refusal is audited without content (`discretion_flow_audit`).
+- New agents start with context memory `members` (migration 0099); existing agents
+  keep their mode. Context memory can no longer be switched `off` for an agent
+  that holds capability grants (`409 context_memory_required`).
+
 ### Fixed — Stopping a single process no longer needs the agent's name (#2090, epic #2043)
 
 - `POST /api/v1/operator/execution/kill-switches` with `level: "process"`

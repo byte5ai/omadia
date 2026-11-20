@@ -905,6 +905,64 @@ Known residuals:
   `audienceOwners` and returns everything. The in-tree providers honour it.
 - Only turns that carry a `TurnOrigin` are context-bound.
 
+### Consultation: a colleague adds judgement, never access (spec 2042 §5.4, #2047)
+
+Agent A may ask agent B through the harness tool `consult`. The boundary:
+
+- **Authorization, fresh on every call:** A's `may_consult`, B's `consultable`, a
+  directed operator grant A→B (`agent_consultation_grants`, migration 0097), its
+  channel scope, per-turn and per-day budgets, and an **active audience floor** for
+  A's turn. A revoked grant is refused on the next call. Facilitators neither hold
+  nor receive grants.
+- **B's envelope** (`runAsConsultation`, `consultationAllowsTool`): tools only from
+  `grant.allowed_capabilities ∩ B's grants ∩ A's grants`; no memory writes, no
+  further consultation, no interactive kernel tools; memory only with
+  `memory_access: discreet` and only through `members` recall bounded by A's
+  audience. Enforced in the offered list, at dispatch and in `isToolGranted` (the
+  subscription CLI's only question). B's run has no session scope: nothing is
+  logged, ingested or promoted.
+- **What comes back:** the user view (B's restored answer) is delivered as B's
+  contribution; A's model gets the same text through A's privacy shield (masked).
+  The discretion rule and the grant's disclosure levels decide what may reach A at
+  all (below). A discussion between agents needs grants in both directions on top
+  of the #1018 switches.
+
+### Discretion: labels at entry, flow rule at every egress (spec 2042 §5.11, #2079)
+
+Every turn carries a label set (`packages/harness-orchestrator/src/discretion/`):
+`context{key, readers}`, `source{system, restricted}`, `classification{class}`.
+The set only grows; model output cannot be traced token by token, so every output
+of the turn carries all of it.
+
+| Entry | Label |
+|---|---|
+| Tool result | its plugin or MCP server; `restricted` when the operator declared the integration so; `classification:personal` when the shield let fields through unmasked (bypass) |
+| Recall | the label set the recalled turn was written with (`discretion_labels`, persisted transitively) |
+| The conversation | its key and the room's readers |
+| A colleague's contribution | B's labels |
+
+| Egress | Rule | Where |
+|---|---|---|
+| Answer to people | every reader may know every label; otherwise the answer is replaced as a whole and the session row stores only the replacement | `guardAnswerEgress`, `beforeTurnWritten` |
+| Contribution to an agent | the receiver's grants cover every source and its readers may know it; then the grant's disclosure level caps what is new to the receiver | consultation broker |
+| Memory | a written turn keeps its label set | `onTurnWritten` |
+| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields | `guardIntegrationEgress`, before the call runs |
+
+A refused flow is never redacted afterwards. The agent gets a structured refusal;
+at disclosure level `none` a consultation is regenerated without the withheld
+context so the visible answer does not reveal that something was withheld.
+`discretion_flow_audit` records every refusal and every allowed cross-context flow
+with label ids and reasons, never content. Damaged persisted labels parse as a
+label nobody may read (fail closed).
+
+Defaults: new agents start with context memory `members` (0099); `off` is refused
+for an agent that holds capability grants. Existing agents keep their mode.
+
+Known residuals: the subscription-CLI path and sub-agent inner calls carry no
+discretion state yet; streamed answers are protected only in what is stored; reads
+through the `memory` and `query_knowledge_graph` tools are not labelled; there is no
+existence probe for knowledge B never saw.
+
 ## 4a. Third-party npm dependencies: audit gate, Dependabot scope, the desktop runtime
 
 Plugins are operator-curated (§4); the npm dependencies of the kernel, the

@@ -5604,6 +5604,10 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   Ohne Kompatibilitätsschicht, weil es noch keine Kundeninstallationen gibt. Die
   Abschnitte dieses Dokuments zu Sub-Agents, Direct Line, Persona-Skills und
   Fallback-Agent beschreiben den Stand vor dem Umbau.
+  - **S5 Rückfrage + Diskretion (#2047, #2079): Kernel gebaut**, siehe Abschnitt
+    „Rückfrage statt Delegation + Diskretion“ am Ende; Residuen dort unter „Offen“
+    (Existenz-Probe, Streaming-Ausgang, CLI-Pfad, MCP in Rückfragen,
+    Offenlegungsstufen auf Capability-Grants, Operator-UI).
 
 - **Teams-SSO für Plugin-Routen (#1620): Kernel-Modus erledigt.** Offen:
   channel-teams auf den Kernel-Verifier umstellen (eigene Kopie in
@@ -9715,3 +9719,111 @@ Pushes hängen an Message-Subscriptions.
   Fach-Agenten-Liste) wird auch für Facilitators gebaut; die Abschnitte sind
   ohne die zugehörigen Tools wirkungslos. Ein schlanker Facilitator-Rumpf ist
   ein Follow-up.
+
+## Rückfrage statt Delegation + Diskretion (Epic #2042, S5: #2047 / #2079, 2026-11-20)
+
+Spec: `specs/2042-agents-as-virtual-employees/spec.md` §5.4 und §5.11, ADR-0018 und
+ADR-0019. Begriffe: `docs/terminology.md` (Rückfrage, Beitrag, Diskretion, Label,
+Leserkreis, Offenlegungsstufe).
+
+### Rückfrage (`consult`)
+
+- **Regel:** Rückfragen fügt Können und Urteil eines Kollegen hinzu, nie Zugriff.
+- **Konfiguration** (Migration 0097): `agents.consultable` und `agents.may_consult`
+  (beide Standard aus) plus gerichtete Grants `agent_consultation_grants`
+  (`channel_scope` NULL = alle Kanäle, `allowed_capabilities` = Plugin-IDs, Standard
+  leer; `memory_access` `none`|`discreet`; `disclosure` = Offenlegungsstufe je
+  Klassifizierung, `{}` = `none`; Budgets pro Turn und Tag). Facilitators halten und
+  empfangen keine Grants (Archetyp-Omission `consultation`).
+- **Tool:** `consult(agent, request)` ist ein Kernel-Domain-Tool jedes Agenten
+  (`packages/harness-orchestrator/src/consultation/consultTool.ts`), angeboten nur,
+  solange der Broker einen Kollegen listet (Snapshot, 30 s, Refresh nach jeder
+  Operator-Änderung) und der Agent nicht selbst gerade eine Rückfrage beantwortet
+  (Tiefe 1). Ohne aktiven Audience-Floor im Turn wird abgelehnt.
+- **Broker** (`middleware/src/consultation/consultationBroker.ts`, Dienst
+  `consultation@1`): prüft bei jedem Aufruf frisch Schalter, Grant, Kanal,
+  Audience-Floor, Budgets (Ledger `agent_consultation_calls`). B läuft mit seinem
+  normalen `ChatAgent.chat()` innerhalb von `runAsConsultation` (prozessweiter
+  ALS-Scope wie `runAsEngineTurn`):
+  - Tools nur aus `grant.allowed_capabilities ∩ B-Grants ∩ A-Grants`
+    (`consultationAllowsTool`, wirkt in `buildToolsList`, im Dispatch und in
+    `isToolGranted`, also auch auf dem Abo-CLI-Pfad);
+  - kein `memory`-Tool, kein `consult`, keine Kalender-/Auswahl-Tools;
+  - Recall und Wissensgraph nur bei `discreet` und nur, wenn B `members` fährt
+    (dann begrenzt auf A's Leserkreis);
+  - kein `sessionScope`: nichts wird geloggt, ingestiert oder promotet; der
+    Fast Path läuft nicht;
+  - Deadline 120 s; Fehler/Timeout → Beitrag mit Status `failed`, nie verworfen.
+- **Zwei Sichten:** Nutzer-Sicht = B's Antwort (restauriert), als
+  `ChatTurnResult.contributions[]` / `SemanticAnswer.contributions` (Kontrakt aus S1,
+  `@omadia/plugin-api` `Contribution`); Modell-Sicht = derselbe Text als Tool-Ergebnis,
+  das A's Privacy Shield wie jede Sub-Agent-Erzählung interniert (maskiert). A
+  referenziert den Beitrag nur per ID.
+- **Diskretion des Beitrags:** Flussregel `agent` gegen A's Grants und Leserkreis,
+  dann Offenlegungsstufe für das, was A nicht selbst wissen konnte. `existence` →
+  Kernel-Text „X kann dazu etwas beitragen, aber nicht hier“; `none` → B wird ohne
+  Memory erneut gefragt, damit „zurückgehalten“ und „nicht vorhanden“ gleich aussehen.
+- **Kosten:** B's Modellaufrufe laufen unter B's eigener Turn-ID; das Ledger
+  verknüpft `from_turn_id` ↔ `to_turn_id`.
+- **Diskussionen** (`discussion_start`): zusätzlich zu Agent-Schalter und Chat-Policy
+  (#1018) brauchen je zwei Teilnehmer Grants in beide Richtungen
+  (`createDiscussionsCapability({ mutualGrant })`, `DiscussionNotGrantedError`).
+
+### Diskretion
+
+- **Kern** (`packages/harness-orchestrator/src/discretion/`, rein): Labels
+  `context{key, readers}`, `source{system, restricted}`, `classification{class}`;
+  Turn-Label-Set (Vereinigung, strengste Leser gewinnen); Flussregel
+  `checkFlow(labels, egress)` für `people`, `agent`, `memory`, `integration`;
+  Offenlegungsstufen `full|redacted|aggregate|existence|none`.
+- **Eingänge:** jedes Tool-Ergebnis labelt sein System (`restricted`, wenn der
+  Operator es so deklariert; `classification:personal` bei Privacy-Bypass); Recall
+  übernimmt die persistierten Labels der zurückgerufenen Turns; der eigene
+  Gesprächskontext (Schlüssel `<channelType>:<conversation>`, Leser = Raum) kommt
+  beim Auflösen dazu; Beiträge bringen B's Labels mit.
+- **Ausgänge:**
+  - schreibende Tool-Aufrufe (deklarierte Write-Capability oder MCP ohne
+    `readOnlyHint`) gegen die Leserschaft der Integration, vor dem Aufruf;
+  - die Antwort gegen den Leserkreis: bei Verstoß im Ganzen ersetzt, und die
+    Session-Zeile speichert nur die Ersatzzeile (`beforeTurnWritten`);
+  - Memory: jeder geschriebene Turn behält sein Label-Set (`discretion_labels`,
+    Migration 0098);
+  - Beiträge an andere Agenten im Broker.
+- **Leserschaft** (`integration_readerships`): `sensitivity` internal|restricted,
+  `readers` everyone|Menge, akzeptierte Systeme und Klassifizierungen. Ohne
+  Deklaration bekommt eine Integration nichts aus fremden Kontexten, keine
+  eingeschränkten Quellen, keine klassifizierten Daten.
+- **Audit:** `discretion_flow_audit` (jede Verweigerung, jeder erlaubte
+  kontextübergreifende Fluss; nur Label-IDs und Gründe, nie Inhalt).
+- **Context-Memory:** neue Agenten starten in `members` (Migration 0099);
+  bestehende werden bewusst NICHT umgestellt (würde ihre Notizen verbergen).
+  `PUT …/context-memory` mit `off` → 409 `context_memory_required`, wenn der Agent
+  Capability-Grants hält.
+
+### Operator-API (`middleware/src/routes/operatorConsultation.ts`)
+
+| Route | Zweck |
+|---|---|
+| `GET/PUT /api/v1/operator/agents/:slug/consultation` | Schalter `consultable`, `mayConsult`; Grants beider Richtungen |
+| `PUT/DELETE /api/v1/operator/agents/:slug/consultation/grants/:to` | Grant A→B anlegen/ändern/widerrufen |
+| `GET /api/v1/operator/discretion/readerships`, `PUT/DELETE …/:integration` | Leserschaft deklarieren |
+
+Audit-Aktionen: `agent.consultation_change` (je Agent eine Zeile), 
+`discretion.readership_change`, `agent.context_memory_change`.
+
+### Offen (S5-Residuen)
+
+- `existence` greift nur für Wissen, das B im Lauf gesehen hat; ein
+  modellfreier „es gibt etwas“-Probe über B's sonst unsichtbares Memory fehlt
+  (Kriterium 16 zweiter Teil end-to-end).
+- Ausgangsprüfung der Antwort läuft auf dem nicht-streamenden Pfad; beim Streaming
+  schützt sie nur die gespeicherte Zeile. Gehört in den satzweisen Emitter (S1).
+- Abo-CLI-Pfad (`ToolDispatchService`) und Sub-Agent-Innenaufrufe labeln nicht und
+  prüfen keine Leserschaft (Turn ohne Diskretionszustand); mit S3 `run_loop`.
+- MCP-Tools sind in einer Rückfrage nicht nutzbar (`allowed_capabilities` kennt nur
+  Plugin-IDs); Offenlegungsstufen auf Capability-Grants (`agent_plugins`) fehlen.
+- `say` prüft pro Äußerung nur die Peer-Gate, die Grants nur beim Start.
+- Ergebnisse von `memory`-Lesezugriffen und `query_knowledge_graph` werden nicht
+  gelabelt (nur der automatische Recall).
+- Rückfrage-Ablehnungen erreichen den Nutzer über A's Text, noch nicht als
+  `system`-Hinweis des S1-Emitters; keine Operator-UI für Grants/Leserschaft (nur API).
