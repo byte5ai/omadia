@@ -104,7 +104,6 @@ const baseSnapshot: ConfigSnapshot = {
     },
   ],
   channelBindings: [],
-  platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
 };
 
 async function setup() {

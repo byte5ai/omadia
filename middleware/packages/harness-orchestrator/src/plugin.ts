@@ -8,6 +8,7 @@ import {
   type GrantStore,
   type SecurityPosture,
 } from '@omadia/channel-sdk';
+import { KernelAgentSelectionService } from './management/agentSelection.js';
 import type { FacilitatorRuntimeLookup } from './facilitatorAgent.js';
 import type {
   SecurityPostureSetup,
@@ -103,7 +104,6 @@ import {
   type PluginCapabilityLookup,
 } from './registry/index.js';
 import { runMultiOrchestratorMigrations } from './registry/migrator.js';
-import { ensureFallbackAgent } from './registry/onboarding.js';
 import { ReloadBus } from './registry/reloadBus.js';
 import { ChannelResolver } from './routing/channelResolver.js';
 import type { FastPathTriagePort } from './fastPathAgent.js';
@@ -1386,25 +1386,6 @@ export async function activate(
       // through the same trigger → reload-bus pipeline).
       disposeServices.push(ctx.services.provide(CONFIG_STORE_SERVICE, store));
 
-      // US7 / T029 — first-boot fallback Agent seed. Runs before the
-      // registry's `start()` so the very first boot already has a fallback
-      // available for unbound channel keys.
-      //
-      // Phase B (B1) — when the kernel publishes `pluginCapabilities@1`
-      // with `listInstalled()`, the fallback Agent is hydrated with every
-      // installed plugin on first creation. Without the lookup (older
-      // kernel boot, tests) it falls back to the legacy zero-plugin seed.
-      const installedPluginIds = pluginLookup?.listInstalled?.();
-      await ensureFallbackAgent(store, {
-        log: (msg, fields) =>
-          ctx.log(
-            `[harness-orchestrator] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`,
-          ),
-        ...(installedPluginIds
-          ? { pluginIds: [...installedPluginIds] }
-          : {}),
-      });
-
       // SEAM (M3-followup): the `claude-cli` -> CliChatAgent swap lives in
       // buildOrchestratorForAgent (buildOrchestrator.ts), which both the
       // default `chatAgent@1` path and the US4 registry call via buildForAgent.
@@ -1438,17 +1419,14 @@ export async function activate(
       // US7 / T028 — publish the channel resolver so channel plugins can
       // route inbound webhooks per-binding. Opt-in: the legacy
       // `chatAgent@1` keeps serving anything that does not consume it.
+      // #2055 — the resolver's ChatAgent handles `/agent` in every channel.
+      const routedRegistry = registry;
       const resolver = new ChannelResolver({
         registry,
+        selection: new KernelAgentSelectionService({ registry: routedRegistry, tables: store.routing }),
         log: (msg, fields) =>
           ctx.log(
             `[harness-orchestrator] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`,
-          ),
-        // #2045 seam: a `system` notice that is owed and cannot be sent yet
-        // is logged. It is never posted under an agent's identity.
-        emitSystemNotice: (notice) =>
-          ctx.log(
-            `[system-notice] owed, not sent (#2045): ${notice.kind} for '${notice.agentName}' in ${notice.channelType}/${notice.channelKey}`,
           ),
       });
       disposeServices.push(

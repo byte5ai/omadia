@@ -69,6 +69,7 @@ function agent(slug: string, id: string): AgentRow {
     description: null,
     privacyProfile: 'default',
     status: 'enabled',
+    availableToEveryone: true,
     createdAt: new Date(0),
     updatedAt: new Date(0),
   };
@@ -81,8 +82,17 @@ const snapshot: ConfigSnapshot = {
     { channelType: 'teams', channelKey: 'key-a', agentId: A_ID, createdAt: new Date(0) },
     { channelType: 'teams', channelKey: 'key-b', agentId: B_ID, createdAt: new Date(0) },
   ],
-  // agent-a is also the platform fallback (unbound keys route to it).
-  platformSettings: { fallbackAgentId: A_ID, updatedAt: new Date(0) },
+  // agent-a is also the instance default agent (unbound keys route to it, #2055).
+  defaultEntries: [
+    {
+      id: 'entry-instance',
+      principal: null,
+      channelType: null,
+      agentId: A_ID,
+      updatedBy: null,
+      updatedAt: new Date(0),
+    },
+  ],
 };
 
 async function harness(): Promise<{
@@ -137,12 +147,13 @@ test('a bound channel turn is logged under its owning Agent\'s graph namespace',
   assert.equal(await graph.getSession(CONV), null);
 });
 
-test('an unbound channel turn lands in the platform fallback Agent\'s namespace', async () => {
+test('an unbound channel turn lands in the instance default Agent\'s namespace', async () => {
   const { resolver, graph } = await harness();
 
   const routed = resolver.resolve('teams', 'key-unbound');
-  assert.equal(routed.decision, 'fallback');
-  assert.equal(routed.agent!.agent.slug, 'agent-a'); // configured fallback
+  assert.equal(routed.decision, 'bound');
+  assert.equal(routed.match, 'default');
+  assert.equal(routed.agent!.agent.slug, 'agent-a'); // the instance entry
 
   await routed.agent!.built.bundle.sessionLogger.log({
     scope: CONV,

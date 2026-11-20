@@ -1,4 +1,5 @@
 import { archetypeOf } from './archetype.js';
+import { speakerFor } from '../management/speakerFor.js';
 import {
   buildOrchestratorForAgent,
   type AgentRuntimeConfig,
@@ -96,8 +97,6 @@ export type DiffAction =
 
 export interface DiffPlan {
   readonly actions: readonly DiffAction[];
-  /** True iff the platform-wide settings (e.g. fallback_agent_id) changed. */
-  readonly platformChanged: boolean;
 }
 
 export function diffSnapshots(
@@ -191,12 +190,7 @@ export function diffSnapshots(
     actions.push({ kind: 'remove', slug });
   }
 
-  const platformChanged =
-    !oldSnap ||
-    oldSnap.platformSettings.fallbackAgentId !==
-      newSnap.platformSettings.fallbackAgentId;
-
-  return { actions, platformChanged };
+  return { actions };
 }
 
 /**
@@ -327,6 +321,9 @@ export function buildForAgent(
   return buildOrchestratorForAgent(
     {
       agentId: agent.slug,
+      // #2045 — the speaker every answer of this agent carries.
+      speaker: speakerFor(agent),
+      ...(runtime.agentDirectory ? { agentDirectory: runtime.agentDirectory } : {}),
       model,
       maxTokens: runtime.maxTokens,
       maxToolIterations: runtime.maxToolIterations,

@@ -11,7 +11,8 @@ import type { ChatAgent } from '@omadia/channel-sdk';
 /**
  * #1598 — the grant-less legacy `chatAgent@1` bundle answers only while there
  * is no orchestrator registry. With one, a turn without an orchestrator of its
- * own goes to the standard (fallback) orchestrator, or is refused.
+ * own goes to the instance's default agent (#2055: the instance entry of the
+ * default-agent table), or is refused when that entry is `off` or unserved.
  */
 
 function agent(name: string, calls: string[]): ChatAgent {
@@ -28,9 +29,9 @@ function agent(name: string, calls: string[]): ChatAgent {
   };
 }
 
-function registry(fallback: string | undefined, slugs: Record<string, ChatAgent>) {
+function registry(instanceDefault: string | undefined, slugs: Record<string, ChatAgent>) {
   return {
-    slugForFallback: () => fallback,
+    instanceDefaultSlug: () => instanceDefault,
     get: (slug: string) => (slugs[slug] ? { built: { bundle: { agent: slugs[slug] } } } : undefined),
   };
 }
@@ -43,21 +44,21 @@ describe('resolveScopedBundle', () => {
   it('no registry → the legacy bundle (Postgres-less boot)', () => {
     assert.equal(resolveScopedBundle(undefined, legacy), legacy);
   });
-  it('registry, no slug or "default" → the standard orchestrator', () => {
+  it('registry, no slug or "default" → the instance default agent', () => {
     assert.equal(resolveScopedBundle(reg, legacy)?.agent.offeredToolNames?.().has('std_tool'), true);
     assert.equal(resolveScopedBundle(reg, legacy, 'default')?.agent.offeredToolNames?.().has('std_tool'), true);
   });
   it('registry, a slug → that orchestrator', () => {
     assert.equal(resolveScopedBundle(reg, legacy, 'hr')?.agent.offeredToolNames?.().has('hr_tool'), true);
   });
-  it('an operator Agent named "default" wins over the standard one', () => {
+  it('an operator Agent named "default" wins over the instance default', () => {
     const r = registry('std', { std: agent('std', calls), default: agent('own', calls) });
     assert.equal(resolveScopedBundle(r, legacy, 'default')?.agent.offeredToolNames?.().has('own_tool'), true);
   });
   it('an unknown slug → undefined, never the legacy bundle', () => {
     assert.equal(resolveScopedBundle(reg, legacy, 'deleted'), undefined);
   });
-  it('registry without a standard orchestrator → undefined', () => {
+  it('registry whose instance default entry is off → undefined', () => {
     assert.equal(resolveScopedBundle(registry(undefined, {}), legacy), undefined);
   });
 });
@@ -70,7 +71,7 @@ describe('createScopedChatAgent (what chatAgent@1 publishes)', () => {
     assert.deepEqual(calls, ['legacy']);
   });
 
-  it('with a registry, runs the standard orchestrator — never the legacy one', async () => {
+  it('with a registry, runs the instance default agent — never the legacy one', async () => {
     const calls: string[] = [];
     const scoped = createScopedChatAgent(agent('legacy', calls), () =>
       registry('std', { std: agent('std', calls) }),
@@ -81,7 +82,7 @@ describe('createScopedChatAgent (what chatAgent@1 publishes)', () => {
     assert.equal(scoped.offeredToolNames?.().has('legacy_tool'), false);
   });
 
-  it('with a registry but no standard orchestrator, refuses the turn', async () => {
+  it('with a registry but no instance default agent, refuses the turn', async () => {
     const calls: string[] = [];
     const scoped = createScopedChatAgent(agent('legacy', calls), () => registry(undefined, {}));
     await assert.rejects(scoped.chat({ userMessage: 'hi' } as never), new RegExp(NO_ORCHESTRATOR_MESSAGE));
