@@ -15,11 +15,14 @@
 
 import type { Pool, PoolClient } from 'pg';
 
+import { parseLabelSet, parseStoredReaders, serializeLabelSet, UNKNOWN_READERS } from '@omadia/orchestrator';
+
 import type {
   NewTrigger,
   Occurrence,
   Trigger,
   TriggerContextKind,
+  TriggerDiscretion,
   TriggerEndReason,
   TriggerPauseReason,
   TriggerStep,
@@ -113,7 +116,8 @@ interface TriggerRowDb {
   delivery_channel: string | null;
   delivery_ref: unknown;
   target: TriggerTarget | null;
-  labels: string[];
+  /** The `labels` column: `{ contextKey, labels }` for a trigger a conversation created, `[]` otherwise. */
+  labels: unknown;
   event_id: string | null;
   event_filter: unknown;
   fire_at: Date | null;
@@ -143,6 +147,32 @@ interface TriggerRowDb {
   created_at: Date;
 }
 
+/**
+ * Spec 2042 §5.11 (INV-9) — the creating conversation's discretion as stored.
+ * An array is none: triggers no conversation created (routines, schedules,
+ * batch jobs) and agent triggers written before it. Any other damage fails
+ * closed: an unreadable context, unknown readers, an unreadable label set.
+ */
+function parseDiscretion(value: unknown): TriggerDiscretion | null {
+  if (Array.isArray(value)) return null;
+  if (typeof value !== 'object' || value === null) return UNREADABLE_DISCRETION;
+  const { contextKey, readers, labels } = value as { contextKey?: unknown; readers?: unknown; labels?: unknown };
+  if (typeof contextKey !== 'string' || contextKey === '') return UNREADABLE_DISCRETION;
+  return { contextKey, readers: parseStoredReaders(readers), labels: parseLabelSet(labels) };
+}
+
+const UNREADABLE_DISCRETION: TriggerDiscretion = {
+  contextKey: 'unreadable',
+  readers: UNKNOWN_READERS,
+  labels: parseLabelSet(undefined),
+};
+
+function serializeDiscretion(discretion: TriggerDiscretion | null): unknown {
+  return discretion
+    ? { contextKey: discretion.contextKey, readers: discretion.readers, labels: serializeLabelSet(discretion.labels) }
+    : [];
+}
+
 const toTrigger = (r: TriggerRowDb): Trigger => ({
   id: r.id,
   agentId: r.agent_id,
@@ -156,7 +186,7 @@ const toTrigger = (r: TriggerRowDb): Trigger => ({
   deliveryChannel: r.delivery_channel,
   deliveryRef: r.delivery_ref,
   target: r.target,
-  labels: r.labels ?? [],
+  discretion: parseDiscretion(r.labels),
   eventId: r.event_id,
   eventFilter: r.event_filter,
   fireAt: r.fire_at,
@@ -292,7 +322,7 @@ export class TriggerStore {
           input.deliveryChannel,
           JSON.stringify(input.deliveryRef ?? null),
           JSON.stringify(input.target),
-          JSON.stringify(input.labels),
+          JSON.stringify(serializeDiscretion(input.discretion)),
           input.eventId,
           JSON.stringify(input.eventFilter ?? null),
           input.fireAt,

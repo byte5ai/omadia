@@ -149,7 +149,7 @@ export function createRoutineTriggerScheduler(deps: RoutineTriggerDeps): Routine
         liveContext: false,
         deliveryChannel: routine.channel,
         deliveryRef: routine.conversationRef,
-        labels: [],
+        discretion: null,
         createdBy: `routine:${routine.id} owner ${routine.tenant}/${routine.userId}`,
       },
     ).catch((err: unknown) => {

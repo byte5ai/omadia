@@ -9,9 +9,11 @@
  *   3. no kill switch (instance or agent)
  *   4. the recipient's quiet hours and rate limit (defer, never spend)
  *   5. budget reservation, only when the chain can reach a model
- *   6. the chain
+ *   6. the chain, in the agent's turn context of the model gateway
  *   7. settle: counters, spend, breaker, next occurrence, end
  */
+
+import { runInExecutionContext } from '@omadia/usage-telemetry';
 
 import { chainUsesModel, type TriggerLimits } from './triggerPolicy.js';
 import { runChain, type StepExecutors } from './triggerChain.js';
@@ -180,7 +182,14 @@ export class TriggerEngine {
       }
     }
 
-    const chain = await runChain(trigger, occ, this.deps.executors, now);
+    // Spec 2042 §5.10 — a firing is its agent's unattended work: every model
+    // call in it (the turn, a routine's screener, a batch job such as the
+    // scratch reaper, a read tool) runs in that agent's turn context, charged
+    // to it and stopped by its kill switch.
+    const chain = await runInExecutionContext(
+      { kind: 'agent_turn', ownerId: trigger.agentSlug, agentSlug: trigger.agentSlug },
+      () => runChain(trigger, occ, this.deps.executors, now),
+    );
     if (chain.error) this.log(`[triggers] ${trigger.id} (${trigger.agentSlug}) failed: ${chain.error}`);
     return this.settle(trigger, {
       ...base,

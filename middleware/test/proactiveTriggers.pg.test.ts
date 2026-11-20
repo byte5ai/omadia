@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url';
 import type { SemanticAnswer } from '@omadia/channel-sdk';
 import { Pool } from 'pg';
 
+import { createDiscretionTurnState, readersOf, turnContext } from '@omadia/orchestrator';
+
 import { probePgTest } from './_helpers/pgTestDb.js';
 
 import { ConfigStore } from '../packages/harness-orchestrator/src/registry/configStore.js';
@@ -140,6 +142,33 @@ describe('#2082 proactive triggers through the kernel wiring (pg, 0093 + 0094)',
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0]?.ref, hrChat);
     assert.ok(sent.every((m) => JSON.stringify(m.ref) !== JSON.stringify(salesChat)));
+  });
+
+  it('INV-9: the trigger keeps its conversation\'s discretion; a post the room may not know is refused when set', async () => {
+    const hrKey = 'teams:19:hr';
+    const turnIn = (initial: { labels: { kind: 'context'; key: string; readers: ReturnType<typeof readersOf> }[] }) =>
+      createDiscretionTurnState({ contextKey: hrKey, resolveReaders: async () => readersOf(['anna', 'ben']), initial });
+    const setIn = (discretion: ReturnType<typeof turnIn>, actions: unknown[]) =>
+      turnContext.run({ turnId: 'turn-hr', turnDate: '2026-11-23', discretion }, () =>
+        call('wake_at', { purpose: 'Erinnerung', time: inMin(10), until: inMin(60), actions }),
+      );
+    // The creating turn had read what only anna and carl may know.
+    const narrow = { labels: [{ kind: 'context' as const, key: 'teams:dm-anna-carl', readers: readersOf(['anna', 'carl']) }] };
+    const refused = await setIn(turnIn(narrow), [{ type: 'post', template: 'Bitte an {{purpose}} denken' }]);
+    assert.match(refused, /Error \(discretion\)/);
+
+    // A turn step is set; its firing runs as a labelled turn of the HR chat.
+    assert.match(await setIn(turnIn(narrow), [{ type: 'turn', instruction: 'Erinnere' }]), /"created"/);
+    const [t] = await wiring.service.listForContext('conversation', 'teams:19:hr-team@thread.v2');
+    assert.equal(t?.discretion?.contextKey, hrKey);
+    assert.deepEqual(t?.discretion?.readers, readersOf(['anna', 'ben']), 'the roster, stored on its own');
+    assert.ok(t?.discretion?.labels.labels.some((l) => l.kind === 'context' && l.key === 'teams:dm-anna-carl'));
+
+    // What the room may know: set, fired, sent.
+    await pool.query('DELETE FROM agent_triggers');
+    assert.match(await setIn(turnIn({ labels: [] }), [{ type: 'post', template: 'Bitte an {{purpose}} denken' }]), /"created"/);
+    await fireAllAt(new Date('2026-11-23T09:20:00Z'));
+    assert.equal(sent.length, 1);
   });
 
   it('criterion 24: nothing goes out during the recipient\'s quiet hours; it is deferred', async () => {

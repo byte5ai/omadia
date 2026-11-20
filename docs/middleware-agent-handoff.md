@@ -4150,6 +4150,18 @@ in `wiring.ts` (aus `index.ts` aufgerufen).
   setzen. Trigger-Turns laufen über den `ChatAgent` des Agenten
   (`kernelExecutors.ts`) unter Modell-Call-Limit und Kosten-Meter;
   `[[nothing]]` sendet nichts.
+- **Diskretion (S5, INV-9):** Ein Agent-Trigger speichert beim Anlegen
+  Kontextschlüssel, Roster des Raums (eigenes Feld, nie aus dem Label-Set
+  abgeleitet) und Label-Set des anlegenden Turns
+  (`agent_triggers.labels` als `{ contextKey, readers, labels }`, `[]` = keine,
+  beschädigt = unbekannte Leser). Der
+  Turn eines Firings läuft darin geseedet (`runWithSeededDiscretion` aus
+  `@omadia/orchestrator`) und wird wie der Turn einer Person geprüft. Eine
+  zurückgehaltene Antwort wird nicht gesendet und zählt als Fehler. `post` und
+  `deliver` prüft `refusedByDiscretion` gegen die gespeicherten Labels, schon
+  beim Anlegen (`Error (discretion)`). Routinen laufen in `runOnce` als Turn
+  des ausführenden Agenten (Gateway-Kontext), auch bei „Jetzt ausführen“. Die
+  Leser sind ein Schnappschuss vom Anlegen; spätere Mitglieder fehlen darin.
 - **Proaktives Gate** (`proactiveGate.ts`, Migration 0094): Zustellung nur in
   den Kontext, in dem der Trigger entstand (`targetAllowed: () => false` bis
   zu den Diskretions-Labels aus S5); Ruhezeiten und Rate-Limit pro Empfänger

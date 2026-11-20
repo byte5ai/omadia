@@ -178,7 +178,7 @@ export function createBatchTriggerSync(deps: BatchTriggerSyncDeps): () => Promis
               liveContext: false,
               deliveryChannel: null,
               deliveryRef: null,
-              labels: [],
+              discretion: null,
               createdBy: `batch:${job.id}`,
             },
           )
