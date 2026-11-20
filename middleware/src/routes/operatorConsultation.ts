@@ -29,6 +29,7 @@ import {
 import { auditActorFromRequest, type AuditEntryInput } from '../auth/adminAuditLog.js';
 import type { ConsultationGrant, ConsultationStore } from '../consultation/consultationStore.js';
 import type { DiscretionStore } from '../discretion/discretionStore.js';
+import { isPreviewDraftAgentSlug } from '../plugins/builder/previewDraftAgents.js';
 
 export interface OperatorConsultationRouterOptions {
   readonly getConfigStore: () => Pick<ConfigStore, 'getAgentBySlug' | 'getAgentById'> | undefined;
@@ -144,6 +145,22 @@ export function createOperatorConsultationRouter(options: OperatorConsultationRo
     }
     return agent;
   }
+
+  // #2049 — the draft agent of a Plugin Builder preview is read and deleted,
+  // never configured: it neither consults nor is consulted (same rule as the
+  // operator agents router).
+  router.use('/agents/:slug/consultation', (req: Request, res: Response, next) => {
+    const slugs = [req.params['slug'], ...(req.path.match(/^\/grants\/([^/]+)/)?.slice(1) ?? [])];
+    const preview = slugs.find((s) => typeof s === 'string' && isPreviewDraftAgentSlug(s));
+    if (preview && !['GET', 'HEAD', 'DELETE'].includes(req.method)) {
+      res.status(409).json({
+        error: 'preview_draft_agent',
+        message: `"${preview}" is the draft agent of a Plugin Builder preview; it can only be read or deleted`,
+      });
+      return;
+    }
+    next();
+  });
 
   router.get('/agents/:slug/consultation', async (req, res) => {
     try {
