@@ -33,7 +33,7 @@ const env = (over: Partial<TriggerEnvelope> = {}): TriggerEnvelope => ({
   liveContext: false,
   deliveryChannel: 'teams',
   deliveryRef: { conversationId: '19:abc' },
-  labels: [],
+  discretion: null,
   createdBy: 'agent:erika',
   ...over,
 });

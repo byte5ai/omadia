@@ -4,7 +4,7 @@
  * gate, the agent tools, the event intake and the worker.
  */
 
-import { currentDispatchCaller, turnContext } from '@omadia/orchestrator';
+import { currentDiscretion, currentDispatchCaller, resolvedTurnLabels, turnContext } from '@omadia/orchestrator';
 import type { AgentSpeaker, AnswerEmitter, DataPlanGuard, NativeToolSpec } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 
@@ -106,7 +106,11 @@ function currentTurn(deps: TriggerWiringDeps): TriggerToolTurn | undefined {
     userId: ctx.userId,
     channel: ctx.channel,
     conversationRef: ctx.conversationRef,
-    labels: [],
+    discretion: async () => {
+      const state = currentDiscretion();
+      if (state?.contextKey === undefined) return null;
+      return { contextKey: state.contextKey, labels: await resolvedTurnLabels(state) };
+    },
   };
 }
 

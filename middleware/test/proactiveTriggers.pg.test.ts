@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url';
 import type { SemanticAnswer } from '@omadia/channel-sdk';
 import { Pool } from 'pg';
 
+import { createDiscretionTurnState, readersOf, turnContext } from '@omadia/orchestrator';
+
 import { probePgTest } from './_helpers/pgTestDb.js';
 
 import { ConfigStore } from '../packages/harness-orchestrator/src/registry/configStore.js';
@@ -140,6 +142,34 @@ describe('#2082 proactive triggers through the kernel wiring (pg, 0093 + 0094)',
     assert.equal(sent.length, 1);
     assert.deepEqual(sent[0]?.ref, hrChat);
     assert.ok(sent.every((m) => JSON.stringify(m.ref) !== JSON.stringify(salesChat)));
+  });
+
+  it('INV-9: the trigger keeps its conversation\'s labels; a post the room may not know is withheld', async () => {
+    const hrKey = 'teams:19:hr';
+    const discretion = createDiscretionTurnState({
+      contextKey: hrKey,
+      resolveReaders: async () => readersOf(['anna', 'ben']),
+      // The creating turn had read what only anna and carl may know.
+      initial: { labels: [{ kind: 'context', key: 'teams:dm-anna-carl', readers: readersOf(['anna', 'carl']) }] },
+    });
+    const created = await turnContext.run({ turnId: 'turn-hr', turnDate: '2026-11-23', discretion }, () =>
+      call('wake_at', {
+        purpose: 'Erinnerung',
+        time: inMin(10),
+        until: inMin(60),
+        actions: [{ type: 'post', template: 'Bitte an {{purpose}} denken' }],
+      }),
+    );
+    assert.match(created, /"created"/);
+    const [t] = await wiring.service.listForContext('conversation', 'teams:19:hr-team@thread.v2');
+    assert.equal(t?.discretion?.contextKey, hrKey);
+    assert.deepEqual(
+      t?.discretion?.labels.labels.map((l) => (l.kind === 'context' ? `${l.key}:${l.readers.kind === 'set' ? l.readers.ids.join('+') : l.readers.kind}` : l.kind)),
+      ['teams:19:hr:anna+ben', 'teams:dm-anna-carl:anna+carl'],
+      'the room with its readers, and what the turn had read',
+    );
+    await fireAllAt(new Date('2026-11-23T09:20:00Z'));
+    assert.equal(sent.length, 0, 'ben may not know what anna and carl said');
   });
 
   it('criterion 24: nothing goes out during the recipient\'s quiet hours; it is deferred', async () => {

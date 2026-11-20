@@ -17,6 +17,8 @@ import { Pool } from 'pg';
 
 import { probePgTest } from './_helpers/pgTestDb.js';
 
+import { readersOf, unionLabels } from '../packages/harness-orchestrator/src/discretion/labels.js';
+
 import { ConfigStore } from '../packages/harness-orchestrator/src/registry/configStore.js';
 import { runMultiOrchestratorMigrations } from '../packages/harness-orchestrator/src/registry/migrator.js';
 import { storeContextChecks } from '../src/triggers/contextChecks.js';
@@ -123,7 +125,7 @@ describe('#2082 agent triggers (pg, migration 0093)', { skip: !pgAvailable }, ()
     liveContext: false,
     deliveryChannel: 'teams',
     deliveryRef: { conversationId: `19:${slug}` },
-    labels: [],
+    discretion: null,
     createdBy: `agent:${slug}`,
     ...over,
   });
@@ -181,6 +183,24 @@ describe('#2082 agent triggers (pg, migration 0093)', { skip: !pgAvailable }, ()
     await pool.query('DELETE FROM agent_trigger_reservations');
     await pool.query('DELETE FROM agent_trigger_context_activity');
     await pool.query('DELETE FROM execution_kill_switches');
+  });
+
+  describe('INV-9 — the creating conversation\'s discretion', () => {
+    it('is stored with the trigger and read back; a row without it has none', async () => {
+      const { service, store } = rig();
+      const labels = unionLabels([
+        { kind: 'context', key: 'teams:19:erika', readers: readersOf(['a', 'b']) },
+        { kind: 'source', system: 'odoo', restricted: true },
+      ]);
+      const raw = { purpose: 'Erinnerung', time: at(HOUR), until: at(2 * HOUR), actions: [{ type: 'post', template: 'Hallo' }] };
+      const t = await create(service, 'wake_at', raw, envFor('erika', { discretion: { contextKey: 'teams:19:erika', labels } }));
+      assert.deepEqual((await store.get(t.id))?.discretion, { contextKey: 'teams:19:erika', labels });
+      await pool.query(`UPDATE agent_triggers SET labels = '[]'::jsonb WHERE id = $1`, [t.id]);
+      assert.equal((await store.get(t.id))?.discretion, null, 'a row written before it');
+      await pool.query(`UPDATE agent_triggers SET labels = '{"contextKey":"teams:19:erika","labels":"junk"}'::jsonb WHERE id = $1`, [t.id]);
+      const damaged = (await store.get(t.id))?.discretion;
+      assert.ok(damaged?.labels.labels.some((l) => l.kind === 'context' && l.readers.kind === 'unknown'), 'damaged fails closed');
+    });
   });
 
   describe('criterion 23 — one-shot wakeup', () => {

@@ -1664,7 +1664,30 @@ Proactive messages from triggers (#2082) use the same channel for the rows
 of a data action. A proactive message goes only to the context its trigger
 was created in: any other target is refused when the trigger is created
 (`targetAllowed` in `src/triggers/wiring.ts`). Delivery into other contexts
-waits for discretion labels (S5, #2079).
+stays refused.
+
+Within that context, discretion (§5.11, INV-9, #2079) holds for trigger
+output too:
+
+- When an agent sets a trigger, the trigger stores its conversation's context
+  key and the creating turn's label set, including that room's readers as the
+  turn resolved them (`currentTurn` in `src/triggers/wiring.ts`; the
+  `agent_triggers.labels` column).
+- A firing's turn runs seeded with them (`runWithSeededDiscretion`,
+  `discretion/seededTurn.ts`). It is a labelled turn of that conversation, and
+  its answer passes the same people-egress check as a person's turn.
+- An answer refused there is not sent; nobody asked, so there is nothing to
+  decline. The refusal counts as a failure for the trigger's breaker.
+- A templated post or a delivery is checked against the stored labels before
+  it goes out (`refusedByDiscretion` in `kernelExecutors.ts`) and is refused
+  as a whole.
+
+Residual: the readers are a snapshot taken when the trigger was created. A
+person who joins the conversation later is not among them, and the trigger's
+output can still reach them there until the trigger ends (at most 30 days for
+recurring triggers, 90 for a one-shot). Triggers from routines, schedules and
+batch jobs were not created in a conversation and carry no labels; routines
+run under their owner's identity.
 
 ## 6a. Dataset link keys — a deliberate identity handle inside the Privacy Shield
 

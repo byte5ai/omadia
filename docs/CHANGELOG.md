@@ -42,6 +42,13 @@ changelog.
   gateway: the turn, a routine's security screener and a batch job such as the
   scratch-promotion reaper are charged to that agent and stopped by its kill
   switch. This closes gaps 1 and 3 in `docs/model-gateway-call-sites.md`.
+- A trigger an agent sets in a conversation keeps that conversation's
+  discretion labels (spec 2042 §5.11, INV-9). Its firings are labelled turns
+  of that conversation and pass the same people-egress check as a person's
+  turn; a withheld answer is not sent. A templated post or a delivery is
+  refused when the room may not know what the creating turn had read. The
+  proactive gate is unchanged: output goes only to the trigger's own
+  conversation.
 
 ### Changed — plugin-api 1.78.0 (#2053, epic #2042): S3 expand step
 

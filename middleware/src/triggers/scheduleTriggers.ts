@@ -126,7 +126,7 @@ export function createScheduleTriggerScheduler(deps: ScheduleTriggerDeps): Sched
           liveContext: false,
           deliveryChannel: null,
           deliveryRef: null,
-          labels: [],
+          discretion: null,
           createdBy: `schedule:${row.id}`,
         },
       )

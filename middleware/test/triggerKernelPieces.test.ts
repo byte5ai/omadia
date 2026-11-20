@@ -2,14 +2,22 @@
  * #2082 / #2085 — the kernel pieces around the trigger engine, without a
  * database: quiet hours, data actions (only the agent's own read tools; rows
  * stay in the harness), the trigger turn (status in, no rows; nothing to say
- * sends nothing; cost settled from actual usage) and the Conductor bus
- * observer that feeds the hooks.
+ * sends nothing; cost settled from actual usage), the discretion of trigger
+ * output (INV-9) and the Conductor bus observer that feeds the hooks.
  */
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import { renderTableText, type ChatTurnInput, type SemanticAnswer } from '@omadia/channel-sdk';
+
+import {
+  answerWithheldText,
+  readersOf,
+  seededDiscretionFor,
+  unionLabels,
+  type SeededTurnDiscretion,
+} from '@omadia/orchestrator';
 
 import { recordUsage } from '../packages/harness-usage-telemetry/src/index.js';
 import { ConductorEventRouter } from '../src/conductor/eventRouter.js';
@@ -33,7 +41,7 @@ const trigger = (over: Partial<Trigger> = {}): Trigger => ({
   deliveryChannel: 'teams',
   deliveryRef: { conversationId: '19:abc' },
   target: null,
-  labels: [],
+  discretion: null,
   eventId: null,
   eventFilter: null,
   fireAt: null,
@@ -195,6 +203,76 @@ describe('#2082 trigger turn', () => {
     const hint = triggerTurnHint(trigger(), status);
     assert.match(hint, /Purpose: Überfällige Rechnungen/);
     assert.match(hint, /\[\[nothing\]\]/);
+  });
+});
+
+describe('#2079 / #2082 discretion of trigger output (INV-9)', () => {
+  const store = {} as TriggerStore;
+  const status = { purpose: 'p', occurrence: { dueAt: '2026-11-20T10:00:00.000Z' }, checks: [], delivered: [] };
+  const room = 'teams:19:abc';
+  /** Created in a room of a, b and c. */
+  const own = { kind: 'context' as const, key: room, readers: readersOf(['a', 'b', 'c']) };
+  /** The creating turn had also read what only a and b may know. */
+  const narrower = { kind: 'context' as const, key: 'teams:dm-ab', readers: readersOf(['a', 'b']) };
+  const created = (labels = unionLabels([own])) => trigger({ discretion: { contextKey: room, labels } });
+  const build = (sent: SemanticAnswer[], chat: (input: ChatTurnInput) => Promise<SemanticAnswer> = async () => ({ text: 'ok' })) =>
+    createKernelExecutors({
+      store,
+      dataActions: createDataActionRunner(() => new Map()),
+      gate: {
+        sendWindow: async () => ({ ok: true as const }),
+        send: async (_t: Trigger, m: SemanticAnswer) => {
+          sent.push(m);
+          return { delivered: true as const };
+        },
+      },
+      agentChat: () => ({ chat }),
+    });
+
+  it('a post or delivery from a turn that read more than the room may know is withheld', async () => {
+    const sent: SemanticAnswer[] = [];
+    const exec = build(sent);
+    const t = created(unionLabels([own, narrower]));
+    const posted = await exec.post(t, 'Erinnerung');
+    assert.equal(posted.delivered, false);
+    assert.match(posted.delivered ? '' : posted.reason, /withheld by discretion: context:teams:dm-ab:readers_not_covered/);
+    const delivered = await exec.deliver(t, { ok: true, rows: [{ id: 1 }], columns: ['id'], raw: [] }, 'T');
+    assert.equal(delivered.delivered, false);
+    assert.equal(sent.length, 0, 'nothing reached the room');
+  });
+
+  it('what the room may know goes out', async () => {
+    const sent: SemanticAnswer[] = [];
+    const exec = build(sent);
+    assert.equal((await exec.post(created(), 'Erinnerung')).delivered, true);
+    const wide = { ...narrower, readers: readersOf(['a', 'b', 'c']) };
+    assert.equal((await exec.post(created(unionLabels([own, wide])), 'Erinnerung')).delivered, true);
+    assert.equal(sent.length, 2);
+  });
+
+  it('the turn runs seeded with the creating conversation; a withheld answer is not sent', async () => {
+    const sent: SemanticAnswer[] = [];
+    let seed: SeededTurnDiscretion | undefined;
+    const exec = build(sent, async () => {
+      seed = seededDiscretionFor('erika');
+      return { text: `${answerWithheldText('de')}\n\nDiese Antwort wurde von einem KI-System erzeugt.` };
+    });
+    const out = await exec.turn(created(), 'go', status);
+    assert.equal(seed?.contextKey, room);
+    assert.deepEqual(seed?.labels, unionLabels([own]));
+    assert.equal(out.delivered, false);
+    assert.equal(out.error, 'the answer was withheld by discretion');
+    assert.equal(sent.length, 0, 'nobody asked, so nothing is declined');
+  });
+
+  it('a trigger no conversation created runs unseeded', async () => {
+    let seed: SeededTurnDiscretion | undefined = { agentSlug: 'x', contextKey: 'x', labels: unionLabels([]) };
+    const exec = build([], async () => {
+      seed = seededDiscretionFor('erika');
+      return { text: 'ok' };
+    });
+    await exec.turn(trigger(), 'go', status);
+    assert.equal(seed, undefined);
   });
 });
 

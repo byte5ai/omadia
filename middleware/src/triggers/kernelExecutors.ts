@@ -14,6 +14,7 @@
 import { renderTableText, type ChatTurnInput, type SemanticAnswer } from '@omadia/channel-sdk';
 import type { AgentSpeaker, AnswerEmitter } from '@omadia/plugin-api';
 import { meterModelCalls, meterUsageCost } from '@omadia/usage-telemetry';
+import { checkFlow, isAnswerWithheldText, runWithSeededDiscretion, seededReaders, violationSummary } from '@omadia/orchestrator';
 
 import { storeContextChecks, type ContextLivenessProbe } from './contextChecks.js';
 import { toTableData, type DataActionRunner } from './dataActions.js';
@@ -82,6 +83,24 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
     const speaker = deps.speakerOf?.(trigger.agentSlug);
     return deps.gate.send(trigger, speaker ? { ...message, speaker } : message);
   };
+  /**
+   * Spec 2042 §5.11 (INV-9) — a templated post or a delivery goes to the
+   * conversation the trigger was created in only when its readers may know
+   * everything the creating turn had read (the template was written there).
+   * Refused as a whole, never redacted. Undefined = it may go.
+   */
+  const refusedByDiscretion = (trigger: Trigger): DeliveryOutcome | undefined => {
+    const discretion = trigger.discretion;
+    if (!discretion) return undefined;
+    const decision = checkFlow(discretion.labels, {
+      kind: 'people',
+      contextKey: discretion.contextKey,
+      readers: seededReaders(discretion),
+    });
+    return decision.allowed
+      ? undefined
+      : { delivered: false, reason: `withheld by discretion: ${violationSummary(decision).join(', ')}` };
+  };
   /** The emitter's verdict on a proactive output; undefined = publish it. */
   const refusedByEmitter = async (
     trigger: Trigger,
@@ -97,12 +116,16 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
     ...checks,
     runDataAction: (trigger, action) => deps.dataActions.run(trigger.agentSlug, action),
     async post(trigger, text) {
+      const withheld = refusedByDiscretion(trigger);
+      if (withheld) return withheld;
       const refused = await refusedByEmitter(trigger, (speaker) => ({ type: 'prose', speaker, text }));
       return refused ?? send(trigger, { text });
     },
     // The side channel (§5.13): the rows go from the tool to the people as
     // `data`, rendered into `text` for channels that show only text.
     async deliver(trigger, result, title) {
+      const withheld = refusedByDiscretion(trigger);
+      if (withheld) return withheld;
       const table = toTableData(result.rows, result.columns, title);
       const refused = await refusedByEmitter(trigger, (speaker) => ({ type: 'data', speaker, data: table }));
       return refused ?? send(trigger, { text: renderTableText(table), data: [table], textWithoutData: '' });
@@ -124,12 +147,20 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
         sessionScope: `trigger:${trigger.id}`,
         extraSystemHint: triggerTurnHint(trigger, status),
       };
+      // INV-9 — the turn belongs to the conversation its trigger was created
+      // in: it starts with that turn's labels, and its answer is checked
+      // against that conversation's readers. A headless turn answers nobody.
+      const discretion = isHeadless(trigger) ? null : trigger.discretion;
+      const chat = (): Promise<SemanticAnswer> =>
+        discretion
+          ? runWithSeededDiscretion({ agentSlug: trigger.agentSlug, ...discretion }, () => agent.chat(input))
+          : agent.chat(input);
       // A throwing turn still spent what it spent: measure around the catch.
       const metered = await meterUsageCost(() =>
         meterModelCalls(
           async () => {
             try {
-              return { answer: await agent.chat(input) };
+              return { answer: await chat() };
             } catch (err) {
               return { error: err instanceof Error ? err.message : String(err) };
             }
@@ -150,6 +181,12 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
       }
       const text = result.answer.text.trim();
       if (text === '' || text.startsWith(NOTHING_TO_SAY)) return { delivered: false, costUsd, modelCalls };
+      // Refused at the people egress: nobody asked, so nothing to decline.
+      // Counts as a failure, so a trigger that keeps producing what its
+      // conversation may not know is paused by its breaker.
+      if (isAnswerWithheldText(text)) {
+        return { delivered: false, costUsd, modelCalls, error: 'the answer was withheld by discretion' };
+      }
       if (metered.value.refused > 0) {
         // A call the limit refused was swallowed on the way: the answer is
         // not what the agent would have said with its full turn.

@@ -15,11 +15,14 @@
 
 import type { Pool, PoolClient } from 'pg';
 
+import { parseLabelSet, serializeLabelSet } from '@omadia/orchestrator';
+
 import type {
   NewTrigger,
   Occurrence,
   Trigger,
   TriggerContextKind,
+  TriggerDiscretion,
   TriggerEndReason,
   TriggerPauseReason,
   TriggerStep,
@@ -113,7 +116,8 @@ interface TriggerRowDb {
   delivery_channel: string | null;
   delivery_ref: unknown;
   target: TriggerTarget | null;
-  labels: string[];
+  /** The `labels` column: `{ contextKey, labels }` for a trigger a conversation created, `[]` otherwise. */
+  labels: unknown;
   event_id: string | null;
   event_filter: unknown;
   fire_at: Date | null;
@@ -143,6 +147,23 @@ interface TriggerRowDb {
   created_at: Date;
 }
 
+/**
+ * Spec 2042 §5.11 (INV-9) — the creating conversation's discretion as stored.
+ * Anything but the stored shape is no discretion (rows written before it, and
+ * triggers no conversation created); a damaged label set inside it fails
+ * closed (`parseLabelSet`).
+ */
+function parseDiscretion(value: unknown): TriggerDiscretion | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const { contextKey, labels } = value as { contextKey?: unknown; labels?: unknown };
+  if (typeof contextKey !== 'string' || contextKey === '') return null;
+  return { contextKey, labels: parseLabelSet(labels) };
+}
+
+function serializeDiscretion(discretion: TriggerDiscretion | null): unknown {
+  return discretion ? { contextKey: discretion.contextKey, labels: serializeLabelSet(discretion.labels) } : [];
+}
+
 const toTrigger = (r: TriggerRowDb): Trigger => ({
   id: r.id,
   agentId: r.agent_id,
@@ -156,7 +177,7 @@ const toTrigger = (r: TriggerRowDb): Trigger => ({
   deliveryChannel: r.delivery_channel,
   deliveryRef: r.delivery_ref,
   target: r.target,
-  labels: r.labels ?? [],
+  discretion: parseDiscretion(r.labels),
   eventId: r.event_id,
   eventFilter: r.event_filter,
   fireAt: r.fire_at,
@@ -292,7 +313,7 @@ export class TriggerStore {
           input.deliveryChannel,
           JSON.stringify(input.deliveryRef ?? null),
           JSON.stringify(input.target),
-          JSON.stringify(input.labels),
+          JSON.stringify(serializeDiscretion(input.discretion)),
           input.eventId,
           JSON.stringify(input.eventFilter ?? null),
           input.fireAt,

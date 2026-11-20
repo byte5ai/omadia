@@ -16,7 +16,7 @@ import type { NativeToolSpec } from '@omadia/plugin-api';
 import type { TriggerEnvelope } from './triggerPolicy.js';
 import type { CreateTriggerResult, TriggerService } from './triggerService.js';
 import { conversationContextId } from './triggerService.js';
-import type { Trigger, TriggerKind } from './types.js';
+import type { Trigger, TriggerDiscretion, TriggerKind } from './types.js';
 
 export const TRIGGER_TOOL_NAMES = ['on_event', 'wake_at', 'wake_every', 'list_triggers', 'cancel_trigger'] as const;
 export type TriggerToolName = (typeof TRIGGER_TOOL_NAMES)[number];
@@ -29,8 +29,9 @@ export interface TriggerToolTurn {
   readonly userId: string;
   readonly channel: string;
   readonly conversationRef: unknown;
-  /** Discretion labels of the conversation (INV-9); empty until labelled. */
-  readonly labels: readonly string[];
+  /** The conversation's discretion as this turn has it (INV-9): its context
+   *  key and everything the turn read. Null outside a labelled turn. */
+  readonly discretion: () => Promise<TriggerDiscretion | null>;
 }
 
 const ACTIONS_SCHEMA = {
@@ -229,7 +230,7 @@ export function createTriggerToolHandler(name: TriggerToolName, deps: TriggerToo
       liveContext: wantsMeeting,
       deliveryChannel: turn.channel,
       deliveryRef: turn.conversationRef,
-      labels: turn.labels,
+      discretion: await turn.discretion(),
       createdBy: `agent:${turn.agentSlug} for ${turn.tenant}/${turn.userId}`,
     };
     const res = await deps.service.create(name as TriggerKind, raw, env);
