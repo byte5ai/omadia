@@ -7383,6 +7383,12 @@ async function main(): Promise<void> {
       // layer, or the management layer answering with its `system` notice.
       return resolver.resolve(channelType, channelKey, context).chatAgent;
     },
+    // #2059 — a turn that names an agent (canvas, agent picker) goes to that
+    // agent's envelope; `undefined` when the resolver cannot address by id.
+    resolveAgent: (agentId, target, context) =>
+      serviceRegistry
+        .get<ChannelBindingResolver>('channelResolver')
+        ?.resolveAgent?.(agentId, target, context),
   });
 
   // Omadia UI canvas transport: a kernel-owned WebSocket registry mirroring
@@ -7455,6 +7461,7 @@ async function main(): Promise<void> {
     conversation: createConversationSendService({
       providers: conversationSendRegistry,
       ownIdentity: ownIdentitySend,
+      ...(conversationMessages ? { openQuestions: conversationMessages.openQuestions } : {}),
       onOwnIdentityDelivered: ownIdentityPostLog.record,
       log: (m) => console.log(m),
     }),

@@ -21,6 +21,7 @@ import {
   resolveAiDisclosure,
   DEFAULT_AI_DISCLOSURE_POLICY,
   InMemoryDisclosureSeenStore,
+  InMemoryDisclosureMarkerStore,
   type ChatStreamEvent,
   type AnswerVerbosityInfo,
   type ChatTurnInput,
@@ -35,6 +36,9 @@ import {
   type ChatAgentToolDefinition,
   type AiDisclosurePolicy,
   type DisclosureSeenStore,
+  type AiDisclosureFrequency,
+  type DisclosureMarkerState,
+  type DisclosureMarkerStore,
   bundleProvenance,
   hasScreenableContent,
   screeningEnabled,
@@ -561,6 +565,14 @@ export interface AiDisclosureSetup {
   /** Verbatim operator addendum appended after the marking line; never replaces
    *  it (AC5). Follows the `RoutineStaticMarkdownSection` verbatim contract. */
   readonly operatorNote?: string;
+  /**
+   * #2087 — how often the VISIBLE markers (text line, channel chips) appear.
+   * Absent → `channel_default` (today's behaviour). The structured field and
+   * machine-readable markings stay on every answer whatever this says.
+   */
+  readonly frequency?: AiDisclosureFrequency;
+  /** #2087 — pause in minutes after which `per_conversation` marks again. */
+  readonly pauseMinutes?: number;
 }
 
 export interface OrchestratorOptions {
@@ -1017,6 +1029,15 @@ export interface OrchestratorOptions {
    * direction).
    */
   aiDisclosureSeenStore?: DisclosureSeenStore;
+  /**
+   * #2087 — `per_conversation` marker state. One instance per process, shared
+   * across the Agents the registry builds: "again when another agent speaks"
+   * compares an answer with the PREVIOUS speaker of the conversation, which a
+   * per-Agent store can never see. Absent → a private
+   * {@link InMemoryDisclosureMarkerStore} (a restart marks again, the
+   * fail-safe direction).
+   */
+  aiDisclosureMarkerStore?: DisclosureMarkerStore;
   /**
    * #579 — org security posture (org floor + optional scope tightening + shadow/
    * enforce mode + optional external screen URL). Absent → the shipping default
@@ -2263,6 +2284,31 @@ function requestDisclosureSeen(
   };
 }
 
+/**
+ * #2087 — the `per_conversation` marker store as one verifier request sees it:
+ * the first read of a scope freezes the state before this request, every later
+ * pass of the request decides from that same state (see
+ * `ToolReplayLedger.disclosureMarkerPrior`).
+ */
+function requestDisclosureMarkers(
+  store: DisclosureMarkerStore,
+  ledger: ToolReplayLedger | undefined,
+): DisclosureMarkerStore {
+  if (ledger === undefined) return store;
+  return {
+    getMarker: (scope) => {
+      const prior = ledger.disclosureMarkerPrior;
+      if (prior !== undefined && prior.scope === scope) {
+        return prior.state as DisclosureMarkerState | undefined;
+      }
+      const state = store.getMarker(scope);
+      ledger.disclosureMarkerPrior = { scope, state };
+      return state;
+    },
+    setMarker: (scope, state) => store.setMarker(scope, state),
+  };
+}
+
 /** The pass of `ledger` that starts now, or undefined for an unbound turn. */
 function boundPassOf(ledger: ToolReplayLedger | undefined): BoundPass | undefined {
   return ledger === undefined ? undefined : { ledger, pass: ledger.pass };
@@ -2991,6 +3037,8 @@ export class Orchestrator {
   private readonly aiDisclosure: AiDisclosureSetup | undefined;
   /** #644 — first-turn-per-scope fold-dedup store (see OrchestratorOptions). */
   private readonly disclosureSeen: DisclosureSeenStore;
+  /** #2087 — `per_conversation` marker state; process-local, a restart marks again. */
+  private readonly disclosureMarkers: DisclosureMarkerStore;
   /** #579 — org security posture setup (undefined → shipping default `auto`). */
   private readonly securityPosture: SecurityPostureSetup | undefined;
   /** #579 — late-bound screener factory (see OrchestratorOptions). */
@@ -3105,6 +3153,8 @@ export class Orchestrator {
     this.aiDisclosure = options.aiDisclosure;
     this.disclosureSeen =
       options.aiDisclosureSeenStore ?? new InMemoryDisclosureSeenStore();
+    this.disclosureMarkers =
+      options.aiDisclosureMarkerStore ?? new InMemoryDisclosureMarkerStore();
     this.securityPosture = options.securityPosture;
     this.securityScreener = options.securityScreener;
     this.securityAuditSink = options.securityAuditSink;
@@ -4580,6 +4630,9 @@ export class Orchestrator {
               ? { scope: this.disclosureFoldScope(input.sessionScope) }
               : {}),
             seen: this.disclosureSeen,
+            agentId: this.agentId,
+            markerStore: this.disclosureMarkers,
+            ...(input.sessionScope ? { markerScope: input.sessionScope } : {}),
           }
         : undefined,
     );
@@ -4648,6 +4701,8 @@ export class Orchestrator {
       level,
       source,
       ...(setup?.locale ? { locale: setup.locale } : {}),
+      ...(setup?.frequency ? { frequency: setup.frequency } : {}),
+      ...(setup?.pauseMinutes !== undefined ? { pauseMinutes: setup.pauseMinutes } : {}),
     };
     // #967 — THIS Agent's authored name outranks the platform-wide
     // `ai_disclosure_assistant_name`. The setup field is one string for the
@@ -4728,14 +4783,19 @@ export class Orchestrator {
     };
     const aiDisclosure = this.resolveTurnDisclosure(input);
     if (!aiDisclosure) return delivered;
-    const { text } = applyAiDisclosure(delivered.answer, {
+    const applied = applyAiDisclosure(delivered.answer, {
       disclosure: aiDisclosure,
       ...(input.sessionScope
         ? { scope: this.disclosureFoldScope(input.sessionScope) }
         : {}),
       seen: requestDisclosureSeen(this.disclosureSeen, ledger),
+      agentId: this.agentId,
+      markerStore: requestDisclosureMarkers(this.disclosureMarkers, ledger),
+      ...(input.sessionScope ? { markerScope: input.sessionScope } : {}),
     });
-    return { ...delivered, answer: text, aiDisclosure };
+    // The carrier that goes out is the applied one: it states which visible
+    // markers this answer carries (#2087), the pre-resolved one does not.
+    return { ...delivered, answer: applied.text, aiDisclosure: applied.aiDisclosure ?? aiDisclosure };
   }
 
   /**
@@ -4752,14 +4812,17 @@ export class Orchestrator {
   ): { readonly answer: string; readonly aiDisclosure?: AiDisclosure } {
     const aiDisclosure = this.resolveTurnDisclosure(input);
     if (!aiDisclosure) return { answer };
-    const { text } = applyAiDisclosure(answer, {
+    const applied = applyAiDisclosure(answer, {
       disclosure: aiDisclosure,
       ...(input.sessionScope
         ? { scope: this.disclosureFoldScope(input.sessionScope) }
         : {}),
       seen: this.disclosureSeen,
+      agentId: this.agentId,
+      markerStore: this.disclosureMarkers,
+      ...(input.sessionScope ? { markerScope: input.sessionScope } : {}),
     });
-    return { answer: text, aiDisclosure };
+    return { answer: applied.text, aiDisclosure: applied.aiDisclosure ?? aiDisclosure };
   }
 
   /**

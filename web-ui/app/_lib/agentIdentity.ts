@@ -307,7 +307,17 @@ export async function deleteAgentAvatar(
 export function avatarPreviewUrl(
   identity: AgentIdentityFieldsDto,
 ): string | null {
-  if (!identity.avatar) return null;
-  const path = identity.avatar.url.replace(/^\/api\//, '/bot-api/');
-  return `${path}?v=${identity.avatar.etag.slice(0, 16)}`;
+  return agentAvatarImageUrl(identity.avatar);
+}
+
+/**
+ * The same URL for any `{ etag, url }` avatar reference — the identity DTO and
+ * the agent lists (picker, directory) report it in the same shape.
+ */
+export function agentAvatarImageUrl(
+  avatar: { etag: string; url: string } | null | undefined,
+): string | null {
+  if (!avatar) return null;
+  const path = avatar.url.replace(/^\/api\//, '/bot-api/');
+  return `${path}?v=${avatar.etag.slice(0, 16)}`;
 }

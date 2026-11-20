@@ -91,6 +91,25 @@ describe('CoreApi scoped to one channel plugin', () => {
     );
   });
 
+  it('nor report a message event for a channel type it does not serve (#2086)', async () => {
+    const s = await setup();
+    assert.ok(s.rogue.reportConversationMessage, 'feature-detectable');
+    const forged = await s.rogue.reportConversationMessage!(
+      messageEvent({ channelId: '@omadia/channel-teams', messageId: 'forged-report' }),
+    );
+    assert.deepEqual(forged, { answeredCard: false });
+    assert.deepEqual((await s.messages.hub.listProcessEventsSince(processOf('mara'), ENGINE)).events, []);
+    assert.match(s.logs.join('\n'), /tried to report a message event for channel type 'teams'/);
+    // the Teams plugin's own report goes through, stamped with its own id
+    assert.deepEqual(await s.teams.reportConversationMessage!(messageEvent({ channelId: 'whatever', messageId: 'own-report' })), {
+      answeredCard: false,
+    });
+    assert.deepEqual(
+      (await s.messages.hub.listProcessEventsSince(processOf('mara'), ENGINE)).events.map((e) => e.messageId),
+      ['own-report'],
+    );
+  });
+
   it('nor learn which Teams conversations are subscribed', async () => {
     const s = await setup();
     assert.equal(s.teams.isAllMessagesSubscribed!('teams', CONVERSATION, MARA_KEY), true);

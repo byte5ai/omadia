@@ -19,6 +19,7 @@ import type { ObservedConversationInvites } from '../../platform/observedConvers
 import { KERNEL_SERVICE_CALLER, type ServiceRegistry } from '../../platform/serviceRegistry.js';
 import type { AddressedMessageRouter } from '../addressedMessageRouter.js';
 import type { PrivateMessageRouter } from '../privateMessageRouter.js';
+import { PgOpenCardQuestionStore, type OpenCardQuestionStore } from '../openCardQuestions.js';
 import { ConversationMessageHub, type ConversationMessageHubDeps } from './hub.js';
 import { PgConversationMessageStore } from './pgStore.js';
 import { startConversationMessagePurge, type ConversationMessagePurgeJob } from './purgeJob.js';
@@ -142,6 +143,8 @@ export interface ConversationMessagesWiringDeps {
 export interface ConversationMessagesWiring {
   readonly hub: ConversationMessageHub;
   readonly store: PgConversationMessageStore;
+  /** #2086 — the open questions of cards that went out as plain text (migration 0101). */
+  readonly openQuestions: OpenCardQuestionStore;
   readonly purge: ConversationMessagePurgeJob;
   /**
    * Allow the kernel to END subscriptions whose ground is gone. Off until the
@@ -158,8 +161,10 @@ export async function wireConversationMessages(
   deps: ConversationMessagesWiringDeps,
 ): Promise<ConversationMessagesWiring> {
   const store = new PgConversationMessageStore(deps.pool);
+  const openQuestions = new PgOpenCardQuestionStore(deps.pool);
   const hub = new ConversationMessageHub({
     store,
+    typedReplies: { store: openQuestions },
     resolveAgent: (slug) => deps.getRegistry()?.get(slug)?.agent,
     identityFor: (slug, channelType) => deps.getRegistry()?.channelIdentityFor(slug, channelType),
     isBotPresent: createBotPresenceCheck({
@@ -239,6 +244,7 @@ export async function wireConversationMessages(
   return {
     hub,
     store,
+    openQuestions,
     purge,
     enableReconcile: () => {
       reconcileEnabled = true;

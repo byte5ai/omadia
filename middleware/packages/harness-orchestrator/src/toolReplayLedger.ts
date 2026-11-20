@@ -193,6 +193,13 @@ export class ToolReplayLedger {
    * request folds the line too (`requestDisclosureSeen` in the orchestrator).
    */
   disclosureFolded = false;
+  /**
+   * #2087 — the `per_conversation` marker state as it was BEFORE this request
+   * first looked at it. Every pass of one request (a verifier correction, a
+   * resample) decides "is the marker due" from this same state, so the answer
+   * the user receives carries the marker whichever pass it comes from.
+   */
+  disclosureMarkerPrior: { scope: string; state: unknown } | undefined = undefined;
 
   constructor(options: ToolReplayLedgerOptions = {}) {
     this.#retainResults = options.retainResults ?? true;

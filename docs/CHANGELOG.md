@@ -36,6 +36,29 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — Channels and UIs: agents as colleagues (epic #2042, S6)
+
+- **Channel SDK:** `resolveChannelRoute` (full routing result with notice and
+  speaker), `match` on the resolve result, decoration registry
+  (`admitDecorations`), plain-text renderer, speaker line, answer details,
+  `runPacedTurn` (one acknowledgement, a follow-up instead of a timeout), AI
+  disclosure frequency (`ai_disclosure_frequency`, `per_conversation` marks
+  again when another agent speaks). Removed: `agentsConsultedFooterText`.
+- **Canvas per agent (#2059):** a turn with `metadata.agentId` goes to that
+  agent's envelope through `resolveAgent`, never to another agent.
+- **Group audience:** `slack`, `discord`, `whatsapp`, `imessage` in
+  `CHANNEL_KIND_BY_ORIGIN` and `CONTEXT_MEMORY_CHANNEL_TYPES`; `ChannelKind`
+  (plugin-api, additive) and the Neon `CHANNEL_KINDS` list them.
+- **Cards and polls as text (#2086):** a card (one question) or poll a channel
+  cannot show natively goes out as numbered text; a typed reply becomes the
+  `card_answer` event. `core.reportConversationMessage` tells a channel when it
+  was taken, so it starts no turn for it.
+  - Migration `0101_open_card_questions` — the open questions (message id,
+    agent, card, close; pruned when they close).
+- **web-ui (#2057):** the agent picker reads `GET /api/v1/agents/directory`,
+  the operator page has a table of default agents (user × channel, `off`), the
+  routing tester shows the notice; "Orchestrator" is gone from visible texts.
+
 ### Changed — One agent speaks: management layer, speaker, identity guard (epic #2042, S1)
 
 - **No fallback agent any more (#2055, #1880).** The management layer routes

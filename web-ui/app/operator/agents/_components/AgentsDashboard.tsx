@@ -37,6 +37,7 @@ import {
 import type { OperatorArchetypeDto } from '../../../_lib/archetypes';
 import { ArchetypeSection } from './ArchetypeSection';
 import { DeletedAgentsSection, EndOfServiceNotice, type EndOfServiceResult } from './EndOfService';
+import { DefaultAgentsSection } from './DefaultAgentsSection';
 import { ExecutionControlSection } from './ExecutionControl';
 import { FacilitatorsSection, type PluginNavLink } from './FacilitatorsSection';
 import { PluginsDnd } from './PluginsDnd';
@@ -224,6 +225,12 @@ export function AgentsDashboard({
           onChange={(slug) => run(DEFAULT_AGENT_LABEL, () => setInstanceDefaultAgent(slug))}
         />
       </section>
+
+      <DefaultAgentsSection
+        agents={standardAgents}
+        channelTypes={channelTypes}
+        disabled={pending || !!busy}
+      />
 
       <RoutingTester
         channelTypes={channelTypes}
@@ -490,7 +497,7 @@ function RoutingTester(props: {
             </p>
           ) : (
             <p className="text-[color:var(--fg-muted)]">
-              {result.message ?? t('routingTesterNoMatch')}
+              {result.notice?.text ?? t('routingTesterNoMatch')}
             </p>
           )}
         </div>
