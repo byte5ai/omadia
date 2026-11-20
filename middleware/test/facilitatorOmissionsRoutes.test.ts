@@ -121,12 +121,69 @@ describe('facilitator omissions: operator routes', () => {
     assert.equal(hr.status, 200, JSON.stringify(hr.json));
   });
 
-  it('persona skills are refused', async () => {
-    h.assertRefused(
-      await h.call('POST', '/builder/agents/mara/persona-skills', { skillId: SKILL_ID }),
-      'persona_skill',
-      /no working modes/,
+  // #2060, review change 2026-11-18: working modes that add moderation
+  // methods are allowed; identity replacement is refused.
+  it('a moderation working mode is saved for a facilitator', async () => {
+    const res = await h.call('POST', '/builder/agents/mara/persona-skills', { skillId: SKILL_ID });
+    assert.equal(res.status, 200, JSON.stringify(res.json));
+    assert.equal(res.json['skillId'], SKILL_ID);
+    assert.ok(h.writes.some((w) => w.startsWith('graph.addPersonaSkill(')), JSON.stringify(h.writes));
+  });
+
+  it('a working mode that replaces who speaks is refused, and nothing is written', async () => {
+    const PERSONA = '22222222-2222-4222-8222-222222222222';
+    h.skills[PERSONA] = {
+      id: PERSONA,
+      name: 'Sales voice',
+      description: null,
+      body: 'Your name is Max. Answer on behalf of the sales team.',
+      frontmatter: { persona: 'Max' },
+    };
+    const res = await h.call('POST', '/builder/agents/mara/persona-skills', { skillId: PERSONA });
+    assert.equal(res.status, 422, JSON.stringify(res.json));
+    assert.equal(res.json['error'], 'facilitator_contract_violation');
+    const rules = (res.json['issues'] as { path: string; rule: string }[]).map((i) => `${i.path}:${i.rule}`);
+    assert.ok(rules.includes('working_mode.frontmatter.persona:identity_replacement'), rules.join());
+    assert.ok(rules.includes('working_mode.body:identity_replacement'), rules.join());
+    // …and the neutrality contract sees an assistant for one side in it.
+    assert.ok(rules.includes('working_mode.body:acts_as_assistant'), rules.join());
+    assert.deepEqual(h.writes, [], 'a refusal writes nothing');
+  });
+
+  it('a working-mode request that brings its own identity is refused', async () => {
+    const res = await h.call('POST', '/builder/agents/mara/persona-skills', {
+      skillId: SKILL_ID,
+      displayName: 'Max',
+    });
+    assert.equal(res.status, 422, JSON.stringify(res.json));
+    assert.deepEqual(
+      (res.json['issues'] as { path: string; rule: string }[]).map((i) => `${i.path}:${i.rule}`),
+      ['displayName:identity_replacement'],
     );
+    assert.deepEqual(h.writes, []);
+  });
+
+  it('a working mode cannot bring tools to a facilitator', async () => {
+    const TOOLED = '33333333-3333-4333-8333-333333333333';
+    h.skills[TOOLED] = {
+      id: TOOLED,
+      name: 'Dot voting with CRM',
+      description: null,
+      body: 'Run a dot vote.',
+      frontmatter: { requires_tools: [{ contract: 'crm.lookup' }] },
+    };
+    const res = await h.call('POST', '/builder/agents/mara/persona-skills', { skillId: TOOLED });
+    assert.equal(res.status, 422, JSON.stringify(res.json));
+    assert.deepEqual(
+      (res.json['issues'] as { rule: string }[]).map((i) => i.rule),
+      ['working_mode_tools'],
+    );
+  });
+
+  it('a standard agent keeps any working mode, persona included', async () => {
+    const PERSONA = '22222222-2222-4222-8222-222222222222';
+    h.skills[PERSONA] = { id: PERSONA, name: 'Max', description: null, body: 'Your name is Max.', frontmatter: {} };
+    assert.equal((await h.call('POST', '/builder/agents/hr/persona-skills', { skillId: PERSONA })).status, 200);
   });
 
   it('sub-agents (consultation by attachment) are refused', async () => {

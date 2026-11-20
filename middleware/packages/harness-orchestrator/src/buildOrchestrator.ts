@@ -111,6 +111,7 @@ import {
 } from './facilitatorAgent.js';
 import {
   FACILITATOR_ARCHETYPE,
+  STANDARD_ARCHETYPE,
   archetypeOmits,
   type ArchetypeId,
   type ArchetypeOmission,
@@ -118,6 +119,7 @@ import {
 import {
   applyArchetypeContract,
 } from './registry/facilitatorNeutrality.js';
+import { findWorkingModeIdentityReplacement } from './workingModeIdentity.js';
 import type { AgentSpeaker } from '@omadia/plugin-api';
 import type { GuardDirectoryEntry } from './identityGuard/deterministic.js';
 import { IdentityGuard } from './identityGuard/guard.js';
@@ -717,6 +719,9 @@ export function buildOrchestratorForAgent(
   // The facilitator's own runtime (refusal gate, engine-driven turns,
   // neutrality contract) is what the archetype ADDS, not an omission.
   const isFacilitator = config.archetype === FACILITATOR_ARCHETYPE;
+  const workingModes = omits('persona_skill')
+    ? []
+    : workingModesKeepingIdentity(config.personaSkills ?? [], config.archetype, config.agentId);
   // #1876 — the fast lane is the agent's own, switchable per agent.
   const fastPathDeps =
     isFacilitator || omits('fast_path') || config.fastLane === false ? undefined : deps.fastPath;
@@ -1036,9 +1041,7 @@ export function buildOrchestratorForAgent(
     ...(config.fallbackVisionSupported !== undefined
       ? { fallbackVisionSupported: config.fallbackVisionSupported }
       : {}),
-    ...(config.personaSkills?.length && !omits('persona_skill')
-      ? { personaSkills: config.personaSkills }
-      : {}),
+    ...(workingModes.length > 0 ? { personaSkills: workingModes } : {}),
     maxTokens: config.maxTokens,
     maxToolIterations: config.maxToolIterations,
     ...(config.loopRepeatSoft !== undefined
@@ -1318,4 +1321,27 @@ export function buildOrchestratorForAgent(
     ...(config.modelRouting ? { effectiveModelRouting: config.modelRouting } : {}),
     dataPlanGuard,
   };
+}
+
+/**
+ * #2060 — the working modes an agent is built with. A `standard` agent keeps
+ * every attached mode (each is composed beneath its identity anyway). An agent
+ * of any other archetype has a fixed identity: a mode written as an identity
+ * of its own is left out here as well, so a skill edited after it was
+ * attached cannot bring back what the route refused (fail closed).
+ */
+export function workingModesKeepingIdentity(
+  modes: readonly OrchestratorPersonaSkill[],
+  archetype: string | undefined,
+  agentId: string,
+): readonly OrchestratorPersonaSkill[] {
+  if (archetype === undefined || archetype === STANDARD_ARCHETYPE) return modes;
+  return modes.filter((mode) => {
+    const findings = findWorkingModeIdentityReplacement(mode);
+    if (findings.length === 0) return true;
+    console.warn(
+      `[working-modes] agent ${agentId}: mode "${mode.slug}" left out, it replaces who speaks (${findings.map((f) => f.path).join(', ')})`,
+    );
+    return false;
+  });
 }

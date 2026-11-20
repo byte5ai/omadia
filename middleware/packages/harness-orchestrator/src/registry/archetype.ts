@@ -108,7 +108,10 @@ const STANDARD_DESCRIPTOR: ArchetypeDescriptor = Object.freeze({
 const FACILITATOR_DESCRIPTOR: ArchetypeDescriptor = Object.freeze({
   id: FACILITATOR_ARCHETYPE,
   source: 'kernel',
-  omits: Object.freeze([...ARCHETYPE_OMISSIONS]),
+  // Spec 2043 §2.3: working modes that add moderation methods are allowed;
+  // the working-mode route and the build refuse a mode that replaces who
+  // speaks (`findWorkingModeIdentityReplacement`, #2060).
+  omits: Object.freeze(ARCHETYPE_OMISSIONS.filter((o) => o !== 'persona_skill')),
   adds: Object.freeze([...ARCHETYPE_ADDITIONS]),
   requires: Object.freeze([...ARCHETYPE_REQUIREMENTS]),
   noun: 'a facilitator',
@@ -123,10 +126,6 @@ const FACILITATOR_DESCRIPTOR: ArchetypeDescriptor = Object.freeze({
       'a facilitator cannot be the default agent; it never answers for or as someone',
     channel_binding:
       'a facilitator speaks only as its own channel identity; a channel binding would let it answer through another bot',
-    // The retired term was "persona skill". Spec 2043 §2.3 allows working
-    // modes that add moderation methods; until a mode can no longer replace
-    // the identity (#2042), every one is refused.
-    persona_skill: 'a facilitator has no working modes; it never answers as someone else',
     fast_path: 'a facilitator does not use the fast lane',
     agent_to_agent: 'a facilitator neither talks to other agents nor is addressed by them',
     consultation: 'a facilitator neither consults other agents nor is consulted by them',

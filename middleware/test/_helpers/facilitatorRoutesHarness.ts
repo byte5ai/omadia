@@ -77,6 +77,9 @@ export interface RoutesHarness {
    *  archetype each delivers. Default: the engine and the second engine
    *  deliver `facilitator`. */
   archetypePlugins: Record<string, string>;
+  /** #2060 — what `graph.getSkill(id)` answers; default: a moderation
+   *  method for {@link SKILL_ID}. */
+  skills: Record<string, { id: string; name: string; description: string | null; body: string; frontmatter: Record<string, unknown> }>;
   call(method: string, path: string, body?: unknown): Promise<RouteResponse>;
   assertRefused(res: RouteResponse, omission: string, messagePattern: RegExp): void;
 }
@@ -144,7 +147,7 @@ export function routesHarness(): RoutesHarness {
       {
         get: (_t, prop: string) => {
           if (prop === 'getSkill') {
-            return () => Promise.resolve({ id: SKILL_ID, frontmatter: {}, body: '', description: '' });
+            return (id: string) => Promise.resolve(h.skills[id]);
           }
           if (prop === 'listMcpServers') return () => Promise.resolve([{ id: SERVER_ID, name: 'crm' }]);
           return (...args: unknown[]) => {
@@ -245,6 +248,15 @@ export function routesHarness(): RoutesHarness {
   beforeEach(() => {
     h.writes = [];
     h.identitySaves = 0;
+    h.skills = {
+      [SKILL_ID]: {
+        id: SKILL_ID,
+        name: 'Retrospective',
+        description: 'Runs a start-stop-continue retrospective',
+        body: 'Collect what went well, what did not and what to try next. Cluster the points with the group, then ask the group to decide on actions.',
+        frontmatter: {},
+      },
+    };
     h.archetypePlugins = { [ENGINE]: 'facilitator', '@acme/second-engine': 'facilitator' };
     h.agents = [agent('mara', 'facilitator'), agent('hr', 'standard')];
     h.installed = [

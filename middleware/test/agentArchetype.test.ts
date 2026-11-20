@@ -23,11 +23,16 @@ import {
 } from '../packages/harness-orchestrator/src/registry/archetype.js';
 
 describe('agent archetypes', () => {
-  it('standard is built in and omits nothing; the facilitator is seeded with every omission of spec 2043 §2.3', () => {
+  // #2060 — spec 2043 §2.3 omits every row but working modes: modes that add
+  // moderation methods are allowed (identity replacement is refused by the
+  // working-mode check, `facilitatorWorkingModes.test.ts`).
+  it('standard is built in and omits nothing; the facilitator is seeded with the omissions of spec 2043 §2.3', () => {
     assert.deepEqual(listArchetypes().map((d) => d.id).sort(), ['facilitator', 'standard']);
     assert.deepEqual(getArchetype('standard')?.omits, []);
-    assert.deepEqual([...(getArchetype('facilitator')?.omits ?? [])].sort(), [...ARCHETYPE_OMISSIONS].sort());
-    for (const omission of ARCHETYPE_OMISSIONS) {
+    const omitted = ARCHETYPE_OMISSIONS.filter((o) => o !== 'persona_skill');
+    assert.deepEqual([...(getArchetype('facilitator')?.omits ?? [])].sort(), [...omitted].sort());
+    assert.equal(archetypeOmits({ archetype: 'facilitator' }, 'persona_skill'), false);
+    for (const omission of omitted) {
       assert.equal(archetypeOmits({ archetype: 'standard' }, omission), false);
       assert.equal(archetypeOmits({ archetype: 'facilitator' }, omission), true);
       assert.ok(getArchetype('facilitator')?.omissionReasons?.[omission], `a reason for ${omission}`);

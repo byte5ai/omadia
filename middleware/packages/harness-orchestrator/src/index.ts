@@ -40,6 +40,9 @@ export type {
   WorkingModeCandidate,
   WorkingModeRouteResult,
 } from './workingModes.js';
+// #2060 — a working mode never replaces who speaks (spec 2043 §2.3).
+export { findWorkingModeIdentityReplacement } from './workingModeIdentity.js';
+export type { WorkingModeIdentityFinding, WorkingModeText } from './workingModeIdentity.js';
 
 // Multi-orchestrator registry (US4) — read by US7 channel routing and US9 UI.
 export {

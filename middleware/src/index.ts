@@ -141,7 +141,7 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { archetypeAdds, archetypeOf, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, MemberBaselineGrantStore, resolveScopedBundle } from '@omadia/orchestrator';
+import { archetypeAdds, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, MemberBaselineGrantStore, resolveScopedBundle } from '@omadia/orchestrator';
 import {
   buildSystemNotice,
   ChannelResolver as ManagementChannelResolver,
@@ -3642,7 +3642,10 @@ async function main(): Promise<void> {
       // (issue #456) — resolved from the same snapshot the registry built
       // this agent from, so tool surface and signature stay consistent.
       const skillsById = new Map((snapshot?.skills ?? []).map((s) => [s.id, s]));
-      const personaSkills = (snapshot?.personaSkillLinks ?? [])
+      // #2060 — an archetype without tool grants (the facilitator) may have
+      // working modes, but a mode never brings tools to it: no skill-bound
+      // capability is hydrated for such an agent.
+      const personaSkills = (archetypeOmits(entry.agent, 'tool_grant') ? [] : (snapshot?.personaSkillLinks ?? []))
         .filter((l) => l.agentId === entry.agent.id)
         .map((l) => skillsById.get(l.skillId))
         .filter((s): s is NonNullable<typeof s> => s !== undefined);

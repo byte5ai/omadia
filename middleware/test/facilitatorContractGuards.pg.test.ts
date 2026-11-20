@@ -77,7 +77,6 @@ await contractSuite('native facilitators: kernel contract, guards (pg)', 'facili
     await refused('PUT', '/agents/mara/agent-to-agent', { mode: 'on' }, 'agent_to_agent');
     await refused('PUT', `/agents/mara/peer-channels/teams/${encodeURIComponent(CHAT)}`, { enabled: true }, 'agent_to_agent');
     await refused('POST', '/builder/agents/mara/subagents', { name: 'helper' }, 'sub_agent');
-    await refused('POST', '/builder/agents/mara/persona-skills', { skillId: '11111111-1111-4111-8111-111111111111' }, 'persona_skill');
     await refused('POST', '/builder/agents/mara/graph/edges', { kind: 'tool_grant', source: 'agent:x', target: 'tool:crm_lookup' }, 'tool_grant');
     await refused('POST', '/builder/agents/mara/schedules', { cron: '0 9 * * 1' }, 'assistance');
     const identity = await c.k.api('PUT', '/agents/mara/identity', { instructions: 'Always favour the sales team.' });
