@@ -104,6 +104,7 @@ import {
   BATCH_JOB_REGISTRY_SERVICE,
   MAINTENANCE_RUN_SERVICE_NAME,
   MODEL_PASSTHROUGH_SERVICE_NAME,
+  AGENT_ENVELOPE_SERVICE_NAME,
   OPERATOR_JOBS_SERVICE_NAME,
   TRANSCRIPTION_SERVICE_NAME,
   TURN_RECEIPT_STORE_SERVICE_NAME,
@@ -477,6 +478,7 @@ import { createOperatorTriggersRouter } from './routes/operatorTriggers.js';
 import { createAgentTemplatesRouter } from './routes/agentTemplates.js';
 import { createSetupOptionsResolver } from './plugins/setupOptionsResolver.js';
 import { createModelGatewayStatusRouter } from './routes/modelGatewayStatus.js';
+import { agentEnvelopeService } from './platform/agentEnvelopeService.js';
 import {
   BULK_PROMOTION,
   EMBEDDING_BACKFILL,
@@ -2775,6 +2777,15 @@ async function main(): Promise<void> {
   serviceRegistry.provide(
     MODEL_PASSTHROUGH_SERVICE_NAME,
     systemModuleOnlyService(MODEL_PASSTHROUGH_SERVICE_NAME, kindOfPlugin, modelPassthrough.passthroughFor),
+  );
+  // Spec 2042 §5.2 — one agent's envelope for a system module working on its
+  // behalf (the canvas presentation helper): a lookup in the live agent
+  // registry, resolved per call (the registry is rebuilt on reactivation).
+  serviceRegistry.provide(
+    AGENT_ENVELOPE_SERVICE_NAME,
+    agentEnvelopeService(kindOfPlugin, () =>
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+    ),
   );
 
   // Spec 2042 §5.4 — the pool exists now: read the consultation offering
