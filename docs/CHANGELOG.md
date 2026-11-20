@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Added — An agent's own bot on Telegram, Discord and Slack (epic #2042, S7)
+
+- **Migration 0105 `agent_channel_identities`:** (agent, channel type, routing key)
+  for an agent's own bot on channels other than Teams; no credential column, the
+  token stays in the channel plugin's vault. Routing reads it together with
+  `agent_teams_identities`, so a turn through the bot goes to its agent and to
+  nobody else, and the agent posts through it (`asChannelKey`).
+- **Channel SDK:** `registerAgentIdentityProvider` / `AgentIdentityProvider`
+  (additive). **Operator API:** `GET/PUT/DELETE
+  /api/v1/operator/agents/:slug/channel-identities[/:channelType]`, audited.
+  **web-ui:** the agent's "Teams" tab is now "Channels" with an "Own bots" section.
+- **plugin-api (additive, version unchanged):** `SystemNoticeCode` `agent_own_bot`,
+  the answer to `/agent` sent to an agent's own bot.
+
 ### Changed — One agent speaks: management layer, speaker, identity guard (epic #2042, S1)
 
 - **No fallback agent any more (#2055, #1880).** The management layer routes

@@ -3733,6 +3733,23 @@ At a minimum, your deployment vault holds:
 Nothing from this list should appear in `git grep` output of this repository.
 If it does, that is a bug — file an issue and rotate.
 
+### Agents' own channel bots: tokens stay in the channel plugin (spec 2042 §5.3)
+
+An agent's own Telegram, Discord or Slack bot is registered through
+`PUT /api/v1/operator/agents/:slug/channel-identities/:channelType`. The
+credentials pass through the kernel exactly once, from the request to the
+channel plugin's `AgentIdentityProvider.provision`; the plugin checks them with
+the platform and stores them in ITS vault namespace (`agent_bot_token_<id>`,
+`agent_app_<member id>`). The kernel stores only (agent, channel type, routing
+key) in `agent_channel_identities` (migration 0105, no credential column), never
+logs a credential (the service scrubs every credential value from a plugin's
+error text before logging or answering), and the audit entries
+(`agent.channel_identity.set|delete`) carry the channel type and the routing key
+only. Removing the bot asks the plugin to stop it and delete the credentials
+before the row goes. A bot whose agent is deleted keeps its row (tombstone) and
+is refused, never answered by another agent with other permissions; an agent bot
+the kernel does not know as an identity answers only with a `system` notice.
+
 ### Master-key posture is not on the public `/health` (#1385, #1387, #1332)
 
 The unauthenticated `GET /health` reports the database verdict

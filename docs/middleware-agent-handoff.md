@@ -148,6 +148,48 @@ src/
 - **Endpoints:** `/api/v1/operator/default-agents`,
   `/api/v1/operator/agents/:slug/availability`, `/api/v1/agents/directory`.
 
+### Eigener Bot pro Agent auf jedem Kanal (Spec 2042 §5.3, §8 Punkt 20, S7)
+
+- **Ein Agent kann pro Kanal einen eigenen Bot haben** (Telegram: BotFather-Bot,
+  Discord: eigene Application, Slack: eigene App). Wer diesem Bot schreibt, spricht
+  mit genau diesem Agenten; der Agent postet über ihn, mit Name und Avatar der
+  Plattform und ohne Namenszeile. Ohne eigenen Bot bleibt der gemeinsame Bot mit
+  `/agent` und Namenszeile.
+- **Datenmodell:** `agent_channel_identities` (Migration 0105): (agent, channel_type,
+  channel_key), `channel_type <> 'teams'` (Teams bleibt in `agent_teams_identities`
+  mit eigener Provisionierungskette), Key lowercase, ein Bot pro Agent und Kanal,
+  ein Bot gehört genau einem Agenten, Trigger `notify_agents_changed`. **Kein
+  Credential im Kernel:** der Token liegt im Vault des Kanal-Plugins.
+- **Routing liest die Union** (`ConfigStore.listChannelIdentities`: Teams `28:<appId>`
+  + 0105). Damit gelten `identityForChannel`, `identityOwnerFor`, `channelIdentityFor`,
+  ManagementRouter-Stufe 1 (`identity`, exklusiv), Tombstones und `asChannelKey`-Sends
+  unverändert für alle Kanäle. `/agent` an einen eigenen Bot beantwortet der
+  Management-Layer mit der Notice `agent_own_bot` und speichert keine Auswahl.
+- **Bot-Keys (verbindlich):** Telegram `tg:<botId>`, Discord `discord-app:<appId>`,
+  Slack `slack-bot:<member id>` (lowercase). Derselbe String ist Routing-Key,
+  `asChannelKey` und `receivedByChannelKey`.
+- **SDK-Vertrag:** `CoreApi.registerAgentIdentityProvider(channelId, AgentIdentityProvider)`
+  (`harness-channel-sdk/src/agentIdentity.ts`): `fields`, `provision` (prüft und
+  startet den Bot, liefert den Key), `release`, `status?`, `defaultChannelKey?`,
+  `presentIn?`. Kanal-Claim und Deactivate wie bei den anderen Providern; `teams`
+  wird abgelehnt. Die Kernel-Registry ist `ChannelProviderRegistry<AgentIdentityProvider>`
+  (`src/index.ts`); `defaultChannelBotKey` (Conductor) und `presentBots`
+  (`get_chat_participants`) fragen außerhalb von Teams den Provider.
+- **Operator-API** (`src/routes/operatorAgentChannelIdentities.ts`,
+  Service `src/platform/agentChannelIdentityService.ts`):
+  `GET /api/v1/operator/agents/:slug/channel-identities` (Kanäle, Felder, Bot mit
+  Status), `PUT …/:channelType` `{credentials}` (201 / 400 invalid_input / 404
+  channel_not_available / 409 agent_has_identity|bot_taken|already_in_use / 422
+  invalid_credentials / 502 unreachable), `DELETE …/:channelType` (stoppt den Bot
+  zuerst, dann geht die Zeile). Audit `agent.channel_identity.set|delete`.
+- **web-ui:** Tab „Kanäle“ der Agent-Seite, Abschnitt „Eigene Bots“
+  (`AgentChannelIdentities.tsx`, Felder vom Plugin, Secrets nur schreibbar).
+- **Plugins:** omadia-channel-telegram, -discord, -slack, je Branch
+  `feat/2042-s7-own-bots`. Ein Agent-Bot routet nur auf seinen eigenen Key und
+  antwortet nur bei `exclusive`; sonst eine `system`-Notice, nie ein anderer Agent.
+  Telegram: Gruppenaktivierung pro Bot, DM-Pairing geteilt (das Pairing sagt, welcher
+  Telegram-Nutzer welche Person ist; das ist keine Eigenschaft eines Bots).
+
 ### Orchestrator
 
 - **Datei:** `services/orchestrator.ts`
