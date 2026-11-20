@@ -7461,6 +7461,7 @@ async function main(): Promise<void> {
     conversation: createConversationSendService({
       providers: conversationSendRegistry,
       ownIdentity: ownIdentitySend,
+      ...(conversationMessages ? { openQuestions: conversationMessages.openQuestions } : {}),
       onOwnIdentityDelivered: ownIdentityPostLog.record,
       log: (m) => console.log(m),
     }),

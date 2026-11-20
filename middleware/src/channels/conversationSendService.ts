@@ -22,7 +22,7 @@ import type {
   TargetedDeliveryOutcome,
   TargetedMessage,
 } from '@omadia/channel-sdk';
-import type { ConversationSendCapabilities } from '@omadia/plugin-api';
+import { CARD_QUESTION_KINDS, type ConversationSendCapabilities, type QuestionCard } from '@omadia/plugin-api';
 
 import type { MessageSubscription } from './conversationMessages/store.js';
 import type { ConversationSendRegistry } from './conversationSendRegistry.js';
@@ -34,6 +34,14 @@ import {
   unreachable,
   type OwnIdentityDeps,
 } from './ownIdentitySend.js';
+import {
+  canGoOutAsText,
+  cardAsPlainMessage,
+  pollAsCard,
+  pollAsPlainMessage,
+  questionExpiry,
+  type OpenCardQuestionStore,
+} from './openCardQuestions.js';
 import { cardRefusalFor, readCardSupport, readCardUpdate, readQuestionCard } from './questionCard.js';
 
 export interface ConversationSendInput {
@@ -76,6 +84,9 @@ export interface ConversationSendService {
   updateCard(input: ConversationCardUpdateInput, ground: AuthorizedSendGround): Promise<CardUpdateOutcome>;
 }
 
+/** The question kinds a person can answer by typing (#2086). */
+const TEXT_CARD_KINDS = CARD_QUESTION_KINDS.filter((kind) => kind !== 'assignment');
+
 const NO_GROUND =
   'an agent posts as itself only under an execution scope that authorized it (conversationSend@2)';
 
@@ -83,11 +94,77 @@ export function createConversationSendService(deps: {
   providers: ConversationSendRegistry;
   /** Own-identity sends. Absent (no registry) → every send is refused. */
   ownIdentity?: OwnIdentityDeps;
+  /**
+   * #2086 — where a card or poll that went out as plain text keeps its open
+   * question, so a typed reply can become a `card_answer`. Absent: such a card
+   * is refused as before and the sender posts its own chat ballot.
+   */
+  openQuestions?: OpenCardQuestionStore;
   /** Told about every message that went out as an agent's own identity. */
   onOwnIdentityDelivered?: (agentSlug: string, channelType: string, conversationId: string) => void;
   log?: (msg: string) => void;
 }): ConversationSendService {
   const log = deps.log ?? (() => undefined);
+
+  /** What goes to the provider: the message as it is, or its plain-text form. */
+  type PlainForm =
+    | { message: TargetedMessage; question?: OpenQuestionToKeep }
+    | { refusal: string };
+  interface OpenQuestionToKeep {
+    card: QuestionCard;
+    asPoll: boolean;
+  }
+
+  function plainFormOf(message: TargetedMessage, provider: ConversationSendProvider, channelType: string): PlainForm {
+    const { poll, card, ...rest } = message;
+    const canKeep = deps.openQuestions !== undefined;
+    if (poll && provider.supports?.poll !== true) {
+      if (!canKeep) return { refusal: `the '${channelType}' channel plugin does not declare poll support` };
+      return {
+        message: { ...rest, text: pollAsPlainMessage(message.text, poll) },
+        question: { card: pollAsCard(poll), asPoll: true },
+      };
+    }
+    if (card) {
+      const refusal = cardRefusalFor(card, readCardSupport(provider.supports?.card), channelType);
+      if (refusal === undefined) return { message };
+      if (!canKeep || !canGoOutAsText(card)) return { refusal: `${refusal} — nothing was posted` };
+      return {
+        message: { ...rest, text: cardAsPlainMessage(message.text, card) },
+        question: { card, asPoll: false },
+      };
+    }
+    return { message };
+  }
+
+  /** Remember the question of a card or poll that went out as text, and say which message carries it. */
+  async function keepQuestionOpen(
+    input: ConversationSendInput,
+    outcome: Extract<TargetedDeliveryOutcome, { outcome: 'delivered' }>,
+    question: OpenQuestionToKeep,
+  ): Promise<TargetedDeliveryOutcome> {
+    // A channel that reports no message id still gets its question tracked:
+    // an addressed reply in a conversation with one open question is matched
+    // without one.
+    const messageId = outcome.cardMessageId ?? outcome.messageId ?? `card:${question.card.cardId}`;
+    try {
+      await deps.openQuestions?.register({
+        channelType: input.channelType,
+        conversationId: input.conversationId,
+        messageId,
+        agentSlug: input.agentSlug,
+        card: question.card,
+        ...(question.asPoll ? { asPoll: true } : {}),
+        expiresAt: questionExpiry(question.card, new Date()),
+      });
+    } catch (err) {
+      // The message is out; a lost question only means a typed reply stays a message.
+      log(
+        `[channels] could not keep the question of ${question.card.cardId} open: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return { ...outcome, cardMessageId: messageId };
+  }
 
   async function deliver(
     input: ConversationSendInput,
@@ -113,27 +190,27 @@ export function createConversationSendService(deps: {
         `the '${input.channelType}' channel plugin does not declare that it sends as a named identity — nothing was posted, so nothing could go out under another bot's name`,
       );
     }
-    if (message.poll && provider.supports.poll !== true) {
-      return unreachable('channel_error', `the '${input.channelType}' channel plugin does not declare poll support`);
-    }
-    // A card only goes to a channel that declared every kind on it. The
-    // refusal is a `channel_error` that says which, so the sender falls back
-    // to a chat ballot instead of guessing.
-    if (message.card) {
-      const refusal = cardRefusalFor(message.card, readCardSupport(provider.supports.card), input.channelType);
-      if (refusal) return unreachable('channel_error', `${refusal} — nothing was posted`);
-    }
+    // #2086 — a card or poll the channel does not show natively goes out as
+    // numbered text, and its question stays open for a typed reply. Only with a
+    // store to keep it in: otherwise the sender gets the refusal it always got
+    // and posts its own chat ballot.
+    const plain = plainFormOf(message, provider, input.channelType);
+    if ('refusal' in plain) return unreachable('channel_error', plain.refusal);
+    const outgoing = plain.message;
     // Mentions degrade by contract: a channel without them shows plain text.
-    const { mentions, ...withoutMentions } = message;
+    const { mentions, ...withoutMentions } = outgoing;
     const marked = markOwnIdentityMessage(
       deps.ownIdentity?.disclosure,
       { agentSlug: input.agentSlug, channelType: input.channelType, target: input.conversationId },
-      mentions && provider.supports.mentions !== true ? withoutMentions : message,
+      mentions && provider.supports.mentions !== true ? withoutMentions : outgoing,
       provider.supports,
     );
     try {
       const outcome = await provider.sendToConversation(input.conversationId, marked.message, { asChannelKey });
-      if (outcome.outcome === 'delivered') marked.delivered();
+      if (outcome.outcome === 'delivered') {
+        marked.delivered();
+        if (plain.question) return keepQuestionOpen(input, outcome, plain.question);
+      }
       return outcome;
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err);
@@ -198,12 +275,20 @@ export function createConversationSendService(deps: {
 
   function capabilitiesOf(provider: ConversationSendProvider): ConversationSendCapabilities {
     const card = readCardSupport(provider.supports?.card);
+    // #2086 — with a store for open questions every channel can ask: what it
+    // does not show natively goes out as numbered text and a typed reply comes
+    // back as the same answer event.
+    const asText = deps.openQuestions !== undefined;
     return {
       asOwnIdentity: provider.supports?.asChannelKey === true,
       mentions: provider.supports?.mentions === true,
-      poll: provider.supports?.poll === true,
+      poll: provider.supports?.poll === true || asText,
       // `update` is only true when the method is really there.
-      ...(card ? { card: { ...card, update: card.update && typeof provider.updateCard === 'function' } } : {}),
+      ...(card
+        ? { card: { ...card, update: card.update && typeof provider.updateCard === 'function' } }
+        : asText
+          ? { card: { kinds: TEXT_CARD_KINDS, maxQuestions: 1, update: false } }
+          : {}),
     };
   }
 

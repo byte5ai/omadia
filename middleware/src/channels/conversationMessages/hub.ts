@@ -25,6 +25,7 @@
 // Events of one subscription are stored in arrival order (a per-subscription
 // queue), so "created, then edited" cannot be stored the other way round.
 
+import { typedReplyAsCardAnswer, type OpenCardQuestionStore } from '../openCardQuestions.js';
 import { archetypeAdds, type ArchetypeBearer } from '@omadia/orchestrator';
 import type { ConversationMessageEvent } from '@omadia/channel-sdk';
 import type {
@@ -62,6 +63,11 @@ const MAX_PAGE_SIZE = 500;
 
 export interface ConversationMessageHubDeps {
   readonly store: ConversationMessageStore;
+  /**
+   * #2086 — the open questions of cards posted as plain text. Absent: a typed
+   * reply is an ordinary message.
+   */
+  readonly typedReplies?: { readonly store: OpenCardQuestionStore; readonly now?: () => Date };
   /** The agent behind a slug, as the registry knows it. */
   readonly resolveAgent: (
     agentSlug: string,
@@ -426,12 +432,32 @@ export class ConversationMessageHub {
     };
   }
 
+  /**
+   * #2086 — a typed reply to a question the kernel posted as plain text is
+   * the answer to it: the same `card_answer` event a card submission would
+   * be, stored instead of the message. A message that does not fit stays a
+   * message.
+   */
+  private async asTypedAnswer(event: ConversationMessageEvent): Promise<ConversationMessageEvent> {
+    const replies = this.deps.typedReplies;
+    if (!replies || event.kind !== 'created') return event;
+    try {
+      return (await typedReplyAsCardAnswer(replies.store, event, replies.now?.() ?? new Date())) ?? event;
+    } catch (err) {
+      this.log(
+        `[conversation-messages] reading a typed reply failed, it stays a message: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return event;
+    }
+  }
+
   private async routeAndStore(
     key: string,
-    event: ConversationMessageEvent,
+    incoming: ConversationMessageEvent,
   ): Promise<ConversationMessageRecord | undefined> {
     const subscriptions = this.byIdentity.get(key) ?? [];
     if (subscriptions.length === 0) return undefined;
+    const event = await this.asTypedAnswer(incoming);
     let first: ConversationMessageRecord | undefined;
     const { recipients, bound } = await this.recipients(subscriptions, event);
     // Where a process reads everything, the channel's turn is suppressed
