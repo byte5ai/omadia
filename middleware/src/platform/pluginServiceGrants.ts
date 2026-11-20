@@ -373,6 +373,11 @@ export const RAW_MODEL_SERVICE_NAMES: ReadonlySet<string> = new Set(['anthropicC
  *     and logged, so the plugins that need migrating are known before the
  *     contract step (channel-teams asks for `anthropicClient@1` today).
  */
+/** Whether `name` is a raw model client or provider pool (spec 2042 §5.10). */
+export function isRawModelServiceName(name: string): boolean {
+  return RAW_MODEL_SERVICE_NAMES.has(name);
+}
+
 export function rawModelServiceAccess(input: {
   readonly name: string;
   readonly kind: PluginKind | undefined;

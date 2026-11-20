@@ -107,7 +107,10 @@ describe('manifest kind', () => {
 
   it('keeps every known kind, and a manifest without the field stays an agent plugin', () => {
     for (const kind of ['agent', 'integration', 'channel', 'tool', 'extension', 'skill', 'model', 'system-module', 'agent-template']) {
-      assert.equal(load(manifest({ kind, archetype: undefined })).plugin?.kind, kind);
+      const doc = manifest({ kind, archetype: undefined });
+      // A template package delivers at least one template (spec 2042 §5.10).
+      if (kind === 'agent-template') doc['agent_templates'] = [{ id: 'hr', name: 'Hanna' }];
+      assert.equal(load(doc).plugin?.kind, kind);
     }
     assert.equal(load(manifest({ kind: undefined, archetype: undefined })).plugin?.kind, 'agent');
   });

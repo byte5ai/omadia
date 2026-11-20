@@ -117,6 +117,7 @@ import {
   createServiceGrantGate,
   declaresServiceMajor,
   legacyServiceGrantsFor,
+  isRawModelServiceName,
   rawModelServiceAccess,
   versionedServiceRef,
 } from './pluginServiceGrants.js';
@@ -384,12 +385,14 @@ export function createPluginContext(
       }
       // Spec 2042 §5.10 — raw model clients and provider pools are never a
       // plugin's: it reaches models through ctx.llm, in its caller's context.
-      const modelAccess = rawModelServiceAccess({
-        name,
-        kind: catalogEntry?.plugin.kind,
-        bundled: catalogEntry?.origin === 'bundled' || catalog.isBundledId(agentId),
-        mode: modelGatewayMode(),
-      });
+      const modelAccess = isRawModelServiceName(name)
+        ? rawModelServiceAccess({
+            name,
+            kind: catalogEntry?.plugin.kind,
+            bundled: catalogEntry?.origin === 'bundled' || catalog.isBundledId(agentId),
+            mode: modelGatewayMode(),
+          })
+        : 'allow';
       if (modelAccess === 'refuse') throw new RawModelServiceRefusedError(agentId, name);
       if (modelAccess === 'observe' && !observedRawModelServices.has(name)) {
         observedRawModelServices.add(name);
