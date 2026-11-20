@@ -98,6 +98,9 @@ export interface OperatorAgentDto {
   /** Spec 2042 — who may reach the agent (`agentAvailability.ts`). Absent on
    *  a middleware that predates it. */
   availability?: AgentAvailability;
+  /** #2066 — channel types the agent has its own identity (bot) on, as the
+   *  kernel routes them. Absent on an older middleware. */
+  own_identity_channels?: string[];
 }
 
 /** #2054 — one connected system an agent reaches (spec 2042 §5.7). */

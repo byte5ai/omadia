@@ -8,6 +8,20 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.80.0 — 2026-11-20
+
+Additive (#2066, spec 2043 §7): per-agent settings of an archetype.
+
+### Added
+
+- **`AgentProfile.archetypeSettings`** (optional): the values the operator set
+  for the fields the agent's archetype declares in its manifest
+  (`archetype.agent_settings`, types `enum` and `number_list`). Only set
+  fields appear; a missing key means the plugin's own instance setting
+  applies. The facilitator uses it for its default methods and reminder
+  policy. Kernels older than 1.80.0 leave it out, so a plugin reads it as optional and
+  needs no `compat.core` change.
+
 ## 1.79.0 — 2026-11-20
 
 Additive (spec 2042 §5.3, §8 item 20): an agent's own bot on every channel,

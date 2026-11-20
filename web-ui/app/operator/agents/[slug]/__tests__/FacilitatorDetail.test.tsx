@@ -65,6 +65,9 @@ vi.mock('../_components/AgentIdentity', () => ({
 vi.mock('../_components/AgentTeamsIdentity', () => ({
   AgentTeamsIdentity: () => <div data-testid="agent-teams-identity" />,
 }));
+vi.mock('../_components/AgentChannelIdentities', () => ({
+  AgentChannelIdentities: () => <div data-testid="agent-channel-identities" />,
+}));
 vi.mock('../_components/AgentTeamsInstalls', () => ({
   AgentTeamsInstalls: () => <div data-testid="agent-teams-installs" />,
 }));
@@ -128,6 +131,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
       'agent-detail-tab-model',
       'agent-detail-tab-teams',
       'agent-detail-tab-engine',
+      'agent-detail-tab-moderation',
     ]);
     expect(screen.getByTestId('facilitator-omitted-note').textContent).toContain(
       'No plugins, tools, MCP servers, memory',
@@ -158,6 +162,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
     await userEvent.click(screen.getByTestId('agent-detail-tab-teams'));
     expect(screen.getByTestId('agent-teams-identity')).toBeTruthy();
     expect(screen.getByTestId('agent-teams-installs')).toBeTruthy();
+    expect(screen.getByTestId('agent-channel-identities')).toBeTruthy();
   });
 
   const ATTACHED = { id: ENGINE.id, enabled: true, config: {} };

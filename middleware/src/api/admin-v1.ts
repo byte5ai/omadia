@@ -12,6 +12,7 @@
 // than restated. A second declaration would drift from the one plugin authors
 // actually compile against.
 import type { SqlPermission } from '@omadia/plugin-api';
+import type { ArchetypeAgentSetting } from '@omadia/orchestrator';
 
 export type { SqlPermission };
 
@@ -447,6 +448,8 @@ export interface PluginArchetype {
   description?: string | { en?: string; de?: string };
   omissionReasons?: Record<string, string>;
   roleContract?: string;
+  /** #2066 — per-agent settings the archetype declares (`agent_settings`). */
+  agentSettings?: ArchetypeAgentSetting[];
 }
 
 /** A tool's declared effect: `read` reads a system, `write` changes one,

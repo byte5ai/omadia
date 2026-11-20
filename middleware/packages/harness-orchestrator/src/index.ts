@@ -40,6 +40,9 @@ export type {
   WorkingModeCandidate,
   WorkingModeRouteResult,
 } from './workingModes.js';
+// #2060 — a working mode never replaces who speaks (spec 2043 §2.3).
+export { findWorkingModeIdentityReplacement } from './workingModeIdentity.js';
+export type { WorkingModeIdentityFinding, WorkingModeText } from './workingModeIdentity.js';
 
 // Multi-orchestrator registry (US4) — read by US7 channel routing and US9 UI.
 export {
@@ -157,6 +160,7 @@ export type { AgentTombstone } from './registry/tombstones.js';
 // #2088 — archetypes: the registry and the one question call sites ask.
 export {
   ARCHETYPE_ADDITIONS,
+  ARCHETYPE_AGENT_SETTING_TYPES,
   ARCHETYPE_OMISSIONS,
   ARCHETYPE_REQUIREMENTS,
   ArchetypeOmissionError,
@@ -167,15 +171,22 @@ export {
   archetypeOmits,
   archetypeRequires,
   assertArchetypeAllows,
+  effectiveArchetypeAgentSettings,
   getArchetype,
   isArchetype,
   isArchetypeId,
   listArchetypes,
   parseArchetype,
   registerArchetype,
+  validateArchetypeAgentSettings,
 } from './registry/archetype.js';
 export type {
   ArchetypeAddition,
+  ArchetypeAgentSetting,
+  ArchetypeAgentSettingIssue,
+  ArchetypeAgentSettingOption,
+  ArchetypeAgentSettingType,
+  ArchetypeAgentSettingValue,
   ArchetypeBearer,
   ArchetypeDescriptor,
   ArchetypeRequirement,

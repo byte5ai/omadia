@@ -186,10 +186,11 @@ export function checkFacilitatorInstructions(
 /** Thrown by the identity save path; the route maps it to a 422. */
 export class FacilitatorContractError extends Error {
   readonly code = 'facilitator_contract_violation';
-  constructor(readonly issues: readonly FacilitatorContractIssue[]) {
-    super(
-      `facilitator identity rejected: ${issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`,
-    );
+  constructor(
+    readonly issues: readonly FacilitatorContractIssue[],
+    subject = 'facilitator identity',
+  ) {
+    super(`${subject} rejected: ${issues.map((i) => `${i.path}: ${i.message}`).join('; ')}`);
     this.name = 'FacilitatorContractError';
   }
 }

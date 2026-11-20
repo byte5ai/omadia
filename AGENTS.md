@@ -42,6 +42,15 @@ Lieferform, Archetypen, Model-Gateway, Konsultation, Diskretion, Trigger, Determ
 first, native Facilitators). Änderungen zahlen auf diese Konzepte ein; wer eine andere
 Richtung braucht, schreibt ein neues ADR, das das betroffene ablöst, statt dagegen zu bauen.
 
+**Facilitator-Entscheidungen (ADR 0023, #2060/#2066):** Facilitators dürfen Arbeitsmodi als
+Moderationsmethoden haben; Route und Build lehnen für jeden Nicht-`standard`-Archetyp
+Identitätsersatz ab (`workingModeIdentity.ts`, `services/workingModeContract.ts`), dazu
+Neutralitätsvertrag und `requires_tools`. Einstellungen pro Agent deklariert der Archetyp
+(`archetype.agent_settings`); der Kernel validiert, speichert (`agents.archetype_settings`)
+und gibt sie als `AgentProfile.archetypeSettings` ans Plugin; nicht gesetzt = Instanz-
+Einstellung des Plugins. Readiness ist pro Kanal-Identität (`own_identity_channels`), Teams
+wird nur für Teams geprüft. Persona-Grenzen bleiben im Kernel (`services/facilitatorContract.ts`).
+
 ## Task-Routing: welches Werkzeug für welche Aufgabengröße
 
 Bevor eine Aufgabe begonnen wird: welche Größenordnung hat sie, und passt eines der vorhandenen `scripts/*.workflow.mjs`-Pipelines besser als Ad-hoc-Arbeit in der aktuellen Session?

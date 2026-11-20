@@ -14,6 +14,8 @@
  */
 
 import {
+  STANDARD_ARCHETYPE,
+  archetypeOf,
   assertArchetypeAllows,
   assertHelperModelAllowed,
   helpersOutOfService,
@@ -38,6 +40,9 @@ import {
   type ToolGrantRow,
 } from '@omadia/orchestrator';
 import { respondFacilitatorRefusal } from '../platform/facilitatorGuard.js';
+import { FacilitatorContractError } from '../services/facilitatorContract.js';
+import { assertWorkingModeAllowed } from '../services/workingModeContract.js';
+
 import {
   isDeprecatedMcpTransport,
   looksUnauthorized,
@@ -109,6 +114,19 @@ import {
   type OperatorSessionCheck,
 } from './publicMcpBindingsRouter.js';
 import type { PublicMcpKeyBindingAdminStore } from '../mcp/publicMcpKeyBindingsAdmin.js';
+
+/** Fields a working-mode request could use to bring an identity along. */
+const WORKING_MODE_IDENTITY_FIELDS = [
+  'displayName',
+  'display_name',
+  'name',
+  'persona',
+  'identity',
+  'speaker',
+  'avatar',
+  'asAgent',
+  'channelIdentity',
+] as const;
 
 export interface AgentBuilderRouterOptions {
   /** #2082 — a schedule was created or deleted: arm or end its trigger now. */
@@ -818,7 +836,22 @@ export function createAgentBuilderRouter(
         const agent = await agentOr404(l, str(req.params.slug), res);
         if (!agent) return;
         assertArchetypeAllows(agent, 'persona_skill');
-        const skillId = str((req.body ?? {}).skillId);
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        // #2060 — a working mode changes how an agent works, never who it is.
+        // A request that tries to bring its own identity along is refused
+        // outright for an agent with a fixed one, whatever the skill says.
+        const identityFields = WORKING_MODE_IDENTITY_FIELDS.filter((f) => body[f] !== undefined);
+        if (identityFields.length > 0 && archetypeOf(agent) !== STANDARD_ARCHETYPE) {
+          throw new FacilitatorContractError(
+            identityFields.map((f) => ({
+              path: f,
+              rule: 'identity_replacement',
+              message: 'a working mode changes how the agent works, never who speaks',
+            })),
+            'working mode',
+          );
+        }
+        const skillId = str(body['skillId']);
         if (!isUuid(skillId)) {
           res.status(400).json({ error: 'invalid_skill_id' });
           return;
@@ -828,6 +861,7 @@ export function createAgentBuilderRouter(
           res.status(400).json({ error: 'skill_not_found', skillId });
           return;
         }
+        assertWorkingModeAllowed(agent, skill);
         // A persona skill drives the TOP-LEVEL orchestrator with its full
         // tool access — a bigger blast radius than a scoped sub-agent skill
         // grant. Re-scan at attach time (not just import time), same
@@ -1227,6 +1261,17 @@ export function createAgentBuilderRouter(
       if (typeof b.body === 'string') patch.body = b.body;
       if (b.frontmatter && typeof b.frontmatter === 'object' && !Array.isArray(b.frontmatter)) {
         patch.frontmatter = b.frontmatter as Record<string, unknown>;
+      }
+      // #2060 — a skill that is a working mode of an agent with a fixed
+      // identity (a facilitator) is checked again with its new text: an edit
+      // must not bring in what attaching it would have been refused for.
+      const current = await l.graph.getSkill(str(req.params.id));
+      if (current) {
+        const next = { ...current, ...patch };
+        for (const agentId of await l.graph.listAgentsByPersonaSkillId(current.id)) {
+          const agent = await l.config.getAgentById(agentId);
+          if (agent) assertWorkingModeAllowed(agent, next);
+        }
       }
       const row = await l.graph.updateSkill(str(req.params.id), patch);
       await reload(l);

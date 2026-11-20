@@ -36,6 +36,24 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Facilitators: moderation working modes, per-facilitator defaults, readiness per channel (#2060, #2066, ADR-0023)
+
+- Facilitators may attach working modes that add moderation methods.
+  `POST /builder/agents/:slug/persona-skills` refuses, for every archetype but
+  `standard`, identity replacement, a mode against the neutrality contract
+  (facilitator) and a mode with `requires_tools` (422
+  `facilitator_contract_violation`); `PATCH /builder/skills/:id` re-checks a
+  skill held as such a mode; the build drops identity-replacing modes.
+- Migration `0106_agent_archetype_settings`: `agents.archetype_settings`
+  (JSON object) for the per-agent settings an archetype declares
+  (`archetype.agent_settings`, types `enum`, `number_list`).
+  `GET/PUT /api/v1/operator/agents/:slug/archetype-settings`, audited as
+  `agent.archetype_settings_change`.
+- `@omadia/plugin-api` 1.80.0 (additive): optional
+  `AgentProfile.archetypeSettings`.
+- The agent list carries `own_identity_channels`; the web-ui shows a
+  facilitator ready with an own identity on any channel and has a
+  "Moderation" tab (defaults and working modes).
 ### Added — An agent's own bot on Telegram, Discord and Slack (epic #2042, S7)
 
 - **Migration 0105 `agent_channel_identities`:** (agent, channel type, routing key)

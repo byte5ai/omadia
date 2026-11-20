@@ -2398,11 +2398,12 @@ export function createOperatorAgentsRouter(
     const live = svc();
     if (!live) return unavailable(res);
     try {
-      const [allAgents, plugins, bindings, availabilityPrincipals] = await Promise.all([
+      const [allAgents, plugins, bindings, availabilityPrincipals, channelIdentities] = await Promise.all([
         live.store.listAgents(),
         live.store.listAllAgentPlugins(),
         live.store.listChannelBindings(),
         live.store.routing.listAvailabilityPrincipals(),
+        ownChannelIdentities(live.store),
       ]);
       // #2049 — the directory lists the operator's agents; a Plugin Builder
       // preview's draft agent belongs to the preview (Plugin Builder only).
@@ -2444,6 +2445,11 @@ export function createOperatorAgentsRouter(
           reach: reachByAgent.get(a.id) ?? null,
           // #2055 — who may use the agent, where (spec 2042 §5.3).
           availability: availabilityDto(a, principalsByAgent.get(a.id) ?? []),
+          // #2066 — channel types the agent has its own identity (bot) on, as
+          // the kernel routes them. A facilitator's readiness is per channel.
+          own_identity_channels: [
+            ...new Set(channelIdentities.filter((i) => i.agentId === a.id).map((i) => i.channelType)),
+          ].sort(),
         })),
         // #2055 — the agent of the instance entry of the default-agent table
         // (`null` = off): what an unaddressed message reaches when no user or
@@ -4983,4 +4989,25 @@ function groupBy<T, K>(items: readonly T[], keyFn: (item: T) => K): Map<K, T[]> 
     else out.set(key, [item]);
   }
   return out;
+}
+
+/**
+ * #2066 — every own channel identity the kernel routes (Teams bots today,
+ * the other channels' bots where the store lists them). Feature-detected: a
+ * store without the method, or a failed read, lists none rather than failing
+ * the directory.
+ */
+async function ownChannelIdentities(
+  store: unknown,
+): Promise<readonly { readonly agentId: string; readonly channelType: string }[]> {
+  const list = (store as Partial<Pick<ConfigStore, 'listChannelIdentities'>>).listChannelIdentities;
+  if (typeof list !== 'function') return [];
+  try {
+    return await list.call(store);
+  } catch (err) {
+    console.warn(
+      `[operator-agents] channel identities could not be read: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return [];
+  }
 }

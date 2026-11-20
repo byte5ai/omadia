@@ -60,6 +60,15 @@ export interface AgentProfile {
   language?: string;
   /** Channel types the agent has an identity of its own on. */
   ownIdentityChannelTypes: readonly string[];
+  /**
+   * #2066 — the settings the operator gave this agent, for the fields its
+   * archetype declares (`archetype.agent_settings` in the archetype plugin's
+   * manifest): a string for an `enum` field, a list of numbers for a
+   * `number_list` field. Only fields that are set appear; a missing key means
+   * the plugin's own instance setting applies. Absent on a kernel older than
+   * 1.80.0, and when nothing is set.
+   */
+  archetypeSettings?: Readonly<Record<string, string | readonly number[]>>;
 }
 
 export interface AgentTurnService {

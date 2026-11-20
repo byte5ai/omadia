@@ -34,7 +34,6 @@ archetype:
     - "memory"
     - "default_agent"
     - "channel_binding"
-    - "persona_skill"
     - "fast_path"
     - "agent_to_agent"
     - "consultation"
@@ -46,12 +45,72 @@ archetype:
     memory: "a facilitator has no general memory; its only memory is the record of each facilitation"
     default_agent: "a facilitator cannot be the default agent; it never answers for or as someone"
     channel_binding: "a facilitator speaks only as its own channel identity; a channel binding would let it answer through another agent's"
-    persona_skill: "a facilitator has no working modes; it never answers as someone else"
     fast_path: "a facilitator does not use the fast lane"
     agent_to_agent: "a facilitator neither talks to other agents nor is addressed by them"
     consultation: "a facilitator neither consults other agents nor is consulted by them"
     sub_agent: "a facilitator has no internal helpers and is not attached to other agents"
     assistance: "a facilitator is not an assistant; it only moderates"
+  agent_settings:
+    - key: "default_decision_method"
+      type: "enum"
+      label:
+        en: "Default decision method"
+        de: "Standard-Entscheidungsmethode"
+      help:
+        en: "How a vote is decided when the group names no method: the deciding step of a template and a vote that only names its options. A consent step stays consent. Unset: the template's method applies."
+        de: "Wie abgestimmt wird, wenn die Gruppe keine Methode nennt: der Entscheidungsschritt einer Vorlage und eine Abstimmung, die nur ihre Optionen nennt. Ein Konsent-Schritt bleibt Konsent. Nicht gesetzt: Es gilt die Methode der Vorlage."
+      options:
+        - value: "ranked"
+          label:
+            en: "Ranked vote"
+            de: "Rangwahl"
+        - value: "single"
+          label:
+            en: "Single choice"
+            de: "Einfachwahl"
+        - value: "approval"
+          label:
+            en: "Approval vote"
+            de: "Zustimmungswahl"
+        - value: "consent"
+          label:
+            en: "Consent"
+            de: "Konsent"
+    - key: "default_prioritisation_method"
+      type: "enum"
+      label:
+        en: "Default prioritisation method"
+        de: "Standard-Methode zum Priorisieren"
+      help:
+        en: "How the prioritising step of a template is decided. Unset: the template's method applies."
+        de: "Wie der Priorisierungsschritt einer Vorlage entschieden wird. Nicht gesetzt: Es gilt die Methode der Vorlage."
+      options:
+        - value: "ranked"
+          label:
+            en: "Ranked vote"
+            de: "Rangwahl"
+        - value: "approval"
+          label:
+            en: "Approval vote"
+            de: "Zustimmungswahl"
+    - key: "ranked_points"
+      type: "number_list"
+      max_items: 10
+      label:
+        en: "Points per rank (ranked vote)"
+        de: "Punkte pro Rang (Rangwahl)"
+      help:
+        en: "First rank first, e.g. 3, 2, 1. Unset: the instance setting 'Points per rank' applies. A facilitation can state its own."
+        de: "Erster Rang zuerst, z. B. 3, 2, 1. Nicht gesetzt: Es gilt die Instanz-Einstellung „Punkte pro Rang“. Eine Moderation kann eigene Punkte nennen."
+    - key: "reminder_offsets_hours"
+      type: "number_list"
+      max_items: 10
+      label:
+        en: "Reminders before the deadline (hours)"
+        de: "Erinnerungen vor der Deadline (Stunden)"
+      help:
+        en: "Hours before the deadline, e.g. 24, 2. Announced in the handshake. Unset: the instance setting applies. A facilitation can state its own."
+        de: "Stunden vor der Deadline, z. B. 24, 2. Wird im Handshake angekündigt. Nicht gesetzt: Es gilt die Instanz-Einstellung. Eine Moderation kann eigene Zeiten nennen."
   adds:
     - "conversation_messages"
     - "agent_turn"

@@ -177,6 +177,7 @@ displayName: string;
 shortDescription?: string;
 language?: string;
 ownIdentityChannelTypes: readonly string[];
+archetypeSettings?: Readonly<Record<string, string | readonly number[]>>;
 }
 export interface AgentTurnService {
 runTurn(request: AgentTurnRequest): Promise<AgentTurnOutcome>;

@@ -77,6 +77,9 @@ export interface RoutesHarness {
    *  archetype each delivers. Default: the engine and the second engine
    *  deliver `facilitator`. */
   archetypePlugins: Record<string, string>;
+  /** #2060 — what `graph.getSkill(id)` answers; default: a moderation
+   *  method for {@link SKILL_ID}. */
+  skills: Record<string, { id: string; name: string; description: string | null; body: string; frontmatter: Record<string, unknown> }>;
   call(method: string, path: string, body?: unknown): Promise<RouteResponse>;
   assertRefused(res: RouteResponse, omission: string, messagePattern: RegExp): void;
 }
@@ -101,6 +104,7 @@ export function routesHarness(): RoutesHarness {
   function store(): ConfigStore {
     const reads: Record<string, unknown> = {
       getAgentBySlug: (slug: string) => Promise.resolve(h.agents.find((a) => a.slug === slug)),
+      getAgentById: (id: string) => Promise.resolve(h.agents.find((a) => a.id === id)),
       listAgents: () => Promise.resolve(h.agents),
       listTombstones: () => Promise.resolve([]),
       // #2055 — the routing tables: reads answer, writes are recorded.
@@ -144,9 +148,11 @@ export function routesHarness(): RoutesHarness {
       {
         get: (_t, prop: string) => {
           if (prop === 'getSkill') {
-            return () => Promise.resolve({ id: SKILL_ID, frontmatter: {}, body: '', description: '' });
+            return (id: string) => Promise.resolve(h.skills[id]);
           }
           if (prop === 'listMcpServers') return () => Promise.resolve([{ id: SERVER_ID, name: 'crm' }]);
+          // #2060 — the facilitator holds every skill as a working mode.
+          if (prop === 'listAgentsByPersonaSkillId') return () => Promise.resolve(['id-mara']);
           return (...args: unknown[]) => {
             h.writes.push(`graph.${prop}(${JSON.stringify(args).slice(0, 60)})`);
             return Promise.resolve({ id: 'x', agentId: 'x', skillId: SKILL_ID, position: 0 });
@@ -245,6 +251,15 @@ export function routesHarness(): RoutesHarness {
   beforeEach(() => {
     h.writes = [];
     h.identitySaves = 0;
+    h.skills = {
+      [SKILL_ID]: {
+        id: SKILL_ID,
+        name: 'Retrospective',
+        description: 'Runs a start-stop-continue retrospective',
+        body: 'Collect what went well, what did not and what to try next. Cluster the points with the group, then ask the group to decide on actions.',
+        frontmatter: {},
+      },
+    };
     h.archetypePlugins = { [ENGINE]: 'facilitator', '@acme/second-engine': 'facilitator' };
     h.agents = [agent('mara', 'facilitator'), agent('hr', 'standard')];
     h.installed = [

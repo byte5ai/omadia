@@ -115,6 +115,7 @@ const field = (built: ReturnType<typeof buildForAgent>, name: string): unknown =
   (built.orchestrator as unknown as Record<string, unknown>)[name];
 
 const PERSONA_SKILL = [{ skillId: 's1', slug: 'mara-coach', name: 'Coach', description: '', body: 'Be a coach.' }];
+const IDENTITY_SKILL = [{ skillId: 's2', slug: 'max', name: 'Max', description: '', body: 'Your name is Max.' }];
 
 describe('facilitator runtime omissions', () => {
   it('memory tool: not offered, not granted, not dispatched', async () => {
@@ -161,12 +162,17 @@ describe('facilitator runtime omissions', () => {
     assert.equal(field(fac, 'bookMeetingTool'), undefined);
   });
 
-  it('persona skills are dropped at build', () => {
+  // #2060 — spec 2043 §2.3: moderation working modes are kept; a mode that
+  // replaces who speaks is dropped at build for a facilitator only.
+  it('working modes: moderation modes are built, identity-replacing ones dropped', () => {
     const { deps } = setup();
-    const fac = buildForAgent(row(), deps, RUNTIME, PERSONA_SKILL, [ENGINE]);
-    const std = buildForAgent(row({ slug: 'hr', archetype: 'standard' }), deps, RUNTIME, PERSONA_SKILL, []);
-    assert.deepEqual(field(fac, 'personaSkills'), []);
-    assert.equal((field(std, 'personaSkills') as unknown[]).length, 1);
+    const fac = buildForAgent(row(), deps, RUNTIME, [...PERSONA_SKILL, ...IDENTITY_SKILL], [ENGINE]);
+    const std = buildForAgent(row({ slug: 'hr', archetype: 'standard' }), deps, RUNTIME, [...PERSONA_SKILL, ...IDENTITY_SKILL], []);
+    assert.deepEqual(
+      (field(fac, 'personaSkills') as { slug: string }[]).map((m) => m.slug),
+      ['mara-coach'],
+    );
+    assert.equal((field(std, 'personaSkills') as unknown[]).length, 2);
   });
 
   it('fast path: never consulted; a private request gets the refusal without a model call', async () => {

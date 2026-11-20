@@ -24,6 +24,9 @@ export const AGENT_DETAIL_TABS = [
   'teams',
   // #2066 — facilitators only: which facilitation engine it runs on.
   'engine',
+  // #2060, #2066 — facilitators only: default methods, reminders and
+  // moderation working modes.
+  'moderation',
   'plugins',
   'tools',
   'memory',

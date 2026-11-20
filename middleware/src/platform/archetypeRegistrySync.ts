@@ -94,6 +94,7 @@ function toDescriptor(plugin: InstalledArchetypePlugin): ArchetypeDescriptor {
     ...(a.description !== undefined ? { description: a.description } : {}),
     ...(a.omissionReasons ? { omissionReasons: a.omissionReasons } : {}),
     ...(a.roleContract !== undefined ? { roleContract: a.roleContract } : {}),
+    ...(a.agentSettings && a.agentSettings.length > 0 ? { agentSettings: a.agentSettings } : {}),
   };
 }
 

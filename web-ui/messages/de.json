@@ -1028,7 +1028,11 @@
       "inert": "Konfiguriert, aber noch nicht wirksam: {channels}. Turns auf diesen Channels melden ihren Channel-Typ nicht, daher gilt dort die globale Einstellung.",
       "note": "Das ist deine Entscheidung als Betreiber — es wird nichts blockiert. Angezeigt, damit eine Einstellung aus einem Test-Setup nicht unbemerkt bleibt.",
       "frequency": "Sichtbare KI-Marker erscheinen {frequency}.",
-      "frequencyValue": {"channel_default": "wie ausgeliefert", "per_answer": "bei jeder Antwort", "per_conversation": "einmal pro Konversation"},
+      "frequencyValue": {
+        "channel_default": "wie ausgeliefert",
+        "per_answer": "bei jeder Antwort",
+        "per_conversation": "einmal pro Konversation"
+      },
       "level": {
         "standard": "volle Kennzeichnung",
         "concise": "kurze Kennzeichnung",
@@ -3144,7 +3148,8 @@
       "plugins": "Plugins",
       "tools": "Werkzeuge",
       "memory": "Memory",
-      "engine": "Moderation"
+      "engine": "Moderation",
+      "moderation": "Methoden"
     },
     "endOfService": {
       "disabled": "„{name}“ ist deaktiviert.",
@@ -3232,14 +3237,14 @@
     },
     "facilitator": {
       "heading": "Facilitatoren",
-      "intro": "Ein Facilitator moderiert ausschließlich: Entscheidungen, Abstimmungen, Priorisierungen, Retrospektiven. Er arbeitet für keine einzelne Person, hat keine inhaltliche Meinung und tritt in Teams unter eigenem Namen auf.",
+      "intro": "Ein Facilitator moderiert ausschließlich: Entscheidungen, Abstimmungen, Priorisierungen, Retrospektiven. Er arbeitet für keine einzelne Person, hat keine inhaltliche Meinung und tritt unter eigenem Namen auf, in Teams oder mit eigenem Bot in einem anderen Kanal.",
       "empty": "Noch keine Facilitatoren. Oben lässt sich einer anlegen.",
       "createHeading": "Facilitator anlegen",
-      "createHint": "Der Archetyp steht nach dem Anlegen fest. Avatar, Persönlichkeit und Teams-Identität werden auf der Seite des Facilitators eingestellt, die sich danach öffnet.",
+      "createHint": "Der Archetyp steht nach dem Anlegen fest. Avatar, Persönlichkeit, Standard-Methoden und Kanal-Identität werden auf der Seite des Facilitators eingestellt, die sich danach öffnet.",
       "createSubmit": "Facilitator anlegen",
       "cardSummary": "Status: {status} · Laufzeit: {runtime}",
       "deleteConfirm": "Facilitator „{slug}“ wirklich löschen? Seine laufenden Moderationen werden beendet; sein Datensatz bleibt unter „Gelöschte Agenten“ erhalten, bis du ihn endgültig entfernst.",
-      "omittedNote": "Keine Plugins, Tools, MCP-Server, kein Gedächtnis, keine internen Helfer, Arbeitsmodi, Zeitpläne oder Gespräche mit anderen Agenten, und nie der Standard-Ansprechpartner: Zugriff auf Unternehmensdaten oder auf die Interessen einer Person würde einen Moderator parteiisch machen.",
+      "omittedNote": "Keine Plugins, Tools, MCP-Server, kein Gedächtnis, keine internen Helfer, Zeitpläne oder Gespräche mit anderen Agenten, und nie der Standard-Ansprechpartner: Zugriff auf Unternehmensdaten oder auf die Interessen einer Person würde einen Moderator parteiisch machen. Arbeitsmodi sind nur als Moderationsmethoden erlaubt; keiner ändert, wer spricht.",
       "contractRejected": "Nicht gespeichert: {count, plural, one {eine Einstellung widerspricht} other {# Einstellungen widersprechen}} dem Neutralitätsvertrag eines Facilitators.",
       "omissionWithPlugins": "{reason} Abgelehnt: {plugins}.",
       "omissions": {
@@ -3247,7 +3252,7 @@
         "tool_grant": "Ein Facilitator erhält nur die Tools der Moderations-Engine. Weitere Tool-Freigaben würden ihn parteiisch machen.",
         "memory": "Ein Facilitator hat kein allgemeines Gedächtnis. Er kennt nur das Protokoll der jeweiligen Moderation.",
         "default_agent": "Ein Facilitator kann nicht der Standard-Ansprechpartner sein. Er antwortet nie für oder als jemand.",
-        "persona_skill": "Ein Facilitator hat keine Arbeitsmodi. Er antwortet nie als jemand anderes.",
+        "persona_skill": "Ein Facilitator bekommt nur Arbeitsmodi, die eine Moderationsmethode hinzufügen. Keiner ändert, wer spricht.",
         "fast_path": "Ein Facilitator nutzt die Schnellspur nicht.",
         "agent_to_agent": "Ein Facilitator spricht nicht mit anderen Agenten und wird von ihnen nicht angesprochen.",
         "consultation": "Ein Facilitator konsultiert keine anderen Agenten und wird von ihnen nicht konsultiert.",
@@ -3269,7 +3274,9 @@
         "ignores_stop": "Verlangt vom Facilitator, nach einem Stopp der Gruppe weiterzumachen.",
         "acts_as_assistant": "Macht den Facilitator zum Assistenten einer Person.",
         "withExcerpt": "{reason} Textstelle: „{excerpt}“",
-        "unknown": "Widerspricht dem Neutralitätsvertrag: {detail}"
+        "unknown": "Widerspricht dem Neutralitätsvertrag: {detail}",
+        "identity_replacement": "Ein Arbeitsmodus ändert, wie der Facilitator arbeitet, nie, wer spricht: Dieser gibt ihm einen anderen Namen, eine Persona oder einen anderen Sprecher.",
+        "working_mode_tools": "Ein Arbeitsmodus kann einem Facilitator keine Tools mitbringen."
       },
       "readiness": {
         "checking": "Bereitschaft wird geprüft",
@@ -3281,11 +3288,14 @@
           "failed": "Das Einrichten der Teams-Identität ist fehlgeschlagen.",
           "unknown": "Die Teams-Identität ließ sich nicht prüfen."
         },
-        "teamsLink": "Teams-Einrichtung öffnen",
+        "teamsLink": "Kanäle öffnen",
         "engineNotReady": "Auf dieser Instanz gibt es keine nutzbare Moderations-Engine. In einer Gruppe angesprochen, antwortet dieser Facilitator nur, dass Moderationen auf dieser Instanz noch nicht eingerichtet sind und man sich an die Administration wenden soll.",
         "engineLink": "Beheben",
         "engineMissing": "Die Moderations-Engine ist diesem Facilitator nicht angehängt, obwohl das normalerweise automatisch geschieht.",
-        "engineDisabled": "Die Moderations-Engine ist für diesen Facilitator abgeschaltet."
+        "engineDisabled": "Die Moderations-Engine ist für diesen Facilitator abgeschaltet.",
+        "readyOn": "Bereit auf: {channels}",
+        "noIdentity": "Noch keine eigene Identität auf einem Kanal (eine Teams-Identität oder ein eigener Bot auf Slack, Discord oder Telegram).",
+        "identityOn": "Eigene Identität auf: {channels}"
       },
       "engine": {
         "heading": "Moderations-Engine",
@@ -3315,7 +3325,34 @@
         "kindHeading": "Facilitator"
       },
       "facilitationsViewLink": "Laufende Moderationen öffnen ({label})",
-      "archetypePluginNotRunning": "Das Plugin {plugin}, das Agenten dieser Art betreibt, ist installiert, aber nicht gestartet. Öffne es im Store, sieh nach dem Grund und behebe ihn zuerst; bis dahin lässt sich kein solcher Agent anlegen oder aktivieren."
+      "archetypePluginNotRunning": "Das Plugin {plugin}, das Agenten dieser Art betreibt, ist installiert, aber nicht gestartet. Öffne es im Store, sieh nach dem Grund und behebe ihn zuerst; bis dahin lässt sich kein solcher Agent anlegen oder aktivieren.",
+      "defaults": {
+        "heading": "Standard-Methoden und Erinnerungen",
+        "intro": "Wovon dieser Facilitator ausgeht, wenn eine Gruppe nichts anderes sagt. Ein Feld auf der Instanz-Einstellung nutzt den Wert aus den Einstellungen des Facilitator-Plugins. Eine Moderation kann weiterhin eigene Methoden oder Erinnerungen vereinbaren.",
+        "loading": "Einstellungen werden geladen",
+        "loadFailed": "Die Einstellungen konnten nicht geladen werden.",
+        "none": "Das Archetyp-Plugin dieses Facilitators bietet keine Einstellungen pro Facilitator an.",
+        "instanceDefault": "Instanz-Einstellung",
+        "invalidList": "Bis zu {max} positive Zahlen, durch Kommas getrennt.",
+        "invalidOption": "Wähle einen der angebotenen Werte.",
+        "save": "Speichern",
+        "saving": "Wird gespeichert",
+        "saved": "Gespeichert.",
+        "saveFailed": "Die Einstellungen konnten nicht gespeichert werden."
+      },
+      "workingModes": {
+        "heading": "Arbeitsmodi",
+        "intro": "Skills, die dieser Facilitator als Moderationsmethoden nutzen kann, zum Beispiel eine Retrospektive oder eine Konsent-Runde. Pro Nachricht wird höchstens einer gewählt; er ändert, wie der Facilitator moderiert, nie, wer spricht, und der Neutralitätsvertrag gilt weiter vorrangig.",
+        "loading": "Arbeitsmodi werden geladen",
+        "loadFailed": "Die Arbeitsmodi konnten nicht geladen werden.",
+        "empty": "Noch kein Arbeitsmodus.",
+        "addLabel": "Arbeitsmodus hinzufügen",
+        "choose": "Skill auswählen",
+        "add": "Hinzufügen",
+        "remove": "Entfernen",
+        "refused": "Dieser Skill kann kein Arbeitsmodus eines Facilitators sein:",
+        "failed": "Die Arbeitsmodi konnten nicht geändert werden."
+      }
     },
     "confirmAction": {
       "cancel": "Abbrechen",

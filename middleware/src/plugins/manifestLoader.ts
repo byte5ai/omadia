@@ -342,6 +342,9 @@ function toPluginArchetype(descriptor: ArchetypeManifestDescriptor): PluginArche
     ...(descriptor.description !== undefined ? { description: descriptor.description } : {}),
     ...(descriptor.omissionReasons ? { omissionReasons: { ...descriptor.omissionReasons } } : {}),
     ...(descriptor.roleContract !== undefined ? { roleContract: descriptor.roleContract } : {}),
+    ...(descriptor.agentSettings && descriptor.agentSettings.length > 0
+      ? { agentSettings: [...descriptor.agentSettings] }
+      : {}),
   };
 }
 

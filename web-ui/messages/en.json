@@ -1028,7 +1028,11 @@
       "inert": "Configured but not yet in effect: {channels}. Turns on these channels do not report their channel type, so they use the global setting.",
       "note": "This is your decision as the operator — nothing is blocked. Shown so a setting from a test setup does not go unnoticed.",
       "frequency": "Visible AI markers appear {frequency}.",
-      "frequencyValue": {"channel_default": "as delivered", "per_answer": "on every answer", "per_conversation": "once per conversation"},
+      "frequencyValue": {
+        "channel_default": "as delivered",
+        "per_answer": "on every answer",
+        "per_conversation": "once per conversation"
+      },
       "level": {
         "standard": "full marking",
         "concise": "short marking",
@@ -3144,7 +3148,8 @@
       "plugins": "Plugins",
       "tools": "Tools",
       "memory": "Memory",
-      "engine": "Facilitation"
+      "engine": "Facilitation",
+      "moderation": "Methods"
     },
     "endOfService": {
       "disabled": "“{name}” is disabled.",
@@ -3232,14 +3237,14 @@
     },
     "facilitator": {
       "heading": "Facilitators",
-      "intro": "A facilitator only moderates: decisions, votes, prioritisations, retrospectives. It works for no single person, holds no opinion on the content and speaks in Teams under its own name.",
+      "intro": "A facilitator only moderates: decisions, votes, prioritisations, retrospectives. It works for no single person, holds no opinion on the content and speaks under its own name, in Teams or through its own bot on another channel.",
       "empty": "No facilitators yet. Create one above.",
       "createHeading": "Create facilitator",
-      "createHint": "The archetype is fixed once created. Avatar, personality and the Teams identity are set on the facilitator's page, which opens next.",
+      "createHint": "The archetype is fixed once created. Avatar, personality, default methods and the channel identity are set on the facilitator's page, which opens next.",
       "createSubmit": "Create facilitator",
       "cardSummary": "status: {status} · runtime: {runtime}",
       "deleteConfirm": "Delete facilitator \"{slug}\"? Its running facilitations are ended; its record is kept under “Deleted agents” until you remove it for good.",
-      "omittedNote": "No plugins, tools, MCP servers, memory, internal helpers, working modes, schedules or conversations with other agents, and never the default agent: access to company data or to one person's interests would make a moderator partial.",
+      "omittedNote": "No plugins, tools, MCP servers, memory, internal helpers, schedules or conversations with other agents, and never the default agent: access to company data or to one person's interests would make a moderator partial. Working modes are allowed only as moderation methods; none of them changes who speaks.",
       "contractRejected": "Not saved: {count, plural, one {one setting conflicts} other {# settings conflict}} with the neutrality contract of a facilitator.",
       "omissionWithPlugins": "{reason} Refused: {plugins}.",
       "omissions": {
@@ -3247,7 +3252,7 @@
         "tool_grant": "A facilitator only gets the tools of the facilitation engine. Other tool grants would make it partial.",
         "memory": "A facilitator has no general memory. Its only memory is the record of each facilitation.",
         "default_agent": "A facilitator cannot be the default agent. It never answers for or as someone.",
-        "persona_skill": "A facilitator has no working modes. It never answers as someone else.",
+        "persona_skill": "A facilitator only gets working modes that add a moderation method. None of them changes who speaks.",
         "fast_path": "A facilitator does not use the fast lane.",
         "agent_to_agent": "A facilitator neither talks to other agents nor is addressed by them.",
         "consultation": "A facilitator neither consults other agents nor is consulted by them.",
@@ -3269,7 +3274,9 @@
         "ignores_stop": "Asks the facilitator to continue after the group said stop.",
         "acts_as_assistant": "Makes the facilitator an assistant for one person.",
         "withExcerpt": "{reason} Passage: “{excerpt}”",
-        "unknown": "Conflicts with the neutrality contract: {detail}"
+        "unknown": "Conflicts with the neutrality contract: {detail}",
+        "identity_replacement": "A working mode changes how the facilitator works, never who speaks: this one gives it another name, persona or speaker.",
+        "working_mode_tools": "A working mode cannot bring tools to a facilitator."
       },
       "readiness": {
         "checking": "Checking readiness",
@@ -3281,11 +3288,14 @@
           "failed": "Provisioning its Teams identity failed.",
           "unknown": "Its Teams identity could not be checked."
         },
-        "teamsLink": "Open Teams provisioning",
+        "teamsLink": "Open channels",
         "engineNotReady": "No usable facilitation engine on this instance. Asked in a group, this facilitator only answers that facilitation is not set up on this instance yet and that people should contact their administrator.",
         "engineLink": "Repair",
         "engineMissing": "The facilitation engine is not attached to this facilitator, although that normally happens automatically.",
-        "engineDisabled": "The facilitation engine is switched off for this facilitator."
+        "engineDisabled": "The facilitation engine is switched off for this facilitator.",
+        "readyOn": "Ready on: {channels}",
+        "noIdentity": "No identity of its own on any channel yet (a Teams identity, or its own bot on Slack, Discord or Telegram).",
+        "identityOn": "Own identity on: {channels}"
       },
       "engine": {
         "heading": "Facilitation engine",
@@ -3315,7 +3325,34 @@
         "kindHeading": "Facilitator"
       },
       "facilitationsViewLink": "Open running facilitations ({label})",
-      "archetypePluginNotRunning": "The plugin {plugin}, which runs agents of this kind, is installed but did not start. Open it in the store to see why and fix that first; until then no such agent can be created or enabled."
+      "archetypePluginNotRunning": "The plugin {plugin}, which runs agents of this kind, is installed but did not start. Open it in the store to see why and fix that first; until then no such agent can be created or enabled.",
+      "defaults": {
+        "heading": "Default methods and reminders",
+        "intro": "What this facilitator starts from when a group does not say otherwise. A field left on the instance setting uses the value from the facilitator plugin's settings. A facilitation can still agree on its own method or reminders.",
+        "loading": "Loading settings",
+        "loadFailed": "The settings could not be loaded.",
+        "none": "This facilitator's archetype plugin declares no settings per facilitator.",
+        "instanceDefault": "Instance setting",
+        "invalidList": "Enter up to {max} positive numbers, separated by commas.",
+        "invalidOption": "Choose one of the listed values.",
+        "save": "Save",
+        "saving": "Saving",
+        "saved": "Saved.",
+        "saveFailed": "The settings could not be saved."
+      },
+      "workingModes": {
+        "heading": "Working modes",
+        "intro": "Skills this facilitator can use as moderation methods, for example a retrospective or a consent round. Per message at most one is chosen; it changes how the facilitator moderates, never who speaks, and the neutrality contract stays above it.",
+        "loading": "Loading working modes",
+        "loadFailed": "The working modes could not be loaded.",
+        "empty": "No working mode yet.",
+        "addLabel": "Add a working mode",
+        "choose": "Choose a skill",
+        "add": "Add",
+        "remove": "Remove",
+        "refused": "This skill cannot be a working mode of a facilitator:",
+        "failed": "The working modes could not be changed."
+      }
     },
     "confirmAction": {
       "cancel": "Cancel",
