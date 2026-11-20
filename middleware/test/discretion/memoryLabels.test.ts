@@ -34,7 +34,10 @@ import {
 } from '../../packages/harness-orchestrator/src/discretion/turnLabels.js';
 import { guardIntegrationEgress, guardMemoryEgress } from '../../packages/harness-orchestrator/src/discretion/toolFlow.js';
 import { LabelledMemoryStore } from '../../packages/harness-orchestrator/src/discretion/labelledMemoryStore.js';
-import { scriptedModel, text, toolCalls } from '../_helpers/replayTurnFixture.js';
+import { MemoryBinder } from '../../packages/harness-orchestrator/src/memoryBinder.js';
+import { parseSessionScope } from '../../packages/harness-channel-sdk/src/scopeId.js';
+import { scriptedModel, text, toolCalls, verifiedTurn } from '../_helpers/replayTurnFixture.js';
+import { approved, blocked } from '../_helpers/verifierVerdictFixtures.js';
 
 const HR_DM = 'teams:dm-hr';
 const SALES = 'teams:sales';
@@ -111,6 +114,62 @@ describe('memory notes keep the labels of the turn that wrote them (criterion 27
   });
 });
 
+describe('label layer edges (review follow-ups)', () => {
+  it('the members index is read for every room without lending one room\'s labels to another', async () => {
+    const { port } = fakePort();
+    const raw = new InMemoryMemoryStore();
+    const binder = new MemoryBinder({
+      agentSlug: 'mira',
+      root: new LabelledMemoryStore(raw, port, 'mira'),
+      indexStore: raw,
+      mode: 'members',
+    });
+    const origin = (conv: string) => ({ channelType: 'teams', scope: parseSessionScope(`msteams::${conv}`) });
+    await inTurn('teams:r', readersOf(['x', 'y']), unionLabels([hrContext]), () =>
+      binder.forAudience(origin('r'), { kind: 'known', members: ['x', 'y'] }),
+    );
+    await inTurn('teams:z', readersOf(['z']), undefined, async () => {
+      await binder.forAudience(origin('z'), { kind: 'known', members: ['z'] });
+      assert.equal(currentTurnLabels().labels.length, 0, 'no foreign room label from the index');
+    });
+  });
+
+  it('a spelling variant of the path reads the note with its labels', async () => {
+    const { port } = fakePort();
+    const store = new LabelledMemoryStore(new InMemoryMemoryStore(), port, 'mira');
+    await inTurn(HR_DM, hrReaders, undefined, () => store.createFile('/memories/n/a.md', 'x'));
+    await inTurn(SALES, salesReaders, undefined, async () => {
+      await store.readFile('/memories/n//a.md');
+      assert.ok(currentTurnLabels().labels.some((l) => l.kind === 'context' && l.key === HR_DM));
+    });
+  });
+
+  it('a renamed directory takes its files\' labels along; a note is not written when its labels cannot be stored', async () => {
+    const { port, stored } = fakePort();
+    const store = new LabelledMemoryStore(new InMemoryMemoryStore(), port, 'mira');
+    await inTurn(HR_DM, hrReaders, undefined, () => store.createFile('/memories/dir/a.md', 'x'));
+    await store.rename('/memories/dir', '/memories/moved');
+    assert.ok(stored.has('memory_file|/memories/moved/a.md'));
+    assert.equal(stored.has('memory_file|/memories/dir/a.md'), false);
+    await store.delete('/memories/moved');
+    assert.equal(stored.has('memory_file|/memories/moved/a.md'), false);
+
+    const inner = new InMemoryMemoryStore();
+    const broken = new LabelledMemoryStore(inner, { ...port, persistLabels: async () => Promise.reject(new Error('db down')) }, 'mira');
+    await assert.rejects(inTurn(HR_DM, hrReaders, undefined, () => broken.createFile('/memories/b.md', 'x')));
+    assert.equal(await inner.fileExists('/memories/b.md'), false);
+  });
+
+  it('labels only grow per path until the note is deleted', async () => {
+    const { port, stored } = fakePort();
+    const store = new LabelledMemoryStore(new InMemoryMemoryStore(), port, 'mira');
+    await inTurn(HR_DM, hrReaders, undefined, () => store.createFile('/memories/c.md', 'x'));
+    await inTurn(SALES, salesReaders, undefined, () => store.writeFile('/memories/c.md', 'y'));
+    const keys = stored.get('memory_file|/memories/c.md')?.labels.map((l) => (l.kind === 'context' ? l.key : l.kind));
+    assert.deepEqual(keys?.sort(), [HR_DM, SALES].sort());
+  });
+});
+
 describe('the memory egress (spec §5.11 "Memory write")', () => {
   it('another conversation\'s knowledge only goes into a tier whose readers may all know it', async () => {
     const { port, audits } = fakePort();
@@ -121,7 +180,7 @@ describe('the memory egress (spec §5.11 "Memory write")', () => {
     const wide = await inTurn(SALES, salesReaders, unionLabels([hrContext]), () =>
       guardMemoryEgress(port, { kind: 'unknown' }, 'memory'),
     );
-    assert.match(wide ?? '', /nothing was written/);
+    assert.match(wide ?? '', /memory was not changed/);
     const members = await inTurn(SALES, salesReaders, unionLabels([hrContext]), () =>
       guardMemoryEgress(port, salesReaders, 'memory'),
     );
@@ -249,5 +308,27 @@ describe('memory through the real orchestrator', () => {
     const control = build([text('Kurz: P verlässt das Unternehmen.')], { insights: ['mk:1'], unlabelled: true });
     const open = await turnContext.runWithChatParticipants(participants as never, () => control.orchestrator.chat(input));
     assert.match(open.text, /verlässt/, 'without stored labels the same recall answers');
+  });
+
+  it('a verifier re-entry that replays the memory read keeps the note\'s labels', async () => {
+    const narrow = unionLabels([hrContext]);
+    const { port } = fakePort([['memory_file', '/memories/p.md', narrow]]);
+    const memory = new InMemoryMemoryStore();
+    await memory.createFile('/memories/p.md', 'P verlässt das Unternehmen');
+    const view = ['memory', { command: 'view', path: '/memories/p.md' }] as const;
+    const t = verifiedTurn({
+      responses: [toolCalls(view), text('P verlässt das Unternehmen.'), toolCalls(view), text('Korrigiert: P verlässt das Unternehmen.')],
+      verdicts: [blocked(), approved()],
+      orchestrator: {
+        agentId: 'mira',
+        knowledgeGraph,
+        discretion: port,
+        memoryToolHandler: new MemoryToolHandler(new LabelledMemoryStore(memory, port, 'mira')),
+      } as never,
+    });
+    const { input, participants } = groupTurn(['s1', 's2']);
+    const sa = await turnContext.runWithChatParticipants(participants as never, () => t.service.chat(input));
+    assert.equal(t.model.requests.length >= 3, true, 'the correction retry ran');
+    assert.equal(sa.text.includes('verlässt'), false, 'the corrected answer still carries the HR label');
   });
 });

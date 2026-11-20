@@ -36,6 +36,7 @@ const port: DiscretionPort = {
   persistLabels: async () => undefined,
   audit: () => undefined,
   toolEffectOf: (system, toolName) => (system === '@omadia/crm' ? (EFFECTS[toolName] ?? 'unknown') : 'unknown'),
+  pluginEffectOf: (system) => (system === '@omadia/crm' ? 'write' : 'unknown'),
 };
 
 function call(toolName: string, labels: LabelSet) {
@@ -68,5 +69,19 @@ describe('declared tool effects at the integration egress (criterion 17)', () =>
     assert.ok(await call('crm_legacy', unionLabels([hrRecord])), 'HR data never reaches an undeclared tool');
     assert.ok(await call('crm_legacy', unionLabels([{ kind: 'classification', class: 'personal' }])));
     assert.equal(await call('crm_legacy', unionLabels([otherRoom])), undefined, 'another room alone does not block it');
+  });
+
+  it('a plugin\'s sub-agent (domain tool) counts as a write when any of its tools declared one', async () => {
+    const discretion = createDiscretionTurnState({
+      contextKey: 'teams:sales',
+      resolveReaders: async () => readersOf(['a', 'b', 'c']),
+      initial: unionLabels([otherRoom]),
+    });
+    const run = (system: string) =>
+      turnContext.run({ turnId: 't', turnDate: '2026-11-20', discretion }, () =>
+        guardIntegrationEgress(port, `query_${system}`, { system, effect: 'unknown', subAgent: true }),
+      );
+    assert.ok(await run('@omadia/crm'), 'a declared write in the plugin: checked against every label');
+    assert.equal(await run('@omadia/wiki'), undefined, 'nothing declared: restricted-only');
   });
 });

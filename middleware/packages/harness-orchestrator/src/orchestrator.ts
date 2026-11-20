@@ -238,8 +238,14 @@ import {
   type ConsultationPort,
 } from './consultation/consultTool.js';
 import type { DiscretionPort } from './discretion/port.js';
-import { UNKNOWN_READERS, readersOf, unionLabels, type DiscretionLabel, type Readers } from './discretion/labels.js';
-import { guardIntegrationEgress, guardMemoryEgress, labelToolRead, type ToolSystem } from './discretion/toolFlow.js';
+import { UNKNOWN_READERS, readersOf, type DiscretionLabel, type LabelSet, type Readers } from './discretion/labels.js';
+import {
+  guardIntegrationEgress,
+  guardMemoryEgress,
+  labelSubjectWithTurn,
+  labelToolRead,
+  type ToolSystem,
+} from './discretion/toolFlow.js';
 import { violationSummary } from './discretion/flowRule.js';
 import { peopleEgressDecision } from './discretion/turnLabels.js';
 import { answerWithheldText } from './discretion/disclosure.js';
@@ -248,6 +254,7 @@ import {
   addTurnLabels,
   createDiscretionTurnState,
   currentDiscretion,
+  currentTurnLabels,
   resolvedTurnLabels,
   type DiscretionTurnState,
 } from './discretion/turnLabels.js';
@@ -5964,6 +5971,7 @@ export class Orchestrator {
       readonly sentinelMint: McpInputSentinelMint;
       readonly authPromptMint: McpAuthPromptMint;
       readonly recorder: SubEventRecorder | undefined;
+      readonly labels?: LabelSet;
     },
   ): ToolReplayRecord {
     if (isOwnMintedSentinel(scope.sentinelMint, result) || scope.authPromptMint.minted(result)) {
@@ -5977,7 +5985,12 @@ export class Orchestrator {
       return { kind: 'rerun' };
     }
     const events = scope.recorder?.events ?? [];
-    return { kind: 'result', value: result, ...(events.length > 0 ? { subEvents: [...events] } : {}) };
+    return {
+      kind: 'result',
+      value: result,
+      ...(events.length > 0 ? { subEvents: [...events] } : {}),
+      ...(scope.labels && scope.labels.labels.length > 0 ? { labels: scope.labels } : {}),
+    };
   }
 
   /**
@@ -9270,6 +9283,9 @@ export class Orchestrator {
       replaySubEvents(observer, replay.kind === 'result' ? replay.subEvents : undefined);
       if (replay.kind === 'rejection') throw replay.error;
       result = replay.value as string;
+      // Spec 2042 §5.11 — a replayed memory read brings the labels the first
+      // run's read added (they come from below the handler, which a replay skips).
+      if (replay.kind === 'result' && replay.labels) addTurnLabels(replay.labels);
       // Fresh-Check gate: a replayed memory read fed this pass's answer too.
       if (name === MEMORY_TOOL_NAME && isMemoryFileRead(input, result)) {
         const box = turnContext.current()?.memoryFileRead;
@@ -9329,6 +9345,7 @@ export class Orchestrator {
           sentinelMint: mcpInputSentinelMint,
           authPromptMint: mcpAuthPromptMint,
           recorder,
+          ...(name === MEMORY_TOOL_NAME ? { labels: currentTurnLabels() } : {}),
         }),
       );
       if (isUnknownOutcomeToolErrorNotice(result)) tracked.noteUnknownOutcome(name, input);
@@ -9414,7 +9431,16 @@ export class Orchestrator {
         // that was not known owns nothing, so nothing is stored.
         const members = turnOwnersField(turnMemory).owners;
         const owners = members ?? (userId ? [userId] : []);
-        if (userId && owners.length > 0) {
+        // Spec 2042 §5.11 — the stored observation is a memory write: only into
+        // a tier whose readers may know what the turn read (members: the
+        // owners; else the turn's own conversation only).
+        const mayStore =
+          (await guardMemoryEgress(
+            this.discretion,
+            members ? readersOf(members) : UNKNOWN_READERS,
+            `mcp-kg:${kgTool.mcpServerId}`,
+          )) === undefined;
+        if (userId && owners.length > 0 && mayStore) {
           const bypassed = isMcpServerBypassInForce(kgTool.mcpServerId, name);
           const detail = bypassed
             ? result.slice(0, 8000)
@@ -9437,10 +9463,14 @@ export class Orchestrator {
             // Spec 2042 §5.11 — the memorable keeps the turn's labels and the
             // server it came from.
             .then(async (ingested) => {
-              const system = `mcp:${kgTool.mcpServerId ?? ''}`;
-              const declared = await this.discretion?.declarationOf(system).catch(() => undefined);
+              const system = `mcp:${String(kgTool.mcpServerId)}`;
+              // A failed lookup counts as restricted (fail closed).
+              const declared = await this.discretion?.declarationOf(system).then(
+                (d) => d?.sensitivity === 'restricted',
+                () => true,
+              );
               await this.labelMemorable(ingested.memorableKnowledgeNodeId, [
-                { kind: 'source', system, restricted: declared?.sensitivity === 'restricted' },
+                { kind: 'source', system, restricted: declared === true },
               ]);
             })
             .catch(() => {
@@ -10668,7 +10698,11 @@ export class Orchestrator {
       return { system: `mcp:${domain.mcpServerId}`, effect: writes ? 'write' : 'read' };
     }
     if (domain.agentId === undefined) return undefined;
-    return { system: domain.agentId, effect: isWriteCapableTool(domain.writeCapabilities) ? 'write' : 'unknown' };
+    return {
+      system: domain.agentId,
+      effect: isWriteCapableTool(domain.writeCapabilities) ? 'write' : 'unknown',
+      subAgent: true,
+    };
   }
 
   /**
@@ -10702,13 +10736,7 @@ export class Orchestrator {
 
   /** Spec 2042 §5.11 — a memorable keeps the labels of the turn that wrote it. */
   private async labelMemorable(mkId: string, extra: readonly DiscretionLabel[] = []): Promise<void> {
-    const state = currentDiscretion();
-    if (!this.discretion || !state) return;
-    const labels = unionLabels(await resolvedTurnLabels(state), extra);
-    if (labels.labels.length === 0) return;
-    await this.discretion.persistLabels('memorable', mkId, this.agentId, labels).catch((err: unknown) => {
-      console.error(`[discretion] persisting the labels of memorable ${mkId} failed:`, err);
-    });
+    await labelSubjectWithTurn(this.discretion, 'memorable', mkId, this.agentId, extra);
   }
 
   /**

@@ -18,8 +18,8 @@
 
 import { turnContext } from '../turnContext.js';
 import { checkFlow, violationSummary } from './flowRule.js';
-import { labelSummary, type DiscretionLabel, type LabelSet, type Readers } from './labels.js';
-import type { DiscretionPort } from './port.js';
+import { labelSummary, unionLabels, type DiscretionLabel, type LabelSet, type Readers } from './labels.js';
+import type { DiscretionPort, LabelSubjectKind } from './port.js';
 import { addTurnLabels, currentDiscretion, resolvedTurnLabels } from './turnLabels.js';
 
 /** What a tool declared it does to its system (`unknown`: nothing declared). */
@@ -35,6 +35,8 @@ export interface ToolSystem {
    * (`DiscretionPort.toolEffectOf`).
    */
   readonly effect: ToolEffect;
+  /** A plugin's sub-agent (domain tool): refined by the plugin's declarations as a whole. */
+  readonly subAgent?: boolean;
 }
 
 /**
@@ -49,6 +51,7 @@ export const UNKNOWN_TOOL_EFFECT_POLICY: 'restricted-only' | 'write' = 'restrict
 
 function effectOf(port: DiscretionPort | undefined, toolName: string, tool: ToolSystem): ToolEffect {
   if (tool.effect !== 'unknown') return tool.effect;
+  if (tool.subAgent) return port?.pluginEffectOf?.(tool.system) ?? 'unknown';
   return port?.toolEffectOf?.(tool.system, toolName) ?? 'unknown';
 }
 
@@ -130,7 +133,7 @@ export async function labelToolRead(
 /** The refusal text the model gets for a memory write that would carry too much. */
 export function memoryRefusal(): string {
   return (
-    'Error: nothing was written to memory. This turn holds information from another conversation ' +
+    'Error: memory was not changed. This turn holds information from another conversation ' +
     'that not everyone who can read this memory may know (discretion). Do not try to store it in other words.'
   );
 }
@@ -169,4 +172,25 @@ export async function guardMemoryEgress(
     });
   }
   return decision.allowed ? undefined : memoryRefusal();
+}
+
+/**
+ * Spec 2042 §5.11 — a written subject (a memorable) keeps the active turn's
+ * labels, plus `extra`. Outside a labelled turn, or with nothing to keep:
+ * nothing. Never throws; a failure is logged (the subject stays unlabelled).
+ */
+export async function labelSubjectWithTurn(
+  port: DiscretionPort | undefined,
+  kind: LabelSubjectKind,
+  id: string,
+  agentSlug: string,
+  extra: readonly DiscretionLabel[] = [],
+): Promise<void> {
+  const state = currentDiscretion();
+  if (!port || !state) return;
+  const labels = unionLabels(await resolvedTurnLabels(state), extra);
+  if (labels.labels.length === 0) return;
+  await port.persistLabels(kind, id, agentSlug, labels).catch((err: unknown) => {
+    console.error(`[discretion] persisting the labels of ${kind} ${id} failed:`, err);
+  });
 }

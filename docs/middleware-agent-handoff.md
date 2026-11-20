@@ -9884,9 +9884,15 @@ Leserkreis, Offenlegungsstufe).
     Flussregel `memory` (Wissen aus einem anderen Gespräch nur in eine Stufe, deren
     Leser es alle kennen dürfen: `members` = die Owner, kontextgebunden = der Raum,
     sonst das Agenten-Memory mit unbekannten Lesern, in das nur das eigene Gespräch
-    darf). Notizen behalten die Labels des schreibenden Turns, nach physischem Pfad
-    (`LabelledMemoryStore` unter dem Binder, Subjekt `memory_file`; Umbenennen nimmt
-    sie mit, Löschen entfernt sie), Lesen fügt sie dem lesenden Turn hinzu.
+    darf). Notizen behalten die Labels der schreibenden Turns, nach kanonischem
+    physischem Pfad (`LabelledMemoryStore` unter dem Binder, Subjekt `memory_file`):
+    vor dem Schreiben wird die Vereinigung gespeichert, ohne Labels kein Schreiben;
+    Umbenennen und Löschen nehmen die Labels eines ganzen Verzeichnisses mit; Lesen
+    fügt sie dem lesenden Turn hinzu, auch beim Verifier-Replay (Labels im
+    Replay-Record). Session-Transcripts bekommen die Labels jedes Turns (eigener
+    Label-Layer unter dem Session-Store, ohne Lese-Labels). Der Members-Index liegt
+    bewusst im ungelabelten Store (`MemoryBinder.indexStore`), weil er für jeden
+    Raum gelesen wird. Durable Rules behalten bei der Promotion die Turn-Labels;
     memorables (Auto-Promotion, MCP→KG-Ingestion mit dem Server als Quelle)
     behalten die Labels (`memorable`), Recall eines memorable bringt sie zurück;
   - Beiträge an andere Agenten im Broker.
@@ -9958,11 +9964,16 @@ Audit-Aktionen: `agent.consultation_change` (je Agent eine Zeile),
 - **Undeklarierte Plugin-Tools** (`unknown`) gelten bis zum Plugin-Train als
   `restricted-only`: ein Schreibzugriff über ein solches Tool, der nur Wissen aus
   einem anderen Gespräch trägt, wird nicht gegen die Leserschaft geprüft.
-  Domain-Tools (`query_<plugin>`, Sub-Agent) sind immer `unknown`.
+  Domain-Tools (`query_<plugin>`, Sub-Agent) gelten als `write`, sobald das Plugin
+  irgendein Tool als `write` deklariert (`pluginEffectOf`), sonst `unknown`.
 - **Memory-Reste:** memorables, die `query_knowledge_graph` liefert, und das
-  Session-Briefing bringen keine Labels mit (nur der automatische Recall); ein
-  umbenanntes Verzeichnis lässt die Labels seiner Dateien unter den alten Pfaden;
-  schlägt das Speichern der Labels einer Notiz fehl, bleibt sie ungelabelt.
+  Session-Briefing bringen keine Labels mit (nur der automatische Recall);
+  Plugin-Memory (`ctx.memory`, `/memories/plugins/…`) wird außerhalb des
+  Label-Layers geschrieben und ist ungelabelt; eine `memory`-Schreibprüfung in die
+  Team-Stufe (`~team`) nimmt die Leser des Raums statt der Team-Mitglieder (die Notiz
+  trägt die Labels trotzdem); ein Transcript, das außerhalb eines Turns geschrieben
+  wird, bekommt keine Labels; Conductor-Rollenhalter, die per `sub` statt E-Mail
+  zugewiesen sind, treffen keinen Kanal-Principal (fail-closed).
 - **`off` mit Grants:** verhindert wird nur das Umschalten auf `off`. Bestehende
   Agenten (kein Backfill) und die Reihenfolge „erst `off`, dann Plugins zuweisen“
   bleiben möglich; das Zuweisen zu sperren würde bestehende `off`-Agenten
@@ -9970,8 +9981,6 @@ Audit-Aktionen: `agent.consultation_change` (je Agent eine Zeile),
 - **Fehlende Labels:** schlägt das Schreiben der Labels eines Turns fehl, bringt ein
   späterer Recall dieses Turns keine Labels mit (fail-open). Ohne Pool liefert
   `labelsOf` nichts (dann wurden auch keine geschrieben).
-- Ergebnisse von `memory`-Lesezugriffen und `query_knowledge_graph` werden nicht
-  gelabelt (nur der automatische Recall).
 - Rückfrage-Ablehnungen erreichen den Nutzer über A's Text, noch nicht als
   `system`-Hinweis des S1-Emitters.
 - Operator-UI gibt es für Schalter und Grants (Agent → Tab „Gespräche“ →

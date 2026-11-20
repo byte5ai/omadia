@@ -17,6 +17,7 @@
 import type { ConsultationPort } from './consultation/consultTool.js';
 import type { DiscretionPort } from './discretion/port.js';
 import { LabelledMemoryStore } from './discretion/labelledMemoryStore.js';
+import { labelSubjectWithTurn } from './discretion/toolFlow.js';
 import type {
   ChatAgent,
   ChatTurnInput,
@@ -672,7 +673,11 @@ export function buildOrchestratorForAgent(
   const scopedStore = new ScopedMemoryStore({
     agentSlug: config.agentId,
     scope: orchestratorMemoryScope(config.agentId),
-    inner: deps.memoryStore,
+    // Spec 2042 §5.11 — a transcript keeps the labels of every turn written
+    // into it, so a `memory` read of it (same physical path) carries them.
+    inner: deps.discretion
+      ? new LabelledMemoryStore(deps.memoryStore, deps.discretion, config.agentId, { labelReads: false })
+      : deps.memoryStore,
   });
   const chatSessionStore = new ChatSessionStore(scopedStore);
   const sessionLogger = new SessionLogger(
@@ -821,6 +826,8 @@ export function buildOrchestratorForAgent(
     root: deps.discretion
       ? new LabelledMemoryStore(deps.memoryStore, deps.discretion, config.agentId)
       : deps.memoryStore,
+    // The members index is read across rooms: never through the label layer.
+    indexStore: deps.memoryStore,
     mode: config.contextMemory ?? 'off',
     shieldActive,
     noteProvenance: TURN_NOTE_PROVENANCE,
@@ -836,6 +843,13 @@ export function buildOrchestratorForAgent(
             log: (msg: string): void => {
               console.error(msg);
             },
+            // Spec 2042 §5.11 — a promoted rule keeps the writing turn's labels.
+            ...(deps.discretion
+              ? {
+                  onPromoted: (mkId: string) =>
+                    labelSubjectWithTurn(deps.discretion, 'memorable', mkId, config.agentId),
+                }
+              : {}),
           },
         }
       : {}),

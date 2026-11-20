@@ -49,6 +49,12 @@ export interface DiscretionPort {
    * absent = every such tool is `unknown`.
    */
   toolEffectOf?(system: string, toolName: string): 'read' | 'write' | 'none' | 'unknown';
+  /**
+   * The effect of a plugin's sub-agent as a whole (its `query_<plugin>` domain
+   * tool, whose name is no manifest tool id): `write` when any of its tools
+   * declared `write`, else `unknown` (a tool may have declared nothing).
+   */
+  pluginEffectOf?(system: string): 'write' | 'unknown';
   /** Record a flow decision. Never throws; never receives content. */
   audit(entry: DiscretionAuditEntry): void;
 }

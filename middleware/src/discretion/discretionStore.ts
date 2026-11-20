@@ -25,7 +25,8 @@ import {
   type Readers,
 } from '@omadia/orchestrator';
 
-import type { DeclaredToolEffect } from '../plugins/toolSideEffects.js';
+import type { ToolSideEffect } from '../api/admin-v1.js';
+import { declaredToolEffect, type DeclaredToolEffect } from '../plugins/toolSideEffects.js';
 
 const SNAPSHOT_TTL_MS = 10_000;
 const MAX_IDS_PER_LOOKUP = 500;
@@ -102,12 +103,17 @@ export class DiscretionStore implements DiscretionPort {
   constructor(
     private readonly poolRef: Pool | (() => Pool | undefined),
     private readonly log: (message: string) => void = () => undefined,
-    /** What a plugin's tool declared in its manifest (`declaredToolEffect`). */
-    private readonly toolEffects?: (system: string, toolName: string) => DeclaredToolEffect,
+    /** What a plugin's tools declared in its manifest (`Plugin.tool_side_effects`). */
+    private readonly declaredEffects?: (system: string) => Readonly<Record<string, ToolSideEffect>> | undefined,
   ) {}
 
   toolEffectOf(system: string, toolName: string): DeclaredToolEffect {
-    return this.toolEffects?.(system, toolName) ?? 'unknown';
+    return declaredToolEffect({ tool_side_effects: this.declaredEffects?.(system) }, toolName);
+  }
+
+  pluginEffectOf(system: string): 'write' | 'unknown' {
+    const declared = this.declaredEffects?.(system);
+    return declared && Object.values(declared).includes('write') ? 'write' : 'unknown';
   }
 
   private get pool(): Pool | undefined {
