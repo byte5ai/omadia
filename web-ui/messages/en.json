@@ -3247,7 +3247,7 @@
       "autoFixKindSmoke": "Smoke",
       "autoFixRunning": "Auto-Fix running (#{buildN} · {kind})",
       "autoFixStoppedTitle": "Auto-Fix stopped after {count} identical {kind} errors",
-      "autoFixStoppedBody": "The builder agent can't get past the same class of error. Auto-Fix was switched off automatically — review the code manually or turn the toggle back on once you've intervened.",
+      "autoFixStoppedBody": "The Plugin Builder can't get past the same class of error. Auto-Fix was switched off automatically — review the code manually or turn the toggle back on once you've intervened.",
       "autoFixDismissAria": "Hide notice",
       "buildStatusLabel": "Build status",
       "buildBusLive": "live",
@@ -3290,7 +3290,7 @@
         "testToolTitle": "Run directly against preview",
         "removeTool": "Remove tool {id}",
         "formPlaceholder": "Tool form coming in B.11-2.",
-        "stuckTitle": "Builder agent got stuck on this tool/slot — check manually",
+        "stuckTitle": "The Plugin Builder got stuck on this tool/slot — check manually",
         "stuckBadge": "stuck"
       },
       "bulkImport": {
@@ -3451,7 +3451,7 @@
         },
         "externalReadsHint": "Preview does not run cross-integration lookups (<code>spec.external_reads</code>) — the agent correctly detects the missing service and throws. Publish the agent to the platform store to test the real data path.",
         "agentStuck": {
-          "title": "Builder agent is stuck on slot <slot>{slotKey}</slot> ({attempts, plural, one {# attempt} other {# attempts}})",
+          "title": "The Plugin Builder is stuck on slot <slot>{slotKey}</slot> ({attempts, plural, one {# attempt} other {# attempts}})",
           "body": "{summary}. Open the slot editor, review the errors manually and fix the code — the agent won't retry on its own.",
           "dismiss": "Dismiss",
           "dismissTooltip": "Dismiss banner"
@@ -3565,7 +3565,7 @@
         "oauth": {
           "provider": "provider",
           "selectProvider": "— select provider —",
-          "noProviders": "Declare an oauth_providers descriptor first (ask the builder agent) — then pick it here.",
+          "noProviders": "Declare an oauth_providers descriptor first (ask the Plugin Builder) — then pick it here.",
           "scopes": "scopes",
           "scopesPlaceholder": "comma-separated, e.g. profile, email"
         }
@@ -3584,8 +3584,8 @@
         "missing": "{count, plural, one {# missing} other {# missing}}"
       },
       "required": "required",
-      "askAgent": "Ask the agent",
-      "askAgentTooltip": "Sends the prompt straight to the Builder chat — the agent gets started right away.",
+      "askAgent": "Ask the Plugin Builder",
+      "askAgentTooltip": "Sends the prompt straight to the Plugin Builder chat, which starts on it right away.",
       "status": {
         "saving": "Saving …",
         "saved": "Saved",
@@ -4096,7 +4096,7 @@
         "footerStamp": "omadia · Plugin-Builder"
       },
       "detail": {
-        "metaTitle": "Workspace · Agent-Builder · omadia",
+        "metaTitle": "Workspace · Plugin Builder · omadia",
         "error": {
           "label": "Error",
           "loadFailed": "Workspace could not be loaded.",

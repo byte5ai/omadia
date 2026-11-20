@@ -3247,7 +3247,7 @@
       "autoFixKindSmoke": "Smoke",
       "autoFixRunning": "Auto-Fix läuft (#{buildN} · {kind})",
       "autoFixStoppedTitle": "Auto-Fix nach {count} identischen {kind}-Fehlern gestoppt",
-      "autoFixStoppedBody": "Der Builder-Agent kommt mit derselben Fehlerklasse nicht weiter. Auto-Fix wurde automatisch ausgeschaltet — prüf den Code manuell oder schalte den Toggle wieder ein, sobald du eingegriffen hast.",
+      "autoFixStoppedBody": "Der Plugin Builder kommt mit derselben Fehlerklasse nicht weiter. Auto-Fix wurde automatisch ausgeschaltet — prüf den Code manuell oder schalte den Toggle wieder ein, sobald du eingegriffen hast.",
       "autoFixDismissAria": "Hinweis ausblenden",
       "buildStatusLabel": "Build-Status",
       "buildBusLive": "live",
@@ -3290,7 +3290,7 @@
         "testToolTitle": "Direkt gegen Preview ausführen",
         "removeTool": "Tool {id} entfernen",
         "formPlaceholder": "Tool-Form folgt in B.11-2.",
-        "stuckTitle": "Builder-Agent ist auf diesem Tool/Slot stecken geblieben — manuell prüfen",
+        "stuckTitle": "Der Plugin Builder ist auf diesem Tool/Slot stecken geblieben — manuell prüfen",
         "stuckBadge": "hängt"
       },
       "bulkImport": {
@@ -3451,7 +3451,7 @@
         },
         "externalReadsHint": "Preview führt Cross-Integration-Lookups (<code>spec.external_reads</code>) nicht aus — der Agent erkennt den fehlenden Service korrekt und wirft. Stelle den Agent in deiner Instanz bereit, um den echten Datenpfad zu testen.",
         "agentStuck": {
-          "title": "Builder-Agent kommt bei Slot <slot>{slotKey}</slot> nicht weiter ({attempts, plural, one {# Versuch} other {# Versuche}})",
+          "title": "Der Plugin Builder kommt bei Slot <slot>{slotKey}</slot> nicht weiter ({attempts, plural, one {# Versuch} other {# Versuche}})",
           "body": "{summary}. Öffne den Slot-Editor, prüf die Errors manuell und korrigier den Code — der Agent versucht es nicht von alleine erneut.",
           "dismiss": "Schließen",
           "dismissTooltip": "Banner schließen"
@@ -3565,7 +3565,7 @@
         "oauth": {
           "provider": "Provider",
           "selectProvider": "— Provider wählen —",
-          "noProviders": "Zuerst einen oauth_providers-Deskriptor anlegen (den Builder-Agent fragen) — dann hier auswählen.",
+          "noProviders": "Zuerst einen oauth_providers-Deskriptor anlegen (den Plugin Builder fragen) — dann hier auswählen.",
           "scopes": "Scopes",
           "scopesPlaceholder": "kommagetrennt, z.B. profile, email"
         }
@@ -3584,8 +3584,8 @@
         "missing": "{count, plural, one {# fehlt} other {# fehlen}}"
       },
       "required": "pflicht",
-      "askAgent": "Frag den Agent",
-      "askAgentTooltip": "Schickt den Prompt direkt an den Builder-Chat — der Agent legt sofort los.",
+      "askAgent": "Plugin Builder fragen",
+      "askAgentTooltip": "Schickt den Prompt direkt an den Chat des Plugin Builders, der sofort loslegt.",
       "status": {
         "saving": "Speichern …",
         "saved": "Gespeichert",
@@ -4096,7 +4096,7 @@
         "footerStamp": "omadia · Plugin-Builder"
       },
       "detail": {
-        "metaTitle": "Workspace · Agent-Builder · omadia",
+        "metaTitle": "Workspace · Plugin Builder · omadia",
         "error": {
           "label": "Fehler",
           "loadFailed": "Workspace konnte nicht geladen werden.",
