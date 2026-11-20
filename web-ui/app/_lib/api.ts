@@ -10,6 +10,7 @@ import type {
   StoreListResponse,
   UploadPackageResponse,
 } from './storeTypes';
+import type { RuntimeInstalledRow } from './packagelessEntries';
 import type { PersonaConfig } from './personaTypes';
 import type { UiPrefs } from './uiPrefs';
 import type {
@@ -909,6 +910,11 @@ export interface InstalledPluginDetail {
   activation_failure_count: number;
   last_activation_error: string | null;
   last_activation_error_at: string | null;
+}
+
+/** Every entry of the installed registry as the runtime sees it. */
+export async function listRuntimeInstalled(): Promise<{ items: RuntimeInstalledRow[] }> {
+  return getJson<{ items: RuntimeInstalledRow[] }>('/v1/admin/runtime/installed');
 }
 
 export async function getInstalledPlugin(

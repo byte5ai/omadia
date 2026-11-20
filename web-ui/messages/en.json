@@ -4413,6 +4413,18 @@
     "errorGeneric": "Something went wrong. Please try again."
   },
   "store": {
+    "packageless": {
+      "title": "{count, plural, one {One installed entry has no package.} other {# installed entries have no package.}}",
+      "body": "These are recorded as installed, but their package is no longer on this instance. They are not running, whatever status was last recorded for them.",
+      "version": "version {version}",
+      "badge": "Package missing",
+      "hint": "Install the package again to bring an entry back, or uninstall the entry here. Nothing is removed automatically.",
+      "remove": "Uninstall entry",
+      "removeConfirmTitle": "Uninstall the entry {id}?",
+      "removeConfirmBody": "The entry, its configuration, its stored secrets and its grants are removed. There is no package to run, so nothing stops working. To use the plugin again, install its package anew.",
+      "removeFailed": "The entry could not be uninstalled. Another installed plugin may still require it.",
+      "cancel": "Cancel"
+    },
     "hero": {
       "eyebrow": "Hub",
       "headline": "Plugins for the omadia platform.",

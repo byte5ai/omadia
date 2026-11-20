@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { HardDrive, PackageCheck, Search, Store, X } from 'lucide-react';
 import { getTranslations } from 'next-intl/server';
 
-import { listProfiles, listStorePlugins } from '../../_lib/api';
+import { listProfiles, listRuntimeInstalled, listStorePlugins } from '../../_lib/api';
 import { APP_VERSION } from '../../_lib/appVersion';
 import {
   countReadiness,
@@ -20,10 +20,12 @@ import type {
 } from '../../_lib/storeTypes';
 import type { ProfileSummary } from '../../_lib/profileTypes';
 import { OnboardingModal } from '../../_components/onboarding/OnboardingModal';
+import { PackagelessEntries } from '../../_components/store/PackagelessEntries';
 import { PluginCard } from '../../_components/store/PluginCard';
 import { UploadDropzone } from '../../_components/store/UploadDropzone';
 import { Button } from '../../_components/ui/Button';
 import { cn } from '../../_lib/cn';
+import { packagelessEntriesOf, type PackagelessEntry } from '../../_lib/packagelessEntries';
 import { registryErrorKey } from '../../_lib/registryErrors';
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -91,6 +93,19 @@ export default async function StorePage({
     profiles = Array.isArray(resp?.items) ? resp.items : [];
   } catch {
     profiles = [];
+  }
+
+  // Installed entries without a package appear in no catalogue, so the list
+  // above cannot show them. Best-effort: an older middleware has no such
+  // field, and a failed read must not take the store down.
+  // Read only for the tab that shows them.
+  let packageless: PackagelessEntry[] = [];
+  if (source === 'installed') {
+    try {
+      packageless = packagelessEntriesOf((await listRuntimeInstalled())?.items);
+    } catch {
+      packageless = [];
+    }
   }
 
   // Three origins, partitioned so every plugin lands in exactly one bucket
@@ -284,6 +299,8 @@ export default async function StorePage({
       {source === 'hub' && !loadError && failedRegistries.length > 0 ? (
         <RegistryErrors failed={failedRegistries} />
       ) : null}
+
+      {source === 'installed' ? <PackagelessEntries entries={packageless} /> : null}
 
       {/* Grid or error */}
       <section className="mt-8">

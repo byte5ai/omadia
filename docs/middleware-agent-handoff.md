@@ -467,6 +467,18 @@ Credential-Änderung automatisch mit.
 - `GET /api/v1/admin/runtime/installed` trägt zusätzlich `action_status`.
   Vorher sagte die Runtime-API `status: "active"` /
   `last_activation_error: null` und sonst nichts, auch wenn jeder Call 401 bekam.
+- **Einträge ohne Paket** (`src/plugins/packagelessEntries.ts`): jede Runtime
+  aktiviert über die Pakete auf der Platte, ein Registry-Eintrag ohne Paket
+  wird also von keiner besucht und behielt früher für immer seinen Status
+  (meist `active`). Jetzt: eine Warnzeile pro Boot (`[plugins] N installed
+  entries have no package …`, nach `toolPluginRuntime.activateAllInstalled()`),
+  `GET /api/v1/admin/runtime/installed` und `/installed/:id` melden `status: "package_missing"`,
+  `package_missing: true` und den gespeicherten Status als `registry_status`
+  (beide Felder neu auf jeder Zeile), und der Tab „Installiert“ im Store listet
+  sie (`PackagelessEntries.tsx`). Abgeleitet bei jedem Lesen: die Registry wird
+  nicht umgeschrieben, nichts wird automatisch gelöscht; „Paket“ heißt
+  Uploaded- oder Built-in-Store, nicht Katalog (ein Manifest ohne Code zählt
+  nicht).
 - **Eigener Readiness-State.** `computeReadiness` (`plugins/readiness.ts`)
   liest zusätzlich die gepushte Status-Lage und liefert
   **`connection_failed`**, wenn `ctx.status` auf `error` steht — egal ob aus
