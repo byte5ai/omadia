@@ -1,0 +1,16 @@
+{
+  "name": "{{AGENT_ID}}",
+  "version": "{{AGENT_VERSION}}",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "description": "{{AGENT_DESCRIPTION_DE}}",
+  "peerDependencies": {
+    "zod": "^4.0.0",
+    "express": "^5.1.0",
+    "@omadia/plugin-ui-helpers": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

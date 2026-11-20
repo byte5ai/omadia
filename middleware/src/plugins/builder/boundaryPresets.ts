@@ -63,8 +63,8 @@ export const BOUNDARY_LABELS_DE: Readonly<Record<string, string>> = {
  * Compile a list of boundary preset IDs + custom lines into prompt text.
  *
  * Unknown IDs are reported via `droppedIds`, not silently dropped, so the
- * preview/quality panel and the `setQualityConfig` tool result can surface
- * them to the operator.
+ * agent identity prompt (`droppedBoundaryPresets`) can surface them to the
+ * operator.
  */
 export function compileBoundaries(
   presetIds: readonly string[],

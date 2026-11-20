@@ -257,7 +257,7 @@ describe('VerifierService.chat — enforce withholds what it found wrong or coul
     assert.match(byTurn.sa.text, /^This answer was withheld/);
     // The disclosure still marks the notice, as it marks every answer.
     assert.ok(byTurn.sa.text.endsWith(english.text));
-    assert.deepEqual(byTurn.sa.aiDisclosure, english);
+    assert.deepEqual(byTurn.sa.aiDisclosure, { ...english, frequency: 'channel_default', markers: { textLine: true, chip: true } });
 
     const byOperator = await chatEnforced([blocked()], [result()], { maxRetries: 0, locale: 'en' });
     assert.match(byOperator.sa.text, /^This answer was withheld/);

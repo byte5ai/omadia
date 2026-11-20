@@ -29,6 +29,7 @@ export type CollectOutcome =
 
 export class TurnDataCollector {
   private readonly payloads: DataPayload[] = [];
+  private withheld = false;
 
   add(payload: DataPayload): CollectOutcome {
     if (this.payloads.length >= MAX_DATA_PAYLOADS_PER_TURN) {
@@ -38,9 +39,17 @@ export class TurnDataCollector {
     return { accepted: true, index: this.payloads.length - 1 };
   }
 
-  /** A snapshot of what was collected, in order. */
+  /**
+   * #2079 — the answer was refused as a whole (discretion): nothing collected
+   * goes out with it, on this pass or a later one of the same request.
+   */
+  withhold(): void {
+    this.withheld = true;
+  }
+
+  /** A snapshot of what was collected, in order; empty once withheld. */
   list(): readonly DataPayload[] {
-    return [...this.payloads];
+    return this.withheld ? [] : [...this.payloads];
   }
 }
 

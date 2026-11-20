@@ -91,8 +91,30 @@ export type RouteOutcome =
 /** Decides whether the sender holds a group (`role:<key>`). */
 export type RoleMembership = (principal: string, roleKey: string) => boolean;
 
+/**
+ * The process's role membership (spec 2042 §5.3): the kernel installs the
+ * Conductor's role snapshot once it is wired (`setRoleMembership`); every
+ * router without an explicit `hasRole` asks it. Kept on `globalThis` under a
+ * registered symbol because this package can be loaded twice (source and
+ * dist), and both copies must see the one the kernel installed. Before it is
+ * installed nobody holds any role (fail closed).
+ */
+const ROLE_MEMBERSHIP_KEY = Symbol.for('omadia.routing.roleMembership');
+
+type RoleMembershipHolder = Record<symbol, RoleMembership | undefined>;
+
+/** Kernel-only: install (or, with `undefined`, remove) the role membership. */
+export function setRoleMembership(membership: RoleMembership | undefined): void {
+  (globalThis as unknown as RoleMembershipHolder)[ROLE_MEMBERSHIP_KEY] = membership;
+}
+
+function installedRoleMembership(principal: string, roleKey: string): boolean {
+  return (globalThis as unknown as RoleMembershipHolder)[ROLE_MEMBERSHIP_KEY]?.(principal, roleKey) === true;
+}
+
 export interface ManagementRouterOptions {
   readonly view: RoutingView;
+  /** Overrides the process's installed role membership (tests). */
   readonly hasRole?: RoleMembership;
 }
 
@@ -179,7 +201,8 @@ export class ManagementRouter {
     if (principal === undefined) return false;
     for (const allowed of agent.availablePrincipals) {
       if (allowed === principal) return true;
-      if (allowed.startsWith('role:') && this.options.hasRole?.(principal, allowed.slice('role:'.length))) {
+      const hasRole = this.options.hasRole ?? installedRoleMembership;
+      if (allowed.startsWith('role:') && hasRole(principal, allowed.slice('role:'.length))) {
         return true;
       }
     }

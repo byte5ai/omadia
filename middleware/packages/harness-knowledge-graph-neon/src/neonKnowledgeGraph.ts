@@ -1372,6 +1372,13 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         // two backends answering "which model wrote this?" the same way.
         ...(trace.model ? { model: trace.model } : {}),
         ...(trace.provider ? { provider: trace.provider } : {}),
+        // #2051 — the working mode, flattened; twin write in the in-memory graph.
+        ...(trace.workingMode
+          ? {
+              workingMode: trace.workingMode.name,
+              workingModeSkillId: trace.workingMode.skillId,
+            }
+          : {}),
         ...(trace.error ? { error: trace.error } : {}),
       });
       const runUuid = await this.upsertNode(client, {

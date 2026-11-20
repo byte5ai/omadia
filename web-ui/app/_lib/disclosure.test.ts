@@ -93,3 +93,19 @@ describe('#648 — disclosure deviation hint', () => {
     expect(shouldShowDisclosureNotice(p)).toBe(false);
   });
 });
+
+describe('#2087 — disclosure frequency hint', () => {
+  it('stays silent for the delivered frequency and on an older middleware', () => {
+    expect(shouldShowDisclosureNotice(posture({ frequency: 'channel_default' }))).toBe(false);
+    expect(shouldShowDisclosureNotice(posture())).toBe(false);
+  });
+
+  it('fires when the frequency deviates, even with the level untouched', () => {
+    expect(shouldShowDisclosureNotice(posture({ frequency: 'per_answer' }))).toBe(true);
+    expect(shouldShowDisclosureNotice(posture({ frequency: 'per_conversation' }))).toBe(true);
+  });
+
+  it('does not claim a deviation when the posture could not be read', () => {
+    expect(shouldShowDisclosureNotice(posture({ known: false, frequency: 'per_answer' }))).toBe(false);
+  });
+});

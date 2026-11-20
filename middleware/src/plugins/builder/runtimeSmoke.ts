@@ -233,7 +233,7 @@ export async function invokeToolsOnHandle(opts: {
   }
   const results: ToolSmokeResult[] = [];
   for (const tool of tools) {
-    results.push(await invokeOne(tool, opts.spec, toolTimeoutMs));
+    results.push(await invokeOne(tool, toolTimeoutMs));
   }
   const toolsOk = results.every(
     (r) => r.status === 'ok' || r.status === 'validation_failed',
@@ -316,7 +316,7 @@ export async function runRuntimeSmoke(
 
     const results: ToolSmokeResult[] = [];
     for (const tool of tools) {
-      results.push(await invokeOne(tool, opts.spec, toolTimeoutMs));
+      results.push(await invokeOne(tool, toolTimeoutMs));
     }
 
     const toolsOk = results.every(
@@ -350,18 +350,13 @@ function stubSetup(spec: AgentSpecSkeleton): {
 
 async function invokeOne(
   tool: PreviewToolDescriptor,
-  spec: AgentSpecSkeleton,
   timeoutMs: number,
 ): Promise<ToolSmokeResult> {
   const toolStart = Date.now();
 
-  const specTools = Array.isArray(spec.tools) ? (spec.tools as unknown[]) : [];
-  const toolSpec = specTools.find((t) => {
-    if (!t || typeof t !== 'object') return false;
-    return (t as { id?: unknown }).id === tool.id;
-  }) as { input?: unknown } | undefined;
-  const inputSchema = toolSpec?.input ?? null;
-  const synthetic = generateInputForSchema(inputSchema);
+  // The input schema the plugin registered with `ctx.tools.register` — what
+  // an agent's model would see, so the probe exercises the same contract.
+  const synthetic = generateInputForSchema(tool.inputSchema);
 
   return new Promise((resolve) => {
     let resolved = false;

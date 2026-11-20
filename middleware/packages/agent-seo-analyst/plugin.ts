@@ -1,8 +1,9 @@
 import { createFetcher } from './fetcher.js';
-import { createToolkit, type Toolkit } from './toolkit.js';
+import { registerToolkit } from './registerTools.js';
+import { createToolkit } from './toolkit.js';
 import type { PluginContext } from './types.js';
 
-export const AGENT_ID = '@omadia/agent-seo-analyst' as const;
+export const PLUGIN_ID = '@omadia/agent-seo-analyst' as const;
 
 const DEFAULT_BASE_URL = 'https://omadia.ai';
 const DEFAULT_USER_AGENT = 'byte5-seo-bot/0.1 (+https://omadia.ai)';
@@ -16,12 +17,19 @@ const DEFAULT_TIMEOUT_MS = 15_000;
  */
 const SELF_TEST_TIMEOUT_MS = 5_000;
 
-export interface AgentHandle {
-  readonly toolkit: Toolkit;
+/**
+ * Capability plugin of kind `tool` (spec 2042 §5.10, ADR-0014): three
+ * read-only SEO tools over public web pages. Every tool is registered with
+ * the kernel via `ctx.tools.register` (`registerTools.ts`); the agents the
+ * operator grants this plugin to call them. The plugin has no persona and no
+ * model loop of its own; the former "SEO Analyst" persona ships as the agent
+ * template `seo-analyst` in manifest.yaml.
+ */
+export interface PluginHandle {
   close(): Promise<void>;
 }
 
-export async function activate(ctx: PluginContext): Promise<AgentHandle> {
+export async function activate(ctx: PluginContext): Promise<PluginHandle> {
   // #91 — all outbound traffic must go through ctx.http so the manifest
   // allow-list + audit mode are enforced. Without it the plugin cannot run.
   if (!ctx.http) {
@@ -86,13 +94,15 @@ export async function activate(ctx: PluginContext): Promise<AgentHandle> {
     log: ctx.log,
   });
 
+  const disposeTools = registerToolkit(ctx, toolkit);
+
   return {
-    toolkit,
     async close() {
       ctx.log('deactivating');
+      disposeTools();
       await toolkit.close();
     },
   };
 }
 
-export default { AGENT_ID, activate };
+export default { PLUGIN_ID, activate };

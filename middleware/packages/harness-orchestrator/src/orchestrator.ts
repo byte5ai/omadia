@@ -21,6 +21,7 @@ import {
   resolveAiDisclosure,
   DEFAULT_AI_DISCLOSURE_POLICY,
   InMemoryDisclosureSeenStore,
+  InMemoryDisclosureMarkerStore,
   type ChatStreamEvent,
   type AnswerVerbosityInfo,
   type ChatTurnInput,
@@ -35,6 +36,9 @@ import {
   type ChatAgentToolDefinition,
   type AiDisclosurePolicy,
   type DisclosureSeenStore,
+  type AiDisclosureFrequency,
+  type DisclosureMarkerState,
+  type DisclosureMarkerStore,
   bundleProvenance,
   hasScreenableContent,
   screeningEnabled,
@@ -178,6 +182,7 @@ import { responseGuardProfileFor } from './agentQuality.js';
 import {
   agentScopePrefix,
   isUnknownOutcomeToolErrorNotice,
+  isWriteCapableTool,
   resolveEffectivePrivacyMode,
 } from '@omadia/plugin-api';
 import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
@@ -235,18 +240,54 @@ import {
   toolErrorRef,
   withholdThrownToolError,
 } from './toolErrorRedaction.js';
-import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
+import { graphScopeFor, type SessionLogEntry, type SessionLogger } from './sessionLogger.js';
 import { TurnRecordWriter, type TurnFacts, type TurnRow } from './turnRecordWriter.js';
+import {
+  CONSULT_TOOL_NAME,
+  createConsultTool,
+  createConsultationTurnState,
+  type ConsultationPort,
+} from './consultation/consultTool.js';
+import type { DiscretionPort } from './discretion/port.js';
+import { UNKNOWN_READERS, readersOf, type DiscretionLabel, type LabelSet, type Readers } from './discretion/labels.js';
+import {
+  guardIntegrationEgress,
+  guardMemoryEgress,
+  labelSubjectWithTurn,
+  labelToolRead,
+  type ToolSystem,
+} from './discretion/toolFlow.js';
+import { violationSummary } from './discretion/flowRule.js';
+import { peopleEgressDecision } from './discretion/turnLabels.js';
+import { answerWithheldText } from './discretion/disclosure.js';
+import { labelSummary } from './discretion/labels.js';
+import {
+  addTurnLabels,
+  createDiscretionTurnState,
+  currentDiscretion,
+  currentTurnLabels,
+  resolvedTurnLabels,
+  type DiscretionTurnState,
+} from './discretion/turnLabels.js';
+import { conversationContextKey, once, ownerContextKey, readersFromAudience } from './discretion/turnSetup.js';
+import {
+  consultationAllowsTool,
+  consultationToolRefusal,
+  currentConsultation,
+  isConsultationRunOf,
+} from './consultation/consultationScope.js';
 import {
   type ModelRoutingConfig,
   type RoutingBucket,
   routeTurnModel,
 } from './modelRouter.js';
 import {
-  type PersonaCandidate,
-  type PersonaRoutingBucket,
-  routeTurnPersona,
-} from './personaRouter.js';
+  type WorkingModeBucket,
+  type WorkingModeCandidate,
+  type SelectedWorkingMode,
+  routeTurnWorkingMode,
+  withWorkingMode,
+} from './workingModes.js';
 import { fromLlmResponse, toLlmRequest } from './llmProviderSeam.js';
 import type {
   AnthropicBlock,
@@ -300,11 +341,13 @@ import {
   guardToolEgress,
 } from './audienceFloorGuard.js';
 import {
+  audienceRoomFor,
   createAudienceFloorProvider,
   knowledgeGraphPrincipalResolver,
 } from './audienceFloorProvider.js';
 import { guardToolCommands } from './commandPolicyGuard.js';
 import {
+  CHANNEL_KIND_BY_ORIGIN,
   resolveRunTraceOwner,
   resolveTurnOwnerIdentity,
   runTraceOwnerId,
@@ -568,6 +611,14 @@ export interface AiDisclosureSetup {
   /** Verbatim operator addendum appended after the marking line; never replaces
    *  it (AC5). Follows the `RoutineStaticMarkdownSection` verbatim contract. */
   readonly operatorNote?: string;
+  /**
+   * #2087 — how often the VISIBLE markers (text line, channel chips) appear.
+   * Absent → `channel_default` (today's behaviour). The structured field and
+   * machine-readable markings stay on every answer whatever this says.
+   */
+  readonly frequency?: AiDisclosureFrequency;
+  /** #2087 — pause in minutes after which `per_conversation` marks again. */
+  readonly pauseMinutes?: number;
 }
 
 export interface OrchestratorOptions {
@@ -700,6 +751,16 @@ export interface OrchestratorOptions {
    * can look up prior turns and entity context before delegating. */
   knowledgeGraph?: KnowledgeGraph;
   /**
+   * The graph used ONLY to answer "who is this channel user" — the turn
+   * owner and the audience floor's principals. Defaults to `knowledgeGraph`.
+   * Supplied separately because an archetype that omits memory (the
+   * facilitator) gets no `knowledgeGraph`, yet still has to resolve the
+   * people in its room: without it every member stays unresolved and the
+   * audience floor refuses every tool in every group conversation.
+   * Identity resolution reads no memory and recalls nothing.
+   */
+  identityGraph?: KnowledgeGraph;
+  /**
    * Per-orchestrator memory isolation — a `MemoryToolHandler` bound to THIS
    * Agent's scoped (+ namespaced) MemoryStore. When set, the orchestrator
    * dispatches the model-facing `memory` tool through it INSTEAD of the
@@ -752,6 +813,18 @@ export interface OrchestratorOptions {
    * principals hold no roles and therefore only their direct grants.
    */
   audienceRoleSources?: RoleSourceRegistry;
+  /**
+   * Spec 2042 §5.4 — the kernel's consultation broker. Present ⇒ this agent
+   * gets the `consult` tool, offered while the broker lists a colleague for
+   * it. Absent ⇒ no consultation (tests, the legacy single-agent path).
+   */
+  consultation?: ConsultationPort;
+  /**
+   * Spec 2042 §5.11 — the kernel's discretion stores (integration
+   * declarations, persisted labels, audit). Absent ⇒ labels live only for the
+   * turn and every integration counts as undeclared.
+   */
+  discretion?: DiscretionPort;
   /**
    * OB-75 (Palaia Phase 6) — Session-Continuity Briefings. When set,
    * the orchestrator prepends a session-summary + open-tasks block to
@@ -994,12 +1067,14 @@ export interface OrchestratorOptions {
    */
   identityName?: string;
   /**
-   * Wave 8 — skills attached to this Agent as direct-answer persona
-   * candidates. When non-empty, each turn runs a Haiku classifier
-   * ({@link routeTurnPersona}) that picks at most one candidate whose `body`
-   * replaces `assistantIdentity` for that turn only — the rest of the system
-   * prompt (tool docs, privacy rules, routing block) is unchanged. Absent/
-   * empty → behaviour is identical to pre-Wave-8 (no classifier call).
+   * #2051 — skills attached to this Agent as working modes (the field keeps
+   * the `agent_persona_skills` table's name). When non-empty, each turn runs a
+   * cheap classifier ({@link routeTurnWorkingMode}) on a model the agent's
+   * policy allows; it picks at most one mode, whose `body` is composed
+   * BENEATH `assistantIdentity` for that turn only ({@link withWorkingMode}).
+   * The identity, personality and boundaries stay first and unchanged; the
+   * rest of the system prompt is unchanged too. Absent/empty → no classifier
+   * call, the agent's default prompt.
    */
   personaSkills?: readonly OrchestratorPersonaSkill[];
   /**
@@ -1025,6 +1100,15 @@ export interface OrchestratorOptions {
    */
   aiDisclosureSeenStore?: DisclosureSeenStore;
   /**
+   * #2087 — `per_conversation` marker state. One instance per process, shared
+   * across the Agents the registry builds: "again when another agent speaks"
+   * compares an answer with the PREVIOUS speaker of the conversation, which a
+   * per-Agent store can never see. Absent → a private
+   * {@link InMemoryDisclosureMarkerStore} (a restart marks again, the
+   * fail-safe direction).
+   */
+  aiDisclosureMarkerStore?: DisclosureMarkerStore;
+  /**
    * #579 — org security posture (org floor + optional scope tightening + shadow/
    * enforce mode + optional external screen URL). Absent → the shipping default
    * (`auto`: screen non-human inbound content, enforce). See
@@ -1049,10 +1133,10 @@ export interface OrchestratorOptions {
   securityAuditSink?: () => (event: SecurityAuditEvent) => void;
 }
 
-/** A persona candidate resolved with its full body (Orchestrator-internal —
- *  the classifier itself only ever sees {@link PersonaCandidate}'s cheap
+/** A working-mode candidate resolved with its full body (Orchestrator-internal
+ *  — the classifier itself only ever sees {@link WorkingModeCandidate}'s cheap
  *  `name`/`description` fields, never `body`). */
-export interface OrchestratorPersonaSkill extends PersonaCandidate {
+export interface OrchestratorPersonaSkill extends WorkingModeCandidate {
   readonly body: string;
 }
 
@@ -2270,6 +2354,31 @@ function requestDisclosureSeen(
   };
 }
 
+/**
+ * #2087 — the `per_conversation` marker store as one verifier request sees it:
+ * the first read of a scope freezes the state before this request, every later
+ * pass of the request decides from that same state (see
+ * `ToolReplayLedger.disclosureMarkerPrior`).
+ */
+function requestDisclosureMarkers(
+  store: DisclosureMarkerStore,
+  ledger: ToolReplayLedger | undefined,
+): DisclosureMarkerStore {
+  if (ledger === undefined) return store;
+  return {
+    getMarker: (scope) => {
+      const prior = ledger.disclosureMarkerPrior;
+      if (prior !== undefined && prior.scope === scope) {
+        return prior.state as DisclosureMarkerState | undefined;
+      }
+      const state = store.getMarker(scope);
+      ledger.disclosureMarkerPrior = { scope, state };
+      return state;
+    },
+    setMarker: (scope, state) => store.setMarker(scope, state),
+  };
+}
+
 /** The pass of `ledger` that starts now, or undefined for an unbound turn. */
 function boundPassOf(ledger: ToolReplayLedger | undefined): BoundPass | undefined {
   return ledger === undefined ? undefined : { ledger, pass: ledger.pass };
@@ -2885,7 +2994,7 @@ export class Orchestrator {
   private readonly fallbackRef: ModelRef | undefined;
   private readonly identityByFamily: Readonly<Record<string, string>> | undefined;
   private readonly fallbackVisionSupported: boolean | undefined;
-  /** Wave 8 — direct-answer persona candidates; empty when none attached. */
+  /** #2051 — working-mode candidates; empty when none attached. */
   private readonly personaSkills: readonly OrchestratorPersonaSkill[];
   private readonly maxTokens: number;
   /** #504/#505 — active model's vision support, if the caller resolved it
@@ -2922,6 +3031,11 @@ export class Orchestrator {
   /** #575 — set only when the deployment opted the audience floor in. */
   private readonly audienceGrants: GrantStore | undefined;
   private readonly audienceRoleSources: RoleSourceRegistry;
+  /** Spec 2042 §5.4 — see `OrchestratorOptions.consultation`. */
+  private readonly consultation: ConsultationPort | undefined;
+  private readonly consultTool: DomainTool | undefined;
+  /** Spec 2042 §5.11 — see `OrchestratorOptions.discretion`. */
+  private readonly discretion: DiscretionPort | undefined;
   private readonly sessionBriefing: SessionBriefingService | undefined;
   private readonly factExtractor: FactExtractor | undefined;
   /** Writes a turn's session-log row and fact extraction — now, or offered to
@@ -2979,6 +3093,8 @@ export class Orchestrator {
    *  `knowledgeGraphTool` is a different abstraction (tool-spec adapter)
    *  that doesn't expose the underlying create-write path. */
   private readonly knowledgeGraph: KnowledgeGraph | undefined;
+  /** See {@link OrchestratorOptions.identityGraph}. */
+  private readonly identityGraph: KnowledgeGraph | undefined;
   private readonly autoPromote: boolean;
   private readonly autoPromoteThreshold: number;
   private readonly autoPromoteDurableMinSignificance: number | undefined;
@@ -3000,6 +3116,8 @@ export class Orchestrator {
   private readonly disclosureSeen: DisclosureSeenStore;
   /** #2085 — one side-channel collector per verifier-bound request. */
   private readonly requestDataCollectors = new WeakMap<ToolReplayLedger, TurnDataCollector>();
+  /** #2087 — `per_conversation` marker state; process-local, a restart marks again. */
+  private readonly disclosureMarkers: DisclosureMarkerStore;
   /** #579 — org security posture setup (undefined → shipping default `auto`). */
   private readonly securityPosture: SecurityPostureSetup | undefined;
   /** #579 — late-bound screener factory (see OrchestratorOptions). */
@@ -3072,6 +3190,7 @@ export class Orchestrator {
       : undefined;
     this.requiredConsultToolName = options.requiredConsultToolName;
     this.knowledgeGraph = options.knowledgeGraph;
+    this.identityGraph = options.identityGraph ?? options.knowledgeGraph;
     this.knowledgeGraphTool = options.knowledgeGraph
       ? new KnowledgeGraphTool(options.knowledgeGraph, options.embeddingClient)
       : undefined;
@@ -3114,6 +3233,8 @@ export class Orchestrator {
     this.aiDisclosure = options.aiDisclosure;
     this.disclosureSeen =
       options.aiDisclosureSeenStore ?? new InMemoryDisclosureSeenStore();
+    this.disclosureMarkers =
+      options.aiDisclosureMarkerStore ?? new InMemoryDisclosureMarkerStore();
     this.securityPosture = options.securityPosture;
     this.securityScreener = options.securityScreener;
     this.securityAuditSink = options.securityAuditSink;
@@ -3121,11 +3242,39 @@ export class Orchestrator {
     this.turnRecords = new TurnRecordWriter({
       sessionLogger: options.sessionLogger,
       factExtractor: options.factExtractor,
+      // Spec 2042 §5.11 — a written turn keeps its label set (transitively).
+      ...(options.discretion
+        ? {
+            beforeTurnWritten: async (entry: SessionLogEntry, discretion: DiscretionTurnState | undefined) => {
+              const decision = await peopleEgressDecision(discretion);
+              return decision === undefined || decision.allowed
+                ? entry
+                : { ...entry, assistantAnswer: answerWithheldText(this.aiDisclosure?.locale) };
+            },
+            onTurnWritten: async (turnId: string, discretion: DiscretionTurnState | undefined) => {
+              if (!discretion) return;
+              await options.discretion?.persistLabels(
+                'turn',
+                turnId,
+                this.agentId,
+                await resolvedTurnLabels(discretion),
+              );
+            },
+          }
+        : {}),
     });
     this.entityRefBus = options.entityRefBus;
     this.contextRetriever = options.contextRetriever;
     this.audienceGrants = options.audienceGrants;
     this.audienceRoleSources = options.audienceRoleSources ?? new RoleSourceRegistryImpl();
+    this.discretion = options.discretion;
+    this.consultation = options.consultation;
+    this.consultTool = options.consultation
+      ? createConsultTool(options.consultation, this.agentId)
+      : undefined;
+    if (this.consultTool && !this.domainToolsByName.has(CONSULT_TOOL_NAME)) {
+      this.domainToolsByName.set(CONSULT_TOOL_NAME, this.consultTool);
+    }
     this.sessionBriefing = options.sessionBriefing;
     this.turnHookRegistry = options.turnHookRegistry;
 
@@ -3219,9 +3368,20 @@ export class Orchestrator {
     fallbackAssistantAnswer: string;
   }): Promise<string | undefined> {
     if (!this.autoPromote) return undefined;
+    // Spec 2042 §5.4 — B writes nothing to its memory from a consultation.
+    if (isConsultationRunOf(this.agentId)) return undefined;
     if (!this.graphPool || !this.graphTenantId) return undefined;
     if (!opts.turnId || !opts.userId) return undefined;
     if (!this.knowledgeGraph) return undefined;
+    // Spec 2042 §5.11 — a promoted memorable is a memory write: only into a
+    // tier whose readers may know what the turn read (members: the owners;
+    // otherwise the agent's own memory, whose readers are not known, so only
+    // the turn's own conversation may go there).
+    const tierReaders = opts.owners !== undefined ? readersOf(opts.owners) : UNKNOWN_READERS;
+    if (await guardMemoryEgress(this.discretion, tierReaders, 'auto-promotion')) {
+      console.warn(`[discretion] auto-promotion of turn ${opts.turnId} skipped: the turn carries another conversation's knowledge`);
+      return undefined;
+    }
     const promotionInput = {
       pool: this.graphPool,
       tenantId: this.graphTenantId,
@@ -3250,6 +3410,7 @@ export class Orchestrator {
     };
     try {
       const result = await promoteTurnIfSignificant(promotionInput);
+      if (result.mkId) await this.labelMemorable(result.mkId);
       return result.mkId;
     } catch (err) {
       console.error(
@@ -4290,6 +4451,13 @@ export class Orchestrator {
     // audience source is installed. A denial is a skip, not an error — the turn
     // simply proceeds without prior context, exactly as it already does when no
     // retriever is configured.
+    // Spec 2042 §5.4 — a consulted agent draws on its memory only with
+    // `memory_access: discreet`, and only through `members` recall bounded by
+    // the consulting turn's audience; anything else recalls nothing.
+    if (!this.consultationMayRecall(isolation)) {
+      console.error('[context] SKIP consultation: memory access not granted for this run');
+      return { text: undefined, recalled: undefined };
+    }
     const recallRefusal = await guardContextRecall();
     if (recallRefusal !== undefined) {
       console.error(`[context] SKIP audience-floor: ${recallRefusal}`);
@@ -4380,6 +4548,10 @@ export class Orchestrator {
           ? { tailLimit: CANVAS_RECALL_TAIL_TURNS }
           : {}),
       });
+      // Spec 2042 §5.11 — reusing a written turn adds the labels it kept.
+      await this.labelRecalledTurns(result.included.map((hit) => hit.turnId));
+      // … and so does reusing a memorable.
+      await this.labelRecalledMemorables(result.recalled?.insights.map((insight) => insight.mkId) ?? []);
       console.error(
         `[context] assembled scope=${input.sessionScope ?? '-'} user=${input.userId ?? '-'} pool=${String(result.stats.candidatePool)} included=${String(result.included.length)} excluded=${String(result.excluded.length)} compact=${String(result.stats.compactMode)} tokens=${String(result.stats.tokensUsed)} rendered=${String(result.text.length)}B`,
       );
@@ -4589,6 +4761,9 @@ export class Orchestrator {
               ? { scope: this.disclosureFoldScope(input.sessionScope) }
               : {}),
             seen: this.disclosureSeen,
+            agentId: this.agentId,
+            markerStore: this.disclosureMarkers,
+            ...(input.sessionScope ? { markerScope: input.sessionScope } : {}),
           }
         : undefined,
     );
@@ -4657,6 +4832,8 @@ export class Orchestrator {
       level,
       source,
       ...(setup?.locale ? { locale: setup.locale } : {}),
+      ...(setup?.frequency ? { frequency: setup.frequency } : {}),
+      ...(setup?.pauseMinutes !== undefined ? { pauseMinutes: setup.pauseMinutes } : {}),
     };
     // #967 — THIS Agent's authored name outranks the platform-wide
     // `ai_disclosure_assistant_name`. The setup field is one string for the
@@ -4741,14 +4918,22 @@ export class Orchestrator {
     };
     const aiDisclosure = this.resolveTurnDisclosure(input);
     if (!aiDisclosure) return withTextWithoutData(delivered, data);
-    const { text } = applyAiDisclosure(delivered.answer, {
+    const applied = applyAiDisclosure(delivered.answer, {
       disclosure: aiDisclosure,
       ...(input.sessionScope
         ? { scope: this.disclosureFoldScope(input.sessionScope) }
         : {}),
       seen: requestDisclosureSeen(this.disclosureSeen, ledger),
+      agentId: this.agentId,
+      markerStore: requestDisclosureMarkers(this.disclosureMarkers, ledger),
+      ...(input.sessionScope ? { markerScope: input.sessionScope } : {}),
     });
-    return withTextWithoutData({ ...delivered, answer: text, aiDisclosure }, data);
+    // The carrier that goes out is the applied one: it states which visible
+    // markers this answer carries (#2087), the pre-resolved one does not.
+    return withTextWithoutData(
+      { ...delivered, answer: applied.text, aiDisclosure: applied.aiDisclosure ?? aiDisclosure },
+      data,
+    );
   }
 
   /**
@@ -4794,14 +4979,17 @@ export class Orchestrator {
   ): { readonly answer: string; readonly aiDisclosure?: AiDisclosure } {
     const aiDisclosure = this.resolveTurnDisclosure(input);
     if (!aiDisclosure) return { answer };
-    const { text } = applyAiDisclosure(answer, {
+    const applied = applyAiDisclosure(answer, {
       disclosure: aiDisclosure,
       ...(input.sessionScope
         ? { scope: this.disclosureFoldScope(input.sessionScope) }
         : {}),
       seen: this.disclosureSeen,
+      agentId: this.agentId,
+      markerStore: this.disclosureMarkers,
+      ...(input.sessionScope ? { markerScope: input.sessionScope } : {}),
     });
-    return { answer: text, aiDisclosure };
+    return { answer: applied.text, aiDisclosure: applied.aiDisclosure ?? aiDisclosure };
   }
 
   /**
@@ -5202,6 +5390,40 @@ export class Orchestrator {
   }
 
   /**
+   * #575 / #2048 — the audience floor provider for one turn, as a spread for
+   * the turn context. Installed whenever the deployment supplied a grant store,
+   * which since #2048 is every deployment unless the operator switched the
+   * floor off (`AUDIENCE_FLOOR_ENABLED=false`); without one the three guards
+   * short-circuit ("not enforced ≠ closed").
+   *
+   * Deliberately not memoized: the egress guard re-evaluates per tool call so
+   * a mid-turn joiner narrows the floor, and caching here would hand it the
+   * turn's opening answer every time.
+   */
+  private audienceFloorFor(
+    input: ChatTurnInput,
+    parent: TurnContextValue | undefined,
+    turnOwnerId: string | undefined,
+  ): Pick<TurnContextValue, 'audienceFloor'> {
+    if (!this.audienceGrants) return {};
+    const room = audienceRoomFor(input, turnOwnerId);
+    if (!room) return {};
+    return {
+      audienceFloor: createAudienceFloorProvider({
+        participants: parent?.chatParticipants,
+        resolvePrincipal: knowledgeGraphPrincipalResolver(
+          this.identityGraph,
+          input.channelIdentity?.channelKind ??
+            (input.origin ? CHANNEL_KIND_BY_ORIGIN[input.origin.channelType] : undefined),
+        ),
+        roles: this.audienceRoleSources,
+        grants: this.audienceGrants,
+        room,
+      }),
+    };
+  }
+
+  /**
    * The turn's binding, with the room's audience resolved first when the
    * agent runs `members` context memory. The audience is async (roster and
    * identity lookups), the binding itself is not, so this is the one await in
@@ -5405,7 +5627,7 @@ export class Orchestrator {
     // rules. Read by `QueryDatasetTool` and `ingestAttachments` via
     // `turnContext.current()?.resolvedOmadiaUserId` instead of each
     // re-deriving it independently.
-    const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
+    const turnOwner = await resolveTurnOwnerIdentity(this.identityGraph, input);
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
     // The run trace's User-Cluster, resolved before anything ingests it — a
     // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
@@ -5506,25 +5728,7 @@ export class Orchestrator {
         // every call as `unresolved` and then fails closed. See the W4-1 block
         // above for where the value comes from.
         ...(mcpUserKey ? { mcpUserKey } : {}),
-        // #575 — installed ONLY when the deployment supplied a grant store.
-        // Without it the three guards short-circuit and behaviour is unchanged,
-        // which is the "not enforced ≠ closed" rule the guards are built on.
-        // Deliberately not memoized: the egress guard re-evaluates per tool
-        // call so a mid-turn joiner narrows the floor, and caching here would
-        // hand it the turn's opening answer every time.
-        ...(this.audienceGrants
-          ? {
-              audienceFloor: createAudienceFloorProvider({
-                participants: parent?.chatParticipants,
-                resolvePrincipal: knowledgeGraphPrincipalResolver(
-                  this.knowledgeGraph,
-                  input.channelIdentity?.channelKind,
-                ),
-                roles: this.audienceRoleSources,
-                grants: this.audienceGrants,
-              }),
-            }
-          : {}),
+        ...this.audienceFloorFor(input, parent, runTraceUserId),
         ...(privacyHandle ? { privacyHandle } : {}),
         ...(parent?.captureRawToolResult
           ? { captureRawToolResult: parent.captureRawToolResult }
@@ -5536,6 +5740,7 @@ export class Orchestrator {
           ? { canvasSentinelSink: parent.canvasSentinelSink }
           : {}),
         toolReplayLedger,
+        ...this.discretionTurnFields(input, parent, resolvedOmadiaUserId),
       },
       () => this.closePassOnThrow(undeliveredPass, async () => {
         // W2-1 (#544) — forced replay of the parked MCP tool call, before the
@@ -5558,7 +5763,11 @@ export class Orchestrator {
         try {
           // The screening gate could not mask: fail closed right here.
           if (screeningBlocked) throw screeningBlocked;
-          result = await this.chatInContext(input, turnId, turnMemory);
+          result = await this.guardAnswerEgress(
+            this.withContributions(await this.chatInContext(input, turnId, turnMemory)),
+            this.turnLocale(input),
+          );
+          await this.exportConsultationResult();
         } catch (err) {
           // #361 — failure-closed prompt masking: the prompt never reached
           // the model; answer with a generic privacy error instead of a raw
@@ -5909,6 +6118,7 @@ export class Orchestrator {
       readonly sentinelMint: McpInputSentinelMint;
       readonly authPromptMint: McpAuthPromptMint;
       readonly recorder: SubEventRecorder | undefined;
+      readonly labels?: LabelSet;
     },
   ): ToolReplayRecord {
     if (isOwnMintedSentinel(scope.sentinelMint, result) || scope.authPromptMint.minted(result)) {
@@ -5922,7 +6132,12 @@ export class Orchestrator {
       return { kind: 'rerun' };
     }
     const events = scope.recorder?.events ?? [];
-    return { kind: 'result', value: result, ...(events.length > 0 ? { subEvents: [...events] } : {}) };
+    return {
+      kind: 'result',
+      value: result,
+      ...(events.length > 0 ? { subEvents: [...events] } : {}),
+      ...(scope.labels && scope.labels.labels.length > 0 ? { labels: scope.labels } : {}),
+    };
   }
 
   /**
@@ -5971,21 +6186,13 @@ export class Orchestrator {
     turnModel: string,
     hasImages: boolean,
   ): Promise<TurnExecution> {
-    let provider = this.provider;
-    let model = turnModel;
-    let effort = this.effort;
-    if (this.primaryRef && this.providerPool && this.primaryRef.provider !== this.provider.id) {
-      const resolved = await this.providerPool.get(this.primaryRef.provider).catch(() => undefined);
-      if (resolved) {
-        provider = resolved;
-        model = this.primaryRef.model;
-        effort = this.primaryRef.effort ?? effort;
-      } else {
-        console.warn(
-          `[orchestrator] agent '${this.agentId}': primary provider '${this.primaryRef.provider}' is not available (no key?) — running on '${this.provider.id}'`,
-        );
-      }
+    const primary = await this.resolvePrimaryExecution(turnModel);
+    if (primary.primaryUnavailable !== undefined) {
+      console.warn(
+        `[orchestrator] agent '${this.agentId}': primary provider '${primary.primaryUnavailable}' is not available (no key?) — running on '${this.provider.id}'`,
+      );
     }
+    const { provider, model, effort } = primary;
     let fallback: TurnFallback | undefined;
     if (this.fallbackRef && this.providerPool) {
       if (hasImages && this.fallbackVisionSupported === false) {
@@ -6011,6 +6218,36 @@ export class Orchestrator {
       }
     }
     return { provider, model, ...(effort !== undefined ? { effort } : {}), ...(fallback ? { fallback } : {}) };
+  }
+
+  /**
+   * #1033 W3 — the provider/model the agent's policy puts the turn on: the
+   * policy's primary when it names another provider the pool can serve, else
+   * the agent's own provider with `turnModel`. `primaryUnavailable` names a
+   * policy provider the pool could not serve (the caller logs it). Shared by
+   * the turn loop and the working-mode classifier (#2051), so both run under
+   * the same policy.
+   */
+  private async resolvePrimaryExecution(turnModel: string): Promise<{
+    provider: LlmProvider;
+    model: string;
+    effort: EffortLevel | undefined;
+    primaryUnavailable?: string;
+  }> {
+    const ref = this.primaryRef;
+    if (!ref || !this.providerPool || ref.provider === this.provider.id) {
+      return { provider: this.provider, model: turnModel, effort: this.effort };
+    }
+    const resolved = await this.providerPool.get(ref.provider).catch(() => undefined);
+    if (!resolved) {
+      return {
+        provider: this.provider,
+        model: turnModel,
+        effort: this.effort,
+        primaryUnavailable: ref.provider,
+      };
+    }
+    return { provider: resolved, model: ref.model, effort: ref.effort ?? this.effort };
   }
 
   /**
@@ -6291,57 +6528,57 @@ export class Orchestrator {
   }
 
   /**
-   * Wave 8 — resolves the direct-answer persona for a single turn. With
-   * persona skills attached, a Haiku classifier picks at most one candidate;
-   * its `body` should replace `assistantIdentity` for this turn only. Empty
-   * candidate list short-circuits before any classifier call — an Agent with
-   * no persona skills pays nothing extra. Never throws — falls back to the
-   * default identity (`skillBody: undefined`).
+   * #2051 — resolves the working mode for a single turn. With modes attached,
+   * a classifier picks at most one; its body is composed BENEATH the agent's
+   * identity ({@link withWorkingMode}), never in its place. Empty candidate
+   * list short-circuits before any classifier call — an Agent without working
+   * modes pays nothing extra. Never throws — falls back to no mode
+   * (`mode: undefined`, the agent's default behaviour).
+   *
+   * The selection is the agent's internal helper (INV-1): it runs inside the
+   * agent's turn context (usage booked on the turn) and on a model the
+   * agent's policy allows — the routing classifier tier when the policy is
+   * `auto` and triage is configured, otherwise the policy's primary
+   * ({@link resolvePrimaryExecution}), never a hardcoded vendor id.
    */
-  private async resolveTurnPersona(userMessage: string): Promise<{
-    skillBody: string | undefined;
-    persona?: {
-      bucket: PersonaRoutingBucket;
+  private async resolveTurnWorkingMode(userMessage: string): Promise<{
+    mode: SelectedWorkingMode | undefined;
+    verdict?: {
+      bucket: WorkingModeBucket;
       classifierModel: string;
       skillId: string | null;
-      skillName: string | null;
+      modeName: string | null;
     };
   }> {
-    if (this.personaSkills.length === 0) return { skillBody: undefined };
-    const r = await routeTurnPersona(
-      this.provider,
+    if (this.personaSkills.length === 0) return { mode: undefined };
+    const classifier = this.modelRouting
+      ? { provider: this.provider, model: this.modelRouting.classifierModel }
+      : await this.resolvePrimaryExecution(this.model);
+    const r = await routeTurnWorkingMode(
+      classifier.provider,
       this.personaSkills,
       userMessage,
-      // Reuses the model-routing classifier tier when configured (same
-      // Haiku-class model already paid for/warmed). Otherwise falls back to
-      // `this.model` (this Agent's own production model) rather than a
-      // hardcoded Anthropic id — `this.provider` may be bound to any vendor
-      // (OpenAI/Mistral/Ollama/…), and a hardcoded `claude-*` classifier
-      // model would 404/reject on every call, silently defeating the whole
-      // feature (every turn falls back to the default identity). `this.model`
-      // is guaranteed provider-compatible by construction; it costs more
-      // than a dedicated cheap-tier classifier, but it always works.
-      this.modelRouting?.classifierModel ?? this.model,
+      classifier.model,
     );
     const picked = r.skillId
       ? this.personaSkills.find((p) => p.skillId === r.skillId)
       : undefined;
-    // Publish the routed persona on the live turn context (epic #459 W4
-    // codex fold): skill-bound MCP tools gate on it at dispatch, so a tool
-    // bound to skill X is unusable on turns where X is not the acting
-    // persona. Mutation (not re-run) so every scope of this turn sees it.
+    // Publish the selected mode on the live turn context (epic #459 W4 codex
+    // fold): skill-bound MCP tools gate on it at dispatch, so a tool bound to
+    // skill X is unusable on turns where X is not the active working mode.
+    // Mutation (not re-run) so every scope of this turn sees it.
     const activeTurn = turnContext.current();
     if (activeTurn) {
-      if (picked?.skillId !== undefined) activeTurn.activePersonaSkillId = picked.skillId;
-      else delete activeTurn.activePersonaSkillId;
+      if (picked?.skillId !== undefined) activeTurn.activeWorkingModeSkillId = picked.skillId;
+      else delete activeTurn.activeWorkingModeSkillId;
     }
     return {
-      skillBody: picked?.body,
-      persona: {
+      mode: picked ? { name: picked.name, body: picked.body } : undefined,
+      verdict: {
         bucket: r.bucket,
         classifierModel: r.classifierModel,
         skillId: picked?.skillId ?? null,
-        skillName: picked?.name ?? null,
+        modeName: picked?.name ?? null,
       },
     };
   }
@@ -6519,19 +6756,22 @@ export class Orchestrator {
     let obligationEscalationsUsed = 0;
     let forceObligationNext = false;
 
-    // Per-turn model routing (no-op unless configured) + Wave 8 persona
-    // routing (no-op unless persona skills are attached), resolved together
-    // — independent classifier calls, run in parallel so persona routing
+    // Per-turn model routing (no-op unless configured) + #2051 working-mode
+    // selection (no-op unless working modes are attached), resolved together
+    // — independent classifier calls, run in parallel so mode selection
     // adds no serial latency on top of model routing. Both resolved once so
     // the whole turn — every tool-loop iteration — is stable. The
-    // non-streaming path has no event channel, so both decisions are simply
-    // applied (channels that want to surface them use chatStream).
-    const [turnModelResolved, turnPersonaResolved] = await Promise.all([
+    // non-streaming path has no event channel; the mode still reaches the
+    // run trace (channels that want the live verdict use chatStream).
+    const [turnModelResolved, turnModeResolved] = await Promise.all([
       this.resolveTurnModel(wireUserMessage, input.routeHint),
-      this.resolveTurnPersona(wireUserMessage),
+      this.resolveTurnWorkingMode(wireUserMessage),
     ]);
     const turnModel = turnModelResolved.model;
-    const turnPersonaBody = turnPersonaResolved.skillBody;
+    const turnWorkingMode = turnModeResolved.mode;
+    if (turnModeResolved.verdict?.skillId && turnWorkingMode) {
+      traceCollector?.recordWorkingMode(turnModeResolved.verdict.skillId, turnWorkingMode.name);
+    }
     // #1033 W3 — which provider/model this turn runs on and where it may hop.
     let turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
     Orchestrator.publishTurnExecution(turnExec);
@@ -6555,12 +6795,17 @@ export class Orchestrator {
         const forceObligation = forceObligationNext && !obligationMet;
         forceObligationNext = false;
         const finalizePass = finalizeThisIter && !forceObligation;
-        // #1033 W3 — the system prompt for a given persona: the routed
-        // persona skill outranks everything; otherwise the execution's own
-        // identity (the fallback family's compiled prompt after a hop).
-        const systemFor = (persona: string | undefined) =>
+        // #1033 W3 — the system prompt for an execution's identity (the
+        // fallback family's compiled prompt after a hop, else the agent's
+        // own); #2051 — the turn's working mode is composed beneath it.
+        const systemFor = (identity: string | undefined) =>
           buildSystemBlocks(
-            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.memoryPrompt),
+            this.composeStableSystemPrompt(
+              prependRules,
+              identity,
+              turnMemory?.memoryPrompt,
+              turnWorkingMode,
+            ),
             priorContext,
             withFinalizeHint(effectiveExtraSystemHint, finalizePass),
           );
@@ -6581,7 +6826,7 @@ export class Orchestrator {
           model: turnExec.model,
           ...(turnExec.effort !== undefined ? { effort: turnExec.effort } : {}),
           max_tokens: this.maxTokens,
-          system: systemFor(turnPersonaBody ?? turnExec.identity),
+          system: systemFor(turnExec.identity),
           messages,
         };
         // Last-resort guard: repair any lone UTF-16 surrogate before the
@@ -6620,7 +6865,7 @@ export class Orchestrator {
                       ...baseParams,
                       model: fb.model,
                       ...(fb.effort !== undefined ? { effort: fb.effort } : {}),
-                      system: systemFor(turnPersonaBody ?? fb.identity),
+                      system: systemFor(fb.identity),
                       ...toolParamsForProvider(fb.provider),
                     }),
                     [MEMORY_BETA_HEADER],
@@ -6865,10 +7110,7 @@ export class Orchestrator {
         const invocations = toolUses.map((use: ContentBlock) => {
           const isNative = this.nativeTools.has(use.name);
           return !isNative && traceCollector
-            ? traceCollector.beginInvocation(
-                use.name,
-                this.domainToolsByName.get(use.name)?.agentId,
-              )
+            ? this.beginDomainInvocation(traceCollector, use.name)
             : undefined;
         });
         const metas: ToolDispatchMeta[] = toolUses.map(() => ({ replayed: false }));
@@ -7239,7 +7481,7 @@ export class Orchestrator {
     // Slack/Telegram, via `createOrchestratorDispatcher`) actually call, so
     // without this the resolved identity would never reach a channel turn's
     // tool dispatch at all — see `resolveTurnOwnerIdentity`.
-    const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
+    const turnOwner = await resolveTurnOwnerIdentity(this.identityGraph, input);
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
     // The run trace's User-Cluster, resolved before anything ingests it — a
     // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
@@ -7320,6 +7562,10 @@ export class Orchestrator {
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
+      // #2048 — the streaming path is what channel adapters and the web chat
+      // call; it carried no floor at all before, so every guard stood down
+      // on exactly the turns that have an audience.
+      ...this.audienceFloorFor(input, parent, runTraceUserId),
       // W3-A / W4-1 — see the matching `turnContext.run` above.
       ...(mcpUserKey ? { mcpUserKey } : {}),
       ...(privacyHandle ? { privacyHandle } : {}),
@@ -7332,6 +7578,7 @@ export class Orchestrator {
         ? { canvasSentinelSink: parent.canvasSentinelSink }
         : {}),
       toolReplayLedger,
+      ...this.discretionTurnFields(input, parent, resolvedOmadiaUserId),
     };
     // `input` is re-bound above (envelope normalisation); capture the final
     // value so the body cannot observe the pre-normalisation message.
@@ -7653,6 +7900,7 @@ export class Orchestrator {
               await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
             );
           }
+          await this.withholdRefusedSideChannelData();
           yield this.discloseDoneEvent(doneEvent, input, bound?.ledger);
           continue;
         }
@@ -7667,6 +7915,7 @@ export class Orchestrator {
           // #644 — fold the disclosure at the boundary, AFTER the hook (which
           // records the raw answer, matching the non-streaming path where
           // `toSemanticAnswer` folds only after `runTurn` persisted the turn).
+          await this.withholdRefusedSideChannelData();
           yield this.discloseDoneEvent(event, input, bound?.ledger);
           continue;
         }
@@ -7847,16 +8096,19 @@ export class Orchestrator {
     // Mid-turn steering — same key the route enqueues under (see chatStream:
     // `sessionId`). Drained at the top of every iteration below.
     const steerKey = input.sessionScope ?? turnId;
-    // Per-turn model routing (no-op unless configured) + Wave 8 persona
-    // routing (no-op unless persona skills are attached). Independent
-    // classifier calls — run in parallel so persona routing adds no serial
+    // Per-turn model routing (no-op unless configured) + #2051 working-mode
+    // selection (no-op unless working modes are attached). Independent
+    // classifier calls — run in parallel so mode selection adds no serial
     // latency. Resolved once so the whole streamed turn runs on one model.
-    const [resolved, resolvedPersona] = await Promise.all([
+    const [resolved, resolvedMode] = await Promise.all([
       this.resolveTurnModel(wireUserMessage, input.routeHint),
-      this.resolveTurnPersona(wireUserMessage),
+      this.resolveTurnWorkingMode(wireUserMessage),
     ]);
     const turnModel = resolved.model;
-    const turnPersonaBody = resolvedPersona.skillBody;
+    const turnWorkingMode = resolvedMode.mode;
+    if (resolvedMode.verdict?.skillId && turnWorkingMode) {
+      traceCollector?.recordWorkingMode(resolvedMode.verdict.skillId, turnWorkingMode.name);
+    }
     // #1033 W3 — which provider/model this turn runs on and where it may hop.
     let turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
     Orchestrator.publishTurnExecution(turnExec);
@@ -7876,16 +8128,18 @@ export class Orchestrator {
         model: resolved.routing.model,
       };
     }
-    // Wave 8 — surface the persona verdict the same way, only when at least
-    // one persona skill is attached (resolvedPersona.persona is undefined
-    // otherwise, matching turn_routing's own "only when configured" shape).
-    if (resolvedPersona.persona) {
+    // #2051 — surface the working-mode verdict the same way, only when at
+    // least one working mode is attached (`verdict` is undefined otherwise,
+    // matching turn_routing's own "only when configured" shape). Data for
+    // the answer's details and trace (§5.14): it names the mode, never a
+    // speaker — the agent answering this turn does not change with it.
+    if (resolvedMode.verdict) {
       yield {
-        type: 'turn_persona',
-        bucket: resolvedPersona.persona.bucket,
-        classifierModel: resolvedPersona.persona.classifierModel,
-        skillId: resolvedPersona.persona.skillId,
-        skillName: resolvedPersona.persona.skillName,
+        type: 'turn_working_mode',
+        bucket: resolvedMode.verdict.bucket,
+        classifierModel: resolvedMode.verdict.classifierModel,
+        skillId: resolvedMode.verdict.skillId,
+        modeName: resolvedMode.verdict.modeName,
       };
     }
     try {
@@ -7951,11 +8205,17 @@ export class Orchestrator {
         // shared `toolParamsFor`, computed per provider (the fallback gets its
         // own pair).
         const finalizePass = finalizeThisIter && !forceObligation;
-        // #1033 W3 — see the buffered path: persona skill first, else the
-        // execution's own identity (the fallback family's prompt after a hop).
-        const systemFor = (persona: string | undefined) =>
+        // #1033 W3 — see the buffered path: the execution's own identity
+        // (the fallback family's prompt after a hop), with the #2051 working
+        // mode composed beneath it.
+        const systemFor = (identity: string | undefined) =>
           buildSystemBlocks(
-            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.memoryPrompt),
+            this.composeStableSystemPrompt(
+              prependRules,
+              identity,
+              turnMemory?.memoryPrompt,
+              turnWorkingMode,
+            ),
             priorContext,
             withFinalizeHint(effectiveExtraSystemHint, finalizePass),
           );
@@ -7973,7 +8233,7 @@ export class Orchestrator {
           model: turnExec.model,
           ...(turnExec.effort !== undefined ? { effort: turnExec.effort } : {}),
           max_tokens: this.maxTokens,
-          system: systemFor(turnPersonaBody ?? turnExec.identity),
+          system: systemFor(turnExec.identity),
           messages,
         };
         // #1033 W3 — a hop to ANOTHER provider is only taken before the first
@@ -8001,7 +8261,7 @@ export class Orchestrator {
                     ...streamParams,
                     model: fb.model,
                     ...(fb.effort !== undefined ? { effort: fb.effort } : {}),
-                    system: systemFor(turnPersonaBody ?? fb.identity),
+                    system: systemFor(fb.identity),
                     ...toolParamsForProvider(fb.provider),
                   },
                   ...(this.providerPool?.health ? { health: this.providerPool.health } : {}),
@@ -8272,6 +8532,7 @@ export class Orchestrator {
             ...(finalAgentsConsulted && finalAgentsConsulted.length > 0
               ? { agentsConsulted: finalAgentsConsulted }
               : {}),
+            ...this.contributionsField(),
           };
           return;
         }
@@ -8528,6 +8789,7 @@ export class Orchestrator {
             ...(choiceAgentsConsulted && choiceAgentsConsulted.length > 0
               ? { agentsConsulted: choiceAgentsConsulted }
               : {}),
+            ...this.contributionsField(),
           };
           return;
         }
@@ -8585,6 +8847,7 @@ export class Orchestrator {
             ...(mcpAgentsConsulted && mcpAgentsConsulted.length > 0
               ? { agentsConsulted: mcpAgentsConsulted }
               : {}),
+            ...this.contributionsField(),
           };
           return;
         }
@@ -8741,10 +9004,7 @@ export class Orchestrator {
     const isNative = this.nativeTools.has(use.name);
     const invocation =
       !isNative && traceCollector
-        ? traceCollector.beginInvocation(
-            use.name,
-            this.domainToolsByName.get(use.name)?.agentId,
-          )
+        ? this.beginDomainInvocation(traceCollector, use.name)
         : undefined;
     const observer = this.makeSlotObserver(use.id, subEvents, invocation);
     const started = Date.now();
@@ -8910,10 +9170,10 @@ export class Orchestrator {
     // the user's prompt: a tool may have been run on it.
     const privacy = turnContext.current()?.privacyHandle;
     try {
-      return remaskEchoedValues(
-        privacy,
-        await this.dispatchToolWithDeadline(name, input, observer, turnMemory, meta),
-      );
+      const out = await this.dispatchToolWithDeadline(name, input, observer, turnMemory, meta);
+      // Spec 2042 §5.11 — what the call brought in joins the turn's labels.
+      await labelToolRead(this.discretion, this.toolSystemOf(name));
+      return remaskEchoedValues(privacy, out);
     } catch (err) {
       const outcome = await withholdThrownToolError({
         toolName: name,
@@ -8955,6 +9215,17 @@ export class Orchestrator {
     // is a TOCTOU hole. Inert unless an audience source is installed.
     const refusal = await guardToolEgress(name);
     if (refusal !== undefined) return refusal;
+
+    // Spec 2042 §5.4 — a consulted agent's run stays inside the consultation
+    // envelope (allowed capabilities ∩ both agents' grants; no memory writes,
+    // no further consultation). Checked here as well as in the offered list,
+    // because a model may name a tool it was not offered.
+    if (!this.consultationAllows(name)) return consultationToolRefusal(name);
+
+    // Spec 2042 §5.11 — a call that may write data out is checked against the
+    // integration's declared readership before it runs.
+    const discretionRefusal = await guardIntegrationEgress(this.discretion, name, this.toolSystemOf(name));
+    if (discretionRefusal !== undefined) return discretionRefusal;
 
     // #580 — the command policy's enforcement seam, at the same choke point.
     // Normalizes any command-shaped argument (unwrapping quoting/substitution)
@@ -9143,7 +9414,11 @@ export class Orchestrator {
     // server directly (`mcpGrantToDomainTool`): only a tool WITHOUT an MCP
     // server id runs a sub-agent model.
     const domainTool = this.domainToolsByName.get(name);
-    const asksSubAgentModel = domainTool !== undefined && domainTool.mcpServerId === undefined;
+    // `consult` is the exception: its input goes to a colleague agent, which
+    // cannot resolve this turn's placeholders, so it gets the restored values
+    // (the broker checks first that the colleague may receive them).
+    const asksSubAgentModel =
+      domainTool !== undefined && domainTool.mcpServerId === undefined && domainTool !== this.consultTool;
     const handlerInput =
       asksSubAgentModel || isInternExemptTool(name)
         ? input
@@ -9198,6 +9473,9 @@ export class Orchestrator {
       replaySubEvents(observer, replay.kind === 'result' ? replay.subEvents : undefined);
       if (replay.kind === 'rejection') throw replay.error;
       result = replay.value as string;
+      // Spec 2042 §5.11 — a replayed memory read brings the labels the first
+      // run's read added (they come from below the handler, which a replay skips).
+      if (replay.kind === 'result' && replay.labels) addTurnLabels(replay.labels);
       // Fresh-Check gate: a replayed memory read fed this pass's answer too.
       if (name === MEMORY_TOOL_NAME && isMemoryFileRead(input, result)) {
         const box = turnContext.current()?.memoryFileRead;
@@ -9257,6 +9535,7 @@ export class Orchestrator {
           sentinelMint: mcpInputSentinelMint,
           authPromptMint: mcpAuthPromptMint,
           recorder,
+          ...(name === MEMORY_TOOL_NAME ? { labels: currentTurnLabels() } : {}),
         }),
       );
       if (isUnknownOutcomeToolErrorNotice(result)) tracked.noteUnknownOutcome(name, input);
@@ -9342,7 +9621,16 @@ export class Orchestrator {
         // that was not known owns nothing, so nothing is stored.
         const members = turnOwnersField(turnMemory).owners;
         const owners = members ?? (userId ? [userId] : []);
-        if (userId && owners.length > 0) {
+        // Spec 2042 §5.11 — the stored observation is a memory write: only into
+        // a tier whose readers may know what the turn read (members: the
+        // owners; else the turn's own conversation only).
+        const mayStore =
+          (await guardMemoryEgress(
+            this.discretion,
+            members ? readersOf(members) : UNKNOWN_READERS,
+            `mcp-kg:${kgTool.mcpServerId}`,
+          )) === undefined;
+        if (userId && owners.length > 0 && mayStore) {
           const bypassed = isMcpServerBypassInForce(kgTool.mcpServerId, name);
           const detail = bypassed
             ? result.slice(0, 8000)
@@ -9361,6 +9649,19 @@ export class Orchestrator {
               // under a shield. The edge above never finds its Turn (the id is
               // the per-turn uuid), so the stamp is the only record of it.
               ...(bypassed ? { unprotected: true } : {}),
+            })
+            // Spec 2042 §5.11 — the memorable keeps the turn's labels and the
+            // server it came from.
+            .then(async (ingested) => {
+              const system = `mcp:${String(kgTool.mcpServerId)}`;
+              // A failed lookup counts as restricted (fail closed).
+              const declared = await this.discretion?.declarationOf(system).then(
+                (d) => d?.sensitivity === 'restricted',
+                () => true,
+              );
+              await this.labelMemorable(ingested.memorableKnowledgeNodeId, [
+                { kind: 'source', system, restricted: declared === true },
+              ]);
             })
             .catch(() => {
               /* KG ingestion is best-effort — never break the tool call */
@@ -9574,6 +9875,13 @@ export class Orchestrator {
           `Error: tool \`${name}\` is unavailable — plugin \`${memoryAgentId}\` has not completed its connection/auth setup.`,
         );
       }
+      // Spec 2042 §5.11 — a write lands in a tier whose readers may all know
+      // what the turn has read; the note then keeps the turn's labels
+      // (`LabelledMemoryStore`).
+      if (!isMemoryViewCall(input)) {
+        const refusal = await guardMemoryEgress(this.discretion, await this.memoryTierReaders(turnMemory), 'memory');
+        if (refusal) return refuse(refusal);
+      }
       const result = await memoryHandler.handle(input);
       // Arm the Fresh-Check gate only on a read that actually DELIVERED a file.
       // Checked after the handler so a `view` of a missing/invalid path — which
@@ -9734,15 +10042,18 @@ export class Orchestrator {
    * turn; stable feature flags come from the readonly fields, the
    * DomainTool list is live.
    *
-   * `personaOverride` (Wave 8) replaces `assistantIdentity` for this call
-   * only — the resolved body of the turn's chosen direct-answer persona
-   * skill, when one was matched. Every other block (tool docs, privacy
-   * rules, Fach-Agent routing) is unaffected, so a persona skill can change
-   * *who* answers but never *how* tools/privacy rules are enforced.
+   * `identityOverride` (#1033 W3) replaces `assistantIdentity` for this call
+   * only — the identity compiled for a fallback model's family after a hop.
+   * `workingMode` (#2051) is composed BENEATH whichever identity applies
+   * ({@link withWorkingMode}): the identity, personality and boundaries stay
+   * the opening section, unchanged, and every other block (tool docs, privacy
+   * rules, Fach-Agent routing) is unaffected. A mode changes how the agent
+   * works, never who answers.
    */
   private getSystemPrompt(
-    personaOverride?: string,
+    identityOverride?: string,
     memoryPrompt?: MemoryPromptKind,
+    workingMode?: SelectedWorkingMode,
   ): string {
     // Plugin-contributed prompt docs, collected from the registry. The
     // kernel's hardcoded blocks (graph/diagram/…) remain in buildSystemPrompt
@@ -9774,7 +10085,7 @@ export class Orchestrator {
       (tool) => this.isToolAvailable(tool.agentId) && this.isOfferableDomainTool(tool),
     );
     return buildSystemPrompt(
-      personaOverride ?? this.assistantIdentity,
+      withWorkingMode(identityOverride ?? this.assistantIdentity, workingMode),
       availableDomainTools,
       this.knowledgeGraphTool !== undefined,
       // Diagrams is now plugin-contributed — its doc ships via extraDocs.
@@ -9840,15 +10151,16 @@ export class Orchestrator {
   /**
    * Combine the Phase-1 prependRules with the body system prompt. Empty
    * rules → returns the body unchanged so the prompt-cache key is byte-
-   * identical to pre-plugin runs. `personaOverride` (Wave 8) is threaded
-   * straight to {@link getSystemPrompt}.
+   * identical to pre-plugin runs. `identityOverride` and `workingMode`
+   * (#2051) are threaded straight to {@link getSystemPrompt}.
    */
   private composeStableSystemPrompt(
     prependRules: string,
-    personaOverride?: string,
+    identityOverride?: string,
     memoryPrompt?: MemoryPromptKind,
+    workingMode?: SelectedWorkingMode,
   ): string {
-    const body = this.getSystemPrompt(personaOverride, memoryPrompt);
+    const body = this.getSystemPrompt(identityOverride, memoryPrompt, workingMode);
     if (prependRules.length === 0) return body;
     return `${prependRules}\n\n---\n\n${body}`;
   }
@@ -9932,6 +10244,9 @@ export class Orchestrator {
     // A tool another orchestrator registered for itself (deferred sub-agent
     // tools) is that orchestrator's alone.
     if (orchestratorScope !== undefined && orchestratorScope !== this.agentId) return false;
+    // Spec 2042 §5.4 — answering a consultation narrows every path, also the
+    // subscription CLI's dispatcher, which asks only this method.
+    if (!this.consultationAllows(name)) return false;
     // #2060 — a facilitator has no general memory, whoever provides the store.
     if (name === MEMORY_TOOL_NAME) return !this.omitsMemory;
     return this.isPluginGranted(pluginId);
@@ -9939,6 +10254,44 @@ export class Orchestrator {
 
   hasDomainTool(name: string): boolean {
     return this.domainToolsByName.has(name);
+  }
+
+  /**
+   * #2050 — does this agent hold the native tool `name` itself: registered,
+   * and its owning plugin (if any) granted here? The subset rule for its
+   * internal helpers' native grants, asked by the Agent Builder on save and by
+   * every helper tool call (`subAgentToolHydration.ts`).
+   */
+  holdsNativeTool(name: string): boolean {
+    const reg = this.nativeTools.get(name);
+    if (reg === undefined) return false;
+    return this.isToolGranted(name, reg.agentId, reg.orchestratorScope);
+  }
+
+  /** #2050 — names of every native tool this agent's registry knows; a helper
+   *  tool name must not collide with one. */
+  listNativeToolNames(): readonly string[] {
+    return this.nativeTools.list();
+  }
+
+  /** #2050 — this agent's per-call output budget and step cap; its internal
+   *  helpers' own budgets never exceed them. */
+  turnBudget(): { readonly maxTokens: number; readonly maxIterations: number } {
+    return { maxTokens: this.maxTokens, maxIterations: this.maxIterations };
+  }
+
+  /** Opens a run-trace invocation for a domain tool; an internal helper's run
+   *  is flagged so it is never listed as a consulted agent (#2050). */
+  private beginDomainInvocation(
+    collector: RunTraceCollector,
+    toolName: string,
+  ): InvocationHandle {
+    const tool = this.domainToolsByName.get(toolName);
+    return collector.beginInvocation(
+      toolName,
+      tool?.agentId,
+      tool?.internalHelper ? { internalHelper: true } : undefined,
+    );
   }
 
   /**
@@ -10423,11 +10776,249 @@ export class Orchestrator {
    * wired (byte-identical pre-#474 behaviour).
    */
   /**
+   * Spec 2042 §5.4 — may this agent use `name` in the current run? Always,
+   * unless it is answering a consultation: then only the consultation
+   * envelope (`consultationAllowsTool`). The knowledge graph additionally
+   * needs `members` context memory, the only mode whose graph boundary is the
+   * consulting turn's audience; any other mode would read unbounded.
+   */
+  private consultationAllows(name: string): boolean {
+    if (!isConsultationRunOf(this.agentId)) return true;
+    if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.memoryBinder?.contextMemoryMode !== 'members') {
+      return false;
+    }
+    const owner = this.nativeTools.get(name)?.agentId ?? this.domainToolsByName.get(name)?.agentId;
+    return consultationAllowsTool(this.agentId, name, owner);
+  }
+
+  /**
+   * Spec 2042 §5.4 — `consult` is offered while the broker lists a colleague
+   * for this agent and the agent is not itself answering a consultation
+   * (depth 1). The broker re-checks everything on the call.
+   */
+  private consultOffered(): boolean {
+    if (!this.consultation || isConsultationRunOf(this.agentId)) return false;
+    return this.consultation.targetsFor(this.agentId).length > 0;
+  }
+
+  /**
+   * Spec 2042 §5.4 / §5.11 — the per-turn discretion and consultation state,
+   * spread into both turn scopes (`runTurnCore`, `chatStream`). The room is
+   * resolved lazily and once: only a turn that consults, writes outward or
+   * persists labels pays for the roster lookups.
+   */
+  private discretionTurnFields(
+    input: ChatTurnInput,
+    parent: TurnContextValue | undefined,
+    /** The turn owner's canonical id: the one reader of a turn without origin (web chat, API). */
+    ownerId: string | undefined,
+  ): Pick<TurnContextValue, 'discretion' | 'consultation'> {
+    // A turn without origin (web chat, API) is the owner's private context:
+    // what it read must not resurface in a room with other readers.
+    const contextKey =
+      conversationContextKey(input.origin) ?? (ownerId !== undefined ? ownerContextKey(ownerId) : undefined);
+    // A consultation run starts with what the consulting turn had read.
+    const consultation = currentConsultation();
+    const initial = consultation?.agentSlug === this.agentId ? consultation.initialLabels : undefined;
+    const resolveReaders = once(async (): Promise<Readers> => {
+      if (!input.origin) return ownerId ? readersOf([ownerId]) : UNKNOWN_READERS;
+      return readersFromAudience(
+        await resolveTurnAudience(this.knowledgeGraph, input, parent?.chatParticipants).catch(
+          (): TurnAudience => ({ kind: 'unknown', reason: 'audience-lookup-failed' }),
+        ),
+      );
+    });
+    return {
+      discretion: createDiscretionTurnState({
+        ...(contextKey !== undefined ? { contextKey } : {}),
+        ...(initial !== undefined ? { initial } : {}),
+        resolveReaders,
+      }),
+      consultation: createConsultationTurnState({
+        ...(input.origin ? { origin: input.origin } : {}),
+        ...(input.userId ? { userId: input.userId } : {}),
+      }),
+    };
+  }
+
+  /** Spec 2042 §5.4 — the turn's delivered contributions onto its result. */
+  private withContributions(result: ChatTurnResult): ChatTurnResult {
+    return { ...result, ...this.contributionsField() };
+  }
+
+  /**
+   * Spec 2042 §5.4 / §5.11 — when this turn answers a consultation, hand its
+   * label set (the conversation label included) and its wire answer to the
+   * broker, which decides what of it may reach the consulting agent.
+   */
+  private async exportConsultationResult(): Promise<void> {
+    const scope = currentConsultation();
+    if (!scope || scope.agentSlug !== this.agentId) return;
+    const ctx = turnContext.current();
+    scope.result.labels = await resolvedTurnLabels(ctx?.discretion);
+    scope.result.shielded = ctx?.privacyHandle !== undefined;
+    const wire = ctx?.wireView?.answer;
+    if (wire !== undefined) scope.result.wireAnswer = wire;
+  }
+
+  /**
+   * Spec 2042 §5.11 — the answer flows to the people of this conversation only
+   * when every reader may know everything the turn read. Otherwise it is
+   * refused as a whole (never redacted afterwards) and replaced by an honest
+   * line that reveals nothing of what was withheld. A consultation run is
+   * checked by the broker instead, against the consulting turn's audience.
+   */
+  private async guardAnswerEgress(
+    result: ChatTurnResult,
+    locale: string | undefined,
+  ): Promise<ChatTurnResult> {
+    const state = currentDiscretion();
+    if (!state || isConsultationRunOf(this.agentId)) return result;
+    const decision = await peopleEgressDecision(state);
+    if (decision === undefined) return result;
+    const crossContext = state.labels.labels.some((l) => l.kind === 'context' && l.key !== state.contextKey);
+    if (!decision.allowed || crossContext) {
+      const ctx = turnContext.current();
+      this.discretion?.audit({
+        ...(ctx?.turnId ? { turnId: ctx.turnId } : {}),
+        agentSlug: this.agentId,
+        egress: 'people',
+        ...(state.contextKey !== undefined ? { target: state.contextKey } : {}),
+        allowed: decision.allowed,
+        labels: labelSummary(state.labels),
+        violations: violationSummary(decision),
+      });
+    }
+    if (decision.allowed) return result;
+    // #2085 — side-channel rows are part of the answer: withheld with it.
+    turnContext.current()?.dataSideChannel?.withhold();
+    console.warn(`[discretion] answer of ${this.agentId} withheld: ${violationSummary(decision).join(', ')}`);
+    // Refused as a whole: the result is rebuilt from bookkeeping fields only,
+    // so no attachment, file, card, surface, recall or contribution derived
+    // from the withheld answer goes out with it.
+    return {
+      answer: answerWithheldText(locale),
+      toolCalls: result.toolCalls,
+      iterations: result.iterations,
+      ...(result.turnId !== undefined ? { turnId: result.turnId } : {}),
+      ...(result.privacyReceipt !== undefined ? { privacyReceipt: result.privacyReceipt } : {}),
+      ...(result.answerSource !== undefined ? { answerSource: result.answerSource } : {}),
+      ...(result.memoryUsed !== undefined ? { memoryUsed: result.memoryUsed } : {}),
+    };
+  }
+
+  /**
+   * #2085 / #2079 — the streamed `done` carries side-channel rows only when
+   * every reader may know what the turn read. The prose already streamed
+   * (the streaming egress is an S5 residual), but the rows join the answer
+   * only here, so they can still be held back: refused as on the buffered
+   * path (`guardAnswerEgress`), never redacted.
+   */
+  private async withholdRefusedSideChannelData(): Promise<void> {
+    const collector = turnContext.current()?.dataSideChannel;
+    if (!collector || collector.list().length === 0) return;
+    const state = currentDiscretion();
+    if (!state || isConsultationRunOf(this.agentId)) return;
+    const decision = await peopleEgressDecision(state);
+    if (decision !== undefined && !decision.allowed) collector.withhold();
+  }
+
+  /** Spec 2042 §5.4 — `{ contributions }` for a result or `done` event, or `{}`. */
+  private contributionsField(): Pick<ChatTurnResult, 'contributions'> {
+    const contributions = turnContext.current()?.consultation?.contributions;
+    return contributions && contributions.length > 0 ? { contributions: [...contributions] } : {};
+  }
+
+  /**
+   * Spec 2042 §5.11 — the system a tool belongs to (its plugin, or the MCP
+   * server) and what the runtime itself knows of its effect: `write` for a
+   * declared write capability or an MCP tool without `readOnlyHint`, `read`
+   * for an MCP tool with it, else `unknown` (refined from the plugin's
+   * manifest at the egress). Kernel tools belong to no system.
+   */
+  private toolSystemOf(name: string): ToolSystem | undefined {
+    const native = this.nativeTools.get(name);
+    if (native?.agentId !== undefined) {
+      return { system: native.agentId, effect: isWriteCapableTool(native.writeCapabilities) ? 'write' : 'unknown' };
+    }
+    const domain = this.domainToolsByName.get(name);
+    if (!domain || domain === this.consultTool) return undefined;
+    if (domain.mcpServerId !== undefined) {
+      const writes = isWriteCapableTool(domain.writeCapabilities) || domain.readOnly !== true;
+      return { system: `mcp:${domain.mcpServerId}`, effect: writes ? 'write' : 'read' };
+    }
+    if (domain.agentId === undefined) return undefined;
+    return {
+      system: domain.agentId,
+      effect: isWriteCapableTool(domain.writeCapabilities) ? 'write' : 'unknown',
+      subAgent: true,
+    };
+  }
+
+  /**
+   * Spec 2042 §5.11 — labels persist transitively: a recalled turn brings the
+   * label set it was written with into this turn. A lookup failure fails
+   * closed: the turn gets a label nobody is known to be allowed to read, so
+   * nothing of it can flow outside this conversation.
+   */
+  private async labelRecalledTurns(turnIds: readonly string[]): Promise<void> {
+    if (!this.discretion || turnIds.length === 0 || !currentDiscretion()) return;
+    try {
+      const found = await this.discretion.labelsOf('turn', turnIds);
+      for (const labels of found.values()) addTurnLabels(labels);
+    } catch (err) {
+      console.error('[discretion] recalled-turn label lookup failed — labelling the turn unreadable:', err);
+      addTurnLabels([{ kind: 'context', key: 'unreadable', readers: UNKNOWN_READERS }]);
+    }
+  }
+
+  /** Spec 2042 §5.11 — recalled memorables bring the labels they were written with. */
+  private async labelRecalledMemorables(mkIds: readonly string[]): Promise<void> {
+    if (!this.discretion || mkIds.length === 0 || !currentDiscretion()) return;
+    try {
+      const found = await this.discretion.labelsOf('memorable', mkIds);
+      for (const labels of found.values()) addTurnLabels(labels);
+    } catch (err) {
+      console.error('[discretion] recalled-memorable label lookup failed — labelling the turn unreadable:', err);
+      addTurnLabels([{ kind: 'context', key: 'unreadable', readers: UNKNOWN_READERS }]);
+    }
+  }
+
+  /** Spec 2042 §5.11 — a memorable keeps the labels of the turn that wrote it. */
+  private async labelMemorable(mkId: string, extra: readonly DiscretionLabel[] = []): Promise<void> {
+    await labelSubjectWithTurn(this.discretion, 'memorable', mkId, this.agentId, extra);
+  }
+
+  /**
+   * Spec 2042 §5.11 — who reads the memory tier a `memory` write of this turn
+   * lands in: the owners (`members`), the conversation (a context-bound
+   * turn), else the agent's own memory, whose readers are not known.
+   */
+  private async memoryTierReaders(turnMemory: TurnMemoryBinding | undefined): Promise<Readers> {
+    const isolation = turnMemory?.isolation;
+    if (isolation?.kind === 'members') {
+      return isolation.audience ? readersOf(isolation.audience) : UNKNOWN_READERS;
+    }
+    if (turnMemory?.contextBound === true) {
+      return (await currentDiscretion()?.resolveReaders()) ?? UNKNOWN_READERS;
+    }
+    return UNKNOWN_READERS;
+  }
+
+  /** Spec 2042 §5.4 — recall in a consultation run: `discreet` + `members` only. */
+  private consultationMayRecall(isolation: TurnMemoryBinding['isolation']): boolean {
+    const scope = currentConsultation();
+    if (!scope || scope.agentSlug !== this.agentId) return true;
+    return scope.memoryAccess === 'discreet' && isolation?.kind === 'members';
+  }
+
+  /**
    * #2060 — a standard agent is offered every domain tool registered on its
    * instance (the grant is enforced at dispatch); a facilitator is not even
    * told about one its granted plugins do not own.
    */
   private isOfferableDomainTool(tool: DomainTool): boolean {
+    if (tool === this.consultTool) return this.consultOffered();
     return !this.grantedToolsOnly || this.isPluginGranted(tool.agentId);
   }
 
@@ -10468,6 +11059,16 @@ export class Orchestrator {
         .map((t: { name?: unknown }) => t.name)
         .filter((n): n is string => typeof n === 'string'),
     );
+  }
+
+  /**
+   * Spec 2042 §5.11 / §5.13 — a read the harness ran for this agent outside
+   * the tool loop (`deliver_data`) joins the active turn's labels like any
+   * tool call, so an answer carrying its rows passes the same people-egress
+   * check. No-op outside a labelled turn.
+   */
+  async labelHarnessRead(toolName: string): Promise<void> {
+    await labelToolRead(this.discretion, this.toolSystemOf(toolName));
   }
 
   /**
@@ -10643,7 +11244,7 @@ export class Orchestrator {
       v4: new Set<unknown>(v4ToolSpecs ?? []),
       native: new Set<unknown>(nativeSpecs),
       domain: new Set<unknown>(domainSpecs),
-    });
+    }).filter((tool) => this.consultationAllows(tool.name));
     // Prompt-cache the full tool-spec block. Anthropic caches every prior
     // content up to and including the tool that carries `cache_control` —
     // marking the final tool makes the whole list a single cacheable chunk.

@@ -51,9 +51,9 @@ interface ProfilesDeps {
   /** #1481 — applying a profile re-installs a built-in the operator had
    *  uninstalled, so its uninstall mark is cleared. Optional. */
   builtInOptOuts?: BuiltInOptOutStore;
-  /** #1491 — called after an apply with the ids it newly registered, so the
-   *  host attaches them to the default orchestrator like any other install.
-   *  Must not throw (the host fences it). */
+  /** Called after an apply with the ids it newly registered. #2054 — the
+   *  kernel host no longer passes one: no install path attaches a plugin to
+   *  an agent (INV-8). Must not throw. */
   onPluginsRegistered?: (pluginIds: readonly string[]) => Promise<void>;
   /** Profile-Quellverzeichnis. Default: built-in `<middleware>/profiles/`.
    *  Tests override this with a tmp dir. */

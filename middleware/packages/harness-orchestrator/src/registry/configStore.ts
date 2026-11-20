@@ -57,7 +57,11 @@ import {
  * (see docs/middleware-agent-handoff.md §13).
  */
 export type PrivacyProfile = 'strict' | 'default';
-export type AgentStatus = 'enabled' | 'disabled';
+/**
+ * `draft` (#2049): a preview agent of the Agent Builder or the Plugin Builder.
+ * Never built into the registry and never addressable; only `enabled` is.
+ */
+export type AgentStatus = 'enabled' | 'disabled' | 'draft';
 
 export interface CanvasPosition {
   readonly x: number;
@@ -1098,6 +1102,7 @@ export class ConfigStore {
       skillToolBindings,
       selections,
       availabilityPrincipals,
+      consultationPairs,
     ] = await Promise.all([
       this.listAgents(),
       this.listAllAgentPlugins(),
@@ -1113,6 +1118,7 @@ export class ConfigStore {
       graph.listAllSkillToolBindings(),
       this.routing.listSelections(),
       this.routing.listAvailabilityPrincipals(),
+      this.listConsultationPairs(),
     ]);
     // #2088 — the deleted agents, so routing can tell "bound to a deleted
     // agent" from "bound to nobody". A database before migration 0072 has no
@@ -1137,8 +1143,36 @@ export class ConfigStore {
       tombstones,
       selections,
       availabilityPrincipals,
+      consultationPairs,
     };
   }
+
+  /**
+   * #2047 — every active consultation pair between live agents. A database
+   * before migration 0097 (no table, no switch columns) has none.
+   */
+  async listConsultationPairs(): Promise<ConsultationPairRow[]> {
+    try {
+      const { rows } = await this.pool.query<{ from_agent_id: string; to_agent_id: string }>(
+        `SELECT g.from_agent_id, g.to_agent_id
+           FROM agent_consultation_grants g
+           JOIN agents f ON f.id = g.from_agent_id AND ${liveAgentRow('f')} AND f.may_consult
+           JOIN agents t ON t.id = g.to_agent_id AND ${liveAgentRow('t')} AND t.consultable
+          ORDER BY g.from_agent_id, g.to_agent_id`,
+      );
+      return rows.map((r) => ({ fromAgentId: r.from_agent_id, toAgentId: r.to_agent_id }));
+    } catch (err) {
+      const code = (err as { code?: unknown } | null)?.code;
+      if (isUndefinedTable(err) || code === '42703') return [];
+      throw err;
+    }
+  }
+}
+
+/** #2047 — one active consultation pair: `fromAgentId` may consult `toAgentId`. */
+export interface ConsultationPairRow {
+  readonly fromAgentId: string;
+  readonly toAgentId: string;
 }
 
 export interface ConfigSnapshot {
@@ -1167,6 +1201,12 @@ export interface ConfigSnapshot {
   readonly selections?: readonly AgentSelectionRow[];
   /** #2055 — named people and groups per agent (migration 0083). */
   readonly availabilityPrincipals?: readonly AvailabilityPrincipalRow[];
+  /**
+   * #2047 — active consultation pairs (migration 0097): a directed grant
+   * between two live agents whose switches are both on. Feeds each agent's
+   * `consultableColleagues`. Optional for fixtures.
+   */
+  readonly consultationPairs?: readonly ConsultationPairRow[];
   // Agent Builder graph (P0). Optional so pre-existing snapshot literals
   // (tests, fixtures) stay valid; `loadSnapshot` always populates them.
   readonly subAgents?: readonly SubAgentRow[];

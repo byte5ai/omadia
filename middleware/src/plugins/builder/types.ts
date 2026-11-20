@@ -39,10 +39,14 @@ export interface TranscriptEntry {
  * the live manifest pane without crashing on missing keys.
  */
 export interface AgentSpecSkeleton {
-  /** Template id from the boilerplate registry (e.g. `agent-integration`).
-   *  Optional in the skeleton because legacy drafts predate the field;
-   *  Zod parse fills the schema default. */
+  /** Template id from the boilerplate registry (`integration` | `tool`;
+   *  drafts stored before carry `agent-integration` / `agent-pure-llm`,
+   *  read as aliases). Optional in the skeleton because legacy drafts
+   *  predate the field; Zod parse fills the schema default. */
   template?: string;
+  /** Manifest kind of the generated capability plugin. Absent = derived
+   *  from the spec (`effectivePluginKind` in agentSpec.ts). */
+  kind?: 'integration' | 'tool';
   id: string;
   name: string;
   version: string;
@@ -60,7 +64,6 @@ export interface AgentSpecSkeleton {
   domain?: string;
   depends_on: string[];
   tools: unknown[];
-  skill: { role: string; tonality?: string };
   setup_fields: unknown[];
   /** Spec 005 (#371) — OAuth-provider descriptors (shape: `OAuthProvider` from
    *  agentSpec.ts). Optional in the skeleton because legacy drafts predate the
@@ -110,42 +113,6 @@ export interface AgentSpecSkeleton {
     input?: unknown;
     expected?: unknown;
   }>;
-  /** Phase-1 Kemia: optional response-quality block (sycophancy +
-   *  boundary presets / custom lines). Mirrors `QualityConfig` from
-   *  agentSpec.ts. Optional in the skeleton because legacy drafts
-   *  predate the field; the runtime provider plugin falls back to its
-   *  own configured defaults when omitted. */
-  quality?: {
-    sycophancy?: 'off' | 'low' | 'medium' | 'high';
-    boundaries?: {
-      presets?: string[];
-      custom?: string[];
-    };
-  };
-  /** Phase-3 Kemia (OB-67): optional persona block (template + 12 axes
-   *  0–100 + free-text custom_notes). Mirrors `PersonaConfig` from
-   *  agentSpec.ts. Optional in the skeleton because legacy drafts
-   *  predate the field; Phase 4's `personaCompose@1` provider (conditional)
-   *  is the eventual runtime consumer. Phase 3 only reads/writes the
-   *  field via the Browser-View. */
-  persona?: {
-    template?: string;
-    axes?: {
-      formality?: number;
-      directness?: number;
-      warmth?: number;
-      humor?: number;
-      sarcasm?: number;
-      conciseness?: number;
-      proactivity?: number;
-      autonomy?: number;
-      risk_tolerance?: number;
-      creativity?: number;
-      drama?: number;
-      philosophy?: number;
-    };
-    custom_notes?: string;
-  };
   /** Multi-orchestrator runtime (US2) — manifest extension. Defaults are
    *  filled by the Zod parser (`multi_instance: true`, `privacy_class:
    *  'strict'`); codegen writes them into the generated `manifest.yaml`. */
@@ -231,9 +198,9 @@ export function emptyAgentSpec(): AgentSpecSkeleton {
     // external API and start from there. The boilerplate's
     // `ctx.secrets.require('API_TOKEN')` + `ctx.config.require('base_url')`
     // give the operator concrete setup-field anchors to fill in via the
-    // SecretsDrawer; pure-LLM remains one click away in the Workspace
-    // header template-switcher for prompting-only drafts.
-    template: 'agent-integration',
+    // SecretsDrawer; the `tool` template (local logic, no external
+    // system) is one click away in the Workspace header.
+    template: 'integration',
     id: '',
     name: '',
     version: '0.1.0',
@@ -248,7 +215,6 @@ export function emptyAgentSpec(): AgentSpecSkeleton {
     domain: '',
     depends_on: [],
     tools: [],
-    skill: { role: '' },
     setup_fields: [],
     playbook: { when_to_use: '', not_for: [], example_prompts: [] },
     network: { outbound: [] },

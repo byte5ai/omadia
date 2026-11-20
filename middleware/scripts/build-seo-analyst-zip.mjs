@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Builds an uploadable agent zip from middleware/packages/agent-seo-analyst/.
+ * Builds an uploadable capability-plugin zip from middleware/packages/agent-seo-analyst/.
  *
  * Flow:
  *   1. tsc with package-local tsconfig.json → dist/
  *   2. Populate staging directory under out/seo-analyst-package/
- *      (manifest.yaml, package.json, README.md, dist/, skills/)
+ *      (manifest.yaml, package.json, README.md, dist/, assets/)
  *   3. Pack as out/seo-analyst-<version>.zip
  *
  * Invariant: The zip must not contain TS sources, node_modules or
@@ -64,7 +64,7 @@ for (const rel of ['manifest.yaml', 'package.json', 'README.md']) {
   process.stdout.write(`  + ${rel}\n`);
 }
 
-const dirs = ['dist', 'skills', 'assets'];
+const dirs = ['dist', 'assets'];
 for (const dir of dirs) {
   const src = resolve(AGENT_DIR, dir);
   if (!existsSync(src)) {

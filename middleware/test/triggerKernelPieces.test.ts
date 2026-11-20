@@ -146,8 +146,8 @@ describe('#2082 trigger turn', () => {
       agentChat: () => ({
         chat: async (input) => {
           seen = input;
-          recordUsage({ source: 'test', model: 'scripted', inputTokens: 1, outputTokens: 1, costUsd: 0.03 });
-          recordUsage({ source: 'test', model: 'scripted', inputTokens: 1, outputTokens: 1, costUsd: 0.02 });
+          recordUsage({ source: 'test', model: 'scripted', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.03 });
+          recordUsage({ source: 'test', model: 'scripted', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.02 });
           return { text: 'Drei Rechnungen sind überfällig, ACME am längsten.' };
         },
       }),
@@ -181,7 +181,7 @@ describe('#2082 trigger turn', () => {
       gate,
       agentChat: () => ({
         chat: async () => {
-          recordUsage({ source: 'test', model: 'scripted', inputTokens: 1, outputTokens: 1, costUsd: 0.01 });
+          recordUsage({ source: 'test', model: 'scripted', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.01 });
           throw new Error('provider down');
         },
       }),

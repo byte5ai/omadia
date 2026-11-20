@@ -1,5 +1,9 @@
+import type { ConsultationPort } from './consultation/consultTool.js';
+import type { DiscretionPort } from './discretion/port.js';
 import {
+  InMemoryDisclosureMarkerStore,
   InMemoryDisclosureSeenStore,
+  isAiDisclosureFrequency,
   POSTURE_ORDER,
   RoleSourceRegistry as RoleSourceRegistryImpl,
   type ChatAgent,
@@ -410,6 +414,12 @@ function resolveAiDisclosureSetup(
     typeof nameRaw === 'string' && nameRaw.trim().length > 0
       ? nameRaw.trim()
       : undefined;
+  const frequencyRaw = read('ai_disclosure_frequency');
+  const frequency = isAiDisclosureFrequency(frequencyRaw) ? frequencyRaw : undefined;
+  const pauseRaw = read('ai_disclosure_pause_minutes');
+  const pauseParsed = parseNumberOrDefault(pauseRaw, Number.NaN);
+  const pauseMinutes =
+    Number.isFinite(pauseParsed) && pauseParsed >= 1 ? Math.floor(pauseParsed) : undefined;
   const noteRaw = read('ai_disclosure_operator_note');
   const operatorNote =
     typeof noteRaw === 'string' && noteRaw.trim().length > 0
@@ -421,7 +431,9 @@ function resolveAiDisclosureSetup(
     overrides === undefined &&
     locale === undefined &&
     assistantName === undefined &&
-    operatorNote === undefined
+    operatorNote === undefined &&
+    frequency === undefined &&
+    pauseMinutes === undefined
   ) {
     return undefined;
   }
@@ -434,6 +446,8 @@ function resolveAiDisclosureSetup(
     ...(locale ? { locale } : {}),
     ...(assistantName ? { assistantName } : {}),
     ...(operatorNote ? { operatorNote } : {}),
+    ...(frequency ? { frequency } : {}),
+    ...(pauseMinutes !== undefined ? { pauseMinutes } : {}),
   };
 }
 
@@ -839,6 +853,11 @@ export async function activate(
   // ordinary case: the orchestrator then installs no audience provider at all
   // and every guard short-circuits, leaving behaviour unchanged.
   const audienceGrants = ctx.services.get<GrantStore>('audienceGrants');
+  // Spec 2042 §5.4 / §5.11 — the consultation broker and the discretion
+  // stores, published by the kernel before plugin activation (late-bound to
+  // Postgres). Absent: no `consult` tool, labels live only for the turn.
+  const consultation = ctx.services.getOptional<ConsultationPort>('consultation');
+  const discretion = ctx.services.getOptional<DiscretionPort>('discretion');
   // #648 — publish the RESOLVED posture so `/health` and the operator
   // dashboard can read what this instance actually does, and warn once at boot
   // when it deviates from the delivered state. A reduced marking is a
@@ -1261,10 +1280,15 @@ export async function activate(
     // when the operator enabled the floor. Absent is the normal case and means
     // the guards stay inert; see `OrchestratorDeps.audienceGrants`.
     ...(audienceGrants ? { audienceGrants } : {}),
+    ...(consultation ? { consultation } : {}),
+    ...(discretion ? { discretion } : {}),
     // #644 — one fold-dedup store for the whole process, shared by every Agent
     // the registry builds: a per-instance store would re-fold the marking into
     // a live conversation whenever an unrelated config tweak rebuilt the Agent.
     aiDisclosureSeenStore: new InMemoryDisclosureSeenStore(),
+    // #2087 — likewise one marker store: a speaker change is only visible to a
+    // store that sees every agent of the conversation.
+    aiDisclosureMarkerStore: new InMemoryDisclosureMarkerStore(),
     ...(turnHookRegistry ? { turnHookRegistry } : {}),
     runTraceStats,
     // W2-1 (#544) — the SAME store instance the kernel's `McpManager` parks

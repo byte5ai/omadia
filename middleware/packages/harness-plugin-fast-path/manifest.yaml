@@ -4,7 +4,7 @@ identity:
   id: "@omadia/fast-path"
   name: "Fast Path"
   version: "0.6.0"
-  kind: "extension"
+  kind: "system-module"
   domain: "omadia.fast-path"
   description:
     en: "Answers simple data lookups in seconds instead of a full agent turn — in the chat, Teams, Telegram, Slack, the API and the canvas. One quick check decides whether a single read query answers the message; then the query runs directly and the result is shown as a table. Everything else goes to the agent as before."

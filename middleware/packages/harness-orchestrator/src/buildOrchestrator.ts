@@ -16,10 +16,15 @@
 
 import type { DataPlanGuard } from '@omadia/plugin-api';
 import { createDataPlanGuard, createLlmDataPlanJudge } from './dataPlanGuard.js';
+import type { ConsultationPort } from './consultation/consultTool.js';
+import type { DiscretionPort } from './discretion/port.js';
+import { LabelledMemoryStore } from './discretion/labelledMemoryStore.js';
+import { labelSubjectWithTurn } from './discretion/toolFlow.js';
 
 import type {
   ChatAgent,
   ChatTurnInput,
+  DisclosureMarkerStore,
   DisclosureSeenStore,
   GrantStore,
 } from '@omadia/channel-sdk';
@@ -176,8 +181,9 @@ export interface AgentRuntimeConfig {
    * silently overruled by a stale deployment variable.
    */
   readonly cliTurnSeconds?: number;
-  /** Wave 8 — this Agent's direct-answer persona-skill candidates, resolved
-   *  by the caller from `agent_persona_skills` (see {@link OrchestratorOptions}).
+  /** #2051 — this Agent's working-mode candidates, resolved by the caller
+   *  from `agent_persona_skills` (see {@link OrchestratorOptions}). A mode is
+   *  composed beneath the identity for one turn; it never replaces it.
    *  Per-agent, unlike the platform-shared `OrchestratorDeps` fields below. */
   readonly personaSkills?: readonly OrchestratorPersonaSkill[];
   /**
@@ -190,8 +196,8 @@ export interface AgentRuntimeConfig {
    * behaviour down means that text, not that text appended to a generic
    * one. Absent/blank → the platform identity, exactly as before.
    *
-   * Per-turn persona skills (Wave 8) still win over both — they replace this
-   * slot for one turn, which is what they always did.
+   * A per-turn working mode (#2051) never touches this slot: it is composed
+   * beneath whichever identity applies, for one turn.
    */
   readonly identityInstructions?: string;
   /**
@@ -451,6 +457,12 @@ export interface OrchestratorDeps {
    */
   readonly aiDisclosureSeenStore?: DisclosureSeenStore;
   /**
+   * #2087 — process-shared `per_conversation` marker state, for the same
+   * reason: a speaker change is only visible to a store that sees every agent
+   * of the conversation.
+   */
+  readonly aiDisclosureMarkerStore?: DisclosureMarkerStore;
+  /**
    * #579 — resolved org security posture (org floor + optional scope tighten +
    * shadow/enforce mode + optional external screen URL). Absent → the shipping
    * default (`auto`, enforce). The SCREENER and AUDIT SINK are built here (they
@@ -470,6 +482,10 @@ export interface OrchestratorDeps {
    * bounds every room to nothing.
    */
   readonly audienceGrants?: GrantStore;
+  /** Spec 2042 §5.4 — the kernel's consultation broker (`consult` tool). */
+  readonly consultation?: ConsultationPort;
+  /** Spec 2042 §5.11 — the kernel's discretion stores. */
+  readonly discretion?: DiscretionPort;
   /** #133 E0 — side-channel turn-hook runner, fired during each turn. */
   readonly turnHookRegistry?: TurnHookRunner;
   /**
@@ -676,7 +692,11 @@ export function buildOrchestratorForAgent(
   const scopedStore = new ScopedMemoryStore({
     agentSlug: config.agentId,
     scope: orchestratorMemoryScope(config.agentId),
-    inner: deps.memoryStore,
+    // Spec 2042 §5.11 — a transcript keeps the labels of every turn written
+    // into it, so a `memory` read of it (same physical path) carries them.
+    inner: deps.discretion
+      ? new LabelledMemoryStore(deps.memoryStore, deps.discretion, config.agentId, { labelReads: false })
+      : deps.memoryStore,
   });
   const chatSessionStore = new ChatSessionStore(scopedStore);
   const sessionLogger = new SessionLogger(
@@ -844,7 +864,13 @@ export function buildOrchestratorForAgent(
   // (decision A3a) and must not be partitioned by chat context.
   const memoryBinder = new MemoryBinder({
     agentSlug: config.agentId,
-    root: deps.memoryStore,
+    // Spec 2042 §5.11 — notes keep the labels of the turn that wrote them,
+    // keyed by physical path (below the binder's scoping).
+    root: deps.discretion
+      ? new LabelledMemoryStore(deps.memoryStore, deps.discretion, config.agentId)
+      : deps.memoryStore,
+    // The members index is read across rooms: never through the label layer.
+    indexStore: deps.memoryStore,
     mode: config.contextMemory ?? 'off',
     shieldActive,
     noteProvenance: TURN_NOTE_PROVENANCE,
@@ -860,6 +886,13 @@ export function buildOrchestratorForAgent(
             log: (msg: string): void => {
               console.error(msg);
             },
+            // Spec 2042 §5.11 — a promoted rule keeps the writing turn's labels.
+            ...(deps.discretion
+              ? {
+                  onPromoted: (mkId: string) =>
+                    labelSubjectWithTurn(deps.discretion, 'memorable', mkId, config.agentId),
+                }
+              : {}),
           },
         }
       : {}),
@@ -990,6 +1023,9 @@ export function buildOrchestratorForAgent(
     ...(config.fallbackRef ? { fallbackRef: config.fallbackRef } : {}),
     ...(identityByFamily ? { identityByFamily } : {}),
     archetypeOmissions: { memory: omits('memory'), toolGrant: omits('tool_grant') },
+    // Who a channel user is, even for an archetype built without memory: the
+    // audience floor and the turn owner need it in every group conversation.
+    identityGraph: deps.knowledgeGraph,
     ...(config.fallbackVisionSupported !== undefined
       ? { fallbackVisionSupported: config.fallbackVisionSupported }
       : {}),
@@ -1081,12 +1117,17 @@ export function buildOrchestratorForAgent(
     ...(deps.aiDisclosureSeenStore
       ? { aiDisclosureSeenStore: deps.aiDisclosureSeenStore }
       : {}),
+    ...(deps.aiDisclosureMarkerStore
+      ? { aiDisclosureMarkerStore: deps.aiDisclosureMarkerStore }
+      : {}),
     // #579 — org security posture + its screener/audit sink. Posture absent →
     // orchestrator applies the shipping default (`auto`); the screener + sink
     // are always wired (inert unless screening is enabled for the posture).
     ...(deps.securityPosture ? { securityPosture: deps.securityPosture } : {}),
     // #575 — supplying this is what makes the audience guards non-inert.
     ...(deps.audienceGrants ? { audienceGrants: deps.audienceGrants } : {}),
+    ...(deps.consultation ? { consultation: deps.consultation } : {}),
+    ...(deps.discretion ? { discretion: deps.discretion } : {}),
     securityScreener,
     securityAuditSink,
     ...(deps.turnHookRegistry

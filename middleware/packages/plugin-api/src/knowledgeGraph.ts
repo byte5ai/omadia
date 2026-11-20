@@ -1292,7 +1292,16 @@ export interface EntityIngestResult {
  *  middleware); the channelUserId there is the local `users.id` uuid. `api` is
  *  the public chat API (#1107): the caller IS its API key (#438), so the
  *  channelUserId there is the `key:<uuid>` ref, not a human end-user. */
-export type ChannelKind = 'teams' | 'telegram' | 'slack' | 'email' | 'web' | 'api';
+export type ChannelKind =
+  | 'teams'
+  | 'telegram'
+  | 'slack'
+  | 'discord'
+  | 'whatsapp'
+  | 'imessage'
+  | 'email'
+  | 'web'
+  | 'api';
 
 /**
  * Payload for {@link KnowledgeGraph.resolveOrCreateChannelIdentity}.
@@ -1996,6 +2005,15 @@ export interface RunTrace {
    * record that can be wrong.
    */
   provider?: string;
+  /**
+   * #2051 — the working mode the turn ran in: the skill id and its name.
+   * Present only when a mode was selected. A mode shapes how the agent worked
+   * on the request; it never changes who answered, so this is trace data,
+   * not a speaker. Optional, like `model`: older traces stay readable, and the
+   * graph stores it flattened on the Run node (`workingMode`,
+   * `workingModeSkillId`) without a migration.
+   */
+  workingMode?: { skillId: string; name: string };
 }
 
 export interface RunIngestResult {

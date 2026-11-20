@@ -173,6 +173,23 @@ src/
   nutzt Session-Transkripte nur auf Rückbezug, persistiert Learnings
   früh (im nächsten Tool-Call, nicht am Ende).
 
+### Arbeitsmodi statt Persona-Wechsel (#2051, Epic #2042)
+
+`workingModes.ts` (vorher `personaRouter.ts`) wählt pro Turn höchstens einen
+Arbeitsmodus aus `agent_persona_skills`; der Klassifikator sieht nur Name und
+Beschreibung, der Skill-Text wird erst danach geladen. `withWorkingMode` hängt
+den Modus als Abschnitt „Arbeitsmodus: <Name>“ mit Vorrang-Satz **unter** die
+Identitätsschicht von `withAgentIdentity` — er ersetzt Identität,
+Persönlichkeit und Grenzen nie (INV-3); ohne Modus ist der Prompt
+byte-identisch. Die Auswahl ist ein interner Helfer des Agenten: sie läuft im
+Turn-Kontext auf `modelRouting.classifierModel`, sonst auf dem Primärmodell
+der Policy (`resolvePrimaryExecution()`), Usage-Source `working-mode-router`.
+Ergebnis: Stream-Event `turn_working_mode` (`bucket`, `classifierModel`,
+`skillId`, `modeName`; nur bei Agenten mit Modi, vor dem Verifier-Verdikt
+erlaubt), `runTrace.workingMode` und `workingMode`/`workingModeSkillId` auf dem
+Run-Knoten. Der Web-Chat zeigt „Modus: X“ nur in der Detail-Zeile der Antwort,
+nie über der Nachricht (Spec §5.14).
+
 ### `get_chat_participants` — per-Turn-Roster-Gating (#1108)
 
 - **Datei:** `packages/harness-orchestrator/src/tools/chatParticipantsTool.ts`.
@@ -627,6 +644,27 @@ Test-Button heißt bei Keyless "Verbindung testen".
 - **Kein Memory-Tool:** Sub-Agents sollen nicht eigenständig in den
   globalen Memory schreiben — nur der Orchestrator tut das. Das hält den
   Memory scharf fokussiert.
+
+### Interne Helfer (DB-Sub-Agents, #2050, Epic #2042)
+
+DB-Sub-Agents (`agent_subagents`, Tool `ask_<name>`, Agent-Builder-Knoten
+„Helfer“) sind **interne Helfer** eines Agenten, keine Agenten (Spec 2042
+§5.6). Die Regeln liegen in `registry/internalHelpers.ts`; Speichern
+(`routes/agentBuilder.ts`: `assertHelperWriteAllowed`,
+`assertHelperGrantHeldByAgent`, `409 helper_refused` mit Code
+`helper_name_collision` / `helper_grant_not_held_by_agent` /
+`helper_model_not_allowed`) und Laufzeit (`buildSubAgentDomainTools` mit
+`parentHolds`, `parentModelPolicy`, `parentBudget`, `reservedToolNames`) nutzen
+sie gemeinsam. Der Kernel verdrahtet `liveParent` = `reg.get(slug)` in
+`src/index.ts`, damit jeder Tool-Aufruf eines Helfers live gegen die Grants
+des Agenten prüft (Entzug beim Agenten sperrt den nächsten Aufruf, nativ und
+MCP). Der Helfer-Prompt trägt `INTERNAL_HELPER_CONTRACT` (keine Vorstellung,
+kein Name), die Tool-Beschreibung sagt dem Agentenmodell, das Ergebnis als
+eigene Arbeit zu nutzen. `maxTokens`/`maxIterations` sind durch das Budget des
+Agenten gedeckelt, Usage läuft auf den Turn des Agenten. Helfer-Läufe stehen im
+Run-Trace mit `internalHelper: true` und nie in `agentsConsulted`. Bei
+kollidierenden Tool-Namen fallen zur Laufzeit alle Beteiligten weg. Ein
+Spezialist, den Menschen ansprechen sollen, wird als eigener Agent angelegt.
 
 ### Wer ruft wen?
 
@@ -2766,6 +2804,24 @@ Conversation-Refs kommen aus `conductorWiring.channelBindingStore.getMany`.
 `test/conversationEventHub.test.ts`, `test/targetedDelivery.test.ts`,
 `test/coreApiOptionalCapabilities.test.ts`.
 
+### Natürliche Antworten: Dekorations-Registry, Details, Disclosure-Frequenz, Pace (#2086, #2087, Spec 2042 §5.14)
+
+Der Chat ist die primäre UI; eine Antwort liest sich wie die Nachricht eines Kollegen. Der Nachrichtentext enthält, was ein guter Kollege sagen würde. Alles andere liegt im strukturierten `SemanticAnswer` und in On-Demand-Details. Die Bausteine liegen im Channel-SDK (`middleware/packages/harness-channel-sdk/src`):
+
+- **Dekorations-Registry** (`decorations.ts`): jede Zeile, jeder Chip, Footer, jede Reaction, jeder Button oder jede Karte über oder unter einer Antwort ist einmal mit Begründung (`legal` oder `next_action`) und den rendernden Kanälen deklariert. Kanäle schicken Dekorationen durch `admitDecorations(channelType, …)`; Undeklariertes, Entferntes (`REMOVED_DECORATIONS`: Verifier-Badge, System-Data-Chip, „Konsultiert"-Footer, „Direkte Antwort von", „Kürzer/Mehr Details", Direct-Line-Buttons, 👀) und Kanal-Fremdes wird verworfen. `test/decorationRegistry.test.ts` pinnt die Id-Liste der Registry: Eine neue Dekoration braucht Registry-Eintrag, Begründung und bewusste Anpassung der erwarteten Liste im Test (Review). Dass ein Kanal nur durch `admitDecorations` rendert, prüft der Kanal in seinem eigenen Repo (die Plugin-Tests von Teams, Slack, Discord und iMessage tun es); der Kernel erzwingt es nicht.
+- **Details** (`answerDetails.ts`): `buildAnswerDetails(answer)` ist die eine Projektion von Verifikation, Beiträgen, Systemdaten-Herkunft, Privacy-Zählern und Speicher-Nutzung; `answerDetailsText` die Klartextform (für Kanäle ohne eingeklapptes Element und für „woher weißt du das?"). Nichts davon gehört in den Nachrichtentext.
+- **Klartext-Renderer** (`plainAnswer.ts`, `speakerLine.ts`, `questionCardText.ts`): Kanäle ohne Rich-Elemente rendern über `renderPlainAnswer`. Namenszeile nur wo INV-4 sie verlangt (Kanal ohne eigene Identität und mehr als ein Agent oder erster Beitrag nach Sprecherwechsel), Beiträge anderer Agenten als „Mira: …", `system`-Notices als eigener Text, Karten als nummerierter Text. `renderCardAsText`/`parseCardReply` machen Umfragen, Zustimmung und Auswahl über Klartext nutzbar (Kanalparität, Kriterium 30).
+- **Disclosure-Frequenz** (`disclosureFrequency.ts`, Operator-Setting `ai_disclosure_frequency` am Orchestrator-Plugin, optional `ai_disclosure_pause_minutes`): `channel_default` (Default, heutiges Verhalten: Textzeile einmal pro Konversation, Kanal-Chips bei jeder Antwort), `per_answer`, `per_conversation` (erste Antwort eines Agenten in der Konversation, bei Sprecherwechsel, nach Pause); `off` bleibt `ai_disclosure_level=off`. `SemanticAnswer.aiDisclosure.markers = { textLine, chip }` sagt dem Kanal, welche sichtbaren Marker diese Antwort trägt; das strukturierte Feld steht bei jeder Antwort. Eine Abweichung steht in `/health` (`disclosure.frequency`), auf der Operator-Kanalseite und im Boot-Log. Verifier-Wiederholungen eines Requests entscheiden aus demselben Zustand (`ToolReplayLedger.disclosureMarkerPrior`).
+- **Pace** (`pace.ts`): `runPacedTurn` gibt jedem Kanal dasselbe Zeitverhalten: Typing-Indikator ab Start, genau eine Bestätigung nach `ackThresholdMs` (Template, kein Modell), und `deliverAsFollowUp`, wenn die Arbeit das Antwortfenster des Kanals überschreitet. Kein Fortschritts-Chatter.
+
+- **Karten und Polls als Text, getippte Antworten als `card_answer`** (`src/channels/openCardQuestions.ts`, Migration 0101 `open_card_questions`, `conversationSendService.ts`, Hub `asTypedAnswer`): Ein Kanal deklariert nur, was er nativ zeigt. Eine Karte (genau eine Frage, nicht `assignment`) oder ein Poll, den er nicht zeigt, schickt `sendToConversation` selbst als nummerierten Text (`renderCardAsText`), registriert die offene Frage mit der von der Plattform gemeldeten Nachrichten-Id (`delivered.cardMessageId`) und schließt sie mit der Karte (`closesAt`, sonst nach 24 h). Der Hub macht aus einer `created`-Nachricht, die auf diese Nachricht antwortet (`replyToMessageId`) oder die den Bot anspricht, während genau eine Frage offen ist (nie bei Freitext), per `parseCardReply` ein typisiertes `card_answer` (`answererVerified: true`, Autor = der Absender; Polls als `{ optionId }`), das statt der Nachricht gespeichert wird. Was nicht passt, bleibt eine normale Nachricht. `capabilities(channelType)` meldet mit dem Store jeden Kanal als fähig zu Polls und Ein-Fragen-Karten. Ein Kanal, der für dieselbe Nachricht einen eigenen Turn startet, fragt vorher `core.reportConversationMessage(event)` (statt `emitConversationMessage`): `answeredCard: true` heißt, der Kernel hat sie als Antwort verbraucht, der Kanal startet keinen Turn (sonst antwortet der Agent zusätzlich auf „2“). Der Scoped-CoreApi stempelt und prüft den Kanal wie bei `emitConversationMessage`. Kanal-Plugins brauchen dafür nur `created`-Events mit `replyToMessageId` und `addressedToBot` und die richtige `messageId` beim Senden; eigene Karten-Antwort-Logik entfällt. Wirksam ist das, wo der Hub einen Abonnenten kennt (Identität des Agenten im Kanal: heute Teams, mit S7 weitere).
+- **Routing eines Kanals** (S1-Kontrakt, `channelRouting.ts`, `principal.ts`): pro Turn `resolveChannelRoute(ctx, type, key, { principal, locale })` (volles Ergebnis: `decision` `bound|reject`, `notice`, `speaker`, `chatAgent`) oder `resolveChatAgentForChannel` (nur der ChatAgent). Der Text geht unverändert an `chatAgent`: `/agent <Name>`, `/agent` (leer löscht die Auswahl) und `/agents` (Liste) fängt der Resolver-ChatAgent ab, kein Kanal parst sie. Bei `reject` antwortet dieser ChatAgent mit der `system`-Notice; ein Kanal postet sie als `system`, nie als Agent. Principal ausschließlich über `channelUserPrincipal(userRef)` bzw. `turnPrincipal(userRef, origin.principal)` (`user:<email>`, wenn der Kanal sie verifiziert hat, sonst `user:<kind>:<id>`). Der `speaker` kommt vorab im Ergebnis: Die Pace-Bestätigung geht in den Worten des Agenten unter seinem Namen raus. Ohne Speaker an einer Agentenantwort posten die Kanalplugins fail-closed nichts, sondern eine `system`-Notice.
+- **Gruppen-Audience**: `CHANNEL_KIND_BY_ORIGIN` (`resolveTurnOwnerIdentity.ts`) kennt `slack`, `discord`, `whatsapp`, `imessage`, `CONTEXT_MEMORY_CHANNEL_TYPES` (`turnOrigin.ts`) ebenso; `ChannelKind` (plugin-api, additiv) und die Neon-`CHANNEL_KINDS` führen `discord`, `whatsapp`, `imessage`. Ohne Kind bleibt die Audience einer Gruppe `unknown` und es gibt kein Gruppengedächtnis.
+- **Canvas pro Agent** (#2059, `orchestratorDispatcher.ts`): Ein Turn mit `metadata.agentId` geht über `channelResolver.resolveAgent(agentId, { channelType, channelKey }, { principal, locale })` an die Hülle genau dieses Agenten, ohne Modell davor. Unbekannt oder nicht verfügbar: der Resolver-ChatAgent antwortet mit der `system`-Notice; ohne `resolveAgent` im Resolver endet der Turn mit einem Fehler. Nie ein anderer Agent.
+- **Verzeichnis in der web-ui** (#2057): Picker und Verzeichnis lesen `GET /api/v1/agents/directory?channel=web` (`web-ui/app/_lib/availableAgents.ts`); ohne Default-Agent zeigt der Picker die Notice des Servers und bindet keinen Agenten.
+
+Kanal-Plugin-Leitfaden (Kurzfassung): Text = was ein Kollege sagt; Sprecher über eigene Identität des Kanals; Beiträge/Notices über den Klartext-Renderer; Karten nur für konkrete wahrscheinliche nächste Aktionen und nur in Kanälen, die sie rendern; Details nur auf Abruf; Disclosure-Chip nur wenn `aiDisclosure.markers.chip`.
+
 ### Zero-Touch-Facilitator-Setup (#330 C2a)
 
 > **Abgelöst durch native Facilitators (#2043, 2026-11-18).** Die Services
@@ -3839,7 +3895,7 @@ laufender DB gezeigt und liest dann die authentifizierte Vault-Status-Route.
 `_lib/runtimeReadiness.ts` der Zustand `database_unavailable`. Dashboard-Karten
 ohne Daten zeigen „Status nicht abrufbar“ statt ihres Leerzustands.
 
-### Built-in-Plugins: Version, Deinstallation, Anhängen an den Standard-Orchestrator (#1505, #1481, #1498, #1491)
+### Built-in-Plugins: Version, Deinstallation, kein automatisches Anhängen (#1505, #1481, #2054)
 
 Built-ins liegen im Image (`middleware/packages/*`) und werden beim Boot von
 `runLegacyBootstrap` (`plugins/bootstrap.ts`) in die Installed-Registry
@@ -3873,32 +3929,33 @@ memory-postgres, embeddings, beide KG-Provider): der Host braucht sie, ihre
 Image-Pakete); der Deinstallations-Dialog nennt das Ergebnis und bietet die
 Checkbox „hochgeladene Paketdatei löschen“ nur für Nicht-Built-ins an.
 
-**Anhängen an den Standard-Orchestrator (#1498, #1491).** Eine Regel für alle
-Install-Wege: das Plugin samt seinen installierten `depends_on`-Eltern bekommt
-eine `agent_plugins`-Zeile am Fallback-Agent. Der gemeinsame Baustein ist
-`attachAllPlugins` (harness-orchestrator `registry/onboarding.ts`):
-- Erst-Boot: `ensureFallbackAgent` hängt alle installierten Plugins an.
-- Boot auf bestehender Instanz: `runLegacyBootstrap` meldet jede neu
-  registrierte ID über `onPluginInstalled`; der Host reiht sie in
-  `createPendingDefaultAttach` (`plugins/defaultOrchestratorAttach.ts`) ein und
-  hängt sie an denselben Flush-Punkten an wie `pendingBindingPurge` (nach
-  `toolPluginRuntime.activateAllInstalled()` und bei jeder (Re-)Aktivierung von
-  `@omadia/orchestrator`).
-- Laufzeit-Install (Hub, Upload, Store-Reinstall) **jeder** Plugin-Art, nicht
-  nur Agents: `onInstalled(id, 'install')` → `propagatePluginInstall`.
-  `onInstalled(id, 'reactivate')` hängt nicht an — eine Reaktivierung darf ein
-  bewusst abgehängtes Plugin nicht zurückholen; ebenso wenig `onPackageReady`
-  (Update eines installierten Pakets).
-- Profil-Apply: der Router meldet die neu registrierten IDs über
-  `onPluginsRegistered`, der Host hängt sie sofort an (oder reiht sie ein).
-
-Beide Laufzeit-Wege nutzen `attachNewPluginsToFallbackAgent`: es legt nur
-Zeilen an, die noch fehlen (ein `upsertAgentPlugin` würde `config` und
-`enabled` einer bestehenden Zeile überschreiben). Ohne Fallback-Agent
-(Operator-Policy) passiert nichts; ohne Config-Store (key-loser Boot) wartet
-die ID in der Queue bis zur Aktivierung des Orchestrators. Die Queue lebt nur
-im Speicher; für einen Neustart davor bleibt „Standard auf alle Plugins
-zurücksetzen“.
+**Kein automatisches Anhängen (#2054, Spec 2042 INV-8; ersetzt #1498/#1491).**
+Bis #2054 hängten Erst-Boot und jeder Install-Weg (Hub, Upload,
+Store-Reinstall, Profil-Apply, beim Boot gesäte Built-ins) jedes Plugin an den
+Fallback-Agent; wer ihn erreichte, hielt alle verbundenen Systeme. Das ist
+komplett entfernt: `attachAllPlugins`, `attachNewPluginsToFallbackAgent`,
+`attachToDefaultOrchestrator`, die Queue `createPendingDefaultAttach` samt
+`plugins/defaultOrchestratorAttach.ts` und die Route
+`POST /api/v1/operator/agents/fallback/rehydrate` („Standard auf alle Plugins
+zurücksetzen“, B3d) gibt es nicht mehr.
+- Erst-Boot: `ensureFallbackAgent` legt den Seed weiter an (Routing, gehört
+  S1), aber **ohne** Plugin. Seine Capabilities vergibt der Operator im
+  Erststart-Flow (siehe „Operator-Agent-Routen“ unten).
+- Install (Store-Install/-Reinstall/-Upload, Profil-Apply): der Kernel hängt
+  nichts an. Die Web-UI bietet ein Capability-Plugin danach Agenten an, die der
+  Operator auswählt, **keiner vorausgewählt** (`GrantToAgentsStep.tsx`, schreibt
+  über `PATCH /:slug/plugins` inkl. Breite-Reichweite-Bestätigung). Was
+  angeboten wird, entscheidet allein `isCapabilityPlugin`
+  (`plugins/capabilityPlugins.ts`): Kinds `integration`, `tool`, `skill` (und
+  ein noch installiertes `agent`-Paket). Channels, Models, Archetypen,
+  System-Module, Templates, `@omadia/orchestrator` und Reference-only-Plugins
+  werden nie angeboten.
+- Bleibt: das Anhängen der Facilitation-Engine an Facilitator-Agenten
+  (`platform/facilitatorEngineAttach.ts`, `attachFacilitationEngine` in
+  `index.ts`). Deinstallation entfernt die Grants weiter bei allen Agenten; die
+  Propagation lädt nur noch neu.
+- Live: bestehende `agent_plugins`-Zeilen bleiben, wie sie sind; nur neue
+  Installationen hängen nicht mehr an.
 
 **Onboarding-Profile (#1484).** `middleware/profiles/*.yaml` listen keine
 Memory-/KG-Provider mehr (die wählt der Boot aus `DATABASE_URL`) und keine
@@ -4105,6 +4162,118 @@ in `wiring.ts` (aus `index.ts` aufgerufen).
   (`deliverDataTool.ts`, `dataActions.ts`) ist nicht an `TRIGGERS_ENABLED`
   gebunden und steht auf jedem Orchestrator-Turn bereit; Details in §11
   „Daten-Seitenkanal“.
+
+### Operator-Agent-Routen: Reichweite, Erststart, Template, Bestätigung (#2054, #2049, #2050, Epic #2042)
+
+Router `routes/operatorAgents.ts` unter `/api/v1/operator/agents`, der
+Agent-Builder-Router `routes/agentBuilder.ts` unter `/api/v1/operator`. Alle
+hinter der Admin-Session. Sicherheitsseite: `docs/security-architecture.md` §5e.
+
+**Neu**
+- `GET /api/v1/operator/agents/:slug/reach` → `{ slug, systems[], connected_systems,
+  covers_every_system, broad }`; je System `{ key: 'plugin:<id>'|'mcp:<id>', type:
+  'plugin'|'mcp_server', ref, name, read, write, declared, via[] }`. Abgeleitet
+  deterministisch in `agents/agentReach.ts` (Quellen: `agentReachSources.ts`):
+  Plugin-Grants, MCP-Tool-Grants des Agenten und seiner Helfer,
+  `plugin_mcp_grants` gehaltener Plugins. Read/Write aus Manifest-`side_effects`
+  bzw. MCP-`readOnlyHint`; nichts deklariert = Read **und** Write,
+  `declared: false`. `broad` = deckt jedes verbundene System ab und es gibt
+  mindestens 2. Die Directory-Liste (`GET /api/v1/operator/agents`) trägt
+  dasselbe Objekt als `reach` (`null`, wenn es nicht berechnet werden konnte).
+- `GET /api/v1/operator/agents/onboarding` → `{ required, agent, capabilities[] }`.
+  `required` solange es keinen Agenten aus Operator-Hand gibt (kein Agent, oder
+  nur der unberührte Seed ohne Plugin-Zeile; `agents/firstAgentOnboarding.ts`).
+  `capabilities` = installierte Capability-Plugins, nichts vorausgewählt.
+- `POST /api/v1/operator/agents/onboarding/first-agent`, Body `{ name,
+  description?, plugin_ids[], confirmBroadReach? }`: legt den ersten Agenten an
+  (201) oder macht den unberührten Seed dazu (200). `plugin_ids` darf leer sein.
+  `409 onboarding_not_required`, `400 not_a_capability_plugin` für IDs, die kein
+  installiertes Capability-Plugin sind, plus die Breite-Reichweite-Prüfung.
+- `GET /api/v1/operator/agents/:slug/template[?format=yaml]`: der Agent als
+  **ein** `agent_templates`-Eintrag im Format des Manifest-Readers
+  (`agents/agentTemplateExport.ts`, `agentTemplateManifest.ts`): Archetyp, Name,
+  Beschreibungen, Instruktionen, Sprache, Persona, Quality, Antwortlänge
+  (`verbosity`) und die IDs der aktivierten Capability-Grants. Nie
+  Plugin-Config, Memory, Bindings, Verfügbarkeit oder Avatar. JSON default,
+  `?format=yaml` als Download, `400 invalid_format`; ein Eintrag, den der
+  Reader ablehnen würde, ist `409 template_export_invalid` statt einer kaputten
+  Datei.
+- `GET /api/v1/operator/agents/plugin-catalog`: jeder Eintrag trägt
+  `capability: boolean` (`isCapabilityPlugin`); nur `true` wird Agenten
+  angeboten.
+- `GET /api/v1/operator/agents/:slug/graph` (Agent Builder): jeder Helfer-Knoten
+  trägt `outOfService: { code, reason } | null`, Codes
+  `helper_model_not_allowed` / `helper_name_conflict` (`helpersOutOfService`,
+  dieselben Regeln wie die Laufzeit, #2050; siehe „Interne Helfer“ oben).
+
+**Breite-Reichweite-Bestätigung** (`agents/broadReachGate.ts`,
+`requireBroadReachConfirmation`). Fragt nur, wenn eine Änderung einen Agenten
+breit macht (vorher nicht breit, nachher breit). Ohne `confirmBroadReach: true`
+im Body: `409 broad_reach_confirmation_required` mit `{ message, change, slug,
+reach }`. Gilt für `PUT|PATCH /api/v1/operator/agents/:slug/plugins`,
+`PUT /api/v1/operator/mcp-grants`, Agent-Builder-Graph-Kanten `tool_grant`
+(`POST /api/v1/operator/agents/:slug/graph/edges`),
+`PUT /api/v1/operator/plugin-mcp-grants` (geprüft für jeden Agenten, der das
+Plugin hält; die 409 nennt die Agenten) und den Erststart-Flow. Audit
+`agent.broad_reach_grant` erst nach erfolgreichem Write; ein fehlgeschlagener
+Audit-Write wird geloggt, der Grant nicht zurückgerollt. Dieselbe
+Bestätigung gilt, wenn ein solcher Agent Default-Agent wird
+(`PUT /api/v1/operator/default-agents` mit `confirmBroadReach`,
+`change: 'default_agent'`, Audit `agent.broad_reach_default`).
+
+**Nur Capability-Plugins.** Die Plugin-Grant-Routen (`PUT|PATCH
+/:slug/plugins`) antworten auf einen **neuen** Grant eines Plugins, das kein
+Capability-Plugin ist, mit `400 not_a_capability_plugin`. Bestehende Zeilen
+bleiben und lassen sich weiter umschalten.
+
+**Entfernt** (ohne Kompatibilitätsschicht)
+- `POST /api/v1/operator/agents/fallback/rehydrate` („Standard auf alle Plugins
+  zurücksetzen“, #2054).
+- Plugin Builder (`/api/v1/builder`, #2049): `GET /drafts/:id/quality`,
+  `PATCH /drafts/:id/persona`, `PATCH /drafts/:id/quality`,
+  `POST /drafts/:id/preview-prompt` (samt `builderQuality.ts`,
+  `builderPreviewPrompt.ts`) und die Builder-Tools `set_persona_config` /
+  `set_quality_config`.
+
+### Plugin Builder: nur Capability-Plugins, Preview als Draft-Agent (#2049, Spec 2042 §5.10)
+
+**Output.** Der Plugin Builder (`/store/builder`, `plugins/builder/`) erzeugt
+nur Capability-Plugins, Manifest-Kind `integration` oder `tool`. Optionales
+`spec.kind`; fehlt es, wird es abgeleitet: `integration`, wenn das Plugin ein
+externes System mit Credentials erreicht (`depends_on`, OAuth-Provider,
+Secret-/OAuth-Setup-Feld), sonst `tool`. `template` wählt nur das Code-Layout
+und bleibt bewusst getrennt. Boilerplates `middleware/assets/boilerplate/integration`
+(Client + Toolkit) und `…/tool` (nur Toolkit); `plugin.ts` registriert jedes
+Toolkit-Tool über `registerTools.ts` (`ctx.tools.register`, Schema aus
+`z.toJSONSchema`) und gibt `{ close }` zurück. Keine Persona, kein `AGENT.md`,
+kein `prompt_partial`-Skill, kein `llm.prefers`, keine Delegation über
+`ctx.subAgent`: `permissions.subAgents` wird in der Builder-Spec abgelehnt (ein
+Capability-Plugin konsultiert nie einen Agenten, §5.4). Alte Drafts laden
+weiter (Persona-/Quality-/Skill-Keys werden beim Lesen entfernt, alte
+Template-IDs `agent-integration`/`agent-pure-llm` als Alias gelesen); ein
+Patch, der sie setzt, wird mit Verweis auf den Agent Builder abgelehnt.
+
+**Preview-Draft-Agents** (`plugins/builder/previewDraftAgents.ts`,
+`previewChatService.ts`, Migration 0085).
+- Eine Preview ist ein Turn eines Draft-Agenten: `agents`-Zeile mit Status
+  `draft`, Slug `builder-preview-<draft>`. Das Präfix ist reserviert: Create
+  lehnt es ab, auf einem solchen Slug sind nur GET und DELETE erlaubt, und die
+  Zeile erscheint nicht im Directory, im Erststart-Flow oder in einem
+  Grant-Angebot. Die Registry baut nie einen Draft.
+- Angelegt pro Builder-Draft beim ersten Preview-Turn (`ensure`); ohne Zeile
+  läuft der Turn nicht (`builder.preview_draft_agent_unavailable`, nichts
+  gespeichert).
+- Entfernt, wenn die Preview endgültig schließt (`PreviewCache.onClosed`:
+  Eviction, Draft verworfen, Logout, Shutdown), **nicht** beim Rebuild. Was ein
+  Crash liegen lässt, räumt der Boot-Sweep ab; kam der Agent-Store erst nach
+  dem Boot, läuft der Sweep lazy beim ersten Gebrauch. Entfernt wird nur, was
+  Status `draft` hat.
+- Der Turn selbst läuft die Model-Loop im Speicher, nur mit den Tools, die das
+  Draft-Plugin registriert hat (auf dem Preview-Handle erfasst, nie in der
+  Kernel-Registry), neutraler Prompt mit „Preview“-Markierung aus Identity,
+  Kind und Playbook. Die Zeile ist Identität und Buchhaltung des Draft-Agenten;
+  sie hält keine Grant-Zeile. Ausgabe nur im Builder-SSE hinter der
+  Admin-Session.
 
 ## 4. Migration Managed Agents → Lokal
 
@@ -4483,6 +4652,13 @@ Die Obergrenze bindet nur Sitzungen, die niemand beendet: Abmelden,
 Admin-Passwort-Reset, Deaktivieren und Löschen beenden alle Sitzungen des
 Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf“)
 — ohne eigene Env-Variable.
+
+### Audience-Floor standardmäßig an (#575, #2048, Epic #2042)
+
+| Variable | Wirkung |
+|---|---|
+| `AUDIENCE_FLOOR_ENABLED` | Default **`true`** seit #2048 (Spec 2042 G15). Ein Raum darf einen Agenten nur tun lassen, was **jede** anwesende Person darf (Egress-, Recall- und Attachment-Guard in `audienceFloorGuard.ts`). Installiert auf beiden Turn-Pfaden (`runTurn` und `chatStream`; der Streaming-Pfad hatte vorher gar keinen Floor). Raumart aus `audienceRoomFor`: Web/Desktop/CLI/API und 1:1-Kanalturns = nur der Turn-Owner; Gruppen = Teilnehmerliste des Kanals (Agenten-Bots zählen nicht); Turns ohne Kanal und ohne Owner (Schedules, Conductor-Steps) = kein Floor. Fail-closed: Kanal ohne Teilnehmerliste in Gruppen (heute Slack, Discord, WhatsApp, iMessage) oder eine nicht auflösbare Person ⇒ jedes Tool wird mit Begründung verweigert. Facilitator-Turns (`agentTurn@2`) lesen die Teilnehmerliste der Konversation als eigene Identität des Agenten. `false` schaltet alle Guards ab; Rückfragen zwischen Agenten (#2047) brauchen den Floor. |
+| `AUDIENCE_BASELINE_GRANTS` | `member` (Default): jede aufgelöste Person hält `tool:*` (jedes Tool, das der Agent selbst hat), `memory:recall`, `memory:recall:cross_scope`, `attachment:read` (`MemberBaselineGrantStore`); Verbote pro Person/Rolle über `/api/v1/admin/audience-grants/{direct,roles}/deny` schlagen die Basis. Läuft auch ohne Postgres (dann nur Basis). `none`: strikte #575-Lesart, nur explizite Grants; braucht Postgres, sonst Boot-Abbruch. |
 
 ### Request-Trust-Boundary (#1310, security-architecture §10o)
 
@@ -5517,7 +5693,7 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
 `docs/security-architecture.md` §7c):
 
 - **Bis zum Urteil** gehen nur Lebenszeichen raus: `iteration_start`,
-  `turn_routing`, `turn_persona`, `tool_progress`, `heartbeat`,
+  `turn_routing`, `turn_working_mode`, `tool_progress`, `heartbeat`,
   `stream_token_chunk`, `iteration_usage`, `steer_applied` (geschlossene
   Allowlist `passesBeforeVerdict`). Alles andere — `text_delta`,
   `tool_use`/`tool_result`, `sub_*` (auch `sub_iteration`, damit es beim
@@ -5739,10 +5915,13 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   „Daten-Seitenkanal“ und der Abschnitt „Fast Lane“. Offen daraus: proaktive
   Nachrichten in einen anderen Kontext als den Ursprung erst mit
   Diskretions-Labels (S5).
+  - **S5 Rückfrage + Diskretion (#2047, #2079): Kernel gebaut**, siehe Abschnitt
+    „Rückfrage statt Delegation + Diskretion“ am Ende; Residuen dort unter „Offen“
+    (Existenz-Probe, Streaming-Ausgang, CLI-Pfad, MCP in Rückfragen,
+    Offenlegungsstufen auf Capability-Grants, Operator-UI für Leserschaften).
 
-- **Offen (S1, Spec 2042):** Gruppen (`role:<key>`) in der Verfügbarkeit
-  brauchen eine synchrone Rollenmitgliedschaft (`ChannelResolver`-Option
-  `hasRole`, nicht verdrahtet; `PUT …/availability` lehnt `role:` deshalb ab);
+- **Offen (S1, Spec 2042):** (Gruppen `role:<key>` in der Verfügbarkeit sind
+  seit S5 verdrahtet, siehe „Rollen für die Verfügbarkeit“ am Ende);
   `chatAgent@1` bedient mit Registry nur noch Canvas-Turns (Instanz-Default),
   bis der Canvas pro Agent dispatcht (#2059); die Modellschicht des Guards auf
   `claude-cli` startet pro Prüfung einen CLI-Prozess (Timeout 8 s, fail-closed)
@@ -9913,3 +10092,207 @@ Pushes hängen an Message-Subscriptions.
   Fach-Agenten-Liste) wird auch für Facilitators gebaut; die Abschnitte sind
   ohne die zugehörigen Tools wirkungslos. Ein schlanker Facilitator-Rumpf ist
   ein Follow-up.
+
+## Rückfrage statt Delegation + Diskretion (Epic #2042, S5: #2047 / #2079, 2026-11-20)
+
+Spec: `specs/2042-agents-as-virtual-employees/spec.md` §5.4 und §5.11, ADR-0018 und
+ADR-0019. Begriffe: `docs/terminology.md` (Rückfrage, Beitrag, Diskretion, Label,
+Leserkreis, Offenlegungsstufe).
+
+### Rückfrage (`consult`)
+
+- **Regel:** Rückfragen fügt Können und Urteil eines Kollegen hinzu, nie Zugriff.
+- **Konfiguration** (Migration 0097): `agents.consultable` und `agents.may_consult`
+  (beide Standard aus) plus gerichtete Grants `agent_consultation_grants`
+  (`channel_scope` NULL = alle Kanäle, `allowed_capabilities` = Plugin-IDs, Standard
+  leer; `memory_access` `none`|`discreet`; `disclosure` = Offenlegungsstufe je
+  Klassifizierung, `{}` = `none`; Budgets pro Turn und Tag). Facilitators halten und
+  empfangen keine Grants (Archetyp-Omission `consultation`).
+- **Tool:** `consult(agent, request)` ist ein Kernel-Domain-Tool jedes Agenten
+  (`packages/harness-orchestrator/src/consultation/consultTool.ts`), angeboten nur,
+  solange der Broker einen Kollegen listet (Snapshot, 30 s, Refresh nach jeder
+  Operator-Änderung) und der Agent nicht selbst gerade eine Rückfrage beantwortet
+  (Tiefe 1). Ohne aktiven Audience-Floor im Turn wird abgelehnt.
+- **Broker** (`middleware/src/consultation/consultationBroker.ts`, Dienst
+  `consultation@1`): prüft bei jedem Aufruf frisch Schalter, Grant, Kanal,
+  Audience-Floor, Tiefe (kein `consult` innerhalb einer Rückfrage, egal welcher
+  Orchestrator fragt), Budgets (pro Turn: Slot wird im Tool vor dem ersten `await`
+  reserviert, parallele Aufrufe sehen einander; pro Tag: Zählen und Ledger-Eintrag
+  `agent_consultation_calls` in einer Transaktion unter
+  `pg_advisory_xact_lock`, pooler-tauglich). Vor B's Lauf prüft er A's Anfrage:
+  sie trägt A's Turn-Label-Set und geht nur an B, wenn B's Grants und der Raum es
+  abdecken (sonst Ablehnung `discretion`, auditiert). B läuft mit seinem
+  normalen `ChatAgent.chat()` innerhalb von `runAsConsultation` (prozessweiter
+  ALS-Scope wie `runAsEngineTurn`) und startet mit A's Labels (`initialLabels`),
+  sodass B's eigene Ausgänge (Integrations-Schreibzugriffe) auch gegen A's Labels
+  geprüft werden. A's Anfrage erreicht B mit restaurierten Werten (B kann A's
+  Platzhalter nicht auflösen; B's eigener Shield maskiert für B's Modell):
+  - Tools nur aus `grant.allowed_capabilities ∩ B-Grants ∩ A-Grants`
+    (`consultationAllowsTool`, wirkt in `buildToolsList`, im Dispatch und in
+    `isToolGranted`, also auch auf dem Abo-CLI-Pfad);
+  - kein `memory`-Tool, kein `consult`, keine Kalender-/Auswahl-Tools;
+  - Recall und Wissensgraph nur bei `discreet` und nur, wenn B `members` fährt
+    (dann begrenzt auf A's Leserkreis);
+  - kein `sessionScope`: nichts wird geloggt, ingestiert oder promotet; der
+    Fast Path läuft nicht;
+  - Deadline 120 s; Fehler/Timeout → Beitrag mit Status `failed`, nie verworfen.
+    B's Lauf lässt sich nicht abbrechen: nach der Deadline bekommt er kein Tool mehr
+    (`result.expired`), seine Antwort wird verworfen.
+- **Zwei Sichten:** Nutzer-Sicht = B's Antwort (restauriert), als
+  `ChatTurnResult.contributions[]` / `SemanticAnswer.contributions` (Kontrakt aus S1,
+  `@omadia/plugin-api` `Contribution`); Modell-Sicht = derselbe Text als Tool-Ergebnis,
+  das A's Privacy Shield wie jede Sub-Agent-Erzählung interniert (maskiert). A
+  referenziert den Beitrag nur per ID.
+- **Diskretion des Beitrags:** Flussregel `agent` gegen A's Grants und Leserkreis,
+  dann Offenlegungsstufe für das, was A nicht selbst wissen konnte. `existence` →
+  Kernel-Text „X kann dazu etwas beitragen, aber nicht hier“; `none` → B wird ohne
+  Memory und ohne Tools erneut gefragt (kein Schreibzugriff läuft doppelt), damit
+  „zurückgehalten“ und „nicht vorhanden“ gleich aussehen. `redacted` liefert die
+  maskierte Sicht nur, wenn B's Lauf einen Shield hatte; sonst `existence`.
+- **Kosten:** B's Modellaufrufe laufen unter B's eigener Turn-ID; das Ledger
+  verknüpft `from_turn_id` ↔ `to_turn_id`.
+- **Rollout** (Migration 0100): je zwei lebende Nicht-Facilitator-Agenten, die nach
+  #1018 im selben Chat für Agent-zu-Agent freigeschaltet sind, bekommen Grants in
+  beide Richtungen (nur der Kanaltyp, keine Capabilities, Memory `none`, Offenlegung
+  `none`) und beide Rückfrage-Schalter; bestehende Grants bleiben. So bleibt keine
+  konfigurierte Diskussion stehen.
+- **Diskussionen** (`discussion_start`): zusätzlich zu Agent-Schalter und Chat-Policy
+  (#1018) brauchen je zwei Teilnehmer Grants in beide Richtungen, die den Kanaltyp
+  abdecken (`createDiscussionsCapability({ mutualGrant })`,
+  `DiscussionNotGrantedError`). Damit schaltet, wer Diskussionen erlaubt, auch
+  `consult` zwischen den beiden frei.
+
+### Diskretion
+
+- **Kern** (`packages/harness-orchestrator/src/discretion/`, rein): Labels
+  `context{key, readers}`, `source{system, restricted}`, `classification{class}`;
+  Turn-Label-Set (Vereinigung, strengste Leser gewinnen); Flussregel
+  `checkFlow(labels, egress)` für `people`, `agent`, `memory`, `integration`;
+  Offenlegungsstufen `full|redacted|aggregate|existence|none`.
+- **Eingänge:** jedes Tool-Ergebnis labelt sein System (`restricted`, wenn der
+  Operator es so deklariert; `classification:personal` bei Privacy-Bypass); Recall
+  übernimmt die persistierten Labels der zurückgerufenen Turns; der eigene
+  Gesprächskontext (Schlüssel `<channelType>:<conversation>`, Leser = Raum; ohne
+  Origin, also Web-Chat/API: `owner:<userId>`, Leser = nur der Owner) kommt beim
+  Auflösen dazu; Beiträge bringen B's Labels mit.
+- **Ausgänge:**
+  - schreibende Tool-Aufrufe gegen die Leserschaft der Integration, vor dem Aufruf.
+    Wirkung eines Tools: `write` = Manifest `capabilities[].side_effects: write`,
+    `writeCapabilities` (#542) oder MCP ohne `readOnlyHint` (gegen alle Labels
+    geprüft); `read`/`none` = nicht geprüft; nichts deklariert = `unknown`, nach
+    `UNKNOWN_TOOL_EFFECT_POLICY` (`restricted-only`: keine eingeschränkten Quellen,
+    keine klassifizierten Daten, aber ein fremder Gesprächskontext allein sperrt
+    nicht, damit Lese-Tools nach einem Recall weiterlaufen; nach dem Plugin-Train
+    auf `write`). Der Kern liefert die Deklaration über
+    `DiscretionPort.toolEffectOf` (`declaredToolEffect`, aus S3 übernommen);
+  - die Antwort gegen den Leserkreis (nicht-streamend): bei Verstoß wird das
+    Ergebnis neu aus Buchhaltungsfeldern gebaut (Antwort = Ersatzzeile; keine
+    Anhänge, Dateien, Karten, Canvas, Recall, Beiträge), und die Session-Zeile
+    speichert nur die Ersatzzeile (`beforeTurnWritten`);
+  - Persistenz: jeder geschriebene Turn behält sein Label-Set (`discretion_labels`,
+    Migration 0098), Recall bringt es zurück;
+  - Memory: `memory`-Schreibvorgänge und die Auto-Promotion laufen vorher durch die
+    Flussregel `memory` (Wissen aus einem anderen Gespräch nur in eine Stufe, deren
+    Leser es alle kennen dürfen: `members` = die Owner, kontextgebunden = der Raum,
+    sonst das Agenten-Memory mit unbekannten Lesern, in das nur das eigene Gespräch
+    darf). Notizen behalten die Labels der schreibenden Turns, nach kanonischem
+    physischem Pfad (`LabelledMemoryStore` unter dem Binder, Subjekt `memory_file`):
+    vor dem Schreiben wird die Vereinigung gespeichert, ohne Labels kein Schreiben;
+    Umbenennen und Löschen nehmen die Labels eines ganzen Verzeichnisses mit; Lesen
+    fügt sie dem lesenden Turn hinzu, auch beim Verifier-Replay (Labels im
+    Replay-Record). Session-Transcripts bekommen die Labels jedes Turns (eigener
+    Label-Layer unter dem Session-Store, ohne Lese-Labels). Der Members-Index liegt
+    bewusst im ungelabelten Store (`MemoryBinder.indexStore`), weil er für jeden
+    Raum gelesen wird. Durable Rules behalten bei der Promotion die Turn-Labels;
+    memorables (Auto-Promotion, MCP→KG-Ingestion mit dem Server als Quelle)
+    behalten die Labels (`memorable`), Recall eines memorable bringt sie zurück;
+  - Beiträge an andere Agenten im Broker.
+- **Leserschaft** (`integration_readerships`): `sensitivity` internal|restricted,
+  `readers` everyone|Menge, akzeptierte Systeme und Klassifizierungen. Ohne
+  Deklaration bekommt eine Integration (über ein als schreibend erkanntes Tool)
+  nichts aus fremden Kontexten, keine eingeschränkten Quellen, keine klassifizierten
+  Daten. Solange die Deklarationen nie geladen wurden (Pool fehlt, erster Lesefehler),
+  gilt jede Integration als `restricted` ohne Leser (fail-closed).
+- **Audit:** `discretion_flow_audit` (jede Verweigerung, jeder erlaubte
+  kontextübergreifende Fluss; nur Label-IDs und Gründe, nie Inhalt).
+- **Context-Memory:** neue Agenten starten in `members` (Migration 0099);
+  bestehende werden bewusst NICHT umgestellt (würde ihre Notizen verbergen).
+  `PUT …/context-memory` mit `off` → 409 `context_memory_required`, wenn der Agent
+  Capability-Grants hält. Neue Facilitators werden beim Anlegen auf `off` gesetzt
+  (kein Memory, die Route erlaubt für sie nur `off`).
+
+### Kollegen im Prompt (`consultableColleagues`)
+
+Der Registry-Snapshot trägt die aktiven Rückfrage-Paare (`ConfigSnapshot.consultationPairs`,
+`ConfigStore.listConsultationPairs`: Grant zwischen zwei lebenden Agenten, beide Schalter
+an). `consultableColleaguesOf` (`registry/consultationColleagues.ts`) macht daraus die
+Anzeigenamen (ohne Facilitators und deaktivierte Agenten), die `buildForAgent` als
+`consultableColleagues` in die Identitätsregeln von S1 gibt. Ändert sich die Liste eines
+Agenten (Grant, Schalter, Name), baut der Diff ihn neu (Grund `consultation_colleagues`).
+Ein Trigger auf `agent_consultation_grants` (0097) meldet `agents_changed`, damit jede
+Replika neu lädt; die Schalter liegen auf `agents` und melden sich über deren Trigger.
+
+### Rollen für die Verfügbarkeit (`hasRole`)
+
+`src/conductor/roleMembership.ts` (`RoleMembershipSnapshot`, Feld `roleMembership` von
+`wireConductor`): synchrone Antwort auf „hat Principal `user:<id>` die Rolle `<key>`?“
+für Verfügbarkeitseinträge `role:<key>`. Halter kommen aus der `RoleHolderRegistry`
+des Conductors (Zuweisungstabelle + aktivierte Quellen), Refresh alle 30 s und sofort
+nach jeder Rollen-/Zuweisungsänderung dieses Prozesses
+(`ConductorRoleStore.onChange`). Eine teilweise Auflösung zählt als „niemand“, ein
+fehlgeschlagener Refresh behält den letzten Stand, vor dem ersten Refresh hat niemand
+eine Rolle. Der Kernel installiert den Snapshot prozessweit (`setRoleMembership`
+aus `routing/managementRouter.ts`, auf `globalThis` wegen Doppel-Ladens des Pakets);
+jeder `ManagementRouter` ohne eigenes `hasRole` fragt ihn, also Routing, Auswahl,
+Routing-Tester und Management-Layer. `PUT …/availability` nimmt `user:<id>` und
+`role:<key>` an (Rollenschlüssel behält die Schreibweise). Rollen gelten nur für die
+Verfügbarkeit, nicht für die Default-Tabelle (§5.6) und nicht für Leserschaften.
+
+### Operator-API (`middleware/src/routes/operatorConsultation.ts`)
+
+| Route | Zweck |
+|---|---|
+| `GET/PUT /api/v1/operator/agents/:slug/consultation` | Schalter `consultable`, `mayConsult`; Grants beider Richtungen |
+| `PUT/DELETE /api/v1/operator/agents/:slug/consultation/grants/:to` | Grant A→B anlegen/ändern/widerrufen |
+| `GET /api/v1/operator/discretion/readerships`, `PUT/DELETE …/:integration` | Leserschaft deklarieren |
+
+Audit-Aktionen: `agent.consultation_change` (je Agent eine Zeile), 
+`discretion.readership_change`, `agent.context_memory_change`.
+
+### Offen (S5-Residuen)
+
+- `existence` greift nur für Wissen, das B im Lauf gesehen hat; ein
+  modellfreier „es gibt etwas“-Probe über B's sonst unsichtbares Memory fehlt
+  (Kriterium 16 zweiter Teil end-to-end).
+- Ausgangsprüfung der Antwort läuft auf dem nicht-streamenden Pfad; beim Streaming
+  schützt sie nur die gespeicherte Zeile. Gehört in den satzweisen Emitter (S1).
+- Abo-CLI-Pfad (`ToolDispatchService`) und Sub-Agent-Innenaufrufe labeln nicht und
+  prüfen keine Leserschaft (Turn ohne Diskretionszustand); mit S3 `run_loop`.
+- MCP-Tools sind in einer Rückfrage nicht nutzbar (`allowed_capabilities` kennt nur
+  Plugin-IDs); Offenlegungsstufen auf Capability-Grants (`agent_plugins`) fehlen.
+- `say` prüft pro Äußerung nur die Peer-Gate, die Grants nur beim Start (der
+  Say-Service kennt die Teilnehmer des Laufs nicht).
+- **Undeklarierte Plugin-Tools** (`unknown`) gelten bis zum Plugin-Train als
+  `restricted-only`: ein Schreibzugriff über ein solches Tool, der nur Wissen aus
+  einem anderen Gespräch trägt, wird nicht gegen die Leserschaft geprüft.
+  Domain-Tools (`query_<plugin>`, Sub-Agent) gelten als `write`, sobald das Plugin
+  irgendein Tool als `write` deklariert (`pluginEffectOf`), sonst `unknown`.
+- **Memory-Reste:** memorables, die `query_knowledge_graph` liefert, und das
+  Session-Briefing bringen keine Labels mit (nur der automatische Recall);
+  Plugin-Memory (`ctx.memory`, `/memories/plugins/…`) wird außerhalb des
+  Label-Layers geschrieben und ist ungelabelt; eine `memory`-Schreibprüfung in die
+  Team-Stufe (`~team`) nimmt die Leser des Raums statt der Team-Mitglieder (die Notiz
+  trägt die Labels trotzdem); ein Transcript, das außerhalb eines Turns geschrieben
+  wird, bekommt keine Labels; Conductor-Rollenhalter, die per `sub` statt E-Mail
+  zugewiesen sind, treffen keinen Kanal-Principal (fail-closed).
+- **`off` mit Grants:** verhindert wird nur das Umschalten auf `off`. Bestehende
+  Agenten (kein Backfill) und die Reihenfolge „erst `off`, dann Plugins zuweisen“
+  bleiben möglich; das Zuweisen zu sperren würde bestehende `off`-Agenten
+  uneditierbar machen.
+- **Fehlende Labels:** schlägt das Schreiben der Labels eines Turns fehl, bringt ein
+  späterer Recall dieses Turns keine Labels mit (fail-open). Ohne Pool liefert
+  `labelsOf` nichts (dann wurden auch keine geschrieben).
+- Rückfrage-Ablehnungen erreichen den Nutzer über A's Text, noch nicht als
+  `system`-Hinweis des S1-Emitters.
+- Operator-UI gibt es für Schalter und Grants (Agent → Tab „Gespräche“ →
+  `AgentConsultation`); die Leserschaften der Integrationen gibt es nur per API.

@@ -77,7 +77,7 @@ describe('#2082 Agent Builder schedules as triggers (pg)', { skip: !pgAvailable 
       agentChat: () => ({
         chat: async (input: ChatTurnInput): Promise<SemanticAnswer> => {
           inputs.push(input);
-          recordUsage({ source: 'test', model: 'scripted', inputTokens: 1, outputTokens: 1, costUsd: 0.02 });
+          recordUsage({ source: 'test', model: 'scripted', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.02 });
           return { text: 'Erledigt.' };
         },
       }),

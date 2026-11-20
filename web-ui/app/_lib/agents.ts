@@ -1,6 +1,7 @@
 import { parseOperatorArchetypes, type OperatorArchetypeDto } from './archetypes';
 import { ApiError, rscTimeoutSignal } from './api';
 import type { LocalizedMarkdown } from './storeTypes';
+import type { AgentAvailability } from './agentAvailability';
 import type { TeamsTargetKind } from './teamsInstallTarget';
 
 /**
@@ -91,6 +92,43 @@ export interface OperatorAgentDto {
   effective_model?: string | null;
   /** #1033 — the agent's model policy. Absent on a pre-W4 middleware. */
   model_policy?: ModelPolicy;
+  /** #2054 — every connected system the agent reaches through its grants.
+   *  `null` = could not be computed this time; absent on an older middleware. */
+  reach?: AgentReachDto | null;
+  /** Spec 2042 — who may reach the agent (`agentAvailability.ts`). Absent on
+   *  a middleware that predates it. */
+  availability?: AgentAvailability;
+}
+
+/** #2054 — one connected system an agent reaches (spec 2042 §5.7). */
+export interface AgentReachSystemDto {
+  key: string;
+  type: 'plugin' | 'mcp_server';
+  ref: string;
+  name: string;
+  read: boolean;
+  write: boolean;
+  /** `false` = the plugin/server declares nothing: read and write assumed. */
+  declared: boolean;
+  /** `grant`, or the plugin ids through which the agent reaches it. */
+  via: string[];
+}
+
+/** #2054 — an agent's reach: derived from its plugin and MCP grants. */
+export interface AgentReachDto {
+  systems: AgentReachSystemDto[];
+  connected_systems: number;
+  covers_every_system: boolean;
+  /** Every connected system, and at least two: the master key. */
+  broad: boolean;
+}
+
+/** #2054 — the API's refusal of a grant that would make a reach broad. */
+export const BROAD_REACH_CONFIRMATION_REQUIRED = 'broad_reach_confirmation_required';
+
+/** Options of a grant write: `confirmBroadReach` answers that refusal. */
+export interface GrantWriteOptions {
+  confirmBroadReach?: boolean;
 }
 
 export interface OperatorAgentsListDto {
@@ -101,7 +139,9 @@ export interface OperatorAgentsListDto {
   default_agent_id: string | null;
 }
 
-async function callJson<T>(
+/** Shared by the typed clients of the same surface (`agentTemplates.ts`,
+ *  `agentAvailability.ts`). */
+export async function callJson<T>(
   path: string,
   init?: RequestInit & { method?: string },
 ): Promise<T> {
@@ -190,7 +230,8 @@ export interface CreateAgentInput {
   /** Reserved, not enforced (#978): persisted and reported, read by no
    *  runtime path — `strict` behaves like `default`. */
   privacy_profile?: PrivacyProfile;
-  status?: AgentStatus;
+  /** #2049 — `draft` only on create: never addressable until enabled. */
+  status?: AgentStatus | 'draft';
   /** #2088 — only on create. Omitted = `standard`. */
   archetype?: AgentArchetype;
 }
@@ -437,10 +478,18 @@ export async function toggleAgentPlugin(
   slug: string,
   pluginId: string,
   enabled: boolean,
+  opts?: GrantWriteOptions,
 ): Promise<ToggleAgentPluginResponse> {
   return callJson<ToggleAgentPluginResponse>(
     `/v1/operator/agents/${encodeURIComponent(slug)}/plugins`,
-    { method: 'PATCH', body: JSON.stringify({ id: pluginId, enabled }) },
+    {
+      method: 'PATCH',
+      body: JSON.stringify({
+        id: pluginId,
+        enabled,
+        ...(opts?.confirmBroadReach ? { confirmBroadReach: true } : {}),
+      }),
+    },
   );
 }
 
@@ -850,6 +899,9 @@ export const OPERATOR_AGENT_ERROR_CODES = [
   'multi_orchestrator_unavailable',
   'not_found',
   'plugin_not_assigned',
+  // #2054 — a grant that would give the agent every connected system, sent
+  // without `confirmBroadReach` (the confirm dialog normally answers it).
+  'broad_reach_confirmation_required',
   // #1033 — the model-policy routes 503 with this while the catalogue is
   // not wired (no DATABASE_URL / orchestrator not active).
   'model_policy_unavailable',
@@ -860,6 +912,9 @@ export const OPERATOR_AGENT_ERROR_CODES = [
   'invalid_avatar',
   'payload_too_large',
   'unsupported_media_type',
+  // Spec 2042 §5.11 — `PUT …/context-memory` refuses `off` for an agent that
+  // holds capability grants.
+  'context_memory_required',
 ] as const;
 
 export type OperatorAgentErrorCode = (typeof OPERATOR_AGENT_ERROR_CODES)[number];
@@ -1316,10 +1371,14 @@ export function parseTeamsIdentityErrorCode(
 export async function replaceAgentPlugins(
   slug: string,
   plugins: Array<{ id: string; config?: Record<string, unknown>; enabled?: boolean }>,
+  opts?: GrantWriteOptions,
 ): Promise<void> {
   await callJson(`/v1/operator/agents/${encodeURIComponent(slug)}/plugins`, {
     method: 'PUT',
-    body: JSON.stringify({ plugins }),
+    body: JSON.stringify({
+      plugins,
+      ...(opts?.confirmBroadReach ? { confirmBroadReach: true } : {}),
+    }),
   });
 }
 
@@ -1339,11 +1398,61 @@ export async function replaceAgentBindings(
  * `null` = off. The server answers 409 when the agent is not available to
  * everyone in every channel, or is a facilitator.
  */
-export async function setInstanceDefaultAgent(slug: string | null): Promise<void> {
+export async function setInstanceDefaultAgent(slug: string | null, opts?: GrantWriteOptions): Promise<void> {
   await callJson('/v1/operator/default-agents', {
     method: 'PUT',
-    body: JSON.stringify({ principal: null, channel_type: null, agent_slug: slug }),
+    body: JSON.stringify({
+      principal: null,
+      channel_type: null,
+      agent_slug: slug,
+      // #2054 — the operator confirmed a default agent with every connected system.
+      ...(opts?.confirmBroadReach ? { confirmBroadReach: true } : {}),
+    }),
   });
+}
+
+/**
+ * #2055 — one entry of the default-agent table: who (`principal`, null =
+ * everyone) in which channel (`channel_type`, null = every channel) reaches
+ * which agent when they address none; `off` = no agent, a system notice.
+ * The entry with both null is the instance entry: it is set, never removed.
+ */
+export interface DefaultAgentEntryDto {
+  id: string;
+  principal: string | null;
+  channel_type: string | null;
+  off: boolean;
+  agent_slug: string | null;
+  agent_name: string | null;
+  /** `deleted` / `disabled` / `enabled` …: messages there get a notice naming the agent. */
+  agent_status: string | null;
+  updated_by: string | null;
+  updated_at: string;
+}
+
+export async function listDefaultAgentEntries(): Promise<DefaultAgentEntryDto[]> {
+  const res = await callJson<{ entries: DefaultAgentEntryDto[] }>('/v1/operator/default-agents');
+  return res.entries;
+}
+
+/** Set (or change) one entry; `agentSlug: null` = `off`. 409 carries why the agent may not be named there. */
+export async function putDefaultAgentEntry(input: {
+  principal: string | null;
+  channelType: string | null;
+  agentSlug: string | null;
+}): Promise<void> {
+  await callJson('/v1/operator/default-agents', {
+    method: 'PUT',
+    body: JSON.stringify({
+      principal: input.principal,
+      channel_type: input.channelType,
+      agent_slug: input.agentSlug,
+    }),
+  });
+}
+
+export async function deleteDefaultAgentEntry(id: string): Promise<void> {
+  await callJson(`/v1/operator/default-agents/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 export async function drainAgentSessions(slug: string): Promise<{ affected: number }> {
@@ -1374,6 +1483,19 @@ export interface EnabledAgentDto {
   /** Reserved, not enforced (#978): persisted and reported, read by no
    *  runtime path — `strict` behaves like `default`. */
   privacy_profile: PrivacyProfile;
+  /** The archetype the middleware already reports on this route; absent on
+   *  one that predates archetypes (read it through `archetypeOfAgent`). */
+  archetype?: AgentArchetype;
+  /** #2057 — `agent_identities.display_name`. Optional: the route does not
+   *  deliver the identity yet, so the name falls back to `name`, then slug. */
+  display_name?: string | null;
+  /** #2057 — `agent_identities.short_description`; falls back to `description`. */
+  short_description?: string | null;
+  /** #2057 — the avatar reference as the identity route reports it. */
+  avatar?: { etag: string; url: string } | null;
+  /** #2057 — systems the agent can read or write through its grants, as
+   *  display names. Absent until the middleware reports it; never guessed. */
+  reach?: string[] | null;
 }
 
 export interface EnabledAgentsListDto {
@@ -1391,15 +1513,44 @@ export async function listEnabledAgents(): Promise<EnabledAgentsListDto> {
   return callJson<EnabledAgentsListDto>('/v1/operator/agents/enabled');
 }
 
+/**
+ * #2057 — one agent in the directory a person sees in a channel
+ * (`GET /api/v1/agents/directory?channel=`, kernel contract of stream S1).
+ */
+export interface AgentDirectoryEntryDto {
+  slug: string;
+  display_name: string;
+  short_description: string | null;
+  avatar_url: string | null;
+  /** `standard`, or the id of an archetype an archetype plugin delivers; `null` = standard. */
+  archetype: string | null;
+}
+
+/** The agent that answers what nobody addressed, or why there is none. */
+export type AgentDirectoryDefaultDto =
+  | { slug: string }
+  | { slug: null; notice: string };
+
+export interface AgentDirectoryDto {
+  channel: string;
+  agents: AgentDirectoryEntryDto[];
+  default_agent: AgentDirectoryDefaultDto;
+}
+
+/**
+ * The agents available to the signed-in person in `channel`, already filtered
+ * by availability on the server (spec 2042 §5.3, criterion 40).
+ */
+export async function getAgentDirectory(channel: string): Promise<AgentDirectoryDto> {
+  return callJson<AgentDirectoryDto>(
+    `/v1/agents/directory?channel=${encodeURIComponent(channel)}`,
+  );
+}
+
 // ── Phase B — operator dashboard support surfaces ───────────────────────
 
-export type PluginKind =
-  | 'agent'
-  | 'integration'
-  | 'channel'
-  | 'tool'
-  | 'extension'
-  | 'archetype';
+import type { PluginKind } from './storeTypes';
+export type { PluginKind };
 
 export type SetupFieldType =
   | 'string'
@@ -1443,6 +1594,9 @@ export interface PluginCatalogEntryDto {
   network_outbound: string[];
   setup_fields: PluginSetupFieldDto[];
   depends_on: string[];
+  /** #2054 — a capability plugin: the only kind offered for a grant to
+   *  agents. Absent on an older middleware. */
+  capability?: boolean;
 }
 
 export interface PluginCatalogListDto {
@@ -1470,7 +1624,8 @@ export interface ResolveChannelResponse {
    *  every binding; `default` — the default-agent table (#2055). See the
    *  orchestrator's ChannelResolver. */
   via: 'identity' | 'explicit' | 'selection' | 'binding' | 'default' | 'none';
-  message?: string;
+  /** #2055 — with no match: the `system` notice the sender would get. */
+  notice?: { code: string; text: string; locale: string } | null;
 }
 
 /**
@@ -1491,6 +1646,45 @@ export async function resolveAgentForChannel(
       }),
     },
   );
+}
+
+// ── #2054 — first-run flow (spec 2042 §7 "Onboarding") ─────────────────
+
+export interface FirstRunCapabilityDto {
+  id: string;
+  name: string;
+  kind: string;
+}
+
+export interface FirstRunOnboardingDto {
+  /** The instance has no agent of the operator's making yet. */
+  required: boolean;
+  /** The installed capability plugins, offered with nothing preselected. */
+  capabilities: FirstRunCapabilityDto[];
+}
+
+export async function getFirstRunOnboarding(): Promise<FirstRunOnboardingDto> {
+  return callJson<FirstRunOnboardingDto>('/v1/operator/agents/onboarding');
+}
+
+export interface CreateFirstAgentInput {
+  name: string;
+  description?: string;
+  /** The capabilities the operator chose; zero is allowed. */
+  plugin_ids: string[];
+}
+
+export async function createFirstAgent(
+  input: CreateFirstAgentInput,
+  opts?: GrantWriteOptions,
+): Promise<{ slug: string; name: string; plugins: string[] }> {
+  return callJson('/v1/operator/agents/onboarding/first-agent', {
+    method: 'POST',
+    body: JSON.stringify({
+      ...input,
+      ...(opts?.confirmBroadReach ? { confirmBroadReach: true } : {}),
+    }),
+  });
 }
 
 /**

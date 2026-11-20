@@ -101,7 +101,7 @@ describe('#2082 routines as triggers (pg)', { skip: !pgAvailable }, () => {
       getOrchestrator: () => ({
         runTurn: async (_input: ChatTurnInput): Promise<ChatTurnResult> => {
           turns += 1;
-          recordUsage({ source: 'test', model: 'scripted', inputTokens: 1, outputTokens: 1, costUsd: 0.04 });
+          recordUsage({ source: 'test', model: 'scripted', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.04 });
           return { answer: `Bericht ${String(turns)}`, toolCalls: 0, iterations: 1 } as ChatTurnResult;
         },
       }),

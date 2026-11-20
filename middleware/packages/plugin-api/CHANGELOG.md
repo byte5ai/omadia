@@ -8,10 +8,9 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## Unreleased
+## 1.77.0 — 2026-11-20
 
 Additive (#2082, #2085, #1876, epic #2042, spec 2042 §5.12, §5.13): stream S4.
-The coordination session sets the version when it lands.
 
 ### Added
 
@@ -38,6 +37,32 @@ The coordination session sets the version when it lands.
   §5.12): a job is deterministic work. A failing job backs off to bounded
   recovery probes (at most one hour apart) instead of running every tick.
   Model-backed learning or consolidation registers a `BatchJob`.
+
+## 1.76.0 — 2026-11-20
+
+Additive (#2051, epic #2042, spec 2042 §5.2): persona skills became working
+modes beneath the agent's identity. Released with the agent model, step S2.
+
+### Added
+
+- **`RunTrace.workingMode`** (optional `{ skillId, name }`): the working mode a
+  turn ran in. Trace data only, never a speaker; absent when no mode was
+  selected, so older traces stay readable.
+
+## 1.75.0 — 2026-11-20
+
+Additive (epic #2042, step S6, spec 2042 §5.3/§5.14, ADR-0021): channels and
+UIs show who speaks. This version marks a kernel whose `@omadia/channel-sdk`
+provides the channel runtime values `runPacedTurn`, `speakerLine`,
+`admitDecorations` with the decoration registry, `buildAnswerDetails` and
+`resolveChannelRoute`, plus `CoreApi.reportConversationMessage` for typed card
+and poll answers. Channel plugins that import them declare
+`compat.core: ">=1.75.0 <2.0"`.
+
+### Changed
+
+- **`ChannelKind`** also names `discord`, `whatsapp` and `imessage`, so the
+  audience floor and context memory know those channels.
 
 ## 1.74.0 — 2026-11-20
 

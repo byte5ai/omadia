@@ -174,7 +174,7 @@ describe('<Nav /> cluster dropdown', () => {
 
     expect(labelsOf('setup')).toEqual([
       'LLM access',
-      'Orchestrators',
+      'Agents',
       'Teams sign-in',
       'Conductor',
       'Routines',

@@ -78,7 +78,7 @@ describe('#2082 batch jobs as agent batch triggers (pg)', { skip: !pgAvailable }
     due: async (slug) => pending.get(slug) ?? 0,
     run: async (slug, { limit }) => {
       runs.push({ agent: slug, limit });
-      recordUsage({ source: 'test', model: 'scripted', inputTokens: 1, outputTokens: 1, costUsd: 0.01 });
+      recordUsage({ source: 'test', model: 'scripted', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.01 });
       const n = Math.min(limit, pending.get(slug) ?? 0);
       pending.set(slug, (pending.get(slug) ?? 0) - n);
       return { processed: n, failed: 0 };

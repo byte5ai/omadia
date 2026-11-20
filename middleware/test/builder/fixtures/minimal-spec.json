@@ -18,9 +18,6 @@
       }
     }
   ],
-  "skill": {
-    "role": "ein präziser Wetter-Recherche-Assistent"
-  },
   "playbook": {
     "when_to_use": "User fragt nach aktuellem oder geplantem Wetter",
     "not_for": ["historische Klimadaten älter als 30 Tage"],
@@ -34,7 +31,6 @@
   },
   "slots": {
     "client-impl": "  // weather client impl placeholder\n  return { async ping() {}, async search() { return []; }, async dispose() {} };",
-    "toolkit-impl": "// weather toolkit impl placeholder\nexport function createToolkit(opts: ToolkitOptions): Toolkit {\n  return { tools: [], async close() { await opts.client.dispose(); } };\n}",
-    "skill-prompt": "# Rolle: Wetter-Recherche-Assistent\n\nDu lieferst präzise Wetter-Forecasts."
+    "toolkit-impl": "// weather toolkit impl placeholder\nexport function createToolkit(opts: ToolkitOptions): Toolkit {\n  return { tools: [], async close() { await opts.client.dispose(); } };\n}"
   }
 }

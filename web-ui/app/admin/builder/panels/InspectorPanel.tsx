@@ -27,6 +27,9 @@ import { Button } from '@/app/_components/ui/Button';
 import { SkillEditor } from '../../../_components/admin/SkillEditor';
 import { SkillVerdictBadge } from '../../../_components/admin/SkillVerdictBadge';
 import type { BuilderNodeData } from '../nodes/types';
+import { helperRefusalCode } from '../helperRefusal';
+import { AgentAvailabilitySection } from './AgentAvailabilitySection';
+import { AgentTemplateExportSection } from './AgentTemplateExportSection';
 import { Field, inputCls, SaveButton } from './InspectorControls';
 
 export interface InspectorPanelProps {
@@ -84,7 +87,7 @@ function ReadOnly(): React.ReactElement {
   return <p className="text-sm text-[color:var(--fg-muted)]">{t('inspector.readOnly')}</p>;
 }
 
-function useSaver(): {
+function useSaver(describe?: (err: unknown) => string | null): {
   pending: boolean;
   error: string | null;
   run: (fn: () => Promise<void>) => Promise<void>;
@@ -97,7 +100,7 @@ function useSaver(): {
     try {
       await fn();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(describe?.(err) ?? (err instanceof Error ? err.message : String(err)));
     } finally {
       setPending(false);
     }
@@ -233,6 +236,12 @@ function AgentEditor({
       />
       <div className="mt-2 border-t border-[color:var(--border)] pt-3">
         <PersonaSkillsSection slug={slug} agent={agent} onSaved={onSaved} />
+      </div>
+      <div className="mt-2 border-t border-[color:var(--border)] pt-3">
+        <AgentAvailabilitySection slug={slug} />
+      </div>
+      <div className="mt-2 border-t border-[color:var(--border)] pt-3">
+        <AgentTemplateExportSection slug={slug} />
       </div>
     </div>
   );
@@ -547,7 +556,12 @@ function SubAgentEditor({
   const [name, setName] = useState(subAgent.name);
   const [model, setModel] = useState(subAgent.model ?? '');
   const [prompt, setPrompt] = useState(subAgent.systemPromptOverride ?? '');
-  const { pending, error, run } = useSaver();
+  // #2050 — a refused helper write (name taken, model outside the agent's
+  // policy) is explained, not shown as a transport line.
+  const { pending, error, run } = useSaver((err) => {
+    const code = helperRefusalCode(err);
+    return code !== null ? t(`helperErrors.${code}`) : null;
+  });
   // Issue #296 follow-up — sub-agent picker uses the same registry-driven
   // dropdown as the parent agent so an operator cannot pin a sub-agent to a
   // model id no installed provider serves.
@@ -566,6 +580,20 @@ function SubAgentEditor({
 
   return (
     <div className="flex flex-col gap-3">
+      {subAgent.outOfService ? (
+        <div
+          role="alert"
+          className="rounded-md border border-[color:var(--danger,#dc2626)] p-2 text-xs text-[color:var(--fg-strong)]"
+        >
+          <p className="font-semibold">{t('helperOutOfService.title')}</p>
+          <p>{t(`helperOutOfService.${subAgent.outOfService.code}`)}</p>
+          <p className="mt-1 text-[color:var(--fg-muted)]">
+            {t('helperOutOfService.reason', { reason: subAgent.outOfService.reason })}
+          </p>
+        </div>
+      ) : null}
+      <p className="text-xs text-[color:var(--fg-muted)]">{t('inspector.helperExplain')}</p>
+      <p className="text-xs text-[color:var(--fg-muted)]">{t('inspector.helperSpecialistHint')}</p>
       <Field label={t('inspector.name')}>
         <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} />
       </Field>

@@ -77,7 +77,7 @@ describe('scaffolded description locales (#1022)', () => {
     });
   });
 
-  for (const template of ['agent-integration', 'agent-pure-llm'] as const) {
+  for (const template of ['integration', 'tool'] as const) {
     it(`${template}: fills each locale from its own spec field`, async () => {
       const { raw, slots } = loadFixture();
       const spec: AgentSpec = parseAgentSpec({
