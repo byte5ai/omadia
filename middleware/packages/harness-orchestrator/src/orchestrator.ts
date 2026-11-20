@@ -7438,10 +7438,7 @@ export class Orchestrator {
         const invocations = toolUses.map((use: ContentBlock) => {
           const isNative = this.nativeTools.has(use.name);
           return !isNative && traceCollector
-            ? traceCollector.beginInvocation(
-                use.name,
-                this.domainToolsByName.get(use.name)?.agentId,
-              )
+            ? this.beginDomainInvocation(traceCollector, use.name)
             : undefined;
         });
         const metas: ToolDispatchMeta[] = toolUses.map(() => ({ replayed: false }));
@@ -9426,10 +9423,7 @@ export class Orchestrator {
     const isNative = this.nativeTools.has(use.name);
     const invocation =
       !isNative && traceCollector
-        ? traceCollector.beginInvocation(
-            use.name,
-            this.domainToolsByName.get(use.name)?.agentId,
-          )
+        ? this.beginDomainInvocation(traceCollector, use.name)
         : undefined;
     const observer = this.makeSlotObserver(use.id, subEvents, invocation);
     const started = Date.now();
@@ -10628,6 +10622,44 @@ export class Orchestrator {
 
   hasDomainTool(name: string): boolean {
     return this.domainToolsByName.has(name);
+  }
+
+  /**
+   * #2050 — does this agent hold the native tool `name` itself: registered,
+   * and its owning plugin (if any) granted here? The subset rule for its
+   * internal helpers' native grants, asked by the Agent Builder on save and by
+   * every helper tool call (`subAgentToolHydration.ts`).
+   */
+  holdsNativeTool(name: string): boolean {
+    const reg = this.nativeTools.get(name);
+    if (reg === undefined) return false;
+    return this.isToolGranted(name, reg.agentId, reg.orchestratorScope);
+  }
+
+  /** #2050 — names of every native tool this agent's registry knows; a helper
+   *  tool name must not collide with one. */
+  listNativeToolNames(): readonly string[] {
+    return this.nativeTools.list();
+  }
+
+  /** #2050 — this agent's per-call output budget and step cap; its internal
+   *  helpers' own budgets never exceed them. */
+  turnBudget(): { readonly maxTokens: number; readonly maxIterations: number } {
+    return { maxTokens: this.maxTokens, maxIterations: this.maxIterations };
+  }
+
+  /** Opens a run-trace invocation for a domain tool; an internal helper's run
+   *  is flagged so it is never listed as a consulted agent (#2050). */
+  private beginDomainInvocation(
+    collector: RunTraceCollector,
+    toolName: string,
+  ): InvocationHandle {
+    const tool = this.domainToolsByName.get(toolName);
+    return collector.beginInvocation(
+      toolName,
+      tool?.agentId,
+      tool?.internalHelper ? { internalHelper: true } : undefined,
+    );
   }
 
   /**

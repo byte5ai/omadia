@@ -170,8 +170,13 @@ function humanizeAgentLabel(agentName: string): string {
 export function deriveAgentsConsulted(
   runTrace: Pick<RunTracePayload, 'agentInvocations'> | undefined,
 ): AgentConsultation[] | undefined {
-  return runTrace?.agentInvocations && runTrace.agentInvocations.length > 0
-    ? runTrace.agentInvocations.map((inv) => ({
+  // #2050 — an internal helper's run is the agent's own work, never a
+  // consulted agent (spec 2042 §5.2 "DB sub-agents"). It stays in the trace.
+  const consulted = (runTrace?.agentInvocations ?? []).filter(
+    (inv) => inv.internalHelper !== true,
+  );
+  return consulted.length > 0
+    ? consulted.map((inv) => ({
         ...(inv.agentId !== undefined ? { agentId: inv.agentId } : {}),
         label: humanizeAgentLabel(inv.agentName),
         status: inv.status,

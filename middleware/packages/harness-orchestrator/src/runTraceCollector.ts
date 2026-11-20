@@ -2,11 +2,12 @@ import type { AskObserver } from './tools/domainQueryTool.js';
 import type {
   EntityRef,
   EntityRefCollection,
-  RunAgentInvocation,
   RunStatus,
   RunToolCall,
 } from '@omadia/plugin-api';
-import type { RunTracePayload } from '@omadia/channel-sdk';
+// The channel-sdk copy of the invocation shape: it carries the kernel-only
+// `internalHelper` flag (#2050) the plugin contract does not need.
+import type { RunAgentInvocation, RunTracePayload } from '@omadia/channel-sdk';
 import { KNOWLEDGE_GRAPH_TOOL_NAME } from './knowledgeGraphTool.js';
 import { knowledgeGraphRefsIn } from './knowledgeGraphRefs.js';
 
@@ -144,7 +145,16 @@ export class RunTraceCollector {
   private knowledgeGraphOutputSeen = false;
   private readonly knowledgeGraphRefs = new Set<string>();
 
-  beginInvocation(agentName: string, agentId?: string): InvocationHandle {
+  /**
+   * `options.internalHelper` (#2050) marks the run of one of the agent's own
+   * internal helpers: recorded like any invocation, so the trace shows the
+   * work, but flagged so no consumer lists it as a consulted agent.
+   */
+  beginInvocation(
+    agentName: string,
+    agentId?: string,
+    options?: { readonly internalHelper?: boolean },
+  ): InvocationHandle {
     const index = this.invocationIndex++;
     const toolCallStarts = new Map<string, { name: string }>();
     const subToolCalls: RunToolCall[] = [];
@@ -193,6 +203,7 @@ export class RunTraceCollector {
           status,
           toolCalls: subToolCalls,
           ...(replayed === true ? { replayed: true } : {}),
+          ...(options?.internalHelper === true ? { internalHelper: true } : {}),
         });
       },
     };

@@ -3556,6 +3556,21 @@ async function main(): Promise<void> {
           // Issue #560 — collect each deferred tool's handle so the resume
           // driver can re-drive its tasks (`resumeOne`) with no id hint.
           deferredTaskToolHandles,
+          // #2050 — helpers are internal to their agent: model within its
+          // policy, capabilities checked against the agent as it is NOW (the
+          // registry's live entry, refreshed on every Builder write), so a
+          // revoked agent grant removes the helper's access on the next call.
+          ...(entry.agent.modelPolicy ? { parentModelPolicy: entry.agent.modelPolicy } : {}),
+          liveParent: () => {
+            const live = reg.get(slug);
+            return live
+              ? {
+                  toolGrants: live.toolGrants,
+                  holdsNativeTool: (name: string): boolean =>
+                    live.built.orchestrator.holdsNativeTool(name),
+                }
+              : undefined;
+          },
           log: (m: string) => console.log(`[middleware] ${m}`),
         },
       );

@@ -365,6 +365,26 @@ export type {
   SubAgentGraph,
   SubAgentToolDeps,
 } from './registry/subAgentTools.js';
+// #2050 — DB sub-agents as the agent's internal helpers: shared write-time and
+// runtime rules (names, model policy, capability subset).
+export {
+  HelperRefusalError,
+  INTERNAL_HELPER_CONTRACT,
+  assertHelperModelAllowed,
+  assertHelperNameFree,
+  helperDefaultModelRef,
+  helperModelVerdict,
+  helperToolName,
+  helperToolNameConflicts,
+  mcpGrantHeldBy,
+} from './registry/internalHelpers.js';
+export type {
+  GrantLike,
+  HelperModelVerdict,
+  HelperNameConflict,
+  HelperRefusalCode,
+  NamedHelper,
+} from './registry/internalHelpers.js';
 // #904 — the scoped `memory` tool a granted sub-agent gets, and the tool name
 // both the orchestrator's dispatch and the grant adapter key on.
 export {

@@ -355,6 +355,9 @@ export interface RunAgentInvocation {
   /** The sub-agent did not run in this pass: a verifier re-entry handed back
    *  the first run's answer and inner calls (see `RunToolCall.replayed`). */
   replayed?: boolean;
+  /** #2050 — the run was the agent's own internal helper (a DB sub-agent), not
+   *  another agent: part of the agent's work, never listed as consulted. */
+  internalHelper?: boolean;
 }
 
 /**

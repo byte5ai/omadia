@@ -124,24 +124,29 @@ test('the delegation tool description carries the skill description + contract',
   const withDescription = build(
     skill({ description: '  Odoo HR: Mitarbeiter, Abwesenheiten\nund Verträge  ' }),
   );
-  assert.match(withDescription, /^Delegate a focused question to the "Researcher Bot" sub-agent\./);
+  // #2050 — an internal helper: never named, its answer is the agent's own work.
+  assert.match(withDescription, /^Internal helper of this agent, not a colleague:/);
+  assert.doesNotMatch(withDescription, /Researcher Bot/);
   assert.match(
     withDescription,
     /Handles: Odoo HR: Mitarbeiter, Abwesenheiten und Verträge\./,
   );
+  assert.match(withDescription, /without naming, quoting or crediting the helper/);
   assert.match(withDescription, /cannot ask follow-up questions/);
   assert.doesNotMatch(withDescription, /\n/);
 
   // An author-supplied final period is not doubled.
-  assert.match(build(skill({ description: 'Reads the CRM.' })), /Handles: Reads the CRM\. It sees/);
+  assert.match(build(skill({ description: 'Reads the CRM.' })), /Handles: Reads the CRM\. Its answer/);
 
   // No skill description → no dangling separator, contract still stated.
   const without = build(skill());
   assert.equal(
     without,
-    'Delegate a focused question to the "Researcher Bot" sub-agent. It sees none' +
-      ' of this conversation and cannot ask follow-up questions, so send one' +
-      ' self-contained question and expect a single answer back.',
+    'Internal helper of this agent, not a colleague: hand it a focused part of your' +
+      ' own work. Its answer is your own work: use it in your reply without naming,' +
+      ' quoting or crediting the helper. It sees none of this conversation and cannot' +
+      ' ask follow-up questions, so send one self-contained question and expect a' +
+      ' single answer back.',
   );
 
   // A sub-agent with no skill at all behaves like an empty description.
@@ -185,7 +190,7 @@ test('the skill description is sanitized and capped before it enters the roster 
   assert.doesNotMatch(capped, /ENDE/);
   // Cut at a word boundary: the kept text plus a space is a prefix of the input.
   assert.ok(long.startsWith(`${capped.slice(0, -1)} `), capped);
-  assert.ok(build(long).includes(`Handles: ${capped} It sees`));
+  assert.ok(build(long).includes(`Handles: ${capped} Its answer`));
 
   // At the cap exactly: untouched apart from the closing period.
   const exact = 'x'.repeat(MAX_ROSTER_SKILL_DESCRIPTION_CHARS);

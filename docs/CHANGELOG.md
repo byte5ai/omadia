@@ -36,6 +36,31 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — DB sub-agents are internal helpers of their agent (#2050, epic #2042)
+
+- **Before:** a DB sub-agent had its own name and system prompt and could hold
+  an MCP grant its agent lacked; users could meet it as a named specialist
+  (spec 2042 G3), and two names like `A B` and `A-B` mapped to the same
+  `ask_a_b` tool, first one wins.
+- **Now:** helpers run strictly inside their agent's envelope. Their prompt
+  carries a fixed contract (no introduction, no name); the agent's model is
+  told to use the result as its own work. Every helper grant must be held by
+  the agent: checked on save (`409 helper_refused`, codes
+  `helper_name_collision`, `helper_grant_not_held_by_agent`,
+  `helper_model_not_allowed`) and on every tool call against the agent's live
+  grants, so revoking the agent's grant locks the helper out at once (native
+  and MCP). The helper model must be allowed by the agent's model policy;
+  tokens and steps are capped by the agent's budget and booked on its turn.
+  Helper runs are marked `internalHelper` in the run trace and never listed in
+  `agentsConsulted`. Colliding tool names are refused on save and dropped at
+  runtime. Builder PATCH and grants check that the helper belongs to the agent
+  in the path. The Agent Builder calls the node "Helfer" and explains it.
+- **Live effect:** existing helpers whose model is stronger than a pinned
+  primary model, and existing colliding helper pairs, stop being offered after
+  the deploy (each with a log line).
+- **Fixed:** a helper whose name collided with a native tool (`ask_user_choice`)
+  aborted the rest of the agent's tool hydration.
+
 ### Changed — Persona skills are working modes beneath the agent's identity (#2051, epic #2042)
 
 - **Before:** the skill a per-turn classifier picked replaced the agent's

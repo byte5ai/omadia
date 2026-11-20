@@ -17,12 +17,13 @@ import {
   type AnthropicClient,
 } from '@omadia/llm-adapter-anthropic';
 import type { EffortLevel } from '@omadia/llm-provider';
-import type { LocalSubAgentTool } from '@omadia/plugin-api';
+import type { LocalSubAgentTool, ModelPolicy } from '@omadia/plugin-api';
 import { resolveClaudeCliBin } from '../platform/cliBinary.js';
 import {
   buildSubAgentDomainTools,
   createLongRunningSubAgentTool,
   createScopedMemorySubAgentTool,
+  mcpGrantHeldBy,
   mcpNativeHandler,
   mcpToolNameFromRef,
   mcpToolToNativeSpec,
@@ -53,10 +54,27 @@ interface DomainToolHost {
     /** #1598 — the parent's plugin-assignment check; a sub-agent's `native`
      *  grant may only name a tool the parent itself is granted. */
     isToolGranted?(name: string, pluginId: string | undefined, orchestratorScope?: string): boolean;
+    /** #2050 — the subset rule for a helper's native grant (see `Orchestrator`). */
+    holdsNativeTool?(name: string): boolean;
+    /** #2050 — the agent's other tools, which a helper tool name must not shadow. */
+    listDomainTools?(): readonly { readonly name: string; readonly internalHelper?: unknown }[];
+    listNativeToolNames?(): readonly string[];
+    /** #2050 — the agent's budget its helpers stay within. */
+    turnBudget?(): { readonly maxTokens: number; readonly maxIterations: number };
     hasDomainTool(name: string): boolean;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerDomainTool(tool: any): void;
   };
+}
+
+/**
+ * #2050 — the parent agent as it is NOW (the registry's live entry), read on
+ * every helper tool call: what the agent holds decides what its helpers may
+ * use, not the snapshot the helpers were built from.
+ */
+export interface LiveParentView {
+  readonly toolGrants: readonly ToolGrantRow[];
+  holdsNativeTool(name: string): boolean;
 }
 
 export interface SubAgentGraphSlice {
@@ -109,7 +127,41 @@ export interface HydrateDeps {
    * already-registered tool does not push a duplicate). Omit ⇒ no resume driving.
    */
   readonly deferredTaskToolHandles?: ResumableTaskSource[];
+  /**
+   * #2050 — the parent agent's live view. Absent ⇒ the slice and `built` this
+   * call was handed stand in (tests, ad-hoc hydration). `undefined` from the
+   * getter (agent gone) refuses every helper tool call.
+   */
+  readonly liveParent?: () => LiveParentView | undefined;
+  /** #2050 — the parent agent's model policy; helper models must fit it. */
+  readonly parentModelPolicy?: ModelPolicy;
   readonly log?: (msg: string) => void;
+}
+
+/**
+ * #2050 — does the parent agent hold the capability a helper grant names?
+ * Native: the agent holds the tool itself (`holdsNativeTool`). MCP: the agent
+ * has an agent-level grant for the same server and tool. Evaluated per call.
+ */
+export function parentHoldsGrant(
+  parent: LiveParentView | undefined,
+  grant: ToolGrantRow,
+  mcpServerName?: string,
+): boolean {
+  if (!parent) return false;
+  if (grant.toolKind === 'native') return parent.holdsNativeTool(grant.toolRef);
+  return (
+    grant.mcpServerId !== null &&
+    mcpGrantHeldBy(parent.toolGrants, grant.mcpServerId, grant.toolRef, mcpServerName)
+  );
+}
+
+/** Names a helper's `ask_<name>` must not take: the agent's other tools. */
+function reservedToolNamesOf(built: DomainToolHost): ReadonlySet<string> {
+  const domain = (built.orchestrator.listDomainTools?.() ?? [])
+    .filter((t) => t.internalHelper === undefined)
+    .map((t) => t.name);
+  return new Set([...domain, ...(built.orchestrator.listNativeToolNames?.() ?? [])]);
 }
 
 interface RequiredToolContract {
@@ -355,6 +407,15 @@ export function registerDbSubAgentTools(
       .filter((r) => r.status !== 'disabled')
       .map((r) => [r.id, mcpRowToConfig(r)]),
   );
+  // #2050 — the parent as it is now. Without a live getter (tests, ad-hoc
+  // hydration) the slice and `built` stand in; a `built` without
+  // `holdsNativeTool` leaves native grants to the plugin check below.
+  const snapshotParent: LiveParentView = {
+    toolGrants: slice.toolGrants,
+    holdsNativeTool: (name) => built.orchestrator.holdsNativeTool?.(name) ?? true,
+  };
+  const currentParent = deps.liveParent ?? ((): LiveParentView => snapshotParent);
+  const parentBudget = built.orchestrator.turnBudget?.();
   const tools: DomainTool[] =
     slice.subAgents.length === 0
       ? []
@@ -390,6 +451,17 @@ export function registerDbSubAgentTools(
             );
           },
           ...(deps.blockedMcpGrant ? { blockedMcpGrant: deps.blockedMcpGrant } : {}),
+          // #2050 — the helper's envelope is a subset of its agent's, checked
+          // when built AND on every call against the live parent.
+          parentHolds: (grant) =>
+            parentHoldsGrant(
+              currentParent(),
+              grant,
+              grant.mcpServerId ? mcpServersById.get(grant.mcpServerId)?.name : undefined,
+            ),
+          reservedToolNames: reservedToolNamesOf(built),
+          ...(parentBudget ? { parentBudget } : {}),
+          ...(deps.parentModelPolicy ? { parentModelPolicy: deps.parentModelPolicy } : {}),
           ...(deps.hostIsCliProvider !== undefined
             ? { hostIsCliProvider: deps.hostIsCliProvider }
             : {}),
@@ -565,6 +637,18 @@ export function registerDbSubAgentTools(
     if (!built.orchestrator.hasDomainTool(t.name)) {
       built.orchestrator.registerDomainTool(t);
       n += 1;
+    } else if (t.internalHelper !== undefined) {
+      // Re-hydrating the same orchestrator finds its own helper again — fine.
+      // Anything else under that name is a collision the reserved-name check
+      // should have caught; never shadow it silently (#2050).
+      const existing = built.orchestrator
+        .listDomainTools?.()
+        .find((d) => d.name === t.name)?.internalHelper as { helperId?: string } | undefined;
+      if (existing?.helperId !== t.internalHelper.helperId) {
+        deps.log?.(
+          `subAgentToolHydration: helper tool "${t.name}" already registered by another tool — helper not materialized (name collision)`,
+        );
+      }
     } else if (t.domain.startsWith('mcp.')) {
       // A fresh rebuild starts from an empty tool surface, so a hit here means
       // another tool already claimed this (sanitized, possibly truncated)

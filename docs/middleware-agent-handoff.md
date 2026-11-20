@@ -610,6 +610,27 @@ Test-Button heißt bei Keyless "Verbindung testen".
   globalen Memory schreiben — nur der Orchestrator tut das. Das hält den
   Memory scharf fokussiert.
 
+### Interne Helfer (DB-Sub-Agents, #2050, Epic #2042)
+
+DB-Sub-Agents (`agent_subagents`, Tool `ask_<name>`, Agent-Builder-Knoten
+„Helfer“) sind **interne Helfer** eines Agenten, keine Agenten (Spec 2042
+§5.6). Die Regeln liegen in `registry/internalHelpers.ts`; Speichern
+(`routes/agentBuilder.ts`: `assertHelperWriteAllowed`,
+`assertHelperGrantHeldByAgent`, `409 helper_refused` mit Code
+`helper_name_collision` / `helper_grant_not_held_by_agent` /
+`helper_model_not_allowed`) und Laufzeit (`buildSubAgentDomainTools` mit
+`parentHolds`, `parentModelPolicy`, `parentBudget`, `reservedToolNames`) nutzen
+sie gemeinsam. Der Kernel verdrahtet `liveParent` = `reg.get(slug)` in
+`src/index.ts`, damit jeder Tool-Aufruf eines Helfers live gegen die Grants
+des Agenten prüft (Entzug beim Agenten sperrt den nächsten Aufruf, nativ und
+MCP). Der Helfer-Prompt trägt `INTERNAL_HELPER_CONTRACT` (keine Vorstellung,
+kein Name), die Tool-Beschreibung sagt dem Agentenmodell, das Ergebnis als
+eigene Arbeit zu nutzen. `maxTokens`/`maxIterations` sind durch das Budget des
+Agenten gedeckelt, Usage läuft auf den Turn des Agenten. Helfer-Läufe stehen im
+Run-Trace mit `internalHelper: true` und nie in `agentsConsulted`. Bei
+kollidierenden Tool-Namen fallen zur Laufzeit alle Beteiligten weg. Ein
+Spezialist, den Menschen ansprechen sollen, wird als eigener Agent angelegt.
+
 ### Wer ruft wen?
 
 ```
