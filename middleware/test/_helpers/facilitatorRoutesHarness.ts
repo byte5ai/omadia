@@ -188,6 +188,10 @@ export function routesHarness(): RoutesHarness {
               const archetypeId = h.archetypePlugins[id];
               return {
                 plugin: {
+                  id,
+                  // #2054 — grants are for capability plugins; the fixtures
+                  // that are no archetype plugin are integrations.
+                  kind: 'integration',
                   provides: provides[id],
                   ...(archetypeId
                     ? { kind: 'archetype', archetype: { id: archetypeId, omits: [], adds: [], requires: [], noun: archetypeId } }
