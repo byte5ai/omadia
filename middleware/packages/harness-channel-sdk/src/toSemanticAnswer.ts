@@ -366,6 +366,7 @@ export function toSemanticAnswer(
     ...(agentsConsulted && agentsConsulted.length > 0
       ? { agentsConsulted }
       : {}),
+    ...(r.contributions && r.contributions.length > 0 ? { contributions: r.contributions } : {}),
     ...(r.delegatedAnswer ? { delegatedAnswer: r.delegatedAnswer } : {}),
     // #445 — forward the sticky indicator verbatim. Guarded on PRESENCE, not
     // on `.active`: `{ active: false }` is the signal that clears a stale

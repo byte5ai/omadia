@@ -14,6 +14,8 @@
  * than once in one process.
  */
 
+import type { ConsultationPort } from './consultation/consultTool.js';
+import type { DiscretionPort } from './discretion/port.js';
 import type {
   ChatAgent,
   ChatTurnInput,
@@ -446,6 +448,10 @@ export interface OrchestratorDeps {
    * bounds every room to nothing.
    */
   readonly audienceGrants?: GrantStore;
+  /** Spec 2042 §5.4 — the kernel's consultation broker (`consult` tool). */
+  readonly consultation?: ConsultationPort;
+  /** Spec 2042 §5.11 — the kernel's discretion stores. */
+  readonly discretion?: DiscretionPort;
   /** #133 E0 — side-channel turn-hook runner, fired during each turn. */
   readonly turnHookRegistry?: TurnHookRunner;
   /**
@@ -995,6 +1001,8 @@ export function buildOrchestratorForAgent(
     ...(deps.securityPosture ? { securityPosture: deps.securityPosture } : {}),
     // #575 — supplying this is what makes the audience guards non-inert.
     ...(deps.audienceGrants ? { audienceGrants: deps.audienceGrants } : {}),
+    ...(deps.consultation ? { consultation: deps.consultation } : {}),
+    ...(deps.discretion ? { discretion: deps.discretion } : {}),
     securityScreener,
     securityAuditSink,
     ...(deps.turnHookRegistry

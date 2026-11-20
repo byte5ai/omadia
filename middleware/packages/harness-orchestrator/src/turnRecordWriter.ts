@@ -5,6 +5,7 @@ import type { WrittenTurn } from './requestTurnRecord.js';
 import type { SessionLogEntry, SessionLogger } from './sessionLogger.js';
 import type { ToolReplayLedger } from './toolReplayLedger.js';
 import { turnContext } from './turnContext.js';
+import type { DiscretionTurnState } from './discretion/turnLabels.js';
 
 /** One pass's session-log row before the entities are attached: a deferred
  *  row gets the entities of every pass of the request (`requestTurnRecord.ts`). */
@@ -35,6 +36,22 @@ const PENDING_DISCLOSURES_CAP = 256;
 export interface TurnRecordWriterDeps {
   readonly sessionLogger: SessionLogger | undefined;
   readonly factExtractor: FactExtractor | undefined;
+  /**
+   * Spec 2042 §5.11 — called once a row is written, with the discretion state
+   * of the turn that produced it: the turn keeps its label set. Errors are
+   * logged; a failed label write never fails the turn (the next recall of an
+   * unlabelled turn reads it as carrying no labels beyond its owners).
+   */
+  readonly onTurnWritten?: (turnId: string, discretion: DiscretionTurnState | undefined) => Promise<void>;
+  /**
+   * Spec 2042 §5.11 — the row's answer as it may be kept: an answer refused at
+   * the people egress is stored as the line that replaced it, so it can never
+   * be recalled later. Identity when nothing is refused.
+   */
+  readonly beforeTurnWritten?: (
+    entry: SessionLogEntry,
+    discretion: DiscretionTurnState | undefined,
+  ) => Promise<SessionLogEntry>;
 }
 
 /**
@@ -66,12 +83,23 @@ export class TurnRecordWriter {
 
   /** One session-log row now; resolves to its Turn id, or undefined when
    *  there is no logger or the log failed (reported with `what`). */
-  async writeRow(entry: SessionLogEntry, what: string): Promise<string | undefined> {
+  async writeRow(
+    entry: SessionLogEntry,
+    what: string,
+    discretion: DiscretionTurnState | undefined = turnContext.current()?.discretion,
+  ): Promise<string | undefined> {
     const logger = this.deps.sessionLogger;
     if (!logger) return undefined;
     try {
-      const { turnExternalId, captureDisclosure } = await logger.log(entry);
+      const kept = this.deps.beforeTurnWritten ? await this.deps.beforeTurnWritten(entry, discretion) : entry;
+      const { turnExternalId, captureDisclosure } = await logger.log(kept);
       if (captureDisclosure) this.noteDisclosure(turnExternalId, captureDisclosure);
+      await this.deps.onTurnWritten?.(turnExternalId, discretion).catch((err: unknown) => {
+        console.error(
+          `[discretion] label write failed for turn ${turnExternalId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      });
       return turnExternalId;
     } catch (err) {
       console.error(
@@ -110,10 +138,12 @@ export class TurnRecordWriter {
     what: string,
     after?: AfterRow,
   ): void {
+    // The write may run later, in the verifier's scope: keep this pass's labels.
+    const discretion = turnContext.current()?.discretion;
     ledger.turnRecord.offer(ledger.pass, {
       entityRefs: row.entityRefs,
       write: async (entityRefs) => {
-        const turnId = await this.writeRow({ ...row.entry, entityRefs }, what);
+        const turnId = await this.writeRow({ ...row.entry, entityRefs }, what, discretion);
         const captureDisclosure = this.takeCaptureDisclosure(turnId);
         const rest = after ? await after(turnId, entityRefs) : {};
         return {
