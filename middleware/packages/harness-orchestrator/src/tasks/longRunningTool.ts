@@ -56,6 +56,11 @@ import {
 import { currentDispatchCaller } from '../toolCallerContext.js';
 import { runDetachedFromRequestLedger } from '../toolReplayLedger.js';
 import { turnContext } from '../turnContext.js';
+import {
+  currentExecutionContext,
+  runInExecutionContext,
+  type ModelExecutionContext,
+} from '@omadia/usage-telemetry';
 
 /**
  * Owner recorded when nothing identifies the caller.
@@ -77,6 +82,53 @@ const UNIDENTIFIED_OWNER = 'unidentified';
  * server-attested — neither is derived from anything a client sends — so neither
  * can be spoofed into reading someone else's task.
  */
+/**
+ * Spec 2042 §5.10 — the execution context a task carries. A task outlives the
+ * turn that started it (its runner is detached; a restart re-drives it from
+ * the store), so the context of that turn is stored with its input and the
+ * runner executes inside it: the task's model calls stay the starting agent's.
+ * Without it a re-driven task would run in no context, and the gateway refuses
+ * every model call there. Only who it belongs to is kept: the turn's deadline
+ * and abort signal end with the turn.
+ */
+const TASK_CONTEXT_KEY = '__omadia_execution_context';
+
+type StoredTaskContext = Pick<ModelExecutionContext, 'kind' | 'ownerId' | 'agentSlug'>;
+
+function withTaskContext(input: object): object {
+  const context = currentExecutionContext();
+  if (context === undefined) return input;
+  const stored: StoredTaskContext = {
+    kind: context.kind,
+    ownerId: context.ownerId,
+    ...(context.agentSlug !== undefined ? { agentSlug: context.agentSlug } : {}),
+  };
+  return { ...input, [TASK_CONTEXT_KEY]: stored };
+}
+
+/** The stored input without the context, and the context, if one was stored. */
+export function splitTaskContext(stored: unknown): {
+  readonly input: unknown;
+  readonly context: ModelExecutionContext | undefined;
+} {
+  if (typeof stored !== 'object' || stored === null || !(TASK_CONTEXT_KEY in stored)) {
+    return { input: stored, context: undefined };
+  }
+  const { [TASK_CONTEXT_KEY]: raw, ...input } = stored as Record<string, unknown>;
+  const ctx = raw as Partial<StoredTaskContext> | undefined;
+  const valid = typeof ctx?.kind === 'string' && typeof ctx.ownerId === 'string';
+  return {
+    input,
+    context: valid
+      ? {
+          kind: ctx.kind as StoredTaskContext['kind'],
+          ownerId: ctx.ownerId as string,
+          ...(typeof ctx.agentSlug === 'string' ? { agentSlug: ctx.agentSlug } : {}),
+        }
+      : undefined,
+  };
+}
+
 function currentTaskOwner(): string {
   return (
     currentDispatchCaller()?.principal ??
@@ -512,7 +564,9 @@ export function defineLongRunningTool(
     };
     let result: string;
     try {
-      result = await def.execute(claimed.input, handle);
+      const { input, context } = splitTaskContext(claimed.input);
+      const run = (): Promise<string> => def.execute(input, handle);
+      result = context !== undefined ? await runInExecutionContext(context, run) : await run();
     } catch (err: unknown) {
       if (parked) return true; // parked-then-threw: the park stands, do not finalize
       const message = err instanceof Error ? err.message : String(err);
@@ -608,7 +662,7 @@ export function defineLongRunningTool(
     try {
       const descriptor = await def.store.create({
         kind: def.kind,
-        input: raw,
+        input: withTaskContext(raw),
         createdBy: currentTaskOwner(),
       });
       // Card = non-sensitive metadata ONLY. See describeDeferredPrivacyPosture.
