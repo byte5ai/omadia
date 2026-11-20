@@ -11318,25 +11318,24 @@ export class Orchestrator {
 
   /**
    * Spec 2042 §5.11 — the system a tool belongs to (its plugin, or the MCP
-   * server) and whether calling it may write data out: a declared write
-   * capability, or an MCP tool that does not declare itself read-only.
-   * Kernel tools belong to no system.
+   * server) and what the runtime itself knows of its effect: `write` for a
+   * declared write capability or an MCP tool without `readOnlyHint`, `read`
+   * for an MCP tool with it, else `unknown` (refined from the plugin's
+   * manifest at the egress). Kernel tools belong to no system.
    */
   private toolSystemOf(name: string): ToolSystem | undefined {
     const native = this.nativeTools.get(name);
     if (native?.agentId !== undefined) {
-      return { system: native.agentId, mayWrite: isWriteCapableTool(native.writeCapabilities) };
+      return { system: native.agentId, effect: isWriteCapableTool(native.writeCapabilities) ? 'write' : 'unknown' };
     }
     const domain = this.domainToolsByName.get(name);
     if (!domain || domain === this.consultTool) return undefined;
     if (domain.mcpServerId !== undefined) {
-      return {
-        system: `mcp:${domain.mcpServerId}`,
-        mayWrite: isWriteCapableTool(domain.writeCapabilities) || domain.readOnly !== true,
-      };
+      const writes = isWriteCapableTool(domain.writeCapabilities) || domain.readOnly !== true;
+      return { system: `mcp:${domain.mcpServerId}`, effect: writes ? 'write' : 'read' };
     }
     if (domain.agentId === undefined) return undefined;
-    return { system: domain.agentId, mayWrite: isWriteCapableTool(domain.writeCapabilities) };
+    return { system: domain.agentId, effect: isWriteCapableTool(domain.writeCapabilities) ? 'write' : 'unknown' };
   }
 
   /**

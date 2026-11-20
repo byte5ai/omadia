@@ -605,6 +605,7 @@ import { turnContext } from '@omadia/orchestrator';
 import { ConsultationStore } from './consultation/consultationStore.js';
 import { createConsultationBroker } from './consultation/consultationBroker.js';
 import { DiscretionStore } from './discretion/discretionStore.js';
+import { declaredToolEffect } from './plugins/toolSideEffects.js';
 import { createOperatorConsultationRouter } from './routes/operatorConsultation.js';
 import type {
   EmbeddingClient,
@@ -1459,6 +1460,8 @@ async function main(): Promise<void> {
   const discretionStore = new DiscretionStore(
     () => serviceRegistry.get<Pool>('graphPool'),
     (m) => console.warn(m),
+    // Criterion 17 — a plugin tool's declared effect, from its manifest.
+    (system, toolName) => declaredToolEffect(pluginCatalog.get(system)?.plugin, toolName),
   );
   const consultationStore = new ConsultationStore(() => serviceRegistry.get<Pool>('graphPool'));
   const consultationBroker = createConsultationBroker({

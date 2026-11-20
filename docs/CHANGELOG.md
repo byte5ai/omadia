@@ -73,9 +73,10 @@ changelog.
   readers, classified data seen unmasked); written turns keep them
   (`discretion_labels`, migration 0098) and recall brings them back.
 - Writes to an integration are checked against its declared readership before
-  they run (`/api/v1/operator/discretion/readerships`, `integration_readerships`) —
-  for tools recognised as writing (declared write capability, MCP without
-  `readOnlyHint`); plugin tools are not recognised yet. A non-streamed answer whose
+  they run (`/api/v1/operator/discretion/readerships`, `integration_readerships`):
+  every label for a declared write (manifest `side_effects: write`, write
+  capability, MCP without `readOnlyHint`); a tool that declared nothing gets no
+  restricted source and no classified data. A non-streamed answer whose
   labels exceed the room's readers is replaced as a whole (no attachments, cards or
   contributions go with it) and never stored; a streamed one is protected only in
   what is stored. Every refusal is audited without content (`discretion_flow_audit`).

@@ -92,7 +92,7 @@ describe('memory notes keep the labels of the turn that wrote them (criterion 27
       assert.ok(currentTurnLabels().labels.some((l) => l.kind === 'context' && l.key === HR_DM));
       const answer = await peopleEgressDecision(turnContext.current()?.discretion);
       assert.equal(answer?.allowed, false, 'the sales room may not read it');
-      const crm = await guardIntegrationEgress(port, 'crm_note', { system: '@omadia/crm', mayWrite: true });
+      const crm = await guardIntegrationEgress(port, 'crm_note', { system: '@omadia/crm', effect: 'write' });
       assert.ok(crm, 'the CRM write carrying it is refused');
     });
   });

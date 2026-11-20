@@ -5,24 +5,60 @@
  *   (`restricted` when the operator declared the system restricted) and, when
  *   the privacy shield let classified fields through unmasked (an operator
  *   bypass), the classification `personal`.
- * - **Egress:** a call that may write data out (declared write capability, or
- *   an MCP tool that does not declare itself read-only) is checked against the
+ * - **Egress:** a call that may write data out is checked against the
  *   integration's declared readership BEFORE it runs. A refused call returns a
  *   structured refusal to the model; it never runs and is audited, with label
- *   ids only.
+ *   ids only. What writes:
+ *   - `write`: a declared `writeCapabilities` (#542), a manifest
+ *     `capabilities[].side_effects: write`, or an MCP tool without
+ *     `readOnlyHint` — checked against every label;
+ *   - `read` / `none` (declared, or an MCP `readOnlyHint`) — not checked;
+ *   - `unknown` (declared nothing) — {@link UNKNOWN_TOOL_EFFECT_POLICY}.
  */
 
 import { turnContext } from '../turnContext.js';
 import { checkFlow, violationSummary } from './flowRule.js';
-import { labelSummary, type DiscretionLabel, type Readers } from './labels.js';
+import { labelSummary, type DiscretionLabel, type LabelSet, type Readers } from './labels.js';
 import type { DiscretionPort } from './port.js';
 import { addTurnLabels, currentDiscretion, resolvedTurnLabels } from './turnLabels.js';
 
-/** Which system a tool belongs to, and whether calling it may write data out. */
+/** What a tool declared it does to its system (`unknown`: nothing declared). */
+export type ToolEffect = 'read' | 'write' | 'none' | 'unknown';
+
+/** Which system a tool belongs to, and what calling it does there. */
 export interface ToolSystem {
   /** Plugin id, or `mcp:<serverId>` for an MCP server's tool. */
   readonly system: string;
-  readonly mayWrite: boolean;
+  /**
+   * What the runtime knows from the tool itself (`writeCapabilities`, MCP
+   * annotations). `unknown` is refined through the plugin's manifest
+   * (`DiscretionPort.toolEffectOf`).
+   */
+  readonly effect: ToolEffect;
+}
+
+/**
+ * What a tool that declared nothing counts as at the integration egress.
+ * `restricted-only`: it receives nothing from restricted sources and no
+ * classified data, but a turn that only carries another conversation's
+ * context may still call it (a read tool after a recall keeps working until
+ * every plugin declares its effects). `write`: like a declared write.
+ * Switched to `write` once the plugin release train declares side effects.
+ */
+export const UNKNOWN_TOOL_EFFECT_POLICY: 'restricted-only' | 'write' = 'restricted-only';
+
+function effectOf(port: DiscretionPort | undefined, toolName: string, tool: ToolSystem): ToolEffect {
+  if (tool.effect !== 'unknown') return tool.effect;
+  return port?.toolEffectOf?.(tool.system, toolName) ?? 'unknown';
+}
+
+/** The labels an unknown-effect tool is checked against under `restricted-only`. */
+function restrictedOnly(labels: LabelSet): LabelSet {
+  return {
+    labels: labels.labels.filter(
+      (l) => l.kind === 'classification' || (l.kind === 'source' && l.restricted),
+    ),
+  };
 }
 
 /** The refusal text the model gets: the reason, never the withheld content. */
@@ -44,8 +80,11 @@ export async function guardIntegrationEgress(
   tool: ToolSystem | undefined,
 ): Promise<string | undefined> {
   const state = currentDiscretion();
-  if (!state || !tool?.mayWrite) return undefined;
-  const labels = await resolvedTurnLabels(state);
+  if (!state || !tool) return undefined;
+  const effect = effectOf(port, toolName, tool);
+  if (effect === 'read' || effect === 'none') return undefined;
+  const all = await resolvedTurnLabels(state);
+  const labels = effect === 'unknown' && UNKNOWN_TOOL_EFFECT_POLICY === 'restricted-only' ? restrictedOnly(all) : all;
   const declaration = await port?.declarationOf(tool.system);
   const decision = checkFlow(labels, {
     kind: 'integration',

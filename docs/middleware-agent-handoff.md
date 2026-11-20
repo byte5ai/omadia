@@ -9804,9 +9804,14 @@ Leserkreis, Offenlegungsstufe).
   Auflösen dazu; Beiträge bringen B's Labels mit.
 - **Ausgänge:**
   - schreibende Tool-Aufrufe gegen die Leserschaft der Integration, vor dem Aufruf.
-    Als schreibend gilt heute nur ein Tool mit deklarierter `writeCapabilities`
-    oder ein MCP-Tool ohne `readOnlyHint`; Plugin-Tools deklarieren das bisher nicht
-    (siehe Offen);
+    Wirkung eines Tools: `write` = Manifest `capabilities[].side_effects: write`,
+    `writeCapabilities` (#542) oder MCP ohne `readOnlyHint` (gegen alle Labels
+    geprüft); `read`/`none` = nicht geprüft; nichts deklariert = `unknown`, nach
+    `UNKNOWN_TOOL_EFFECT_POLICY` (`restricted-only`: keine eingeschränkten Quellen,
+    keine klassifizierten Daten, aber ein fremder Gesprächskontext allein sperrt
+    nicht, damit Lese-Tools nach einem Recall weiterlaufen; nach dem Plugin-Train
+    auf `write`). Der Kern liefert die Deklaration über
+    `DiscretionPort.toolEffectOf` (`declaredToolEffect`, aus S3 übernommen);
   - die Antwort gegen den Leserkreis (nicht-streamend): bei Verstoß wird das
     Ergebnis neu aus Buchhaltungsfeldern gebaut (Antwort = Ersatzzeile; keine
     Anhänge, Dateien, Karten, Canvas, Recall, Beiträge), und die Session-Zeile
@@ -9873,12 +9878,10 @@ Audit-Aktionen: `agent.consultation_change` (je Agent eine Zeile),
   Plugin-IDs); Offenlegungsstufen auf Capability-Grants (`agent_plugins`) fehlen.
 - `say` prüft pro Äußerung nur die Peer-Gate, die Grants nur beim Start (der
   Say-Service kennt die Teilnehmer des Laufs nicht).
-- **Schreib-Erkennung für Plugin-Tools:** kein Plugin-Manifest deklariert
-  `writeCapabilities` (das ist der Canvas-Inline-Edit-Kontrakt, „nichts deklariert“ =
-  nur lesend). Mail senden, Ticket anlegen usw. über Plugin-Tools werden deshalb
-  nicht gegen die Leserschaft geprüft. Den Standard umzudrehen würde jedes
-  Plugin-Tool nach einem kontextübergreifenden Recall sperren, auch reine Lesetools;
-  gehört zu S3 (Plugin-Kinds/Gateway: Tools deklarieren lesend/schreibend).
+- **Undeklarierte Plugin-Tools** (`unknown`) gelten bis zum Plugin-Train als
+  `restricted-only`: ein Schreibzugriff über ein solches Tool, der nur Wissen aus
+  einem anderen Gespräch trägt, wird nicht gegen die Leserschaft geprüft.
+  Domain-Tools (`query_<plugin>`, Sub-Agent) sind immer `unknown`.
 - **Memory-Reste:** memorables, die `query_knowledge_graph` liefert, und das
   Session-Briefing bringen keine Labels mit (nur der automatische Recall); ein
   umbenanntes Verzeichnis lässt die Labels seiner Dateien unter den alten Pfaden;

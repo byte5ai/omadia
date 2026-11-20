@@ -25,6 +25,8 @@ import {
   type Readers,
 } from '@omadia/orchestrator';
 
+import type { DeclaredToolEffect } from '../plugins/toolSideEffects.js';
+
 const SNAPSHOT_TTL_MS = 10_000;
 const MAX_IDS_PER_LOOKUP = 500;
 
@@ -100,7 +102,13 @@ export class DiscretionStore implements DiscretionPort {
   constructor(
     private readonly poolRef: Pool | (() => Pool | undefined),
     private readonly log: (message: string) => void = () => undefined,
+    /** What a plugin's tool declared in its manifest (`declaredToolEffect`). */
+    private readonly toolEffects?: (system: string, toolName: string) => DeclaredToolEffect,
   ) {}
+
+  toolEffectOf(system: string, toolName: string): DeclaredToolEffect {
+    return this.toolEffects?.(system, toolName) ?? 'unknown';
+  }
 
   private get pool(): Pool | undefined {
     return typeof this.poolRef === 'function' ? this.poolRef() : this.poolRef;

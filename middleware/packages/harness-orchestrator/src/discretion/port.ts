@@ -43,6 +43,12 @@ export interface DiscretionPort {
   persistLabels(kind: LabelSubjectKind, id: string, agentSlug: string, labels: LabelSet): Promise<void>;
   /** Drop a subject's labels (a deleted or renamed note). Optional: absent = kept. */
   dropLabels?(kind: LabelSubjectKind, id: string): Promise<void>;
+  /**
+   * What a plugin's tool declared in its manifest (`capabilities[].side_effects`);
+   * `unknown` when it declared nothing or the plugin is not known. Optional:
+   * absent = every such tool is `unknown`.
+   */
+  toolEffectOf?(system: string, toolName: string): 'read' | 'write' | 'none' | 'unknown';
   /** Record a flow decision. Never throws; never receives content. */
   audit(entry: DiscretionAuditEntry): void;
 }
