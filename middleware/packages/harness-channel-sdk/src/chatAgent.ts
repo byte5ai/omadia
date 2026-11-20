@@ -3,6 +3,8 @@ import type {
   ChannelKind,
   PrivacyReceipt,
   RecalledContext,
+  Speaker,
+  SystemNotice,
 } from '@omadia/plugin-api';
 import type {
   AgentConsultation,
@@ -1263,6 +1265,15 @@ export type ChatStreamEvent =
        * web chat can offer "Kürzer" / "Mehr Details" too.
        */
       answerVerbosity?: AnswerVerbosityInfo;
+      /**
+       * #2045 — who this answer is from: the agent the management layer
+       * routed the turn to, or `system` for a notice (then
+       * {@link systemNotice} is set and `answer` is its text). Stamped by the
+       * harness, never by a model (spec 2042 INV-4).
+       */
+      speaker?: Speaker;
+      /** #2045 — present when `speaker` is `system`: the notice `answer` renders. */
+      systemNotice?: SystemNotice;
     }
   /**
    * Emitted after `done` by the verifier wrapper (only when enabled). The
@@ -1308,7 +1319,13 @@ export type ChatStreamEvent =
    * Optional so existing adapters keep compiling; an adapter that does not
    * render it behaves exactly as before.
    */
-  | { type: 'error'; message: string; correlationId?: string }
+  | {
+      type: 'error';
+      message: string;
+      correlationId?: string;
+      /** #2045 — the agent whose turn failed (the harness, never a model). */
+      speaker?: Speaker;
+    }
   /**
    * Omadia UI canvas surface events (omadia-canvas-protocol/1.0). Additive;
    * channels not declaring the `'canvas'` capability default-ignore these.

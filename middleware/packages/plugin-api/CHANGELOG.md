@@ -35,6 +35,12 @@ version when it lands.
   ContributionStatus`): a colleague's delivered block (spec §5.4); replaces
   the singular `delegatedAnswer` of the channel SDK.
 
+- (#2055) `SYSTEM_NOTICE_CODES` gains `agent_selection_cleared` and
+  `agent_directory` (the answers to `/agent` and `/agents`).
+- (#2046) `ProseEmission.restoredValues`: values the privacy shield restored
+  into the text server-side; the identity guard's model layer sees them
+  masked.
+
 ### Changed
 
 - `ExecutionEmissionType` is now `Exclude<EmissionType, 'system'>`: the same

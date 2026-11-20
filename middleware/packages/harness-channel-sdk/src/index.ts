@@ -98,6 +98,7 @@ export {
   type ChannelBindingResolver,
   type ChannelResolveResult,
   type ChannelResolveDecision,
+  type ChannelRouteContext,
 } from './channelRouting.js';
 
 // Inbound message shape
@@ -381,11 +382,13 @@ export {
 export {
   PRINCIPAL_KINDS,
   canonicalizePrincipalRef,
+  channelUserPrincipal,
   formatPrincipal,
   makePrincipal,
   parsePrincipal,
   principalRef,
   principalsEqual,
+  turnPrincipal,
   type Principal,
   type PrincipalKind,
 } from './principal.js';
@@ -475,3 +478,12 @@ export {
   type NewCredentialGrantInput,
   type NewCredentialInput,
 } from './credentials.js';
+
+// #2055 — choosing an agent in plain text (`/agent Mira`, `/agents`): the
+// parser every channel uses and the kernel service that carries it out.
+export {
+  parseAgentCommand,
+  type AgentCommand,
+  type AgentSelectionContext,
+  type AgentSelectionService,
+} from './agentCommand.js';
