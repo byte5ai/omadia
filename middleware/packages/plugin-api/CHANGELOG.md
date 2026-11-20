@@ -8,6 +8,24 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.82.0 — 2026-11-20
+
+Additive (spec 2043 §5.14, #2061): recording is quiet, with a reaction where
+the channel supports one.
+
+### Added
+
+- **`ScopedConversationSendService.react?(request)`** (`conversationSend@2`):
+  sets a reaction as the agent's own identity on a message of the
+  conversation, named by the kernel's id of its stored inbound event
+  (`messageEventId`). Drawn from the scope like a post to that conversation
+  (action `post`, emission `data`); the kernel reacts only to a message it
+  stored for this process in this conversation. Optional member: feature-detect it.
+- **`ConversationSendCapabilities.reactions`**: the channel can set
+  reactions as an agent's own identity.
+- **`ConversationReaction`** (`'acknowledge'`) and `CONVERSATION_REACTIONS`:
+  reactions are named by what they mean; each channel uses its own thumbs-up.
+- **`ScopedReactionRequest`**, **`ScopedReactionOutcome`**.
 ## 1.81.0 — 2026-11-20
 
 Additive (#2076, #2077, #2089, spec 2043 §5.3): linked session conversations

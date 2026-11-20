@@ -5,7 +5,7 @@
 // deny-by-default service over it, and unreachability is RETURNED, never
 // thrown.
 
-import type { CardUpdate, CardUpdateOutcome } from '@omadia/plugin-api';
+import type { CardUpdate, CardUpdateOutcome, ConversationReaction } from '@omadia/plugin-api';
 
 import type {
   SendProviderCapabilities,
@@ -73,4 +73,24 @@ export interface ConversationSendProvider {
     update: CardUpdate,
     opts: { asChannelKey: string },
   ): Promise<CardUpdateOutcome>;
+  /**
+   * Set a reaction on a message of the conversation as `opts.asChannelKey`
+   * (spec 2043 §5.14); declared through `supports.reactions`. `messageId` is
+   * the platform id of the message as its inbound event stated it. The
+   * provider maps the {@link ConversationReaction} to its platform's form
+   * (a thumbs-up). It reacts as exactly that identity or answers
+   * `unreachable`, never through another one; a failure (message deleted,
+   * not allowed, rate limit) is returned, not thrown.
+   */
+  react?(
+    conversationId: string,
+    messageId: string,
+    reaction: ConversationReaction,
+    opts: { asChannelKey: string },
+  ): Promise<ConversationReactionOutcome>;
 }
+
+/** What a provider answers to {@link ConversationSendProvider.react}. */
+export type ConversationReactionOutcome =
+  | { outcome: 'reacted' }
+  | { outcome: 'unreachable'; code: string; message: string };
