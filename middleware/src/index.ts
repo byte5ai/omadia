@@ -481,6 +481,7 @@ import {
   BULK_PROMOTION,
   EMBEDDING_BACKFILL,
   FIELD_CLASSIFICATION,
+  GRAPH_BACKFILL,
   ISSUE_PREVIEW,
   MEMORY_EDIT,
   MEMORY_REVIEW_DETECTION,
@@ -3219,7 +3220,11 @@ async function main(): Promise<void> {
   // BACKFILL_AT_STARTUP=1 to re-enable for one-off corpus-import boots.
   if (process.env['BACKFILL_AT_STARTUP'] === '1') {
     try {
-      const backfill = await backfillGraph(memoryStore, knowledgeGraph);
+      // Spec 2042 §5.10 — the replay embeds every turn it ingests: one
+      // maintenance run (embed only), started by the boot.
+      const backfill = await modelWork.run(GRAPH_BACKFILL, 'system:boot', () =>
+        backfillGraph(memoryStore, knowledgeGraph),
+      );
       console.log(
         `[graph] backfill: scopes=${String(backfill.scopes)} files=${String(backfill.files)} turns=${String(backfill.turns)} skipped=${String(backfill.skippedFiles.length)}`,
       );

@@ -123,3 +123,14 @@ export const EMBEDDING_BACKFILL: ModelWorkKind = {
   deadlineMs: 10 * MINUTE,
   effects: ['embeddings'],
 };
+
+/** The boot graph backfill (`BACKFILL_AT_STARTUP=1`): stored session
+ *  transcripts are replayed into the knowledge graph, which embeds them.
+ *  Embed only, so a maintenance run; a corpus import may take long. */
+export const GRAPH_BACKFILL: ModelWorkKind = {
+  kind: 'graph_backfill',
+  context: 'maintenance_run',
+  budgetCalls: 50_000,
+  deadlineMs: 60 * MINUTE,
+  effects: ['knowledge_graph', 'embeddings'],
+};
