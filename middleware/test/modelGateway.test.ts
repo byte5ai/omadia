@@ -174,6 +174,33 @@ describe('model gateway — embedding and transcription services', () => {
     assert.equal(calls, 1);
   });
 
+  it('the decision model (Jev) passes the gate as `complete`: refused outside a turn and in a maintenance run', async () => {
+    setModelGatewayMode('enforce');
+    let calls = 0;
+    const decide = gateModelService('decisionModel', {
+      provider: 'jev',
+      choose: async () => {
+        calls += 1;
+        return { choice: 'a', confidence: 0.9 };
+      },
+      decideAll: async () => {
+        calls += 1;
+        return { answers: [] };
+      },
+    });
+    assert.equal(decide.provider, 'jev');
+    await assert.rejects(decide.choose(), (err: unknown) => isModelCallNotCovered(err));
+    await runInExecutionContext(maintenance, async () => {
+      await assert.rejects(decide.decideAll(), (err: unknown) => isModelCallNotCovered(err));
+    });
+    assert.equal(calls, 0);
+    await runInExecutionContext({ kind: 'agent_turn', ownerId: 'mira', agentSlug: 'mira' }, async () => {
+      assert.deepEqual(await decide.choose(), { choice: 'a', confidence: 0.9 });
+      await decide.decideAll();
+    });
+    assert.equal(calls, 2);
+  });
+
   it('transcription passes the gate as `transcribe`: refused in a maintenance run', async () => {
     const service = gateModelService('transcription', {
       providerId: 'test',
