@@ -206,11 +206,20 @@ src/
   Telegram-Nutzer welche Person ist; das ist keine Eigenschaft eines Bots).
 - **Welche Wege über den eigenen Bot gehen:** Conversation-Send, Targeted Send, der
   Say-Service, Roster und Karten-Updates (alle über `channelIdentityFor` /
-  `asChannelKey`). **Noch nicht:** proaktive Trigger- und Routine-Zustellungen (S4,
-  `ProactiveSenderRegistry` mit opakem `deliveryRef`); die drei Kanal-Plugins
-  registrieren dafür noch keinen Sender. Ein Agent-Bot-Turn bekommt deshalb keine
-  Trigger-Tools. `isOwnAuthor` (`src/triggers/wiring.ts`) kennt die S7-Keys nicht; die
-  Schleifensperre liefern bis dahin die Plugins (Agent-Bots ignorieren Geschwister-Bots).
+  `asChannelKey`) und **Trigger- und Routine-Zustellungen**:
+  - Die Kanal-Plugins öffnen bei jedem Turn den Routinen-Kontext
+    (`routinesIntegration.beginRoutineTurn`, ohne `tenant` → Deployment-Tenant) mit
+    dem Delivery-Ref `{ kind: 'channel', channelId, conversationId, asChannelKey? }`;
+    `asChannelKey` ist der Bot-Key, wenn der Turn über den eigenen Bot kam. Erst damit
+    bekommt der Agent dort Trigger-Tools und `manage_routine`.
+  - Sie registrieren `publishProactiveSend(<typ>, …)` und posten über genau den Bot
+    des Refs; die Nachricht trägt jetzt `speaker` (gemeinsamer Bot: Namenszeile wie
+    bei einer Antwort; Agent-Bot: keine).
+  - `createProactiveGate` (`src/triggers/proactiveGate.ts`) liefert einen Ref mit
+    `asChannelKey` nur, solange `channelIdentityFor(agent, kanal)` genau dieser Bot ist
+    (entfernt oder umgehängt → nicht zugestellt, zählt als Fehlschlag).
+  - `isOwnAuthor` vergleicht über `isOwnBotAuthor` (`src/triggers/ownBot.ts`): Key ==
+    Autor-ID oder Key endet auf `:<Autor-ID>` (`tg:`, `discord-app:`, `slack-bot:`).
 
 ### Orchestrator
 
@@ -6012,10 +6021,9 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   „Daten-Seitenkanal“ und der Abschnitt „Fast Lane“. Offen daraus: proaktive
   Nachrichten in einen anderen Kontext als den Ursprung erst mit
   Diskretions-Labels (S5).
-  - **S7 eigener Bot pro Agent: offen** sind proaktive Zustellungen über den eigenen
-    Bot (Bot-Key im `deliveryRef`, Proactive-Sender der Kanal-Plugins) und
-    `isOwnAuthor` für `tg:`/`discord-app:`/`slack-bot:`; siehe §3 „Eigener Bot pro
-    Agent auf jedem Kanal“.
+  - **S7 eigener Bot pro Agent: gebaut**, einschließlich Trigger- und
+    Routine-Zustellungen über den eigenen Bot; siehe §3 „Eigener Bot pro Agent auf
+    jedem Kanal“. Offen: Live-Test mit echten Bots (Telegram, Discord, Slack).
   - **S5 Rückfrage + Diskretion (#2047, #2079): Kernel gebaut**, siehe Abschnitt
     „Rückfrage statt Delegation + Diskretion“ am Ende; Residuen dort unter „Offen“
     (Existenz-Probe, Streaming-Ausgang, CLI-Pfad, MCP in Rückfragen,

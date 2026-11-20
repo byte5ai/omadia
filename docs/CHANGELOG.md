@@ -43,8 +43,17 @@ changelog.
   token stays in the channel plugin's vault. Routing reads it together with
   `agent_teams_identities`, so a turn through the bot goes to its agent and to
   nobody else, and the agent answers and posts through it (`asChannelKey`:
-  conversation and targeted sends, rosters, card updates). Proactive trigger and
-  routine deliveries do not use an own bot yet.
+  conversation and targeted sends, rosters, card updates, and trigger and
+  routine deliveries).
+- **Triggers and routines on Telegram, Discord and Slack:** the channel plugins
+  open the kernel's routines scope on every turn (`beginRoutineTurn`), so agents
+  get the trigger tools and `manage_routine` there too, and register a proactive
+  send. A delivery goes out through the bot the conversation came through
+  (`asChannelKey` on the delivery ref); the proactive gate delivers such a ref
+  only while that bot is still the agent's. `publishProactiveSend` now passes the
+  message's `speaker`; `RoutineTurnInput.tenant` is optional (deployment tenant).
+  A hook never hears the agent's own bot (`isOwnAuthor` matches `tg:`,
+  `discord-app:`, `slack-bot:` keys against the raw author id).
 - **Channel SDK:** `registerAgentIdentityProvider` / `AgentIdentityProvider`
   (additive). **Operator API:** `GET/PUT/DELETE
   /api/v1/operator/agents/:slug/channel-identities[/:channelType]`, audited.
@@ -52,7 +61,10 @@ changelog.
   Purging a deleted agent stops its own bots first and says which ones it could
   not stop. A Plugin Builder preview's draft agent never gets a bot (`409`).
 - **`@omadia/plugin-api` 1.79.0 (additive):** `SystemNoticeCode` `agent_own_bot`,
-  the answer to `/agent` sent to an agent's own bot.
+  the answer to `/agent` sent to an agent's own bot; the optional `speaker` on a
+  `publishProactiveSend` message; `RoutineTurnInput.tenant` optional. Channel
+  plugins with own bots declare `compat.core: ">=1.79.0 <2.0"`. Upgrade notes:
+  `docs/upgrading.md`.
 - **Live findings of the S6 Teams rollout:** `/agent` in a provisioned Teams agent's
   own bot chat now answers `agent_own_bot` (no selection stored); the identity
   guard's notice is written in the turn's language (`ChatTurnInput.locale`, additive);
