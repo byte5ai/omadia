@@ -4,7 +4,7 @@ identity:
   id: "@omadia/knowledge-graph-neon"
   name: "Knowledge Graph (Neon Postgres)"
   version: "0.1.0"
-  kind: "extension"
+  kind: "system-module"
   domain: "core.knowledge-graph"
   description:
     en: "Stores the knowledge graph in a Neon Postgres database with vector search, so it survives a restart and grows with the data. This is the provider for production. Only one knowledge graph provider can be active."

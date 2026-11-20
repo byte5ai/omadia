@@ -51,11 +51,9 @@
     "agentPicker.label": "glossary",
     "operatorAgents.detailMetaTitle": "brand",
     "operatorAgents.detailOpenLink": "loanword",
-    "builder.simple.persona.optional": "loanword",
     "builder.workspace.buildBusLive": "loanword",
     "builder.spec.setupFields.required.off": "loanword",
     "builder.persona.radar.comparisonNeutral": "loanword",
-    "builder.persona.quality.tokensPrefix": "loanword",
     "builder.uiSurfaces.pageForm.dataBinding.toolLabel": "glossary",
     "builder.uiSurfaces.pageForm.componentSlot.label": "code",
     "builder.uiSurfaces.pageForm.componentSlot.hint": "code",
@@ -101,6 +99,7 @@
     "operatorAgents.detailTabs.memory": "glossary",
     "system.vaultStatus.keySourceEnv": "code",
     "system.platformHealth.eyebrow": "code",
-    "chat.decision.stats": "placeholder"
+    "chat.decision.stats": "placeholder",
+    "agentAvailability.channelsPlaceholder": "placeholder"
   }
 }

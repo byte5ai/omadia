@@ -7,6 +7,7 @@ import { useFormatter, useTranslations } from 'next-intl';
 import { Button } from '@/app/_components/ui/Button';
 import { ApiError } from '../../_lib/api';
 import { ConfirmDialog } from '../../_components/ConfirmDialog';
+import { useBroadReachConfirm } from '../../_components/agents/useBroadReachConfirm';
 import { SkillVerdictBadge } from '../../_components/admin/SkillVerdictBadge';
 import { McpAuthSection } from '../../_components/mcp/McpAuthSection';
 import { McpConnectModal } from '../../_components/mcp/McpConnectModal';
@@ -1616,6 +1617,7 @@ function GrantsPane({
   onConsumed?: () => void;
 }): React.ReactElement {
   const t = useTranslations('adminMcp');
+  const broadReach = useBroadReachConfirm();
   const [rows, setRows] = useState<McpGrantMatrixRow[] | null>(null);
   const [orchestrators, setOrchestrators] = useState<McpOrchestrator[]>([]);
   const [servers, setServers] = useState<McpServerNode[]>([]);
@@ -1682,7 +1684,9 @@ function GrantsPane({
     setBusy(toolName);
     setError(null);
     try {
-      await grantMcpToolToOrchestrator(pickAgent, pickServer, toolName);
+      await broadReach.guard(pickAgent, (confirm) =>
+        grantMcpToolToOrchestrator(pickAgent, pickServer, toolName, { confirmBroadReach: confirm }),
+      );
       await refresh();
     } catch (err) {
       setError(errText(err));
@@ -1698,7 +1702,11 @@ function GrantsPane({
     try {
       for (const tool of chosenServer.discoveredTools) {
         if (!grantedSet.has(tool.name)) {
-          await grantMcpToolToOrchestrator(pickAgent, pickServer, tool.name);
+          // #2054 — declining the broad-reach confirmation stops the run.
+          const done = await broadReach.guard(pickAgent, (confirm) =>
+            grantMcpToolToOrchestrator(pickAgent, pickServer, tool.name, { confirmBroadReach: confirm }),
+          );
+          if (!done) break;
         }
       }
       await refresh();
@@ -1711,6 +1719,7 @@ function GrantsPane({
 
   return (
     <div className="flex flex-col gap-3">
+      {broadReach.dialog}
       {/* Grant surface (W8): the step that makes a scanned server usable — pick
           an orchestrator + server, then grant its tools. No Builder canvas. */}
       <div className="flex flex-col gap-3 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
@@ -1897,6 +1906,9 @@ function GrantsPane({
 
 function PluginGrantsPane(): React.ReactElement {
   const t = useTranslations('adminMcp');
+  // #2054 — the server reaches every agent holding the plugin; one that would
+  // thereby reach every connected system asks first.
+  const broadReach = useBroadReachConfirm();
   const [data, setData] = useState<{
     servers: { id: string; name: string; status: 'enabled' | 'disabled' }[];
     plugins: McpPluginCandidate[];
@@ -1922,7 +1934,7 @@ function PluginGrantsPane(): React.ReactElement {
     setError(null);
     try {
       if (granted) await revokePluginMcpServer(pluginId, serverId);
-      else await grantPluginMcpServer(pluginId, serverId);
+      else await broadReach.guard('', (confirm) => grantPluginMcpServer(pluginId, serverId, confirm));
       await refresh();
     } catch (err) {
       setError(errText(err));
@@ -1934,6 +1946,7 @@ function PluginGrantsPane(): React.ReactElement {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-[color:var(--fg-muted)]">{t('plugins.intro')}</p>
+      {broadReach.dialog}
       {error ? <div className="text-sm text-[color:var(--danger)]">{error}</div> : null}
       {!data ? <div className="text-sm text-[color:var(--fg-muted)]">{t('loading')}</div> : null}
       {data && data.plugins.length === 0 ? (

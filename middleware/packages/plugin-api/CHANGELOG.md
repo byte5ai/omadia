@@ -18,6 +18,47 @@ Additive (spec 2042 §5.3, §8 item 20): an agent's own bot on every channel.
   `/agent` sent to an agent's own bot (Teams, Telegram, Discord, Slack). That
   bot is always its agent, so nothing is selected.
 
+## 1.77.0 — 2026-11-20
+
+Additive (#2082, #2085, #1876, epic #2042, spec 2042 §5.12, §5.13): stream S4.
+
+### Added
+
+- `ScheduleNode` gains the optional **`until`** (#2082, spec §5.12,
+  ADR-0020): the deadline an Agent Builder schedule runs to; past it the
+  schedule is disabled until an operator renews it.
+- **`BatchJob`**, **`BatchJobRegistry`**, **`BatchJobResult`**,
+  **`BatchJobRunOptions`** and the service name
+  **`BATCH_JOB_REGISTRY_SERVICE`** (`batchJobRegistry@1`, #2082, spec §5.12):
+  a plugin registers periodic learning or consolidation as a job; the kernel
+  runs it as a bounded batch trigger per agent (deadline, budget, breaker)
+  instead of a plugin's own interval.
+- The boundary check of a data plan (#2085, spec §5.13 1a, criterion 35):
+  **`DataPlanDescription`**, **`DataPlanVerdict`**, **`DataPlanGuard`**,
+  **`describeToolCall`**, **`checkDataPlanPresets`**, **`ranksIndividuals`**
+  and **`dataPlanText`** — a plan described by tool, identifiers, filter
+  fields, order and top-N, never values. New boundary preset
+  **`no-individual-rankings`** (category `data`), whose constraint is checked
+  deterministically.
+
+### Changed
+
+- `JobHandler` runs (`ctx.jobs`) are refused every model call (#2082, spec
+  §5.12): a job is deterministic work. A failing job backs off to bounded
+  recovery probes (at most one hour apart) instead of running every tick.
+  Model-backed learning or consolidation registers a `BatchJob`.
+
+## 1.76.0 — 2026-11-20
+
+Additive (#2051, epic #2042, spec 2042 §5.2): persona skills became working
+modes beneath the agent's identity. Released with the agent model, step S2.
+
+### Added
+
+- **`RunTrace.workingMode`** (optional `{ skillId, name }`): the working mode a
+  turn ran in. Trace data only, never a speaker; absent when no mode was
+  selected, so older traces stay readable.
+
 ## 1.75.0 — 2026-11-20
 
 Additive (epic #2042, step S6, spec 2042 §5.3/§5.14, ADR-0021): channels and

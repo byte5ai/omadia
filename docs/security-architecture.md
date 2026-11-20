@@ -850,6 +850,23 @@ registry handler (`src/platform/pluginContext.ts`):
   A new native tool bound to shared or unscoped state must be routed or denied
   the same way before it is registered.
 
+### The audience floor is on by default (#2048)
+
+Since #2048 every deployment enforces the audience floor (#575) unless the
+operator sets `AUDIENCE_FLOOR_ENABLED=false`. The default answer to "what may a
+person do" is the member baseline (`MemberBaselineGrantStore`): `tool:*`,
+recall and attachment reads for every person resolved to a `user:` principal.
+That is never more than the agent itself may do — the floor is only consulted
+for tools the agent holds (INV-8) — and explicit prohibitions beat it.
+
+What closes a room, deliberately: a group in a channel without a participant
+list, a roster that cannot be read, a participant who cannot be resolved, a 1:1
+whose owner cannot be resolved. Turns with no channel and no owner (schedules,
+Conductor steps) have no reader, so the floor does not apply; they stay bounded
+by the agent's own grants. Known gap: a channel roster that lists only part of
+the members (Telegram administrators) still bounds the room by the listed part;
+member-scoped memory (`completeRoster`) is stricter.
+
 ### Context memory: what a turn may recall (`enforce-strict`, `members`)
 
 Per-agent switch `agents.context_memory`. Two modes put a boundary around
@@ -904,6 +921,82 @@ Known residuals:
 - A knowledge-graph provider that predates plugin-api 1.26.0 ignores
   `audienceOwners` and returns everything. The in-tree providers honour it.
 - Only turns that carry a `TurnOrigin` are context-bound.
+
+### Consultation: a colleague adds judgement, never access (spec 2042 §5.4, #2047)
+
+Agent A may ask agent B through the harness tool `consult`. The boundary:
+
+- **Authorization, fresh on every call:** A's `may_consult`, B's `consultable`, a
+  directed operator grant A→B (`agent_consultation_grants`, migration 0097), its
+  channel scope, per-turn and per-day budgets (the per-turn slot is reserved before
+  the first await, so parallel calls cannot overrun it; the day budget is counted
+  and recorded in one transaction under a transaction-scoped advisory lock), depth 1
+  (no consultation starts inside a consultation run), and an **active audience
+  floor** for A's turn. A revoked grant is refused on the next call. Facilitators
+  neither hold nor receive grants.
+- **A's request is an agent egress:** it carries A's turn label set and reaches B
+  only when B's grants cover every source and the room may know every context;
+  otherwise it is refused (`discretion`). B's turn starts with A's labels, so B
+  cannot write to an integration what A was refused.
+- **B's envelope** (`runAsConsultation`, `consultationAllowsTool`): tools only from
+  `grant.allowed_capabilities ∩ B's grants ∩ A's grants`; no memory writes, no
+  further consultation, no interactive kernel tools; memory only with
+  `memory_access: discreet` and only through `members` recall bounded by A's
+  audience. Enforced in the offered list, at dispatch and in `isToolGranted` (the
+  subscription CLI's only question). B's run has no session scope: nothing is
+  logged, ingested or promoted. Past its deadline B gets no tool at all (the run
+  cannot be aborted) and its answer is discarded.
+- **What comes back:** the user view (B's restored answer) is delivered as B's
+  contribution; A's model gets the same text through A's privacy shield (masked).
+  The discretion rule and the grant's disclosure levels decide what may reach A at
+  all (below). A discussion between agents needs grants in both directions on top
+  of the #1018 switches.
+
+### Discretion: labels at entry, flow rule at every egress (spec 2042 §5.11, #2079)
+
+Every turn carries a label set (`packages/harness-orchestrator/src/discretion/`):
+`context{key, readers}`, `source{system, restricted}`, `classification{class}`.
+The set only grows; model output cannot be traced token by token, so every output
+of the turn carries all of it.
+
+| Entry | Label |
+|---|---|
+| Tool result | its plugin or MCP server; `restricted` when the operator declared the integration so; `classification:personal` when the shield let fields through unmasked (bypass) |
+| Recall | the label set the recalled turn was written with (`discretion_labels`, persisted transitively) |
+| The conversation | its key and the room's readers; a turn without origin (web chat, API) is the owner's private context `owner:<id>` |
+| A colleague's contribution | B's labels |
+
+| Egress | Rule | Where |
+|---|---|---|
+| Answer to people | every reader may know every label; otherwise the result is rebuilt from bookkeeping fields only (no attachments, files, cards, canvas, recall or contributions) and the session row stores only the replacement. Non-streaming path; a streamed answer is protected only in what is stored | `guardAnswerEgress`, `beforeTurnWritten` |
+| Contribution to an agent | the receiver's grants cover every source and its readers may know it; then the grant's disclosure level caps what is new to the receiver | consultation broker |
+| Persistence | a written turn keeps its label set | `onTurnWritten` |
+| Memory write | another conversation's knowledge only into a tier whose readers may all know it (members: the owners; context-bound: the room; else the agent's memory, readers unknown, which only the turn's own conversation may enter). Notes keep the union of their writers' labels by canonical physical path, stored before the content (no labels, no write); directory renames and deletes take the labels along; session transcripts keep every turn's labels; memorables (auto-promotion, MCP→KG ingestion, durable rules) keep them too; reading, recalling or replaying them (verifier re-entry) adds them back. The members index is kept out of the label layer (read for every room) | `guardMemoryEgress`, `LabelledMemoryStore`, `maybePromoteTurn` |
+| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and gets no restricted source and no classified data (`UNKNOWN_TOOL_EFFECT_POLICY = restricted-only`, switched to `write` after the plugin release train); a plugin's sub-agent tool (`query_<plugin>`) is `write` when any of the plugin's tools declares `write`, else `unknown` | `guardIntegrationEgress`, before the call runs |
+
+A refused flow is never redacted afterwards. The agent gets a structured refusal;
+at disclosure level `none` a consultation is regenerated without memory and without
+tools (so no write runs twice) so the visible answer does not reveal that something
+was withheld. `redacted` delivers the masked view only when B ran with a privacy
+shield; otherwise A gets `existence`. While the integration declarations were never
+loaded, every integration counts as restricted with no known reader (fail closed).
+`discretion_flow_audit` records every refusal and every allowed cross-context flow
+with label ids and reasons, never content. Damaged persisted labels parse as a
+label nobody may read (fail closed).
+
+Defaults: new agents start with context memory `members` (0099); `off` is refused
+for an agent that holds capability grants. Existing agents keep their mode.
+
+Known residuals: the subscription-CLI path and sub-agent inner calls carry no
+discretion state yet; streamed answers are protected only in what is stored; reads
+of memorables through `query_knowledge_graph` and the session briefing bring no
+labels; plugin memory (`ctx.memory`) is written outside the label layer; a write
+to the team memory tier is checked against the room's readers; a tool that declared no effect may still
+receive another conversation's context (until plugins declare, `restricted-only`); a turn whose label write failed is recalled
+without labels; `off` is refused only on the context-memory switch, not when
+plugins are granted to an agent that already runs `off`; `say` re-checks consultation
+grants only at the start of a discussion; there is no existence probe for knowledge
+B never saw.
 
 ### Which channels reach a context tree, and who may address an agent by id (#2042, #2059)
 
@@ -1348,6 +1441,111 @@ have no orchestrator of their own (canvas, unbound channel keys, routines
 created before migration 0005) are refused instead of answered with every
 plugin's tools. Set a standard orchestrator under Orchestrators.
 
+## 5d. Internal helpers stay inside their agent's envelope (#2050)
+
+A DB sub-agent (`agent_subagents`, tool `ask_<name>`, Builder node "helper") is
+an internal helper of one agent (spec 2042 §5.6, criterion 11): it may use a
+subset of what its agent holds, never more.
+
+- **Capabilities, on save.** The Builder refuses a helper tool grant
+  (`409 helper_refused`, code `helper_grant_not_held_by_agent`) unless the
+  helper belongs to the agent in the path and the agent holds the tool itself:
+  an MCP tool needs an agent-level grant for the same server and tool (before
+  this, a helper could hold an MCP grant its agent lacked), a native tool must
+  pass `Orchestrator.holdsNativeTool` (registered and its plugin assigned). A
+  disabled agent is not built, so its native grants are only checked at runtime.
+- **Capabilities, at runtime.** `buildSubAgentDomainTools` does not materialise a
+  grant the agent lacks, and wraps every helper tool so each CALL re-checks the
+  agent as it is now (`liveParent`: the registry's live entry, refreshed by every
+  Builder write). Revoking the agent's grant therefore removes the helper's
+  access on the next call without waiting for a rebuild; the refusal is a
+  `ToolRefusalError` the helper's model reads. An agent that is gone refuses every helper call. Not covered by the
+  per-call check: deleting the helper's OWN grant row while the agent keeps the
+  tool takes effect with the rebuild the Builder write triggers.
+- **Model.** With an explicit primary in the agent's model policy, a helper
+  model must be on the policy's provider(s) and of a class no stronger than the
+  primary (`helper_model_not_allowed` on save). A helper that violates it at
+  runtime (for example after a policy change or a deploy) fails loud, never
+  silently: its tool stays and refuses every call with the reason
+  (`ToolRefusalError`, so the agent can say why), and the Agent Builder marks
+  the helper "out of service" with the code and reason (`outOfService` on the
+  graph's helper node, `helpersOutOfService`). A helper without a model never
+  inherits a class stronger than the agent's pinned primary.
+- **Budget.** A helper's `maxTokens`/`maxIterations` are capped by its agent's
+  per-call output budget and step cap; its model calls are booked on the
+  agent's turn (`token_usage.turn_id`). There is still no per-turn spend cap
+  across helpers (spec G18).
+- **Names.** `ask_<name>` is not injective (`A B` and `A-B`), so a helper name
+  whose tool name another helper of the agent or one of the agent's own tools
+  already has is refused on save (`helper_name_collision`), and at runtime every
+  member of a colliding group is left out (logged and shown "out of service"
+  in the Agent Builder), never first-wins. Before
+  this, a helper called `User Choice` threw on registration against the native
+  `ask_user_choice` and aborted the rest of that agent's tool hydration.
+- **Presentation.** A helper never introduces itself (a fixed contract is
+  appended to its system prompt), the agent's tool description tells its model
+  to present the result as its own work, and helper runs are flagged
+  `internalHelper` in the run trace so `agentsConsulted` never lists them.
+
+## 5e. Least privilege by default (#2054, spec 2042 INV-8, §5.7)
+
+Before #2054, first boot and every kernel install path (Hub, upload,
+reinstall, profile apply, boot-seeded built-ins) attached every plugin to the
+default agent, so whoever could reach that agent held every connected system.
+Now an agent holds exactly what an operator granted it, and a grant that gives
+one agent everything needs a second, explicit yes.
+
+- **No auto-attach.** `attachAllPlugins`, `attachNewPluginsToFallbackAgent`,
+  `attachToDefaultOrchestrator`, the pending-attach queue and the "reset
+  standard to all plugins" route are gone. The boot seed (`ensureFallbackAgent`)
+  stays for routing and holds no plugin. Installing a capability plugin only
+  offers it to agents the operator picks, none preselected. The one attach left
+  is the facilitation engine's, which only facilitator agents receive.
+- **Deterministic reach** (`agents/agentReach.ts`, `GET
+  /api/v1/operator/agents/:slug/reach`, the directory list). A connected system
+  is an installed capability plugin or an enabled MCP server. An agent reaches
+  one through an enabled plugin grant, an MCP tool grant (its own or a
+  helper's), or a `plugin_mcp_grants` row of a plugin it holds. Read and write
+  come from what the system declares: the manifest capabilities'
+  `side_effects`, the MCP tools' `annotations.readOnlyHint` from the last
+  discovery. Unknown (nothing declared, a tool the discovery does not know, a
+  server granted whole without discovered tools) counts as read and write and
+  is marked undeclared, the same conservative rule the runtime applies.
+- **Broad-reach confirmation** (`agents/broadReachGate.ts`). An agent is broad
+  when its reach covers every connected system and there are at least two.
+  The check asks only when a change makes an agent broad (not broad before,
+  broad after), so ordinary grants pass without a prompt. Such a write answers
+  `409 broad_reach_confirmation_required` (with the reach it would produce)
+  unless the body carries `confirmBroadReach: true`. Gated writes:
+  `PUT|PATCH /api/v1/operator/agents/:slug/plugins`,
+  `PUT /api/v1/operator/mcp-grants`, Agent Builder graph `tool_grant` edges,
+  `PUT /api/v1/operator/plugin-mcp-grants` (checked for every agent holding
+  the plugin) and the first-run flow. A confirmed change is audited as
+  `agent.broad_reach_grant` only after the write succeeded, so a failed write
+  leaves no row claiming a change that did not happen. If the audit write
+  itself fails, the failure is logged and the grant is not rolled back. That is
+  by design: the grant already happened, and the audit records it, it does not
+  authorise it.
+- **Only capability plugins are granted** (`plugins/capabilityPlugins.ts`,
+  `isCapabilityPlugin`). The plugin grant routes refuse a new grant of a plugin
+  that is not a capability plugin (`integration`, `tool`, `skill`; a still
+  installed retired `agent` package counts too) with
+  `400 not_a_capability_plugin`. Never a capability: the agent runtime itself
+  (`@omadia/orchestrator`), reference-only plugins, channels, models,
+  archetypes, system modules and templates. Rows that already exist stay.
+- **Preview draft agents are never addressable** (#2049). A Plugin Builder
+  preview runs as an `agents` row with status `draft` under the reserved slug
+  prefix `builder-preview-`: the registry never builds it, create refuses the
+  prefix, only GET and DELETE are allowed on such a slug, and it is hidden from
+  the directory, the first-run flow and every grant offer. It holds no grant
+  row; the preview turn gets only the draft plugin's captured tools.
+
+**Default agents.** Making an agent with every connected system a default
+agent (`PUT /api/v1/operator/default-agents`, `change: 'default_agent'`) needs
+the same confirmation and is audited as `agent.broad_reach_default`. Existing
+grants on a live instance are unchanged by #2054; only new
+installs stop attaching.
+
 ## 6. Defence in depth for cached data
 
 The Odoo / external-system response cache and the in-memory conversation
@@ -1374,6 +1572,29 @@ still embeds a `_pending*` sentinel in `resultText` is caught at the same
 seam (`v4RenderSideChannel.ts`): the sentinel goes to the sink and the model
 gets a kernel-authored note. The user-facing answer (`takeRenderedAnswerV4`)
 and the verifier hand-over of its prose are unchanged.
+
+### Data side channel: `deliver_data` rows never reach a model (#2085)
+
+The kernel tool `deliver_data` (`src/triggers/deliverDataTool.ts`, spec 2042
+§5.13) lets an agent show records without its model reading them. It runs
+one of the agent's own read tools only after the audience-floor check
+(`guardToolEgress`). "Own read tool" (`readToolsOf` in `index.ts`,
+`dataActions.ts`) means a tool the agent was granted and is offered, that
+declares no write capability, and that is neither a sub-agent's inner tool
+(`via`) nor an MCP tool. The rows go to the turn's `TurnDataCollector` and
+from there onto the answer as `data` (`SemanticAnswer`, `ChatTurnResult`,
+`done`). `text` gets a markdown rendering of them after the prose and before
+the AI disclosure (`sideChannelData.ts`); `textWithoutData` omits it. The
+model gets a status only: row count, columns, or the refusal. The verifier
+checks the prose only (`withoutDataText` in `verifierJudge.ts`), and an
+answer it withholds (`verifier-blocked`) goes out without its data:
+`withheldDone` and `withheldTurnResult` do not copy `data`.
+
+Proactive messages from triggers (#2082) use the same channel for the rows
+of a data action. A proactive message goes only to the context its trigger
+was created in: any other target is refused when the trigger is created
+(`targetAllowed` in `src/triggers/wiring.ts`). Delivery into other contexts
+waits for discretion labels (S5, #2079).
 
 ## 6a. Dataset link keys — a deliberate identity handle inside the Privacy Shield
 
@@ -1868,7 +2089,8 @@ answer they check:
   then goes out with the receipt, followed by the `verifier` event.
 
 Callers: every `bundle.agent` caller goes through the wrapper — chat routes,
-channel adapters, the scheduler (`scheduleWorker.ts`) and conductor steps
+channel adapters, trigger turns (`src/triggers/kernelExecutors.ts`, which
+replaced the Agent Builder `scheduleWorker.ts`) and conductor steps
 (`realStepEffects.ts`, `builderAgent.ts`). The subscription-CLI chat runtime
 is never wrapped (§3a); the verifier's own provider cannot be `claude-cli`
 (#1583). Deliberately unchanged: `verifier_contradictions`

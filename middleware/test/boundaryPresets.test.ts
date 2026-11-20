@@ -10,11 +10,10 @@ import {
 } from '../src/plugins/builder/boundaryPresets.ts';
 
 describe('boundary preset registry (issue #54)', () => {
-  it('ships 12 presets across 4 categories (kemia @ main)', () => {
-    // The issue description mentions "14"; kemia currently ships 12.
-    // The byte-identical AC asserts whatever kemia carries — locking
-    // the count here to flag drift on either side.
-    assert.equal(BOUNDARY_PRESETS.length, 12);
+  it('ships 13 presets across 4 categories (kemia @ main + no-individual-rankings)', () => {
+    // kemia ships 12; #2085 adds `no-individual-rankings`, whose data-plan
+    // constraint is checked deterministically. Locking the count flags drift.
+    assert.equal(BOUNDARY_PRESETS.length, 13);
 
     const byCategory = {
       data: 0,
@@ -26,7 +25,7 @@ describe('boundary preset registry (issue #54)', () => {
       byCategory[p.category] = (byCategory[p.category] ?? 0) + 1;
     }
     assert.deepEqual(byCategory, {
-      data: 4,
+      data: 5,
       scope: 3,
       authority: 3,
       communication: 2,

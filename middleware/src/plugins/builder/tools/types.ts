@@ -175,8 +175,8 @@ export interface BuilderToolContext {
    */
   readonly directIssueCreateAvailable?: boolean;
   /**
-   * Issue #56 — fire-and-forget audit logger. Mutating tools (`set_persona_config`,
-   * `set_quality_config`, `patch_spec`, `fill_slot`) call `ctx.audit.log(...)`
+   * Issue #56 — fire-and-forget audit logger. Mutating tools (`patch_spec`,
+   * `fill_slot`, …) call `ctx.audit.log(...)`
    * to append a row to the `builder_audit` table. Read-only tools (`lint_spec`,
    * `read_reference`, …) leave it untouched.
    */

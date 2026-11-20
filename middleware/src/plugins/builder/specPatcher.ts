@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { parseAgentSpec, type AgentSpec } from './agentSpec.js';
+import { parseAgentSpec, retiredSpecKeyOf, type AgentSpec } from './agentSpec.js';
 
 /**
  * RFC-6902-subset patch operation. The Builder needs `add`/`replace`/`remove`
@@ -64,6 +64,24 @@ export function applyJsonPatchesRaw(
   for (let i = 0; i < patches.length; i += 1) {
     const patch = patches[i];
     if (!patch) continue;
+    // Spec 2042 §5.10 — a plugin has no persona, quality settings or role
+    // prompt. Old drafts may still carry them (ignored on parse); setting
+    // one is refused so the caller learns it, removing one is fine.
+    const retired =
+      patch.op === 'remove' ? undefined : retiredSpecKeyOf(patch.path, 'value' in patch ? patch.value : undefined);
+    if (retired === 'permissions.subAgents') {
+      throw new IllegalSpecState(
+        `Patch #${String(i)} (${patch.op} ${patch.path}) refused: a capability plugin never consults an agent ` +
+          '(permissions.subAgents / ctx.subAgent). It returns data to the agent that calls it.',
+      );
+    }
+    if (retired !== undefined) {
+      throw new IllegalSpecState(
+        `Patch #${String(i)} (${patch.op} ${patch.path}) refused: '${retired}' is not part of a plugin spec. ` +
+          'The Plugin Builder generates capability plugins; persona, quality and role ' +
+          "instructions belong to an agent and are set in the Agent Builder.",
+      );
+    }
     try {
       mutated = applyOne(mutated, patch);
     } catch (err) {

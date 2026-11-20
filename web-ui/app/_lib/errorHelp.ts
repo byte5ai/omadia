@@ -69,6 +69,10 @@ export const ERROR_HELP_CODES = [
   'install.not_installed',
   // #1507 — the last Privacy Shield provider under OMADIA_PRIVACY_FORCE_GUARDED.
   'install.privacy_guard_required',
+  // Spec 2042 §5.10 — kind `agent` is never installed anew; a system module
+  // is installed on confirmation only.
+  'install.retired_kind',
+  'install.system_module_confirmation_required',
   'install.unexpected',
   'install.wrong_state',
   // cli_install.* — set by startCliInstall in

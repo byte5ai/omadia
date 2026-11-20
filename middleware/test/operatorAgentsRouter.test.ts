@@ -818,6 +818,48 @@ describe('createOperatorAgentsRouter', () => {
     teamsEvents = undefined;
   });
 
+  // ── Plugin Builder preview drafts (#2049) ────────────────────────────
+  describe('Plugin Builder preview draft agents (#2049)', () => {
+    it('refuses an operator agent in the preview slug space', async () => {
+      const res = await fetch(baseUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug: 'builder-preview-d1', name: 'Sneaky' }),
+      });
+      assert.equal(res.status, 409);
+      assert.equal(await store.getAgentBySlug('builder-preview-d1'), undefined);
+    });
+
+    it('never enables a preview draft agent', async () => {
+      await store.createAgent({ slug: 'builder-preview-d1', name: 'Preview: Weather', status: 'draft' as never });
+      const res = await fetch(`${baseUrl}/builder-preview-d1`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ status: 'enabled' }),
+      });
+      assert.equal(res.status, 409);
+      assert.equal((await store.getAgentBySlug('builder-preview-d1'))?.status, 'draft');
+    });
+
+    it('is not in the directory and gets no grant', async () => {
+      await store.createAgent({ slug: 'builder-preview-d1', name: 'Preview: Weather', status: 'draft' as never });
+      await store.createAgent({ slug: 'mira', name: 'Mira' });
+      const list = (await (await fetch(baseUrl)).json()) as { agents: Array<{ slug: string }> };
+      const slugs = list.agents.map((a) => a.slug);
+      assert.ok(slugs.includes('mira'));
+      assert.equal(slugs.includes('builder-preview-d1'), false);
+
+      const grant = await fetch(`${baseUrl}/builder-preview-d1/plugins`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ plugins: [] }),
+      });
+      assert.equal(grant.status, 409);
+      const read = await fetch(`${baseUrl}/builder-preview-d1`);
+      assert.notEqual(read.status, 409, 'reading stays possible');
+    });
+  });
+
   // ── model policy (#1033) ─────────────────────────────────────────────
   describe('model policy (#1033)', () => {
     it('GET /:slug/model-policy defaults to auto/none with the active provider', async () => {
@@ -3799,14 +3841,24 @@ describe('createOperatorAgentsRouter', () => {
     assert.deepEqual(list.agents.find((a) => a.slug === 'pub')?.availability, expected);
     assert.equal('fallback_agent_id' in list, false);
 
-    // Groups are refused until routing resolves role membership: a stored
-    // `role:` grant would silently never match.
+    // Groups are Conductor roles (spec §5.3): accepted, the role key keeps
+    // its case; anything that is neither a user nor a role is refused.
     const group = await fetch(`${baseUrl}/pub/availability`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ everyone: false, channels: null, principals: ['role:sales'] }),
+      body: JSON.stringify({ everyone: false, channels: null, principals: ['role:Sales-Team', 'user:Ben@Example.com'] }),
     });
-    assert.equal(group.status, 400);
+    assert.equal(group.status, 200);
+    assert.deepEqual(((await group.json()) as { availability: { principals: string[] } }).availability.principals.sort(), [
+      'role:Sales-Team',
+      'user:ben@example.com',
+    ]);
+    const bogus = await fetch(`${baseUrl}/pub/availability`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ everyone: false, channels: null, principals: ['team:sales'] }),
+    });
+    assert.equal(bogus.status, 400);
   });
 
   it('POST /:slug/drain calls forceInvalidate(drain)', async () => {

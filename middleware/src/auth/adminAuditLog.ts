@@ -71,12 +71,26 @@ export type AuditAction =
   | 'agent.disable'
   | 'agent.delete'
   | 'agent.purge'
+  // #2054 — spec 2042 §5.7: the operator confirmed a grant that gives an agent
+  // access to every connected system, or made such an agent the default
+  // agent. `before`/`after` carry the reach (system keys + count), never a
+  // credential.
+  | 'agent.broad_reach_grant'
+  | 'agent.broad_reach_default'
   // #2090 — the operator's kill switch for the actions of archetype plugins
   // (instance, one agent, one process): set and cleared.
   | 'execution.kill_switch_set'
   // D34 — an operator released a held conversation reservation.
   | 'execution.reservation_release'
   | 'execution.kill_switch_clear'
+  // #2082 — agent-owned triggers: a trigger the harness paused (budget cap,
+  // circuit breaker, agent unavailable; actor `system:triggers`), and the
+  // operator's pause, resume and end, and a recipient's proactive profile.
+  | 'trigger.notice'
+  | 'trigger.pause'
+  | 'trigger.resume'
+  | 'trigger.end'
+  | 'trigger.recipient_profile'
   // #2055 — the default-agent table and an agent's availability decide who
   // answers whom: who may reach which agent belongs in the trail.
   | 'agent.default_entry.set'
@@ -137,7 +151,16 @@ export type AuditAction =
   | 'memory.purge'
   | 'api_key.create'
   | 'api_key.revoke'
-  | 'api_key.delete';
+  | 'api_key.delete'
+  // Spec 2042 §5.4 (#2047) — consultation switches and directed grants. A
+  // grant change is written twice, once per agent (`target` `agent:<slug>`),
+  // so the trail of either agent shows it. `before`/`after` carry the grant.
+  | 'agent.consultation_change'
+  // Spec 2042 §5.11 (#2079) — an integration's declared readership and
+  // sensitivity (`target` `integration:<id>`), and an agent's context-memory
+  // mode (`target` `agent:<slug>`).
+  | 'discretion.readership_change'
+  | 'agent.context_memory_change';
 
 /**
  * #1329 — the actions a PLUGIN may write via

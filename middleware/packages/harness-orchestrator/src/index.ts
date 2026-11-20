@@ -31,13 +31,15 @@ export type {
   RoutingBucket,
 } from './modelRouter.js';
 
-// Wave 8 — per-turn direct-answer persona routing (twin of modelRouter).
-export { routeTurnPersona } from './personaRouter.js';
+// #2051 — per-turn working-mode selection (twin of modelRouter); the mode is
+// composed beneath the agent's identity, never in its place.
+export { routeTurnWorkingMode, withWorkingMode } from './workingModes.js';
 export type {
-  PersonaCandidate,
-  PersonaRouteResult,
-  PersonaRoutingBucket,
-} from './personaRouter.js';
+  SelectedWorkingMode,
+  WorkingModeBucket,
+  WorkingModeCandidate,
+  WorkingModeRouteResult,
+} from './workingModes.js';
 
 // Multi-orchestrator registry (US4) — read by US7 channel routing and US9 UI.
 export {
@@ -54,7 +56,7 @@ export { diffSnapshots, buildForAgent } from './registry/applyDiff.js';
 export type { DiffAction, DiffPlan } from './registry/applyDiff.js';
 export { ReloadBus, directDatabaseUrl, isPooledDatabaseUrl } from './registry/reloadBus.js';
 export type { ReloadBusOptions } from './registry/reloadBus.js';
-// US7 — channel routing + first-boot onboarding.
+// US7 — channel routing.
 export { ChannelResolver } from './routing/channelResolver.js';
 export type {
   ChannelResolverOptions,
@@ -63,17 +65,13 @@ export type {
   ResolveDecision,
   ResolveResult,
 } from './routing/channelResolver.js';
-export {
-  attachAllPlugins,
-  attachNewPluginsToFallbackAgent,
-} from './registry/onboarding.js';
-export type { FallbackAttachResult } from './registry/onboarding.js';
 // #2055 — the management layer: deterministic routing, routing tables,
 // plain-text agent selection, system notices.
 export {
   ADDRESSABLE_STATUS,
   ManagementRouter,
   defaultEntryFor,
+  setRoleMembership,
 } from './routing/managementRouter.js';
 export type {
   RoleMembership,
@@ -393,6 +391,28 @@ export type {
   SubAgentGraph,
   SubAgentToolDeps,
 } from './registry/subAgentTools.js';
+// #2050 — DB sub-agents as the agent's internal helpers: shared write-time and
+// runtime rules (names, model policy, capability subset).
+export {
+  HelperRefusalError,
+  INTERNAL_HELPER_CONTRACT,
+  assertHelperModelAllowed,
+  assertHelperNameFree,
+  helperDefaultModelRef,
+  helperModelVerdict,
+  helperToolName,
+  helperToolNameConflicts,
+  helpersOutOfService,
+  mcpGrantHeldBy,
+} from './registry/internalHelpers.js';
+export type {
+  GrantLike,
+  HelperModelVerdict,
+  HelperOutOfService,
+  HelperNameConflict,
+  HelperRefusalCode,
+  NamedHelper,
+} from './registry/internalHelpers.js';
 // #904 — the scoped `memory` tool a granted sub-agent gets, and the tool name
 // both the orchestrator's dispatch and the grant adapter key on.
 export {
@@ -730,6 +750,17 @@ export type {
   TurnContextValue,
   GraphReadScope,
 } from './turnContext.js';
+// #2085 — a data action run on the agent's behalf passes the same audience
+// floor as a tool the model dispatches.
+export { guardToolEgress } from './audienceFloorGuard.js';
+// #2085 — the agent's boundary check of a data plan (spec 2042 §5.13 1a).
+export { createDataPlanGuard, createLlmDataPlanJudge, type DataPlanJudge } from './dataPlanGuard.js';
+// #2085 — per-turn side-channel data collector (spec 2042 §5.13).
+export {
+  MAX_DATA_PAYLOADS_PER_TURN,
+  TurnDataCollector,
+  type CollectOutcome,
+} from './turnDataCollector.js';
 export {
   setMcpPrivacyBypassServers,
   isMcpServerPrivacyBypassed,
@@ -792,6 +823,18 @@ export type { AttachmentByteStore } from './attachmentReaderFactory.js';
 // #575 — the handle→room binding contract. Exported so the kernel can supply a
 // Postgres implementation; the enforcement itself stays inside the reader
 // wrapper, where every resolution path is covered by construction.
+// #2048 — the audience floor on by default: the member baseline every resolved
+// person holds, and the room classification the per-turn provider uses.
+export {
+  MEMBER_BASELINE_CAPABILITIES,
+  MemberBaselineGrantStore,
+} from './memberBaselineGrantStore.js';
+export {
+  audienceRoomFor,
+  chatParticipantsFromRoster,
+  createAudienceFloorProvider,
+  type AudienceRoom,
+} from './audienceFloorProvider.js';
 export {
   bindingForRawScope,
   bindingForScope,
@@ -978,3 +1021,15 @@ export {
   resolveScopedBundle,
 } from './scopedChatAgent.js';
 export type { ScopedRegistryView } from './scopedChatAgent.js';
+
+// Spec 2042 §5.11 (#2079) — discretion: labels, flow rule, disclosure levels.
+export * from './discretion/labels.js';
+export * from './discretion/flowRule.js';
+export * from './discretion/disclosure.js';
+export * from './discretion/port.js';
+export * from './discretion/turnLabels.js';
+export * from './discretion/turnSetup.js';
+// Spec 2042 §5.4 (#2047) — consultation instead of delegation.
+export * from './consultation/consultationScope.js';
+export * from './consultation/consultTool.js';
+export * from './discretion/toolFlow.js';

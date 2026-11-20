@@ -16,6 +16,7 @@ import {
   type ApplyAiDisclosureContext,
 } from './aiDisclosure.js';
 import { stripCitationMarkers } from './citationMarkers.js';
+import { withDataText, withoutDataText } from './sideChannelData.js';
 
 /** Claims the verifier confirmed: every claim it neither found contradicted
  *  nor left unconfirmed. */
@@ -147,8 +148,13 @@ function humanizeAgentLabel(agentName: string): string {
 export function deriveAgentsConsulted(
   runTrace: Pick<RunTracePayload, 'agentInvocations'> | undefined,
 ): AgentConsultation[] | undefined {
-  return runTrace?.agentInvocations && runTrace.agentInvocations.length > 0
-    ? runTrace.agentInvocations.map((inv) => ({
+  // #2050 — an internal helper's run is the agent's own work, never a
+  // consulted agent (spec 2042 §5.2 "DB sub-agents"). It stays in the trace.
+  const consulted = (runTrace?.agentInvocations ?? []).filter(
+    (inv) => inv.internalHelper !== true,
+  );
+  return consulted.length > 0
+    ? consulted.map((inv) => ({
         ...(inv.agentId !== undefined ? { agentId: inv.agentId } : {}),
         label: humanizeAgentLabel(inv.agentName),
         status: inv.status,
@@ -306,7 +312,13 @@ export function toSemanticAnswer(
   // `text`, which every connector MUST render.
   // #131 — the `[ref:…]` markers the verifier checked are not for the reader;
   // removed here, the one text every connector renders.
-  const baseText = withMcpInputPrompt(stripCitationMarkers(r.answer), r.pendingMcpInput);
+  // #2085 — side-channel data goes after the prose and before the disclosure
+  // fold, so a connector that renders only `text` still shows it, marked.
+  const data = r.data && r.data.length > 0 ? r.data : undefined;
+  const baseText = withDataText(
+    withMcpInputPrompt(stripCitationMarkers(r.answer), r.pendingMcpInput),
+    data,
+  );
 
   // #643 (epic #642) — AI-Act Art. 50 disclosure. Fold the harness-owned
   // marking into `text` (the one field every connector renders) and forward the
@@ -350,6 +362,8 @@ export function toSemanticAnswer(
     ...(agentsConsulted && agentsConsulted.length > 0
       ? { agentsConsulted }
       : {}),
+    ...(r.contributions && r.contributions.length > 0 ? { contributions: r.contributions } : {}),
+    ...(data ? { data, textWithoutData: withoutDataText(disclosed.text, data) } : {}),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
     ...(r.followUpOptions && r.followUpOptions.length > 0
       ? { followUps: r.followUpOptions }

@@ -57,7 +57,11 @@ import {
  * (see docs/middleware-agent-handoff.md §13).
  */
 export type PrivacyProfile = 'strict' | 'default';
-export type AgentStatus = 'enabled' | 'disabled';
+/**
+ * `draft` (#2049): a preview agent of the Agent Builder or the Plugin Builder.
+ * Never built into the registry and never addressable; only `enabled` is.
+ */
+export type AgentStatus = 'enabled' | 'disabled' | 'draft';
 
 export interface CanvasPosition {
   readonly x: number;
@@ -102,6 +106,12 @@ export interface AgentRow {
    * reasons as `contextMemory` (see {@link parseAgentToAgentMode}).
    */
   readonly agentToAgent?: AgentToAgentMode;
+  /**
+   * #1876 — the agent's fast lane switch (`agents.fast_lane`, 0096): may the
+   * fast path answer simple data questions for it? Absent on a DB that
+   * predates 0096, which reads as on (today's behaviour).
+   */
+  readonly fastLane?: boolean;
   /**
    * #1033 — the agent's model policy (`agents.model_policy`, migration 0059),
    * narrowed deny-default by {@link parseModelPolicy}: absent column or an
@@ -269,6 +279,8 @@ export interface AgentPatch {
   readonly contextMemory?: ContextMemoryMode;
   /** #1018 — same COALESCE contract as `contextMemory`: absent leaves it. */
   readonly agentToAgent?: AgentToAgentMode;
+  /** #1876 — same COALESCE contract: absent leaves the fast lane switch. */
+  readonly fastLane?: boolean;
   /** #1033 — validated by the caller ({@link validateModelPolicy}); absent leaves it. */
   readonly modelPolicy?: ModelPolicy;
 }
@@ -397,6 +409,8 @@ interface AgentDbRow {
   context_memory?: string | null;
   /** #1018 — `agents.agent_to_agent`; absent on a DB that predates 0058. */
   agent_to_agent?: string | null;
+  /** #1876 — `agents.fast_lane`; absent on a DB that predates 0096. */
+  fast_lane?: boolean | null;
   /** #1033 — `agents.model_policy`; absent on a DB that predates 0059. */
   model_policy?: unknown;
   /** #1033 — `agent_identities.composed_prompts`, joined by the read queries. */
@@ -510,6 +524,7 @@ function mapAgent(row: AgentDbRow): AgentRow {
     canvasPosition: row.canvas_position ?? null,
     contextMemory: parseContextMemoryMode(row.context_memory),
     agentToAgent: parseAgentToAgentMode(row.agent_to_agent),
+    fastLane: row.fast_lane !== false,
     modelPolicy: parseModelPolicy(row.model_policy),
     ...(row.identity_composed_prompts && typeof row.identity_composed_prompts === 'object'
       ? {
@@ -681,6 +696,7 @@ export class ConfigStore {
          context_memory  = COALESCE($8, context_memory),
          agent_to_agent  = COALESCE($9, agent_to_agent),
          model_policy    = COALESCE($10::jsonb, model_policy),
+         fast_lane       = COALESCE($11, fast_lane),
          updated_at      = now()
        WHERE id = $1
        RETURNING *`,
@@ -695,6 +711,7 @@ export class ConfigStore {
         patch.contextMemory ?? null,
         patch.agentToAgent ?? null,
         patch.modelPolicy ? JSON.stringify(patch.modelPolicy) : null,
+        patch.fastLane ?? null,
       ],
     );
     const row = rows[0];
@@ -1124,6 +1141,7 @@ export class ConfigStore {
       skillToolBindings,
       selections,
       availabilityPrincipals,
+      consultationPairs,
     ] = await Promise.all([
       this.listAgents(),
       this.listAllAgentPlugins(),
@@ -1139,6 +1157,7 @@ export class ConfigStore {
       graph.listAllSkillToolBindings(),
       this.routing.listSelections(),
       this.routing.listAvailabilityPrincipals(),
+      this.listConsultationPairs(),
     ]);
     // #2088 — the deleted agents, so routing can tell "bound to a deleted
     // agent" from "bound to nobody". A database before migration 0072 has no
@@ -1163,8 +1182,36 @@ export class ConfigStore {
       tombstones,
       selections,
       availabilityPrincipals,
+      consultationPairs,
     };
   }
+
+  /**
+   * #2047 — every active consultation pair between live agents. A database
+   * before migration 0097 (no table, no switch columns) has none.
+   */
+  async listConsultationPairs(): Promise<ConsultationPairRow[]> {
+    try {
+      const { rows } = await this.pool.query<{ from_agent_id: string; to_agent_id: string }>(
+        `SELECT g.from_agent_id, g.to_agent_id
+           FROM agent_consultation_grants g
+           JOIN agents f ON f.id = g.from_agent_id AND ${liveAgentRow('f')} AND f.may_consult
+           JOIN agents t ON t.id = g.to_agent_id AND ${liveAgentRow('t')} AND t.consultable
+          ORDER BY g.from_agent_id, g.to_agent_id`,
+      );
+      return rows.map((r) => ({ fromAgentId: r.from_agent_id, toAgentId: r.to_agent_id }));
+    } catch (err) {
+      const code = (err as { code?: unknown } | null)?.code;
+      if (isUndefinedTable(err) || code === '42703') return [];
+      throw err;
+    }
+  }
+}
+
+/** #2047 — one active consultation pair: `fromAgentId` may consult `toAgentId`. */
+export interface ConsultationPairRow {
+  readonly fromAgentId: string;
+  readonly toAgentId: string;
 }
 
 export interface ConfigSnapshot {
@@ -1193,6 +1240,12 @@ export interface ConfigSnapshot {
   readonly selections?: readonly AgentSelectionRow[];
   /** #2055 — named people and groups per agent (migration 0083). */
   readonly availabilityPrincipals?: readonly AvailabilityPrincipalRow[];
+  /**
+   * #2047 — active consultation pairs (migration 0097): a directed grant
+   * between two live agents whose switches are both on. Feeds each agent's
+   * `consultableColleagues`. Optional for fixtures.
+   */
+  readonly consultationPairs?: readonly ConsultationPairRow[];
   // Agent Builder graph (P0). Optional so pre-existing snapshot literals
   // (tests, fixtures) stay valid; `loadSnapshot` always populates them.
   readonly subAgents?: readonly SubAgentRow[];

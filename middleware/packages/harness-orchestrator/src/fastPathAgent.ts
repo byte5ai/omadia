@@ -1,5 +1,8 @@
 import {
   toSemanticAnswer,
+  withDataText,
+  withoutDataText,
+  type AiDisclosure,
   type ChatAgent,
   type ChatAgentToolDefinition,
   type ChatStreamEvent,
@@ -9,7 +12,7 @@ import {
   type SemanticAnswer,
 } from '@omadia/channel-sdk';
 import type { ChatTriageOutcome, ChatTriageRequest } from '@omadia/fast-path';
-import type { CaptureDisclosure } from '@omadia/plugin-api';
+import type { CaptureDisclosure, DataPayload, DataPlanGuard } from '@omadia/plugin-api';
 
 import { isValidSessionId } from './chatSessionStore.js';
 import type { SessionLogEntry } from './sessionLogger.js';
@@ -66,6 +69,21 @@ export interface FastPathAgentDeps {
   /** a Privacy Shield runs: the recorded turn gets an EMPTY masked view so
    *  no capture decorator sends the rows to a model of its own */
   privacyGuarded: () => boolean;
+  /**
+   * #1876 — the agent's own AI disclosure for a fast-lane answer: the same
+   * per-turn resolution and first-turn fold as any answer of this agent
+   * (`Orchestrator.discloseCliAnswer`). Absent → the text goes out as is.
+   */
+  disclose?: (
+    answer: string,
+    input: ChatTurnInput,
+  ) => { readonly answer: string; readonly aiDisclosure?: AiDisclosure };
+  /** #1876 — the agent whose fast lane this is: learned plans and the answer
+   *  cache are keyed by it. */
+  agentSlug?: string;
+  /** #2085 — the agent's boundary check, applied to every plan (new or
+   *  cached) before it runs (spec 2042 §5.13 1a). */
+  checkPlan?: DataPlanGuard;
   log: (message: string) => void;
 }
 
@@ -119,6 +137,16 @@ type Decision =
       turnId?: string;
       captureDisclosure?: CaptureDisclosure;
       decision?: FastPathDecision;
+      /** `text` already carries the fold; this is the structured carrier. */
+      aiDisclosure?: AiDisclosure;
+      /** The summary sentence alone — what streams as a delta (neither a
+       *  disclosure nor side-channel rows go out as a delta). */
+      prose: string;
+      /** #2085 — the rows, as side-channel data (rendered into `text`);
+       *  empty when there are none. */
+      data: readonly DataPayload[];
+      /** `text` without the rendering of `data`. */
+      textWithoutData: string;
     }
   | { kind: 'agent'; input: ChatTurnInput; decision?: FastPathDecision };
 
@@ -213,6 +241,8 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
         permittedTools,
         ...(toolDefinitions !== undefined ? { toolDefinitions } : {}),
         ...(input.sessionScope !== undefined ? { sessionKey: input.sessionScope } : {}),
+        ...(deps.agentSlug !== undefined ? { agentSlug: deps.agentSlug } : {}),
+        ...(deps.checkPlan !== undefined ? { checkPlan: deps.checkPlan } : {}),
         userMessage: input.userMessage,
       });
     } catch (err) {
@@ -234,10 +264,23 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
         ...(outcome.decision ? { decision: toFastPathDecision(outcome.decision, false) } : {}),
       };
     }
-    const recorded = await record(input, outcome.text, outcome.toolCalls);
+    // #2085 — the summary is prose (the model wrote its template) and passes
+    // the identity guard around this wrapper; the rows are side-channel data:
+    // rendered for people, never in the transcript a later model reads.
+    const prose = outcome.summary;
+    const data: readonly DataPayload[] = outcome.table.rows.length > 0 ? [outcome.table] : [];
+    const recorded = await record(input, prose, outcome.toolCalls);
+    // Marked after recording: the transcript keeps the answer, as for a turn.
+    const combined = withDataText(prose, data);
+    const disclosed = deps.disclose?.(combined, input);
+    const text = disclosed?.answer ?? combined;
     return {
       kind: 'answer',
-      text: outcome.text,
+      text,
+      prose,
+      data,
+      textWithoutData: withoutDataText(text, data),
+      ...(disclosed?.aiDisclosure ? { aiDisclosure: disclosed.aiDisclosure } : {}),
       toolCalls: outcome.toolCalls,
       ...recorded,
       ...(outcome.decision ? { decision: toFastPathDecision(outcome.decision, true) } : {}),
@@ -251,12 +294,19 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
     async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
       const d = await decide(input);
       if (d.kind === 'agent') return inner.chat(d.input);
-      return toSemanticAnswer({
+      // The fold is in `d.text`: the carrier joins after the conversion, so
+      // `toSemanticAnswer` does not fold a second time.
+      const answer = toSemanticAnswer({
         answer: d.text,
         toolCalls: d.toolCalls,
         iterations: 0,
         ...(d.turnId ? { turnId: d.turnId } : {}),
       });
+      return {
+        ...answer,
+        ...(d.data.length > 0 ? { data: d.data, textWithoutData: d.textWithoutData } : {}),
+        ...(d.aiDisclosure ? { aiDisclosure: d.aiDisclosure } : {}),
+      };
     },
     async *chatStream(input: ChatTurnInput, observer?: ChatStreamObserver): AsyncGenerator<ChatStreamEvent> {
       const d = await decide(input);
@@ -264,7 +314,7 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
         yield* stampDecision(inner.chatStream(d.input, observer), d.decision);
         return;
       }
-      yield { type: 'text_delta', text: d.text };
+      yield { type: 'text_delta', text: d.prose };
       yield {
         type: 'done',
         answer: d.text,
@@ -272,6 +322,8 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
         iterations: 0,
         ...(d.turnId ? { turnId: d.turnId } : {}),
         ...(d.captureDisclosure ? { captureDisclosure: d.captureDisclosure } : {}),
+        ...(d.aiDisclosure ? { aiDisclosure: d.aiDisclosure } : {}),
+        ...(d.data.length > 0 ? { data: d.data, textWithoutData: d.textWithoutData } : {}),
         ...(d.decision ? { fastPathDecision: d.decision } : {}),
       };
     },

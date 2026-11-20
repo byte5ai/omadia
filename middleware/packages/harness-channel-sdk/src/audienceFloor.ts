@@ -87,6 +87,18 @@ export type AudienceUnknownReason =
    */
   | 'empty_roster';
 
+/**
+ * #2048 — the plain reason a closed floor gives, per unknown-audience cause.
+ * It reaches the model as part of a tool refusal and, through it, the person
+ * who asked: "fail closed" must say WHY, or it reads as a random outage.
+ */
+const UNKNOWN_AUDIENCE_EXPLANATION: Readonly<Record<AudienceUnknownReason, string>> = {
+  no_provider:
+    'this channel does not tell omadia who is in the conversation, so it cannot be bounded to what everyone present may do',
+  provider_failed: 'the list of people in this conversation could not be read',
+  empty_roster: 'the channel returned no participants for this conversation',
+};
+
 /** One participant, once we have tried to turn them into a Principal. */
 export type AudienceMember =
   | {
@@ -246,7 +258,10 @@ export async function resolveAudience<TParticipant>(
  */
 export function audienceFloor(audience: Audience): AudienceFloor {
   if (audience.kind === 'unknown') {
-    return { outcome: 'closed', reason: `audience unknown (${audience.reason})` };
+    return {
+      outcome: 'closed',
+      reason: `audience unknown (${audience.reason}): ${UNKNOWN_AUDIENCE_EXPLANATION[audience.reason]}`,
+    };
   }
 
   const unresolved = audience.members.filter((m) => m.kind === 'unresolved');
@@ -293,10 +308,39 @@ export function audienceFloor(audience: Audience): AudienceFloor {
  * The single predicate the three guards call. A `closed` floor permits nothing —
  * stated here once so no guard has to remember to check `outcome` first, which
  * is exactly the check that gets forgotten.
+ *
+ * #2048 — a `tool:<name>` capability is also permitted when the room holds
+ * {@link UNRESTRICTED_TOOL_CAPABILITY}, unless somebody present explicitly
+ * forbids that tool. The order matches {@link floorAllowsHost}: a prohibition
+ * beats the unrestricted grant, because a veto the wildcard could undo would
+ * not be a veto.
  */
 export function floorPermits(floor: AudienceFloor, capability: Capability): boolean {
-  return floor.outcome === 'open' && floor.capabilities.has(capability);
+  if (floor.outcome !== 'open') return false;
+  if (floor.capabilities.has(capability)) return true;
+  return (
+    capability.startsWith(TOOL_CAPABILITY_PREFIX) &&
+    floor.capabilities.has(UNRESTRICTED_TOOL_CAPABILITY) &&
+    !floor.denied.has(capability)
+  );
 }
+
+const TOOL_CAPABILITY_PREFIX = 'tool:';
+
+/**
+ * #2048 — "may use any tool the agent itself holds".
+ *
+ * The tool-side twin of {@link UNRESTRICTED_HOST_CAPABILITY}. The audience
+ * floor bounds what a ROOM may make an agent do; which tools exist for that
+ * agent at all is decided by its grants (INV-8), not here. Enumerating every
+ * tool name per principal would break the moment an operator grants an agent a
+ * new capability, so the default member baseline carries this token instead
+ * and operators narrow it with explicit prohibitions (`tool:<name>` denials).
+ *
+ * It is an ordinary capability, so it INTERSECTS: the room holds it only when
+ * everyone present does.
+ */
+export const UNRESTRICTED_TOOL_CAPABILITY: Capability = 'tool:*';
 
 /**
  * The capability token for reaching one outbound host.

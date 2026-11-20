@@ -326,19 +326,27 @@ export const ConfigSchema = z.object({
     .transform((v) => v === 'true')
     .default(true),
 
-  // #575 — enforce the audience floor: a room may only do what EVERY
-  // participant is granted. Off by default, and that default is load-bearing
-  // rather than cautious. The floor fails closed by design, so switching it on
-  // against an empty grant table does not mean "no policy yet" — it means every
-  // tool refused, no context recalled and no attachment readable, in every
-  // room, at once. Seed and review the grants through
-  // /api/v1/admin/audience-grants (available whenever Postgres is), THEN set
-  // this. It also needs Postgres: with the in-memory backend there is nowhere
-  // durable for grants to live, and a restart would shut the rooms.
+  // #575 / #2048 — enforce the audience floor: a room may only do what EVERY
+  // participant may do. ON by default since #2048 (spec 2042 G15): a person
+  // who cannot be resolved closes the room, and an explicit prohibition from
+  // /api/v1/admin/audience-grants binds the whole room. What an ordinary,
+  // resolved person may do by default is AUDIENCE_BASELINE_GRANTS below.
+  // `false` switches every guard off (the pre-#2048 behaviour); consultations
+  // between agents need the floor and are refused without it (spec §5.4).
   AUDIENCE_FLOOR_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
-    .default(false),
+    .default(true),
+
+  // #2048 — what every resolved person holds before any explicit grant:
+  //  - `member` (default): any tool the agent itself was granted (`tool:*`),
+  //    recall and attachment reads; narrowed per person or role by explicit
+  //    prohibitions. Works without Postgres (prohibitions then cannot be
+  //    stored, so only the baseline applies).
+  //  - `none`: the strict #575 reading — only explicit grants count, so an
+  //    empty grant table refuses every tool in every room. Needs Postgres;
+  //    seed the grants BEFORE switching to it.
+  AUDIENCE_BASELINE_GRANTS: z.enum(['member', 'none']).default('member'),
 
   // #575 — read the audience floor's host policy as an ALLOW-LIST rather than
   // as prohibitions only.
@@ -446,6 +454,33 @@ export const ConfigSchema = z.object({
   // #2043 — ceiling on kernel-run turns ('agentTurn@2') per agent and minute;
   // a loop in an engine plugin must not spend without bound. 0 = no ceiling.
   AGENT_TURN_MAX_PER_MINUTE: z.coerce.number().int().nonnegative().default(60),
+  // #2082 — agent-owned triggers (spec 2042 §5.12). Instance caps the harness
+  // enforces on every hook, wakeup and timer; no prompt or plugin can lift
+  // them. TRIGGERS_ENABLED=false is a config-level stop: nothing fires —
+  // also no routine, Agent Builder schedule or memory consolidation, which
+  // fire through triggers (the operator's live kill switch is
+  // /api/v1/operator/execution).
+  TRIGGERS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  TRIGGER_TICK_MS: z.coerce.number().int().min(1_000).default(15_000),
+  TRIGGER_LEASE_MS: z.coerce.number().int().min(60_000).default(20 * 60_000),
+  TRIGGER_ONE_SHOT_MAX_DAYS: z.coerce.number().int().positive().max(365).default(90),
+  TRIGGER_RECURRING_MAX_DAYS: z.coerce.number().int().positive().max(365).default(30),
+  TRIGGER_MIN_INTERVAL_MINUTES: z.coerce.number().int().positive().default(15),
+  TRIGGER_MIN_INTERVAL_LIVE_MINUTES: z.coerce.number().int().positive().default(1),
+  TRIGGER_MAX_ACTIVE_PER_AGENT: z.coerce.number().int().positive().default(50),
+  TRIGGER_MAX_USD_PER_FIRING: z.coerce.number().nonnegative().default(1),
+  TRIGGER_MAX_USD_PER_TRIGGER: z.coerce.number().nonnegative().default(20),
+  TRIGGER_MONTHLY_USD_PER_AGENT: z.coerce.number().nonnegative().default(25),
+  TRIGGER_MONTHLY_USD_PER_INSTANCE: z.coerce.number().nonnegative().default(200),
+  // #1035 — instance defaults of a recipient's communication profile for
+  // proactive messages: quiet hours (`HH:MM-HH:MM` or `off`), their time zone,
+  // and messages per hour. A recipient profile overrides them.
+  PROACTIVE_QUIET_HOURS: z.string().default('22:00-07:00'),
+  PROACTIVE_TIMEZONE: z.string().default('Europe/Berlin'),
+  PROACTIVE_MAX_PER_HOUR: z.coerce.number().int().nonnegative().default(6),
 
   // #758 — Ed25519 checkpoint signing for the receipt hash chain. The
   // private key (base64 PKCS#8 DER; generate with

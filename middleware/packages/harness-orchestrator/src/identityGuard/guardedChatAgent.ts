@@ -32,6 +32,24 @@ export function maskRestoredValues(text: string, values: readonly string[] | und
   return masked;
 }
 
+/**
+ * #2085 — what the guard checks of an answer: its prose without the
+ * side-channel rows (`textWithoutData`), plus the column labels of its
+ * tables (a fast-lane planner writes those). Rows are system data straight
+ * from a tool, never the agent's words: a customer named like a colleague
+ * must not block an invoice list.
+ */
+export function proseToCheck(answer: {
+  readonly text?: string;
+  readonly answer?: string;
+  readonly textWithoutData?: string;
+  readonly data?: readonly { readonly columns: readonly string[] }[];
+}): string {
+  const prose = answer.textWithoutData ?? answer.text ?? answer.answer ?? '';
+  const labels = (answer.data ?? []).flatMap((d) => d.columns);
+  return labels.length > 0 ? `${prose}\n${labels.join(' · ')}` : prose;
+}
+
 function isAgentProse(source: string | undefined): boolean {
   // The verifier's notice is the harness's own text, not the agent's prose.
   return source !== 'verifier-blocked';
@@ -65,7 +83,7 @@ export function withIdentityGuard<A extends ChatAgent>(inner: A, emitter: AgentA
     const outcome = await emitter.emit({
       type: 'prose',
       speaker,
-      text: answer.text,
+      text: proseToCheck(answer),
       ...(answer.maskedValues ? { restoredValues: answer.maskedValues } : {}),
     });
     if (outcome.published) return answer;
@@ -126,9 +144,10 @@ export function withIdentityGuard<A extends ChatAgent>(inner: A, emitter: AgentA
         // `done.answer` is authoritative and may differ from the preview
         // (privacy render, folded disclosure): check what was not checked.
         const released = gate.releasedText;
-        const segment = event.answer.startsWith(released) ? event.answer.slice(released.length) : undefined;
+        const checked = proseToCheck(event);
+        const segment = checked.startsWith(released) ? checked.slice(released.length) : undefined;
         const result = await emitter.guardFor(event.maskedValues).check(
-          event.answer,
+          checked,
           segment !== undefined && released.length > 0 ? segment : undefined,
         );
         emitter.reportGuardResult(result);

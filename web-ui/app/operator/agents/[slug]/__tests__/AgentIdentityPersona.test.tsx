@@ -72,6 +72,14 @@ function dto(
   };
 }
 
+/** Pick an archetype in the shared gallery (#2049) and apply it. */
+async function applyArchetype(id: string): Promise<void> {
+  await userEvent.click(screen.getByTestId(`gallery-card-${id}`));
+  await userEvent.click(screen.getByTestId('gallery-apply'));
+  // The gallery applies in a transition and closes once the value is set.
+  await waitFor(() => expect(screen.queryByTestId('persona-template-gallery')).toBeNull());
+}
+
 async function openTab(id: 'character' | 'boundaries' | 'prompt'): Promise<void> {
   await userEvent.click(await screen.findByTestId(`agent-identity-tab-${id}`));
 }
@@ -102,9 +110,7 @@ describe('AgentIdentity — character (#914)', () => {
     await openTab('character');
 
     await userEvent.click(screen.getByTestId('agent-persona-template-toggle'));
-    await userEvent.click(
-      screen.getByTestId('agent-persona-template-customer-service'),
-    );
+    await applyArchetype('customer-service');
 
     // The badge names the applied archetype, and nothing was saved yet: the
     // operator can still look at it and change their mind.
@@ -114,6 +120,25 @@ describe('AgentIdentity — character (#914)', () => {
     expect(mockSave).not.toHaveBeenCalled();
   });
 
+  it('applies a culture preset through the shared dropdown into the save (#2049)', async () => {
+    mockGet.mockResolvedValue(dto({ persona: { axes: { directness: 50, warmth: 50 } } }));
+    mockSave.mockResolvedValue({ ...dto(), republish: 'not_needed' });
+    renderWithIntl(<AgentIdentity slug="sales" />);
+    await openTab('character');
+
+    await userEvent.selectOptions(screen.getByTestId('culture-preset-select'), 'saas-startup');
+    expect(screen.getByTestId('culture-diff-directness').textContent).toMatch(/50.*75/);
+    await userEvent.click(screen.getByTestId('culture-confirm-apply'));
+    await waitFor(() => expect(screen.queryByTestId('culture-confirm-modal')).toBeNull());
+    expect(mockSave).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Save identity' }));
+
+    await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1));
+    const payload = mockSave.mock.calls[0]?.[1] as { persona: { axes: Record<string, number> } };
+    expect(payload.persona.axes.directness).toBe(75);
+    expect(payload.persona.axes.warmth).toBe(55);
+  });
+
   it('replaces the axes when switching to another archetype (#1897)', async () => {
     mockGet.mockResolvedValue(dto());
     mockSave.mockResolvedValue({ ...dto(), republish: 'not_needed' });
@@ -121,13 +146,9 @@ describe('AgentIdentity — character (#914)', () => {
     await openTab('character');
 
     await userEvent.click(screen.getByTestId('agent-persona-template-toggle'));
-    await userEvent.click(
-      screen.getByTestId('agent-persona-template-research-analyst'),
-    );
+    await applyArchetype('research-analyst');
     await userEvent.click(screen.getByTestId('agent-persona-template-toggle'));
-    await userEvent.click(
-      screen.getByTestId('agent-persona-template-customer-service'),
-    );
+    await applyArchetype('customer-service');
     await userEvent.click(screen.getByRole('button', { name: 'Save identity' }));
 
     await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1));
@@ -153,9 +174,7 @@ describe('AgentIdentity — character (#914)', () => {
     // … pick an archetype on the character tab …
     await openTab('character');
     await userEvent.click(screen.getByTestId('agent-persona-template-toggle'));
-    await userEvent.click(
-      screen.getByTestId('agent-persona-template-customer-service'),
-    );
+    await applyArchetype('customer-service');
     // … tick a boundary on the limits tab …
     await openTab('boundaries');
     await userEvent.click(screen.getByTestId('agent-boundary-no-pii'));
@@ -206,9 +225,7 @@ describe('AgentIdentity — character (#914)', () => {
     // showing a preview that quietly lags behind the sliders.
     await openTab('character');
     await userEvent.click(screen.getByTestId('agent-persona-template-toggle'));
-    await userEvent.click(
-      screen.getByTestId('agent-persona-template-customer-service'),
-    );
+    await applyArchetype('customer-service');
     await openTab('prompt');
     expect(screen.getByText(/Unsaved changes are not in here yet/)).toBeTruthy();
   });

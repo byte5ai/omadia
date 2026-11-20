@@ -56,7 +56,7 @@ Bevor eine Aufgabe begonnen wird: welche Größenordnung hat sie, und passt eine
 Alle Skripte in `scripts/*.workflow.mjs` laufen über das `Workflow`-Tool (`Workflow({ scriptPath: "scripts/<name>.workflow.mjs", args: {...} })`), nicht als eigenständige Node-Prozesse. Keines von ihnen pusht oder merged selbstständig nach GitHub — "PR erstellen" bzw. "mergen" bleibt immer ein expliziter, von einer Top-Level-Session oder einem Menschen ausgelöster Schritt.
 
 **Review-Kriterien referenzieren statt duplizieren:**
-- Plugin-Contract (PluginContext, 10-Punkte-Package-Checklist): `middleware/assets/boilerplate/{agent-integration,agent-pure-llm}/CLAUDE.md` — das ist die kanonische Quelle; `docs/harness-platform/` ist nur lokales, gitignored Scratch und darf nicht als Referenz zitiert werden.
+- Plugin-Contract (PluginContext, 10-Punkte-Package-Checklist): `middleware/assets/boilerplate/{integration,tool}/CLAUDE.md` — das ist die kanonische Quelle; `docs/harness-platform/` ist nur lokales, gitignored Scratch und darf nicht als Referenz zitiert werden.
 - i18n-Regeln für Frontend-Komponenten: `web-ui/CLAUDE.md`.
 
 **Bekannte offene Baustelle beim Testen:** In der Middleware-Suite gibt es Cross-File-Test-Pollution (ein Test ist isoliert grün und scheitert im vollen `npm run test`-Lauf wegen State-Leak aus einer anderen Testdatei). Bevor Build-/Test-Caching (z. B. Turborepo) für die `middleware/packages/*`-Packages eingeführt wird, sollte diese Bug-Klasse behoben werden — sonst wird nur unzuverlässiges Grün schneller ausgeliefert.

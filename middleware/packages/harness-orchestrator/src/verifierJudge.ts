@@ -119,7 +119,7 @@ export class VerifierJudge {
   async verdictFor(
     runId: string,
     input: ChatTurnInput,
-    turn: Pick<ChatTurnResult, 'answer' | 'runTrace' | 'answerSource'>,
+    turn: Pick<ChatTurnResult, 'answer' | 'runTrace' | 'answerSource'> & { readonly textWithoutData?: string },
     egress: PrivacyEgressContinuation | undefined,
   ): Promise<VerifierVerdict | undefined> {
     const run = this.noteRun(runId, turn);
@@ -133,10 +133,14 @@ export class VerifierJudge {
     }
     // A server-rendered answer: the pipeline checks the prose its model
     // wrote, never `turn.answer`, which holds the rendered real values.
+    // #2085 — likewise side-channel data: a streamed `done` carries its
+    // rendering in `answer` and the text without it, made at render time, in
+    // `textWithoutData`; those rows are system data, never checked. A buffered
+    // result's `answer` never holds them (`toSemanticAnswer` renders later).
     const answer =
       gate.renderedProse === true && gate.privacy !== undefined
         ? await this.restoredProse(gate.privacy)
-        : turn.answer;
+        : (turn.textWithoutData ?? turn.answer);
     // #1571 — the verifier's model calls run after the turn's own context
     // closed; their token-usage rows carry the request's turn id explicitly.
     const verify = (): Promise<VerifierVerdict> =>

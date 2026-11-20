@@ -315,10 +315,20 @@ export type {
   AgentSpeaker,
   Contribution,
   ContributionStatus,
+  DataPayload,
   Speaker,
   SystemNotice,
   SystemSpeaker,
+  TableData,
 } from './outgoing.js';
+// #2085 — side-channel data rendering (spec 2042 §5.13).
+export {
+  renderDataText,
+  renderTableText,
+  SIDE_CHANNEL_TEXT_MAX_ROWS,
+  withDataText,
+  withoutDataText,
+} from './sideChannelData.js';
 
 // Channel-agnostic store interfaces
 export type {
@@ -440,6 +450,7 @@ export {
 export {
   audienceFloor,
   UNRESTRICTED_HOST_CAPABILITY,
+  UNRESTRICTED_TOOL_CAPABILITY,
   floorAllowsHost,
   floorDeniesHost,
   floorPermits,

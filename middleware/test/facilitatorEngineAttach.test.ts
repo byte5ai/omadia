@@ -16,7 +16,7 @@ import {
   assertEngineOnlyForFacilitators,
   resolveFacilitationEngine,
 } from '../src/platform/facilitatorGuard.js';
-import { attachablePluginIds } from '../src/plugins/defaultOrchestratorAttach.js';
+import { capabilityPluginIds } from '../src/plugins/capabilityPlugins.js';
 
 const ENGINE = '@omadia/agent-facilitator';
 const ODOO = '@omadia/integration-odoo';
@@ -157,10 +157,11 @@ describe('facilitation engine auto-attach', () => {
     assert.match((await ground(subscription))!, /no longer has the teams identity/);
   });
 
-  it('the engine is never part of a default attach, and cannot be granted to a standard agent', () => {
+  it('the engine is never offered as a capability, and cannot be granted to a standard agent', () => {
     const w = world([ENGINE, ODOO]);
     const catalog = w.sources.catalog as { get(id: string): never };
-    assert.deepEqual(attachablePluginIds([ENGINE, ODOO, '@unknown/x'], catalog), [ODOO, '@unknown/x']);
+    // #2054 — an id the catalog does not know is not offered either.
+    assert.deepEqual(capabilityPluginIds([ENGINE, ODOO, '@unknown/x'], catalog), [ODOO]);
     assert.throws(
       () => assertEngineOnlyForFacilitators(w.agents[2]!, [{ pluginId: ENGINE, enabled: true }], w.sources),
       /an archetype plugin can only be granted to agents of its own archetype/,

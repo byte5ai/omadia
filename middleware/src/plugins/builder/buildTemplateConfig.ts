@@ -25,7 +25,7 @@ const MIDDLEWARE_ROOT = path.resolve(HERE, '..', '..', '..');
 
 export const DEFAULT_BOILERPLATE_PACKAGE_JSON = path.join(
   ASSETS.boilerplate.root,
-  'agent-integration',
+  'integration',
   'package.json',
 );
 

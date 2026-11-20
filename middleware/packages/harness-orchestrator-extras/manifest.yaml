@@ -3,8 +3,8 @@ schema_version: "1"
 identity:
   id: "@omadia/orchestrator-extras"
   name: "Orchestrator Extras"
-  version: "0.1.1"
-  kind: "extension"
+  version: "0.2.0"
+  kind: "system-module"
   domain: "core.orchestrator-extras"
   description:
     en: "Adds the steps around a chat turn that make answers better over time. It looks up relevant context before the turn, records facts in the knowledge graph afterwards, and recognises what a message is about."
@@ -59,6 +59,9 @@ optional_requires:
   # decision model (e.g. TypeSafe Jev) first when one runs, resolved per call;
   # without it, or on any failure, they ask the LLM as before.
   - "decisionModel@1"
+  # #2082 — the scratch-promotion reaper runs as a bounded agent batch
+  # trigger the kernel schedules; without the registry it does not run.
+  - "batchJobRegistry@1"
 
 # ---------------------------------------------------------------------------
 # S+9.2 Sub-Commit 2b: Capability lifetime flipped.

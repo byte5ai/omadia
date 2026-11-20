@@ -9,6 +9,8 @@ import { useTranslations } from 'next-intl';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 
 import { Button } from '@/app/_components/ui/Button';
+import { AgentReachPanel, AgentReachSummary } from '@/app/_components/agents/AgentReach';
+import { useBroadReachConfirm } from '@/app/_components/agents/useBroadReachConfirm';
 import { ApiError } from '../../../_lib/api';
 import {
   createOperatorAgent,
@@ -41,6 +43,7 @@ import { DeletedAgentsSection, EndOfServiceNotice, type EndOfServiceResult } fro
 import { DefaultAgentsSection } from './DefaultAgentsSection';
 import { ExecutionControlSection } from './ExecutionControl';
 import { FacilitatorsSection, type PluginNavLink } from './FacilitatorsSection';
+import { FirstAgentCard } from './FirstAgentCard';
 import { PluginsDnd } from './PluginsDnd';
 import { useFacilitatorRefusalMessage } from './useFacilitatorCopy';
 import { useConfirmAction } from './useConfirmAction';
@@ -68,6 +71,9 @@ interface AgentsDashboardProps {
  *       memory-scope chips, kind badge) replaces the raw plugin-id textarea.
  * B3b — channel-binding form with type dropdown + routing tester.
  * B3c — per-(Agent × plugin) config editor rendered from `setup_fields`.
+ * #2054 — no "reset to all plugins" any more (INV-8: no agent gets every
+ *       plugin by default); a grant that gives an agent every connected
+ *       system asks for an explicit confirmation (`useBroadReachConfirm`).
  *
  * The catalog is fetched once on mount via `listAgentPluginCatalog()` and
  * shared across every AgentCard; we treat it as read-only for the lifetime
@@ -81,6 +87,7 @@ export function AgentsDashboard({
   archetypes,
 }: AgentsDashboardProps): React.ReactElement {
   const t = useTranslations('operatorAgents');
+  const broadReach = useBroadReachConfirm();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -181,6 +188,8 @@ export function AgentsDashboard({
 
   return (
     <div className="space-y-8">
+      {broadReach.dialog}
+      <FirstAgentCard />
       {error && (
         <div className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-3 text-sm text-[color:var(--danger)]">
           {error}
@@ -213,7 +222,13 @@ export function AgentsDashboard({
           agents={standardAgents}
           currentSlug={defaultSlug}
           disabled={pending || !!busy}
-          onChange={(slug) => run(DEFAULT_AGENT_LABEL, () => setInstanceDefaultAgent(slug))}
+          onChange={(slug) =>
+            run(DEFAULT_AGENT_LABEL, () =>
+              broadReach.guard(standardAgents.find((a) => a.slug === slug)?.name ?? '', (confirm) =>
+                setInstanceDefaultAgent(slug, { confirmBroadReach: confirm }),
+              ),
+            )
+          }
         />
       </section>
 
@@ -262,7 +277,9 @@ export function AgentsDashboard({
               }
               onReplacePlugins={(plugins) =>
                 run(`plugins:${agent.slug}`, () =>
-                  replaceAgentPlugins(agent.slug, plugins),
+                  broadReach.guard(agent.name, (confirm) =>
+                    replaceAgentPlugins(agent.slug, plugins, { confirmBroadReach: confirm }),
+                  ),
                 )
               }
               onReplaceBindings={(bindings) =>
@@ -645,6 +662,8 @@ function AgentCard(props: {
                 })}
               </span>
             )}
+            {/* #2054 — every agent's reach, at a glance (spec 2042 §5.7). */}
+            <AgentReachSummary reach={agent.reach} />
           </span>
         </button>
         <div className="flex flex-col items-end gap-2">
@@ -736,6 +755,12 @@ function AgentCard(props: {
               {t('actionKill')}
             </Button>
           </div>
+
+          {agent.reach !== undefined ? (
+            <div className="mb-6">
+              <AgentReachPanel reach={agent.reach} />
+            </div>
+          ) : null}
 
           <div className="mb-6">
             <h4 className="mb-2 text-sm font-medium">

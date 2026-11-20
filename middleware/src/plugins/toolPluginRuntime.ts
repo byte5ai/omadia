@@ -48,6 +48,7 @@ import { assertStartable, PluginNotStartableError } from './coreCompat.js';
 import type { InstalledRegistry } from './installedRegistry.js';
 import type { JobScheduler } from './jobScheduler.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
+import { isDataOnlyPlugin, pluginRuntimeOf } from './pluginRuntimeOf.js';
 import { topoSortByDependsOn } from './topoSort.js';
 import type { UploadedPackageStore } from './uploadedPackageStore.js';
 
@@ -258,16 +259,11 @@ export class ToolPluginRuntime {
     for (const id of ids) {
       const catalogEntry = this.deps.catalog.get(id);
       if (!catalogEntry) continue;
-      if (
-        catalogEntry.plugin.kind !== 'tool' &&
-        catalogEntry.plugin.kind !== 'extension' &&
-        // #2088 — an archetype plugin runs like an extension: it registers
-        // tools and jobs for the agents of its archetype.
-        catalogEntry.plugin.kind !== 'archetype' &&
-        catalogEntry.plugin.kind !== 'integration'
-      ) {
-        continue;
-      }
+      // Every kind this runtime runs (`pluginRuntimeOf`), archetype plugins
+      // included (#2088): they register tools and jobs for their agents.
+      if (pluginRuntimeOf(catalogEntry.plugin.kind) !== 'tool') continue;
+      // OB-29-5 — builder-reference plugins never run (see activate()).
+      if (catalogEntry.plugin.is_reference_only === true) continue;
       const reg = this.deps.registry.get(id);
       if (!reg || reg.status !== 'active') continue;
       eligible.push(id);
@@ -386,6 +382,13 @@ export class ToolPluginRuntime {
       throw new Error(`tool-runtime: ${agentId} not in plugin catalog`);
     }
     assertStartable(catalogEntry.plugin);
+    // OB-29-5 — a builder-reference plugin (now a capability plugin, spec
+    // 2042 §5.10) is a read_reference pattern source only; it never runs.
+    if (catalogEntry.plugin.is_reference_only === true) {
+      throw new Error(
+        `tool-runtime: cannot activate '${agentId}' — plugin is marked is_reference_only=true (Builder-Reference, read_reference-only)`,
+      );
+    }
 
     // Issue #474 (round 5) — refresh the automatic OAuth-connection signal
     // BEFORE the plugin's own activate() runs, so a plugin that separately
@@ -399,6 +402,13 @@ export class ToolPluginRuntime {
         catalogEntry,
         this.deps.vault,
       );
+    }
+
+    // Spec 2042 §5.10 — an agent template (or a skill package without code)
+    // delivers data only: nothing is imported, nothing runs.
+    if (isDataOnlyPlugin(catalogEntry.plugin.kind, catalogEntry.manifest)) {
+      await this.activateDataOnly(catalogEntry, packagePath);
+      return;
     }
 
     const entryRel = extractEntryPath(catalogEntry) ?? 'dist/plugin.js';
@@ -906,6 +916,31 @@ export class ToolPluginRuntime {
 
   activeIds(): string[] {
     return Array.from(this.active.keys());
+  }
+
+  /** A data-only package is active once it is in the catalog: no code, no
+   *  context, nothing to close. */
+  private async activateDataOnly(catalogEntry: PluginCatalogEntry, packagePath: string): Promise<void> {
+    const log = this.deps.log ?? ((m) => console.log(m));
+    const agentId = catalogEntry.plugin.id;
+    this.active.set(agentId, { agentId, handle: { close: async () => {} }, extDisposes: [] });
+    try {
+      await this.deps.registry.markActivationSucceeded(agentId);
+    } catch (err) {
+      log(
+        `[tool-runtime] registry markActivationSucceeded FAILED for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (this.deps.onActivated) {
+      try {
+        await this.deps.onActivated(catalogEntry, packagePath);
+      } catch (err) {
+        log(
+          `[tool-runtime] onActivated hook FAILED for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    log(`[tool-runtime] ACTIVATED ${agentId} (${catalogEntry.plugin.kind}, data only)`);
   }
 
   private resolvePackagePath(agentId: string): string | undefined {

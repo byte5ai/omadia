@@ -1026,7 +1026,6 @@ export function MessageRow({
             {message.proactive && <ProactiveBadge proactive={message.proactive} />}
             {message.fastPathDecision !== undefined && <DecisionBadge decision={message.fastPathDecision} />}
             {message.routing && <TriageBadge routing={message.routing} />}
-            {message.persona && <PersonaBadge persona={message.persona} />}
             {message.recalledContext && (
               <RecalledContextCard recalled={message.recalledContext} />
             )}
@@ -1153,7 +1152,8 @@ export function MessageRow({
           (message.telemetry ||
             elapsed ||
             message.turnId !== undefined ||
-            message.verifier) && (
+            message.verifier ||
+            message.workingMode) && (
             <div className="mt-2 flex flex-wrap items-center border-t border-current/10 pt-2 text-[11px] text-[color:var(--fg-muted)]">
               {message.telemetry && (
                 <span>
@@ -1169,6 +1169,7 @@ export function MessageRow({
                   {shortModelName(message.model)}
                 </span>
               )}
+              {message.workingMode && <WorkingModeDetail mode={message.workingMode} />}
               {message.systemData && <SystemDataBadge />}
               {message.verifier && (
                 <VerifierBadge summary={message.verifier} systemData={message.systemData === true} />
@@ -1443,46 +1444,26 @@ function TriageBadge({
 }
 
 /**
- * Wave 8 — inline persona chip — rendered at the top of an assistant turn as
- * soon as the direct-answer persona classifier resolves (the `turn_persona`
- * event). Shows which persona skill answered this turn, or that the Agent
- * kept its default identity.
+ * #2051 — the turn's working mode, in the answer's details row (§5.14: not a
+ * chip above the message). Rendered only when a mode was selected; a turn
+ * without one ran on the agent's default behaviour and needs no note. A mode
+ * is how the agent worked, never who answered — so the label says "mode: X",
+ * and the agent's name stays where it is.
  */
-function PersonaBadge({
-  persona,
+function WorkingModeDetail({
+  mode,
 }: {
-  persona: {
-    bucket: 'matched' | 'none' | 'fallback';
-    classifierModel: string;
-    skillId: string | null;
-    skillName: string | null;
-  };
-}): React.ReactElement {
-  const t = useTranslations('chat');
-  const isMatched = persona.bucket === 'matched' && persona.skillName;
-  const isFallback = persona.bucket === 'fallback';
-  const cls = isMatched
-    ? 'bg-[color:var(--accent)]/10 text-[color:var(--accent)] ring-[color:var(--accent)]'
-    : isFallback
-      ? 'bg-[color:var(--warning)]/10 text-[color:var(--warning)] ring-[color:var(--warning)]'
-      : 'bg-[color:var(--fg-subtle)]/10 text-[color:var(--fg-subtle)] ring-[color:var(--fg-subtle)]';
-  const label = isMatched
-    ? t('persona.matched', { name: persona.skillName ?? '' })
-    : isFallback
-      ? t('persona.fallback')
-      : t('persona.none');
+  mode: NonNullable<Message['workingMode']>;
+}): React.ReactElement | null {
+  const t = useTranslations('chat.workingMode');
+  if (mode.bucket !== 'matched' || !mode.modeName) return null;
   return (
-    <div
-      className="mb-2 inline-flex flex-wrap items-center gap-2 text-[11px] text-[color:var(--fg-muted)]"
-      title={`${t('persona.title')}: ${shortModelName(persona.classifierModel)} → ${persona.bucket}`}
+    <span
+      className="ml-3"
+      title={t('title', { classifier: shortModelName(mode.classifierModel) })}
     >
-      <span className="font-medium uppercase tracking-[0.12em]">{t('persona.title')}</span>
-      <span
-        className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ring-1 ${cls}`}
-      >
-        {label}
-      </span>
-    </div>
+      {t('label', { name: mode.modeName })}
+    </span>
   );
 }
 

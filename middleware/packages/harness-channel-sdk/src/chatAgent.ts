@@ -1,6 +1,8 @@
 import type {
   CaptureDisclosure,
   ChannelKind,
+  Contribution,
+  DataPayload,
   PrivacyReceipt,
   RecalledContext,
   Speaker,
@@ -355,6 +357,9 @@ export interface RunAgentInvocation {
   /** The sub-agent did not run in this pass: a verifier re-entry handed back
    *  the first run's answer and inner calls (see `RunToolCall.replayed`). */
   replayed?: boolean;
+  /** #2050 — the run was the agent's own internal helper (a DB sub-agent), not
+   *  another agent: part of the agent's work, never listed as consulted. */
+  internalHelper?: boolean;
 }
 
 /**
@@ -393,6 +398,13 @@ export interface RunTracePayload {
    */
   model?: string;
   provider?: string;
+  /**
+   * #2051 — the working mode the turn ran in (the skill id and its name),
+   * present only when one was selected. Mirrors `RunTrace.workingMode` in
+   * `@omadia/plugin-api`. Trace data for details and audit: a mode shapes how
+   * the agent worked, it never changes who answered.
+   */
+  workingMode?: { skillId: string; name: string };
 }
 
 /**
@@ -707,6 +719,13 @@ export interface ChatTurnInput {
  * call `runTurn()` instead.
  */
 export interface ChatTurnResult {
+  /**
+   * #2047 (spec 2042 §5.4) — colleagues' delivered contributions, in order:
+   * each consulted agent's own block, delivered by the harness from its
+   * output, never reworded by the speaking agent. `toSemanticAnswer` forwards
+   * it to `SemanticAnswer.contributions`.
+   */
+  contributions?: readonly Contribution[];
   answer: string;
   toolCalls: number;
   iterations: number;
@@ -878,6 +897,14 @@ export interface ChatTurnResult {
    */
   answerVerbosity?: AnswerVerbosityInfo;
   /**
+   * #2085 — side-channel data this turn delivered (spec 2042 §5.13), from
+   * the turn's data collector, never from model output. `answer` stays the
+   * agent's prose: `toSemanticAnswer` renders the data into
+   * `SemanticAnswer.text` and forwards `data` + `textWithoutData`. Omitted
+   * when the turn delivered none.
+   */
+  data?: readonly DataPayload[];
+  /**
    * AI-Act Art. 50 — the AI disclosure the orchestrator resolved for this turn
    * (#643, epic #642). `toSemanticAnswer` forwards it to
    * `SemanticAnswer.aiDisclosure` and folds its line into `text`. The per-turn
@@ -961,19 +988,20 @@ export type ChatStreamEvent =
       provider?: string;
     }
   /**
-   * Wave 8 — per-turn direct-answer persona verdict. Emitted ONCE at turn
-   * start, right after the persona classifier resolves — only when the Agent
-   * has one or more persona skills attached. `skillId: null` means the
-   * classifier picked the Agent's default identity (`bucket: 'none'`) or the
-   * classifier call itself failed (`bucket: 'fallback'`). Lets the UI show
-   * which persona is answering, the same way `turn_routing` shows the model.
+   * #2051 — per-turn working-mode verdict (formerly `turn_persona`). Emitted
+   * ONCE at turn start, right after the mode classifier resolves — only when
+   * the Agent has one or more working modes attached. `skillId: null` means
+   * no mode fits (`bucket: 'none'`) or the classifier call itself failed
+   * (`bucket: 'fallback'`); the agent then works in its default way. Data for
+   * the answer's details and trace, never a speaker: the agent answering the
+   * turn does not change with its mode (INV-3).
    */
   | {
-      type: 'turn_persona';
+      type: 'turn_working_mode';
       bucket: 'matched' | 'none' | 'fallback';
       classifierModel: string;
       skillId: string | null;
-      skillName: string | null;
+      modeName: string | null;
     }
   /**
    * Answer text as the model streams it — a preview; `done.answer` is
@@ -1259,6 +1287,15 @@ export type ChatStreamEvent =
        */
       aiDisclosure?: AiDisclosure;
       /**
+       * #2085 — side-channel data (spec 2042 §5.13); see
+       * `SemanticAnswer.data`. `answer` above already holds its markdown
+       * rendering (after the prose, before the disclosure fold);
+       * `textWithoutData` is `answer` without it. Both omitted when the turn
+       * delivered no data.
+       */
+      data?: readonly DataPayload[];
+      textWithoutData?: string;
+      /**
        * #332 Layer 1 (gap-closure) — curated, tamper-evident projection of
        * `runTrace.agentInvocations`, identical in shape and derivation to
        * `SemanticAnswer.agentsConsulted` (see `deriveAgentsConsulted` in
@@ -1267,6 +1304,11 @@ export type ChatStreamEvent =
        * field gives every channel the SAME harness-built array.
        */
       agentsConsulted?: AgentConsultation[];
+      /**
+       * #2047 — colleagues' delivered contributions of this turn; the
+       * streaming twin of {@link ChatTurnResult.contributions}.
+       */
+      contributions?: readonly Contribution[];
       /**
        * Phase 3 — the answer-size level this turn was generated under (see
        * {@link ChatTurnResult.answerVerbosity}); the streaming twin so the

@@ -318,7 +318,7 @@ describe('`done` carries the disclosure', () => {
       fastPath: () => ({
         channelEnabled: () => true,
         triageChatTurn: () =>
-          Promise.resolve({ kind: 'answer', text: 'rows', tool: 'odoo_query', rows: 2, toolCalls: 1, ms: 30 }),
+          Promise.resolve({ kind: 'answer', text: 'rows', summary: 'rows', table: { kind: 'table' as const, columns: [], rows: [] }, tool: 'odoo_query', rows: 2, toolCalls: 1, ms: 30 }),
       }),
       logSession: (entry: SessionLogEntry) => logger.log(entry),
       privacyGuarded: () => false,

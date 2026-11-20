@@ -120,10 +120,14 @@ describe('AgentIdentity — facilitator (#2066)', () => {
     renderWithIntl(<AgentIdentity slug="mod" archetype="facilitator" />);
     await openTab('character');
     await userEvent.click(screen.getByTestId('agent-persona-template-toggle'));
-    const cards = screen.getAllByTestId(/^agent-persona-template-(?!toggle|badge)/);
-    for (const card of cards) {
-      await userEvent.click(card);
-      await userEvent.click(screen.getByTestId('agent-persona-template-toggle'));
+    const ids = screen
+      .getAllByTestId(/^gallery-card-(?!custom)/)
+      .map((card) => card.getAttribute('data-testid') ?? '');
+    for (const [i, id] of ids.entries()) {
+      if (i > 0) await userEvent.click(screen.getByTestId('agent-persona-template-toggle'));
+      await userEvent.click(screen.getByTestId(id));
+      await userEvent.click(screen.getByTestId('gallery-apply'));
+      await waitFor(() => expect(screen.queryByTestId('persona-template-gallery')).toBeNull());
     }
     if (screen.queryByTestId('dimension-slider-drama') === null) {
       await userEvent.click(screen.getByTestId('agent-persona-extended-toggle'));

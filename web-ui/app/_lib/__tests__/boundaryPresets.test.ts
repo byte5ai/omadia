@@ -33,7 +33,7 @@ function sharedPresets(): Array<{ id: string; category: string; labelKey: string
 
 describe('web-ui boundary presets mirror the plugin-api library', () => {
   it('reads the shared library (guards the parser itself)', () => {
-    expect(sharedPresets()).toHaveLength(12);
+    expect(sharedPresets()).toHaveLength(13);
   });
 
   it('has the same ids, categories and label keys, in the same order', () => {
