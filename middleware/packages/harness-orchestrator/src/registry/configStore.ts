@@ -1176,15 +1176,6 @@ function isUndefinedTable(err: unknown): boolean {
   );
 }
 
-/** A violation raised with a named constraint (CHECK or a trigger's RAISE). */
-function isConstraintViolation(err: unknown, constraint: string): boolean {
-  return (
-    !!err &&
-    typeof err === 'object' &&
-    (err as { constraint?: string }).constraint === constraint
-  );
-}
-
 function isUniqueViolation(err: unknown, constraint?: string): boolean {
   if (!err || typeof err !== 'object') return false;
   const code = (err as { code?: string }).code;
