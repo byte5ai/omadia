@@ -44,12 +44,12 @@ changelog.
   (facilitator) and a mode with `requires_tools` (422
   `facilitator_contract_violation`); `PATCH /builder/skills/:id` re-checks a
   skill held as such a mode; the build drops identity-replacing modes.
-- Migration `0102_agent_archetype_settings`: `agents.archetype_settings`
+- Migration `0106_agent_archetype_settings`: `agents.archetype_settings`
   (JSON object) for the per-agent settings an archetype declares
   (`archetype.agent_settings`, types `enum`, `number_list`).
   `GET/PUT /api/v1/operator/agents/:slug/archetype-settings`, audited as
   `agent.archetype_settings_change`.
-- `@omadia/plugin-api` 1.79.0 (additive): optional
+- `@omadia/plugin-api` 1.80.0 (additive): optional
   `AgentProfile.archetypeSettings`.
 - The agent list carries `own_identity_channels`; the web-ui shows a
   facilitator ready with an own identity on any channel and has a

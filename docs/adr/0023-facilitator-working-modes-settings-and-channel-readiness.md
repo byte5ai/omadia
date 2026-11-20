@@ -66,10 +66,10 @@ descriptor fields of the archetype?
 - An archetype descriptor may declare `agent_settings` (manifest
   `archetype.agent_settings`): fields of type `enum` or `number_list`, with en/de labels. The
   kernel reads them strictly (unknown type → manifest refused), stores the values per agent
-  (`agents.archetype_settings`, migration 0102), validates them against the fields
+  (`agents.archetype_settings`, migration 0106), validates them against the fields
   (`GET/PUT /api/v1/operator/agents/:slug/archetype-settings`, audited as
   `agent.archetype_settings_change`) and hands them to the plugin as
-  `AgentProfile.archetypeSettings` (plugin-api 1.79.0, optional).
+  `AgentProfile.archetypeSettings` (plugin-api 1.80.0, optional).
 - An unset field means the plugin's instance setting applies; the instance setting stays
   the default. Numbers are bounded by the kernel (at most 10 000); each save fires the
   `agents` notify trigger and so a registry reload, which is acceptable for a rare
@@ -86,8 +86,9 @@ descriptor fields of the archetype?
 ### 3. Readiness per channel identity
 
 - The agent list carries `own_identity_channels`: the channel types the kernel routes an
-  own identity of the agent on (`ConfigStore.listChannelIdentities`, Teams today, other
-  channels' bots as their identities arrive with S7, #2145).
+  own identity of the agent on (`ConfigStore.listChannelIdentities`: Teams and the other
+  channels' own bots since S7, #2145, migration 0105). The facilitator's page offers both:
+  the Teams identity and its own bots on Slack, Discord and Telegram.
 - The operator UI calls a facilitator ready when the engine is usable and attached and it
   has an own identity on at least one channel; it names those channels. Teams provisioning
   states are shown only as the reason when no channel is ready.
@@ -112,8 +113,9 @@ item is not built.
 - 🟢 **Good:** A facilitator is ready on Slack, Discord or Telegram without Teams.
 - 🔴 **Bad:** The identity check is a pattern list; a paraphrase can pass. It still lands
   beneath the identity, whose precedence line and neutrality block hold.
-- ⚪ **Neutral:** Live field runs on Slack, Discord and Telegram need the own bots of S7
-  (#2145); until then they are covered by the plugin's simulated-transport scenario.
+- ⚪ **Neutral:** The field scenario without Teams is covered by the plugin's
+  simulated-transport suite and the kernel's identity tables; a live run with real Slack,
+  Discord and Telegram bots needs their credentials and is part of the release checklist.
 
 ## More Information
 

@@ -1,6 +1,6 @@
 /**
  * #2066 (spec 2043 §7) — per-agent archetype settings (`agents.archetype_settings`,
- * migration 0102): empty by default, merged per key, `null` removes a key, the
+ * migration 0106): empty by default, merged per key, `null` removes a key, the
  * column only holds an object, and a deleted agent has none.
  */
 
@@ -65,6 +65,20 @@ describe('#2066 agents.archetype_settings (pg)', { skip: !pgAvailable }, () => {
       pool.query(`UPDATE agents SET archetype_settings = '[]'::jsonb WHERE id = $1`, [agent.id]),
       /agents_archetype_settings_object_check/,
     );
+  });
+
+  // #2066 field scenario without Teams, on the real tables (S7, migration
+  // 0105): a facilitator with only its own Telegram bot is routed on
+  // Telegram, which is what readiness per channel and its profile read.
+  it('a facilitator with only a Telegram bot has an own identity on telegram, not on teams', async () => {
+    const config = new ConfigStore(pool);
+    const agent = await config.createAgent({ slug: 'tilda', name: 'Tilda', archetype: 'facilitator' });
+    await pool.query(
+      `INSERT INTO agent_channel_identities (agent_id, channel_type, channel_key) VALUES ($1, 'telegram', 'tg:4242')`,
+      [agent.id],
+    );
+    const own = (await config.listChannelIdentities()).filter((i) => i.agentId === agent.id);
+    assert.deepEqual(own.map((i) => [i.channelType, i.channelKey]), [['telegram', 'tg:4242']]);
   });
 
   it('a deleted agent has no settings and takes none', async () => {

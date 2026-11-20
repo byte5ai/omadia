@@ -10007,7 +10007,7 @@ enthält **keine** Facilitation-Tabellen. Spec: `specs/2043-native-facilitators/
   `archetype.agent_settings`, Typen `enum` und `number_list`, strikt gelesen
   in `plugins/archetypeManifest.ts`, über `manifestLoader`/
   `archetypeRegistrySync` in die Registry). Werte pro Agent in
-  `agents.archetype_settings` (Migration 0102,
+  `agents.archetype_settings` (Migration 0106,
   `platform/agentArchetypeSettingsStore.ts`, Grabsteine ausgenommen).
 - `GET/PUT /api/v1/operator/agents/:slug/archetype-settings`
   (`routes/operatorAgentArchetypeSettings.ts`, vor dem Agents-Router
@@ -10016,7 +10016,7 @@ enthält **keine** Facilitation-Tabellen. Spec: `specs/2043-native-facilitators/
   422 `invalid_archetype_settings`, Audit `agent.archetype_settings_change`.
   Jeder Save feuert den `agents`-Notify-Trigger und damit ein Registry-Reload.
 - `agentTurn@2` `getProfile` gibt die Werte, die noch zu den Feldern passen,
-  als `AgentProfile.archetypeSettings` ans Plugin (plugin-api 1.79.0);
+  als `AgentProfile.archetypeSettings` ans Plugin (plugin-api 1.80.0);
   nicht gesetzt = Instanz-Einstellung des Plugins.
 - `GET /api/v1/operator/agents` trägt `own_identity_channels`
   (`ConfigStore.listChannelIdentities`). Die web-ui nennt einen Facilitator

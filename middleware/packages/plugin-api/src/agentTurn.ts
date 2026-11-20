@@ -66,7 +66,7 @@ export interface AgentProfile {
    * manifest): a string for an `enum` field, a list of numbers for a
    * `number_list` field. Only fields that are set appear; a missing key means
    * the plugin's own instance setting applies. Absent on a kernel older than
-   * 1.79.0, and when nothing is set.
+   * 1.80.0, and when nothing is set.
    */
   archetypeSettings?: Readonly<Record<string, string | readonly number[]>>;
 }
