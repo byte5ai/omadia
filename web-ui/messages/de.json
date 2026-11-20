@@ -1028,11 +1028,7 @@
       "inert": "Konfiguriert, aber noch nicht wirksam: {channels}. Turns auf diesen Channels melden ihren Channel-Typ nicht, daher gilt dort die globale Einstellung.",
       "note": "Das ist deine Entscheidung als Betreiber — es wird nichts blockiert. Angezeigt, damit eine Einstellung aus einem Test-Setup nicht unbemerkt bleibt.",
       "frequency": "Sichtbare KI-Marker erscheinen {frequency}.",
-      "frequencyValue": {
-        "channel_default": "wie ausgeliefert",
-        "per_answer": "bei jeder Antwort",
-        "per_conversation": "einmal pro Konversation"
-      },
+      "frequencyValue": {"channel_default": "wie ausgeliefert", "per_answer": "bei jeder Antwort", "per_conversation": "einmal pro Konversation"},
       "level": {
         "standard": "volle Kennzeichnung",
         "concise": "kurze Kennzeichnung",
@@ -3219,7 +3215,10 @@
       "purging": "Wird entfernt",
       "purgeConfirm": "„{slug}“ endgültig entfernen? Identität, Freigaben, Zuordnungen und Zeitpläne werden mitgelöscht. Das lässt sich nicht rückgängig machen.",
       "purgeTypeSlug": "Dieser Agent wurde vor weniger als {days, plural, one {# Tag} other {# Tagen}} gelöscht. Tippe seinen Slug „{slug}“ ein, um ihn jetzt zu entfernen:",
-      "purgeableFrom": "ohne Eingabe des Slugs entfernbar ab {when}"
+      "purgeableFrom": "ohne Eingabe des Slugs entfernbar ab {when}",
+      "purgeFailed": "Der Agent konnte nicht entfernt werden.",
+      "botReleaseFailed": "Die eigenen Bots des Agenten ließen sich nicht anhalten, deshalb wurde nichts entfernt. Versuch es noch einmal.",
+      "botsNotReleased": "Entfernt. Seine eigenen Bots ({bots}) wurden nicht angehalten, weil ihr Kanal-Plugin nicht aktiv ist; es hat ihre Tokens womöglich noch: Widerrufe sie auf der Plattform."
     },
     "archetype": {
       "deliveredBy": "Geliefert vom Archetyp-Plugin „{plugin}“. omadia setzt für jeden Agenten in diesem Abschnitt durch, was der Archetyp hinzufügt und weglässt.",

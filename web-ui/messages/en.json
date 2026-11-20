@@ -1028,11 +1028,7 @@
       "inert": "Configured but not yet in effect: {channels}. Turns on these channels do not report their channel type, so they use the global setting.",
       "note": "This is your decision as the operator — nothing is blocked. Shown so a setting from a test setup does not go unnoticed.",
       "frequency": "Visible AI markers appear {frequency}.",
-      "frequencyValue": {
-        "channel_default": "as delivered",
-        "per_answer": "on every answer",
-        "per_conversation": "once per conversation"
-      },
+      "frequencyValue": {"channel_default": "as delivered", "per_answer": "on every answer", "per_conversation": "once per conversation"},
       "level": {
         "standard": "full marking",
         "concise": "short marking",
@@ -3219,7 +3215,10 @@
       "purging": "Removing",
       "purgeConfirm": "Remove “{slug}” for good? Its identity, grants, bindings and schedules are deleted with it. This cannot be undone.",
       "purgeTypeSlug": "This agent was deleted less than {days, plural, one {# day} other {# days}} ago. Type its slug “{slug}” to remove it now:",
-      "purgeableFrom": "can be removed without typing the slug from {when}"
+      "purgeableFrom": "can be removed without typing the slug from {when}",
+      "purgeFailed": "The agent could not be removed.",
+      "botReleaseFailed": "The agent's own bots could not be stopped, so nothing was removed. Try again.",
+      "botsNotReleased": "Removed. Its own bots ({bots}) were not stopped because their channel plugin is not active, so it may still hold their tokens: revoke them on the platform."
     },
     "archetype": {
       "deliveredBy": "Delivered by the archetype plugin “{plugin}”. omadia enforces what the archetype adds and leaves out for every agent in this section.",

@@ -330,7 +330,14 @@ export async function listDeletedAgents(): Promise<{ retention_days: number; age
 
 /** `confirm`: the agent's slug, required while it was deleted less than the
  *  retention period ago (409 `purge_confirmation_required` otherwise). */
-export async function purgeDeletedAgent(id: string, confirm?: string): Promise<{ ok: boolean }> {
+export interface PurgeDeletedAgentResult {
+  ok: boolean;
+  /** Own bots (`<channelType>:<key>`) whose channel plugin was not active:
+   *  the plugin may still hold their tokens (spec 2042 §5.3). */
+  bots_not_released?: string[];
+}
+
+export async function purgeDeletedAgent(id: string, confirm?: string): Promise<PurgeDeletedAgentResult> {
   return callJson(`/v1/operator/agents/deleted/${encodeURIComponent(id)}/purge`, {
     method: 'POST',
     body: JSON.stringify(confirm !== undefined ? { confirm } : {}),
