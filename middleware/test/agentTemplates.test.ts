@@ -167,8 +167,9 @@ describe('GET /api/v1/admin/agent-templates', () => {
       quality: null,
     });
     // The status and the slug are the Agent Builder's; nothing is granted.
-    assert.equal(body['agent']?.['status'], undefined);
-    assert.equal(body['agent']?.['slug'], undefined);
+    const agent: Record<string, unknown> = body['agent'] ?? {};
+    assert.equal(Object.hasOwn(agent, 'status'), false);
+    assert.equal(Object.hasOwn(agent, 'slug'), false);
   });
 
   it('answers 404 for a template of a plugin that is not installed, 400 without a reference', async () => {
