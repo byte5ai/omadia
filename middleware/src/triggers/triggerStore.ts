@@ -745,10 +745,14 @@ export class TriggerStore {
         `UPDATE agent_triggers
             SET state = 'active', pause_reason = NULL, consecutive_failures = 0,
                 consecutive_ineffective = 0, updated_at = now()
-          WHERE id = $1 RETURNING *`,
+          WHERE id = $1 AND state = 'paused' RETURNING *`,
         [id],
       );
-      if (!rows[0]) return undefined;
+      if (!rows[0]) {
+        // Already active (or gone): nothing to resume, no second occurrence.
+        const { rows: current } = await client.query<TriggerRowDb>('SELECT * FROM agent_triggers WHERE id = $1', [id]);
+        return current[0] ? toTrigger(current[0]) : undefined;
+      }
       const t = toTrigger(rows[0]);
       if (nextDueAt) await this.insertTimerOccurrence(client, id, nextDueAt);
       await this.auditIn(client, t, 'resumed', { by });
