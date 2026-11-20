@@ -52,6 +52,6 @@ describe('<AgentUnavailableBanner />', () => {
     // The way out is a link to LLM access.
     const link = screen.getByRole('link', { name: /open llm access/i });
     expect(link.getAttribute('href')).toBe('/admin/providers');
-    expect(screen.getByText(/no orchestrator is running/i)).toBeTruthy();
+    expect(screen.getByText(/no agent is running/i)).toBeTruthy();
   });
 });

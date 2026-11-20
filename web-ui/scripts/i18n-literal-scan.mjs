@@ -81,7 +81,7 @@ const SPEC_KEYWORDS = new Set([
 
 /** Product nouns from `messages/GLOSSARY.md` — English by decision, not by neglect. */
 const BRAND_TERMS = new Set([
-  'omadia', 'byte5', 'privacy shield', 'orchestrator', 'orchestrators',
+  'omadia', 'byte5', 'privacy shield',
   'conductor', 'turn', 'run', 'tool', 'tools', 'skill', 'skills', 'guard',
   'trace', 'token', 'tokens', 'cache', 'stream', 'sycophancy',
 ]);
