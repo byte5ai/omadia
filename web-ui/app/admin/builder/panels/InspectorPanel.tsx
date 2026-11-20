@@ -28,6 +28,8 @@ import { SkillEditor } from '../../../_components/admin/SkillEditor';
 import { SkillVerdictBadge } from '../../../_components/admin/SkillVerdictBadge';
 import type { BuilderNodeData } from '../nodes/types';
 import { helperRefusalCode } from '../helperRefusal';
+import { AgentAvailabilitySection } from './AgentAvailabilitySection';
+import { AgentTemplateExportSection } from './AgentTemplateExportSection';
 import { Field, inputCls, SaveButton } from './InspectorControls';
 
 export interface InspectorPanelProps {
@@ -234,6 +236,12 @@ function AgentEditor({
       />
       <div className="mt-2 border-t border-[color:var(--border)] pt-3">
         <PersonaSkillsSection slug={slug} agent={agent} onSaved={onSaved} />
+      </div>
+      <div className="mt-2 border-t border-[color:var(--border)] pt-3">
+        <AgentAvailabilitySection slug={slug} />
+      </div>
+      <div className="mt-2 border-t border-[color:var(--border)] pt-3">
+        <AgentTemplateExportSection slug={slug} />
       </div>
     </div>
   );

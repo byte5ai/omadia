@@ -449,7 +449,71 @@
         "confirmAttachAction": "Attach anyway",
         "confirmAttachHighRisk": "This skill's heuristic scan is at high risk ({codes}). As a working mode it shapes how the agent works, with the agent's full tool access. Confirm you've reviewed it before attaching."
       },
-      "facilitatorsNote": "Facilitators are not listed here: channels, helpers, tools, MCP servers and schedules cannot be wired to them."
+      "facilitatorsNote": "Facilitators are not listed here: channels, helpers, tools, MCP servers and schedules cannot be wired to them.",
+      "newAgent": {
+        "open": "New agent",
+        "title": "New agent",
+        "sourceLabel": "Start from",
+        "blank": "Blank agent",
+        "blankHint": "Or pick an agent template of an installed plugin: it fills in name, identity and personality and suggests capabilities.",
+        "templateOption": "{name} — {plugin}",
+        "templatesLoading": "Loading agent templates…",
+        "templatesError": "Agent templates could not be loaded: {detail}",
+        "templatesEmpty": "No installed plugin ships an agent template.",
+        "archetypeUnavailable": "This template is for agents of the archetype “{archetype}”, which is not installed here.",
+        "prefillError": "The template could not be loaded: {detail}",
+        "nameLabel": "Name",
+        "slugLabel": "Address (slug)",
+        "slugHint": "Lowercase letters, digits and hyphens.",
+        "descriptionLabel": "Description",
+        "capabilitiesLabel": "Capabilities",
+        "capabilitiesHint": "The template suggests these. Only what you tick is granted.",
+        "capabilitiesNone": "The template suggests no capabilities.",
+        "capabilityNotInstalled": "{plugin} (not installed)",
+        "capabilityNotGrantable": "{plugin} (not a capability plugin)",
+        "enableLabel": "Enable the agent after creating it",
+        "enableHint": "Left unticked, the agent stays a draft that nobody can reach until you enable it.",
+        "create": "Create agent",
+        "creating": "Creating…",
+        "cancel": "Cancel",
+        "close": "Close",
+        "steps": {
+          "create": "create draft",
+          "identity": "identity",
+          "availability": "availability",
+          "grants": "capabilities",
+          "enable": "enable"
+        },
+        "failed": "Step “{step}” failed: {detail}",
+        "declined": "You did not confirm the grant, so no capability was granted.",
+        "stepDone": "✓ {step}",
+        "stepFailed": "✗ {step}",
+        "stepNotRun": "– {step} (not run)",
+        "draftKept": "The draft “{slug}” stays. Open it to fix what is missing, or delete it.",
+        "draftDeleted": "The draft was deleted.",
+        "notCreated": "No agent was created.",
+        "openDraft": "Open draft",
+        "deleteDraft": "Delete draft",
+        "deleting": "Deleting…",
+        "deleteFailed": "The draft could not be deleted: {detail}"
+      },
+      "availability": {
+        "title": "Availability",
+        "loading": "Loading availability…",
+        "loadError": "Availability could not be loaded: {detail}",
+        "notReported": "This middleware does not report who may reach this agent yet.",
+        "save": "Save availability",
+        "saved": "Availability saved.",
+        "saveError": "Availability could not be saved: {detail}"
+      },
+      "exportTemplate": {
+        "title": "Export as template",
+        "hint": "The agent's name, descriptions, instructions, language, persona, quality and granted capabilities as one agent_templates entry. Never secrets, memory or channel bindings.",
+        "download": "Download YAML",
+        "showJson": "Show JSON",
+        "hideJson": "Hide JSON",
+        "loadError": "The export failed: {detail}"
+      }
     }
   },
   "selfExtension": {
@@ -3645,7 +3709,6 @@
         "role": "Role: {role}",
         "customLabel": "Custom",
         "customDescription": "Apply no template — use your own axes.",
-        "prefillSkill": "Also prefill skill fields ({role})",
         "cancel": "Cancel",
         "apply": "Apply",
         "applying": "Applying…",
@@ -7211,5 +7274,19 @@
       "failed": "The agent could not be created: {detail}",
       "loadFailed": "The first-run setup could not be loaded: {detail}"
     }
+  },
+  "agentAvailability": {
+    "legend": "Who can reach this agent",
+    "everyone": "Everyone",
+    "principalsHint": "Or only these users and roles:",
+    "principalLabel": "User or role",
+    "principalPlaceholder": "user:… or role:…",
+    "addPrincipal": "Add",
+    "removePrincipal": "Remove {principal}",
+    "principalInvalid": "Enter “user:” followed by a user id, or “role:” followed by a role name.",
+    "restrictChannels": "Only in some channels",
+    "channelsLabel": "Channels (comma-separated)",
+    "channelsPlaceholder": "teams, web",
+    "reachesNobody": "Nobody can reach this agent with these settings."
   }
 }

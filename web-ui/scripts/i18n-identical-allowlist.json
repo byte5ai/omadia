@@ -99,6 +99,7 @@
     "operatorAgents.detailTabs.memory": "glossary",
     "system.vaultStatus.keySourceEnv": "code",
     "system.platformHealth.eyebrow": "code",
-    "chat.decision.stats": "placeholder"
+    "chat.decision.stats": "placeholder",
+    "agentAvailability.channelsPlaceholder": "placeholder"
   }
 }

@@ -449,7 +449,71 @@
         "confirmAttachAction": "Trotzdem anhängen",
         "confirmAttachHighRisk": "Der heuristische Scan dieses Skills zeigt hohes Risiko ({codes}). Als Arbeitsmodus prägt er, wie der Agent arbeitet, mit dessen vollem Tool-Zugriff. Bestätige, dass du ihn geprüft hast, bevor du ihn anhängst."
       },
-      "facilitatorsNote": "Facilitatoren sind hier nicht aufgeführt: Channels, Helfer, Tools, MCP-Server und Zeitpläne lassen sich mit ihnen nicht verdrahten."
+      "facilitatorsNote": "Facilitatoren sind hier nicht aufgeführt: Channels, Helfer, Tools, MCP-Server und Zeitpläne lassen sich mit ihnen nicht verdrahten.",
+      "newAgent": {
+        "open": "Neuer Agent",
+        "title": "Neuer Agent",
+        "sourceLabel": "Ausgangspunkt",
+        "blank": "Leerer Agent",
+        "blankHint": "Oder wähle eine Agentenvorlage eines installierten Plugins: Sie füllt Name, Identität und Persönlichkeit aus und schlägt Fähigkeiten vor.",
+        "templateOption": "{name} — {plugin}",
+        "templatesLoading": "Agentenvorlagen werden geladen…",
+        "templatesError": "Agentenvorlagen konnten nicht geladen werden: {detail}",
+        "templatesEmpty": "Kein installiertes Plugin bringt eine Agentenvorlage mit.",
+        "archetypeUnavailable": "Diese Vorlage ist für Agenten des Archetyps „{archetype}“, der hier nicht installiert ist.",
+        "prefillError": "Die Vorlage konnte nicht geladen werden: {detail}",
+        "nameLabel": "Name",
+        "slugLabel": "Adresse (Slug)",
+        "slugHint": "Kleinbuchstaben, Ziffern und Bindestriche.",
+        "descriptionLabel": "Beschreibung",
+        "capabilitiesLabel": "Fähigkeiten",
+        "capabilitiesHint": "Die Vorlage schlägt diese vor. Freigegeben wird nur, was du ankreuzt.",
+        "capabilitiesNone": "Die Vorlage schlägt keine Fähigkeiten vor.",
+        "capabilityNotInstalled": "{plugin} (nicht installiert)",
+        "capabilityNotGrantable": "{plugin} (kein Fähigkeiten-Plugin)",
+        "enableLabel": "Agent nach dem Anlegen aktivieren",
+        "enableHint": "Ohne Haken bleibt der Agent ein Entwurf, den niemand erreicht, bis du ihn aktivierst.",
+        "create": "Agent anlegen",
+        "creating": "Wird angelegt…",
+        "cancel": "Abbrechen",
+        "close": "Schließen",
+        "steps": {
+          "create": "Entwurf anlegen",
+          "identity": "Identität",
+          "availability": "Erreichbarkeit",
+          "grants": "Fähigkeiten",
+          "enable": "Aktivieren"
+        },
+        "failed": "Schritt „{step}“ ist fehlgeschlagen: {detail}",
+        "declined": "Du hast die Freigabe nicht bestätigt, daher wurde keine Fähigkeit freigegeben.",
+        "stepDone": "✓ {step}",
+        "stepFailed": "✗ {step}",
+        "stepNotRun": "– {step} (nicht ausgeführt)",
+        "draftKept": "Der Entwurf „{slug}“ bleibt bestehen. Öffne ihn, um das Fehlende zu ergänzen, oder lösche ihn.",
+        "draftDeleted": "Der Entwurf wurde gelöscht.",
+        "notCreated": "Es wurde kein Agent angelegt.",
+        "openDraft": "Entwurf öffnen",
+        "deleteDraft": "Entwurf löschen",
+        "deleting": "Wird gelöscht…",
+        "deleteFailed": "Der Entwurf konnte nicht gelöscht werden: {detail}"
+      },
+      "availability": {
+        "title": "Erreichbarkeit",
+        "loading": "Erreichbarkeit wird geladen…",
+        "loadError": "Die Erreichbarkeit konnte nicht geladen werden: {detail}",
+        "notReported": "Diese Middleware meldet noch nicht, wer diesen Agenten erreichen darf.",
+        "save": "Erreichbarkeit speichern",
+        "saved": "Erreichbarkeit gespeichert.",
+        "saveError": "Die Erreichbarkeit konnte nicht gespeichert werden: {detail}"
+      },
+      "exportTemplate": {
+        "title": "Als Vorlage exportieren",
+        "hint": "Name, Beschreibungen, Anweisungen, Sprache, Persona, Qualität und freigegebene Fähigkeiten des Agenten als ein agent_templates-Eintrag. Nie Geheimnisse, Gedächtnis oder Kanalbindungen.",
+        "download": "YAML herunterladen",
+        "showJson": "JSON anzeigen",
+        "hideJson": "JSON ausblenden",
+        "loadError": "Der Export ist fehlgeschlagen: {detail}"
+      }
     }
   },
   "selfExtension": {
@@ -3645,7 +3709,6 @@
         "role": "Rolle: {role}",
         "customLabel": "Custom",
         "customDescription": "Keine Vorlage anwenden — eigene Achsen verwenden.",
-        "prefillSkill": "Skill-Felder ebenfalls vorbefüllen ({role})",
         "cancel": "Abbrechen",
         "apply": "Anwenden",
         "applying": "Anwenden…",
@@ -7211,5 +7274,19 @@
       "failed": "Der Agent konnte nicht angelegt werden: {detail}",
       "loadFailed": "Die Ersteinrichtung konnte nicht geladen werden: {detail}"
     }
+  },
+  "agentAvailability": {
+    "legend": "Wer diesen Agenten erreichen kann",
+    "everyone": "Alle",
+    "principalsHint": "Oder nur diese Personen und Rollen:",
+    "principalLabel": "Person oder Rolle",
+    "principalPlaceholder": "user:… oder role:…",
+    "addPrincipal": "Hinzufügen",
+    "removePrincipal": "{principal} entfernen",
+    "principalInvalid": "Gib „user:“ mit einer Personen-ID oder „role:“ mit einem Rollennamen ein.",
+    "restrictChannels": "Nur in bestimmten Kanälen",
+    "channelsLabel": "Kanäle (durch Komma getrennt)",
+    "channelsPlaceholder": "teams, web",
+    "reachesNobody": "Mit diesen Einstellungen erreicht niemand diesen Agenten."
   }
 }

@@ -1,6 +1,7 @@
 import { parseOperatorArchetypes, type OperatorArchetypeDto } from './archetypes';
 import { ApiError, rscTimeoutSignal } from './api';
 import type { LocalizedMarkdown } from './storeTypes';
+import type { AgentAvailability } from './agentAvailability';
 import type { TeamsTargetKind } from './teamsInstallTarget';
 
 /**
@@ -94,6 +95,9 @@ export interface OperatorAgentDto {
   /** #2054 — every connected system the agent reaches through its grants.
    *  `null` = could not be computed this time; absent on an older middleware. */
   reach?: AgentReachDto | null;
+  /** Spec 2042 — who may reach the agent (`agentAvailability.ts`). Absent on
+   *  a middleware that predates it. */
+  availability?: AgentAvailability;
 }
 
 /** #2054 — one connected system an agent reaches (spec 2042 §5.7). */
@@ -132,7 +136,9 @@ export interface OperatorAgentsListDto {
   fallback_agent_id: string | null;
 }
 
-async function callJson<T>(
+/** Shared by the typed clients of the same surface (`agentTemplates.ts`,
+ *  `agentAvailability.ts`). */
+export async function callJson<T>(
   path: string,
   init?: RequestInit & { method?: string },
 ): Promise<T> {
@@ -221,7 +227,8 @@ export interface CreateAgentInput {
   /** Reserved, not enforced (#978): persisted and reported, read by no
    *  runtime path — `strict` behaves like `default`. */
   privacy_profile?: PrivacyProfile;
-  status?: AgentStatus;
+  /** #2049 — `draft` only on create: never addressable until enabled. */
+  status?: AgentStatus | 'draft';
   /** #2088 — only on create. Omitted = `standard`. */
   archetype?: AgentArchetype;
 }
