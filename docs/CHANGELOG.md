@@ -36,6 +36,67 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — The plugin boundary and the model gateway enforce (#2053, epic #2042): S3 contract step
+
+- **BREAKING for operators.** Spec 2042 §5.10, the contract step (S3b). The
+  model gateway and the plugin network sandbox always enforce:
+  `MODEL_GATEWAY_MODE` and `PLUGIN_EGRESS_MODE` are no longer read (removed
+  from `middleware/src/config.ts` and `.env.example`). A model call outside
+  any execution context is refused, and so is a request a plugin's own code
+  makes through the global `fetch` or `node:http(s)` outside its network
+  permission, or to a model provider from a plugin that is not a `model`
+  plugin. A deployment that set either to `observe` now runs enforced.
+  `GET /api/v1/admin/model-gateway` lists what was refused since boot.
+- Raw model services (`anthropicClient`, `llm`, `llmProviderPool`) are
+  refused to every plugin except `model` plugins and the kernel's own
+  bundled system modules. Other plugins reach models through `ctx.llm`, in
+  their caller's context.
+- The kinds `agent` and `extension` are no longer uploaded, installed or
+  updated, also not as the update of a package installed under that kind
+  (`422 package.retired_kind`, `422 install.retired_kind`). Its migrated
+  version (a capability, `system-module` or `model`) is accepted. An
+  installed plugin of a retired kind keeps running as legacy: a "Legacy"
+  chip on its card and a notice on its page that says what replaces it. The
+  store lists registry and local packages of a retired kind as
+  `incompatible`. The agent runtime (`dynamicAgentRuntime`) stays until the
+  remaining agent plugins are rebuilt (S3c).
+- An update that makes a plugin a system module needs the explicit
+  confirmation of a fresh install (`becomes_system_module`, the same
+  `confirm_archetype` flag as archetype updates). `extension` →
+  `system-module` needs none. The prerequisites wizard pauses for that
+  confirmation instead of failing the step.
+- Call sites that had no context now run in one, or are refused by design:
+  the field-classification recompute is the operator job
+  `privacy_field_classification`, the boot graph backfill the maintenance run
+  `graph_backfill`; the knowledge graph's embedding sweep is not run without
+  `maintenanceRun@1`; a long-running task carries the context of the turn
+  that started it (a task stored before this change fails); a public MCP
+  tool call runs in the bound agent's turn; the Plugin Builder's auto-fix
+  and runtime smoke are the operator jobs `plugin_builder_autofix` and
+  `plugin_builder_preview`; `decisionModel@1` (Jev) passes the gateway as
+  `complete`. A reported call site skips the kernel bridges and names the
+  plugin code. Details: `docs/model-gateway-call-sites.md`.
+- Discretion: a tool that declares no effect (`unknown`) is checked like a
+  `write`, against every label of the turn (spec 2042 §5.11, criterion 17).
+  `UNKNOWN_TOOL_EFFECT_POLICY` is gone.
+- New kernel service `agentEnvelope@1`
+  (`middleware/src/platform/agentEnvelopeService.ts`): resolves an agent by
+  `agents.id` to its own chat agent, without a model. An unknown, disabled
+  or unbuilt agent has none, and no other agent is returned in its place.
+  Given to system modules only, for the canvas presentation helper
+  `@omadia/ui-orchestrator`.
+- `ToolRegistrationOptions.piiFields` on `ctx.tools.register` and
+  `registerHandler`: a native tool declares the PII fields of its result.
+  The Privacy Shield masks every declared column of an interned result,
+  whatever its classifier or an operator's non-personal entry says
+  (`packages/harness-plugin-privacy-guard/src/v4/declaredPii.ts`). Only paths
+  that name a row column apply (`field`, `[].field`, `<items>[].field`, a
+  trailing `[N]` masks the whole column); deeper paths are ignored.
+- **`@omadia/plugin-api` 1.81.0 (additive):** `AGENT_ENVELOPE_SERVICE_NAME`,
+  `AgentEnvelope`, `AgentEnvelopeResolver`,
+  `ToolRegistrationOptions.piiFields`, `PrivacyToolResultV4Request.piiFields`.
+  Upgrade notes: `docs/upgrading.md`.
+
 ### Added — Facilitators: moderation working modes, per-facilitator defaults, readiness per channel (#2060, #2066, ADR-0023)
 
 - Facilitators may attach working modes that add moderation methods.
