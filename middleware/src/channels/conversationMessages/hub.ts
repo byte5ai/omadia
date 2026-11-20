@@ -39,6 +39,8 @@ import type {
 } from '@omadia/plugin-api';
 
 import { isBoundedText, MAX_ID_LENGTH, toStoredEvent, validateMessageEvent } from './eventIntake.js';
+import { sessionAllows, sessionReadMode, type SessionRead } from './sessionReadTable.js';
+import { markSuperseded } from './supersededMarks.js';
 import {
   cardRef,
   normalizeChannelKey,
@@ -56,6 +58,9 @@ export interface ProcessAccess {
   readonly everReserved: boolean;
   /** It has an open execution scope. */
   readonly openScope: boolean;
+  /** #2076 — the conversation is a linked session conversation of the
+   *  process: its session state decides what is read (sessionReadTable). */
+  readonly session?: SessionRead;
 }
 
 const DEFAULT_PAGE_SIZE = 100;
@@ -248,6 +253,17 @@ export class ConversationMessageHub {
       conversationId: subscription.conversationId,
     });
     if (!access.openScope) return 'its process has no open execution scope';
+    if (access.session) {
+      const allowed = sessionReadMode(access.session);
+      if (allowed === 'none') return `its session conversation is ${access.session.released ? 'released' : access.session.state}`;
+      if (!sessionAllows(access.session, subscription.mode)) {
+        await this.changeMode(subscription, allowed);
+        this.log(
+          `[conversation-messages] '${subscription.agentSlug}' (process ${subscription.processId}): the session in ${subscription.channelType}/${subscription.conversationId} is ${access.session.state}, it now gets ${allowed} messages`,
+        );
+      }
+      return undefined;
+    }
     if (subscription.mode === 'all' && !access.reserved) {
       await this.changeMode(subscription, 'addressed');
       this.log(
@@ -274,6 +290,17 @@ export class ConversationMessageHub {
     if (report.ready) return undefined;
     const reasons = report.missing.map((m) => `${m.code}: ${m.message}`).join('; ');
     return reasons || 'the channel reported it cannot deliver all messages';
+  }
+
+  /**
+   * #2076 — why the agent's own identity cannot read every message of a
+   * conversation, or `undefined` when it can (criterion 60: asked for a
+   * session conversation before its session goes live).
+   */
+  async readinessForAll(agentSlug: string, channelType: string, conversationId: string): Promise<string | undefined> {
+    const identity = this.deps.identityFor(agentSlug, channelType);
+    if (!identity) return `agent '${agentSlug}' has no identity of its own on '${channelType}'`;
+    return this.notReadyForAll(channelType, conversationId, normalizeChannelKey(identity.channelKey));
   }
 
   private changeMode(subscription: MessageSubscription, mode: ConversationMessageMode): Promise<MessageSubscription | undefined> {
@@ -615,6 +642,14 @@ export class ConversationMessageHub {
     return this.all().filter((s) => s.processId === processId && s.pluginId === pluginId && s.agentSlug === agentSlug);
   }
 
+  /** #2089 — a record of a revision that was superseded says so. */
+  private async marked(
+    subscription: MessageSubscription,
+    record: ConversationMessageRecord | undefined,
+  ): Promise<ConversationMessageRecord | undefined> {
+    return record ? (await markSuperseded(this.deps.store, subscription, [record]))[0] : undefined;
+  }
+
   private asProcessRecord(
     subscription: MessageSubscription,
     record: ConversationMessageRecord | undefined,
@@ -679,6 +714,14 @@ export class ConversationMessageHub {
       return refused('unavailable', `the process's permissions could not be read: ${err instanceof Error ? err.message : String(err)}`);
     }
     if (!access.openScope) return refused('no_scope', 'this process has no open execution scope');
+    if (access.session && !sessionAllows(access.session, mode)) {
+      return refused(
+        'session_state',
+        access.session.released
+          ? 'the session conversation was released; nothing of it is read any more'
+          : `a session in '${access.session.state}' is read for ${sessionReadMode(access.session)} messages only`,
+      );
+    }
     if (mode === 'all' && !access.reserved) {
       return refused('not_reserved', 'every message of a conversation is read only by the process that holds its reservation');
     }
@@ -778,7 +821,7 @@ export class ConversationMessageHub {
     if (!subscription || !isBoundedText(messageId, MAX_ID_LENGTH)) return undefined;
     return this.asProcessRecord(
       subscription,
-      await this.deps.store.getEvent(subscription, messageId, Number.isInteger(revision) ? revision : undefined),
+      await this.marked(subscription, await this.deps.store.getEvent(subscription, messageId, Number.isInteger(revision) ? revision : undefined)),
     );
   }
 
@@ -789,7 +832,7 @@ export class ConversationMessageHub {
   ): Promise<ProcessConversationMessageRecord | undefined> {
     const subscription = this.processSubscription(scope, pluginId);
     if (!subscription || !isBoundedText(eventId, 64)) return undefined;
-    return this.asProcessRecord(subscription, await this.deps.store.getEventById(subscription, eventId));
+    return this.asProcessRecord(subscription, await this.marked(subscription, await this.deps.store.getEventById(subscription, eventId)));
   }
 
   async listProcessEventsSince(
@@ -803,7 +846,7 @@ export class ConversationMessageHub {
     const requested = Number.isInteger(opts?.limit) ? opts!.limit! : DEFAULT_PAGE_SIZE;
     const limit = Math.min(Math.max(requested, 1), MAX_PAGE_SIZE);
     const rows = await this.deps.store.listSince(subscription, opts?.after, limit + 1);
-    const events = rows.slice(0, limit).map((record) => ({ ...record, processId }));
+    const events = (await markSuperseded(this.deps.store, subscription, rows.slice(0, limit))).map((record) => ({ ...record, processId }));
     const last = events[events.length - 1];
     return { events, ...(rows.length > limit && last ? { nextCursor: last.eventId } : {}) };
   }

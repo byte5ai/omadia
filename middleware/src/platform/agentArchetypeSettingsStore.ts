@@ -1,4 +1,4 @@
-// #2066 — per-agent settings of the agent's archetype (migration 0106,
+// #2066 — per-agent settings of the agent's archetype (migration 0107,
 // spec 2043 §7). The values are validated against the archetype's declared
 // fields BEFORE they reach this store (`validateArchetypeAgentSettings`); the
 // store only reads and merges the JSON object on the agent row.

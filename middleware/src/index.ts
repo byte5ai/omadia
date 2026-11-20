@@ -461,6 +461,7 @@ import { attachEngineToFacilitators } from './platform/facilitatorEngineAttach.j
 import { createArchetypeRegistrySync } from './platform/archetypeRegistrySync.js';
 import { wireExecutionAuthorization, type ExecutionWiring } from './execution/wiring.js';
 import { AddressedMessageRouter } from './channels/addressedMessageRouter.js';
+import { LinkRequestRouter } from './channels/linkRequestRouter.js';
 import { PrivateMessageRouter } from './channels/privateMessageRouter.js';
 import { createArchetypeDatabase } from './platform/archetypeDatabase.js';
 import { pluginRuntimeOf } from './plugins/pluginRuntimeOf.js';
@@ -977,6 +978,17 @@ async function main(): Promise<void> {
       // Only the message itself: a card answer shares its card's message id.
       return record?.kind === 'created' ? record.eventId : undefined;
     },
+    log: (m) => console.log(m),
+  });
+  // #2089 — a request to link a conversation no process of the facilitator
+  // reads (the chat of a scheduled meeting) as a session conversation: the
+  // turn asks the archetype plugin, the kernel records the request.
+  const linkRequestRouter = new LinkRequestRouter({
+    sessions: () => executionRef.current?.sessions,
+    isRead: (scope) =>
+      (conversationMessagesRef.current?.hub.subscriptionsIn(scope.channelType, scope.conversationId) ?? []).some(
+        (s) => s.agentSlug === scope.agentSlug && s.mode !== 'none',
+      ),
     log: (m) => console.log(m),
   });
   // #2043 — channel readiness providers and meeting sources (same lifecycle).
@@ -2724,7 +2736,7 @@ async function main(): Promise<void> {
     );
   }
   const graphPool = serviceRegistry.get<Pool>('graphPool');
-  // #2066 — per-agent archetype settings (migration 0106); none without a database.
+  // #2066 — per-agent archetype settings (migration 0107); none without a database.
   const agentArchetypeSettingsStore = graphPool ? createAgentArchetypeSettingsStore(graphPool) : undefined;
   const graphTenantId = process.env['GRAPH_TENANT_ID'] ?? 'default';
 
@@ -5377,6 +5389,7 @@ async function main(): Promise<void> {
       ownPosts: ownIdentityPostLog,
       getPrivateMessages: () => privateMessageRouter,
       getAddressedMessages: () => addressedMessageRouter,
+      getLinkRequests: () => linkRequestRouter,
     }),
   );
   const sessionCapabilityHub = wireSessionCapabilities({
@@ -5446,6 +5459,12 @@ async function main(): Promise<void> {
       getRegistry,
       configuringMaxHours: config.EXECUTION_SCOPE_CONFIGURING_MAX_HOURS,
       sweepIntervalMs: config.EXECUTION_SCOPE_SWEEP_INTERVAL_MS,
+      // #2076 — a session goes live only where its conversation is ready.
+      notReadyForAll: async (agentSlug, channelType, conversationId) => {
+        const hub = conversationMessagesRef.current?.hub;
+        if (!hub) return 'conversation messages are not available';
+        return hub.readinessForAll(agentSlug, channelType, conversationId);
+      },
       // #2089 — reading follows the reservation and the scopes at once.
       onAccessChanged: () => {
         void conversationMessagesRef.current?.reconcileNow().catch((err: unknown) => {
@@ -5698,6 +5717,7 @@ async function main(): Promise<void> {
       // its reservation.
       privateMessages: privateMessageRouter,
       addressedMessages: addressedMessageRouter,
+      linkRequests: linkRequestRouter,
       processAccess: (process) => {
         const store = executionRef.current?.store;
         if (!store) return Promise.reject(new Error('the execution store is not available'));

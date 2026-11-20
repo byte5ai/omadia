@@ -175,6 +175,10 @@ export interface FacilitatorRuntimeLookup {
  * process of the agent may still listen for messages that address it (a
  * facilitation in follow-up). `true`: a process takes the message and the
  * turn stays silent; `false`: the agent's ordinary turn answers.
+ *
+ * `{ answer }` (#2089, a link request in a conversation no process reads,
+ * spec 2043 §5.3): a process takes the message and this fixed text is the
+ * turn's answer (for example the one short refusal of a link).
  */
 export type AddressedTurnLookup = (
   agentSlug: string,
@@ -185,7 +189,7 @@ export type AddressedTurnLookup = (
     text: string;
     messageId?: string;
   },
-) => Promise<boolean>;
+) => Promise<boolean | { readonly answer: string }>;
 
 /**
  * #2089 — a private message to the facilitator from a person who takes part
@@ -315,8 +319,12 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
   const fixedAnswer = (
     disposition: Exclude<TurnDisposition, 'model'>,
     input: ChatTurnInput,
+  ): { readonly answer: string; readonly aiDisclosure?: AiDisclosure } => disclosed(textFor(disposition), input);
+  /** A fixed text as this agent's answer, marked like every other one. */
+  const disclosed = (
+    answer: string,
+    input: ChatTurnInput,
   ): { readonly answer: string; readonly aiDisclosure?: AiDisclosure } => {
-    const answer = textFor(disposition);
     if (answer.length === 0 || !deps.disclose) return { answer };
     try {
       return deps.disclose(answer, input);
@@ -391,7 +399,7 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
   };
   /** Does a process of the agent take this group turn? Only asked for a turn
    *  the channel started and the model would otherwise answer. */
-  const takenByAProcess = async (input: ChatTurnInput): Promise<boolean> => {
+  const takenByAProcess = async (input: ChatTurnInput): Promise<false | { readonly answer?: string }> => {
     const { addressedTurn, agentSlug } = deps;
     const principal = input.origin?.principal;
     if (!addressedTurn || !agentSlug || !input.origin || principal?.kind !== 'user') return false;
@@ -410,26 +418,42 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
           `[facilitator] '${agentSlug}' channel turn suppressed: a process of the agent takes the message that addresses it`,
         );
       }
-      return taken === true;
+      if (typeof taken === 'object' && taken !== null && typeof taken.answer === 'string') {
+        return taken.answer.length > 0 ? { answer: taken.answer } : {};
+      }
+      return taken === true ? {} : false;
     } catch (err) {
       deps.log?.(`[facilitator] addressed message lookup failed: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   };
-  const disposeTurn = async (input: ChatTurnInput): Promise<TurnDisposition> => {
+  const disposeTurn = async (
+    input: ChatTurnInput,
+  ): Promise<{ disposition: TurnDisposition; processAnswer?: string }> => {
     const disposition = dispose(input);
-    return disposition === 'model' && (await takenByAProcess(input)) ? 'engine_driven' : disposition;
+    if (disposition !== 'model') return { disposition };
+    const taken = await takenByAProcess(input);
+    if (taken === false) return { disposition };
+    return { disposition: 'engine_driven', ...(taken.answer !== undefined ? { processAnswer: taken.answer } : {}) };
+  };
+  const answerOf = async (
+    disposition: Exclude<TurnDisposition, 'model'>,
+    processAnswer: string | undefined,
+    input: ChatTurnInput,
+  ): Promise<{ readonly answer: string; readonly aiDisclosure?: AiDisclosure }> => {
+    if (processAnswer !== undefined) return disclosed(processAnswer, input);
+    return (disposition === 'refuse' ? await privateAnswer(input) : undefined) ?? fixedAnswer(disposition, input);
   };
   return {
     async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
-      const disposition = await disposeTurn(input);
+      const { disposition, processAnswer } = await disposeTurn(input);
       if (disposition === 'model') {
         const watch = watchesEnginePosts();
         const before = watch ? ownPosts(input) : 0;
         const answer = await inner.chat(withGroupStatement(input));
         return watch && enginePostedSince(input, before) ? { ...answer, text: '' } : answer;
       }
-      const fixed = (disposition === 'refuse' ? await privateAnswer(input) : undefined) ?? fixedAnswer(disposition, input);
+      const fixed = await answerOf(disposition, processAnswer, input);
       return {
         ...toSemanticAnswer({ answer: fixed.answer, toolCalls: 0, iterations: 0 }),
         ...(fixed.aiDisclosure ? { aiDisclosure: fixed.aiDisclosure } : {}),
@@ -439,7 +463,7 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
       input: ChatTurnInput,
       observer?: ChatStreamObserver,
     ): AsyncGenerator<ChatStreamEvent> {
-      const disposition = await disposeTurn(input);
+      const { disposition, processAnswer } = await disposeTurn(input);
       if (disposition === 'model') {
         const watch = watchesEnginePosts();
         const before = watch ? ownPosts(input) : 0;
@@ -456,7 +480,7 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
         }
         return;
       }
-      const fixed = (disposition === 'refuse' ? await privateAnswer(input) : undefined) ?? fixedAnswer(disposition, input);
+      const fixed = await answerOf(disposition, processAnswer, input);
       if (fixed.answer.length > 0) yield { type: 'text_delta', text: fixed.answer };
       yield {
         type: 'done',

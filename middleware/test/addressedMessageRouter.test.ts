@@ -311,6 +311,19 @@ describe('#2089 the facilitator answers a mention through its model only when no
     });
   });
 
+  it('a link request taken with a short answer: that text is the turn\'s answer, the model does not run', async () => {
+    const calls: string[] = [];
+    const agent = wrapFacilitatorAgent(inner(calls), {
+      ...base,
+      addressedTurn: () => Promise.resolve({ answer: 'Please ask from inside the meeting chat.' }),
+    });
+    assert.equal((await agent.chat(groupTurn)).text, 'Please ask from inside the meeting chat.');
+    const events = [];
+    for await (const event of agent.chatStream(groupTurn)) events.push(event);
+    assert.deepEqual(events.map((e) => e.type), ['text_delta', 'done']);
+    assert.deepEqual(calls, []);
+  });
+
   it('nobody takes it, or the lookup fails: the model answers', async () => {
     for (const addressedTurn of [() => Promise.resolve(false), () => Promise.reject(new Error('down'))]) {
       const calls: string[] = [];

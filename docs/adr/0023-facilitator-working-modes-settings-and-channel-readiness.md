@@ -66,10 +66,10 @@ descriptor fields of the archetype?
 - An archetype descriptor may declare `agent_settings` (manifest
   `archetype.agent_settings`): fields of type `enum` or `number_list`, with en/de labels. The
   kernel reads them strictly (unknown type → manifest refused), stores the values per agent
-  (`agents.archetype_settings`, migration 0106), validates them against the fields
+  (`agents.archetype_settings`, migration 0107), validates them against the fields
   (`GET/PUT /api/v1/operator/agents/:slug/archetype-settings`, audited as
   `agent.archetype_settings_change`) and hands them to the plugin as
-  `AgentProfile.archetypeSettings` (plugin-api 1.80.0, optional).
+  `AgentProfile.archetypeSettings` (plugin-api 1.81.0, optional).
 - An unset field means the plugin's instance setting applies; the instance setting stays
   the default. Numbers are bounded by the kernel (at most 10 000); each save fires the
   `agents` notify trigger and so a registry reload, which is acceptable for a rare

@@ -78,7 +78,7 @@ export interface AgentTurnServiceDeps {
     agentSlug: string,
   ) => Promise<ConversationRoster | undefined>;
   /**
-   * #2066 — the agent's stored archetype settings (migration 0106). Absent
+   * #2066 — the agent's stored archetype settings (migration 0107). Absent
    * (no database) = none: the plugin's instance settings apply.
    */
   readonly archetypeSettings?: (agentId: string) => Promise<Readonly<Record<string, unknown>>>;

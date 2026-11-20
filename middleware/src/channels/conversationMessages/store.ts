@@ -25,6 +25,13 @@ export function isRevisionKind(kind: ConversationMessageKind): boolean {
   return REVISION_KINDS.includes(kind);
 }
 
+/** #2089 — messages and transcript segments count their revisions apart;
+ *  reactions and card answers have none of their own (`undefined`). */
+export function revisionFamilyKey(kind: ConversationMessageKind, messageId: string): string | undefined {
+  if (kind === 'transcript_segment') return `transcript\u0000${messageId}`;
+  return isRevisionKind(kind) ? `message\u0000${messageId}` : undefined;
+}
+
 /** Identity keys are compared lower-cased on both sides (Teams adapters ask
  *  with `28:<appid lowercase>` on the hot path). */
 export function normalizeChannelKey(channelKey: string): string {
@@ -140,6 +147,12 @@ export interface ConversationMessageStore {
     subscription: MessageSubscription,
     eventId: string,
   ): Promise<ConversationMessageRecord | undefined>;
+  /** #2089 — the latest stored revision per message and per transcript
+   *  segment of these ids, keyed by {@link revisionFamilyKey}. */
+  latestRevisions(
+    subscription: MessageSubscription,
+    messageIds: readonly string[],
+  ): Promise<ReadonlyMap<string, number>>;
   /** Events after the cursor in storage order, at most `limit`. */
   listSince(
     subscription: MessageSubscription,
@@ -367,6 +380,20 @@ export class InMemoryConversationMessageStore implements ConversationMessageStor
     return Promise.resolve(
       this.events.find((e) => e.subscriptionId === subscription.id && e.record.eventId === eventId)?.record,
     );
+  }
+
+  latestRevisions(
+    subscription: MessageSubscription,
+    messageIds: readonly string[],
+  ): Promise<ReadonlyMap<string, number>> {
+    const wanted = new Set(messageIds);
+    const latest = new Map<string, number>();
+    for (const e of this.events) {
+      if (e.subscriptionId !== subscription.id || !wanted.has(e.record.messageId)) continue;
+      const key = revisionFamilyKey(e.record.kind, e.record.messageId);
+      if (key !== undefined) latest.set(key, Math.max(latest.get(key) ?? -1, e.record.revision));
+    }
+    return Promise.resolve(latest);
   }
 
   listSince(

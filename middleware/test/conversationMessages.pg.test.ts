@@ -164,7 +164,8 @@ describe('conversationMessages (pg, migrations 0068 and 0075)', { skip: !pgAvail
     // A read hands the stored record back with the process it belongs to.
     const ofProcess = <T extends object>(record: T) => ({ ...record, processId: MARA_PROCESS.processId });
     assert.deepEqual(await f.hub.getProcessEvent(MARA_PROCESS, ENGINE, 'm1'), ofProcess(edited));
-    assert.deepEqual(await f.hub.getProcessEvent(MARA_PROCESS, ENGINE, 'm1', 0), ofProcess(created));
+    // #2089 — the earlier revision says it was superseded, and by which.
+    assert.deepEqual(await f.hub.getProcessEvent(MARA_PROCESS, ENGINE, 'm1', 0), { ...ofProcess(created), superseded: true, latestRevision: 1 });
     assert.deepEqual(await f.hub.getProcessEventById(MARA_PROCESS, ENGINE, answer.eventId), ofProcess(answer));
     assert.equal(await f.hub.getProcessEventById(MARA_PROCESS, ENGINE, 'not-a-number'), undefined);
   });
