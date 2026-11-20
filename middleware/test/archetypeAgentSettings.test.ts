@@ -128,6 +128,7 @@ describe('archetype agent settings: validation (#2066)', () => {
       checked.issues.map((i) => i.key),
       ['tone', 'default_decision_method', 'reminder_offsets_hours'],
     );
+    assert.ok('issues' in validateArchetypeAgentSettings(descriptor, { reminder_offsets_hours: [1e300] }));
     const tooMany = validateArchetypeAgentSettings(descriptor, { reminder_offsets_hours: [1, 2, 3, 4] });
     assert.ok('issues' in tooMany);
     assert.ok('issues' in validateArchetypeAgentSettings(descriptor, ['x']));

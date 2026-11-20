@@ -52,8 +52,10 @@ descriptor fields of the archetype?
   - for a facilitator, the neutrality contract (the same check as its instructions);
   - tools: a skill with `requires_tools` for an agent whose archetype omits tool grants
     (`working_mode_tools`); the hydration leaves skill-bound tools out for such agents too.
-- The build runs the identity check again (`workingModesKeepingIdentity`) and leaves such a
-  mode out, so a skill edited after it was attached cannot bring it back.
+- Editing a skill that an agent holds as such a mode (`PATCH /builder/skills/:id`) runs the
+  same checks for every such agent and refuses the edit. The build runs the identity check
+  once more (`workingModesKeepingIdentity`) and leaves such a mode out (fail closed, for
+  example a file-sourced skill changed on disk).
 - Selection is unchanged: the per-turn router picks at most one mode, composed beneath the
   identity; the neutrality block stays inside the identity, above the mode and its
   precedence line.
@@ -69,7 +71,9 @@ descriptor fields of the archetype?
   `agent.archetype_settings_change`) and hands them to the plugin as
   `AgentProfile.archetypeSettings` (plugin-api 1.79.0, optional).
 - An unset field means the plugin's instance setting applies; the instance setting stays
-  the default. A value the descriptor no longer declares is not passed on.
+  the default. Numbers are bounded by the kernel (at most 10 000); each save fires the
+  `agents` notify trigger and so a registry reload, which is acceptable for a rare
+  operator action. A value the descriptor no longer declares is not passed on.
 - The facilitator declares `default_decision_method`, `default_prioritisation_method`,
   `ranked_points` and `reminder_offsets_hours`. The engine (plugin) overlays them on its
   instance configuration when a facilitation is set up and stores what it started with, so

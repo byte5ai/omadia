@@ -5,7 +5,7 @@
 
 import type { Pool } from 'pg';
 
-import type { ArchetypeAgentSettingValue } from '@omadia/orchestrator';
+import { liveAgentRow, type ArchetypeAgentSettingValue } from '@omadia/orchestrator';
 
 export interface AgentArchetypeSettingsStore {
   /** The stored object; `{}` when nothing is set or the agent is unknown. */
@@ -28,7 +28,8 @@ export function createAgentArchetypeSettingsStore(pool: Pick<Pool, 'query'>): Ag
   return {
     async get(agentId) {
       const { rows } = await pool.query<{ archetype_settings: unknown }>(
-        'SELECT archetype_settings FROM agents WHERE id = $1',
+        // A deleted agent (tombstone) has no settings any more.
+        `SELECT archetype_settings FROM agents a WHERE a.id = $1 AND ${liveAgentRow('a')}`,
         [agentId],
       );
       return asObject(rows[0]?.archetype_settings);
@@ -40,10 +41,10 @@ export function createAgentArchetypeSettingsStore(pool: Pick<Pool, 'query'>): Ag
         .map(([k]) => k);
       // One statement: merge the new values, then drop the cleared keys.
       const { rows } = await pool.query<{ archetype_settings: unknown }>(
-        `UPDATE agents
-            SET archetype_settings = (archetype_settings || $2::jsonb) - $3::text[]
-          WHERE id = $1
-        RETURNING archetype_settings`,
+        `UPDATE agents a
+            SET archetype_settings = (a.archetype_settings || $2::jsonb) - $3::text[]
+          WHERE a.id = $1 AND ${liveAgentRow('a')}
+        RETURNING a.archetype_settings`,
         [agentId, JSON.stringify(set), removed],
       );
       return rows[0] ? asObject(rows[0].archetype_settings) : undefined;

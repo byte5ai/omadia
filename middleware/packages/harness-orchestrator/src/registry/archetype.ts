@@ -331,6 +331,10 @@ export function assertArchetypeAllows(
   }
 }
 
+/** Largest number a `number_list` value may hold (hours, points): a bound
+ *  against nonsense, not a domain rule; the plugin checks its own. */
+export const ARCHETYPE_SETTING_MAX_NUMBER = 10_000;
+
 export interface ArchetypeAgentSettingIssue {
   readonly key: string;
   readonly message: string;
@@ -374,9 +378,14 @@ export function validateArchetypeAgentSettings(
     if (
       !Array.isArray(value) ||
       value.length > field.maxItems ||
-      !value.every((n) => typeof n === 'number' && Number.isFinite(n) && n > 0)
+      !value.every(
+        (n) => typeof n === 'number' && Number.isFinite(n) && n > 0 && n <= ARCHETYPE_SETTING_MAX_NUMBER,
+      )
     ) {
-      issues.push({ key, message: `must be a list of up to ${String(field.maxItems)} positive numbers` });
+      issues.push({
+        key,
+        message: `must be a list of up to ${String(field.maxItems)} positive numbers of at most ${String(ARCHETYPE_SETTING_MAX_NUMBER)}`,
+      });
       continue;
     }
     settings[key] = Object.freeze([...(value as number[])]);

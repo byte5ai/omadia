@@ -104,6 +104,7 @@ export function routesHarness(): RoutesHarness {
   function store(): ConfigStore {
     const reads: Record<string, unknown> = {
       getAgentBySlug: (slug: string) => Promise.resolve(h.agents.find((a) => a.slug === slug)),
+      getAgentById: (id: string) => Promise.resolve(h.agents.find((a) => a.id === id)),
       listAgents: () => Promise.resolve(h.agents),
       listTombstones: () => Promise.resolve([]),
       // #2055 — the routing tables: reads answer, writes are recorded.
@@ -150,6 +151,8 @@ export function routesHarness(): RoutesHarness {
             return (id: string) => Promise.resolve(h.skills[id]);
           }
           if (prop === 'listMcpServers') return () => Promise.resolve([{ id: SERVER_ID, name: 'crm' }]);
+          // #2060 — the facilitator holds every skill as a working mode.
+          if (prop === 'listAgentsByPersonaSkillId') return () => Promise.resolve(['id-mara']);
           return (...args: unknown[]) => {
             h.writes.push(`graph.${prop}(${JSON.stringify(args).slice(0, 60)})`);
             return Promise.resolve({ id: 'x', agentId: 'x', skillId: SKILL_ID, position: 0 });

@@ -271,6 +271,20 @@ erlaubt), `runTrace.workingMode` und `workingMode`/`workingModeSkillId` auf dem
 Run-Knoten. Der Web-Chat zeigt „Modus: X“ nur in der Detail-Zeile der Antwort,
 nie über der Nachricht (Spec §5.14).
 
+**Arbeitsmodi bei Archetypen mit fester Identität (#2060, ADR-0023):** Für
+jeden Agenten außer `standard` prüft `services/workingModeContract.ts` beim
+Anhängen (`POST /builder/agents/:slug/persona-skills`) und beim Bearbeiten
+eines so genutzten Skills (`PATCH /builder/skills/:id`): kein Identitätsersatz
+(`findWorkingModeIdentityReplacement` in `workingModeIdentity.ts`:
+Identitätsfelder im Frontmatter, neuer Name, Persona, Sprechen als jemand
+anderes; Identitätsfelder im Request), beim Facilitator der
+Neutralitätsvertrag (`checkFacilitatorInstructions`), keine `requires_tools`
+bei einem Archetyp ohne Tool-Grants. Antwort `422
+facilitator_contract_violation` mit `issues` (`identity_replacement`,
+`working_mode_tools`, Neutralitätsregeln). Beim Bauen lässt
+`workingModesKeepingIdentity` Modi mit Identitätsersatz weg; skill-gebundene
+Tools werden für Agenten ohne Tool-Grants nicht hydriert.
+
 ### `get_chat_participants` — per-Turn-Roster-Gating (#1108)
 
 - **Datei:** `packages/harness-orchestrator/src/tools/chatParticipantsTool.ts`.
@@ -9967,8 +9981,10 @@ enthält **keine** Facilitation-Tabellen. Spec: `specs/2043-native-facilitators/
   (`PluginCapabilityLookup.facilitatorGrantable`).
 - **Schreibzeit (Routen):** `operatorAgents.ts` und `agentBuilder.ts` lehnen
   ab: fremde Plugin-Grants, Context-Memory-Modi, Default-Agent,
-  Agent-to-Agent (Schalter und Chat-Policy), Persona-Skills, Sub-Agents,
+  Agent-to-Agent (Schalter und Chat-Policy), Sub-Agents,
   Tool-/MCP-Grants, Schedules. Antwort `409 facilitator_omission`.
+  Arbeitsmodi (Persona-Skills) sind seit #2060 erlaubt, siehe
+  „Arbeitsmodi bei Archetypen mit fester Identität“.
 - **Laufzeit (`buildOrchestratorForAgent`, `AgentRuntimeConfig.kind`):** kein
   Memory-Tool/-Binder, kein Recall (`contextRetriever`, `sessionBriefing`),
   kein Capture (`sessionLogger`, Knowledge Graph), kein Learning
@@ -9984,6 +10000,29 @@ enthält **keine** Facilitation-Tabellen. Spec: `specs/2043-native-facilitators/
   freundliche Absage ohne Modellaufruf.
 - Das Fallback-Onboarding kann Facilitators nicht treffen (Fallback ist nie
   ein Facilitator); Plugin-getriebenes Provisioning gibt es nicht mehr.
+
+### Einstellungen pro Facilitator und Readiness pro Kanal (#2066, ADR-0023)
+
+- Ein Archetyp-Deskriptor kann `agent_settings` deklarieren (Manifest
+  `archetype.agent_settings`, Typen `enum` und `number_list`, strikt gelesen
+  in `plugins/archetypeManifest.ts`, über `manifestLoader`/
+  `archetypeRegistrySync` in die Registry). Werte pro Agent in
+  `agents.archetype_settings` (Migration 0102,
+  `platform/agentArchetypeSettingsStore.ts`, Grabsteine ausgenommen).
+- `GET/PUT /api/v1/operator/agents/:slug/archetype-settings`
+  (`routes/operatorAgentArchetypeSettings.ts`, vor dem Agents-Router
+  gemountet): Felder des Archetyps und gesetzte Werte; PUT validiert
+  (`validateArchetypeAgentSettings`, `null` löscht ein Feld, Zahlen ≤ 10 000),
+  422 `invalid_archetype_settings`, Audit `agent.archetype_settings_change`.
+  Jeder Save feuert den `agents`-Notify-Trigger und damit ein Registry-Reload.
+- `agentTurn@2` `getProfile` gibt die Werte, die noch zu den Feldern passen,
+  als `AgentProfile.archetypeSettings` ans Plugin (plugin-api 1.79.0);
+  nicht gesetzt = Instanz-Einstellung des Plugins.
+- `GET /api/v1/operator/agents` trägt `own_identity_channels`
+  (`ConfigStore.listChannelIdentities`). Die web-ui nennt einen Facilitator
+  bereit, sobald er auf irgendeinem Kanal eine eigene Identität hat und die
+  Engine angebunden ist; Teams wird nur für Teams geprüft. Die Bereitschaft
+  in einer Konversation prüft die Engine beim Start.
 
 ### Neutralitätsvertrag (Spec §2.4)
 

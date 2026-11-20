@@ -82,12 +82,16 @@ export function parseArchetypeSettingIssues(err: unknown): ArchetypeSettingIssue
   }
 }
 
-/** "24, 2" → [24, 2]; `undefined` when an entry is not a positive number. */
+/**
+ * "24, 2" → [24, 2]; `undefined` when an entry is not a positive number.
+ * A comma always separates entries (the field asks for whole hours or points);
+ * a decimal is written with a point ("1.5").
+ */
 export function parseNumberListInput(raw: string): number[] | undefined {
   const parts = raw
     .split(/[,;\s]+/)
     .map((p) => p.trim())
     .filter((p) => p !== '');
-  const values = parts.map((p) => Number(p.replace(',', '.')));
+  const values = parts.map((p) => Number(p));
   return values.every((v) => Number.isFinite(v) && v > 0) ? values : undefined;
 }

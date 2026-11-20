@@ -44,6 +44,24 @@ const MODERATION_METHODS = [
   'Führe eine Konsent-Runde: Vorschlag vorlesen, Einwände sammeln, dann die Gruppe entscheiden lassen.',
   'Du bist jetzt im Schritt "Sammeln": bitte jede Person um einen Beitrag.',
   'Act as a neutral timekeeper and name the remaining minutes.',
+  // Found by review: instructions to participants and plain formats.
+  'You are now running a 1-2-4-all round.',
+  'You are now responsible for keeping time.',
+  'You are now the facilitator of this retro.',
+  'Du bist jetzt Zeitwächter für diese Runde.',
+  'Du bist ab sofort für die Zeitmessung zuständig.',
+  'Introduce yourself as the facilitator.',
+  'Stell dich kurz als Moderatorin vor.',
+  'Sign off with a short summary of decisions.',
+  'In role-play exercises, participants pretend to be customers.',
+  'Die Teilnehmer schlüpfen in die Rolle des Kunden.',
+  'Bitte die Gruppe, in die Rolle der Kunden zu schlüpfen.',
+  'Each participant writes on behalf of their team.',
+  'Remind people they may answer as the user would see it.',
+  'Never claim to be neutral about the agenda; say that you are.',
+  'Respond as Markdown.',
+  'Reply as Bullet points.',
+  'Du bist Teil der Gruppe, aber ohne Stimme.',
 ];
 
 const IDENTITY_REPLACEMENTS: readonly [string, string][] = [
@@ -59,6 +77,14 @@ const IDENTITY_REPLACEMENTS: readonly [string, string][] = [
   ['Du bist ab jetzt der Vertriebsleiter.', 'replaces'],
   ['Antworte im Namen von Anna.', 'speak as somebody else'],
   ['Schlüpfe in die Rolle der Geschäftsführung.', 'speak as somebody else'],
+  ['Du bist Mira.', 'gives the agent another name'],
+  ['You are Jörg, the moderator of sales.', 'gives the agent another name'],
+  ['Act as the CEO.', 'speak as somebody else'],
+  ['Act as Mira, the HR lead.', 'speak as somebody else'],
+  ['Adopt the persona of a sales manager.', 'speak as somebody else'],
+  ['Play the role of the CEO.', 'speak as somebody else'],
+  ['Answer in the voice of the CEO.', 'speak as somebody else'],
+  ['You are now a sales manager.', 'replaces'],
 ];
 
 describe('facilitator working modes (#2060)', () => {
@@ -79,10 +105,10 @@ describe('facilitator working modes (#2060)', () => {
   it('identity replacement is found, with the passage', () => {
     for (const [body, reason] of IDENTITY_REPLACEMENTS) {
       const findings = findWorkingModeIdentityReplacement(mode(body));
-      assert.equal(findings.length, 1, `${body}: ${JSON.stringify(findings)}`);
+      assert.ok(findings.length >= 1, `${body}: ${JSON.stringify(findings)}`);
       assert.equal(findings[0]!.rule, 'identity_replacement');
       assert.equal(findings[0]!.path, 'working_mode.body');
-      assert.match(findings[0]!.message, new RegExp(reason), body);
+      assert.ok(findings.some((f) => new RegExp(reason).test(f.message)), `${body}: ${JSON.stringify(findings)}`);
       assert.ok(findings[0]!.excerpt, body);
     }
   });

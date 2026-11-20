@@ -247,7 +247,20 @@ describe('registration: what is installed is what is enforced', () => {
   });
 
   it('a third archetype exists while its plugin is installed and omits everything once it is gone', async () => {
-    const coach = { id: '@acme/archetype-coach', doc: manifest({ id: '@acme/archetype-coach', archetype: { id: 'coach', omits: ['memory'], adds: [] } }) };
+    const coach = {
+      id: '@acme/archetype-coach',
+      doc: manifest({
+        id: '@acme/archetype-coach',
+        archetype: {
+          id: 'coach',
+          omits: ['memory'],
+          adds: [],
+          // #2066 — declared per-agent settings travel from the manifest
+          // through the catalog into the registered descriptor.
+          agent_settings: [{ key: 'tone', type: 'enum', label: 'Tone', options: [{ value: 'calm', label: 'Calm' }] }],
+        },
+      }),
+    };
     let installed = [coach];
     const h = syncWith(() => installed);
     disposers.push(async () => {
@@ -257,6 +270,10 @@ describe('registration: what is installed is what is enforced', () => {
     await h.sync.sync();
     assert.deepEqual(listArchetypes().map((d) => d.id).sort(), ['coach', 'facilitator', 'standard']);
     assert.equal(archetypeOmits({ archetype: 'coach' }, 'memory'), true);
+    assert.deepEqual(
+      getArchetype('coach')?.agentSettings?.map((f) => `${f.key}:${f.type}`),
+      ['tone:enum'],
+    );
     assert.equal(archetypeOmits({ archetype: 'coach' }, 'plugin_grant'), false);
     assert.equal(archetypeAdds({ archetype: 'coach' }, 'agent_turn'), false, 'not listed, not given');
     assert.equal(applyArchetypeContract('coach', 'You coach.'), 'You coach.', 'no role contract, nothing appended');
@@ -444,6 +461,7 @@ describe('GET /operator/archetypes', () => {
       assert.deepEqual(facilitator?.plugin, { id: ENGINE, status: 'active' });
       assert.deepEqual(facilitator?.label_plural, { en: 'Facilitators', de: 'Facilitatoren' });
       assert.equal(facilitator?.agent_count, null, 'no config store, no count');
+      assert.deepEqual(facilitator?.agent_settings, [], 'this manifest declares none');
     } finally {
       current = [];
       await sync.sync();

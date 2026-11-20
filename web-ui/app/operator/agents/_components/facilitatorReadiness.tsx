@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import {
   getAgentTeamsIdentity,
@@ -258,6 +258,7 @@ export function FacilitatorReadiness(
   props: FacilitatorReadinessProps,
 ): React.ReactElement {
   const t = useTranslations('operatorAgents.facilitator.readiness');
+  const format = useFormatter();
   const { agent, teams, engine } = props;
 
   if (teams === 'loading' || engine.phase === 'loading') {
@@ -272,7 +273,7 @@ export function FacilitatorReadiness(
   const grant = engineGrantState(agent, engine);
   const identity = facilitatorChannels(agent, teams);
   const ready = identity.ready && engineReady && grant === 'attached';
-  const channelList = identity.channels.map(channelLabel).join(', ');
+  const channelList = format.list(identity.channels.map(channelLabel), { type: 'conjunction' });
 
   if (ready) {
     return (
