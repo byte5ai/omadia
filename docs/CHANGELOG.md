@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Tools declare their effect (#2053, epic #2042; cherry-picked from S3)
+
+- The kernel reads `capabilities[].side_effects` (`read | write | none`, the
+  field the boilerplates and the Plugin Builder already write) as
+  `Plugin.tool_side_effects`; `declaredToolEffect(plugin, toolId)`
+  (`src/plugins/toolSideEffects.ts`) answers `unknown` for a tool without a
+  declaration. Basis for the readership check of writes (§6 criterion 17).
+
 ### Added — Agents consult colleagues without gaining access (#2047, epic #2042)
 
 - New harness tool `consult(agent, request)`. An agent may ask a colleague only

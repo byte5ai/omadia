@@ -377,6 +377,12 @@ export interface PluginArchetype {
   roleContract?: string;
 }
 
+/** A tool's declared effect: `read` reads a system, `write` changes one,
+ *  `none` touches no system (a computation). */
+export type ToolSideEffect = 'read' | 'write' | 'none';
+
+export const TOOL_SIDE_EFFECTS: readonly ToolSideEffect[] = ['read', 'write', 'none'];
+
 export type ChannelTransportKind = 'webhook' | 'websocket' | 'long-poll';
 
 export type ChannelCapability =
@@ -560,6 +566,11 @@ export interface Plugin {
   kind: PluginKind;
   /** #2088 — present exactly when `kind === 'archetype'`. */
   archetype?: PluginArchetype;
+  /** Spec 2042 §5.10/§5.11 — what each tool of the plugin declares it does,
+   *  from `capabilities[].side_effects`, keyed by the tool id. A tool not
+   *  listed declared nothing (`declaredToolEffect` → `unknown`). Absent when
+   *  no tool declares one. */
+  tool_side_effects?: Readonly<Record<string, ToolSideEffect>>;
   name: string;
   version: string;
   latest_version: string;
