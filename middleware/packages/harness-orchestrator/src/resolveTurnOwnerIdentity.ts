@@ -5,6 +5,12 @@ import type { ChannelIdentityIngest, ChannelKind, KnowledgeGraph } from '@omadia
 export const CHANNEL_KIND_BY_ORIGIN: Readonly<Record<string, ChannelKind>> = {
   teams: 'teams',
   telegram: 'telegram',
+  // #2042 — the colleague channels: a group turn needs a kind to establish
+  // its audience (an unknown audience answers nothing, fail-closed).
+  slack: 'slack',
+  discord: 'discord',
+  whatsapp: 'whatsapp',
+  imessage: 'imessage',
   api: 'api',
 };
 

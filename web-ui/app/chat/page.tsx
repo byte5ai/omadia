@@ -536,13 +536,11 @@ export default function ChatPage(): React.ReactElement {
 
       <div className="border-b border-[color:var(--border)] bg-[color:var(--bg-elevated)]/75 px-6 py-2 text-xs">
         <div className="mx-auto flex max-w-4xl flex-col gap-2">
-          {/* Row 1 — orchestrator picker. The stream-path + session-scope
-              debug labels were removed 2026-06-26 (noise). The picker self-
-              hides when there is only one orchestrator (nothing to choose). */}
+          {/* Row 1 — agent picker. The stream-path + session-scope
+              debug labels were removed 2026-06-26 (noise). The picker is always
+              shown (#2057): a menu before the first turn, the pinned agent
+              after it, the only agent when there is just one. */}
           <div className="flex flex-wrap items-center gap-3 text-[color:var(--fg-muted)] empty:hidden">
-            {/* Phase A — Orchestrator picker. Read-only pinned label after the
-                first turn; dropdown before it. Renders null unless there is
-                more than one orchestrator. */}
             <AgentPicker
               pinnedSlug={activeSession.snapshot?.agentSlug}
               selectedSlug={selectedAgentSlug}

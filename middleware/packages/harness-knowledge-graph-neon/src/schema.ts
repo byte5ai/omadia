@@ -182,7 +182,19 @@ const UserPropsSchema = z
 // This enum did not, so every API-key turn failed `resolveOrCreateChannelIdentity`
 // and its run trace had no User-Cluster to land in. A test pins this list to
 // the `plugin-api` union so the two cannot drift apart again.
-export const CHANNEL_KINDS = ['teams', 'telegram', 'slack', 'email', 'web', 'api'] as const;
+// #2042 — discord, whatsapp and imessage join with the agents-as-colleagues
+// channels: without a kind the audience floor of a group turn is `unknown`.
+export const CHANNEL_KINDS = [
+  'teams',
+  'telegram',
+  'slack',
+  'discord',
+  'whatsapp',
+  'imessage',
+  'email',
+  'web',
+  'api',
+] as const;
 export type ChannelKind = (typeof CHANNEL_KINDS)[number];
 
 const ChannelIdentityPropsSchema = z

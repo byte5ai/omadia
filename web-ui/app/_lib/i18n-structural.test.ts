@@ -138,7 +138,7 @@ describe('#679 / I5 — the boot-seeded agent description is recognised', () => 
     expect(isSeededAgentDescription('Auto-seeded on first boot.')).toBe(false);
     expect(
       isSeededAgentDescription(
-        'Unser Standard-Orchestrator für alles ohne eigene Zuordnung.',
+        'Unser Standard-Ansprechpartner für alles ohne eigene Zuordnung.',
       ),
     ).toBe(false);
     expect(isSeededAgentDescription('')).toBe(false);

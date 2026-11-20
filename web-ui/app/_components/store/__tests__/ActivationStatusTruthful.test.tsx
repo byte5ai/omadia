@@ -111,10 +111,10 @@ describe('PostInstallNextSteps (#1496, #1492)', () => {
         pluginName="SEO Analyst"
         readiness={READY}
         kind="agent"
-        attachedTo={['Default orchestrator']}
+        attachedTo={['Default agent']}
       />,
     );
-    expect(screen.getByText('"SEO Analyst" is granted to Default orchestrator.')).toBeTruthy();
+    expect(screen.getByText('"SEO Analyst" is granted to Default agent.')).toBeTruthy();
     expect(screen.queryByText('Open the agents')).toBeNull();
     expect(screen.getByText('Manage agents')).toBeTruthy();
   });
@@ -127,7 +127,7 @@ describe('PostInstallNextSteps (#1496, #1492)', () => {
     expect(screen.getByText('Open the agents')).toBeTruthy();
   });
 
-  it('sends neither integrations nor extensions to an orchestrator or the chat', () => {
+  it('sends neither integrations nor extensions to an agent or the chat', () => {
     renderWithIntl(
       <PostInstallNextSteps pluginName="Odoo Connector" readiness={READY} kind="integration" attachedTo={null} />,
     );

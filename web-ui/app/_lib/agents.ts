@@ -1383,6 +1383,50 @@ export async function setInstanceDefaultAgent(slug: string | null, opts?: GrantW
   });
 }
 
+/**
+ * #2055 — one entry of the default-agent table: who (`principal`, null =
+ * everyone) in which channel (`channel_type`, null = every channel) reaches
+ * which agent when they address none; `off` = no agent, a system notice.
+ * The entry with both null is the instance entry: it is set, never removed.
+ */
+export interface DefaultAgentEntryDto {
+  id: string;
+  principal: string | null;
+  channel_type: string | null;
+  off: boolean;
+  agent_slug: string | null;
+  agent_name: string | null;
+  /** `deleted` / `disabled` / `enabled` …: messages there get a notice naming the agent. */
+  agent_status: string | null;
+  updated_by: string | null;
+  updated_at: string;
+}
+
+export async function listDefaultAgentEntries(): Promise<DefaultAgentEntryDto[]> {
+  const res = await callJson<{ entries: DefaultAgentEntryDto[] }>('/v1/operator/default-agents');
+  return res.entries;
+}
+
+/** Set (or change) one entry; `agentSlug: null` = `off`. 409 carries why the agent may not be named there. */
+export async function putDefaultAgentEntry(input: {
+  principal: string | null;
+  channelType: string | null;
+  agentSlug: string | null;
+}): Promise<void> {
+  await callJson('/v1/operator/default-agents', {
+    method: 'PUT',
+    body: JSON.stringify({
+      principal: input.principal,
+      channel_type: input.channelType,
+      agent_slug: input.agentSlug,
+    }),
+  });
+}
+
+export async function deleteDefaultAgentEntry(id: string): Promise<void> {
+  await callJson(`/v1/operator/default-agents/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 export async function drainAgentSessions(slug: string): Promise<{ affected: number }> {
   return callJson(`/v1/operator/agents/${encodeURIComponent(slug)}/drain`, {
     method: 'POST',
@@ -1411,6 +1455,19 @@ export interface EnabledAgentDto {
   /** Reserved, not enforced (#978): persisted and reported, read by no
    *  runtime path — `strict` behaves like `default`. */
   privacy_profile: PrivacyProfile;
+  /** The archetype the middleware already reports on this route; absent on
+   *  one that predates archetypes (read it through `archetypeOfAgent`). */
+  archetype?: AgentArchetype;
+  /** #2057 — `agent_identities.display_name`. Optional: the route does not
+   *  deliver the identity yet, so the name falls back to `name`, then slug. */
+  display_name?: string | null;
+  /** #2057 — `agent_identities.short_description`; falls back to `description`. */
+  short_description?: string | null;
+  /** #2057 — the avatar reference as the identity route reports it. */
+  avatar?: { etag: string; url: string } | null;
+  /** #2057 — systems the agent can read or write through its grants, as
+   *  display names. Absent until the middleware reports it; never guessed. */
+  reach?: string[] | null;
 }
 
 export interface EnabledAgentsListDto {
@@ -1426,6 +1483,40 @@ export interface EnabledAgentsListDto {
  */
 export async function listEnabledAgents(): Promise<EnabledAgentsListDto> {
   return callJson<EnabledAgentsListDto>('/v1/operator/agents/enabled');
+}
+
+/**
+ * #2057 — one agent in the directory a person sees in a channel
+ * (`GET /api/v1/agents/directory?channel=`, kernel contract of stream S1).
+ */
+export interface AgentDirectoryEntryDto {
+  slug: string;
+  display_name: string;
+  short_description: string | null;
+  avatar_url: string | null;
+  /** `standard`, or the id of an archetype an archetype plugin delivers; `null` = standard. */
+  archetype: string | null;
+}
+
+/** The agent that answers what nobody addressed, or why there is none. */
+export type AgentDirectoryDefaultDto =
+  | { slug: string }
+  | { slug: null; notice: string };
+
+export interface AgentDirectoryDto {
+  channel: string;
+  agents: AgentDirectoryEntryDto[];
+  default_agent: AgentDirectoryDefaultDto;
+}
+
+/**
+ * The agents available to the signed-in person in `channel`, already filtered
+ * by availability on the server (spec 2042 §5.3, criterion 40).
+ */
+export async function getAgentDirectory(channel: string): Promise<AgentDirectoryDto> {
+  return callJson<AgentDirectoryDto>(
+    `/v1/agents/directory?channel=${encodeURIComponent(channel)}`,
+  );
 }
 
 // ── Phase B — operator dashboard support surfaces ───────────────────────
@@ -1505,7 +1596,8 @@ export interface ResolveChannelResponse {
    *  every binding; `default` — the default-agent table (#2055). See the
    *  orchestrator's ChannelResolver. */
   via: 'identity' | 'explicit' | 'selection' | 'binding' | 'default' | 'none';
-  message?: string;
+  /** #2055 — with no match: the `system` notice the sender would get. */
+  notice?: { code: string; text: string; locale: string } | null;
 }
 
 /**

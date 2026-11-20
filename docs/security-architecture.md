@@ -922,6 +922,18 @@ Known residuals:
   `audienceOwners` and returns everything. The in-tree providers honour it.
 - Only turns that carry a `TurnOrigin` are context-bound.
 
+### Which channels reach a context tree, and who may address an agent by id (#2042, #2059)
+
+`slack`, `discord`, `whatsapp` and `imessage` are in `CONTEXT_MEMORY_CHANNEL_TYPES` and `CHANNEL_KIND_BY_ORIGIN`, like `teams` and `telegram`. The effect is narrow:
+
+- A turn reaches a tier only through the `TurnOrigin` the channel plugin sends. No origin, an `unscoped` or `system` scope, or a blank group or user id stays context-free. A conversation or group gets its own `channel:` tier, a 1:1 chat its `user:` tier, two groups never share one (`test/memoryAxesForOrigin.test.ts`).
+- Member-scoped memory (`members`) needs a known audience. A group is known only when the plugin marks its roster complete. A Slack, Discord, WhatsApp or iMessage plugin that does not stays `unknown`, so no member-owned knowledge comes in (`test/turnAudience.test.ts`). The scope kind and the completeness flag come from the channel plugin, the same trust as for Teams and Telegram.
+- An allowlist entry is a deliberate act: a channel without a reviewed recipe in §4 of the memory design stays context-free.
+
+A typed reply is turned into a `card_answer` only for a question the receiving identity posted itself (`identityFor(agent, channel)` equals the event's `receivedByChannelKey`), only where the channel leaves the message alone (it reported it, or a process reads everything), and never for a forwarded message. The kernel sets `answererVerified: true` from the channel's statement of who wrote the message, so the authenticity of the sender rests on the channel plugin, as it does for `emitConversationMessage`. Like a native card, a question takes an answer from anyone in the conversation until it closes (at most seven days); each answer is one event and the receiver decides which counts. `core.reportConversationMessage` is scoped like `emitConversationMessage`: a channel reports only events of its own channel type (`test/scopedCoreApi.test.ts`).
+
+Explicit addressing by agent id (`metadata.agentId`, canvas and UI pickers) goes through `ChannelResolver.resolveAgent`: the agent is checked like any routing target (status, tombstone, channel and sender availability). A refusal is answered by the management layer as a `system` notice naming the agent. It never becomes another agent, and a platform without `resolveAgent` refuses the turn. A provisioned bot identity on the channel key outranks the id, so a bot never answers for another agent (`test/channelResolverExplicitAgent.test.ts`, `test/dispatcherAgentAddressing.test.ts`).
+
 ## 4a. Third-party npm dependencies: audit gate, Dependabot scope, the desktop runtime
 
 Plugins are operator-curated (§4); the npm dependencies of the kernel, the

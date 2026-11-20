@@ -248,7 +248,7 @@ describe('AgentDetail plugin assignment', () => {
       <AgentDetail agent={agent({ plugins: [] })} />,
     );
     expect(
-      await screen.findByText(/No plugins are assigned to this orchestrator/),
+      await screen.findByText(/No plugins are assigned to this agent/),
     ).toBeInTheDocument();
   });
 
@@ -314,7 +314,7 @@ describe('AgentDetail plugin assignment', () => {
 
     expect(
       await screen.findByText(
-        /This plugin is not assigned to the orchestrator anymore/,
+        /This plugin is not assigned to the agent anymore/,
       ),
     ).toBeInTheDocument();
     // The raw machine code must never surface as UI text.

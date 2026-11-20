@@ -18,6 +18,7 @@
 import type {
   ChatAgent,
   ChatTurnInput,
+  DisclosureMarkerStore,
   DisclosureSeenStore,
   GrantStore,
 } from '@omadia/channel-sdk';
@@ -447,6 +448,12 @@ export interface OrchestratorDeps {
    * whenever an operator changed something unrelated.
    */
   readonly aiDisclosureSeenStore?: DisclosureSeenStore;
+  /**
+   * #2087 — process-shared `per_conversation` marker state, for the same
+   * reason: a speaker change is only visible to a store that sees every agent
+   * of the conversation.
+   */
+  readonly aiDisclosureMarkerStore?: DisclosureMarkerStore;
   /**
    * #579 — resolved org security posture (org floor + optional scope tighten +
    * shadow/enforce mode + optional external screen URL). Absent → the shipping
@@ -1047,6 +1054,9 @@ export function buildOrchestratorForAgent(
     ...(deps.aiDisclosure ? { aiDisclosure: deps.aiDisclosure } : {}),
     ...(deps.aiDisclosureSeenStore
       ? { aiDisclosureSeenStore: deps.aiDisclosureSeenStore }
+      : {}),
+    ...(deps.aiDisclosureMarkerStore
+      ? { aiDisclosureMarkerStore: deps.aiDisclosureMarkerStore }
       : {}),
     // #579 — org security posture + its screener/audit sink. Posture absent →
     // orchestrator applies the shipping default (`auto`); the screener + sink
