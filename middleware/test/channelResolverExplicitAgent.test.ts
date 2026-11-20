@@ -182,3 +182,17 @@ test('#2059: availability is checked for the sender and the channel', async () =
     'agent_not_available',
   );
 });
+
+test('#2059: a provisioned bot never answers for another agent, whatever id is named', async () => {
+  const registry = await buildRegistry({
+    ...snap,
+    channelIdentities: [{ channelType: 'teams', channelKey: '28:mira-bot', agentId: ID.mira }],
+  });
+  const result = new ChannelResolver({ registry }).resolveAgent(
+    ID.other,
+    { channelType: 'teams', channelKey: '28:mira-bot' },
+    { principal: 'user:anna@example.com' },
+  );
+  assert.equal(result.agent?.agent.slug, 'mira');
+  assert.equal(result.exclusive, true);
+});
