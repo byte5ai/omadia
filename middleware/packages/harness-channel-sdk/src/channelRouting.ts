@@ -156,3 +156,24 @@ export function resolveChatAgentForChannel(
   }
   return getChatAgent(ctx);
 }
+
+/**
+ * #2055 — the full routing result for a `(channelType, channelKey)`: the
+ * decision, the {@link ChannelResolveResult.notice} of a `reject` and the
+ * {@link ChannelResolveResult.speaker} of the agent that will answer — what
+ * {@link resolveChatAgentForChannel} drops on the way to the bare ChatAgent.
+ *
+ * `undefined` when the platform has no {@link CHANNEL_RESOLVER_SERVICE}
+ * (no multi-agent registry): the caller then uses the shared singleton, as
+ * `resolveChatAgentForChannel` does.
+ */
+export function resolveChannelRoute(
+  ctx: PluginContext,
+  channelType: string,
+  channelKey: string,
+  context?: ChannelRouteContext,
+): ChannelResolveResult | undefined {
+  return ctx.services
+    .get<ChannelBindingResolver>(CHANNEL_RESOLVER_SERVICE)
+    ?.resolve(channelType, channelKey, context);
+}

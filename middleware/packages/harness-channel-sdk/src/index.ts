@@ -95,6 +95,7 @@ export {
 export {
   CHANNEL_RESOLVER_SERVICE,
   resolveChatAgentForChannel,
+  resolveChannelRoute,
   type ChannelBindingResolver,
   type ChannelResolveResult,
   type ChannelResolveDecision,
