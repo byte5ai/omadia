@@ -530,3 +530,5 @@ export { parseCardReply, renderCardAsText } from './questionCardText.js';
 export type { CardReplyParse } from './questionCardText.js';
 export { answerDetailsText, buildAnswerDetails } from './answerDetails.js';
 export type { AnswerDetails } from './answerDetails.js';
+export { DEFAULT_PACE_PROFILE, paceAckText, runPacedTurn } from './pace.js';
+export type { ChannelPaceProfile, PaceClock, PaceHooks, PacedOutcome } from './pace.js';
