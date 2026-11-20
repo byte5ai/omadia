@@ -93,6 +93,8 @@ export interface ChannelRegistryDeps {
   /** #2043 — readiness providers and meeting sources, dropped the same way. */
   readinessProviders?: { unregisterChannel(channelId: string): void };
   meetingSources?: { unregisterChannel(channelId: string): void };
+  /** Spec 2042 §5.3 — per-agent bots, dropped the same way. */
+  agentIdentities?: { unregisterChannel(channelId: string): void };
 }
 
 export class DefaultChannelRegistry implements ChannelRegistry {
@@ -256,6 +258,7 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     this.channelTypeClaims.release(agentId);
     this.deps.readinessProviders?.unregisterChannel(agentId);
     this.deps.meetingSources?.unregisterChannel(agentId);
+    this.deps.agentIdentities?.unregisterChannel(agentId);
     // Drop the cached ChannelPlugin implementation BEFORE the rest of
     // teardown so an immediately-following re-activate (upgrade flow)
     // can never observe the stale module. Without this, the resolver's

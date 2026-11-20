@@ -27,6 +27,7 @@
 // existing contract; they have their own ownership rules.
 
 import type {
+  AgentIdentityProvider,
   ChannelReadinessProvider,
   ConversationMembershipEvent,
   ConversationMessageEvent,
@@ -152,6 +153,7 @@ export function scopeCoreApiToChannel(
     registerRosterProvider: claimed('a roster provider', core.registerRosterProvider),
     registerTargetedSendProvider: claimed('a targeted-send provider', core.registerTargetedSendProvider),
     registerConversationSendProvider: claimed('a conversation-send provider', core.registerConversationSendProvider),
+    registerAgentIdentityProvider: claimed<AgentIdentityProvider>('an agent-identity provider', core.registerAgentIdentityProvider),
   };
   for (const [name, fn] of Object.entries(withClaim)) {
     if (fn) (scoped as unknown as Record<string, unknown>)[name] = fn;
