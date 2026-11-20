@@ -20,7 +20,7 @@
 
 import { turnContext } from '../turnContext.js';
 import { checkFlow, violationSummary } from './flowRule.js';
-import { labelSummary, unionLabels, type DiscretionLabel, type LabelSet, type Readers } from './labels.js';
+import { labelSummary, unionLabels, type DiscretionLabel, type Readers } from './labels.js';
 import type { DiscretionPort, LabelSubjectKind } from './port.js';
 import { addTurnLabels, currentDiscretion, resolvedTurnLabels } from './turnLabels.js';
 

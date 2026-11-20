@@ -43,7 +43,7 @@ function hubEntry(
   return {
     id,
     name,
-    kind: 'agent',
+    kind: 'tool',
     domain: 'x.y',
     description: '',
     categories: [],
@@ -116,7 +116,7 @@ function fetchImpl(): RegistryClientDeps['fetchImpl'] {
 function plugin(id: string, over: Partial<Plugin> = {}): Plugin {
   return {
     id,
-    kind: 'agent',
+    kind: 'tool',
     name: id,
     version: '1.0.0',
     latest_version: '1.0.0',
@@ -472,5 +472,29 @@ describe('store · search + order (#1471)', () => {
       const ids = (await list(base, '?search=aufgaben')).map((p) => p.id);
       assert.deepEqual(ids, [TODOIST]);
     });
+  });
+});
+
+// Spec 2042 §5.10, the contract step — a package of a retired kind is
+// listed, never offered for install (the install would be refused); one
+// that is installed stays installed (legacy).
+describe('store · retired kinds', () => {
+  it('a hub or local package of kind agent/extension is incompatible unless installed', async () => {
+    await withStore(
+      {
+        catalog: [
+          plugin('@acme/old-agent', { kind: 'agent' }),
+          plugin('@acme/legacy-agent', { kind: 'agent' }),
+        ],
+        installed: { '@acme/legacy-agent': '1.0.0' },
+      },
+      async (base) => {
+        const items = await list(base);
+        assert.equal(items.find((p) => p.id === DEV)?.install_state, 'incompatible', 'hub extension');
+        assert.equal(items.find((p) => p.id === '@acme/old-agent')?.install_state, 'incompatible');
+        assert.equal(items.find((p) => p.id === '@acme/legacy-agent')?.install_state, 'installed');
+        assert.equal(items.find((p) => p.id === TODOIST)?.install_state, 'available', 'a current kind is offered');
+      },
+    );
   });
 });
