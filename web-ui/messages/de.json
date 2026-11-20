@@ -3288,7 +3288,7 @@
           "failed": "Das Einrichten der Teams-Identität ist fehlgeschlagen.",
           "unknown": "Die Teams-Identität ließ sich nicht prüfen."
         },
-        "teamsLink": "Teams-Einrichtung öffnen",
+        "teamsLink": "Kanäle öffnen",
         "engineNotReady": "Auf dieser Instanz gibt es keine nutzbare Moderations-Engine. In einer Gruppe angesprochen, antwortet dieser Facilitator nur, dass Moderationen auf dieser Instanz noch nicht eingerichtet sind und man sich an die Administration wenden soll.",
         "engineLink": "Beheben",
         "engineMissing": "Die Moderations-Engine ist diesem Facilitator nicht angehängt, obwohl das normalerweise automatisch geschieht.",

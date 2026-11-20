@@ -23,6 +23,7 @@ import {
   type FacilitationEngineLoad,
 } from '../../_components/facilitatorReadiness';
 import { useFacilitatorRefusalMessage } from '../../_components/useFacilitatorCopy';
+import { AgentChannelIdentities } from './AgentChannelIdentities';
 import { AgentDetailTabs } from './AgentDetailTabs';
 import { AgentIdentity } from './AgentIdentity';
 import { AgentModelPolicy } from './AgentModelPolicy';
@@ -86,6 +87,9 @@ export function FacilitatorDetail(
             <>
               <AgentTeamsIdentity slug={agent.slug} />
               <AgentTeamsInstalls slug={agent.slug} />
+              {/* #2066 — its own bot on Slack, Discord or Telegram (S7): a
+                  facilitator is ready on every channel it has one on. */}
+              <AgentChannelIdentities slug={agent.slug} />
             </>
           ),
           moderation: () => (
