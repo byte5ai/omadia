@@ -660,7 +660,7 @@ describe('#1876 fast lane — the agent\'s own, switchable, under its identity',
     channelEnabled: () => true,
     triageChatTurn: (req) => {
       seen.push(req);
-      return Promise.resolve({ kind: 'answer', text: '3 offene Posten', tool: 'odoo_query', rows: 3, toolCalls: 1, ms: 1 });
+      return Promise.resolve({ kind: 'answer', text: '3 offene Posten', summary: '3 offene Posten', table: { kind: 'table' as const, columns: [], rows: [] }, tool: 'odoo_query', rows: 3, toolCalls: 1, ms: 1 });
     },
   });
   const turn = { userMessage: 'Offene Posten?', sessionScope: 'conv-1876' };

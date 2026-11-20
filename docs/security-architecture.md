@@ -1510,8 +1510,8 @@ The seams, each applying the helper after the operator bypass and before
 interning, and for an intern-exempt tool before the exemption (the exemption
 covers the tool's result, not its error):
 
-- `Orchestrator.dispatchTool` — the one choke point for both chat loops, the
-  streaming slots and the Direct-Line relay. It never rejects: a thrown error
+- `Orchestrator.dispatchTool` — the one choke point for both chat loops and
+  the streaming slots. It never rejects: a thrown error
   resolves as the notice, also with the dispatch deadline disabled. The loops'
   own rejection handlers are backstops that build the same notice.
 - `Orchestrator.dispatchToolDeadlined` and `Orchestrator.guardReplayResult`
@@ -1750,9 +1750,10 @@ answer they check:
   wrapper calls `markPrivacyFinalizeHeld(input)`. The pass then does not
   finalize: it returns without a receipt and hands a
   `PrivacyEgressContinuation` (`harness-orchestrator/src/privacyEgress.ts`)
-  over, keyed on the caller's input object (one-shot mark, weak maps). All
-  three finalize sites hand over — buffered `runTurn`, streaming `done`,
-  streaming Direct Line. Every verifier request about a pass's answer goes
+  over, keyed on the caller's input object (one-shot mark, weak maps). Both
+  finalize sites hand over — buffered `runTurn` and streaming `done` (the
+  third, streaming Direct Line, went with Direct Line itself, spec 2042).
+  Every verifier request about a pass's answer goes
   through that pass's continuation, and every pass that handed over is
   finalized exactly once, after them (`EgressLedger` on `chat()`,
   `StreamPasses` on the stream; also on errors, abandoned re-entries and
@@ -1790,7 +1791,7 @@ answer they check:
   pipeline's own `userMessage` (server-side checks; the extraction prompt when
   no shield is installed) is the same normalised text, never the envelope.
   A server-rendered v4 answer (`answerSource: 'privacy-render'`, real values
-  the model never saw), a Direct Line relay and the privacy refusal are never
+  the model never saw) and the privacy refusal are never
   verified (`verifierGate`; what `enforce` delivers instead is in §7c). The
   extraction window and the verbatim guard (§7c) apply to the wire answer,
   the text the model saw. Claims come back with placeholders and are
@@ -1946,8 +1947,8 @@ requests, and only there, the shield acts on four kinds of text:
   blocks the turn (`PromptMaskBlockedError`).
 - **Prompt text, only while `mask_user_prompt` is on.** The setting is off by
   default. While it is on, the user's message, document text inlined at
-  upload, the user messages a channel replays in `priorTurns`, live steering text, a direct-line relay's
-  payload and a verifier correction hint are masked in the turn's own model
+  upload, the user messages a channel replays in `priorTurns`, live steering text
+  and a verifier correction hint are masked in the turn's own model
   requests through the turn's prompt map (`maskPromptForWire`): the C0
   baseline and the operator's deny-list, plus names when the C1 detector is
   configured. The turn's model and persona routing, its card routing, fact
@@ -1957,7 +1958,7 @@ requests, and only there, the shield acts on four kinds of text:
   detection or the deny-list fails, or a detected span survives
   substitution, the guard reports `blocked` and the request is not sent
   unmasked (`PromptMaskBlockedError`: the turn answers with a privacy
-  notice, a direct-line (#specialist) turn included, a fact-extraction pass
+  notice, a fact-extraction pass
   is skipped and a verifier re-entry is abandoned, §7c). If the configured
   C1 detector fails, C1 stays off for the rest of the turn and masking falls
   back to the C0 baseline (`c1DetectorFor`, logged as `promptMaskDegraded`),
@@ -2463,7 +2464,7 @@ These tool results skip the digest:
   running (failed boot activation, a reactivation in flight, a tripped
   breaker) is caught per turn instead: the clamp makes the turn fail closed
   with a refusal (`PrivacyShieldRequiredError`, `PRIVACY_SHIELD_REQUIRED_ANSWER`)
-  before the screener, a Direct Line dispatch or the model see it (#1535). The
+  before the screener or the model see it (#1535). The
   instance still boots, and the admin UI and the store keep working, so the
   guard can be repaired; only chat answers with the refusal until it is back.
   A turn on the subscription CLI (`claude-cli`), which has no shield, is
@@ -2542,8 +2543,7 @@ their requests; the kernel hands them text the handle already masked.
   handle the orchestrator hands the row its masked view
   (`TurnIngest.maskedView`): the user message as the model received it and
   the answer as the model wrote it, the texts the fact extraction gets, never
-  the restored answer. A direct-line turn's specialist answer is masked like
-  a replayed answer, whatever `mask_user_prompt` says.
+  the restored answer.
   `CaptureFilteringKnowledgeGraph` strips the view before the turn is stored,
   and an empty view (its masking was `blocked`) skips the scorer.
   `capture_level: minimal` switches the scorer off.
@@ -3144,7 +3144,7 @@ trace does not support.
   any tool query) and its column labels and rank header, which it writes as
   free text into the rendered table.
 - **Never verified: what the verifier may not see.** Behind a shield, a pass
-  that handed over no privacy view (a Direct Line relay) leaves nothing the
+  that handed over no privacy view leaves nothing the
   verifier may read (§6e), and neither does a rendered failure (#1097:
   `answerIsError`, control flow rather than system data) or a render whose
   provider does not report `prose` (it predates plugin-api 1.27.0, so prose
@@ -3331,7 +3331,7 @@ replayed result the shield cannot intern again is withheld, never sent raw.
   the streaming tool loop stop after the batch (post-batch fail-fast), a
   `LocalSubAgent` stops after its batch, and the one authoritative check at
   the end of `runTurnCore` (and on the stream's terminal event) catches what
-  a direct-line dispatch or a sub-agent folded into an answer. An abandoned
+  a sub-agent folded into an answer. An abandoned
   resample keeps the first answer; an abandoned retry withholds it with the
   `failed` badge. A recorded MCP input sentinel or connect prompt is not
   replayable (its provenance exists only in the dispatch that produced it),
@@ -3455,7 +3455,7 @@ hint still carries no verifier evidence. The open points are in handoff §13.
 
 Tests: `middleware/test/toolReplayLedger.test.ts`,
 `middleware/test/toolReplaySeams.test.ts` (the standalone dispatcher with and
-without an ambient ledger, the MCP input-card and direct-line aborts),
+without an ambient ledger, the MCP input-card abort),
 `middleware/test/verifierServiceWriteSafety.test.ts` (resample, chained
 resample and retry, abandoned re-entries, read-only misses, thrown and
 returned errors replayed through the shield),
@@ -6709,6 +6709,42 @@ whitelist, per-frame session check) before the channel's handler sees the
 socket, whoever installed the package under that id; without the channel the
 upgrade on `/omadia-ui/canvas` is a raw 404. Pairing discovery
 (`/.well-known/omadia-ui`) keeps advertising that path either way.
+
+## 10z. One agent speaks: routing, speaker, identity guard (spec 2042, #2045 #2046 #2055 #1880)
+
+**Routing never hands a turn to a broader agent.** Before #2055 a binding to a
+disabled agent, an unknown channel key or an unbound conversation reached the
+fallback agent, which typically held every installed plugin: a quiet privilege
+escalation. Routing is now deterministic and closed: the addressed, selected,
+bound or default-table agent answers, or nobody does and the sender gets a
+`system` notice naming the agent. There is no fallback agent. Only
+`status = 'enabled'` agents are addressable; availability (who, which
+channels) is checked before every turn, also for explicit addressing; a fresh
+agent is available to nobody. A purge of a deleted agent is refused while a
+default-agent entry still names it (`ON DELETE RESTRICT`); users' selections
+of it go with the purge.
+
+`chatAgent@1` is not a way around routing either: with a registry it answers
+every non-canvas turn with the `no_agent` notice, so a channel that falls back
+to it after a refusal (the shipped Teams plugin does) never reaches the
+instance's default agent. The canvas still runs on the instance's default
+agent until it dispatches per agent (#2059). Availability lists only named
+people (`user:<id>`) for now; groups are refused at save time until routing
+resolves role membership.
+
+**Speaker is structural.** Every answer carries the speaker the harness stamped
+from routing (`withSpeaker` around every agent bundle); no model output can set
+it.
+
+**Identity guard (textual, fail-closed).** Every `prose` emission passes
+`identityGuard/` before publication, independent of the fact verifier's
+settings: a deterministic layer against all agents' names and aliases and
+claims to be human, then a model layer on the masked text (values the privacy
+shield restored are masked again) for text that mentions a colleague or
+introduces someone. A judge error, timeout (8 s) or missing judge withholds the
+text. Streaming releases complete sentences only, each checked with all text
+so far. The guard is a strong guard with test-defined coverage, not a proof
+(ADR-0013).
 
 ## 11. Reviewer checklist
 

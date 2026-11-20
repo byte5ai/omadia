@@ -44,10 +44,6 @@ import { FacilitatorDetail } from './FacilitatorDetail';
  */
 interface AgentDetailProps {
   readonly agent: OperatorAgentDto;
-  /** Fallback agents always run plugins with the global store config —
-   *  surfaced as a notice and forwarded to PluginsDnd, which hides the
-   *  per-agent config drawer and wipes overrides on save. */
-  readonly isFallback: boolean;
 }
 
 /**
@@ -231,17 +227,11 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
       </section>
 
       <section>
-        {props.isFallback && (
-          <div className="mb-3 rounded border border-[color:var(--accent)] bg-[color:var(--accent)]/10 px-3 py-2 text-xs text-[color:var(--accent)]">
-            {t('fallbackStoreOnlyNotice')}
-          </div>
-        )}
         {catalog ? (
           <PluginsDnd
             key={`${props.agent.id}:${editorRevision}`}
             agent={props.agent}
             catalog={catalog}
-            isFallback={props.isFallback}
             disabled={disabled}
             onReplace={(plugins) =>
               run(

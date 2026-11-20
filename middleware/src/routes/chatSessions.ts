@@ -104,22 +104,8 @@ const MessageSchema = z.object({
   error: z.boolean().optional(),
   startedAt: z.number(),
   finishedAt: z.number().optional(),
-  // #445 — persist the sticky Direct-Line indicator so the banner survives a
-  // reload or a cross-device resume. zod strips unknown keys, so without this
-  // the field would be silently dropped by the client's own periodic PUT.
-  directLineSession: z
-    .object({
-      active: z.boolean(),
-      agentId: z.string().optional(),
-      label: z.string().optional(),
-      transition: z
-        .enum(['entered', 'switched', 'continued', 'left', 'unavailable', 'refused'])
-        .optional(),
-      refusedReason: z.enum(['no-scope', 'shared-scope', 'synthetic-scope']).optional(),
-    })
-    .optional(),
   // #1071 — marker of a server-written routine delivery. Accepted so a
-  // client round-trip does not strip it (same trap as #445 above); the store
+  // client round-trip does not strip it (zod strips unknown keys); the store
   // trusts it only when the server's own copy carries it.
   proactive: z
     .object({
@@ -131,6 +117,32 @@ const MessageSchema = z.object({
     })
     .optional(),
 
+  // #2045 — who the message is from (agent or `system`), stamped by the
+  // harness; kept so a reloaded chat still shows the speaker per message. A
+  // malformed value is dropped, never trusted for anything but display.
+  speaker: z
+    .discriminatedUnion('kind', [
+      z.object({
+        kind: z.literal('agent'),
+        agentId: z.string().min(1).max(100),
+        slug: z.string().min(1).max(100),
+        displayName: z.string().min(1).max(200),
+        // Only the kernel's own same-origin avatar path: the client stores
+        // this, so it must not become a way to show any URL as an avatar.
+        avatarUrl: z
+          .string()
+          .max(500)
+          .regex(/^\/api\/v1\/operator\/agents\/[A-Za-z0-9_-]+\/identity\/avatar(?:\?v=[A-Za-z0-9._~%-]*)?$/)
+          .optional(),
+      }),
+      z.object({ kind: z.literal('system') }),
+    ])
+    .optional()
+    .catch(undefined),
+  systemNotice: z
+    .object({ code: z.string().min(1).max(64), text: z.string().max(2000) })
+    .optional()
+    .catch(undefined),
   verifier: VerifierSummarySchema.optional().catch(undefined),
   // The answer verifier withheld this turn's answer (`enforce` mode); the
   // content is the notice saying so.

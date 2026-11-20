@@ -155,7 +155,8 @@ export async function contractSuite(
 
     beforeEach(async () => {
       await c.k?.stop();
-      await c.pool.query('UPDATE multi_orchestrator_settings SET fallback_agent_id = NULL');
+      // #2055 — default-agent entries name agents ON DELETE RESTRICT.
+      await c.pool.query('UPDATE agent_default_entries SET agent_id = NULL');
       await c.pool.query('DELETE FROM agent_teams_identities');
       await c.pool.query('DELETE FROM agents');
       c.k = await bootFacilitatorKernel({ pool: c.pool });

@@ -10,9 +10,39 @@ implements, is a major.
 
 ## Unreleased
 
+Additive (#2082, #2085, #1876, epic #2042, spec 2042 §5.12, §5.13): stream S4.
+The coordination session sets the version when it lands.
+
+### Added
+
+- `ScheduleNode` gains the optional **`until`** (#2082, spec §5.12,
+  ADR-0020): the deadline an Agent Builder schedule runs to; past it the
+  schedule is disabled until an operator renews it.
+- **`BatchJob`**, **`BatchJobRegistry`**, **`BatchJobResult`**,
+  **`BatchJobRunOptions`** and the service name
+  **`BATCH_JOB_REGISTRY_SERVICE`** (`batchJobRegistry@1`, #2082, spec §5.12):
+  a plugin registers periodic learning or consolidation as a job; the kernel
+  runs it as a bounded batch trigger per agent (deadline, budget, breaker)
+  instead of a plugin's own interval.
+- The boundary check of a data plan (#2085, spec §5.13 1a, criterion 35):
+  **`DataPlanDescription`**, **`DataPlanVerdict`**, **`DataPlanGuard`**,
+  **`describeToolCall`**, **`checkDataPlanPresets`**, **`ranksIndividuals`**
+  and **`dataPlanText`** — a plan described by tool, identifiers, filter
+  fields, order and top-N, never values. New boundary preset
+  **`no-individual-rankings`** (category `data`), whose constraint is checked
+  deterministically.
+
+### Changed
+
+- `JobHandler` runs (`ctx.jobs`) are refused every model call (#2082, spec
+  §5.12): a job is deterministic work. A failing job backs off to bounded
+  recovery probes (at most one hour apart) instead of running every tick.
+  Model-backed learning or consolidation registers a `BatchJob`.
+
+## 1.74.0 — 2026-11-20
+
 Additive (#2045, epic #2042, spec 2042 §5.5, ADR-0013): who speaks, and
-what kind of output reaches a person. The coordination session sets the
-version when it lands.
+what kind of output reaches a person. Released with the agent model, step S1.
 
 ### Added
 
@@ -34,31 +64,17 @@ version when it lands.
 - **`Contribution`** (`id`, `speaker: AgentSpeaker`, `text`, `status:
   ContributionStatus`): a colleague's delivered block (spec §5.4); replaces
   the singular `delegatedAnswer` of the channel SDK.
-- `ScheduleNode` gains the optional **`until`** (#2082, spec §5.12,
-  ADR-0020): the deadline an Agent Builder schedule runs to; past it the
-  schedule is disabled until an operator renews it.
-- **`BatchJob`**, **`BatchJobRegistry`**, **`BatchJobResult`**,
-  **`BatchJobRunOptions`** and the service name
-  **`BATCH_JOB_REGISTRY_SERVICE`** (`batchJobRegistry@1`, #2082, spec §5.12):
-  a plugin registers periodic learning or consolidation as a job; the kernel
-  runs it as a bounded batch trigger per agent (deadline, budget, breaker)
-  instead of a plugin's own interval.
-- The boundary check of a data plan (#2085, spec §5.13 1a, criterion 35):
-  **`DataPlanDescription`**, **`DataPlanVerdict`**, **`DataPlanGuard`**,
-  **`describeToolCall`**, **`checkDataPlanPresets`**, **`ranksIndividuals`**
-  and **`dataPlanText`** — a plan described by tool, identifiers, filter
-  fields, order and top-N, never values. New boundary preset
-  **`no-individual-rankings`** (category `data`), whose constraint is checked
-  deterministically.
+
+- (#2055) `SYSTEM_NOTICE_CODES` gains `agent_selection_cleared` and
+  `agent_directory` (the answers to `/agent` and `/agents`).
+- (#2046) `ProseEmission.restoredValues`: values the privacy shield restored
+  into the text server-side; the identity guard's model layer sees them
+  masked.
 
 ### Changed
 
 - `ExecutionEmissionType` is now `Exclude<EmissionType, 'system'>`: the same
   three members as before.
-- `JobHandler` runs (`ctx.jobs`) are refused every model call (#2082, spec
-  §5.12): a job is deterministic work. A failing job backs off to bounded
-  recovery probes (at most one hour apart) instead of running every tick.
-  Model-backed learning or consolidation registers a `BatchJob`.
 
 ## 1.73.0 — 2026-11-19
 

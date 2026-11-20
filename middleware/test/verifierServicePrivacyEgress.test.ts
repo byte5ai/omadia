@@ -483,9 +483,9 @@ describe('VerifierService.chat — privacy egress', () => {
     assert.equal(state.continuations[0]!.finalizeCalls, 1);
   });
 
-  it('skips a turn whose continuation has no view (Direct Line relay) and still attaches its receipt', async () => {
+  it('skips a turn whose continuation has no view (privacy refusal) and still attaches its receipt', async () => {
     const { orchestrator, state } = stubOrchestrator({
-      results: [turn('Antwort des Spezialisten mit 100 €.')],
+      results: [turn('Antwort mit 100 €.')],
       handOver: true,
       privacyActive: true,
       continuation: () => ({ wireAnswer: undefined }),
@@ -493,7 +493,7 @@ describe('VerifierService.chat — privacy egress', () => {
     const { pipeline, inputs } = verdicts([APPROVED]);
     const service = new VerifierService({ orchestrator, pipeline, enabled: true, mode: 'enforce', log: SILENT });
 
-    const answer = await service.chat({ userMessage: '#spezialist frage' });
+    const answer = await service.chat({ userMessage: 'frage' });
 
     assert.equal(inputs.length, 0);
     assert.equal(state.continuations[0]!.finalizeCalls, 1);

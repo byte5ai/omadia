@@ -12,7 +12,7 @@ import {
  * Phase A — chat-header Agent picker.
  *
  * Before the first turn of a session: dropdown of enabled Agents,
- * fallback pre-selected. The selected slug feeds the first
+ * default agent pre-selected. The selected slug feeds the first
  * `startTurn({agentSlug})` call; the server pins the snapshot and
  * subsequent turns reuse the pin.
  *
@@ -20,7 +20,7 @@ import {
  * "Agent: <slug>" with a tooltip explaining how to change it.
  *
  * Empty-config UX (TA07): when the endpoint returns zero enabled
- * Agents AND no fallback, render a small CTA pointing the operator at
+ * Agents AND no default agent, render a small CTA pointing the operator at
  * `/operator/agents` instead of an empty dropdown that 412s every turn.
  */
 
@@ -38,7 +38,7 @@ export interface AgentPickerProps {
 interface LoadState {
   loading: boolean;
   agents: EnabledAgentDto[];
-  fallbackSlug: string | null;
+  defaultSlug: string | null;
   error: string | null;
 }
 
@@ -47,7 +47,7 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement | null 
   const [state, setState] = useState<LoadState>({
     loading: true,
     agents: [],
-    fallbackSlug: null,
+    defaultSlug: null,
     error: null,
   });
 
@@ -59,17 +59,17 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement | null 
         setState({
           loading: false,
           agents: data.agents,
-          fallbackSlug: data.fallback_slug,
+          defaultSlug: data.default_slug,
           error: null,
         });
-        // Auto-select the fallback on first load when nothing else is
-        // chosen yet AND we're not already pinned.
+        // Auto-select the instance default agent (#2055) on first load when
+        // nothing else is chosen yet AND we're not already pinned.
         if (
           !props.pinnedSlug &&
           !props.selectedSlug &&
-          data.fallback_slug
+          data.default_slug
         ) {
-          props.onSelect(data.fallback_slug);
+          props.onSelect(data.default_slug);
         }
       })
       .catch((err: unknown) => {
@@ -77,7 +77,7 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement | null 
         setState({
           loading: false,
           agents: [],
-          fallbackSlug: null,
+          defaultSlug: null,
           error: err instanceof Error ? err.message : String(err),
         });
       });
@@ -100,10 +100,10 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement | null 
   }
 
   // Only surface the picker when the operator actually has a choice to make:
-  // more than one orchestrator. A lone fallback (or none) is just noise, so
+  // more than one orchestrator. A lone agent (or none) is just noise, so
   // the picker — dropdown and read-only pinned label alike — stays hidden.
-  // The fallback is still auto-selected in the effect above, so the first
-  // turn binds correctly even with no UI.
+  // The default agent is still auto-selected in the effect above, so the
+  // first turn binds correctly even with no UI.
   if (state.agents.length <= 1) return null;
 
   // Pinned → read-only label (only reached when more than one orchestrator
@@ -125,7 +125,7 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement | null 
       <span className="text-[color:var(--fg-muted)]">{t('label')}</span>
       <select
         className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-1 font-mono text-xs"
-        value={props.selectedSlug ?? state.fallbackSlug ?? ''}
+        value={props.selectedSlug ?? state.defaultSlug ?? ''}
         onChange={(e) =>
           props.onSelect(e.target.value === '' ? undefined : e.target.value)
         }
@@ -133,7 +133,7 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement | null 
         {state.agents.map((a) => (
           <option key={a.slug} value={a.slug}>
             {a.slug}
-            {a.is_fallback ? ` ${t('fallbackMarker')}` : ''}
+            {a.slug === state.defaultSlug ? ` ${t('defaultMarker')}` : ''}
           </option>
         ))}
       </select>

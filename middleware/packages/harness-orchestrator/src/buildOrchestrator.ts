@@ -16,6 +16,7 @@
 
 import type { DataPlanGuard } from '@omadia/plugin-api';
 import { createDataPlanGuard, createLlmDataPlanJudge } from './dataPlanGuard.js';
+
 import type {
   ChatAgent,
   ChatTurnInput,
@@ -66,7 +67,6 @@ import {
   type SecurityPostureSetup,
   type SecurityAuditEvent,
 } from './securityScreener.js';
-import type { DirectLineStickyStore } from './directLineSticky.js';
 import type {
   McpInputReplayer,
   PendingMcpInputStore,
@@ -112,6 +112,17 @@ import {
 import {
   applyArchetypeContract,
 } from './registry/facilitatorNeutrality.js';
+import type { AgentSpeaker } from '@omadia/plugin-api';
+import type { GuardDirectoryEntry } from './identityGuard/deterministic.js';
+import { IdentityGuard } from './identityGuard/guard.js';
+import { maskRestoredValues, withIdentityGuard } from './identityGuard/guardedChatAgent.js';
+import { createLlmIdentityJudge } from './identityGuard/llmJudge.js';
+import { DEFAULT_AGENT_IDENTITY, withIdentityRules } from './management/agentIdentityPrompt.js';
+import { AgentAnswerEmitter } from './management/answerEmitter.js';
+import { withSpeaker } from './management/speakingChatAgent.js';
+
+/** A guard check slower than this is logged even when it passes (trace). */
+const IDENTITY_GUARD_SLOW_MS = 1_500;
 
 /**
  * The per-Agent knobs — everything that differs between two Agents built in
@@ -120,6 +131,24 @@ import {
 export interface AgentRuntimeConfig {
   /** Stable id of the Agent (orchestrator instance) being built. */
   readonly agentId: string;
+  /**
+   * #2045 — who this agent's answers are from (its `agents.id`, slug, the name
+   * it wears, its avatar), stamped on every answer. Set by the registry from
+   * the agent row; absent (legacy single-agent boot, fixtures) = derived from
+   * `agentId` and `identityName`.
+   */
+  readonly speaker?: AgentSpeaker;
+  /**
+   * #2046 — the directory of every agent's names and aliases the identity
+   * guard checks this agent's prose against, read per turn. Absent = only the
+   * agent itself (human claims are still checked).
+   */
+  readonly agentDirectory?: () => readonly GuardDirectoryEntry[];
+  /**
+   * #2056 — the colleagues this agent may consult, by name (directed
+   * consultation grants, #2047), named in its prompt. Absent = none.
+   */
+  readonly consultableColleagues?: readonly string[];
   readonly model: string;
   /** Optional per-turn Sonnet/Opus routing (see {@link OrchestratorOptions}). */
   readonly modelRouting?: ModelRoutingConfig;
@@ -147,8 +176,6 @@ export interface AgentRuntimeConfig {
    * silently overruled by a stale deployment variable.
    */
   readonly cliTurnSeconds?: number;
-  /** #445 — sticky Direct Line for this Agent (see {@link OrchestratorOptions}). */
-  readonly directLineSticky?: boolean;
   /** Wave 8 — this Agent's direct-answer persona-skill candidates, resolved
    *  by the caller from `agent_persona_skills` (see {@link OrchestratorOptions}).
    *  Per-agent, unlike the platform-shared `OrchestratorDeps` fields below. */
@@ -286,25 +313,18 @@ export interface OrchestratorDeps {
   readonly nativeToolRegistry: NativeToolRegistry;
   readonly nudgeRegistry: NudgeRegistry;
   /**
-   * #445 — process-shared sticky Direct Line binding store. Deps, not
-   * per-Agent config, because the registry REPLACES an Orchestrator instance
-   * on any config diff: a per-instance store would silently unbind every live
-   * conversation whenever an operator tweaked something unrelated.
-   */
-  readonly directLineStickyStore?: DirectLineStickyStore;
-  /**
    * #1082 — process-shared run-trace / capture tallies, handed to every
-   * `SessionLogger` this factory builds. Deps for the SAME reason as
-   * `directLineStickyStore`: a per-instance tally would split the counts per
-   * Agent and reset whenever a config diff rebuilt one. Absent ⇒ each logger
-   * keeps its own.
+   * `SessionLogger` this factory builds. Deps, not per-Agent config, because
+   * the registry REPLACES an Orchestrator instance on any config diff: a
+   * per-instance tally would split the counts per Agent and reset whenever a
+   * config diff rebuilt one. Absent ⇒ each logger keeps its own.
    */
   readonly runTraceStats?: RunTraceOutcomeStats;
   /**
    * W2-1 (#544) — process-shared MCP pending-input store + replayer.
    *
-   * Deps, not per-Agent config, for the SAME reason as
-   * `directLineStickyStore`: the registry replaces an Orchestrator instance on
+   * Deps, not per-Agent config, for the SAME reason as `runTraceStats`: the
+   * registry replaces an Orchestrator instance on
    * any config diff, and a per-instance store would drop every parked call
    * whenever an operator changed something unrelated — after the user had
    * already seen the card. Must be the same store instance the kernel's
@@ -424,7 +444,7 @@ export interface OrchestratorDeps {
   readonly aiDisclosure?: AiDisclosureSetup;
   /**
    * #644 — process-shared first-turn-per-scope fold-dedup store. Deps, not
-   * per-Agent config, for the SAME reason as `directLineStickyStore`: the
+   * per-Agent config, for the SAME reason as `runTraceStats`: the
    * registry replaces an Orchestrator instance on any config diff, and a
    * per-instance store would re-fold the marking into every live conversation
    * whenever an operator changed something unrelated.
@@ -769,6 +789,41 @@ export function buildOrchestratorForAgent(
     : namespacedStore;
   const memoryToolHandler = new MemoryToolHandler(memoryToolStore);
 
+  // #2045 / #2046 — the outermost layers of every agent, whatever produced
+  // its answer: the mandatory identity guard on its prose, then the speaker
+  // stamp from routing (spec 2042 INV-3, INV-4).
+  const agentSpeaker: AgentSpeaker = config.speaker ?? {
+    kind: 'agent',
+    agentId: config.agentId,
+    slug: config.agentId,
+    displayName: config.identityName ?? config.agentId,
+  };
+  const emitter = new AgentAnswerEmitter({
+    speaker: agentSpeaker,
+    guard: (restoredValues) =>
+      new IdentityGuard({
+        speaker: agentSpeaker,
+        directory: config.agentDirectory?.() ?? [],
+        judge: createLlmIdentityJudge({
+          provider: deps.provider,
+          // An internal helper on the agent's own policy: its classifier
+          // model when it routes per turn, else its model.
+          model: config.modelRouting?.classifierModel ?? config.model,
+        }),
+        mask: (text) => Promise.resolve(maskRestoredValues(text, restoredValues)),
+      }),
+    locale: () => config.identityLanguage ?? deps.aiDisclosure?.locale,
+    onGuardResult: (result) => {
+      if (result.outcome !== 'pass' || result.latencyMs > IDENTITY_GUARD_SLOW_MS) {
+        console.log(
+          `[identity-guard] agent=${agentSpeaker.slug} outcome=${result.outcome} latencyMs=${String(result.latencyMs)}`,
+        );
+      }
+    },
+  });
+  const finalize = (agent: ChatAgent): ChatAgent =>
+    withSpeaker(withIdentityGuard(withFastPath(agent), emitter), agentSpeaker, emitter);
+
   // W5 memory-ACL — the per-CHAT-CONTEXT binder. `memoryToolHandler` above is
   // resolved once, here, for the whole process lifetime; the binder resolves a
   // stack per turn from the turn's `TurnOrigin` instead, so what an Agent
@@ -866,7 +921,8 @@ export function buildOrchestratorForAgent(
   // append the Steckbrief, then append the name last); see its doc comment for
   // why each field sits where it does and why the accent colour and avatar are
   // deliberately not in it.
-  const layeredIdentity = withAgentIdentity(deps.assistantIdentity, {
+  // #2056 — the base is the platform's agent identity, else the default one.
+  const layeredIdentity = withAgentIdentity(deps.assistantIdentity?.trim() || DEFAULT_AGENT_IDENTITY, {
     ...(config.identityInstructions !== undefined
       ? { identityInstructions: config.identityInstructions }
       : {}),
@@ -885,12 +941,18 @@ export function buildOrchestratorForAgent(
   // the name and self-description layered on above, and on every per-family
   // variant. Applied here as well as at compose time so an agent without a
   // stored identity (or with one compiled before the kind existed) has it.
-  const assistantIdentityWithName = applyArchetypeContract(config.archetype, layeredIdentity);
+  // #2056 — every agent's prompt starts from its own identity (the default
+  // one when none is authored) and carries the identity rules: it speaks only
+  // as itself, never as a colleague or a person.
+  const assistantIdentityWithName = applyArchetypeContract(
+    config.archetype,
+    withIdentityRules(layeredIdentity, config.consultableColleagues),
+  );
   const identityByFamily = config.identityByFamily
     ? Object.fromEntries(
         Object.entries(config.identityByFamily).map(([family, text]) => [
           family,
-          applyArchetypeContract(config.archetype, text),
+          applyArchetypeContract(config.archetype, withIdentityRules(text, config.consultableColleagues)),
         ]),
       )
     : config.identityByFamily;
@@ -930,10 +992,6 @@ export function buildOrchestratorForAgent(
     archetypeOmissions: { memory: omits('memory'), toolGrant: omits('tool_grant') },
     ...(config.fallbackVisionSupported !== undefined
       ? { fallbackVisionSupported: config.fallbackVisionSupported }
-      : {}),
-    ...(config.directLineSticky ? { directLineSticky: true } : {}),
-    ...(deps.directLineStickyStore
-      ? { directLineStickyStore: deps.directLineStickyStore }
       : {}),
     ...(config.personaSkills?.length && !omits('persona_skill')
       ? { personaSkills: config.personaSkills }
@@ -1077,7 +1135,7 @@ export function buildOrchestratorForAgent(
     return {
       orchestrator,
       bundle: {
-        agent: withFastPath(new CliChatAgent({
+        agent: finalize(new CliChatAgent({
           dispatch,
           // #1102 — surface the choice card / follow-up chips / slot picker a
           // kernel-native tool scheduled this turn on the `done` event, so the
@@ -1207,7 +1265,7 @@ export function buildOrchestratorForAgent(
 
   return {
     orchestrator,
-    bundle: { agent: withFastPath(agent), raw: orchestrator, sessionLogger, chatSessionStore },
+    bundle: { agent: finalize(agent), raw: orchestrator, sessionLogger, chatSessionStore },
     effectiveModel: config.model,
     ...(config.modelRouting ? { effectiveModelRouting: config.modelRouting } : {}),
     dataPlanGuard,

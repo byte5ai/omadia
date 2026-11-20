@@ -2,7 +2,7 @@
  * #575 Phase 1 — `ScopeId`: the typed form of a turn's session scope.
  *
  * Today `sessionScope` is a bare `string` used as the partition key for memory,
- * the knowledge graph, sticky Direct Line bindings and parked MCP input. Five
+ * the knowledge graph and parked MCP input. Five
  * different producers spell it five different ways, and two of those spellings
  * (`'http-default'`, `'teams-unknown'`) are SHARED buckets that several distinct
  * callers land in — the cross-user hole #445 had to paper over with a denylist.
@@ -20,8 +20,8 @@
  *  2. **Machine scopes are their own kind.** `routine:`/`schedule:`/`conductor:`
  *     have no audience at all — no human is present — so "the rights of everyone
  *     present" is undefined for them rather than merely restrictive. Modelling
- *     them as a variant is what lets `directLineSticky` delete its
- *     `SYNTHETIC_SCOPE_PREFIXES` denylist instead of renaming it.
+ *     them as a variant is what lets a consumer refuse machine scopes by kind
+ *     instead of keeping a `SYNTHETIC_SCOPE_PREFIXES`-style denylist.
  *
  * Everything here is pure and synchronous.
  */

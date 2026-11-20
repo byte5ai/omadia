@@ -85,6 +85,11 @@ export type AuditAction =
   | 'trigger.resume'
   | 'trigger.end'
   | 'trigger.recipient_profile'
+  // #2055 — the default-agent table and an agent's availability decide who
+  // answers whom: who may reach which agent belongs in the trail.
+  | 'agent.default_entry.set'
+  | 'agent.default_entry.delete'
+  | 'agent.availability_change'
   | 'plugin.uninstall'
   // #1510/#1508 — a plugin's Privacy Shield setting (`_privacy_mode`,
   // `_privacy_bypass_scopes`) changed. A switch to `bypass` sends that

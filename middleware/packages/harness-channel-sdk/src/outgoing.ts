@@ -252,28 +252,6 @@ export interface SemanticAnswer {
   agentsConsulted?: readonly AgentConsultation[];
 
   /**
-   * #332 Layer 2 — Direct Line. The verbatim answer of a sub-agent the USER
-   * directed input at (e.g. `@omadia #strategist …`), captured at the choke
-   * point and delivered as a HARNESS-owned, attributed segment INDEPENDENT of
-   * the orchestrator's own `text`. The orchestrator can neither remove nor
-   * rewrite it — its only sanctioned addition is an attributed, additive note
-   * in `text` (never a replacement). Still PII-masked by the privacy guard.
-   * Omitted on ordinary turns (no direct-line directive). Sidecar.
-   */
-  delegatedAnswer?: DelegatedAnswer;
-
-  /**
-   * #445 — sticky Direct Line indicator. Present on EVERY turn while the
-   * feature is enabled, including `{ active: false }` on ordinary turns. That
-   * is deliberate: a field that only appears while bound cannot tell a client
-   * that a binding ENDED, so a restart, a registry rebuild or a TTL expiry
-   * would leave a stale "you are talking to X" banner on screen. Emitting the
-   * negative makes the indicator self-correcting on the very next turn.
-   * Omitted entirely when the feature is off. Sidecar.
-   */
-  directLineSession?: DirectLineSessionState;
-
-  /**
    * AI-Act Art. 50 — harness-owned AI disclosure for this turn (#643, epic
    * #642). The structured carrier for channels with a rich UI (badge, footer);
    * the SAME line is folded into `text` by `toSemanticAnswer` so the marking
@@ -282,36 +260,11 @@ export interface SemanticAnswer {
    *
    * Present on every turn the disclosure is active, EVEN when the line was not
    * folded into `text` this turn (folding is first-turn-per-scope; the
-   * structured field is every-turn). Same rationale as `directLineSession`: a
-   * field that appears only when folded cannot tell a client the marking is
-   * still in force. Omitted only when an operator turned it `'off'`. Sidecar —
+   * structured field is every-turn): a field that appears only when folded
+   * cannot tell a client the marking is still in force. Omitted only when an operator turned it `'off'`. Sidecar —
    * does NOT short-circuit the answer.
    */
   aiDisclosure?: AiDisclosure;
-}
-
-/**
- * #445 — which specialist, if any, this conversation is currently bound to.
- * `transition` describes what THIS turn did, so a channel can narrate the
- * change ("now talking to X") without diffing against its own prior state.
- */
-export interface DirectLineSessionState {
-  /** True while a binding is live at the END of this turn. */
-  readonly active: boolean;
-  /** Stable agent id of the bound specialist. Omitted when inactive. */
-  readonly agentId?: string;
-  /** Human label of the bound specialist. Omitted when inactive. */
-  readonly label?: string;
-  /** What this turn did to the binding. */
-  readonly transition?:
-    | 'entered'
-    | 'switched'
-    | 'continued'
-    | 'left'
-    | 'unavailable'
-    | 'refused';
-  /** Why a requested binding was refused — only with `transition: 'refused'`. */
-  readonly refusedReason?: 'no-scope' | 'shared-scope' | 'synthetic-scope';
 }
 
 /**
@@ -331,22 +284,6 @@ export interface AgentConsultation {
   durationMs?: number;
   /** COUNT of tool calls the sub-agent made — never the orchestrator's prose. */
   toolCalls?: number;
-}
-
-/**
- * #332 Layer 2 — the harness-owned verbatim sub-agent segment for a
- * direct-line turn. Rendered attributed and visually separate from the
- * orchestrator's `text`. `status: 'error'` carries a faithful failure message
- * in `text` (never a cover-up or hallucinated answer).
- */
-export interface DelegatedAnswer {
-  /** Stable agent id the directive resolved to. */
-  agentId: string;
-  /** Human label for attribution (e.g. `Strategist`). */
-  label: string;
-  /** The sub-agent's verbatim answer (PII-masked), or a faithful error line. */
-  text: string;
-  status: 'success' | 'error';
 }
 
 /** Image/file side-channel. `url` must be reachable by the channel. */

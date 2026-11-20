@@ -5,7 +5,7 @@
  */
 
 import { currentDispatchCaller, turnContext } from '@omadia/orchestrator';
-import type { DataPlanGuard, NativeToolSpec } from '@omadia/plugin-api';
+import type { AgentSpeaker, AnswerEmitter, DataPlanGuard, NativeToolSpec } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 
 import type { AuditEntryInput } from '../auth/adminAuditLog.js';
@@ -46,6 +46,9 @@ export interface TriggerWiringDeps {
   /** A live agent by slug (enabled or not), or undefined when it is not in service. */
   readonly agentBySlug: (slug: string) => TriggerAgentView | undefined;
   readonly agentChat: (slug: string) => AgentChat | undefined;
+  /** The agent's speaker and single emitter (#2045), from its bundle. */
+  readonly speakerOf?: (slug: string) => AgentSpeaker | undefined;
+  readonly emitterOf?: (slug: string) => AnswerEmitter | undefined;
   /** The agent's own bot on a channel, to keep its messages off its hooks. */
   readonly ownChannelKey?: (slug: string, channel: string) => string | undefined;
   readonly readToolsOf: ReadToolsOf;
@@ -163,11 +166,14 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
       gate,
       agentChat: deps.agentChat,
       speakerOf: (slug) => {
+        const stamped = deps.speakerOf?.(slug);
+        if (stamped) return stamped;
         const agent = deps.agentBySlug(slug);
         return agent
           ? { kind: 'agent', agentId: agent.id, slug: agent.slug, displayName: agent.displayName ?? agent.slug }
           : undefined;
       },
+      ...(deps.emitterOf ? { emitterOf: deps.emitterOf } : {}),
       ...(deps.batchJobs ? { batch: createBatchExecutor(deps.batchJobs) } : {}),
       scheduleRan: async (trigger) => deps.schedules?.()?.ran(trigger),
       scheduleLive: async (trigger) => (await deps.schedules?.()?.isLive(trigger)) ?? false,

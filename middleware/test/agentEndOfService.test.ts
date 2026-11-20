@@ -364,7 +364,6 @@ describe('agent routes: disable, delete, deleted agents, purge', () => {
   before(async () => {
     const store = {
       getAgentBySlug: (slug: string) => Promise.resolve(agents.find((a) => a.slug === slug)),
-      getPlatformSettings: () => Promise.resolve({ fallbackAgentId: 'id-hr', updatedAt: new Date(0) }),
       updateAgent: (id: string, patch: { status?: string }) => {
         order.push(`store.updateAgent(${id}, ${JSON.stringify(patch)})`);
         agents = agents.map((a) => (a.id === id ? { ...a, ...patch } : a)) as typeof agents;
@@ -501,10 +500,20 @@ describe('agent routes: disable, delete, deleted agents, purge', () => {
     assert.equal((await call('PATCH', '/mara', { name: 'x' })).status, 404, 'it is no agent any more');
   });
 
-  it('the default agent is neither disabled nor deleted, and nothing ends for it', async () => {
-    assert.equal((await call('DELETE', '/hr')).status, 409);
-    assert.equal((await call('PATCH', '/hr', { status: 'disabled' })).status, 409);
-    assert.deepEqual(order, []);
+  it('#2055: the default agent is disabled and deleted like any other, with its end of service', async () => {
+    // There is no fallback agent to protect: its conversations get a notice
+    // naming it (INV-7), never another agent's answer.
+    assert.equal((await call('PATCH', '/hr', { status: 'disabled' })).status, 200);
+    assert.equal((await call('DELETE', '/hr')).status, 200);
+    assert.deepEqual(
+      order.filter((o) => o.startsWith('endOfService') || o.startsWith('store.')),
+      [
+        'endOfService(hr, agent_disabled)',
+        'store.updateAgent(id-hr, {"status":"disabled"})',
+        'endOfService(hr, agent_deleted)',
+        'store.deleteAgent(id-hr, undefined)',
+      ],
+    );
   });
 
   it('purge: inside the retention period it needs the slug typed out; after it, or with the slug, it is the hard delete', async () => {

@@ -4,13 +4,13 @@ import type {
   DataPayload,
   PrivacyReceipt,
   RecalledContext,
+  Speaker,
+  SystemNotice,
 } from '@omadia/plugin-api';
 import type {
   AgentConsultation,
   AiDisclosure,
   AnswerSource,
-  DelegatedAnswer,
-  DirectLineSessionState,
   FollowUpOption,
   SemanticAnswer,
 } from './outgoing.js';
@@ -563,7 +563,7 @@ export interface ChatTurnInput {
    * exactly as `LocalSubAgent` does for sub-agents (OB-31). Unknown tool names
    * are ignored. The Conductor (Spec 005) composes these into multi-step
    * processes; on its own it guarantees the consult HAPPENS (Layer 1 surfaces
-   * it). Faithful input/output is the Direct Line's (Layer 2) job.
+   * it).
    */
   expectedDomainTool?: string;
   /**
@@ -871,14 +871,6 @@ export interface ChatTurnResult {
    */
   answerVerbosity?: AnswerVerbosityInfo;
   /**
-   * #332 Layer 2 — Direct Line. The verbatim sub-agent answer for a turn the
-   * user directed at a named specialist (`@omadia #strategist …`). Set by the
-   * harness inside `chatStream`, NOT by the LLM; `toSemanticAnswer` forwards it
-   * to `SemanticAnswer.delegatedAnswer` so the orchestrator cannot suppress or
-   * reword it. Omitted on ordinary turns.
-   */
-  delegatedAnswer?: DelegatedAnswer;
-  /**
    * #2085 — side-channel data this turn delivered (spec 2042 §5.13), from
    * the turn's data collector, never from model output. `answer` stays the
    * agent's prose: `toSemanticAnswer` renders the data into
@@ -886,13 +878,6 @@ export interface ChatTurnResult {
    * when the turn delivered none.
    */
   data?: readonly DataPayload[];
-  /**
-   * #445 — sticky Direct Line indicator for this turn. Set by the harness in
-   * `executeDirectLine`; `toSemanticAnswer` forwards it to
-   * `SemanticAnswer.directLineSession`. Present on every turn while the
-   * feature is enabled (including `{ active: false }`), omitted when off.
-   */
-  directLineSession?: DirectLineSessionState;
   /**
    * AI-Act Art. 50 — the AI disclosure the orchestrator resolved for this turn
    * (#643, epic #642). `toSemanticAnswer` forwards it to
@@ -1258,7 +1243,7 @@ export type ChatStreamEvent =
        * path carries the marking through `toSemanticAnswer`; the streaming
        * clients (web-ui reads only this event, never `toSemanticAnswer`) would
        * otherwise have no slot for it at all. Rides the existing `done` event
-       * exactly like `delegatedAnswer` rather than adding a stream event type.
+       * rather than adding a stream event type.
        *
        * Additive and optional — a client that renders this event without
        * knowing the field ignores it, so the NDJSON framing stays
@@ -1275,12 +1260,6 @@ export type ChatStreamEvent =
        */
       aiDisclosure?: AiDisclosure;
       /**
-       * #332 Layer 2 — Direct Line. Harness-owned verbatim sub-agent segment
-       * for a user-directed specialist turn; see ChatTurnResult.delegatedAnswer.
-       * The orchestrator cannot suppress or reword it.
-       */
-      delegatedAnswer?: DelegatedAnswer;
-      /**
        * #2085 — side-channel data (spec 2042 §5.13); see
        * `SemanticAnswer.data`. `answer` above already holds its markdown
        * rendering (after the prose, before the disclosure fold);
@@ -1289,12 +1268,6 @@ export type ChatStreamEvent =
        */
       data?: readonly DataPayload[];
       textWithoutData?: string;
-      /**
-       * #445 — sticky Direct Line indicator; see ChatTurnResult.directLineSession.
-       * Rides the existing `done` event exactly like `delegatedAnswer` rather
-       * than adding a stream event type, so the web-ui folds it in one hop.
-       */
-      directLineSession?: DirectLineSessionState;
       /**
        * #332 Layer 1 (gap-closure) — curated, tamper-evident projection of
        * `runTrace.agentInvocations`, identical in shape and derivation to
@@ -1310,6 +1283,15 @@ export type ChatStreamEvent =
        * web chat can offer "Kürzer" / "Mehr Details" too.
        */
       answerVerbosity?: AnswerVerbosityInfo;
+      /**
+       * #2045 — who this answer is from: the agent the management layer
+       * routed the turn to, or `system` for a notice (then
+       * {@link systemNotice} is set and `answer` is its text). Stamped by the
+       * harness, never by a model (spec 2042 INV-4).
+       */
+      speaker?: Speaker;
+      /** #2045 — present when `speaker` is `system`: the notice `answer` renders. */
+      systemNotice?: SystemNotice;
     }
   /**
    * Emitted after `done` by the verifier wrapper (only when enabled). The
@@ -1355,7 +1337,13 @@ export type ChatStreamEvent =
    * Optional so existing adapters keep compiling; an adapter that does not
    * render it behaves exactly as before.
    */
-  | { type: 'error'; message: string; correlationId?: string }
+  | {
+      type: 'error';
+      message: string;
+      correlationId?: string;
+      /** #2045 — the agent whose turn failed (the harness, never a model). */
+      speaker?: Speaker;
+    }
   /**
    * Omadia UI canvas surface events (omadia-canvas-protocol/1.0). Additive;
    * channels not declaring the `'canvas'` capability default-ignore these.

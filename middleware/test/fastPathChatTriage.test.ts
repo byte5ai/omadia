@@ -373,7 +373,7 @@ function port(outcome: ChatTriageOutcome, calls: string[] = []): FastPathTriageP
   };
 }
 
-const HIT: ChatTriageOutcome = { kind: 'answer', text: '2 Treffer.\n\n| A |\n| --- |\n| x |', tool: 'odoo_query', rows: 1, toolCalls: 1, ms: 5 };
+const HIT: ChatTriageOutcome = { kind: 'answer', text: '2 Treffer.\n\n| A |\n| --- |\n| x |', summary: '2 Treffer.', table: { kind: 'table', columns: ['A'], rows: [['x']] }, tool: 'odoo_query', rows: 1, toolCalls: 1, ms: 5 };
 
 async function collect(it: AsyncIterable<ChatStreamEvent>): Promise<ChatStreamEvent[]> {
   const out: ChatStreamEvent[] = [];
@@ -397,10 +397,21 @@ describe('fast-path chat triage — wrapper', () => {
     });
     const events = await collect(agent.chatStream({ userMessage: 'Geburtstage?', sessionScope: 'sess-1', userId: 'u1' }));
     assert.equal(inner.inputs.length, 0);
+    // #2085 — the summary streams as prose; the rows ride `done` as
+    // side-channel data, rendered into its answer.
     assert.deepEqual(events, [
-      { type: 'text_delta', text: HIT.kind === 'answer' ? HIT.text : '' },
-      { type: 'done', answer: HIT.kind === 'answer' ? HIT.text : '', toolCalls: 1, iterations: 0, turnId: 'turn:sess-1:t' },
+      { type: 'text_delta', text: '2 Treffer.' },
+      {
+        type: 'done',
+        answer: HIT.kind === 'answer' ? HIT.text : '',
+        toolCalls: 1,
+        iterations: 0,
+        turnId: 'turn:sess-1:t',
+        data: [{ kind: 'table', columns: ['A'], rows: [['x']] }],
+        textWithoutData: '2 Treffer.',
+      },
     ]);
+    assert.equal(logged[0]?.assistantAnswer, '2 Treffer.', 'the transcript keeps the prose, not the rows');
     assert.equal(logged.length, 1);
     assert.equal(logged[0]?.scope, 'sess-1');
     assert.equal(logged[0]?.userMessage, 'Geburtstage?');
@@ -566,12 +577,20 @@ describe('fast-path chat triage — orchestrator wiring', () => {
   it('every built bundle agent answers a hit itself (outside the verifier)', async () => {
     const built = buildForAgent(AGENT_ROW, orchestratorDeps(() => port(HIT)), RUNTIME);
     const events = await collect(built.bundle.agent.chatStream({ userMessage: 'Geburtstage?', sessionScope: 'tab_1' }));
-    assert.deepEqual(
-      events.map((e) => e.type),
-      ['text_delta', 'done'],
+    // #2046 — the identity guard releases the text sentence by sentence, so
+    // the one fast-lane delta may arrive in several; together they are it.
+    assert.equal(events.at(-1)?.type, 'done');
+    assert.ok(events.slice(0, -1).every((e) => e.type === 'text_delta'));
+    assert.equal(events.map((e) => (e.type === 'text_delta' ? e.text : '')).join(''), '2 Treffer.');
+    const done = events.at(-1);
+    assert.ok(
+      (done?.type === 'done' ? done.answer : '').startsWith(HIT.kind === 'answer' ? HIT.text : '-'),
+      'the rows ride done (then the AI disclosure)',
     );
     const bare = buildForAgent(AGENT_ROW, orchestratorDeps(), RUNTIME);
-    assert.equal(bare.bundle.agent, bare.orchestrator, 'no fast path dep → no wrapper');
+    // No fast path dep → no fast-lane wrapper: a hit question goes to the
+    // model loop (the agent is the orchestrator behind speaker and guard).
+    assert.equal(bare.bundle.raw, bare.orchestrator);
   });
 
   it('a routeHint replaces the router classifier call', async () => {

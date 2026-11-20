@@ -121,7 +121,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
   it('offers only the tabs a facilitator has and says why', async () => {
     mockEngine.mockResolvedValue({ state: 'ready', pluginId: ENGINE.id });
     mockTeams.mockResolvedValue({ state: 'installed' });
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    renderWithIntl(<AgentDetail agent={agent()} />);
 
     expect(tabIds()).toEqual([
       'agent-detail-tab-identity',
@@ -142,7 +142,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
     window.history.replaceState(null, '', '/?tab=plugins');
     mockEngine.mockResolvedValue({ state: 'none' });
     mockTeams.mockResolvedValue({ state: 'installed' });
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    renderWithIntl(<AgentDetail agent={agent()} />);
     expect(screen.getByTestId('agent-identity')).toBeTruthy();
     expect(screen.queryByTestId('plugins-dnd')).toBeNull();
     await screen.findByTestId('facilitation-engine-notice');
@@ -153,7 +153,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
     mockTeams.mockRejectedValue(
       new ApiError(404, 'x', JSON.stringify({ error: 'teams_identity_not_found' })),
     );
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    renderWithIntl(<AgentDetail agent={agent()} />);
     await screen.findByTestId('facilitator-readiness-teams');
     await userEvent.click(screen.getByTestId('agent-detail-tab-teams'));
     expect(screen.getByTestId('agent-teams-identity')).toBeTruthy();
@@ -165,7 +165,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
   it('shows the automatically attached engine without a call to action', async () => {
     mockEngine.mockResolvedValue({ state: 'ready', pluginId: ENGINE.id });
     mockTeams.mockResolvedValue({ state: 'installed' });
-    renderWithIntl(<AgentDetail agent={agent({ plugins: [ATTACHED] })} isFallback={false} />);
+    renderWithIntl(<AgentDetail agent={agent({ plugins: [ATTACHED] })} />);
     await waitFor(() =>
       expect(screen.getByTestId('facilitator-readiness').getAttribute('data-ready')).toBe('true'),
     );
@@ -183,7 +183,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
     mockEngine.mockResolvedValue({ state: 'ready', pluginId: ENGINE.id });
     mockTeams.mockResolvedValue({ state: 'installed' });
     mockReplace.mockResolvedValue(undefined);
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    renderWithIntl(<AgentDetail agent={agent()} />);
     const reason = await screen.findByTestId('facilitator-readiness-grant');
     expect(reason.getAttribute('data-grant-state')).toBe('missing');
     await userEvent.click(screen.getByTestId('agent-detail-tab-engine'));
@@ -203,7 +203,6 @@ describe('AgentDetail — facilitator (#2066)', () => {
     renderWithIntl(
       <AgentDetail
         agent={agent({ plugins: [{ ...ATTACHED, enabled: false }] })}
-        isFallback={false}
       />,
     );
     const reason = await screen.findByTestId('facilitator-readiness-grant');
@@ -231,7 +230,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
         }),
       ),
     );
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    renderWithIntl(<AgentDetail agent={agent()} />);
     await userEvent.click(screen.getByTestId('agent-detail-tab-engine'));
     await userEvent.click(await screen.findByTestId('facilitator-engine-repair'));
     const alert = await screen.findByRole('alert');
@@ -243,7 +242,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
   it('keeps every tab for a standard agent and adds no engine tab', async () => {
     mockCatalog.mockResolvedValue({ items: [] });
     renderWithIntl(
-      <AgentDetail agent={agent({ slug: 'sales', archetype: 'standard' })} isFallback={false} />,
+      <AgentDetail agent={agent({ slug: 'sales', archetype: 'standard' })} />,
     );
     expect(tabIds()).toEqual([
       'agent-detail-tab-identity',

@@ -1,7 +1,16 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { ANSWER_VERBOSITY_LEVELS, isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
+import {
+  ANSWER_VERBOSITY_LEVELS,
+  formatPrincipal,
+  isNoReply,
+  logNoReplyDrop,
+  makePrincipal,
+  parseAgentCommand,
+  type AgentCommand,
+} from '@omadia/channel-sdk';
+import { SYSTEM_SPEAKER, type AgentSpeaker, type SystemNotice } from '@omadia/plugin-api';
 import { MAX_STEER_LENGTH, steeringBus, today, turnContext } from '@omadia/orchestrator';
 import type {
   AskObserver,
@@ -272,12 +281,19 @@ export interface CreateChatRouterOptions {
    *  carry agent pills for the UI. Optional — when absent (e.g. in tests),
    *  events are forwarded unchanged. */
   agentResolver?: AgentResolver;
-  /** Phase A — per-Agent lookup. Returns the `ChatAgent` registered
-   *  under `slug`, or `undefined` when the Agent is not active. */
-  resolveChatAgent: (slug: string) => ChatAgent | undefined;
-  /** Phase A — the no-pick default slug. Returns the platform fallback
-   *  Agent's slug, or `undefined` when no fallback is configured. */
-  getDefaultSlug: () => string | undefined;
+  /**
+   * #2055 — the management layer's decision for one web chat turn: the
+   * agent that answers (explicitly chosen, else the sender's default agent
+   * for the web channel), or the `system` notice the sender gets instead.
+   * Never another agent.
+   */
+  routeTurn: (request: WebRouteRequest) => WebRouteResult;
+  /**
+   * #2055 — carries out `/agent <name>`, `/agent`, `/agents` typed in the web
+   * chat: stores the sender's selection for this conversation and returns
+   * the `system` notice. Absent: the command is ordinary text.
+   */
+  handleAgentCommand?: (command: AgentCommand, request: Omit<WebRouteRequest, 'explicitSlug'>) => Promise<SystemNotice>;
   /** OM-76 (#996) — is ANY Agent active right now? When this answers `false`
    *  the 503 carries `no_agents_active` instead of `agent_unavailable`: the
    *  requested slug is not "deleted or disabled", there simply is no
@@ -306,10 +322,81 @@ export interface CreateChatRouterOptions {
     | undefined;
 }
 
+/** #2055 — what the chat route asks the management layer. */
+export interface WebRouteRequest {
+  /** The agent the conversation is pinned to or the sender chose. */
+  readonly explicitSlug?: string;
+  /** The sender, `user:<id>`. */
+  readonly principal?: string;
+  /** The conversation: `session:<id>`, or the shared HTTP scope. */
+  readonly conversationKey: string;
+  readonly locale?: string;
+}
+
+export type WebRouteResult =
+  | {
+      readonly kind: 'agent';
+      readonly chatAgent: ChatAgent;
+      readonly slug: string;
+      readonly speaker: AgentSpeaker;
+    }
+  | { readonly kind: 'notice'; readonly notice: SystemNotice };
+
+type ResolvedTurn =
+  | { readonly kind: 'agent'; readonly chatAgent: ChatAgent; readonly effectiveSlug: string; readonly speaker: AgentSpeaker }
+  | { readonly kind: 'notice'; readonly notice: SystemNotice };
+
 /**
- * Phase A — per-request Agent resolution. Returns the effective slug +
- * ChatAgent, or sends an HTTP error and returns `undefined`. The caller
- * uses the returned slug to capture a snapshot on the first turn.
+ * #2055 — `/agent …` typed in the web chat is the management layer's, never
+ * an agent turn, and never pins the session. Choosing or clearing an agent
+ * also releases the session's pin, so the next message routes by the new
+ * selection (explicit addressing would otherwise keep the old agent).
+ */
+async function handleWebAgentCommand(
+  req: Request,
+  message: string,
+  sessionId: string | undefined,
+  options: CreateChatRouterOptions,
+): Promise<SystemNotice | undefined> {
+  const command = options.handleAgentCommand ? parseAgentCommand(message) : undefined;
+  if (!command || !options.handleAgentCommand) return undefined;
+  const principal = webPrincipal(req);
+  const notice = await options.handleAgentCommand(command, {
+    ...(principal ? { principal } : {}),
+    conversationKey: sessionId ? `session:${sessionId}` : 'http-default',
+    locale: webLocale(req),
+  });
+  const sessionStore = options.getChatSessionStore?.() ?? options.chatSessionStore;
+  const changed = notice.code === 'agent_selected' || notice.code === 'agent_selection_cleared';
+  if (changed && sessionId && sessionStore) {
+    await sessionStore.clearSnapshot(sessionId);
+  }
+  return notice;
+}
+
+/** The web channel's type in the routing tables (default-agent entries, availability). */
+export const WEB_CHANNEL_TYPE = 'web';
+
+/**
+ * #2055 — the sender as a principal. The e-mail first, the way channel
+ * plugins name a person, so a default-agent entry for `user:anna@co.com`
+ * matches Anna in the web chat and in Teams alike.
+ */
+function webPrincipal(req: Request): string | undefined {
+  const ref = req.session?.email || req.session?.sub;
+  const principal = ref ? makePrincipal('user', ref) : undefined;
+  return principal ? formatPrincipal(principal) : undefined;
+}
+
+function webLocale(req: Request): string {
+  return req.acceptsLanguages('de', 'en') || 'de';
+}
+
+/**
+ * Phase A / #2055 — per-request agent resolution. Returns the agent that
+ * answers, the `system` notice the sender gets instead, or sends an HTTP
+ * error and returns `undefined`. The caller uses the returned slug to capture
+ * a snapshot on the first turn.
  */
 async function resolveAgentForRequest(
   req: Request,
@@ -317,7 +404,11 @@ async function resolveAgentForRequest(
   requestSlug: string | undefined,
   sessionId: string | undefined,
   options: CreateChatRouterOptions,
-): Promise<{ chatAgent: ChatAgent; effectiveSlug: string } | undefined> {
+  message: string,
+): Promise<ResolvedTurn | undefined> {
+  const commandNotice = await handleWebAgentCommand(req, message, sessionId, options);
+  if (commandNotice) return { kind: 'notice', notice: commandNotice };
+
   // 1. If session has a pinned snapshot, use it (and reject mismatches).
   let pinnedSlug: string | undefined;
   const sessionStore = options.getChatSessionStore?.() ?? options.chatSessionStore;
@@ -334,35 +425,25 @@ async function resolveAgentForRequest(
     }
   }
 
-  const effectiveSlug = pinnedSlug ?? requestSlug ?? options.getDefaultSlug();
-  if (!effectiveSlug) {
-    res.status(412).json({
-      error: 'no_fallback',
+  if (options.hasActiveAgents?.() === false) {
+    res.status(503).json({
+      error: 'no_agents_active',
       message:
-        'no agent slug provided and no platform fallback_agent_id is configured',
+        'no agent is active. Assign an LLM provider (API key or subscription CLI) under LLM access.',
     });
     return undefined;
   }
 
-  const chatAgent = options.resolveChatAgent(effectiveSlug);
-  if (!chatAgent) {
-    if (options.hasActiveAgents?.() === false) {
-      res.status(503).json({
-        error: 'no_agents_active',
-        message:
-          'no orchestrator is active. Assign an LLM provider (API key or subscription CLI) under LLM access.',
-        slug: effectiveSlug,
-      });
-      return undefined;
-    }
-    res.status(503).json({
-      error: 'agent_unavailable',
-      message: `agent "${effectiveSlug}" is not currently active`,
-      slug: effectiveSlug,
-    });
-    return undefined;
-  }
-  return { chatAgent, effectiveSlug };
+  const explicitSlug = pinnedSlug ?? requestSlug;
+  const principal = webPrincipal(req);
+  const routed = options.routeTurn({
+    ...(explicitSlug ? { explicitSlug } : {}),
+    ...(principal ? { principal } : {}),
+    conversationKey: sessionId ? `session:${sessionId}` : 'http-default',
+    locale: webLocale(req),
+  });
+  if (routed.kind === 'notice') return routed;
+  return { kind: 'agent', chatAgent: routed.chatAgent, effectiveSlug: routed.slug, speaker: routed.speaker };
 }
 
 export function createChatRouter(
@@ -387,9 +468,19 @@ export function createChatRouter(
       parsed.data.agentSlug,
       parsed.data.sessionId,
       options,
+      parsed.data.message,
     );
     if (!resolved) return;
-    const { chatAgent: chat, effectiveSlug } = resolved;
+    if (resolved.kind === 'notice') {
+      // INV-6/7 — the management layer speaks, as `system`, never an agent.
+      res.json({
+        answer: resolved.notice.text,
+        speaker: SYSTEM_SPEAKER,
+        systemNotice: resolved.notice,
+      });
+      return;
+    }
+    const { chatAgent: chat, effectiveSlug, speaker } = resolved;
 
     try {
       const userId = resolveUserId(req);
@@ -449,6 +540,8 @@ export function createChatRouter(
       res.json({
         answer: result.text,
         agent_slug: effectiveSlug,
+        speaker: result.speaker ?? speaker,
+        ...(result.systemNotice ? { systemNotice: result.systemNotice } : {}),
         ...(result.privacyReceipt
           ? { privacyReceipt: result.privacyReceipt }
           : {}),
@@ -483,9 +576,9 @@ export function createChatRouter(
       parsed.data.agentSlug,
       parsed.data.sessionId,
       options,
+      parsed.data.message,
     );
     if (!resolved) return;
-    const { chatAgent: chat, effectiveSlug } = resolved;
 
     // NDJSON streaming. `X-Accel-Buffering: no` disables nginx response
     // buffering if the middleware ever sits behind one; harmless locally.
@@ -494,6 +587,22 @@ export function createChatRouter(
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
+
+    if (resolved.kind === 'notice') {
+      // INV-6/7 — no agent answers: the turn is the management layer's
+      // notice, with speaker `system`. No model runs.
+      writeEvent(res, {
+        type: 'done',
+        answer: resolved.notice.text,
+        toolCalls: 0,
+        iterations: 0,
+        speaker: SYSTEM_SPEAKER,
+        systemNotice: resolved.notice,
+      });
+      res.end();
+      return;
+    }
+    const { chatAgent: chat, effectiveSlug, speaker } = resolved;
 
     // Detect premature client disconnect via the response's 'close' event.
     // We intentionally *don't* listen on req.on('close') — on Node 22 / Express 5
@@ -616,7 +725,7 @@ export function createChatRouter(
       }
       // Emit a header event so the UI can render the bound Agent slug
       // before the first token lands.
-      safeWrite({ type: 'agent_bound', slug: effectiveSlug });
+      safeWrite({ type: 'agent_bound', slug: effectiveSlug, speaker });
 
       // OM-82: `run`, not `enter`. `turnContext` needs `runGenerator` because
       // ITS generator is created inside the orchestrator and resumed by

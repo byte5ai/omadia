@@ -60,9 +60,7 @@ type-shaped pseudonyms in **every LLM-bound copy of the turn** — the main
 prompt, the user messages of the **live chat history** (`priorTurns`, which
 replays persisted REAL values from earlier turns; its answers are masked
 whether the flag is on or not, see below), the ingested attachment tail, the
-recalled prior-context block, the **direct-line relay payload** (a
-`#specialist question` turn hands the question to an LLM-backed
-sub-agent), and auxiliary LLM passes (fact extraction, model/persona
+recalled prior-context block, and auxiliary LLM passes (fact extraction, model/persona
 routing, card router, excerpt) — while the surrogate↔real map is held
 server-side per turn and inverted over the final answer, over user-facing
 card content (choice cards, follow-up buttons), **and over everything

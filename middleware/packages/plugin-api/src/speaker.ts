@@ -68,6 +68,8 @@ export type EmissionType = (typeof EMISSION_TYPES)[number];
  * - `no_agent`: nothing addressed, no selection, no binding, and the
  *   default-agent table says `off` or has no entry (spec §5.6).
  * - `agent_selected`: confirms a stored selection (spec §5.3).
+ * - `agent_selection_cleared`: the sender's selection was removed.
+ * - `agent_directory`: the agents available to the sender here (`/agents`).
  * - `agent_error`: the agent's turn failed.
  * - `missing_grant`: the turn needs a capability the agent does not hold.
  * - `quota_exceeded`: a budget or quota stops the turn.
@@ -82,6 +84,8 @@ export const SYSTEM_NOTICE_CODES = [
   'agent_not_available',
   'no_agent',
   'agent_selected',
+  'agent_selection_cleared',
+  'agent_directory',
   'agent_error',
   'missing_grant',
   'quota_exceeded',
@@ -146,6 +150,11 @@ export interface ProseEmission {
   readonly type: 'prose';
   readonly speaker: AgentSpeaker;
   readonly text: string;
+  /**
+   * Values the privacy shield restored into `text` server-side (the model
+   * never saw them). The identity guard's model layer sees them masked.
+   */
+  readonly restoredValues?: readonly string[];
 }
 
 export interface TemplateEmission {

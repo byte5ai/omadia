@@ -44,7 +44,7 @@ export interface RoutineRowAccess {
 export interface RoutineTriggerDeps {
   readonly service: () => TriggerService | undefined;
   readonly routines: () => RoutineRowAccess | undefined;
-  /** The agent a routine runs as (`null` = the instance's default agent). */
+  /** The agent a routine runs as; none for `null` (no fallback agent, #2055). */
   readonly resolveAgent: (slug: string | null) => { readonly id: string; readonly slug: string } | undefined;
   /** The renewal question goes out through the routine's own channel. */
   readonly askOwner: (routine: Routine, text: string) => Promise<void>;

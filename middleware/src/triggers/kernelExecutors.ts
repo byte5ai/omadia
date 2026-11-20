@@ -12,14 +12,14 @@
  */
 
 import { renderTableText, type ChatTurnInput, type SemanticAnswer } from '@omadia/channel-sdk';
-import type { AgentSpeaker } from '@omadia/plugin-api';
+import type { AgentSpeaker, AnswerEmitter } from '@omadia/plugin-api';
 import { meterModelCalls, meterUsageCost } from '@omadia/usage-telemetry';
 
 import { storeContextChecks, type ContextLivenessProbe } from './contextChecks.js';
 import { toTableData, type DataActionRunner } from './dataActions.js';
 import { isHeadless } from './headless.js';
 import type { ProactiveGate } from './proactiveGate.js';
-import type { BatchOutcome, FiringStatus, StepExecutors, TurnOutcome } from './triggerChain.js';
+import type { BatchOutcome, DeliveryOutcome, FiringStatus, StepExecutors, TurnOutcome } from './triggerChain.js';
 import type { TriggerStore } from './triggerStore.js';
 import type { Trigger } from './types.js';
 
@@ -42,6 +42,9 @@ export interface KernelExecutorDeps {
   readonly routineTurn?: (trigger: Trigger) => Promise<TurnOutcome>;
   /** Who a proactive message is from (#2045), or undefined when unknown. */
   readonly speakerOf?: (agentSlug: string) => AgentSpeaker | undefined;
+  /** The agent's single emitter (#2045): a post passes it as `prose` (the
+   *  identity guard; the agent wrote the template), a delivery as `data`. */
+  readonly emitterOf?: (agentSlug: string) => AnswerEmitter | undefined;
   /** An Agent Builder schedule's turn ran (stamps the row). */
   readonly scheduleRan?: (trigger: Trigger) => Promise<void>;
   /** Is the schedule behind a headless trigger still enabled? A deleted or
@@ -79,15 +82,30 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
     const speaker = deps.speakerOf?.(trigger.agentSlug);
     return deps.gate.send(trigger, speaker ? { ...message, speaker } : message);
   };
+  /** The emitter's verdict on a proactive output; undefined = publish it. */
+  const refusedByEmitter = async (
+    trigger: Trigger,
+    emission: (speaker: AgentSpeaker) => Parameters<AnswerEmitter['emit']>[0],
+  ): Promise<DeliveryOutcome | undefined> => {
+    const emitter = deps.emitterOf?.(trigger.agentSlug);
+    const speaker = deps.speakerOf?.(trigger.agentSlug);
+    if (!emitter || !speaker) return undefined;
+    const outcome = await emitter.emit(emission(speaker));
+    return outcome.published ? undefined : { delivered: false, reason: `refused by the emitter: ${outcome.reason}` };
+  };
   return {
     ...checks,
     runDataAction: (trigger, action) => deps.dataActions.run(trigger.agentSlug, action),
-    post: (trigger, text) => send(trigger, { text }),
+    async post(trigger, text) {
+      const refused = await refusedByEmitter(trigger, (speaker) => ({ type: 'prose', speaker, text }));
+      return refused ?? send(trigger, { text });
+    },
     // The side channel (§5.13): the rows go from the tool to the people as
     // `data`, rendered into `text` for channels that show only text.
-    deliver: (trigger, result, title) => {
+    async deliver(trigger, result, title) {
       const table = toTableData(result.rows, result.columns, title);
-      return send(trigger, { text: renderTableText(table), data: [table], textWithoutData: '' });
+      const refused = await refusedByEmitter(trigger, (speaker) => ({ type: 'data', speaker, data: table }));
+      return refused ?? send(trigger, { text: renderTableText(table), data: [table], textWithoutData: '' });
     },
     batch: (trigger, job) =>
       deps.batch

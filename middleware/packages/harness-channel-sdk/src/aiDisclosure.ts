@@ -36,9 +36,8 @@ export type AiDisclosureLevel = 'standard' | 'concise' | 'off';
 /**
  * The structured disclosure carried on `SemanticAnswer.aiDisclosure`. Built by
  * the harness, never by the model. Present on every turn the disclosure is
- * active (even when the line is NOT folded into `text` — see the
- * `directLineSession` rationale in outgoing.ts: a field that appears only when
- * folded cannot tell a client the state is still active). Absent only when an
+ * active (even when the line is NOT folded into `text`: a field that appears
+ * only when folded cannot tell a client the state is still active). Absent only when an
  * operator turned it `'off'`.
  */
 export interface AiDisclosure {

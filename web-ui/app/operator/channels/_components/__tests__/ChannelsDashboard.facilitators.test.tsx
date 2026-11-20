@@ -36,11 +36,13 @@ function dto(agents: ChannelsListDto['agents']): ChannelsListDto {
         label: 'Project Group',
         origin_plugin_id: '@omadia/channel-teams',
         bound_agent_slug: null,
+        bound_agent_status: null,
+        bound_agent_name: null,
         stale: false,
       },
     ],
     agents,
-    fallback_slug: 'hr',
+    instance_default_slug: 'hr',
     directory_types: ['teams'],
   };
 }
