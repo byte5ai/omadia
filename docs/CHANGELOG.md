@@ -36,6 +36,13 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — Trigger firings run in their agent's turn context (#2082, #2053, epic #2042): S4 follow-up
+
+- Every trigger firing now runs in its agent's turn context of the model
+  gateway: the turn, a routine's security screener and a batch job such as the
+  scratch-promotion reaper are charged to that agent and stopped by its kill
+  switch. This closes gaps 1 and 3 in `docs/model-gateway-call-sites.md`.
+
 ### Changed — plugin-api 1.78.0 (#2053, epic #2042): S3 expand step
 
 - `@omadia/plugin-api` 1.78.0 (additive): `MaintenanceRunService`,
