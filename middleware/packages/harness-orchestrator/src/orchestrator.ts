@@ -250,7 +250,7 @@ import {
 } from './consultation/consultTool.js';
 import type { DiscretionPort } from './discretion/port.js';
 import { UNKNOWN_READERS, readersOf, unionLabels, type DiscretionLabel, type LabelSet, type Readers } from './discretion/labels.js';
-import { seededDiscretionFor, seededReaders } from './discretion/seededTurn.js';
+import { seededDiscretionFor } from './discretion/seededTurn.js';
 import {
   guardIntegrationEgress,
   guardMemoryEgress,
@@ -10828,7 +10828,7 @@ export class Orchestrator {
     const consulted = consultation?.agentSlug === this.agentId ? consultation.initialLabels : undefined;
     const initial = seed ? unionLabels(seed.labels, consulted ?? []) : consulted;
     const resolveReaders = once(async (): Promise<Readers> => {
-      if (seed) return seededReaders(seed);
+      if (seed) return seed.readers;
       if (!input.origin) return ownerId ? readersOf([ownerId]) : UNKNOWN_READERS;
       return readersFromAudience(
         await resolveTurnAudience(this.knowledgeGraph, input, parent?.chatParticipants).catch(

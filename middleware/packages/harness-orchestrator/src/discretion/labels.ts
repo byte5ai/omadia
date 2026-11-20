@@ -137,6 +137,11 @@ function parseReaders(value: unknown): Readers | undefined {
   return undefined;
 }
 
+/** Parse persisted readers. Fails closed: anything invalid is unknown. */
+export function parseStoredReaders(value: unknown): Readers {
+  return parseReaders(value) ?? UNKNOWN_READERS;
+}
+
 function parseLabel(value: unknown): DiscretionLabel | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const v = value as Record<string, unknown>;

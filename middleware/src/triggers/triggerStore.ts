@@ -15,7 +15,7 @@
 
 import type { Pool, PoolClient } from 'pg';
 
-import { parseLabelSet, serializeLabelSet } from '@omadia/orchestrator';
+import { parseLabelSet, parseStoredReaders, serializeLabelSet, UNKNOWN_READERS } from '@omadia/orchestrator';
 
 import type {
   NewTrigger,
@@ -149,19 +149,28 @@ interface TriggerRowDb {
 
 /**
  * Spec 2042 §5.11 (INV-9) — the creating conversation's discretion as stored.
- * Anything but the stored shape is no discretion (rows written before it, and
- * triggers no conversation created); a damaged label set inside it fails
- * closed (`parseLabelSet`).
+ * An array is none: triggers no conversation created (routines, schedules,
+ * batch jobs) and agent triggers written before it. Any other damage fails
+ * closed: an unreadable context, unknown readers, an unreadable label set.
  */
 function parseDiscretion(value: unknown): TriggerDiscretion | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
-  const { contextKey, labels } = value as { contextKey?: unknown; labels?: unknown };
-  if (typeof contextKey !== 'string' || contextKey === '') return null;
-  return { contextKey, labels: parseLabelSet(labels) };
+  if (Array.isArray(value)) return null;
+  if (typeof value !== 'object' || value === null) return UNREADABLE_DISCRETION;
+  const { contextKey, readers, labels } = value as { contextKey?: unknown; readers?: unknown; labels?: unknown };
+  if (typeof contextKey !== 'string' || contextKey === '') return UNREADABLE_DISCRETION;
+  return { contextKey, readers: parseStoredReaders(readers), labels: parseLabelSet(labels) };
 }
 
+const UNREADABLE_DISCRETION: TriggerDiscretion = {
+  contextKey: 'unreadable',
+  readers: UNKNOWN_READERS,
+  labels: parseLabelSet(undefined),
+};
+
 function serializeDiscretion(discretion: TriggerDiscretion | null): unknown {
-  return discretion ? { contextKey: discretion.contextKey, labels: serializeLabelSet(discretion.labels) } : [];
+  return discretion
+    ? { contextKey: discretion.contextKey, readers: discretion.readers, labels: serializeLabelSet(discretion.labels) }
+    : [];
 }
 
 const toTrigger = (r: TriggerRowDb): Trigger => ({

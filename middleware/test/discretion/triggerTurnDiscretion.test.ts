@@ -70,8 +70,8 @@ function build(recalledLabels: LabelSet) {
 
 /** A trigger firing's turn: no origin, no person. */
 const firing: ChatTurnInput = { userMessage: 'Erinnere an das Angebot', sessionScope: 'trigger:t-1' } as ChatTurnInput;
-const seeded = <T>(labels: LabelSet, work: () => Promise<T>): Promise<T> =>
-  runWithSeededDiscretion({ agentSlug: 'mira', contextKey: ROOM, labels }, work);
+const seeded = <T>(labels: LabelSet, work: () => Promise<T>, agentSlug = 'mira'): Promise<T> =>
+  runWithSeededDiscretion({ agentSlug, contextKey: ROOM, readers: readersOf(['a', 'b', 'c']), labels }, work);
 
 describe('a trigger firing is a labelled turn of its conversation (INV-9)', () => {
   it('what was said in the room flows back to it; unseeded the room is unknown and it is refused', async () => {
@@ -91,6 +91,30 @@ describe('a trigger firing is a labelled turn of its conversation (INV-9)', () =
     const answer = await seeded(unionLabels([roomLabel]), () => orchestrator.chat(firing));
     assert.equal(answer.text.includes('ACME'), false);
     assert.match(answer.text, /nicht alle hier|not everyone here/);
+  });
+
+  it('the readers are the stored roster, not the narrower room label of older turns', async () => {
+    // c joined later; an older turn of the room kept room:{a,b}.
+    const olderRoomTurn = { ...roomLabel, readers: readersOf(['a', 'b']) };
+    const narrow = unionLabels([{ kind: 'context', key: 'telegram:dm-ab', readers: readersOf(['a', 'b']) }]);
+    const { orchestrator } = build(narrow);
+    const answer = await seeded(unionLabels([roomLabel, olderRoomTurn]), () => orchestrator.chat(firing));
+    assert.equal(answer.text.includes('ACME'), false, 'c may not know what only a and b may know');
+  });
+
+  it('a seed for another agent, or a turn with its own origin, is not seeded', async () => {
+    const recalled = unionLabels([roomLabel]);
+    const other = build(recalled);
+    const refused = await seeded(unionLabels([roomLabel]), () => other.orchestrator.chat(firing), 'someone-else');
+    assert.equal(refused.text.includes('ACME'), false, 'mira takes no seed meant for someone else');
+
+    const withOrigin = build(recalled);
+    const input = {
+      ...firing,
+      origin: { channelType: 'telegram', scope: { kind: 'conversation', conversationId: 'dm-x' }, conversationType: 'personal', channelConversationId: 'dm-x' },
+    } as unknown as ChatTurnInput;
+    const answer = await seeded(unionLabels([roomLabel]), () => withOrigin.orchestrator.chat(input));
+    assert.equal(answer.text.includes('ACME'), false, 'a turn with an origin is its own room, not the seed');
   });
 
   it('the creating turn labels are the turn labels from its start', async () => {

@@ -144,32 +144,31 @@ describe('#2082 proactive triggers through the kernel wiring (pg, 0093 + 0094)',
     assert.ok(sent.every((m) => JSON.stringify(m.ref) !== JSON.stringify(salesChat)));
   });
 
-  it('INV-9: the trigger keeps its conversation\'s labels; a post the room may not know is withheld', async () => {
+  it('INV-9: the trigger keeps its conversation\'s discretion; a post the room may not know is refused when set', async () => {
     const hrKey = 'teams:19:hr';
-    const discretion = createDiscretionTurnState({
-      contextKey: hrKey,
-      resolveReaders: async () => readersOf(['anna', 'ben']),
-      // The creating turn had read what only anna and carl may know.
-      initial: { labels: [{ kind: 'context', key: 'teams:dm-anna-carl', readers: readersOf(['anna', 'carl']) }] },
-    });
-    const created = await turnContext.run({ turnId: 'turn-hr', turnDate: '2026-11-23', discretion }, () =>
-      call('wake_at', {
-        purpose: 'Erinnerung',
-        time: inMin(10),
-        until: inMin(60),
-        actions: [{ type: 'post', template: 'Bitte an {{purpose}} denken' }],
-      }),
-    );
-    assert.match(created, /"created"/);
+    const turnIn = (initial: { labels: { kind: 'context'; key: string; readers: ReturnType<typeof readersOf> }[] }) =>
+      createDiscretionTurnState({ contextKey: hrKey, resolveReaders: async () => readersOf(['anna', 'ben']), initial });
+    const setIn = (discretion: ReturnType<typeof turnIn>, actions: unknown[]) =>
+      turnContext.run({ turnId: 'turn-hr', turnDate: '2026-11-23', discretion }, () =>
+        call('wake_at', { purpose: 'Erinnerung', time: inMin(10), until: inMin(60), actions }),
+      );
+    // The creating turn had read what only anna and carl may know.
+    const narrow = { labels: [{ kind: 'context' as const, key: 'teams:dm-anna-carl', readers: readersOf(['anna', 'carl']) }] };
+    const refused = await setIn(turnIn(narrow), [{ type: 'post', template: 'Bitte an {{purpose}} denken' }]);
+    assert.match(refused, /Error \(discretion\)/);
+
+    // A turn step is set; its firing runs as a labelled turn of the HR chat.
+    assert.match(await setIn(turnIn(narrow), [{ type: 'turn', instruction: 'Erinnere' }]), /"created"/);
     const [t] = await wiring.service.listForContext('conversation', 'teams:19:hr-team@thread.v2');
     assert.equal(t?.discretion?.contextKey, hrKey);
-    assert.deepEqual(
-      t?.discretion?.labels.labels.map((l) => (l.kind === 'context' ? `${l.key}:${l.readers.kind === 'set' ? l.readers.ids.join('+') : l.readers.kind}` : l.kind)),
-      ['teams:19:hr:anna+ben', 'teams:dm-anna-carl:anna+carl'],
-      'the room with its readers, and what the turn had read',
-    );
+    assert.deepEqual(t?.discretion?.readers, readersOf(['anna', 'ben']), 'the roster, stored on its own');
+    assert.ok(t?.discretion?.labels.labels.some((l) => l.kind === 'context' && l.key === 'teams:dm-anna-carl'));
+
+    // What the room may know: set, fired, sent.
+    await pool.query('DELETE FROM agent_triggers');
+    assert.match(await setIn(turnIn({ labels: [] }), [{ type: 'post', template: 'Bitte an {{purpose}} denken' }]), /"created"/);
     await fireAllAt(new Date('2026-11-23T09:20:00Z'));
-    assert.equal(sent.length, 0, 'ben may not know what anna and carl said');
+    assert.equal(sent.length, 1);
   });
 
   it('criterion 24: nothing goes out during the recipient\'s quiet hours; it is deferred', async () => {

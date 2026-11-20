@@ -11,6 +11,8 @@
 
 import { createHash } from 'node:crypto';
 
+import { checkFlow } from '@omadia/orchestrator';
+
 import type { NativeToolSpec } from '@omadia/plugin-api';
 
 import type { TriggerEnvelope } from './triggerPolicy.js';
@@ -186,6 +188,15 @@ export interface TriggerToolDeps {
   readonly currentTurn: () => TriggerToolTurn | undefined;
 }
 
+/** May the trigger's own conversation know everything its creating turn had read? */
+export function discretionAllowsRoom(discretion: TriggerDiscretion): boolean {
+  return checkFlow(discretion.labels, {
+    kind: 'people',
+    contextKey: discretion.contextKey,
+    readers: discretion.readers,
+  }).allowed;
+}
+
 export function createTriggerToolHandler(name: TriggerToolName, deps: TriggerToolDeps): (input: unknown) => Promise<string> {
   return async (input: unknown): Promise<string> => {
     const turn = deps.currentTurn();
@@ -233,6 +244,12 @@ export function createTriggerToolHandler(name: TriggerToolName, deps: TriggerToo
       discretion: await turn.discretion(),
       createdBy: `agent:${turn.agentSlug} for ${turn.tenant}/${turn.userId}`,
     };
+    // INV-9 — a post or delivery this conversation may not receive would be
+    // withheld on every firing; say so now instead.
+    const sends = Array.isArray(raw['actions']) && raw['actions'].some((a) => isRecord(a) && (a['type'] === 'post' || a['type'] === 'deliver'));
+    if (sends && env.discretion && !discretionAllowsRoom(env.discretion)) {
+      return 'Error (discretion): this conversation has touched information not everyone here may know, so a post or delivery from this trigger would be withheld. Set it where everyone may know what it refers to.';
+    }
     const res = await deps.service.create(name as TriggerKind, raw, env);
     return res.ok ? JSON.stringify({ created: triggerSummary(res.trigger) }) : errorText(res);
   };

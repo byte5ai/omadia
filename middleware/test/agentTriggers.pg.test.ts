@@ -193,13 +193,17 @@ describe('#2082 agent triggers (pg, migration 0093)', { skip: !pgAvailable }, ()
         { kind: 'source', system: 'odoo', restricted: true },
       ]);
       const raw = { purpose: 'Erinnerung', time: at(HOUR), until: at(2 * HOUR), actions: [{ type: 'post', template: 'Hallo' }] };
-      const t = await create(service, 'wake_at', raw, envFor('erika', { discretion: { contextKey: 'teams:19:erika', labels } }));
-      assert.deepEqual((await store.get(t.id))?.discretion, { contextKey: 'teams:19:erika', labels });
+      const discretion = { contextKey: 'teams:19:erika', readers: readersOf(['a', 'b', 'c']), labels };
+      const t = await create(service, 'wake_at', raw, envFor('erika', { discretion }));
+      assert.deepEqual((await store.get(t.id))?.discretion, discretion);
       await pool.query(`UPDATE agent_triggers SET labels = '[]'::jsonb WHERE id = $1`, [t.id]);
       assert.equal((await store.get(t.id))?.discretion, null, 'a row written before it');
-      await pool.query(`UPDATE agent_triggers SET labels = '{"contextKey":"teams:19:erika","labels":"junk"}'::jsonb WHERE id = $1`, [t.id]);
+      await pool.query(`UPDATE agent_triggers SET labels = '{"contextKey":"teams:19:erika","readers":{"kind":"set","ids":[5]},"labels":"junk"}'::jsonb WHERE id = $1`, [t.id]);
       const damaged = (await store.get(t.id))?.discretion;
-      assert.ok(damaged?.labels.labels.some((l) => l.kind === 'context' && l.readers.kind === 'unknown'), 'damaged fails closed');
+      assert.equal(damaged?.readers.kind, 'unknown', 'damaged readers fail closed');
+      assert.ok(damaged?.labels.labels.some((l) => l.kind === 'context' && l.readers.kind === 'unknown'), 'damaged labels fail closed');
+      await pool.query(`UPDATE agent_triggers SET labels = '{"contextKey":5}'::jsonb WHERE id = $1`, [t.id]);
+      assert.equal((await store.get(t.id))?.discretion?.readers.kind, 'unknown', 'a damaged record is not "no discretion"');
     });
   });
 

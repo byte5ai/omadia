@@ -35,7 +35,7 @@ Line numbers drift; the names are what to search for.
 |---|---|---|---|
 | `streaming.ts` (`completeWithFallback`, stream) from `orchestrator.ts` and `localSubAgent.ts` | complete | AT | main loop, sub-agents, dynamic agents; routine turns through the ambient `turnContext` |
 | `orchestrator.ts` `maybeRouteCardsFromText`, `maybeDirectLineNote`; `modelRouter.ts`, `personaRouter.ts` | complete | AT | |
-| `securityScreener.ts` (`screenInboundTurn`) | complete | AT | on routine turns through the trigger firing's agent turn (`src/triggers/triggerEngine.ts`) |
+| `securityScreener.ts` (`screenInboundTurn`) | complete | AT | on routine turns through the running agent's turn (`routineRunner.ts` `runOnce`, scheduled or "run now") |
 | `cliChatAgent.ts`, `cliSubAgent.ts` | run_loop | AT (OJ for the Plugin Builder) | |
 | `orchestrator.ts` `recallCliContext`, `recordCliTurn` | embed, complete | AT | |
 | `knowledgeGraphTool.ts` | embed | AT; **NONE through the public MCP server** | |
@@ -95,7 +95,7 @@ Line numbers drift; the names are what to search for.
 | Conductor `builderAgent.ts` | complete | OJ:workflow_designer_turn with AT nested | |
 | Conductor steps, schedules, `routes/chat.ts`, `orchestratorDispatcher.ts` | complete | AT | through the agent's chat agent |
 | `agents/agentTurnService.ts` (`agentTurn@2`) | complete | ES with AT nested | |
-| `plugins/routines/routineRunner.ts` | complete | AT | a routine fires through its trigger; the firing, screener included, is the agent's turn |
+| `plugins/routines/routineRunner.ts` | complete | AT | every run (scheduled through its trigger, or "run now" from the route or a chat action) is the turn of the agent that runs it, screener and emitter included |
 | `src/platform/pluginContext.ts` `ctx.llm` | complete | the caller's; archetype plugins only ES | **NONE from a plugin's `activate()`, `ctx.jobs` handler or timer** |
 | channel plugins' `transcription.transcribeFile`, `topicDetector.classify` | transcribe; embed, complete | IP | `inboundProcessing`; `transcribeStream` is not wrapped |
 | `src/mcp/publicMcpServer.ts` tool dispatch | any | **NONE** | |
@@ -110,7 +110,7 @@ removed) before the contract step switches to `enforce`.
 |---|---|---|
 | 1 | ~~Scratch-promotion reaper (interval)~~ | Done (S4): a batch trigger with caps and circuit breaker; every trigger firing runs in its agent's turn context. Not a maintenance run, because it calls `complete` |
 | 2 | Field-classification recompute (boot, activation, 6 h, POST route) | S3b: operator job for the POST route; the scheduled runs as a bounded kernel job (S4 trigger caps) |
-| 3 | ~~Security screener on routine turns~~ | Done (S4): routines fire through triggers, and the firing is the agent's turn |
+| 3 | ~~Security screener on routine turns~~ | Done (S4): a routine run, scheduled or "run now", is the turn of the agent that runs it (`runOnce`); a scheduled one also runs inside its trigger firing |
 | 4 | Boot graph backfill (`BACKFILL_AT_STARTUP=1`) | S3b: maintenance run like the embedding backfill |
 | 5 | Public MCP server tool dispatch | S3b: run each dispatch in the agent turn of the agent the API key is bound to |
 | 6 | Long-running sub-agent tasks re-driven at boot / interval | S3b: carry the originating agent turn's context on the task |

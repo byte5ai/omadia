@@ -214,7 +214,8 @@ describe('#2079 / #2082 discretion of trigger output (INV-9)', () => {
   const own = { kind: 'context' as const, key: room, readers: readersOf(['a', 'b', 'c']) };
   /** The creating turn had also read what only a and b may know. */
   const narrower = { kind: 'context' as const, key: 'teams:dm-ab', readers: readersOf(['a', 'b']) };
-  const created = (labels = unionLabels([own])) => trigger({ discretion: { contextKey: room, labels } });
+  const created = (labels = unionLabels([own])) =>
+    trigger({ discretion: { contextKey: room, readers: readersOf(['a', 'b', 'c']), labels } });
   const build = (sent: SemanticAnswer[], chat: (input: ChatTurnInput) => Promise<SemanticAnswer> = async () => ({ text: 'ok' })) =>
     createKernelExecutors({
       store,
@@ -241,6 +242,17 @@ describe('#2079 / #2082 discretion of trigger output (INV-9)', () => {
     assert.equal(sent.length, 0, 'nothing reached the room');
   });
 
+  it('checks against the room roster, not the narrower room label older turns left (review finding)', async () => {
+    const sent: SemanticAnswer[] = [];
+    const exec = build(sent);
+    // c joined later: an older turn of the room kept `room:{a,b}`, which
+    // narrows the merged room label; the roster stored beside it is {a,b,c}.
+    const olderRoomTurn = { ...own, readers: readersOf(['a', 'b']) };
+    const posted = await exec.post(created(unionLabels([own, olderRoomTurn, narrower])), 'Erinnerung');
+    assert.equal(posted.delivered, false, 'c may not know what only a and b may know');
+    assert.equal(sent.length, 0);
+  });
+
   it('what the room may know goes out', async () => {
     const sent: SemanticAnswer[] = [];
     const exec = build(sent);
@@ -260,13 +272,14 @@ describe('#2079 / #2082 discretion of trigger output (INV-9)', () => {
     const out = await exec.turn(created(), 'go', status);
     assert.equal(seed?.contextKey, room);
     assert.deepEqual(seed?.labels, unionLabels([own]));
+    assert.deepEqual(seed?.readers, readersOf(['a', 'b', 'c']));
     assert.equal(out.delivered, false);
     assert.equal(out.error, 'the answer was withheld by discretion');
     assert.equal(sent.length, 0, 'nobody asked, so nothing is declined');
   });
 
   it('a trigger no conversation created runs unseeded', async () => {
-    let seed: SeededTurnDiscretion | undefined = { agentSlug: 'x', contextKey: 'x', labels: unionLabels([]) };
+    let seed: SeededTurnDiscretion | undefined = { agentSlug: 'x', contextKey: 'x', readers: readersOf([]), labels: unionLabels([]) };
     const exec = build([], async () => {
       seed = seededDiscretionFor('erika');
       return { text: 'ok' };

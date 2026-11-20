@@ -14,7 +14,7 @@
 import { renderTableText, type ChatTurnInput, type SemanticAnswer } from '@omadia/channel-sdk';
 import type { AgentSpeaker, AnswerEmitter } from '@omadia/plugin-api';
 import { meterModelCalls, meterUsageCost } from '@omadia/usage-telemetry';
-import { checkFlow, isAnswerWithheldText, runWithSeededDiscretion, seededReaders, violationSummary } from '@omadia/orchestrator';
+import { checkFlow, isAnswerWithheldText, runWithSeededDiscretion, violationSummary } from '@omadia/orchestrator';
 
 import { storeContextChecks, type ContextLivenessProbe } from './contextChecks.js';
 import { toTableData, type DataActionRunner } from './dataActions.js';
@@ -95,7 +95,7 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
     const decision = checkFlow(discretion.labels, {
       kind: 'people',
       contextKey: discretion.contextKey,
-      readers: seededReaders(discretion),
+      readers: discretion.readers,
     });
     return decision.allowed
       ? undefined

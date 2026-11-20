@@ -8,7 +8,7 @@
  * where judgement or language is needed).
  */
 
-import type { LabelSet } from '@omadia/orchestrator';
+import type { LabelSet, Readers } from '@omadia/orchestrator';
 
 export const TRIGGER_KINDS = ['on_event', 'wake_at', 'wake_every'] as const;
 export type TriggerKind = (typeof TRIGGER_KINDS)[number];
@@ -69,6 +69,10 @@ export type TriggerTarget =
  */
 export interface TriggerDiscretion {
   readonly contextKey: string;
+  /** That conversation's roster as the creating turn resolved it. Stored on
+   *  its own: the room label in `labels` may be narrower (an intersection
+   *  with older turns of the room). */
+  readonly readers: Readers;
   readonly labels: LabelSet;
 }
 
