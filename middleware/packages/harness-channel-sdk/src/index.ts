@@ -185,9 +185,6 @@ export { ANSWER_VERBOSITY_LEVELS } from './chatAgent.js';
 // adapters can call it without crossing into kernel internals.
 export { toSemanticAnswer } from './toSemanticAnswer.js';
 
-// #332 Layer 1 — plain-text fallback so even a minimal connector (no rich-card
-// UI) can append a readable, harness-sourced consulted-agents footer line.
-export { agentsConsultedFooterText } from './toSemanticAnswer.js';
 // #544 W2-1 — plain-text fallback for channels without form support.
 export { withMcpInputPrompt } from './toSemanticAnswer.js';
 
