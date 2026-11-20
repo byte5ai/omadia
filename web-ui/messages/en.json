@@ -932,14 +932,15 @@
     "emptyHeading": "No channels known yet.",
     "emptyExplain": "Channel plugins (Teams, Telegram, …) report their keys during activation. As soon as a channel plugin is installed and active, its keys appear here.",
     "emptyDirectoriesKnown": "Registered channel types: {types}",
-    "fallbackHint": "Channels without an explicit binding fall through to the standard Orchestrator ({fallback}).",
-    "fallbackHintNone": "no standard set",
+    "defaultAgentHint": "Channels without an explicit binding go to the default agent ({agent}).",
+    "defaultAgentHintOff": "off",
     "originLabel": "via",
     "membersLine": "Members: {names}",
     "membersMore": "{count, plural, one {+# more} other {+# more}}",
     "staleBadge": "stale",
     "routesTo": "→ Orchestrator:",
-    "routesToFallback": "(standard · {fallback})",
+    "routesToDefault": "(default agent · {agent})",
+    "boundAgentUnavailable": "{name} ({status, select, deleted {deleted} other {disabled}})",
     "clearStale": "Clear binding",
     "disclosure": {
       "heading": "AI marking differs from the delivered state",
@@ -1651,6 +1652,10 @@
       "none": "Default identity",
       "fallback": "Persona classifier unavailable — default identity"
     },
+    "speaker": {
+      "system": "System notice",
+      "avatarAlt": "Avatar of {name}"
+    },
     "subAgentTrace": "sub-agent trace",
     "mcpAuth": {
       "kicker": "Authorization required",
@@ -1958,22 +1963,17 @@
     "turnId": "Turn {id}",
     "turnReceiptLink": "View on the Receipts page"
   },
-  "directLine": {
+  "agentsConsulted": {
     "consultedLabel": "🔎 Consulted",
     "consultedCount": "· {count, plural, one {# tool} other {# tools}}",
     "viewTrace": "trace ▾",
-    "stepsCount": "{count, plural, one {# step} other {# steps}}",
-    "delegatedAnswerFrom": "Direct answer from {label}",
-    "delegatedAnswerCaption": "Delivered verbatim — the orchestrator cannot edit or remove this answer.",
-    "stickyActive": "Talking directly to {label} — every message goes straight there.",
-    "stickyExit": "Back to orchestrator",
-    "stickyPlaceholder": "Message to {label}…"
+    "stepsCount": "{count, plural, one {# step} other {# steps}}"
   },
   "agentPicker": {
     "label": "Orchestrator:",
     "loading": "loading orchestrators…",
     "error": "orchestrator list unavailable",
-    "fallbackMarker": "(standard)",
+    "defaultMarker": "(default)",
     "pinnedTooltip": "Session is pinned. Use Operator → Orchestrators → Drain to reassign.",
     "emptyCta": "No orchestrators configured — open Operator → Orchestrators",
     "unavailableTitle": "This session's Orchestrator is no longer available",
@@ -2084,8 +2084,9 @@
     },
     "platformHeading": "Platform",
     "forceReload": "Force registry reload",
-    "fallbackLabel": "Standard orchestrator:",
-    "fallbackNone": "(none — hard-reject unbound keys)",
+    "defaultAgentLabel": "Default agent:",
+    "defaultAgentOff": "(off — unaddressed messages get a system notice)",
+    "defaultAgentRefused": "This agent cannot be the default agent: it must be enabled and available to everyone in every channel.",
     "createHeading": "Create Orchestrator",
     "fieldSlug": "Slug",
     "fieldName": "Name",
@@ -2128,7 +2129,6 @@
     "actionDrain": "Drain sessions",
     "actionKill": "Kill sessions",
     "drainTooltip": "Clear snapshot on every session bound to this Orchestrator — next turn re-captures from current config",
-    "fallbackProtected": "This is the standard orchestrator and cannot be disabled or deleted.",
     "deleteConfirm": "Delete orchestrator \"{slug}\"? It goes out of service; its record is kept under “Deleted agents” until you remove it for good.",
     "killConfirm": "Kill all sessions for \"{slug}\"? History will be lost.",
     "memoryScopeHeading": "Memory scope",
@@ -2136,10 +2136,6 @@
     "pluginsHeading": "Plugins",
     "bindingsHeading": "Channel bindings",
     "save": "Save",
-    "actionRehydrateFallback": "Reset standard to all plugins",
-    "rehydrateTooltip": "Re-attaches every installed plugin to the current standard Orchestrator — restores day-1 capabilities.",
-    "rehydrateConfirm": "Re-attach every installed plugin to the standard Orchestrator? Existing plugin configs are preserved; newly added plugins start with empty config.",
-    "rehydrateDone": "Standard rehydrated: {attached} of {requested} plugins attached.",
     "catalogError": "Failed to load the plugin catalog ({message}). The multi-select falls back to manual mode.",
     "catalogLoading": "Loading plugin catalog…",
     "catalogEmpty": "No installed plugins.",
@@ -2176,15 +2172,15 @@
     "orphanPluginBadge": "no longer installed",
     "bindingsAdd": "Add binding",
     "bindingsRemove": "Remove",
-    "bindingsEmpty": "No bindings — unbound traffic lands on the standard Orchestrator.",
+    "bindingsEmpty": "No bindings — unaddressed messages go to the default agent.",
     "routingTesterHeading": "Routing tester",
-    "routingTesterHelp": "Ask the server which Orchestrator would handle an inbound webhook. Hits explicit bindings first, then the standard orchestrator.",
+    "routingTesterHelp": "Ask the server which Orchestrator would handle an inbound webhook. Hits explicit bindings first, then the default agent.",
     "fieldChannelType": "Channel type",
     "fieldChannelKey": "Channel key",
     "routingTesterSubmit": "Test routing",
     "routingTesterRunning": "Testing…",
     "routingTesterMatched": "→ Orchestrator \"{slug}\" (via {via})",
-    "routingTesterNoMatch": "No match — and no standard orchestrator configured.",
+    "routingTesterNoMatch": "No match — no default agent applies; the sender would get a system notice.",
     "agentCardSummary": "privacy: {privacy} (not enforced) · status: {status} · runtime: {runtime} · {plugins} plugins attached · {bindings} bindings",
     "agentCardModel": "model: {primary}{fallback, select, none {} other { · fallback: {fallback}}}",
     "agentCardModelAuto": "Auto{model, select, none {} other { ({model})}}",
@@ -2202,7 +2198,6 @@
     "dragHandle": "Drag to move between columns",
     "dependencyMissingBadge": "Parent missing",
     "dependencyMissingTooltip": "This plugin depends on \"{parent}\" — parent is not attached in the same column.",
-    "fallbackStoreOnlyNotice": "The standard Orchestrator always runs plugins with the global store config. Per-Orchestrator overrides are disabled here — create a dedicated Orchestrator if you need them.",
     "orphanDetachAll": "Remove all",
     "orphanDetachAllTooltip": "Detach every stale plugin row (old ids from earlier deployments) at once.",
     "orphanExplain": "Plugin ids from earlier seeds that no longer exist in the current catalog (typically a rename like de.byte5.agent.* → @omadia/*). Dropped on next Save unless you tick \"Keep\".",
@@ -3184,8 +3179,7 @@
     "confirmAction": {
       "cancel": "Cancel",
       "typedMismatch": "That is not the slug."
-    },
-    "rehydrateConfirmYes": "Rehydrate"
+    }
   },
   "builder": {
     "issueReport": {

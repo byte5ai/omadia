@@ -4,6 +4,7 @@
  * instances, each carrying its own `agentId`, with no shared mutable state.
  */
 
+import { emitterOf, speakerOf } from '../packages/harness-orchestrator/src/management/speakingChatAgent.js';
 import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -79,8 +80,15 @@ test('the built bundle exposes the orchestrator as its raw + bare agent', () => 
     deps(),
   );
   assert.equal(built.bundle.raw, built.orchestrator);
-  // No verifier bundle in deps → the bare Orchestrator IS the chatAgent.
-  assert.equal(built.bundle.agent, built.orchestrator);
+  // No verifier bundle in deps → the chatAgent is the Orchestrator behind the
+  // two layers every agent has (#2045 speaker, #2046 identity guard).
+  assert.deepEqual(speakerOf(built.bundle.agent), {
+    kind: 'agent',
+    agentId: 'solo',
+    slug: 'solo',
+    displayName: 'solo',
+  });
+  assert.notEqual(emitterOf(built.bundle.agent), undefined);
 });
 
 /**
@@ -349,8 +357,8 @@ test('a metered agent ignores the CLI turn budget (OM-104)', () => {
     deps(),
   );
   // The budget exists only on the CLI runtime; the in-process path keeps the
-  // orchestrator as its agent.
-  assert.equal(built.bundle.agent, built.orchestrator);
+  // orchestrator as its agent (behind the speaker and guard layers).
+  assert.equal(built.bundle.raw, built.orchestrator);
   assert.equal(installedSpawnTimeout(built.bundle.agent), undefined);
 });
 

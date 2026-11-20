@@ -97,8 +97,8 @@ export function ChannelsDashboard({
         </div>
       )}
       <p className="text-xs text-[color:var(--fg-muted)]">
-        {t('fallbackHint', {
-          fallback: initial.fallback_slug ?? t('fallbackHintNone'),
+        {t('defaultAgentHint', {
+          agent: initial.instance_default_slug ?? t('defaultAgentHintOff'),
         })}
       </p>
       {groups.map((group) => (
@@ -162,7 +162,11 @@ export function ChannelsDashboard({
                 <label className="flex items-center gap-2 text-xs text-[color:var(--fg-muted)]">
                   <span>{t('routesTo')}</span>
                   <select
-                    value={c.bound_agent_slug ?? ''}
+                    value={
+                      isUnavailableBinding(c)
+                        ? UNAVAILABLE_BINDING_VALUE
+                        : (c.bound_agent_slug ?? '')
+                    }
                     disabled={pending || !!busy}
                     onChange={(e) => {
                       const v = e.target.value;
@@ -176,10 +180,21 @@ export function ChannelsDashboard({
                     className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-1 text-xs"
                   >
                     <option value="">
-                      {t('routesToFallback', {
-                        fallback: initial.fallback_slug ?? '—',
+                      {t('routesToDefault', {
+                        agent: initial.instance_default_slug ?? t('defaultAgentHintOff'),
                       })}
                     </option>
+                    {/* #1880 — a binding to a disabled or deleted agent is
+                        still that agent's binding; show it instead of letting
+                        the select fall back to its first option. */}
+                    {isUnavailableBinding(c) && (
+                      <option value={UNAVAILABLE_BINDING_VALUE} disabled>
+                        {t('boundAgentUnavailable', {
+                          name: c.bound_agent_name ?? c.bound_agent_slug ?? '—',
+                          status: c.bound_agent_status ?? 'disabled',
+                        })}
+                      </option>
+                    )}
                     {bindableAgents.map((a) => (
                       <option key={a.slug} value={a.slug}>
                         {a.slug}
@@ -210,6 +225,15 @@ export function ChannelsDashboard({
       ))}
     </div>
   );
+}
+
+/** Select value of the bound-but-unavailable agent's option; no agent slug
+ *  can collide with it (slugs are kebab-case). */
+const UNAVAILABLE_BINDING_VALUE = '__unavailable__';
+
+/** #1880 — bound to an agent that can no longer answer (disabled/deleted). */
+function isUnavailableBinding(c: OperatorChannelDto): boolean {
+  return c.bound_agent_status === 'disabled' || c.bound_agent_status === 'deleted';
 }
 
 interface Grouped {

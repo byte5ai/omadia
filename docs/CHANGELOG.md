@@ -95,6 +95,56 @@ changelog.
   `off`); existing agents keep their mode. Context memory can no longer be switched `off` for an agent
   that holds capability grants (`409 context_memory_required`).
 
+### Changed — One agent speaks: management layer, speaker, identity guard (epic #2042, S1)
+
+- **No fallback agent any more (#2055, #1880).** The management layer routes
+  every turn deterministically: the agent's own channel identity, an explicit
+  address (web chat / API slug, or `resolveAgent` by id), the sender's
+  selection for the conversation, the conversation's binding, then the
+  default-agent table — (user, channel), (user), (channel), instance; the first
+  existing entry wins, `off` included. Whatever names an agent, that agent
+  answers or nobody does: a disabled, deleted or unavailable target, or no
+  target at all, gets a `system` notice naming the agent (INV-7). A binding to
+  a disabled agent no longer falls through to another agent.
+- **Migrations (S1 range):**
+  - `0081_agent_default_entries` — the default-agent table. The former
+    `multi_orchestrator_settings.fallback_agent_id` becomes the instance entry
+    (a database without one starts with the instance entry `off`); the
+    settings table and its facilitator trigger are dropped; the tombstone guard
+    no longer refuses deleting a default agent.
+  - `0082_agent_selections` — a user's agent selection per conversation.
+  - `0083_agent_availability` — `agents.available_to_everyone` (default
+    `false`: a fresh agent is available to nobody), `agents.available_channels`
+    (`NULL` = all), `agent_availability_principals` (`user:<id>`,
+    `role:<key>`). Existing agents are set available to everyone.
+- **Plain-text agent choice:** `/agent <name>`, `/agent`, `/agents` in every
+  channel, handled by the ChatAgent the channel resolver returns.
+- **API:** new `GET/PUT/DELETE /api/v1/operator/default-agents`,
+  `PUT /api/v1/operator/agents/:slug/availability`,
+  `GET /api/v1/agents/directory?channel=…`. Removed: `PUT
+  /api/v1/operator/agents/fallback`, `POST …/fallback/rehydrate`,
+  `is_fallback`/`fallback_slug`/`fallback_agent_id` fields and the
+  `fallback_protected` refusal. The web chat answers a notice with 200 and
+  `speaker: {kind:'system'}` instead of 412 `no_fallback`.
+  `scripts/agents-apply.ts` reads `default_agent` instead of `fallback_agent`.
+- **Speaker on every answer (#2045):** every agent bundle stamps its
+  `AgentSpeaker` on `SemanticAnswer.speaker`, stream `done` and `error`;
+  management-layer notices carry `system`. One typed emitter per agent
+  (`prose`, `template`, `data`, `system`); routine answers go through it. The
+  web chat shows name and avatar on every message and styles notices apart.
+- **Identity guard (#2046):** mandatory and fail-closed, independent of the
+  fact verifier. Deterministic layer (agent names and aliases, claims to be
+  human), model layer on masked text for suspicious text; streamed answers are
+  released sentence by sentence; a refusal or a guard timeout withholds the
+  rest and appends a `system` notice.
+- **Operator web UI** follows the removed fallback: the "default agent"
+  picker sets the instance entry of the default-agent table, the rehydrate
+  button is gone, every agent can be disabled or deleted, the channels page
+  shows a binding to a disabled or deleted agent as such (#1880).
+- **Agent prompt (#2056):** the default identity is a virtual colleague, no
+  longer "an assistant that delegates to specialised domain agents"; every
+  agent's prompt carries the identity rules.
+
 ### Fixed — Stopping a single process no longer needs the agent's name (#2090, epic #2043)
 
 - `POST /api/v1/operator/execution/kill-switches` with `level: "process"`

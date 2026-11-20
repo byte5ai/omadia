@@ -189,16 +189,6 @@ setup:
       help:
         en: "When on, a cheap Haiku call classifies each turn: simple → simple model, complex → complex model. Migrated from ORCHESTRATOR_MODEL_ROUTING."
         de: "Wenn an, klassifiziert ein günstiger Haiku-Call jeden Turn: einfach → Simple-Modell, komplex → Complex-Modell. Migriert aus ORCHESTRATOR_MODEL_ROUTING."
-    - key: "orchestrator_direct_line_sticky"
-      label:
-        en: "Direct Line: sticky mode"
-        de: "Direct Line: Sticky-Modus"
-      type: "boolean"
-      required: false
-      default: "false"
-      help:
-        en: "When on, a bare `#<agent>` binds the conversation to that specialist — every further message goes straight there until `#end` or `#orchestrator` is sent. Without this switch, `#<agent> <question>` still applies to a single message only. Default: off. Migrated from ORCHESTRATOR_DIRECT_LINE_STICKY."
-        de: "Wenn an, bindet ein blosses `#<agent>` das Gespräch an diesen Spezialisten — jede weitere Nachricht geht direkt dorthin, bis `#end` oder `#orchestrator` gesendet wird. Ohne diesen Schalter wirkt `#<agent> <Frage>` weiterhin nur für eine einzelne Nachricht. Standard: aus. Migriert aus ORCHESTRATOR_DIRECT_LINE_STICKY."
     - key: "model_routing_classifier_model"
       label:
         en: "Routing: classifier model"
@@ -322,13 +312,13 @@ setup:
         de: "Ziel-Umfang der Antwort an den User für alle Agenten dieser Installation. Steuert, was eine Antwort enthält (Ergebnis, Begründung, Zwischenschritte) und wie Ergebnisse der Fach-Agenten verdichtet werden — kein Token-Limit. Bittet der User in seiner Nachricht ausdrücklich um mehr oder weniger (»kurz«, »alle Details«), gewinnt seine Bitte für diesen Turn. Leer lassen = Standard."
     - key: "assistant_identity"
       label:
-        en: "Assistant persona"
-        de: "Assistant-Persona"
+        en: "Default agent identity"
+        de: "Standard-Agentenidentität"
       type: "string"
       required: false
       help:
-        en: "Opening line(s) of the system prompt — who the assistant is and in which context it works. Leave empty for a generic, integration-neutral persona. Example: 'You are the byte5 assistant for the Odoo 17 production system. You delegate to specialized domain agents and remember lessons learned.' The concrete list of domain agents is appended automatically — only describe identity/context here, no tool names."
-        de: "Eröffnungszeile(n) des System-Prompts — wer der Assistent ist und in welchem Kontext er arbeitet. Leer lassen für eine generische, integrationsneutrale Persona. Beispiel: 'Du bist der byte5-Assistent für die Odoo-17-Produktion. Du delegierst an spezialisierte Fach-Agenten und merkst dir Lernpunkte.' Die konkrete Fach-Agenten-Liste wird automatisch angehängt — hier nur Identität/Kontext beschreiben, keine Tool-Namen."
+        en: "Opening line(s) of the system prompt of every agent without its own identity text — who the agent is and in which context it works. Leave empty for the default: an AI agent working as a virtual colleague in this team. Example: 'You are an AI agent of byte5 working with the Odoo 17 production system.' Every agent additionally always speaks only as itself, never as a colleague or a person."
+        de: "Eröffnungszeile(n) des System-Prompts aller Agenten ohne eigenen Identitätstext — wer der Agent ist und in welchem Kontext er arbeitet. Leer lassen = Standard: ein KI-Agent, der als virtueller Kollege in diesem Team arbeitet. Beispiel: 'Du bist ein KI-Agent von byte5 für die Odoo-17-Produktion.' Jeder Agent spricht zusätzlich immer nur als er selbst, nie als Kollege oder Mensch."
     # AI-Act Art. 50 (#644, epic #642) — KI-Kennzeichnung pro Turn. Die
     # Kennzeichnung läuft NICHT über den System-Prompt (ein Modell kann eine
     # Prompt-Anweisung ignorieren, und `assistant_identity` / Persona-Skills

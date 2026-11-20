@@ -8,11 +8,10 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## Unreleased
+## 1.74.0 — 2026-11-20
 
 Additive (#2045, epic #2042, spec 2042 §5.5, ADR-0013): who speaks, and
-what kind of output reaches a person. The coordination session sets the
-version when it lands.
+what kind of output reaches a person. Released with the agent model, step S1.
 
 ### Added
 
@@ -34,6 +33,12 @@ version when it lands.
 - **`Contribution`** (`id`, `speaker: AgentSpeaker`, `text`, `status:
   ContributionStatus`): a colleague's delivered block (spec §5.4); replaces
   the singular `delegatedAnswer` of the channel SDK.
+
+- (#2055) `SYSTEM_NOTICE_CODES` gains `agent_selection_cleared` and
+  `agent_directory` (the answers to `/agent` and `/agents`).
+- (#2046) `ProseEmission.restoredValues`: values the privacy shield restored
+  into the text server-side; the identity guard's model layer sees them
+  masked.
 
 ### Changed
 

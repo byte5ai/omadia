@@ -17,9 +17,11 @@ import { after, before, beforeEach } from 'node:test';
 
 import express from 'express';
 
-import type { AgentGraphStore, ConfigStore, OrchestratorRegistry } from '@omadia/orchestrator';
+import { SnapshotRoutingView } from '@omadia/orchestrator';
+import type { AgentGraphStore, AgentRow, ConfigStore, OrchestratorRegistry } from '@omadia/orchestrator';
 
 import { createAgentBuilderRouter } from '../../src/routes/agentBuilder.js';
+import { createOperatorDefaultAgentsRouter } from '../../src/routes/managementLayer.js';
 import { createOperatorAgentsRouter } from '../../src/routes/operatorAgents.js';
 import { createOperatorChannelsRouter } from '../../src/routes/operatorChannels.js';
 import { listenLoopback } from './listenLoopback.js';
@@ -37,6 +39,8 @@ interface FakeAgent {
   privacyProfile: 'default';
   status: 'enabled';
   archetype: 'standard' | 'facilitator';
+  /** #2055 — the harness agents serve everyone, like agents that predate 0083. */
+  availableToEveryone: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -50,6 +54,7 @@ function agent(slug: string, archetype: FakeAgent['archetype']): FakeAgent {
     privacyProfile: 'default',
     status: 'enabled',
     archetype,
+    availableToEveryone: true,
     createdAt: new Date(0),
     updatedAt: new Date(0),
   };
@@ -94,10 +99,19 @@ export function routesHarness(): RoutesHarness {
   /** Read methods answer; every mutating method is recorded. An unexpected
    *  call fails loudly so a refusal test cannot pass by accident. */
   function store(): ConfigStore {
-    const reads: Record<string, (...args: never[]) => unknown> = {
+    const reads: Record<string, unknown> = {
       getAgentBySlug: (slug: string) => Promise.resolve(h.agents.find((a) => a.slug === slug)),
       listAgents: () => Promise.resolve(h.agents),
-      getPlatformSettings: () => Promise.resolve({ fallbackAgentId: 'id-hr', updatedAt: new Date(0) }),
+      listTombstones: () => Promise.resolve([]),
+      // #2055 — the routing tables: reads answer, writes are recorded.
+      routing: {
+        listDefaultEntries: () => Promise.resolve([]),
+        listAvailabilityPrincipals: () => Promise.resolve([]),
+        upsertDefaultEntry: (input: { principal: string | null; channelType: string | null; agentId: string | null }) => {
+          h.writes.push(`routing.upsertDefaultEntry(${JSON.stringify(input).slice(0, 80)})`);
+          return Promise.resolve({ id: 'entry-1', ...input, updatedBy: null, updatedAt: new Date(0) });
+        },
+      },
       listAgentPlugins: () => Promise.resolve([]),
       listAllAgentPlugins: () => Promise.resolve([]),
       listChannelBindings: () => Promise.resolve([]),
@@ -118,7 +132,7 @@ export function routesHarness(): RoutesHarness {
           reads[prop] ??
           ((...args: unknown[]) => {
             h.writes.push(`${prop}(${JSON.stringify(args).slice(0, 80)})`);
-            return Promise.resolve({ fallbackAgentId: null, updatedAt: new Date(0), agentToAgent: true });
+            return Promise.resolve({ agentToAgent: true });
           }),
       },
     ) as ConfigStore;
@@ -144,9 +158,18 @@ export function routesHarness(): RoutesHarness {
 
   before(async () => {
     const registry = {
-      reload: () => Promise.resolve({ actions: [], platformChanged: false }),
+      reload: () => Promise.resolve({ actions: [] }),
       list: () => [],
       get: () => undefined,
+      getById: () => undefined,
+      instanceDefaultSlug: () => undefined,
+      // #2055 — what the default-agent table checks an entry against.
+      routingView: () =>
+        new SnapshotRoutingView({
+          agents: h.agents as unknown as AgentRow[],
+          agentPlugins: [],
+          channelBindings: [],
+        }),
     } as unknown as OrchestratorRegistry;
     const app = express();
     app.use(express.json());
@@ -182,6 +205,13 @@ export function routesHarness(): RoutesHarness {
             },
           } as never,
         }),
+      }),
+    );
+    app.use(
+      '/default-agents',
+      createOperatorDefaultAgentsRouter({
+        getConfigStore: () => store(),
+        getRegistry: () => registry,
       }),
     );
     app.use(

@@ -370,7 +370,7 @@ export class ReloadBus {
       this.log(`reloadBus: reload applied`, {
         source,
         channel: this.channel,
-        ...(plan ? { actions: plan.actions.length, platformChanged: plan.platformChanged } : {}),
+        ...(plan ? { actions: plan.actions.length } : {}),
       });
     } catch (err) {
       this.log(`reloadBus: reload FAILED`, {
