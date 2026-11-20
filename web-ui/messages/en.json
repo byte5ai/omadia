@@ -2251,6 +2251,7 @@
       "not_found": "This agent does not exist anymore — reload the page.",
       "plugin_not_assigned": "This plugin is not assigned to the agent anymore — reload the page.",
       "model_policy_unavailable": "The model catalogue is not available right now — the policy cannot be validated. Try again in a moment.",
+      "context_memory_required": "Context memory cannot be off for an agent that holds capability grants. Choose “Shared by the people present” or one of the separate modes.",
       "unknown": "Request failed: {detail}",
       "broad_reach_confirmation_required": "This change would give the agent access to every connected system and needs your explicit confirmation."
     },
@@ -2488,9 +2489,73 @@
       "chatNotPresent": "The bot is not (or no longer) in this chat; the row has no effect.",
       "chatMembers": "Participants: {members}"
     },
+    "consultation": {
+      "heading": "Consulting other agents",
+      "hint": "Whether this agent may ask another agent for a contribution during a conversation, and whether it may be asked. The answer appears under the consulted agent's name. Everything is off by default; a revoked grant stops the next call.",
+      "loading": "Loading the consultation settings…",
+      "switches": {
+        "mayConsult": "May consult other agents",
+        "consultable": "May be consulted"
+      },
+      "switchHints": {
+        "mayConsult": "The agent may ask the agents granted below. A grant alone does nothing while this is off.",
+        "consultable": "Other agents with a grant may ask this agent. It then answers only within what their grant allows."
+      },
+      "consultsHeading": "Agents this agent may consult",
+      "consultsHint": "One grant per colleague. It names the capabilities the colleague may use for this agent, whether it may draw on its own memory, how much it may disclose and how often it may be asked.",
+      "consultsEmpty": "No colleague granted yet.",
+      "consultedByHeading": "Consulted by",
+      "consultedByEmpty": "No other agent may consult this agent.",
+      "grantSummary": "{capabilities, plural, =0 {no capabilities} one {# capability} other {# capabilities}} · memory: {memory} · other conversations: {context} · {perTurn} per turn, {perDay} per day",
+      "targetOption": "{name} ({slug})",
+      "addGrant": "Grant an agent",
+      "edit": "Edit",
+      "revoke": "Revoke",
+      "formNewHeading": "New grant",
+      "formEditHeading": "Grant for {agent}",
+      "targetLabel": "Agent to consult",
+      "targetPlaceholder": "Choose an agent…",
+      "targetNone": "No other enabled agent available",
+      "capabilitiesLabel": "Capabilities the colleague may use",
+      "capabilitiesHint": "Only plugins both agents hold are offered: a consultation never reaches beyond what either agent may do on its own.",
+      "capabilitiesNone": "The two agents share no enabled plugin. The colleague can still answer from its instructions.",
+      "capabilityNotShared": "no longer held by both agents; takes effect again once both hold it",
+      "memoryAccessLabel": "Colleague's own memory",
+      "memoryAccess": {
+        "none": "Not used",
+        "discreet": "Discreetly"
+      },
+      "memoryAccessHint": "Discreetly: the colleague may draw on its memory, but only when its context memory is limited to members, and what it passes on follows the disclosure levels below.",
+      "disclosureLabel": "How much may be disclosed",
+      "disclosureHint": "Applies to what the colleague knows that this agent could not know itself. The lower level wins.",
+      "disclosureKeys": {
+        "context": "From other conversations",
+        "default": "Everything else"
+      },
+      "disclosureLevels": {
+        "none": "Nothing, not even that it knows",
+        "existence": "Only that it knows, and whom to ask",
+        "aggregate": "Only aggregates",
+        "redacted": "With classified fields masked",
+        "full": "In full"
+      },
+      "perTurnLabel": "Calls per turn (max. {max})",
+      "perDayLabel": "Calls per day (max. {max})",
+      "save": "Save grant",
+      "saving": "Saving",
+      "cancel": "Cancel",
+      "errors": {
+        "archetype_omits": "Facilitators neither consult nor are consulted.",
+        "self_grant": "An agent cannot consult itself.",
+        "invalid_disclosure": "The server rejected the disclosure levels.",
+        "invalid_body": "The server rejected the request payload.",
+        "not_found": "This agent or the colleague does not exist anymore — reload the page.",
+        "unknown": "Request failed: {detail}"
+      }
+    },
     "contextMemory": {
       "heading": "Chat-context memory",
-      "hint": "Controls whether this agent keeps one shared memory tree or a separate tree per chat context (team, channel, direct message). Off is the default and matches the behaviour before this feature existed.",
+      "hint": "Controls whether this agent keeps one shared memory tree or a separate tree per chat context (team, channel, direct message). New agents start with “Shared by the people present”; agents created earlier keep their mode. Off is not available while the agent holds capability grants.",
       "loading": "Loading the memory setting…",
       "stateSummary": "Current: {mode}",
       "stateUnknown": "Current: unknown",
@@ -2506,7 +2571,7 @@
       "modes": {
         "off": {
           "label": "Off",
-          "description": "One shared memory tree for every turn. The default, and identical to the behaviour before this feature."
+          "description": "One shared memory tree for every turn, as before this feature. Not available for an agent that holds capability grants."
         },
         "enforce": {
           "label": "Separate per context",

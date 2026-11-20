@@ -5849,6 +5849,10 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   Ohne Kompatibilitätsschicht, weil es noch keine Kundeninstallationen gibt. Die
   Abschnitte dieses Dokuments zu Sub-Agents, Persona-Skills und
   Fallback-Agent beschreiben den Stand vor dem Umbau.
+  - **S5 Rückfrage + Diskretion (#2047, #2079): Kernel gebaut**, siehe Abschnitt
+    „Rückfrage statt Delegation + Diskretion“ am Ende; Residuen dort unter „Offen“
+    (Existenz-Probe, Streaming-Ausgang, CLI-Pfad, MCP in Rückfragen,
+    Offenlegungsstufen auf Capability-Grants, Operator-UI für Leserschaften).
 
 - **Plugin-Grenze + Modell-Gateway (#2053, Epic #2042): Expand-Schritt S3a
   im Kernel, Contract-Schritt S3b offen.** S3b erst, wenn der
@@ -5865,9 +5869,8 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   wird dem Kanal statt dem adressierten Agenten zugerechnet, bis der Kanal
   vor dem Transkribieren routet.
 
-- **Offen (S1, Spec 2042):** Gruppen (`role:<key>`) in der Verfügbarkeit
-  brauchen eine synchrone Rollenmitgliedschaft (`ChannelResolver`-Option
-  `hasRole`, nicht verdrahtet; `PUT …/availability` lehnt `role:` deshalb ab);
+- **Offen (S1, Spec 2042):** (Gruppen `role:<key>` in der Verfügbarkeit sind
+  seit S5 verdrahtet, siehe „Rollen für die Verfügbarkeit“ am Ende);
   `chatAgent@1` bedient mit Registry nur noch Canvas-Turns (Instanz-Default),
   bis der Canvas pro Agent dispatcht (#2059); die Modellschicht des Guards auf
   `claude-cli` startet pro Prüfung einen CLI-Prozess (Timeout 8 s, fail-closed)
@@ -10081,3 +10084,207 @@ Plugin-Release-Train (§13).
   `checkCliInit` verlangt exakt die angebotenen Loopback-Tools und einen
   verbundenen Loopback-Server, Kill Switch beendet den Kindprozess.
 
+
+## Rückfrage statt Delegation + Diskretion (Epic #2042, S5: #2047 / #2079, 2026-11-20)
+
+Spec: `specs/2042-agents-as-virtual-employees/spec.md` §5.4 und §5.11, ADR-0018 und
+ADR-0019. Begriffe: `docs/terminology.md` (Rückfrage, Beitrag, Diskretion, Label,
+Leserkreis, Offenlegungsstufe).
+
+### Rückfrage (`consult`)
+
+- **Regel:** Rückfragen fügt Können und Urteil eines Kollegen hinzu, nie Zugriff.
+- **Konfiguration** (Migration 0097): `agents.consultable` und `agents.may_consult`
+  (beide Standard aus) plus gerichtete Grants `agent_consultation_grants`
+  (`channel_scope` NULL = alle Kanäle, `allowed_capabilities` = Plugin-IDs, Standard
+  leer; `memory_access` `none`|`discreet`; `disclosure` = Offenlegungsstufe je
+  Klassifizierung, `{}` = `none`; Budgets pro Turn und Tag). Facilitators halten und
+  empfangen keine Grants (Archetyp-Omission `consultation`).
+- **Tool:** `consult(agent, request)` ist ein Kernel-Domain-Tool jedes Agenten
+  (`packages/harness-orchestrator/src/consultation/consultTool.ts`), angeboten nur,
+  solange der Broker einen Kollegen listet (Snapshot, 30 s, Refresh nach jeder
+  Operator-Änderung) und der Agent nicht selbst gerade eine Rückfrage beantwortet
+  (Tiefe 1). Ohne aktiven Audience-Floor im Turn wird abgelehnt.
+- **Broker** (`middleware/src/consultation/consultationBroker.ts`, Dienst
+  `consultation@1`): prüft bei jedem Aufruf frisch Schalter, Grant, Kanal,
+  Audience-Floor, Tiefe (kein `consult` innerhalb einer Rückfrage, egal welcher
+  Orchestrator fragt), Budgets (pro Turn: Slot wird im Tool vor dem ersten `await`
+  reserviert, parallele Aufrufe sehen einander; pro Tag: Zählen und Ledger-Eintrag
+  `agent_consultation_calls` in einer Transaktion unter
+  `pg_advisory_xact_lock`, pooler-tauglich). Vor B's Lauf prüft er A's Anfrage:
+  sie trägt A's Turn-Label-Set und geht nur an B, wenn B's Grants und der Raum es
+  abdecken (sonst Ablehnung `discretion`, auditiert). B läuft mit seinem
+  normalen `ChatAgent.chat()` innerhalb von `runAsConsultation` (prozessweiter
+  ALS-Scope wie `runAsEngineTurn`) und startet mit A's Labels (`initialLabels`),
+  sodass B's eigene Ausgänge (Integrations-Schreibzugriffe) auch gegen A's Labels
+  geprüft werden. A's Anfrage erreicht B mit restaurierten Werten (B kann A's
+  Platzhalter nicht auflösen; B's eigener Shield maskiert für B's Modell):
+  - Tools nur aus `grant.allowed_capabilities ∩ B-Grants ∩ A-Grants`
+    (`consultationAllowsTool`, wirkt in `buildToolsList`, im Dispatch und in
+    `isToolGranted`, also auch auf dem Abo-CLI-Pfad);
+  - kein `memory`-Tool, kein `consult`, keine Kalender-/Auswahl-Tools;
+  - Recall und Wissensgraph nur bei `discreet` und nur, wenn B `members` fährt
+    (dann begrenzt auf A's Leserkreis);
+  - kein `sessionScope`: nichts wird geloggt, ingestiert oder promotet; der
+    Fast Path läuft nicht;
+  - Deadline 120 s; Fehler/Timeout → Beitrag mit Status `failed`, nie verworfen.
+    B's Lauf lässt sich nicht abbrechen: nach der Deadline bekommt er kein Tool mehr
+    (`result.expired`), seine Antwort wird verworfen.
+- **Zwei Sichten:** Nutzer-Sicht = B's Antwort (restauriert), als
+  `ChatTurnResult.contributions[]` / `SemanticAnswer.contributions` (Kontrakt aus S1,
+  `@omadia/plugin-api` `Contribution`); Modell-Sicht = derselbe Text als Tool-Ergebnis,
+  das A's Privacy Shield wie jede Sub-Agent-Erzählung interniert (maskiert). A
+  referenziert den Beitrag nur per ID.
+- **Diskretion des Beitrags:** Flussregel `agent` gegen A's Grants und Leserkreis,
+  dann Offenlegungsstufe für das, was A nicht selbst wissen konnte. `existence` →
+  Kernel-Text „X kann dazu etwas beitragen, aber nicht hier“; `none` → B wird ohne
+  Memory und ohne Tools erneut gefragt (kein Schreibzugriff läuft doppelt), damit
+  „zurückgehalten“ und „nicht vorhanden“ gleich aussehen. `redacted` liefert die
+  maskierte Sicht nur, wenn B's Lauf einen Shield hatte; sonst `existence`.
+- **Kosten:** B's Modellaufrufe laufen unter B's eigener Turn-ID; das Ledger
+  verknüpft `from_turn_id` ↔ `to_turn_id`.
+- **Rollout** (Migration 0100): je zwei lebende Nicht-Facilitator-Agenten, die nach
+  #1018 im selben Chat für Agent-zu-Agent freigeschaltet sind, bekommen Grants in
+  beide Richtungen (nur der Kanaltyp, keine Capabilities, Memory `none`, Offenlegung
+  `none`) und beide Rückfrage-Schalter; bestehende Grants bleiben. So bleibt keine
+  konfigurierte Diskussion stehen.
+- **Diskussionen** (`discussion_start`): zusätzlich zu Agent-Schalter und Chat-Policy
+  (#1018) brauchen je zwei Teilnehmer Grants in beide Richtungen, die den Kanaltyp
+  abdecken (`createDiscussionsCapability({ mutualGrant })`,
+  `DiscussionNotGrantedError`). Damit schaltet, wer Diskussionen erlaubt, auch
+  `consult` zwischen den beiden frei.
+
+### Diskretion
+
+- **Kern** (`packages/harness-orchestrator/src/discretion/`, rein): Labels
+  `context{key, readers}`, `source{system, restricted}`, `classification{class}`;
+  Turn-Label-Set (Vereinigung, strengste Leser gewinnen); Flussregel
+  `checkFlow(labels, egress)` für `people`, `agent`, `memory`, `integration`;
+  Offenlegungsstufen `full|redacted|aggregate|existence|none`.
+- **Eingänge:** jedes Tool-Ergebnis labelt sein System (`restricted`, wenn der
+  Operator es so deklariert; `classification:personal` bei Privacy-Bypass); Recall
+  übernimmt die persistierten Labels der zurückgerufenen Turns; der eigene
+  Gesprächskontext (Schlüssel `<channelType>:<conversation>`, Leser = Raum; ohne
+  Origin, also Web-Chat/API: `owner:<userId>`, Leser = nur der Owner) kommt beim
+  Auflösen dazu; Beiträge bringen B's Labels mit.
+- **Ausgänge:**
+  - schreibende Tool-Aufrufe gegen die Leserschaft der Integration, vor dem Aufruf.
+    Wirkung eines Tools: `write` = Manifest `capabilities[].side_effects: write`,
+    `writeCapabilities` (#542) oder MCP ohne `readOnlyHint` (gegen alle Labels
+    geprüft); `read`/`none` = nicht geprüft; nichts deklariert = `unknown`, nach
+    `UNKNOWN_TOOL_EFFECT_POLICY` (`restricted-only`: keine eingeschränkten Quellen,
+    keine klassifizierten Daten, aber ein fremder Gesprächskontext allein sperrt
+    nicht, damit Lese-Tools nach einem Recall weiterlaufen; nach dem Plugin-Train
+    auf `write`). Der Kern liefert die Deklaration über
+    `DiscretionPort.toolEffectOf` (`declaredToolEffect`, aus S3 übernommen);
+  - die Antwort gegen den Leserkreis (nicht-streamend): bei Verstoß wird das
+    Ergebnis neu aus Buchhaltungsfeldern gebaut (Antwort = Ersatzzeile; keine
+    Anhänge, Dateien, Karten, Canvas, Recall, Beiträge), und die Session-Zeile
+    speichert nur die Ersatzzeile (`beforeTurnWritten`);
+  - Persistenz: jeder geschriebene Turn behält sein Label-Set (`discretion_labels`,
+    Migration 0098), Recall bringt es zurück;
+  - Memory: `memory`-Schreibvorgänge und die Auto-Promotion laufen vorher durch die
+    Flussregel `memory` (Wissen aus einem anderen Gespräch nur in eine Stufe, deren
+    Leser es alle kennen dürfen: `members` = die Owner, kontextgebunden = der Raum,
+    sonst das Agenten-Memory mit unbekannten Lesern, in das nur das eigene Gespräch
+    darf). Notizen behalten die Labels der schreibenden Turns, nach kanonischem
+    physischem Pfad (`LabelledMemoryStore` unter dem Binder, Subjekt `memory_file`):
+    vor dem Schreiben wird die Vereinigung gespeichert, ohne Labels kein Schreiben;
+    Umbenennen und Löschen nehmen die Labels eines ganzen Verzeichnisses mit; Lesen
+    fügt sie dem lesenden Turn hinzu, auch beim Verifier-Replay (Labels im
+    Replay-Record). Session-Transcripts bekommen die Labels jedes Turns (eigener
+    Label-Layer unter dem Session-Store, ohne Lese-Labels). Der Members-Index liegt
+    bewusst im ungelabelten Store (`MemoryBinder.indexStore`), weil er für jeden
+    Raum gelesen wird. Durable Rules behalten bei der Promotion die Turn-Labels;
+    memorables (Auto-Promotion, MCP→KG-Ingestion mit dem Server als Quelle)
+    behalten die Labels (`memorable`), Recall eines memorable bringt sie zurück;
+  - Beiträge an andere Agenten im Broker.
+- **Leserschaft** (`integration_readerships`): `sensitivity` internal|restricted,
+  `readers` everyone|Menge, akzeptierte Systeme und Klassifizierungen. Ohne
+  Deklaration bekommt eine Integration (über ein als schreibend erkanntes Tool)
+  nichts aus fremden Kontexten, keine eingeschränkten Quellen, keine klassifizierten
+  Daten. Solange die Deklarationen nie geladen wurden (Pool fehlt, erster Lesefehler),
+  gilt jede Integration als `restricted` ohne Leser (fail-closed).
+- **Audit:** `discretion_flow_audit` (jede Verweigerung, jeder erlaubte
+  kontextübergreifende Fluss; nur Label-IDs und Gründe, nie Inhalt).
+- **Context-Memory:** neue Agenten starten in `members` (Migration 0099);
+  bestehende werden bewusst NICHT umgestellt (würde ihre Notizen verbergen).
+  `PUT …/context-memory` mit `off` → 409 `context_memory_required`, wenn der Agent
+  Capability-Grants hält. Neue Facilitators werden beim Anlegen auf `off` gesetzt
+  (kein Memory, die Route erlaubt für sie nur `off`).
+
+### Kollegen im Prompt (`consultableColleagues`)
+
+Der Registry-Snapshot trägt die aktiven Rückfrage-Paare (`ConfigSnapshot.consultationPairs`,
+`ConfigStore.listConsultationPairs`: Grant zwischen zwei lebenden Agenten, beide Schalter
+an). `consultableColleaguesOf` (`registry/consultationColleagues.ts`) macht daraus die
+Anzeigenamen (ohne Facilitators und deaktivierte Agenten), die `buildForAgent` als
+`consultableColleagues` in die Identitätsregeln von S1 gibt. Ändert sich die Liste eines
+Agenten (Grant, Schalter, Name), baut der Diff ihn neu (Grund `consultation_colleagues`).
+Ein Trigger auf `agent_consultation_grants` (0097) meldet `agents_changed`, damit jede
+Replika neu lädt; die Schalter liegen auf `agents` und melden sich über deren Trigger.
+
+### Rollen für die Verfügbarkeit (`hasRole`)
+
+`src/conductor/roleMembership.ts` (`RoleMembershipSnapshot`, Feld `roleMembership` von
+`wireConductor`): synchrone Antwort auf „hat Principal `user:<id>` die Rolle `<key>`?“
+für Verfügbarkeitseinträge `role:<key>`. Halter kommen aus der `RoleHolderRegistry`
+des Conductors (Zuweisungstabelle + aktivierte Quellen), Refresh alle 30 s und sofort
+nach jeder Rollen-/Zuweisungsänderung dieses Prozesses
+(`ConductorRoleStore.onChange`). Eine teilweise Auflösung zählt als „niemand“, ein
+fehlgeschlagener Refresh behält den letzten Stand, vor dem ersten Refresh hat niemand
+eine Rolle. Der Kernel installiert den Snapshot prozessweit (`setRoleMembership`
+aus `routing/managementRouter.ts`, auf `globalThis` wegen Doppel-Ladens des Pakets);
+jeder `ManagementRouter` ohne eigenes `hasRole` fragt ihn, also Routing, Auswahl,
+Routing-Tester und Management-Layer. `PUT …/availability` nimmt `user:<id>` und
+`role:<key>` an (Rollenschlüssel behält die Schreibweise). Rollen gelten nur für die
+Verfügbarkeit, nicht für die Default-Tabelle (§5.6) und nicht für Leserschaften.
+
+### Operator-API (`middleware/src/routes/operatorConsultation.ts`)
+
+| Route | Zweck |
+|---|---|
+| `GET/PUT /api/v1/operator/agents/:slug/consultation` | Schalter `consultable`, `mayConsult`; Grants beider Richtungen |
+| `PUT/DELETE /api/v1/operator/agents/:slug/consultation/grants/:to` | Grant A→B anlegen/ändern/widerrufen |
+| `GET /api/v1/operator/discretion/readerships`, `PUT/DELETE …/:integration` | Leserschaft deklarieren |
+
+Audit-Aktionen: `agent.consultation_change` (je Agent eine Zeile), 
+`discretion.readership_change`, `agent.context_memory_change`.
+
+### Offen (S5-Residuen)
+
+- `existence` greift nur für Wissen, das B im Lauf gesehen hat; ein
+  modellfreier „es gibt etwas“-Probe über B's sonst unsichtbares Memory fehlt
+  (Kriterium 16 zweiter Teil end-to-end).
+- Ausgangsprüfung der Antwort läuft auf dem nicht-streamenden Pfad; beim Streaming
+  schützt sie nur die gespeicherte Zeile. Gehört in den satzweisen Emitter (S1).
+- Abo-CLI-Pfad (`ToolDispatchService`) und Sub-Agent-Innenaufrufe labeln nicht und
+  prüfen keine Leserschaft (Turn ohne Diskretionszustand); mit S3 `run_loop`.
+- MCP-Tools sind in einer Rückfrage nicht nutzbar (`allowed_capabilities` kennt nur
+  Plugin-IDs); Offenlegungsstufen auf Capability-Grants (`agent_plugins`) fehlen.
+- `say` prüft pro Äußerung nur die Peer-Gate, die Grants nur beim Start (der
+  Say-Service kennt die Teilnehmer des Laufs nicht).
+- **Undeklarierte Plugin-Tools** (`unknown`) gelten bis zum Plugin-Train als
+  `restricted-only`: ein Schreibzugriff über ein solches Tool, der nur Wissen aus
+  einem anderen Gespräch trägt, wird nicht gegen die Leserschaft geprüft.
+  Domain-Tools (`query_<plugin>`, Sub-Agent) gelten als `write`, sobald das Plugin
+  irgendein Tool als `write` deklariert (`pluginEffectOf`), sonst `unknown`.
+- **Memory-Reste:** memorables, die `query_knowledge_graph` liefert, und das
+  Session-Briefing bringen keine Labels mit (nur der automatische Recall);
+  Plugin-Memory (`ctx.memory`, `/memories/plugins/…`) wird außerhalb des
+  Label-Layers geschrieben und ist ungelabelt; eine `memory`-Schreibprüfung in die
+  Team-Stufe (`~team`) nimmt die Leser des Raums statt der Team-Mitglieder (die Notiz
+  trägt die Labels trotzdem); ein Transcript, das außerhalb eines Turns geschrieben
+  wird, bekommt keine Labels; Conductor-Rollenhalter, die per `sub` statt E-Mail
+  zugewiesen sind, treffen keinen Kanal-Principal (fail-closed).
+- **`off` mit Grants:** verhindert wird nur das Umschalten auf `off`. Bestehende
+  Agenten (kein Backfill) und die Reihenfolge „erst `off`, dann Plugins zuweisen“
+  bleiben möglich; das Zuweisen zu sperren würde bestehende `off`-Agenten
+  uneditierbar machen.
+- **Fehlende Labels:** schlägt das Schreiben der Labels eines Turns fehl, bringt ein
+  späterer Recall dieses Turns keine Labels mit (fail-open). Ohne Pool liefert
+  `labelsOf` nichts (dann wurden auch keine geschrieben).
+- Rückfrage-Ablehnungen erreichen den Nutzer über A's Text, noch nicht als
+  `system`-Hinweis des S1-Emitters.
+- Operator-UI gibt es für Schalter und Grants (Agent → Tab „Gespräche“ →
+  `AgentConsultation`); die Leserschaften der Integrationen gibt es nur per API.

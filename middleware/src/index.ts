@@ -141,6 +141,7 @@ import {
   ChannelResolver as ManagementChannelResolver,
   KernelAgentSelectionService,
   emitterOf,
+  setRoleMembership,
   speakerFor,
   speakerOf,
 } from '@omadia/orchestrator';
@@ -644,6 +645,10 @@ import { deriveChannelType } from './channels/channelType.js';
 import type { FactExtractor } from '@omadia/orchestrator-extras';
 import { backfillGraph } from '@omadia/orchestrator-extras';
 import { turnContext } from '@omadia/orchestrator';
+import { ConsultationStore } from './consultation/consultationStore.js';
+import { createConsultationBroker } from './consultation/consultationBroker.js';
+import { DiscretionStore } from './discretion/discretionStore.js';
+import { createOperatorConsultationRouter } from './routes/operatorConsultation.js';
 import type {
   EmbeddingClient,
   EntityRefBus,
@@ -1544,6 +1549,31 @@ async function main(): Promise<void> {
       }) — rooms are limited to what every participant may do`,
     );
   }
+
+  // Spec 2042 §5.4 / §5.11 (#2047, #2079) — the consultation broker behind the
+  // `consult` tool and the discretion stores. Published HERE, before plugin
+  // activation, for the same reason as `audienceGrants` above: the orchestrator
+  // reads them at its own activate(). Both are late-bound to `graphPool`; a
+  // call before the pool exists fails (the broker refuses the consultation, a
+  // label lookup fails closed). The broker re-reads its offering snapshot in
+  // the background; operator writes refresh it at once.
+  const discretionStore = new DiscretionStore(
+    () => serviceRegistry.get<Pool>('graphPool'),
+    (m) => console.warn(m),
+    // Criterion 17 — what a plugin's tools declare in its manifest.
+    (system) => pluginCatalog.get(system)?.plugin.tool_side_effects,
+  );
+  const consultationStore = new ConsultationStore(() => serviceRegistry.get<Pool>('graphPool'));
+  const consultationBroker = createConsultationBroker({
+    store: consultationStore,
+    getRegistry: () => serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+    audit: (entry) => discretionStore.audit(entry),
+    log: (m) => console.log(m),
+  });
+  serviceRegistry.provide('discretion', discretionStore);
+  serviceRegistry.provide('consultation', consultationBroker);
+  // The offering snapshot is read once the pool exists (after plugin
+  // activation, below); until then `consult` is simply not offered.
 
   // Phase B (B1) — publish `pluginCapabilities@1` so the registry's snapshot
   // validation has manifest metadata (multi_instance / installed /
@@ -2689,6 +2719,11 @@ async function main(): Promise<void> {
     MODEL_PASSTHROUGH_SERVICE_NAME,
     systemModuleOnlyService(MODEL_PASSTHROUGH_SERVICE_NAME, kindOfPlugin, modelPassthrough.passthroughFor),
   );
+
+  // Spec 2042 §5.4 — the pool exists now: read the consultation offering
+  // once, so `consult` is offered from the first turn (not only after the
+  // first background refresh). A failure keeps the empty snapshot.
+  if (graphPool) await consultationBroker.refresh();
 
   // #575 — hydrate the forward reference published before activation.
   //
@@ -4679,6 +4714,22 @@ async function main(): Promise<void> {
       },
     }),
   );
+  // Spec 2042 §5.4 / §5.11 (#2047, #2079) — consultation switches and grants,
+  // integration readerships. Same auth gate; a separate router so the agents
+  // router stays the agents router.
+  app.use(
+    '/api/v1/operator',
+    requireAuth,
+    createOperatorConsultationRouter({
+      getConfigStore: () => serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+      consultationStore,
+      discretionStore,
+      refreshBroker: () => consultationBroker.refresh(),
+      recordAudit: async (entry) => {
+        await adminAudit?.record(entry);
+      },
+    }),
+  );
   console.log(
     '[middleware] operator-agents endpoints ready at /api/v1/operator/agents/* (auth-gated, incl. teams-identity provisioning)',
   );
@@ -5546,6 +5597,18 @@ async function main(): Promise<void> {
         listPartners: presentBots,
         // #1018 — the opener must be enabled here, and so must every partner.
         peerGate,
+        // Spec 2042 §5.4 — and every two of them hold consultation grants for
+        // each other (same grants as `consult`).
+        mutualGrant: async (a, b, channelType) => {
+          const registry = getRegistry();
+          const left = registry?.get(a)?.agent.id;
+          const right = registry?.get(b)?.agent.id;
+          return (
+            left !== undefined &&
+            right !== undefined &&
+            consultationStore.hasMutualGrants(left, right, channelType)
+          );
+        },
         log: (msg: string) => console.log(msg),
       }),
     );
@@ -5562,6 +5625,9 @@ async function main(): Promise<void> {
     // instance, so a future external holder source (Entra group, Odoo HR)
     // reaches both paths at once — no drift.
     targetedRoleResolver = (roleKey) => conductorWiring.roleHolderRegistry.resolveHolders(roleKey);
+    // Spec 2042 §5.3 — availability entries `role:<key>` are answered by the
+    // same registry, from the Conductor's role snapshot (every router asks it).
+    setRoleMembership(conductorWiring.roleMembership.hasRole);
     targetedBindingLookup = (principalIds, channelType) =>
       conductorWiring.channelBindingStore.getMany(principalIds, channelType);
     // #478 — plugin-borne workflow templates: hand the composite catalog's

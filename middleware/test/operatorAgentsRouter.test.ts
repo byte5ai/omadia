@@ -3841,14 +3841,24 @@ describe('createOperatorAgentsRouter', () => {
     assert.deepEqual(list.agents.find((a) => a.slug === 'pub')?.availability, expected);
     assert.equal('fallback_agent_id' in list, false);
 
-    // Groups are refused until routing resolves role membership: a stored
-    // `role:` grant would silently never match.
+    // Groups are Conductor roles (spec §5.3): accepted, the role key keeps
+    // its case; anything that is neither a user nor a role is refused.
     const group = await fetch(`${baseUrl}/pub/availability`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ everyone: false, channels: null, principals: ['role:sales'] }),
+      body: JSON.stringify({ everyone: false, channels: null, principals: ['role:Sales-Team', 'user:Ben@Example.com'] }),
     });
-    assert.equal(group.status, 400);
+    assert.equal(group.status, 200);
+    assert.deepEqual(((await group.json()) as { availability: { principals: string[] } }).availability.principals.sort(), [
+      'role:Sales-Team',
+      'user:ben@example.com',
+    ]);
+    const bogus = await fetch(`${baseUrl}/pub/availability`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ everyone: false, channels: null, principals: ['team:sales'] }),
+    });
+    assert.equal(bogus.status, 400);
   });
 
   it('POST /:slug/drain calls forceInvalidate(drain)', async () => {

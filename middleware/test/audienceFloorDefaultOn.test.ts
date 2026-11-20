@@ -267,7 +267,12 @@ describe('#2048 — the orchestrator installs the floor on both turn paths', () 
     mock.restoreAll();
   });
 
-  function setup(grants: InMemoryGrantStore) {
+  function setup(
+    grants: InMemoryGrantStore,
+    graphs: { knowledgeGraph?: InMemoryKnowledgeGraph; identityGraph?: InMemoryKnowledgeGraph } = {
+      knowledgeGraph: new InMemoryKnowledgeGraph(),
+    },
+  ) {
     const registry = new NativeToolRegistry();
     let runs = 0;
     registry.register('hr_read_record', {
@@ -289,7 +294,8 @@ describe('#2048 — the orchestrator installs the floor on both turn paths', () 
       maxToolIterations: 3,
       domainTools: [],
       nativeToolRegistry: registry,
-      knowledgeGraph: new InMemoryKnowledgeGraph(),
+      ...(graphs.knowledgeGraph ? { knowledgeGraph: graphs.knowledgeGraph } : {}),
+      ...(graphs.identityGraph ? { identityGraph: graphs.identityGraph } : {}),
       audienceGrants: new MemberBaselineGrantStore(grants),
     });
     return { orchestrator, model, runs: () => runs };
@@ -308,6 +314,38 @@ describe('#2048 — the orchestrator installs the floor on both turn paths', () 
     assert.ok(
       toolResultContents(model.requests[1]).some((c) => c.includes('refused for this conversation')),
       'the model was told why',
+    );
+  });
+
+  // Live 2026-11-20: a facilitator is built without memory, so it had no
+  // knowledge graph, so nobody in its group resolved, and the floor refused
+  // every tool of a running facilitation.
+  const groupTurn = {
+    ...REQUEST,
+    origin: { channelType: 'teams', scope: { kind: 'conversation' as const, conversationId: '19:x' } },
+  };
+  const roomOf = (ids: readonly string[]) => async () =>
+    ids.map((id) => ({ ...participant(`29:${id}`), aadObjectId: `aad-${id}` }));
+
+  it('resolves the group of an orchestrator built without memory through its identity graph', async () => {
+    const { orchestrator, runs } = setup(new InMemoryGrantStore(), {
+      identityGraph: new InMemoryKnowledgeGraph(),
+    });
+    await turnContext.runWithChatParticipants(roomOf(['anna', 'ben', 'carl']), () =>
+      orchestrator.runTurn(groupTurn),
+    );
+    assert.equal(runs(), 1, 'the tool ran for a room of resolvable people');
+  });
+
+  it('closes that group when no graph can say who its members are', async () => {
+    const { orchestrator, model, runs } = setup(new InMemoryGrantStore(), {});
+    await turnContext.runWithChatParticipants(roomOf(['anna', 'ben', 'carl']), () =>
+      orchestrator.runTurn(groupTurn),
+    );
+    assert.equal(runs(), 0);
+    assert.ok(
+      toolResultContents(model.requests[1]).some((c) => c.includes('3 participant(s) could not be resolved')),
+      'the refusal names the unresolved members',
     );
   });
 });

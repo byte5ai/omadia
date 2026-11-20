@@ -213,6 +213,63 @@ changelog.
 - plugin-api (additive, version bump by the release): `MaintenanceRunService`,
   `MAINTENANCE_RUN_SERVICE_NAME`, `LlmScopeRequiredError`,
   `RawModelServiceRefusedError`.
+
+### Added — Agents consult colleagues without gaining access (#2047, epic #2042)
+
+- New harness tool `consult(agent, request)`. An agent may ask a colleague only
+  when the operator switched on `may_consult` for it and `consultable` for the
+  colleague and granted the pair (`agent_consultation_grants`, migration 0097).
+  The colleague answers as itself, with at most the capabilities both agents hold
+  and the grant allows, writes nothing to its memory and cannot consult further.
+  Its answer reaches the user as its own contribution
+  (`SemanticAnswer.contributions`); the asking agent sees a masked copy.
+- A consultation needs an active audience floor; without one it is refused. The
+  request carries what the asking turn has read and reaches the colleague only when
+  the colleague's grants cover it.
+- Agent discussions (`discussion_start`) now need consultation grants in both
+  directions (each covering the channel), in addition to the existing per-agent and
+  per-chat switches.
+  **Behaviour change:** a discussion between agents without grants is refused
+  until an operator grants the pairs.
+- Operator API: `/api/v1/operator/agents/:slug/consultation` (switches, grants);
+  audit action `agent.consultation_change`. In the web UI under the agent's
+  Conversations tab ("Consulting other agents"): both switches, the grants with
+  capabilities offered only from plugins both agents hold, and who may consult
+  the agent.
+
+### Added — Discretion: information flows only to those who may know it (#2079, epic #2042)
+
+- Every turn carries labels of what it read (source system, conversation and its
+  readers, classified data seen unmasked); written turns keep them
+  (`discretion_labels`, migration 0098) and recall brings them back.
+- Writes to an integration are checked against its declared readership before
+  they run (`/api/v1/operator/discretion/readerships`, `integration_readerships`):
+  every label for a declared write (manifest `side_effects: write`, write
+  capability, MCP without `readOnlyHint`); a tool that declared nothing gets no
+  restricted source and no classified data. A non-streamed answer whose
+  labels exceed the room's readers is replaced as a whole (no attachments, cards or
+  contributions go with it) and never stored; a streamed one is protected only in
+  what is stored. Every refusal is audited without content (`discretion_flow_audit`).
+- Web chat and API turns are the owner's private context (`owner:<id>`): what they
+  read does not resurface in a room with other readers.
+- Memory keeps labels too: a `memory` note keeps the labels of the turn that wrote it
+  and a later reader carries them; memorables (auto-promotion, MCP→KG ingestion) do
+  the same on recall. `memory` writes and auto-promotion move another conversation's
+  knowledge only into a tier whose readers may all know it (criterion 27).
+- Migration 0100: agents enabled for agent-to-agent talk in the same chat (#1018) get
+  consultation grants in both directions for that channel type and both consultation
+  switches, so configured discussions keep working.
+- Each agent's prompt names the colleagues it may consult (active grants), and a
+  changed grant, switch or colleague name rebuilds the agent; grant writes notify
+  `agents_changed` (trigger in 0097).
+- Availability groups: `PUT /api/v1/operator/agents/:slug/availability` accepts
+  `role:<key>` (Conductor roles); every router answers it synchronously from a
+  snapshot of the Conductor's role holders (30 s and after every role write; a
+  partial lookup admits nobody).
+- New agents start with context memory `members` (migration 0099; facilitators
+  `off`); existing agents keep their mode. Context memory can no longer be switched `off` for an agent
+  that holds capability grants (`409 context_memory_required`).
+
 ### Changed — Agent Builder and Plugin Builder separated; agents from templates (#2049, epic #2042)
 - **Plugin Builder** (`/store/builder`) generates capability plugins only:
   manifest kind `integration` (an external system with credentials) or `tool`

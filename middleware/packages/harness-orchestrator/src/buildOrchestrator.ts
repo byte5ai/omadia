@@ -14,7 +14,10 @@
  * than once in one process.
  */
 
-
+import type { ConsultationPort } from './consultation/consultTool.js';
+import type { DiscretionPort } from './discretion/port.js';
+import { LabelledMemoryStore } from './discretion/labelledMemoryStore.js';
+import { labelSubjectWithTurn } from './discretion/toolFlow.js';
 import type {
   ChatAgent,
   ChatTurnInput,
@@ -475,6 +478,10 @@ export interface OrchestratorDeps {
    * bounds every room to nothing.
    */
   readonly audienceGrants?: GrantStore;
+  /** Spec 2042 §5.4 — the kernel's consultation broker (`consult` tool). */
+  readonly consultation?: ConsultationPort;
+  /** Spec 2042 §5.11 — the kernel's discretion stores. */
+  readonly discretion?: DiscretionPort;
   /** #133 E0 — side-channel turn-hook runner, fired during each turn. */
   readonly turnHookRegistry?: TurnHookRunner;
   /**
@@ -675,7 +682,11 @@ export function buildOrchestratorForAgent(
   const scopedStore = new ScopedMemoryStore({
     agentSlug: config.agentId,
     scope: orchestratorMemoryScope(config.agentId),
-    inner: deps.memoryStore,
+    // Spec 2042 §5.11 — a transcript keeps the labels of every turn written
+    // into it, so a `memory` read of it (same physical path) carries them.
+    inner: deps.discretion
+      ? new LabelledMemoryStore(deps.memoryStore, deps.discretion, config.agentId, { labelReads: false })
+      : deps.memoryStore,
   });
   const chatSessionStore = new ChatSessionStore(scopedStore);
   const sessionLogger = new SessionLogger(
@@ -826,7 +837,13 @@ export function buildOrchestratorForAgent(
   // (decision A3a) and must not be partitioned by chat context.
   const memoryBinder = new MemoryBinder({
     agentSlug: config.agentId,
-    root: deps.memoryStore,
+    // Spec 2042 §5.11 — notes keep the labels of the turn that wrote them,
+    // keyed by physical path (below the binder's scoping).
+    root: deps.discretion
+      ? new LabelledMemoryStore(deps.memoryStore, deps.discretion, config.agentId)
+      : deps.memoryStore,
+    // The members index is read across rooms: never through the label layer.
+    indexStore: deps.memoryStore,
     mode: config.contextMemory ?? 'off',
     shieldActive,
     noteProvenance: TURN_NOTE_PROVENANCE,
@@ -842,6 +859,13 @@ export function buildOrchestratorForAgent(
             log: (msg: string): void => {
               console.error(msg);
             },
+            // Spec 2042 §5.11 — a promoted rule keeps the writing turn's labels.
+            ...(deps.discretion
+              ? {
+                  onPromoted: (mkId: string) =>
+                    labelSubjectWithTurn(deps.discretion, 'memorable', mkId, config.agentId),
+                }
+              : {}),
           },
         }
       : {}),
@@ -972,6 +996,9 @@ export function buildOrchestratorForAgent(
     ...(config.fallbackRef ? { fallbackRef: config.fallbackRef } : {}),
     ...(identityByFamily ? { identityByFamily } : {}),
     archetypeOmissions: { memory: omits('memory'), toolGrant: omits('tool_grant') },
+    // Who a channel user is, even for an archetype built without memory: the
+    // audience floor and the turn owner need it in every group conversation.
+    identityGraph: deps.knowledgeGraph,
     ...(config.fallbackVisionSupported !== undefined
       ? { fallbackVisionSupported: config.fallbackVisionSupported }
       : {}),
@@ -1072,6 +1099,8 @@ export function buildOrchestratorForAgent(
     ...(deps.securityPosture ? { securityPosture: deps.securityPosture } : {}),
     // #575 — supplying this is what makes the audience guards non-inert.
     ...(deps.audienceGrants ? { audienceGrants: deps.audienceGrants } : {}),
+    ...(deps.consultation ? { consultation: deps.consultation } : {}),
+    ...(deps.discretion ? { discretion: deps.discretion } : {}),
     securityScreener,
     securityAuditSink,
     ...(deps.turnHookRegistry
