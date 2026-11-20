@@ -51,7 +51,10 @@ changelog.
   **Behaviour change:** a discussion between agents without grants is refused
   until an operator grants the pairs.
 - Operator API: `/api/v1/operator/agents/:slug/consultation` (switches, grants);
-  audit action `agent.consultation_change`.
+  audit action `agent.consultation_change`. In the web UI under the agent's
+  Conversations tab ("Consulting other agents"): both switches, the grants with
+  capabilities offered only from plugins both agents hold, and who may consult
+  the agent.
 
 ### Added — Discretion: information flows only to those who may know it (#2079, epic #2042)
 

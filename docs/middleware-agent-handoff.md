@@ -5607,7 +5607,7 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   - **S5 Rückfrage + Diskretion (#2047, #2079): Kernel gebaut**, siehe Abschnitt
     „Rückfrage statt Delegation + Diskretion“ am Ende; Residuen dort unter „Offen“
     (Existenz-Probe, Streaming-Ausgang, CLI-Pfad, MCP in Rückfragen,
-    Offenlegungsstufen auf Capability-Grants, Operator-UI).
+    Offenlegungsstufen auf Capability-Grants, Operator-UI für Leserschaften).
 
 - **Teams-SSO für Plugin-Routen (#1620): Kernel-Modus erledigt.** Offen:
   channel-teams auf den Kernel-Verifier umstellen (eigene Kopie in
@@ -9826,4 +9826,6 @@ Audit-Aktionen: `agent.consultation_change` (je Agent eine Zeile),
 - Ergebnisse von `memory`-Lesezugriffen und `query_knowledge_graph` werden nicht
   gelabelt (nur der automatische Recall).
 - Rückfrage-Ablehnungen erreichen den Nutzer über A's Text, noch nicht als
-  `system`-Hinweis des S1-Emitters; keine Operator-UI für Grants/Leserschaft (nur API).
+  `system`-Hinweis des S1-Emitters.
+- Operator-UI gibt es für Schalter und Grants (Agent → Tab „Gespräche“ →
+  `AgentConsultation`); die Leserschaften der Integrationen gibt es nur per API.
