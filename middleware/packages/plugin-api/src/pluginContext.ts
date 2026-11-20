@@ -936,7 +936,7 @@ export interface ToolRegistrationOptions {
    */
   readonly writeCapabilities?: readonly WriteCapability[];
   /**
-   * Spec 2042 §5.10 (1.80.0) — the PII-bearing fields of this tool's result
+   * Spec 2042 §5.10 (1.81.0) — the PII-bearing fields of this tool's result
    * (`piiAnnotation.ts`), on the registration for the same reason as
    * `writeCapabilities`. The Privacy Shield masks every declared field of an
    * interned result, whatever its own classifier would have said; a declared

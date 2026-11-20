@@ -24,7 +24,7 @@ weist der Kern beim Upload ab (`422 package.persona_declared`). Die früheren
 Kinds `agent` und `extension` sind **ausgemustert**: Upload, Installation und
 Update eines solchen Pakets antworten `422 package.retired_kind` bzw. `422
 install.retired_kind`, auch als Update eines Pakets, das unter diesem Kind
-installiert ist (seit plugin-api 1.80.0). Bereits installierte Pakete laufen
+installiert ist (seit plugin-api 1.81.0). Bereits installierte Pakete laufen
 als Altbestand weiter, bis ihre migrierte Version sie ersetzt: ein
 Agent-Plugin wird zu einer Capability plus einem Agenten aus dem Agent
 Builder, eine `extension` zu `system-module` oder `model`. Ein Plugin hat
@@ -96,7 +96,7 @@ mit seiner `id` (= Tool-Name), was es tut: `read` (liest ein System), `write`
 `Plugin.tool_side_effects` (`declaredToolEffect`, `src/plugins/toolSideEffects.ts`).
 Schreibzugriffe über ein Plugin-Tool werden gegen die Leserschaft des Ziels
 geprüft (Spec 2042 §5.11, Kriterium 17). Ein Tool ohne Deklaration gilt als
-`unknown` und wird seit plugin-api 1.80.0 wie `write` gegen alle Labels des
+`unknown` und wird seit plugin-api 1.81.0 wie `write` gegen alle Labels des
 Turns geprüft, nie als `read`; ein Wert außerhalb der drei wird mit Warnung
 verworfen. Deklariere deshalb jedes Tool.
 
@@ -110,14 +110,14 @@ capabilities:
 
 Ein Tool, das Personendaten liefert, deklariert die Felder bei der
 Registrierung (`ToolRegistrationOptions.piiFields` an `ctx.tools.register`
-und `ctx.tools.registerHandler`, plugin-api 1.80.0; Typ `ToolPIIField` aus
+und `ctx.tools.registerHandler`, plugin-api 1.81.0; Typ `ToolPIIField` aus
 `piiAnnotation.ts`). Der Privacy Shield maskiert jede deklarierte Spalte
 eines internierten Ergebnisses, egal was sein Classifier oder ein
 Nicht-personenbezogen-Eintrag des Operators sagt. Die Deklaration maskiert
 nur zusätzlich, sie gibt nie ein Feld frei. Es zählen nur Pfade, die eine
 Spalte der Ergebniszeilen nennen: `name`, `[].name`, `<items>[].name`; ein
 abschließendes `[N]` (Odoo-many2one `[id, label]`) maskiert die ganze Spalte.
-Tiefere Pfade ignoriert der Kern. Kerne vor 1.80.0 lesen die Option nicht.
+Tiefere Pfade ignoriert der Kern. Kerne vor 1.81.0 lesen die Option nicht.
 
 ```ts
 ctx.tools.register(spec, handler, {
@@ -165,7 +165,7 @@ und die Vorbelegung über `GET /api/v1/admin/agent-templates/prefill?plugin=…&
   mitgelieferten System-Modulen des Kerns (`RawModelServiceRefusedError`).
   Ein Modellaufruf außerhalb jedes Ausführungskontexts wird verweigert, etwa
   aus `activate()` oder einem Timer. `embeddingClient` und `transcription`
-  sind immer durch den Gateway gebunden. Seit plugin-api 1.80.0 gilt das
+  sind immer durch den Gateway gebunden. Seit plugin-api 1.81.0 gilt das
   immer; `MODEL_GATEWAY_MODE` gibt es nicht mehr.
 - **Netz nur über `ctx.http`** (Allow-List aus `permissions.network.outbound`,
   `$config.*`-Hosts, `web_scanner`-Modi). Der globale `fetch` und `node:http(s)`

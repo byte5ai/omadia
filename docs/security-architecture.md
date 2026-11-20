@@ -2563,7 +2563,7 @@ its raw value, not by the person's name. Each cleared field is recorded on the
 receipt (`operatorClearedFields` with its `scope`, "In clear by admin rule" in
 the card).
 
-**Tool-declared PII fields (spec 2042 §5.10, plugin-api 1.80.0).** The
+**Tool-declared PII fields (spec 2042 §5.10, plugin-api 1.81.0).** The
 opposite direction: a native tool can declare the PII fields of its result on
 its registration (`ToolRegistrationOptions.piiFields` on `ctx.tools.register`
 and `registerHandler`). The kernel hands them to the Privacy Shield with every

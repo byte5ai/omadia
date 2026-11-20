@@ -836,7 +836,7 @@ Vertrag (ein Tool deklariert pro `dataClass`/`operation`, was es mutieren darf).
 **Wichtig:** `writeCapabilities` ist **kein** Feld auf `NativeToolSpec` — der
 Spec geht via `buildToolsList` verbatim in die Anthropic-Tool-Liste, und
 Anthropic lehnt unbekannte Felder ab (gleicher Grund, warum `piiFields` am
-LocalSubAgentTool-**Wrapper** hängt, nicht am Spec; seit plugin-api 1.80.0
+LocalSubAgentTool-**Wrapper** hängt, nicht am Spec; seit plugin-api 1.81.0
 auch an `ToolRegistrationOptions`, siehe „S3b: Contract-Schritt“). Der Anbindungspunkt
 (Manifest-Annotation / Registration-Metadata, non-model-facing) wird mit dem
 ersten Consumer (PR-9) verdrahtet. `deriveMutabilityCapabilities(caps, dataClass)` in
@@ -6075,7 +6075,7 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
     Offenlegungsstufen auf Capability-Grants, Operator-UI für Leserschaften).
 
 - **Plugin-Grenze + Modell-Gateway (#2053, Epic #2042): Expand-Schritt S3a
-  und Contract-Schritt S3b im Kernel (plugin-api 1.80.0).** S3b: `agent` und
+  und Contract-Schritt S3b im Kernel (plugin-api 1.81.0).** S3b: `agent` und
   `extension` werden weder hochgeladen noch installiert noch aktualisiert
   (installierte laufen als Altbestand weiter), Modell-Gateway und Netz-Sandbox
   setzen immer durch (`MODEL_GATEWAY_MODE`/`PLUGIN_EGRESS_MODE` nicht mehr
@@ -10371,7 +10371,7 @@ geändert hat, steht unten in „S3b: Contract-Schritt“.
   `checkCliInit` verlangt exakt die angebotenen Loopback-Tools und einen
   verbundenen Loopback-Server, Kill Switch beendet den Kindprozess.
 
-### S3b: Contract-Schritt (#2053, plugin-api 1.80.0, 2026-11-20)
+### S3b: Contract-Schritt (#2053, plugin-api 1.81.0, 2026-11-20)
 
 Spec 2042 §5.10, Kriterium 15. Branch `feat/2042-s3b-plugin-contract`.
 
