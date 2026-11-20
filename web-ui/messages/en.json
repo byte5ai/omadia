@@ -3149,7 +3149,7 @@
       "tools": "Tools",
       "memory": "Memory",
       "engine": "Facilitation",
-      "moderation": "Moderation"
+      "moderation": "Methods"
     },
     "endOfService": {
       "disabled": "“{name}” is disabled.",
@@ -3237,10 +3237,10 @@
     },
     "facilitator": {
       "heading": "Facilitators",
-      "intro": "A facilitator only moderates: decisions, votes, prioritisations, retrospectives. It works for no single person, holds no opinion on the content and speaks in Teams under its own name.",
+      "intro": "A facilitator only moderates: decisions, votes, prioritisations, retrospectives. It works for no single person, holds no opinion on the content and speaks under its own name, in Teams or through its own bot on another channel.",
       "empty": "No facilitators yet. Create one above.",
       "createHeading": "Create facilitator",
-      "createHint": "The archetype is fixed once created. Avatar, personality and the Teams identity are set on the facilitator's page, which opens next.",
+      "createHint": "The archetype is fixed once created. Avatar, personality, default methods and the channel identity are set on the facilitator's page, which opens next.",
       "createSubmit": "Create facilitator",
       "cardSummary": "status: {status} · runtime: {runtime}",
       "deleteConfirm": "Delete facilitator \"{slug}\"? Its running facilitations are ended; its record is kept under “Deleted agents” until you remove it for good.",

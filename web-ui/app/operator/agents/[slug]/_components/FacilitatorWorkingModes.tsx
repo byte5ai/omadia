@@ -69,7 +69,11 @@ export function FacilitatorWorkingModes(props: { readonly slug: string }): React
       await load();
     } catch (err: unknown) {
       const refusal = parseFacilitatorRefusal(err);
-      if (refusal?.kind === 'contract') setIssues(refusal.issues);
+      // One line per rule and place: the kernel may report the same rule
+      // twice for one text (e.g. a new name and speaking as someone else).
+      if (refusal?.kind === 'contract') {
+        setIssues(refusal.issues.filter((issue, i, all) => all.findIndex((o) => o.rule === issue.rule && o.path === issue.path) === i));
+      }
       else setFailed(true);
     } finally {
       setBusy(false);

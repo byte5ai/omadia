@@ -3149,7 +3149,7 @@
       "tools": "Werkzeuge",
       "memory": "Memory",
       "engine": "Moderation",
-      "moderation": "Moderation"
+      "moderation": "Methoden"
     },
     "endOfService": {
       "disabled": "„{name}“ ist deaktiviert.",
@@ -3237,10 +3237,10 @@
     },
     "facilitator": {
       "heading": "Facilitatoren",
-      "intro": "Ein Facilitator moderiert ausschließlich: Entscheidungen, Abstimmungen, Priorisierungen, Retrospektiven. Er arbeitet für keine einzelne Person, hat keine inhaltliche Meinung und tritt in Teams unter eigenem Namen auf.",
+      "intro": "Ein Facilitator moderiert ausschließlich: Entscheidungen, Abstimmungen, Priorisierungen, Retrospektiven. Er arbeitet für keine einzelne Person, hat keine inhaltliche Meinung und tritt unter eigenem Namen auf, in Teams oder mit eigenem Bot in einem anderen Kanal.",
       "empty": "Noch keine Facilitatoren. Oben lässt sich einer anlegen.",
       "createHeading": "Facilitator anlegen",
-      "createHint": "Der Archetyp steht nach dem Anlegen fest. Avatar, Persönlichkeit und Teams-Identität werden auf der Seite des Facilitators eingestellt, die sich danach öffnet.",
+      "createHint": "Der Archetyp steht nach dem Anlegen fest. Avatar, Persönlichkeit, Standard-Methoden und Kanal-Identität werden auf der Seite des Facilitators eingestellt, die sich danach öffnet.",
       "createSubmit": "Facilitator anlegen",
       "cardSummary": "Status: {status} · Laufzeit: {runtime}",
       "deleteConfirm": "Facilitator „{slug}“ wirklich löschen? Seine laufenden Moderationen werden beendet; sein Datensatz bleibt unter „Gelöschte Agenten“ erhalten, bis du ihn endgültig entfernst.",
