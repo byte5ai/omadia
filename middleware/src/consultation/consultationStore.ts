@@ -7,6 +7,7 @@
 import type { Pool } from 'pg';
 
 import {
+  liveAgentRow,
   parseDisclosurePolicy,
   type DisclosurePolicy,
 } from '@omadia/orchestrator';
@@ -105,7 +106,7 @@ export class ConsultationStore {
 
   async getSwitches(agentId: string): Promise<ConsultationSwitches | undefined> {
     const { rows } = await this.pool.query<{ consultable: boolean; may_consult: boolean }>(
-      'SELECT consultable, may_consult FROM agents WHERE id = $1 AND deleted_at IS NULL',
+      `SELECT consultable, may_consult FROM agents a WHERE a.id = $1 AND ${liveAgentRow('a')}`,
       [agentId],
     );
     const row = rows[0];
@@ -199,8 +200,8 @@ export class ConsultationStore {
     const { rows } = await this.pool.query<{ from_slug: string; to_slug: string }>(
       `SELECT f.slug AS from_slug, t.slug AS to_slug
          FROM agent_consultation_grants g
-         JOIN agents f ON f.id = g.from_agent_id AND f.deleted_at IS NULL AND f.may_consult
-         JOIN agents t ON t.id = g.to_agent_id AND t.deleted_at IS NULL AND t.consultable
+         JOIN agents f ON f.id = g.from_agent_id AND ${liveAgentRow('f')} AND f.may_consult
+         JOIN agents t ON t.id = g.to_agent_id AND ${liveAgentRow('t')} AND t.consultable
         ORDER BY f.slug, t.slug`,
     );
     return rows.map((r) => ({ fromSlug: r.from_slug, toSlug: r.to_slug }));
@@ -211,8 +212,8 @@ export class ConsultationStore {
     const { rows } = await this.pool.query<{ n: number }>(
       `SELECT count(*)::int AS n
          FROM agent_consultation_grants g
-         JOIN agents f ON f.id = g.from_agent_id AND f.deleted_at IS NULL AND f.may_consult
-         JOIN agents t ON t.id = g.to_agent_id AND t.deleted_at IS NULL AND t.consultable
+         JOIN agents f ON f.id = g.from_agent_id AND ${liveAgentRow('f')} AND f.may_consult
+         JOIN agents t ON t.id = g.to_agent_id AND ${liveAgentRow('t')} AND t.consultable
         WHERE (g.from_agent_id = $1 AND g.to_agent_id = $2)
            OR (g.from_agent_id = $2 AND g.to_agent_id = $1)`,
       [agentIdA, agentIdB],

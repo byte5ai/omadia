@@ -295,9 +295,17 @@ describe('consultation broker', () => {
       getRegistry: () => new Map([['anna', A()], ['ben', slow]]),
       timeoutMs: 20,
     });
-    const out = await inTurn(() => broker.consult(request()));
-    assert.ok(out.kind === 'answered');
-    assert.equal(out.contribution.status, 'failed');
+    // The broker's timer is unref'd (it must not keep a process alive) and the
+    // colleague's promise never settles, so nothing else holds the event loop
+    // open until the timeout fires: hold it here.
+    const keepAlive = setInterval(() => undefined, 1_000);
+    try {
+      const out = await inTurn(() => broker.consult(request()));
+      assert.ok(out.kind === 'answered');
+      assert.equal(out.contribution.status, 'failed');
+    } finally {
+      clearInterval(keepAlive);
+    }
   });
 
   it('criterion 16: HR knowledge never reaches the sales chat; with `existence` only that Ben can help', async () => {
