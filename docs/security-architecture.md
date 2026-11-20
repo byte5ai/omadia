@@ -1042,7 +1042,7 @@ of the turn carries all of it.
 | Contribution to an agent | the receiver's grants cover every source and its readers may know it; then the grant's disclosure level caps what is new to the receiver | consultation broker |
 | Persistence | a written turn keeps its label set | `onTurnWritten` |
 | Memory write | another conversation's knowledge only into a tier whose readers may all know it (members: the owners; context-bound: the room; else the agent's memory, readers unknown, which only the turn's own conversation may enter). Notes keep the union of their writers' labels by canonical physical path, stored before the content (no labels, no write); directory renames and deletes take the labels along; session transcripts keep every turn's labels; memorables (auto-promotion, MCP→KG ingestion, durable rules) keep them too; reading, recalling or replaying them (verifier re-entry) adds them back. The members index is kept out of the label layer (read for every room) | `guardMemoryEgress`, `LabelledMemoryStore`, `maybePromoteTurn` |
-| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and gets no restricted source and no classified data (`UNKNOWN_TOOL_EFFECT_POLICY = restricted-only`, switched to `write` after the plugin release train); a plugin's sub-agent tool (`query_<plugin>`) is `write` when any of the plugin's tools declares `write`, else `unknown` | `guardIntegrationEgress`, before the call runs |
+| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and checked like a write, against every label (since the contract step, S3b); a plugin's sub-agent tool (`query_<plugin>`) is `write` when any of the plugin's tools declares `write`, else `unknown`, so checked as well | `guardIntegrationEgress`, before the call runs |
 
 A refused flow is never redacted afterwards. The agent gets a structured refusal;
 at disclosure level `none` a consultation is regenerated without memory and without
@@ -1061,8 +1061,7 @@ Known residuals: the subscription-CLI path and sub-agent inner calls carry no
 discretion state yet; streamed answers are protected only in what is stored; reads
 of memorables through `query_knowledge_graph` and the session briefing bring no
 labels; plugin memory (`ctx.memory`) is written outside the label layer; a write
-to the team memory tier is checked against the room's readers; a tool that declared no effect may still
-receive another conversation's context (until plugins declare, `restricted-only`); a turn whose label write failed is recalled
+to the team memory tier is checked against the room's readers; a turn whose label write failed is recalled
 without labels; `off` is refused only on the context-memory switch, not when
 plugins are granted to an agent that already runs `off`; `say` re-checks consultation
 grants only at the start of a discussion; there is no existence probe for knowledge

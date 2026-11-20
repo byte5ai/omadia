@@ -10441,11 +10441,8 @@ Leserkreis, Offenlegungsstufe).
   - schreibende Tool-Aufrufe gegen die Leserschaft der Integration, vor dem Aufruf.
     Wirkung eines Tools: `write` = Manifest `capabilities[].side_effects: write`,
     `writeCapabilities` (#542) oder MCP ohne `readOnlyHint` (gegen alle Labels
-    geprüft); `read`/`none` = nicht geprüft; nichts deklariert = `unknown`, nach
-    `UNKNOWN_TOOL_EFFECT_POLICY` (`restricted-only`: keine eingeschränkten Quellen,
-    keine klassifizierten Daten, aber ein fremder Gesprächskontext allein sperrt
-    nicht, damit Lese-Tools nach einem Recall weiterlaufen; nach dem Plugin-Train
-    auf `write`). Der Kern liefert die Deklaration über
+    geprüft); `read`/`none` = nicht geprüft; nichts deklariert = `unknown`, seit dem
+    Contract-Schritt (S3b) wie `write` gegen alle Labels geprüft. Der Kern liefert die Deklaration über
     `DiscretionPort.toolEffectOf` (`declaredToolEffect`, aus S3 übernommen);
   - die Antwort gegen den Leserkreis (nicht-streamend): bei Verstoß wird das
     Ergebnis neu aus Buchhaltungsfeldern gebaut (Antwort = Ersatzzeile; keine
@@ -10534,11 +10531,6 @@ Audit-Aktionen: `agent.consultation_change` (je Agent eine Zeile),
   Plugin-IDs); Offenlegungsstufen auf Capability-Grants (`agent_plugins`) fehlen.
 - `say` prüft pro Äußerung nur die Peer-Gate, die Grants nur beim Start (der
   Say-Service kennt die Teilnehmer des Laufs nicht).
-- **Undeklarierte Plugin-Tools** (`unknown`) gelten bis zum Plugin-Train als
-  `restricted-only`: ein Schreibzugriff über ein solches Tool, der nur Wissen aus
-  einem anderen Gespräch trägt, wird nicht gegen die Leserschaft geprüft.
-  Domain-Tools (`query_<plugin>`, Sub-Agent) gelten als `write`, sobald das Plugin
-  irgendein Tool als `write` deklariert (`pluginEffectOf`), sonst `unknown`.
 - **Memory-Reste:** memorables, die `query_knowledge_graph` liefert, und das
   Session-Briefing bringen keine Labels mit (nur der automatische Recall);
   Plugin-Memory (`ctx.memory`, `/memories/plugins/…`) wird außerhalb des
