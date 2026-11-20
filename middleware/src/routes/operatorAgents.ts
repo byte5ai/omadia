@@ -1688,9 +1688,9 @@ export interface OperatorAgentsRouterOptions {
    * not stop a bot, and the purge waits; `notReleased` = bots whose plugin is
    * not active (their credentials may still be in that plugin's vault).
    */
-  releaseChannelIdentities?: (
-    agentId: string,
-  ) => Promise<{ ok: boolean; failed: readonly string[]; notReleased: readonly string[] }>;
+  releaseChannelIdentities?:
+    | ((agentId: string) => Promise<{ ok: boolean; failed: readonly string[]; notReleased: readonly string[] }>)
+    | undefined;
   /** Late-bound lookups so the router survives orchestrator-plugin
    *  re-activation. Each returns undefined when the orchestratorRegistry
    *  service is not currently published (no DATABASE_URL / first boot

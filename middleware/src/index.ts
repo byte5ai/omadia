@@ -4431,6 +4431,11 @@ async function main(): Promise<void> {
         log: (m) => console.log(m),
       })
     : undefined;
+  // Named here, not inline, for the wiring-pin tests' lazy
+  // `createOperatorAgentsRouter\(\{…\}\)` match.
+  const releaseAgentChannelBots = agentChannelIdentities
+    ? (agentId: string) => agentChannelIdentities.releaseAll(agentId)
+    : undefined;
   app.use(
     '/api/v1/operator/agents',
     requireAuth,
@@ -4463,9 +4468,7 @@ async function main(): Promise<void> {
         serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
       getChatSessionStore,
       // Spec 2042 §5.3 — a purged agent's own bots are stopped first.
-      ...(agentChannelIdentities
-        ? { releaseChannelIdentities: (agentId: string) => agentChannelIdentities.releaseAll(agentId) }
-        : {}),
+      releaseChannelIdentities: releaseAgentChannelBots,
       getFacilitationEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
