@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { DEFAULT_AGENT_IDENTITY, withIdentityRules } from './management/agentIdentityPrompt.js';
 import type { Pool } from 'pg';
 import {
   mcpDomainForServer,
@@ -2171,8 +2172,8 @@ function withUnscreenedMarker(input: ChatTurnInput): ChatTurnInput {
  * no specific integration (Odoo, Confluence, …) — the concrete agent
  * roster is rendered live from `domainTools` further down in the prompt.
  */
-const DEFAULT_ASSISTANT_IDENTITY =
-  'Du bist ein KI-Assistent, der Anfragen beantwortet, indem er an spezialisierte Fach-Agenten delegiert und Lernpunkte über Sessions hinweg persistent merkt.';
+// #2056 — an agent is a virtual colleague, not a delegating assistant.
+const DEFAULT_ASSISTANT_IDENTITY = withIdentityRules(DEFAULT_AGENT_IDENTITY);
 
 /**
  * W5 memory-ACL — one turn's resolved memory binding.

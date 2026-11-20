@@ -32,6 +32,8 @@ import {
  *    keeps serving the old Orchestrator otherwise.
  */
 
+import { identityRules } from '../packages/harness-orchestrator/src/management/agentIdentityPrompt.js';
+
 const PLATFORM_IDENTITY = 'You are the platform assistant.';
 
 function fakeNativeToolRegistry(): NativeToolRegistry {
@@ -75,10 +77,26 @@ function agentRow(overrides: Partial<AgentRow> = {}): AgentRow {
 
 /** The Orchestrator's private identity slot — same structural-cast
  *  convention as the persona-skills and routing guards. */
-function identityOf(built: ReturnType<typeof buildForAgent>): unknown {
+function rawIdentityOf(built: ReturnType<typeof buildForAgent>): unknown {
   return (built.orchestrator as unknown as { assistantIdentity?: unknown })
     .assistantIdentity;
 }
+
+/**
+ * #2056 — every identity ends with the identity rules
+ * (`agentIdentityPrompt.test.ts` pins them); the layering tests below look at
+ * what comes before them, and the first test checks they are there.
+ */
+const RULES_SUFFIX = `\n\n${identityRules()}`;
+function identityOf(built: ReturnType<typeof buildForAgent>): unknown {
+  const raw = rawIdentityOf(built);
+  return typeof raw === 'string' && raw.endsWith(RULES_SUFFIX) ? raw.slice(0, -RULES_SUFFIX.length) : raw;
+}
+
+test('#2056 — every layered identity ends with the identity rules', () => {
+  const raw = rawIdentityOf(buildForAgent(agentRow(), deps(), RUNTIME));
+  assert.ok(typeof raw === 'string' && raw.endsWith(RULES_SUFFIX));
+});
 
 const RUNTIME = { model: 'm', maxTokens: 100, maxToolIterations: 4 };
 
