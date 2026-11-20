@@ -469,7 +469,7 @@ describe('decision trace → web chat (`done.fastPathDecision`)', () => {
 
   it('a fast-path answer: `done` says Jev answered it without the agent', async () => {
     const events = await collectEvents(
-      wrap({ kind: 'answer', text: 'rows', tool: 'odoo_query', rows: 2, toolCalls: 1, ms: 30, decision: TRACE }).chatStream({ userMessage: 'Offene Posten?', sessionScope: 'tab_1' }),
+      wrap({ kind: 'answer', text: 'rows', summary: 'rows', table: { kind: 'table' as const, columns: [], rows: [] }, tool: 'odoo_query', rows: 2, toolCalls: 1, ms: 30, decision: TRACE }).chatStream({ userMessage: 'Offene Posten?', sessionScope: 'tab_1' }),
     );
     const done = events.find((e) => e.type === 'done');
     assert.deepEqual(done && done.type === 'done' ? done.fastPathDecision : undefined, { ...TRACE, answered: true });
@@ -503,7 +503,7 @@ describe('decision trace → web chat (`done.fastPathDecision`)', () => {
       { task: SOURCE_TASK, choice: 'tool:odoo_query', confidence: 0.95, ms: 6 },
     ];
     const events = await collectEvents(
-      wrap({ kind: 'answer', text: 'rows', tool: 'odoo_query', rows: 2, toolCalls: 1, ms: 30, decision: { ...TRACE, steps } }).chatStream({
+      wrap({ kind: 'answer', text: 'rows', summary: 'rows', table: { kind: 'table' as const, columns: [], rows: [] }, tool: 'odoo_query', rows: 2, toolCalls: 1, ms: 30, decision: { ...TRACE, steps } }).chatStream({
         userMessage: 'Offene Posten?',
         sessionScope: 'tab_1',
       }),

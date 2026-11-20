@@ -23,6 +23,7 @@ import { AgentDetailTabs } from './AgentDetailTabs';
 import { AgentIdentity } from './AgentIdentity';
 import { AgentMcpServers } from './AgentMcpServers';
 import { AgentModelPolicy } from './AgentModelPolicy';
+import { AgentFastLane } from './AgentFastLane';
 import { AgentConsultation } from './AgentConsultation';
 import { AgentPeers } from './AgentPeers';
 import { AgentTeamsIdentity } from './AgentTeamsIdentity';
@@ -287,7 +288,12 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
       <AgentDetailTabs
         panels={{
           identity: () => <AgentIdentity slug={props.agent.slug} />,
-          model: () => <AgentModelPolicy slug={props.agent.slug} />,
+          model: () => (
+            <>
+              <AgentModelPolicy slug={props.agent.slug} />
+              <AgentFastLane slug={props.agent.slug} />
+            </>
+          ),
           peers: () => (
             <>
               <AgentPeers slug={props.agent.slug} />

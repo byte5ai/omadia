@@ -12,7 +12,9 @@
  * provider plugin and (through its pinned mirror in
  * `web-ui/app/_lib/boundaryPresets.ts`) the web UI all read the same ids and the
  * same rule wording. Ported from `byte5ai/kemia` (src/lib/boundary-presets.ts),
- * 12 presets across 4 categories.
+ * 12 presets across 4 categories, plus `no-individual-rankings` (#2085),
+ * whose data-plan constraint is checked deterministically
+ * (`dataPlanBoundaries.ts`).
  *
  * Adding a preset is additive (minor). Renaming or removing an id is a major:
  * ids are persisted in agent specs and in provider-plugin config strings.
@@ -57,6 +59,13 @@ export const BOUNDARY_PRESETS: readonly BoundaryPreset[] = [
     labelKey: 'presetNoMedical',
     prompt:
       'You must NEVER provide medical diagnoses, treatment recommendations, or interpret health data. Always redirect medical questions to qualified healthcare professionals.',
+  },
+  {
+    id: 'no-individual-rankings',
+    category: 'data',
+    labelKey: 'presetNoIndividualRankings',
+    prompt:
+      'You must NEVER rank, order or compare individual customers, employees or other people by any figure (no top-N or per-person league tables). Aggregates over groups and lookups of one record are fine.',
   },
   {
     id: 'no-legal-advice',

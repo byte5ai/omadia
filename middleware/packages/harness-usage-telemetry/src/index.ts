@@ -33,6 +33,7 @@ export {
 } from './recorder.js';
 
 export { withProviderUsageTracking } from './withProviderUsageTracking.js';
+export { addMeteredCost, meterUsageCost } from './costMeter.js';
 
 export { type FxRate, createEcbEurRateSource } from './exchangeRate.js';
 

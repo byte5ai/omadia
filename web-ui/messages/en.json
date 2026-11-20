@@ -50,6 +50,7 @@
             "no_graph_pool": "no graph storage",
             "disabled_by_config": "disabled by configuration",
             "plugin_inactive": "plugin not active",
+            "no_batch_job_registry": "no batch scheduler in the kernel",
             "unknown": "reason unknown"
           }
         }
@@ -597,7 +598,8 @@
     "teamsSignIn": "Teams sign-in",
     "llmAccess": "LLM access",
     "privacyFields": "Field classification",
-    "badgeLabel": "{count, plural, one {# field to review} other {# fields to review}}"
+    "badgeLabel": "{count, plural, one {# field to review} other {# fields to review}}",
+    "triggers": "Triggers"
   },
   "conductor": {
     "title": "Conductor",
@@ -3315,6 +3317,15 @@
     "confirmAction": {
       "cancel": "Cancel",
       "typedMismatch": "That is not the slug."
+    },
+    "fastLane": {
+      "heading": "Fast lane",
+      "hint": "Simple data questions (\"open invoices of Müller\") are answered without the full agent loop: a fast model plans one read query with this agent's own read tools, and the rows go straight to the user under the agent's name and AI disclosure. Anything it cannot answer goes to the agent as usual.",
+      "loading": "Loading the fast lane setting…",
+      "label": "Answer simple data questions in the fast lane",
+      "onHint": "On: quicker and cheaper for simple lookups.",
+      "offHint": "Off: every question goes through the full agent loop.",
+      "unavailable": "This kind of agent has no fast lane."
     }
   },
   "builder": {
@@ -3838,6 +3849,7 @@
           "presetNoFinancial": "No financial data",
           "presetNoPii": "No personal data (PII)",
           "presetNoMedical": "No medical data",
+          "presetNoIndividualRankings": "No rankings of individual customers or people",
           "presetNoLegal": "No legal advice",
           "presetOwnDomain": "Own domain only",
           "presetNoCode": "No code execution",
@@ -7278,6 +7290,79 @@
       "undoConfirm": "Undo",
       "undoing": "Undoing",
       "undone": "{count, plural, =0 {No entry removed.} one {# entry removed — the field is masked again.} other {# entries removed — the fields are masked again.}}"
+    }
+  },
+  "operatorTriggers": {
+    "metaTitle": "Triggers",
+    "title": "What agents do unasked",
+    "subtitle": "Every hook, wakeup and timer of every agent, routines, Agent Builder schedules and batch jobs, each with purpose, deadline and cost so far. Pause, resume or end any of them; the execution kill switch stops all at once.",
+    "loadError": "The triggers could not be loaded.",
+    "actionError": "That did not work. The list shows the current state.",
+    "never": "never",
+    "spend": {
+      "heading": "Spend this month",
+      "instance": "Instance: {spent} spent, {reserved} reserved, cap {cap}",
+      "caps": "Caps: {agent} per agent and month, {trigger} per trigger, {firing} per firing",
+      "agent": "{agent}: {spent} of {cap}"
+    },
+    "list": {
+      "heading": "Active triggers ({count})",
+      "empty": "No agent is watching or waiting for anything right now.",
+      "agent": "Agent",
+      "purpose": "Purpose",
+      "when": "When",
+      "until": "Until",
+      "cost": "Cost",
+      "state": "State",
+      "runs": "{runs} of {max, plural, =0 {unlimited} other {#}} runs",
+      "lastFired": "last {at}",
+      "costOf": "{spent} of {budget}",
+      "lastError": "Last error (details)"
+    },
+    "schedule": {
+      "event": "on {event}",
+      "cron": "{cron} ({timezone})",
+      "every": "every {minutes} min",
+      "at": "at {at}"
+    },
+    "origin": {
+      "agent": "set by the agent",
+      "routine": "routine",
+      "system": "system"
+    },
+    "state": {
+      "active": "active",
+      "paused": "paused: {reason}"
+    },
+    "actions": {
+      "pause": "Pause",
+      "resume": "Resume",
+      "end": "End"
+    },
+    "jobs": {
+      "heading": "Background jobs",
+      "batch": "{purpose}: at most every {minutes} min per agent",
+      "empty": "No plugin background job is registered.",
+      "ok": "last run {at}",
+      "failing": "failing ({failures} in a row), next probe {next}"
+    },
+    "steps": {
+      "newActivity": "check for news",
+      "contextLive": "check meeting is live",
+      "dataCheck": "check data",
+      "post": "post",
+      "deliver": "send data",
+      "turn": "agent turn",
+      "batch": "batch job",
+      "other": "other step"
+    },
+    "pauseReasons": {
+      "breaker_failures": "failed several times in a row",
+      "breaker_ineffective": "runs had no effect",
+      "budget": "budget reached",
+      "owner": "by its owner",
+      "operator": "by an operator",
+      "other": "other reason"
     }
   },
   "agentReach": {

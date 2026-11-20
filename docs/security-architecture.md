@@ -1643,6 +1643,29 @@ seam (`v4RenderSideChannel.ts`): the sentinel goes to the sink and the model
 gets a kernel-authored note. The user-facing answer (`takeRenderedAnswerV4`)
 and the verifier hand-over of its prose are unchanged.
 
+### Data side channel: `deliver_data` rows never reach a model (#2085)
+
+The kernel tool `deliver_data` (`src/triggers/deliverDataTool.ts`, spec 2042
+§5.13) lets an agent show records without its model reading them. It runs
+one of the agent's own read tools only after the audience-floor check
+(`guardToolEgress`). "Own read tool" (`readToolsOf` in `index.ts`,
+`dataActions.ts`) means a tool the agent was granted and is offered, that
+declares no write capability, and that is neither a sub-agent's inner tool
+(`via`) nor an MCP tool. The rows go to the turn's `TurnDataCollector` and
+from there onto the answer as `data` (`SemanticAnswer`, `ChatTurnResult`,
+`done`). `text` gets a markdown rendering of them after the prose and before
+the AI disclosure (`sideChannelData.ts`); `textWithoutData` omits it. The
+model gets a status only: row count, columns, or the refusal. The verifier
+checks the prose only (`withoutDataText` in `verifierJudge.ts`), and an
+answer it withholds (`verifier-blocked`) goes out without its data:
+`withheldDone` and `withheldTurnResult` do not copy `data`.
+
+Proactive messages from triggers (#2082) use the same channel for the rows
+of a data action. A proactive message goes only to the context its trigger
+was created in: any other target is refused when the trigger is created
+(`targetAllowed` in `src/triggers/wiring.ts`). Delivery into other contexts
+waits for discretion labels (S5, #2079).
+
 ## 6a. Dataset link keys — a deliberate identity handle inside the Privacy Shield
 
 Uploaded CSV/XLSX rows are PII-masked at import (encrypted at rest since §6b;
@@ -2136,7 +2159,8 @@ answer they check:
   then goes out with the receipt, followed by the `verifier` event.
 
 Callers: every `bundle.agent` caller goes through the wrapper — chat routes,
-channel adapters, the scheduler (`scheduleWorker.ts`) and conductor steps
+channel adapters, trigger turns (`src/triggers/kernelExecutors.ts`, which
+replaced the Agent Builder `scheduleWorker.ts`) and conductor steps
 (`realStepEffects.ts`, `builderAgent.ts`). The subscription-CLI chat runtime
 is never wrapped (§3a); the verifier's own provider cannot be `claude-cli`
 (#1583). Deliberately unchanged: `verifier_contradictions`

@@ -593,6 +593,31 @@ export async function setAgentModelPolicy(
   return { ...res, policy: parseModelPolicy(res.policy) };
 }
 
+// ── #1876 — the agent's fast lane ───────────────────────────────────────
+
+export interface AgentFastLaneDto {
+  slug: string;
+  /** The fast lane answers simple data questions for this agent. */
+  enabled: boolean;
+  /** False for an archetype without one (a facilitator). */
+  available: boolean;
+}
+
+export async function getAgentFastLane(slug: string): Promise<AgentFastLaneDto> {
+  const res = await callJson<AgentFastLaneDto>(`/v1/operator/agents/${encodeURIComponent(slug)}/fast-lane`);
+  return { slug: res.slug, enabled: res.enabled === true, available: res.available === true };
+}
+
+export async function setAgentFastLane(
+  slug: string,
+  enabled: boolean,
+): Promise<{ ok: boolean; enabled: boolean }> {
+  return callJson<{ ok: boolean; enabled: boolean }>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/fast-lane`,
+    { method: 'PUT', body: JSON.stringify({ enabled }) },
+  );
+}
+
 // ── #1018 — agent-to-agent switches ─────────────────────────────────────
 
 export const AGENT_TO_AGENT_MODES = ['off', 'on'] as const;

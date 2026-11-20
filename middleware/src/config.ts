@@ -454,6 +454,33 @@ export const ConfigSchema = z.object({
   // #2043 — ceiling on kernel-run turns ('agentTurn@2') per agent and minute;
   // a loop in an engine plugin must not spend without bound. 0 = no ceiling.
   AGENT_TURN_MAX_PER_MINUTE: z.coerce.number().int().nonnegative().default(60),
+  // #2082 — agent-owned triggers (spec 2042 §5.12). Instance caps the harness
+  // enforces on every hook, wakeup and timer; no prompt or plugin can lift
+  // them. TRIGGERS_ENABLED=false is a config-level stop: nothing fires —
+  // also no routine, Agent Builder schedule or memory consolidation, which
+  // fire through triggers (the operator's live kill switch is
+  // /api/v1/operator/execution).
+  TRIGGERS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  TRIGGER_TICK_MS: z.coerce.number().int().min(1_000).default(15_000),
+  TRIGGER_LEASE_MS: z.coerce.number().int().min(60_000).default(20 * 60_000),
+  TRIGGER_ONE_SHOT_MAX_DAYS: z.coerce.number().int().positive().max(365).default(90),
+  TRIGGER_RECURRING_MAX_DAYS: z.coerce.number().int().positive().max(365).default(30),
+  TRIGGER_MIN_INTERVAL_MINUTES: z.coerce.number().int().positive().default(15),
+  TRIGGER_MIN_INTERVAL_LIVE_MINUTES: z.coerce.number().int().positive().default(1),
+  TRIGGER_MAX_ACTIVE_PER_AGENT: z.coerce.number().int().positive().default(50),
+  TRIGGER_MAX_USD_PER_FIRING: z.coerce.number().nonnegative().default(1),
+  TRIGGER_MAX_USD_PER_TRIGGER: z.coerce.number().nonnegative().default(20),
+  TRIGGER_MONTHLY_USD_PER_AGENT: z.coerce.number().nonnegative().default(25),
+  TRIGGER_MONTHLY_USD_PER_INSTANCE: z.coerce.number().nonnegative().default(200),
+  // #1035 — instance defaults of a recipient's communication profile for
+  // proactive messages: quiet hours (`HH:MM-HH:MM` or `off`), their time zone,
+  // and messages per hour. A recipient profile overrides them.
+  PROACTIVE_QUIET_HOURS: z.string().default('22:00-07:00'),
+  PROACTIVE_TIMEZONE: z.string().default('Europe/Berlin'),
+  PROACTIVE_MAX_PER_HOUR: z.coerce.number().int().nonnegative().default(6),
 
   // #758 — Ed25519 checkpoint signing for the receipt hash chain. The
   // private key (base64 PKCS#8 DER; generate with

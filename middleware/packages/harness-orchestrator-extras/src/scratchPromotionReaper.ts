@@ -1,10 +1,16 @@
 /**
  * @omadia/orchestrator-extras — Scratchpad-Promotion Reaper (WS5).
  *
- * Periodic background job that consolidates significant, AGED agent-scratch
- * memory (the PostgresMemoryStore `memory_files` table, physical layout
+ * Consolidates significant, AGED agent-scratch memory (the
+ * PostgresMemoryStore `memory_files` table, physical layout
  * `/memories/orchestrators/<slug>/…`) into the Knowledge-Graph as
  * MemorableKnowledge.
+ *
+ * #2082 (spec 2042 §5.12) — it no longer runs on its own interval. It is a
+ * `BatchJob` (`asBatchJob`) the kernel runs as a bounded batch trigger owned
+ * by the agent whose scratch it is: due rows are counted without a model
+ * (`due`), a firing handles at most one batch of that agent's rows under the
+ * trigger's deadline, budget and breaker.
  *
  * Flow per `runOnce()`:
  *   1. SELECT aged agent-scratch rows (updated_at older than `ageMs`,
@@ -16,7 +22,7 @@
  *      >= threshold AND the content is non-trivial, materialise a
  *      MemorableKnowledge node (`kind=insight`) stamped with
  *      `originAgent=<slug>`, `createdBy='scratch-reaper'` and
- *      `visibility='team'`, THEN delete the scratch row. Delete happens
+ *      `visibility='private'`, THEN delete the scratch row. Delete happens
  *      ONLY after a successful create, so a failed promotion leaves the
  *      scratch intact for the next run.
  *   3. Aged rows that are NOT promoted (sub-threshold or trivial/too-short)
@@ -25,13 +31,13 @@
  *      scratch). The two branches are mutually exclusive — a row is never
  *      both promoted (which already deletes it) and dropped.
  *
- * Visibility: promoted scratch is published TEAM-VISIBLE (`visibility:
- * 'team'`) so consolidated agent knowledge is shareable across the team
- * rather than admin-only. `aclOwners` stays `[]` — team visibility, not the
- * owner list, is what makes the MK recallable team-wide. Scratch memory is
- * not user-attributed (it is the orchestrator's own scratchpad), so there
- * are no `involvedOmadiaUserIds`. `defaultVisibility` (the dep) is carried
- * for telemetry/log parity with the capture-filter.
+ * Visibility (#2082, spec 2042 §5.12): promoted scratch stays the agent's
+ * own — `visibility: 'private'`, `originAgent` = the agent, origin labels
+ * (`unprotected`) kept. Nothing is published as team knowledge by default.
+ * `aclOwners` stays `[]`: scratch memory is not user-attributed (it is the
+ * orchestrator's own scratchpad), so there are no `involvedOmadiaUserIds`.
+ * `defaultVisibility` (the dep) is carried for telemetry/log parity with
+ * the capture-filter.
  *
  * Failure semantics: per-row failures are logged and skipped — the run
  * never throws. `runOnce` returns
@@ -39,7 +45,7 @@
  */
 
 import type { Pool } from 'pg';
-import type { KnowledgeGraph, MemorableKind, Visibility } from '@omadia/plugin-api';
+import type { BatchJob, KnowledgeGraph, MemorableKind, Visibility } from '@omadia/plugin-api';
 
 import type { SignificanceScorer } from './captureFilter.js';
 import { isUnprotectedNote, stripUnprotectedNoteMarker } from './noteProvenance.js';
@@ -64,6 +70,14 @@ const DEFAULT_BATCH = 50;
 /** MK kind for an insight-type consolidation. */
 const REAPER_MK_KIND: MemorableKind = 'insight';
 
+/** The batch job id the kernel knows this reaper by. */
+export const SCRATCH_PROMOTION_JOB_ID = 'orchestrator-extras.scratch-promotion';
+
+/** `LIKE` prefix of one agent's scratch tree (slug metacharacters escaped). */
+export function agentScratchPrefix(agentSlug: string): string {
+  return `${SCRATCH_PREFIX}${agentSlug.replace(/[\\%_]/g, (c) => `\\${c}`)}/`;
+}
+
 export interface ScratchPromotionReaperDeps {
   pool: Pool;
   /** Reserved for future tenant-scoped scratch trees. `memory_files` is
@@ -76,8 +90,7 @@ export interface ScratchPromotionReaperDeps {
   threshold: number;
   /** A scratch row is eligible once `updated_at < now() - ageMs`. */
   ageMs: number;
-  /** `setInterval` cadence for `start()`. Required for the background loop;
-   *  `runOnce()` works standalone without it (used by tests). */
+  /** How often the kernel may run the batch job for one agent. */
   intervalMs: number;
   /** Default visibility — telemetry only (see file header). */
   defaultVisibility: Visibility;
@@ -106,19 +119,31 @@ export interface ScratchReapRunResult {
   failed: number;
 }
 
+/** One agent's batch: its scratch tree only, at most `limit` rows. */
+export interface ScratchReapScope {
+  readonly agentSlug: string;
+  readonly limit: number;
+  readonly signal?: AbortSignal;
+}
+
 export interface ScratchPromotionReaper {
-  /** Start the interval. No-op if already started. */
-  start(): void;
-  /** Stop the interval. Safe to call when not started. */
-  stop(): void;
-  /** Run a single consolidation pass. Never throws. */
-  runOnce(): Promise<ScratchReapRunResult>;
+  /** Run a single consolidation pass (all agents, or one agent's batch).
+   *  Never throws. */
+  runOnce(scope?: ScratchReapScope): Promise<ScratchReapRunResult>;
+  /** Aged rows of one agent's scratch tree, counted without a model. */
+  due(agentSlug: string): Promise<number>;
+  /** This reaper as the kernel batch job (spec 2042 §5.12). */
+  asBatchJob(): BatchJob;
 }
 
 interface ScratchRow {
   virtual_path: string;
   content: string;
+  updated_at: Date;
 }
+
+/** Rows kept in memory as already scored below the threshold. */
+const MAX_EVALUATED = 10_000;
 
 /** Derive the orchestrator/agent slug from a scratch virtual path.
  *  `/memories/orchestrators/<slug>/note.md` → `<slug>`. Returns the empty
@@ -148,10 +173,49 @@ export function createScratchPromotionReaper(
       ? Math.max(1, Math.floor(deps.batchSize))
       : DEFAULT_BATCH;
 
-  // Interval handle. Module-private; never leaks.
-  let timer: ReturnType<typeof setInterval> | undefined;
+  const ageSeconds = Math.max(0, deps.ageMs) / 1000;
 
-  async function runOnce(): Promise<ScratchReapRunResult> {
+  // #2082 — rows scored below the threshold and left in place (no
+  // `dropUnpromoted`): path → the `updated_at` they were scored at. They are
+  // not due again until written again, so `due` reaches 0 and a run does not
+  // re-score the same oldest rows forever. In memory: a restart scores them
+  // once more.
+  const evaluated = new Map<string, number>();
+  const remember = (row: ScratchRow): void => {
+    evaluated.delete(row.virtual_path);
+    evaluated.set(row.virtual_path, row.updated_at.getTime());
+    while (evaluated.size > MAX_EVALUATED) {
+      const oldest = evaluated.keys().next().value;
+      if (oldest === undefined) break;
+      evaluated.delete(oldest);
+    }
+  };
+  const notEvaluated = (): [string[], Date[]] => [
+    [...evaluated.keys()],
+    [...evaluated.values()].map((ms) => new Date(ms)),
+  ];
+  // Compared at millisecond precision: that is what a JS Date keeps.
+  const NOT_EVALUATED_SQL = `(virtual_path, date_trunc('milliseconds', updated_at)) NOT IN (SELECT * FROM unnest($3::text[], $4::timestamptz[]))`;
+
+  async function due(agentSlug: string): Promise<number> {
+    try {
+      const [paths, stamps] = notEvaluated();
+      const res = await deps.pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n
+           FROM memory_files
+          WHERE virtual_path LIKE $1
+            AND updated_at < now() - make_interval(secs => $2)
+            AND ${NOT_EVALUATED_SQL}`,
+        [`${agentScratchPrefix(agentSlug)}%`, ageSeconds, paths, stamps],
+      );
+      return Number(res.rows[0]?.n ?? 0);
+    } catch {
+      // memory_files unavailable: nothing is due.
+      return 0;
+    }
+  }
+
+  async function runOnce(scope?: ScratchReapScope): Promise<ScratchReapRunResult> {
     const result: ScratchReapRunResult = {
       scanned: 0,
       promoted: 0,
@@ -165,15 +229,18 @@ export function createScratchPromotionReaper(
       // `make_interval(secs => …)` keeps the age window a bound parameter
       // (no string interpolation into SQL). `text_pattern_ops` index on
       // virtual_path serves the LIKE prefix scan.
-      const ageSeconds = Math.max(0, deps.ageMs) / 1000;
+      const prefix = scope ? agentScratchPrefix(scope.agentSlug) : SCRATCH_PREFIX;
+      const limit = scope ? Math.max(1, Math.min(scope.limit, batchSize)) : batchSize;
+      const [paths, stamps] = notEvaluated();
       const res = await deps.pool.query<ScratchRow>(
-        `SELECT virtual_path, content
+        `SELECT virtual_path, content, updated_at
            FROM memory_files
           WHERE virtual_path LIKE $1
             AND updated_at < now() - make_interval(secs => $2)
+            AND ${NOT_EVALUATED_SQL}
           ORDER BY updated_at ASC
-          LIMIT $3`,
-        [`${SCRATCH_PREFIX}%`, ageSeconds, batchSize],
+          LIMIT $5`,
+        [`${prefix}%`, ageSeconds, paths, stamps, limit],
       );
       rows = res.rows;
     } catch (err) {
@@ -191,20 +258,22 @@ export function createScratchPromotionReaper(
     // it (true TTL) and count it as dropped; otherwise leave it untouched
     // and count it as skipped (historical default). Mutually exclusive with
     // the promotion branch, which deletes the row itself.
-    const reapUnpromoted = async (virtualPath: string): Promise<void> => {
+    const reapUnpromoted = async (row: ScratchRow): Promise<void> => {
       if (deps.dropUnpromoted) {
         await deps.pool.query(
           `DELETE FROM memory_files WHERE virtual_path = $1`,
-          [virtualPath],
+          [row.virtual_path],
         );
         result.dropped++;
-        log(`[scratch-reaper] dropped path=${virtualPath} (unpromoted, ttl)`);
+        log(`[scratch-reaper] dropped path=${row.virtual_path} (unpromoted, ttl)`);
       } else {
         result.skipped++;
+        remember(row);
       }
     };
 
     for (const row of rows) {
+      if (scope?.signal?.aborted) break;
       try {
         const slug = deriveAgentSlug(row.virtual_path);
         // #1540 — a note written in an unprotected turn: score and summarise
@@ -217,20 +286,19 @@ export function createScratchPromotionReaper(
         const trimmed = content.trim();
 
         if (trimmed.length < MIN_NON_TRIVIAL_LEN) {
-          await reapUnpromoted(row.virtual_path);
+          await reapUnpromoted(row);
           continue;
         }
 
         const { score } = await deps.scorer.score(trimmed);
         if (score < deps.threshold) {
-          await reapUnpromoted(row.virtual_path);
+          await reapUnpromoted(row);
           continue;
         }
 
-        // Promote: agent-scoped, TEAM-VISIBLE MemorableKnowledge. aclOwners=[]
-        // (scratch isn't user-attributed) — visibility='team' is what makes
-        // the consolidated knowledge shareable team-wide. originAgent = the
-        // orchestrator slug so recall can still attribute it to that Agent.
+        // Promote: the agent's own MemorableKnowledge (#2082 — never team
+        // knowledge by default). aclOwners=[] (scratch isn't
+        // user-attributed); originAgent = the orchestrator slug.
         await deps.kg.createMemorableKnowledge({
           kind: REAPER_MK_KIND,
           summary: deriveSummary(content),
@@ -238,7 +306,7 @@ export function createScratchPromotionReaper(
           createdBy: 'scratch-reaper',
           involvedOmadiaUserIds: [],
           aclOwners: [],
-          visibility: 'team',
+          visibility: 'private',
           ...(slug ? { originAgent: slug } : {}),
           ...(unprotected ? { unprotected: true } : {}),
         });
@@ -269,22 +337,20 @@ export function createScratchPromotionReaper(
   }
 
   return {
-    start(): void {
-      if (timer) return;
-      const ms =
-        deps.intervalMs > 0 ? deps.intervalMs : 60 * 60 * 1000;
-      timer = setInterval(() => {
-        void runOnce();
-      }, ms);
-      // Don't keep the event loop alive solely for the reaper.
-      if (typeof timer.unref === 'function') timer.unref();
-    },
-    stop(): void {
-      if (timer) {
-        clearInterval(timer);
-        timer = undefined;
-      }
-    },
     runOnce,
+    due,
+    asBatchJob(): BatchJob {
+      return {
+        id: SCRATCH_PROMOTION_JOB_ID,
+        purpose: 'Consolidate significant aged scratch notes into durable memory',
+        intervalMinutes: Math.max(1, Math.round(deps.intervalMs / 60_000)),
+        batchSize,
+        due,
+        async run(agentSlug, options) {
+          const r = await runOnce({ agentSlug, limit: options.limit, signal: options.signal });
+          return { processed: r.promoted + r.dropped + r.skipped, failed: r.failed };
+        },
+      };
+    },
   };
 }

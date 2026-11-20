@@ -194,7 +194,10 @@ export class RealStepEffects implements StepEffects {
     // transition guards can branch on `stepResult.data.…` deterministically.
     // Tolerant by design: missing/broken JSON just means no `data` — a guard
     // like `ne stepResult.data.dodMet true` then keeps the bounded loop going.
-    const data = extractFencedJson(answer.text);
+    // #2085 — the run context feeds later steps' models: side-channel rows
+    // stay out of it; only a published `say` carries them to people.
+    const prose = answer.textWithoutData ?? answer.text;
+    const data = extractFencedJson(prose);
     // The agent-dialogue seam: without `say` an agent step's prose never leaves
     // the run context (which is why two agent bots could not converse). With
     // it, the turn is published into the run's bound conversation — and the
@@ -203,7 +206,7 @@ export class RealStepEffects implements StepEffects {
     const said = step.say ? await this.publish(step, context, meta, slug, answer.text) : undefined;
     return {
       result: {
-        text: answer.text,
+        text: prose,
         ...(data !== undefined ? { data } : {}),
         ...(said !== undefined ? { said: said.said, ...(said.said ? {} : { sayError: said.reason }) } : {}),
       },

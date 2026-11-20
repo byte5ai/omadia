@@ -180,6 +180,9 @@ export interface CreateCoreApiOptions {
    */
   conversationMessages?: Pick<ConversationMessageHub, 'emit' | 'isSubscribed' | 'deliveryMode'> &
     Partial<Pick<ConversationMessageHub, 'report'>>;
+  /** #2082 — told of every message event a channel reports, before the hub
+   *  decides whether a subscription stores it: agents' hooks hear it. */
+  onConversationMessage?: (event: ConversationMessageEvent) => void;
   /** #2043 — readiness providers and meeting sources, same lifecycle as the
    *  roster registry; and where pushed snapshots and session events go. */
   readinessProviders?: ChannelProviderRegistry<ChannelReadinessProvider>;
@@ -364,13 +367,27 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
   }
   if (opts.conversationMessages) {
     const messages = opts.conversationMessages;
+    const observe = opts.onConversationMessage;
+    // #2082 — agents' hooks hear a message however the channel hands it over.
+    const observed = (event: ConversationMessageEvent): void => {
+      if (!observe) return;
+      try {
+        observe(event);
+      } catch {
+        // An observer never breaks the channel's inbound path.
+      }
+    };
     api.emitConversationMessage = (event: ConversationMessageEvent): void => {
       messages.emit(event);
+      observed(event);
     };
     if (messages.report) {
       const report = messages.report.bind(messages);
-      api.reportConversationMessage = (event: ConversationMessageEvent): Promise<{ answeredCard: boolean }> =>
-        report(event);
+      api.reportConversationMessage = (event: ConversationMessageEvent): Promise<{ answeredCard: boolean }> => {
+        const reported = report(event);
+        observed(event);
+        return reported;
+      };
     }
     // Asked synchronously for every inbound activity: a cache lookup that
     // never throws. Anything not positively subscribed is `false`.

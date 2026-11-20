@@ -404,6 +404,8 @@ export function buildForAgent(
       // installation default inside `buildOrchestratorForAgent`, so exactly
       // one verbosity block ever reaches the prompt.
       ...(agent.answerVerbosity ? { answerVerbosity: agent.answerVerbosity } : {}),
+      // #1876 — the operator switched this agent's fast lane off.
+      ...(agent.fastLane === false ? { fastLane: false } : {}),
       // #2043 — the agent's own language (a facilitator's refusal text).
       ...(agent.identityLanguage ? { identityLanguage: agent.identityLanguage } : {}),
       // #1569 — the agent's own quality settings, so the Quality Guard plugin

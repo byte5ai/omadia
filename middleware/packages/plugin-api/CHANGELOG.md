@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.77.0 — 2026-11-20
+## 1.78.0 — 2026-11-20
 
 Additive (#2053, epic #2042, spec 2042 §5.10, ADR-0014/0017): the plugin
 boundary and the model gateway, step S3a (expand). This version marks a
@@ -16,7 +16,7 @@ kernel that loads the plugin kinds `integration`, `tool`, `skill`, `model`,
 `system-module` and `agent-template` (beside `channel` and `archetype`),
 reads `agent_templates:` and `capabilities[].side_effects`, runs every model
 call in an execution context and sandboxes plugins' own network access.
-Plugins that use any of it declare `compat.core: ">=1.77.0 <2.0"`.
+Plugins that use any of it declare `compat.core: ">=1.78.0 <2.0"`.
 
 ### Added
 
@@ -34,6 +34,36 @@ Plugins that use any of it declare `compat.core: ">=1.77.0 <2.0"`.
 - **`RawModelServiceRefusedError`**: a raw model client or provider pool
   (`anthropicClient`, `llm`, `llmProviderPool`) asked for by a plugin that
   may not hold one.
+
+## 1.77.0 — 2026-11-20
+
+Additive (#2082, #2085, #1876, epic #2042, spec 2042 §5.12, §5.13): stream S4.
+
+### Added
+
+- `ScheduleNode` gains the optional **`until`** (#2082, spec §5.12,
+  ADR-0020): the deadline an Agent Builder schedule runs to; past it the
+  schedule is disabled until an operator renews it.
+- **`BatchJob`**, **`BatchJobRegistry`**, **`BatchJobResult`**,
+  **`BatchJobRunOptions`** and the service name
+  **`BATCH_JOB_REGISTRY_SERVICE`** (`batchJobRegistry@1`, #2082, spec §5.12):
+  a plugin registers periodic learning or consolidation as a job; the kernel
+  runs it as a bounded batch trigger per agent (deadline, budget, breaker)
+  instead of a plugin's own interval.
+- The boundary check of a data plan (#2085, spec §5.13 1a, criterion 35):
+  **`DataPlanDescription`**, **`DataPlanVerdict`**, **`DataPlanGuard`**,
+  **`describeToolCall`**, **`checkDataPlanPresets`**, **`ranksIndividuals`**
+  and **`dataPlanText`** — a plan described by tool, identifiers, filter
+  fields, order and top-N, never values. New boundary preset
+  **`no-individual-rankings`** (category `data`), whose constraint is checked
+  deterministically.
+
+### Changed
+
+- `JobHandler` runs (`ctx.jobs`) are refused every model call (#2082, spec
+  §5.12): a job is deterministic work. A failing job backs off to bounded
+  recovery probes (at most one hour apart) instead of running every tick.
+  Model-backed learning or consolidation registers a `BatchJob`.
 
 ## 1.76.0 — 2026-11-20
 

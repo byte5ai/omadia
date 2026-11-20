@@ -36,14 +36,14 @@ changelog.
 
 ## [Unreleased]
 
-### Changed — plugin-api 1.77.0 (#2053, epic #2042): S3 expand step
+### Changed — plugin-api 1.78.0 (#2053, epic #2042): S3 expand step
 
-- `@omadia/plugin-api` 1.77.0 (additive): `MaintenanceRunService`,
+- `@omadia/plugin-api` 1.78.0 (additive): `MaintenanceRunService`,
   `OperatorJobsService`, `OperatorJob`, `ModelPassthroughService`,
   `LlmScopeRequiredError`, `RawModelServiceRefusedError`. It marks the kernel
   that loads the new plugin kinds, `agent_templates:` and
   `capabilities[].side_effects`; plugins using them declare
-  `compat.core: ">=1.77.0 <2.0"`. Upgrade notes: `docs/upgrading.md`.
+  `compat.core: ">=1.78.0 <2.0"`. Upgrade notes: `docs/upgrading.md`.
 
 ### Changed — The system prompt speaks of domain tools of capabilities, not "Fach-Agenten" (#2053, epic #2042)
 
@@ -106,6 +106,91 @@ changelog.
   plugin off loopback. Reaching them is decided by the plugin's permission.
 
 ### Added — Tools declare their effect; templates carry the answer size; memory writes as an operator job (#2053, epic #2042): S3 expand step
+
+### Added — Agents act unasked only through bounded triggers; data reaches people without a model (#2082, #2085, #1876, #1035, epic #2042): S4
+
+- **Agent-owned triggers.** On a turn with a person's conversation an agent
+  gets the harness tools `on_event`, `wake_at`, `wake_every`, `list_triggers`
+  and `cancel_trigger`. The harness fixes agent, context and delivery target;
+  a trigger turn is offered none of these tools, so a trigger cannot set
+  further triggers. Every trigger has a mandatory deadline (one-shot 90 days,
+  recurring and hooks 30 days), run limits, a minimum interval (15 minutes,
+  1 minute in a live meeting), a budget per firing, per trigger and per month
+  (agent and instance), the execution kill switch (instance and agent level)
+  and a circuit breaker on failures and on ineffective turns. A firing is
+  claimed at most once (the lease is renewed right before it runs; each
+  firing's budget reservation is its own row and settles exactly once);
+  model-free checks run before any model turn, and a check that finds
+  nothing ends the firing quietly. `list_triggers` and `cancel_trigger` see
+  only what the agent set itself in the current conversation; the
+  per-agent cap counts only those. A hook never fires on the agent's own
+  messages, and a turn hint or a post template carries only an event's ids
+  and kind, never its content. `TRIGGERS_ENABLED=false` stops all firing,
+  routines, schedules and consolidation included; limits are `TRIGGER_*` in
+  `.env.example`.
+- **Proactive gate.** A proactive message goes only to the context its
+  trigger was created in, until discretion labels exist (S5). Quiet hours and
+  a per-recipient rate limit come from a recipient profile or the instance
+  default (`PROACTIVE_QUIET_HOURS`, `PROACTIVE_TIMEZONE`,
+  `PROACTIVE_MAX_PER_HOUR`); a firing in quiet hours is deferred before
+  anything runs. Every proactive message names its agent as speaker.
+- **Routines fire through triggers.** One trigger per routine; owner,
+  controls, templates, run history and cron semantics stay. A routine now has
+  a deadline: three days before it the owner is asked once, `manage_routine`
+  `renew` (or resuming an expired routine) starts a new period, and past it
+  the routine is paused with an error that says so. A harness pause (budget,
+  breaker) also pauses the row. No catch-up storm after downtime; routines
+  run at most every 15 minutes; the owner's chosen time is exempt from the
+  default quiet hours.
+- **Agent Builder schedules fire through triggers.** Each enabled schedule
+  has one headless trigger (no recipient, no quiet hours or rate limit) with a
+  deadline (`agent_schedules.until`); an expired schedule is disabled with an
+  operator notice and re-enabled with
+  `POST /api/v1/operator/agents/:slug/schedules/:id/renew`. The minute poller
+  `src/scheduler/scheduleWorker.ts` is removed.
+- **Plugin jobs back off.** After three consecutive failures a job runs only
+  as a recovery probe, once per backoff window (doubling up to one hour); the
+  first success resets it, failures never end a job. A job's run may not call
+  a generative model.
+- **Consolidation as agent batch triggers.** Built-in plugins register
+  batch jobs (`batchJobRegistry@1`, plugin-api additive; any other plugin is
+  refused); the kernel arms one bounded trigger per job and agent with due
+  items. The scratch-promotion reaper drops
+  its own interval and registers as a batch job; promoted scratch is
+  `visibility: 'private'` with its origin agent instead of `team`
+  (orchestrator-extras 0.2.0).
+- **Side channel for data.** The kernel tool `deliver_data` runs one of the
+  agent's own read tools and puts the rows on the answer as
+  `SemanticAnswer.data` (also on `ChatTurnResult` and `done`); the model gets
+  a status only (row count, columns). `text` carries a rendering of the table
+  after the prose and before the AI disclosure; `textWithoutData` is the same
+  text without it. The verifier, the facilitation engine's history and the
+  Conductor run context get the prose only.
+- **Fast lane per agent.** The fast path is the addressed agent's fast lane:
+  per-agent switch `agents.fast_lane` (default on,
+  `GET/PUT /api/v1/operator/agents/:slug/fast-lane`, checkbox in the agent's
+  model tab), only the agent's own read tools (no sub-agent `via` tools), the
+  agent's AI disclosure on every fast-lane answer, and an answer cache keyed
+  by agent; older entries are dropped (fast-path 0.6.0).
+- **Boundaries on data paths (spec §5.13 1a, criterion 35).** Before a
+  fast-lane plan runs (new or from the cache), and before `deliver_data` or
+  a trigger's data action runs, its description (tool, identifiers, filter
+  fields, order, top-N; no values) is checked against the agent's
+  boundaries: presets deterministically (new preset
+  `no-individual-rankings`), free-text rules by the agent's classifier
+  model; an error or timeout refuses. A refused fast-lane plan hands the
+  turn to the agent.
+- **Operator view.** `/operator/triggers` (Setup menu, backed by
+  `/api/v1/operator/triggers`) lists every trigger with purpose, schedule,
+  deadline, runs and cost against its budget, the month's spend against the
+  caps, plugin jobs with their recovery state and the batch jobs; each
+  trigger can be paused, resumed or ended.
+- **Migrations:** `0093_agent_triggers.sql`,
+  `0094_proactive_recipient_profiles.sql`,
+  `0095_agent_schedules_deadline.sql`, `0096_agent_fast_lane.sql`, and in the
+  routines series `0006_routines_deadline.sql`.
+
+### Added — Tools declare their effect (#2053, epic #2042; cherry-picked from S3)
 
 - The kernel reads `capabilities[].side_effects` (`read | write | none`, the
   field the boilerplates and the Plugin Builder already write) as

@@ -358,7 +358,7 @@ bump: it holds the data volume, exactly as with the compose stack.
 
 ## Upgrading past v0.210.0 — plugin kinds, the model gateway and the plugin network sandbox
 
-Spec 2042 §5.10 (#2053), plugin-api 1.77.0, expand step: everything new is
+Spec 2042 §5.10 (#2053), plugin-api 1.78.0, expand step: everything new is
 accepted, the old paths keep working and are observed.
 
 1. **Plugin authors:** the manifest `kind` says what a plugin delivers
@@ -369,7 +369,7 @@ accepted, the old paths keep working and are observed.
    already installed keeps running until its migrated version replaces it.
    Personas ship as `agent_templates:`. Declare every tool's
    `capabilities[].side_effects`. Packages that use any of this declare
-   `compat.core: ">=1.77.0 <2.0"`. See `docs/creating-plugins.md`.
+   `compat.core: ">=1.78.0 <2.0"`. See `docs/creating-plugins.md`.
 2. **Operators, new settings (all optional):** `MODEL_GATEWAY_MODE` and
    `PLUGIN_EGRESS_MODE` (`observe`, the default, logs model calls outside an
    execution context and plugins' own network requests outside their
