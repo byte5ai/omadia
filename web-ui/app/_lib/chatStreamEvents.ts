@@ -47,15 +47,16 @@ export type ChatStreamEvent =
       provider?: string;
     }
   /**
-   * Wave 8 — per-turn direct-answer persona verdict, emitted once at turn
-   * start, only when the Agent has one or more persona skills attached.
+   * #2051 — per-turn working-mode verdict, emitted once at turn start, only
+   * when the Agent has one or more working modes attached. Names the mode,
+   * never a speaker: the answering agent does not change with it.
    */
   | {
-      type: 'turn_persona';
+      type: 'turn_working_mode';
       bucket: 'matched' | 'none' | 'fallback';
       classifierModel: string;
       skillId: string | null;
-      skillName: string | null;
+      modeName: string | null;
     }
   | { type: 'text_delta'; text: string }
   /** #1500 — drop the last `chars` preview characters (tool-call preamble). */
@@ -267,14 +268,14 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           ...(event.provider ? { provider: event.provider } : {}),
         },
       };
-    case 'turn_persona':
+    case 'turn_working_mode':
       return {
         ...m,
-        persona: {
+        workingMode: {
           bucket: event.bucket,
           classifierModel: event.classifierModel,
           skillId: event.skillId,
-          skillName: event.skillName,
+          modeName: event.modeName,
         },
       };
     case 'turn_annotation':

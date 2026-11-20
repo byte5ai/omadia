@@ -838,16 +838,17 @@ export interface Message {
     provider?: string;
   };
   /**
-   * Wave 8 — per-turn direct-answer persona verdict, from the `turn_persona`
-   * event emitted at turn start. Present only when the Agent has one or more
-   * persona skills attached. `skillId: null` means the classifier kept the
-   * Agent's default identity. Rendered inline next to `routing`.
+   * #2051 — per-turn working-mode verdict, from the `turn_working_mode` event
+   * emitted at turn start. Present only when the Agent has one or more working
+   * modes attached. `skillId: null` means the turn ran without a mode (the
+   * agent's default behaviour). Shown in the answer's details row, never above
+   * the message (§5.14), and never as a different name for the agent.
    */
-  persona?: {
+  workingMode?: {
     bucket: 'matched' | 'none' | 'fallback';
     classifierModel: string;
     skillId: string | null;
-    skillName: string | null;
+    modeName: string | null;
   };
 }
 

@@ -424,16 +424,16 @@
       },
       "apiError": "Fehler {status}",
       "persona": {
-        "title": "Direkt-Antwort-Personas",
-        "hintEmpty": "Keine Persona-Skills angehängt — dieser Agent antwortet mit der generischen Standard-Identität.",
-        "hintSome": "Der Agent wählt pro Turn eine dieser Personas, um direkt zu antworten — oder die Standard-Identität, falls keine eindeutig passt. Kein Sub-Agent-Umweg.",
+        "title": "Arbeitsmodi",
+        "hintEmpty": "Keine Arbeitsmodi angehängt — dieser Agent arbeitet immer auf seine Standard-Art.",
+        "hintSome": "Der Agent wählt pro Anfrage den passenden Arbeitsmodus — oder arbeitet auf seine Standard-Art, falls keiner eindeutig passt. Ein Modus prägt, wie der Agent arbeitet; Name, Persönlichkeit und Grenzen bleiben gleich.",
         "addPlaceholder": "Skill zum Anhängen wählen…",
         "add": "Anhängen",
         "remove": "Entfernen",
         "noSkillsAvailable": "Keine weiteren Skills zum Anhängen verfügbar.",
-        "riskWarning": "Heuristischer Scan hat diesen Skill markiert: {codes}. Als Persona steuert er den Top-Level-Agent mit vollem Tool-Zugriff — vor Verwendung prüfen.",
+        "riskWarning": "Heuristischer Scan hat diesen Skill markiert: {codes}. Als Arbeitsmodus prägt er, wie der Agent arbeitet, mit dessen vollem Tool-Zugriff — vor Verwendung prüfen.",
         "confirmAttachAction": "Trotzdem anhängen",
-        "confirmAttachHighRisk": "Der heuristische Scan dieses Skills zeigt hohes Risiko ({codes}). Als Persona steuert er den Top-Level-Agent mit vollem Tool-Zugriff. Bestätige, dass du ihn geprüft hast, bevor du ihn anhängst."
+        "confirmAttachHighRisk": "Der heuristische Scan dieses Skills zeigt hohes Risiko ({codes}). Als Arbeitsmodus prägt er, wie der Agent arbeitet, mit dessen vollem Tool-Zugriff. Bestätige, dass du ihn geprüft hast, bevor du ihn anhängst."
       },
       "facilitatorsNote": "Facilitatoren sind hier nicht aufgeführt: Channels, Sub-Agenten, Tools, MCP-Server und Zeitpläne lassen sich mit ihnen nicht verdrahten."
     }
@@ -1645,11 +1645,9 @@
     "outputLabel": "Ausgabe",
     "foreignToolBadge": "Fremdes Werkzeug",
     "foreignToolExplain": "Dieser Aufruf lief nicht über omadia. Die Abo-CLI hat ein eigenes eingebautes Werkzeug benutzt, omadias Rechteprüfung hat dafür also nicht gegriffen. Bitte melde das deinem Betreiber.",
-    "persona": {
-      "title": "Persona",
-      "matched": "Antwortet als {name}",
-      "none": "Standard-Identität",
-      "fallback": "Persona-Klassifikator nicht verfügbar — Standard-Identität"
+    "workingMode": {
+      "label": "Modus: {name}",
+      "title": "Arbeitsmodus für diese Antwort, gewählt von {classifier}. Er ändert, wie der Agent arbeitet, nicht wer antwortet."
     },
     "subAgentTrace": "Sub-Agent-Trace",
     "mcpAuth": {
