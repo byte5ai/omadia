@@ -449,6 +449,28 @@ export interface PluginArchetype {
   roleContract?: string;
 }
 
+/**
+ * One agent template of a plugin (`agent_templates:` block, spec 2042
+ * §5.10): a preset of identity, personality and suggested capabilities for
+ * an agent of an existing archetype. Inactive metadata: it runs nothing and
+ * grants nothing. `persona` and `quality` are the Agent Builder's documents
+ * (`PersonaConfigSchema`, `QualityConfigSchema`), validated when the
+ * manifest is read.
+ */
+export interface PluginAgentTemplate {
+  readonly id: string;
+  readonly archetype: string;
+  readonly name: string;
+  readonly short_description?: string;
+  readonly long_description?: string;
+  readonly instructions?: string;
+  readonly language?: string;
+  readonly persona?: Readonly<Record<string, unknown>>;
+  readonly quality?: Readonly<Record<string, unknown>>;
+  /** Plugin ids the template suggests granting; never granted by it. */
+  readonly capabilities: readonly string[];
+}
+
 export type ChannelTransportKind = 'webhook' | 'websocket' | 'long-poll';
 
 export type ChannelCapability =
@@ -632,6 +654,10 @@ export interface Plugin {
   kind: PluginKind;
   /** #2088 — present exactly when `kind === 'archetype'`. */
   archetype?: PluginArchetype;
+  /** Spec 2042 §5.10 — the `agent_templates:` block: inactive presets the
+   *  operator turns into agents in the Agent Builder. Absent when the
+   *  manifest declares none. */
+  agent_templates?: PluginAgentTemplate[];
   name: string;
   version: string;
   latest_version: string;

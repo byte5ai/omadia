@@ -435,6 +435,7 @@ import { createAgentEndOfService, logOwedSystemNotice } from './platform/agentEn
 import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
 import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
 import { createOperatorExecutionRouter } from './routes/operatorExecution.js';
+import { createAgentTemplatesRouter } from './routes/agentTemplates.js';
 import type { ConductorDiscussionAdmin } from './conductor/discussionAdmin.js';
 import {
   wireConversationMessages,
@@ -3685,6 +3686,18 @@ async function main(): Promise<void> {
   // handful of bytes and walks through a cap written against it.
   app.use(express.json({ limit: '10mb', verify: recordRawBodyBytes }));
   app.use(cookieParser());
+
+  // Spec 2042 §5.10 — agent templates of the installed plugins, as prefills
+  // for the Agent Builder. Read-only: the Builder creates the agent.
+  app.use(
+    '/api/v1/admin/agent-templates',
+    requireAuth,
+    createAgentTemplatesRouter({
+      listPlugins: () => pluginCatalog.list().map((entry) => entry.plugin),
+      isInstalled: (pluginId) => installedRegistry.has(pluginId),
+      isArchetypeRegistered: (archetypeId) => getArchetype(archetypeId) !== undefined,
+    }),
+  );
 
   app.get('/health', (_req, res) => {
     // `kg` surfaces the recall capability picture (backend durability +

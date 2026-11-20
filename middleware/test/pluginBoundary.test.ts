@@ -115,7 +115,7 @@ describe('spec 2042 §5.10 — checkPluginBoundary', () => {
 
   it('lets an agent template with a personality in: inactive presets', () => {
     const manifest = {
-      agent_templates: [{ id: 'hr', identity: { name: 'Hanna' }, personality: { warmth: 'high' } }],
+      agent_templates: [{ id: 'hr', name: 'Hanna', instructions: 'You are the HR colleague.', persona: { axes: { warmth: 80 } } }],
     };
     assert.equal(checkPluginBoundary({ ...base, kind: 'agent-template', manifest }), undefined);
     assert.equal(checkPluginBoundary({ ...base, kind: 'integration', manifest }), undefined);
@@ -260,7 +260,7 @@ describe('spec 2042 §6 criterion 15 — the boundary at ingest', () => {
   });
 
   it('accepts an agent template with a personality and no code', async () => {
-    const templates = 'agent_templates:\n  - id: "hr"\n    identity:\n      name: "Hanna"\n    personality:\n      warmth: "high"\n';
+    const templates = 'agent_templates:\n  - id: "hr"\n    name: "Hanna"\n    instructions: "You are the HR colleague."\n    persona:\n      axes:\n        warmth: 80\n';
     const r = await ingest({ 'manifest.yaml': manifest('agent-template', templates, false), 'AGENT.md': 'x' });
     assert.equal(r.ok, true, JSON.stringify(r));
   });
