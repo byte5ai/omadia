@@ -10089,6 +10089,27 @@ der Adapter gilt immer.
   Kernel den vom Kanal gestarteten Turn dieses Agents in dieser Konversation
   (`facilitatorAgent.ts`, Service `facilitatorConversations@1`): leere Antwort,
   kein Modellaufruf. Der Adapter sollte den Turn dort gar nicht starten.
+- **Verknüpfte Sitzungs-Konversationen (#2076, #2089, ADR-0026, Migration
+  `0107_session_conversations`):** Eine Sitzung kann in einer eigenen
+  Konversation laufen (Meeting-Chat). Verknüpft wird nur auf eine
+  Link-Anfrage, die IN dieser Konversation gestellt wurde: eine Erwähnung des
+  Facilitators in einer Konversation, die kein Prozess des Agents liest, geht
+  über `LinkRequestRouter` (`src/channels/linkRequestRouter.ts`, aufgerufen
+  aus `facilitatorRuntimeService.addressedTurn`) als typisiertes
+  `LinkRequest` an `onLinkRequest` des Archetyp-Plugins, ohne gespeichert zu
+  werden und ohne Leserecht; die Anfrage liegt in `conversation_link_requests`.
+  `reserveConversation({ linkRequestId })` nimmt die Reservierung (Rolle
+  `session`, Zustand `scheduled`) und verbraucht die Anfrage in einer
+  Transaktion (`src/execution/sessionConversationStore.ts`); ohne passende
+  Anfrage `link_not_authorized`. `setSessionState` bewegt den Zustand
+  (`scheduled → live → confirming → closed`, `scheduled → cancelled`); `live`
+  nur mit Readiness für alle Nachrichten (`not_ready`), `closed`/`cancelled`
+  geben die Reservierung frei. Der Hub liest nach der Tabelle
+  (`sessionReadTable.ts`: `scheduled` addressed, `live`/`confirming` all,
+  sonst nichts, Abo endet); senden in eine freigegebene Sitzungs-Konversation
+  nur aus einem `closing`-Scope, in `confirming` nur Konsens/Status/Stop.
+  Überholte Revisionen tragen auf jedem Lesepfad `superseded` und
+  `latestRevision` (`supersededMarks.ts`).
 - **Engine-Status:** `GET /api/v1/operator/agents/facilitation-engine`
   (`src/routes/facilitationEngineStatus.ts`) liest den Zustand, den das
   Engine-Plugin unter dem Service `facilitationEngine` veröffentlicht.

@@ -1253,10 +1253,14 @@ export async function activate(
         .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
         ?.privateTurn?.(agentSlug, message),
     // #2089 — a mention in a conversation where a process listens for them.
-    facilitatorAddressedTurn: async (agentSlug, message) =>
-      (await ctx.services
+    // #2089 — and a link request in a conversation no process reads yet: a
+    // fixed answer may come back.
+    facilitatorAddressedTurn: async (agentSlug, message) => {
+      const taken = await ctx.services
         .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
-        ?.addressedTurn?.(agentSlug, message)) === true,
+        ?.addressedTurn?.(agentSlug, message);
+      return typeof taken === 'object' && taken !== null ? taken : taken === true;
+    },
     ...(contextRetriever ? { contextRetriever } : {}),
     ...(sessionBriefing ? { sessionBriefing } : {}),
     ...(factExtractor ? { factExtractor } : {}),

@@ -18,9 +18,18 @@ import {
   type ExecutionScopeKind,
   type ExecutionTarget,
   type OpenExecutionScopeRequest,
+  type SessionConversationState,
 } from '@omadia/plugin-api';
 
 import type { ExecutionScopeStore, ReservationRow, ScopeRow } from './scopeStore.js';
+import type { SessionConversationStore } from './sessionConversationStore.js';
+
+const SESSION_STATES: ReadonlySet<string> = new Set(['scheduled', 'live', 'confirming', 'closed', 'cancelled']);
+/** #2076 — what a non-closing scope may still send into a session
+ *  conversation whose summary waits for the group's consent (spec 2043 §5.3). */
+const CONFIRMING_PURPOSES: ReadonlySet<string> = new Set([
+  'consent', 'status', 'stop', 'essential_message', 'protocol_dispatch', 'readiness_check', 'roster_check',
+]);
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -66,6 +75,16 @@ export interface ExecutionAuthorizationDeps {
    * adjusted at once instead of at the next periodic check.
    */
   readonly onAccessChanged?: () => void;
+  /** #2076 / #2089 — linked session conversations; absent: a session
+   *  conversation cannot be linked (`reserveConversation` refuses). */
+  readonly sessions?: SessionConversationStore;
+  /**
+   * #2076 — why the agent's identity cannot read EVERY message of a
+   * conversation (the channel's readiness), or `undefined` when it can.
+   * Asked before a session goes `live` (criterion 60). Absent: `live` is
+   * refused, since nobody can say the channel delivers.
+   */
+  readonly notReadyForAll?: (agentSlug: string, channelType: string, conversationId: string) => Promise<string | undefined>;
   readonly now?: () => Date;
   readonly log?: (message: string) => void;
 }
@@ -88,6 +107,8 @@ const publicReservation = (row: ReservationRow): ConversationReservation => ({
   role: row.role,
   reservedAt: row.reservedAt,
   ...(row.releasedAt ? { releasedAt: row.releasedAt } : {}),
+  ...(row.sessionState ? { sessionState: row.sessionState } : {}),
+  ...(row.sessionId ? { sessionId: row.sessionId } : {}),
 });
 
 const isId = (value: unknown): value is string =>
@@ -189,6 +210,35 @@ export function createExecutionAuthorizationService(
     return { deadline, absoluteLimit };
   };
 
+  /**
+   * #2076 (spec 2043 §5.3) — sending into a linked session conversation
+   * follows its session state: once it is `closed` or `cancelled` only the
+   * process's `closing` scopes send there (its closing documents); while it
+   * is `confirming` the other scopes send consent requests, status and stop,
+   * no moderation.
+   */
+  const sessionTargetRefusal = async (
+    scope: ScopeRow,
+    target: ExecutionTarget,
+    purpose: string,
+  ): Promise<ExecutionRefusal | undefined> => {
+    if (target.kind !== 'conversation' || scope.kind === 'closing' || !deps.sessions) return undefined;
+    const session = await deps.sessions.sessionReservation({
+      pluginId: callerPluginId,
+      processId: scope.processId,
+      channelType: target.channelType,
+      conversationId: target.conversationId,
+    });
+    if (!session) return undefined;
+    if (session.releasedAt) {
+      return refuse('target_not_allowed', 'the session conversation was released; only a closing scope sends there');
+    }
+    if (session.sessionState === 'confirming' && !CONFIRMING_PURPOSES.has(purpose)) {
+      return refuse('purpose_not_allowed', 'a session in confirming takes consent requests, status and stop only');
+    }
+    return undefined;
+  };
+
   return {
     async openScope(request: OpenExecutionScopeRequest) {
       const agent = permittedAgent(request?.agentSlug);
@@ -286,6 +336,8 @@ export function createExecutionAuthorizationService(
         if (request.action === 'post' && target.kind !== 'conversation') {
           return refuse('invalid_request', 'a post goes to a conversation');
         }
+        const sessionRefusal = await sessionTargetRefusal(scope, target, request.purpose);
+        if (sessionRefusal) return sessionRefusal;
         if (request.action === 'direct_message' && target.kind !== 'person') {
           return refuse('invalid_request', 'a direct message goes to a person');
         }
@@ -407,26 +459,75 @@ export function createExecutionAuthorizationService(
       if (!scopes.some((s) => s.state === 'open' && s.agentId === agent.id)) {
         return refuse('scope_order', 'this process has no open scope');
       }
-      const reserved = await store.reserve({
+      // #2089 — a session conversation is linked on a link request made
+      // inside it (spec 2043 §5.3, criterion 48).
+      if (!deps.sessions) return refuse('unavailable', 'session conversations need the execution store');
+      const linked = await deps.sessions.reserveSession({
+        pluginId: callerPluginId,
+        agentId: agent.id,
+        processId: request.processId,
         channelType: target.channelType,
         conversationId: target.conversationId,
-        holderKind: 'archetype_process',
-        agentId: agent.id,
-        pluginId: callerPluginId,
-        processId: request.processId,
-        role: 'session',
+        linkRequestId: typeof request.linkRequestId === 'string' ? request.linkRequestId : undefined,
+        sessionId: isId(request.sessionId) ? request.sessionId : undefined,
       });
-      if (reserved.ok) return { outcome: 'reserved', reservation: publicReservation(reserved.reservation) };
-      const holder = reserved.heldBy;
-      if (holder && holder.pluginId === callerPluginId && holder.processId === request.processId) {
-        return { outcome: 'reserved', reservation: publicReservation(holder) };
+      if (linked.ok) {
+        deps.onAccessChanged?.();
+        deps.log?.(
+          `[execution] '${agent.slug}' process ${request.processId} linked ${target.channelType}/${target.conversationId} as a session conversation`,
+        );
+        return { outcome: 'reserved', reservation: publicReservation(linked.reservation) };
       }
+      if (linked.code === 'link_not_authorized') return refuse('link_not_authorized', linked.message);
       return refuse(
         'conversation_busy',
-        holder?.holderKind === 'agent_discussion'
+        linked.heldBy?.holderKind === 'agent_discussion'
           ? 'an agent discussion holds this conversation'
           : 'another process holds this conversation',
       );
+    },
+
+    async setSessionState(request) {
+      if (!deps.sessions) return refuse('unavailable', 'session conversations need the execution store');
+      const target = readTarget({ kind: 'conversation', ...request });
+      if (!isId(request?.processId) || !target || target.kind !== 'conversation') {
+        return refuse('invalid_request', 'processId, channelType and conversationId are required');
+      }
+      if (!SESSION_STATES.has(request.state)) return refuse('invalid_request', 'unknown session state');
+      const state = request.state as SessionConversationState;
+      const where = {
+        pluginId: callerPluginId,
+        processId: request.processId,
+        channelType: target.channelType,
+        conversationId: target.conversationId,
+      };
+      const current = await deps.sessions.sessionReservation(where);
+      if (!current) return refuse('unknown_scope', 'this process never linked that conversation');
+      if (state === 'live' && current.sessionState !== 'live' && !current.releasedAt) {
+        // Criterion 60: readiness of the session conversation itself, again
+        // right before it goes live.
+        const agentSlug = (await store.listScopesOfProcess(callerPluginId, request.processId)).find((s) => s.state === 'open')?.agentSlug;
+        if (!agentSlug) return refuse('scope_order', 'this process has no open scope');
+        const notReady = deps.notReadyForAll
+          ? await deps.notReadyForAll(agentSlug, target.channelType, target.conversationId).catch(
+              (err: unknown) => `the readiness check failed: ${err instanceof Error ? err.message : String(err)}`,
+            )
+          : 'the kernel cannot check the readiness of this conversation';
+        if (notReady) return refuse('not_ready', notReady);
+      }
+      const result = await deps.sessions.setSessionState({
+        ...where,
+        state,
+        reason: typeof request.reason === 'string' && request.reason ? request.reason : state,
+      });
+      if (!result.ok) return refuse(result.code, result.message);
+      if (result.changed) {
+        deps.onAccessChanged?.();
+        deps.log?.(
+          `[execution] process ${request.processId}: session conversation ${target.channelType}/${target.conversationId} is ${state}`,
+        );
+      }
+      return { outcome: 'updated', reservation: publicReservation(result.reservation) };
     },
 
     async releaseConversation(request) {

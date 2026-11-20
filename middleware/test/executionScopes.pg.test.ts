@@ -27,6 +27,7 @@ import {
 } from '../src/execution/executionAuthorizationService.js';
 import { createExecutionGrantsService, createGrantVerificationService } from '../src/execution/grantService.js';
 import { ExecutionScopeStore } from '../src/execution/scopeStore.js';
+import { SessionConversationStore } from '../src/execution/sessionConversationStore.js';
 import { createScopedSendService } from '../src/channels/scopedSendService.js';
 import { wrapFacilitatorAgent } from '../packages/harness-orchestrator/src/facilitatorAgent.js';
 import { admitModelCall } from '../packages/llm-provider-api/src/index.js';
@@ -48,6 +49,9 @@ const HOUR = 3_600_000;
 describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, () => {
   let pool: Pool;
   let store: ExecutionScopeStore;
+  let sessions: SessionConversationStore;
+  /** Conversations whose channel cannot deliver every message, with why. */
+  const notReady = new Map<string, string>();
   const agents = new Map<string, ExecutionAgent>();
   let clock = (): Date => new Date();
   let seq = 0;
@@ -65,6 +69,8 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       resolveAgent: (slug) => agents.get(slug),
       archetypePluginIdFor: (archetype) => (archetype === 'facilitator' ? ENGINE : archetype === 'other' ? OTHER : undefined),
       configuringMaxMs: 72 * HOUR,
+      sessions,
+      notReadyForAll: (_agent, _channel, conversationId) => Promise.resolve(notReady.get(conversationId)),
       now: () => clock(),
     });
   let engine: ExecutionAuthorizationService;
@@ -108,6 +114,7 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       agents.set(slug, { id: agent.id, slug, archetype, enabled: true });
     }
     store = new ExecutionScopeStore(pool);
+    sessions = new SessionConversationStore(pool);
     engine = serviceFor(ENGINE);
   });
 
@@ -583,22 +590,149 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       await engine.openScope({ agentSlug: 'finn', processId, kind: 'configuring', budget: { actions: 1, modelCalls: 0 }, home: first.home });
       assert.deepEqual(await engine.listScopes(processId), []);
     });
+  });
 
-    it('a session conversation is linked with its own reservation and released on its own', async () => {
+  describe('#2076 / #2089 linked session conversations (migration 0107)', () => {
+    /** A link request made inside `conversation` for these processes. */
+    const linkRequest = async (
+      conversation: { channelType: string; conversationId: string },
+      processIds: readonly string[],
+      agentSlug = 'mara',
+      ttlMs = HOUR,
+    ): Promise<string> =>
+      (
+        await sessions.createLinkRequest({
+          pluginId: ENGINE,
+          agentId: agents.get(agentSlug)!.id,
+          ...conversation,
+          principalId: 'aad-anna',
+          processIds,
+          ttlMs,
+        })
+      ).id;
+
+    it('a session conversation is linked only on a link request made inside it (criterion 48)', async () => {
       const { processId, home } = await activeProcess();
       const session = chat();
+      const elsewhere = chat();
+      // No request, or one made in another conversation (the home one): nothing.
+      assert.equal(code(await engine.reserveConversation({ agentSlug: 'mara', processId, ...session })), 'link_not_authorized');
+      // Its own home conversation, lost, it takes back without a link...
+      await engine.releaseConversation({ processId, ...home, reason: 'lost' });
+      const back = await engine.reserveConversation({ agentSlug: 'mara', processId, ...home });
+      assert.equal(back.outcome === 'reserved' && back.reservation.role, 'home');
+      // ...but not after an operator released it.
+      const heldNow = await store.holder(home.channelType, home.conversationId);
+      await store.releaseReservation(heldNow!.id, 'released by ops@example.com');
+      assert.equal(code(await engine.reserveConversation({ agentSlug: 'mara', processId, ...home })), 'link_not_authorized');
+      assert.equal(code(await engine.reserveConversation({ agentSlug: 'mara', processId, ...session, linkRequestId: 'not-a-uuid' })), 'link_not_authorized');
+      const fromElsewhere = await linkRequest(elsewhere, [processId]);
+      assert.equal(
+        code(await engine.reserveConversation({ agentSlug: 'mara', processId, ...session, linkRequestId: fromElsewhere })),
+        'link_not_authorized',
+      );
+      // A request offered to another process does not authorize this one.
+      const forOther = await linkRequest(session, ['someone-else']);
+      assert.equal(code(await engine.reserveConversation({ agentSlug: 'mara', processId, ...session, linkRequestId: forOther })), 'link_not_authorized');
+      assert.equal(await store.holder(session.channelType, session.conversationId), undefined, 'nothing was taken');
+
+      const request = await linkRequest(session, [processId]);
+      const linked = await engine.reserveConversation({ agentSlug: 'mara', processId, ...session, linkRequestId: request, sessionId: 's-1' });
+      assert.equal(linked.outcome, 'reserved', JSON.stringify(linked));
+      if (linked.outcome !== 'reserved') return;
+      assert.equal(linked.reservation.role, 'session');
+      assert.equal(linked.reservation.sessionState, 'scheduled');
+      assert.equal(linked.reservation.sessionId, 's-1');
+      // A restart asks again: the same reservation, without a new request.
+      assert.equal((await serviceFor(ENGINE, new ExecutionScopeStore(pool)).reserveConversation({ agentSlug: 'mara', processId, ...session })).outcome, 'reserved');
+      // The request is used up.
+      const { rows } = await pool.query<{ consumed: boolean }>('SELECT consumed_at IS NOT NULL AS consumed FROM conversation_link_requests WHERE id = $1', [request]);
+      assert.equal(rows[0]?.consumed, true);
+      // The open scopes may now address it.
+      const active = (await engine.listScopes(processId)).find((sc) => sc.kind === 'active' && sc.state === 'open');
+      assert.ok(active?.targets.some((t) => t.kind === 'conversation' && t.conversationId === session.conversationId));
+    });
+
+    it('an expired request, or a conversation held by another process or a discussion, takes nothing (criterion 45)', async () => {
+      const first = await activeProcess();
+      const second = await activeProcess(undefined, 'finn');
+      const session = chat();
+      // Two processes link the same chat at the same moment: exactly one wins.
+      const [a, b] = await Promise.all([linkRequest(session, [first.processId]), linkRequest(session, [second.processId], 'finn')]);
+      const results = await Promise.all([
+        engine.reserveConversation({ agentSlug: 'mara', processId: first.processId, ...session, linkRequestId: a }),
+        engine.reserveConversation({ agentSlug: 'finn', processId: second.processId, ...session, linkRequestId: b }),
+      ]);
+      assert.deepEqual(results.map((r) => r.outcome === 'reserved' ? 'reserved' : code(r)).sort(), ['conversation_busy', 'reserved']);
+      // A chat held by an agent discussion.
+      const talk = chat();
+      assert.equal((await store.reserve({ ...talk, holderKind: 'agent_discussion', processId: 'discussion:9', role: 'home' })).ok, true);
+      const onTalk = await linkRequest(talk, [first.processId]);
+      assert.equal(code(await engine.reserveConversation({ agentSlug: 'mara', processId: first.processId, ...talk, linkRequestId: onTalk })), 'conversation_busy');
+      // An expired request.
+      const late = chat();
+      const expired = await linkRequest(late, [first.processId], 'mara', 1);
+      await new Promise((r) => setTimeout(r, 20));
+      assert.equal(code(await engine.reserveConversation({ agentSlug: 'mara', processId: first.processId, ...late, linkRequestId: expired })), 'link_not_authorized');
+    });
+
+    async function linkedSession() {
+      const process = await activeProcess({ actions: 20, modelCalls: 0 });
+      const session = chat();
+      const request = await linkRequest(session, [process.processId]);
+      const linked = await engine.reserveConversation({ agentSlug: 'mara', processId: process.processId, ...session, linkRequestId: request });
+      assert.equal(linked.outcome, 'reserved');
+      return { ...process, session };
+    }
+    const setState = (processId: string, session: { channelType: string; conversationId: string }, state: 'live' | 'confirming' | 'closed' | 'cancelled' | 'scheduled') =>
+      engine.setSessionState!({ processId, ...session, state });
+
+    it('the session state follows the table; live needs readiness (criterion 60); closed releases', async () => {
+      const { processId, session, scope } = await linkedSession();
+      const access = () => store.processAccess({ pluginId: ENGINE, processId, ...session });
+      assert.deepEqual((await access()).session, { state: 'scheduled', released: false });
+      // Not ready: the session does not go live and nothing changes.
+      notReady.set(session.conversationId, 'rsc_missing: ChatMessage.Read.Chat is not consented');
+      const refused = await setState(processId, session, 'live');
+      assert.equal(code(refused), 'not_ready');
+      assert.match((refused as ExecutionRefusal).message, /ChatMessage\.Read\.Chat/);
+      assert.equal((await access()).session?.state, 'scheduled');
+      notReady.delete(session.conversationId);
+      assert.equal((await setState(processId, session, 'live')).outcome, 'updated');
+      assert.equal((await setState(processId, session, 'live')).outcome, 'updated', 'the same state again');
+      assert.equal(code(await setState(processId, session, 'scheduled')), 'session_state', 'no way back');
+      assert.equal((await setState(processId, session, 'confirming')).outcome, 'updated');
+      // In confirming: consent and status go out, moderation does not.
+      const authorize = (purpose: 'moderation' | 'consent') =>
+        engine.authorize({ scopeId: scope.id, phase: 'active', purpose, action: 'post', target: { kind: 'conversation', ...session }, emission: 'template' });
+      assert.equal(code(await authorize('moderation')), 'purpose_not_allowed');
+      assert.equal((await authorize('consent')).outcome, 'authorized');
+      const closed = await setState(processId, session, 'closed');
+      assert.equal(closed.outcome === 'updated' && closed.reservation.releasedAt !== undefined, true);
+      assert.deepEqual((await access()).session, { state: 'closed', released: true });
+      assert.equal(await store.holder(session.channelType, session.conversationId), undefined, 'the conversation is free');
+      // Released: only a closing scope sends there.
+      assert.equal(code(await authorize('consent')), 'target_not_allowed');
+      const closing = await engine.openScope({
+        agentSlug: 'mara', processId, kind: 'closing', eventId: 'session-close-1', deadline: inHours(24),
+        budget: { actions: 5, modelCalls: 0 }, targets: [{ kind: 'conversation', ...session }],
+      });
+      assert.equal(closing.outcome, 'opened', JSON.stringify(closing));
+      if (closing.outcome !== 'opened') return;
+      const protocol = await engine.authorize({
+        scopeId: closing.scope.id, phase: 'active', purpose: 'protocol_dispatch', action: 'post', target: { kind: 'conversation', ...session }, emission: 'template',
+      });
+      assert.equal(protocol.outcome, 'authorized');
+      assert.equal(code(await setState(processId, session, 'live')), 'session_state', 'a released session never re-opens');
+    });
+
+    it('a scheduled session is cancelled and released; another process asks nothing of it', async () => {
+      const { processId, session } = await linkedSession();
       const other = await activeProcess(undefined, 'finn');
-      assert.equal(code(await engine.reserveConversation({ agentSlug: 'mara', processId, ...other.home })), 'conversation_busy');
-      assert.equal(code(await engine.reserveConversation({ agentSlug: 'mara', processId: 'never-started', ...session })), 'scope_order');
-      const linked = await engine.reserveConversation({ agentSlug: 'mara', processId, ...session });
-      assert.equal(linked.outcome === 'reserved' && linked.reservation.role, 'session');
-      assert.equal((await engine.reserveConversation({ agentSlug: 'mara', processId, ...session })).outcome, 'reserved', 'idempotent');
-      await engine.releaseConversation({ processId, ...session, reason: 'session closed' });
-      const held = (await engine.listReservations(processId)).filter((r) => !r.releasedAt).map((r) => r.conversationId);
-      assert.deepEqual(held, [home.conversationId]);
-      // One process cannot release another's.
-      await engine.releaseConversation({ processId, ...other.home, reason: 'hostile' });
-      assert.equal((await store.holder(other.home.channelType, other.home.conversationId))?.processId, other.processId);
+      assert.equal(code(await serviceFor(ENGINE).setSessionState!({ processId: other.processId, ...session, state: 'cancelled' })), 'unknown_scope');
+      assert.equal(code(await serviceFor(OTHER).setSessionState!({ processId, ...session, state: 'cancelled' })), 'unknown_scope');
+      assert.equal((await setState(processId, session, 'cancelled')).outcome, 'updated');
+      assert.equal(await store.holder(session.channelType, session.conversationId), undefined);
     });
   });
 
