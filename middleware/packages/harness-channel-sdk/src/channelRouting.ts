@@ -89,6 +89,16 @@ export interface ChannelResolveResult {
    * agent's own name.
    */
   readonly speaker?: AgentSpeaker;
+  /**
+   * #2055 — why this agent (or this refusal) was chosen: `identity` (the key
+   * IS the agent's own bot), `explicit` (addressed by slug or id),
+   * `selection` (the sender's `/agent` choice), `binding` (an operator bound
+   * the key) or `default` (the default-agent table). An adapter that probes
+   * more than one key per turn prefers a decided match (`identity`,
+   * `explicit`, `selection`, `binding`) over `default`, which every key
+   * answers alike. Absent on older platforms.
+   */
+  readonly match?: 'identity' | 'explicit' | 'selection' | 'binding' | 'default';
 }
 
 /**
@@ -155,4 +165,25 @@ export function resolveChatAgentForChannel(
     return result.chatAgent;
   }
   return getChatAgent(ctx);
+}
+
+/**
+ * #2055 — the full routing result for a `(channelType, channelKey)`: the
+ * decision, the {@link ChannelResolveResult.notice} of a `reject` and the
+ * {@link ChannelResolveResult.speaker} of the agent that will answer — what
+ * {@link resolveChatAgentForChannel} drops on the way to the bare ChatAgent.
+ *
+ * `undefined` when the platform has no {@link CHANNEL_RESOLVER_SERVICE}
+ * (no multi-agent registry): the caller then uses the shared singleton, as
+ * `resolveChatAgentForChannel` does.
+ */
+export function resolveChannelRoute(
+  ctx: PluginContext,
+  channelType: string,
+  channelKey: string,
+  context?: ChannelRouteContext,
+): ChannelResolveResult | undefined {
+  return ctx.services
+    .get<ChannelBindingResolver>(CHANNEL_RESOLVER_SERVICE)
+    ?.resolve(channelType, channelKey, context);
 }

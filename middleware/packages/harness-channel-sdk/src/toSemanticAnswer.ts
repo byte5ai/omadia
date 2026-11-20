@@ -117,29 +117,6 @@ function connectorVerifierBadge(
 }
 
 /**
- * #332 Layer 1 — plain-text fallback footer for connectors without rich-card
- * UI. Renders the harness-sourced `agentsConsulted` projection as a single
- * readable line, e.g. `🔎 Consulted: Strategist ✓ · 2 steps`. Returns
- * `undefined` when no sub-agent ran (caller appends nothing). Rich connectors
- * (web-ui, Teams) render their own UI from the structured field instead.
- */
-export function agentsConsultedFooterText(
-  answer: Pick<SemanticAnswer, 'agentsConsulted'>,
-): string | undefined {
-  const consulted = answer.agentsConsulted;
-  if (!consulted || consulted.length === 0) return undefined;
-  const parts = consulted.map((c) => {
-    const mark = c.status === 'success' ? '✓' : '✗';
-    const steps =
-      typeof c.toolCalls === 'number' && c.toolCalls > 0
-        ? ` · ${c.toolCalls} ${c.toolCalls === 1 ? 'step' : 'steps'}`
-        : '';
-    return `${c.label} ${mark}${steps}`;
-  });
-  return `🔎 Consulted: ${parts.join(' · ')}`;
-}
-
-/**
  * Humanize a run-trace `agentName` (which is the invoked tool name, e.g.
  * `ask_strategist` / `@omadia/agent-strategist`) into a footer label. Mirrors
  * the middleware-side `labelFromAgentId` (agents/resolveAgentForTool.ts) but
@@ -354,6 +331,13 @@ export function toSemanticAnswer(
           ...(disclosure?.assistantName !== undefined
             ? { assistantName: disclosure.assistantName }
             : {}),
+          // #2087 — frequency inputs of the visible markers.
+          ...(disclosure?.frequency !== undefined ? { frequency: disclosure.frequency } : {}),
+          ...(disclosure?.agentId !== undefined ? { agentId: disclosure.agentId } : {}),
+          ...(disclosure?.pauseMinutes !== undefined ? { pauseMinutes: disclosure.pauseMinutes } : {}),
+          ...(disclosure?.markerStore !== undefined ? { markerStore: disclosure.markerStore } : {}),
+          ...(disclosure?.markerScope !== undefined ? { markerScope: disclosure.markerScope } : {}),
+          ...(disclosure?.now !== undefined ? { now: disclosure.now } : {}),
         })
       : { text: baseText };
 

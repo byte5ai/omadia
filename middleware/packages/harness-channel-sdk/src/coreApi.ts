@@ -250,6 +250,17 @@ export interface CoreApi {
   emitConversationMessage?(event: ConversationMessageEvent): void;
 
   /**
+   * #2086 — `emitConversationMessage` for an adapter that must know what
+   * became of the message. `answeredCard` is `true` when the kernel took it as
+   * the typed answer to an open question (a card or poll it posted as plain
+   * text) and stored it as a `card_answer`: the adapter then starts NO turn
+   * for the message, or the agent would also answer "2". Resolves when the
+   * kernel has decided; never rejects. Optional — feature-detect; absent, use
+   * `emitConversationMessage` and start the turn as before.
+   */
+  reportConversationMessage?(event: ConversationMessageEvent): Promise<{ answeredCard: boolean }>;
+
+  /**
    * Does the identity `channelKey` receive EVERY message of this conversation
    * (#2043)? Synchronous and kernel-cached, because the adapter asks it on
    * the hot path to decide whether its mention gate applies. `false` for

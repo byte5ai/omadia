@@ -18,6 +18,21 @@ Additive (spec 2042 §5.3, §8 item 20): an agent's own bot on every channel.
   `/agent` sent to an agent's own bot (Teams, Telegram, Discord, Slack). That
   bot is always its agent, so nothing is selected.
 
+## 1.75.0 — 2026-11-20
+
+Additive (epic #2042, step S6, spec 2042 §5.3/§5.14, ADR-0021): channels and
+UIs show who speaks. This version marks a kernel whose `@omadia/channel-sdk`
+provides the channel runtime values `runPacedTurn`, `speakerLine`,
+`admitDecorations` with the decoration registry, `buildAnswerDetails` and
+`resolveChannelRoute`, plus `CoreApi.reportConversationMessage` for typed card
+and poll answers. Channel plugins that import them declare
+`compat.core: ">=1.75.0 <2.0"`.
+
+### Changed
+
+- **`ChannelKind`** also names `discord`, `whatsapp` and `imessage`, so the
+  audience floor and context memory know those channels.
+
 ## 1.74.0 — 2026-11-20
 
 Additive (#2045, epic #2042, spec 2042 §5.5, ADR-0013): who speaks, and

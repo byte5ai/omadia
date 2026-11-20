@@ -26,9 +26,9 @@
         "invalid": "Provider key rejected"
       },
       "orchestrators": {
-        "title": "Orchestrators",
-        "available": "{count, plural, one {# orchestrator available} other {# orchestrators available}}",
-        "none": "No orchestrator configured"
+        "title": "Agents",
+        "available": "{count, plural, one {# agent available} other {# agents available}}",
+        "none": "No agent configured"
       },
       "embeddings": {
         "title": "Memory / embeddings",
@@ -85,19 +85,19 @@
       "subtitle": "Jump straight into the most-used surfaces.",
       "chat": {
         "title": "Chat",
-        "description": "Talk to your orchestrators and run tasks."
+        "description": "Talk to your agents and run tasks."
       },
       "hub": {
         "title": "Hub",
         "description": "Browse and install plugins for your team."
       },
       "orchestrators": {
-        "title": "Orchestrators",
+        "title": "Agents",
         "description": "Configure agents, bindings, and channels."
       },
       "mcp": {
         "title": "MCP servers",
-        "description": "Connect external tools and assign them to orchestrators."
+        "description": "Connect external tools and assign them to agents."
       },
       "routines": {
         "title": "Routines",
@@ -150,14 +150,14 @@
         "connectApiKey": "Enter an API key",
         "connectSubscription": "Use a subscription",
         "title": "Connect an LLM",
-        "description": "Without a connected LLM no orchestrator can run. Connect an API provider or a subscription CLI first.",
+        "description": "Without a connected LLM no agent can run. Connect an API provider or a subscription CLI first.",
         "doneViaProvider": "An LLM provider is connected and its key has been verified.",
-        "doneViaCli": "You are logged into a subscription CLI and the orchestrator runs on it.",
+        "doneViaCli": "You are logged into a subscription CLI and the agent runs on it.",
         "doneViaOauth": "A subscription is connected and the agent runtime runs on it.",
         "doneViaRuntime": "The agent runtime runs on {label}.",
         "doneViaRuntimeNoLabel": "The agent runtime is running.",
-        "accessWithoutRuntime": "An LLM access is stored, but the agent runtime is not up yet. Usually the orchestrator just has not been assigned to that access.",
-        "assignOrchestrator": "Assign the orchestrator",
+        "accessWithoutRuntime": "An LLM access is stored, but the agent runtime is not up yet. Usually the agent just has not been assigned to that access.",
+        "assignOrchestrator": "Assign the agent",
         "unreachable": "The agent runtime did not answer, so this step cannot be checked. The middleware may be unavailable, still starting, or returning an error.",
         "openSystemStatus": "Open update & status",
         "databaseUnavailable": "The middleware answers, but its database is not reachable, so this step cannot be checked.",
@@ -193,7 +193,7 @@
   },
   "adminLlm": {
     "title": "LLM access",
-    "subtitle": "Give the orchestrator a model: connect an API provider and assign models per plugin, or log in to a vendor subscription CLI.",
+    "subtitle": "Give the agent a model: connect an API provider and assign models per plugin, or log in to a vendor subscription CLI.",
     "tabProviders": "API keys",
     "tabSubscriptions": "Subscriptions"
   },
@@ -508,7 +508,7 @@
     "privacyReports": "Privacy reports",
     "admin": "Admin",
     "system": "System",
-    "agentsCluster": "Orchestrators",
+    "agentsCluster": "Agents",
     "skills": "Skills",
     "agentsOverview": "Overview",
     "channels": "Channels",
@@ -527,7 +527,7 @@
     "workflowsHeading": "Workflows",
     "noWorkflows": "No workflows yet. Publish one below to get started.",
     "publishHeading": "Publish a workflow",
-    "publishHint": "The graph is validated by the engine before it is saved. An agent step's agentId is the slug of an Agent (orchestrator), e.g. \"fallback\".",
+    "publishHint": "The graph is validated by the engine before it is saved. An agent step's agentId is the slug of an agent, e.g. \"fallback\".",
     "slugLabel": "Slug",
     "nameLabel": "Name",
     "graphLabel": "Graph (JSON)",
@@ -728,7 +728,7 @@
     "conditionOp_exists": "exists",
     "conditionOp_in": "is one of",
     "conditionOp_matches": "matches",
-    "agentSlugHint": "The orchestrator slug to run for this step.",
+    "agentSlugHint": "The agent slug to run for this step.",
     "actionIdHint": "The tool / connector action id to invoke.",
     "scheduleLabel": "Schedule",
     "durationRawHint": "Custom ISO-8601 duration (e.g. PT1H30M)",
@@ -926,9 +926,9 @@
   "operatorChannels": {
     "metaTitle": "Channels · omadia",
     "title": "Channels",
-    "subtitle": "Route inbound webhooks per channel-key to an Orchestrator. Each channel plugin reports its own keys — you only pick which Orchestrator answers them.",
+    "subtitle": "Route inbound webhooks per channel-key to an agent. Each channel plugin reports its own keys — you only pick which agent answers them.",
     "loadError": "Failed to load channels",
-    "awaitingOrchestrator": "Channel routing becomes available once an orchestrator is running.",
+    "awaitingOrchestrator": "Channel routing becomes available once an agent is running.",
     "emptyHeading": "No channels known yet.",
     "emptyExplain": "Channel plugins (Teams, Telegram, …) report their keys during activation. As soon as a channel plugin is installed and active, its keys appear here.",
     "emptyDirectoriesKnown": "Registered channel types: {types}",
@@ -938,7 +938,7 @@
     "membersLine": "Members: {names}",
     "membersMore": "{count, plural, one {+# more} other {+# more}}",
     "staleBadge": "stale",
-    "routesTo": "→ Orchestrator:",
+    "routesTo": "→ Agent:",
     "routesToDefault": "(default agent · {agent})",
     "boundAgentUnavailable": "{name} ({status, select, deleted {deleted} other {disabled}})",
     "clearStale": "Clear binding",
@@ -947,6 +947,8 @@
       "body": "Answers on these channels are marked differently than on delivery: {channels}.",
       "inert": "Configured but not yet in effect: {channels}. Turns on these channels do not report their channel type, so they use the global setting.",
       "note": "This is your decision as the operator — nothing is blocked. Shown so a setting from a test setup does not go unnoticed.",
+      "frequency": "Visible AI markers appear {frequency}.",
+      "frequencyValue": {"channel_default": "as delivered", "per_answer": "on every answer", "per_conversation": "once per conversation"},
       "level": {
         "standard": "full marking",
         "concise": "short marking",
@@ -1048,8 +1050,8 @@
     "restartHint": "The plugins are registered. They become active after the next restart of the middleware.",
     "profiles": {
       "blank": "Empty profile. Build the stack yourself in the plugin store; upload custom plugins as a ZIP in the store's \"Local\" tab.",
-      "minimal-dev": "Orchestrator stack without the verifier. Embeddings are included because orchestrator-extras needs them. The memory and knowledge-graph backend follows DATABASE_URL and is set up at startup. Add channel plugins from the store afterwards.",
-      "production": "Full orchestrator stack with the verifier. Set DATABASE_URL so the startup selects the Postgres memory and knowledge-graph backend, and an LLM key, before applying. Install channel plugins (Teams, Telegram, …) from the store afterwards."
+      "minimal-dev": "Agent runtime stack without the verifier. Embeddings are included because the agent runtime extras need them. The memory and knowledge-graph backend follows DATABASE_URL and is set up at startup. Add channel plugins from the store afterwards.",
+      "production": "Full agent runtime stack with the verifier. Set DATABASE_URL so the startup selects the Postgres memory and knowledge-graph backend, and an LLM key, before applying. Install channel plugins (Teams, Telegram, …) from the store afterwards."
     }
   },
   "chatTabs": {
@@ -1260,7 +1262,7 @@
       },
       "subscription_cli_unsupported": {
         "what": "This plugin cannot run on the subscription CLI: it needs a provider with an API key. With the CLI assigned it would not start — for the answer verifier that means answers go out unchecked.",
-        "next": "Assign this plugin a key-based provider such as Anthropic. The subscription CLI stays available for the orchestrator and the background jobs."
+        "next": "Assign this plugin a key-based provider such as Anthropic. The subscription CLI stays available for the agent and the background jobs."
       },
       "tool_incompatible": {
         "what": "This plugin drives a tool loop and the selected provider cannot do that.",
@@ -1547,9 +1549,9 @@
   },
   "runtimeReadiness": {
     "title": "LLM access missing",
-    "body": "The agent runtime is offline: no LLM API key or subscription is connected yet. Add an API key or connect an existing Claude/Codex subscription in the LLM access settings, then assign the orchestrator to that access. This card disappears once the runtime is up.",
-    "titleNoAssignment": "Orchestrator not assigned",
-    "bodyNoAssignment": "An LLM access exists, but the orchestrator is not assigned to a provider that has access yet. In LLM access, under Assignment, pick the connected provider for the orchestrator, for a subscription \"Claude (subscription CLI)\". The runtime starts afterwards without a restart.",
+    "body": "The agent runtime is offline: no LLM API key or subscription is connected yet. Add an API key or connect an existing Claude/Codex subscription in the LLM access settings, then assign the agent to that access. This card disappears once the runtime is up.",
+    "titleNoAssignment": "Agent not assigned",
+    "bodyNoAssignment": "An LLM access exists, but the agent is not assigned to a provider that has access yet. In LLM access, under Assignment, pick the connected provider for the agent, for a subscription \"Claude (subscription CLI)\". The runtime starts afterwards without a restart.",
     "titleUnknown": "Agent runtime not responding",
     "bodyUnknown": "Access and assignment are set, but the agent runtime still does not respond. Check the stored access under LLM access.",
     "titleUnreachable": "Runtime status unknown",
@@ -1592,8 +1594,8 @@
   },
   "chat": {
     "errorProxyFailure": "Proxy error (HTTP {status}). Check the middleware logs.",
-    "errorAgentUnavailable": "This session's orchestrator is no longer active. Re-bind it below, or pick another.",
-    "errorNoAgentsActive": "No orchestrator is running yet. Assign an LLM provider under LLM access, then try again.",
+    "errorAgentUnavailable": "This session's agent is no longer active. Re-bind it below, or pick another.",
+    "errorNoAgentsActive": "No agent is running yet. Assign an LLM provider under LLM access, then try again.",
     "errorAborted": "Aborted.",
     "errorProviderGeneric": "Something went wrong while talking to the AI provider. Please try again.",
     "errorProviderAuth": "The AI provider rejected the stored API key. Check it under Admin → LLM access with “Test key” and store a new one if needed.",
@@ -1601,7 +1603,7 @@
     "errorProviderOverloaded": "The AI provider is currently overloaded. This resolves on its own — try again in a moment.",
     "intro": {
       "kicker": "What is this chat?",
-      "body": "This is the operator debug chat — a direct line to your orchestrators for testing prompts and inspecting tool calls, plans, and knowledge-graph walks as they happen. It's not the end-user experience; it's built for debugging."
+      "body": "This is the operator debug chat — a direct line to your agents for testing prompts and inspecting tool calls, plans, and knowledge-graph walks as they happen. It's not the end-user experience; it's built for debugging."
     },
     "streamLabel": "Stream:",
     "clearTabTitle": "Clear only the active tab",
@@ -1613,7 +1615,7 @@
     "resetConfirmBody": "The conversation in this chat will be cleared and the agent forgets its current context. Memory and Knowledge-Graph entries are preserved.",
     "resetConfirmAction": "Reset chat",
     "resetCancel": "Cancel",
-    "placeholder": "Ask the orchestrator…",
+    "placeholder": "Ask the agent…",
     "stopButton": "Stop",
     "sendButton": "Send",
     "steerPlaceholder": "Steer the running turn…",
@@ -1624,7 +1626,7 @@
     "steerNoticeEnded": "The turn just finished — press Send to ask it as a new message.",
     "steerTraceLabel": "Steered mid-turn:",
     "sessionsLoading": "Loading sessions…",
-    "emptyStatePrompt": "Ask the orchestrator — the answer streams live including tool calls.",
+    "emptyStatePrompt": "Ask the agent — the answer streams live including tool calls.",
     "emptyStateShortcut": "Shortcut: ↵ to send · ⇧↵ for a new line · new tab via „+ New chat\"",
     "composerSendHint": "↵ to send · ⇧↵ for a new line",
     "proactiveRoutineBadge": "Scheduled routine · {name}",
@@ -1969,19 +1971,38 @@
     "viewTrace": "trace ▾",
     "stepsCount": "{count, plural, one {# step} other {# steps}}"
   },
+  "agentDirectory": {
+    "heading": "Agents",
+    "empty": "No agents are available to you in this channel.",
+    "error": "The agent list could not be loaded.",
+    "defaultBadge": "default",
+    "archetypeStandard": "Standard agent",
+    "archetypeFacilitator": "Facilitator",
+    "reach": "Reach:",
+    "seededDescription": "Answers when nobody addressed a specific agent."
+  },
   "agentPicker": {
-    "label": "Orchestrator:",
-    "loading": "loading orchestrators…",
-    "error": "orchestrator list unavailable",
+    "label": "Agent:",
+    "loading": "loading agents…",
+    "error": "agent list unavailable",
     "defaultMarker": "(default)",
-    "pinnedTooltip": "Session is pinned. Use Operator → Orchestrators → Drain to reassign.",
-    "emptyCta": "No orchestrators configured — open Operator → Orchestrators",
-    "unavailableTitle": "This session's Orchestrator is no longer available",
-    "unavailableBody": "The Orchestrator \"{slug}\" was deleted or disabled. Pick how to recover this session.",
-    "actionReSnapshot": "Re-bind to standard",
+    "onlyAgentTooltip": "This is the only agent available to you here.",
+    "ariaCurrent": "Current agent: {name}",
+    "notice": {
+      "no_agent": "No agent is set up for you here. Ask an operator to make one available.",
+      "agent_not_available": "The default agent is not available to you here.",
+      "agent_disabled": "The default agent is switched off.",
+      "agent_deleted": "The default agent no longer exists.",
+      "generic": "There is no default agent here. Choose an agent to start."
+    },
+    "pinnedTooltip": "Session is pinned. Use Operator → Agents → Drain to reassign.",
+    "emptyCta": "No agents configured — open Operator → Agents",
+    "unavailableTitle": "This session's agent is no longer available",
+    "unavailableBody": "The agent \"{slug}\" was deleted or disabled. Pick how to recover this session.",
+    "actionReSnapshot": "Re-bind to the default agent",
     "actionDelete": "Delete session",
-    "noAgentsTitle": "No orchestrator is running",
-    "noAgentsBody": "No LLM provider is assigned to an orchestrator yet, so no agent can answer. Open LLM access and assign an API key or a subscription CLI.",
+    "noAgentsTitle": "No agent is running",
+    "noAgentsBody": "No LLM provider is assigned to an agent yet, so no agent can answer. Open LLM access and assign an API key or a subscription CLI.",
     "actionOpenLlmAccess": "Open LLM access"
   },
   "skills": {
@@ -2067,18 +2088,18 @@
     }
   },
   "operatorAgents": {
-    "metaTitle": "Orchestrators · omadia",
-    "title": "Orchestrators",
-    "subtitle": "Multi-orchestrator runtime — create, edit, disable, drain, or kill Orchestrators and watch the registry react in real time via the LISTEN/NOTIFY hot-reload bus.",
-    "loadError": "Failed to load orchestrators",
+    "metaTitle": "Agents · omadia",
+    "title": "Agents",
+    "subtitle": "Multi-agent runtime — create, edit, disable, drain, or kill agents and watch the registry react in real time via the LISTEN/NOTIFY hot-reload bus.",
+    "loadError": "Failed to load agents",
     "setup": {
       "eyebrow": "First start",
-      "titleNoAccess": "No orchestrator is running yet",
-      "bodyNoAccess": "Orchestrators and their channel routing appear here once the orchestrator plugin runs. It needs an LLM access: add an API key or connect an existing Claude/Codex subscription under LLM access, then assign the orchestrator to that access.",
-      "titleNoAssignment": "Orchestrator not assigned yet",
-      "bodyNoAssignment": "An LLM access exists, but the orchestrator is not yet assigned to a provider that has access. Under LLM access, in Assignment, pick the connected provider for the orchestrator. The orchestrators appear here afterwards, without a restart.",
-      "titleUnknown": "Orchestrator is not running",
-      "bodyUnknown": "Access and assignment are set, but the orchestrator is still not running. Check the stored access under LLM access.",
+      "titleNoAccess": "No agent is running yet",
+      "bodyNoAccess": "Agents and their channel routing appear here once the agent runtime plugin runs. It needs an LLM access: add an API key or connect an existing Claude/Codex subscription under LLM access, then assign the agent to that access.",
+      "titleNoAssignment": "Agent not assigned yet",
+      "bodyNoAssignment": "An LLM access exists, but the agent is not yet assigned to a provider that has access. Under LLM access, in Assignment, pick the connected provider for the agent. The agents appear here afterwards, without a restart.",
+      "titleUnknown": "Agent is not running",
+      "bodyUnknown": "Access and assignment are set, but the agent is still not running. Check the stored access under LLM access.",
       "cta": "Open LLM access",
       "ctaNoAssignment": "Open assignment"
     },
@@ -2087,34 +2108,64 @@
     "defaultAgentLabel": "Default agent:",
     "defaultAgentOff": "(off — unaddressed messages get a system notice)",
     "defaultAgentRefused": "This agent cannot be the default agent: it must be enabled and available to everyone in every channel.",
-    "createHeading": "Create Orchestrator",
+    "defaultEntries": {
+      "heading": "Default agents",
+      "help": "Who reaches which agent when they address none. The most specific row wins: user and channel, then user, then channel, then the whole instance. An agent can only be named where it is available; “off” answers with a system notice instead. The instance row is set, never removed.",
+      "loading": "Loading…",
+      "loadError": "The default-agent table could not be loaded.",
+      "writeError": "The change was not saved.",
+      "colWho": "Who",
+      "colChannel": "Channel",
+      "colAgent": "Agent",
+      "everyone": "Everyone",
+      "everyChannel": "Every channel",
+      "off": "off (system notice)",
+      "statusBadge": "{status, select, deleted {deleted} other {disabled}}",
+      "instanceRow": "instance row",
+      "remove": "Remove",
+      "removeRow": "Remove the row for {who} in {channel}",
+      "fieldWho": "User (e-mail)",
+      "fieldChannel": "Channel",
+      "fieldAgent": "Agent",
+      "save": "Save row",
+      "refusal": {
+        "agent_deleted": "This agent was deleted.",
+        "agent_disabled": "This agent is disabled.",
+        "archetype_not_default": "This kind of agent can never be a default agent.",
+        "agent_not_available_in_every_channel": "This agent is not available in every channel; pick one channel or change its availability.",
+        "agent_not_available_in_channel": "This agent is not available in that channel.",
+        "agent_not_available_to_everyone": "This agent is not available to everyone; name a user or change its availability.",
+        "agent_not_available_to_user": "This agent is not available to that user."
+      }
+    },
+    "createHeading": "Create agent",
     "fieldSlug": "Slug",
     "fieldName": "Name",
     "fieldDescription": "Description",
     "createSubmit": "Create",
-    "agentsHeading": "Orchestrators",
-    "agentsEmpty": "No orchestrators yet. Create one above.",
+    "agentsHeading": "Standard agents",
+    "agentsEmpty": "No agents yet. Create one above.",
     "agentMeta": "id: {id} · privacy: {privacy} (not enforced) · status: {status} · runtime: {runtime}",
-    "detailMetaTitle": "Orchestrator: {slug} · omadia",
-    "detailNotFoundMetaTitle": "Orchestrator not found · omadia",
+    "detailMetaTitle": "Agent: {slug} · omadia",
+    "detailNotFoundMetaTitle": "Agent not found · omadia",
     "detailOpenLink": "Details",
-    "detailBackToList": "All orchestrators",
+    "detailBackToList": "All agents",
     "detailAssignedHeading": "Assigned plugins",
-    "detailAssignedHint": "Enable or disable a plugin for this orchestrator only — the switch is saved immediately. Attach or detach plugins in the editor below.",
-    "detailAssignedEmpty": "No plugins are assigned to this orchestrator yet. Attach one in the editor below.",
+    "detailAssignedHint": "Enable or disable a plugin for this agent only — the switch is saved immediately. Attach or detach plugins in the editor below.",
+    "detailAssignedEmpty": "No plugins are assigned to this agent yet. Attach one in the editor below.",
     "detailToggleAria": "Enable or disable {plugin}",
     "detailErrors": {
       "agent_identity_unavailable": "The identity store is not wired — it registers once DATABASE_URL is set and migration 0051 has been applied.",
       "invalid_avatar": "That image could not be used as an avatar — a PNG, JPEG or WebP of up to 2 MB is expected.",
       "payload_too_large": "The image is too large — 2 MB is the limit.",
       "unsupported_media_type": "That file type does not work here — PNG, JPEG and WebP are accepted.",
-      "agent_graph_store_unavailable": "The orchestrator registry is unavailable right now. Try again in a moment.",
+      "agent_graph_store_unavailable": "The agent registry is unavailable right now. Try again in a moment.",
       "config_validation": "The server rejected the plugin configuration.",
       "invalid_body": "The server rejected the request payload.",
-      "invalid_slug": "This orchestrator slug is not valid.",
-      "multi_orchestrator_unavailable": "The multi-orchestrator runtime is not available.",
-      "not_found": "This orchestrator does not exist anymore — reload the page.",
-      "plugin_not_assigned": "This plugin is not assigned to the orchestrator anymore — reload the page.",
+      "invalid_slug": "This agent slug is not valid.",
+      "multi_orchestrator_unavailable": "The multi-agent runtime is not available.",
+      "not_found": "This agent does not exist anymore — reload the page.",
+      "plugin_not_assigned": "This plugin is not assigned to the agent anymore — reload the page.",
       "model_policy_unavailable": "The model catalogue is not available right now — the policy cannot be validated. Try again in a moment.",
       "unknown": "Request failed: {detail}"
     },
@@ -2127,8 +2178,8 @@
     "actionDelete": "Delete",
     "actionDrain": "Drain sessions",
     "actionKill": "Kill sessions",
-    "drainTooltip": "Clear snapshot on every session bound to this Orchestrator — next turn re-captures from current config",
-    "deleteConfirm": "Delete orchestrator \"{slug}\"? It goes out of service; its record is kept under “Deleted agents” until you remove it for good.",
+    "drainTooltip": "Clear snapshot on every session bound to this agent — next turn re-captures from current config",
+    "deleteConfirm": "Delete agent \"{slug}\"? It goes out of service; its record is kept under “Deleted agents” until you remove it for good.",
     "killConfirm": "Kill all sessions for \"{slug}\"? History will be lost.",
     "memoryScopeHeading": "Memory scope",
     "memoryScopeEmpty": "No scope (runtime registry not active)",
@@ -2138,20 +2189,20 @@
     "catalogError": "Failed to load the plugin catalog ({message}). The multi-select falls back to manual mode.",
     "catalogLoading": "Loading plugin catalog…",
     "catalogEmpty": "No installed plugins.",
-    "multiInstanceFalseBadge": "multi_instance: false — may be active on at most ONE orchestrator",
+    "multiInstanceFalseBadge": "multi_instance: false — may be active on at most ONE agent",
     "multiInstanceFalseShort": "Single-instance",
     "privacyStrictBadge": "strict",
     "memoryReadTooltip": "Plugin's memory read scope",
     "memoryWriteTooltip": "Plugin's memory write scope",
     "networkLabel": "Network:",
     "configShow": "Config",
-    "configOverrideBadgeTooltip": "Fields overridden for this orchestrator",
+    "configOverrideBadgeTooltip": "Fields overridden for this agent",
     "pluginConfig": {
       "title": "Configuration — {plugin}",
       "close": "Close",
       "done": "Done",
       "overrideSummary": "{set} of {total} overridden",
-      "introMixed": "Overridden fields apply to this orchestrator only; every other field keeps the store configuration.",
+      "introMixed": "Overridden fields apply to this agent only; every other field keeps the store configuration.",
       "introAllFromStore": "Nothing is overridden — this plugin runs entirely on the store configuration.",
       "resetAll": "Clear all overrides",
       "filterPlaceholder": "Filter fields …",
@@ -2173,12 +2224,12 @@
     "bindingsRemove": "Remove",
     "bindingsEmpty": "No bindings — unaddressed messages go to the default agent.",
     "routingTesterHeading": "Routing tester",
-    "routingTesterHelp": "Ask the server which Orchestrator would handle an inbound webhook. Hits explicit bindings first, then the default agent.",
+    "routingTesterHelp": "Ask the server which agent would handle an inbound webhook. Hits explicit bindings first, then the default agent.",
     "fieldChannelType": "Channel type",
     "fieldChannelKey": "Channel key",
     "routingTesterSubmit": "Test routing",
     "routingTesterRunning": "Testing…",
-    "routingTesterMatched": "→ Orchestrator \"{slug}\" (via {via})",
+    "routingTesterMatched": "→ Agent \"{slug}\" (via {via})",
     "routingTesterNoMatch": "No match — no default agent applies; the sender would get a system notice.",
     "agentCardSummary": "privacy: {privacy} (not enforced) · status: {status} · runtime: {runtime} · {plugins} plugins attached · {bindings} bindings",
     "agentCardModel": "model: {primary}{fallback, select, none {} other { · fallback: {fallback}}}",
@@ -2186,7 +2237,7 @@
     "sessionsLabel": "Sessions:",
     "pluginsAvailable": "Available",
     "pluginsAvailableToAttach": "Available to attach",
-    "pluginsAttachedHere": "Attached to this orchestrator",
+    "pluginsAttachedHere": "Attached to this agent",
     "pluginsAvailableEmpty": "All installed plugins are already attached.",
     "pluginsEnabled": "Attached",
     "pluginsEnabledEmpty": "Drag-and-drop or click \"Attach\" to add plugins.",
@@ -2204,7 +2255,7 @@
     "seededDescription": "Auto-created on first boot. Receives channel traffic that has no explicit binding, until you configure one.",
     "mcp": {
       "heading": "MCP servers",
-      "hint": "Assign MCP servers to this orchestrator and edit its per-tool allowlist. A tool only becomes callable once it is granted here and has passed the scan gate.",
+      "hint": "Assign MCP servers to this agent and edit its per-tool allowlist. A tool only becomes callable once it is granted here and has passed the scan gate.",
       "loading": "Loading MCP servers…",
       "loadError": "Failed to load MCP servers: {detail}",
       "empty": "No MCP servers available. Register and discover servers in the MCP Control Center first.",
@@ -2224,7 +2275,7 @@
       "discardDraft": "Discard changes",
       "unassign": "Unassign server",
       "unassignTitle": "Unassign MCP server",
-      "unassignBody": "Revoke all {count} tool grants of \"{server}\" for this orchestrator?",
+      "unassignBody": "Revoke all {count} tool grants of \"{server}\" for this agent?",
       "unassignConfirm": "Revoke all",
       "cancel": "Cancel",
       "delegation": {
@@ -2240,8 +2291,8 @@
         "invalid_delegation": "The server rejected the delegation mode.",
         "invalid_grant": "The server rejected the grant request.",
         "mcp_server_not_found": "This MCP server does not exist anymore — reload the page.",
-        "multi_orchestrator_unavailable": "The multi-orchestrator runtime is not available.",
-        "orchestrator_not_found": "This orchestrator does not exist anymore — reload the page.",
+        "multi_orchestrator_unavailable": "The multi-agent runtime is not available.",
+        "orchestrator_not_found": "This agent does not exist anymore — reload the page.",
         "grant_not_found": "This grant does not exist anymore — reload the page.",
         "invalid_grant_id": "The grant id is not valid.",
         "not_an_mcp_grant": "This grant is not an MCP tool grant.",
@@ -2250,30 +2301,30 @@
     },
     "grants": {
       "heading": "Tool grants",
-      "hint": "Read-only view of the tools this orchestrator may call and the MCP servers its plugins were granted. Manage grants on the MCP admin page.",
+      "hint": "Read-only view of the tools this agent may call and the MCP servers its plugins were granted. Manage grants on the MCP admin page.",
       "loading": "Loading grants…",
       "refresh": "Refresh",
-      "empty": "This orchestrator holds no tool grants yet.",
+      "empty": "This agent holds no tool grants yet.",
       "epochSummary": "Grant epoch: {epoch}",
       "epochRow": "epoch: {epoch}",
       "epochNever": "never bumped",
       "epochUnknown": "Grant epoch: unknown",
       "serverRemoved": "(server removed)",
       "pluginHeading": "Plugin MCP grants",
-      "pluginEmpty": "No MCP servers are granted to this orchestrator's plugins.",
+      "pluginEmpty": "No MCP servers are granted to this agent's plugins.",
       "grantedMeta": "granted by {who} · {date}",
       "kind": {
         "native": "native",
         "mcp": "MCP"
       },
       "errors": {
-        "agent_graph_store_unavailable": "The orchestrator registry is unavailable right now. Try again in a moment.",
+        "agent_graph_store_unavailable": "The agent registry is unavailable right now. Try again in a moment.",
         "config_validation": "The server rejected the request.",
         "invalid_body": "The server rejected the request payload.",
-        "invalid_slug": "This orchestrator slug is not valid.",
-        "multi_orchestrator_unavailable": "The multi-orchestrator runtime is not available.",
-        "not_found": "This orchestrator does not exist anymore — reload the page.",
-        "plugin_not_assigned": "This plugin is not assigned to the orchestrator anymore — reload the page.",
+        "invalid_slug": "This agent slug is not valid.",
+        "multi_orchestrator_unavailable": "The multi-agent runtime is not available.",
+        "not_found": "This agent does not exist anymore — reload the page.",
+        "plugin_not_assigned": "This plugin is not assigned to the agent anymore — reload the page.",
         "unknown": "Loading grants failed: {detail}"
       }
     },
@@ -2354,7 +2405,7 @@
     },
     "contextMemory": {
       "heading": "Chat-context memory",
-      "hint": "Controls whether this orchestrator keeps one shared memory tree or a separate tree per chat context (team, channel, direct message). Off is the default and matches the behaviour before this feature existed.",
+      "hint": "Controls whether this agent keeps one shared memory tree or a separate tree per chat context (team, channel, direct message). Off is the default and matches the behaviour before this feature existed.",
       "loading": "Loading the memory setting…",
       "stateSummary": "Current: {mode}",
       "stateUnknown": "Current: unknown",
@@ -2363,10 +2414,10 @@
       "unchanged": "No unsaved change.",
       "semanticsHeading": "Read this before switching it on",
       "semanticsTeam": "A turn from a team context writes into its own tier and into the shared team tier — that is the tier teammates read each other in.",
-      "semanticsAgent": "The orchestrator's own memory stays readable but becomes read-only for context turns, so “remember this globally” can no longer carry knowledge from one team to another.",
-      "semanticsApi": "Turns from the API carry no chat context, so they only ever reach the private memory of the orchestrator itself — never a team or channel tree.",
+      "semanticsAgent": "The agent's own memory stays readable but becomes read-only for context turns, so “remember this globally” can no longer carry knowledge from one team to another.",
+      "semanticsApi": "Turns from the API carry no chat context, so they only ever reach the private memory of the agent itself — never a team or channel tree.",
       "semanticsMembers": "With “Shared by the people present”, a group only gets knowledge when the channel reports its complete member list; otherwise it gets none, so nobody can read what was never theirs.",
-      "acknowledge": "I understand how memory will be split for this orchestrator.",
+      "acknowledge": "I understand how memory will be split for this agent.",
       "modes": {
         "off": {
           "label": "Off",
@@ -2374,11 +2425,11 @@
         },
         "enforce": {
           "label": "Separate per context",
-          "description": "Each chat context gets its own memory tree. The orchestrator's own memory stays readable, so existing knowledge can still be quoted."
+          "description": "Each chat context gets its own memory tree. The agent's own memory stays readable, so existing knowledge can still be quoted."
         },
         "enforce-strict": {
           "label": "Separate and sealed",
-          "description": "Each chat context gets its own memory tree and cannot read the orchestrator's own memory at all. Choose this when contexts must not share anything."
+          "description": "Each chat context gets its own memory tree and cannot read the agent's own memory at all. Choose this when contexts must not share anything."
         },
         "members": {
           "label": "Shared by the people present",
@@ -2388,12 +2439,12 @@
     },
     "teamsInstalls": {
       "heading": "Teams assignment",
-      "hint": "Which Microsoft Teams team this orchestrator's app is installed in, and whether the tenant has consented to the permissions the install needs.",
+      "hint": "Which Microsoft Teams team this agent's app is installed in, and whether the tenant has consented to the permissions the install needs.",
       "loading": "Loading the team assignment…",
       "refresh": "Refresh",
-      "noIdentity": "This orchestrator has no Teams identity yet. Create one in the Teams identity section before assigning it to a team.",
+      "noIdentity": "This agent has no Teams identity yet. Create one in the Teams identity section before assigning it to a team.",
       "installedHeading": "Installed in",
-      "installedEmpty": "This orchestrator's app is not installed in any team yet.",
+      "installedEmpty": "This agent's app is not installed in any team yet.",
       "appIdLabel": "Teams app: {appId}",
       "appIdNone": "not uploaded yet",
       "installedAt": "recorded {date}",
@@ -2423,8 +2474,8 @@
       "uninstall": "Uninstall",
       "uninstallBusy": "Uninstalling",
       "uninstallTitle": "Remove the app from this team?",
-      "uninstallBody": "The orchestrator's app is removed from team {teamId} and stops answering there.",
-      "uninstallBodyNamed": "The orchestrator's app is removed from the team “{teamName}” ({teamId}) and stops answering there.",
+      "uninstallBody": "The agent's app is removed from team {teamId} and stops answering there.",
+      "uninstallBodyNamed": "The agent's app is removed from the team “{teamName}” ({teamId}) and stops answering there.",
       "teamNameUnresolved": "Name not resolved — the M365 connector cannot provide it right now.",
       "uninstallConfirm": "Remove",
       "uninstallAlreadyAbsent": "The app was not installed in team {teamId} — the assignment has been cleared.",
@@ -2434,27 +2485,27 @@
         "install": "Installing into a team is not available in this deployment.",
         "uninstall": "Removing the app from a team needs Microsoft 365 connector 0.4.0 or newer. The connector installed here is older and publishes no uninstall — upgrade the plugin, or have a Teams administrator remove the app manually.",
         "enumerate": "The connector cannot list installs, so this view reports what the provisioning record proves rather than what Teams currently holds.",
-        "multi_team": "One orchestrator is tracked in one team. Assigning a second team would leave the first install untracked, so it is refused.",
+        "multi_team": "One agent is tracked in one team. Assigning a second team would leave the first install untracked, so it is refused.",
         "chat_install": "Installing into a chat needs the Microsoft 365 connector 0.7.0 or newer. The connector installed here is older — update the plugin, or choose a team as the target.",
         "chat_uninstall": "Removing the app from a chat needs the Microsoft 365 connector 0.7.0 or newer. The connector installed here is older — update the plugin, or remove the app inside the chat manually."
       },
       "unsupportedTechnical": "Server reason: {detail}",
       "notice": {
-        "teams_identity_unavailable": "Teams provisioning is not wired in this deployment — the identity store and job runner register once a database is configured and the orchestrator factory booted.",
+        "teams_identity_unavailable": "Teams provisioning is not wired in this deployment — the identity store and job runner register once a database is configured and the agent runtime booted.",
         "teams_provisioner_unavailable": "The Teams provisioner capability is missing — install and activate the Microsoft 365 connector plugin (0.3.1 or newer), then reload this page."
       },
       "errors": {
         "invalid_body": "The server rejected the request payload.",
-        "invalid_slug": "This orchestrator slug is not valid.",
-        "multi_orchestrator_unavailable": "The multi-orchestrator runtime is not available.",
-        "not_found": "This orchestrator does not exist anymore — reload the page.",
-        "team_install_conflict": "This orchestrator is already assigned to another team. Remove that assignment first — one orchestrator is tracked in one team.",
+        "invalid_slug": "This agent slug is not valid.",
+        "multi_orchestrator_unavailable": "The multi-agent runtime is not available.",
+        "not_found": "This agent does not exist anymore — reload the page.",
+        "team_install_conflict": "This agent is already assigned to another team. Remove that assignment first — one agent is tracked in one team.",
         "team_install_not_found": "There is no recorded install in this team — reload the page to see what can be removed.",
-        "teams_app_id_missing": "This orchestrator is recorded as installed but carries no Teams app id, so the install cannot be addressed. Run provisioning again.",
-        "teams_identity_not_found": "This orchestrator has no Teams identity yet.",
+        "teams_app_id_missing": "This agent is recorded as installed but carries no Teams app id, so the install cannot be addressed. Run provisioning again.",
+        "teams_identity_not_found": "This agent has no Teams identity yet.",
         "teams_identity_unavailable": "Teams provisioning is not wired in this deployment.",
         "teams_provisioner_unavailable": "The Teams provisioner capability is missing — install the Microsoft 365 connector plugin.",
-        "teams_provisioning_running": "A provisioning run is still in flight for this orchestrator. Wait for it to finish, then try again.",
+        "teams_provisioning_running": "A provisioning run is still in flight for this agent. Wait for it to finish, then try again.",
         "teams_uninstall_unsupported": "The Microsoft 365 connector installed here is too old to remove an app from a team. Upgrade it to 0.4.0 or newer, or have a Teams administrator remove the app manually.",
         "unknown": "The team assignment request failed: {detail}",
         "teams_target_is_channel": "That is a channel id. A channel is not an install target — use the team's group id, or a group chat id.",
@@ -2508,7 +2559,7 @@
         "instructions": "Behaviour",
         "instructionsHint": "How this agent should present itself and answer. For this agent it replaces the platform-wide default text — leave it empty to keep the default.",
         "verbosity": "Answer size",
-        "verbosityHint": "How much an answer contains — from the result alone to every intermediate step. Overrides the installation-wide setting of the Chat Orchestrator for this agent. A user asking for \"short\" or \"all details\" still wins for that turn.",
+        "verbosityHint": "How much an answer contains — from the result alone to every intermediate step. Overrides the installation-wide chat setting for this agent. A user asking for \"short\" or \"all details\" still wins for that turn.",
         "verbosityInherit": "Inherit the installation default",
         "verbosityLevels": {
           "tldr": "TL;DR — 1 to 3 sentences, the result only",
@@ -2602,12 +2653,12 @@
     },
     "teamsIdentity": {
       "heading": "Teams identity",
-      "hint": "Give this orchestrator its own Teams bot identity: a bot slug, a display name and an optional target team. Provisioning registers the Entra app, creates the bot, builds and uploads the Teams app package, and installs it.",
+      "hint": "Give this agent its own Teams bot identity: a bot slug, a display name and an optional target team. Provisioning registers the Entra app, creates the bot, builds and uploads the Teams app package, and installs it.",
       "loading": "Loading the Teams identity…",
       "refresh": "Refresh",
-      "createHint": "The bot slug and the display name are optional — omit them and the server derives both from the orchestrator. The target team is required: provisioning installs the app into it.",
+      "createHint": "The bot slug and the display name are optional — omit them and the server derives both from the agent. The target team is required: provisioning installs the app into it.",
       "fieldBotSlug": "Bot slug",
-      "fieldBotSlugHint": "Lowercase letters, digits and dashes. Must be unique across orchestrators.",
+      "fieldBotSlugHint": "Lowercase letters, digits and dashes. Must be unique across agents.",
       "fieldDisplayName": "Display name",
       "fieldDisplayNameHint": "The name people see in Teams.",
       "fieldTeamId": "Target team ID",
@@ -2653,7 +2704,7 @@
           "bot_handle_unavailable": "the bot name is already taken globally",
           "error": "error",
           "retries_exhausted": "retries exhausted — the progress reached is kept",
-          "team_conflict": "another run is already in flight for this orchestrator",
+          "team_conflict": "another run is already in flight for this agent",
           "stopped": "interrupted by a shutdown",
           "delegated_upload": "Catalogue upload via this tenant's Teams sign-in",
           "delegated_token_refreshed": "Access token renewed automatically",
@@ -2691,16 +2742,16 @@
         "failed": "failed"
       },
       "notice": {
-        "teams_identity_unavailable": "Teams identity provisioning is not wired in this deployment — the identity store and job runner register once a database is configured and the orchestrator factory booted.",
+        "teams_identity_unavailable": "Teams identity provisioning is not wired in this deployment — the identity store and job runner register once a database is configured and the agent runtime booted.",
         "teams_provisioner_unavailable": "The Teams provisioner capability is missing — install and activate the Microsoft 365 connector plugin (0.3.1 or newer), then reload this page."
       },
       "routeErrors": {
-        "bot_slug_taken": "That bot slug already belongs to another orchestrator — pick a different one.",
+        "bot_slug_taken": "That bot slug already belongs to another agent — pick a different one.",
         "invalid_body": "The server rejected the request payload.",
-        "invalid_slug": "This orchestrator slug is not valid.",
-        "multi_orchestrator_unavailable": "The multi-orchestrator runtime is not available.",
-        "not_found": "This orchestrator does not exist anymore — reload the page.",
-        "teams_identity_not_found": "This orchestrator has no Teams identity yet.",
+        "invalid_slug": "This agent slug is not valid.",
+        "multi_orchestrator_unavailable": "The multi-agent runtime is not available.",
+        "not_found": "This agent does not exist anymore — reload the page.",
+        "teams_identity_not_found": "This agent has no Teams identity yet.",
         "teams_identity_unavailable": "Teams identity provisioning is not wired in this deployment.",
         "teams_provisioner_unavailable": "The Teams provisioner capability is missing — install the Microsoft 365 connector plugin.",
         "unknown": "The Teams identity request failed: {detail}"
@@ -2762,7 +2813,7 @@
           "next": "Check that the Microsoft 365 connector's publisher app allows device-code sign-ins as a public client, and that no Conditional Access policy blocks them. Retrying changes nothing without that adjustment."
         },
         "rsc_permissions_mismatch": {
-          "what": "Microsoft Graph refused the install: this orchestrator’s Teams app package declares resource-specific permissions the installing identity may not consent to. The target id is correct — a role is missing.",
+          "what": "Microsoft Graph refused the install: this agent’s Teams app package declares resource-specific permissions the installing identity may not consent to. The target id is correct — a role is missing.",
           "next": "Grant the M365 connector’s Entra app the role TeamsAppInstallation.ReadWriteAndConsentForTeam.All (team) or …ForChat.All (chat), admin-consent it, then re-run provisioning."
         },
         "rsc_consent_refused": {
@@ -2923,14 +2974,14 @@
       "openRun": "Reset the run …",
       "openIdentity": "Delete the identity …",
       "confirmHeadingIdentity": "This is deleted for good — the identity itself included:",
-      "consequenceIdentity": "This orchestrator's Teams identity, bot slug and display name included. Both are freely choosable again afterwards.",
-      "dropsHint": "Bot slug and display name are NOT kept. The orchestrator has no Teams identity afterwards, and creating one starts from an empty form again.",
+      "consequenceIdentity": "This agent's Teams identity, bot slug and display name included. Both are freely choosable again afterwards.",
+      "dropsHint": "Bot slug and display name are NOT kept. The agent has no Teams identity afterwards, and creating one starts from an empty form again.",
       "acknowledgeIdentity": "I understand that the identity is removed as well, and that a bot slug and display name have to be chosen again.",
       "confirmRun": "Reset the run",
       "confirmIdentity": "Delete the identity for good",
       "slugConfirmLabel": "Type the bot slug \"{slug}\" to confirm:",
       "slugMismatch": "That is not the bot slug of this identity.",
-      "resultCompleteIdentity": "Identity deleted. The orchestrator can be created again with a new bot slug and display name."
+      "resultCompleteIdentity": "Identity deleted. The agent can be created again with a new bot slug and display name."
     },
     "detailTabs": {
       "aria": "Agent settings",
@@ -3692,7 +3743,7 @@
           },
           "teamLead": {
             "label": "Team Lead / Coordinator",
-            "description": "Orchestrator managing delegation, escalation and team structure."
+            "description": "Coordinating role for delegation, escalation and team structure."
           }
         }
       },
@@ -4320,7 +4371,7 @@
     },
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
-    "selectModelLink": "After you sign in, assign the orchestrator to this CLI under LLM access — otherwise no agent runs. omadia sets this for you automatically when no other provider is configured",
+    "selectModelLink": "After you sign in, assign the agent to this CLI under LLM access — otherwise no agent runs. omadia sets this for you automatically when no other provider is configured",
     "detected": {
       "heading": "Detected CLIs"
     },
@@ -4670,20 +4721,20 @@
       "update": "Update",
       "installed": "Installed",
       "active": "active",
-      "installedNext": "\"{name}\" installed — attach it to an orchestrator to start using it.",
-      "toManageOrchestrators": "Manage orchestrators",
+      "installedNext": "\"{name}\" installed — attach it to an agent to start using it.",
+      "toManageOrchestrators": "Manage agents",
       "nextLlm": "\"{name}\" is installed, but the LLM provider it is assigned to has no verified access yet.",
       "nextSetup": "\"{name}\" is installed, but needs setup before it can run.",
       "nextRunning": "\"{name}\" is installed and running.",
       "nextIntegration": "\"{name}\" is running. Agents that depend on it use it automatically — there is nothing to attach.",
       "nextAttached": "\"{name}\" is attached to {agents}.",
-      "toOrchestrators": "Attach to an orchestrator",
+      "toOrchestrators": "Attach to an agent",
       "toSetup": "Complete setup ({count} missing)",
       "toLlmProvider": "Connect an LLM provider",
       "toChat": "Try it in chat",
       "uninstallAria": "Uninstall {name}",
       "uninstall": "Uninstall",
-      "confirmRemove": "Remove <strong>{name}</strong>? The tool is immediately removed from the orchestrator, the vault namespace is cleared, and the registry entry is deleted.",
+      "confirmRemove": "Remove <strong>{name}</strong>? The tool is immediately removed from the agent, the vault namespace is cleared, and the registry entry is deleted.",
       "builtInUninstallPersistent": "<strong>{name}</strong> ships with omadia. It stays uninstalled after a restart; you can install it again from the store at any time, starting from default settings.",
       "builtInUninstallReinstalled": "<strong>{name}</strong> ships with omadia and is a provider this instance selects at startup. If the instance needs it, the next restart installs it again, with default settings.",
       "deletePackageLabel": "Also remove the uploaded package file under <mono>.uploaded-packages/</mono>. <subtle>Left unchecked, the package stays in the catalog and can be reinstalled — only built-ins are unaffected.</subtle>",
@@ -5009,7 +5060,7 @@
   },
   "adminMcp": {
     "title": "MCP Control Center",
-    "intro": "Manage MCP servers, review scan verdicts of discovered tools, grant tools to orchestrators, skills and plugins, and follow the call audit log — everything in one place.",
+    "intro": "Manage MCP servers, review scan verdicts of discovered tools, grant tools to agents, skills and plugins, and follow the call audit log — everything in one place.",
     "loading": "Loading…",
     "cancel": "Cancel",
     "tabs": {
@@ -5081,7 +5132,7 @@
       "discoveredTools": "Discovered tools ({count})",
       "discover": "Discover",
       "assignTools": "Assign tools →",
-      "assignPrompt": "{count} tools discovered — assign them to an orchestrator to make them usable in chat.",
+      "assignPrompt": "{count} tools discovered — assign them to an agent to make them usable in chat.",
       "enable": "Enable",
       "disable": "Disable",
       "needsAuth": "\"{name}\" needs authorization before its tools can be discovered. Connect it below (it signs in via {host}), then run Discover again.",
@@ -5118,7 +5169,7 @@
       "marketplaceSource": "marketplace",
       "sourceLink": "source",
       "rescanAll": "Re-scan all",
-      "flowHint": "How it works: add a server (or import one from the Marketplace tab), run Discover to scan its tools, acknowledge any high-risk verdicts — then grant its tools to an orchestrator on the Grants tab, to a plugin on the Plugin access tab, or to a skill in the skill editor. Registering a server alone does not make it usable in chat — the grant is the step that does.",
+      "flowHint": "How it works: add a server (or import one from the Marketplace tab), run Discover to scan its tools, acknowledge any high-risk verdicts — then grant its tools to an agent on the Grants tab, to a plugin on the Plugin access tab, or to a skill in the skill editor. Registering a server alone does not make it usable in chat — the grant is the step that does.",
       "state": {
         "enabled": "enabled",
         "disabled": "disabled"
@@ -5151,7 +5202,7 @@
       "delegationPerUser": "Each user acts as themselves",
       "delegationService": "One shared service identity",
       "delegationPerUserWhy": "Every caller uses their own authorization at this server. A conversation with no mapped user identity is refused rather than falling back to yours.",
-      "delegationServiceWhy": "All callers share one authorization — yours. Anyone who can reach an orchestrator with this server granted acts with that authority. Only keep this for servers where a shared identity is intended.",
+      "delegationServiceWhy": "All callers share one authorization — yours. Anyone who can reach an agent with this server granted acts with that authority. Only keep this for servers where a shared identity is intended.",
       "delegationSwitchToPerUser": "Require per-user identity",
       "delegationSwitchToService": "Use a shared service identity",
       "delegationIdentityMissing": "This session has no mapped user identity, so per-user calls to this server fail closed. Nothing is sent to the server.",
@@ -5210,11 +5261,11 @@
       "errorDetail": "Details: {detail}"
     },
     "grants": {
-      "grantHeading": "Grant tools to an orchestrator",
-      "orchestrator": "Orchestrator",
+      "grantHeading": "Grant tools to an agent",
+      "orchestrator": "Agent",
       "pickServer": "Pick server…",
       "grantAll": "Grant all tools",
-      "grantHint": "Pick an orchestrator and a server, then grant the tools it may use. This is the step that makes a registered server usable in chat.",
+      "grantHint": "Pick an agent and a server, then grant the tools it may use. This is the step that makes a registered server usable in chat.",
       "noToolsDiscover": "This server has no discovered tools yet — run Discover on the Servers tab first.",
       "toolCount": "{count} tools",
       "holder": "Granted to",
@@ -5232,7 +5283,7 @@
       "revokeBody": "Revoke \"{tool}\" from {holder}?",
       "revokeConfirm": "Revoke grant",
       "kind": {
-        "agent": "Orchestrator",
+        "agent": "Agent",
         "subagent": "Sub-agent",
         "skill": "Skill",
         "plugin": "Plugin"
@@ -5256,7 +5307,7 @@
       "loadMore": "Load more",
       "unresolved": "unresolved",
       "kind": {
-        "agent": "Orchestrator",
+        "agent": "Agent",
         "subagent": "Sub-agent",
         "skill": "Skill",
         "plugin": "Plugin",
@@ -5582,7 +5633,7 @@
   },
   "adminUsage": {
     "title": "Usage & Cost",
-    "intro": "Records the LLM calls of the orchestrator, its sub-agents, the builder, plugins and background tasks, streamed or not. Subscription turns via the Claude CLI count as calls but are not billed per token.",
+    "intro": "Records the LLM calls of agents, their internal helpers, the builders, plugins and background tasks, streamed or not. Subscription turns via the Claude CLI count as calls but are not billed per token.",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "ranges": {
@@ -6501,7 +6552,7 @@
       "noToolCalls": "Run without tool calls (plain text answer)",
       "toolsLabel": "tools={count}",
       "iterations": "{count} iter",
-      "orchestratorTools": "Orchestrator tools",
+      "orchestratorTools": "Agent tools",
       "toolCalls": "{count, plural, one {# tool call} other {# tool calls}}",
       "userTooltip": "User: {user}"
     }
@@ -6701,7 +6752,7 @@
       "triggerTitle": "Trigger the routine manually now — fires an agent run and delivers the result to the channel.",
       "triggerNotice": "Started — the result will appear in the channel in ~30 seconds.",
       "triggerNoticeWeb": "Started — the result is added to the chat this routine was created in and shows up there the next time you open or return to that chat.",
-      "triggerChatUnavailable": "No orchestrator can run this routine: its orchestrator was deleted, no standard orchestrator is set, or no LLM API key is configured (Admin → Settings).",
+      "triggerChatUnavailable": "No agent can run this routine: its agent was deleted, no default agent is set, or no LLM API key is configured (Admin → Settings).",
       "triggerNotActive": "This routine is paused — resume it first, then trigger it. If it was paused because its chat is gone: when that chat still exists in your browser, open it first; otherwise delete the routine and create it again from a chat.",
       "deleteConfirm": "Delete routine ''{name}''? This cannot be undone."
     },
@@ -6752,7 +6803,7 @@
       "sectionAnswer": "Answer",
       "sectionTrace": "Call Stack · Run Trace",
       "noAnswer": "No answer stored (run aborted or failed before delivery).",
-      "traceDescription": "Complete agentic trace of this run — iterations, orchestrator tool calls and sub-agent invocations. Click a row to expand / collapse the node."
+      "traceDescription": "Complete agentic trace of this run — iterations, agent tool calls and internal helper invocations. Click a row to expand / collapse the node."
     }
   },
   "system": {
