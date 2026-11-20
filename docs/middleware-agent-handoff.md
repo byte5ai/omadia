@@ -5681,8 +5681,10 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   `dynamicAgentRuntime` löschen, `MODEL_GATEWAY_MODE` und
   `PLUGIN_EGRESS_MODE` fest `enforce`, rohe Modell-Services für alle
   Nicht-`model`-Plugins verweigern, Provider-Katalog-Registrierung nur für
-  `model`. Blocker: channel-teams hängt an `anthropicClient@1`, dev-platform
-  ruft `api.anthropic.com` direkt. Offen außerdem: die Netz-Sandbox sieht
+  `model`. Voraussetzung: der Plugin-Release-Train (Kinds, Templates,
+  `side_effects`, kein roher Modellzugang; channel-teams ohne
+  `anthropicClient@1`, dev-platform über `modelPassthrough@1`) ist auf dem Hub
+  und auf Fly. Offen außerdem: die Netz-Sandbox sieht
   `node:net`/`node:tls` und eigenes `undici` nicht; Inbound-Transkription
   wird dem Kanal statt dem adressierten Agenten zugerechnet, bis der Kanal
   vor dem Transkribieren routet.
@@ -5695,8 +5697,7 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   `claude-cli` startet pro Prüfung einen CLI-Prozess (Timeout 8 s, fail-closed)
   — Latenz messen; UI für
   Verfügbarkeit und Default-Agent-Tabelle (S6/Agent Builder); Persona-Skills
-  ersetzen pro Turn noch die Identität samt Identitätsregeln (Arbeitsmodi, S2);
-  der Prompt spricht weiter von „Fach-Agenten“ für Domain-Tools (Plugin-Kinds, S3).
+  ersetzen pro Turn noch die Identität samt Identitätsregeln (Arbeitsmodi, S2).
 - **Entfernt: Direct Line (#2052, Spec 2042 §5.2/§7).** Owner-Entscheidung:
   `#token`-Adressierung (`#strategist Frage`) und der Sticky-Modus sind ganz
   weg; die direkte Adressierung eines Agenten ersetzt sie. `#name Text` ist

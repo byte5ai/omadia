@@ -244,7 +244,7 @@ export function createDomainTool(options: DomainToolOptions): DomainTool {
         question: {
           type: 'string',
           description:
-            'Natürlichsprachige Einzel-Frage für den Fach-Agenten, auf Deutsch wenn der Nutzer Deutsch geschrieben hat. Inklusive aller IDs/Namen/Zeiträume, die der Agent braucht.',
+            'Natürlichsprachige Einzel-Frage für das Fach-Werkzeug, auf Deutsch wenn der Nutzer Deutsch geschrieben hat. Inklusive aller IDs/Namen/Zeiträume, die der Agent braucht.',
         },
       },
       required: ['question'],

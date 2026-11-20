@@ -36,6 +36,15 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — The system prompt speaks of domain tools of capabilities, not "Fach-Agenten" (#2053, epic #2042)
+
+- Spec 2042 §5.10: a plugin delivers capabilities and is never an agent.
+  The agent's system prompt (orchestrator, answer size, session log,
+  verifier notice) and the prompt docs of `render_diagram`, `create_xlsx`
+  and `create_docx` now call the domain tools "Fach-Werkzeuge"; the roster
+  heading reads "Fach-Werkzeuge deiner Fähigkeiten". Wording only, the
+  routing rules are unchanged.
+
 ### Added — Operator jobs and model passthrough for system modules (#2053, epic #2042): S3 expand step
 
 - Kernel services `operatorJobs@1` and `modelPassthrough@1` (plugin-api

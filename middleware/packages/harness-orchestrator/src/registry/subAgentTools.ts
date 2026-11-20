@@ -166,7 +166,7 @@ export function buildSubAgentDomainTools(
 /**
  * Description of a sub-agent delegation tool.
  *
- * Doubles as routing text: the orchestrator renders its Fach-Agenten roster as
+ * Doubles as routing text: the orchestrator renders its Fach-Werkzeuge roster as
  * one `- \`name\`: description` line per domain tool, so this string is what the
  * model picks a specialist by. The sub-agent's name alone carries no domain
  * information; its skill description does, when the skill has one.

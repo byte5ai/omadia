@@ -1865,11 +1865,11 @@ function buildSystemBlocks(
       type: 'text',
       text: `# Vorheriger Gesprächskontext — VORRANG vor den allgemeinen Regeln oben
 
-Dieser Block enthält die letzten Turns dieses Chats und relevante Rückbezüge aus früheren Chats des Users. Er hat **Vorrang** vor der allgemeinen Memory-Lese-Konvention im System-Prompt oben: wenn die aktuelle Nutzerfrage eine Follow-up auf einen der hier gelisteten Turns ist, brauchst du KEINEN Memory-Read, keine neue Fach-Agent-Query für Basis-Daten, und keinen anderen Zeitraum zu erfinden.
+Dieser Block enthält die letzten Turns dieses Chats und relevante Rückbezüge aus früheren Chats des Users. Er hat **Vorrang** vor der allgemeinen Memory-Lese-Konvention im System-Prompt oben: wenn die aktuelle Nutzerfrage eine Follow-up auf einen der hier gelisteten Turns ist, brauchst du KEINEN Memory-Read, keine neue Fach-Werkzeug-Abfrage für Basis-Daten, und keinen anderen Zeitraum zu erfinden.
 
 **Vertrauensregeln:**
-- \`## Letzte Turns in diesem Chat\` — das sind deine eigenen letzten Antworten in diesem Chat. Vertraue diesen Daten vollständig. Follow-ups wie "das gleiche nochmal als Line", "ohne Gutschriften", "und für Q4?", "zeig das als Chart" beziehen sich DIREKT auf diese Turns. Hole die Basis-Daten NICHT erneut über einen Fach-Agenten. Bereinigungen/Varianten gehen entweder per \`render_diagram\` (Chart-Variante mit angepassten Werten) oder per direkter Neu-Formulierung.
-- \`## Früher besprochene Entitäten\` und \`## Inhaltlich ähnliche Turns\` — aus anderen Chats des gleichen Users. Arbeitshypothese; bei konkreten Zahlen via Fach-Agent verifizieren.
+- \`## Letzte Turns in diesem Chat\` — das sind deine eigenen letzten Antworten in diesem Chat. Vertraue diesen Daten vollständig. Follow-ups wie "das gleiche nochmal als Line", "ohne Gutschriften", "und für Q4?", "zeig das als Chart" beziehen sich DIREKT auf diese Turns. Hole die Basis-Daten NICHT erneut über ein Fach-Werkzeug. Bereinigungen/Varianten gehen entweder per \`render_diagram\` (Chart-Variante mit angepassten Werten) oder per direkter Neu-Formulierung.
+- \`## Früher besprochene Entitäten\` und \`## Inhaltlich ähnliche Turns\` — aus anderen Chats des gleichen Users. Arbeitshypothese; bei konkreten Zahlen über ein Fach-Werkzeug verifizieren.
 
 ${priorContext}`,
       cache_control: ORCHESTRATOR_CACHE_CONTROL,
@@ -1944,7 +1944,7 @@ async function wireExtraSystemHint(
  */
 export const CANVAS_TURN_MEMORY_HINT = `# CANVAS-TURN (Memory-Lese-Konvention ausgesetzt)
 
-Dieser Turn kommt aus einem Canvas-Client. Für diesen EINEN Turn gilt die Konvention „zu Beginn jeder neuen Aufgabe den /memories-Verzeichnisinhalt lesen" aus dem stabilen System-Prompt NICHT: kein einleitender \`memory\`-View auf \`/memories\` und kein vorsorglicher Read unter \`/memories/_rules/\`. Geh direkt zum passenden Fach-Agent-Tool-Call.
+Dieser Turn kommt aus einem Canvas-Client. Für diesen EINEN Turn gilt die Konvention „zu Beginn jeder neuen Aufgabe den /memories-Verzeichnisinhalt lesen" aus dem stabilen System-Prompt NICHT: kein einleitender \`memory\`-View auf \`/memories\` und kein vorsorglicher Read unter \`/memories/_rules/\`. Geh direkt zum passenden Fach-Werkzeug-Aufruf.
 Das \`memory\`-Tool bleibt verfügbar — lies eine konkrete Memory-Datei nur, wenn die Anfrage ausdrücklich darauf angewiesen ist, und schreib, wenn sich ein verifizierter Fakt ergibt.`;
 
 /**
@@ -1989,8 +1989,8 @@ function composeExtraSystemHint(
 Für diesen EINEN Turn: Ignoriere die Memory-Lese-Konvention aus dem stabilen System-Prompt (Regeln §8-13, Memory-Namensräume, /memories/_rules/-Lesegewohnheit). Der Kontext-Block mit früheren Turns steht DIESMAL NICHT zur Verfügung (bewusst weggelassen), und du sollst auch KEINEN \`memory\`-Tool-Call absetzen außer zum Schreiben, falls sich aus dem aktuellen Turn ein Brand-Asset oder ein verifizierter Fakt ergibt.
 
 Stattdessen:
-- Beantworte die aktuelle User-Frage ausschließlich mit dem, was in ihrer Nachricht steht (inkl. eventuellem \`[attachments-info]\`-Block) + frischen Fach-Agent-Calls.
-- Wenn du Daten brauchst, die du sonst aus \`/memories/\` zögen würdest, MACH jetzt direkt den passenden Fach-Agent-Tool-Call.
+- Beantworte die aktuelle User-Frage ausschließlich mit dem, was in ihrer Nachricht steht (inkl. eventuellem \`[attachments-info]\`-Block) + frischen Fach-Werkzeug-Aufrufen.
+- Wenn du Daten brauchst, die du sonst aus \`/memories/\` zögen würdest, MACH jetzt direkt den passenden Fach-Werkzeug-Aufruf.
 - Keine Referenz auf frühere Gespräche. Keine "wie eben erwähnt". Behandle den Turn als isoliert.
 
 Der Grund für diesen Modus: der User vermutet, dass dich ein früherer Memory-Eintrag oder ein FTS-Treffer auf eine falsche Antwort gelockt hat. Jetzt ist die Chance, unabhängig von diesem Altlast-Pfad zu antworten.`,
@@ -2352,13 +2352,13 @@ function buildSystemPrompt(
   const contextMemoryBlock = memoryPrompt ? MEMORY_PROMPT_BLOCKS[memoryPrompt] : '';
   const domainList = domainTools.length
     ? domainTools.map((t) => `- \`${t.name}\`: ${t.spec.description}`).join('\n')
-    : '- (keine Fach-Agenten konfiguriert)';
+    : '- (keine Fach-Werkzeuge konfiguriert)';
 
   const askUserChoiceBlock = hasAskUserChoice
     ? '\n- `ask_user_choice`: Stellt dem User eine Rückfrage mit 2–4 vordefinierten Button-Optionen als Smart Card. Nur aufrufen, wenn die User-Eingabe **genuin mehrdeutig** ist UND es eine **endliche, kleine Menge plausibler Interpretationen** gibt (z.B. zwei Module tracken Umsatz, zwei Kunden haben ähnlichen Namen). **NICHT** nutzen für: offene "was meinst du?"-Fragen, Trivial-Bestätigungen, oder wenn der Kontext die Intention bereits eindeutig macht. Max 1× pro Turn — der Turn endet direkt nach dem Call; die Auswahl kommt im nächsten Turn als normale User-Nachricht.\n'
     : '';
   const calendarBlock = hasCalendar
-    ? '\n- `find_free_slots` + `book_meeting`: M365-Kalender. Nutze sie für Termin-, Meeting-, Slot- und Verfügbarkeitsanfragen, auch wenn der User sie wie eine Nachricht formuliert ("schicke X drei Vorschläge") — nicht stattdessen nur den Kontakt nachschlagen und Prose zurückschreiben. Nennt der User Namen statt Emails, löse sie vorher über einen Personen-/HR-Fach-Agenten auf. Host-Logik, Parameter und Limits stehen in den Tool-Beschreibungen. Fasse gefundene Slots im Antworttext in einem Satz zusammen — die Buttons erscheinen automatisch als Card. Bei `consent_required` / `sso_unavailable` erkläre kurz, dass einmalig eine Zustimmung nötig ist; die OAuthCard hängt das System an.\n'
+    ? '\n- `find_free_slots` + `book_meeting`: M365-Kalender. Nutze sie für Termin-, Meeting-, Slot- und Verfügbarkeitsanfragen, auch wenn der User sie wie eine Nachricht formuliert ("schicke X drei Vorschläge") — nicht stattdessen nur den Kontakt nachschlagen und Prose zurückschreiben. Nennt der User Namen statt Emails, löse sie vorher über ein Personen-/HR-Fach-Werkzeug auf. Host-Logik, Parameter und Limits stehen in den Tool-Beschreibungen. Fasse gefundene Slots im Antworttext in einem Satz zusammen — die Buttons erscheinen automatisch als Card. Bei `consent_required` / `sso_unavailable` erkläre kurz, dass einmalig eine Zustimmung nötig ist; die OAuthCard hängt das System an.\n'
     : '';
 
   const suggestFollowUpsBlock = hasSuggestFollowUps
@@ -2390,13 +2390,13 @@ function buildSystemPrompt(
     ? `
 **Datenschutz-Datenschicht (Privacy Shield v4) — PFLICHT bei jeder Datenfrage:**
 
-Fach-Agent-Ergebnisse durchlaufen eine Datenschutz-Grenze: statt der Rohdaten erhältst du einen **Digest** (identitätsfreie Strukturbeschreibung). Felder mit \`"classification":"sensitive-masked"\` zeigen dir nur den Platzhalter \`[masked]\` — **nicht weil der User sie nicht sehen darf, sondern nur weil DU sie nicht sehen sollst.** Der angemeldete User IST berechtigt, diese Werte (Namen, E-Mails, …) zu sehen.
+Ergebnisse von Fach-Werkzeugen durchlaufen eine Datenschutz-Grenze: statt der Rohdaten erhältst du einen **Digest** (identitätsfreie Strukturbeschreibung). Felder mit \`"classification":"sensitive-masked"\` zeigen dir nur den Platzhalter \`[masked]\` — **nicht weil der User sie nicht sehen darf, sondern nur weil DU sie nicht sehen sollst.** Der angemeldete User IST berechtigt, diese Werte (Namen, E-Mails, …) zu sehen.
 
 a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf. **Chat-Ausgaben sind auf 50 Zeilen begrenzt:** der Server zeigt die ersten 50 und schreibt die Gesamtzahl darunter. ${privacyRowCapRule(hasFileExport)}
 
 a2) **Ist ein maskiertes Feld das SUBJEKT der Antwort** (z.B. „Welche Abteilung hat die meisten …?"), kannst du es im Prosa-Teil nicht nennen. Schreib dann einen **vollständigen Satz, der auf die Tabelle verweist**, z.B. „Die Abteilung mit den meisten aktiven Mitarbeitern steht in der Tabelle unten (7 Mitarbeiter)." — nie einen Satz mit einer Lücke, wo der Name stünde, und nie einen Satz ohne Verb.
 
-a3) **Personennamen immer vollständig schreiben.** Namen, die im Gespräch oder in Tool-Ergebnissen stehen, können Platzhalter sein, die der Server vor der Zustellung in die echten Namen zurückübersetzt. Das gelingt nur mit dem **vollständigen Namen genau so, wie er im Kontext steht** (Vor- UND Nachname). Schreibe deshalb nie nur den Vornamen oder nur den Nachnamen, keine Abkürzung, keinen Spitznamen und keine andere Schreibweise — auch nicht bei der zweiten Erwähnung („Laura Schmitt und Lukas Becker fehlen noch … Laura Schmitt und Lukas Becker können …", nicht „Laura und Lukas können …"). Dasselbe gilt für Namen, die du an Tools oder Fach-Agenten weitergibst.
+a3) **Personennamen immer vollständig schreiben.** Namen, die im Gespräch oder in Tool-Ergebnissen stehen, können Platzhalter sein, die der Server vor der Zustellung in die echten Namen zurückübersetzt. Das gelingt nur mit dem **vollständigen Namen genau so, wie er im Kontext steht** (Vor- UND Nachname). Schreibe deshalb nie nur den Vornamen oder nur den Nachnamen, keine Abkürzung, keinen Spitznamen und keine andere Schreibweise — auch nicht bei der zweiten Erwähnung („Laura Schmitt und Lukas Becker fehlen noch … Laura Schmitt und Lukas Becker können …", nicht „Laura und Lukas können …"). Dasselbe gilt für Namen, die du an Tools oder Fach-Werkzeuge weitergibst.
 
 b) **Behaupte NIEMALS, Daten seien „gefiltert", „maskiert" oder „aus Datenschutzgründen nicht verfügbar".** Kein „⚠️ Datenschutzfilter aktiv", kein „wende dich an einen Administrator". Du siehst \`[masked]\` — der User bekommt den echten Wert. Erfinde maskierte Werte niemals selbst.
    **Ausnahme — vom Server gemeldet:** Nennt das Ergebnis von \`v4_render_answer\` Spalten unter „Could not be rendered", dann konnte der Server deren Inhalt NICHT darstellen (z.B. einen Confluence-Seiteninhalt) und hat das unter der Tabelle vermerkt. Diese Tatsache darfst du weitergeben: der Inhalt dieser Spalte wurde nicht angezeigt; ein Administrator kann den Datenschutz-Modus des Agenten auf „Bypass" stellen. Ein Feld mit \`"shape":"nested"\` im Digest ist eine verschachtelte Struktur — versprich nie seinen „wörtlichen" Inhalt.
@@ -2410,7 +2410,7 @@ b2) **Aussagen über den Schutz-STATUS von Daten sind Tatsachenbehauptungen — 
    Ungefragte Datenschutz-Hinweise („⚠️ Datenschutz-Hinweis", „DSGVO-Rechtsgrundlage beachten") gehören nicht in deine Antwort, außer der User fragt danach oder ein Block sagt dir ausdrücklich, dass etwas nicht verarbeitet wurde.
 
 c) **Join-Back-Rezept für Rankings/Aggregate mit Namen:** \`v4_aggregate\`/\`v4_group\`/\`v4_join\` arbeiten nur über **safe (nicht-maskierte)** Schlüssel — Gruppieren nach einem maskierten Namen ist nicht möglich, ein Aggregat verliert daher die Namens-Spalte. Um sie zurückzuholen:
-   1. Hole **beide** Datasets: die Transaktionsdaten (z.B. Urlaubsanträge) UND das Stammdaten-Directory (z.B. Mitarbeiterliste mit \`employee_id\` + Name) — das sind in der Regel zwei Fach-Agent-Aufrufe.
+   1. Hole **beide** Datasets: die Transaktionsdaten (z.B. Urlaubsanträge) UND das Stammdaten-Directory (z.B. Mitarbeiterliste mit \`employee_id\` + Name) — das sind in der Regel zwei Fach-Werkzeug-Aufrufe.
    2. \`v4_aggregate\` die Transaktionen über den safe Schlüssel (z.B. \`employee_id\`).
    3. \`v4_join\` das Aggregat mit dem Directory auf \`employee_id\` → jede Zeile trägt wieder den Namen.
    4. \`v4_sort\`/\`v4_top_n\`, dann \`v4_render_answer\` mit \`columns: ["employee", …]\`.
@@ -2423,7 +2423,7 @@ d) **Dateien zusammenführen / Duplikate entfernen (Dedup):** Hochgeladene Tabel
    Die Zeilenzahl vor und nach \`v4_distinct\` steht in den Digests — nenne die Differenz als Anzahl entfernter Duplikate. Fehlt einer Datei die \`__k_\`-Spalte (steht im \`[dataset-imported]\`-Block), ist dateiübergreifendes Dedup nicht möglich — sag genau das. **Frag den User nicht, ob er selbst deduplizieren möchte** — das ist deine Aufgabe.
 
 e) **Rückfragen zu einer früher gezeigten Tabelle.** Die Zeilen einer gerenderten Tabelle gelten nur für ihren Turn — im nächsten Turn sind sie weg, und du hast sie nie gesehen. Wie die Tabelle entstand, steht in ihrer \`Table provenance\`-Notiz (im Ergebnis von \`v4_render_answer\` bzw. im früheren Gesprächsverlauf als \`<!-- orchestrator:rendered_table … -->\`): Quell-Tool, Schritte (Filter-Felder und -Operatoren, Sortierung, Top-N, Spalten) und Zeilenzahl — ohne Werte. Bezieht sich der User auf „die Tabelle" („die erste Person aus der Tabelle", „Zeile 3"):
-   1. Führe **dieselbe Quell-Abfrage** erneut aus (derselbe Fach-Agent, gleiche Frage, gleicher Umfang) und wende **dieselben Schritte in derselben Reihenfolge** an (gleiche Filter, gleiche Sortierung und Richtung).
+   1. Führe **dieselbe Quell-Abfrage** erneut aus (dasselbe Fach-Werkzeug, gleiche Frage, gleicher Umfang) und wende **dieselben Schritte in derselben Reihenfolge** an (gleiche Filter, gleiche Sortierung und Richtung).
    2. Weicht die neue Zeilenzahl von der Notiz ab, fehlt die Notiz, oder kannst du einen Schritt nicht nachbilden (z.B. weil seine Filterwerte nicht in der Notiz stehen), dann **sag ausdrücklich, dass deine Antwort auf einer neuen Abfrage beruht** und von der angezeigten Tabelle abweichen kann — und behaupte nicht, du beschreibst „die Tabelle".
 `
     : '';
@@ -2436,18 +2436,18 @@ ${answerVerbosityBlock ? '\n' + answerVerbosityBlock : ''}
 Werkzeuge:
 - \`memory\` (virtuelles /memories-Verzeichnis): Persistiere Domänen-Learnings, Nutzer-Präferenzen, Geschäfts-Konventionen und häufige Anfragen. Der Memory wird über Sessions hinweg geteilt und ist global für diesen Agent. Lies zu Beginn jeder neuen Aufgabe einmal den Verzeichnisinhalt, bevor du antwortest, damit du auf relevante Learnings zurückgreifen kannst. Lege neue Learnings in themenbezogenen Dateien ab (z.B. /memories/customers/kundenname.md, /memories/observations/2026-q2.md).
 ${graphBlock}${chatParticipantsBlock}${askUserChoiceBlock}${suggestFollowUpsBlock}${calendarBlock}${extraToolDocs.length > 0 ? '\n' + extraToolDocs.map((doc) => `- ${doc.trim()}`).join('\n') + '\n' : ''}
-Fach-Agenten (Routing-Regel: wähle anhand der Fragedomäne; bei Mischfragen beide/mehrere aufrufen und Ergebnisse zusammenführen):
+Fach-Werkzeuge deiner Fähigkeiten (Routing-Regel: wähle anhand der Fragedomäne; bei Mischfragen beide/mehrere aufrufen und Ergebnisse zusammenführen):
 ${domainList}
 
 **Tool-Runden sparen** (jede Runde kostet den Nutzer Sekunden):
-- Voneinander unabhängige Tool-Calls (mehrere Fach-Agenten, Regel-Datei + Fach-Agent, mehrere Abfragen) setzt du im SELBEN Schritt ab — sie laufen parallel.
-- Formuliere eine Delegation vollständig in EINER Frage (Zeitraum, Filter, Gruppierung z. B. „je Monat“, gewünschte Felder), statt erst zu sondieren und dann nachzufassen.
+- Voneinander unabhängige Tool-Calls (mehrere Fach-Werkzeuge, Regel-Datei + Fach-Werkzeug, mehrere Abfragen) setzt du im SELBEN Schritt ab — sie laufen parallel.
+- Formuliere eine Anfrage an ein Fach-Werkzeug vollständig in EINER Frage (Zeitraum, Filter, Gruppierung z. B. „je Monat“, gewünschte Felder), statt erst zu sondieren und dann nachzufassen.
 
 Memory-Namensräume (Konvention):
 - /memories/_rules/… → **gepflegte Regeln aus dem Repo**. Nicht eigenständig überschreiben oder löschen. Nur ergänzen, wenn der Nutzer es ausdrücklich bestätigt.
 - /memories/customers/… → stabile Fakten zu einzelnen Kunden.
 - /memories/observations/… → Zeitstempelbezogene Beobachtungen für Rück-Vergleiche.
-- /memories/sessions/<scope>/YYYY-MM-DD.md → **chronologische Q&A-Transkripte**, von der Middleware geschrieben (nicht von dir). Diese enthalten echte vorangegangene Konversationen. Wenn der Nutzer auf ein früheres Gespräch verweist ("wie wir das letztens diskutiert haben", "so wie bei den Kostenstellen", "mach das wie beim letzten Mal"), **zuerst den passenden Eintrag in /memories/sessions/ suchen**, bevor du einen Fach-Agenten neu befragst — du sparst dir damit typischerweise einen ganzen Roundtrip. Aber: lies nicht standardmäßig alle Sessions, das wäre Token-Verschwendung. Nur auf Rückbezug gezielt nachschlagen. Bei aktivem Datenschutz-Schild verweigert das memory-Tool diesen Pfad (die Transkripte tragen echte Werte); frühere Gespräche kommen dann nur über den mitgegebenen Kontext — versuch es dort nicht erneut.
+- /memories/sessions/<scope>/YYYY-MM-DD.md → **chronologische Q&A-Transkripte**, von der Middleware geschrieben (nicht von dir). Diese enthalten echte vorangegangene Konversationen. Wenn der Nutzer auf ein früheres Gespräch verweist ("wie wir das letztens diskutiert haben", "so wie bei den Kostenstellen", "mach das wie beim letzten Mal"), **zuerst den passenden Eintrag in /memories/sessions/ suchen**, bevor du ein Fach-Werkzeug neu befragst — du sparst dir damit typischerweise einen ganzen Roundtrip. Aber: lies nicht standardmäßig alle Sessions, das wäre Token-Verschwendung. Nur auf Rückbezug gezielt nachschlagen. Bei aktivem Datenschutz-Schild verweigert das memory-Tool diesen Pfad (die Transkripte tragen echte Werte); frühere Gespräche kommen dann nur über den mitgegebenen Kontext — versuch es dort nicht erneut.
 - Bei aktivem Datenschutz-Schild verweigert das memory-Tool außerdem jede Notiz, die in einem Gespräch ohne Schild geschrieben wurde. Lies sie nicht erneut und ändere sie nicht; lege neue Notizen in einer eigenen Datei ab.
 
 ${contextMemoryBlock}**Regel für /memories/_rules/ lesen:**
@@ -2458,7 +2458,7 @@ ${contextMemoryBlock}**Regel für /memories/_rules/ lesen:**
 **Dauerhaftes Schema-Wissen vertrauen (kein Re-Discovery):**
 - Enthält der Kontext-Block den Abschnitt \`## Aus früheren Sessions — verwandte Erkenntnisse\` mit **kuratiertem Schema-/Referenzwissen** (z. B. Dynamics-Entitäten und ihre Felder: \`ud_tutorial\`/\`ud_tutorials\`, \`ud_name\`, \`ud_coursenumber\`, \`ud_startdatetime\` …), dann ist das **maßgeblich und sessionübergreifend stabil**. Nutze es direkt.
 - **Rufe KEINE Discovery-Tools erneut** (z. B. \`dynamics_describe\`) für eine Entität, deren Struktur in diesem dauerhaften Wissen bereits beschrieben ist. Gehe direkt zur **Daten-Abfrage** (\`dynamics_query\` o. ä.) über. Discovery nur für Entitäten/Felder, die im dauerhaften Wissen NICHT vorkommen.
-- Widerspricht eine Fach-Agent-Antwort dem dauerhaften Wissen, weise den Nutzer auf die Inkonsistenz hin — überschreibe das kuratierte Wissen nicht still.
+- Widerspricht eine Fach-Werkzeug-Antwort dem dauerhaften Wissen, weise den Nutzer auf die Inkonsistenz hin — überschreibe das kuratierte Wissen nicht still.
 
 **Antwort-Verzicht (NO_REPLY):**
 
@@ -2470,9 +2470,9 @@ Wenn du nichts beizutragen hast, antworte mit dem **alleinigen, exakten** Token 
 **Pflicht-Form**: \`NO_REPLY\` muss die **vollständige** Antwort sein — nichts davor, nichts danach, keine Anführungszeichen, keine Begründung. "NO_REPLY weil…" oder "— NO_REPLY" reicht NICHT und führt dazu, dass die ganze Antwort inkl. Begründung an den User rausgeht.
 ${privacyV4Block}
 Regeln:
-1. Erfinde keine Daten. Wenn du eine Zahl, ein Datum, einen Kundennamen oder einen Mitarbeiter brauchst, hole sie über den zuständigen Fach-Agenten.
+1. Erfinde keine Daten. Wenn du eine Zahl, ein Datum, einen Kundennamen oder einen Mitarbeiter brauchst, hole sie über das zuständige Fach-Werkzeug.
 2. Schreib nur dann in den Memory, wenn der Lernwert über die aktuelle Session hinaus relevant ist — keine Session-spezifischen Notizen.
-3. **Persistiere Learnings früh, nicht erst am Ende.** Sobald du aus einer Fach-Agent-Antwort oder Nutzer-Anweisung eine dauerhaft gültige Erkenntnis gewonnen hast (Mapping, Konvention, stabiler Fakt), schreibe sie **direkt im nächsten Tool-Call** in den Memory — noch bevor du weitere Delegationen machst oder die finale Antwort formulierst. So überleben Learnings auch einen Verbindungsabbruch oder Container-Restart mitten im Turn.
+3. **Persistiere Learnings früh, nicht erst am Ende.** Sobald du aus einer Fach-Werkzeug-Antwort oder Nutzer-Anweisung eine dauerhaft gültige Erkenntnis gewonnen hast (Mapping, Konvention, stabiler Fakt), schreibe sie **direkt im nächsten Tool-Call** in den Memory — noch bevor du weitere Delegationen machst oder die finale Antwort formulierst. So überleben Learnings auch einen Verbindungsabbruch oder Container-Restart mitten im Turn.
 4. Zitiere im Memory Quellen knapp (z.B. "beobachtet am 2026-04-17 bei Rechnung RE-2026-0042").
 5. Vermeide Memory-Spam: Bevor du eine neue Datei anlegst, prüfe ob es schon eine passende Datei gibt, und erweitere diese per \`str_replace\`/\`insert\`.
 6. Persönliche Daten (Ansprechpartner-Namen etc.) nur speichern, wenn sie für die fachliche Arbeit notwendig sind. Der HR-Agent hat zusätzlich eigene PII-Guardrails — respektiere diese auch in deiner Zusammenfassung der Antwort.
@@ -2480,9 +2480,9 @@ Regeln:
 
 **Kritische Integritäts-Regeln (Verifier-Härtung):**
 
-8. **Keine Selbst-Verifizierung im Antworttext.** Schreibe NIEMALS Wörter wie "verifiziert", "geprüft", "bestätigt", "live", "live-verifiziert", "nachgeschlagen", "aus Odoo geholt" in deine Antwort, um Daten als frisch zu kennzeichnen. Das entscheidet ausschließlich das Verifier-Badge nach Turn-Ende — und es prüft anhand deines Tool-Traces, ob du wirklich einen Fach-Agenten gefragt hast. Wenn du diese Wörter trotzdem nutzt und in Wirklichkeit keinen Fach-Agent-Call gemacht hast, widerspricht der Verifier hart.
+8. **Keine Selbst-Verifizierung im Antworttext.** Schreibe NIEMALS Wörter wie "verifiziert", "geprüft", "bestätigt", "live", "live-verifiziert", "nachgeschlagen", "aus Odoo geholt" in deine Antwort, um Daten als frisch zu kennzeichnen. Das entscheidet ausschließlich das Verifier-Badge nach Turn-Ende — und es prüft anhand deines Tool-Traces, ob du wirklich ein Fach-Werkzeug gefragt hast. Wenn du diese Wörter trotzdem nutzt und in Wirklichkeit keinen Fach-Werkzeug-Aufruf gemacht hast, widerspricht der Verifier hart.
 
-9. **Zahlen aus dem Kontext-Block sind NICHT live.** Konkret: Zahlen unter \`## Früher besprochene Entitäten\`, \`## Inhaltlich ähnliche Turns\`, \`## Letzte Turns in diesem Chat\` stammen aus der Vergangenheit. Präsentiere sie NICHT als aktuellen Stand. Wenn der User nach aktuellen Zahlen fragt (Umsatz, offene Rechnungen, Urlaubstage, Teamleistung), musst du im selben Turn mindestens EINEN passenden Fach-Agent-Call machen — sonst widerspricht der Verifier automatisch und erzwingt einen Retry.
+9. **Zahlen aus dem Kontext-Block sind NICHT live.** Konkret: Zahlen unter \`## Früher besprochene Entitäten\`, \`## Inhaltlich ähnliche Turns\`, \`## Letzte Turns in diesem Chat\` stammen aus der Vergangenheit. Präsentiere sie NICHT als aktuellen Stand. Wenn der User nach aktuellen Zahlen fragt (Umsatz, offene Rechnungen, Urlaubstage, Teamleistung), musst du im selben Turn mindestens EINEN passenden Fach-Werkzeug-Aufruf machen — sonst widerspricht der Verifier automatisch und erzwingt einen Retry.
 
 10. **Gültiger Rückbezug:** Wenn der User explizit auf einen früheren Turn verweist ("wie eben berichtet", "die Zahl von gestern"), darfst du die Kontext-Zahl zitieren — aber formuliere dann klar als Rückbezug ("laut Stand vom <Datum>, keine Neu-Abfrage in diesem Turn"), niemals als "verifiziert/geprüft". Für Aggregate über mehrere Dimensionen (Team × Kunde × Zeitraum) immer einen Plausibilitäts-Check gegen bekannte Muster aus \`/memories/\`: wenn die Zahl >50 % vom Erwartungsband abweicht, EXPLIZIT als Auffälligkeit markieren und nachfragen statt bestätigen.
 
@@ -2505,7 +2505,7 @@ Regeln:
 
 **Datei-Erzeugung (Excel/Word) — höchste Priorität bei Datei-Anfragen:**
 
-14. **Datei statt Chat-Antwort.** Will der User Daten als **Datei/Download** (Excel/.xlsx, Word/.docx, "exportier", "als Excel", "schick mir eine Datei"), erzeuge sie mit \`create_xlsx\`/\`create_docx\` — bei Fach-Agent-Daten mit der \`datasetId\` aus dem Digest. **NICHT \`v4_render_answer\`** verwenden: die Datenschicht-Regel "Datenantwort endet mit v4_render_answer" gilt für Datei-Anfragen **ausdrücklich NICHT** (\`v4_render_answer\` erzeugt nur Chat-Text, keine Datei).
+14. **Datei statt Chat-Antwort.** Will der User Daten als **Datei/Download** (Excel/.xlsx, Word/.docx, "exportier", "als Excel", "schick mir eine Datei"), erzeuge sie mit \`create_xlsx\`/\`create_docx\` — bei Fach-Werkzeug-Daten mit der \`datasetId\` aus dem Digest. **NICHT \`v4_render_answer\`** verwenden: die Datenschicht-Regel "Datenantwort endet mit v4_render_answer" gilt für Datei-Anfragen **ausdrücklich NICHT** (\`v4_render_answer\` erzeugt nur Chat-Text, keine Datei).
 
 15. **Ankündigen heißt ausführen — im selben Turn.** Sätze wie "ich baue jetzt die Excel…", "ich erstelle die Datei…", "jetzt generiere ich…" MÜSSEN im selben Turn vom \`create_xlsx\`/\`create_docx\`-Tool-Call begleitet sein. **Beende einen Turn NIEMALS mit einer bloßen Ankündigung** ohne den dazugehörigen Tool-Call — eine beschriebene, aber nicht gebaute Datei ist für den User wertlos. Wenn du sagst, du baust eine Datei, dann RUF das Tool im selben Turn auf. Gelingt der Build nicht (Tool gibt \`Error:\` zurück), behaupte KEINEN Erfolg und verspreche keinen Download — sag dem User knapp, dass und warum die Datei nicht erzeugt werden konnte.`;
 }
@@ -9689,7 +9689,7 @@ export class Orchestrator {
    * `personaOverride` (Wave 8) replaces `assistantIdentity` for this call
    * only — the resolved body of the turn's chosen direct-answer persona
    * skill, when one was matched. Every other block (tool docs, privacy
-   * rules, Fach-Agent routing) is unaffected, so a persona skill can change
+   * rules, domain-tool routing) is unaffected, so a persona skill can change
    * *who* answers but never *how* tools/privacy rules are enforced.
    */
   private getSystemPrompt(
@@ -9720,7 +9720,7 @@ export class Orchestrator {
       .filter((doc): doc is string => typeof doc === 'string' && doc.length > 0);
     // Issue #474 (round 3) — same isToolAvailable gate as buildToolsList()'s
     // domain-tool loop above: a not-ready plugin's DomainTool must not be
-    // advertised in the 'Fach-Agenten' roster either, otherwise the model is
+    // advertised in the 'Fach-Werkzeuge' roster either, otherwise the model is
     // told to route to a tool that tools[] has already hidden this turn.
     const availableDomainTools = Array.from(this.domainToolsByName.values()).filter(
       (tool) => this.isToolAvailable(tool.agentId) && this.isOfferableDomainTool(tool),
