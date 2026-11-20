@@ -8,6 +8,7 @@ import type {
   StoreGetResponse,
   StoreListResponse,
 } from '../api/admin-v1.js';
+import { isInstallableKind } from '../api/admin-v1.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import { BOOT_MANAGED_BUILT_IN_IDS } from '../plugins/builtInOptOuts.js';
 import type {
@@ -496,6 +497,9 @@ function applyInstallState(
       ...(installed.origin ? { install_origin: installed.origin } : {}),
     };
   }
+  // Spec 2042 §5.10, the contract step — a package of a retired kind that is
+  // not installed is never offered: the install would be refused.
+  if (!isInstallableKind(plugin.kind)) return { ...plugin, install_state: 'incompatible' };
   return plugin;
 }
 
@@ -736,7 +740,9 @@ function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
       entry.id,
     ),
     integrations_summary: [],
-    install_state: 'available',
+    // Spec 2042 §5.10 — a registry version of a retired kind is listed, never
+    // offered: the install would be refused.
+    install_state: isInstallableKind(entry.kind) ? 'available' : 'incompatible',
     depends_on: Array.isArray(summary.depends_on) ? summary.depends_on : [],
     jobs: [],
     provides: Array.isArray(summary.provides) ? summary.provides : [],

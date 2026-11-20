@@ -1266,8 +1266,8 @@
         "next": "Install another Privacy Shield provider first, or turn the org policy off in the middleware environment."
       },
       "retired_kind": {
-        "what": "This package is of the retired kind 'agent'. A plugin delivers capabilities and may ship agent templates; it is never an agent of its own.",
-        "next": "Install the version of the plugin that delivers capabilities (or agent templates) instead, then create the agent in the Agent Builder."
+        "what": "This package is of a retired kind ('agent' or 'extension'). A plugin delivers capabilities and may ship agent templates; it is never an agent of its own, and infrastructure is a 'system-module'.",
+        "next": "Install the version of the plugin that delivers capabilities, agent templates, a system module or a model instead; create agents in the Agent Builder."
       },
       "system_module_confirmation_required": {
         "what": "This plugin is a system module: infrastructure of omadia itself. It is installed only after an explicit confirmation, and this request did not carry one.",
@@ -4777,7 +4777,9 @@
         },
         "minutes": "~{minutes} min"
       },
-      "hubChip": "Hub · {registry}"
+      "hubChip": "Hub · {registry}",
+      "legacyChip": "Legacy",
+      "legacyChipTitle": "A retired plugin kind: it keeps running, but gets no new versions."
     },
     "stateBadge": {
       "available": "Available",
@@ -5113,8 +5115,8 @@
         "zipTooManyEntries": "The archive contains too many files.",
         "zipFileTooLarge": "A file in the archive is too large once unpacked.",
         "zipTotalTooLarge": "The unpacked archive exceeds the size limit.",
-        "archetypeConfirmationRequired": "Version {toVersion} of {pluginId} changes more than the version of the installed {fromVersion}: it makes the plugin an archetype plugin, changes what agents of its archetype may do, or moves its tables into its own database schema for good. Confirm the update explicitly.",
-        "retiredKind": "{pluginId} is of the retired kind 'agent'. A plugin delivers capabilities and may ship agent templates, never an agent of its own.",
+        "archetypeConfirmationRequired": "Version {toVersion} of {pluginId} changes more than the version of the installed {fromVersion}: it makes the plugin an archetype plugin or a system module (infrastructure of omadia itself), changes what agents of its archetype may do, or moves its tables into its own database schema for good. Confirm the update explicitly.",
+        "retiredKind": "{pluginId} is of a retired kind ('agent' or 'extension'). A plugin delivers capabilities and may ship agent templates, never an agent of its own; infrastructure is a 'system-module', a model provider a 'model'.",
         "personaDeclared": "{pluginId} declares a persona or speaker of its own ({field}). Identity and personality belong to an agent, or to an agent template as inactive presets."
       },
       "replacedVersion": "Replaced the previously uploaded version {previous}.",
@@ -5187,6 +5189,17 @@
       "rejected": "The credentials were refused by the target system",
       "inconclusive": "The connection could not be checked",
       "noProbe": "This plugin does not support a connection check"
+    },
+    "legacyKind": {
+      "title": "Legacy plugin",
+      "agent": {
+        "what": "This plugin is of the retired kind 'agent': a plugin with an agent of its own. It keeps running, but omadia accepts no new version of it.",
+        "next": "Rebuild it in the Plugin Builder as a capability (tool or integration), then create the agent in the Agent Builder and grant it that capability."
+      },
+      "extension": {
+        "what": "This plugin is of the retired kind 'extension'. It keeps running as a system module, but omadia accepts no new version of it under that kind.",
+        "next": "Install a version that declares 'system-module' (infrastructure of omadia) or 'model' (a model provider) once its publisher provides one."
+      }
     }
   },
   "adminAuth": {

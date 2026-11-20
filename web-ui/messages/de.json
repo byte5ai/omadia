@@ -1266,8 +1266,8 @@
         "next": "Installiere zuerst einen anderen Privacy-Shield-Provider oder schalte die Org-Richtlinie in der Middleware-Umgebung ab."
       },
       "retired_kind": {
-        "what": "Dieses Paket hat die abgekündigte Art 'agent'. Ein Plugin liefert Fähigkeiten und darf Agentenvorlagen mitbringen, ist aber nie selbst ein Agent.",
-        "next": "Installiere stattdessen die Version des Plugins, die Fähigkeiten (oder Agentenvorlagen) liefert, und lege den Agenten im Agent Builder an."
+        "what": "Dieses Paket hat eine ausgemusterte Art ('agent' oder 'extension'). Ein Plugin liefert Fähigkeiten und darf Agent-Vorlagen mitbringen; es ist nie selbst ein Agent, und Infrastruktur ist ein 'system-module'.",
+        "next": "Installiere stattdessen die Version, die Fähigkeiten, Agent-Vorlagen, ein Systemmodul oder ein Modell liefert; Agenten legst du im Agent Builder an."
       },
       "system_module_confirmation_required": {
         "what": "Dieses Plugin ist ein Systemmodul: Infrastruktur von omadia selbst. Es wird nur nach ausdrücklicher Bestätigung installiert, und diese Anfrage enthielt keine.",
@@ -4777,7 +4777,9 @@
         },
         "minutes": "ca. {minutes} Min"
       },
-      "hubChip": "Hub · {registry}"
+      "hubChip": "Hub · {registry}",
+      "legacyChip": "Altbestand",
+      "legacyChipTitle": "Eine ausgemusterte Plugin-Art: Das Plugin läuft weiter, bekommt aber keine neuen Versionen."
     },
     "stateBadge": {
       "available": "Verfügbar",
@@ -5113,8 +5115,8 @@
         "zipTooManyEntries": "Das Archiv enthält zu viele Dateien.",
         "zipFileTooLarge": "Eine Datei im Archiv ist entpackt zu groß.",
         "zipTotalTooLarge": "Das entpackte Archiv überschreitet die Größengrenze.",
-        "archetypeConfirmationRequired": "Version {toVersion} von {pluginId} ändert mehr als die Version der installierten {fromVersion}: Sie macht das Plugin zum Archetyp-Plugin, ändert, was Agenten seines Archetyps dürfen, oder verschiebt seine Tabellen endgültig in ein eigenes Datenbankschema. Bestätige das Update ausdrücklich.",
-        "retiredKind": "{pluginId} hat die abgekündigte Art 'agent'. Ein Plugin liefert Fähigkeiten und darf Agentenvorlagen mitbringen, ist aber nie selbst ein Agent.",
+        "archetypeConfirmationRequired": "Version {toVersion} von {pluginId} ändert mehr als die Version der installierten {fromVersion}: Sie macht das Plugin zum Archetyp-Plugin oder zum Systemmodul (Infrastruktur von omadia), ändert, was Agenten seines Archetyps dürfen, oder verschiebt seine Tabellen endgültig in ein eigenes Datenbankschema. Bestätige das Update ausdrücklich.",
+        "retiredKind": "{pluginId} hat eine ausgemusterte Art ('agent' oder 'extension'). Ein Plugin liefert Fähigkeiten und darf Agent-Vorlagen mitbringen, nie einen eigenen Agenten; Infrastruktur ist ein 'system-module', ein Modell-Anbieter ein 'model'.",
         "personaDeclared": "{pluginId} legt eine eigene Persona oder einen eigenen Absender fest ({field}). Identität und Persönlichkeit gehören zu einem Agenten oder als inaktive Voreinstellung in eine Agentenvorlage."
       },
       "replacedVersion": "Die zuvor hochgeladene Version {previous} wurde ersetzt.",
@@ -5187,6 +5189,17 @@
       "rejected": "Das Zielsystem hat die Zugangsdaten abgelehnt",
       "inconclusive": "Die Verbindung konnte nicht geprüft werden",
       "noProbe": "Dieses Plugin unterstützt keine Verbindungsprüfung"
+    },
+    "legacyKind": {
+      "title": "Altbestand",
+      "agent": {
+        "what": "Dieses Plugin hat die ausgemusterte Art 'agent': ein Plugin mit eigenem Agenten. Es läuft weiter, aber omadia nimmt keine neue Version davon an.",
+        "next": "Bau es im Plugin Builder als Fähigkeit (Tool oder Integration) neu, leg dann im Agent Builder den Agenten an und gib ihm diese Fähigkeit."
+      },
+      "extension": {
+        "what": "Dieses Plugin hat die ausgemusterte Art 'extension'. Es läuft als Systemmodul weiter, aber omadia nimmt keine neue Version mit dieser Art an.",
+        "next": "Installiere eine Version mit 'system-module' (Infrastruktur von omadia) oder 'model' (ein Modell-Anbieter), sobald der Herausgeber sie anbietet."
+      }
     }
   },
   "adminAuth": {
