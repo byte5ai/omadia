@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { evaluatePredicate } from '@omadia/conductor-core';
 import type { JsonObject, Predicate } from '@omadia/conductor-core';
 
@@ -24,7 +26,12 @@ export interface EmitResult {
  * This is the kernel side of the Conductor Surface; a connector calls it (today via the operator emit route
  * and the inbound webhook route; `ctx.events.emit` for plugins is a follow-up).
  */
+/** #2082 — told of every emitted event (agents' hooks listen on the same bus). */
+export type EventObserver = (eventId: string, payload: JsonObject, eventKey: string) => void;
+
 export class ConductorEventRouter {
+  private readonly observers: EventObserver[] = [];
+
   constructor(
     private readonly deps: {
       workflowStore: ConductorWorkflowStore;
@@ -33,12 +40,28 @@ export class ConductorEventRouter {
     },
   ) {}
 
+  addObserver(observer: EventObserver): () => void {
+    this.observers.push(observer);
+    return () => {
+      const i = this.observers.indexOf(observer);
+      if (i >= 0) this.observers.splice(i, 1);
+    };
+  }
+
   async emit(eventId: string, rawPayload: JsonObject, sourcePluginId?: string): Promise<EmitResult> {
     // #1702 — strip the executor-owned keys once, before anything reads the
     // payload, so the trigger filter and the run share one context. startRun
     // strips too (it is the chokepoint for every trigger kind); this call is
     // what keeps `filter` from matching on a key the run will not have.
     const payload = sanitizeRunContext(rawPayload);
+    const eventKey = typeof payload['eventKey'] === 'string' ? payload['eventKey'] : randomUUID();
+    for (const observer of this.observers) {
+      try {
+        observer(eventId, payload, eventKey);
+      } catch (err) {
+        this.deps.log?.(`[conductor] event observer failed for '${eventId}': ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     const workflows = await this.deps.workflowStore.list();
     const started: Array<{ workflowSlug: string; runId: string }> = [];
     let matched = 0;

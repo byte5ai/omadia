@@ -40,6 +40,8 @@ const CRON_SAMPLE = 12;
 export interface TriggerLimits {
   readonly oneShotMaxDays: number;
   readonly recurringMaxDays: number;
+  /** A trigger bound to a live meeting ends within this many hours. */
+  readonly liveContextMaxHours: number;
   readonly minIntervalSecondsLive: number;
   readonly minIntervalSeconds: number;
   readonly maxActivePerAgent: number;
@@ -59,6 +61,7 @@ export interface TriggerLimits {
 export const DEFAULT_TRIGGER_LIMITS: TriggerLimits = {
   oneShotMaxDays: 90,
   recurringMaxDays: 30,
+  liveContextMaxHours: 12,
   minIntervalSecondsLive: 60,
   minIntervalSeconds: 15 * 60,
   maxActivePerAgent: 50,
@@ -290,6 +293,9 @@ export function validateTriggerRequest(
   const capDays = kind === 'wake_at' ? limits.oneShotMaxDays : limits.recurringMaxDays;
   if (until.getTime() - now.getTime() > capDays * DAY_MS) {
     return refuse('deadline_too_far', `until may lie at most ${String(capDays)} days ahead for ${kind}`);
+  }
+  if (env.liveContext && until.getTime() - now.getTime() > limits.liveContextMaxHours * 3_600_000) {
+    return refuse('deadline_too_far', `a trigger in a live meeting ends within ${String(limits.liveContextMaxHours)} hours`);
   }
 
   let fireAt: Date | null = null;

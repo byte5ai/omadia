@@ -441,6 +441,7 @@ import { createAgentEndOfService, logOwedSystemNotice } from './platform/agentEn
 import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
 import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
 import { createOperatorExecutionRouter } from './routes/operatorExecution.js';
+import { createOperatorTriggersRouter } from './routes/operatorTriggers.js';
 import type { ConductorDiscussionAdmin } from './conductor/discussionAdmin.js';
 import {
   wireConversationMessages,
@@ -582,6 +583,9 @@ import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js
 import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
 import { PeopleDirectoryRegistry } from './channels/peopleDirectoryRegistry.js';
 import { ConversationEventHub } from './channels/conversationEventHub.js';
+import { wireTriggers, type TriggerWiring } from './triggers/wiring.js';
+import { parseQuietHours } from './triggers/proactiveGate.js';
+import { DEFAULT_TRIGGER_LIMITS } from './triggers/triggerPolicy.js';
 import { TargetedSendRegistry } from './channels/targetedSendRegistry.js';
 import { createTargetedDeliveryService } from './channels/targetedDeliveryService.js';
 import { ConversationSendRegistry } from './channels/conversationSendRegistry.js';
@@ -846,6 +850,11 @@ async function main(): Promise<void> {
   const conversationMessagesRef: { current?: ConversationMessagesWiring } = {};
   // #2090 — set once the database pool exists (execution scopes, reservations).
   const executionRef: { current?: ExecutionWiring } = {};
+  // #2082 — agent-owned triggers; wired once the pool and the registry exist.
+  const triggersRef: { current?: TriggerWiring } = {};
+  // Channel plugins' ids, known once the channel registry exists: their
+  // events are offered to every agent's hooks.
+  const channelPluginIdsRef: { current: () => readonly string[] } = { current: () => [] };
   // #2067 — set once the Conductor is wired; the operator routes mount earlier.
   const discussionAdminRef: { current?: ConductorDiscussionAdmin } = {};
   // #2089 — private messages of a running process's participants to its
@@ -882,6 +891,19 @@ async function main(): Promise<void> {
   // bind conversations the transport actually reported a group bot_added for.
   const observedInvites = new ObservedConversationInvites({ log: (m) => console.log(`[middleware] ${m}`) });
   observedInvites.attach(conversationEventHub);
+  // #2082 — membership changes reach the agents' hooks as kernel events.
+  conversationEventHub.subscribe((event) => {
+    if (event.kind !== 'members_added' && event.kind !== 'members_removed') return;
+    triggersRef.current?.onEvent(
+      event.kind === 'members_added' ? 'conversation.members.added' : 'conversation.members.removed',
+      {
+        channelType: event.channelType ?? event.channelId,
+        conversationId: event.conversationId,
+        members: event.members.map((member) => member.id),
+      },
+      `${event.kind}:${event.occurredAt}:${event.members.map((member) => member.id).join(',')}`,
+    );
+  });
   // #2043 — per caller: only the facilitation engine may read a roster as an
   // agent (`{ agentSlug }`), and the kernel resolves that agent's identity.
   publishConversationRostersService({
@@ -4569,6 +4591,17 @@ async function main(): Promise<void> {
       },
     }),
   );
+  // #2082 — every agent's triggers, their spend and the operator's controls.
+  app.use(
+    '/api/v1/operator/triggers',
+    requireAuth,
+    createOperatorTriggersRouter({
+      triggers: () => triggersRef.current,
+      audit: async (entry) => {
+        await adminAudit?.record(entry);
+      },
+    }),
+  );
   app.use(
     '/api/v1/operator/channels',
     requireAuth,
@@ -4997,6 +5030,64 @@ async function main(): Promise<void> {
       },
       log: (m) => console.log(m),
     });
+    // #2082 — agent-owned triggers (spec 2042 §5.12): hooks, wakeups and
+    // timers with deadline, limits, budget and kill switch. The worker starts
+    // after the channels registered their proactive senders.
+    triggersRef.current = wireTriggers({
+      pool: graphPool,
+      limits: {
+        ...DEFAULT_TRIGGER_LIMITS,
+        oneShotMaxDays: config.TRIGGER_ONE_SHOT_MAX_DAYS,
+        recurringMaxDays: config.TRIGGER_RECURRING_MAX_DAYS,
+        minIntervalSeconds: config.TRIGGER_MIN_INTERVAL_MINUTES * 60,
+        minIntervalSecondsLive: config.TRIGGER_MIN_INTERVAL_LIVE_MINUTES * 60,
+        maxActivePerAgent: config.TRIGGER_MAX_ACTIVE_PER_AGENT,
+        perFiringUsdMax: config.TRIGGER_MAX_USD_PER_FIRING,
+        perFiringUsdDefault: Math.min(DEFAULT_TRIGGER_LIMITS.perFiringUsdDefault, config.TRIGGER_MAX_USD_PER_FIRING),
+        perTriggerUsdMax: config.TRIGGER_MAX_USD_PER_TRIGGER,
+        perTriggerUsdDefault: Math.min(DEFAULT_TRIGGER_LIMITS.perTriggerUsdDefault, config.TRIGGER_MAX_USD_PER_TRIGGER),
+        monthlyAgentUsd: config.TRIGGER_MONTHLY_USD_PER_AGENT,
+        monthlyInstanceUsd: config.TRIGGER_MONTHLY_USD_PER_INSTANCE,
+      },
+      recipientDefaults: {
+        timezone: config.PROACTIVE_TIMEZONE,
+        quiet: parseQuietHours(config.PROACTIVE_QUIET_HOURS),
+        maxPerHour: config.PROACTIVE_MAX_PER_HOUR,
+      },
+      enabled: config.TRIGGERS_ENABLED,
+      tickMs: config.TRIGGER_TICK_MS,
+      leaseMs: config.TRIGGER_LEASE_MS,
+      agentBySlug: (slug) => {
+        const agent = getRegistry()?.get(slug)?.agent;
+        return agent ? { id: agent.id, slug: agent.slug, enabled: agent.status === 'enabled' } : undefined;
+      },
+      agentChat: (slug) => getRegistry()?.get(slug)?.built.bundle.agent,
+      // The agent's OWN read tools: granted plugin tools without write
+      // capabilities, never a sub-agent's inner tools (`via`), never MCP
+      // tools (they need a person's identity a trigger firing lacks).
+      readToolsOf: (slug) => {
+        const entry = getRegistry()?.get(slug);
+        if (!entry) return undefined;
+        const tools = new Map<string, (input: unknown) => Promise<string>>();
+        for (const def of entry.built.bundle.raw.offeredToolDefinitions()) {
+          if (def.via !== undefined || def.invoke !== undefined) continue;
+          const handler = nativeToolRegistry.get(def.name)?.handler;
+          if (handler) tools.set(def.name, (input) => handler(input));
+        }
+        return tools;
+      },
+      grantedPluginIds: (slug) =>
+        (getRegistry()?.get(slug)?.plugins ?? []).filter((p) => p.enabled).map((p) => p.pluginId),
+      eventCatalog: () => eventCatalogRegistry.byPluginId(),
+      channelPluginIds: () => channelPluginIdsRef.current(),
+      senders: () => routinesHandle?.senderRegistry,
+      registerNativeTool: (name, handler, options) =>
+        nativeToolRegistry.register(name, { handler, spec: options.spec, isAvailable: options.isAvailable }),
+      audit: () => async (entry) => {
+        await adminAudit?.record(entry);
+      },
+      log: (m) => console.log(m),
+    });
     const disposeEphemeralAttachment = async (
       attachment: { id: string; agentSlug: string; channelType: string; channelKey: string; roleKey: string | null },
       actor: string,
@@ -5272,6 +5363,11 @@ async function main(): Promise<void> {
     discussionAdminRef.current = conductorWiring.discussionAdmin;
     // Expose the event router so plugin contexts (ctx.events.emit) resolve it lazily — US4.
     serviceRegistry.provide('conductorEventRouter', conductorWiring.eventRouter);
+    // #2082 — every domain event on the Conductor bus also reaches the
+    // agents' hooks (spec 2042 §5.12: hooks use the same event bus).
+    conductorWiring.eventRouter.addObserver((eventId, payload, eventKey) => {
+      triggersRef.current?.onEvent(eventId, payload, eventKey);
+    });
     // Expose the channel-binding store so the routines turn-capture hook can populate it — US5.
     serviceRegistry.provide('conductorChannelBindings', conductorWiring.channelBindingStore);
     // Expose await resolution so a channel plugin can resolve a human approval in-process when the
@@ -7381,6 +7477,22 @@ async function main(): Promise<void> {
     targetedSends: targetedSendRegistry,
     conversationEvents: conversationEventHub,
     conversationSends: conversationSendRegistry,
+    // #2082 — every message a channel reports reaches the agents' hooks as
+    // `conversation.message.created`: ids and kind only, never the text.
+    onConversationMessage: (event) => {
+      if (event.kind !== 'created') return;
+      triggersRef.current?.onEvent(
+        'conversation.message.created',
+        {
+          channelType: event.channelType,
+          conversationId: event.conversationId,
+          messageId: event.messageId,
+          authorId: event.author.id,
+          authorKind: event.author.kind,
+        },
+        `${event.channelType}:${event.conversationId}:${event.messageId}`,
+      );
+    },
     ...(conversationMessages ? { conversationMessages: conversationMessages.hub } : {}),
     readinessProviders: readinessProviderRegistry,
     meetingSources: meetingSourceRegistry,
@@ -7446,6 +7558,7 @@ async function main(): Promise<void> {
     readinessProviders: readinessProviderRegistry,
     meetingSources: meetingSourceRegistry,
   });
+  channelPluginIdsRef.current = () => channelRegistry.activeIds();
   channelRegistryRef = channelRegistry;
   await channelRegistry.activateAllInstalled();
   // #2043 — every plugin had its chance to activate: from here on the kernel
@@ -7465,6 +7578,8 @@ async function main(): Promise<void> {
   if (routinesHandle) {
     await routinesHandle.runner.start();
   }
+  // #2082 — triggers fire through the same proactive senders.
+  triggersRef.current?.start();
 
   // Mount routers contributed by plugins (via ctx.routes.register). Must run
   // AFTER all plugin activate()'s have completed, otherwise late-registered

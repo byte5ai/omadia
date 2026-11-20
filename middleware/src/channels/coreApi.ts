@@ -165,6 +165,9 @@ export interface CreateCoreApiOptions {
    * undefined, so an adapter's mention gate always applies.
    */
   conversationMessages?: Pick<ConversationMessageHub, 'emit' | 'isSubscribed' | 'deliveryMode'>;
+  /** #2082 — told of every message event a channel reports, before the hub
+   *  decides whether a subscription stores it: agents' hooks hear it. */
+  onConversationMessage?: (event: ConversationMessageEvent) => void;
   /** #2043 — readiness providers and meeting sources, same lifecycle as the
    *  roster registry; and where pushed snapshots and session events go. */
   readinessProviders?: ChannelProviderRegistry<ChannelReadinessProvider>;
@@ -348,8 +351,16 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
   }
   if (opts.conversationMessages) {
     const messages = opts.conversationMessages;
+    const observe = opts.onConversationMessage;
     api.emitConversationMessage = (event: ConversationMessageEvent): void => {
       messages.emit(event);
+      if (observe) {
+        try {
+          observe(event);
+        } catch {
+          // An observer never breaks the channel's inbound path.
+        }
+      }
     };
     // Asked synchronously for every inbound activity: a cache lookup that
     // never throws. Anything not positively subscribed is `false`.
