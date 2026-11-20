@@ -579,7 +579,10 @@ asOwnIdentity: boolean;
 mentions: boolean;
 poll: boolean;
 card?: CardSupport;
+reactions?: boolean;
 }
+export type ConversationReaction = 'acknowledge';
+export declare const CONVERSATION_REACTIONS: readonly ConversationReaction[];
 export interface ConversationCardUpdateRequest {
 agentSlug: string;
 channelType: string;
@@ -637,6 +640,22 @@ authorization: SendAuthorization;
 export interface ScopedCardUpdateRequest extends ConversationCardUpdateRequest {
 authorization: SendAuthorization;
 }
+export interface ScopedReactionRequest {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+messageEventId: string;
+reaction: ConversationReaction;
+authorization: Omit<SendAuthorization, 'emission'> & {
+emission?: SendAuthorization['emission'];
+};
+}
+export type ScopedReactionOutcome = {
+outcome: 'reacted';
+authorizationId: string;
+} | Extract<ScopedSendOutcome, {
+outcome: 'unreachable';
+}>;
 export interface ScopedReadinessRequest {
 agentSlug: string;
 channelType: string;
@@ -650,6 +669,7 @@ updateCard(request: ScopedCardUpdateRequest): Promise<CardUpdateOutcome | Extrac
 outcome: 'unreachable';
 }>>;
 capabilities(channelType: string): ConversationSendCapabilities | undefined;
+react?(request: ScopedReactionRequest): Promise<ScopedReactionOutcome>;
 checkReadiness(request: ScopedReadinessRequest): Promise<{
 outcome: 'checked';
 report: ChannelReadinessReport;

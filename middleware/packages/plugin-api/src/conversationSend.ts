@@ -89,7 +89,24 @@ export interface ConversationSendCapabilities {
   poll: boolean;
   /** Absent = no question cards on this channel. */
   card?: CardSupport;
+  /**
+   * The agent can set a reaction on a message of the conversation as its own
+   * identity (`ScopedConversationSendService.react`, spec 2043 §5.14). Absent
+   * or false = the channel cannot; the caller then says nothing instead.
+   */
+  reactions?: boolean;
 }
+
+/**
+ * A reaction an agent sets on somebody's message (spec 2043 §5.14: "recording
+ * is quiet: a reaction where the channel supports it"). Named by what it
+ * means, not by an emoji: each channel uses its own form of a thumbs-up
+ * (Teams `like`, Slack `+1`, Discord and Telegram 👍).
+ */
+export type ConversationReaction = 'acknowledge';
+
+/** Every reaction of {@link ConversationReaction}, for validation. */
+export const CONVERSATION_REACTIONS: readonly ConversationReaction[] = ['acknowledge'];
 
 export interface ConversationCardUpdateRequest {
   /** The agent that posted the card. Same rules as a send: its own identity,
@@ -200,6 +217,30 @@ export interface ScopedCardUpdateRequest extends ConversationCardUpdateRequest {
   authorization: SendAuthorization;
 }
 
+/**
+ * Set a reaction on a message (spec 2043 §5.14), drawn from the scope like a
+ * post to that conversation (action `post`, emission `data`). The message is
+ * named by the kernel's id of its stored inbound event: the kernel reacts only
+ * to a message it stored for this process in this conversation, never to one
+ * of another conversation or process.
+ */
+export interface ScopedReactionRequest {
+  agentSlug: string;
+  channelType: string;
+  conversationId: string;
+  /** `ConversationMessageRecord.eventId` of the message to react to: a `created`
+   *  or `edited` event (never a reaction or a card answer, whose `messageId` names
+   *  another message). */
+  messageEventId: string;
+  reaction: ConversationReaction;
+  /** `emission` is ignored: a reaction is recorded as `data`. */
+  authorization: Omit<SendAuthorization, 'emission'> & { emission?: SendAuthorization['emission'] };
+}
+
+export type ScopedReactionOutcome =
+  | { outcome: 'reacted'; authorizationId: string }
+  | Extract<ScopedSendOutcome, { outcome: 'unreachable' }>;
+
 export interface ScopedReadinessRequest {
   agentSlug: string;
   channelType: string;
@@ -214,6 +255,14 @@ export interface ScopedConversationSendService {
   sendToPerson(request: ScopedDirectSendRequest): Promise<ScopedSendOutcome>;
   updateCard(request: ScopedCardUpdateRequest): Promise<CardUpdateOutcome | Extract<ScopedSendOutcome, { outcome: 'unreachable' }>>;
   capabilities(channelType: string): ConversationSendCapabilities | undefined;
+  /**
+   * Set a reaction as the agent's own identity on a message of the
+   * conversation (plugin-api 1.82.0). Only where `capabilities(channelType)`
+   * says `reactions: true`; otherwise 'unreachable' with code
+   * 'channel_error' and nothing is set. Optional member: absent on an older
+   * kernel, feature-detect it.
+   */
+  react?(request: ScopedReactionRequest): Promise<ScopedReactionOutcome>;
   /**
    * Readiness of the agent's identity in ONE conversation: installed, may
    * read all messages where needed, can post. Asked when a conversation is

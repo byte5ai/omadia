@@ -10,6 +10,7 @@ import {
   type OperatorAgentsListDto,
 } from '../../../_lib/agents';
 import { AgentDetail } from './_components/AgentDetail';
+import { parseAgentDetailTab } from './_components/agentDetailTab';
 
 /**
  * Issue #861 — per-agent capability page (epic #860).
@@ -33,6 +34,8 @@ const loadAgents = cache(listOperatorAgents);
 
 interface RouteParams {
   params: Promise<{ slug: string }>;
+  /** Only `generateMetadata` omits it; the page always gets it. */
+  searchParams?: Promise<{ tab?: string | string[] }>;
 }
 
 export async function generateMetadata({
@@ -53,8 +56,13 @@ export async function generateMetadata({
 
 export default async function OperatorAgentDetailPage({
   params,
+  searchParams,
 }: RouteParams): Promise<React.ReactElement> {
   const { slug: rawSlug } = await params;
+  // `?tab=` is read here, on the server, so the server and the client render
+  // the same tab; reading it from `window` while hydrating mismatched.
+  const rawTab = (await searchParams)?.tab;
+  const initialTab = parseAgentDetailTab(Array.isArray(rawTab) ? rawTab[0] : rawTab);
   const slug = decodeURIComponent(rawSlug);
   const t = await getTranslations('operatorAgents');
 
@@ -105,7 +113,7 @@ export default async function OperatorAgentDetailPage({
               })}
             </p>
           </header>
-          <AgentDetail agent={agent} />
+          <AgentDetail agent={agent} initialTab={initialTab} />
           {/* The sibling per-agent surfaces (tool grants #861, MCP #862,
               context memory #899) moved into AgentDetail's tabs — one
               composition point, one tab strip. */}

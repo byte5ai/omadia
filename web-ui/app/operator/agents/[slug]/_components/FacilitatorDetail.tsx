@@ -24,7 +24,7 @@ import {
 } from '../../_components/facilitatorReadiness';
 import { useFacilitatorRefusalMessage } from '../../_components/useFacilitatorCopy';
 import { AgentChannelIdentities } from './AgentChannelIdentities';
-import { AgentDetailTabs } from './AgentDetailTabs';
+import { AgentDetailTabs, type AgentDetailTab } from './AgentDetailTabs';
 import { AgentIdentity } from './AgentIdentity';
 import { AgentModelPolicy } from './AgentModelPolicy';
 import { AgentTeamsIdentity } from './AgentTeamsIdentity';
@@ -50,6 +50,8 @@ import { FacilitatorWorkingModes } from './FacilitatorWorkingModes';
  */
 interface FacilitatorDetailProps {
   readonly agent: OperatorAgentDto;
+  /** The tab `?tab=` names, read by the page on the server. */
+  readonly initialTab?: AgentDetailTab;
 }
 
 export function FacilitatorDetail(
@@ -80,6 +82,7 @@ export function FacilitatorDetail(
       <FacilitationEngineNotice engine={engine} />
 
       <AgentDetailTabs
+        {...(props.initialTab ? { initialTab: props.initialTab } : {})}
         panels={{
           identity: () => <AgentIdentity slug={agent.slug} archetype={FACILITATOR_ARCHETYPE} />,
           model: () => <AgentModelPolicy slug={agent.slug} />,

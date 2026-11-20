@@ -60,6 +60,9 @@ fill a gap in the spec or deviates from its wording, so that later work does not
 
 ### Quiet recording without a reaction contract (§5.3, §5.14)
 
+- **Superseded by [ADR 0027](0027-agent-reactions-for-quiet-recording.md)** (2026-11-20): the kernel now offers
+  a reaction contract; the decision below held until then.
+
 - The spec wants a reaction "where the channel supports reactions, otherwise nothing". The
   kernel has no contract for a facilitator to react to a message (the channel SDK's
   decorations registry even lists `receipt_reaction` as removed). **Decision:** in v1 a

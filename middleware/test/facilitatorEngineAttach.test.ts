@@ -5,11 +5,13 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import {
   attachEngineToFacilitator,
   attachEngineToFacilitators,
+  syncArchetypesAndAttachEngine,
 } from '../src/platform/facilitatorEngineAttach.js';
 import { createSubscriptionGroundCheck } from '../src/channels/conversationMessages/wiring.js';
 import {
@@ -172,5 +174,57 @@ describe('facilitation engine auto-attach', () => {
     assert.doesNotThrow(() =>
       assertEngineOnlyForFacilitators(w.agents[0]!, [{ pluginId: ENGINE, enabled: true }], w.sources),
     );
+  });
+});
+
+describe('syncArchetypesAndAttachEngine: the boot and install path', () => {
+  const run = async (opts: { store?: object; syncFails?: boolean; attachFails?: boolean }) => {
+    const calls: string[] = [];
+    const logs: string[] = [];
+    await syncArchetypesAndAttachEngine({
+      sync: () => {
+        calls.push('sync');
+        return opts.syncFails ? Promise.reject(new Error('catalog down')) : Promise.resolve();
+      },
+      getStore: () => opts.store as never,
+      attach: () => {
+        calls.push('attach');
+        return opts.attachFails ? Promise.reject(new Error('db down')) : Promise.resolve();
+      },
+      reload: () => {
+        calls.push('reload');
+        return Promise.resolve();
+      },
+      log: (m) => logs.push(m),
+    });
+    return { calls, logs };
+  };
+
+  it('syncs the archetypes also without a config store, and attaches nothing then', async () => {
+    assert.deepEqual((await run({})).calls, ['sync']);
+  });
+
+  it('with a config store: sync, then attach, then rebuild', async () => {
+    assert.deepEqual((await run({ store: {} })).calls, ['sync', 'attach', 'reload']);
+  });
+
+  it('a failed sync attaches nothing and says so; a failed attach is logged, never thrown', async () => {
+    const failedSync = await run({ store: {}, syncFails: true });
+    assert.deepEqual(failedSync.calls, ['sync']);
+    assert.match(failedSync.logs.join('\n'), /archetype sync FAILED: catalog down/);
+    const failedAttach = await run({ store: {}, attachFails: true });
+    assert.deepEqual(failedAttach.calls, ['sync', 'attach']);
+    assert.match(failedAttach.logs.join('\n'), /facilitation engine attach FAILED: db down/);
+  });
+});
+
+describe('wiring: the boot path syncs archetypes before it needs a config store', () => {
+  it('index.ts builds attachFacilitationEngine on syncArchetypesAndAttachEngine', () => {
+    const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf-8');
+    const start = source.indexOf('const attachFacilitationEngine');
+    assert.ok(start > 0, 'attachFacilitationEngine is defined');
+    const body = source.slice(start, source.indexOf('const propagatePluginInstall', start));
+    assert.match(body, /syncArchetypesAndAttachEngine\(/);
+    assert.doesNotMatch(body, /if \(!store\) return/, 'no early return before the sync');
   });
 });

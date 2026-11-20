@@ -146,7 +146,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
     window.history.replaceState(null, '', '/?tab=plugins');
     mockEngine.mockResolvedValue({ state: 'none' });
     mockTeams.mockResolvedValue({ state: 'installed' });
-    renderWithIntl(<AgentDetail agent={agent()} />);
+    renderWithIntl(<AgentDetail agent={agent()} initialTab="plugins" />);
     expect(screen.getByTestId('agent-identity')).toBeTruthy();
     expect(screen.queryByTestId('plugins-dnd')).toBeNull();
     await screen.findByTestId('facilitation-engine-notice');

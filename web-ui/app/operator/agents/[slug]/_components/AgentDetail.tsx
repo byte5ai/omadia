@@ -20,7 +20,7 @@ import { useFacilitatorRefusalMessage } from '../../_components/useFacilitatorCo
 import { PluginsDnd } from '../../_components/PluginsDnd';
 import { AgentChannelIdentities } from './AgentChannelIdentities';
 import { AgentContextMemory } from './AgentContextMemory';
-import { AgentDetailTabs } from './AgentDetailTabs';
+import { AgentDetailTabs, type AgentDetailTab } from './AgentDetailTabs';
 import { AgentIdentity } from './AgentIdentity';
 import { AgentMcpServers } from './AgentMcpServers';
 import { AgentModelPolicy } from './AgentModelPolicy';
@@ -48,6 +48,8 @@ import { FacilitatorDetail } from './FacilitatorDetail';
  */
 interface AgentDetailProps {
   readonly agent: OperatorAgentDto;
+  /** The tab `?tab=` names, read by the page on the server. */
+  readonly initialTab?: AgentDetailTab;
 }
 
 /**
@@ -83,7 +85,7 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
   // has no plugin editor, grants, peers or memory, so none of their read
   // models are fetched for it.
   return isFacilitatorAgent(props.agent) ? (
-    <FacilitatorDetail agent={props.agent} />
+    <FacilitatorDetail agent={props.agent} {...(props.initialTab ? { initialTab: props.initialTab } : {})} />
   ) : (
     <StandardAgentDetail {...props} />
   );
@@ -287,6 +289,7 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
           Every section fetches its own read model by slug and is safe to
           mount on its own — which is exactly what a tab does. */}
       <AgentDetailTabs
+        {...(props.initialTab ? { initialTab: props.initialTab } : {})}
         panels={{
           identity: () => <AgentIdentity slug={props.agent.slug} />,
           model: () => (

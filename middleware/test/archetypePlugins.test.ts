@@ -42,6 +42,7 @@ import { capabilityPluginIds } from '../src/plugins/capabilityPlugins.js';
 import { InstallError, InstallService } from '../src/plugins/installService.js';
 import { adaptManifestV1 } from '../src/plugins/manifestLoader.js';
 import { buildOperatorArchetypes } from '../src/routes/operatorArchetypes.js';
+import { syncArchetypesAndAttachEngine } from '../src/platform/facilitatorEngineAttach.js';
 
 const ENGINE = '@omadia/agent-facilitator';
 const CONTRACT = '## Neutrality contract (plugin)\nYou moderate. You hold no opinion on the content.';
@@ -200,6 +201,31 @@ describe('registration: what is installed is what is enforced', () => {
     });
     return { sync, logs, writes, resets };
   }
+
+  // Boot without a config store (an instance without LLM access, so the
+  // orchestrator publishes none): the archetype sync must still run, or the
+  // kernel seed stays in force until the next restart.
+  it('boot without a config store still registers the plugin descriptor; nothing is attached', async () => {
+    let installed = [{ id: ENGINE, doc: manifest() }];
+    const h = syncWith(() => installed);
+    disposers.push(async () => {
+      installed = [];
+      await h.sync.sync();
+    });
+    const attached: unknown[] = [];
+    await syncArchetypesAndAttachEngine({
+      sync: () => h.sync.sync(),
+      getStore: () => undefined,
+      attach: (store) => {
+        attached.push(store);
+        return Promise.resolve();
+      },
+      reload: () => undefined,
+      log: () => undefined,
+    });
+    assert.equal(getArchetype('facilitator')?.source, ENGINE, 'the plugin descriptor is in force without a config store');
+    assert.deepEqual(attached, [], 'attaching needs the config store');
+  });
 
   it('an installed archetype plugin replaces the kernel seed, and an uninstall brings the seed back', async () => {
     let installed = [{ id: ENGINE, doc: manifest() }];

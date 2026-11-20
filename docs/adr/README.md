@@ -54,6 +54,7 @@ decision, write a new ADR and mark the old one **Superseded by …**.
 | 0024 | [Facilitation closing procedure, result status and retention](0024-facilitation-closing-procedure-and-result-status.md) | Accepted | 2026-11-20 |
 | 0025 | [Facilitation contributions and decisions: electorate, quiet recording, consent, repeats](0025-facilitation-contributions-and-decisions.md) | Accepted | 2026-11-20 |
 | 0026 | [Facilitation sessions: linked conversations, binding close and spoken contributions](0026-facilitation-sessions-linked-conversations-and-spoken-contributions.md) | Accepted | 2026-11-20 |
+| 0027 | [Agent reactions for quiet recording](0027-agent-reactions-for-quiet-recording.md) | Accepted | 2026-11-20 |
 
 ### The agent model (0012–0022)
 
