@@ -70,6 +70,11 @@ import {
 } from '../agents/broadReachGate.js';
 import { firstAgentSlug, onboardingTarget } from '../agents/firstAgentOnboarding.js';
 import {
+  AgentTemplateExportError,
+  agentTemplateFromAgent,
+  agentTemplateYaml,
+} from '../agents/agentTemplateExport.js';
+import {
   buildBotHandle,
   TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION,
   teamsProvisioningErrorDetailOf,
@@ -186,6 +191,7 @@ interface AgentPluginCatalogEntry {
  *   PUT    /api/v1/operator/agents/:slug/plugins         replace agent plugin set
  *   PATCH  /api/v1/operator/agents/:slug/plugins         enable/disable ONE plugin (body: { id, enabled })
  *   GET    /api/v1/operator/agents/:slug/grants          per-agent tool grants + plugin MCP grants + grant epoch
+ *   GET    /api/v1/operator/agents/:slug/template        the agent as one agent_templates entry (#2049; ?format=yaml)
  *   GET    /api/v1/operator/agents/:slug/context-memory  read the W5 memory-ACL rollout mode (#899)
  *   PUT    /api/v1/operator/agents/:slug/context-memory  set the W5 memory-ACL rollout mode (body: { mode })
  *   POST   /api/v1/operator/agents/:slug/teams-identity   create-or-provision Teams identity (async, W1a #860)
@@ -2970,6 +2976,72 @@ export function createOperatorAgentsRouter(
       const identity = await deps.store.getByAgentId(agent.id);
       res.json(projectAgentIdentity(agent, identity));
     } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── export as agent template (#2049, spec 2042 §5.2) ────────────────
+  // The agent as ONE `agent_templates:` entry in the format the manifest
+  // reader takes (`agents/agentTemplateExport.ts`): identity, persona,
+  // quality and the granted capability plugin ids. Never secrets (plugin
+  // configuration), memory, bindings or availability. `?format=yaml` is the
+  // download, JSON the default.
+  router.get('/:slug/template', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    const deps = agentIdentity(res);
+    if (!deps) return;
+    const catalog = options.getPluginCatalog?.();
+    if (!catalog) {
+      res.status(503).json({
+        error: 'plugin_catalog_unavailable',
+        message: 'the plugin catalog is not wired into the operator-agents router.',
+      });
+      return;
+    }
+    try {
+      const format = req.query['format'] ?? 'json';
+      if (format !== 'json' && format !== 'yaml') {
+        res.status(400).json({ error: 'invalid_format', message: 'format must be "json" or "yaml"' });
+        return;
+      }
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [identity, rows] = await Promise.all([
+        deps.store.getByAgentId(agent.id),
+        live.store.listAgentPlugins(agent.id),
+      ]);
+      const capabilities = rows
+        .filter((r) => r.enabled && isCapabilityPlugin(catalog.get(r.pluginId)?.plugin))
+        .map((r) => r.pluginId)
+        .sort();
+      const entry = agentTemplateFromAgent({
+        slug: agent.slug,
+        name: agent.name,
+        archetype: archetypeOf(agent),
+        identity,
+        capabilities,
+      });
+      if (format === 'yaml') {
+        res.setHeader('content-type', 'application/yaml; charset=utf-8');
+        res.setHeader(
+          'content-disposition',
+          `attachment; filename="${entry.id}.agent-template.yaml"`,
+        );
+        res.send(agentTemplateYaml(entry));
+        return;
+      }
+      res.json({ agent_templates: [entry] });
+    } catch (err) {
+      if (err instanceof AgentTemplateExportError) {
+        res.status(409).json({ error: 'template_export_invalid', message: err.message, reason: err.reason });
+        return;
+      }
       badRequest(res, err);
     }
   });
