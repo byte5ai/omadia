@@ -5077,7 +5077,8 @@
       "fromHub": "from the Hub",
       "stepActivationFailed": "{label}: installed, but it did not start: {error}",
       "stepUpdatedNotStarted": "{label}: updated, but not started. Activate it on its store page, then install again.",
-      "stepNeedsParents": "{label}: needs other plugins installed first. Install it from its store page, then install again."
+      "stepNeedsParents": "{label}: needs other plugins installed first. Install it from its store page, then install again.",
+      "stepNotConfirmed": "{label} is a system module and was not confirmed, so nothing further was installed."
     },
     "upload": {
       "onlyZip": "Only .zip allowed, got: {name}",

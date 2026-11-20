@@ -21,6 +21,7 @@ import type {
   UnresolvedCapabilityEntry,
 } from '../../_lib/storeTypes';
 import { Chip } from './Chip';
+import { SystemModuleInstallConfirm } from './SystemModuleInstallConfirm';
 import {
   FieldRow,
   extractValues,
@@ -77,8 +78,21 @@ type Phase =
     }
   /** #1496 — `notRunning` names the steps that installed but did not start
    *  (`errored`); the final screen must not call those "active". */
+  /** Spec 2042 §5.10 — a step installs a system module: the operator
+   *  confirms it before its job is created, as on the plugin's own page. */
+  | { kind: 'confirm_system_module'; label: string; stepIndex: number; stepCount: number }
   | { kind: 'success'; notRunning: string[] }
   | { kind: 'error'; message: string };
+
+/** Whether an install refusal asks for the system-module confirmation. */
+function needsSystemModuleConfirmation(err: unknown): boolean {
+  if (!(err instanceof ApiError) || err.status !== 409) return false;
+  try {
+    return (JSON.parse(err.body) as { code?: unknown }).code === 'install.system_module_confirmation_required';
+  } catch {
+    return false;
+  }
+}
 
 /**
  * #825 — in this flow "installed" and "running" are different questions.
@@ -127,6 +141,13 @@ export function RequiresWizard({
   const formResolverRef = useRef<
     ((values: Record<string, unknown>) => void) | null
   >(null);
+  // The same pause for a system module's confirmation: `true` = confirmed.
+  const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const answerConfirm = (confirmed: boolean): void => {
+    const resolver = confirmResolverRef.current;
+    confirmResolverRef.current = null;
+    resolver?.(confirmed);
+  };
 
   const allResolved = selections.every((s) => s.providerId !== null);
   const installing = phase.kind === 'installing';
@@ -203,6 +224,13 @@ export function RequiresWizard({
                 }
               }}
             />
+          ) : phase.kind === 'confirm_system_module' ? (
+            <SystemModuleInstallConfirm
+              pluginName={phase.label}
+              busy={false}
+              onConfirm={() => answerConfirm(true)}
+              onCancel={() => answerConfirm(false)}
+            />
           ) : phase.kind === 'success' ? (
             <SuccessBody targetPluginName={targetPluginName} notRunning={phase.notRunning} />
           ) : (
@@ -217,7 +245,7 @@ export function RequiresWizard({
                   count: selections.length,
                   name: targetPluginName,
                 })
-              : phase.kind === 'installing'
+              : phase.kind === 'installing' || phase.kind === 'confirm_system_module'
                 ? t('stepOf', {
                     current: phase.stepIndex + 1,
                     total: phase.stepCount,
@@ -383,7 +411,28 @@ export function RequiresWizard({
             return;
           }
         }
-        const created = await createInstallJob(step.pluginId);
+        let created: Awaited<ReturnType<typeof createInstallJob>>;
+        try {
+          created = await createInstallJob(step.pluginId);
+        } catch (err) {
+          if (!needsSystemModuleConfirmation(err)) throw err;
+          // Spec 2042 §5.10 — a system module is installed only on an
+          // explicit confirmation; ask here instead of failing the chain.
+          const confirmed = await new Promise<boolean>((resolve) => {
+            confirmResolverRef.current = resolve;
+            setPhase({
+              kind: 'confirm_system_module',
+              label: step.label,
+              stepIndex: i,
+              stepCount: steps.length,
+            });
+          });
+          if (!confirmed) {
+            setPhase({ kind: 'error', message: t('stepNotConfirmed', { label: step.label }) });
+            return;
+          }
+          created = await createInstallJob(step.pluginId, { confirmArchetype: true });
+        }
         const job = created.job;
         const fields = job.setup_schema?.fields ?? [];
         const requiredFields = fields.filter((f) => f.required);
