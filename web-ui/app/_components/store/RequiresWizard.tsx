@@ -76,11 +76,11 @@ type Phase =
       requiresForm: boolean;
       stepError: string | null;
     }
-  /** #1496 — `notRunning` names the steps that installed but did not start
-   *  (`errored`); the final screen must not call those "active". */
   /** Spec 2042 §5.10 — a step installs a system module: the operator
    *  confirms it before its job is created, as on the plugin's own page. */
   | { kind: 'confirm_system_module'; label: string; stepIndex: number; stepCount: number }
+  /** #1496 — `notRunning` names the steps that installed but did not start
+   *  (`errored`); the final screen must not call those "active". */
   | { kind: 'success'; notRunning: string[] }
   | { kind: 'error'; message: string };
 
@@ -431,6 +431,16 @@ export function RequiresWizard({
             setPhase({ kind: 'error', message: t('stepNotConfirmed', { label: step.label }) });
             return;
           }
+          // Back to the progress view while the confirmed job is created.
+          setPhase({
+            kind: 'installing',
+            stepIndex: i,
+            stepCount: steps.length,
+            currentLabel: step.label,
+            currentJob: null,
+            requiresForm: false,
+            stepError: null,
+          });
           created = await createInstallJob(step.pluginId, { confirmArchetype: true });
         }
         const job = created.job;

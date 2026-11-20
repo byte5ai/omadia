@@ -408,7 +408,9 @@ the expand step below. **Breaking for operators** who relied on `observe`.
    migrated version instead: a capability (`tool`, `integration`) plus an
    agent built in the Agent Builder, or a `system-module` or `model`. The
    store lists registry and local packages of a retired kind as
-   `incompatible`.
+   `incompatible`. A profile bundle or snapshot that brings such a package
+   at another version, or onto a fresh instance, fails to import it with
+   `package.retired_kind`.
 3. **An update that makes a plugin a system module** needs the same explicit
    confirmation as a fresh install (`becomes_system_module`, the
    `confirm_archetype` flag). `extension` → `system-module` needs none. The

@@ -325,7 +325,8 @@ export interface PrivacyToolResultV4Request {
   /**
    * Spec 2042 §5.10 (1.80.0) — the tool's declared PII fields
    * (`ToolRegistrationOptions.piiFields`): masked in the digest whatever the
-   * classifier says. Absent ⇒ the classifier alone decides.
+   * classifier says. Absent ⇒ the classifier alone decides. Honoured by the
+   * bundled privacy guard; another `privacy.redact@1` provider may ignore it.
    */
   readonly piiFields?: readonly ToolPIIField[];
 }
