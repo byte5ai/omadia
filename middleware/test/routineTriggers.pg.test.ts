@@ -20,7 +20,7 @@ import { probePgTest } from './_helpers/pgTestDb.js';
 
 import { ConfigStore } from '../packages/harness-orchestrator/src/registry/configStore.js';
 import { runMultiOrchestratorMigrations } from '../packages/harness-orchestrator/src/registry/migrator.js';
-import { recordUsage } from '../packages/harness-usage-telemetry/src/index.js';
+import { currentExecutionContext, recordUsage, type ModelExecutionContext } from '../packages/harness-usage-telemetry/src/index.js';
 import { runRoutineMigrations } from '../src/plugins/routines/migrator.js';
 import { InMemoryProactiveSenderRegistry } from '../src/plugins/routines/proactiveSender.js';
 import { RoutineRunner } from '../src/plugins/routines/routineRunner.js';
@@ -60,6 +60,8 @@ describe('#2082 routines as triggers (pg)', { skip: !pgAvailable }, () => {
   let wiring: TriggerWiring;
   const sent: string[] = [];
   let turns = 0;
+  /** The gateway context each routine turn ran in (its screener runs there too). */
+  const turnContexts: (ModelExecutionContext | undefined)[] = [];
   let agentId = '';
 
   const triggerOf = (routineId: string): Promise<Trigger | undefined> =>
@@ -101,6 +103,7 @@ describe('#2082 routines as triggers (pg)', { skip: !pgAvailable }, () => {
       getOrchestrator: () => ({
         runTurn: async (_input: ChatTurnInput): Promise<ChatTurnResult> => {
           turns += 1;
+          turnContexts.push(currentExecutionContext());
           recordUsage({ source: 'test', model: 'scripted', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.04 });
           return { answer: `Bericht ${String(turns)}`, toolCalls: 0, iterations: 1 } as ChatTurnResult;
         },
@@ -171,6 +174,9 @@ describe('#2082 routines as triggers (pg)', { skip: !pgAvailable }, () => {
     await Promise.all([wiring.worker.tick(), wiring.worker.tick()]);
     assert.equal(turns, 1);
     assert.deepEqual(sent, ['Bericht 1']);
+    // Spec 2042 §5.10 — the routine's turn, and the security screener that
+    // runs before its turn scope, are the agent's turn in the model gateway.
+    assert.deepEqual(turnContexts.at(-1), { kind: 'agent_turn', ownerId: 'erika', agentSlug: 'erika' });
     const after1 = await triggerOf(routine.id);
     assert.equal(after1?.runs, 1);
     assert.ok(Math.abs((after1?.spentUsd ?? 0) - 0.04) < 1e-9, 'settled with the actual cost');

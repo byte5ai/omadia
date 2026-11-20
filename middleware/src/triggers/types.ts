@@ -8,6 +8,8 @@
  * where judgement or language is needed).
  */
 
+import type { LabelSet, Readers } from '@omadia/orchestrator';
+
 export const TRIGGER_KINDS = ['on_event', 'wake_at', 'wake_every'] as const;
 export type TriggerKind = (typeof TRIGGER_KINDS)[number];
 
@@ -59,12 +61,19 @@ export type TriggerTarget =
   | { readonly kind: 'conversation'; readonly channel: string; readonly ref: unknown }
   | { readonly kind: 'person'; readonly channel: string; readonly principalId: string; readonly ref: unknown };
 
-/** Where the trigger was created: the default delivery target and its labels. */
-export interface TriggerOriginContext {
-  readonly channel: string;
-  readonly conversationRef: unknown;
-  /** Discretion labels of the creating context (INV-9). */
-  readonly labels: readonly string[];
+/**
+ * The discretion of the conversation a trigger was created in (spec 2042
+ * §5.11, INV-9): its context key and everything the creating turn had read,
+ * its own conversation label (with that room's readers) included. A firing's
+ * turn starts from it; a post or delivery is checked against it.
+ */
+export interface TriggerDiscretion {
+  readonly contextKey: string;
+  /** That conversation's roster as the creating turn resolved it. Stored on
+   *  its own: the room label in `labels` may be narrower (an intersection
+   *  with older turns of the room). */
+  readonly readers: Readers;
+  readonly labels: LabelSet;
 }
 
 export interface Trigger {
@@ -80,7 +89,8 @@ export interface Trigger {
   readonly deliveryChannel: string | null;
   readonly deliveryRef: unknown;
   readonly target: TriggerTarget | null;
-  readonly labels: readonly string[];
+  /** Null for triggers no person's conversation created (routines, schedules, batch jobs). */
+  readonly discretion: TriggerDiscretion | null;
   readonly eventId: string | null;
   readonly eventFilter: unknown;
   readonly fireAt: Date | null;
@@ -123,7 +133,8 @@ export interface NewTrigger {
   readonly deliveryChannel: string | null;
   readonly deliveryRef: unknown;
   readonly target: TriggerTarget | null;
-  readonly labels: readonly string[];
+  /** Null for triggers no person's conversation created (routines, schedules, batch jobs). */
+  readonly discretion: TriggerDiscretion | null;
   readonly eventId: string | null;
   readonly eventFilter: unknown;
   readonly fireAt: Date | null;

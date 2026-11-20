@@ -20,6 +20,7 @@ import type {
   DeliveryClass,
   NewTrigger,
   TriggerContextKind,
+  TriggerDiscretion,
   TriggerKind,
   TriggerOrigin,
   TriggerRefusal,
@@ -91,7 +92,7 @@ export interface TriggerEnvelope {
   readonly liveContext: boolean;
   readonly deliveryChannel: string | null;
   readonly deliveryRef: unknown;
-  readonly labels: readonly string[];
+  readonly discretion: TriggerDiscretion | null;
   readonly createdBy: string;
 }
 
@@ -424,7 +425,7 @@ export function validateTriggerRequest(
       deliveryChannel: env.deliveryChannel,
       deliveryRef: env.deliveryRef,
       target,
-      labels: env.labels,
+      discretion: env.discretion,
       eventId,
       eventFilter,
       fireAt,

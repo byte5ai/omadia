@@ -1664,7 +1664,48 @@ Proactive messages from triggers (#2082) use the same channel for the rows
 of a data action. A proactive message goes only to the context its trigger
 was created in: any other target is refused when the trigger is created
 (`targetAllowed` in `src/triggers/wiring.ts`). Delivery into other contexts
-waits for discretion labels (S5, #2079).
+stays refused.
+
+Within that context, discretion (§5.11, INV-9, #2079) holds for trigger
+output too:
+
+- When an agent sets a trigger, the trigger stores its conversation's context
+  key, the room's roster as the turn resolved it, and the creating turn's
+  label set (`currentTurn` in `src/triggers/wiring.ts`; the
+  `agent_triggers.labels` column). The roster is stored on its own. The room
+  label inside the label set is an intersection with older turns of the room,
+  so it can name fewer readers than the room has.
+- A turn without origin (the owner's private context) gets the owner as its
+  reader only when the trigger delivers into the owner's own web chat.
+  Anywhere else the readers are unknown, and anything labelled is refused.
+- A post or delivery the room may not receive is refused when the trigger is
+  set (`Error (discretion)`), not only on every firing.
+- A firing's turn runs seeded with them (`runWithSeededDiscretion`,
+  `discretion/seededTurn.ts`). It is a labelled turn of that conversation, and
+  its answer passes the same people-egress check as a person's turn.
+- An answer refused there is not sent; nobody asked, so there is nothing to
+  decline. The refusal counts as a failure for the trigger's breaker.
+- A templated post or a delivery is checked against the stored labels before
+  it goes out (`refusedByDiscretion` in `kernelExecutors.ts`) and is refused
+  as a whole.
+- A damaged stored record fails closed: unknown readers and an unreadable
+  label set. It is never read as "no discretion".
+
+Residual: the readers are a snapshot taken when the trigger was created. A
+person who joins the conversation later is not among them, and the trigger's
+output can still reach them there until the trigger ends (at most 30 days for
+recurring triggers, 90 for a one-shot). Further residuals:
+
+- Triggers from routines, schedules and batch jobs were not created in a
+  conversation and carry no labels; routines run under their owner's
+  identity.
+- Agent triggers set before this change carry none either (`[]`). Their posts
+  and deliveries go out unchecked, as before, until they end.
+- An agent on the `claude-cli` runtime has no labelled turn, so its triggers
+  carry no labels.
+- A firing turn's withheld answer is recognised by its text
+  (`isAnswerWithheldText`). If that text changes, the decline line is posted
+  instead. It reveals nothing of the withheld content.
 
 ## 6a. Dataset link keys — a deliberate identity handle inside the Privacy Shield
 

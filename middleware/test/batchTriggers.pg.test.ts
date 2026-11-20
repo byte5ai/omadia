@@ -17,7 +17,7 @@ import { probePgTest } from './_helpers/pgTestDb.js';
 
 import { ConfigStore } from '../packages/harness-orchestrator/src/registry/configStore.js';
 import { runMultiOrchestratorMigrations } from '../packages/harness-orchestrator/src/registry/migrator.js';
-import { recordUsage } from '../packages/harness-usage-telemetry/src/index.js';
+import { currentExecutionContext, recordUsage, type ModelExecutionContext } from '../packages/harness-usage-telemetry/src/index.js';
 import { batchContextId, createBatchTriggerSync, KernelBatchJobRegistry } from '../src/triggers/batchJobs.js';
 import { DEFAULT_TRIGGER_LIMITS, parseActions } from '../src/triggers/triggerPolicy.js';
 import { wireTriggers, type TriggerWiring } from '../src/triggers/wiring.js';
@@ -66,7 +66,7 @@ describe('#2082 batch jobs as agent batch triggers (pg)', { skip: !pgAvailable }
   let wiring: TriggerWiring;
   const registry = new KernelBatchJobRegistry();
   const pending = new Map<string, number>();
-  const runs: { agent: string; limit: number }[] = [];
+  const runs: { agent: string; limit: number; context: ModelExecutionContext | undefined }[] = [];
   const agents: { id: string; slug: string }[] = [];
   let unregister: () => void = () => undefined;
 
@@ -77,7 +77,7 @@ describe('#2082 batch jobs as agent batch triggers (pg)', { skip: !pgAvailable }
     batchSize: 50,
     due: async (slug) => pending.get(slug) ?? 0,
     run: async (slug, { limit }) => {
-      runs.push({ agent: slug, limit });
+      runs.push({ agent: slug, limit, context: currentExecutionContext() });
       recordUsage({ source: 'test', model: 'scripted', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.01 });
       const n = Math.min(limit, pending.get(slug) ?? 0);
       pending.set(slug, (pending.get(slug) ?? 0) - n);
@@ -164,6 +164,9 @@ describe('#2082 batch jobs as agent batch triggers (pg)', { skip: !pgAvailable }
     await Promise.all([wiring.worker.tick(), wiring.worker.tick()]);
     assert.equal(runs.length, 1, 'once per occurrence');
     assert.equal(runs[0]?.limit, DEFAULT_TRIGGER_LIMITS.modelCallsPerFiringMax, 'batch within the model-call cap');
+    // Spec 2042 §5.10 — the batch (the scratch reaper's shape) runs in the
+    // agent's turn context of the model gateway, not without a context.
+    assert.deepEqual(runs[0]?.context, { kind: 'agent_turn', ownerId: 'erika', agentSlug: 'erika' });
     const [t] = await wiring.service.listForContext('memory', batchContextId(JOB, 'erika'));
     assert.equal(t?.runs, 1);
     assert.ok(Math.abs((t?.spentUsd ?? 0) - 0.01) < 1e-9, 'settled with the actual cost');

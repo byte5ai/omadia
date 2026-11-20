@@ -35,7 +35,7 @@ Line numbers drift; the names are what to search for.
 |---|---|---|---|
 | `streaming.ts` (`completeWithFallback`, stream) from `orchestrator.ts` and `localSubAgent.ts` | complete | AT | main loop, sub-agents, dynamic agents; routine turns through the ambient `turnContext` |
 | `orchestrator.ts` `maybeRouteCardsFromText`, `maybeDirectLineNote`; `modelRouter.ts`, `personaRouter.ts` | complete | AT | |
-| `securityScreener.ts` (`screenInboundTurn`) | complete | AT; **NONE on routine turns** | runs before the routine's turn scope |
+| `securityScreener.ts` (`screenInboundTurn`) | complete | AT | on routine turns through the running agent's turn (`routineRunner.ts` `runOnce`, scheduled or "run now") |
 | `cliChatAgent.ts`, `cliSubAgent.ts` | run_loop | AT (OJ for the Plugin Builder) | |
 | `orchestrator.ts` `recallCliContext`, `recordCliTurn` | embed, complete | AT | |
 | `knowledgeGraphTool.ts` | embed | AT; **NONE through the public MCP server** | |
@@ -58,11 +58,11 @@ Line numbers drift; the names are what to search for.
 |---|---|---|---|
 | `factExtractor.ts`, `excerptExtractor.ts`, `sessionSummaryGenerator.ts`, `recallRelevanceJudge.ts`, `promoteDurableRule.ts` | complete, embed | AT | |
 | `contextRetriever.ts` | embed | AT | |
-| `significanceScorer.ts` | complete | AT; OJ:bulk_promotion; **NONE from the scratch reaper** | |
+| `significanceScorer.ts` | complete | AT (the scratch reaper's batch trigger too); OJ:bulk_promotion | |
 | `topicClustering.ts` | complete | OJ:topic_regrouping | |
 | bulk promotion (`routes/bulkPromotion.ts`) | complete, embed | OJ:bulk_promotion | |
-| `inconsistencyDetector.ts`, `mergeCandidateDetector.ts` | embed, complete | AT; OJ:memory_review_detection; OJ:memory_edit after memory REST writes; **NONE after reaper writes** | |
-| `scratchPromotionReaper.ts` | complete, embed | **NONE** | interval job |
+| `inconsistencyDetector.ts`, `mergeCandidateDetector.ts` | embed, complete | AT (after reaper writes too); OJ:memory_review_detection; OJ:memory_edit after memory REST writes | |
+| `scratchPromotionReaper.ts` | complete, embed | AT | a batch job (`batchJobRegistry@1`), run only by the agent's batch trigger; the firing is that agent's turn |
 | `topicDetector.ts` | embed, complete | IP when a channel plugin calls `classify` before the turn (`inboundProcessing`) | only consumer: channel-teams |
 
 ## Memory and knowledge graph
@@ -70,7 +70,7 @@ Line numbers drift; the names are what to search for.
 | Site | Operation | Context | Note |
 |---|---|---|---|
 | `neonKnowledgeGraph.ts` `embedAndStoreTurn` | embed | AT; **NONE for the boot graph backfill** (`BACKFILL_AT_STARTUP=1`) | |
-| `neonKnowledgeGraph.ts` `embedAndStoreNode` | embed | AT or OJ by caller (OJ:memory_edit for `src/routes/memory.ts` writes); **NONE from the reaper** | |
+| `neonKnowledgeGraph.ts` `embedAndStoreNode` | embed | AT or OJ by caller (OJ:memory_edit for `src/routes/memory.ts` writes; AT from the reaper) | |
 | `processMemoryStore.ts` | embed | AT | |
 | `embeddingBackfill.ts` | embed | MR (`maintenanceRun@1`); **NONE if that service is missing** | |
 
@@ -95,7 +95,7 @@ Line numbers drift; the names are what to search for.
 | Conductor `builderAgent.ts` | complete | OJ:workflow_designer_turn with AT nested | |
 | Conductor steps, schedules, `routes/chat.ts`, `orchestratorDispatcher.ts` | complete | AT | through the agent's chat agent |
 | `agents/agentTurnService.ts` (`agentTurn@2`) | complete | ES with AT nested | |
-| `plugins/routines/routineRunner.ts` | complete | AT, except the screener | |
+| `plugins/routines/routineRunner.ts` | complete | AT | every run (scheduled through its trigger, or "run now" from the route or a chat action) is the turn of the agent that runs it, screener and emitter included |
 | `src/platform/pluginContext.ts` `ctx.llm` | complete | the caller's; archetype plugins only ES | **NONE from a plugin's `activate()`, `ctx.jobs` handler or timer** |
 | channel plugins' `transcription.transcribeFile`, `topicDetector.classify` | transcribe; embed, complete | IP | `inboundProcessing`; `transcribeStream` is not wrapped |
 | `src/mcp/publicMcpServer.ts` tool dispatch | any | **NONE** | |
@@ -108,9 +108,9 @@ removed) before the contract step switches to `enforce`.
 
 | # | Call | Fix owner / plan |
 |---|---|---|
-| 1 | Scratch-promotion reaper (interval) | S4: unattended work as a batch trigger with caps and circuit breaker; not a maintenance run (it calls `complete`) |
+| 1 | ~~Scratch-promotion reaper (interval)~~ | Done (S4): a batch trigger with caps and circuit breaker; every trigger firing runs in its agent's turn context. Not a maintenance run, because it calls `complete` |
 | 2 | Field-classification recompute (boot, activation, 6 h, POST route) | S3b: operator job for the POST route; the scheduled runs as a bounded kernel job (S4 trigger caps) |
-| 3 | Security screener on routine turns | S4 (routines become triggers of an agent turn) |
+| 3 | ~~Security screener on routine turns~~ | Done (S4): a routine run, scheduled or "run now", is the turn of the agent that runs it (`runOnce`); a scheduled one also runs inside its trigger firing |
 | 4 | Boot graph backfill (`BACKFILL_AT_STARTUP=1`) | S3b: maintenance run like the embedding backfill |
 | 5 | Public MCP server tool dispatch | S3b: run each dispatch in the agent turn of the agent the API key is bound to |
 | 6 | Long-running sub-agent tasks re-driven at boot / interval | S3b: carry the originating agent turn's context on the task |

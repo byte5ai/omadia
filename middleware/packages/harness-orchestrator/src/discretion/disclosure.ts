@@ -161,3 +161,12 @@ export function answerWithheldText(locale: string | undefined): string {
   }
   return 'I cannot answer that in this conversation, because not everyone here may know the information involved. Feel free to ask me directly.';
 }
+
+/**
+ * Is `text` an answer refused at the people egress ({@link answerWithheldText}
+ * in any locale, disclosure folded on or not)? A proactive sender drops it:
+ * nobody asked, so there is nothing to decline.
+ */
+export function isAnswerWithheldText(text: string): boolean {
+  return [answerWithheldText('de'), answerWithheldText('en')].some((line) => text.includes(line));
+}

@@ -249,7 +249,8 @@ import {
   type ConsultationPort,
 } from './consultation/consultTool.js';
 import type { DiscretionPort } from './discretion/port.js';
-import { UNKNOWN_READERS, readersOf, type DiscretionLabel, type LabelSet, type Readers } from './discretion/labels.js';
+import { UNKNOWN_READERS, readersOf, unionLabels, type DiscretionLabel, type LabelSet, type Readers } from './discretion/labels.js';
+import { seededDiscretionFor } from './discretion/seededTurn.js';
 import {
   guardIntegrationEgress,
   guardMemoryEgress,
@@ -10815,12 +10816,19 @@ export class Orchestrator {
   ): Pick<TurnContextValue, 'discretion' | 'consultation'> {
     // A turn without origin (web chat, API) is the owner's private context:
     // what it read must not resurface in a room with other readers.
+    // A trigger firing's turn has no origin: it belongs to the conversation
+    // its trigger was created in, with what that turn had read (INV-9).
+    const seed = input.origin ? undefined : seededDiscretionFor(this.agentId);
     const contextKey =
-      conversationContextKey(input.origin) ?? (ownerId !== undefined ? ownerContextKey(ownerId) : undefined);
+      seed?.contextKey ??
+      conversationContextKey(input.origin) ??
+      (ownerId !== undefined ? ownerContextKey(ownerId) : undefined);
     // A consultation run starts with what the consulting turn had read.
     const consultation = currentConsultation();
-    const initial = consultation?.agentSlug === this.agentId ? consultation.initialLabels : undefined;
+    const consulted = consultation?.agentSlug === this.agentId ? consultation.initialLabels : undefined;
+    const initial = seed ? unionLabels(seed.labels, consulted ?? []) : consulted;
     const resolveReaders = once(async (): Promise<Readers> => {
+      if (seed) return seed.readers;
       if (!input.origin) return ownerId ? readersOf([ownerId]) : UNKNOWN_READERS;
       return readersFromAudience(
         await resolveTurnAudience(this.knowledgeGraph, input, parent?.chatParticipants).catch(

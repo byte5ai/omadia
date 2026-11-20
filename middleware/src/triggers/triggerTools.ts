@@ -11,12 +11,14 @@
 
 import { createHash } from 'node:crypto';
 
+import { checkFlow } from '@omadia/orchestrator';
+
 import type { NativeToolSpec } from '@omadia/plugin-api';
 
 import type { TriggerEnvelope } from './triggerPolicy.js';
 import type { CreateTriggerResult, TriggerService } from './triggerService.js';
 import { conversationContextId } from './triggerService.js';
-import type { Trigger, TriggerKind } from './types.js';
+import type { Trigger, TriggerDiscretion, TriggerKind } from './types.js';
 
 export const TRIGGER_TOOL_NAMES = ['on_event', 'wake_at', 'wake_every', 'list_triggers', 'cancel_trigger'] as const;
 export type TriggerToolName = (typeof TRIGGER_TOOL_NAMES)[number];
@@ -29,8 +31,9 @@ export interface TriggerToolTurn {
   readonly userId: string;
   readonly channel: string;
   readonly conversationRef: unknown;
-  /** Discretion labels of the conversation (INV-9); empty until labelled. */
-  readonly labels: readonly string[];
+  /** The conversation's discretion as this turn has it (INV-9): its context
+   *  key and everything the turn read. Null outside a labelled turn. */
+  readonly discretion: () => Promise<TriggerDiscretion | null>;
 }
 
 const ACTIONS_SCHEMA = {
@@ -185,6 +188,15 @@ export interface TriggerToolDeps {
   readonly currentTurn: () => TriggerToolTurn | undefined;
 }
 
+/** May the trigger's own conversation know everything its creating turn had read? */
+export function discretionAllowsRoom(discretion: TriggerDiscretion): boolean {
+  return checkFlow(discretion.labels, {
+    kind: 'people',
+    contextKey: discretion.contextKey,
+    readers: discretion.readers,
+  }).allowed;
+}
+
 export function createTriggerToolHandler(name: TriggerToolName, deps: TriggerToolDeps): (input: unknown) => Promise<string> {
   return async (input: unknown): Promise<string> => {
     const turn = deps.currentTurn();
@@ -229,9 +241,15 @@ export function createTriggerToolHandler(name: TriggerToolName, deps: TriggerToo
       liveContext: wantsMeeting,
       deliveryChannel: turn.channel,
       deliveryRef: turn.conversationRef,
-      labels: turn.labels,
+      discretion: await turn.discretion(),
       createdBy: `agent:${turn.agentSlug} for ${turn.tenant}/${turn.userId}`,
     };
+    // INV-9 — a post or delivery this conversation may not receive would be
+    // withheld on every firing; say so now instead.
+    const sends = Array.isArray(raw['actions']) && raw['actions'].some((a) => isRecord(a) && (a['type'] === 'post' || a['type'] === 'deliver'));
+    if (sends && env.discretion && !discretionAllowsRoom(env.discretion)) {
+      return 'Error (discretion): this conversation has touched information not everyone here may know, so a post or delivery from this trigger would be withheld. Set it where everyone may know what it refers to.';
+    }
     const res = await deps.service.create(name as TriggerKind, raw, env);
     return res.ok ? JSON.stringify({ created: triggerSummary(res.trigger) }) : errorText(res);
   };

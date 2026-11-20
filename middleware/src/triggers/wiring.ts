@@ -4,7 +4,7 @@
  * gate, the agent tools, the event intake and the worker.
  */
 
-import { currentDispatchCaller, turnContext } from '@omadia/orchestrator';
+import { currentDiscretion, currentDispatchCaller, resolvedTurnLabels, turnContext, UNKNOWN_READERS } from '@omadia/orchestrator';
 import type { AgentSpeaker, AnswerEmitter, DataPlanGuard, NativeToolSpec } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 
@@ -13,6 +13,7 @@ import { systemAuditActor } from '../auth/adminAuditLog.js';
 import type { ProactiveSenderRegistry } from '../plugins/routines/proactiveSender.js';
 import { isOwnBotAuthor } from './ownBot.js';
 import { routineTurnContext } from '../plugins/routines/routineTurnContext.js';
+import { WEB_ROUTINE_CHANNEL } from '../plugins/routines/webChatProactiveSender.js';
 import { createDataActionRunner, type ReadToolsOf } from './dataActions.js';
 import { createDeliverDataHandler, DELIVER_DATA_TOOL_NAME, deliverDataToolSpec } from './deliverDataTool.js';
 import { createKernelExecutors, type AgentChat } from './kernelExecutors.js';
@@ -107,7 +108,19 @@ function currentTurn(deps: TriggerWiringDeps): TriggerToolTurn | undefined {
     userId: ctx.userId,
     channel: ctx.channel,
     conversationRef: ctx.conversationRef,
-    labels: [],
+    discretion: async () => {
+      const state = currentDiscretion();
+      // No labelled turn (the claude-cli runtime): nothing was labelled.
+      if (!state) return null;
+      // A labelled turn without a room: what it read can go nowhere.
+      if (state.contextKey === undefined) return { contextKey: 'unknown', readers: UNKNOWN_READERS, labels: state.labels };
+      // A turn without origin is its owner's private context; its readers
+      // are the owner's only where the trigger delivers into the owner's
+      // own web chat. Anywhere else the room is not known: fail closed.
+      const ownerOnly = state.contextKey.startsWith('owner:') && ctx.channel !== WEB_ROUTINE_CHANNEL;
+      const readers = ownerOnly ? UNKNOWN_READERS : await state.resolveReaders();
+      return { contextKey: state.contextKey, readers, labels: await resolvedTurnLabels(state) };
+    },
   };
 }
 

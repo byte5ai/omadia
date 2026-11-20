@@ -7,6 +7,7 @@ import type {
 } from '@omadia/channel-sdk';
 import { toSemanticAnswer } from '@omadia/channel-sdk';
 import { turnContext, today } from '@omadia/orchestrator';
+import { runInExecutionContext } from '@omadia/usage-telemetry';
 import {
   SYSTEM_SPEAKER,
   type AgentSpeaker,
@@ -701,7 +702,14 @@ export class RoutineRunner {
       // data sections directly from the tool handler's output instead
       // of letting the LLM author markdown rows. Non-templated routines
       // skip the wrap entirely — byte-identical to pre-C.2 behaviour.
-      const turn = await this.runTurnWithOptionalCapture(fresh, orchestrator);
+      // Spec 2042 §5.10 — the run (its security screener before the turn
+      // scope, the turn, the emitter's guard) is the turn of the agent that
+      // actually runs it, scheduled or "run now", whatever context the
+      // caller had: charged to that agent and stopped by its kill switch.
+      const slug = orchestrator.speaker?.slug;
+      const asAgentTurn = <T>(work: () => Promise<T>): Promise<T> =>
+        slug ? runInExecutionContext({ kind: 'agent_turn', ownerId: slug, agentSlug: slug }, work) : work();
+      const turn = await asAgentTurn(() => this.runTurnWithOptionalCapture(fresh, orchestrator));
       result = turn.result;
       cardBody = turn.cardBody;
 
@@ -714,7 +722,8 @@ export class RoutineRunner {
         return;
       }
 
-      const answer = await publishRoutineAnswer(orchestrator, result);
+      const finished = result;
+      const answer = await asAgentTurn(() => publishRoutineAnswer(orchestrator, finished));
       await sender.send({
         conversationRef: fresh.conversationRef,
         message: answer,
