@@ -42,11 +42,15 @@ changelog.
   for an agent's own bot on channels other than Teams; no credential column, the
   token stays in the channel plugin's vault. Routing reads it together with
   `agent_teams_identities`, so a turn through the bot goes to its agent and to
-  nobody else, and the agent posts through it (`asChannelKey`).
+  nobody else, and the agent answers and posts through it (`asChannelKey`:
+  conversation and targeted sends, rosters, card updates). Proactive trigger and
+  routine deliveries do not use an own bot yet.
 - **Channel SDK:** `registerAgentIdentityProvider` / `AgentIdentityProvider`
   (additive). **Operator API:** `GET/PUT/DELETE
   /api/v1/operator/agents/:slug/channel-identities[/:channelType]`, audited.
   **web-ui:** the agent's "Teams" tab is now "Channels" with an "Own bots" section.
+  Purging a deleted agent stops its own bots first and says which ones it could
+  not stop. A Plugin Builder preview's draft agent never gets a bot (`409`).
 - **plugin-api (additive, version unchanged):** `SystemNoticeCode` `agent_own_bot`,
   the answer to `/agent` sent to an agent's own bot.
 - **Live findings of the S6 Teams rollout:** `/agent` in a provisioned Teams agent's
