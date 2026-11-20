@@ -2123,6 +2123,7 @@
       "statusBadge": "{status, select, deleted {deleted} other {disabled}}",
       "instanceRow": "instance row",
       "remove": "Remove",
+      "removeRow": "Remove the row for {who} in {channel}",
       "fieldWho": "User (e-mail)",
       "fieldChannel": "Channel",
       "fieldAgent": "Agent",

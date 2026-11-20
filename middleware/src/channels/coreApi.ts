@@ -79,7 +79,7 @@ export interface TurnDispatcher {
  * key. Every other channel keeps its channel-native id (`userId`).
  */
 export function conductorPrincipalRef(ref: ChannelUserRef): string | undefined {
-  if (ref.email) return ref.email;
+  if (ref.email?.includes('@')) return ref.email;
   if (ref.kind === 'slack-user') return channelUserPrincipal(ref).replace(/^user:/, '');
   return undefined;
 }
@@ -254,6 +254,7 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
       // guard's documented "absent context ⇒ pass" row is the correct outcome
       // for an anonymous turn, and skipping here is what preserves it.
       const principal = turn.userRef.id.trim();
+      const principalRef = conductorPrincipalRef(turn.userRef);
       if (!routineTurn || !principal || routineTurn.hasContextFor(turn.userRef.id)) {
         return dispatch();
       }
@@ -266,7 +267,7 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
         {
           ...(declaredTenant ? { tenant: declaredTenant } : {}),
           userId: turn.userRef.id,
-          ...(conductorPrincipalRef(turn.userRef) ? { principalRef: conductorPrincipalRef(turn.userRef) } : {}),
+          ...(principalRef ? { principalRef } : {}),
           // The routine is stored against the SHORT binding type, because that
           // is what a channel plugin registers its ProactiveSender under
           // ('telegram'), not the reverse-DNS catalog id.

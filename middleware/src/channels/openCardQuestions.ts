@@ -8,9 +8,13 @@
 // own. Deterministic, no model.
 //
 // Only one-question cards go out this way, because a typed reply answers one
-// question. A reply is taken when it points at the question's message, or —
-// the private-chat case — when it addresses the bot and is the only open
-// question of the conversation. A message that does not fit stays what it
+// question. A reply is taken when it points at the question's message, or
+// when it addresses the bot (a mention, a private chat) and the question is
+// the only open one of the conversation. A question belongs to the identity
+// that posted it: a reply that reached another bot of the conversation is not
+// its answer. Like a native card, a question takes an answer from anyone in
+// the conversation until it closes; each answer is one event, and the
+// receiver decides which one counts. A message that does not fit stays what it
 // was: an ordinary message the receiver sees as such.
 
 import { parseCardReply, renderCardAsText, type ConversationMessageEvent } from '@omadia/channel-sdk';
@@ -19,6 +23,8 @@ import type { Pool } from 'pg';
 
 /** A question stays open this long when the card names no close. */
 export const DEFAULT_OPEN_QUESTION_MS = 24 * 60 * 60 * 1000;
+/** …and never longer than this, whatever close a card names. */
+export const MAX_OPEN_QUESTION_MS = 7 * DEFAULT_OPEN_QUESTION_MS;
 
 export interface OpenCardQuestion {
   readonly channelType: string;
@@ -126,9 +132,11 @@ export function cardAsPlainMessage(lead: string, card: QuestionCard): string {
 /** When the question closes: the card's own close, else a day after the post. */
 export function questionExpiry(card: QuestionCard, postedAt: Date): Date {
   const closes = card.closesAt !== undefined ? new Date(card.closesAt) : undefined;
-  return closes !== undefined && !Number.isNaN(closes.getTime())
-    ? closes
-    : new Date(postedAt.getTime() + DEFAULT_OPEN_QUESTION_MS);
+  const latest = new Date(postedAt.getTime() + MAX_OPEN_QUESTION_MS);
+  if (closes === undefined || Number.isNaN(closes.getTime())) {
+    return new Date(postedAt.getTime() + DEFAULT_OPEN_QUESTION_MS);
+  }
+  return closes > latest ? latest : closes;
 }
 
 function pickQuestion(
@@ -153,11 +161,13 @@ export async function typedReplyAsCardAnswer(
   store: OpenCardQuestionStore,
   event: ConversationMessageEvent,
   now: Date,
+  /** Whether the identity that received the event is the one that posted the question. */
+  ownsQuestion: (question: OpenCardQuestion) => boolean = () => true,
 ): Promise<ConversationMessageEvent | undefined> {
   if (event.kind !== 'created' || event.forwarded === true) return undefined;
   const text = event.text?.trim();
   if (!text) return undefined;
-  const open = await store.listOpen(event.channelType, event.conversationId, now);
+  const open = (await store.listOpen(event.channelType, event.conversationId, now)).filter(ownsQuestion);
   if (open.length === 0) return undefined;
   const question = pickQuestion(open, event);
   const asked = question?.card.questions[0];

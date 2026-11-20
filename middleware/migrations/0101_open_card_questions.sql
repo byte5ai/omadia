@@ -31,5 +31,7 @@ CREATE TABLE IF NOT EXISTS open_card_questions (
 CREATE INDEX IF NOT EXISTS open_card_questions_conversation_idx
   ON open_card_questions (channel_type, conversation_id, expires_at);
 
+CREATE INDEX IF NOT EXISTS open_card_questions_expiry_idx ON open_card_questions (expires_at);
+
 COMMENT ON TABLE open_card_questions IS
   '#2086 a question card posted as plain text; a fitting reply becomes a card_answer event.';

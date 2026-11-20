@@ -45,7 +45,7 @@ function refusalCodeOf(err: unknown): RefusalCode | undefined {
 export function toUserPrincipal(raw: string): string | null {
   const trimmed = raw.trim();
   if (trimmed === '') return null;
-  return trimmed.startsWith('user:') ? trimmed : `user:${trimmed}`;
+  return /^user:/i.test(trimmed) ? `user:${trimmed.slice('user:'.length)}` : `user:${trimmed}`;
 }
 
 /** Most specific first, so the table reads in the order routing applies it. */
@@ -153,6 +153,10 @@ export function DefaultAgentsSection(props: DefaultAgentsSectionProps): React.Re
                         variant="secondary"
                         size="sm"
                         disabled={locked}
+                        aria-label={t('removeRow', {
+                          who: e.principal?.replace(/^user:/, '') ?? t('everyone'),
+                          channel: e.channel_type ?? t('everyChannel'),
+                        })}
                         onClick={() => void write(() => deleteDefaultAgentEntry(e.id))}
                       >
                         {t('remove')}

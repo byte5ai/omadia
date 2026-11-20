@@ -226,6 +226,56 @@ describe('the hub stores the answer instead of the message', () => {
     assert.deepEqual(await h.hub.report(messageEvent({ messageId: 'u1', text: '2,1,3', replyToMessageId: 'card-msg' })), { answeredCard: false });
   });
 
+  it('a question belongs to the identity that posted it', async () => {
+    const h = setup();
+    await h.openQuestions.register({
+      channelType: 'teams',
+      conversationId: CONVERSATION,
+      messageId: 'card-msg',
+      agentSlug: 'nora', // another agent's question: identityFor('nora') is not the receiver
+      card: ranking,
+      expiresAt: new Date('2026-11-21T10:00:00.000Z'),
+    });
+    await h.service.subscribe(h.scope, { mode: 'all' });
+    assert.deepEqual(await h.hub.report(messageEvent({ messageId: 'u1', text: '2,1,3', replyToMessageId: 'card-msg', addressedToBot: true })), { answeredCard: false });
+    assert.deepEqual((await h.service.listSince(h.scope)).events.map((e) => e.kind), ['created']);
+  });
+
+  it('emit alone converts only where the channel turn is suppressed anyway (a process reads everything)', async () => {
+    const q = {
+      channelType: 'teams',
+      conversationId: CONVERSATION,
+      messageId: 'card-msg',
+      agentSlug: 'mara',
+      card: ranking,
+      expiresAt: new Date('2026-11-21T10:00:00.000Z'),
+    };
+    const addressed = setup();
+    await addressed.openQuestions.register(q);
+    await addressed.service.subscribe(addressed.scope, { mode: 'addressed' });
+    await addressed.hub.ingest(messageEvent({ messageId: 'u1', text: '2,1,3', replyToMessageId: 'card-msg', addressedToBot: true }));
+    assert.deepEqual((await addressed.service.listSince(addressed.scope)).events.map((e) => e.kind), ['created'], 'a channel that only emits starts its turn: no conversion');
+    await addressed.hub.report(messageEvent({ messageId: 'u2', text: '2,1,3', replyToMessageId: 'card-msg', addressedToBot: true }));
+    assert.ok((await addressed.service.listSince(addressed.scope)).events.some((e) => e.kind === 'card_answer'), 'reported: converted');
+  });
+
+  it('the same reply delivered twice is still an answer, never a turn', async () => {
+    const h = setup();
+    await h.openQuestions.register({
+      channelType: 'teams',
+      conversationId: CONVERSATION,
+      messageId: 'card-msg',
+      agentSlug: 'mara',
+      card: ranking,
+      expiresAt: new Date('2026-11-21T10:00:00.000Z'),
+    });
+    await h.service.subscribe(h.scope, { mode: 'all' });
+    const reply = messageEvent({ messageId: 'u1', text: '2,1,3', replyToMessageId: 'card-msg' });
+    assert.deepEqual(await h.hub.report(reply), { answeredCard: true });
+    assert.deepEqual(await h.hub.report(reply), { answeredCard: true });
+    assert.equal((await h.service.listSince(h.scope)).events.filter((e) => e.kind === 'card_answer').length, 1);
+  });
+
   it('without a store a reply is only a message', async () => {
     const store = new InMemoryConversationMessageStore();
     const hub = new ConversationMessageHub({
@@ -311,6 +361,14 @@ describe('the send service posts what the channel cannot show as text and keeps 
     const assignment: QuestionCard = { cardId: 'as-1', title: 'T', questions: [{ id: 'q', kind: 'assignment', label: 'Wer?', candidates: 'conversation_members' }] };
     assert.equal((await send.sendToConversation(input({ card: assignment }), ground)).outcome, 'unreachable');
     assert.equal(sent.length, 0);
+  });
+
+  it('a close far in the future does not keep a question open for ever', async () => {
+    const open = new InMemoryOpenCardQuestionStore();
+    const { send } = service(false, open);
+    await send.sendToConversation(input({ card: { ...ranking, closesAt: '2099-01-01T00:00:00.000Z' } }), ground);
+    const kept = await open.listOpen('telegram', CONVERSATION, new Date());
+    assert.ok((kept[0]?.expiresAt.getTime() ?? 0) <= Date.now() + 7 * 24 * 3600_000 + 5000);
   });
 
   it('without a store the refusal is the old one', async () => {

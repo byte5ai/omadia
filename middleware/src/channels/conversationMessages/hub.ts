@@ -25,7 +25,7 @@
 // Events of one subscription are stored in arrival order (a per-subscription
 // queue), so "created, then edited" cannot be stored the other way round.
 
-import { typedReplyAsCardAnswer, type OpenCardQuestionStore } from '../openCardQuestions.js';
+import { typedReplyAsCardAnswer, type OpenCardQuestion, type OpenCardQuestionStore } from '../openCardQuestions.js';
 import { archetypeAdds, type ArchetypeBearer } from '@omadia/orchestrator';
 import type { ConversationMessageEvent } from '@omadia/channel-sdk';
 import type {
@@ -384,7 +384,7 @@ export class ConversationMessageHub {
    *  one, when several processes get the event), or `undefined` when it was
    *  dropped (no subscription takes it, invalid, redelivery). */
   ingest(event: ConversationMessageEvent): Promise<ConversationMessageRecord | undefined> {
-    return this.take(event).then((taken) => taken.record);
+    return this.take(event, false).then((taken) => taken.record);
   }
 
   /**
@@ -396,14 +396,14 @@ export class ConversationMessageHub {
    */
   async report(event: ConversationMessageEvent): Promise<{ answeredCard: boolean }> {
     try {
-      return { answeredCard: (await this.take(event)).answeredCard };
+      return { answeredCard: (await this.take(event, true)).answeredCard };
     } catch (err) {
       this.log(`[conversation-messages] storing an event failed: ${err instanceof Error ? err.message : String(err)}`);
       return { answeredCard: false };
     }
   }
 
-  private take(event: ConversationMessageEvent): Promise<TakenEvent> {
+  private take(event: ConversationMessageEvent, reported: boolean): Promise<TakenEvent> {
     const none: TakenEvent = { record: undefined, answeredCard: false };
     const invalid = validateMessageEvent(event);
     if (invalid) {
@@ -414,7 +414,7 @@ export class ConversationMessageHub {
     if (!this.byIdentity.has(key)) return Promise.resolve(none);
     // One queue per conversation and identity: routing reads the bindings, and
     // "created, then edited" must not be stored the other way round.
-    const work = (): Promise<TakenEvent> => this.routeAndStore(key, event);
+    const work = (): Promise<TakenEvent> => this.routeAndStore(key, event, reported);
     const previous = this.queues.get(key) ?? Promise.resolve();
     const next = previous.then(work, work);
     this.queues.set(key, next);
@@ -469,7 +469,13 @@ export class ConversationMessageHub {
     const replies = this.deps.typedReplies;
     if (!replies || event.kind !== 'created') return event;
     try {
-      return (await typedReplyAsCardAnswer(replies.store, event, replies.now?.() ?? new Date())) ?? event;
+      // The question belongs to the identity of the agent that posted it.
+      const receiver = normalizeChannelKey(event.receivedByChannelKey);
+      const ownsQuestion = (question: OpenCardQuestion): boolean => {
+        const own = this.deps.identityFor(question.agentSlug, question.channelType);
+        return own !== undefined && normalizeChannelKey(own.channelKey) === receiver;
+      };
+      return (await typedReplyAsCardAnswer(replies.store, event, replies.now?.() ?? new Date(), ownsQuestion)) ?? event;
     } catch (err) {
       this.log(
         `[conversation-messages] reading a typed reply failed, it stays a message: ${err instanceof Error ? err.message : String(err)}`,
@@ -478,10 +484,19 @@ export class ConversationMessageHub {
     }
   }
 
-  private async routeAndStore(key: string, incoming: ConversationMessageEvent): Promise<TakenEvent> {
+  private async routeAndStore(
+    key: string,
+    incoming: ConversationMessageEvent,
+    reported: boolean,
+  ): Promise<TakenEvent> {
     const subscriptions = this.byIdentity.get(key) ?? [];
     if (subscriptions.length === 0) return { record: undefined, answeredCard: false };
-    const event = await this.asTypedAnswer(incoming);
+    // A typed reply is only turned into an answer where the channel can leave
+    // the message alone: it reported it (and starts no turn for an answer), or
+    // a process reads everything (the channel's own turn is suppressed). A
+    // channel that only emits and still starts its turn would answer "2" too.
+    const mayAnswer = reported || subscriptions.some((s) => s.mode === 'all');
+    const event = mayAnswer ? await this.asTypedAnswer(incoming) : incoming;
     const converted = incoming.kind === 'created' && event.kind === 'card_answer';
     let first: ConversationMessageRecord | undefined;
     const { recipients, bound } = await this.recipients(subscriptions, event);
@@ -492,9 +507,11 @@ export class ConversationMessageHub {
       const record = await this.store(subscription, event, !(turnAsks && this.leftToTheTurn(subscription, event)));
       first ??= record;
     }
-    // Taken as an answer only when somebody received it; an answer nobody
-    // takes leaves the message to the channel's own turn.
-    return { record: first, answeredCard: converted && first !== undefined };
+    // Taken as an answer when somebody receives it — also when the platform
+    // delivers the same reply twice and the second is a duplicate (nothing new
+    // stored, still no turn). An answer nobody receives leaves the message to
+    // the channel's own turn.
+    return { record: first, answeredCard: converted && recipients.length > 0 };
   }
 
   /**

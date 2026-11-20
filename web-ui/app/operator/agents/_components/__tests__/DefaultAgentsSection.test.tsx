@@ -54,6 +54,7 @@ describe('toUserPrincipal', () => {
   it('names a user by e-mail or by principal, and blank as everyone', () => {
     expect(toUserPrincipal(' anna@example.com ')).toBe('user:anna@example.com');
     expect(toUserPrincipal('user:anna@example.com')).toBe('user:anna@example.com');
+    expect(toUserPrincipal('User:anna@example.com')).toBe('user:anna@example.com');
     expect(toUserPrincipal('  ')).toBeNull();
   });
 });
@@ -91,7 +92,7 @@ describe('<DefaultAgentsSection />', () => {
     const inst = await screen.findByTestId('default-entry-inst');
     expect(within(inst).queryByRole('button')).toBeNull();
     const row = screen.getByTestId('default-entry-c');
-    await userEvent.click(within(row).getByRole('button', { name: 'Remove' }));
+    await userEvent.click(within(row).getByRole('button', { name: 'Remove the row for Everyone in slack' }));
     await waitFor(() => expect(mockDelete).toHaveBeenCalledWith('c'));
   });
 
