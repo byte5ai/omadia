@@ -121,6 +121,7 @@ import {
   versionedServiceRef,
 } from './pluginServiceGrants.js';
 import { currentExecutionContext, modelGatewayMode } from '@omadia/usage-telemetry';
+import { inboundTranscription } from './modelGatewayServices.js';
 import {
   createSqlGate,
   DEFAULT_MIGRATIONS_DIR,
@@ -396,7 +397,13 @@ export function createPluginContext(
           `[model-gateway] plugin '${agentId}' resolved the raw model service '${name}'; it is refused once the gateway enforces (spec 2042 §5.10)`,
         );
       }
-      const resolved = serviceRegistry.get<T>(requested, serviceCaller);
+      const found = serviceRegistry.get<T>(requested, serviceCaller);
+      // Spec 2042 §5.10 — a channel transcribing a voice message before the
+      // turn does so in an inbound-processing context (`inboundTranscription`).
+      const resolved =
+        found !== undefined && name === 'transcription' && catalogEntry?.plugin.kind === 'channel'
+          ? inboundTranscription(found, agentId)
+          : found;
       // Epic #470 C7 / G4 — a pool-shaped capability is BORROWED, not handed
       // over. Passing the raw `pg.Pool` would mean one `.end()` in one plugin
       // tears down the connection pool core writes user data through. Applied

@@ -1,4 +1,5 @@
 import { admitModelCall, type ModelOperation } from '@omadia/llm-provider';
+import { currentExecutionContext, runInExecutionContext } from '@omadia/usage-telemetry';
 
 /**
  * Spec 2042 §5.10 — embedding and transcription models go through the model
@@ -62,6 +63,34 @@ export function gateModelService<T>(name: PropertyKey, impl: T): T {
           return Promise.reject(err);
         }
         return (value as (...a: unknown[]) => unknown).apply(target, args);
+      };
+    },
+  }) as T;
+}
+
+/**
+ * Spec 2042 §5.10 — inbound processing: a channel plugin transcribes a voice
+ * message before the addressed agent's turn. The transcription service a
+ * channel plugin resolves therefore runs `transcribeFile` in an
+ * `inbound_processing` context owned by that channel, which allows only
+ * `transcribe`, when no other context is around the call. A transcription
+ * inside an agent turn or an execution scope (a live session) stays that
+ * context's. The context comes from the kernel, which knows the caller is a
+ * channel plugin; the plugin cannot name one itself.
+ */
+export function inboundTranscription<T>(impl: T, channelPluginId: string): T {
+  if (impl === null || typeof impl !== 'object') return impl;
+  return new Proxy(impl as object, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver) as unknown;
+      if (prop !== 'transcribeFile' || typeof value !== 'function') return value;
+      return function inbound(this: unknown, ...args: unknown[]): unknown {
+        const call = (): Promise<unknown> => (value as (...a: unknown[]) => Promise<unknown>).apply(target, args);
+        if (currentExecutionContext()) return call();
+        return runInExecutionContext(
+          { kind: 'inbound_processing', ownerId: channelPluginId, operations: ['transcribe'] },
+          call,
+        );
       };
     },
   }) as T;

@@ -25,7 +25,7 @@ import {
   type ModelExecutionContext,
 } from '@omadia/usage-telemetry';
 
-import { gateModelService } from '../src/platform/modelGatewayServices.js';
+import { gateModelService, inboundTranscription } from '../src/platform/modelGatewayServices.js';
 import { ServiceRegistry } from '../src/platform/serviceRegistry.js';
 
 const turn: ModelExecutionContext = { kind: 'agent_turn', ownerId: 'mira', agentSlug: 'mira' };
@@ -189,6 +189,33 @@ describe('model gateway — embedding and transcription services', () => {
     await runInExecutionContext({ kind: 'inbound_processing', ownerId: 'mira', agentSlug: 'mira' }, async () => {
       assert.deepEqual(await service.transcribeFile(), { text: 'hi' });
     });
+  });
+
+  it('a channel’s voice message is transcribed in an inbound-processing context, nothing else', async () => {
+    setModelGatewayMode('enforce');
+    let completeRefused = false;
+    const gated = gateModelService('transcription', {
+      providerId: 'test',
+      transcribeFile: async () => {
+        // A provider that tried to generate text on the way is refused.
+        try {
+          admitModelCall('complete');
+        } catch (err) {
+          completeRefused = isModelCallNotCovered(err);
+        }
+        return { text: 'hi', context: currentExecutionContext() };
+      },
+    });
+    await assert.rejects(gated.transcribeFile(), (err: unknown) => isModelCallNotCovered(err));
+    const channel = inboundTranscription(gated, '@omadia/channel-telegram');
+    const out = (await channel.transcribeFile()) as { text: string; context: ModelExecutionContext };
+    assert.equal(out.text, 'hi');
+    assert.equal(out.context.kind, 'inbound_processing');
+    assert.equal(out.context.ownerId, '@omadia/channel-telegram');
+    assert.equal(completeRefused, true);
+    // Inside an agent turn the call stays the turn's.
+    const inTurn = await runInExecutionContext(turn, () => channel.transcribeFile());
+    assert.equal((inTurn as { context: ModelExecutionContext }).context.kind, 'agent_turn');
   });
 
   it('wraps once: a replace that decorates the gated service is not gated twice', async () => {
