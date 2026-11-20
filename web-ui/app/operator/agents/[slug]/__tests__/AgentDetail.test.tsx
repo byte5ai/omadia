@@ -9,6 +9,7 @@ import type {
 } from '../../../../_lib/agents';
 import { renderWithIntl } from '../../../../_lib/test-utils';
 import { AgentDetail } from '../_components/AgentDetail';
+import { parseAgentDetailTab } from '../_components/AgentDetailTabs';
 
 /**
  * Issue #861 — agent detail route, plugin-assignment slice.
@@ -437,14 +438,15 @@ describe('AgentDetail tabs', () => {
   });
 
   it('a ?tab= deep link lands on that tab; an unknown value falls back to Identity', async () => {
+    // The page reads `?tab=` on the server and passes it as `initialTab`.
     window.history.replaceState(null, '', '/operator/agents/hr?tab=model');
-    const first = renderWithIntl(<AgentDetail agent={agent()} />);
+    const first = renderWithIntl(<AgentDetail agent={agent()} initialTab={parseAgentDetailTab('model')} />);
     expect(await screen.findByTestId('agent-model-policy')).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Model' })).toHaveAttribute('aria-selected', 'true');
     first.unmount();
 
     window.history.replaceState(null, '', '/operator/agents/hr?tab=nope');
-    renderWithIntl(<AgentDetail agent={agent()} />);
+    renderWithIntl(<AgentDetail agent={agent()} initialTab={parseAgentDetailTab('nope')} />);
     expect(await screen.findByTestId('agent-identity')).toBeTruthy();
   });
 

@@ -57,3 +57,40 @@ export async function attachEngineToFacilitators(
   }
   return changed;
 }
+
+/**
+ * What the kernel does at boot and whenever installed plugins change: first
+ * register which archetypes are delivered, and by whom; then attach the
+ * engine to the facilitators and rebuild them.
+ *
+ * The archetype sync does not depend on the agent runtime. It runs even when
+ * there is no config store yet (an instance without LLM access, where the
+ * orchestrator does not publish one): the descriptor in force must be the
+ * plugin's from the start, not the kernel's seed until the next restart.
+ * Attaching needs the config store and is skipped without one. A failed sync
+ * attaches nothing: the attach is decided on the registered descriptors.
+ */
+export async function syncArchetypesAndAttachEngine<S extends AttachStore>(deps: {
+  readonly sync: () => Promise<unknown>;
+  readonly getStore: () => S | undefined;
+  readonly attach: (store: S) => Promise<unknown>;
+  readonly reload: () => Promise<unknown> | undefined;
+  readonly log: (message: string) => void;
+}): Promise<void> {
+  try {
+    await deps.sync();
+  } catch (err) {
+    deps.log(`[middleware] archetype sync FAILED: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  const store = deps.getStore();
+  if (!store) return;
+  try {
+    await deps.attach(store);
+    // Always: the registry rebuilds the facilitators whose effective engine
+    // grant changed, with or without a new row (boot, grant, revoke).
+    await deps.reload();
+  } catch (err) {
+    deps.log(`[middleware] facilitation engine attach FAILED: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
