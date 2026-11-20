@@ -60,8 +60,9 @@ interface ListenConnection {
   on(event: 'error', listener: (err: Error) => void): unknown;
   on(event: 'notification', listener: (msg: { channel: string; payload?: string }) => void): unknown;
   query(text: string): Promise<unknown>;
-  /** End the session. LISTEN state must never reach another user of it. */
-  close(): void;
+  /** End the session. LISTEN state must never reach another user of it.
+   *  Settles when the session is gone, as far as the connection can tell. */
+  close(): Promise<void>;
 }
 
 export interface ReloadBusOptions {
@@ -112,6 +113,8 @@ export interface ReloadBusOptions {
 const DEFAULT_RECONCILE_MS = 60_000;
 const DEFAULT_RECONNECT_MS = 5_000;
 const MAX_RECONNECT_MS = 30_000;
+/** How long `stop()` waits for the bus' own LISTEN session to end. */
+const CLOSE_TIMEOUT_MS = 2_000;
 const DEFAULT_NOTIFY_CHANNEL = 'agents_changed';
 /** Four reloads a second is the most a flood of notifications can cause. */
 const DEFAULT_MIN_NOTIFY_INTERVAL_MS = 250;
@@ -176,14 +179,15 @@ export class ReloadBus {
       this.reconnectTimer = undefined;
     }
     if (this.client) {
+      const client = this.client;
+      this.client = undefined;
       try {
         // The session ends: LISTEN state is connection-bound and would bleed
         // into the next checkout of a pooled connection.
-        this.client.close();
+        await client.close();
       } catch {
         // best-effort during shutdown
       }
-      this.client = undefined;
     }
     if (this.inFlight) {
       try {
@@ -254,6 +258,11 @@ export class ReloadBus {
     });
 
     await client.query(`LISTEN ${this.channel}`);
+    if (this.stopped) {
+      // Stopped while connecting: nobody else would end this session.
+      await client.close().catch(() => undefined);
+      return;
+    }
     this.client = client;
     this.reconnectDelayMs =
       this.options.reconnectInitialMs ?? DEFAULT_RECONNECT_MS;
@@ -268,7 +277,15 @@ export class ReloadBus {
       return {
         on: (event: 'error' | 'notification', listener: never) => own.on(event as 'error', listener),
         query: (text) => own.query(text),
-        close: () => void own.end().catch(() => undefined),
+        // Bounded: a half-open connection must not hold up a shutdown.
+        close: () => {
+          let timer: NodeJS.Timeout | undefined;
+          const gaveUp = new Promise<void>((done) => {
+            timer = setTimeout(done, CLOSE_TIMEOUT_MS);
+            timer.unref?.();
+          });
+          return Promise.race([own.end().catch(() => undefined), gaveUp]).finally(() => clearTimeout(timer));
+        },
       };
     }
     const pooled = await this.options.pool.connect();
@@ -276,7 +293,10 @@ export class ReloadBus {
       on: (event: 'error' | 'notification', listener: never) => pooled.on(event as 'error', listener),
       query: (text) => pooled.query(text),
       // `release(true)` makes the pool drop the connection instead of recycling it.
-      close: () => pooled.release(true),
+      close: () => {
+        pooled.release(true);
+        return Promise.resolve();
+      },
     };
   }
 
@@ -284,12 +304,11 @@ export class ReloadBus {
     if (this.stopped) return;
     if (this.reconnectTimer) return;
     if (this.client) {
-      try {
-        this.client.close();
-      } catch {
-        // ignore
-      }
+      const client = this.client;
       this.client = undefined;
+      void Promise.resolve()
+        .then(() => client.close())
+        .catch(() => undefined);
     }
     const delay = this.reconnectDelayMs;
     this.reconnectDelayMs = Math.min(
@@ -325,6 +344,10 @@ export class ReloadBus {
    * queued (collapsed to a single replay).
    */
   private fire(source: 'notify' | 'reconcile' | 'manual'): Promise<void> {
+    // A stopped bus reloads nothing. Ending the LISTEN session takes a round
+    // trip, and a notification already on its way still arrives after
+    // `stop()` was called; without this it ran one more reload.
+    if (this.stopped) return this.inFlight ?? Promise.resolve();
     if (this.inFlight) {
       this.pending = true;
       return this.inFlight;

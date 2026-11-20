@@ -36,6 +36,18 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Stopping a single process no longer needs the agent's name (#2090, epic #2043)
+
+- `POST /api/v1/operator/execution/kill-switches` with `level: "process"`
+  answered `404 no such agent` when `agent_slug` was left out. The kernel now
+  takes the agent from the process's execution scopes. `agent_slug` stays
+  optional and is only needed when two plugins use the same process id for
+  different agents: that case answers `400 execution.ambiguous_process` and
+  names the agents. A process id without any execution scope answers
+  `404 execution.unknown_process`.
+- `level: "agent"` without `agent_slug` answers `400 execution.invalid`
+  ("agent_slug is required for level agent") instead of `404`.
+
 ### Fixed — A subscription could be turned up to every message without the channel being ready (#2089, epic #2043)
 
 - A process that listened only for messages addressing its facilitator could
@@ -45,6 +57,16 @@ changelog.
   reading everything, and the facilitator's own answers in that chat were
   held back, while messages never arrived. The switch is now refused with
   `not_ready` and the subscription keeps the mode it had.
+
+### Fixed — A stopped reload bus could run one more reload (#2043)
+
+- `ReloadBus.stop()` returned before its LISTEN session had ended, so a
+  notification already on its way still ran a reload afterwards, and a reload
+  queued behind a running one ran after the stop as well. A stopped bus now
+  reloads nothing, and `stop()` waits for a session of its own to end (at most
+  two seconds), also when it is called while the bus is still connecting. This
+  was the cause of the occasional failure of `reloadBusListen.pg.test.ts` in
+  full runs (two reloads counted where one was expected).
 
 ### Removed — The implementations behind the first majors (#2067, epic #2043): K6.4
 

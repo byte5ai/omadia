@@ -2851,6 +2851,15 @@ beenden kann, hängen sie am Abschnitt „Laufende Prozesse“ der Agenten-Seite
   `execution.unknown_discussion`; Conductor noch nicht verdrahtet ⇒ 503.
   Jeder erfolgreiche Stopp landet als `conductor.discussion_stop` im
   admin_audit.
+- **`POST /api/v1/operator/execution/kill-switches`** `{ level, agent_slug?,
+  process_id?, reason? }`: `level: agent` braucht `agent_slug` (fehlt er ⇒ 400
+  `execution.invalid`), `level: process` braucht `process_id`. Fehlt bei
+  `process` der `agent_slug`, nimmt der Kernel den Agenten aus den
+  Execution-Scopes des Prozesses (`ExecutionScopeStore.agentsOfProcess`).
+  Kein Scope mit dieser Prozess-Id ⇒ 404 `execution.unknown_process`; dieselbe
+  Prozess-Id bei mehreren Agenten (zwei Plugins) ⇒ 400
+  `execution.ambiguous_process` mit den Slugs; unbekannter `agent_slug` ⇒ 404
+  `execution.unknown_agent`.
 - **Kein Kill-Switch:** Diskussionen halten keinen Execution-Scope. Die
   Kill-Switches (Instanz, Agent, Prozess) erreichen sie nicht; ihr Stopp ist
   endgültig und nicht fortsetzbar.
