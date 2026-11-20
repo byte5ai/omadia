@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Setup options come from a capability plugin's registered tool (#2053, epic #2042): S3 expand step
+
+- A setup field's `options_provider` (e.g. Notion's `list_notion_roots`) was
+  answered only from the retired agent runtime's toolkit, so a plugin moved
+  to a capability kind answered `agent_inactive`. The setup-options endpoint
+  and the multiselect check now ask the plugin's own tool registered via
+  `ctx.tools` first (`src/plugins/setupOptionsResolver.ts`; only that
+  plugin's tool, never another plugin's of the same name), and the agent
+  runtime only for a plugin still running there.
+
 ### Added — A channel's topic detection before the turn is inbound processing (#2053, epic #2042): S3 expand step
 
 - `topicDetector.classify`, resolved by a channel plugin, runs in an

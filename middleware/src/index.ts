@@ -445,6 +445,7 @@ import { createModelCallHaltMirror } from './execution/modelCallHalts.js';
 import { createModelWorkRuns } from './platform/modelWorkRuns.js';
 import { createModelWorkRouter } from './routes/modelWork.js';
 import { createAgentTemplatesRouter } from './routes/agentTemplates.js';
+import { createSetupOptionsResolver } from './plugins/setupOptionsResolver.js';
 import { createModelGatewayStatusRouter } from './routes/modelGatewayStatus.js';
 import {
   BULK_PROMOTION,
@@ -6317,7 +6318,10 @@ async function main(): Promise<void> {
       reactivate: reactivateAgent,
       onGrantsChanged: () => attachFacilitationEngine(),
       restartPending: (agentId) => installService.restartPending(agentId),
-      dynamicAgentRuntime,
+      // Spec 2042 §5.10 — setup options come from the plugin's tool, whether
+      // it registered it with the kernel (capability plugin) or still runs
+      // in the retired agent runtime.
+      dynamicAgentRuntime: createSetupOptionsResolver({ agentRuntime: dynamicAgentRuntime, tools: nativeToolRegistry }),
       // #1453 — the operator-facing half of the credential check: `GET
       // /installed` reports what a plugin pushed through `ctx.status`, and
       // `POST /installed/:id/verify` re-runs that plugin's own probe.
