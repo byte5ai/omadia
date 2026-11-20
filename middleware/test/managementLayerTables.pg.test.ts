@@ -7,7 +7,8 @@
  *    removed, only set `off`;
  *  - agents that existed before 0083 stay available to everyone, a fresh
  *    agent is available to nobody;
- *  - a deleted agent that an entry or a selection still names is not purged.
+ *  - a deleted agent that a default-agent entry still names is not purged;
+ *    users' selections of it go with the purge.
  */
 
 import { strict as assert } from 'node:assert';
@@ -116,11 +117,12 @@ describe('management layer tables (pg, migrations 0081–0083)', { skip: !pgAvai
     assert.equal(mine[0]?.agentId, fallbackId);
   });
 
-  it('a deleted agent named by an entry or a selection is not purged, and a default agent can be deleted', async () => {
+  it('a deleted default agent is not purged while an entry names it; its selections go with the purge', async () => {
     await store.deleteAgent(fallbackId);
     await assert.rejects(store.purgeAgent(fallbackId), ConfigValidationError);
-    await store.routing.clearSelection('telegram', 'g', 'user:anna@example.com');
     await store.routing.upsertDefaultEntry({ principal: null, channelType: null, agentId: null });
     assert.equal(await store.purgeAgent(fallbackId), true);
+    const left = (await store.routing.listSelections()).filter((sel) => sel.agentId === fallbackId);
+    assert.deepEqual(left, []);
   });
 });

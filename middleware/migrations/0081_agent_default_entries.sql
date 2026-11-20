@@ -80,7 +80,6 @@ BEGIN
     INSERT INTO agent_default_entries (principal, channel_type, agent_id, updated_by)
     SELECT NULL, NULL, s.fallback_agent_id, 'migration:0081'
       FROM multi_orchestrator_settings s
-      LEFT JOIN agents a ON a.id = s.fallback_agent_id
      WHERE s.id
     ON CONFLICT DO NOTHING;
   END IF;

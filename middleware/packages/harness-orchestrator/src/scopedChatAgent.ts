@@ -1,5 +1,8 @@
 import type { ChatAgent } from '@omadia/channel-sdk';
 
+import { systemNoticeAnswer, systemNoticeDone } from './management/managementChatAgent.js';
+import { buildSystemNotice } from './management/systemNotices.js';
+
 /** The slice of the orchestrator registry the scoping rule reads. */
 export interface ScopedRegistryView<B> {
   /** The instance's default agent (default-agent table, instance entry), if it serves. */
@@ -38,28 +41,40 @@ export const NO_ORCHESTRATOR_MESSAGE = 'no agent is assigned to this conversatio
 
 /**
  * A `ChatAgent` that resolves its target per call via {@link resolveScopedBundle}
- * — what `chatAgent@1` publishes, so every consumer without an agent of its
- * own (canvas, channel plugins without routing) runs on the instance's
- * default agent once a registry exists. No target ⇒ the turn is refused.
+ * — what `chatAgent@1` publishes.
+ *
+ * #2055 / #1880 — with a registry, this is NOT a way around routing: a
+ * channel that falls back to `chatAgent@1` after the resolver refused a turn
+ * (a binding to a disabled agent, a provisioned bot of a deleted one) would
+ * otherwise reach the instance's default agent, silently. Such a turn is
+ * answered with the management layer's `system` notice instead. The one
+ * remaining consumer without routing is the canvas (a turn with a
+ * `canvasSessionId`), which keeps running on the instance's default agent
+ * until it dispatches per agent (#2059). Without a registry the legacy
+ * bundle is the deployment's one agent and answers.
  */
 export function createScopedChatAgent(
   legacy: ChatAgent,
   getRegistry: () => ScopedRegistryView<{ readonly agent: ChatAgent }> | undefined,
 ): ChatAgent & { readonly legacy: ChatAgent } {
-  const target = (): ChatAgent | undefined =>
-    resolveScopedBundle(getRegistry(), { agent: legacy })?.agent;
+  const target = (input?: { readonly canvasSessionId?: string }): ChatAgent | undefined => {
+    const registry = getRegistry();
+    if (registry && input !== undefined && input.canvasSessionId === undefined) return undefined;
+    return resolveScopedBundle(registry, { agent: legacy })?.agent;
+  };
+  const refusal = () => buildSystemNotice('no_agent');
   return {
     /** The wrapped legacy agent — for introspection (tests), never for turns. */
     legacy,
     chat(input) {
-      const agent = target();
-      return agent ? agent.chat(input) : Promise.reject(new Error(NO_ORCHESTRATOR_MESSAGE));
+      const agent = target(input);
+      return agent ? agent.chat(input) : Promise.resolve(systemNoticeAnswer(refusal()));
     },
     chatStream(input, observer) {
-      const agent = target();
+      const agent = target(input);
       if (agent) return agent.chatStream(input, observer);
       return (async function* () {
-        yield { type: 'error' as const, message: NO_ORCHESTRATOR_MESSAGE };
+        yield systemNoticeDone(refusal());
       })();
     },
     get holdsContentUntilVerdict() {

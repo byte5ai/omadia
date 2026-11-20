@@ -175,7 +175,11 @@ class FakeConfigStore {
   /** #2055 — named people and groups per agent (migration 0083). */
   availabilityPrincipals: Array<{ agentId: string; principal: string }> = [];
   /** #2055 — the slice of `RoutingTables` the router uses. */
+  /** #2055 — the instance entry's agent (`null` = off). */
+  instanceDefaultAgentId: string | null = null;
   readonly routing = {
+    listDefaultEntries: (): Promise<Array<{ principal: null; channelType: null; agentId: string | null }>> =>
+      Promise.resolve([{ principal: null, channelType: null, agentId: this.instanceDefaultAgentId }]),
     listAvailabilityPrincipals: (): Promise<Array<{ agentId: string; principal: string }>> =>
       Promise.resolve(this.availabilityPrincipals.slice()),
     setAvailability: (
@@ -3780,11 +3784,11 @@ describe('createOperatorAgentsRouter', () => {
       body: JSON.stringify({
         everyone: false,
         channels: ['teams'],
-        principals: ['user:Anna@Example.com', 'role:sales'],
+        principals: ['user:Anna@Example.com'],
       }),
     });
     assert.equal(res.status, 200);
-    const expected = { everyone: false, channels: ['teams'], principals: ['user:anna@example.com', 'role:sales'] };
+    const expected = { everyone: false, channels: ['teams'], principals: ['user:anna@example.com'] };
     assert.deepEqual(((await res.json()) as { availability: unknown }).availability, expected);
     assert.equal(registry.reloadCalls, 1);
 
@@ -3794,6 +3798,15 @@ describe('createOperatorAgentsRouter', () => {
     };
     assert.deepEqual(list.agents.find((a) => a.slug === 'pub')?.availability, expected);
     assert.equal('fallback_agent_id' in list, false);
+
+    // Groups are refused until routing resolves role membership: a stored
+    // `role:` grant would silently never match.
+    const group = await fetch(`${baseUrl}/pub/availability`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ everyone: false, channels: null, principals: ['role:sales'] }),
+    });
+    assert.equal(group.status, 400);
   });
 
   it('POST /:slug/drain calls forceInvalidate(drain)', async () => {

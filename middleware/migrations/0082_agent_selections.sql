@@ -6,8 +6,10 @@
 -- conversation's binding.
 --
 -- `principal` is the user principal `user:<id>`. A selection keeps pointing to
--- a deleted agent (tombstone) and yields "<name> was deleted" until the user
--- chooses again; ON DELETE RESTRICT keeps a purge from removing it silently.
+-- a deleted agent (tombstone: a delete is an UPDATE) and yields "<name> was
+-- deleted" until the user chooses again. The hard purge of the tombstone
+-- removes the selections with it (ON DELETE CASCADE): they are per user and
+-- cheap to lose, and only that user could clear them otherwise.
 --
 -- Idempotent (the CI schema job applies everything twice).
 
@@ -15,7 +17,7 @@ CREATE TABLE IF NOT EXISTS agent_selections (
   channel_type     TEXT NOT NULL,
   conversation_key TEXT NOT NULL,
   principal        TEXT NOT NULL CHECK (principal ~ '^user:.+'),
-  agent_id         UUID NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  agent_id         UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
   selected_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (channel_type, conversation_key, principal)
 );

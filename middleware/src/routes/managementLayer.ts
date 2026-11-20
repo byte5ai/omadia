@@ -179,6 +179,9 @@ export function createOperatorDefaultAgentsRouter(options: ManagementLayerRouter
         agentId = agent.id;
       }
       const actor = auditActorFromRequest(req);
+      const previous = (await svc.store.routing.listDefaultEntries()).find(
+        (e) => e.principal === principal && e.channelType === body.channel_type,
+      );
       const entry = await svc.store.routing.upsertDefaultEntry({
         principal,
         channelType: body.channel_type,
@@ -189,6 +192,7 @@ export function createOperatorDefaultAgentsRouter(options: ManagementLayerRouter
         actor,
         action: 'agent.default_entry.set',
         target: `${principal ?? '*'}@${body.channel_type ?? '*'}`,
+        before: previous ? { agent_id: previous.agentId, off: previous.agentId === null } : null,
         after: { agent_slug: body.agent_slug, off: agentId === null },
       });
       await svc.registry.reload();

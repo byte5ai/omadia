@@ -826,7 +826,7 @@ export class ConfigStore {
       // tombstone (ON DELETE RESTRICT): purged only when nothing refers to it.
       if ((err as { code?: unknown } | null)?.code === '23503') {
         throw new ConfigValidationError(
-          'the deleted agent is still named by a default-agent entry or a user selection; change those first',
+          'the deleted agent is still named by a default-agent entry; change the entry first',
         );
       }
       throw err;

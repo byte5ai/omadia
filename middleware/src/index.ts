@@ -131,6 +131,7 @@ import { archetypeAdds, archetypeOf, getArchetype, directDatabaseUrl, isPooledDa
 import {
   buildSystemNotice,
   ChannelResolver as ManagementChannelResolver,
+  KernelAgentSelectionService,
   emitterOf,
   speakerFor,
   speakerOf,
@@ -1960,8 +1961,8 @@ async function main(): Promise<void> {
   // every kernel install path (see `defaultOrchestratorAttach.ts`): Hub
   // install, upload and store reinstall of ANY plugin kind (not only agents),
   // together with the plugin's installed `depends_on` parents, and the
-  // built-ins the boot installs on an existing instance. First boot runs the
-  // same `attachAllPlugins` primitive via `ensureFallbackAgent`. Rows that
+  // built-ins the boot installs on an existing instance (#2055: the agent of
+  // the instance default entry; S2 removes this auto-attach, #2054). Rows that
   // already exist are left alone, so an operator's disable/config survives.
   // Answers `false` when the orchestrator's config store does not exist yet.
   const attachToDefaultOrchestrator = async (
@@ -4043,6 +4044,22 @@ async function main(): Promise<void> {
     createChatRouter({
       agentResolver,
       routeTurn: routeWebTurn,
+      // #2055 — `/agent …` in the web chat, the same management-layer
+      // handling every other channel gets from its resolver.
+      handleAgentCommand: async (command, request) => {
+        const registry = getRegistry();
+        const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+        if (!registry || !store) return buildSystemNotice('no_agent', request.locale ? { locale: request.locale } : {});
+        if (!request.principal && command.kind !== 'list') {
+          return buildSystemNotice('no_agent', request.locale ? { locale: request.locale } : {});
+        }
+        return new KernelAgentSelectionService({ registry, tables: store.routing }).handle(command, {
+          channelType: WEB_CHANNEL_TYPE,
+          conversationKey: request.conversationKey,
+          principal: request.principal ?? 'user:anonymous',
+          ...(request.locale ? { locale: request.locale } : {}),
+        });
+      },
       // OM-76 — "no orchestrator at all" vs "this one is gone". With a registry
       // it is the live agent count; on a no-DB boot the legacy default bundle
       // is the only agent there can be.

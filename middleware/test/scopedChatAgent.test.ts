@@ -3,7 +3,6 @@ import { strict as assert } from 'node:assert';
 
 import {
   createScopedChatAgent,
-  NO_ORCHESTRATOR_MESSAGE,
   resolveScopedBundle,
 } from '@omadia/orchestrator';
 import type { ChatAgent } from '@omadia/channel-sdk';
@@ -71,24 +70,39 @@ describe('createScopedChatAgent (what chatAgent@1 publishes)', () => {
     assert.deepEqual(calls, ['legacy']);
   });
 
-  it('with a registry, runs the instance default agent — never the legacy one', async () => {
+  it('with a registry, a canvas turn runs the instance default agent — never the legacy one', async () => {
     const calls: string[] = [];
     const scoped = createScopedChatAgent(agent('legacy', calls), () =>
       registry('std', { std: agent('std', calls) }),
     );
-    await scoped.chat({ userMessage: 'hi' } as never);
-    for await (const _ of scoped.chatStream({ userMessage: 'hi' } as never)) void _;
+    const canvas = { userMessage: 'hi', canvasSessionId: 'cv1' } as never;
+    await scoped.chat(canvas);
+    for await (const _ of scoped.chatStream(canvas)) void _;
     assert.deepEqual(calls, ['std', 'std']);
     assert.equal(scoped.offeredToolNames?.().has('legacy_tool'), false);
   });
 
-  it('with a registry but no instance default agent, refuses the turn', async () => {
+  it('#1880 — with a registry, a channel turn is never answered by the default agent: system notice', async () => {
+    const calls: string[] = [];
+    const scoped = createScopedChatAgent(agent('legacy', calls), () =>
+      registry('std', { std: agent('std', calls) }),
+    );
+    const answer = await scoped.chat({ userMessage: 'hi' } as never);
+    assert.deepEqual(answer.speaker, { kind: 'system' });
+    assert.equal(answer.systemNotice?.code, 'no_agent');
+    const events: { type: string; speaker?: unknown }[] = [];
+    for await (const ev of scoped.chatStream({ userMessage: 'hi' } as never)) events.push(ev);
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.type, 'done');
+    assert.deepEqual(events[0]?.speaker, { kind: 'system' });
+    assert.deepEqual(calls, []);
+  });
+
+  it('with a registry but no instance default agent, a canvas turn is refused too', async () => {
     const calls: string[] = [];
     const scoped = createScopedChatAgent(agent('legacy', calls), () => registry(undefined, {}));
-    await assert.rejects(scoped.chat({ userMessage: 'hi' } as never), new RegExp(NO_ORCHESTRATOR_MESSAGE));
-    const events: unknown[] = [];
-    for await (const ev of scoped.chatStream({ userMessage: 'hi' } as never)) events.push(ev);
-    assert.deepEqual(events, [{ type: 'error', message: NO_ORCHESTRATOR_MESSAGE }]);
+    const answer = await scoped.chat({ userMessage: 'hi', canvasSessionId: 'cv1' } as never);
+    assert.equal(answer.systemNotice?.code, 'no_agent');
     assert.deepEqual(calls, []);
   });
 });

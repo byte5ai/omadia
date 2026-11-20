@@ -305,8 +305,14 @@ const AvailabilitySchema = z.object({
   everyone: z.boolean(),
   /** Channel types the agent serves; `null` = all. */
   channels: z.array(z.string().min(1).max(64)).max(64).nullable(),
-  /** Named people (`user:<id>`) and groups (`role:<key>`). */
-  principals: z.array(z.string().regex(/^(user|role):.+/).max(320)).max(500),
+  /**
+   * Named people (`user:<id>`). Groups (`role:<key>`) are refused until the
+   * routing resolves role membership: accepting them would store a grant
+   * that silently never matches.
+   */
+  principals: z
+    .array(z.string().regex(/^user:.+/, 'only user:<id> principals are supported; groups (role:<key>) are not resolved yet').max(320))
+    .max(500),
 });
 
 /**
@@ -2154,6 +2160,14 @@ export function createOperatorAgentsRouter(
           // #2055 — who may use the agent, where (spec 2042 §5.3).
           availability: availabilityDto(a, principalsByAgent.get(a.id) ?? []),
         })),
+        // #2055 — the agent of the instance entry of the default-agent table
+        // (`null` = off): what an unaddressed message reaches when no user or
+        // channel entry applies. Informational; the table is
+        // `/api/v1/operator/default-agents`.
+        default_agent_id:
+          (await live.store.routing.listDefaultEntries()).find(
+            (e) => e.principal === null && e.channelType === null,
+          )?.agentId ?? null,
       });
     } catch (err) {
       badRequest(res, err);

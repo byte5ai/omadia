@@ -72,7 +72,11 @@ export class KernelAgentSelectionService implements AgentSelectionService {
       return notice('agent_selection_cleared');
     }
 
-    const chosen = this.selectable(context).find((a) => matches(a, command.name));
+    // A slug is unique; a display name may not be: an exact slug wins.
+    const selectable = this.selectable(context);
+    const chosen =
+      selectable.find((a) => normalize(a.slug) === normalize(command.name)) ??
+      selectable.find((a) => matches(a, command.name));
     if (!chosen) {
       const known = this.deps.registry.routingView().liveAgents().find((a) => matches(a, command.name));
       if (!known) {

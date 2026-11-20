@@ -7,6 +7,8 @@ import {
   isNoReply,
   logNoReplyDrop,
   makePrincipal,
+  parseAgentCommand,
+  type AgentCommand,
 } from '@omadia/channel-sdk';
 import { SYSTEM_SPEAKER, type AgentSpeaker, type SystemNotice } from '@omadia/plugin-api';
 import { MAX_STEER_LENGTH, steeringBus, today, turnContext } from '@omadia/orchestrator';
@@ -286,6 +288,12 @@ export interface CreateChatRouterOptions {
    * Never another agent.
    */
   routeTurn: (request: WebRouteRequest) => WebRouteResult;
+  /**
+   * #2055 — carries out `/agent <name>`, `/agent`, `/agents` typed in the web
+   * chat: stores the sender's selection for this conversation and returns
+   * the `system` notice. Absent: the command is ordinary text.
+   */
+  handleAgentCommand?: (command: AgentCommand, request: Omit<WebRouteRequest, 'explicitSlug'>) => Promise<SystemNotice>;
   /** OM-76 (#996) — is ANY Agent active right now? When this answers `false`
    *  the 503 carries `no_agents_active` instead of `agent_unavailable`: the
    *  requested slug is not "deleted or disabled", there simply is no
@@ -338,6 +346,34 @@ type ResolvedTurn =
   | { readonly kind: 'agent'; readonly chatAgent: ChatAgent; readonly effectiveSlug: string; readonly speaker: AgentSpeaker }
   | { readonly kind: 'notice'; readonly notice: SystemNotice };
 
+/**
+ * #2055 — `/agent …` typed in the web chat is the management layer's, never
+ * an agent turn, and never pins the session. Choosing or clearing an agent
+ * also releases the session's pin, so the next message routes by the new
+ * selection (explicit addressing would otherwise keep the old agent).
+ */
+async function handleWebAgentCommand(
+  req: Request,
+  message: string,
+  sessionId: string | undefined,
+  options: CreateChatRouterOptions,
+): Promise<SystemNotice | undefined> {
+  const command = options.handleAgentCommand ? parseAgentCommand(message) : undefined;
+  if (!command || !options.handleAgentCommand) return undefined;
+  const principal = webPrincipal(req);
+  const notice = await options.handleAgentCommand(command, {
+    ...(principal ? { principal } : {}),
+    conversationKey: sessionId ? `session:${sessionId}` : 'http-default',
+    locale: webLocale(req),
+  });
+  const sessionStore = options.getChatSessionStore?.() ?? options.chatSessionStore;
+  const changed = notice.code === 'agent_selected' || notice.code === 'agent_selection_cleared';
+  if (changed && sessionId && sessionStore) {
+    await sessionStore.clearSnapshot(sessionId);
+  }
+  return notice;
+}
+
 /** The web channel's type in the routing tables (default-agent entries, availability). */
 export const WEB_CHANNEL_TYPE = 'web';
 
@@ -368,7 +404,11 @@ async function resolveAgentForRequest(
   requestSlug: string | undefined,
   sessionId: string | undefined,
   options: CreateChatRouterOptions,
+  message: string,
 ): Promise<ResolvedTurn | undefined> {
+  const commandNotice = await handleWebAgentCommand(req, message, sessionId, options);
+  if (commandNotice) return { kind: 'notice', notice: commandNotice };
+
   // 1. If session has a pinned snapshot, use it (and reject mismatches).
   let pinnedSlug: string | undefined;
   const sessionStore = options.getChatSessionStore?.() ?? options.chatSessionStore;
@@ -428,6 +468,7 @@ export function createChatRouter(
       parsed.data.agentSlug,
       parsed.data.sessionId,
       options,
+      parsed.data.message,
     );
     if (!resolved) return;
     if (resolved.kind === 'notice') {
@@ -535,6 +576,7 @@ export function createChatRouter(
       parsed.data.agentSlug,
       parsed.data.sessionId,
       options,
+      parsed.data.message,
     );
     if (!resolved) return;
 

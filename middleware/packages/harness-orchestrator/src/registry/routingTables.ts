@@ -9,6 +9,8 @@
 
 import type { Pool } from 'pg';
 
+import { ofLiveAgent } from './tombstones.js';
+
 /** One default-agent entry. `agentId: null` is `off`. */
 export interface DefaultAgentEntryRow {
   readonly id: string;
@@ -171,7 +173,10 @@ export class RoutingTables {
   async listAvailabilityPrincipals(): Promise<readonly AvailabilityPrincipalRow[]> {
     try {
       const { rows } = await this.pool.query<{ agent_id: string; principal: string }>(
-        `SELECT agent_id, principal FROM agent_availability_principals ORDER BY agent_id, principal`,
+        // A deleted agent is available to nobody; its rows stay for the purge.
+        `SELECT agent_id, principal FROM agent_availability_principals
+          WHERE ${ofLiveAgent('agent_id')}
+          ORDER BY agent_id, principal`,
       );
       return rows.map((r) => ({ agentId: r.agent_id, principal: r.principal }));
     } catch (err) {
