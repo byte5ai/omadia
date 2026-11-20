@@ -104,6 +104,17 @@ const DECLARATIONS: readonly DecorationDeclaration[] = [
     channels: ['teams'],
   },
   {
+    id: 'question_card',
+    kind: 'card',
+    purpose: 'A structured question card an agent posts into a conversation (QuestionCard, #2089).',
+    justification: {
+      kind: 'next_action',
+      action:
+        'Answer the agent\'s typed question (choice, ranking, consent, text, number, date) with one submission instead of typing each value; a plain-text path with renderCardAsText/parseCardReply exists in every channel.',
+    },
+    channels: ['teams'],
+  },
+  {
     id: 'follow_up_options',
     kind: 'button',
     purpose: 'Buttons for next steps the agent itself proposed as concrete options.',

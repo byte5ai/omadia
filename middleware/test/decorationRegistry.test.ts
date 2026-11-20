@@ -20,6 +20,7 @@ const EXPECTED_IDS = [
   'ai_disclosure_chip',
   'decision_card',
   'facilitation_poll',
+  'question_card',
   'follow_up_options',
   'consent_card',
   'mcp_input_form',
