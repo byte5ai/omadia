@@ -196,7 +196,9 @@ const AgentCreateSchema = z.object({
   name: z.string().min(1).max(120),
   description: z.string().max(2000).optional(),
   privacy_profile: z.enum(['strict', 'default']).optional(),
-  status: z.enum(['enabled', 'disabled']).optional(),
+  // #2049 — `draft` only on create: a preview agent that is never addressable
+  // until an operator enables it. An existing agent never goes back to draft.
+  status: z.enum(['enabled', 'disabled', 'draft']).optional(),
   // #2088 — only on create: the archetype is fixed for the agent's lifetime.
   archetype: z.string().refine(isArchetypeId, 'archetype must be a registered archetype id').optional(),
   // The name of `archetype` before #2088. Not accepted any more, and named

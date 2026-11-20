@@ -51,7 +51,11 @@ import {
  * (see docs/middleware-agent-handoff.md §13).
  */
 export type PrivacyProfile = 'strict' | 'default';
-export type AgentStatus = 'enabled' | 'disabled';
+/**
+ * `draft` (#2049): a preview agent of the Agent Builder or the Plugin Builder.
+ * Never built into the registry and never addressable; only `enabled` is.
+ */
+export type AgentStatus = 'enabled' | 'disabled' | 'draft';
 
 export interface CanvasPosition {
   readonly x: number;
