@@ -117,6 +117,9 @@ export interface SendProviderCapabilities {
    *  (`ConversationSendProvider.updateCard`). Absent = no cards; the kernel
    *  then refuses a card instead of handing it over. */
   card?: CardSupport;
+  /** Sets a reaction as the named identity
+   *  (`ConversationSendProvider.react`, spec 2043 §5.14). */
+  reactions?: boolean;
 }
 
 export interface TargetedSendProvider {

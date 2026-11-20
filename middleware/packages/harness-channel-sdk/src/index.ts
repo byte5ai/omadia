@@ -68,7 +68,7 @@ export type {
   QuestionCard,
 } from '@omadia/plugin-api';
 // #330 C3b - conversation-addressed proactive send (group nudges).
-export type { ConversationSendOptions, ConversationSendProvider } from './conversationSend.js';
+export type { ConversationReactionOutcome, ConversationSendOptions, ConversationSendProvider } from './conversationSend.js';
 export type {
   AgentIdentityDescription,
   AgentIdentityField,

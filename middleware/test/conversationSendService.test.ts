@@ -88,3 +88,51 @@ describe('conversationSend', () => {
     assert.equal(providers.get('teams'), undefined);
   });
 });
+
+describe('conversationSend: reactions (spec 2043 §5.14)', () => {
+  const GROUND = { subscriptions: [] };
+  const input = { agentSlug: 'mara', channelType: 'teams', conversationId: 'conv-1', messageId: 'msg-7', reaction: 'acknowledge' as const };
+  function service(provider: ConversationSendProvider, opts: { noIdentity?: boolean } = {}) {
+    const providers = new ConversationSendRegistry();
+    providers.register('plugin-teams', provider);
+    return createConversationSendService({ providers, ownIdentity: { identityFor: () => (opts.noIdentity ? undefined : { channelKey: '28:bot' }) }, log: () => undefined });
+  }
+
+  it('a channel that declares reactions and has the method reacts as the agent\'s own identity', async () => {
+    const calls: unknown[] = [];
+    const s = service({
+      channelType: 'teams',
+      supports: { asChannelKey: true, reactions: true },
+      sendToConversation: async () => ({ outcome: 'delivered' }),
+      react: async (conversationId, messageId, reaction, opts) => {
+        calls.push({ conversationId, messageId, reaction, opts });
+        return { outcome: 'reacted' };
+      },
+    });
+    assert.equal(s.capabilities('teams')?.reactions, true);
+    assert.deepEqual(await s.react(input, GROUND), { outcome: 'reacted' });
+    assert.deepEqual(calls, [{ conversationId: 'conv-1', messageId: 'msg-7', reaction: 'acknowledge', opts: { asChannelKey: '28:bot' } }]);
+  });
+
+  it('declared without the method, the method without the declaration, an unknown reaction, no identity or no ground: nothing is set', async () => {
+    let called = 0;
+    const react = async () => {
+      called += 1;
+      return { outcome: 'reacted' as const };
+    };
+    const send = async () => ({ outcome: 'delivered' as const });
+    const declaredOnly = service({ channelType: 'teams', supports: { asChannelKey: true, reactions: true }, sendToConversation: send });
+    assert.equal(declaredOnly.capabilities('teams')?.reactions, false);
+    assert.equal((await declaredOnly.react(input, GROUND)).outcome, 'unreachable');
+    const undeclared = service({ channelType: 'teams', supports: { asChannelKey: true }, sendToConversation: send, react });
+    assert.equal(undeclared.capabilities('teams')?.reactions, false);
+    assert.equal((await undeclared.react(input, GROUND)).outcome, 'unreachable');
+    const able = service({ channelType: 'teams', supports: { asChannelKey: true, reactions: true }, sendToConversation: send, react });
+    assert.equal((await able.react({ ...input, reaction: 'party' as never }, GROUND)).outcome, 'unreachable');
+    assert.equal((await able.react(input, undefined as never)).outcome, 'unreachable');
+    const noIdentity = service({ channelType: 'teams', supports: { asChannelKey: true, reactions: true }, sendToConversation: send, react }, { noIdentity: true });
+    const refused = await noIdentity.react(input, GROUND);
+    assert.equal(refused.outcome === 'unreachable' ? refused.code : '', 'no_identity');
+    assert.equal(called, 0);
+  });
+});
