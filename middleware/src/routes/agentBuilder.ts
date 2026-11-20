@@ -15,7 +15,11 @@
 
 import {
   assertArchetypeAllows,
+  assertHelperModelAllowed,
+  assertHelperNameFree,
   ConfigValidationError,
+  HelperRefusalError,
+  mcpGrantHeldBy,
   type AgentGraphStore,
   type AgentRow,
   type ConfigStore,
@@ -567,10 +571,19 @@ export function createAgentBuilderRouter(
       if (!agent) return;
       assertArchetypeAllows(agent, 'sub_agent');
       const b = req.body ?? {};
+      const name = String(b.name ?? '').trim();
+      // #2050 — a helper is internal to its agent: a collision-free tool name
+      // and a model the agent's policy allows, refused here with a code.
+      await assertHelperWriteAllowed(
+        l,
+        agent,
+        { name, model: b.model ?? null },
+        options.getActiveProvider?.(),
+      );
       const row = await l.graph.createSubAgent(
         {
           parentAgentId: agent.id,
-          name: String(b.name ?? '').trim(),
+          name,
           skillId: b.skillId ?? null,
           model: b.model ?? null,
           maxTokens: b.maxTokens ?? null,
@@ -594,8 +607,34 @@ export function createAgentBuilderRouter(
       const l = live(res);
       if (!l) return;
       try {
+        const agent = await agentOr404(l, str(req.params.slug), res);
+        if (!agent) return;
+        const id = str(req.params.id);
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        // #2050 — the helper must belong to the agent in the path, and a
+        // rename / re-enable / model change passes the same checks as create.
+        const current = (await l.graph.listAllSubAgents()).find(
+          (s) => s.id === id && s.parentAgentId === agent.id,
+        );
+        if (!current) {
+          res.status(404).json({ error: 'subagent_not_found', id });
+          return;
+        }
+        const renamesOrEnables = typeof body['name'] === 'string' || body['status'] === 'enabled';
+        await assertHelperWriteAllowed(
+          l,
+          agent,
+          {
+            selfId: id,
+            ...(renamesOrEnables
+              ? { name: typeof body['name'] === 'string' ? body['name'].trim() : current.name }
+              : {}),
+            ...('model' in body ? { model: (body['model'] as string | null) ?? null } : {}),
+          },
+          options.getActiveProvider?.(),
+        );
         const row = await l.graph.updateSubAgent(
-          str(req.params.id),
+          id,
           req.body ?? {},
           options.getActiveProvider?.(),
         );
@@ -2734,6 +2773,97 @@ async function assertMcpToolAllowed(
   return toolName;
 }
 
+// ── internal helpers (#2050) ─────────────────────────────────────────────────
+
+/** The built orchestrator of `agent`, when the registry holds it (an enabled,
+ *  activated agent). The capability and tool-name checks need it. */
+function builtOrchestratorOf(l: Live, agent: AgentRow) {
+  return l.registry?.get(agent.slug)?.built.orchestrator;
+}
+
+/**
+ * The tool names a helper of `agent` must not take: its plugin domain tools and
+ * every native tool. Its own helpers are excluded here; the sibling check
+ * covers them from the database. Empty when the agent is not built (disabled),
+ * in which case the runtime check refuses a collision when it is.
+ */
+function reservedToolNamesFor(l: Live, agent: AgentRow): ReadonlySet<string> {
+  const orch = builtOrchestratorOf(l, agent);
+  if (!orch) return new Set();
+  return new Set([
+    ...orch
+      .listDomainTools()
+      .filter((t) => t.internalHelper === undefined)
+      .map((t) => t.name),
+    ...orch.listNativeToolNames(),
+  ]);
+}
+
+/**
+ * Save-time checks of a helper write (spec 2042 §5.6, #2050): its `ask_<name>`
+ * is unique within the agent and not one of the agent's other tools, and its
+ * model is one the agent's model policy allows. Throws `HelperRefusalError`.
+ */
+async function assertHelperWriteAllowed(
+  l: Live,
+  agent: AgentRow,
+  write: { readonly selfId?: string; readonly name?: string; readonly model?: string | null },
+  activeProvider: string | undefined,
+): Promise<void> {
+  if (write.name !== undefined) {
+    const siblings = (await l.graph.listAllSubAgents()).filter(
+      (s) => s.parentAgentId === agent.id,
+    );
+    assertHelperNameFree({
+      name: write.name,
+      ...(write.selfId !== undefined ? { selfId: write.selfId } : {}),
+      siblings,
+      reservedToolNames: reservedToolNamesFor(l, agent),
+    });
+  }
+  if (write.model !== undefined) {
+    assertHelperModelAllowed(write.model, agent.modelPolicy ?? DEFAULT_MODEL_POLICY, activeProvider);
+  }
+}
+
+/**
+ * Save-time subset rule of a helper grant (#2050): the helper belongs to this
+ * agent, and the agent holds the capability itself — an agent-level MCP grant
+ * for the same server and tool, or the native tool (checked against the built
+ * agent; a disabled agent is checked at runtime instead).
+ */
+async function assertHelperGrantHeldByAgent(
+  l: Live,
+  agent: AgentRow,
+  subAgentId: string,
+  grant: { readonly toolKind: 'native' | 'mcp'; readonly toolRef: string; readonly mcpServerId: string | null },
+): Promise<void> {
+  const helper = (await l.graph.listAllSubAgents()).find(
+    (s) => s.id === subAgentId && s.parentAgentId === agent.id,
+  );
+  if (!helper) {
+    throw new ConfigValidationError(`sub-agent ${subAgentId} does not belong to agent "${agent.slug}"`);
+  }
+  if (grant.toolKind === 'mcp') {
+    const agentGrants = (await l.graph.listAllToolGrants()).filter((g) => g.agentId === agent.id);
+    const serverName = (await l.graph.listMcpServers()).find((s) => s.id === grant.mcpServerId)?.name;
+    if (!grant.mcpServerId || !mcpGrantHeldBy(agentGrants, grant.mcpServerId, grant.toolRef, serverName)) {
+      throw new HelperRefusalError(
+        'helper_grant_not_held_by_agent',
+        `the agent "${agent.slug}" does not hold the MCP tool "${grant.toolRef}" itself; grant it to the agent first — a helper only uses tools its agent has`,
+      );
+    }
+    return;
+  }
+  const orch = builtOrchestratorOf(l, agent);
+  if (orch && !orch.holdsNativeTool(grant.toolRef)) {
+    throw new HelperRefusalError(
+      'helper_grant_not_held_by_agent',
+      `the agent "${agent.slug}" does not hold the tool "${grant.toolRef}" itself; a helper only uses tools its agent has`,
+    );
+  }
+}
+
 // ── edge dispatchers ─────────────────────────────────────────────────────────
 
 async function createEdge(
@@ -2780,6 +2910,11 @@ async function createEdge(
         // the bare-name grant (the 0014 unique index keys on the raw ref),
         // splitting one tool across two rows (W0c review).
         toolRef = await assertMcpToolAllowed(l, mcpServerId, toolRef);
+      }
+      // #2050 — a helper's grant is a subset of its agent's: refused unless the
+      // helper belongs to this agent and the agent holds the tool itself.
+      if (subAgentId !== null) {
+        await assertHelperGrantHeldByAgent(l, agent, subAgentId, { toolKind, toolRef, mcpServerId });
       }
       const grant = await l.graph.createToolGrant({
         agentId: onAgent ? agent.id : null,
@@ -3132,6 +3267,11 @@ function fail(res: Response, err: unknown): void {
   // #2060 — a facilitator is refused sub-agents, tool grants, persona skills
   // and schedules; one mapping for all of them.
   if (respondFacilitatorRefusal(res, err)) return;
+  // #2050 — a refused helper write carries a stable code the UI explains.
+  if (err instanceof HelperRefusalError) {
+    res.status(409).json({ error: 'helper_refused', code: err.code, message: err.message });
+    return;
+  }
   if (err instanceof ConfigValidationError) {
     res.status(409).json({ error: 'config_validation', message: err.message });
     return;

@@ -1353,6 +1353,47 @@ have no orchestrator of their own (canvas, unbound channel keys, routines
 created before migration 0005) are refused instead of answered with every
 plugin's tools. Set a standard orchestrator under Orchestrators.
 
+## 5d. Internal helpers stay inside their agent's envelope (#2050)
+
+A DB sub-agent (`agent_subagents`, tool `ask_<name>`, Builder node "helper") is
+an internal helper of one agent (spec 2042 §5.6, criterion 11): it may use a
+subset of what its agent holds, never more.
+
+- **Capabilities, on save.** The Builder refuses a helper tool grant
+  (`409 helper_refused`, code `helper_grant_not_held_by_agent`) unless the
+  helper belongs to the agent in the path and the agent holds the tool itself:
+  an MCP tool needs an agent-level grant for the same server and tool (before
+  this, a helper could hold an MCP grant its agent lacked), a native tool must
+  pass `Orchestrator.holdsNativeTool` (registered and its plugin assigned). A
+  disabled agent is not built, so its native grants are only checked at runtime.
+- **Capabilities, at runtime.** `buildSubAgentDomainTools` does not materialise a
+  grant the agent lacks, and wraps every helper tool so each CALL re-checks the
+  agent as it is now (`liveParent`: the registry's live entry, refreshed by every
+  Builder write). Revoking the agent's grant therefore removes the helper's
+  access on the next call without waiting for a rebuild; the refusal is a
+  `ToolRefusalError` the helper's model reads. An agent that is gone refuses every helper call. Not covered by the
+  per-call check: deleting the helper's OWN grant row while the agent keeps the
+  tool takes effect with the rebuild the Builder write triggers.
+- **Model.** With an explicit primary in the agent's model policy, a helper
+  model must be on the policy's provider(s) and of a class no stronger than the
+  primary (`helper_model_not_allowed` on save, helper not built at runtime). A
+  helper without a model never inherits a class stronger than the agent's
+  pinned primary.
+- **Budget.** A helper's `maxTokens`/`maxIterations` are capped by its agent's
+  per-call output budget and step cap; its model calls are booked on the
+  agent's turn (`token_usage.turn_id`). There is still no per-turn spend cap
+  across helpers (spec G18).
+- **Names.** `ask_<name>` is not injective (`A B` and `A-B`), so a helper name
+  whose tool name another helper of the agent or one of the agent's own tools
+  already has is refused on save (`helper_name_collision`), and at runtime every
+  member of a colliding group is left out (logged), never first-wins. Before
+  this, a helper called `User Choice` threw on registration against the native
+  `ask_user_choice` and aborted the rest of that agent's tool hydration.
+- **Presentation.** A helper never introduces itself (a fixed contract is
+  appended to its system prompt), the agent's tool description tells its model
+  to present the result as its own work, and helper runs are flagged
+  `internalHelper` in the run trace so `agentsConsulted` never lists them.
+
 ## 6. Defence in depth for cached data
 
 The Odoo / external-system response cache and the in-memory conversation
