@@ -160,6 +160,7 @@ export type { AgentTombstone } from './registry/tombstones.js';
 // #2088 — archetypes: the registry and the one question call sites ask.
 export {
   ARCHETYPE_ADDITIONS,
+  ARCHETYPE_AGENT_SETTING_TYPES,
   ARCHETYPE_OMISSIONS,
   ARCHETYPE_REQUIREMENTS,
   ArchetypeOmissionError,
@@ -170,15 +171,22 @@ export {
   archetypeOmits,
   archetypeRequires,
   assertArchetypeAllows,
+  effectiveArchetypeAgentSettings,
   getArchetype,
   isArchetype,
   isArchetypeId,
   listArchetypes,
   parseArchetype,
   registerArchetype,
+  validateArchetypeAgentSettings,
 } from './registry/archetype.js';
 export type {
   ArchetypeAddition,
+  ArchetypeAgentSetting,
+  ArchetypeAgentSettingIssue,
+  ArchetypeAgentSettingOption,
+  ArchetypeAgentSettingType,
+  ArchetypeAgentSettingValue,
   ArchetypeBearer,
   ArchetypeDescriptor,
   ArchetypeRequirement,

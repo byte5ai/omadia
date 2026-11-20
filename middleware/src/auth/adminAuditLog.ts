@@ -160,7 +160,10 @@ export type AuditAction =
   // sensitivity (`target` `integration:<id>`), and an agent's context-memory
   // mode (`target` `agent:<slug>`).
   | 'discretion.readership_change'
-  | 'agent.context_memory_change';
+  | 'agent.context_memory_change'
+  // #2066 — per-agent settings of the agent's archetype (a facilitator's
+  // default methods and reminder policy).
+  | 'agent.archetype_settings_change';
 
 /**
  * #1329 — the actions a PLUGIN may write via

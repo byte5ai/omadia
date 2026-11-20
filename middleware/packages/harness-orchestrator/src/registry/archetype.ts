@@ -68,6 +68,43 @@ export type ArchetypeRequirement = (typeof ARCHETYPE_REQUIREMENTS)[number];
 /** A text in the operator's languages; a plain string is shown as written. */
 export type ArchetypeText = string | Readonly<Partial<Record<'en' | 'de', string>>>;
 
+/** One choice of an `enum` agent setting. */
+export interface ArchetypeAgentSettingOption {
+  readonly value: string;
+  readonly label: ArchetypeText;
+}
+
+interface ArchetypeAgentSettingBase {
+  /** Lowercase letters, digits, underscores; unique within the descriptor. */
+  readonly key: string;
+  readonly label: ArchetypeText;
+  readonly help?: ArchetypeText;
+}
+
+/**
+ * #2066 — a setting the operator can give each agent of the archetype (spec
+ * 2043 §7: a facilitator's default methods and reminder policy). The archetype
+ * plugin declares the fields; the kernel validates, stores and shows them and
+ * hands the values to the plugin with the agent's profile. A field left unset
+ * means the plugin's own instance setting applies.
+ */
+export type ArchetypeAgentSetting =
+  | (ArchetypeAgentSettingBase & {
+      readonly type: 'enum';
+      readonly options: readonly ArchetypeAgentSettingOption[];
+    })
+  | (ArchetypeAgentSettingBase & {
+      readonly type: 'number_list';
+      /** At most this many entries; each a positive number. */
+      readonly maxItems: number;
+    });
+
+export const ARCHETYPE_AGENT_SETTING_TYPES = ['enum', 'number_list'] as const;
+export type ArchetypeAgentSettingType = (typeof ARCHETYPE_AGENT_SETTING_TYPES)[number];
+
+/** A stored value of an agent setting. */
+export type ArchetypeAgentSettingValue = string | readonly number[];
+
 export interface ArchetypeDescriptor {
   readonly id: ArchetypeId;
   /** Who registered it: `'kernel'` (built in or kernel-seeded) or a plugin id. */
@@ -95,6 +132,8 @@ export interface ArchetypeDescriptor {
    * the kernel's own block for that archetype, if it has one.
    */
   readonly roleContract?: string;
+  /** Per-agent settings the operator can set; absent = none. */
+  readonly agentSettings?: readonly ArchetypeAgentSetting[];
 }
 
 const STANDARD_DESCRIPTOR: ArchetypeDescriptor = Object.freeze({
@@ -290,4 +329,78 @@ export function assertArchetypeAllows(
   if (agent && archetypeOmits(agent, omission)) {
     throw new ArchetypeOmissionError(omission, agent.slug, archetypeOf(agent));
   }
+}
+
+export interface ArchetypeAgentSettingIssue {
+  readonly key: string;
+  readonly message: string;
+}
+
+/**
+ * #2066 — check settings an operator wants to store for an agent of the
+ * archetype against the descriptor's fields. `null` (or an empty list) for a
+ * key clears it: the plugin's instance setting applies again. A key the
+ * descriptor does not declare, or a value of the wrong shape, is an issue;
+ * nothing is stored then.
+ */
+export function validateArchetypeAgentSettings(
+  descriptor: Pick<ArchetypeDescriptor, 'agentSettings'> | undefined,
+  raw: unknown,
+): { readonly settings: Readonly<Record<string, ArchetypeAgentSettingValue | null>> } | { readonly issues: readonly ArchetypeAgentSettingIssue[] } {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { issues: [{ key: '', message: 'settings must be an object of key to value' }] };
+  }
+  const fields = new Map((descriptor?.agentSettings ?? []).map((f) => [f.key, f]));
+  const issues: ArchetypeAgentSettingIssue[] = [];
+  const settings: Record<string, ArchetypeAgentSettingValue | null> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const field = fields.get(key);
+    if (!field) {
+      issues.push({ key, message: 'this archetype has no such setting' });
+      continue;
+    }
+    if (value === null || (Array.isArray(value) && value.length === 0)) {
+      settings[key] = null;
+      continue;
+    }
+    if (field.type === 'enum') {
+      if (typeof value !== 'string' || !field.options.some((o) => o.value === value)) {
+        issues.push({ key, message: `must be one of: ${field.options.map((o) => o.value).join(', ')}` });
+        continue;
+      }
+      settings[key] = value;
+      continue;
+    }
+    if (
+      !Array.isArray(value) ||
+      value.length > field.maxItems ||
+      !value.every((n) => typeof n === 'number' && Number.isFinite(n) && n > 0)
+    ) {
+      issues.push({ key, message: `must be a list of up to ${String(field.maxItems)} positive numbers` });
+      continue;
+    }
+    settings[key] = Object.freeze([...(value as number[])]);
+  }
+  return issues.length > 0 ? { issues } : { settings };
+}
+
+/**
+ * The stored settings that still fit the descriptor: what the plugin gets and
+ * the UI shows. A value the descriptor no longer declares (the plugin dropped
+ * a field, or changed its options) is left out rather than passed on.
+ */
+export function effectiveArchetypeAgentSettings(
+  descriptor: Pick<ArchetypeDescriptor, 'agentSettings'> | undefined,
+  stored: unknown,
+): Readonly<Record<string, ArchetypeAgentSettingValue>> {
+  if (stored === null || typeof stored !== 'object' || Array.isArray(stored)) return {};
+  const out: Record<string, ArchetypeAgentSettingValue> = {};
+  for (const [key, value] of Object.entries(stored as Record<string, unknown>)) {
+    const checked = validateArchetypeAgentSettings(descriptor, { [key]: value });
+    if ('settings' in checked) {
+      const v = checked.settings[key];
+      if (v !== null && v !== undefined) out[key] = v;
+    }
+  }
+  return out;
 }

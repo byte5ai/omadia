@@ -34,6 +34,7 @@ import {
 import { NativeToolRegistry } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
 import { buildForAgent } from '../packages/harness-orchestrator/src/registry/applyDiff.js';
 import type { AgentRow } from '../packages/harness-orchestrator/src/registry/configStore.js';
+import { getArchetype, registerArchetype } from '../packages/harness-orchestrator/src/registry/archetype.js';
 import {
   buildToolCallContext,
   currentToolCallContext,
@@ -202,7 +203,16 @@ describe('agentTurn service', () => {
     toolCall: NativeToolCallContext;
   }
 
-  async function setup(options: { agent?: Partial<AgentRow>; granted?: boolean; isEngine?: boolean; perMinute?: number } = {}) {
+  async function setup(
+    options: {
+      agent?: Partial<AgentRow>;
+      granted?: boolean;
+      isEngine?: boolean;
+      perMinute?: number;
+      channels?: string[];
+      archetypeSettings?: (agentId: string) => Promise<Record<string, unknown>>;
+    } = {},
+  ) {
     const f = hubFixture(new InMemoryConversationMessageStore());
     assert.equal((await readAll(f, 'mara', CONVERSATION, PROCESS)).outcome, 'subscribed');
     const stored = await f.hub.ingest(messageEvent({ text: 'My vote: A > C > B' }));
@@ -231,8 +241,9 @@ describe('agentTurn service', () => {
       getRegistry: () =>
         ({
           get: (slug: string) => (slug === 'mara' ? entry : undefined),
-          channelTypesWithIdentity: () => ['teams'],
+          channelTypesWithIdentity: () => options.channels ?? ['teams'],
         }) as never,
+      ...(options.archetypeSettings ? { archetypeSettings: options.archetypeSettings } : {}),
       // The turn looks its inbound event up among the events of its process.
       messages: f.hub,
       callerPluginId: ENGINE,
@@ -411,5 +422,61 @@ describe('agentTurn service', () => {
     assert.equal(await service.getProfile('ghost'), undefined);
     assert.equal(await (await setup({ isEngine: false })).service.getProfile('mara'), undefined);
     assert.equal(await (await setup({ agent: { archetype: 'standard' } })).service.getProfile('mara'), undefined);
+  });
+
+  // #2066 — field scenario without Teams: the profile names the channels the
+  // kernel routes an own bot of the facilitator on, Teams or not.
+  it('getProfile names an own identity on Telegram on an instance without Teams', async () => {
+    const { service } = await setup({ channels: ['telegram'] });
+    assert.deepEqual((await service.getProfile('mara'))?.ownIdentityChannelTypes, ['telegram']);
+  });
+
+  // #2066 — the facilitator's own defaults reach the plugin with its profile;
+  // only values that fit the archetype's declared fields, none when unset.
+  it('getProfile carries the facilitator settings its archetype declares', async () => {
+    const dispose = registerArchetype({
+      ...getArchetype('facilitator')!,
+      source: '@omadia/agent-facilitator',
+      agentSettings: [
+        {
+          key: 'default_decision_method',
+          type: 'enum',
+          label: 'Default decision method',
+          options: [
+            { value: 'ranked', label: 'Ranked' },
+            { value: 'consent', label: 'Consent' },
+          ],
+        },
+        { key: 'reminder_offsets_hours', type: 'number_list', label: 'Reminders', maxItems: 10 },
+      ],
+    });
+    try {
+      const seenIds: string[] = [];
+      const { service } = await setup({
+        archetypeSettings: (agentId) => {
+          seenIds.push(agentId);
+          return Promise.resolve({
+            default_decision_method: 'consent',
+            reminder_offsets_hours: [48, 4],
+            dropped_field: 'x',
+          });
+        },
+      });
+      const profile = await service.getProfile('mara');
+      assert.deepEqual(profile?.archetypeSettings, {
+        default_decision_method: 'consent',
+        reminder_offsets_hours: [48, 4],
+      });
+      assert.equal(seenIds.length, 1);
+      const unset = await (await setup({ archetypeSettings: () => Promise.resolve({}) })).service.getProfile('mara');
+      assert.equal(unset?.archetypeSettings, undefined, 'nothing set = the instance settings apply');
+      const failing = await (
+        await setup({ archetypeSettings: () => Promise.reject(new Error('db down')) })
+      ).service.getProfile('mara');
+      assert.equal(failing?.archetypeSettings, undefined, 'a failed read falls back to the instance settings');
+      assert.equal(failing?.agentSlug, 'mara');
+    } finally {
+      dispose();
+    }
   });
 });

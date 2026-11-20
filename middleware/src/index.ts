@@ -467,6 +467,8 @@ import { pluginRuntimeOf } from './plugins/pluginRuntimeOf.js';
 import { createAgentEndOfService, logOwedSystemNotice } from './platform/agentEndOfService.js';
 import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
 import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
+import { createOperatorAgentArchetypeSettingsRouter } from './routes/operatorAgentArchetypeSettings.js';
+import { createAgentArchetypeSettingsStore } from './platform/agentArchetypeSettingsStore.js';
 import { createOperatorExecutionRouter } from './routes/operatorExecution.js';
 import { createModelCallHaltMirror } from './execution/modelCallHalts.js';
 import { createModelWorkRuns } from './platform/modelWorkRuns.js';
@@ -2722,6 +2724,8 @@ async function main(): Promise<void> {
     );
   }
   const graphPool = serviceRegistry.get<Pool>('graphPool');
+  // #2066 — per-agent archetype settings (migration 0102); none without a database.
+  const agentArchetypeSettingsStore = graphPool ? createAgentArchetypeSettingsStore(graphPool) : undefined;
   const graphTenantId = process.env['GRAPH_TENANT_ID'] ?? 'default';
 
   // Spec 2042 §5.10 — operator jobs and maintenance runs of the model
@@ -4694,6 +4698,21 @@ async function main(): Promise<void> {
   // service is not published (no DATABASE_URL / orchestrator plugin not
   // active). Writes route through ConfigStore → trigger → reload bus →
   // registry.reload(), so the next request already sees the new config.
+  // #2066 — per-agent archetype settings (a facilitator's default methods and
+  // reminder policy). Mounted before the main agents router on the same path.
+  app.use(
+    '/api/v1/operator/agents',
+    requireAuth,
+    createOperatorAgentArchetypeSettingsRouter({
+      getAgent: async (slug) =>
+        (await serviceRegistry.get<MultiOrchestratorConfigStore>('configStore')?.getAgentBySlug(slug)) ?? undefined,
+      getStore: () => agentArchetypeSettingsStore,
+      recordAudit: async (entry) => {
+        await adminAudit?.record(entry);
+      },
+      log: (m) => console.warn(m),
+    }),
+  );
   app.use(
     '/api/v1/operator/agents',
     requireAuth,
@@ -7946,6 +7965,8 @@ async function main(): Promise<void> {
       const raw = installedRegistry.get('@omadia/orchestrator')?.config?.['ai_disclosure_locale'];
       return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : undefined;
     },
+    // #2066 — the facilitator's default methods and reminder policy.
+    ...(agentArchetypeSettingsStore ? { archetypeSettings: (agentId: string) => agentArchetypeSettingsStore.get(agentId) } : {}),
     log: (m) => console.log(m),
   });
   publishSendServices({

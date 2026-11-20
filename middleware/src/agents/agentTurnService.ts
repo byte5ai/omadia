@@ -25,6 +25,9 @@ import {
 import {
   archetypeAdds,
   archetypeOf,
+  effectiveArchetypeAgentSettings,
+  getArchetype,
+  type ArchetypeAgentSettingValue,
   chatParticipantsFromRoster,
   runAsEngineTurn,
   turnContext,
@@ -74,6 +77,11 @@ export interface AgentTurnServiceDeps {
     conversationId: string,
     agentSlug: string,
   ) => Promise<ConversationRoster | undefined>;
+  /**
+   * #2066 — the agent's stored archetype settings (migration 0102). Absent
+   * (no database) = none: the plugin's instance settings apply.
+   */
+  readonly archetypeSettings?: (agentId: string) => Promise<Readonly<Record<string, unknown>>>;
   readonly log?: (message: string) => void;
 }
 
@@ -307,6 +315,7 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
       const { agent } = resolved.entry;
       const registry = deps.getRegistry();
       const language = agent.identityLanguage?.trim() || deps.language?.();
+      const archetypeSettings = await readArchetypeSettings(deps, agent);
       return {
         agentSlug: agent.slug,
         kind: 'facilitator',
@@ -317,9 +326,31 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
           : {}),
         ...(language ? { language } : {}),
         ownIdentityChannelTypes: registry?.channelTypesWithIdentity?.(agent.slug) ?? [],
+        ...(Object.keys(archetypeSettings).length > 0 ? { archetypeSettings } : {}),
       };
     },
   };
+}
+
+/**
+ * #2066 — the settings that still fit the archetype's declared fields. A read
+ * failure is logged and answered with none: the plugin then uses its instance
+ * settings, which is what an unset field means anyway.
+ */
+async function readArchetypeSettings(
+  deps: AgentTurnServiceDeps,
+  agent: { readonly id: string; readonly slug: string; readonly archetype?: string },
+): Promise<Readonly<Record<string, ArchetypeAgentSettingValue>>> {
+  if (!deps.archetypeSettings) return {};
+  try {
+    const stored = await deps.archetypeSettings(agent.id);
+    return effectiveArchetypeAgentSettings(getArchetype(archetypeOf(agent)), stored);
+  } catch (err) {
+    deps.log?.(
+      `[agent-turn] archetype settings of '${agent.slug}' could not be read, instance settings apply: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return {};
+  }
 }
 
 // ---------------------------------------------------------------------------
