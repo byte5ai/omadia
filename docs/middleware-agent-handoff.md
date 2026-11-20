@@ -5738,8 +5738,7 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   Seitenkanal, Fast Lane) beschreiben §3 „Agent-eigene Trigger“, §11
   „Daten-Seitenkanal“ und der Abschnitt „Fast Lane“. Offen daraus: proaktive
   Nachrichten in einen anderen Kontext als den Ursprung erst mit
-  Diskretions-Labels (S5); Identitäts-Guard der Planner-Zusammenfassung (S1);
-  Grenzprüfung von Datenplänen (§5.13 1a).
+  Diskretions-Labels (S5).
 
 - **Offen (S1, Spec 2042):** Gruppen (`role:<key>`) in der Verfügbarkeit
   brauchen eine synchrone Rollenmitgliedschaft (`ChannelResolver`-Option
@@ -9356,10 +9355,21 @@ Fast Lane plant also nur die eigenen Lese-Tools des Agenten, und
 - **Answer-Cache pro Agent:** Ein gecachter Plan wird nie von einem anderen
   Agenten wiederverwendet; ältere Einträge ohne Agent fallen weg
   (`@omadia/fast-path` 0.6.0).
-- Offen (andere Streams): Identitäts-Guard der Planner-Zusammenfassung (S1)
-  und die Grenzprüfung von Datenplänen (§5.13 1a).
+- **Unter dem Identitäts-Guard (Kriterium 33):** Die Planner-Zusammenfassung
+  ist Prosa des Agenten und läuft durch den Guard um den Wrapper; die Zeilen
+  gehen als Seitenkanal-`data` raus (in den Text gerendert, nie ins
+  Transkript). Der Guard prüft `textWithoutData` plus Spaltenköpfe, nie
+  Tabellenzeilen.
+- **Grenzprüfung (§5.13 1a, Kriterium 35):** Jeder Plan, neu oder aus dem
+  Cache, wird vor der Ausführung gegen die Boundaries des Agenten geprüft
+  (`BuiltOrchestrator.dataPlanGuard`): Presets deterministisch (neues Preset
+  `no-individual-rankings`), Freitext-Boundaries per Klassifikator-Modell
+  auf der Planbeschreibung ohne Werte; Fehler/Timeout lehnen ab. Eine
+  Ablehnung gibt den Zug an den Agenten. Dieselbe Prüfung gilt für
+  `deliver_data` und Trigger-Datenaktionen.
 
-Tests: `test/agentFastLane.pg.test.ts`, `test/fastPathAnswerCache.test.ts`,
+Tests: `test/fastLaneIdentityGuard.test.ts`, `test/dataPlanBoundaries.test.ts`,
+`test/agentFastLane.pg.test.ts`, `test/fastPathAnswerCache.test.ts`,
 `test/fastPathGenericToolSpecs.test.ts`.
 
 ## Canvas: generische Zeilendetails (`canvas.detail-tool`, 2026-11-03)
