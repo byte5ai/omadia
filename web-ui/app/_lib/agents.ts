@@ -1321,6 +1321,50 @@ export async function setInstanceDefaultAgent(slug: string | null): Promise<void
   });
 }
 
+/**
+ * #2055 — one entry of the default-agent table: who (`principal`, null =
+ * everyone) in which channel (`channel_type`, null = every channel) reaches
+ * which agent when they address none; `off` = no agent, a system notice.
+ * The entry with both null is the instance entry: it is set, never removed.
+ */
+export interface DefaultAgentEntryDto {
+  id: string;
+  principal: string | null;
+  channel_type: string | null;
+  off: boolean;
+  agent_slug: string | null;
+  agent_name: string | null;
+  /** `deleted` / `disabled` / `enabled` …: messages there get a notice naming the agent. */
+  agent_status: string | null;
+  updated_by: string | null;
+  updated_at: string;
+}
+
+export async function listDefaultAgentEntries(): Promise<DefaultAgentEntryDto[]> {
+  const res = await callJson<{ entries: DefaultAgentEntryDto[] }>('/v1/operator/default-agents');
+  return res.entries;
+}
+
+/** Set (or change) one entry; `agentSlug: null` = `off`. 409 carries why the agent may not be named there. */
+export async function putDefaultAgentEntry(input: {
+  principal: string | null;
+  channelType: string | null;
+  agentSlug: string | null;
+}): Promise<void> {
+  await callJson('/v1/operator/default-agents', {
+    method: 'PUT',
+    body: JSON.stringify({
+      principal: input.principal,
+      channel_type: input.channelType,
+      agent_slug: input.agentSlug,
+    }),
+  });
+}
+
+export async function deleteDefaultAgentEntry(id: string): Promise<void> {
+  await callJson(`/v1/operator/default-agents/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 export async function drainAgentSessions(slug: string): Promise<{ affected: number }> {
   return callJson(`/v1/operator/agents/${encodeURIComponent(slug)}/drain`, {
     method: 'POST',
@@ -1492,7 +1536,8 @@ export interface ResolveChannelResponse {
    *  every binding; `default` — the default-agent table (#2055). See the
    *  orchestrator's ChannelResolver. */
   via: 'identity' | 'explicit' | 'selection' | 'binding' | 'default' | 'none';
-  message?: string;
+  /** #2055 — with no match: the `system` notice the sender would get. */
+  notice?: { code: string; text: string; locale: string } | null;
 }
 
 /**
