@@ -83,6 +83,14 @@ export type AuditAction =
   // D34 — an operator released a held conversation reservation.
   | 'execution.reservation_release'
   | 'execution.kill_switch_clear'
+  // #2082 — agent-owned triggers: a trigger the harness paused (budget cap,
+  // circuit breaker, agent unavailable; actor `system:triggers`), and the
+  // operator's pause, resume and end, and a recipient's proactive profile.
+  | 'trigger.notice'
+  | 'trigger.pause'
+  | 'trigger.resume'
+  | 'trigger.end'
+  | 'trigger.recipient_profile'
   // #2055 — the default-agent table and an agent's availability decide who
   // answers whom: who may reach which agent belongs in the trail.
   | 'agent.default_entry.set'

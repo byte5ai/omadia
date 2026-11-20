@@ -2,6 +2,7 @@ import type {
   CaptureDisclosure,
   ChannelKind,
   Contribution,
+  DataPayload,
   PrivacyReceipt,
   RecalledContext,
   Speaker,
@@ -888,6 +889,14 @@ export interface ChatTurnResult {
    */
   answerVerbosity?: AnswerVerbosityInfo;
   /**
+   * #2085 — side-channel data this turn delivered (spec 2042 §5.13), from
+   * the turn's data collector, never from model output. `answer` stays the
+   * agent's prose: `toSemanticAnswer` renders the data into
+   * `SemanticAnswer.text` and forwards `data` + `textWithoutData`. Omitted
+   * when the turn delivered none.
+   */
+  data?: readonly DataPayload[];
+  /**
    * AI-Act Art. 50 — the AI disclosure the orchestrator resolved for this turn
    * (#643, epic #642). `toSemanticAnswer` forwards it to
    * `SemanticAnswer.aiDisclosure` and folds its line into `text`. The per-turn
@@ -1269,6 +1278,15 @@ export type ChatStreamEvent =
        * paths. Omitted only when an operator turned the disclosure `'off'`.
        */
       aiDisclosure?: AiDisclosure;
+      /**
+       * #2085 — side-channel data (spec 2042 §5.13); see
+       * `SemanticAnswer.data`. `answer` above already holds its markdown
+       * rendering (after the prose, before the disclosure fold);
+       * `textWithoutData` is `answer` without it. Both omitted when the turn
+       * delivered no data.
+       */
+      data?: readonly DataPayload[];
+      textWithoutData?: string;
       /**
        * #332 Layer 1 (gap-closure) — curated, tamper-evident projection of
        * `runTrace.agentInvocations`, identical in shape and derivation to

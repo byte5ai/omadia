@@ -96,6 +96,7 @@ readonly timezone: string;
 readonly payload: Record<string, unknown>;
 readonly status: 'enabled' | 'disabled';
 readonly lastRunAt: string | null;
+readonly until?: string | null;
 }
 export type EdgeKind = 'channel_bind' | 'subagent' | 'skill' | 'tool_grant' | 'schedule';
 export interface CanvasEdge {
@@ -243,6 +244,28 @@ ended: readonly ArchetypeProcessEnded[];
 }
 export interface ArchetypeProcessesService {
 endProcessesOfAgent(request: ArchetypeProcessEndRequest): Promise<ArchetypeProcessEndReport>;
+}
+
+// ===== batchJobs.d.ts =====
+export declare const BATCH_JOB_REGISTRY_SERVICE = "batchJobRegistry";
+export interface BatchJobRunOptions {
+readonly limit: number;
+readonly signal: AbortSignal;
+}
+export interface BatchJobResult {
+readonly processed: number;
+readonly failed: number;
+}
+export interface BatchJob {
+readonly id: string;
+readonly purpose: string;
+readonly intervalMinutes: number;
+readonly batchSize: number;
+due(agentSlug: string): Promise<number>;
+run(agentSlug: string, options: BatchJobRunOptions): Promise<BatchJobResult>;
+}
+export interface BatchJobRegistry {
+register(job: BatchJob): () => void;
 }
 
 // ===== boundaryPresets.d.ts =====
@@ -612,6 +635,32 @@ authorizationId: string;
 outcome: 'unreachable';
 }>>;
 }
+
+// ===== dataPlanBoundaries.d.ts =====
+export interface DataPlanDescription {
+readonly tool: string;
+readonly inputKeys: readonly string[];
+readonly inputIdentifiers: readonly string[];
+readonly sort: readonly {
+readonly field: string;
+readonly dir: 'asc' | 'desc';
+}[];
+readonly groupBy: readonly string[];
+readonly take?: number;
+readonly filterFields: readonly string[];
+}
+export type DataPlanVerdict = {
+readonly allowed: true;
+} | {
+readonly allowed: false;
+readonly reason: string;
+readonly layer: 'preset' | 'model';
+};
+export type DataPlanGuard = (plan: DataPlanDescription) => Promise<DataPlanVerdict>;
+export declare function describeToolCall(tool: string, input: unknown): DataPlanDescription;
+export declare function ranksIndividuals(plan: DataPlanDescription): boolean;
+export declare function checkDataPlanPresets(plan: DataPlanDescription, presets: readonly string[]): DataPlanVerdict;
+export declare function dataPlanText(plan: DataPlanDescription): string;
 
 // ===== datasetId.d.ts =====
 export declare function normalizeDatasetUuid(raw: string): string | undefined;
@@ -1080,6 +1129,7 @@ export * from './datasetId.js';
 export * from './embeddingClient.js';
 export * from './responseGuard.js';
 export * from './boundaryPresets.js';
+export * from './dataPlanBoundaries.js';
 export * from './agentPriorities.js';
 export * from './privacyReceipt.js';
 export * from './privacyFieldClassification.js';
@@ -1114,6 +1164,7 @@ export * from './facilitation.js';
 export * from './executionAuthorization.js';
 export * from './executionGrants.js';
 export * from './speaker.js';
+export * from './batchJobs.js';
 
 // ===== knowledgeGraph.d.ts =====
 import type { EntityRef } from './entityRef.js';

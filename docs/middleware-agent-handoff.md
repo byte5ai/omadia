@@ -690,7 +690,8 @@ Stream hält jeden Inhalt bis zum Urteil (der Canvas-Composer sein Skeleton
 ebenso), eine widerlegte oder nicht prüfbare Antwort wird durch eine Notiz
 ersetzt, eine nicht vollständig bestätigte geht mit Hinweis raus (§11,
 Kontrakt-Erweiterung Verifier-Gate). Agenten auf dem Abo-CLI-Runtime und
-Routinen laufen ohne diesen Wrapper.
+Routinen laufen ohne diesen Wrapper; Trigger-Turns (Agent-Builder-Schedules,
+Hooks, Wakeups) rufen `bundle.agent.chat()` und laufen mit ihm.
 
 ### Channel → Orchestrator-Dispatch (per-Channel, Omadia UI)
 
@@ -3194,7 +3195,10 @@ memoryFeatures: {
 ```
 
 Reason-Codes (geschlossenes Enum): `no_llm_provider`, `no_embedding_provider`,
-`no_graph_pool`, `disabled_by_config`, `plugin_inactive`. Geschlossen, weil die
+`no_graph_pool`, `disabled_by_config`, `plugin_inactive`, `no_batch_job_registry`
+(seit orchestrator-extras 0.2.0 hat der Reaper kein eigenes Intervall mehr,
+sondern läuft als Batch-Job über die Trigger des Kernels, siehe §3 „Agent-eigene
+Trigger“; ohne `batchJobRegistry@1` bleibt er aus). Geschlossen, weil die
 UI je Code eine Übersetzung führt — Backend-Englisch darf nie der primäre
 deutsche Satz werden (`web-ui/CLAUDE.md`); Freitext reist ausschließlich in
 `detail`. Die Ursache steht **pro Feature**, weil die drei aus verschiedenen
@@ -4105,6 +4109,60 @@ Session-Cookie öffnet sie nicht. Dateien: `auth/teamsSsoVerifier.ts`,
 der `ui_routes` (`/p/<slug>/teams`, siehe `docs/security-architecture.md`
 §5b-1).
 
+### Agent-eigene Trigger: Hooks, Wakeups, Routinen, Schedules, Batch-Jobs (#2082, Spec 2042 §5.12)
+
+Ein Agent handelt ungefragt nur über einen Trigger; Frist, Limits und Budget
+erzwingt der Harness, nicht der Prompt. Code unter `src/triggers/`, Verdrahtung
+in `wiring.ts` (aus `index.ts` aufgerufen).
+
+- **Kern:** `triggerStore.ts` (Migration 0093: `agent_triggers`, Occurrences
+  mit Lease, Monats-Spend pro Agent und Instanz, Kontext-Aktivität, Audit),
+  `triggerPolicy.ts` (Pflicht-`until`: einmalig 90 Tage, wiederkehrend/Hooks
+  30 Tage; Mindestabstand 15 min, 1 min im Live-Meeting; Budget-Caps; Breaker
+  nach 3 Fehlern bzw. 3 wirkungslosen Turns), `triggerEngine.ts` +
+  `triggerChain.ts` (Kill-Switch aus 0073 auf Instanz-/Agent-Ebene, modellfreie
+  Checks vor jedem Modell-Turn, Budget-Reservierung nur für Ketten mit Modell),
+  `triggerWorker.ts` (Tick `TRIGGER_TICK_MS`, Claim mit
+  `FOR UPDATE SKIP LOCKED`, nur Xact-Locks wegen Neon-Pooler).
+- **Agenten-Tools** (`triggerTools.ts`): `on_event`, `wake_at`, `wake_every`,
+  `list_triggers`, `cancel_trigger` — nur auf einem Turn mit Routines-Principal
+  (`routineTurnContext`). Ein Trigger-Turn hat keinen, kann also keine Trigger
+  setzen. Trigger-Turns laufen über den `ChatAgent` des Agenten
+  (`kernelExecutors.ts`) unter Modell-Call-Limit und Kosten-Meter;
+  `[[nothing]]` sendet nichts.
+- **Proaktives Gate** (`proactiveGate.ts`, Migration 0094): Zustellung nur in
+  den Kontext, in dem der Trigger entstand (`targetAllowed: () => false` bis
+  zu den Diskretions-Labels aus S5); Ruhezeiten und Rate-Limit pro Empfänger
+  aus `proactive_recipient_profiles` oder `PROACTIVE_*`, Verschieben vor jedem
+  Lauf. Live-Meetings sind ausgenommen, Routinen von den Ruhezeiten (nicht vom
+  Rate-Limit).
+- **Routinen** (`routineTriggers.ts`): Der Scheduler-Port des Routine-Runners
+  ist durch Trigger ersetzt (ein Trigger pro Routine); der Runner selbst
+  (`runTurn` auf dem rohen Orchestrator, Owner, Templates, Run-Historie) bleibt.
+  Neu: Frist `routines.until` (Routines-Migration 0006), Rückfrage an den Owner
+  drei Tage vorher, `manage_routine` `renew`, nach Ablauf pausiert.
+- **Agent-Builder-Schedules** (`scheduleTriggers.ts`, Migration 0095): Der
+  Minuten-Poller `src/scheduler/scheduleWorker.ts` ist entfernt. Jede aktive
+  `agent_schedules`-Zeile hat genau einen headless Trigger (`headless.ts`:
+  kein Empfänger, keine Ruhezeiten); Sync beim Boot, im stündlichen Sweep und
+  direkt nach Builder-Create/Delete. Abgelaufene Schedules werden deaktiviert
+  (`trigger.notice` im Audit), Verlängerung per
+  `POST /api/v1/operator/agents/:slug/schedules/:id/renew`.
+- **Batch-Jobs** (`batchJobs.ts`): Plugins registrieren über
+  `batchJobRegistry@1`; der stündliche Sweep legt pro Job und Agent mit
+  fälligen Einträgen einen Trigger an (`context_kind 'memory'`). Der
+  Scratch-Promotion-Reaper (orchestrator-extras 0.2.0) hat kein eigenes
+  Intervall mehr und promotet `visibility: 'private'`.
+- **Plugin-Jobs** (`src/plugins/jobScheduler.ts`): nach 3 Fehlern in Folge nur
+  noch Recovery-Probes, Fenster verdoppelt sich bis 1 h; kein Modell-Call.
+- **Operator:** `/api/v1/operator/triggers` (`routes/operatorTriggers.ts`) und
+  die Seite `/operator/triggers`. Abschalten: `TRIGGERS_ENABLED=false` oder der
+  Kill-Switch unter `/api/v1/operator/execution`.
+- **Seitenkanal (#2085, §5.13):** Das Kernel-Tool `deliver_data`
+  (`deliverDataTool.ts`, `dataActions.ts`) ist nicht an `TRIGGERS_ENABLED`
+  gebunden und steht auf jedem Orchestrator-Turn bereit; Details in §11
+  „Daten-Seitenkanal“.
+
 ### Operator-Agent-Routen: Reichweite, Erststart, Template, Bestätigung (#2054, #2049, #2050, Epic #2042)
 
 Router `routes/operatorAgents.ts` unter `/api/v1/operator/agents`, der
@@ -4901,6 +4959,23 @@ TRUSTED_PROXY_ADDRESSES=             # leer = keinem Hop glauben
 PUBLIC_SCHEME=auto                   # auto | https | http
 WEB_UI_PUBLIC_SCHEME=http            # liest web-ui: http | https
 WS_SESSION_FRAME_RECHECK_MS=5000    # 0..60000; 0 = jeder Frame wird geprüft
+# Agent-eigene Trigger (#2082, §3 „Agent-eigene Trigger“) — Instanz-Caps, kein Prompt hebt sie auf
+TRIGGERS_ENABLED=true               # false = nichts feuert (Live-Stopp: Kill-Switch /api/v1/operator/execution)
+TRIGGER_TICK_MS=15000
+TRIGGER_LEASE_MS=1200000
+TRIGGER_ONE_SHOT_MAX_DAYS=90
+TRIGGER_RECURRING_MAX_DAYS=30       # auch Routinen- und Schedule-Periode
+TRIGGER_MIN_INTERVAL_MINUTES=15
+TRIGGER_MIN_INTERVAL_LIVE_MINUTES=1
+TRIGGER_MAX_ACTIVE_PER_AGENT=50
+TRIGGER_MAX_USD_PER_FIRING=1
+TRIGGER_MAX_USD_PER_TRIGGER=20
+TRIGGER_MONTHLY_USD_PER_AGENT=25
+TRIGGER_MONTHLY_USD_PER_INSTANCE=200
+# Proaktive Nachrichten (#1035) — Instanz-Default; ein Empfängerprofil überschreibt
+PROACTIVE_QUIET_HOURS=22:00-07:00   # HH:MM-HH:MM in PROACTIVE_TIMEZONE oder `off`
+PROACTIVE_TIMEZONE=Europe/Berlin
+PROACTIVE_MAX_PER_HOUR=6
 # Runtime
 PORT=3979
 ```
@@ -5411,6 +5486,26 @@ sie nicht kennt, ignoriert sie, und NDJSON-Framing wie JSON-RPC-Envelope bleiben
 rückwärtskompatibel. Vollständige Darstellung samt Grenzen:
 [`ai-act-transparency.md`](ai-act-transparency.md).
 
+Eine Fast-Lane-Antwort (#1876) trägt dieselbe Kennzeichnung wie jede andere
+Antwort des Agenten (`Orchestrator.discloseCliAnswer`: gleiche Auflösung pro
+Turn, gleiche Faltung beim ersten Turn); der gestreamte Delta bleibt ohne
+Faltung, die Kennzeichnung kommt über `done.aiDisclosure` bzw.
+`SemanticAnswer.aiDisclosure`.
+
+**Contract-Erweiterung — Daten-Seitenkanal (#2085, Spec 2042 §5.13).** Zeilen,
+die `deliver_data` während des Turns liefert, sammelt der `TurnDataCollector`
+(`harness-orchestrator/src/turnDataCollector.ts`, einer pro verifier-gebundener
+Anfrage, damit ein Wiedereintritt die Tabelle behält; höchstens 5 Tabellen pro
+Antwort). Sie landen als `data` (`TableData`) auf `ChatTurnResult`, `done`
+(`attachSideChannelData` in `discloseDoneEvent`) und `SemanticAnswer`. `text`
+enthält zusätzlich eine Markdown-Darstellung (`sideChannelData.ts`, höchstens
+50 Zeilen) **nach** der Prosa und **vor** der gefalteten KI-Kennzeichnung;
+`textWithoutData` ist derselbe Text ohne sie, für Kanäle, die `data` selbst
+rendern. Das Modell bekommt nur einen Status (Zeilenzahl, Spalten), der
+Verifier prüft nur die Prosa, und eine zurückgehaltene Antwort
+(`verifier-blocked`) trägt kein `data`. Ohne `data` bleibt `done`
+byte-identisch.
+
 **Tabellen-Render und `tool_result` (#1402).** Der `tool_result` von
 `v4_render_answer` ist LLM-gebunden und enthält nur eine Form-Quittung
 (Zeilenzahl, vom Modell gewählte Spaltennamen). Den `_pendingCanvasTree`-
@@ -5815,7 +5910,11 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   Sub-Agents, kein Super-Agent ab Werk, Facilitator als eigene Agent-Art statt Plugin.
   Ohne Kompatibilitätsschicht, weil es noch keine Kundeninstallationen gibt. Die
   Abschnitte dieses Dokuments zu Sub-Agents, Persona-Skills und
-  Fallback-Agent beschreiben den Stand vor dem Umbau.
+  Fallback-Agent beschreiben den Stand vor dem Umbau. Stream S4 (Trigger,
+  Seitenkanal, Fast Lane) beschreiben §3 „Agent-eigene Trigger“, §11
+  „Daten-Seitenkanal“ und der Abschnitt „Fast Lane“. Offen daraus: proaktive
+  Nachrichten in einen anderen Kontext als den Ursprung erst mit
+  Diskretions-Labels (S5).
   - **S5 Rückfrage + Diskretion (#2047, #2079): Kernel gebaut**, siehe Abschnitt
     „Rückfrage statt Delegation + Diskretion“ am Ende; Residuen dort unter „Offen“
     (Existenz-Probe, Streaming-Ausgang, CLI-Pfad, MCP in Rückfragen,
@@ -8543,7 +8642,8 @@ Migration vor Deploy, sonst verwirft jeder Flush den ganzen Batch.
 ### Kosten-Ledger: Lücken und Dashboard-Korrektheit (#1388, #1390, #1392, #1393, #1396)
 
 Capture-Seams, die vorher fehlten: `completeWithFallback` (gepufferter
-Orchestrator-Pfad hinter `runTurn()` — Routinen, Schedule-Worker,
+Orchestrator-Pfad hinter `runTurn()` — Routinen, Trigger-Turns (Agent-Builder-
+Schedules, Hooks, Wakeups; `src/triggers/kernelExecutors.ts`),
 `ChatAgent.chat()`) schreibt pro Modell-Call eine Zeile (`source` = Stream-Label,
 `provider` = der tatsächlich antwortende Provider, auch nach Fallback).
 Plugin-`ctx.llm` schreibt `plugin <id>` (Builder-Preview: `plugin <id> (preview)`)
@@ -9415,6 +9515,41 @@ läuft, das eine eindeutige Datensatz-Array (Wurzel-Array oder einzige
 Array-Eigenschaft auf oberster Ebene). Ein Pfad auf ein echtes Nicht-Array-Feld
 und mehrere Kandidaten bleiben ein Miss. `unmappable` loggt jetzt die Form
 (`itemsPath=… map=… output={ok:boolean,items:array[30]}`), nie Werte.
+
+**Nachtrag (#1876, Fast Lane):** Der Fast-Path-Wrapper des Agenten
+(`buildOrchestrator.ts`) übergibt nur noch Tool-Definitionen ohne `via`; die
+Fast Lane plant also nur die eigenen Lese-Tools des Agenten, und
+`fast_path_agent_tools` wirkt auf diesem Pfad nicht mehr.
+
+## Fast Lane: der Fast Path gehört dem angesprochenen Agenten (#1876, Spec 2042 §5.2, §8 Punkt 10)
+
+- **Schalter pro Agent:** `agents.fast_lane` (Migration 0096, Default `true`
+  = bisheriges Verhalten), `GET/PUT /api/v1/operator/agents/:slug/fast-lane`
+  (abgelehnt für ein Archetyp, das `fast_path` auslässt), Checkbox im
+  Modell-Tab des Agenten. Aus → der Agent wird ohne Fast-Path-Wrapper gebaut.
+  Ein Facilitator nimmt nie die Fast Lane.
+- **Nur eigene Lese-Tools** (siehe Nachtrag oben).
+- **KI-Kennzeichnung:** Eine Fast-Lane-Antwort trägt die Kennzeichnung des
+  Agenten wie jede andere seiner Antworten (§11, AI-Act-Kennzeichnung).
+- **Answer-Cache pro Agent:** Ein gecachter Plan wird nie von einem anderen
+  Agenten wiederverwendet; ältere Einträge ohne Agent fallen weg
+  (`@omadia/fast-path` 0.6.0).
+- **Unter dem Identitäts-Guard (Kriterium 33):** Die Planner-Zusammenfassung
+  ist Prosa des Agenten und läuft durch den Guard um den Wrapper; die Zeilen
+  gehen als Seitenkanal-`data` raus (in den Text gerendert, nie ins
+  Transkript). Der Guard prüft `textWithoutData` plus Spaltenköpfe, nie
+  Tabellenzeilen.
+- **Grenzprüfung (§5.13 1a, Kriterium 35):** Jeder Plan, neu oder aus dem
+  Cache, wird vor der Ausführung gegen die Boundaries des Agenten geprüft
+  (`BuiltOrchestrator.dataPlanGuard`): Presets deterministisch (neues Preset
+  `no-individual-rankings`), Freitext-Boundaries per Klassifikator-Modell
+  auf der Planbeschreibung ohne Werte; Fehler/Timeout lehnen ab. Eine
+  Ablehnung gibt den Zug an den Agenten. Dieselbe Prüfung gilt für
+  `deliver_data` und Trigger-Datenaktionen.
+
+Tests: `test/fastLaneIdentityGuard.test.ts`, `test/dataPlanBoundaries.test.ts`,
+`test/agentFastLane.pg.test.ts`, `test/fastPathAnswerCache.test.ts`,
+`test/fastPathGenericToolSpecs.test.ts`.
 
 ## Canvas: generische Zeilendetails (`canvas.detail-tool`, 2026-11-03)
 

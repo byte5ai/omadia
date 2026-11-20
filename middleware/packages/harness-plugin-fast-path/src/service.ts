@@ -1,4 +1,4 @@
-import type { DecisionModelService, PrivacyGuardService } from '@omadia/plugin-api';
+import type { DataPlanGuard, DecisionModelService, PrivacyGuardService, TableData } from '@omadia/plugin-api';
 
 import {
   ANSWER_CACHE_PRIVACY_JOB,
@@ -10,7 +10,14 @@ import {
   settleAnswerCache,
   type AnswerCache,
 } from './answerCache.js';
-import { parseFastPathChannels, renderChatAnswer } from './chatAnswer.js';
+import { MAX_TABLE_ROWS, parseFastPathChannels, renderChatAnswer } from './chatAnswer.js';
+
+/** A table cell of side-channel data: scalars as they are, the rest as text. */
+function tableCell(value: unknown): string | number | boolean | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  return JSON.stringify(value);
+}
 import {
   fetchRecipeRows,
   parseBooleanSetting,
@@ -29,7 +36,7 @@ import {
   type LearnedPlanStore,
   type PlanMemory,
 } from './learnedPlanStore.js';
-import { resolveTimeZone, type RefreshSource } from './refreshRecipes.js';
+import { describeRefreshSource, resolveTimeZone, type RefreshSource } from './refreshRecipes.js';
 import { openStoredTextPrivacy, TRIAGE_PRIVACY_JOB } from './storedTextPrivacy.js';
 import type { DecisionTrace } from './router.js';
 import type { PreviousQuery, TriageRoute } from './triage.js';
@@ -61,6 +68,11 @@ export interface ChatTriageRequest {
    *  allow-list / learned tools). Required: an unknown set is the caller's
    *  fail-closed pass-through, never "everything". */
   permittedTools: ReadonlySet<string>;
+  /** #1876 — the agent whose fast lane asks: its answer cache is its own */
+  agentSlug?: string;
+  /** #2085 — the agent's boundary check: every plan, new or from the cache,
+   *  passes it before it runs; a refusal hands the turn to the agent. */
+  checkPlan?: DataPlanGuard;
   /** the agent's own definitions of those tools (`ChatAgent.
    *  offeredToolDefinitions`): every read tool among them without a catalog
    *  spec gets a generic planner spec (genericToolSpecs.ts). Absent → only
@@ -73,6 +85,12 @@ export type ChatTriageOutcome =
       kind: 'answer';
       /** summary sentence + markdown table — the full text answer */
       text: string;
+      /** #2085 — the rendered summary sentence alone (prose: the model wrote
+       *  its template), for a caller that sends the rows as side-channel data */
+      summary: string;
+      /** #2085 — the rows as side-channel data: model-written column labels,
+       *  values straight from the tool (at most the shown rows) */
+      table: TableData;
       tool: string;
       rows: number;
       toolCalls: number;
@@ -303,7 +321,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
         allowedTools: allowedFetchTools(),
         ...(previous ? { previous } : {}),
         ...(privacy ? { privacy } : {}),
-        ...(withCache && answerCache ? { answerCache } : {}),
+        ...(withCache && answerCache ? { answerCache, agent: req.agentSlug ?? '' } : {}),
         ...(decide ? { decide, directPlans: directPlansEnabled } : {}),
         log: deps.log,
       });
@@ -328,6 +346,17 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
         return { ...agent(reason), ...traced };
       };
       if (!permitted.has(decision.fetch.tool)) return miss('tool-not-permitted');
+      if (req.checkPlan) {
+        const verdict = await req.checkPlan(describeRefreshSource(decision.fetch)).catch(() => ({
+          allowed: false as const,
+          reason: 'the boundary check failed',
+          layer: 'model' as const,
+        }));
+        if (!verdict.allowed) {
+          deps.log(`[fast-path] miss channel=${channel} reason=boundary (${verdict.layer})`);
+          return miss('boundary');
+        }
+      }
       const fetched = await fetchRecipeRows(invoke, decision.fetch, { rejectTruncated: true, timeZone });
       if (!fetched.ok) {
         if (fetched.detail !== undefined) {
@@ -371,7 +400,24 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
           (triage.cache?.source === 'cache' ? ' via=cache' : '') +
           (learned.length > 0 ? ` plan=${learned.join(',')}` : ''),
       );
-      return { kind: 'answer', text: answer, tool: decision.fetch.tool, rows: fetched.rows.length, toolCalls: 1, ms, ...traced };
+      const columns = Object.keys(decision.fetch.map);
+      const table: TableData = {
+        kind: 'table',
+        columns: columns.map((k) => decision.labels[k] ?? k),
+        rows: fetched.rows.slice(0, MAX_TABLE_ROWS).map((r) => columns.map((k) => tableCell(r[k]))),
+        ...(fetched.rows.length > MAX_TABLE_ROWS ? { caption: `${String(MAX_TABLE_ROWS)} / ${String(fetched.rows.length)}` } : {}),
+      };
+      return {
+        kind: 'answer',
+        text: answer,
+        summary: rendered.text,
+        table,
+        tool: decision.fetch.tool,
+        rows: fetched.rows.length,
+        toolCalls: 1,
+        ms,
+        ...traced,
+      };
     }
 
     // a slot-filled cache plan with no rows is a doubt: re-plan without it

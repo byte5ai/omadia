@@ -267,9 +267,15 @@ export const JOB_DEFAULT_TIMEOUT_MS = 30_000;
  * Handler the kernel calls on every scheduled tick. The supplied
  * `AbortSignal` is aborted on plugin deactivate or when `timeoutMs`
  * elapses — long-running handlers must respect it (e.g. pass it to fetch
- * or check `signal.aborted` between work units). Throwing is logged but
- * does NOT cancel future ticks; if the operator wants the job stopped, they
- * deactivate the plugin.
+ * or check `signal.aborted` between work units). Throwing is logged and
+ * backs the job off: after a failure the kernel runs bounded recovery
+ * probes (growing intervals, at most one hour apart) instead of every tick;
+ * the first success returns it to its schedule.
+ *
+ * A job is deterministic work (a sync, a cleanup). It runs no model call:
+ * every model call inside a job run is refused (spec 2042 §5.12). Learning
+ * or consolidation that needs a model registers a `BatchJob` instead, which
+ * the kernel runs as a bounded agent batch trigger.
  */
 export type JobHandler = (signal: AbortSignal) => Promise<void>;
 

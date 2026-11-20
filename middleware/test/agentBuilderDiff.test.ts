@@ -180,6 +180,7 @@ test('adding a schedule produces NO orchestrator action', () => {
         timezone: 'UTC',
         status: 'enabled',
         lastRunAt: null,
+        until: null,
         createdAt: new Date(0),
       } satisfies ScheduleRow,
     ],

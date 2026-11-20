@@ -111,6 +111,10 @@ import {
 import type { PublicMcpKeyBindingAdminStore } from '../mcp/publicMcpKeyBindingsAdmin.js';
 
 export interface AgentBuilderRouterOptions {
+  /** #2082 — a schedule was created or deleted: arm or end its trigger now. */
+  readonly onSchedulesChanged?: () => void;
+  /** #2082 — re-enable a schedule with a fresh deadline (ADR-0020). */
+  readonly renewSchedule?: (scheduleId: string, by: string) => Promise<ScheduleRow | undefined>;
   readonly getConfigStore: () => ConfigStore | undefined;
   /** #2054 — the plugin side of an agent's reach (catalog + installed
    *  registry), for the broad-reach confirmation on MCP grants. Absent = MCP
@@ -2837,6 +2841,32 @@ export function createAgentBuilderRouter(
         payload: b.payload ?? {},
         status: b.status ?? 'enabled',
       });
+      options.onSchedulesChanged?.();
+      res.json(scheduleNode(row));
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // #2082 — a schedule runs to a deadline; when it passed, the schedule is
+  // disabled until an operator renews it here (another full period).
+  router.post('/agents/:slug/schedules/:id/renew', async (req: Request, res: Response) => {
+    const l = live(res);
+    if (!l) return;
+    try {
+      const agent = await agentOr404(l, str(req.params.slug), res);
+      if (!agent) return;
+      const id = str(req.params.id);
+      const own = (await l.graph.listSchedulesForAgent(agent.id)).some((s) => s.id === id);
+      if (!own || !options.renewSchedule) {
+        res.status(404).json({ code: 'schedule.not_found', message: 'no such schedule' });
+        return;
+      }
+      const row = await options.renewSchedule(id, req.session?.sub || req.session?.email || 'operator');
+      if (!row) {
+        res.status(404).json({ code: 'schedule.not_found', message: 'no such schedule' });
+        return;
+      }
       res.json(scheduleNode(row));
     } catch (err) {
       fail(res, err);
@@ -2850,6 +2880,7 @@ export function createAgentBuilderRouter(
       if (!l) return;
       try {
         await l.graph.deleteSchedule(str(req.params.id));
+        options.onSchedulesChanged?.();
         res.status(204).end();
       } catch (err) {
         fail(res, err);
@@ -3382,6 +3413,7 @@ function scheduleNode(s: ScheduleRow) {
     payload: s.payload,
     status: s.status,
     lastRunAt: s.lastRunAt ? s.lastRunAt.toISOString() : null,
+    until: s.until ? s.until.toISOString() : null,
   };
 }
 

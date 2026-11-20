@@ -14,9 +14,7 @@ import {
   type JobHandler,
   type JobSpec,
 } from '@omadia/plugin-api';
-import type { Cron } from 'croner';
 
-import { createCron } from '../../scheduler/cronerCompat.js';
 
 import {
   buildSlotDirective,
@@ -295,7 +293,6 @@ export class RoutineRunner {
 
     const rows = await this.store.listAllActive();
     let registered = 0;
-    let caughtUp = 0;
     for (const row of rows) {
       try {
         this.registerInScheduler(row);
@@ -304,61 +301,11 @@ export class RoutineRunner {
         this.log(
           `[routines/runner] failed to register routine ${row.id} ('${row.name}'): ${errMsg(err)}`,
         );
-        continue;
-      }
-      // Catch-up: if a cron match elapsed between this routine's last
-      // observed run (or its creation, if it never ran) and now, fire
-      // exactly one make-up run. Fire-and-forget — don't block start()
-      // on the agent turn or the channel send. Multiple missed slots
-      // collapse into a single catch-up; this is intentional, prevents
-      // a "deploy storm" where a long outage produces N back-to-back
-      // runs the user can't keep up with.
-      if (this.shouldCatchUp(row)) {
-        caughtUp += 1;
-        this.log(
-          `[routines/runner] catch-up firing routine ${row.id} ('${row.name}') — missed slot since ${row.lastRunAt?.toISOString() ?? 'creation'}`,
-        );
-        const controller = new AbortController();
-        void this.runOnce(row, controller.signal, 'catchup').catch((err) => {
-          this.log(
-            `[routines/runner] catch-up runOnce threw for ${row.id}: ${errMsg(err)}`,
-          );
-        });
       }
     }
     this.log(
-      `[routines/runner] started — ${registered}/${rows.length} routines registered, ${caughtUp} caught up`,
+      `[routines/runner] started — ${registered}/${rows.length} routines registered`,
     );
-  }
-
-  /**
-   * Return true iff the routine has at least one cron match between its
-   * last-observed run (or creation, if it never ran) and now. Used by
-   * `start()` to decide whether to fire a make-up run after a process
-   * downtime window.
-   *
-   * The reference timestamp is `last_run_at` if present, else
-   * `created_at`. We don't use `now()` minus one cron interval because
-   * cron expressions aren't fixed-rate — `0 9 * * 1` (Monday 9am) has
-   * irregular gaps. Croner's `nextRun(after)` walks the cron tree
-   * exactly.
-   */
-  private shouldCatchUp(routine: Routine): boolean {
-    const reference = routine.lastRunAt ?? routine.createdAt;
-    let probe: Cron | undefined;
-    try {
-      probe = createCron(routine.cron, { paused: true });
-      const next = probe.nextRun(reference);
-      if (!next) return false;
-      return next.getTime() <= Date.now();
-    } catch (err) {
-      this.log(
-        `[routines/runner] catch-up probe failed for ${routine.id}: ${errMsg(err)}`,
-      );
-      return false;
-    } finally {
-      probe?.stop();
-    }
   }
 
   /**
@@ -551,12 +498,17 @@ export class RoutineRunner {
   }
 
   async resumeRoutine(id: string, scope: RoutineActorScope): Promise<Routine> {
-    const updated = await this.store.setStatus(
+    let updated = await this.store.setStatus(
       id,
       'active',
       ownerFilter(scope),
     );
     if (!updated) throw new RoutineNotFoundError(id);
+    // #2082 — resuming a routine past its deadline is its owner's choice to
+    // go on: a new period starts when it is scheduled.
+    if (updated.until && updated.until.getTime() <= Date.now()) {
+      updated = (await this.store.setUntil(id, null)) ?? updated;
+    }
     if (!this.senders.get(updated.channel)) {
       // Resume the row but report the misconfiguration; trigger will
       // record an error each time it fires until a sender exists.
@@ -566,6 +518,21 @@ export class RoutineRunner {
     }
     this.registerInScheduler(updated);
     return updated;
+  }
+
+  /**
+   * #2082 — the owner wants the routine to go on: a new deadline period
+   * starts (and the renewal question will be asked again before it ends).
+   * A paused routine stays paused; an active one is rescheduled.
+   */
+  async renewRoutine(id: string, scope: RoutineActorScope): Promise<Routine> {
+    const owned = await this.store.get(id);
+    if (!owned || (scope.kind === 'channel-user' && (owned.tenant !== scope.tenant || owned.userId !== scope.userId))) {
+      throw new RoutineNotFoundError(id);
+    }
+    const renewed = (await this.store.setUntil(id, null)) ?? owned;
+    if (renewed.status === 'active') this.registerInScheduler(renewed);
+    return renewed;
   }
 
   /**

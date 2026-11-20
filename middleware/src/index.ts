@@ -95,7 +95,7 @@ import { createFieldClassificationRoutes } from './privacy/fieldClassification/r
 import { createNonPersonalFieldsEditor } from './privacy/fieldClassification/configEditor.js';
 import { PgFieldClassificationStore } from './privacy/fieldClassification/store.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME, perCallerService } from '@omadia/plugin-api';
-import { TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
+import { BATCH_JOB_REGISTRY_SERVICE, TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
 import { archetypeProcessesServiceName, type ArchetypeProcessesService } from '@omadia/plugin-api';
 import type { TranscriptionService } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
@@ -126,7 +126,6 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { ScheduleWorker } from './scheduler/scheduleWorker.js';
 import { archetypeAdds, archetypeOf, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, MemberBaselineGrantStore, resolveScopedBundle } from '@omadia/orchestrator';
 import {
   buildSystemNotice,
@@ -376,7 +375,7 @@ import {
   EntraProvider,
 } from './auth/providers/EntraProvider.js';
 import { runAuthBootstrap } from './auth/bootstrap.js';
-import { AdminAuditLog, auditActorFromLabel, roleChangeAuditEntry, type AuditEntryInput } from './auth/adminAuditLog.js';
+import { AdminAuditLog, auditActorFromLabel, roleChangeAuditEntry, systemAuditActor, type AuditEntryInput } from './auth/adminAuditLog.js';
 import {
   PlatformSettingsStore,
   SETTING_AUTH_ACTIVE_PROVIDERS,
@@ -454,6 +453,7 @@ import { createAgentEndOfService, logOwedSystemNotice } from './platform/agentEn
 import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
 import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
 import { createOperatorExecutionRouter } from './routes/operatorExecution.js';
+import { createOperatorTriggersRouter } from './routes/operatorTriggers.js';
 import { createAgentTemplatesRouter } from './routes/agentTemplates.js';
 import type { ConductorDiscussionAdmin } from './conductor/discussionAdmin.js';
 import {
@@ -596,6 +596,12 @@ import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js
 import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
 import { PeopleDirectoryRegistry } from './channels/peopleDirectoryRegistry.js';
 import { ConversationEventHub } from './channels/conversationEventHub.js';
+import { wireTriggers, type TriggerWiring } from './triggers/wiring.js';
+import { parseQuietHours } from './triggers/proactiveGate.js';
+import { DEFAULT_TRIGGER_LIMITS } from './triggers/triggerPolicy.js';
+import { createRoutineTriggerScheduler } from './triggers/routineTriggers.js';
+import { createScheduleTriggerScheduler } from './triggers/scheduleTriggers.js';
+import { KernelBatchJobRegistry } from './triggers/batchJobs.js';
 import { TargetedSendRegistry } from './channels/targetedSendRegistry.js';
 import { createTargetedDeliveryService } from './channels/targetedDeliveryService.js';
 import { ConversationSendRegistry } from './channels/conversationSendRegistry.js';
@@ -791,6 +797,20 @@ async function main(): Promise<void> {
   // so the Designer can list emittable events and ctx.events.emit enforces deny-by-default.
   const eventCatalogRegistry = new EventCatalogRegistry();
   serviceRegistry.provide('eventCatalogRegistry', eventCatalogRegistry);
+  // #2082 — plugins register learning/consolidation jobs here; they run as
+  // bounded agent batch triggers (deadline, budget, breaker), never as a
+  // free-running plugin interval.
+  const batchJobRegistry = new KernelBatchJobRegistry();
+  serviceRegistry.provide(
+    BATCH_JOB_REGISTRY_SERVICE,
+    // A batch job spends every agent's trigger budget: built-in plugins only.
+    perCallerService((caller) =>
+      batchJobRegistry.forCaller(
+        caller.pluginId,
+        caller.pluginId === KERNEL_SERVICE_CALLER.pluginId || builtInPackageStore.has(caller.pluginId),
+      ),
+    ),
+  );
   // #133 E0 — expose the kernel turn-hook registry to the orchestrator plugin
   // so it can fire onBeforeTurn / onAfterToolCall / onAfterTurn during turns.
   serviceRegistry.provide('turnHookRegistry', turnHookRegistry);
@@ -864,6 +884,11 @@ async function main(): Promise<void> {
   const conversationMessagesRef: { current?: ConversationMessagesWiring } = {};
   // #2090 — set once the database pool exists (execution scopes, reservations).
   const executionRef: { current?: ExecutionWiring } = {};
+  // #2082 — agent-owned triggers; wired once the pool and the registry exist.
+  const triggersRef: { current?: TriggerWiring } = {};
+  // Channel plugins' ids, known once the channel registry exists: their
+  // events are offered to every agent's hooks.
+  const channelPluginIdsRef: { current: () => readonly string[] } = { current: () => [] };
   // #2067 — set once the Conductor is wired; the operator routes mount earlier.
   const discussionAdminRef: { current?: ConductorDiscussionAdmin } = {};
   // #2089 — private messages of a running process's participants to its
@@ -900,6 +925,19 @@ async function main(): Promise<void> {
   // bind conversations the transport actually reported a group bot_added for.
   const observedInvites = new ObservedConversationInvites({ log: (m) => console.log(`[middleware] ${m}`) });
   observedInvites.attach(conversationEventHub);
+  // #2082 — membership changes reach the agents' hooks as kernel events.
+  conversationEventHub.subscribe((event) => {
+    if (event.kind !== 'members_added' && event.kind !== 'members_removed') return;
+    triggersRef.current?.onEvent(
+      event.kind === 'members_added' ? 'conversation.members.added' : 'conversation.members.removed',
+      {
+        channelType: event.channelType ?? event.channelId,
+        conversationId: event.conversationId,
+        members: event.members.map((member) => member.id),
+      },
+      `${event.kind}:${event.occurredAt}:${event.members.map((member) => member.id).join(',')}`,
+    );
+  });
   // #2043 — per caller: only the facilitation engine may read a roster as an
   // agent (`{ agentSlug }`), and the kernel resolves that agent's identity.
   publishConversationRostersService({
@@ -3619,10 +3657,63 @@ async function main(): Promise<void> {
   // #1086 — held in a variable (not only in the service registry) so the
   // channel CoreApi below can wire the channel-agnostic routine-turn producer.
   let routinesIntegration: RoutinesIntegration | undefined;
+  // #2082 — routines are user-requested triggers: the trigger engine decides
+  // when one fires (durable, once per occurrence, deadline, budget, kill
+  // switch); the routine runner keeps owner, controls, templates and history.
+  const routineTriggerScheduler = createRoutineTriggerScheduler({
+    service: () => triggersRef.current?.service,
+    routines: () => routinesHandle?.store,
+    resolveAgent: (slug) => {
+      // #2055 — no fallback agent: a routine runs as the agent it names.
+      const registry = serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+      const agent = slug !== null && slug !== 'default' ? registry?.get(slug)?.agent : undefined;
+      return agent ? { id: agent.id, slug: agent.slug } : undefined;
+    },
+    askOwner: async (routine, text) => {
+      const sender = routinesHandle?.senderRegistry.get(routine.channel);
+      if (!sender) throw new Error(`no proactive sender for channel '${routine.channel}'`);
+      await sender.send({ conversationRef: routine.conversationRef, message: { text } });
+    },
+    limits: () => triggersRef.current?.service.limits ?? DEFAULT_TRIGGER_LIMITS,
+    language: () => {
+      const raw = installedRegistry.get('@omadia/orchestrator')?.config?.['ai_disclosure_locale'];
+      return typeof raw === 'string' ? raw : undefined;
+    },
+    timeZone: config.PROACTIVE_TIMEZONE,
+    log: (m) => console.log(m),
+  });
+  // #2082 — Agent Builder schedules (P6) fire through bounded triggers too:
+  // one per enabled schedule, with deadline, budget and breaker, replacing
+  // the minute poller that ran unbounded model turns.
+  const scheduleGraphPool = graphPool;
+  const scheduleTriggerScheduler = scheduleGraphPool
+    ? createScheduleTriggerScheduler({
+        service: () => triggersRef.current?.service,
+        schedules: () => new AgentGraphStore(scheduleGraphPool),
+        agentById: (agentId) => {
+          const registry = serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+          const agent = registry?.list().find((a) => a.agent.id === agentId)?.agent;
+          return agent ? { id: agent.id, slug: agent.slug } : undefined;
+        },
+        limits: () => triggersRef.current?.service.limits ?? DEFAULT_TRIGGER_LIMITS,
+        notice: (scheduleId, message) => {
+          console.log(`[schedules/triggers] NOTICE ${message}`);
+          void adminAudit
+            ?.record({
+              actor: systemAuditActor('system:triggers'),
+              action: 'trigger.notice',
+              target: `schedule:${scheduleId}`,
+              after: { reason: 'expired', message },
+            })
+            .catch(() => undefined);
+        },
+        log: (m) => console.log(m),
+      })
+    : undefined;
   if (graphPool) {
     routinesHandle = await initRoutines({
       pool: graphPool,
-      scheduler: jobScheduler,
+      scheduler: routineTriggerScheduler,
       // #1598 — the routine's own orchestrator, with its plugin grants.
       // #2045 / #2046 — with the agent's emitter and speaker, so a routine's
       // answer passes the same identity guard and carries the same speaker.
@@ -4645,6 +4736,19 @@ async function main(): Promise<void> {
       },
     }),
   );
+  // #2082 — every agent's triggers, their spend and the operator's controls.
+  app.use(
+    '/api/v1/operator/triggers',
+    requireAuth,
+    createOperatorTriggersRouter({
+      triggers: () => triggersRef.current,
+      jobs: () => jobScheduler.list(),
+      batchJobs: () => batchJobRegistry.list(),
+      audit: async (entry) => {
+        await adminAudit?.record(entry);
+      },
+    }),
+  );
   app.use(
     '/api/v1/operator/channels',
     requireAuth,
@@ -4763,6 +4867,15 @@ async function main(): Promise<void> {
     '/api/v1/operator',
     requireAuth,
     createAgentBuilderRouter({
+      // #2082 — a schedule change arms or ends its trigger right away.
+      onSchedulesChanged: () => {
+        void scheduleTriggerScheduler?.sync().catch((err: unknown) => {
+          console.log(`[schedules/triggers] sync failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      },
+      renewSchedule: scheduleTriggerScheduler
+        ? (id, by) => scheduleTriggerScheduler.renew(id, by)
+        : undefined,
       getConfigStore: () =>
         serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
       // #2054 — the broad-reach confirmation on MCP grants sees plugins too.
@@ -4919,19 +5032,8 @@ async function main(): Promise<void> {
     `[middleware] agent-builder endpoints ready at /api/v1/operator/{agents/:slug/graph,skills,mcp-servers,…} (auth-gated, graphPool=${graphPool ? 'on' : 'off'})`,
   );
 
-  // Agent Builder schedule worker (P6) — fires cron-scheduled agent turns.
-  // Only with a Neon graphPool (the agent_schedules table lives there).
-  if (graphPool) {
-    const schedulePool = graphPool;
-    const scheduleWorker = new ScheduleWorker({
-      getGraphStore: () => new AgentGraphStore(schedulePool),
-      getRegistry: () =>
-        serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
-      log: (m, f) => console.log(`[middleware] ${m}`, f ?? ''),
-    });
-    scheduleWorker.start();
-    console.log('[middleware] agent-builder schedule worker started (1-min poll)');
-  }
+  // Agent Builder schedules (P6) fire through their triggers (#2082):
+  // `scheduleTriggerScheduler` above, synced by the trigger wiring.
 
   // Slice 10 — near-duplicate MK workflow. Mirrors the Slice 9
   // mounting pattern: detector + bulk are optional, route 503s when
@@ -5102,6 +5204,96 @@ async function main(): Promise<void> {
             `[conversation-messages] reconcile after an access change failed: ${err instanceof Error ? err.message : String(err)}`,
           );
         });
+      },
+      log: (m) => console.log(m),
+    });
+    // #2082 — agent-owned triggers (spec 2042 §5.12): hooks, wakeups and
+    // timers with deadline, limits, budget and kill switch. The worker starts
+    // after the channels registered their proactive senders.
+    triggersRef.current = wireTriggers({
+      pool: graphPool,
+      limits: {
+        ...DEFAULT_TRIGGER_LIMITS,
+        oneShotMaxDays: config.TRIGGER_ONE_SHOT_MAX_DAYS,
+        recurringMaxDays: config.TRIGGER_RECURRING_MAX_DAYS,
+        minIntervalSeconds: config.TRIGGER_MIN_INTERVAL_MINUTES * 60,
+        minIntervalSecondsLive: config.TRIGGER_MIN_INTERVAL_LIVE_MINUTES * 60,
+        maxActivePerAgent: config.TRIGGER_MAX_ACTIVE_PER_AGENT,
+        perFiringUsdMax: config.TRIGGER_MAX_USD_PER_FIRING,
+        perFiringUsdDefault: Math.min(DEFAULT_TRIGGER_LIMITS.perFiringUsdDefault, config.TRIGGER_MAX_USD_PER_FIRING),
+        perTriggerUsdMax: config.TRIGGER_MAX_USD_PER_TRIGGER,
+        perTriggerUsdDefault: Math.min(DEFAULT_TRIGGER_LIMITS.perTriggerUsdDefault, config.TRIGGER_MAX_USD_PER_TRIGGER),
+        monthlyAgentUsd: config.TRIGGER_MONTHLY_USD_PER_AGENT,
+        monthlyInstanceUsd: config.TRIGGER_MONTHLY_USD_PER_INSTANCE,
+      },
+      recipientDefaults: {
+        timezone: config.PROACTIVE_TIMEZONE,
+        quiet: parseQuietHours(config.PROACTIVE_QUIET_HOURS),
+        maxPerHour: config.PROACTIVE_MAX_PER_HOUR,
+      },
+      enabled: config.TRIGGERS_ENABLED,
+      tickMs: config.TRIGGER_TICK_MS,
+      leaseMs: config.TRIGGER_LEASE_MS,
+      agentBySlug: (slug) => {
+        const agent = getRegistry()?.get(slug)?.agent;
+        return agent
+          ? {
+              id: agent.id,
+              slug: agent.slug,
+              enabled: agent.status === 'enabled',
+              displayName: agent.identityName?.trim() || agent.slug,
+            }
+          : undefined;
+      },
+      agentChat: (slug) => getRegistry()?.get(slug)?.built.bundle.agent,
+      // #2045 — the agent's own speaker and emitter, as its bundle stamps them.
+      speakerOf: (slug) => {
+        const agent = getRegistry()?.get(slug)?.built.bundle.agent;
+        return agent ? speakerOf(agent) : undefined;
+      },
+      emitterOf: (slug) => {
+        const agent = getRegistry()?.get(slug)?.built.bundle.agent;
+        return agent ? emitterOf(agent) : undefined;
+      },
+      ownChannelKey: (slug, channel) => getRegistry()?.channelIdentityFor(slug, channel)?.channelKey,
+      dataPlanGuardOf: (slug) => getRegistry()?.get(slug)?.built.dataPlanGuard,
+      // The agent's OWN read tools: granted plugin tools without write
+      // capabilities, never a sub-agent's inner tools (`via`), never MCP
+      // tools (they need a person's identity a trigger firing lacks).
+      readToolsOf: (slug) => {
+        const entry = getRegistry()?.get(slug);
+        if (!entry) return undefined;
+        const tools = new Map<string, (input: unknown) => Promise<string>>();
+        for (const def of entry.built.bundle.raw.offeredToolDefinitions()) {
+          if (def.via !== undefined || def.invoke !== undefined) continue;
+          const handler = nativeToolRegistry.get(def.name)?.handler;
+          if (!handler) continue;
+          // #2079 — what the read brought in labels the turn (S5 discretion):
+          // an answer carrying these rows is checked against its readers.
+          tools.set(def.name, async (input) => {
+            const out = await handler(input);
+            await entry.built.bundle.raw.labelHarnessRead(def.name);
+            return out;
+          });
+        }
+        return tools;
+      },
+      grantedPluginIds: (slug) =>
+        (getRegistry()?.get(slug)?.plugins ?? []).filter((p) => p.enabled).map((p) => p.pluginId),
+      eventCatalog: () => eventCatalogRegistry.byPluginId(),
+      channelPluginIds: () => channelPluginIdsRef.current(),
+      senders: () => routinesHandle?.senderRegistry,
+      routines: () => routineTriggerScheduler,
+      schedules: () => scheduleTriggerScheduler,
+      batchJobs: batchJobRegistry,
+      enabledAgents: () =>
+        (getRegistry()?.list() ?? [])
+          .filter((a) => a.agent.status === 'enabled')
+          .map((a) => ({ id: a.agent.id, slug: a.agent.slug })),
+      registerNativeTool: (name, handler, options) =>
+        nativeToolRegistry.register(name, { handler, spec: options.spec, isAvailable: options.isAvailable }),
+      audit: () => async (entry) => {
+        await adminAudit?.record(entry);
       },
       log: (m) => console.log(m),
     });
@@ -5380,6 +5572,11 @@ async function main(): Promise<void> {
     discussionAdminRef.current = conductorWiring.discussionAdmin;
     // Expose the event router so plugin contexts (ctx.events.emit) resolve it lazily — US4.
     serviceRegistry.provide('conductorEventRouter', conductorWiring.eventRouter);
+    // #2082 — every domain event on the Conductor bus also reaches the
+    // agents' hooks (spec 2042 §5.12: hooks use the same event bus).
+    conductorWiring.eventRouter.addObserver((eventId, payload, eventKey) => {
+      triggersRef.current?.onEvent(eventId, payload, eventKey);
+    });
     // Expose the channel-binding store so the routines turn-capture hook can populate it — US5.
     serviceRegistry.provide('conductorChannelBindings', conductorWiring.channelBindingStore);
     // Expose await resolution so a channel plugin can resolve a human approval in-process when the
@@ -7531,6 +7728,22 @@ async function main(): Promise<void> {
     targetedSends: targetedSendRegistry,
     conversationEvents: conversationEventHub,
     conversationSends: conversationSendRegistry,
+    // #2082 — every message a channel reports reaches the agents' hooks as
+    // `conversation.message.created`: ids and kind only, never the text.
+    onConversationMessage: (event) => {
+      if (event.kind !== 'created') return;
+      triggersRef.current?.onEvent(
+        'conversation.message.created',
+        {
+          channelType: event.channelType,
+          conversationId: event.conversationId,
+          messageId: event.messageId,
+          authorId: event.author.id,
+          authorKind: event.author.kind,
+        },
+        `${event.channelType}:${event.conversationId}:${event.messageId}`,
+      );
+    },
     ...(conversationMessages ? { conversationMessages: conversationMessages.hub } : {}),
     readinessProviders: readinessProviderRegistry,
     meetingSources: meetingSourceRegistry,
@@ -7596,6 +7809,7 @@ async function main(): Promise<void> {
     readinessProviders: readinessProviderRegistry,
     meetingSources: meetingSourceRegistry,
   });
+  channelPluginIdsRef.current = () => channelRegistry.activeIds();
   channelRegistryRef = channelRegistry;
   await channelRegistry.activateAllInstalled();
   // #2043 — every plugin had its chance to activate: from here on the kernel
@@ -7615,6 +7829,8 @@ async function main(): Promise<void> {
   if (routinesHandle) {
     await routinesHandle.runner.start();
   }
+  // #2082 — triggers fire through the same proactive senders.
+  triggersRef.current?.start();
 
   // Mount routers contributed by plugins (via ctx.routes.register). Must run
   // AFTER all plugin activate()'s have completed, otherwise late-registered

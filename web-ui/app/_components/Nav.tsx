@@ -88,6 +88,9 @@ const NAV: readonly NavItem[] = [
       // Routines are created from chat, not on their own page — the page is
       // an overview/management surface, so it is not a primary nav item.
       { kind: 'link', href: '/routines', key: 'routines' },
+      // #2082 — everything agents do unasked: triggers, routines, schedules,
+      // batch jobs, with deadline, cost and the operator's controls.
+      { kind: 'link', href: '/operator/triggers', key: 'triggers' },
     ],
   },
   {

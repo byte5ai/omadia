@@ -277,7 +277,13 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
         if (accept && !accept()) {
           return { outcome: 'failed', message: 'the answer was not accepted' };
         }
-        deps.history.append(sessionScope, request.input, text);
+        // #2085 — the history feeds the next turn's model: side-channel rows
+        // stay out of it (they reach people through `text` only).
+        const prose =
+          answer.textWithoutData !== undefined
+            ? withoutFoldedAiDisclosure(answer.textWithoutData, answer.aiDisclosure)
+            : text;
+        deps.history.append(sessionScope, request.input, prose);
         const turnId = (answer as { turnId?: unknown }).turnId;
         return {
           outcome: 'completed',

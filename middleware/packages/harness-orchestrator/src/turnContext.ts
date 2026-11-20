@@ -7,6 +7,7 @@ import type { ChatParticipantsProvider } from './chatParticipants.js';
 import type { McpInputSentinelMint } from './mcp/pendingMcpInput.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
 import type { ToolReplayLedger } from './toolReplayLedger.js';
+import type { TurnDataCollector } from './turnDataCollector.js';
 import type { DiscretionTurnState } from './discretion/turnLabels.js';
 import type { ConsultationTurnState } from './consultation/consultTool.js';
 
@@ -337,6 +338,14 @@ export interface TurnContextValue {
    * shallow-copy reason as {@link memoryFileRead}.
    */
   renderProvenance?: { notes: string[] };
+  /**
+   * #2085 — this turn's side-channel data (spec 2042 §5.13): what the kernel
+   * tool `deliver_data` collected for the answer, never shown to a model. Set
+   * by the orchestrator at turn start and shared by reference with every
+   * nested scope; `undefined` outside an orchestrator turn, where
+   * `deliver_data` refuses.
+   */
+  dataSideChannel?: TurnDataCollector;
   /**
    * Where the orchestrator's own model calls run this turn — its provider and
    * model after `resolveTurnExecution`, and after a fallback hop the fallback.
