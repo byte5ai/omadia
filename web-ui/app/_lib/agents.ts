@@ -1349,6 +1349,19 @@ export interface EnabledAgentDto {
   /** Reserved, not enforced (#978): persisted and reported, read by no
    *  runtime path — `strict` behaves like `default`. */
   privacy_profile: PrivacyProfile;
+  /** The archetype the middleware already reports on this route; absent on
+   *  one that predates archetypes (read it through `archetypeOfAgent`). */
+  archetype?: AgentArchetype;
+  /** #2057 — `agent_identities.display_name`. Optional: the route does not
+   *  deliver the identity yet, so the name falls back to `name`, then slug. */
+  display_name?: string | null;
+  /** #2057 — `agent_identities.short_description`; falls back to `description`. */
+  short_description?: string | null;
+  /** #2057 — the avatar reference as the identity route reports it. */
+  avatar?: { etag: string; url: string } | null;
+  /** #2057 — systems the agent can read or write through its grants, as
+   *  display names. Absent until the middleware reports it; never guessed. */
+  reach?: string[] | null;
 }
 
 export interface EnabledAgentsListDto {
