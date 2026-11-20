@@ -14,6 +14,8 @@ import { recordUsage } from '@omadia/usage-telemetry';
 import type { IdentityJudge, IdentityJudgeRequest, IdentityJudgeVerdict } from './guard.js';
 
 const JUDGE_MAX_TOKENS = 8;
+/** How much of the answer the judge sees, from its end. */
+const JUDGE_MAX_CHARS = 8_000;
 
 function system(request: IdentityJudgeRequest): string {
   const colleagues = request.colleagues.length > 0 ? request.colleagues.join(', ') : '(none named)';
@@ -35,13 +37,18 @@ export function createLlmIdentityJudge(options: {
 }): IdentityJudge {
   return {
     async judge(request: IdentityJudgeRequest, signal: AbortSignal): Promise<IdentityJudgeVerdict> {
+      // The provider API takes no abort signal: a timed-out call finishes in
+      // the background (bounded by JUDGE_MAX_TOKENS) and its verdict is
+      // ignored; the guard has already failed closed.
       if (signal.aborted) throw new Error('identity judge aborted');
       const res = await options.provider.complete({
         model: options.model,
         maxTokens: JUDGE_MAX_TOKENS,
         temperature: 0,
         system: system(request),
-        messages: [textMessage('user', request.text.slice(0, 8000))],
+        // The END of the answer: the guard sends all text so far, and the
+        // sentence under check is the newest one.
+        messages: [textMessage('user', request.text.slice(-JUDGE_MAX_CHARS))],
       });
       recordUsage({
         source: 'identity-guard',

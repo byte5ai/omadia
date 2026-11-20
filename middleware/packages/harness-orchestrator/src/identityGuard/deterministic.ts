@@ -58,14 +58,15 @@ const ARTICLE = String.raw`(?:(?:the|your|a|der|die|das|dein|deine|ihr|ihre|euer
 const SELF_IDENTIFICATION_PREFIXES = [
   String.raw`i\s*am`,
   String.raw`i['’]m`,
-  String.raw`this\s+is`,
   String.raw`my\s+name\s+is`,
   String.raw`call\s+me`,
   String.raw`speaking\s+as`,
   String.raw`answering\s+as`,
   String.raw`you(?:['’]re|\s+are)\s+(?:talking|speaking|chatting|writing)\s+(?:to|with)`,
   String.raw`ich\s+bin`,
-  String.raw`hier\s+(?:ist|spricht|schreibt)`,
+  // Not "hier ist <Name>": "Hier ist Mira die richtige Ansprechpartnerin" is
+  // a referral. The model layer looks at that (a colleague is mentioned).
+  String.raw`hier\s+(?:spricht|schreibt)`,
   String.raw`mein\s+name\s+ist`,
   String.raw`ich\s+hei(?:ß|ss)e`,
   String.raw`(?:du|sie)\s+(?:sprichst|sprechen|schreibst|schreiben|chattest|chatten)\s+(?:gerade\s+)?mit`,
@@ -109,25 +110,44 @@ const OPINION_NOUNS = [
   'ansicht', 'rat', 'urteil', 'worte',
 ];
 
+/** A word that is the whole word: "KI" in "KI-Lösung" is part of a compound. */
+const WORD_END = String.raw`(?![\p{L}\p{N}_-])`;
+
 const HUMAN_CLAIMS: readonly RegExp[] = [
   // "I am a (real) human / person", "I'm human"
   /\b(?:i\s*am|i['’]m)\s+(?:a\s+|an\s+)?(?:real\s+|actual\s+|living\s+)?(?:human(?:\s+being)?|person|man|woman|flesh\s+and\s+blood)\b/iu,
   // "I am not a bot / an AI"
-  /\b(?:i\s*am|i['’]m)\b[^.!?\n]{0,80}?\bnot\s+(?:a|an)\s+(?:bot|ai|a\.i\.|robot|machine|program|language\s+model|chatbot)\b/iu,
-  /\b(?:i\s*am|i['’]m)\b[^.!?\n]{0,80}?\bno\s+(?:bot|robot|machine|ai)\b/iu,
+  // Adjacent only: "I'm not sure, but this is not a program error" is no claim.
+  new RegExp(
+    String.raw`\b(?:i\s*am|i['’]m)\s+(?:really\s+|actually\s+|definitely\s+|certainly\s+|honestly\s+)?(?:not\s+(?:a|an)|no)\s+(?:bot|ai|a\.i\.|robot|machine|program|language\s+model|chatbot)${WORD_END}`,
+    'iu',
+  ),
   /\bnot\s+an?\s+(?:ai|bot|chatbot)\s*[,;—–-]\s*(?:i\s*am|i['’]m)\s+(?:a\s+)?(?:real\s+)?(?:human|person)\b/iu,
   // "ich bin ein (echter) Mensch / eine echte Person"
   /\bich\s+bin\s+(?:ein\s+|eine\s+)?(?:echter\s+|echte\s+|richtiger\s+|richtige\s+|lebendiger\s+)?(?:mensch|person|mitarbeiter(?:in)?\s+aus\s+fleisch\s+und\s+blut)\b/iu,
   // "ich bin (Anna aus dem Vertrieb,) kein Bot / keine KI / nicht ein Bot"
-  /\bich\s+bin\b[^.!?\n]{0,80}?\b(?:kein|keine|nicht\s+(?:ein|eine))\s+(?:bot|ki|k\.i\.|ai|roboter|maschine|programm|sprachmodell|chatbot|künstliche\s+intelligenz)\b/iu,
-  /\b(?:aus\s+fleisch\s+und\s+blut|flesh\s+and\s+blood)\b/iu,
+  // "ich bin (Anna aus dem Vertrieb,) kein Bot": the window stays inside the
+  // sentence, and "keine KI-Lösung" is a compound, not a denial.
+  new RegExp(
+    String.raw`\bich\s+bin\b[^.!?\n]{0,60}?\b(?:kein|keine|nicht\s+(?:ein|eine))\s+(?:bot|ki|k\.i\.|ai|roboter|maschine|programm|sprachmodell|chatbot|künstliche\s+intelligenz)${WORD_END}`,
+    'iu',
+  ),
+  /\b(?:ich\s+bin|i\s*am|i['’]m)\b[^.!?\n]{0,40}?\b(?:aus\s+fleisch\s+und\s+blut|flesh\s+and\s+blood)\b/iu,
 ];
 
-const SELF_INTRODUCTION: readonly RegExp[] = [
-  /\b(?:my\s+name\s+is|call\s+me|this\s+is|mein\s+name\s+ist|ich\s+hei(?:ß|ss)e|hier\s+(?:ist|spricht|schreibt))\s+\p{Lu}/u,
-  /\b(?:i['’]m|i\s+am|ich\s+bin)\s+\p{Lu}\p{Ll}+(?:\s+(?:from|aus|vom|von|der|die))?\b/u,
-  /\b(?:human|person|mensch|bot|robot|roboter|künstliche\s+intelligenz)\b/iu,
-];
+/**
+ * Someone is introduced by name. Case-sensitive on purpose (the name is
+ * capitalised), so the prefixes spell both cases of their first letter; the
+ * captured name is compared with the agent's own names.
+ */
+const SELF_INTRODUCTION =
+  /(?:^|[^\p{L}])(?:[Mm]y\s+name\s+is|[Cc]all\s+me|[Tt]his\s+is|[Mm]ein\s+[Nn]ame\s+ist|[Ii]ch\s+hei(?:ß|ss)e|[Hh]ier\s+(?:ist|spricht|schreibt)|[Ii]['’]m|[Ii]\s+am|[Ii]ch\s+bin)\s+(\p{Lu}[\p{L}-]+)/gu;
+
+/** First person near a word about being human or a machine. */
+const IDENTITY_TALK = new RegExp(
+  String.raw`\b(?:i|i['’]m|ich|mich|me)\b[^.!?\n]{0,30}?\b(?:human|mensch|bot|robot|roboter|ki|ai|künstliche\s+intelligenz)${WORD_END}`,
+  'iu',
+);
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -165,6 +185,9 @@ function compileFor(entry: GuardDirectoryEntry, ownNames: ReadonlySet<string>): 
   const after = String.raw`(?![\p{L}\p{N}_])`;
   const named = `${before}${name}${after}`;
   const possessive = `${before}${name}(?:['’]s|s)?${after}`;
+  // "Mira's view", "Miras Einschätzung" — the genitive is required: "Odoo view"
+  // names a screen, not an opinion.
+  const genitive = `${before}${name}(?:['’]s|s)${after}`;
   return {
     displayName: entry.displayName,
     mention: new RegExp(possessive, 'iu'),
@@ -176,8 +199,9 @@ function compileFor(entry: GuardDirectoryEntry, ownNames: ReadonlySet<string>): 
     quote: [
       new RegExp(String.raw`${named}\s+(?:${QUOTE_VERBS_AFTER.map(escapeRegExp).join('|')})(?![\p{L}])`, 'iu'),
       new RegExp(String.raw`\b(?:${QUOTE_PREFIXES_BEFORE.join('|')})\s*${ARTICLE}${named}`, 'iu'),
-      new RegExp(String.raw`${possessive}\s+(?:${OPINION_NOUNS.join('|')})\b`, 'iu'),
-      new RegExp(String.raw`${named}\s+(?:zufolge|nach)\b`, 'iu'),
+      new RegExp(String.raw`${genitive}\s+(?:${OPINION_NOUNS.join('|')})\b`, 'iu'),
+      // Not "nach": "frag bei Mira nach" is a referral.
+      new RegExp(String.raw`${named}\s+zufolge\b`, 'iu'),
       // A name line: "Mira: …" at the start of a line or sentence, the way a
       // transcript or a chat attributes a message.
       new RegExp(String.raw`(?:^|\n|[.!?…]\s+)\s*(?:\*\*)?${named}(?:\*\*)?\s*:`, 'iu'),
@@ -188,12 +212,14 @@ function compileFor(entry: GuardDirectoryEntry, ownNames: ReadonlySet<string>): 
 /** Compiled directory for one speaker; build once per turn. */
 export class IdentityGuardPatterns {
   private readonly colleagues: readonly NamedPatterns[];
+  private readonly ownNames: ReadonlySet<string>;
 
   constructor(self: GuardSelf, directory: readonly GuardDirectoryEntry[]) {
     const ownEntry = directory.find((entry) => entry.agentId === self.agentId);
     const ownNames = new Set(
       [self.displayName, self.slug, ...(ownEntry?.aliases ?? [])].map(normalizeName),
     );
+    this.ownNames = ownNames;
     this.colleagues = directory
       .filter((entry) => entry.agentId !== self.agentId)
       .map((entry) => compileFor(entry, ownNames))
@@ -215,8 +241,16 @@ export class IdentityGuardPatterns {
       }
       mentions.push(colleague.displayName);
     }
-    const introduces = SELF_INTRODUCTION.some((pattern) => pattern.test(text));
-    return { verdict: 'pass', suspicious: mentions.length > 0 || introduces, mentions };
+    return { verdict: 'pass', suspicious: mentions.length > 0 || this.introducesSomeoneElse(text), mentions };
+  }
+
+  /** A name introduced that is not one of the agent's own, or talk about being human. */
+  private introducesSomeoneElse(text: string): boolean {
+    for (const match of text.matchAll(SELF_INTRODUCTION)) {
+      const name = match[1];
+      if (name && !this.ownNames.has(normalizeName(name))) return true;
+    }
+    return IDENTITY_TALK.test(text);
   }
 }
 

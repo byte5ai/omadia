@@ -14,17 +14,7 @@
  * than once in one process.
  */
 
-import { DEFAULT_AGENT_IDENTITY, withIdentityRules } from './management/agentIdentityPrompt.js';
-import type { AgentSpeaker } from '@omadia/plugin-api';
-import type { GuardDirectoryEntry } from './identityGuard/deterministic.js';
-import { maskRestoredValues, withIdentityGuard } from './identityGuard/guardedChatAgent.js';
-import { IdentityGuard } from './identityGuard/guard.js';
-import { AgentAnswerEmitter } from './management/answerEmitter.js';
-import { createLlmIdentityJudge } from './identityGuard/llmJudge.js';
-import { withSpeaker } from './management/speakingChatAgent.js';
 
-/** A guard check slower than this is logged even when it passes (trace). */
-const IDENTITY_GUARD_SLOW_MS = 1_500;
 import type {
   ChatAgent,
   ChatTurnInput,
@@ -120,6 +110,17 @@ import {
 import {
   applyArchetypeContract,
 } from './registry/facilitatorNeutrality.js';
+import type { AgentSpeaker } from '@omadia/plugin-api';
+import type { GuardDirectoryEntry } from './identityGuard/deterministic.js';
+import { IdentityGuard } from './identityGuard/guard.js';
+import { maskRestoredValues, withIdentityGuard } from './identityGuard/guardedChatAgent.js';
+import { createLlmIdentityJudge } from './identityGuard/llmJudge.js';
+import { DEFAULT_AGENT_IDENTITY, withIdentityRules } from './management/agentIdentityPrompt.js';
+import { AgentAnswerEmitter } from './management/answerEmitter.js';
+import { withSpeaker } from './management/speakingChatAgent.js';
+
+/** A guard check slower than this is logged even when it passes (trace). */
+const IDENTITY_GUARD_SLOW_MS = 1_500;
 
 /**
  * The per-Agent knobs — everything that differs between two Agents built in

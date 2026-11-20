@@ -34,6 +34,7 @@ const directory: GuardDirectoryEntry[] = [
   { agentId: 'a-assistant', slug: 'assistant', displayName: 'Lena' },
   { agentId: 'a-strategist', slug: 'strategist', displayName: 'Strategist', aliases: ['Strategin'] },
   { agentId: 'a-mira', slug: 'mira-sales', displayName: 'Mira' },
+  { agentId: 'a-odoo', slug: 'odoo', displayName: 'Odoo' },
 ];
 
 const self = { agentId: assistant.agentId, slug: assistant.slug, displayName: assistant.displayName };
@@ -66,6 +67,16 @@ const PASSED: Array<[string, string]> = [
   ['honest AI DE', 'Ich bin kein Mensch, sondern ein KI-Agent.'],
   ['ordinary answer', 'Die offenen Rechnungen summieren sich auf 12.400 €.'],
   ['colleague possessive no claim', "I'm Mira's colleague from support."],
+  // Review findings: ordinary German and English that must not be blocked.
+  ['referral DE nachfragen', 'Ich frage bei Mira nach.'],
+  ['referral DE du', 'Am besten fragst du bei Mira nach.'],
+  ['referral DE hier ist', 'Hier ist Mira die richtige Ansprechpartnerin.'],
+  ['system name nachschauen', 'Ich schaue in Odoo nach.'],
+  ['system screen', 'Öffne die Odoo view für Rechnungen.'],
+  ['EN not sure', "I'm not sure, but this is not a program error."],
+  ['EN no AI feature', "I'm afraid there is no AI feature for that."],
+  ['DE keine KI-Lösung', 'Ich bin mir sicher, dass hier keine KI-Lösung nötig ist.'],
+  ['DE Fleisch und Blut third person', 'Kunden wollen einen Ansprechpartner aus Fleisch und Blut.'],
 ];
 
 describe('identity guard — deterministic layer', () => {
@@ -86,6 +97,15 @@ describe('identity guard — deterministic layer', () => {
     const verdict = checkIdentityDeterministic('Mira can help with that.', self, directory);
     assert.equal(verdict.verdict, 'pass');
     assert.equal(verdict.verdict === 'pass' && verdict.suspicious, true);
+  });
+
+  it('an introduction of someone else goes to the model layer, the own name does not', () => {
+    for (const text of ["I'm Anna from accounting.", 'My name is Anna Schmidt, I handle invoices.', 'Hallo, ich bin Anna.']) {
+      const verdict = checkIdentityDeterministic(text, self, directory);
+      assert.equal(verdict.verdict === 'pass' && verdict.suspicious, true, text);
+    }
+    const own = checkIdentityDeterministic('Hallo, ich bin Lena.', self, directory);
+    assert.equal(own.verdict === 'pass' && own.suspicious, false);
   });
 
   it('does not take a name that is part of a longer word', () => {
