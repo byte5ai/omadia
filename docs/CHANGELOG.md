@@ -47,9 +47,16 @@ changelog.
   1 minute in a live meeting), a budget per firing, per trigger and per month
   (agent and instance), the execution kill switch (instance and agent level)
   and a circuit breaker on failures and on ineffective turns. A firing is
-  claimed at most once; model-free checks run before any model turn, and a
-  check that finds nothing ends the firing quietly. `TRIGGERS_ENABLED=false`
-  stops all firing; limits are `TRIGGER_*` in `.env.example`.
+  claimed at most once (the lease is renewed right before it runs; each
+  firing's budget reservation is its own row and settles exactly once);
+  model-free checks run before any model turn, and a check that finds
+  nothing ends the firing quietly. `list_triggers` and `cancel_trigger` see
+  only what the agent set itself in the current conversation; the
+  per-agent cap counts only those. A hook never fires on the agent's own
+  messages, and a turn hint or a post template carries only an event's ids
+  and kind, never its content. `TRIGGERS_ENABLED=false` stops all firing,
+  routines, schedules and consolidation included; limits are `TRIGGER_*` in
+  `.env.example`.
 - **Proactive gate.** A proactive message goes only to the context its
   trigger was created in, until discretion labels exist (S5). Quiet hours and
   a per-recipient rate limit come from a recipient profile or the instance
@@ -74,9 +81,10 @@ changelog.
   as a recovery probe, once per backoff window (doubling up to one hour); the
   first success resets it, failures never end a job. A job's run may not call
   a generative model.
-- **Consolidation as agent batch triggers.** Plugins register batch jobs
-  (`batchJobRegistry@1`, plugin-api additive); the kernel arms one bounded
-  trigger per job and agent with due items. The scratch-promotion reaper drops
+- **Consolidation as agent batch triggers.** Built-in plugins register
+  batch jobs (`batchJobRegistry@1`, plugin-api additive; any other plugin is
+  refused); the kernel arms one bounded trigger per job and agent with due
+  items. The scratch-promotion reaper drops
   its own interval and registers as a batch job; promoted scratch is
   `visibility: 'private'` with its origin agent instead of `team`
   (orchestrator-extras 0.2.0).
@@ -85,7 +93,8 @@ changelog.
   `SemanticAnswer.data` (also on `ChatTurnResult` and `done`); the model gets
   a status only (row count, columns). `text` carries a rendering of the table
   after the prose and before the AI disclosure; `textWithoutData` is the same
-  text without it. The verifier checks the prose only.
+  text without it. The verifier, the facilitation engine's history and the
+  Conductor run context get the prose only.
 - **Fast lane per agent.** The fast path is the addressed agent's fast lane:
   per-agent switch `agents.fast_lane` (default on,
   `GET/PUT /api/v1/operator/agents/:slug/fast-lane`, checkbox in the agent's
