@@ -85,9 +85,17 @@ Details:
 - Good: one closing model (F2) for session protocols and facilitation results.
 - Bad: no channel produces `transcript_segment` events yet (Teams has no real-time audio
   in this instance, #584); spoken contributions are exercised with a simulated source.
-- Bad: the per-step electorate of a session (session participants as the electorate of a
-  step run inside a live session, spec §5.5) and the fresh electorate check of a session
-  summary's consent are left to the electorate work (F3, #2061/#2062).
+- Session electorate (spec §5.5), added 2026-11-20 in the plugin (migration `0011`): a
+  linked session fixes the source of its member list when it is linked (the meeting chat's
+  roster if `complete`, otherwise a declared list); members include home participants who
+  are in the chat. A step run inside a live session may declare that session's participants
+  as its electorate (only before any contribution); then they alone count, guests included,
+  and people only at home are not eligible. Session-only participants never count for home
+  steps; leaving the meeting chat ends only the session membership. Before an automatic
+  decision of a session step the session's roster is asked for fresh. No kernel contract
+  was needed: the existing `conversationRosters` service answers for any conversation.
+- The media consent of a linked session (spec §6.3) is asked in its chat and decided by the
+  session's members; anyone there, a guest too, can object or stop listening.
 
 ## More Information
 
