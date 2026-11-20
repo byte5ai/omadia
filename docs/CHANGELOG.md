@@ -143,6 +143,26 @@ changelog.
 - Facilitator 1.2.0 and later are unaffected. They may keep the `provides`
   line: it is what lets the plugin publish its own status.
 
+### Fixed — An installed entry without a package stayed "active" unseen
+
+- Every runtime activates by walking the packages on disk. An entry of the
+  installed registry whose package is gone was therefore visited by nobody: it
+  was never activated, never failed, kept the status it had (usually
+  `active`), and appeared nowhere in the web-ui, because the store lists what
+  the catalogue has packages for.
+- **One warning per boot** names every such entry:
+  `[plugins] N installed entries have no package and are not running, …`.
+- **`GET /api/v1/admin/runtime/installed`** (and `/installed/:id`) reports them with
+  `status: "package_missing"` and `package_missing: true`; the status the
+  registry holds is next to it as `registry_status`. Both fields are new on
+  every row.
+- **The store's "Installed" tab** lists them in a notice with the badge
+  "Package missing" and an "Uninstall entry" button per entry (confirmed, one
+  at a time).
+- The state is derived on every read. The registry is not rewritten and
+  nothing is removed automatically; an entry whose package comes back is
+  ordinary again. Uninstalling such an entry works as for any other.
+
 ### Removed — `kind`, the predecessor of an agent's archetype (#2088, epic #2042): K6.1, the contract step
 
 - **The column is gone.** Migration 0079 drops `agents.kind` together with

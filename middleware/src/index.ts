@@ -406,6 +406,7 @@ import {
   retryErroredPlugins,
   runLegacyBootstrap,
 } from './plugins/bootstrap.js';
+import { hasPackage, warnPackagelessEntries } from './plugins/packagelessEntries.js';
 import { createPendingBindingPurge } from './plugins/pendingBindingPurge.js';
 import {
   builtInOptOutsPathFor,
@@ -2586,6 +2587,11 @@ async function main(): Promise<void> {
   console.log(
     `[middleware] tool plugin runtime: ${toolPluginRuntime.activeIds().length} tool/extension/integration package(s) active`,
   );
+  // Entries of the registry whose package is gone are visited by no runtime
+  // (each walks the packages), so nothing ever reports them. Once per boot.
+  warnPackagelessEntries(installedRegistry, [uploadedPackageStore, builtInPackageStore], (message) => {
+    console.warn(message);
+  });
   // #1070 — the orchestrator (an extension) has now had its chance to provide
   // `configStore`; purge the bindings of plugins bootstrap removed above.
   await pendingBindingPurge.flush();
@@ -6150,6 +6156,7 @@ async function main(): Promise<void> {
       promptContributionRegistry,
       vault: secretVault,
       catalog: pluginCatalog,
+      hasPackage: (id) => hasPackage(id, [uploadedPackageStore, builtInPackageStore]),
       reactivate: reactivateAgent,
       onGrantsChanged: () => attachFacilitationEngine(),
       restartPending: (agentId) => installService.restartPending(agentId),
