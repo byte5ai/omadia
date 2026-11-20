@@ -302,6 +302,13 @@ export type {
   AgentConsultation,
   DelegatedAnswer,
   DirectLineSessionState,
+  // #2045 — speaker, system notices, contributions (types live in plugin-api).
+  AgentSpeaker,
+  Contribution,
+  ContributionStatus,
+  Speaker,
+  SystemNotice,
+  SystemSpeaker,
 } from './outgoing.js';
 
 // Channel-agnostic store interfaces

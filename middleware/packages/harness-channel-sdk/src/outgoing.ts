@@ -12,14 +12,25 @@
 
 import type {
   CaptureDisclosure,
+  Contribution,
   PrivacyReceipt,
   RecalledContext,
+  Speaker,
+  SystemNotice,
 } from '@omadia/plugin-api';
 import type { OutgoingSurface } from './surface.js';
 import type { AiDisclosure } from './aiDisclosure.js';
 import type { AnswerVerbosityInfo } from './chatAgent.js';
 
 export type { CaptureDisclosure, PrivacyReceipt, RecalledContext };
+export type {
+  AgentSpeaker,
+  Contribution,
+  ContributionStatus,
+  Speaker,
+  SystemNotice,
+  SystemSpeaker,
+} from '@omadia/plugin-api';
 export type { AiDisclosure } from './aiDisclosure.js';
 
 /**
@@ -60,6 +71,31 @@ export type AnswerSource = 'model' | 'privacy-render' | 'verifier-blocked';
 export interface SemanticAnswer {
   /** The assistant's prose response. Connectors MUST render this. */
   text: string;
+
+  /**
+   * #2045 — who this message is from: the agent the management layer routed
+   * the turn to, or `system` for a management-layer notice. Stamped by the
+   * harness from the routing decision, never from model output. Channels show
+   * it the natural way (the agent's own bot, the name and avatar a chat UI
+   * shows anyway); `speakerLine()` adds a plain name line only where the
+   * speaker would otherwise be unclear (spec 2042 INV-4, §5.14).
+   */
+  speaker?: Speaker;
+
+  /**
+   * #2045 — present when `speaker` is `system`: the notice `text` renders
+   * (agent disabled, deleted, not available, no agent addressed, identity
+   * guard, …). Channels MAY style it as a notice rather than an answer.
+   */
+  systemNotice?: SystemNotice;
+
+  /**
+   * #2047 — colleagues' delivered contributions, in order (spec 2042 §5.4).
+   * Each is the consulted agent's own verbatim block, attributed to it; the
+   * speaking agent's `text` refers to one only by its id. A failed
+   * contribution is shown as failed, never dropped.
+   */
+  contributions?: readonly Contribution[];
 
   /** Visual verifier state — connectors may render as badge / icon / colour. */
   verifier?: VerifierBadge;

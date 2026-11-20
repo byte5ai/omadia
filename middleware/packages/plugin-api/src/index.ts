@@ -205,3 +205,7 @@ export * from './executionAuthorization.js';
 
 // #2078 — kernel-issued grants for mail and calendar, bound to execution scopes.
 export * from './executionGrants.js';
+
+// #2045 (epic #2042) — speaker, typed emissions, system notices and
+// contributions: who speaks, and what kind of output reaches a person.
+export * from './speaker.js';
