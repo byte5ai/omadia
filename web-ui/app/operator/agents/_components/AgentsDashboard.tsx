@@ -1,5 +1,6 @@
 'use client';
 
+import { channelTypesOfCatalog } from '../../../_lib/channelTypes';
 import { useEffect, useMemo, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -151,17 +152,7 @@ export function AgentsDashboard({
     initial.agents.find((a) => a.id === initial.default_agent_id)?.slug ??
     null;
 
-  const channelTypes = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          (catalog ?? [])
-            .filter((p) => p.kind === 'channel')
-            .map((p) => deriveChannelType(p.id)),
-        ),
-      ).sort(),
-    [catalog],
-  );
+  const channelTypes = useMemo(() => channelTypesOfCatalog(catalog), [catalog]);
 
   function run(label: string, op: () => Promise<unknown>): void {
     setError(null);
@@ -368,20 +359,6 @@ export function AgentsDashboard({
       <DeletedAgentsSection refreshKey={deletedRefresh} />
     </div>
   );
-}
-
-/**
- * Heuristic: derive the channel binding "type" string from a channel
- * plugin id. `de.byte5.channel.teams` → `teams`, `@omadia/channel-foo` →
- * `foo`. Operators bind by type-string in `channel_bindings`, not by
- * plugin id, so the dashboard does the mapping client-side. Unknown
- * formats fall back to the last segment.
- */
-function deriveChannelType(pluginId: string): string {
-  const match = pluginId.match(/(?:^|[./])channel[./]([a-z0-9_-]+)/i);
-  if (match?.[1]) return match[1].toLowerCase();
-  const last = pluginId.split(/[./]/).pop();
-  return (last ?? pluginId).toLowerCase();
 }
 
 function DefaultAgentPicker(props: {

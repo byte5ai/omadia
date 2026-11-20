@@ -3140,7 +3140,7 @@
       "identity": "Identity",
       "model": "Model",
       "peers": "Conversations",
-      "teams": "Teams",
+      "teams": "Channels",
       "plugins": "Plugins",
       "tools": "Tools",
       "memory": "Memory",
@@ -3215,7 +3215,10 @@
       "purging": "Removing",
       "purgeConfirm": "Remove “{slug}” for good? Its identity, grants, bindings and schedules are deleted with it. This cannot be undone.",
       "purgeTypeSlug": "This agent was deleted less than {days, plural, one {# day} other {# days}} ago. Type its slug “{slug}” to remove it now:",
-      "purgeableFrom": "can be removed without typing the slug from {when}"
+      "purgeableFrom": "can be removed without typing the slug from {when}",
+      "purgeFailed": "The agent could not be removed.",
+      "botReleaseFailed": "The agent's own bots could not be stopped, so nothing was removed. Try again.",
+      "botsNotReleased": "Removed. Its own bots ({bots}) were not stopped because their channel plugin is not active, so it may still hold their tokens: revoke them on the platform."
     },
     "archetype": {
       "deliveredBy": "Delivered by the archetype plugin “{plugin}”. omadia enforces what the archetype adds and leaves out for every agent in this section.",
@@ -3317,6 +3320,49 @@
     "confirmAction": {
       "cancel": "Cancel",
       "typedMismatch": "That is not the slug."
+    },
+    "channelIdentities": {
+      "heading": "Own bots",
+      "intro": "Give this agent a bot of its own on a channel. Everyone who writes to that bot talks to this agent, and the agent posts through it under its own name. Without one, people reach the agent through the channel's shared bot with /agent.",
+      "loading": "Loading…",
+      "noChannels": "No active channel plugin can run a bot per agent.",
+      "sharedBot": "Shared bot",
+      "sharedBotHint": "This agent has no bot of its own here yet.",
+      "ownBot": "Own bot {name}, since {since}.",
+      "routingKey": "Routing key: {key}",
+      "pluginInactive": "The channel plugin is not active, so the bot does not answer right now.",
+      "save": "Connect bot",
+      "saving": "Connecting…",
+      "remove": "Remove bot",
+      "cancel": "Cancel",
+      "removeConfirmTitle": "Remove this agent's {channel} bot?",
+      "removeConfirmBody": "The channel plugin stops the bot and forgets its credentials. People then reach the agent through the shared bot again.",
+      "removedNotReleased": "The bot is no longer this agent's. The {channel} plugin was not active, so it may still hold the token: revoke the token on the platform.",
+      "state": {
+        "running": "Running",
+        "stopped": "Stopped",
+        "unknown": "Status unknown"
+      },
+      "channelNames": {
+        "telegram": "Telegram",
+        "discord": "Discord",
+        "slack": "Slack"
+      },
+      "errors": {
+        "agent_identities_unavailable": "The agent registry is not running.",
+        "not_found": "This agent no longer exists.",
+        "invalid_channel_type": "This channel cannot have agent bots.",
+        "channel_not_available": "The channel plugin is not active.",
+        "invalid_input": "A required field is missing or malformed.",
+        "agent_has_identity": "The agent has a bot on this channel already. Remove it first.",
+        "invalid_credentials": "The platform rejected these credentials.",
+        "already_in_use": "This is the channel's shared bot. Give the agent a bot of its own.",
+        "bot_taken": "This bot belongs to another agent.",
+        "unreachable": "The channel plugin or the platform could not be reached. Try again.",
+        "invalid_key": "The channel plugin returned an unusable bot.",
+        "identity_not_found": "The agent has no bot on this channel.",
+        "unknown": "That did not work ({detail})."
+      }
     },
     "fastLane": {
       "heading": "Fast lane",

@@ -18,7 +18,7 @@ import {
   type ChatStreamEvent,
   type SemanticAnswer,
 } from '@omadia/channel-sdk';
-import { SYSTEM_SPEAKER, type SystemNotice } from '@omadia/plugin-api';
+import { SYSTEM_SPEAKER, type NoticeAgentRef, type SystemNotice } from '@omadia/plugin-api';
 
 import { buildSystemNotice } from './systemNotices.js';
 
@@ -28,6 +28,12 @@ export interface ManagementTurnContext {
   readonly principal?: string;
   readonly locale?: string;
   readonly selection?: AgentSelectionService;
+  /**
+   * Spec 2042 §5.3 — the turn arrived through this agent's OWN bot. Routing
+   * gives that bot to its agent before any selection, so `/agent` here would
+   * store a choice that can never apply; the sender is told whose bot it is.
+   */
+  readonly ownBotOf?: NoticeAgentRef;
 }
 
 /** A turn the management layer answers: speaker `system`, no model. */
@@ -48,7 +54,14 @@ export function systemNoticeAnswer(notice: SystemNotice): SemanticAnswer {
 
 async function commandNotice(text: string, context: ManagementTurnContext): Promise<SystemNotice | undefined> {
   const command = parseAgentCommand(text);
-  if (!command || !context.selection) return undefined;
+  if (!command) return undefined;
+  if (context.ownBotOf) {
+    return buildSystemNotice('agent_own_bot', {
+      agent: context.ownBotOf,
+      ...(context.locale ? { locale: context.locale } : {}),
+    });
+  }
+  if (!context.selection) return undefined;
   if (context.principal === undefined && command.kind !== 'list') {
     // A selection is kept per person; without knowing the sender there is no
     // one to keep it for.
@@ -73,10 +86,13 @@ export function managementChatAgent(
 ): ChatAgent {
   const fallbackNotice = (): SystemNotice =>
     refusal ?? buildSystemNotice('no_agent', context.locale ? { locale: context.locale } : {});
+  // The sender's language reaches the agent's own notices (identity guard).
+  const withLocale = <I extends { locale?: string }>(input: I): I =>
+    input.locale === undefined && context.locale !== undefined ? { ...input, locale: context.locale } : input;
   const chat = async (input: Parameters<ChatAgent['chat']>[0]): Promise<SemanticAnswer> => {
     const notice = await commandNotice(input.userMessage, context);
     if (notice) return systemNoticeAnswer(notice);
-    return inner ? inner.chat(input) : systemNoticeAnswer(fallbackNotice());
+    return inner ? inner.chat(withLocale(input)) : systemNoticeAnswer(fallbackNotice());
   };
   async function* chatStream(
     input: Parameters<ChatAgent['chatStream']>[0],
@@ -91,7 +107,7 @@ export function managementChatAgent(
       yield systemNoticeDone(fallbackNotice());
       return;
     }
-    yield* inner.chatStream(input, observer);
+    yield* inner.chatStream(withLocale(input), observer);
   }
   if (!inner) return { chat, chatStream };
   return new Proxy(inner, {

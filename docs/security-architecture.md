@@ -4078,6 +4078,51 @@ At a minimum, your deployment vault holds:
 Nothing from this list should appear in `git grep` output of this repository.
 If it does, that is a bug — file an issue and rotate.
 
+### Agents' own channel bots: tokens stay in the channel plugin (spec 2042 §5.3)
+
+An agent's own Telegram, Discord or Slack bot is registered through
+`PUT /api/v1/operator/agents/:slug/channel-identities/:channelType`. The
+credentials pass through the kernel once, from the request to the channel
+plugin: `AgentIdentityProvider.identify` checks them with the platform and names
+the bot WITHOUT a side effect; the kernel then refuses the channel's default bot
+and a bot another agent owns, and only for a free bot calls `provision`, which
+stores the credentials in the plugin's OWN vault namespace
+(`agent_bot_token_<id>`, `agent_app_<member id>`) and starts it. So typing agent
+A's token on agent B's page cannot touch A's bot or its stored credentials.
+
+The kernel stores only (agent, channel type, routing key) in
+`agent_channel_identities` (migration 0105, no credential column). It does not
+log credentials: a plugin's refusal or `identify`/`provision` error text is
+scrubbed of every credential value before it is logged or answered, and a
+`release` error is logged by its class only. The audit entries
+(`agent.channel_identity.set|delete`, refused attempts included) carry the
+channel type, the routing key or the refusal code, never a credential.
+
+Removing a bot asks the plugin to stop it and delete the credentials; if the
+plugin fails, nothing is removed. If the plugin is not active, the row goes and
+the answer says `released: false` (the UI then asks the operator to revoke the
+token on the platform, since the inactive plugin may still hold it). Purging a
+deleted agent first stops its bots the same way and is held when an active
+plugin cannot. Until then a bot whose agent is deleted keeps its row (tombstone)
+and is refused, never answered by another agent with other permissions; an agent
+bot the kernel does not know as an identity answers only with a `system` notice.
+
+**Triggers and routines through an agent's own bot (spec 2042 §5.12).** A turn
+through an agent's bot files its delivery ref with that bot (`asChannelKey`). A
+later delivery would otherwise say one agent's words through another agent's bot
+once the bot is removed or provisioned for someone else, with no name line,
+indistinguishable in the chat from that agent speaking. So every delivery path
+checks `ownBotRefusal` (`src/triggers/ownBot.ts`) against the agent's own key at
+delivery time: the trigger gate before the model turn (`sendWindow`, the firing
+is refused) and again before sending, and the routine runner before the turn
+(the routine pauses and says why, also for "trigger now"). A hook set on an own
+bot hears only messages that bot received (`receivedByChannelKey`), because a
+Telegram DM has the same chat id with every bot. These turns pass
+`conductorBinding: false`: a group or an agent's bot never becomes the place a
+person's Conductor reminders and approvals are posted. A plugin's proactive
+sender is removed when it deactivates (the disposer of `publishProactiveSend`
+removes only its own sender).
+
 ### Master-key posture is not on the public `/health` (#1385, #1387, #1332)
 
 The unauthenticated `GET /health` reports the database verdict

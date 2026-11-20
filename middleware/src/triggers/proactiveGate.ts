@@ -18,6 +18,7 @@ import type { SemanticAnswer } from '@omadia/channel-sdk';
 import type { Pool } from 'pg';
 
 import type { ProactiveSenderRegistry } from '../plugins/routines/proactiveSender.js';
+import { ownBotRefusal, type OwnChannelKey } from './ownBot.js';
 import type { SendWindow } from './triggerEngine.js';
 import { isHeadless } from './headless.js';
 import type { DeliveryOutcome } from './triggerChain.js';
@@ -144,6 +145,9 @@ export interface ProactiveGateDeps {
   readonly profiles: RecipientProfileStore;
   readonly defaults: RecipientProfile;
   readonly senders: () => ProactiveSenderRegistry | undefined;
+  /** The agent's own bot on a channel (spec 2042 §5.3): a delivery ref that
+   *  names a bot is delivered only while that bot is still the agent's. */
+  readonly ownChannelKey?: OwnChannelKey;
   readonly now?: () => Date;
   readonly log?: (message: string) => void;
 }
@@ -160,6 +164,10 @@ export function createProactiveGate(deps: ProactiveGateDeps): ProactiveGate {
       // A schedule sends nothing: no recipient, no quiet hours, no rate limit.
       if (isHeadless(trigger)) return { ok: true };
       if (!trigger.deliveryChannel) return { ok: false, drop: 'no_delivery_target' };
+      // Before any model turn: a bot that is no longer the agent's (spec 2042 §5.3).
+      if (ownBotRefusal(trigger.deliveryRef, trigger.agentSlug, trigger.deliveryChannel, deps.ownChannelKey)) {
+        return { ok: false, drop: 'bot_no_longer_agents' };
+      }
       if (trigger.liveContext) return { ok: true };
       const key = recipientKey(trigger);
       const profile = await deps.profiles.get(key, deps.defaults);
@@ -180,6 +188,8 @@ export function createProactiveGate(deps: ProactiveGateDeps): ProactiveGate {
       if (!channel) return { delivered: false, reason: 'no delivery target' };
       const sender = deps.senders()?.get(channel);
       if (!sender) return { delivered: false, reason: `no proactive sender for channel '${channel}'` };
+      const refused = ownBotRefusal(trigger.deliveryRef, trigger.agentSlug, channel, deps.ownChannelKey);
+      if (refused) return { delivered: false, reason: refused };
       try {
         await sender.checkDeliverable?.(trigger.deliveryRef);
         await sender.send({ conversationRef: trigger.deliveryRef, message });

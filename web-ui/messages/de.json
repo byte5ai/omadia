@@ -3140,7 +3140,7 @@
       "identity": "Identität",
       "model": "Modell",
       "peers": "Gespräche",
-      "teams": "Teams",
+      "teams": "Kanäle",
       "plugins": "Plugins",
       "tools": "Werkzeuge",
       "memory": "Memory",
@@ -3215,7 +3215,10 @@
       "purging": "Wird entfernt",
       "purgeConfirm": "„{slug}“ endgültig entfernen? Identität, Freigaben, Zuordnungen und Zeitpläne werden mitgelöscht. Das lässt sich nicht rückgängig machen.",
       "purgeTypeSlug": "Dieser Agent wurde vor weniger als {days, plural, one {# Tag} other {# Tagen}} gelöscht. Tippe seinen Slug „{slug}“ ein, um ihn jetzt zu entfernen:",
-      "purgeableFrom": "ohne Eingabe des Slugs entfernbar ab {when}"
+      "purgeableFrom": "ohne Eingabe des Slugs entfernbar ab {when}",
+      "purgeFailed": "Der Agent konnte nicht entfernt werden.",
+      "botReleaseFailed": "Die eigenen Bots des Agenten ließen sich nicht anhalten, deshalb wurde nichts entfernt. Versuch es noch einmal.",
+      "botsNotReleased": "Entfernt. Seine eigenen Bots ({bots}) wurden nicht angehalten, weil ihr Kanal-Plugin nicht aktiv ist; es hat ihre Tokens womöglich noch: Widerrufe sie auf der Plattform."
     },
     "archetype": {
       "deliveredBy": "Geliefert vom Archetyp-Plugin „{plugin}“. omadia setzt für jeden Agenten in diesem Abschnitt durch, was der Archetyp hinzufügt und weglässt.",
@@ -3317,6 +3320,49 @@
     "confirmAction": {
       "cancel": "Abbrechen",
       "typedMismatch": "Das ist nicht der Slug."
+    },
+    "channelIdentities": {
+      "heading": "Eigene Bots",
+      "intro": "Gib diesem Agenten in einem Kanal einen eigenen Bot. Wer diesem Bot schreibt, spricht mit diesem Agenten, und der Agent schreibt unter seinem eigenen Namen darüber. Ohne eigenen Bot erreicht man den Agenten über den gemeinsamen Bot des Kanals mit /agent.",
+      "loading": "Wird geladen…",
+      "noChannels": "Kein aktives Kanal-Plugin kann einen Bot pro Agent betreiben.",
+      "sharedBot": "Gemeinsamer Bot",
+      "sharedBotHint": "Dieser Agent hat hier noch keinen eigenen Bot.",
+      "ownBot": "Eigener Bot {name}, seit {since}.",
+      "routingKey": "Routing-Schlüssel: {key}",
+      "pluginInactive": "Das Kanal-Plugin ist nicht aktiv, der Bot antwortet deshalb gerade nicht.",
+      "save": "Bot verbinden",
+      "saving": "Wird verbunden…",
+      "remove": "Bot entfernen",
+      "cancel": "Abbrechen",
+      "removeConfirmTitle": "{channel}-Bot dieses Agenten entfernen?",
+      "removeConfirmBody": "Das Kanal-Plugin hält den Bot an und vergisst seine Zugangsdaten. Danach erreicht man den Agenten wieder über den gemeinsamen Bot.",
+      "removedNotReleased": "Der Bot gehört nicht mehr zu diesem Agenten. Das {channel}-Plugin war nicht aktiv und hat den Token womöglich noch: Widerrufe den Token auf der Plattform.",
+      "state": {
+        "running": "Läuft",
+        "stopped": "Angehalten",
+        "unknown": "Status unbekannt"
+      },
+      "channelNames": {
+        "telegram": "Telegram",
+        "discord": "Discord",
+        "slack": "Slack"
+      },
+      "errors": {
+        "agent_identities_unavailable": "Die Agenten-Registry läuft nicht.",
+        "not_found": "Diesen Agenten gibt es nicht mehr.",
+        "invalid_channel_type": "Dieser Kanal kann keine Agenten-Bots haben.",
+        "channel_not_available": "Das Kanal-Plugin ist nicht aktiv.",
+        "invalid_input": "Ein Pflichtfeld fehlt oder ist ungültig.",
+        "agent_has_identity": "Der Agent hat in diesem Kanal schon einen Bot. Entferne ihn zuerst.",
+        "invalid_credentials": "Die Plattform hat diese Zugangsdaten abgelehnt.",
+        "already_in_use": "Das ist der gemeinsame Bot des Kanals. Gib dem Agenten einen eigenen Bot.",
+        "bot_taken": "Dieser Bot gehört einem anderen Agenten.",
+        "unreachable": "Das Kanal-Plugin oder die Plattform war nicht erreichbar. Versuch es noch einmal.",
+        "invalid_key": "Das Kanal-Plugin hat einen unbrauchbaren Bot geliefert.",
+        "identity_not_found": "Der Agent hat in diesem Kanal keinen Bot.",
+        "unknown": "Das hat nicht geklappt ({detail})."
+      }
     },
     "fastLane": {
       "heading": "Schnellspur",

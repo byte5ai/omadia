@@ -20,6 +20,7 @@
  */
 
 import type { ApprovalReminder } from './conductorApproval.js';
+import type { Speaker } from './speaker.js';
 
 export const ROUTINES_INTEGRATION_SERVICE_NAME = 'routinesIntegration';
 
@@ -54,7 +55,12 @@ export type RoutineTurnRunner = <T>(fn: () => Promise<T>) => Promise<T>;
  * Shared by both turn-capture entry points so they cannot drift apart.
  */
 export interface RoutineTurnInput {
-  tenant: string;
+  /**
+   * The tenant the turn belongs to (Teams: the AAD tenant). A channel without
+   * tenants (Telegram, Discord, Slack) omits it: the kernel then files the
+   * turn under the deployment tenant, as for the web chat.
+   */
+  tenant?: string;
   userId: string;
   channel: string;
   /**
@@ -69,8 +75,21 @@ export interface RoutineTurnInput {
    * by `conversationId`) or, better, the adapter should install its own context
    * so this one is never used — and it can upgrade an already-stored ref via
    * {@link RoutinesIntegration.updateRoutineConversationRef}.
+   *
+   * Spec 2042 §5.3 — a turn that came through an agent's own bot names that
+   * bot as `asChannelKey` on the ref (`{ kind: 'channel', channelId,
+   * conversationId, asChannelKey }`, the bot's routing key). The sender then
+   * posts the delivery through exactly that bot, and the kernel delivers it
+   * only while that bot is still the delivering agent's.
    */
   conversationRef: unknown;
+  /**
+   * Spec 2042 §5.12 — `false`: open the routines scope only; this
+   * conversation is NOT where the person is reached for Conductor reminders
+   * and approvals (a group, an agent's own bot). Absent / `true`: the kernel
+   * records it as the person's Conductor channel binding (Teams).
+   */
+  conductorBinding?: boolean;
   /**
    * Operator-addressable principal id used as the Conductor channel-binding key, so proactive
    * reminders / approvals reach this user. For Teams this is the lowercased email/UPN — the id an
@@ -158,15 +177,24 @@ export interface RoutinesIntegration {
    * the proactive send is an approval reminder. Channels that can render a
    * rich approve/reject card (Teams) build it from this; others ignore it
    * and fall back to `message.text`.
+   *
+   * Returns a disposer (kernels from plugin-api 1.79.0): a channel calls it
+   * when it deactivates, so nothing is delivered through a plugin that is no
+   * longer running. It removes only the sender it registered.
+   *
+   * `message.speaker` (spec 2042 §5.3, §5.12) names who speaks: the agent a
+   * trigger or routine fired for. A channel that shows a name line for a
+   * shared bot builds it from this; through an agent's own bot none is
+   * needed. Absent on kernel texts (approvals, reminders).
    */
   publishProactiveSend(
     channel: string,
     send: (
       conversationRef: unknown,
-      message: { text: string; cardBody?: readonly unknown[]; approval?: ApprovalReminder },
+      message: { text: string; cardBody?: readonly unknown[]; approval?: ApprovalReminder; speaker?: Speaker },
       routine?: { id: string; name: string; cron: string },
     ) => Promise<void>,
-  ): void;
+  ): (() => void) | void;
 
   /**
    * Handle a button-click from a routine smart-card (Pause / Resume /

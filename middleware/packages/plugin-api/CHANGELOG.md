@@ -8,6 +8,37 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.79.0 — 2026-11-20
+
+Additive (spec 2042 §5.3, §8 item 20): an agent's own bot on every channel,
+step S7.
+
+### Added
+
+- **`SystemNoticeCode` `agent_own_bot`**: the management layer's answer to
+  `/agent` sent to an agent's own bot (Teams, Telegram, Discord, Slack). That
+  bot is always its agent, so nothing is selected.
+- **`RoutinesIntegration.publishProactiveSend`**: the message carries the
+  optional **`speaker`** (spec 2042 §5.12): who a trigger or routine delivery
+  speaks as, so a shared bot can name the agent and an agent's own bot needs
+  no name line. Absent on kernel texts (approvals, reminders).
+- **`RoutineTurnInput.conversationRef`** documents **`asChannelKey`**: a turn
+  through an agent's own bot names that bot on its delivery ref
+  (`{ kind: 'channel', channelId, conversationId, asChannelKey }`); the kernel
+  delivers such a ref only while the bot is still the delivering agent's.
+- **`RoutineTurnInput.conductorBinding`** (optional, default `true`): `false`
+  opens the routines scope without making the conversation the person's
+  Conductor reminder target (a group, an agent's own bot).
+- **`publishProactiveSend`** returns a disposer (`(() => void) | void`, void on
+  older kernels): a channel calls it on deactivation; it removes only the
+  sender it registered.
+
+### Changed
+
+- **`RoutineTurnInput.tenant`** is optional: a channel without tenants
+  (Telegram, Discord, Slack) omits it and the kernel files the turn under the
+  deployment tenant, as for the web chat. Callers that pass it are unchanged.
+
 ## 1.78.0 — 2026-11-20
 
 Additive (#2053, epic #2042, spec 2042 §5.10, ADR-0014/0017): the plugin

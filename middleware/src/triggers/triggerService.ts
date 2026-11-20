@@ -8,6 +8,7 @@
 import { evaluatePredicate } from '@omadia/conductor-core';
 import type { JsonObject, Predicate } from '@omadia/conductor-core';
 
+import { asChannelKeyOf } from './ownBot.js';
 import { validateTriggerRequest, type TriggerEnvelope, type TriggerLimits } from './triggerPolicy.js';
 import { eventOccurrenceKey, firstDue, nextDue, runsUntil } from './triggerSchedule.js';
 import type { CreateResult, TriggerStore } from './triggerStore.js';
@@ -143,6 +144,13 @@ export class TriggerService {
     const authorId = typeof payload['authorId'] === 'string' ? payload['authorId'] : undefined;
     const channel = typeof payload['channelType'] === 'string' ? payload['channelType'] : undefined;
     if (authorId && channel && this.deps.isOwnAuthor?.(hook.agentSlug, channel, authorId)) return false;
+    // A hook set on an agent's own bot hears only what that bot received: a
+    // Telegram DM has the same chat id with every bot (spec 2042 §5.3).
+    const hookBot = asChannelKeyOf(hook.deliveryRef);
+    if (hookBot !== undefined) {
+      const heardBy = typeof payload['receivedByChannelKey'] === 'string' ? payload['receivedByChannelKey'].trim().toLowerCase() : undefined;
+      if (heardBy !== hookBot) return false;
+    }
     // A hook bound to a conversation or meeting hears only that one.
     if ((hook.contextKind === 'conversation' || hook.contextKind === 'meeting') && conversationId !== undefined) {
       if (conversationPart(hook.contextId) !== conversationId) return false;

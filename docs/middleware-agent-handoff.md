@@ -148,6 +148,87 @@ src/
 - **Endpoints:** `/api/v1/operator/default-agents`,
   `/api/v1/operator/agents/:slug/availability`, `/api/v1/agents/directory`.
 
+### Eigener Bot pro Agent auf jedem Kanal (Spec 2042 §5.3, §8 Punkt 20, S7)
+
+- **Ein Agent kann pro Kanal einen eigenen Bot haben** (Telegram: BotFather-Bot,
+  Discord: eigene Application, Slack: eigene App). Wer diesem Bot schreibt, spricht
+  mit genau diesem Agenten; der Agent postet über ihn, mit Name und Avatar der
+  Plattform und ohne Namenszeile. Ohne eigenen Bot bleibt der gemeinsame Bot mit
+  `/agent` und Namenszeile.
+- **Datenmodell:** `agent_channel_identities` (Migration 0105): (agent, channel_type,
+  channel_key), `channel_type <> 'teams'` (Teams bleibt in `agent_teams_identities`
+  mit eigener Provisionierungskette), Key lowercase, ein Bot pro Agent und Kanal,
+  ein Bot gehört genau einem Agenten, Trigger `notify_agents_changed`. **Kein
+  Credential im Kernel:** der Token liegt im Vault des Kanal-Plugins.
+- **Routing liest die Union** (`ConfigStore.listChannelIdentities`: Teams `28:<appId>`
+  + 0105). Damit gelten `identityForChannel`, `identityOwnerFor`, `channelIdentityFor`,
+  ManagementRouter-Stufe 1 (`identity`, exklusiv), Tombstones und `asChannelKey`-Sends
+  unverändert für alle Kanäle. `/agent` an einen eigenen Bot beantwortet der
+  Management-Layer mit der Notice `agent_own_bot` und speichert keine Auswahl.
+- **Bot-Keys (verbindlich):** Telegram `tg:<botId>`, Discord `discord-app:<appId>`,
+  Slack `slack-bot:<member id>` (lowercase). Derselbe String ist Routing-Key,
+  `asChannelKey` und `receivedByChannelKey`.
+- **SDK-Vertrag:** `CoreApi.registerAgentIdentityProvider(channelId, AgentIdentityProvider)`
+  (`harness-channel-sdk/src/agentIdentity.ts`): `fields`, `identify` (prüft die
+  Zugangsdaten und nennt den Key, **ohne** Seiteneffekt), `provision(input, key)`
+  (speichert und startet; nur für einen freien Bot, nachdem der Kernel Default-Bot
+  und Besitzer geprüft hat), `release`, `status?`, `defaultChannelKey?`,
+  `presentIn?` (3 s Timeout im Kernel). Kanal-Claim und Deactivate wie bei den anderen Providern; `teams`
+  wird abgelehnt. Die Kernel-Registry ist `ChannelProviderRegistry<AgentIdentityProvider>`
+  (`src/index.ts`); `defaultChannelBotKey` (Conductor) und `presentBots`
+  (`get_chat_participants`) fragen außerhalb von Teams den Provider.
+- **Operator-API** (`src/routes/operatorAgentChannelIdentities.ts`,
+  Service `src/platform/agentChannelIdentityService.ts`):
+  `GET /api/v1/operator/agents/:slug/channel-identities` (Kanäle, Felder, Bot mit
+  Status), `PUT …/:channelType` `{credentials}` (201 / 400 invalid_input / 404
+  channel_not_available / 409 agent_has_identity|bot_taken|already_in_use / 422
+  invalid_credentials / 502 unreachable; 409 `preview_draft_agent` für den Entwurfsagenten
+  einer Plugin-Builder-Vorschau), `DELETE …/:channelType` (stoppt den Bot
+  zuerst, dann geht die Zeile; `released: false`, wenn das Plugin nicht aktiv war).
+  Audit `agent.channel_identity.set|delete`, auch abgelehnte Versuche (nur Code).
+  Der Purge eines gelöschten Agenten (`POST /deleted/:id/purge`) stoppt zuerst
+  seine Bots (`releaseAll`) und wartet (502 `channel_identity_release_failed`),
+  wenn ein aktives Plugin einen Bot nicht stoppen kann.
+- **web-ui:** Tab „Kanäle“ der Agent-Seite, Abschnitt „Eigene Bots“
+  (`AgentChannelIdentities.tsx`, Felder vom Plugin, Secrets nur schreibbar).
+- **Kanaltypen vom Server:** `GET /api/v1/operator/agents/plugin-catalog` liefert für
+  Kanal-Plugins `channel_types` (die Typen, die das aktive Plugin beim Registrieren
+  geclaimt hat, sonst `deriveChannelType` der ID; der API-Kanal bindet bewusst unter
+  `@omadia/channel-api`). Default-Agent-Tabelle, Binding-Formular und Routing-Tester
+  bieten nur diese an (`web-ui/app/_lib/channelTypes.ts`), nie eine geratene Plugin-ID.
+- **Sprache der Notices:** `ChatTurnInput.locale` (additiv). Der Management-Layer
+  füllt sie aus der Resolve-Locale; der Identity-Guard formuliert seine Notice darin
+  vor der Agent- bzw. Instanzsprache.
+- **Plugins:** omadia-channel-telegram, -discord, -slack, je Branch
+  `feat/2042-s7-own-bots`. Ein Agent-Bot routet nur auf seinen eigenen Key und
+  antwortet nur bei `exclusive`; sonst eine `system`-Notice, nie ein anderer Agent.
+  Telegram: Gruppenaktivierung pro Bot, DM-Pairing geteilt (das Pairing sagt, welcher
+  Telegram-Nutzer welche Person ist; das ist keine Eigenschaft eines Bots).
+- **Welche Wege über den eigenen Bot gehen:** Conversation-Send, Targeted Send, der
+  Say-Service, Roster und Karten-Updates (alle über `channelIdentityFor` /
+  `asChannelKey`) und **Trigger- und Routine-Zustellungen**:
+  - Die Kanal-Plugins öffnen bei jedem Turn den Routinen-Kontext
+    (`routinesIntegration.beginRoutineTurn`, ohne `tenant` → Deployment-Tenant) mit
+    dem Delivery-Ref `{ kind: 'channel', channelId, conversationId, asChannelKey? }`;
+    `asChannelKey` ist der Bot-Key, wenn der Turn über den eigenen Bot kam. Erst damit
+    bekommt der Agent dort Trigger-Tools und `manage_routine`.
+  - Sie registrieren `publishProactiveSend(<typ>, …)` und posten über genau den Bot
+    des Refs; die Nachricht trägt jetzt `speaker` (gemeinsamer Bot: Namenszeile wie
+    bei einer Antwort; Agent-Bot: keine).
+  - `ownBotRefusal` (`src/triggers/ownBot.ts`): ein Ref mit `asChannelKey` wird nur
+    zugestellt, solange `channelIdentityFor(agent, kanal)` genau dieser Bot ist. Geprüft
+    im Trigger-Gate vor dem Modell-Turn (`sendWindow` → `bot_no_longer_agents`) und
+    beim Senden, im `RoutineRunner` vor dem Turn (`deliveryRefusal`, pausiert die
+    Routine, auch bei „jetzt ausführen“).
+  - Ein Hook auf einem eigenen Bot hört nur, was dieser Bot empfangen hat
+    (`receivedByChannelKey` im Event-Payload; Telegram-DMs haben mit jedem Bot dieselbe
+    Chat-ID).
+  - Die Plugins setzen `conductorBinding: false`: Gruppen und Agent-Bots werden nie
+    das Conductor-Erinnerungsziel einer Person. Den Disposer von
+    `publishProactiveSend` rufen sie beim Deaktivieren auf.
+  - `isOwnAuthor` vergleicht über `isOwnBotAuthor` (`src/triggers/ownBot.ts`): Key ==
+    Autor-ID oder Key endet auf `:<Autor-ID>` (`tg:`, `discord-app:`, `slack-bot:`).
+
 ### Orchestrator
 
 - **Datei:** `services/orchestrator.ts`
@@ -5960,6 +6041,9 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   „Daten-Seitenkanal“ und der Abschnitt „Fast Lane“. Offen daraus: proaktive
   Nachrichten in einen anderen Kontext als den Ursprung erst mit
   Diskretions-Labels (S5).
+  - **S7 eigener Bot pro Agent: gebaut**, einschließlich Trigger- und
+    Routine-Zustellungen über den eigenen Bot; siehe §3 „Eigener Bot pro Agent auf
+    jedem Kanal“. Offen: Live-Test mit echten Bots (Telegram, Discord, Slack).
   - **S5 Rückfrage + Diskretion (#2047, #2079): Kernel gebaut**, siehe Abschnitt
     „Rückfrage statt Delegation + Diskretion“ am Ende; Residuen dort unter „Offen“
     (Existenz-Probe, Streaming-Ausgang, CLI-Pfad, MCP in Rückfragen,

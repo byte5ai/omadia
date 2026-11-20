@@ -136,10 +136,13 @@ export class ChannelResolver {
           slug: active.agent.slug,
           agentId: active.agent.id,
         });
+        const ownBot = exclusive
+          ? { ownBotOf: { slug: active.agent.slug, displayName: speakerFor(active.agent).displayName, agentId: active.agent.id } }
+          : {};
         return {
           decision: 'bound',
           agent: active,
-          chatAgent: managementChatAgent(active.built.bundle.agent, turn),
+          chatAgent: managementChatAgent(active.built.bundle.agent, { ...turn, ...ownBot }),
           speaker: speakerFor(active.agent),
           exclusive,
           match: outcome.match,

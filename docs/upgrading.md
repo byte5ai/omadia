@@ -356,6 +356,27 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.210.0 — agents' own bots on Telegram, Discord and Slack
+
+Spec 2042 §5.3, §5.12 (S7), plugin-api 1.79.0, additive. Migration
+`0105_agent_channel_identities` runs on boot.
+
+1. **Operators:** an agent can get its own bot per channel under **Operator →
+   Agents → the agent → Channels → Own bots**. It needs the channel plugin
+   versions that declare `compat.core: ">=1.79.0 <2.0"` (Telegram, Discord,
+   Slack). Without an own bot nothing changes: the shared bot with `/agent`
+   and the name line.
+2. **Behaviour change:** with those plugin versions every Telegram, Discord and
+   Slack turn opens the routines scope, so agents there are offered the
+   trigger tools and `manage_routine` (as in Teams and the web chat), and
+   deliveries go out through the bot the conversation came through. The
+   trigger limits and the kill switch apply unchanged (`TRIGGERS_ENABLED`).
+   These turns do not become the person's Conductor reminder target
+   (`conductorBinding: false`), so reminders and approvals still go where
+   they went before.
+3. **Purging a deleted agent** stops its own bots first; it answers `502
+   channel_identity_release_failed` when an active plugin cannot stop one.
+
 ## Upgrading past v0.210.0 — plugin kinds, the model gateway and the plugin network sandbox
 
 Spec 2042 §5.10 (#2053), plugin-api 1.78.0, expand step: everything new is

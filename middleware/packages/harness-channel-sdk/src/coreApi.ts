@@ -7,6 +7,7 @@ import type { PeopleDirectoryProvider } from './peopleDirectory.js';
 import type { ConversationMembershipEvent } from './membershipEvent.js';
 import type { TargetedSendProvider } from './targetedSend.js';
 import type { ConversationSendProvider } from './conversationSend.js';
+import type { AgentIdentityProvider } from './agentIdentity.js';
 import type { ConversationMessageEvent } from './conversationMessage.js';
 import type {
   ChannelReadinessProvider,
@@ -229,6 +230,14 @@ export interface CoreApi {
    * lifecycle as {@link registerTargetedSendProvider}.
    */
   registerConversationSendProvider?(channelId: string, provider: ConversationSendProvider): void;
+
+  /**
+   * Register the channel's per-agent bots (spec 2042 §5.3): the plugin can run
+   * one bot per agent next to its default bot. Optional — same feature-detect
+   * + deactivate lifecycle as {@link registerRosterProvider}; one provider per
+   * channel type, the first registrant owns it. See {@link AgentIdentityProvider}.
+   */
+  registerAgentIdentityProvider?(channelId: string, provider: AgentIdentityProvider): void;
 
   /**
    * Emit an inbound conversation message (#2043): every human message, edit,

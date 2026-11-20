@@ -11,6 +11,7 @@ import type { Pool } from 'pg';
 import type { AuditEntryInput } from '../auth/adminAuditLog.js';
 import { systemAuditActor } from '../auth/adminAuditLog.js';
 import type { ProactiveSenderRegistry } from '../plugins/routines/proactiveSender.js';
+import { isOwnBotAuthor } from './ownBot.js';
 import { routineTurnContext } from '../plugins/routines/routineTurnContext.js';
 import { WEB_ROUTINE_CHANNEL } from '../plugins/routines/webChatProactiveSender.js';
 import { createDataActionRunner, type ReadToolsOf } from './dataActions.js';
@@ -128,7 +129,14 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
   const profiles = new RecipientProfileStore(deps.pool);
   const dataActions = createDataActionRunner(deps.readToolsOf, deps.dataPlanGuardOf);
   const clock = deps.now ?? (() => new Date());
-  const gate = createProactiveGate({ profiles, defaults: deps.recipientDefaults, senders: deps.senders, now: clock, log: deps.log });
+  const gate = createProactiveGate({
+    profiles,
+    defaults: deps.recipientDefaults,
+    senders: deps.senders,
+    ...(deps.ownChannelKey ? { ownChannelKey: deps.ownChannelKey } : {}),
+    now: clock,
+    log: deps.log,
+  });
 
   const eventSources = (agentSlug: string): readonly EventSource[] => {
     const catalog = deps.eventCatalog();
@@ -149,7 +157,7 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
     // A proactive message goes to the conversation it was born in, nowhere
     // else, until discretion labels can tell what may flow where (INV-9).
     targetAllowed: () => false,
-    isOwnAuthor: (slug, channel, authorId) => deps.ownChannelKey?.(slug, channel) === authorId,
+    isOwnAuthor: (slug, channel, authorId) => isOwnBotAuthor(deps.ownChannelKey?.(slug, channel), authorId),
     now: clock,
     log: deps.log,
   });

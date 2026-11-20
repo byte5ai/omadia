@@ -3396,6 +3396,7 @@ orchestratorProfile?: RoutineOrchestratorProfile;
 
 // ===== routinesIntegration.d.ts =====
 import type { ApprovalReminder } from './conductorApproval.js';
+import type { Speaker } from './speaker.js';
 export declare const ROUTINES_INTEGRATION_SERVICE_NAME = "routinesIntegration";
 export interface RoutineCardAttachment {
 contentType: string;
@@ -3420,10 +3421,11 @@ lastRunStatus: 'ok' | 'error' | 'timeout' | null;
 }
 export type RoutineTurnRunner = <T>(fn: () => Promise<T>) => Promise<T>;
 export interface RoutineTurnInput {
-tenant: string;
+tenant?: string;
 userId: string;
 channel: string;
 conversationRef: unknown;
+conductorBinding?: boolean;
 principalRef?: string;
 canTargetOthers?: boolean;
 }
@@ -3435,11 +3437,12 @@ publishProactiveSend(channel: string, send: (conversationRef: unknown, message: 
 text: string;
 cardBody?: readonly unknown[];
 approval?: ApprovalReminder;
+speaker?: Speaker;
 }, routine?: {
 id: string;
 name: string;
 cron: string;
-}) => Promise<void>): void;
+}) => Promise<void>): (() => void) | void;
 handleRoutineAction(input: {
 action: 'pause' | 'resume' | 'trigger_now' | 'delete';
 id: string;
@@ -3602,7 +3605,7 @@ export declare function isAgentSpeaker(speaker: Speaker | undefined): speaker is
 export declare function isSystemSpeaker(speaker: Speaker | undefined): speaker is SystemSpeaker;
 export declare const EMISSION_TYPES: readonly ["prose", "template", "data", "system"];
 export type EmissionType = (typeof EMISSION_TYPES)[number];
-export declare const SYSTEM_NOTICE_CODES: readonly ["agent_disabled", "agent_deleted", "agent_unknown", "agent_not_available", "no_agent", "agent_selected", "agent_selection_cleared", "agent_directory", "agent_error", "missing_grant", "quota_exceeded", "identity_guard_blocked", "identity_guard_unavailable"];
+export declare const SYSTEM_NOTICE_CODES: readonly ["agent_disabled", "agent_deleted", "agent_unknown", "agent_not_available", "no_agent", "agent_selected", "agent_selection_cleared", "agent_directory", "agent_error", "missing_grant", "quota_exceeded", "identity_guard_blocked", "identity_guard_unavailable", "agent_own_bot"];
 export type SystemNoticeCode = (typeof SYSTEM_NOTICE_CODES)[number];
 export interface NoticeAgentRef {
 readonly slug: string;

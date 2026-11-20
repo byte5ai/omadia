@@ -123,6 +123,19 @@ describe('speaker stamping (#2045)', () => {
 });
 
 describe('identity guard at the agent boundary (#2046)', () => {
+  it('the notice is written in the turn’s language, not the agent’s (Teams chat in English)', async () => {
+    const agent = bundle('Ich bin der Strategist und empfehle Österreich.');
+    const answer = await agent.chat({ userMessage: 'x', locale: 'en' });
+    assert.equal(answer.systemNotice?.code, 'identity_guard_blocked');
+    assert.equal(answer.systemNotice?.locale, 'en');
+    assert.match(answer.text, /answer was withheld/);
+    let done: Extract<ChatStreamEvent, { type: 'done' }> | undefined;
+    for await (const event of agent.chatStream({ userMessage: 'x', locale: 'en' })) if (event.type === 'done') done = event;
+    assert.equal(done?.systemNotice?.locale, 'en');
+    // without a turn language the agent's (here German) stays
+    assert.equal((await agent.chat({ userMessage: 'x' })).systemNotice?.locale, 'de');
+  });
+
   it('non-streaming: a claim to be another agent becomes a system notice', async () => {
     const answer = await bundle('Ich bin der Strategist und empfehle Österreich.').chat({ userMessage: 'x' });
     assert.deepEqual(answer.speaker, SYSTEM_SPEAKER);

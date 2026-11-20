@@ -177,6 +177,12 @@ interface AgentPluginCatalogEntry {
    *  operator dashboard to indent dependants under their parent in the
    *  plugin multi-select. */
   readonly depends_on: readonly string[];
+  /**
+   * A channel plugin's channel types as the kernel routes them (`discord`,
+   * not the plugin id `@omadia/channel-discord`): what the default-agent
+   * table, bindings and the routing tester offer. Channel plugins only.
+   */
+  readonly channel_types?: readonly string[];
   /** #2054 — a capability plugin (`capabilityPlugins.ts`): the only kind the
    *  install flow offers to grant to agents. */
   readonly capability: boolean;
@@ -1725,6 +1731,18 @@ async function republishTeamsPackage(
 }
 
 export interface OperatorAgentsRouterOptions {
+  /** The channel types of a channel plugin (see `AgentPluginCatalogEntry.channel_types`). */
+  channelTypesOf?: ((pluginId: string) => readonly string[]) | undefined;
+  /**
+   * Spec 2042 §5.3 — before an agent is purged for good: ask the channel
+   * plugins to stop the agent's own bots and forget their credentials (the
+   * identity rows go with the agent row). `ok: false` = an active plugin could
+   * not stop a bot, and the purge waits; `notReleased` = bots whose plugin is
+   * not active (their credentials may still be in that plugin's vault).
+   */
+  releaseChannelIdentities?:
+    | ((agentId: string) => Promise<{ ok: boolean; failed: readonly string[]; notReleased: readonly string[] }>)
+    | undefined;
   /** Late-bound lookups so the router survives orchestrator-plugin
    *  re-activation. Each returns undefined when the orchestratorRegistry
    *  service is not currently published (no DATABASE_URL / first boot
@@ -2481,16 +2499,27 @@ export function createOperatorAgentsRouter(
         });
         return;
       }
+      // The agent's own bots are stopped first; a bot an active plugin cannot
+      // stop would keep running with nobody behind it.
+      const bots = (await options.releaseChannelIdentities?.(tombstone.id)) ?? { ok: true, failed: [], notReleased: [] };
+      if (!bots.ok) {
+        res.status(502).json({
+          error: 'channel_identity_release_failed',
+          message: `the agent's own bots could not be stopped (${bots.failed.join(', ')}); nothing was purged — try again`,
+          failed: bots.failed,
+        });
+        return;
+      }
       const purged = await live.store.purgeAgent(tombstone.id);
       await recordAudit({
         actor: auditActorFromRequest(req),
         action: 'agent.purge',
         target: `agent:${tombstone.id}`,
         before: { slug: tombstone.slug, name: tombstone.name, archetype: tombstone.archetype, deleted_at: tombstone.deletedAt },
-        after: { purged },
+        after: { purged, ...(bots.notReleased.length > 0 ? { bots_not_released: bots.notReleased } : {}) },
       });
       await live.registry.reload();
-      res.json({ ok: purged });
+      res.json({ ok: purged, ...(bots.notReleased.length > 0 ? { bots_not_released: bots.notReleased } : {}) });
     } catch (err) {
       badRequest(res, err);
     }
@@ -4835,6 +4864,9 @@ export function createOperatorAgentsRouter(
             network_outbound: summary?.network_outbound ?? [],
             setup_fields: p.setup_fields ?? [],
             depends_on: p.depends_on ?? [],
+            ...(p.kind === 'channel' && options.channelTypesOf
+              ? { channel_types: options.channelTypesOf(p.id) }
+              : {}),
             capability: isCapabilityPlugin(p),
           } satisfies AgentPluginCatalogEntry;
         });

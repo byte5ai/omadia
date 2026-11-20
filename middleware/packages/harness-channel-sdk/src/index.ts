@@ -69,6 +69,18 @@ export type {
 } from '@omadia/plugin-api';
 // #330 C3b - conversation-addressed proactive send (group nudges).
 export type { ConversationSendOptions, ConversationSendProvider } from './conversationSend.js';
+export type {
+  AgentIdentityDescription,
+  AgentIdentityField,
+  AgentIdentityIdentifyOutcome,
+  AgentIdentityProvider,
+  AgentIdentityProvisionInput,
+  AgentIdentityProvisionOutcome,
+  AgentIdentityRefusal,
+  AgentIdentityRefusalCode,
+  AgentIdentityStatus,
+} from './agentIdentity.js';
+export { normalizeAgentIdentityKey } from './agentIdentity.js';
 // #2043 - native facilitators: authenticated inbound messages, readiness and
 // per-session capabilities.
 export type { ConversationMessageEvent } from './conversationMessage.js';

@@ -610,6 +610,14 @@ export interface ChatTurnInput {
    */
   userTimeZone?: string;
   /**
+   * Spec 2042 §5.3 — the language of the conversation as the channel knows it
+   * (`de`, `en`, `en-US`), for the management layer's and the identity
+   * guard's `system` notices: a notice is written in the language the sender
+   * writes in, not in the agent's or the instance's. The management layer
+   * fills it from the resolve call's `locale` when the channel did not set it.
+   */
+  locale?: string;
+  /**
    * Inbound attachments from the channel (S+7.7+). Today only image
    * kinds reach the model — vision-capable Claude builds a multimodal
    * `content[]` array combining each image with the userMessage. Other

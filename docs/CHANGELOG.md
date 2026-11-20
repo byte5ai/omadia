@@ -36,6 +36,46 @@ changelog.
 
 ## [Unreleased]
 
+### Added — An agent's own bot on Telegram, Discord and Slack (epic #2042, S7)
+
+- **Migration 0105 `agent_channel_identities`:** (agent, channel type, routing key)
+  for an agent's own bot on channels other than Teams; no credential column, the
+  token stays in the channel plugin's vault. Routing reads it together with
+  `agent_teams_identities`, so a turn through the bot goes to its agent and to
+  nobody else, and the agent answers and posts through it (`asChannelKey`:
+  conversation and targeted sends, rosters, card updates, and trigger and
+  routine deliveries).
+- **Triggers and routines on Telegram, Discord and Slack:** the channel plugins
+  open the kernel's routines scope on every turn (`beginRoutineTurn`), so agents
+  get the trigger tools and `manage_routine` there too, and register a proactive
+  send. A delivery goes out through the bot the conversation came through
+  (`asChannelKey` on the delivery ref); the proactive gate delivers such a ref
+  only while that bot is still the agent's. `publishProactiveSend` now passes the
+  message's `speaker`; `RoutineTurnInput.tenant` is optional (deployment tenant).
+  The check runs before the model turn (trigger send window; the routine runner
+  pauses a routine whose bot is no longer its agent's, also on "trigger now").
+  A hook never hears the agent's own bot (`isOwnAuthor` matches `tg:`,
+  `discord-app:`, `slack-bot:` keys against the raw author id), and a hook set
+  on an own bot hears only what that bot received (`receivedByChannelKey`).
+  These turns pass `conductorBinding: false` (no Conductor reminder target);
+  `publishProactiveSend` returns a disposer the plugins call on deactivation.
+- **Channel SDK:** `registerAgentIdentityProvider` / `AgentIdentityProvider`
+  (additive). **Operator API:** `GET/PUT/DELETE
+  /api/v1/operator/agents/:slug/channel-identities[/:channelType]`, audited.
+  **web-ui:** the agent's "Teams" tab is now "Channels" with an "Own bots" section.
+  Purging a deleted agent stops its own bots first and says which ones it could
+  not stop. A Plugin Builder preview's draft agent never gets a bot (`409`).
+- **`@omadia/plugin-api` 1.79.0 (additive):** `SystemNoticeCode` `agent_own_bot`,
+  the answer to `/agent` sent to an agent's own bot; the optional `speaker` on a
+  `publishProactiveSend` message; `RoutineTurnInput.tenant` optional. Channel
+  plugins with own bots declare `compat.core: ">=1.79.0 <2.0"`. Upgrade notes:
+  `docs/upgrading.md`.
+- **Live findings of the S6 Teams rollout:** `/agent` in a provisioned Teams agent's
+  own bot chat now answers `agent_own_bot` (no selection stored); the identity
+  guard's notice is written in the turn's language (`ChatTurnInput.locale`, additive);
+  the operator UI offers channel types the server names (`plugin-catalog`
+  `channel_types`) instead of plugin ids such as `channel-discord`.
+
 ### Changed — Trigger firings run in their agent's turn context (#2082, #2053, epic #2042): S4 follow-up
 
 - Every trigger firing now runs in its agent's turn context of the model

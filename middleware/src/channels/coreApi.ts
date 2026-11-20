@@ -1,6 +1,7 @@
 import type { RequestHandler, Router } from 'express';
 
 import type {
+  AgentIdentityProvider,
   ChatStreamEvent,
   ChannelSocketHandler,
   ChannelUserRef,
@@ -187,6 +188,8 @@ export interface CreateCoreApiOptions {
    *  roster registry; and where pushed snapshots and session events go. */
   readinessProviders?: ChannelProviderRegistry<ChannelReadinessProvider>;
   meetingSources?: ChannelProviderRegistry<MeetingSourceProvider>;
+  /** Spec 2042 §5.3 — per-agent bots, same lifecycle as the roster registry. */
+  agentIdentities?: ChannelProviderRegistry<AgentIdentityProvider>;
   sessionCapabilities?: Pick<SessionCapabilityHub, 'emitSnapshot' | 'emitSessionEvent'>;
   /**
    * #1086 — routines principal producer. Present only when the routines
@@ -425,6 +428,17 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
     const meetingSources = opts.meetingSources;
     api.registerMeetingSourceProvider = (channelId: string, provider: MeetingSourceProvider): void => {
       meetingSources.register(channelId, provider);
+    };
+  }
+  if (opts.agentIdentities) {
+    const agentIdentities = opts.agentIdentities;
+    api.registerAgentIdentityProvider = (channelId: string, provider: AgentIdentityProvider): void => {
+      // A Teams bot is provisioned through the Microsoft 365 chain
+      // (`agent_teams_identities`), never registered by the plugin itself.
+      if (provider.channelType === 'teams') {
+        throw new Error(`channel '${channelId}' cannot register agent identities for 'teams': Teams bots are provisioned by the kernel`);
+      }
+      agentIdentities.register(channelId, provider);
     };
   }
   if (opts.sessionCapabilities) {

@@ -234,6 +234,12 @@ export interface RoutineRunnerOptions {
    */
   getOrchestrator: (agentSlug: string | null) => OrchestratorLike | undefined;
   senderRegistry: ProactiveSenderRegistry;
+  /**
+   * Spec 2042 §5.3 — why a routine's delivery may not go out (its ref names a
+   * bot that is no longer the routine's agent's own), or undefined. Checked
+   * before the agent turn; a refusal pauses the routine like a gone target.
+   */
+  deliveryRefusal?: (routine: { agentSlug: string | null; channel: string; conversationRef: unknown }) => string | undefined;
   log?: (msg: string) => void;
   /** Override the per-user active-routine cap. */
   maxActivePerUser?: number;
@@ -257,11 +263,32 @@ export interface RoutineRunnerOptions {
  * `JobValidationError` on malformed input. The tool layer translates
  * those errors into user-facing messages.
  */
+/**
+ * Spec 2042 §5.3 — the routine's conversation runs through a bot that is no
+ * longer its agent's own. Its words would appear as another agent's (or
+ * through a bot nobody stands behind): never delivered, the routine pauses.
+ */
+class OwnBotDeliveryRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OwnBotDeliveryRefusedError';
+  }
+}
+
+// The chat can be gone from the server yet still live in a browser (its first
+// PUT failed, or another device deleted it): loading the chat there stores it
+// again, and the routine can simply be resumed.
+const WEB_CHAT_PAUSE_ADVICE =
+  'if the chat still exists in your browser, open it and resume the routine; otherwise delete the routine and create it again from an existing conversation';
+const OWN_BOT_PAUSE_ADVICE =
+  "resume it once the bot is the agent's own again, or delete it and create it again in a conversation with the agent";
+
 export class RoutineRunner {
   private readonly store: RoutineStore;
   private readonly runsStore: RoutineRunsStore;
   private readonly scheduler: JobSchedulerLike;
   private readonly getOrchestrator: (agentSlug: string | null) => OrchestratorLike | undefined;
+  private readonly deliveryRefusal: RoutineRunnerOptions['deliveryRefusal'];
   private readonly senders: ProactiveSenderRegistry;
   private readonly log: (msg: string) => void;
   private readonly maxActivePerUser: number;
@@ -275,6 +302,7 @@ export class RoutineRunner {
     this.scheduler = opts.scheduler;
     this.getOrchestrator = opts.getOrchestrator;
     this.senders = opts.senderRegistry;
+    this.deliveryRefusal = opts.deliveryRefusal;
     this.log = opts.log ?? ((msg) => console.log(msg));
     this.maxActivePerUser =
       opts.maxActivePerUser ?? DEFAULT_MAX_ACTIVE_PER_USER;
@@ -649,6 +677,12 @@ export class RoutineRunner {
       // chat) fails here, BEFORE the agent turn: otherwise every cron fire
       // would run a full turn whose output nobody can receive.
       await sender.checkDeliverable?.(fresh.conversationRef);
+      const refused = this.deliveryRefusal?.({
+        agentSlug: fresh.agentSlug ?? null,
+        channel: fresh.channel,
+        conversationRef: fresh.conversationRef,
+      });
+      if (refused) throw new OwnBotDeliveryRefusedError(refused);
 
       if (signal.aborted) {
         status = 'timeout';
@@ -705,6 +739,8 @@ export class RoutineRunner {
       errorMessage = errMsg(err);
       if (err instanceof ProactiveTargetGoneError) {
         errorMessage = await this.pauseOrphanedRoutine(routine.id, errorMessage);
+      } else if (err instanceof OwnBotDeliveryRefusedError) {
+        errorMessage = await this.pauseOrphanedRoutine(routine.id, errorMessage, OWN_BOT_PAUSE_ADVICE);
       }
       this.log(
         `[routines/runner] routine ${routine.id} ('${routine.name}') ${status}: ${errorMessage}`,
@@ -750,15 +786,12 @@ export class RoutineRunner {
    * says the routine was paused. A failed pause is logged, never thrown:
    * the run is still recorded, and the next fire's pre-flight tries again.
    */
-  private async pauseOrphanedRoutine(id: string, reason: string): Promise<string> {
+  private async pauseOrphanedRoutine(id: string, reason: string, advice = WEB_CHAT_PAUSE_ADVICE): Promise<string> {
     try {
       const paused = await this.store.setStatus(id, 'paused');
       if (!paused) return reason;
       this.unregisterFromScheduler(id);
-      // The chat can be gone from the server yet still live in a browser
-      // (its first PUT failed, or another device deleted it): loading the
-      // chat there stores it again, and the routine can simply be resumed.
-      return `${reason}; the routine was paused — if the chat still exists in your browser, open it and resume the routine; otherwise delete the routine and create it again from an existing conversation`;
+      return `${reason}; the routine was paused — ${advice}`;
     } catch (err) {
       this.log(`[routines/runner] could not pause orphaned routine ${id}: ${errMsg(err)}`);
       return reason;
