@@ -14,12 +14,12 @@ import {
  * manifest of a capability plugin or an `agent-template` package.
  *
  * What goes in: the agent's archetype, its name, its authored identity
- * (descriptions, instructions, language, persona, quality) and the ids of
- * the capability plugins it is granted. What never goes in: the avatar,
+ * (descriptions, instructions, language, verbosity, persona, quality) and the
+ * ids of the capability plugins it is granted. What never goes in: the avatar,
  * plugin configuration (it may hold credentials), memory, channel bindings,
  * availability, model policy, or anything else about the running agent.
- * The template format has no field for verbosity or accent colour; those
- * stay with the agent.
+ * The template format has no field for the accent colour; it stays with the
+ * agent.
  */
 
 export interface AgentTemplateExportInput {
@@ -72,6 +72,7 @@ export function agentTemplateFromAgent(input: AgentTemplateExportInput): AgentTe
     long_description: present(i?.longDescription),
     instructions: present(i?.instructions),
     language: present(i?.language),
+    verbosity: i?.verbosity ?? undefined,
     persona: i?.persona ?? undefined,
     quality: i?.quality ?? undefined,
   };

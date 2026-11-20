@@ -86,6 +86,7 @@ const PREFILL: AgentTemplatePrefillDto = {
     long_description: null,
     instructions: 'You are the HR colleague.',
     language: 'de',
+    verbosity: 'brief',
     persona: { axes: { warmth: 80 } },
     quality: null,
   },
@@ -175,7 +176,6 @@ describe('NewAgentDialog', () => {
     expect(m.saveAgentIdentity).toHaveBeenCalledWith('hanna', {
       ...PREFILL.identity,
       accent_color: null,
-      verbosity: null,
     });
     expect(m.setAgentAvailability).toHaveBeenCalledWith('hanna', {
       everyone: true,

@@ -139,7 +139,7 @@ export function NewAgentDialog({ onClose, onCreated }: NewAgentDialogProps): Rea
           ...(description.trim() ? { description: description.trim() } : {}),
           archetype: prefill?.agent.archetype ?? STANDARD_ARCHETYPE,
         },
-        identity: prefill ? { ...prefill.identity, accent_color: null, verbosity: null } : null,
+        identity: prefill ? { ...prefill.identity, accent_color: null } : null,
         availability,
         pluginIds: [...chosen],
         enable,

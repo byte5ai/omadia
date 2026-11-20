@@ -165,13 +165,14 @@ describe('#2049 — export an agent as an agent template', () => {
       long_description: 'Audits pages and explains what to fix first.',
       instructions: 'You are the SEO analyst of the marketing team.',
       language: 'de',
+      verbosity: 'brief',
       persona: { template: 'research-analyst', axes: { directness: 70, warmth: 40 } },
       quality: { sycophancy: 'high', boundaries: { presets: ['no-pii'], custom: [] } },
       // The disabled grant and the channel plugin are no capability of it.
       capabilities: [ODOO],
     });
     assert.equal(text.includes(SECRET), false, 'plugin configuration never leaves');
-    for (const leak of ['avatar', 'composed', 'revision', 'accent_color', 'verbosity', 'bindings', 'memory']) {
+    for (const leak of ['avatar', 'composed', 'revision', 'accent_color', 'bindings', 'memory']) {
       assert.equal(text.includes(leak), false, `no ${leak}`);
     }
   });
@@ -212,6 +213,7 @@ describe('#2049 — export an agent as an agent template', () => {
         long_description: SEO_IDENTITY.longDescription,
         instructions: SEO_IDENTITY.instructions,
         language: SEO_IDENTITY.language,
+        verbosity: SEO_IDENTITY.verbosity,
         persona: SEO_IDENTITY.persona,
         quality: SEO_IDENTITY.quality,
       });

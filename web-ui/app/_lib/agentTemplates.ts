@@ -41,6 +41,7 @@ export interface AgentTemplatePrefillDto {
     | 'short_description'
     | 'long_description'
     | 'instructions'
+    | 'verbosity'
     | 'persona'
     | 'quality'
   > & { language: string | null };
@@ -75,6 +76,7 @@ export interface AgentTemplateEntryDto {
   long_description?: string;
   instructions?: string;
   language?: string;
+  verbosity?: string;
   persona?: Record<string, unknown>;
   quality?: Record<string, unknown>;
   capabilities?: string[];
