@@ -130,6 +130,10 @@ src/
   `channelUserPrincipal` / `turnPrincipal` aus `@omadia/channel-sdk`.
 - **Notices:** `management/systemNotices.ts` (registrierte Vorlagen de/en,
   Speaker `system`).
+- **Agentenauswahl pro Gespräch** hängt am engsten Gesprächsschlüssel des
+  Turns (`channelKey` des Resolve-Aufrufs, z. B. der Slack-Channel bzw. Thread,
+  nicht der Workspace) und am Principal des Absenders; im Web-Chat
+  `session:<id>`.
 - **Speaker:** `buildOrchestratorForAgent` wickelt jedes Agent-Bundle außen in
   `withSpeaker(withIdentityGuard(…))`; `AgentAnswerEmitter`
   (`management/answerEmitter.ts`) ist der typisierte Emitter pro Agent
@@ -5639,7 +5643,11 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 - **Offen (S1, Spec 2042):** Gruppen (`role:<key>`) in der Verfügbarkeit
   brauchen eine synchrone Rollenmitgliedschaft (`ChannelResolver`-Option
-  `hasRole`, heute nicht verdrahtet → Rollen-Einträge greifen nicht); UI für
+  `hasRole`, nicht verdrahtet; `PUT …/availability` lehnt `role:` deshalb ab);
+  `chatAgent@1` bedient mit Registry nur noch Canvas-Turns (Instanz-Default),
+  bis der Canvas pro Agent dispatcht (#2059); die Modellschicht des Guards auf
+  `claude-cli` startet pro Prüfung einen CLI-Prozess (Timeout 8 s, fail-closed)
+  — Latenz messen; UI für
   Verfügbarkeit und Default-Agent-Tabelle (S6/Agent Builder); Persona-Skills
   ersetzen pro Turn noch die Identität samt Identitätsregeln (Arbeitsmodi, S2);
   der Prompt spricht weiter von „Fach-Agenten“ für Domain-Tools (Plugin-Kinds, S3).

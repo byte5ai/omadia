@@ -6697,7 +6697,16 @@ bound or default-table agent answers, or nobody does and the sender gets a
 `status = 'enabled'` agents are addressable; availability (who, which
 channels) is checked before every turn, also for explicit addressing; a fresh
 agent is available to nobody. A purge of a deleted agent is refused while a
-default-agent entry or a selection still names it (`ON DELETE RESTRICT`).
+default-agent entry still names it (`ON DELETE RESTRICT`); users' selections
+of it go with the purge.
+
+`chatAgent@1` is not a way around routing either: with a registry it answers
+every non-canvas turn with the `no_agent` notice, so a channel that falls back
+to it after a refusal (the shipped Teams plugin does) never reaches the
+instance's default agent. The canvas still runs on the instance's default
+agent until it dispatches per agent (#2059). Availability lists only named
+people (`user:<id>`) for now; groups are refused at save time until routing
+resolves role membership.
 
 **Speaker is structural.** Every answer carries the speaker the harness stamped
 from routing (`withSpeaker` around every agent bundle); no model output can set
