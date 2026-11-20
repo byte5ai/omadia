@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS agent_triggers (
   CONSTRAINT agent_triggers_state_check CHECK (state IN ('active', 'paused')),
   CONSTRAINT agent_triggers_delivery_class_check CHECK (delivery_class IN ('droppable', 'essential')),
   CONSTRAINT agent_triggers_context_check
-    CHECK (context_kind IN ('conversation', 'meeting', 'facilitation', 'task', 'routine', 'memory')),
+    CHECK (context_kind IN ('conversation', 'meeting', 'facilitation', 'task', 'routine', 'schedule', 'memory')),
   CONSTRAINT agent_triggers_shape_check CHECK (
     (kind = 'on_event' AND event_id IS NOT NULL AND max_runs IS NOT NULL)
     OR (kind = 'wake_at' AND fire_at IS NOT NULL AND fire_at <= until)
@@ -100,6 +100,9 @@ CREATE INDEX IF NOT EXISTS agent_triggers_owner_idx ON agent_triggers (owner_key
 -- cannot create a second one).
 CREATE UNIQUE INDEX IF NOT EXISTS agent_triggers_routine_once_idx
   ON agent_triggers (context_id) WHERE context_kind = 'routine';
+-- Likewise an Agent Builder schedule (`agent_schedules`, migration 0095).
+CREATE UNIQUE INDEX IF NOT EXISTS agent_triggers_schedule_once_idx
+  ON agent_triggers (context_id) WHERE context_kind = 'schedule';
 
 CREATE TABLE IF NOT EXISTS agent_trigger_occurrences (
   id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),

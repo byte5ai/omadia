@@ -17,6 +17,7 @@ import { meterModelCalls, meterUsageCost } from '@omadia/usage-telemetry';
 
 import { storeContextChecks, type ContextLivenessProbe } from './contextChecks.js';
 import { toTableData, type DataActionRunner } from './dataActions.js';
+import { isHeadless } from './headless.js';
 import type { ProactiveGate } from './proactiveGate.js';
 import type { FiringStatus, StepExecutors, TurnOutcome } from './triggerChain.js';
 import type { TriggerStore } from './triggerStore.js';
@@ -41,7 +42,13 @@ export interface KernelExecutorDeps {
   readonly routineTurn?: (trigger: Trigger) => Promise<TurnOutcome>;
   /** Who a proactive message is from (#2045), or undefined when unknown. */
   readonly speakerOf?: (agentSlug: string) => AgentSpeaker | undefined;
+  /** An Agent Builder schedule's turn ran (stamps the row). */
+  readonly scheduleRan?: (trigger: Trigger) => Promise<void>;
+  /** Is the schedule behind a headless trigger still enabled? A deleted or
+   *  disabled schedule never runs a turn, even before its trigger is ended. */
+  readonly scheduleLive?: (trigger: Trigger) => Promise<boolean>;
 }
+
 
 /** The system hint of a trigger turn: purpose and status, never data rows. */
 export function triggerTurnHint(trigger: Trigger, status: FiringStatus): string {
@@ -54,7 +61,9 @@ export function triggerTurnHint(trigger: Trigger, status: FiringStatus): string 
     checks ? `Model-free checks before this turn: ${checks}.` : '',
     status.delivered.length > 0 ? `Already sent to the recipients in this firing: ${status.delivered.join(', ')}.` : '',
     status.occurrence.event ? `Event: ${JSON.stringify(status.occurrence.event).slice(0, 2000)}` : '',
-    `Your answer is sent as your message to the conversation this trigger was created in. If nothing is worth telling, answer exactly ${NOTHING_TO_SAY} and nothing is sent.`,
+    isHeadless(trigger)
+      ? 'This is a standing order with no conversation: act through your tools. Your answer is recorded, not sent to anyone.'
+      : `Your answer is sent as your message to the conversation this trigger was created in. If nothing is worth telling, answer exactly ${NOTHING_TO_SAY} and nothing is sent.`,
   ]
     .filter((line) => line.length > 0)
     .join('\n');
@@ -80,6 +89,10 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
     },
     async turn(trigger, instruction, status): Promise<TurnOutcome> {
       if (trigger.origin === 'routine' && deps.routineTurn) return deps.routineTurn(trigger);
+      if (isHeadless(trigger) && deps.scheduleLive && !(await deps.scheduleLive(trigger))) {
+        await deps.store.end(trigger.id, 'cancelled', { schedule: trigger.contextId, why: 'schedule disabled or deleted' });
+        return { delivered: false, costUsd: 0, modelCalls: 0 };
+      }
       const agent = deps.agentChat(trigger.agentSlug);
       if (!agent) return { delivered: false, costUsd: 0, modelCalls: 0, error: `agent '${trigger.agentSlug}' is not in service` };
       const input: ChatTurnInput = {
@@ -104,6 +117,13 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
       const modelCalls = metered.value.modelCalls;
       const result = metered.value.value;
       if ('error' in result) return { delivered: false, costUsd, modelCalls, error: result.error };
+      if (isHeadless(trigger)) {
+        // A schedule's effect is what its tools did; the turn completing is
+        // the outcome. A refused model call still means it did not finish.
+        if (metered.value.refused > 0) return { delivered: false, costUsd, modelCalls, error: 'the turn reached its model-call limit' };
+        await deps.scheduleRan?.(trigger).catch(() => undefined);
+        return { delivered: true, costUsd, modelCalls };
+      }
       const text = result.answer.text.trim();
       if (text === '' || text.startsWith(NOTHING_TO_SAY)) return { delivered: false, costUsd, modelCalls };
       if (metered.value.refused > 0) {

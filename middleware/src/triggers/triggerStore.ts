@@ -352,6 +352,14 @@ export class TriggerStore {
     return rows.map(toTrigger);
   }
 
+  async listByContextKind(kind: TriggerContextKind): Promise<Trigger[]> {
+    const { rows } = await this.pool.query<TriggerRowDb>(
+      'SELECT * FROM agent_triggers WHERE context_kind = $1 ORDER BY created_at',
+      [kind],
+    );
+    return rows.map(toTrigger);
+  }
+
   async listAll(limit: number): Promise<Trigger[]> {
     const { rows } = await this.pool.query<TriggerRowDb>(
       'SELECT * FROM agent_triggers ORDER BY agent_slug, created_at LIMIT $1',

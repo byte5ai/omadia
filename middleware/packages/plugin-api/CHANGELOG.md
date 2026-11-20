@@ -34,6 +34,9 @@ version when it lands.
 - **`Contribution`** (`id`, `speaker: AgentSpeaker`, `text`, `status:
   ContributionStatus`): a colleague's delivered block (spec §5.4); replaces
   the singular `delegatedAnswer` of the channel SDK.
+- `ScheduleNode` gains the optional **`until`** (#2082, spec §5.12,
+  ADR-0020): the deadline an Agent Builder schedule runs to; past it the
+  schedule is disabled until an operator renews it.
 
 ### Changed
 

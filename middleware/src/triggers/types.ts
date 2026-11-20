@@ -14,7 +14,7 @@ export type TriggerKind = (typeof TRIGGER_KINDS)[number];
 /** Who asked for the trigger. A routine keeps its human owner. */
 export type TriggerOrigin = 'agent' | 'routine' | 'system';
 
-export const CONTEXT_KINDS = ['conversation', 'meeting', 'facilitation', 'task', 'routine', 'memory'] as const;
+export const CONTEXT_KINDS = ['conversation', 'meeting', 'facilitation', 'task', 'routine', 'schedule', 'memory'] as const;
 export type TriggerContextKind = (typeof CONTEXT_KINDS)[number];
 
 /**

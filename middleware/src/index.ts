@@ -117,7 +117,6 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { ScheduleWorker } from './scheduler/scheduleWorker.js';
 import { archetypeAdds, archetypeOf, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, resolveScopedBundle } from '@omadia/orchestrator';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
@@ -358,7 +357,7 @@ import {
   EntraProvider,
 } from './auth/providers/EntraProvider.js';
 import { runAuthBootstrap } from './auth/bootstrap.js';
-import { AdminAuditLog, auditActorFromLabel, roleChangeAuditEntry } from './auth/adminAuditLog.js';
+import { AdminAuditLog, auditActorFromLabel, roleChangeAuditEntry, systemAuditActor } from './auth/adminAuditLog.js';
 import {
   PlatformSettingsStore,
   SETTING_AUTH_ACTIVE_PROVIDERS,
@@ -587,6 +586,7 @@ import { wireTriggers, type TriggerWiring } from './triggers/wiring.js';
 import { parseQuietHours } from './triggers/proactiveGate.js';
 import { DEFAULT_TRIGGER_LIMITS } from './triggers/triggerPolicy.js';
 import { createRoutineTriggerScheduler } from './triggers/routineTriggers.js';
+import { createScheduleTriggerScheduler } from './triggers/scheduleTriggers.js';
 import { TargetedSendRegistry } from './channels/targetedSendRegistry.js';
 import { createTargetedDeliveryService } from './channels/targetedDeliveryService.js';
 import { ConversationSendRegistry } from './channels/conversationSendRegistry.js';
@@ -3675,6 +3675,34 @@ async function main(): Promise<void> {
     limits: () => triggersRef.current?.service.limits ?? DEFAULT_TRIGGER_LIMITS,
     log: (m) => console.log(m),
   });
+  // #2082 — Agent Builder schedules (P6) fire through bounded triggers too:
+  // one per enabled schedule, with deadline, budget and breaker, replacing
+  // the minute poller that ran unbounded model turns.
+  const scheduleGraphPool = graphPool;
+  const scheduleTriggerScheduler = scheduleGraphPool
+    ? createScheduleTriggerScheduler({
+        service: () => triggersRef.current?.service,
+        schedules: () => new AgentGraphStore(scheduleGraphPool),
+        agentById: (agentId) => {
+          const registry = serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+          const agent = registry?.list().find((a) => a.agent.id === agentId)?.agent;
+          return agent ? { id: agent.id, slug: agent.slug } : undefined;
+        },
+        limits: () => triggersRef.current?.service.limits ?? DEFAULT_TRIGGER_LIMITS,
+        notice: (scheduleId, message) => {
+          console.log(`[schedules/triggers] NOTICE ${message}`);
+          void adminAudit
+            ?.record({
+              actor: systemAuditActor('system:triggers'),
+              action: 'trigger.notice',
+              target: `schedule:${scheduleId}`,
+              after: { reason: 'expired', message },
+            })
+            .catch(() => undefined);
+        },
+        log: (m) => console.log(m),
+      })
+    : undefined;
   if (graphPool) {
     routinesHandle = await initRoutines({
       pool: graphPool,
@@ -4717,6 +4745,15 @@ async function main(): Promise<void> {
     '/api/v1/operator',
     requireAuth,
     createAgentBuilderRouter({
+      // #2082 — a schedule change arms or ends its trigger right away.
+      onSchedulesChanged: () => {
+        void scheduleTriggerScheduler?.sync().catch((err: unknown) => {
+          console.log(`[schedules/triggers] sync failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      },
+      renewSchedule: scheduleTriggerScheduler
+        ? (id, by) => scheduleTriggerScheduler.renew(id, by)
+        : undefined,
       getConfigStore: () =>
         serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
       getGraphStore: () =>
@@ -4865,19 +4902,8 @@ async function main(): Promise<void> {
     `[middleware] agent-builder endpoints ready at /api/v1/operator/{agents/:slug/graph,skills,mcp-servers,…} (auth-gated, graphPool=${graphPool ? 'on' : 'off'})`,
   );
 
-  // Agent Builder schedule worker (P6) — fires cron-scheduled agent turns.
-  // Only with a Neon graphPool (the agent_schedules table lives there).
-  if (graphPool) {
-    const schedulePool = graphPool;
-    const scheduleWorker = new ScheduleWorker({
-      getGraphStore: () => new AgentGraphStore(schedulePool),
-      getRegistry: () =>
-        serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
-      log: (m, f) => console.log(`[middleware] ${m}`, f ?? ''),
-    });
-    scheduleWorker.start();
-    console.log('[middleware] agent-builder schedule worker started (1-min poll)');
-  }
+  // Agent Builder schedules (P6) fire through their triggers (#2082):
+  // `scheduleTriggerScheduler` above, synced by the trigger wiring.
 
   // Slice 10 — near-duplicate MK workflow. Mirrors the Slice 9
   // mounting pattern: detector + bulk are optional, route 503s when
@@ -5110,6 +5136,7 @@ async function main(): Promise<void> {
       channelPluginIds: () => channelPluginIdsRef.current(),
       senders: () => routinesHandle?.senderRegistry,
       routines: () => routineTriggerScheduler,
+      schedules: () => scheduleTriggerScheduler,
       registerNativeTool: (name, handler, options) =>
         nativeToolRegistry.register(name, { handler, spec: options.spec, isAvailable: options.isAvailable }),
       audit: () => async (entry) => {

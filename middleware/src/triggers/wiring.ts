@@ -16,6 +16,7 @@ import { createDataActionRunner, type ReadToolsOf } from './dataActions.js';
 import { createDeliverDataHandler, DELIVER_DATA_TOOL_NAME, deliverDataToolSpec } from './deliverDataTool.js';
 import { createKernelExecutors, type AgentChat } from './kernelExecutors.js';
 import type { RoutineTriggerScheduler } from './routineTriggers.js';
+import type { ScheduleTriggerScheduler } from './scheduleTriggers.js';
 import { createProactiveGate, RecipientProfileStore, type RecipientProfile } from './proactiveGate.js';
 import { TriggerEngine, type OperatorNotice, type TriggerAgentView } from './triggerEngine.js';
 import type { TriggerLimits } from './triggerPolicy.js';
@@ -60,6 +61,8 @@ export interface TriggerWiringDeps {
   readonly audit?: () => ((entry: AuditEntryInput) => Promise<void>) | undefined;
   /** Routines fire through their triggers (spec 2042 §5.12). */
   readonly routines?: () => RoutineTriggerScheduler | undefined;
+  /** Agent Builder schedules fire through their triggers (spec 2042 §5.12). */
+  readonly schedules?: () => ScheduleTriggerScheduler | undefined;
   /** Injectable clock for tests. */
   readonly now?: () => Date;
   readonly log: (message: string) => void;
@@ -155,6 +158,8 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
           ? { kind: 'agent', agentId: agent.id, slug: agent.slug, displayName: agent.displayName ?? agent.slug }
           : undefined;
       },
+      scheduleRan: async (trigger) => deps.schedules?.()?.ran(trigger),
+      scheduleLive: async (trigger) => (await deps.schedules?.()?.isLive(trigger)) ?? false,
       routineTurn: async (trigger) => {
         const routines = deps.routines?.();
         return routines
@@ -234,8 +239,18 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
           deps.log(`[triggers] routine sweep failed: ${err instanceof Error ? err.message : String(err)}`);
         });
       };
-      sweepRoutines();
-      routineTimer = setInterval(sweepRoutines, ROUTINE_SWEEP_MS);
+      // Schedules: arm new ones, end removed ones, disable expired ones.
+      const syncSchedules = (): void => {
+        void deps.schedules?.()?.sync().catch((err: unknown) => {
+          deps.log(`[triggers] schedule sync failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      };
+      const sweep = (): void => {
+        sweepRoutines();
+        syncSchedules();
+      };
+      sweep();
+      routineTimer = setInterval(sweep, ROUTINE_SWEEP_MS);
       routineTimer.unref();
     },
     stop() {

@@ -19,6 +19,7 @@ import type { Pool } from 'pg';
 
 import type { ProactiveSenderRegistry } from '../plugins/routines/proactiveSender.js';
 import type { SendWindow } from './triggerEngine.js';
+import { isHeadless } from './headless.js';
 import type { DeliveryOutcome } from './triggerChain.js';
 import type { Trigger } from './types.js';
 
@@ -156,6 +157,8 @@ export function createProactiveGate(deps: ProactiveGateDeps): ProactiveGate {
   const clock = deps.now ?? (() => new Date());
   return {
     async sendWindow(trigger, now) {
+      // A schedule sends nothing: no recipient, no quiet hours, no rate limit.
+      if (isHeadless(trigger)) return { ok: true };
       if (!trigger.deliveryChannel) return { ok: false, drop: 'no_delivery_target' };
       if (trigger.liveContext) return { ok: true };
       const key = recipientKey(trigger);
