@@ -35,6 +35,13 @@ Wenn die Zuordnung unklar ist: lieber in CHANGELOG notieren als gar nicht — sp
 
 Ohne mindestens Punkte 1–3 darf kein Code geändert werden.
 
+**Agentenmodell (verbindlich):** Wer Agenten, Plugins, Kanäle, Modelle, Routing, Memory,
+Trigger oder Antwortdarstellung anfasst, liest vorher `docs/terminology.md` und die ADRs
+0012–0022 in `docs/adr/` (virtuelle Mitarbeiter, kein Orchestrator-Agent, Plugins nur als
+Lieferform, Archetypen, Model-Gateway, Konsultation, Diskretion, Trigger, Deterministic
+first, native Facilitators). Änderungen zahlen auf diese Konzepte ein; wer eine andere
+Richtung braucht, schreibt ein neues ADR, das das betroffene ablöst, statt dagegen zu bauen.
+
 ## Task-Routing: welches Werkzeug für welche Aufgabengröße
 
 Bevor eine Aufgabe begonnen wird: welche Größenordnung hat sie, und passt eines der vorhandenen `scripts/*.workflow.mjs`-Pipelines besser als Ad-hoc-Arbeit in der aktuellen Session?
