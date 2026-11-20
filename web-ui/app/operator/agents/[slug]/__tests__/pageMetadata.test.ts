@@ -11,7 +11,6 @@ import enMessages from '../../../../../messages/en.json';
 const listOperatorAgents = vi.fn();
 
 vi.mock('../../../../_lib/agents', () => ({
-  FALLBACK_AGENT_SLUG: 'fallback',
   listOperatorAgents: () => listOperatorAgents(),
 }));
 

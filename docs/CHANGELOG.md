@@ -78,6 +78,10 @@ changelog.
   human), model layer on masked text for suspicious text; streamed answers are
   released sentence by sentence; a refusal or a guard timeout withholds the
   rest and appends a `system` notice.
+- **Operator web UI** follows the removed fallback: the "default agent"
+  picker sets the instance entry of the default-agent table, the rehydrate
+  button is gone, every agent can be disabled or deleted, the channels page
+  shows a binding to a disabled or deleted agent as such (#1880).
 - **Agent prompt (#2056):** the default identity is a virtual colleague, no
   longer "an assistant that delegates to specialised domain agents"; every
   agent's prompt carries the identity rules.
