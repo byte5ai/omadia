@@ -744,6 +744,16 @@ export interface OrchestratorOptions {
    * can look up prior turns and entity context before delegating. */
   knowledgeGraph?: KnowledgeGraph;
   /**
+   * The graph used ONLY to answer "who is this channel user" — the turn
+   * owner and the audience floor's principals. Defaults to `knowledgeGraph`.
+   * Supplied separately because an archetype that omits memory (the
+   * facilitator) gets no `knowledgeGraph`, yet still has to resolve the
+   * people in its room: without it every member stays unresolved and the
+   * audience floor refuses every tool in every group conversation.
+   * Identity resolution reads no memory and recalls nothing.
+   */
+  identityGraph?: KnowledgeGraph;
+  /**
    * Per-orchestrator memory isolation — a `MemoryToolHandler` bound to THIS
    * Agent's scoped (+ namespaced) MemoryStore. When set, the orchestrator
    * dispatches the model-facing `memory` tool through it INSTEAD of the
@@ -3076,6 +3086,8 @@ export class Orchestrator {
    *  `knowledgeGraphTool` is a different abstraction (tool-spec adapter)
    *  that doesn't expose the underlying create-write path. */
   private readonly knowledgeGraph: KnowledgeGraph | undefined;
+  /** See {@link OrchestratorOptions.identityGraph}. */
+  private readonly identityGraph: KnowledgeGraph | undefined;
   private readonly autoPromote: boolean;
   private readonly autoPromoteThreshold: number;
   private readonly autoPromoteDurableMinSignificance: number | undefined;
@@ -3169,6 +3181,7 @@ export class Orchestrator {
       : undefined;
     this.requiredConsultToolName = options.requiredConsultToolName;
     this.knowledgeGraph = options.knowledgeGraph;
+    this.identityGraph = options.identityGraph ?? options.knowledgeGraph;
     this.knowledgeGraphTool = options.knowledgeGraph
       ? new KnowledgeGraphTool(options.knowledgeGraph, options.embeddingClient)
       : undefined;
@@ -5354,7 +5367,7 @@ export class Orchestrator {
       audienceFloor: createAudienceFloorProvider({
         participants: parent?.chatParticipants,
         resolvePrincipal: knowledgeGraphPrincipalResolver(
-          this.knowledgeGraph,
+          this.identityGraph,
           input.channelIdentity?.channelKind ??
             (input.origin ? CHANNEL_KIND_BY_ORIGIN[input.origin.channelType] : undefined),
         ),
@@ -5569,7 +5582,7 @@ export class Orchestrator {
     // rules. Read by `QueryDatasetTool` and `ingestAttachments` via
     // `turnContext.current()?.resolvedOmadiaUserId` instead of each
     // re-deriving it independently.
-    const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
+    const turnOwner = await resolveTurnOwnerIdentity(this.identityGraph, input);
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
     // The run trace's User-Cluster, resolved before anything ingests it — a
     // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
@@ -7419,7 +7432,7 @@ export class Orchestrator {
     // Slack/Telegram, via `createOrchestratorDispatcher`) actually call, so
     // without this the resolved identity would never reach a channel turn's
     // tool dispatch at all — see `resolveTurnOwnerIdentity`.
-    const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
+    const turnOwner = await resolveTurnOwnerIdentity(this.identityGraph, input);
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
     // The run trace's User-Cluster, resolved before anything ingests it — a
     // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).

@@ -988,6 +988,9 @@ export function buildOrchestratorForAgent(
     ...(config.fallbackRef ? { fallbackRef: config.fallbackRef } : {}),
     ...(identityByFamily ? { identityByFamily } : {}),
     archetypeOmissions: { memory: omits('memory'), toolGrant: omits('tool_grant') },
+    // Who a channel user is, even for an archetype built without memory: the
+    // audience floor and the turn owner need it in every group conversation.
+    identityGraph: deps.knowledgeGraph,
     ...(config.fallbackVisionSupported !== undefined
       ? { fallbackVisionSupported: config.fallbackVisionSupported }
       : {}),
