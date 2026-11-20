@@ -18,11 +18,12 @@
 
 import type {
   CardUpdateOutcome,
+  ConversationReactionOutcome,
   ConversationSendProvider,
   TargetedDeliveryOutcome,
   TargetedMessage,
 } from '@omadia/channel-sdk';
-import { CARD_QUESTION_KINDS, type ConversationSendCapabilities, type QuestionCard } from '@omadia/plugin-api';
+import { CARD_QUESTION_KINDS, CONVERSATION_REACTIONS, type ConversationReaction, type ConversationSendCapabilities, type QuestionCard } from '@omadia/plugin-api';
 
 import type { MessageSubscription } from './conversationMessages/store.js';
 import type { ConversationSendRegistry } from './conversationSendRegistry.js';
@@ -75,9 +76,21 @@ export interface AuthorizedSendGround {
   readonly subscriptions: readonly MessageSubscription[];
 }
 
+/** spec 2043 §5.14 — a reaction on one message of the conversation. */
+export interface ConversationReactionInput {
+  agentSlug: string;
+  channelType: string;
+  conversationId: string;
+  /** The platform id of the message, from its stored inbound event. */
+  messageId: string;
+  reaction: ConversationReaction;
+}
+
 export interface ConversationSendService {
   /** Post as the agent's own identity. The caller has authorized the post. */
   sendToConversation(input: ConversationSendInput, ground: AuthorizedSendGround): Promise<TargetedDeliveryOutcome>;
+  /** Set a reaction as the agent's own identity; same identity rules as a send. */
+  react(input: ConversationReactionInput, ground: AuthorizedSendGround): Promise<ConversationReactionOutcome>;
   /** #2089 — what the channel's plugin declares; `undefined` = no provider. */
   capabilities(channelType: string): ConversationSendCapabilities | undefined;
   /** #2089 — update a card the agent posted; same identity rules as a send. */
@@ -282,6 +295,8 @@ export function createConversationSendService(deps: {
     return {
       asOwnIdentity: provider.supports?.asChannelKey === true,
       mentions: provider.supports?.mentions === true,
+      // Only when the method is really there, and as a named identity.
+      reactions: provider.supports?.reactions === true && provider.supports.asChannelKey === true && typeof provider.react === 'function',
       poll: provider.supports?.poll === true || asText,
       // `update` is only true when the method is really there.
       ...(card
@@ -350,6 +365,30 @@ export function createConversationSendService(deps: {
         const text = err instanceof Error ? err.message : String(err);
         log(`[channels] card update in ${input.channelType}/${input.conversationId} threw: ${text}`);
         return unreachable('channel_error', text) as CardUpdateOutcome;
+      }
+    },
+
+    async react(input, ground) {
+      const isText = (v: unknown, max: number): v is string => typeof v === 'string' && v.trim().length > 0 && v.length <= max;
+      if (!isText(input?.agentSlug, 128) || !isText(input.channelType, 64) || !isText(input.conversationId, 512) || !isText(input.messageId, 512)) {
+        return { outcome: 'unreachable', code: 'not_permitted', message: 'agentSlug, channelType, conversationId and messageId are required' };
+      }
+      if (!CONVERSATION_REACTIONS.includes(input.reaction)) {
+        return { outcome: 'unreachable', code: 'channel_error', message: `unknown reaction '${String(input.reaction)}'` };
+      }
+      if (!ground) return { outcome: 'unreachable', code: 'not_permitted', message: NO_GROUND };
+      const identity = ownIdentityOf(input);
+      if ('outcome' in identity) return { outcome: 'unreachable', code: identity.code, message: identity.message };
+      const provider = deps.providers.get(input.channelType);
+      if (!provider || !capabilitiesOf(provider).reactions || !provider.react) {
+        return { outcome: 'unreachable', code: 'channel_error', message: `the '${input.channelType}' channel plugin does not declare reactions — nothing was set` };
+      }
+      try {
+        return await provider.react(input.conversationId, input.messageId, input.reaction, { asChannelKey: identity.channelKey });
+      } catch (err) {
+        const text = err instanceof Error ? err.message : String(err);
+        log(`[channels] reaction in ${input.channelType}/${input.conversationId} threw: ${text}`);
+        return { outcome: 'unreachable', code: 'channel_error', message: text };
       }
     },
 

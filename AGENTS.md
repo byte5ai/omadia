@@ -39,7 +39,8 @@ Ohne mindestens Punkte 1–3 darf kein Code geändert werden.
 Trigger oder Antwortdarstellung anfasst, liest vorher `docs/terminology.md` und die ADRs
 0012–0022 in `docs/adr/` (virtuelle Mitarbeiter, kein Orchestrator-Agent, Plugins nur als
 Lieferform, Archetypen, Model-Gateway, Konsultation, Diskretion, Trigger, Deterministic
-first, native Facilitators). Änderungen zahlen auf diese Konzepte ein; wer eine andere
+first, native Facilitators). Wer Facilitator-Sitzungen anfasst, liest zusätzlich ADR-0026
+(Lesetabelle und Link-Anfrage liegen im Kernel, Sprechererkennung setzt nie Autorschaft). Änderungen zahlen auf diese Konzepte ein; wer eine andere
 Richtung braucht, schreibt ein neues ADR, das das betroffene ablöst, statt dagegen zu bauen.
 
 **Facilitator-Entscheidungen (ADR 0023, #2060/#2066):** Facilitators dürfen Arbeitsmodi als

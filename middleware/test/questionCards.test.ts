@@ -220,10 +220,10 @@ describe('question cards through conversationSend, as an authorized send', () =>
   });
 
   it('says what the channel declares, so the engine can choose card or chat ballot', () => {
-    assert.deepEqual(engine.capabilities('teams'), { asOwnIdentity: true, mentions: false, poll: true, card: ALL_KINDS });
+    assert.deepEqual(engine.capabilities('teams'), { asOwnIdentity: true, mentions: false, reactions: false, poll: true, card: ALL_KINDS });
     assert.equal(engine.capabilities('slack'), undefined, 'no channel plugin for that type');
     support = undefined;
-    assert.deepEqual(engine.capabilities('teams'), { asOwnIdentity: true, mentions: false, poll: true });
+    assert.deepEqual(engine.capabilities('teams'), { asOwnIdentity: true, mentions: false, reactions: false, poll: true });
     // `update` is only reported when the method exists, and a nonsense declaration is cut down.
     support = { kinds: ['single_choice', 'matrix' as never], maxQuestions: 99, update: true };
     withUpdate = false;

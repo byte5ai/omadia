@@ -401,6 +401,8 @@ occurredAt: string;
 receivedAt: string;
 addressedToBot?: boolean;
 transcript?: MessageTranscriptSegment;
+superseded?: boolean;
+latestRevision?: number;
 }
 export interface MessageTranscriptSegment {
 sessionId: string;
@@ -459,7 +461,8 @@ outcome: 'refused';
 code: 'no_identity' | 'not_facilitator' | 'not_present' | 'not_ready' | 'unavailable'
 | 'not_reserved'
 | 'no_scope'
-| 'ended';
+| 'ended'
+| 'session_state';
 message: string;
 };
 export interface ProcessConversationMessagesService {
@@ -483,7 +486,26 @@ cardId?: string;
 }): Promise<boolean>;
 onPrivateMessage?(agentSlug: string, handler: (request: PrivateMessageRequest) => Promise<PrivateMessageReply>): () => void;
 onAddressedMessage?(agentSlug: string, handler: (request: AddressedMessageRequest) => Promise<AddressedMessageReply>): () => void;
+onLinkRequest?(agentSlug: string, handler: (request: LinkRequest) => Promise<LinkRequestReply>): () => void;
 }
+export interface LinkRequest {
+linkRequestId: string;
+agentSlug: string;
+channelType: string;
+conversationId: string;
+principalId: string;
+displayName?: string;
+text: string;
+messageId?: string;
+processIds: readonly string[];
+expiresAt: string;
+}
+export type LinkRequestReply = {
+handled: false;
+} | {
+handled: true;
+answer?: string;
+};
 export interface AddressedMessageRequest {
 agentSlug: string;
 channelType: string;
@@ -557,7 +579,10 @@ asOwnIdentity: boolean;
 mentions: boolean;
 poll: boolean;
 card?: CardSupport;
+reactions?: boolean;
 }
+export type ConversationReaction = 'acknowledge';
+export declare const CONVERSATION_REACTIONS: readonly ConversationReaction[];
 export interface ConversationCardUpdateRequest {
 agentSlug: string;
 channelType: string;
@@ -615,6 +640,22 @@ authorization: SendAuthorization;
 export interface ScopedCardUpdateRequest extends ConversationCardUpdateRequest {
 authorization: SendAuthorization;
 }
+export interface ScopedReactionRequest {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+messageEventId: string;
+reaction: ConversationReaction;
+authorization: Omit<SendAuthorization, 'emission'> & {
+emission?: SendAuthorization['emission'];
+};
+}
+export type ScopedReactionOutcome = {
+outcome: 'reacted';
+authorizationId: string;
+} | Extract<ScopedSendOutcome, {
+outcome: 'unreachable';
+}>;
 export interface ScopedReadinessRequest {
 agentSlug: string;
 channelType: string;
@@ -628,6 +669,7 @@ updateCard(request: ScopedCardUpdateRequest): Promise<CardUpdateOutcome | Extrac
 outcome: 'unreachable';
 }>>;
 capabilities(channelType: string): ConversationSendCapabilities | undefined;
+react?(request: ScopedReactionRequest): Promise<ScopedReactionOutcome>;
 checkReadiness(request: ScopedReadinessRequest): Promise<{
 outcome: 'checked';
 report: ChannelReadinessReport;
@@ -866,7 +908,10 @@ readonly openedAt: string;
 readonly endedAt?: string;
 readonly endReason?: string;
 }
-export type ExecutionRefusalCode = 'not_permitted' | 'unknown_agent' | 'unknown_scope' | 'invalid_request' | 'scope_exists' | 'scope_order' | 'scope_ended' | 'deadline_passed' | 'limit_exceeded' | 'budget_exhausted' | 'kill_switch' | 'phase_mismatch' | 'purpose_not_allowed' | 'target_not_allowed' | 'conversation_busy' | 'unavailable';
+export type ExecutionRefusalCode = 'not_permitted' | 'unknown_agent' | 'unknown_scope' | 'invalid_request' | 'scope_exists' | 'scope_order' | 'scope_ended' | 'deadline_passed' | 'limit_exceeded' | 'budget_exhausted' | 'kill_switch' | 'phase_mismatch' | 'purpose_not_allowed' | 'target_not_allowed' | 'conversation_busy'
+| 'link_not_authorized'
+| 'not_ready'
+| 'session_state' | 'unavailable';
 export interface ExecutionRefusal {
 readonly outcome: 'refused';
 readonly code: ExecutionRefusalCode;
@@ -900,6 +945,8 @@ readonly authorizationId: string;
 readonly scopeId: string;
 readonly remaining: ExecutionBudget;
 }
+export type SessionConversationState = 'scheduled' | 'live' | 'confirming' | 'closed' | 'cancelled';
+export declare const SESSION_CONVERSATION_TRANSITIONS: Readonly<Record<SessionConversationState, readonly SessionConversationState[]>>;
 export interface ConversationReservation {
 readonly channelType: string;
 readonly conversationId: string;
@@ -907,6 +954,8 @@ readonly processId: string;
 readonly role: 'home' | 'session';
 readonly reservedAt: string;
 readonly releasedAt?: string;
+readonly sessionState?: SessionConversationState;
+readonly sessionId?: string;
 }
 export interface ExecutionAuthorizationService {
 openScope(request: OpenExecutionScopeRequest): Promise<{
@@ -937,8 +986,20 @@ agentSlug: string;
 processId: string;
 channelType: string;
 conversationId: string;
+linkRequestId?: string;
+sessionId?: string;
 }): Promise<{
 outcome: 'reserved';
+reservation: ConversationReservation;
+} | ExecutionRefusal>;
+setSessionState?(request: {
+processId: string;
+channelType: string;
+conversationId: string;
+state: SessionConversationState;
+reason?: string;
+}): Promise<{
+outcome: 'updated';
 reservation: ConversationReservation;
 } | ExecutionRefusal>;
 releaseConversation(request: {

@@ -80,6 +80,16 @@ export interface ConversationMessageRecord {
   /** 'transcript_segment': the session and the media source it came from.
    *  `text` is the transcribed text of this revision of the segment. */
   transcript?: MessageTranscriptSegment;
+  /** #2089 — a later revision of the same message (or transcript segment)
+   *  was stored for this subscription: this record is SUPERSEDED. Set on
+   *  every read path (`getEvent` with an older revision, `getEventById`,
+   *  `listSince`). A consumer refuses a superseded revision as a
+   *  contribution or confirmation (spec 2043 §5.3). Absent = it is the
+   *  latest revision known, or the kind has no revisions (reaction, card
+   *  answer). Optional: absent on a kernel before plugin-api 1.81.0. */
+  superseded?: boolean;
+  /** With `superseded`: the latest stored revision. */
+  latestRevision?: number;
 }
 
 /**
@@ -248,7 +258,12 @@ export type ProcessSubscribeOutcome =
         | 'no_scope'
         /** The process's subscription for this conversation has ended; a
          *  process subscribes a conversation once. */
-        | 'ended';
+        | 'ended'
+        /** #2089 — a linked session conversation is read as its session's
+         *  state allows (spec 2043 §5.3): `scheduled` only addressed
+         *  messages, `live` and `confirming` every message, `closed` and
+         *  `cancelled` nothing. The mode asked for is above that. */
+        | 'session_state';
       message: string;
     };
 
@@ -326,7 +341,69 @@ export interface ProcessConversationMessagesService {
     agentSlug: string,
     handler: (request: AddressedMessageRequest) => Promise<AddressedMessageReply>,
   ): () => void;
+
+  /**
+   * #2089 (spec 2043 §5.3) — a LINK REQUEST: a person addressed the agent
+   * inside a group conversation in which none of the agent's processes
+   * reads, while the caller runs processes of this agent (`configuring` or
+   * `active`). Optional: absent on a kernel before plugin-api 1.81.0.
+   *
+   * The kernel hands the handler the message as a typed request: the author
+   * as the channel stated it on the turn, the conversation, the text, and a
+   * `linkRequestId`. It does NOT store the message as a conversation event
+   * and grants no read access to the conversation: the request is the only
+   * thing the plugin learns of it.
+   *
+   * The handler decides quickly whether the message asks to link this
+   * conversation to one of `processIds`. The kernel guarantees only that the
+   * request was made inside this conversation by `principalId`; whether that
+   * person may link (for a facilitation: an active home participant who
+   * names it) is the PLUGIN's check. The readiness of the conversation at
+   * link time is the plugin's check too; the kernel checks it again before
+   * the session goes `live`. `handled: true` keeps the agent's
+   * ordinary turn silent; `answer`, when given, is posted as the agent's
+   * answer to that message (one short refusal, for example). The plugin then
+   * links with `executionAuthorization.reserveConversation({ linkRequestId })`,
+   * which accepts only a request from exactly that conversation, bound to
+   * that process, not yet used and not expired. `handled: false`: the
+   * agent's ordinary turn answers, and the request expires unused.
+   *
+   * The kernel waits 20 seconds for the handler, then lets the ordinary turn
+   * answer.
+   */
+  onLinkRequest?(
+    agentSlug: string,
+    handler: (request: LinkRequest) => Promise<LinkRequestReply>,
+  ): () => void;
 }
+
+export interface LinkRequest {
+  /** Pass to `executionAuthorization.reserveConversation`. */
+  linkRequestId: string;
+  agentSlug: string;
+  channelType: string;
+  /** The conversation the request was made in: the link target. */
+  conversationId: string;
+  /** The author's platform id, as the turn states it (compare lower-cased). */
+  principalId: string;
+  displayName?: string;
+  /** The message text: the only content the plugin receives. */
+  text: string;
+  messageId?: string;
+  /** The caller's processes of this agent with an open `configuring` or
+   *  `active` scope. Never empty. */
+  processIds: readonly string[];
+  /** ISO time after which the request can no longer be used. */
+  expiresAt: string;
+}
+
+export type LinkRequestReply =
+  | { handled: false }
+  | {
+      handled: true;
+      /** Posted as the agent's answer to the message in that conversation. */
+      answer?: string;
+    };
 
 export interface AddressedMessageRequest {
   agentSlug: string;

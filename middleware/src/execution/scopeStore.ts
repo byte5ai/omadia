@@ -17,6 +17,7 @@ import type {
   ExecutionScope,
   ExecutionScopeKind,
   ExecutionTarget,
+  SessionConversationState,
 } from '@omadia/plugin-api';
 import type { Pool, PoolClient } from 'pg';
 
@@ -44,6 +45,13 @@ export interface ReservationRow extends ConversationReservation {
   readonly holderKind: 'archetype_process' | 'agent_discussion';
   readonly agentId?: string;
   readonly pluginId?: string;
+}
+
+/** #2076 — the session a `session` reservation is for, as far as reading goes. */
+export interface ProcessSessionAccess {
+  readonly state: SessionConversationState;
+  /** The reservation was released (the session closed, or the process ended). */
+  readonly released: boolean;
 }
 
 export interface NewScope {
@@ -125,7 +133,7 @@ function toScope(r: ScopeDbRow): ScopeRow {
   };
 }
 
-interface ReservationDbRow {
+export interface ReservationDbRow {
   id: string;
   channel_type: string;
   conversation_id: string;
@@ -136,12 +144,15 @@ interface ReservationDbRow {
   role: 'home' | 'session';
   reserved_at: Date;
   released_at: Date | null;
+  session_state: SessionConversationState | null;
+  session_id: string | null;
 }
 
-const RESERVATION_COLS =
-  'id, channel_type, conversation_id, holder_kind, agent_id, plugin_id, process_id, role, reserved_at, released_at';
+export const RESERVATION_COLS =
+  'id, channel_type, conversation_id, holder_kind, agent_id, plugin_id, process_id, role, reserved_at, released_at, ' +
+  'session_state, session_id';
 
-function toReservation(r: ReservationDbRow): ReservationRow {
+export function toReservation(r: ReservationDbRow): ReservationRow {
   return {
     id: r.id,
     channelType: r.channel_type,
@@ -153,6 +164,8 @@ function toReservation(r: ReservationDbRow): ReservationRow {
     ...(r.released_at ? { releasedAt: r.released_at.toISOString() } : {}),
     ...(r.agent_id ? { agentId: r.agent_id } : {}),
     ...(r.plugin_id ? { pluginId: r.plugin_id } : {}),
+    ...(r.session_state ? { sessionState: r.session_state } : {}),
+    ...(r.session_id ? { sessionId: r.session_id } : {}),
   };
 }
 
@@ -507,8 +520,14 @@ export class ExecutionScopeStore {
     processId: string;
     channelType: string;
     conversationId: string;
-  }): Promise<{ reserved: boolean; everReserved: boolean; openScope: boolean }> {
-    const res = await this.pool.query<{ reserved: boolean; ever_reserved: boolean; open_scope: boolean }>(
+  }): Promise<{ reserved: boolean; everReserved: boolean; openScope: boolean; session?: ProcessSessionAccess }> {
+    const res = await this.pool.query<{
+      reserved: boolean;
+      ever_reserved: boolean;
+      open_scope: boolean;
+      session_state: SessionConversationState | null;
+      session_released: boolean | null;
+    }>(
       `SELECT
          EXISTS (SELECT 1 FROM conversation_reservations r
                   WHERE r.plugin_id = $1 AND r.process_id = $2 AND r.channel_type = $3
@@ -519,11 +538,26 @@ export class ExecutionScopeStore {
                     AND r.conversation_id = $4 AND r.holder_kind = 'archetype_process') AS ever_reserved,
          EXISTS (SELECT 1 FROM execution_scopes sc
                   WHERE sc.plugin_id = $1 AND sc.process_id = $2 AND sc.state = 'open'
-                    AND sc.deadline > now()) AS open_scope`,
+                    AND sc.deadline > now()) AS open_scope,
+         s.session_state, CASE WHEN s.present THEN s.released_at IS NOT NULL END AS session_released
+       FROM (SELECT 1) one
+       LEFT JOIN LATERAL (
+         SELECT true AS present, r.session_state, r.released_at FROM conversation_reservations r
+          WHERE r.plugin_id = $1 AND r.process_id = $2 AND r.channel_type = $3
+            AND r.conversation_id = $4 AND r.holder_kind = 'archetype_process' AND r.role = 'session'
+          ORDER BY (r.released_at IS NULL) DESC, r.reserved_at DESC LIMIT 1) s ON true`,
       [input.pluginId, input.processId, input.channelType, input.conversationId],
     );
     const row = res.rows[0];
-    return { reserved: row?.reserved === true, everReserved: row?.ever_reserved === true, openScope: row?.open_scope === true };
+    return {
+      reserved: row?.reserved === true,
+      everReserved: row?.ever_reserved === true,
+      openScope: row?.open_scope === true,
+      // #2076 — a linked session conversation: its state decides what is read.
+      ...(row && row.session_released !== null
+        ? { session: { state: row.session_state ?? 'scheduled', released: row.session_released === true } }
+        : {}),
+    };
   }
 
   /**
