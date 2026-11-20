@@ -12,7 +12,6 @@
   "keywords": [
     "ai-agents",
     "self-hosted",
-    "orchestrator",
     "plugin"
   ],
   "scripts": {

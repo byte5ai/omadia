@@ -1,142 +1,252 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
 import {
-  listEnabledAgents,
-  type EnabledAgentDto,
-} from '../_lib/agents';
+  useAvailableAgents,
+  type AgentDirectoryEntry,
+  type AvailableAgents,
+} from '../_lib/availableAgents';
+import { AgentAvatar } from './agents/AgentAvatar';
 
 /**
- * Phase A — chat-header Agent picker.
+ * Chat-header agent picker (#2057, spec 2042 §5.3 / §5.9).
  *
- * Before the first turn of a session: dropdown of enabled Agents,
- * default agent pre-selected. The selected slug feeds the first
- * `startTurn({agentSlug})` call; the server pins the snapshot and
- * subsequent turns reuse the pin.
+ * ALWAYS shown, by name and avatar, never by slug. The choice stays visible for
+ * the whole conversation:
  *
- * After the first turn (`pinnedSlug` prop set): read-only label
- * "Agent: <slug>" with a tooltip explaining how to change it.
+ *   - before the first turn with more than one agent: a menu of the agents
+ *     available to the person; the default agent is pre-selected and feeds the
+ *     first `startTurn({agentSlug})`;
+ *   - after the first turn (`pinnedSlug`): the pinned agent, read-only, with a
+ *     tooltip explaining how to change it;
+ *   - with exactly one agent: that agent, read-only, so the person still sees
+ *     who they are talking to;
+ *   - with none: a link that sends the operator to `/operator/agents`.
  *
- * Empty-config UX (TA07): when the endpoint returns zero enabled
- * Agents AND no default agent, render a small CTA pointing the operator at
- * `/operator/agents` instead of an empty dropdown that 412s every turn.
+ * The list comes from `useAvailableAgents`, which is the seam for the
+ * per-channel availability filter (criterion 40). Pass `availableAgents` to
+ * render a list the caller already holds.
  */
 
 export interface AgentPickerProps {
-  /** Slug already pinned to the session — turns the picker into a
-   *  read-only label. */
+  /** Slug already pinned to the session — makes the picker read-only. */
   pinnedSlug?: string;
-  /** Called when the user picks an Agent for the upcoming first turn. */
+  /** Called when the user picks an agent for the upcoming first turn. */
   onSelect: (slug: string | undefined) => void;
-  /** Current selection (controlled). When `pinnedSlug` is set this is
-   *  ignored. */
+  /** Current selection (controlled). Ignored when `pinnedSlug` is set. */
   selectedSlug?: string;
+  /** The agents available to this person in this channel. */
+  availableAgents?: AvailableAgents;
 }
 
-interface LoadState {
-  loading: boolean;
-  agents: EnabledAgentDto[];
-  defaultSlug: string | null;
-  error: string | null;
+const CHIP_CLASS =
+  'inline-flex items-center gap-2 rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 text-xs text-[color:var(--fg)]';
+
+/** Notice codes the server names for a missing default agent; the text is ours (i18n). */
+const KNOWN_NOTICE_CODES = [
+  'no_agent',
+  'agent_not_available',
+  'agent_disabled',
+  'agent_deleted',
+] as const;
+
+function noticeKeyFor(code: string): `notice.${(typeof KNOWN_NOTICE_CODES)[number] | 'generic'}` {
+  const known = KNOWN_NOTICE_CODES.find((c) => c === code);
+  return `notice.${known ?? 'generic'}`;
+}
+
+/**
+ * The slug to show: pinned, else chosen, else the default, else the only agent.
+ * With several agents and no default none is shown as chosen — the turn would
+ * be answered by a `system` notice, not by a guessed agent (spec 2042 INV-7).
+ */
+function currentSlugOf(
+  props: AgentPickerProps,
+  agents: readonly AgentDirectoryEntry[],
+  defaultSlug: string | null,
+): string | undefined {
+  return (
+    props.pinnedSlug ??
+    props.selectedSlug ??
+    defaultSlug ??
+    (agents.length === 1 ? agents[0]?.slug : undefined)
+  );
+}
+
+/** A pinned agent that is no longer in the list is still shown, by slug. */
+function entryFor(
+  slug: string,
+  agents: readonly AgentDirectoryEntry[],
+): AgentDirectoryEntry {
+  return (
+    agents.find((a) => a.slug === slug) ?? {
+      slug,
+      name: slug,
+      avatarUrl: null,
+      shortDescription: null,
+      archetype: 'standard',
+      reach: null,
+      isDefault: false,
+    }
+  );
+}
+
+interface AgentMenuProps {
+  agents: readonly AgentDirectoryEntry[];
+  current: AgentDirectoryEntry;
+  onSelect: (slug: string) => void;
+}
+
+function AgentMenu(props: AgentMenuProps): React.ReactElement {
+  const t = useTranslations('agentPicker');
+  const listId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent): void => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+
+  const choose = (slug: string): void => {
+    props.onSelect(slug);
+    setOpen(false);
+  };
+
+  return (
+    <div
+      ref={rootRef}
+      className="relative"
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') setOpen(false);
+      }}
+    >
+      {/* eslint-disable-next-line no-restricted-syntax -- combobox trigger that opens a listbox, not a §4.2 Button candidate */}
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={listId}
+        aria-label={t('ariaCurrent', { name: props.current.name })}
+        onClick={() => setOpen(!open)}
+        className={`${CHIP_CLASS} bg-[color:var(--bg-elevated)] hover:border-[color:var(--accent)]`}
+      >
+        <span className="text-[color:var(--fg-muted)]">{t('label')}</span>
+        <AgentAvatar name={props.current.name} url={props.current.avatarUrl} />
+        <span className="font-semibold">{props.current.name}</span>
+        <span aria-hidden className="text-[color:var(--fg-subtle)]">
+          ▾
+        </span>
+      </button>
+      {open && (
+        <ul
+          id={listId}
+          role="listbox"
+          aria-label={t('label')}
+          className="absolute left-0 top-full z-20 mt-1 min-w-56 rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] py-1 shadow-lg"
+        >
+          {props.agents.map((agent) => (
+            <li
+              key={agent.slug}
+              role="option"
+              aria-selected={agent.slug === props.current.slug}
+              tabIndex={0}
+              onClick={() => choose(agent.slug)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  choose(agent.slug);
+                }
+              }}
+              className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs hover:bg-[color:var(--bg-soft)] focus:bg-[color:var(--bg-soft)] aria-selected:font-semibold"
+            >
+              <AgentAvatar name={agent.name} url={agent.avatarUrl} />
+              <span>{agent.name}</span>
+              {agent.isDefault && (
+                <span className="text-[color:var(--fg-subtle)]">
+                  {t('defaultMarker')}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 export function AgentPicker(props: AgentPickerProps): React.ReactElement | null {
   const t = useTranslations('agentPicker');
-  const [state, setState] = useState<LoadState>({
-    loading: true,
-    agents: [],
-    defaultSlug: null,
-    error: null,
-  });
+  const { loading, error, agents, defaultSlug, defaultNotice } = useAvailableAgents(
+    props.availableAgents,
+  );
+  const { pinnedSlug, selectedSlug, onSelect } = props;
 
+  // Bind the first turn: default agent, or the only agent there is.
   useEffect(() => {
-    let cancelled = false;
-    listEnabledAgents()
-      .then((data) => {
-        if (cancelled) return;
-        setState({
-          loading: false,
-          agents: data.agents,
-          defaultSlug: data.default_slug,
-          error: null,
-        });
-        // Auto-select the instance default agent (#2055) on first load when
-        // nothing else is chosen yet AND we're not already pinned.
-        if (
-          !props.pinnedSlug &&
-          !props.selectedSlug &&
-          data.default_slug
-        ) {
-          props.onSelect(data.default_slug);
-        }
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setState({
-          loading: false,
-          agents: [],
-          defaultSlug: null,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.pinnedSlug]);
+    if (loading || pinnedSlug || selectedSlug) return;
+    const initial = defaultSlug ?? (agents.length === 1 ? agents[0]?.slug : undefined);
+    if (initial) onSelect(initial);
+  }, [loading, agents, defaultSlug, pinnedSlug, selectedSlug, onSelect]);
 
-  // While loading we don't yet know the orchestrator count — render nothing
-  // so the picker doesn't flash for the common single-orchestrator case.
-  if (state.loading) return null;
+  // Unknown while loading — render nothing so the picker does not flash.
+  if (loading) return null;
 
-  if (state.error) {
+  if (error) {
     return (
-      <span className="inline-flex text-xs text-[color:var(--danger)]" title={state.error}>
+      <span className="inline-flex text-xs text-[color:var(--danger)]" title={error}>
         {t('error')}
       </span>
     );
   }
 
-  // Only surface the picker when the operator actually has a choice to make:
-  // more than one orchestrator. A lone agent (or none) is just noise, so
-  // the picker — dropdown and read-only pinned label alike — stays hidden.
-  // The default agent is still auto-selected in the effect above, so the
-  // first turn binds correctly even with no UI.
-  if (state.agents.length <= 1) return null;
+  const slug = currentSlugOf(props, agents, defaultSlug);
+  if (agents.length === 0 && !pinnedSlug) {
+    return (
+      <Link
+        href="/operator/agents"
+        className="inline-flex text-xs text-[color:var(--accent)] underline"
+      >
+        {t('emptyCta')}
+      </Link>
+    );
+  }
+  if (!slug) {
+    // No default agent: the server says why (a `system` notice, never an agent).
+    return defaultNotice ? (
+      <span className="inline-flex text-xs text-[color:var(--fg-muted)]">
+        {t(noticeKeyFor(defaultNotice))}
+      </span>
+    ) : null;
+  }
 
-  // Pinned → read-only label (only reached when more than one orchestrator
-  // exists, i.e. the binding is a real choice worth showing).
-  if (props.pinnedSlug) {
+  const current = entryFor(slug, agents);
+  const isReadOnly = Boolean(pinnedSlug) || agents.length <= 1;
+  if (isReadOnly) {
     return (
       <span
-        className="inline-flex items-center gap-2 rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 font-mono text-xs text-[color:var(--fg)]"
-        title={t('pinnedTooltip')}
+        className={CHIP_CLASS}
+        title={pinnedSlug ? t('pinnedTooltip') : t('onlyAgentTooltip')}
       >
         <span className="text-[color:var(--fg-muted)]">{t('label')}</span>
-        <span className="font-semibold">{props.pinnedSlug}</span>
+        <AgentAvatar name={current.name} url={current.avatarUrl} />
+        <span className="font-semibold">{current.name}</span>
       </span>
     );
   }
 
   return (
-    <label className="inline-flex items-center gap-2 text-xs">
-      <span className="text-[color:var(--fg-muted)]">{t('label')}</span>
-      <select
-        className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-1 font-mono text-xs"
-        value={props.selectedSlug ?? state.defaultSlug ?? ''}
-        onChange={(e) =>
-          props.onSelect(e.target.value === '' ? undefined : e.target.value)
-        }
-      >
-        {state.agents.map((a) => (
-          <option key={a.slug} value={a.slug}>
-            {a.slug}
-            {a.slug === state.defaultSlug ? ` ${t('defaultMarker')}` : ''}
-          </option>
-        ))}
-      </select>
-    </label>
+    <AgentMenu
+      agents={agents}
+      current={current}
+      onSelect={(next) => onSelect(next)}
+    />
   );
 }

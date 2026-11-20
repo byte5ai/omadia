@@ -2,6 +2,7 @@ import { CHAT_AGENT_SERVICE, turnPrincipal } from '@omadia/channel-sdk';
 import type {
   ChatAgent,
   ChatAgentBundle,
+  ChannelResolveResult,
   ChannelRouteContext,
   ChannelUserKind,
   TurnOrigin,
@@ -138,11 +139,43 @@ export interface OrchestratorDispatcherDeps {
    * `resolveBinding`; absent disables per-binding routing.
    */
   channelTypeFor?(channelId: string): string;
+  /**
+   * #2059 — explicit addressing by agent id (a canvas, a UI with an agent
+   * picker): the agent's own envelope, checked like any routing target
+   * (enabled, not deleted, available to the sender here). A `reject` result
+   * carries a `chatAgent` that answers with the `system` notice naming the
+   * agent. Returns `undefined` when the platform cannot address by id (no
+   * registry, or an older resolver): the turn is then refused, never routed
+   * to another agent.
+   */
+  resolveAgent?(
+    agentId: string,
+    target: { readonly channelType: string; readonly channelKey: string },
+    context: ChannelRouteContext,
+  ): ChannelResolveResult | undefined;
+}
+
+/**
+ * #2059 — the agent id a turn addresses, if it names one. Set by a UI that
+ * lets the user pick an agent per conversation (`metadata.agentId`); a
+ * non-string or blank value counts as no address.
+ */
+function addressedAgentId(metadata: Record<string, unknown> | undefined): string | undefined {
+  const raw = metadata?.['agentId'];
+  return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : undefined;
 }
 
 /**
  * Build the real `TurnDispatcher`. Per turn:
  *
+ *   0. **Explicit addressing (#2059).** A turn that names an agent
+ *      (`metadata.agentId`, from a canvas or an agent picker) goes to exactly
+ *      that agent's envelope via `resolveAgent`, with no model in front. This
+ *      stage runs before the `dispatch_service` opt-out below on purpose: a
+ *      canvas channel has `dispatch_service: canvasChatAgent` and still
+ *      reaches the agent it named. A refusal is answered with the `system`
+ *      notice, a platform that cannot address by id refuses the turn; neither
+ *      ever falls through to another agent.
  *   1. **Per-binding routing (US7).** When the channel routes to the shared
  *      `chatAgent` (i.e. declares no explicit `dispatch_service`) and a
  *      `channelKey` is known, resolve the Agent the operator *bound* to this
@@ -153,7 +186,7 @@ export interface OrchestratorDispatcherDeps {
  *      or an explicit `dispatch_service` like Omadia UI's `canvasChatAgent`) →
  *      fetch that bundle from the registry exactly as before. An explicit
  *      `dispatch_service` is an intentional override and is NEVER re-routed by
- *      the binding resolver.
+ *      the binding resolver (only stage 0 outranks it).
  *
  * Resolution is lazy per turn so the currently-active orchestrator (and the
  * live binding table, post hot-reload) is always used. Classic channels with no
@@ -170,9 +203,45 @@ export function createOrchestratorDispatcher(
       let agent: ChatAgent | undefined;
       const origin = readTurnOrigin(input.metadata?.['origin']);
 
+      // (0) #2059 Explicit addressing. A turn that names an agent goes to
+      // THAT agent's envelope, with no model in front of it. Missing,
+      // unknown or unavailable never falls through to another agent: the
+      // resolver's `chatAgent` answers a `reject` with the `system` notice,
+      // and a platform that cannot address by id refuses the turn.
+      const addressedId = addressedAgentId(input.metadata);
+      if (addressedId !== undefined) {
+        const channelType =
+          input.channelType ?? deps.channelTypeFor?.(input.channelId) ?? input.channelId;
+        const channelKey = input.channelKey ?? input.scope;
+        const locale =
+          typeof input.metadata?.['locale'] === 'string'
+            ? (input.metadata['locale'] as string)
+            : undefined;
+        const routed = deps.resolveAgent?.(
+          addressedId,
+          { channelType, channelKey },
+          {
+            principal: turnPrincipal(input.userRef, origin?.principal),
+            ...(locale ? { locale } : {}),
+          },
+        );
+        if (!routed?.chatAgent) {
+          console.warn(
+            `[channels] agent ${addressedId} cannot be addressed on ${channelType}:${channelKey} — turn refused (scope=${input.scope})`,
+          );
+          yield {
+            type: 'error',
+            message: 'the addressed agent is not available for this conversation',
+          };
+          return;
+        }
+        agent = routed.chatAgent;
+      }
+
       // (1) Per-binding routing — only for channels that would otherwise hit
       // the shared chatAgent. An explicit dispatch_service (canvas) opts out.
       if (
+        !agent &&
         dispatchService === CHAT_AGENT_SERVICE &&
         deps.resolveBinding &&
         deps.channelTypeFor &&

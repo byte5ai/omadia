@@ -111,22 +111,22 @@ describe('PostInstallNextSteps (#1496, #1492)', () => {
         pluginName="SEO Analyst"
         readiness={READY}
         kind="agent"
-        attachedTo={['Default orchestrator']}
+        attachedTo={['Default agent']}
       />,
     );
-    expect(screen.getByText('"SEO Analyst" is attached to Default orchestrator.')).toBeTruthy();
-    expect(screen.queryByText('Attach to an orchestrator')).toBeNull();
-    expect(screen.getByText('Manage orchestrators')).toBeTruthy();
+    expect(screen.getByText('"SEO Analyst" is attached to Default agent.')).toBeTruthy();
+    expect(screen.queryByText('Attach to an agent')).toBeNull();
+    expect(screen.getByText('Manage agents')).toBeTruthy();
   });
 
   it('still offers attaching an agent that is not attached anywhere', () => {
     renderWithIntl(
       <PostInstallNextSteps pluginName="SEO Analyst" readiness={READY} kind="agent" attachedTo={[]} />,
     );
-    expect(screen.getByText('Attach to an orchestrator')).toBeTruthy();
+    expect(screen.getByText('Attach to an agent')).toBeTruthy();
   });
 
-  it('sends neither integrations nor extensions to an orchestrator or the chat', () => {
+  it('sends neither integrations nor extensions to an agent or the chat', () => {
     renderWithIntl(
       <PostInstallNextSteps pluginName="Odoo Connector" readiness={READY} kind="integration" attachedTo={null} />,
     );
@@ -135,7 +135,7 @@ describe('PostInstallNextSteps (#1496, #1492)', () => {
       <PostInstallNextSteps pluginName="Dev Platform" readiness={READY} kind="extension" attachedTo={null} />,
     );
     expect(screen.getByText('"Dev Platform" is installed and running.')).toBeTruthy();
-    expect(screen.queryByText('Attach to an orchestrator')).toBeNull();
+    expect(screen.queryByText('Attach to an agent')).toBeNull();
     expect(screen.queryByText('Try it in chat')).toBeNull();
   });
 

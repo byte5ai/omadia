@@ -145,7 +145,7 @@ export const CONTEXT_FREE_MEMORY_AXES: MemoryAxes = Object.freeze({
  * `memoryContextKey` applies to its type segment.
  */
 export const CONTEXT_MEMORY_CHANNEL_TYPES: ReadonlySet<string> = Object.freeze(
-  new Set(['teams', 'telegram', 'http', 'api']),
+  new Set(['teams', 'telegram', 'slack', 'discord', 'whatsapp', 'imessage', 'http', 'api']),
 );
 
 /**
