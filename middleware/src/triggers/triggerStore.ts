@@ -1,0 +1,748 @@
+/**
+ * #2082 — durable state of agent-owned triggers (migration 0093).
+ *
+ * Fly runs on Neon's transaction pooler: no session state survives a
+ * statement outside a transaction. So every serialisation here is a
+ * transaction-scoped advisory lock or a row lock (`FOR UPDATE [SKIP LOCKED]`),
+ * never a session lock, LISTEN or a session-level SET.
+ *
+ * At most once per occurrence: an occurrence row is unique per
+ * (trigger, occurrence key) and is claimed by one statement that moves it to
+ * `leased`. A lease that runs out (the worker died mid-firing) is retried only
+ * for essential triggers; a droppable one is dropped, because its outcome is
+ * unknown and a duplicate reminder is worse than a missing one.
+ */
+
+import type { Pool, PoolClient } from 'pg';
+
+import type {
+  NewTrigger,
+  Occurrence,
+  Trigger,
+  TriggerContextKind,
+  TriggerEndReason,
+  TriggerPauseReason,
+  TriggerStep,
+  TriggerTarget,
+} from './types.js';
+
+/** Advisory-lock namespace of the trigger store (first key of the pair). */
+const LOCK_NAMESPACE = 2082;
+
+export type TriggerAuditEvent =
+  | 'created'
+  | 'fired'
+  | 'deferred'
+  | 'refused'
+  | 'paused'
+  | 'resumed'
+  | 'renewed'
+  | 'ended';
+
+export interface TriggerAuditRow {
+  readonly triggerId: string;
+  readonly agentSlug: string;
+  readonly event: TriggerAuditEvent;
+  readonly detail: Record<string, unknown>;
+  readonly costUsd: number | null;
+  readonly at: Date;
+}
+
+export type CreateResult =
+  | { readonly ok: true; readonly trigger: Trigger }
+  | { readonly ok: false; readonly code: 'too_many_active'; readonly message: string };
+
+export interface ClaimedOccurrence extends Occurrence {
+  readonly leaseOwner: string;
+}
+
+export type ReserveResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly scope: 'trigger' | 'agent' | 'instance' };
+
+export interface SpendCaps {
+  readonly monthlyAgentUsd: number;
+  readonly monthlyInstanceUsd: number;
+}
+
+export interface FinishInput {
+  readonly occurrenceId: string;
+  readonly leaseOwner: string;
+  readonly triggerId: string;
+  /** `acted`: an effect happened. `nothing`: a check found nothing to do
+   *  (a success). `failed`: an error. `refused`: a guard refused the firing
+   *  before anything ran. */
+  readonly outcome: 'acted' | 'nothing' | 'failed' | 'refused';
+  /** The firing counts against max_runs. */
+  readonly countsAsRun: boolean;
+  /** A model turn ran and had no effect. */
+  readonly ineffectiveTurn: boolean;
+  /** A model turn ran and had an effect. */
+  readonly effectiveTurn: boolean;
+  readonly costUsd: number;
+  readonly reservedUsd: number;
+  readonly month: string;
+  readonly error?: string;
+  /** The data fingerprint to remember for a `changed` check. */
+  readonly fingerprint?: string;
+  readonly nextDueAt?: Date;
+  /** End the trigger after this firing. */
+  readonly end?: TriggerEndReason;
+  readonly breaker: { readonly failures: number; readonly ineffective: number };
+  readonly detail: Record<string, unknown>;
+}
+
+export interface FinishResult {
+  readonly ended?: TriggerEndReason;
+  readonly paused?: TriggerPauseReason;
+}
+
+interface TriggerRowDb {
+  id: string;
+  agent_id: string;
+  agent_slug: string;
+  kind: Trigger['kind'];
+  origin: Trigger['origin'];
+  owner_key: string | null;
+  purpose: string;
+  context_kind: TriggerContextKind;
+  context_id: string;
+  delivery_channel: string | null;
+  delivery_ref: unknown;
+  target: TriggerTarget | null;
+  labels: string[];
+  event_id: string | null;
+  event_filter: unknown;
+  fire_at: Date | null;
+  interval_seconds: number | null;
+  cron: string | null;
+  timezone: string | null;
+  live_context: boolean;
+  actions: TriggerStep[];
+  delivery_class: Trigger['deliveryClass'];
+  until: Date;
+  max_runs: number | null;
+  runs: number;
+  state: Trigger['state'];
+  pause_reason: string | null;
+  consecutive_failures: number;
+  consecutive_ineffective: number;
+  budget_per_firing_usd: string;
+  budget_total_usd: string;
+  model_calls_per_firing: number;
+  spent_usd: string;
+  reserved_usd: string;
+  last_fired_at: Date | null;
+  last_outcome: string | null;
+  last_error: string | null;
+  last_fingerprint: string | null;
+  created_by: string;
+  created_at: Date;
+}
+
+const toTrigger = (r: TriggerRowDb): Trigger => ({
+  id: r.id,
+  agentId: r.agent_id,
+  agentSlug: r.agent_slug,
+  kind: r.kind,
+  origin: r.origin,
+  ownerKey: r.owner_key,
+  purpose: r.purpose,
+  contextKind: r.context_kind,
+  contextId: r.context_id,
+  deliveryChannel: r.delivery_channel,
+  deliveryRef: r.delivery_ref,
+  target: r.target,
+  labels: r.labels ?? [],
+  eventId: r.event_id,
+  eventFilter: r.event_filter,
+  fireAt: r.fire_at,
+  intervalSeconds: r.interval_seconds,
+  cron: r.cron,
+  timezone: r.timezone,
+  liveContext: r.live_context,
+  actions: r.actions,
+  deliveryClass: r.delivery_class,
+  until: r.until,
+  maxRuns: r.max_runs,
+  runs: r.runs,
+  state: r.state,
+  pauseReason: r.pause_reason,
+  consecutiveFailures: r.consecutive_failures,
+  consecutiveIneffective: r.consecutive_ineffective,
+  budgetPerFiringUsd: Number(r.budget_per_firing_usd),
+  budgetTotalUsd: Number(r.budget_total_usd),
+  modelCallsPerFiring: r.model_calls_per_firing,
+  spentUsd: Number(r.spent_usd),
+  reservedUsd: Number(r.reserved_usd),
+  lastFiredAt: r.last_fired_at,
+  lastOutcome: r.last_outcome,
+  lastError: r.last_error,
+  lastFingerprint: r.last_fingerprint,
+  createdBy: r.created_by,
+  createdAt: r.created_at,
+});
+
+interface OccurrenceRowDb {
+  id: string;
+  trigger_id: string;
+  occurrence_key: string;
+  due_at: Date;
+  payload: Record<string, unknown> | null;
+  attempts: number;
+  lease_owner: string;
+}
+
+const toClaimed = (r: OccurrenceRowDb): ClaimedOccurrence => ({
+  id: r.id,
+  triggerId: r.trigger_id,
+  occurrenceKey: r.occurrence_key,
+  dueAt: r.due_at,
+  payload: r.payload,
+  attempts: r.attempts,
+  leaseOwner: r.lease_owner,
+});
+
+/** `YYYY-MM-01` of a date in UTC: the spend month. */
+export const spendMonth = (d: Date): string =>
+  `${String(d.getUTCFullYear())}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-01`;
+
+const KILLED_FOR_AGENT = `EXISTS (
+  SELECT 1 FROM execution_kill_switches k
+   WHERE k.cleared_at IS NULL
+     AND (k.level = 'instance' OR (k.level = 'agent' AND k.agent_id = $1)))`;
+
+export class TriggerStore {
+  constructor(private readonly pool: Pool) {}
+
+  private async inTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      try {
+        const value = await work(client);
+        await client.query('COMMIT');
+        return value;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw err;
+      }
+    } finally {
+      client.release();
+    }
+  }
+
+  private async auditIn(
+    client: PoolClient,
+    t: Pick<Trigger, 'id' | 'agentId' | 'agentSlug'>,
+    event: TriggerAuditEvent,
+    detail: Record<string, unknown>,
+    costUsd: number | null = null,
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO agent_trigger_audit (trigger_id, agent_id, agent_slug, event, detail, cost_usd)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
+      [t.id, t.agentId, t.agentSlug, event, JSON.stringify(detail), costUsd],
+    );
+  }
+
+  /** Store a validated trigger and its first occurrence, within the agent's
+   *  limit of active triggers (serialised per agent). */
+  async create(input: NewTrigger, firstDueAt: Date | undefined, maxActivePerAgent: number): Promise<CreateResult> {
+    return this.inTransaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock($1::int, hashtext($2)::int)', [LOCK_NAMESPACE, input.agentId]);
+      const { rows: countRows } = await client.query<{ n: string }>(
+        'SELECT count(*)::text AS n FROM agent_triggers WHERE agent_id = $1',
+        [input.agentId],
+      );
+      if (Number(countRows[0]?.n ?? '0') >= maxActivePerAgent) {
+        return {
+          ok: false as const,
+          code: 'too_many_active' as const,
+          message: `agent '${input.agentSlug}' already has ${String(maxActivePerAgent)} triggers; end one first`,
+        };
+      }
+      const { rows } = await client.query<TriggerRowDb>(
+        `INSERT INTO agent_triggers (
+           agent_id, agent_slug, kind, origin, owner_key, purpose, context_kind, context_id,
+           delivery_channel, delivery_ref, target, labels, event_id, event_filter, fire_at,
+           interval_seconds, cron, timezone, live_context, actions, delivery_class, until, max_runs,
+           budget_per_firing_usd, budget_total_usd, model_calls_per_firing, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,$14::jsonb,$15,
+                 $16,$17,$18,$19,$20::jsonb,$21,$22,$23,$24,$25,$26,$27)
+         RETURNING *`,
+        [
+          input.agentId,
+          input.agentSlug,
+          input.kind,
+          input.origin,
+          input.ownerKey,
+          input.purpose,
+          input.contextKind,
+          input.contextId,
+          input.deliveryChannel,
+          JSON.stringify(input.deliveryRef ?? null),
+          JSON.stringify(input.target),
+          JSON.stringify(input.labels),
+          input.eventId,
+          JSON.stringify(input.eventFilter ?? null),
+          input.fireAt,
+          input.intervalSeconds,
+          input.cron,
+          input.timezone,
+          input.liveContext,
+          JSON.stringify(input.actions),
+          input.deliveryClass,
+          input.until,
+          input.maxRuns,
+          input.budgetPerFiringUsd,
+          input.budgetTotalUsd,
+          input.modelCallsPerFiring,
+          input.createdBy,
+        ],
+      );
+      const trigger = toTrigger(rows[0] as TriggerRowDb);
+      if (firstDueAt) await this.insertTimerOccurrence(client, trigger.id, firstDueAt);
+      await this.auditIn(client, trigger, 'created', {
+        kind: trigger.kind,
+        purpose: trigger.purpose,
+        context: `${trigger.contextKind}:${trigger.contextId}`,
+        until: trigger.until.toISOString(),
+        actions: trigger.actions.map((a) => a.type),
+        createdBy: trigger.createdBy,
+      });
+      return { ok: true as const, trigger };
+    });
+  }
+
+  private async insertTimerOccurrence(client: PoolClient, triggerId: string, dueAt: Date): Promise<void> {
+    await client.query(
+      `INSERT INTO agent_trigger_occurrences (trigger_id, occurrence_key, due_at)
+       VALUES ($1, $2, $3) ON CONFLICT (trigger_id, occurrence_key) DO NOTHING`,
+      [triggerId, `at:${dueAt.toISOString()}`, dueAt],
+    );
+  }
+
+  async get(id: string): Promise<Trigger | undefined> {
+    const { rows } = await this.pool.query<TriggerRowDb>('SELECT * FROM agent_triggers WHERE id = $1', [id]);
+    return rows[0] ? toTrigger(rows[0]) : undefined;
+  }
+
+  async listByAgent(agentId: string): Promise<Trigger[]> {
+    const { rows } = await this.pool.query<TriggerRowDb>(
+      'SELECT * FROM agent_triggers WHERE agent_id = $1 ORDER BY created_at',
+      [agentId],
+    );
+    return rows.map(toTrigger);
+  }
+
+  async listByOwner(ownerKey: string): Promise<Trigger[]> {
+    const { rows } = await this.pool.query<TriggerRowDb>(
+      'SELECT * FROM agent_triggers WHERE owner_key = $1 ORDER BY created_at',
+      [ownerKey],
+    );
+    return rows.map(toTrigger);
+  }
+
+  async listAll(limit: number): Promise<Trigger[]> {
+    const { rows } = await this.pool.query<TriggerRowDb>(
+      'SELECT * FROM agent_triggers ORDER BY agent_slug, created_at LIMIT $1',
+      [limit],
+    );
+    return rows.map(toTrigger);
+  }
+
+  /** Active hooks on an event id (the caller matches filter and context). */
+  async listHooks(eventId: string): Promise<Trigger[]> {
+    const { rows } = await this.pool.query<TriggerRowDb>(
+      `SELECT * FROM agent_triggers
+        WHERE kind = 'on_event' AND event_id = $1 AND state = 'active' AND until > now()`,
+      [eventId],
+    );
+    return rows.map(toTrigger);
+  }
+
+  /** One occurrence of a hook for one event. False when it already existed. */
+  async enqueueEvent(triggerId: string, occurrenceKey: string, dueAt: Date, payload: Record<string, unknown>): Promise<boolean> {
+    const { rowCount } = await this.pool.query(
+      `INSERT INTO agent_trigger_occurrences (trigger_id, occurrence_key, due_at, payload)
+       SELECT $1, $2, $3, $4::jsonb
+        WHERE EXISTS (SELECT 1 FROM agent_triggers WHERE id = $1 AND state = 'active')
+       ON CONFLICT (trigger_id, occurrence_key) DO NOTHING`,
+      [triggerId, occurrenceKey, dueAt, JSON.stringify(payload)],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  /** Claim due occurrences under a lease, in one statement. */
+  async claimDue(leaseOwner: string, now: Date, leaseMs: number, limit: number): Promise<ClaimedOccurrence[]> {
+    const { rows } = await this.pool.query<OccurrenceRowDb>(
+      `UPDATE agent_trigger_occurrences o
+          SET state = 'leased', lease_owner = $1, lease_until = $2, attempts = o.attempts + 1
+        WHERE o.id IN (
+          SELECT id FROM agent_trigger_occurrences
+           WHERE state = 'pending' AND due_at <= $3
+           ORDER BY due_at
+           LIMIT $4
+           FOR UPDATE SKIP LOCKED)
+        RETURNING o.id, o.trigger_id, o.occurrence_key, o.due_at, o.payload, o.attempts, o.lease_owner`,
+      [leaseOwner, new Date(now.getTime() + leaseMs), now, limit],
+    );
+    return rows.map(toClaimed);
+  }
+
+  /**
+   * Leases that ran out: the worker died with the outcome unknown. Essential
+   * triggers get the occurrence back (up to `maxAttempts`); droppable ones
+   * drop it.
+   */
+  async recoverExpiredLeases(now: Date, maxAttempts: number): Promise<{ retried: number; dropped: number }> {
+    return this.inTransaction(async (client) => {
+      const retried = await client.query(
+        `UPDATE agent_trigger_occurrences o
+            SET state = 'pending', lease_owner = NULL, lease_until = NULL
+           FROM agent_triggers t
+          WHERE o.trigger_id = t.id AND o.state = 'leased' AND o.lease_until < $1
+            AND t.delivery_class = 'essential' AND o.attempts < $2`,
+        [now, maxAttempts],
+      );
+      const dropped = await client.query(
+        `UPDATE agent_trigger_occurrences o
+            SET state = 'dropped', outcome = 'lease_expired', finished_at = $1
+          WHERE o.state = 'leased' AND o.lease_until < $1`,
+        [now],
+      );
+      return { retried: retried.rowCount ?? 0, dropped: dropped.rowCount ?? 0 };
+    });
+  }
+
+  /** Put a leased occurrence back for later (quiet hours, rate limit). */
+  async defer(occurrenceId: string, leaseOwner: string, dueAt: Date, trigger: Trigger, reason: string): Promise<void> {
+    await this.inTransaction(async (client) => {
+      await client.query(
+        `UPDATE agent_trigger_occurrences
+            SET state = 'pending', lease_owner = NULL, lease_until = NULL, due_at = $3, attempts = 0
+          WHERE id = $1 AND lease_owner = $2 AND state = 'leased'`,
+        [occurrenceId, leaseOwner, dueAt],
+      );
+      await this.auditIn(client, trigger, 'deferred', { reason, until: dueAt.toISOString() });
+    });
+  }
+
+  /** Drop a leased occurrence without running it (with a reason). */
+  async drop(occurrenceId: string, leaseOwner: string, outcome: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE agent_trigger_occurrences SET state = 'dropped', outcome = $3, finished_at = now()
+        WHERE id = $1 AND lease_owner = $2 AND state = 'leased'`,
+      [occurrenceId, leaseOwner, outcome],
+    );
+  }
+
+  /** Whether an instance or agent kill switch is set. */
+  async killSwitchSet(agentId: string): Promise<boolean> {
+    const { rows } = await this.pool.query<{ killed: boolean }>(`SELECT ${KILLED_FOR_AGENT} AS killed`, [agentId]);
+    return rows[0]?.killed === true;
+  }
+
+  /**
+   * Reserve `amount` for one firing against the trigger's own budget, the
+   * agent's month and the instance's month. All or nothing.
+   */
+  async reserve(trigger: Trigger, amount: number, month: string, caps: SpendCaps): Promise<ReserveResult> {
+    if (amount <= 0) return { ok: true };
+    return this.inTransaction(async (client) => {
+      const { rows } = await client.query<{ ok: boolean }>(
+        `UPDATE agent_triggers SET reserved_usd = reserved_usd + $2
+          WHERE id = $1 AND spent_usd + reserved_usd + $2 <= budget_total_usd
+          RETURNING true AS ok`,
+        [trigger.id, amount],
+      );
+      if (rows.length === 0) return { ok: false as const, scope: 'trigger' as const };
+      for (const [scope, cap, name] of [
+        [trigger.agentId, caps.monthlyAgentUsd, 'agent'],
+        ['instance', caps.monthlyInstanceUsd, 'instance'],
+      ] as const) {
+        if (amount > cap) throw new SpendRefused(name);
+        const { rows: spend } = await client.query(
+          `INSERT INTO agent_trigger_spend AS s (scope, month, reserved_usd) VALUES ($1, $2::date, $3)
+           ON CONFLICT (scope, month) DO UPDATE SET reserved_usd = s.reserved_usd + EXCLUDED.reserved_usd
+            WHERE s.spent_usd + s.reserved_usd + EXCLUDED.reserved_usd <= $4
+           RETURNING 1`,
+          [scope, month, amount, cap],
+        );
+        if (spend.length === 0) throw new SpendRefused(name);
+      }
+      return { ok: true as const };
+    }).catch((err: unknown) => {
+      if (err instanceof SpendRefused) return { ok: false as const, scope: err.scope };
+      throw err;
+    });
+  }
+
+  /** Month spend of an agent (or 'instance'). */
+  async monthSpend(scope: string, month: string): Promise<{ spentUsd: number; reservedUsd: number }> {
+    const { rows } = await this.pool.query<{ spent_usd: string; reserved_usd: string }>(
+      'SELECT spent_usd, reserved_usd FROM agent_trigger_spend WHERE scope = $1 AND month = $2::date',
+      [scope, month],
+    );
+    return { spentUsd: Number(rows[0]?.spent_usd ?? 0), reservedUsd: Number(rows[0]?.reserved_usd ?? 0) };
+  }
+
+  /**
+   * Settle a firing in one transaction: the occurrence, the counters, the
+   * spend, the circuit breaker, the next occurrence, and the end.
+   */
+  async finish(input: FinishInput): Promise<FinishResult> {
+    return this.inTransaction(async (client) => {
+      await client.query(
+        `UPDATE agent_trigger_occurrences SET state = 'done', outcome = $3, finished_at = now()
+          WHERE id = $1 AND lease_owner = $2 AND state = 'leased'`,
+        [input.occurrenceId, input.leaseOwner, input.outcome],
+      );
+      const { rows } = await client.query<TriggerRowDb>(
+        `UPDATE agent_triggers SET
+            runs = LEAST(runs + $2::int, COALESCE(max_runs, runs + $2::int)),
+            consecutive_failures = CASE WHEN $3 THEN consecutive_failures + 1 ELSE 0 END,
+            consecutive_ineffective = CASE WHEN $4 THEN consecutive_ineffective + 1
+                                           WHEN $5 THEN 0 ELSE consecutive_ineffective END,
+            spent_usd = spent_usd + $6,
+            reserved_usd = GREATEST(reserved_usd - $7, 0),
+            last_fired_at = now(),
+            last_outcome = $8,
+            last_error = $9,
+            last_fingerprint = COALESCE($10, last_fingerprint),
+            updated_at = now()
+          WHERE id = $1
+          RETURNING *`,
+        [
+          input.triggerId,
+          input.countsAsRun ? 1 : 0,
+          input.outcome === 'failed',
+          input.ineffectiveTurn,
+          input.effectiveTurn,
+          input.costUsd,
+          input.reservedUsd,
+          input.outcome,
+          input.error ?? null,
+          input.fingerprint ?? null,
+        ],
+      );
+      await this.settleSpendIn(client, input);
+      const row = rows[0];
+      if (!row) return {};
+      const trigger = toTrigger(row);
+      await this.auditIn(
+        client,
+        trigger,
+        input.outcome === 'refused' ? 'refused' : 'fired',
+        { outcome: input.outcome, ...input.detail, ...(input.error ? { error: input.error } : {}) },
+        input.costUsd > 0 ? input.costUsd : null,
+      );
+
+      const exhausted = trigger.maxRuns !== null && trigger.runs >= trigger.maxRuns;
+      const end: TriggerEndReason | undefined =
+        input.end ?? (exhausted ? 'max_runs' : trigger.kind === 'wake_at' && input.countsAsRun ? 'fired' : undefined);
+      if (end) {
+        await this.deleteIn(client, trigger, end, {});
+        return { ended: end };
+      }
+      let paused: TriggerPauseReason | undefined;
+      if (trigger.consecutiveFailures >= input.breaker.failures) paused = 'breaker_failures';
+      else if (trigger.consecutiveIneffective >= input.breaker.ineffective) paused = 'breaker_ineffective';
+      if (paused) {
+        await this.pauseIn(client, trigger, paused, { failures: trigger.consecutiveFailures, ineffective: trigger.consecutiveIneffective });
+        return { paused };
+      }
+      if (input.nextDueAt && trigger.state === 'active') {
+        await this.insertTimerOccurrence(client, trigger.id, input.nextDueAt);
+      }
+      return {};
+    });
+  }
+
+  private async settleSpendIn(client: PoolClient, input: FinishInput): Promise<void> {
+    if (input.costUsd <= 0 && input.reservedUsd <= 0) return;
+    const { rows } = await client.query<{ agent_id: string }>('SELECT agent_id FROM agent_triggers WHERE id = $1', [input.triggerId]);
+    const scopes = ['instance', ...(rows[0] ? [rows[0].agent_id] : [])];
+    for (const scope of scopes) {
+      await client.query(
+        `INSERT INTO agent_trigger_spend AS s (scope, month, spent_usd) VALUES ($1, $2::date, $3)
+         ON CONFLICT (scope, month) DO UPDATE
+           SET spent_usd = s.spent_usd + EXCLUDED.spent_usd,
+               reserved_usd = GREATEST(s.reserved_usd - $4, 0)`,
+        [scope, input.month, input.costUsd, input.reservedUsd],
+      );
+    }
+  }
+
+  private async deleteIn(client: PoolClient, trigger: Trigger, reason: TriggerEndReason, detail: Record<string, unknown>): Promise<void> {
+    await client.query('DELETE FROM agent_triggers WHERE id = $1', [trigger.id]);
+    await this.auditIn(client, trigger, 'ended', {
+      reason,
+      purpose: trigger.purpose,
+      runs: trigger.runs,
+      spentUsd: trigger.spentUsd,
+      ...detail,
+    });
+  }
+
+  private async pauseIn(client: PoolClient, trigger: Trigger, reason: TriggerPauseReason, detail: Record<string, unknown>): Promise<void> {
+    await client.query(
+      `UPDATE agent_triggers SET state = 'paused', pause_reason = $2, updated_at = now() WHERE id = $1`,
+      [trigger.id, reason],
+    );
+    await client.query(
+      `UPDATE agent_trigger_occurrences SET state = 'dropped', outcome = 'paused', finished_at = now()
+        WHERE trigger_id = $1 AND state = 'pending'`,
+      [trigger.id],
+    );
+    await this.auditIn(client, trigger, 'paused', { reason, ...detail });
+  }
+
+  /** End (delete) one trigger. False when it was already gone. */
+  async end(id: string, reason: TriggerEndReason, detail: Record<string, unknown> = {}): Promise<boolean> {
+    return this.inTransaction(async (client) => {
+      const { rows } = await client.query<TriggerRowDb>('SELECT * FROM agent_triggers WHERE id = $1 FOR UPDATE', [id]);
+      if (!rows[0]) return false;
+      await this.deleteIn(client, toTrigger(rows[0]), reason, detail);
+      return true;
+    });
+  }
+
+  /**
+   * A context ended (a meeting, a facilitation, a deleted routine): every
+   * trigger bound to it ends in this one transaction, hooks and timers alike.
+   */
+  async endContext(kind: TriggerContextKind, contextId: string, at: Date): Promise<Trigger[]> {
+    return this.inTransaction(async (client) => {
+      const { rows } = await client.query<TriggerRowDb>(
+        'SELECT * FROM agent_triggers WHERE context_kind = $1 AND context_id = $2 FOR UPDATE',
+        [kind, contextId],
+      );
+      const ended = rows.map(toTrigger);
+      for (const t of ended) await this.deleteIn(client, t, 'context_ended', { context: `${kind}:${contextId}` });
+      await client.query(
+        `INSERT INTO agent_trigger_context_activity (context_kind, context_id, last_activity_at, ended_at)
+         VALUES ($1, $2, $3, $3)
+         ON CONFLICT (context_kind, context_id) DO UPDATE SET ended_at = EXCLUDED.ended_at`,
+        [kind, contextId, at],
+      );
+      return ended;
+    });
+  }
+
+  /** Pause a trigger (owner, operator, breaker or budget). */
+  async pause(id: string, reason: TriggerPauseReason, detail: Record<string, unknown> = {}): Promise<Trigger | undefined> {
+    return this.inTransaction(async (client) => {
+      const { rows } = await client.query<TriggerRowDb>('SELECT * FROM agent_triggers WHERE id = $1 FOR UPDATE', [id]);
+      if (!rows[0]) return undefined;
+      const t = toTrigger(rows[0]);
+      if (t.state === 'paused') return t;
+      await this.pauseIn(client, t, reason, detail);
+      return { ...t, state: 'paused' as const, pauseReason: reason };
+    });
+  }
+
+  /** Resume a paused trigger; the breaker starts over and the next
+   *  occurrence is scheduled. */
+  async resume(id: string, nextDueAt: Date | undefined, by: string): Promise<Trigger | undefined> {
+    return this.inTransaction(async (client) => {
+      const { rows } = await client.query<TriggerRowDb>(
+        `UPDATE agent_triggers
+            SET state = 'active', pause_reason = NULL, consecutive_failures = 0,
+                consecutive_ineffective = 0, updated_at = now()
+          WHERE id = $1 RETURNING *`,
+        [id],
+      );
+      if (!rows[0]) return undefined;
+      const t = toTrigger(rows[0]);
+      if (nextDueAt) await this.insertTimerOccurrence(client, id, nextDueAt);
+      await this.auditIn(client, t, 'resumed', { by });
+      return t;
+    });
+  }
+
+  /** Move the deadline (a routine's renewal). */
+  async renew(id: string, until: Date, by: string): Promise<Trigger | undefined> {
+    return this.inTransaction(async (client) => {
+      const { rows } = await client.query<TriggerRowDb>(
+        `UPDATE agent_triggers SET until = $2, updated_at = now()
+          WHERE id = $1 AND (fire_at IS NULL OR fire_at <= $2) RETURNING *`,
+        [id, until],
+      );
+      if (!rows[0]) return undefined;
+      const t = toTrigger(rows[0]);
+      await this.auditIn(client, t, 'renewed', { until: until.toISOString(), by });
+      return t;
+    });
+  }
+
+  /** Delete every trigger past its deadline. */
+  async sweepExpired(now: Date): Promise<number> {
+    return this.inTransaction(async (client) => {
+      const { rows } = await client.query<TriggerRowDb>(
+        'SELECT * FROM agent_triggers WHERE until < $1 FOR UPDATE SKIP LOCKED',
+        [now],
+      );
+      for (const r of rows) await this.deleteIn(client, toTrigger(r), 'expired', {});
+      return rows.length;
+    });
+  }
+
+  /** Something happened in a context (a message, an event). */
+  async noteActivity(kind: TriggerContextKind, contextId: string, at: Date): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO agent_trigger_context_activity (context_kind, context_id, last_activity_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (context_kind, context_id) DO UPDATE
+         SET last_activity_at = GREATEST(agent_trigger_context_activity.last_activity_at, EXCLUDED.last_activity_at)`,
+      [kind, contextId, at],
+    );
+  }
+
+  /** When the context last saw activity, and whether it ended. */
+  async contextActivity(kind: TriggerContextKind, contextId: string): Promise<{ lastActivityAt: Date; endedAt: Date | null } | undefined> {
+    const { rows } = await this.pool.query<{ last_activity_at: Date; ended_at: Date | null }>(
+      'SELECT last_activity_at, ended_at FROM agent_trigger_context_activity WHERE context_kind = $1 AND context_id = $2',
+      [kind, contextId],
+    );
+    return rows[0] ? { lastActivityAt: rows[0].last_activity_at, endedAt: rows[0].ended_at } : undefined;
+  }
+
+  async audit(t: Pick<Trigger, 'id' | 'agentId' | 'agentSlug'>, event: TriggerAuditEvent, detail: Record<string, unknown>): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await this.auditIn(client, t, event, detail);
+    } finally {
+      client.release();
+    }
+  }
+
+  async auditOf(triggerId: string, limit: number): Promise<TriggerAuditRow[]> {
+    const { rows } = await this.pool.query<{
+      trigger_id: string;
+      agent_slug: string;
+      event: TriggerAuditEvent;
+      detail: Record<string, unknown>;
+      cost_usd: string | null;
+      at: Date;
+    }>(
+      'SELECT trigger_id, agent_slug, event, detail, cost_usd, at FROM agent_trigger_audit WHERE trigger_id = $1 ORDER BY id DESC LIMIT $2',
+      [triggerId, limit],
+    );
+    return rows.map((r) => ({
+      triggerId: r.trigger_id,
+      agentSlug: r.agent_slug,
+      event: r.event,
+      detail: r.detail,
+      costUsd: r.cost_usd === null ? null : Number(r.cost_usd),
+      at: r.at,
+    }));
+  }
+}
+
+class SpendRefused extends Error {
+  constructor(readonly scope: 'agent' | 'instance') {
+    super(`monthly ${scope} cap reached`);
+  }
+}
