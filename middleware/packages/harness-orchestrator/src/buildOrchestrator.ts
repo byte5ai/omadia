@@ -147,8 +147,9 @@ export interface AgentRuntimeConfig {
   readonly cliTurnSeconds?: number;
   /** #445 — sticky Direct Line for this Agent (see {@link OrchestratorOptions}). */
   readonly directLineSticky?: boolean;
-  /** Wave 8 — this Agent's direct-answer persona-skill candidates, resolved
-   *  by the caller from `agent_persona_skills` (see {@link OrchestratorOptions}).
+  /** #2051 — this Agent's working-mode candidates, resolved by the caller
+   *  from `agent_persona_skills` (see {@link OrchestratorOptions}). A mode is
+   *  composed beneath the identity for one turn; it never replaces it.
    *  Per-agent, unlike the platform-shared `OrchestratorDeps` fields below. */
   readonly personaSkills?: readonly OrchestratorPersonaSkill[];
   /**
@@ -161,8 +162,8 @@ export interface AgentRuntimeConfig {
    * behaviour down means that text, not that text appended to a generic
    * one. Absent/blank → the platform identity, exactly as before.
    *
-   * Per-turn persona skills (Wave 8) still win over both — they replace this
-   * slot for one turn, which is what they always did.
+   * A per-turn working mode (#2051) never touches this slot: it is composed
+   * beneath whichever identity applies, for one turn.
    */
   readonly identityInstructions?: string;
   /**

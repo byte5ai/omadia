@@ -31,13 +31,15 @@ export type {
   RoutingBucket,
 } from './modelRouter.js';
 
-// Wave 8 — per-turn direct-answer persona routing (twin of modelRouter).
-export { routeTurnPersona } from './personaRouter.js';
+// #2051 — per-turn working-mode selection (twin of modelRouter); the mode is
+// composed beneath the agent's identity, never in its place.
+export { routeTurnWorkingMode, withWorkingMode } from './workingModes.js';
 export type {
-  PersonaCandidate,
-  PersonaRouteResult,
-  PersonaRoutingBucket,
-} from './personaRouter.js';
+  SelectedWorkingMode,
+  WorkingModeBucket,
+  WorkingModeCandidate,
+  WorkingModeRouteResult,
+} from './workingModes.js';
 
 // Multi-orchestrator registry (US4) — read by US7 channel routing and US9 UI.
 export {

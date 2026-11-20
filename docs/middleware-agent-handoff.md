@@ -138,6 +138,23 @@ src/
   nutzt Session-Transkripte nur auf Rückbezug, persistiert Learnings
   früh (im nächsten Tool-Call, nicht am Ende).
 
+### Arbeitsmodi statt Persona-Wechsel (#2051, Epic #2042)
+
+`workingModes.ts` (vorher `personaRouter.ts`) wählt pro Turn höchstens einen
+Arbeitsmodus aus `agent_persona_skills`; der Klassifikator sieht nur Name und
+Beschreibung, der Skill-Text wird erst danach geladen. `withWorkingMode` hängt
+den Modus als Abschnitt „Arbeitsmodus: <Name>“ mit Vorrang-Satz **unter** die
+Identitätsschicht von `withAgentIdentity` — er ersetzt Identität,
+Persönlichkeit und Grenzen nie (INV-3); ohne Modus ist der Prompt
+byte-identisch. Die Auswahl ist ein interner Helfer des Agenten: sie läuft im
+Turn-Kontext auf `modelRouting.classifierModel`, sonst auf dem Primärmodell
+der Policy (`resolvePrimaryExecution()`), Usage-Source `working-mode-router`.
+Ergebnis: Stream-Event `turn_working_mode` (`bucket`, `classifierModel`,
+`skillId`, `modeName`; nur bei Agenten mit Modi, vor dem Verifier-Verdikt
+erlaubt), `runTrace.workingMode` und `workingMode`/`workingModeSkillId` auf dem
+Run-Knoten. Der Web-Chat zeigt „Modus: X“ nur in der Detail-Zeile der Antwort,
+nie über der Nachricht (Spec §5.14).
+
 ### `get_chat_participants` — per-Turn-Roster-Gating (#1108)
 
 - **Datei:** `packages/harness-orchestrator/src/tools/chatParticipantsTool.ts`.
@@ -5393,7 +5410,7 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
 `docs/security-architecture.md` §7c):
 
 - **Bis zum Urteil** gehen nur Lebenszeichen raus: `iteration_start`,
-  `turn_routing`, `turn_persona`, `tool_progress`, `heartbeat`,
+  `turn_routing`, `turn_working_mode`, `tool_progress`, `heartbeat`,
   `stream_token_chunk`, `iteration_usage`, `steer_applied` (geschlossene
   Allowlist `passesBeforeVerdict`). Alles andere — `text_delta`,
   `tool_use`/`tool_result`, `sub_*` (auch `sub_iteration`, damit es beim

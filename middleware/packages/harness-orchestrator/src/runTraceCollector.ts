@@ -218,6 +218,17 @@ export class RunTraceCollector {
   private model?: string;
   private provider?: string;
 
+  /**
+   * #2051 — record the working mode this turn ran in (only when one was
+   * selected). Trace data, not a speaker: the agent answering the turn is
+   * unchanged by its mode. Set once, right after mode selection resolves.
+   */
+  recordWorkingMode(skillId: string, name: string): void {
+    this.workingMode = { skillId, name };
+  }
+
+  private workingMode?: { skillId: string; name: string };
+
   finish(opts: {
     iterations: number;
     status: RunStatus;
@@ -241,6 +252,7 @@ export class RunTraceCollector {
       // string: a trace that carries `model: ''` claims to know and does not.
       ...(this.model ? { model: this.model } : {}),
       ...(this.provider ? { provider: this.provider } : {}),
+      ...(this.workingMode ? { workingMode: this.workingMode } : {}),
       ...(opts.error ? { error: opts.error } : {}),
     };
     if (this.knowledgeGraphOutputSeen) {

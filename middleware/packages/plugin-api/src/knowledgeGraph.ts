@@ -1996,6 +1996,15 @@ export interface RunTrace {
    * record that can be wrong.
    */
   provider?: string;
+  /**
+   * #2051 — the working mode the turn ran in: the skill id and its name.
+   * Present only when a mode was selected. A mode shapes how the agent worked
+   * on the request; it never changes who answered, so this is trace data,
+   * not a speaker. Optional, like `model`: older traces stay readable, and the
+   * graph stores it flattened on the Run node (`workingMode`,
+   * `workingModeSkillId`) without a migration.
+   */
+  workingMode?: { skillId: string; name: string };
 }
 
 export interface RunIngestResult {

@@ -473,11 +473,11 @@ export function registerDbSubAgentTools(
         handle: (input: unknown) => {
           const current = turnContext.current();
           // Bind-time consent covers "when this skill is active" — a turn
-          // where a DIFFERENT (or no) persona is acting must not reach the
+          // where a DIFFERENT (or no) working mode is active must not reach the
           // tool, even though it is registered on the agent (codex fold).
-          if (current?.activePersonaSkillId !== skillId) {
+          if (current?.activeWorkingModeSkillId !== skillId) {
             return Promise.resolve(
-              `Error: tool "${base.name}" is bound to skill "${skillSlug}", which is not the active persona for this turn.`,
+              `Error: tool "${base.name}" is bound to skill "${skillSlug}", which is not the active working mode for this turn.`,
             );
           }
           // Attribute the call to the skill in the audit log (issue #462
@@ -492,7 +492,7 @@ export function registerDbSubAgentTools(
               // skill-bound MCP call reaches a `per_user` server with no
               // identity, audits as `unresolved` and fails closed.
               ...(current.mcpUserKey ? { mcpUserKey: current.mcpUserKey } : {}),
-              activePersonaSkillId: skillId,
+              activeWorkingModeSkillId: skillId,
               mcpCallerKind: 'skill',
               mcpCallerId: skillSlug,
             },

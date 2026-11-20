@@ -36,6 +36,24 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — Persona skills are working modes beneath the agent's identity (#2051, epic #2042)
+
+- **Before:** the skill a per-turn classifier picked replaced the agent's
+  identity in the system prompt, and the web chat said "Answering as X" — one
+  agent spoke under another name without calling anyone (spec 2042 G5, INV-3).
+- **Now:** the selection stays (classifier on names and descriptions, skill
+  body loaded afterwards, fallback to no mode) and runs as the agent's internal
+  helper on a model its policy allows (`working-mode-router` usage source). The
+  chosen skill is appended as "Arbeitsmodus: <name>" beneath identity,
+  personality and boundaries, which keep precedence; without a mode the prompt
+  is byte-identical.
+- **Renamed without a compatibility layer:** stream event `turn_persona` →
+  `turn_working_mode` (`modeName` instead of `skillName`), turn context
+  `activePersonaSkillId` → `activeWorkingModeSkillId`. New optional
+  `RunTrace.workingMode` (additive). The web chat shows "Modus: X" in the
+  answer details only. Table `agent_persona_skills` and its routes keep their
+  names (spec §7).
+
 ### Changed — The audience floor is on by default (#2048, epic #2042)
 
 - **Before:** the floor that limits a room to what every person present may do

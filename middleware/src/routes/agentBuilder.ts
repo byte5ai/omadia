@@ -645,9 +645,10 @@ export function createAgentBuilderRouter(
     },
   );
 
-  // ── persona skills (Wave 8 — direct-answer identity candidates) ─────────
+  // ── working modes (#2051; the route and table keep the persona-skill name) ─
   // Attached straight to the Agent, no sub-agent in between: the per-turn
-  // classifier (`routeTurnPersona`) picks at most one to answer as. Current
+  // classifier (`routeTurnWorkingMode`) picks at most one mode, composed
+  // beneath the agent's identity — it never changes who answers. Current
   // links + names come back on `/agents/:slug/graph` (`agent.personaSkillIds`
   // + `skills`) — no separate GET here to avoid a second source of truth.
   router.post(

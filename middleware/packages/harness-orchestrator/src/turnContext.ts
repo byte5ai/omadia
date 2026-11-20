@@ -242,14 +242,15 @@ export interface TurnContextValue {
    */
   mcpUserKey?: string;
   /**
-   * Epic #459 W4/W5 (codex fold) — the persona skill the W8 per-turn router
-   * selected as this turn's acting identity, or undefined when no persona is
-   * active. Skill-bound MCP DomainTools check it at dispatch: a tool bound to
-   * skill X must not be callable on a turn where X is not the active persona
-   * (that would exceed the bind-time consent). Set by the orchestrator right
-   * after persona routing, mutated on the live store so nested scopes see it.
+   * Epic #459 W4/W5 (codex fold), #2051 — the working mode (skill) the
+   * per-turn selector chose for this turn, or undefined when the turn runs
+   * without one. Skill-bound MCP DomainTools check it at dispatch: a tool
+   * bound to skill X must not be callable on a turn where X is not the active
+   * working mode (that would exceed the bind-time consent). Set by the
+   * orchestrator right after mode selection, mutated on the live store so
+   * nested scopes see it.
    */
-  activePersonaSkillId?: string;
+  activeWorkingModeSkillId?: string;
   /**
    * W2-1 (#544) — outcome of an MCP `input_required` REPLAY performed at turn
    * start, as a note to append to the user's wire message so the model can
@@ -260,7 +261,7 @@ export interface TurnContextValue {
    * `runTurn → chatInContext → chatInContextInner` and the streaming mirror of
    * all three, on both of which every call site already passes `input`. Written
    * onto the LIVE store inside the turn scope (same technique as
-   * `activePersonaSkillId`), read once when the wire messages are assembled.
+   * `activeWorkingModeSkillId`), read once when the wire messages are assembled.
    *
    * Carries no collected values — those may be secrets the user typed for the
    * server, and this string reaches the LLM and the session log.
@@ -430,7 +431,7 @@ export const turnContext = {
    * the context is active for exactly the spans that execute generator body
    * code, and is NOT active while the consumer processes a yielded value.
    * `value` is passed by reference on every step, so writes onto the live store
-   * (`activePersonaSkillId`, `mcpInputReplayNote`) stay visible to later steps
+   * (`activeWorkingModeSkillId`, `mcpInputReplayNote`) stay visible to later steps
    * — same semantics `run()` gives a plain async function.
    */
   runGenerator<T>(
