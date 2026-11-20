@@ -50,7 +50,9 @@ changelog.
   credentials, admitted in the job's context (budget across calls, deadline,
   cancel, kill switch), and returns the provider's response as it is. Only
   `anthropic-version`, `anthropic-beta`, `accept` and `content-type` are
-  forwarded; a job the kernel did not issue to that plugin is refused.
+  forwarded; a job the kernel did not issue to that plugin is refused. The
+  response comes back without the credential: auth-like headers are dropped
+  and the key is scrubbed from the body, also where a stream splits it.
 - For the dev platform's coding jobs: the Claude CLI in a job container
   keeps talking to the dev platform's proxy, which no longer holds a
   provider key or calls `api.anthropic.com` itself. `ModelWorkRuns.open`

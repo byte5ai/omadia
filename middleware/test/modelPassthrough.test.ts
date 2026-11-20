@@ -11,7 +11,7 @@ import { afterEach, describe, it } from 'node:test';
 import { isModelCallNotCovered } from '@omadia/llm-provider';
 import { currentExecutionContext, resetModelGatewayForTests, setModelCallHalts, setModelGatewayMode } from '@omadia/usage-telemetry';
 
-import { ModelPassthroughError, createModelPassthrough, systemModuleOnlyService } from '../src/platform/modelPassthrough.js';
+import { ModelPassthroughError, createModelPassthrough, systemModuleOnlyService, withoutCredential } from '../src/platform/modelPassthrough.js';
 import { ServiceRegistry } from '../src/platform/serviceRegistry.js';
 import { createModelWorkRuns } from '../src/platform/modelWorkRuns.js';
 
@@ -142,6 +142,32 @@ describe('model passthrough for system modules', () => {
         (err: unknown) => err instanceof ModelPassthroughError && err.code === 'model_passthrough.not_system_module',
         id,
       );
+    }
+  });
+
+  it('hands back no credential: auth-like headers dropped, the key scrubbed even across chunks', async () => {
+    const key = 'sk-ant-instance-secret-0123456789';
+    for (let split = 1; split < key.length; split += 1) {
+      const enc = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode(`data: {"echo":"${key.slice(0, split)}`));
+          c.enqueue(enc.encode(`${key.slice(split)}"} and ${key}\n`));
+          c.close();
+        },
+      });
+      const upstream = new Response(body, {
+        status: 200,
+        headers: { 'x-api-key': key, 'set-cookie': 'a=b', 'content-type': 'text/event-stream', 'x-echo': `k=${key}` },
+      });
+      const out = withoutCredential(upstream, key);
+      const text = await out.text();
+      assert.equal(text.includes(key), false, `split at ${String(split)}`);
+      assert.equal(text, 'data: {"echo":"[REDACTED]"} and [REDACTED]\n');
+      assert.equal(out.headers.get('x-api-key'), null);
+      assert.equal(out.headers.get('set-cookie'), null);
+      assert.equal(out.headers.get('x-echo'), null);
+      assert.equal(out.headers.get('content-type'), 'text/event-stream');
     }
   });
 });

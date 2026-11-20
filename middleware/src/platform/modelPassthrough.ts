@@ -119,7 +119,8 @@ export function createModelPassthrough(deps: ModelPassthroughDeps): ModelPassthr
           return entry.handle.admit(async () => {
             admitModelCall('complete');
             const signal = input.signal ? AbortSignal.any([input.signal, entry.handle.signal]) : entry.handle.signal;
-            return fetchImpl(url, { method: 'POST', headers, body: input.body, signal });
+            const upstream = await fetchImpl(url, { method: 'POST', headers, body: input.body, signal });
+            return withoutCredential(upstream, apiKey);
           });
         },
       };
@@ -146,6 +147,83 @@ export function systemModuleOnlyService<T>(
       );
     }
     return make(caller.pluginId);
+  });
+}
+
+/** Response headers never handed back: hop-by-hop, recomputed, auth-like. */
+const STRIPPED_RESPONSE_HEADERS = new Set([
+  'connection',
+  'transfer-encoding',
+  'content-length',
+  'content-encoding',
+  'keep-alive',
+  'authorization',
+  'proxy-authorization',
+  'x-api-key',
+  'set-cookie',
+  'www-authenticate',
+  'proxy-authenticate',
+]);
+
+/**
+ * The provider's response without the instance's credential: auth-like
+ * headers dropped, and every occurrence of the key in the body (streamed or
+ * not, also split across chunks) replaced by `[REDACTED]`. The module the
+ * response goes to never held the key and must not learn it from an echo.
+ */
+export function withoutCredential(upstream: Response, secret: string): Response {
+  const headers = new Headers();
+  upstream.headers.forEach((value, name) => {
+    if (!STRIPPED_RESPONSE_HEADERS.has(name.toLowerCase()) && !value.includes(secret)) headers.set(name, value);
+  });
+  const init = { status: upstream.status, statusText: upstream.statusText, headers };
+  if (!upstream.body || secret.length === 0) return new Response(upstream.body, init);
+  return new Response(upstream.body.pipeThrough(redactStream(secret)), init);
+}
+
+const REDACTED = new TextEncoder().encode('[REDACTED]');
+
+/** Replace `secret` in a byte stream, holding back a tail shorter than the
+ *  secret so a match split across chunks is still found. */
+function redactStream(secret: string): TransformStream<Uint8Array, Uint8Array> {
+  const needle = new TextEncoder().encode(secret);
+  let carry = new Uint8Array(0);
+  const indexOf = (hay: Uint8Array, from: number): number => {
+    outer: for (let i = from; i <= hay.length - needle.length; i += 1) {
+      for (let j = 0; j < needle.length; j += 1) if (hay[i + j] !== needle[j]) continue outer;
+      return i;
+    }
+    return -1;
+  };
+  const concat = (parts: Uint8Array[]): Uint8Array => {
+    const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    let at = 0;
+    for (const p of parts) {
+      out.set(p, at);
+      at += p.length;
+    }
+    return out;
+  };
+  const scrub = (buf: Uint8Array): Uint8Array => {
+    const parts: Uint8Array[] = [];
+    let start = 0;
+    for (let i = indexOf(buf, 0); i !== -1; i = indexOf(buf, start)) {
+      parts.push(buf.subarray(start, i), REDACTED);
+      start = i + needle.length;
+    }
+    parts.push(buf.subarray(start));
+    return concat(parts);
+  };
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      const scrubbed = scrub(concat([carry, chunk]));
+      const keep = Math.min(needle.length - 1, scrubbed.length);
+      carry = scrubbed.slice(scrubbed.length - keep);
+      if (scrubbed.length > keep) controller.enqueue(scrubbed.subarray(0, scrubbed.length - keep));
+    },
+    flush(controller) {
+      if (carry.length > 0) controller.enqueue(carry);
+    },
   });
 }
 

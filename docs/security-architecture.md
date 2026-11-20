@@ -817,7 +817,9 @@ instance keeps working while the plugin release train moves the packages.
   module's Anthropic-compatible proxy. The proxy holds no provider key: it
   opens an operator job (`operatorJobs@1`) and forwards each request through
   `modelPassthrough@1`, which adds the instance's credentials, forwards only
-  four protocol headers and admits the call in the job's context. Both
+  four protocol headers, admits the call in the job's context and hands the
+  response back with auth-like headers dropped and the key scrubbed from
+  the body (also across stream chunks). Both
   services are given only to `system-module` plugins, and a job object is
   valid only for the plugin the kernel issued it to.
 - **Network sandbox** (`src/platform/pluginEgressGuard.ts`). `ctx.http` has
