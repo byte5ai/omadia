@@ -211,6 +211,11 @@ export * from './executionGrants.js';
 // #2045 (epic #2042) — speaker, typed emissions, system notices and
 // contributions: who speaks, and what kind of output reaches a person.
 export * from './speaker.js';
+// Spec 2042 §5.10 — maintenance runs of the model gateway (`maintenanceRun@1`).
+export * from './maintenanceRun.js';
+// Spec 2042 §5.10 — operator jobs and model passthrough for system modules
+// (`operatorJobs@1`, `modelPassthrough@1`).
+export * from './modelPassthrough.js';
 
 // #2082 (epic #2042) — bounded batch jobs: learning and consolidation run as
 // agent batch triggers, not as free-running plugin intervals.

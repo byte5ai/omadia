@@ -15,7 +15,7 @@ import {
 /**
  * Flatten a RunTrace into the list of tool / sub-agent names invoked in
  * this turn. Used by the pipeline's trace-cross-check rule to spot
- * accounting/HR numeric claims that arrived WITHOUT a fresh fach-agent
+ * accounting/HR numeric claims that arrived WITHOUT a fresh domain-tool
  * call — i.e. the orchestrator replayed numbers from the context block.
  *
  * Returns `undefined` when no trace is available — the pipeline then

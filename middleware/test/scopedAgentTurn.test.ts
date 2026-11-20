@@ -381,7 +381,8 @@ describe('#2090 every provider passes the gate', () => {
 
   it('each implementation that reaches a backend calls admitModelCall()', () => {
     for (const file of GATED) {
-      assert.match(read(file), /admitModelCall\(\);/, `${file} must pass the gate before it calls its backend`);
+      // Spec 2042 §5.10 — with or without the operation (`'run_loop'` for the CLI).
+      assert.match(read(file), /admitModelCall\(('[a-z_]+')?\);/, `${file} must pass the gate before it calls its backend`);
     }
   });
 

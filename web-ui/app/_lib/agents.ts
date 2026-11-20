@@ -1,6 +1,6 @@
 import { parseOperatorArchetypes, type OperatorArchetypeDto } from './archetypes';
 import { ApiError, rscTimeoutSignal } from './api';
-import type { LocalizedMarkdown } from './storeTypes';
+import type { LocalizedMarkdown, PluginKind } from './storeTypes';
 import type { AgentAvailability } from './agentAvailability';
 import type { TeamsTargetKind } from './teamsInstallTarget';
 
@@ -1556,7 +1556,6 @@ export async function getAgentDirectory(channel: string): Promise<AgentDirectory
 
 // ── Phase B — operator dashboard support surfaces ───────────────────────
 
-import type { PluginKind } from './storeTypes';
 export type { PluginKind };
 
 export type SetupFieldType =

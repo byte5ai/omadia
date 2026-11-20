@@ -51,13 +51,84 @@ changelog.
   **web-ui:** the agent's "Teams" tab is now "Channels" with an "Own bots" section.
   Purging a deleted agent stops its own bots first and says which ones it could
   not stop. A Plugin Builder preview's draft agent never gets a bot (`409`).
-- **plugin-api (additive, version unchanged):** `SystemNoticeCode` `agent_own_bot`,
+- **`@omadia/plugin-api` 1.79.0 (additive):** `SystemNoticeCode` `agent_own_bot`,
   the answer to `/agent` sent to an agent's own bot.
 - **Live findings of the S6 Teams rollout:** `/agent` in a provisioned Teams agent's
   own bot chat now answers `agent_own_bot` (no selection stored); the identity
   guard's notice is written in the turn's language (`ChatTurnInput.locale`, additive);
   the operator UI offers channel types the server names (`plugin-catalog`
   `channel_types`) instead of plugin ids such as `channel-discord`.
+
+### Changed — plugin-api 1.78.0 (#2053, epic #2042): S3 expand step
+
+- `@omadia/plugin-api` 1.78.0 (additive): `MaintenanceRunService`,
+  `OperatorJobsService`, `OperatorJob`, `ModelPassthroughService`,
+  `LlmScopeRequiredError`, `RawModelServiceRefusedError`. It marks the kernel
+  that loads the new plugin kinds, `agent_templates:` and
+  `capabilities[].side_effects`; plugins using them declare
+  `compat.core: ">=1.78.0 <2.0"`. Upgrade notes: `docs/upgrading.md`.
+
+### Changed — The system prompt speaks of domain tools of capabilities, not "Fach-Agenten" (#2053, epic #2042)
+
+- Spec 2042 §5.10: a plugin delivers capabilities and is never an agent.
+  The agent's system prompt (orchestrator, answer size, session log,
+  verifier notice) and the prompt docs of `render_diagram`, `create_xlsx`
+  and `create_docx` now call the domain tools "Fach-Werkzeuge"; the roster
+  heading reads "Fach-Werkzeuge deiner Fähigkeiten". Wording only, the
+  routing rules are unchanged.
+
+### Added — Operator jobs and model passthrough for system modules (#2053, epic #2042): S3 expand step
+
+- Kernel services `operatorJobs@1` and `modelPassthrough@1` (plugin-api
+  `modelPassthrough.ts`, additive), given only to plugins of kind
+  `system-module` (`model_passthrough.not_system_module` otherwise).
+- `operatorJobs.open({ kind, startedBy, budgetCalls, deadlineMs, effects })`
+  opens a recorded operator job (`model_work_runs`, kind
+  `<plugin id>:<kind>`, at most 10000 calls and 24 h) whose model calls
+  arrive over time; cancel and deadline abort `job.signal`.
+- `modelPassthrough.forwardAnthropicMessages({ job, query, headers, body })`
+  forwards one Anthropic Messages request with the instance's Anthropic
+  credentials, admitted in the job's context (budget across calls, deadline,
+  cancel, kill switch), and returns the provider's response as it is. Only
+  `anthropic-version`, `anthropic-beta`, `accept` and `content-type` are
+  forwarded; a job the kernel did not issue to that plugin is refused. The
+  response comes back without the credential: auth-like headers are dropped
+  and the key is scrubbed from the body, also where a stream splits it.
+- For the dev platform's coding jobs: the Claude CLI in a job container
+  keeps talking to the dev platform's proxy, which no longer holds a
+  provider key or calls `api.anthropic.com` itself. `ModelWorkRuns.open`
+  is the handle form of `run` (`src/platform/modelWorkRuns.ts`).
+
+### Fixed — Setup options come from a capability plugin's registered tool (#2053, epic #2042): S3 expand step
+
+- A setup field's `options_provider` (e.g. Notion's `list_notion_roots`) was
+  answered only from the retired agent runtime's toolkit, so a plugin moved
+  to a capability kind answered `agent_inactive`. The setup-options endpoint
+  and the multiselect check now ask the plugin's own tool registered via
+  `ctx.tools` first (`src/plugins/setupOptionsResolver.ts`; only that
+  plugin's tool, never another plugin's of the same name), and the agent
+  runtime only for a plugin still running there.
+
+### Added — A channel's topic detection before the turn is inbound processing (#2053, epic #2042): S3 expand step
+
+- `topicDetector.classify`, resolved by a channel plugin, runs in an
+  `inbound_processing` context owned by that channel (embed and complete
+  only) when no other context is around the call, like `transcribeFile`
+  (`inboundProcessing`, `src/platform/modelGatewayServices.ts`). channel-teams
+  calls it before the turn to decide how much history the turn gets.
+
+### Fixed — `$config.*` base URLs allow their host; local model servers are no model endpoint (#2053, epic #2042): S3 expand step
+
+- A `permissions.network.outbound` entry `$config.<field>` whose value is a
+  URL (`https://gateway.example.net/v1`, the usual base-URL setup field)
+  now allows that URL's host, for `ctx.http` and the network sandbox alike.
+  Before, such a value matched no host.
+- The sandbox's model endpoints leave out local and private hosts
+  (`localhost`, `host.docker.internal`, private IPs): a local Ollama shares
+  its host with every other local service, and blocking it would cut every
+  plugin off loopback. Reaching them is decided by the plugin's permission.
+
+### Added — Tools declare their effect; templates carry the answer size; memory writes as an operator job (#2053, epic #2042): S3 expand step
 
 ### Added — Agents act unasked only through bounded triggers; data reaches people without a model (#2082, #2085, #1876, #1035, epic #2042): S4
 
@@ -149,6 +220,107 @@ changelog.
   `Plugin.tool_side_effects`; `declaredToolEffect(plugin, toolId)`
   (`src/plugins/toolSideEffects.ts`) answers `unknown` for a tool without a
   declaration. Basis for the readership check of writes (§6 criterion 17).
+- `agent_templates[].verbosity` (one of `ANSWER_VERBOSITY_LEVELS`), served in
+  the identity prefill.
+- `POST /api/v1/memory`, `PATCH /api/v1/memory/:id` and
+  `PATCH /api/v1/memory/:id/excerpts/:position` run as the operator job
+  `memory_edit` (50 calls, 5 min) with the writing user as its actor.
+
+### Fixed — Operator jobs answer when they cannot start; scoped archetype turns reach ctx.llm (#2053, epic #2042): S3 expand step
+
+- An admin route wrapped as an operator job left the request open when the
+  run could not be recorded (database unreachable): it now answers
+  `503 model_work.unavailable` without running the route; the daily budget
+  still answers `429`. A run whose process died while `running` stops
+  holding its budget at its deadline instead of for 24 h.
+- An archetype plugin's `ctx.llm` accepts an execution scope anywhere along
+  the context chain (`executionContextChain`, `@omadia/usage-telemetry`):
+  its own scoped turn is an agent turn nested in the scope.
+- The embedding backfill opens no maintenance run for a tick that skips,
+  and logs a run that cannot start instead of an unhandled rejection.
+- Network sandbox: the kernel's own `@omadia/*` packages count as kernel
+  code wherever they are installed (desktop runtime), `localhost` is a
+  private address in `public-web`, the observation list is bounded (1000),
+  and the package roots are rebuilt at most every 5 s.
+- `LlmScopeRequiredError` counts as a gate refusal (`isModelCallNotCovered`),
+  so no helper turns it into a silent fallback.
+
+### Added — Network sandbox of installed plugins; agent templates; inbound transcription context (#2053, epic #2042): S3 expand step
+
+- Spec 2042 §5.10. **Network sandbox** (`src/platform/pluginEgressGuard.ts`):
+  a request an installed plugin's own code makes through the global `fetch`
+  or `node:http(s)` is attributed to it from the call stack and checked
+  against the permission `ctx.http` already enforced (manifest and
+  `$config.*` hosts, operator hosts, `public-web`), with model provider
+  endpoints refused to every plugin that is not a model plugin.
+  `PLUGIN_EGRESS_MODE=observe|enforce` (new, default `observe`: logged once
+  per plugin and host as `[plugin-egress] observed …`). Kernel code acting
+  for a plugin (`ctx.http`, `ctx.llm`) stays the kernel's.
+- `GET /api/v1/admin/model-gateway`: model calls seen outside any execution
+  context and the sandbox's observations since boot. Both must be empty on
+  the live instance before the contract step switches to `enforce`.
+- **Agent templates**: the manifest block `agent_templates:` (inactive
+  presets of identity, personality and suggested capabilities, read
+  strictly) on capability, archetype and `agent-template` packages;
+  `GET /api/v1/admin/agent-templates` and
+  `GET /api/v1/admin/agent-templates/prefill?plugin=&template=` serve them
+  to the Agent Builder as the bodies of the existing create and identity
+  routes. Nothing is created or granted by them.
+- **Inbound processing**: a channel plugin's `transcription.transcribeFile`
+  runs in an `inbound_processing` context (transcribe only) when no other
+  context is around the call.
+- Model call sites and their contexts: `docs/model-gateway-call-sites.md`.
+
+### Added — The model gateway: every model call in one execution context (#2053, epic #2042): S3 expand step
+
+- Spec 2042 §5.10, ADR-0017. The gate every provider already passed
+  (`admitModelCall`, #2090) now takes the operation (`complete`, `embed`,
+  `transcribe`, `run_loop`) and the execution context around the call:
+  agent turn, execution scope, inbound processing, operator job or
+  maintenance run (`@omadia/usage-telemetry` `runInExecutionContext`,
+  `meterModelCalls({ context })`). The agent runtime's turn scope is an
+  agent turn (`currentAgentTurnExecutionContext`), and every agent's chat
+  agent is wrapped so the fast lane before the loop, the verifier after it
+  and the `claude-cli` runtime are that agent's turn too
+  (`withAgentTurnExecution`). `agentTurn@2` runs under its execution scope.
+- `MODEL_GATEWAY_MODE=observe|enforce` (new, default `observe`): a call
+  outside any context is logged once per call site
+  (`[model-gateway] observed a 'complete' call …`) in `observe` and refused in
+  `enforce` (the contract step). Operations a context does not allow (a
+  maintenance run only embeds), deadlines, cancels and kill switches are
+  refused in both modes.
+- Kill switches reach the gate: an instance switch halts every model call, an
+  agent switch that agent's (`src/execution/modelCallHalts.ts`, refreshed on
+  set/clear and every 10 s).
+- Embedding and transcription services (`embeddingClient`, `transcription`)
+  are handed out by the service registry only behind the gate, for kernel and
+  plugin consumers alike (`src/platform/modelGatewayServices.ts`).
+- Raw model services (`anthropicClient`, `llm`, `llmProviderPool`) are never
+  an archetype plugin's (`RawModelServiceRefusedError`); for other plugins
+  they are logged in `observe` and refused in `enforce`; model plugins and
+  the kernel's own system modules keep them. An archetype plugin's
+  `ctx.llm` works only inside an execution scope (`LlmScopeRequiredError`).
+- Operator jobs and maintenance runs (migration **0089** `model_work_runs`):
+  the issue preview, skill verification, topic regrouping, bulk promotion,
+  memory review detection, the Plugin Builder's chat and preview and the
+  Conductor's workflow designer each run as one operator job with a budget,
+  a deadline and a cancel (`GET /api/v1/admin/model-work`,
+  `POST /api/v1/admin/model-work/:id/cancel`); daily caps
+  `OPERATOR_TOOLS_DAILY_MODEL_CALLS` (20000) and
+  `MAINTENANCE_DAILY_MODEL_CALLS` (200000). The embedding backfill runs each
+  sweep as a maintenance run through the new kernel service
+  `maintenanceRun@1` (embed only).
+- `claude-cli` (`run_loop`): every CLI spawn runs with `HOME` and
+  `CLAUDE_CONFIG_DIR` set to one profile holding only the login
+  (`OMADIA_CLI_PROFILE=auto|isolated|inherit`; the image's
+  `CLAUDE_CONFIG_DIR=/data/claude-cli` is that profile; on a macOS keychain
+  login `auto` keeps the environment and says so at boot). An instruction
+  file in the profile refuses the spawn. The CLI's tool list must be exactly
+  the loopback tools offered this turn with the loopback server connected.
+  A kill switch ends a running CLI turn.
+- plugin-api (additive, version bump by the release): `MaintenanceRunService`,
+  `MAINTENANCE_RUN_SERVICE_NAME`, `LlmScopeRequiredError`,
+  `RawModelServiceRefusedError`.
 
 ### Added — Agents consult colleagues without gaining access (#2047, epic #2042)
 

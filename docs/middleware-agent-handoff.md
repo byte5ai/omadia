@@ -4173,6 +4173,26 @@ Session-Cookie öffnet sie nicht. Dateien: `auth/teamsSsoVerifier.ts`,
 der `ui_routes` (`/p/<slug>/teams`, siehe `docs/security-architecture.md`
 §5b-1).
 
+### Plugin-Grenze, Modell-Gateway, Netz-Sandbox — Routen (Epic #2042 S3a)
+
+Details im gleichnamigen Abschnitt am Ende dieses Dokuments. Neue Routen
+(alle hinter der Admin-Session):
+
+- `GET /api/v1/admin/model-work`, `POST /api/v1/admin/model-work/:id/cancel`:
+  Operator-Jobs und Maintenance-Runs. Die Admin-Funktionen mit Modellaufrufen
+  laufen über die Middleware `modelWork.middleware(kind)` als Job; sie
+  antwortet `429 model_work.daily_budget_exhausted`, wenn das Tagesbudget
+  verbraucht ist, und `503 model_work.unavailable`, wenn der Job nicht
+  angelegt werden kann (die Route läuft dann nicht).
+- `GET /api/v1/admin/model-gateway`: Aufrufe ohne Ausführungskontext und
+  Beobachtungen der Netz-Sandbox seit Boot.
+- `GET /api/v1/admin/agent-templates`, `GET /api/v1/admin/agent-templates/prefill`.
+- Kernel-Service `maintenanceRun@1` (Embedding-Backfill als Maintenance-Run).
+- Kernel-Services `operatorJobs@1` und `modelPassthrough@1`, nur für
+  `system-module` (`src/platform/modelPassthrough.ts`): ein System-Modul mit
+  eigener Modell-Schleife (dev-platform) öffnet einen Operator-Job und leitet
+  Anthropic-Messages-Anfragen über den Kernel, der die Credentials hält.
+
 ### Agent-eigene Trigger: Hooks, Wakeups, Routinen, Schedules, Batch-Jobs (#2082, Spec 2042 §5.12)
 
 Ein Agent handelt ungefragt nur über einen Trigger; Frist, Limits und Budget
@@ -4927,6 +4947,19 @@ Gelesen vom **web-ui**-Prozess, nicht von der Middleware:
 | `UI_FRAME_ANCESTORS` | CSP-`frame-ancestors`-Quellenliste für alle Operator-Seiten, z. B. `"'self' https://teams.microsoft.com"` (ganzen Wert in doppelte Anführungszeichen setzen). Ungesetzt: `frame-ancestors 'none'` plus `X-Frame-Options: DENY`. Gesetzt: ersetzt `'none'`, `X-Frame-Options` entfällt, weil es keine Freigabeliste kennt. Ungültige Werte (`;`, `,`, andere Schlüsselwörter, Steuerzeichen) werden mit Warnung im web-ui-Log ignoriert, der Default bleibt. `/p/*` und `/bot-api/*` behalten immer die Header der Middleware. Pro Request gelesen, wirkt also ohne Rebuild auf einem veröffentlichten Image. |
 
 Details: `docs/security-architecture.md` §10h.
+
+### Modell-Gateway, Netz-Sandbox, CLI-Profil (Epic #2042 S3a, Spec §5.10)
+
+Siehe „Plugin-Grenze, Modell-Gateway, Netz-Sandbox“ am Ende dieses Dokuments
+und `docs/security-architecture.md` §4.
+
+| Variable | Wirkung |
+|---|---|
+| `MODEL_GATEWAY_MODE` | `observe` (Default, Expand-Schritt) oder `enforce`. Ein Modellaufruf außerhalb jedes Ausführungskontexts wird in `observe` einmal pro Aufrufstelle geloggt (`[model-gateway] observed …`) und zugelassen, in `enforce` verweigert. Rohe Modell-Services (`anthropicClient`, `llm`, `llmProviderPool`) für Nicht-Archetyp-Plugins: `observe` loggt, `enforce` verweigert. Nicht erlaubte Operationen, Deadlines, Cancel und Kill Switch greifen in beiden Modi. |
+| `PLUGIN_EGRESS_MODE` | `observe` (Default) oder `enforce`. Netz-Sandbox installierter Plugins: eigene Anfragen über den globalen `fetch` und `node:http(s)` müssen von der Netzerlaubnis gedeckt sein, Modell-Provider-Endpunkte sind für Nicht-`model`-Plugins gesperrt. `observe` loggt einmal pro Plugin, Host und Grund (`[plugin-egress] observed …`), `enforce` verweigert (`PluginEgressRefusedError`). |
+| `OPERATOR_TOOLS_DAILY_MODEL_CALLS` | Tagesbudget (Modellaufrufe pro 24 h) aller Operator-Jobs zusammen. Default `20000`. |
+| `MAINTENANCE_DAILY_MODEL_CALLS` | Tagesbudget aller Maintenance-Runs zusammen (nur `embed`). Default `200000`. |
+| `OMADIA_CLI_PROFILE` | `auto` (Default), `isolated` oder `inherit`: Profil (`HOME` + `CLAUDE_CONFIG_DIR`) jedes Claude-CLI-Spawns. `auto` isoliert, wo der Login mitkommt (im Image ist `CLAUDE_CONFIG_DIR=/data/claude-cli` das Profil); bei einem macOS-Keychain-Login bleibt die Umgebung, der Boot sagt es (`[cli-profile] …`). Eine Instruktionsdatei (`CLAUDE.md`, `.claude/CLAUDE.md`) im Profil verweigert jeden Spawn. **Lokale Entwicklung:** läuft die Middleware in einer Shell, deren `CLAUDE_CONFIG_DIR` auf ein persönliches Claude-Verzeichnis mit `CLAUDE.md` zeigt (etwa aus einer Agent-Sitzung), `OMADIA_CLI_PROFILE=inherit` setzen oder `CLAUDE_CONFIG_DIR` leeren. **Vor dem Deploy:** prüfen, dass `/data/claude-cli` keine `CLAUDE.md` enthält. |
 
 ### Answer-Verifier (`VERIFIER_*`)
 
@@ -5988,6 +6021,21 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
     (Existenz-Probe, Streaming-Ausgang, CLI-Pfad, MCP in Rückfragen,
     Offenlegungsstufen auf Capability-Grants, Operator-UI für Leserschaften).
 
+- **Plugin-Grenze + Modell-Gateway (#2053, Epic #2042): Expand-Schritt S3a
+  im Kernel, Contract-Schritt S3b offen.** S3b erst, wenn der
+  Plugin-Release-Train live ist und `GET /api/v1/admin/model-gateway` auf der
+  Live-Instanz leer bleibt: `agent`/`extension` beim Laden ablehnen,
+  `dynamicAgentRuntime` löschen, `MODEL_GATEWAY_MODE` und
+  `PLUGIN_EGRESS_MODE` fest `enforce`, rohe Modell-Services für alle
+  Nicht-`model`-Plugins verweigern, Provider-Katalog-Registrierung nur für
+  `model`. Voraussetzung: der Plugin-Release-Train (Kinds, Templates,
+  `side_effects`, kein roher Modellzugang; channel-teams ohne
+  `anthropicClient@1`, dev-platform über `modelPassthrough@1`) ist auf dem Hub
+  und auf Fly. Offen außerdem: die Netz-Sandbox sieht
+  `node:net`/`node:tls` und eigenes `undici` nicht; Inbound-Transkription
+  wird dem Kanal statt dem adressierten Agenten zugerechnet, bis der Kanal
+  vor dem Transkribieren routet.
+
 - **Offen (S1, Spec 2042):** (Gruppen `role:<key>` in der Verfügbarkeit sind
   seit S5 verdrahtet, siehe „Rollen für die Verfügbarkeit“ am Ende);
   `chatAgent@1` bedient mit Registry nur noch Canvas-Turns (Instanz-Default),
@@ -5995,8 +6043,7 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   `claude-cli` startet pro Prüfung einen CLI-Prozess (Timeout 8 s, fail-closed)
   — Latenz messen; UI für
   Verfügbarkeit und Default-Agent-Tabelle (S6/Agent Builder); Persona-Skills
-  ersetzen pro Turn noch die Identität samt Identitätsregeln (Arbeitsmodi, S2);
-  der Prompt spricht weiter von „Fach-Agenten“ für Domain-Tools (Plugin-Kinds, S3).
+  ersetzen pro Turn noch die Identität samt Identitätsregeln (Arbeitsmodi, S2).
 - **Entfernt: Direct Line (#2052, Spec 2042 §5.2/§7).** Owner-Entscheidung:
   `#token`-Adressierung (`#strategist Frage`) und der Sticky-Modus sind ganz
   weg; die direkte Adressierung eines Agenten ersetzt sie. `#name Text` ist
@@ -10160,6 +10207,86 @@ Pushes hängen an Message-Subscriptions.
   Fach-Agenten-Liste) wird auch für Facilitators gebaut; die Abschnitte sind
   ohne die zugehörigen Tools wirkungslos. Ein schlanker Facilitator-Rumpf ist
   ein Follow-up.
+
+## Plugin-Grenze, Modell-Gateway, Netz-Sandbox (Epic #2042 S3a, 2026-11-20)
+
+Spec `specs/2042-agents-as-virtual-employees/spec.md` §5.10, ADR-0014
+(Plugin-Kinds), ADR-0015 (Archetypen), ADR-0017 (Modell-Gateway). Dies ist
+der **Expand-Schritt**: alles Neue wird angenommen, das Alte läuft weiter
+und wird beobachtet; der Contract-Schritt (S3b) folgt nach dem
+Plugin-Release-Train (§13).
+
+### Plugin-Kinds und Grenze
+
+- `PluginKind` (`src/api/admin-v1.ts`): `integration`, `tool`, `skill`,
+  `channel`, `model`, `archetype`, `system-module`, `agent-template`, dazu
+  die ausgemusterten `agent` (nur bereits installiert, Neuinstallation
+  `422 package.retired_kind` / `install.retired_kind`) und `extension`
+  (gelesen als `system-module`, `effectiveKind`). Laufzeitwahl
+  `src/plugins/pluginRuntimeOf.ts`; `agent-template` und ein `skill` ohne
+  Code sind reine Daten (`isDataOnlyPlugin`).
+- Ingest-Grenze `src/plugins/pluginBoundary.ts`: Persona/Speaker/
+  Personality/System-Prompt, `prompt_partial`-Skills und `AGENT.md` außerhalb
+  einer Vorlage → `422 package.persona_declared`. `system-module` und
+  `archetype` verlangen beim Installieren eine Bestätigung
+  (`409 install.system_module_confirmation_required`).
+- Built-ins: 9 × `system-module`, 4 × `model`. `agent-seo-analyst` und
+  `agent-reference-maximum` (Builder-Referenzen) sind noch `agent`.
+
+### Agent-Vorlagen
+
+- Manifest-Block `agent_templates:` (`src/plugins/agentTemplateManifest.ts`,
+  streng gelesen, max. 50 pro Paket) auf `integration`/`tool`/`skill`/
+  `archetype`/`agent-template`; im Katalog `Plugin.agent_templates`.
+- `GET /api/v1/admin/agent-templates` (Session): Vorlagen installierter
+  Plugins mit `archetype_available` und `suggested_capabilities`
+  (`installed`, `grantable`).
+- `GET /api/v1/admin/agent-templates/prefill?plugin=<id>&template=<id>`:
+  `{ template, agent, identity }` (`identity` mit `verbosity`); `agent` ist der Body von
+  `POST /api/v1/operator/agents` ohne `slug`/`status`, `identity` der von
+  `PUT /api/v1/operator/agents/:slug/identity`. Die Route legt nichts an und
+  gewährt nichts; den Entwurfs-Agenten legt der Agent Builder an.
+  Fehler `400 agent_template.ref_missing`, `404 agent_template.not_found`.
+
+### Modell-Gateway
+
+- Gate: `admitModelCall(operation)` (`@omadia/llm-provider-api`) in jedem
+  Adapter, Host-Hälfte `packages/harness-usage-telemetry/src/modelCallMeter.ts`
+  (`runInExecutionContext`, `meterModelCalls({ context, limit })`,
+  `runGeneratorInExecutionContext`, `setAmbientExecutionContext`,
+  `setModelCallHalts`). Kontexte: `agent_turn` (Turn-Scope der Runtime plus
+  `withAgentTurnExecution` als äußerste Hülle jedes Chat-Agenten),
+  `execution_scope` (`agentTurn@2`), `inbound_processing`
+  (`inboundTranscription` für Kanal-Plugins, nur `transcribe`),
+  `operator_job` und `maintenance_run` (`src/platform/modelWorkRuns.ts`,
+  Migration 0089 `model_work_runs`, Art-Katalog `modelWorkKinds.ts`).
+- Embedding/Transkription: die Service-Registry hält `embeddingClient` und
+  `transcription` nur hinter dem Gate (`gateModelService`).
+- Rohe Modell-Services: `rawModelServiceAccess` (`pluginServiceGrants.ts`).
+  `ctx.llm` eines Archetyp-Plugins nur im Execution Scope.
+- Kill Switch: `src/execution/modelCallHalts.ts` spiegelt die Schalter ins
+  Gate; ein laufender CLI-Turn pollt `modelCallHaltFor` und endet.
+- Routen: `GET /api/v1/admin/model-work`, `POST /api/v1/admin/model-work/:id/cancel`,
+  `GET /api/v1/admin/model-gateway` (Aufrufe ohne Kontext + Egress-Beobachtungen
+  seit Boot). Service `maintenanceRun@1` (plugin-api `maintenanceRun.ts`).
+- Aufrufstellen mit ihrem Kontext: `docs/model-gateway-call-sites.md`.
+
+### Netz-Sandbox
+
+- `src/platform/pluginEgressGuard.ts` (Wächter auf `globalThis.fetch`,
+  `http(s).request/get`, `syncBuiltinESMExports`), Quelle
+  `src/platform/pluginEgressSource.ts` (Paketverzeichnisse installierter
+  Plugins, effektive Erlaubnis wie `ctx.http`, Modell-Hosts aus dem
+  Provider-Katalog und den Literal-Hosts der Modell-Plugins). Zuordnung über
+  den Aufrufstapel; installiert vor jeder Plugin-Aktivierung in `src/index.ts`.
+- Schalter `PLUGIN_EGRESS_MODE` (§10). Restrisiken: security-architecture §4.
+
+### `claude-cli` (`run_loop`)
+
+- `packages/harness-orchestrator/src/cliProfile.ts` (`OMADIA_CLI_PROFILE`),
+  `checkCliInit` verlangt exakt die angebotenen Loopback-Tools und einen
+  verbundenen Loopback-Server, Kill Switch beendet den Kindprozess.
+
 
 ## Rückfrage statt Delegation + Diskretion (Epic #2042, S5: #2047 / #2079, 2026-11-20)
 

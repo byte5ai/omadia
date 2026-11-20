@@ -164,7 +164,7 @@ export function createHttpAccessor(opts: {
   };
 }
 
-function buildHostMatcher(pattern: string): (host: string) => boolean {
+export function buildHostMatcher(pattern: string): (host: string) => boolean {
   const p = pattern.trim().toLowerCase();
   if (p.startsWith('*.')) {
     const suffix = p.slice(2);
