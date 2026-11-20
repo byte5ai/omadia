@@ -2357,6 +2357,69 @@
       "chatNotPresent": "Der Bot ist nicht (mehr) in diesem Chat; die Zeile wirkt nicht.",
       "chatMembers": "Teilnehmer: {members}"
     },
+    "consultation": {
+      "heading": "Rückfrage bei anderen Agenten",
+      "hint": "Ob dieser Agent im Gespräch einen anderen Agenten um einen Beitrag bitten darf und ob er selbst gefragt werden darf. Die Antwort erscheint unter dem Namen des befragten Agenten. Standardmäßig ist alles aus; eine entzogene Freigabe gilt ab dem nächsten Aufruf.",
+      "loading": "Rückfrage-Einstellungen werden geladen…",
+      "switches": {
+        "mayConsult": "Darf andere Agenten befragen",
+        "consultable": "Darf befragt werden"
+      },
+      "switchHints": {
+        "mayConsult": "Der Agent darf die unten freigegebenen Agenten fragen. Solange das aus ist, bewirkt eine Freigabe nichts.",
+        "consultable": "Andere Agenten mit Freigabe dürfen diesen Agenten fragen. Er antwortet dann nur im Rahmen ihrer Freigabe."
+      },
+      "consultsHeading": "Agenten, die dieser Agent befragen darf",
+      "consultsHint": "Eine Freigabe pro Agent. Sie legt fest, welche Fähigkeiten der befragte Agent dafür nutzen darf, ob er sein eigenes Gedächtnis heranziehen darf, wie viel er preisgeben darf und wie oft er gefragt werden darf.",
+      "consultsEmpty": "Noch kein Agent freigegeben.",
+      "consultedByHeading": "Wird befragt von",
+      "consultedByEmpty": "Kein anderer Agent darf diesen Agenten befragen.",
+      "grantSummary": "{capabilities, plural, =0 {keine Fähigkeiten} one {# Fähigkeit} other {# Fähigkeiten}} · Gedächtnis: {memory} · andere Gespräche: {context} · {perTurn} pro Turn, {perDay} pro Tag",
+      "targetOption": "{name} ({slug})",
+      "addGrant": "Agent freigeben",
+      "edit": "Bearbeiten",
+      "revoke": "Entziehen",
+      "formNewHeading": "Neue Freigabe",
+      "formEditHeading": "Freigabe für {agent}",
+      "targetLabel": "Befragter Agent",
+      "targetPlaceholder": "Agent wählen…",
+      "targetNone": "Kein anderer aktiver Agent verfügbar",
+      "capabilitiesLabel": "Fähigkeiten, die der befragte Agent nutzen darf",
+      "capabilitiesHint": "Angeboten werden nur Plugins, die beide Agenten haben: Eine Rückfrage reicht nie weiter als das, was jeder der beiden selbst darf.",
+      "capabilitiesNone": "Die beiden Agenten teilen kein aktives Plugin. Der befragte Agent kann trotzdem aus seinen Anweisungen antworten.",
+      "memoryAccessLabel": "Eigenes Gedächtnis des befragten Agenten",
+      "memoryAccess": {
+        "none": "Nicht genutzt",
+        "discreet": "Diskret"
+      },
+      "memoryAccessHint": "Diskret: Der befragte Agent darf sein Gedächtnis heranziehen, aber nur, wenn sein Kontextgedächtnis auf Mitglieder beschränkt ist; was er weitergibt, folgt den Stufen unten.",
+      "disclosureLabel": "Wie viel preisgegeben werden darf",
+      "disclosureHint": "Gilt für das, was der befragte Agent weiß und dieser Agent selbst nicht wissen könnte. Die niedrigere Stufe gewinnt.",
+      "disclosureKeys": {
+        "context": "Aus anderen Gesprächen",
+        "default": "Alles andere"
+      },
+      "disclosureLevels": {
+        "none": "Nichts, nicht einmal, dass er etwas weiß",
+        "existence": "Nur, dass er etwas weiß, und wen man fragen kann",
+        "aggregate": "Nur Aggregate",
+        "redacted": "Mit maskierten klassifizierten Feldern",
+        "full": "Vollständig"
+      },
+      "perTurnLabel": "Aufrufe pro Turn (max. {max})",
+      "perDayLabel": "Aufrufe pro Tag (max. {max})",
+      "save": "Freigabe speichern",
+      "saving": "Wird gespeichert",
+      "cancel": "Abbrechen",
+      "errors": {
+        "archetype_omits": "Facilitatoren befragen niemanden und werden nicht befragt.",
+        "self_grant": "Ein Agent kann sich nicht selbst befragen.",
+        "invalid_disclosure": "Der Server hat die Offenlegungsstufen abgelehnt.",
+        "invalid_body": "Der Server hat die Anfrage abgelehnt.",
+        "not_found": "Dieser Agent oder der befragte Agent existiert nicht mehr – Seite neu laden.",
+        "unknown": "Anfrage fehlgeschlagen: {detail}"
+      }
+    },
     "contextMemory": {
       "heading": "Chat-Kontext-Memory",
       "hint": "Legt fest, ob dieser Orchestrator ein gemeinsames Memory führt oder je Chat-Kontext (Team, Kanal, Direktnachricht) ein eigenes. „Aus“ ist die Voreinstellung und entspricht dem Verhalten vor dieser Funktion.",

@@ -98,7 +98,7 @@ export interface OperatorAgentsListDto {
   fallback_agent_id: string | null;
 }
 
-async function callJson<T>(
+export async function callJson<T>(
   path: string,
   init?: RequestInit & { method?: string },
 ): Promise<T> {
