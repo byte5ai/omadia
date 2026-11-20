@@ -306,6 +306,12 @@ describe('credential helpers', () => {
     assert.equal(validateCredentials(fields, { token: 'x'.repeat(5000) }).ok, false);
   });
 
+  it('scrubCredentials also removes a URL-encoded credential (Telegram `:` as %3A or %3a)', () => {
+    const token = '7000000001:AAfake-token_value';
+    const text = `GET /bot7000000001%3AAAfake-token_value/getMe and /bot7000000001%3aAAfake-token_value`;
+    assert.equal(scrubCredentials(text, { token }), 'GET /bot[redacted]/getMe and /bot[redacted]');
+  });
+
   it('scrubCredentials removes every credential value', () => {
     assert.equal(scrubCredentials(`a ${TOKEN} b ${TOKEN}`, { t: TOKEN }), 'a [redacted] b [redacted]');
   });

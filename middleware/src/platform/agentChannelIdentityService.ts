@@ -107,11 +107,18 @@ function refusal(status: number, error: string, message: string): { ok: false; s
   return { ok: false, status, error, message };
 }
 
-/** Replace every credential value in `text` — a plugin's error may echo one. */
+/**
+ * Replace every credential value in `text`: a plugin's error may echo one, as
+ * is or URL-encoded (a Telegram token's `:` in a request URL is `%3A`).
+ */
 export function scrubCredentials(text: string, credentials: Readonly<Record<string, string>>): string {
   let out = text;
   for (const value of Object.values(credentials)) {
-    if (value.length >= 4) out = out.split(value).join('[redacted]');
+    if (value.length < 4) continue;
+    const encoded = encodeURIComponent(value);
+    // Percent-escapes are case-insensitive: `%3A` and `%3a` are both seen.
+    const lowerEscapes = encoded.replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase());
+    for (const form of new Set([value, encoded, lowerEscapes])) out = out.split(form).join('[redacted]');
   }
   return out.slice(0, 500);
 }
