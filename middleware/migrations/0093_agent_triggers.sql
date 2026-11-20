@@ -96,6 +96,10 @@ CREATE INDEX IF NOT EXISTS agent_triggers_context_idx ON agent_triggers (context
 CREATE INDEX IF NOT EXISTS agent_triggers_event_idx ON agent_triggers (event_id) WHERE kind = 'on_event';
 CREATE INDEX IF NOT EXISTS agent_triggers_until_idx ON agent_triggers (until);
 CREATE INDEX IF NOT EXISTS agent_triggers_owner_idx ON agent_triggers (owner_key) WHERE owner_key IS NOT NULL;
+-- A routine has exactly one trigger (two machines scheduling it at once
+-- cannot create a second one).
+CREATE UNIQUE INDEX IF NOT EXISTS agent_triggers_routine_once_idx
+  ON agent_triggers (context_id) WHERE context_kind = 'routine';
 
 CREATE TABLE IF NOT EXISTS agent_trigger_occurrences (
   id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),

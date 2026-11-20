@@ -162,7 +162,9 @@ export function createProactiveGate(deps: ProactiveGateDeps): ProactiveGate {
       if (trigger.liveContext) return { ok: true };
       const key = recipientKey(trigger);
       const profile = await deps.profiles.get(key, deps.defaults);
-      const quietEnd = quietUntil(now, profile.timezone, profile.quiet);
+      // A routine fires when its owner asked it to: their chosen time wins
+      // over the default quiet hours. The rate limit still applies.
+      const quietEnd = trigger.origin === 'routine' ? undefined : quietUntil(now, profile.timezone, profile.quiet);
       if (quietEnd) return { ok: false, deferUntil: quietEnd, reason: 'quiet_hours' };
       if (profile.maxPerHour <= 0) return { ok: false, drop: 'recipient_takes_no_proactive_messages' };
       const recent = await deps.profiles.deliveriesSince(key, new Date(now.getTime() - HOUR_MS), profile.maxPerHour);

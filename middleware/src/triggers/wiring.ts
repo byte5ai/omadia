@@ -14,6 +14,7 @@ import type { ProactiveSenderRegistry } from '../plugins/routines/proactiveSende
 import { routineTurnContext } from '../plugins/routines/routineTurnContext.js';
 import { createDataActionRunner, type ReadToolsOf } from './dataActions.js';
 import { createKernelExecutors, type AgentChat } from './kernelExecutors.js';
+import type { RoutineTriggerScheduler } from './routineTriggers.js';
 import { createProactiveGate, RecipientProfileStore, type RecipientProfile } from './proactiveGate.js';
 import { TriggerEngine, type OperatorNotice, type TriggerAgentView } from './triggerEngine.js';
 import type { TriggerLimits } from './triggerPolicy.js';
@@ -23,6 +24,7 @@ import { createTriggerToolHandler, TRIGGER_TOOL_NAMES, triggerToolSpecs, type Tr
 import { TriggerWorker } from './triggerWorker.js';
 
 const DAY_MS = 86_400_000;
+const ROUTINE_SWEEP_MS = 3_600_000;
 
 /** Events the kernel itself emits for every conversation it hears. */
 export const KERNEL_EVENT_SOURCES: readonly EventSource[] = [
@@ -55,6 +57,8 @@ export interface TriggerWiringDeps {
     options: { spec: NativeToolSpec; isAvailable: () => boolean },
   ) => () => void;
   readonly audit?: () => ((entry: AuditEntryInput) => Promise<void>) | undefined;
+  /** Routines fire through their triggers (spec 2042 §5.12). */
+  readonly routines?: () => RoutineTriggerScheduler | undefined;
   /** Injectable clock for tests. */
   readonly now?: () => Date;
   readonly log: (message: string) => void;
@@ -122,6 +126,11 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
 
   const notifyOperator = (notice: OperatorNotice): void => {
     deps.log(`[triggers] NOTICE ${notice.reason}: ${notice.message}`);
+    // A routine's row follows a harness pause, so its owner sees it paused
+    // (with the reason) and a restart does not lift the pause.
+    if (notice.origin === 'routine' && notice.reason !== 'agent_unavailable' && notice.reason !== 'kill_switch') {
+      void deps.routines?.()?.pausedByHarness(notice.contextId, notice.message).catch(() => undefined);
+    }
     const audit = deps.audit?.();
     void audit?.({
       actor: systemAuditActor('system:triggers'),
@@ -134,7 +143,18 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
   const engine = new TriggerEngine({
     store,
     limits: deps.limits,
-    executors: createKernelExecutors({ store, dataActions, gate, agentChat: deps.agentChat }),
+    executors: createKernelExecutors({
+      store,
+      dataActions,
+      gate,
+      agentChat: deps.agentChat,
+      routineTurn: async (trigger) => {
+        const routines = deps.routines?.();
+        return routines
+          ? routines.fire(trigger)
+          : { delivered: false, costUsd: 0, modelCalls: 0, error: 'routines are not wired' };
+      },
+    }),
     resolveAgent: deps.agentBySlug,
     sendWindow: (trigger, now) => gate.sendWindow(trigger, now),
     notifyOperator,
@@ -167,6 +187,7 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
   }
 
   let purgeTimer: ReturnType<typeof setInterval> | undefined;
+  let routineTimer: ReturnType<typeof setInterval> | undefined;
 
   return {
     store,
@@ -189,10 +210,20 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
         void profiles.purge(new Date(Date.now() - DAY_MS)).catch(() => undefined);
       }, 6 * 3_600_000);
       purgeTimer.unref();
+      // Routines: ask owners before a deadline, pause the expired ones.
+      const sweepRoutines = (): void => {
+        void deps.routines?.()?.sweep().catch((err: unknown) => {
+          deps.log(`[triggers] routine sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      };
+      sweepRoutines();
+      routineTimer = setInterval(sweepRoutines, ROUTINE_SWEEP_MS);
+      routineTimer.unref();
     },
     stop() {
       worker.stop();
       if (purgeTimer) clearInterval(purgeTimer);
+      if (routineTimer) clearInterval(routineTimer);
       for (const dispose of disposers) dispose();
     },
   };

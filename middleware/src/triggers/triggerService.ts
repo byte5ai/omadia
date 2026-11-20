@@ -201,6 +201,10 @@ export class TriggerService {
     return this.deps.store.listByOwner(ownerKey);
   }
 
+  listForContext(kind: TriggerContextKind, contextId: string): Promise<Trigger[]> {
+    return this.deps.store.listByContext(kind, contextId);
+  }
+
   listAll(limit: number): Promise<Trigger[]> {
     return this.deps.store.listAll(limit);
   }

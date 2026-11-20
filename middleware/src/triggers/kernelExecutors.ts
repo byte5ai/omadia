@@ -35,6 +35,9 @@ export interface KernelExecutorDeps {
   /** The agent's own chat agent, or undefined when it is not in service. */
   readonly agentChat: (agentSlug: string) => AgentChat | undefined;
   readonly liveness?: ContextLivenessProbe;
+  /** A routine's turn runs through the routine runner (owner identity,
+   *  output templates, run history). */
+  readonly routineTurn?: (trigger: Trigger) => Promise<TurnOutcome>;
 }
 
 /** The system hint of a trigger turn: purpose and status, never data rows. */
@@ -63,6 +66,7 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
     deliver: (trigger, result, title) =>
       deps.gate.send(trigger, { text: renderDataTable(result.rows, result.columns, title) }),
     async turn(trigger, instruction, status): Promise<TurnOutcome> {
+      if (trigger.origin === 'routine' && deps.routineTurn) return deps.routineTurn(trigger);
       const agent = deps.agentChat(trigger.agentSlug);
       if (!agent) return { delivered: false, costUsd: 0, modelCalls: 0, error: `agent '${trigger.agentSlug}' is not in service` };
       const input: ChatTurnInput = {

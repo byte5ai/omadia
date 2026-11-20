@@ -34,6 +34,9 @@ export type SendWindow =
 export interface OperatorNotice {
   readonly agentSlug: string;
   readonly triggerId: string;
+  readonly origin: Trigger['origin'];
+  readonly contextKind: Trigger['contextKind'];
+  readonly contextId: string;
   readonly purpose: string;
   readonly reason: TriggerPauseReason | 'agent_unavailable' | 'kill_switch';
   readonly message: string;
@@ -110,6 +113,9 @@ export class TriggerEngine {
       this.deps.notifyOperator({
         agentSlug: trigger.agentSlug,
         triggerId: trigger.id,
+        origin: trigger.origin,
+        contextKind: trigger.contextKind,
+        contextId: trigger.contextId,
         purpose: trigger.purpose,
         reason: 'agent_unavailable',
         message: `Agent '${trigger.agentSlug}' is ${reason}; its trigger "${trigger.purpose}" did not fire.`,
@@ -207,6 +213,9 @@ export class TriggerEngine {
     this.deps.notifyOperator({
       agentSlug: trigger.agentSlug,
       triggerId: trigger.id,
+      origin: trigger.origin,
+      contextKind: trigger.contextKind,
+      contextId: trigger.contextId,
       purpose: trigger.purpose,
       reason,
       message: `Trigger "${trigger.purpose}" of agent '${trigger.agentSlug}' was paused: ${text[reason]}.`,

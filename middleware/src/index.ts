@@ -586,6 +586,7 @@ import { ConversationEventHub } from './channels/conversationEventHub.js';
 import { wireTriggers, type TriggerWiring } from './triggers/wiring.js';
 import { parseQuietHours } from './triggers/proactiveGate.js';
 import { DEFAULT_TRIGGER_LIMITS } from './triggers/triggerPolicy.js';
+import { createRoutineTriggerScheduler } from './triggers/routineTriggers.js';
 import { TargetedSendRegistry } from './channels/targetedSendRegistry.js';
 import { createTargetedDeliveryService } from './channels/targetedDeliveryService.js';
 import { ConversationSendRegistry } from './channels/conversationSendRegistry.js';
@@ -3654,10 +3655,30 @@ async function main(): Promise<void> {
   // #1086 — held in a variable (not only in the service registry) so the
   // channel CoreApi below can wire the channel-agnostic routine-turn producer.
   let routinesIntegration: RoutinesIntegration | undefined;
+  // #2082 — routines are user-requested triggers: the trigger engine decides
+  // when one fires (durable, once per occurrence, deadline, budget, kill
+  // switch); the routine runner keeps owner, controls, templates and history.
+  const routineTriggerScheduler = createRoutineTriggerScheduler({
+    service: () => triggersRef.current?.service,
+    routines: () => routinesHandle?.store,
+    resolveAgent: (slug) => {
+      const registry = serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+      const resolved = slug !== null && slug !== 'default' ? slug : registry?.slugForFallback();
+      const agent = resolved ? registry?.get(resolved)?.agent : undefined;
+      return agent ? { id: agent.id, slug: agent.slug } : undefined;
+    },
+    askOwner: async (routine, text) => {
+      const sender = routinesHandle?.senderRegistry.get(routine.channel);
+      if (!sender) throw new Error(`no proactive sender for channel '${routine.channel}'`);
+      await sender.send({ conversationRef: routine.conversationRef, message: { text } });
+    },
+    limits: () => triggersRef.current?.service.limits ?? DEFAULT_TRIGGER_LIMITS,
+    log: (m) => console.log(m),
+  });
   if (graphPool) {
     routinesHandle = await initRoutines({
       pool: graphPool,
-      scheduler: jobScheduler,
+      scheduler: routineTriggerScheduler,
       // #1598 — the routine's own orchestrator, with its plugin grants.
       getOrchestrator: (agentSlug) => getScopedChatAgentBundle(agentSlug)?.raw,
       requiresAgentSlug: () =>
@@ -5081,6 +5102,7 @@ async function main(): Promise<void> {
       eventCatalog: () => eventCatalogRegistry.byPluginId(),
       channelPluginIds: () => channelPluginIdsRef.current(),
       senders: () => routinesHandle?.senderRegistry,
+      routines: () => routineTriggerScheduler,
       registerNativeTool: (name, handler, options) =>
         nativeToolRegistry.register(name, { handler, spec: options.spec, isAvailable: options.isAvailable }),
       audit: () => async (entry) => {

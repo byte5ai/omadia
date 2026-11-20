@@ -213,7 +213,12 @@ function parseStep(v: unknown): Result<TriggerStep> {
  * hook's own event counts as the "something new"; a timer needs
  * `new_activity`, a live context `context_live`).
  */
-export function parseActions(raw: unknown, kind: TriggerKind, contextKind: TriggerContextKind): Result<readonly TriggerStep[]> {
+export function parseActions(
+  raw: unknown,
+  kind: TriggerKind,
+  contextKind: TriggerContextKind,
+  origin: TriggerOrigin = 'agent',
+): Result<readonly TriggerStep[]> {
   if (!Array.isArray(raw) || raw.length === 0) return refuse('invalid', 'actions must be a non-empty list');
   if (raw.length > MAX_STEPS) return refuse('invalid', `at most ${String(MAX_STEPS)} actions`);
   const steps: TriggerStep[] = [];
@@ -224,7 +229,9 @@ export function parseActions(raw: unknown, kind: TriggerKind, contextKind: Trigg
   }
   const firstTurn = steps.findIndex((s) => s.type === 'turn');
   const hasCheckBeforeTurn = firstTurn > 0 && steps.slice(0, firstTurn).some((s) => s.type === 'check');
-  if (firstTurn >= 0 && !hasCheckBeforeTurn && kind !== 'wake_at') {
+  // A routine's turn is what its owner asked for at that time: no pre-check
+  // can tell "nothing new" for it, so it runs (within its budget).
+  if (firstTurn >= 0 && !hasCheckBeforeTurn && kind !== 'wake_at' && origin === 'agent') {
     const prefix: TriggerStep[] = [];
     if (contextKind === 'meeting' || contextKind === 'facilitation') prefix.push({ type: 'check', check: 'context_live' });
     if (kind === 'wake_every') prefix.push({ type: 'check', check: 'new_activity' });
@@ -359,7 +366,7 @@ export function validateTriggerRequest(
     }
   }
 
-  const actions = parseActions(raw['actions'], kind, env.contextKind);
+  const actions = parseActions(raw['actions'], kind, env.contextKind, env.origin);
   if (!actions.ok) return actions;
 
   const deliveryRaw = raw['delivery'] ?? 'droppable';

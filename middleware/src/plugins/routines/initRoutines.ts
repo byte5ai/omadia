@@ -1,7 +1,7 @@
 import type { Pool } from 'pg';
 import { currentDispatchCaller, turnContext } from '@omadia/orchestrator';
 
-import type { JobScheduler } from '../jobScheduler.js';
+import type { JobSchedulerLike } from './routineRunner.js';
 import {
   ManageRoutineTool,
   manageRoutineToolSpec,
@@ -48,7 +48,8 @@ import { routineTurnContext } from './routineTurnContext.js';
  */
 export interface InitRoutinesOptions {
   pool: Pool;
-  scheduler: JobScheduler;
+  /** #2082 — the trigger engine's routine port (`createRoutineTriggerScheduler`). */
+  scheduler: JobSchedulerLike;
   /** #1598 — see `ManageRoutineToolOptions.requiresAgentSlug`. */
   requiresAgentSlug?: () => boolean;
   /**
