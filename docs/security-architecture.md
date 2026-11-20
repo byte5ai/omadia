@@ -922,6 +922,82 @@ Known residuals:
   `audienceOwners` and returns everything. The in-tree providers honour it.
 - Only turns that carry a `TurnOrigin` are context-bound.
 
+### Consultation: a colleague adds judgement, never access (spec 2042 §5.4, #2047)
+
+Agent A may ask agent B through the harness tool `consult`. The boundary:
+
+- **Authorization, fresh on every call:** A's `may_consult`, B's `consultable`, a
+  directed operator grant A→B (`agent_consultation_grants`, migration 0097), its
+  channel scope, per-turn and per-day budgets (the per-turn slot is reserved before
+  the first await, so parallel calls cannot overrun it; the day budget is counted
+  and recorded in one transaction under a transaction-scoped advisory lock), depth 1
+  (no consultation starts inside a consultation run), and an **active audience
+  floor** for A's turn. A revoked grant is refused on the next call. Facilitators
+  neither hold nor receive grants.
+- **A's request is an agent egress:** it carries A's turn label set and reaches B
+  only when B's grants cover every source and the room may know every context;
+  otherwise it is refused (`discretion`). B's turn starts with A's labels, so B
+  cannot write to an integration what A was refused.
+- **B's envelope** (`runAsConsultation`, `consultationAllowsTool`): tools only from
+  `grant.allowed_capabilities ∩ B's grants ∩ A's grants`; no memory writes, no
+  further consultation, no interactive kernel tools; memory only with
+  `memory_access: discreet` and only through `members` recall bounded by A's
+  audience. Enforced in the offered list, at dispatch and in `isToolGranted` (the
+  subscription CLI's only question). B's run has no session scope: nothing is
+  logged, ingested or promoted. Past its deadline B gets no tool at all (the run
+  cannot be aborted) and its answer is discarded.
+- **What comes back:** the user view (B's restored answer) is delivered as B's
+  contribution; A's model gets the same text through A's privacy shield (masked).
+  The discretion rule and the grant's disclosure levels decide what may reach A at
+  all (below). A discussion between agents needs grants in both directions on top
+  of the #1018 switches.
+
+### Discretion: labels at entry, flow rule at every egress (spec 2042 §5.11, #2079)
+
+Every turn carries a label set (`packages/harness-orchestrator/src/discretion/`):
+`context{key, readers}`, `source{system, restricted}`, `classification{class}`.
+The set only grows; model output cannot be traced token by token, so every output
+of the turn carries all of it.
+
+| Entry | Label |
+|---|---|
+| Tool result | its plugin or MCP server; `restricted` when the operator declared the integration so; `classification:personal` when the shield let fields through unmasked (bypass) |
+| Recall | the label set the recalled turn was written with (`discretion_labels`, persisted transitively) |
+| The conversation | its key and the room's readers; a turn without origin (web chat, API) is the owner's private context `owner:<id>` |
+| A colleague's contribution | B's labels |
+
+| Egress | Rule | Where |
+|---|---|---|
+| Answer to people | every reader may know every label; otherwise the result is rebuilt from bookkeeping fields only (no attachments, files, cards, canvas, recall or contributions) and the session row stores only the replacement. Non-streaming path; a streamed answer is protected only in what is stored | `guardAnswerEgress`, `beforeTurnWritten` |
+| Contribution to an agent | the receiver's grants cover every source and its readers may know it; then the grant's disclosure level caps what is new to the receiver | consultation broker |
+| Persistence | a written turn keeps its label set | `onTurnWritten` |
+| Memory write | another conversation's knowledge only into a tier whose readers may all know it (members: the owners; context-bound: the room; else the agent's memory, readers unknown, which only the turn's own conversation may enter). Notes keep the union of their writers' labels by canonical physical path, stored before the content (no labels, no write); directory renames and deletes take the labels along; session transcripts keep every turn's labels; memorables (auto-promotion, MCP→KG ingestion, durable rules) keep them too; reading, recalling or replaying them (verifier re-entry) adds them back. The members index is kept out of the label layer (read for every room) | `guardMemoryEgress`, `LabelledMemoryStore`, `maybePromoteTurn` |
+| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and gets no restricted source and no classified data (`UNKNOWN_TOOL_EFFECT_POLICY = restricted-only`, switched to `write` after the plugin release train); a plugin's sub-agent tool (`query_<plugin>`) is `write` when any of the plugin's tools declares `write`, else `unknown` | `guardIntegrationEgress`, before the call runs |
+
+A refused flow is never redacted afterwards. The agent gets a structured refusal;
+at disclosure level `none` a consultation is regenerated without memory and without
+tools (so no write runs twice) so the visible answer does not reveal that something
+was withheld. `redacted` delivers the masked view only when B ran with a privacy
+shield; otherwise A gets `existence`. While the integration declarations were never
+loaded, every integration counts as restricted with no known reader (fail closed).
+`discretion_flow_audit` records every refusal and every allowed cross-context flow
+with label ids and reasons, never content. Damaged persisted labels parse as a
+label nobody may read (fail closed).
+
+Defaults: new agents start with context memory `members` (0099); `off` is refused
+for an agent that holds capability grants. Existing agents keep their mode.
+
+Known residuals: the subscription-CLI path and sub-agent inner calls carry no
+discretion state yet; streamed answers are protected only in what is stored; reads
+of memorables through `query_knowledge_graph` and the session briefing bring no
+labels; plugin memory (`ctx.memory`) is written outside the label layer; a write
+to the team memory tier is checked against the room's readers; a tool that declared no effect may still
+receive another conversation's context (until plugins declare, `restricted-only`); a turn whose label write failed is recalled
+without labels; `off` is refused only on the context-memory switch, not when
+plugins are granted to an agent that already runs `off`; `say` re-checks consultation
+grants only at the start of a discussion; there is no existence probe for knowledge
+B never saw.
+
 ### Which channels reach a context tree, and who may address an agent by id (#2042, #2059)
 
 `slack`, `discord`, `whatsapp` and `imessage` are in `CONTEXT_MEMORY_CHANNEL_TYPES` and `CHANNEL_KIND_BY_ORIGIN`, like `teams` and `telegram`. The effect is narrow:

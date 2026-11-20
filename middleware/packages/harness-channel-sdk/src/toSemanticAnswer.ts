@@ -355,6 +355,7 @@ export function toSemanticAnswer(
     ...(agentsConsulted && agentsConsulted.length > 0
       ? { agentsConsulted }
       : {}),
+    ...(r.contributions && r.contributions.length > 0 ? { contributions: r.contributions } : {}),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
     ...(r.followUpOptions && r.followUpOptions.length > 0
       ? { followUps: r.followUpOptions }

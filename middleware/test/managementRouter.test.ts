@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 
 import {
   ManagementRouter,
+  setRoleMembership,
   type RouteOutcome,
 } from '../packages/harness-orchestrator/src/routing/managementRouter.js';
 import { SnapshotRoutingView } from '../packages/harness-orchestrator/src/registry/routingView.js';
@@ -289,6 +290,25 @@ describe('management router — availability (criterion 40)', () => {
       noticeOf(router.route({ channelType: 'web', channelKey: 's', principal: ben, explicitSlug: 'g' })),
       'agent_not_available',
     );
+  });
+});
+
+describe('management router — installed role membership', () => {
+  it('a router without its own hasRole asks the membership the kernel installed; none installed admits nobody', () => {
+    const grouped = agent('g', { availableToEveryone: false });
+    const view = new SnapshotRoutingView(
+      snapshot({ agents: [grouped], availabilityPrincipals: [{ agentId: grouped.id, principal: 'role:sales' }] }),
+    );
+    const router = new ManagementRouter({ view });
+    const request = { channelType: 'web', channelKey: 's', principal: anna, explicitSlug: 'g' };
+    assert.equal(noticeOf(router.route(request)), 'agent_not_available');
+    setRoleMembership((p, role) => p === anna && role === 'sales');
+    try {
+      assert.equal(agentOf(router.route(request)), 'g');
+    } finally {
+      setRoleMembership(undefined);
+    }
+    assert.equal(noticeOf(router.route(request)), 'agent_not_available');
   });
 });
 

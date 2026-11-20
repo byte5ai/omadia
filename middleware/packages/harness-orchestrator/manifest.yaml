@@ -104,6 +104,13 @@ optional_requires:
   # it for a one-call triage per non-canvas human turn. Optional — resolved
   # per turn; without it every turn runs the agent unchanged.
   - "fastPath@1"
+  # Spec 2042 §5.4 / §5.11 (#2047, #2079) — kernel-published before plugin
+  # activation, late-bound to Postgres: the consultation broker behind the
+  # `consult` tool, and the discretion stores (integration declarations,
+  # persisted labels, flow audit). Absent (no database, unit tests): no
+  # `consult` tool, and labels live only for the turn.
+  - "consultation@1"
+  - "discretion@1"
 
 # chatAgent@1 — published bundle consumed by channel-plugins (Teams,
 # Telegram), the kernel-side HTTP chat route, and the dynamic-agent runtime

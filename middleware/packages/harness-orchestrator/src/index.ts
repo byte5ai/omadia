@@ -71,6 +71,7 @@ export {
   ADDRESSABLE_STATUS,
   ManagementRouter,
   defaultEntryFor,
+  setRoleMembership,
 } from './routing/managementRouter.js';
 export type {
   RoleMembership,
@@ -1009,3 +1010,15 @@ export {
   resolveScopedBundle,
 } from './scopedChatAgent.js';
 export type { ScopedRegistryView } from './scopedChatAgent.js';
+
+// Spec 2042 §5.11 (#2079) — discretion: labels, flow rule, disclosure levels.
+export * from './discretion/labels.js';
+export * from './discretion/flowRule.js';
+export * from './discretion/disclosure.js';
+export * from './discretion/port.js';
+export * from './discretion/turnLabels.js';
+export * from './discretion/turnSetup.js';
+// Spec 2042 §5.4 (#2047) — consultation instead of delegation.
+export * from './consultation/consultationScope.js';
+export * from './consultation/consultTool.js';
+export * from './discretion/toolFlow.js';

@@ -26,8 +26,9 @@ import type {
   SetupAudience,
   SetupProfile,
   SetupEnumOption,
+  ToolSideEffect,
 } from '../api/admin-v1.js';
-import { PLUGIN_KINDS } from '../api/admin-v1.js';
+import { PLUGIN_KINDS, TOOL_SIDE_EFFECTS } from '../api/admin-v1.js';
 import { parseSqlPermission } from '../platform/pluginSqlGrants.js';
 import { readArchetypeManifest, type ArchetypeManifestDescriptor } from './archetypeManifest.js';
 import { readAgentTemplates, type AgentTemplate } from './agentTemplateManifest.js';
@@ -555,6 +556,7 @@ export function adaptManifestV1(
       `[manifest:${id}] an \`archetype:\` block is only read for identity.kind 'archetype' (this plugin is '${kind}') — ignored.`,
     );
   }
+  const toolSideEffects = extractToolSideEffects(doc['capabilities'], id);
   // Spec 2042 §5.10 — inactive presets the operator turns into agents. Read
   // strictly for the same reason as the archetype block above.
   const templatesRead = readAgentTemplates(doc['agent_templates'], kind);
@@ -710,6 +712,7 @@ export function adaptManifestV1(
   if (setupProfile) result = { ...result, setup_profile: setupProfile };
   if (channel) result = { ...result, channel };
   if (archetype) result = { ...result, archetype: toPluginArchetype(archetype) };
+  if (Object.keys(toolSideEffects).length > 0) result = { ...result, tool_side_effects: toolSideEffects };
   if (agentTemplates.length > 0) result = { ...result, agent_templates: [...agentTemplates] };
   if (adminUiPath) result = { ...result, admin_ui_path: adminUiPath };
   if (isReferenceOnly) result = { ...result, is_reference_only: true };
@@ -722,6 +725,32 @@ export function adaptManifestV1(
   // Last, so only a manifest that actually loads is reported (#1401).
   warnManifestI18nGaps(id, version, doc);
   return result;
+}
+
+/**
+ * Spec 2042 §5.10/§5.11 — the effect each tool declares in the manifest's
+ * `capabilities:` list (`id` = the tool id, `side_effects: read | write |
+ * none`, the field the boilerplates and the Plugin Builder already write).
+ * A value outside the vocabulary is dropped with a warning: the tool then
+ * declared nothing, which the kernel reads as `unknown`, never as `read`.
+ */
+function extractToolSideEffects(raw: unknown, pluginId: string): Record<string, ToolSideEffect> {
+  // No prototype: a tool id is manifest text (`__proto__`, `constructor`).
+  const out: Record<string, ToolSideEffect> = Object.create(null) as Record<string, ToolSideEffect>;
+  for (const entry of asArray(raw)) {
+    const rec = asRecord(entry);
+    const toolId = asString(rec?.['id']);
+    const effect = rec?.['side_effects'];
+    if (!toolId || effect === undefined || effect === null) continue;
+    if (typeof effect === 'string' && (TOOL_SIDE_EFFECTS as readonly string[]).includes(effect)) {
+      out[toolId] = effect as ToolSideEffect;
+    } else {
+      console.warn(
+        `[manifest:${pluginId}] capabilities '${toolId}': side_effects ${JSON.stringify(effect)} is not one of ${TOOL_SIDE_EFFECTS.join(', ')}; the tool declares no effect.`,
+      );
+    }
+  }
+  return out;
 }
 
 /**

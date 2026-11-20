@@ -7,6 +7,8 @@ import type { ChatParticipantsProvider } from './chatParticipants.js';
 import type { McpInputSentinelMint } from './mcp/pendingMcpInput.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
 import type { ToolReplayLedger } from './toolReplayLedger.js';
+import type { DiscretionTurnState } from './discretion/turnLabels.js';
+import type { ConsultationTurnState } from './consultation/consultTool.js';
 
 /**
  * Per-turn context that propagates implicitly through every `await` triggered
@@ -381,6 +383,20 @@ export interface TurnContextValue {
    * executes as before. Holds raw handler results: never log or persist it.
    */
   toolReplayLedger?: ToolReplayLedger;
+  /**
+   * Spec 2042 §5.11 — the turn's discretion state: the union of the labels of
+   * everything read this turn, the turn's own conversation and its readers.
+   * Installed once per turn; a mutable box for the same shallow-copy reason
+   * as {@link memoryFileRead}. Undefined outside a turn: nothing is labelled
+   * and no egress is checked (see `discretion/turnLabels.ts`).
+   */
+  discretion?: DiscretionTurnState;
+  /**
+   * Spec 2042 §5.4 — the turn's consultations: the origin and user a
+   * consulted colleague runs with, and the contributions the harness delivers
+   * with the answer. Mutable box, installed once per turn.
+   */
+  consultation?: ConsultationTurnState;
 }
 
 /** See `TurnContextValue.orchestratorExecution`. */

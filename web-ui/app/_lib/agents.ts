@@ -887,6 +887,9 @@ export const OPERATOR_AGENT_ERROR_CODES = [
   'invalid_avatar',
   'payload_too_large',
   'unsupported_media_type',
+  // Spec 2042 §5.11 — `PUT …/context-memory` refuses `off` for an agent that
+  // holds capability grants.
+  'context_memory_required',
 ] as const;
 
 export type OperatorAgentErrorCode = (typeof OPERATOR_AGENT_ERROR_CODES)[number];

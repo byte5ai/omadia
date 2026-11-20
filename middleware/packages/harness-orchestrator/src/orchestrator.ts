@@ -175,6 +175,7 @@ import { responseGuardProfileFor } from './agentQuality.js';
 import {
   agentScopePrefix,
   isUnknownOutcomeToolErrorNotice,
+  isWriteCapableTool,
   resolveEffectivePrivacyMode,
 } from '@omadia/plugin-api';
 import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
@@ -232,8 +233,42 @@ import {
   toolErrorRef,
   withholdThrownToolError,
 } from './toolErrorRedaction.js';
-import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
+import { graphScopeFor, type SessionLogEntry, type SessionLogger } from './sessionLogger.js';
 import { TurnRecordWriter, type TurnFacts, type TurnRow } from './turnRecordWriter.js';
+import {
+  CONSULT_TOOL_NAME,
+  createConsultTool,
+  createConsultationTurnState,
+  type ConsultationPort,
+} from './consultation/consultTool.js';
+import type { DiscretionPort } from './discretion/port.js';
+import { UNKNOWN_READERS, readersOf, type DiscretionLabel, type LabelSet, type Readers } from './discretion/labels.js';
+import {
+  guardIntegrationEgress,
+  guardMemoryEgress,
+  labelSubjectWithTurn,
+  labelToolRead,
+  type ToolSystem,
+} from './discretion/toolFlow.js';
+import { violationSummary } from './discretion/flowRule.js';
+import { peopleEgressDecision } from './discretion/turnLabels.js';
+import { answerWithheldText } from './discretion/disclosure.js';
+import { labelSummary } from './discretion/labels.js';
+import {
+  addTurnLabels,
+  createDiscretionTurnState,
+  currentDiscretion,
+  currentTurnLabels,
+  resolvedTurnLabels,
+  type DiscretionTurnState,
+} from './discretion/turnLabels.js';
+import { conversationContextKey, once, ownerContextKey, readersFromAudience } from './discretion/turnSetup.js';
+import {
+  consultationAllowsTool,
+  consultationToolRefusal,
+  currentConsultation,
+  isConsultationRunOf,
+} from './consultation/consultationScope.js';
 import {
   type ModelRoutingConfig,
   type RoutingBucket,
@@ -771,6 +806,18 @@ export interface OrchestratorOptions {
    * principals hold no roles and therefore only their direct grants.
    */
   audienceRoleSources?: RoleSourceRegistry;
+  /**
+   * Spec 2042 §5.4 — the kernel's consultation broker. Present ⇒ this agent
+   * gets the `consult` tool, offered while the broker lists a colleague for
+   * it. Absent ⇒ no consultation (tests, the legacy single-agent path).
+   */
+  consultation?: ConsultationPort;
+  /**
+   * Spec 2042 §5.11 — the kernel's discretion stores (integration
+   * declarations, persisted labels, audit). Absent ⇒ labels live only for the
+   * turn and every integration counts as undeclared.
+   */
+  discretion?: DiscretionPort;
   /**
    * OB-75 (Palaia Phase 6) — Session-Continuity Briefings. When set,
    * the orchestrator prepends a session-summary + open-tasks block to
@@ -2977,6 +3024,11 @@ export class Orchestrator {
   /** #575 — set only when the deployment opted the audience floor in. */
   private readonly audienceGrants: GrantStore | undefined;
   private readonly audienceRoleSources: RoleSourceRegistry;
+  /** Spec 2042 §5.4 — see `OrchestratorOptions.consultation`. */
+  private readonly consultation: ConsultationPort | undefined;
+  private readonly consultTool: DomainTool | undefined;
+  /** Spec 2042 §5.11 — see `OrchestratorOptions.discretion`. */
+  private readonly discretion: DiscretionPort | undefined;
   private readonly sessionBriefing: SessionBriefingService | undefined;
   private readonly factExtractor: FactExtractor | undefined;
   /** Writes a turn's session-log row and fact extraction — now, or offered to
@@ -3181,11 +3233,39 @@ export class Orchestrator {
     this.turnRecords = new TurnRecordWriter({
       sessionLogger: options.sessionLogger,
       factExtractor: options.factExtractor,
+      // Spec 2042 §5.11 — a written turn keeps its label set (transitively).
+      ...(options.discretion
+        ? {
+            beforeTurnWritten: async (entry: SessionLogEntry, discretion: DiscretionTurnState | undefined) => {
+              const decision = await peopleEgressDecision(discretion);
+              return decision === undefined || decision.allowed
+                ? entry
+                : { ...entry, assistantAnswer: answerWithheldText(this.aiDisclosure?.locale) };
+            },
+            onTurnWritten: async (turnId: string, discretion: DiscretionTurnState | undefined) => {
+              if (!discretion) return;
+              await options.discretion?.persistLabels(
+                'turn',
+                turnId,
+                this.agentId,
+                await resolvedTurnLabels(discretion),
+              );
+            },
+          }
+        : {}),
     });
     this.entityRefBus = options.entityRefBus;
     this.contextRetriever = options.contextRetriever;
     this.audienceGrants = options.audienceGrants;
     this.audienceRoleSources = options.audienceRoleSources ?? new RoleSourceRegistryImpl();
+    this.discretion = options.discretion;
+    this.consultation = options.consultation;
+    this.consultTool = options.consultation
+      ? createConsultTool(options.consultation, this.agentId)
+      : undefined;
+    if (this.consultTool && !this.domainToolsByName.has(CONSULT_TOOL_NAME)) {
+      this.domainToolsByName.set(CONSULT_TOOL_NAME, this.consultTool);
+    }
     this.sessionBriefing = options.sessionBriefing;
     this.turnHookRegistry = options.turnHookRegistry;
 
@@ -3279,9 +3359,20 @@ export class Orchestrator {
     fallbackAssistantAnswer: string;
   }): Promise<string | undefined> {
     if (!this.autoPromote) return undefined;
+    // Spec 2042 §5.4 — B writes nothing to its memory from a consultation.
+    if (isConsultationRunOf(this.agentId)) return undefined;
     if (!this.graphPool || !this.graphTenantId) return undefined;
     if (!opts.turnId || !opts.userId) return undefined;
     if (!this.knowledgeGraph) return undefined;
+    // Spec 2042 §5.11 — a promoted memorable is a memory write: only into a
+    // tier whose readers may know what the turn read (members: the owners;
+    // otherwise the agent's own memory, whose readers are not known, so only
+    // the turn's own conversation may go there).
+    const tierReaders = opts.owners !== undefined ? readersOf(opts.owners) : UNKNOWN_READERS;
+    if (await guardMemoryEgress(this.discretion, tierReaders, 'auto-promotion')) {
+      console.warn(`[discretion] auto-promotion of turn ${opts.turnId} skipped: the turn carries another conversation's knowledge`);
+      return undefined;
+    }
     const promotionInput = {
       pool: this.graphPool,
       tenantId: this.graphTenantId,
@@ -3310,6 +3401,7 @@ export class Orchestrator {
     };
     try {
       const result = await promoteTurnIfSignificant(promotionInput);
+      if (result.mkId) await this.labelMemorable(result.mkId);
       return result.mkId;
     } catch (err) {
       console.error(
@@ -4350,6 +4442,13 @@ export class Orchestrator {
     // audience source is installed. A denial is a skip, not an error — the turn
     // simply proceeds without prior context, exactly as it already does when no
     // retriever is configured.
+    // Spec 2042 §5.4 — a consulted agent draws on its memory only with
+    // `memory_access: discreet`, and only through `members` recall bounded by
+    // the consulting turn's audience; anything else recalls nothing.
+    if (!this.consultationMayRecall(isolation)) {
+      console.error('[context] SKIP consultation: memory access not granted for this run');
+      return { text: undefined, recalled: undefined };
+    }
     const recallRefusal = await guardContextRecall();
     if (recallRefusal !== undefined) {
       console.error(`[context] SKIP audience-floor: ${recallRefusal}`);
@@ -4440,6 +4539,10 @@ export class Orchestrator {
           ? { tailLimit: CANVAS_RECALL_TAIL_TURNS }
           : {}),
       });
+      // Spec 2042 §5.11 — reusing a written turn adds the labels it kept.
+      await this.labelRecalledTurns(result.included.map((hit) => hit.turnId));
+      // … and so does reusing a memorable.
+      await this.labelRecalledMemorables(result.recalled?.insights.map((insight) => insight.mkId) ?? []);
       console.error(
         `[context] assembled scope=${input.sessionScope ?? '-'} user=${input.userId ?? '-'} pool=${String(result.stats.candidatePool)} included=${String(result.included.length)} excluded=${String(result.excluded.length)} compact=${String(result.stats.compactMode)} tokens=${String(result.stats.tokensUsed)} rendered=${String(result.text.length)}B`,
       );
@@ -5589,6 +5692,7 @@ export class Orchestrator {
           ? { canvasSentinelSink: parent.canvasSentinelSink }
           : {}),
         toolReplayLedger,
+        ...this.discretionTurnFields(input, parent, resolvedOmadiaUserId),
       },
       () => this.closePassOnThrow(undeliveredPass, async () => {
         // W2-1 (#544) — forced replay of the parked MCP tool call, before the
@@ -5611,7 +5715,11 @@ export class Orchestrator {
         try {
           // The screening gate could not mask: fail closed right here.
           if (screeningBlocked) throw screeningBlocked;
-          result = await this.chatInContext(input, turnId, turnMemory);
+          result = await this.guardAnswerEgress(
+            this.withContributions(await this.chatInContext(input, turnId, turnMemory)),
+            this.turnLocale(input),
+          );
+          await this.exportConsultationResult();
         } catch (err) {
           // #361 — failure-closed prompt masking: the prompt never reached
           // the model; answer with a generic privacy error instead of a raw
@@ -5961,6 +6069,7 @@ export class Orchestrator {
       readonly sentinelMint: McpInputSentinelMint;
       readonly authPromptMint: McpAuthPromptMint;
       readonly recorder: SubEventRecorder | undefined;
+      readonly labels?: LabelSet;
     },
   ): ToolReplayRecord {
     if (isOwnMintedSentinel(scope.sentinelMint, result) || scope.authPromptMint.minted(result)) {
@@ -5974,7 +6083,12 @@ export class Orchestrator {
       return { kind: 'rerun' };
     }
     const events = scope.recorder?.events ?? [];
-    return { kind: 'result', value: result, ...(events.length > 0 ? { subEvents: [...events] } : {}) };
+    return {
+      kind: 'result',
+      value: result,
+      ...(events.length > 0 ? { subEvents: [...events] } : {}),
+      ...(scope.labels && scope.labels.labels.length > 0 ? { labels: scope.labels } : {}),
+    };
   }
 
   /**
@@ -7413,6 +7527,7 @@ export class Orchestrator {
         ? { canvasSentinelSink: parent.canvasSentinelSink }
         : {}),
       toolReplayLedger,
+      ...this.discretionTurnFields(input, parent, resolvedOmadiaUserId),
     };
     // `input` is re-bound above (envelope normalisation); capture the final
     // value so the body cannot observe the pre-normalisation message.
@@ -8364,6 +8479,7 @@ export class Orchestrator {
             ...(finalAgentsConsulted && finalAgentsConsulted.length > 0
               ? { agentsConsulted: finalAgentsConsulted }
               : {}),
+            ...this.contributionsField(),
           };
           return;
         }
@@ -8620,6 +8736,7 @@ export class Orchestrator {
             ...(choiceAgentsConsulted && choiceAgentsConsulted.length > 0
               ? { agentsConsulted: choiceAgentsConsulted }
               : {}),
+            ...this.contributionsField(),
           };
           return;
         }
@@ -8677,6 +8794,7 @@ export class Orchestrator {
             ...(mcpAgentsConsulted && mcpAgentsConsulted.length > 0
               ? { agentsConsulted: mcpAgentsConsulted }
               : {}),
+            ...this.contributionsField(),
           };
           return;
         }
@@ -8999,10 +9117,10 @@ export class Orchestrator {
     // the user's prompt: a tool may have been run on it.
     const privacy = turnContext.current()?.privacyHandle;
     try {
-      return remaskEchoedValues(
-        privacy,
-        await this.dispatchToolWithDeadline(name, input, observer, turnMemory, meta),
-      );
+      const out = await this.dispatchToolWithDeadline(name, input, observer, turnMemory, meta);
+      // Spec 2042 §5.11 — what the call brought in joins the turn's labels.
+      await labelToolRead(this.discretion, this.toolSystemOf(name));
+      return remaskEchoedValues(privacy, out);
     } catch (err) {
       const outcome = await withholdThrownToolError({
         toolName: name,
@@ -9044,6 +9162,17 @@ export class Orchestrator {
     // is a TOCTOU hole. Inert unless an audience source is installed.
     const refusal = await guardToolEgress(name);
     if (refusal !== undefined) return refusal;
+
+    // Spec 2042 §5.4 — a consulted agent's run stays inside the consultation
+    // envelope (allowed capabilities ∩ both agents' grants; no memory writes,
+    // no further consultation). Checked here as well as in the offered list,
+    // because a model may name a tool it was not offered.
+    if (!this.consultationAllows(name)) return consultationToolRefusal(name);
+
+    // Spec 2042 §5.11 — a call that may write data out is checked against the
+    // integration's declared readership before it runs.
+    const discretionRefusal = await guardIntegrationEgress(this.discretion, name, this.toolSystemOf(name));
+    if (discretionRefusal !== undefined) return discretionRefusal;
 
     // #580 — the command policy's enforcement seam, at the same choke point.
     // Normalizes any command-shaped argument (unwrapping quoting/substitution)
@@ -9232,7 +9361,11 @@ export class Orchestrator {
     // server directly (`mcpGrantToDomainTool`): only a tool WITHOUT an MCP
     // server id runs a sub-agent model.
     const domainTool = this.domainToolsByName.get(name);
-    const asksSubAgentModel = domainTool !== undefined && domainTool.mcpServerId === undefined;
+    // `consult` is the exception: its input goes to a colleague agent, which
+    // cannot resolve this turn's placeholders, so it gets the restored values
+    // (the broker checks first that the colleague may receive them).
+    const asksSubAgentModel =
+      domainTool !== undefined && domainTool.mcpServerId === undefined && domainTool !== this.consultTool;
     const handlerInput =
       asksSubAgentModel || isInternExemptTool(name)
         ? input
@@ -9287,6 +9420,9 @@ export class Orchestrator {
       replaySubEvents(observer, replay.kind === 'result' ? replay.subEvents : undefined);
       if (replay.kind === 'rejection') throw replay.error;
       result = replay.value as string;
+      // Spec 2042 §5.11 — a replayed memory read brings the labels the first
+      // run's read added (they come from below the handler, which a replay skips).
+      if (replay.kind === 'result' && replay.labels) addTurnLabels(replay.labels);
       // Fresh-Check gate: a replayed memory read fed this pass's answer too.
       if (name === MEMORY_TOOL_NAME && isMemoryFileRead(input, result)) {
         const box = turnContext.current()?.memoryFileRead;
@@ -9346,6 +9482,7 @@ export class Orchestrator {
           sentinelMint: mcpInputSentinelMint,
           authPromptMint: mcpAuthPromptMint,
           recorder,
+          ...(name === MEMORY_TOOL_NAME ? { labels: currentTurnLabels() } : {}),
         }),
       );
       if (isUnknownOutcomeToolErrorNotice(result)) tracked.noteUnknownOutcome(name, input);
@@ -9431,7 +9568,16 @@ export class Orchestrator {
         // that was not known owns nothing, so nothing is stored.
         const members = turnOwnersField(turnMemory).owners;
         const owners = members ?? (userId ? [userId] : []);
-        if (userId && owners.length > 0) {
+        // Spec 2042 §5.11 — the stored observation is a memory write: only into
+        // a tier whose readers may know what the turn read (members: the
+        // owners; else the turn's own conversation only).
+        const mayStore =
+          (await guardMemoryEgress(
+            this.discretion,
+            members ? readersOf(members) : UNKNOWN_READERS,
+            `mcp-kg:${kgTool.mcpServerId}`,
+          )) === undefined;
+        if (userId && owners.length > 0 && mayStore) {
           const bypassed = isMcpServerBypassInForce(kgTool.mcpServerId, name);
           const detail = bypassed
             ? result.slice(0, 8000)
@@ -9450,6 +9596,19 @@ export class Orchestrator {
               // under a shield. The edge above never finds its Turn (the id is
               // the per-turn uuid), so the stamp is the only record of it.
               ...(bypassed ? { unprotected: true } : {}),
+            })
+            // Spec 2042 §5.11 — the memorable keeps the turn's labels and the
+            // server it came from.
+            .then(async (ingested) => {
+              const system = `mcp:${String(kgTool.mcpServerId)}`;
+              // A failed lookup counts as restricted (fail closed).
+              const declared = await this.discretion?.declarationOf(system).then(
+                (d) => d?.sensitivity === 'restricted',
+                () => true,
+              );
+              await this.labelMemorable(ingested.memorableKnowledgeNodeId, [
+                { kind: 'source', system, restricted: declared === true },
+              ]);
             })
             .catch(() => {
               /* KG ingestion is best-effort — never break the tool call */
@@ -9662,6 +9821,13 @@ export class Orchestrator {
         return refuse(
           `Error: tool \`${name}\` is unavailable — plugin \`${memoryAgentId}\` has not completed its connection/auth setup.`,
         );
+      }
+      // Spec 2042 §5.11 — a write lands in a tier whose readers may all know
+      // what the turn has read; the note then keeps the turn's labels
+      // (`LabelledMemoryStore`).
+      if (!isMemoryViewCall(input)) {
+        const refusal = await guardMemoryEgress(this.discretion, await this.memoryTierReaders(turnMemory), 'memory');
+        if (refusal) return refuse(refusal);
       }
       const result = await memoryHandler.handle(input);
       // Arm the Fresh-Check gate only on a read that actually DELIVERED a file.
@@ -10025,6 +10191,9 @@ export class Orchestrator {
     // A tool another orchestrator registered for itself (deferred sub-agent
     // tools) is that orchestrator's alone.
     if (orchestratorScope !== undefined && orchestratorScope !== this.agentId) return false;
+    // Spec 2042 §5.4 — answering a consultation narrows every path, also the
+    // subscription CLI's dispatcher, which asks only this method.
+    if (!this.consultationAllows(name)) return false;
     // #2060 — a facilitator has no general memory, whoever provides the store.
     if (name === MEMORY_TOOL_NAME) return !this.omitsMemory;
     return this.isPluginGranted(pluginId);
@@ -10554,11 +10723,231 @@ export class Orchestrator {
    * wired (byte-identical pre-#474 behaviour).
    */
   /**
+   * Spec 2042 §5.4 — may this agent use `name` in the current run? Always,
+   * unless it is answering a consultation: then only the consultation
+   * envelope (`consultationAllowsTool`). The knowledge graph additionally
+   * needs `members` context memory, the only mode whose graph boundary is the
+   * consulting turn's audience; any other mode would read unbounded.
+   */
+  private consultationAllows(name: string): boolean {
+    if (!isConsultationRunOf(this.agentId)) return true;
+    if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.memoryBinder?.contextMemoryMode !== 'members') {
+      return false;
+    }
+    const owner = this.nativeTools.get(name)?.agentId ?? this.domainToolsByName.get(name)?.agentId;
+    return consultationAllowsTool(this.agentId, name, owner);
+  }
+
+  /**
+   * Spec 2042 §5.4 — `consult` is offered while the broker lists a colleague
+   * for this agent and the agent is not itself answering a consultation
+   * (depth 1). The broker re-checks everything on the call.
+   */
+  private consultOffered(): boolean {
+    if (!this.consultation || isConsultationRunOf(this.agentId)) return false;
+    return this.consultation.targetsFor(this.agentId).length > 0;
+  }
+
+  /**
+   * Spec 2042 §5.4 / §5.11 — the per-turn discretion and consultation state,
+   * spread into both turn scopes (`runTurnCore`, `chatStream`). The room is
+   * resolved lazily and once: only a turn that consults, writes outward or
+   * persists labels pays for the roster lookups.
+   */
+  private discretionTurnFields(
+    input: ChatTurnInput,
+    parent: TurnContextValue | undefined,
+    /** The turn owner's canonical id: the one reader of a turn without origin (web chat, API). */
+    ownerId: string | undefined,
+  ): Pick<TurnContextValue, 'discretion' | 'consultation'> {
+    // A turn without origin (web chat, API) is the owner's private context:
+    // what it read must not resurface in a room with other readers.
+    const contextKey =
+      conversationContextKey(input.origin) ?? (ownerId !== undefined ? ownerContextKey(ownerId) : undefined);
+    // A consultation run starts with what the consulting turn had read.
+    const consultation = currentConsultation();
+    const initial = consultation?.agentSlug === this.agentId ? consultation.initialLabels : undefined;
+    const resolveReaders = once(async (): Promise<Readers> => {
+      if (!input.origin) return ownerId ? readersOf([ownerId]) : UNKNOWN_READERS;
+      return readersFromAudience(
+        await resolveTurnAudience(this.knowledgeGraph, input, parent?.chatParticipants).catch(
+          (): TurnAudience => ({ kind: 'unknown', reason: 'audience-lookup-failed' }),
+        ),
+      );
+    });
+    return {
+      discretion: createDiscretionTurnState({
+        ...(contextKey !== undefined ? { contextKey } : {}),
+        ...(initial !== undefined ? { initial } : {}),
+        resolveReaders,
+      }),
+      consultation: createConsultationTurnState({
+        ...(input.origin ? { origin: input.origin } : {}),
+        ...(input.userId ? { userId: input.userId } : {}),
+      }),
+    };
+  }
+
+  /** Spec 2042 §5.4 — the turn's delivered contributions onto its result. */
+  private withContributions(result: ChatTurnResult): ChatTurnResult {
+    return { ...result, ...this.contributionsField() };
+  }
+
+  /**
+   * Spec 2042 §5.4 / §5.11 — when this turn answers a consultation, hand its
+   * label set (the conversation label included) and its wire answer to the
+   * broker, which decides what of it may reach the consulting agent.
+   */
+  private async exportConsultationResult(): Promise<void> {
+    const scope = currentConsultation();
+    if (!scope || scope.agentSlug !== this.agentId) return;
+    const ctx = turnContext.current();
+    scope.result.labels = await resolvedTurnLabels(ctx?.discretion);
+    scope.result.shielded = ctx?.privacyHandle !== undefined;
+    const wire = ctx?.wireView?.answer;
+    if (wire !== undefined) scope.result.wireAnswer = wire;
+  }
+
+  /**
+   * Spec 2042 §5.11 — the answer flows to the people of this conversation only
+   * when every reader may know everything the turn read. Otherwise it is
+   * refused as a whole (never redacted afterwards) and replaced by an honest
+   * line that reveals nothing of what was withheld. A consultation run is
+   * checked by the broker instead, against the consulting turn's audience.
+   */
+  private async guardAnswerEgress(
+    result: ChatTurnResult,
+    locale: string | undefined,
+  ): Promise<ChatTurnResult> {
+    const state = currentDiscretion();
+    if (!state || isConsultationRunOf(this.agentId)) return result;
+    const decision = await peopleEgressDecision(state);
+    if (decision === undefined) return result;
+    const crossContext = state.labels.labels.some((l) => l.kind === 'context' && l.key !== state.contextKey);
+    if (!decision.allowed || crossContext) {
+      const ctx = turnContext.current();
+      this.discretion?.audit({
+        ...(ctx?.turnId ? { turnId: ctx.turnId } : {}),
+        agentSlug: this.agentId,
+        egress: 'people',
+        ...(state.contextKey !== undefined ? { target: state.contextKey } : {}),
+        allowed: decision.allowed,
+        labels: labelSummary(state.labels),
+        violations: violationSummary(decision),
+      });
+    }
+    if (decision.allowed) return result;
+    console.warn(`[discretion] answer of ${this.agentId} withheld: ${violationSummary(decision).join(', ')}`);
+    // Refused as a whole: the result is rebuilt from bookkeeping fields only,
+    // so no attachment, file, card, surface, recall or contribution derived
+    // from the withheld answer goes out with it.
+    return {
+      answer: answerWithheldText(locale),
+      toolCalls: result.toolCalls,
+      iterations: result.iterations,
+      ...(result.turnId !== undefined ? { turnId: result.turnId } : {}),
+      ...(result.privacyReceipt !== undefined ? { privacyReceipt: result.privacyReceipt } : {}),
+      ...(result.answerSource !== undefined ? { answerSource: result.answerSource } : {}),
+      ...(result.memoryUsed !== undefined ? { memoryUsed: result.memoryUsed } : {}),
+    };
+  }
+
+  /** Spec 2042 §5.4 — `{ contributions }` for a result or `done` event, or `{}`. */
+  private contributionsField(): Pick<ChatTurnResult, 'contributions'> {
+    const contributions = turnContext.current()?.consultation?.contributions;
+    return contributions && contributions.length > 0 ? { contributions: [...contributions] } : {};
+  }
+
+  /**
+   * Spec 2042 §5.11 — the system a tool belongs to (its plugin, or the MCP
+   * server) and what the runtime itself knows of its effect: `write` for a
+   * declared write capability or an MCP tool without `readOnlyHint`, `read`
+   * for an MCP tool with it, else `unknown` (refined from the plugin's
+   * manifest at the egress). Kernel tools belong to no system.
+   */
+  private toolSystemOf(name: string): ToolSystem | undefined {
+    const native = this.nativeTools.get(name);
+    if (native?.agentId !== undefined) {
+      return { system: native.agentId, effect: isWriteCapableTool(native.writeCapabilities) ? 'write' : 'unknown' };
+    }
+    const domain = this.domainToolsByName.get(name);
+    if (!domain || domain === this.consultTool) return undefined;
+    if (domain.mcpServerId !== undefined) {
+      const writes = isWriteCapableTool(domain.writeCapabilities) || domain.readOnly !== true;
+      return { system: `mcp:${domain.mcpServerId}`, effect: writes ? 'write' : 'read' };
+    }
+    if (domain.agentId === undefined) return undefined;
+    return {
+      system: domain.agentId,
+      effect: isWriteCapableTool(domain.writeCapabilities) ? 'write' : 'unknown',
+      subAgent: true,
+    };
+  }
+
+  /**
+   * Spec 2042 §5.11 — labels persist transitively: a recalled turn brings the
+   * label set it was written with into this turn. A lookup failure fails
+   * closed: the turn gets a label nobody is known to be allowed to read, so
+   * nothing of it can flow outside this conversation.
+   */
+  private async labelRecalledTurns(turnIds: readonly string[]): Promise<void> {
+    if (!this.discretion || turnIds.length === 0 || !currentDiscretion()) return;
+    try {
+      const found = await this.discretion.labelsOf('turn', turnIds);
+      for (const labels of found.values()) addTurnLabels(labels);
+    } catch (err) {
+      console.error('[discretion] recalled-turn label lookup failed — labelling the turn unreadable:', err);
+      addTurnLabels([{ kind: 'context', key: 'unreadable', readers: UNKNOWN_READERS }]);
+    }
+  }
+
+  /** Spec 2042 §5.11 — recalled memorables bring the labels they were written with. */
+  private async labelRecalledMemorables(mkIds: readonly string[]): Promise<void> {
+    if (!this.discretion || mkIds.length === 0 || !currentDiscretion()) return;
+    try {
+      const found = await this.discretion.labelsOf('memorable', mkIds);
+      for (const labels of found.values()) addTurnLabels(labels);
+    } catch (err) {
+      console.error('[discretion] recalled-memorable label lookup failed — labelling the turn unreadable:', err);
+      addTurnLabels([{ kind: 'context', key: 'unreadable', readers: UNKNOWN_READERS }]);
+    }
+  }
+
+  /** Spec 2042 §5.11 — a memorable keeps the labels of the turn that wrote it. */
+  private async labelMemorable(mkId: string, extra: readonly DiscretionLabel[] = []): Promise<void> {
+    await labelSubjectWithTurn(this.discretion, 'memorable', mkId, this.agentId, extra);
+  }
+
+  /**
+   * Spec 2042 §5.11 — who reads the memory tier a `memory` write of this turn
+   * lands in: the owners (`members`), the conversation (a context-bound
+   * turn), else the agent's own memory, whose readers are not known.
+   */
+  private async memoryTierReaders(turnMemory: TurnMemoryBinding | undefined): Promise<Readers> {
+    const isolation = turnMemory?.isolation;
+    if (isolation?.kind === 'members') {
+      return isolation.audience ? readersOf(isolation.audience) : UNKNOWN_READERS;
+    }
+    if (turnMemory?.contextBound === true) {
+      return (await currentDiscretion()?.resolveReaders()) ?? UNKNOWN_READERS;
+    }
+    return UNKNOWN_READERS;
+  }
+
+  /** Spec 2042 §5.4 — recall in a consultation run: `discreet` + `members` only. */
+  private consultationMayRecall(isolation: TurnMemoryBinding['isolation']): boolean {
+    const scope = currentConsultation();
+    if (!scope || scope.agentSlug !== this.agentId) return true;
+    return scope.memoryAccess === 'discreet' && isolation?.kind === 'members';
+  }
+
+  /**
    * #2060 — a standard agent is offered every domain tool registered on its
    * instance (the grant is enforced at dispatch); a facilitator is not even
    * told about one its granted plugins do not own.
    */
   private isOfferableDomainTool(tool: DomainTool): boolean {
+    if (tool === this.consultTool) return this.consultOffered();
     return !this.grantedToolsOnly || this.isPluginGranted(tool.agentId);
   }
 
@@ -10774,7 +11163,7 @@ export class Orchestrator {
       v4: new Set<unknown>(v4ToolSpecs ?? []),
       native: new Set<unknown>(nativeSpecs),
       domain: new Set<unknown>(domainSpecs),
-    });
+    }).filter((tool) => this.consultationAllows(tool.name));
     // Prompt-cache the full tool-spec block. Anthropic caches every prior
     // content up to and including the tool that carries `cache_control` —
     // marking the final tool makes the whole list a single cacheable chunk.

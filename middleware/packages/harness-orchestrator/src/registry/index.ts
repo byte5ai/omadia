@@ -20,6 +20,7 @@ import {
   type DiffAction,
   type DiffPlan,
 } from './applyDiff.js';
+import { consultableColleaguesOf } from './consultationColleagues.js';
 import { FACILITATOR_ARCHETYPE, isArchetype } from './archetype.js';
 import {
   ConfigValidationError,
@@ -515,6 +516,7 @@ export class OrchestratorRegistry {
           this.runtimeConfig(),
           personaSkillsFor(graph.personaSkillsByAgent.get(action.agent.id) ?? []),
           this.grantedPluginIdsFor(action.agent, plugins),
+          consultableColleaguesOf(action.agent.id, graph.snapshot),
         );
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
         const memoryScope = computeMemoryScope(action.agent.slug);
@@ -567,6 +569,7 @@ export class OrchestratorRegistry {
           this.runtimeConfig(),
           personaSkillsFor(graph.personaSkillsByAgent.get(action.agent.id) ?? []),
           this.grantedPluginIdsFor(action.agent, plugins),
+          consultableColleaguesOf(action.agent.id, graph.snapshot),
         );
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
         const memoryScope = computeMemoryScope(action.agent.slug);
@@ -1004,6 +1007,8 @@ interface GraphIndex {
   /** Wave 8 — direct-answer persona skills attached directly to the Agent
    *  (via `agent_persona_skills`), independent of any sub-agent. */
   readonly personaSkillsByAgent: Map<string, SkillRow[]>;
+  /** #2047/#2056 — the snapshot the index was built from (colleague names). */
+  readonly snapshot: ConfigSnapshot;
 }
 
 function indexGraph(snap: ConfigSnapshot): GraphIndex {
@@ -1051,7 +1056,7 @@ function indexGraph(snap: ConfigSnapshot): GraphIndex {
     skillsByAgent.set(agentId, refSkills);
   }
 
-  return { subAgentsByAgent, grantsByAgent, skillsByAgent, personaSkillsByAgent };
+  return { subAgentsByAgent, grantsByAgent, skillsByAgent, personaSkillsByAgent, snapshot: snap };
 }
 
 function groupBy<T, K>(

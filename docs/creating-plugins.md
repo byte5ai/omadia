@@ -61,6 +61,24 @@ Zip-Flow, aber der Code-Contract ist verschieden:
   `IncomingTurn`-Shape, fährt einen Orchestrator-Turn und rendert die Antwort
   zurück. **Keine** `capabilities`/`playbook`/`skills`. → §4b.
 
+### Was ein Tool tut: `capabilities[].side_effects`
+
+Jedes Tool eines Capability-Plugins deklariert im `capabilities:`-Eintrag
+mit seiner `id` (= Tool-Name), was es tut: `read` (liest ein System), `write`
+(ändert eines) oder `none` (berührt kein System). Der Kern liest das als
+`Plugin.tool_side_effects` (`declaredToolEffect`, `src/plugins/toolSideEffects.ts`).
+Schreibzugriffe über ein Plugin-Tool werden gegen die Leserschaft des Ziels
+geprüft (Spec 2042 §5.11, Kriterium 17). Ein Tool ohne Deklaration gilt als
+`unknown` — nie als `read`; ein Wert außerhalb der drei wird mit Warnung
+verworfen.
+
+```yaml
+capabilities:
+  - id: "crm_create_note"
+    side_effects: "write"     # read | write | none
+```
+
+
 ---
 
 ### `kind: archetype` — ein Archetyp-Plugin

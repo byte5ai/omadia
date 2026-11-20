@@ -14,6 +14,7 @@ import {
   mcpToolNameFromRef,
   type AgentGraphStore,
   AGENT_TO_AGENT_MODES,
+  archetypeOmits,
   assertArchetypeAllows,
   FACILITATOR_ARCHETYPE,
   STANDARD_ARCHETYPE,
@@ -348,12 +349,11 @@ const AvailabilitySchema = z.object({
   /** Channel types the agent serves; `null` = all. */
   channels: z.array(z.string().min(1).max(64)).max(64).nullable(),
   /**
-   * Named people (`user:<id>`). Groups (`role:<key>`) are refused until the
-   * routing resolves role membership: accepting them would store a grant
-   * that silently never matches.
+   * Named people (`user:<id>`) and groups (`role:<key>`, Conductor roles,
+   * resolved by the role-membership snapshot).
    */
   principals: z
-    .array(z.string().regex(/^user:.+/, 'only user:<id> principals are supported; groups (role:<key>) are not resolved yet').max(320))
+    .array(z.string().regex(/^(user|role):.+/, 'principals are user:<id> or role:<key>').max(320))
     .max(500),
 });
 
@@ -2531,6 +2531,13 @@ export function createOperatorAgentsRouter(
         ...(body.status ? { status: body.status } : {}),
         archetype,
       });
+      // Spec 2042 §5.11 — new agents start in `members` (migration 0099). An
+      // archetype without memory (a facilitator) has no memory to scope, and
+      // the context-memory route refuses every mode but `off` for it: keep
+      // the stored mode consistent with that.
+      if (archetypeOmits(created, 'memory') && normalizeContextMemoryMode(created.contextMemory) !== 'off') {
+        await live.store.updateAgent(created.id, { contextMemory: 'off' });
+      }
       // #2043 — a facilitator gets the engine with its creation; nobody has
       // to grant it by hand. No engine bound yet: it is attached on install.
       await attachEngineToFacilitator(live.store, created, engineSources());
@@ -2687,6 +2694,20 @@ export function createOperatorAgentsRouter(
       const previous = normalizeContextMemoryMode(agent.contextMemory);
       // #2060 — every mode other than `off` scopes a memory a facilitator does not have.
       if (body.mode !== 'off') assertArchetypeAllows(agent, 'memory');
+      // Spec 2042 §5.11 "Defaults" — never `off` for an agent with access to
+      // classified data: any capability grant can return such data, so an
+      // agent that holds one keeps a context-memory boundary.
+      if (body.mode === 'off' && !archetypeOmits(agent, 'memory')) {
+        const grants = (await live.store.listAgentPlugins(agent.id)).filter((p) => p.enabled);
+        if (grants.length > 0) {
+          res.status(409).json({
+            error: 'context_memory_required',
+            message:
+              'context memory cannot be off for an agent that holds capability grants; choose members, enforce or enforce-strict',
+          });
+          return;
+        }
+      }
       await live.store.updateAgent(agent.id, { contextMemory: body.mode });
       // Same reload contract as every other write on this router: the running
       // registry rebuilds the agent's `MemoryBinder` with the new mode, so the
@@ -2699,6 +2720,13 @@ export function createOperatorAgentsRouter(
         console.warn(
           `[security-audit] context_memory ${previous} -> ${body.mode} for agent ${agent.slug}`,
         );
+        await recordAudit({
+          actor: auditActorFromRequest(req),
+          action: 'agent.context_memory_change',
+          target: `agent:${agent.slug}`,
+          before: { mode: previous },
+          after: { mode: body.mode },
+        });
       }
       res.json({ ok: true, mode: body.mode });
     } catch (err) {

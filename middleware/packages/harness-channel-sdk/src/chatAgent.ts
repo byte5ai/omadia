@@ -1,6 +1,7 @@
 import type {
   CaptureDisclosure,
   ChannelKind,
+  Contribution,
   PrivacyReceipt,
   RecalledContext,
   Speaker,
@@ -709,6 +710,13 @@ export interface ChatTurnInput {
  * call `runTurn()` instead.
  */
 export interface ChatTurnResult {
+  /**
+   * #2047 (spec 2042 §5.4) — colleagues' delivered contributions, in order:
+   * each consulted agent's own block, delivered by the harness from its
+   * output, never reworded by the speaking agent. `toSemanticAnswer` forwards
+   * it to `SemanticAnswer.contributions`.
+   */
+  contributions?: readonly Contribution[];
   answer: string;
   toolCalls: number;
   iterations: number;
@@ -1270,6 +1278,11 @@ export type ChatStreamEvent =
        * field gives every channel the SAME harness-built array.
        */
       agentsConsulted?: AgentConsultation[];
+      /**
+       * #2047 — colleagues' delivered contributions of this turn; the
+       * streaming twin of {@link ChatTurnResult.contributions}.
+       */
+      contributions?: readonly Contribution[];
       /**
        * Phase 3 — the answer-size level this turn was generated under (see
        * {@link ChatTurnResult.answerVerbosity}); the streaming twin so the
