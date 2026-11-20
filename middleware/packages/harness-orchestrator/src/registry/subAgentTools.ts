@@ -1,5 +1,6 @@
 import { isClassRef, type EffortLevel, type LlmProvider } from '@omadia/llm-provider';
-import type { LocalSubAgentTool } from '@omadia/plugin-api';
+import type { LocalSubAgentTool, ModelPolicy } from '@omadia/plugin-api';
+import { ToolRefusalError } from '@omadia/plugin-api';
 
 import { createCliSubAgent } from '../cliSubAgent.js';
 import { LocalSubAgent } from '../localSubAgent.js';
@@ -23,10 +24,23 @@ import type {
   SubAgentRow,
   ToolGrantRow,
 } from './agentGraphStore.js';
+import {
+  INTERNAL_HELPER_CONTRACT,
+  helperDefaultModelRef,
+  helperModelVerdict,
+  helperToolName,
+  helperToolNameConflicts,
+  mcpGrantHeldBy,
+} from './internalHelpers.js';
 
 /**
  * Agent Builder P2/P4 — materialise an agent's DB-defined sub-agents into
  * orchestrator `DomainTool`s.
+ *
+ * #2050 — these are the agent's INTERNAL HELPERS (spec 2042 §5.2, §5.6): no
+ * name or persona towards people, their output is the agent's own work, and
+ * their envelope is a subset of the agent's (tools, model policy, budget). See
+ * `internalHelpers.ts` for the shared rules.
  *
  * Each enabled `agent_subagents` row becomes a `LocalSubAgent` whose system
  * prompt is its skill body (or an inline override), running on its own model
@@ -76,6 +90,25 @@ export interface SubAgentToolDeps {
    *  callable tool — a high_risk/scan_failed verdict without a valid ack
    *  must not stay callable just because the grant predates the verdict. */
   readonly blockedMcpGrant?: (serverId: string, toolName: string) => boolean;
+  /**
+   * #2050 — does the PARENT agent hold this granted capability right now?
+   * Asked when the helper is built (a grant its agent lacks is never
+   * materialised) and again on EVERY call of the helper's tool, so revoking
+   * the agent's grant after materialisation removes the helper's access. The
+   * kernel answers from the live registry, not from this build's snapshot.
+   * Absent ⇒ native grants pass and an MCP grant needs an agent-level grant
+   * for the same server and tool in `graph.toolGrants` (the snapshot).
+   */
+  readonly parentHolds?: (grant: ToolGrantRow) => boolean;
+  /** #2050 — the parent agent's model policy; a helper model it does not
+   *  allow is refused (`helperModelVerdict`). Absent ⇒ no policy check. */
+  readonly parentModelPolicy?: ModelPolicy;
+  /** #2050 — the parent agent's per-call output budget and step cap. A
+   *  helper's own `maxTokens`/`maxIterations` never exceed them. */
+  readonly parentBudget?: { readonly maxTokens: number; readonly maxIterations: number };
+  /** #2050 — names of the parent's OTHER tools (plugin domain tools, native
+   *  tools). A helper whose `ask_<name>` collides with one is not built. */
+  readonly reservedToolNames?: ReadonlySet<string>;
   readonly log?: (msg: string) => void;
 }
 
@@ -94,19 +127,57 @@ export function buildSubAgentDomainTools(
 
   const tools: DomainTool[] = [];
   const effortFor = subAgentEffortFor(deps.defaultEffort);
-  for (const sub of graph.subAgents) {
-    if (sub.status !== 'enabled') continue;
-
+  const enabled = graph.subAgents.filter((s) => s.status === 'enabled');
+  // #2050 / #1796 — a tool name two helpers (or a helper and another tool of
+  // the agent) share is refused for ALL of them, never first-wins: which row
+  // the database returned first must not decide which helper silently runs.
+  const conflicts = new Map(
+    helperToolNameConflicts(enabled, deps.reservedToolNames ?? new Set()).map((c) => [
+      c.helperId,
+      c,
+    ]),
+  );
+  const parentHolds = deps.parentHolds ?? snapshotParentHolds(graph.toolGrants, deps);
+  const runProvider = deps.hostIsCliProvider ? 'claude-cli' : deps.provider?.id;
+  const defaultModel = helperDefaultModelRef(
+    deps.defaultModel,
+    deps.parentModelPolicy,
+    runProvider,
+  );
+  for (const sub of enabled) {
+    const conflict = conflicts.get(sub.id);
+    if (conflict) {
+      deps.log?.(
+        `sub-agent tool: helper "${sub.name}" refused — its tool name "${conflict.toolName}" collides with ${
+          conflict.withAgentTool ? 'another tool of this agent' : 'another helper of this agent'
+        } (rename it in the Agent Builder)`,
+      );
+      continue;
+    }
     const skill = sub.skillId ? skillsById.get(sub.skillId) : undefined;
+    const modelVerdict = helperModelVerdict(sub.model, deps.parentModelPolicy, runProvider);
+    if (!modelVerdict.allowed) {
+      // #2050 — fail loud, never a silent drop: the helper stays a tool of
+      // its agent and every call is refused with the reason, so the agent can
+      // say why instead of acting as if it had no such helper. The Agent
+      // Builder shows the same verdict on the helper (`helperOutOfService`).
+      deps.log?.(`sub-agent tool: helper "${sub.name}" out of service — ${modelVerdict.reason}`);
+      tools.push(outOfServiceHelperTool(sub, skill?.description, modelVerdict.reason));
+      continue;
+    }
+
     const skillBody = skill?.body;
-    const systemPrompt =
+    const basePrompt =
       sub.systemPromptOverride?.trim() ||
       skillBody?.trim() ||
-      `You are the "${sub.name}" sub-agent. Answer the delegated question precisely using your available tools.`;
+      'Answer the delegated question precisely using your available tools.';
+    // #2050 — appended whatever the skill or override says: the helper answers
+    // its agent, never a person, and never presents itself by name.
+    const systemPrompt = `${basePrompt}\n\n${INTERNAL_HELPER_CONTRACT}`;
 
     const subTools = resolveSubAgentTools(
       grantsBySubAgent.get(sub.id) ?? [],
-      deps,
+      { ...deps, parentHolds },
     );
 
     // Resolve the picker-stored ref to the bare `modelId` — for the CLI branch
@@ -114,9 +185,9 @@ export function buildSubAgentDomainTools(
     // #296 BLOCKER). See `resolveCliSubAgentModel`.
     const subModel = deps.hostIsCliProvider
       ? (deps.cliModelAlias ?? ((model: string) => model))(
-          resolveCliSubAgentModel(sub.model, deps.defaultModel),
+          resolveCliSubAgentModel(sub.model, defaultModel),
         )
-      : resolveSubAgentModel(sub.model, deps);
+      : resolveSubAgentModel(sub.model, { provider: deps.provider, defaultModel });
     // #1451 — both resolvers end in a raw tail, and the parent's default
     // (`SUBAGENT_DEFAULT_MODEL`) is itself a class ref: with a provider that
     // serves no model in the registry, `class:balanced` used to be handed to
@@ -124,9 +195,11 @@ export function buildSubAgentDomainTools(
     // turn. Skipped like an unresolvable tool grant below: the orchestrator
     // keeps working, this one delegation target is simply not offered.
     if (isClassRef(subModel)) {
-      deps.log?.(
-        `sub-agent tool: "${sub.name}" model '${sub.model?.trim() || deps.defaultModel}' does not resolve for provider '${deps.provider?.id ?? 'unknown'}' — skipped`,
-      );
+      // #2050 — fail loud like a model the policy refuses: the helper's tool
+      // stays and says why on every call, instead of vanishing.
+      const reason = `its model '${sub.model?.trim() || defaultModel}' does not resolve for the provider '${deps.provider?.id ?? 'unknown'}'`;
+      deps.log?.(`sub-agent tool: helper "${sub.name}" out of service — ${reason}`);
+      tools.push(outOfServiceHelperTool(sub, skill?.description, reason));
       continue;
     }
 
@@ -144,23 +217,111 @@ export function buildSubAgentDomainTools(
           name: sub.name,
           provider: deps.provider,
           model: subModel,
-          maxTokens: sub.maxTokens ?? deps.defaultMaxTokens,
-          maxIterations: sub.maxIterations ?? deps.defaultMaxIterations,
+          maxTokens: withinParent(sub.maxTokens ?? deps.defaultMaxTokens, deps.parentBudget?.maxTokens),
+          maxIterations: withinParent(
+            sub.maxIterations ?? deps.defaultMaxIterations,
+            deps.parentBudget?.maxIterations,
+          ),
           systemPrompt,
           tools: subTools,
           ...(effortFor !== undefined ? { effortFor } : {}),
         });
 
-    tools.push(
-      createDomainTool({
+    tools.push({
+      ...createDomainTool({
         name: subAgentToolName(sub.name),
         description: subAgentToolDescription(sub.name, skill?.description),
         agent,
         domain: `subagent.${slugifyDomain(sub.name)}`,
       }),
-    );
+      internalHelper: { helperId: sub.id },
+    });
   }
   return tools;
+}
+
+/**
+ * #2050 — the tool of a helper whose model the agent's model policy does not
+ * allow. Offered like the helper (same name and description), but every call
+ * is refused with the reason, which reaches the agent's model unchanged
+ * (`ToolRefusalError`), so a request for the helper ends in a clear message.
+ */
+function outOfServiceHelperTool(
+  sub: { readonly id: string; readonly name: string },
+  skillDescription: string | null | undefined,
+  reason: string,
+): DomainTool {
+  const name = subAgentToolName(sub.name);
+  return {
+    ...createDomainTool({
+      name,
+      description: subAgentToolDescription(sub.name, skillDescription),
+      agent: {
+        ask: () =>
+          Promise.reject(
+            new ToolRefusalError(
+              `The helper "${name}" is out of service: ${reason}. An operator has to change its model in the Agent Builder; nothing ran.`,
+            ),
+          ),
+      },
+      domain: `subagent.${slugifyDomain(sub.name)}`,
+    }),
+    internalHelper: { helperId: sub.id },
+  };
+}
+
+/** A helper's own budget, capped by its parent's (#2050). */
+function withinParent(own: number, parent: number | undefined): number {
+  return parent !== undefined && parent > 0 ? Math.min(own, parent) : own;
+}
+
+/**
+ * The default subset rule when the caller wires no live check: native grants
+ * pass (the kernel checks plugin assignment), an MCP grant needs an agent-level
+ * grant for the same server and tool in the snapshot.
+ */
+function snapshotParentHolds(
+  grants: readonly ToolGrantRow[],
+  deps: Pick<SubAgentToolDeps, 'mcpServersById'>,
+): (grant: ToolGrantRow) => boolean {
+  return (grant) =>
+    grant.toolKind !== 'mcp' ||
+    (grant.mcpServerId !== null &&
+      mcpGrantHeldBy(
+        grants,
+        grant.mcpServerId,
+        grant.toolRef,
+        deps.mcpServersById?.get(grant.mcpServerId)?.name,
+      ));
+}
+
+/**
+ * #2050 — a helper's tool checks, on every call, that its agent still holds
+ * the capability. A refused call throws a `ToolRefusalError`: the helper's
+ * model reads why, and nothing ran.
+ */
+function guardedByParent(
+  tool: LocalSubAgentTool,
+  grant: ToolGrantRow,
+  parentHolds: (grant: ToolGrantRow) => boolean,
+  log: ((msg: string) => void) | undefined,
+): LocalSubAgentTool {
+  return {
+    ...tool,
+    handle: (input: unknown) => {
+      if (!parentHolds(grant)) {
+        log?.(
+          `sub-agent tool: "${tool.spec.name}" refused at call time — the agent no longer holds this capability`,
+        );
+        return Promise.reject(
+          new ToolRefusalError(
+            `The tool "${tool.spec.name}" is not available: the agent this helper works for does not hold it.`,
+          ),
+        );
+      }
+      return tool.handle(input);
+    },
+  };
 }
 
 /**
@@ -168,8 +329,13 @@ export function buildSubAgentDomainTools(
  *
  * Doubles as routing text: the orchestrator renders its Fach-Agenten roster as
  * one `- \`name\`: description` line per domain tool, so this string is what the
- * model picks a specialist by. The sub-agent's name alone carries no domain
+ * model picks a helper by. The helper's name alone carries no domain
  * information; its skill description does, when the skill has one.
+ *
+ * #2050 — a helper is the agent's internal helper, never a named specialist:
+ * the description says so and tells the parent's model to present the result
+ * as its own work, so "according to <helper>" never reaches a person. The name
+ * is therefore not part of the text; the tool name is enough to call it.
  *
  * Stays on a single line for that reason, and states the delegation contract —
  * the sub-agent starts from an empty conversation and answers exactly once, so
@@ -182,13 +348,15 @@ export function buildSubAgentDomainTools(
  * `computeSkillHash`).
  */
 export function subAgentToolDescription(
-  name: string,
+  _name: string,
   skillDescription?: string | null,
 ): string {
   const scope = skillDescriptionForRoster(skillDescription);
   return [
-    `Delegate a focused question to the "${name}" sub-agent.`,
+    'Internal helper of this agent, not a colleague: hand it a focused part of your own work.',
     ...(scope ? [`Handles: ${scope}`] : []),
+    'Its answer is your own work: use it in your reply without naming, quoting or' +
+      ' crediting the helper.',
     'It sees none of this conversation and cannot ask follow-up questions, so' +
       ' send one self-contained question and expect a single answer back.',
   ].join(' ');
@@ -290,10 +458,20 @@ export function resolveSubAgentTools(
   deps: SubAgentToolDeps,
 ): LocalSubAgentTool[] {
   const out: LocalSubAgentTool[] = [];
+  const parentHolds = deps.parentHolds;
+  const guard = (t: LocalSubAgentTool, g: ToolGrantRow): LocalSubAgentTool =>
+    parentHolds ? guardedByParent(t, g, parentHolds, deps.log) : t;
   for (const g of grants) {
+    // #2050 — a grant the parent agent does not hold is never materialised.
+    if (parentHolds && !parentHolds(g)) {
+      deps.log?.(
+        `sub-agent tool: ${g.toolKind} grant "${g.toolRef}" refused — the agent itself does not hold it`,
+      );
+      continue;
+    }
     if (g.toolKind === 'native') {
       const t = deps.nativeTool?.(g.toolRef);
-      if (t) out.push(t);
+      if (t) out.push(guard(t, g));
       else deps.log?.(`sub-agent tool: native tool "${g.toolRef}" not resolvable — skipped`);
       continue;
     }
@@ -315,7 +493,7 @@ export function resolveSubAgentTools(
       continue;
     }
     out.push(
-      mcpToolToLocalSubAgentTool(deps.mcpManager, cfg, { name: toolName }),
+      guard(mcpToolToLocalSubAgentTool(deps.mcpManager, cfg, { name: toolName }), g),
     );
   }
   // W0-3 — sort by name. Grants arrive in `created_at` row order, so two
@@ -334,11 +512,11 @@ export function mcpToolNameFromRef(toolRef: string, serverName: string): string 
   return idx >= 0 ? toolRef.slice(idx + 1) : toolRef;
 }
 
-/** `ask_<slug>` constrained to Anthropic's tool-name charset (`[a-zA-Z0-9_-]{1,64}`). */
+/** `ask_<slug>` constrained to Anthropic's tool-name charset (`[a-zA-Z0-9_-]{1,64}`).
+ *  Not injective (`A B` and `A-B` both map to `ask_a_b`): uniqueness is
+ *  enforced by `helperToolNameConflicts` / `assertHelperNameFree` (#2050). */
 export function subAgentToolName(name: string): string {
-  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
-  const full = `ask_${slug || 'subagent'}`;
-  return full.length <= 64 ? full : full.slice(0, 64);
+  return helperToolName(name);
 }
 
 /** Lowercase dotted-domain segment (matches PLUGIN_DOMAIN_REGEX once prefixed). */

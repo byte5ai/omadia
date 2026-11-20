@@ -173,6 +173,23 @@ src/
   nutzt Session-Transkripte nur auf Rückbezug, persistiert Learnings
   früh (im nächsten Tool-Call, nicht am Ende).
 
+### Arbeitsmodi statt Persona-Wechsel (#2051, Epic #2042)
+
+`workingModes.ts` (vorher `personaRouter.ts`) wählt pro Turn höchstens einen
+Arbeitsmodus aus `agent_persona_skills`; der Klassifikator sieht nur Name und
+Beschreibung, der Skill-Text wird erst danach geladen. `withWorkingMode` hängt
+den Modus als Abschnitt „Arbeitsmodus: <Name>“ mit Vorrang-Satz **unter** die
+Identitätsschicht von `withAgentIdentity` — er ersetzt Identität,
+Persönlichkeit und Grenzen nie (INV-3); ohne Modus ist der Prompt
+byte-identisch. Die Auswahl ist ein interner Helfer des Agenten: sie läuft im
+Turn-Kontext auf `modelRouting.classifierModel`, sonst auf dem Primärmodell
+der Policy (`resolvePrimaryExecution()`), Usage-Source `working-mode-router`.
+Ergebnis: Stream-Event `turn_working_mode` (`bucket`, `classifierModel`,
+`skillId`, `modeName`; nur bei Agenten mit Modi, vor dem Verifier-Verdikt
+erlaubt), `runTrace.workingMode` und `workingMode`/`workingModeSkillId` auf dem
+Run-Knoten. Der Web-Chat zeigt „Modus: X“ nur in der Detail-Zeile der Antwort,
+nie über der Nachricht (Spec §5.14).
+
 ### `get_chat_participants` — per-Turn-Roster-Gating (#1108)
 
 - **Datei:** `packages/harness-orchestrator/src/tools/chatParticipantsTool.ts`.
@@ -627,6 +644,27 @@ Test-Button heißt bei Keyless "Verbindung testen".
 - **Kein Memory-Tool:** Sub-Agents sollen nicht eigenständig in den
   globalen Memory schreiben — nur der Orchestrator tut das. Das hält den
   Memory scharf fokussiert.
+
+### Interne Helfer (DB-Sub-Agents, #2050, Epic #2042)
+
+DB-Sub-Agents (`agent_subagents`, Tool `ask_<name>`, Agent-Builder-Knoten
+„Helfer“) sind **interne Helfer** eines Agenten, keine Agenten (Spec 2042
+§5.6). Die Regeln liegen in `registry/internalHelpers.ts`; Speichern
+(`routes/agentBuilder.ts`: `assertHelperWriteAllowed`,
+`assertHelperGrantHeldByAgent`, `409 helper_refused` mit Code
+`helper_name_collision` / `helper_grant_not_held_by_agent` /
+`helper_model_not_allowed`) und Laufzeit (`buildSubAgentDomainTools` mit
+`parentHolds`, `parentModelPolicy`, `parentBudget`, `reservedToolNames`) nutzen
+sie gemeinsam. Der Kernel verdrahtet `liveParent` = `reg.get(slug)` in
+`src/index.ts`, damit jeder Tool-Aufruf eines Helfers live gegen die Grants
+des Agenten prüft (Entzug beim Agenten sperrt den nächsten Aufruf, nativ und
+MCP). Der Helfer-Prompt trägt `INTERNAL_HELPER_CONTRACT` (keine Vorstellung,
+kein Name), die Tool-Beschreibung sagt dem Agentenmodell, das Ergebnis als
+eigene Arbeit zu nutzen. `maxTokens`/`maxIterations` sind durch das Budget des
+Agenten gedeckelt, Usage läuft auf den Turn des Agenten. Helfer-Läufe stehen im
+Run-Trace mit `internalHelper: true` und nie in `agentsConsulted`. Bei
+kollidierenden Tool-Namen fallen zur Laufzeit alle Beteiligten weg. Ein
+Spezialist, den Menschen ansprechen sollen, wird als eigener Agent angelegt.
 
 ### Wer ruft wen?
 
@@ -3853,7 +3891,7 @@ laufender DB gezeigt und liest dann die authentifizierte Vault-Status-Route.
 `_lib/runtimeReadiness.ts` der Zustand `database_unavailable`. Dashboard-Karten
 ohne Daten zeigen „Status nicht abrufbar“ statt ihres Leerzustands.
 
-### Built-in-Plugins: Version, Deinstallation, Anhängen an den Standard-Orchestrator (#1505, #1481, #1498, #1491)
+### Built-in-Plugins: Version, Deinstallation, kein automatisches Anhängen (#1505, #1481, #2054)
 
 Built-ins liegen im Image (`middleware/packages/*`) und werden beim Boot von
 `runLegacyBootstrap` (`plugins/bootstrap.ts`) in die Installed-Registry
@@ -3887,32 +3925,33 @@ memory-postgres, embeddings, beide KG-Provider): der Host braucht sie, ihre
 Image-Pakete); der Deinstallations-Dialog nennt das Ergebnis und bietet die
 Checkbox „hochgeladene Paketdatei löschen“ nur für Nicht-Built-ins an.
 
-**Anhängen an den Standard-Orchestrator (#1498, #1491).** Eine Regel für alle
-Install-Wege: das Plugin samt seinen installierten `depends_on`-Eltern bekommt
-eine `agent_plugins`-Zeile am Fallback-Agent. Der gemeinsame Baustein ist
-`attachAllPlugins` (harness-orchestrator `registry/onboarding.ts`):
-- Erst-Boot: `ensureFallbackAgent` hängt alle installierten Plugins an.
-- Boot auf bestehender Instanz: `runLegacyBootstrap` meldet jede neu
-  registrierte ID über `onPluginInstalled`; der Host reiht sie in
-  `createPendingDefaultAttach` (`plugins/defaultOrchestratorAttach.ts`) ein und
-  hängt sie an denselben Flush-Punkten an wie `pendingBindingPurge` (nach
-  `toolPluginRuntime.activateAllInstalled()` und bei jeder (Re-)Aktivierung von
-  `@omadia/orchestrator`).
-- Laufzeit-Install (Hub, Upload, Store-Reinstall) **jeder** Plugin-Art, nicht
-  nur Agents: `onInstalled(id, 'install')` → `propagatePluginInstall`.
-  `onInstalled(id, 'reactivate')` hängt nicht an — eine Reaktivierung darf ein
-  bewusst abgehängtes Plugin nicht zurückholen; ebenso wenig `onPackageReady`
-  (Update eines installierten Pakets).
-- Profil-Apply: der Router meldet die neu registrierten IDs über
-  `onPluginsRegistered`, der Host hängt sie sofort an (oder reiht sie ein).
-
-Beide Laufzeit-Wege nutzen `attachNewPluginsToFallbackAgent`: es legt nur
-Zeilen an, die noch fehlen (ein `upsertAgentPlugin` würde `config` und
-`enabled` einer bestehenden Zeile überschreiben). Ohne Fallback-Agent
-(Operator-Policy) passiert nichts; ohne Config-Store (key-loser Boot) wartet
-die ID in der Queue bis zur Aktivierung des Orchestrators. Die Queue lebt nur
-im Speicher; für einen Neustart davor bleibt „Standard auf alle Plugins
-zurücksetzen“.
+**Kein automatisches Anhängen (#2054, Spec 2042 INV-8; ersetzt #1498/#1491).**
+Bis #2054 hängten Erst-Boot und jeder Install-Weg (Hub, Upload,
+Store-Reinstall, Profil-Apply, beim Boot gesäte Built-ins) jedes Plugin an den
+Fallback-Agent; wer ihn erreichte, hielt alle verbundenen Systeme. Das ist
+komplett entfernt: `attachAllPlugins`, `attachNewPluginsToFallbackAgent`,
+`attachToDefaultOrchestrator`, die Queue `createPendingDefaultAttach` samt
+`plugins/defaultOrchestratorAttach.ts` und die Route
+`POST /api/v1/operator/agents/fallback/rehydrate` („Standard auf alle Plugins
+zurücksetzen“, B3d) gibt es nicht mehr.
+- Erst-Boot: `ensureFallbackAgent` legt den Seed weiter an (Routing, gehört
+  S1), aber **ohne** Plugin. Seine Capabilities vergibt der Operator im
+  Erststart-Flow (siehe „Operator-Agent-Routen“ unten).
+- Install (Store-Install/-Reinstall/-Upload, Profil-Apply): der Kernel hängt
+  nichts an. Die Web-UI bietet ein Capability-Plugin danach Agenten an, die der
+  Operator auswählt, **keiner vorausgewählt** (`GrantToAgentsStep.tsx`, schreibt
+  über `PATCH /:slug/plugins` inkl. Breite-Reichweite-Bestätigung). Was
+  angeboten wird, entscheidet allein `isCapabilityPlugin`
+  (`plugins/capabilityPlugins.ts`): Kinds `integration`, `tool`, `skill` (und
+  ein noch installiertes `agent`-Paket). Channels, Models, Archetypen,
+  System-Module, Templates, `@omadia/orchestrator` und Reference-only-Plugins
+  werden nie angeboten.
+- Bleibt: das Anhängen der Facilitation-Engine an Facilitator-Agenten
+  (`platform/facilitatorEngineAttach.ts`, `attachFacilitationEngine` in
+  `index.ts`). Deinstallation entfernt die Grants weiter bei allen Agenten; die
+  Propagation lädt nur noch neu.
+- Live: bestehende `agent_plugins`-Zeilen bleiben, wie sie sind; nur neue
+  Installationen hängen nicht mehr an.
 
 **Onboarding-Profile (#1484).** `middleware/profiles/*.yaml` listen keine
 Memory-/KG-Provider mehr (die wählt der Boot aus `DATABASE_URL`) und keine
@@ -4065,6 +4104,118 @@ Session-Cookie öffnet sie nicht. Dateien: `auth/teamsSsoVerifier.ts`,
 `index.ts` (`teamsSsoGateRef`). Builder-Codegen nutzt das für die Teams-Tabs
 der `ui_routes` (`/p/<slug>/teams`, siehe `docs/security-architecture.md`
 §5b-1).
+
+### Operator-Agent-Routen: Reichweite, Erststart, Template, Bestätigung (#2054, #2049, #2050, Epic #2042)
+
+Router `routes/operatorAgents.ts` unter `/api/v1/operator/agents`, der
+Agent-Builder-Router `routes/agentBuilder.ts` unter `/api/v1/operator`. Alle
+hinter der Admin-Session. Sicherheitsseite: `docs/security-architecture.md` §5e.
+
+**Neu**
+- `GET /api/v1/operator/agents/:slug/reach` → `{ slug, systems[], connected_systems,
+  covers_every_system, broad }`; je System `{ key: 'plugin:<id>'|'mcp:<id>', type:
+  'plugin'|'mcp_server', ref, name, read, write, declared, via[] }`. Abgeleitet
+  deterministisch in `agents/agentReach.ts` (Quellen: `agentReachSources.ts`):
+  Plugin-Grants, MCP-Tool-Grants des Agenten und seiner Helfer,
+  `plugin_mcp_grants` gehaltener Plugins. Read/Write aus Manifest-`side_effects`
+  bzw. MCP-`readOnlyHint`; nichts deklariert = Read **und** Write,
+  `declared: false`. `broad` = deckt jedes verbundene System ab und es gibt
+  mindestens 2. Die Directory-Liste (`GET /api/v1/operator/agents`) trägt
+  dasselbe Objekt als `reach` (`null`, wenn es nicht berechnet werden konnte).
+- `GET /api/v1/operator/agents/onboarding` → `{ required, agent, capabilities[] }`.
+  `required` solange es keinen Agenten aus Operator-Hand gibt (kein Agent, oder
+  nur der unberührte Seed ohne Plugin-Zeile; `agents/firstAgentOnboarding.ts`).
+  `capabilities` = installierte Capability-Plugins, nichts vorausgewählt.
+- `POST /api/v1/operator/agents/onboarding/first-agent`, Body `{ name,
+  description?, plugin_ids[], confirmBroadReach? }`: legt den ersten Agenten an
+  (201) oder macht den unberührten Seed dazu (200). `plugin_ids` darf leer sein.
+  `409 onboarding_not_required`, `400 not_a_capability_plugin` für IDs, die kein
+  installiertes Capability-Plugin sind, plus die Breite-Reichweite-Prüfung.
+- `GET /api/v1/operator/agents/:slug/template[?format=yaml]`: der Agent als
+  **ein** `agent_templates`-Eintrag im Format des Manifest-Readers
+  (`agents/agentTemplateExport.ts`, `agentTemplateManifest.ts`): Archetyp, Name,
+  Beschreibungen, Instruktionen, Sprache, Persona, Quality, Antwortlänge
+  (`verbosity`) und die IDs der aktivierten Capability-Grants. Nie
+  Plugin-Config, Memory, Bindings, Verfügbarkeit oder Avatar. JSON default,
+  `?format=yaml` als Download, `400 invalid_format`; ein Eintrag, den der
+  Reader ablehnen würde, ist `409 template_export_invalid` statt einer kaputten
+  Datei.
+- `GET /api/v1/operator/agents/plugin-catalog`: jeder Eintrag trägt
+  `capability: boolean` (`isCapabilityPlugin`); nur `true` wird Agenten
+  angeboten.
+- `GET /api/v1/operator/agents/:slug/graph` (Agent Builder): jeder Helfer-Knoten
+  trägt `outOfService: { code, reason } | null`, Codes
+  `helper_model_not_allowed` / `helper_name_conflict` (`helpersOutOfService`,
+  dieselben Regeln wie die Laufzeit, #2050; siehe „Interne Helfer“ oben).
+
+**Breite-Reichweite-Bestätigung** (`agents/broadReachGate.ts`,
+`requireBroadReachConfirmation`). Fragt nur, wenn eine Änderung einen Agenten
+breit macht (vorher nicht breit, nachher breit). Ohne `confirmBroadReach: true`
+im Body: `409 broad_reach_confirmation_required` mit `{ message, change, slug,
+reach }`. Gilt für `PUT|PATCH /api/v1/operator/agents/:slug/plugins`,
+`PUT /api/v1/operator/mcp-grants`, Agent-Builder-Graph-Kanten `tool_grant`
+(`POST /api/v1/operator/agents/:slug/graph/edges`),
+`PUT /api/v1/operator/plugin-mcp-grants` (geprüft für jeden Agenten, der das
+Plugin hält; die 409 nennt die Agenten) und den Erststart-Flow. Audit
+`agent.broad_reach_grant` erst nach erfolgreichem Write; ein fehlgeschlagener
+Audit-Write wird geloggt, der Grant nicht zurückgerollt. Dieselbe
+Bestätigung gilt, wenn ein solcher Agent Default-Agent wird
+(`PUT /api/v1/operator/default-agents` mit `confirmBroadReach`,
+`change: 'default_agent'`, Audit `agent.broad_reach_default`).
+
+**Nur Capability-Plugins.** Die Plugin-Grant-Routen (`PUT|PATCH
+/:slug/plugins`) antworten auf einen **neuen** Grant eines Plugins, das kein
+Capability-Plugin ist, mit `400 not_a_capability_plugin`. Bestehende Zeilen
+bleiben und lassen sich weiter umschalten.
+
+**Entfernt** (ohne Kompatibilitätsschicht)
+- `POST /api/v1/operator/agents/fallback/rehydrate` („Standard auf alle Plugins
+  zurücksetzen“, #2054).
+- Plugin Builder (`/api/v1/builder`, #2049): `GET /drafts/:id/quality`,
+  `PATCH /drafts/:id/persona`, `PATCH /drafts/:id/quality`,
+  `POST /drafts/:id/preview-prompt` (samt `builderQuality.ts`,
+  `builderPreviewPrompt.ts`) und die Builder-Tools `set_persona_config` /
+  `set_quality_config`.
+
+### Plugin Builder: nur Capability-Plugins, Preview als Draft-Agent (#2049, Spec 2042 §5.10)
+
+**Output.** Der Plugin Builder (`/store/builder`, `plugins/builder/`) erzeugt
+nur Capability-Plugins, Manifest-Kind `integration` oder `tool`. Optionales
+`spec.kind`; fehlt es, wird es abgeleitet: `integration`, wenn das Plugin ein
+externes System mit Credentials erreicht (`depends_on`, OAuth-Provider,
+Secret-/OAuth-Setup-Feld), sonst `tool`. `template` wählt nur das Code-Layout
+und bleibt bewusst getrennt. Boilerplates `middleware/assets/boilerplate/integration`
+(Client + Toolkit) und `…/tool` (nur Toolkit); `plugin.ts` registriert jedes
+Toolkit-Tool über `registerTools.ts` (`ctx.tools.register`, Schema aus
+`z.toJSONSchema`) und gibt `{ close }` zurück. Keine Persona, kein `AGENT.md`,
+kein `prompt_partial`-Skill, kein `llm.prefers`, keine Delegation über
+`ctx.subAgent`: `permissions.subAgents` wird in der Builder-Spec abgelehnt (ein
+Capability-Plugin konsultiert nie einen Agenten, §5.4). Alte Drafts laden
+weiter (Persona-/Quality-/Skill-Keys werden beim Lesen entfernt, alte
+Template-IDs `agent-integration`/`agent-pure-llm` als Alias gelesen); ein
+Patch, der sie setzt, wird mit Verweis auf den Agent Builder abgelehnt.
+
+**Preview-Draft-Agents** (`plugins/builder/previewDraftAgents.ts`,
+`previewChatService.ts`, Migration 0085).
+- Eine Preview ist ein Turn eines Draft-Agenten: `agents`-Zeile mit Status
+  `draft`, Slug `builder-preview-<draft>`. Das Präfix ist reserviert: Create
+  lehnt es ab, auf einem solchen Slug sind nur GET und DELETE erlaubt, und die
+  Zeile erscheint nicht im Directory, im Erststart-Flow oder in einem
+  Grant-Angebot. Die Registry baut nie einen Draft.
+- Angelegt pro Builder-Draft beim ersten Preview-Turn (`ensure`); ohne Zeile
+  läuft der Turn nicht (`builder.preview_draft_agent_unavailable`, nichts
+  gespeichert).
+- Entfernt, wenn die Preview endgültig schließt (`PreviewCache.onClosed`:
+  Eviction, Draft verworfen, Logout, Shutdown), **nicht** beim Rebuild. Was ein
+  Crash liegen lässt, räumt der Boot-Sweep ab; kam der Agent-Store erst nach
+  dem Boot, läuft der Sweep lazy beim ersten Gebrauch. Entfernt wird nur, was
+  Status `draft` hat.
+- Der Turn selbst läuft die Model-Loop im Speicher, nur mit den Tools, die das
+  Draft-Plugin registriert hat (auf dem Preview-Handle erfasst, nie in der
+  Kernel-Registry), neutraler Prompt mit „Preview“-Markierung aus Identity,
+  Kind und Playbook. Die Zeile ist Identität und Buchhaltung des Draft-Agenten;
+  sie hält keine Grant-Zeile. Ausgabe nur im Builder-SSE hinter der
+  Admin-Session.
 
 ## 4. Migration Managed Agents → Lokal
 
@@ -4443,6 +4594,13 @@ Die Obergrenze bindet nur Sitzungen, die niemand beendet: Abmelden,
 Admin-Passwort-Reset, Deaktivieren und Löschen beenden alle Sitzungen des
 Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf“)
 — ohne eigene Env-Variable.
+
+### Audience-Floor standardmäßig an (#575, #2048, Epic #2042)
+
+| Variable | Wirkung |
+|---|---|
+| `AUDIENCE_FLOOR_ENABLED` | Default **`true`** seit #2048 (Spec 2042 G15). Ein Raum darf einen Agenten nur tun lassen, was **jede** anwesende Person darf (Egress-, Recall- und Attachment-Guard in `audienceFloorGuard.ts`). Installiert auf beiden Turn-Pfaden (`runTurn` und `chatStream`; der Streaming-Pfad hatte vorher gar keinen Floor). Raumart aus `audienceRoomFor`: Web/Desktop/CLI/API und 1:1-Kanalturns = nur der Turn-Owner; Gruppen = Teilnehmerliste des Kanals (Agenten-Bots zählen nicht); Turns ohne Kanal und ohne Owner (Schedules, Conductor-Steps) = kein Floor. Fail-closed: Kanal ohne Teilnehmerliste in Gruppen (heute Slack, Discord, WhatsApp, iMessage) oder eine nicht auflösbare Person ⇒ jedes Tool wird mit Begründung verweigert. Facilitator-Turns (`agentTurn@2`) lesen die Teilnehmerliste der Konversation als eigene Identität des Agenten. `false` schaltet alle Guards ab; Rückfragen zwischen Agenten (#2047) brauchen den Floor. |
+| `AUDIENCE_BASELINE_GRANTS` | `member` (Default): jede aufgelöste Person hält `tool:*` (jedes Tool, das der Agent selbst hat), `memory:recall`, `memory:recall:cross_scope`, `attachment:read` (`MemberBaselineGrantStore`); Verbote pro Person/Rolle über `/api/v1/admin/audience-grants/{direct,roles}/deny` schlagen die Basis. Läuft auch ohne Postgres (dann nur Basis). `none`: strikte #575-Lesart, nur explizite Grants; braucht Postgres, sonst Boot-Abbruch. |
 
 ### Request-Trust-Boundary (#1310, security-architecture §10o)
 
@@ -5440,7 +5598,7 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
 `docs/security-architecture.md` §7c):
 
 - **Bis zum Urteil** gehen nur Lebenszeichen raus: `iteration_start`,
-  `turn_routing`, `turn_persona`, `tool_progress`, `heartbeat`,
+  `turn_routing`, `turn_working_mode`, `tool_progress`, `heartbeat`,
   `stream_token_chunk`, `iteration_usage`, `steer_applied` (geschlossene
   Allowlist `passesBeforeVerdict`). Alles andere — `text_delta`,
   `tool_use`/`tool_result`, `sub_*` (auch `sub_iteration`, damit es beim

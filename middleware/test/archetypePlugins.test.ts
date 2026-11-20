@@ -38,7 +38,7 @@ import {
   resolveFacilitationEngine,
 } from '../src/platform/facilitatorGuard.js';
 import { readArchetypeManifest } from '../src/plugins/archetypeManifest.js';
-import { attachablePluginIds } from '../src/plugins/defaultOrchestratorAttach.js';
+import { capabilityPluginIds } from '../src/plugins/capabilityPlugins.js';
 import { InstallError, InstallService } from '../src/plugins/installService.js';
 import { adaptManifestV1 } from '../src/plugins/manifestLoader.js';
 import { buildOperatorArchetypes } from '../src/routes/operatorArchetypes.js';
@@ -96,16 +96,21 @@ function sources(installed: { id: string; status?: string; doc: Record<string, u
 
 describe('manifest kind', () => {
   it('rejects a kind the kernel does not know instead of loading it as an agent plugin', () => {
-    for (const kind of ['archetyp', 'system-module', 'model', 'provider', 'ui', 'Agent', 42, '']) {
+    // `provider` and `ui` were never kernel kinds (spec 2042 §5.10 retires
+    // them in the Hub's vocabulary); a typo stays a typo.
+    for (const kind of ['archetyp', 'systemmodule', 'provider', 'ui', 'Agent', 42, '']) {
       const { plugin, warnings } = load(manifest({ kind, archetype: undefined }));
       assert.equal(plugin, null, `kind ${JSON.stringify(kind)} must be rejected`);
-      assert.match(warnings, /manifest rejected: plugin '@omadia\/agent-facilitator' has identity\.kind .* which this kernel does not know \(it knows: agent, integration, channel, tool, extension, archetype\)/);
+      assert.match(warnings, /manifest rejected: plugin '@omadia\/agent-facilitator' has identity\.kind .* which this kernel does not know \(it knows: integration, tool, skill, channel, model, archetype, system-module, agent-template, agent, extension\)/);
     }
   });
 
   it('keeps every known kind, and a manifest without the field stays an agent plugin', () => {
-    for (const kind of ['agent', 'integration', 'channel', 'tool', 'extension']) {
-      assert.equal(load(manifest({ kind, archetype: undefined })).plugin?.kind, kind);
+    for (const kind of ['agent', 'integration', 'channel', 'tool', 'extension', 'skill', 'model', 'system-module', 'agent-template']) {
+      const doc = manifest({ kind, archetype: undefined });
+      // A template package delivers at least one template (spec 2042 §5.10).
+      if (kind === 'agent-template') doc['agent_templates'] = [{ id: 'hr', name: 'Hanna' }];
+      assert.equal(load(doc).plugin?.kind, kind);
     }
     assert.equal(load(manifest({ kind: undefined, archetype: undefined })).plugin?.kind, 'agent');
   });
@@ -369,11 +374,11 @@ describe('an archetype plugin is attached only to agents of its archetype', () =
     assert.throws(() => assertEngineOnlyForFacilitators({ slug: 'cora', archetype: 'coach' }, grant(ENGINE), s), /refused: @omadia\/agent-facilitator/);
   });
 
-  it('the kernel never attaches it to the default agent, on install, at boot or on a reset', () => {
+  it('is no capability plugin: never offered for a grant to agents (#2054)', () => {
     const odoo = { id: '@omadia/integration-odoo', doc: manifest({ id: '@omadia/integration-odoo', kind: 'integration', archetype: undefined }) };
     const all = sources([coach, facilitation, odoo]);
     assert.deepEqual(
-      attachablePluginIds(['@acme/archetype-coach', ENGINE, '@omadia/integration-odoo'], all.catalog),
+      capabilityPluginIds(['@acme/archetype-coach', ENGINE, '@omadia/integration-odoo'], all.catalog),
       ['@omadia/integration-odoo'],
     );
   });

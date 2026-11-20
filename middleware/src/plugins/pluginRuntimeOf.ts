@@ -1,4 +1,4 @@
-import type { PluginKind } from '../api/admin-v1.js';
+import { effectiveKind, type PluginKind } from '../api/admin-v1.js';
 
 /**
  * Which of the three runtimes runs a plugin of a manifest kind.
@@ -14,10 +14,17 @@ export type PluginRuntime = 'channel' | 'tool' | 'agent';
 const RUNTIME_OF_KIND: Readonly<Record<PluginKind, PluginRuntime>> = {
   channel: 'channel',
   tool: 'tool',
-  extension: 'tool',
   integration: 'tool',
-  // #2088 — an archetype plugin runs like an extension.
+  skill: 'tool',
+  model: 'tool',
+  // #2088 — an archetype plugin runs like a system module.
   archetype: 'tool',
+  'system-module': 'tool',
+  // Data-only packages run in the tool runtime, which starts no code for
+  // them (`isDataOnlyPlugin`).
+  'agent-template': 'tool',
+  extension: 'tool',
+  // Retired: only packages installed before the kind was retired.
   agent: 'agent',
 };
 
@@ -25,4 +32,18 @@ const RUNTIME_OF_KIND: Readonly<Record<PluginKind, PluginRuntime>> = {
  *  always was. */
 export function pluginRuntimeOf(kind: PluginKind | undefined): PluginRuntime {
   return kind === undefined ? 'agent' : RUNTIME_OF_KIND[kind];
+}
+
+/**
+ * Spec 2042 §5.10 — a package that delivers only data: an `agent-template`
+ * (inactive presets) always, a `skill` package when it ships no code. The
+ * tool runtime marks such a package active without importing anything, and
+ * the upload accepts it without an entry file.
+ */
+export function isDataOnlyPlugin(kind: PluginKind, manifest: unknown): boolean {
+  const k = effectiveKind(kind);
+  if (k === 'agent-template') return true;
+  if (k !== 'skill') return false;
+  const lifecycle = (manifest as { lifecycle?: { entry?: unknown } } | undefined)?.lifecycle;
+  return typeof lifecycle?.entry !== 'string' || lifecycle.entry.length === 0;
 }

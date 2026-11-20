@@ -11,8 +11,6 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { attachNewPluginsToFallbackAgent } from '@omadia/orchestrator';
-
 import type { Config } from '../src/config.js';
 import {
   reconcileBuiltInVersions,
@@ -23,11 +21,6 @@ import {
   InMemoryBuiltInOptOutStore,
 } from '../src/plugins/builtInOptOuts.js';
 import { BuiltInPackageStore } from '../src/plugins/builtInPackageStore.js';
-import {
-  attachablePluginIds,
-  createPendingDefaultAttach,
-  withInstalledParents,
-} from '../src/plugins/defaultOrchestratorAttach.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 import { InstallService } from '../src/plugins/installService.js';
 import { PluginCatalog } from '../src/plugins/manifestLoader.js';
@@ -35,10 +28,10 @@ import { listProfiles } from '../src/plugins/profileLoader.js';
 import { InMemorySecretVault } from '../src/secrets/vault.js';
 
 /**
- * Sweep 2 / N05 — how built-in plugins are installed, versioned and attached:
- * #1505 (version reconcile), #1481 (uninstall sticks), #1498 / #1491 (attach
- * to the default orchestrator), #1499 (bundled manifest rule), #1484 (shipped
- * profiles).
+ * Sweep 2 / N05 — how built-in plugins are installed and versioned:
+ * #1505 (version reconcile), #1481 (uninstall sticks), #1499 (bundled manifest
+ * rule), #1484 (shipped profiles). The attach to the default orchestrator
+ * (#1498 / #1491) is gone (#2054): `leastPrivilegeByDefault.test.ts`.
  */
 
 const MIDDLEWARE_ROOT = resolve(new URL(import.meta.url).pathname, '..', '..');
@@ -298,149 +291,6 @@ describe('#1481 — an uninstalled built-in stays uninstalled', () => {
       const written = JSON.parse(readFileSync(file, 'utf8')) as { uninstalled: Record<string, string> };
       assert.ok(written.uninstalled['@test/c']);
     });
-  });
-});
-
-describe('#1491 / #1498 — attach to the default orchestrator', () => {
-  it('#1601 — never attaches a reference-only plugin', () => {
-    const plugins: Record<string, { is_reference_only?: boolean }> = {
-      '@omadia/agent-reference-maximum': { is_reference_only: true },
-      '@omadia/integration-odoo': {},
-    };
-    const catalog = {
-      get: (id: string) => (plugins[id] ? { plugin: plugins[id] } : undefined),
-    } as unknown as Pick<PluginCatalog, 'get'>;
-
-    assert.deepEqual(
-      attachablePluginIds(
-        ['@omadia/agent-reference-maximum', '@omadia/integration-odoo', '@test/unknown'],
-        catalog,
-      ),
-      ['@omadia/integration-odoo', '@test/unknown'],
-    );
-  });
-
-  it('expands installed depends_on parents, parents first', async () => {
-    await withTmpDir(async (dir) => {
-      writeManifest(join(dir, 'integration'), '@test/integration', '1.0.0');
-      writeManifest(join(dir, 'agent'), '@test/agent', '1.0.0', [
-        'depends_on:',
-        '  - "@test/integration"',
-        '  - "@test/not-installed"',
-      ]);
-      const { catalog } = await builtIns(dir);
-      const registry = new InMemoryInstalledRegistry();
-      for (const id of ['@test/integration', '@test/agent']) {
-        await registry.register({
-          id,
-          installed_version: '1.0.0',
-          installed_at: new Date().toISOString(),
-          status: 'active',
-          config: {},
-        });
-      }
-
-      assert.deepEqual(withInstalledParents(['@test/agent'], catalog, registry), [
-        '@test/integration',
-        '@test/agent',
-      ]);
-    });
-  });
-
-  it('attaches only ids without a row and never the orchestrator itself', async () => {
-    const upserts: Array<{ agentId: string; pluginId: string; enabled?: boolean }> = [];
-    const store = {
-      // #2055 — the former fallback is the instance entry of the default-agent table.
-      routing: {
-        listDefaultEntries: async () => [
-          { id: 'e-user', principal: 'user:anna@example.com', channelType: null, agentId: 'agent-2' },
-          { id: 'e-instance', principal: null, channelType: null, agentId: 'agent-1' },
-        ],
-      },
-      listAgentPlugins: async () => [
-        // The operator disabled this one on purpose — it must stay disabled.
-        { agentId: 'agent-1', pluginId: '@test/parent', enabled: false, config: { k: 1 } },
-      ],
-      upsertAgentPlugin: async (
-        agentId: string,
-        input: { pluginId: string; enabled?: boolean },
-      ) => {
-        upserts.push({ agentId, pluginId: input.pluginId, enabled: input.enabled });
-        return { agentId, pluginId: input.pluginId, enabled: true, config: {} };
-      },
-    };
-
-    const result = await attachNewPluginsToFallbackAgent(
-      store as unknown as Parameters<typeof attachNewPluginsToFallbackAgent>[0],
-      ['@test/parent', '@test/child', '@omadia/orchestrator', '@test/child'],
-    );
-
-    assert.equal(result.agentId, 'agent-1');
-    assert.deepEqual(result.attached, ['@test/child']);
-    assert.deepEqual(upserts, [
-      { agentId: 'agent-1', pluginId: '@test/child', enabled: true },
-    ]);
-  });
-
-  it('attaches nothing when the instance default entry is off', async () => {
-    let upserted = false;
-    const store = {
-      routing: {
-        listDefaultEntries: async () => [
-          { id: 'e-instance', principal: null, channelType: null, agentId: null },
-        ],
-      },
-      listAgentPlugins: async () => [],
-      upsertAgentPlugin: async () => {
-        upserted = true;
-        return {};
-      },
-    };
-    const result = await attachNewPluginsToFallbackAgent(
-      store as unknown as Parameters<typeof attachNewPluginsToFallbackAgent>[0],
-      ['@test/x'],
-    );
-    assert.equal(result.agentId, undefined);
-    assert.equal(upserted, false);
-  });
-
-  it('the boot queue waits for the store, then attaches what is still installed', async () => {
-    const installed = new Set(['@test/a', '@test/b']);
-    const calls: string[][] = [];
-    let storeReady = false;
-    const queue = createPendingDefaultAttach({
-      attach: async (ids) => {
-        if (!storeReady) return false;
-        calls.push([...ids]);
-        return true;
-      },
-      isInstalled: (id) => installed.has(id),
-      log: () => {},
-    });
-    queue.enqueue('@test/a');
-    queue.enqueue('@test/b');
-
-    await queue.flush();
-    assert.deepEqual(queue.pending(), ['@test/a', '@test/b']);
-    assert.deepEqual(calls, []);
-
-    installed.delete('@test/b');
-    storeReady = true;
-    // A throwing attach (DB blip) keeps the ids for the next flush point.
-    const failing = createPendingDefaultAttach({
-      attach: async () => {
-        throw new Error('connection refused');
-      },
-      isInstalled: () => true,
-      log: () => {},
-    });
-    failing.enqueue('@test/x');
-    await failing.flush();
-    assert.deepEqual(failing.pending(), ['@test/x']);
-
-    await queue.flush();
-    assert.deepEqual(calls, [['@test/a']]);
-    assert.deepEqual(queue.pending(), []);
   });
 });
 

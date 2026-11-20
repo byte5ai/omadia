@@ -105,7 +105,7 @@ describe('PostInstallNextSteps (#1496, #1492)', () => {
     expect(container.textContent).toBe('');
   });
 
-  it('does not ask to attach an agent that is attached already', () => {
+  it('names the agents a plugin is granted to (#2054: granted, never auto-attached)', () => {
     renderWithIntl(
       <PostInstallNextSteps
         pluginName="SEO Analyst"
@@ -114,28 +114,29 @@ describe('PostInstallNextSteps (#1496, #1492)', () => {
         attachedTo={['Default agent']}
       />,
     );
-    expect(screen.getByText('"SEO Analyst" is attached to Default agent.')).toBeTruthy();
-    expect(screen.queryByText('Attach to an agent')).toBeNull();
+    expect(screen.getByText('"SEO Analyst" is granted to Default agent.')).toBeTruthy();
+    expect(screen.queryByText('Open the agents')).toBeNull();
     expect(screen.getByText('Manage agents')).toBeTruthy();
   });
 
-  it('still offers attaching an agent that is not attached anywhere', () => {
+  it('says a plugin granted to no agent is granted to none yet', () => {
     renderWithIntl(
       <PostInstallNextSteps pluginName="SEO Analyst" readiness={READY} kind="agent" attachedTo={[]} />,
     );
-    expect(screen.getByText('Attach to an agent')).toBeTruthy();
+    expect(screen.getByText(/granted to no agent yet/)).toBeTruthy();
+    expect(screen.getByText('Open the agents')).toBeTruthy();
   });
 
   it('sends neither integrations nor extensions to an agent or the chat', () => {
     renderWithIntl(
       <PostInstallNextSteps pluginName="Odoo Connector" readiness={READY} kind="integration" attachedTo={null} />,
     );
-    expect(screen.getByText(/Agents that depend on it use it automatically/)).toBeTruthy();
+    expect(screen.getByText(/It is granted to no agent until you grant it/)).toBeTruthy();
     renderWithIntl(
       <PostInstallNextSteps pluginName="Dev Platform" readiness={READY} kind="extension" attachedTo={null} />,
     );
     expect(screen.getByText('"Dev Platform" is installed and running.')).toBeTruthy();
-    expect(screen.queryByText('Attach to an agent')).toBeNull();
+    expect(screen.queryByText('Open the agents')).toBeNull();
     expect(screen.queryByText('Try it in chat')).toBeNull();
   });
 

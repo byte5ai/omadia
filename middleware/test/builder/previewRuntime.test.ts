@@ -9,11 +9,10 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { z } from 'zod';
 
 import {
   PreviewRuntime,
-  type PreviewAgentHandle,
+  type PreviewPluginHandle,
   type PreviewHostServices,
   type PreviewLlmCompleteRequest,
   type PreviewPluginContext,
@@ -43,7 +42,7 @@ describe('PreviewRuntime', () => {
    *  pre-fabricated handle. */
   function buildRuntime(opts: {
     previewsRoot: string;
-    handle?: PreviewAgentHandle;
+    handle?: PreviewPluginHandle;
     onActivate?: (ctx: PreviewPluginContext) => void | Promise<void>;
     activateThrows?: Error;
     serviceRegistry?: PreviewHostServices;
@@ -78,7 +77,6 @@ describe('PreviewRuntime', () => {
         await opts.onActivate?.(ctx);
         return (
           opts.handle ?? {
-            toolkit: { tools: [] },
             close: async () => {},
           }
         );
@@ -102,22 +100,26 @@ describe('PreviewRuntime', () => {
   beforeEach(() => {});
 
   describe('activate', () => {
-    it('returns a PreviewHandle with toolkit + previewDir', async () => {
+    // Spec 2042 §5.10 — a capability plugin registers its tools via
+    // ctx.tools.register; the preview captures them on the handle.
+    const ECHO_SPEC = {
+      name: 'echo',
+      description: 'echo',
+      input_schema: {
+        type: 'object' as const,
+        properties: { msg: { type: 'string' } },
+        required: ['msg'],
+      },
+    };
+
+    it('returns a PreviewHandle whose toolkit holds the tools registered via ctx.tools', async () => {
       const root = freshRoot('act-1');
       const runtime = buildRuntime({
         previewsRoot: root,
-        handle: {
-          toolkit: {
-            tools: [
-              {
-                id: 'echo',
-                description: 'echo',
-                input: z.object({ msg: z.string() }) as z.ZodType<unknown>,
-                run: async (raw) => ({ echoed: (raw as { msg: string }).msg }),
-              },
-            ],
-          },
-          close: async () => {},
+        onActivate: (ctx) => {
+          ctx.tools.register(ECHO_SPEC, async (raw) =>
+            JSON.stringify({ echoed: (raw as { msg: string }).msg }),
+          );
         },
       });
 
@@ -134,25 +136,18 @@ describe('PreviewRuntime', () => {
       assert.equal(handle.rev, 1);
       assert.equal(handle.toolkit.tools.length, 1);
       assert.equal(handle.toolkit.tools[0]?.id, 'echo');
+      assert.deepEqual(handle.toolkit.tools[0]?.inputSchema, ECHO_SPEC.input_schema);
       assert.ok(existsSync(handle.previewDir));
     });
 
-    it('runs a tool through the returned toolkit', async () => {
+    it('runs a registered tool through the returned toolkit', async () => {
       const root = freshRoot('act-2');
       const runtime = buildRuntime({
         previewsRoot: root,
-        handle: {
-          toolkit: {
-            tools: [
-              {
-                id: 'echo',
-                description: 'echo',
-                input: z.object({ msg: z.string() }) as z.ZodType<unknown>,
-                run: async (raw) => ({ echoed: (raw as { msg: string }).msg }),
-              },
-            ],
-          },
-          close: async () => {},
+        onActivate: (ctx) => {
+          ctx.tools.register(ECHO_SPEC, async (raw) =>
+            JSON.stringify({ echoed: (raw as { msg: string }).msg }),
+          );
         },
       });
       const handle = await runtime.activate({
@@ -162,10 +157,36 @@ describe('PreviewRuntime', () => {
         configValues: {},
         secretValues: {},
       });
-      const out = (await handle.toolkit.tools[0]!.run({ msg: 'hi' })) as {
-        echoed: string;
-      };
-      assert.equal(out.echoed, 'hi');
+      const out = await handle.toolkit.tools[0]!.run({ msg: 'hi' });
+      assert.deepEqual(JSON.parse(out), { echoed: 'hi' });
+    });
+
+    it('drops a disposed tool and refuses a second live registration of the same name', async () => {
+      const root = freshRoot('act-3');
+      let dispose: (() => void) | undefined;
+      let duplicateError: unknown;
+      const runtime = buildRuntime({
+        previewsRoot: root,
+        onActivate: (ctx) => {
+          dispose = ctx.tools.register(ECHO_SPEC, async () => 'a');
+          try {
+            ctx.tools.register(ECHO_SPEC, async () => 'b');
+          } catch (err) {
+            duplicateError = err;
+          }
+        },
+      });
+      const handle = await runtime.activate({
+        zipBuffer: Buffer.alloc(0),
+        draftId: 'd1',
+        rev: 1,
+        configValues: {},
+        secretValues: {},
+      });
+      assert.match(String(duplicateError), /already registered/);
+      assert.equal(handle.toolkit.tools.length, 1);
+      dispose?.();
+      assert.equal(handle.toolkit.tools.length, 0);
     });
 
     it('passes config + secret values through the stub PluginContext', async () => {
@@ -751,7 +772,6 @@ describe('PreviewStore', () => {
       draftId: 'd1',
       agentId: 'a',
       rev: 1,
-      toolkit: { tools: [] },
       previewDir: '/x',
       routeCaptures: [],
       close: async () => {},
@@ -769,7 +789,6 @@ describe('PreviewStore', () => {
       draftId: 'd1',
       agentId: 'a',
       rev: 1,
-      toolkit: { tools: [] },
       previewDir: '/x',
       routeCaptures: [],
       close: async () => {
@@ -789,8 +808,7 @@ describe('PreviewStore', () => {
         draftId: `d${i}`,
         agentId: 'a',
         rev: 1,
-        toolkit: { tools: [] },
-        previewDir: '/x',
+          previewDir: '/x',
         routeCaptures: [],
         close: async () => {
           closeCount += 1;
@@ -808,7 +826,6 @@ describe('PreviewStore', () => {
       draftId: '',
       agentId: 'a',
       rev: 1,
-      toolkit: { tools: [] },
       previewDir: '/x',
       routeCaptures: [],
       close: async () => {},

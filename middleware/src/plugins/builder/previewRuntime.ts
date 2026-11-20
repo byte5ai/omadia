@@ -2,9 +2,13 @@ import { promises as fs, type Dirent } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import yaml from 'yaml';
-import type { z } from 'zod';
 
-import type { HttpAccessor, RouteRegisterOptions } from '@omadia/plugin-api';
+import type {
+  HttpAccessor,
+  NativeToolHandler,
+  NativeToolSpec,
+  RouteRegisterOptions,
+} from '@omadia/plugin-api';
 
 import { extractZipToDir, type ExtractLimits } from '../zipExtractor.js';
 import { createHttpAccessor, isAuditMode } from '../../platform/httpAccessor.js';
@@ -15,16 +19,18 @@ import {
 } from './previewMemoryStore.js';
 
 /**
- * PreviewRuntime — activates a builder-built ZIP into an ephemeral, in-memory
- * Agent-Handle for live testing inside the workspace UI.
+ * PreviewRuntime — activates a builder-built ZIP (a capability plugin of kind
+ * `integration` or `tool`) into an ephemeral, in-memory handle for live
+ * testing inside the workspace UI.
  *
- * Distinct from `dynamicAgentRuntime.ts` (which serves *installed* agents and
- * registers them as DomainTools on the orchestrator):
- *   - Preview agents are NOT in the InstalledRegistry and never reach the
- *     orchestrator's domain-tool list.
- *   - Preview agents do NOT consume the SecretVault; setup-field values come
+ * Distinct from `toolPluginRuntime.ts` (which serves *installed* plugins):
+ *   - Preview plugins are NOT in the InstalledRegistry; the tools they
+ *     register via `ctx.tools.register` are CAPTURED on the handle
+ *     (`toolkit.tools`) and never reach the kernel's NativeToolRegistry, so
+ *     no agent outside the preview can call them.
+ *   - Preview plugins do NOT consume the SecretVault; setup-field values come
  *     from the draft (workspace-UI-supplied), in-memory only.
- *   - Preview agents do NOT register native tools or jobs.
+ *   - Jobs are captured, never scheduled.
  *   - `ctx.routes.register()` exists as a NO-OP stub: route-mounting plugins
  *     (admin-UI, webhooks) do not crash on activate, but their routes are
  *     not served from the preview iframe — admin UIs only become reachable
@@ -40,33 +46,41 @@ const PREVIEW_LIMITS: ExtractLimits = {
   maxFileBytes: 10 * 1024 * 1024,
 };
 
+/**
+ * A tool the previewed plugin registered via `ctx.tools.register(spec,
+ * handler)` — the tool-runtime contract of a capability plugin. `inputSchema`
+ * is the JSON schema the plugin declared (what an agent's model sees);
+ * `run` calls the plugin's handler, which returns the result as text.
+ */
 export interface PreviewToolDescriptor {
   readonly id: string;
   readonly description: string;
-  readonly input: z.ZodType<unknown>;
-  run(input: unknown): Promise<unknown>;
+  readonly inputSchema: NativeToolSpec['input_schema'];
+  run(input: unknown): Promise<string>;
 }
 
 export interface PreviewToolkit {
+  /** The tools registered and not yet disposed, in registration order. */
   readonly tools: ReadonlyArray<PreviewToolDescriptor>;
 }
 
-export interface PreviewAgentHandle {
-  readonly toolkit: PreviewToolkit;
+/** What a capability plugin's `activate()` returns. */
+export interface PreviewPluginHandle {
   close(): Promise<void>;
 }
 
 export interface PreviewModuleShape {
-  activate?: (ctx: PreviewPluginContext) => Promise<PreviewAgentHandle>;
+  activate?: (ctx: PreviewPluginContext) => Promise<PreviewPluginHandle>;
   default?: {
-    activate?: (ctx: PreviewPluginContext) => Promise<PreviewAgentHandle>;
+    activate?: (ctx: PreviewPluginContext) => Promise<PreviewPluginHandle>;
   };
 }
 
 /**
- * Minimal PluginContext surface for preview agents — matches what the
- * boilerplate's `activate()` reads (see `boilerplate/agent-integration/types.ts`).
- * Preview never wires service-registry or native-tools. `routes` captures
+ * Minimal PluginContext surface for previewed plugins — matches what the
+ * boilerplate's `activate()` reads (see `boilerplate/integration/types.ts`).
+ * Preview captures tool registrations on the handle and never touches the
+ * kernel NativeToolRegistry. `routes` captures
  * (prefix, router) pairs locally so that the runtime-smoke pass (Theme D)
  * can introspect them later; nothing is actually served from the preview
  * iframe — admin-UI URLs only become reachable after a real Install.
@@ -140,7 +154,7 @@ export interface PreviewLlmConfig {
 }
 
 /** Mirror of `JobSchedule` from the boilerplate contract
- *  (`agent-integration/types.ts`). Inline-copied to keep previewRuntime
+ *  (`integration/types.ts`). Inline-copied to keep previewRuntime
  *  self-contained. */
 export type PreviewJobSchedule =
   | { readonly cron: string }
@@ -193,6 +207,13 @@ export interface PreviewPluginContext {
    *  kernel after install. */
   readonly uiRoutes: {
     register(descriptor: PreviewUiRouteDescriptorInput): () => void;
+  };
+  /** Tool runtime (spec 2042 §5.10): the capability plugin registers each
+   *  tool here. Preview captures the registration on the handle
+   *  (`toolkit.tools`); nothing reaches the kernel's NativeToolRegistry. A
+   *  second registration under a live name throws, like the kernel. */
+  readonly tools: {
+    register(spec: NativeToolSpec, handler: NativeToolHandler): () => void;
   };
   /** Background-job registry. Non-optional in the kernel contract
    *  (`pluginContext.ts` always wires `jobs`), so a plugin with a scheduled
@@ -300,6 +321,13 @@ export interface PreviewRouteCapture {
   disposed: boolean;
 }
 
+/** A tool registration captured at activate-time by the preview's
+ *  `tools.register`; `disposed` flips when the plugin's close() disposes it. */
+export interface PreviewToolCapture {
+  readonly tool: PreviewToolDescriptor;
+  disposed: boolean;
+}
+
 /**
  * Job registration captured at activate-time by the preview's
  * `jobs.register`. The preview does NOT schedule the job (no cron fires in
@@ -396,7 +424,7 @@ export interface PreviewRuntimeDeps {
   activateModule?: (
     entryAbs: string,
     ctx: PreviewPluginContext,
-  ) => Promise<PreviewAgentHandle>;
+  ) => Promise<PreviewPluginHandle>;
 }
 
 const DEFAULT_ACTIVATE_TIMEOUT_MS = 10_000;
@@ -411,7 +439,7 @@ export class PreviewRuntime {
   private readonly activateModule: (
     entryAbs: string,
     ctx: PreviewPluginContext,
-  ) => Promise<PreviewAgentHandle>;
+  ) => Promise<PreviewPluginHandle>;
 
   constructor(deps: PreviewRuntimeDeps) {
     this.previewsRoot = deps.previewsRoot;
@@ -575,6 +603,7 @@ export class PreviewRuntime {
         : undefined;
 
     const routeCaptures: PreviewRouteCapture[] = [];
+    const toolCaptures: PreviewToolCapture[] = [];
     const jobCaptures: PreviewJobCapture[] = [];
     const statusReports: PreviewStatusInput[] = [];
     const ctx = createStubContext({
@@ -583,6 +612,7 @@ export class PreviewRuntime {
       secretValues: opts.secretValues,
       smokeMode: opts.smokeMode === true,
       routeCaptures,
+      toolCaptures,
       jobCaptures,
       statusReports,
       hostServices: this.hostServices,
@@ -592,7 +622,7 @@ export class PreviewRuntime {
       logger: (...args) => this.log(`[${agentId}]`, ...args),
     });
 
-    let handle: PreviewAgentHandle;
+    let handle: PreviewPluginHandle;
     try {
       handle = await withTimeout(
         this.activateModule(entryAbs, ctx),
@@ -608,7 +638,11 @@ export class PreviewRuntime {
       draftId: opts.draftId,
       agentId,
       rev: opts.rev,
-      toolkit: handle.toolkit,
+      toolkit: {
+        get tools(): ReadonlyArray<PreviewToolDescriptor> {
+          return toolCaptures.filter((c) => !c.disposed).map((c) => c.tool);
+        },
+      },
       previewDir,
       routeCaptures,
       jobCaptures,
@@ -819,6 +853,7 @@ function createStubContext(opts: {
   secretValues: Readonly<Record<string, string>>;
   smokeMode: boolean;
   routeCaptures: PreviewRouteCapture[];
+  toolCaptures: PreviewToolCapture[];
   jobCaptures: PreviewJobCapture[];
   statusReports: PreviewStatusInput[];
   hostServices?: PreviewHostServices;
@@ -890,6 +925,30 @@ function createStubContext(opts: {
     // catalogue gets populated only after a real Install.
     uiRoutes: {
       register: (_descriptor) => () => {},
+    },
+    // Tool runtime — the capability plugin's tools land on the preview
+    // handle only, never in the kernel's NativeToolRegistry.
+    tools: {
+      register: (spec, handler) => {
+        if (opts.toolCaptures.some((c) => !c.disposed && c.tool.id === spec.name)) {
+          throw new Error(
+            `preview: tool '${spec.name}' is already registered by '${opts.agentId}'`,
+          );
+        }
+        const entry: PreviewToolCapture = {
+          tool: {
+            id: spec.name,
+            description: spec.description,
+            inputSchema: spec.input_schema,
+            run: (input) => handler(input),
+          },
+          disposed: false,
+        };
+        opts.toolCaptures.push(entry);
+        return () => {
+          entry.disposed = true;
+        };
+      },
     },
     // Jobs accessor — non-optional in the kernel contract, so a plugin with a
     // scheduled job calls `ctx.jobs.register(...)` unconditionally in
@@ -1061,7 +1120,7 @@ async function defaultExtractZip(zipBuffer: Buffer, destDir: string): Promise<vo
 async function defaultActivateModule(
   entryAbs: string,
   ctx: PreviewPluginContext,
-): Promise<PreviewAgentHandle> {
+): Promise<PreviewPluginHandle> {
   await fs.access(entryAbs);
   const mod = (await import(pathToFileURL(entryAbs).href)) as PreviewModuleShape;
   const activateFn = mod.activate ?? mod.default?.activate;

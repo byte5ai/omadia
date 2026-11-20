@@ -428,6 +428,7 @@ export {
 export {
   audienceFloor,
   UNRESTRICTED_HOST_CAPABILITY,
+  UNRESTRICTED_TOOL_CAPABILITY,
   floorAllowsHost,
   floorDeniesHost,
   floorPermits,

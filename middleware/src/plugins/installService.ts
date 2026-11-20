@@ -21,6 +21,7 @@ import type {
   InstallSetupSchema,
   SetupEnumOption,
 } from '../api/admin-v1.js';
+import { isInstallableKind } from '../api/admin-v1.js';
 import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
 import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
 import type { SecretVault } from '../secrets/vault.js';
@@ -263,6 +264,18 @@ export class InstallService {
       });
     }
 
+    // Spec 2042 §5.10, criterion 15 — kind `agent` is retired: never
+    // installed anew. A package uploaded before the boundary existed may
+    // still sit in the store; it stays there, uninstalled.
+    if (!isInstallableKind(entry.plugin.kind)) {
+      throw new InstallError(
+        'install.retired_kind',
+        `'${pluginId}' is of the retired kind 'agent'; a plugin delivers capabilities and may ship agent templates, never an agent of its own`,
+        422,
+        { kind: entry.plugin.kind },
+      );
+    }
+
     // #2088 — an archetype plugin adds a new kind of agent to the instance:
     // what agents of it may do and never get is decided by its descriptor,
     // not by per-agent grants. That is installed only on an explicit
@@ -274,6 +287,18 @@ export class InstallService {
         `'${pluginId}' adds the agent archetype '${entry.plugin.archetype?.id ?? '?'}' to this instance; confirm the install explicitly`,
         409,
         { archetype: entry.plugin.archetype ?? null },
+      );
+    }
+    // Spec 2042 §5.10 — a system module is infrastructure of omadia itself;
+    // it is installed on an explicit confirmation, like an archetype. The
+    // same flag carries both confirmations: the operator confirmed exactly
+    // the kind the refusal named.
+    if (entry.plugin.kind === 'system-module' && opts.confirmedArchetype !== true) {
+      throw new InstallError(
+        'install.system_module_confirmation_required',
+        `'${pluginId}' is a system module (infrastructure of omadia itself); confirm the install explicitly`,
+        409,
+        { kind: entry.plugin.kind },
       );
     }
 

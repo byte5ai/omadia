@@ -25,7 +25,6 @@ import {
   type ConfigStore,
 } from '../packages/harness-orchestrator/src/registry/configStore.js';
 import { OrchestratorRegistry } from '../packages/harness-orchestrator/src/registry/index.js';
-import { attachAllPlugins } from '../packages/harness-orchestrator/src/registry/onboarding.js';
 import type { DefaultAgentEntryRow } from '../packages/harness-orchestrator/src/registry/routingTables.js';
 import { ChannelResolver } from '../packages/harness-orchestrator/src/routing/channelResolver.js';
 

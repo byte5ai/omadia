@@ -4,7 +4,7 @@ identity:
   id: "@omadia/orchestrator-extras"
   name: "Orchestrator Extras"
   version: "0.1.1"
-  kind: "extension"
+  kind: "system-module"
   domain: "core.orchestrator-extras"
   description:
     en: "Adds the steps around a chat turn that make answers better over time. It looks up relevant context before the turn, records facts in the knowledge graph afterwards, and recognises what a message is about."

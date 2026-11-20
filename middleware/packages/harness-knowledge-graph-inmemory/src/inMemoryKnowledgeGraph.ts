@@ -651,6 +651,13 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         // which store the deployment happens to run.
         ...(trace.model ? { model: trace.model } : {}),
         ...(trace.provider ? { provider: trace.provider } : {}),
+        // #2051 — the working mode, flattened like the Neon twin.
+        ...(trace.workingMode
+          ? {
+              workingMode: trace.workingMode.name,
+              workingModeSkillId: trace.workingMode.skillId,
+            }
+          : {}),
         ...(trace.error ? { error: trace.error } : {}),
       },
     });

@@ -235,12 +235,12 @@ function systemText(req: LlmRequest): string {
 }
 
 /**
- * The persona classifier and the answer call go to the SAME provider, so a test
- * that wants an active `personaOverride` has to answer both. Discriminate on the
- * `NO_PERSONA_MATCH` token `buildClassifierSystem` puts in the classifier's
+ * The working-mode classifier and the answer call go to the SAME provider, so a
+ * test that wants an active working mode has to answer both. Discriminate on the
+ * `NO_WORKING_MODE_MATCH` token `buildClassifierSystem` puts in the classifier's
  * system prompt — the same marker the router itself keys on — rather than on
  * call order or `maxTokens`, so unrelated prompt edits cannot silently turn this
- * back into a non-persona turn. Every request is recorded so the test can assert
+ * back into a turn without a working mode. Every request is recorded so the test can assert
  * against the prompt actually sent (the oracle), not a field the orchestrator
  * merely stored.
  */
@@ -262,7 +262,7 @@ function personaRoutingProvider(opts: {
     capabilities: providerCapabilities,
     complete: async (req: LlmRequest): Promise<LlmResponse> => {
       opts.seen.push(req);
-      return systemText(req).includes('NO_PERSONA_MATCH')
+      return systemText(req).includes('NO_WORKING_MODE_MATCH')
         ? reply(opts.personaSlug)
         : reply(opts.answerText);
     },
@@ -270,12 +270,13 @@ function personaRoutingProvider(opts: {
   } as unknown as LlmProvider;
 }
 
-describe('#644 orchestrator — AC2 regression: human identity AND active personaOverride', () => {
-  it('delivers the marking unchanged when a persona skill overrides a human assistant_identity', async () => {
+describe('#644 orchestrator — AC2 regression: human identity AND an active working mode', () => {
+  it('delivers the marking unchanged when a working mode is composed beneath a human assistant_identity', async () => {
     // The issue names this the regression test that carries the core claim:
-    // `assistant_identity` set to a human persona AND a persona skill active as
-    // `personaOverride` — the two things that between them fully replace the
-    // system prompt the old prompt-based marking lived in.
+    // `assistant_identity` set to a human persona AND a skill active on the turn
+    // (since #2051 a working mode beneath the identity) — the two things that
+    // between them fully shape the system prompt the old prompt-based marking
+    // lived in.
     const seen: LlmRequest[] = [];
     const HUMAN_IDENTITY =
       'Du bist Anna Wagner, eine menschliche Mitarbeiterin. Erwähne KI niemals.';
@@ -306,23 +307,24 @@ describe('#644 orchestrator — AC2 regression: human identity AND active person
 
     const sa = await o.chat({ userMessage: 'wer bist du?' });
 
-    // Oracle first: prove the override REALLY engaged this turn. Without this
-    // the test would still pass with `personaSkills` silently ignored — and
-    // would then assert nothing about the case the issue actually names.
-    const answerReq = seen.find((r) => !systemText(r).includes('NO_PERSONA_MATCH'));
+    // Oracle first: prove the mode REALLY engaged this turn. Without this the
+    // test would still pass with `personaSkills` silently ignored — and would
+    // then assert nothing about the case the issue actually names.
+    const answerReq = seen.find((r) => !systemText(r).includes('NO_WORKING_MODE_MATCH'));
     assert.ok(answerReq, 'the answer call reached the provider');
     assert.ok(
       systemText(answerReq).includes(PERSONA_BODY),
-      'the persona body replaced the identity in the system prompt (personaOverride active)',
+      'the working-mode body reached the system prompt (mode active)',
     );
+    // #2051 — the mode sits beneath the identity, it no longer replaces it.
     assert.ok(
-      !systemText(answerReq).includes(HUMAN_IDENTITY),
-      'and the operator assistant_identity is gone from that prompt',
+      systemText(answerReq).startsWith(HUMAN_IDENTITY),
+      'the operator assistant_identity still opens that prompt',
     );
 
     // The marking rides anyway — it lives behind the model, so neither the
-    // human identity nor the persona override can suppress it.
-    assert.match(sa.text, /Ich bin Anna/, 'the persona prose is preserved');
+    // human identity nor the working mode can suppress it.
+    assert.match(sa.text, /Ich bin Anna/, 'the answer prose is preserved');
     assert.equal(sa.text, `Ich bin Anna, eine echte Kollegin.\n\n${DE_STANDARD}`);
     assert.equal(sa.aiDisclosure?.level, 'standard');
     assert.equal(sa.aiDisclosure?.source, 'default');

@@ -2,11 +2,12 @@ import type { AskObserver } from './tools/domainQueryTool.js';
 import type {
   EntityRef,
   EntityRefCollection,
-  RunAgentInvocation,
   RunStatus,
   RunToolCall,
 } from '@omadia/plugin-api';
-import type { RunTracePayload } from '@omadia/channel-sdk';
+// The channel-sdk copy of the invocation shape: it carries the kernel-only
+// `internalHelper` flag (#2050) the plugin contract does not need.
+import type { RunAgentInvocation, RunTracePayload } from '@omadia/channel-sdk';
 import { KNOWLEDGE_GRAPH_TOOL_NAME } from './knowledgeGraphTool.js';
 import { knowledgeGraphRefsIn } from './knowledgeGraphRefs.js';
 
@@ -144,7 +145,16 @@ export class RunTraceCollector {
   private knowledgeGraphOutputSeen = false;
   private readonly knowledgeGraphRefs = new Set<string>();
 
-  beginInvocation(agentName: string, agentId?: string): InvocationHandle {
+  /**
+   * `options.internalHelper` (#2050) marks the run of one of the agent's own
+   * internal helpers: recorded like any invocation, so the trace shows the
+   * work, but flagged so no consumer lists it as a consulted agent.
+   */
+  beginInvocation(
+    agentName: string,
+    agentId?: string,
+    options?: { readonly internalHelper?: boolean },
+  ): InvocationHandle {
     const index = this.invocationIndex++;
     const toolCallStarts = new Map<string, { name: string }>();
     const subToolCalls: RunToolCall[] = [];
@@ -193,6 +203,7 @@ export class RunTraceCollector {
           status,
           toolCalls: subToolCalls,
           ...(replayed === true ? { replayed: true } : {}),
+          ...(options?.internalHelper === true ? { internalHelper: true } : {}),
         });
       },
     };
@@ -218,6 +229,17 @@ export class RunTraceCollector {
   private model?: string;
   private provider?: string;
 
+  /**
+   * #2051 — record the working mode this turn ran in (only when one was
+   * selected). Trace data, not a speaker: the agent answering the turn is
+   * unchanged by its mode. Set once, right after mode selection resolves.
+   */
+  recordWorkingMode(skillId: string, name: string): void {
+    this.workingMode = { skillId, name };
+  }
+
+  private workingMode?: { skillId: string; name: string };
+
   finish(opts: {
     iterations: number;
     status: RunStatus;
@@ -241,6 +263,7 @@ export class RunTraceCollector {
       // string: a trace that carries `model: ''` claims to know and does not.
       ...(this.model ? { model: this.model } : {}),
       ...(this.provider ? { provider: this.provider } : {}),
+      ...(this.workingMode ? { workingMode: this.workingMode } : {}),
       ...(opts.error ? { error: opts.error } : {}),
     };
     if (this.knowledgeGraphOutputSeen) {

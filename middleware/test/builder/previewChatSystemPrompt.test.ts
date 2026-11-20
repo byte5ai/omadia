@@ -4,26 +4,39 @@ import { promises as fs, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { loadPreviewSystemPrompt } from '../../src/plugins/builder/previewChatService.js';
+import { previewDraftAgentPrompt } from '../../src/plugins/builder/previewChatService.js';
 import { emptyAgentSpec } from '../../src/plugins/builder/types.js';
-import type { PreviewHandle } from '../../src/plugins/builder/previewRuntime.js';
+import type {
+  PreviewHandle,
+  PreviewToolDescriptor,
+} from '../../src/plugins/builder/previewRuntime.js';
 
 /**
- * Issue #55+#54+#51 follow-up — verify that the preview-chat system
- * prompt now composes the live persona / boundaries / sycophancy from
- * the draft spec, without an Install round-trip.
+ * Spec 2042 §5.10 — the Plugin Builder preview is a turn of a neutral draft
+ * agent. Its system prompt names the draft plugin and its tools, marks the
+ * turn as a preview and never carries a persona, quality settings, role text
+ * or skill files — not even from a draft stored before the change, and not
+ * from a stray `skills/` directory in the extracted package.
  */
 
-function fakeHandle(previewDir: string): PreviewHandle {
+function tool(id: string): PreviewToolDescriptor {
   return {
-    agentId: 'weather',
+    id,
+    description: `tool ${id}`,
+    inputSchema: { type: 'object', properties: {} },
+    run: async () => 'ok',
+  };
+}
+
+function fakeHandle(previewDir: string, tools: PreviewToolDescriptor[]): PreviewHandle {
+  return {
+    agentId: '@omadia/weather',
     previewDir,
-    // Other PreviewHandle fields are not touched by loadPreviewSystemPrompt
-    toolkit: { tools: [] },
+    toolkit: { tools },
   } as unknown as PreviewHandle;
 }
 
-describe('loadPreviewSystemPrompt — live compose (issue #51/#54/#55 follow-up)', () => {
+describe('previewDraftAgentPrompt — neutral draft agent', () => {
   let previewDir: string;
 
   beforeEach(async () => {
@@ -34,165 +47,62 @@ describe('loadPreviewSystemPrompt — live compose (issue #51/#54/#55 follow-up)
     rmSync(previewDir, { recursive: true, force: true });
   });
 
-  it('header-only when spec has no persona/quality and no skills dir', async () => {
-    const spec = { ...emptyAgentSpec(), name: 'Weather', id: 'weather' };
-    const out = await loadPreviewSystemPrompt(
-      fakeHandle(previewDir),
-      spec,
-      'claude-sonnet-4-6',
-    );
-    assert.match(out, /^# Weather \(weather v0\.1\.0\) — preview/);
-    assert.equal(out.includes('<persona>'), false);
-    assert.equal(out.includes('## Boundaries'), false);
-    assert.equal(out.includes('Anti-Sycophancy'), false);
-  });
-
-  it('emits the persona section when spec.persona has deviations', async () => {
+  it('marks the preview, names the plugin, its kind and exactly its tools', () => {
     const spec = {
       ...emptyAgentSpec(),
       name: 'Weather',
-      id: 'weather',
-      persona: {
-        axes: { directness: 90, warmth: 20 },
-        custom_notes: 'Antworte auf Deutsch.',
-      },
+      id: '@omadia/weather',
+      description: 'Liefert Wetterdaten.',
+      depends_on: ['@omadia/integration-openweather'],
+      playbook: { when_to_use: 'Fragen zum Wetter', not_for: ['Klimahistorie'], example_prompts: [] },
     };
-    const out = await loadPreviewSystemPrompt(
-      fakeHandle(previewDir),
+    const out = previewDraftAgentPrompt(
+      fakeHandle(previewDir, [tool('get_forecast'), tool('get_alerts')]),
       spec,
-      'claude-sonnet-4-6',
     );
-    assert.match(out, /<persona>/);
-    assert.match(out, /directness/);
-    assert.match(out, /Antworte auf Deutsch\./);
+    assert.match(out, /^# Preview/);
+    assert.match(out, /neutral draft agent in the Plugin Builder preview/);
+    assert.match(out, /"Weather" \(@omadia\/weather v0\.1\.0, kind integration\)/);
+    assert.match(out, /Your only tools are the ones this plugin registers: get_forecast, get_alerts\./);
+    assert.match(out, /Fragen zum Wetter/);
+    assert.match(out, /- Klimahistorie/);
   });
 
-  it('emits the boundaries section from spec.quality.boundaries', async () => {
-    const spec = {
-      ...emptyAgentSpec(),
-      name: 'Weather',
-      id: 'weather',
-      quality: {
-        boundaries: { presets: ['no-pii', 'no-medical-data'], custom: ['Keine Spekulationen.'] },
-      },
-    };
-    const out = await loadPreviewSystemPrompt(
-      fakeHandle(previewDir),
-      spec,
-      'claude-sonnet-4-6',
-    );
-    assert.match(out, /## Boundaries/);
-    assert.match(out, /personally identifiable information/);
-    assert.match(out, /medical diagnoses/);
-    assert.match(out, /\nKeine Spekulationen\./);
-    assert.doesNotMatch(out, /You must NOT:/);
-  });
-
-  it('emits the sycophancy guard when quality.sycophancy is set', async () => {
-    const specMedium = {
-      ...emptyAgentSpec(),
-      quality: { sycophancy: 'medium' as const },
-    };
-    const outMedium = await loadPreviewSystemPrompt(
-      fakeHandle(previewDir),
-      specMedium,
-      'claude-sonnet-4-6',
-    );
-    assert.match(outMedium, /## Critical Thinking Guidelines/);
-
-    const specHigh = {
-      ...emptyAgentSpec(),
-      quality: { sycophancy: 'high' as const },
-    };
-    const outHigh = await loadPreviewSystemPrompt(
-      fakeHandle(previewDir),
-      specHigh,
-      'claude-sonnet-4-6',
-    );
-    assert.match(outHigh, /## Anti-Sycophancy Protocol \(STRICT/);
-    assert.equal((outHigh.match(/MANDATORY:/g) ?? []).length, 3);
-  });
-
-  it('omits sycophancy when level is off', async () => {
-    const spec = {
-      ...emptyAgentSpec(),
-      quality: { sycophancy: 'off' as const },
-    };
-    const out = await loadPreviewSystemPrompt(
-      fakeHandle(previewDir),
-      spec,
-      'claude-sonnet-4-6',
-    );
-    assert.equal(out.includes('Sycophancy'), false);
-    assert.equal(out.includes('Accuracy Guidelines'), false);
-  });
-
-  it('compose order: [header, persona, custom_notes, boundaries, sycophancy, skill]', async () => {
-    // Seed a skills/*.md so the skill section is also present
-    const skillsDir = path.join(previewDir, 'skills');
-    await fs.mkdir(skillsDir, { recursive: true });
+  it('carries no persona, quality or role text from an old draft or a skills dir', async () => {
+    await fs.mkdir(path.join(previewDir, 'skills'));
     await fs.writeFile(
-      path.join(skillsDir, 'weather.md'),
-      '## Wetter\n\nAntworte mit aktuellen Daten.',
+      path.join(previewDir, 'skills', 'weather-expert.md'),
+      '---\nkind: prompt_partial\n---\n# Rolle: Wetterfrosch mit Humor',
     );
-
-    const spec = {
+    const legacy = {
       ...emptyAgentSpec(),
       name: 'Weather',
-      id: 'weather',
-      persona: {
-        axes: { directness: 90 },
-        custom_notes: 'Antworte auf Deutsch.',
-      },
-      quality: {
-        sycophancy: 'medium' as const,
-        boundaries: { presets: ['no-pii'], custom: [] },
-      },
+      id: '@omadia/weather',
+      skill: { role: 'Du bist ein Wetterfrosch.', tonality: 'sarkastisch' },
+      persona: { axes: { sarcasm: 95 }, custom_notes: 'Antworte immer gereimt.' },
+      quality: { sycophancy: 'high', boundaries: { presets: ['no-pii'], custom: ['nie lügen'] } },
     };
-
-    const out = await loadPreviewSystemPrompt(
-      fakeHandle(previewDir),
-      spec,
-      'claude-sonnet-4-6',
-    );
-
-    const idxHeader = out.indexOf('# Weather');
-    const idxPersona = out.indexOf('<persona>');
-    const idxNotes = out.indexOf('Antworte auf Deutsch.');
-    const idxBoundaries = out.indexOf('## Boundaries');
-    const idxSycophancy = out.indexOf('## Critical Thinking Guidelines');
-    const idxSkill = out.indexOf('## Wetter');
-
-    assert.ok(idxHeader >= 0 && idxPersona > idxHeader, 'persona after header');
-    assert.ok(idxNotes > idxPersona, 'custom_notes after persona');
-    assert.ok(idxBoundaries > idxNotes, 'boundaries after custom_notes');
-    assert.ok(idxSycophancy > idxBoundaries, 'sycophancy after boundaries');
-    assert.ok(idxSkill > idxSycophancy, 'skill after sycophancy');
+    const out = previewDraftAgentPrompt(fakeHandle(previewDir, [tool('get_forecast')]), legacy);
+    for (const leaked of [
+      'Wetterfrosch',
+      'sarkastisch',
+      'gereimt',
+      'nie lügen',
+      '<persona>',
+      'Boundaries',
+      'Anti-Sycophancy',
+    ]) {
+      assert.equal(out.includes(leaked), false, `prompt must not contain '${leaked}'`);
+    }
   });
 
-  it('persona delta picks the right family from the model id (haiku vs sonnet)', async () => {
-    const spec = {
+  it('says so when the plugin registers no tools yet', () => {
+    const out = previewDraftAgentPrompt(fakeHandle(previewDir, []), {
       ...emptyAgentSpec(),
-      persona: { axes: { directness: 50 } },
-    };
-    const sonnetOut = await loadPreviewSystemPrompt(
-      fakeHandle(previewDir),
-      spec,
-      'claude-sonnet-4-6',
-    );
-    const haikuOut = await loadPreviewSystemPrompt(
-      fakeHandle(previewDir),
-      spec,
-      'claude-haiku-4-5',
-    );
-    // Sonnet's directness default is 55; haiku's default is 60.
-    // Operator setting of 50 is below both, but the delta magnitude differs.
-    // Haiku: |50-60|=10 → neutral → no emission
-    // Sonnet: |50-55|=5 → neutral → no emission
-    // Both emit a `<persona>` opening tag (because axes is present), but
-    // neither emits a directness instruction. We just verify both produce
-    // a stable string (i.e. the family parameter is honored).
-    assert.notEqual(sonnetOut, undefined);
-    assert.notEqual(haikuOut, undefined);
+      name: 'Empty',
+      id: '@omadia/empty',
+    });
+    assert.match(out, /registers no tools yet/);
+    assert.match(out, /kind tool/);
   });
 });
