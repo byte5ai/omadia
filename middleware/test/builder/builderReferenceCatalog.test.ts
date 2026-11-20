@@ -40,12 +40,12 @@ function fakeCatalog(entries: PluginCatalogEntry[]): PluginCatalog {
 }
 
 describe('resolveBuilderReferenceCatalog', () => {
-  it('always includes the four essentials (reference-maximum + seo-analyst + 2 boilerplates)', () => {
+  it('always includes the four essentials (reference-maximum + seo-analyst + 2 capability boilerplates)', () => {
     const catalog = resolveBuilderReferenceCatalog(fakeCatalog([]));
     assert.ok(catalog['reference-maximum']);
     assert.ok(catalog['seo-analyst']);
-    assert.ok(catalog['boilerplate']);
-    assert.ok(catalog['boilerplate-pure-llm']);
+    assert.ok(catalog['boilerplate-integration']);
+    assert.ok(catalog['boilerplate-tool']);
   });
 
   it('auto-registers integration-kind plugins under `integration-<tail>`', () => {

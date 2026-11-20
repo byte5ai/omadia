@@ -73,7 +73,7 @@ type DoneEvent = Extract<ChatStreamEvent, { type: 'done' }>;
  * Events an `enforce` turn passes while the verdict is pending. A closed
  * allowlist: an event type not named here — including any added later — is
  * held. None of these carries model or tool output: iteration and usage
- * counters, routing and persona decisions (model and skill names), tool
+ * counters, routing and working-mode decisions (model and mode names), tool
  * progress pulses (the keepalive of a long tool call), route heartbeats, and
  * `steer_applied`, which echoes the user's own steering message.
  * `sub_iteration` carries no output either but is held with the `tool_use`
@@ -82,7 +82,7 @@ type DoneEvent = Extract<ChatStreamEvent, { type: 'done' }>;
 const LIVE_BEFORE_VERDICT: ReadonlySet<string> = new Set<ChatStreamEvent['type']>([
   'iteration_start',
   'turn_routing',
-  'turn_persona',
+  'turn_working_mode',
   'tool_progress',
   'heartbeat',
   'stream_token_chunk',

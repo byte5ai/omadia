@@ -258,6 +258,10 @@ const RunPropsSchema = z
     // for this table.
     model: z.string().optional(),
     provider: z.string().optional(),
+    // #2051 — the working mode the turn ran in, flattened to scalars (JSONB
+    // property, no migration). Absent when the turn ran without one.
+    workingMode: z.string().optional(),
+    workingModeSkillId: z.string().optional(),
   })
   .passthrough();
 

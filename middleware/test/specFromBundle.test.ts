@@ -18,7 +18,7 @@ import { emptyAgentSpec } from '../src/plugins/builder/types.js';
  */
 
 const VALID_SPEC = {
-  template: 'agent-integration',
+  template: 'integration',
   id: 'de.byte5.agent.test',
   name: 'Test Agent',
   version: '1.0.0',
@@ -26,7 +26,6 @@ const VALID_SPEC = {
   category: 'productivity',
   depends_on: [],
   tools: [],
-  skill: { role: 'Antworte knapp' },
   setup_fields: [],
   playbook: {
     when_to_use: 'Beim Testen',
@@ -41,7 +40,7 @@ const VALID_SPEC = {
 };
 
 describe('reconstructSpecFromBundle', () => {
-  it('roundtrip: spec.json → AgentSpec preserves identity + skill', () => {
+  it('roundtrip: spec.json → AgentSpec preserves identity', () => {
     const result = reconstructSpecFromBundle({
       bundleAgentMd: Buffer.from('# rendered agent.md\nignored', 'utf8'),
       bundleSpecJson: Buffer.from(JSON.stringify(VALID_SPEC), 'utf8'),
@@ -53,7 +52,28 @@ describe('reconstructSpecFromBundle', () => {
     assert.equal(result.spec.id, 'de.byte5.agent.test');
     assert.equal(result.spec.version, '1.0.0');
     assert.equal(result.spec.category, 'productivity');
-    assert.equal(result.spec.skill.role, 'Antworte knapp');
+  });
+
+  // Spec 2042 §5.10 — a bundle exported before the change may still carry
+  // the retired persona fields; they are dropped, not imported.
+  it('roundtrip: drops persona/quality/skill an older spec.json carries', () => {
+    const result = reconstructSpecFromBundle({
+      bundleAgentMd: Buffer.from('', 'utf8'),
+      bundleSpecJson: Buffer.from(
+        JSON.stringify({
+          ...VALID_SPEC,
+          skill: { role: 'Antworte knapp' },
+          persona: { custom_notes: 'frech' },
+          quality: { sycophancy: 'high' },
+        }),
+        'utf8',
+      ),
+      fallbackName: 'x',
+    });
+    const raw = result.spec as unknown as Record<string, unknown>;
+    assert.equal(raw['skill'], undefined);
+    assert.equal(raw['persona'], undefined);
+    assert.equal(raw['quality'], undefined);
   });
 
   it('roundtrip: empty spec.name falls back to bundle profile name', () => {
@@ -108,7 +128,7 @@ describe('reconstructSpecFromBundle', () => {
     );
   });
 
-  it('source-only fallback: agent.md becomes skill.role on empty spec', () => {
+  it('source-only fallback: an empty plugin spec, the agent.md role text is not imported', () => {
     const md = '# Persona\n\nYou are a helpful test agent.';
     const result = reconstructSpecFromBundle({
       bundleAgentMd: Buffer.from(md, 'utf8'),
@@ -118,34 +138,10 @@ describe('reconstructSpecFromBundle', () => {
 
     assert.equal(result.source, 'agent_md_fallback');
     assert.equal(result.name, 'Imported Bundle');
-    assert.equal(result.spec.skill.role, md);
-    // Rest of the skeleton must match the empty defaults so the Builder
-    // UI can render the live-manifest pane without crashing.
-    const expected = emptyAgentSpec();
-    assert.equal(result.spec.id, expected.id);
-    assert.equal(result.spec.version, expected.version);
-    assert.equal(result.spec.category, expected.category);
-  });
-
-  it('source-only fallback strips YAML frontmatter from agent.md', () => {
-    const md = `---
-schema_version: 1
-identity:
-  id: foo
----
-
-# Body
-
-Real content here.
-`;
-    const result = reconstructSpecFromBundle({
-      bundleAgentMd: Buffer.from(md, 'utf8'),
-      bundleSpecJson: null,
-      fallbackName: 'Imported',
-    });
-    assert.equal(result.source, 'agent_md_fallback');
-    assert.match(result.spec.skill.role, /^# Body/);
-    assert.doesNotMatch(result.spec.skill.role, /schema_version/);
+    // The skeleton matches the empty defaults so the Builder UI can render
+    // the live-manifest pane; nothing of the persona text lands in it.
+    assert.deepEqual(result.spec, emptyAgentSpec());
+    assert.doesNotMatch(JSON.stringify(result.spec), /helpful test agent/);
   });
 
   it('treats empty buffer as null spec.json', () => {

@@ -4,7 +4,7 @@ identity:
   id: "@omadia/embeddings"
   name: "Embeddings"
   version: "0.1.0"
-  kind: "extension"
+  kind: "model"
   domain: "core.embeddings"
   description:
     en: "Computes embeddings through a local Ollama server, which is what semantic search, the knowledge graph and topic detection need. Use it instead of the OpenAI compatible adapter, only one of the two can be active."

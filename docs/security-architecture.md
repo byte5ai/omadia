@@ -850,6 +850,23 @@ registry handler (`src/platform/pluginContext.ts`):
   A new native tool bound to shared or unscoped state must be routed or denied
   the same way before it is registered.
 
+### The audience floor is on by default (#2048)
+
+Since #2048 every deployment enforces the audience floor (#575) unless the
+operator sets `AUDIENCE_FLOOR_ENABLED=false`. The default answer to "what may a
+person do" is the member baseline (`MemberBaselineGrantStore`): `tool:*`,
+recall and attachment reads for every person resolved to a `user:` principal.
+That is never more than the agent itself may do — the floor is only consulted
+for tools the agent holds (INV-8) — and explicit prohibitions beat it.
+
+What closes a room, deliberately: a group in a channel without a participant
+list, a roster that cannot be read, a participant who cannot be resolved, a 1:1
+whose owner cannot be resolved. Turns with no channel and no owner (schedules,
+Conductor steps) have no reader, so the floor does not apply; they stay bounded
+by the agent's own grants. Known gap: a channel roster that lists only part of
+the members (Telegram administrators) still bounds the room by the listed part;
+member-scoped memory (`completeRoster`) is stricter.
+
 ### Context memory: what a turn may recall (`enforce-strict`, `members`)
 
 Per-agent switch `agents.context_memory`. Two modes put a boundary around
@@ -1423,6 +1440,111 @@ turn on the grant-less legacy bundle any more:
 have no orchestrator of their own (canvas, unbound channel keys, routines
 created before migration 0005) are refused instead of answered with every
 plugin's tools. Set a standard orchestrator under Orchestrators.
+
+## 5d. Internal helpers stay inside their agent's envelope (#2050)
+
+A DB sub-agent (`agent_subagents`, tool `ask_<name>`, Builder node "helper") is
+an internal helper of one agent (spec 2042 §5.6, criterion 11): it may use a
+subset of what its agent holds, never more.
+
+- **Capabilities, on save.** The Builder refuses a helper tool grant
+  (`409 helper_refused`, code `helper_grant_not_held_by_agent`) unless the
+  helper belongs to the agent in the path and the agent holds the tool itself:
+  an MCP tool needs an agent-level grant for the same server and tool (before
+  this, a helper could hold an MCP grant its agent lacked), a native tool must
+  pass `Orchestrator.holdsNativeTool` (registered and its plugin assigned). A
+  disabled agent is not built, so its native grants are only checked at runtime.
+- **Capabilities, at runtime.** `buildSubAgentDomainTools` does not materialise a
+  grant the agent lacks, and wraps every helper tool so each CALL re-checks the
+  agent as it is now (`liveParent`: the registry's live entry, refreshed by every
+  Builder write). Revoking the agent's grant therefore removes the helper's
+  access on the next call without waiting for a rebuild; the refusal is a
+  `ToolRefusalError` the helper's model reads. An agent that is gone refuses every helper call. Not covered by the
+  per-call check: deleting the helper's OWN grant row while the agent keeps the
+  tool takes effect with the rebuild the Builder write triggers.
+- **Model.** With an explicit primary in the agent's model policy, a helper
+  model must be on the policy's provider(s) and of a class no stronger than the
+  primary (`helper_model_not_allowed` on save). A helper that violates it at
+  runtime (for example after a policy change or a deploy) fails loud, never
+  silently: its tool stays and refuses every call with the reason
+  (`ToolRefusalError`, so the agent can say why), and the Agent Builder marks
+  the helper "out of service" with the code and reason (`outOfService` on the
+  graph's helper node, `helpersOutOfService`). A helper without a model never
+  inherits a class stronger than the agent's pinned primary.
+- **Budget.** A helper's `maxTokens`/`maxIterations` are capped by its agent's
+  per-call output budget and step cap; its model calls are booked on the
+  agent's turn (`token_usage.turn_id`). There is still no per-turn spend cap
+  across helpers (spec G18).
+- **Names.** `ask_<name>` is not injective (`A B` and `A-B`), so a helper name
+  whose tool name another helper of the agent or one of the agent's own tools
+  already has is refused on save (`helper_name_collision`), and at runtime every
+  member of a colliding group is left out (logged and shown "out of service"
+  in the Agent Builder), never first-wins. Before
+  this, a helper called `User Choice` threw on registration against the native
+  `ask_user_choice` and aborted the rest of that agent's tool hydration.
+- **Presentation.** A helper never introduces itself (a fixed contract is
+  appended to its system prompt), the agent's tool description tells its model
+  to present the result as its own work, and helper runs are flagged
+  `internalHelper` in the run trace so `agentsConsulted` never lists them.
+
+## 5e. Least privilege by default (#2054, spec 2042 INV-8, §5.7)
+
+Before #2054, first boot and every kernel install path (Hub, upload,
+reinstall, profile apply, boot-seeded built-ins) attached every plugin to the
+default agent, so whoever could reach that agent held every connected system.
+Now an agent holds exactly what an operator granted it, and a grant that gives
+one agent everything needs a second, explicit yes.
+
+- **No auto-attach.** `attachAllPlugins`, `attachNewPluginsToFallbackAgent`,
+  `attachToDefaultOrchestrator`, the pending-attach queue and the "reset
+  standard to all plugins" route are gone. The boot seed (`ensureFallbackAgent`)
+  stays for routing and holds no plugin. Installing a capability plugin only
+  offers it to agents the operator picks, none preselected. The one attach left
+  is the facilitation engine's, which only facilitator agents receive.
+- **Deterministic reach** (`agents/agentReach.ts`, `GET
+  /api/v1/operator/agents/:slug/reach`, the directory list). A connected system
+  is an installed capability plugin or an enabled MCP server. An agent reaches
+  one through an enabled plugin grant, an MCP tool grant (its own or a
+  helper's), or a `plugin_mcp_grants` row of a plugin it holds. Read and write
+  come from what the system declares: the manifest capabilities'
+  `side_effects`, the MCP tools' `annotations.readOnlyHint` from the last
+  discovery. Unknown (nothing declared, a tool the discovery does not know, a
+  server granted whole without discovered tools) counts as read and write and
+  is marked undeclared, the same conservative rule the runtime applies.
+- **Broad-reach confirmation** (`agents/broadReachGate.ts`). An agent is broad
+  when its reach covers every connected system and there are at least two.
+  The check asks only when a change makes an agent broad (not broad before,
+  broad after), so ordinary grants pass without a prompt. Such a write answers
+  `409 broad_reach_confirmation_required` (with the reach it would produce)
+  unless the body carries `confirmBroadReach: true`. Gated writes:
+  `PUT|PATCH /api/v1/operator/agents/:slug/plugins`,
+  `PUT /api/v1/operator/mcp-grants`, Agent Builder graph `tool_grant` edges,
+  `PUT /api/v1/operator/plugin-mcp-grants` (checked for every agent holding
+  the plugin) and the first-run flow. A confirmed change is audited as
+  `agent.broad_reach_grant` only after the write succeeded, so a failed write
+  leaves no row claiming a change that did not happen. If the audit write
+  itself fails, the failure is logged and the grant is not rolled back. That is
+  by design: the grant already happened, and the audit records it, it does not
+  authorise it.
+- **Only capability plugins are granted** (`plugins/capabilityPlugins.ts`,
+  `isCapabilityPlugin`). The plugin grant routes refuse a new grant of a plugin
+  that is not a capability plugin (`integration`, `tool`, `skill`; a still
+  installed retired `agent` package counts too) with
+  `400 not_a_capability_plugin`. Never a capability: the agent runtime itself
+  (`@omadia/orchestrator`), reference-only plugins, channels, models,
+  archetypes, system modules and templates. Rows that already exist stay.
+- **Preview draft agents are never addressable** (#2049). A Plugin Builder
+  preview runs as an `agents` row with status `draft` under the reserved slug
+  prefix `builder-preview-`: the registry never builds it, create refuses the
+  prefix, only GET and DELETE are allowed on such a slug, and it is hidden from
+  the directory, the first-run flow and every grant offer. It holds no grant
+  row; the preview turn gets only the draft plugin's captured tools.
+
+**Default agents.** Making an agent with every connected system a default
+agent (`PUT /api/v1/operator/default-agents`, `change: 'default_agent'`) needs
+the same confirmation and is audited as `agent.broad_reach_default`. Existing
+grants on a live instance are unchanged by #2054; only new
+installs stop attaching.
 
 ## 6. Defence in depth for cached data
 

@@ -71,6 +71,12 @@ export type AuditAction =
   | 'agent.disable'
   | 'agent.delete'
   | 'agent.purge'
+  // #2054 — spec 2042 §5.7: the operator confirmed a grant that gives an agent
+  // access to every connected system, or made such an agent the default
+  // agent. `before`/`after` carry the reach (system keys + count), never a
+  // credential.
+  | 'agent.broad_reach_grant'
+  | 'agent.broad_reach_default'
   // #2090 — the operator's kill switch for the actions of archetype plugins
   // (instance, one agent, one process): set and cleared.
   | 'execution.kill_switch_set'

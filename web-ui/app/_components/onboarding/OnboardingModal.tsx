@@ -7,6 +7,7 @@ import { useTranslations } from 'next-intl';
 
 import { applyProfile, ApiError, profileExportUrl } from '../../_lib/api';
 import { cn } from '../../_lib/cn';
+import { GrantToAgentsStep } from '../store/GrantToAgentsStep';
 import type {
   ProfileApplyOutcome,
   ProfileSummary,
@@ -316,6 +317,12 @@ function OutcomeBody({
         <p className="text-[12px] leading-relaxed text-[color:var(--ink)]">
           {t('restartHint')}
         </p>
+      ) : null}
+
+      {/* #2054 — applying a profile grants its capabilities to no agent;
+          the operator picks the agents here (none preselected). */}
+      {outcome.installed.length > 0 ? (
+        <GrantToAgentsStep pluginIds={outcome.installed.map((p) => p.id)} />
       ) : null}
 
       {outcome.skipped.length > 0 ? (

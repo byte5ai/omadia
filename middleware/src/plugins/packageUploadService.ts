@@ -29,6 +29,8 @@ import {
 import { archetypeUpdateReasons } from './archetypeUpdateConfirmation.js';
 import type { PluginCatalog } from './manifestLoader.js';
 import { loadManifestFromPath } from './manifestLoader.js';
+import { checkPluginBoundary } from './pluginBoundary.js';
+import { isDataOnlyPlugin } from './pluginRuntimeOf.js';
 import type { MigrationRunner } from './migrationRunner.js';
 import {
   retirePackageDir,
@@ -332,6 +334,26 @@ export class PackageUploadService {
         });
       }
 
+      // --- 5c. Agent/plugin boundary (spec 2042 §5.10) ---------------------
+      // No persona, speaker or kind `agent`. An update of a package that is
+      // installed already is still let in under the retired kind, so a live
+      // instance can take the migrated version of it.
+      const boundary = checkPluginBoundary({
+        pluginId: plugin.id,
+        kind: plugin.kind,
+        manifest: entry.manifest,
+        hasAgentMd:
+          (await fileExists(path.join(packageRoot, 'AGENT.md'))) ||
+          (await fileExists(path.join(packageRoot, 'agent.md'))),
+        installedKind:
+          this.deps.registry?.has(plugin.id) === true
+            ? this.deps.catalog.get(plugin.id)?.plugin.kind
+            : undefined,
+      });
+      if (boundary) {
+        return fail(boundary.code, boundary.message, { field: boundary.field }, { ...boundary.params });
+      }
+
       // --- 6. package.json consistency --------------------------------------
       const pkgJsonPath = path.join(packageRoot, 'package.json');
       let pkgJson: Record<string, unknown> | null = null;
@@ -374,12 +396,15 @@ export class PackageUploadService {
       const peersMissing = this.resolvePeers(pkgJson);
 
       // --- 8. Entry point must exist in the zip -----------------------------
+      // Spec 2042 §5.10 — a data-only package (agent template, skill without
+      // code) has none; the tool runtime imports nothing for it.
+      const dataOnly = isDataOnlyPlugin(plugin.kind, entry.manifest);
       const entryRel =
         (asRecord(asRecord(entry.manifest)?.['lifecycle'])?.['entry'] as
           | string
           | undefined) ?? 'dist/plugin.js';
       const absEntry = path.resolve(packageRoot, entryRel);
-      if (!absEntry.startsWith(packageRoot + path.sep) || !(await fileExists(absEntry))) {
+      if (!dataOnly && (!absEntry.startsWith(packageRoot + path.sep) || !(await fileExists(absEntry)))) {
         return fail(
           'package.entry_missing',
           `lifecycle.entry '${entryRel}' ist im Zip nicht vorhanden.`,
@@ -391,9 +416,9 @@ export class PackageUploadService {
       // an entry point below such a path would EXECUTE code the scanner
       // never saw while the store shows a clean badge. No legitimate omadia
       // plugin does this (the boilerplate uses dist/plugin.js) → reject.
-      const unscannable = findUnscannableSegment(
-        path.relative(packageRoot, absEntry),
-      );
+      const unscannable = dataOnly
+        ? null
+        : findUnscannableSegment(path.relative(packageRoot, absEntry));
       if (unscannable !== null) {
         return fail(
           'package.entry_unscannable',

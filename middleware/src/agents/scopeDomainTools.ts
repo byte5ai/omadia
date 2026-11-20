@@ -16,9 +16,8 @@
  * with no `agentId` is a core helper (memory, ask_user_choice, …) available
  * to everyone.
  *
- * The fallback Agent has every installed plugin enabled, so it still
- * receives the full set — preserving the original boot-hydration intent of
- * day-1, route-anything chat.
+ * No Agent holds a plugin it was not explicitly granted (#2054, INV-8) —
+ * the fallback Agent included, which used to receive every installed plugin.
  */
 
 import type { DomainTool } from '@omadia/orchestrator';

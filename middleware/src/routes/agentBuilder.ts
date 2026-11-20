@@ -15,13 +15,19 @@
 
 import {
   assertArchetypeAllows,
+  assertHelperModelAllowed,
+  helpersOutOfService,
+  assertHelperNameFree,
   ConfigValidationError,
+  HelperRefusalError,
+  mcpGrantHeldBy,
   type AgentGraphStore,
   type AgentRow,
   type ConfigStore,
   type McpConfigField,
   type McpRegistryRow,
   type McpServerConfig,
+  type HelperOutOfService,
   type McpServerRow,
   DEFAULT_MODEL_POLICY,
   type OrchestratorRegistry,
@@ -43,7 +49,9 @@ import {
 } from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
-import { auditActorFromRequest } from '../auth/adminAuditLog.js';
+import { auditActorFromRequest, type AuditEntryInput } from '../auth/adminAuditLog.js';
+import { requireBroadReachConfirmation } from '../agents/broadReachGate.js';
+import type { ReachSources } from '../agents/agentReachSources.js';
 
 import {
   parseRequiresTools,
@@ -104,6 +112,13 @@ import type { PublicMcpKeyBindingAdminStore } from '../mcp/publicMcpKeyBindingsA
 
 export interface AgentBuilderRouterOptions {
   readonly getConfigStore: () => ConfigStore | undefined;
+  /** #2054 — the plugin side of an agent's reach (catalog + installed
+   *  registry), for the broad-reach confirmation on MCP grants. Absent = MCP
+   *  servers are the only connected systems the check sees. */
+  readonly getReachPluginSources?: () => Pick<ReachSources, 'catalog' | 'installed'>;
+  /** #2054 — the admin audit for confirmed broad-reach grants; absent = the
+   *  change is logged only. */
+  readonly recordAudit?: (entry: AuditEntryInput) => Promise<void>;
   readonly getGraphStore: () => AgentGraphStore | undefined;
   readonly getRegistry: () => OrchestratorRegistry | undefined;
   /** The orchestrator's single configured LLM provider id (live-read from the
@@ -479,6 +494,92 @@ export function createAgentBuilderRouter(
     return { config, graph, registry: options.getRegistry() };
   }
 
+  /**
+   * #2054 — spec 2042 §5.7: an MCP tool grant that gives the agent access to
+   * every connected system needs `confirmBroadReach: true` and is audited
+   * (`broadReachGate.ts`). Answers 409 and `undefined` when refused; else the
+   * audit to record once the grant is written (`null` = nothing to audit).
+   */
+  async function mcpGrantBroadReachGate(
+    l: Live,
+    req: Request,
+    res: Response,
+    agent: AgentRow,
+    added: readonly { mcpServerId: string; toolName: string }[],
+  ): Promise<AuditEntryInput | null | undefined> {
+    if (added.length === 0) return null;
+    const gate = await requireBroadReachConfirmation({
+      sources: { ...(options.getReachPluginSources?.() ?? {}), graph: l.graph },
+      agent,
+      change: 'grant',
+      currentPlugins: await l.config.listAgentPlugins(agent.id),
+      proposed: { addMcpToolGrants: added },
+      confirmed: (req.body as { confirmBroadReach?: unknown } | undefined)?.confirmBroadReach === true,
+      actor: auditActorFromRequest(req),
+    });
+    if (!gate.ok) {
+      res.status(gate.status).json(gate.body);
+      return undefined;
+    }
+    return gate.audit ?? null;
+  }
+
+  /**
+   * #2054 — the broad-reach check of a plugin MCP grant, for every agent with
+   * an enabled grant of the plugin. Answers 409 (naming the agents) and
+   * `undefined` when one would become broad without `confirmBroadReach`;
+   * else the audits to record once the grant is written.
+   */
+  async function pluginMcpGrantBroadReachGate(
+    l: Live,
+    req: Request,
+    res: Response,
+    pluginId: string,
+    mcpServerId: string,
+  ): Promise<AuditEntryInput[] | undefined> {
+    const [agents, rows] = await Promise.all([l.config.listAgents(), l.config.listAllAgentPlugins()]);
+    const holders = agents.filter((a) => rows.some((r) => r.agentId === a.id && r.pluginId === pluginId && r.enabled));
+    const confirmed = (req.body as { confirmBroadReach?: unknown } | undefined)?.confirmBroadReach === true;
+    const audits: AuditEntryInput[] = [];
+    const refusedSlugs: string[] = [];
+    let refusal: unknown;
+    for (const agent of holders) {
+      const gate = await requireBroadReachConfirmation({
+        sources: { ...(options.getReachPluginSources?.() ?? {}), graph: l.graph },
+        agent,
+        change: 'grant',
+        currentPlugins: rows.filter((r) => r.agentId === agent.id),
+        proposed: { addPluginMcpGrants: [{ pluginId, mcpServerId }] },
+        confirmed,
+        actor: auditActorFromRequest(req),
+      });
+      if (!gate.ok) {
+        refusedSlugs.push(agent.slug);
+        refusal ??= gate.body;
+      } else if (gate.audit) {
+        audits.push(gate.audit);
+      }
+    }
+    if (refusedSlugs.length > 0) {
+      res.status(409).json({ ...(refusal as Record<string, unknown>), slugs: refusedSlugs });
+      return undefined;
+    }
+    return audits;
+  }
+
+  async function recordBroadReachAudit(entry: AuditEntryInput | null): Promise<void> {
+    if (!entry) return;
+    try {
+      if (options.recordAudit) await options.recordAudit(entry);
+      else console.log(`[security-audit] ${entry.action} ${entry.target}`);
+    } catch (err) {
+      console.error(
+        `[security-audit] ${entry.action} ${entry.target} could not be recorded:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   async function agentOr404(
     l: Live,
     slug: string,
@@ -520,6 +621,15 @@ export function createAgentBuilderRouter(
           schedules,
           l.registry,
           personaSkillLinks,
+          // #2050 — what the runtime does with each helper, with the reason.
+          helpersOutOfService(
+            subAgents.filter((s) => s.parentAgentId === agent.id),
+            {
+              policy: agent.modelPolicy ?? DEFAULT_MODEL_POLICY,
+              activeProvider: options.getActiveProvider?.(),
+              reservedToolNames: reservedToolNamesFor(l, agent),
+            },
+          ),
         ),
       );
     } catch (err) {
@@ -534,7 +644,16 @@ export function createAgentBuilderRouter(
     try {
       const agent = await agentOr404(l, str(req.params.slug), res);
       if (!agent) return;
+      const audit = await mcpGrantBroadReachGate(
+        l,
+        req,
+        res,
+        agent,
+        await mcpGrantOfEdge(l, req.body ?? {}),
+      );
+      if (audit === undefined) return;
       const edge = await createEdge(l, agent, req.body ?? {});
+      await recordBroadReachAudit(audit);
       const diff = await reload(l);
       res.json({ edge, diff });
     } catch (err) {
@@ -567,10 +686,19 @@ export function createAgentBuilderRouter(
       if (!agent) return;
       assertArchetypeAllows(agent, 'sub_agent');
       const b = req.body ?? {};
+      const name = String(b.name ?? '').trim();
+      // #2050 — a helper is internal to its agent: a collision-free tool name
+      // and a model the agent's policy allows, refused here with a code.
+      await assertHelperWriteAllowed(
+        l,
+        agent,
+        { name, model: b.model ?? null },
+        options.getActiveProvider?.(),
+      );
       const row = await l.graph.createSubAgent(
         {
           parentAgentId: agent.id,
-          name: String(b.name ?? '').trim(),
+          name,
           skillId: b.skillId ?? null,
           model: b.model ?? null,
           maxTokens: b.maxTokens ?? null,
@@ -594,8 +722,34 @@ export function createAgentBuilderRouter(
       const l = live(res);
       if (!l) return;
       try {
+        const agent = await agentOr404(l, str(req.params.slug), res);
+        if (!agent) return;
+        const id = str(req.params.id);
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        // #2050 — the helper must belong to the agent in the path, and a
+        // rename / re-enable / model change passes the same checks as create.
+        const current = (await l.graph.listAllSubAgents()).find(
+          (s) => s.id === id && s.parentAgentId === agent.id,
+        );
+        if (!current) {
+          res.status(404).json({ error: 'subagent_not_found', id });
+          return;
+        }
+        const renamesOrEnables = typeof body['name'] === 'string' || body['status'] === 'enabled';
+        await assertHelperWriteAllowed(
+          l,
+          agent,
+          {
+            selfId: id,
+            ...(renamesOrEnables
+              ? { name: typeof body['name'] === 'string' ? body['name'].trim() : current.name }
+              : {}),
+            ...('model' in body ? { model: (body['model'] as string | null) ?? null } : {}),
+          },
+          options.getActiveProvider?.(),
+        );
         const row = await l.graph.updateSubAgent(
-          str(req.params.id),
+          id,
           req.body ?? {},
           options.getActiveProvider?.(),
         );
@@ -645,9 +799,10 @@ export function createAgentBuilderRouter(
     },
   );
 
-  // ── persona skills (Wave 8 — direct-answer identity candidates) ─────────
+  // ── working modes (#2051; the route and table keep the persona-skill name) ─
   // Attached straight to the Agent, no sub-agent in between: the per-turn
-  // classifier (`routeTurnPersona`) picks at most one to answer as. Current
+  // classifier (`routeTurnWorkingMode`) picks at most one mode, composed
+  // beneath the agent's identity — it never changes who answers. Current
   // links + names come back on `/agents/:slug/graph` (`agent.personaSkillIds`
   // + `skills`) — no separate GET here to avoid a second source of truth.
   router.post(
@@ -1648,7 +1803,13 @@ export function createAgentBuilderRouter(
         res.status(401).json({ error: 'unauthenticated' });
         return;
       }
+      // #2054 — the server becomes reachable for every agent that holds the
+      // plugin; each one that would thereby reach every connected system
+      // needs the confirmation, and each is audited.
+      const audits = await pluginMcpGrantBroadReachGate(l, req, res, pluginId, mcpServerId);
+      if (audits === undefined) return;
       await l.graph.upsertPluginMcpGrant(pluginId, mcpServerId, actor);
+      for (const entry of audits) await recordBroadReachAudit(entry);
       res.json({ pluginId, serverId: mcpServerId, grantedBy: actor });
     } catch (err) {
       fail(res, err);
@@ -2066,6 +2227,14 @@ export function createAgentBuilderRouter(
       for (const toolName of diff.toGrant) {
         await assertMcpToolAllowed(l, mcpServerId, toolName);
       }
+      const broadReachAudit = await mcpGrantBroadReachGate(
+        l,
+        req,
+        res,
+        agent,
+        diff.toGrant.map((toolName) => ({ mcpServerId, toolName })),
+      );
+      if (broadReachAudit === undefined) return;
       const revokeIds = toRevoke.flatMap(
         (toolName) => grantIdsByTool.get(toolName) ?? [],
       );
@@ -2079,6 +2248,7 @@ export function createAgentBuilderRouter(
           grantRefs: diff.toGrant,
           revokeIds,
         });
+        await recordBroadReachAudit(broadReachAudit);
       }
       if (delegation !== undefined && delegation !== server.delegation) {
         await l.graph.setMcpServerDelegation(mcpServerId, delegation);
@@ -2733,7 +2903,117 @@ async function assertMcpToolAllowed(
   return toolName;
 }
 
+// ── internal helpers (#2050) ─────────────────────────────────────────────────
+
+/** The built orchestrator of `agent`, when the registry holds it (an enabled,
+ *  activated agent). The capability and tool-name checks need it. */
+function builtOrchestratorOf(l: Live, agent: AgentRow) {
+  return l.registry?.get(agent.slug)?.built.orchestrator;
+}
+
+/**
+ * The tool names a helper of `agent` must not take: its plugin domain tools and
+ * every native tool. Its own helpers are excluded here; the sibling check
+ * covers them from the database. Empty when the agent is not built (disabled),
+ * in which case the runtime check refuses a collision when it is.
+ */
+function reservedToolNamesFor(l: Live, agent: AgentRow): ReadonlySet<string> {
+  const orch = builtOrchestratorOf(l, agent);
+  if (!orch) return new Set();
+  return new Set([
+    ...orch
+      .listDomainTools()
+      .filter((t) => t.internalHelper === undefined)
+      .map((t) => t.name),
+    ...orch.listNativeToolNames(),
+  ]);
+}
+
+/**
+ * Save-time checks of a helper write (spec 2042 §5.6, #2050): its `ask_<name>`
+ * is unique within the agent and not one of the agent's other tools, and its
+ * model is one the agent's model policy allows. Throws `HelperRefusalError`.
+ */
+async function assertHelperWriteAllowed(
+  l: Live,
+  agent: AgentRow,
+  write: { readonly selfId?: string; readonly name?: string; readonly model?: string | null },
+  activeProvider: string | undefined,
+): Promise<void> {
+  if (write.name !== undefined) {
+    const siblings = (await l.graph.listAllSubAgents()).filter(
+      (s) => s.parentAgentId === agent.id,
+    );
+    assertHelperNameFree({
+      name: write.name,
+      ...(write.selfId !== undefined ? { selfId: write.selfId } : {}),
+      siblings,
+      reservedToolNames: reservedToolNamesFor(l, agent),
+    });
+  }
+  if (write.model !== undefined) {
+    assertHelperModelAllowed(write.model, agent.modelPolicy ?? DEFAULT_MODEL_POLICY, activeProvider);
+  }
+}
+
+/**
+ * Save-time subset rule of a helper grant (#2050): the helper belongs to this
+ * agent, and the agent holds the capability itself — an agent-level MCP grant
+ * for the same server and tool, or the native tool (checked against the built
+ * agent; a disabled agent is checked at runtime instead).
+ */
+async function assertHelperGrantHeldByAgent(
+  l: Live,
+  agent: AgentRow,
+  subAgentId: string,
+  grant: { readonly toolKind: 'native' | 'mcp'; readonly toolRef: string; readonly mcpServerId: string | null },
+): Promise<void> {
+  const helper = (await l.graph.listAllSubAgents()).find(
+    (s) => s.id === subAgentId && s.parentAgentId === agent.id,
+  );
+  if (!helper) {
+    throw new ConfigValidationError(`sub-agent ${subAgentId} does not belong to agent "${agent.slug}"`);
+  }
+  if (grant.toolKind === 'mcp') {
+    const agentGrants = (await l.graph.listAllToolGrants()).filter((g) => g.agentId === agent.id);
+    const serverName = (await l.graph.listMcpServers()).find((s) => s.id === grant.mcpServerId)?.name;
+    if (!grant.mcpServerId || !mcpGrantHeldBy(agentGrants, grant.mcpServerId, grant.toolRef, serverName)) {
+      throw new HelperRefusalError(
+        'helper_grant_not_held_by_agent',
+        `the agent "${agent.slug}" does not hold the MCP tool "${grant.toolRef}" itself; grant it to the agent first — a helper only uses tools its agent has`,
+      );
+    }
+    return;
+  }
+  const orch = builtOrchestratorOf(l, agent);
+  if (orch && !orch.holdsNativeTool(grant.toolRef)) {
+    throw new HelperRefusalError(
+      'helper_grant_not_held_by_agent',
+      `the agent "${agent.slug}" does not hold the tool "${grant.toolRef}" itself; a helper only uses tools its agent has`,
+    );
+  }
+}
+
 // ── edge dispatchers ─────────────────────────────────────────────────────────
+
+/** #2054 — the MCP tool a `tool_grant` edge would grant, for the reach check. */
+async function mcpGrantOfEdge(
+  l: Live,
+  body: Record<string, unknown>,
+): Promise<Array<{ mcpServerId: string; toolName: string }>> {
+  if (body['kind'] !== 'tool_grant') return [];
+  // #2050 — a helper may only be granted what its agent already holds
+  // (`assertHelperGrantHeldByAgent`), so a helper grant never widens the
+  // agent's reach: nothing for the broad-reach gate.
+  if (String(body['source'] ?? '').startsWith('subagent:')) return [];
+  const config = (body['config'] as Record<string, unknown> | undefined) ?? {};
+  const mcpServerId = config['mcpServerId'];
+  if (config['toolKind'] !== 'mcp' || typeof mcpServerId !== 'string') return [];
+  const server = (await l.graph.listMcpServers()).find((s) => s.id === mcpServerId);
+  const rawRef = String(config['toolRef'] ?? idAfter(String(body['target'] ?? ''), 'tool'));
+  if (!server || !rawRef) return [];
+  return [{ mcpServerId, toolName: mcpToolNameFromRef(rawRef, server.name) }];
+}
 
 async function createEdge(
   l: Live,
@@ -2779,6 +3059,11 @@ async function createEdge(
         // the bare-name grant (the 0014 unique index keys on the raw ref),
         // splitting one tool across two rows (W0c review).
         toolRef = await assertMcpToolAllowed(l, mcpServerId, toolRef);
+      }
+      // #2050 — a helper's grant is a subset of its agent's: refused unless the
+      // helper belongs to this agent and the agent holds the tool itself.
+      if (subAgentId !== null) {
+        await assertHelperGrantHeldByAgent(l, agent, subAgentId, { toolKind, toolRef, mcpServerId });
       }
       const grant = await l.graph.createToolGrant({
         agentId: onAgent ? agent.id : null,
@@ -2838,6 +3123,7 @@ function assembleGraph(
   schedules: readonly ScheduleRow[],
   registry: OrchestratorRegistry | undefined,
   personaSkillLinks: readonly PersonaSkillRow[] = [],
+  outOfService: ReadonlyMap<string, HelperOutOfService> = new Map(),
 ) {
   const mySubs = subAgents.filter((s) => s.parentAgentId === agent.id);
   const myPersonaLinks = personaSkillLinks.filter(
@@ -2912,7 +3198,7 @@ function assembleGraph(
       channelKey: b.channelKey,
       position: null,
     })),
-    subAgents: mySubs.map(subAgentNode),
+    subAgents: mySubs.map((s) => ({ ...subAgentNode(s), outOfService: outOfService.get(s.id) ?? null })),
     skills: skills.map(skillNode),
     tools: myGrants.map(toolGrantNode),
     mcpServers: servers.map(mcpNode),
@@ -3131,6 +3417,11 @@ function fail(res: Response, err: unknown): void {
   // #2060 — a facilitator is refused sub-agents, tool grants, persona skills
   // and schedules; one mapping for all of them.
   if (respondFacilitatorRefusal(res, err)) return;
+  // #2050 — a refused helper write carries a stable code the UI explains.
+  if (err instanceof HelperRefusalError) {
+    res.status(409).json({ error: 'helper_refused', code: err.code, message: err.message });
+    return;
+  }
   if (err instanceof ConfigValidationError) {
     res.status(409).json({ error: 'config_validation', message: err.message });
     return;

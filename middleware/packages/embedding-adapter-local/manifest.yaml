@@ -4,7 +4,7 @@ identity:
   id: "@omadia/embedding-adapter-local"
   name: "Embeddings (lokal, ohne Schlüssel)"
   version: "0.1.0"
-  kind: "extension"
+  kind: "model"
   domain: "core.embeddings"
   description:
     en: "Turns text into vectors on this machine, with no API key and no separate server, so semantic search, memory and duplicate detection also work on the subscription path. Use it instead of the Ollama or OpenAI compatible adapter, only one of the three can be active. The model is downloaded once, about 144 MB, and then runs offline."

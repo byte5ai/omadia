@@ -326,24 +326,25 @@
     },
     "builder": {
       "title": "Agent-Builder",
-      "subtitle": "Kanäle, Sub-Agenten, Skills und Tools auf einer editierbaren Leinwand verdrahten.",
+      "subtitle": "Kanäle, Helfer, Skills und Tools auf einer editierbaren Leinwand verdrahten.",
       "agentPicker": "Agent",
       "loading": "Lädt …",
       "loadError": "Laden fehlgeschlagen",
       "noAgents": "Noch keine Agenten verfügbar.",
       "card": {
         "title": "Agent-Builder",
-        "description": "Visuelle Node-Graph-Leinwand: Kanäle, Sub-Agenten, Skills, Tools/MCP und Zeitpläne verdrahten. Eine gezogene Verbindung schreibt die Verdrahtung; eine gelöschte Kante entfernt sie."
+        "description": "Visuelle Node-Graph-Leinwand: Kanäle, Helfer, Skills, Tools/MCP und Zeitpläne verdrahten. Eine gezogene Verbindung schreibt die Verdrahtung; eine gelöschte Kante entfernt sie."
       },
       "nodes": {
         "channel": "Kanal",
         "agent": "Agent",
-        "subagent": "Sub-Agent",
+        "subagent": "Helfer",
         "skill": "Skill",
         "tool": "Tool",
         "mcp": "MCP-Server",
         "schedule": "Zeitplan",
-        "tools": "Tools"
+        "tools": "Tools",
+        "subagentOutOfService": "Außer Dienst"
       },
       "palette": {
         "title": "Hinzufügen",
@@ -387,7 +388,7 @@
         "noTools": "Noch keine erkannten Tools."
       },
       "defaults": {
-        "subAgentName": "Neuer Sub-Agent",
+        "subAgentName": "Neuer Helfer",
         "skillName": "Neuer Skill",
         "mcpName": "Neuer MCP-Server"
       },
@@ -420,22 +421,99 @@
         "transport": "Transport",
         "endpoint": "Endpoint",
         "cron": "Cron",
-        "timezone": "Zeitzone"
+        "timezone": "Zeitzone",
+        "helperExplain": "Ein Helfer gehört intern zu diesem Agenten: Er erledigt einen Teil der Arbeit des Agenten auf einem eigenen, oft günstigeren Modell, nutzt nur Tools, die der Agent selbst hat, und wird Menschen gegenüber nie genannt. Seine Antwort ist die Arbeit des Agenten.",
+        "helperSpecialistHint": "Soll ein Spezialist direkt ansprechbar sein? Lege ihn als eigenen Agenten an."
+      },
+      "helperErrors": {
+        "helper_name_collision": "Dieser Name ist schon vergeben: Ein anderer Helfer oder ein Tool dieses Agenten nutzt denselben Tool-Namen. Wähle einen anderen Namen.",
+        "helper_grant_not_held_by_agent": "Der Agent hat dieses Tool selbst nicht. Weise es zuerst dem Agenten zu; ein Helfer nutzt nur Tools seines Agenten.",
+        "helper_model_not_allowed": "Die Modellrichtlinie des Agenten erlaubt dieses Modell für einen Helfer nicht. Wähle das Modell des Agenten oder ein günstigeres."
+      },
+      "helperOutOfService": {
+        "title": "Dieser Helfer ist außer Dienst.",
+        "helper_model_not_allowed": "Die Modellrichtlinie des Agenten erlaubt sein Modell nicht. Jede Anfrage an ihn wird deshalb mit dem Grund unten abgelehnt. Wähle das Modell des Agenten oder ein günstigeres.",
+        "helper_name_conflict": "Sein Tool-Name kollidiert mit einem anderen Helfer oder Tool dieses Agenten, deshalb wird er nicht angeboten. Wähle einen anderen Namen.",
+        "reason": "Grund: {reason}"
       },
       "apiError": "Fehler {status}",
       "persona": {
-        "title": "Direkt-Antwort-Personas",
-        "hintEmpty": "Keine Persona-Skills angehängt — dieser Agent antwortet mit der generischen Standard-Identität.",
-        "hintSome": "Der Agent wählt pro Turn eine dieser Personas, um direkt zu antworten — oder die Standard-Identität, falls keine eindeutig passt. Kein Sub-Agent-Umweg.",
+        "title": "Arbeitsmodi",
+        "hintEmpty": "Keine Arbeitsmodi angehängt — dieser Agent arbeitet immer auf seine Standard-Art.",
+        "hintSome": "Der Agent wählt pro Anfrage den passenden Arbeitsmodus — oder arbeitet auf seine Standard-Art, falls keiner eindeutig passt. Ein Modus prägt, wie der Agent arbeitet; Name, Persönlichkeit und Grenzen bleiben gleich.",
         "addPlaceholder": "Skill zum Anhängen wählen…",
         "add": "Anhängen",
         "remove": "Entfernen",
         "noSkillsAvailable": "Keine weiteren Skills zum Anhängen verfügbar.",
-        "riskWarning": "Heuristischer Scan hat diesen Skill markiert: {codes}. Als Persona steuert er den Top-Level-Agent mit vollem Tool-Zugriff — vor Verwendung prüfen.",
+        "riskWarning": "Heuristischer Scan hat diesen Skill markiert: {codes}. Als Arbeitsmodus prägt er, wie der Agent arbeitet, mit dessen vollem Tool-Zugriff — vor Verwendung prüfen.",
         "confirmAttachAction": "Trotzdem anhängen",
-        "confirmAttachHighRisk": "Der heuristische Scan dieses Skills zeigt hohes Risiko ({codes}). Als Persona steuert er den Top-Level-Agent mit vollem Tool-Zugriff. Bestätige, dass du ihn geprüft hast, bevor du ihn anhängst."
+        "confirmAttachHighRisk": "Der heuristische Scan dieses Skills zeigt hohes Risiko ({codes}). Als Arbeitsmodus prägt er, wie der Agent arbeitet, mit dessen vollem Tool-Zugriff. Bestätige, dass du ihn geprüft hast, bevor du ihn anhängst."
       },
-      "facilitatorsNote": "Facilitatoren sind hier nicht aufgeführt: Channels, Sub-Agenten, Tools, MCP-Server und Zeitpläne lassen sich mit ihnen nicht verdrahten."
+      "facilitatorsNote": "Facilitatoren sind hier nicht aufgeführt: Channels, Helfer, Tools, MCP-Server und Zeitpläne lassen sich mit ihnen nicht verdrahten.",
+      "newAgent": {
+        "open": "Neuer Agent",
+        "title": "Neuer Agent",
+        "sourceLabel": "Ausgangspunkt",
+        "blank": "Leerer Agent",
+        "blankHint": "Oder wähle eine Agentenvorlage eines installierten Plugins: Sie füllt Name, Identität und Persönlichkeit aus und schlägt Fähigkeiten vor.",
+        "templateOption": "{name} — {plugin}",
+        "templatesLoading": "Agentenvorlagen werden geladen…",
+        "templatesError": "Agentenvorlagen konnten nicht geladen werden: {detail}",
+        "templatesEmpty": "Kein installiertes Plugin bringt eine Agentenvorlage mit.",
+        "archetypeUnavailable": "Diese Vorlage ist für Agenten des Archetyps „{archetype}“, der hier nicht installiert ist.",
+        "prefillError": "Die Vorlage konnte nicht geladen werden: {detail}",
+        "nameLabel": "Name",
+        "slugLabel": "Adresse (Slug)",
+        "slugHint": "Kleinbuchstaben, Ziffern und Bindestriche.",
+        "descriptionLabel": "Beschreibung",
+        "capabilitiesLabel": "Fähigkeiten",
+        "capabilitiesHint": "Die Vorlage schlägt diese vor. Freigegeben wird nur, was du ankreuzt.",
+        "capabilitiesNone": "Die Vorlage schlägt keine Fähigkeiten vor.",
+        "capabilityNotInstalled": "{plugin} (nicht installiert)",
+        "capabilityNotGrantable": "{plugin} (kein Fähigkeiten-Plugin)",
+        "enableLabel": "Agent nach dem Anlegen aktivieren",
+        "enableHint": "Ohne Haken bleibt der Agent ein Entwurf, den niemand erreicht, bis du ihn aktivierst.",
+        "create": "Agent anlegen",
+        "creating": "Wird angelegt…",
+        "cancel": "Abbrechen",
+        "close": "Schließen",
+        "steps": {
+          "create": "Entwurf anlegen",
+          "identity": "Identität",
+          "availability": "Erreichbarkeit",
+          "grants": "Fähigkeiten",
+          "enable": "Aktivieren"
+        },
+        "failed": "Schritt „{step}“ ist fehlgeschlagen: {detail}",
+        "declined": "Du hast die Freigabe nicht bestätigt, daher wurde keine Fähigkeit freigegeben.",
+        "stepDone": "✓ {step}",
+        "stepFailed": "✗ {step}",
+        "stepNotRun": "– {step} (nicht ausgeführt)",
+        "draftKept": "Der Entwurf „{slug}“ bleibt bestehen. Öffne ihn, um das Fehlende zu ergänzen, oder lösche ihn.",
+        "draftDeleted": "Der Entwurf wurde gelöscht.",
+        "notCreated": "Es wurde kein Agent angelegt.",
+        "openDraft": "Entwurf öffnen",
+        "deleteDraft": "Entwurf löschen",
+        "deleting": "Wird gelöscht…",
+        "deleteFailed": "Der Entwurf konnte nicht gelöscht werden: {detail}"
+      },
+      "availability": {
+        "title": "Erreichbarkeit",
+        "loading": "Erreichbarkeit wird geladen…",
+        "loadError": "Die Erreichbarkeit konnte nicht geladen werden: {detail}",
+        "notReported": "Diese Middleware meldet noch nicht, wer diesen Agenten erreichen darf.",
+        "save": "Erreichbarkeit speichern",
+        "saved": "Erreichbarkeit gespeichert.",
+        "saveError": "Die Erreichbarkeit konnte nicht gespeichert werden: {detail}"
+      },
+      "exportTemplate": {
+        "title": "Als Vorlage exportieren",
+        "hint": "Name, Beschreibungen, Anweisungen, Sprache, Persona, Qualität und freigegebene Fähigkeiten des Agenten als ein agent_templates-Eintrag. Nie Geheimnisse, Gedächtnis oder Kanalbindungen.",
+        "download": "YAML herunterladen",
+        "showJson": "JSON anzeigen",
+        "hideJson": "JSON ausblenden",
+        "loadError": "Der Export ist fehlgeschlagen: {detail}"
+      }
     }
   },
   "selfExtension": {
@@ -1180,6 +1258,14 @@
       "privacy_guard_required": {
         "what": "Dieses Plugin ist der einzige Privacy Shield, und die Org-Richtlinie OMADIA_PRIVACY_FORCE_GUARDED verlangt Maskierung, deshalb lässt es sich nicht deinstallieren.",
         "next": "Installiere zuerst einen anderen Privacy-Shield-Provider oder schalte die Org-Richtlinie in der Middleware-Umgebung ab."
+      },
+      "retired_kind": {
+        "what": "Dieses Paket hat die abgekündigte Art 'agent'. Ein Plugin liefert Fähigkeiten und darf Agentenvorlagen mitbringen, ist aber nie selbst ein Agent.",
+        "next": "Installiere stattdessen die Version des Plugins, die Fähigkeiten (oder Agentenvorlagen) liefert, und lege den Agenten im Agent Builder an."
+      },
+      "system_module_confirmation_required": {
+        "what": "Dieses Plugin ist ein Systemmodul: Infrastruktur von omadia selbst. Es wird nur nach ausdrücklicher Bestätigung installiert, und diese Anfrage enthielt keine.",
+        "next": "Starte die Installation auf der Seite des Plugins im Store und bestätige sie dort."
       }
     },
     "cli_install": {
@@ -1648,17 +1734,15 @@
     "outputLabel": "Ausgabe",
     "foreignToolBadge": "Fremdes Werkzeug",
     "foreignToolExplain": "Dieser Aufruf lief nicht über omadia. Die Abo-CLI hat ein eigenes eingebautes Werkzeug benutzt, omadias Rechteprüfung hat dafür also nicht gegriffen. Bitte melde das deinem Betreiber.",
-    "persona": {
-      "title": "Persona",
-      "matched": "Antwortet als {name}",
-      "none": "Standard-Identität",
-      "fallback": "Persona-Klassifikator nicht verfügbar — Standard-Identität"
+    "workingMode": {
+      "label": "Modus: {name}",
+      "title": "Arbeitsmodus für diese Antwort, gewählt von {classifier}. Er ändert, wie der Agent arbeitet, nicht wer antwortet."
     },
     "speaker": {
       "system": "Systemhinweis",
       "avatarAlt": "Avatar von {name}"
     },
-    "subAgentTrace": "Sub-Agent-Trace",
+    "subAgentTrace": "Interne Schritte",
     "mcpAuth": {
       "kicker": "Autorisierung erforderlich",
       "body": "{server} muss verbunden werden, bevor es genutzt werden kann.",
@@ -2168,7 +2252,8 @@
       "plugin_not_assigned": "Dieses Plugin ist dem Agenten nicht mehr zugewiesen — lad die Seite neu.",
       "model_policy_unavailable": "Der Modell-Katalog ist gerade nicht verfügbar — die Policy kann nicht geprüft werden. Versuch es gleich noch einmal.",
       "context_memory_required": "Das Kontextgedächtnis kann für einen Agenten mit Capability-Grants nicht ausgeschaltet werden. Wähle „Geteilt unter den Anwesenden“ oder einen der getrennten Modi.",
-      "unknown": "Request fehlgeschlagen: {detail}"
+      "unknown": "Request fehlgeschlagen: {detail}",
+      "broad_reach_confirmation_required": "Diese Änderung gäbe dem Agenten Zugriff auf alle angebundenen Systeme und braucht deine ausdrückliche Bestätigung."
     },
     "statusEnabled": "aktiviert",
     "statusDisabled": "deaktiviert",
@@ -3253,51 +3338,49 @@
     "simple": {
       "intro": {
         "badge": "No-Code",
-        "title": "Lass uns deinen Assistenten bauen",
+        "title": "Lass uns dein Plugin bauen",
         "subtitle": "In drei ruhigen Schritten — beschreiben, ansehen, ausprobieren. Die Technik dahinter kümmert sich von selbst."
       },
       "step1": {
-        "title": "Beschreibe deinen Assistenten",
-        "subtitle": "Sag in eigenen Worten, was er für dich tun soll."
+        "title": "Beschreibe dein Plugin",
+        "subtitle": "Sag in eigenen Worten, was deine Agenten damit können sollen."
       },
       "step2": {
-        "title": "Dein Assistent",
+        "title": "Dein Plugin",
         "subtitle": "Ein Überblick in Klartext — ganz ohne Fachbegriffe."
       },
       "step3": {
         "title": "Ausprobieren",
-        "subtitle": "Stell eine Frage und sieh, wie dein Assistent antwortet."
+        "subtitle": "Es antwortet ein neutraler Test-Agent, der nur dieses Plugin hat. Stell eine Frage und sieh, wie er das Plugin nutzt."
       },
       "overview": {
         "nameLabel": "Name",
         "namePlaceholder": "Noch ohne Namen",
         "whatLabel": "Was er tut",
-        "whatPlaceholder": "Sobald du oben beschrieben hast, was dein Assistent können soll, erscheint hier eine kurze Zusammenfassung.",
+        "whatPlaceholder": "Sobald du oben beschrieben hast, was dein Plugin können soll, erscheint hier eine kurze Zusammenfassung.",
         "readyTools": "Bereit. Kann {count, plural, one {# Aktion} other {# Aktionen}} für dich ausführen.",
-        "readyChat": "Bereit. Antwortet auf deine Fragen im Chat."
-      },
-      "persona": {
-        "title": "Persönlichkeit anpassen",
-        "subtitle": "Wie soll dein Assistent klingen? Freundlich, sachlich, locker …",
-        "optional": "optional"
+        "readyChat": "Bereit. Noch keine Aktionen definiert.",
+        "kindLabel": "Plugin-Typ",
+        "kindIntegration": "Integration: verbindet deine Agenten mit einem externen System mit eigenen Zugangsdaten.",
+        "kindTool": "Tool: lokale Logik, die deine Agenten nutzen können, ohne externes System."
       },
       "intake": {
-        "heroTitle": "Was soll dein Assistent können?",
+        "heroTitle": "Was sollen deine Agenten mit diesem Plugin können?",
         "heroSubtitle": "Beschreib es einfach in eigenen Worten. Den Rest übernehmen wir — du musst nichts Technisches wissen.",
         "examplesLabel": "Zum Beispiel",
-        "example1": "Ein Assistent, der Fragen zu unseren Confluence-Seiten beantwortet.",
-        "example2": "Ein Helfer, der eingehende E-Mails zusammenfasst.",
-        "example3": "Ein Assistent für Fragen rund um unsere Urlaubsregeln.",
-        "inputLabel": "Beschreibe deinen Assistenten",
+        "example1": "Ein Plugin, das unsere Confluence-Seiten durchsucht und liest.",
+        "example2": "Ein Tool, das eingehende E-Mails zusammenfasst.",
+        "example3": "Ein Plugin, das unsere Urlaubsregeln nachschlägt.",
+        "inputLabel": "Beschreibe dein Plugin",
         "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
-        "placeholderIdle": "Beschreibe in eigenen Worten, was dein Assistent können soll.",
-        "placeholderBusy": "Dein Assistent wird gebaut …",
+        "placeholderIdle": "Beschreibe in eigenen Worten, was dein Plugin können soll.",
+        "placeholderBusy": "Dein Plugin wird gebaut …",
         "send": "Senden",
         "stop": "Stopp",
-        "statusDefault": "Dein Assistent wird vorbereitet …",
+        "statusDefault": "Dein Plugin wird vorbereitet …",
         "statusReading": "Liest deine Anforderung …",
-        "statusConfiguring": "Richtet deinen Assistenten ein …",
-        "statusTeaching": "Bringt deinem Assistenten seine Fähigkeiten bei …",
+        "statusConfiguring": "Richtet dein Plugin ein …",
+        "statusTeaching": "Schreibt die Aktionen deines Plugins …",
         "statusWaitingChoice": "Wartet auf deine Entscheidung …",
         "statusWorking": "Arbeitet an den Details …",
         "statusChecking": "Prüft das Ergebnis …",
@@ -3306,7 +3389,7 @@
         "statusBusy": "Arbeitet …",
         "errorLostConnection": "Verbindung verloren: {message}",
         "errorUnknown": "Unbekannter Fehler — bitte erneut versuchen.",
-        "errorProviderGeneric": "Dein Assistent konnte den KI-Dienst gerade nicht erreichen. Bitte versuch es gleich noch einmal.",
+        "errorProviderGeneric": "Der Plugin Builder konnte den KI-Dienst gerade nicht erreichen. Bitte versuch es gleich noch einmal.",
         "errorChoiceFailed": "Auswahl konnte nicht gespeichert werden.",
         "errorChoiceFailedMessage": "Auswahl konnte nicht gespeichert werden: {message}"
       }
@@ -3326,7 +3409,6 @@
       "tabOverview": "Übersicht",
       "tabSpec": "Spec",
       "tabSlots": "Slots",
-      "tabPersona": "Persona",
       "tabSkills": "Skills",
       "tabVersions": "Versionen",
       "paneChat": "Builder-Chat",
@@ -3357,7 +3439,7 @@
       "autoFixKindSmoke": "Smoke",
       "autoFixRunning": "Auto-Fix läuft (#{buildN} · {kind})",
       "autoFixStoppedTitle": "Auto-Fix nach {count} identischen {kind}-Fehlern gestoppt",
-      "autoFixStoppedBody": "Der Builder-Agent kommt mit derselben Fehlerklasse nicht weiter. Auto-Fix wurde automatisch ausgeschaltet — prüf den Code manuell oder schalte den Toggle wieder ein, sobald du eingegriffen hast.",
+      "autoFixStoppedBody": "Der Plugin Builder kommt mit derselben Fehlerklasse nicht weiter. Auto-Fix wurde automatisch ausgeschaltet — prüf den Code manuell oder schalte den Toggle wieder ein, sobald du eingegriffen hast.",
       "autoFixDismissAria": "Hinweis ausblenden",
       "buildStatusLabel": "Build-Status",
       "buildBusLive": "live",
@@ -3369,7 +3451,11 @@
       "buildErrorsCloseAria": "Fehlerliste schließen",
       "buildErrorsShowTitle": "Fehlerliste anzeigen",
       "buildErrorsHideTitle": "Fehlerliste ausblenden",
-      "fixWithBuilder": "Fix mit Builder"
+      "fixWithBuilder": "Fix mit Builder",
+      "kindIntegration": "Integration",
+      "kindTool": "Tool",
+      "kindIntegrationHint": "Plugin-Art: Integration — ein externes System mit Zugangsdaten. Wird Agenten einzeln freigegeben.",
+      "kindToolHint": "Plugin-Art: Tool — lokale Logik ohne externes System. Wird Agenten einzeln freigegeben."
     },
     "tools": {
       "form": {
@@ -3377,7 +3463,7 @@
         "idPlaceholder": "z.B. fetch_metrics",
         "idTaken": "Tool-ID ist bereits vergeben",
         "descriptionLabel": "Beschreibung",
-        "descriptionPlaceholder": "Was tut dieses Tool? Wird vom Agent als description gelesen.",
+        "descriptionPlaceholder": "Was tut dieses Tool? Der aufrufende Agent liest das als description.",
         "inputSchema": "Input-Schema",
         "schemaModeLabel": "Schema-Modus",
         "tabForm": "Formular",
@@ -3400,7 +3486,7 @@
         "testToolTitle": "Direkt gegen Preview ausführen",
         "removeTool": "Tool {id} entfernen",
         "formPlaceholder": "Tool-Form folgt in B.11-2.",
-        "stuckTitle": "Builder-Agent ist auf diesem Tool/Slot stecken geblieben — manuell prüfen",
+        "stuckTitle": "Der Plugin Builder ist auf diesem Tool/Slot stecken geblieben — manuell prüfen",
         "stuckBadge": "hängt"
       },
       "bulkImport": {
@@ -3493,14 +3579,14 @@
         "providerGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
         "choiceSaveFailedDetail": "Auswahl konnte nicht gespeichert werden: {message}",
         "choiceSaveFailed": "Auswahl konnte nicht gespeichert werden.",
-        "llmAccessMissing": "Der Plugin-Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo)."
+        "llmAccessMissing": "Der Plugin Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo)."
       },
       "inputLabel": "Builder-Nachricht",
       "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
       "placeholder": {
         "thinking": "Builder denkt nach …",
         "awaitingChoice": "Builder wartet oben auf deine Auswahl …",
-        "idle": "Beschreibe was der Agent tun soll. Enter zum Senden, Shift+Enter für Zeilenumbruch."
+        "idle": "Beschreibe, was das Plugin tun soll. Enter zum Senden, Shift+Enter für Zeilenumbruch."
       },
       "button": {
         "stop": "Stop",
@@ -3519,26 +3605,12 @@
       },
       "empty": {
         "title": "Sag dem Builder, womit du anfangen willst.",
-        "example": "z.B. „Bau einen Confluence-Reader-Agent mit Tools page_read und page_search.“"
+        "example": "z.B. „Bau eine Confluence-Integration mit den Tools page_read und page_search.“"
       }
     },
     "preview": {
-      "prompt": {
-        "title": "Preview Prompt",
-        "tokens": "{count} Tokens ({health})",
-        "health": {
-          "good": "gut",
-          "medium": "mittel",
-          "high": "hoch",
-          "critical": "kritisch"
-        },
-        "loading": "Lade…",
-        "refresh": "Aktualisieren",
-        "copied": "Kopiert ✓",
-        "copy": "Kopieren"
-      },
       "chat": {
-        "agentLabel": "Preview-Agent",
+        "agentLabel": "Vorschau: neutraler Entwurfs-Agent nur mit diesem Plugin",
         "credentials": "Credentials",
         "credentialsTooltip": "Test-Credentials für die Preview verwalten",
         "rebuild": "Rebuild",
@@ -3546,8 +3618,8 @@
         "inputLabel": "Preview-Nachricht",
         "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
         "placeholder": {
-          "inflight": "Preview-Agent antwortet …",
-          "idle": "Teste den Agent. Enter zum Senden."
+          "inflight": "Der Vorschau-Agent antwortet …",
+          "idle": "Teste das Plugin. Enter zum Senden."
         },
         "stop": "Stop",
         "send": "Senden",
@@ -3556,19 +3628,19 @@
           "connectionLost": "Verbindung verloren: {message}",
           "unknownTurn": "Unbekannter Fehler beim Preview-Turn",
           "providerGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
-          "llmAccessMissing": "Der Plugin-Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo).",
+          "llmAccessMissing": "Der Plugin Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo).",
           "privacyShieldRequired": "Deine Organisation verlangt den Privacy Shield. Der Vorschau-Chat läuft ohne ihn und ist deshalb abgeschaltet."
         },
-        "externalReadsHint": "Preview führt Cross-Integration-Lookups (<code>spec.external_reads</code>) nicht aus — der Agent erkennt den fehlenden Service korrekt und wirft. Stelle den Agent in deiner Instanz bereit, um den echten Datenpfad zu testen.",
+        "externalReadsHint": "Preview führt Cross-Integration-Lookups (<code>spec.external_reads</code>) nicht aus — das Plugin erkennt den fehlenden Service korrekt und wirft. Installiere das Plugin in deiner Instanz, um den echten Datenpfad zu testen.",
         "agentStuck": {
-          "title": "Builder-Agent kommt bei Slot <slot>{slotKey}</slot> nicht weiter ({attempts, plural, one {# Versuch} other {# Versuche}})",
-          "body": "{summary}. Öffne den Slot-Editor, prüf die Errors manuell und korrigier den Code — der Agent versucht es nicht von alleine erneut.",
+          "title": "Der Plugin Builder kommt bei Slot <slot>{slotKey}</slot> nicht weiter ({attempts, plural, one {# Versuch} other {# Versuche}})",
+          "body": "{summary}. Öffne den Slot-Editor, prüf die Errors manuell und korrigier den Code — der Plugin Builder versucht es nicht von alleine erneut.",
           "dismiss": "Schließen",
           "dismissTooltip": "Banner schließen"
         },
         "empty": {
-          "title": "Teste den Preview-Agent.",
-          "body": "Spec + Slots werden vor jedem Turn neu kompiliert, falls etwas geändert wurde."
+          "title": "Teste das Plugin mit dem Vorschau-Agenten.",
+          "body": "Ein neutraler Entwurfs-Agent hat nur die Tools dieses Plugins. Spec + Slots werden vor jedem Turn neu kompiliert, falls etwas geändert wurde."
         },
         "smoke": {
           "running": "smoke #{buildN} läuft …",
@@ -3577,7 +3649,8 @@
           "activateFailed": "Smoke #{buildN} ✗ — Preview-Aktivierung fehlgeschlagen{detail}",
           "toolsFailed": "Smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {Tool} other {Tools}} fehlgeschlagen",
           "fixWithBuilder": "Fix mit Builder"
-        }
+        },
+        "replyMarker": "Vorschau"
       },
       "secrets": {
         "title": "Test-Credentials",
@@ -3604,22 +3677,17 @@
         "groups": {
           "identity": "Identität",
           "description": "Beschreibung",
-          "skill": "Skill",
           "dependencies": "Abhängigkeiten & Netzwerk",
           "setupFields": "Setup-Felder (Credentials & Config)"
         },
         "fields": {
-          "agentId": "Agent-ID",
+          "agentId": "Plugin-ID",
           "name": "Name",
           "version": "Version",
-          "category": "Kategorie",
-          "role": "Rolle",
-          "tonality": "Tonalität (optional)"
+          "category": "Kategorie"
         },
         "placeholders": {
-          "name": "z.B. SEO-Analyst",
-          "role": "z.B. Vertriebs-Analyst",
-          "tonality": "z.B. präzise, sachlich",
+          "name": "z.B. SEO-Prüfungen",
           "notFor": "Anti-Pattern eingeben",
           "examplePrompt": "Beispiel-Prompt",
           "dependsOn": "z.B. @omadia/knowledge-graph-neon",
@@ -3637,19 +3705,19 @@
       },
       "overview": {
         "fields": {
-          "agentId": "Agent-ID",
+          "agentId": "Plugin-ID",
           "name": "Name",
           "author": "Autor",
           "version": "Version",
           "template": "Template",
           "category": "Kategorie",
           "domain": "Domain",
-          "skillRole": "Skill-Rolle",
           "tools": "Tools",
           "slots": "Slots",
           "setupFields": "Setup-Felder",
           "outbound": "Outbound",
-          "description": "Beschreibung"
+          "description": "Beschreibung",
+          "kind": "Art"
         },
         "values": {
           "none": "keine",
@@ -3658,13 +3726,13 @@
         "slotKeys": "Slot-Keys"
       },
       "setupFields": {
-        "emptyState": "Noch keine Setup-Felder. Lege z.B. <example>api_key (secret, required)</example> an, damit der Preview-Agent Test-Credentials lesen kann.",
+        "emptyState": "Noch keine Setup-Felder. Lege z.B. <example>api_key (secret, required)</example> an, damit die Vorschau Test-Credentials lesen kann.",
         "required": {
           "on": "pflicht",
           "off": "optional"
         },
         "removeAria": "Setup-Feld {key} entfernen",
-        "descriptionPlaceholder": "Wofür braucht der Agent dieses Feld?",
+        "descriptionPlaceholder": "Wofür braucht das Plugin dieses Feld?",
         "newKey": "neuer key",
         "newKeyPlaceholder": "z.B. api_key",
         "add": "Hinzufügen",
@@ -3675,7 +3743,7 @@
         "oauth": {
           "provider": "Provider",
           "selectProvider": "— Provider wählen —",
-          "noProviders": "Zuerst einen oauth_providers-Deskriptor anlegen (den Builder-Agent fragen) — dann hier auswählen.",
+          "noProviders": "Zuerst einen oauth_providers-Deskriptor anlegen (den Plugin Builder fragen) — dann hier auswählen.",
           "scopes": "Scopes",
           "scopesPlaceholder": "kommagetrennt, z.B. profile, email"
         }
@@ -3694,8 +3762,8 @@
         "missing": "{count, plural, one {# fehlt} other {# fehlen}}"
       },
       "required": "pflicht",
-      "askAgent": "Frag den Agent",
-      "askAgentTooltip": "Schickt den Prompt direkt an den Builder-Chat — der Agent legt sofort los.",
+      "askAgent": "Plugin Builder fragen",
+      "askAgentTooltip": "Schickt den Prompt direkt an den Chat des Plugin Builders, der sofort loslegt.",
       "status": {
         "saving": "Speichern …",
         "saved": "Gespeichert",
@@ -3713,33 +3781,12 @@
       "prefillPromptWithDescription": "Fülle den Slot `{slotKey}` (target: {targetFile}) — {description} mit der TypeScript-Implementierung."
     },
     "persona": {
-      "pillar": {
-        "accentLabel": "Persona",
-        "heading": "Charakter prägen",
-        "description": "12 Achsen, jede einzeln optional. Werte werden im Frontmatter der AGENT.md gespiegelt — Phase 4 kompiliert daraus eine Persona-Section in den System-Prompt.",
-        "templateBadge": "Vorlage: {template}",
-        "templateBadgeAdjusted": "Vorlage: {template} — angepasst",
-        "templateBadgeNone": "Keine Vorlage",
-        "applyTemplate": "Vorlage anwenden",
-        "templateLabel": "Vorlage (optional)",
-        "templatePlaceholder": "z.B. software-engineer (Templates kommen in Phase 4)",
-        "coreHeading": "Kern (8)",
-        "extendedHeading": "Erweitert (4)",
-        "customNotesLabel": "Eigene Notizen (optional)",
-        "customNotesPlaceholder": "z.B. „Antworte auf Deutsch wenn der User auf Deutsch schreibt.\"",
-        "saved": "Gespeichert.",
-        "unsavedChanges": "Änderungen nicht gespeichert.",
-        "reset": "Zurücksetzen",
-        "save": "Speichern",
-        "saving": "Speichere…"
-      },
       "gallery": {
         "title": "Persona-Vorlage auswählen",
         "close": "Schließen",
         "role": "Rolle: {role}",
         "customLabel": "Custom",
         "customDescription": "Keine Vorlage anwenden — eigene Achsen verwenden.",
-        "prefillSkill": "Skill-Felder ebenfalls vorbefüllen ({role})",
         "cancel": "Abbrechen",
         "apply": "Anwenden",
         "applying": "Anwenden…",
@@ -3850,28 +3897,6 @@
         "title": "Persona Radar",
         "comparisonPrefix": "Persona vs.",
         "comparisonNeutral": "Neutral (50)"
-      },
-      "quality": {
-        "heading": "Quality",
-        "tokensPrefix": "Tokens:",
-        "loading": "Lade…",
-        "refresh": "Aktualisieren",
-        "dimensions": {
-          "completeness": "Vollständigkeit",
-          "tokenEfficiency": "Token-Effizienz",
-          "ruleQuality": "Regel-Qualität",
-          "specificity": "Spezifität"
-        },
-        "sweetspot": {
-          "under": "unterversorgt",
-          "over": "überfrachtet",
-          "sweet": "Sweet Spot"
-        },
-        "tokenHealth": {
-          "warning": "Warnung",
-          "critical": "kritisch",
-          "ok": "OK"
-        }
       },
       "conflicts": {
         "sycophancyHighDirectnessLow": "Sycophancy=high erzwingt Devil's-Advocate-Rules; directness ≤ 30 sagt „diplomatisch\". Modell wird eines der beiden ignorieren. Empfehlung: directness ≥ 50 oder sycophancy=medium.",
@@ -4063,7 +4088,7 @@
       "deployReady": "Deploy-ready",
       "rollback": "Rollback",
       "downloadPlugin": "Plugin",
-      "downloadPluginTitle": "Plugin-ZIP — direkt installierbar via /install/packages/upload (inkl. AGENT.md mit persona/quality)",
+      "downloadPluginTitle": "Plugin-ZIP — direkt installierbar via /install/packages/upload",
       "downloadBundle": "Bundle",
       "downloadBundleTitle": "Profile-Bundle — für cross-instance-Migration via /api/v1/profiles/import-bundle",
       "toastMarkedDeployReady": "Als deploy-ready markiert",
@@ -4096,7 +4121,7 @@
       "closeAria": "Schließen",
       "diffGateEyebrow": "Bereitstellungs-Diff-Gate",
       "publishLeadPrefix": "Diese Surface wird in die Plugin-Registry deiner Instanz geschrieben. Nach „Bereitstellen“ ist",
-      "publishLeadSuffix": "für alle Agents in deinem Tenant verfügbar — nicht öffentlich.",
+      "publishLeadSuffix": "kann Agenten in deinem Tenant freigegeben werden — nicht öffentlich.",
       "back": "Zurück",
       "publishing": "Stelle bereit …",
       "succeeded": "Erfolgreich",
@@ -4109,11 +4134,6 @@
       "kvDomain": "Domain",
       "kvTemplate": "Template",
       "kvDescription": "Beschreibung",
-      "sectionSkill": "Skill / System-Prompt",
-      "kvRole": "Rolle",
-      "kvTonality": "Tonalität",
-      "skillPromptSlotSummary": "skill-prompt slot ({count} Zeichen)",
-      "noSkillPromptSlot": "Kein dediziertes skill-prompt-Slot — der Agent läuft mit der Boilerplate-Default-Anweisung.",
       "sectionTools": "Tools",
       "toolsCount": "{count, plural, one {# Tool} other {# Tools}}",
       "noToolsDefined": "Keine Tools definiert.",
@@ -4155,7 +4175,8 @@
       "manifestPreviewRefreshAria": "Manifest-Vorschau aktualisieren",
       "manifestPreviewCloseAria": "Manifest-Vorschau schließen",
       "manifestPreviewLoading": "# (Vorschau wird geladen)",
-      "previewError": "Preview-Fehler"
+      "previewError": "Preview-Fehler",
+      "kvKind": "Art"
     },
     "common": {
       "missingCountAria": "{count} fehlt",
@@ -4169,10 +4190,10 @@
     },
     "drafts": {
       "list": {
-        "metaTitle": "Plugin-Builder · omadia",
-        "eyebrow": "Plugin-Builder",
+        "metaTitle": "Plugin Builder · omadia",
+        "eyebrow": "Plugin Builder",
         "headline": "Neue Plugins bauen.",
-        "lede": "Ein Plugin kann deterministischen Code bündeln (die Tools und Integrationen, auf denen die Plattform läuft), die Agents, die damit arbeiten, oder beides zusammen. Lege hier Drafts an, iteriere parallel an mehreren und installiere sie per Klick. Jeder Draft bleibt in deinem persönlichen Arbeitsbereich, sichtbar nur für dich.",
+        "lede": "Der Plugin Builder erzeugt Fähigkeits-Plugins als Code: Integrationen mit einem externen System und Tools mit lokaler Logik. Operatoren geben sie Agenten frei; Persönlichkeit und Anweisungen gehören zum Agenten (Agent Builder). Lege hier Drafts an, iteriere parallel an mehreren und installiere sie per Klick. Jeder Draft bleibt in deinem persönlichen Arbeitsbereich, sichtbar nur für dich.",
         "scope": {
           "draft": "Entwurf",
           "published": "Bereitgestellt",
@@ -4203,10 +4224,10 @@
           "label": "Fehler",
           "loadFailed": "Drafts konnten nicht geladen werden."
         },
-        "footerStamp": "omadia · Plugin-Builder"
+        "footerStamp": "omadia · Plugin Builder"
       },
       "detail": {
-        "metaTitle": "Workspace · Agent-Builder · omadia",
+        "metaTitle": "Workspace · Plugin Builder · omadia",
         "error": {
           "label": "Fehler",
           "loadFailed": "Workspace konnte nicht geladen werden.",
@@ -4538,18 +4559,18 @@
     "hero": {
       "eyebrow": "Hub",
       "headline": "Plugins für die omadia-Plattform.",
-      "lead": "Der Hub ist unser Katalog für die bereitgestellten Plugins. Er bündelt Integrations (Credential-Container), Agents (Domain-Capabilities) und Channels (User-Kanäle wie Teams, Telegram). Ein Klick auf eine Kachel zeigt Berechtigungen, Secrets und Abhängigkeiten vor der Installation."
+      "lead": "Der Hub ist unser Katalog fertiger Plugins. Ein Plugin ist nur die Lieferform: Es bringt Fähigkeiten (Zugang zu einem System, ein Werkzeug oder Know-how), die du Agenten gibst, einen Kanal, ein Modell, einen Archetyp, ein Systemmodul oder Agentenvorlagen. Ein Klick auf eine Kachel zeigt Berechtigungen, Secrets und Abhängigkeiten vor der Installation."
     },
     "page": {
       "metaTitle": "Hub · omadia",
       "filters": {
         "all": "Alle",
-        "integration": "Integrations",
-        "agent": "Agents",
-        "channel": "Channels",
-        "tool": "Tools",
-        "extension": "Extensions",
-        "archetype": "Archetypen"
+        "capabilities": "Fähigkeiten",
+        "channels": "Kanäle",
+        "models": "Modelle",
+        "archetypes": "Archetypen",
+        "systemModules": "Systemmodule",
+        "templates": "Agentenvorlagen"
       },
       "unknownLoadError": "Unbekannter Fehler beim Laden des Katalogs.",
       "filterCategoryAria": "Kategorie filtern",
@@ -4744,14 +4765,14 @@
       "update": "Aktualisieren",
       "installed": "Installiert",
       "active": "aktiv",
-      "installedNext": "\"{name}\" installiert — jetzt an einen Agenten anhängen.",
+      "installedNext": "„{name}“ ist installiert und noch keinem Agenten freigegeben. Gib es den Agenten frei, die es nutzen sollen.",
       "toManageOrchestrators": "Agenten verwalten",
       "nextLlm": "„{name}“ ist installiert, aber der zugewiesene LLM-Anbieter hat noch keinen geprüften Zugang.",
       "nextSetup": "„{name}“ ist installiert, braucht aber noch Setup, bevor es laufen kann.",
       "nextRunning": "„{name}“ ist installiert und läuft.",
-      "nextIntegration": "„{name}“ läuft. Agenten, die davon abhängen, nutzen es automatisch – anzubinden ist nichts.",
-      "nextAttached": "„{name}“ ist an {agents} angehängt.",
-      "toOrchestrators": "An einen Agenten anhängen",
+      "nextIntegration": "„{name}“ läuft. Keinem Agenten ist es freigegeben, bis du es freigibst.",
+      "nextAttached": "„{name}“ ist für {agents} freigegeben.",
+      "toOrchestrators": "Zu den Agenten",
       "toSetup": "Einrichtung abschließen ({count} fehlen)",
       "toLlmProvider": "LLM-Zugang einrichten",
       "toChat": "Im Chat ausprobieren",
@@ -4806,6 +4827,13 @@
         "requirements": {
           "own_channel_identity": "Eine eigene Identität im Kanal, in dem er arbeitet (in Teams ein eigener Bot). Er spricht nie über die Identität eines anderen Agenten."
         }
+      },
+      "systemModuleConfirm": {
+        "title": "Systemmodul {plugin} installieren?",
+        "lead": "{plugin} ist ein Systemmodul: Infrastruktur von omadia selbst, die allen Agenten und Administratoren dient. Es wird keinem Agenten zugeordnet. Installiere es nur, wenn du diese Infrastruktur auf dieser Instanz haben willst.",
+        "confirm": "Systemmodul installieren",
+        "confirming": "Wird installiert…",
+        "cancel": "Abbrechen"
       },
       "setupGuide": "Installationsanleitung",
       "noConfigNeeded": "Dieses Plugin erfordert keine Konfiguration — bestätige die Installation rechts unten.",
@@ -4990,7 +5018,9 @@
         "zipTooManyEntries": "Das Archiv enthält zu viele Dateien.",
         "zipFileTooLarge": "Eine Datei im Archiv ist entpackt zu groß.",
         "zipTotalTooLarge": "Das entpackte Archiv überschreitet die Größengrenze.",
-        "archetypeConfirmationRequired": "Version {toVersion} von {pluginId} ändert mehr als die Version der installierten {fromVersion}: Sie macht das Plugin zum Archetyp-Plugin, ändert, was Agenten seines Archetyps dürfen, oder verschiebt seine Tabellen endgültig in ein eigenes Datenbankschema. Bestätige das Update ausdrücklich."
+        "archetypeConfirmationRequired": "Version {toVersion} von {pluginId} ändert mehr als die Version der installierten {fromVersion}: Sie macht das Plugin zum Archetyp-Plugin, ändert, was Agenten seines Archetyps dürfen, oder verschiebt seine Tabellen endgültig in ein eigenes Datenbankschema. Bestätige das Update ausdrücklich.",
+        "retiredKind": "{pluginId} hat die abgekündigte Art 'agent'. Ein Plugin liefert Fähigkeiten und darf Agentenvorlagen mitbringen, ist aber nie selbst ein Agent.",
+        "personaDeclared": "{pluginId} legt eine eigene Persona oder einen eigenen Absender fest ({field}). Identität und Persönlichkeit gehören zu einem Agenten oder als inaktive Voreinstellung in eine Agentenvorlage."
       },
       "replacedVersion": "Die zuvor hochgeladene Version {previous} wurde ersetzt.",
       "confirmArchetypeUpdate": "Trotzdem aktualisieren"
@@ -5307,7 +5337,7 @@
       "revokeConfirm": "Grant entziehen",
       "kind": {
         "agent": "Agent",
-        "subagent": "Sub-Agent",
+        "subagent": "Helfer",
         "skill": "Skill",
         "plugin": "Plugin"
       },
@@ -5331,7 +5361,7 @@
       "unresolved": "nicht aufgelöst",
       "kind": {
         "agent": "Agent",
-        "subagent": "Sub-Agent",
+        "subagent": "Helfer",
         "skill": "Skill",
         "plugin": "Plugin",
         "unattributed": "Nicht zugeordnet",
@@ -7249,5 +7279,69 @@
       "undoing": "Wird rückgängig gemacht",
       "undone": "{count, plural, =0 {Kein Eintrag entfernt.} one {# Eintrag entfernt — das Feld ist wieder maskiert.} other {# Einträge entfernt — die Felder sind wieder maskiert.}}"
     }
+  },
+  "agentReach": {
+    "heading": "Reichweite",
+    "hint": "Jedes angebundene System, das dieser Agent über seine Freigaben lesen oder schreiben kann.",
+    "empty": "Dieser Agent erreicht kein angebundenes System.",
+    "unavailable": "Die Reichweite lässt sich gerade nicht ermitteln.",
+    "connected": "Diese Instanz hat {count, plural, =0 {kein angebundenes System} one {# angebundenes System} other {# angebundene Systeme}}.",
+    "summary": "Reichweite: {count} von {total} angebundenen Systemen ({reads} lesend, {writes} schreibend)",
+    "summaryNone": "Reichweite: kein angebundenes System",
+    "broadBadge": "alle angebundenen Systeme",
+    "broadWarning": "Dieser Agent erreicht alle angebundenen Systeme. Wer diesen Agenten erreicht, hält den Schlüssel zu allen.",
+    "read": "lesen",
+    "write": "schreiben",
+    "undeclared": "Gibt nichts über seinen Zugriff an – lesen und schreiben angenommen.",
+    "typePlugin": "Plugin",
+    "typeMcp": "MCP-Server",
+    "viaPlugins": "über {plugins}",
+    "confirmTitle": "{agent} Zugriff auf alle angebundenen Systeme geben?",
+    "confirmBody": "Nach dieser Änderung erreicht {agent} alle {count} angebundenen Systeme. Wer diesen Agenten erreicht, hält den Schlüssel zu jedem davon. Die Änderung wird im Audit-Log festgehalten.",
+    "confirmYes": "Zugriff auf alles freigeben",
+    "cancel": "Abbrechen",
+    "grant": {
+      "heading": "Agenten freigeben",
+      "hint": "Die Installation hat {plugins} keinem Agenten gegeben. Wähle die Agenten, die es nutzen dürfen – vorausgewählt ist keiner.",
+      "noAgents": "Es gibt noch keinen Agenten. Lege einen auf der Seite „Agenten“ an und gib es dort frei.",
+      "already": "bereits freigegeben",
+      "submit": "Für ausgewählte Agenten freigeben",
+      "submitting": "Wird freigegeben…",
+      "done": "Freigegeben für {agents}.",
+      "declined": "Nicht freigegeben für {agents}: Der Zugriff auf alle angebundenen Systeme wurde nicht bestätigt.",
+      "failed": "Die Freigabe ist fehlgeschlagen: {detail}",
+      "loadFailed": "Die Agenten konnten nicht geladen werden, deshalb lässt sich dieses Plugin hier keinem Agenten anbieten: {detail}. Es ist keinem Agenten freigegeben, bis du es auf der Seite eines Agenten freigibst."
+    },
+    "firstRun": {
+      "eyebrow": "Erster Start",
+      "title": "Richte deinen ersten Agenten ein",
+      "body": "Ein Agent ist ein virtueller Kollege. Gib ihm einen Namen und wähle die Fähigkeiten, die er bekommt. Nichts ist vorausgewählt, und keine zu wählen ist in Ordnung – Fähigkeiten kannst du später freigeben.",
+      "nameLabel": "Name",
+      "descriptionLabel": "Beschreibung (optional)",
+      "capabilitiesLabel": "Fähigkeiten",
+      "capabilitiesHint": "Jede Fähigkeit gibt dem Agenten Zugriff auf ein System oder Werkzeug. Gib nur frei, was er braucht.",
+      "capabilitiesEmpty": "Es ist noch kein Fähigkeits-Plugin installiert. Installiere eines im Store und gib es danach frei.",
+      "submit": "Agent anlegen",
+      "submitting": "Wird angelegt…",
+      "failed": "Der Agent konnte nicht angelegt werden: {detail}",
+      "loadFailed": "Die Ersteinrichtung konnte nicht geladen werden: {detail}"
+    },
+    "confirmDefaultTitle": "{agent} zum Default-Agenten machen?",
+    "confirmDefaultBody": "{agent} erreicht alle {count} angebundenen Systeme. Als Default-Agent beantwortet er Nachrichten, die an keinen Agenten gerichtet sind; wer schreibt, ohne einen Agenten zu nennen, erreicht damit jedes dieser Systeme. Die Änderung wird im Audit-Log festgehalten.",
+    "confirmDefaultYes": "Zum Default-Agenten machen"
+  },
+  "agentAvailability": {
+    "legend": "Wer diesen Agenten erreichen kann",
+    "everyone": "Alle",
+    "principalsHint": "Oder nur diese Personen und Rollen:",
+    "principalLabel": "Person oder Rolle",
+    "principalPlaceholder": "user:… oder role:…",
+    "addPrincipal": "Hinzufügen",
+    "removePrincipal": "{principal} entfernen",
+    "principalInvalid": "Gib „user:“ mit einer Personen-ID oder „role:“ mit einem Rollennamen ein.",
+    "restrictChannels": "Nur in bestimmten Kanälen",
+    "channelsLabel": "Kanäle (durch Komma getrennt)",
+    "channelsPlaceholder": "teams, web",
+    "reachesNobody": "Mit diesen Einstellungen erreicht niemand diesen Agenten."
   }
 }

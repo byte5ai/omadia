@@ -196,7 +196,7 @@ describe('loadBuildTemplateConfig', () => {
     const cfg = await loadBuildTemplateConfig();
     assert.ok('zod' in cfg.npmDeps, 'expected zod in npmDeps');
     // Sanity: the default-path constant points at a valid file
-    assert.match(DEFAULT_BOILERPLATE_PACKAGE_JSON, /agent-integration\/package\.json$/);
+    assert.match(DEFAULT_BOILERPLATE_PACKAGE_JSON, /integration\/package\.json$/);
   });
 
   it('merges integration packages from serviceTypeRegistry into workspaceDeps (Theme A)', async () => {

@@ -16,6 +16,8 @@ import type {
   InstallResponse,
 } from '../../../../_lib/builderTypes';
 
+import { effectivePluginKind, normalizeTemplateId } from './pluginKind';
+
 /**
  * Frontend mirror of middleware's `bumpPatchVersion` (Theme C). Strips
  * any prerelease tag and increments the patch segment. Returns input
@@ -294,7 +296,6 @@ export function InstallDiffModal({
 
 function DiffBody({ draft, t }: { draft: Draft; t: InstallT }): React.ReactElement {
   const spec = draft.spec;
-  const skillPromptSlot = draft.slots['skill-prompt'];
   // Skeleton arrays may be undefined on drafts that were persisted before
   // the LLM filled every section (patch_spec can omit untouched fields).
   // The rest of the builder UI follows the same `?? []` convention, see
@@ -314,29 +315,9 @@ function DiffBody({ draft, t }: { draft: Draft; t: InstallT }): React.ReactEleme
           k={t('kvDomain')}
           v={<span className="font-mono-num">{spec.domain || '—'}</span>}
         />
-        <KV k={t('kvTemplate')} v={spec.template ?? 'agent-integration'} />
+        <KV k={t('kvKind')} v={effectivePluginKind(spec)} />
+        <KV k={t('kvTemplate')} v={normalizeTemplateId(spec.template)} />
         <KV k={t('kvDescription')} v={spec.description} />
-      </Section>
-
-      <Section title={t('sectionSkill')}>
-        <KV k={t('kvRole')} v={spec.skill.role} />
-        {spec.skill.tonality ? (
-          <KV k={t('kvTonality')} v={spec.skill.tonality} />
-        ) : null}
-        {skillPromptSlot ? (
-          <details className="mt-2 rounded-md border border-[color:var(--divider)] bg-[color:var(--bg-soft)]">
-            <summary className="cursor-pointer px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-muted)]">
-              {t('skillPromptSlotSummary', { count: skillPromptSlot.length })}
-            </summary>
-            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words border-t border-[color:var(--divider)] px-3 py-2 text-[11px] font-mono leading-relaxed text-[color:var(--fg-strong)]">
-              {skillPromptSlot}
-            </pre>
-          </details>
-        ) : (
-          <p className="text-[11px] italic text-[color:var(--fg-subtle)]">
-            {t('noSkillPromptSlot')}
-          </p>
-        )}
       </Section>
 
       <Section

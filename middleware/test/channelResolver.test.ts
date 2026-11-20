@@ -8,9 +8,7 @@
  *     `no_agent` notice when that entry is `off` or missing.
  *  3. #2055 / #1880 — a binding to a disabled agent is rejected with
  *     `agent_disabled` naming it; the default agent does not answer instead.
- *  4. B1 — `attachAllPlugins` hydrates an agent with every supplied plugin
- *     (the former `ensureFallbackAgent` first-boot seed is gone with #2055).
- *  5. Decision logging — every `resolve()` emits exactly one structured
+ *  4. Decision logging — every `resolve()` emits exactly one structured
  *     log line carrying channelType, channelKey, decision, and the match.
  */
 
@@ -34,7 +32,6 @@ import {
   type ConfigStore,
 } from '../packages/harness-orchestrator/src/registry/configStore.js';
 import { OrchestratorRegistry } from '../packages/harness-orchestrator/src/registry/index.js';
-import { attachAllPlugins } from '../packages/harness-orchestrator/src/registry/onboarding.js';
 import type { DefaultAgentEntryRow } from '../packages/harness-orchestrator/src/registry/routingTables.js';
 import { ChannelResolver } from '../packages/harness-orchestrator/src/routing/channelResolver.js';
 
@@ -296,37 +293,6 @@ test('SC-008: binding-move surfaces on next resolve (registry diff handles in-fl
     resolver.resolve('teams', '28:public-bot').agent?.agent.slug,
     'general',
   );
-});
-
-test('B1: attachAllPlugins attaches every supplied plugin, skipping the orchestrator id', async () => {
-  const upserts: Array<{ agentId: string; pluginId: string }> = [];
-  const store = {
-    upsertAgentPlugin: (agentId: string, input: { pluginId: string }) => {
-      upserts.push({ agentId, pluginId: input.pluginId });
-      return Promise.resolve({
-        agentId,
-        pluginId: input.pluginId,
-        config: {},
-        enabled: true,
-        createdAt: new Date(0),
-      });
-    },
-  } as unknown as ConfigStore;
-
-  const attached = await attachAllPlugins(store, '00000000-0000-0000-0000-000000000099', [
-    '@omadia/orchestrator', // must be filtered out (it IS the runtime)
-    '@omadia/memory',
-    'de.byte5.integration.microsoft365',
-    '@omadia/diagrams',
-  ]);
-  assert.equal(attached, 3);
-  assert.deepEqual(
-    upserts.map((u) => u.pluginId),
-    ['@omadia/memory', 'de.byte5.integration.microsoft365', '@omadia/diagrams'],
-  );
-  for (const u of upserts) {
-    assert.equal(u.agentId, '00000000-0000-0000-0000-000000000099');
-  }
 });
 
 test('#2060: a binding to a facilitator is rejected at resolve time, never answered through a foreign bot', async () => {

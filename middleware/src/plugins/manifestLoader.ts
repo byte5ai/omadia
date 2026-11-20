@@ -31,6 +31,7 @@ import type {
 import { PLUGIN_KINDS, TOOL_SIDE_EFFECTS } from '../api/admin-v1.js';
 import { parseSqlPermission } from '../platform/pluginSqlGrants.js';
 import { readArchetypeManifest, type ArchetypeManifestDescriptor } from './archetypeManifest.js';
+import { readAgentTemplates, type AgentTemplate } from './agentTemplateManifest.js';
 import {
   MAX_DECLARED_PUBLIC_PATHS,
   publicPathEntrySchema,
@@ -556,6 +557,14 @@ export function adaptManifestV1(
     );
   }
   const toolSideEffects = extractToolSideEffects(doc['capabilities'], id);
+  // Spec 2042 §5.10 — inactive presets the operator turns into agents. Read
+  // strictly for the same reason as the archetype block above.
+  const templatesRead = readAgentTemplates(doc['agent_templates'], kind);
+  if ('error' in templatesRead) {
+    console.warn(`[catalog] manifest rejected: plugin '${id}': ${templatesRead.error}.`);
+    return null;
+  }
+  const agentTemplates: readonly AgentTemplate[] = templatesRead.templates;
   const dependsOn = extractStringArray(doc['depends_on']);
   const jobs = extractJobs(doc['jobs']);
   const provides = extractCapabilityList(doc['provides'], id, 'provides');
@@ -704,6 +713,7 @@ export function adaptManifestV1(
   if (channel) result = { ...result, channel };
   if (archetype) result = { ...result, archetype: toPluginArchetype(archetype) };
   if (Object.keys(toolSideEffects).length > 0) result = { ...result, tool_side_effects: toolSideEffects };
+  if (agentTemplates.length > 0) result = { ...result, agent_templates: [...agentTemplates] };
   if (adminUiPath) result = { ...result, admin_ui_path: adminUiPath };
   if (isReferenceOnly) result = { ...result, is_reference_only: true };
   if (multiInstanceJustification) {

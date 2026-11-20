@@ -66,8 +66,7 @@ export function resolveConfiguredModel(
  *     registry is a curated subset, not the universe of valid API ids — an id
  *     the registry does not list may still be served (e.g. an undated default
  *     or an operator-typed id). Passing it through preserves pre-resolution
- *     behaviour, matching the `resolveModelRef(x)?.modelId ?? x` contract used
- *     elsewhere (e.g. `builderPreviewPrompt`).
+ *     behaviour, matching the `resolveModelRef(x)?.modelId ?? x` contract.
  *   - empty / whitespace → `undefined` (no model specified → caller falls back)
  *
  * The CLI provider owns its own alias scheme (`sonnet`/`opus`) and must be
