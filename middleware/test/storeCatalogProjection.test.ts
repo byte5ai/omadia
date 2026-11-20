@@ -497,4 +497,26 @@ describe('store · retired kinds', () => {
       },
     );
   });
+
+  it('an uninstalled hub download of a retired kind yields to the hub’s migrated version', async () => {
+    await withStore(
+      {
+        catalog: [plugin(CONFLUENCE, { version: '0.3.0', kind: 'agent', setup_fields: [] })],
+        packages: [pkg(CONFLUENCE, '0.3.0', 'registry:omadia-public', HUB_SHA_030)],
+      },
+      async (base) => {
+        const item = (await list(base)).find((p) => p.id === CONFLUENCE)!;
+        assert.equal(item.install_state, 'available');
+        assert.equal(item.version, '0.3.3');
+        assert.equal(item.kind, 'tool');
+      },
+    );
+  });
+
+  it('says why a retired-kind package is incompatible', async () => {
+    await withStore({ catalog: [plugin('@acme/old-agent', { kind: 'agent' })] }, async (base) => {
+      const item = (await list(base)).find((p) => p.id === '@acme/old-agent')!;
+      assert.match((item.incompatibility_reasons ?? []).join(' '), /kind 'agent' is retired/);
+    });
+  });
 });
