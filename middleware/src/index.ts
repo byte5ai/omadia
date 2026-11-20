@@ -126,7 +126,6 @@ import type {
 } from '@omadia/orchestrator';
 import {
   RUN_TRACE_STATS_SERVICE,
-  attachNewPluginsToFallbackAgent,
   setDatasetVaultKeyFallback,
 } from '@omadia/orchestrator';
 import { createMemoryRouter } from './routes/memory.js';
@@ -412,11 +411,6 @@ import {
   builtInOptOutsPathFor,
   FileBuiltInOptOutStore,
 } from './plugins/builtInOptOuts.js';
-import {
-  attachablePluginIds,
-  createPendingDefaultAttach,
-  withInstalledParents,
-} from './plugins/defaultOrchestratorAttach.js';
 import {
   facilitatorGrantablePluginIds,
   resolveFacilitationEngine,
@@ -1461,11 +1455,10 @@ async function main(): Promise<void> {
     );
   }
 
-  // Phase B (B1) — publish `pluginCapabilities@1` so the orchestrator's
-  // first-boot onboarding (`ensureFallbackAgent`) can hydrate the fallback
-  // Agent with every installed plugin, and so the registry's snapshot
+  // Phase B (B1) — publish `pluginCapabilities@1` so the registry's snapshot
   // validation has manifest metadata (multi_instance / installed /
-  // memory-scope) to reject impossible configurations.
+  // memory-scope) to reject impossible configurations. (#2054: it no longer
+  // lists installed plugins for a first-boot attach — the seed holds none.)
   //
   // Sourced from the freshly-loaded PluginCatalog + InstalledRegistry —
   // published BEFORE `toolPluginRuntime.activateAllInstalled()` further
@@ -1496,21 +1489,6 @@ async function main(): Promise<void> {
     // #2060 — the one plugin a facilitator-kind agent may be granted.
     facilitatorGrantable(): readonly string[] {
       return facilitatorGrantablePluginIds(facilitationEngineSources());
-    },
-    listInstalled(): readonly string[] {
-      // Include `active` AND `inactive` plugins (the latter may simply
-      // not have activated yet on this boot). Drop `errored` only —
-      // validateSnapshot would reject those, and the operator should fix
-      // the underlying manifest before the platform re-attaches them.
-      // #1601 — and reference-only plugins: the only consumer is the
-      // fallback seed's attach, and those must never be attached.
-      return attachablePluginIds(
-        installedRegistry
-          .list()
-          .filter((entry) => entry.status !== 'errored')
-          .map((entry) => entry.id),
-        pluginCatalog,
-      );
     },
   });
 
@@ -1955,52 +1933,14 @@ async function main(): Promise<void> {
     );
   };
 
-  // #1491 / #1498 — the one "attach to the default orchestrator" routine for
-  // every kernel install path (see `defaultOrchestratorAttach.ts`): Hub
-  // install, upload and store reinstall of ANY plugin kind (not only agents),
-  // together with the plugin's installed `depends_on` parents, and the
-  // built-ins the boot installs on an existing instance. First boot runs the
-  // same `attachAllPlugins` primitive via `ensureFallbackAgent`. Rows that
-  // already exist are left alone, so an operator's disable/config survives.
-  // Answers `false` when the orchestrator's config store does not exist yet.
-  const attachToDefaultOrchestrator = async (
-    pluginIds: readonly string[],
-  ): Promise<boolean> => {
-    const store =
-      serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
-    if (!store) return false; // no-DB / chat-disabled boot — nothing to wire
-    const ids = attachablePluginIds(
-      withInstalledParents(
-        pluginIds.filter((id) => id !== ORCHESTRATOR_PLUGIN_ID),
-        pluginCatalog,
-        installedRegistry,
-      ),
-      pluginCatalog,
-    );
-    if (ids.length === 0) return true;
-    const { agentId, attached } = await attachNewPluginsToFallbackAgent(
-      store,
-      ids,
-      (msg, fields) =>
-        console.warn(
-          `[middleware] default-orchestrator attach: ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`,
-        ),
-    );
-    if (agentId && attached.length > 0) {
-      console.log(
-        `[middleware] attached to the default orchestrator: ${attached.join(', ')}`,
-      );
-      // Refresh `entry.plugins` from the DB so the scoping check sees the new
-      // rows. Idempotent no-op when unchanged. A changed plugin set is a full
-      // `rebuild` (reason `plugin_grants`, #989): conversation history and the
-      // session's Agent binding survive it, and the new plugin set applies
-      // from the next turn.
-      await serviceRegistry
-        .get<MultiOrchestratorRegistry>('orchestratorRegistry')
-        ?.reload();
-    }
-    return true;
-  };
+  // #2054 / INV-8 (spec 2042) — no install path attaches a plugin to any
+  // agent. Hub install, upload, store reinstall, profile apply and the
+  // built-ins the boot seeds used to attach every plugin to the default agent
+  // (#1491 / #1498), which made it a master key to every connected system.
+  // The operator grants a capability plugin to the agents they pick (the
+  // store's "grant to agents" step, `PATCH /api/v1/operator/agents/:slug/plugins`).
+  // The one exception is archetype-specific, not a default-agent attach: the
+  // facilitation engine goes to the facilitators (`attachFacilitationEngine`).
 
   /** #2043 — see `platform/facilitatorEngineAttach.ts`. Never throws. */
   const attachFacilitationEngine = async (): Promise<void> => {
@@ -2022,27 +1962,8 @@ async function main(): Promise<void> {
     }
   };
 
-  const propagatePluginInstall = async (
-    pluginId: string,
-    opts: { attach: boolean } = { attach: true },
-  ): Promise<void> => {
+  const propagatePluginInstall = async (pluginId: string): Promise<void> => {
     if (pluginId === ORCHESTRATOR_PLUGIN_ID) return;
-    try {
-      // Keep the "fallback Agent has every installed plugin enabled"
-      // invariant alive at runtime. Un-slugged chat routes to the fallback
-      // Agent (getDefaultSlug → slugForFallback); without an enabled
-      // `agent_plugins` row, `scopeDomainToolsToPlugins` would withhold the
-      // new tool even after it is hydrated. Without a config store yet
-      // (key-less boot) the id waits for the orchestrator's activation.
-      if (opts.attach && !(await attachToDefaultOrchestrator([pluginId]))) {
-        pendingDefaultAttach.enqueue(pluginId);
-      }
-    } catch (err) {
-      console.error(
-        `[middleware] propagatePluginInstall(${pluginId}) enable/reload FAILED:`,
-        err instanceof Error ? err.message : String(err),
-      );
-    }
     // #2043 — an engine installed (or replaced) while facilitators exist is
     // attached to them; nothing else ever is.
     await attachFacilitationEngine();
@@ -2060,17 +1981,14 @@ async function main(): Promise<void> {
     // #2043 — an uninstalled engine ends its message subscriptions at once.
     void conversationMessagesRef.current?.reconcileNow();
 
-    const store =
-      serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+    // #2054 — the uninstall already removed the plugin's grants from EVERY
+    // agent (`purgePluginAgentBindings`, before this hook); the registry only
+    // has to pick that up. It used to clean the fallback Agent alone.
     const reg =
       serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
-    if (!store || !reg) return;
+    if (!reg) return;
     try {
-      const { fallbackAgentId } = await store.getPlatformSettings();
-      if (fallbackAgentId) {
-        await store.removeAgentPlugin(fallbackAgentId, pluginId);
-        await reg.reload();
-      }
+      await reg.reload();
     } catch (err) {
       console.error(
         `[middleware] propagatePluginUninstall(${pluginId}) disable/reload FAILED:`,
@@ -2093,12 +2011,6 @@ async function main(): Promise<void> {
   const pendingBindingPurge = createPendingBindingPurge({
     getStore: agentPluginBindingStore,
     hasDatabase: Boolean(config.DATABASE_URL),
-    isInstalled: (pluginId) => installedRegistry.has(pluginId),
-  });
-  // #1498 — built-ins the boot installs on an existing instance are queued by
-  // `runLegacyBootstrap` and attached at the same flush points as the purge.
-  const pendingDefaultAttach = createPendingDefaultAttach({
-    attach: attachToDefaultOrchestrator,
     isInstalled: (pluginId) => installedRegistry.has(pluginId),
   });
 
@@ -2127,8 +2039,7 @@ async function main(): Promise<void> {
         ? `another plugin wraps its service(s) ${shadowed.map((n) => `'${String(n)}'`).join(', ')}`
         : undefined;
     },
-    onInstalled: async (agentId, reason) => {
-      const attach = { attach: reason === 'install' };
+    onInstalled: async (agentId) => {
       // A plugin may contribute an `llm_provider` block regardless of its kind
       // (provider plugins ship as `extension`). Register it FIRST — mirroring
       // the boot-time loop — so a runtime-installed provider lands in the
@@ -2147,13 +2058,10 @@ async function main(): Promise<void> {
             console.warn(
               `[install] channel '${agentId}' installed before channelRegistry was wired — activation will run at next boot`,
             );
-            // #1491 — still attach it once the orchestrator store exists.
-            if (reason === 'install') pendingDefaultAttach.enqueue(agentId);
             return;
           }
           await channelRegistryRef.activate(agentId);
-          // #1491 — every kind is attached, like first boot does.
-          await propagatePluginInstall(agentId, attach);
+          await propagatePluginInstall(agentId);
           return;
         case 'tool':
           if (kind === 'archetype') {
@@ -2164,8 +2072,8 @@ async function main(): Promise<void> {
             // this point).
             await archetypeRegistry.sync();
             await toolPluginRuntime.activate(agentId);
-            // Never attached to the default agent (`attachablePluginIds`).
-            await propagatePluginInstall(agentId, { attach: false });
+            // Attached to no agent; only to its own archetype's agents.
+            await propagatePluginInstall(agentId);
             return;
           }
           await toolPluginRuntime.activate(agentId);
@@ -2174,16 +2082,14 @@ async function main(): Promise<void> {
           // the bootstrap removals that were still waiting for it.
           if (agentId === ORCHESTRATOR_PLUGIN_ID) {
             await pendingBindingPurge.flush();
-            await pendingDefaultAttach.flush();
           }
-          // #1491 — every kind is attached, like first boot does.
-          await propagatePluginInstall(agentId, attach);
+          await propagatePluginInstall(agentId);
           return;
         case 'agent':
           await dynamicAgentRuntime.activate(agentId);
           // Make the freshly-activated agent's tool reachable on the per-Agent
-          // orchestrators (incl. the fallback Agent) without a restart.
-          await propagatePluginInstall(agentId, attach);
+          // orchestrators that hold it without a restart.
+          await propagatePluginInstall(agentId);
       }
     },
     // #2088 — an uninstalled archetype plugin no longer delivers its archetype:
@@ -2432,10 +2338,6 @@ async function main(): Promise<void> {
       pendingBindingPurge.enqueue(pluginId);
     },
     builtInOptOuts,
-    // #1498 — queue only, same reason as above.
-    onPluginInstalled: (pluginId) => {
-      pendingDefaultAttach.enqueue(pluginId);
-    },
   });
 
   // S+8.5 sub-commit-3 — Auto-reset errored plugins whose root cause has
@@ -2609,10 +2511,6 @@ async function main(): Promise<void> {
   // #1070 — the orchestrator (an extension) has now had its chance to provide
   // `configStore`; purge the bindings of plugins bootstrap removed above.
   await pendingBindingPurge.flush();
-  // #1498 — and attach the plugins bootstrap installed above. Before the
-  // agent runtime activates, so the per-Agent hydration below already sees
-  // the new rows.
-  await pendingDefaultAttach.flush();
   // #2043 — and the facilitation engine to facilitators that predate it.
   await attachFacilitationEngine();
 
@@ -4699,6 +4597,13 @@ async function main(): Promise<void> {
     createAgentBuilderRouter({
       getConfigStore: () =>
         serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+      // #2054 — the broad-reach confirmation on MCP grants sees plugins too.
+      getReachPluginSources: () => ({ catalog: pluginCatalog, installed: installedRegistry }),
+      // Closure: adminAudit is constructed further down (undefined = log only).
+      recordAudit: async (entry) => {
+        if (adminAudit) await adminAudit.record(entry);
+        else console.log(`[security-audit] ${entry.action} ${entry.target}`);
+      },
       getGraphStore: () =>
         graphPool ? new AgentGraphStore(graphPool) : undefined,
       getRegistry: () =>
@@ -6071,10 +5976,7 @@ async function main(): Promise<void> {
             // Hub/registry install + package re-upload land here. Propagate the
             // (fresh) tool onto the per-Agent orchestrators so the new/updated
             // capability is live for the next chat turn without a restart.
-            // #1491 — an UPDATE of an installed plugin: no attach, so a plugin
-            // the operator detached stays detached (a first install attaches
-            // via `onInstalled(id, 'install')`).
-            await propagatePluginInstall(agentId, { attach: false });
+            await propagatePluginInstall(agentId);
           }
         }
       },
@@ -6636,20 +6538,8 @@ async function main(): Promise<void> {
       catalog: pluginCatalog,
       registry: installedRegistry,
       builtInOptOuts,
-      // #1491 — profile apply is an install path too: attach the newly
-      // registered plugins now (or once the orchestrator store exists).
-      onPluginsRegistered: async (ids) => {
-        try {
-          if (!(await attachToDefaultOrchestrator(ids))) {
-            for (const id of ids) pendingDefaultAttach.enqueue(id);
-          }
-        } catch (err) {
-          console.error(
-            `[middleware] default-orchestrator attach after profile apply FAILED for ${ids.join(', ')}:`,
-            err instanceof Error ? err.message : String(err),
-          );
-        }
-      },
+      // #2054 — profile apply attaches nothing to any agent (INV-8); the
+      // apply dialog offers the capability plugins it installed for a grant.
       ...(liveProfileStorage ? { liveStorage: liveProfileStorage } : {}),
       ...(snapshotService ? { snapshotService } : {}),
       ...(graphPool && snapshotService ? { driftSweepPool: graphPool } : {}),

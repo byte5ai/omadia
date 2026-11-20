@@ -47,7 +47,9 @@ import {
 } from '@omadia/orchestrator';
 import { Router, type Request, type Response } from 'express';
 
-import { auditActorFromRequest } from '../auth/adminAuditLog.js';
+import { auditActorFromRequest, type AuditEntryInput } from '../auth/adminAuditLog.js';
+import { requireBroadReachConfirmation } from '../agents/broadReachGate.js';
+import type { ReachSources } from '../agents/agentReachSources.js';
 
 import {
   parseRequiresTools,
@@ -108,6 +110,13 @@ import type { PublicMcpKeyBindingAdminStore } from '../mcp/publicMcpKeyBindingsA
 
 export interface AgentBuilderRouterOptions {
   readonly getConfigStore: () => ConfigStore | undefined;
+  /** #2054 — the plugin side of an agent's reach (catalog + installed
+   *  registry), for the broad-reach confirmation on MCP grants. Absent = MCP
+   *  servers are the only connected systems the check sees. */
+  readonly getReachPluginSources?: () => Pick<ReachSources, 'catalog' | 'installed'>;
+  /** #2054 — the admin audit for confirmed broad-reach grants; absent = the
+   *  change is logged only. */
+  readonly recordAudit?: (entry: AuditEntryInput) => Promise<void>;
   readonly getGraphStore: () => AgentGraphStore | undefined;
   readonly getRegistry: () => OrchestratorRegistry | undefined;
   /** The orchestrator's single configured LLM provider id (live-read from the
@@ -483,6 +492,49 @@ export function createAgentBuilderRouter(
     return { config, graph, registry: options.getRegistry() };
   }
 
+  /**
+   * #2054 — spec 2042 §5.7: an MCP tool grant that gives the agent access to
+   * every connected system needs `confirmBroadReach: true` and is audited
+   * (`broadReachGate.ts`). Answers 409 and `undefined` when refused; else the
+   * audit to record once the grant is written (`null` = nothing to audit).
+   */
+  async function mcpGrantBroadReachGate(
+    l: Live,
+    req: Request,
+    res: Response,
+    agent: AgentRow,
+    added: readonly { mcpServerId: string; toolName: string }[],
+  ): Promise<AuditEntryInput | null | undefined> {
+    if (added.length === 0) return null;
+    const gate = await requireBroadReachConfirmation({
+      sources: { ...(options.getReachPluginSources?.() ?? {}), graph: l.graph },
+      agent,
+      change: 'grant',
+      currentPlugins: await l.config.listAgentPlugins(agent.id),
+      proposed: { addMcpToolGrants: added },
+      confirmed: (req.body as { confirmBroadReach?: unknown } | undefined)?.confirmBroadReach === true,
+      actor: auditActorFromRequest(req),
+    });
+    if (!gate.ok) {
+      res.status(gate.status).json(gate.body);
+      return undefined;
+    }
+    return gate.audit ?? null;
+  }
+
+  async function recordBroadReachAudit(entry: AuditEntryInput | null): Promise<void> {
+    if (!entry) return;
+    try {
+      if (options.recordAudit) await options.recordAudit(entry);
+      else console.log(`[security-audit] ${entry.action} ${entry.target}`);
+    } catch (err) {
+      console.error(
+        `[security-audit] ${entry.action} ${entry.target} could not be recorded:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   async function agentOr404(
     l: Live,
     slug: string,
@@ -538,7 +590,16 @@ export function createAgentBuilderRouter(
     try {
       const agent = await agentOr404(l, str(req.params.slug), res);
       if (!agent) return;
+      const audit = await mcpGrantBroadReachGate(
+        l,
+        req,
+        res,
+        agent,
+        await mcpGrantOfEdge(l, req.body ?? {}),
+      );
+      if (audit === undefined) return;
       const edge = await createEdge(l, agent, req.body ?? {});
+      await recordBroadReachAudit(audit);
       const diff = await reload(l);
       res.json({ edge, diff });
     } catch (err) {
@@ -2106,6 +2167,14 @@ export function createAgentBuilderRouter(
       for (const toolName of diff.toGrant) {
         await assertMcpToolAllowed(l, mcpServerId, toolName);
       }
+      const broadReachAudit = await mcpGrantBroadReachGate(
+        l,
+        req,
+        res,
+        agent,
+        diff.toGrant.map((toolName) => ({ mcpServerId, toolName })),
+      );
+      if (broadReachAudit === undefined) return;
       const revokeIds = toRevoke.flatMap(
         (toolName) => grantIdsByTool.get(toolName) ?? [],
       );
@@ -2119,6 +2188,7 @@ export function createAgentBuilderRouter(
           grantRefs: diff.toGrant,
           revokeIds,
         });
+        await recordBroadReachAudit(broadReachAudit);
       }
       if (delegation !== undefined && delegation !== server.delegation) {
         await l.graph.setMcpServerDelegation(mcpServerId, delegation);
@@ -2865,6 +2935,25 @@ async function assertHelperGrantHeldByAgent(
 }
 
 // ── edge dispatchers ─────────────────────────────────────────────────────────
+
+/** #2054 — the MCP tool a `tool_grant` edge would grant, for the reach check. */
+async function mcpGrantOfEdge(
+  l: Live,
+  body: Record<string, unknown>,
+): Promise<Array<{ mcpServerId: string; toolName: string }>> {
+  if (body['kind'] !== 'tool_grant') return [];
+  // #2050 — a helper may only be granted what its agent already holds
+  // (`assertHelperGrantHeldByAgent`), so a helper grant never widens the
+  // agent's reach: nothing for the broad-reach gate.
+  if (String(body['source'] ?? '').startsWith('subagent:')) return [];
+  const config = (body['config'] as Record<string, unknown> | undefined) ?? {};
+  const mcpServerId = config['mcpServerId'];
+  if (config['toolKind'] !== 'mcp' || typeof mcpServerId !== 'string') return [];
+  const server = (await l.graph.listMcpServers()).find((s) => s.id === mcpServerId);
+  const rawRef = String(config['toolRef'] ?? idAfter(String(body['target'] ?? ''), 'tool'));
+  if (!server || !rawRef) return [];
+  return [{ mcpServerId, toolName: mcpToolNameFromRef(rawRef, server.name) }];
+}
 
 async function createEdge(
   l: Live,

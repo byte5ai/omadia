@@ -8,7 +8,6 @@ import { auditActorFromRequest, type AuditEntryInput } from '../auth/adminAuditL
 import type { AgentEndOfService, EndOfServiceReport } from '../platform/agentEndOfService.js';
 
 import {
-  attachAllPlugins,
   ConfigValidationError,
   FALLBACK_AGENT_SLUG,
   mcpToolNameFromRef,
@@ -56,7 +55,19 @@ import { assertFacilitatorIdentity } from '../services/facilitatorContract.js';
 import { createFacilitationEngineStatusHandler } from './facilitationEngineStatus.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
-import { attachablePluginIds } from '../plugins/defaultOrchestratorAttach.js';
+import { isCapabilityPlugin } from '../plugins/capabilityPlugins.js';
+import {
+  loadAgentReach,
+  loadReachEnvironment,
+  reachDto,
+  type ReachSources,
+} from '../agents/agentReachSources.js';
+import {
+  requireBroadReachConfirmation,
+  withPluginRow,
+  type BroadReachConfirmation,
+} from '../agents/broadReachGate.js';
+import { firstAgentSlug, onboardingTarget } from '../agents/firstAgentOnboarding.js';
 import {
   buildBotHandle,
   TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION,
@@ -154,6 +165,9 @@ interface AgentPluginCatalogEntry {
    *  operator dashboard to indent dependants under their parent in the
    *  plugin multi-select. */
   readonly depends_on: readonly string[];
+  /** #2054 — a capability plugin (`capabilityPlugins.ts`): the only kind the
+   *  install flow offers to grant to agents. */
+  readonly capability: boolean;
 }
 
 /**
@@ -210,7 +224,8 @@ const AgentCreateSchema = z.object({
 /** Slugs that collide with a static segment of this router. */
 // `deleted`: the list of tombstones and their purge (#2088). The placeholder
 // slug of a tombstone starts with `deleted-`, which no route addresses.
-const RESERVED_AGENT_SLUGS: ReadonlySet<string> = new Set(['facilitation-engine', 'deleted']);
+// `onboarding`: the first-run flow (#2054).
+const RESERVED_AGENT_SLUGS: ReadonlySet<string> = new Set(['facilitation-engine', 'deleted', 'onboarding']);
 
 const AgentPatchSchema = z.object({
   name: z.string().min(1).max(120).optional(),
@@ -274,6 +289,8 @@ const AgentPluginsSchema = z.object({
       enabled: z.boolean().optional(),
     }),
   ),
+  /** #2054 — confirms a set that gives the agent every connected system. */
+  confirmBroadReach: z.boolean().optional(),
 });
 
 /** W0c (#861) — single-plugin toggle. The plugin id lives in the BODY, not
@@ -282,6 +299,8 @@ const AgentPluginsSchema = z.object({
 const AgentPluginToggleSchema = z.object({
   id: z.string().min(1).max(200),
   enabled: z.boolean(),
+  /** #2054 — confirms a grant that gives the agent every connected system. */
+  confirmBroadReach: z.boolean().optional(),
 });
 
 const AgentBindingsSchema = z.object({
@@ -295,6 +314,15 @@ const AgentBindingsSchema = z.object({
 
 const FallbackSchema = z.object({
   slug: z.string().min(1).max(64).nullable(),
+});
+
+/** #2054 — the first-run flow: the first agent and its explicitly chosen
+ *  capabilities (none preselected, zero allowed). */
+const FirstAgentSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().max(2000).optional(),
+  plugin_ids: z.array(z.string().min(1).max(200)).max(200),
+  confirmBroadReach: z.boolean().optional(),
 });
 
 const ResolveChannelSchema = z.object({
@@ -1930,6 +1958,20 @@ export function createOperatorAgentsRouter(
     }
   };
 
+  /** #2054 — what an agent's reach is computed from; every source optional. */
+  const reachSources = (): ReachSources => ({
+    catalog: options.getPluginCatalog?.(),
+    installed: options.getInstalledRegistry?.(),
+    graph: options.getAgentGraphStore?.(),
+  });
+
+  /** #2054 — answers a refused broad-reach change; `true` = refused. */
+  const refusedBroadReach = (res: Response, gate: BroadReachConfirmation): boolean => {
+    if (gate.ok) return false;
+    res.status(gate.status).json(gate.body);
+    return true;
+  };
+
   function svc(): {
     store: ConfigStore;
     registry: OrchestratorRegistry;
@@ -2042,6 +2084,167 @@ export function createOperatorAgentsRouter(
     res.status(500).json({ error: 'internal', message: (err as Error).message });
   }
 
+  /**
+   * #2054 — the reach of every listed agent. The directory must not fail
+   * because the graph store hiccups: an agent whose reach could not be
+   * computed is listed with `reach: null` (the UI says so), and the cause is
+   * logged.
+   */
+  const directoryReach = async (
+    agents: readonly { id: string; plugins: readonly { pluginId: string; enabled: boolean }[] }[],
+  ): Promise<Map<string, ReturnType<typeof reachDto>>> => {
+    const out = new Map<string, ReturnType<typeof reachDto>>();
+    try {
+      const sources = reachSources();
+      const env = await loadReachEnvironment(sources);
+      for (const a of agents) {
+        out.set(a.id, reachDto(await loadAgentReach(sources, env, a.id, a.plugins)));
+      }
+    } catch (err) {
+      console.error(
+        '[operator-agents] agent reach for the directory FAILED:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    return out;
+  };
+
+  // ── first-run flow (#2054, spec 2042 §7 "Onboarding") ───────────────
+  // Due while the instance has no agent of the operator's making (see
+  // `firstAgentOnboarding.ts`). Offers the installed capability plugins with
+  // nothing preselected; the operator may choose none.
+  const installedCapabilities = (): Array<{ id: string; name: string; kind: string }> => {
+    const catalog = options.getPluginCatalog?.();
+    const installed = options.getInstalledRegistry?.();
+    if (!catalog || !installed) return [];
+    return installed
+      .list()
+      .flatMap((entry) => {
+        const plugin = catalog.get(entry.id)?.plugin;
+        return plugin && isCapabilityPlugin(plugin)
+          ? [{ id: plugin.id, name: plugin.name, kind: plugin.kind }]
+          : [];
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  };
+
+  const currentOnboardingTarget = async (store: ConfigStore) => {
+    const [agents, rows] = await Promise.all([store.listAgents(), store.listAllAgentPlugins()]);
+    return onboardingTarget(agents, (agentId) => rows.filter((r) => r.agentId === agentId).length);
+  };
+
+  router.get('/onboarding', async (_req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const target = await currentOnboardingTarget(live.store);
+      res.json({
+        required: target !== undefined,
+        agent: target?.kind === 'seed' ? { slug: target.agent.slug, name: target.agent.name } : null,
+        capabilities: target ? installedCapabilities() : [],
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.post('/onboarding/first-agent', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const body = FirstAgentSchema.parse(req.body);
+      const target = await currentOnboardingTarget(live.store);
+      if (!target) {
+        res.status(409).json({
+          error: 'onboarding_not_required',
+          message: 'the instance already has an agent of the operator\'s making',
+        });
+        return;
+      }
+      const offered = new Set(installedCapabilities().map((c) => c.id));
+      const pluginIds = [...new Set(body.plugin_ids)];
+      const notOffered = pluginIds.filter((id) => !offered.has(id));
+      if (notOffered.length > 0) {
+        res.status(400).json({
+          error: 'not_a_capability_plugin',
+          message: `not an installed capability plugin: ${notOffered.join(', ')}`,
+          plugin_ids: notOffered,
+        });
+        return;
+      }
+      // The reach check runs against the agent the flow writes; a new agent
+      // has no grants yet, so its id is irrelevant to the result.
+      const agentRef =
+        target.kind === 'seed'
+          ? { id: target.agent.id, slug: target.agent.slug }
+          : { id: '', slug: firstAgentSlug(body.name, RESERVED_AGENT_SLUGS) };
+      const gate = await requireBroadReachConfirmation({
+        sources: reachSources(),
+        agent: agentRef,
+        change: 'grant',
+        currentPlugins: [],
+        proposed: { plugins: pluginIds.map((pluginId) => ({ pluginId, enabled: true })) },
+        confirmed: body.confirmBroadReach === true,
+        actor: auditActorFromRequest(req),
+      });
+      if (refusedBroadReach(res, gate)) return;
+      const agent =
+        target.kind === 'seed'
+          ? await live.store.updateAgent(target.agent.id, {
+              name: body.name,
+              description: body.description ?? null,
+            })
+          : await live.store.createAgent({
+              slug: agentRef.slug,
+              name: body.name,
+              ...(body.description !== undefined ? { description: body.description } : {}),
+              status: 'enabled',
+              archetype: STANDARD_ARCHETYPE,
+            });
+      for (const pluginId of pluginIds) {
+        await live.store.upsertAgentPlugin(agent.id, { pluginId, config: {}, enabled: true });
+      }
+      if (gate.ok && gate.audit) {
+        await recordAudit({ ...gate.audit, target: `agent:${agent.id}` });
+      }
+      await live.registry.reload();
+      res.status(target.kind === 'seed' ? 200 : 201).json({
+        slug: agent.slug,
+        name: agent.name,
+        plugins: pluginIds,
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── reach of one agent (#2054, spec 2042 §5.7) ──────────────────────
+  // Every connected system the agent can read or write through its grants
+  // (plugin grants + MCP grants), read and write marked separately; derived
+  // deterministically by `computeAgentReach`.
+  router.get('/:slug/reach', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const existing = await live.store.getAgentBySlug(slug);
+      if (!existing) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const sources = reachSources();
+      const env = await loadReachEnvironment(sources);
+      const rows = await live.store.listAgentPlugins(existing.id);
+      res.json({
+        slug: existing.slug,
+        ...reachDto(await loadAgentReach(sources, env, existing.id, rows)),
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
   // ── facilitation engine state (#2043) ────────────────────────────────
   // Registered before every `/:slug/...` route; it has no slug of its own.
   router.get(
@@ -2098,6 +2301,10 @@ export function createOperatorAgentsRouter(
       const pluginsByAgent = groupBy(plugins, (p) => p.agentId);
       const bindingsByAgent = groupBy(bindings, (b) => b.agentId);
       const active = new Set(live.registry.list().map((a) => a.agent.id));
+      // #2054 — the directory shows every agent's reach (spec 2042 §5.7).
+      const reachByAgent = await directoryReach(
+        agents.map((a) => ({ id: a.id, plugins: pluginsByAgent.get(a.id) ?? [] })),
+      );
       res.json({
         agents: agents.map((a) => ({
           id: a.id,
@@ -2124,6 +2331,7 @@ export function createOperatorAgentsRouter(
             channel_type: b.channelType,
             channel_key: b.channelKey,
           })),
+          reach: reachByAgent.get(a.id) ?? null,
         })),
         fallback_agent_id: settings.fallbackAgentId,
       });
@@ -3054,11 +3262,24 @@ export function createOperatorAgentsRouter(
       const toggled = [{ pluginId: body.id, enabled: body.enabled }];
       assertFacilitatorPluginGrants(existing, toggled, engineSources());
       assertEngineOnlyForFacilitators(existing, toggled, engineSources());
+      // #2054 — a grant that gives the agent every connected system needs
+      // the operator's explicit confirmation, and is audited.
+      const gate = await requireBroadReachConfirmation({
+        sources: reachSources(),
+        agent: existing,
+        change: 'grant',
+        currentPlugins: current,
+        proposed: { plugins: withPluginRow(current, { pluginId: body.id, enabled: body.enabled }) },
+        confirmed: body.confirmBroadReach === true,
+        actor: auditActorFromRequest(req),
+      });
+      if (refusedBroadReach(res, gate)) return;
       await live.store.upsertAgentPlugin(existing.id, {
         pluginId: body.id,
         config,
         enabled: body.enabled,
       });
+      if (gate.ok && gate.audit) await recordAudit(gate.audit);
       await live.registry.reload();
       res.json({
         ok: true,
@@ -4203,6 +4424,18 @@ export function createOperatorAgentsRouter(
       assertFacilitatorPluginGrants(existing, requested, engineSources());
       assertEngineOnlyForFacilitators(existing, requested, engineSources());
       const current = await live.store.listAgentPlugins(existing.id);
+      // #2054 — see the PATCH above.
+      const gate = await requireBroadReachConfirmation({
+        sources: reachSources(),
+        agent: existing,
+        change: 'grant',
+        currentPlugins: current,
+        // `upsertAgentPlugin` writes `enabled: true` when none is given.
+        proposed: { plugins: body.plugins.map((p) => ({ pluginId: p.id, enabled: p.enabled ?? true })) },
+        confirmed: body.confirmBroadReach === true,
+        actor: auditActorFromRequest(req),
+      });
+      if (refusedBroadReach(res, gate)) return;
       const desired = new Set(body.plugins.map((p) => p.id));
       for (const p of current) {
         if (!desired.has(p.pluginId)) {
@@ -4217,6 +4450,7 @@ export function createOperatorAgentsRouter(
           ...(p.enabled !== undefined ? { enabled: p.enabled } : {}),
         });
       }
+      if (gate.ok && gate.audit) await recordAudit(gate.audit);
       await live.registry.reload();
       res.json({ ok: true, fallback: isFallback });
     } catch (err) {
@@ -4412,6 +4646,7 @@ export function createOperatorAgentsRouter(
             network_outbound: summary?.network_outbound ?? [],
             setup_fields: p.setup_fields ?? [],
             depends_on: p.depends_on ?? [],
+            capability: isCapabilityPlugin(p),
           } satisfies AgentPluginCatalogEntry;
         });
       res.json({ items: entries });
@@ -4469,72 +4704,6 @@ export function createOperatorAgentsRouter(
           privacy_profile: match.agent.privacyProfile,
         },
         via,
-      });
-    } catch (err) {
-      badRequest(res, err);
-    }
-  });
-
-  // ── reset fallback to all installed plugins (B3d) ───────────────────
-  // Re-runs the B1 catalog-attach against the CURRENT fallback Agent.
-  // Consent-bearing — only invoked from an explicit operator button so
-  // an operator who pruned the fallback is not silently re-granted
-  // capabilities. Idempotent: upserts produce the same row shape.
-  router.post('/fallback/rehydrate', async (_req: Request, res: Response) => {
-    const live = svc();
-    if (!live) return unavailable(res);
-    const installed = options.getInstalledRegistry?.();
-    if (!installed) {
-      res.status(503).json({
-        error: 'installed_registry_unavailable',
-        message:
-          'installedRegistry not wired into the operator-agents router.',
-      });
-      return;
-    }
-    try {
-      const settings = await live.store.getPlatformSettings();
-      if (!settings.fallbackAgentId) {
-        res.status(409).json({
-          error: 'no_fallback',
-          message:
-            'no fallback agent is currently configured — set one before rehydrating',
-        });
-        return;
-      }
-      const fallback = (await live.store.listAgents()).find(
-        (a) => a.id === settings.fallbackAgentId,
-      );
-      if (!fallback) {
-        res.status(404).json({ error: 'fallback_missing' });
-        return;
-      }
-      // Skip `errored` entries (validateSnapshot would reject them anyway —
-      // installedRegistry treats `errored` as un-installable until the
-      // operator fixes the manifest). Include `inactive` so a plugin that
-      // briefly stopped activating still ends up attached.
-      // #1601 — reference-only plugins never run as an agent and the Plugins
-      // tab does not list them; attaching one shows it as both "active" and
-      // "no longer installed", and the next save drops it again.
-      const installedIds = installed
-        .list()
-        .filter((e) => e.status !== 'errored')
-        .map((e) => e.id);
-      const catalog = options.getPluginCatalog?.();
-      const pluginIds = catalog
-        ? attachablePluginIds(installedIds, catalog)
-        : installedIds;
-      const attached = await attachAllPlugins(
-        live.store,
-        fallback.id,
-        pluginIds,
-      );
-      await live.registry.reload();
-      res.json({
-        ok: true,
-        slug: fallback.slug,
-        attached,
-        requested: pluginIds.length,
       });
     } catch (err) {
       badRequest(res, err);

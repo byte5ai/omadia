@@ -1,15 +1,6 @@
 import type { ConfigStore } from './configStore.js';
 
 /**
- * The orchestrator plugin's own id. It activates as part of the kernel's
- * tool runtime, but it is not a tool plugin that an Agent attaches to — it
- * IS the Agent runtime. Excluding it from the auto-attach catalog prevents
- * the operator UI from showing an unactionable "orchestrator on agent"
- * row on every Agent card.
- */
-const ORCHESTRATOR_PLUGIN_ID = '@omadia/orchestrator';
-
-/**
  * First-boot onboarding seed (US7 / T029, C2 / FR-021).
  *
  * If the operator has not yet created any Agents, seed a minimal-privilege
@@ -30,6 +21,13 @@ const ORCHESTRATOR_PLUGIN_ID = '@omadia/orchestrator';
  *
  * Returns the slug of the fallback Agent (or `undefined` if seeding was
  * skipped because non-fallback agents already exist).
+ *
+ * #2054 / INV-8 (spec 2042) — the seed holds NO capability. It used to be
+ * hydrated with every installed plugin, which made whoever reached it the
+ * holder of a master key to every connected system. The operator gives the
+ * first agent its capabilities explicitly (the first-run flow,
+ * `POST /api/v1/operator/agents/onboarding/first-agent`); nothing here or in
+ * any install path attaches a plugin to it.
  */
 
 export const FALLBACK_AGENT_SLUG = 'fallback';
@@ -77,111 +75,6 @@ export interface OnboardingOptions {
   readonly name?: string;
   readonly description?: string;
   readonly log?: (msg: string, fields?: Record<string, unknown>) => void;
-  /**
-   * Phase B (B1) — plugin IDs to attach to the fallback Agent on creation.
-   * Each ID is upserted into `agent_plugins` with `enabled: true` and
-   * empty config (operator can later edit via the dashboard, B3c).
-   *
-   * Filtered to skip the orchestrator's own id — it is the runtime, not a
-   * pluggable contribution. Passing `undefined` or `[]` reverts to the
-   * pre-B1 behaviour (zero plugins; useful in tests).
-   */
-  readonly pluginIds?: readonly string[];
-}
-
-/**
- * Phase B (B1) — attach every supplied plugin id to the given Agent via
- * `upsertAgentPlugin`. Used by `ensureFallbackAgent` on first-boot seed
- * and by the B3d "Reset fallback to all plugins" operator action.
- *
- * Idempotent: an already-attached plugin id is re-upserted with the same
- * shape so the row is rewritten but the state is identical. Per-plugin
- * failures are logged and the loop continues — one broken manifest
- * cannot block the rest of the catalog from landing on the Agent.
- *
- * Returns the count of plugins attached (successful upserts).
- */
-export async function attachAllPlugins(
-  store: Pick<ConfigStore, 'upsertAgentPlugin'>,
-  agentId: string,
-  pluginIds: readonly string[],
-  log: (msg: string, fields?: Record<string, unknown>) => void = () =>
-    undefined,
-): Promise<number> {
-  let attached = 0;
-  for (const pluginId of pluginIds) {
-    if (pluginId === ORCHESTRATOR_PLUGIN_ID) continue;
-    try {
-      await store.upsertAgentPlugin(agentId, {
-        pluginId,
-        config: {},
-        enabled: true,
-      });
-      attached += 1;
-    } catch (err) {
-      log(`onboarding: upsertAgentPlugin FAILED — skipping`, {
-        agentId,
-        pluginId,
-        error: (err as Error).message,
-      });
-    }
-  }
-  return attached;
-}
-
-/** Outcome of {@link attachNewPluginsToFallbackAgent}. */
-export interface FallbackAttachResult {
-  /** The fallback Agent's id, or `undefined` when none is set. */
-  readonly agentId: string | undefined;
-  /** Ids that got a new `agent_plugins` row. */
-  readonly attached: readonly string[];
-}
-
-/**
- * #1491 / #1498 — the runtime half of the "the fallback Agent has every
- * installed plugin" rule that first boot establishes via `attachAllPlugins`.
- * The host calls it for plugins the KERNEL just installed: a Hub install or
- * upload, or a built-in the boot seeded on an existing instance.
- *
- * Only ids WITHOUT a row on the fallback Agent are attached. An existing row
- * is the operator's (or an earlier attach's) decision, so a disabled row stays
- * disabled and a configured row keeps its config — `upsertAgentPlugin`
- * would overwrite both. A freshly installed plugin never has a row (uninstall
- * purges them), so for it this is the same as `attachAllPlugins`.
- *
- * No fallback Agent set → nothing to attach to (operator policy, see
- * `ensureFallbackAgent`); returns `agentId: undefined`.
- */
-export async function attachNewPluginsToFallbackAgent(
-  store: Pick<
-    ConfigStore,
-    'getPlatformSettings' | 'listAgentPlugins' | 'upsertAgentPlugin'
-  >,
-  pluginIds: readonly string[],
-  log: (msg: string, fields?: Record<string, unknown>) => void = () =>
-    undefined,
-): Promise<FallbackAttachResult> {
-  const { fallbackAgentId } = await store.getPlatformSettings();
-  if (!fallbackAgentId) return { agentId: undefined, attached: [] };
-  const existing = new Set(
-    (await store.listAgentPlugins(fallbackAgentId)).map((row) => row.pluginId),
-  );
-  const missing = [...new Set(pluginIds)].filter(
-    (id) => id !== ORCHESTRATOR_PLUGIN_ID && !existing.has(id),
-  );
-  const attached: string[] = [];
-  for (const pluginId of missing) {
-    // One id per call so the result names exactly what landed; the per-id
-    // failure handling is `attachAllPlugins`' own.
-    const count = await attachAllPlugins(
-      store,
-      fallbackAgentId,
-      [pluginId],
-      log,
-    );
-    if (count > 0) attached.push(pluginId);
-  }
-  return { agentId: fallbackAgentId, attached };
 }
 
 export async function ensureFallbackAgent(
@@ -211,7 +104,6 @@ export async function ensureFallbackAgent(
   // Zero Agents — seed the fallback. If a row with the seed slug already
   // exists (e.g. operator pre-created an empty one), reuse it.
   let fallback = await store.getAgentBySlug(slug);
-  const created = !fallback;
   if (!fallback) {
     fallback = await store.createAgent({
       slug,
@@ -224,26 +116,6 @@ export async function ensureFallbackAgent(
     log(`onboarding: seeded fallback agent`, {
       slug: fallback.slug,
       agentId: fallback.id,
-    });
-  }
-
-  // Phase B (B1) — on FRESH creation only, attach every installed plugin.
-  // Existing fallback rows are left untouched (operator may have already
-  // pruned them; rehydrating without consent would silently re-grant
-  // capabilities the operator removed on purpose). The B3d operator action
-  // is the consent-bearing path for an existing Agent.
-  if (created && options.pluginIds && options.pluginIds.length > 0) {
-    const attached = await attachAllPlugins(
-      store,
-      fallback.id,
-      options.pluginIds,
-      log,
-    );
-    log(`onboarding: fallback agent hydrated with installed plugins`, {
-      slug: fallback.slug,
-      agentId: fallback.id,
-      attached,
-      requested: options.pluginIds.length,
     });
   }
 

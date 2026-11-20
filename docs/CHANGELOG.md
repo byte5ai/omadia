@@ -36,6 +36,28 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — Least privilege by default: no auto-attach, reach, explicit grants (#2054, epic #2042)
+- **Before:** first boot and every kernel install path (Hub, upload,
+  reinstall, profile apply, boot-seeded built-ins) attached every plugin to the
+  default agent, so whoever reached it held every connected system.
+- **Now:** nothing is attached automatically (`attachAllPlugins`,
+  `attachNewPluginsToFallbackAgent`, `attachToDefaultOrchestrator`, the
+  pending-attach queue and the "reset standard to all plugins" route are
+  gone). The boot seed holds no plugin. Installing a capability plugin offers
+  it to agents the operator picks, none preselected; channels, models,
+  archetypes, system modules and templates are never offered.
+- **Reach:** `GET /api/v1/operator/agents/:slug/reach` and the directory list
+  show each agent's systems, read and write separately (manifest
+  `side_effects`, MCP `readOnlyHint`).
+- **Confirmation:** a grant write that gives an agent every connected system
+  answers `409 broad_reach_confirmation_required` unless the request carries
+  `confirmBroadReach: true`; confirmed changes are audited
+  (`agent.broad_reach_grant`, `agent.broad_reach_default`).
+- **First run:** `GET|POST /api/v1/operator/agents/onboarding[/first-agent]`
+  creates the first agent with an explicit capability choice (zero allowed).
+- **Live effect:** existing grants stay as they are; only new installs stop
+  attaching.
+
 ### Changed — DB sub-agents are internal helpers of their agent (#2050, epic #2042)
 
 - **Before:** a DB sub-agent had its own name and system prompt and could hold
