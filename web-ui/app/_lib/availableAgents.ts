@@ -1,25 +1,15 @@
 import { useEffect, useState } from 'react';
 
-import { agentAvatarImageUrl } from './agentIdentity';
-import {
-  archetypeOfAgent,
-  listEnabledAgents,
-  type EnabledAgentDto,
-} from './agents';
+import { getAgentDirectory, type AgentDirectoryEntryDto } from './agents';
 
 /**
  * #2057 — the agents a person may pick and see in the directory.
  *
  * Spec 2042 §5.3 / criterion 40: a user is shown only the agents available to
- * them in the channel they are in (availability = which users, in which
- * channels, set by the operator). The picker and the directory both read this
- * one list through {@link useAvailableAgents}, so there is exactly one place
- * to change when the availability endpoint of stream S1 (#2045) lands:
- * {@link fetchAvailableAgents}.
- *
- * TODAY there is no such endpoint. `fetchAvailableAgents` passes the list of
- * enabled agents through unfiltered; the channel is accepted and ignored. See
- * the comment on it for the response shape this module expects.
+ * them in the channel they are in. The server filters
+ * (`GET /api/v1/agents/directory?channel=`); this client never decides who may
+ * see which agent. The picker and the directory both read the one list through
+ * {@link useAvailableAgents}.
  */
 
 /** One agent as the picker and the directory show it. */
@@ -42,53 +32,54 @@ export interface AvailableAgents {
   agents: readonly AgentDirectoryEntry[];
   /** Slug of the default agent when it is among `agents`, else `null`. */
   defaultSlug: string | null;
+  /** Why there is no default agent (the server's `system` notice), else `null`. */
+  defaultNotice?: string | null;
 }
 
-/** Which person-and-channel context the list is for. Reserved for S1. */
+/** Which channel the list is for. */
 export interface AvailabilityScope {
-  /** Channel key (`web`, `teams`, …). Ignored until the endpoint exists. */
+  /** Channel key (`web`, `teams`, …); the web UI asks for `web`. */
   channel?: string;
 }
+
+const DEFAULT_DIRECTORY_CHANNEL = 'web';
 
 function nonEmpty(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
 }
 
-export function toDirectoryEntry(dto: EnabledAgentDto): AgentDirectoryEntry {
+/** The server hands out API paths (`/api/…`); the browser reaches them via `/bot-api/`. */
+function directoryAvatarUrl(url: string | null): string | null {
+  const trimmed = nonEmpty(url);
+  return trimmed ? trimmed.replace(/^\/api\//, '/bot-api/') : null;
+}
+
+export function toDirectoryEntry(
+  dto: AgentDirectoryEntryDto,
+  defaultSlug: string | null,
+): AgentDirectoryEntry {
   return {
     slug: dto.slug,
-    name: nonEmpty(dto.display_name) ?? nonEmpty(dto.name) ?? dto.slug,
-    avatarUrl: agentAvatarImageUrl(dto.avatar),
-    shortDescription: nonEmpty(dto.short_description) ?? nonEmpty(dto.description),
-    archetype: archetypeOfAgent(dto),
-    reach: dto.reach ?? null,
-    isDefault: false,
+    name: nonEmpty(dto.display_name) ?? dto.slug,
+    avatarUrl: directoryAvatarUrl(dto.avatar_url),
+    shortDescription: nonEmpty(dto.short_description),
+    archetype: dto.archetype,
+    reach: null,
+    isDefault: dto.slug === defaultSlug,
   };
 }
 
-/**
- * The agents available to the caller in `scope.channel`.
- *
- * EXPECTED ENDPOINT (stream S1, not built yet): a route that answers for the
- * signed-in user and the given channel and returns the existing
- * `EnabledAgentsListDto` shape, already filtered by availability:
- *
- *   GET /v1/agents/available?channel=<channelKey>
- *   { agents: EnabledAgentDto[], fallback_slug: string | null }
- *
- * with `display_name`, `short_description`, `avatar` and `reach` filled in
- * (all optional here). The filtering happens on the server; this client never
- * decides who may see which agent. Swap the call below, nothing else changes.
- */
+/** The agents available to the caller in `scope.channel` (default `web`). */
 export async function fetchAvailableAgents(
   scope: AvailabilityScope = {},
 ): Promise<AvailableAgents> {
-  void scope;
-  const list = await listEnabledAgents();
+  const directory = await getAgentDirectory(scope.channel ?? DEFAULT_DIRECTORY_CHANNEL);
+  const defaultSlug = directory.default_agent.slug;
   return {
-    agents: list.agents.map(toDirectoryEntry),
-    defaultSlug: list.default_slug,
+    agents: directory.agents.map((a) => toDirectoryEntry(a, defaultSlug)),
+    defaultSlug,
+    defaultNotice: 'notice' in directory.default_agent ? directory.default_agent.notice.text : null,
   };
 }
 
@@ -97,6 +88,7 @@ export interface AvailableAgentsState {
   error: string | null;
   agents: readonly AgentDirectoryEntry[];
   defaultSlug: string | null;
+  defaultNotice: string | null;
 }
 
 const LOADING: AvailableAgentsState = {
@@ -104,6 +96,7 @@ const LOADING: AvailableAgentsState = {
   error: null,
   agents: [],
   defaultSlug: null,
+  defaultNotice: null,
 };
 
 /**
@@ -123,7 +116,7 @@ export function useAvailableAgents(
     fetchAvailableAgents(channel === undefined ? {} : { channel })
       .then((data) => {
         if (cancelled) return;
-        setState({ loading: false, error: null, ...data });
+        setState({ loading: false, error: null, ...data, defaultNotice: data.defaultNotice ?? null });
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -132,6 +125,7 @@ export function useAvailableAgents(
           error: err instanceof Error ? err.message : String(err),
           agents: [],
           defaultSlug: null,
+          defaultNotice: null,
         });
       });
     return () => {
@@ -140,7 +134,7 @@ export function useAvailableAgents(
   }, [provided, channel]);
 
   if (provided) {
-    return { loading: false, error: null, ...provided };
+    return { loading: false, error: null, ...provided, defaultNotice: provided.defaultNotice ?? null };
   }
   return state;
 }

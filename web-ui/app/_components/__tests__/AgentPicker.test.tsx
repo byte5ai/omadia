@@ -11,11 +11,11 @@ import { AgentPicker } from '../AgentPicker';
  * avatar, and with one agent it still shows that agent by name.
  */
 
-const { mockListEnabled } = vi.hoisted(() => ({ mockListEnabled: vi.fn() }));
+const { mockDirectory } = vi.hoisted(() => ({ mockDirectory: vi.fn() }));
 
 vi.mock('../../_lib/agents', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../_lib/agents')>()),
-  listEnabledAgents: mockListEnabled,
+  getAgentDirectory: mockDirectory,
 }));
 
 vi.mock('next/link', () => ({
@@ -57,7 +57,7 @@ function list(agents: AgentDirectoryEntry[]): AvailableAgents {
 }
 
 beforeEach(() => {
-  mockListEnabled.mockReset();
+  mockDirectory.mockReset();
 });
 
 describe('<AgentPicker />', () => {
@@ -134,25 +134,38 @@ describe('<AgentPicker />', () => {
   });
 
   it('loads the enabled agents when none are passed in, with name and display name', async () => {
-    mockListEnabled.mockResolvedValue({
+    mockDirectory.mockResolvedValue({
+      channel: 'web',
       agents: [
         {
           slug: 'mira-sales',
-          name: 'mira-sales',
           display_name: 'Mira',
-          description: null,
-          privacy_profile: 'default',
-          is_fallback: true,
+          short_description: null,
+          avatar_url: null,
+          archetype: 'standard',
         },
       ],
-      fallback_slug: 'mira-sales',
+      default_agent: { slug: 'mira-sales' },
     });
     renderWithIntl(<AgentPicker onSelect={vi.fn()} />);
     expect(await screen.findByText('Mira')).toBeInTheDocument();
   });
 
+  it('shows the server notice when there is no default agent and none is selected', async () => {
+    mockDirectory.mockResolvedValue({
+      channel: 'web',
+      agents: [
+        { slug: 'a', display_name: 'Anna', short_description: null, avatar_url: null, archetype: 'standard' },
+        { slug: 'b', display_name: 'Ben', short_description: null, avatar_url: null, archetype: 'standard' },
+      ],
+      default_agent: { slug: null, notice: { code: 'no_agent', text: 'Pick an agent to start.' } },
+    });
+    renderWithIntl(<AgentPicker onSelect={vi.fn()} />);
+    expect(await screen.findByText('Pick an agent to start.')).toBeInTheDocument();
+  });
+
   it('says so when the list cannot be loaded', async () => {
-    mockListEnabled.mockRejectedValue(new Error('boom'));
+    mockDirectory.mockRejectedValue(new Error('boom'));
     renderWithIntl(<AgentPicker onSelect={vi.fn()} />);
     expect(await screen.findByText('agent list unavailable')).toBeInTheDocument();
   });

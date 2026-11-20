@@ -1379,6 +1379,40 @@ export async function listEnabledAgents(): Promise<EnabledAgentsListDto> {
   return callJson<EnabledAgentsListDto>('/v1/operator/agents/enabled');
 }
 
+/**
+ * #2057 — one agent in the directory a person sees in a channel
+ * (`GET /api/v1/agents/directory?channel=`, kernel contract of stream S1).
+ */
+export interface AgentDirectoryEntryDto {
+  slug: string;
+  display_name: string;
+  short_description: string | null;
+  avatar_url: string | null;
+  /** `standard`, or the id of an archetype an archetype plugin delivers. */
+  archetype: string;
+}
+
+/** The agent that answers what nobody addressed, or why there is none. */
+export type AgentDirectoryDefaultDto =
+  | { slug: string }
+  | { slug: null; notice: { code: string; text: string } };
+
+export interface AgentDirectoryDto {
+  channel: string;
+  agents: AgentDirectoryEntryDto[];
+  default_agent: AgentDirectoryDefaultDto;
+}
+
+/**
+ * The agents available to the signed-in person in `channel`, already filtered
+ * by availability on the server (spec 2042 §5.3, criterion 40).
+ */
+export async function getAgentDirectory(channel: string): Promise<AgentDirectoryDto> {
+  return callJson<AgentDirectoryDto>(
+    `/v1/agents/directory?channel=${encodeURIComponent(channel)}`,
+  );
+}
+
 // ── Phase B — operator dashboard support surfaces ───────────────────────
 
 export type PluginKind =

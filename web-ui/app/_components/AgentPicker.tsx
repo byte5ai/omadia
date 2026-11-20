@@ -45,7 +45,11 @@ export interface AgentPickerProps {
 const CHIP_CLASS =
   'inline-flex items-center gap-2 rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 text-xs text-[color:var(--fg)]';
 
-/** The slug to show: pinned, else chosen, else the default, else the first. */
+/**
+ * The slug to show: pinned, else chosen, else the default, else the only agent.
+ * With several agents and no default none is shown as chosen — the turn would
+ * be answered by a `system` notice, not by a guessed agent (spec 2042 INV-7).
+ */
 function currentSlugOf(
   props: AgentPickerProps,
   agents: readonly AgentDirectoryEntry[],
@@ -55,7 +59,7 @@ function currentSlugOf(
     props.pinnedSlug ??
     props.selectedSlug ??
     defaultSlug ??
-    agents[0]?.slug
+    (agents.length === 1 ? agents[0]?.slug : undefined)
   );
 }
 
@@ -167,7 +171,7 @@ function AgentMenu(props: AgentMenuProps): React.ReactElement {
 
 export function AgentPicker(props: AgentPickerProps): React.ReactElement | null {
   const t = useTranslations('agentPicker');
-  const { loading, error, agents, defaultSlug } = useAvailableAgents(
+  const { loading, error, agents, defaultSlug, defaultNotice } = useAvailableAgents(
     props.availableAgents,
   );
   const { pinnedSlug, selectedSlug, onSelect } = props;
@@ -201,7 +205,12 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement | null 
       </Link>
     );
   }
-  if (!slug) return null;
+  if (!slug) {
+    // No default agent: the server says why (a `system` notice, never an agent).
+    return defaultNotice ? (
+      <span className="inline-flex text-xs text-[color:var(--fg-muted)]">{defaultNotice}</span>
+    ) : null;
+  }
 
   const current = entryFor(slug, agents);
   const isReadOnly = Boolean(pinnedSlug) || agents.length <= 1;
