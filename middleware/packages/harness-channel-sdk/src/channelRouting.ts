@@ -89,6 +89,16 @@ export interface ChannelResolveResult {
    * agent's own name.
    */
   readonly speaker?: AgentSpeaker;
+  /**
+   * #2055 — why this agent (or this refusal) was chosen: `identity` (the key
+   * IS the agent's own bot), `explicit` (addressed by slug or id),
+   * `selection` (the sender's `/agent` choice), `binding` (an operator bound
+   * the key) or `default` (the default-agent table). An adapter that probes
+   * more than one key per turn prefers a decided match (`identity`,
+   * `explicit`, `selection`, `binding`) over `default`, which every key
+   * answers alike. Absent on older platforms.
+   */
+  readonly match?: 'identity' | 'explicit' | 'selection' | 'binding' | 'default';
 }
 
 /**
