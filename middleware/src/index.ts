@@ -5124,6 +5124,7 @@ async function main(): Promise<void> {
           : undefined;
       },
       agentChat: (slug) => getRegistry()?.get(slug)?.built.bundle.agent,
+      ownChannelKey: (slug, channel) => getRegistry()?.channelIdentityFor(slug, channel)?.channelKey,
       // The agent's OWN read tools: granted plugin tools without write
       // capabilities, never a sub-agent's inner tools (`via`), never MCP
       // tools (they need a person's identity a trigger firing lacks).

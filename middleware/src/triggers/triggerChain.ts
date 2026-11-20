@@ -92,6 +92,35 @@ export function fingerprintRows(rows: readonly unknown[]): string {
 
 const PLACEHOLDER = /\{\{\s*([a-z_]+(?:\.[A-Za-z0-9_]+)?)\s*\}\}/g;
 
+/**
+ * The event fields a model hint or a post template may carry: kinds and ids,
+ * never content. A plugin's domain event can be a whole business record; its
+ * values reach people only through a data action, under the agent's grants.
+ */
+export const EVENT_FIELDS: ReadonlySet<string> = new Set([
+  'eventId',
+  'kind',
+  'type',
+  'status',
+  'state',
+  'channelType',
+  'conversationId',
+  'messageId',
+  'authorKind',
+  'id',
+]);
+
+/** The allowed, scalar fields of an event payload. */
+export function eventView(event: Readonly<Record<string, unknown>> | null | undefined): Record<string, string | number | boolean> {
+  const out: Record<string, string | number | boolean> = {};
+  if (!event) return out;
+  for (const key of EVENT_FIELDS) {
+    const v = event[key];
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') out[key] = v;
+  }
+  return out;
+}
+
 export interface TemplateValues {
   readonly purpose: string;
   readonly runs: number;
@@ -131,7 +160,7 @@ export function renderTemplate(template: string, v: TemplateValues): string {
         return formatDate(v.now, v.timezone);
       default: {
         if (!name.startsWith('event.') || !v.event) return '';
-        const value = v.event[name.slice('event.'.length)];
+        const value = eventView(v.event)[name.slice('event.'.length)];
         return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? String(value) : '';
       }
     }
@@ -263,7 +292,7 @@ export async function runChain(
           purpose: trigger.purpose,
           occurrence: {
             dueAt: occurrence.dueAt.toISOString(),
-            ...(occurrence.payload ? { event: occurrence.payload } : {}),
+            ...(occurrence.payload ? { event: eventView(occurrence.payload) } : {}),
           },
           checks,
           delivered,

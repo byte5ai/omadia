@@ -46,6 +46,8 @@ export interface TriggerWiringDeps {
   /** A live agent by slug (enabled or not), or undefined when it is not in service. */
   readonly agentBySlug: (slug: string) => TriggerAgentView | undefined;
   readonly agentChat: (slug: string) => AgentChat | undefined;
+  /** The agent's own bot on a channel, to keep its messages off its hooks. */
+  readonly ownChannelKey?: (slug: string, channel: string) => string | undefined;
   readonly readToolsOf: ReadToolsOf;
   /** The plugin ids granted to an agent (enabled grants). */
   readonly grantedPluginIds: (slug: string) => readonly string[];
@@ -129,6 +131,7 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
     // A proactive message goes to the conversation it was born in, nowhere
     // else, until discretion labels can tell what may flow where (INV-9).
     targetAllowed: () => false,
+    isOwnAuthor: (slug, channel, authorId) => deps.ownChannelKey?.(slug, channel) === authorId,
     now: clock,
     log: deps.log,
   });

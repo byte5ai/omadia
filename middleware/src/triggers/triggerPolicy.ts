@@ -13,6 +13,7 @@
  */
 
 import { isValidCron } from '../scheduler/cron.js';
+import { EVENT_FIELDS } from './triggerChain.js';
 import { createCron } from '../scheduler/cronerCompat.js';
 import type {
   DataActionSpec,
@@ -145,7 +146,7 @@ export function unknownPlaceholders(template: string): string[] {
   const out: string[] = [];
   for (const m of template.matchAll(PLACEHOLDER)) {
     const name = m[1] ?? '';
-    if (name.startsWith('event.')) continue;
+    if (name.startsWith('event.') && EVENT_FIELDS.has(name.slice('event.'.length))) continue;
     if (!POST_PLACEHOLDERS.has(name)) out.push(name);
   }
   return out;
@@ -186,7 +187,7 @@ function parseStep(v: unknown): Result<TriggerStep> {
       if (unknown.length > 0) {
         return refuse(
           'invalid',
-          `unknown placeholder(s) ${unknown.map((u) => `{{${u}}}`).join(', ')}; allowed: ${[...POST_PLACEHOLDERS].map((p) => `{{${p}}}`).join(', ')}, {{event.<field>}}`,
+          `unknown placeholder(s) ${unknown.map((u) => `{{${u}}}`).join(', ')}; allowed: ${[...POST_PLACEHOLDERS].map((p) => `{{${p}}}`).join(', ')}, ${[...EVENT_FIELDS].map((f) => `{{event.${f}}}`).join(', ')}`,
         );
       }
       return { ok: true, value: { type: 'post', template } };

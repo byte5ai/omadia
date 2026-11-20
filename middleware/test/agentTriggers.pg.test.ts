@@ -349,7 +349,7 @@ describe('#2082 agent triggers (pg, migration 0093)', { skip: !pgAvailable }, ()
         until: at(60 * MIN + 30_000),
         max_fires: 50,
         filter: { op: 'eq', path: 'ctx.kind', value: 'question' },
-        actions: [{ type: 'post', template: 'Notiert: {{event.author}}' }],
+        actions: [{ type: 'post', template: 'Notiert: {{event.kind}}' }],
       }, env);
       await create(r.service, 'wake_at', {
         purpose: 'Zusammenfassung',

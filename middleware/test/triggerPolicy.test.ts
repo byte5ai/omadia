@@ -112,7 +112,8 @@ describe('#2082 trigger policy (criterion 20)', () => {
   });
 
   it('refuses unknown template placeholders', () => {
-    assert.deepEqual(unknownPlaceholders('{{purpose}} {{secret}} {{event.title}}'), ['secret']);
+    // #2082 review — an event's content (a title, an amount) is no placeholder.
+    assert.deepEqual(unknownPlaceholders('{{purpose}} {{secret}} {{event.title}} {{event.status}}'), ['secret', 'event.title']);
     const res = validate('wake_at', { purpose: 'x', time: inMinutes(30), until: inMinutes(60), actions: [{ type: 'post', template: '{{password}}' }] });
     assert.equal(!res.ok && res.code, 'invalid');
   });
@@ -136,16 +137,16 @@ describe('#2082 schedule and templates', () => {
   });
 
   it('fills a post template from engine values only', () => {
-    const text = renderTemplate('Noch {{minutes_left}} Minuten für „{{purpose}}" ({{event.title}}){{event.nested}}', {
+    const text = renderTemplate('Noch {{minutes_left}} Minuten für „{{purpose}}" ({{event.status}}){{event.title}}{{event.nested}}', {
       purpose: 'Schritt 2',
       runs: 3,
       remainingRuns: 9,
       until: new Date(inMinutes(5)),
       now: NOW,
       rows: null,
-      event: { title: 'Planung', nested: { a: 1 } },
+      event: { status: 'offen', title: 'Rechnung Müller GmbH', nested: { a: 1 } },
       timezone: 'Europe/Berlin',
     });
-    assert.equal(text, 'Noch 5 Minuten für „Schritt 2" (Planung)');
+    assert.equal(text, 'Noch 5 Minuten für „Schritt 2" (offen)', 'ids and kinds only, never content');
   });
 });

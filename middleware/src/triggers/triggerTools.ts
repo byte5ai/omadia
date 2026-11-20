@@ -38,7 +38,7 @@ const ACTIONS_SCHEMA = {
   minItems: 1,
   maxItems: 8,
   description:
-    'What each firing does, cheapest first. `check` (no model): `new_activity` (anything new here since the last firing), `context_live` (meeting still running), `data` (run one of your read tools; `condition` `rows` = go on if it returns rows, `changed` = go on if the result changed). `post` (no model): a template, placeholders {{purpose}} {{runs}} {{remaining_runs}} {{until}} {{minutes_left}} {{rows}} {{now}} {{event.<field>}}. `deliver` (no model): run one of your read tools and send the result as a table — you never see the rows. `turn` (model, costs budget): only where judgement or language is needed; you get a status of the checks, not the data. A check that finds nothing ends the firing quietly.',
+    'What each firing does, cheapest first. `check` (no model): `new_activity` (anything new here since the last firing), `context_live` (meeting still running), `data` (run one of your read tools; `condition` `rows` = go on if it returns rows, `changed` = go on if the result changed). `post` (no model): a template, placeholders {{purpose}} {{runs}} {{remaining_runs}} {{until}} {{minutes_left}} {{rows}} {{now}}, and for a hook the ids and kind of the event ({{event.kind}} {{event.status}} {{event.id}} {{event.messageId}}; never its content). `deliver` (no model): run one of your read tools and send the result as a table — you never see the rows. `turn` (model, costs budget): only where judgement or language is needed; you get a status of the checks, not the data. A check that finds nothing ends the firing quietly.',
   items: {
     type: 'object',
     properties: {

@@ -79,6 +79,7 @@ describe('#2082 proactive triggers through the kernel wiring (pg, 0093 + 0094)',
       leaseMs: 10 * MIN,
       agentBySlug: (slug) => (slug === 'erika' ? { id: agentId, slug, enabled: true } : undefined),
       agentChat: () => ({ chat: async () => ({ text: 'unused' }) }),
+      ownChannelKey: (slug, channel) => (slug === 'erika' && channel === 'teams' ? '28:erika-bot' : undefined),
       readToolsOf: () => new Map(),
       grantedPluginIds: () => ['de.byte5.integration.expenses'],
       eventCatalog: () => ({ 'de.byte5.integration.expenses': ['expenses.report.submitted'], 'de.byte5.integration.hr': ['hr.leave.requested'] }),
@@ -195,6 +196,19 @@ describe('#2082 proactive triggers through the kernel wiring (pg, 0093 + 0094)',
     assert.ok(ids.includes('expenses.report.submitted'));
     assert.ok(ids.includes('conversation.message.created'));
     assert.ok(!ids.includes('hr.leave.requested'));
+  });
+
+  it('a hook never hears the agent\'s own messages', async () => {
+    await call('on_event', {
+      purpose: 'Auf neue Nachrichten reagieren',
+      event: 'conversation.message.created',
+      until: inMin(24 * 60),
+      max_fires: 5,
+      actions: [{ type: 'post', template: 'Gesehen' }],
+    });
+    const base = { channelType: 'teams', conversationId: hrChat.conversationId, authorKind: 'teams' };
+    assert.equal(await wiring.service.onEvent('conversation.message.created', { ...base, messageId: 'm1', authorId: '28:erika-bot' }, 'k1'), 0);
+    assert.equal(await wiring.service.onEvent('conversation.message.created', { ...base, messageId: 'm2', authorId: '29:anna' }, 'k2'), 1);
   });
 
   it('cancel_trigger ends only the agent\'s own trigger', async () => {

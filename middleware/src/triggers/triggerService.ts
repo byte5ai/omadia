@@ -37,6 +37,9 @@ export interface TriggerServiceDeps {
   readonly checkDataAction: (agentSlug: string, action: DataActionSpec) => string | undefined;
   /** Whether a proactive message from this envelope may go to `target`. */
   readonly targetAllowed: (env: TriggerEnvelope, target: TriggerTarget) => boolean;
+  /** Whether `authorId` on `channel` is the agent's own bot: its own
+   *  messages never fire its hooks (a hook that posts would hear itself). */
+  readonly isOwnAuthor?: (agentSlug: string, channel: string, authorId: string) => boolean;
   readonly now?: () => Date;
   readonly log?: (message: string) => void;
 }
@@ -137,6 +140,9 @@ export class TriggerService {
   }
 
   private hookMatches(hook: Trigger, payload: Readonly<Record<string, unknown>>, conversationId: string | undefined): boolean {
+    const authorId = typeof payload['authorId'] === 'string' ? payload['authorId'] : undefined;
+    const channel = typeof payload['channelType'] === 'string' ? payload['channelType'] : undefined;
+    if (authorId && channel && this.deps.isOwnAuthor?.(hook.agentSlug, channel, authorId)) return false;
     // A hook bound to a conversation or meeting hears only that one.
     if ((hook.contextKind === 'conversation' || hook.contextKind === 'meeting') && conversationId !== undefined) {
       if (conversationPart(hook.contextId) !== conversationId) return false;
