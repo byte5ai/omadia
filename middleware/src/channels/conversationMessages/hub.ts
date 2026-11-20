@@ -61,6 +61,12 @@ export interface ProcessAccess {
 const DEFAULT_PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 500;
 
+/** What became of one inbound event: the stored record, and whether it was a typed answer. */
+interface TakenEvent {
+  readonly record: ConversationMessageRecord | undefined;
+  readonly answeredCard: boolean;
+}
+
 export interface ConversationMessageHubDeps {
   readonly store: ConversationMessageStore;
   /**
@@ -378,16 +384,37 @@ export class ConversationMessageHub {
    *  one, when several processes get the event), or `undefined` when it was
    *  dropped (no subscription takes it, invalid, redelivery). */
   ingest(event: ConversationMessageEvent): Promise<ConversationMessageRecord | undefined> {
+    return this.take(event).then((taken) => taken.record);
+  }
+
+  /**
+   * #2086 — `ingest` for a channel that must know what became of the message:
+   * `answeredCard` is `true` when it was the typed answer to an open question
+   * and the kernel stored it as a `card_answer`. The channel then starts no
+   * turn for it, so the agent does not also answer "2". Never rejects: a
+   * message the kernel could not take is `answeredCard: false`.
+   */
+  async report(event: ConversationMessageEvent): Promise<{ answeredCard: boolean }> {
+    try {
+      return { answeredCard: (await this.take(event)).answeredCard };
+    } catch (err) {
+      this.log(`[conversation-messages] storing an event failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { answeredCard: false };
+    }
+  }
+
+  private take(event: ConversationMessageEvent): Promise<TakenEvent> {
+    const none: TakenEvent = { record: undefined, answeredCard: false };
     const invalid = validateMessageEvent(event);
     if (invalid) {
       this.log(`[conversation-messages] dropped an invalid event: ${invalid}`);
-      return Promise.resolve(undefined);
+      return Promise.resolve(none);
     }
     const key = lookupKey(event.channelType, event.conversationId, event.receivedByChannelKey);
-    if (!this.byIdentity.has(key)) return Promise.resolve(undefined);
+    if (!this.byIdentity.has(key)) return Promise.resolve(none);
     // One queue per conversation and identity: routing reads the bindings, and
     // "created, then edited" must not be stored the other way round.
-    const work = (): Promise<ConversationMessageRecord | undefined> => this.routeAndStore(key, event);
+    const work = (): Promise<TakenEvent> => this.routeAndStore(key, event);
     const previous = this.queues.get(key) ?? Promise.resolve();
     const next = previous.then(work, work);
     this.queues.set(key, next);
@@ -451,13 +478,11 @@ export class ConversationMessageHub {
     }
   }
 
-  private async routeAndStore(
-    key: string,
-    incoming: ConversationMessageEvent,
-  ): Promise<ConversationMessageRecord | undefined> {
+  private async routeAndStore(key: string, incoming: ConversationMessageEvent): Promise<TakenEvent> {
     const subscriptions = this.byIdentity.get(key) ?? [];
-    if (subscriptions.length === 0) return undefined;
+    if (subscriptions.length === 0) return { record: undefined, answeredCard: false };
     const event = await this.asTypedAnswer(incoming);
+    const converted = incoming.kind === 'created' && event.kind === 'card_answer';
     let first: ConversationMessageRecord | undefined;
     const { recipients, bound } = await this.recipients(subscriptions, event);
     // Where a process reads everything, the channel's turn is suppressed
@@ -467,7 +492,9 @@ export class ConversationMessageHub {
       const record = await this.store(subscription, event, !(turnAsks && this.leftToTheTurn(subscription, event)));
       first ??= record;
     }
-    return first;
+    // Taken as an answer only when somebody received it; an answer nobody
+    // takes leaves the message to the channel's own turn.
+    return { record: first, answeredCard: converted && first !== undefined };
   }
 
   /**

@@ -192,6 +192,40 @@ describe('the hub stores the answer instead of the message', () => {
     assert.equal(events[0]?.cardAnswer?.cardId, 'rank-1');
   });
 
+  it('report tells the channel whether the message was taken as an answer, so it starts no turn', async () => {
+    const h = setup();
+    await h.openQuestions.register({
+      channelType: 'teams',
+      conversationId: CONVERSATION,
+      messageId: 'card-msg',
+      agentSlug: 'mara',
+      card: ranking,
+      expiresAt: new Date('2026-11-21T10:00:00.000Z'),
+    });
+    await h.service.subscribe(h.scope, { mode: 'all' });
+    assert.deepEqual(await h.hub.report(messageEvent({ messageId: 'u1', text: '2,1,3', replyToMessageId: 'card-msg' })), { answeredCard: true });
+    assert.deepEqual(await h.hub.report(messageEvent({ messageId: 'u2', text: 'hm', replyToMessageId: 'card-msg' })), { answeredCard: false });
+    assert.deepEqual(await h.hub.report(messageEvent({ messageId: 'u3', text: 'hallo' })), { answeredCard: false });
+    // an invalid event and a conversation nobody subscribed to are never an answer, and never reject
+    assert.deepEqual(await h.hub.report({ ...messageEvent({ messageId: 'u4' }), conversationId: '' }), { answeredCard: false });
+    assert.deepEqual(await h.hub.report(messageEvent({ messageId: 'u5', conversationId: 'unsubscribed', text: '2,1,3', replyToMessageId: 'card-msg' })), { answeredCard: false });
+  });
+
+  it('an answer nobody receives is left to the channel turn', async () => {
+    const h = setup();
+    await h.openQuestions.register({
+      channelType: 'teams',
+      conversationId: CONVERSATION,
+      messageId: 'card-msg',
+      agentSlug: 'mara',
+      card: ranking,
+      expiresAt: new Date('2026-11-21T10:00:00.000Z'),
+    });
+    // subscribed in `addressed` mode, and the reply does not address the bot
+    await h.service.subscribe(h.scope, { mode: 'addressed' });
+    assert.deepEqual(await h.hub.report(messageEvent({ messageId: 'u1', text: '2,1,3', replyToMessageId: 'card-msg' })), { answeredCard: false });
+  });
+
   it('without a store a reply is only a message', async () => {
     const store = new InMemoryConversationMessageStore();
     const hub = new ConversationMessageHub({
