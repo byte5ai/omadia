@@ -11,11 +11,13 @@
  *    grants, all schedules, …) excludes the rows of tombstones with
  *    {@link ofLiveAgent}. A per-agent query (`WHERE agent_id = $1`) needs
  *    nothing: its id came from a live agent;
- *  - two tables are deliberately read WITH tombstones, because a deleted
+ *  - four tables are deliberately read WITH tombstones, because a deleted
  *    agent must keep its place there: `channel_bindings` (a conversation
- *    bound to a deleted agent is refused, never handed to the default agent)
- *    and the channel identities (a deleted agent's bot stays quiet, never
- *    answers as another agent).
+ *    bound to a deleted agent is refused, never handed to the default agent),
+ *    the channel identities (a deleted agent's bot stays quiet, never answers
+ *    as another agent), and #2055's `agent_default_entries` and
+ *    `agent_selections` (an entry or a selection naming a deleted agent gives
+ *    "<name> was deleted" until it is changed).
  *
  * `test/agentTombstoneReaders.test.ts` reads the source and fails when a
  * query on one of these tables does neither.

@@ -41,7 +41,12 @@ import { createUpdaterClient } from './update/updaterClient.js';
 import { resolvePlatform } from './update/platform.js';
 import { resolveAppVersion } from './update/version.js';
 import { createMemoryBackendRouter } from './routes/memoryBackend.js';
-import { createChatRouter } from './routes/chat.js';
+import {
+  createChatRouter,
+  WEB_CHANNEL_TYPE,
+  type WebRouteRequest,
+  type WebRouteResult,
+} from './routes/chat.js';
 import {
   createOperatorAgentsRouter,
   type OperatorAgentIdentityStore,
@@ -100,6 +105,10 @@ import { loadCheckpointSigner, startCheckpointWorker } from './receipts/checkpoi
 import { createProvenanceRoutes } from './receipts/verifyRoutes.js';
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
+import {
+  createAgentDirectoryRouter,
+  createOperatorDefaultAgentsRouter,
+} from './routes/managementLayer.js';
 import { createOperatorMemoryContextsRouter } from './routes/operatorMemoryContexts.js';
 import { createMemberNameResolver } from './services/memberNames.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
@@ -119,6 +128,14 @@ import {
 } from './services/pluginVerdict.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
 import { archetypeAdds, archetypeOf, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, resolveScopedBundle } from '@omadia/orchestrator';
+import {
+  buildSystemNotice,
+  ChannelResolver as ManagementChannelResolver,
+  KernelAgentSelectionService,
+  emitterOf,
+  speakerFor,
+  speakerOf,
+} from '@omadia/orchestrator';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
   OrchestratorRegistry as MultiOrchestratorRegistry,
@@ -358,7 +375,7 @@ import {
   EntraProvider,
 } from './auth/providers/EntraProvider.js';
 import { runAuthBootstrap } from './auth/bootstrap.js';
-import { AdminAuditLog, auditActorFromLabel, roleChangeAuditEntry } from './auth/adminAuditLog.js';
+import { AdminAuditLog, auditActorFromLabel, roleChangeAuditEntry, type AuditEntryInput } from './auth/adminAuditLog.js';
 import {
   PlatformSettingsStore,
   SETTING_AUTH_ACTIVE_PROVIDERS,
@@ -1651,7 +1668,8 @@ async function main(): Promise<void> {
     const registry =
       serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
     if (!registry) return true;
-    const slug = registry.slugForFallback();
+    // #2055 — the canvas runs on the instance's default agent.
+    const slug = registry.instanceDefaultSlug();
     const standard = slug ? registry.get(slug)?.built.orchestrator : undefined;
     return standard?.isToolGranted(toolId, owner) === true;
   };
@@ -1943,8 +1961,8 @@ async function main(): Promise<void> {
   // every kernel install path (see `defaultOrchestratorAttach.ts`): Hub
   // install, upload and store reinstall of ANY plugin kind (not only agents),
   // together with the plugin's installed `depends_on` parents, and the
-  // built-ins the boot installs on an existing instance. First boot runs the
-  // same `attachAllPlugins` primitive via `ensureFallbackAgent`. Rows that
+  // built-ins the boot installs on an existing instance (#2055: the agent of
+  // the instance default entry; S2 removes this auto-attach, #2054). Rows that
   // already exist are left alone, so an operator's disable/config survives.
   // Answers `false` when the orchestrator's config store does not exist yet.
   const attachToDefaultOrchestrator = async (
@@ -2050,7 +2068,12 @@ async function main(): Promise<void> {
       serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
     if (!store || !reg) return;
     try {
-      const { fallbackAgentId } = await store.getPlatformSettings();
+      // #2055 — the former fallback agent is the instance default entry
+      // (S2 removes this auto-attach coupling, #2054).
+      const fallbackAgentId =
+        (await store.routing.listDefaultEntries()).find(
+          (e) => e.principal === null && e.channelType === null,
+        )?.agentId ?? null;
       if (fallbackAgentId) {
         await store.removeAgentPlugin(fallbackAgentId, pluginId);
         await reg.reload();
@@ -3637,7 +3660,20 @@ async function main(): Promise<void> {
       pool: graphPool,
       scheduler: jobScheduler,
       // #1598 — the routine's own orchestrator, with its plugin grants.
-      getOrchestrator: (agentSlug) => getScopedChatAgentBundle(agentSlug)?.raw,
+      // #2045 / #2046 — with the agent's emitter and speaker, so a routine's
+      // answer passes the same identity guard and carries the same speaker.
+      getOrchestrator: (agentSlug) => {
+        const bundle = getScopedChatAgentBundle(agentSlug);
+        const raw = bundle?.raw;
+        if (!bundle || !raw) return undefined;
+        const emitter = emitterOf(bundle.agent);
+        const speaker = speakerOf(bundle.agent);
+        return {
+          runTurn: (input) => raw.runTurn(input),
+          ...(emitter ? { emitter } : {}),
+          ...(speaker ? { speaker } : {}),
+        };
+      },
       requiresAgentSlug: () =>
         serviceRegistry.get('orchestratorRegistry') !== undefined,
       registerNativeTool: (name, handler, options) =>
@@ -3916,22 +3952,55 @@ async function main(): Promise<void> {
   // boot-time value would pin the chat-disabled state forever.
   const getRegistry = (): MultiOrchestratorRegistry | undefined =>
     serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
-  const resolveChatAgent = (slug: string): ChatAgent | undefined => {
-    const entry = getRegistry()?.get(slug);
-    if (entry) return entry.built.bundle.agent;
-    // #1598 — the legacy bundle has no per-Agent plugin grants, so it holds
-    // every plugin's tools. It answers `default` only on a registry-less boot,
-    // where it IS the whole deployment's orchestrator; with a registry, an
-    // explicit `agentSlug: "default"` must not bypass every Agent's grants.
-    if (slug === 'default' && !getRegistry()) return getChatAgentBundle()?.agent;
-    return undefined;
-  };
-  const getDefaultSlug = (): string | undefined => {
+  // #2055 — the management layer decides who answers a web chat turn: the
+  // agent the conversation is pinned to or the sender chose, else the
+  // sender's default agent for the web channel; otherwise a `system` notice.
+  // No fallback agent, never another agent in the named one's place.
+  const routeWebTurn = (request: WebRouteRequest): WebRouteResult => {
     const reg = getRegistry();
-    const fallback = reg?.slugForFallback();
-    if (fallback) return fallback;
-    // Pre-Phase-A / no-DB boot: the legacy default is the only Agent.
-    return reg ? undefined : 'default';
+    const locale = request.locale;
+    if (!reg) {
+      // #1598 — registry-less boot (no database): the legacy bundle IS the
+      // deployment's one agent, reachable as `default` or unaddressed.
+      const legacy = getChatAgentBundle()?.agent;
+      if (legacy && (request.explicitSlug === undefined || request.explicitSlug === 'default')) {
+        return {
+          kind: 'agent',
+          chatAgent: legacy,
+          slug: 'default',
+          speaker: { kind: 'agent', agentId: 'default', slug: 'default', displayName: 'omadia' },
+        };
+      }
+      return {
+        kind: 'notice',
+        notice: request.explicitSlug
+          ? buildSystemNotice('agent_unknown', {
+              agent: { slug: request.explicitSlug, displayName: request.explicitSlug },
+              ...(locale ? { locale } : {}),
+            })
+          : buildSystemNotice('no_agent', locale ? { locale } : {}),
+      };
+    }
+    const resolver =
+      serviceRegistry.get<ManagementChannelResolver>('channelResolver') ??
+      new ManagementChannelResolver({ registry: reg });
+    const result = resolver.resolve(WEB_CHANNEL_TYPE, request.conversationKey, {
+      ...(request.principal ? { principal: request.principal } : {}),
+      ...(request.explicitSlug ? { explicitSlug: request.explicitSlug } : {}),
+      ...(locale ? { locale } : {}),
+    });
+    if (result.decision === 'bound' && result.agent && result.chatAgent) {
+      return {
+        kind: 'agent',
+        chatAgent: result.chatAgent,
+        slug: result.agent.agent.slug,
+        speaker: speakerFor(result.agent.agent),
+      };
+    }
+    return {
+      kind: 'notice',
+      notice: result.notice ?? buildSystemNotice('no_agent', locale ? { locale } : {}),
+    };
   };
   // ── Epic #470 C4 / H1 — the terminating public-path mount ────────────────
   //
@@ -3974,8 +4043,23 @@ async function main(): Promise<void> {
     requireAuth,
     createChatRouter({
       agentResolver,
-      resolveChatAgent,
-      getDefaultSlug,
+      routeTurn: routeWebTurn,
+      // #2055 — `/agent …` in the web chat, the same management-layer
+      // handling every other channel gets from its resolver.
+      handleAgentCommand: async (command, request) => {
+        const registry = getRegistry();
+        const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+        if (!registry || !store) return buildSystemNotice('no_agent', request.locale ? { locale: request.locale } : {});
+        if (!request.principal && command.kind !== 'list') {
+          return buildSystemNotice('no_agent', request.locale ? { locale: request.locale } : {});
+        }
+        return new KernelAgentSelectionService({ registry, tables: store.routing }).handle(command, {
+          channelType: WEB_CHANNEL_TYPE,
+          conversationKey: request.conversationKey,
+          principal: request.principal ?? 'user:anonymous',
+          ...(request.locale ? { locale: request.locale } : {}),
+        });
+      },
       // OM-76 — "no orchestrator at all" vs "this one is gone". With a registry
       // it is the live agent count; on a no-DB boot the legacy default bundle
       // is the only agent there can be.
@@ -4582,6 +4666,24 @@ async function main(): Promise<void> {
   );
   console.log(
     '[middleware] operator-channels endpoints ready at /api/v1/operator/channels/* (auth-gated)',
+  );
+  // #2055 — the management layer: the default-agent table (operator) and the
+  // agent directory a signed-in user sees per channel (pickers).
+  const managementLayerOptions = {
+    getConfigStore: () => serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+    getRegistry: () => serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+    audit: async (entry: AuditEntryInput) => {
+      await adminAudit?.record(entry);
+    },
+  };
+  app.use(
+    '/api/v1/operator/default-agents',
+    requireAuth,
+    createOperatorDefaultAgentsRouter(managementLayerOptions),
+  );
+  app.use('/api/v1/agents', requireAuth, createAgentDirectoryRouter(managementLayerOptions));
+  console.log(
+    '[middleware] management-layer endpoints ready at /api/v1/operator/default-agents and /api/v1/agents/directory (auth-gated)',
   );
 
   // W2a (#860) — read-only operator browser for the chat-context memory trees.
@@ -7273,14 +7375,13 @@ async function main(): Promise<void> {
     // channelResolver. Resolved lazily so hot config reloads take effect and
     // so a Postgres-less deployment (no resolver published) degrades to the
     // shared chatAgent via the static dispatch_service path.
-    resolveBinding: (channelType, channelKey) => {
+    resolveBinding: (channelType, channelKey, context) => {
       const resolver =
         serviceRegistry.get<ChannelBindingResolver>('channelResolver');
       if (!resolver) return undefined;
-      const result = resolver.resolve(channelType, channelKey);
-      // #1598 — `null` is an explicit reject: the dispatcher refuses the turn
-      // instead of falling back to an orchestrator nobody bound here.
-      return result.decision !== 'reject' ? result.chatAgent : null;
+      // #2055 — always a ChatAgent: the routed agent behind the management
+      // layer, or the management layer answering with its `system` notice.
+      return resolver.resolve(channelType, channelKey, context).chatAgent;
     },
   });
 

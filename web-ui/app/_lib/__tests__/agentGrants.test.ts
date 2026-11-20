@@ -125,7 +125,6 @@ describe('getAgentPlugins / toggleAgentPlugin (#861)', () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
         slug: 'hr-agent',
-        fallback: false,
         plugins: [{ id: '@omadia/odoo', config: {}, enabled: true }],
       }),
     );
@@ -136,7 +135,6 @@ describe('getAgentPlugins / toggleAgentPlugin (#861)', () => {
     expect(lastCall(fetchMock).url).toBe(
       '/bot-api/v1/operator/agents/hr-agent/plugins',
     );
-    expect(res.fallback).toBe(false);
     expect(res.plugins[0]?.enabled).toBe(true);
   });
 
@@ -144,7 +142,6 @@ describe('getAgentPlugins / toggleAgentPlugin (#861)', () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
         ok: true,
-        fallback: false,
         plugin: { id: '@omadia/odoo', enabled: false },
       }),
     );

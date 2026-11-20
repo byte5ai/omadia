@@ -932,14 +932,15 @@
     "emptyHeading": "Noch keine Channels bekannt.",
     "emptyExplain": "Channel-Plugins (Teams, Telegram, …) melden ihre Keys während der Plugin-Aktivierung. Sobald ein Channel-Plugin installiert + aktiv ist, erscheinen seine Keys hier.",
     "emptyDirectoriesKnown": "Registrierte Channel-Typen: {types}",
-    "fallbackHint": "Channels ohne explizite Zuordnung landen beim Standard-Orchestrator ({fallback}).",
-    "fallbackHintNone": "kein Standard gesetzt",
+    "defaultAgentHint": "Channels ohne explizite Zuordnung landen beim Standard-Ansprechpartner ({agent}).",
+    "defaultAgentHintOff": "aus",
     "originLabel": "via",
     "membersLine": "Mitglieder: {names}",
     "membersMore": "{count, plural, one {+# weiteres} other {+# weitere}}",
     "staleBadge": "veraltet",
     "routesTo": "→ Orchestrator:",
-    "routesToFallback": "(Standard · {fallback})",
+    "routesToDefault": "(Standard-Ansprechpartner · {agent})",
+    "boundAgentUnavailable": "{name} ({status, select, deleted {gelöscht} other {deaktiviert}})",
     "clearStale": "Binding entfernen",
     "disclosure": {
       "heading": "KI-Kennzeichnung weicht vom Auslieferungszustand ab",
@@ -1651,6 +1652,10 @@
       "none": "Standard-Identität",
       "fallback": "Persona-Klassifikator nicht verfügbar — Standard-Identität"
     },
+    "speaker": {
+      "system": "Systemhinweis",
+      "avatarAlt": "Avatar von {name}"
+    },
     "subAgentTrace": "Sub-Agent-Trace",
     "mcpAuth": {
       "kicker": "Autorisierung erforderlich",
@@ -1958,22 +1963,17 @@
     "turnId": "Turn {id}",
     "turnReceiptLink": "Auf der Receipts-Seite ansehen"
   },
-  "directLine": {
+  "agentsConsulted": {
     "consultedLabel": "🔎 Konsultiert",
     "consultedCount": "· {count, plural, one {# Tool} other {# Tools}}",
     "viewTrace": "Trace ▾",
-    "stepsCount": "{count, plural, one {# Schritt} other {# Schritte}}",
-    "delegatedAnswerFrom": "Direkte Antwort von {label}",
-    "delegatedAnswerCaption": "Wortgetreu übermittelt — der Orchestrator kann diese Antwort nicht bearbeiten oder entfernen.",
-    "stickyActive": "Direkter Draht zu {label} — jede Nachricht geht dorthin.",
-    "stickyExit": "Zurück zum Orchestrator",
-    "stickyPlaceholder": "Nachricht an {label}…"
+    "stepsCount": "{count, plural, one {# Schritt} other {# Schritte}}"
   },
   "agentPicker": {
     "label": "Orchestrator:",
     "loading": "Lade Orchestratoren…",
     "error": "Orchestrator-Liste nicht verfügbar",
-    "fallbackMarker": "(Standard)",
+    "defaultMarker": "(Standard-Ansprechpartner)",
     "pinnedTooltip": "Session ist gepinnt. Zum Wechseln: Operator → Orchestratoren → Drain.",
     "emptyCta": "Keine Orchestratoren konfiguriert — öffne Operator → Orchestratoren",
     "unavailableTitle": "Der Orchestrator dieser Session ist nicht mehr verfügbar",
@@ -2084,8 +2084,9 @@
     },
     "platformHeading": "Plattform",
     "forceReload": "Registry-Reload erzwingen",
-    "fallbackLabel": "Standard-Orchestrator:",
-    "fallbackNone": "(keiner — unbound Keys hart ablehnen)",
+    "defaultAgentLabel": "Standard-Ansprechpartner:",
+    "defaultAgentOff": "(aus — nicht adressierte Nachrichten bekommen einen Systemhinweis)",
+    "defaultAgentRefused": "Dieser Agent kann nicht Standard-Ansprechpartner sein: Er muss aktiviert und für alle in jedem Channel verfügbar sein.",
     "createHeading": "Orchestrator anlegen",
     "fieldSlug": "Slug",
     "fieldName": "Name",
@@ -2127,7 +2128,6 @@
     "actionDrain": "Sessions drainen",
     "actionKill": "Sessions killen",
     "drainTooltip": "Snapshot auf allen an diesen Orchestrator gebundenen Sessions leeren — nächster Turn nimmt frische Config aus der Registry",
-    "fallbackProtected": "Das ist der Standard-Orchestrator und kann nicht deaktiviert oder gelöscht werden.",
     "deleteConfirm": "Orchestrator „{slug}“ wirklich löschen? Er geht außer Dienst; sein Datensatz bleibt unter „Gelöschte Agenten“ erhalten, bis du ihn endgültig entfernst.",
     "killConfirm": "Alle Sessions von „{slug}\" killen? History geht verloren.",
     "memoryScopeHeading": "Memory-Scope",
@@ -2135,10 +2135,6 @@
     "pluginsHeading": "Plugins",
     "bindingsHeading": "Channel-Bindings",
     "save": "Speichern",
-    "actionRehydrateFallback": "Standard auf alle Plugins zurücksetzen",
-    "rehydrateTooltip": "Hängt jedes installierte Plugin wieder an den aktuellen Standard-Orchestrator — du kriegst Day-1-Capabilities zurück.",
-    "rehydrateConfirm": "Wirklich jedes installierte Plugin auf den Standard-Orchestrator rehydrieren? Existierende Plugin-Configs bleiben erhalten; neu hinzugefügte Plugins starten mit leerer Config.",
-    "rehydrateDone": "Standard rehydriert: {attached} von {requested} Plugins angehängt.",
     "catalogError": "Plugin-Katalog konnte nicht geladen werden ({message}). Multi-Select fällt auf manuellen Modus zurück.",
     "catalogLoading": "Plugin-Katalog lädt …",
     "catalogEmpty": "Keine installierten Plugins.",
@@ -2175,15 +2171,15 @@
     "orphanPluginBadge": "nicht mehr installiert",
     "bindingsAdd": "Binding hinzufügen",
     "bindingsRemove": "Entfernen",
-    "bindingsEmpty": "Keine Bindings — unbound Traffic landet beim Standard-Orchestrator.",
+    "bindingsEmpty": "Keine Bindings — nicht adressierte Nachrichten landen beim Standard-Ansprechpartner.",
     "routingTesterHeading": "Routing-Tester",
-    "routingTesterHelp": "Frag den Server, welcher Orchestrator einen eingehenden Webhook beantworten würde. Hits gegen explizite Bindings zuerst, dann Standard.",
+    "routingTesterHelp": "Frag den Server, welcher Orchestrator einen eingehenden Webhook beantworten würde. Hits gegen explizite Bindings zuerst, dann der Standard-Ansprechpartner.",
     "fieldChannelType": "Channel-Type",
     "fieldChannelKey": "Channel-Key",
     "routingTesterSubmit": "Routing prüfen",
     "routingTesterRunning": "Prüfe …",
     "routingTesterMatched": "→ Orchestrator „{slug}\" (via {via})",
-    "routingTesterNoMatch": "Kein Match — und kein Standard-Orchestrator konfiguriert.",
+    "routingTesterNoMatch": "Kein Match — kein Standard-Ansprechpartner greift; der Absender bekäme einen Systemhinweis.",
     "agentCardSummary": "privacy: {privacy} (nicht wirksam) · status: {status} · runtime: {runtime} · {plugins} Plugins angehängt · {bindings} Bindings",
     "agentCardModel": "Modell: {primary}{fallback, select, none {} other { · Fallback: {fallback}}}",
     "agentCardModelAuto": "Auto{model, select, none {} other { ({model})}}",
@@ -2201,7 +2197,6 @@
     "dragHandle": "Ziehen, um zwischen den Spalten zu bewegen",
     "dependencyMissingBadge": "Parent fehlt",
     "dependencyMissingTooltip": "Dieses Plugin hängt von „{parent}\" ab — Parent ist nicht in der gleichen Spalte angehängt.",
-    "fallbackStoreOnlyNotice": "Der Standard-Orchestrator läuft immer mit den Configs aus dem Store. Per-Orchestrator Overrides sind hier deaktiviert — leg dafür einen eigenen Orchestrator an.",
     "orphanDetachAll": "Alle entfernen",
     "orphanDetachAllTooltip": "Entfernt alle veralteten Plugin-Zuordnungen (alte IDs aus früheren Deployments) auf einmal.",
     "orphanExplain": "Plugin-IDs aus früheren Seeds, die im aktuellen Katalog nicht mehr existieren (typisch: Umbenennung de.byte5.agent.* → @omadia/*). Werden beim nächsten „Speichern\" verworfen, außer du markierst sie als „Behalten\".",
@@ -3119,8 +3114,7 @@
     "confirmAction": {
       "cancel": "Abbrechen",
       "typedMismatch": "Das ist nicht der Slug."
-    },
-    "rehydrateConfirmYes": "Rehydrieren"
+    }
   },
   "builder": {
     "issueReport": {

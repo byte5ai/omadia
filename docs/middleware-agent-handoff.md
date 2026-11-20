@@ -113,6 +113,41 @@ src/
 
 ## 3. Die Execution-Layer im Detail
 
+### Management-Layer, Speaker und Identity-Guard (Spec 2042, #2045 #2046 #2055 #2056 #1880)
+
+- **Routing** (`harness-orchestrator/src/routing/managementRouter.ts`, rein,
+  ohne Modell): eigene Kanalidentität → explizite Ansprache (Slug, `resolveAgent`
+  per ID) → Auswahl des Absenders (`agent_selections`) → Bindung → Default-Agent-
+  Tabelle (`agent_default_entries`: (User, Kanal) > (User) > (Kanal) > Instanz,
+  `agent_id NULL` = `off`) → `system`-Notice `no_agent`. Nur `status = 'enabled'`
+  ist adressierbar; Verfügbarkeit (`available_to_everyone`, `available_channels`,
+  `agent_availability_principals`) wird vor jedem Turn geprüft. Tombstones bleiben
+  Ziel und ergeben `agent_deleted`. Kein Fallback-Agent.
+- **`ChannelResolver.resolve(type, key, {principal, explicitSlug, locale})`**
+  liefert immer einen ChatAgent (`management/managementChatAgent.ts`): er
+  behandelt `/agent <Name>`, `/agent`, `/agents` (`management/agentSelection.ts`)
+  und beantwortet ein `reject` mit der Notice. Principal pro Kanal:
+  `channelUserPrincipal` / `turnPrincipal` aus `@omadia/channel-sdk`.
+- **Notices:** `management/systemNotices.ts` (registrierte Vorlagen de/en,
+  Speaker `system`).
+- **Agentenauswahl pro Gespräch** hängt am engsten Gesprächsschlüssel des
+  Turns (`channelKey` des Resolve-Aufrufs, z. B. der Slack-Channel bzw. Thread,
+  nicht der Workspace) und am Principal des Absenders; im Web-Chat
+  `session:<id>`.
+- **Speaker:** `buildOrchestratorForAgent` wickelt jedes Agent-Bundle außen in
+  `withSpeaker(withIdentityGuard(…))`; `AgentAnswerEmitter`
+  (`management/answerEmitter.ts`) ist der typisierte Emitter pro Agent
+  (`emitterOf(bundle.agent)`), auch für Routinen. `test/speakerEmission.test.ts`
+  zählt alle Emitter und schlägt bei neuen ohne Speaker fehl.
+- **Identity-Guard:** `identityGuard/deterministic.ts` (Namen/Aliasse,
+  Menschen-Behauptungen), `identityGuard/llmJudge.ts` (Modellschicht, Klassifizier-
+  Modell des Agenten, nur bei verdächtigem Text), `identityGuard/guard.ts`
+  (`SentenceGate`: satzweise Freigabe beim Streaming, Timeout 8 s → fail-closed).
+- **Prompt:** `management/agentIdentityPrompt.ts` (`DEFAULT_AGENT_IDENTITY`,
+  `identityRules`), Snapshots in `test/fixtures/agentPrompt/` (`test/agentIdentityRules.test.ts`).
+- **Endpoints:** `/api/v1/operator/default-agents`,
+  `/api/v1/operator/agents/:slug/availability`, `/api/v1/agents/directory`.
+
 ### Orchestrator
 
 - **Datei:** `services/orchestrator.ts`
@@ -322,10 +357,10 @@ inkl. des Anthropic-`memory`-Fast-Path, falls ein Plugin ihn via
 `dispatchToolInner()` (derselbe Fast-Path plus die generischen
 `NativeToolRegistry`- und `DomainTool`-Handler), `getSystemPrompt()`
 (promptDoc-Splice + Fach-Agenten-Roster — ein gegatetes Tool taucht weder in
-den Specs noch in Doku/Roster auf), `directLineObligationState()` (#332
-Forced-`tool_choice`) und `executeDirectLine()` (`#token`-Kandidatenauflösung,
-degradiert auf die bestehende "Specialist … is no longer available."-Notiz
-statt den internen Dispatch-Fehler zu zeigen). Die parallele
+den Specs noch in Doku/Roster auf) und `consultObligationState()` (#332
+Forced-`tool_choice`; hieß bis Spec 2042 `directLineObligationState()`). Die
+Direct-Line-Auflösung (`executeDirectLine()`) gibt es nicht mehr (siehe §13,
+„Entfernt: Direct Line“). Die parallele
 `ToolDispatchService` (Subscription-CLI-Bridge) trägt dieselbe Gate-Logik
 unabhängig nach, da sie ohne Orchestrator-Instanz läuft. Auf dieser Bridge gibt
 es zusätzlich ein Gate auf der Spawn-Seite: `CliChatAgent` startet die CLI mit
@@ -2454,8 +2489,9 @@ setzt vor jedem `runTurn`/`chatStream` `markPrivacyFinalizeHeld(input)`
 (One-Shot, gekeyt auf das Input-Objekt des Aufrufers), der Turn liefert sein
 Ergebnis ohne `privacyReceipt` und übergibt eine
 `PrivacyEgressContinuation` (`harness-orchestrator/src/privacyEgress.ts`),
-die der Wrapper mit `takePrivacyEgress(input)` abholt. Alle drei
-Finalize-Stellen übergeben (gepuffert, Streaming-`done`, Streaming-Direct-Line).
+die der Wrapper mit `takePrivacyEgress(input)` abholt. Beide
+Finalize-Stellen übergeben (gepuffert und Streaming-`done`; die dritte,
+Streaming-Direct-Line, ist mit Spec 2042 entfallen).
 Über `continuation.verifierPrivacy` laufen Extractor- und Judge-Requests unter
 der Surrogat-Map des Turns; danach ruft der Wrapper `finalize()` **genau
 einmal** pro Lauf (`EgressLedger` in `verifierPrivacyGate.ts` für `chat()`,
@@ -3648,7 +3684,7 @@ Jetzt erzeugt ein Wiedereintritt nur die Antwort neu:
   Replay bleibt der Sink ja leer.
 - **Abbruch.** Post-Batch-Check in beiden Tool-Loops und im `LocalSubAgent`,
   dazu der autoritative Check am Ende von `runTurnCore` bzw. am Terminal-Event
-  im Stream (fängt Direct-Line und gefaltete Sub-Agent-Antworten).
+  im Stream (fängt gefaltete Sub-Agent-Antworten).
   `ToolReplayAbortError` → Resample behält die erste Antwort, Retry hält sie
   mit `failed` zurück. Wirft ein Wiedereintritt aus anderem Grund, loggt
   `reentryFailureLine` nur Run-ID, Fehlerklasse und `reentry_turn_failed`,
@@ -4603,7 +4639,7 @@ Setup-Felder, nicht mehr die Env.
 | Variable / Setup-Feld | Wirkung |
 |---|---|
 | `VERIFIER_ENABLED` / `verifier_enabled` | `true` schaltet den Verifier-Wrapper ein. Default `false`. |
-| `VERIFIER_MODE` / `verifier_mode` | `shadow` (Default): prüft und speichert nur, die Antwort geht unverändert raus. `enforce`: Auslieferungs-Gate auf Stream **und** `chat()` — eine Antwort geht bei `approved` und `skipped` (`no_trigger`/`no_claims`) raus, bei `approved_with_disclaimer` und `skipped` (`no_checkable_claims`/`incomplete_coverage`) mit lokalisiertem Hinweis „ließ sich nicht automatisch bestätigen“ (außer alle gelaufenen Checks scheiterten technisch: dann zurückgehalten); bei `blocked` oder `unavailable` statt ihrer eine Notiz (`answerSource: 'verifier-blocked'`); im Stream kommt bis zum Urteil kein Antworttext (§11, Security §7c). Eine von Privacy Shield gerenderte Antwort wird an ihrer Prosa geprüft; die Zellwerte sind Systemdaten und gehen nie an den Verifier. Ohne Prosa ist sie reine Systemdaten (`skipped` / `system_data`) und geht ohne Hinweis raus; die Web-UI markiert jede gerenderte Antwort als „Originaldaten aus dem System“. Ein gerenderter Fehler, ein Provider ohne `prose`-Feld und hinter dem Shield ein Lauf ohne Privacy-Sicht (Direct-Line-Relay) gehen nie an den Verifier und werden zurückgehalten (`privacy_shield`), außer an einem Turn mit Input-Karte: Die Karten-Ausnahme (`releasesWithoutVerification`) greift vorher und gibt ihn ungeprüft frei; `shadow` speichert für sie kein Verdict. Gilt nicht für den Abo-CLI-Runtime und nicht für Routinen. |
+| `VERIFIER_MODE` / `verifier_mode` | `shadow` (Default): prüft und speichert nur, die Antwort geht unverändert raus. `enforce`: Auslieferungs-Gate auf Stream **und** `chat()` — eine Antwort geht bei `approved` und `skipped` (`no_trigger`/`no_claims`) raus, bei `approved_with_disclaimer` und `skipped` (`no_checkable_claims`/`incomplete_coverage`) mit lokalisiertem Hinweis „ließ sich nicht automatisch bestätigen“ (außer alle gelaufenen Checks scheiterten technisch: dann zurückgehalten); bei `blocked` oder `unavailable` statt ihrer eine Notiz (`answerSource: 'verifier-blocked'`); im Stream kommt bis zum Urteil kein Antworttext (§11, Security §7c). Eine von Privacy Shield gerenderte Antwort wird an ihrer Prosa geprüft; die Zellwerte sind Systemdaten und gehen nie an den Verifier. Ohne Prosa ist sie reine Systemdaten (`skipped` / `system_data`) und geht ohne Hinweis raus; die Web-UI markiert jede gerenderte Antwort als „Originaldaten aus dem System“. Ein gerenderter Fehler, ein Provider ohne `prose`-Feld und hinter dem Shield ein Lauf ohne Privacy-Sicht gehen nie an den Verifier und werden zurückgehalten (`privacy_shield`), außer an einem Turn mit Input-Karte: Die Karten-Ausnahme (`releasesWithoutVerification`) greift vorher und gibt ihn ungeprüft frei; `shadow` speichert für sie kein Verdict. Gilt nicht für den Abo-CLI-Runtime und nicht für Routinen. |
 | `VERIFIER_MODEL` / `verifier_model` | Modell für Claim-Extraktion und Evidence-Judge. |
 | `VERIFIER_MAX_CLAIMS` / `verifier_max_claims` | Höchstzahl geprüfter Claims pro Antwort, Default `20`. |
 | `VERIFIER_AMOUNT_TOLERANCE` / `verifier_amount_tolerance` | Absolute Toleranz für Betrags- und Summenvergleiche in der Einheit des Felds (`0.01` = ein Cent bzw. 0,01 Urlaubstage, nicht 1 %), Default `0.01` (#1564). |
@@ -5448,7 +5484,7 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   `ai_disclosure_locale` → `de`), dann `done` mit dieser Notiz als `answer`,
   `answerSource: 'verifier-blocked'`, `answerIsError: true`, `verifier` und nur
   Identitäts-/Telemetriefeldern (Allowlist; Anhänge, Dateien, Follow-ups,
-  `maskedValues`, `delegatedAnswer`, Karten, Excerpts fallen weg), dann das
+  `maskedValues`, Karten, Excerpts fallen weg), dann das
   `verifier`-Event: `text_delta(Notiz), done{verifier-blocked}, verifier`.
   Hatte der Turn die KI-Kennzeichnung in `done.answer` gefaltet (erster Turn
   des Scopes), trägt die Notiz in `done.answer` denselben Block — nie im
@@ -5494,8 +5530,8 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
 - **Nie an den Verifier: was er hinter dem Privacy Shield nicht sehen darf.**
   Eine Antwort mit `answerSource: 'privacy-render'` (auch ein `degraded`-Turn,
   dessen Antwort der Shield schon gerendert hatte) und — hinter einem Shield —
-  ein Lauf ohne Privacy-Sicht (Direct-Line-Relay, keine übergebene
-  Continuation) gehen nie an `pipeline.verify` (`verifierGate`,
+  ein Lauf ohne Privacy-Sicht (keine übergebene Continuation, etwa die
+  Privacy-Ablehnung) gehen nie an `pipeline.verify` (`verifierGate`,
   `verifierPrivacyGate.ts`): die gerenderte Antwort hält echte Werte, die der
   Shield dem Modell vorenthalten hat. In `enforce` wird daraus das Verdict
   `unavailable` / `privacy_shield` → zurückgehalten, auf Stream und `chat()`,
@@ -5602,8 +5638,40 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   eine deterministische Verwaltungsebene, kein Orchestrator-Agent, keine versteckten
   Sub-Agents, kein Super-Agent ab Werk, Facilitator als eigene Agent-Art statt Plugin.
   Ohne Kompatibilitätsschicht, weil es noch keine Kundeninstallationen gibt. Die
-  Abschnitte dieses Dokuments zu Sub-Agents, Direct Line, Persona-Skills und
+  Abschnitte dieses Dokuments zu Sub-Agents, Persona-Skills und
   Fallback-Agent beschreiben den Stand vor dem Umbau.
+
+- **Offen (S1, Spec 2042):** Gruppen (`role:<key>`) in der Verfügbarkeit
+  brauchen eine synchrone Rollenmitgliedschaft (`ChannelResolver`-Option
+  `hasRole`, nicht verdrahtet; `PUT …/availability` lehnt `role:` deshalb ab);
+  `chatAgent@1` bedient mit Registry nur noch Canvas-Turns (Instanz-Default),
+  bis der Canvas pro Agent dispatcht (#2059); die Modellschicht des Guards auf
+  `claude-cli` startet pro Prüfung einen CLI-Prozess (Timeout 8 s, fail-closed)
+  — Latenz messen; UI für
+  Verfügbarkeit und Default-Agent-Tabelle (S6/Agent Builder); Persona-Skills
+  ersetzen pro Turn noch die Identität samt Identitätsregeln (Arbeitsmodi, S2);
+  der Prompt spricht weiter von „Fach-Agenten“ für Domain-Tools (Plugin-Kinds, S3).
+- **Entfernt: Direct Line (#2052, Spec 2042 §5.2/§7).** Owner-Entscheidung:
+  `#token`-Adressierung (`#strategist Frage`) und der Sticky-Modus sind ganz
+  weg; die direkte Adressierung eines Agenten ersetzt sie. `#name Text` ist
+  jetzt gewöhnlicher Text für den aktuellen Agenten — der Harness wertet
+  keine Direktive mehr aus und dispatcht nichts selbst
+  (`test/orchestrator/hashNameIsOrdinaryText.test.ts`). Entfernt:
+  `directLine.ts`, `directLineSticky.ts`, `executeDirectLine()` samt
+  Guarded-Note-Pass, die Orchestrator-Optionen `directLineMode` /
+  `directLinePrefix` / `directLineSticky` / `directLineStickyStore`, die ENV
+  `ORCHESTRATOR_DIRECT_LINE_STICKY` und das Setup-Feld
+  `orchestrator_direct_line_sticky` (ein gesetzter Wert wird ignoriert), das
+  persistierte `directLineSession` an Chat-Nachrichten (zod strippt es beim
+  nächsten PUT). In `@omadia/channel-sdk` fallen `delegatedAnswer` und
+  `directLineSession` an `SemanticAnswer`, `ChatTurnResult` und dem
+  Stream-`done` weg, ebenso die Typen `DelegatedAnswer` und
+  `DirectLineSessionState`; `SemanticAnswer.contributions[]` (#2047, Typen in
+  `plugin-api/src/speaker.ts`) ersetzt `delegatedAnswer`. Web-UI: kein
+  Sticky-Banner, keine `DelegatedAnswerCard`; der i18n-Namespace des
+  Konsultiert-Footers heißt jetzt `agentsConsulted`. Geblieben:
+  `agentsConsulted` / `AgentConsultation` samt Footer und die #332-Layer-3-
+  Pflicht-Konsultation (`consultObligationState()`).
 
 - **Teams-SSO für Plugin-Routen (#1620): Kernel-Modus erledigt.** Offen:
   channel-teams auf den Kernel-Verifier umstellen (eigene Kopie in
@@ -6196,11 +6264,6 @@ laufen die Verifier-Requests unter der Surrogat-Map des Turns. Offen:
   Maskierung) könnte weiche Widersprüche wieder blockierend machen.
 - **Ledger-Attribution:** die Verifier-Kostenzeilen können an
   `continuation.receiptId` anknüpfen (siehe Cost-Ledger "Offen").
-- **Direct-Line-Relay in `enforce`.** Hinter einem Shield übergibt ein
-  Relay-Lauf keine Privacy-Sicht; `enforce` hält seine Antwort deshalb als
-  `unavailable` / `privacy_shield` zurück. Wer Direct-Line-Agenten mit
-  `enforce` und Shield betreibt, bekommt dort keine Antwort. Prüfen, ob die
-  Relay-Antwort über die Sicht des Sub-Agent-Laufs verifiziert werden kann.
 - **Wertgleiche Platzhalter beim Minting:** `createPromptPseudonymMap`
   (`v4/pseudonym.ts`) prüft Kollisionen nur als String. Ein echtes Datum oder
   ein echter Betrag, dessen Wert einem Kandidaten entspricht, bekommt einen
@@ -6452,8 +6515,8 @@ Stand nach „Wiedereintritte führen kein Tool erneut aus“ (§3,
 - **Kalibrierung vor `enforce`: verborgene Antworten haben keine Zeile.**
   `verifier_verdicts.reason` (KG-Migration 0034) macht `skipped`-Gründe
   abfragbar (`docs/upgrading.md`). `shadow` schreibt aber keine Zeile für eine
-  Antwort, die der Verifier hinter dem Shield nicht sehen darf (Render,
-  Direct-Line-Relay) — `enforce` hält jede davon zurück. Gezählt werden kann
+  Antwort, die der Verifier hinter dem Shield nicht sehen darf (Render) —
+  `enforce` hält jede davon zurück. Gezählt werden kann
   nur über die Log-Zeile `verification skipped run=…`. Fix: in `shadow` eine
   `unavailable`/`privacy_shield`-Zeile schreiben, ohne zu prüfen.
 
@@ -8965,10 +9028,10 @@ einleitende `memory`-View des Modells auf ein `/memories`, das es nicht gab
   `maskRecalledForWire` VOR `onBeforeTurn` und wartet erst danach — auf beiden
   Pfaden. Die Promise ist vor-gehandelt (`recall.catch`), ein `blocked` der
   Recall-Maske fliegt weiterhin dort, wo der sequenzielle Code warf (#1547).
-  Streaming: `bindTurnMemoryForTurn` steht jetzt vor der Direct-Line-
-  Entscheidung, und die Direct-Line-Entscheidung vor Hook + Recall — wie
-  `runTurnCore` im gepufferten Pfad; ein Direct-Line-Turn bekommt damit weder
-  Plan noch Recall-Scan auf seinem Receipt. Im `finally` eines früh beendeten
+  Streaming: `bindTurnMemoryForTurn` steht jetzt vor Hook + Recall — wie
+  `runTurnCore` im gepufferten Pfad. (Die Direct-Line-Entscheidung, die hier
+  ebenfalls davor stand, ist mit Spec 2042 entfallen.) Im `finally` eines
+  früh beendeten
   Streams wird ein noch laufender Recall abgewartet, BEVOR `closeUndeliveredPass`
   die Prompt-Map des Turns verwirft — sonst legte dessen Maske die Map mit
   Realwerten neu an, und nichts löschte sie mehr.

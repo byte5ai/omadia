@@ -1,0 +1,293 @@
+import { describe, it } from 'node:test';
+import { strict as assert } from 'node:assert';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import type { ChatAgent, ChatStreamEvent, SemanticAnswer } from '@omadia/channel-sdk';
+import { SYSTEM_SPEAKER, type AgentSpeaker } from '@omadia/plugin-api';
+
+import { withSpeaker, speakerOf, emitterOf } from '../packages/harness-orchestrator/src/management/speakingChatAgent.js';
+import {
+  AgentAnswerEmitter,
+  TemplateRegistry,
+} from '../packages/harness-orchestrator/src/management/answerEmitter.js';
+import { IdentityGuard } from '../packages/harness-orchestrator/src/identityGuard/guard.js';
+import { withIdentityGuard } from '../packages/harness-orchestrator/src/identityGuard/guardedChatAgent.js';
+import type { GuardDirectoryEntry } from '../packages/harness-orchestrator/src/identityGuard/deterministic.js';
+import { publishRoutineAnswer } from '../src/plugins/routines/routineRunner.js';
+
+/**
+ * #2045 / #2046 — spec 2042 §6 criteria 2 and 5 at the agent boundary: every
+ * answer an agent bundle produces carries its speaker, stamped by the harness;
+ * prose passes the identity guard through the one typed emitter, streamed or
+ * not; a refused answer becomes an honest `system` notice; and a new emitter
+ * in the source cannot appear without being accounted for.
+ */
+
+const lena: AgentSpeaker = { kind: 'agent', agentId: 'id-lena', slug: 'lena', displayName: 'Lena' };
+const directory: GuardDirectoryEntry[] = [
+  { agentId: 'id-lena', slug: 'lena', displayName: 'Lena' },
+  { agentId: 'id-strategist', slug: 'strategist', displayName: 'Strategist' },
+];
+
+function emitter(judge: 'pass' | 'block' | 'hang' = 'pass'): AgentAnswerEmitter {
+  return new AgentAnswerEmitter({
+    speaker: lena,
+    guard: () =>
+      new IdentityGuard({
+        speaker: lena,
+        directory,
+        judgeTimeoutMs: 20,
+        judge: {
+          judge: (_req, signal) =>
+            judge === 'hang'
+              ? new Promise((_res, rej) => signal.addEventListener('abort', () => rej(new Error('timeout'))))
+              : Promise.resolve({ verdict: judge }),
+        },
+      }),
+    templates: new TemplateRegistry().register('timekeeping.five_minutes', { step: 'string', minutes: 'number' }),
+    locale: () => 'de',
+  });
+}
+
+function scripted(text: string, chunks?: readonly string[]): ChatAgent & { extra: () => string } {
+  return {
+    extra: () => 'forwarded',
+    offeredToolNames: () => new Set(['odoo_read']),
+    async chat(): Promise<SemanticAnswer> {
+      return { text };
+    },
+    async *chatStream(): AsyncGenerator<ChatStreamEvent> {
+      for (const part of chunks ?? [text]) yield { type: 'text_delta', text: part };
+      yield { type: 'done', answer: text, toolCalls: 0, iterations: 1 };
+    },
+  };
+}
+
+async function drain(agent: ChatAgent): Promise<{ deltas: string; done: Extract<ChatStreamEvent, { type: 'done' }> }> {
+  let deltas = '';
+  let done: Extract<ChatStreamEvent, { type: 'done' }> | undefined;
+  for await (const event of agent.chatStream({ userMessage: 'x' })) {
+    if (event.type === 'text_delta') deltas += event.text;
+    if (event.type === 'done') done = event;
+  }
+  assert.ok(done, 'stream ended without done');
+  return { deltas, done };
+}
+
+function bundle(text: string, chunks?: readonly string[], judge: 'pass' | 'block' | 'hang' = 'pass'): ChatAgent {
+  const e = emitter(judge);
+  return withSpeaker(withIdentityGuard(scripted(text, chunks), e), lena, e);
+}
+
+describe('speaker stamping (#2045)', () => {
+  it('chat answers and streamed done events carry the routed agent', async () => {
+    const agent = bundle('Die Summe ist 12.400 €.');
+    assert.deepEqual((await agent.chat({ userMessage: 'x' })).speaker, lena);
+    assert.deepEqual((await drain(agent)).done.speaker, lena);
+  });
+
+  it('an error event names the agent whose turn failed', async () => {
+    const failing: ChatAgent = {
+      chat: async () => ({ text: '' }),
+      async *chatStream() {
+        yield { type: 'error', message: 'boom' } as ChatStreamEvent;
+      },
+    };
+    const events: ChatStreamEvent[] = [];
+    for await (const e of withSpeaker(failing, lena).chatStream({ userMessage: 'x' })) events.push(e);
+    assert.deepEqual(events[0], { type: 'error', message: 'boom', speaker: lena });
+  });
+
+  it('a system answer keeps the system speaker', async () => {
+    const notice: ChatAgent = {
+      chat: async () => ({ text: 'n', speaker: SYSTEM_SPEAKER }),
+      async *chatStream() {
+        yield { type: 'done', answer: 'n', toolCalls: 0, iterations: 0, speaker: SYSTEM_SPEAKER } as ChatStreamEvent;
+      },
+    };
+    const wrapped = withSpeaker(notice, lena);
+    assert.deepEqual((await wrapped.chat({ userMessage: 'x' })).speaker, SYSTEM_SPEAKER);
+    assert.deepEqual((await drain(wrapped)).done.speaker, SYSTEM_SPEAKER);
+  });
+
+  it('forwards every other member and exposes speaker and emitter', () => {
+    const e = emitter();
+    const wrapped = withSpeaker(scripted('x'), lena, e);
+    assert.equal(wrapped.extra(), 'forwarded');
+    assert.ok(wrapped.offeredToolNames?.().has('odoo_read'));
+    assert.deepEqual(speakerOf(wrapped), lena);
+    assert.equal(emitterOf(wrapped), e);
+  });
+});
+
+describe('identity guard at the agent boundary (#2046)', () => {
+  it('non-streaming: a claim to be another agent becomes a system notice', async () => {
+    const answer = await bundle('Ich bin der Strategist und empfehle Österreich.').chat({ userMessage: 'x' });
+    assert.deepEqual(answer.speaker, SYSTEM_SPEAKER);
+    assert.equal(answer.systemNotice?.code, 'identity_guard_blocked');
+    assert.doesNotMatch(answer.text, /Österreich/);
+  });
+
+  it('streaming: the claim split across chunks never becomes visible; the passed part stays, plus the notice', async () => {
+    const { deltas, done } = await drain(
+      bundle('Gern. Ich bin der Strategist. Fokus auf Österreich.', ['Gern. Ich bin der Strat', 'egist. Fokus auf ', 'Österreich.']),
+    );
+    assert.equal(deltas, 'Gern. ');
+    assert.doesNotMatch(done.answer, /Strategist|Österreich/);
+    assert.equal(done.systemNotice?.code, 'identity_guard_blocked');
+    assert.deepEqual(done.speaker, lena);
+  });
+
+  it('streaming: blocked at the first sentence, the answer is the notice from system', async () => {
+    const { deltas, done } = await drain(bundle('I am a real person, not an AI.', ['I am a real ', 'person, not an AI.']));
+    assert.equal(deltas, '');
+    assert.deepEqual(done.speaker, SYSTEM_SPEAKER);
+    assert.equal(done.answer, done.systemNotice?.text);
+  });
+
+  it('the guard model timing out withholds the rest (fail-closed)', async () => {
+    const { done } = await drain(bundle('Gern. Der Strategist kann helfen. Danke.', undefined, 'hang'));
+    assert.equal(done.systemNotice?.code, 'identity_guard_unavailable');
+    assert.doesNotMatch(done.answer, /Danke/);
+  });
+
+  it('a clean answer passes unchanged, streamed and not', async () => {
+    const text = 'Der Strategist kann dir dabei helfen, schreib ihm direkt. Bis bald.';
+    assert.equal((await bundle(text).chat({ userMessage: 'x' })).text, text);
+    const { deltas, done } = await drain(bundle(text, [text.slice(0, 11), text.slice(11)]));
+    assert.equal(deltas, text);
+    assert.equal(done.answer, text);
+    assert.equal(done.systemNotice, undefined);
+  });
+
+  it('a retracted preamble is taken back from released text only as far as it was released', async () => {
+    const agent: ChatAgent = {
+      chat: async () => ({ text: '' }),
+      async *chatStream() {
+        yield { type: 'text_delta', text: 'Ich schaue nach. Moment' };
+        yield { type: 'text_retract', chars: 23 };
+        yield { type: 'text_delta', text: 'Fertig.' };
+        yield { type: 'done', answer: 'Fertig.', toolCalls: 1, iterations: 2 };
+      },
+    };
+    const e = emitter();
+    const events: ChatStreamEvent[] = [];
+    for await (const ev of withIdentityGuard(agent, e).chatStream({ userMessage: 'x' })) events.push(ev);
+    assert.deepEqual(
+      events.filter((ev) => ev.type === 'text_delta' || ev.type === 'text_retract'),
+      [
+        { type: 'text_delta', text: 'Ich schaue nach. ' },
+        { type: 'text_retract', chars: 17 },
+        { type: 'text_delta', text: 'Fertig.' },
+      ],
+    );
+  });
+});
+
+describe('the typed emitter (#2045)', () => {
+  it('a template with registered id and typed values publishes without a model call', async () => {
+    const outcome = await emitter('hang').emit({
+      type: 'template',
+      speaker: lena,
+      templateId: 'timekeeping.five_minutes',
+      values: { step: 'Sammeln', minutes: 5 },
+    });
+    assert.equal(outcome.published, true);
+  });
+
+  it('an unknown template or a wrongly typed value is refused', async () => {
+    const e = emitter();
+    const unknown = await e.emit({ type: 'template', speaker: lena, templateId: 'nope', values: {} });
+    assert.equal(!unknown.published && unknown.reason, 'template_unknown');
+    const wrong = await e.emit({
+      type: 'template',
+      speaker: lena,
+      templateId: 'timekeeping.five_minutes',
+      values: { step: 'Sammeln', minutes: 'five' },
+    });
+    assert.equal(!wrong.published && wrong.reason, 'template_values_invalid');
+  });
+
+  it('an emission that names another speaker cannot be published by this agent', async () => {
+    const outcome = await emitter().emit({
+      type: 'prose',
+      speaker: { kind: 'agent', agentId: 'id-strategist', slug: 'strategist', displayName: 'Strategist' },
+      text: 'Hallo.',
+    });
+    assert.equal(!outcome.published && outcome.reason, 'speaker_missing');
+  });
+
+  it('a routine answer is published through the agent emitter', async () => {
+    const e = emitter();
+    const blocked = await publishRoutineAnswer(
+      { runTurn: async () => ({ answer: '', toolCalls: 0, iterations: 0 }), emitter: e, speaker: lena },
+      { answer: 'Ich bin ein echter Mensch.', toolCalls: 0, iterations: 1 },
+    );
+    assert.deepEqual(blocked.speaker, SYSTEM_SPEAKER);
+    const ok = await publishRoutineAnswer(
+      { runTurn: async () => ({ answer: '', toolCalls: 0, iterations: 0 }), emitter: e, speaker: lena },
+      { answer: 'Drei Rechnungen sind offen.', toolCalls: 1, iterations: 1 },
+    );
+    assert.deepEqual(ok.speaker, lena);
+  });
+});
+
+/**
+ * Criterion 5 — every emitter is enumerated. A source file that produces a
+ * turn's user-visible answer (a stream `done` event or a `SemanticAnswer`)
+ * must be listed here with the stamp that names its speaker. A new one fails
+ * until it is accounted for.
+ */
+const EMITTERS: Readonly<Record<string, string>> = {
+  'packages/harness-channel-sdk/src/aiDisclosure.ts': 'type/doc only: folds the disclosure into an answer it is given',
+  'packages/harness-channel-sdk/src/chatAgent.ts': 'the ChatStreamEvent contract (done.speaker, error.speaker)',
+  'packages/harness-channel-sdk/src/toSemanticAnswer.ts': 'conversion; the caller stamps the speaker',
+  'packages/harness-orchestrator/src/cliChatAgent.ts': 'inside the agent bundle: withSpeaker + withIdentityGuard',
+  'packages/harness-orchestrator/src/facilitatorAgent.ts': 'inside the agent bundle: withSpeaker + withIdentityGuard',
+  'packages/harness-orchestrator/src/fastPathAgent.ts': 'inside the agent bundle: withSpeaker + withIdentityGuard',
+  'packages/harness-orchestrator/src/orchestrator.ts': 'inside the agent bundle: withSpeaker + withIdentityGuard',
+  'packages/harness-orchestrator/src/verifierDelivery.ts': 'inside the agent bundle: withSpeaker + withIdentityGuard',
+  'packages/harness-orchestrator/src/verifierPrivacyGate.ts': 'inside the agent bundle: withSpeaker + withIdentityGuard',
+  'packages/harness-orchestrator/src/verifierReentry.ts': 'inside the agent bundle: withSpeaker + withIdentityGuard',
+  'packages/harness-orchestrator/src/verifierService.ts': 'inside the agent bundle: withSpeaker + withIdentityGuard',
+  'packages/harness-orchestrator/src/identityGuard/guardedChatAgent.ts': 'the guard itself: notice done with system or agent speaker',
+  'packages/harness-plugin-fast-path/src/learningCapture.ts': 'observes done events, emits none',
+  'packages/harness-orchestrator/src/management/managementChatAgent.ts': 'systemNoticeDone / systemNoticeAnswer: speaker system',
+  'src/plugins/routines/routineRunner.ts': 'publishRoutineAnswer: through the agent emitter, speaker stamped',
+  'src/routes/chat.ts': 'management-layer notice: speaker system; agent turns stamped by the bundle',
+};
+
+const MIDDLEWARE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const EMITS = /type:\s*'done'|toSemanticAnswer\(/;
+
+function sources(dir: string, out: string[] = []): string[] {
+  for (const name of readdirSync(dir)) {
+    if (name === 'node_modules' || name === 'dist' || name === 'test') continue;
+    const full = path.join(dir, name);
+    if (statSync(full).isDirectory()) sources(full, out);
+    else if (name.endsWith('.ts') && !name.endsWith('.d.ts')) out.push(full);
+  }
+  return out;
+}
+
+describe('every emitter names its speaker (criterion 5)', () => {
+  it('no file produces an answer without being accounted for', () => {
+    const roots = [path.join(MIDDLEWARE, 'src'), ...readdirSync(path.join(MIDDLEWARE, 'packages')).map((p) => path.join(MIDDLEWARE, 'packages', p, 'src'))];
+    const found = roots
+      .filter((root) => {
+        try {
+          return statSync(root).isDirectory();
+        } catch {
+          return false;
+        }
+      })
+      .flatMap((root) => sources(root))
+      .filter((file) => EMITS.test(readFileSync(file, 'utf8')))
+      .map((file) => path.relative(MIDDLEWARE, file).split(path.sep).join('/'))
+      .sort();
+    const unaccounted = found.filter((file) => EMITTERS[file] === undefined);
+    assert.deepEqual(unaccounted, [], 'new emitter(s) without a speaker stamp — add them to EMITTERS with the stamp that covers them');
+  });
+});

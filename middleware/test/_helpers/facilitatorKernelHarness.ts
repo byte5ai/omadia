@@ -95,6 +95,7 @@ import { ObservedConversationInvites } from '../../src/platform/observedConversa
 import { ServiceRegistry } from '../../src/platform/serviceRegistry.js';
 import { createAgentBuilderRouter } from '../../src/routes/agentBuilder.js';
 import { createOperatorAgentsRouter } from '../../src/routes/operatorAgents.js';
+import { createOperatorDefaultAgentsRouter } from '../../src/routes/managementLayer.js';
 import { listenLoopback } from './listenLoopback.js';
 import { scriptedModel, type ScriptedModel } from './scriptedModel.js';
 
@@ -544,6 +545,11 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
   app.use(
     '/builder',
     createAgentBuilderRouter({ getConfigStore: () => store, getGraphStore: () => graph, getRegistry }),
+  );
+  // #2055 — the default-agent table replaced `PUT /agents/fallback`.
+  app.use(
+    '/default-agents',
+    createOperatorDefaultAgentsRouter({ getConfigStore: () => store, getRegistry }),
   );
   const server: Server = await listenLoopback(app);
   const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;

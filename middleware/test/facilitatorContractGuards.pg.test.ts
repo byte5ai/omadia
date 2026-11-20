@@ -73,7 +73,7 @@ await contractSuite('native facilitators: kernel contract, guards (pg)', 'facili
     await refused('PATCH', '/agents/mara/plugins', { id: BUSINESS_PLUGIN, enabled: true }, 'plugin_grant');
     await refused('PUT', '/agents/mara/plugins', { plugins: [{ id: ENGINE_PLUGIN }, { id: BUSINESS_PLUGIN }] }, 'plugin_grant');
     await refused('PUT', '/agents/mara/context-memory', { mode: 'enforce' }, 'memory');
-    await refused('PUT', '/agents/fallback', { slug: 'mara' }, 'default_agent');
+    await refused('PUT', '/default-agents', { principal: null, channel_type: null, agent_slug: 'mara' }, 'default_agent');
     await refused('PUT', '/agents/mara/agent-to-agent', { mode: 'on' }, 'agent_to_agent');
     await refused('PUT', `/agents/mara/peer-channels/teams/${encodeURIComponent(CHAT)}`, { enabled: true }, 'agent_to_agent');
     await refused('POST', '/builder/agents/mara/subagents', { name: 'helper' }, 'sub_agent');
@@ -86,7 +86,12 @@ await contractSuite('native facilitators: kernel contract, guards (pg)', 'facili
     // The database holds the two that must survive any route.
     const mara = await c.k.store.getAgentBySlug('mara');
     await assert.rejects(c.pool.query(`UPDATE agents SET kind = 'standard' WHERE id = $1`, [mara!.id]));
-    await assert.rejects(c.pool.query('UPDATE multi_orchestrator_settings SET fallback_agent_id = $1', [mara!.id]));
+    await assert.rejects(
+      c.pool.query(
+        'UPDATE agent_default_entries SET agent_id = $1 WHERE principal IS NULL AND channel_type IS NULL',
+        [mara!.id],
+      ),
+    );
 
     // And the runtime, whatever reached the tables: a hand-written business
     // grant gives the built facilitator nothing.

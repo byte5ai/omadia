@@ -6,7 +6,6 @@ import { cache } from 'react';
 
 import { redirectIfUnauthorized } from '../../../_lib/authRedirect';
 import {
-  FALLBACK_AGENT_SLUG,
   listOperatorAgents,
   type OperatorAgentsListDto,
 } from '../../../_lib/agents';
@@ -106,13 +105,7 @@ export default async function OperatorAgentDetailPage({
               })}
             </p>
           </header>
-          <AgentDetail
-            agent={agent}
-            isFallback={
-              agent.slug === FALLBACK_AGENT_SLUG ||
-              agent.id === list.fallback_agent_id
-            }
-          />
+          <AgentDetail agent={agent} />
           {/* The sibling per-agent surfaces (tool grants #861, MCP #862,
               context memory #899) moved into AgentDetail's tabs — one
               composition point, one tab strip. */}

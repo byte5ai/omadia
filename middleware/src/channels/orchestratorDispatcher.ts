@@ -1,7 +1,8 @@
-import { CHAT_AGENT_SERVICE } from '@omadia/channel-sdk';
+import { CHAT_AGENT_SERVICE, turnPrincipal } from '@omadia/channel-sdk';
 import type {
   ChatAgent,
   ChatAgentBundle,
+  ChannelRouteContext,
   ChannelUserKind,
   TurnOrigin,
 } from '@omadia/channel-sdk';
@@ -121,16 +122,16 @@ export interface OrchestratorDispatcherDeps {
   /** The ChatAgentBundle registered under a bare service key, or undefined. */
   getAgentBundle(service: string): ChatAgentBundle | undefined;
   /**
-   * US7 per-binding routing: resolve the *scoped* ChatAgent bound to a turn's
-   * `(channelType, channelKey)` via the multi-orchestrator `channelResolver`.
-   * Returns `null` when the resolver REJECTS the key (no binding and no
-   * platform fallback Agent, or a provisioned bot whose Agent is not
-   * servable) — #1598: the dispatcher refuses the turn rather than falling
-   * back to the shared bundle. Returns `undefined` when the resolver is not wired (Postgres-less deployment) — the
-   * dispatcher then falls back to the static `dispatch_service`. Optional so the
-   * legacy single-Agent boot and unit tests work without it.
+   * #2055 — the management layer's ChatAgent for a turn's `(channelType,
+   * channelKey)` and sender: in front of the routed agent, or answering with
+   * the `system` notice when no agent may answer (agent disabled, deleted,
+   * not available, nothing addressed); it also handles `/agent`. Never
+   * another agent. Returns `undefined` when the resolver is not wired
+   * (Postgres-less deployment) — the dispatcher then falls back to the static
+   * `dispatch_service`. Optional so the legacy single-agent boot and unit
+   * tests work without it.
    */
-  resolveBinding?(channelType: string, channelKey: string): ChatAgent | null | undefined;
+  resolveBinding?(channelType: string, channelKey: string, context: ChannelRouteContext): ChatAgent | undefined;
   /**
    * Map a `channelId` (plugin catalog id) to its `channel_bindings.channel_type`
    * selector (`de.byte5.channel.teams` → `teams`). Optional — paired with
@@ -167,6 +168,7 @@ export function createOrchestratorDispatcher(
       const dispatchService = resolveDispatchService(block);
 
       let agent: ChatAgent | undefined;
+      const origin = readTurnOrigin(input.metadata?.['origin']);
 
       // (1) Per-binding routing — only for channels that would otherwise hit
       // the shared chatAgent. An explicit dispatch_service (canvas) opts out.
@@ -178,15 +180,10 @@ export function createOrchestratorDispatcher(
       ) {
         const channelType =
           input.channelType ?? deps.channelTypeFor(input.channelId);
-        const bound = deps.resolveBinding(channelType, input.channelKey);
-        if (bound === null) {
-          console.warn(
-            `[channels] no orchestrator serves ${channelType}:${input.channelKey} — turn refused (scope=${input.scope})`,
-          );
-          yield { type: 'error', message: 'no orchestrator is assigned to this conversation' };
-          return;
-        }
-        agent = bound;
+        // #2055 — the management layer decides; its ChatAgent answers a
+        // refusal with the `system` notice and handles `/agent` itself.
+        const principal = turnPrincipal(input.userRef, origin?.principal);
+        agent = deps.resolveBinding(channelType, input.channelKey, { principal });
       }
 
       // (2) Static dispatch_service fallback (legacy + canvas).
@@ -258,7 +255,6 @@ export function createOrchestratorDispatcher(
       // Fail-closed applies to the transport too — an old plugin sends no
       // `origin` at all and gets exactly the same answer, so there is no flag
       // day in either direction.
-      const origin = readTurnOrigin(input.metadata?.['origin']);
       yield* agent.chatStream({
         userMessage: input.text,
         sessionScope: input.scope,

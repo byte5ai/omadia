@@ -58,24 +58,55 @@ export type { ReloadBusOptions } from './registry/reloadBus.js';
 export { ChannelResolver } from './routing/channelResolver.js';
 export type {
   ChannelResolverOptions,
+  ResolveContext,
   SystemNoticeRequest,
   ResolveDecision,
   ResolveResult,
 } from './routing/channelResolver.js';
 export {
-  ensureFallbackAgent,
   attachAllPlugins,
   attachNewPluginsToFallbackAgent,
-  FALLBACK_AGENT_SLUG,
-  // #679 / I5 — exported so a locale-aware surface can recognise the
-  // server-written seed prose and render its own copy instead.
-  FALLBACK_AGENT_SEED_NAME,
-  FALLBACK_AGENT_SEED_DESCRIPTION,
 } from './registry/onboarding.js';
+export type { FallbackAttachResult } from './registry/onboarding.js';
+// #2055 — the management layer: deterministic routing, routing tables,
+// plain-text agent selection, system notices.
+export {
+  ADDRESSABLE_STATUS,
+  ManagementRouter,
+  defaultEntryFor,
+} from './routing/managementRouter.js';
 export type {
-  FallbackAttachResult,
-  OnboardingOptions,
-} from './registry/onboarding.js';
+  RoleMembership,
+  RouteMatch,
+  RouteOutcome,
+  RouteRequest,
+  RoutingAgentRecord,
+  RoutingView,
+} from './routing/managementRouter.js';
+export { RoutingTables } from './registry/routingTables.js';
+export type {
+  AgentSelectionRow,
+  AvailabilityPrincipalRow,
+  DefaultAgentEntryInput,
+  DefaultAgentEntryRow,
+} from './registry/routingTables.js';
+export { SnapshotRoutingView } from './registry/routingView.js';
+export { KernelAgentSelectionService } from './management/agentSelection.js';
+export { buildSystemNotice, noticeLocale, systemEmission } from './management/systemNotices.js';
+export { agentAvatarUrl, speakerFor } from './management/speakerFor.js';
+export { emitterOf, speakerOf, stampAnswer, stampEvent, withSpeaker } from './management/speakingChatAgent.js';
+export { AgentAnswerEmitter, TemplateRegistry } from './management/answerEmitter.js';
+export type { TemplateValueType } from './management/answerEmitter.js';
+export {
+  DEFAULT_AGENT_IDENTITY,
+  identityRules,
+  withIdentityRules,
+} from './management/agentIdentityPrompt.js';
+export { IdentityGuard, SentenceGate, IDENTITY_GUARD_JUDGE_TIMEOUT_MS } from './identityGuard/guard.js';
+export type { IdentityGuardResult, IdentityJudge } from './identityGuard/guard.js';
+export { checkIdentityDeterministic } from './identityGuard/deterministic.js';
+export type { GuardDirectoryEntry } from './identityGuard/deterministic.js';
+export { maskRestoredValues, withIdentityGuard } from './identityGuard/guardedChatAgent.js';
 // US8 — per-Agent memory scope.
 export { computeMemoryScope } from './registry/index.js';
 export {
@@ -226,7 +257,6 @@ export type {
   ChannelBindingRow,
   ChannelIdentityRow,
   ConfigSnapshot,
-  PlatformSettingsRow,
   PrivacyProfile,
 } from './registry/configStore.js';
 export { runMultiOrchestratorMigrations } from './registry/migrator.js';
@@ -440,43 +470,6 @@ export type {
   SecurityAuditEvent,
   FetchLike,
 } from './securityScreener.js';
-
-// #332 Layer 2 — Direct Line directive parsing & target resolution (exported
-// for unit coverage and reuse by deterministic routers / the Conductor).
-export {
-  parseDirectLineDirective,
-  resolveDirectLineTarget,
-  directLineLabel,
-  DEFAULT_DIRECTIVE_PREFIX,
-} from './directLine.js';
-export type {
-  DirectLineDirective,
-  DirectLineCandidate,
-  DirectLineResolution,
-  DirectLineMode,
-} from './directLine.js';
-
-// #445 — sticky Direct Line: the pure target-selection layer. Exported so the
-// decision table, the scope allow-gate and the binding store can be unit-tested
-// without an Orchestrator, and so the store can be constructed once at boot and
-// injected (it must outlive any single Orchestrator instance).
-export {
-  classifyStickyScope,
-  decideDirectLineTurn,
-  isDirectLineExitMessage,
-  stickyKeyFor,
-  InMemoryDirectLineStickyStore,
-  DIRECT_LINE_EXIT_TOKENS,
-  STICKY_IDLE_TTL_MS,
-  STICKY_MAX_BINDINGS,
-} from './directLineSticky.js';
-export type {
-  DirectLineBinding,
-  DirectLineDecision,
-  DirectLineStickyStore,
-  StickyScopeClassification,
-  StickyScopeRefusal,
-} from './directLineSticky.js';
 
 // Round-loop guard — exported so it can be unit-tested in isolation and reused
 // by other agentic loops (e.g. the Builder).

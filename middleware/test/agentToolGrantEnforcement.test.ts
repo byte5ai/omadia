@@ -193,7 +193,6 @@ test('a plugin granted to a RUNNING agent works without a restart', async () => 
     agents: [agent],
     agentPlugins: [],
     channelBindings: [],
-    platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
   };
   const store = new FakeStore(empty);
   const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
@@ -257,7 +256,6 @@ test('a plugin revoked from a RUNNING agent stops working immediately', async ()
       },
     ],
     channelBindings: [],
-    platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
   };
   const store = new FakeStore(granted);
   const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {

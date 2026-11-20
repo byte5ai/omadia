@@ -14,6 +14,12 @@ import {
 } from './agentToAgent.js';
 import { parseArchetype, type ArchetypeId } from './archetype.js';
 import { liveAgentRow, ofLiveAgent, tombstoneSlug, type AgentTombstone } from './tombstones.js';
+import {
+  RoutingTables,
+  type AgentSelectionRow,
+  type AvailabilityPrincipalRow,
+  type DefaultAgentEntryRow,
+} from './routingTables.js';
 import { parseModelPolicy } from './modelPolicy.js';
 import type { ModelPolicy } from '@omadia/plugin-api';
 
@@ -174,6 +180,16 @@ export interface AgentRow {
    * agent set none.
    */
   readonly quality?: ProfileQualityConfig | null;
+  /**
+   * #2055 — availability (migration 0083, spec 2042 §5.3): everyone in the
+   * tenant may use the agent. Optional for fixtures; absent reads as `false`
+   * (a fresh agent is available to nobody), see `isAvailableTo`.
+   */
+  readonly availableToEveryone?: boolean;
+  /** #2055 — the channel types the agent serves; `null`/absent = all. */
+  readonly availableChannels?: readonly string[] | null;
+  /** #2045 — `agent_identities.avatar_etag`: the agent has an avatar; `null`/absent = none. */
+  readonly avatarEtag?: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -222,11 +238,6 @@ export interface ChannelIdentityRow {
   readonly channelType: string;
   readonly channelKey: string;
   readonly agentId: string;
-}
-
-export interface PlatformSettingsRow {
-  readonly fallbackAgentId: string | null;
-  readonly updatedAt: Date;
 }
 
 export interface AgentInput {
@@ -409,6 +420,10 @@ interface AgentDbRow {
   identity_language?: string | null;
   /** #1569 — `agent_identities.quality` (JSONB), same join / same absence on writes. */
   identity_quality?: unknown;
+  /** #2055 — absent on a DB that predates migration 0083. */
+  available_to_everyone?: boolean | null;
+  available_channels?: string[] | null;
+  identity_avatar_etag?: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -440,11 +455,6 @@ interface ChannelBindingDbRow {
   channel_key: string;
   agent_id: string;
   created_at: Date;
-}
-
-interface PlatformSettingsDbRow {
-  fallback_agent_id: string | null;
-  updated_at: Date;
 }
 
 interface AgentChannelPolicyDbRow {
@@ -520,6 +530,10 @@ function mapAgent(row: AgentDbRow): AgentRow {
     answerVerbosity: parseAnswerVerbosity(row.identity_verbosity) ?? null,
     identityLanguage: row.identity_language?.trim() || null,
     quality: parseAgentQuality(row.identity_quality) ?? null,
+    // Deny-default: an absent column (pre-0083) is "nobody", never "everyone".
+    availableToEveryone: row.available_to_everyone === true,
+    availableChannels: Array.isArray(row.available_channels) ? row.available_channels : null,
+    avatarEtag: row.identity_avatar_etag ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -541,15 +555,6 @@ function mapBinding(row: ChannelBindingDbRow): ChannelBindingRow {
     channelKey: row.channel_key,
     agentId: row.agent_id,
     createdAt: row.created_at,
-  };
-}
-
-function mapPlatformSettings(
-  row: PlatformSettingsDbRow,
-): PlatformSettingsRow {
-  return {
-    fallbackAgentId: row.fallback_agent_id,
-    updatedAt: row.updated_at,
   };
 }
 
@@ -587,14 +592,21 @@ const AGENT_SELECT =
   // to_jsonb, not the bare column: a database that predates migration 0069
   // has no `language`, and this SELECT runs before any migration check.
   "to_jsonb(i) ->> 'language' AS identity_language, " +
-  'i.quality AS identity_quality ' +
+  'i.quality AS identity_quality, ' +
+  // #2045 — the etag only (text), so a speaker can name its avatar URL.
+  'i.avatar_etag AS identity_avatar_etag ' +
   'FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id ' +
   // #2088 — LIVE agents only. This is the one read of `agents`; a deleted
   // agent (tombstone, migration 0072) is reached through `listTombstones`.
   `WHERE ${liveAgentRow('a')}`;
 
 export class ConfigStore {
-  constructor(private readonly pool: Pool) {}
+  /** #2055 — default-agent entries, selections, availability. */
+  readonly routing: RoutingTables;
+
+  constructor(private readonly pool: Pool) {
+    this.routing = new RoutingTables(pool);
+  }
 
   // ── agents ────────────────────────────────────────────────────────────
   async listAgents(): Promise<readonly AgentRow[]> {
@@ -806,8 +818,19 @@ export class ConfigStore {
    * a live agent is deleted first. Returns whether a row was removed.
    */
   async purgeAgent(id: string): Promise<boolean> {
-    const result = await this.pool.query('DELETE FROM agents WHERE id = $1 AND deleted_at IS NOT NULL', [id]);
-    return (result.rowCount ?? 0) > 0;
+    try {
+      const result = await this.pool.query('DELETE FROM agents WHERE id = $1 AND deleted_at IS NOT NULL', [id]);
+      return (result.rowCount ?? 0) > 0;
+    } catch (err) {
+      // #2055 — a default-agent entry or a user's selection still names the
+      // tombstone (ON DELETE RESTRICT): purged only when nothing refers to it.
+      if ((err as { code?: unknown } | null)?.code === '23503') {
+        throw new ConfigValidationError(
+          'the deleted agent is still named by a default-agent entry; change the entry first',
+        );
+      }
+      throw err;
+    }
   }
 
   /** Agent Builder — set (or clear, with null) the per-agent model routing.
@@ -1035,46 +1058,6 @@ export class ConfigStore {
     }
   }
 
-  // ── multi_orchestrator_settings ─────────────────────────────────────────────────
-  async getPlatformSettings(): Promise<PlatformSettingsRow> {
-    const { rows } = await this.pool.query<PlatformSettingsDbRow>(
-      'SELECT fallback_agent_id, updated_at FROM multi_orchestrator_settings WHERE id = true',
-    );
-    if (rows[0]) return mapPlatformSettings(rows[0]);
-    // Migration seeds a row, but defensively upsert in case it was wiped.
-    await this.pool.query(
-      'INSERT INTO multi_orchestrator_settings (id) VALUES (true) ON CONFLICT (id) DO NOTHING',
-    );
-    return { fallbackAgentId: null, updatedAt: new Date() };
-  }
-
-  async setFallbackAgentId(agentId: string | null): Promise<PlatformSettingsRow> {
-    let rows: PlatformSettingsDbRow[];
-    try {
-      ({ rows } = await this.pool.query<PlatformSettingsDbRow>(
-        `INSERT INTO multi_orchestrator_settings (id, fallback_agent_id, updated_at)
-         VALUES (true, $1, now())
-         ON CONFLICT (id) DO UPDATE SET
-           fallback_agent_id = EXCLUDED.fallback_agent_id,
-           updated_at        = now()
-         RETURNING fallback_agent_id, updated_at`,
-        [agentId],
-      ));
-    } catch (err) {
-      // #2060 — the trigger of migration 0067 is the last line of defence;
-      // surface it as a domain error instead of a raw pg failure.
-      if (isConstraintViolation(err, 'fallback_agent_not_facilitator')) {
-        throw new ConfigValidationError('a facilitator cannot be the default agent');
-      }
-      throw err;
-    }
-    const row = rows[0];
-    if (!row) {
-      throw new Error('setFallbackAgentId: RETURNING produced no row');
-    }
-    return mapPlatformSettings(row);
-  }
-
   // ── aggregate read for the registry ───────────────────────────────────
   /**
    * Single-snapshot read of every config table. The registry calls this on
@@ -1092,7 +1075,7 @@ export class ConfigStore {
       plugins,
       bindings,
       identities,
-      settings,
+      defaultEntries,
       subAgents,
       toolGrants,
       schedules,
@@ -1100,12 +1083,14 @@ export class ConfigStore {
       mcpServers,
       personaSkillLinks,
       skillToolBindings,
+      selections,
+      availabilityPrincipals,
     ] = await Promise.all([
       this.listAgents(),
       this.listAllAgentPlugins(),
       this.listChannelBindings(),
       this.listChannelIdentities(),
-      this.getPlatformSettings(),
+      this.routing.listDefaultEntries(),
       graph.listAllSubAgents(),
       graph.listAllToolGrants(),
       graph.listAllSchedules(),
@@ -1113,6 +1098,8 @@ export class ConfigStore {
       graph.listMcpServers(),
       graph.listAllPersonaSkillLinks(),
       graph.listAllSkillToolBindings(),
+      this.routing.listSelections(),
+      this.routing.listAvailabilityPrincipals(),
     ]);
     // #2088 — the deleted agents, so routing can tell "bound to a deleted
     // agent" from "bound to nobody". A database before migration 0072 has no
@@ -1126,7 +1113,7 @@ export class ConfigStore {
       agentPlugins: plugins,
       channelBindings: bindings,
       channelIdentities: identities,
-      platformSettings: settings,
+      defaultEntries,
       subAgents,
       toolGrants,
       schedules,
@@ -1135,6 +1122,8 @@ export class ConfigStore {
       personaSkillLinks,
       skillToolBindings,
       tombstones,
+      selections,
+      availabilityPrincipals,
     };
   }
 }
@@ -1159,7 +1148,12 @@ export interface ConfigSnapshot {
    * never had the field.
    */
   readonly channelIdentities?: readonly ChannelIdentityRow[];
-  readonly platformSettings: PlatformSettingsRow;
+  /** #2055 — default-agent entries (migration 0081). Optional for fixtures. */
+  readonly defaultEntries?: readonly DefaultAgentEntryRow[];
+  /** #2055 — users' agent selections per conversation (migration 0082). */
+  readonly selections?: readonly AgentSelectionRow[];
+  /** #2055 — named people and groups per agent (migration 0083). */
+  readonly availabilityPrincipals?: readonly AvailabilityPrincipalRow[];
   // Agent Builder graph (P0). Optional so pre-existing snapshot literals
   // (tests, fixtures) stay valid; `loadSnapshot` always populates them.
   readonly subAgents?: readonly SubAgentRow[];
@@ -1179,15 +1173,6 @@ function isUndefinedTable(err: unknown): boolean {
     !!err &&
     typeof err === 'object' &&
     (err as { code?: string }).code === '42P01'
-  );
-}
-
-/** A violation raised with a named constraint (CHECK or a trigger's RAISE). */
-function isConstraintViolation(err: unknown, constraint: string): boolean {
-  return (
-    !!err &&
-    typeof err === 'object' &&
-    (err as { constraint?: string }).constraint === constraint
   );
 }
 

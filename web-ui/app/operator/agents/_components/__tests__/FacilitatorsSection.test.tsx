@@ -26,7 +26,7 @@ import { AgentsDashboard } from '../AgentsDashboard';
 const {
   mockCreate,
   mockPatch,
-  mockSetFallback,
+  mockSetDefault,
   mockTeams,
   mockEngine,
   mockPush,
@@ -34,7 +34,7 @@ const {
 } = vi.hoisted(() => ({
   mockCreate: vi.fn(),
   mockPatch: vi.fn(),
-  mockSetFallback: vi.fn(),
+  mockSetDefault: vi.fn(),
   mockTeams: vi.fn(),
   mockEngine: vi.fn(),
   mockPush: vi.fn(),
@@ -67,7 +67,7 @@ vi.mock('../../../../_lib/agents', async (importOriginal) => ({
   listDeletedAgents: vi.fn().mockResolvedValue({ retention_days: 30, agents: [] }),
   createOperatorAgent: mockCreate,
   patchOperatorAgent: mockPatch,
-  setFallbackAgent: mockSetFallback,
+  setInstanceDefaultAgent: mockSetDefault,
   getAgentTeamsIdentity: mockTeams,
 }));
 
@@ -102,10 +102,10 @@ const ENGINE = { id: '@omadia/agent-facilitator', name: 'Facilitation Engine' };
 const READY: FacilitationEngineStatus = { state: 'ready', pluginId: ENGINE.id };
 
 function list(...agents: OperatorAgentDto[]): OperatorAgentsListDto {
-  return { agents, fallback_agent_id: 'id-fallback' };
+  return { agents, default_agent_id: 'id-help' };
 }
 
-const FALLBACK = agent({ slug: 'fallback', name: 'Standard' });
+const HELP = agent({ slug: 'help', name: 'Help' });
 const SALES = agent({ slug: 'sales', name: 'Sales' });
 const MONA = agent({ slug: 'mona', name: 'Mona', archetype: 'facilitator' });
 
@@ -121,15 +121,15 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
   it('lists facilitators apart from orchestrators', async () => {
     mockEngine.mockResolvedValue(READY);
     mockTeams.mockRejectedValue(teamsMissing());
-    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, SALES, MONA)} />);
+    renderWithIntl(<AgentsDashboard initial={list(HELP, SALES, MONA)} />);
 
     const section = screen.getByTestId('facilitators-section');
     expect(section.textContent).toContain('Facilitators (1)');
     expect(screen.getByTestId('facilitator-card-mona')).toBeTruthy();
     expect(screen.getByRole('heading', { name: /Orchestrators \(2\)/ })).toBeTruthy();
 
-    // Not offered as the standard orchestrator.
-    const picker = screen.getByRole('combobox', { name: /Standard orchestrator/ });
+    // Not offered as the default agent.
+    const picker = screen.getByRole('combobox', { name: /Default agent/ });
     const options = [...(picker as HTMLSelectElement).options].map((o) => o.value);
     expect(options).toContain('sales');
     expect(options).not.toContain('mona');
@@ -144,7 +144,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
   it('shows a facilitator without its own Teams identity as not ready', async () => {
     mockEngine.mockResolvedValue(READY);
     mockTeams.mockRejectedValue(teamsMissing());
-    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} />);
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} />);
 
     const teams = await screen.findByTestId('facilitator-readiness-teams');
     expect(screen.getByTestId('facilitator-readiness').getAttribute('data-ready')).toBe('false');
@@ -163,7 +163,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
       archetype: 'facilitator',
       plugins: [{ id: ENGINE.id, enabled: true, config: {} }],
     });
-    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, granted)} />);
+    renderWithIntl(<AgentsDashboard initial={list(HELP, granted)} />);
     await waitFor(() =>
       expect(screen.getByTestId('facilitator-readiness').getAttribute('data-ready')).toBe('true'),
     );
@@ -173,7 +173,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
   it('points at the repair when the engine row is missing', async () => {
     mockEngine.mockResolvedValue(READY);
     mockTeams.mockResolvedValue({ state: 'installed' });
-    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} />);
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} />);
     const grant = await screen.findByTestId('facilitator-readiness-grant');
     expect(grant.textContent).toContain('normally happens automatically');
     expect(grant.querySelector('a')?.getAttribute('href')).toBe(
@@ -184,7 +184,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
   it('says that no facilitation engine is installed', async () => {
     mockEngine.mockResolvedValue({ state: 'none' });
     mockTeams.mockRejectedValue(teamsMissing());
-    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} />);
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} />);
     const notice = await screen.findByTestId('facilitation-engine-notice');
     expect(notice.textContent).toContain('No facilitation engine is installed');
     expect(notice.querySelector('a')?.getAttribute('href')).toBe('/store');
@@ -198,7 +198,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
   it('says that an installed engine did not start, where to look, and links to its store page', async () => {
     mockEngine.mockResolvedValue({ state: 'unusable', pluginId: ENGINE.id, reason: 'inactive', engineReason: null });
     mockTeams.mockRejectedValue(teamsMissing());
-    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} />);
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} />);
     const notice = await screen.findByTestId('facilitation-engine-notice');
     expect(notice.textContent).toContain('is installed but did not start');
     expect(notice.textContent).toContain('database access that has not been granted');
@@ -217,7 +217,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
       engineReason: null,
     });
     mockTeams.mockRejectedValue(teamsMissing());
-    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} />);
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} />);
     const notice = await screen.findByTestId('facilitation-engine-notice');
     expect(notice.textContent).toContain(text);
     expect(notice.querySelector('a')?.getAttribute('href')).toBe(
@@ -234,7 +234,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
       engineReason: 'migrations not run',
     });
     mockTeams.mockRejectedValue(teamsMissing());
-    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} />, { locale: 'de' });
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} />, { locale: 'de' });
     const notice = await screen.findByTestId('facilitation-engine-notice');
     expect(notice.textContent).toContain('meldet, dass sie nicht bereit ist');
     // Verbatim, in an element of its own.
@@ -246,7 +246,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
   it('names the engines when more than one is installed', async () => {
     mockEngine.mockResolvedValue({ state: 'ambiguous', pluginIds: ['a.engine', 'b.engine'] });
     mockTeams.mockRejectedValue(teamsMissing());
-    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} />);
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} />);
     const notice = await screen.findByTestId('facilitation-engine-notice');
     expect(notice.textContent).toContain('a.engine, b.engine');
   });
@@ -256,7 +256,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
     mockTeams.mockRejectedValue(teamsMissing());
     renderWithIntl(
       <AgentsDashboard
-        initial={list(FALLBACK, MONA)}
+        initial={list(HELP, MONA)}
         pluginNav={[
           { pluginId: 'other', href: '/plugin-ui/other', label: 'Other' },
           { pluginId: ENGINE.id, href: '/plugin-ui/engine', label: 'Facilitations' },
@@ -273,7 +273,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
     mockTeams.mockRejectedValue(teamsMissing());
     renderWithIntl(
       <AgentsDashboard
-        initial={list(FALLBACK, MONA)}
+        initial={list(HELP, MONA)}
         pluginNav={[{ pluginId: ENGINE.id, href: '/plugin-ui/engine', label: 'Facilitations' }]}
       />,
     );
@@ -284,7 +284,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
   it('does not claim "no engine" when the status cannot be read', async () => {
     mockEngine.mockRejectedValue(new Error('store down'));
     mockTeams.mockRejectedValue(teamsMissing());
-    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} />);
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} />);
     const notice = await screen.findByTestId('facilitation-engine-notice');
     expect(notice.textContent).toContain('could not be checked');
     expect(notice.textContent).not.toContain('store down');
@@ -293,7 +293,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
   it('creates with the archetype facilitator and opens the new page', async () => {
     mockEngine.mockResolvedValue(READY);
     mockCreate.mockResolvedValue({ id: 'id-rita', slug: 'rita', archetype: 'facilitator' });
-    renderWithIntl(<AgentsDashboard initial={list(FALLBACK)} />);
+    renderWithIntl(<AgentsDashboard initial={list(HELP)} />);
 
     await userEvent.type(screen.getByTestId('facilitator-create-slug'), 'rita');
     await userEvent.type(screen.getByTestId('facilitator-create-name'), 'Rita');
@@ -312,7 +312,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
   it('prints the omission sentence for a 409 facilitator_omission', async () => {
     mockEngine.mockResolvedValue(READY);
     mockTeams.mockRejectedValue(teamsMissing());
-    mockSetFallback.mockRejectedValue(
+    mockSetDefault.mockRejectedValue(
       new ApiError(
         409,
         'PUT failed: 409',
@@ -323,9 +323,9 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
         }),
       ),
     );
-    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, SALES, MONA)} />);
+    renderWithIntl(<AgentsDashboard initial={list(HELP, SALES, MONA)} />);
     await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: /Standard orchestrator/ }),
+      screen.getByRole('combobox', { name: /Default agent/ }),
       'sales',
     );
     await waitFor(() =>
@@ -370,7 +370,7 @@ describe('AgentsDashboard — one section per archetype (#2088)', () => {
     mockEngine.mockResolvedValue(READY);
     mockTeams.mockRejectedValue(teamsMissing());
     mockCreate.mockResolvedValue({ id: 'id-nina', slug: 'nina', archetype: 'coach' });
-    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA, COACH)} archetypes={REGISTERED} />);
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA, COACH)} archetypes={REGISTERED} />);
 
     const section = screen.getByTestId('archetype-section-coach');
     expect(section.textContent).toContain('Coaches (1)');
@@ -394,7 +394,7 @@ describe('AgentsDashboard — one section per archetype (#2088)', () => {
     mockEngine.mockResolvedValue(READY);
     mockTeams.mockRejectedValue(teamsMissing());
     renderWithIntl(
-      <AgentsDashboard initial={list(FALLBACK, COACH)} archetypes={[REGISTERED[0], REGISTERED[1]] as never} />,
+      <AgentsDashboard initial={list(HELP, COACH)} archetypes={[REGISTERED[0], REGISTERED[1]] as never} />,
     );
     const section = screen.getByTestId('archetype-section-coach');
     expect(section.textContent).toContain('coach (1)');
@@ -406,7 +406,7 @@ describe('AgentsDashboard — one section per archetype (#2088)', () => {
   it('a middleware that does not report archetypes: the facilitator section as before', async () => {
     mockEngine.mockResolvedValue(READY);
     mockTeams.mockRejectedValue(teamsMissing());
-    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} archetypes={null} />);
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} archetypes={null} />);
     expect(screen.getByTestId('facilitators-section').textContent).toContain('Facilitators (1)');
     expect(screen.queryByTestId('archetype-section-coach')).toBeNull();
   });
