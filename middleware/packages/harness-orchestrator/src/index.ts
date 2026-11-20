@@ -74,6 +74,7 @@ export {
   ADDRESSABLE_STATUS,
   ManagementRouter,
   defaultEntryFor,
+  setRoleMembership,
 } from './routing/managementRouter.js';
 export type {
   RoleMembership,

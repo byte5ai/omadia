@@ -307,12 +307,11 @@ const AvailabilitySchema = z.object({
   /** Channel types the agent serves; `null` = all. */
   channels: z.array(z.string().min(1).max(64)).max(64).nullable(),
   /**
-   * Named people (`user:<id>`). Groups (`role:<key>`) are refused until the
-   * routing resolves role membership: accepting them would store a grant
-   * that silently never matches.
+   * Named people (`user:<id>`) and groups (`role:<key>`, Conductor roles,
+   * resolved by the role-membership snapshot).
    */
   principals: z
-    .array(z.string().regex(/^user:.+/, 'only user:<id> principals are supported; groups (role:<key>) are not resolved yet').max(320))
+    .array(z.string().regex(/^(user|role):.+/, 'principals are user:<id> or role:<key>').max(320))
     .max(500),
 });
 

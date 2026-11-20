@@ -133,6 +133,7 @@ import {
   ChannelResolver as ManagementChannelResolver,
   KernelAgentSelectionService,
   emitterOf,
+  setRoleMembership,
   speakerFor,
   speakerOf,
 } from '@omadia/orchestrator';
@@ -5508,6 +5509,9 @@ async function main(): Promise<void> {
     // instance, so a future external holder source (Entra group, Odoo HR)
     // reaches both paths at once — no drift.
     targetedRoleResolver = (roleKey) => conductorWiring.roleHolderRegistry.resolveHolders(roleKey);
+    // Spec 2042 §5.3 — availability entries `role:<key>` are answered by the
+    // same registry, from the Conductor's role snapshot (every router asks it).
+    setRoleMembership(conductorWiring.roleMembership.hasRole);
     targetedBindingLookup = (principalIds, channelType) =>
       conductorWiring.channelBindingStore.getMany(principalIds, channelType);
     // #478 — plugin-borne workflow templates: hand the composite catalog's

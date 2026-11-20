@@ -5645,9 +5645,8 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
     (Existenz-Probe, Streaming-Ausgang, CLI-Pfad, MCP in Rückfragen,
     Offenlegungsstufen auf Capability-Grants, Operator-UI für Leserschaften).
 
-- **Offen (S1, Spec 2042):** Gruppen (`role:<key>`) in der Verfügbarkeit
-  brauchen eine synchrone Rollenmitgliedschaft (`ChannelResolver`-Option
-  `hasRole`, nicht verdrahtet; `PUT …/availability` lehnt `role:` deshalb ab);
+- **Offen (S1, Spec 2042):** (Gruppen `role:<key>` in der Verfügbarkeit sind
+  seit S5 verdrahtet, siehe „Rollen für die Verfügbarkeit“ am Ende);
   `chatAgent@1` bedient mit Registry nur noch Canvas-Turns (Instanz-Default),
   bis der Canvas pro Agent dispatcht (#2059); die Modellschicht des Guards auf
   `claude-cli` startet pro Prüfung einen CLI-Prozess (Timeout 8 s, fail-closed)
@@ -9914,8 +9913,12 @@ des Conductors (Zuweisungstabelle + aktivierte Quellen), Refresh alle 30 s und s
 nach jeder Rollen-/Zuweisungsänderung dieses Prozesses
 (`ConductorRoleStore.onChange`). Eine teilweise Auflösung zählt als „niemand“, ein
 fehlgeschlagener Refresh behält den letzten Stand, vor dem ersten Refresh hat niemand
-eine Rolle. Rollen gelten nur für die Verfügbarkeit, nicht für die Default-Tabelle
-(§5.6) und nicht für Leserschaften.
+eine Rolle. Der Kernel installiert den Snapshot prozessweit (`setRoleMembership`
+aus `routing/managementRouter.ts`, auf `globalThis` wegen Doppel-Ladens des Pakets);
+jeder `ManagementRouter` ohne eigenes `hasRole` fragt ihn, also Routing, Auswahl,
+Routing-Tester und Management-Layer. `PUT …/availability` nimmt `user:<id>` und
+`role:<key>` an (Rollenschlüssel behält die Schreibweise). Rollen gelten nur für die
+Verfügbarkeit, nicht für die Default-Tabelle (§5.6) und nicht für Leserschaften.
 
 ### Operator-API (`middleware/src/routes/operatorConsultation.ts`)
 
