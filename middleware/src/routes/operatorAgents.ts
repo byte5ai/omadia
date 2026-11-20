@@ -52,6 +52,10 @@ import {
 } from '../platform/facilitatorGuard.js';
 import { attachEngineToFacilitator } from '../platform/facilitatorEngineAttach.js';
 import { erroredArchetypePlugin } from '../platform/archetypeRegistrySync.js';
+import {
+  PREVIEW_DRAFT_AGENT_SLUG_PREFIX,
+  isPreviewDraftAgentSlug,
+} from '../plugins/builder/previewDraftAgents.js';
 import { assertFacilitatorIdentity } from '../services/facilitatorContract.js';
 import { createFacilitationEngineStatusHandler } from './facilitationEngineStatus.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
@@ -1954,6 +1958,20 @@ export function createOperatorAgentsRouter(
   options: OperatorAgentsRouterOptions,
 ): Router {
   const router = Router();
+  // #2049 — the draft agent of a Plugin Builder preview is the preview's, not
+  // the operator's: it is read and deleted here, never configured (grants,
+  // bindings, identity, status).
+  router.use('/:slug', (req: Request, res: Response, next) => {
+    const slug = req.params['slug'];
+    if (typeof slug === 'string' && isPreviewDraftAgentSlug(slug) && !['GET', 'HEAD', 'DELETE'].includes(req.method)) {
+      res.status(409).json({
+        error: 'preview_draft_agent',
+        message: `"${slug}" is the draft agent of a Plugin Builder preview; it can only be read or deleted`,
+      });
+      return;
+    }
+    next();
+  });
   const retentionDays = (): number => options.tombstoneRetentionDays ?? 30;
   /** The audit never fails a request: without it the change is logged. */
   const recordAudit = async (entry: AuditEntryInput): Promise<void> => {
@@ -2173,7 +2191,11 @@ export function createOperatorAgentsRouter(
 
   const currentOnboardingTarget = async (store: ConfigStore) => {
     const [agents, rows] = await Promise.all([store.listAgents(), store.listAllAgentPlugins()]);
-    return onboardingTarget(agents, (agentId) => rows.filter((r) => r.agentId === agentId).length);
+    // A Plugin Builder preview's draft agent is no agent of the operator's.
+    return onboardingTarget(
+      agents.filter((a) => !isPreviewDraftAgentSlug(a.slug)),
+      (agentId) => rows.filter((r) => r.agentId === agentId).length,
+    );
   };
 
   router.get('/onboarding', async (_req: Request, res: Response) => {
@@ -2335,12 +2357,15 @@ export function createOperatorAgentsRouter(
     const live = svc();
     if (!live) return unavailable(res);
     try {
-      const [agents, plugins, bindings, settings] = await Promise.all([
+      const [allAgents, plugins, bindings, settings] = await Promise.all([
         live.store.listAgents(),
         live.store.listAllAgentPlugins(),
         live.store.listChannelBindings(),
         live.store.getPlatformSettings(),
       ]);
+      // #2049 — the directory lists the operator's agents; a Plugin Builder
+      // preview's draft agent belongs to the preview (Plugin Builder only).
+      const agents = allAgents.filter((a) => !isPreviewDraftAgentSlug(a.slug));
       const pluginsByAgent = groupBy(plugins, (p) => p.agentId);
       const bindingsByAgent = groupBy(bindings, (b) => b.agentId);
       const active = new Set(live.registry.list().map((a) => a.agent.id));
@@ -2448,6 +2473,12 @@ export function createOperatorAgentsRouter(
       // addressed: `/facilitation-engine/...` answers the engine status.
       if (RESERVED_AGENT_SLUGS.has(body.slug)) {
         throw new ConfigValidationError(`agent slug "${body.slug}" is reserved`);
+      }
+      // #2049 — the draft agents of Plugin Builder previews own this prefix.
+      if (isPreviewDraftAgentSlug(body.slug)) {
+        throw new ConfigValidationError(
+          `agent slugs starting with "${PREVIEW_DRAFT_AGENT_SLUG_PREFIX}" are reserved for Plugin Builder previews`,
+        );
       }
       if (body.kind !== undefined) {
         throw new ConfigValidationError('"kind" was replaced by "archetype"; send archetype');
@@ -4633,6 +4664,9 @@ export function createOperatorAgentsRouter(
         if (!target) {
           res.status(404).json({ error: 'not_found' });
           return;
+        }
+        if (isPreviewDraftAgentSlug(target.slug)) {
+          throw new ConfigValidationError('the draft agent of a Plugin Builder preview cannot be a default agent');
         }
         assertArchetypeAllows(target, 'default_agent');
         await live.store.setFallbackAgentId(target.id);

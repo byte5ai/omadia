@@ -14,6 +14,7 @@ import { probePgTest } from './_helpers/pgTestDb.js';
 
 import { ConfigStore } from '../packages/harness-orchestrator/src/registry/configStore.js';
 import { runMultiOrchestratorMigrations } from '../packages/harness-orchestrator/src/registry/migrator.js';
+import { PreviewDraftAgents } from '../src/plugins/builder/previewDraftAgents.js';
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
   label: 'agentDraftStatus',
@@ -49,6 +50,22 @@ describe('agent draft status (pg, migration 0085)', { skip: !pgAvailable }, () =
     const { rows } = await pool.query<{ status: string }>(`SELECT status FROM agents WHERE id = $1`, [draft.id]);
     assert.equal(rows[0]?.status, 'draft');
     await pool.query(`UPDATE agents SET status = 'enabled' WHERE id = $1`, [draft.id]);
+  });
+
+  it('a Plugin Builder preview draft agent is created once and removed without a trace', async () => {
+    const drafts = new PreviewDraftAgents(() => store);
+    const ref = await drafts.ensure('draft-pg-1', 'Weather');
+    assert.equal((await drafts.ensure('draft-pg-1', 'Weather')).id, ref.id);
+    const { rows: before } = await pool.query<{ status: string }>(`SELECT status FROM agents WHERE id = $1`, [ref.id]);
+    assert.equal(before[0]?.status, 'draft');
+    assert.equal(await drafts.remove('draft-pg-1'), true);
+    const { rows: after } = await pool.query(`SELECT 1 FROM agents WHERE id = $1`, [ref.id]);
+    assert.equal(after.length, 0, 'purged, no tombstone left behind');
+    // The boot sweep finds what a crash left and nothing else.
+    await drafts.ensure('draft-pg-2', 'Weather');
+    await store.createAgent({ slug: 'mira-draft', name: 'Mira', status: 'draft' });
+    assert.equal(await drafts.sweep(), 1);
+    assert.ok(await store.getAgentBySlug('mira-draft'));
   });
 
   it('refuses any other status', async () => {

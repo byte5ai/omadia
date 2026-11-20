@@ -48,9 +48,14 @@ changelog.
   the workspace. Old drafts still load; their persona, quality and skill fields
   are dropped on read, and a patch that sets them is refused with a pointer to
   the Agent Builder.
-- **Preview** is a neutral preview agent in memory that holds exactly the draft
-  plugin's tools and nothing else, with a neutral prompt (identity, kind,
-  playbook) and answers marked "preview", only in the admin UI.
+- **Preview** is a turn of a draft agent: an `agents` row with status `draft`
+  (`builder-preview-<draft>`, a reserved slug prefix), never built by the
+  registry, never enabled, holding exactly the draft plugin's tools and
+  nothing else, with a neutral prompt (identity, kind, playbook) and answers
+  marked "preview", only in the admin UI. It is removed when its preview
+  closes (evicted, draft discarded, logout, shutdown) and by a boot sweep
+  after a crash. Without it the preview does not run
+  (`builder.preview_draft_agent_unavailable`).
 - **Built-ins:** `@omadia/agent-seo-analyst` 0.3.0 (kind `tool`) and
   `@omadia/agent-reference-maximum` 0.4.0 (kind `integration`, still the
   Builder's reference-only pattern source) are capability plugins; their former

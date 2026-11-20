@@ -467,6 +467,9 @@ export function createBuilderRouter(deps: BuilderRouterDeps): Router {
         });
         return;
       }
+      // Spec 2042 §5.10 — a discarded draft's preview closes, and its draft
+      // agent goes with it (`PreviewCache.onClosed`).
+      await deps.preview?.previewCache.evict(email, id);
       res.status(204).end();
     } catch (err) {
       sendError(res, err, 'builder.delete_failed');

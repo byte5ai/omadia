@@ -786,6 +786,54 @@ describe('createOperatorAgentsRouter', () => {
     teamsEvents = undefined;
   });
 
+  // ── Plugin Builder preview drafts (#2049) ────────────────────────────
+  describe('Plugin Builder preview draft agents (#2049)', () => {
+    it('refuses an operator agent in the preview slug space', async () => {
+      const res = await fetch(baseUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug: 'builder-preview-d1', name: 'Sneaky' }),
+      });
+      assert.equal(res.status, 409);
+      assert.equal(await store.getAgentBySlug('builder-preview-d1'), undefined);
+    });
+
+    it('never enables a preview draft agent', async () => {
+      await store.createAgent({ slug: 'builder-preview-d1', name: 'Preview: Weather', status: 'draft' as never });
+      const res = await fetch(`${baseUrl}/builder-preview-d1`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ status: 'enabled' }),
+      });
+      assert.equal(res.status, 409);
+      assert.equal((await store.getAgentBySlug('builder-preview-d1'))?.status, 'draft');
+    });
+
+    it('is not in the directory, gets no grant and is never a default agent', async () => {
+      await store.createAgent({ slug: 'builder-preview-d1', name: 'Preview: Weather', status: 'draft' as never });
+      await store.createAgent({ slug: 'mira', name: 'Mira' });
+      const list = (await (await fetch(baseUrl)).json()) as { agents: Array<{ slug: string }> };
+      const slugs = list.agents.map((a) => a.slug);
+      assert.ok(slugs.includes('mira'));
+      assert.equal(slugs.includes('builder-preview-d1'), false);
+
+      const grant = await fetch(`${baseUrl}/builder-preview-d1/plugins`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ plugins: [] }),
+      });
+      assert.equal(grant.status, 409);
+      const fallback = await fetch(`${baseUrl}/fallback`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug: 'builder-preview-d1' }),
+      });
+      assert.equal(fallback.status, 409);
+      const read = await fetch(`${baseUrl}/builder-preview-d1`);
+      assert.notEqual(read.status, 409, 'reading stays possible');
+    });
+  });
+
   // ── model policy (#1033) ─────────────────────────────────────────────
   describe('model policy (#1033)', () => {
     it('GET /:slug/model-policy defaults to auto/none with the active provider', async () => {

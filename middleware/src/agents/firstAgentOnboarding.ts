@@ -4,6 +4,8 @@ import {
   FALLBACK_AGENT_SLUG,
 } from '@omadia/orchestrator';
 
+import { isPreviewDraftAgentSlug } from '../plugins/builder/previewDraftAgents.js';
+
 /**
  * #2054 — spec 2042 §7 "Onboarding": a fresh installation starts with no agent
  * holding any capability; the first-run flow creates the first agent with an
@@ -58,5 +60,7 @@ export function firstAgentSlug(name: string, reserved: ReadonlySet<string>): str
     .slice(0, MAX_SLUG_LENGTH)
     .replace(/^-+|-+$/g, '');
   if (!slug) return 'agent';
+  // The draft agents of Plugin Builder previews own this prefix (#2049).
+  if (isPreviewDraftAgentSlug(slug)) return `agent-${slug}`.slice(0, MAX_SLUG_LENGTH);
   return reserved.has(slug) ? `${slug.slice(0, MAX_SLUG_LENGTH - 6)}-agent` : slug;
 }

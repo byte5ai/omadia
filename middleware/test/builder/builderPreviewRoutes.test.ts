@@ -25,6 +25,7 @@ import type {
 import { createBuilderRouter } from '../../src/routes/builder.js';
 import type { BuildPipeline } from '../../src/plugins/builder/buildPipeline.js';
 import { listenLoopback } from '../_helpers/listenLoopback.js';
+import { fakePreviewDraftAgents } from '../_helpers/fakePreviewDraftAgents.js';
 
 // Augment express Request with the session shape the production code expects.
 declare module 'express-serve-static-core' {
@@ -191,6 +192,7 @@ async function startHarness(opts: {
   });
 
   const chatService = new PreviewChatService({
+    draftAgents: fakePreviewDraftAgents(),
     resolveProvider: async () => ({
       provider: {} as never,
       modelId: 'claude-haiku-4-5-20251001',

@@ -247,6 +247,7 @@ import { PreviewCache } from './plugins/builder/previewCache.js';
 import { PreviewSecretBuffer } from './plugins/builder/previewSecretBuffer.js';
 import { PreviewRebuildScheduler } from './plugins/builder/previewRebuildScheduler.js';
 import { PreviewChatService } from './plugins/builder/previewChatService.js';
+import { PreviewDraftAgents } from './plugins/builder/previewDraftAgents.js';
 import {
   BuilderAgent,
   type BuilderProviderResolver,
@@ -4723,7 +4724,8 @@ async function main(): Promise<void> {
             // one layer along.
             return new Set(
               (await configStore.listAgents())
-                .filter((a) => a.status !== 'disabled')
+                // #2049 — `draft` is not addressable either.
+                .filter((a) => a.status === 'enabled')
                 .map((a) => a.slug),
             );
           } catch (err) {
@@ -6396,10 +6398,26 @@ async function main(): Promise<void> {
       );
       return { removed: 0 };
     });
+  // Spec 2042 §5.10 — a preview turn is a turn of a draft agent (`agents`
+  // row, status `draft`), removed when its preview closes. No preview
+  // survives a restart, so the boot removes what a crash left behind.
+  const previewDraftAgents = new PreviewDraftAgents(
+    () => serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+    (msg) => console.log(msg),
+  );
+  try {
+    await previewDraftAgents.sweep();
+  } catch (err) {
+    console.error(
+      '[preview-draft-agent] boot sweep FAILED; stale preview drafts stay until their preview closes:',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
   const previewCache = new PreviewCache({
     activate: previewRuntime.activate.bind(previewRuntime),
     warmSlots: 3,
     logger: () => {},
+    onClosed: (_userEmail, draftId) => previewDraftAgents.remove(draftId),
   });
   // Vault-backed: test-credentials survive a middleware restart. The vault
   // is libsodium-sealed on disk under /data/secrets so values stay
@@ -6684,6 +6702,7 @@ async function main(): Promise<void> {
   const previewChatService = new PreviewChatService({
     resolveProvider: resolveBuilderProvider,
     draftStore,
+    draftAgents: previewDraftAgents,
     logger: () => {},
   });
 

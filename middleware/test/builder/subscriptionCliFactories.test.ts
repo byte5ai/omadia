@@ -22,6 +22,7 @@ import {
 } from '../../src/plugins/builder/tools/index.js';
 import { noopSlotTypechecker } from './fixtures/noopSlotTypechecker.js';
 import { installFakeClaudeCli, type FakeClaudeCli } from '../_helpers/fakeClaudeCli.js';
+import { fakePreviewDraftAgents } from '../_helpers/fakePreviewDraftAgents.js';
 
 /**
  * #1072 (and #1077 rows `builderAgent.ts` defaultBuildSubAgent /
@@ -192,6 +193,7 @@ describe('PreviewChatService default factory on the subscription CLI (#1072)', {
       close: async () => {},
     };
     const svc = new PreviewChatService({
+      draftAgents: fakePreviewDraftAgents(),
       resolveProvider: async () => ({ cliModel: 'sonnet', modelId: 'claude-sonnet-cli' }),
       draftStore,
       systemPromptFor: () => 'preview-system-prompt',

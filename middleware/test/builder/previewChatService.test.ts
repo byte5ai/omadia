@@ -21,6 +21,11 @@ import type {
 } from '../../src/plugins/builder/previewRuntime.js';
 import type { AgentSpecSkeleton } from '../../src/plugins/builder/types.js';
 import { emptyAgentSpec } from '../../src/plugins/builder/types.js';
+import { fakePreviewDraftAgents } from '../_helpers/fakePreviewDraftAgents.js';
+import {
+  PreviewDraftAgentUnavailableError,
+  previewDraftAgentSlug,
+} from '../../src/plugins/builder/previewDraftAgents.js';
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -191,6 +196,7 @@ describe('PreviewChatService', () => {
         finalText: 'I called the echo tool.',
       });
       const svc = new PreviewChatService({
+        draftAgents: fakePreviewDraftAgents(),
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: () => 'system-prompt-stub',
@@ -239,6 +245,7 @@ describe('PreviewChatService', () => {
       const handle = makeHandle({ draftId: draft.id });
       const fake = fakeSubAgentBuilder({ finalText: 'OK' });
       const svc = new PreviewChatService({
+        draftAgents: fakePreviewDraftAgents(),
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: () => 'sp',
@@ -282,6 +289,7 @@ describe('PreviewChatService', () => {
       const handle = makeHandle({ draftId: draft.id });
       const fake = fakeSubAgentBuilder({ finalText: 'noted' });
       const svc = new PreviewChatService({
+        draftAgents: fakePreviewDraftAgents(),
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: () => 'sp',
@@ -311,6 +319,7 @@ describe('PreviewChatService', () => {
       const handle = makeHandle({ draftId: draft.id });
       const fake = fakeSubAgentBuilder({ finalText: 'ack' });
       const svc = new PreviewChatService({
+        draftAgents: fakePreviewDraftAgents(),
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: () => 'sp',
@@ -335,6 +344,7 @@ describe('PreviewChatService', () => {
       const handle = makeHandle({ draftId: draft.id, tools: [tool] });
       const fake = fakeSubAgentBuilder({ finalText: 'OK' });
       const svc = new PreviewChatService({
+        draftAgents: fakePreviewDraftAgents(),
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: () => 'CUSTOM-PROMPT',
@@ -383,6 +393,7 @@ describe('PreviewChatService', () => {
       const handle = makeHandle({ draftId: draft.id, tools: [tool] });
       const fake = fakeSubAgentBuilder({ finalText: 'OK' });
       const svc = new PreviewChatService({
+        draftAgents: fakePreviewDraftAgents(),
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: () => 'sp',
@@ -430,6 +441,7 @@ describe('PreviewChatService', () => {
         throws: new Error('anthropic-rate-limit'),
       });
       const svc = new PreviewChatService({
+        draftAgents: fakePreviewDraftAgents(),
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: () => 'sp',
@@ -456,6 +468,7 @@ describe('PreviewChatService', () => {
       const handle = makeHandle({ draftId: draft.id });
       const fake = fakeSubAgentBuilder({ finalText: 'unused' });
       const svc = new PreviewChatService({
+        draftAgents: fakePreviewDraftAgents(),
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: () => 'sp',
@@ -489,6 +502,7 @@ describe('PreviewChatService', () => {
       const handle = makeHandle({ draftId: draft.id });
       const fake = fakeSubAgentBuilder({ finalText: 'new reply' });
       const svc = new PreviewChatService({
+        draftAgents: fakePreviewDraftAgents(),
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: () => 'sp',
@@ -527,6 +541,7 @@ describe('PreviewChatService', () => {
         finalText: 'done',
       });
       const svc = new PreviewChatService({
+        draftAgents: fakePreviewDraftAgents(),
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: () => 'sp',
@@ -567,6 +582,7 @@ describe('PreviewChatService', () => {
       });
       const handle = makeHandle({ draftId: 'd1', tools: [tool] });
       const svc = new PreviewChatService({
+        draftAgents: fakePreviewDraftAgents(),
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: () => 'sp',
@@ -585,6 +601,7 @@ describe('PreviewChatService', () => {
     it('returns isError=true on unknown toolId', async () => {
       const handle = makeHandle({ draftId: 'd1' });
       const svc = new PreviewChatService({
+        draftAgents: fakePreviewDraftAgents(),
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: () => 'sp',
@@ -608,6 +625,7 @@ describe('PreviewChatService', () => {
       });
       const handle = makeHandle({ draftId: 'd1', tools: [tool] });
       const svc = new PreviewChatService({
+        draftAgents: fakePreviewDraftAgents(),
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: () => 'sp',
@@ -629,6 +647,7 @@ describe('PreviewChatService', () => {
       });
       const handle = makeHandle({ draftId: 'd1', tools: [tool] });
       const svc = new PreviewChatService({
+        draftAgents: fakePreviewDraftAgents(),
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         systemPromptFor: () => 'sp',
@@ -666,7 +685,9 @@ describe('PreviewChatService', () => {
         tools: [makeFakeTool({ id: 'get_forecast' }), makeFakeTool({ id: 'get_alerts' })],
       });
       const fake = fakeSubAgentBuilder({ finalText: 'OK' });
+      const draftAgents = fakePreviewDraftAgents();
       const svc = new PreviewChatService({
+        draftAgents,
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
         buildSubAgent: fake.build,
@@ -688,13 +709,38 @@ describe('PreviewChatService', () => {
         built.options.tools.map((t) => t.spec.name),
         ['get_forecast', 'get_alerts'],
       );
-      assert.equal(built.options.name, 'preview-draft-@omadia/weather');
+      // Spec 2042 §5.10 — the turn is a turn of the draft's draft agent row.
+      assert.deepEqual(draftAgents.calls, [{ draftId: draft.id, pluginName: 'Weather' }]);
+      assert.equal(built.options.name, previewDraftAgentSlug(draft.id));
       const prompt = built.options.systemPrompt;
       assert.match(prompt, /^# Preview/);
       assert.match(prompt, /neutral draft agent/);
       for (const leaked of ['Wetterfrosch', 'gereimt', 'Anti-Sycophancy', '<persona>']) {
         assert.equal(prompt.includes(leaked), false, `prompt must not contain '${leaked}'`);
       }
+    });
+
+    it('does not run without its draft agent, and stores nothing', async () => {
+      const draft = await store.create('alice@example.com', 'Weather');
+      const handle = makeHandle({ draftId: draft.id, agentId: '@omadia/weather', tools: [makeFakeTool({ id: 'get_forecast' })] });
+      const fake = fakeSubAgentBuilder({ finalText: 'OK' });
+      const svc = new PreviewChatService({
+        draftAgents: {
+          ensure: () => Promise.reject(new PreviewDraftAgentUnavailableError('no agent store')),
+        },
+        resolveProvider: () => Promise.reject(new Error('not reached: no draft agent, no model')),
+        draftStore: store,
+        buildSubAgent: fake.build,
+        logger: () => {},
+      });
+      const events = await collectEvents(
+        svc.runTurn({ handle, userEmail: 'alice@example.com', userMessage: 'Wetter?', modelChoice: 'x' }),
+      );
+      assert.deepEqual(events, [
+        { type: 'error', code: 'builder.preview_draft_agent_unavailable', message: 'no agent store' },
+      ]);
+      assert.equal(fake.records.length, 0, 'no model loop ran');
+      assert.deepEqual((await store.load('alice@example.com', draft.id))?.previewTranscript, []);
     });
   });
 });

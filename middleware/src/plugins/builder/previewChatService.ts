@@ -20,6 +20,7 @@ import {
 } from './builderAgent.js';
 import { BuilderLlmAccessError, builderResolverErrorCode } from './builderLlmAccess.js';
 import type { DraftStore } from './draftStore.js';
+import { PreviewDraftAgentUnavailableError, type PreviewDraftAgentRef } from './previewDraftAgents.js';
 import type { PreviewHandle, PreviewToolDescriptor } from './previewRuntime.js';
 import type { AgentSpecSkeleton, TranscriptEntry } from './types.js';
 
@@ -34,11 +35,10 @@ import type { AgentSpecSkeleton, TranscriptEntry } from './types.js';
  * marked "preview". Its output goes only to the operator's admin UI (the
  * builder SSE route behind the admin session).
  *
- * The draft agent lives in memory for the turn (an ephemeral `LocalSubAgent`)
- * rather than as an `agents` row with status `draft`: nothing outside this
- * service can reach it, it is offered no tool but the draft plugin's, and it
- * carries no identity a row would hold — a row would add a lifecycle to clean
- * up without adding a boundary.
+ * The draft agent is an `agents` row with status `draft`, one per Builder
+ * draft (`previewDraftAgents.ts`): never built by the registry, not
+ * addressable in any channel, removed when the preview closes. Its model loop
+ * runs here (a `LocalSubAgent` per turn) with exactly the captured tools.
  *
  * Exposes two entry points:
  *   - `runTurn(...)`: chat-style turn — hands the captured tools to the
@@ -94,9 +94,16 @@ export interface SubAgentBuildOptions {
   tools: LocalSubAgentTool[];
 }
 
+/** The draft agent a preview turn runs as (`PreviewDraftAgents`). */
+export interface PreviewDraftAgentSource {
+  ensure(draftId: string, pluginName: string): Promise<PreviewDraftAgentRef>;
+}
+
 export interface PreviewChatServiceDeps {
   resolveProvider: BuilderProviderResolver;
   draftStore: DraftStore;
+  /** Spec 2042 §5.10 — every preview turn is a turn of a draft agent row. */
+  draftAgents: PreviewDraftAgentSource;
   /** Override of the neutral draft agent's system prompt (test seam).
    *  Default: `previewDraftAgentPrompt`. */
   systemPromptFor?: (handle: PreviewHandle, spec: AgentSpecSkeleton) => string;
@@ -140,6 +147,7 @@ export interface DirectToolResult {
 export class PreviewChatService {
   private readonly resolveProvider: BuilderProviderResolver;
   private readonly draftStore: DraftStore;
+  private readonly draftAgents: PreviewDraftAgentSource;
   private readonly systemPromptFor: NonNullable<
     PreviewChatServiceDeps['systemPromptFor']
   >;
@@ -154,6 +162,7 @@ export class PreviewChatService {
   constructor(deps: PreviewChatServiceDeps) {
     this.resolveProvider = deps.resolveProvider;
     this.draftStore = deps.draftStore;
+    this.draftAgents = deps.draftAgents;
     this.systemPromptFor = deps.systemPromptFor ?? previewDraftAgentPrompt;
     this.buildSubAgent = deps.buildSubAgent ?? defaultBuildSubAgent;
     this.maxTokens = deps.subAgentMaxTokens ?? DEFAULT_MAX_TOKENS;
@@ -183,6 +192,20 @@ export class PreviewChatService {
       throw new Error(
         `PreviewChatService: draft not found '${draftId}' for user '${opts.userEmail}'`,
       );
+    }
+
+    // Spec 2042 §5.10 — the turn runs as the draft's draft agent. Without
+    // one the preview does not run (fail loud, nothing stored).
+    let draftAgent: PreviewDraftAgentRef;
+    try {
+      draftAgent = await this.draftAgents.ensure(draftId, (draft.spec.name || opts.handle.agentId).trim());
+    } catch (err) {
+      yield {
+        type: 'error',
+        code: err instanceof PreviewDraftAgentUnavailableError ? err.code : 'builder.preview_draft_agent_failed',
+        message: err instanceof Error ? err.message : String(err),
+      };
+      return;
     }
 
     const turnId = randomUUID();
@@ -217,7 +240,7 @@ export class PreviewChatService {
     const systemPrompt = this.systemPromptFor(opts.handle, draft.spec);
 
     const subAgent = this.buildSubAgent({
-      name: `preview-draft-${opts.handle.agentId}`,
+      name: draftAgent.slug,
       ...(resolved.provider ? { provider: resolved.provider } : {}),
       ...(resolved.cliModel ? { cliModel: resolved.cliModel } : {}),
       model: resolved.modelId,
@@ -319,7 +342,7 @@ export class PreviewChatService {
     yield { type: 'turn_done', turnId };
 
     this.log(
-      `[preview-chat] draft=${draftId} agent=${opts.handle.agentId} model=${opts.modelChoice} turn=${turnId} chars=${String(assistantText.length)}`,
+      `[preview-chat] draft=${draftId} draftAgent=${draftAgent.id} plugin=${opts.handle.agentId} model=${opts.modelChoice} turn=${turnId} chars=${String(assistantText.length)}`,
     );
   }
 
