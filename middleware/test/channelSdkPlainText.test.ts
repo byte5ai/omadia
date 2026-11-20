@@ -7,7 +7,9 @@ import {
   InMemoryDisclosureMarkerStore,
   InMemoryDisclosureSeenStore,
   InMemorySpeakerHistoryStore,
+  answerDetailsText,
   applyAiDisclosure,
+  buildAnswerDetails,
   parseCardReply,
   renderCardAsText,
   renderPlainAnswer,
@@ -154,5 +156,34 @@ describe('AI disclosure frequency (#2087)', () => {
   it('off removes everything (operator source only)', () => {
     const r = applyAiDisclosure('x', { policy: { level: 'off', source: 'operator' } });
     assert.deepEqual(r, { text: 'x' });
+  });
+});
+
+describe('answer details (criterion 29: reachable on demand, not in the body)', () => {
+  it('has nothing to show for a plain answer', () => {
+    assert.equal(buildAnswerDetails({ text: 'Hallo', speaker: mira }), undefined);
+    assert.equal(answerDetailsText(undefined), undefined);
+  });
+
+  it('projects verification, colleagues, system data and privacy for on-demand display', () => {
+    const answer: SemanticAnswer = {
+      text: 'Es sind 3 Rechnungen offen.',
+      speaker: mira,
+      verifier: { status: 'verified' },
+      contributions: [{ id: 'c1', speaker: jonas, text: 'ok', status: 'delivered' }],
+      privacyReceipt: { datasetsInterned: 1, fieldsMasked: 4, fieldsCleartext: 2, verbsExecuted: [], pseudonymProjectionUsed: false },
+      answerSource: 'privacy-render',
+    };
+    const details = buildAnswerDetails(answer);
+    assert.equal(details?.verification, 'verified');
+    assert.deepEqual(details?.consulted, [{ name: 'Jonas', status: 'delivered' }]);
+    assert.equal(details?.systemData, true);
+    const text = answerDetailsText(details, 'de') ?? '';
+    assert.match(text, /Alle Angaben geprüft/);
+    assert.match(text, /Quellsystem/);
+    assert.match(text, /Jonas hat beigetragen/);
+    assert.match(text, /4 Felder wurden maskiert/);
+    // and none of it is in the plain body
+    assert.equal(plain(answer).includes('geprüft'), false);
   });
 });

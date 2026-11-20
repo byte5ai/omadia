@@ -528,3 +528,5 @@ export { renderPlainAnswer } from './plainAnswer.js';
 export type { PlainAnswerOptions } from './plainAnswer.js';
 export { parseCardReply, renderCardAsText } from './questionCardText.js';
 export type { CardReplyParse } from './questionCardText.js';
+export { answerDetailsText, buildAnswerDetails } from './answerDetails.js';
+export type { AnswerDetails } from './answerDetails.js';
