@@ -20,9 +20,14 @@ import {
  *
  * Three things have to be true, and each has its own fix:
  *
- *  1. IT HAS ITS OWN TEAMS IDENTITY. Owner decision (spec 2043 §0): a
- *     facilitator never speaks through another bot, so one without its own
- *     identity is "not ready", not "falls back to the default bot".
+ *  1. IT HAS AN IDENTITY OF ITS OWN ON AT LEAST ONE CHANNEL. Owner decision
+ *     (spec 2043 §0): a facilitator never speaks through another bot. Since
+ *     the review of 2026-11-18 readiness is per channel identity: Teams
+ *     (installation, RSC) is only checked for Teams, and a facilitator with
+ *     its own bot on Slack, Discord or Telegram is ready there, also on an
+ *     instance without any Teams configuration. Whether it is ready in ONE
+ *     conversation (installed there, can read every message) is checked by
+ *     the engine when a facilitation starts.
  *  2. A FACILITATION ENGINE IS USABLE: exactly one installed plugin declares
  *     `facilitationEngine@1`, the operator granted its SQL access, and it
  *     reports itself available. The kernel answers this on
@@ -211,8 +216,36 @@ export function facilitatorEngineHref(slug: string): string {
   return `/operator/agents/${encodeURIComponent(slug)}?tab=engine`;
 }
 
+/**
+ * #2066 — the channels a facilitator can work on: Teams when its own Teams
+ * identity is installed, and every other channel the kernel routes an own bot
+ * of it on. `ready` = at least one.
+ */
+export function facilitatorChannels(
+  agent: Pick<OperatorAgentDto, 'own_identity_channels'>,
+  teams: FacilitatorTeamsState,
+): { readonly ready: boolean; readonly channels: readonly string[] } {
+  const others = (agent.own_identity_channels ?? []).filter((c) => c !== 'teams');
+  const channels = [...(teams === 'ready' ? ['teams'] : []), ...others];
+  return { ready: channels.length > 0, channels };
+}
+
+/** How a channel type is named in the readiness line. */
+export function channelLabel(channelType: string): string {
+  return CHANNEL_LABELS[channelType] ?? channelType;
+}
+
+// Product names, the same in every language.
+const CHANNEL_LABELS: Readonly<Record<string, string>> = {
+  teams: 'Microsoft Teams',
+  slack: 'Slack',
+  discord: 'Discord',
+  telegram: 'Telegram',
+  whatsapp: 'WhatsApp',
+};
+
 interface FacilitatorReadinessProps {
-  readonly agent: Pick<OperatorAgentDto, 'slug' | 'plugins'>;
+  readonly agent: Pick<OperatorAgentDto, 'slug' | 'plugins' | 'own_identity_channels'>;
   readonly teams: FacilitatorTeamsState;
   readonly engine: FacilitationEngineLoad;
 }
@@ -237,16 +270,19 @@ export function FacilitatorReadiness(
 
   const engineReady = engine.phase === 'loaded' && engine.status.state === 'ready';
   const grant = engineGrantState(agent, engine);
-  const ready = teams === 'ready' && engineReady && grant === 'attached';
+  const identity = facilitatorChannels(agent, teams);
+  const ready = identity.ready && engineReady && grant === 'attached';
+  const channelList = identity.channels.map(channelLabel).join(', ');
 
   if (ready) {
     return (
       <p
         data-testid="facilitator-readiness"
         data-ready="true"
+        data-channels={identity.channels.join(',')}
         className="text-xs font-medium text-[color:var(--success)]"
       >
-        {t('ready')}
+        {t('readyOn', { channels: channelList })}
       </p>
     );
   }
@@ -259,12 +295,19 @@ export function FacilitatorReadiness(
     >
       <p className="font-medium">{t('notReady')}</p>
       <ul className="mt-1 list-disc space-y-0.5 pl-4">
-        {teams !== 'ready' && (
+        {!identity.ready && (
           <li data-testid="facilitator-readiness-teams">
-            {t(`teams.${teams}`)}{' '}
+            {teams === 'provisioning' || teams === 'failed'
+              ? t(`teams.${teams}`)
+              : t('noIdentity')}{' '}
             <Link href={facilitatorTeamsHref(agent.slug)} className="underline">
               {t('teamsLink')}
             </Link>
+          </li>
+        )}
+        {identity.ready && (
+          <li data-testid="facilitator-readiness-channels">
+            {t('identityOn', { channels: channelList })}
           </li>
         )}
         {!engineReady && (

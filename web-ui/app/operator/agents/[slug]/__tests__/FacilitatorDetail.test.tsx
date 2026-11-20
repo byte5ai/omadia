@@ -128,6 +128,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
       'agent-detail-tab-model',
       'agent-detail-tab-teams',
       'agent-detail-tab-engine',
+      'agent-detail-tab-moderation',
     ]);
     expect(screen.getByTestId('facilitator-omitted-note').textContent).toContain(
       'No plugins, tools, MCP servers, memory',

@@ -148,7 +148,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
 
     const teams = await screen.findByTestId('facilitator-readiness-teams');
     expect(screen.getByTestId('facilitator-readiness').getAttribute('data-ready')).toBe('false');
-    expect(teams.textContent).toContain('No Teams identity of its own yet');
+    expect(teams.textContent).toContain('No identity of its own on any channel yet');
     expect(teams.querySelector('a')?.getAttribute('href')).toBe(
       '/operator/agents/mona?tab=teams',
     );
@@ -168,6 +168,46 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
       expect(screen.getByTestId('facilitator-readiness').getAttribute('data-ready')).toBe('true'),
     );
     expect(screen.queryByTestId('facilitation-engine-notice')).toBeNull();
+  });
+
+  // Review change 2026-11-18: readiness is per channel identity. Teams is
+  // checked only for Teams; on an instance without Teams configuration a
+  // facilitator with its own Telegram bot is ready.
+  it('is ready with its own Telegram bot on an instance without Teams', async () => {
+    mockEngine.mockResolvedValue(READY);
+    // No Teams configuration: the identity route answers 503.
+    mockTeams.mockRejectedValue(new ApiError(503, 'GET failed: 503', JSON.stringify({ error: 'teams_unavailable' })));
+    const telegramOnly = agent({
+      slug: 'mona',
+      name: 'Mona',
+      archetype: 'facilitator',
+      plugins: [{ id: ENGINE.id, enabled: true, config: {} }],
+      own_identity_channels: ['telegram'],
+    });
+    renderWithIntl(<AgentsDashboard initial={list(HELP, telegramOnly)} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('facilitator-readiness').getAttribute('data-ready')).toBe('true'),
+    );
+    const readiness = screen.getByTestId('facilitator-readiness');
+    expect(readiness.getAttribute('data-channels')).toBe('telegram');
+    expect(readiness.textContent).toContain('Telegram');
+    expect(screen.queryByTestId('facilitator-readiness-teams')).toBeNull();
+  });
+
+  it('lists every channel it has its own identity on', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockResolvedValue({ state: 'installed' });
+    const both = agent({
+      slug: 'mona',
+      name: 'Mona',
+      archetype: 'facilitator',
+      plugins: [{ id: ENGINE.id, enabled: true, config: {} }],
+      own_identity_channels: ['slack', 'teams'],
+    });
+    renderWithIntl(<AgentsDashboard initial={list(HELP, both)} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('facilitator-readiness').getAttribute('data-channels')).toBe('teams,slack'),
+    );
   });
 
   it('points at the repair when the engine row is missing', async () => {

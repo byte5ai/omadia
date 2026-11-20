@@ -112,6 +112,9 @@ export const FACILITATOR_ISSUE_RULES = [
   'lifts_contract',
   'ignores_stop',
   'acts_as_assistant',
+  // #2060 — a working mode refused for a facilitator.
+  'identity_replacement',
+  'working_mode_tools',
 ] as const;
 
 export type FacilitatorIssueRule = (typeof FACILITATOR_ISSUE_RULES)[number];
