@@ -10654,6 +10654,9 @@ export class Orchestrator {
     // A tool another orchestrator registered for itself (deferred sub-agent
     // tools) is that orchestrator's alone.
     if (orchestratorScope !== undefined && orchestratorScope !== this.agentId) return false;
+    // Spec 2042 §5.4 — answering a consultation narrows every path, also the
+    // subscription CLI's dispatcher, which asks only this method.
+    if (!this.consultationAllows(name)) return false;
     // #2060 — a facilitator has no general memory, whoever provides the store.
     if (name === MEMORY_TOOL_NAME) return !this.omitsMemory;
     return this.isPluginGranted(pluginId);

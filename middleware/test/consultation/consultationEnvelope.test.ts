@@ -257,3 +257,30 @@ describe('discretion at the tool boundary (criterion 17)', () => {
     assert.match(await orch.dispatchTool('crm_create_note', {}, undefined, undefined), /result/);
   });
 });
+
+describe('consultation envelope on the subscription-CLI dispatcher', () => {
+  it('isToolGranted, the only question the CLI dispatcher asks, honours the envelope', async () => {
+    const built = buildForAgent(agentRow('ben'), deps(), RUNTIME, undefined, [HR, CRM]);
+    const ran: string[] = [];
+    built.orchestrator.registerDomainTool(tool('query_odoo_hr', HR, ran));
+    const orch = built.orchestrator as unknown as {
+      isToolGranted(n: string, p: string | undefined, s?: string): boolean;
+    };
+    assert.equal(orch.isToolGranted('query_odoo_hr', HR), true);
+    await runAsConsultation(
+      {
+        agentSlug: 'ben',
+        fromAgentSlug: 'anna',
+        fromTurnId: 't',
+        callId: 'c',
+        allowedPluginIds: new Set([CRM]),
+        memoryAccess: 'none',
+        result: {},
+      },
+      async () => {
+        assert.equal(orch.isToolGranted('query_odoo_hr', HR), false);
+        assert.equal(orch.isToolGranted('memory', undefined), false);
+      },
+    );
+  });
+});
