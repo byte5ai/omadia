@@ -520,7 +520,8 @@
     "teamsSignIn": "Teams sign-in",
     "llmAccess": "LLM access",
     "privacyFields": "Field classification",
-    "badgeLabel": "{count, plural, one {# field to review} other {# fields to review}}"
+    "badgeLabel": "{count, plural, one {# field to review} other {# fields to review}}",
+    "triggers": "Triggers"
   },
   "conductor": {
     "title": "Conductor",
@@ -7148,6 +7149,59 @@
       "undoConfirm": "Undo",
       "undoing": "Undoing",
       "undone": "{count, plural, =0 {No entry removed.} one {# entry removed — the field is masked again.} other {# entries removed — the fields are masked again.}}"
+    }
+  },
+  "operatorTriggers": {
+    "metaTitle": "Triggers",
+    "title": "What agents do unasked",
+    "subtitle": "Every hook, wakeup and timer of every agent, routines, Agent Builder schedules and batch jobs, each with purpose, deadline and cost so far. Pause, resume or end any of them; the execution kill switch stops all at once.",
+    "loadError": "The triggers could not be loaded.",
+    "actionError": "That did not work. The list shows the current state.",
+    "never": "never",
+    "spend": {
+      "heading": "Spend this month",
+      "instance": "Instance: {spent} spent, {reserved} reserved, cap {cap}",
+      "caps": "Caps: {agent} per agent and month, {trigger} per trigger, {firing} per firing"
+    },
+    "list": {
+      "heading": "Active triggers ({count})",
+      "empty": "No agent is watching or waiting for anything right now.",
+      "agent": "Agent",
+      "purpose": "Purpose",
+      "when": "When",
+      "until": "Until",
+      "cost": "Cost",
+      "state": "State",
+      "runs": "{runs} of {max, plural, =0 {unlimited} other {#}} runs",
+      "lastFired": "last {at}",
+      "costOf": "{spent} of {budget}"
+    },
+    "schedule": {
+      "event": "on {event}",
+      "cron": "{cron} ({timezone})",
+      "every": "every {minutes} min",
+      "at": "at {at}"
+    },
+    "origin": {
+      "agent": "set by the agent",
+      "routine": "routine",
+      "system": "system"
+    },
+    "state": {
+      "active": "active",
+      "paused": "paused: {reason}"
+    },
+    "actions": {
+      "pause": "Pause",
+      "resume": "Resume",
+      "end": "End"
+    },
+    "jobs": {
+      "heading": "Background jobs",
+      "batch": "{purpose}: at most every {minutes} min per agent",
+      "empty": "No plugin background job is registered.",
+      "ok": "last run {at}",
+      "failing": "failing ({failures} in a row), next probe {next}"
     }
   }
 }

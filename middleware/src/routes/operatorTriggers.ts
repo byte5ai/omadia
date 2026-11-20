@@ -2,7 +2,9 @@
 // active trigger of every agent with purpose, context, deadline and cost so
 // far, the month's spend against the caps, and the operator's controls.
 //
-//   GET    /                      triggers + spend of this month + caps
+//   GET    /                      triggers + spend of this month + caps,
+//                                  plugin jobs (recovery probes) and the
+//                                  registered batch jobs
 //   GET    /:id/audit             creation, firings, pauses, end (newest first)
 //   POST   /:id/pause             pause one (it keeps its deadline)
 //   POST   /:id/resume            resume one (breaker starts over)
@@ -19,6 +21,7 @@ import type { RecipientProfileStore } from '../triggers/proactiveGate.js';
 import type { TriggerService } from '../triggers/triggerService.js';
 import { spendMonth, type TriggerStore } from '../triggers/triggerStore.js';
 import { triggerSummary } from '../triggers/triggerTools.js';
+import type { JobStatus } from '../plugins/jobScheduler.js';
 
 const MAX_TRIGGERS = 1_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -30,6 +33,10 @@ export interface OperatorTriggersDeps {
     | { readonly service: TriggerService; readonly store: TriggerStore; readonly profiles: RecipientProfileStore }
     | undefined;
   readonly audit?: (entry: AuditEntryInput) => Promise<void>;
+  /** Plugin background jobs and their recovery state (`JobScheduler.list`). */
+  readonly jobs?: () => readonly JobStatus[];
+  /** Registered batch jobs (learning, consolidation). */
+  readonly batchJobs?: () => readonly { readonly id: string; readonly purpose: string; readonly intervalMinutes: number }[];
 }
 
 export function createOperatorTriggersRouter(deps: OperatorTriggersDeps): Router {
@@ -72,6 +79,8 @@ export function createOperatorTriggersRouter(deps: OperatorTriggersDeps): Router
           maxActivePerAgent: limits.maxActivePerAgent,
         },
         agents: Object.fromEntries(perAgent),
+        jobs: deps.jobs?.() ?? [],
+        batchJobs: (deps.batchJobs?.() ?? []).map((j) => ({ id: j.id, purpose: j.purpose, intervalMinutes: j.intervalMinutes })),
         triggers: triggers.map((x) => ({
           ...triggerSummary(x),
           agent: x.agentSlug,

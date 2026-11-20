@@ -4652,6 +4652,8 @@ async function main(): Promise<void> {
     requireAuth,
     createOperatorTriggersRouter({
       triggers: () => triggersRef.current,
+      jobs: () => jobScheduler.list(),
+      batchJobs: () => batchJobRegistry.list(),
       audit: async (entry) => {
         await adminAudit?.record(entry);
       },

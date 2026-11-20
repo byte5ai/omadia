@@ -520,7 +520,8 @@
     "teamsSignIn": "Teams-Anmeldung",
     "llmAccess": "LLM-Zugang",
     "privacyFields": "Feldklassifizierung",
-    "badgeLabel": "{count, plural, one {# Feld zu prüfen} other {# Felder zu prüfen}}"
+    "badgeLabel": "{count, plural, one {# Feld zu prüfen} other {# Felder zu prüfen}}",
+    "triggers": "Trigger"
   },
   "conductor": {
     "title": "Conductor",
@@ -7148,6 +7149,59 @@
       "undoConfirm": "Rückgängig machen",
       "undoing": "Wird rückgängig gemacht",
       "undone": "{count, plural, =0 {Kein Eintrag entfernt.} one {# Eintrag entfernt — das Feld ist wieder maskiert.} other {# Einträge entfernt — die Felder sind wieder maskiert.}}"
+    }
+  },
+  "operatorTriggers": {
+    "metaTitle": "Trigger",
+    "title": "Was Agenten ungefragt tun",
+    "subtitle": "Jeder Hook, Weckruf und Timer jedes Agenten, Routinen, Zeitpläne aus dem Agent Builder und Batch-Jobs, jeweils mit Zweck, Frist und bisherigen Kosten. Pausiere, setze fort oder beende jeden einzeln; der Ausführungs-Notschalter stoppt alle auf einmal.",
+    "loadError": "Die Trigger konnten nicht geladen werden.",
+    "actionError": "Das hat nicht geklappt. Die Liste zeigt den aktuellen Stand.",
+    "never": "nie",
+    "spend": {
+      "heading": "Ausgaben in diesem Monat",
+      "instance": "Instanz: {spent} ausgegeben, {reserved} reserviert, Obergrenze {cap}",
+      "caps": "Obergrenzen: {agent} pro Agent und Monat, {trigger} pro Trigger, {firing} pro Auslösung"
+    },
+    "list": {
+      "heading": "Aktive Trigger ({count})",
+      "empty": "Gerade beobachtet oder erwartet kein Agent etwas.",
+      "agent": "Agent",
+      "purpose": "Zweck",
+      "when": "Wann",
+      "until": "Bis",
+      "cost": "Kosten",
+      "state": "Status",
+      "runs": "{runs} von {max, plural, =0 {unbegrenzt} other {#}} Läufen",
+      "lastFired": "zuletzt {at}",
+      "costOf": "{spent} von {budget}"
+    },
+    "schedule": {
+      "event": "bei {event}",
+      "cron": "{cron} ({timezone})",
+      "every": "alle {minutes} Min.",
+      "at": "am {at}"
+    },
+    "origin": {
+      "agent": "vom Agenten gesetzt",
+      "routine": "Routine",
+      "system": "System"
+    },
+    "state": {
+      "active": "aktiv",
+      "paused": "pausiert: {reason}"
+    },
+    "actions": {
+      "pause": "Pausieren",
+      "resume": "Fortsetzen",
+      "end": "Beenden"
+    },
+    "jobs": {
+      "heading": "Hintergrund-Jobs",
+      "batch": "{purpose}: höchstens alle {minutes} Min. pro Agent",
+      "empty": "Kein Plugin hat einen Hintergrund-Job registriert.",
+      "ok": "zuletzt gelaufen {at}",
+      "failing": "schlägt fehl ({failures} in Folge), nächster Versuch {next}"
     }
   }
 }

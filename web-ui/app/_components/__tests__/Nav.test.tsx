@@ -178,6 +178,7 @@ describe('<Nav /> cluster dropdown', () => {
       'Teams sign-in',
       'Conductor',
       'Routines',
+      'Triggers',
     ]);
     expect(labelsOf('admin')).toEqual([
       'Admin',
