@@ -48,6 +48,7 @@ import { assertStartable, PluginNotStartableError } from './coreCompat.js';
 import type { InstalledRegistry } from './installedRegistry.js';
 import type { JobScheduler } from './jobScheduler.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
+import { isDataOnlyPlugin, pluginRuntimeOf } from './pluginRuntimeOf.js';
 import { topoSortByDependsOn } from './topoSort.js';
 import type { UploadedPackageStore } from './uploadedPackageStore.js';
 
@@ -258,16 +259,9 @@ export class ToolPluginRuntime {
     for (const id of ids) {
       const catalogEntry = this.deps.catalog.get(id);
       if (!catalogEntry) continue;
-      if (
-        catalogEntry.plugin.kind !== 'tool' &&
-        catalogEntry.plugin.kind !== 'extension' &&
-        // #2088 — an archetype plugin runs like an extension: it registers
-        // tools and jobs for the agents of its archetype.
-        catalogEntry.plugin.kind !== 'archetype' &&
-        catalogEntry.plugin.kind !== 'integration'
-      ) {
-        continue;
-      }
+      // Every kind this runtime runs (`pluginRuntimeOf`), archetype plugins
+      // included (#2088): they register tools and jobs for their agents.
+      if (pluginRuntimeOf(catalogEntry.plugin.kind) !== 'tool') continue;
       const reg = this.deps.registry.get(id);
       if (!reg || reg.status !== 'active') continue;
       eligible.push(id);
@@ -399,6 +393,13 @@ export class ToolPluginRuntime {
         catalogEntry,
         this.deps.vault,
       );
+    }
+
+    // Spec 2042 §5.10 — an agent template (or a skill package without code)
+    // delivers data only: nothing is imported, nothing runs.
+    if (isDataOnlyPlugin(catalogEntry.plugin.kind, catalogEntry.manifest)) {
+      await this.activateDataOnly(catalogEntry, packagePath);
+      return;
     }
 
     const entryRel = extractEntryPath(catalogEntry) ?? 'dist/plugin.js';
@@ -906,6 +907,31 @@ export class ToolPluginRuntime {
 
   activeIds(): string[] {
     return Array.from(this.active.keys());
+  }
+
+  /** A data-only package is active once it is in the catalog: no code, no
+   *  context, nothing to close. */
+  private async activateDataOnly(catalogEntry: PluginCatalogEntry, packagePath: string): Promise<void> {
+    const log = this.deps.log ?? ((m) => console.log(m));
+    const agentId = catalogEntry.plugin.id;
+    this.active.set(agentId, { agentId, handle: { close: async () => {} }, extDisposes: [] });
+    try {
+      await this.deps.registry.markActivationSucceeded(agentId);
+    } catch (err) {
+      log(
+        `[tool-runtime] registry markActivationSucceeded FAILED for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (this.deps.onActivated) {
+      try {
+        await this.deps.onActivated(catalogEntry, packagePath);
+      } catch (err) {
+        log(
+          `[tool-runtime] onActivated hook FAILED for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    log(`[tool-runtime] ACTIVATED ${agentId} (${catalogEntry.plugin.kind}, data only)`);
   }
 
   private resolvePackagePath(agentId: string): string | undefined {

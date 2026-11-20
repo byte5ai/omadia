@@ -23,9 +23,10 @@ interface PostInstallNextStepsProps {
 const LINK_CLASS =
   'inline-flex items-center gap-1.5 text-[12px] font-semibold text-[color:var(--accent)] transition-colors hover:underline';
 
-/** Kinds an operator attaches to an orchestrator. Integrations are used through
- *  the agents that depend on them; channels and extensions are neither. */
-const ATTACHABLE: ReadonlySet<PluginKind> = new Set<PluginKind>(['agent', 'tool']);
+/** Kinds an operator attaches to an agent. Integrations are used through
+ *  the agents that depend on them; channels, models, system modules,
+ *  archetypes and agent templates are never attached (spec 2042 §5.10). */
+const ATTACHABLE: ReadonlySet<PluginKind> = new Set<PluginKind>(['agent', 'tool', 'skill']);
 
 /**
  * OM-06 / OM-07 — "installed" is not a destination: confirm what happened,

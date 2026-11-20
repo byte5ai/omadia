@@ -13,10 +13,12 @@ import {
 } from '../../_lib/pluginCounts';
 import { deriveInitialsForSet } from '../../_lib/pluginInitials';
 import { redirectIfUnauthorized } from '../../_lib/authRedirect';
-import type {
-  Plugin,
-  PluginKind,
-  RegistrySourceStatus,
+import {
+  STORE_CATEGORIES,
+  storeCategoryOf,
+  type Plugin,
+  type RegistrySourceStatus,
+  type StoreCategory,
 } from '../../_lib/storeTypes';
 import type { ProfileSummary } from '../../_lib/profileTypes';
 import { OnboardingModal } from '../../_components/onboarding/OnboardingModal';
@@ -35,18 +37,11 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export const dynamic = 'force-dynamic';
 
-type CategoryFilter = 'all' | PluginKind;
+type CategoryFilter = 'all' | StoreCategory;
 
-/** #1470 — one pill per plugin kind, so the pill counts add up to "All". */
-const CATEGORY_FILTERS: readonly CategoryFilter[] = [
-  'all',
-  'integration',
-  'agent',
-  'channel',
-  'tool',
-  'extension',
-  'archetype',
-];
+/** #1470 — one pill per Hub category (spec 2042 §5.10), so the pill counts
+ *  add up to "All". */
+const CATEGORY_FILTERS: readonly CategoryFilter[] = ['all', ...STORE_CATEGORIES];
 
 /** Upper bound for `?q=`; the middleware substring-matches it per entry. */
 const MAX_QUERY_LENGTH = 100;
@@ -143,13 +138,13 @@ export default async function StorePage({
       : source === 'local'
         ? localPlugins
         : hubPlugins;
-  const countsByKind = countByKind(scoped);
+  const countsByCategory = countByCategory(scoped);
   // OM-31 — "MiniMax LLM Provider" and "Mistral LLM Provider" both used to
   // render "ML". Resolve collisions once across the WHOLE catalog (not just the
   // visible slice) so a tile's initials do not change when a filter is applied.
   const initialsByName = deriveInitialsForSet(plugins.map((p) => p.name));
   const visible =
-    filter === 'all' ? scoped : scoped.filter((p) => p.kind === filter);
+    filter === 'all' ? scoped : scoped.filter((p) => storeCategoryOf(p.kind) === filter);
 
   return (
     <main className="mx-auto max-w-[1280px] px-6 py-12 lg:px-8 lg:py-16">
@@ -263,7 +258,7 @@ export default async function StorePage({
         {CATEGORY_FILTERS.map(
           (f) => {
             const count =
-              f === 'all' ? scoped.length : countsByKind[f as PluginKind];
+              f === 'all' ? scoped.length : countsByCategory[f as StoreCategory];
             const active = f === filter;
             return (
               <Link
@@ -665,28 +660,11 @@ function parseQuery(raw: string | undefined): string {
 }
 
 function parseFilter(raw: string | undefined): CategoryFilter {
-  if (
-    raw === 'integration' ||
-    raw === 'agent' ||
-    raw === 'channel' ||
-    raw === 'tool' ||
-    raw === 'extension' ||
-    raw === 'archetype'
-  ) {
-    return raw;
-  }
-  return 'all';
+  return (STORE_CATEGORIES as readonly string[]).includes(raw ?? '') ? (raw as StoreCategory) : 'all';
 }
 
-function countByKind(plugins: Plugin[]): Record<PluginKind, number> {
-  const counts: Record<PluginKind, number> = {
-    agent: 0,
-    integration: 0,
-    channel: 0,
-    tool: 0,
-    extension: 0,
-    archetype: 0,
-  };
-  for (const p of plugins) counts[p.kind] += 1;
+function countByCategory(plugins: Plugin[]): Record<StoreCategory, number> {
+  const counts = Object.fromEntries(STORE_CATEGORIES.map((c) => [c, 0])) as Record<StoreCategory, number>;
+  for (const p of plugins) counts[storeCategoryOf(p.kind)] += 1;
   return counts;
 }

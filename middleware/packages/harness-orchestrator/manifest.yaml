@@ -4,7 +4,7 @@ identity:
   id: "@omadia/orchestrator"
   name: "Chat Orchestrator"
   version: "0.1.0"
-  kind: "extension"
+  kind: "system-module"
   domain: "core.orchestrator"
   description:
     en: "Runs the chat itself. It decides which tools an agent uses in each turn, brings memory and the knowledge graph into the answer, and has the result checked before it goes out. Every channel, from Teams to the web interface, talks to this plugin."

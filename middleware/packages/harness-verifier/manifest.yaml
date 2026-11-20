@@ -4,7 +4,7 @@ identity:
   id: "@omadia/verifier"
   name: "Answer Verifier"
   version: "0.1.1"
-  kind: "extension"
+  kind: "system-module"
   domain: "core.verifier"
   description:
     en: "Checks an answer before it reaches the user. It takes the claims apart, compares them against the knowledge graph and the source systems, and asks for a correction when something does not hold. The verdicts are kept, so contradictions become visible."

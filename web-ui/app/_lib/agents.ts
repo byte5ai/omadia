@@ -1363,13 +1363,8 @@ export async function listEnabledAgents(): Promise<EnabledAgentsListDto> {
 
 // ── Phase B — operator dashboard support surfaces ───────────────────────
 
-export type PluginKind =
-  | 'agent'
-  | 'integration'
-  | 'channel'
-  | 'tool'
-  | 'extension'
-  | 'archetype';
+import type { PluginKind } from './storeTypes';
+export type { PluginKind };
 
 export type SetupFieldType =
   | 'string'

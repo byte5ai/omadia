@@ -96,15 +96,17 @@ function sources(installed: { id: string; status?: string; doc: Record<string, u
 
 describe('manifest kind', () => {
   it('rejects a kind the kernel does not know instead of loading it as an agent plugin', () => {
-    for (const kind of ['archetyp', 'system-module', 'model', 'provider', 'ui', 'Agent', 42, '']) {
+    // `provider` and `ui` were never kernel kinds (spec 2042 §5.10 retires
+    // them in the Hub's vocabulary); a typo stays a typo.
+    for (const kind of ['archetyp', 'systemmodule', 'provider', 'ui', 'Agent', 42, '']) {
       const { plugin, warnings } = load(manifest({ kind, archetype: undefined }));
       assert.equal(plugin, null, `kind ${JSON.stringify(kind)} must be rejected`);
-      assert.match(warnings, /manifest rejected: plugin '@omadia\/agent-facilitator' has identity\.kind .* which this kernel does not know \(it knows: agent, integration, channel, tool, extension, archetype\)/);
+      assert.match(warnings, /manifest rejected: plugin '@omadia\/agent-facilitator' has identity\.kind .* which this kernel does not know \(it knows: integration, tool, skill, channel, model, archetype, system-module, agent-template, agent, extension\)/);
     }
   });
 
   it('keeps every known kind, and a manifest without the field stays an agent plugin', () => {
-    for (const kind of ['agent', 'integration', 'channel', 'tool', 'extension']) {
+    for (const kind of ['agent', 'integration', 'channel', 'tool', 'extension', 'skill', 'model', 'system-module', 'agent-template']) {
       assert.equal(load(manifest({ kind, archetype: undefined })).plugin?.kind, kind);
     }
     assert.equal(load(manifest({ kind: undefined, archetype: undefined })).plugin?.kind, 'agent');

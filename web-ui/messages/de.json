@@ -1184,6 +1184,14 @@
       "privacy_guard_required": {
         "what": "Dieses Plugin ist der einzige Privacy Shield, und die Org-Richtlinie OMADIA_PRIVACY_FORCE_GUARDED verlangt Maskierung, deshalb lässt es sich nicht deinstallieren.",
         "next": "Installiere zuerst einen anderen Privacy-Shield-Provider oder schalte die Org-Richtlinie in der Middleware-Umgebung ab."
+      },
+      "retired_kind": {
+        "what": "Dieses Paket hat die abgekündigte Art 'agent'. Ein Plugin liefert Fähigkeiten und darf Agentenvorlagen mitbringen, ist aber nie selbst ein Agent.",
+        "next": "Installiere stattdessen die Version des Plugins, die Fähigkeiten (oder Agentenvorlagen) liefert, und lege den Agenten im Agent Builder an."
+      },
+      "system_module_confirmation_required": {
+        "what": "Dieses Plugin ist ein Systemmodul: Infrastruktur von omadia selbst. Es wird nur nach ausdrücklicher Bestätigung installiert, und diese Anfrage enthielt keine.",
+        "next": "Starte die Installation auf der Seite des Plugins im Store und bestätige sie dort."
       }
     },
     "cli_install": {
@@ -4433,18 +4441,18 @@
     "hero": {
       "eyebrow": "Hub",
       "headline": "Plugins für die omadia-Plattform.",
-      "lead": "Der Hub ist unser Katalog für die bereitgestellten Plugins. Er bündelt Integrations (Credential-Container), Agents (Domain-Capabilities) und Channels (User-Kanäle wie Teams, Telegram). Ein Klick auf eine Kachel zeigt Berechtigungen, Secrets und Abhängigkeiten vor der Installation."
+      "lead": "Der Hub ist unser Katalog fertiger Plugins. Ein Plugin ist nur die Lieferform: Es bringt Fähigkeiten (Zugang zu einem System, ein Werkzeug oder Know-how), die du Agenten gibst, einen Kanal, ein Modell, einen Archetyp, ein Systemmodul oder Agentenvorlagen. Ein Klick auf eine Kachel zeigt Berechtigungen, Secrets und Abhängigkeiten vor der Installation."
     },
     "page": {
       "metaTitle": "Hub · omadia",
       "filters": {
         "all": "Alle",
-        "integration": "Integrations",
-        "agent": "Agents",
-        "channel": "Channels",
-        "tool": "Tools",
-        "extension": "Extensions",
-        "archetype": "Archetypen"
+        "capabilities": "Fähigkeiten",
+        "channels": "Kanäle",
+        "models": "Modelle",
+        "archetypes": "Archetypen",
+        "systemModules": "Systemmodule",
+        "templates": "Agentenvorlagen"
       },
       "unknownLoadError": "Unbekannter Fehler beim Laden des Katalogs.",
       "filterCategoryAria": "Kategorie filtern",
@@ -4702,6 +4710,13 @@
           "own_channel_identity": "Eine eigene Identität im Kanal, in dem er arbeitet (in Teams ein eigener Bot). Er spricht nie über die Identität eines anderen Agenten."
         }
       },
+      "systemModuleConfirm": {
+        "title": "Systemmodul {plugin} installieren?",
+        "lead": "{plugin} ist ein Systemmodul: Infrastruktur von omadia selbst, die allen Agenten und Administratoren dient. Es wird keinem Agenten zugeordnet. Installiere es nur, wenn du diese Infrastruktur auf dieser Instanz haben willst.",
+        "confirm": "Systemmodul installieren",
+        "confirming": "Wird installiert…",
+        "cancel": "Abbrechen"
+      },
       "setupGuide": "Installationsanleitung",
       "noConfigNeeded": "Dieses Plugin erfordert keine Konfiguration — bestätige die Installation rechts unten.",
       "secretsNote1": "Secrets werden ausschließlich im per-Agent-Vault abgelegt.",
@@ -4885,7 +4900,9 @@
         "zipTooManyEntries": "Das Archiv enthält zu viele Dateien.",
         "zipFileTooLarge": "Eine Datei im Archiv ist entpackt zu groß.",
         "zipTotalTooLarge": "Das entpackte Archiv überschreitet die Größengrenze.",
-        "archetypeConfirmationRequired": "Version {toVersion} von {pluginId} ändert mehr als die Version der installierten {fromVersion}: Sie macht das Plugin zum Archetyp-Plugin, ändert, was Agenten seines Archetyps dürfen, oder verschiebt seine Tabellen endgültig in ein eigenes Datenbankschema. Bestätige das Update ausdrücklich."
+        "archetypeConfirmationRequired": "Version {toVersion} von {pluginId} ändert mehr als die Version der installierten {fromVersion}: Sie macht das Plugin zum Archetyp-Plugin, ändert, was Agenten seines Archetyps dürfen, oder verschiebt seine Tabellen endgültig in ein eigenes Datenbankschema. Bestätige das Update ausdrücklich.",
+        "retiredKind": "{pluginId} hat die abgekündigte Art 'agent'. Ein Plugin liefert Fähigkeiten und darf Agentenvorlagen mitbringen, ist aber nie selbst ein Agent.",
+        "personaDeclared": "{pluginId} legt eine eigene Persona oder einen eigenen Absender fest ({field}). Identität und Persönlichkeit gehören zu einem Agenten oder als inaktive Voreinstellung in eine Agentenvorlage."
       },
       "replacedVersion": "Die zuvor hochgeladene Version {previous} wurde ersetzt.",
       "confirmArchetypeUpdate": "Trotzdem aktualisieren"

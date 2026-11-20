@@ -56,6 +56,7 @@ import { ConfirmDialog } from '@/app/_components/ConfirmDialog';
 import { parsePluginArchetype, type PluginArchetype } from '@/app/_lib/archetypes';
 
 import { ArchetypeInstallConfirm } from './ArchetypeInstallConfirm';
+import { SystemModuleInstallConfirm } from './SystemModuleInstallConfirm';
 import { RemovePackageAction } from './RemovePackageAction';
 import { useStoreErrorText } from './useStoreErrorText';
 import { errorHelpLine } from '../../_lib/errorHelp';
@@ -123,6 +124,8 @@ type Phase =
    *  install until the operator confirms that a new kind of agent is added.
    *  `busy` while the confirmed install job is being created. */
   | { kind: 'confirm_archetype'; archetype: PluginArchetype; busy: boolean }
+  /** Spec 2042 §5.10 — a system module is installed on confirmation only. */
+  | { kind: 'confirm_system_module'; busy: boolean }
   /** Epic #470 C16 (#817) — the install succeeded and the manifest asks for at
    *  least one operator grant. Entered INSTEAD of `success`, so a plugin is
    *  never quietly left in the state issue #817 describes: installed, asking
@@ -167,6 +170,7 @@ export function InstallButton({
     phase.kind === 'error' ||
     phase.kind === 'permissions' ||
     phase.kind === 'confirm_archetype' ||
+    phase.kind === 'confirm_system_module' ||
     phase.kind === 'creating';
 
   // --- visual dispatch -----------------------------------------------------
@@ -327,6 +331,10 @@ export function InstallButton({
             return;
           }
         }
+        if (parsed?.code === 'install.system_module_confirmation_required') {
+          setPhase({ kind: 'confirm_system_module', busy: false });
+          return;
+        }
         if (parsed?.code === 'install.missing_capability' && parsed.details) {
           const resolution = parsed.details as InstallChainResolution;
           if (
@@ -350,7 +358,7 @@ export function InstallButton({
 
   /** #2088 — the operator confirmed the archetype: create the job for real. */
   async function handleConfirmArchetype(): Promise<void> {
-    if (phase.kind !== 'confirm_archetype' || phase.busy) return;
+    if ((phase.kind !== 'confirm_archetype' && phase.kind !== 'confirm_system_module') || phase.busy) return;
     setPhase({ ...phase, busy: true });
     try {
       const resp = await createInstallJob(pluginId, { confirmArchetype: true });
@@ -1121,6 +1129,15 @@ function InstallDrawer({
             <ArchetypeInstallConfirm
               pluginName={pluginName}
               archetype={phase.archetype}
+              busy={phase.busy}
+              onConfirm={onConfirmArchetype}
+              onCancel={onClose}
+            />
+          </div>
+        ) : phase.kind === 'confirm_system_module' ? (
+          <div className="min-h-0 flex-1 overflow-y-auto p-8">
+            <SystemModuleInstallConfirm
+              pluginName={pluginName}
               busy={phase.busy}
               onConfirm={onConfirmArchetype}
               onCancel={onClose}
