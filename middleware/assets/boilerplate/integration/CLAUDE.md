@@ -31,14 +31,14 @@ Agent Builder; hier entsteht nur die Fähigkeit, die er danach bekommt.
 - **Manifest-Kinds**: `PLUGIN_KINDS` in `middleware/src/api/admin-v1.ts`. Der
   Plugin Builder erzeugt nur `integration` und `tool`; `depends_on`-Graph,
     `required_secrets` + `setup.fields`, permissions summary, `compat.core`-Guard.
-- **Entity-Registry**: `docs/harness-platform/entity-registry.v1.yaml`.
+- **Entity-Registry**: `middleware/assets/entity-registry.v1.yaml`.
 - **Admin-API v1** (alle JWT-gated außer `/auth/*`):
   - `middleware/src/routes/store.ts`       — `GET /api/v1/store/plugins`
   - `middleware/src/routes/install.ts`     — job-basiert:
     `POST /api/v1/install/plugins/:id` → `POST /api/v1/install/jobs/:id/configure`
   - `middleware/src/routes/auth.ts`        — `/api/v1/auth/{login,callback,me,logout}`
   - `middleware/src/routes/vaultStatus.ts` — `GET /api/v1/admin/vault-status`
-  - Typen: `docs/harness-platform/api/admin-api.v1.ts`.
+  - Typen: `middleware/src/api/admin-v1.ts`.
 - **Runtime-Contract**: `middleware/src/platform/pluginContext.ts` —
   Surface ist `agentId`, `secrets.{get,require,keys}` (async), `config.{get,require}<T>`
   (sync), `log(...)`. `vault`/`registry`/`catalog` sind Factory-intern und bleiben

@@ -55,7 +55,11 @@ changelog.
   marked "preview", only in the admin UI. It is removed when its preview
   closes (evicted, draft discarded, logout, shutdown) and by a boot sweep
   after a crash. Without it the preview does not run
-  (`builder.preview_draft_agent_unavailable`).
+  (`builder.preview_draft_agent_unavailable`). Preview draft agents are hidden
+  from the agent directory, the first-run flow and every grant offer; on a
+  `builder-preview-` slug the operator routes allow only GET and DELETE.
+- **Spec:** `permissions.subAgents` is refused in the Plugin Builder spec: a
+  capability plugin never consults an agent (spec 2042 §5.4).
 - **Built-ins:** `@omadia/agent-seo-analyst` 0.3.0 (kind `tool`) and
   `@omadia/agent-reference-maximum` 0.4.0 (kind `integration`, still the
   Builder's reference-only pattern source) are capability plugins; their former
@@ -92,9 +96,19 @@ changelog.
   show each agent's systems, read and write separately (manifest
   `side_effects`, MCP `readOnlyHint`).
 - **Confirmation:** a grant write that gives an agent every connected system
-  answers `409 broad_reach_confirmation_required` unless the request carries
-  `confirmBroadReach: true`; confirmed changes are audited
-  (`agent.broad_reach_grant`, `agent.broad_reach_default`).
+  (`PUT|PATCH /api/v1/operator/agents/:slug/plugins`,
+  `PUT /api/v1/operator/mcp-grants`, Agent Builder `tool_grant` edges,
+  `PUT /api/v1/operator/plugin-mcp-grants`, the first-run flow) answers
+  `409 broad_reach_confirmation_required` unless the request carries
+  `confirmBroadReach: true`; a confirmed change is audited as
+  `agent.broad_reach_grant` after the write succeeded. The default-agent check
+  (`agent.broad_reach_default`) is provided for the default-agent table of the
+  S1 stream and not wired to a route yet.
+- **Only capability plugins are granted:** the plugin grant routes answer
+  `400 not_a_capability_plugin` for a new grant of a plugin that is not a
+  capability plugin (`integration`, `tool`, `skill`; a still installed `agent`
+  package counts too); existing rows stay.
+  `/api/v1/operator/agents/plugin-catalog` carries a `capability` flag.
 - **First run:** `GET|POST /api/v1/operator/agents/onboarding[/first-agent]`
   creates the first agent with an explicit capability choice (zero allowed).
 - **Live effect:** existing grants stay as they are; only new installs stop
@@ -169,6 +183,7 @@ changelog.
   or a participant who cannot be resolved, refuses every tool. The refusal now
   says why ("this channel does not tell omadia who is in the conversation …").
   Switch off with `AUDIENCE_FLOOR_ENABLED=false`.
+
 ### Added — Plugin kinds name what a plugin delivers; the agent/plugin boundary at ingest (#2053, epic #2042): S3 expand step
 
 - Spec 2042 §5.10, ADR-0014. The kernel accepts the manifest kinds

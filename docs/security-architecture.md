@@ -1399,6 +1399,65 @@ subset of what its agent holds, never more.
   to present the result as its own work, and helper runs are flagged
   `internalHelper` in the run trace so `agentsConsulted` never lists them.
 
+## 5e. Least privilege by default (#2054, spec 2042 INV-8, §5.7)
+
+Before #2054, first boot and every kernel install path (Hub, upload,
+reinstall, profile apply, boot-seeded built-ins) attached every plugin to the
+default agent, so whoever could reach that agent held every connected system.
+Now an agent holds exactly what an operator granted it, and a grant that gives
+one agent everything needs a second, explicit yes.
+
+- **No auto-attach.** `attachAllPlugins`, `attachNewPluginsToFallbackAgent`,
+  `attachToDefaultOrchestrator`, the pending-attach queue and the "reset
+  standard to all plugins" route are gone. The boot seed (`ensureFallbackAgent`)
+  stays for routing and holds no plugin. Installing a capability plugin only
+  offers it to agents the operator picks, none preselected. The one attach left
+  is the facilitation engine's, which only facilitator agents receive.
+- **Deterministic reach** (`agents/agentReach.ts`, `GET
+  /api/v1/operator/agents/:slug/reach`, the directory list). A connected system
+  is an installed capability plugin or an enabled MCP server. An agent reaches
+  one through an enabled plugin grant, an MCP tool grant (its own or a
+  helper's), or a `plugin_mcp_grants` row of a plugin it holds. Read and write
+  come from what the system declares: the manifest capabilities'
+  `side_effects`, the MCP tools' `annotations.readOnlyHint` from the last
+  discovery. Unknown (nothing declared, a tool the discovery does not know, a
+  server granted whole without discovered tools) counts as read and write and
+  is marked undeclared, the same conservative rule the runtime applies.
+- **Broad-reach confirmation** (`agents/broadReachGate.ts`). An agent is broad
+  when its reach covers every connected system and there are at least two.
+  The check asks only when a change makes an agent broad (not broad before,
+  broad after), so ordinary grants pass without a prompt. Such a write answers
+  `409 broad_reach_confirmation_required` (with the reach it would produce)
+  unless the body carries `confirmBroadReach: true`. Gated writes:
+  `PUT|PATCH /api/v1/operator/agents/:slug/plugins`,
+  `PUT /api/v1/operator/mcp-grants`, Agent Builder graph `tool_grant` edges,
+  `PUT /api/v1/operator/plugin-mcp-grants` (checked for every agent holding
+  the plugin) and the first-run flow. A confirmed change is audited as
+  `agent.broad_reach_grant` only after the write succeeded, so a failed write
+  leaves no row claiming a change that did not happen. If the audit write
+  itself fails, the failure is logged and the grant is not rolled back. That is
+  by design: the grant already happened, and the audit records it, it does not
+  authorise it.
+- **Only capability plugins are granted** (`plugins/capabilityPlugins.ts`,
+  `isCapabilityPlugin`). The plugin grant routes refuse a new grant of a plugin
+  that is not a capability plugin (`integration`, `tool`, `skill`; a still
+  installed retired `agent` package counts too) with
+  `400 not_a_capability_plugin`. Never a capability: the agent runtime itself
+  (`@omadia/orchestrator`), reference-only plugins, channels, models,
+  archetypes, system modules and templates. Rows that already exist stay.
+- **Preview draft agents are never addressable** (#2049). A Plugin Builder
+  preview runs as an `agents` row with status `draft` under the reserved slug
+  prefix `builder-preview-`: the registry never builds it, create refuses the
+  prefix, only GET and DELETE are allowed on such a slug, and it is hidden from
+  the directory, the first-run flow and every grant offer. It holds no grant
+  row; the preview turn gets only the draft plugin's captured tools.
+
+**Not wired yet.** The default-agent designation check
+(`change: 'default_agent'`, audited as `agent.broad_reach_default`) is exported
+for the S1 stream's default-agent table and is not called by any route on this
+branch. Existing grants on a live instance are unchanged by #2054; only new
+installs stop attaching.
+
 ## 6. Defence in depth for cached data
 
 The Odoo / external-system response cache and the in-memory conversation

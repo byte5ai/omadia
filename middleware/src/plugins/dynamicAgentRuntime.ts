@@ -1169,11 +1169,10 @@ export async function loadSystemPrompt(
  * delegates to the **inner layer** `compileSycophancyGuard(level)` for
  * the actual prompt-text rendering.
  *
- * The same inner layer is called directly by the preview-prompt route
- * (issue #55, `routes/builderPreviewPrompt.ts`) with the spec-side
- * `quality.sycophancy` value — guaranteeing byte-identical output
- * between the runtime compose path and the live preview without a
- * dedicated refactor. Parity is enforced by
+ * The same inner layer is called directly by the agent identity prompt
+ * (`services/agentIdentityPrompt.ts`) with the identity's sycophancy level —
+ * guaranteeing byte-identical output between this AGENT.md path and a
+ * value passed in directly. Parity is enforced by
  * `test/builder/previewPromptParity.test.ts`.
  *
  * Returns `''` when:
@@ -1208,9 +1207,9 @@ export async function composeSycophancyFromAgentMd(packageRoot: string): Promise
  * delegates to the **inner layer** `compileBoundariesSection(presets,
  * customLines)` for the actual prompt-text rendering.
  *
- * The same inner layer is called directly by the preview-prompt route
- * (issue #55) with the spec-side `quality.boundaries` value —
- * guaranteeing byte-identical output between runtime and preview.
+ * The same inner layer is called directly by the agent identity prompt
+ * (`services/agentIdentityPrompt.ts`) with the identity's boundaries —
+ * guaranteeing byte-identical output for the same settings.
  * Parity is enforced by `test/builder/previewPromptParity.test.ts`.
  *
  * Returns `''` when:
@@ -1224,9 +1223,9 @@ export async function composeSycophancyFromAgentMd(packageRoot: string): Promise
  * `[header, persona, boundaries, sycophancy, skill]`.
  *
  * Unknown preset IDs (legacy persisted values, or future kemia presets
- * not yet ported) are silently skipped at runtime — the `setQualityConfig`
- * tool surfaces them as warnings at edit time so the operator can act on
- * them before they ship.
+ * not yet ported) are silently skipped at runtime — the agent identity
+ * prompt reports them (`droppedBoundaryPresets`) so the operator can act on
+ * them.
  */
 export async function composeBoundariesFromAgentMd(packageRoot: string): Promise<string> {
   for (const candidate of ['AGENT.md', 'agent.md']) {
@@ -1256,10 +1255,10 @@ export async function composeBoundariesFromAgentMd(packageRoot: string): Promise
  * `composePersonaSection({ persona, family })` from `personaCompose.ts`
  * for the actual `<persona>`-XML rendering.
  *
- * The same inner layer is called directly by the preview-prompt route
- * (issue #55) with the spec-side `persona` block — guaranteeing
- * byte-identical output between runtime and preview. Parity is enforced
- * by `test/builder/previewPromptParity.test.ts`.
+ * The same inner layer is called directly by the agent identity prompt
+ * (`services/agentIdentityPrompt.ts`) with the identity's `persona` block —
+ * guaranteeing byte-identical output for the same settings. Parity is
+ * enforced by `test/builder/previewPromptParity.test.ts`.
  *
  * Returns `''` when:
  *   - no AGENT.md or agent.md file at the package root

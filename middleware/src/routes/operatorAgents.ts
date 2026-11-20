@@ -1704,8 +1704,8 @@ export interface OperatorAgentsRouterOptions {
   readonly getChatSessionStore: () => ChatSessionStore | undefined;
   /** Phase B — kernel-owned plugin catalog + installed-registry pair.
    *  Used by `/plugin-catalog` (B3a multi-select), `/resolve-channel`
-   *  (B3b routing tester surfaces installed channel-kind ids), and
-   *  `/fallback/rehydrate` (B3d). Optional so the router stays usable
+   *  (B3b routing tester surfaces installed channel-kind ids), the first-run
+   *  flow and `/:slug/template` (#2054, #2049). Optional so the router stays usable
    *  in tests that build it with a bare config store. */
   readonly getPluginCatalog?: () => PluginCatalog | undefined;
   readonly getInstalledRegistry?: () => InstalledRegistry | undefined;

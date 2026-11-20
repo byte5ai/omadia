@@ -105,7 +105,7 @@ export const ToolSpecSchema = z.object({
   // here. Declaring them explicitly lets codegen synthesise each
   // capability entry per-tool instead. `side_effects` mirrors the
   // manifest's own `'read' | 'write' | 'none'` string enum (see
-  // middleware/assets/boilerplate/agent-integration/manifest.yaml and
+  // middleware/assets/boilerplate/integration/manifest.yaml and
   // middleware/packages/agent-reference-maximum/manifest.yaml) — it is
   // passed straight through by codegen, not mapped from a boolean.
   // Undefined fields fall back to the boilerplate default per-tool,
@@ -525,10 +525,10 @@ export type QualityConfig = z.infer<typeof QualityConfigSchema>;
 // shape is the inline-Phase-3 mirror of the schema documented in
 // docs/harness-platform/specs/persona-ui-v1.md §4 — Phase 4 will move it
 // to plugin-api/src/persona.ts when the `personaCompose@1` provider
-// plugin lands. Until then, the field is data-only: the Builder writes
-// it via `set_persona_config`, the bridge serialiser mirrors it into
-// `agent.md` frontmatter, and the orchestrator-side compose hook is a
-// no-op (Phase 4 deferred — conditional on Phase-1 ops data).
+// plugin lands. Since #2049 (spec 2042 §5.10) the Plugin Builder spec
+// carries no persona: the schema serves the Agent Builder's persona editor
+// (`PUT /api/v1/operator/agents/:slug/identity`), agent templates
+// (`agentTemplateManifest.ts`) and reading legacy `agent.md` frontmatter.
 //
 // All fields optional. The 12 axes mirror Kemia's persona-dimensions.ts;
 // Core (8) drives 80% of the Browser-View, Extended (4) is opt-in tuning.
@@ -725,7 +725,7 @@ export const AgentSpecSchema = z
     // web-ui embeds the URL as an iframe on the store-detail page once
     // the plugin is installed. The plugin must additionally mount its UI
     // routes via `ctx.routes.register()` in its activate-body — see
-    // `boilerplate/agent-integration/CLAUDE.md` (Optional-Admin-UI).
+    // `boilerplate/integration/CLAUDE.md` (Optional: Operator-Admin-UI).
     // Path MUST be absolute (start with `/`); the recommended shape is
     // `/api/<slug>/admin/index.html`.
     admin_ui_path: z

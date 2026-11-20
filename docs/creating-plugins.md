@@ -3,14 +3,19 @@
 Diese Anleitung führt von „leeres Verzeichnis" bis „installierbar aus dem Hub".
 Ein Plugin ist ein **standalone Package**, das als `.zip` hochgeladen wird — der
 Server validiert das Manifest, prüft Peer-Dependencies und registriert es im
-Katalog. Es gibt drei `kind`s, und sie unterscheiden sich **nicht nur im
-Manifest, sondern auch im Code-Contract**:
+Katalog. Der `kind` sagt, was das Plugin liefert (Spec 2042 §5.10, ADR-0014);
+die häufigsten unterscheiden sich **nicht nur im Manifest, sondern auch im
+Code-Contract**:
 
 | kind | Was es ist | `activate()` gibt zurück | Beispiel |
 |---|---|---|---|
-| `agent` | Capability-Anbieter mit Toolkit (Zod-Tools) + System-Prompt | `{ toolkit, close }` | `agent-seo-analyst` |
-| `integration` | reiner Credential-/HTTP-Client, kein Toolkit | (kein Toolkit; nur Secrets/Config-Container) | `de.byte5.integration.odoo` |
+| `integration` | Fähigkeit mit Zugang zu einem externen System (Zugangsdaten), Tools per `ctx.tools.register` | `{ close }` | `agent-reference-maximum` |
+| `tool` | Fähigkeit ohne externes System (lokale Logik), Tools per `ctx.tools.register` | `{ close }` | `agent-seo-analyst` |
 | `channel` | User-Surface (WhatsApp, Teams, Telegram, …) mit Transport + Adaptern | **`ChannelHandle` über `activate(ctx, core)`** | `@omadia/channel-whatsapp` |
+
+Weitere Kinds: `skill`, `model`, `archetype`, `system-module`, `agent-template`.
+`agent` und `extension` sind ausgemustert: ein Plugin hat keine Persona und
+keinen System-Prompt; Persona-Vorlagen liefert es als `agent_templates:`.
 
 > **Quellen der Wahrheit (nicht halluzinieren):**
 > - Capability-Plugin (`integration` / `tool`): Referenzen
@@ -146,7 +151,8 @@ schema_version: "1"
 identity:
   id: "de.byte5.agent.<slug>"      # === package.json "name". byte5-privat: reverse-DNS;
                                    # public OSS: "@omadia/<slug>" (wie @omadia/plugin-office)
-  kind: "agent"                    # agent | integration | channel
+  kind: "integration"              # integration | tool | skill | channel | model | archetype
+                                   # | system-module | agent-template (agent/extension: ausgemustert)
   domain: "<domain>"               # z.B. coaching, m365.sharepoint, whatsapp — lowercase, dotted
   name: "<Anzeigename>"
   version: "0.1.0"                 # SemVer; === package.json "version"
@@ -172,20 +178,14 @@ setup:
   fields: []                       # Setup-Felder → rendern automatisch im Install-Drawer
   self_test: false
 
-capabilities: []                   # Tools liefert das toolkit; [] = pure-LLM (NICHT für channel)
-
-skills:
-  - id: "<slug>_expert_system"
-    kind: "prompt_partial"
-    path: "skills/<slug>-expert.md"
-    description: "Rolle & Arbeitsweise."
+capabilities: []                   # Tools liefert das toolkit; je Capability side_effects (read|write|none) (NICHT für channel)
 
 permissions:
   memory:
     reads: ["session:*", "agent:de.byte5.agent.<slug>:*"]
     writes: ["agent:de.byte5.agent.<slug>:*"]
   network:
-    outbound: []                   # erlaubte Hosts (leer = pure-LLM)
+    outbound: []                   # erlaubte Hosts (leer = kein ausgehender Netzzugriff)
 ```
 
 **Regeln, die sonst erst zur Install-/Ingest-Zeit knallen:**

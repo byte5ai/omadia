@@ -15,7 +15,7 @@ Trigger: **jede Bearbeitung** der Marker-Region
 `assets/admin-ui/index.html`. Das Boilerplate-Drumherum (head, body-class,
 title, link-tag) ist vom Codegen befüllt — daran NICHT herumschreiben.
 
-Das parent CLAUDE.md (`docs/harness-platform/boilerplate/integration/CLAUDE.md`)
+Das parent CLAUDE.md (`../../CLAUDE.md` im Plugin-Root)
 erklärt das große "Wie funktioniert die Admin-UI"-Bild. Dieses Dokument
 dreht sich ausschließlich um **Layout, Styling und Constraints des
 Body-Inhalts**.
