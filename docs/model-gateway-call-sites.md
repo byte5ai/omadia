@@ -63,7 +63,7 @@ Line numbers drift; the names are what to search for.
 | bulk promotion (`routes/bulkPromotion.ts`) | complete, embed | OJ:bulk_promotion | |
 | `inconsistencyDetector.ts`, `mergeCandidateDetector.ts` | embed, complete | AT; OJ:memory_review_detection; OJ:memory_edit after memory REST writes; **NONE after reaper writes** | |
 | `scratchPromotionReaper.ts` | complete, embed | **NONE** | interval job |
-| `topicDetector.ts` | embed, complete | **NONE** | only consumer: channel-teams `topicDetector.classify`, before the turn |
+| `topicDetector.ts` | embed, complete | IP when a channel plugin calls `classify` before the turn (`inboundProcessing`) | only consumer: channel-teams |
 
 ## Memory and knowledge graph
 
@@ -97,7 +97,7 @@ Line numbers drift; the names are what to search for.
 | `agents/agentTurnService.ts` (`agentTurn@2`) | complete | ES with AT nested | |
 | `plugins/routines/routineRunner.ts` | complete | AT, except the screener | |
 | `src/platform/pluginContext.ts` `ctx.llm` | complete | the caller's; archetype plugins only ES | **NONE from a plugin's `activate()`, `ctx.jobs` handler or timer** |
-| channel plugins' `transcription.transcribeFile` | transcribe | IP | `inboundTranscription`; `transcribeStream` is not wrapped |
+| channel plugins' `transcription.transcribeFile`, `topicDetector.classify` | transcribe; embed, complete | IP | `inboundProcessing`; `transcribeStream` is not wrapped |
 | `src/mcp/publicMcpServer.ts` tool dispatch | any | **NONE** | |
 
 ## Gaps: calls with no context today
@@ -109,15 +109,14 @@ removed) before the contract step switches to `enforce`.
 |---|---|---|
 | 1 | Scratch-promotion reaper (interval) | S4: unattended work as a batch trigger with caps and circuit breaker; not a maintenance run (it calls `complete`) |
 | 2 | Field-classification recompute (boot, activation, 6 h, POST route) | S3b: operator job for the POST route; the scheduled runs as a bounded kernel job (S4 trigger caps) |
-| 3 | channel-teams `topicDetector.classify` before the turn | plugin train (channel-teams): move into the turn or an inbound-processing context |
-| 4 | Security screener on routine turns | S4 (routines become triggers of an agent turn) |
-| 5 | Boot graph backfill (`BACKFILL_AT_STARTUP=1`) | S3b: maintenance run like the embedding backfill |
-| 6 | Public MCP server tool dispatch | S3b: run each dispatch in the agent turn of the agent the API key is bound to |
-| 7 | Long-running sub-agent tasks re-driven at boot / interval | S3b: carry the originating agent turn's context on the task |
-| 8 | Plugin Builder auto-fix, smoke, preview refresh, rebuilds | S2 (Plugin Builder): wire `PLUGIN_BUILDER_AUTOFIX` and the preview kinds |
-| 9 | Plugin background code (`activate()`, `ctx.jobs`, timers) calling `ctx.llm` / `embeddingClient` | S3b: `ctx.jobs` handlers as maintenance runs or refused; plugin train moves the rest |
-| 10 | A channel's `transcribeStream` outside a turn | live sessions run in their execution scope; anything else is refused in `enforce` |
-| 11 | Embedding backfill when `maintenanceRun@1` is missing | S3b: refuse the sweep instead of running it without a context |
+| 3 | Security screener on routine turns | S4 (routines become triggers of an agent turn) |
+| 4 | Boot graph backfill (`BACKFILL_AT_STARTUP=1`) | S3b: maintenance run like the embedding backfill |
+| 5 | Public MCP server tool dispatch | S3b: run each dispatch in the agent turn of the agent the API key is bound to |
+| 6 | Long-running sub-agent tasks re-driven at boot / interval | S3b: carry the originating agent turn's context on the task |
+| 7 | Plugin Builder auto-fix, smoke, preview refresh, rebuilds | S2 (Plugin Builder): wire `PLUGIN_BUILDER_AUTOFIX` and the preview kinds |
+| 8 | Plugin background code (`activate()`, `ctx.jobs`, timers) calling `ctx.llm` / `embeddingClient` | S3b: `ctx.jobs` handlers as maintenance runs or refused; plugin train moves the rest |
+| 9 | A channel's `transcribeStream` outside a turn | live sessions run in their execution scope; anything else is refused in `enforce` |
+| 10 | Embedding backfill when `maintenanceRun@1` is missing | S3b: refuse the sweep instead of running it without a context |
 
 ## Not gated in any mode
 

@@ -69,29 +69,49 @@ export function gateModelService<T>(name: PropertyKey, impl: T): T {
 }
 
 /**
- * Spec 2042 §5.10 — inbound processing: a channel plugin transcribes a voice
- * message before the addressed agent's turn. The transcription service a
- * channel plugin resolves therefore runs `transcribeFile` in an
- * `inbound_processing` context owned by that channel, which allows only
- * `transcribe`, when no other context is around the call. A transcription
- * inside an agent turn or an execution scope (a live session) stays that
- * context's. The context comes from the kernel, which knows the caller is a
- * channel plugin; the plugin cannot name one itself.
+ * Spec 2042 §5.10 — inbound processing: what a channel plugin does with a
+ * message before the addressed agent's turn. Two kernel services are used
+ * that way: `transcription.transcribeFile` (a voice message) and
+ * `topicDetector.classify` (does the message start a new topic, which
+ * decides how much history the turn gets). The service a channel plugin
+ * resolves runs those methods in an `inbound_processing` context owned by
+ * that channel, with only the operations they need, when no other context is
+ * around the call. Inside an agent turn or an execution scope (a live
+ * session) the call stays that context's. The context comes from the
+ * kernel, which knows the caller is a channel plugin; the plugin cannot name
+ * one itself.
  */
-export function inboundTranscription<T>(impl: T, channelPluginId: string): T {
-  if (impl === null || typeof impl !== 'object') return impl;
+const INBOUND_METHODS: ReadonlyMap<string, { readonly method: string; readonly operations: readonly ModelOperation[] }> =
+  new Map([
+    ['transcription', { method: 'transcribeFile', operations: ['transcribe'] as const }],
+    ['topicDetector', { method: 'classify', operations: ['embed', 'complete'] as const }],
+  ]);
+
+/** Whether a channel plugin's resolve of `name` is wrapped as inbound processing. */
+export function isInboundProcessingService(name: string): boolean {
+  return INBOUND_METHODS.has(baseName(name));
+}
+
+export function inboundProcessing<T>(name: string, impl: T, channelPluginId: string): T {
+  const spec = INBOUND_METHODS.get(baseName(name));
+  if (!spec || impl === null || typeof impl !== 'object') return impl;
   return new Proxy(impl as object, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver) as unknown;
-      if (prop !== 'transcribeFile' || typeof value !== 'function') return value;
+      if (prop !== spec.method || typeof value !== 'function') return value;
       return function inbound(this: unknown, ...args: unknown[]): unknown {
         const call = (): Promise<unknown> => (value as (...a: unknown[]) => Promise<unknown>).apply(target, args);
         if (currentExecutionContext()) return call();
         return runInExecutionContext(
-          { kind: 'inbound_processing', ownerId: channelPluginId, operations: ['transcribe'] },
+          { kind: 'inbound_processing', ownerId: channelPluginId, operations: spec.operations },
           call,
         );
       };
     },
   }) as T;
+}
+
+/** The transcription case of {@link inboundProcessing}. */
+export function inboundTranscription<T>(impl: T, channelPluginId: string): T {
+  return inboundProcessing('transcription', impl, channelPluginId);
 }

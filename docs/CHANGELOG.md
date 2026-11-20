@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Added — A channel's topic detection before the turn is inbound processing (#2053, epic #2042): S3 expand step
+
+- `topicDetector.classify`, resolved by a channel plugin, runs in an
+  `inbound_processing` context owned by that channel (embed and complete
+  only) when no other context is around the call, like `transcribeFile`
+  (`inboundProcessing`, `src/platform/modelGatewayServices.ts`). channel-teams
+  calls it before the turn to decide how much history the turn gets.
+
 ### Fixed — `$config.*` base URLs allow their host; local model servers are no model endpoint (#2053, epic #2042): S3 expand step
 
 - A `permissions.network.outbound` entry `$config.<field>` whose value is a

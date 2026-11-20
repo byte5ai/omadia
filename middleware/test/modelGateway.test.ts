@@ -25,7 +25,7 @@ import {
   type ModelExecutionContext,
 } from '@omadia/usage-telemetry';
 
-import { gateModelService, inboundTranscription } from '../src/platform/modelGatewayServices.js';
+import { gateModelService, inboundProcessing, inboundTranscription } from '../src/platform/modelGatewayServices.js';
 import { ServiceRegistry } from '../src/platform/serviceRegistry.js';
 
 const turn: ModelExecutionContext = { kind: 'agent_turn', ownerId: 'mira', agentSlug: 'mira' };
@@ -216,6 +216,31 @@ describe('model gateway — embedding and transcription services', () => {
     // Inside an agent turn the call stays the turn's.
     const inTurn = await runInExecutionContext(turn, () => channel.transcribeFile());
     assert.equal((inTurn as { context: ModelExecutionContext }).context.kind, 'agent_turn');
+  });
+
+  it('a channel’s topic detection before the turn is inbound processing: embed and complete, nothing else', async () => {
+    setModelGatewayMode('enforce');
+    const detector = inboundProcessing(
+      'topicDetector@1',
+      {
+        classify: async () => {
+          admitModelCall('embed');
+          admitModelCall('complete');
+          let transcribeRefused = false;
+          try {
+            admitModelCall('transcribe');
+          } catch (err) {
+            transcribeRefused = isModelCallNotCovered(err);
+          }
+          return { context: currentExecutionContext(), transcribeRefused };
+        },
+      },
+      '@omadia/channel-teams',
+    );
+    const out = (await detector.classify()) as { context: ModelExecutionContext; transcribeRefused: boolean };
+    assert.equal(out.context.kind, 'inbound_processing');
+    assert.equal(out.context.ownerId, '@omadia/channel-teams');
+    assert.equal(out.transcribeRefused, true);
   });
 
   it('wraps once: a replace that decorates the gated service is not gated twice', async () => {
