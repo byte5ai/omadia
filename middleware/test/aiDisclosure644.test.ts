@@ -179,11 +179,15 @@ describe('#644 orchestrator — AC1 default marking on every channel', () => {
     const o = makeOrchestrator({ answer: 'Hallo.' });
     const sa = await o.chat({ userMessage: 'hi' });
     assert.equal(sa.text, `Hallo.\n\n${DE_STANDARD}`);
+    // #2087 — the carrier also states which visible markers this answer has:
+    // the channel default is today's behaviour (line on the first answer, chip on every answer).
     assert.deepEqual(sa.aiDisclosure, {
       text: DE_STANDARD,
       level: 'standard',
       locale: 'de',
       source: 'default',
+      frequency: 'channel_default',
+      markers: { textLine: true, chip: true },
     });
   });
 
@@ -454,5 +458,53 @@ describe('#644 orchestrator manifest — disclosure setup fields', () => {
       (f) => f.key === 'ai_disclosure_level',
     );
     assert.equal(field?.default, 'standard');
+  });
+});
+
+// ── #2087 — frequency of the visible markers, orchestrator level ─────────────
+
+describe('#2087 orchestrator — disclosure frequency', () => {
+  const folded = (text: string): boolean => text.includes(DE_STANDARD);
+
+  it('per_answer marks every answer on both paths, structured field always present', async () => {
+    const o = makeOrchestrator({ answer: 'Hallo.', aiDisclosure: { level: 'standard', frequency: 'per_answer' } });
+    const first = await o.chat({ userMessage: 'a', sessionScope: 'c-pa' });
+    const second = await o.chat({ userMessage: 'b', sessionScope: 'c-pa' });
+    const streamed = await streamDone(o, { userMessage: 'c', sessionScope: 'c-pa' });
+    assert.ok(folded(first.text) && folded(second.text) && folded(streamed.answer));
+    assert.equal(second.aiDisclosure?.markers?.chip, true);
+  });
+
+  it('per_conversation marks the first answer only (same agent, no pause)', async () => {
+    const o = makeOrchestrator({ answer: 'Hallo.', aiDisclosure: { level: 'standard', frequency: 'per_conversation' } });
+    const first = await o.chat({ userMessage: 'a', sessionScope: 'c-pc' });
+    const second = await o.chat({ userMessage: 'b', sessionScope: 'c-pc' });
+    const streamed = await streamDone(o, { userMessage: 'c', sessionScope: 'c-pc' });
+    assert.equal(folded(first.text), true);
+    assert.equal(folded(second.text), false);
+    assert.equal(folded(streamed.answer), false);
+    // the structured carrier stays on the unmarked answers and says so
+    assert.ok(second.aiDisclosure);
+    assert.deepEqual(second.aiDisclosure?.markers, { textLine: false, chip: false });
+    assert.equal(streamed.aiDisclosure?.markers?.chip, false);
+    // another conversation is marked again
+    const other = await o.chat({ userMessage: 'a', sessionScope: 'c-pc-2' });
+    assert.equal(folded(other.text), true);
+  });
+
+  it('channel_default keeps today: line once, chip every answer', async () => {
+    const o = makeOrchestrator({ answer: 'Hallo.' });
+    const first = await o.chat({ userMessage: 'a', sessionScope: 'c-cd' });
+    const second = await o.chat({ userMessage: 'b', sessionScope: 'c-cd' });
+    assert.equal(folded(first.text), true);
+    assert.equal(folded(second.text), false);
+    assert.equal(second.aiDisclosure?.markers?.chip, true);
+  });
+
+  it("off removes everything: no line, no structured field", async () => {
+    const o = makeOrchestrator({ answer: 'Hallo.', aiDisclosure: { level: 'off', frequency: 'per_answer' } });
+    const sa = await o.chat({ userMessage: 'a', sessionScope: 'c-off' });
+    assert.equal(folded(sa.text), false);
+    assert.equal(sa.aiDisclosure, undefined);
   });
 });

@@ -947,6 +947,8 @@
       "body": "Answers on these channels are marked differently than on delivery: {channels}.",
       "inert": "Configured but not yet in effect: {channels}. Turns on these channels do not report their channel type, so they use the global setting.",
       "note": "This is your decision as the operator — nothing is blocked. Shown so a setting from a test setup does not go unnoticed.",
+      "frequency": "Visible AI markers appear {frequency}.",
+      "frequencyValue": {"channel_default": "as delivered", "per_answer": "on every answer", "per_conversation": "once per conversation"},
       "level": {
         "standard": "full marking",
         "concise": "short marking",

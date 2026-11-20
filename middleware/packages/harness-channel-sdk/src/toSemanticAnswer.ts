@@ -354,6 +354,12 @@ export function toSemanticAnswer(
           ...(disclosure?.assistantName !== undefined
             ? { assistantName: disclosure.assistantName }
             : {}),
+          // #2087 — frequency inputs of the visible markers.
+          ...(disclosure?.frequency !== undefined ? { frequency: disclosure.frequency } : {}),
+          ...(disclosure?.agentId !== undefined ? { agentId: disclosure.agentId } : {}),
+          ...(disclosure?.pauseMinutes !== undefined ? { pauseMinutes: disclosure.pauseMinutes } : {}),
+          ...(disclosure?.markerStore !== undefined ? { markerStore: disclosure.markerStore } : {}),
+          ...(disclosure?.now !== undefined ? { now: disclosure.now } : {}),
         })
       : { text: baseText };
 

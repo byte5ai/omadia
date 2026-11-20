@@ -2,6 +2,7 @@ import { getTranslations } from 'next-intl/server';
 
 import {
   deviatingChannels,
+  frequencyDeviates,
   shouldShowDisclosureNotice,
   type DisclosureHealthDto,
 } from '../../../_lib/disclosure';
@@ -40,6 +41,11 @@ export async function DisclosureNotice({
   return (
     <div className="mb-6 rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/8 p-4 text-sm">
       <p className="font-medium text-[color:var(--fg)]">{t('heading')}</p>
+      {frequencyDeviates(posture) && posture.frequency && (
+        <p className="mt-1 text-[color:var(--fg-muted)]">
+          {t('frequency', { frequency: t(`frequencyValue.${posture.frequency}`) })}
+        </p>
+      )}
       {posture.deviates && deviating.length > 0 && (
         <p className="mt-1 text-[color:var(--fg-muted)]">
           {t('body', { channels: deviating })}

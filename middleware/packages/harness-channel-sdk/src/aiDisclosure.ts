@@ -78,6 +78,8 @@ export interface AiDisclosure {
    * Absent on a disclosure that was resolved before the answer was decided.
    */
   readonly frequency?: AiDisclosureFrequency;
+  /** #2087 — pause (minutes) the `per_conversation` frequency was configured with. */
+  readonly pauseMinutes?: number;
   /**
    * #2087 — which VISIBLE markers are due on this answer. Channels render
    * their own chip / native label only when `chip` is true; the text line is
@@ -264,6 +266,8 @@ function resolveFromPolicy(ctx: ApplyAiDisclosureContext): AiDisclosure | undefi
     locale,
     source: effective.source,
     ...(operatorNote ? { operatorNote } : {}),
+    ...(effective.frequency !== undefined ? { frequency: effective.frequency } : {}),
+    ...(effective.pauseMinutes !== undefined ? { pauseMinutes: effective.pauseMinutes } : {}),
   });
 }
 
@@ -371,7 +375,7 @@ export function applyAiDisclosure(
     scope: ctx.scope,
     agentId: ctx.agentId,
     now: ctx.now ?? Date.now(),
-    pauseMinutes: ctx.pauseMinutes ?? ctx.policy?.pauseMinutes,
+    pauseMinutes: ctx.pauseMinutes ?? ctx.policy?.pauseMinutes ?? resolved.pauseMinutes,
     store: ctx.markerStore,
   });
   const aiDisclosure: AiDisclosure = Object.freeze({ ...resolved, frequency, markers });

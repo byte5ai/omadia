@@ -947,6 +947,8 @@
       "body": "Auf diesen Channels werden Antworten anders gekennzeichnet als im Auslieferungszustand: {channels}.",
       "inert": "Konfiguriert, aber noch nicht wirksam: {channels}. Turns auf diesen Channels melden ihren Channel-Typ nicht, daher gilt dort die globale Einstellung.",
       "note": "Das ist deine Entscheidung als Betreiber — es wird nichts blockiert. Angezeigt, damit eine Einstellung aus einem Test-Setup nicht unbemerkt bleibt.",
+      "frequency": "Sichtbare KI-Marker erscheinen {frequency}.",
+      "frequencyValue": {"channel_default": "wie ausgeliefert", "per_answer": "bei jeder Antwort", "per_conversation": "einmal pro Konversation"},
       "level": {
         "standard": "volle Kennzeichnung",
         "concise": "kurze Kennzeichnung",
