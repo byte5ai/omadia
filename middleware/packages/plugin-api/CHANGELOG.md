@@ -12,7 +12,7 @@ implements, is a major.
 
 Additive (epic #2042, step S6, spec 2042 §5.3/§5.14, ADR-0021): channels and
 UIs show who speaks. This version marks a kernel whose `@omadia/channel-sdk`
-(0.4.0) provides the channel runtime values `runPacedTurn`, `speakerLine`,
+provides the channel runtime values `runPacedTurn`, `speakerLine`,
 `admitDecorations` with the decoration registry, `buildAnswerDetails` and
 `resolveChannelRoute`, plus `CoreApi.reportConversationMessage` for typed card
 and poll answers. Channel plugins that import them declare
