@@ -39,6 +39,7 @@ interface Seen {
   allowed: string[];
   memoryAccess: string;
   input: ChatTurnInput;
+  initialLabels: LabelSet | undefined;
 }
 
 /** A colleague whose run reports `labels` (per attempt) and answers `text`. */
@@ -52,6 +53,8 @@ function colleague(opts: {
   answer?: (attempt: number) => string;
   fail?: boolean;
   seen?: Seen[];
+  /** Whether B's turn ran with a privacy shield (default true). */
+  shielded?: boolean;
 }): ConsultRegistryEntry {
   let attempt = 0;
   return {
@@ -70,10 +73,16 @@ function colleague(opts: {
             attempt += 1;
             const scope = currentConsultation();
             assert.ok(scope, 'the colleague runs inside a consultation scope');
-            opts.seen?.push({ allowed: [...scope.allowedPluginIds].sort(), memoryAccess: scope.memoryAccess, input });
+            opts.seen?.push({
+              allowed: [...scope.allowedPluginIds].sort(),
+              memoryAccess: scope.memoryAccess,
+              input,
+              initialLabels: scope.initialLabels,
+            });
             if (opts.fail) throw new Error('model down');
             scope.result.labels = unionLabels([salesLabel], opts.labels?.(attempt, scope.memoryAccess) ?? []);
             scope.result.wireAnswer = 'masked «PERSON_1» view';
+            scope.result.shielded = opts.shielded ?? true;
             return { text: opts.answer?.(attempt) ?? `answer ${String(attempt)}` } as SemanticAnswer;
           },
         },
@@ -109,9 +118,10 @@ function fakeStore(state: {
   const store: ConsultationBrokerStore = {
     getSwitches: async (id) => state.switches?.[id] ?? { consultable: true, mayConsult: true },
     getGrant: async () => state.grant,
-    countCallsToday: async () => state.today ?? 0,
     startCall: async (c) => {
+      if ((state.today ?? 0) >= c.maxCallsPerDay) return false;
       calls.push({ id: c.id });
+      return true;
     },
     finishCall: async (id, r) => {
       const call = calls.find((c) => c.id === id);
@@ -131,6 +141,7 @@ function request(over: Partial<ConsultRequest> = {}): ConsultRequest {
     toAgentSlug: 'ben',
     request: 'What do you think?',
     callsThisTurn: 0,
+    sequence: 1,
     origin: { channelType: 'teams', scope: { kind: 'conversation', conversationId: '19:sales@thread.v2' } },
     labels: unionLabels([salesLabel]),
     contextKey: SALES_CHAT,
@@ -272,7 +283,7 @@ describe('consultation broker', () => {
     ]);
     const broker = createConsultationBroker({ store, getRegistry: () => registry });
     const first = await inTurn(() => broker.consult(request()));
-    const second = await inTurn(() => broker.consult(request({ callsThisTurn: 1 })));
+    const second = await inTurn(() => broker.consult(request({ callsThisTurn: 1, sequence: 2 })));
     assert.ok(first.kind === 'answered' && second.kind === 'answered');
     assert.notEqual(first.contribution.id, second.contribution.id);
     assert.equal(first.contribution.speaker.slug, 'ben');
@@ -404,6 +415,152 @@ describe('consultation broker', () => {
     const masked = await inTurn(() => redacted.consult(request()));
     assert.ok(masked.kind === 'answered');
     assert.equal(masked.contribution.text, 'masked «PERSON_1» view');
+  });
+
+  it('criterion 17: A\'s labels go with the request; B may receive them only when its grants cover them', async () => {
+    const hrSource: DiscretionLabel = { kind: 'source', system: '@omadia/odoo-hr', restricted: true };
+    const askerLabels = unionLabels([salesLabel, hrSource]);
+    const seen: Seen[] = [];
+    const audits: string[][] = [];
+    const without = createConsultationBroker({
+      store: fakeStore({ grant: grant() }).store,
+      getRegistry: () =>
+        new Map([
+          ['anna', A(['@omadia/odoo-hr'])],
+          ['ben', colleague({ id: 'b', slug: 'ben', plugins: ['@omadia/crm'], seen })],
+        ]),
+      audit: (e) => audits.push([...e.violations]),
+    });
+    const refused = await inTurn(() => without.consult(request({ labels: askerLabels })));
+    assert.equal(refused.kind === 'refused' && refused.reason, 'discretion');
+    assert.equal(seen.length, 0, 'B never ran');
+    assert.deepEqual(audits[0], ['source:@omadia/odoo-hr:agent_lacks_grant']);
+
+    const withGrant = createConsultationBroker({
+      store: fakeStore({ grant: grant() }).store,
+      getRegistry: () =>
+        new Map([
+          ['anna', A(['@omadia/odoo-hr'])],
+          ['ben', colleague({ id: 'b', slug: 'ben', plugins: ['@omadia/odoo-hr'], seen })],
+        ]),
+    });
+    const out = await inTurn(() => withGrant.consult(request({ labels: askerLabels })));
+    assert.equal(out.kind, 'answered');
+    // B's turn starts with what A had read: its own egress checks see it.
+    assert.ok(seen[0]!.initialLabels?.labels.some((l) => l.kind === 'source' && l.system === '@omadia/odoo-hr'));
+  });
+
+  it('depth 1: no consultation starts inside a consultation run', async () => {
+    const { runAsConsultation } = await import('@omadia/orchestrator');
+    const broker = createConsultationBroker({
+      store: fakeStore({ grant: grant() }).store,
+      getRegistry: () => new Map([['anna', A()], ['ben', colleague({ id: 'b', slug: 'ben' })]]),
+    });
+    const scope = {
+      agentSlug: 'carl',
+      fromAgentSlug: 'dora',
+      fromTurnId: 't',
+      callId: 'c',
+      allowedPluginIds: new Set<string>(),
+      memoryAccess: 'none' as const,
+      result: {},
+    };
+    const out = await inTurn(() => runAsConsultation(scope, () => broker.consult(request())));
+    assert.equal(out.kind === 'refused' && out.reason, 'depth');
+  });
+
+  it('a colleague past its deadline gets no tool any more', async () => {
+    let captured: ReturnType<typeof currentConsultation>;
+    const slow: ConsultRegistryEntry = {
+      ...colleague({ id: 'b', slug: 'ben' }),
+      built: {
+        bundle: {
+          agent: {
+            chat: () => {
+              captured = currentConsultation();
+              return new Promise<SemanticAnswer>(() => undefined);
+            },
+          },
+        },
+      },
+    };
+    const broker = createConsultationBroker({
+      store: fakeStore({ grant: grant({ allowedCapabilities: ['@omadia/crm'] }) }).store,
+      getRegistry: () => new Map([['anna', A(['@omadia/crm'])], ['ben', { ...slow, plugins: [{ pluginId: '@omadia/crm', enabled: true }] }]]),
+      timeoutMs: 20,
+    });
+    const keepAlive = setInterval(() => undefined, 1_000);
+    try {
+      await inTurn(() => broker.consult(request()));
+    } finally {
+      clearInterval(keepAlive);
+    }
+    const { runAsConsultation } = await import('@omadia/orchestrator');
+    assert.ok(captured);
+    assert.equal(captured.result.expired, true);
+    runAsConsultation(captured, () => {
+      assert.equal(consultationAllowsTool('ben', 'crm_search', '@omadia/crm'), false);
+    });
+  });
+
+  it('`none` regenerates without memory and without tools, so no write runs twice', async () => {
+    const seen: Seen[] = [];
+    const broker = createConsultationBroker({
+      store: fakeStore({ grant: grant({ memoryAccess: 'discreet', allowedCapabilities: ['@omadia/crm'] }) }).store,
+      getRegistry: () =>
+        new Map([
+          ['anna', A(['@omadia/crm'])],
+          [
+            'ben',
+            colleague({
+              id: 'b',
+              slug: 'ben',
+              plugins: ['@omadia/crm'],
+              labels: (_a, m) => (m === 'discreet' ? [hrMemory] : []),
+              seen,
+            }),
+          ],
+        ]),
+    });
+    await inTurn(() => broker.consult(request()));
+    assert.equal(seen.length, 2);
+    assert.deepEqual(seen[0]!.allowed, ['@omadia/crm']);
+    assert.deepEqual(seen[1]!.allowed, []);
+    assert.equal(seen[1]!.memoryAccess, 'none');
+  });
+
+  it('`redacted` without a shielded run is only existence, never the full text', async () => {
+    const memoryKnowledge: DiscretionLabel = { kind: 'context', key: 'members:abc', readers: salesReaders };
+    const broker = createConsultationBroker({
+      store: fakeStore({ grant: grant({ memoryAccess: 'discreet', disclosure: { context: 'redacted' } }) }).store,
+      getRegistry: () =>
+        new Map([
+          ['anna', A()],
+          [
+            'ben',
+            colleague({
+              id: 'b',
+              slug: 'ben',
+              name: 'Ben',
+              labels: () => [memoryKnowledge],
+              answer: () => 'Real Name',
+              shielded: false,
+            }),
+          ],
+        ]),
+    });
+    const out = await inTurn(() => broker.consult(request()));
+    assert.ok(out.kind === 'answered');
+    assert.equal(out.contribution.text, 'Ben can help with this, but not here. Best ask Ben directly.');
+  });
+
+  it('criterion 4: the day budget is taken atomically with the ledger entry', async () => {
+    const broker = createConsultationBroker({
+      store: fakeStore({ grant: grant({ maxCallsPerDay: 3 }), today: 3 }).store,
+      getRegistry: () => new Map([['anna', A()], ['ben', colleague({ id: 'b', slug: 'ben' })]]),
+    });
+    const out = await inTurn(() => broker.consult(request()));
+    assert.equal(out.kind === 'refused' && out.reason, 'day_budget');
   });
 
   it('offers only colleagues of active pairs, from a background-refreshed snapshot', async () => {

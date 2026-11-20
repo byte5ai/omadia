@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS agent_consultation_calls (
   to_turn_id    TEXT,
   channel_type  TEXT,
   status        TEXT        NOT NULL DEFAULT 'running',
-  -- Outcome code only (`refused:<reason>`, `existence`, `none` …), never text.
+  -- Outcome code only (`full`, `redacted`, `existence`, `none`, `timeout` …), never text.
+  -- Refused calls are not recorded: only calls that started a run.
   outcome       TEXT,
   started_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   finished_at   TIMESTAMPTZ

@@ -21,8 +21,12 @@ const PARTNERS: DiscussionPartner[] = [
 
 function harness(granted: ReadonlyArray<readonly [string, string]>) {
   const started: Array<{ participants: string[] }> = [];
-  const mutual = (a: string, b: string) =>
-    Promise.resolve(granted.some(([x, y]) => (x === a && y === b) || (x === b && y === a)));
+  // Grants hold in Teams only: the discussion runs in Teams, so the channel
+  // type must reach the check.
+  const mutual = (a: string, b: string, channelType: string) =>
+    Promise.resolve(
+      channelType === 'teams' && granted.some(([x, y]) => (x === a && y === b) || (x === b && y === a)),
+    );
   const capability = createDiscussionsCapability({
     discussions: {
       start: async (input: { participants: string[] }) => {

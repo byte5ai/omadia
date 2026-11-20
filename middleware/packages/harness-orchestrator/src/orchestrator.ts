@@ -268,7 +268,7 @@ import {
   resolvedTurnLabels,
   type DiscretionTurnState,
 } from './discretion/turnLabels.js';
-import { conversationContextKey, once, readersFromAudience } from './discretion/turnSetup.js';
+import { conversationContextKey, once, ownerContextKey, readersFromAudience } from './discretion/turnSetup.js';
 import {
   consultationAllowsTool,
   consultationToolRefusal,
@@ -9865,7 +9865,11 @@ export class Orchestrator {
     // server directly (`mcpGrantToDomainTool`): only a tool WITHOUT an MCP
     // server id runs a sub-agent model.
     const domainTool = this.domainToolsByName.get(name);
-    const asksSubAgentModel = domainTool !== undefined && domainTool.mcpServerId === undefined;
+    // `consult` is the exception: its input goes to a colleague agent, which
+    // cannot resolve this turn's placeholders, so it gets the restored values
+    // (the broker checks first that the colleague may receive them).
+    const asksSubAgentModel =
+      domainTool !== undefined && domainTool.mcpServerId === undefined && domainTool !== this.consultTool;
     const handlerInput =
       asksSubAgentModel || isInternExemptTool(name)
         ? input
@@ -11185,7 +11189,13 @@ export class Orchestrator {
     /** The turn owner's canonical id: the one reader of a turn without origin (web chat, API). */
     ownerId: string | undefined,
   ): Pick<TurnContextValue, 'discretion' | 'consultation'> {
-    const contextKey = conversationContextKey(input.origin);
+    // A turn without origin (web chat, API) is the owner's private context:
+    // what it read must not resurface in a room with other readers.
+    const contextKey =
+      conversationContextKey(input.origin) ?? (ownerId !== undefined ? ownerContextKey(ownerId) : undefined);
+    // A consultation run starts with what the consulting turn had read.
+    const consultation = currentConsultation();
+    const initial = consultation?.agentSlug === this.agentId ? consultation.initialLabels : undefined;
     const resolveReaders = once(async (): Promise<Readers> => {
       if (!input.origin) return ownerId ? readersOf([ownerId]) : UNKNOWN_READERS;
       return readersFromAudience(
@@ -11197,6 +11207,7 @@ export class Orchestrator {
     return {
       discretion: createDiscretionTurnState({
         ...(contextKey !== undefined ? { contextKey } : {}),
+        ...(initial !== undefined ? { initial } : {}),
         resolveReaders,
       }),
       consultation: createConsultationTurnState({
@@ -11221,6 +11232,7 @@ export class Orchestrator {
     if (!scope || scope.agentSlug !== this.agentId) return;
     const ctx = turnContext.current();
     scope.result.labels = await resolvedTurnLabels(ctx?.discretion);
+    scope.result.shielded = ctx?.privacyHandle !== undefined;
     const wire = ctx?.wireView?.answer;
     if (wire !== undefined) scope.result.wireAnswer = wire;
   }
@@ -11255,11 +11267,18 @@ export class Orchestrator {
     }
     if (decision.allowed) return result;
     console.warn(`[discretion] answer of ${this.agentId} withheld: ${violationSummary(decision).join(', ')}`);
+    // Refused as a whole: the result is rebuilt from bookkeeping fields only,
+    // so no attachment, file, card, surface, recall or contribution derived
+    // from the withheld answer goes out with it.
     return {
-      ...result,
       answer: answerWithheldText(locale),
-      // Nothing derived from the withheld answer goes out with it.
-      contributions: undefined,
+      toolCalls: result.toolCalls,
+      iterations: result.iterations,
+      ...(result.turnId !== undefined ? { turnId: result.turnId } : {}),
+      ...(result.privacyReceipt !== undefined ? { privacyReceipt: result.privacyReceipt } : {}),
+      ...(result.answerSource !== undefined ? { answerSource: result.answerSource } : {}),
+      ...(result.memoryUsed !== undefined ? { memoryUsed: result.memoryUsed } : {}),
+      ...(result.directLineSession !== undefined ? { directLineSession: result.directLineSession } : {}),
     };
   }
 

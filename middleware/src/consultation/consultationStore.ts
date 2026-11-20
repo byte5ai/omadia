@@ -90,6 +90,10 @@ function mapGrant(row: GrantDbRow): ConsultationGrant {
   };
 }
 
+const COUNT_CALLS_TODAY_SQL = `SELECT count(*)::int AS n FROM agent_consultation_calls
+  WHERE from_agent_id = $1 AND to_agent_id = $2
+    AND started_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`;
+
 export class ConsultationStore {
   /**
    * `pool` may be late-bound: the kernel's Postgres pool is published by the
@@ -207,43 +211,69 @@ export class ConsultationStore {
     return rows.map((r) => ({ fromSlug: r.from_slug, toSlug: r.to_slug }));
   }
 
-  /** Both directions granted (and all four switches on): what a discussion needs. */
-  async hasMutualGrants(agentIdA: string, agentIdB: string): Promise<boolean> {
+  /**
+   * Both directions granted (and all four switches on), each grant covering
+   * the channel type: what a discussion there needs.
+   */
+  async hasMutualGrants(agentIdA: string, agentIdB: string, channelType: string): Promise<boolean> {
     const { rows } = await this.pool.query<{ n: number }>(
       `SELECT count(*)::int AS n
          FROM agent_consultation_grants g
          JOIN agents f ON f.id = g.from_agent_id AND ${liveAgentRow('f')} AND f.may_consult
          JOIN agents t ON t.id = g.to_agent_id AND ${liveAgentRow('t')} AND t.consultable
-        WHERE (g.from_agent_id = $1 AND g.to_agent_id = $2)
-           OR (g.from_agent_id = $2 AND g.to_agent_id = $1)`,
-      [agentIdA, agentIdB],
+        WHERE ((g.from_agent_id = $1 AND g.to_agent_id = $2)
+            OR (g.from_agent_id = $2 AND g.to_agent_id = $1))
+          AND (g.channel_scope IS NULL OR $3 = ANY(g.channel_scope))`,
+      [agentIdA, agentIdB, channelType],
     );
     return (rows[0]?.n ?? 0) === 2;
   }
 
   /** Calls A made to B since the start of the current UTC day. */
   async countCallsToday(fromAgentId: string, toAgentId: string): Promise<number> {
-    const { rows } = await this.pool.query<{ n: number }>(
-      `SELECT count(*)::int AS n FROM agent_consultation_calls
-        WHERE from_agent_id = $1 AND to_agent_id = $2
-          AND started_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
-      [fromAgentId, toAgentId],
-    );
+    const { rows } = await this.pool.query<{ n: number }>(COUNT_CALLS_TODAY_SQL, [fromAgentId, toAgentId]);
     return rows[0]?.n ?? 0;
   }
 
+  /**
+   * Record a call when the pair's day budget still has room; false when it
+   * is spent. Count and insert run in one transaction under a transaction-
+   * scoped advisory lock on the pair, so concurrent calls cannot both take
+   * the last slot (transaction-scoped: safe behind a transaction pooler).
+   */
   async startCall(call: {
     readonly id: string;
     readonly fromAgentId: string;
     readonly toAgentId: string;
     readonly fromTurnId: string;
     readonly channelType?: string;
-  }): Promise<void> {
-    await this.pool.query(
-      `INSERT INTO agent_consultation_calls (id, from_agent_id, to_agent_id, from_turn_id, channel_type)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [call.id, call.fromAgentId, call.toAgentId, call.fromTurnId, call.channelType ?? null],
-    );
+    readonly maxCallsPerDay: number;
+  }): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended('consultation:' || $1 || ':' || $2, 0))", [
+        call.fromAgentId,
+        call.toAgentId,
+      ]);
+      const { rows } = await client.query<{ n: number }>(COUNT_CALLS_TODAY_SQL, [call.fromAgentId, call.toAgentId]);
+      if ((rows[0]?.n ?? 0) >= call.maxCallsPerDay) {
+        await client.query('ROLLBACK');
+        return false;
+      }
+      await client.query(
+        `INSERT INTO agent_consultation_calls (id, from_agent_id, to_agent_id, from_turn_id, channel_type)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [call.id, call.fromAgentId, call.toAgentId, call.fromTurnId, call.channelType ?? null],
+      );
+      await client.query('COMMIT');
+      return true;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async finishCall(

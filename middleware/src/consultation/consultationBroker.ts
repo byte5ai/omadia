@@ -8,13 +8,16 @@
  *  2. A's `may_consult`, B's `consultable`, the directed grant A→B, its
  *     channel scope;
  *  3. the audience floor is active for A's turn;
- *  4. the per-turn and per-day budgets.
+ *  4. the per-turn and per-day budgets (the day budget atomically with the
+ *     call ledger), depth 1.
  * Then B runs its ordinary turn inside the consultation scope: tools only from
  * `grant.allowed_capabilities ∩ B's grants ∩ A's grants`, memory only when
  * `discreet` (and then bounded by A's audience), nothing written, no further
- * consultation, a timeout. B's output is checked by the discretion rule for
- * A and A's audience and capped by the grant's disclosure levels (§5.11);
- * a contribution capped at `none` is regenerated from permitted context only,
+ * consultation, a timeout. A's request is checked first: B starts with A's
+ * labels and receives them only when B's grants and the room cover them.
+ * B's output is checked by the discretion rule for A and A's audience and
+ * capped by the grant's disclosure levels (§5.11); a contribution capped at
+ * `none` is regenerated from permitted context only (no memory, no tools),
  * so the visible answer cannot tell "withheld" from "does not exist".
  *
  * Cost: B's model calls are recorded under B's own turn id; the call ledger
@@ -28,6 +31,7 @@ import { withoutFoldedAiDisclosure, type ChatTurnInput, type SemanticAnswer } fr
 import {
   archetypeOmits,
   checkFlow,
+  currentConsultation,
   decideDisclosure,
   existenceText,
   labelSummary,
@@ -75,7 +79,7 @@ export interface ConsultRegistry {
 
 export type ConsultationBrokerStore = Pick<
   ConsultationStore,
-  'getSwitches' | 'getGrant' | 'countCallsToday' | 'startCall' | 'finishCall' | 'listActivePairs'
+  'getSwitches' | 'getGrant' | 'startCall' | 'finishCall' | 'listActivePairs'
 >;
 
 export interface ConsultationBrokerDeps {
@@ -169,7 +173,12 @@ export function createConsultationBroker(deps: ConsultationBrokerDeps): Consulta
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new ConsultTimeoutError()), timeoutMs);
+      timer = setTimeout(() => {
+        // B's run cannot be aborted: from now on it gets no tool, and its
+        // answer is discarded (see `consultationAllowsTool`).
+        scope.result.expired = true;
+        reject(new ConsultTimeoutError());
+      }, timeoutMs);
       timer.unref?.();
     });
     // A clean outer scope: A's roster and MCP caller identity carry over (B
@@ -200,6 +209,11 @@ export function createConsultationBroker(deps: ConsultationBrokerDeps): Consulta
     | { ok: false; outcome: ConsultOutcome }
     | { ok: true; from: ConsultRegistryEntry; to: ConsultRegistryEntry; grant: ConsultationGrant; channelType: string }
   > {
+    // Depth 1, enforced here as well as by the tool: no consultation starts
+    // inside a consultation run, whichever orchestrator asks.
+    if (currentConsultation()) {
+      return { ok: false, outcome: refused('depth', 'a consultation cannot start inside another consultation.') };
+    }
     const registry = deps.getRegistry();
     if (!registry) return { ok: false, outcome: refused('unavailable', 'the agent registry is not available.') };
     const from = registry.get(request.fromAgentSlug);
@@ -248,10 +262,31 @@ export function createConsultationBroker(deps: ConsultationBrokerDeps): Consulta
         outcome: refused('turn_budget', `you reached the limit of consultations of ${to.agent.slug} for this turn.`),
       };
     }
-    if ((await deps.store.countCallsToday(from.agent.id, to.agent.id)) >= grant.maxCallsPerDay) {
+    // Spec §5.11 — the request carries everything A's turn has read: B may
+    // receive it only when B's own grants cover it and the room may know it.
+    const inbound = checkFlow(request.labels, {
+      kind: 'agent',
+      agentId: to.agent.id,
+      grantedSystems: grantedSystems(to),
+      ...(request.contextKey !== undefined ? { contextKey: request.contextKey } : {}),
+      readers: request.readers,
+    });
+    if (!inbound.allowed) {
+      deps.audit?.({
+        turnId: request.fromTurnId,
+        agentSlug: from.agent.slug,
+        egress: 'agent',
+        target: to.agent.slug,
+        allowed: false,
+        labels: labelSummary(request.labels),
+        violations: violationSummary(inbound),
+      });
       return {
         ok: false,
-        outcome: refused('day_budget', `you reached today's limit of consultations of ${to.agent.slug}.`),
+        outcome: refused(
+          'discretion',
+          `this turn holds information ${to.agent.slug} may not receive, so it cannot be consulted here.`,
+        ),
       };
     }
     return { ok: true, from, to, grant, channelType };
@@ -305,14 +340,18 @@ export function createConsultationBroker(deps: ConsultationBrokerDeps): Consulta
       const toSpeaker = speakerOf(to);
       const locale = to.agent.identityLanguage ?? undefined;
       const callId = randomUUID();
-      const id = `c${String(request.callsThisTurn + 1)}`;
-      await deps.store.startCall({
+      const id = `c${String(request.sequence)}`;
+      const started = await deps.store.startCall({
         id: callId,
         fromAgentId: from.agent.id,
         toAgentId: to.agent.id,
         fromTurnId: request.fromTurnId,
         channelType,
+        maxCallsPerDay: grant.maxCallsPerDay,
       });
+      if (!started) {
+        return refused('day_budget', `you reached today's limit of consultations of ${to.agent.slug}.`);
+      }
 
       const fromSystems = grantedSystems(from);
       const attempt = async (allowed: ReadonlySet<string>, memoryAccess: 'none' | 'discreet') => {
@@ -323,6 +362,7 @@ export function createConsultationBroker(deps: ConsultationBrokerDeps): Consulta
           callId,
           allowedPluginIds: allowed,
           memoryAccess,
+          initialLabels: request.labels,
           result: {},
         };
         const answer = await runColleague(to, scope, request, fromSpeaker);
@@ -357,7 +397,8 @@ export function createConsultationBroker(deps: ConsultationBrokerDeps): Consulta
           answer,
           labels,
           outcome,
-          wireAnswer: scope.result.wireAnswer,
+          // The masked view exists only when B's shield masked the answer.
+          wireAnswer: scope.result.shielded === true ? scope.result.wireAnswer : undefined,
           toTurnId: typeof turnId === 'string' ? turnId : undefined,
         };
       };
@@ -382,10 +423,10 @@ export function createConsultationBroker(deps: ConsultationBrokerDeps): Consulta
         const envelope = consultationEnvelope(grant, from, to);
         let run = await attempt(envelope, grant.memoryAccess);
         if (run.outcome.kind === 'none') {
-          // Regenerate from permitted context only: no memory, and none of the
-          // systems A could not reach itself (the envelope already is a subset
-          // of A's grants, so only memory and classified data can be new).
-          run = await attempt(envelope, 'none');
+          // Regenerate from permitted context only: no memory and no tools.
+          // Without tools the second run cannot repeat a write the first one
+          // made, and it sees nothing beyond A's request.
+          run = await attempt(new Set<string>(), 'none');
           if (run.outcome.kind !== 'deliver') {
             await finish('withheld', 'none', run.toTurnId);
             return answered(
@@ -412,7 +453,16 @@ export function createConsultationBroker(deps: ConsultationBrokerDeps): Consulta
         // The contribution carries B's words, not B's AI-disclosure sentence:
         // A's message is marked once, by A's own disclosure (spec §5.14).
         const userView = withoutFoldedAiDisclosure(run.answer.text, run.answer.aiDisclosure);
-        const text = run.outcome.view === 'redacted' ? (run.wireAnswer ?? userView) : userView;
+        if (run.outcome.view === 'redacted' && run.wireAnswer === undefined) {
+          // No masked view (B ran without a shield): `redacted` must not
+          // become `full`, so A learns only that B can help.
+          await finish('withheld', 'existence', run.toTurnId);
+          return answered(
+            { id, speaker: toSpeaker, text: existenceText(toSpeaker.displayName, locale), status: 'delivered' },
+            request.labels,
+          );
+        }
+        const text = run.outcome.view === 'redacted' ? (run.wireAnswer ?? '') : userView;
         if (!text.trim()) {
           await finish('failed', 'empty', run.toTurnId);
           return answered(

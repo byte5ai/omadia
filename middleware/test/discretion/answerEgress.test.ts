@@ -21,6 +21,7 @@ import { NativeToolRegistry } from '../../packages/harness-orchestrator/src/nati
 import { Orchestrator, type OrchestratorOptions } from '../../packages/harness-orchestrator/src/orchestrator.js';
 import { turnContext } from '../../packages/harness-orchestrator/src/turnContext.js';
 import { readersOf, unionLabels, type LabelSet } from '../../packages/harness-orchestrator/src/discretion/labels.js';
+import { createDiscretionTurnState } from '../../packages/harness-orchestrator/src/discretion/turnLabels.js';
 import type { DiscretionAuditEntry, DiscretionPort } from '../../packages/harness-orchestrator/src/discretion/port.js';
 import { scriptedModel, text } from '../_helpers/replayTurnFixture.js';
 
@@ -129,5 +130,42 @@ describe('the answer egress (criterion 18)', () => {
     const result = await turnContext.runWithChatParticipants(participants as never, () => orchestrator.chat(input));
     assert.match(result.text, /Paula/);
     assert.match(logged[0]!.assistantAnswer, /Paula/);
+  });
+
+  it('a withheld answer goes out without anything derived from it', async () => {
+    const narrow = unionLabels([{ kind: 'context', key: 'telegram:dm-ab', readers: readersOf(['a', 'b']) }]);
+    const { orchestrator } = build(narrow);
+    const discretion = createDiscretionTurnState({
+      contextKey: 'telegram:group-1',
+      resolveReaders: async () => readersOf(['a', 'b', 'c']),
+      initial: narrow,
+    });
+    const full = {
+      answer: SECRET,
+      toolCalls: 2,
+      iterations: 3,
+      turnId: 'turn-new',
+      attachments: [{ kind: 'diagram' }],
+      fileAttachments: [{ name: 'export.xlsx' }],
+      followUpOptions: [{ label: SECRET }],
+      pendingUserChoice: { question: SECRET },
+      surface: { kind: 'canvas' },
+      recalled: { plans: [] },
+      contributions: [{ id: 'c1', text: SECRET }],
+    };
+    const guarded = (await turnContext.run({ turnId: 'turn-new', turnDate: '2026-11-20', discretion }, () =>
+      (orchestrator as unknown as { guardAnswerEgress(r: unknown, l: string): Promise<Record<string, unknown>> })
+        .guardAnswerEgress(full, 'de'),
+    )) as Record<string, unknown>;
+    assert.equal(JSON.stringify(guarded).includes('Paula'), false);
+    assert.deepEqual(Object.keys(guarded).sort(), ['answer', 'iterations', 'toolCalls', 'turnId']);
+  });
+
+  it('a web-chat turn (no origin) keeps its owner as its one reader', async () => {
+    const { orchestrator, persisted } = build(unionLabels([]));
+    await orchestrator.chat({ userMessage: 'Notiz für mich', sessionScope: 'web-a', userId: 'a' } as ChatTurnInput);
+    const kept = persisted.get('turn-new');
+    const owner = kept?.labels.find((l) => l.kind === 'context');
+    assert.deepEqual(owner, { kind: 'context', key: 'owner:a', readers: readersOf(['a']) });
   });
 });

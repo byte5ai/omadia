@@ -2217,6 +2217,13 @@ export function createOperatorAgentsRouter(
         ...(body.status ? { status: body.status } : {}),
         archetype,
       });
+      // Spec 2042 §5.11 — new agents start in `members` (migration 0099). An
+      // archetype without memory (a facilitator) has no memory to scope, and
+      // the context-memory route refuses every mode but `off` for it: keep
+      // the stored mode consistent with that.
+      if (archetypeOmits(created, 'memory') && normalizeContextMemoryMode(created.contextMemory) !== 'off') {
+        await live.store.updateAgent(created.id, { contextMemory: 'off' });
+      }
       // #2043 — a facilitator gets the engine with its creation; nobody has
       // to grant it by hand. No engine bound yet: it is attached on install.
       await attachEngineToFacilitator(live.store, created, engineSources());

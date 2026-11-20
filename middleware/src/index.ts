@@ -1469,6 +1469,8 @@ async function main(): Promise<void> {
   });
   serviceRegistry.provide('discretion', discretionStore);
   serviceRegistry.provide('consultation', consultationBroker);
+  // The offering snapshot is read once the pool exists (after plugin
+  // activation, below); until then `consult` is simply not offered.
 
   // Phase B (B1) — publish `pluginCapabilities@1` so the orchestrator's
   // first-boot onboarding (`ensureFallbackAgent`) can hydrate the fallback
@@ -2664,6 +2666,11 @@ async function main(): Promise<void> {
   }
   const graphPool = serviceRegistry.get<Pool>('graphPool');
   const graphTenantId = process.env['GRAPH_TENANT_ID'] ?? 'default';
+
+  // Spec 2042 §5.4 — the pool exists now: read the consultation offering
+  // once, so `consult` is offered from the first turn (not only after the
+  // first background refresh). A failure keeps the empty snapshot.
+  if (graphPool) await consultationBroker.refresh();
 
   // #575 — hydrate the forward reference published before activation.
   //
@@ -5370,11 +5377,15 @@ async function main(): Promise<void> {
         peerGate,
         // Spec 2042 §5.4 — and every two of them hold consultation grants for
         // each other (same grants as `consult`).
-        mutualGrant: async (a, b) => {
+        mutualGrant: async (a, b, channelType) => {
           const registry = getRegistry();
           const left = registry?.get(a)?.agent.id;
           const right = registry?.get(b)?.agent.id;
-          return left !== undefined && right !== undefined && consultationStore.hasMutualGrants(left, right);
+          return (
+            left !== undefined &&
+            right !== undefined &&
+            consultationStore.hasMutualGrants(left, right, channelType)
+          );
         },
         log: (msg: string) => console.log(msg),
       }),

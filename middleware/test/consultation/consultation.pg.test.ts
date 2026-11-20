@@ -120,21 +120,37 @@ describe('consultation and discretion stores (pg, migrations 0097–0099)', { sk
     assert.deepEqual(await consultation.listActivePairs(), []);
     await consultation.setSwitches(ids['ben']!, { consultable: true });
     assert.deepEqual(await consultation.listActivePairs(), [{ fromSlug: 'anna', toSlug: 'ben' }]);
-    assert.equal(await consultation.hasMutualGrants(ids['anna']!, ids['ben']!), false);
+    assert.equal(await consultation.hasMutualGrants(ids['anna']!, ids['ben']!, 'teams'), false);
     await consultation.upsertGrant(ids['ben']!, ids['anna']!, {}, 'op');
-    assert.equal(await consultation.hasMutualGrants(ids['anna']!, ids['ben']!), false, 'ben may not consult yet');
+    assert.equal(await consultation.hasMutualGrants(ids['anna']!, ids['ben']!, 'teams'), false, 'ben may not consult yet');
     await consultation.setSwitches(ids['ben']!, { mayConsult: true });
-    assert.equal(await consultation.hasMutualGrants(ids['ben']!, ids['anna']!), true);
+    assert.equal(await consultation.hasMutualGrants(ids['ben']!, ids['anna']!, 'teams'), true);
+    // A grant scoped to Teams does not allow a discussion on Slack.
+    await consultation.upsertGrant(ids['ben']!, ids['anna']!, { channelScope: ['teams'] }, 'op');
+    assert.equal(await consultation.hasMutualGrants(ids['ben']!, ids['anna']!, 'slack'), false);
+    assert.equal(await consultation.hasMutualGrants(ids['ben']!, ids['anna']!, 'teams'), true);
   });
 
   it('the call ledger links both turns and counts the day', async () => {
     assert.equal(await consultation.countCallsToday(ids['anna']!, ids['ben']!), 0);
     const id = '6a1f1c8e-0000-4000-8000-000000000001';
-    await consultation.startCall({ id, fromAgentId: ids['anna']!, toAgentId: ids['ben']!, fromTurnId: 'turn-a', channelType: 'teams' });
+    const call = { fromAgentId: ids['anna']!, toAgentId: ids['ben']!, fromTurnId: 'turn-a', channelType: 'teams' };
+    assert.equal(await consultation.startCall({ id, ...call, maxCallsPerDay: 2 }), true);
     await consultation.finishCall(id, { status: 'delivered', outcome: 'full', toTurnId: 'turn-b' });
     assert.equal(await consultation.countCallsToday(ids['anna']!, ids['ben']!), 1);
     const { rows } = await pool.query('SELECT from_turn_id, to_turn_id, status, outcome FROM agent_consultation_calls WHERE id = $1', [id]);
     assert.deepEqual(rows[0], { from_turn_id: 'turn-a', to_turn_id: 'turn-b', status: 'delivered', outcome: 'full' });
+  });
+
+  it('the day budget holds under concurrent calls', async () => {
+    const call = { fromAgentId: ids['carl']!, toAgentId: ids['ben']!, fromTurnId: 'turn-c' };
+    const started = await Promise.all(
+      [2, 3, 4, 5, 6].map((n) =>
+        consultation.startCall({ id: `6a1f1c8e-0000-4000-8000-00000000000${String(n)}`, ...call, maxCallsPerDay: 2 }),
+      ),
+    );
+    assert.equal(started.filter(Boolean).length, 2);
+    assert.equal(await consultation.countCallsToday(ids['carl']!, ids['ben']!), 2);
   });
 
   it('a deleted agent drops out of every pair', async () => {

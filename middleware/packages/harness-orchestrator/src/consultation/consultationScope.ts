@@ -31,6 +31,12 @@ export interface ConsultationRunScope {
   readonly allowedPluginIds: ReadonlySet<string>;
   readonly memoryAccess: ConsultationMemoryAccess;
   /**
+   * Spec 2042 §5.11 — what A's turn had read when it asked: B's turn starts
+   * with these labels, so nothing A may not send somewhere can leave through
+   * B (an integration write of B is checked against A's labels too).
+   */
+  readonly initialLabels?: LabelSet;
+  /**
    * Filled by B's orchestrator when its turn ends: the turn's label set
    * (everything B read, its conversation included) and B's answer as its
    * model wrote it, before the privacy shield restored values for the user
@@ -42,6 +48,13 @@ export interface ConsultationRunScope {
 export interface ConsultationRunResult {
   labels?: LabelSet;
   wireAnswer?: string;
+  /** True when B's turn ran with a privacy shield (the wire answer is masked). */
+  shielded?: boolean;
+  /**
+   * Set by the broker when B's deadline passed: B's run cannot be aborted,
+   * so from then on it gets no tool at all and its answer is discarded.
+   */
+  expired?: boolean;
 }
 
 const consultationRuns = processWideStore<ConsultationRunScope>('omadia.consultation.run');
@@ -72,6 +85,8 @@ export function consultationAllowsTool(
 ): boolean {
   const scope = currentConsultation();
   if (!scope || scope.agentSlug !== agentSlug) return true;
+  // Past the deadline the answer is discarded: nothing may run any more.
+  if (scope.result.expired === true) return false;
   if (toolName.startsWith('v4_')) return true;
   // B writes nothing to its memory from a consultation.
   if (toolName === 'memory') return false;

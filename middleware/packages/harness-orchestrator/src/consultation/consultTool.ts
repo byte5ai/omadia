@@ -37,8 +37,14 @@ export interface ConsultRequest {
   readonly fromTurnId: string;
   readonly toAgentSlug: string;
   readonly request: string;
-  /** How many consultations A already made in this turn (per-turn budget). */
+  /**
+   * How many consultations of this turn ran or are running before this one
+   * (per-turn budget). Reserved synchronously by the tool, so calls the model
+   * makes in parallel each see the slots of the others.
+   */
   readonly callsThisTurn: number;
+  /** 1-based number of this call in the turn; the contribution id is `c<sequence>`. */
+  readonly sequence: number;
   /** A's turn: where it runs and for whom. B runs with the same origin. */
   readonly origin?: TurnOrigin;
   readonly userId?: string;
@@ -60,6 +66,7 @@ export type ConsultRefusalReason =
   | 'turn_budget'
   | 'day_budget'
   | 'no_audience_floor'
+  | 'discretion'
   | 'unavailable';
 
 export type ConsultOutcome =
@@ -83,7 +90,10 @@ export interface ConsultationTurnState {
   readonly origin?: TurnOrigin;
   readonly userId?: string;
   readonly contributions: Contribution[];
+  /** Calls that ran or are running (the per-turn budget); a refusal gives its slot back. */
   calls: number;
+  /** Calls ever made in the turn; numbers contributions, never reused. */
+  sequence: number;
 }
 
 export function createConsultationTurnState(opts: {
@@ -95,6 +105,7 @@ export function createConsultationTurnState(opts: {
     ...(opts.userId ? { userId: opts.userId } : {}),
     contributions: [],
     calls: 0,
+    sequence: 0,
   };
 }
 
@@ -176,24 +187,33 @@ export function createConsultTool(port: ConsultationPort, agentSlug: string): Do
         );
       }
       const state = ctx.consultation;
+      // Reserve the slot before the first await: the model may call `consult`
+      // several times in one step, and those calls run in parallel.
+      const callsThisTurn = state?.calls ?? 0;
+      const sequence = (state?.sequence ?? 0) + 1;
+      if (state) {
+        state.calls += 1;
+        state.sequence = sequence;
+      }
       const discretion = currentDiscretion();
       const outcome = await port.consult({
         fromAgentSlug: agentSlug,
         fromTurnId: ctx.turnId,
         toAgentSlug: agent.trim(),
         request: request.trim(),
-        callsThisTurn: state?.calls ?? 0,
+        callsThisTurn,
+        sequence,
         ...(state?.origin ? { origin: state.origin } : {}),
         ...(state?.userId ? { userId: state.userId } : {}),
         labels: await resolvedTurnLabels(discretion),
         ...(discretion?.contextKey !== undefined ? { contextKey: discretion.contextKey } : {}),
         readers: discretion ? await discretion.resolveReaders() : UNKNOWN_READERS,
       });
-      if (outcome.kind === 'refused') return refusalText(outcome.message);
-      if (state) {
-        state.calls += 1;
-        state.contributions.push(outcome.contribution);
+      if (outcome.kind === 'refused') {
+        if (state) state.calls -= 1;
+        return refusalText(outcome.message);
       }
+      state?.contributions.push(outcome.contribution);
       // A now knows what B contributed: its labels join A's turn.
       addTurnLabels(outcome.labels);
       return contributionModelText(outcome.contribution);

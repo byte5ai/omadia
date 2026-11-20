@@ -11,13 +11,21 @@ import type { TurnAudience } from '../turnAudience.js';
 
 /**
  * The context key of a turn's conversation, or undefined for a turn without
- * an origin (web chat, API, internal runs): those carry no conversation label.
+ * an origin (web chat, API, internal runs); see {@link ownerContextKey}.
  * Prefers the id the channel stated; falls back to the scope it gave.
  */
 export function conversationContextKey(origin: TurnOrigin | undefined): string | undefined {
   if (!origin) return undefined;
   const native = origin.channelConversationId ?? formatSessionScope(origin.scope);
   return `${origin.channelType}:${native}`;
+}
+
+/**
+ * The context key of a turn without origin that has an owner (web chat, API):
+ * the owner's private context, whose one reader is the owner.
+ */
+export function ownerContextKey(ownerId: string): string {
+  return `owner:${ownerId}`;
 }
 
 export function readersFromAudience(audience: TurnAudience): Readers {

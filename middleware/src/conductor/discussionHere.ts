@@ -203,11 +203,12 @@ export function createDiscussionsCapability(deps: {
   /**
    * Spec 2042 §5.4 "One authorization" — two agents may discuss only when
    * each holds a consultation grant for the other (and all four switches are
-   * on), on top of the peer gate. Applied between the opener and every
-   * candidate, and between every two named partners. Absent = no grant check
-   * (a test harness without a store); production always wires it.
+   * on), each covering this channel type, on top of the peer gate. Applied
+   * between the opener and every candidate, and between every two named
+   * partners. Absent = no grant check (a test harness without a store);
+   * production always wires it.
    */
-  mutualGrant?: (agentSlugA: string, agentSlugB: string) => Promise<boolean>;
+  mutualGrant?: (agentSlugA: string, agentSlugB: string, channelType: string) => Promise<boolean>;
   log?: (msg: string) => void;
 }): ConductorDiscussionsCapability {
   /** The turn's conversation + the agent that answered it, or a typed refusal. */
@@ -239,7 +240,7 @@ export function createDiscussionsCapability(deps: {
     const verdicts = await Promise.all(
       present.map(async (p) => {
         if (gate && !(await gate(turn.channelType, turn.conversationId, p.slug))) return false;
-        return mutual ? mutual(opener, p.slug).catch(() => false) : true;
+        return mutual ? mutual(opener, p.slug, turn.channelType).catch(() => false) : true;
       }),
     );
     return present.filter((_, i) => verdicts[i] === true);
@@ -284,7 +285,7 @@ export function createDiscussionsCapability(deps: {
       if (deps.mutualGrant) {
         for (const [i, a] of resolved.entries()) {
           for (const b of resolved.slice(i + 1)) {
-            if (!(await deps.mutualGrant(a, b).catch(() => false))) {
+            if (!(await deps.mutualGrant(a, b, turn.channelType).catch(() => false))) {
               throw new DiscussionNotGrantedError(a, b);
             }
           }

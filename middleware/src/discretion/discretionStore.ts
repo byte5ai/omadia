@@ -16,6 +16,7 @@ import {
   parseLabelSet,
   readersOf,
   serializeLabelSet,
+  UNKNOWN_READERS,
   type DiscretionAuditEntry,
   type DiscretionPort,
   type IntegrationDeclaration,
@@ -26,6 +27,17 @@ import {
 
 const SNAPSHOT_TTL_MS = 10_000;
 const MAX_IDS_PER_LOOKUP = 500;
+
+/**
+ * What every integration counts as while the declarations were never read
+ * (no database yet, or the first read failed): restricted, readable by
+ * nobody known and accepting nothing. Fails closed: an operator's
+ * `restricted` must not read as `internal` in a boot window.
+ */
+const NOT_LOADED: IntegrationDeclaration = {
+  sensitivity: 'restricted',
+  readership: { readers: UNKNOWN_READERS, acceptsSystems: [], acceptsClassifications: [] },
+};
 
 interface ReadershipDbRow {
   integration: string;
@@ -82,6 +94,7 @@ function mapReadership(row: ReadershipDbRow): IntegrationReadershipRow {
 export class DiscretionStore implements DiscretionPort {
   private snapshot = new Map<string, IntegrationDeclaration>();
   private snapshotAt = 0;
+  private loaded = false;
   private refreshing: Promise<void> | undefined;
 
   constructor(
@@ -100,6 +113,7 @@ export class DiscretionStore implements DiscretionPort {
       const rows = await this.listReaderships();
       this.snapshot = new Map(rows.map((r) => [r.integration, r.declaration]));
       this.snapshotAt = Date.now();
+      this.loaded = true;
     } catch (err) {
       this.log(`[discretion] declaration refresh failed, keeping the last snapshot: ${String(err)}`);
     }
@@ -113,6 +127,7 @@ export class DiscretionStore implements DiscretionPort {
       // The first read waits; later ones answer from the snapshot meanwhile.
       if (this.snapshotAt === 0) await this.refreshing;
     }
+    if (!this.loaded) return NOT_LOADED;
     return this.snapshot.get(integration);
   }
 
@@ -120,11 +135,14 @@ export class DiscretionStore implements DiscretionPort {
     const pool = this.pool;
     const out = new Map<string, LabelSet>();
     if (!pool || ids.length === 0) return out;
-    const { rows } = await pool.query<{ subject_id: string; labels: unknown }>(
-      'SELECT subject_id, labels FROM discretion_labels WHERE subject_kind = $1 AND subject_id = ANY($2::text[])',
-      [kind, ids.slice(0, MAX_IDS_PER_LOOKUP)],
-    );
-    for (const row of rows) out.set(row.subject_id, parseLabelSet(row.labels));
+    // In chunks: every id is looked up, none is silently dropped.
+    for (let start = 0; start < ids.length; start += MAX_IDS_PER_LOOKUP) {
+      const { rows } = await pool.query<{ subject_id: string; labels: unknown }>(
+        'SELECT subject_id, labels FROM discretion_labels WHERE subject_kind = $1 AND subject_id = ANY($2::text[])',
+        [kind, ids.slice(start, start + MAX_IDS_PER_LOOKUP)],
+      );
+      for (const row of rows) out.set(row.subject_id, parseLabelSet(row.labels));
+    }
     return out;
   }
 

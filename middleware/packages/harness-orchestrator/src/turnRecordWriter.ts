@@ -39,8 +39,8 @@ export interface TurnRecordWriterDeps {
   /**
    * Spec 2042 §5.11 — called once a row is written, with the discretion state
    * of the turn that produced it: the turn keeps its label set. Errors are
-   * logged; a failed label write never fails the turn (the next recall of an
-   * unlabelled turn reads it as carrying no labels beyond its owners).
+   * logged; a failed label write never fails the turn. Known gap: a later
+   * recall of such an unlabelled turn adds no labels (documented residual).
    */
   readonly onTurnWritten?: (turnId: string, discretion: DiscretionTurnState | undefined) => Promise<void>;
   /**
