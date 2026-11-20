@@ -23,7 +23,7 @@ import { describe, it } from 'node:test';
 
 import type { ChatStreamEvent, ChatTurnInput } from '@omadia/channel-sdk';
 import type { LlmProvider, LlmRequest, LlmResponse, LlmStreamEvent } from '@omadia/llm-provider';
-import { NativeToolRegistry, Orchestrator, turnContext } from '@omadia/orchestrator';
+import { NativeToolRegistry, Orchestrator, turnContext, withIdentityRules } from '@omadia/orchestrator';
 
 type OrchestratorOptions = ConstructorParameters<typeof Orchestrator>[0];
 
@@ -229,6 +229,30 @@ for (const path of ['stream', 'runTurn'] as const) {
     });
   });
 }
+
+describe("#2051 working modes under S1's prompt identity (#2056)", () => {
+  // The identity as the kernel builds it since #2056: the agent's own text
+  // plus the identity rules (who it is, that it never speaks as another
+  // agent). A working mode goes beneath all of it and changes none of it.
+  const RULED = withIdentityRules(IDENTITY);
+  for (const path of ['stream', 'runTurn'] as const) {
+    it(`keeps the identity and its rules verbatim and adds the mode beneath them (${path})`, async () => {
+      const seen: Recorded[] = [];
+      const o = orchestrator(recordingProvider('anthropic', seen, 'angebote'), {
+        personaSkills: [MODE],
+        assistantIdentity: RULED,
+      });
+      if (path === 'stream') await streamTurn(o, seen);
+      else await o.runTurn(INPUT);
+      const prompt = stablePrompt(seen);
+      assert.notEqual(RULED, IDENTITY, 'the rules add to the identity');
+      assert.ok(
+        prompt.startsWith(`${RULED}\n\n${MODE_SECTION}\n\n`),
+        `unexpected prompt head:\n${prompt.slice(0, RULED.length + MODE_SECTION.length + 40)}`,
+      );
+    });
+  }
+});
 
 describe('#2051 working modes — the answer keeps the agent (stream)', () => {
   it('emits the mode as a turn_working_mode event, not as a speaker', async () => {
