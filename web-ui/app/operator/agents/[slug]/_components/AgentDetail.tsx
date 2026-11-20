@@ -16,6 +16,7 @@ import {
 import { humanizeApiError } from '../../_components/AgentsDashboard';
 import { useFacilitatorRefusalMessage } from '../../_components/useFacilitatorCopy';
 import { PluginsDnd } from '../../_components/PluginsDnd';
+import { AgentChannelIdentities } from './AgentChannelIdentities';
 import { AgentContextMemory } from './AgentContextMemory';
 import { AgentDetailTabs } from './AgentDetailTabs';
 import { AgentIdentity } from './AgentIdentity';
@@ -282,6 +283,7 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
             <>
               <AgentTeamsIdentity slug={props.agent.slug} />
               <AgentTeamsInstalls slug={props.agent.slug} />
+              <AgentChannelIdentities slug={props.agent.slug} />
             </>
           ),
           plugins: () => pluginsPanel,
