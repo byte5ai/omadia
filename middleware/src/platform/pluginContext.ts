@@ -62,6 +62,8 @@ import {
   SqlMigrationError,
   ServiceNotDeclaredError,
   SharedPoolRefusedError,
+  LlmScopeRequiredError,
+  RawModelServiceRefusedError,
 } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 import type { DomainTool } from '@omadia/orchestrator';
@@ -115,8 +117,10 @@ import {
   createServiceGrantGate,
   declaresServiceMajor,
   legacyServiceGrantsFor,
+  rawModelServiceAccess,
   versionedServiceRef,
 } from './pluginServiceGrants.js';
+import { currentExecutionContext, modelGatewayMode } from '@omadia/usage-telemetry';
 import {
   createSqlGate,
   DEFAULT_MIGRATIONS_DIR,
@@ -355,6 +359,7 @@ export function createPluginContext(
     pluginId: agentId,
   });
 
+  const observedRawModelServices = new Set<string>();
   const services: ServicesAccessor = {
     get<T>(requested: string): T | undefined {
       // #2090 — `name@2` asks for that major, registered under that key. The
@@ -375,6 +380,21 @@ export function createPluginContext(
       // gets no pool: its database is its own schema, through `ctx.sql`.
       if (isArchetypePlugin && POOL_SHAPED_CAPABILITIES.has(name)) {
         throw new SharedPoolRefusedError(agentId, name);
+      }
+      // Spec 2042 §5.10 — raw model clients and provider pools are never a
+      // plugin's: it reaches models through ctx.llm, in its caller's context.
+      const modelAccess = rawModelServiceAccess({
+        name,
+        kind: catalogEntry?.plugin.kind,
+        bundled: catalogEntry?.origin === 'bundled' || catalog.isBundledId(agentId),
+        mode: modelGatewayMode(),
+      });
+      if (modelAccess === 'refuse') throw new RawModelServiceRefusedError(agentId, name);
+      if (modelAccess === 'observe' && !observedRawModelServices.has(name)) {
+        observedRawModelServices.add(name);
+        console.warn(
+          `[model-gateway] plugin '${agentId}' resolved the raw model service '${name}'; it is refused once the gateway enforces (spec 2042 §5.10)`,
+        );
       }
       const resolved = serviceRegistry.get<T>(requested, serviceCaller);
       // Epic #470 C7 / G4 — a pool-shaped capability is BORROWED, not handed
@@ -1025,6 +1045,7 @@ export function createPluginContext(
   // permissions.llm.models_allowed with at least one entry.
   const llm = createLlmAccessor({
     callerAgentId: agentId,
+    requiresScope: isArchetypePlugin,
     permissions: extractLlmPermissions(agentId, catalog),
     serviceRegistry,
     serviceCaller,
@@ -1793,6 +1814,9 @@ function modelMatch(
 
 interface LlmAccessorOptions {
   callerAgentId: string;
+  /** Spec 2042 §5.10 — an archetype plugin's calls run only under an
+   *  execution scope. */
+  requiresScope: boolean;
   permissions: LlmPermissions | undefined;
   serviceRegistry: ServiceRegistry;
   serviceCaller: ServiceCaller;
@@ -1811,6 +1835,7 @@ function createLlmAccessor(
 ): LlmAccessor | undefined {
   const {
     callerAgentId,
+    requiresScope,
     permissions,
     serviceRegistry,
     serviceCaller,
@@ -1856,6 +1881,13 @@ function createLlmAccessor(
   return {
     modelsAllowed: permissions.modelsAllowed,
     async complete(req: LlmCompleteRequest): Promise<LlmCompleteResult> {
+      // Spec 2042 §5.10 — the call runs in its caller's execution context:
+      // the agent turn whose capability called it (charged to and limited by
+      // that agent's envelope, recorded under its turn), or for an archetype
+      // plugin only the execution scope of its process.
+      if (requiresScope && currentExecutionContext()?.kind !== 'execution_scope') {
+        throw new LlmScopeRequiredError(callerAgentId);
+      }
       if (callsUsed >= permissions.callsPerInvocation) {
         throw new LlmBudgetExceededError(
           callerAgentId,

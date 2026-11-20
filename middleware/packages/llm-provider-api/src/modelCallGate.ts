@@ -15,6 +15,20 @@
  * process-wide slot. Without a host that installed one, the gate is a no-op.
  */
 
+/**
+ * Spec 2042 §5.10 — a model call the gateway refuses: no execution context,
+ * an operation the context does not allow, a context past its deadline or
+ * cancelled, or a kill switch. `code` says which. Never retried.
+ */
+export class ModelCallRefusedError extends Error {
+  public readonly code: 'no_context' | 'operation_not_allowed' | 'deadline' | 'cancelled' | 'kill_switch';
+  constructor(code: ModelCallRefusedError['code'], message: string) {
+    super(`model call refused: ${message}`);
+    this.name = 'ModelCallRefusedError';
+    this.code = code;
+  }
+}
+
 /** A model call the active reservation does not cover. Never retried. */
 export class ModelCallNotCoveredError extends Error {
   public readonly limit: number;
@@ -32,19 +46,37 @@ export class ModelCallNotCoveredError extends Error {
 export const MODEL_CALL_GATE_SLOT = Symbol.for('omadia.llm.modelCallGate');
 
 /**
- * Called by a provider before it reaches its backend. Throws
- * {@link ModelCallNotCoveredError} when the host's reservation around the
- * call has no call left; counts the call otherwise.
+ * Spec 2042 §5.10 — the operations of the model gateway. `complete` is text
+ * generation (`complete()` and `stream()` alike), `embed` and `transcribe`
+ * are what embedding and transcription models do, and `run_loop` is a model
+ * and tool loop the provider runs itself (the `claude-cli` turn).
  */
-export function admitModelCall(): void {
-  const check = (globalThis as unknown as Record<symbol, (() => void) | undefined>)[MODEL_CALL_GATE_SLOT];
-  if (typeof check === 'function') check();
+export type ModelOperation = 'complete' | 'embed' | 'transcribe' | 'run_loop';
+
+/**
+ * Called by a provider before it reaches its backend, with the operation it
+ * is about to run. Throws when the host refuses the call: a reservation that
+ * has no call left ({@link ModelCallNotCoveredError}), no execution context,
+ * or an operation the context does not allow. Counts the call otherwise.
+ * A provider compiled against an older contract calls it without an
+ * operation; that reads as `complete`.
+ */
+export function admitModelCall(operation: ModelOperation = 'complete'): void {
+  const check = (globalThis as unknown as Record<symbol, ((op: ModelOperation) => void) | undefined>)[
+    MODEL_CALL_GATE_SLOT
+  ];
+  if (typeof check === 'function') check(operation);
 }
+
+/** Names of every error the gate throws: none of them is retried, and none
+ *  may become a helper's silent fallback. */
+const REFUSAL_NAMES: ReadonlySet<string> = new Set(['ModelCallNotCoveredError', 'ModelCallRefusedError']);
 
 /** Whether `err` is (or was caused by) a refused model call. */
 export function isModelCallNotCovered(err: unknown): boolean {
   for (let e: unknown = err, depth = 0; e !== null && typeof e === 'object' && depth < 5; depth += 1) {
-    if ((e as { name?: unknown }).name === 'ModelCallNotCoveredError') return true;
+    const name = (e as { name?: unknown }).name;
+    if (typeof name === 'string' && REFUSAL_NAMES.has(name)) return true;
     e = (e as { cause?: unknown }).cause;
   }
   return false;

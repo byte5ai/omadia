@@ -628,6 +628,22 @@ export type {
   CliVersionExec,
   CompletionCliArgvOptions,
 } from './cliSpawnGate.js';
+// Spec 2042 §5.10 — every agent's chat agent runs its turns as the model
+// gateway's agent-turn context.
+export { innerChatAgent, withAgentTurnExecution } from './agentTurnExecution.js';
+// Spec 2042 §5.10 — the isolated profile of every CLI spawn.
+export {
+  CLI_PROFILE_INSTRUCTION_FILES,
+  CliProfileNotCleanError,
+  applyCliProfile,
+  assertCliProfileClean,
+  cliProfileDir,
+  cliProfileInstructionFiles,
+  decideCliProfile,
+  setCliProfileDir,
+  type CliProfileDecision,
+  type CliProfileMode,
+} from './cliProfile.js';
 export type {
   CliChatAgentDeps,
   CliChatHooks,

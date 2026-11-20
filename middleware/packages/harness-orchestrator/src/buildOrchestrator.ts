@@ -46,6 +46,7 @@ import type { Pool } from 'pg';
 
 import { MemoryToolHandler } from '@omadia/memory';
 
+import { withAgentTurnExecution } from './agentTurnExecution.js';
 import { ChatSessionStore, chatSessionTailTurns } from './chatSessionStore.js';
 import { wrapChatAgentWithFastPath, type FastPathTriagePort } from './fastPathAgent.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
@@ -667,7 +668,11 @@ export function buildOrchestratorForAgent(
   // neutrality contract) is what the archetype ADDS, not an omission.
   const isFacilitator = config.archetype === FACILITATOR_ARCHETYPE;
   const fastPathDeps = isFacilitator || omits('fast_path') ? undefined : deps.fastPath;
+  // Spec 2042 §5.10 — the outermost layer: everything this agent's chat
+  // agent runs is this agent's turn for the model gateway.
   const withFastPath = (agent: ChatAgent): ChatAgent =>
+    withAgentTurnExecution(withLanes(agent), config.agentId);
+  const withLanes = (agent: ChatAgent): ChatAgent =>
     isFacilitator
       ? wrapFacilitatorAgent(agent, {
           agentSlug: config.agentId,

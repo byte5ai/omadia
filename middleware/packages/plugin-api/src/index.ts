@@ -205,3 +205,6 @@ export * from './executionAuthorization.js';
 
 // #2078 — kernel-issued grants for mail and calendar, bound to execution scopes.
 export * from './executionGrants.js';
+
+// Spec 2042 §5.10 — maintenance runs of the model gateway (`maintenanceRun@1`).
+export * from './maintenanceRun.js';

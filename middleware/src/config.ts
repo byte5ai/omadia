@@ -728,6 +728,28 @@ export const ConfigSchema = z.object({
     .transform((v) => v === 'true')
     .default(false),
   VERIFIER_MODE: z.enum(['shadow', 'enforce']).default('shadow'),
+  // Spec 2042 §5.10 — the model gateway. Every model call runs in an
+  // execution context (agent turn, execution scope, inbound processing,
+  // operator job, maintenance run). `observe` (the expand step) admits a call
+  // outside any context and logs its call site once; `enforce` refuses it.
+  // Operations a context does not allow, deadlines, cancels and kill
+  // switches are refused in both modes.
+  MODEL_GATEWAY_MODE: z.enum(['observe', 'enforce']).default('observe'),
+  // Spec 2042 §5.10 — the instance's daily budgets of the two execution
+  // contexts that belong to no agent: operator jobs (admin functions an
+  // operator starts: issue preview, skill verification, topic regrouping,
+  // bulk promotion, the builders' chats) and maintenance runs (index upkeep
+  // such as the embedding backfill, embed only). Model calls per 24 hours,
+  // summed over every run of the context; each run has its own budget too.
+  OPERATOR_TOOLS_DAILY_MODEL_CALLS: z.coerce.number().int().positive().default(20_000),
+  MAINTENANCE_DAILY_MODEL_CALLS: z.coerce.number().int().positive().default(200_000),
+  // Spec 2042 §5.10 — the isolated profile of every Claude CLI spawn: HOME
+  // and CLAUDE_CONFIG_DIR point to a directory holding only the subscription
+  // login, so no ~/.claude/CLAUDE.md reaches the model. `auto` isolates where
+  // the login can follow (CLAUDE_CONFIG_DIR set, or a login file to take
+  // over); `isolated` always (on a macOS keychain login: sign in once more);
+  // `inherit` keeps the environment as it is.
+  OMADIA_CLI_PROFILE: z.enum(['auto', 'isolated', 'inherit']).default('auto'),
   VERIFIER_MODEL: z.string().min(1).default('claude-haiku-4-5-20251001'),
   VERIFIER_MAX_CLAIMS: z.coerce.number().int().positive().default(20),
   VERIFIER_AMOUNT_TOLERANCE: z.coerce.number().nonnegative().default(0.01),

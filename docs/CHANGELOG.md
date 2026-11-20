@@ -36,6 +36,57 @@ changelog.
 
 ## [Unreleased]
 
+### Added — The model gateway: every model call in one execution context (#2053, epic #2042): S3 expand step
+
+- Spec 2042 §5.10, ADR-0017. The gate every provider already passed
+  (`admitModelCall`, #2090) now takes the operation (`complete`, `embed`,
+  `transcribe`, `run_loop`) and the execution context around the call:
+  agent turn, execution scope, inbound processing, operator job or
+  maintenance run (`@omadia/usage-telemetry` `runInExecutionContext`,
+  `meterModelCalls({ context })`). The agent runtime's turn scope is an
+  agent turn (`currentAgentTurnExecutionContext`), and every agent's chat
+  agent is wrapped so the fast lane before the loop, the verifier after it
+  and the `claude-cli` runtime are that agent's turn too
+  (`withAgentTurnExecution`). `agentTurn@2` runs under its execution scope.
+- `MODEL_GATEWAY_MODE=observe|enforce` (new, default `observe`): a call
+  outside any context is logged once per call site
+  (`[model-gateway] observed a 'complete' call …`) in `observe` and refused in
+  `enforce` (the contract step). Operations a context does not allow (a
+  maintenance run only embeds), deadlines, cancels and kill switches are
+  refused in both modes.
+- Kill switches reach the gate: an instance switch halts every model call, an
+  agent switch that agent's (`src/execution/modelCallHalts.ts`, refreshed on
+  set/clear and every 10 s).
+- Embedding and transcription services (`embeddingClient`, `transcription`)
+  are handed out by the service registry only behind the gate, for kernel and
+  plugin consumers alike (`src/platform/modelGatewayServices.ts`).
+- Raw model services (`anthropicClient`, `llm`, `llmProviderPool`) are never
+  an archetype plugin's (`RawModelServiceRefusedError`); for other plugins
+  they are logged in `observe` and refused in `enforce`; model plugins and
+  the kernel's own system modules keep them. An archetype plugin's
+  `ctx.llm` works only inside an execution scope (`LlmScopeRequiredError`).
+- Operator jobs and maintenance runs (migration **0089** `model_work_runs`):
+  the issue preview, skill verification, topic regrouping, bulk promotion,
+  memory review detection, the Plugin Builder's chat and preview and the
+  Conductor's workflow designer each run as one operator job with a budget,
+  a deadline and a cancel (`GET /api/v1/admin/model-work`,
+  `POST /api/v1/admin/model-work/:id/cancel`); daily caps
+  `OPERATOR_TOOLS_DAILY_MODEL_CALLS` (20000) and
+  `MAINTENANCE_DAILY_MODEL_CALLS` (200000). The embedding backfill runs each
+  sweep as a maintenance run through the new kernel service
+  `maintenanceRun@1` (embed only).
+- `claude-cli` (`run_loop`): every CLI spawn runs with `HOME` and
+  `CLAUDE_CONFIG_DIR` set to one profile holding only the login
+  (`OMADIA_CLI_PROFILE=auto|isolated|inherit`; the image's
+  `CLAUDE_CONFIG_DIR=/data/claude-cli` is that profile; on a macOS keychain
+  login `auto` keeps the environment and says so at boot). An instruction
+  file in the profile refuses the spawn. The CLI's tool list must be exactly
+  the loopback tools offered this turn with the loopback server connected.
+  A kill switch ends a running CLI turn.
+- plugin-api (additive, version bump by the release): `MaintenanceRunService`,
+  `MAINTENANCE_RUN_SERVICE_NAME`, `LlmScopeRequiredError`,
+  `RawModelServiceRefusedError`.
+
 ### Added — Plugin kinds name what a plugin delivers; the agent/plugin boundary at ingest (#2053, epic #2042): S3 expand step
 
 - Spec 2042 §5.10, ADR-0014. The kernel accepts the manifest kinds

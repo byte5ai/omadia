@@ -306,7 +306,11 @@ export interface ScopedAgentTurnServiceDeps extends AgentTurnServiceDeps {
    */
   readonly meter: <T>(
     work: (probe: () => { modelCalls: number; refused: number }) => Promise<T>,
-    options: { limit: number },
+    options: {
+      limit: number;
+      /** Spec 2042 §5.10 — the execution scope is the model calls' context. */
+      context?: { kind: 'execution_scope'; ownerId: string; agentSlug: string };
+    },
   ) => Promise<{ value: T; modelCalls: number; refused: number }>;
 }
 
@@ -382,7 +386,10 @@ export function createScopedAgentTurnService(deps: ScopedAgentTurnServiceDeps): 
       try {
         const metered = await deps.meter(
           (probe) => base.runGuarded(request, request.processId, () => probe().refused === 0),
-          { limit: reserved },
+          {
+            limit: reserved,
+            context: { kind: 'execution_scope', ownerId: scope.id, agentSlug: request.agentSlug },
+          },
         );
         used = metered.modelCalls;
         refusedCalls = metered.refused;

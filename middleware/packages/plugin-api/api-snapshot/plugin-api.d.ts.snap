@@ -1112,6 +1112,7 @@ export * from './sessionCapabilities.js';
 export * from './facilitation.js';
 export * from './executionAuthorization.js';
 export * from './executionGrants.js';
+export * from './maintenanceRun.js';
 
 // ===== knowledgeGraph.d.ts =====
 import type { EntityRef } from './entityRef.js';
@@ -1930,6 +1931,12 @@ handle(input: unknown): Promise<string | LocalSubAgentToolResult>;
 piiFields?: readonly ToolPIIField[];
 }
 
+// ===== maintenanceRun.d.ts =====
+export interface MaintenanceRunService {
+run<T>(name: string, work: () => Promise<T>): Promise<T>;
+}
+export declare const MAINTENANCE_RUN_SERVICE_NAME = "maintenanceRun";
+
 // ===== mergeCandidate.d.ts =====
 export type MergeCandidateStatus = 'open' | 'resolved' | 'dismissed';
 export type MergeCandidateResolution =
@@ -2602,6 +2609,14 @@ constructor(callerAgentId: string);
 }
 export declare class LlmModelNotAllowedError extends Error {
 constructor(callerAgentId: string, model: string);
+}
+export declare class LlmScopeRequiredError extends Error {
+constructor(callerAgentId: string);
+}
+export declare class RawModelServiceRefusedError extends Error {
+readonly pluginId: string;
+readonly capability: string;
+constructor(pluginId: string, capability: string);
 }
 export declare class LlmBudgetExceededError extends Error {
 constructor(callerAgentId: string, budget: number);

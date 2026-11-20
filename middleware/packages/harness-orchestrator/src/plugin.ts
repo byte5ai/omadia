@@ -68,8 +68,8 @@ import {
 import type { VerifierBundle } from '@omadia/verifier';
 
 import type { Pool } from 'pg';
-import { initUsageRecorder, setUsageContextProvider } from '@omadia/usage-telemetry';
-import { currentUsageContext } from './turnContext.js';
+import { initUsageRecorder, setAmbientExecutionContext, setUsageContextProvider } from '@omadia/usage-telemetry';
+import { currentAgentTurnExecutionContext, currentUsageContext } from './turnContext.js';
 
 import {
   buildOrchestratorForAgent,
@@ -954,6 +954,9 @@ export async function activate(
   // scorers run after the orchestrator's scope has closed, and the claude-cli
   // runtime never opens one (`CliChatAgent` passes its own ids explicitly).
   setUsageContextProvider(currentUsageContext);
+  // Spec 2042 §5.10 — and the model gateway reads the same scope as the
+  // agent turn every model call inside it belongs to.
+  setAmbientExecutionContext(currentAgentTurnExecutionContext);
 
   // (LLM provider built above from the configured provider id.)
 

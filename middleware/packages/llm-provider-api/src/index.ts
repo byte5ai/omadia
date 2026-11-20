@@ -71,4 +71,6 @@ export {
   isModelCallNotCovered,
   MODEL_CALL_GATE_SLOT,
   ModelCallNotCoveredError,
+  ModelCallRefusedError,
 } from './modelCallGate.js';
+export type { ModelOperation } from './modelCallGate.js';

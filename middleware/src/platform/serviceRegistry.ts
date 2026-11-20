@@ -47,6 +47,7 @@ import {
   resolvePerCallerService,
   type ServiceCaller,
 } from '@omadia/plugin-api';
+import { gateModelService } from './modelGatewayServices.js';
 
 /** Attribution used when core resolves a service for itself rather than on
  *  behalf of a plugin. A per-caller factory can branch on it to hand the
@@ -131,7 +132,9 @@ export class ServiceRegistry {
    *  `owner` is the registering plugin's agentId. `createPluginContext`
    *  supplies it from the kernel-known id, so attribution never comes from
    *  the caller. Omitted for core's own registrations. */
-  provide<T>(name: ServiceName, impl: T, owner?: string): () => void {
+  provide<T>(name: ServiceName, rawImpl: T, owner?: string): () => void {
+    // Spec 2042 §5.10 — a model service is only ever held through the gate.
+    const impl = gateModelService(name, rawImpl);
     if (this.providers.has(name)) {
       throw new Error(
         `ServiceRegistry: duplicate provider for '${String(name)}' — uninstall the existing provider first`,
@@ -175,7 +178,8 @@ export class ServiceRegistry {
    * the underlying KG provider stays live for the rest of the system.
    * Stacking multiple replacements is supported (LIFO restore).
    */
-  replace<T>(name: ServiceName, impl: T, owner?: string): () => void {
+  replace<T>(name: ServiceName, rawImpl: T, owner?: string): () => void {
+    const impl = gateModelService(name, rawImpl);
     const previous = this.providers.get(name);
     if (previous === undefined) {
       throw new Error(

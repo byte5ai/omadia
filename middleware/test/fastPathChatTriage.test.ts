@@ -43,6 +43,7 @@ import type { NativeToolRegistry } from '../packages/harness-orchestrator/src/na
 import type { SessionLogEntry } from '../packages/harness-orchestrator/src/sessionLogger.js';
 import type { AgentRow } from '../packages/harness-orchestrator/src/registry/configStore.js';
 import { buildForAgent } from '../packages/harness-orchestrator/src/registry/applyDiff.js';
+import { innerChatAgent } from '../packages/harness-orchestrator/src/agentTurnExecution.js';
 
 // ── fixtures ──────────────────────────────────────────────────────────────
 
@@ -571,7 +572,7 @@ describe('fast-path chat triage — orchestrator wiring', () => {
       ['text_delta', 'done'],
     );
     const bare = buildForAgent(AGENT_ROW, orchestratorDeps(), RUNTIME);
-    assert.equal(bare.bundle.agent, bare.orchestrator, 'no fast path dep → no wrapper');
+    assert.equal(innerChatAgent(bare.bundle.agent), bare.orchestrator, 'no fast path dep → no wrapper');
   });
 
   it('a routeHint replaces the router classifier call', async () => {

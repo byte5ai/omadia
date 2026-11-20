@@ -27,6 +27,7 @@ import {
   type NativeToolRegistry,
 } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
 import { RunTraceOutcomeStats } from '../packages/harness-orchestrator/src/runTraceObservability.js';
+import { innerChatAgent } from '../packages/harness-orchestrator/src/agentTurnExecution.js';
 
 /** Minimal NativeToolRegistry — the Orchestrator constructor only calls
  *  `has` and `register` while seeding the kernel native-tool names. */
@@ -79,8 +80,9 @@ test('the built bundle exposes the orchestrator as its raw + bare agent', () => 
     deps(),
   );
   assert.equal(built.bundle.raw, built.orchestrator);
-  // No verifier bundle in deps → the bare Orchestrator IS the chatAgent.
-  assert.equal(built.bundle.agent, built.orchestrator);
+  // No verifier bundle in deps → the bare Orchestrator IS the chatAgent,
+  // inside the model gateway's agent-turn wrapper (spec 2042 §5.10).
+  assert.equal(innerChatAgent(built.bundle.agent), built.orchestrator);
 });
 
 /**
@@ -350,7 +352,7 @@ test('a metered agent ignores the CLI turn budget (OM-104)', () => {
   );
   // The budget exists only on the CLI runtime; the in-process path keeps the
   // orchestrator as its agent.
-  assert.equal(built.bundle.agent, built.orchestrator);
+  assert.equal(innerChatAgent(built.bundle.agent), built.orchestrator);
   assert.equal(installedSpawnTimeout(built.bundle.agent), undefined);
 });
 
