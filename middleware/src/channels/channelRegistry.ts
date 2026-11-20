@@ -291,6 +291,15 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     this.deps.jobScheduler.stopForPlugin(agentId);
   }
 
+  /**
+   * The channel types an active channel plugin acts for: the ones it claimed
+   * by registering a provider or emitting an event under them (`teams`,
+   * `discord`). Empty for a plugin that claimed none (yet).
+   */
+  channelTypesOf(channelId: string): readonly string[] {
+    return this.channelTypeClaims.typesOf(channelId);
+  }
+
   isActive(agentId: string): boolean {
     return this.handles.has(agentId);
   }

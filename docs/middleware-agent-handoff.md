@@ -190,6 +190,14 @@ src/
   wenn ein aktives Plugin einen Bot nicht stoppen kann.
 - **web-ui:** Tab „Kanäle“ der Agent-Seite, Abschnitt „Eigene Bots“
   (`AgentChannelIdentities.tsx`, Felder vom Plugin, Secrets nur schreibbar).
+- **Kanaltypen vom Server:** `GET /api/v1/operator/agents/plugin-catalog` liefert für
+  Kanal-Plugins `channel_types` (die Typen, die das aktive Plugin beim Registrieren
+  geclaimt hat, sonst `deriveChannelType` der ID; der API-Kanal bindet bewusst unter
+  `@omadia/channel-api`). Default-Agent-Tabelle, Binding-Formular und Routing-Tester
+  bieten nur diese an (`web-ui/app/_lib/channelTypes.ts`), nie eine geratene Plugin-ID.
+- **Sprache der Notices:** `ChatTurnInput.locale` (additiv). Der Management-Layer
+  füllt sie aus der Resolve-Locale; der Identity-Guard formuliert seine Notice darin
+  vor der Agent- bzw. Instanzsprache.
 - **Plugins:** omadia-channel-telegram, -discord, -slack, je Branch
   `feat/2042-s7-own-bots`. Ein Agent-Bot routet nur auf seinen eigenen Key und
   antwortet nur bei `exclusive`; sonst eine `system`-Notice, nie ein anderer Agent.

@@ -49,6 +49,11 @@ changelog.
   **web-ui:** the agent's "Teams" tab is now "Channels" with an "Own bots" section.
 - **plugin-api (additive, version unchanged):** `SystemNoticeCode` `agent_own_bot`,
   the answer to `/agent` sent to an agent's own bot.
+- **Live findings of the S6 Teams rollout:** `/agent` in a provisioned Teams agent's
+  own bot chat now answers `agent_own_bot` (no selection stored); the identity
+  guard's notice is written in the turn's language (`ChatTurnInput.locale`, additive);
+  the operator UI offers channel types the server names (`plugin-catalog`
+  `channel_types`) instead of plugin ids such as `channel-discord`.
 
 ### Changed — Channels and UIs: agents as colleagues (epic #2042, S6)
 

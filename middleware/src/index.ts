@@ -4431,6 +4431,16 @@ async function main(): Promise<void> {
         log: (m) => console.log(m),
       })
     : undefined;
+  // The channel types a channel plugin acts for, as routing knows them: what
+  // it claimed while active (`discord`), else what the dispatcher derives for
+  // its id (the API channel binds under its own id). Late-bound: the channel
+  // registry is created further down. Named here for the wiring pins.
+  const channelTypesOfPlugin = (pluginId: string): readonly string[] => {
+    const claimed = (channelRegistryRef as DefaultChannelRegistry | undefined)?.channelTypesOf?.(pluginId) ?? [];
+    return claimed.length > 0
+      ? claimed
+      : [deriveChannelType(pluginId, { manifest: pluginCatalog.get(pluginId)?.plugin.channel })];
+  };
   // Named here, not inline, for the wiring-pin tests' lazy
   // `createOperatorAgentsRouter\(\{…\}\)` match.
   const releaseAgentChannelBots = agentChannelIdentities
@@ -4469,6 +4479,7 @@ async function main(): Promise<void> {
       getChatSessionStore,
       // Spec 2042 §5.3 — a purged agent's own bots are stopped first.
       releaseChannelIdentities: releaseAgentChannelBots,
+      channelTypesOf: channelTypesOfPlugin,
       getFacilitationEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,

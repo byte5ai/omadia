@@ -154,6 +154,12 @@ interface AgentPluginCatalogEntry {
    *  operator dashboard to indent dependants under their parent in the
    *  plugin multi-select. */
   readonly depends_on: readonly string[];
+  /**
+   * A channel plugin's channel types as the kernel routes them (`discord`,
+   * not the plugin id `@omadia/channel-discord`): what the default-agent
+   * table, bindings and the routing tester offer. Channel plugins only.
+   */
+  readonly channel_types?: readonly string[];
 }
 
 /**
@@ -1681,6 +1687,8 @@ async function republishTeamsPackage(
 }
 
 export interface OperatorAgentsRouterOptions {
+  /** The channel types of a channel plugin (see `AgentPluginCatalogEntry.channel_types`). */
+  channelTypesOf?: ((pluginId: string) => readonly string[]) | undefined;
   /**
    * Spec 2042 §5.3 — before an agent is purged for good: ask the channel
    * plugins to stop the agent's own bots and forget their credentials (the
@@ -4414,6 +4422,9 @@ export function createOperatorAgentsRouter(
             network_outbound: summary?.network_outbound ?? [],
             setup_fields: p.setup_fields ?? [],
             depends_on: p.depends_on ?? [],
+            ...(p.kind === 'channel' && options.channelTypesOf
+              ? { channel_types: options.channelTypesOf(p.id) }
+              : {}),
           } satisfies AgentPluginCatalogEntry;
         });
       res.json({ items: entries });

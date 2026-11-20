@@ -18,7 +18,7 @@ Ohne Doku-Update ist eine Änderung **nicht fertig**, selbst wenn der Build grü
 | Bugfix / Ops-Vorfall / Build-Problem | `docs/CHANGELOG.md` Eintrag anhängen | Datum + ein Absatz |
 | Security-Entscheidung / Credential-Verschiebung | `docs/security-architecture.md` aktualisieren | Abschnitt |
 | Neue ENV-Variable / Secret | `middleware/.env.example` + `docs/middleware-agent-handoff.md` §10 | Zeile + Erklärung |
-| Neue Route / Tool / Sub-Agent | `docs/middleware-agent-handoff.md` §3 und §8 | Abschnitt |
+| Neue Route / Tool / Sub-Agent | `docs/middleware-agent-handoff.md` §3 (Execution-Layer; Routen beim jeweiligen Feature-Abschnitt). §8 ist „Skills“, nur für neue Skills | Abschnitt |
 | Neue SQL-Migration | Datei in `middleware/migrations/` (Core-Serie; Subsystem-Serien wie `packages/harness-knowledge-graph-neon/src/migrations/` oder `src/conductor/migrations/` nur für deren eigene Tabellen — **nie** `src/services/graph/migrations/`, das liest kein Runner) — **plus** CHANGELOG-Eintrag mit ID und Zweck | Migration-ID |
 | Neue Skill-Version | `skills/<name>/SKILL.md` + CHANGELOG | Skill-Name + Kurzzusammenfassung |
 | Offener Punkt / Backlog / TODO | `docs/middleware-agent-handoff.md` §13 Roadmap | Bullet |

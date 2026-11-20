@@ -56,6 +56,11 @@ export class ChannelTypeClaims {
     return this.owners.get(channelType);
   }
 
+  /** The channel types `channelId` holds, sorted. */
+  typesOf(channelId: string): string[] {
+    return [...this.owners].filter(([, owner]) => owner === channelId).map(([type]) => type).sort();
+  }
+
   release(channelId: string): void {
     for (const [channelType, owner] of this.owners) {
       if (owner === channelId) this.owners.delete(channelType);

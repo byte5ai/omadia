@@ -1509,6 +1509,11 @@ export interface PluginCatalogEntryDto {
   network_outbound: string[];
   setup_fields: PluginSetupFieldDto[];
   depends_on: string[];
+  /**
+   * A channel plugin's channel types as the kernel routes them (`discord`,
+   * never the plugin id). Set by the server for channel plugins only.
+   */
+  channel_types?: string[];
 }
 
 export interface PluginCatalogListDto {
