@@ -14,7 +14,7 @@
 
 import { z } from 'zod';
 
-import { isArchetypeId, STANDARD_ARCHETYPE } from '@omadia/orchestrator';
+import { ANSWER_VERBOSITY_LEVELS, isArchetypeId, STANDARD_ARCHETYPE } from '@omadia/orchestrator';
 
 import type { PluginKind } from '../api/admin-v1.js';
 import { effectiveKind } from '../api/admin-v1.js';
@@ -54,6 +54,8 @@ export const AgentTemplateSchema = z
     /** The opening of the agent's system prompt: its role and how it works. */
     instructions: text(20_000).optional(),
     language: z.string().trim().regex(LANGUAGE_TAG_PATTERN, 'a BCP 47 language tag such as "de" or "en-GB"').optional(),
+    /** The answer size, one of the agent identity's levels. */
+    verbosity: z.enum(ANSWER_VERBOSITY_LEVELS).optional(),
     persona: PersonaConfigSchema.optional(),
     quality: QualityConfigSchema.optional(),
     /** Plugin ids of the capabilities the template suggests granting. Only

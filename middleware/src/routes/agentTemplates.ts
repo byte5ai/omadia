@@ -134,6 +134,7 @@ function prefillDto(
       long_description: template.long_description ?? null,
       instructions: template.instructions ?? null,
       language: template.language ?? null,
+      verbosity: template.verbosity ?? null,
       persona: template.persona ?? null,
       quality: template.quality ?? null,
     },

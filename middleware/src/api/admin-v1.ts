@@ -465,6 +465,8 @@ export interface PluginAgentTemplate {
   readonly long_description?: string;
   readonly instructions?: string;
   readonly language?: string;
+  /** One of the identity's answer-size levels (`ANSWER_VERBOSITY_LEVELS`). */
+  readonly verbosity?: string;
   readonly persona?: Readonly<Record<string, unknown>>;
   readonly quality?: Readonly<Record<string, unknown>>;
   /** Plugin ids the template suggests granting; never granted by it. */
