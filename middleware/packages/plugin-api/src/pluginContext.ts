@@ -17,6 +17,7 @@
 
 import type { Socket } from 'node:net';
 
+import type { ToolPIIField } from './piiAnnotation.js';
 import type { WriteCapability } from './writeCapabilities.js';
 
 import type {
@@ -934,6 +935,16 @@ export interface ToolRegistrationOptions {
    * a public endpoint, that means a duplicate is possible.
    */
   readonly writeCapabilities?: readonly WriteCapability[];
+  /**
+   * Spec 2042 §5.10 (1.80.0) — the PII-bearing fields of this tool's result
+   * (`piiAnnotation.ts`), on the registration for the same reason as
+   * `writeCapabilities`. The Privacy Shield masks every declared field of an
+   * interned result, whatever its own classifier would have said; a declared
+   * field is never let through in clear. Only paths that name a column of the
+   * result rows are applied (`field`, `[].field`, `<items>[].field`, with an
+   * optional trailing `[N]`); deeper paths are ignored.
+   */
+  readonly piiFields?: readonly ToolPIIField[];
   /**
    * #1346 — per-turn availability. The kernel calls it inside the turn scope
    * each time it builds the tool list and the system-prompt tool docs; `false`

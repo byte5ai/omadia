@@ -690,6 +690,9 @@ export function createPluginContext(
         ...(options?.writeCapabilities !== undefined
           ? { writeCapabilities: options.writeCapabilities }
           : {}),
+        // Spec 2042 §5.10 — the tool's declared PII fields, handed to the
+        // Privacy Shield with every interned result of this tool.
+        ...(options?.piiFields !== undefined ? { piiFields: options.piiFields } : {}),
         // #1346 — per-turn availability; the orchestrator reads it when it
         // builds the tool list and prompt docs (`isOfferedThisTurn`).
         ...(options?.isAvailable !== undefined
@@ -720,6 +723,9 @@ export function createPluginContext(
         ...(options?.writeCapabilities !== undefined
           ? { writeCapabilities: options.writeCapabilities }
           : {}),
+        // Spec 2042 §5.10 — the tool's declared PII fields, handed to the
+        // Privacy Shield with every interned result of this tool.
+        ...(options?.piiFields !== undefined ? { piiFields: options.piiFields } : {}),
         // #1346 — per-turn availability; the orchestrator reads it when it
         // builds the tool list and prompt docs (`isOfferedThisTurn`).
         ...(options?.isAvailable !== undefined
