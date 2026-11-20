@@ -36,6 +36,12 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — ADR-0026: session electorate and guests in media consent (#2076)
+
+- ADR-0026 records the per-session electorate of spec 2043 §5.5 and the guests' part in a
+  linked session's media consent (both in the facilitator plugin, migration `0011`; no
+  kernel contract change).
+
 ### Added — Linked session conversations and session state (#2076, #2077, #2089; ADR-0026)
 
 - `@omadia/plugin-api` 1.81.0 (additive): `ExecutionAuthorizationService.setSessionState`,
