@@ -66,6 +66,19 @@ export const MEMORY_EDIT: ModelWorkKind = {
   effects: ['memory'],
 };
 
+/** The privacy field-classification recompute (boot, plugin (de)activation,
+ *  every 6 h, `POST …/field-classification/recompute`): the schema of each
+ *  unclassified or stale model is sent to the classifier model, verdicts and
+ *  auto-approved non-personal fields are stored. Not a maintenance run,
+ *  because it calls `complete`. */
+export const FIELD_CLASSIFICATION: ModelWorkKind = {
+  kind: 'privacy_field_classification',
+  context: 'operator_job',
+  budgetCalls: 200,
+  deadlineMs: 15 * MINUTE,
+  effects: ['privacy_field_classification'],
+};
+
 /** One turn of the Plugin Builder's chat: the draft plugin is changed. */
 export const PLUGIN_BUILDER_TURN: ModelWorkKind = {
   kind: 'plugin_builder_turn',

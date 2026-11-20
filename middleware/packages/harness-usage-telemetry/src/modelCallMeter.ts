@@ -133,10 +133,26 @@ function refuse(innermost: Meter | undefined, error: Error): never {
  *  called; the first frame after them does. */
 const GATE_FRAME = /modelCallMeter|modelCallGate|llm-adapter-|llm-provider|claudeCliAdapter|node:internal|node_modules/;
 
+/** Kernel bridges every caller of a kind passes through: the neutral-provider
+ *  bridge of `ctx.llm` / the `llm` service, the `ctx.llm` accessor and the
+ *  provider usage wrapper. Reporting them would file every plugin's call under
+ *  one site, so the frame after them is the caller. */
+const BRIDGE_FRAME = /platform\/anthropicLlmProvider|platform\/pluginContext|withProviderUsageTracking/;
+
+/** The path prefix of a kernel file: `…/middleware/` in a checkout,
+ *  `/app/` in the image. */
+const KERNEL_PATH_PREFIX = /file:\/\/[^\s)]*?\/(?:middleware|app)\//;
+
+/** Exported for tests: the call site of a stack (`new Error().stack`). */
+export function callSiteOf(stack: string): string {
+  const frames = stack.split('\n').slice(1);
+  const outside = frames.filter((f) => !GATE_FRAME.test(f));
+  const frame = outside.find((f) => !BRIDGE_FRAME.test(f)) ?? outside[0] ?? frames[0] ?? 'unknown';
+  return frame.trim().replace(/^at /, '').replace(KERNEL_PATH_PREFIX, '');
+}
+
 function callSite(): string {
-  const frames = (new Error().stack ?? '').split('\n').slice(1);
-  const frame = frames.find((f) => !GATE_FRAME.test(f)) ?? frames[0] ?? 'unknown';
-  return frame.trim().replace(/^at /, '').replace(/file:\/\/[^\s)]*?\/middleware\//, '');
+  return callSiteOf(new Error().stack ?? '');
 }
 
 function ambientContext(gateway: GatewayState): ModelExecutionContext | undefined {

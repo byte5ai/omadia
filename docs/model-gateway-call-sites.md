@@ -8,7 +8,7 @@ in on the S3a kernel (expand step). Under `MODEL_GATEWAY_MODE=observe` a call
 with no context is admitted and logged once per call site; under `enforce`
 (the contract step, S3b) it is refused. The live counterpart of this page is
 `GET /api/v1/admin/model-gateway`, which lists the call sites that actually ran
-outside a context since boot.
+outside a context since boot. A site is the first frame after the gate, the provider adapters and the kernel bridges every caller of a kind passes through (`platform/anthropicLlmProvider`, `platform/pluginContext`, `withProviderUsageTracking`), so a `ctx.llm` call names the plugin code that made it.
 
 Abbreviations: **AT** agent turn (opened by `withAgentTurnExecution`, the
 outermost layer of every agent's chat agent, or by the agent runtime's
@@ -109,7 +109,7 @@ removed) before the contract step switches to `enforce`.
 | # | Call | Fix owner / plan |
 |---|---|---|
 | 1 | ~~Scratch-promotion reaper (interval)~~ | Done (S4): a batch trigger with caps and circuit breaker; every trigger firing runs in its agent's turn context. Not a maintenance run, because it calls `complete` |
-| 2 | Field-classification recompute (boot, activation, 6 h, POST route) | S3b: operator job for the POST route; the scheduled runs as a bounded kernel job (S4 trigger caps) |
+| 2 | ~~Field-classification recompute (boot, activation, 6 h, POST route)~~ | Done (S3b): every pass is one operator job `privacy_field_classification` (200 calls, 15 min), started by `system:auto-classifier`. Seen live in observe mode: one call per plugin activation |
 | 3 | ~~Security screener on routine turns~~ | Done (S4): a routine run, scheduled or "run now", is the turn of the agent that runs it (`runOnce`); a scheduled one also runs inside its trigger firing |
 | 4 | Boot graph backfill (`BACKFILL_AT_STARTUP=1`) | S3b: maintenance run like the embedding backfill |
 | 5 | Public MCP server tool dispatch | S3b: run each dispatch in the agent turn of the agent the API key is bound to |

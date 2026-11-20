@@ -480,6 +480,7 @@ import { createModelGatewayStatusRouter } from './routes/modelGatewayStatus.js';
 import {
   BULK_PROMOTION,
   EMBEDDING_BACKFILL,
+  FIELD_CLASSIFICATION,
   ISSUE_PREVIEW,
   MEMORY_EDIT,
   MEMORY_REVIEW_DETECTION,
@@ -6716,9 +6717,12 @@ async function main(): Promise<void> {
       installedRegistry,
       catalog: pluginCatalog,
     });
+    // Spec 2042 §5.10 — every pass (boot, plugin lifecycle, the 6 h
+    // interval, the recompute route) is one operator job of the classifier,
+    // so its model calls run in a context with a budget and a deadline.
     const fieldClassificationScheduler = createFieldClassificationScheduler({
       run: () =>
-        recomputeFieldClassification({
+        modelWork.run(FIELD_CLASSIFICATION, 'system:auto-classifier', () => recomputeFieldClassification({
           store: fieldClassificationStore,
           serviceRegistry,
           readNonPersonalFields: () =>
@@ -6728,7 +6732,7 @@ async function main(): Promise<void> {
             ...(adminAudit ? { audit: adminAudit } : {}),
           },
           log: (msg) => console.log(msg),
-        }),
+        })),
       log: (msg) => console.warn(msg),
     });
     fieldClassificationTriggerRef = (reason) => fieldClassificationScheduler.trigger(reason);
