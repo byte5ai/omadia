@@ -127,7 +127,13 @@ const MessageSchema = z.object({
         agentId: z.string().min(1).max(100),
         slug: z.string().min(1).max(100),
         displayName: z.string().min(1).max(200),
-        avatarUrl: z.string().max(500).optional(),
+        // Only the kernel's own same-origin avatar path: the client stores
+        // this, so it must not become a way to show any URL as an avatar.
+        avatarUrl: z
+          .string()
+          .max(500)
+          .regex(/^\/api\/v1\/operator\/agents\/[A-Za-z0-9_-]+\/identity\/avatar(?:\?v=[A-Za-z0-9._~%-]*)?$/)
+          .optional(),
       }),
       z.object({ kind: z.literal('system') }),
     ])
