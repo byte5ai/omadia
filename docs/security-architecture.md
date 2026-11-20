@@ -1376,9 +1376,13 @@ subset of what its agent holds, never more.
   tool takes effect with the rebuild the Builder write triggers.
 - **Model.** With an explicit primary in the agent's model policy, a helper
   model must be on the policy's provider(s) and of a class no stronger than the
-  primary (`helper_model_not_allowed` on save, helper not built at runtime). A
-  helper without a model never inherits a class stronger than the agent's
-  pinned primary.
+  primary (`helper_model_not_allowed` on save). A helper that violates it at
+  runtime (for example after a policy change or a deploy) fails loud, never
+  silently: its tool stays and refuses every call with the reason
+  (`ToolRefusalError`, so the agent can say why), and the Agent Builder marks
+  the helper "out of service" with the code and reason (`outOfService` on the
+  graph's helper node, `helpersOutOfService`). A helper without a model never
+  inherits a class stronger than the agent's pinned primary.
 - **Budget.** A helper's `maxTokens`/`maxIterations` are capped by its agent's
   per-call output budget and step cap; its model calls are booked on the
   agent's turn (`token_usage.turn_id`). There is still no per-turn spend cap
@@ -1386,7 +1390,8 @@ subset of what its agent holds, never more.
 - **Names.** `ask_<name>` is not injective (`A B` and `A-B`), so a helper name
   whose tool name another helper of the agent or one of the agent's own tools
   already has is refused on save (`helper_name_collision`), and at runtime every
-  member of a colliding group is left out (logged), never first-wins. Before
+  member of a colliding group is left out (logged and shown "out of service"
+  in the Agent Builder), never first-wins. Before
   this, a helper called `User Choice` threw on registration against the native
   `ask_user_choice` and aborted the rest of that agent's tool hydration.
 - **Presentation.** A helper never introduces itself (a fixed contract is

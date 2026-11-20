@@ -77,9 +77,12 @@ changelog.
   `agentsConsulted`. Colliding tool names are refused on save and dropped at
   runtime. Builder PATCH and grants check that the helper belongs to the agent
   in the path. The Agent Builder calls the node "Helfer" and explains it.
-- **Live effect:** existing helpers whose model is stronger than a pinned
-  primary model, and existing colliding helper pairs, stop being offered after
-  the deploy (each with a log line).
+- **Live effect, fail loud:** an existing helper whose model is stronger than
+  a pinned primary model (or on another provider) is out of service after the
+  deploy, but never silently: its tool stays, and every call is refused with
+  the reason, so the agent can tell the person why. Colliding helper pairs are
+  not offered. The Agent Builder marks each such helper "out of service" with
+  the reason (`outOfService` on the graph's helper node).
 - **Fixed:** a helper whose name collided with a native tool (`ask_user_choice`)
   aborted the rest of the agent's tool hydration.
 

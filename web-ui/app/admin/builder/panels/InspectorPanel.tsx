@@ -572,6 +572,18 @@ function SubAgentEditor({
 
   return (
     <div className="flex flex-col gap-3">
+      {subAgent.outOfService ? (
+        <div
+          role="alert"
+          className="rounded-md border border-[color:var(--danger,#dc2626)] p-2 text-xs text-[color:var(--fg-strong)]"
+        >
+          <p className="font-semibold">{t('helperOutOfService.title')}</p>
+          <p>{t(`helperOutOfService.${subAgent.outOfService.code}`)}</p>
+          <p className="mt-1 text-[color:var(--fg-muted)]">
+            {t('helperOutOfService.reason', { reason: subAgent.outOfService.reason })}
+          </p>
+        </div>
+      ) : null}
       <p className="text-xs text-[color:var(--fg-muted)]">{t('inspector.helperExplain')}</p>
       <p className="text-xs text-[color:var(--fg-muted)]">{t('inspector.helperSpecialistHint')}</p>
       <Field label={t('inspector.name')}>

@@ -343,7 +343,8 @@
         "tool": "Tool",
         "mcp": "MCP-Server",
         "schedule": "Zeitplan",
-        "tools": "Tools"
+        "tools": "Tools",
+        "subagentOutOfService": "Außer Dienst"
       },
       "palette": {
         "title": "Hinzufügen",
@@ -428,6 +429,12 @@
         "helper_name_collision": "Dieser Name ist schon vergeben: Ein anderer Helfer oder ein Tool dieses Agenten nutzt denselben Tool-Namen. Wähle einen anderen Namen.",
         "helper_grant_not_held_by_agent": "Der Agent hat dieses Tool selbst nicht. Weise es zuerst dem Agenten zu; ein Helfer nutzt nur Tools seines Agenten.",
         "helper_model_not_allowed": "Die Modellrichtlinie des Agenten erlaubt dieses Modell für einen Helfer nicht. Wähle das Modell des Agenten oder ein günstigeres."
+      },
+      "helperOutOfService": {
+        "title": "Dieser Helfer ist außer Dienst.",
+        "helper_model_not_allowed": "Die Modellrichtlinie des Agenten erlaubt sein Modell nicht. Jede Anfrage an ihn wird deshalb mit dem Grund unten abgelehnt. Wähle das Modell des Agenten oder ein günstigeres.",
+        "helper_name_conflict": "Sein Tool-Name kollidiert mit einem anderen Helfer oder Tool dieses Agenten, deshalb wird er nicht angeboten. Wähle einen anderen Namen.",
+        "reason": "Grund: {reason}"
       },
       "apiError": "Fehler {status}",
       "persona": {

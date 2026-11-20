@@ -77,6 +77,7 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
       channel: t('nodes.channel'),
       agent: t('nodes.agent'),
       subAgent: t('nodes.subagent'),
+      subAgentOutOfService: t('nodes.subagentOutOfService'),
       skill: t('nodes.skill'),
       tool: t('nodes.tool'),
       mcp: t('nodes.mcp'),

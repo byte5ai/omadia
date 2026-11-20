@@ -142,6 +142,21 @@ export interface SubAgentNode {
   systemPromptOverride: string | null;
   status: NodeStatus;
   position: CanvasPosition | null;
+  /**
+   * #2050 — set when the runtime puts this enabled helper out of service: a
+   * model the agent's policy does not allow (every request is refused with the
+   * reason) or a tool-name collision (not offered). `reason` is the server's
+   * technical detail. Absent on an older middleware.
+   */
+  outOfService?: HelperOutOfService | null;
+}
+
+/** #2050 — the codes of {@link SubAgentNode.outOfService}. */
+export type HelperOutOfServiceCode = 'helper_model_not_allowed' | 'helper_name_conflict';
+
+export interface HelperOutOfService {
+  code: HelperOutOfServiceCode;
+  reason: string;
 }
 
 export interface SkillNode {

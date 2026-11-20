@@ -91,12 +91,16 @@ const state: State = { helpers: [], grants: [], writes: [], natives: [], domainT
 
 const config = {
   getAgentBySlug: (slug: string) => Promise.resolve(slug === AGENT.slug ? AGENT : undefined),
+  listChannelBindingsForAgent: () => Promise.resolve([]),
 } as unknown as ConfigStore;
 
 const graph = {
   listAllSubAgents: () => Promise.resolve(state.helpers),
   listAllToolGrants: () => Promise.resolve(state.grants),
   listMcpServers: () => Promise.resolve([{ id: SERVER_ID, name: 'crm' }]),
+  listSkills: () => Promise.resolve([]),
+  listSchedulesForAgent: () => Promise.resolve([]),
+  listPersonaSkills: () => Promise.resolve([]),
   getMcpToolVerdict: () => Promise.resolve({ severity: 'no_signals', contentHash: 'h' }),
   getMcpToolVerdictAck: () => Promise.resolve(undefined),
   createSubAgent: (input: { name: string }) => {
@@ -222,6 +226,29 @@ describe('#2050 — the helper model must fit the agent model policy at save tim
     );
     const ok = await call('POST', '/agents/mira/subagents', { name: 'Fast one', model: HAIKU.id });
     assert.equal(ok.status, 200, JSON.stringify(ok.json));
+  });
+});
+
+describe('#2050 — fail loud: the graph shows each helper the runtime puts out of service', () => {
+  it('names the code and the reason on the helper node; a fitting helper has none', async () => {
+    state.helpers = [
+      { ...helper('h-strong', 'Strong'), model: OPUS.id },
+      { ...helper('h-fit', 'Fit'), model: HAIKU.id },
+    ];
+    // The graph maps full MCP server rows; this fixture's server is a stub.
+    const g = graph as unknown as { listMcpServers: () => Promise<unknown[]> };
+    const listServers = g.listMcpServers;
+    g.listMcpServers = () => Promise.resolve([]);
+    const res = await call('GET', '/agents/mira/graph').finally(() => {
+      g.listMcpServers = listServers;
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.json));
+    const nodes = (res.json as { subAgents: { id: string; outOfService: { code: string; reason: string } | null }[] })
+      .subAgents;
+    const strong = nodes.find((n) => n.id === 'h-strong');
+    assert.equal(strong?.outOfService?.code, 'helper_model_not_allowed');
+    assert.match(strong?.outOfService?.reason ?? '', /stronger than the agent's own balanced model/);
+    assert.equal(nodes.find((n) => n.id === 'h-fit')?.outOfService, null);
   });
 });
 

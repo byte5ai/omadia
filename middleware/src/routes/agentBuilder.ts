@@ -16,6 +16,7 @@
 import {
   assertArchetypeAllows,
   assertHelperModelAllowed,
+  helpersOutOfService,
   assertHelperNameFree,
   ConfigValidationError,
   HelperRefusalError,
@@ -26,6 +27,7 @@ import {
   type McpConfigField,
   type McpRegistryRow,
   type McpServerConfig,
+  type HelperOutOfService,
   type McpServerRow,
   DEFAULT_MODEL_POLICY,
   type OrchestratorRegistry,
@@ -619,6 +621,15 @@ export function createAgentBuilderRouter(
           schedules,
           l.registry,
           personaSkillLinks,
+          // #2050 — what the runtime does with each helper, with the reason.
+          helpersOutOfService(
+            subAgents.filter((s) => s.parentAgentId === agent.id),
+            {
+              policy: agent.modelPolicy ?? DEFAULT_MODEL_POLICY,
+              activeProvider: options.getActiveProvider?.(),
+              reservedToolNames: reservedToolNamesFor(l, agent),
+            },
+          ),
         ),
       );
     } catch (err) {
@@ -3112,6 +3123,7 @@ function assembleGraph(
   schedules: readonly ScheduleRow[],
   registry: OrchestratorRegistry | undefined,
   personaSkillLinks: readonly PersonaSkillRow[] = [],
+  outOfService: ReadonlyMap<string, HelperOutOfService> = new Map(),
 ) {
   const mySubs = subAgents.filter((s) => s.parentAgentId === agent.id);
   const myPersonaLinks = personaSkillLinks.filter(
@@ -3186,7 +3198,7 @@ function assembleGraph(
       channelKey: b.channelKey,
       position: null,
     })),
-    subAgents: mySubs.map(subAgentNode),
+    subAgents: mySubs.map((s) => ({ ...subAgentNode(s), outOfService: outOfService.get(s.id) ?? null })),
     skills: skills.map(skillNode),
     tools: myGrants.map(toolGrantNode),
     mcpServers: servers.map(mcpNode),

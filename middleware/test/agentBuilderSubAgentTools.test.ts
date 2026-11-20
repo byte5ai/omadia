@@ -390,7 +390,7 @@ test('mcp adapters: native tool name + spec + result rendering + command split',
  * The tool is skipped instead, like an unresolvable tool grant, and the skip is
  * logged.
  */
-test('a sub-agent whose class-ref model resolves to nothing is skipped, not built', () => {
+test('a sub-agent whose class-ref model resolves to nothing is out of service, loudly (#1451, #2050)', async () => {
   const logs: string[] = [];
   const tools = buildSubAgentDomainTools(
     { subAgents: [sub()], toolGrants: [nativeGrant()], skills: [skill()] },
@@ -406,11 +406,16 @@ test('a sub-agent whose class-ref model resolves to nothing is skipped, not buil
     },
   );
 
-  assert.equal(tools.length, 0, 'no delegation target may run on a class ref');
+  // No model loop is built on a class ref; the helper's tool stays and every
+  // call says why instead of the helper vanishing.
+  assert.equal(tools.length, 1);
   assert.equal(logs.length, 1);
   assert.match(logs[0]!, /Researcher Bot/);
   assert.match(logs[0]!, /class:balanced/);
-  assert.match(logs[0]!, /skipped/);
+  assert.match(logs[0]!, /out of service/);
+  const answer = await tools[0]!.handle({ question: 'q' });
+  assert.match(answer, /^Error: /);
+  assert.match(answer, /does not resolve for the provider 'anthropic'/);
 });
 
 test('a resolvable model still builds the sub-agent tool', () => {

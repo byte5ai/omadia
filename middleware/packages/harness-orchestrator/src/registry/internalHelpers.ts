@@ -222,6 +222,47 @@ export function helperDefaultModelRef(
   return CLASS_RANK[defaultInfo.class] > CLASS_RANK[primaryInfo.class] ? primaryInfo.id : defaultModel;
 }
 
+// ── out of service ─────────────────────────────────────────────────────────
+
+/** Why an enabled helper does not run as configured (#2050, fail loud). */
+export interface HelperOutOfService {
+  readonly code: 'helper_model_not_allowed' | 'helper_name_conflict';
+  readonly reason: string;
+}
+
+/**
+ * The verdict the runtime applies to each ENABLED helper of one agent, for the
+ * admin UI: a name collision (the helper is not built) or a model the agent's
+ * policy does not allow (the helper's tool refuses every call). The same rules
+ * as `buildSubAgentDomainTools`, so the Agent Builder shows exactly what the
+ * runtime does after a deploy, not a guess. Helpers without an entry run.
+ */
+export function helpersOutOfService(
+  helpers: readonly (NamedHelper & { readonly model: string | null; readonly status: string })[],
+  input: {
+    readonly policy: ModelPolicy | undefined;
+    readonly activeProvider: string | undefined;
+    readonly reservedToolNames: ReadonlySet<string>;
+  },
+): Map<string, HelperOutOfService> {
+  const enabled = helpers.filter((h) => h.status === 'enabled');
+  const out = new Map<string, HelperOutOfService>();
+  for (const c of helperToolNameConflicts(enabled, input.reservedToolNames)) {
+    out.set(c.helperId, {
+      code: 'helper_name_conflict',
+      reason: `its tool name "${c.toolName}" collides with ${
+        c.withAgentTool ? 'another tool of this agent' : 'another helper of this agent'
+      }`,
+    });
+  }
+  for (const h of enabled) {
+    if (out.has(h.id)) continue;
+    const verdict = helperModelVerdict(h.model, input.policy, input.activeProvider);
+    if (!verdict.allowed) out.set(h.id, { code: 'helper_model_not_allowed', reason: verdict.reason });
+  }
+  return out;
+}
+
 // ── capability subset ──────────────────────────────────────────────────────
 
 /** The fields of a tool grant the subset check reads. */

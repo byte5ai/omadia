@@ -373,11 +373,13 @@ export {
   helperModelVerdict,
   helperToolName,
   helperToolNameConflicts,
+  helpersOutOfService,
   mcpGrantHeldBy,
 } from './registry/internalHelpers.js';
 export type {
   GrantLike,
   HelperModelVerdict,
+  HelperOutOfService,
   HelperNameConflict,
   HelperRefusalCode,
   NamedHelper,

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { ApiError } from '../../_lib/api';
+import type { HelperOutOfServiceCode } from '../../_lib/agentBuilder';
 import { HELPER_REFUSAL_CODES, helperRefusalCode } from './helperRefusal';
 
 /**
@@ -69,6 +70,17 @@ describe.each(['en', 'de'])('helper copy (%s)', (locale) => {
       expect(typeof value).toBe('string');
       expect((value as string).length).toBeGreaterThan(0);
     }
+  });
+
+  it('every out-of-service code has a sentence, and the reason is shown', () => {
+    const codes: HelperOutOfServiceCode[] = ['helper_model_not_allowed', 'helper_name_conflict'];
+    for (const code of codes) {
+      const value = at(messages, `admin.builder.helperOutOfService.${code}`);
+      expect(typeof value).toBe('string');
+      expect((value as string).length).toBeGreaterThan(0);
+    }
+    expect(at(messages, 'admin.builder.helperOutOfService.reason')).toMatch(/\{reason\}/);
+    expect(typeof at(messages, 'admin.builder.nodes.subagentOutOfService')).toBe('string');
   });
 });
 

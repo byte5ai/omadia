@@ -154,13 +154,18 @@ export function buildSubAgentDomainTools(
       );
       continue;
     }
+    const skill = sub.skillId ? skillsById.get(sub.skillId) : undefined;
     const modelVerdict = helperModelVerdict(sub.model, deps.parentModelPolicy, runProvider);
     if (!modelVerdict.allowed) {
-      deps.log?.(`sub-agent tool: helper "${sub.name}" refused — ${modelVerdict.reason}`);
+      // #2050 — fail loud, never a silent drop: the helper stays a tool of
+      // its agent and every call is refused with the reason, so the agent can
+      // say why instead of acting as if it had no such helper. The Agent
+      // Builder shows the same verdict on the helper (`helperOutOfService`).
+      deps.log?.(`sub-agent tool: helper "${sub.name}" out of service — ${modelVerdict.reason}`);
+      tools.push(outOfServiceHelperTool(sub, skill?.description, modelVerdict.reason));
       continue;
     }
 
-    const skill = sub.skillId ? skillsById.get(sub.skillId) : undefined;
     const skillBody = skill?.body;
     const basePrompt =
       sub.systemPromptOverride?.trim() ||
@@ -190,9 +195,11 @@ export function buildSubAgentDomainTools(
     // turn. Skipped like an unresolvable tool grant below: the orchestrator
     // keeps working, this one delegation target is simply not offered.
     if (isClassRef(subModel)) {
-      deps.log?.(
-        `sub-agent tool: "${sub.name}" model '${sub.model?.trim() || defaultModel}' does not resolve for provider '${deps.provider?.id ?? 'unknown'}' — skipped`,
-      );
+      // #2050 — fail loud like a model the policy refuses: the helper's tool
+      // stays and says why on every call, instead of vanishing.
+      const reason = `its model '${sub.model?.trim() || defaultModel}' does not resolve for the provider '${deps.provider?.id ?? 'unknown'}'`;
+      deps.log?.(`sub-agent tool: helper "${sub.name}" out of service — ${reason}`);
+      tools.push(outOfServiceHelperTool(sub, skill?.description, reason));
       continue;
     }
 
@@ -231,6 +238,36 @@ export function buildSubAgentDomainTools(
     });
   }
   return tools;
+}
+
+/**
+ * #2050 — the tool of a helper whose model the agent's model policy does not
+ * allow. Offered like the helper (same name and description), but every call
+ * is refused with the reason, which reaches the agent's model unchanged
+ * (`ToolRefusalError`), so a request for the helper ends in a clear message.
+ */
+function outOfServiceHelperTool(
+  sub: { readonly id: string; readonly name: string },
+  skillDescription: string | null | undefined,
+  reason: string,
+): DomainTool {
+  const name = subAgentToolName(sub.name);
+  return {
+    ...createDomainTool({
+      name,
+      description: subAgentToolDescription(sub.name, skillDescription),
+      agent: {
+        ask: () =>
+          Promise.reject(
+            new ToolRefusalError(
+              `The helper "${name}" is out of service: ${reason}. An operator has to change its model in the Agent Builder; nothing ran.`,
+            ),
+          ),
+      },
+      domain: `subagent.${slugifyDomain(sub.name)}`,
+    }),
+    internalHelper: { helperId: sub.id },
+  };
 }
 
 /** A helper's own budget, capped by its parent's (#2050). */

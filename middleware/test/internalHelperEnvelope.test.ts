@@ -5,7 +5,8 @@
  *   - a helper run that calls a capability its agent lacks is refused, for
  *     native and for MCP tools, and revoking the AGENT's grant after the helper
  *     was materialised removes the helper's access on the next call;
- *   - a helper model the agent's policy does not allow is not run;
+ *   - a helper model the agent's policy does not allow puts the helper out of
+ *     service loudly: its tool stays and refuses every call with the reason;
  *   - helper tool names are collision-free: a clash (with another helper or one
  *     of the agent's other tools) is refused for all members, never shadowed.
  *
@@ -31,6 +32,7 @@ import {
   helperDefaultModelRef,
   helperModelVerdict,
   helperToolNameConflicts,
+  helpersOutOfService,
   type McpManager,
   type ToolGrantRow,
   type SubAgentRow,
@@ -366,7 +368,7 @@ describe('#2050 — the helper model must fit the agent model policy', () => {
     );
   });
 
-  it('a helper whose model the policy does not allow is not run', () => {
+  it('a helper whose model the policy does not allow is out of service, loudly: its tool refuses with the reason', async () => {
     const logs: string[] = [];
     const tools = buildSubAgentDomainTools(
       { subAgents: [helperRow({ model: OPUS.id })], toolGrants: [], skills: [] },
@@ -379,8 +381,28 @@ describe('#2050 — the helper model must fit the agent model policy', () => {
         log: (m) => logs.push(m),
       },
     );
-    assert.equal(tools.length, 0);
-    assert.ok(logs.some((l) => /helper "Researcher" refused — .*stronger than the agent's own balanced model/.test(l)));
+    assert.equal(tools.length, 1, 'the helper is not dropped silently');
+    assert.ok(logs.some((l) => /helper "Researcher" out of service — .*stronger than the agent's own balanced model/.test(l)));
+    const answer = await tools[0]!.handle({ question: 'anything' });
+    assert.match(answer, /^Error: /, 'the agent model sees a tool error');
+    assert.match(answer, /out of service: .*stronger than the agent's own balanced model/);
+    assert.match(answer, /Agent Builder/);
+  });
+
+  it('helpersOutOfService reports what the runtime does with each enabled helper', () => {
+    const verdicts = helpersOutOfService(
+      [
+        { id: 'h-ok', name: 'Fine', model: HAIKU.id, status: 'enabled' },
+        { id: 'h-strong', name: 'Strong', model: OPUS.id, status: 'enabled' },
+        { id: 'h-off', name: 'Off', model: OPUS.id, status: 'disabled' },
+        { id: 'h-clash', name: 'web search', model: null, status: 'enabled' },
+      ],
+      { policy: pinnedSonnet, activeProvider: 'anthropic', reservedToolNames: new Set(['ask_web_search']) },
+    );
+    assert.deepEqual([...verdicts.keys()].sort(), ['h-clash', 'h-strong']);
+    assert.equal(verdicts.get('h-strong')?.code, 'helper_model_not_allowed');
+    assert.match(verdicts.get('h-strong')?.reason ?? '', /stronger/);
+    assert.equal(verdicts.get('h-clash')?.code, 'helper_name_conflict');
   });
 
   it('a helper without its own model never inherits a model stronger than the agent', () => {
