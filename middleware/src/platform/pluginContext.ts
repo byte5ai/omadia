@@ -2109,7 +2109,7 @@ export function extractOutboundAllowlist(
       const resolved = configGet(key);
       if (typeof resolved === 'string') {
         for (const host of resolved.split(/[\s,]+/)) {
-          const h = host.trim();
+          const h = hostOfConfiguredTarget(host.trim());
           if (h.length > 0) out.push(h);
         }
       }
@@ -2118,6 +2118,21 @@ export function extractOutboundAllowlist(
     }
   }
   return out;
+}
+
+/**
+ * A `$config.*` outbound value names a host; a field that holds a base URL
+ * (`https://api.example.com/v1`, the usual setup field of a provider or a
+ * gateway) allows that URL's host. Anything that does not parse as a URL is
+ * taken as the host it states, as before.
+ */
+function hostOfConfiguredTarget(value: string): string {
+  if (!value.includes('://')) return value;
+  try {
+    return new URL(value).hostname.toLowerCase();
+  } catch {
+    return value;
+  }
 }
 
 /**

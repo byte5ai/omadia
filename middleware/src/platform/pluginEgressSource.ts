@@ -1,4 +1,5 @@
 import { realpathSync } from 'node:fs';
+import { isIP } from 'node:net';
 import path from 'node:path';
 
 import type { LlmProviderCatalog } from '@omadia/llm-provider';
@@ -7,6 +8,7 @@ import { effectiveKind } from '../api/admin-v1.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import { extractAuditConfig, extractOutboundAllowlist } from './pluginContext.js';
+import { isPublicIp } from './ssrfGuard.js';
 import type { PluginEgressPermission, PluginEgressSource } from './pluginEgressGuard.js';
 
 const ROOTS_TTL_MS = 5_000;
@@ -90,7 +92,7 @@ export function createPluginEgressSource(deps: {
       const hosts = new Set<string>();
       for (const desc of deps.llmProviderCatalog.list()) {
         const host = hostOf(desc.baseURL);
-        if (host) hosts.add(host);
+        if (host && !isLocalHost(host)) hosts.add(host);
       }
       // Literal hosts of model plugins. Wildcards are left out on purpose:
       // `*.googleapis.com` of a model plugin must not cut an integration off
@@ -99,12 +101,24 @@ export function createPluginEgressSource(deps: {
         if (!isModelPlugin(entry.plugin.id)) continue;
         const config = deps.installedRegistry.get(entry.plugin.id)?.config ?? {};
         for (const h of extractOutboundAllowlist(entry.plugin.id, deps.catalog, (key) => config[key])) {
-          if (!h.includes('*')) hosts.add(h.trim().toLowerCase());
+          const host = h.trim().toLowerCase();
+          if (!host.includes('*') && !isLocalHost(host)) hosts.add(host);
         }
       }
       return hosts;
     },
   };
+}
+
+/**
+ * A local model server (Ollama on `localhost:11434`) shares its host with
+ * every other local service; blocking the host would cut every plugin off
+ * loopback. Local and private hosts are therefore not model endpoints here:
+ * reaching them is decided by the plugin's network permission alone.
+ */
+function isLocalHost(host: string): boolean {
+  if (host === 'localhost' || host.endsWith('.localhost') || host === 'host.docker.internal') return true;
+  return isIP(host) !== 0 && !isPublicIp(host);
 }
 
 function hostOf(url: string | undefined): string | undefined {

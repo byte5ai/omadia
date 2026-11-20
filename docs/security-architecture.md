@@ -837,7 +837,9 @@ Residual risks of the sandbox (in-process, a policy, not a boundary against
 hostile code): a plugin that imports its own `undici` or opens sockets with
 `node:net`/`node:tls` directly is not seen; the DNS-rebinding check runs
 only in `ctx.http`'s guarded dispatcher; bundled packages (system modules,
-built-in adapters) count as kernel code; a plugin that hands the kernel a
+built-in adapters) count as kernel code; a model server on a local or
+private host (a local Ollama) is not a model endpoint, because the host is
+shared with every other local service; a plugin that hands the kernel a
 bare `fetch` reference to call for it is not seen. A plugin can also patch
 the guard away, like any in-process check.
 

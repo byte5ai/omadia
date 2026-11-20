@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — `$config.*` base URLs allow their host; local model servers are no model endpoint (#2053, epic #2042): S3 expand step
+
+- A `permissions.network.outbound` entry `$config.<field>` whose value is a
+  URL (`https://gateway.example.net/v1`, the usual base-URL setup field)
+  now allows that URL's host, for `ctx.http` and the network sandbox alike.
+  Before, such a value matched no host.
+- The sandbox's model endpoints leave out local and private hosts
+  (`localhost`, `host.docker.internal`, private IPs): a local Ollama shares
+  its host with every other local service, and blocking it would cut every
+  plugin off loopback. Reaching them is decided by the plugin's permission.
+
 ### Added — Tools declare their effect; templates carry the answer size; memory writes as an operator job (#2053, epic #2042): S3 expand step
 
 - The kernel reads `capabilities[].side_effects` (`read | write | none`, the
