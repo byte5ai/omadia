@@ -128,8 +128,10 @@ export class InMemoryProactiveSenderRegistry implements ProactiveSenderRegistry 
       );
     }
     this.senders.set(sender.channel, sender);
+    // Removes only THIS sender: a late dispose of a hot-swapped instance
+    // must not take its successor with it.
     return () => {
-      this.senders.delete(sender.channel);
+      if (this.senders.get(sender.channel) === sender) this.senders.delete(sender.channel);
     };
   }
 

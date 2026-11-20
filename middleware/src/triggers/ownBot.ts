@@ -19,6 +19,28 @@ export function asChannelKeyOf(ref: unknown): string | undefined {
   return normalized === '' ? undefined : normalized;
 }
 
+/** The agent's own bot on a channel; undefined = it has none. */
+export type OwnChannelKey = (slug: string, channel: string) => string | undefined;
+
+/**
+ * Why a delivery ref may not be delivered for `agentSlug`, or undefined: a
+ * ref that names a bot is delivered only while that bot is the agent's own
+ * (removed, or given to another agent → refused). A ref without a bot (the
+ * shared bot, Teams, the web chat) is never refused here.
+ */
+export function ownBotRefusal(
+  ref: unknown,
+  agentSlug: string | null | undefined,
+  channel: string,
+  ownChannelKey: OwnChannelKey | undefined,
+): string | undefined {
+  const viaBot = asChannelKeyOf(ref);
+  if (viaBot === undefined) return undefined;
+  const own = agentSlug ? ownChannelKey?.(agentSlug, channel)?.trim().toLowerCase() : undefined;
+  if (own === viaBot) return undefined;
+  return `the bot '${viaBot}' this conversation came through is no longer ${agentSlug ?? 'the agent'}'s own bot`;
+}
+
 /**
  * Whether `authorId` (as a channel reports a message's author) is the bot with
  * routing key `ownKey`. A routing key is the author id itself (Teams

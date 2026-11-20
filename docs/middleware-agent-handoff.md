@@ -215,9 +215,17 @@ src/
   - Sie registrieren `publishProactiveSend(<typ>, …)` und posten über genau den Bot
     des Refs; die Nachricht trägt jetzt `speaker` (gemeinsamer Bot: Namenszeile wie
     bei einer Antwort; Agent-Bot: keine).
-  - `createProactiveGate` (`src/triggers/proactiveGate.ts`) liefert einen Ref mit
-    `asChannelKey` nur, solange `channelIdentityFor(agent, kanal)` genau dieser Bot ist
-    (entfernt oder umgehängt → nicht zugestellt, zählt als Fehlschlag).
+  - `ownBotRefusal` (`src/triggers/ownBot.ts`): ein Ref mit `asChannelKey` wird nur
+    zugestellt, solange `channelIdentityFor(agent, kanal)` genau dieser Bot ist. Geprüft
+    im Trigger-Gate vor dem Modell-Turn (`sendWindow` → `bot_no_longer_agents`) und
+    beim Senden, im `RoutineRunner` vor dem Turn (`deliveryRefusal`, pausiert die
+    Routine, auch bei „jetzt ausführen“).
+  - Ein Hook auf einem eigenen Bot hört nur, was dieser Bot empfangen hat
+    (`receivedByChannelKey` im Event-Payload; Telegram-DMs haben mit jedem Bot dieselbe
+    Chat-ID).
+  - Die Plugins setzen `conductorBinding: false`: Gruppen und Agent-Bots werden nie
+    das Conductor-Erinnerungsziel einer Person. Den Disposer von
+    `publishProactiveSend` rufen sie beim Deaktivieren auf.
   - `isOwnAuthor` vergleicht über `isOwnBotAuthor` (`src/triggers/ownBot.ts`): Key ==
     Autor-ID oder Key endet auf `:<Autor-ID>` (`tg:`, `discord-app:`, `slack-bot:`).
 

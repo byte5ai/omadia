@@ -3425,6 +3425,7 @@ tenant?: string;
 userId: string;
 channel: string;
 conversationRef: unknown;
+conductorBinding?: boolean;
 principalRef?: string;
 canTargetOthers?: boolean;
 }
@@ -3441,7 +3442,7 @@ speaker?: Speaker;
 id: string;
 name: string;
 cron: string;
-}) => Promise<void>): void;
+}) => Promise<void>): (() => void) | void;
 handleRoutineAction(input: {
 action: 'pause' | 'resume' | 'trigger_now' | 'delete';
 id: string;

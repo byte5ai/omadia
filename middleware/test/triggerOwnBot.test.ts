@@ -14,6 +14,7 @@ import { InMemoryProactiveSenderRegistry, type ProactiveSender } from '../src/pl
 import { routineTurnContext } from '../src/plugins/routines/routineTurnContext.js';
 import { asChannelKeyOf, isOwnBotAuthor } from '../src/triggers/ownBot.js';
 import { createProactiveGate } from '../src/triggers/proactiveGate.js';
+import { TriggerService } from '../src/triggers/triggerService.js';
 import type { Trigger } from '../src/triggers/types.js';
 
 const MIRA_BOT = 'tg:7000000001';
@@ -98,6 +99,11 @@ describe('proactive gate and an own bot', () => {
     }
   });
 
+  it('refuses before any model turn: the send window drops a bot that is no longer the agent\'s', async () => {
+    const { gate } = gateWith('tg:7000000009');
+    assert.deepEqual(await gate.sendWindow(trigger(viaMira), new Date()), { ok: false, drop: 'bot_no_longer_agents' });
+  });
+
   it('a conversation of the shared bot is delivered as before', async () => {
     const { gate, sent } = gateWith(undefined);
     const outcome = await gate.send(trigger({ kind: 'channel', conversationId: '42' }), { text: 'Reminder' } as SemanticAnswer);
@@ -107,6 +113,26 @@ describe('proactive gate and an own bot', () => {
 });
 
 describe('routines integration for channels without tenants', () => {
+  it('a turn with conductorBinding false opens the scope but binds nothing for reminders', async () => {
+    const captured: unknown[] = [];
+    const integ = createRoutinesIntegration({} as RoutinesHandle, (info) => captured.push(info));
+    const run = integ.beginRoutineTurn({ userId: 'u-1', channel: 'telegram', conversationRef: { conversationId: '-100777' }, conductorBinding: false });
+    assert.equal(await run(async () => routineTurnContext.current()?.userId), 'u-1');
+    assert.deepEqual(captured, []);
+  });
+
+  it('publishProactiveSend returns a disposer that removes only its own sender', async () => {
+    const senderRegistry = new InMemoryProactiveSenderRegistry();
+    const integ = createRoutinesIntegration({ senderRegistry } as unknown as RoutinesHandle);
+    const first = integ.publishProactiveSend('telegram', async () => undefined);
+    const second = integ.publishProactiveSend('telegram', async () => undefined);
+    const successor = senderRegistry.get('telegram');
+    (first as () => void)();
+    assert.equal(senderRegistry.get('telegram'), successor, 'a late dispose of the old instance keeps its successor');
+    (second as () => void)();
+    assert.equal(senderRegistry.get('telegram'), undefined);
+  });
+
   it("passes the speaker to the channel's proactive send", async () => {
     const senderRegistry = new InMemoryProactiveSenderRegistry();
     const integ = createRoutinesIntegration({ senderRegistry } as unknown as RoutinesHandle);
@@ -125,5 +151,46 @@ describe('routines integration for channels without tenants', () => {
     const tenant = await run(async () => routineTurnContext.current()?.tenant);
     assert.equal(tenant, 'tenant-x');
     assert.deepEqual(captured, ['tenant-x']);
+  });
+});
+
+describe('hooks and an own bot', () => {
+  async function heard(hookRef: unknown, receivedByChannelKey: string): Promise<number> {
+    const hook = {
+      id: 'h-1',
+      agentId: 'id-mira',
+      agentSlug: 'mira',
+      origin: 'agent',
+      contextKind: 'conversation',
+      contextId: 'telegram:42',
+      deliveryChannel: 'telegram',
+      deliveryRef: hookRef,
+      eventFilter: null,
+    } as unknown as Trigger;
+    const service = new TriggerService({
+      store: {
+        noteActivity: async () => undefined,
+        listHooks: async () => [hook],
+        enqueueEvent: async () => true,
+      } as never,
+      limits: {} as never,
+      eventSources: () => [],
+    } as never);
+    return service.onEvent(
+      'conversation.message.created',
+      { channelType: 'telegram', conversationId: '42', messageId: 'm1', authorId: '42', receivedByChannelKey },
+      'telegram:42:m1',
+    );
+  }
+
+  it("a hook set on an agent's own bot hears only what that bot received (a Telegram DM has one chat id for every bot)", async () => {
+    const viaMira = { kind: 'channel', conversationId: '42', asChannelKey: MIRA_BOT };
+    assert.equal(await heard(viaMira, MIRA_BOT), 1);
+    assert.equal(await heard(viaMira, 'tg:7000000002'), 0);
+    assert.equal(await heard(viaMira, 'tg:999'), 0);
+  });
+
+  it('a hook of the shared bot hears the conversation as before', async () => {
+    assert.equal(await heard({ kind: 'channel', conversationId: '42' }, 'tg:999'), 1);
   });
 });

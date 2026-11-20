@@ -84,6 +84,13 @@ export interface RoutineTurnInput {
    */
   conversationRef: unknown;
   /**
+   * Spec 2042 §5.12 — `false`: open the routines scope only; this
+   * conversation is NOT where the person is reached for Conductor reminders
+   * and approvals (a group, an agent's own bot). Absent / `true`: the kernel
+   * records it as the person's Conductor channel binding (Teams).
+   */
+  conductorBinding?: boolean;
+  /**
    * Operator-addressable principal id used as the Conductor channel-binding key, so proactive
    * reminders / approvals reach this user. For Teams this is the lowercased email/UPN — the id an
    * operator enters as a role holder or human-step principal. Omitted ⇒ the binding falls back to
@@ -171,6 +178,10 @@ export interface RoutinesIntegration {
    * rich approve/reject card (Teams) build it from this; others ignore it
    * and fall back to `message.text`.
    *
+   * Returns a disposer (kernels from plugin-api 1.79.0): a channel calls it
+   * when it deactivates, so nothing is delivered through a plugin that is no
+   * longer running. It removes only the sender it registered.
+   *
    * `message.speaker` (spec 2042 §5.3, §5.12) names who speaks: the agent a
    * trigger or routine fired for. A channel that shows a name line for a
    * shared bot builds it from this; through an agent's own bot none is
@@ -183,7 +194,7 @@ export interface RoutinesIntegration {
       message: { text: string; cardBody?: readonly unknown[]; approval?: ApprovalReminder; speaker?: Speaker },
       routine?: { id: string; name: string; cron: string },
     ) => Promise<void>,
-  ): void;
+  ): (() => void) | void;
 
   /**
    * Handle a button-click from a routine smart-card (Pause / Resume /

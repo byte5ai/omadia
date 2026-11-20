@@ -52,8 +52,13 @@ changelog.
   (`asChannelKey` on the delivery ref); the proactive gate delivers such a ref
   only while that bot is still the agent's. `publishProactiveSend` now passes the
   message's `speaker`; `RoutineTurnInput.tenant` is optional (deployment tenant).
+  The check runs before the model turn (trigger send window; the routine runner
+  pauses a routine whose bot is no longer its agent's, also on "trigger now").
   A hook never hears the agent's own bot (`isOwnAuthor` matches `tg:`,
-  `discord-app:`, `slack-bot:` keys against the raw author id).
+  `discord-app:`, `slack-bot:` keys against the raw author id), and a hook set
+  on an own bot hears only what that bot received (`receivedByChannelKey`).
+  These turns pass `conductorBinding: false` (no Conductor reminder target);
+  `publishProactiveSend` returns a disposer the plugins call on deactivation.
 - **Channel SDK:** `registerAgentIdentityProvider` / `AgentIdentityProvider`
   (additive). **Operator API:** `GET/PUT/DELETE
   /api/v1/operator/agents/:slug/channel-identities[/:channelType]`, audited.

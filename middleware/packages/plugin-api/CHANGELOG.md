@@ -26,6 +26,12 @@ step S7.
   through an agent's own bot names that bot on its delivery ref
   (`{ kind: 'channel', channelId, conversationId, asChannelKey }`); the kernel
   delivers such a ref only while the bot is still the delivering agent's.
+- **`RoutineTurnInput.conductorBinding`** (optional, default `true`): `false`
+  opens the routines scope without making the conversation the person's
+  Conductor reminder target (a group, an agent's own bot).
+- **`publishProactiveSend`** returns a disposer (`(() => void) | void`, void on
+  older kernels): a channel calls it on deactivation; it removes only the
+  sender it registered.
 
 ### Changed
 

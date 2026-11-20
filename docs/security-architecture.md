@@ -4066,6 +4066,22 @@ plugin cannot. Until then a bot whose agent is deleted keeps its row (tombstone)
 and is refused, never answered by another agent with other permissions; an agent
 bot the kernel does not know as an identity answers only with a `system` notice.
 
+**Triggers and routines through an agent's own bot (spec 2042 §5.12).** A turn
+through an agent's bot files its delivery ref with that bot (`asChannelKey`). A
+later delivery would otherwise say one agent's words through another agent's bot
+once the bot is removed or provisioned for someone else, with no name line,
+indistinguishable in the chat from that agent speaking. So every delivery path
+checks `ownBotRefusal` (`src/triggers/ownBot.ts`) against the agent's own key at
+delivery time: the trigger gate before the model turn (`sendWindow`, the firing
+is refused) and again before sending, and the routine runner before the turn
+(the routine pauses and says why, also for "trigger now"). A hook set on an own
+bot hears only messages that bot received (`receivedByChannelKey`), because a
+Telegram DM has the same chat id with every bot. These turns pass
+`conductorBinding: false`: a group or an agent's bot never becomes the place a
+person's Conductor reminders and approvals are posted. A plugin's proactive
+sender is removed when it deactivates (the disposer of `publishProactiveSend`
+removes only its own sender).
+
 ### Master-key posture is not on the public `/health` (#1385, #1387, #1332)
 
 The unauthenticated `GET /health` reports the database verdict

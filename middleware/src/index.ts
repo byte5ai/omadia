@@ -633,6 +633,7 @@ import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
 import { PeopleDirectoryRegistry } from './channels/peopleDirectoryRegistry.js';
 import { ConversationEventHub } from './channels/conversationEventHub.js';
 import { wireTriggers, type TriggerWiring } from './triggers/wiring.js';
+import { ownBotRefusal } from './triggers/ownBot.js';
 import { parseQuietHours } from './triggers/proactiveGate.js';
 import { DEFAULT_TRIGGER_LIMITS } from './triggers/triggerPolicy.js';
 import { createRoutineTriggerScheduler } from './triggers/routineTriggers.js';
@@ -3844,6 +3845,12 @@ async function main(): Promise<void> {
     routinesHandle = await initRoutines({
       pool: graphPool,
       scheduler: routineTriggerScheduler,
+      // Spec 2042 §5.3 — a routine set on an agent's own bot delivers only
+      // while that bot is still the routine's agent's.
+      deliveryRefusal: ({ agentSlug, channel, conversationRef }) =>
+        ownBotRefusal(conversationRef, agentSlug, channel, (slug, type) =>
+          serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')?.channelIdentityFor(slug, type)?.channelKey,
+        ),
       // #1598 — the routine's own orchestrator, with its plugin grants.
       // #2045 / #2046 — with the agent's emitter and speaker, so a routine's
       // answer passes the same identity guard and carries the same speaker.
@@ -7991,6 +7998,9 @@ async function main(): Promise<void> {
           messageId: event.messageId,
           authorId: event.author.id,
           authorKind: event.author.kind,
+          // Which bot heard it (spec 2042 §5.3): a hook set on an agent's own
+          // bot hears only that bot's conversation.
+          receivedByChannelKey: event.receivedByChannelKey,
         },
         `${event.channelType}:${event.conversationId}:${event.messageId}`,
       );

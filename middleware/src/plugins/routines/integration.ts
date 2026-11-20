@@ -51,6 +51,8 @@ export function createRoutinesIntegration(
 
   /** Conductor channel binding for reminders. Best-effort, never fatal. */
   function notifyTurnCaptured(info: RoutineTurnInput): void {
+    // A group or an agent's own bot is not where the person is reminded.
+    if (info.conductorBinding === false) return;
     try {
       onTurnCaptured?.({ userId: info.userId, principalRef: info.principalRef, channel: info.channel, conversationRef: info.conversationRef, tenant: tenantOf(info) });
     } catch {
@@ -91,7 +93,7 @@ export function createRoutinesIntegration(
     },
 
     publishProactiveSend(channel, send) {
-      handle.senderRegistry.register(
+      return handle.senderRegistry.register(
         createProactiveSender(channel, async (ref, msg, routine) => {
           await send(
             ref,
