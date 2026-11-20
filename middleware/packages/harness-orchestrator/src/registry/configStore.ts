@@ -1014,7 +1014,10 @@ export class ConfigStore {
 
   // ── channel identities (provisioned bots) ─────────────────────────────
   /**
-   * Every provisioned Microsoft Teams bot as a routing key.
+   * Every agent's own bot as a routing key: the provisioned Microsoft Teams
+   * bots below, plus the bots of other channels (`agent_channel_identities`).
+   *
+   * Teams:
    *
    * `agent_teams_identities` already holds the only mapping that matters —
    * `app_id` (the bot's Entra application id) against the agent it was
@@ -1037,6 +1040,14 @@ export class ConfigStore {
    * snapshot load, and with it the registry boot, down with it.
    */
   async listChannelIdentities(): Promise<readonly ChannelIdentityRow[]> {
+    const [teams, others] = await Promise.all([
+      this.listTeamsIdentities(),
+      this.listOtherChannelIdentities(),
+    ]);
+    return [...teams, ...others];
+  }
+
+  private async listTeamsIdentities(): Promise<readonly ChannelIdentityRow[]> {
     try {
       const { rows } = await this.pool.query<{
         agent_id: string;
@@ -1049,6 +1060,34 @@ export class ConfigStore {
       );
       return rows.map((r) => ({
         channelType: 'teams',
+        channelKey: r.channel_key,
+        agentId: r.agent_id,
+      }));
+    } catch (err) {
+      if (isUndefinedTable(err)) return [];
+      throw err;
+    }
+  }
+
+  /**
+   * Spec 2042 §5.3 — an agent's own bot on every other channel (Telegram,
+   * Discord, Slack; migration 0105). The channel plugin that runs the bot
+   * chose the key when it was registered, so it is read as stored. Same
+   * missing-table tolerance as the Teams source.
+   */
+  private async listOtherChannelIdentities(): Promise<readonly ChannelIdentityRow[]> {
+    try {
+      const { rows } = await this.pool.query<{
+        agent_id: string;
+        channel_type: string;
+        channel_key: string;
+      }>(
+        `SELECT agent_id::text AS agent_id, channel_type, channel_key
+           FROM agent_channel_identities
+          ORDER BY channel_type, channel_key`,
+      );
+      return rows.map((r) => ({
+        channelType: r.channel_type,
         channelKey: r.channel_key,
         agentId: r.agent_id,
       }));
