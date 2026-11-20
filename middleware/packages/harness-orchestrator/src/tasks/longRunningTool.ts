@@ -95,7 +95,10 @@ const TASK_CONTEXT_KEY = '__omadia_execution_context';
 
 type StoredTaskContext = Pick<ModelExecutionContext, 'kind' | 'ownerId' | 'agentSlug'>;
 
-function withTaskContext(input: object): object {
+function withTaskContext(raw: object): object {
+  // The input comes from the model: a context key in it is never trusted,
+  // only the one this turn really runs in is stored.
+  const { [TASK_CONTEXT_KEY]: _forged, ...input } = raw as Record<string, unknown>;
   const context = currentExecutionContext();
   if (context === undefined) return input;
   const stored: StoredTaskContext = {

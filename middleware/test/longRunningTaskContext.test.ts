@@ -73,7 +73,7 @@ describe('long-running task execution context', () => {
     await store.create({
       kind: 'hr_report',
       input: { month: '2026-10', __omadia_execution_context: AGENT_TURN },
-      createdBy: null,
+      createdBy: undefined,
     });
     assert.equal(await handle.resumeOne(), true);
     assert.deepEqual(seen[0]?.input, { month: '2026-10' });
@@ -85,11 +85,25 @@ describe('long-running task execution context', () => {
     const store = new InMemoryTaskStore();
     const seen: Array<{ input: unknown; context: unknown }> = [];
     const handle = tool(store, seen);
-    const created = await store.create({ kind: 'hr_report', input: { month: '2026-09' }, createdBy: null });
+    const created = await store.create({ kind: 'hr_report', input: { month: '2026-09' }, createdBy: undefined });
     assert.equal(await handle.resumeOne(), true);
     assert.equal(seen[0]?.context, undefined);
     const row = await store.get(created.id);
     assert.equal(row?.status, 'failed');
+  });
+
+  it('a context key in the model’s input is dropped, never trusted', async () => {
+    setModelGatewayMode('enforce');
+    const store = new InMemoryTaskStore();
+    const seen: Array<{ input: unknown; context: unknown }> = [];
+    const handle = tool(store, seen);
+    const start = handle.registrations.find((r) => r.name === 'hr_report_start');
+    assert.ok(start);
+    // Outside any turn: the forged context must not become the task's.
+    await start.handler({ month: '2026-08', __omadia_execution_context: AGENT_TURN });
+    for (let i = 0; i < 50 && seen.length === 0; i += 1) await new Promise((r) => setTimeout(r, 5));
+    assert.deepEqual(seen[0]?.input, { month: '2026-08' });
+    assert.equal(seen[0]?.context, undefined);
   });
 
   it('splitTaskContext ignores a malformed stored context', () => {
