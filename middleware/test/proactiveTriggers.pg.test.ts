@@ -207,6 +207,10 @@ describe('#2082 proactive triggers through the kernel wiring (pg, 0093 + 0094)',
       }),
     ) as { created: { id: string } };
     assert.match(await call('cancel_trigger', { id: '00000000-0000-0000-0000-000000000000' }), /no such trigger/);
+    // From another conversation the trigger is neither listed nor cancellable.
+    const elsewhere = JSON.parse(await call('list_triggers', {}, salesChat)) as { triggers: unknown[] };
+    assert.deepEqual(elsewhere.triggers, []);
+    assert.match(await call('cancel_trigger', { id: created.created.id }, salesChat), /no such trigger/);
     assert.deepEqual(JSON.parse(await call('cancel_trigger', { id: created.created.id })), { cancelled: created.created.id });
     assert.equal(await wiring.service.get(created.created.id), undefined);
   });

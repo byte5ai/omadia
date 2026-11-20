@@ -127,12 +127,12 @@ export const triggerToolSpecs: Record<TriggerToolName, NativeToolSpec> = {
   list_triggers: {
     name: 'list_triggers',
     description:
-      'What you are currently watching or waiting for (your hooks, wakeups and timers with purpose, deadline and cost so far), and the events you could hook. Use it when someone asks what you are watching for them.',
+      'What you are currently watching or waiting for in this conversation (your hooks, wakeups and timers with purpose, deadline and cost so far), and the events you could hook. Use it when someone asks what you are watching for them.',
     input_schema: { type: 'object', properties: {} },
   },
   cancel_trigger: {
     name: 'cancel_trigger',
-    description: 'End one of your triggers early (id from list_triggers).',
+    description: 'End one of your triggers in this conversation early (id from list_triggers).',
     input_schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
   },
 };
@@ -191,22 +191,30 @@ export function createTriggerToolHandler(name: TriggerToolName, deps: TriggerToo
     if (!turn) return 'Error (no_context): triggers can only be set in a conversation with a person.';
     const raw = isRecord(input) ? input : {};
 
+    const conversationId = conversationIdOf(turn.conversationRef);
+    // The agent sees and ends only what it set itself in THIS conversation:
+    // not other conversations' hooks, not a person's routine, not the
+    // system's schedules or batch jobs.
+    const here = conversationContextId(turn.channel, conversationId);
+    const ownHere = (t: Trigger): boolean => t.agentId === turn.agentId && t.origin === 'agent' && t.contextId === here;
+
     if (name === 'list_triggers') {
-      const mine = await deps.service.listForAgent(turn.agentId);
+      const mine = (await deps.service.listForContext('conversation', here)).concat(
+        await deps.service.listForContext('meeting', here),
+      );
       return JSON.stringify({
-        triggers: mine.map(triggerSummary),
+        triggers: mine.filter(ownHere).map(triggerSummary),
         eventSources: deps.service.eventSourcesFor(turn.agentSlug),
       });
     }
     if (name === 'cancel_trigger') {
       const id = typeof raw['id'] === 'string' ? raw['id'] : '';
       const t = /^[0-9a-f-]{36}$/i.test(id) ? await deps.service.get(id) : undefined;
-      if (!t || t.agentId !== turn.agentId) return 'Error (invalid): no such trigger of yours.';
+      if (!t || !ownHere(t)) return 'Error (invalid): no such trigger of yours in this conversation.';
       await deps.service.end(t.id, 'cancelled', { by: `agent:${turn.agentSlug}` });
       return JSON.stringify({ cancelled: t.id });
     }
 
-    const conversationId = conversationIdOf(turn.conversationRef);
     const wantsMeeting = raw['context'] === 'meeting';
     if (wantsMeeting && !isMeetingConversation(conversationId)) {
       return 'Error (invalid): this conversation is not a meeting; use context "conversation".';
