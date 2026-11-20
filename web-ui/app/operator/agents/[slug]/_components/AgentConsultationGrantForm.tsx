@@ -41,6 +41,14 @@ function enabledPlugins(agent: OperatorAgentDto | undefined): Set<string> {
   return new Set((agent?.plugins ?? []).filter((p) => p.enabled).map((p) => p.id));
 }
 
+/**
+ * The level the runtime applies to a key: the key itself, else `default`,
+ * else `none` (the order `levelFor` reads a policy in).
+ */
+export function effectiveLevel(disclosure: Readonly<Record<string, DisclosureLevel>>, key: string): DisclosureLevel {
+  return disclosure[key] ?? disclosure['default'] ?? 'none';
+}
+
 function clampInt(raw: string, max: number, fallback: number): number {
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n)) return fallback;
@@ -68,6 +76,10 @@ export function AgentConsultationGrantForm(props: GrantFormProps): React.ReactEl
     const theirs = enabledPlugins(target);
     return [...mine].filter((id) => theirs.has(id)).sort();
   }, [props.self, target]);
+  // A stored capability one of the agents no longer holds stays listed (and
+  // kept on save): it has no effect now, but comes back with the plugin.
+  const stale = (editing?.allowedCapabilities ?? []).filter((id) => !shared.includes(id)).sort();
+  const offered = [...shared, ...stale];
 
   const toggleCapability = (id: string, on: boolean): void => {
     setCapabilities((prev) => (on ? [...prev.filter((c) => c !== id), id] : prev.filter((c) => c !== id)));
@@ -80,7 +92,7 @@ export function AgentConsultationGrantForm(props: GrantFormProps): React.ReactEl
   const submit = (): void => {
     if (!to) return;
     props.onSubmit(to, {
-      allowedCapabilities: capabilities.filter((c) => shared.includes(c)),
+      allowedCapabilities: capabilities.filter((c) => offered.includes(c)),
       memoryAccess,
       disclosure,
       maxCallsPerTurn: clampInt(perTurn, MAX_CALLS_PER_TURN, DEFAULT_CALLS_PER_TURN),
@@ -119,10 +131,10 @@ export function AgentConsultationGrantForm(props: GrantFormProps): React.ReactEl
       <fieldset className="flex flex-col gap-1 text-xs">
         <legend className="mb-1 text-[color:var(--fg-muted)]">{t('capabilitiesLabel')}</legend>
         <p className="text-[color:var(--fg-muted)]">{t('capabilitiesHint')}</p>
-        {!to ? null : shared.length === 0 ? (
+        {!to ? null : offered.length === 0 ? (
           <p className="text-sm text-[color:var(--fg-muted)]">{t('capabilitiesNone')}</p>
         ) : (
-          shared.map((id) => (
+          offered.map((id) => (
             <label key={id} className="flex cursor-pointer items-center gap-2 text-sm">
               <input
                 type="checkbox"
@@ -131,6 +143,9 @@ export function AgentConsultationGrantForm(props: GrantFormProps): React.ReactEl
                 onChange={(e) => toggleCapability(id, e.target.checked)}
               />
               <code className="text-xs">{id}</code>
+              {stale.includes(id) && (
+                <span className="text-xs text-[color:var(--fg-muted)]">{t('capabilityNotShared')}</span>
+              )}
             </label>
           ))
         )}
@@ -161,7 +176,7 @@ export function AgentConsultationGrantForm(props: GrantFormProps): React.ReactEl
             <span className="min-w-48">{t(`disclosureKeys.${key}`)}</span>
             <select
               className={selectClass}
-              value={disclosure[key] ?? 'none'}
+              value={effectiveLevel(disclosure, key)}
               disabled={props.busy}
               onChange={(e) => setLevel(key, e.target.value as DisclosureLevel)}
             >

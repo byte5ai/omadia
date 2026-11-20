@@ -148,4 +148,21 @@ describe('<AgentConsultation />', () => {
     fireEvent.click(await screen.findByLabelText(/Darf befragt werden/));
     expect(await screen.findByRole('alert')).toHaveTextContent('Facilitatoren befragen niemanden');
   });
+
+  it('shows the level the runtime applies: `default` when `context` is not set', async () => {
+    mockGet.mockResolvedValue(state({ consults: [grant({ disclosure: { default: 'full' } })] }));
+    renderWithIntl(<AgentConsultation agent={anna} />);
+    expect(await screen.findByText(/other conversations: In full/)).toBeTruthy();
+  });
+
+  it('keeps a stored capability the agents no longer share when the grant is edited', async () => {
+    mockGet.mockResolvedValue(state({ consults: [grant({ allowedCapabilities: ['crm', 'legacy'] })] }));
+    renderWithIntl(<AgentConsultation agent={anna} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    expect(screen.getByText(/no longer held by both agents/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Save grant' }));
+    await waitFor(() =>
+      expect(mockPut).toHaveBeenCalledWith('anna', 'ben', expect.objectContaining({ allowedCapabilities: ['crm', 'legacy'] })),
+    );
+  });
 });

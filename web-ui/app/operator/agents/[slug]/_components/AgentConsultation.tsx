@@ -17,7 +17,7 @@ import {
   type ConsultationGrantInput,
 } from '../../../../_lib/consultation';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
-import { AgentConsultationGrantForm } from './AgentConsultationGrantForm';
+import { AgentConsultationGrantForm, effectiveLevel } from './AgentConsultationGrantForm';
 
 interface AgentConsultationProps {
   readonly agent: OperatorAgentDto;
@@ -98,7 +98,7 @@ export function AgentConsultation(props: AgentConsultationProps): React.ReactEle
     t('grantSummary', {
       capabilities: g.allowedCapabilities.length,
       memory: t(`memoryAccess.${g.memoryAccess}`),
-      context: t(`disclosureLevels.${g.disclosure.context ?? 'none'}`),
+      context: t(`disclosureLevels.${effectiveLevel(g.disclosure, 'context')}`),
       perTurn: g.maxCallsPerTurn,
       perDay: g.maxCallsPerDay,
     });

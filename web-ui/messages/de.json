@@ -2115,6 +2115,7 @@
       "not_found": "Diesen Orchestrator gibt es nicht mehr — lad die Seite neu.",
       "plugin_not_assigned": "Dieses Plugin ist dem Orchestrator nicht mehr zugewiesen — lad die Seite neu.",
       "model_policy_unavailable": "Der Modell-Katalog ist gerade nicht verfügbar — die Policy kann nicht geprüft werden. Versuch es gleich noch einmal.",
+      "context_memory_required": "Das Kontextgedächtnis kann für einen Agenten mit Capability-Grants nicht ausgeschaltet werden. Wähle „Geteilt unter den Anwesenden“ oder einen der getrennten Modi.",
       "unknown": "Request fehlgeschlagen: {detail}"
     },
     "statusEnabled": "aktiviert",
@@ -2387,6 +2388,7 @@
       "capabilitiesLabel": "Fähigkeiten, die der befragte Agent nutzen darf",
       "capabilitiesHint": "Angeboten werden nur Plugins, die beide Agenten haben: Eine Rückfrage reicht nie weiter als das, was jeder der beiden selbst darf.",
       "capabilitiesNone": "Die beiden Agenten teilen kein aktives Plugin. Der befragte Agent kann trotzdem aus seinen Anweisungen antworten.",
+      "capabilityNotShared": "nicht mehr bei beiden Agenten aktiv; wirkt erst wieder, wenn beide es haben",
       "memoryAccessLabel": "Eigenes Gedächtnis des befragten Agenten",
       "memoryAccess": {
         "none": "Nicht genutzt",
@@ -2422,7 +2424,7 @@
     },
     "contextMemory": {
       "heading": "Chat-Kontext-Memory",
-      "hint": "Legt fest, ob dieser Orchestrator ein gemeinsames Memory führt oder je Chat-Kontext (Team, Kanal, Direktnachricht) ein eigenes. „Aus“ ist die Voreinstellung und entspricht dem Verhalten vor dieser Funktion.",
+      "hint": "Legt fest, ob dieser Orchestrator ein gemeinsames Memory führt oder je Chat-Kontext (Team, Kanal, Direktnachricht) ein eigenes. Neue Agenten starten mit „Geteilt unter den Anwesenden“; früher angelegte Agenten behalten ihren Modus. „Aus“ ist nicht möglich, solange der Agent Capability-Grants hat.",
       "loading": "Memory-Einstellung wird geladen…",
       "stateSummary": "Aktuell: {mode}",
       "stateUnknown": "Aktuell: unbekannt",
@@ -2438,7 +2440,7 @@
       "modes": {
         "off": {
           "label": "Aus",
-          "description": "Ein gemeinsames Memory für alle Turns. Voreinstellung und identisch mit dem Verhalten vor dieser Funktion."
+          "description": "Ein gemeinsames Memory für alle Turns, wie vor dieser Funktion. Nicht möglich für einen Agenten mit Capability-Grants."
         },
         "enforce": {
           "label": "Je Kontext getrennt",

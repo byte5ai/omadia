@@ -2115,6 +2115,7 @@
       "not_found": "This orchestrator does not exist anymore — reload the page.",
       "plugin_not_assigned": "This plugin is not assigned to the orchestrator anymore — reload the page.",
       "model_policy_unavailable": "The model catalogue is not available right now — the policy cannot be validated. Try again in a moment.",
+      "context_memory_required": "Context memory cannot be off for an agent that holds capability grants. Choose “Shared by the people present” or one of the separate modes.",
       "unknown": "Request failed: {detail}"
     },
     "statusEnabled": "enabled",
@@ -2387,6 +2388,7 @@
       "capabilitiesLabel": "Capabilities the colleague may use",
       "capabilitiesHint": "Only plugins both agents hold are offered: a consultation never reaches beyond what either agent may do on its own.",
       "capabilitiesNone": "The two agents share no enabled plugin. The colleague can still answer from its instructions.",
+      "capabilityNotShared": "no longer held by both agents; takes effect again once both hold it",
       "memoryAccessLabel": "Colleague's own memory",
       "memoryAccess": {
         "none": "Not used",
@@ -2422,7 +2424,7 @@
     },
     "contextMemory": {
       "heading": "Chat-context memory",
-      "hint": "Controls whether this orchestrator keeps one shared memory tree or a separate tree per chat context (team, channel, direct message). Off is the default and matches the behaviour before this feature existed.",
+      "hint": "Controls whether this orchestrator keeps one shared memory tree or a separate tree per chat context (team, channel, direct message). New agents start with “Shared by the people present”; agents created earlier keep their mode. Off is not available while the agent holds capability grants.",
       "loading": "Loading the memory setting…",
       "stateSummary": "Current: {mode}",
       "stateUnknown": "Current: unknown",
@@ -2438,7 +2440,7 @@
       "modes": {
         "off": {
           "label": "Off",
-          "description": "One shared memory tree for every turn. The default, and identical to the behaviour before this feature."
+          "description": "One shared memory tree for every turn, as before this feature. Not available for an agent that holds capability grants."
         },
         "enforce": {
           "label": "Separate per context",
