@@ -522,6 +522,49 @@ export function createAgentBuilderRouter(
     return gate.audit ?? null;
   }
 
+  /**
+   * #2054 — the broad-reach check of a plugin MCP grant, for every agent with
+   * an enabled grant of the plugin. Answers 409 (naming the agents) and
+   * `undefined` when one would become broad without `confirmBroadReach`;
+   * else the audits to record once the grant is written.
+   */
+  async function pluginMcpGrantBroadReachGate(
+    l: Live,
+    req: Request,
+    res: Response,
+    pluginId: string,
+    mcpServerId: string,
+  ): Promise<AuditEntryInput[] | undefined> {
+    const [agents, rows] = await Promise.all([l.config.listAgents(), l.config.listAllAgentPlugins()]);
+    const holders = agents.filter((a) => rows.some((r) => r.agentId === a.id && r.pluginId === pluginId && r.enabled));
+    const confirmed = (req.body as { confirmBroadReach?: unknown } | undefined)?.confirmBroadReach === true;
+    const audits: AuditEntryInput[] = [];
+    const refusedSlugs: string[] = [];
+    let refusal: unknown;
+    for (const agent of holders) {
+      const gate = await requireBroadReachConfirmation({
+        sources: { ...(options.getReachPluginSources?.() ?? {}), graph: l.graph },
+        agent,
+        change: 'grant',
+        currentPlugins: rows.filter((r) => r.agentId === agent.id),
+        proposed: { addPluginMcpGrants: [{ pluginId, mcpServerId }] },
+        confirmed,
+        actor: auditActorFromRequest(req),
+      });
+      if (!gate.ok) {
+        refusedSlugs.push(agent.slug);
+        refusal ??= gate.body;
+      } else if (gate.audit) {
+        audits.push(gate.audit);
+      }
+    }
+    if (refusedSlugs.length > 0) {
+      res.status(409).json({ ...(refusal as Record<string, unknown>), slugs: refusedSlugs });
+      return undefined;
+    }
+    return audits;
+  }
+
   async function recordBroadReachAudit(entry: AuditEntryInput | null): Promise<void> {
     if (!entry) return;
     try {
@@ -1749,7 +1792,13 @@ export function createAgentBuilderRouter(
         res.status(401).json({ error: 'unauthenticated' });
         return;
       }
+      // #2054 — the server becomes reachable for every agent that holds the
+      // plugin; each one that would thereby reach every connected system
+      // needs the confirmation, and each is audited.
+      const audits = await pluginMcpGrantBroadReachGate(l, req, res, pluginId, mcpServerId);
+      if (audits === undefined) return;
       await l.graph.upsertPluginMcpGrant(pluginId, mcpServerId, actor);
+      for (const entry of audits) await recordBroadReachAudit(entry);
       res.json({ pluginId, serverId: mcpServerId, grantedBy: actor });
     } catch (err) {
       fail(res, err);

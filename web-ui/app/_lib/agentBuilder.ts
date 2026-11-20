@@ -759,11 +759,19 @@ export async function grantMcpToolToOrchestrator(
   agentSlug: string,
   mcpServerId: string,
   toolName: string,
-): Promise<void> {
+  opts?: { confirmBroadReach?: boolean },
+): Promise<true> {
   await callJson('/v1/operator/mcp-grants', {
     method: 'PUT',
-    body: JSON.stringify({ agentSlug, mcpServerId, toolName }),
+    body: JSON.stringify({
+      agentSlug,
+      mcpServerId,
+      toolName,
+      // #2054 — answers `broad_reach_confirmation_required`.
+      ...(opts?.confirmBroadReach ? { confirmBroadReach: true } : {}),
+    }),
   });
+  return true;
 }
 
 /**
@@ -801,7 +809,7 @@ export async function replaceMcpToolAllowlist(
   agentSlug: string,
   mcpServerId: string,
   toolNames: string[],
-  opts?: { delegation?: McpDelegation },
+  opts?: { delegation?: McpDelegation; confirmBroadReach?: boolean },
 ): Promise<McpToolAllowlistResult> {
   return callJson<McpToolAllowlistResult>('/v1/operator/mcp-grants', {
     method: 'PUT',
@@ -810,6 +818,8 @@ export async function replaceMcpToolAllowlist(
       mcpServerId,
       toolNames,
       ...(opts?.delegation !== undefined ? { delegation: opts.delegation } : {}),
+      // #2054 — answers `broad_reach_confirmation_required`.
+      ...(opts?.confirmBroadReach ? { confirmBroadReach: true } : {}),
     }),
   });
 }
@@ -883,10 +893,16 @@ export async function listMcpPluginCandidates(): Promise<{
   return callJson('/v1/operator/mcp-plugin-candidates');
 }
 
-export async function grantPluginMcpServer(pluginId: string, mcpServerId: string): Promise<void> {
+/** #2054 — `confirmBroadReach`: the operator confirmed that the grant gives
+ *  an agent holding the plugin every connected system (409 otherwise). */
+export async function grantPluginMcpServer(
+  pluginId: string,
+  mcpServerId: string,
+  confirmBroadReach = false,
+): Promise<void> {
   await callJson('/v1/operator/plugin-mcp-grants', {
     method: 'PUT',
-    body: JSON.stringify({ pluginId, mcpServerId }),
+    body: JSON.stringify({ pluginId, mcpServerId, ...(confirmBroadReach ? { confirmBroadReach: true } : {}) }),
   });
 }
 

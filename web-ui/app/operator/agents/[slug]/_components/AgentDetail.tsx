@@ -13,6 +13,8 @@ import {
   type OperatorAgentDto,
   type PluginCatalogEntryDto,
 } from '../../../../_lib/agents';
+import { AgentReachPanel } from '@/app/_components/agents/AgentReach';
+import { useBroadReachConfirm } from '@/app/_components/agents/useBroadReachConfirm';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
 import { useFacilitatorRefusalMessage } from '../../_components/useFacilitatorCopy';
 import { PluginsDnd } from '../../_components/PluginsDnd';
@@ -90,6 +92,7 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
 
 function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
   const t = useTranslations('operatorAgents');
+  const broadReach = useBroadReachConfirm();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [busy, setBusy] = useState<string | null>(null);
@@ -212,10 +215,10 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
                       })}
                       onChange={() =>
                         run(`toggle:${p.id}`, () =>
-                          toggleAgentPlugin(
-                            props.agent.slug,
-                            p.id,
-                            !p.enabled,
+                          broadReach.guard(props.agent.name, (confirm) =>
+                            toggleAgentPlugin(props.agent.slug, p.id, !p.enabled, {
+                              confirmBroadReach: confirm,
+                            }),
                           ),
                         )
                       }
@@ -245,7 +248,10 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
             onReplace={(plugins) =>
               run(
                 'plugins',
-                () => replaceAgentPlugins(props.agent.slug, plugins),
+                () =>
+                  broadReach.guard(props.agent.name, (confirm) =>
+                    replaceAgentPlugins(props.agent.slug, plugins, { confirmBroadReach: confirm }),
+                  ),
                 { remountEditor: true },
               )
             }
@@ -263,6 +269,10 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
 
   return (
     <div className="space-y-8">
+      {broadReach.dialog}
+      {/* #2054 — the agent's reach: every connected system it can read or
+          write through its grants (spec 2042 §5.7). */}
+      <AgentReachPanel reach={props.agent.reach} />
       {error && (
         <div
           role="alert"

@@ -162,7 +162,11 @@ async function harness(): Promise<Harness> {
         },
       ]),
     listToolGrantsForAgent: (agentId: string) =>
-      Promise.resolve(
+      // Like Postgres: the agent columns are UUIDs, so an id of an agent that
+      // does not exist yet ('' or anything else that is no id) throws 22P02.
+      !agentId
+        ? Promise.reject(new Error('invalid input syntax for type uuid: ""'))
+        : Promise.resolve(
         agentId === store.agents.find((a) => a.slug === 'sales')?.id
           ? [{ id: 'g1', agentId, subAgentId: null, toolKind: 'mcp', toolRef: 'jira:search', mcpServerId: JIRA_SERVER, config: {}, createdAt: new Date(0) }]
           : [],
@@ -272,6 +276,25 @@ describe('#2054 — reach, broad-reach confirmation and first-run flow', () => {
     const again = await call(h, 'PATCH', '/sales/plugins', { id: SEARCH, enabled: false });
     assert.equal(again.status, 200);
     assert.equal(h.audits.length, 1);
+  });
+
+  it('only capability plugins are newly granted; a row the agent already has stays', async () => {
+    h = await harness();
+    const sales = await h.store.createAgent({ slug: 'sales', name: 'Sales' });
+    const put = await call(h, 'PUT', '/sales/plugins', { plugins: [{ id: ODOO }, { id: TEAMS }] });
+    assert.equal(put.status, 400);
+    assert.equal(put.json['error'], 'not_a_capability_plugin');
+    assert.deepEqual(put.json['plugin_ids'], [TEAMS]);
+    assert.deepEqual(h.store.plugins, [], 'nothing written');
+    const patch = await call(h, 'PATCH', '/sales/plugins', { id: TEAMS, enabled: true });
+    assert.equal(patch.status, 400);
+
+    // A channel row from before least privilege: kept, and may be toggled off.
+    await h.store.upsertAgentPlugin(sales.id, { pluginId: TEAMS, config: {}, enabled: true });
+    const keep = await call(h, 'PUT', '/sales/plugins', { plugins: [{ id: ODOO }, { id: TEAMS }] });
+    assert.equal(keep.status, 200);
+    const off = await call(h, 'PATCH', '/sales/plugins', { id: TEAMS, enabled: false });
+    assert.equal(off.status, 200);
   });
 
   it('the replace-set PUT is gated the same way; a grant short of everything is not', async () => {

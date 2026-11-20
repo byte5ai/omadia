@@ -61,10 +61,15 @@ export async function loadReachEnvironment(sources: ReachSources): Promise<Reach
   };
 }
 
+/**
+ * `agentId` `undefined`: an agent that does not exist yet (the first-run
+ * flow's create path) — it has no tool grants of its own, only the plugin
+ * rows it is about to get.
+ */
 export async function loadReachGrants(
   sources: ReachSources,
   env: ReachEnvironment,
-  agentId: string,
+  agentId: string | undefined,
   pluginRows: readonly ReachPluginRow[],
 ): Promise<ReachGrants> {
   const plugins = pluginRows.map((p) => ({ pluginId: p.pluginId, enabled: p.enabled }));
@@ -72,7 +77,7 @@ export async function loadReachGrants(
   if (!graph) return { plugins, mcpToolGrants: [], pluginMcpGrants: [] };
   const serverNames = new Map(env.mcpServers.map((s) => [s.id, s.name]));
   const [toolGrants, pluginMcpGrants] = await Promise.all([
-    graph.listToolGrantsForAgent(agentId),
+    agentId === undefined ? Promise.resolve([]) : graph.listToolGrantsForAgent(agentId),
     graph.listPluginMcpGrantsForPlugins(plugins.map((p) => p.pluginId)),
   ]);
   return {

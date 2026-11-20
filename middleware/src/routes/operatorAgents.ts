@@ -12,6 +12,7 @@ import {
   FALLBACK_AGENT_SLUG,
   mcpToolNameFromRef,
   type AgentGraphStore,
+  type AgentRow,
   AGENT_TO_AGENT_MODES,
   assertArchetypeAllows,
   FACILITATOR_ARCHETYPE,
@@ -1965,6 +1966,42 @@ export function createOperatorAgentsRouter(
     graph: options.getAgentGraphStore?.(),
   });
 
+  /**
+   * #2054 — spec 2042 §5.10: an agent is granted capability plugins (and an
+   * archetype plugin of its own archetype, the facilitator's engine). A NEW
+   * grant of anything else (channel, model, system module, template) is
+   * refused with 400 `not_a_capability_plugin`; rows the agent already has
+   * stay as they are. Answers and returns `true` when refused. Without a
+   * plugin catalog wired (test seams) nothing can be classified and the
+   * archetype guards above are the only check.
+   */
+  const refusedNonCapabilityGrant = (
+    res: Response,
+    agent: AgentRow,
+    requested: readonly { readonly pluginId: string; readonly enabled?: boolean | undefined }[],
+    current: readonly { readonly pluginId: string }[],
+  ): boolean => {
+    const catalog = options.getPluginCatalog?.();
+    if (!catalog) return false;
+    const held = new Set(current.map((r) => r.pluginId));
+    const own = archetypeOf(agent);
+    const refused = requested
+      .filter((g) => g.enabled !== false && !held.has(g.pluginId))
+      .map((g) => g.pluginId)
+      .filter((id) => {
+        const plugin = catalog.get(id)?.plugin;
+        if (isCapabilityPlugin(plugin)) return false;
+        return !(plugin?.kind === 'archetype' && plugin.archetype?.id === own);
+      });
+    if (refused.length === 0) return false;
+    res.status(400).json({
+      error: 'not_a_capability_plugin',
+      message: `only capability plugins can be granted to an agent; refused: ${refused.join(', ')}`,
+      plugin_ids: refused,
+    });
+    return true;
+  };
+
   /** #2054 — answers a refused broad-reach change; `true` = refused. */
   const refusedBroadReach = (res: Response, gate: BroadReachConfirmation): boolean => {
     if (gate.ok) return false;
@@ -2173,11 +2210,11 @@ export function createOperatorAgentsRouter(
         return;
       }
       // The reach check runs against the agent the flow writes; a new agent
-      // has no grants yet, so its id is irrelevant to the result.
+      // does not exist yet and has no tool grants (`id: undefined`).
       const agentRef =
         target.kind === 'seed'
           ? { id: target.agent.id, slug: target.agent.slug }
-          : { id: '', slug: firstAgentSlug(body.name, RESERVED_AGENT_SLUGS) };
+          : { id: undefined, slug: firstAgentSlug(body.name, RESERVED_AGENT_SLUGS) };
       const gate = await requireBroadReachConfirmation({
         sources: reachSources(),
         agent: agentRef,
@@ -3262,6 +3299,7 @@ export function createOperatorAgentsRouter(
       const toggled = [{ pluginId: body.id, enabled: body.enabled }];
       assertFacilitatorPluginGrants(existing, toggled, engineSources());
       assertEngineOnlyForFacilitators(existing, toggled, engineSources());
+      if (refusedNonCapabilityGrant(res, existing, toggled, current)) return;
       // #2054 — a grant that gives the agent every connected system needs
       // the operator's explicit confirmation, and is audited.
       const gate = await requireBroadReachConfirmation({
@@ -4424,6 +4462,7 @@ export function createOperatorAgentsRouter(
       assertFacilitatorPluginGrants(existing, requested, engineSources());
       assertEngineOnlyForFacilitators(existing, requested, engineSources());
       const current = await live.store.listAgentPlugins(existing.id);
+      if (refusedNonCapabilityGrant(res, existing, requested, current)) return;
       // #2054 — see the PATCH above.
       const gate = await requireBroadReachConfirmation({
         sources: reachSources(),

@@ -2128,7 +2128,8 @@
       "not_found": "This orchestrator does not exist anymore — reload the page.",
       "plugin_not_assigned": "This plugin is not assigned to the orchestrator anymore — reload the page.",
       "model_policy_unavailable": "The model catalogue is not available right now — the policy cannot be validated. Try again in a moment.",
-      "unknown": "Request failed: {detail}"
+      "unknown": "Request failed: {detail}",
+      "broad_reach_confirmation_required": "This change would give the agent access to every connected system and needs your explicit confirmation."
     },
     "statusEnabled": "enabled",
     "statusDisabled": "disabled",
@@ -2148,10 +2149,6 @@
     "pluginsHeading": "Plugins",
     "bindingsHeading": "Channel bindings",
     "save": "Save",
-    "actionRehydrateFallback": "Reset standard to all plugins",
-    "rehydrateTooltip": "Re-attaches every installed plugin to the current standard Orchestrator — restores day-1 capabilities.",
-    "rehydrateConfirm": "Re-attach every installed plugin to the standard Orchestrator? Existing plugin configs are preserved; newly added plugins start with empty config.",
-    "rehydrateDone": "Standard rehydrated: {attached} of {requested} plugins attached.",
     "catalogError": "Failed to load the plugin catalog ({message}). The multi-select falls back to manual mode.",
     "catalogLoading": "Loading plugin catalog…",
     "catalogEmpty": "No installed plugins.",
@@ -3132,8 +3129,7 @@
     "confirmAction": {
       "cancel": "Cancel",
       "typedMismatch": "That is not the slug."
-    },
-    "rehydrateConfirmYes": "Rehydrate"
+    }
   },
   "builder": {
     "issueReport": {
@@ -4647,14 +4643,14 @@
       "update": "Update",
       "installed": "Installed",
       "active": "active",
-      "installedNext": "\"{name}\" installed — attach it to an orchestrator to start using it.",
-      "toManageOrchestrators": "Manage orchestrators",
+      "installedNext": "\"{name}\" is installed and granted to no agent yet. Grant it to the agents that should use it.",
+      "toManageOrchestrators": "Manage agents",
       "nextLlm": "\"{name}\" is installed, but the LLM provider it is assigned to has no verified access yet.",
       "nextSetup": "\"{name}\" is installed, but needs setup before it can run.",
       "nextRunning": "\"{name}\" is installed and running.",
-      "nextIntegration": "\"{name}\" is running. Agents that depend on it use it automatically — there is nothing to attach.",
-      "nextAttached": "\"{name}\" is attached to {agents}.",
-      "toOrchestrators": "Attach to an orchestrator",
+      "nextIntegration": "\"{name}\" is running. It is granted to no agent until you grant it.",
+      "nextAttached": "\"{name}\" is granted to {agents}.",
+      "toOrchestrators": "Open the agents",
       "toSetup": "Complete setup ({count} missing)",
       "toLlmProvider": "Connect an LLM provider",
       "toChat": "Try it in chat",
@@ -7160,6 +7156,53 @@
       "undoConfirm": "Undo",
       "undoing": "Undoing",
       "undone": "{count, plural, =0 {No entry removed.} one {# entry removed — the field is masked again.} other {# entries removed — the fields are masked again.}}"
+    }
+  },
+  "agentReach": {
+    "heading": "Reach",
+    "hint": "Every connected system this agent can read or write through its grants.",
+    "empty": "This agent reaches no connected system.",
+    "unavailable": "The reach could not be determined right now.",
+    "connected": "This instance has {count, plural, =0 {no connected system} one {# connected system} other {# connected systems}}.",
+    "summary": "Reach: {count} of {total} connected systems ({reads} read, {writes} write)",
+    "summaryNone": "Reach: no connected system",
+    "broadBadge": "every connected system",
+    "broadWarning": "This agent can reach every connected system. Whoever can reach this agent holds the key to all of them.",
+    "read": "read",
+    "write": "write",
+    "undeclared": "Declares nothing about its access — assumed read and write.",
+    "typePlugin": "Plugin",
+    "typeMcp": "MCP server",
+    "viaPlugins": "through {plugins}",
+    "confirmTitle": "Give {agent} access to every connected system?",
+    "confirmBody": "After this change {agent} can reach all {count} connected systems. Whoever can reach this agent holds the key to every one of them. The change is recorded in the audit log.",
+    "confirmYes": "Grant access to everything",
+    "cancel": "Cancel",
+    "grant": {
+      "heading": "Grant to agents",
+      "hint": "Installing gave {plugins} to no agent. Pick the agents that may use it — none are preselected.",
+      "noAgents": "There is no agent yet. Create one on the Agents page, then grant it from there.",
+      "already": "already granted",
+      "submit": "Grant to selected agents",
+      "submitting": "Granting…",
+      "done": "Granted to {agents}.",
+      "declined": "Not granted to {agents}: you did not confirm access to every connected system.",
+      "failed": "The grant failed: {detail}",
+      "loadFailed": "The agents could not be loaded, so this plugin cannot be offered to an agent here: {detail}. It is granted to no agent until you grant it on an agent's page."
+    },
+    "firstRun": {
+      "eyebrow": "First run",
+      "title": "Set up your first agent",
+      "body": "An agent is a virtual colleague. Give it a name and choose the capabilities it gets. Nothing is preselected, and choosing none is fine — you can grant capabilities later.",
+      "nameLabel": "Name",
+      "descriptionLabel": "Description (optional)",
+      "capabilitiesLabel": "Capabilities",
+      "capabilitiesHint": "Each capability gives the agent access to one system or tool. Grant only what it needs.",
+      "capabilitiesEmpty": "No capability plugin is installed yet. Install one in the store and grant it afterwards.",
+      "submit": "Create agent",
+      "submitting": "Creating…",
+      "failed": "The agent could not be created: {detail}",
+      "loadFailed": "The first-run setup could not be loaded: {detail}"
     }
   }
 }

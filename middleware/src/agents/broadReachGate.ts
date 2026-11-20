@@ -21,8 +21,11 @@ import {
  * {@link requireBroadReachConfirmation} is the one check every such write
  * calls BEFORE it writes: the plugin grant routes
  * (`PATCH|PUT /api/v1/operator/agents/:slug/plugins`), the MCP tool grant
- * route (`PUT /api/v1/operator/mcp-grants`), the first-run flow, and the
- * default-agent assignment (change `default_agent`). A refusal is HTTP 409
+ * routes (`PUT /api/v1/operator/mcp-grants`, Agent Builder `tool_grant`
+ * edges), the plugin MCP grant (`PUT /plugin-mcp-grants`, checked for every
+ * agent holding the plugin) and the first-run flow. The default-agent check
+ * (change `default_agent`) is for the default-agent assignment of stream S1;
+ * no route on this branch calls it yet. A refusal is HTTP 409
  * with the typed error {@link BROAD_REACH_CONFIRMATION_REQUIRED}; the request
  * passes when it carries `confirmBroadReach: true`. A confirmed change comes
  * back with the admin audit entry the caller records AFTER its write
@@ -41,11 +44,16 @@ export interface ProposedGrants {
   /** MCP tool grants added to the agent's own. Revokes are not modelled: a
    *  revoke never widens a reach, so leaving it out can only over-ask. */
   readonly addMcpToolGrants?: readonly { readonly mcpServerId: string; readonly toolName: string }[];
+  /** MCP servers granted to a plugin (`plugin_mcp_grants`): every agent that
+   *  holds the plugin reaches them. */
+  readonly addPluginMcpGrants?: readonly { readonly pluginId: string; readonly mcpServerId: string }[];
 }
 
 export interface BroadReachConfirmationInput {
   readonly sources: ReachSources;
-  readonly agent: { readonly id: string; readonly slug: string };
+  /** `id` `undefined`: the agent is about to be created (no grants yet); the
+   *  caller sets the audit target once it exists. */
+  readonly agent: { readonly id: string | undefined; readonly slug: string };
   readonly change: BroadReachChange;
   /** The agent's current `agent_plugins` rows. */
   readonly currentPlugins: readonly ReachPluginRow[];
@@ -100,7 +108,7 @@ export async function requireBroadReachConfirmation(
     ? {
         actor: input.actor,
         action: input.change === 'grant' ? 'agent.broad_reach_grant' : 'agent.broad_reach_default',
-        target: `agent:${input.agent.id}`,
+        target: `agent:${input.agent.id ?? input.agent.slug}`,
         before: broadReachAuditState(before),
         after: { ...broadReachAuditState(after), slug: input.agent.slug, confirmed: true },
       }
@@ -117,10 +125,13 @@ export function withPluginRow(
 }
 
 function withAddedMcpGrants(grants: ReachGrants, proposed: ProposedGrants): ReachGrants {
-  const added = proposed.addMcpToolGrants ?? [];
-  return added.length === 0
-    ? grants
-    : { ...grants, mcpToolGrants: [...grants.mcpToolGrants, ...added] };
+  const tools = proposed.addMcpToolGrants ?? [];
+  const pluginServers = proposed.addPluginMcpGrants ?? [];
+  return {
+    ...grants,
+    mcpToolGrants: [...grants.mcpToolGrants, ...tools],
+    pluginMcpGrants: [...grants.pluginMcpGrants, ...pluginServers],
+  };
 }
 
 function broadReachRefusal(
