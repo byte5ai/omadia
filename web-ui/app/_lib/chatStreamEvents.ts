@@ -10,6 +10,8 @@ import type {
   KgWalkNode,
   KgWalkPayload,
   Message,
+  MessageSpeaker,
+  MessageSystemNotice,
   NudgeEvent,
   OutgoingFileAttachment,
   PalaiaExcerpt,
@@ -159,6 +161,10 @@ export type ChatStreamEvent =
       agentsConsulted?: AgentConsultation[];
       /** Phase 3 — see `Message.answerVerbosity`. */
       answerVerbosity?: AnswerVerbosityInfo;
+      /** #2045 — the agent this answer is from, or `system` for a notice. */
+      speaker?: MessageSpeaker;
+      /** #2045 — the notice `answer` renders or ends with. */
+      systemNotice?: MessageSystemNotice;
       /**
        * #1094 — `true` when the turn threw AFTER a tool call had already
        * committed. The terminal stays `done` on purpose (an `error` would make
@@ -208,7 +214,9 @@ export type ChatStreamEvent =
    * Optional because middleware older than this change does not send it; the
    * renderer then behaves exactly as before.
    */
-  | { type: 'error'; message: string; correlationId?: string };
+  | { type: 'error'; message: string; correlationId?: string; speaker?: MessageSpeaker }
+  /** #2045 — the agent the turn is routed to, before the first token. */
+  | { type: 'agent_bound'; slug: string; speaker?: MessageSpeaker };
 
 /**
  * Fold one stream event into the session that owns the pending assistant
@@ -464,6 +472,12 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           ? { agentsConsulted: event.agentsConsulted }
           : {}),
         ...(event.answerVerbosity ? { answerVerbosity: event.answerVerbosity } : {}),
+        // #2045 — the speaker the harness stamped; `done` is authoritative
+        // over the `agent_bound` header (a notice turns it into `system`).
+        ...(event.speaker ? { speaker: event.speaker } : {}),
+        ...(event.systemNotice
+          ? { systemNotice: { code: event.systemNotice.code, text: event.systemNotice.text } }
+          : {}),
         // Enforce-mode verifier: the verdict rides `done`, and a withheld
         // answer is marked so the bubble says so (`VerifierBlockedNotice`)
         // instead of presenting the notice as an ordinary reply. Not an
@@ -481,9 +495,13 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
         streaming: false,
       };
     }
+    case 'agent_bound':
+      // #2045 — name and avatar show before the first token lands.
+      return event.speaker ? { ...m, speaker: event.speaker } : m;
     case 'error':
       return {
         ...m,
+        ...(event.speaker ? { speaker: event.speaker } : {}),
         content: m.content + (m.content ? '\n\n' : '') + event.message,
         error: true,
         finishedAt: Date.now(),

@@ -1651,6 +1651,10 @@
       "none": "Default identity",
       "fallback": "Persona classifier unavailable — default identity"
     },
+    "speaker": {
+      "system": "System notice",
+      "avatarAlt": "Avatar of {name}"
+    },
     "subAgentTrace": "sub-agent trace",
     "mcpAuth": {
       "kicker": "Authorization required",

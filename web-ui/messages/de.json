@@ -1651,6 +1651,10 @@
       "none": "Standard-Identität",
       "fallback": "Persona-Klassifikator nicht verfügbar — Standard-Identität"
     },
+    "speaker": {
+      "system": "Systemhinweis",
+      "avatarAlt": "Avatar von {name}"
+    },
     "subAgentTrace": "Sub-Agent-Trace",
     "mcpAuth": {
       "kicker": "Autorisierung erforderlich",

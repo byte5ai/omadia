@@ -36,6 +36,7 @@ import { PlanProgressCard } from '../_components/chat/PlanProgressCard';
 import { RecalledContextCard } from '../_components/chat/RecalledContextCard';
 import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from '../_components/chat/SaveMemoryButton';
+import { MessageSpeakerLine } from '../_components/chat/MessageSpeakerLine';
 import { TurnIncompleteNotice } from '../_components/chat/TurnIncompleteNotice';
 import { SystemDataBadge, VerifierBadge } from '../_components/chat/VerifierBadge';
 import { DecisionBadge } from '../_components/chat/DecisionBadge';
@@ -1012,6 +1013,10 @@ export function MessageRow({
                 // the verifier withheld: the bubble holds its notice.
                 degradedTurn || message.verifierBlocked
                 ? 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-strong)] ring-1 ring-[color:var(--warning)]'
+                : // #2045 — a management-layer notice is not an agent's
+                  // answer: muted and dashed, never in agent styling.
+                  message.speaker?.kind === 'system'
+                ? 'bg-[color:var(--bg)] text-[color:var(--fg-muted)] border border-dashed border-[color:var(--border)]'
                 : 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-strong)] ring-1 ring-[color:var(--border)]',
         ].join(' ')}
       >
@@ -1019,6 +1024,7 @@ export function MessageRow({
           <div className="whitespace-pre-wrap text-sm">{message.content}</div>
         ) : (
           <>
+            {message.speaker && <MessageSpeakerLine speaker={message.speaker} />}
             {message.proactive && <ProactiveBadge proactive={message.proactive} />}
             {message.fastPathDecision !== undefined && <DecisionBadge decision={message.fastPathDecision} />}
             {message.routing && <TriageBadge routing={message.routing} />}

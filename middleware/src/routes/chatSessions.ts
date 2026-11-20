@@ -117,6 +117,26 @@ const MessageSchema = z.object({
     })
     .optional(),
 
+  // #2045 — who the message is from (agent or `system`), stamped by the
+  // harness; kept so a reloaded chat still shows the speaker per message. A
+  // malformed value is dropped, never trusted for anything but display.
+  speaker: z
+    .discriminatedUnion('kind', [
+      z.object({
+        kind: z.literal('agent'),
+        agentId: z.string().min(1).max(100),
+        slug: z.string().min(1).max(100),
+        displayName: z.string().min(1).max(200),
+        avatarUrl: z.string().max(500).optional(),
+      }),
+      z.object({ kind: z.literal('system') }),
+    ])
+    .optional()
+    .catch(undefined),
+  systemNotice: z
+    .object({ code: z.string().min(1).max(64), text: z.string().max(2000) })
+    .optional()
+    .catch(undefined),
   verifier: VerifierSummarySchema.optional().catch(undefined),
   // The answer verifier withheld this turn's answer (`enforce` mode); the
   // content is the notice saying so.

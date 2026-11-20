@@ -3,10 +3,17 @@ import { isDeepStrictEqual } from 'node:util';
 import type {
   ChatTurnInput,
   ChatTurnResult,
+  SemanticAnswer,
 } from '@omadia/channel-sdk';
 import { toSemanticAnswer } from '@omadia/channel-sdk';
 import { turnContext, today } from '@omadia/orchestrator';
-import type { JobHandler, JobSpec } from '@omadia/plugin-api';
+import {
+  SYSTEM_SPEAKER,
+  type AgentSpeaker,
+  type AnswerEmitter,
+  type JobHandler,
+  type JobSpec,
+} from '@omadia/plugin-api';
 import type { Cron } from 'croner';
 
 import { createCron } from '../../scheduler/cronerCompat.js';
@@ -44,6 +51,38 @@ export interface JobSchedulerLike {
  */
 export interface OrchestratorLike {
   runTurn(input: ChatTurnInput): Promise<ChatTurnResult>;
+  /**
+   * #2045 / #2046 — the agent's single typed emitter. A routine's answer is
+   * this agent's prose: it is published through the emitter (identity guard,
+   * speaker), never straight from the turn. Absent only on the registry-less
+   * legacy boot and in tests.
+   */
+  readonly emitter?: AnswerEmitter;
+  /** #2045 — the agent the routine's answers are from. */
+  readonly speaker?: AgentSpeaker;
+}
+
+/**
+ * #2045 / #2046 — a routine's answer as the agent publishes it: its prose
+ * passes the agent's emitter; a refused answer becomes the honest `system`
+ * notice instead.
+ */
+export async function publishRoutineAnswer(
+  orchestrator: OrchestratorLike,
+  result: ChatTurnResult,
+): Promise<SemanticAnswer> {
+  const answer = toSemanticAnswer(result);
+  const { emitter, speaker } = orchestrator;
+  if (!emitter || !speaker) return answer;
+  const outcome = await emitter.emit({
+    type: 'prose',
+    speaker,
+    text: result.answer,
+    ...(answer.maskedValues ? { restoredValues: answer.maskedValues } : {}),
+  });
+  if (outcome.published) return { ...answer, speaker };
+  const notice = outcome.replacement.notice;
+  return { text: notice.text, speaker: SYSTEM_SPEAKER, systemNotice: notice };
 }
 import {
   ProactiveTargetGoneError,
@@ -674,7 +713,7 @@ export class RoutineRunner {
         return;
       }
 
-      const answer = toSemanticAnswer(result);
+      const answer = await publishRoutineAnswer(orchestrator, result);
       await sender.send({
         conversationRef: fresh.conversationRef,
         message: answer,

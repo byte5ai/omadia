@@ -566,12 +566,18 @@ describe('fast-path chat triage — orchestrator wiring', () => {
   it('every built bundle agent answers a hit itself (outside the verifier)', async () => {
     const built = buildForAgent(AGENT_ROW, orchestratorDeps(() => port(HIT)), RUNTIME);
     const events = await collect(built.bundle.agent.chatStream({ userMessage: 'Geburtstage?', sessionScope: 'tab_1' }));
-    assert.deepEqual(
-      events.map((e) => e.type),
-      ['text_delta', 'done'],
+    // #2046 — the identity guard releases the text sentence by sentence, so
+    // the one fast-lane delta may arrive in several; together they are it.
+    assert.equal(events.at(-1)?.type, 'done');
+    assert.ok(events.slice(0, -1).every((e) => e.type === 'text_delta'));
+    assert.equal(
+      events.map((e) => (e.type === 'text_delta' ? e.text : '')).join(''),
+      HIT.kind === 'answer' ? HIT.text : '',
     );
     const bare = buildForAgent(AGENT_ROW, orchestratorDeps(), RUNTIME);
-    assert.equal(bare.bundle.agent, bare.orchestrator, 'no fast path dep → no wrapper');
+    // No fast path dep → no fast-lane wrapper: a hit question goes to the
+    // model loop (the agent is the orchestrator behind speaker and guard).
+    assert.equal(bare.bundle.raw, bare.orchestrator);
   });
 
   it('a routeHint replaces the router classifier call', async () => {

@@ -560,10 +560,34 @@ export interface KgWalkPayload {
   edges: KgWalkEdge[];
 }
 
+/**
+ * #2045 — who a message is from: the agent the management layer routed the
+ * turn to, or `system` for a notice. Stamped by the harness, never by a model.
+ */
+export type MessageSpeaker =
+  | {
+      kind: 'agent';
+      agentId: string;
+      slug: string;
+      displayName: string;
+      avatarUrl?: string;
+    }
+  | { kind: 'system' };
+
+/** #2045 — a management-layer notice (agent disabled, not available, …). */
+export interface MessageSystemNotice {
+  code: string;
+  text: string;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** #2045 — the speaker of an assistant message. */
+  speaker?: MessageSpeaker;
+  /** #2045 — set when the message is (or ends with) a `system` notice. */
+  systemNotice?: MessageSystemNotice;
   /** #133 (E9) — live plan DAG for this turn, streamed in as a `plan`
    *  annotation: present from the first event and re-emitted on every step
    *  change + replan. Persisted, so a reloaded session keeps the plan. */
