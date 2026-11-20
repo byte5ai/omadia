@@ -1971,6 +1971,16 @@
     "viewTrace": "trace ▾",
     "stepsCount": "{count, plural, one {# step} other {# steps}}"
   },
+  "agentDirectory": {
+    "heading": "Agents",
+    "empty": "No agents are available to you in this channel.",
+    "error": "The agent list could not be loaded.",
+    "defaultBadge": "default",
+    "archetypeStandard": "Standard agent",
+    "archetypeFacilitator": "Facilitator",
+    "reach": "Reach:",
+    "seededDescription": "Answers when nobody addressed a specific agent."
+  },
   "agentPicker": {
     "label": "Agent:",
     "loading": "loading agents…",

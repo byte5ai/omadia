@@ -1971,6 +1971,16 @@
     "viewTrace": "Trace ▾",
     "stepsCount": "{count, plural, one {# Schritt} other {# Schritte}}"
   },
+  "agentDirectory": {
+    "heading": "Agenten",
+    "empty": "In diesem Kanal steht dir kein Agent zur Verfügung.",
+    "error": "Die Agentenliste konnte nicht geladen werden.",
+    "defaultBadge": "Standard",
+    "archetypeStandard": "Standard-Agent",
+    "archetypeFacilitator": "Facilitator",
+    "reach": "Reichweite:",
+    "seededDescription": "Antwortet, wenn niemand einen bestimmten Agenten angesprochen hat."
+  },
   "agentPicker": {
     "label": "Agent:",
     "loading": "Lade Agenten…",
