@@ -61,7 +61,7 @@ Line numbers drift; the names are what to search for.
 | `significanceScorer.ts` | complete | AT; OJ:bulk_promotion; **NONE from the scratch reaper** | |
 | `topicClustering.ts` | complete | OJ:topic_regrouping | |
 | bulk promotion (`routes/bulkPromotion.ts`) | complete, embed | OJ:bulk_promotion | |
-| `inconsistencyDetector.ts`, `mergeCandidateDetector.ts` | embed, complete | AT; OJ:memory_review_detection; **NONE after memory REST writes and reaper writes** | |
+| `inconsistencyDetector.ts`, `mergeCandidateDetector.ts` | embed, complete | AT; OJ:memory_review_detection; OJ:memory_edit after memory REST writes; **NONE after reaper writes** | |
 | `scratchPromotionReaper.ts` | complete, embed | **NONE** | interval job |
 | `topicDetector.ts` | embed, complete | **NONE** | only consumer: channel-teams `topicDetector.classify`, before the turn |
 
@@ -70,7 +70,7 @@ Line numbers drift; the names are what to search for.
 | Site | Operation | Context | Note |
 |---|---|---|---|
 | `neonKnowledgeGraph.ts` `embedAndStoreTurn` | embed | AT; **NONE for the boot graph backfill** (`BACKFILL_AT_STARTUP=1`) | |
-| `neonKnowledgeGraph.ts` `embedAndStoreNode` | embed | AT or OJ by caller; **NONE from `src/routes/memory.ts` writes and the reaper** | |
+| `neonKnowledgeGraph.ts` `embedAndStoreNode` | embed | AT or OJ by caller (OJ:memory_edit for `src/routes/memory.ts` writes); **NONE from the reaper** | |
 | `processMemoryStore.ts` | embed | AT | |
 | `embeddingBackfill.ts` | embed | MR (`maintenanceRun@1`); **NONE if that service is missing** | |
 
@@ -86,6 +86,7 @@ Line numbers drift; the names are what to search for.
 
 | Site | Operation | Context | Note |
 |---|---|---|---|
+| `src/routes/memory.ts` `POST /`, `PATCH /:id`, `PATCH /:id/excerpts/:position` | embed, complete | OJ:memory_edit | the writing user is the job's actor |
 | `src/issues/issueReformulator.ts` | complete | OJ:issue_preview | |
 | `src/services/skillVerdictLlmVerifier.ts` | complete | OJ:skill_verification | |
 | Plugin Builder `builderAgent.ts` (`builderChat.ts`) | complete, run_loop | OJ:plugin_builder_turn | |
@@ -109,7 +110,6 @@ removed) before the contract step switches to `enforce`.
 | 1 | Scratch-promotion reaper (interval) | S4: unattended work as a batch trigger with caps and circuit breaker; not a maintenance run (it calls `complete`) |
 | 2 | Field-classification recompute (boot, activation, 6 h, POST route) | S3b: operator job for the POST route; the scheduled runs as a bounded kernel job (S4 trigger caps) |
 | 3 | channel-teams `topicDetector.classify` before the turn | plugin train (channel-teams): move into the turn or an inbound-processing context |
-| 4 | Memory REST writes (`/api/v1/memory` POST/PATCH) embed and fire the detectors | decision pending: the writing user's own context vs. an operator job |
 | 5 | Security screener on routine turns | S4 (routines become triggers of an agent turn) |
 | 6 | Boot graph backfill (`BACKFILL_AT_STARTUP=1`) | S3b: maintenance run like the embedding backfill |
 | 7 | Public MCP server tool dispatch | S3b: run each dispatch in the agent turn of the agent the API key is bound to |

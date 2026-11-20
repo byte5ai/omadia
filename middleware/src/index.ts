@@ -450,6 +450,7 @@ import {
   BULK_PROMOTION,
   EMBEDDING_BACKFILL,
   ISSUE_PREVIEW,
+  MEMORY_EDIT,
   MEMORY_REVIEW_DETECTION,
   PLUGIN_BUILDER_PREVIEW,
   PLUGIN_BUILDER_TURN,
@@ -3864,6 +3865,11 @@ async function main(): Promise<void> {
   ] as const) {
     app.post(route, requireAuth, modelWork.middleware(kind));
   }
+  // Memory REST writes embed the entry and run the review detectors: an
+  // operator job with the writing user as its actor.
+  app.post('/api/v1/memory', requireAuth, modelWork.middleware(MEMORY_EDIT));
+  app.patch('/api/v1/memory/:id', requireAuth, modelWork.middleware(MEMORY_EDIT));
+  app.patch('/api/v1/memory/:id/excerpts/:position', requireAuth, modelWork.middleware(MEMORY_EDIT));
   app.use('/api/v1/admin/model-work', requireAuth, createModelWorkRouter({ runs: modelWork }));
   app.use('/api/v1/admin/model-gateway', requireAuth, createModelGatewayStatusRouter());
   // Spec 2042 §5.10 — agent templates of the installed plugins, as prefills

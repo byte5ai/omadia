@@ -55,6 +55,17 @@ export const MEMORY_REVIEW_DETECTION: ModelWorkKind = {
   effects: ['memory_review_items'],
 };
 
+/** A memory written or edited through the REST surface (`/api/v1/memory`):
+ *  the entry is embedded and the review detectors run on it. The writing
+ *  user is the job's actor. */
+export const MEMORY_EDIT: ModelWorkKind = {
+  kind: 'memory_edit',
+  context: 'operator_job',
+  budgetCalls: 50,
+  deadlineMs: 5 * MINUTE,
+  effects: ['memory'],
+};
+
 /** One turn of the Plugin Builder's chat: the draft plugin is changed. */
 export const PLUGIN_BUILDER_TURN: ModelWorkKind = {
   kind: 'plugin_builder_turn',
