@@ -9660,6 +9660,16 @@ Pushes hängen an Message-Subscriptions.
   `ReloadBus` mit Kanal `conversation_message_subscriptions_changed`
   (`CONVERSATION_MESSAGES_LISTEN`). `refresh`, `subscribeProcess` und das
   Beenden einer Subscription laufen über einen gemeinsamen Mutex im Hub.
+- **Ein NOTIFY ist nur ein Hinweis.** Postgres kennt kein Recht für NOTIFY:
+  jede Rolle mit Login (auch die Datenbank-Rolle eines Archetyp-Plugins) kann
+  auf `agents_changed` und `conversation_message_subscriptions_changed` mit
+  beliebigem Payload senden. `ReloadBus` ist der einzige Listener des Kernels;
+  er liest den Payload nie, loggt ihn nie (nur die Größe über `debug`) und
+  liest den Zustand über `reload` aus den Tabellen. Notifications lösen
+  höchstens einen Reload je `minNotifyIntervalMs` (250 ms) aus, der erste
+  sofort, der letzte geht nie verloren. Wer einen neuen Listener baut: der
+  Payload ist höchstens ein Schlüssel zum Nachlesen, nie eine Tatsache.
+  Scopes, Reservierungen, Kill-Switches und Grants hängen an keinem NOTIFY.
 - **Engine = Archetyp-Plugin, Vertrauen durch die bestätigte Installation**
   (`facilitatorGuard.ts`). Der SQL-Grant ist seit K6 kein Vertrauensschritt
   mehr und `ungranted` kein Zustand: ohne Grant hat das Plugin keine
