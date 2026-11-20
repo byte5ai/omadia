@@ -485,6 +485,7 @@ import {
   ISSUE_PREVIEW,
   MEMORY_EDIT,
   MEMORY_REVIEW_DETECTION,
+  PLUGIN_BUILDER_AUTOFIX,
   PLUGIN_BUILDER_PREVIEW,
   PLUGIN_BUILDER_TURN,
   SKILL_VERIFICATION,
@@ -7505,6 +7506,9 @@ async function main(): Promise<void> {
     logger: (...args: unknown[]) => {
       console.log('[builder]', ...args);
     },
+    // Spec 2042 §5.10 — a smoke run is a preview of the draft: one operator
+    // job of the Plugin Builder's preview kind.
+    runAsJob: (startedBy, work) => modelWork.run(PLUGIN_BUILDER_PREVIEW, startedBy, () => work()),
   });
 
   // ── Native issue-reporting wiring (concept plan) ─────────────────────────
@@ -7632,6 +7636,8 @@ async function main(): Promise<void> {
     logger: (...args: unknown[]) => {
       console.log('[builder/auto-fix]', ...args);
     },
+    // Spec 2042 §5.10 — each synthetic fix turn is one operator job.
+    runAsJob: (startedBy, work) => modelWork.run(PLUGIN_BUILDER_AUTOFIX, startedBy, () => work()),
   });
 
   let stopMdnsAdvertiser: (() => Promise<void> | undefined) | undefined;
