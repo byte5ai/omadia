@@ -3833,6 +3833,49 @@ rules, in the Electron-free `secretsBlob.ts` and `secretsStore.ts`:
 different, empty folder in setup. Deleting only `secrets.enc` produces new keys
 next to the old kernel vault, which the kernel then cannot open.
 
+## 8a-1. Database notifications are hints, never facts (#2088)
+
+Postgres has no privilege for `NOTIFY`. Every role that can log in to the
+kernel's database can send on every channel, with any payload of up to 8000
+bytes. Since archetype plugins have database roles of their own
+(`omadia_plg_<id>_rt`, `omadia_plg_<id>_mig`), a plugin can send on the
+channels the kernel listens on: `agents_changed` (agent registry) and
+`conversation_message_subscriptions_changed` (message subscriptions). Schema
+limits and table rights do not help here; nothing in Postgres does.
+
+So the rule is on the receiving side, in `ReloadBus`
+(`middleware/packages/harness-orchestrator/src/registry/reloadBus.ts`), the
+kernel's only `LISTEN` consumer:
+
+- **The payload is never read.** A notification means "something may have
+  changed". What changed is read from the tables by the bus' `reload`, which
+  the plugin's role cannot write. A forged notification can therefore cause a
+  reload and nothing else: no subscription appears, none ends, no agent
+  changes.
+- **The payload is never logged.** Only its size, and only through the
+  optional `debug` sink. Before, the full payload went to the kernel log with
+  every notification, so a database role could write log lines of its choice.
+- **A flood is bounded.** The first notification reloads at once; those that
+  follow within `minNotifyIntervalMs` (250 ms) are answered by one reload at
+  the end of the interval, measured on a monotonic clock. The last
+  notification is never dropped, so a real change is never lost in a flood.
+- **Not a boundary against load.** Up to four reloads a second remain
+  possible; each re-reads the agent registry's snapshot or the active
+  subscriptions.
+
+What does not depend on notifications at all: execution scopes, conversation
+reservations, kill switches and grants. They are read from the database at
+every authorization. The Conductor's triggers (`conductor_await_resolved`,
+`conductor_role_changed`) send notifications nobody in the kernel listens to.
+
+**For a new listener:** a payload is at most a key to look up, never a fact.
+Use `ReloadBus` rather than a `LISTEN` of your own.
+
+Tests: `middleware/test/reloadBusNotifyHint.test.ts` (forged, empty and
+oversized payloads, flood), `middleware/test/facilitatorContractGuards.pg.test.ts`
+("a forged NOTIFY changes nothing", against a second kernel on a real
+Postgres).
+
 ## 8b. Desktop embedded Postgres: SCRAM passwords and a restricted kernel role
 
 The desktop app runs its own PostgreSQL 17 cluster (`desktop/src/embeddedDb.ts`).

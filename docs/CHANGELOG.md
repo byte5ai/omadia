@@ -91,6 +91,26 @@ changelog.
   `targetedSend`, `sessionCapabilities`, `channelReadiness`,
   `conversationRosters`, `conversationEvents`, and the database schema.
 
+### Security — A database notification is only a hint to the kernel (#2088, epic #2043)
+
+- Postgres has no privilege for `NOTIFY`: every role that can log in, the
+  database role of an archetype plugin included, can send on the channels the
+  kernel listens on (`agents_changed`,
+  `conversation_message_subscriptions_changed`) with any payload. The kernel's
+  listener (`ReloadBus`, the only one) never read the payload to decide
+  anything, and that is now stated and tested: a notification means
+  "something may have changed" and the state is read from the tables. Scopes,
+  reservations, kill switches and grants use no notification at all; they are
+  read from the database at every authorization.
+- **The payload is no longer written to the log.** It was logged in full with
+  every notification, so anyone who could log in to the database could write
+  lines of their choice into the kernel's log. One line per reload now states
+  how many notifications it answers.
+- **A flood of notifications no longer keeps the kernel reloading.** The first
+  notification reloads at once; those that follow within 250 ms
+  (`minNotifyIntervalMs`) are answered by one reload at the end of the
+  interval. The last notification is never dropped.
+
 ### Removed — The first majors of the facilitator services (#2089, #2090, #2091, epic #2043): K6.3, the contract step
 
 - **`agentTurn`, `conversationMessages` and `conversationSend` without a
