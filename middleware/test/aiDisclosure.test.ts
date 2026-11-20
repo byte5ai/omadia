@@ -72,11 +72,14 @@ describe('#643 applyAiDisclosure — level resolution', () => {
   it('AC1: with no configuration at all, the answer carries the marking in text', () => {
     const { text, aiDisclosure } = applyAiDisclosure('Antwort.');
     assert.equal(text, `Antwort.\n\n${DE_STANDARD}`);
+    // #2087: the carrier also states the frequency and which visible markers are due.
     assert.deepEqual(aiDisclosure, {
       text: DE_STANDARD,
       level: 'standard',
       locale: 'de',
       source: 'default',
+      frequency: 'channel_default',
+      markers: { textLine: true, chip: true },
     });
   });
 
@@ -130,7 +133,7 @@ describe('#643 applyAiDisclosure — level resolution', () => {
       policy: OPERATOR_OFF,
     });
     assert.equal(text, 'A.\n\nVorgegeben.');
-    assert.deepEqual(aiDisclosure, preresolved);
+    assert.deepEqual({ ...aiDisclosure, frequency: undefined, markers: undefined }, { ...preresolved, frequency: undefined, markers: undefined });
   });
 
   it('folds onto an empty answer as the sole content', () => {
@@ -175,11 +178,14 @@ describe('#643 applyAiDisclosure — fail-safe fold decision (AC3)', () => {
     seen.markSeen('conv-B'); // scope already seen → no fold
     const { text, aiDisclosure } = applyAiDisclosure('Turn N.', { scope: 'conv-B', seen });
     assert.equal(text, 'Turn N.', 'not folded');
+    // channel_default: the line is not folded again, the channel chip still is due (#2087).
     assert.deepEqual(aiDisclosure, {
       text: DE_STANDARD,
       level: 'standard',
       locale: 'de',
       source: 'default',
+      frequency: 'channel_default',
+      markers: { textLine: false, chip: true },
     });
   });
 
