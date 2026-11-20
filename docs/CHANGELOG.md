@@ -13661,6 +13661,13 @@ Three live defects in the MCP OAuth path, one migration
   sentence, instead of reporting it as 'done' (a successful turn) as it did
   before (#403).
 
+### Fixed — Conductor previews no longer execute agent steps
+
+2026-11-15. Conductor previews now stub agent steps alongside action steps, so
+previewing a workflow cannot start a real LLM turn, create token usage, or run
+agent tools and side effects. Normal conductor runs continue to execute agent
+steps normally.
+
 ---
 
 ## [0.142.2] - 2026-08-28
