@@ -3121,7 +3121,16 @@
       "cancel": "Abbrechen",
       "typedMismatch": "Das ist nicht der Slug."
     },
-    "rehydrateConfirmYes": "Rehydrieren"
+    "rehydrateConfirmYes": "Rehydrieren",
+    "fastLane": {
+      "heading": "Schnellspur",
+      "hint": "Einfache Datenfragen („offene Rechnungen von Müller“) werden ohne die volle Agentenschleife beantwortet: Ein schnelles Modell plant eine Leseabfrage mit den eigenen Lese-Tools dieses Agenten, und die Zeilen gehen direkt unter dem Namen des Agenten und mit KI-Kennzeichnung an die Person. Was sie nicht beantworten kann, geht wie gewohnt an den Agenten.",
+      "loading": "Einstellung der Schnellspur wird geladen…",
+      "label": "Einfache Datenfragen über die Schnellspur beantworten",
+      "onHint": "An: schneller und günstiger bei einfachen Abfragen.",
+      "offHint": "Aus: Jede Frage läuft durch die volle Agentenschleife.",
+      "unavailable": "Diese Art von Agent hat keine Schnellspur."
+    }
   },
   "builder": {
     "issueReport": {

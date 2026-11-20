@@ -260,6 +260,8 @@ export interface AgentRuntimeConfig {
    * `ChatAgent` answers with a fixed refusal. Absent = `standard`.
    */
   readonly archetype?: ArchetypeId;
+  /** #1876 — `false`: the operator switched this agent's fast lane off. */
+  readonly fastLane?: boolean;
   /** #2043 — the agent's own language (BCP 47), when its identity names one. */
   readonly identityLanguage?: string;
 }
@@ -666,7 +668,9 @@ export function buildOrchestratorForAgent(
   // The facilitator's own runtime (refusal gate, engine-driven turns,
   // neutrality contract) is what the archetype ADDS, not an omission.
   const isFacilitator = config.archetype === FACILITATOR_ARCHETYPE;
-  const fastPathDeps = isFacilitator || omits('fast_path') ? undefined : deps.fastPath;
+  // #1876 — the fast lane is the agent's own, switchable per agent.
+  const fastPathDeps =
+    isFacilitator || omits('fast_path') || config.fastLane === false ? undefined : deps.fastPath;
   const withFastPath = (agent: ChatAgent): ChatAgent =>
     isFacilitator
       ? wrapFacilitatorAgent(agent, {
@@ -694,8 +698,15 @@ export function buildOrchestratorForAgent(
           // nothing else (a per-Agent tool set is respected)
           permittedTools: () => orchestrator.offeredToolNames(),
           // …and their definitions: read tools of every plugin get a generic
-          // planner spec (@omadia/fast-path genericToolSpecs.ts)
-          toolDefinitions: () => orchestrator.offeredToolDefinitions(),
+          // planner spec (@omadia/fast-path genericToolSpecs.ts). #1876 —
+          // only the agent's OWN read tools: a sub-agent's inner tools
+          // (`via`) reach the agent only through their domain tool.
+          toolDefinitions: () => orchestrator.offeredToolDefinitions().filter((d) => d.via === undefined),
+          // #1876 — the fast lane answers under this agent's identity, with
+          // its AI disclosure (spec 2042 INV-2).
+          disclose: (answer, input) => orchestrator.discloseCliAnswer(answer, input),
+          // #1876 — learned plans and the answer cache are this agent's.
+          agentSlug: config.agentId,
           logSession: (entry) => sessionLogger.log(entry),
           privacyGuarded: () => deps.privacyGuard() !== undefined,
           log: (m) => console.log(m),

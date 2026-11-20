@@ -61,6 +61,8 @@ export interface ChatTriageRequest {
    *  allow-list / learned tools). Required: an unknown set is the caller's
    *  fail-closed pass-through, never "everything". */
   permittedTools: ReadonlySet<string>;
+  /** #1876 — the agent whose fast lane asks: its answer cache is its own */
+  agentSlug?: string;
   /** the agent's own definitions of those tools (`ChatAgent.
    *  offeredToolDefinitions`): every read tool among them without a catalog
    *  spec gets a generic planner spec (genericToolSpecs.ts). Absent → only
@@ -303,7 +305,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
         allowedTools: allowedFetchTools(),
         ...(previous ? { previous } : {}),
         ...(privacy ? { privacy } : {}),
-        ...(withCache && answerCache ? { answerCache } : {}),
+        ...(withCache && answerCache ? { answerCache, agent: req.agentSlug ?? '' } : {}),
         ...(decide ? { decide, directPlans: directPlansEnabled } : {}),
         log: deps.log,
       });

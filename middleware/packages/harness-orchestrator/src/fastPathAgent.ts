@@ -1,5 +1,6 @@
 import {
   toSemanticAnswer,
+  type AiDisclosure,
   type ChatAgent,
   type ChatAgentToolDefinition,
   type ChatStreamEvent,
@@ -66,6 +67,18 @@ export interface FastPathAgentDeps {
   /** a Privacy Shield runs: the recorded turn gets an EMPTY masked view so
    *  no capture decorator sends the rows to a model of its own */
   privacyGuarded: () => boolean;
+  /**
+   * #1876 — the agent's own AI disclosure for a fast-lane answer: the same
+   * per-turn resolution and first-turn fold as any answer of this agent
+   * (`Orchestrator.discloseCliAnswer`). Absent → the text goes out as is.
+   */
+  disclose?: (
+    answer: string,
+    input: ChatTurnInput,
+  ) => { readonly answer: string; readonly aiDisclosure?: AiDisclosure };
+  /** #1876 — the agent whose fast lane this is: learned plans and the answer
+   *  cache are keyed by it. */
+  agentSlug?: string;
   log: (message: string) => void;
 }
 
@@ -119,6 +132,11 @@ type Decision =
       turnId?: string;
       captureDisclosure?: CaptureDisclosure;
       decision?: FastPathDecision;
+      /** `text` already carries the fold; this is the structured carrier. */
+      aiDisclosure?: AiDisclosure;
+      /** The answer without the fold — what streams as a delta (a disclosure
+       *  never goes out as a delta). */
+      prose: string;
     }
   | { kind: 'agent'; input: ChatTurnInput; decision?: FastPathDecision };
 
@@ -213,6 +231,7 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
         permittedTools,
         ...(toolDefinitions !== undefined ? { toolDefinitions } : {}),
         ...(input.sessionScope !== undefined ? { sessionKey: input.sessionScope } : {}),
+        ...(deps.agentSlug !== undefined ? { agentSlug: deps.agentSlug } : {}),
         userMessage: input.userMessage,
       });
     } catch (err) {
@@ -235,9 +254,13 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
       };
     }
     const recorded = await record(input, outcome.text, outcome.toolCalls);
+    // Marked after recording: the transcript keeps the answer, as for a turn.
+    const disclosed = deps.disclose?.(outcome.text, input);
     return {
       kind: 'answer',
-      text: outcome.text,
+      text: disclosed?.answer ?? outcome.text,
+      prose: outcome.text,
+      ...(disclosed?.aiDisclosure ? { aiDisclosure: disclosed.aiDisclosure } : {}),
       toolCalls: outcome.toolCalls,
       ...recorded,
       ...(outcome.decision ? { decision: toFastPathDecision(outcome.decision, true) } : {}),
@@ -251,12 +274,15 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
     async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
       const d = await decide(input);
       if (d.kind === 'agent') return inner.chat(d.input);
-      return toSemanticAnswer({
+      // The fold is in `d.text`: the carrier joins after the conversion, so
+      // `toSemanticAnswer` does not fold a second time.
+      const answer = toSemanticAnswer({
         answer: d.text,
         toolCalls: d.toolCalls,
         iterations: 0,
         ...(d.turnId ? { turnId: d.turnId } : {}),
       });
+      return d.aiDisclosure ? { ...answer, aiDisclosure: d.aiDisclosure } : answer;
     },
     async *chatStream(input: ChatTurnInput, observer?: ChatStreamObserver): AsyncGenerator<ChatStreamEvent> {
       const d = await decide(input);
@@ -264,7 +290,7 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
         yield* stampDecision(inner.chatStream(d.input, observer), d.decision);
         return;
       }
-      yield { type: 'text_delta', text: d.text };
+      yield { type: 'text_delta', text: d.prose };
       yield {
         type: 'done',
         answer: d.text,
@@ -272,6 +298,7 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
         iterations: 0,
         ...(d.turnId ? { turnId: d.turnId } : {}),
         ...(d.captureDisclosure ? { captureDisclosure: d.captureDisclosure } : {}),
+        ...(d.aiDisclosure ? { aiDisclosure: d.aiDisclosure } : {}),
         ...(d.decision ? { fastPathDecision: d.decision } : {}),
       };
     },

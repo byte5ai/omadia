@@ -15,6 +15,7 @@ import {
   type AgentGraphStore,
   AGENT_TO_AGENT_MODES,
   assertArchetypeAllows,
+  archetypeOmits,
   FACILITATOR_ARCHETYPE,
   STANDARD_ARCHETYPE,
   archetypeOf,
@@ -242,6 +243,8 @@ const ContextMemorySchema = z.object({
 // #1018 — the agent-to-agent switches. Same two-endpoint shape as
 // context-memory, for the same reason: a peer-talk switch must not ride along
 // on an unrelated rename.
+const FastLaneSchema = z.object({ enabled: z.boolean() }).strict();
+
 const AgentToAgentSchema = z.object({
   mode: z.enum(AGENT_TO_AGENT_MODES),
 });
@@ -2457,6 +2460,53 @@ export function createOperatorAgentsRouter(
         );
       }
       res.json({ ok: true, mode: body.mode });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── fast lane (#1876, spec 2042 §8 item 10) ───────────────────────────
+  // The fast path is the agent's own fast lane: simple data questions are
+  // answered without the full agent loop, under the agent's identity. The
+  // operator switches it per agent; a facilitator never has one.
+  router.get('/:slug/fast-lane', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const available = !archetypeOmits(agent, 'fast_path');
+      res.json({ slug: agent.slug, enabled: available && agent.fastLane !== false, available });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.put('/:slug/fast-lane', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const body = FastLaneSchema.parse(req.body);
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (body.enabled) assertArchetypeAllows(agent, 'fast_path');
+      const previous = agent.fastLane !== false;
+      await live.store.updateAgent(agent.id, { fastLane: body.enabled });
+      await live.registry.reload();
+      if (previous !== body.enabled) {
+        console.warn(`[security-audit] fast_lane ${String(previous)} -> ${String(body.enabled)} for agent ${agent.slug}`);
+      }
+      res.json({ ok: true, enabled: body.enabled });
     } catch (err) {
       badRequest(res, err);
     }

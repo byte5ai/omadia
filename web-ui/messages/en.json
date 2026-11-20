@@ -3121,7 +3121,16 @@
       "cancel": "Cancel",
       "typedMismatch": "That is not the slug."
     },
-    "rehydrateConfirmYes": "Rehydrate"
+    "rehydrateConfirmYes": "Rehydrate",
+    "fastLane": {
+      "heading": "Fast lane",
+      "hint": "Simple data questions (\"open invoices of Müller\") are answered without the full agent loop: a fast model plans one read query with this agent's own read tools, and the rows go straight to the user under the agent's name and AI disclosure. Anything it cannot answer goes to the agent as usual.",
+      "loading": "Loading the fast lane setting…",
+      "label": "Answer simple data questions in the fast lane",
+      "onHint": "On: quicker and cheaper for simple lookups.",
+      "offHint": "Off: every question goes through the full agent loop.",
+      "unavailable": "This kind of agent has no fast lane."
+    }
   },
   "builder": {
     "issueReport": {
