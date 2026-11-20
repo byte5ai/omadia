@@ -159,7 +159,9 @@ export type TriggerEndReason =
   | 'context_ended'
   | 'cancelled'
   | 'agent_gone'
-  | 'fired';
+  | 'fired'
+  /** Refused at its last occurrence (kill switch, agent away, no window). */
+  | 'missed';
 
 /** Why a trigger was paused; an operator (or the owner) resumes it. */
 export type TriggerPauseReason = 'breaker_failures' | 'breaker_ineffective' | 'budget' | 'owner' | 'operator';

@@ -107,6 +107,9 @@ export class TriggerEngine {
       costUsd: 0,
     } as const;
     const next = nextDue(trigger, occ.dueAt, now);
+    // A timer refused at its last occurrence has nothing left to wait for:
+    // it ends instead of lingering, active, until its deadline.
+    const missed = trigger.kind !== 'on_event' && !next ? ({ end: 'missed' } as const) : {};
 
     const agent = this.deps.resolveAgent(trigger.agentSlug);
     if (!agent || !agent.enabled) {
@@ -128,7 +131,7 @@ export class TriggerEngine {
         outcome: 'failed',
         countsAsRun: false,
         error: `agent ${reason}`,
-        ...(next ? { nextDueAt: next } : {}),
+        ...(next ? { nextDueAt: next } : missed),
         detail: { refusal: 'agent_unavailable' },
       });
     }
@@ -138,7 +141,7 @@ export class TriggerEngine {
         ...base,
         outcome: 'refused',
         countsAsRun: false,
-        ...(next ? { nextDueAt: next } : {}),
+        ...(next ? { nextDueAt: next } : missed),
         detail: { refusal: 'kill_switch' },
       });
     }
@@ -154,7 +157,7 @@ export class TriggerEngine {
         ...base,
         outcome: 'refused',
         countsAsRun: false,
-        ...(next ? { nextDueAt: next } : {}),
+        ...(next ? { nextDueAt: next } : missed),
         detail: { refusal: reason },
       });
     }

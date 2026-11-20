@@ -3688,6 +3688,11 @@ async function main(): Promise<void> {
       await sender.send({ conversationRef: routine.conversationRef, message: { text } });
     },
     limits: () => triggersRef.current?.service.limits ?? DEFAULT_TRIGGER_LIMITS,
+    language: () => {
+      const raw = installedRegistry.get('@omadia/orchestrator')?.config?.['ai_disclosure_locale'];
+      return typeof raw === 'string' ? raw : undefined;
+    },
+    timeZone: config.PROACTIVE_TIMEZONE,
     log: (m) => console.log(m),
   });
   // #2082 — Agent Builder schedules (P6) fire through bounded triggers too:

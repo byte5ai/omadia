@@ -460,6 +460,16 @@ describe('#2082 agent triggers (pg, migration 0093)', { skip: !pgAvailable }, ()
       assert.deepEqual(calls.posts, ['tick']);
     });
 
+    it('a one-shot wakeup refused by the kill switch ends instead of lingering', async () => {
+      const r = rig();
+      const t = await create(r.service, 'wake_at', { purpose: 'x', time: at(MIN), until: at(DAY), actions: [{ type: 'post', template: 'x' }] }, envFor('kill'));
+      await pool.query(`INSERT INTO execution_kill_switches (level, reason, set_by) VALUES ('instance', 'test', 'op')`);
+      clock = new Date(clock.getTime() + 2 * MIN);
+      await r.worker.tick();
+      assert.equal(calls.posts.length, 0);
+      assert.equal(await r.service.get(t.id), undefined, 'nothing left to wait for');
+    });
+
     it('a firing in quiet hours is deferred, not run and not spent', async () => {
       const r = rig();
       await create(r.service, 'wake_at', { purpose: 'x', time: at(MIN), until: at(DAY), actions: [{ type: 'turn', instruction: 'go' }] }, envFor('erika'));

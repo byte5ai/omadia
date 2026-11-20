@@ -26,6 +26,7 @@ import { createCron } from '../scheduler/cronerCompat.js';
 import type { TurnOutcome } from './triggerChain.js';
 import { cronMinGapSeconds, type TriggerLimits } from './triggerPolicy.js';
 import type { TriggerService } from './triggerService.js';
+import { routineLang, routineTexts } from './routineTexts.js';
 import type { Trigger } from './types.js';
 
 const DAY_MS = 86_400_000;
@@ -48,6 +49,10 @@ export interface RoutineTriggerDeps {
   /** The renewal question goes out through the routine's own channel. */
   readonly askOwner: (routine: Routine, text: string) => Promise<void>;
   readonly limits: () => TriggerLimits;
+  /** The instance's answer language (`ai_disclosure_locale`). */
+  readonly language?: () => string | undefined;
+  /** Time zone for dates in owner messages (the proactive default). */
+  readonly timeZone?: string;
   readonly now?: () => Date;
   readonly log: (message: string) => void;
 }
@@ -57,8 +62,9 @@ export interface RoutineTriggerScheduler extends JobSchedulerLike {
   fire(trigger: Trigger): Promise<TurnOutcome>;
   /** Ask owners about routines ending soon; pause the ones past their deadline. */
   sweep(): Promise<void>;
-  /** The harness paused a routine's trigger (budget, breaker): the row follows. */
-  pausedByHarness(routineId: string, why: string): Promise<void>;
+  /** The harness paused a routine's trigger (budget, breaker): the row
+   *  follows. `cause` is the trigger's pause reason. */
+  pausedByHarness(routineId: string, cause: string): Promise<void>;
 }
 
 const ownerKey = (r: Routine): string => `${r.tenant}\n${r.userId}`;
@@ -76,13 +82,13 @@ export function cronRunsUntil(cron: string, until: Date, from: Date, cap: number
   return Math.max(count, 1);
 }
 
-export function renewalText(r: Routine, until: Date): string {
-  const date = new Intl.DateTimeFormat('de-DE', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Berlin' }).format(until);
-  return `Deine Routine „${r.name}“ läuft am ${date} aus. Soll sie weiterlaufen? Sag mir einfach „Routine ${r.name} verlängern“, dann läuft sie einen weiteren Zeitraum.`;
+export function renewalText(r: Routine, until: Date, language?: string, timeZone = 'UTC'): string {
+  return routineTexts.renewal(routineLang(language), r.name, until, timeZone);
 }
 
 export function createRoutineTriggerScheduler(deps: RoutineTriggerDeps): RoutineTriggerScheduler {
   const clock = deps.now ?? (() => new Date());
+  const lang = () => routineLang(deps.language?.());
   const armed = new Map<string, { handler: JobHandler; timeoutMs: number }>();
 
   async function triggerOf(routineId: string): Promise<Trigger | undefined> {
@@ -154,14 +160,14 @@ export function createRoutineTriggerScheduler(deps: RoutineTriggerDeps): Routine
     if (res && !res.ok) {
       deps.log(`[routines/triggers] routine ${routine.id} not scheduled: ${res.code}: ${res.message}`);
       // The owner sees why it does not run instead of an "active" row that never fires.
-      await routines.markExpired(routine.id, `Die Routine konnte nicht eingeplant werden: ${res.message}`);
+      await routines.markExpired(routine.id, routineTexts.notScheduled(lang(), res.message));
     }
   }
 
   async function expire(routine: Routine): Promise<void> {
     await deps.routines()?.markExpired(
       routine.id,
-      'Die Routine ist abgelaufen. Setze sie fort oder verlängere sie, damit sie wieder läuft.',
+      routineTexts.expired(lang()),
     );
     const t = await triggerOf(routine.id);
     if (t) await deps.service()?.end(t.id, 'expired', { routine: routine.id });
@@ -200,7 +206,7 @@ export function createRoutineTriggerScheduler(deps: RoutineTriggerDeps): Routine
         // owner sees why on the row instead of a silent "active".
         void deps
           .routines()
-          ?.markExpired(routineId, `Die Routine läuft öfter als alle ${String(min / 60)} Minuten; wähle einen langsameren Takt.`)
+          ?.markExpired(routineId, routineTexts.tooFrequent(lang(), min / 60))
           .catch(report(`marking ${routineId}`));
         throw new Error(`a routine runs at most every ${String(min / 60)} minutes`);
       }
@@ -245,9 +251,10 @@ export function createRoutineTriggerScheduler(deps: RoutineTriggerDeps): Routine
     },
 
     async pausedByHarness(routineId: string, why: string): Promise<void> {
+      // `why` is the trigger's pause reason; the owner reads it localized.
       const routines = deps.routines();
       if (!routines) return;
-      const row = await routines.markExpired(routineId, `Die Routine wurde angehalten: ${why}`);
+      const row = await routines.markExpired(routineId, routineTexts.paused(lang(), why));
       if (row) armed.delete(routineId);
     },
 
@@ -268,7 +275,7 @@ export function createRoutineTriggerScheduler(deps: RoutineTriggerDeps): Routine
         }
         if (r.renewalAskedAt) continue;
         if (await routines.markRenewalAsked(r.id, now)) {
-          await deps.askOwner(r, renewalText(r, until)).catch(report(`asking the owner of ${r.id}`));
+          await deps.askOwner(r, renewalText(r, until, deps.language?.(), deps.timeZone)).catch(report(`asking the owner of ${r.id}`));
         }
       }
     },

@@ -141,7 +141,7 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
     // A routine's row follows a harness pause, so its owner sees it paused
     // (with the reason) and a restart does not lift the pause.
     if (notice.origin === 'routine' && notice.reason !== 'agent_unavailable' && notice.reason !== 'kill_switch') {
-      void deps.routines?.()?.pausedByHarness(notice.contextId, notice.message).catch(() => undefined);
+      void deps.routines?.()?.pausedByHarness(notice.contextId, notice.reason).catch(() => undefined);
     }
     const audit = deps.audit?.();
     void audit?.({

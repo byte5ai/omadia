@@ -222,3 +222,14 @@ describe('#2082 event intake', () => {
     assert.match(conversationIdOf('opaque'), /^ref-/);
   });
 });
+
+describe('#2082 routine owner messages', () => {
+  it('speak the instance language, with dates in its time zone', async () => {
+    const { routineLang, routineTexts } = await import('../src/triggers/routineTexts.js');
+    const until = new Date('2026-12-20T23:30:00Z');
+    assert.match(routineTexts.renewal(routineLang('en'), 'Report', until, 'Europe/Berlin'), /^Your routine "Report" ends on 21 Dec 2026, 00:30\./);
+    assert.match(routineTexts.renewal(routineLang(undefined), 'Bericht', until, 'UTC'), /läuft am 20\.12\.2026, 23:30 aus/);
+    assert.equal(routineTexts.paused('en', 'budget'), 'The routine was paused: its budget is used up.');
+    assert.equal(routineTexts.paused('de', 'something new'), 'Die Routine wurde angehalten.');
+  });
+});
