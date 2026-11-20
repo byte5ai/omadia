@@ -3904,7 +3904,7 @@ async function main(): Promise<void> {
           .upsert(bindingKeyForTurn(info), String(info.channel), info.conversationRef, info.tenant)
           .catch(() => undefined);
       }
-    });
+    }, graphTenantId);
     serviceRegistry.provide(ROUTINES_INTEGRATION_SERVICE_NAME, routinesIntegration);
     console.log(
       '[middleware] routines feature ready (manage_routine tool registered, routinesIntegration published, chat agent resolved live per run)',

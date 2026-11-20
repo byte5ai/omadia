@@ -18,6 +18,7 @@ import type { SemanticAnswer } from '@omadia/channel-sdk';
 import type { Pool } from 'pg';
 
 import type { ProactiveSenderRegistry } from '../plugins/routines/proactiveSender.js';
+import { asChannelKeyOf } from './ownBot.js';
 import type { SendWindow } from './triggerEngine.js';
 import { isHeadless } from './headless.js';
 import type { DeliveryOutcome } from './triggerChain.js';
@@ -144,6 +145,9 @@ export interface ProactiveGateDeps {
   readonly profiles: RecipientProfileStore;
   readonly defaults: RecipientProfile;
   readonly senders: () => ProactiveSenderRegistry | undefined;
+  /** The agent's own bot on a channel (spec 2042 §5.3): a delivery ref that
+   *  names a bot is delivered only while that bot is still the agent's. */
+  readonly ownChannelKey?: (slug: string, channel: string) => string | undefined;
   readonly now?: () => Date;
   readonly log?: (message: string) => void;
 }
@@ -180,6 +184,10 @@ export function createProactiveGate(deps: ProactiveGateDeps): ProactiveGate {
       if (!channel) return { delivered: false, reason: 'no delivery target' };
       const sender = deps.senders()?.get(channel);
       if (!sender) return { delivered: false, reason: `no proactive sender for channel '${channel}'` };
+      const viaBot = asChannelKeyOf(trigger.deliveryRef);
+      if (viaBot !== undefined && deps.ownChannelKey?.(trigger.agentSlug, channel)?.toLowerCase() !== viaBot) {
+        return { delivered: false, reason: `the bot '${viaBot}' this conversation came through is no longer ${trigger.agentSlug}'s` };
+      }
       try {
         await sender.checkDeliverable?.(trigger.deliveryRef);
         await sender.send({ conversationRef: trigger.deliveryRef, message });

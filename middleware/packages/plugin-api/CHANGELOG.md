@@ -18,6 +18,20 @@ step S7.
 - **`SystemNoticeCode` `agent_own_bot`**: the management layer's answer to
   `/agent` sent to an agent's own bot (Teams, Telegram, Discord, Slack). That
   bot is always its agent, so nothing is selected.
+- **`RoutinesIntegration.publishProactiveSend`**: the message carries the
+  optional **`speaker`** (spec 2042 §5.12): who a trigger or routine delivery
+  speaks as, so a shared bot can name the agent and an agent's own bot needs
+  no name line. Absent on kernel texts (approvals, reminders).
+- **`RoutineTurnInput.conversationRef`** documents **`asChannelKey`**: a turn
+  through an agent's own bot names that bot on its delivery ref
+  (`{ kind: 'channel', channelId, conversationId, asChannelKey }`); the kernel
+  delivers such a ref only while the bot is still the delivering agent's.
+
+### Changed
+
+- **`RoutineTurnInput.tenant`** is optional: a channel without tenants
+  (Telegram, Discord, Slack) omits it and the kernel files the turn under the
+  deployment tenant, as for the web chat. Callers that pass it are unchanged.
 
 ## 1.78.0 — 2026-11-20
 

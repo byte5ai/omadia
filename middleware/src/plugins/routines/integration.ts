@@ -31,11 +31,17 @@ export function createRoutinesIntegration(
   /** Optional per-turn observer — the kernel uses it to persist a Conductor channel binding for
    *  reminders, without coupling routines to Conductor. Best-effort: failures must not break a turn. */
   onTurnCaptured?: (info: { userId: string; principalRef?: string; channel: string; conversationRef: unknown; tenant?: string }) => void,
+  /** Where a turn without a tenant is filed (Telegram, Discord, Slack): the
+   *  deployment tenant, as for the web chat. */
+  deploymentTenant = 'default',
 ): RoutinesIntegration {
+  /** A blank tenant is not a tenant. */
+  const tenantOf = (info: RoutineTurnInput): string => info.tenant?.trim() || deploymentTenant;
+
   /** The ALS value both turn-capture entry points install. */
   function contextFor(info: RoutineTurnInput): ManageRoutineContext {
     return {
-      tenant: info.tenant,
+      tenant: tenantOf(info),
       userId: info.userId,
       channel: info.channel,
       conversationRef: info.conversationRef,
@@ -46,7 +52,7 @@ export function createRoutinesIntegration(
   /** Conductor channel binding for reminders. Best-effort, never fatal. */
   function notifyTurnCaptured(info: RoutineTurnInput): void {
     try {
-      onTurnCaptured?.({ userId: info.userId, principalRef: info.principalRef, channel: info.channel, conversationRef: info.conversationRef, tenant: info.tenant });
+      onTurnCaptured?.({ userId: info.userId, principalRef: info.principalRef, channel: info.channel, conversationRef: info.conversationRef, tenant: tenantOf(info) });
     } catch {
       // never let a binding-capture error break the inbound turn
     }
@@ -91,6 +97,7 @@ export function createRoutinesIntegration(
             ref,
             {
               text: msg.text,
+              ...(msg.speaker !== undefined ? { speaker: msg.speaker } : {}),
               ...(msg.cardBody !== undefined ? { cardBody: msg.cardBody } : {}),
               ...(msg.approval !== undefined ? { approval: msg.approval } : {}),
             },

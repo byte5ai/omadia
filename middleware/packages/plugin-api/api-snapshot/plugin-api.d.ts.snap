@@ -3396,6 +3396,7 @@ orchestratorProfile?: RoutineOrchestratorProfile;
 
 // ===== routinesIntegration.d.ts =====
 import type { ApprovalReminder } from './conductorApproval.js';
+import type { Speaker } from './speaker.js';
 export declare const ROUTINES_INTEGRATION_SERVICE_NAME = "routinesIntegration";
 export interface RoutineCardAttachment {
 contentType: string;
@@ -3420,7 +3421,7 @@ lastRunStatus: 'ok' | 'error' | 'timeout' | null;
 }
 export type RoutineTurnRunner = <T>(fn: () => Promise<T>) => Promise<T>;
 export interface RoutineTurnInput {
-tenant: string;
+tenant?: string;
 userId: string;
 channel: string;
 conversationRef: unknown;
@@ -3435,6 +3436,7 @@ publishProactiveSend(channel: string, send: (conversationRef: unknown, message: 
 text: string;
 cardBody?: readonly unknown[];
 approval?: ApprovalReminder;
+speaker?: Speaker;
 }, routine?: {
 id: string;
 name: string;
