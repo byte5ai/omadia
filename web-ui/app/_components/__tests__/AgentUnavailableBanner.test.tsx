@@ -10,7 +10,7 @@ import { AgentUnavailableBanner } from '../AgentUnavailableBanner';
  * `agent_unavailable`: this session's pinned orchestrator is gone → offer the
  * re-bind + delete actions (the original behaviour).
  *
- * `no_agents_active`: there is NO orchestrator at all. "Re-bind to default"
+ * `no_agents_active`: there is NO agent at all. "Re-bind to default"
  * would rebind to the missing thing and 503 again, so the banner must instead
  * link to LLM access and hide the re-bind action.
  */
@@ -33,7 +33,7 @@ describe('<AgentUnavailableBanner />', () => {
         onDeleted={noop}
       />,
     );
-    expect(screen.getByRole('button', { name: /re-bind to standard/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /re-bind to the default agent/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /delete session/i })).toBeTruthy();
   });
 
@@ -48,7 +48,7 @@ describe('<AgentUnavailableBanner />', () => {
       />,
     );
     // The dangerous "re-bind to the missing default" action is gone.
-    expect(screen.queryByRole('button', { name: /re-bind to standard/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /re-bind to the default agent/i })).toBeNull();
     // The way out is a link to LLM access.
     const link = screen.getByRole('link', { name: /open llm access/i });
     expect(link.getAttribute('href')).toBe('/admin/providers');
