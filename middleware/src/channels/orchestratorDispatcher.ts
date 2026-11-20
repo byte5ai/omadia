@@ -168,6 +168,14 @@ function addressedAgentId(metadata: Record<string, unknown> | undefined): string
 /**
  * Build the real `TurnDispatcher`. Per turn:
  *
+ *   0. **Explicit addressing (#2059).** A turn that names an agent
+ *      (`metadata.agentId`, from a canvas or an agent picker) goes to exactly
+ *      that agent's envelope via `resolveAgent`, with no model in front. This
+ *      stage runs before the `dispatch_service` opt-out below on purpose: a
+ *      canvas channel has `dispatch_service: canvasChatAgent` and still
+ *      reaches the agent it named. A refusal is answered with the `system`
+ *      notice, a platform that cannot address by id refuses the turn; neither
+ *      ever falls through to another agent.
  *   1. **Per-binding routing (US7).** When the channel routes to the shared
  *      `chatAgent` (i.e. declares no explicit `dispatch_service`) and a
  *      `channelKey` is known, resolve the Agent the operator *bound* to this
@@ -178,7 +186,7 @@ function addressedAgentId(metadata: Record<string, unknown> | undefined): string
  *      or an explicit `dispatch_service` like Omadia UI's `canvasChatAgent`) →
  *      fetch that bundle from the registry exactly as before. An explicit
  *      `dispatch_service` is an intentional override and is NEVER re-routed by
- *      the binding resolver.
+ *      the binding resolver (only stage 0 outranks it).
  *
  * Resolution is lazy per turn so the currently-active orchestrator (and the
  * live binding table, post hot-reload) is always used. Classic channels with no

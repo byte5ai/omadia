@@ -86,6 +86,21 @@ describe('resolveTurnAudience', () => {
     });
   }
 
+  for (const channelType of ['slack', 'discord', 'whatsapp', 'imessage']) {
+    it(`a ${channelType} group whose roster is not complete has an unknown audience (#2042)`, async () => {
+      const kg = new InMemoryKnowledgeGraph();
+      const audience = await resolveTurnAudience(
+        kg,
+        { userId: 'u1', origin: { channelType, scope: parseSessionScope('c1') } },
+        provider(
+          [{ channelUserId: 'u1', aadObjectId: null, displayName: 'u1', email: null, userPrincipalName: null }],
+          false,
+        ),
+      );
+      assert.deepEqual(audience, { kind: 'unknown', reason: 'roster-incomplete' });
+    });
+  }
+
   it('leaves agents out of the room', async () => {
     const kg = new InMemoryKnowledgeGraph();
     const audience = await resolveTurnAudience(

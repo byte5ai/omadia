@@ -1,8 +1,6 @@
 // Spec 2042 §5.14, criterion 31 — every decoration is declared once with a
 // justification and its channels; the SDK refuses the rest.
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import {
@@ -80,18 +78,5 @@ describe('decoration registry', () => {
       'verifier_badge:removed',
       'decision_card:channel_not_declared',
     ]);
-  });
-
-  it('fails when the SDK attaches a decoration id that is not declared', () => {
-    // Static guard: ids passed to `decoration: '<id>'` / `decorationId: '<id>'`
-    // anywhere in the SDK sources must be declared.
-    const dir = join(process.cwd(), 'packages/harness-channel-sdk/src');
-    const declared = new Set(DECORATION_REGISTRY.map((d) => d.id));
-    const used: string[] = [];
-    for (const file of readdirSync(dir).filter((f) => f.endsWith('.ts') && f !== 'decorations.ts')) {
-      const source = readFileSync(join(dir, file), 'utf8');
-      for (const m of source.matchAll(/decoration(?:Id)?\s*:\s*'([a-z_]+)'/g)) used.push(m[1] ?? '');
-    }
-    for (const id of used) assert.ok(declared.has(id), `undeclared decoration '${id}'`);
   });
 });

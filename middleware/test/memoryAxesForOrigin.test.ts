@@ -233,6 +233,45 @@ describe('W5 memoryAxesForOrigin — §2 row 3: group chat without a container',
   });
 });
 
+describe('#2042 memoryAxesForOrigin — the colleague channels', () => {
+  for (const channelType of ['slack', 'discord', 'whatsapp', 'imessage']) {
+    it(`${channelType}: a group reaches only its own conversation tier`, () => {
+      const axes = memoryAxesForOrigin({
+        channelType,
+        scope: { kind: 'group', groupRef: 'g-1' },
+      });
+      assert.equal(axes.isContextFree, false);
+      assert.deepEqual([...axes.patterns], [groupPattern(channelType, 'g-1')]);
+    });
+
+    it(`${channelType}: a 1:1 chat reaches only the person's tier`, () => {
+      const axes = memoryAxesForOrigin({
+        channelType,
+        scope: parseSessionScope('personal:u-1'),
+      });
+      assert.deepEqual([...axes.patterns], [userPattern(channelType, 'u-1')]);
+    });
+
+    it(`${channelType}: an unscoped or blank-id turn stays context-free`, () => {
+      assertContextFree(
+        memoryAxesForOrigin({ channelType, scope: parseSessionScope('') }),
+        'unscoped',
+      );
+      assertContextFree(
+        memoryAxesForOrigin({ channelType, scope: { kind: 'group', groupRef: '  ' } }),
+        'blank group id',
+      );
+      assertContextFree(memoryAxesForOrigin(undefined), 'no origin');
+    });
+
+    it(`${channelType}: two groups never share a tier`, () => {
+      const a = memoryAxesForOrigin({ channelType, scope: { kind: 'group', groupRef: 'g-1' } });
+      const b = memoryAxesForOrigin({ channelType, scope: { kind: 'group', groupRef: 'g-2' } });
+      assert.notDeepEqual([...a.patterns], [...b.patterns]);
+    });
+  }
+});
+
 describe('W5 memoryAxesForOrigin — §2 row 4: personal chat', () => {
   it('gives a Teams 1:1 turn only its user tier', () => {
     const axes = memoryAxesForOrigin({
