@@ -1987,6 +1987,14 @@
     "error": "agent list unavailable",
     "defaultMarker": "(default)",
     "onlyAgentTooltip": "This is the only agent available to you here.",
+    "ariaCurrent": "Current agent: {name}",
+    "notice": {
+      "no_agent": "No agent is set up for you here. Ask an operator to make one available.",
+      "agent_not_available": "The default agent is not available to you here.",
+      "agent_disabled": "The default agent is switched off.",
+      "agent_deleted": "The default agent no longer exists.",
+      "generic": "There is no default agent here. Choose an agent to start."
+    },
     "pinnedTooltip": "Session is pinned. Use Operator → Agents → Drain to reassign.",
     "emptyCta": "No agents configured — open Operator → Agents",
     "unavailableTitle": "This session's agent is no longer available",

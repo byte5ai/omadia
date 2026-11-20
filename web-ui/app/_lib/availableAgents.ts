@@ -32,7 +32,7 @@ export interface AvailableAgents {
   agents: readonly AgentDirectoryEntry[];
   /** Slug of the default agent when it is among `agents`, else `null`. */
   defaultSlug: string | null;
-  /** Why there is no default agent (the server's `system` notice), else `null`. */
+  /** Why there is no default agent: the server's notice CODE (`no_agent`, …), else `null`. */
   defaultNotice?: string | null;
 }
 
@@ -64,7 +64,7 @@ export function toDirectoryEntry(
     name: nonEmpty(dto.display_name) ?? dto.slug,
     avatarUrl: directoryAvatarUrl(dto.avatar_url),
     shortDescription: nonEmpty(dto.short_description),
-    archetype: dto.archetype,
+    archetype: dto.archetype ?? 'standard',
     reach: null,
     isDefault: dto.slug === defaultSlug,
   };
@@ -79,7 +79,7 @@ export async function fetchAvailableAgents(
   return {
     agents: directory.agents.map((a) => toDirectoryEntry(a, defaultSlug)),
     defaultSlug,
-    defaultNotice: 'notice' in directory.default_agent ? directory.default_agent.notice.text : null,
+    defaultNotice: 'notice' in directory.default_agent ? directory.default_agent.notice : null,
   };
 }
 

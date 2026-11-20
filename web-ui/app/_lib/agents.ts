@@ -1388,14 +1388,14 @@ export interface AgentDirectoryEntryDto {
   display_name: string;
   short_description: string | null;
   avatar_url: string | null;
-  /** `standard`, or the id of an archetype an archetype plugin delivers. */
-  archetype: string;
+  /** `standard`, or the id of an archetype an archetype plugin delivers; `null` = standard. */
+  archetype: string | null;
 }
 
 /** The agent that answers what nobody addressed, or why there is none. */
 export type AgentDirectoryDefaultDto =
   | { slug: string }
-  | { slug: null; notice: { code: string; text: string } };
+  | { slug: null; notice: string };
 
 export interface AgentDirectoryDto {
   channel: string;

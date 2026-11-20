@@ -1987,6 +1987,14 @@
     "error": "Agent-Liste nicht verfügbar",
     "defaultMarker": "(Standard)",
     "onlyAgentTooltip": "Das ist der einzige Agent, der dir hier zur Verfügung steht.",
+    "ariaCurrent": "Aktueller Agent: {name}",
+    "notice": {
+      "no_agent": "Hier ist dir kein Agent zugeordnet. Bitte einen Operator, einen freizugeben.",
+      "agent_not_available": "Der Standard-Agent steht dir hier nicht zur Verfügung.",
+      "agent_disabled": "Der Standard-Agent ist ausgeschaltet.",
+      "agent_deleted": "Der Standard-Agent existiert nicht mehr.",
+      "generic": "Hier gibt es keinen Standard-Agenten. Wähle einen Agenten, um zu starten."
+    },
     "pinnedTooltip": "Session ist gepinnt. Zum Wechseln: Operator → Agenten → Drain.",
     "emptyCta": "Keine Agenten konfiguriert — öffne Operator → Agenten",
     "unavailableTitle": "Der Agent dieser Session ist nicht mehr verfügbar",

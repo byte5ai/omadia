@@ -20,6 +20,7 @@ describe('fetchAvailableAgents (#2057, directory endpoint)', () => {
           archetype: 'standard',
         },
         { slug: 'tom', display_name: ' ', short_description: null, avatar_url: null, archetype: 'facilitator' },
+        { slug: 'zed', display_name: 'Zed', short_description: null, avatar_url: null, archetype: null },
       ],
       default_agent: { slug: 'mira' },
     });
@@ -34,18 +35,19 @@ describe('fetchAvailableAgents (#2057, directory endpoint)', () => {
       shortDescription: 'Sales',
       isDefault: true,
     });
+    expect(result.agents[2]).toMatchObject({ slug: 'zed', archetype: 'standard' });
     expect(result.agents[1]).toMatchObject({ name: 'tom', avatarUrl: null, isDefault: false, archetype: 'facilitator' });
   });
 
-  it('carries the server notice when there is no default agent', async () => {
+  it('carries the server notice code when there is no default agent', async () => {
     getAgentDirectory.mockResolvedValue({
       channel: 'teams',
       agents: [],
-      default_agent: { slug: null, notice: { code: 'no_agent', text: 'No agent is set up here.' } },
+      default_agent: { slug: null, notice: 'no_agent' },
     });
     const result = await fetchAvailableAgents({ channel: 'teams' });
     expect(getAgentDirectory).toHaveBeenCalledWith('teams');
     expect(result.defaultSlug).toBeNull();
-    expect(result.defaultNotice).toBe('No agent is set up here.');
+    expect(result.defaultNotice).toBe('no_agent');
   });
 });

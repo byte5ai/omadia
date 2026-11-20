@@ -45,6 +45,19 @@ export interface AgentPickerProps {
 const CHIP_CLASS =
   'inline-flex items-center gap-2 rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-2 py-1 text-xs text-[color:var(--fg)]';
 
+/** Notice codes the server names for a missing default agent; the text is ours (i18n). */
+const KNOWN_NOTICE_CODES = [
+  'no_agent',
+  'agent_not_available',
+  'agent_disabled',
+  'agent_deleted',
+] as const;
+
+function noticeKeyFor(code: string): `notice.${(typeof KNOWN_NOTICE_CODES)[number] | 'generic'}` {
+  const known = KNOWN_NOTICE_CODES.find((c) => c === code);
+  return `notice.${known ?? 'generic'}`;
+}
+
 /**
  * The slug to show: pinned, else chosen, else the default, else the only agent.
  * With several agents and no default none is shown as chosen — the turn would
@@ -121,7 +134,7 @@ function AgentMenu(props: AgentMenuProps): React.ReactElement {
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={listId}
-        aria-label={`${t('label')} ${props.current.name}`}
+        aria-label={t('ariaCurrent', { name: props.current.name })}
         onClick={() => setOpen(!open)}
         className={`${CHIP_CLASS} bg-[color:var(--bg-elevated)] hover:border-[color:var(--accent)]`}
       >
@@ -208,7 +221,9 @@ export function AgentPicker(props: AgentPickerProps): React.ReactElement | null 
   if (!slug) {
     // No default agent: the server says why (a `system` notice, never an agent).
     return defaultNotice ? (
-      <span className="inline-flex text-xs text-[color:var(--fg-muted)]">{defaultNotice}</span>
+      <span className="inline-flex text-xs text-[color:var(--fg-muted)]">
+        {t(noticeKeyFor(defaultNotice))}
+      </span>
     ) : null;
   }
 

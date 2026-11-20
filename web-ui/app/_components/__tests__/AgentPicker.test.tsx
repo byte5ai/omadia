@@ -151,17 +151,17 @@ describe('<AgentPicker />', () => {
     expect(await screen.findByText('Mira')).toBeInTheDocument();
   });
 
-  it('shows the server notice when there is no default agent and none is selected', async () => {
+  it('shows the catalog text for the server notice code when there is no default agent and none is selected', async () => {
     mockDirectory.mockResolvedValue({
       channel: 'web',
       agents: [
         { slug: 'a', display_name: 'Anna', short_description: null, avatar_url: null, archetype: 'standard' },
         { slug: 'b', display_name: 'Ben', short_description: null, avatar_url: null, archetype: 'standard' },
       ],
-      default_agent: { slug: null, notice: { code: 'no_agent', text: 'Pick an agent to start.' } },
+      default_agent: { slug: null, notice: 'no_agent' },
     });
     renderWithIntl(<AgentPicker onSelect={vi.fn()} />);
-    expect(await screen.findByText('Pick an agent to start.')).toBeInTheDocument();
+    expect(await screen.findByText(/No agent is set up for you here/)).toBeInTheDocument();
   });
 
   it('says so when the list cannot be loaded', async () => {
