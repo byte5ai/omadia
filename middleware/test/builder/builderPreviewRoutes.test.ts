@@ -196,7 +196,7 @@ async function startHarness(opts: {
       modelId: 'claude-haiku-4-5-20251001',
     }),
     draftStore: store,
-    systemPromptFor: async () => 'sp',
+    systemPromptFor: () => 'sp',
     buildSubAgent: () => ({
       ask: async (
         _q: string,
@@ -767,7 +767,7 @@ describe('builder preview routes', () => {
       };
       assert.equal(typeof body.template, 'string');
       assert.ok(Array.isArray(body.slots));
-      // The bundled `agent-integration` template declares the
+      // The bundled `integration` template declares the
       // client-impl / toolkit-impl / skill-prompt slots that the
       // workspace review surfaced.
       const required = body.slots.filter((s) => s.required).map((s) => s.key);

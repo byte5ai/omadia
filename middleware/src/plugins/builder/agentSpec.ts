@@ -11,7 +11,10 @@ import { isReservedToolId } from '../reservedNames.js';
 import { UiRouteSchema } from './uiRouteSchema.js';
 
 /**
- * AgentSpec — structured description of an uploaded/builder-generated agent.
+ * AgentSpec — structured description of a Plugin-Builder-generated capability
+ * plugin (spec 2042 §5.10, ADR-0014). The name is historical: the Plugin
+ * Builder generates capability plugins of kind `integration` or `tool`,
+ * never an agent, a persona or a system prompt.
  *
  * The spec is the data contract between the Builder UI (formulation chat,
  * inline editor) and the CodegenEngine (B.1-3). It is stored verbatim in
@@ -19,14 +22,15 @@ import { UiRouteSchema } from './uiRouteSchema.js';
  * carry the LLM-generated code chunks that get injected into marker regions
  * inside the boilerplate.
  *
- * Multi-template:
- *   The MVP ships a single template (`agent-integration` — the
- *   client-plus-toolkit shape that today's seo-analyst uses), but the spec
- *   is template-aware from day one. New templates register at boot via
- *   `registerAgentTemplate(id)` (BoilerplateSource will do this in B.1-2).
- *   The CodegenEngine resolves slot keys against the chosen template's
- *   manifest, not against a hardcoded list — adding `agent-pure-compute`
- *   or `agent-sub-orchestrator` later is a doc drop, not a codegen patch.
+ * Templates and kind:
+ *   `template` picks the code layout (`integration`: client.ts + toolkit.ts;
+ *   `tool`: toolkit.ts only). `kind` is the manifest kind the generated
+ *   plugin declares; when the spec leaves it out it is derived from the
+ *   spec (`effectivePluginKind`): `integration` when the plugin reaches an
+ *   external system with credentials, else `tool`. The two are separate on
+ *   purpose — a plugin may fetch public web pages through a client
+ *   (`integration` layout) and still be a `tool` (no credentials).
+ *   Templates register at boot via `registerAgentTemplate(id)`.
  *
  * `slots` is a free-form `Record<string, string>` here. Per-template slot
  * key validation runs in CodegenEngine (B.1-3), where the active template
@@ -241,25 +245,6 @@ const GraphPermissionSchema = z
   })
   .strict();
 
-const SubAgentsPermissionSchema = z
-  .object({
-    /** Full agent-ids this plugin may delegate to via `ctx.subAgent.ask`.
-     *  Format mirrors `depends_on`: reverse-FQDN OR npm-scoped. */
-    calls: z
-      .array(
-        z
-          .string()
-          .regex(
-            /^(?:@[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*|[a-z][a-z0-9.-]*)$/,
-            'subAgents.calls entry must be reverse-FQDN or @scope/name',
-          ),
-      )
-      .default([]),
-    /** Per-tool-handler invocation cap. Default 5 in kernel. */
-    calls_per_invocation: z.number().int().positive().max(50).optional(),
-  })
-  .strict();
-
 const LlmPermissionSchema = z
   .object({
     /** LLM model whitelist. Prefer provider-agnostic CLASS refs
@@ -293,7 +278,6 @@ const McpPermissionSchema = z
 export const PermissionsSchema = z
   .object({
     graph: GraphPermissionSchema.optional(),
-    subAgents: SubAgentsPermissionSchema.optional(),
     llm: LlmPermissionSchema.optional(),
     /** Epic #459 W7 (issue #458) — declaring this enables `ctx.mcp`. */
     mcp: McpPermissionSchema.optional(),
@@ -351,7 +335,7 @@ export type ExternalRead = z.infer<typeof ExternalReadSchema>;
 
 // --- Template registry ----------------------------------------------------
 
-const knownTemplates = new Set<string>(['agent-integration', 'agent-pure-llm']);
+const knownTemplates = new Set<string>(['integration', 'tool']);
 
 export function registerAgentTemplate(id: string): void {
   if (!id) {
@@ -371,17 +355,119 @@ export function getKnownAgentTemplates(): readonly string[] {
 // here so a stray `pure-llm` doesn't fail validation; the canonical id is
 // what every downstream codepath (codegen, manifest loader, install path)
 // expects.
+//
+// Spec 2042 §5.10 — the boilerplates were renamed from `agent-integration` /
+// `agent-pure-llm` to `integration` / `tool`. Drafts stored before keep their
+// old id; the aliases read them as the new templates.
 const AGENT_TEMPLATE_ALIASES: Record<string, string> = {
-  'pure-llm': 'agent-pure-llm',
-  'integration': 'agent-integration',
+  'agent-integration': 'integration',
+  'agent-pure-llm': 'tool',
+  'pure-llm': 'tool',
 };
 
 const AgentTemplateSchema = z
   .string()
   .transform((val) => AGENT_TEMPLATE_ALIASES[val] ?? val)
   .refine((val) => knownTemplates.has(val), {
-    message: 'Unknown agent template',
+    message: 'Unknown plugin template (known: integration, tool)',
   });
+
+/** Normalises a stored template id (old drafts carry `agent-integration` /
+ *  `agent-pure-llm`) to the current boilerplate id. */
+export function canonicalTemplateId(id: string): string {
+  return AGENT_TEMPLATE_ALIASES[id] ?? id;
+}
+
+// --- Plugin kind -----------------------------------------------------------
+// Spec 2042 §5.10 — the only manifest kinds the Plugin Builder generates.
+
+export const PLUGIN_BUILDER_KINDS = ['integration', 'tool'] as const;
+export type PluginBuilderKind = (typeof PLUGIN_BUILDER_KINDS)[number];
+
+/** What `effectivePluginKind` needs: the fields that say whether the plugin
+ *  reaches an external system with credentials. */
+export interface PluginKindSource {
+  readonly kind?: PluginBuilderKind | undefined;
+  readonly depends_on?: readonly string[] | undefined;
+  readonly oauth_providers?: readonly unknown[] | undefined;
+  /** Read leniently: a draft skeleton holds them unvalidated. */
+  readonly setup_fields?: readonly unknown[] | undefined;
+}
+
+/**
+ * The manifest kind a spec generates. An explicit `spec.kind` wins.
+ * Otherwise: `integration` when the plugin reaches an external system with
+ * credentials — a `depends_on` integration (its vault scope), an OAuth
+ * provider, or a setup field of type `secret` / `oauth`; else `tool` (local
+ * logic, or public data without credentials).
+ *
+ * web-ui mirrors this in `app/store/builder/[id]/_components/pluginKind.ts`.
+ */
+export function effectivePluginKind(spec: PluginKindSource): PluginBuilderKind {
+  if (spec.kind !== undefined) return spec.kind;
+  const hasCredentials =
+    (spec.depends_on?.length ?? 0) > 0 ||
+    (spec.oauth_providers?.length ?? 0) > 0 ||
+    (spec.setup_fields ?? []).some((f) => {
+      const type = (f as { type?: unknown } | null)?.type;
+      return type === 'secret' || type === 'oauth';
+    });
+  return hasCredentials ? 'integration' : 'tool';
+}
+
+// --- Retired spec fields ----------------------------------------------------
+// Spec 2042 §5.10 — persona, quality and the role prompt (`skill`) belong to
+// agents (Agent Builder), never to a plugin. Drafts stored before still carry
+// them: parsing strips them (they are ignored and never emitted), and a patch
+// that tries to set one is refused (`retiredSpecKeyOf`).
+
+export const RETIRED_SPEC_KEYS = ['skill', 'persona', 'quality'] as const;
+
+/** Spec 2042 §5.4 — a capability plugin never consults an agent:
+ *  `permissions.subAgents` (`ctx.subAgent`) is retired with the agent kind. */
+export const RETIRED_PERMISSION_KEY = 'subAgents';
+
+/** The retired key a JSON pointer targets, if any: a top-level key, or
+ *  `permissions.subAgents` (also inside a `permissions` object being set). */
+export function retiredSpecKeyOf(
+  pointer: string,
+  value?: unknown,
+): (typeof RETIRED_SPEC_KEYS)[number] | 'permissions.subAgents' | undefined {
+  const [, first, second] = pointer.split('/');
+  const top = RETIRED_SPEC_KEYS.find((k) => k === first);
+  if (top) return top;
+  if (first === 'permissions' && second === RETIRED_PERMISSION_KEY) return 'permissions.subAgents';
+  if (first === 'permissions' && second === undefined && isRecord(value) && RETIRED_PERMISSION_KEY in value) {
+    return 'permissions.subAgents';
+  }
+  if (first === undefined || first === '') {
+    const perms = isRecord(value) ? value['permissions'] : undefined;
+    if (isRecord(perms) && RETIRED_PERMISSION_KEY in perms) return 'permissions.subAgents';
+  }
+  return undefined;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** The input without the retired keys (unchanged when it has none). Used on
+ *  every parse and wherever a stored draft is shown. */
+export function stripRetiredSpecKeys(input: unknown): unknown {
+  if (!isRecord(input)) return input;
+  const perms = input['permissions'];
+  const hasRetiredPermission = isRecord(perms) && RETIRED_PERMISSION_KEY in perms;
+  if (!RETIRED_SPEC_KEYS.some((k) => k in input) && !hasRetiredPermission) return input;
+  const out = Object.fromEntries(
+    Object.entries(input).filter(([k]) => !(RETIRED_SPEC_KEYS as readonly string[]).includes(k)),
+  );
+  if (hasRetiredPermission) {
+    out['permissions'] = Object.fromEntries(
+      Object.entries(perms).filter(([k]) => k !== RETIRED_PERMISSION_KEY),
+    );
+  }
+  return out;
+}
 
 // --- Builder settings -----------------------------------------------------
 // Per-draft operator preferences that influence the BUILDER UX, not the
@@ -529,7 +615,10 @@ export type OAuthProvider = z.infer<typeof OAuthProviderSchema>;
 
 export const AgentSpecSchema = z
   .object({
-    template: AgentTemplateSchema.default('agent-integration'),
+    template: AgentTemplateSchema.default('integration'),
+    // Manifest kind of the generated plugin. Optional: absent means
+    // derived from the spec (`effectivePluginKind`).
+    kind: z.enum(PLUGIN_BUILDER_KINDS).optional(),
 
     // Identity
     id: AgentIdSchema,
@@ -591,13 +680,6 @@ export const AgentSpecSchema = z
 
     // Capabilities
     tools: z.array(ToolSpecSchema).default([]),
-    skill: z
-      .object({
-        role: z.string().min(1),
-        tonality: z.string().optional(),
-      })
-      .strict(),
-
     // Runtime config
     setup_fields: z.array(SetupFieldSchema).default([]),
 
@@ -677,17 +759,6 @@ export const AgentSpecSchema = z
     // ignores this branch and the manifestLinter does not gate on it.
     test_cases: z.array(TestCaseSchema).default([]),
 
-    // Phase-1 Kemia: optional response-quality block. See
-    // QualityConfigSchema docstring. Omitted in legacy drafts; the
-    // responseGuard@1 provider falls back to its configured defaults.
-    quality: QualityConfigSchema.optional(),
-
-    // Phase-3 Kemia (OB-67): optional persona block. See
-    // PersonaConfigSchema docstring. Phase 4 (`personaCompose@1`,
-    // conditional) will consume this field; Phase 3 only writes/reads
-    // it via the Browser-View. Omitted in legacy drafts.
-    persona: PersonaConfigSchema.optional(),
-
     // Multi-orchestrator runtime (US2) — manifest extension. Codegen writes
     // these into the generated manifest.yaml as top-level keys; the
     // multi-orchestrator registry consumes them at activation time.
@@ -727,7 +798,7 @@ function migrateMissingDomain(input: unknown): unknown {
 }
 
 export function parseAgentSpec(input: unknown): AgentSpec {
-  const result = AgentSpecSchema.safeParse(migrateMissingDomain(input));
+  const result = AgentSpecSchema.safeParse(migrateMissingDomain(stripRetiredSpecKeys(input)));
   if (result.success) return result.data;
   // Re-throw with the LLM-friendly enriched message (allowed-keys at path
   // appended to bare `unrecognized_keys` issues). Without this, downstream
@@ -739,7 +810,8 @@ export function parseAgentSpec(input: unknown): AgentSpec {
 }
 
 /**
- * Safe-parse companion that runs the same legacy-domain migration. Use
+ * Safe-parse companion that runs the same legacy migrations (retired
+ * persona/quality/skill keys stripped, missing domain filled). Use
  * from tools that consume `safeParse` so they see migrated specs (and
  * surface only real validation issues, not "missing domain" on every
  * legacy draft).
@@ -747,7 +819,7 @@ export function parseAgentSpec(input: unknown): AgentSpec {
 export function safeParseAgentSpec(
   input: unknown,
 ): ReturnType<typeof AgentSpecSchema.safeParse> {
-  return AgentSpecSchema.safeParse(migrateMissingDomain(input));
+  return AgentSpecSchema.safeParse(migrateMissingDomain(stripRetiredSpecKeys(input)));
 }
 
 /**

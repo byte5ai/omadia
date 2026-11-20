@@ -273,7 +273,7 @@ describe('POST /api/v1/profiles/import-bundle', () => {
 
   it('roundtrip: bundle with spec.json → draft created, spec_source=spec_json', async () => {
     const specJson = JSON.stringify({
-      template: 'agent-integration',
+      template: 'integration',
       id: 'de.byte5.agent.import-test',
       name: 'Imported Agent',
       version: '1.0.0',
@@ -281,7 +281,6 @@ describe('POST /api/v1/profiles/import-bundle', () => {
       category: 'productivity',
       depends_on: [],
       tools: [],
-      skill: { role: 'Hilf knapp.' },
       setup_fields: [],
       playbook: {
         when_to_use: 'beim Test',
@@ -426,7 +425,7 @@ describe('POST /api/v1/profiles/import-bundle', () => {
 
   it('rejects bundle with manipulated spec.json (400 bundle.invalid_spec_json)', async () => {
     const badSpecJson = JSON.stringify({
-      template: 'agent-integration',
+      template: 'integration',
       id: 'de.byte5.agent.bad',
       name: 'Bad',
       version: '1.0.0',
@@ -434,7 +433,6 @@ describe('POST /api/v1/profiles/import-bundle', () => {
       category: 'not-a-real-category',
       depends_on: [],
       tools: [],
-      skill: { role: 'role' },
       setup_fields: [],
       playbook: { when_to_use: 'now', not_for: [], example_prompts: [] },
       network: { outbound: [] },

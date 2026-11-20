@@ -14,7 +14,7 @@ import { validateSpec } from '../src/plugins/builder/manifestLinter.js';
 import type { AgentSpecSkeleton } from '../src/plugins/builder/types.js';
 
 const baseSpec = (): Record<string, unknown> => ({
-  template: 'agent-pure-llm',
+  template: 'tool',
   id: 'de.byte5.agent.test',
   name: 'Test',
   version: '0.1.0',
@@ -23,7 +23,6 @@ const baseSpec = (): Record<string, unknown> => ({
   domain: 'test',
   depends_on: [],
   tools: [],
-  skill: { role: 'helper' },
   setup_fields: [],
   jobs: [],
   playbook: { when_to_use: 'use it', not_for: [], example_prompts: [] },

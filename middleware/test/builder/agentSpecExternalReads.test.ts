@@ -11,7 +11,6 @@ const validBase = {
   name: 'Weather Agent',
   description: 'Weather forecast agent',
   category: 'analysis',
-  skill: { role: 'a weather expert' },
   playbook: { when_to_use: 'when user asks about weather' },
 } as const;
 

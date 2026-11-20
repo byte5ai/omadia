@@ -1,10 +1,8 @@
 // -----------------------------------------------------------------------------
-// Agent-Builder types. Mirrors middleware/src/plugins/builder/types.ts +
+// Plugin Builder types. Mirrors middleware/src/plugins/builder/types.ts +
 // middleware/src/routes/builder*.ts response shapes.
 // Keep in sync manually until the admin API gets a shared type package.
 // -----------------------------------------------------------------------------
-
-import type { PersonaConfig } from './personaTypes';
 
 export type DraftStatus = 'draft' | 'published' | 'archived';
 
@@ -169,8 +167,17 @@ export interface OAuthProvider {
   client_secret_field: string;
 }
 
+/** Manifest kind of a Plugin Builder plugin (spec 2042 §5.10): the Plugin
+ *  Builder generates capability plugins only. */
+export type BuilderPluginKind = 'integration' | 'tool';
+
 export interface AgentSpecSkeleton {
+  /** Boilerplate id: `integration` | `tool`. Drafts stored before #2049 may
+   *  still carry `agent-integration` / `agent-pure-llm`; see
+   *  `normalizeTemplateId` in `store/builder/[id]/_components/pluginKind.ts`. */
   template?: string;
+  /** Manifest kind. Absent = derived (see `effectivePluginKind`). */
+  kind?: BuilderPluginKind;
   id: string;
   name: string;
   version: string;
@@ -186,7 +193,6 @@ export interface AgentSpecSkeleton {
   domain: string;
   depends_on: string[];
   tools: ToolSpec[];
-  skill: { role: string; tonality?: string };
   setup_fields: SetupField[];
   /** Spec 005 (#371) — declarative OAuth-provider descriptors. Optional;
    *  defaults to [] in spec. Mirrors middleware AgentSpecSkeleton. */
@@ -211,15 +217,6 @@ export interface AgentSpecSkeleton {
   builder_settings?: { auto_fix_enabled: boolean };
   /** B.11-6: Operator-promoted tool-test records. */
   test_cases?: ToolTestCase[];
-  /** Phase-1 Kemia: optional response-quality block (sycophancy +
-   *  boundary presets / custom lines). Mirrors middleware
-   *  QualityConfigSchema. */
-  quality?: QualityConfig;
-  /** Phase-3 Kemia (OB-67): optional persona block (template + 12 axes
-   *  0–100 + custom_notes). Mirrors middleware PersonaConfigSchema —
-   *  see personaTypes.ts for the canonical TS-shape used by the
-   *  Browser-View. */
-  persona?: PersonaConfig;
 }
 
 export interface TranscriptEntry {

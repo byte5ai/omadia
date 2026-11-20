@@ -4,6 +4,8 @@ import { useTranslations } from 'next-intl';
 
 import type { AgentSpecSkeleton } from '../../../../_lib/builderTypes';
 
+import { effectivePluginKind, normalizeTemplateId } from './pluginKind';
+
 interface SpecOverviewProps {
   spec: AgentSpecSkeleton;
   slots: Record<string, string>;
@@ -30,16 +32,13 @@ export function SpecOverview({ spec, slots }: SpecOverviewProps): React.ReactEle
       <Field label={t('fields.name')} value={spec.name || '—'} />
       <Field label={t('fields.author')} value={spec.author || '—'} />
       <Field label={t('fields.version')} value={spec.version || '—'} mono />
-      <Field label={t('fields.template')} value={spec.template ?? 'agent-integration'} mono />
+      <Field label={t('fields.kind')} value={effectivePluginKind(spec)} mono />
+      <Field label={t('fields.template')} value={normalizeTemplateId(spec.template)} mono />
       <Field label={t('fields.category')} value={spec.category || '—'} />
       <Field
         label={t('fields.domain')}
         value={spec.domain || '—'}
         mono
-      />
-      <Field
-        label={t('fields.skillRole')}
-        value={spec.skill?.role || '—'}
       />
       <Field
         label={t('fields.tools')}

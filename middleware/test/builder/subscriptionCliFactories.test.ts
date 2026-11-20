@@ -3,7 +3,6 @@ import { strict as assert } from 'node:assert';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { z } from 'zod';
 
 import { DraftStore } from '../../src/plugins/builder/draftStore.js';
 import { SpecEventBus } from '../../src/plugins/builder/specEventBus.js';
@@ -182,8 +181,8 @@ describe('PreviewChatService default factory on the subscription CLI (#1072)', {
           {
             id: 'echo',
             description: 'echo tool',
-            input: z.object({ q: z.string() }),
-            run: async (input: unknown) => ({ echo: input }),
+            inputSchema: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },
+            run: async (input: unknown) => JSON.stringify({ echo: input }),
           },
         ],
       },
@@ -195,7 +194,7 @@ describe('PreviewChatService default factory on the subscription CLI (#1072)', {
     const svc = new PreviewChatService({
       resolveProvider: async () => ({ cliModel: 'sonnet', modelId: 'claude-sonnet-cli' }),
       draftStore,
-      systemPromptFor: async () => 'preview-system-prompt',
+      systemPromptFor: () => 'preview-system-prompt',
       logger: () => {},
     });
 

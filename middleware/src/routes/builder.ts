@@ -14,6 +14,7 @@ import {
   discoverTemplates,
   loadBoilerplate,
 } from '../plugins/builder/boilerplateSource.js';
+import { canonicalTemplateId } from '../plugins/builder/agentSpec.js';
 import { loadEntityVocabulary } from '../plugins/builder/entityVocabulary.js';
 import type {
   BuilderModelId,
@@ -35,14 +36,6 @@ import {
   registerBuilderEditRoutes,
   type BuilderEditDeps,
 } from './builderEdit.js';
-import {
-  registerBuilderPreviewPromptRoute,
-  type BuilderPreviewPromptDeps,
-} from './builderPreviewPrompt.js';
-import {
-  registerBuilderQualityRoute,
-  type BuilderQualityDeps,
-} from './builderQuality.js';
 import {
   registerBuilderEventsRoutes,
   type BuilderEventsDeps,
@@ -94,12 +87,6 @@ export interface BuilderRouterDeps {
   /** Audit-log GET surface (issue #56). When omitted, the
    *  GET /drafts/:id/audit endpoint stays absent. */
   audit?: BuilderAuditDeps;
-  /** Preview-prompt POST surface (issue #55). When omitted, the
-   *  POST /drafts/:id/preview-prompt endpoint stays absent. */
-  previewPrompt?: BuilderPreviewPromptDeps;
-  /** Quality-score GET surface (issue #52). When omitted, the
-   *  GET /drafts/:id/quality endpoint stays absent. */
-  quality?: BuilderQualityDeps;
   /** SSE event-bus stream (B.5-4). When omitted, the
    *  GET /drafts/:id/events endpoint stays absent. Wired by `index.ts`
    *  alongside the chat + edit surfaces — a single SpecEventBus instance
@@ -156,8 +143,8 @@ export function createBuilderRouter(deps: BuilderRouterDeps): Router {
         .template;
       const templateId =
         typeof rawTemplate === 'string' && rawTemplate.length > 0
-          ? rawTemplate
-          : 'agent-integration';
+          ? canonicalTemplateId(rawTemplate)
+          : 'integration';
       const libs = await loadDraftLibs(templateId);
       res.json({ template: templateId, libs });
     } catch (err) {
@@ -194,8 +181,8 @@ export function createBuilderRouter(deps: BuilderRouterDeps): Router {
           .template;
         const templateId =
           typeof rawTemplate === 'string' && rawTemplate.length > 0
-            ? rawTemplate
-            : 'agent-integration';
+            ? canonicalTemplateId(rawTemplate)
+            : 'integration';
         try {
           const bundle = await loadBoilerplate(templateId);
           res.json({
@@ -535,16 +522,6 @@ export function createBuilderRouter(deps: BuilderRouterDeps): Router {
     registerBuilderAuditRoute(router, deps.audit);
   }
 
-  // ── Builder preview-prompt POST (issue #55) ────────────────────────────
-  if (deps.previewPrompt) {
-    registerBuilderPreviewPromptRoute(router, deps.previewPrompt);
-  }
-
-  // ── Builder quality-score GET (issue #52) ──────────────────────────────
-  if (deps.quality) {
-    registerBuilderQualityRoute(router, deps.quality);
-  }
-
   // ── Builder SSE event stream (B.5-4) ──────────────────────────────────
   if (deps.events) {
     registerBuilderEventsRoutes(router, deps.events);
@@ -645,7 +622,7 @@ async function loadDraftLibs(templateId: string): Promise<DraftLib[]> {
       content,
     });
   } catch {
-    // No types.ts in this template — pure-llm has it, integration has it,
+    // No types.ts in this template — integration and tool have one,
     // but a future template might not. Non-fatal.
   }
 

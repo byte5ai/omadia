@@ -13,9 +13,11 @@ Manifest, sondern auch im Code-Contract**:
 | `channel` | User-Surface (WhatsApp, Teams, Telegram, …) mit Transport + Adaptern | **`ChannelHandle` über `activate(ctx, core)`** | `@omadia/channel-whatsapp` |
 
 > **Quellen der Wahrheit (nicht halluzinieren):**
-> - Agent: Referenz `middleware/packages/agent-seo-analyst/`, Boilerplate
->   `middleware/assets/boilerplate/{agent-pure-llm,agent-integration}/`,
->   Package-Contract (10 Punkte) `…/agent-pure-llm/CLAUDE.md`.
+> - Capability-Plugin (`integration` / `tool`): Referenzen
+>   `middleware/packages/agent-reference-maximum/` und
+>   `middleware/packages/agent-seo-analyst/`, Boilerplate
+>   `middleware/assets/boilerplate/{integration,tool}/`,
+>   Package-Contract (10 Punkte) `…/integration/CLAUDE.md`.
 > - Channel: SDK-Contract `middleware/packages/harness-channel-sdk/src/`,
 >   öffentliches Referenz-Plugin **`byte5ai/omadia-channel-whatsapp`**
 >   (Teams/Telegram-Quelle liegt privat). Resolver
@@ -96,31 +98,32 @@ archetype:
 - `compat.core` muss den Kern verlangen, der `archetype` kennt (plugin-api
   ≥ 1.60.0): ein älterer Kern bietet das Plugin aus dem Hub gar nicht an.
 
-## 2. Scaffold aus der Boilerplate (agent)
+## 2. Scaffold aus der Boilerplate (Capability-Plugin)
 
-Wähle `agent-pure-llm` (kein externes API, reines Prompting) oder
-`agent-integration` (echter HTTP-Client + Secrets):
+Wähle `tool` (lokale Logik, kein externes System) oder `integration`
+(externes System mit Zugangsdaten). Ein Capability-Plugin hat keine Persona
+und keinen System-Prompt; Rolle und Charakter gehören einem Agenten (Agent
+Builder), siehe Spec 2042 §5.10 und ADR-0014.
 
 ```bash
-cp -R middleware/assets/boilerplate/agent-pure-llm \
-      middleware/packages/agent-<slug>
-cd middleware/packages/agent-<slug>
-mv skills/{{AGENT_SLUG}}-expert.md skills/<slug>-expert.md
+cp -R middleware/assets/boilerplate/tool \
+      middleware/packages/<slug>
+cd middleware/packages/<slug>
 ```
 
 Package-Layout (flach, am Root):
 
 ```
-agent-<slug>/
-├── manifest.yaml         # deklarative Definition (Schema v1) — Pflicht
+<slug>/
+├── manifest.yaml         # deklarative Definition (Schema v1), kind integration|tool
 ├── package.json          # name === manifest.identity.id, "type":"module", "private":true
 ├── tsconfig.json         # NodeNext, rootDir:"./", outDir:"./dist"
 ├── types.ts              # lokales PluginContext-Duplikat (KEIN Cross-Import!)
-├── plugin.ts             # activate(ctx) → { toolkit, close() }
+├── plugin.ts             # activate(ctx) → registerToolkit → { close() }
+├── registerTools.ts      # jedes Tool → ctx.tools.register
 ├── toolkit.ts            # Capability → ToolDescriptor[] (Zod-Input + run)
-├── client.ts             # externe API (LLM-frei, testbar) — nur agent-integration
+├── client.ts             # externe API (LLM-frei, testbar) — nur integration
 ├── index.ts              # Barrel
-├── skills/<slug>-expert.md   # System-Prompt-Partial (YAML-Frontmatter)
 ├── assets/               # icon.png etc. (optional)
 └── scripts/build-zip.mjs # tsc + stage + zip → out/<id>-<version>.zip
 ```
@@ -223,11 +226,12 @@ permissions:
   `query_<slug>`) und System-Prompt-Concat aus `skills/*.md`.
 - Secrets/Config nur über `ctx`:
   `await ctx.secrets.get(k)` / `.require(k)` (async), `ctx.config.get<T>(k)` (sync).
-- System-Prompt gehört in `skills/<slug>-expert.md` (Markdown + YAML-Frontmatter),
-  **nicht** in den Code.
+- Kein System-Prompt, kein `AGENT.md`, keine `prompt_partial`-Skills: was ein
+  Agent über das Plugin wissen muss, steht in den Tool-Beschreibungen und im
+  `playbook:`.
 
 Details + Zod-Support-Matrix + Lifecycle-Budgets (`activate` ≤10s, `close` ≤5s):
-die 10 Punkte in `middleware/assets/boilerplate/agent-pure-llm/CLAUDE.md`.
+die 10 Punkte in `middleware/assets/boilerplate/integration/CLAUDE.md`.
 Kanonische Vorlage: `middleware/packages/agent-seo-analyst/`.
 
 ```bash
@@ -326,7 +330,7 @@ channel:
 + JSON-API), im Manifest `admin_ui_path` auf `…/index.html` zeigen → web-ui
 rendert automatisch ein `<iframe src="/bot-api{admin_ui_path}">` auf der
 Store-Detail-Page. Harte Regeln (siehe
-`middleware/assets/boilerplate/agent-integration/assets/admin-ui/CLAUDE.md`):
+`middleware/assets/boilerplate/integration/assets/admin-ui/CLAUDE.md`):
 `fetch()` **relativ** (`api/status`), jede Antwort `{ ok, … }`, Stylesheet
 `/bot-api/_harness/admin-ui.css`, nur `var(--*)`-Tokens, keine externen Scripts/Fonts.
 
@@ -567,8 +571,8 @@ lokal und startet dann den normalen Install-Job.
 
 ## Referenzen
 
-- Package-Contract Agent (10 Punkte): `middleware/assets/boilerplate/agent-pure-llm/CLAUDE.md`
-- Admin-UI-Constraints: `middleware/assets/boilerplate/agent-integration/assets/admin-ui/CLAUDE.md`
+- Package-Contract Capability-Plugin (10 Punkte): `middleware/assets/boilerplate/integration/CLAUDE.md`
+- Admin-UI-Constraints: `middleware/assets/boilerplate/integration/assets/admin-ui/CLAUDE.md`
 - Kanonischer Agent: `middleware/packages/agent-seo-analyst/`
 - Channel-SDK: `middleware/packages/harness-channel-sdk/src/` (`@omadia/channel-sdk`) — inkl. `getChatAgent(ctx)`
 - API-Key-Auth (server-to-server Bearer statt Session-Cookie): `middleware/packages/harness-api-key-auth/src/` (`@omadia/api-key-auth`) — `requireApiKey(...)` als mountbare Express-Middleware, inkl. Key-Store, Scopes, Rate-Limit, Audit-Log

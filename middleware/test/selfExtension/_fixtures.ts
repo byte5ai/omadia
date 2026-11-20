@@ -16,7 +16,6 @@ export const BASE_SPEC_INPUT = {
   domain: 'dynamics.sales',
   depends_on: ['de.byte5.integration.dynamics'],
   tools: [{ id: 'dynamics_query', description: 'OData query gegen Dataverse', input: {} }],
-  skill: { role: 'ein präziser Dataverse-Analyst' },
   playbook: { when_to_use: 'User fragt nach Verkaufszahlen' },
   permissions: {
     graph: {

@@ -3223,51 +3223,49 @@
     "simple": {
       "intro": {
         "badge": "No-Code",
-        "title": "Let's build your assistant",
+        "title": "Let's build your plugin",
         "subtitle": "In three calm steps — describe it, review it, try it out. The technical side takes care of itself."
       },
       "step1": {
-        "title": "Describe your assistant",
-        "subtitle": "Say in your own words what it should do for you."
+        "title": "Describe your plugin",
+        "subtitle": "Say in your own words what your agents should be able to do with it."
       },
       "step2": {
-        "title": "Your assistant",
+        "title": "Your plugin",
         "subtitle": "An overview in plain language — no jargon."
       },
       "step3": {
         "title": "Try it out",
-        "subtitle": "Ask a question and see how your assistant replies."
+        "subtitle": "A neutral test agent that holds only this plugin answers. Ask a question and see how it uses the plugin."
       },
       "overview": {
         "nameLabel": "Name",
         "namePlaceholder": "Not named yet",
         "whatLabel": "What it does",
-        "whatPlaceholder": "Once you've described above what your assistant should do, a short summary will appear here.",
+        "whatPlaceholder": "Once you've described above what your plugin should do, a short summary will appear here.",
         "readyTools": "Ready. Can carry out {count, plural, one {# action} other {# actions}} for you.",
-        "readyChat": "Ready. Answers your questions in the chat."
-      },
-      "persona": {
-        "title": "Adjust personality",
-        "subtitle": "How should your assistant sound? Friendly, factual, casual …",
-        "optional": "optional"
+        "readyChat": "Ready. No actions defined yet.",
+        "kindLabel": "Plugin type",
+        "kindIntegration": "Integration: connects your agents to an external system with its own credentials.",
+        "kindTool": "Tool: local logic your agents can use, without an external system."
       },
       "intake": {
-        "heroTitle": "What should your assistant be able to do?",
+        "heroTitle": "What should your agents be able to do with this plugin?",
         "heroSubtitle": "Just describe it in your own words. We'll handle the rest — you don't need to know anything technical.",
         "examplesLabel": "For example",
-        "example1": "An assistant that answers questions about our Confluence pages.",
-        "example2": "A helper that summarizes incoming emails.",
-        "example3": "An assistant for questions about our vacation policy.",
-        "inputLabel": "Describe your assistant",
+        "example1": "A plugin that searches and reads our Confluence pages.",
+        "example2": "A tool that summarizes incoming emails.",
+        "example3": "A plugin that looks up our vacation policy.",
+        "inputLabel": "Describe your plugin",
         "scrollToBottomAriaLabel": "Jump to latest message",
-        "placeholderIdle": "Describe in your own words what your assistant should do.",
-        "placeholderBusy": "Your assistant is being built …",
+        "placeholderIdle": "Describe in your own words what your plugin should do.",
+        "placeholderBusy": "Your plugin is being built …",
         "send": "Send",
         "stop": "Stop",
-        "statusDefault": "Getting your assistant ready …",
+        "statusDefault": "Getting your plugin ready …",
         "statusReading": "Reading your request …",
-        "statusConfiguring": "Setting up your assistant …",
-        "statusTeaching": "Teaching your assistant its skills …",
+        "statusConfiguring": "Setting up your plugin …",
+        "statusTeaching": "Writing the actions of your plugin …",
         "statusWaitingChoice": "Waiting for your decision …",
         "statusWorking": "Working on the details …",
         "statusChecking": "Checking the result …",
@@ -3276,7 +3274,7 @@
         "statusBusy": "Working …",
         "errorLostConnection": "Connection lost: {message}",
         "errorUnknown": "Unknown error — please try again.",
-        "errorProviderGeneric": "Your assistant couldn't reach the AI service just now. Please try again in a moment.",
+        "errorProviderGeneric": "The Plugin Builder couldn't reach the AI service just now. Please try again in a moment.",
         "errorChoiceFailed": "Your choice could not be saved.",
         "errorChoiceFailedMessage": "Your choice could not be saved: {message}"
       }
@@ -3296,7 +3294,6 @@
       "tabOverview": "Overview",
       "tabSpec": "Spec",
       "tabSlots": "Slots",
-      "tabPersona": "Persona",
       "tabSkills": "Skills",
       "tabVersions": "Versions",
       "paneChat": "Builder Chat",
@@ -3339,7 +3336,11 @@
       "buildErrorsCloseAria": "Close error list",
       "buildErrorsShowTitle": "Show error list",
       "buildErrorsHideTitle": "Hide error list",
-      "fixWithBuilder": "Fix with Builder"
+      "fixWithBuilder": "Fix with Builder",
+      "kindIntegration": "Integration",
+      "kindTool": "Tool",
+      "kindIntegrationHint": "Plugin kind: integration — an external system with credentials. Granted to agents per agent.",
+      "kindToolHint": "Plugin kind: tool — local logic without an external system. Granted to agents per agent."
     },
     "tools": {
       "form": {
@@ -3347,7 +3348,7 @@
         "idPlaceholder": "e.g. fetch_metrics",
         "idTaken": "Tool ID is already taken",
         "descriptionLabel": "Description",
-        "descriptionPlaceholder": "What does this tool do? Read by the agent as the description.",
+        "descriptionPlaceholder": "What does this tool do? The calling agent reads this as the description.",
         "inputSchema": "Input schema",
         "schemaModeLabel": "Schema mode",
         "tabForm": "Form",
@@ -3463,14 +3464,14 @@
         "providerGeneric": "Something went wrong while talking to the AI provider. Please try again.",
         "choiceSaveFailedDetail": "Could not save selection: {message}",
         "choiceSaveFailed": "Could not save selection.",
-        "llmAccessMissing": "The plugin builder needs LLM access (an API key or a connected subscription)."
+        "llmAccessMissing": "The Plugin Builder needs LLM access (an API key or a connected subscription)."
       },
       "inputLabel": "Builder message",
       "scrollToBottomAriaLabel": "Jump to latest message",
       "placeholder": {
         "thinking": "Builder is thinking …",
         "awaitingChoice": "Builder is waiting for your choice above …",
-        "idle": "Describe what the agent should do. Enter to send, Shift+Enter for a line break."
+        "idle": "Describe what the plugin should do. Enter to send, Shift+Enter for a line break."
       },
       "button": {
         "stop": "Stop",
@@ -3489,26 +3490,12 @@
       },
       "empty": {
         "title": "Tell the builder what you want to start with.",
-        "example": "e.g. „Build a Confluence reader agent with the tools page_read and page_search.“"
+        "example": "e.g. „Build a Confluence integration with the tools page_read and page_search.“"
       }
     },
     "preview": {
-      "prompt": {
-        "title": "Preview Prompt",
-        "tokens": "{count} tokens ({health})",
-        "health": {
-          "good": "good",
-          "medium": "medium",
-          "high": "high",
-          "critical": "critical"
-        },
-        "loading": "Loading…",
-        "refresh": "Refresh",
-        "copied": "Copied ✓",
-        "copy": "Copy"
-      },
       "chat": {
-        "agentLabel": "Preview agent",
+        "agentLabel": "Preview: neutral draft agent with only this plugin",
         "credentials": "Credentials",
         "credentialsTooltip": "Manage test credentials for the preview",
         "rebuild": "Rebuild",
@@ -3516,8 +3503,8 @@
         "inputLabel": "Preview message",
         "scrollToBottomAriaLabel": "Jump to latest message",
         "placeholder": {
-          "inflight": "Preview agent is responding …",
-          "idle": "Test the agent. Press Enter to send."
+          "inflight": "The preview agent is responding …",
+          "idle": "Test the plugin. Press Enter to send."
         },
         "stop": "Stop",
         "send": "Send",
@@ -3526,19 +3513,19 @@
           "connectionLost": "Connection lost: {message}",
           "unknownTurn": "Unknown error during the preview turn",
           "providerGeneric": "Something went wrong while talking to the AI provider. Please try again.",
-          "llmAccessMissing": "The plugin builder needs LLM access (an API key or a connected subscription).",
+          "llmAccessMissing": "The Plugin Builder needs LLM access (an API key or a connected subscription).",
           "privacyShieldRequired": "Your organization requires the Privacy Shield. The preview chat runs without it, so it is turned off."
         },
-        "externalReadsHint": "Preview does not run cross-integration lookups (<code>spec.external_reads</code>) — the agent correctly detects the missing service and throws. Publish the agent to the platform store to test the real data path.",
+        "externalReadsHint": "Preview does not run cross-integration lookups (<code>spec.external_reads</code>) — the plugin correctly detects the missing service and throws. Install the plugin in your instance to test the real data path.",
         "agentStuck": {
           "title": "The Plugin Builder is stuck on slot <slot>{slotKey}</slot> ({attempts, plural, one {# attempt} other {# attempts}})",
-          "body": "{summary}. Open the slot editor, review the errors manually and fix the code — the agent won't retry on its own.",
+          "body": "{summary}. Open the slot editor, review the errors manually and fix the code — the Plugin Builder won't retry on its own.",
           "dismiss": "Dismiss",
           "dismissTooltip": "Dismiss banner"
         },
         "empty": {
-          "title": "Test the preview agent.",
-          "body": "Spec + slots are recompiled before each turn if anything changed."
+          "title": "Test the plugin with the preview agent.",
+          "body": "A neutral draft agent holds only this plugin’s tools. Spec + slots are recompiled before each turn if anything changed."
         },
         "smoke": {
           "running": "smoke #{buildN} running …",
@@ -3547,7 +3534,8 @@
           "activateFailed": "smoke #{buildN} ✗ — preview activate failed{detail}",
           "toolsFailed": "smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {tool} other {tools}} failed",
           "fixWithBuilder": "Fix with builder"
-        }
+        },
+        "replyMarker": "Preview"
       },
       "secrets": {
         "title": "Test credentials",
@@ -3574,22 +3562,17 @@
         "groups": {
           "identity": "Identity",
           "description": "Description",
-          "skill": "Skill",
           "dependencies": "Dependencies & Network",
           "setupFields": "Setup Fields (Credentials & Config)"
         },
         "fields": {
-          "agentId": "Agent ID",
+          "agentId": "Plugin ID",
           "name": "Name",
           "version": "Version",
-          "category": "Category",
-          "role": "Role",
-          "tonality": "Tonality (optional)"
+          "category": "Category"
         },
         "placeholders": {
-          "name": "e.g. SEO Analyst",
-          "role": "e.g. Sales Analyst",
-          "tonality": "e.g. precise, factual",
+          "name": "e.g. SEO checks",
           "notFor": "Enter anti-pattern",
           "examplePrompt": "Example prompt",
           "dependsOn": "e.g. @omadia/knowledge-graph-neon",
@@ -3607,19 +3590,19 @@
       },
       "overview": {
         "fields": {
-          "agentId": "Agent ID",
+          "agentId": "Plugin ID",
           "name": "Name",
           "author": "Author",
           "version": "Version",
           "template": "Template",
           "category": "Category",
           "domain": "Domain",
-          "skillRole": "Skill Role",
           "tools": "Tools",
           "slots": "Slots",
           "setupFields": "Setup Fields",
           "outbound": "Outbound",
-          "description": "Description"
+          "description": "Description",
+          "kind": "Kind"
         },
         "values": {
           "none": "none",
@@ -3628,13 +3611,13 @@
         "slotKeys": "Slot Keys"
       },
       "setupFields": {
-        "emptyState": "No setup fields yet. Add e.g. <example>api_key (secret, required)</example> so the preview agent can read test credentials.",
+        "emptyState": "No setup fields yet. Add e.g. <example>api_key (secret, required)</example> so the preview can read test credentials.",
         "required": {
           "on": "required",
           "off": "optional"
         },
         "removeAria": "Remove setup field {key}",
-        "descriptionPlaceholder": "What does the agent need this field for?",
+        "descriptionPlaceholder": "What does the plugin need this field for?",
         "newKey": "new key",
         "newKeyPlaceholder": "e.g. api_key",
         "add": "Add",
@@ -3683,26 +3666,6 @@
       "prefillPromptWithDescription": "Fill the slot `{slotKey}` (target: {targetFile}) — {description} with the TypeScript implementation."
     },
     "persona": {
-      "pillar": {
-        "accentLabel": "Persona",
-        "heading": "Shape character",
-        "description": "12 axes, each individually optional. Values are mirrored in the AGENT.md frontmatter — Phase 4 compiles them into a persona section in the system prompt.",
-        "templateBadge": "Template: {template}",
-        "templateBadgeAdjusted": "Template: {template} — adjusted",
-        "templateBadgeNone": "No template",
-        "applyTemplate": "Apply template",
-        "templateLabel": "Template (optional)",
-        "templatePlaceholder": "e.g. software-engineer (templates arrive in Phase 4)",
-        "coreHeading": "Core (8)",
-        "extendedHeading": "Extended (4)",
-        "customNotesLabel": "Custom Notes (optional)",
-        "customNotesPlaceholder": "e.g. \"Reply in German when the user writes in German.\"",
-        "saved": "Saved.",
-        "unsavedChanges": "Unsaved changes.",
-        "reset": "Reset",
-        "save": "Save",
-        "saving": "Saving…"
-      },
       "gallery": {
         "title": "Choose a persona template",
         "close": "Close",
@@ -3819,28 +3782,6 @@
         "title": "Persona Radar",
         "comparisonPrefix": "Persona vs.",
         "comparisonNeutral": "Neutral (50)"
-      },
-      "quality": {
-        "heading": "Quality",
-        "tokensPrefix": "Tokens:",
-        "loading": "Loading…",
-        "refresh": "Refresh",
-        "dimensions": {
-          "completeness": "Completeness",
-          "tokenEfficiency": "Token efficiency",
-          "ruleQuality": "Rule quality",
-          "specificity": "Specificity"
-        },
-        "sweetspot": {
-          "under": "under-provisioned",
-          "over": "overloaded",
-          "sweet": "Sweet spot"
-        },
-        "tokenHealth": {
-          "warning": "Warning",
-          "critical": "critical",
-          "ok": "OK"
-        }
       },
       "conflicts": {
         "sycophancyHighDirectnessLow": "Sycophancy=high enforces devil's-advocate rules; directness ≤ 30 says \"diplomatic\". The model will ignore one of the two. Recommendation: directness ≥ 50 or sycophancy=medium.",
@@ -4032,7 +3973,7 @@
       "deployReady": "Deploy-ready",
       "rollback": "Rollback",
       "downloadPlugin": "Plugin",
-      "downloadPluginTitle": "Plugin ZIP — directly installable via /install/packages/upload (incl. AGENT.md with persona/quality)",
+      "downloadPluginTitle": "Plugin ZIP — directly installable via /install/packages/upload",
       "downloadBundle": "Bundle",
       "downloadBundleTitle": "Profile bundle — for cross-instance migration via /api/v1/profiles/import-bundle",
       "toastMarkedDeployReady": "Marked deploy-ready",
@@ -4065,7 +4006,7 @@
       "closeAria": "Close",
       "diffGateEyebrow": "Publish diff gate",
       "publishLeadPrefix": "This surface will be written to the plugin store. After “Publish”,",
-      "publishLeadSuffix": "is available to every agent in the tenant.",
+      "publishLeadSuffix": "can be granted to agents in the tenant.",
       "back": "Back",
       "publishing": "Publishing …",
       "succeeded": "Succeeded",
@@ -4078,11 +4019,6 @@
       "kvDomain": "Domain",
       "kvTemplate": "Template",
       "kvDescription": "Description",
-      "sectionSkill": "Skill / system prompt",
-      "kvRole": "Role",
-      "kvTonality": "Tonality",
-      "skillPromptSlotSummary": "skill-prompt slot ({count} characters)",
-      "noSkillPromptSlot": "No dedicated skill-prompt slot — the agent runs with the boilerplate default instruction.",
       "sectionTools": "Tools",
       "toolsCount": "{count, plural, one {# tool} other {# tools}}",
       "noToolsDefined": "No tools defined.",
@@ -4124,7 +4060,8 @@
       "manifestPreviewRefreshAria": "Refresh manifest preview",
       "manifestPreviewCloseAria": "Close manifest preview",
       "manifestPreviewLoading": "# (preview loading)",
-      "previewError": "Preview error"
+      "previewError": "Preview error",
+      "kvKind": "Kind"
     },
     "common": {
       "missingCountAria": "{count} missing",
@@ -4138,10 +4075,10 @@
     },
     "drafts": {
       "list": {
-        "metaTitle": "Plugin-Builder · omadia",
+        "metaTitle": "Plugin Builder · omadia",
         "eyebrow": "Plugin Builder",
         "headline": "Build new plugins.",
-        "lede": "A plugin can package deterministic code (the tools and integrations the platform runs on), the agents that put them to work, or both together. Draft here, iterate on several in parallel, and install with one click. Every draft stays in your personal workspace, visible only to you.",
+        "lede": "The Plugin Builder creates capability plugins as code: integrations with an external system and tools with local logic. Operators grant them to agents; personality and instructions belong to the agent (Agent Builder). Draft here, iterate on several in parallel, and install with one click. Every draft stays in your personal workspace, visible only to you.",
         "scope": {
           "draft": "Draft",
           "published": "Published",
@@ -4172,7 +4109,7 @@
           "label": "Error",
           "loadFailed": "Drafts could not be loaded."
         },
-        "footerStamp": "omadia · Plugin-Builder"
+        "footerStamp": "omadia · Plugin Builder"
       },
       "detail": {
         "metaTitle": "Workspace · Plugin Builder · omadia",

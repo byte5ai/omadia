@@ -36,6 +36,43 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — Agent Builder and Plugin Builder separated; agents from templates (#2049, epic #2042)
+- **Plugin Builder** (`/store/builder`) generates capability plugins only:
+  manifest kind `integration` (an external system with credentials) or `tool`
+  (`spec.kind`, derived when absent). No persona, no `AGENT.md`, no
+  `prompt_partial` skill; the generated `plugin.ts` registers its tools with
+  `ctx.tools.register`. Boilerplates renamed to `integration` and `tool`.
+  Removed without a compatibility layer: the builder tools
+  `set_persona_config` / `set_quality_config`, `PATCH …/persona|quality`,
+  `GET …/quality`, `POST …/preview-prompt`, the persona and quality pillars of
+  the workspace. Old drafts still load; their persona, quality and skill fields
+  are dropped on read, and a patch that sets them is refused with a pointer to
+  the Agent Builder.
+- **Preview** is a neutral preview agent in memory that holds exactly the draft
+  plugin's tools and nothing else, with a neutral prompt (identity, kind,
+  playbook) and answers marked "preview", only in the admin UI.
+- **Built-ins:** `@omadia/agent-seo-analyst` 0.3.0 (kind `tool`) and
+  `@omadia/agent-reference-maximum` 0.4.0 (kind `integration`, still the
+  Builder's reference-only pattern source) are capability plugins; their former
+  personas are `agent_templates` (English and German). The tool runtime never
+  starts a reference-only plugin.
+- **Agent Builder** (`/admin/builder`): "New agent" from a template of an
+  installed plugin (`GET /api/v1/admin/agent-templates[/prefill]`) or blank:
+  draft (`agents.status = 'draft'`, migration 0085, never addressable) →
+  identity → availability → capabilities the operator ticks (none preselected,
+  broad-reach confirmation) → enable only when asked. A failed step is named
+  and the draft stays. Export an agent as a template:
+  `GET /api/v1/operator/agents/:slug/template[?format=yaml]`, validated
+  against the strict template format before it is served (never secrets,
+  memory, bindings or availability).
+- **Persona templates and culture presets** moved from the Plugin Builder to
+  the agent's persona editor.
+- **Availability** is set when an agent is created and editable in the
+  inspector (`PUT /api/v1/operator/agents/:slug/availability`, delivered by
+  the S1 stream).
+- **Texts:** "Plugin Builder" for `/store/builder` everywhere, "Agent Builder"
+  only for `/admin/builder`.
+
 ### Changed — Least privilege by default: no auto-attach, reach, explicit grants (#2054, epic #2042)
 - **Before:** first boot and every kernel install path (Hub, upload,
   reinstall, profile apply, boot-seeded built-ins) attached every plugin to the

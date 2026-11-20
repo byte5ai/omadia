@@ -11,7 +11,6 @@ import type { AskObserver } from '@omadia/orchestrator';
 import { DraftStore } from '../../src/plugins/builder/draftStore.js';
 import {
   PreviewChatService,
-  loadPreviewSystemPrompt,
   type PreviewChatEvent,
   type SubAgentBuildOptions,
 } from '../../src/plugins/builder/previewChatService.js';
@@ -27,19 +26,35 @@ import { emptyAgentSpec } from '../../src/plugins/builder/types.js';
 // Test fixtures
 // ---------------------------------------------------------------------------
 
+/**
+ * A tool as the preview captures it from `ctx.tools.register`, built the way
+ * the boilerplate's `registerTools.ts` does: JSON schema from the Zod schema,
+ * input parsed by the handler, result returned as text.
+ */
 function makeFakeTool(opts: {
   id: string;
   description?: string;
   schema?: z.ZodType<unknown>;
   run?: (input: unknown) => Promise<unknown>;
 }): PreviewToolDescriptor {
+  const schema = opts.schema ?? z.object({ q: z.string() });
+  const json = z.toJSONSchema(schema, { io: 'input' }) as {
+    properties?: Record<string, unknown>;
+    required?: string[];
+  };
+  const run = opts.run ?? (async (input: unknown) => ({ echo: input }));
   return {
     id: opts.id,
     description: opts.description ?? `tool ${opts.id}`,
-    input: opts.schema ?? z.object({ q: z.string() }),
-    run:
-      opts.run ??
-      (async (input: unknown) => ({ echo: input })),
+    inputSchema: {
+      type: 'object',
+      properties: json.properties ?? {},
+      ...(json.required ? { required: json.required } : {}),
+    },
+    run: async (raw: unknown) => {
+      const out = await run(schema.parse(raw));
+      return typeof out === 'string' ? out : JSON.stringify(out);
+    },
   };
 }
 
@@ -178,7 +193,7 @@ describe('PreviewChatService', () => {
       const svc = new PreviewChatService({
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
-        systemPromptFor: async () => 'system-prompt-stub',
+        systemPromptFor: () => 'system-prompt-stub',
         buildSubAgent: fake.build,
         logger: () => {},
       });
@@ -226,7 +241,7 @@ describe('PreviewChatService', () => {
       const svc = new PreviewChatService({
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
-        systemPromptFor: async () => 'sp',
+        systemPromptFor: () => 'sp',
         buildSubAgent: fake.build,
         logger: () => {},
       });
@@ -269,7 +284,7 @@ describe('PreviewChatService', () => {
       const svc = new PreviewChatService({
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
-        systemPromptFor: async () => 'sp',
+        systemPromptFor: () => 'sp',
         buildSubAgent: fake.build,
         logger: () => {},
       });
@@ -298,7 +313,7 @@ describe('PreviewChatService', () => {
       const svc = new PreviewChatService({
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
-        systemPromptFor: async () => 'sp',
+        systemPromptFor: () => 'sp',
         buildSubAgent: fake.build,
         logger: () => {},
       });
@@ -322,7 +337,7 @@ describe('PreviewChatService', () => {
       const svc = new PreviewChatService({
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
-        systemPromptFor: async () => 'CUSTOM-PROMPT',
+        systemPromptFor: () => 'CUSTOM-PROMPT',
         buildSubAgent: fake.build,
         subAgentMaxTokens: 2048,
         subAgentMaxIterations: 4,
@@ -351,7 +366,7 @@ describe('PreviewChatService', () => {
       assert.deepEqual(built.questions, ['go']);
     });
 
-    it('bridges Zod input schemas with their properties + required intact', async () => {
+    it('hands the registered input schemas over with their properties + required intact', async () => {
       // Regression for the geo-analyst-style bug where the bridge silently
       // delivered `{properties: {}, required: []}` to Claude even though the
       // Zod schema was structurally rich. The previous assertion only checked
@@ -370,7 +385,7 @@ describe('PreviewChatService', () => {
       const svc = new PreviewChatService({
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
-        systemPromptFor: async () => 'sp',
+        systemPromptFor: () => 'sp',
         buildSubAgent: fake.build,
         logger: () => {},
       });
@@ -417,7 +432,7 @@ describe('PreviewChatService', () => {
       const svc = new PreviewChatService({
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
-        systemPromptFor: async () => 'sp',
+        systemPromptFor: () => 'sp',
         buildSubAgent: fake.build,
         logger: () => {},
       });
@@ -443,7 +458,7 @@ describe('PreviewChatService', () => {
       const svc = new PreviewChatService({
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
-        systemPromptFor: async () => 'sp',
+        systemPromptFor: () => 'sp',
         buildSubAgent: fake.build,
         logger: () => {},
       });
@@ -476,7 +491,7 @@ describe('PreviewChatService', () => {
       const svc = new PreviewChatService({
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
-        systemPromptFor: async () => 'sp',
+        systemPromptFor: () => 'sp',
         buildSubAgent: fake.build,
         logger: () => {},
       });
@@ -514,7 +529,7 @@ describe('PreviewChatService', () => {
       const svc = new PreviewChatService({
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
-        systemPromptFor: async () => 'sp',
+        systemPromptFor: () => 'sp',
         buildSubAgent: fake.build,
         logger: () => {},
       });
@@ -541,7 +556,7 @@ describe('PreviewChatService', () => {
   });
 
   describe('runDirectTool', () => {
-    it('invokes the tool with Zod-validated input and returns the result', async () => {
+    it('invokes the registered tool and returns its parsed result', async () => {
       const tool = makeFakeTool({
         id: 'sum',
         schema: z.object({ a: z.number(), b: z.number() }),
@@ -554,7 +569,7 @@ describe('PreviewChatService', () => {
       const svc = new PreviewChatService({
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
-        systemPromptFor: async () => 'sp',
+        systemPromptFor: () => 'sp',
         logger: () => {},
       });
 
@@ -572,7 +587,7 @@ describe('PreviewChatService', () => {
       const svc = new PreviewChatService({
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
-        systemPromptFor: async () => 'sp',
+        systemPromptFor: () => 'sp',
         logger: () => {},
       });
       const out = await svc.runDirectTool({
@@ -595,7 +610,7 @@ describe('PreviewChatService', () => {
       const svc = new PreviewChatService({
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
-        systemPromptFor: async () => 'sp',
+        systemPromptFor: () => 'sp',
         logger: () => {},
       });
       const out = await svc.runDirectTool({
@@ -616,7 +631,7 @@ describe('PreviewChatService', () => {
       const svc = new PreviewChatService({
         resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
         draftStore: store,
-        systemPromptFor: async () => 'sp',
+        systemPromptFor: () => 'sp',
         logger: () => {},
       });
       const out = await svc.runDirectTool({
@@ -628,71 +643,58 @@ describe('PreviewChatService', () => {
     });
   });
 
-  describe('loadPreviewSystemPrompt', () => {
-    let promptDir: string;
-
-    beforeEach(() => {
-      promptDir = mkdtempSync(path.join(tmp, 'prompt-'));
-    });
-
-    function makeSpec(over: Partial<AgentSpecSkeleton> = {}): AgentSpecSkeleton {
-      const base = emptyAgentSpec();
-      return {
-        ...base,
-        ...over,
-        playbook: {
-          ...base.playbook,
-          ...(over.playbook ?? {}),
-        },
-      };
-    }
-
-    it('returns header-only prompt when skills/ is missing', async () => {
+  // Spec 2042 §5.10 — the preview is a turn of a neutral draft agent: no
+  // persona from the plugin, only the draft plugin's tools.
+  describe('neutral draft agent (default prompt)', () => {
+    it('offers exactly the draft plugin\'s tools and no persona text from the spec', async () => {
+      const draft = await store.create('alice@example.com', 'Weather');
+      await store.update('alice@example.com', draft.id, {
+        spec: {
+          ...emptyAgentSpec(),
+          id: '@omadia/weather',
+          name: 'Weather',
+          playbook: { when_to_use: 'Fragen zum Wetter', not_for: [], example_prompts: [] },
+          // A draft stored before the change still carries these.
+          skill: { role: 'Du bist ein Wetterfrosch.' },
+          persona: { custom_notes: 'Antworte immer gereimt.' },
+          quality: { sycophancy: 'high' },
+        } as unknown as AgentSpecSkeleton,
+      });
       const handle = makeHandle({
-        draftId: 'd1',
-        previewDir: promptDir,
+        draftId: draft.id,
+        agentId: '@omadia/weather',
+        tools: [makeFakeTool({ id: 'get_forecast' }), makeFakeTool({ id: 'get_alerts' })],
       });
-      const spec = makeSpec({
-        id: 'foo.bar',
-        name: 'Foo Bar',
-        version: '1.0.0',
-        description: 'A test agent.',
-        playbook: {
-          when_to_use: 'whenever',
-          not_for: [],
-          example_prompts: [],
-        },
+      const fake = fakeSubAgentBuilder({ finalText: 'OK' });
+      const svc = new PreviewChatService({
+        resolveProvider: async () => ({ provider: fakeAnthropic, modelId: 'claude-haiku-4-5-20251001' }),
+        draftStore: store,
+        buildSubAgent: fake.build,
+        logger: () => {},
       });
-      const out = await loadPreviewSystemPrompt(handle, spec);
-      assert.match(out, /^# Foo Bar \(foo\.bar v1\.0\.0\) — preview/);
-      assert.match(out, /A test agent\./);
-      assert.match(out, /## Wann nutzen\n\nwhenever/);
-    });
 
-    it('reads + concatenates skills/*.md, stripping frontmatter', async () => {
-      const skillsDir = path.join(promptDir, 'skills');
-      mkdirSync(skillsDir, { recursive: true });
-      writeFileSync(
-        path.join(skillsDir, 'a-first.md'),
-        '---\nname: first\n---\nFIRST BODY',
+      await collectEvents(
+        svc.runTurn({
+          handle,
+          userEmail: 'alice@example.com',
+          userMessage: 'Wie wird das Wetter?',
+          modelChoice: 'claude-haiku-4-5-20251001',
+        }),
       );
-      writeFileSync(
-        path.join(skillsDir, 'b-second.md'),
-        'NO-FRONTMATTER-BODY',
-      );
-      writeFileSync(path.join(skillsDir, 'ignore.txt'), 'ignored');
 
-      const handle = makeHandle({
-        draftId: 'd1',
-        previewDir: promptDir,
-      });
-      const spec = makeSpec({ id: 'p.x', name: 'Px', version: '0.1.0' });
-      const out = await loadPreviewSystemPrompt(handle, spec);
-      assert.match(out, /FIRST BODY/);
-      assert.match(out, /NO-FRONTMATTER-BODY/);
-      assert.equal(out.includes('ignored'), false);
-      // Order: a-first before b-second (sorted).
-      assert.ok(out.indexOf('FIRST BODY') < out.indexOf('NO-FRONTMATTER-BODY'));
+      const built = fake.records[0];
+      if (!built) throw new Error('expected one built sub-agent');
+      assert.deepEqual(
+        built.options.tools.map((t) => t.spec.name),
+        ['get_forecast', 'get_alerts'],
+      );
+      assert.equal(built.options.name, 'preview-draft-@omadia/weather');
+      const prompt = built.options.systemPrompt;
+      assert.match(prompt, /^# Preview/);
+      assert.match(prompt, /neutral draft agent/);
+      for (const leaked of ['Wetterfrosch', 'gereimt', 'Anti-Sycophancy', '<persona>']) {
+        assert.equal(prompt.includes(leaked), false, `prompt must not contain '${leaked}'`);
+      }
     });
   });
 });
