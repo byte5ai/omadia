@@ -198,7 +198,7 @@ export type AddressedTurnLookup = (
  */
 export type PrivateTurnLookup = (
   agentSlug: string,
-  message: { channelType: string; principalId: string; text: string },
+  message: { channelType: string; principalId: string; text: string; replyToMessageId?: string },
 ) => Promise<string | undefined>;
 
 export type OwnPostCountLookup = (
@@ -378,11 +378,13 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
     const principal = input.origin?.principal;
     if (!privateTurn || !agentSlug || !input.origin || principal?.kind !== 'user') return undefined;
     let answer: string | undefined;
+    const replyTo = input.origin.replyToMessageId;
     try {
       answer = await privateTurn(agentSlug, {
         channelType: input.origin.channelType,
         principalId: principal.userId,
         text: input.userMessage,
+        ...(typeof replyTo === 'string' && replyTo.length > 0 ? { replyToMessageId: replyTo } : {}),
       });
     } catch (err) {
       deps.log?.(`[facilitator] private message lookup failed: ${err instanceof Error ? err.message : String(err)}`);
