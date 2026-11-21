@@ -16,9 +16,15 @@ import { KERNEL_SERVICE_CALLER, type ServiceRegistry } from '../platform/service
 import { createExecutionAuthorizationService, type ExecutionAgent } from './executionAuthorizationService.js';
 import { createExecutionGrantsService, createGrantVerificationService } from './grantService.js';
 import { ExecutionScopeStore } from './scopeStore.js';
+import { SessionConversationStore } from './sessionConversationStore.js';
+
+/** Link requests are kept a day past their expiry, for the operator's eye. */
+const LINK_REQUEST_KEEP_MS = 24 * 3_600_000;
 
 export interface ExecutionWiring {
   readonly store: ExecutionScopeStore;
+  /** #2076 / #2089 — link requests and session conversation states. */
+  readonly sessions: SessionConversationStore;
   /** The execution authorization as the plugin `pluginId` gets it: for kernel
    *  services that draw an authorization on a plugin's behalf (`agentTurn@2`). */
   serviceFor(pluginId: string): ExecutionAuthorizationService;
@@ -34,11 +40,14 @@ export interface ExecutionWiringDeps {
   /** #2089 — a reservation was released or a scope ended (by the plugin or by
    *  the sweep): message subscriptions follow at once. */
   readonly onAccessChanged?: () => void;
+  /** #2076 — why the agent cannot read every message of a conversation. */
+  readonly notReadyForAll?: (agentSlug: string, channelType: string, conversationId: string) => Promise<string | undefined>;
   readonly log: (message: string) => void;
 }
 
 export function wireExecutionAuthorization(deps: ExecutionWiringDeps): ExecutionWiring {
   const store = new ExecutionScopeStore(deps.pool);
+  const sessions = new SessionConversationStore(deps.pool);
 
   // The registry holds agents that are in service; a tombstone is not in it.
   const resolveAgent = (slug: string): ExecutionAgent | undefined => {
@@ -64,6 +73,8 @@ export function wireExecutionAuthorization(deps: ExecutionWiringDeps): Execution
       resolveAgent,
       archetypePluginIdFor,
       configuringMaxMs: deps.configuringMaxHours * 3_600_000,
+      sessions,
+      ...(deps.notReadyForAll ? { notReadyForAll: deps.notReadyForAll } : {}),
       ...(deps.onAccessChanged ? { onAccessChanged: deps.onAccessChanged } : {}),
       log: deps.log,
     });
@@ -110,6 +121,9 @@ export function wireExecutionAuthorization(deps: ExecutionWiringDeps): Execution
       .catch((err: unknown) => {
         deps.log(`[execution] sweep failed: ${err instanceof Error ? err.message : String(err)}`);
       });
+    sessions.purgeLinkRequests(LINK_REQUEST_KEEP_MS).catch((err: unknown) => {
+      deps.log(`[execution] link request purge failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
   };
   sweep();
   const timer = setInterval(sweep, deps.sweepIntervalMs);
@@ -117,6 +131,7 @@ export function wireExecutionAuthorization(deps: ExecutionWiringDeps): Execution
 
   return {
     store,
+    sessions,
     serviceFor,
     stop: () => {
       clearInterval(timer);

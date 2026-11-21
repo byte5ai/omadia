@@ -2563,7 +2563,7 @@ its raw value, not by the person's name. Each cleared field is recorded on the
 receipt (`operatorClearedFields` with its `scope`, "In clear by admin rule" in
 the card).
 
-**Tool-declared PII fields (spec 2042 §5.10, plugin-api 1.81.0).** The
+**Tool-declared PII fields (spec 2042 §5.10, plugin-api 1.83.0).** The
 opposite direction: a native tool can declare the PII fields of its result on
 its registration (`ToolRegistrationOptions.piiFields` on `ctx.tools.register`
 and `registerHandler`). The kernel hands them to the Privacy Shield with every
@@ -4083,6 +4083,25 @@ explicit here so a deployment can reason about them:
   a grace period after the subscription ends and after a maximum age. The channel-side provider registries enforce first-registrant
   ownership per channel type, so a second plugin can neither hijack the
   delivery path nor speak through another channel's identity.
+- **Linked session conversations (#2076, #2089, ADR-0026, migration 0107).**
+  A facilitation reads a second conversation (a meeting chat) only after a
+  link request was made INSIDE that conversation: a mention of the
+  facilitator where none of its processes reads is handed to the archetype
+  plugin as a typed request (author as the platform stated it, text only;
+  not stored, no read access) and recorded in `conversation_link_requests`.
+  `reserveConversation` takes a session conversation only with such a
+  request from exactly that conversation, offered to that process, unused
+  and unexpired; it is consumed atomically with the reservation. Whether the
+  author may link (an active home participant who names the facilitation) is
+  checked by the plugin; the kernel guarantees the "from inside" part. The
+  kernel keeps the session state of the reservation and reads by it
+  (`scheduled` addressed only, `live`/`confirming` everything, `closed`/
+  `cancelled` nothing and the subscription ends); `live` needs the channel's
+  readiness for every message there. A released session conversation is
+  written to only from a `closing` scope, a `confirming` one only with
+  consent, status and stop. A process takes back its own home reservation
+  after losing it, but never after an operator released it. Records of
+  superseded message revisions are marked on every read path.
 
 ## 8. What lives in the vault
 

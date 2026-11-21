@@ -305,6 +305,26 @@ export class PgConversationMessageStore implements ConversationMessageStore {
     return rows[0] ? mapEvent(subscription, rows[0]) : undefined;
   }
 
+  async latestRevisions(
+    subscription: MessageSubscription,
+    messageIds: readonly string[],
+  ): Promise<ReadonlyMap<string, number>> {
+    const latest = new Map<string, number>();
+    if (messageIds.length === 0) return latest;
+    const { rows } = await this.pool.query<{ message_id: string; family: string; revision: number }>(
+      `SELECT message_id,
+              CASE WHEN kind = 'transcript_segment' THEN 'transcript' ELSE 'message' END AS family,
+              MAX(revision) AS revision
+         FROM conversation_message_events
+        WHERE subscription_id = $1 AND message_id = ANY($2::text[])
+          AND kind IN ('created', 'edited', 'deleted', 'transcript_segment')
+        GROUP BY 1, 2`,
+      [subscription.id, [...new Set(messageIds)]],
+    );
+    for (const row of rows) latest.set(`${row.family}\u0000${row.message_id}`, Number(row.revision));
+    return latest;
+  }
+
   async listSince(
     subscription: MessageSubscription,
     after: string | undefined,

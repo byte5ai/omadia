@@ -19,6 +19,7 @@ import type { FacilitatorRuntimeLookup, OrchestratorRegistry } from '@omadia/orc
 import type { ConversationMessageHub } from '../channels/conversationMessages/hub.js';
 import type { OwnIdentityPostLog } from '../channels/ownIdentityPostLog.js';
 import type { AddressedMessageRouter } from '../channels/addressedMessageRouter.js';
+import type { LinkRequestRouter } from '../channels/linkRequestRouter.js';
 import type { PrivateMessageRouter } from '../channels/privateMessageRouter.js';
 import {
   resolveFacilitationEngine,
@@ -90,6 +91,8 @@ export function createFacilitatorRuntimeLookup(deps: {
   getPrivateMessages?: () => Pick<PrivateMessageRouter, 'route'> | undefined;
   /** #2089 — who answers a message that addresses the agent in follow-up. */
   getAddressedMessages?: () => Pick<AddressedMessageRouter, 'route'> | undefined;
+  /** #2089 — a link request in a conversation no process of the agent reads. */
+  getLinkRequests?: () => Pick<LinkRequestRouter, 'route'> | undefined;
 }): FacilitatorRuntimeLookup {
   return {
     privateTurn: async (agentSlug, message) => {
@@ -99,8 +102,17 @@ export function createFacilitatorRuntimeLookup(deps: {
       const routed = await router.route({ agent: { id: agent.id, slug: agent.slug }, ...message });
       return routed?.answer;
     },
-    addressedTurn: async (agentSlug, message) =>
-      (await deps.getAddressedMessages?.()?.route({ agentSlug, ...message })) === true,
+    addressedTurn: async (agentSlug, message) => {
+      if ((await deps.getAddressedMessages?.()?.route({ agentSlug, ...message })) === true) return true;
+      // #2089 — not a message for a listening process: maybe a request to
+      // link this conversation as a session conversation (spec 2043 §5.3).
+      const agent = deps.getRegistry()?.get(agentSlug)?.agent;
+      const router = deps.getLinkRequests?.();
+      if (!agent || !router) return false;
+      const taken = await router.route({ agent: { id: agent.id, slug: agent.slug }, ...message });
+      if (!taken) return false;
+      return taken.answer !== undefined ? { answer: taken.answer } : true;
+    },
     ...(deps.ownPosts ? { ownPostCount: deps.ownPosts.count } : {}),
     isEngineDriven: (agentSlug, channelType, conversationId) =>
       // #2089 — a subscription of either major that reads every message. A

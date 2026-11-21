@@ -92,11 +92,40 @@ changelog.
   (`packages/harness-plugin-privacy-guard/src/v4/declaredPii.ts`). Only paths
   that name a row column apply (`field`, `[].field`, `<items>[].field`, a
   trailing `[N]` masks the whole column); deeper paths are ignored.
-- **`@omadia/plugin-api` 1.81.0 (additive):** `AGENT_ENVELOPE_SERVICE_NAME`,
+- **`@omadia/plugin-api` 1.83.0 (additive):** `AGENT_ENVELOPE_SERVICE_NAME`,
   `AgentEnvelope`, `AgentEnvelopeResolver`,
   `ToolRegistrationOptions.piiFields`, `PrivacyToolResultV4Request.piiFields`.
   Upgrade notes: `docs/upgrading.md`.
 
+### Changed — ADR-0026: session electorate and guests in media consent (#2076)
+
+- ADR-0026 records the per-session electorate of spec 2043 §5.5 and the guests' part in a
+  linked session's media consent (both in the facilitator plugin, migration `0011`; no
+  kernel contract change).
+
+### Added — Linked session conversations and session state (#2076, #2077, #2089; ADR-0026)
+
+- `@omadia/plugin-api` 1.81.0 (additive): `ExecutionAuthorizationService.setSessionState`,
+  `SessionConversationState`, `SESSION_CONVERSATION_TRANSITIONS`,
+  `ConversationReservation.sessionState`/`sessionId`,
+  `ProcessConversationMessagesService.onLinkRequest` (`LinkRequest`, `LinkRequestReply`),
+  `reserveConversation({ linkRequestId, sessionId })`, `ConversationMessageRecord.superseded`
+  and `.latestRevision`, refusal codes `link_not_authorized`, `not_ready`, `session_state`.
+- Migration `0107_session_conversations`: `conversation_reservations.session_state` and
+  `.session_id`; table `conversation_link_requests` (link requests made inside a not yet
+  linked conversation, consumed by the reservation they authorize).
+- The kernel reads a linked session conversation as its session's state allows
+  (`scheduled` addressed only, `live`/`confirming` everything, `closed`/`cancelled` nothing,
+  reservation released); `live` needs the conversation's readiness for every message; a
+  released session conversation is written to only from a `closing` scope.
+- A mention in a conversation no process of the facilitator reads is offered to the
+  archetype plugin as a typed link request (not stored, no read access); a short answer of
+  the plugin becomes the turn's answer.
+- Every read path marks an older revision of a message or transcript segment as superseded.
+- A process takes back its own home conversation's reservation without a link request,
+  unless an operator released it.
+- Docs: ADR-0026; `AGENTS.md` points sessions work to ADR-0026;
+  `docs/security-architecture.md` § native facilitators covers the link and read rules.
 ### Added — Facilitators: moderation working modes, per-facilitator defaults, readiness per channel (#2060, #2066, ADR-0023)
 
 - Facilitators may attach working modes that add moderation methods.

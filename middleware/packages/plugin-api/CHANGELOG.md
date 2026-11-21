@@ -8,9 +8,10 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.81.0 — 2026-11-20
+## 1.83.0 — 2026-11-21
 
-Additive (spec 2042 §5.10, the contract step S3b of #2053).
+Additive (spec 2042 §5.10, the contract step S3b of #2053). Plugins that use
+`agentEnvelope@1` or `piiFields` declare `compat.core: ">=1.83.0 <2.0"`.
 
 ### Added
 
@@ -33,6 +34,59 @@ Additive (spec 2042 §5.10, the contract step S3b of #2053).
   call outside an execution context, a plugin request outside its network
   permission and a raw model service for a non-model plugin are refused.
 - `decisionModel@1` passes the gateway as `complete`.
+
+## 1.82.0 — 2026-11-20
+
+Additive (spec 2043 §5.14, #2061): recording is quiet, with a reaction where
+the channel supports one.
+
+### Added
+
+- **`ScopedConversationSendService.react?(request)`** (`conversationSend@2`):
+  sets a reaction as the agent's own identity on a message of the
+  conversation, named by the kernel's id of its stored inbound event
+  (`messageEventId`). Drawn from the scope like a post to that conversation
+  (action `post`, emission `data`); the kernel reacts only to a message it
+  stored for this process in this conversation. Optional member: feature-detect it.
+- **`ConversationSendCapabilities.reactions`**: the channel can set
+  reactions as an agent's own identity.
+- **`ConversationReaction`** (`'acknowledge'`) and `CONVERSATION_REACTIONS`:
+  reactions are named by what they mean; each channel uses its own thumbs-up.
+- **`ScopedReactionRequest`**, **`ScopedReactionOutcome`**.
+## 1.81.0 — 2026-11-20
+
+Additive (#2076, #2077, #2089, spec 2043 §5.3): linked session conversations
+of a facilitation, the kernel-held session state with its read table, link
+requests, and superseded revisions. Plugins that use any of it declare
+`compat.core: ">=1.81.0 <2.0"`.
+
+### Added
+
+- **`SessionConversationState`**, `SESSION_CONVERSATION_TRANSITIONS`, and
+  `ExecutionAuthorizationService.setSessionState` (optional): the state of a
+  session a `session` reservation is for. The kernel derives reading from it
+  (`scheduled` addressed only, `live`/`confirming` everything, `closed`/
+  `cancelled` nothing, reservation released) and sending (released: only a
+  `closing` scope; `confirming`: consent, status and stop). `live` needs the
+  channel's readiness for every message there (`not_ready`).
+- `ConversationReservation.sessionState` and `.sessionId`.
+- **`ProcessConversationMessagesService.onLinkRequest`** (optional),
+  `LinkRequest`, `LinkRequestReply`: a message addressing the agent inside a
+  conversation none of its processes reads reaches the plugin as a typed link
+  request, without being stored and without read access.
+- `reserveConversation({ linkRequestId, sessionId })`: a session
+  conversation is reserved only on a link request made inside it and offered
+  to that process; the request is consumed, and the conversation becomes a
+  target of the process's open `configuring` and `active` scopes.
+- `ConversationMessageRecord.superseded` and `.latestRevision`, set on every
+  read path for an older revision of a message or transcript segment.
+- Refusal codes `link_not_authorized`, `not_ready`, `session_state`
+  (execution) and `session_state` (process subscribe).
+
+### Changed
+
+- `reserveConversation` without a fitting `linkRequestId` is refused with
+  `link_not_authorized` (no plugin linked session conversations before).
 
 ## 1.80.0 — 2026-11-20
 

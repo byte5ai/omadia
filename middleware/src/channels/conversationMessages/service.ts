@@ -6,6 +6,7 @@
 import type { ProcessConversationMessagesService, ProcessMessageScope } from '@omadia/plugin-api';
 
 import type { AddressedMessageRouter } from '../addressedMessageRouter.js';
+import type { LinkRequestRouter } from '../linkRequestRouter.js';
 import type { PrivateMessageRouter } from '../privateMessageRouter.js';
 import type { ConversationMessageHub } from './hub.js';
 
@@ -23,11 +24,20 @@ export function createProcessConversationMessagesService(deps: {
   readonly privateMessages?: Pick<PrivateMessageRouter, 'register'>;
   /** #2089 — who answers a message that addresses the agent; absent: not offered. */
   readonly addressedMessages?: Pick<AddressedMessageRouter, 'register'>;
+  /** #2089 — link requests from not yet linked conversations; absent: not offered. */
+  readonly linkRequests?: Pick<LinkRequestRouter, 'register'>;
 }): ProcessConversationMessagesService {
   const { hub, callerPluginId } = deps;
   const router = deps.privateMessages;
   const addressed = deps.addressedMessages;
+  const links = deps.linkRequests;
   return {
+    ...(links && callerPluginId !== undefined
+      ? {
+          onLinkRequest: (agentSlug: string, handler: Parameters<LinkRequestRouter['register']>[2]) =>
+            links.register(callerPluginId, agentSlug, handler),
+        }
+      : {}),
     ...(addressed && callerPluginId !== undefined
       ? {
           onAddressedMessage: (agentSlug: string, handler: Parameters<AddressedMessageRouter['register']>[2]) =>

@@ -23,7 +23,7 @@ const HOME = { channelType: 'teams', conversationId: '19:offsite@thread.v2' };
 const AUTH: SendAuthorization = { scopeId: 'scope-1', processId: 'fac-7', phase: 'active', purpose: 'moderation', emission: 'template' };
 const SCOPE = { id: 'scope-1', agentSlug: 'mara', processId: 'fac-7' } as ExecutionScope;
 
-function harness(options: { refuse?: ExecutionRefusalCode; channelFails?: boolean; directConversationId?: unknown; noDatabase?: boolean; scopes?: ExecutionScope[] } = {}) {
+function harness(options: { refuse?: ExecutionRefusalCode; channelFails?: boolean; directConversationId?: unknown; noDatabase?: boolean; scopes?: ExecutionScope[]; noReactions?: boolean } = {}) {
   const order: string[] = [];
   const authorized: AuthorizeActionRequest[] = [];
   const bound: unknown[] = [];
@@ -45,7 +45,12 @@ function harness(options: { refuse?: ExecutionRefusalCode; channelFails?: boolea
     callerPluginId: ENGINE,
     execution: () => (options.noDatabase ? undefined : execution),
     conversation: {
-      capabilities: () => ({ asOwnIdentity: true, mentions: true, poll: false }),
+      capabilities: () => ({ asOwnIdentity: true, mentions: true, poll: false, reactions: options.noReactions !== true }),
+      react: (input: unknown, ground: unknown) => {
+        order.push(`react(${JSON.stringify(input)})`);
+        grounds.push(ground);
+        return Promise.resolve(options.channelFails ? { outcome: 'unreachable', code: 'channel_error', message: 'rate limited' } : { outcome: 'reacted' });
+      },
       sendToConversation: (_input: unknown, ground: unknown) => {
         order.push('send');
         grounds.push(ground);
@@ -72,6 +77,16 @@ function harness(options: { refuse?: ExecutionRefusalCode; channelFails?: boolea
     },
     messages: {
       subscriptionsOfProcess: () => subscriptions as never,
+      // The stored event of a message: only 'ev-anna' exists for this process,
+      // in the home conversation.
+      getProcessEventById: (scope: { conversationId: string; processId: string }, plugin: string, eventId: string) => {
+        order.push(`event(${eventId})`);
+        return Promise.resolve(
+          eventId === 'ev-anna' && plugin === ENGINE && scope.processId === 'fac-7' && scope.conversationId === HOME.conversationId
+            ? ({ eventId, kind: 'created', messageId: 'user-msg-9', ...HOME } as never)
+            : undefined,
+        );
+      },
       bindProcessMessage: (scope: unknown, plugin: string, ref: unknown) => {
         bound.push({ scope, plugin, ref });
         return Promise.resolve(true);
@@ -289,5 +304,45 @@ describe('#2091 the own-identity path under an established permission', () => {
     const outcome = await service.sendToConversation(input, { subscriptions: [] });
     assert.equal(outcome.outcome === 'unreachable' && outcome.code, 'no_identity');
     assert.deepEqual(sent, []);
+  });
+});
+
+describe('spec 2043 §5.14 a reaction under a scope', () => {
+  const reaction = { agentSlug: 'mara', ...HOME, messageEventId: 'ev-anna', reaction: 'acknowledge' as const, authorization: AUTH };
+
+  it('is authorized like a post to the conversation, as data, then set on the stored message as the agent', async () => {
+    const h = harness();
+    assert.deepEqual(await h.service.react!(reaction), { outcome: 'reacted', authorizationId: 'auth-1' });
+    assert.deepEqual(h.authorized, [
+      { scopeId: 'scope-1', phase: 'active', purpose: 'moderation', action: 'post', target: { kind: 'conversation', ...HOME }, emission: 'data' },
+    ]);
+    assert.deepEqual(h.order, [
+      'event(ev-anna)',
+      'authorize(post)',
+      `react(${JSON.stringify({ agentSlug: 'mara', ...HOME, messageId: 'user-msg-9', reaction: 'acknowledge' })})`,
+    ]);
+    assert.deepEqual(h.grounds, [{ subscriptions: h.subscriptions }]);
+  });
+
+  it('never reacts to a message the kernel did not store for this process in this conversation', async () => {
+    const h = harness();
+    const outcome = await h.service.react!({ ...reaction, messageEventId: 'ev-other' });
+    assert.deepEqual(outcome, { outcome: 'unreachable', code: 'not_permitted', message: 'no such message of this process in this conversation' });
+    const foreign = await h.service.react!({ ...reaction, conversationId: '19:elsewhere@thread.v2' });
+    assert.equal(foreign.outcome, 'unreachable');
+    assert.ok(!h.order.some((step) => step.startsWith('react(') || step.startsWith('authorize(')), 'nothing spent, nothing set');
+    const unknown = await h.service.react!({ ...reaction, reaction: 'party' as never });
+    assert.equal(unknown.outcome, 'unreachable');
+  });
+
+  it('a channel without reactions spends nothing; a refusal and a channel failure are said', async () => {
+    const none = harness({ noReactions: true });
+    assert.deepEqual(await none.service.react!(reaction), { outcome: 'unreachable', code: 'channel_error', message: "the 'teams' channel cannot set reactions" });
+    assert.deepEqual(none.order, []);
+    const refused = harness({ refuse: 'budget_exhausted' });
+    assert.equal((await refused.service.react!(reaction)).outcome, 'unreachable');
+    assert.deepEqual(refused.order, ['event(ev-anna)', 'authorize(post)']);
+    const failing = harness({ channelFails: true });
+    assert.deepEqual(await failing.service.react!(reaction), { outcome: 'unreachable', code: 'channel_error', message: 'rate limited', authorizationId: 'auth-1' });
   });
 });

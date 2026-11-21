@@ -18,6 +18,7 @@ import type { FacilitationEngineSources } from '../../platform/facilitatorGuard.
 import type { ObservedConversationInvites } from '../../platform/observedConversationInvites.js';
 import { KERNEL_SERVICE_CALLER, type ServiceRegistry } from '../../platform/serviceRegistry.js';
 import type { AddressedMessageRouter } from '../addressedMessageRouter.js';
+import type { LinkRequestRouter } from '../linkRequestRouter.js';
 import type { PrivateMessageRouter } from '../privateMessageRouter.js';
 import { PgOpenCardQuestionStore, type OpenCardQuestionStore } from '../openCardQuestions.js';
 import { ConversationMessageHub, type ConversationMessageHubDeps } from './hub.js';
@@ -137,6 +138,8 @@ export interface ConversationMessagesWiringDeps {
   readonly privateMessages?: Pick<PrivateMessageRouter, 'register'>;
   /** #2089 — where a plugin registers to decide turns that address its agent. */
   readonly addressedMessages?: Pick<AddressedMessageRouter, 'register' | 'owns'>;
+  /** #2089 — where a plugin registers for link requests (spec 2043 §5.3). */
+  readonly linkRequests?: Pick<LinkRequestRouter, 'register'>;
   readonly log: (message: string) => void;
 }
 
@@ -209,6 +212,7 @@ export async function wireConversationMessages(
         callerPluginId: caller.pluginId === KERNEL_SERVICE_CALLER.pluginId ? undefined : caller.pluginId,
         ...(deps.privateMessages ? { privateMessages: deps.privateMessages } : {}),
         ...(deps.addressedMessages ? { addressedMessages: deps.addressedMessages } : {}),
+        ...(deps.linkRequests ? { linkRequests: deps.linkRequests } : {}),
       }),
     ),
   );

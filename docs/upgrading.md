@@ -379,7 +379,7 @@ Spec 2042 §5.3, §5.12 (S7), plugin-api 1.79.0, additive. Migration
 
 ## Upgrading past v0.210.0 — the model gateway and the plugin sandbox enforce; `agent` and `extension` are retired
 
-Spec 2042 §5.10 (#2053), plugin-api 1.81.0, contract step (S3b). It follows
+Spec 2042 §5.10 (#2053), plugin-api 1.83.0, contract step (S3b). It follows
 the expand step below. **Breaking for operators** who relied on `observe`.
 
 1. **Check before you deploy:**
@@ -426,16 +426,18 @@ the expand step below. **Breaking for operators** who relied on `observe`.
    - a native tool can declare the PII fields of its result with the new
      `piiFields` option of `ctx.tools.register` / `registerHandler`. The
      Privacy Shield masks every declared column, whatever its classifier
-     says. Kernels before 1.81.0 do not read it;
+     says. Kernels before 1.83.0 do not read it;
    - system modules can resolve one agent's envelope through the new
-     `agentEnvelope@1` service.
+     `agentEnvelope@1` service;
+   - a plugin that relies on `piiFields` or `agentEnvelope@1` declares
+     `compat.core: ">=1.83.0 <2.0"`.
    See `docs/creating-plugins.md`.
 
 ## Upgrading past v0.210.0 — plugin kinds, the model gateway and the plugin network sandbox
 
 Spec 2042 §5.10 (#2053), plugin-api 1.78.0, expand step: everything new is
 accepted, the old paths keep working and are observed. The contract step
-above (plugin-api 1.81.0) ends `observe` and the retired kinds.
+above (plugin-api 1.83.0) ends `observe` and the retired kinds.
 
 1. **Plugin authors:** the manifest `kind` says what a plugin delivers
    (`integration`, `tool`, `skill`, `channel`, `model`, `archetype`,
