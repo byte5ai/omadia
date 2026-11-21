@@ -36,6 +36,18 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — ADR-0028: the kernel bounds closing scopes and the deadline wait (#2090)
+
+- `@omadia/plugin-api` 1.84.0, `@omadia/channel-sdk` 0.3.10 (additive types, stricter
+  enforcement): a `closing` scope counts its 30 days from `eventAt` (when the closing event
+  happened) and authorizes only `CLOSING_SCOPE_PURPOSES` (never moderation); the deadline wait
+  of an `active` scope needs an open `closing` scope of the process, is bounded by its absolute
+  limit and ends when those closings end. `TurnOrigin.replyToMessageId` →
+  `PrivateMessageRequest.replyToMessageId` binds a private reply to a reminder. No migration.
+- **Rollout order:** facilitator plugin first (it works on kernels from 1.82.0), then this
+  kernel. Facilitator 1.6.0 on a 1.84 kernel loses moderation-mapped posts under a closing and
+  its deadline wait (it opens closings lazily).
+
 ### Changed — ADR-0026: session electorate and guests in media consent (#2076)
 
 - ADR-0026 records the per-session electorate of spec 2043 §5.5 and the guests' part in a

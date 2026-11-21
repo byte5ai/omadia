@@ -7131,6 +7131,27 @@ text. Streaming releases complete sentences only, each checked with all text
 so far. The guard is a strong guard with test-defined coverage, not a proof
 (ADR-0013).
 
+## 10za. Execution scopes bound closings and the deadline wait (#2090, ADR-0028)
+
+An archetype plugin's actions are authorized from execution scopes (§0 of spec 2043). Three
+rules are the kernel's, not the plugin's bookkeeping:
+
+- **A closing never moderates.** A `closing` scope authorizes only `CLOSING_SCOPE_PURPOSES`
+  (essential messages, protocol dispatch, consent, status, stop, invitations, checks);
+  `moderation`, `handshake`, `link` and `reminder` are refused, model turns included.
+- **A closing ends 30 days after its event.** `eventAt` sets the base of the absolute limit;
+  an event in the future is refused, an earlier one only shortens the limit. This guards
+  against a plugin that opens its closing late (restart, retried send); a plugin that omits
+  `eventAt` or invents a fresh event id still gets 30 days from the opening. A hostile
+  plugin is bounded by the per-process once-index and budgets, not by this rule.
+- **The deadline wait is bounded by its closings.** It needs an open `closing` scope of the
+  same process, never runs past the latest absolute limit of those, and `authorize` refuses
+  (`deadline_passed`) once they have ended, whatever deadline the wait was given.
+
+Private replies: `replyToMessageId` is a channel statement; the plugin binds a reply only to
+a private message it sent that very person (outbox row with `target_principal`), so a forged
+reference to someone else's message binds nothing.
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
