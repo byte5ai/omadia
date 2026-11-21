@@ -133,10 +133,26 @@ function refuse(innermost: Meter | undefined, error: Error): never {
  *  called; the first frame after them does. */
 const GATE_FRAME = /modelCallMeter|modelCallGate|llm-adapter-|llm-provider|claudeCliAdapter|node:internal|node_modules/;
 
+/** Kernel bridges every caller of a kind passes through: the neutral-provider
+ *  bridge of `ctx.llm` / the `llm` service, the `ctx.llm` accessor and the
+ *  provider usage wrapper. Reporting them would file every plugin's call under
+ *  one site, so the frame after them is the caller. */
+const BRIDGE_FRAME = /platform\/anthropicLlmProvider|platform\/pluginContext|withProviderUsageTracking/;
+
+/** The path prefix of a kernel file: `…/middleware/` in a checkout,
+ *  `/app/` in the image. */
+const KERNEL_PATH_PREFIX = /file:\/\/[^\s)]*?\/(?:middleware|app)\//;
+
+/** Exported for tests: the call site of a stack (`new Error().stack`). */
+export function callSiteOf(stack: string): string {
+  const frames = stack.split('\n').slice(1);
+  const outside = frames.filter((f) => !GATE_FRAME.test(f));
+  const frame = outside.find((f) => !BRIDGE_FRAME.test(f)) ?? outside[0] ?? frames[0] ?? 'unknown';
+  return frame.trim().replace(/^at /, '').replace(KERNEL_PATH_PREFIX, '');
+}
+
 function callSite(): string {
-  const frames = (new Error().stack ?? '').split('\n').slice(1);
-  const frame = frames.find((f) => !GATE_FRAME.test(f)) ?? frames[0] ?? 'unknown';
-  return frame.trim().replace(/^at /, '').replace(/file:\/\/[^\s)]*?\/middleware\//, '');
+  return callSiteOf(new Error().stack ?? '');
 }
 
 function ambientContext(gateway: GatewayState): ModelExecutionContext | undefined {
@@ -165,14 +181,16 @@ function check(operation: ModelOperation = 'complete'): void {
   }
 
   if (!context) {
-    if (gateway.mode === 'enforce') {
-      refuse(innermost, new ModelCallRefusedError('no_context', `a '${operation}' call outside any execution context`));
-    }
+    // Recorded in both modes, before an enforced refusal: the list at
+    // GET /api/v1/admin/model-gateway is how remaining call sites are found.
     const site = callSite();
     const key = `${operation} ${site}`;
     const seen = gateway.uncovered.get(key) ?? 0;
     gateway.uncovered.set(key, seen + 1);
     if (seen === 0) gateway.onUncovered?.({ operation, site });
+    if (gateway.mode === 'enforce') {
+      refuse(innermost, new ModelCallRefusedError('no_context', `a '${operation}' call outside any execution context`));
+    }
   } else {
     const chain: ModelExecutionContext[] = [];
     for (let m: Meter | undefined = innermost; m; m = m.parent) if (m.context) chain.push(m.context);
@@ -258,6 +276,21 @@ export async function runInExecutionContext<T>(
 }
 
 /**
+ * Run `work` in `context` from a fresh root: no enclosing meter is its
+ * parent, so the budget, deadline and abort signal of whatever started it do
+ * not apply and its calls are not counted there. For work that outlives the
+ * code that started it (a long-running task's detached runner).
+ */
+export async function runDetachedInExecutionContext<T>(
+  context: ModelExecutionContext,
+  work: () => Promise<T>,
+): Promise<T> {
+  installModelCallGate();
+  const meter: Meter = { admitted: 0, refused: 0, limit: undefined, context, parent: undefined };
+  return store().run(meter, work);
+}
+
+/**
  * The same, for code that cannot await (a stream constructor, an event
  * handler): `work` runs synchronously in the context, and so does every
  * async continuation it starts.
@@ -323,7 +356,8 @@ export async function* runGeneratorInExecutionContext<T>(
   }
 }
 
-/** Set by the kernel at boot from `MODEL_GATEWAY_MODE`. Default `observe`. */
+/** Set by the kernel at boot: `enforce` since the contract step (S3b). The
+ *  default `observe` is for code that runs without a kernel (tests). */
 export function setModelGatewayMode(mode: ModelGatewayMode): void {
   installModelCallGate();
   state().mode = mode;

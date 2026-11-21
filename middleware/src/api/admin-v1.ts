@@ -371,13 +371,13 @@ export type PluginKind =
    *  operator turns into agents. Inactive metadata; never runs itself. */
   | 'agent-template'
   /** Retired (spec 2042 §5.10): a persona-bearing plugin. Still LOADED for a
-   *  package that is already installed, so a live instance keeps working
-   *  until its packages are migrated; never installed anew
-   *  (`isInstallableKind`). Removed in the contract step. */
+   *  package that is already installed (legacy, `isLegacyKind`), so a live
+   *  instance keeps working until the agent is rebuilt; never uploaded,
+   *  installed or updated (`isInstallableKind`). The runtime goes in S3c. */
   | 'agent'
-  /** Retired: became `system-module`, and `model` for the LLM plugins. Still
-   *  loaded and installed until the plugin release train has moved every
-   *  package; read as `system-module` everywhere ({@link effectiveKind}). */
+  /** Retired: became `system-module`, and `model` for the LLM plugins. An
+   *  installed one still loads, read as `system-module` everywhere
+   *  ({@link effectiveKind}); never uploaded, installed or updated. */
   | 'extension';
 
 /** Every manifest `kind` this kernel accepts. Anything else is rejected at
@@ -416,18 +416,24 @@ export function effectiveKind(kind: PluginKind): Exclude<PluginKind, 'extension'
   return kind === 'extension' ? 'system-module' : kind;
 }
 
-/** Whether a package of this kind may be installed anew. A kind `agent`
- *  package is refused (spec 2042 §6 criterion 15); one already installed
- *  keeps running until it is migrated. */
+/** Whether a package of this kind may enter the instance at all: uploaded,
+ *  installed or updated (spec 2042 §5.10, §6 criterion 15; the contract step).
+ *  The retired kinds are refused. A plugin already installed under one keeps
+ *  running as legacy (`isLegacyKind`) until it is rebuilt: an `agent` as a
+ *  capability plus an agent, an `extension` as a `system-module` or `model`. */
 export function isInstallableKind(kind: PluginKind): boolean {
-  return kind !== 'agent';
+  return !RETIRED_PLUGIN_KINDS.has(kind);
+}
+
+/** An installed plugin of a retired kind: it runs, but no new version of it
+ *  under that kind is accepted. */
+export function isLegacyKind(kind: PluginKind): boolean {
+  return RETIRED_PLUGIN_KINDS.has(kind);
 }
 
 /** Kinds whose install adds something the operator confirms explicitly: a
- *  new kind of agent, or infrastructure of omadia itself. The retired
- *  `extension` is not asked about — the release train moves those packages
- *  to `model` or `system-module`, and the store keeps installing them as
- *  before until then. */
+ *  new kind of agent, or infrastructure of omadia itself. (The retired kinds
+ *  are not installed at all.) */
 export function installNeedsConfirmation(kind: PluginKind): boolean {
   return kind === 'archetype' || kind === 'system-module';
 }

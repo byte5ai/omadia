@@ -85,7 +85,7 @@ function pluginOf(spec: PluginSpec): Plugin {
       id: spec.id,
       name: spec.id,
       version: '1.0.0',
-      kind: 'extension',
+      kind: 'tool',
       domain: 'test.optional',
     },
     ...(spec.requires ? { requires: spec.requires } : {}),

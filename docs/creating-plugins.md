@@ -20,14 +20,18 @@ ADR-0014); ein Plugin liefert genau eines davon:
 Kein Plugin ist ein Akteur: keine Persona, kein Speaker, keine eigene Identität.
 Ein Manifest mit `persona`/`speaker`/`personality`/`system_prompt`, einem
 `prompt_partial`-Skill oder einem `AGENT.md` (außer in einer Agent-Vorlage)
-weist der Kern beim Upload ab (`422 package.persona_declared`). Der frühere
-`kind: agent` ist **ausgemustert**: Neu-Uploads antworten `422
-package.retired_kind`; bereits installierte Pakete laufen weiter, bis ihre
-migrierte Version sie ersetzt. `extension` wird als `system-module` gelesen.
-Plugins mit den neuen Kinds, `agent_templates:` oder `side_effects` verlangen
-den Kern mit plugin-api 1.78.0: `compat.core: ">=1.78.0 <2.0"`.
-`agent` und `extension` sind ausgemustert: ein Plugin hat keine Persona und
-keinen System-Prompt; Persona-Vorlagen liefert es als `agent_templates:`.
+weist der Kern beim Upload ab (`422 package.persona_declared`). Die früheren
+Kinds `agent` und `extension` sind **ausgemustert**: Upload, Installation und
+Update eines solchen Pakets antworten `422 package.retired_kind` bzw. `422
+install.retired_kind`, auch als Update eines Pakets, das unter diesem Kind
+installiert ist (seit plugin-api 1.83.0). Bereits installierte Pakete laufen
+als Altbestand weiter, bis ihre migrierte Version sie ersetzt: ein
+Agent-Plugin wird zu einer Capability plus einem Agenten aus dem Agent
+Builder, eine `extension` zu `system-module` oder `model`. Ein Plugin hat
+keine Persona und keinen System-Prompt; Persona-Vorlagen liefert es als
+`agent_templates:`. Plugins mit den neuen Kinds, `agent_templates:` oder
+`side_effects` verlangen den Kern mit plugin-api 1.78.0:
+`compat.core: ">=1.78.0 <2.0"`.
 
 > **Quellen der Wahrheit (nicht halluzinieren):**
 > - Capability-Plugin (`integration` / `tool`): Referenzen
@@ -75,7 +79,14 @@ Bei vagem „Plugin" zuerst klären, was es liefern soll (Tabelle oben):
 - **`model`** — hält Modell-Credentials und spricht mit Modell-APIs. Nur
   Modell-Plugins dürfen das (siehe „Modellzugriff und Netz“ unten).
 - **`archetype`**, **`system-module`**: Installation verlangt eine
-  ausdrückliche Bestätigung.
+  ausdrückliche Bestätigung, ebenso ein Update, das ein Plugin zum
+  System-Modul macht (`becomes_system_module`). Ein System-Modul, das für
+  einen bestimmten Agenten arbeitet (etwa der Canvas-Helfer
+  `@omadia/ui-orchestrator`), holt dessen Hülle über `agentEnvelope@1`
+  (`AGENT_ENVELOPE_SERVICE_NAME`): `resolve(agentId)` liefert den Chat-Agenten
+  genau dieses Agenten oder `undefined`, ohne Modell. Andere Kinds bekommen
+  den Service nicht. Ein Plugin, das ihn nutzt, deklariert
+  `compat.core: ">=1.83.0 <2.0"`.
 - **`agent-template`** — nur Vorlagen (siehe unten).
 
 ### Was ein Tool tut: `capabilities[].side_effects`
@@ -86,13 +97,35 @@ mit seiner `id` (= Tool-Name), was es tut: `read` (liest ein System), `write`
 `Plugin.tool_side_effects` (`declaredToolEffect`, `src/plugins/toolSideEffects.ts`).
 Schreibzugriffe über ein Plugin-Tool werden gegen die Leserschaft des Ziels
 geprüft (Spec 2042 §5.11, Kriterium 17). Ein Tool ohne Deklaration gilt als
-`unknown` — nie als `read`; ein Wert außerhalb der drei wird mit Warnung
-verworfen.
+`unknown` und wird seit plugin-api 1.83.0 wie `write` gegen alle Labels des
+Turns geprüft, nie als `read`; ein Wert außerhalb der drei wird mit Warnung
+verworfen. Deklariere deshalb jedes Tool.
 
 ```yaml
 capabilities:
   - id: "crm_create_note"
     side_effects: "write"     # read | write | none
+```
+
+### Personenbezogene Felder eines Tool-Ergebnisses: `piiFields`
+
+Ein Tool, das Personendaten liefert, deklariert die Felder bei der
+Registrierung (`ToolRegistrationOptions.piiFields` an `ctx.tools.register`
+und `ctx.tools.registerHandler`, plugin-api 1.83.0; Typ `ToolPIIField` aus
+`piiAnnotation.ts`). Der Privacy Shield maskiert jede deklarierte Spalte
+eines internierten Ergebnisses, egal was sein Classifier oder ein
+Nicht-personenbezogen-Eintrag des Operators sagt. Die Deklaration maskiert
+nur zusätzlich, sie gibt nie ein Feld frei. Es zählen nur Pfade, die eine
+Spalte der Ergebniszeilen nennen: `name`, `[].name`, `<items>[].name`; ein
+abschließendes `[N]` (Odoo-many2one `[id, label]`) maskiert die ganze Spalte.
+Tiefere Pfade ignoriert der Kern. Kerne vor 1.83.0 lesen die Option nicht;
+ein Plugin, das sich auf die Maskierung verlässt, deklariert
+`compat.core: ">=1.83.0 <2.0"`.
+
+```ts
+ctx.tools.register(spec, handler, {
+  piiFields: [{ path: '[].name', idPath: '[].id', type: 'PERSON' }],
+});
 ```
 
 ### Agent-Vorlagen: `agent_templates:`
@@ -131,20 +164,20 @@ und die Vorbelegung über `GET /api/v1/admin/agent-templates/prefill?plugin=…&
   Plugin gerade nutzt: im Turn des aufrufenden Agenten (dessen Modell-Policy,
   Budget und Trace), für ein Archetyp-Plugin nur in einem Execution Scope
   (sonst `LlmScopeRequiredError`). Rohe Modell-Services (`anthropicClient`,
-  `llm`, `llmProviderPool`) bekommt ein Archetyp-Plugin nie
-  (`RawModelServiceRefusedError`); anderen Plugins werden sie in der
-  Übergangsphase noch ausgehändigt und geloggt, mit
-  `MODEL_GATEWAY_MODE=enforce` verweigert. `embeddingClient` und
-  `transcription` sind immer durch den Gateway gebunden.
+  `llm`, `llmProviderPool`) bekommt kein Plugin außer `model`-Plugins und den
+  mitgelieferten System-Modulen des Kerns (`RawModelServiceRefusedError`).
+  Ein Modellaufruf außerhalb jedes Ausführungskontexts wird verweigert, etwa
+  aus `activate()` oder einem Timer. `embeddingClient` und `transcription`
+  sind immer durch den Gateway gebunden. Seit plugin-api 1.83.0 gilt das
+  immer; `MODEL_GATEWAY_MODE` gibt es nicht mehr.
 - **Netz nur über `ctx.http`** (Allow-List aus `permissions.network.outbound`,
   `$config.*`-Hosts, `web_scanner`-Modi). Der globale `fetch` und `node:http(s)`
   sind für Plugin-Code sandboxed: eine Anfrage, die das Plugin selbst stellt,
   muss von seiner Netzerlaubnis gedeckt sein, und **Modell-Provider-Endpunkte
   sind für jedes Nicht-`model`-Plugin gesperrt**, auch wenn sie in der
-  Allow-List stehen. `PLUGIN_EGRESS_MODE=observe` loggt das heute
-  (`[plugin-egress] observed …`), `enforce` verweigert es
-  (`PluginEgressRefusedError`). Was der Kern gesehen hat:
-  `GET /api/v1/admin/model-gateway`.
+  Allow-List stehen. Der Kern verweigert eine solche Anfrage immer
+  (`PluginEgressRefusedError`); `PLUGIN_EGRESS_MODE` gibt es nicht mehr. Was
+  der Kern verweigert hat: `GET /api/v1/admin/model-gateway`.
 
 ---
 
@@ -236,7 +269,7 @@ identity:
   id: "de.byte5.agent.<slug>"      # === package.json "name". byte5-privat: reverse-DNS;
                                    # public OSS: "@omadia/<slug>" (wie @omadia/plugin-office)
   kind: "integration"              # integration | tool | skill | channel | model | archetype
-                                   # | system-module | agent-template (agent/extension: ausgemustert)
+                                   # | system-module | agent-template (agent/extension: Upload abgelehnt)
   domain: "<domain>"               # z.B. coaching, m365.sharepoint, whatsapp — lowercase, dotted
   name: "<Anzeigename>"
   version: "0.1.0"                 # SemVer; === package.json "version"

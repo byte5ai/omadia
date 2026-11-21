@@ -21,7 +21,12 @@ import { admitModelCall, isModelCallNotCovered } from '@omadia/llm-provider';
 import { resetModelGatewayForTests, setModelGatewayMode } from '@omadia/usage-telemetry';
 
 import { ModelWorkBudgetError, createModelWorkRuns, type ModelWorkKind } from '../src/platform/modelWorkRuns.js';
-import { EMBEDDING_BACKFILL, ISSUE_PREVIEW, TOPIC_REGROUPING } from '../src/platform/modelWorkKinds.js';
+import {
+  EMBEDDING_BACKFILL,
+  FIELD_CLASSIFICATION,
+  ISSUE_PREVIEW,
+  TOPIC_REGROUPING,
+} from '../src/platform/modelWorkKinds.js';
 import { rawModelServiceAccess } from '../src/platform/pluginServiceGrants.js';
 
 afterEach(() => resetModelGatewayForTests());
@@ -35,6 +40,20 @@ const job = (budgetCalls: number, deadlineMs = 60_000): ModelWorkKind => ({
 });
 
 describe('operator jobs', () => {
+  it('the field-classification recompute may complete under enforce (live: a call outside any context)', async () => {
+    setModelGatewayMode('enforce');
+    assert.throws(() => admitModelCall('complete'), (err: unknown) => isModelCallNotCovered(err));
+    const runs = createModelWorkRuns({ operatorDailyCalls: 1_000, maintenanceDailyCalls: 100 });
+    await runs.run(FIELD_CLASSIFICATION, 'system:auto-classifier', async () => {
+      admitModelCall('complete');
+    });
+    const [row] = await runs.list();
+    assert.equal(row?.jobKind, 'privacy_field_classification');
+    assert.equal(row?.contextKind, 'operator_job');
+    assert.equal(row?.startedBy, 'system:auto-classifier');
+    assert.equal(row?.modelCalls, 1);
+  });
+
   it('admits the job’s calls under enforce and records what it used', async () => {
     setModelGatewayMode('enforce');
     const runs = createModelWorkRuns({ operatorDailyCalls: 100, maintenanceDailyCalls: 100 });
@@ -152,31 +171,32 @@ describe('maintenance runs', () => {
 });
 
 describe('raw model services', () => {
-  const access = (name: string, kind: Parameters<typeof rawModelServiceAccess>[0]['kind'], bundled: boolean, mode: 'observe' | 'enforce') =>
-    rawModelServiceAccess({ name, kind, bundled, mode });
+  const access = (name: string, kind: Parameters<typeof rawModelServiceAccess>[0]['kind'], bundled: boolean) =>
+    rawModelServiceAccess({ name, kind, bundled });
 
   it('are never an archetype plugin’s', () => {
     for (const name of ['anthropicClient', 'llm', 'llmProviderPool']) {
-      assert.equal(access(name, 'archetype', false, 'observe'), 'refuse');
-      assert.equal(access(name, 'archetype', true, 'observe'), 'refuse');
+      assert.equal(access(name, 'archetype', false), 'refuse');
+      assert.equal(access(name, 'archetype', true), 'refuse');
     }
   });
 
-  it('are observed for other plugins in the expand step and refused once enforced', () => {
-    assert.equal(access('anthropicClient', 'channel', false, 'observe'), 'observe');
-    assert.equal(access('anthropicClient', 'channel', false, 'enforce'), 'refuse');
-    assert.equal(access('llm', 'integration', false, 'enforce'), 'refuse');
-    assert.equal(access('llmProviderPool', 'extension', false, 'enforce'), 'refuse');
+  it('are refused for every other plugin since the contract step (S3b)', () => {
+    assert.equal(access('anthropicClient', 'channel', false), 'refuse');
+    assert.equal(access('llm', 'integration', false), 'refuse');
+    assert.equal(access('llm', 'tool', false), 'refuse');
+    assert.equal(access('llmProviderPool', 'extension', false), 'refuse');
+    assert.equal(access('llmProviderPool', 'system-module', false), 'refuse');
   });
 
   it('stay with model plugins and the kernel’s own system modules', () => {
-    assert.equal(access('llmProviderPool', 'model', false, 'enforce'), 'allow');
-    assert.equal(access('llmProviderPool', 'system-module', true, 'enforce'), 'allow');
-    assert.equal(access('llm', 'extension', true, 'enforce'), 'allow');
+    assert.equal(access('llmProviderPool', 'model', false), 'allow');
+    assert.equal(access('llmProviderPool', 'system-module', true), 'allow');
+    assert.equal(access('llm', 'extension', true), 'allow');
   });
 
   it('leave every other service alone', () => {
-    assert.equal(access('knowledgeGraph', 'archetype', false, 'enforce'), 'allow');
+    assert.equal(access('knowledgeGraph', 'archetype', false), 'allow');
   });
 });
 

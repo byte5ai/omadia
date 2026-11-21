@@ -68,6 +68,7 @@ export const CLI_COMPLETION_USAGE_SOURCE: (typeof SUBSCRIPTION_SOURCES)[1] =
 // the provider contract's `admitModelCall` (`@omadia/llm-provider-api`).
 // Spec 2042 §5.10 — the model gateway's execution contexts, mode and halts.
 export {
+  callSiteOf,
   currentExecutionContext,
   executionContextChain,
   installModelCallGate,
@@ -76,6 +77,7 @@ export {
   modelGatewayMode,
   onUncoveredModelCall,
   resetModelGatewayForTests,
+  runDetachedInExecutionContext,
   runInExecutionContext,
   runGeneratorInExecutionContext,
   runInExecutionContextSync,
