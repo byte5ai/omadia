@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { evaluatePredicate } from '@omadia/conductor-core';
-import type { JsonObject, Predicate } from '@omadia/conductor-core';
+import type { JsonObject, Predicate, WorkflowGraph } from '@omadia/conductor-core';
 
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunExecutor } from './runExecutor.js';
@@ -11,6 +11,23 @@ export interface EmitResult {
   eventId: string;
   startedRuns: Array<{ workflowSlug: string; runId: string }>;
   matchedWorkflows: number;
+  /** Matching workflows not started because their agent steps run as a
+   *  different agent than the bot the channel event was addressed to. */
+  skippedWorkflows: Array<{ workflowSlug: string; addressedAgent: string; stepAgents: string[] }>;
+}
+
+/**
+ * The agent ids of a graph's agent steps that differ from `addressedAgent`.
+ * Empty means every agent step may run for a message to that agent's bot.
+ */
+export function foreignAgentSteps(graph: WorkflowGraph, addressedAgent: string): string[] {
+  const foreign = new Set<string>();
+  for (const step of graph.steps ?? []) {
+    if (step.kind === 'agent' && step.agentId !== undefined && step.agentId !== addressedAgent) {
+      foreign.add(step.agentId);
+    }
+  }
+  return [...foreign];
 }
 
 /**
@@ -36,6 +53,14 @@ export class ConductorEventRouter {
     private readonly deps: {
       workflowStore: ConductorWorkflowStore;
       executor: ConductorRunExecutor;
+      /**
+       * The agent a channel event was addressed to (its bot's owner), or
+       * undefined for non-channel events and bots without an active agent.
+       * When present, a workflow whose agent steps run as another agent is
+       * not started for that event: the step-level origin rule would refuse
+       * it anyway, so starting it only produced a failed run per message.
+       */
+      addressedAgent?: (eventId: string, payload: JsonObject) => string | undefined;
       log?: (msg: string) => void;
     },
   ) {}
@@ -64,7 +89,9 @@ export class ConductorEventRouter {
     }
     const workflows = await this.deps.workflowStore.list();
     const started: Array<{ workflowSlug: string; runId: string }> = [];
+    const skipped: EmitResult['skippedWorkflows'] = [];
     let matched = 0;
+    const addressedAgent = this.resolveAddressedAgent(eventId, payload);
 
     for (const wf of workflows) {
       if (wf.status !== 'enabled' || !wf.activeVersionId) continue;
@@ -81,6 +108,20 @@ export class ConductorEventRouter {
       if (!match) continue;
       matched += 1;
 
+      if (addressedAgent !== undefined) {
+        const stepAgents = foreignAgentSteps(version.graph, addressedAgent);
+        if (stepAgents.length > 0) {
+          skipped.push({ workflowSlug: wf.slug, addressedAgent, stepAgents });
+          this.deps.log?.(
+            `[conductor] event '${eventId}' did not start '${wf.slug}': the message was addressed to ` +
+              `Agent '${addressedAgent}', but the workflow's agent steps run as ${stepAgents
+                .map((a) => `'${a}'`)
+                .join(', ')}`,
+          );
+          continue;
+        }
+      }
+
       try {
         const run = await this.deps.executor.startRun({
           slug: wf.slug,
@@ -95,7 +136,19 @@ export class ConductorEventRouter {
       }
     }
 
-    return { eventId, startedRuns: started, matchedWorkflows: matched };
+    return { eventId, startedRuns: started, matchedWorkflows: matched, skippedWorkflows: skipped };
+  }
+
+  private resolveAddressedAgent(eventId: string, payload: JsonObject): string | undefined {
+    if (!this.deps.addressedAgent) return undefined;
+    try {
+      return this.deps.addressedAgent(eventId, payload);
+    } catch (err) {
+      this.deps.log?.(
+        `[conductor] addressed-agent lookup failed for '${eventId}' (runs start; the step rule still applies): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
   }
 
   /** An absent filter always matches; otherwise the predicate is evaluated against the payload. */

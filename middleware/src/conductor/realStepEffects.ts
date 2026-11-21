@@ -1,5 +1,10 @@
 import { assertArchetypeAllows, type OrchestratorRegistry } from '@omadia/orchestrator';
-import { resolveAddressedBot, type DefaultChannelBotKey } from './channelBotOwnership.js';
+import {
+  addressedBotKey,
+  isChannelEvent,
+  resolveAddressedBot,
+  type DefaultChannelBotKey,
+} from './channelBotOwnership.js';
 import type { JsonObject, JsonValue, Step } from '@omadia/conductor-core';
 
 import type { ConductorSayOutcome, ConductorSayService } from './sayService.js';
@@ -295,22 +300,6 @@ export function extractFencedJson(text: string, maxBytes = 16_384): JsonValue | 
 }
 
 /**
- * Channel events whose payload identifies the bot a person addressed.
- *
- * A prefix list rather than a wildcard: a channel that does NOT carry an
- * addressed bot must not be silently treated as if it did, because the rule
- * below would then refuse every run it starts. Adding a channel here is a
- * deliberate statement that its events name their bot.
- */
-const CHANNEL_EVENT_PREFIXES: readonly string[] = ['teams.'];
-
-/** The addressed bot's routing key, as the channel put it in the payload. */
-function addressedBotKey(context: JsonObject): string | undefined {
-  const raw = context['botId'];
-  return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : undefined;
-}
-
-/**
  * Refuse an agent step whose run began with a message to a DIFFERENT bot.
  *
  * Three outcomes, and the middle one is the point:
@@ -335,7 +324,7 @@ function assertChannelOriginAllows(
   const isChannelTrigger =
     (meta.triggerKind === 'event' || meta.triggerKind === 'webhook') &&
     eventId !== undefined &&
-    CHANNEL_EVENT_PREFIXES.some((p) => eventId.startsWith(p));
+    isChannelEvent(eventId);
   if (!isChannelTrigger) return;
 
   const botKey = addressedBotKey(context);
