@@ -8,6 +8,37 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.84.0 — 2026-11-21
+
+Additive (#2090, spec 2043 §0, §5.2, §5.6; ADR 0028): the kernel bounds a
+closing and the deadline wait itself, instead of trusting the plugin's
+bookkeeping.
+
+### Added
+
+- **`OpenExecutionScopeRequest.eventAt?`** (`closing` only): when the closing
+  event happened. The absolute limit of 30 days counts from it, also when the
+  scope is opened later (a restart, a retried send). Not in the future, not
+  before the process's first scope (`invalid_request`); an event older than
+  30 days opens nothing (`limit_exceeded`).
+- **`CLOSING_SCOPE_PURPOSES`**: what a `closing` scope authorizes —
+  `essential_message`, `protocol_dispatch`, `consent`, `status`, `stop`,
+  `invitation`, `readiness_check`, `roster_check`, and `other` for a `check`
+  only. Everything else (`moderation`, `handshake`, `link`, `reminder`) is
+  `purpose_not_allowed`: a closing never re-opens moderation.
+
+- **`PrivateMessageRequest.replyToMessageId?`**: the message a private
+  message replies to or quotes, as the channel states it (from
+  `TurnOrigin.replyToMessageId`, channel-sdk 0.3.10). A direct reply to a
+  reminder is bound to that reminder (spec 2043 §5.3, criterion 28).
+
+### Changed (enforced by the kernel)
+
+- **`extendScope(…, { deadlineWait: true })`** needs an open `closing` scope
+  of the same process (`scope_order` otherwise) and never runs past the
+  latest absolute limit of those (`limit_exceeded`). The plugin opens the
+  closings of the sessions it waits for first, then the wait.
+
 ## 1.82.0 — 2026-11-20
 
 Additive (spec 2043 §5.14, #2061): recording is quiet, with a reaction where

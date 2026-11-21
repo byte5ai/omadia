@@ -90,7 +90,8 @@ export type ExecutionActionType =
 export type ExecutionEmissionType = Exclude<EmissionType, 'system'>;
 
 /** What the action is for. Past the deadline of an `active` scope in its
- *  deadline wait, only `consent`, `status` and `stop` are authorized. */
+ *  deadline wait, only `consent`, `status` and `stop` are authorized; a
+ *  `closing` scope authorizes only {@link CLOSING_SCOPE_PURPOSES}. */
 export type ExecutionPurpose =
   | 'moderation'
   | 'handshake'
@@ -105,6 +106,25 @@ export type ExecutionPurpose =
   | 'readiness_check'
   | 'roster_check'
   | 'other';
+
+/**
+ * #2090 (spec 2043 §0, §5.2) — what a `closing` scope authorizes: the
+ * essential messages of its closing event, their dispatch, the consent
+ * answers of a required confirmation, status and stop, and checks. Never
+ * moderation: a closing does not re-open it. `other` only for a `check`.
+ * Since plugin-api 1.84.0.
+ */
+export const CLOSING_SCOPE_PURPOSES: readonly ExecutionPurpose[] = [
+  'essential_message',
+  'protocol_dispatch',
+  'consent',
+  'status',
+  'stop',
+  'invitation',
+  'readiness_check',
+  'roster_check',
+  'other',
+];
 
 export type ExecutionTarget =
   | { readonly kind: 'conversation'; readonly channelType: string; readonly conversationId: string }
@@ -184,6 +204,14 @@ export interface OpenExecutionScopeRequest {
   /** Required for `closing` (its closing event) and `scheduling` (the agreed
    *  meeting); several of each may be open, each with its own id. */
   readonly eventId?: string;
+  /**
+   * `closing` only (plugin-api 1.84.0): when the closing event happened, ISO
+   * time. The absolute limit of 30 days counts from it (spec 2043 §0), also
+   * when the scope is opened later (a restart, a send that was retried). It
+   * may not lie in the future nor before the process's first scope. Absent:
+   * the event is now.
+   */
+  readonly eventAt?: string;
   /** ISO time. Absent for `configuring`: the kernel's configured maximum. */
   readonly deadline?: string;
   readonly budget: ExecutionBudget;
@@ -271,7 +299,11 @@ export interface ExecutionAuthorizationService {
     people: readonly Extract<ExecutionTarget, { kind: 'person' }>[],
   ): Promise<{ outcome: 'updated'; scope: ExecutionScope } | ExecutionRefusal>;
   /** Move the deadline, within the kind's absolute limit. `deadlineWait`
-   *  (`active` only) is the bounded wait past the agreed deadline. */
+   *  (`active` only) is the bounded wait past the agreed deadline (spec 2043
+   *  §5.6): since plugin-api 1.84.0 it needs an open `closing` scope of the
+   *  same process (the session closings it waits for are opened first) and
+   *  never runs past the latest absolute limit of those (`scope_order`,
+   *  `limit_exceeded`). */
   extendScope(
     scopeId: string,
     change: { deadline: string; deadlineWait?: boolean },

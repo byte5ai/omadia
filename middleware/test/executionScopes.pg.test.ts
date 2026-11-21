@@ -504,6 +504,8 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       await pool.query("UPDATE execution_scopes SET deadline = now() - interval '1 second' WHERE id = $1", [scope.id]);
       assert.equal(code(await engine.extendScope(scope.id, { deadline: inHours(1) })), 'deadline_passed', 'an expired scope never re-opens moderation');
       assert.equal(code(await engine.extendScope(scope.id, { deadline: inHours(24 * 31), deadlineWait: true })), 'limit_exceeded');
+      // The session closing the wait is for is opened first (spec 2043 §5.6).
+      await engine.openScope({ agentSlug: 'mara', processId: scope.processId, kind: 'closing', eventId: 'session:s1', deadline: inHours(24 * 7), budget: { actions: 5, modelCalls: 0 } });
       const wait = await engine.extendScope(scope.id, { deadline: inHours(24), deadlineWait: true });
       assert.equal(wait.outcome, 'extended');
       const target = { kind: 'conversation' as const, ...home };
@@ -523,6 +525,160 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       if (closing.outcome !== 'opened') throw new Error('unreachable');
       assert.equal(code(await engine.extendScope(closing.scope.id, { deadline: inHours(2), deadlineWait: true })), 'invalid_request');
       assert.equal((await engine.extendScope(closing.scope.id, { deadline: inHours(24 * 7) })).outcome, 'extended');
+    });
+  });
+
+  describe('#2090 closing limits, closing purposes and the bounded deadline wait (plugin-api 1.84.0)', () => {
+    const budget = { actions: 20, modelCalls: 0 };
+    type Home = { channelType: string; conversationId: string };
+    const closingOf = (processId: string, eventId: string, extra: { eventAt?: string; deadline?: string; home?: Home } = {}) =>
+      engine.openScope({
+        agentSlug: 'mara',
+        processId,
+        kind: 'closing',
+        eventId,
+        deadline: extra.deadline ?? inHours(24),
+        budget,
+        ...(extra.eventAt ? { eventAt: extra.eventAt } : {}),
+        ...(extra.home ? { targets: [{ kind: 'conversation' as const, ...extra.home }] } : {}),
+      });
+
+    it('the 30 days of a closing count from its event, also when the scope is opened later', async () => {
+      const { processId } = await activeProcess();
+      const started = clock().getTime();
+      // The plugin comes round to the closing 3 days after the event (a restart).
+      clock = () => new Date(started + 3 * 24 * HOUR);
+      try {
+        const eventAt = new Date(started + HOUR).toISOString();
+        assert.equal(code(await closingOf(processId, 'late', { eventAt, deadline: inHours(24 * 28) })), 'limit_exceeded', 'not 30 days from the opening');
+        const opened = await closingOf(processId, 'late', { eventAt, deadline: inHours(24 * 26) });
+        assert.equal(opened.outcome, 'opened', JSON.stringify(opened));
+        if (opened.outcome !== 'opened') return;
+        assert.equal(opened.scope.absoluteLimit, new Date(started + HOUR + 30 * 24 * HOUR).toISOString());
+        assert.equal(code(await engine.extendScope(opened.scope.id, { deadline: inHours(24 * 28) })), 'limit_exceeded');
+        assert.equal(code(await closingOf(processId, 'future', { eventAt: inHours(1) })), 'invalid_request', 'an event cannot lie ahead');
+        const early = await closingOf(processId, 'early', { eventAt: new Date(started - 2 * 24 * HOUR).toISOString(), deadline: inHours(24) });
+        assert.equal(early.outcome === 'opened' ? early.scope.absoluteLimit : '', new Date(started + 28 * 24 * HOUR).toISOString(), 'an earlier event only shortens the limit');
+        assert.equal(
+          code(await engine.openScope({ agentSlug: 'mara', processId, kind: 'follow_up', eventAt: new Date(started).toISOString(), deadline: inHours(2), budget })),
+          'invalid_request',
+          'only a closing names its event time',
+        );
+      } finally {
+        clock = () => new Date();
+      }
+    });
+
+    it('a closing event older than 30 days opens nothing: nothing is sent after the absolute limit', async () => {
+      const { processId } = await activeProcess();
+      const started = clock().getTime();
+      clock = () => new Date(started + 31 * 24 * HOUR);
+      try {
+        assert.equal(code(await closingOf(processId, 'stale', { eventAt: new Date(started + HOUR).toISOString() })), 'limit_exceeded');
+        assert.equal((await engine.listScopes(processId)).some((s) => s.eventId === 'stale'), false);
+      } finally {
+        clock = () => new Date();
+      }
+    });
+
+    it('a closing never re-opens moderation: only its messages, consent answers, status, stop and checks', async () => {
+      const { processId, home } = await activeProcess();
+      const opened = await closingOf(processId, 'result', { home });
+      if (opened.outcome !== 'opened') throw new Error(JSON.stringify(opened));
+      const post = { scopeId: opened.scope.id, phase: 'concluding' as const, action: 'post' as const, target: { kind: 'conversation' as const, ...home } };
+      for (const purpose of ['moderation', 'handshake', 'link', 'reminder'] as const) {
+        assert.equal(code(await engine.authorize({ ...post, purpose })), 'purpose_not_allowed', purpose);
+      }
+      assert.equal(code(await engine.authorize({ ...post, purpose: 'other' })), 'purpose_not_allowed', "'other' is a check only");
+      assert.equal(code(await engine.authorize({ ...post, action: 'model_turn', target: undefined, purpose: 'moderation', modelCalls: 1 })), 'purpose_not_allowed');
+      for (const purpose of ['essential_message', 'protocol_dispatch', 'consent', 'status', 'stop'] as const) {
+        assert.equal((await engine.authorize({ ...post, purpose })).outcome, 'authorized', purpose);
+      }
+      assert.equal((await engine.authorize({ ...post, action: 'check', target: undefined, purpose: 'other' })).outcome, 'authorized');
+      const used = await pool.query<{ used_actions: number }>('SELECT used_actions FROM execution_scopes WHERE id = $1', [opened.scope.id]);
+      assert.equal(used.rows[0]?.used_actions, 6, 'a refusal spends nothing');
+    });
+
+    it('a deadline wait needs an open closing scope and ends with its limit', async () => {
+      const { processId, scope } = await activeProcess();
+      const started = clock().getTime();
+      await pool.query("UPDATE execution_scopes SET deadline = now() - interval '1 second' WHERE id = $1", [scope.id]);
+      // Five days later: the session closed at the start of the process.
+      clock = () => new Date(started + 5 * 24 * HOUR);
+      try {
+        assert.equal(code(await engine.extendScope(scope.id, { deadline: inHours(24), deadlineWait: true })), 'scope_order', 'nothing to wait for');
+        const session = await closingOf(processId, 'session:last', { eventAt: new Date(started).toISOString(), deadline: inHours(24 * 7) });
+        if (session.outcome !== 'opened') throw new Error(JSON.stringify(session));
+        assert.equal(
+          code(await engine.extendScope(scope.id, { deadline: inHours(24 * 26), deadlineWait: true })),
+          'limit_exceeded',
+          'never past the closing it waits for (30 days after its event, 25 days from now)',
+        );
+        assert.equal((await engine.extendScope(scope.id, { deadline: inHours(48), deadlineWait: true })).outcome, 'extended');
+        const status = { scopeId: scope.id, phase: 'active' as const, purpose: 'status' as const, action: 'check' as const };
+        assert.equal((await engine.authorize(status)).outcome, 'authorized', 'consent, status and stop run in the wait');
+        await engine.endScope(session.scope.id, 'confirmed');
+        assert.equal(code(await engine.authorize(status)), 'deadline_passed', 'the wait ends with its closings, not at its own deadline');
+        assert.equal(code(await engine.extendScope(scope.id, { deadline: inHours(72), deadlineWait: true })), 'scope_order', 'the wait is over with its closings');
+      } finally {
+        clock = () => new Date();
+      }
+    });
+
+    describe('criterion 59 across the kernel boundary: the last session ends exactly at the deadline', () => {
+      /**
+       * The two jobs due at the same moment run in either order: the
+       * session's end (its closing is opened) and the facilitation's
+       * deadline (the active scope goes into its wait). In both, the wait
+       * only stands once the closing is open, only consent, status and stop
+       * run during it, the summary goes out under its own closing, and the
+       * result closing that follows counts from the deadline.
+       */
+      for (const order of ['session end first', 'deadline first'] as const) {
+        it(order, async () => {
+          const { processId, scope, home } = await activeProcess({ actions: 20, modelCalls: 4 });
+          const started = clock().getTime();
+          const deadline = new Date(started + 2 * HOUR);
+          await engine.extendScope(scope.id, { deadline: deadline.toISOString() });
+          clock = () => new Date(deadline.getTime());
+          try {
+            await pool.query('UPDATE execution_scopes SET deadline = $2 WHERE id = $1', [scope.id, new Date(Date.now() - 1000)]);
+            const waitUntil = new Date(deadline.getTime() + 25 * HOUR).toISOString();
+            const openSessionClosing = () => closingOf(processId, 'session:last', { home, eventAt: deadline.toISOString(), deadline: new Date(deadline.getTime() + 7 * 24 * HOUR).toISOString() });
+            if (order === 'deadline first') {
+              assert.equal(code(await engine.extendScope(scope.id, { deadline: waitUntil, deadlineWait: true })), 'scope_order');
+              assert.equal((await engine.listScopes(processId)).find((s) => s.id === scope.id)?.deadlineWait, false, 'nothing changed');
+            }
+            const closing = await openSessionClosing();
+            if (closing.outcome !== 'opened') throw new Error(JSON.stringify(closing));
+            const waiting = await engine.extendScope(scope.id, { deadline: waitUntil, deadlineWait: true });
+            assert.equal(waiting.outcome, 'extended', JSON.stringify(waiting));
+
+            const home$ = { kind: 'conversation' as const, ...home };
+            const active = { scopeId: scope.id, phase: 'active' as const, action: 'post' as const, target: home$ };
+            assert.equal(code(await engine.authorize({ ...active, purpose: 'moderation' })), 'purpose_not_allowed');
+            assert.equal(code(await engine.authorize({ ...active, action: 'model_turn', target: undefined, purpose: 'moderation', modelCalls: 1 })), 'purpose_not_allowed');
+            for (const purpose of ['consent', 'status', 'stop'] as const) {
+              assert.equal((await engine.authorize({ ...active, purpose })).outcome, 'authorized', purpose);
+            }
+            const summary = { scopeId: closing.scope.id, phase: 'active' as const, action: 'post' as const, target: home$ };
+            assert.equal((await engine.authorize({ ...summary, purpose: 'essential_message' })).outcome, 'authorized');
+
+            // The summary's window ends; the closing ends, and so does the wait.
+            await engine.endScope(closing.scope.id, 'confirmed');
+            assert.equal(code(await engine.extendScope(scope.id, { deadline: new Date(deadline.getTime() + 30 * HOUR).toISOString(), deadlineWait: true })), 'scope_order');
+            await engine.endScope(scope.id, 'concluding');
+            const result = await closingOf(processId, 'result', { home, eventAt: deadline.toISOString(), deadline: new Date(deadline.getTime() + 7 * 24 * HOUR).toISOString() });
+            assert.equal(result.outcome, 'opened', JSON.stringify(result));
+            if (result.outcome !== 'opened') return;
+            assert.equal(result.scope.absoluteLimit, new Date(deadline.getTime() + 30 * 24 * HOUR).toISOString());
+            assert.equal(code(await engine.authorize({ scopeId: result.scope.id, phase: 'concluding', action: 'post', target: home$, purpose: 'moderation' })), 'purpose_not_allowed', 'moderation never re-opens');
+            assert.equal((await engine.authorize({ scopeId: result.scope.id, phase: 'concluding', action: 'post', target: home$, purpose: 'essential_message' })).outcome, 'authorized');
+          } finally {
+            clock = () => new Date();
+          }
+        });
+      }
     });
   });
 
