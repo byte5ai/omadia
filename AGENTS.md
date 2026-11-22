@@ -58,6 +58,15 @@ deren Agent-Schritte alle als der Agent dieses Bots laufen (`ConductorEventRoute
 statt einen Lauf zu starten, den `assertChannelOriginAllows` am Agent-Schritt ohnehin ablehnt.
 Die Schritt-Regel bleibt als zweite Linie.
 
+**Facilitator-Abnahme und Audio (ADR 0029, ADR 0031, #2068):** Die Abnahmematrix für Spec B §9
+(Kriterien 1–64) liegt in `omadia-agent-facilitator` (`docs/acceptance-matrix.md`, geprüft von
+`scripts/check-acceptance-matrix.mjs` in dessen CI). Wer ein Kriterium ändert oder einen
+Kernel-Test aus der Matrix umbenennt, passt die Matrix an. #584 (Audio-Meeting-Source: Sidecar
+als Tenant-User mit eigener Lizenz pro Agent, GPT-Live-Transcribe) gehört seit der Owner-
+Entscheidung vom 2026-11-22 nicht mehr zum Epic #2043, sondern ist ein eigenes Folge-Vorhaben.
+`transcription@1` und der Capability-Snapshot pro Sitzung (#2077) stehen bereits. Eine Audio-
+Quelle deklariert nur `transcribed_speech`; Facilitator und Engine ändern sich dafür nicht.
+
 **Execution-Scopes (ADR 0030, #2090):** Der Kernel begrenzt `closing`-Scopes selbst: 30 Tage ab
 dem Ereignis (`eventAt` beim Öffnen, nicht ab dem Öffnen), nur `CLOSING_SCOPE_PURPOSES` (nie
 Moderation). Der Deadline-Wait eines `active`-Scopes braucht einen offenen `closing`-Scope
