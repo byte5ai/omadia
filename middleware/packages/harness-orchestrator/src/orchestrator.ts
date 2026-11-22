@@ -9761,10 +9761,12 @@ export class Orchestrator {
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.
       try {
+        const piiFields = this.nativeTools.get(name)?.piiFields;
         const v4 = await privacy.internToolResultV4({
           toolName: name,
           rawResult: result,
           toolInput: input,
+          ...(piiFields !== undefined ? { piiFields } : {}),
         });
         return v4.digestText;
       } catch (err) {

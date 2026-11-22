@@ -32,10 +32,9 @@ import { isPublicIp } from './ssrfGuard.js';
  * or a kernel service is. Packages that ship inside the image are kernel
  * code (system modules, built-in adapters) and are not guarded here.
  *
- * Modes (`PLUGIN_EGRESS_MODE`): `observe` lets the request through and
- * records it once per plugin, host and reason (the expand step: the plugin
- * release train moves the last plugins onto `ctx.http` and the gateway);
- * `enforce` refuses it.
+ * Modes: `enforce` (the kernel, since the contract step S3b) refuses the
+ * request and records it once per plugin, host and reason; `observe` lets
+ * it through and records it (the expand step; tests).
  *
  * Not covered (documented, `docs/security-architecture.md`): a plugin that
  * imports its own `undici` or opens sockets with `node:net`/`node:tls`

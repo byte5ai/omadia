@@ -1478,7 +1478,6 @@ describe('codegen.generate', () => {
             kind: manifest.identity.kind,
             manifest,
             hasAgentMd: [...out.keys()].some((f) => /^agent\.md$/i.test(f)),
-            installedKind: undefined,
           }),
           undefined,
         );

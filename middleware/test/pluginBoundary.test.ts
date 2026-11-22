@@ -6,8 +6,9 @@
  *     is rejected;
  *   - a channel plugin transporting two agents' bots and an agent template
  *     with a personality load;
- *   - an update of an installed `agent` package still enters (expand step),
- *     no other package becomes one.
+ *   - the contract step (S3b): a package of a retired kind (`agent`,
+ *     `extension`) never enters, not even as the update of one installed
+ *     under it; the installed one runs on as legacy.
  */
 
 import { strict as assert } from 'node:assert';
@@ -23,6 +24,7 @@ import {
   effectiveKind,
   installNeedsConfirmation,
   isInstallableKind,
+  isLegacyKind,
   PLUGIN_KINDS,
   type PluginKind,
 } from '../src/api/admin-v1.js';
@@ -60,9 +62,15 @@ describe('spec 2042 §5.10 — plugin kinds', () => {
     for (const kind of PLUGIN_KINDS.filter((k) => k !== 'extension')) assert.equal(effectiveKind(kind), kind);
   });
 
-  it('never installs kind `agent` anew; asks before an archetype or a system module', () => {
-    assert.equal(isInstallableKind('agent'), false);
-    for (const kind of PLUGIN_KINDS.filter((k) => k !== 'agent')) assert.equal(isInstallableKind(kind), true);
+  it('never installs a retired kind (`agent`, `extension`); asks before an archetype or a system module', () => {
+    for (const kind of ['agent', 'extension'] as const) {
+      assert.equal(isInstallableKind(kind), false);
+      assert.equal(isLegacyKind(kind), true);
+    }
+    for (const kind of PLUGIN_KINDS.filter((k) => k !== 'agent' && k !== 'extension')) {
+      assert.equal(isInstallableKind(kind), true);
+      assert.equal(isLegacyKind(kind), false);
+    }
     assert.deepEqual(PLUGIN_KINDS.filter(installNeedsConfirmation).sort(), ['archetype', 'system-module']);
   });
 
@@ -75,21 +83,15 @@ describe('spec 2042 §5.10 — plugin kinds', () => {
 });
 
 describe('spec 2042 §5.10 — checkPluginBoundary', () => {
-  const base = { pluginId: '@t/p', hasAgentMd: false, installedKind: undefined } as const;
+  const base = { pluginId: '@t/p', hasAgentMd: false } as const;
 
-  it('refuses kind `agent` that is not installed, with the plugin id for the client', () => {
-    const v = checkPluginBoundary({ ...base, kind: 'agent', manifest: {} });
-    assert.equal(v?.code, 'package.retired_kind');
-    assert.deepEqual(v?.params, { pluginId: '@t/p' });
-  });
-
-  it('lets the update of an installed `agent` package in, and no package becomes one', () => {
-    assert.equal(checkPluginBoundary({ ...base, kind: 'agent', manifest: {}, installedKind: 'agent' }), undefined);
-    assert.equal(
-      checkPluginBoundary({ ...base, kind: 'agent', manifest: {}, installedKind: 'tool' })?.code,
-      'package.retired_kind',
-    );
-  });
+  for (const kind of ['agent', 'extension'] as const) {
+    it(`refuses kind \`${kind}\`, with the plugin id and kind for the client`, () => {
+      const v = checkPluginBoundary({ ...base, kind, manifest: {} });
+      assert.equal(v?.code, 'package.retired_kind');
+      assert.deepEqual(v?.params, { pluginId: '@t/p', kind });
+    });
+  }
 
   for (const [label, manifest] of [
     ['a persona block', { persona: { tone: 'warm' } }],
@@ -270,8 +272,22 @@ describe('spec 2042 §6 criterion 15 — the boundary at ingest', () => {
     assert.equal(r.ok, true, JSON.stringify(r));
   });
 
-  it('accepts the update of an installed `agent` package (expand step)', async () => {
+  it('rejects the update of an installed `agent` package (contract step): it runs on as legacy', async () => {
     const r = await ingest({ 'manifest.yaml': manifest('agent'), ...code }, 'agent');
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'package.retired_kind');
+  });
+
+  it('rejects a package of kind `extension`, also as an update', async () => {
+    assert.equal((await ingest({ 'manifest.yaml': manifest('extension'), ...code })).code, 'package.retired_kind');
+    assert.equal(
+      (await ingest({ 'manifest.yaml': manifest('extension'), ...code }, 'extension')).code,
+      'package.retired_kind',
+    );
+  });
+
+  it('accepts the migrated version of an installed `agent` package', async () => {
+    const r = await ingest({ 'manifest.yaml': manifest('tool'), ...code }, 'agent');
     assert.equal(r.ok, true, JSON.stringify(r));
   });
 });

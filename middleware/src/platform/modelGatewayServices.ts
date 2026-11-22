@@ -25,6 +25,17 @@ const GATED_SERVICES: ReadonlyMap<string, ReadonlyMap<PropertyKey, ModelOperatio
       ['transcribeStream', 'transcribe'],
     ]),
   ],
+  // The decision model (`decisionModel@1`, the Jev model plugin): a small
+  // model that picks among options; every call is a `complete` in the
+  // caller's context (fast lane, verifier and recall judge in the agent's
+  // turn, the significance scorer in its turn or operator job).
+  [
+    'decisionModel',
+    new Map<PropertyKey, ModelOperation>([
+      ['choose', 'complete'],
+      ['decideAll', 'complete'],
+    ]),
+  ],
 ]);
 
 const GATED = Symbol.for('omadia.modelGateway.gated');

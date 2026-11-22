@@ -63,7 +63,6 @@ for (const builtIn of BUILT_INS) {
         kind: entry.plugin.kind,
         manifest: entry.manifest,
         hasAgentMd,
-        installedKind: undefined,
       });
       assert.equal(violation, undefined);
       assert.equal((entry.manifest as Record<string, unknown>)['skills'], undefined);

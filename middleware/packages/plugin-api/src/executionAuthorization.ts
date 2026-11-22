@@ -208,8 +208,8 @@ export interface OpenExecutionScopeRequest {
    * `closing` only (plugin-api 1.84.0): when the closing event happened, ISO
    * time. The absolute limit of 30 days counts from it (spec 2043 §0), also
    * when the scope is opened later (a restart, a send that was retried). It
-   * may not lie in the future nor before the process's first scope. Absent:
-   * the event is now.
+   * may not lie in the future; an earlier event only shortens the limit.
+   * Absent: the event is now.
    */
   readonly eventAt?: string;
   /** ISO time. Absent for `configuring`: the kernel's configured maximum. */

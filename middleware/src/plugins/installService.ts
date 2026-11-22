@@ -264,13 +264,15 @@ export class InstallService {
       });
     }
 
-    // Spec 2042 §5.10, criterion 15 — kind `agent` is retired: never
-    // installed anew. A package uploaded before the boundary existed may
-    // still sit in the store; it stays there, uninstalled.
+    // Spec 2042 §5.10, criterion 15 — the kinds `agent` and `extension` are
+    // retired: never installed anew. A package uploaded before the boundary
+    // existed may still sit in the store; it stays there, uninstalled.
     if (!isInstallableKind(entry.plugin.kind)) {
       throw new InstallError(
         'install.retired_kind',
-        `'${pluginId}' is of the retired kind 'agent'; a plugin delivers capabilities and may ship agent templates, never an agent of its own`,
+        entry.plugin.kind === 'agent'
+          ? `'${pluginId}' is of the retired kind 'agent'; a plugin delivers capabilities and may ship agent templates, never an agent of its own`
+          : `'${pluginId}' is of the retired kind '${entry.plugin.kind}'; install a version that declares 'system-module' or 'model'`,
         422,
         { kind: entry.plugin.kind },
       );

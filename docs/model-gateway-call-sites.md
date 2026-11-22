@@ -4,11 +4,10 @@ Spec 2042 §5.10 and §6 criterion 37, ADR-0017, issue #2053. Every model call
 runs in exactly one execution context, which decides whose budget it uses and
 what it may do. This page lists every place in `middleware/src` and
 `middleware/packages/*/src` that makes a model call, and the context it runs
-in on the S3a kernel (expand step). Under `MODEL_GATEWAY_MODE=observe` a call
-with no context is admitted and logged once per call site; under `enforce`
-(the contract step, S3b) it is refused. The live counterpart of this page is
-`GET /api/v1/admin/model-gateway`, which lists the call sites that actually ran
-outside a context since boot.
+in. Since the contract step (S3b) a call with no context is refused; the S3a
+kernel (expand step) admitted and logged it. The live counterpart of this page
+is `GET /api/v1/admin/model-gateway`, which lists the call sites refused since
+boot. A site is the first frame after the gate, the provider adapters and the kernel bridges every caller of a kind passes through (`platform/anthropicLlmProvider`, `platform/pluginContext`, `withProviderUsageTracking`), so a `ctx.llm` call names the plugin code that made it.
 
 Abbreviations: **AT** agent turn (opened by `withAgentTurnExecution`, the
 outermost layer of every agent's chat agent, or by the agent runtime's
@@ -98,35 +97,36 @@ Line numbers drift; the names are what to search for.
 | `plugins/routines/routineRunner.ts` | complete | AT | every run (scheduled through its trigger, or "run now" from the route or a chat action) is the turn of the agent that runs it, screener and emitter included |
 | `src/platform/pluginContext.ts` `ctx.llm` | complete | the caller's; archetype plugins only ES | **NONE from a plugin's `activate()`, `ctx.jobs` handler or timer** |
 | channel plugins' `transcription.transcribeFile`, `topicDetector.classify` | transcribe; embed, complete | IP | `inboundProcessing`; `transcribeStream` is not wrapped |
-| `src/mcp/publicMcpServer.ts` tool dispatch | any | **NONE** | |
+| `src/mcp/publicMcpServer.ts` tool dispatch | any | AT | the turn of the agent the API key is bound to (S3b) |
 | `src/platform/modelPassthrough.ts` `forwardAnthropicMessages` (dev platform's coding jobs) | complete | OJ:`<plugin>:<kind>` (`operatorJobs@1`) | the system module's proxy, no provider key of its own |
 
 ## Gaps: calls with no context today
 
-Each is admitted and logged in `observe`; each must have a context (or be
-removed) before the contract step switches to `enforce`.
+Since the contract step (S3b) the gateway enforces: a call with no context is
+refused and listed at `GET /api/v1/admin/model-gateway`.
 
 | # | Call | Fix owner / plan |
 |---|---|---|
 | 1 | ~~Scratch-promotion reaper (interval)~~ | Done (S4): a batch trigger with caps and circuit breaker; every trigger firing runs in its agent's turn context. Not a maintenance run, because it calls `complete` |
-| 2 | Field-classification recompute (boot, activation, 6 h, POST route) | S3b: operator job for the POST route; the scheduled runs as a bounded kernel job (S4 trigger caps) |
+| 2 | ~~Field-classification recompute (boot, activation, 6 h, POST route)~~ | Done (S3b): every pass is one operator job `privacy_field_classification` (200 calls, 15 min), started by `system:auto-classifier`. Seen live in observe mode: one call per plugin activation |
 | 3 | ~~Security screener on routine turns~~ | Done (S4): a routine run, scheduled or "run now", is the turn of the agent that runs it (`runOnce`); a scheduled one also runs inside its trigger firing |
-| 4 | Boot graph backfill (`BACKFILL_AT_STARTUP=1`) | S3b: maintenance run like the embedding backfill |
-| 5 | Public MCP server tool dispatch | S3b: run each dispatch in the agent turn of the agent the API key is bound to |
-| 6 | Long-running sub-agent tasks re-driven at boot / interval | S3b: carry the originating agent turn's context on the task |
-| 7 | Plugin Builder auto-fix, smoke, preview refresh, rebuilds | S2 (Plugin Builder): wire `PLUGIN_BUILDER_AUTOFIX` and the preview kinds |
-| 8 | Plugin background code (`activate()`, `ctx.jobs`, timers) calling `ctx.llm` / `embeddingClient` | S3b: `ctx.jobs` handlers as maintenance runs or refused; plugin train moves the rest |
-| 9 | A channel's `transcribeStream` outside a turn | live sessions run in their execution scope; anything else is refused in `enforce` |
-| 10 | Embedding backfill when `maintenanceRun@1` is missing | S3b: refuse the sweep instead of running it without a context |
+| 4 | ~~Boot graph backfill (`BACKFILL_AT_STARTUP=1`)~~ | Done (S3b): one maintenance run `graph_backfill` (embed only), started by `system:boot` |
+| 5 | ~~Public MCP server tool dispatch~~ | Done (S3b): each call runs in the agent turn of the agent the API key is bound to |
+| 6 | ~~Long-running sub-agent tasks re-driven at boot / interval~~ | Done (S3b): `<tool>_start` stores its turn's context (kind, owner, agent) with the task input; the runner executes in it, fresh or re-driven. A task stored before has none and fails |
+| 7 | ~~Plugin Builder auto-fix, runtime smoke~~ | Done (S3b): each auto-fix turn is an operator job `plugin_builder_autofix`, each smoke run one `plugin_builder_preview`. Preview refresh and rebuilds make no model call of their own; a draft's `activate()` that does is gap 8 |
+| 8 | Plugin background code (`activate()`, `ctx.jobs`, timers) calling `ctx.llm` / `embeddingClient` | Refused (S3b, by design): background code has no context. Index upkeep goes through `maintenanceRun@1` (embed only), as the knowledge graph's sweep does |
+| 9 | A channel's `transcribeStream` outside a turn | Refused (S3b, by design): live sessions run in their execution scope |
+| 10 | ~~Embedding backfill when `maintenanceRun@1` is missing~~ | Done (S3b): the sweep is not run, the tick logs why |
 
-## Not gated in any mode
+## Gated since S3b
 
-- `decisionModel@1` (Jev): the provider lives in `byte5ai/omadia-jev-plugin`,
-  not in `GATED_SERVICES`. Plugin train: the Jev plugin becomes a `model` or
-  `system-module` and its service passes the gate.
+- `decisionModel@1` (Jev, a `model` plugin): `choose` and `decideAll` pass the
+  gate as `complete` in the caller's context (`GATED_SERVICES`).
+
+## Not gated
+
 - The GLiNER sidecar (`c1Detector.ts`): a local NER model, no gateway
   operation.
-- The raw `anthropicClient` service: a direct `messages.create` skips the
-  adapters. Refused to archetype plugins, observed for other plugins, refused
-  to all non-`model` plugins in the contract step (channel-teams still
-  declares it and must drop it first).
+- The raw `anthropicClient` service is refused to every plugin but model
+  plugins and the kernel's own system modules (S3b); none of them calls it
+  outside the adapters.

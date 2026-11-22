@@ -18,9 +18,9 @@ bookkeeping.
 
 - **`OpenExecutionScopeRequest.eventAt?`** (`closing` only): when the closing
   event happened. The absolute limit of 30 days counts from it, also when the
-  scope is opened later (a restart, a retried send). Not in the future, not
-  before the process's first scope (`invalid_request`); an event older than
-  30 days opens nothing (`limit_exceeded`).
+  scope is opened later (a restart, a retried send). Not in the future
+  (`invalid_request`, one minute of clock skew); an earlier event only shortens
+  the limit, and one older than 30 days opens nothing (`limit_exceeded`).
 - **`CLOSING_SCOPE_PURPOSES`**: what a `closing` scope authorizes —
   `essential_message`, `protocol_dispatch`, `consent`, `status`, `stop`,
   `invitation`, `readiness_check`, `roster_check`, and `other` for a `check`
@@ -38,6 +38,33 @@ bookkeeping.
   of the same process (`scope_order` otherwise) and never runs past the
   latest absolute limit of those (`limit_exceeded`). The plugin opens the
   closings of the sessions it waits for first, then the wait.
+
+## 1.83.0 — 2026-11-21
+
+Additive (spec 2042 §5.10, the contract step S3b of #2053). Plugins that use
+`agentEnvelope@1` or `piiFields` declare `compat.core: ">=1.83.0 <2.0"`.
+
+### Added
+
+- **`agentEnvelope@1`** (`AGENT_ENVELOPE_SERVICE_NAME`, `AgentEnvelope`,
+  `AgentEnvelopeResolver`): the envelope of one agent, by `agents.id`, for a
+  system module that works on its behalf (the canvas presentation helper).
+  A lookup without a model; an agent that cannot serve has none. Given to
+  system modules only.
+- **`ToolRegistrationOptions.piiFields`** and
+  **`PrivacyToolResultV4Request.piiFields`**: a native tool declares the PII
+  fields of its result on its registration; the Privacy Shield masks every
+  declared column of an interned result, whatever its classifier says.
+
+### Changed (kernel behaviour, no type change)
+
+- The kinds `agent` and `extension` are no longer uploaded, installed or
+  updated. An installed plugin of one keeps running as legacy until it is
+  rebuilt.
+- The model gateway and the plugin network sandbox always enforce; a model
+  call outside an execution context, a plugin request outside its network
+  permission and a raw model service for a non-model plugin are refused.
+- `decisionModel@1` passes the gateway as `complete`.
 
 ## 1.82.0 — 2026-11-20
 

@@ -55,6 +55,7 @@ import type {
   PromptPiiDetector,
   PromptPiiSpan,
   ToolErrorEntry,
+  ToolPIIField,
   UnresolvedSurrogateCountOptions,
 } from '@omadia/plugin-api';
 import { isControlFlowToolResult } from '@omadia/plugin-api';
@@ -979,9 +980,10 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
     rawResult: string,
     toolInput?: unknown,
     audience?: PrivacyDigestAudience,
+    piiFields?: readonly ToolPIIField[],
   ): PrivacyToolResultV4Result {
     const store = storeFor(turnId);
-    const { digest } = store.internToolResult(toolName, rawResult, toolInput);
+    const { digest } = store.internToolResult(toolName, rawResult, toolInput, piiFields);
     // The receipt counts every field the digest exposes — record columns AND
     // envelope metadata (both reach the model, masked or in clear).
     const metadata = digest.metadata ?? [];
@@ -1018,6 +1020,7 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
         request.rawResult,
         request.toolInput,
         request.audience,
+        request.piiFields,
       );
       // Slice 2 — schema-level PII classification. Schema only (field names
       // + types, never a value); cached per tool shape. Never throws; the
