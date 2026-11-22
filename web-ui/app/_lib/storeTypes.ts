@@ -168,6 +168,13 @@ export type PluginKind =
   | 'agent'
   | 'extension';
 
+/** A retired kind (spec 2042 §5.10, the contract step): an installed plugin
+ *  of it runs on as legacy, but no new version of it is accepted. Mirrors the
+ *  kernel's `isLegacyKind`. */
+export function isLegacyKind(kind: PluginKind): boolean {
+  return kind === 'agent' || kind === 'extension';
+}
+
 /** The Hub categories (spec 2042 §5.10): one per kind of delivery. */
 export type StoreCategory =
   | 'capabilities'

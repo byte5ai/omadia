@@ -785,33 +785,50 @@ This keeps the supply chain explicit:
 
 ### The agent/plugin boundary, the model gateway and the plugin network sandbox (spec 2042 §5.10, ADR-0014/0017)
 
-Only agents are actors. These rules hold for every plugin; the expand step
-(this kernel) observes where the contract step will refuse, so the live
-instance keeps working while the plugin release train moves the packages.
+Only agents are actors. These rules hold for every plugin and are enforced
+since the contract step (S3b). The expand step before it (S3a) only logged a
+model call outside any context, a raw model service handed to a plugin and a
+request outside a plugin's network permission, so the live instance kept
+working while the plugin release train moved the packages; there is no
+`observe` mode any more (`MODEL_GATEWAY_MODE` and `PLUGIN_EGRESS_MODE` are
+not read).
 
 - **No persona at ingest.** `checkPluginBoundary`
   (`src/plugins/pluginBoundary.ts`) refuses a manifest with a persona,
   speaker, personality or system prompt of its own, a `prompt_partial`
   skill or an `AGENT.md` outside an agent template
-  (`422 package.persona_declared`), and a new package of the retired kind
-  `agent` (`422 package.retired_kind`). Agent templates
+  (`422 package.persona_declared`), and every package of the retired kinds
+  `agent` and `extension`, also as the update of a package installed under
+  that kind (`422 package.retired_kind`, `422 install.retired_kind`). An
+  installed plugin of a retired kind keeps running as legacy until it is
+  replaced; the agent runtime that runs agent plugins goes in S3c. An update
+  that makes a plugin a system module needs the explicit confirmation of a
+  fresh install (`becomes_system_module`). Agent templates
   (`agent_templates:`, `src/plugins/agentTemplateManifest.ts`) are inactive
   data, read strictly; the admin API only serves them as a prefill and
   creates and grants nothing.
 - **Every model call in one execution context.** The gate every provider
   adapter passes (`admitModelCall(operation)`) sees the context around the
   call (agent turn, execution scope, inbound processing, operator job,
-  maintenance run) and refuses operations the context does not allow, past
-  deadlines, cancels and kill switches in every mode; a call outside any
-  context is logged in `MODEL_GATEWAY_MODE=observe` and refused in `enforce`.
-  Embedding and transcription services are held only behind the gate
+  maintenance run) and refuses a call outside any context, operations the
+  context does not allow, past deadlines, cancels and kill switches.
+  `decisionModel@1` (Jev) passes the gate as `complete` in its caller's
+  context. Embedding and transcription services are held only behind the gate
   (`src/platform/modelGatewayServices.ts`). A channel plugin's
   `transcribeFile` runs as inbound processing set by the kernel, never by
   the plugin. The call sites and their contexts: `docs/model-gateway-call-sites.md`.
-- **No raw model service for an archetype plugin**, and its `ctx.llm` only
-  inside an execution scope. Other plugins still get `anthropicClient`,
-  `llm` and `llmProviderPool` in `observe` (logged once per plugin and
-  service); `enforce` refuses them.
+- **No raw model service for a plugin.** `anthropicClient`, `llm` and
+  `llmProviderPool` are refused to every plugin except `model` plugins and
+  the kernel's own bundled system modules (`rawModelServiceAccess`,
+  `src/platform/pluginServiceGrants.ts`). Other plugins reach models through
+  `ctx.llm`, in their caller's context; an archetype plugin's `ctx.llm` works
+  only inside an execution scope.
+- **One agent's envelope for a system module.** `agentEnvelope@1`
+  (`src/platform/agentEnvelopeService.ts`) resolves an agent by `agents.id`
+  to its own chat agent: a lookup in the live agent registry, no model, no
+  routing. An unknown, disabled or unbuilt agent has no envelope, and no
+  other agent is returned in its place. Only system modules get it (the
+  canvas presentation helper `@omadia/ui-orchestrator`).
 - **A system module's own model loop goes through the kernel.** The dev
   platform's coding jobs run the Claude CLI in a container against the
   module's Anthropic-compatible proxy. The proxy holds no provider key: it
@@ -836,12 +853,11 @@ instance keeps working while the plugin release train moves the packages.
   addresses refused), and **model provider endpoints** (the provider
   catalog's base URLs and the literal hosts of model plugins) are refused to
   every plugin that is not a model plugin, before any allow-list entry.
-  `PLUGIN_EGRESS_MODE=observe` (default) logs and counts, `enforce` refuses
-  (`PluginEgressRefusedError`). A fault of the guard itself lets the
-  request through, so it never takes the kernel's own network down.
+  A request that fails the check is refused (`PluginEgressRefusedError`)
+  and counted once per plugin, host and reason. A fault of the guard itself
+  lets the request through, so it never takes the kernel's own network down.
   `GET /api/v1/admin/model-gateway` lists what the gateway and the guard
-  saw since boot; both lists must be empty on the live instance before the
-  contract step switches to `enforce`.
+  refused since boot.
 
 Residual risks of the sandbox (in-process, a policy, not a boundary against
 hostile code): a plugin that imports its own `undici` or opens sockets with
@@ -1042,7 +1058,7 @@ of the turn carries all of it.
 | Contribution to an agent | the receiver's grants cover every source and its readers may know it; then the grant's disclosure level caps what is new to the receiver | consultation broker |
 | Persistence | a written turn keeps its label set | `onTurnWritten` |
 | Memory write | another conversation's knowledge only into a tier whose readers may all know it (members: the owners; context-bound: the room; else the agent's memory, readers unknown, which only the turn's own conversation may enter). Notes keep the union of their writers' labels by canonical physical path, stored before the content (no labels, no write); directory renames and deletes take the labels along; session transcripts keep every turn's labels; memorables (auto-promotion, MCP→KG ingestion, durable rules) keep them too; reading, recalling or replaying them (verifier re-entry) adds them back. The members index is kept out of the label layer (read for every room) | `guardMemoryEgress`, `LabelledMemoryStore`, `maybePromoteTurn` |
-| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and gets no restricted source and no classified data (`UNKNOWN_TOOL_EFFECT_POLICY = restricted-only`, switched to `write` after the plugin release train); a plugin's sub-agent tool (`query_<plugin>`) is `write` when any of the plugin's tools declares `write`, else `unknown` | `guardIntegrationEgress`, before the call runs |
+| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and checked like a write, against every label (since the contract step, S3b); a plugin's sub-agent tool (`query_<plugin>`) is `write` when any of the plugin's tools declares `write`, else `unknown`, so checked as well | `guardIntegrationEgress`, before the call runs |
 
 A refused flow is never redacted afterwards. The agent gets a structured refusal;
 at disclosure level `none` a consultation is regenerated without memory and without
@@ -1061,8 +1077,7 @@ Known residuals: the subscription-CLI path and sub-agent inner calls carry no
 discretion state yet; streamed answers are protected only in what is stored; reads
 of memorables through `query_knowledge_graph` and the session briefing bring no
 labels; plugin memory (`ctx.memory`) is written outside the label layer; a write
-to the team memory tier is checked against the room's readers; a tool that declared no effect may still
-receive another conversation's context (until plugins declare, `restricted-only`); a turn whose label write failed is recalled
+to the team memory tier is checked against the room's readers; a turn whose label write failed is recalled
 without labels; `off` is refused only on the context-memory switch, not when
 plugins are granted to an agent that already runs `off`; `say` re-checks consultation
 grants only at the start of a discussion; there is no existence probe for knowledge
@@ -2548,7 +2563,18 @@ its raw value, not by the person's name. Each cleared field is recorded on the
 receipt (`operatorClearedFields` with its `scope`, "In clear by admin rule" in
 the card).
 
-**Suggestions for that list (#1556 follow-up, contract v2).** omadia proposes
+**Tool-declared PII fields (spec 2042 §5.10, plugin-api 1.83.0).** The
+opposite direction: a native tool can declare the PII fields of its result on
+its registration (`ToolRegistrationOptions.piiFields` on `ctx.tools.register`
+and `registerHandler`). The kernel hands them to the Privacy Shield with every
+interned result of that tool (orchestrator dispatch, `ToolDispatchService`),
+and `v4/declaredPii.ts` masks every declared column, whatever the classifier
+or an operator's non-personal entry says. A declaration only adds masking; it
+never clears a field. Only paths that name one column of the result rows apply
+(`field`, `[].field`, `<items>[].field`; a trailing `[N]` masks the whole
+column); a deeper path names no column and is ignored.
+
+**Suggestions for the `non_personal_fields` list (#1556 follow-up, contract v2).** omadia proposes
 entries; it writes one itself only through the auto-approval below. The privacy guard records masked fields of every
 interned tool result schema-only, one observation per tool + scope + field
 (`fieldObservations.ts`; never `sub-agent`, canvas producers or `v4_*` verbs,

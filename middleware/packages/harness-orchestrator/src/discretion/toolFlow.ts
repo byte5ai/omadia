@@ -13,12 +13,14 @@
  *     `capabilities[].side_effects: write`, or an MCP tool without
  *     `readOnlyHint` — checked against every label;
  *   - `read` / `none` (declared, or an MCP `readOnlyHint`) — not checked;
- *   - `unknown` (declared nothing) — {@link UNKNOWN_TOOL_EFFECT_POLICY}.
+ *   - `unknown` (declared nothing) — like a write, checked against every
+ *     label (since the contract step, S3b: every published plugin declares
+ *     its tools' effects, so a tool that declares none is the exception).
  */
 
 import { turnContext } from '../turnContext.js';
 import { checkFlow, violationSummary } from './flowRule.js';
-import { labelSummary, unionLabels, type DiscretionLabel, type LabelSet, type Readers } from './labels.js';
+import { labelSummary, unionLabels, type DiscretionLabel, type Readers } from './labels.js';
 import type { DiscretionPort, LabelSubjectKind } from './port.js';
 import { addTurnLabels, currentDiscretion, resolvedTurnLabels } from './turnLabels.js';
 
@@ -39,29 +41,10 @@ export interface ToolSystem {
   readonly subAgent?: boolean;
 }
 
-/**
- * What a tool that declared nothing counts as at the integration egress.
- * `restricted-only`: it receives nothing from restricted sources and no
- * classified data, but a turn that only carries another conversation's
- * context may still call it (a read tool after a recall keeps working until
- * every plugin declares its effects). `write`: like a declared write.
- * Switched to `write` once the plugin release train declares side effects.
- */
-export const UNKNOWN_TOOL_EFFECT_POLICY: 'restricted-only' | 'write' = 'restricted-only';
-
 function effectOf(port: DiscretionPort | undefined, toolName: string, tool: ToolSystem): ToolEffect {
   if (tool.effect !== 'unknown') return tool.effect;
   if (tool.subAgent) return port?.pluginEffectOf?.(tool.system) ?? 'unknown';
   return port?.toolEffectOf?.(tool.system, toolName) ?? 'unknown';
-}
-
-/** The labels an unknown-effect tool is checked against under `restricted-only`. */
-function restrictedOnly(labels: LabelSet): LabelSet {
-  return {
-    labels: labels.labels.filter(
-      (l) => l.kind === 'classification' || (l.kind === 'source' && l.restricted),
-    ),
-  };
 }
 
 /** The refusal text the model gets: the reason, never the withheld content. */
@@ -86,8 +69,8 @@ export async function guardIntegrationEgress(
   if (!state || !tool) return undefined;
   const effect = effectOf(port, toolName, tool);
   if (effect === 'read' || effect === 'none') return undefined;
-  const all = await resolvedTurnLabels(state);
-  const labels = effect === 'unknown' && UNKNOWN_TOOL_EFFECT_POLICY === 'restricted-only' ? restrictedOnly(all) : all;
+  // `write` and `unknown` alike: every label of the turn.
+  const labels = await resolvedTurnLabels(state);
   const declaration = await port?.declarationOf(tool.system);
   const decision = checkFlow(labels, {
     kind: 'integration',

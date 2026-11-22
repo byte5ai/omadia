@@ -598,9 +598,11 @@ export class ToolDispatchService {
       );
     }
     try {
+      const piiFields = this.deps.nativeTools.get(name)?.piiFields;
       const v4 = await privacy.internToolResultV4({
         toolName: name,
         rawResult: result,
+        ...(piiFields !== undefined ? { piiFields } : {}),
       });
       return fromTool(v4.digestText);
     } catch (err) {

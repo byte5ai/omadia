@@ -8,6 +8,7 @@ import type {
   StoreGetResponse,
   StoreListResponse,
 } from '../api/admin-v1.js';
+import { isInstallableKind } from '../api/admin-v1.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import { BOOT_MANAGED_BUILT_IN_IDS } from '../plugins/builtInOptOuts.js';
 import type {
@@ -496,7 +497,23 @@ function applyInstallState(
       ...(installed.origin ? { install_origin: installed.origin } : {}),
     };
   }
+  // Spec 2042 §5.10, the contract step — a package of a retired kind that is
+  // not installed is never offered: the install would be refused.
+  if (!isInstallableKind(plugin.kind)) return retiredKindEntry(plugin);
   return plugin;
+}
+
+/** Spec 2042 §5.10 — an uninstalled package of a retired kind: listed, not
+ *  offered, with the reason the install would be refused. */
+function retiredKindEntry(plugin: Plugin): Plugin {
+  return {
+    ...plugin,
+    install_state: 'incompatible',
+    incompatibility_reasons: [
+      ...(plugin.incompatibility_reasons ?? []),
+      `kind '${plugin.kind}' is retired: this version can no longer be installed`,
+    ],
+  };
 }
 
 function matchesSearch(plugin: Plugin, search: string | undefined): boolean {
@@ -617,7 +634,13 @@ function hubOfferOverStaleDownload(
   resolved: ResolvedRegistryPlugin,
   packages: StoreDeps['uploadedPackages'],
 ): Plugin | undefined {
-  if (existing.install_state !== 'available') return undefined;
+  // An uninstalled download of a retired kind (`incompatible` for that
+  // reason alone) yields to the hub's migrated version too.
+  const retiredOnly =
+    existing.install_state === 'incompatible' &&
+    !isInstallableKind(existing.kind) &&
+    isInstallableKind(resolved.entry.kind);
+  if (existing.install_state !== 'available' && !retiredOnly) return undefined;
   const pkg = packages?.get(existing.id);
   if (!pkg || pkg.uploaded_by !== `registry:${resolved.registry}`) return undefined;
   if (!isNewerVersion(resolved.entry.latest_version, pkg.version)) return undefined;
@@ -736,7 +759,12 @@ function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
       entry.id,
     ),
     integrations_summary: [],
-    install_state: 'available',
+    // Spec 2042 §5.10 — a registry version of a retired kind is listed, never
+    // offered: the install would be refused.
+    install_state: isInstallableKind(entry.kind) ? 'available' : 'incompatible',
+    ...(isInstallableKind(entry.kind)
+      ? {}
+      : { incompatibility_reasons: [`kind '${entry.kind}' is retired: this version can no longer be installed`] }),
     depends_on: Array.isArray(summary.depends_on) ? summary.depends_on : [],
     jobs: [],
     provides: Array.isArray(summary.provides) ? summary.provides : [],
