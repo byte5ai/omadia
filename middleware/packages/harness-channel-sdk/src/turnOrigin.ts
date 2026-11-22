@@ -102,7 +102,7 @@ export interface TurnOrigin {
    * when the platform states one (#2090, spec 2043 §5.3: a direct reply to a
    * reminder is bound to that reminder). The same value as
    * `ConversationMessageEvent.replyToMessageId`. Opaque. Absent = no reply,
-   * or the adapter does not state it. Since channel-sdk 0.3.10.
+   * or the adapter does not state it. Since channel-sdk 0.3.11.
    */
   readonly replyToMessageId?: string;
   /**

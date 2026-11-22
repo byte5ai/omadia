@@ -50,7 +50,7 @@ private reply bound (4)?
 
 ## Decision Outcome
 
-- **`eventAt` on `openScope` (closing only, plugin-api 1.84.0).** The plugin states when the
+- **`eventAt` on `openScope` (closing only, plugin-api 1.85.0).** The plugin states when the
   closing event happened; the absolute limit is `eventAt + 30 days`. The kernel refuses an
   event in the future (one minute of clock skew, `invalid_request`) and one whose limit has
   passed (`limit_exceeded`, nothing opens); an earlier event only shortens the limit and is
@@ -66,9 +66,9 @@ private reply bound (4)?
   (`limit_exceeded`). Once they have ended, `authorize` refuses on the waiting scope
   (`deadline_passed`) and the wait cannot be extended again.
 - **Private replies carry their reference.** `TurnOrigin.replyToMessageId` (channel-sdk
-  0.3.10) is the message a turn's message replies to or quotes, as the channel states it; the
+  0.3.11) is the message a turn's message replies to or quotes, as the channel states it; the
   facilitator wrapper passes it to the private-message router, and the plugin gets it as
-  `PrivateMessageRequest.replyToMessageId` (plugin-api 1.84.0). The plugin binds a reply to
+  `PrivateMessageRequest.replyToMessageId` (plugin-api 1.85.0). The plugin binds a reply to
   the private message it sent that person (outbox `channel_message_id`): "done" completes
   that reminder's action item, "stop" ends only that facilitation's follow-up (only in reply to a reminder), "status"
   answers for that facilitation. A private "stop" without a reference is not taken (the spec
@@ -99,7 +99,7 @@ private reply bound (4)?
   for the wait, and name its purposes precisely under a closing (consent hints and objection
   acknowledgements as `consent`, a late acceptance as `status`). A plugin that does not is
   refused instead of silently allowed.
-- ⚪ **Neutral:** plugin-api 1.84.0, channel-sdk 0.3.10; no migration; the operator view is
+- ⚪ **Neutral:** plugin-api 1.85.0, channel-sdk 0.3.11; no migration; the operator view is
   unchanged.
 
 ## More Information

@@ -112,7 +112,7 @@ export type ExecutionPurpose =
  * essential messages of its closing event, their dispatch, the consent
  * answers of a required confirmation, status and stop, and checks. Never
  * moderation: a closing does not re-open it. `other` only for a `check`.
- * Since plugin-api 1.84.0.
+ * Since plugin-api 1.85.0.
  */
 export const CLOSING_SCOPE_PURPOSES: readonly ExecutionPurpose[] = [
   'essential_message',
@@ -205,7 +205,7 @@ export interface OpenExecutionScopeRequest {
    *  meeting); several of each may be open, each with its own id. */
   readonly eventId?: string;
   /**
-   * `closing` only (plugin-api 1.84.0): when the closing event happened, ISO
+   * `closing` only (plugin-api 1.85.0): when the closing event happened, ISO
    * time. The absolute limit of 30 days counts from it (spec 2043 §0), also
    * when the scope is opened later (a restart, a send that was retried). It
    * may not lie in the future; an earlier event only shortens the limit.
@@ -300,7 +300,7 @@ export interface ExecutionAuthorizationService {
   ): Promise<{ outcome: 'updated'; scope: ExecutionScope } | ExecutionRefusal>;
   /** Move the deadline, within the kind's absolute limit. `deadlineWait`
    *  (`active` only) is the bounded wait past the agreed deadline (spec 2043
-   *  §5.6): since plugin-api 1.84.0 it needs an open `closing` scope of the
+   *  §5.6): since plugin-api 1.85.0 it needs an open `closing` scope of the
    *  same process (the session closings it waits for are opened first) and
    *  never runs past the latest absolute limit of those (`scope_order`,
    *  `limit_exceeded`). */

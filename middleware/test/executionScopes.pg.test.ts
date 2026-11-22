@@ -528,7 +528,7 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
     });
   });
 
-  describe('#2090 closing limits, closing purposes and the bounded deadline wait (plugin-api 1.84.0)', () => {
+  describe('#2090 closing limits, closing purposes and the bounded deadline wait (plugin-api 1.85.0)', () => {
     const budget = { actions: 20, modelCalls: 0 };
     type Home = { channelType: string; conversationId: string };
     const closingOf = (processId: string, eventId: string, extra: { eventAt?: string; deadline?: string; home?: Home } = {}) =>

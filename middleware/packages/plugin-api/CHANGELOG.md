@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.84.0 — 2026-11-21
+## 1.85.0 — 2026-11-21
 
 Additive (#2090, spec 2043 §0, §5.2, §5.6; ADR 0030): the kernel bounds a
 closing and the deadline wait itself, instead of trusting the plugin's
@@ -29,7 +29,7 @@ bookkeeping.
 
 - **`PrivateMessageRequest.replyToMessageId?`**: the message a private
   message replies to or quotes, as the channel states it (from
-  `TurnOrigin.replyToMessageId`, channel-sdk 0.3.10). A direct reply to a
+  `TurnOrigin.replyToMessageId`, channel-sdk 0.3.11). A direct reply to a
   reminder is bound to that reminder (spec 2043 §5.3, criterion 28).
 
 ### Changed (enforced by the kernel)
