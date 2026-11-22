@@ -435,6 +435,13 @@ export interface PrivateMessageRequest {
   /** The author's platform id, as the turn states it (compare lower-cased). */
   principalId: string;
   text: string;
+  /**
+   * #2090 (spec 2043 §5.3) — the platform id of the message this one replies
+   * to or quotes in the private chat, when the channel states it: a direct
+   * reply to a reminder is bound to that reminder and its process. Compare
+   * with the message id the send reported. Since plugin-api 1.85.0.
+   */
+  replyToMessageId?: string;
   /** The caller's processes of this agent whose open scopes list the author.
    *  Several: the handler asks which one is meant, or answers for each. */
   processIds: readonly string[];

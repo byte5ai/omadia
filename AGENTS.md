@@ -67,6 +67,14 @@ Entscheidung vom 2026-11-22 nicht mehr zum Epic #2043, sondern ist ein eigenes F
 `transcription@1` und der Capability-Snapshot pro Sitzung (#2077) stehen bereits. Eine Audio-
 Quelle deklariert nur `transcribed_speech`; Facilitator und Engine ändern sich dafür nicht.
 
+**Execution-Scopes (ADR 0030, #2090):** Der Kernel begrenzt `closing`-Scopes selbst: 30 Tage ab
+dem Ereignis (`eventAt` beim Öffnen, nicht ab dem Öffnen), nur `CLOSING_SCOPE_PURPOSES` (nie
+Moderation). Der Deadline-Wait eines `active`-Scopes braucht einen offenen `closing`-Scope
+desselben Prozesses und endet spätestens mit dessen absolutem Limit. Die Teile eines Closings
+(Zustellung, Bestätigung, Versand) und ihre 7-Tage-Limits bleiben im Plugin. Private Antworten
+tragen `replyToMessageId` (TurnOrigin → `PrivateMessageRequest`), damit „erledigt“/„stop“ an die
+Erinnerung gebunden werden; Kanal-Adapter müssen das Feld füllen.
+
 ## Task-Routing: welches Werkzeug für welche Aufgabengröße
 
 Bevor eine Aufgabe begonnen wird: welche Größenordnung hat sie, und passt eines der vorhandenen `scripts/*.workflow.mjs`-Pipelines besser als Ad-hoc-Arbeit in der aktuellen Session?

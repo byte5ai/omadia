@@ -57,6 +57,7 @@ decision, write a new ADR and mark the old one **Superseded by …**.
 | 0027 | [Agent reactions for quiet recording](0027-agent-reactions-for-quiet-recording.md) | Accepted | 2026-11-20 |
 | 0028 | [Channel-triggered workflows start only for the addressed agent](0028-channel-triggered-workflows-start-only-for-the-addressed-agent.md) | Accepted | 2026-11-21 |
 | 0029 | [Facilitator acceptance matrix and CI](0029-facilitator-acceptance-matrix-and-ci.md) | Accepted | 2026-11-21 |
+| 0030 | [The kernel bounds closing scopes and the deadline wait](0030-kernel-bounds-closing-scopes-and-the-deadline-wait.md) | Accepted | 2026-11-21 |
 | 0031 | [Audio meeting source split from the native facilitator epic](0031-audio-meeting-source-split-from-native-facilitators.md) | Accepted | 2026-11-22 |
 
 ### The agent model (0012–0022)

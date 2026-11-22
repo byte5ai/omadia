@@ -534,6 +534,7 @@ agentSlug: string;
 channelType: string;
 principalId: string;
 text: string;
+replyToMessageId?: string;
 processIds: readonly string[];
 }
 export type PrivateMessageReply = {
@@ -888,6 +889,7 @@ export declare const EXECUTION_SCOPE_PHASES: Readonly<Record<ExecutionScopeKind,
 export type ExecutionActionType = 'model_turn' | 'post' | 'direct_message' | 'card_update' | 'check' | 'delivery';
 export type ExecutionEmissionType = Exclude<EmissionType, 'system'>;
 export type ExecutionPurpose = 'moderation' | 'handshake' | 'link' | 'reminder' | 'status' | 'consent' | 'stop' | 'essential_message' | 'protocol_dispatch' | 'invitation' | 'readiness_check' | 'roster_check' | 'other';
+export declare const CLOSING_SCOPE_PURPOSES: readonly ExecutionPurpose[];
 export type ExecutionTarget = {
 readonly kind: 'conversation';
 readonly channelType: string;
@@ -933,6 +935,7 @@ readonly agentSlug: string;
 readonly processId: string;
 readonly kind: ExecutionScopeKind;
 readonly eventId?: string;
+readonly eventAt?: string;
 readonly deadline?: string;
 readonly budget: ExecutionBudget;
 readonly targets?: readonly ExecutionTarget[];

@@ -6,6 +6,7 @@
  */
 
 import {
+  CLOSING_SCOPE_PURPOSES,
   EXECUTION_SCOPE_KINDS,
   EXECUTION_SCOPE_PHASES,
   type AuthorizeActionRequest,
@@ -44,6 +45,10 @@ const MAX_BUDGET = 1_000_000;
 const MAX_TARGETS = 2_000;
 const MAX_ID_LENGTH = 200;
 
+/** How far a closing event may lie ahead of the kernel's clock (another
+ *  replica's clock, a round trip). */
+const EVENT_CLOCK_SKEW_MS = 60_000;
+
 const DEADLINE_WAIT_PURPOSES: ReadonlySet<string> = new Set(['consent', 'status', 'stop']);
 const ACTIONS_WITH_TARGET: ReadonlySet<string> = new Set(['post', 'direct_message', 'card_update', 'delivery']);
 const PURPOSES: ReadonlySet<string> = new Set([
@@ -51,6 +56,7 @@ const PURPOSES: ReadonlySet<string> = new Set([
   'essential_message', 'protocol_dispatch', 'invitation', 'readiness_check', 'roster_check', 'other',
 ]);
 const ACTIONS: ReadonlySet<string> = new Set(['model_turn', 'post', 'direct_message', 'card_update', 'check', 'delivery']);
+const CLOSING_PURPOSES: ReadonlySet<string> = new Set(CLOSING_SCOPE_PURPOSES);
 
 export interface ExecutionAgent {
   readonly id: string;
@@ -181,19 +187,24 @@ export function createExecutionAuthorizationService(
     return row;
   };
 
+  /** `eventAt`: when a closing event happened; its 30 days count from it. */
   const limitsFor = (
     kind: ExecutionScopeKind,
     requested: string | undefined,
+    eventAt?: Date,
   ): { deadline: Date; absoluteLimit: Date } | ExecutionRefusal => {
     const at = now().getTime();
     const absoluteLimit = new Date(
-      at +
+      (eventAt?.getTime() ?? at) +
         (kind === 'configuring'
           ? deps.configuringMaxMs
           : kind === 'closing'
             ? CLOSING_ABSOLUTE_LIMIT_MS
             : SCOPE_MAX_LIFETIME_MS),
     );
+    if (absoluteLimit.getTime() <= at) {
+      return refuse('limit_exceeded', `the absolute limit of this '${kind}' scope passed at ${absoluteLimit.toISOString()}`);
+    }
     if (requested === undefined) {
       if (kind !== 'configuring') return refuse('invalid_request', `a '${kind}' scope needs a deadline`);
       return { deadline: absoluteLimit, absoluteLimit };
@@ -208,6 +219,25 @@ export function createExecutionAuthorizationService(
       );
     }
     return { deadline, absoluteLimit };
+  };
+
+  /**
+   * #2090 (spec 2043 §0) — when the closing event of a `closing` scope
+   * happened: its absolute limit counts from there, not from the moment the
+   * plugin got round to opening the scope. Not in the future. An earlier time
+   * only shortens the limit, so it is taken as stated.
+   */
+  const closingEventTime = (request: OpenExecutionScopeRequest): Date | ExecutionRefusal | undefined => {
+    if (request.eventAt === undefined) return undefined;
+    if (request.kind !== 'closing') return refuse('invalid_request', "only a 'closing' scope names when its event happened");
+    const eventAt = new Date(request.eventAt);
+    if (typeof request.eventAt !== 'string' || Number.isNaN(eventAt.getTime())) {
+      return refuse('invalid_request', 'eventAt is not a time');
+    }
+    if (eventAt.getTime() > now().getTime() + EVENT_CLOCK_SKEW_MS) {
+      return refuse('invalid_request', 'a closing event cannot lie in the future');
+    }
+    return eventAt;
   };
 
   /**
@@ -237,6 +267,19 @@ export function createExecutionAuthorizationService(
       return refuse('purpose_not_allowed', 'a session in confirming takes consent requests, status and stop only');
     }
     return undefined;
+  };
+
+  /**
+   * #2090 (spec 2043 §5.6) — the latest time a deadline wait may run to: the
+   * latest absolute limit of the process's open `closing` scopes, the
+   * session closings it waits for. `undefined`: nothing to wait for.
+   */
+  const deadlineWaitBound = async (processId: string): Promise<number | undefined> => {
+    const at = now().getTime();
+    const limits = (await store.listScopesOfProcess(callerPluginId, processId))
+      .filter((s) => s.kind === 'closing' && s.state === 'open' && new Date(s.deadline).getTime() > at)
+      .map((s) => new Date(s.absoluteLimit).getTime());
+    return limits.length > 0 ? Math.max(...limits) : undefined;
   };
 
   return {
@@ -269,7 +312,9 @@ export function createExecutionAuthorizationService(
         home = { channelType: read.channelType, conversationId: read.conversationId };
         if (!matchingTarget(targets, read)) targets.unshift(read);
       }
-      const limits = limitsFor(request.kind, request.deadline);
+      const eventAt = closingEventTime(request);
+      if (eventAt && 'outcome' in eventAt) return eventAt;
+      const limits = limitsFor(request.kind, request.deadline, eventAt);
       if ('outcome' in limits) return limits;
 
       const opened = await store.openScope({
@@ -318,11 +363,25 @@ export function createExecutionAuthorizationService(
       // this closes the moment between the two.
       const agent = permittedAgent(scope.agentSlug);
       if ('outcome' in agent) return agent;
+      // A closing runs its essential messages, their dispatch and the consent
+      // of a required confirmation; it never re-opens moderation (spec 2043
+      // §0, §5.2).
+      if (scope.kind === 'closing' && (!CLOSING_PURPOSES.has(request.purpose) || (request.purpose === 'other' && request.action !== 'check'))) {
+        return refuse(
+          'purpose_not_allowed',
+          'a closing scope only allows its essential messages, their dispatch, consent answers, status, stop and checks',
+        );
+      }
       if (scope.deadlineWait && !DEADLINE_WAIT_PURPOSES.has(request.purpose)) {
         return refuse(
           'purpose_not_allowed',
           'past its deadline this scope only allows consent answers, status and stop',
         );
+      }
+      // The wait ends with the closings it waits for (spec 2043 §5.6), not
+      // only at the deadline it was given.
+      if (scope.deadlineWait && (await deadlineWaitBound(scope.processId)) === undefined) {
+        return refuse('deadline_passed', 'the deadline wait is over: the closings it waited for have ended');
       }
       let target: ExecutionTarget | undefined;
       if (request.target !== undefined) {
@@ -422,6 +481,15 @@ export function createExecutionAuthorizationService(
       }
       if (wait && deadline.getTime() > at + DEADLINE_WAIT_MAX_MS) {
         return refuse('limit_exceeded', 'a deadline wait is bounded to 30 days');
+      }
+      if (wait) {
+        const bound = await deadlineWaitBound(scope.processId);
+        if (bound === undefined) {
+          return refuse('scope_order', 'a deadline wait needs an open closing scope of this process: open the session closings first');
+        }
+        if (deadline.getTime() > bound) {
+          return refuse('limit_exceeded', `a deadline wait ends at the latest with its closings, ${new Date(bound).toISOString()}`);
+        }
       }
       if (deadline.getTime() > new Date(scope.absoluteLimit).getTime()) {
         return refuse('limit_exceeded', `this scope ends at the latest ${scope.absoluteLimit}`);
