@@ -55,6 +55,10 @@ export interface AutoFixOrchestratorDeps {
    *  tabs the same way an HTTP-route turn is. */
   turnRingBuffer?: BuilderTurnRingBuffer;
   logger?: (...args: unknown[]) => void;
+  /** Spec 2042 §5.10 — runs `work` as one operator job started by
+   *  `startedBy` (the kernel's `modelWork.run`), so its model calls have a
+   *  context, a budget and a deadline. Absent (tests): `work` runs as is. */
+  runAsJob?: <T>(startedBy: string, work: () => Promise<T>) => Promise<T>;
 }
 
 interface DraftAutoFixState {
@@ -131,6 +135,7 @@ export class AutoFixOrchestrator {
   private readonly defaultModel: ModelRef;
   private readonly turnRingBuffer: BuilderTurnRingBuffer | undefined;
   private readonly log: (...args: unknown[]) => void;
+  private readonly runAsJob: NonNullable<AutoFixOrchestratorDeps['runAsJob']>;
 
   private readonly perDraft = new Map<string, DraftAutoFixState>();
 
@@ -141,6 +146,7 @@ export class AutoFixOrchestrator {
     this.defaultModel = deps.defaultModel;
     this.turnRingBuffer = deps.turnRingBuffer;
     this.log = deps.logger ?? (() => {});
+    this.runAsJob = deps.runAsJob ?? ((_by, work) => work());
   }
 
   /**
@@ -369,13 +375,17 @@ export class AutoFixOrchestrator {
       });
     }
 
-    void this.fireTurn({
-      draftId,
-      userEmail: state.userEmail,
-      userMessage,
-      modelChoice: this.resolveDraftModel(draft.codegenModel),
-      turnId,
-    })
+    // One operator job per synthetic turn, attributed to the operator whose
+    // draft session switched auto-fix on.
+    void this.runAsJob(state.userEmail, () =>
+      this.fireTurn({
+        draftId,
+        userEmail: state.userEmail,
+        userMessage,
+        modelChoice: this.resolveDraftModel(draft.codegenModel),
+        turnId,
+      }),
+    )
       .catch((err: unknown) => {
         this.log('autoFix: fireTurn failed', draftId, err);
       })

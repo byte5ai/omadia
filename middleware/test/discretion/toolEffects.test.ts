@@ -4,9 +4,8 @@
  *
  *  - declared `write` (manifest `side_effects`): checked against every label;
  *  - declared `read` / `none`: not checked;
- *  - declared nothing (`unknown`): `restricted-only` — no restricted source and
- *    no classified data reach it, but another conversation's context alone
- *    does not block it (read tools after a recall keep working).
+ *  - declared nothing (`unknown`): like a write since the contract step
+ *    (S3b), checked against every label.
  */
 
 import assert from 'node:assert/strict';
@@ -16,10 +15,7 @@ import { turnContext } from '../../packages/harness-orchestrator/src/turnContext
 import { readersOf, unionLabels, type DiscretionLabel, type LabelSet } from '../../packages/harness-orchestrator/src/discretion/labels.js';
 import type { DiscretionPort } from '../../packages/harness-orchestrator/src/discretion/port.js';
 import { createDiscretionTurnState } from '../../packages/harness-orchestrator/src/discretion/turnLabels.js';
-import {
-  guardIntegrationEgress,
-  UNKNOWN_TOOL_EFFECT_POLICY,
-} from '../../packages/harness-orchestrator/src/discretion/toolFlow.js';
+import { guardIntegrationEgress } from '../../packages/harness-orchestrator/src/discretion/toolFlow.js';
 
 const hrRecord: DiscretionLabel = { kind: 'source', system: '@omadia/odoo-hr', restricted: true };
 const otherRoom: DiscretionLabel = { kind: 'context', key: 'teams:dm-ab', readers: readersOf(['a', 'b']) };
@@ -51,10 +47,6 @@ function call(toolName: string, labels: LabelSet) {
 }
 
 describe('declared tool effects at the integration egress (criterion 17)', () => {
-  it('the default for tools that declared nothing is restricted-only', () => {
-    assert.equal(UNKNOWN_TOOL_EFFECT_POLICY, 'restricted-only');
-  });
-
   it('a declared write is checked against every label', async () => {
     assert.ok(await call('crm_create_note', unionLabels([hrRecord])));
     assert.ok(await call('crm_create_note', unionLabels([otherRoom])));
@@ -65,10 +57,10 @@ describe('declared tool effects at the integration egress (criterion 17)', () =>
     assert.equal(await call('crm_format', unionLabels([hrRecord])), undefined);
   });
 
-  it('a tool that declared nothing gets no restricted or classified data, but works after a recall', async () => {
+  it('a tool that declared nothing is checked like a write (contract step, S3b)', async () => {
     assert.ok(await call('crm_legacy', unionLabels([hrRecord])), 'HR data never reaches an undeclared tool');
     assert.ok(await call('crm_legacy', unionLabels([{ kind: 'classification', class: 'personal' }])));
-    assert.equal(await call('crm_legacy', unionLabels([otherRoom])), undefined, 'another room alone does not block it');
+    assert.ok(await call('crm_legacy', unionLabels([otherRoom])), 'another room’s context does not reach it either');
   });
 
   it('a plugin\'s sub-agent (domain tool) counts as a write when any of its tools declared one', async () => {
@@ -82,6 +74,6 @@ describe('declared tool effects at the integration egress (criterion 17)', () =>
         guardIntegrationEgress(port, `query_${system}`, { system, effect: 'unknown', subAgent: true }),
       );
     assert.ok(await run('@omadia/crm'), 'a declared write in the plugin: checked against every label');
-    assert.equal(await run('@omadia/wiki'), undefined, 'nothing declared: restricted-only');
+    assert.ok(await run('@omadia/wiki'), 'nothing declared: like a write');
   });
 });

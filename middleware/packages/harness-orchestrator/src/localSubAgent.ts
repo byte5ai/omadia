@@ -783,10 +783,13 @@ export class LocalSubAgent {
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.
       try {
+        // Spec 2042 §5.10 — the wrapper's PII annotation is read here too.
+        const piiFields = this.toolsByName.get(toolName)?.piiFields;
         const v4 = await privacy.internToolResultV4({
           toolName,
           rawResult: result,
           toolInput: input,
+          ...(piiFields !== undefined ? { piiFields } : {}),
         });
         // Privacy Shield v4 — record the interned datasetId so the parent
         // orchestrator can pass the REAL dataset up by reference instead of

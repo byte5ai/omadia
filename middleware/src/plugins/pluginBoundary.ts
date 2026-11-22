@@ -43,10 +43,6 @@ export interface BoundaryCheckInput {
   /** Whether the package root holds an `AGENT.md` / `agent.md` (the persona
    *  file of the retired agent plugins). */
   readonly hasAgentMd: boolean;
-  /** The kind of the version installed on this instance, if any. An update
-   *  of an installed `agent` package is still let in under that kind until
-   *  the release train moved it; no other package becomes one. */
-  readonly installedKind: PluginKind | undefined;
 }
 
 /** Manifest keys that give a package a persona or a voice of its own. */
@@ -61,18 +57,21 @@ function asRecord(v: unknown): Record<string, unknown> | undefined {
  * enter. Pure, so every rule is asserted directly in tests.
  */
 export function checkPluginBoundary(input: BoundaryCheckInput): BoundaryViolation | undefined {
-  if (!isInstallableKind(input.kind) && input.installedKind !== input.kind) {
+  // The contract step (S3b): a retired kind never enters, not even as an
+  // update of a package installed under it. The installed version keeps
+  // running as legacy; its successor is a capability (`tool`/`integration`,
+  // plus an agent built in the Agent Builder) or a `system-module`/`model`.
+  if (!isInstallableKind(input.kind)) {
     return {
       code: 'package.retired_kind',
       field: 'identity.kind',
-      params: { pluginId: input.pluginId },
+      params: { pluginId: input.pluginId, kind: input.kind },
       message:
-        "kind 'agent' is retired: a plugin delivers capabilities and may ship agent templates, never an agent of its own (spec 2042 §5.10)",
+        input.kind === 'agent'
+          ? "kind 'agent' is retired: a plugin delivers capabilities and may ship agent templates, never an agent of its own (spec 2042 §5.10)"
+          : `kind '${input.kind}' is retired: declare 'system-module' (infrastructure of omadia) or 'model' (a model provider) instead (spec 2042 §5.10)`,
     };
   }
-  // A package of the retired kind that is already installed carries its
-  // persona until it is migrated; everything below is for every other kind.
-  if (input.kind === 'agent') return undefined;
 
   const doc = asRecord(input.manifest) ?? {};
   const identity = asRecord(doc['identity']) ?? {};

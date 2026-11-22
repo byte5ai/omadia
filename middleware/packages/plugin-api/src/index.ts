@@ -217,6 +217,10 @@ export * from './maintenanceRun.js';
 // (`operatorJobs@1`, `modelPassthrough@1`).
 export * from './modelPassthrough.js';
 
+// Spec 2042 §5.2 — the envelope of one agent for a system module working on
+// its behalf (`agentEnvelope@1`, the canvas presentation helper).
+export * from './agentEnvelope.js';
+
 // #2082 (epic #2042) — bounded batch jobs: learning and consolidation run as
 // agent batch triggers, not as free-running plugin intervals.
 export * from './batchJobs.js';

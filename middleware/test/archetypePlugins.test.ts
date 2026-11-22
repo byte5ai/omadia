@@ -464,7 +464,7 @@ describe('installing an archetype plugin needs an explicit confirmation', () => 
 
   it('with it the install job is created; other kinds never ask', () => {
     assert.equal(service(manifest()).create(ENGINE, { confirmedArchetype: true }).plugin_id, ENGINE);
-    const legacy = manifest({ kind: 'extension', archetype: undefined });
+    const legacy = manifest({ kind: 'tool', archetype: undefined });
     assert.equal(service(legacy).create(ENGINE).plugin_id, ENGINE);
   });
 });

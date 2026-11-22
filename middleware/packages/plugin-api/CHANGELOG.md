@@ -8,6 +8,33 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.83.0 — 2026-11-21
+
+Additive (spec 2042 §5.10, the contract step S3b of #2053). Plugins that use
+`agentEnvelope@1` or `piiFields` declare `compat.core: ">=1.83.0 <2.0"`.
+
+### Added
+
+- **`agentEnvelope@1`** (`AGENT_ENVELOPE_SERVICE_NAME`, `AgentEnvelope`,
+  `AgentEnvelopeResolver`): the envelope of one agent, by `agents.id`, for a
+  system module that works on its behalf (the canvas presentation helper).
+  A lookup without a model; an agent that cannot serve has none. Given to
+  system modules only.
+- **`ToolRegistrationOptions.piiFields`** and
+  **`PrivacyToolResultV4Request.piiFields`**: a native tool declares the PII
+  fields of its result on its registration; the Privacy Shield masks every
+  declared column of an interned result, whatever its classifier says.
+
+### Changed (kernel behaviour, no type change)
+
+- The kinds `agent` and `extension` are no longer uploaded, installed or
+  updated. An installed plugin of one keeps running as legacy until it is
+  rebuilt.
+- The model gateway and the plugin network sandbox always enforce; a model
+  call outside an execution context, a plugin request outside its network
+  permission and a raw model service for a non-model plugin are refused.
+- `decisionModel@1` passes the gateway as `complete`.
+
 ## 1.82.0 — 2026-11-20
 
 Additive (spec 2043 §5.14, #2061): recording is quiet, with a reaction where

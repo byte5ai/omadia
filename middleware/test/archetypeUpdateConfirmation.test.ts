@@ -28,6 +28,15 @@ const archetypeOnPool = { kind: 'archetype', archetype: DESCRIPTOR, requires: ['
 const archetypeOwnDb = { kind: 'archetype', archetype: DESCRIPTOR, requires: [] } as never;
 
 describe('#2088 archetypeUpdateReasons', () => {
+  it('spec 2042 §5.10: an update that makes a plugin a system module is confirmed; extension → system-module is not', () => {
+    const systemModule = { kind: 'system-module', requires: [] } as never;
+    const extension = { kind: 'extension', requires: [] } as never;
+    assert.deepEqual(archetypeUpdateReasons(tool, systemModule), ['becomes_system_module']);
+    assert.deepEqual(archetypeUpdateReasons({ kind: 'model' } as never, systemModule), ['becomes_system_module']);
+    assert.deepEqual(archetypeUpdateReasons(extension, systemModule), []);
+    assert.deepEqual(archetypeUpdateReasons(systemModule, systemModule), []);
+  });
+
   it('a plugin that becomes an archetype plugin, with or without its own database', () => {
     assert.deepEqual(archetypeUpdateReasons(tool, archetypeOnPool), ['becomes_archetype']);
     assert.deepEqual(archetypeUpdateReasons(tool, archetypeOwnDb), ['becomes_archetype', 'moves_database']);

@@ -6,9 +6,9 @@ import { pluginEgressMode, pluginEgressObservations } from '../platform/pluginEg
 
 /**
  * Spec 2042 §5.10 — what the model gateway and the plugin network sandbox
- * saw since the process started, for the operator and for the contract
- * step: before `MODEL_GATEWAY_MODE` and `PLUGIN_EGRESS_MODE` go to
- * `enforce`, both lists must be empty on the live instance.
+ * refused since the process started (both enforce since the contract step,
+ * S3b): model calls outside any execution context by call site, and plugin
+ * requests outside their network permission by plugin and host.
  *
  *   GET /api/v1/admin/model-gateway
  */

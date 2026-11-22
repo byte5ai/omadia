@@ -244,10 +244,13 @@ export async function activate(
     backfill = startEmbeddingBackfill({
       // Spec 2042 §5.10 — each sweep is a maintenance run (embed only,
       // maintenance budget). Resolved per sweep: the kernel publishes the
-      // service after this plugin activated.
+      // service after this plugin activated. Without it the sweep is not
+      // run: outside a context the gateway would refuse every embed anyway.
       asMaintenanceRun: (sweep) => {
         const maintenance = ctx.services.getOptional<MaintenanceRunService>(MAINTENANCE_RUN_SERVICE_NAME);
-        return maintenance ? maintenance.run('embedding_backfill', sweep) : sweep();
+        return maintenance
+          ? maintenance.run('embedding_backfill', sweep)
+          : Promise.reject(new Error(`${MAINTENANCE_RUN_SERVICE_NAME}@1 is not available; the sweep needs a maintenance run`));
       },
       pool: graphPool,
       embeddingClient: wanted,

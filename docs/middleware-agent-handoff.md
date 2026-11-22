@@ -836,7 +836,8 @@ Vertrag (ein Tool deklariert pro `dataClass`/`operation`, was es mutieren darf).
 **Wichtig:** `writeCapabilities` ist **kein** Feld auf `NativeToolSpec` — der
 Spec geht via `buildToolsList` verbatim in die Anthropic-Tool-Liste, und
 Anthropic lehnt unbekannte Felder ab (gleicher Grund, warum `piiFields` am
-LocalSubAgentTool-**Wrapper** hängt, nicht am Spec). Der Anbindungspunkt
+LocalSubAgentTool-**Wrapper** hängt, nicht am Spec; seit plugin-api 1.83.0
+auch an `ToolRegistrationOptions`, siehe „S3b: Contract-Schritt“). Der Anbindungspunkt
 (Manifest-Annotation / Registration-Metadata, non-model-facing) wird mit dem
 ersten Consumer (PR-9) verdrahtet. `deriveMutabilityCapabilities(caps, dataClass)` in
 `plugin-api/src/writeCapabilities.ts` leitet daraus **deterministisch** (kein
@@ -4216,13 +4217,17 @@ Details im gleichnamigen Abschnitt am Ende dieses Dokuments. Neue Routen
   verbraucht ist, und `503 model_work.unavailable`, wenn der Job nicht
   angelegt werden kann (die Route läuft dann nicht).
 - `GET /api/v1/admin/model-gateway`: Aufrufe ohne Ausführungskontext und
-  Beobachtungen der Netz-Sandbox seit Boot.
+  Fälle der Netz-Sandbox seit Boot (seit S3b: was verweigert wurde).
 - `GET /api/v1/admin/agent-templates`, `GET /api/v1/admin/agent-templates/prefill`.
 - Kernel-Service `maintenanceRun@1` (Embedding-Backfill als Maintenance-Run).
 - Kernel-Services `operatorJobs@1` und `modelPassthrough@1`, nur für
   `system-module` (`src/platform/modelPassthrough.ts`): ein System-Modul mit
   eigener Modell-Schleife (dev-platform) öffnet einen Operator-Job und leitet
   Anthropic-Messages-Anfragen über den Kernel, der die Credentials hält.
+- Kernel-Service `agentEnvelope@1` (S3b, nur für `system-module`,
+  `src/platform/agentEnvelopeService.ts`): die Hülle genau eines Agenten per
+  `agents.id`, ohne Modell; für `@omadia/ui-orchestrator`. Details im
+  Abschnitt „S3b: Contract-Schritt“ am Ende.
 
 ### Agent-eigene Trigger: Hooks, Wakeups, Routinen, Schedules, Batch-Jobs (#2082, Spec 2042 §5.12)
 
@@ -4991,15 +4996,21 @@ Gelesen vom **web-ui**-Prozess, nicht von der Middleware:
 
 Details: `docs/security-architecture.md` §10h.
 
-### Modell-Gateway, Netz-Sandbox, CLI-Profil (Epic #2042 S3a, Spec §5.10)
+### Modell-Gateway, Netz-Sandbox, CLI-Profil (Epic #2042 S3a/S3b, Spec §5.10)
 
 Siehe „Plugin-Grenze, Modell-Gateway, Netz-Sandbox“ am Ende dieses Dokuments
 und `docs/security-architecture.md` §4.
 
+Modell-Gateway und Netz-Sandbox setzen seit dem Contract-Schritt (S3b) immer
+durch; `MODEL_GATEWAY_MODE` und `PLUGIN_EGRESS_MODE` werden nicht mehr
+gelesen (aus `src/config.ts` und `.env.example` entfernt). Ein Modellaufruf
+außerhalb jedes Ausführungskontexts, eine Plugin-Anfrage außerhalb der
+Netzerlaubnis und ein roher Modell-Service für ein Nicht-`model`-Plugin
+werden verweigert; was verweigert wurde, listet
+`GET /api/v1/admin/model-gateway`.
+
 | Variable | Wirkung |
 |---|---|
-| `MODEL_GATEWAY_MODE` | `observe` (Default, Expand-Schritt) oder `enforce`. Ein Modellaufruf außerhalb jedes Ausführungskontexts wird in `observe` einmal pro Aufrufstelle geloggt (`[model-gateway] observed …`) und zugelassen, in `enforce` verweigert. Rohe Modell-Services (`anthropicClient`, `llm`, `llmProviderPool`) für Nicht-Archetyp-Plugins: `observe` loggt, `enforce` verweigert. Nicht erlaubte Operationen, Deadlines, Cancel und Kill Switch greifen in beiden Modi. |
-| `PLUGIN_EGRESS_MODE` | `observe` (Default) oder `enforce`. Netz-Sandbox installierter Plugins: eigene Anfragen über den globalen `fetch` und `node:http(s)` müssen von der Netzerlaubnis gedeckt sein, Modell-Provider-Endpunkte sind für Nicht-`model`-Plugins gesperrt. `observe` loggt einmal pro Plugin, Host und Grund (`[plugin-egress] observed …`), `enforce` verweigert (`PluginEgressRefusedError`). |
 | `OPERATOR_TOOLS_DAILY_MODEL_CALLS` | Tagesbudget (Modellaufrufe pro 24 h) aller Operator-Jobs zusammen. Default `20000`. |
 | `MAINTENANCE_DAILY_MODEL_CALLS` | Tagesbudget aller Maintenance-Runs zusammen (nur `embed`). Default `200000`. |
 | `OMADIA_CLI_PROFILE` | `auto` (Default), `isolated` oder `inherit`: Profil (`HOME` + `CLAUDE_CONFIG_DIR`) jedes Claude-CLI-Spawns. `auto` isoliert, wo der Login mitkommt (im Image ist `CLAUDE_CONFIG_DIR=/data/claude-cli` das Profil); bei einem macOS-Keychain-Login bleibt die Umgebung, der Boot sagt es (`[cli-profile] …`). Eine Instruktionsdatei (`CLAUDE.md`, `.claude/CLAUDE.md`) im Profil verweigert jeden Spawn. **Lokale Entwicklung:** läuft die Middleware in einer Shell, deren `CLAUDE_CONFIG_DIR` auf ein persönliches Claude-Verzeichnis mit `CLAUDE.md` zeigt (etwa aus einer Agent-Sitzung), `OMADIA_CLI_PROFILE=inherit` setzen oder `CLAUDE_CONFIG_DIR` leeren. **Vor dem Deploy:** prüfen, dass `/data/claude-cli` keine `CLAUDE.md` enthält. |
@@ -6064,16 +6075,20 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
     Offenlegungsstufen auf Capability-Grants, Operator-UI für Leserschaften).
 
 - **Plugin-Grenze + Modell-Gateway (#2053, Epic #2042): Expand-Schritt S3a
-  im Kernel, Contract-Schritt S3b offen.** S3b erst, wenn der
-  Plugin-Release-Train live ist und `GET /api/v1/admin/model-gateway` auf der
-  Live-Instanz leer bleibt: `agent`/`extension` beim Laden ablehnen,
-  `dynamicAgentRuntime` löschen, `MODEL_GATEWAY_MODE` und
-  `PLUGIN_EGRESS_MODE` fest `enforce`, rohe Modell-Services für alle
-  Nicht-`model`-Plugins verweigern, Provider-Katalog-Registrierung nur für
-  `model`. Voraussetzung: der Plugin-Release-Train (Kinds, Templates,
-  `side_effects`, kein roher Modellzugang; channel-teams ohne
-  `anthropicClient@1`, dev-platform über `modelPassthrough@1`) ist auf dem Hub
-  und auf Fly. Offen außerdem: die Netz-Sandbox sieht
+  und Contract-Schritt S3b im Kernel (plugin-api 1.83.0).** S3b: `agent` und
+  `extension` werden weder hochgeladen noch installiert noch aktualisiert
+  (installierte laufen als Altbestand weiter), Modell-Gateway und Netz-Sandbox
+  setzen immer durch (`MODEL_GATEWAY_MODE`/`PLUGIN_EGRESS_MODE` nicht mehr
+  gelesen), rohe Modell-Services nur für `model`-Plugins und die eigenen
+  System-Module des Kerns, Tools ohne Wirkungsdeklaration wie `write`
+  geprüft. Siehe „S3b: Contract-Schritt“ am Ende. Vor dem Deploy muss
+  `GET /api/v1/admin/model-gateway` auf der Live-Instanz leer sein, und der
+  Plugin-Release-Train (Kinds, Templates, `side_effects`, kein roher
+  Modellzugang; channel-teams ohne `anthropicClient@1`, dev-platform über
+  `modelPassthrough@1`) muss auf dem Hub und auf Fly sein. **Offen:**
+  `dynamicAgentRuntime` löschen (S3c, sobald die restlichen Agent-Plugins
+  umgebaut sind); Provider-Katalog-Registrierung nur für `model`. Offen
+  außerdem: die Netz-Sandbox sieht
   `node:net`/`node:tls` und eigenes `undici` nicht; Inbound-Transkription
   wird dem Kanal statt dem adressierten Agenten zugerechnet, bis der Kanal
   vor dem Transkribieren routet.
@@ -10299,18 +10314,18 @@ Pushes hängen an Message-Subscriptions.
 ## Plugin-Grenze, Modell-Gateway, Netz-Sandbox (Epic #2042 S3a, 2026-11-20)
 
 Spec `specs/2042-agents-as-virtual-employees/spec.md` §5.10, ADR-0014
-(Plugin-Kinds), ADR-0015 (Archetypen), ADR-0017 (Modell-Gateway). Dies ist
-der **Expand-Schritt**: alles Neue wird angenommen, das Alte läuft weiter
-und wird beobachtet; der Contract-Schritt (S3b) folgt nach dem
-Plugin-Release-Train (§13).
+(Plugin-Kinds), ADR-0015 (Archetypen), ADR-0017 (Modell-Gateway). Dieser
+Abschnitt beschreibt den **Expand-Schritt**: alles Neue wird angenommen, das
+Alte lief weiter und wurde beobachtet. Was der Contract-Schritt (S3b)
+geändert hat, steht unten in „S3b: Contract-Schritt“.
 
 ### Plugin-Kinds und Grenze
 
 - `PluginKind` (`src/api/admin-v1.ts`): `integration`, `tool`, `skill`,
   `channel`, `model`, `archetype`, `system-module`, `agent-template`, dazu
-  die ausgemusterten `agent` (nur bereits installiert, Neuinstallation
-  `422 package.retired_kind` / `install.retired_kind`) und `extension`
-  (gelesen als `system-module`, `effectiveKind`). Laufzeitwahl
+  die ausgemusterten `agent` und `extension` (`extension` gelesen als
+  `system-module`, `effectiveKind`; seit S3b für beide weder Upload noch
+  Installation noch Update, siehe unten). Laufzeitwahl
   `src/plugins/pluginRuntimeOf.ts`; `agent-template` und ein `skill` ohne
   Code sind reine Daten (`isDataOnlyPlugin`).
 - Ingest-Grenze `src/plugins/pluginBoundary.ts`: Persona/Speaker/
@@ -10318,8 +10333,9 @@ Plugin-Release-Train (§13).
   einer Vorlage → `422 package.persona_declared`. `system-module` und
   `archetype` verlangen beim Installieren eine Bestätigung
   (`409 install.system_module_confirmation_required`).
-- Built-ins: 9 × `system-module`, 4 × `model`. `agent-seo-analyst` und
-  `agent-reference-maximum` (Builder-Referenzen) sind noch `agent`.
+- Built-ins: 9 × `system-module`, 4 × `model`. Die Builder-Referenzen
+  `agent-seo-analyst` (`tool`) und `agent-reference-maximum` (`integration`)
+  sind seit S2 Capabilities.
 
 ### Agent-Vorlagen
 
@@ -10355,8 +10371,8 @@ Plugin-Release-Train (§13).
 - Kill Switch: `src/execution/modelCallHalts.ts` spiegelt die Schalter ins
   Gate; ein laufender CLI-Turn pollt `modelCallHaltFor` und endet.
 - Routen: `GET /api/v1/admin/model-work`, `POST /api/v1/admin/model-work/:id/cancel`,
-  `GET /api/v1/admin/model-gateway` (Aufrufe ohne Kontext + Egress-Beobachtungen
-  seit Boot). Service `maintenanceRun@1` (plugin-api `maintenanceRun.ts`).
+  `GET /api/v1/admin/model-gateway` (Aufrufe ohne Kontext + Egress-Fälle
+  seit Boot; seit S3b das Verweigerte). Service `maintenanceRun@1` (plugin-api `maintenanceRun.ts`).
 - Aufrufstellen mit ihrem Kontext: `docs/model-gateway-call-sites.md`.
 
 ### Netz-Sandbox
@@ -10367,13 +10383,68 @@ Plugin-Release-Train (§13).
   Plugins, effektive Erlaubnis wie `ctx.http`, Modell-Hosts aus dem
   Provider-Katalog und den Literal-Hosts der Modell-Plugins). Zuordnung über
   den Aufrufstapel; installiert vor jeder Plugin-Aktivierung in `src/index.ts`.
-- Schalter `PLUGIN_EGRESS_MODE` (§10). Restrisiken: security-architecture §4.
+- Im Expand-Schritt Schalter `PLUGIN_EGRESS_MODE` (§10), seit S3b immer
+  `enforce`. Restrisiken: security-architecture §4.
 
 ### `claude-cli` (`run_loop`)
 
 - `packages/harness-orchestrator/src/cliProfile.ts` (`OMADIA_CLI_PROFILE`),
   `checkCliInit` verlangt exakt die angebotenen Loopback-Tools und einen
   verbundenen Loopback-Server, Kill Switch beendet den Kindprozess.
+
+### S3b: Contract-Schritt (#2053, plugin-api 1.83.0, 2026-11-20)
+
+Spec 2042 §5.10, Kriterium 15. Branch `feat/2042-s3b-plugin-contract`.
+
+- **Ausgemusterte Kinds:** Upload, Installation und Update eines Pakets vom
+  Kind `agent` oder `extension` → `422 package.retired_kind`
+  (`checkPluginBoundary`, ohne Ausnahme für bereits installierte Pakete) bzw.
+  `422 install.retired_kind` (`InstallService`). Die migrierte Version
+  (Capability, `system-module`, `model`) wird angenommen. Installierte Pakete
+  laufen als Altbestand weiter (`isLegacyKind`, web-ui: Chip
+  „Legacy“/„Altbestand“ und `LegacyKindNotice` auf der Plugin-Seite). Der
+  Store listet Registry- und lokale Pakete eines ausgemusterten Kinds als
+  `incompatible` (`src/routes/store.ts`). `dynamicAgentRuntime` bleibt bis
+  S3c.
+- **System-Modul per Update:** `archetypeUpdateReasons`
+  (`src/plugins/archetypeUpdateConfirmation.ts`) meldet
+  `becomes_system_module`, bestätigt mit demselben `confirm_archetype`;
+  `extension` → `system-module` braucht keine Bestätigung. Der
+  Voraussetzungs-Wizard (`RequiresWizard`) hält bei
+  `install.system_module_confirmation_required` an und fragt, statt den
+  Schritt scheitern zu lassen.
+- **Gateway und Sandbox immer `enforce`:** `MODEL_GATEWAY_MODE` und
+  `PLUGIN_EGRESS_MODE` entfernt (§10). `rawModelServiceAccess` kennt nur noch
+  `allow` (`model`-Plugin, mitgeliefertes System-Modul) und `refuse`.
+- **Aufrufstellen:** Feldklassifizierung als Operator-Job
+  `privacy_field_classification`, Boot-Graph-Backfill als Maintenance-Run
+  `graph_backfill`, KG-Embedding-Sweep nur mit `maintenanceRun@1`,
+  Langläufer-Tasks tragen den Kontext ihres Start-Turns, öffentliche
+  MCP-Tool-Aufrufe im Turn des gebundenen Agenten, Plugin-Builder-Auto-Fix
+  und Runtime-Smoke als Operator-Jobs (`plugin_builder_autofix`,
+  `plugin_builder_preview`), `decisionModel@1` (Jev) als `complete` im
+  Gateway. Die gemeldete Aufrufstelle überspringt die Kernel-Brücken. Details
+  und Lücken: `docs/model-gateway-call-sites.md`.
+- **Diskretion:** Tools ohne Wirkungsdeklaration (`unknown`) werden wie
+  `write` geprüft (S5 Option A), siehe „Diskretion“ unten.
+- **Neuer Service `agentEnvelope@1`** (`src/platform/agentEnvelopeService.ts`,
+  plugin-api `AGENT_ENVELOPE_SERVICE_NAME`, `AgentEnvelope`,
+  `AgentEnvelopeResolver`): `resolve(agentId)` liefert für `agents.id` den
+  Chat-Agenten genau dieses Agenten aus der Live-Registry, ohne Modell und
+  ohne Routing; unbekannt, nicht aktiviert oder nicht gebaut → `undefined`,
+  nie ein anderer Agent. Nur für System-Module
+  (`agent_envelope.not_system_module` sonst). Verbraucher: der
+  Canvas-Präsentationshelfer `@omadia/ui-orchestrator`.
+- **`piiFields` an der Tool-Registrierung:** `ToolRegistrationOptions.piiFields`
+  (`ctx.tools.register`/`registerHandler`) wird an der nativen
+  Tool-Registrierung getragen (`nativeToolRegistry.ts`) und mit jedem
+  internierten Ergebnis an den Privacy Shield gegeben (Orchestrator-Dispatch,
+  `ToolDispatchService`, `PrivacyToolResultV4Request.piiFields`). Leser:
+  `packages/harness-plugin-privacy-guard/src/v4/declaredPii.ts`; deklarierte
+  Spalten werden maskiert, egal was der Classifier oder ein
+  Nicht-personenbezogen-Eintrag sagt. Nur Pfade, die eine Zeilenspalte
+  nennen (`field`, `[].field`, `<items>[].field`, optional `[N]` am Ende),
+  tiefere Pfade werden ignoriert.
 
 
 ## Rückfrage statt Delegation + Diskretion (Epic #2042, S5: #2047 / #2079, 2026-11-20)
@@ -10462,11 +10533,8 @@ Leserkreis, Offenlegungsstufe).
   - schreibende Tool-Aufrufe gegen die Leserschaft der Integration, vor dem Aufruf.
     Wirkung eines Tools: `write` = Manifest `capabilities[].side_effects: write`,
     `writeCapabilities` (#542) oder MCP ohne `readOnlyHint` (gegen alle Labels
-    geprüft); `read`/`none` = nicht geprüft; nichts deklariert = `unknown`, nach
-    `UNKNOWN_TOOL_EFFECT_POLICY` (`restricted-only`: keine eingeschränkten Quellen,
-    keine klassifizierten Daten, aber ein fremder Gesprächskontext allein sperrt
-    nicht, damit Lese-Tools nach einem Recall weiterlaufen; nach dem Plugin-Train
-    auf `write`). Der Kern liefert die Deklaration über
+    geprüft); `read`/`none` = nicht geprüft; nichts deklariert = `unknown`, seit dem
+    Contract-Schritt (S3b) wie `write` gegen alle Labels geprüft. Der Kern liefert die Deklaration über
     `DiscretionPort.toolEffectOf` (`declaredToolEffect`, aus S3 übernommen);
   - die Antwort gegen den Leserkreis (nicht-streamend): bei Verstoß wird das
     Ergebnis neu aus Buchhaltungsfeldern gebaut (Antwort = Ersatzzeile; keine
@@ -10555,11 +10623,6 @@ Audit-Aktionen: `agent.consultation_change` (je Agent eine Zeile),
   Plugin-IDs); Offenlegungsstufen auf Capability-Grants (`agent_plugins`) fehlen.
 - `say` prüft pro Äußerung nur die Peer-Gate, die Grants nur beim Start (der
   Say-Service kennt die Teilnehmer des Laufs nicht).
-- **Undeklarierte Plugin-Tools** (`unknown`) gelten bis zum Plugin-Train als
-  `restricted-only`: ein Schreibzugriff über ein solches Tool, der nur Wissen aus
-  einem anderen Gespräch trägt, wird nicht gegen die Leserschaft geprüft.
-  Domain-Tools (`query_<plugin>`, Sub-Agent) gelten als `write`, sobald das Plugin
-  irgendein Tool als `write` deklariert (`pluginEffectOf`), sonst `unknown`.
 - **Memory-Reste:** memorables, die `query_knowledge_graph` liefert, und das
   Session-Briefing bringen keine Labels mit (nur der automatische Recall);
   Plugin-Memory (`ctx.memory`, `/memories/plugins/…`) wird außerhalb des

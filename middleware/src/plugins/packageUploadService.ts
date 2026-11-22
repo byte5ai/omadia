@@ -335,9 +335,9 @@ export class PackageUploadService {
       }
 
       // --- 5c. Agent/plugin boundary (spec 2042 §5.10) ---------------------
-      // No persona, speaker or kind `agent`. An update of a package that is
-      // installed already is still let in under the retired kind, so a live
-      // instance can take the migrated version of it.
+      // No persona, speaker or retired kind (`agent`, `extension`), not even
+      // as an update of a package installed under one: that one keeps
+      // running as legacy until it is rebuilt.
       const boundary = checkPluginBoundary({
         pluginId: plugin.id,
         kind: plugin.kind,
@@ -345,10 +345,6 @@ export class PackageUploadService {
         hasAgentMd:
           (await fileExists(path.join(packageRoot, 'AGENT.md'))) ||
           (await fileExists(path.join(packageRoot, 'agent.md'))),
-        installedKind:
-          this.deps.registry?.has(plugin.id) === true
-            ? this.deps.catalog.get(plugin.id)?.plugin.kind
-            : undefined,
       });
       if (boundary) {
         return fail(boundary.code, boundary.message, { field: boundary.field }, { ...boundary.params });

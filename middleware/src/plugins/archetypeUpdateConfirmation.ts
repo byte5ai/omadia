@@ -12,14 +12,23 @@
 //   moves_database       the new version keeps its tables in its own schema
 //                        (it no longer asks for the shared pool): the tables
 //                        are moved once and the installed version cannot
-//                        read them afterwards.
+//                        read them afterwards;
+//   becomes_system_module  (spec 2042 §5.10) the plugin was a capability,
+//                        channel or model and now is infrastructure of omadia
+//                        itself, which a fresh install confirms too. The
+//                        retired `extension` already is a system module, so
+//                        its move to `system-module` needs none.
 //
 // A plain version bump of an archetype plugin needs no confirmation.
 
-import type { Plugin, PluginArchetype } from '../api/admin-v1.js';
+import { effectiveKind, type Plugin, type PluginArchetype } from '../api/admin-v1.js';
 import { ownsItsDatabase } from '../platform/archetypeDatabase.js';
 
-export type ArchetypeUpdateReason = 'becomes_archetype' | 'descriptor_changed' | 'moves_database';
+export type ArchetypeUpdateReason =
+  | 'becomes_archetype'
+  | 'descriptor_changed'
+  | 'moves_database'
+  | 'becomes_system_module';
 
 type Described = Pick<Plugin, 'kind' | 'archetype'> & {
   readonly requires?: readonly string[];
@@ -40,6 +49,9 @@ function enforcedPart(archetype: PluginArchetype | undefined): string {
 }
 
 export function archetypeUpdateReasons(installed: Described, next: Described): ArchetypeUpdateReason[] {
+  if (effectiveKind(next.kind) === 'system-module') {
+    return effectiveKind(installed.kind) === 'system-module' ? [] : ['becomes_system_module'];
+  }
   if (next.kind !== 'archetype') return [];
   const reasons: ArchetypeUpdateReason[] = [];
   if (installed.kind !== 'archetype') reasons.push('becomes_archetype');

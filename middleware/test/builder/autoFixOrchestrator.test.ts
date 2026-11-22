@@ -116,7 +116,10 @@ interface Harness {
   orchestrator: AutoFixOrchestrator;
 }
 
-function makeHarness(opts?: { autoFixEnabled?: boolean }): Harness {
+function makeHarness(opts?: {
+  autoFixEnabled?: boolean;
+  runAsJob?: <T>(startedBy: string, work: () => Promise<T>) => Promise<T>;
+}): Harness {
   const bus = new SpecEventBus();
   const fired: Harness['fired'] = [];
   let autoFixEnabled = opts?.autoFixEnabled ?? true;
@@ -181,6 +184,7 @@ function makeHarness(opts?: { autoFixEnabled?: boolean }): Harness {
     builderAgent,
     defaultModel: 'claude-haiku-4-5-20251001',
     logger: () => {},
+    ...(opts?.runAsJob ? { runAsJob: opts.runAsJob } : {}),
   });
 
   return {
@@ -223,6 +227,21 @@ describe('AutoFixOrchestrator integration', () => {
       (e) => e.type === 'auto_fix_status' && e.phase === 'triggered',
     );
     assert.equal(triggers.length, 1);
+  });
+
+  it('spec 2042 §5.10: each fix turn runs as one operator job of the draft’s operator', async () => {
+    const jobs: string[] = [];
+    const h = makeHarness({
+      runAsJob: async (startedBy, work) => {
+        jobs.push(startedBy);
+        return work();
+      },
+    });
+    h.orchestrator.ensureSubscribed('d1', 'op@example.com');
+    h.bus.emit('d1', buildFailed([{ code: 'TS2322' }], 1));
+    await settle();
+    assert.deepEqual(jobs, ['op@example.com']);
+    assert.equal(h.fired.length, 1);
   });
 
   it('dedupes per-buildN: same buildN twice fires only one turn', async () => {

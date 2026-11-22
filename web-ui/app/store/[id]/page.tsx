@@ -19,6 +19,7 @@ import {
 import { getLocale, getTranslations } from 'next-intl/server';
 
 import { Markdown } from '../../_components/Markdown';
+import { LegacyKindNotice } from '../../_components/store/LegacyKindNotice';
 import { PluginVerdictBadge } from '../../_components/admin/PluginVerdictBadge';
 import { pickLocalized } from '../../_lib/localized';
 
@@ -428,6 +429,11 @@ export default async function PluginDetailPage({
 
         {/* Sidebar */}
         <aside className="space-y-8 lg:sticky lg:top-10 lg:self-start">
+          {/* Spec 2042 §5.10 — an installed plugin of a retired kind runs on
+              as legacy; say so, and what replaces it. */}
+          {plugin.install_state === 'installed' || plugin.install_state === 'update-available' ? (
+            <LegacyKindNotice kind={plugin.kind} />
+          ) : null}
           <InstallButton
             pluginId={plugin.id}
             pluginName={plugin.name}

@@ -104,6 +104,7 @@ import {
   BATCH_JOB_REGISTRY_SERVICE,
   MAINTENANCE_RUN_SERVICE_NAME,
   MODEL_PASSTHROUGH_SERVICE_NAME,
+  AGENT_ENVELOPE_SERVICE_NAME,
   OPERATOR_JOBS_SERVICE_NAME,
   TRANSCRIPTION_SERVICE_NAME,
   TURN_RECEIPT_STORE_SERVICE_NAME,
@@ -478,12 +479,16 @@ import { createOperatorTriggersRouter } from './routes/operatorTriggers.js';
 import { createAgentTemplatesRouter } from './routes/agentTemplates.js';
 import { createSetupOptionsResolver } from './plugins/setupOptionsResolver.js';
 import { createModelGatewayStatusRouter } from './routes/modelGatewayStatus.js';
+import { agentEnvelopeService } from './platform/agentEnvelopeService.js';
 import {
   BULK_PROMOTION,
   EMBEDDING_BACKFILL,
+  FIELD_CLASSIFICATION,
+  GRAPH_BACKFILL,
   ISSUE_PREVIEW,
   MEMORY_EDIT,
   MEMORY_REVIEW_DETECTION,
+  PLUGIN_BUILDER_AUTOFIX,
   PLUGIN_BUILDER_PREVIEW,
   PLUGIN_BUILDER_TURN,
   SKILL_VERIFICATION,
@@ -766,11 +771,10 @@ async function main(): Promise<void> {
   // plugin would miss those registrations.
   const nativeToolRegistry = new NativeToolRegistry();
   serviceRegistry.provide('nativeToolRegistry', nativeToolRegistry);
-  // Spec 2042 §5.10 — the model gateway's mode, set before any plugin can
-  // make a model call. In `observe` every call site found outside an
-  // execution context is logged once, so the last ones can be found before
-  // the contract step switches to `enforce`.
-  setModelGatewayMode(config.MODEL_GATEWAY_MODE);
+  // Spec 2042 §5.10 — the model gateway refuses every model call outside an
+  // execution context (the contract step; set before any plugin can make a
+  // model call). Each refused call site is logged once.
+  setModelGatewayMode('enforce');
   // Spec 2042 §5.10 — every Claude CLI spawn runs in an isolated profile
   // (HOME and CLAUDE_CONFIG_DIR = a directory holding only the login).
   try {
@@ -790,7 +794,7 @@ async function main(): Promise<void> {
   }
   onUncoveredModelCall((report) => {
     console.warn(
-      `[model-gateway] ${config.MODEL_GATEWAY_MODE === 'enforce' ? 'refused' : 'observed'} a '${report.operation}' call outside any execution context at ${report.site}`,
+      `[model-gateway] refused a '${report.operation}' call outside any execution context at ${report.site}`,
     );
   });
   // W2-2 (issue #543) — the store + orphan reaper backing deferred sub-agent
@@ -1327,14 +1331,14 @@ async function main(): Promise<void> {
   await installedRegistry.load();
   // Spec 2042 §5.10 — the network sandbox of installed plugins, before any
   // of them activates: their own requests through the global `fetch` and
-  // `node:http(s)` are checked against their network permission, and model
-  // providers are reached only through the gateway.
+  // `node:http(s)` are refused outside their network permission, and model
+  // providers are reached only through the gateway (enforced since S3b).
   installPluginEgressGuard({
-    mode: config.PLUGIN_EGRESS_MODE,
+    mode: 'enforce',
     source: createPluginEgressSource({ catalog: pluginCatalog, installedRegistry, llmProviderCatalog }),
     onObservation: (o) => {
       console.warn(
-        `[plugin-egress] ${o.mode === 'enforce' ? 'refused' : 'observed'}: plugin '${o.pluginId}' reached '${o.host}' (${o.reason})${o.mode === 'observe' ? '; refused once PLUGIN_EGRESS_MODE=enforce' : ''}`,
+        `[plugin-egress] ${o.mode === 'enforce' ? 'refused' : 'observed'}: plugin '${o.pluginId}' reached '${o.host}' (${o.reason})`,
       );
     },
   });
@@ -2778,6 +2782,15 @@ async function main(): Promise<void> {
     MODEL_PASSTHROUGH_SERVICE_NAME,
     systemModuleOnlyService(MODEL_PASSTHROUGH_SERVICE_NAME, kindOfPlugin, modelPassthrough.passthroughFor),
   );
+  // Spec 2042 §5.2 — one agent's envelope for a system module working on its
+  // behalf (the canvas presentation helper): a lookup in the live agent
+  // registry, resolved per call (the registry is rebuilt on reactivation).
+  serviceRegistry.provide(
+    AGENT_ENVELOPE_SERVICE_NAME,
+    agentEnvelopeService(kindOfPlugin, () =>
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+    ),
+  );
 
   // Spec 2042 §5.4 — the pool exists now: read the consultation offering
   // once, so `consult` is offered from the first turn (not only after the
@@ -3223,7 +3236,11 @@ async function main(): Promise<void> {
   // BACKFILL_AT_STARTUP=1 to re-enable for one-off corpus-import boots.
   if (process.env['BACKFILL_AT_STARTUP'] === '1') {
     try {
-      const backfill = await backfillGraph(memoryStore, knowledgeGraph);
+      // Spec 2042 §5.10 — the replay embeds every turn it ingests: one
+      // maintenance run (embed only), started by the boot.
+      const backfill = await modelWork.run(GRAPH_BACKFILL, 'system:boot', () =>
+        backfillGraph(memoryStore, knowledgeGraph),
+      );
       console.log(
         `[graph] backfill: scopes=${String(backfill.scopes)} files=${String(backfill.files)} turns=${String(backfill.turns)} skipped=${String(backfill.skippedFiles.length)}`,
       );
@@ -6728,9 +6745,12 @@ async function main(): Promise<void> {
       installedRegistry,
       catalog: pluginCatalog,
     });
+    // Spec 2042 §5.10 — every pass (boot, plugin lifecycle, the 6 h
+    // interval, the recompute route) is one operator job of the classifier,
+    // so its model calls run in a context with a budget and a deadline.
     const fieldClassificationScheduler = createFieldClassificationScheduler({
       run: () =>
-        recomputeFieldClassification({
+        modelWork.run(FIELD_CLASSIFICATION, 'system:auto-classifier', () => recomputeFieldClassification({
           store: fieldClassificationStore,
           serviceRegistry,
           readNonPersonalFields: () =>
@@ -6740,7 +6760,7 @@ async function main(): Promise<void> {
             ...(adminAudit ? { audit: adminAudit } : {}),
           },
           log: (msg) => console.log(msg),
-        }),
+        })),
       log: (msg) => console.warn(msg),
     });
     fieldClassificationTriggerRef = (reason) => fieldClassificationScheduler.trigger(reason);
@@ -7509,6 +7529,9 @@ async function main(): Promise<void> {
     logger: (...args: unknown[]) => {
       console.log('[builder]', ...args);
     },
+    // Spec 2042 §5.10 — a smoke run is a preview of the draft: one operator
+    // job of the Plugin Builder's preview kind.
+    runAsJob: (startedBy, work) => modelWork.run(PLUGIN_BUILDER_PREVIEW, startedBy, () => work()),
   });
 
   // ── Native issue-reporting wiring (concept plan) ─────────────────────────
@@ -7636,6 +7659,8 @@ async function main(): Promise<void> {
     logger: (...args: unknown[]) => {
       console.log('[builder/auto-fix]', ...args);
     },
+    // Spec 2042 §5.10 — each synthetic fix turn is one operator job.
+    runAsJob: (startedBy, work) => modelWork.run(PLUGIN_BUILDER_AUTOFIX, startedBy, () => work()),
   });
 
   let stopMdnsAdvertiser: (() => Promise<void> | undefined) | undefined;
