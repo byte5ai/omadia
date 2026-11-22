@@ -190,7 +190,9 @@ export async function typedReplyAsCardAnswer(
     cardAnswer:
       question.asPoll === true && parsed.value.kind === 'single_choice'
         ? { cardId: card.cardId, value: { optionId: parsed.value.optionId }, answererVerified: true }
-        : {
+        : question.asPoll === true && parsed.value.kind === 'multiple_choice'
+          ? { cardId: card.cardId, value: { optionIds: [...parsed.value.optionIds] }, answererVerified: true }
+          : {
             cardId: card.cardId,
             value: { answers },
             answers,
@@ -209,12 +211,17 @@ export function pollAsCard(poll: {
   readonly question: string;
   readonly options: readonly { id: string; label: string }[];
   readonly hint?: string;
+  readonly multipleAnswers?: boolean;
 }): QuestionCard {
   return {
     cardId: poll.pollId,
     title: poll.question,
     ...(poll.hint !== undefined ? { intro: poll.hint } : {}),
-    questions: [{ id: 'poll', kind: 'single_choice', label: poll.question, options: poll.options }],
+    questions: [
+      poll.multipleAnswers === true
+        ? { id: 'poll', kind: 'multiple_choice', label: poll.question, options: poll.options }
+        : { id: 'poll', kind: 'single_choice', label: poll.question, options: poll.options },
+    ],
   };
 }
 

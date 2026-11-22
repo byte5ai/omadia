@@ -17,8 +17,10 @@ import { InMemoryConversationMessageStore } from '../src/channels/conversationMe
 import { createConversationSendService } from '../src/channels/conversationSendService.js';
 import {
   InMemoryOpenCardQuestionStore,
+  pollAsCard,
   typedReplyAsCardAnswer,
 } from '../src/channels/openCardQuestions.js';
+import { readPoll } from '../src/channels/ownIdentitySend.js';
 import { CONVERSATION, ENGINE, MARA_KEY, messageEvent } from './_helpers/conversationMessagesFixture.js';
 
 const NOW = new Date('2026-11-20T10:00:00.000Z');
@@ -149,6 +151,29 @@ describe('typed reply → card_answer', () => {
     assert.equal(answer?.cardAnswer?.cardId, 'poll-1');
     assert.deepEqual(answer?.cardAnswer?.value, { optionId: 'sushi' });
     assert.equal(answer?.cardAnswer?.answers, undefined);
+  });
+
+  it('a poll for several answers (approval vote) answers as { optionIds }', async () => {
+    const card = pollAsCard({
+      pollId: 'poll-2',
+      question: 'Welche Termine gehen?',
+      options: [{ id: 'mo', label: 'Montag' }, { id: 'di', label: 'Dienstag' }, { id: 'mi', label: 'Mittwoch' }],
+      multipleAnswers: true,
+    });
+    assert.equal(card.questions[0]?.kind, 'multiple_choice');
+    const store = await openStore(card, 'poll-msg', true);
+    const answer = await typedReplyAsCardAnswer(store, ev({ text: '1, 3', replyToMessageId: 'poll-msg' }), LATER);
+    assert.deepEqual(answer?.cardAnswer?.value, { optionIds: ['mo', 'mi'] });
+    assert.equal(answer?.cardAnswer?.answers, undefined);
+  });
+
+  it('readPoll keeps multipleAnswers only when it is true', () => {
+    const base = { pollId: 'p', question: 'q', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] };
+    const multi = readPoll({ ...base, multipleAnswers: true });
+    assert.ok('poll' in multi && multi.poll.multipleAnswers === true);
+    const single = readPoll({ ...base, multipleAnswers: 'yes' });
+    assert.ok('poll' in single && !('multipleAnswers' in single.poll));
+    assert.equal(pollAsCard(base).questions[0]?.kind, 'single_choice');
   });
 });
 

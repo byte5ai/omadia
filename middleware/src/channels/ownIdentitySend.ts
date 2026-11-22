@@ -219,7 +219,7 @@ function isShortText(value: unknown): value is string {
  *  it is refused (nothing is posted then). */
 export function readPoll(raw: unknown): { poll: TargetedPoll } | { error: string } {
   if (raw === null || typeof raw !== 'object') return { error: 'poll must be an object' };
-  const poll = raw as { pollId?: unknown; question?: unknown; options?: unknown; hint?: unknown };
+  const poll = raw as { pollId?: unknown; question?: unknown; options?: unknown; hint?: unknown; multipleAnswers?: unknown };
   if (!isShortText(poll.pollId)) return { error: 'pollId must be 1..128 characters' };
   if (typeof poll.question !== 'string' || poll.question.trim().length === 0) {
     return { error: 'question must not be empty' };
@@ -245,6 +245,7 @@ export function readPoll(raw: unknown): { poll: TargetedPoll } | { error: string
       question: poll.question,
       options,
       ...(typeof poll.hint === 'string' && poll.hint.trim().length > 0 ? { hint: poll.hint } : {}),
+      ...(poll.multipleAnswers === true ? { multipleAnswers: true } : {}),
     },
   };
 }
