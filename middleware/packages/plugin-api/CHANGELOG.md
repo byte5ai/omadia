@@ -8,15 +8,14 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.85.0 — 2026-11-22
+## 1.84.0 — 2026-11-22
 
-Additive (spec 2043 §5.3, review of omadia-channel-telegram#13). Follows
-1.84.0 (omadia#2157); if this lands first, renumber.
+Additive (spec 2043 §5.3, review of omadia-channel-telegram#13).
 
 ### Added
 
 - **`SendPoll.multipleAnswers`** (and `TargetedPoll.multipleAnswers`,
-  channel-sdk 0.3.11): a poll for an approval vote, where several options may
+  channel-sdk 0.3.10): a poll for an approval vote, where several options may
   be chosen. A channel posts a multi-answer poll and reports `{ optionIds }`;
   one that cannot must not post a single-choice poll for it, so one tap never
   replaces a written multi-option ballot. A poll that goes out as text keeps
