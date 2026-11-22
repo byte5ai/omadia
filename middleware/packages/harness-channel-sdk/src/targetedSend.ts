@@ -39,6 +39,10 @@ export interface TargetedPoll {
   /** 2..6 options, ids unique. */
   options: readonly { id: string; label: string }[];
   hint?: string;
+  /** Several options may be chosen (an approval vote). A channel posts it as
+   *  a multi-answer poll and reports `{ optionIds }`; one that cannot, does not
+   *  post a single-choice poll for it. Absent = one option. */
+  multipleAnswers?: boolean;
 }
 
 export interface TargetedMention {

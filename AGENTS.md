@@ -52,6 +52,12 @@ und gibt sie als `AgentProfile.archetypeSettings` ans Plugin; nicht gesetzt = In
 Einstellung des Plugins. Readiness ist pro Kanal-Identität (`own_identity_channels`), Teams
 wird nur für Teams geprüft. Persona-Grenzen bleiben im Kernel (`services/facilitatorContract.ts`).
 
+**Kanal-getriggerte Workflows (ADR 0028):** Eine Nachricht an einen Bot startet nur Workflows,
+deren Agent-Schritte alle als der Agent dieses Bots laufen (`ConductorEventRouter` mit
+`addressedAgentForEvent`, `channelBotOwnership.ts`). Andere werden übersprungen und geloggt,
+statt einen Lauf zu starten, den `assertChannelOriginAllows` am Agent-Schritt ohnehin ablehnt.
+Die Schritt-Regel bleibt als zweite Linie.
+
 ## Task-Routing: welches Werkzeug für welche Aufgabengröße
 
 Bevor eine Aufgabe begonnen wird: welche Größenordnung hat sie, und passt eines der vorhandenen `scripts/*.workflow.mjs`-Pipelines besser als Ad-hoc-Arbeit in der aktuellen Session?

@@ -3,7 +3,11 @@ import { randomUUID } from 'node:crypto';
 import type { Express, RequestHandler } from 'express';
 import type { Pool } from 'pg';
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
-import { speakingIdentityFor, type DefaultChannelBotKey } from './channelBotOwnership.js';
+import {
+  addressedAgentForEvent,
+  speakingIdentityFor,
+  type DefaultChannelBotKey,
+} from './channelBotOwnership.js';
 import type { JsonObject, KnownRefs } from '@omadia/conductor-core';
 
 import type { RoleHolderRegistry, RoleHolderSource } from '@omadia/channel-sdk';
@@ -554,7 +558,19 @@ export async function wireConductor(deps: {
   ephemeralReaper.start();
 
   // Event router — a domain event starts every subscribed workflow's run (US4).
-  const eventRouter = new ConductorEventRouter({ workflowStore, executor, log });
+  const eventRouter = new ConductorEventRouter({
+    workflowStore,
+    executor,
+    // Same owner resolution as the step-level origin rule, so a workflow that
+    // would be refused at its agent step is not started for that message.
+    addressedAgent: (eventId, payload) => {
+      const registry = deps.getRegistry();
+      return registry
+        ? addressedAgentForEvent(registry, eventId, payload, deps.defaultChannelBotKey)
+        : undefined;
+    },
+    log,
+  });
 
   // Template surface (#429 bundled files + #478 DB store): one composite,
   // viewer-scoped catalog over both, plus the plugin registration seam.
