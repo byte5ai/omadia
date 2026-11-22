@@ -62,6 +62,13 @@ export interface SendPoll {
   options: readonly { id: string; label: string }[];
   /** Optional line under the question. */
   hint?: string;
+  /** Several options may be chosen (an approval vote). Absent or `false` =
+   *  one option. A channel that cannot offer several answers must not post a
+   *  single-choice poll for it (one tap would replace a written multi-option
+   *  ballot): it posts the question as text. An answer then carries
+   *  `{ optionIds }` instead of `{ optionId }`. Kernels before this field
+   *  drop it. */
+  multipleAnswers?: boolean;
 }
 
 export interface ConversationSendMention {

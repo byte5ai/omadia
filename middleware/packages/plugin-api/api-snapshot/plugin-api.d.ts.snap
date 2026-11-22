@@ -570,6 +570,7 @@ id: string;
 label: string;
 }[];
 hint?: string;
+multipleAnswers?: boolean;
 }
 export interface ConversationSendMention {
 user: string;

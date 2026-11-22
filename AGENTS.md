@@ -52,6 +52,12 @@ und gibt sie als `AgentProfile.archetypeSettings` ans Plugin; nicht gesetzt = In
 Einstellung des Plugins. Readiness ist pro Kanal-Identität (`own_identity_channels`), Teams
 wird nur für Teams geprüft. Persona-Grenzen bleiben im Kernel (`services/facilitatorContract.ts`).
 
+**Kanal-getriggerte Workflows (ADR 0028):** Eine Nachricht an einen Bot startet nur Workflows,
+deren Agent-Schritte alle als der Agent dieses Bots laufen (`ConductorEventRouter` mit
+`addressedAgentForEvent`, `channelBotOwnership.ts`). Andere werden übersprungen und geloggt,
+statt einen Lauf zu starten, den `assertChannelOriginAllows` am Agent-Schritt ohnehin ablehnt.
+Die Schritt-Regel bleibt als zweite Linie.
+
 **Execution-Scopes (ADR 0030, #2090):** Der Kernel begrenzt `closing`-Scopes selbst: 30 Tage ab
 dem Ereignis (`eventAt` beim Öffnen, nicht ab dem Öffnen), nur `CLOSING_SCOPE_PURPOSES` (nie
 Moderation). Der Deadline-Wait eines `active`-Scopes braucht einen offenen `closing`-Scope
