@@ -23,6 +23,9 @@ import { CONVERSATION, ENGINE, MARA_KEY, messageEvent } from './_helpers/convers
 
 const NOW = new Date('2026-11-20T10:00:00.000Z');
 const LATER = new Date('2026-11-20T10:30:00.000Z');
+// The in-memory store drops questions expired by the wall clock when one is
+// registered, so an open question must stay open in real time too.
+const OPEN_UNTIL = new Date('2099-01-01T00:00:00.000Z');
 const READY = { ready: true, installed: true, canReadAllMessages: true, canPost: true, missing: [] };
 
 const ranking: QuestionCard = {
@@ -62,7 +65,7 @@ async function openStore(card: QuestionCard, messageId = 'card-msg', asPoll = fa
     agentSlug: 'mara',
     card,
     ...(asPoll ? { asPoll: true } : {}),
-    expiresAt: new Date('2026-11-21T10:00:00.000Z'),
+    expiresAt: OPEN_UNTIL,
   });
   return store;
 }
@@ -108,7 +111,7 @@ describe('typed reply → card_answer', () => {
       messageId: 'card-msg-2',
       agentSlug: 'mara',
       card: { ...ranking, cardId: 'rank-2' },
-      expiresAt: new Date('2026-11-21T10:00:00.000Z'),
+      expiresAt: OPEN_UNTIL,
     });
     assert.equal(await typedReplyAsCardAnswer(two, ev({ text: '3,2,1', addressedToBot: true }), LATER), undefined, 'two open: only a reply says which');
   });
@@ -124,7 +127,7 @@ describe('typed reply → card_answer', () => {
     const store = await openStore(ranking);
     assert.equal(await typedReplyAsCardAnswer(store, ev({ text: '2,1,3', replyToMessageId: 'card-msg', forwarded: true }), LATER), undefined);
     assert.equal(
-      await typedReplyAsCardAnswer(store, ev({ text: '2,1,3', replyToMessageId: 'card-msg' }), new Date('2026-11-22T00:00:00.000Z')),
+      await typedReplyAsCardAnswer(store, ev({ text: '2,1,3', replyToMessageId: 'card-msg' }), new Date(OPEN_UNTIL.getTime() + 1)),
       undefined,
     );
     assert.equal(
@@ -178,7 +181,7 @@ describe('the hub stores the answer instead of the message', () => {
       messageId: 'card-msg',
       agentSlug: 'mara',
       card: ranking,
-      expiresAt: new Date('2026-11-21T10:00:00.000Z'),
+      expiresAt: OPEN_UNTIL,
     });
     assert.equal((await h.service.subscribe(h.scope, { mode: 'all' })).outcome, 'subscribed');
     await h.hub.ingest(messageEvent({ messageId: 'u1', text: '2,1,3', replyToMessageId: 'card-msg' }));
@@ -200,7 +203,7 @@ describe('the hub stores the answer instead of the message', () => {
       messageId: 'card-msg',
       agentSlug: 'mara',
       card: ranking,
-      expiresAt: new Date('2026-11-21T10:00:00.000Z'),
+      expiresAt: OPEN_UNTIL,
     });
     await h.service.subscribe(h.scope, { mode: 'all' });
     assert.deepEqual(await h.hub.report(messageEvent({ messageId: 'u1', text: '2,1,3', replyToMessageId: 'card-msg' })), { answeredCard: true });
@@ -219,7 +222,7 @@ describe('the hub stores the answer instead of the message', () => {
       messageId: 'card-msg',
       agentSlug: 'mara',
       card: ranking,
-      expiresAt: new Date('2026-11-21T10:00:00.000Z'),
+      expiresAt: OPEN_UNTIL,
     });
     // subscribed in `addressed` mode, and the reply does not address the bot
     await h.service.subscribe(h.scope, { mode: 'addressed' });
@@ -234,7 +237,7 @@ describe('the hub stores the answer instead of the message', () => {
       messageId: 'card-msg',
       agentSlug: 'nora', // another agent's question: identityFor('nora') is not the receiver
       card: ranking,
-      expiresAt: new Date('2026-11-21T10:00:00.000Z'),
+      expiresAt: OPEN_UNTIL,
     });
     await h.service.subscribe(h.scope, { mode: 'all' });
     assert.deepEqual(await h.hub.report(messageEvent({ messageId: 'u1', text: '2,1,3', replyToMessageId: 'card-msg', addressedToBot: true })), { answeredCard: false });
@@ -248,7 +251,7 @@ describe('the hub stores the answer instead of the message', () => {
       messageId: 'card-msg',
       agentSlug: 'mara',
       card: ranking,
-      expiresAt: new Date('2026-11-21T10:00:00.000Z'),
+      expiresAt: OPEN_UNTIL,
     };
     const addressed = setup();
     await addressed.openQuestions.register(q);
@@ -267,7 +270,7 @@ describe('the hub stores the answer instead of the message', () => {
       messageId: 'card-msg',
       agentSlug: 'mara',
       card: ranking,
-      expiresAt: new Date('2026-11-21T10:00:00.000Z'),
+      expiresAt: OPEN_UNTIL,
     });
     await h.service.subscribe(h.scope, { mode: 'all' });
     const reply = messageEvent({ messageId: 'u1', text: '2,1,3', replyToMessageId: 'card-msg' });
