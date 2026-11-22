@@ -58,6 +58,15 @@ deren Agent-Schritte alle als der Agent dieses Bots laufen (`ConductorEventRoute
 statt einen Lauf zu starten, den `assertChannelOriginAllows` am Agent-Schritt ohnehin ablehnt.
 Die Schritt-Regel bleibt als zweite Linie.
 
+**Facilitator-Abnahme und Audio (ADR 0029, ADR 0031, #2068):** Die Abnahmematrix für Spec B §9
+(Kriterien 1–64) liegt in `omadia-agent-facilitator` (`docs/acceptance-matrix.md`, geprüft von
+`scripts/check-acceptance-matrix.mjs` in dessen CI). Wer ein Kriterium ändert oder einen
+Kernel-Test aus der Matrix umbenennt, passt die Matrix an. #584 (Audio-Meeting-Source: Sidecar
+als Tenant-User mit eigener Lizenz pro Agent, GPT-Live-Transcribe) gehört seit der Owner-
+Entscheidung vom 2026-11-22 nicht mehr zum Epic #2043, sondern ist ein eigenes Folge-Vorhaben.
+`transcription@1` und der Capability-Snapshot pro Sitzung (#2077) stehen bereits. Eine Audio-
+Quelle deklariert nur `transcribed_speech`; Facilitator und Engine ändern sich dafür nicht.
+
 ## Task-Routing: welches Werkzeug für welche Aufgabengröße
 
 Bevor eine Aufgabe begonnen wird: welche Größenordnung hat sie, und passt eines der vorhandenen `scripts/*.workflow.mjs`-Pipelines besser als Ad-hoc-Arbeit in der aktuellen Session?
