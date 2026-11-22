@@ -10,7 +10,7 @@ implements, is a major.
 
 ## 1.84.0 — 2026-11-21
 
-Additive (#2090, spec 2043 §0, §5.2, §5.6; ADR 0028): the kernel bounds a
+Additive (#2090, spec 2043 §0, §5.2, §5.6; ADR 0030): the kernel bounds a
 closing and the deadline wait itself, instead of trusting the plugin's
 bookkeeping.
 

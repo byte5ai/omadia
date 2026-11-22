@@ -52,7 +52,7 @@ und gibt sie als `AgentProfile.archetypeSettings` ans Plugin; nicht gesetzt = In
 Einstellung des Plugins. Readiness ist pro Kanal-Identität (`own_identity_channels`), Teams
 wird nur für Teams geprüft. Persona-Grenzen bleiben im Kernel (`services/facilitatorContract.ts`).
 
-**Execution-Scopes (ADR 0028, #2090):** Der Kernel begrenzt `closing`-Scopes selbst: 30 Tage ab
+**Execution-Scopes (ADR 0030, #2090):** Der Kernel begrenzt `closing`-Scopes selbst: 30 Tage ab
 dem Ereignis (`eventAt` beim Öffnen, nicht ab dem Öffnen), nur `CLOSING_SCOPE_PURPOSES` (nie
 Moderation). Der Deadline-Wait eines `active`-Scopes braucht einen offenen `closing`-Scope
 desselben Prozesses und endet spätestens mit dessen absolutem Limit. Die Teile eines Closings

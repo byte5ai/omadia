@@ -36,7 +36,7 @@ changelog.
 
 ## [Unreleased]
 
-### Changed — ADR-0028: the kernel bounds closing scopes and the deadline wait (#2090)
+### Changed — ADR-0030: the kernel bounds closing scopes and the deadline wait (#2090)
 
 - `@omadia/plugin-api` 1.84.0, `@omadia/channel-sdk` 0.3.10 (additive types, stricter
   enforcement): a `closing` scope counts its 30 days from `eventAt` (when the closing event

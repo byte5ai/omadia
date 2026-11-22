@@ -6043,7 +6043,7 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
-- **#2090 Reply-Referenz in privaten Chats (ADR-0028):** Kernel und Facilitator binden
+- **#2090 Reply-Referenz in privaten Chats (ADR-0030):** Kernel und Facilitator binden
   private Antworten über `TurnOrigin.replyToMessageId` an die Erinnerung. Kein Kanal-Adapter
   füllt das Feld bisher (Teams: zitierte Antwort/`replyToId`, Slack `thread_ts`, Discord
   `message_reference`, Telegram `reply_to_message`); bis dahin greift die Rückfrage mit

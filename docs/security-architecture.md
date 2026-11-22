@@ -7131,7 +7131,7 @@ text. Streaming releases complete sentences only, each checked with all text
 so far. The guard is a strong guard with test-defined coverage, not a proof
 (ADR-0013).
 
-## 10za. Execution scopes bound closings and the deadline wait (#2090, ADR-0028)
+## 10za. Execution scopes bound closings and the deadline wait (#2090, ADR-0030)
 
 An archetype plugin's actions are authorized from execution scopes (§0 of spec 2043). Three
 rules are the kernel's, not the plugin's bookkeeping:
