@@ -76,6 +76,12 @@ const TEMPLATES: Record<SystemNoticeCode, Record<NoticeLocale, Template>> = {
     de: (a) => `Das ist der eigene Bot von ${a}: Hier antwortet immer ${a}. Andere Agenten erreichst du über ihren eigenen Bot oder den gemeinsamen Bot.`,
     en: (a) => `This is ${a}'s own bot: ${a} always answers here. Reach other agents through their own bot or the shared bot.`,
   },
+  archetype_plugin_removed: {
+    de: (a) =>
+      `${a} steht nicht mehr zur Verfügung: Das Plugin für die Rolle von ${a} wurde entfernt. Laufende Abläufe von ${a} wurden abgebrochen; ausstehende Abschlussnachrichten werden nicht mehr gesendet. Bitte wende dich an deinen Administrator.`,
+    en: (a) =>
+      `${a} is no longer available: the plugin for ${a}'s role was removed. ${a}'s running processes were aborted; pending closing messages will not be sent. Please contact your administrator.`,
+  },
   identity_guard_unavailable: {
     de: (a) => `Die Antwort von ${a} wurde zurückgehalten, weil die Identitätsprüfung nicht abgeschlossen werden konnte. Bitte versuche es erneut.`,
     en: (a) => `${a}'s answer was withheld because the identity check could not be completed. Please try again.`,

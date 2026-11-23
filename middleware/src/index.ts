@@ -142,7 +142,7 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, MemberBaselineGrantStore, resolveScopedBundle } from '@omadia/orchestrator';
+import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
 import {
   buildSystemNotice,
   ChannelResolver as ManagementChannelResolver,
@@ -466,7 +466,8 @@ import { LinkRequestRouter } from './channels/linkRequestRouter.js';
 import { PrivateMessageRouter } from './channels/privateMessageRouter.js';
 import { createArchetypeDatabase } from './platform/archetypeDatabase.js';
 import { pluginRuntimeOf } from './plugins/pluginRuntimeOf.js';
-import { createAgentEndOfService, logOwedSystemNotice } from './platform/agentEndOfService.js';
+import { createAgentEndOfService } from './platform/agentEndOfService.js';
+import { createSystemNoticeOutbox } from './platform/systemNoticeOutbox.js';
 import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
 import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
 import { createOperatorAgentArchetypeSettingsRouter } from './routes/operatorAgentArchetypeSettings.js';
@@ -1352,9 +1353,25 @@ async function main(): Promise<void> {
     log: (m) => console.log(m),
   });
   // #2088 — end of service: what ends before an agent is disabled or deleted
-  // and before its archetype plugin is removed. `system` notices are owed and
-  // not sent yet (#2045): the seam logs them.
-  const emitSystemNotice = logOwedSystemNotice((m) => console.log(m));
+  // and before its archetype plugin is removed. Each affected home
+  // conversation gets one `system` notice through the channel's shared bot,
+  // kept in an outbox so a restart still delivers it (criterion 37).
+  const systemNoticeOutbox = createSystemNoticeOutbox({
+    pool: () => serviceRegistry.get<Pool>('graphPool'),
+    send: async (channelType, conversationId, message) => {
+      const provider = conversationSendRegistry.get(channelType);
+      if (!provider) return { delivered: false, reason: `no conversation sender for channel '${channelType}'` };
+      const out = await provider.sendToConversation(conversationId, message);
+      return out.outcome === 'delivered' ? { delivered: true } : { delivered: false, reason: `${out.code}: ${out.message}` };
+    },
+    locale: () => {
+      const raw = installedRegistry.get('@omadia/orchestrator')?.config?.['ai_disclosure_locale'];
+      return typeof raw === 'string' ? raw : undefined;
+    },
+    log: (m) => console.log(m),
+  });
+  systemNoticeOutbox.start(60_000);
+  const emitSystemNotice = (notice: SystemNoticeRequest): Promise<void> => systemNoticeOutbox.emit(notice);
   const agentEndOfService = createAgentEndOfService({
     // Only the plugin that delivers the archetype is asked; the same service
     // name provided by anybody else is not its process service.
