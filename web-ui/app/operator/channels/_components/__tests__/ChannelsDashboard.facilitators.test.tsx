@@ -12,7 +12,7 @@ import { ChannelsDashboard } from '../ChannelsDashboard';
  *
  * The kernel refuses it (409 `facilitator_omission` / `channel_binding`), so
  * the dropdown does not offer a facilitator, whether the page names it by
- * slug or the route reports its `kind`. If the refusal still arrives (a stale
+ * slug or the route reports its archetype. If the refusal still arrives (a stale
  * page, an agent list that could not be read), it is a sentence.
  */
 
@@ -36,11 +36,13 @@ function dto(agents: ChannelsListDto['agents']): ChannelsListDto {
         label: 'Project Group',
         origin_plugin_id: '@omadia/channel-teams',
         bound_agent_slug: null,
+        bound_agent_status: null,
+        bound_agent_name: null,
         stale: false,
       },
     ],
     agents,
-    fallback_slug: 'hr',
+    instance_default_slug: 'hr',
     directory_types: ['teams'],
   };
 }
@@ -67,12 +69,12 @@ describe('ChannelsDashboard — facilitators (#2066)', () => {
     expect(options()).toEqual(['', 'hr']);
   });
 
-  it('does not offer a facilitator the route reports by kind', () => {
+  it('does not offer a facilitator the route reports by archetype', () => {
     renderWithIntl(
       <ChannelsDashboard
         initial={dto([
-          { slug: 'hr', name: 'HR', kind: 'standard' },
-          { slug: 'mona', name: 'Mona', kind: 'facilitator' },
+          { slug: 'hr', name: 'HR', archetype: 'standard' },
+          { slug: 'mona', name: 'Mona', archetype: 'facilitator' },
         ])}
       />,
     );

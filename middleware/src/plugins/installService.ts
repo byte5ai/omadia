@@ -1,6 +1,7 @@
 import { extractFromJsonFile } from './setupJsonFile.js';
 import { parseBooleanSetupValue, parseIntegerSetupValue } from './setupFieldValue.js';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -21,6 +22,7 @@ import type {
   InstallSetupSchema,
   SetupEnumOption,
 } from '../api/admin-v1.js';
+import { isInstallableKind } from '../api/admin-v1.js';
 import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
 import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
 import type { SecretVault } from '../secrets/vault.js';
@@ -41,6 +43,7 @@ import {
 } from './installedRegistry.js';
 import type { BuiltInOptOutStore } from './builtInOptOuts.js';
 import { checkCoreCompat } from './coreCompat.js';
+import { checkPluginBoundary } from './pluginBoundary.js';
 import { readGrantGap } from './grantGap.js';
 import { extractTemplateDeclarations } from './manifestLoader.js';
 import { uninstallVoidsForceGuarded } from './privacyPosture.js';
@@ -100,7 +103,7 @@ export interface InstallServiceDeps {
    *  `process.env`. Injectable for tests. */
   env?: NodeJS.ProcessEnv;
   /** Called after a successful `configure()` — e.g. to activate an uploaded
-   *  agent via DynamicAgentRuntime. Errors in the hook do not cause the
+   *  plugin in its runtime. Errors in the hook do not cause the
    *  installation to be marked `failed`: registry entries are already
    *  persisted and the agent counts as installed. The caller must handle
    *  hook errors separately. */
@@ -263,6 +266,36 @@ export class InstallService {
       });
     }
 
+    // Spec 2042 §5.10, criterion 15 — the kinds `agent` and `extension` are
+    // retired: never installed anew. A package uploaded before the boundary
+    // existed may still sit in the store; it stays there, uninstalled.
+    if (!isInstallableKind(entry.plugin.kind)) {
+      throw new InstallError(
+        'install.retired_kind',
+        entry.plugin.kind === 'agent'
+          ? `'${pluginId}' is of the retired kind 'agent'; a plugin delivers capabilities and may ship agent templates, never an agent of its own`
+          : `'${pluginId}' is of the retired kind '${entry.plugin.kind}'; install a version that declares 'system-module' or 'model'`,
+        422,
+        { kind: entry.plugin.kind },
+      );
+    }
+
+    // Spec 2042 §5.10, criterion 15 — nor does a persona or speaker of its
+    // own come in at install. Ingest refuses such a package, but one uploaded
+    // before the boundary existed may still sit in the store. Packages that
+    // ship in the image are kernel code and not checked here.
+    if (entry.origin !== 'bundled') {
+      const boundary = checkPluginBoundary({
+        pluginId,
+        kind: entry.plugin.kind,
+        manifest: entry.manifest,
+        hasAgentMd: hasAgentMdFile(entry.source_path),
+      });
+      if (boundary) {
+        throw new InstallError('install.persona_declared', boundary.message, 422, { ...boundary.params });
+      }
+    }
+
     // #2088 — an archetype plugin adds a new kind of agent to the instance:
     // what agents of it may do and never get is decided by its descriptor,
     // not by per-agent grants. That is installed only on an explicit
@@ -274,6 +307,18 @@ export class InstallService {
         `'${pluginId}' adds the agent archetype '${entry.plugin.archetype?.id ?? '?'}' to this instance; confirm the install explicitly`,
         409,
         { archetype: entry.plugin.archetype ?? null },
+      );
+    }
+    // Spec 2042 §5.10 — a system module is infrastructure of omadia itself;
+    // it is installed on an explicit confirmation, like an archetype. The
+    // same flag carries both confirmations: the operator confirmed exactly
+    // the kind the refusal named.
+    if (entry.plugin.kind === 'system-module' && opts.confirmedArchetype !== true) {
+      throw new InstallError(
+        'install.system_module_confirmation_required',
+        `'${pluginId}' is a system module (infrastructure of omadia itself); confirm the install explicitly`,
+        409,
+        { kind: entry.plugin.kind },
       );
     }
 
@@ -1143,6 +1188,14 @@ export class InstallService {
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
+
+/** Whether the package of `manifestPath` holds the persona file of the
+ *  retired agent plugins. A catalog entry without a source path has none. */
+function hasAgentMdFile(manifestPath: string | undefined): boolean {
+  if (manifestPath === undefined || manifestPath.length === 0) return false;
+  const dir = path.dirname(manifestPath);
+  return existsSync(path.join(dir, 'AGENT.md')) || existsSync(path.join(dir, 'agent.md'));
+}
 
 export class InstallError extends Error {
   constructor(

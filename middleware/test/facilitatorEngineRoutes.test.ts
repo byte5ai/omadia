@@ -18,7 +18,6 @@ describe('facilitation engine: operator routes', () => {
     h.engineState = undefined;
     assert.deepEqual(await status(), {
       state: 'bound',
-      capability: 'facilitationEngine@1',
       plugin_id: ENGINE,
       plugin_ids: [ENGINE],
       version: null,
@@ -40,13 +39,6 @@ describe('facilitation engine: operator routes', () => {
     h.engineState = { pluginId: '@acme/other', version: '9', available: true };
     assert.equal((await status())['reason_code'], 'not_reported');
 
-    // Declared, but the operator has not granted it SQL: a candidate, named.
-    h.sqlGranted = false;
-    assert.deepEqual(
-      [(await status())['state'], (await status())['plugin_id'], (await status())['available'], (await status())['reason_code']],
-      ['ungranted', ENGINE, false, 'ungranted'],
-    );
-    h.sqlGranted = true;
     h.installed = [{ id: ENGINE, status: 'inactive' }];
     assert.equal((await status())['reason_code'], 'inactive');
     h.installed = [{ id: ODOO, status: 'active' }];
@@ -64,23 +56,17 @@ describe('facilitation engine: operator routes', () => {
     assert.equal(JSON.stringify(two).includes('installed'), false, 'no English sentence in the answer');
   });
 
-  it('an engine installed without its grant is errored, and is still reported as waiting for the grant', async () => {
+  it('an engine that did not start is still the engine, and reported as not started', async () => {
     const status = async (): Promise<Record<string, unknown>> => (await h.call('GET', '/agents/facilitation-engine')).json;
-    // What a real install without the SQL grant leaves behind: the install job
-    // ends `installed_missing_permissions` and the registry entry is errored.
+    // What an install without the SQL grant leaves behind: the registry entry
+    // is errored. Not "none": the operator has to be told that the installed
+    // engine did not start. The grant itself is no longer a state of its own.
     h.installed = [{ id: ENGINE, status: 'errored' }];
-    h.sqlGranted = false;
     assert.deepEqual(
-      [(await status())['state'], (await status())['plugin_id'], (await status())['reason_code']],
-      ['ungranted', ENGINE, 'ungranted'],
-      'not "none": the operator has to be told to grant it',
+      [(await status())['state'], (await status())['plugin_id'], (await status())['available'], (await status())['reason_code']],
+      ['bound', ENGINE, false, 'inactive'],
     );
-    // Granted, but still errored for another reason: bound, and not usable.
-    h.sqlGranted = true;
-    assert.deepEqual(
-      [(await status())['state'], (await status())['available'], (await status())['reason_code']],
-      ['bound', false, 'inactive'],
-    );
+    assert.ok(!('capability' in (await status())), 'the capability no longer identifies the engine');
     // A healthy engine beside an errored leftover is not ambiguous.
     h.installed = [
       { id: ENGINE, status: 'active' },
@@ -90,16 +76,15 @@ describe('facilitation engine: operator routes', () => {
     assert.deepEqual([(await status())['state'], (await status())['plugin_id']], ['bound', ENGINE]);
   });
 
-  it('a plugin that only declares the capability is not the engine until the operator grants it SQL', async () => {
-    h.sqlGranted = false;
-    // Nothing is attached at create…
-    await h.call('POST', '/agents', { slug: 'nora', name: 'Nora', kind: 'facilitator' });
-    assert.deepEqual(h.writes, []);
-    // …and it cannot be granted by hand either; the refusal says what to do.
+  it('a plugin that only lists `facilitationEngine@1` under provides is not the engine (#2088, K6)', async () => {
+    // The form of engine plugins before the archetype kind: found nowhere now.
+    h.archetypePlugins = {};
+    const status = (await h.call('GET', '/agents/facilitation-engine')).json;
+    assert.deepEqual([status['state'], status['plugin_id'], status['reason_code']], ['none', null, 'none']);
+    await h.call('POST', '/agents', { slug: 'nora', name: 'Nora', archetype: 'facilitator' });
+    assert.deepEqual(h.writes, [], 'nothing is attached');
     const res = await h.call('PATCH', '/agents/mara/plugins', { id: ENGINE, enabled: true });
-    h.assertRefused(res, 'plugin_grant', /declares the facilitation engine but has no database grant yet/);
-    h.sqlGranted = true;
-    assert.equal((await h.call('PATCH', '/agents/mara/plugins', { id: ENGINE, enabled: true })).status, 200);
+    h.assertRefused(res, 'plugin_grant', /no facilitation engine plugin is installed/);
   });
 
   it('the slug of a static route is reserved', async () => {
@@ -109,42 +94,49 @@ describe('facilitation engine: operator routes', () => {
     assert.deepEqual(h.writes, []);
   });
 
-  it('creates a facilitator and reports the kind in create, list and picker', async () => {
-    const created = await h.call('POST', '/agents', { slug: 'nora', name: 'Nora', kind: 'facilitator' });
+  it('creates a facilitator and reports the archetype in create, list and picker', async () => {
+    const created = await h.call('POST', '/agents', { slug: 'nora', name: 'Nora', archetype: 'facilitator' });
     assert.equal(created.status, 201);
-    assert.equal(created.json['kind'], 'facilitator');
+    assert.equal(created.json['archetype'], 'facilitator');
     const plain = await h.call('POST', '/agents', { slug: 'sales', name: 'Sales' });
-    assert.equal(plain.json['kind'], 'standard');
+    assert.equal(plain.json['archetype'], 'standard');
     const bogus = await h.call('POST', '/agents', { slug: 'x', name: 'X', kind: 'moderator' });
-    assert.equal(bogus.status, 400);
+    assert.equal(bogus.status, 409);
 
     // #2088 — `archetype` is the name; both are returned while `kind` exists.
     assert.equal(created.json['archetype'], 'facilitator');
     assert.equal(plain.json['archetype'], 'standard');
     const byArchetype = await h.call('POST', '/agents', { slug: 'ida', name: 'Ida', archetype: 'facilitator' });
-    assert.deepEqual([byArchetype.status, byArchetype.json['archetype'], byArchetype.json['kind']], [201, 'facilitator', 'facilitator']);
+    assert.deepEqual([byArchetype.status, byArchetype.json['archetype']], [201, 'facilitator']);
+    assert.ok(!('kind' in byArchetype.json), 'the predecessor field is gone from the answer');
     const unregistered = await h.call('POST', '/agents', { slug: 'y', name: 'Y', archetype: 'coach' });
     assert.equal(unregistered.status >= 400 && unregistered.status < 500, true);
     assert.match(String(unregistered.json['message']), /archetype "coach" is not registered/);
-    const disagree = await h.call('POST', '/agents', { slug: 'z', name: 'Z', archetype: 'standard', kind: 'facilitator' });
-    assert.equal(disagree.status >= 400 && disagree.status < 500, true);
-    assert.match(String(disagree.json['message']), /disagree/);
+    // #2088 (K6): `kind` is refused, also next to an archetype, instead of
+    // being ignored: a client that still sends it must not get a standard
+    // agent where it asked for a facilitator.
+    for (const body of [
+      { slug: 'z', name: 'Z', kind: 'facilitator' },
+      { slug: 'z', name: 'Z', archetype: 'facilitator', kind: 'facilitator' },
+    ]) {
+      const refused = await h.call('POST', '/agents', body);
+      assert.equal(refused.status, 409);
+      assert.match(String(refused.json['message']), /"kind" was replaced by "archetype"/);
+    }
+    assert.ok(!h.agents.some((a) => a.slug === 'z'));
 
     const list = await h.call('GET', '/agents');
-    const kinds = Object.fromEntries(
-      (list.json['agents'] as { slug: string; kind: string }[]).map((a) => [a.slug, a.kind]),
+    const archetypes = Object.fromEntries(
+      (list.json['agents'] as { slug: string; archetype: string }[]).map((a) => [a.slug, a.archetype]),
     );
-    assert.deepEqual(kinds, { mara: 'facilitator', hr: 'standard', nora: 'facilitator', sales: 'standard', ida: 'facilitator' });
-    assert.equal(
-      (list.json['agents'] as { kind: string; archetype: string }[]).every((a) => a.archetype === a.kind),
-      true,
-    );
+    assert.deepEqual(archetypes, { mara: 'facilitator', hr: 'standard', nora: 'facilitator', sales: 'standard', ida: 'facilitator' });
+    assert.ok((list.json['agents'] as object[]).every((a) => !('kind' in a)));
     const enabled = await h.call('GET', '/agents/enabled');
-    assert.equal((enabled.json['agents'] as { slug: string; kind: string }[])[0]!.kind, 'facilitator');
+    assert.equal((enabled.json['agents'] as { slug: string; archetype: string }[])[0]!.archetype, 'facilitator');
   });
 
   it('create attaches the engine to a facilitator, and only to a facilitator', async () => {
-    await h.call('POST', '/agents', { slug: 'nora', name: 'Nora', kind: 'facilitator' });
+    await h.call('POST', '/agents', { slug: 'nora', name: 'Nora', archetype: 'facilitator' });
     assert.equal(h.writes.length, 1);
     assert.match(h.writes[0]!, /^upsertAgentPlugin\(\["id-nora",\{"pluginId":"@omadia\/agent-facilitator","enabled":true\}/);
     h.writes = [];
@@ -152,7 +144,7 @@ describe('facilitation engine: operator routes', () => {
     assert.deepEqual(h.writes, []);
     // No engine installed: the facilitator is created, the engine follows on install.
     h.installed = [{ id: ODOO, status: 'active' }];
-    assert.equal((await h.call('POST', '/agents', { slug: 'ida', name: 'Ida', kind: 'facilitator' })).status, 201);
+    assert.equal((await h.call('POST', '/agents', { slug: 'ida', name: 'Ida', archetype: 'facilitator' })).status, 201);
     assert.deepEqual(h.writes, []);
   });
 
@@ -160,18 +152,18 @@ describe('facilitation engine: operator routes', () => {
     const res = await h.call('PATCH', '/agents/hr/plugins', { id: ENGINE, enabled: true });
     assert.equal(res.status, 409);
     assert.equal(res.json['error'], 'config_validation');
-    assert.match(String(res.json['message']), /can only be granted to a facilitator/);
+    assert.match(String(res.json['message']), /an archetype plugin can only be granted to agents of its own archetype/);
     assert.deepEqual(h.writes, []);
   });
 
   it('the kind cannot be patched', async () => {
-    const res = await h.call('PATCH', '/agents/hr', { kind: 'facilitator', name: 'HR' });
+    const res = await h.call('PATCH', '/agents/hr', { archetype: 'facilitator', name: 'HR' });
     assert.equal(res.status, 200);
     assert.equal(h.writes.length, 1);
     assert.equal(h.writes[0]!.includes('kind'), false, 'kind is not part of any update');
   });
 
-  it('plugin grant: the engine plugin is granted, found by capability', async () => {
+  it('plugin grant: the engine plugin is granted, found by what it delivers', async () => {
     const res = await h.call('PATCH', '/agents/mara/plugins', { id: ENGINE, enabled: true });
     assert.equal(res.status, 200, JSON.stringify(res.json));
     assert.equal(h.writes.length, 1);

@@ -27,6 +27,7 @@
 // existing contract; they have their own ownership rules.
 
 import type {
+  AgentIdentityProvider,
   ChannelReadinessProvider,
   ConversationMembershipEvent,
   ConversationMessageEvent,
@@ -53,6 +54,11 @@ export class ChannelTypeClaims {
 
   ownerOf(channelType: string): string | undefined {
     return this.owners.get(channelType);
+  }
+
+  /** The channel types `channelId` holds, sorted. */
+  typesOf(channelId: string): string[] {
+    return [...this.owners].filter(([, owner]) => owner === channelId).map(([type]) => type).sort();
   }
 
   release(channelId: string): void {
@@ -93,6 +99,18 @@ export function scopeCoreApiToChannel(
     scoped.emitConversationMessage = (event: ConversationMessageEvent): void => {
       if (event === null || typeof event !== 'object' || foreign('emit a message event', event.channelType)) return;
       emit({ ...event, channelId });
+    };
+  }
+  if (core.reportConversationMessage) {
+    const report = core.reportConversationMessage;
+    // Same rule as `emitConversationMessage`: a channel reports its own
+    // messages only, stamped with its own id. A refused or malformed event is
+    // not an answer, so the channel starts its turn as usual.
+    scoped.reportConversationMessage = (event: ConversationMessageEvent): Promise<{ answeredCard: boolean }> => {
+      if (event === null || typeof event !== 'object' || foreign('report a message event', event.channelType)) {
+        return Promise.resolve({ answeredCard: false });
+      }
+      return report({ ...event, channelId });
     };
   }
   if (core.emitSessionEvent) {
@@ -152,6 +170,7 @@ export function scopeCoreApiToChannel(
     registerRosterProvider: claimed('a roster provider', core.registerRosterProvider),
     registerTargetedSendProvider: claimed('a targeted-send provider', core.registerTargetedSendProvider),
     registerConversationSendProvider: claimed('a conversation-send provider', core.registerConversationSendProvider),
+    registerAgentIdentityProvider: claimed<AgentIdentityProvider>('an agent-identity provider', core.registerAgentIdentityProvider),
   };
   for (const [name, fn] of Object.entries(withClaim)) {
     if (fn) (scoped as unknown as Record<string, unknown>)[name] = fn;

@@ -176,7 +176,7 @@ describe('facilitator neutrality in the built agent', () => {
     (built.orchestrator as unknown as { assistantIdentity: string }).assistantIdentity;
 
   it('appends the block after name and self-description, also without a stored identity', () => {
-    const bare = identityOf(buildForAgent(row({ kind: 'facilitator' }), deps(), RUNTIME, undefined, []));
+    const bare = identityOf(buildForAgent(row({ archetype: 'facilitator' }), deps(), RUNTIME, undefined, []));
     assert.ok(bare.endsWith(PINNED_BLOCK));
 
     // A stored prompt that already carries the block (compose time) plus the
@@ -184,7 +184,7 @@ describe('facilitator neutrality in the built agent', () => {
     const stored = withFacilitatorNeutrality('You are a calm moderator.');
     const named = identityOf(
       buildForAgent(
-        row({ kind: 'facilitator', instructions: stored, identityName: 'Mara', identityShortDescription: 'Moderates.' }),
+        row({ archetype: 'facilitator', instructions: stored, identityName: 'Mara', identityShortDescription: 'Moderates.' }),
         deps(),
         RUNTIME,
         undefined,
@@ -230,7 +230,7 @@ describe('stale-identity recompose (boot)', () => {
         },
       },
       agentStore: {
-        listAgents: () => Promise.resolve([{ id: 'agent-f', kind: 'facilitator' as const }]),
+        listAgents: () => Promise.resolve([{ id: 'agent-f', archetype: 'facilitator' as const }]),
       },
       registry: { reload: () => Promise.resolve() },
       log: () => undefined,

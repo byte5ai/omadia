@@ -10,7 +10,7 @@ import type {
   StoreListResponse,
   UploadPackageResponse,
 } from './storeTypes';
-import type { PersonaConfig } from './personaTypes';
+import type { RuntimeInstalledRow } from './packagelessEntries';
 import type { UiPrefs } from './uiPrefs';
 import type {
   ImportBundleSuccess,
@@ -909,6 +909,11 @@ export interface InstalledPluginDetail {
   activation_failure_count: number;
   last_activation_error: string | null;
   last_activation_error_at: string | null;
+}
+
+/** Every entry of the installed registry as the runtime sees it. */
+export async function listRuntimeInstalled(): Promise<{ items: RuntimeInstalledRow[] }> {
+  return getJson<{ items: RuntimeInstalledRow[] }>('/v1/admin/runtime/installed');
 }
 
 export async function getInstalledPlugin(
@@ -2393,85 +2398,6 @@ export async function patchBuilderSpec(
 }
 
 /**
- * Phase 3 / OB-67 — set the per-profile persona block on a draft.
- *
- * Issue #53 follow-up — calls the dedicated `PATCH /drafts/:id/persona`
- * route which routes through `setPersonaConfigTool` server-side. That
- * gives us tool-side validation, `SpecEventBus.cause='agent'`, and a
- * `builder_audit` row — parity with BuilderAgent-initiated edits.
- *
- * Replaces any existing `spec.persona` block in full; pass `{}` to clear.
- */
-export async function setPersonaConfig(
-  draftId: string,
-  config: PersonaConfig,
-): Promise<DraftEnvelope> {
-  const forwarded = await forwardCookieHeader();
-  const res = await fetch(
-    botApi(`/v1/builder/drafts/${encodeURIComponent(draftId)}/persona`),
-    {
-      method: 'PATCH',
-      headers: {
-        accept: 'application/json',
-        'content-type': 'application/json',
-        ...forwarded,
-      },
-      body: JSON.stringify(config),
-      credentials: 'include',
-      cache: 'no-store',
-    },
-  );
-  const text = await res.text();
-  if (!res.ok) {
-    throw new ApiError(
-      res.status,
-      `PATCH builder/drafts/${draftId}/persona failed: ${res.status}`,
-      text,
-    );
-  }
-  return JSON.parse(text) as DraftEnvelope;
-}
-
-/**
- * Issue #54 — set the per-profile quality block (sycophancy level +
- * boundary presets + custom lines) on a draft.
- *
- * Issue #54 follow-up — calls the dedicated `PATCH /drafts/:id/quality`
- * route which routes through `setQualityConfigTool` server-side. The
- * tool's `warnings` for unknown preset IDs are surfaced as an optional
- * sibling field on the response.
- */
-export async function setQualityConfig(
-  draftId: string,
-  config: import('./builderTypes').QualityConfig,
-): Promise<DraftEnvelope & { warnings?: string[] }> {
-  const forwarded = await forwardCookieHeader();
-  const res = await fetch(
-    botApi(`/v1/builder/drafts/${encodeURIComponent(draftId)}/quality`),
-    {
-      method: 'PATCH',
-      headers: {
-        accept: 'application/json',
-        'content-type': 'application/json',
-        ...forwarded,
-      },
-      body: JSON.stringify(config),
-      credentials: 'include',
-      cache: 'no-store',
-    },
-  );
-  const text = await res.text();
-  if (!res.ok) {
-    throw new ApiError(
-      res.status,
-      `PATCH builder/drafts/${draftId}/quality failed: ${res.status}`,
-      text,
-    );
-  }
-  return JSON.parse(text) as DraftEnvelope & { warnings?: string[] };
-}
-
-/**
  * B.11-9: Server-side render of manifest.yaml as it would appear in
  * the next codegen run. Cheap (no zip, no fs writes).
  */
@@ -3739,79 +3665,6 @@ export async function resumeBuilderFromIssue(input: {
     `/v1/builder/drafts/${encodeURIComponent(input.draftId)}/resume-from-issue`,
     { force: input.force === true },
   );
-}
-
-// ── Builder quality score (issue #52) ───────────────────────────────────────
-
-export interface QualitySuggestion {
-  code: string;
-  message: string;
-  dimension: 'completeness' | 'tokenEfficiency' | 'ruleQuality' | 'specificity';
-}
-
-export interface BuilderQualityResult {
-  draftId: string;
-  score: number;
-  dimensions: {
-    completeness: number;
-    tokenEfficiency: number;
-    ruleQuality: number;
-    specificity: number;
-  };
-  sweetspot: 'under' | 'sweet' | 'over';
-  tokenHealth: 'ok' | 'warning' | 'critical';
-  suggestions: QualitySuggestion[];
-}
-
-export async function fetchBuilderQuality(
-  draftId: string,
-): Promise<BuilderQualityResult> {
-  return getJson<BuilderQualityResult>(
-    `/v1/builder/drafts/${encodeURIComponent(draftId)}/quality`,
-  );
-}
-
-// ── Builder preview prompt (issue #55) ──────────────────────────────────────
-
-export interface PreviewPromptSection {
-  label: string;
-  content: string;
-  kind: 'header' | 'persona' | 'boundaries' | 'sycophancy' | 'skill' | 'custom_notes';
-}
-
-export interface BuilderPreviewPrompt {
-  systemPrompt: string;
-  tokens: number;
-  sections: PreviewPromptSection[];
-}
-
-/**
- * Issue #55 — render the live compiled system prompt for a draft.
- * POST so the route can carry future options (token-count mode, etc.)
- * without breaking the GET surface.
- */
-export async function fetchBuilderPreviewPrompt(
-  draftId: string,
-): Promise<BuilderPreviewPrompt> {
-  const forwarded = await forwardCookieHeader();
-  const res = await fetch(
-    botApi(`/v1/builder/drafts/${encodeURIComponent(draftId)}/preview-prompt`),
-    {
-      method: 'POST',
-      headers: { accept: 'application/json', ...forwarded },
-      credentials: 'include',
-      cache: 'no-store',
-    },
-  );
-  const text = await res.text();
-  if (!res.ok) {
-    throw new ApiError(
-      res.status,
-      `POST /v1/builder/drafts/${draftId}/preview-prompt failed: ${res.status}`,
-      text,
-    );
-  }
-  return JSON.parse(text) as BuilderPreviewPrompt;
 }
 
 // ── Builder audit log (issue #57) ───────────────────────────────────────────
@@ -5187,7 +5040,8 @@ export type MemoryFeatureReason =
   | 'no_embedding_provider'
   | 'no_graph_pool'
   | 'disabled_by_config'
-  | 'plugin_inactive';
+  | 'plugin_inactive'
+  | 'no_batch_job_registry';
 
 export interface MemoryFeatureStatus {
   factExtractor: MemoryFeatureState;

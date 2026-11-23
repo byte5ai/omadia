@@ -153,6 +153,10 @@ describe('#2090 operator routes: open scopes and the kill switch', () => {
   before(async () => {
     const store = {
       listKillSwitches: () => Promise.resolve(switches),
+      agentsOfProcess: (processId: string) =>
+        Promise.resolve(
+          ({ 'fac-7': ['id-mara'], 'fac-9': ['id-finn'], 'fac-shared': ['id-finn', 'id-mara'], 'fac-orphan': ['id-gone'], 'fac-half': ['id-gone', 'id-finn'] } as Record<string, string[]>)[processId] ?? [],
+        ),
       listHeldReservations: () => Promise.resolve(reservations),
       releaseReservation: (id: string, reason: string) => {
         const found = reservations.find((r) => r.id === id);
@@ -281,10 +285,54 @@ describe('#2090 operator routes: open scopes and the kill switch', () => {
   it('refuses a malformed switch and an unknown agent', async () => {
     assert.equal((await call('POST', '/kill-switches', { level: 'everything' })).status, 400);
     assert.equal((await call('POST', '/kill-switches', { level: 'agent', agent_slug: 'nobody' })).status, 404);
-    assert.equal((await call('POST', '/kill-switches', { level: 'agent' })).status, 404);
+    const noSlug = await call('POST', '/kill-switches', { level: 'agent' });
+    assert.equal(noSlug.status, 400);
+    assert.equal(noSlug.json['message'], 'agent_slug is required for level agent');
+    assert.equal((await call('POST', '/kill-switches', { level: 'process', agent_slug: 'nobody', process_id: 'fac-7' })).status, 404);
     assert.equal((await call('POST', '/kill-switches', { level: 'process', agent_slug: 'mara' })).status, 400);
     assert.deepEqual(switches, []);
     assert.deepEqual(audits, []);
+  });
+
+  it('a process switch without agent_slug takes the agent from the process', async () => {
+    const set = await call('POST', '/kill-switches', { level: 'process', process_id: 'fac-9' });
+    assert.equal(set.status, 201);
+    assert.equal(set.json['kill_switch'].agent_slug, 'finn');
+    assert.equal(set.json['kill_switch'].process_id, 'fac-9');
+    assert.equal(switches[0]?.agentId, 'id-finn');
+    assert.deepEqual(audits[0]?.after, { level: 'process', agent: 'finn', process_id: 'fac-9', reason: '' });
+    const list = await call('GET', '/');
+    assert.deepEqual(list.json['scopes'].map((s: { stopped: boolean }) => s.stopped), [false, true]);
+  });
+
+  it('a process switch without agent_slug says why it cannot name the agent', async () => {
+    const unknown = await call('POST', '/kill-switches', { level: 'process', process_id: 'fac-nowhere' });
+    assert.equal(unknown.status, 404);
+    assert.equal(unknown.json['code'], 'execution.unknown_process');
+    const shared = await call('POST', '/kill-switches', { level: 'process', process_id: 'fac-shared' });
+    assert.equal(shared.status, 400);
+    assert.equal(shared.json['code'], 'execution.ambiguous_process');
+    assert.match(shared.json['message'], /finn, mara.*agent_slug/);
+    const orphan = await call('POST', '/kill-switches', { level: 'process', process_id: 'fac-orphan' });
+    assert.equal(orphan.status, 404);
+    assert.equal(orphan.json['code'], 'execution.unknown_agent');
+    assert.deepEqual(switches, []);
+    // An agent that no longer exists does not make the process ambiguous.
+    const half = await call('POST', '/kill-switches', { level: 'process', process_id: 'fac-half' });
+    assert.equal(half.status, 201);
+    assert.equal(half.json['kill_switch'].agent_slug, 'finn');
+    switches = [];
+    // Stated, the agent decides.
+    assert.equal((await call('POST', '/kill-switches', { level: 'process', agent_slug: 'mara', process_id: 'fac-shared' })).status, 201);
+  });
+
+  it('an instance switch reads no agent_slug, known or not', async () => {
+    for (const agent_slug of ['mara', 'nobody']) {
+      const set = await call('POST', '/kill-switches', { level: 'instance', agent_slug, process_id: 'fac-7' });
+      assert.equal(set.status, 201);
+      assert.equal(set.json['kill_switch'].agent_slug, null);
+    }
+    assert.ok(switches.every((k) => k.agentId === undefined && k.processId === undefined));
   });
 
   it('clears a switch once, with an audit entry', async () => {

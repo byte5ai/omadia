@@ -122,7 +122,7 @@ describe('patchSpecTool', () => {
     async function seedValidSpec(): Promise<void> {
       await harness.draftStore.update(harness.userEmail, harness.draftId, {
         spec: {
-          template: 'agent-integration',
+          template: 'integration',
           id: 'de.byte5.agent.weather',
           name: 'Weather',
           version: '0.1.0',
@@ -131,7 +131,6 @@ describe('patchSpecTool', () => {
           domain: 'weather',
           depends_on: [],
           tools: [],
-          skill: { role: 'tester' },
           setup_fields: [],
           playbook: { when_to_use: 'tests', not_for: [], example_prompts: [] },
           network: { outbound: [] },
@@ -258,7 +257,7 @@ describe('patchSpecTool', () => {
     async function seedTwoTools(): Promise<void> {
       await harness.draftStore.update(harness.userEmail, harness.draftId, {
         spec: {
-          template: 'agent-integration',
+          template: 'integration',
           id: 'de.byte5.agent.weather',
           name: 'Weather',
           version: '0.1.0',
@@ -269,7 +268,6 @@ describe('patchSpecTool', () => {
             { id: 'get_forecast', description: 'a' },
             { id: 'get_history', description: 'b' },
           ],
-          skill: { role: 'tester' },
           setup_fields: [],
           playbook: { when_to_use: 'tests', not_for: [], example_prompts: [] },
           network: { outbound: ['api.openweather.org'] },
@@ -371,7 +369,7 @@ describe('patchSpecTool', () => {
     async function seedValidWithCatalog(): Promise<void> {
       await harness.draftStore.update(harness.userEmail, harness.draftId, {
         spec: {
-          template: 'agent-integration',
+          template: 'integration',
           id: 'de.byte5.agent.weather',
           name: 'Weather',
           version: '0.1.0',
@@ -379,7 +377,6 @@ describe('patchSpecTool', () => {
           category: 'analysis',
           depends_on: ['de.byte5.integration.openweather'],
           tools: [{ id: 'get_forecast', description: 'a' }],
-          skill: { role: 'tester' },
           setup_fields: [],
           playbook: { when_to_use: 'tests', not_for: [], example_prompts: [] },
           network: { outbound: ['api.openweather.org'] },

@@ -1,8 +1,7 @@
-// Publishes 'targetedSend' and 'conversationSend' as PER-CALLER services
-// (#2043). Both keep the plugin-facing shape they always had; the facade only
-// adds what a plugin cannot be trusted to state itself — which plugin is
-// calling. An own-identity send is permitted by a message subscription, and
-// a subscription belongs to the plugin that created it.
+// Publishes 'targetedSend' and 'conversationSend@2' as PER-CALLER services
+// (#2043, #2091). The facade adds what a plugin cannot be trusted to state
+// itself: which plugin is calling. A scope, a process and a subscription
+// belong to the plugin that created them.
 
 import {
   CONVERSATION_SEND_V2_SERVICE_NAME,
@@ -22,8 +21,8 @@ export function publishSendServices(deps: {
   serviceRegistry: ServiceRegistry;
   targeted: TargetedDeliveryService;
   conversation: ConversationSendService;
-  /** #2091 — what 'conversationSend@2' needs beyond the first major's
-   *  services. Absent: the second major is not published. */
+  /** #2091 — what 'conversationSend@2' needs beyond the delivery itself.
+   *  Absent (no database): it is not published. */
   scoped?: {
     executionFor: (pluginId: string) => ExecutionAuthorizationService | undefined;
     direct: OwnIdentityDirectSendDeps;
@@ -42,21 +41,9 @@ export function publishSendServices(deps: {
         deps.targeted.sendToPrincipal(input, callerPluginId(caller.pluginId)),
     })),
   );
-  deps.serviceRegistry.provide(
-    'conversationSend',
-    perCallerService((caller) => ({
-      sendToConversation: (input: SendInput<ConversationSendService['sendToConversation']>) =>
-        deps.conversation.sendToConversation(input, callerPluginId(caller.pluginId)),
-      // #2089 — question cards.
-      capabilities: (channelType: string) => deps.conversation.capabilities(channelType),
-      updateCard: (input: SendInput<ConversationSendService['updateCard']>) =>
-        deps.conversation.updateCard(input, callerPluginId(caller.pluginId)),
-    })),
-  );
-
-  // #2091 — the second major, next to the first: every send is drawn from an
-  // execution scope, and the scope (not a message subscription) names the
-  // targets.
+  // #2091 — a post into a conversation is drawn from an execution scope
+  // (`conversationSend@2`); the bare name `conversationSend` provides nothing.
+  // `targetedSend` above has one major and stays.
   const scoped = deps.scoped;
   if (!scoped) return;
   deps.serviceRegistry.provide(

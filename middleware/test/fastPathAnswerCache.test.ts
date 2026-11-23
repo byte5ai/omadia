@@ -384,7 +384,7 @@ describe('answer cache — store bounds and tool scope', () => {
     guard().openStoredTextScope!({ job: 'test' });
 
   async function stored(cache: AnswerCache, question: string): Promise<void> {
-    const r = await cache.remember({ question, plan: planned(question), previous: false, openScope: scope });
+    const r = await cache.remember({ question, plan: planned(question), previous: false, agent: '', openScope: scope });
     assert.ok(r.stored, r.reason ?? 'stored');
   }
 
@@ -393,7 +393,7 @@ describe('answer cache — store bounds and tool scope', () => {
     const cache = createAnswerCache({ log: () => {}, maxEntries: 2, now: () => new Date(Date.UTC(2026, 0, 1, 0, 0, (t += 1))) });
     await stored(cache, 'Offene Posten von Müller');
     await stored(cache, 'Überfällige Rechnungen');
-    const hit = cache.lookup({ question: 'Offene Posten von Weber', tools: ODOO, previous: false });
+    const hit = cache.lookup({ question: 'Offene Posten von Weber', tools: ODOO, previous: false, agent: '' });
     assert.ok(hit.hit);
     cache.recordHit(hit.key); // Müller-shape is now the most recent
     await stored(cache, 'Offene Posten');
@@ -401,6 +401,22 @@ describe('answer cache — store bounds and tool scope', () => {
       cache.entries().map((e) => e.key),
       ['offene posten von {{text_1}}', 'offene posten'],
     );
+  });
+
+  it('#1876: a plan cached in one agent\'s fast lane is never reused by another agent', async () => {
+    const cache = createAnswerCache({ log: () => {} });
+    const r = await cache.remember({
+      question: 'Offene Posten von Müller',
+      plan: planned('Offene Posten von Müller'),
+      previous: false,
+      agent: 'erika',
+      openScope: scope,
+    });
+    assert.ok(r.stored);
+    assert.ok(cache.lookup({ question: 'Offene Posten von Weber', tools: ODOO, previous: false, agent: 'erika' }).hit);
+    const other = cache.lookup({ question: 'Offene Posten von Weber', tools: ODOO, previous: false, agent: 'otto' });
+    assert.equal(other.hit, false, 'same tool, other agent: no hit');
+    assert.equal(cache.entries()[0]?.agent, 'erika');
   });
 
   it('a tool this agent is not offered never runs from the cache', async () => {
@@ -473,11 +489,11 @@ describe('answer cache — a span that only masked a slot sentinel is no persona
     const r = await cache.remember({
       question: q,
       plan: planned(q),
-      previous: false,
+      previous: false, agent: '',
       openScope: () => liveGuard().openStoredTextScope!({ job: 'test' }),
     });
     assert.ok(r.stored, r.reason ?? 'stored');
-    assert.ok(cache.lookup({ question: 'Zeige die offenen Posten von Carrera Toys GmbH', tools: ODOO, previous: false }).hit);
+    assert.ok(cache.lookup({ question: 'Zeige die offenen Posten von Carrera Toys GmbH', tools: ODOO, previous: false, agent: '' }).hit);
   });
 
   it('a real name OUTSIDE the slot still blocks the entry', async () => {
@@ -486,7 +502,7 @@ describe('answer cache — a span that only masked a slot sentinel is no persona
     const r = await cache.remember({
       question: q,
       plan: planned(q),
-      previous: false,
+      previous: false, agent: '',
       openScope: () => liveGuard('Weber').openStoredTextScope!({ job: 'test' }),
     });
     assert.equal(r.stored, false);
@@ -502,7 +518,7 @@ describe('answer cache — column headers are not run through the person detecto
     const r = await cache.remember({
       question: q,
       plan: withRoleHeader,
-      previous: false,
+      previous: false, agent: '',
       openScope: () => guard({ personIn: 'Kunde' }).openStoredTextScope!({ job: 'test' }),
     });
     assert.ok(r.stored, r.reason ?? 'stored');
@@ -515,7 +531,7 @@ describe('answer cache — column headers are not run through the person detecto
     const r = await cache.remember({
       question: q,
       plan: { ...plan, labels: { ...plan.labels, partner: 'a.b@example.com' } },
-      previous: false,
+      previous: false, agent: '',
       openScope: () => guard().openStoredTextScope!({ job: 'test' }),
     });
     assert.equal(r.stored, false);
@@ -551,7 +567,7 @@ describe('answer cache — format tokens are checked as the sentence the user re
     const r = await cache.remember({
       question: q,
       plan: { ...plan, summary: '{count} offene Posten.' },
-      previous: false,
+      previous: false, agent: '',
       openScope: () => braceGuard.openStoredTextScope!({ job: 'test' }),
     });
     assert.ok(r.stored, r.reason ?? 'stored');

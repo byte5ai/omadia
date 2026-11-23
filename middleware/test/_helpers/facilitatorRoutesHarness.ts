@@ -17,9 +17,11 @@ import { after, before, beforeEach } from 'node:test';
 
 import express from 'express';
 
-import type { AgentGraphStore, ConfigStore, OrchestratorRegistry } from '@omadia/orchestrator';
+import { SnapshotRoutingView } from '@omadia/orchestrator';
+import type { AgentGraphStore, AgentRow, ConfigStore, OrchestratorRegistry } from '@omadia/orchestrator';
 
 import { createAgentBuilderRouter } from '../../src/routes/agentBuilder.js';
+import { createOperatorDefaultAgentsRouter } from '../../src/routes/managementLayer.js';
 import { createOperatorAgentsRouter } from '../../src/routes/operatorAgents.js';
 import { createOperatorChannelsRouter } from '../../src/routes/operatorChannels.js';
 import { listenLoopback } from './listenLoopback.js';
@@ -36,12 +38,14 @@ interface FakeAgent {
   description: string | null;
   privacyProfile: 'default';
   status: 'enabled';
-  kind: 'standard' | 'facilitator';
+  archetype: 'standard' | 'facilitator';
+  /** #2055 — the harness agents serve everyone, like agents that predate 0083. */
+  availableToEveryone: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
 
-function agent(slug: string, kind: FakeAgent['kind']): FakeAgent {
+function agent(slug: string, archetype: FakeAgent['archetype']): FakeAgent {
   return {
     id: `id-${slug}`,
     slug,
@@ -49,7 +53,8 @@ function agent(slug: string, kind: FakeAgent['kind']): FakeAgent {
     description: null,
     privacyProfile: 'default',
     status: 'enabled',
-    kind,
+    archetype,
+    availableToEveryone: true,
     createdAt: new Date(0),
     updatedAt: new Date(0),
   };
@@ -67,12 +72,16 @@ export interface RoutesHarness {
   installed: { id: string; status: string }[];
   /** What the engine plugin reports about itself. */
   engineState: unknown;
-  /** Has the operator granted the engine its SQL ledger? */
-  sqlGranted: boolean;
   identitySaves: number;
+  /** S3c — the grants the store holds (`listAgentPlugins`); default none. */
+  grants: { agentId: string; pluginId: string; enabled: boolean; config: Record<string, unknown> }[];
   /** Plugin ids the catalog describes as archetype plugins, with the
-   *  archetype each delivers. Empty by default. */
+   *  archetype each delivers. Default: the engine and the second engine
+   *  deliver `facilitator`. */
   archetypePlugins: Record<string, string>;
+  /** #2060 — what `graph.getSkill(id)` answers; default: a moderation
+   *  method for {@link SKILL_ID}. */
+  skills: Record<string, { id: string; name: string; description: string | null; body: string; frontmatter: Record<string, unknown> }>;
   call(method: string, path: string, body?: unknown): Promise<RouteResponse>;
   assertRefused(res: RouteResponse, omission: string, messagePattern: RegExp): void;
 }
@@ -95,20 +104,29 @@ export function routesHarness(): RoutesHarness {
   /** Read methods answer; every mutating method is recorded. An unexpected
    *  call fails loudly so a refusal test cannot pass by accident. */
   function store(): ConfigStore {
-    const reads: Record<string, (...args: never[]) => unknown> = {
+    const reads: Record<string, unknown> = {
       getAgentBySlug: (slug: string) => Promise.resolve(h.agents.find((a) => a.slug === slug)),
+      getAgentById: (id: string) => Promise.resolve(h.agents.find((a) => a.id === id)),
       listAgents: () => Promise.resolve(h.agents),
-      getPlatformSettings: () => Promise.resolve({ fallbackAgentId: 'id-hr', updatedAt: new Date(0) }),
-      listAgentPlugins: () => Promise.resolve([]),
+      listTombstones: () => Promise.resolve([]),
+      // #2055 — the routing tables: reads answer, writes are recorded.
+      routing: {
+        listDefaultEntries: () => Promise.resolve([]),
+        listAvailabilityPrincipals: () => Promise.resolve([]),
+        upsertDefaultEntry: (input: { principal: string | null; channelType: string | null; agentId: string | null }) => {
+          h.writes.push(`routing.upsertDefaultEntry(${JSON.stringify(input).slice(0, 80)})`);
+          return Promise.resolve({ id: 'entry-1', ...input, updatedBy: null, updatedAt: new Date(0) });
+        },
+      },
+      listAgentPlugins: (agentId: string) => Promise.resolve(h.grants.filter((g) => g.agentId === agentId)),
       listAllAgentPlugins: () => Promise.resolve([]),
       listChannelBindings: () => Promise.resolve([]),
       listChannelBindingsForAgent: () => Promise.resolve([]),
       listChannelIdentities: () => Promise.resolve([]),
       resolveBinding: () => Promise.resolve(undefined),
       getAgentChannelPolicy: () => Promise.resolve(undefined),
-      // The route names the archetype; `kind` is what a fixture row carries.
-      createAgent: (input: { slug: string; name: string; archetype?: string; kind?: FakeAgent['kind'] }) => {
-        const created = agent(input.slug, (input.archetype ?? input.kind ?? 'standard') as FakeAgent['kind']);
+      createAgent: (input: { slug: string; name: string; archetype?: string }) => {
+        const created = agent(input.slug, (input.archetype ?? 'standard') as FakeAgent['archetype']);
         h.agents.push(created);
         return Promise.resolve(created);
       },
@@ -120,7 +138,7 @@ export function routesHarness(): RoutesHarness {
           reads[prop] ??
           ((...args: unknown[]) => {
             h.writes.push(`${prop}(${JSON.stringify(args).slice(0, 80)})`);
-            return Promise.resolve({ fallbackAgentId: null, updatedAt: new Date(0), agentToAgent: true });
+            return Promise.resolve({ agentToAgent: true });
           }),
       },
     ) as ConfigStore;
@@ -132,9 +150,11 @@ export function routesHarness(): RoutesHarness {
       {
         get: (_t, prop: string) => {
           if (prop === 'getSkill') {
-            return () => Promise.resolve({ id: SKILL_ID, frontmatter: {}, body: '', description: '' });
+            return (id: string) => Promise.resolve(h.skills[id]);
           }
           if (prop === 'listMcpServers') return () => Promise.resolve([{ id: SERVER_ID, name: 'crm' }]);
+          // #2060 — the facilitator holds every skill as a working mode.
+          if (prop === 'listAgentsByPersonaSkillId') return () => Promise.resolve(['id-mara']);
           return (...args: unknown[]) => {
             h.writes.push(`graph.${prop}(${JSON.stringify(args).slice(0, 60)})`);
             return Promise.resolve({ id: 'x', agentId: 'x', skillId: SKILL_ID, position: 0 });
@@ -146,9 +166,18 @@ export function routesHarness(): RoutesHarness {
 
   before(async () => {
     const registry = {
-      reload: () => Promise.resolve({ actions: [], platformChanged: false }),
+      reload: () => Promise.resolve({ actions: [] }),
       list: () => [],
       get: () => undefined,
+      getById: () => undefined,
+      instanceDefaultSlug: () => undefined,
+      // #2055 — what the default-agent table checks an entry against.
+      routingView: () =>
+        new SnapshotRoutingView({
+          agents: h.agents as unknown as AgentRow[],
+          agentPlugins: [],
+          channelBindings: [],
+        }),
     } as unknown as OrchestratorRegistry;
     const app = express();
     app.use(express.json());
@@ -159,7 +188,6 @@ export function routesHarness(): RoutesHarness {
         getRegistry: () => registry,
         getChatSessionStore: () => undefined,
         getFacilitationEngineState: () => h.engineState,
-        isSqlGranted: () => h.sqlGranted,
         getInstalledRegistry: () => ({ list: () => h.installed }) as never,
         getPluginCatalog: () =>
           ({
@@ -168,6 +196,10 @@ export function routesHarness(): RoutesHarness {
               const archetypeId = h.archetypePlugins[id];
               return {
                 plugin: {
+                  id,
+                  // #2054 — grants are for capability plugins; the fixtures
+                  // that are no archetype plugin are integrations.
+                  kind: 'integration',
                   provides: provides[id],
                   ...(archetypeId
                     ? { kind: 'archetype', archetype: { id: archetypeId, omits: [], adds: [], requires: [], noun: archetypeId } }
@@ -185,6 +217,13 @@ export function routesHarness(): RoutesHarness {
             },
           } as never,
         }),
+      }),
+    );
+    app.use(
+      '/default-agents',
+      createOperatorDefaultAgentsRouter({
+        getConfigStore: () => store(),
+        getRegistry: () => registry,
       }),
     );
     app.use(
@@ -214,8 +253,17 @@ export function routesHarness(): RoutesHarness {
   beforeEach(() => {
     h.writes = [];
     h.identitySaves = 0;
-    h.archetypePlugins = {};
-    h.sqlGranted = true;
+    h.grants = [];
+    h.skills = {
+      [SKILL_ID]: {
+        id: SKILL_ID,
+        name: 'Retrospective',
+        description: 'Runs a start-stop-continue retrospective',
+        body: 'Collect what went well, what did not and what to try next. Cluster the points with the group, then ask the group to decide on actions.',
+        frontmatter: {},
+      },
+    };
+    h.archetypePlugins = { [ENGINE]: 'facilitator', '@acme/second-engine': 'facilitator' };
     h.agents = [agent('mara', 'facilitator'), agent('hr', 'standard')];
     h.installed = [
       { id: ENGINE, status: 'active' },

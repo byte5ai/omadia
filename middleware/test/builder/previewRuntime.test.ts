@@ -9,11 +9,12 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { z } from 'zod';
+
+import { RawModelServiceRefusedError, ServiceNotDeclaredError, SharedPoolRefusedError } from '@omadia/plugin-api';
 
 import {
   PreviewRuntime,
-  type PreviewAgentHandle,
+  type PreviewPluginHandle,
   type PreviewHostServices,
   type PreviewLlmCompleteRequest,
   type PreviewPluginContext,
@@ -38,12 +39,26 @@ describe('PreviewRuntime', () => {
     return root;
   }
 
+  /** A draft that depends on the Odoo integration (and, wrongly, on the pool and raw model clients). */
+  const SERVICES_MANIFEST = [
+    'schema_version: "1"',
+    'identity:',
+    '  id: "de.byte5.agent.test"',
+    '  kind: "tool"',
+    '  domain: "test.preview"',
+    '  name: "Preview test"',
+    '  version: "0.1.0"',
+    'requires: ["odoo.client@^1", "graphPool@^1", "anthropicClient@^1", "llm@^1"]',
+    'optional_requires: ["reports.store@^1"]',
+    '',
+  ].join('\n');
+
   /** Test factory — bypasses zip extraction by writing a stub package.json
    *  directly into the preview dir. The activateModule override returns a
    *  pre-fabricated handle. */
   function buildRuntime(opts: {
     previewsRoot: string;
-    handle?: PreviewAgentHandle;
+    handle?: PreviewPluginHandle;
     onActivate?: (ctx: PreviewPluginContext) => void | Promise<void>;
     activateThrows?: Error;
     serviceRegistry?: PreviewHostServices;
@@ -78,7 +93,6 @@ describe('PreviewRuntime', () => {
         await opts.onActivate?.(ctx);
         return (
           opts.handle ?? {
-            toolkit: { tools: [] },
             close: async () => {},
           }
         );
@@ -102,22 +116,26 @@ describe('PreviewRuntime', () => {
   beforeEach(() => {});
 
   describe('activate', () => {
-    it('returns a PreviewHandle with toolkit + previewDir', async () => {
+    // Spec 2042 §5.10 — a capability plugin registers its tools via
+    // ctx.tools.register; the preview captures them on the handle.
+    const ECHO_SPEC = {
+      name: 'echo',
+      description: 'echo',
+      input_schema: {
+        type: 'object' as const,
+        properties: { msg: { type: 'string' } },
+        required: ['msg'],
+      },
+    };
+
+    it('returns a PreviewHandle whose toolkit holds the tools registered via ctx.tools', async () => {
       const root = freshRoot('act-1');
       const runtime = buildRuntime({
         previewsRoot: root,
-        handle: {
-          toolkit: {
-            tools: [
-              {
-                id: 'echo',
-                description: 'echo',
-                input: z.object({ msg: z.string() }) as z.ZodType<unknown>,
-                run: async (raw) => ({ echoed: (raw as { msg: string }).msg }),
-              },
-            ],
-          },
-          close: async () => {},
+        onActivate: (ctx) => {
+          ctx.tools.register(ECHO_SPEC, async (raw) =>
+            JSON.stringify({ echoed: (raw as { msg: string }).msg }),
+          );
         },
       });
 
@@ -134,25 +152,18 @@ describe('PreviewRuntime', () => {
       assert.equal(handle.rev, 1);
       assert.equal(handle.toolkit.tools.length, 1);
       assert.equal(handle.toolkit.tools[0]?.id, 'echo');
+      assert.deepEqual(handle.toolkit.tools[0]?.inputSchema, ECHO_SPEC.input_schema);
       assert.ok(existsSync(handle.previewDir));
     });
 
-    it('runs a tool through the returned toolkit', async () => {
+    it('runs a registered tool through the returned toolkit', async () => {
       const root = freshRoot('act-2');
       const runtime = buildRuntime({
         previewsRoot: root,
-        handle: {
-          toolkit: {
-            tools: [
-              {
-                id: 'echo',
-                description: 'echo',
-                input: z.object({ msg: z.string() }) as z.ZodType<unknown>,
-                run: async (raw) => ({ echoed: (raw as { msg: string }).msg }),
-              },
-            ],
-          },
-          close: async () => {},
+        onActivate: (ctx) => {
+          ctx.tools.register(ECHO_SPEC, async (raw) =>
+            JSON.stringify({ echoed: (raw as { msg: string }).msg }),
+          );
         },
       });
       const handle = await runtime.activate({
@@ -162,10 +173,36 @@ describe('PreviewRuntime', () => {
         configValues: {},
         secretValues: {},
       });
-      const out = (await handle.toolkit.tools[0]!.run({ msg: 'hi' })) as {
-        echoed: string;
-      };
-      assert.equal(out.echoed, 'hi');
+      const out = await handle.toolkit.tools[0]!.run({ msg: 'hi' });
+      assert.deepEqual(JSON.parse(out), { echoed: 'hi' });
+    });
+
+    it('drops a disposed tool and refuses a second live registration of the same name', async () => {
+      const root = freshRoot('act-3');
+      let dispose: (() => void) | undefined;
+      let duplicateError: unknown;
+      const runtime = buildRuntime({
+        previewsRoot: root,
+        onActivate: (ctx) => {
+          dispose = ctx.tools.register(ECHO_SPEC, async () => 'a');
+          try {
+            ctx.tools.register(ECHO_SPEC, async () => 'b');
+          } catch (err) {
+            duplicateError = err;
+          }
+        },
+      });
+      const handle = await runtime.activate({
+        zipBuffer: Buffer.alloc(0),
+        draftId: 'd1',
+        rev: 1,
+        configValues: {},
+        secretValues: {},
+      });
+      assert.match(String(duplicateError), /already registered/);
+      assert.equal(handle.toolkit.tools.length, 1);
+      dispose?.();
+      assert.equal(handle.toolkit.tools.length, 0);
     });
 
     it('passes config + secret values through the stub PluginContext', async () => {
@@ -270,9 +307,12 @@ describe('PreviewRuntime', () => {
       // previewed agent resolve the real service its depends_on integration
       // provides.
       const odooClient = { execute: () => 'ok' };
+      const callers: unknown[] = [];
       const host: PreviewHostServices = {
-        get: <T,>(name: string): T | undefined =>
-          name === 'odoo.client' ? (odooClient as T) : undefined,
+        get: <T,>(name: string, caller?: unknown): T | undefined => {
+          callers.push(caller);
+          return name === 'odoo.client' ? (odooClient as T) : undefined;
+        },
         has: (name: string): boolean => name === 'odoo.client',
       };
       const root = freshRoot('services-readthrough');
@@ -280,6 +320,7 @@ describe('PreviewRuntime', () => {
       const runtime = buildRuntime({
         previewsRoot: root,
         serviceRegistry: host,
+        manifestYaml: SERVICES_MANIFEST,
         onActivate: (ctx) => {
           captured = ctx;
         },
@@ -292,10 +333,12 @@ describe('PreviewRuntime', () => {
         secretValues: {},
       });
       assert.ok(captured);
-      // Read-through to the host registry.
+      // Read-through to the host registry, for what the manifest declares,
+      // asked as the draft plugin.
       assert.equal(captured!.services.get('odoo.client'), odooClient);
+      assert.deepEqual(callers, [{ agentId: 'de.byte5.agent.test', pluginId: 'de.byte5.agent.test' }]);
       assert.equal(captured!.services.has('odoo.client'), true);
-      assert.equal(captured!.services.get('not.there'), undefined);
+      assert.equal(captured!.services.get('reports.store'), undefined, 'declared, nobody provides it');
       // Agent-provided services stay preview-local and do NOT mutate the host
       // registry; local entries are checked before the host.
       const dispose = captured!.services.provide('local.only', { y: 2 });
@@ -303,6 +346,61 @@ describe('PreviewRuntime', () => {
       assert.equal(host.has('local.only'), false);
       dispose();
       assert.equal(captured!.services.get('local.only'), undefined);
+    });
+
+    it('criterion 37: a preview gets no service right the draft lacks: undeclared names, the pool, raw model clients', async () => {
+      const handed: string[] = [];
+      const host: PreviewHostServices = {
+        get: <T,>(name: string): T | undefined => {
+          handed.push(name);
+          return { name } as T;
+        },
+        has: () => true,
+      };
+      let captured: PreviewPluginContext | undefined;
+      await buildRuntime({
+        previewsRoot: freshRoot('services-gated'),
+        serviceRegistry: host,
+        manifestYaml: SERVICES_MANIFEST,
+        onActivate: (ctx) => {
+          captured = ctx;
+        },
+      }).activate({ zipBuffer: Buffer.alloc(0), draftId: 'd1', rev: 1, configValues: {}, secretValues: {} });
+      const ctx = captured!;
+      assert.throws(() => ctx.services.get('knowledgeGraph'), ServiceNotDeclaredError, 'not in the manifest');
+      assert.throws(() => ctx.services.get('executionAuthorization'), ServiceNotDeclaredError);
+      assert.throws(() => ctx.services.getOptional('odoo.client@2'), ServiceNotDeclaredError, 'only the declared major');
+      // Declared, and still refused: the operator's pool and raw model clients.
+      assert.throws(() => ctx.services.get('graphPool'), SharedPoolRefusedError);
+      assert.throws(() => ctx.services.get('anthropicClient'), RawModelServiceRefusedError);
+      assert.throws(() => ctx.services.get('llm'), RawModelServiceRefusedError);
+      assert.deepEqual(handed, [], 'the host registry was never asked');
+
+      // Without a readable manifest the draft declares nothing.
+      let bare: PreviewPluginContext | undefined;
+      await buildRuntime({
+        previewsRoot: freshRoot('services-no-manifest'),
+        serviceRegistry: host,
+        onActivate: (c) => {
+          bare = c;
+        },
+      }).activate({ zipBuffer: Buffer.alloc(0), draftId: 'd2', rev: 1, configValues: {}, secretValues: {} });
+      assert.throws(() => bare!.services.get('odoo.client'), ServiceNotDeclaredError);
+
+      // A draft that calls itself a model plugin gets no raw client either.
+      let model: PreviewPluginContext | undefined;
+      await buildRuntime({
+        previewsRoot: freshRoot('services-model-kind'),
+        serviceRegistry: host,
+        manifestYaml: SERVICES_MANIFEST.replace('kind: "tool"', 'kind: "model"'),
+        onActivate: (c) => {
+          model = c;
+        },
+      }).activate({ zipBuffer: Buffer.alloc(0), draftId: 'd3', rev: 1, configValues: {}, secretValues: {} });
+      assert.ok(model);
+      assert.throws(() => model!.services.get('anthropicClient'), RawModelServiceRefusedError);
+      assert.throws(() => model!.services.get('llm'), RawModelServiceRefusedError);
+      assert.deepEqual(handed, []);
     });
 
     // ── ctx.llm (host-backed, manifest-gated) ─────────────────────────────
@@ -751,7 +849,6 @@ describe('PreviewStore', () => {
       draftId: 'd1',
       agentId: 'a',
       rev: 1,
-      toolkit: { tools: [] },
       previewDir: '/x',
       routeCaptures: [],
       close: async () => {},
@@ -769,7 +866,6 @@ describe('PreviewStore', () => {
       draftId: 'd1',
       agentId: 'a',
       rev: 1,
-      toolkit: { tools: [] },
       previewDir: '/x',
       routeCaptures: [],
       close: async () => {
@@ -789,8 +885,7 @@ describe('PreviewStore', () => {
         draftId: `d${i}`,
         agentId: 'a',
         rev: 1,
-        toolkit: { tools: [] },
-        previewDir: '/x',
+          previewDir: '/x',
         routeCaptures: [],
         close: async () => {
           closeCount += 1;
@@ -808,7 +903,6 @@ describe('PreviewStore', () => {
       draftId: '',
       agentId: 'a',
       rev: 1,
-      toolkit: { tools: [] },
       previewDir: '/x',
       routeCaptures: [],
       close: async () => {},

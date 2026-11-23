@@ -33,7 +33,7 @@ In scope:
 - The `omadia` platform code in this repository (middleware, web-ui,
   plugin-api, channel-sdk, orchestrator, knowledge-graph, embeddings,
   diagrams, verifier).
-- The reference agents shipped in-tree (`agent-reference-maximum`,
+- The reference capability plugins shipped in-tree (`agent-reference-maximum`,
   `agent-seo-analyst`).
 - The Compose stack and Fly image artefacts produced from this repo.
 

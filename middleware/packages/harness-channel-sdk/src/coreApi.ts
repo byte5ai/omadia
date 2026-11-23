@@ -7,6 +7,7 @@ import type { PeopleDirectoryProvider } from './peopleDirectory.js';
 import type { ConversationMembershipEvent } from './membershipEvent.js';
 import type { TargetedSendProvider } from './targetedSend.js';
 import type { ConversationSendProvider } from './conversationSend.js';
+import type { AgentIdentityProvider } from './agentIdentity.js';
 import type { ConversationMessageEvent } from './conversationMessage.js';
 import type {
   ChannelReadinessProvider,
@@ -231,6 +232,14 @@ export interface CoreApi {
   registerConversationSendProvider?(channelId: string, provider: ConversationSendProvider): void;
 
   /**
+   * Register the channel's per-agent bots (spec 2042 §5.3): the plugin can run
+   * one bot per agent next to its default bot. Optional — same feature-detect
+   * + deactivate lifecycle as {@link registerRosterProvider}; one provider per
+   * channel type, the first registrant owns it. See {@link AgentIdentityProvider}.
+   */
+  registerAgentIdentityProvider?(channelId: string, provider: AgentIdentityProvider): void;
+
+  /**
    * Emit an inbound conversation message (#2043): every human message, edit,
    * deletion, reaction and card answer in a conversation an agent moderates.
    * Optional — feature-detect. Fire-and-forget; the kernel stores the event
@@ -239,6 +248,17 @@ export interface CoreApi {
    * asking first.
    */
   emitConversationMessage?(event: ConversationMessageEvent): void;
+
+  /**
+   * #2086 — `emitConversationMessage` for an adapter that must know what
+   * became of the message. `answeredCard` is `true` when the kernel took it as
+   * the typed answer to an open question (a card or poll it posted as plain
+   * text) and stored it as a `card_answer`: the adapter then starts NO turn
+   * for the message, or the agent would also answer "2". Resolves when the
+   * kernel has decided; never rejects. Optional — feature-detect; absent, use
+   * `emitConversationMessage` and start the turn as before.
+   */
+  reportConversationMessage?(event: ConversationMessageEvent): Promise<{ answeredCard: boolean }>;
 
   /**
    * Does the identity `channelKey` receive EVERY message of this conversation

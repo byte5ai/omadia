@@ -5,10 +5,11 @@
  * it out of service. Before the change takes effect: the archetype plugin
  * ends its processes (while agent and plugin are still there, so it can
  * close them in the agent's own voice), the kernel ends every message
- * subscription whatever the plugin answered, the `system` notice the
- * conversation is owed goes to the #2045 seam (nothing is posted under the
- * agent's bot), and the audit says what happened to which agent and
- * conversation. A delete then keeps a tombstone.
+ * subscription whatever the plugin answered, each affected conversation is
+ * handed one `system` notice (the outbox posts it through the shared bot,
+ * `systemNoticeOutbox.ts`; nothing under the agent's bot), and the audit says
+ * what happened to which agent and conversation. A delete then keeps a
+ * tombstone.
  */
 
 import { strict as assert } from 'node:assert';
@@ -22,7 +23,7 @@ import type { AgentEndOfServiceReason, ArchetypeProcessesService } from '@omadia
 import type { AgentTombstone, ConfigStore, OrchestratorRegistry, SystemNoticeRequest } from '@omadia/orchestrator';
 
 import type { AuditEntryInput } from '../src/auth/adminAuditLog.js';
-import { createAgentEndOfService, logOwedSystemNotice } from '../src/platform/agentEndOfService.js';
+import { createAgentEndOfService } from '../src/platform/agentEndOfService.js';
 import { guardArchetypePluginUninstall } from '../src/platform/archetypeUninstallGuard.js';
 import { createOperatorAgentsRouter } from '../src/routes/operatorAgents.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
@@ -106,6 +107,7 @@ describe('end of service: the procedure', () => {
       channelKey: '19:offsite@thread.v2',
       agentId: 'id-mara',
       agentName: 'Mara',
+      agentSlug: 'mara',
       processId: 'fac-7',
     });
   });
@@ -207,19 +209,32 @@ describe('end of service: the procedure', () => {
     assert.equal(report.processes[0]?.detail?.length, 500);
   });
 
-  it('the #2045 seam today: an owed notice is logged, nothing is posted', () => {
-    const lines: string[] = [];
-    logOwedSystemNotice((m) => lines.push(m))({
-      kind: 'agent_deleted',
-      channelType: 'teams',
-      channelKey: '19:offsite@thread.v2',
-      agentId: 'id-mara',
-      agentName: 'Mara',
-      processId: 'fac-7',
+  it('criterion 37: each conversation gets one notice request naming the agent, and the procedure waits for it to be kept', async () => {
+    const kept: string[] = [];
+    const endOfService = createAgentEndOfService({
+      processesFor: () => undefined,
+      endSubscriptionsOf: () => Promise.resolve([HOME, HOME, SESSION]),
+      emitSystemNotice: async (notice) => {
+        await new Promise((r) => setTimeout(r, 5));
+        kept.push(`${notice.kind}:${notice.agentSlug ?? ''}:${notice.agentName}:${notice.channelKey}`);
+      },
     });
-    assert.deepEqual(lines, [
-      "[system-notice] owed, not sent (#2045): agent_deleted for 'Mara' in teams/19:offsite@thread.v2 (process fac-7)",
+    const report = await endOfService.run(MARA, 'archetype_plugin_removed', ACTOR);
+    assert.deepEqual(kept, [
+      `archetype_plugin_removed:mara:Mara:${HOME.conversationId}`,
+      `archetype_plugin_removed:mara:Mara:${SESSION.conversationId}`,
     ]);
+    assert.equal(report.noticesOwed, 2);
+  });
+
+  it('a notice that cannot be kept does not stop the end of service', async () => {
+    const endOfService = createAgentEndOfService({
+      processesFor: () => undefined,
+      endSubscriptionsOf: () => Promise.resolve([HOME]),
+      emitSystemNotice: () => Promise.reject(new Error('outbox down')),
+    });
+    const report = await endOfService.run(MARA, 'agent_disabled', ACTOR);
+    assert.equal(report.noticesOwed, 1);
   });
 });
 
@@ -350,6 +365,8 @@ describe('agent routes: disable, delete, deleted agents, purge', () => {
   let order: string[];
   let audits: AuditEntryInput[];
   let retentionDays: number;
+  /** What the channel plugins answer when a purged agent's own bots are stopped. */
+  let botRelease: { ok: boolean; failed: string[]; notReleased: string[] } = { ok: true, failed: [], notReleased: [] };
 
   const call = async (method: string, path: string, body?: unknown) => {
     const res = await fetch(`${base}${path}`, {
@@ -364,7 +381,6 @@ describe('agent routes: disable, delete, deleted agents, purge', () => {
   before(async () => {
     const store = {
       getAgentBySlug: (slug: string) => Promise.resolve(agents.find((a) => a.slug === slug)),
-      getPlatformSettings: () => Promise.resolve({ fallbackAgentId: 'id-hr', updatedAt: new Date(0) }),
       updateAgent: (id: string, patch: { status?: string }) => {
         order.push(`store.updateAgent(${id}, ${JSON.stringify(patch)})`);
         agents = agents.map((a) => (a.id === id ? { ...a, ...patch } : a)) as typeof agents;
@@ -428,6 +444,10 @@ describe('agent routes: disable, delete, deleted agents, purge', () => {
         },
         get tombstoneRetentionDays() {
           return retentionDays;
+        },
+        releaseChannelIdentities: (agentId: string) => {
+          order.push(`releaseBots(${agentId})`);
+          return Promise.resolve(botRelease);
         },
       } as never),
     );
@@ -501,10 +521,37 @@ describe('agent routes: disable, delete, deleted agents, purge', () => {
     assert.equal((await call('PATCH', '/mara', { name: 'x' })).status, 404, 'it is no agent any more');
   });
 
-  it('the default agent is neither disabled nor deleted, and nothing ends for it', async () => {
-    assert.equal((await call('DELETE', '/hr')).status, 409);
-    assert.equal((await call('PATCH', '/hr', { status: 'disabled' })).status, 409);
-    assert.deepEqual(order, []);
+  it('#2055: the default agent is disabled and deleted like any other, with its end of service', async () => {
+    // There is no fallback agent to protect: its conversations get a notice
+    // naming it (INV-7), never another agent's answer.
+    assert.equal((await call('PATCH', '/hr', { status: 'disabled' })).status, 200);
+    assert.equal((await call('DELETE', '/hr')).status, 200);
+    assert.deepEqual(
+      order.filter((o) => o.startsWith('endOfService') || o.startsWith('store.')),
+      [
+        'endOfService(hr, agent_disabled)',
+        'store.updateAgent(id-hr, {"status":"disabled"})',
+        'endOfService(hr, agent_deleted)',
+        'store.deleteAgent(id-hr, undefined)',
+      ],
+    );
+  });
+
+  it("purge: the agent's own bots are stopped first; a bot an active plugin cannot stop holds the purge", async () => {
+    agents = [{ ...MARA }, { ...HR }];
+    tombstones = [];
+    retentionDays = 0;
+    await call('DELETE', '/mara');
+    order = [];
+    botRelease = { ok: false, failed: ['telegram:tg:7000000001'], notReleased: [] };
+    const held = await call('POST', '/deleted/id-mara/purge', {});
+    assert.deepEqual([held.status, held.json['error']], [502, 'channel_identity_release_failed']);
+    assert.deepEqual(order, ['releaseBots(id-mara)'], 'nothing was purged');
+    botRelease = { ok: true, failed: [], notReleased: ['slack:slack-bot:u1'] };
+    const purged = await call('POST', '/deleted/id-mara/purge', {});
+    assert.deepEqual([purged.status, purged.json['bots_not_released']], [200, ['slack:slack-bot:u1']]);
+    botRelease = { ok: true, failed: [], notReleased: [] };
+    retentionDays = 30;
   });
 
   it('purge: inside the retention period it needs the slug typed out; after it, or with the slug, it is the hard delete', async () => {
@@ -520,7 +567,7 @@ describe('agent routes: disable, delete, deleted agents, purge', () => {
 
     const purged = await call('POST', '/deleted/id-mara/purge', { confirm: 'mara' });
     assert.deepEqual([purged.status, purged.json['ok']], [200, true]);
-    assert.deepEqual(order, ['store.purgeAgent(id-mara)', 'audit(agent.purge)']);
+    assert.deepEqual(order, ['releaseBots(id-mara)', 'store.purgeAgent(id-mara)', 'audit(agent.purge)']);
     assert.deepEqual(audits[0]?.after, { purged: true });
     assert.equal((await call('POST', '/deleted/id-mara/purge', { confirm: 'mara' })).status, 404);
 

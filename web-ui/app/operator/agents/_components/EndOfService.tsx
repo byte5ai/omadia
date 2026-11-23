@@ -92,6 +92,7 @@ export function DeletedAgentsSection({ refreshKey }: { refreshKey: number }): Re
   >({ kind: 'loading' });
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback((): void => {
     listDeletedAgents()
@@ -111,9 +112,20 @@ export function DeletedAgentsSection({ refreshKey }: { refreshKey: number }): Re
 
   function run(agent: DeletedAgentDto, confirmation?: string): void {
     setMessage(null);
+    setNotice(null);
     setBusy(agent.id);
     purgeDeletedAgent(agent.id, confirmation)
-      .catch(() => setMessage(t('loadFailed')))
+      .then((res) => {
+        const bots = res.bots_not_released ?? [];
+        if (bots.length > 0) setNotice(t('botsNotReleased', { bots: bots.join(', ') }));
+      })
+      .catch((err: unknown) =>
+        setMessage(
+          err instanceof ApiError && err.code === 'channel_identity_release_failed'
+            ? t('botReleaseFailed')
+            : t('purgeFailed'),
+        ),
+      )
       .finally(() => {
         setBusy(null);
         load();
@@ -143,6 +155,11 @@ export function DeletedAgentsSection({ refreshKey }: { refreshKey: number }): Re
         <p className="mt-1 max-w-3xl text-xs text-[color:var(--fg-muted)]">{t('intro')}</p>
       </div>
       {message ? <p className="text-sm text-[color:var(--danger)]">{message}</p> : null}
+      {notice ? (
+        <p className="text-sm text-[color:var(--warning)]" role="status" data-testid="deleted-agents-notice">
+          {notice}
+        </p>
+      ) : null}
       {state.kind === 'error' ? (
         <p className="text-sm text-[color:var(--danger)]">{t('loadFailed')}</p>
       ) : (

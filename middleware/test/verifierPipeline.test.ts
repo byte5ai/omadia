@@ -252,7 +252,7 @@ describe('verifier/pipeline', () => {
         verdict.contradictions[0]!.status === 'contradicted'
           ? (verdict.contradictions[0]!.detail ?? '')
           : '',
-        /Fach-Agent-Call/,
+        /Fach-Werkzeug-Aufruf/,
       );
     }
     assert.equal(

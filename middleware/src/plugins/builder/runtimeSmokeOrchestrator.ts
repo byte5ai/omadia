@@ -41,6 +41,10 @@ export interface RuntimeSmokeOrchestratorDeps {
   /** Per-tool timeout, default 10s (mirrors invokeToolsOnHandle default). */
   toolTimeoutMs?: number;
   logger?: (...args: unknown[]) => void;
+  /** Spec 2042 §5.10 — runs `work` as one operator job started by
+   *  `startedBy` (the kernel's `modelWork.run`), so its model calls have a
+   *  context, a budget and a deadline. Absent (tests): `work` runs as is. */
+  runAsJob?: <T>(startedBy: string, work: () => Promise<T>) => Promise<T>;
 }
 
 export class RuntimeSmokeOrchestrator {
@@ -48,6 +52,7 @@ export class RuntimeSmokeOrchestrator {
   private readonly bus: SpecEventBus;
   private readonly toolTimeoutMs: number | undefined;
   private readonly log: (...args: unknown[]) => void;
+  private readonly runAsJob: NonNullable<RuntimeSmokeOrchestratorDeps['runAsJob']>;
 
   /** Per-draft last successfully-smoked rev. Smoke is skipped if the
    *  rev hasn't advanced since the previous attempt. */
@@ -62,6 +67,7 @@ export class RuntimeSmokeOrchestrator {
     this.bus = deps.bus;
     this.toolTimeoutMs = deps.toolTimeoutMs;
     this.log = deps.logger ?? (() => {});
+    this.runAsJob = deps.runAsJob ?? ((_by, work) => work());
   }
 
   /**
@@ -91,7 +97,13 @@ export class RuntimeSmokeOrchestrator {
       buildN: handle.rev,
     });
 
-    void this.runDetached({ handle, userEmail, draftId });
+    // The smoke runs the draft's tools, which may ask a model: one operator
+    // job per smoke run, attributed to the draft's operator.
+    void this.runAsJob(userEmail, () => this.runDetached({ handle, userEmail, draftId })).catch(
+      (err: unknown) => {
+        this.log('runtime smoke: operator job not started', draftId, err);
+      },
+    );
   }
 
   /**

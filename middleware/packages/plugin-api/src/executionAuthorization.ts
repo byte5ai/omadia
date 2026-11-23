@@ -33,6 +33,8 @@
  * scope may address; the kernel enforces that list and records it.
  */
 
+import type { EmissionType } from './speaker.js';
+
 export const EXECUTION_AUTHORIZATION_SERVICE_NAME = 'executionAuthorization';
 
 /** The five scopes of spec 2043 §0. */
@@ -85,10 +87,11 @@ export type ExecutionActionType =
  * model-written text, `template` a registered template filled with engine
  * values, `data` side-channel data. Recorded with the authorization.
  */
-export type ExecutionEmissionType = 'prose' | 'template' | 'data';
+export type ExecutionEmissionType = Exclude<EmissionType, 'system'>;
 
 /** What the action is for. Past the deadline of an `active` scope in its
- *  deadline wait, only `consent`, `status` and `stop` are authorized. */
+ *  deadline wait, only `consent`, `status` and `stop` are authorized; a
+ *  `closing` scope authorizes only {@link CLOSING_SCOPE_PURPOSES}. */
 export type ExecutionPurpose =
   | 'moderation'
   | 'handshake'
@@ -103,6 +106,25 @@ export type ExecutionPurpose =
   | 'readiness_check'
   | 'roster_check'
   | 'other';
+
+/**
+ * #2090 (spec 2043 §0, §5.2) — what a `closing` scope authorizes: the
+ * essential messages of its closing event, their dispatch, the consent
+ * answers of a required confirmation, status and stop, and checks. Never
+ * moderation: a closing does not re-open it. `other` only for a `check`.
+ * Since plugin-api 1.85.0.
+ */
+export const CLOSING_SCOPE_PURPOSES: readonly ExecutionPurpose[] = [
+  'essential_message',
+  'protocol_dispatch',
+  'consent',
+  'status',
+  'stop',
+  'invitation',
+  'readiness_check',
+  'roster_check',
+  'other',
+];
 
 export type ExecutionTarget =
   | { readonly kind: 'conversation'; readonly channelType: string; readonly conversationId: string }
@@ -159,6 +181,14 @@ export type ExecutionRefusalCode =
   | 'purpose_not_allowed'
   | 'target_not_allowed'
   | 'conversation_busy'
+  /** #2089 — a session conversation is linked only on a link request made
+   *  inside it and bound to this process (spec 2043 §5.3, criterion 48). */
+  | 'link_not_authorized'
+  /** #2076 — a session goes `live` only where the channel can deliver every
+   *  message of its conversation (criterion 60). */
+  | 'not_ready'
+  /** #2076 — the session-state change is not one of the table's. */
+  | 'session_state'
   | 'unavailable';
 
 export interface ExecutionRefusal {
@@ -174,6 +204,14 @@ export interface OpenExecutionScopeRequest {
   /** Required for `closing` (its closing event) and `scheduling` (the agreed
    *  meeting); several of each may be open, each with its own id. */
   readonly eventId?: string;
+  /**
+   * `closing` only (plugin-api 1.85.0): when the closing event happened, ISO
+   * time. The absolute limit of 30 days counts from it (spec 2043 §0), also
+   * when the scope is opened later (a restart, a send that was retried). It
+   * may not lie in the future; an earlier event only shortens the limit.
+   * Absent: the event is now.
+   */
+  readonly eventAt?: string;
   /** ISO time. Absent for `configuring`: the kernel's configured maximum. */
   readonly deadline?: string;
   readonly budget: ExecutionBudget;
@@ -204,6 +242,33 @@ export interface ExecutionAuthorization {
   readonly remaining: ExecutionBudget;
 }
 
+/**
+ * #2076 (spec 2043 §5.2, §5.3) — the state of the session a `session`
+ * reservation is for. The kernel derives from it what the process reads and
+ * where it may send. Of the sending column the kernel enforces the released
+ * states (only a `closing` scope) and `confirming` (consent, status, stop and
+ * essential/protocol messages); in `scheduled` and `live` the plugin keeps
+ * to the column:
+ *
+ * | state        | delivered and read                  | the process may send |
+ * |--------------|-------------------------------------|----------------------|
+ * | `scheduled`  | messages addressed to the agent     | link confirmation, agenda, preparation |
+ * | `live`       | every human message                 | moderation |
+ * | `confirming` | every human message                 | consent request, status |
+ * | `closed`     | nothing; the reservation is released | only under a `closing` scope |
+ * | `cancelled`  | nothing; the reservation is released | only under a `closing` scope |
+ */
+export type SessionConversationState = 'scheduled' | 'live' | 'confirming' | 'closed' | 'cancelled';
+
+/** The transitions the kernel accepts. */
+export const SESSION_CONVERSATION_TRANSITIONS: Readonly<Record<SessionConversationState, readonly SessionConversationState[]>> = {
+  scheduled: ['live', 'cancelled'],
+  live: ['confirming', 'closed'],
+  confirming: ['closed'],
+  closed: [],
+  cancelled: [],
+};
+
 export interface ConversationReservation {
   readonly channelType: string;
   readonly conversationId: string;
@@ -211,6 +276,10 @@ export interface ConversationReservation {
   readonly role: 'home' | 'session';
   readonly reservedAt: string;
   readonly releasedAt?: string;
+  /** `session` role: the session's state (plugin-api 1.81.0). */
+  readonly sessionState?: SessionConversationState;
+  /** `session` role: the plugin's id of the session. */
+  readonly sessionId?: string;
 }
 
 export interface ExecutionAuthorizationService {
@@ -230,7 +299,11 @@ export interface ExecutionAuthorizationService {
     people: readonly Extract<ExecutionTarget, { kind: 'person' }>[],
   ): Promise<{ outcome: 'updated'; scope: ExecutionScope } | ExecutionRefusal>;
   /** Move the deadline, within the kind's absolute limit. `deadlineWait`
-   *  (`active` only) is the bounded wait past the agreed deadline. */
+   *  (`active` only) is the bounded wait past the agreed deadline (spec 2043
+   *  §5.6): since plugin-api 1.85.0 it needs an open `closing` scope of the
+   *  same process (the session closings it waits for are opened first) and
+   *  never runs past the latest absolute limit of those (`scope_order`,
+   *  `limit_exceeded`). */
   extendScope(
     scopeId: string,
     change: { deadline: string; deadlineWait?: boolean },
@@ -241,13 +314,45 @@ export interface ExecutionAuthorizationService {
   listScopes(processId: string): Promise<readonly ExecutionScope[]>;
   /** Take a further conversation for the process (a linked session
    *  conversation). Refused with `conversation_busy` when another process or
-   *  an agent discussion holds it. */
+   *  an agent discussion holds it.
+   *
+   *  Since plugin-api 1.81.0 (#2089, spec 2043 §5.3) the link must be
+   *  authorized from inside the conversation: `linkRequestId` names a link
+   *  request (`conversationMessages@2.onLinkRequest`) made in exactly this
+   *  conversation and offered for this process; it is consumed in the same
+   *  transaction. Without one, or with one that does not fit, the answer is
+   *  `link_not_authorized` and nothing is taken. The reservation starts in
+   *  session state `scheduled`, and the conversation is added to the
+   *  targets of the process's open `configuring` and `active` scopes.
+   *  Asked again by the process that holds it: the same reservation. A
+   *  process that lost its own HOME conversation's reservation takes it back
+   *  without a link request, unless an operator released it. */
   reserveConversation(request: {
     agentSlug: string;
     processId: string;
     channelType: string;
     conversationId: string;
+    linkRequestId?: string;
+    /** The plugin's id of the session the conversation is linked for. */
+    sessionId?: string;
   }): Promise<{ outcome: 'reserved'; reservation: ConversationReservation } | ExecutionRefusal>;
+  /**
+   * #2076 (spec 2043 §5.2, §5.3) — move a linked session conversation to
+   * another session state; the kernel applies the read table at once (the
+   * process's message subscription there follows). Only the transitions of
+   * {@link SESSION_CONVERSATION_TRANSITIONS}; the same state again is
+   * accepted (idempotent). `live` needs the channel's readiness to deliver
+   * every message there (`not_ready` with what is missing otherwise; the
+   * state stays). `closed` and `cancelled` release the reservation in the
+   * same transaction. Optional: absent on a kernel before plugin-api 1.81.0.
+   */
+  setSessionState?(request: {
+    processId: string;
+    channelType: string;
+    conversationId: string;
+    state: SessionConversationState;
+    reason?: string;
+  }): Promise<{ outcome: 'updated'; reservation: ConversationReservation } | ExecutionRefusal>;
   /** Release one of the process's reservations. Idempotent. */
   releaseConversation(request: {
     processId: string;

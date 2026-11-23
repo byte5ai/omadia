@@ -21,19 +21,18 @@ import {
   parseArchetype,
   registerArchetype,
 } from '../packages/harness-orchestrator/src/registry/archetype.js';
-import {
-  FacilitatorOmissionError,
-  assertNotFacilitator,
-  isFacilitatorKind,
-  parseAgentKind,
-} from '../packages/harness-orchestrator/src/registry/agentKind.js';
 
 describe('agent archetypes', () => {
-  it('standard is built in and omits nothing; the facilitator is seeded with every omission of spec 2043 §2.3', () => {
+  // #2060 — spec 2043 §2.3 omits every row but working modes: modes that add
+  // moderation methods are allowed (identity replacement is refused by the
+  // working-mode check, `facilitatorWorkingModes.test.ts`).
+  it('standard is built in and omits nothing; the facilitator is seeded with the omissions of spec 2043 §2.3', () => {
     assert.deepEqual(listArchetypes().map((d) => d.id).sort(), ['facilitator', 'standard']);
     assert.deepEqual(getArchetype('standard')?.omits, []);
-    assert.deepEqual([...(getArchetype('facilitator')?.omits ?? [])].sort(), [...ARCHETYPE_OMISSIONS].sort());
-    for (const omission of ARCHETYPE_OMISSIONS) {
+    const omitted = ARCHETYPE_OMISSIONS.filter((o) => o !== 'persona_skill');
+    assert.deepEqual([...(getArchetype('facilitator')?.omits ?? [])].sort(), [...omitted].sort());
+    assert.equal(archetypeOmits({ archetype: 'facilitator' }, 'persona_skill'), false);
+    for (const omission of omitted) {
       assert.equal(archetypeOmits({ archetype: 'standard' }, omission), false);
       assert.equal(archetypeOmits({ archetype: 'facilitator' }, omission), true);
       assert.ok(getArchetype('facilitator')?.omissionReasons?.[omission], `a reason for ${omission}`);
@@ -41,16 +40,16 @@ describe('agent archetypes', () => {
     assert.equal(archetypeOmits(undefined, 'memory'), false, 'no agent, nothing to refuse');
   });
 
-  it('reads the archetype, then the legacy kind, then standard', () => {
-    assert.equal(archetypeOf({ archetype: 'facilitator', kind: 'facilitator' }), 'facilitator');
-    assert.equal(archetypeOf({ kind: 'facilitator' }), 'facilitator', 'a row from before migration 0070');
-    // The column default next to a kind the sync has not copied yet.
-    assert.equal(archetypeOf({ archetype: 'standard', kind: 'facilitator' }), 'facilitator');
+  it('reads the archetype, and standard where there is none; `kind` no longer counts', () => {
+    assert.equal(archetypeOf({ archetype: 'facilitator' }), 'facilitator');
+    assert.equal(archetypeOf({ archetype: 'standard' }), 'standard');
+    // #2088 (K6): the predecessor field is not read any more.
+    assert.equal(archetypeOf({ kind: 'facilitator' } as never), 'standard');
     assert.equal(archetypeOf({}), 'standard');
     assert.equal(archetypeOf(undefined), 'standard');
-    assert.equal(parseArchetype(null, null), 'standard');
-    assert.equal(parseArchetype('Not An Id', undefined), 'standard');
-    assert.equal(isArchetype({ kind: 'facilitator' }, 'facilitator'), true);
+    assert.equal(parseArchetype(null), 'standard');
+    assert.equal(parseArchetype('Not An Id'), 'standard');
+    assert.equal(isArchetype({ archetype: 'facilitator' }, 'facilitator'), true);
     assert.equal(isArchetype(undefined, 'standard'), false);
   });
 
@@ -61,8 +60,6 @@ describe('agent archetypes', () => {
       () => assertArchetypeAllows(orphan, 'plugin_grant'),
       /agent "coach-1" has the archetype 'coach', which is not registered on this instance/,
     );
-    // The legacy output value for it is `standard`; that is why nothing decides on `kind`.
-    assert.equal(parseAgentKind(archetypeOf(orphan)), 'standard');
   });
 
   it('a registered descriptor decides, and removing it denies again', () => {
@@ -109,7 +106,6 @@ describe('agent archetypes', () => {
       caught = err;
     }
     assert.ok(caught instanceof ArchetypeOmissionError);
-    assert.ok(caught instanceof FacilitatorOmissionError, 'the old class name is the same class');
     assert.deepEqual(
       [caught.code, caught.omission, caught.agentSlug, caught.archetype],
       ['facilitator_omission', 'memory', 'mara', 'facilitator'],
@@ -118,8 +114,7 @@ describe('agent archetypes', () => {
       caught.message,
       'agent "mara" is a facilitator: a facilitator has no general memory; its only memory is the record of each facilitation',
     );
-    assert.throws(() => assertNotFacilitator({ slug: 'mara', kind: 'facilitator' }, 'consultation'), ArchetypeOmissionError);
-    assert.equal(isFacilitatorKind({ archetype: 'facilitator' }), true);
+    assert.throws(() => assertArchetypeAllows({ slug: 'mara', archetype: 'facilitator' }, 'consultation'), ArchetypeOmissionError);
     assert.doesNotThrow(() => assertArchetypeAllows({ slug: 'hr', archetype: 'standard' }, 'memory'));
   });
 });

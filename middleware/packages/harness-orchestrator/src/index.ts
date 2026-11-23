@@ -31,13 +31,18 @@ export type {
   RoutingBucket,
 } from './modelRouter.js';
 
-// Wave 8 — per-turn direct-answer persona routing (twin of modelRouter).
-export { routeTurnPersona } from './personaRouter.js';
+// #2051 — per-turn working-mode selection (twin of modelRouter); the mode is
+// composed beneath the agent's identity, never in its place.
+export { routeTurnWorkingMode, withWorkingMode } from './workingModes.js';
 export type {
-  PersonaCandidate,
-  PersonaRouteResult,
-  PersonaRoutingBucket,
-} from './personaRouter.js';
+  SelectedWorkingMode,
+  WorkingModeBucket,
+  WorkingModeCandidate,
+  WorkingModeRouteResult,
+} from './workingModes.js';
+// #2060 — a working mode never replaces who speaks (spec 2043 §2.3).
+export { findWorkingModeIdentityReplacement } from './workingModeIdentity.js';
+export type { WorkingModeIdentityFinding, WorkingModeText } from './workingModeIdentity.js';
 
 // Multi-orchestrator registry (US4) — read by US7 channel routing and US9 UI.
 export {
@@ -54,28 +59,55 @@ export { diffSnapshots, buildForAgent } from './registry/applyDiff.js';
 export type { DiffAction, DiffPlan } from './registry/applyDiff.js';
 export { ReloadBus, directDatabaseUrl, isPooledDatabaseUrl } from './registry/reloadBus.js';
 export type { ReloadBusOptions } from './registry/reloadBus.js';
-// US7 — channel routing + first-boot onboarding.
+// US7 — channel routing.
 export { ChannelResolver } from './routing/channelResolver.js';
 export type {
   ChannelResolverOptions,
+  ResolveContext,
   SystemNoticeRequest,
   ResolveDecision,
   ResolveResult,
 } from './routing/channelResolver.js';
+// #2055 — the management layer: deterministic routing, routing tables,
+// plain-text agent selection, system notices.
 export {
-  ensureFallbackAgent,
-  attachAllPlugins,
-  attachNewPluginsToFallbackAgent,
-  FALLBACK_AGENT_SLUG,
-  // #679 / I5 — exported so a locale-aware surface can recognise the
-  // server-written seed prose and render its own copy instead.
-  FALLBACK_AGENT_SEED_NAME,
-  FALLBACK_AGENT_SEED_DESCRIPTION,
-} from './registry/onboarding.js';
+  ADDRESSABLE_STATUS,
+  ManagementRouter,
+  defaultEntryFor,
+  setRoleMembership,
+} from './routing/managementRouter.js';
 export type {
-  FallbackAttachResult,
-  OnboardingOptions,
-} from './registry/onboarding.js';
+  RoleMembership,
+  RouteMatch,
+  RouteOutcome,
+  RouteRequest,
+  RoutingAgentRecord,
+  RoutingView,
+} from './routing/managementRouter.js';
+export { RoutingTables } from './registry/routingTables.js';
+export type {
+  AgentSelectionRow,
+  AvailabilityPrincipalRow,
+  DefaultAgentEntryInput,
+  DefaultAgentEntryRow,
+} from './registry/routingTables.js';
+export { SnapshotRoutingView } from './registry/routingView.js';
+export { KernelAgentSelectionService } from './management/agentSelection.js';
+export { buildSystemNotice, noticeLocale, systemEmission } from './management/systemNotices.js';
+export { agentAvatarUrl, speakerFor } from './management/speakerFor.js';
+export { emitterOf, speakerOf, stampAnswer, stampEvent, withSpeaker } from './management/speakingChatAgent.js';
+export { AgentAnswerEmitter, TemplateRegistry } from './management/answerEmitter.js';
+export type { TemplateValueType } from './management/answerEmitter.js';
+export {
+  DEFAULT_AGENT_IDENTITY,
+  identityRules,
+  withIdentityRules,
+} from './management/agentIdentityPrompt.js';
+export { IdentityGuard, SentenceGate, IDENTITY_GUARD_JUDGE_TIMEOUT_MS } from './identityGuard/guard.js';
+export type { IdentityGuardResult, IdentityJudge } from './identityGuard/guard.js';
+export { checkIdentityDeterministic } from './identityGuard/deterministic.js';
+export type { GuardDirectoryEntry } from './identityGuard/deterministic.js';
+export { maskRestoredValues, withIdentityGuard } from './identityGuard/guardedChatAgent.js';
 // US8 — per-Agent memory scope.
 export { computeMemoryScope } from './registry/index.js';
 export {
@@ -122,20 +154,13 @@ export type {
   ContextMemoryMode,
   MemoryBinderOptions,
 } from './memoryBinder.js';
-export {
-  AGENT_KINDS,
-  FacilitatorOmissionError,
-  assertNotFacilitator,
-  isFacilitatorKind,
-  parseAgentKind,
-} from './registry/agentKind.js';
-export type { AgentKind, FacilitatorOmission } from './registry/agentKind.js';
 // #2088 — tombstones: a deleted agent's row stays; readers say what they mean.
 export { liveAgentRow, ofLiveAgent, tombstoneSlug } from './registry/tombstones.js';
 export type { AgentTombstone } from './registry/tombstones.js';
 // #2088 — archetypes: the registry and the one question call sites ask.
 export {
   ARCHETYPE_ADDITIONS,
+  ARCHETYPE_AGENT_SETTING_TYPES,
   ARCHETYPE_OMISSIONS,
   ARCHETYPE_REQUIREMENTS,
   ArchetypeOmissionError,
@@ -146,15 +171,22 @@ export {
   archetypeOmits,
   archetypeRequires,
   assertArchetypeAllows,
+  effectiveArchetypeAgentSettings,
   getArchetype,
   isArchetype,
   isArchetypeId,
   listArchetypes,
   parseArchetype,
   registerArchetype,
+  validateArchetypeAgentSettings,
 } from './registry/archetype.js';
 export type {
   ArchetypeAddition,
+  ArchetypeAgentSetting,
+  ArchetypeAgentSettingIssue,
+  ArchetypeAgentSettingOption,
+  ArchetypeAgentSettingType,
+  ArchetypeAgentSettingValue,
   ArchetypeBearer,
   ArchetypeDescriptor,
   ArchetypeRequirement,
@@ -181,6 +213,7 @@ export type {
   PrivateTurnLookup,
   AddressedTurnLookup,
 } from './facilitatorAgent.js';
+export { conversationPrincipal } from './conversationPrincipal.js';
 export {
   buildToolCallContext,
   currentToolCallContext,
@@ -234,7 +267,6 @@ export type {
   ChannelBindingRow,
   ChannelIdentityRow,
   ConfigSnapshot,
-  PlatformSettingsRow,
   PrivacyProfile,
 } from './registry/configStore.js';
 export { runMultiOrchestratorMigrations } from './registry/migrator.js';
@@ -371,6 +403,28 @@ export type {
   SubAgentGraph,
   SubAgentToolDeps,
 } from './registry/subAgentTools.js';
+// #2050 — DB sub-agents as the agent's internal helpers: shared write-time and
+// runtime rules (names, model policy, capability subset).
+export {
+  HelperRefusalError,
+  INTERNAL_HELPER_CONTRACT,
+  assertHelperModelAllowed,
+  assertHelperNameFree,
+  helperDefaultModelRef,
+  helperModelVerdict,
+  helperToolName,
+  helperToolNameConflicts,
+  helpersOutOfService,
+  mcpGrantHeldBy,
+} from './registry/internalHelpers.js';
+export type {
+  GrantLike,
+  HelperModelVerdict,
+  HelperOutOfService,
+  HelperNameConflict,
+  HelperRefusalCode,
+  NamedHelper,
+} from './registry/internalHelpers.js';
 // #904 — the scoped `memory` tool a granted sub-agent gets, and the tool name
 // both the orchestrator's dispatch and the grant adapter key on.
 export {
@@ -448,43 +502,6 @@ export type {
   SecurityAuditEvent,
   FetchLike,
 } from './securityScreener.js';
-
-// #332 Layer 2 — Direct Line directive parsing & target resolution (exported
-// for unit coverage and reuse by deterministic routers / the Conductor).
-export {
-  parseDirectLineDirective,
-  resolveDirectLineTarget,
-  directLineLabel,
-  DEFAULT_DIRECTIVE_PREFIX,
-} from './directLine.js';
-export type {
-  DirectLineDirective,
-  DirectLineCandidate,
-  DirectLineResolution,
-  DirectLineMode,
-} from './directLine.js';
-
-// #445 — sticky Direct Line: the pure target-selection layer. Exported so the
-// decision table, the scope allow-gate and the binding store can be unit-tested
-// without an Orchestrator, and so the store can be constructed once at boot and
-// injected (it must outlive any single Orchestrator instance).
-export {
-  classifyStickyScope,
-  decideDirectLineTurn,
-  isDirectLineExitMessage,
-  stickyKeyFor,
-  InMemoryDirectLineStickyStore,
-  DIRECT_LINE_EXIT_TOKENS,
-  STICKY_IDLE_TTL_MS,
-  STICKY_MAX_BINDINGS,
-} from './directLineSticky.js';
-export type {
-  DirectLineBinding,
-  DirectLineDecision,
-  DirectLineStickyStore,
-  StickyScopeClassification,
-  StickyScopeRefusal,
-} from './directLineSticky.js';
 
 // Round-loop guard — exported so it can be unit-tested in isolation and reused
 // by other agentic loops (e.g. the Builder).
@@ -636,6 +653,22 @@ export type {
   CliVersionExec,
   CompletionCliArgvOptions,
 } from './cliSpawnGate.js';
+// Spec 2042 §5.10 — every agent's chat agent runs its turns as the model
+// gateway's agent-turn context.
+export { innerChatAgent, withAgentTurnExecution } from './agentTurnExecution.js';
+// Spec 2042 §5.10 — the isolated profile of every CLI spawn.
+export {
+  CLI_PROFILE_INSTRUCTION_FILES,
+  CliProfileNotCleanError,
+  applyCliProfile,
+  assertCliProfileClean,
+  cliProfileDir,
+  cliProfileInstructionFiles,
+  decideCliProfile,
+  setCliProfileDir,
+  type CliProfileDecision,
+  type CliProfileMode,
+} from './cliProfile.js';
 export type {
   CliChatAgentDeps,
   CliChatHooks,
@@ -745,6 +778,17 @@ export type {
   TurnContextValue,
   GraphReadScope,
 } from './turnContext.js';
+// #2085 — a data action run on the agent's behalf passes the same audience
+// floor as a tool the model dispatches.
+export { guardToolEgress } from './audienceFloorGuard.js';
+// #2085 — the agent's boundary check of a data plan (spec 2042 §5.13 1a).
+export { createDataPlanGuard, createLlmDataPlanJudge, type DataPlanJudge } from './dataPlanGuard.js';
+// #2085 — per-turn side-channel data collector (spec 2042 §5.13).
+export {
+  MAX_DATA_PAYLOADS_PER_TURN,
+  TurnDataCollector,
+  type CollectOutcome,
+} from './turnDataCollector.js';
 export {
   setMcpPrivacyBypassServers,
   isMcpServerPrivacyBypassed,
@@ -807,6 +851,19 @@ export type { AttachmentByteStore } from './attachmentReaderFactory.js';
 // #575 — the handle→room binding contract. Exported so the kernel can supply a
 // Postgres implementation; the enforcement itself stays inside the reader
 // wrapper, where every resolution path is covered by construction.
+// #2048 — the audience floor on by default: the member baseline every resolved
+// person holds, and the room classification the per-turn provider uses.
+export {
+  MEMBER_BASELINE_CAPABILITIES,
+  MemberBaselineGrantStore,
+} from './memberBaselineGrantStore.js';
+export { CHANNEL_KIND_BY_ORIGIN } from './resolveTurnOwnerIdentity.js';
+export {
+  audienceRoomFor,
+  chatParticipantsFromRoster,
+  createAudienceFloorProvider,
+  type AudienceRoom,
+} from './audienceFloorProvider.js';
 export {
   bindingForRawScope,
   bindingForScope,
@@ -929,7 +986,9 @@ export { toSemanticAnswer } from '@omadia/channel-sdk';
 export {
   TASK_LIFECYCLE_STATUSES,
   TERMINAL_TASK_STATUSES,
+  TASK_CONTEXT_KEY,
   TASK_LEASE_UUID_RE,
+  carryTaskContext,
   TaskLeaseLostError,
   isTaskLifecycleStatus,
   isTerminalTaskStatus,
@@ -993,3 +1052,18 @@ export {
   resolveScopedBundle,
 } from './scopedChatAgent.js';
 export type { ScopedRegistryView } from './scopedChatAgent.js';
+
+// Spec 2042 §5.11 (#2079) — discretion: labels, flow rule, disclosure levels.
+export * from './discretion/labels.js';
+export * from './discretion/flowRule.js';
+export * from './discretion/disclosure.js';
+export * from './discretion/port.js';
+export * from './discretion/turnLabels.js';
+export * from './discretion/turnSetup.js';
+export * from './discretion/seededTurn.js';
+export * from './discretion/fieldRights.js';
+export * from './privacyAudience.js';
+// Spec 2042 §5.4 (#2047) — consultation instead of delegation.
+export * from './consultation/consultationScope.js';
+export * from './consultation/consultTool.js';
+export * from './discretion/toolFlow.js';

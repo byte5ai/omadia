@@ -1,9 +1,13 @@
 /**
- * 'agentTurn@1' and the tool call context (#2043).
+ * The kernel-run agent turn and the tool call context (#2043).
  *
  * The facilitation engine asks the kernel to run one turn as a facilitator
  * and gets the text back unposted; tools called in that turn are told, by the
  * kernel, which agent, conversation, stored event and caller they serve.
+ *
+ * This suite is about the turn itself, as one process of the engine runs it.
+ * Its authorization (the execution scope, the reservation of model calls) is
+ * 'agentTurn@2' and is in `scopedAgentTurn.test.ts`.
  */
 
 import { strict as assert } from 'node:assert';
@@ -30,6 +34,7 @@ import {
 import { NativeToolRegistry } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
 import { buildForAgent } from '../packages/harness-orchestrator/src/registry/applyDiff.js';
 import type { AgentRow } from '../packages/harness-orchestrator/src/registry/configStore.js';
+import { getArchetype, registerArchetype } from '../packages/harness-orchestrator/src/registry/archetype.js';
 import {
   buildToolCallContext,
   currentToolCallContext,
@@ -48,8 +53,11 @@ import {
   ENGINE,
   hubFixture,
   messageEvent,
-  scopeOf,
+  readAll,
 } from './_helpers/conversationMessagesFixture.js';
+
+/** The process of the engine that runs the turns of this suite. */
+const PROCESS = 'facilitation-7';
 
 const RUNTIME = { model: 'm', maxTokens: 100, maxToolIterations: 4 };
 
@@ -61,7 +69,7 @@ function row(overrides: Partial<AgentRow> = {}): AgentRow {
     description: null,
     privacyProfile: 'default',
     status: 'enabled',
-    kind: 'facilitator',
+    archetype: 'facilitator',
     identityName: 'Mara',
     identityShortDescription: 'Moderates decisions.',
     createdAt: new Date(0),
@@ -195,9 +203,18 @@ describe('agentTurn service', () => {
     toolCall: NativeToolCallContext;
   }
 
-  async function setup(options: { agent?: Partial<AgentRow>; granted?: boolean; isEngine?: boolean; perMinute?: number } = {}) {
+  async function setup(
+    options: {
+      agent?: Partial<AgentRow>;
+      granted?: boolean;
+      isEngine?: boolean;
+      perMinute?: number;
+      channels?: string[];
+      archetypeSettings?: (agentId: string) => Promise<Record<string, unknown>>;
+    } = {},
+  ) {
     const f = hubFixture(new InMemoryConversationMessageStore());
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    assert.equal((await readAll(f, 'mara', CONVERSATION, PROCESS)).outcome, 'subscribed');
     const stored = await f.hub.ingest(messageEvent({ text: 'My vote: A > C > B' }));
     assert.ok(stored);
     const seen: Seen[] = [];
@@ -214,18 +231,20 @@ describe('agentTurn service', () => {
     };
     const agent = row(options.agent);
     // The real refusal gate in front of the fake model: an engine turn must pass it.
-    const bundleAgent = agent.kind === 'facilitator' ? wrapFacilitatorAgent(inner, { agentSlug: 'mara' }) : inner;
+    const bundleAgent = agent.archetype === 'facilitator' ? wrapFacilitatorAgent(inner, { agentSlug: 'mara' }) : inner;
     const entry = {
       agent,
       plugins: options.granted === false ? [] : [{ pluginId: ENGINE, enabled: true }],
       built: { bundle: { agent: bundleAgent } },
     };
-    const service = createAgentTurnService({
+    const guarded = createAgentTurnService({
       getRegistry: () =>
         ({
           get: (slug: string) => (slug === 'mara' ? entry : undefined),
-          channelTypesWithIdentity: () => ['teams'],
+          channelTypesWithIdentity: () => options.channels ?? ['teams'],
         }) as never,
+      ...(options.archetypeSettings ? { archetypeSettings: options.archetypeSettings } : {}),
+      // The turn looks its inbound event up among the events of its process.
       messages: f.hub,
       callerPluginId: ENGINE,
       isEngine: () => options.isEngine !== false,
@@ -233,6 +252,11 @@ describe('agentTurn service', () => {
       budget: new AgentTurnBudget(options.perMinute ?? 60),
       language: () => 'de',
     });
+    const service = {
+      ...guarded,
+      runTurn: (request: Parameters<typeof guarded.runGuarded>[0], processId = PROCESS) =>
+        guarded.runGuarded(request, processId),
+    };
     const request = {
       agentSlug: 'mara',
       sessionKey: 'facilitation-7',
@@ -321,7 +345,7 @@ describe('agentTurn service', () => {
     const a = await notEngine.service.runTurn(notEngine.request);
     assert.deepEqual([a.outcome, a.outcome === 'refused' && a.code], ['refused', 'not_bound']);
 
-    const standard = await setup({ agent: { kind: 'standard' } });
+    const standard = await setup({ agent: { archetype: 'standard' } });
     const b = await standard.service.runTurn(standard.request);
     assert.equal(b.outcome === 'refused' && b.code, 'not_bound');
     assert.match(b.outcome === 'refused' ? b.message : '', /runs facilitators only/);
@@ -345,6 +369,9 @@ describe('agentTurn service', () => {
       const outcome = await service.runTurn({ ...request, ...bad });
       assert.equal(outcome.outcome === 'refused' && outcome.code, 'unavailable');
     }
+    // Another process of the same plugin did not receive the event either.
+    const otherProcess = await service.runTurn(request, 'facilitation-8');
+    assert.equal(otherProcess.outcome === 'refused' && otherProcess.code, 'unavailable');
     const invalid = await service.runTurn({ ...request, input: '' });
     assert.equal(invalid.outcome === 'refused' && invalid.code, 'unavailable');
     assert.equal(seen.length, 0);
@@ -378,8 +405,9 @@ describe('agentTurn service', () => {
 
   it('getProfile answers for a bound facilitator only', async () => {
     const { service } = await setup({ agent: { identityLanguage: 'en-GB' } });
-    assert.deepEqual(await service.getProfile!('mara'), {
+    assert.deepEqual(await service.getProfile('mara'), {
       agentSlug: 'mara',
+      // Deprecated in the plugin API, still answered (no major for one field).
       kind: 'facilitator',
       archetype: 'facilitator',
       displayName: 'Mara',
@@ -388,11 +416,67 @@ describe('agentTurn service', () => {
       ownIdentityChannelTypes: ['teams'],
     });
     const platform = await setup({ agent: { identityName: null } });
-    const profile = await platform.service.getProfile!('mara');
+    const profile = await platform.service.getProfile('mara');
     assert.equal(profile?.displayName, 'mara', 'falls back to the agent label');
     assert.equal(profile?.language, 'de', 'falls back to the installation language');
-    assert.equal(await service.getProfile!('ghost'), undefined);
-    assert.equal(await (await setup({ isEngine: false })).service.getProfile!('mara'), undefined);
-    assert.equal(await (await setup({ agent: { kind: 'standard' } })).service.getProfile!('mara'), undefined);
+    assert.equal(await service.getProfile('ghost'), undefined);
+    assert.equal(await (await setup({ isEngine: false })).service.getProfile('mara'), undefined);
+    assert.equal(await (await setup({ agent: { archetype: 'standard' } })).service.getProfile('mara'), undefined);
+  });
+
+  // #2066 — field scenario without Teams: the profile names the channels the
+  // kernel routes an own bot of the facilitator on, Teams or not.
+  it('getProfile names an own identity on Telegram on an instance without Teams', async () => {
+    const { service } = await setup({ channels: ['telegram'] });
+    assert.deepEqual((await service.getProfile('mara'))?.ownIdentityChannelTypes, ['telegram']);
+  });
+
+  // #2066 — the facilitator's own defaults reach the plugin with its profile;
+  // only values that fit the archetype's declared fields, none when unset.
+  it('getProfile carries the facilitator settings its archetype declares', async () => {
+    const dispose = registerArchetype({
+      ...getArchetype('facilitator')!,
+      source: '@omadia/agent-facilitator',
+      agentSettings: [
+        {
+          key: 'default_decision_method',
+          type: 'enum',
+          label: 'Default decision method',
+          options: [
+            { value: 'ranked', label: 'Ranked' },
+            { value: 'consent', label: 'Consent' },
+          ],
+        },
+        { key: 'reminder_offsets_hours', type: 'number_list', label: 'Reminders', maxItems: 10 },
+      ],
+    });
+    try {
+      const seenIds: string[] = [];
+      const { service } = await setup({
+        archetypeSettings: (agentId) => {
+          seenIds.push(agentId);
+          return Promise.resolve({
+            default_decision_method: 'consent',
+            reminder_offsets_hours: [48, 4],
+            dropped_field: 'x',
+          });
+        },
+      });
+      const profile = await service.getProfile('mara');
+      assert.deepEqual(profile?.archetypeSettings, {
+        default_decision_method: 'consent',
+        reminder_offsets_hours: [48, 4],
+      });
+      assert.equal(seenIds.length, 1);
+      const unset = await (await setup({ archetypeSettings: () => Promise.resolve({}) })).service.getProfile('mara');
+      assert.equal(unset?.archetypeSettings, undefined, 'nothing set = the instance settings apply');
+      const failing = await (
+        await setup({ archetypeSettings: () => Promise.reject(new Error('db down')) })
+      ).service.getProfile('mara');
+      assert.equal(failing?.archetypeSettings, undefined, 'a failed read falls back to the instance settings');
+      assert.equal(failing?.agentSlug, 'mara');
+    } finally {
+      dispose();
+    }
   });
 });

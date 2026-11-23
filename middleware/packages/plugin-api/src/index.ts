@@ -8,6 +8,7 @@ export * from './toolControlFlowText.js';
 export * from './toolErrorNotice.js';
 export * from './selfExtend.js';
 export * from './localSubAgentTool.js';
+export * from './nativeToolResult.js';
 export * from './piiAnnotation.js';
 
 // Omadia UI canvas: the shared `TargetRef` discriminated union (beam / mutation
@@ -52,6 +53,8 @@ export * from './responseGuard.js';
 // "Boundaries" and the `responseGuard@1` provider's install-wide defaults read
 // the same ids and rule wording.
 export * from './boundaryPresets.js';
+// #2085 (epic #2042) — the boundary check of a data plan (spec 2042 §5.13 1a).
+export * from './dataPlanBoundaries.js';
 
 // Palaia-Phase-5 (OB-74): per-agent block/boost list, consumed by the
 // `ContextRetriever.assembleForBudget` assembler. Provider:
@@ -205,3 +208,24 @@ export * from './executionAuthorization.js';
 
 // #2078 — kernel-issued grants for mail and calendar, bound to execution scopes.
 export * from './executionGrants.js';
+
+// #2045 (epic #2042) — speaker, typed emissions, system notices and
+// contributions: who speaks, and what kind of output reaches a person.
+export * from './speaker.js';
+// Spec 2042 §5.10 — maintenance runs of the model gateway (`maintenanceRun@1`).
+export * from './maintenanceRun.js';
+// Spec 2042 §5.10 — operator jobs and model passthrough for system modules
+// (`operatorJobs@1`, `modelPassthrough@1`).
+export * from './modelPassthrough.js';
+
+// Spec 2042 §5.2 — the envelope of one agent for a system module working on
+// its behalf (`agentEnvelope@1`, the canvas presentation helper).
+export * from './agentEnvelope.js';
+
+// Spec 2042 §5.3 — the agents a person may address in a channel
+// (`agentDirectory@1`, the canvas channel's picker), channel plugins only.
+export * from './agentDirectory.js';
+
+// #2082 (epic #2042) — bounded batch jobs: learning and consolidation run as
+// agent batch triggers, not as free-running plugin intervals.
+export * from './batchJobs.js';

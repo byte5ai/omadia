@@ -1,8 +1,8 @@
 /**
  * #2090 — `agentTurn@2`: a model turn as an authorized action.
  *
- * The turn itself is the first major's (same guards, same agent bundle). What
- * is tested here is the envelope: the kernel draws the authorization from the
+ * The turn itself (its guards, the agent bundle) is in
+ * `agentTurnService.test.ts`. What is tested here is the envelope: the kernel draws the authorization from the
  * named scope BEFORE any model is called, refuses the turn when it gets none,
  * counts the model calls the turn made (helper and guard calls included) and
  * settles them, whatever the turn's outcome.
@@ -108,7 +108,7 @@ function harness(options: {
     chatStream: (() => undefined) as never,
   };
   const entry = {
-    agent: { id: 'id-mara', slug: 'mara', name: 'mara', status: 'enabled', kind: 'facilitator', archetype: 'facilitator' },
+    agent: { id: 'id-mara', slug: 'mara', name: 'mara', status: 'enabled', archetype: 'facilitator' },
     plugins: [{ pluginId: ENGINE, enabled: true }],
     built: { bundle: { agent: wrapFacilitatorAgent(inner, { agentSlug: 'mara' }) } },
   };
@@ -381,7 +381,8 @@ describe('#2090 every provider passes the gate', () => {
 
   it('each implementation that reaches a backend calls admitModelCall()', () => {
     for (const file of GATED) {
-      assert.match(read(file), /admitModelCall\(\);/, `${file} must pass the gate before it calls its backend`);
+      // Spec 2042 §5.10 — with or without the operation (`'run_loop'` for the CLI).
+      assert.match(read(file), /admitModelCall\(('[a-z_]+')?\);/, `${file} must pass the gate before it calls its backend`);
     }
   });
 

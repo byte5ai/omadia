@@ -202,10 +202,12 @@ describe('AgentMcpServers (#862)', () => {
     await user.click(screen.getByRole('button', { name: 'Save allowlist' }));
 
     await waitFor(() =>
-      expect(mockReplaceMcpToolAllowlist).toHaveBeenCalledWith('odoo', 'srv-1', [
-        'create_invoice',
-        'search_partners',
-      ]),
+      expect(mockReplaceMcpToolAllowlist).toHaveBeenCalledWith(
+        'odoo',
+        'srv-1',
+        ['create_invoice', 'search_partners'],
+        { confirmBroadReach: false },
+      ),
     );
     expect(await screen.findByText('Allowlist saved — 1 granted, 0 revoked.')).toBeTruthy();
   });
@@ -234,7 +236,9 @@ describe('AgentMcpServers (#862)', () => {
     await user.click(await screen.findByRole('button', { name: 'Revoke all' }));
 
     await waitFor(() =>
-      expect(mockReplaceMcpToolAllowlist).toHaveBeenCalledWith('odoo', 'srv-1', []),
+      expect(mockReplaceMcpToolAllowlist).toHaveBeenCalledWith('odoo', 'srv-1', [], {
+        confirmBroadReach: false,
+      }),
     );
   });
 

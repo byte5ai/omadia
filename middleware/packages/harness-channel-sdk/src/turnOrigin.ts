@@ -98,6 +98,14 @@ export interface TurnOrigin {
    */
   readonly messageId?: string;
   /**
+   * The platform id of the message this turn's message replies to or quotes,
+   * when the platform states one (#2090, spec 2043 §5.3: a direct reply to a
+   * reminder is bound to that reminder). The same value as
+   * `ConversationMessageEvent.replyToMessageId`. Opaque. Absent = no reply,
+   * or the adapter does not state it. Since channel-sdk 0.3.11.
+   */
+  readonly replyToMessageId?: string;
+  /**
    * Who spoke, as the CHANNEL names them (#2043): the channel's user kind and
    * id and, when the platform gave one, the display name. The same person as
    * {@link principal}, in the channel's own terms. It reaches a tool as
@@ -145,7 +153,7 @@ export const CONTEXT_FREE_MEMORY_AXES: MemoryAxes = Object.freeze({
  * `memoryContextKey` applies to its type segment.
  */
 export const CONTEXT_MEMORY_CHANNEL_TYPES: ReadonlySet<string> = Object.freeze(
-  new Set(['teams', 'telegram', 'http', 'api']),
+  new Set(['teams', 'telegram', 'slack', 'discord', 'whatsapp', 'imessage', 'http', 'api']),
 );
 
 /**

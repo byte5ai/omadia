@@ -135,6 +135,14 @@ describe('#2089 private message routing', () => {
     assert.deepEqual(otherAgent.asked, []);
   });
 
+  it('#2090: a reply to a message in the private chat names that message to the plugin; no reply, no field', async () => {
+    const h = setup();
+    await h.router.route({ ...MESSAGE, text: 'erledigt', replyToMessageId: 'msg-reminder-1' });
+    await h.router.route({ ...MESSAGE, text: 'erledigt', replyToMessageId: '' });
+    assert.equal(h.asked[0]?.replyToMessageId, 'msg-reminder-1');
+    assert.equal('replyToMessageId' in (h.asked[1] ?? {}), false, 'an empty id is no reply');
+  });
+
   it('an unregistered handler is not asked any more', async () => {
     const router = new PrivateMessageRouter({
       processesListingPerson: () => Promise.resolve([{ pluginId: ENGINE, processId: 'fac-7' }]),
@@ -186,6 +194,21 @@ describe('#2089 the facilitator\'s private turn', () => {
     for await (const event of agent.chatStream(privateTurn)) events.push(event);
     assert.deepEqual(events.map((e) => e.type), ['text_delta', 'done']);
     assert.equal((events[1] as { answer: string }).answer, 'Es fehlen noch Bert und Cara.');
+  });
+
+  it('#2090: passes on the message a private turn replies to, as the channel stated it', async () => {
+    const seen: unknown[] = [];
+    const agent = wrapFacilitatorAgent(inner, {
+      agentSlug: 'mara',
+      name: 'Mara',
+      privateTurn: (_agentSlug, message) => {
+        seen.push(message);
+        return Promise.resolve('Danke, #1 ist erledigt.');
+      },
+    });
+    const reply = { ...privateTurn, userMessage: 'erledigt', origin: { ...privateTurn.origin!, replyToMessageId: 'msg-reminder-1' } } as ChatTurnInput;
+    assert.equal((await agent.chat(reply)).text, 'Danke, #1 ist erledigt.');
+    assert.deepEqual(seen, [{ channelType: 'teams', principalId: 'aad-anna', text: 'erledigt', replyToMessageId: 'msg-reminder-1' }]);
   });
 
   it('gives the fixed refusal when no process takes the message, the lookup fails, or the author is unknown', async () => {

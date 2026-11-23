@@ -69,6 +69,9 @@ ENV PORT=3000
 COPY --from=builder --chown=node:node /app/public ./public
 COPY --from=builder --chown=node:node /app/.next/standalone ./
 COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+# The entry point: server.js with the canvas WebSocket relayed to the
+# middleware (spec 2042; Next's route handlers cannot upgrade a connection).
+COPY --from=builder --chown=node:node /app/scripts/runtime/omadia-server.mjs /app/scripts/runtime/canvasWsProxy.mjs ./
 
 # Run as the base image's unprivileged `node` user (uid 1000). The middleware
 # image drops privileges in its entrypoint via gosu because it must chown a
@@ -78,4 +81,4 @@ COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 USER node
 
 EXPOSE 3000
-CMD ["node", "server.js"]
+CMD ["node", "omadia-server.mjs"]

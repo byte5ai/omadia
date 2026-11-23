@@ -21,7 +21,7 @@ import { Pool } from 'pg';
 
 import { probePgTest } from './_helpers/pgTestDb.js';
 
-import { ConfigStore, ConfigValidationError } from '../packages/harness-orchestrator/src/registry/configStore.js';
+import { ConfigStore } from '../packages/harness-orchestrator/src/registry/configStore.js';
 import { archetypeOf, archetypeOmits } from '../packages/harness-orchestrator/src/registry/archetype.js';
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
@@ -116,9 +116,12 @@ describe('agents.archetype (pg, migration 0070)', { skip: !pgAvailable }, () => 
   it('this release names only the archetype: kind follows, so a machine on the previous release still sees a facilitator', async () => {
     const mara = await store.createAgent({ slug: 'mara', name: 'Mara', archetype: 'facilitator' });
     const hr = await store.createAgent({ slug: 'hr', name: 'HR' });
-    const viaLegacyName = await store.createAgent({ slug: 'nora', name: 'Nora', kind: 'facilitator' });
-    assert.deepEqual([mara.archetype, mara.kind], ['facilitator', 'facilitator']);
-    assert.deepEqual([hr.archetype, hr.kind], ['standard', 'standard']);
+    const viaLegacyName = await store.createAgent({ slug: 'nora', name: 'Nora', archetype: 'facilitator' });
+    assert.deepEqual([mara.archetype, hr.archetype], ['facilitator', 'standard']);
+    assert.deepEqual((await rows()).filter(([slug]) => slug === 'mara' || slug === 'hr'), [
+      ['hr', 'standard', 'standard'],
+      ['mara', 'facilitator', 'facilitator'],
+    ]);
     assert.equal(viaLegacyName.archetype, 'facilitator');
     assert.deepEqual((await rows()).filter(([slug]) => !slug.startsWith('legacy-')), [
       ['hr', 'standard', 'standard'],
@@ -129,7 +132,7 @@ describe('agents.archetype (pg, migration 0070)', { skip: !pgAvailable }, () => 
     assert.equal(archetypeOf(mara), 'facilitator');
     assert.equal(archetypeOmits(mara, 'memory'), true);
     // A row read by a machine that only knows `kind` decides the same way.
-    assert.equal(archetypeOmits({ kind: 'facilitator' }, 'memory'), true);
+    assert.equal(archetypeOmits({ archetype: 'facilitator' }, 'memory'), true);
     assert.equal(archetypeOmits(hr, 'memory'), false);
   });
 
@@ -165,14 +168,20 @@ describe('agents.archetype (pg, migration 0070)', { skip: !pgAvailable }, () => 
   });
 
   it('refuses a facilitator as the default agent, read from the archetype', async () => {
+    // The 0070 guard on the single-row fallback setting. #2055 (migration
+    // 0081) replaces the setting with the default-agent table and moves the
+    // guard there (`default_agent_not_facilitator`, agentTombstone.pg.test.ts).
     const plain = await store.createAgent({ slug: 'hr', name: 'HR' });
     const moderator = await store.createAgent({ slug: 'mara', name: 'Mara', archetype: 'facilitator' });
     await assert.rejects(
       pool.query('UPDATE multi_orchestrator_settings SET fallback_agent_id = $1', [moderator.id]),
       (err: { constraint?: string }) => err.constraint === 'fallback_agent_not_facilitator',
     );
-    await assert.rejects(store.setFallbackAgentId(moderator.id), ConfigValidationError);
-    assert.equal((await store.setFallbackAgentId(plain.id)).fallbackAgentId, plain.id);
+    const ok = await pool.query<{ fallback_agent_id: string }>(
+      'UPDATE multi_orchestrator_settings SET fallback_agent_id = $1 RETURNING fallback_agent_id',
+      [plain.id],
+    );
+    assert.equal(ok.rows[0]?.fallback_agent_id, plain.id);
   });
 
   it('0071: a third archetype can exist once it is registered; kind follows it; unregistered stays refused', async () => {
@@ -190,7 +199,7 @@ describe('agents.archetype (pg, migration 0070)', { skip: !pgAvailable }, () => 
     assert.deepEqual((await rows()).filter(([slug]) => slug === 'c1'), [['c1', 'coach', 'coach']]);
     // The two known archetypes read exactly as before.
     const mara = await store.createAgent({ slug: 'mara', name: 'Mara', archetype: 'facilitator' });
-    assert.deepEqual([mara.kind, mara.archetype], ['facilitator', 'facilitator']);
+    assert.equal(mara.archetype, 'facilitator');
     // Fixed at creation, like every archetype.
     await assert.rejects(
       pool.query(`UPDATE agents SET archetype = 'standard' WHERE slug = 'c1'`),
@@ -200,5 +209,46 @@ describe('agents.archetype (pg, migration 0070)', { skip: !pgAvailable }, () => 
     await assert.rejects(pool.query(`DELETE FROM agent_archetypes WHERE id = 'coach'`));
     await pool.query(`DELETE FROM agents WHERE slug = 'c1'`);
     await pool.query(`DELETE FROM agent_archetypes WHERE id = 'coach'`);
+  });
+
+  describe('#2088 (K6) migration 0079 drops the predecessor column', () => {
+    const MIGRATION = '0079_drop_agents_kind.sql';
+
+    it('removes `kind`, its sync and its guard, keeps every archetype, and is safe to run twice', async () => {
+      await store.createAgent({ slug: 'k6-mara', name: 'Mara', archetype: 'facilitator' });
+      const sql = await readFile(resolve(MIGRATIONS_DIR, MIGRATION), 'utf8');
+      await pool.query(sql);
+      await pool.query(sql);
+
+      const columns = await pool.query<{ column_name: string }>(
+        `SELECT column_name FROM information_schema.columns
+          WHERE table_schema = current_schema() AND table_name = 'agents' AND column_name IN ('kind', 'archetype')`,
+      );
+      assert.deepEqual(columns.rows.map((r) => r.column_name), ['archetype']);
+      const triggers = await pool.query<{ tgname: string }>(
+        `SELECT tgname FROM pg_trigger WHERE tgrelid = 'agents'::regclass AND NOT tgisinternal
+            AND tgname IN ('agents_kind_archetype_sync', 'agents_kind_immutable', 'agents_archetype_immutable')`,
+      );
+      assert.deepEqual(triggers.rows.map((r) => r.tgname), ['agents_archetype_immutable']);
+
+      // The two functions went with their triggers; a function of the same
+      // name in another schema, which another table may use, is not touched.
+      const functions = await pool.query<{ proname: string }>(
+        `SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = current_schema() AND p.proname IN ('agents_sync_kind_archetype', 'agents_refuse_kind_change')`,
+      );
+      assert.deepEqual(functions.rows, []);
+
+      // Existing rows keep their archetype; the store reads and writes as before.
+      // (Read with SQL: the store's lookup joins tables of other migrations,
+      // which this suite does not apply.)
+      const kept = await pool.query<{ archetype: string }>("SELECT archetype FROM agents WHERE slug = 'k6-mara'");
+      assert.equal(kept.rows[0]?.archetype, 'facilitator');
+      const nora = await store.createAgent({ slug: 'k6-nora', name: 'Nora', archetype: 'facilitator' });
+      const hr = await store.createAgent({ slug: 'k6-hr', name: 'HR' });
+      assert.deepEqual([nora.archetype, hr.archetype], ['facilitator', 'standard']);
+      // The archetype stays fixed at creation.
+      await assert.rejects(pool.query("UPDATE agents SET archetype = 'standard' WHERE slug = 'k6-nora'"));
+    });
   });
 });

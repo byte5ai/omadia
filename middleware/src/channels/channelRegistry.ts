@@ -75,8 +75,8 @@ export interface ChannelRegistryDeps {
   /**
    * US4 event-emit catalog. A channel plugin that declares `event_emit` capabilities (e.g. Teams
    * emitting `teams.message.posted`) has them registered here on activate, so `ctx.events.emit` is
-   * allowed (deny-by-default otherwise) and the Conductor event-trigger picker lists them. The tool
-   * and dynamic-agent runtimes already do this — the channel activation path was the missing third.
+   * allowed (deny-by-default otherwise) and the Conductor event-trigger picker lists them, as the
+   * tool runtime does.
    */
   eventCatalogRegistry?: EventCatalogRegistry;
   resolver: ChannelPluginResolver;
@@ -93,6 +93,8 @@ export interface ChannelRegistryDeps {
   /** #2043 — readiness providers and meeting sources, dropped the same way. */
   readinessProviders?: { unregisterChannel(channelId: string): void };
   meetingSources?: { unregisterChannel(channelId: string): void };
+  /** Spec 2042 §5.3 — per-agent bots, dropped the same way. */
+  agentIdentities?: { unregisterChannel(channelId: string): void };
 }
 
 export class DefaultChannelRegistry implements ChannelRegistry {
@@ -127,7 +129,7 @@ export class DefaultChannelRegistry implements ChannelRegistry {
         // channel kept reading `active`. Deliberately `markActivationFailed`
         // alone, no explicit status flip: at boot the threshold is the right
         // policy (a transient infra outage must not latch the entry on the
-        // first try), exactly as the tool and dynamic-agent boot loops do it.
+        // first try), exactly as the tool runtime's boot loop does it.
         // The operator-triggered seams flip immediately instead.
         try {
           await this.deps.installedRegistry.markActivationFailed(
@@ -256,6 +258,7 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     this.channelTypeClaims.release(agentId);
     this.deps.readinessProviders?.unregisterChannel(agentId);
     this.deps.meetingSources?.unregisterChannel(agentId);
+    this.deps.agentIdentities?.unregisterChannel(agentId);
     // Drop the cached ChannelPlugin implementation BEFORE the rest of
     // teardown so an immediately-following re-activate (upgrade flow)
     // can never observe the stale module. Without this, the resolver's
@@ -286,6 +289,15 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     // Symmetric belt-and-braces with the other runtimes — see
     // toolPluginRuntime.ts for the rationale.
     this.deps.jobScheduler.stopForPlugin(agentId);
+  }
+
+  /**
+   * The channel types an active channel plugin acts for: the ones it claimed
+   * by registering a provider or emitting an event under them (`teams`,
+   * `discord`). Empty for a plugin that claimed none (yet).
+   */
+  channelTypesOf(channelId: string): readonly string[] {
+    return this.channelTypeClaims.typesOf(channelId);
   }
 
   isActive(agentId: string): boolean {

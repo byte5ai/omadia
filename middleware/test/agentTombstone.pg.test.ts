@@ -19,7 +19,7 @@ import { Pool } from 'pg';
 import { probePgTest } from './_helpers/pgTestDb.js';
 
 import { AgentGraphStore } from '../packages/harness-orchestrator/src/registry/agentGraphStore.js';
-import { ConfigStore } from '../packages/harness-orchestrator/src/registry/configStore.js';
+import { ConfigStore, ConfigValidationError } from '../packages/harness-orchestrator/src/registry/configStore.js';
 import { runMultiOrchestratorMigrations } from '../packages/harness-orchestrator/src/registry/migrator.js';
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
@@ -65,9 +65,12 @@ describe('agent tombstones (pg, migration 0072)', { skip: !pgAvailable }, () => 
     await bootstrap.end();
     pool = new Pool({ connectionString: PG_URL, max: 3, options: `-c search_path=${SCHEMA},public` });
     await runMultiOrchestratorMigrations(pool, () => undefined, MIGRATIONS_DIR);
-    // The CI schema job applies everything twice.
-    const tombstones = await readFile(resolve(MIGRATIONS_DIR, '0072_agent_tombstones.sql'), 'utf8');
-    await pool.query(tombstones);
+    // The CI schema job applies everything twice. 0081 (#2055) redefines the
+    // guard 0072 creates (the fallback setting it read is gone), so a second
+    // pass reapplies both, in order, like the job does.
+    for (const file of ['0072_agent_tombstones.sql', '0081_agent_default_entries.sql']) {
+      await pool.query(await readFile(resolve(MIGRATIONS_DIR, file), 'utf8'));
+    }
     store = new ConfigStore(pool);
     graph = new AgentGraphStore(pool);
   });
@@ -139,20 +142,36 @@ describe('agent tombstones (pg, migration 0072)', { skip: !pgAvailable }, () => 
     assert.equal((await store.listAllAgentPlugins()).some((p) => p.agentId === again.id), false, 'nothing is inherited');
   });
 
-  it('a tombstone is final, and the default agent cannot become one', async () => {
+  it('a tombstone is final; the default agent may be deleted and its entry keeps naming it (#2055)', async () => {
     const tombstone = (await store.listTombstones()).find((t) => t.slug === 'sales')!;
     await assert.rejects(
       pool.query('UPDATE agents SET deleted_at = NULL WHERE id = $1', [tombstone.id]),
       (err: { constraint?: string }) => err.constraint === 'agents_tombstone_final',
     );
-    const fallback = await store.createAgent({ slug: 'fallback', name: 'Standard' });
-    await store.setFallbackAgentId(fallback.id);
-    await assert.rejects(
-      store.deleteAgent(fallback.id),
-      (err: { constraint?: string }) => err.constraint === 'agents_default_not_deleted',
+    // There is no fallback agent to protect any more: deleting the instance
+    // default works, and the entry keeps pointing at the tombstone so the
+    // sender is told "<name> was deleted" instead of reaching another agent.
+    const standard = await store.createAgent({ slug: 'standard', name: 'Standard' });
+    await store.routing.upsertDefaultEntry({ principal: null, channelType: null, agentId: standard.id });
+    const deleted = await store.deleteAgent(standard.id);
+    assert.equal(deleted?.id, standard.id);
+    const instance = (await store.routing.listDefaultEntries()).find(
+      (e) => e.principal === null && e.channelType === null,
     );
-    assert.equal((await store.getAgentBySlug('fallback'))?.id, fallback.id);
-    await store.setFallbackAgentId(null);
+    assert.equal(instance?.agentId, standard.id);
+    // A tombstone still named by an entry cannot be purged.
+    await assert.rejects(store.purgeAgent(standard.id), ConfigValidationError);
+    await store.routing.upsertDefaultEntry({ principal: null, channelType: null, agentId: null });
+    assert.equal(await store.purgeAgent(standard.id), true);
+  });
+
+  it('#2055: a facilitator cannot be a default agent (default_agent_not_facilitator)', async () => {
+    const mara = await store.createAgent({ slug: 'mara-default', name: 'Mara', archetype: 'facilitator' });
+    await assert.rejects(
+      store.routing.upsertDefaultEntry({ principal: 'user:anna@example.com', channelType: null, agentId: mara.id }),
+      (err: { constraint?: string }) => err.constraint === 'default_agent_not_facilitator',
+    );
+    await store.purgeAgent((await store.deleteAgent(mara.id))!.id);
   });
 
   it('the purge is the hard delete, and only a tombstone can be purged', async () => {
@@ -174,10 +193,10 @@ describe('agent tombstones (pg, migration 0072)', { skip: !pgAvailable }, () => 
     const mara = await store.createAgent({ slug: 'mara', name: 'Mara', archetype: 'facilitator' });
     const tombstone = await store.deleteAgent(mara.id);
     assert.equal(tombstone?.archetype, 'facilitator');
-    const row = await pool.query<{ kind: string; archetype: string; status: string }>(
-      'SELECT kind, archetype, status FROM agents WHERE id = $1',
+    const row = await pool.query<{ archetype: string; status: string }>(
+      'SELECT archetype, status FROM agents WHERE id = $1',
       [mara.id],
     );
-    assert.deepEqual(row.rows[0], { kind: 'facilitator', archetype: 'facilitator', status: 'disabled' });
+    assert.deepEqual(row.rows[0], { archetype: 'facilitator', status: 'disabled' });
   });
 });

@@ -6,7 +6,7 @@
  * path from the manifest to the enforced descriptor: strict reading (an
  * unknown kind or an unknown descriptor entry rejects the manifest),
  * registration of what is installed, the engine found by kind as well as by
- * the legacy capability, and the explicit confirmation at install.
+ * the archetype it delivers, and the explicit confirmation at install.
  */
 
 import { strict as assert } from 'node:assert';
@@ -38,10 +38,11 @@ import {
   resolveFacilitationEngine,
 } from '../src/platform/facilitatorGuard.js';
 import { readArchetypeManifest } from '../src/plugins/archetypeManifest.js';
-import { attachablePluginIds } from '../src/plugins/defaultOrchestratorAttach.js';
+import { capabilityPluginIds } from '../src/plugins/capabilityPlugins.js';
 import { InstallError, InstallService } from '../src/plugins/installService.js';
 import { adaptManifestV1 } from '../src/plugins/manifestLoader.js';
 import { buildOperatorArchetypes } from '../src/routes/operatorArchetypes.js';
+import { syncArchetypesAndAttachEngine } from '../src/platform/facilitatorEngineAttach.js';
 
 const ENGINE = '@omadia/agent-facilitator';
 const CONTRACT = '## Neutrality contract (plugin)\nYou moderate. You hold no opinion on the content.';
@@ -96,16 +97,21 @@ function sources(installed: { id: string; status?: string; doc: Record<string, u
 
 describe('manifest kind', () => {
   it('rejects a kind the kernel does not know instead of loading it as an agent plugin', () => {
-    for (const kind of ['archetyp', 'system-module', 'model', 'provider', 'ui', 'Agent', 42, '']) {
+    // `provider` and `ui` were never kernel kinds (spec 2042 §5.10 retires
+    // them in the Hub's vocabulary); a typo stays a typo.
+    for (const kind of ['archetyp', 'systemmodule', 'provider', 'ui', 'Agent', 42, '']) {
       const { plugin, warnings } = load(manifest({ kind, archetype: undefined }));
       assert.equal(plugin, null, `kind ${JSON.stringify(kind)} must be rejected`);
-      assert.match(warnings, /manifest rejected: plugin '@omadia\/agent-facilitator' has identity\.kind .* which this kernel does not know \(it knows: agent, integration, channel, tool, extension, archetype\)/);
+      assert.match(warnings, /manifest rejected: plugin '@omadia\/agent-facilitator' has identity\.kind .* which this kernel does not know \(it knows: integration, tool, skill, channel, model, archetype, system-module, agent-template, agent, extension\)/);
     }
   });
 
   it('keeps every known kind, and a manifest without the field stays an agent plugin', () => {
-    for (const kind of ['agent', 'integration', 'channel', 'tool', 'extension']) {
-      assert.equal(load(manifest({ kind, archetype: undefined })).plugin?.kind, kind);
+    for (const kind of ['agent', 'integration', 'channel', 'tool', 'extension', 'skill', 'model', 'system-module', 'agent-template']) {
+      const doc = manifest({ kind, archetype: undefined });
+      // A template package delivers at least one template (spec 2042 §5.10).
+      if (kind === 'agent-template') doc['agent_templates'] = [{ id: 'hr', name: 'Hanna' }];
+      assert.equal(load(doc).plugin?.kind, kind);
     }
     assert.equal(load(manifest({ kind: undefined, archetype: undefined })).plugin?.kind, 'agent');
   });
@@ -196,6 +202,31 @@ describe('registration: what is installed is what is enforced', () => {
     return { sync, logs, writes, resets };
   }
 
+  // Boot without a config store (an instance without LLM access, so the
+  // orchestrator publishes none): the archetype sync must still run, or the
+  // kernel seed stays in force until the next restart.
+  it('boot without a config store still registers the plugin descriptor; nothing is attached', async () => {
+    let installed = [{ id: ENGINE, doc: manifest() }];
+    const h = syncWith(() => installed);
+    disposers.push(async () => {
+      installed = [];
+      await h.sync.sync();
+    });
+    const attached: unknown[] = [];
+    await syncArchetypesAndAttachEngine({
+      sync: () => h.sync.sync(),
+      getStore: () => undefined,
+      attach: (store) => {
+        attached.push(store);
+        return Promise.resolve();
+      },
+      reload: () => undefined,
+      log: () => undefined,
+    });
+    assert.equal(getArchetype('facilitator')?.source, ENGINE, 'the plugin descriptor is in force without a config store');
+    assert.deepEqual(attached, [], 'attaching needs the config store');
+  });
+
   it('an installed archetype plugin replaces the kernel seed, and an uninstall brings the seed back', async () => {
     let installed = [{ id: ENGINE, doc: manifest() }];
     const h = syncWith(() => installed);
@@ -242,7 +273,20 @@ describe('registration: what is installed is what is enforced', () => {
   });
 
   it('a third archetype exists while its plugin is installed and omits everything once it is gone', async () => {
-    const coach = { id: '@acme/archetype-coach', doc: manifest({ id: '@acme/archetype-coach', archetype: { id: 'coach', omits: ['memory'], adds: [] } }) };
+    const coach = {
+      id: '@acme/archetype-coach',
+      doc: manifest({
+        id: '@acme/archetype-coach',
+        archetype: {
+          id: 'coach',
+          omits: ['memory'],
+          adds: [],
+          // #2066 — declared per-agent settings travel from the manifest
+          // through the catalog into the registered descriptor.
+          agent_settings: [{ key: 'tone', type: 'enum', label: 'Tone', options: [{ value: 'calm', label: 'Calm' }] }],
+        },
+      }),
+    };
     let installed = [coach];
     const h = syncWith(() => installed);
     disposers.push(async () => {
@@ -252,6 +296,10 @@ describe('registration: what is installed is what is enforced', () => {
     await h.sync.sync();
     assert.deepEqual(listArchetypes().map((d) => d.id).sort(), ['coach', 'facilitator', 'standard']);
     assert.equal(archetypeOmits({ archetype: 'coach' }, 'memory'), true);
+    assert.deepEqual(
+      getArchetype('coach')?.agentSettings?.map((f) => `${f.key}:${f.type}`),
+      ['tone:enum'],
+    );
     assert.equal(archetypeOmits({ archetype: 'coach' }, 'plugin_grant'), false);
     assert.equal(archetypeAdds({ archetype: 'coach' }, 'agent_turn'), false, 'not listed, not given');
     assert.equal(applyArchetypeContract('coach', 'You coach.'), 'You coach.', 'no role contract, nothing appended');
@@ -319,19 +367,17 @@ describe('the role contract of an archetype', () => {
   });
 });
 
-describe('the facilitation engine: by archetype kind or by the legacy capability', () => {
+describe('the facilitation engine: found by the archetype it delivers', () => {
   const legacy = { id: ENGINE, doc: manifest({ kind: 'extension', archetype: undefined, provides: ['facilitationEngine@1'] }) };
   const byKind = { id: ENGINE, doc: manifest() };
 
-  it('both forms are found, and both need the database grant to be bound', () => {
-    assert.equal(declaresFacilitationEngine(load(legacy.doc).plugin ?? undefined), true);
+  it('an archetype plugin that delivers `facilitator` is the engine; a `provides: facilitationEngine@1` line alone is not', () => {
     assert.equal(declaresFacilitationEngine(load(byKind.doc).plugin ?? undefined), true);
-    for (const installed of [legacy, byKind]) {
-      const s = sources([installed]);
-      assert.deepEqual(facilitationEnginePluginIds(s), [ENGINE]);
-      assert.deepEqual(resolveFacilitationEngine({ ...s, isSqlGranted: () => false }), { state: 'ungranted', pluginId: ENGINE });
-      assert.deepEqual(resolveFacilitationEngine({ ...s, isSqlGranted: () => true }), { state: 'bound', pluginId: ENGINE });
-    }
+    assert.deepEqual(resolveFacilitationEngine(sources([byKind])), { state: 'bound', pluginId: ENGINE });
+    // #2088 (K6): the form of engine plugins 1.0.x.
+    assert.equal(declaresFacilitationEngine(load(legacy.doc).plugin ?? undefined), false);
+    assert.deepEqual(facilitationEnginePluginIds(sources([legacy])), []);
+    assert.deepEqual(resolveFacilitationEngine(sources([legacy])), { state: 'none' });
   });
 
   it('an archetype plugin for another archetype, or any other plugin, is not the engine', () => {
@@ -342,12 +388,14 @@ describe('the facilitation engine: by archetype kind or by the legacy capability
     assert.deepEqual(installedArchetypePlugins(sources([coach, odoo])).map((p) => p.pluginId), ['@acme/archetype-coach']);
   });
 
-  it('one of each form installed side by side is ambiguous, as two engines always were', () => {
-    const second = { id: '@acme/legacy-engine', doc: manifest({ id: '@acme/legacy-engine', kind: 'extension', archetype: undefined, provides: ['facilitationEngine@1'] }) };
+  it('two archetype plugins that deliver `facilitator` are ambiguous; the old form next to one changes nothing', () => {
+    const second = { id: '@acme/second-engine', doc: manifest({ id: '@acme/second-engine' }) };
     assert.deepEqual(resolveFacilitationEngine(sources([byKind, second])), {
       state: 'ambiguous',
-      pluginIds: ['@acme/legacy-engine', ENGINE],
+      pluginIds: ['@acme/second-engine', ENGINE],
     });
+    const old = { id: '@acme/legacy-engine', doc: manifest({ id: '@acme/legacy-engine', kind: 'extension', archetype: undefined, provides: ['facilitationEngine@1'] }) };
+    assert.deepEqual(resolveFacilitationEngine(sources([byKind, old])), { state: 'bound', pluginId: ENGINE });
   });
 });
 
@@ -369,11 +417,11 @@ describe('an archetype plugin is attached only to agents of its archetype', () =
     assert.throws(() => assertEngineOnlyForFacilitators({ slug: 'cora', archetype: 'coach' }, grant(ENGINE), s), /refused: @omadia\/agent-facilitator/);
   });
 
-  it('the kernel never attaches it to the default agent, on install, at boot or on a reset', () => {
+  it('is no capability plugin: never offered for a grant to agents (#2054)', () => {
     const odoo = { id: '@omadia/integration-odoo', doc: manifest({ id: '@omadia/integration-odoo', kind: 'integration', archetype: undefined }) };
     const all = sources([coach, facilitation, odoo]);
     assert.deepEqual(
-      attachablePluginIds(['@acme/archetype-coach', ENGINE, '@omadia/integration-odoo'], all.catalog),
+      capabilityPluginIds(['@acme/archetype-coach', ENGINE, '@omadia/integration-odoo'], all.catalog),
       ['@omadia/integration-odoo'],
     );
   });
@@ -416,7 +464,7 @@ describe('installing an archetype plugin needs an explicit confirmation', () => 
 
   it('with it the install job is created; other kinds never ask', () => {
     assert.equal(service(manifest()).create(ENGINE, { confirmedArchetype: true }).plugin_id, ENGINE);
-    const legacy = manifest({ kind: 'extension', archetype: undefined });
+    const legacy = manifest({ kind: 'tool', archetype: undefined });
     assert.equal(service(legacy).create(ENGINE).plugin_id, ENGINE);
   });
 });
@@ -439,6 +487,7 @@ describe('GET /operator/archetypes', () => {
       assert.deepEqual(facilitator?.plugin, { id: ENGINE, status: 'active' });
       assert.deepEqual(facilitator?.label_plural, { en: 'Facilitators', de: 'Facilitatoren' });
       assert.equal(facilitator?.agent_count, null, 'no config store, no count');
+      assert.deepEqual(facilitator?.agent_settings, [], 'this manifest declares none');
     } finally {
       current = [];
       await sync.sync();

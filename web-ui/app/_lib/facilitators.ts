@@ -112,6 +112,9 @@ export const FACILITATOR_ISSUE_RULES = [
   'lifts_contract',
   'ignores_stop',
   'acts_as_assistant',
+  // #2060 — a working mode refused for a facilitator.
+  'identity_replacement',
+  'working_mode_tools',
 ] as const;
 
 export type FacilitatorIssueRule = (typeof FACILITATOR_ISSUE_RULES)[number];
@@ -230,11 +233,9 @@ export type FacilitationEngineUnusableReason =
  * (`middleware/src/routes/facilitationEngineStatus.ts`). The route answers
  * with CODES; the sentences are this app's catalogue.
  *
- *  - `none`: no installed plugin declares `facilitationEngine@1`.
+ *  - `none`: no installed archetype plugin delivers the archetype `facilitator`.
  *  - `ambiguous`: more than one does; nothing takes effect until all but one
  *    are removed.
- *  - `ungranted`: one plugin declares it but the operator has not granted its
- *    SQL access. It is not the engine yet: nothing is attached to it.
  *  - `unusable`: the engine is bound but cannot run facilitations. `reason`
  *    is the kernel's code; `engineReason` is the plugin's own untranslated
  *    sentence (only with `engine_reported`) and is shown on its own, never
@@ -244,7 +245,6 @@ export type FacilitationEngineUnusableReason =
 export type FacilitationEngineStatus =
   | { readonly state: 'none' }
   | { readonly state: 'ambiguous'; readonly pluginIds: readonly string[] }
-  | { readonly state: 'ungranted'; readonly pluginId: string }
   | {
       readonly state: 'unusable';
       readonly pluginId: string;
@@ -253,8 +253,7 @@ export type FacilitationEngineStatus =
     }
   | { readonly state: 'ready'; readonly pluginId: string };
 
-/** The BOUND engine's id — the plugin the kernel attaches to facilitators.
- *  An ungranted candidate is not bound, so it has none. */
+/** The BOUND engine's id — the plugin the kernel attaches to facilitators. */
 export function facilitationEnginePluginId(
   status: FacilitationEngineStatus,
 ): string | null {
@@ -280,9 +279,6 @@ export function parseFacilitationEngineStatus(
     return { state: 'ambiguous', pluginIds: ids };
   }
   if (typeof body.plugin_id !== 'string') return null;
-  if (body.state === 'ungranted') {
-    return { state: 'ungranted', pluginId: body.plugin_id };
-  }
   if (body.state !== 'bound') return null;
   if (body.available === true) return { state: 'ready', pluginId: body.plugin_id };
   const reason = (FACILITATION_ENGINE_UNUSABLE_REASONS as readonly string[]).includes(

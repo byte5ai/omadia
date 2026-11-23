@@ -44,8 +44,7 @@ export interface PrivacyEgressContinuation {
   /**
    * The view the verifier sends through, bound to this turn's handle.
    * `undefined` when the turn's answer is not model prose the verifier may
-   * see: a Direct Line relay (restored before it got here), the privacy
-   * refusal, a server-rendered v4 answer whose model wrote no prose, or a
+   * see: the privacy refusal, a server-rendered v4 answer whose model wrote no prose, or a
    * turn that recorded no wire view. The wrapper then skips verification.
    * For a server-rendered answer with prose, the view's answer is that prose
    * — never the rendered rows, real values its model never saw.

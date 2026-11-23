@@ -23,11 +23,14 @@ import {
   type FacilitationEngineLoad,
 } from '../../_components/facilitatorReadiness';
 import { useFacilitatorRefusalMessage } from '../../_components/useFacilitatorCopy';
-import { AgentDetailTabs } from './AgentDetailTabs';
+import { AgentChannelIdentities } from './AgentChannelIdentities';
+import { AgentDetailTabs, type AgentDetailTab } from './AgentDetailTabs';
 import { AgentIdentity } from './AgentIdentity';
 import { AgentModelPolicy } from './AgentModelPolicy';
 import { AgentTeamsIdentity } from './AgentTeamsIdentity';
 import { AgentTeamsInstalls } from './AgentTeamsInstalls';
+import { FacilitatorDefaults } from './FacilitatorDefaults';
+import { FacilitatorWorkingModes } from './FacilitatorWorkingModes';
 
 /**
  * #2066 — the page of ONE facilitator (spec 2043 §2, §7).
@@ -35,8 +38,8 @@ import { AgentTeamsInstalls } from './AgentTeamsInstalls';
  * The same identity, model and Teams sections a standard agent has, because a
  * facilitator inherits what makes an agent a virtual employee. What it must
  * not have — plugin grants, tools and MCP servers, conversations with other
- * agents, memory, sub-agents, persona skills, schedules, being the default
- * agent — has no tab here at all: the kernel refuses each of them at write
+ * agents, memory, sub-agents, schedules, being the default agent — has no tab
+ * here at all: the kernel refuses each of them at write
  * time, so offering the control would only offer a refusal. One line says
  * why, so the missing tabs read as a decision and not as a bug.
  *
@@ -47,6 +50,8 @@ import { AgentTeamsInstalls } from './AgentTeamsInstalls';
  */
 interface FacilitatorDetailProps {
   readonly agent: OperatorAgentDto;
+  /** The tab `?tab=` names, read by the page on the server. */
+  readonly initialTab?: AgentDetailTab;
 }
 
 export function FacilitatorDetail(
@@ -77,6 +82,7 @@ export function FacilitatorDetail(
       <FacilitationEngineNotice engine={engine} />
 
       <AgentDetailTabs
+        {...(props.initialTab ? { initialTab: props.initialTab } : {})}
         panels={{
           identity: () => <AgentIdentity slug={agent.slug} archetype={FACILITATOR_ARCHETYPE} />,
           model: () => <AgentModelPolicy slug={agent.slug} />,
@@ -84,7 +90,16 @@ export function FacilitatorDetail(
             <>
               <AgentTeamsIdentity slug={agent.slug} />
               <AgentTeamsInstalls slug={agent.slug} />
+              {/* #2066 — its own bot on Slack, Discord or Telegram (S7): a
+                  facilitator is ready on every channel it has one on. */}
+              <AgentChannelIdentities slug={agent.slug} />
             </>
+          ),
+          moderation: () => (
+            <div className="space-y-8">
+              <FacilitatorDefaults slug={agent.slug} />
+              <FacilitatorWorkingModes slug={agent.slug} />
+            </div>
           ),
           engine: () => (
             <FacilitatorEnginePanel

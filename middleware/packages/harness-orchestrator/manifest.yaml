@@ -2,9 +2,9 @@ schema_version: "1"
 
 identity:
   id: "@omadia/orchestrator"
-  name: "Chat Orchestrator"
+  name: "Agent Runtime"
   version: "0.1.0"
-  kind: "extension"
+  kind: "system-module"
   domain: "core.orchestrator"
   description:
     en: "Runs the chat itself. It decides which tools an agent uses in each turn, brings memory and the knowledge graph into the answer, and has the result checked before it goes out. Every channel, from Teams to the web interface, talks to this plugin."
@@ -104,6 +104,13 @@ optional_requires:
   # it for a one-call triage per non-canvas human turn. Optional — resolved
   # per turn; without it every turn runs the agent unchanged.
   - "fastPath@1"
+  # Spec 2042 §5.4 / §5.11 (#2047, #2079) — kernel-published before plugin
+  # activation, late-bound to Postgres: the consultation broker behind the
+  # `consult` tool, and the discretion stores (integration declarations,
+  # persisted labels, flow audit). Absent (no database, unit tests): no
+  # `consult` tool, and labels live only for the turn.
+  - "consultation@1"
+  - "discretion@1"
 
 # chatAgent@1 — published bundle consumed by channel-plugins (Teams,
 # Telegram), the kernel-side HTTP chat route, and the dynamic-agent runtime
@@ -134,18 +141,18 @@ setup:
       type: "secret"
       required: false
       help:
-        en: "Anthropic API key for the orchestrator's main Claude loop. Without a key the plugin does NOT publish `chatAgent@1` — kernel + channels degrade to no-chat. Shared with @omadia/orchestrator-extras + @omadia/verifier (same Anthropic account). Bootstrap migrates ANTHROPIC_API_KEY from the legacy .env into the vault. (S+12.6: type: secret — the key is stored in the vault, not in installed.json config.)"
-        de: "Anthropic-API-Key für die Haupt-Claude-Loop des Orchestrators. Ohne Key publiziert das Plugin KEIN `chatAgent@1` — Kernel + Channels degradieren auf no-chat. Geteilt mit @omadia/orchestrator-extras + @omadia/verifier (gleicher Anthropic-Account). Bootstrap migriert ANTHROPIC_API_KEY aus dem legacy .env in den Vault. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
+        en: "Anthropic API key for the agent runtime's main Claude loop. Without a key the plugin does NOT publish `chatAgent@1` — kernel + channels degrade to no-chat. Shared with @omadia/orchestrator-extras + @omadia/verifier (same Anthropic account). Bootstrap migrates ANTHROPIC_API_KEY from the legacy .env into the vault. (S+12.6: type: secret — the key is stored in the vault, not in installed.json config.)"
+        de: "Anthropic-API-Key für die Haupt-Claude-Loop der Agentenlaufzeit. Ohne Key publiziert das Plugin KEIN `chatAgent@1` — Kernel + Channels degradieren auf no-chat. Geteilt mit @omadia/orchestrator-extras + @omadia/verifier (gleicher Anthropic-Account). Bootstrap migriert ANTHROPIC_API_KEY aus dem legacy .env in den Vault. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
     - key: "orchestrator_model"
       label:
-        en: "Orchestrator Model"
-        de: "Orchestrator-Modell"
+        en: "Agent model"
+        de: "Agenten-Modell"
       type: "string"
       required: false
       default: "class:frontier"
       help:
-        en: "Model reference for the orchestrator's main loop: a class (class:frontier | class:balanced | class:fast — automatically follows the newest model of the active provider), an alias (opus / sonnet / haiku) or a concrete vendor ID. The selection normally happens on the \"Models\" admin page; the catalog there is read live from the provider API. Migrated from ORCHESTRATOR_MODEL."
-        de: "Modell-Referenz für die Orchestrator-Haupt-Loop: eine Klasse (class:frontier | class:balanced | class:fast — folgt automatisch dem aktuellsten Modell des aktiven Providers), ein Alias (opus / sonnet / haiku) oder eine konkrete Vendor-ID. Die Auswahl passiert normalerweise auf der Admin-Seite »Modelle«; der Katalog dort wird live aus der Provider-API gelesen. Migriert aus ORCHESTRATOR_MODEL."
+        en: "Model reference for the agent's main loop: a class (class:frontier | class:balanced | class:fast — automatically follows the newest model of the active provider), an alias (opus / sonnet / haiku) or a concrete vendor ID. The selection normally happens on the \"Models\" admin page; the catalog there is read live from the provider API. Migrated from ORCHESTRATOR_MODEL."
+        de: "Modell-Referenz für die Haupt-Loop des Agenten: eine Klasse (class:frontier | class:balanced | class:fast — folgt automatisch dem aktuellsten Modell des aktiven Providers), ein Alias (opus / sonnet / haiku) oder eine konkrete Vendor-ID. Die Auswahl passiert normalerweise auf der Admin-Seite »Modelle«; der Katalog dort wird live aus der Provider-API gelesen. Migriert aus ORCHESTRATOR_MODEL."
     - key: "orchestrator_max_tokens"
       label:
         en: "Max Output Tokens"
@@ -162,8 +169,8 @@ setup:
       type: "string"
       required: false
       help:
-        en: "Hard cap on the agentic tool loop per turn. When it is exhausted, NO raw error is thrown anymore — the orchestrator forces one last tool-free iteration and returns a best-effort answer. Default: 100 (also the floor — lower installed values are raised). Round loops are caught separately by the loop guard. Migrated from MAX_TOOL_ITERATIONS."
-        de: "Hard cap auf den agentic tool-loop pro Turn. Bei Erschöpfung wird KEIN roher Fehler mehr geworfen — der Orchestrator erzwingt eine letzte tool-freie Iteration und gibt eine Best-Effort-Antwort. Default: 100 (auch Floor — niedrigere installierte Werte werden hochgesetzt). Round-Loops werden separat vom Loop-Guard abgefangen. Migriert aus MAX_TOOL_ITERATIONS."
+        en: "Hard cap on the agentic tool loop per turn. When it is exhausted, NO raw error is thrown anymore — the agent runtime forces one last tool-free iteration and returns a best-effort answer. Default: 100 (also the floor — lower installed values are raised). Round loops are caught separately by the loop guard. Migrated from MAX_TOOL_ITERATIONS."
+        de: "Hard cap auf den agentic tool-loop pro Turn. Bei Erschöpfung wird KEIN roher Fehler mehr geworfen — die Agentenlaufzeit erzwingt eine letzte tool-freie Iteration und gibt eine Best-Effort-Antwort. Default: 100 (auch Floor — niedrigere installierte Werte werden hochgesetzt). Round-Loops werden separat vom Loop-Guard abgefangen. Migriert aus MAX_TOOL_ITERATIONS."
     - key: "cli_turn_seconds"
       label:
         en: "Time limit per turn (seconds)"
@@ -182,16 +189,6 @@ setup:
       help:
         en: "When on, a cheap Haiku call classifies each turn: simple → simple model, complex → complex model. Migrated from ORCHESTRATOR_MODEL_ROUTING."
         de: "Wenn an, klassifiziert ein günstiger Haiku-Call jeden Turn: einfach → Simple-Modell, komplex → Complex-Modell. Migriert aus ORCHESTRATOR_MODEL_ROUTING."
-    - key: "orchestrator_direct_line_sticky"
-      label:
-        en: "Direct Line: sticky mode"
-        de: "Direct Line: Sticky-Modus"
-      type: "boolean"
-      required: false
-      default: "false"
-      help:
-        en: "When on, a bare `#<agent>` binds the conversation to that specialist — every further message goes straight there until `#end` or `#orchestrator` is sent. Without this switch, `#<agent> <question>` still applies to a single message only. Default: off. Migrated from ORCHESTRATOR_DIRECT_LINE_STICKY."
-        de: "Wenn an, bindet ein blosses `#<agent>` das Gespräch an diesen Spezialisten — jede weitere Nachricht geht direkt dorthin, bis `#end` oder `#orchestrator` gesendet wird. Ohne diesen Schalter wirkt `#<agent> <Frage>` weiterhin nur für eine einzelne Nachricht. Standard: aus. Migriert aus ORCHESTRATOR_DIRECT_LINE_STICKY."
     - key: "model_routing_classifier_model"
       label:
         en: "Routing: classifier model"
@@ -217,8 +214,8 @@ setup:
       type: "string"
       required: false
       help:
-        en: "Empty = orchestrator model. Migrated from MODEL_ROUTING_COMPLEX_MODEL."
-        de: "Leer = Orchestrator-Modell. Migriert aus MODEL_ROUTING_COMPLEX_MODEL."
+        en: "Empty = agent model. Migrated from MODEL_ROUTING_COMPLEX_MODEL."
+        de: "Leer = Agenten-Modell. Migriert aus MODEL_ROUTING_COMPLEX_MODEL."
     - key: "max_turn_seconds"
       label:
         en: "Max turn duration (seconds)"
@@ -226,8 +223,8 @@ setup:
       type: "string"
       required: false
       help:
-        en: "Optional wall-clock budget per turn. If it is exceeded, the orchestrator finalizes at the next iteration boundary with a best-effort answer. 0 or empty = off (default — the iteration cap and the loop guard are the limits; long multi-step turns are not cut off)."
-        de: "Optionales Wall-Clock-Budget pro Turn. Wird es überschritten, finalisiert der Orchestrator an der nächsten Iterations-Grenze mit einer Best-Effort-Antwort. 0 oder leer = aus (Default — der Iteration-Cap und der Loop-Guard sind die Schranken; lange Multi-Step-Turns werden nicht abgeschnitten)."
+        en: "Optional wall-clock budget per turn. If it is exceeded, the agent runtime finalizes at the next iteration boundary with a best-effort answer. 0 or empty = off (default — the iteration cap and the loop guard are the limits; long multi-step turns are not cut off)."
+        de: "Optionales Wall-Clock-Budget pro Turn. Wird es überschritten, finalisiert die Agentenlaufzeit an der nächsten Iterations-Grenze mit einer Best-Effort-Antwort. 0 oder leer = aus (Default — der Iteration-Cap und der Loop-Guard sind die Schranken; lange Multi-Step-Turns werden nicht abgeschnitten)."
     - key: "loop_repeat_soft"
       label:
         en: "Loop guard: soft threshold"
@@ -315,13 +312,13 @@ setup:
         de: "Ziel-Umfang der Antwort an den User für alle Agenten dieser Installation. Steuert, was eine Antwort enthält (Ergebnis, Begründung, Zwischenschritte) und wie Ergebnisse der Fach-Agenten verdichtet werden — kein Token-Limit. Bittet der User in seiner Nachricht ausdrücklich um mehr oder weniger (»kurz«, »alle Details«), gewinnt seine Bitte für diesen Turn. Leer lassen = Standard."
     - key: "assistant_identity"
       label:
-        en: "Assistant persona"
-        de: "Assistant-Persona"
+        en: "Default agent identity"
+        de: "Standard-Agentenidentität"
       type: "string"
       required: false
       help:
-        en: "Opening line(s) of the system prompt — who the assistant is and in which context it works. Leave empty for a generic, integration-neutral persona. Example: 'You are the byte5 assistant for the Odoo 17 production system. You delegate to specialized domain agents and remember lessons learned.' The concrete list of domain agents is appended automatically — only describe identity/context here, no tool names."
-        de: "Eröffnungszeile(n) des System-Prompts — wer der Assistent ist und in welchem Kontext er arbeitet. Leer lassen für eine generische, integrationsneutrale Persona. Beispiel: 'Du bist der byte5-Assistent für die Odoo-17-Produktion. Du delegierst an spezialisierte Fach-Agenten und merkst dir Lernpunkte.' Die konkrete Fach-Agenten-Liste wird automatisch angehängt — hier nur Identität/Kontext beschreiben, keine Tool-Namen."
+        en: "Opening line(s) of the system prompt of every agent without its own identity text — who the agent is and in which context it works. Leave empty for the default: an AI agent working as a virtual colleague in this team. Example: 'You are an AI agent of byte5 working with the Odoo 17 production system.' Every agent additionally always speaks only as itself, never as a colleague or a person."
+        de: "Eröffnungszeile(n) des System-Prompts aller Agenten ohne eigenen Identitätstext — wer der Agent ist und in welchem Kontext er arbeitet. Leer lassen = Standard: ein KI-Agent, der als virtueller Kollege in diesem Team arbeitet. Beispiel: 'Du bist ein KI-Agent von byte5 für die Odoo-17-Produktion.' Jeder Agent spricht zusätzlich immer nur als er selbst, nie als Kollege oder Mensch."
     # AI-Act Art. 50 (#644, epic #642) — KI-Kennzeichnung pro Turn. Die
     # Kennzeichnung läuft NICHT über den System-Prompt (ein Modell kann eine
     # Prompt-Anweisung ignorieren, und `assistant_identity` / Persona-Skills
@@ -396,6 +393,42 @@ setup:
       help:
         en: "Optional operator text, appended verbatim (e.g. a contact or compliance notice). ALWAYS output AFTER the disclosure as a separate paragraph; it can only supplement the disclosure, never replace it: at level 'off' the note is dropped as well. Follows the pattern of a static Markdown section — no LLM, no data."
         de: "Optionaler, wortgetreu angehängter Betreiber-Text (z. B. Kontakt- oder Compliance-Hinweis). Wird IMMER NACH der Kennzeichnung als eigener Absatz ausgegeben und kann sie nur ergänzen, nie ersetzen: bei Stufe 'off' entfällt auch der Zusatztext. Folgt dem Muster einer statischen Markdown-Sektion — kein LLM, keine Daten."
+    # #2087 — wie oft die SICHTBAREN Kennzeichnungen erscheinen. Das
+    # strukturierte Feld und maschinenlesbare Markierungen bleiben bei jeder
+    # Einstellung auf jeder Antwort.
+    - key: "ai_disclosure_frequency"
+      label:
+        en: "AI disclosure: how often visible markers appear"
+        de: "KI-Kennzeichnung: Häufigkeit der sichtbaren Marker"
+      type: "enum"
+      required: false
+      default: "channel_default"
+      enum:
+        - value: "channel_default"
+          label:
+            en: "Channel default — today's behaviour (text line once per conversation, channel chips on every answer)"
+            de: "Kanal-Standard — heutiges Verhalten (Textzeile einmal pro Konversation, Kanal-Chips bei jeder Antwort)"
+        - value: "per_answer"
+          label:
+            en: "On every answer"
+            de: "Bei jeder Antwort"
+        - value: "per_conversation"
+          label:
+            en: "Once per conversation (again when another agent speaks or after a pause)"
+            de: "Einmal pro Konversation (erneut, wenn ein anderer Agent spricht oder nach einer Pause)"
+      help:
+        en: "Governs every visible marker: the text line and channel chips such as the Teams card chip. Leave empty = channel default. The structured aiDisclosure field and machine-readable markings stay on every answer. Switch the disclosure off entirely with the level setting above. Any deviation from the default is shown in /health, the operator dashboard and the boot log."
+        de: "Steuert jeden sichtbaren Marker: die Textzeile und Kanal-Chips wie den Teams-Karten-Chip. Leer lassen = Kanal-Standard. Das strukturierte Feld aiDisclosure und maschinenlesbare Markierungen bleiben bei jeder Antwort erhalten. Die Kennzeichnung ganz abschalten geht über die Stufe oben. Jede Abweichung vom Standard steht in /health, im Operator-Dashboard und im Boot-Log."
+    - key: "ai_disclosure_pause_minutes"
+      label:
+        en: "AI disclosure: pause for 'once per conversation' (minutes)"
+        de: "KI-Kennzeichnung: Pause für 'einmal pro Konversation' (Minuten)"
+      type: "number"
+      required: false
+      default: 60
+      help:
+        en: "Only used with 'once per conversation': after this many minutes without an answer the marker appears again. Default 60."
+        de: "Nur bei 'einmal pro Konversation': nach so vielen Minuten ohne Antwort erscheint der Marker erneut. Standard 60."
     # Org-Sicherheits-Postures + Provenance-Screening (#579). Zwei Achsen:
     # Eingangs-Screening (nicht-menschlicher Input wird geprüft) und Tool-
     # Freigaben. 'dangerous' = kein Screening, keine Freigaben; 'auto'

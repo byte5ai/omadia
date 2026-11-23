@@ -18,10 +18,13 @@ import {
   CHANNEL_TYPE,
   type FacilitatorKernel,
 } from './facilitatorKernelHarness.js';
-import type { RecordedSend } from './facilitatorKernelTypes.js';
+import type { FixtureProcess, RecordedSend } from './facilitatorKernelTypes.js';
 import { probePgTest } from './pgTestDb.js';
 
 export const CHAT = '19:offsite@thread.v2';
+/** Further group chats: a conversation is reserved for one process at a time. */
+export const CHAT_2 = '19:budget@thread.v2';
+export const CHAT_3 = '19:roadmap@thread.v2';
 export const ANNA = '5f0c1a2b-0000-4000-8000-00000000a11a';
 export const BEN = '5f0c1a2b-0000-4000-8000-00000000be11';
 export const NEUTRALITY = '## Neutrality contract (fixed, takes precedence)';
@@ -38,10 +41,21 @@ export interface ContractContext {
   /** A turn the channel adapter starts for a mention in the group chat. */
   groupMention(text: string, conversationId?: string): ChatTurnInput;
   /** A facilitator with its own identity, present in the chat. Returns its bot key. */
-  facilitator(slug: string, appId: string): Promise<string>;
+  facilitator(slug: string, appId: string, conversationId?: string): Promise<string>;
+  /** The engine starts a process for the agent in the chat and subscribes it
+   *  to every message there. */
+  moderate(agentSlug: string, conversationId?: string): Promise<FixtureProcess>;
+  /** Does the identity get every message of the chat (the mention gate is lifted)? */
+  readsAll(botKey: string, conversationId?: string): boolean;
+  /** Wait for something the kernel does on its own (a reconcile after an
+   *  access change, a NOTIFY from another kernel). Fails when it never happens. */
+  until(what: string, check: () => boolean | Promise<boolean>): Promise<void>;
   /** What the simulated channel recorded. Read through a call, so a "nothing
    *  was sent" assertion does not narrow the array's type afterwards. */
   sent(): RecordedSend[];
+  /** Let what was emitted be routed and stored. Enough for "nothing happened"
+   *  and for a single event; where a test waits for a delivery it says so
+   *  with `until`. */
   flush(): Promise<void>;
 }
 
@@ -95,15 +109,32 @@ export async function contractSuite(
           conversationType: 'group',
         },
       }),
-      async facilitator(slug: string, appId: string): Promise<string> {
-        const created = await c.k.api('POST', '/agents', { slug, name: slug, kind: 'facilitator' });
+      async facilitator(slug: string, appId: string, conversationId = CHAT): Promise<string> {
+        const created = await c.k.api('POST', '/agents', { slug, name: slug, archetype: 'facilitator' });
         assert.equal(created.status, 201, JSON.stringify(created.json));
         const key = await c.k.provisionIdentity(slug, appId);
-        c.k.channel.botAdded(CHAT);
+        c.k.channel.botAdded(conversationId);
         return key;
       },
+      async moderate(agentSlug: string, conversationId = CHAT): Promise<FixtureProcess> {
+        const process = await c.k.engine.openProcess(agentSlug, conversationId);
+        assert.deepEqual(await c.k.engine.messages.subscribe(process.scope, { mode: 'all' }), {
+          outcome: 'subscribed',
+          mode: 'all',
+        });
+        return process;
+      },
+      readsAll: (botKey: string, conversationId = CHAT): boolean =>
+        c.k.channel.core.isAllMessagesSubscribed!(CHANNEL_TYPE, conversationId, botKey),
+      async until(what: string, check: () => boolean | Promise<boolean>): Promise<void> {
+        for (let i = 0; i < 120; i += 1) {
+          if (await check()) return;
+          await c.flush();
+        }
+        assert.fail(`did not happen: ${what}`);
+      },
       sent: (): RecordedSend[] => c.k.channel.sent,
-      flush: (): Promise<void> => new Promise((r) => setTimeout(r, 25)),
+      flush: (): Promise<void> => new Promise((r) => setTimeout(r, 60)),
     } as ContractContext;
 
     before(async () => {
@@ -124,9 +155,11 @@ export async function contractSuite(
 
     beforeEach(async () => {
       await c.k?.stop();
-      await c.pool.query('UPDATE multi_orchestrator_settings SET fallback_agent_id = NULL');
+      // #2055 — default-agent entries name agents ON DELETE RESTRICT.
+      await c.pool.query('UPDATE agent_default_entries SET agent_id = NULL');
       await c.pool.query('DELETE FROM agent_teams_identities');
       await c.pool.query('DELETE FROM agents');
+      await c.pool.query('DELETE FROM system_notice_outbox');
       c.k = await bootFacilitatorKernel({ pool: c.pool });
       c.k.channel.rosters.set(CHAT, {
         conversationType: 'group',

@@ -4,12 +4,13 @@
 // The kernel takes the authorization from the named execution scope first
 // (#2090): the target must be one the scope lists, and the scope must be
 // open, inside its deadline and budget, and not stopped. Only then the action
-// goes through the same own-identity path as the first major. What the first
-// major asked a message subscription ("it only posts where it moderates") is
-// here the scope's answer, so a `closing` scope still posts to a conversation
-// whose reservation was released.
+// goes through the own-identity path (`conversationSendService.ts`). Whether
+// the agent may post somewhere is the scope's answer and nothing else's, so a
+// `closing` scope still posts to a conversation whose reservation was
+// released.
 
 import type { TargetedDeliveryOutcome, TargetedMessage } from '@omadia/channel-sdk';
+import { CONVERSATION_REACTIONS } from '@omadia/plugin-api';
 import type {
   CardUpdateOutcome,
   ChannelReadinessReport,
@@ -20,6 +21,8 @@ import type {
   ScopedConversationSendRequest,
   ScopedConversationSendService,
   ScopedDirectSendRequest,
+  ScopedReactionOutcome,
+  ScopedReactionRequest,
   ScopedReadinessRequest,
   ScopedSendOutcome,
   SendAuthorization,
@@ -41,7 +44,7 @@ export interface ScopedSendServiceDeps {
     input: { channelType: string; principal: string; message: TargetedMessage; asAgentSlug: string; userRef?: { kind: string; id: string } },
     subscriptions: ReturnType<ConversationMessageHub['subscriptionsOfProcess']>,
   ) => Promise<TargetedDeliveryOutcome>;
-  readonly messages?: Pick<ConversationMessageHub, 'subscriptionsOfProcess' | 'bindProcessMessage'>;
+  readonly messages?: Pick<ConversationMessageHub, 'subscriptionsOfProcess' | 'bindProcessMessage' | 'getProcessEventById'>;
   readonly readiness?: (request: { agentSlug: string; channelType: string; conversationId: string }) => Promise<ChannelReadinessReport>;
   readonly log?: (message: string) => void;
 }
@@ -129,9 +132,8 @@ export function createScopedSendService(deps: ScopedSendServiceDeps): ScopedConv
         channelType: request.channelType,
         conversationId: request.conversationId,
         message: request.message,
-        asOwnIdentity: true,
       };
-      const outcome = await deps.conversation.sendToConversation(input, deps.callerPluginId, {
+      const outcome = await deps.conversation.sendToConversation(input, {
         subscriptions: subscriptionsOf(granted.processId, request.agentSlug),
       });
       if (outcome.outcome !== 'delivered') {
@@ -223,9 +225,63 @@ export function createScopedSendService(deps: ScopedSendServiceDeps): ScopedConv
           cardMessageId: request.cardMessageId,
           update: request.update,
         },
-        deps.callerPluginId,
         { subscriptions: subscriptionsOf(granted.processId, request.agentSlug) },
       );
+    },
+
+    async react(request: ScopedReactionRequest): Promise<ScopedReactionOutcome> {
+      if (!isText(request?.channelType, 64) || !isText(request.conversationId) || !isText(request.messageEventId, 64)) {
+        return refusal('not_permitted', 'channelType, conversationId and messageEventId are required');
+      }
+      if (!CONVERSATION_REACTIONS.includes(request.reaction)) return refusal('channel_error', `unknown reaction '${String(request.reaction)}'`);
+      // Everything that can be answered without the scope is asked first:
+      // a reaction that cannot be set spends nothing of its budget.
+      if (deps.conversation.capabilities(request.channelType)?.reactions !== true) {
+        return refusal('channel_error', `the '${request.channelType}' channel cannot set reactions`);
+      }
+      if (!isText(request.agentSlug, 128) || !isText(request.authorization?.processId, 200)) {
+        return refusal('not_permitted', 'agentSlug and authorization.processId are required');
+      }
+      // Only somebody's message the kernel stored for this process in this
+      // conversation (the lookup is bound to the caller's own subscription):
+      // never one of another conversation or process, and never the target
+      // of a reaction or a card answer (that is often the agent's own post).
+      const record = await deps.messages?.getProcessEventById(
+        { agentSlug: request.agentSlug, channelType: request.channelType, conversationId: request.conversationId, processId: request.authorization.processId },
+        deps.callerPluginId,
+        request.messageEventId,
+      );
+      if (
+        !record ||
+        record.channelType !== request.channelType ||
+        record.conversationId !== request.conversationId ||
+        (record.kind !== 'created' && record.kind !== 'edited') ||
+        !isText(record.messageId)
+      ) {
+        return refusal('not_permitted', 'no such message of this process in this conversation');
+      }
+      // A reaction is drawn like a post to the conversation; it carries data,
+      // never text.
+      const granted = await authorize(
+        request.agentSlug,
+        { ...request.authorization, emission: 'data' as SendAuthorization['emission'] },
+        'post',
+        { kind: 'conversation', channelType: request.channelType, conversationId: request.conversationId },
+        { emission: 'data' as SendAuthorization['emission'] },
+      );
+      if ('outcome' in granted) return granted;
+      const outcome = await deps.conversation.react(
+        {
+          agentSlug: request.agentSlug,
+          channelType: request.channelType,
+          conversationId: request.conversationId,
+          messageId: record.messageId,
+          reaction: request.reaction,
+        },
+        { subscriptions: subscriptionsOf(granted.processId, request.agentSlug) },
+      );
+      if (outcome.outcome !== 'reacted') return refusal(outcome.code, outcome.message, { authorizationId: granted.authorizationId });
+      return { outcome: 'reacted', authorizationId: granted.authorizationId };
     },
 
     async checkReadiness(request: ScopedReadinessRequest) {

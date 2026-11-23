@@ -16,6 +16,8 @@
 
 import type { PromptPiiSpan } from '@omadia/plugin-api';
 
+import { isRoleNounOnly } from './roleNouns.js';
+
 /** Shortest token propagated — shorter ones ("Li", "Bo") collide with
  *  ordinary words too easily. */
 const MIN_TOKEN_LENGTH = 4;
@@ -59,6 +61,9 @@ function personNameTokens(
       if (token.length < MIN_TOKEN_LENGTH) continue;
       if (!STARTS_UPPER.test(token)) continue;
       if (HONORIFICS.has(token.replace(/\.$/u, ''))) continue;
+      // "Kunde" of "Kunde Müller" is no name: propagating it would mask
+      // every other "Kunde" of the text as a person.
+      if (isRoleNounOnly(token)) continue;
       tokens.set(token, Math.max(tokens.get(token) ?? 0, span.confidence));
     }
   }

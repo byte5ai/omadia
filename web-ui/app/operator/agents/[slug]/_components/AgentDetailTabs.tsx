@@ -3,6 +3,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
+import {
+  DEFAULT_AGENT_DETAIL_TAB as DEFAULT_TAB,
+  AGENT_DETAIL_TABS,
+  parseAgentDetailTab,
+  type AgentDetailTab,
+} from './agentDetailTab';
+
 /**
  * The agent detail page as tabs.
  *
@@ -17,28 +24,12 @@ import { useTranslations } from 'next-intl';
  * `history.replaceState`, not the router: switching a tab is not a
  * navigation and must not re-run the RSC fetch behind the page.
  */
-export const AGENT_DETAIL_TABS = [
-  'identity',
-  'model',
-  'peers',
-  'teams',
-  // #2066 — facilitators only: which facilitation engine it runs on.
-  'engine',
-  'plugins',
-  'tools',
-  'memory',
-] as const;
+// The tab list and its parser live in `agentDetailTab.ts` (no 'use client'):
+// the page calls the parser on the server to read `?tab=`.
+export { AGENT_DETAIL_TABS, parseAgentDetailTab, type AgentDetailTab } from './agentDetailTab';
 
-export type AgentDetailTab = (typeof AGENT_DETAIL_TABS)[number];
-
-const DEFAULT_TAB: AgentDetailTab = 'identity';
 const TAB_PARAM = 'tab';
 
-export function parseAgentDetailTab(raw: string | null | undefined): AgentDetailTab {
-  return (AGENT_DETAIL_TABS as readonly string[]).includes(raw ?? '')
-    ? (raw as AgentDetailTab)
-    : DEFAULT_TAB;
-}
 
 function readTabFromLocation(): AgentDetailTab {
   if (typeof window === 'undefined') return DEFAULT_TAB;
@@ -70,19 +61,19 @@ interface AgentDetailTabsProps {
    * opens onto nothing would promise something the kernel refuses.
    */
   readonly panels: Readonly<Partial<Record<AgentDetailTab, () => React.ReactNode>>>;
-  /** Tab to open when the URL names none. */
+  /** The tab to render first: what `?tab=` names, read by the page on the
+   *  server (the default tab when it names none). */
   readonly initialTab?: AgentDetailTab;
 }
 
 export function AgentDetailTabs(props: AgentDetailTabsProps): React.ReactElement {
   const t = useTranslations('operatorAgents.detailTabs');
-  // Lazy initial read: the server renders the default tab, the client picks
-  // the URL's tab on hydration. The effect below re-syncs if the URL is
-  // edited by hand (back/forward keeps the same document, so `popstate`).
-  const [requested, setTab] = useState<AgentDetailTab>(() => {
-    const fromUrl = readTabFromLocation();
-    return fromUrl !== DEFAULT_TAB ? fromUrl : (props.initialTab ?? DEFAULT_TAB);
-  });
+  // The page reads `?tab=` on the server and passes it as `initialTab`, so
+  // the server and the client render the same tab. Reading `window` here
+  // made the hydration render differ from the server's for every deep link.
+  // The effect below re-syncs if the URL changes in the same document
+  // (back/forward, so `popstate`).
+  const [requested, setTab] = useState<AgentDetailTab>(props.initialTab ?? DEFAULT_TAB);
   const tabs = AGENT_DETAIL_TABS.filter((id) => props.panels[id] !== undefined);
   // A deep link to a tab this agent does not have lands on the first one.
   const tab = tabs.includes(requested) ? requested : (tabs[0] ?? DEFAULT_TAB);

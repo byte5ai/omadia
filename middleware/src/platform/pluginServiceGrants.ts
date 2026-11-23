@@ -115,6 +115,7 @@ import {
 import type { ServiceGateOperation } from '@omadia/plugin-api';
 
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import { effectiveKind, type PluginKind } from '../api/admin-v1.js';
 
 /**
  * The half of the audit that lives in THIS repository — `middleware/packages/*`.
@@ -350,6 +351,41 @@ export function legacyServiceGrantsFor(
 export const KERNEL_ONLY_SERVICE_NAMES: ReadonlySet<string> = new Set([
   PRIVACY_FIELD_SAMPLES_SERVICE_NAME,
 ]);
+
+/**
+ * Spec 2042 §5.10, ADR-0017 — raw model clients and provider pools. Code
+ * holding `anthropicClient` reaches the provider past every kernel control;
+ * `llm` and `llmProviderPool` hand out whole providers. No plugin gets them:
+ * plugins reach models through `ctx.llm`, inside the calling agent's
+ * execution context.
+ */
+export const RAW_MODEL_SERVICE_NAMES: ReadonlySet<string> = new Set(['anthropicClient', 'llm', 'llmProviderPool']);
+
+/**
+ * What a plugin's request for a raw model service gets (the contract step,
+ * S3b):
+ *
+ *   - `allow`   — not a raw model service; a model plugin (it is one); or one
+ *     of the kernel's own system modules (agent runtime, verifier, fast lane
+ *     …), the gateway's trusted callers;
+ *   - `refuse`  — every other plugin: it reaches models through `ctx.llm`, in
+ *     its caller's context.
+ */
+/** Whether `name` is a raw model client or provider pool (spec 2042 §5.10). */
+export function isRawModelServiceName(name: string): boolean {
+  return RAW_MODEL_SERVICE_NAMES.has(name);
+}
+
+export function rawModelServiceAccess(input: {
+  readonly name: string;
+  readonly kind: PluginKind | undefined;
+  readonly bundled: boolean;
+}): 'allow' | 'refuse' {
+  if (!RAW_MODEL_SERVICE_NAMES.has(input.name)) return 'allow';
+  if (input.kind === 'model') return 'allow';
+  if (input.bundled && input.kind !== undefined && effectiveKind(input.kind) === 'system-module') return 'allow';
+  return 'refuse';
+}
 
 /** Why a `services.get` call was allowed — or wasn't. */
 export type ServiceGrantOutcome =

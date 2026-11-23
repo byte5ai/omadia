@@ -3,21 +3,20 @@
  *
  *  1. SC-008 — a bound channel key routes to its owning Agent's
  *     `BuiltOrchestrator`; another bound key routes to a different Agent.
- *  2. T031 — an unbound key routes to the platform fallback Agent when
- *     one is configured, and hard-rejects when none is.
- *  3. T029 — `ensureFallbackAgent` seeds the fallback on first boot
- *     (zero agents → seed), is a no-op when agents already exist with a
- *     fallback set, and points `fallback_agent_id` at an existing seed
- *     row if one is found.
+ *  2. #2055 — there is no fallback agent: an unbound key routes to the
+ *     instance entry of the default-agent table, and is rejected with a
+ *     `no_agent` notice when that entry is `off` or missing.
+ *  3. #2055 / #1880 — a binding to a disabled agent is rejected with
+ *     `agent_disabled` naming it; the default agent does not answer instead.
  *  4. Decision logging — every `resolve()` emits exactly one structured
- *     log line carrying channelType, channelKey, decision, and (for
- *     non-reject decisions) the resolved slug.
+ *     log line carrying channelType, channelKey, decision, and the match.
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import Anthropic from '@anthropic-ai/sdk';
+import type { ChatAgent } from '@omadia/channel-sdk';
 import { InMemoryNudgeRegistry } from '@omadia/plugin-api';
 import type {
   EntityRefBus,
@@ -31,13 +30,9 @@ import {
   type AgentRow,
   type ConfigSnapshot,
   type ConfigStore,
-  type PlatformSettingsRow,
 } from '../packages/harness-orchestrator/src/registry/configStore.js';
 import { OrchestratorRegistry } from '../packages/harness-orchestrator/src/registry/index.js';
-import {
-  ensureFallbackAgent,
-  FALLBACK_AGENT_SLUG,
-} from '../packages/harness-orchestrator/src/registry/onboarding.js';
+import type { DefaultAgentEntryRow } from '../packages/harness-orchestrator/src/registry/routingTables.js';
 import { ChannelResolver } from '../packages/harness-orchestrator/src/routing/channelResolver.js';
 
 function fakeNativeToolRegistry(): NativeToolRegistry {
@@ -72,9 +67,22 @@ function agent(slug: string, id: string, overrides: Partial<AgentRow> = {}): Age
     description: null,
     privacyProfile: 'default',
     status: 'enabled',
+    availableToEveryone: true,
     createdAt: new Date(0),
     updatedAt: new Date(0),
     ...overrides,
+  };
+}
+
+/** The instance entry of the default-agent table (the former fallback). */
+function instanceEntry(agentId: string | null): DefaultAgentEntryRow {
+  return {
+    id: 'entry-instance',
+    principal: null,
+    channelType: null,
+    agentId,
+    updatedBy: null,
+    updatedAt: new Date(0),
   };
 }
 
@@ -98,16 +106,27 @@ const twoAgentSnap: ConfigSnapshot = {
       createdAt: new Date(0),
     },
   ],
-  platformSettings: {
-    fallbackAgentId: '00000000-0000-0000-0000-000000000001',
-    updatedAt: new Date(0),
-  },
+  defaultEntries: [instanceEntry('00000000-0000-0000-0000-000000000001')],
 };
 
 function fakeStore(snap: ConfigSnapshot): ConfigStore {
   return {
     loadSnapshot: () => Promise.resolve(snap),
   } as unknown as ConfigStore;
+}
+
+/**
+ * #2055 — a reject still hands out a ChatAgent: the management layer with no
+ * agent behind it. Whatever the sender writes, it answers with the notice,
+ * from `system`, without running a model.
+ */
+async function noticeAnswerOf(chatAgent: ChatAgent): Promise<Record<string, unknown> | undefined> {
+  const events: Array<Record<string, unknown>> = [];
+  for await (const ev of chatAgent.chatStream({ userMessage: 'hi', sessionScope: 's' } as never)) {
+    events.push(ev as unknown as Record<string, unknown>);
+  }
+  assert.equal(events.length, 1, 'one done event, no agent output');
+  return events[0];
 }
 
 async function buildRegistry(snap: ConfigSnapshot): Promise<OrchestratorRegistry> {
@@ -140,7 +159,7 @@ test('SC-008: bound channel keys route to their owning Agent', async () => {
   assert.equal(boundLogs.length, 2);
 });
 
-test('T031: unmatched key routes to the configured fallback Agent', async () => {
+test('#2055: unmatched key routes to the instance default agent', async () => {
   const registry = await buildRegistry(twoAgentSnap);
   const logs: Array<{ msg: string; fields?: Record<string, unknown> }> = [];
   const resolver = new ChannelResolver({
@@ -149,32 +168,93 @@ test('T031: unmatched key routes to the configured fallback Agent', async () => 
   });
 
   const result = resolver.resolve('teams', '28:unbound');
-  assert.equal(result.decision, 'fallback');
+  assert.equal(result.decision, 'bound');
+  assert.equal(result.match, 'default');
+  assert.equal(result.exclusive, false);
   assert.equal(result.agent?.agent.slug, 'public');
 
-  const fallbackLog = logs.find((l) => l.fields?.['decision'] === 'fallback');
-  assert.ok(fallbackLog, 'fallback decision is logged');
+  const defaultLog = logs.find((l) => l.fields?.['match'] === 'default');
+  assert.equal(defaultLog?.fields?.['decision'], 'bound', 'the default decision is logged');
 });
 
-test('T031: unmatched key hard-rejects when no fallback is configured', async () => {
-  const noFallback: ConfigSnapshot = {
-    ...twoAgentSnap,
-    platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
-  };
-  const registry = await buildRegistry(noFallback);
-  const logs: Array<{ msg: string; fields?: Record<string, unknown> }> = [];
-  const resolver = new ChannelResolver({
-    registry,
-    log: (msg, fields) => logs.push({ msg, ...(fields ? { fields } : {}) }),
-  });
+for (const [label, defaultEntries] of [
+  ['set to off', [instanceEntry(null)]],
+  ['missing', []],
+] as const) {
+  test(`#2055: unmatched key is rejected with no_agent when the instance entry is ${label}`, async () => {
+    const registry = await buildRegistry({ ...twoAgentSnap, defaultEntries });
+    const logs: Array<{ msg: string; fields?: Record<string, unknown> }> = [];
+    const resolver = new ChannelResolver({
+      registry,
+      log: (msg, fields) => logs.push({ msg, ...(fields ? { fields } : {}) }),
+    });
 
-  const result = resolver.resolve('teams', '28:unbound');
+    const result = resolver.resolve('teams', '28:unbound');
+    assert.equal(result.decision, 'reject');
+    assert.equal(result.agent, undefined);
+    assert.equal(result.notice?.code, 'no_agent');
+    const done = await noticeAnswerOf(result.chatAgent);
+    assert.deepEqual(done?.['speaker'], { kind: 'system' });
+    assert.equal((done?.['systemNotice'] as { code?: string } | undefined)?.code, 'no_agent');
+    assert.equal(result.match, undefined, 'nothing addressed an agent');
+
+    const rejectLog = logs.find((l) => l.fields?.['decision'] === 'reject');
+    assert.equal(rejectLog?.fields?.['notice'], 'no_agent', 'reject decision is logged');
+  });
+}
+
+test('#2055/#1880: a binding to a disabled agent is rejected naming it; the default agent does not answer', async () => {
+  const registry = await buildRegistry({
+    ...twoAgentSnap,
+    agents: [
+      twoAgentSnap.agents[0]!,
+      agent('general', '00000000-0000-0000-0000-000000000002', { status: 'disabled' }),
+    ],
+  });
+  const resolver = new ChannelResolver({ registry });
+
+  const result = resolver.resolve('telegram', '@omadia_general_bot', { locale: 'en' });
   assert.equal(result.decision, 'reject');
   assert.equal(result.agent, undefined);
-  assert.equal(result.chatAgent, undefined);
+  assert.equal(result.match, 'binding');
+  assert.equal(result.notice?.code, 'agent_disabled');
+  assert.equal(result.notice?.agent?.slug, 'general');
+  assert.match(result.notice?.text ?? '', /general is currently disabled/);
+  const done = await noticeAnswerOf(result.chatAgent);
+  assert.deepEqual(done?.['speaker'], { kind: 'system' });
+  assert.equal(done?.['answer'], result.notice?.text, 'the notice is the answer, not the default agent');
+});
 
-  const rejectLog = logs.find((l) => l.fields?.['decision'] === 'reject');
-  assert.ok(rejectLog, 'reject decision is logged');
+test('#2055: an agent available to nobody is not served, not even through its binding', async () => {
+  const registry = await buildRegistry({
+    ...twoAgentSnap,
+    agents: [
+      twoAgentSnap.agents[0]!,
+      agent('general', '00000000-0000-0000-0000-000000000002', { availableToEveryone: false }),
+    ],
+  });
+  const resolver = new ChannelResolver({ registry });
+
+  const anonymous = resolver.resolve('telegram', '@omadia_general_bot');
+  assert.equal(anonymous.decision, 'reject');
+  assert.equal(anonymous.notice?.code, 'agent_not_available');
+
+  // Named availability: the listed person is served.
+  const named = await buildRegistry({
+    ...twoAgentSnap,
+    agents: [
+      twoAgentSnap.agents[0]!,
+      agent('general', '00000000-0000-0000-0000-000000000002', { availableToEveryone: false }),
+    ],
+    availabilityPrincipals: [
+      { agentId: '00000000-0000-0000-0000-000000000002', principal: 'user:anna@example.com' },
+    ],
+  });
+  const forAnna = new ChannelResolver({ registry: named }).resolve('telegram', '@omadia_general_bot', {
+    principal: 'user:anna@example.com',
+  });
+  assert.equal(forAnna.decision, 'bound');
+  assert.equal(forAnna.agent?.agent.slug, 'general');
 });
 
 test('SC-008: binding-move surfaces on next resolve (registry diff handles in-flight separately)', async () => {
@@ -215,177 +295,11 @@ test('SC-008: binding-move surfaces on next resolve (registry diff handles in-fl
   );
 });
 
-test('T029: ensureFallbackAgent seeds on first boot when no agents exist', async () => {
-  let createdSlug: string | undefined;
-  let fallbackId: string | null = null;
-  const store = {
-    listAgents: () => Promise.resolve([]),
-    getPlatformSettings: () =>
-      Promise.resolve<PlatformSettingsRow>({
-        fallbackAgentId: null,
-        updatedAt: new Date(0),
-      }),
-    getAgentBySlug: () => Promise.resolve(undefined),
-    createAgent: (input: { slug: string }) => {
-      createdSlug = input.slug;
-      return Promise.resolve(agent(input.slug, '00000000-0000-0000-0000-000000000010'));
-    },
-    setFallbackAgentId: (id: string | null) => {
-      fallbackId = id;
-      return Promise.resolve({ fallbackAgentId: id, updatedAt: new Date(0) });
-    },
-  } as unknown as ConfigStore;
-
-  const slug = await ensureFallbackAgent(store);
-  assert.equal(slug, FALLBACK_AGENT_SLUG);
-  assert.equal(createdSlug, FALLBACK_AGENT_SLUG);
-  assert.equal(fallbackId, '00000000-0000-0000-0000-000000000010');
-});
-
-test('T029: ensureFallbackAgent is a no-op when agents exist with a fallback already set', async () => {
-  let createCalls = 0;
-  let setFallbackCalls = 0;
-  const store = {
-    listAgents: () => Promise.resolve([agent('a', '1')]),
-    getPlatformSettings: () =>
-      Promise.resolve<PlatformSettingsRow>({
-        fallbackAgentId: '1',
-        updatedAt: new Date(0),
-      }),
-    getAgentBySlug: () => Promise.resolve(undefined),
-    createAgent: () => {
-      createCalls += 1;
-      return Promise.resolve(agent('x', '2'));
-    },
-    setFallbackAgentId: () => {
-      setFallbackCalls += 1;
-      return Promise.resolve({ fallbackAgentId: null, updatedAt: new Date(0) });
-    },
-  } as unknown as ConfigStore;
-
-  const slug = await ensureFallbackAgent(store);
-  assert.equal(slug, undefined);
-  assert.equal(createCalls, 0);
-  assert.equal(setFallbackCalls, 0);
-});
-
-test('B1: ensureFallbackAgent hydrates fresh fallback with every supplied plugin (skipping orchestrator id)', async () => {
-  const upserts: Array<{ agentId: string; pluginId: string }> = [];
-  let createCalls = 0;
-  const store = {
-    listAgents: () => Promise.resolve([]),
-    getPlatformSettings: () =>
-      Promise.resolve<PlatformSettingsRow>({
-        fallbackAgentId: null,
-        updatedAt: new Date(0),
-      }),
-    getAgentBySlug: () => Promise.resolve(undefined),
-    createAgent: (input: { slug: string }) => {
-      createCalls += 1;
-      return Promise.resolve(agent(input.slug, '00000000-0000-0000-0000-000000000099'));
-    },
-    setFallbackAgentId: (id: string | null) =>
-      Promise.resolve({ fallbackAgentId: id, updatedAt: new Date(0) }),
-    upsertAgentPlugin: (agentId: string, input: { pluginId: string }) => {
-      upserts.push({ agentId, pluginId: input.pluginId });
-      return Promise.resolve({
-        agentId,
-        pluginId: input.pluginId,
-        config: {},
-        enabled: true,
-        createdAt: new Date(0),
-      });
-    },
-  } as unknown as ConfigStore;
-
-  const slug = await ensureFallbackAgent(store, {
-    pluginIds: [
-      '@omadia/orchestrator', // must be filtered out (it IS the runtime)
-      '@omadia/memory',
-      'de.byte5.integration.microsoft365',
-      '@omadia/diagrams',
-    ],
-  });
-  assert.equal(slug, FALLBACK_AGENT_SLUG);
-  assert.equal(createCalls, 1);
-  assert.deepEqual(
-    upserts.map((u) => u.pluginId),
-    ['@omadia/memory', 'de.byte5.integration.microsoft365', '@omadia/diagrams'],
-  );
-  for (const u of upserts) {
-    assert.equal(u.agentId, '00000000-0000-0000-0000-000000000099');
-  }
-});
-
-test('B1: ensureFallbackAgent does NOT re-attach plugins when the fallback row already exists', async () => {
-  // Operator may have pruned the fallback's plugins on purpose; rehydrating
-  // without consent would silently re-grant capabilities. The reset path
-  // (B3d / attachAllPlugins) is the consent-bearing rehydration entry.
-  const upserts: string[] = [];
-  const store = {
-    listAgents: () => Promise.resolve([]),
-    getPlatformSettings: () =>
-      Promise.resolve<PlatformSettingsRow>({
-        fallbackAgentId: null,
-        updatedAt: new Date(0),
-      }),
-    getAgentBySlug: () => Promise.resolve(agent(FALLBACK_AGENT_SLUG, 'existing-id')),
-    createAgent: () => {
-      throw new Error('createAgent must NOT be called when fallback exists');
-    },
-    setFallbackAgentId: (id: string | null) =>
-      Promise.resolve({ fallbackAgentId: id, updatedAt: new Date(0) }),
-    upsertAgentPlugin: (agentId: string, input: { pluginId: string }) => {
-      upserts.push(input.pluginId);
-      return Promise.resolve({
-        agentId,
-        pluginId: input.pluginId,
-        config: {},
-        enabled: true,
-        createdAt: new Date(0),
-      });
-    },
-  } as unknown as ConfigStore;
-
-  const slug = await ensureFallbackAgent(store, {
-    pluginIds: ['@omadia/memory'],
-  });
-  assert.equal(slug, FALLBACK_AGENT_SLUG);
-  assert.deepEqual(upserts, []);
-});
-
-test('T029: ensureFallbackAgent refuses to invent a fallback when operator left it unset', async () => {
-  let createCalls = 0;
-  let setFallbackCalls = 0;
-  const store = {
-    listAgents: () => Promise.resolve([agent('a', '1')]),
-    getPlatformSettings: () =>
-      Promise.resolve<PlatformSettingsRow>({
-        fallbackAgentId: null,
-        updatedAt: new Date(0),
-      }),
-    getAgentBySlug: () => Promise.resolve(undefined),
-    createAgent: () => {
-      createCalls += 1;
-      return Promise.resolve(agent('x', '2'));
-    },
-    setFallbackAgentId: () => {
-      setFallbackCalls += 1;
-      return Promise.resolve({ fallbackAgentId: null, updatedAt: new Date(0) });
-    },
-  } as unknown as ConfigStore;
-
-  const slug = await ensureFallbackAgent(store);
-  assert.equal(slug, undefined, 'should NOT create when operator policy is hard-reject');
-  assert.equal(createCalls, 0);
-  assert.equal(setFallbackCalls, 0);
-});
-
 test('#2060: a binding to a facilitator is rejected at resolve time, never answered through a foreign bot', async () => {
   const mara = '00000000-0000-0000-0000-0000000000f1';
   const registry = await buildRegistry({
     ...twoAgentSnap,
-    agents: [...twoAgentSnap.agents, agent('mara', mara, { kind: 'facilitator' })],
+    agents: [...twoAgentSnap.agents, agent('mara', mara, { archetype: 'facilitator' })],
     channelBindings: [
       ...twoAgentSnap.channelBindings,
       // The default bot's key, bound to the facilitator by hand.
@@ -402,11 +316,15 @@ test('#2060: a binding to a facilitator is rejected at resolve time, never answe
 
   const viaBinding = resolver.resolve('teams', '28:default-bot');
   assert.equal(viaBinding.decision, 'reject');
-  assert.equal(viaBinding.chatAgent, undefined);
-  assert.equal(logs.at(-1)?.fields?.['match'], 'binding-to-facilitator');
+  assert.equal(viaBinding.agent, undefined);
+  assert.equal(viaBinding.notice?.code, 'agent_not_available');
+  assert.equal(viaBinding.notice?.agent?.slug, 'mara');
+  assert.equal(logs.at(-1)?.fields?.['match'], 'binding');
+  assert.equal(logs.at(-1)?.fields?.['notice'], 'agent_not_available');
 
   const viaIdentity = resolver.resolve('teams', '28:mara-bot');
   assert.equal(viaIdentity.decision, 'bound');
+  assert.equal(viaIdentity.exclusive, true);
   assert.equal(viaIdentity.agent?.agent.slug, 'mara');
   // A standard agent's binding is untouched.
   assert.equal(resolver.resolve('teams', '28:public-bot').agent?.agent.slug, 'public');
@@ -414,7 +332,6 @@ test('#2060: a binding to a facilitator is rejected at resolve time, never answe
 
 test('#2088: a conversation bound to a deleted agent is refused; the default agent does not answer in its place', async () => {
   const gone = '00000000-0000-0000-0000-0000000000d1';
-  const notices: unknown[] = [];
   const snapshot = {
     ...twoAgentSnap,
     // The deleted agent is in no agent list; its binding and its bot's
@@ -433,27 +350,30 @@ test('#2088: a conversation bound to a deleted agent is refused; the default age
   const resolver = new ChannelResolver({
     registry,
     log: (msg, fields) => logs.push({ msg, ...(fields ? { fields } : {}) }),
-    emitSystemNotice: (notice) => notices.push(notice),
   });
 
-  // The fallback exists and would have answered before.
-  assert.equal(resolver.resolve('teams', '19:somewhere-else@thread.v2').decision, 'fallback');
+  // The default agent exists and answers an unbound conversation.
+  const elsewhere = resolver.resolve('teams', '19:somewhere-else@thread.v2');
+  assert.equal(elsewhere.decision, 'bound');
+  assert.equal(elsewhere.match, 'default');
 
-  const bound = resolver.resolve('teams', '19:sales-team@thread.v2');
+  const bound = resolver.resolve('teams', '19:sales-team@thread.v2', { locale: 'en' });
   assert.equal(bound.decision, 'reject');
-  assert.equal(bound.chatAgent, undefined);
-  assert.equal(logs.at(-1)?.fields?.['match'], 'binding-to-deleted-agent');
+  assert.equal(bound.agent, undefined);
+  assert.equal(logs.at(-1)?.fields?.['match'], 'binding');
   assert.equal(logs.at(-1)?.fields?.['agentId'], gone);
-  // The seam where "Mira was deleted" will be said once the kernel can (#2045).
-  assert.deepEqual(notices, [
-    { kind: 'agent_deleted', channelType: 'teams', channelKey: '19:sales-team@thread.v2', agentId: gone, agentName: 'Mira' },
-  ]);
+  // "Mira was deleted" — the notice names the agent (#2045, INV-7).
+  assert.equal(bound.notice?.code, 'agent_deleted');
+  assert.deepEqual(bound.notice?.agent, { slug: 'mira', displayName: 'Mira', agentId: gone });
+  assert.match(bound.notice?.text ?? '', /^Mira was deleted/);
+  assert.equal((await noticeAnswerOf(bound.chatAgent))?.['answer'], bound.notice?.text);
 
-  // Its own bot goes quiet as well, by the rule that already held for a bot
-  // whose agent is not servable.
+  // Its own bot goes quiet as well, by the same rule; the reject is exclusive.
   const ownBot = resolver.resolve('teams', '28:gone-bot');
   assert.equal(ownBot.decision, 'reject');
-  assert.equal(logs.at(-1)?.fields?.['match'], 'identity-unavailable');
+  assert.equal(ownBot.exclusive, true);
+  assert.equal(ownBot.notice?.code, 'agent_deleted');
+  assert.equal(logs.at(-1)?.fields?.['match'], 'identity');
 
   // The refusal survives a reload: the binding is kept until somebody changes the target.
   await registry.reload();

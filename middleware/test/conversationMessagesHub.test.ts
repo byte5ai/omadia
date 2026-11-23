@@ -1,17 +1,17 @@
 /**
- * 'conversationMessages@1' (#2043) — the kernel's record of who wrote what.
+ * 'conversationMessages@2' (#2043, #2089) — the kernel's record of who wrote
+ * what, as one process of the engine plugin reads it.
  *
  * Runs on the in-memory store, which follows the same rules as the Postgres
  * one (`conversationMessages.pg.test.ts` proves those against the real
- * migration, including a restart).
+ * migrations, including a restart). What separates one process from another
+ * is in `processConversationMessages.test.ts`.
  */
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import type { ConversationMessageRecord } from '@omadia/plugin-api';
-
-import { createConversationMessagesService } from '../src/channels/conversationMessages/service.js';
+import type { ProcessConversationMessageRecord } from '@omadia/plugin-api';
 
 import {
   assignRevision,
@@ -20,29 +20,34 @@ import {
 import {
   CONVERSATION,
   ENGINE,
+  FULL_ACCESS,
   hubFixture,
   MARA_KEY,
   messageEvent,
   NORA_KEY,
-  scopeOf,
+  processOf,
+  readAll,
 } from './_helpers/conversationMessagesFixture.js';
 
 const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
+const OTHER_CHAT = '19:other@thread.v2';
+const MARA = processOf('mara');
 
 describe('conversationMessages: subscribe', () => {
-  it('subscribes a facilitator with its own identity, idempotently', async () => {
+  it('subscribes a process of a facilitator with its own identity, idempotently', async () => {
     const f = hubFixture(new InMemoryConversationMessageStore());
-    assert.deepEqual(await f.hub.subscribe(scopeOf('mara'), ENGINE), { outcome: 'subscribed' });
-    assert.deepEqual(await f.hub.subscribe(scopeOf('mara'), ENGINE), { outcome: 'subscribed' });
+    assert.deepEqual(await readAll(f, 'mara'), { outcome: 'subscribed', mode: 'all' });
+    assert.deepEqual(await readAll(f, 'mara'), { outcome: 'subscribed', mode: 'all' });
+    assert.equal(f.hub.subscriptionsIn('teams', CONVERSATION).length, 1, 'the same process again is the same subscription');
     assert.equal(f.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), true);
     assert.equal(f.hub.isSubscribed('teams', CONVERSATION, MARA_KEY.toLowerCase()), true, 'lower-case key');
     assert.equal(f.hub.isSubscribed('teams', CONVERSATION, NORA_KEY), false, 'another bot in the same chat');
-    assert.equal(f.hub.isSubscribed('teams', '19:other@thread.v2', MARA_KEY), false);
+    assert.equal(f.hub.isSubscribed('teams', OTHER_CHAT, MARA_KEY), false);
     assert.equal(f.hub.isSubscribed('slack', CONVERSATION, MARA_KEY), false);
   });
 
   const refusals: readonly [string, string, RegExp, ((f: ReturnType<typeof hubFixture>) => void)?][] = [
-    ['hr', 'not_facilitator', /not a facilitator/],
+    ['hr', 'not_facilitator', /does not add conversation messages/],
     ['ida', 'no_identity', /no identity of its own/],
     ['ghost', 'unavailable', /not active/],
     ['mara', 'not_present', /not observed in this conversation/, (f) => f.present.clear()],
@@ -65,7 +70,7 @@ describe('conversationMessages: subscribe', () => {
     it(`refuses ${slug}: ${code}`, async () => {
       const f = hubFixture(new InMemoryConversationMessageStore());
       arrange?.(f);
-      const outcome = await f.hub.subscribe(scopeOf(slug), ENGINE);
+      const outcome = await readAll(f, slug);
       assert.equal(outcome.outcome, 'refused');
       assert.equal(outcome.outcome === 'refused' && outcome.code, code);
       assert.match(outcome.outcome === 'refused' ? outcome.message : '', message);
@@ -78,58 +83,12 @@ describe('conversationMessages: subscribe', () => {
     // (the kernel suppresses the turn) while no message event ever arrives.
     const undeclared = hubFixture(new InMemoryConversationMessageStore());
     undeclared.hasReadinessProvider = false;
-    const outcome = await undeclared.hub.subscribe(scopeOf('mara'), ENGINE);
+    const outcome = await readAll(undeclared, 'mara');
     assert.equal(outcome.outcome === 'refused' && outcome.code, 'not_ready');
     assert.match(outcome.outcome === 'refused' ? outcome.message : '', /does not declare delivery of all messages/);
     assert.equal(undeclared.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), false);
     undeclared.hasReadinessProvider = true;
-    assert.equal((await undeclared.hub.subscribe(scopeOf('mara'), ENGINE)).outcome, 'subscribed');
-  });
-
-  it('a second plugin cannot take over or read a subscription', async () => {
-    const f = hubFixture(new InMemoryConversationMessageStore());
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
-    const other = await f.hub.subscribe(scopeOf('mara'), '@acme/snoop');
-    assert.equal(other.outcome === 'refused' && other.code, 'unavailable');
-    await f.hub.ingest(messageEvent());
-    assert.equal(await f.hub.getEvent(scopeOf('mara'), '@acme/snoop', 'm1'), undefined);
-    assert.deepEqual(await f.hub.listSince(scopeOf('mara'), '@acme/snoop'), { events: [] });
-    await f.hub.unsubscribe(scopeOf('mara'), '@acme/snoop');
-    assert.equal(f.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), true, 'still subscribed');
-  });
-});
-
-describe('conversationMessages: isSubscribed', () => {
-  it('answers exactly, from the store, and only for the caller own subscriptions', async () => {
-    const store = new InMemoryConversationMessageStore();
-    const f = hubFixture(store);
-    const engine = createConversationMessagesService({ hub: f.hub, callerPluginId: ENGINE, isEngine: () => true });
-    const snoop = createConversationMessagesService({ hub: f.hub, callerPluginId: '@acme/snoop', isEngine: () => false });
-    assert.equal(await engine.isSubscribed?.(scopeOf('mara')), false, 'nothing yet');
-    assert.deepEqual(await engine.subscribe(scopeOf('mara')), { outcome: 'subscribed' });
-    assert.equal(await engine.isSubscribed?.(scopeOf('mara')), true);
-    assert.equal(await engine.isSubscribed?.(scopeOf('mara', '19:other@thread.v2')), false, 'another conversation');
-    assert.equal(await engine.isSubscribed?.(scopeOf('nora')), false, 'another agent');
-    assert.equal(await snoop.isSubscribed?.(scopeOf('mara')), false, 'not the engine');
-
-    // A fresh hub over the same store (a restart) answers without a boot
-    // refresh having run: the question re-reads the store.
-    const restarted = hubFixture(store);
-    const after = createConversationMessagesService({ hub: restarted.hub, callerPluginId: ENGINE, isEngine: () => true });
-    assert.equal(await after.isSubscribed?.(scopeOf('mara')), true);
-
-    await engine.unsubscribe(scopeOf('mara'));
-    assert.equal(await after.isSubscribed?.(scopeOf('mara')), false, 'ended elsewhere: seen at once');
-  });
-
-  it('a former engine gets false even for the subscription it created', async () => {
-    const store = new InMemoryConversationMessageStore();
-    const f = hubFixture(store);
-    let isEngine = true;
-    const engine = createConversationMessagesService({ hub: f.hub, callerPluginId: ENGINE, isEngine: () => isEngine });
-    await engine.subscribe(scopeOf('mara'));
-    isEngine = false;
-    assert.equal(await engine.isSubscribed?.(scopeOf('mara')), false);
+    assert.equal((await readAll(undeclared, 'mara')).outcome, 'subscribed');
   });
 });
 
@@ -138,16 +97,16 @@ describe('conversationMessages: storing events', () => {
     const store = new InMemoryConversationMessageStore();
     const f = hubFixture(store);
     assert.equal(await f.hub.ingest(messageEvent()), undefined);
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(f, 'mara');
     // N bots in one chat deliver N copies: only the subscribed identity's is stored.
     assert.equal(await f.hub.ingest(messageEvent({ receivedByChannelKey: NORA_KEY })), undefined);
-    assert.equal(await f.hub.ingest(messageEvent({ conversationId: '19:other@thread.v2' })), undefined);
-    assert.deepEqual((await f.hub.listSince(scopeOf('mara'), ENGINE)).events, []);
+    assert.equal(await f.hub.ingest(messageEvent({ conversationId: OTHER_CHAT })), undefined);
+    assert.deepEqual((await f.hub.listProcessEventsSince(MARA, ENGINE)).events, []);
   });
 
   it('stores the platform-stated author and derives the principal', async () => {
     const f = hubFixture(new InMemoryConversationMessageStore());
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(f, 'mara');
     const record = await f.hub.ingest(
       messageEvent({ receivedByChannelKey: MARA_KEY.toUpperCase(), replyToMessageId: 'm0', quoted: true }),
     );
@@ -165,13 +124,15 @@ describe('conversationMessages: storing events', () => {
     assert.equal(record.replyToMessageId, 'm0');
     assert.equal(record.quoted, true);
     assert.equal(record.forwarded, undefined);
-    assert.deepEqual(await f.hub.getEvent(scopeOf('mara'), ENGINE, 'm1'), record);
-    assert.deepEqual(await f.hub.getEventById(scopeOf('mara'), ENGINE, record.eventId), record);
+    // Every read hands the record back with the process it belongs to.
+    const read = { ...record, processId: MARA.processId };
+    assert.deepEqual(await f.hub.getProcessEvent(MARA, ENGINE, 'm1'), read);
+    assert.deepEqual(await f.hub.getProcessEventById(MARA, ENGINE, record.eventId), read);
   });
 
   it('assigns revisions itself: an adapter that restarts at 1 cannot rewind them', async () => {
     const f = hubFixture(new InMemoryConversationMessageStore());
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(f, 'mara');
     await f.hub.ingest(messageEvent());
     const first = await f.hub.ingest(messageEvent({ kind: 'edited', revision: 1, text: 'A > B > C' }));
     const second = await f.hub.ingest(messageEvent({ kind: 'edited', revision: 2, text: 'B > A > C' }));
@@ -183,10 +144,10 @@ describe('conversationMessages: storing events', () => {
       [1, 2, 3, 4],
     );
     assert.equal(deleted?.text, undefined, 'a deletion carries no text');
-    const latest = await f.hub.getEvent(scopeOf('mara'), ENGINE, 'm1');
+    const latest = await f.hub.getProcessEvent(MARA, ENGINE, 'm1');
     assert.equal(latest?.kind, 'deleted');
-    assert.equal((await f.hub.getEvent(scopeOf('mara'), ENGINE, 'm1', 2))?.text, 'B > A > C');
-    assert.equal(await f.hub.getEvent(scopeOf('mara'), ENGINE, 'm1', 9), undefined);
+    assert.equal((await f.hub.getProcessEvent(MARA, ENGINE, 'm1', 2))?.text, 'B > A > C');
+    assert.equal(await f.hub.getProcessEvent(MARA, ENGINE, 'm1', 9), undefined);
   });
 
   it('revision rule', () => {
@@ -202,7 +163,7 @@ describe('conversationMessages: storing events', () => {
 
   it('a redelivered platform event is stored once', async () => {
     const f = hubFixture(new InMemoryConversationMessageStore());
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(f, 'mara');
     const original = messageEvent();
     assert.ok(await f.hub.ingest(original));
     // A mentioned message is emitted and also starts a turn; a retry delivers it again.
@@ -211,12 +172,12 @@ describe('conversationMessages: storing events', () => {
     const edit = messageEvent({ kind: 'edited', text: 'B' });
     assert.ok(await f.hub.ingest(edit));
     assert.equal(await f.hub.ingest({ ...edit }), undefined);
-    assert.equal((await f.hub.listSince(scopeOf('mara'), ENGINE)).events.length, 2);
+    assert.equal((await f.hub.listProcessEventsSince(MARA, ENGINE)).events.length, 2);
   });
 
   it('stores reactions and card answers against the message, not as revisions', async () => {
     const f = hubFixture(new InMemoryConversationMessageStore());
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(f, 'mara');
     await f.hub.ingest(messageEvent());
     await f.hub.ingest(messageEvent({ kind: 'edited', text: 'B' }));
     const reaction = await f.hub.ingest(
@@ -244,13 +205,13 @@ describe('conversationMessages: storing events', () => {
     assert.equal(reaction?.revision, 1, 'refers to the revision it reacted to');
     assert.deepEqual(answer?.cardAnswer, { cardId: 'poll-7', value: { optionId: 'b' } });
     assert.ok(changed, 'a changed answer is a second event; the engine decides which counts');
-    assert.equal((await f.hub.getEvent(scopeOf('mara'), ENGINE, 'm1'))?.kind, 'edited');
-    assert.equal(await f.hub.getEvent(scopeOf('mara'), ENGINE, 'card-1'), undefined);
+    assert.equal((await f.hub.getProcessEvent(MARA, ENGINE, 'm1'))?.kind, 'edited');
+    assert.equal(await f.hub.getProcessEvent(MARA, ENGINE, 'card-1'), undefined);
   });
 
   it('drops malformed events without throwing', async () => {
     const f = hubFixture(new InMemoryConversationMessageStore());
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(f, 'mara');
     for (const bad of [
       messageEvent({ messageId: '' }),
       messageEvent({ kind: 'typing' as never }),
@@ -267,14 +228,14 @@ describe('conversationMessages: storing events', () => {
 
   it('keeps arrival order per subscription', async () => {
     const f = hubFixture(new InMemoryConversationMessageStore());
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(f, 'mara');
     const all = await Promise.all([
       f.hub.ingest(messageEvent({ messageId: 'a' })),
       f.hub.ingest(messageEvent({ messageId: 'a', kind: 'edited', text: 'x' })),
       f.hub.ingest(messageEvent({ messageId: 'b' })),
     ]);
     assert.deepEqual(all.map((r) => `${r!.messageId}:${String(r!.revision)}`), ['a:0', 'a:1', 'b:0']);
-    const page = await f.hub.listSince(scopeOf('mara'), ENGINE);
+    const page = await f.hub.listProcessEventsSince(MARA, ENGINE);
     assert.deepEqual(page.events.map((e) => e.eventId), all.map((r) => r!.eventId));
   });
 });
@@ -282,76 +243,89 @@ describe('conversationMessages: storing events', () => {
 describe('conversationMessages: reading', () => {
   it('getEvent knows nothing of a foreign conversation or of a message from before the subscription', async () => {
     const f = hubFixture(new InMemoryConversationMessageStore());
+    const noraElsewhere = processOf('nora', OTHER_CHAT);
     // Before the subscription: emitted, never stored.
     await f.hub.ingest(messageEvent({ messageId: 'early' }));
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
-    await f.hub.subscribe(scopeOf('nora', '19:other@thread.v2'), ENGINE);
+    await readAll(f, 'mara');
+    await readAll(f, 'nora', OTHER_CHAT);
     await f.hub.ingest(messageEvent({ messageId: 'm1' }));
     await f.hub.ingest(
-      messageEvent({ messageId: 'x1', conversationId: '19:other@thread.v2', receivedByChannelKey: NORA_KEY }),
+      messageEvent({ messageId: 'x1', conversationId: OTHER_CHAT, receivedByChannelKey: NORA_KEY }),
     );
-    assert.equal(await f.hub.getEvent(scopeOf('mara'), ENGINE, 'early'), undefined);
-    assert.equal(await f.hub.getEvent(scopeOf('mara'), ENGINE, 'x1'), undefined, 'foreign conversation');
-    assert.equal(await f.hub.getEvent(scopeOf('nora'), ENGINE, 'm1'), undefined, 'nora is not subscribed there');
-    assert.equal(await f.hub.getEvent(scopeOf('mara', '19:other@thread.v2'), ENGINE, 'x1'), undefined);
-    assert.equal(await f.hub.getEvent(scopeOf('mara'), ENGINE, 'nope'), undefined);
-    assert.ok(await f.hub.getEvent(scopeOf('mara'), ENGINE, 'm1'));
-    assert.ok(await f.hub.getEvent(scopeOf('nora', '19:other@thread.v2'), ENGINE, 'x1'));
+    assert.equal(await f.hub.getProcessEvent(MARA, ENGINE, 'early'), undefined);
+    assert.equal(await f.hub.getProcessEvent(MARA, ENGINE, 'x1'), undefined, 'foreign conversation');
+    assert.equal(
+      await f.hub.getProcessEvent({ ...noraElsewhere, conversationId: CONVERSATION }, ENGINE, 'm1'),
+      undefined,
+      'nora is not subscribed there',
+    );
+    assert.equal(await f.hub.getProcessEvent({ ...MARA, conversationId: OTHER_CHAT }, ENGINE, 'x1'), undefined);
+    // Naming another agent's process does not open its record either.
+    assert.equal(await f.hub.getProcessEvent({ ...MARA, processId: noraElsewhere.processId }, ENGINE, 'm1'), undefined);
+    assert.equal(await f.hub.getProcessEvent({ ...noraElsewhere, agentSlug: 'mara' }, ENGINE, 'x1'), undefined);
+    assert.equal(await f.hub.getProcessEvent(MARA, ENGINE, 'nope'), undefined);
+    assert.ok(await f.hub.getProcessEvent(MARA, ENGINE, 'm1'));
+    assert.ok(await f.hub.getProcessEvent(noraElsewhere, ENGINE, 'x1'));
   });
 
-  it('a new subscription does not see what an earlier one received', async () => {
+  it('a later process does not see what an earlier one received', async () => {
     const f = hubFixture(new InMemoryConversationMessageStore());
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(f, 'mara');
     await f.hub.ingest(messageEvent({ messageId: 'old-vote' }));
-    await f.hub.unsubscribe(scopeOf('mara'), ENGINE);
+    // The earlier process is over: no open scope, the conversation released.
+    f.access.set(`${ENGINE}|${MARA.processId}`, { reserved: false, everReserved: true, openScope: false });
+    assert.equal((await f.hub.reconcile()).length, 1);
     assert.equal(f.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), false, 'the mention gate applies again at once');
     assert.equal(await f.hub.ingest(messageEvent({ messageId: 'between' })), undefined);
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
-    assert.equal(await f.hub.getEvent(scopeOf('mara'), ENGINE, 'old-vote'), undefined);
-    assert.deepEqual((await f.hub.listSince(scopeOf('mara'), ENGINE)).events, []);
+    const later = processOf('mara', CONVERSATION, 'a-later-process');
+    f.access.set(`${ENGINE}|${later.processId}`, FULL_ACCESS);
+    assert.equal((await f.hub.subscribeProcess(later, 'all', ENGINE)).outcome, 'subscribed');
+    assert.equal(await f.hub.getProcessEvent(later, ENGINE, 'old-vote'), undefined);
+    assert.deepEqual((await f.hub.listProcessEventsSince(later, ENGINE)).events, []);
   });
 
   it('listSince replays strictly after the cursor and omits nextCursor at the end', async () => {
     const f = hubFixture(new InMemoryConversationMessageStore());
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(f, 'mara');
     for (const id of ['a', 'b', 'c', 'd', 'e']) await f.hub.ingest(messageEvent({ messageId: id }));
-    const first = await f.hub.listSince(scopeOf('mara'), ENGINE, { limit: 2 });
+    const first = await f.hub.listProcessEventsSince(MARA, ENGINE, { limit: 2 });
     assert.deepEqual(first.events.map((e) => e.messageId), ['a', 'b']);
     assert.equal(first.nextCursor, first.events[1]!.eventId);
-    const second = await f.hub.listSince(scopeOf('mara'), ENGINE, { after: first.nextCursor!, limit: 2 });
+    const second = await f.hub.listProcessEventsSince(MARA, ENGINE, { after: first.nextCursor!, limit: 2 });
     assert.deepEqual(second.events.map((e) => e.messageId), ['c', 'd']);
-    const third = await f.hub.listSince(scopeOf('mara'), ENGINE, { after: second.nextCursor!, limit: 2 });
+    const third = await f.hub.listProcessEventsSince(MARA, ENGINE, { after: second.nextCursor!, limit: 2 });
     assert.deepEqual(third.events.map((e) => e.messageId), ['e']);
     assert.equal(third.nextCursor, undefined);
     // A page that ends exactly at the end has no cursor either.
-    const exact = await f.hub.listSince(scopeOf('mara'), ENGINE, { after: first.nextCursor!, limit: 3 });
+    const exact = await f.hub.listProcessEventsSince(MARA, ENGINE, { after: first.nextCursor!, limit: 3 });
     assert.equal(exact.events.length, 3);
     assert.equal(exact.nextCursor, undefined);
     assert.deepEqual(
-      (await f.hub.listSince(scopeOf('mara'), ENGINE, { after: third.events[0]!.eventId })).events,
+      (await f.hub.listProcessEventsSince(MARA, ENGINE, { after: third.events[0]!.eventId })).events,
       [],
     );
   });
 
   it('delivers live, at least once, and survives a failing handler', async () => {
     const f = hubFixture(new InMemoryConversationMessageStore());
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
-    const seen: ConversationMessageRecord[] = [];
-    f.hub.onMessage('mara', ENGINE, () => {
+    await readAll(f, 'mara');
+    const seen: ProcessConversationMessageRecord[] = [];
+    f.hub.onProcessMessage('mara', ENGINE, () => {
       throw new Error('engine hiccup');
     });
-    const dispose = f.hub.onMessage('mara', ENGINE, (r) => void seen.push(r));
-    const foreign: ConversationMessageRecord[] = [];
-    f.hub.onMessage('mara', '@acme/snoop', (r) => void foreign.push(r));
-    f.hub.onMessage('nora', ENGINE, (r) => void foreign.push(r));
+    const dispose = f.hub.onProcessMessage('mara', ENGINE, (r) => void seen.push(r));
+    const foreign: ProcessConversationMessageRecord[] = [];
+    f.hub.onProcessMessage('mara', '@acme/snoop', (r) => void foreign.push(r));
+    f.hub.onProcessMessage('nora', ENGINE, (r) => void foreign.push(r));
     f.hub.emit(messageEvent());
     await flush();
     await flush();
     assert.equal(seen.length, 1);
+    assert.equal(seen[0]!.processId, MARA.processId);
     assert.equal(foreign.length, 0);
     assert.ok(f.logs.some((l) => /live handler for 'mara' failed on event/.test(l)));
     // The failed consumer catches up through the replay.
-    assert.equal((await f.hub.listSince(scopeOf('mara'), ENGINE)).events.length, 1);
+    assert.equal((await f.hub.listProcessEventsSince(MARA, ENGINE)).events.length, 1);
     dispose();
     f.hub.emit(messageEvent({ messageId: 'm2' }));
     await flush();
@@ -363,13 +337,13 @@ describe('conversationMessages: reading', () => {
 describe('conversationMessages: adapter hints', () => {
   it('ignores an adapter revision outside a sane range instead of failing the insert', async () => {
     const f = hubFixture(new InMemoryConversationMessageStore());
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(f, 'mara');
     await f.hub.ingest(messageEvent());
     for (const revision of [5_000_000_000, -3, 1.5, Number.NaN]) {
       const stored = await f.hub.ingest(messageEvent({ kind: 'edited', revision, text: `v${String(revision)}` }));
       assert.ok(stored, `revision ${String(revision)} must not drop the event`);
     }
-    const latest = await f.hub.getEvent(scopeOf('mara'), ENGINE, 'm1');
+    const latest = await f.hub.getProcessEvent(MARA, ENGINE, 'm1');
     assert.equal(latest?.revision, 4, 'the kernel counted on its own');
   });
 });

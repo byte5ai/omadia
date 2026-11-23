@@ -437,3 +437,72 @@ describe('W1a AgentTeamsIdentityStore against a real Postgres', { skip: !pgAvail
     );
   });
 });
+
+/**
+ * D40 — the resume scan in a database that HAS `agents`, which is every real
+ * one. The suite above has no such table and takes the fallback, so it never
+ * ran the tombstone filter: `agent_id` is TEXT, `agents.id` a uuid, and every
+ * boot failed with "operator does not exist: text = uuid".
+ */
+describe('AgentTeamsIdentityStore.listResumable next to an agents table (D40)', { skip: !pgAvailable }, () => {
+  const schema = `d40_teams_resume_${String(process.pid)}`;
+  const LIVE = '11111111-1111-4111-8111-111111111111';
+  const DELETED = '22222222-2222-4222-8222-222222222222';
+  let pool: Pool;
+  let store: AgentTeamsIdentityStore;
+
+  before(async () => {
+    const bootstrap = new Pool({ connectionString: PG_URL, max: 1 });
+    await bootstrap.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    await bootstrap.query(`CREATE SCHEMA ${schema}`);
+    await bootstrap.end();
+    pool = new Pool({ connectionString: PG_URL, max: 2, options: `-c search_path=${schema}` });
+    for (const file of MIGRATION_FILES) {
+      await pool.query(await readFile(resolve(MIGRATIONS_DIR, file), 'utf8'));
+    }
+    // What the filter reads of `agents`: the id (a uuid, as in migration
+    // 0001) and the tombstone mark (migration 0072).
+    await pool.query('CREATE TABLE agents (id UUID PRIMARY KEY, deleted_at TIMESTAMPTZ)');
+    await pool.query('INSERT INTO agents (id, deleted_at) VALUES ($1, NULL), ($2, now())', [LIVE, DELETED]);
+    store = new AgentTeamsIdentityStore(pool);
+  });
+
+  after(async () => {
+    await pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    await pool.end();
+  });
+
+  it('resumes the interrupted run of a live agent, never a deleted agent\'s, and does not fail on the id types', async () => {
+    const seed = (agentId: string, state: TeamsProvisioningState): Promise<unknown> =>
+      pool.query(
+        `INSERT INTO agent_teams_identities (agent_id, bot_slug, display_name, state, team_id)
+         VALUES ($1, $2, 'Seed', $3, '19:t')`,
+        [agentId, `bot-${agentId}`, state],
+      );
+    await seed(LIVE, 'app_registered');
+    await seed(DELETED, 'catalog_uploaded');
+    // The column is TEXT without a foreign key: an id that is no uuid, or
+    // names no agent, is not a tombstone's.
+    await seed('legacy-slug-id', 'pending');
+    await seed('33333333-3333-4333-8333-333333333333', 'installed');
+    const resumable = await store.listResumable();
+    assert.deepEqual(resumable.map((r) => r.agentId).sort(), [LIVE, 'legacy-slug-id'].sort());
+  });
+
+  it('the filter is the real one, not the fallback for a database without agents', async () => {
+    await pool.query(
+      `INSERT INTO agent_teams_identities (agent_id, bot_slug, display_name, state, team_id)
+       VALUES ($1, 'bot-own-seed', 'Seed', 'catalog_uploaded', '19:t') ON CONFLICT (agent_id) DO NOTHING`,
+      [DELETED],
+    );
+    // Before migration 0072 there is no `deleted_at`: every agent is live.
+    await pool.query('ALTER TABLE agents DROP COLUMN deleted_at');
+    try {
+      const resumable = await store.listResumable();
+      assert.ok(resumable.some((r) => r.agentId === DELETED), 'without the mark nobody is a tombstone');
+    } finally {
+      await pool.query('ALTER TABLE agents ADD COLUMN deleted_at TIMESTAMPTZ');
+      await pool.query('UPDATE agents SET deleted_at = now() WHERE id = $1', [DELETED]);
+    }
+  });
+});

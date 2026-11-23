@@ -198,26 +198,35 @@ describe('store page — tabs, pills and search (#1469, #1470, #1471)', () => {
     ).toBe(items.length);
   });
 
-  it('renders a pill for every plugin kind and highlights ?kind=extension (#1470)', async () => {
+  it('renders a pill for every Hub category and files a retired kind under its successor (spec 2042 §5.10)', async () => {
     mockListStorePlugins.mockResolvedValue({
-      items: [catalogPlugin('@a/llm', { kind: 'extension', install_state: 'available' })],
+      items: [
+        catalogPlugin('@a/llm', { kind: 'extension', install_state: 'available' }),
+        catalogPlugin('@a/model', { kind: 'model', install_state: 'available' }),
+      ],
     });
     const tree = await StorePage({
-      searchParams: Promise.resolve({ source: 'local', kind: 'extension' }),
+      searchParams: Promise.resolve({ source: 'local', kind: 'systemModules' }),
     });
     const pills = allElements(tree)
       .map((el) => el.props.href)
       .filter((href): href is string => typeof href === 'string' && href.includes('kind='));
-    expect(pills).toEqual(
-      expect.arrayContaining([
-        '/store?source=local&kind=tool',
-        '/store?source=local&kind=extension',
-      ]),
-    );
+    expect(pills).toEqual([
+      '/store?source=local&kind=capabilities',
+      '/store?source=local&kind=channels',
+      '/store?source=local&kind=models',
+      '/store?source=local&kind=archetypes',
+      '/store?source=local&kind=systemModules',
+      '/store?source=local&kind=templates',
+    ]);
     const active = allElements(tree).find(
-      (el) => el.props.href === '/store?source=local&kind=extension',
+      (el) => el.props.href === '/store?source=local&kind=systemModules',
     );
     expect(active?.props['aria-current']).toBe('page');
+    // The retired `extension` package is listed as a system module; the model
+    // plugin is not.
+    const cards = elementsNamed(tree, 'PluginCard').map((p) => (p.plugin as { id: string }).id);
+    expect(cards).toEqual(['@a/llm']);
   });
 
   it('passes ?q to the API and keeps it in every tab and pill link (#1471)', async () => {

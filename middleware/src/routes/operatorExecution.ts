@@ -3,6 +3,9 @@
 //
 //   GET    /                    open execution scopes and set kill switches
 //   POST   /kill-switches       set one: { level, agent_slug?, process_id?, reason? }
+//                               level agent needs agent_slug; level process needs
+//                               process_id, and agent_slug only when the process
+//                               id is used by more than one agent
 //   DELETE /kill-switches/:id   clear one
 //   POST   /discussions/:workflowId/stop   stop a running agent discussion
 //   POST   /reservations/:id/release       release one held conversation
@@ -43,6 +46,40 @@ export interface OperatorExecutionDeps {
   /** Told after a reservation was released: message subscriptions follow. */
   readonly onAccessChanged?: () => void;
   readonly audit?: (entry: AuditEntryInput) => Promise<void>;
+  /** Told after a kill switch was set or cleared: the model gateway's gate
+   *  follows at once (spec 2042 §5.10). */
+  readonly onKillSwitchesChanged?: () => Promise<void>;
+}
+
+type ProcessAgent =
+  | { agent: { id: string; slug: string } }
+  | { refusal: { status: 400 | 404; code: string; message: string } };
+
+/** The one live agent a process id belongs to, or why there is none. */
+async function agentOfProcess(store: ExecutionScopeStore, deps: OperatorExecutionDeps, processId: string): Promise<ProcessAgent> {
+  const agentIds = await store.agentsOfProcess(processId);
+  if (agentIds.length === 0) {
+    return { refusal: { status: 404, code: 'execution.unknown_process', message: `no process '${processId}' has an execution scope` } };
+  }
+  // Only agents that still exist can be stopped, so only they count.
+  const slugs = await deps.agentSlugs();
+  const live = agentIds.flatMap((id) => {
+    const slug = slugs.get(id);
+    return slug ? [{ id, slug }] : [];
+  });
+  if (live.length === 0) {
+    return { refusal: { status: 404, code: 'execution.unknown_agent', message: `the agent of process '${processId}' no longer exists` } };
+  }
+  if (live.length > 1) {
+    return {
+      refusal: {
+        status: 400,
+        code: 'execution.ambiguous_process',
+        message: `process '${processId}' belongs to more than one agent (${live.map((a) => a.slug).join(', ')}); state agent_slug`,
+      },
+    };
+  }
+  return { agent: live[0]! };
 }
 
 const MAX_RESERVATIONS = 500;
@@ -171,20 +208,34 @@ export function createOperatorExecutionRouter(deps: OperatorExecutionDeps): Rout
     try {
       let agent: { id: string; slug: string } | undefined;
       let processId: string | undefined;
-      if (level !== 'instance') {
-        const slug = typeof body['agent_slug'] === 'string' ? body['agent_slug'].trim() : '';
-        agent = slug ? await deps.agentBySlug(slug) : undefined;
-        if (!agent) {
-          res.status(404).json({ code: 'execution.unknown_agent', message: 'no such agent' });
-          return;
-        }
-      }
+      // An instance switch names no agent; an agent_slug sent with it is not read.
+      const slug = level !== 'instance' && typeof body['agent_slug'] === 'string' ? body['agent_slug'].trim() : '';
       if (level === 'process') {
         processId = typeof body['process_id'] === 'string' ? body['process_id'].trim().slice(0, 200) : '';
         if (!processId) {
           res.status(400).json({ code: 'execution.invalid', message: 'process_id is required for level process' });
           return;
         }
+      }
+      if (level === 'agent' && !slug) {
+        res.status(400).json({ code: 'execution.invalid', message: 'agent_slug is required for level agent' });
+        return;
+      }
+      if (slug) {
+        agent = await deps.agentBySlug(slug);
+        if (!agent) {
+          res.status(404).json({ code: 'execution.unknown_agent', message: `no agent with the slug '${slug.slice(0, 100)}'` });
+          return;
+        }
+      } else if (processId) {
+        // The process names its agent: a process id belongs to one agent
+        // unless two plugins happened to choose the same id.
+        const found = await agentOfProcess(store, deps, processId);
+        if ('refusal' in found) {
+          res.status(found.refusal.status).json({ code: found.refusal.code, message: found.refusal.message });
+          return;
+        }
+        agent = found.agent;
       }
       const actor = auditActorFromRequest(req);
       const set = await store.setKillSwitch({
@@ -202,6 +253,7 @@ export function createOperatorExecutionRouter(deps: OperatorExecutionDeps): Rout
           after: { level, agent: agent?.slug ?? null, process_id: processId ?? null, reason },
         })
         .catch(() => undefined);
+      await deps.onKillSwitchesChanged?.().catch(() => undefined);
       res.status(201).json({ kill_switch: killSwitchDto(set, new Map(agent ? [[agent.id, agent.slug]] : [])) });
     } catch (err) {
       res.status(500).json({ code: 'execution.failed', message: err instanceof Error ? err.message : String(err) });
@@ -231,6 +283,7 @@ export function createOperatorExecutionRouter(deps: OperatorExecutionDeps): Rout
           before: { level: cleared.level, process_id: cleared.processId ?? null, reason: cleared.reason },
         })
         .catch(() => undefined);
+      await deps.onKillSwitchesChanged?.().catch(() => undefined);
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ code: 'execution.failed', message: err instanceof Error ? err.message : String(err) });

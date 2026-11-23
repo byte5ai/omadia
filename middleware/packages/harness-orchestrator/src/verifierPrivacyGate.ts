@@ -236,7 +236,7 @@ export type VerifierGate =
  *     nothing to verify (`systemData`); with no view at all (a rendered
  *     failure, nothing handed over) it is skipped and fails closed;
  *   - a continuation came back: verify through its view, or skip when it
- *     has none (Direct Line relay, privacy refusal);
+ *     has none (privacy refusal);
  *   - a shield is installed but nothing came back: skip rather than send
  *     raw text (fail closed);
  *   - no shield at all: verify as before.

@@ -29,7 +29,19 @@ export interface DisclosureHealthDto {
   deviates: boolean;
   channels: Record<string, DisclosureLevel>;
   inertOverrides: string[];
+  /** #2087 — how often the visible markers appear; absent on an older middleware. */
+  frequency?: DisclosureFrequency;
   warnings: string[];
+}
+
+/** How often the visible AI markers appear (#2087). `channel_default` = delivered. */
+export type DisclosureFrequency = 'channel_default' | 'per_answer' | 'per_conversation';
+
+/** True when the visible-marker frequency differs from the delivered state. */
+export function frequencyDeviates(posture: DisclosureHealthDto | null): boolean {
+  return Boolean(
+    posture?.known && posture.frequency !== undefined && posture.frequency !== 'channel_default',
+  );
 }
 
 /**
@@ -50,7 +62,7 @@ export interface DisclosureHealthDto {
 export function shouldShowDisclosureNotice(
   posture: DisclosureHealthDto | null,
 ): boolean {
-  return Boolean(posture?.known && posture.deviates);
+  return Boolean(posture?.known && (posture.deviates || frequencyDeviates(posture)));
 }
 
 /**

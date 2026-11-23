@@ -1,4 +1,4 @@
-import type { PluginContext } from '@omadia/plugin-api';
+import type { AgentSpeaker, PluginContext, SystemNotice } from '@omadia/plugin-api';
 
 import type { ChatAgent } from './chatAgent.js';
 import { getChatAgent } from './chatAgentService.js';
@@ -28,14 +28,38 @@ import { getChatAgent } from './chatAgentService.js';
  */
 export const CHANNEL_RESOLVER_SERVICE = 'channelResolver';
 
-export type ChannelResolveDecision = 'bound' | 'fallback' | 'reject';
+/**
+ * #2055 — `bound`: the turn belongs to this agent. `reject`: no agent answers;
+ * {@link ChannelResolveResult.notice} says why, in a `system` notice the
+ * sender should get. There is no fallback agent (spec 2042 INV-7).
+ */
+export type ChannelResolveDecision = 'bound' | 'reject';
+
+/** #2055 — who sent the turn and what they addressed, as far as the channel knows. */
+export interface ChannelRouteContext {
+  /**
+   * The sender as a principal: `turnPrincipal(userRef, origin.principal)` /
+   * `channelUserPrincipal(userRef)` from this SDK — the one form for every
+   * channel. Without it only agents available to everyone answer, and
+   * `/agent` cannot store a selection.
+   */
+  readonly principal?: string;
+  /** An agent slug the sender addressed explicitly. */
+  readonly explicitSlug?: string;
+  /** Locale for the notice text (`de`, `en`). */
+  readonly locale?: string;
+}
 
 /** What {@link ChannelBindingResolver.resolve} returns for a lookup. */
 export interface ChannelResolveResult {
   readonly decision: ChannelResolveDecision;
   /**
-   * The bound (or platform-fallback) Agent's scoped {@link ChatAgent}. Present
-   * iff `decision !== 'reject'`.
+   * The {@link ChatAgent} to hand the turn's text to — ALWAYS present when
+   * the platform has a registry, on `reject` too. It handles `/agent <name>`,
+   * `/agent` and `/agents` itself (the management layer stores the selection
+   * and answers as `system`); on `bound` every other message reaches the
+   * agent, on `reject` it is answered with {@link notice} from `system`. A
+   * channel just passes the text through.
    */
   readonly chatAgent?: ChatAgent;
   /**
@@ -53,6 +77,28 @@ export interface ChannelResolveResult {
    * ignore it behave exactly as they did before.
    */
   readonly exclusive?: boolean;
+  /**
+   * #2055 — with `reject`: the `system` notice for the sender (the agent is
+   * disabled, deleted or not available to them, or nothing addressed an
+   * agent). Post it with speaker `system`, never as an agent's answer.
+   */
+  readonly notice?: SystemNotice;
+  /**
+   * #2045 — with `bound`: the agent that will answer, known before the answer
+   * (name, avatar), so a channel can show it or acknowledge long work in the
+   * agent's own name.
+   */
+  readonly speaker?: AgentSpeaker;
+  /**
+   * #2055 — why this agent (or this refusal) was chosen: `identity` (the key
+   * IS the agent's own bot), `explicit` (addressed by slug or id),
+   * `selection` (the sender's `/agent` choice), `binding` (an operator bound
+   * the key) or `default` (the default-agent table). An adapter that probes
+   * more than one key per turn prefers a decided match (`identity`,
+   * `explicit`, `selection`, `binding`) over `default`, which every key
+   * answers alike. Absent on older platforms.
+   */
+  readonly match?: 'identity' | 'explicit' | 'selection' | 'binding' | 'default';
 }
 
 /**
@@ -61,7 +107,18 @@ export interface ChannelResolveResult {
  * dependency on `@omadia/orchestrator`.
  */
 export interface ChannelBindingResolver {
-  resolve(channelType: string, channelKey: string): ChannelResolveResult;
+  resolve(channelType: string, channelKey: string, context?: ChannelRouteContext): ChannelResolveResult;
+  /**
+   * #2045 / #2059 — explicit addressing by agent id (a canvas, a UI with an
+   * agent picker): that agent, checked like any routing target (enabled,
+   * not deleted, available to the sender in this channel), or `reject` with
+   * the notice naming it. Never another agent.
+   */
+  resolveAgent?(
+    agentId: string,
+    target: { readonly channelType: string; readonly channelKey: string },
+    context?: ChannelRouteContext,
+  ): ChannelResolveResult;
 }
 
 /**
@@ -96,13 +153,37 @@ export function resolveChatAgentForChannel(
   ctx: PluginContext,
   channelType: string,
   channelKey: string,
+  context?: ChannelRouteContext,
 ): ChatAgent | undefined {
   const resolver = ctx.services.get<ChannelBindingResolver>(
     CHANNEL_RESOLVER_SERVICE,
   );
   if (resolver) {
-    const result = resolver.resolve(channelType, channelKey);
-    return result.decision !== 'reject' ? result.chatAgent : undefined;
+    const result = resolver.resolve(channelType, channelKey, context);
+    // #2055 — on `reject` the agent answers with the `system` notice and
+    // handles `/agent`; `undefined` only from an older platform.
+    return result.chatAgent;
   }
   return getChatAgent(ctx);
+}
+
+/**
+ * #2055 — the full routing result for a `(channelType, channelKey)`: the
+ * decision, the {@link ChannelResolveResult.notice} of a `reject` and the
+ * {@link ChannelResolveResult.speaker} of the agent that will answer — what
+ * {@link resolveChatAgentForChannel} drops on the way to the bare ChatAgent.
+ *
+ * `undefined` when the platform has no {@link CHANNEL_RESOLVER_SERVICE}
+ * (no multi-agent registry): the caller then uses the shared singleton, as
+ * `resolveChatAgentForChannel` does.
+ */
+export function resolveChannelRoute(
+  ctx: PluginContext,
+  channelType: string,
+  channelKey: string,
+  context?: ChannelRouteContext,
+): ChannelResolveResult | undefined {
+  return ctx.services
+    .get<ChannelBindingResolver>(CHANNEL_RESOLVER_SERVICE)
+    ?.resolve(channelType, channelKey, context);
 }

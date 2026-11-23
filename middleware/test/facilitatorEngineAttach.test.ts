@@ -5,19 +5,20 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import {
   attachEngineToFacilitator,
   attachEngineToFacilitators,
+  syncArchetypesAndAttachEngine,
 } from '../src/platform/facilitatorEngineAttach.js';
 import { createSubscriptionGroundCheck } from '../src/channels/conversationMessages/wiring.js';
 import {
   assertEngineOnlyForFacilitators,
-  createSqlGrantView,
   resolveFacilitationEngine,
 } from '../src/platform/facilitatorGuard.js';
-import { attachablePluginIds } from '../src/plugins/defaultOrchestratorAttach.js';
+import { capabilityPluginIds } from '../src/plugins/capabilityPlugins.js';
 
 const ENGINE = '@omadia/agent-facilitator';
 const ODOO = '@omadia/integration-odoo';
@@ -30,15 +31,16 @@ interface Row {
 
 function world(installed: string[]) {
   const agents = [
-    { id: 'a-mara', slug: 'mara', kind: 'facilitator' as const },
-    { id: 'a-nora', slug: 'nora', kind: 'facilitator' as const },
-    { id: 'a-hr', slug: 'hr', kind: 'standard' as const },
+    { id: 'a-mara', slug: 'mara', archetype: 'facilitator' as const },
+    { id: 'a-nora', slug: 'nora', archetype: 'facilitator' as const },
+    { id: 'a-hr', slug: 'hr', archetype: 'standard' as const },
   ];
   const rows: Row[] = [];
-  const provides: Record<string, string[]> = {
-    [ENGINE]: ['facilitationEngine@1'],
-    '@acme/engine-2': ['facilitationEngine@1'],
-    [ODOO]: ['odoo@1'],
+  const engine = { kind: 'archetype', archetype: { id: 'facilitator' } };
+  const plugins: Record<string, object> = {
+    [ENGINE]: engine,
+    '@acme/engine-2': engine,
+    [ODOO]: { kind: 'integration', provides: ['odoo@1'] },
   };
   const state = { installed };
   return {
@@ -47,7 +49,7 @@ function world(installed: string[]) {
     state,
     sources: {
       installedRegistry: { list: () => state.installed.map((id) => ({ id, status: 'active' })) } as never,
-      catalog: { get: (id: string) => (provides[id] ? { plugin: { provides: provides[id] } } : undefined) } as never,
+      catalog: { get: (id: string) => (plugins[id] ? { plugin: plugins[id] } : undefined) } as never,
     },
     store: {
       listAgents: () => Promise.resolve(agents),
@@ -105,52 +107,10 @@ describe('facilitation engine auto-attach', () => {
     assert.deepEqual(two.rows, []);
   });
 
-  it('a declared engine is attached only once the operator granted it SQL (the trust step)', async () => {
-    const w = world([ENGINE]);
-    let granted = false;
-    const sources = { ...w.sources, isSqlGranted: (id: string) => granted && id === ENGINE };
-    assert.deepEqual(resolveFacilitationEngine(sources), { state: 'ungranted', pluginId: ENGINE });
-    assert.deepEqual(await attachEngineToFacilitators(w.store, sources), [], 'declaring is not enough');
-    assert.equal(await attachEngineToFacilitator(w.store, w.agents[0]!, sources), undefined);
-    assert.deepEqual(w.rows, []);
-    granted = true;
-    assert.deepEqual(resolveFacilitationEngine(sources), { state: 'bound', pluginId: ENGINE });
-    assert.deepEqual(await attachEngineToFacilitators(w.store, sources), ['mara', 'nora']);
-  });
-
-  it('the SQL grant view is synchronous, refreshes itself when stale and keeps the last state on failure', async () => {
-    let now = 0;
-    let rows: string[] | Error = [];
-    const logs: string[] = [];
-    const view = createSqlGrantView({
-      listGranted: () => (rows instanceof Error ? Promise.reject(rows) : Promise.resolve(rows)),
-      maxAgeMs: 1_000,
-      now: () => now,
-      log: (m) => logs.push(m),
-    });
-    assert.equal(view.isGranted(ENGINE), false, 'unknown is not granted');
-    await view.refresh(); // the read above started one; overlapping refreshes coalesce
-    rows = [ENGINE];
-    await view.refresh();
-    assert.equal(view.isGranted(ENGINE), true);
-    // Revoked in the operator UI: noticed by the next stale read, no restart.
-    rows = [];
-    now = 2_000;
-    assert.equal(view.isGranted(ENGINE), true, 'the stale read still answers, and triggers a refresh');
-    await view.refresh();
-    assert.equal(view.isGranted(ENGINE), false);
-    rows = [ENGINE];
-    await view.refresh();
-    rows = new Error('pool exhausted');
-    await view.refresh();
-    assert.equal(view.isGranted(ENGINE), true, 'a failed lookup changes nothing');
-    assert.match(logs[0]!, /SQL grant lookup failed/);
-  });
-
-  it('the ground of a subscription: engine, agent, identity', async () => {
+  it('the ground of a subscription: a running plugin, the agent, its identity', async () => {
     const w = world([ENGINE]);
     let status = 'active';
-    let agent: { id: string; status: string; kind: string } | undefined = { id: 'a-mara', status: 'enabled', kind: 'facilitator' };
+    let agent: { id: string; status: string; archetype: string } | undefined = { id: 'a-mara', status: 'enabled', archetype: 'facilitator' };
     let identities = [{ agentId: 'a-mara', channelType: 'teams', channelKey: '28:AAAA-MARA' }];
     const ground = createSubscriptionGroundCheck({
       engineSources: () => ({
@@ -172,35 +132,41 @@ describe('facilitation engine auto-attach', () => {
       channelKey: '28:aaaa-mara',
       pluginId: ENGINE,
       createdAt: new Date(0),
+      processId: 'facilitation-1',
       mode: 'all' as const,
     };
     assert.equal(await ground(subscription), undefined, 'stands');
     status = 'inactive';
-    assert.match((await ground(subscription))!, /engine plugin is inactive/);
+    assert.equal(await ground(subscription), 'the plugin that subscribed is inactive');
     status = 'active';
+    // Who may run a process of this agent is not asked here: the subscription
+    // stands on its process's execution scope, which the hub checks, and which
+    // was revoked if the plugin was uninstalled. A second engine next to it,
+    // or the plugin missing from the registry, ends nothing by itself.
     w.state.installed = [ENGINE, '@acme/engine-2'];
-    assert.match((await ground(subscription))!, /no longer the facilitation engine/);
+    assert.equal(await ground(subscription), undefined);
     w.state.installed = [];
-    assert.match((await ground(subscription))!, /no longer the facilitation engine/);
+    assert.equal(await ground(subscription), undefined);
     w.state.installed = [ENGINE];
-    agent = { id: 'a-mara', status: 'disabled', kind: 'facilitator' };
+    agent = { id: 'a-mara', status: 'disabled', archetype: 'facilitator' };
     assert.equal(await ground(subscription), 'the agent is disabled');
     agent = undefined;
     assert.equal(await ground(subscription), 'the agent was deleted');
-    agent = { id: 'a-mara', status: 'enabled', kind: 'facilitator' };
+    agent = { id: 'a-mara', status: 'enabled', archetype: 'facilitator' };
     identities = [{ agentId: 'a-mara', channelType: 'teams', channelKey: '28:another-app' }];
     assert.match((await ground(subscription))!, /no longer has the teams identity/);
     identities = [];
     assert.match((await ground(subscription))!, /no longer has the teams identity/);
   });
 
-  it('the engine is never part of a default attach, and cannot be granted to a standard agent', () => {
+  it('the engine is never offered as a capability, and cannot be granted to a standard agent', () => {
     const w = world([ENGINE, ODOO]);
     const catalog = w.sources.catalog as { get(id: string): never };
-    assert.deepEqual(attachablePluginIds([ENGINE, ODOO, '@unknown/x'], catalog), [ODOO, '@unknown/x']);
+    // #2054 — an id the catalog does not know is not offered either.
+    assert.deepEqual(capabilityPluginIds([ENGINE, ODOO, '@unknown/x'], catalog), [ODOO]);
     assert.throws(
       () => assertEngineOnlyForFacilitators(w.agents[2]!, [{ pluginId: ENGINE, enabled: true }], w.sources),
-      /can only be granted to a facilitator/,
+      /an archetype plugin can only be granted to agents of its own archetype/,
     );
     assert.doesNotThrow(() =>
       assertEngineOnlyForFacilitators(w.agents[2]!, [{ pluginId: ENGINE, enabled: false }, { pluginId: ODOO }], w.sources),
@@ -208,5 +174,57 @@ describe('facilitation engine auto-attach', () => {
     assert.doesNotThrow(() =>
       assertEngineOnlyForFacilitators(w.agents[0]!, [{ pluginId: ENGINE, enabled: true }], w.sources),
     );
+  });
+});
+
+describe('syncArchetypesAndAttachEngine: the boot and install path', () => {
+  const run = async (opts: { store?: object; syncFails?: boolean; attachFails?: boolean }) => {
+    const calls: string[] = [];
+    const logs: string[] = [];
+    await syncArchetypesAndAttachEngine({
+      sync: () => {
+        calls.push('sync');
+        return opts.syncFails ? Promise.reject(new Error('catalog down')) : Promise.resolve();
+      },
+      getStore: () => opts.store as never,
+      attach: () => {
+        calls.push('attach');
+        return opts.attachFails ? Promise.reject(new Error('db down')) : Promise.resolve();
+      },
+      reload: () => {
+        calls.push('reload');
+        return Promise.resolve();
+      },
+      log: (m) => logs.push(m),
+    });
+    return { calls, logs };
+  };
+
+  it('syncs the archetypes also without a config store, and attaches nothing then', async () => {
+    assert.deepEqual((await run({})).calls, ['sync']);
+  });
+
+  it('with a config store: sync, then attach, then rebuild', async () => {
+    assert.deepEqual((await run({ store: {} })).calls, ['sync', 'attach', 'reload']);
+  });
+
+  it('a failed sync attaches nothing and says so; a failed attach is logged, never thrown', async () => {
+    const failedSync = await run({ store: {}, syncFails: true });
+    assert.deepEqual(failedSync.calls, ['sync']);
+    assert.match(failedSync.logs.join('\n'), /archetype sync FAILED: catalog down/);
+    const failedAttach = await run({ store: {}, attachFails: true });
+    assert.deepEqual(failedAttach.calls, ['sync', 'attach']);
+    assert.match(failedAttach.logs.join('\n'), /facilitation engine attach FAILED: db down/);
+  });
+});
+
+describe('wiring: the boot path syncs archetypes before it needs a config store', () => {
+  it('index.ts builds attachFacilitationEngine on syncArchetypesAndAttachEngine', () => {
+    const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf-8');
+    const start = source.indexOf('const attachFacilitationEngine');
+    assert.ok(start > 0, 'attachFacilitationEngine is defined');
+    const body = source.slice(start, source.indexOf('const propagatePluginInstall', start));
+    assert.match(body, /syncArchetypesAndAttachEngine\(/);
+    assert.doesNotMatch(body, /if \(!store\) return/, 'no early return before the sync');
   });
 });

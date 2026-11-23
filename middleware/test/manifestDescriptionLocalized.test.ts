@@ -96,7 +96,7 @@ test('the agent boilerplates scaffold a locale map, not a bare string', () => {
     'assets',
     'boilerplate',
   );
-  const templates = ['agent-integration', 'agent-pure-llm'];
+  const templates = ['integration', 'tool'];
 
   for (const name of templates) {
     const file = join(boilerplate, name, 'manifest.yaml');
