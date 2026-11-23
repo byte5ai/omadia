@@ -6091,9 +6091,9 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   `GET /api/v1/admin/model-gateway` auf der Live-Instanz leer sein, und der
   Plugin-Release-Train (Kinds, Templates, `side_effects`, kein roher
   Modellzugang; channel-teams ohne `anthropicClient@1`, dev-platform über
-  `modelPassthrough@1`) muss auf dem Hub und auf Fly sein. **Offen:**
-  `dynamicAgentRuntime` löschen (S3c, sobald die restlichen Agent-Plugins
-  umgebaut sind); Provider-Katalog-Registrierung nur für `model`. Offen
+  `modelPassthrough@1`) muss auf dem Hub und auf Fly sein. Die
+  Agent-Plugin-Laufzeit ist mit S3c gelöscht (siehe „S3c“ am Ende). **Offen:**
+  Provider-Katalog-Registrierung nur für `model`. Offen
   außerdem: die Netz-Sandbox sieht
   `node:net`/`node:tls` und eigenes `undici` nicht; Inbound-Transkription
   wird dem Kanal statt dem adressierten Agenten zugerechnet, bis der Kanal
@@ -10410,8 +10410,9 @@ Spec 2042 §5.10, Kriterium 15. Branch `feat/2042-s3b-plugin-contract`.
   laufen als Altbestand weiter (`isLegacyKind`, web-ui: Chip
   „Legacy“/„Altbestand“ und `LegacyKindNotice` auf der Plugin-Seite). Der
   Store listet Registry- und lokale Pakete eines ausgemusterten Kinds als
-  `incompatible` (`src/routes/store.ts`). `dynamicAgentRuntime` bleibt bis
-  S3c.
+  `incompatible` (`src/routes/store.ts`). Seit S3c startet ein
+  installiertes `agent`-Paket nicht mehr (`kind_retired`); ein `extension`-Paket
+  läuft als Systemmodul weiter.
 - **System-Modul per Update:** `archetypeUpdateReasons`
   (`src/plugins/archetypeUpdateConfirmation.ts`) meldet
   `becomes_system_module`, bestätigt mit demselben `confirm_archetype`;
