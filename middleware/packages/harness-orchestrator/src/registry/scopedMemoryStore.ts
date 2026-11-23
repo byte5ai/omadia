@@ -305,16 +305,6 @@ function canonicalPath(path: string): string {
   return collapsed.length > 1 ? collapsed.replace(/\/$/, '') : collapsed;
 }
 
-/**
- * The path as the store will resolve it (#1827): the stores collapse duplicate
- * slashes and drop a trailing one, so `/memories/core//audit/x` lands on the
- * log although it does not start with `/memories/core/audit/`.
- */
-function canonicalPath(path: string): string {
-  const collapsed = path.replace(/\/+/g, '/');
-  return collapsed.length > 1 ? collapsed.replace(/\/$/, '') : collapsed;
-}
-
 function isAgentUnwritable(path: string): boolean {
   const p = canonicalPath(path);
   return AGENT_UNWRITABLE_PREFIXES.some(

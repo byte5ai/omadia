@@ -8431,8 +8431,6 @@ Außerdem steht `/memories/_rules/` auf der Deny-Liste: `core` gewährt `_*`, un
 Regel-Datei wirkt für alle Agents und Accounts. Wie Regeln künftig gepflegt werden (Admin-Seite, Regeln pro
 Agent/Account), ist offen (§13).
 
-Offen aus #1827: wer `_rules/` schreiben darf (Entscheidung zum Zugriffsmodell).
-
 ### Kontext-Key
 
 `memoryContextKey(channelType, nativeId)` (`harness-channel-sdk/src/scopeId.ts`) ist der
