@@ -62,7 +62,7 @@ const ACTIONS_SCHEMA = {
 
 const COMMON = {
   purpose: { type: 'string', description: 'Why you watch or wake, in one sentence (shown to operators and users).' },
-  until: { type: 'string', description: 'Mandatory deadline (ISO date-time). The trigger is deleted then. At most 90 days ahead for wake_at, 30 days otherwise, 12 hours in a live meeting.' },
+  until: { type: 'string', description: "Mandatory deadline: an ISO date-time, or a duration from now like '30m', '2h', '7d' (prefer a duration: you do not know the clock time). The trigger is deleted then. At most 90 days ahead for wake_at, 30 days otherwise, 12 hours in a live meeting." },
   context: {
     type: 'string',
     enum: ['conversation', 'meeting'],
@@ -109,7 +109,7 @@ export const triggerToolSpecs: Record<TriggerToolName, NativeToolSpec> = {
     input_schema: {
       type: 'object',
       properties: {
-        time: { type: 'string', description: 'When to wake (ISO date-time, in the future).' },
+        time: { type: 'string', description: "When to wake: an ISO date-time in the future, or a duration from now like '3m', '2h', '1d' (prefer a duration for anything within a day: you do not know the clock time)." },
         ...COMMON,
       },
       required: ['time', 'purpose', 'until', 'actions'],
@@ -173,7 +173,7 @@ export function triggerSummary(t: Trigger): Record<string, unknown> {
   };
 }
 
-const errorText = (res: Extract<CreateTriggerResult, { ok: false }>): string => `Error (${res.code}): ${res.message}`;
+const errorText = (res: Extract<CreateTriggerResult, { ok: false }>): string => `Error: (${res.code}) ${res.message}`;
 
 export interface TriggerToolDeps {
   readonly service: TriggerService;
@@ -203,7 +203,7 @@ export function discretionAllowsRoom(discretion: TriggerDiscretion): boolean {
 export function createTriggerToolHandler(name: TriggerToolName, deps: TriggerToolDeps): (input: unknown) => Promise<string> {
   return async (input: unknown): Promise<string> => {
     const turn = deps.currentTurn();
-    if (!turn) return 'Error (no_context): triggers can only be set in a conversation with a person.';
+    if (!turn) return 'Error: (no_context) triggers can only be set in a conversation with a person.';
     const raw = isRecord(input) ? input : {};
 
     const conversationId = conversationIdOf(turn.conversationRef);
@@ -226,14 +226,14 @@ export function createTriggerToolHandler(name: TriggerToolName, deps: TriggerToo
     if (name === 'cancel_trigger') {
       const id = typeof raw['id'] === 'string' ? raw['id'] : '';
       const t = /^[0-9a-f-]{36}$/i.test(id) ? await deps.service.get(id) : undefined;
-      if (!t || !ownHere(t)) return 'Error (invalid): no such trigger of yours in this conversation.';
+      if (!t || !ownHere(t)) return 'Error: (invalid) no such trigger of yours in this conversation.';
       await deps.service.end(t.id, 'cancelled', { by: `agent:${turn.agentSlug}` });
       return JSON.stringify({ cancelled: t.id });
     }
 
     const wantsMeeting = raw['context'] === 'meeting';
     if (wantsMeeting && !isMeetingConversation(conversationId)) {
-      return 'Error (invalid): this conversation is not a meeting; use context "conversation".';
+      return 'Error: (invalid) this conversation is not a meeting; use context "conversation".';
     }
     const env: TriggerEnvelope = {
       agentId: turn.agentId,
@@ -259,7 +259,7 @@ export function createTriggerToolHandler(name: TriggerToolName, deps: TriggerToo
           ? ((await deps.targetsOf?.(turn.agentId)) ?? []).find((g) => g.id === targetId)
           : undefined;
       if (!grant) {
-        return 'Error (target_not_allowed): target must be the id of one of your granted targets (list_triggers → targets).';
+        return 'Error: (target_not_allowed) target must be the id of one of your granted targets (list_triggers → targets).';
       }
       request = { ...raw, target: { kind: 'conversation', channel: grant.channel, ref: grant.deliveryRef } };
     }
@@ -268,7 +268,7 @@ export function createTriggerToolHandler(name: TriggerToolName, deps: TriggerToo
     // posts there: that room is checked at send time, with its readers then.
     const sends = Array.isArray(raw['actions']) && raw['actions'].some((a) => isRecord(a) && (a['type'] === 'post' || a['type'] === 'deliver'));
     if (request === raw && sends && env.discretion && !discretionAllowsRoom(env.discretion)) {
-      return 'Error (discretion): this conversation has touched information not everyone here may know, so a post or delivery from this trigger would be withheld. Set it where everyone may know what it refers to.';
+      return 'Error: (discretion) this conversation has touched information not everyone here may know, so a post or delivery from this trigger would be withheld. Set it where everyone may know what it refers to.';
     }
     const res = await deps.service.create(name as TriggerKind, request, env);
     return res.ok ? JSON.stringify({ created: triggerSummary(res.trigger) }) : errorText(res);
