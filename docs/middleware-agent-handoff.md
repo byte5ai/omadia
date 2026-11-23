@@ -4284,7 +4284,11 @@ in `wiring.ts` (aus `index.ts` aufgerufen).
 - **Agenten-Tools** (`triggerTools.ts`): `on_event`, `wake_at`, `wake_every`,
   `list_triggers`, `cancel_trigger` — nur auf einem Turn mit Routines-Principal
   (`routineTurnContext`). Ein Trigger-Turn hat keinen, kann also keine Trigger
-  setzen. Trigger-Turns laufen über den `ChatAgent` des Agenten
+  setzen. `time`/`until` nehmen ISO-Zeitpunkte oder Dauern ab jetzt (`'3m'`,
+  `'+2h'`, `'in 1d'`; das Modell kennt nur das Datum, nicht die Uhrzeit).
+  Ablehnungen folgen der Tool-Error-Konvention `Error: (code) …`, damit der
+  Privacy Shield sie als Fehler durchreicht statt sie zu internieren.
+  Trigger-Turns laufen über den `ChatAgent` des Agenten
   (`kernelExecutors.ts`) unter Modell-Call-Limit und Kosten-Meter;
   `[[nothing]]` sendet nichts.
 - **Diskretion (S5, INV-9):** Ein Agent-Trigger speichert beim Anlegen
@@ -4296,7 +4300,7 @@ in `wiring.ts` (aus `index.ts` aufgerufen).
   `@omadia/orchestrator`) und wird wie der Turn einer Person geprüft. Eine
   zurückgehaltene Antwort wird nicht gesendet und zählt als Fehler. `post` und
   `deliver` prüft `refusedByDiscretion` gegen die gespeicherten Labels, schon
-  beim Anlegen (`Error (discretion)`). Routinen laufen in `runOnce` als Turn
+  beim Anlegen (`Error: (discretion)`). Routinen laufen in `runOnce` als Turn
   des ausführenden Agenten (Gateway-Kontext), auch bei „Jetzt ausführen“.
   Beim Senden liest `kernelExecutors.ts` die Leser des Raums frisch aus dem
   Kanal-Roster (`conversationReaders.ts`, Kriterium 24): für ein explizites

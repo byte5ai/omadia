@@ -36,6 +36,23 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — agent triggers found in the live Teams E2E of spec 2042 (2026-11-23)
+
+- **A trigger tool's refusal reached the model as masked data.** `on_event`, `wake_at`,
+  `wake_every`, `list_triggers`, `cancel_trigger` and `deliver_data` refused with
+  `Error (code): …`, which the Privacy Shield does not read as the tool-error convention
+  (`Error:`), so it interned the refusal as a one-row dataset. The model saw only a digest
+  and told the user in Teams "the trigger is set" while none was. The refusals now read
+  `Error: (code) …`: they reach the model as an error (and get `is_error`).
+- **"In two minutes" needed a clock the model does not have.** The prompt names today's
+  date, not the time; the model computed `time`/`until` from a stale timestamp and the
+  deadline lay in the past. `time` and `until` now also take a duration from now (`'3m'`,
+  `'+2h'`, `'in 1d'`), the tool descriptions say to prefer it, and a time refusal names the
+  server time.
+- **A bot's own post was news.** A bot's own post, reported back by its channel, is no
+  longer booked as context activity, so a trigger's post cannot make its next firing reach
+  the model.
+
 ### Fixed — the canvas, live (spec 2042 §5.10, §5.5): gateway context, the socket on the front, "wer bist du"
 
 - **Model gateway.** A canvas turn addressed to an agent is handed to the canvas helper
