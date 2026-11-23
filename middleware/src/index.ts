@@ -457,7 +457,11 @@ import { publishSendServices } from './channels/sendServicesWiring.js';
 import { publishAgentTurnService } from './agents/agentTurnWiring.js';
 import { ChannelProviderRegistry } from './channels/sessionCapabilities/providerRegistry.js';
 import { wireSessionCapabilities } from './channels/sessionCapabilities/wiring.js';
-import { attachEngineToFacilitators, syncArchetypesAndAttachEngine } from './platform/facilitatorEngineAttach.js';
+import {
+  attachEngineToFacilitators,
+  revokeForeignArchetypeGrants,
+  syncArchetypesAndAttachEngine,
+} from './platform/facilitatorEngineAttach.js';
 import { createArchetypeRegistrySync } from './platform/archetypeRegistrySync.js';
 import { wireExecutionAuthorization, type ExecutionWiring } from './execution/wiring.js';
 import { AddressedMessageRouter } from './channels/addressedMessageRouter.js';
@@ -2021,7 +2025,13 @@ async function main(): Promise<void> {
       // config store (no LLM access yet), before anything is attached.
       sync: () => archetypeRegistry.sync(),
       getStore: () => serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
-      attach: (store) => attachEngineToFacilitators(store, facilitationEngineSources(), (m) => console.log(m)),
+      attach: async (store) => {
+        // S3c — first drop grants of an archetype plugin held by an agent of
+        // another archetype (rows from before #2088), each with a warning.
+        // Runs at boot too, before the admin audit log exists.
+        await revokeForeignArchetypeGrants(store, pluginCatalog, (m) => console.warn(m));
+        await attachEngineToFacilitators(store, facilitationEngineSources(), (m) => console.log(m));
+      },
       reload: () => serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')?.reload(),
       log: (m) => console.error(m),
     });

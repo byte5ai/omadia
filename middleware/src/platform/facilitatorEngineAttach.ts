@@ -12,9 +12,13 @@
 // than one, attaches nothing.
 
 import type { ConfigStore } from '@omadia/orchestrator';
-import { FACILITATOR_ARCHETYPE, isArchetype, type ArchetypeBearer } from '@omadia/orchestrator';
+import { FACILITATOR_ARCHETYPE, archetypeOf, isArchetype, type ArchetypeBearer } from '@omadia/orchestrator';
 
-import { resolveFacilitationEngine, type FacilitationEngineSources } from './facilitatorGuard.js';
+import {
+  foreignArchetypeGrants,
+  resolveFacilitationEngine,
+  type FacilitationEngineSources,
+} from './facilitatorGuard.js';
 
 type AttachStore = Pick<ConfigStore, 'listAgents' | 'listAgentPlugins' | 'upsertAgentPlugin'>;
 
@@ -93,4 +97,47 @@ export async function syncArchetypesAndAttachEngine<S extends AttachStore>(deps:
   } catch (err) {
     deps.log(`[middleware] facilitation engine attach FAILED: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+/** One grant {@link revokeForeignArchetypeGrants} removed. */
+export interface RevokedArchetypeGrant {
+  readonly agentSlug: string;
+  readonly pluginId: string;
+  /** The archetype the plugin delivers (not the agent's own). */
+  readonly archetype: string;
+}
+
+/**
+ * S3c — remove every grant of an archetype plugin from an agent of ANOTHER
+ * archetype (for example the facilitation engine on a standard agent). Such a
+ * grant is never valid (#2088) and is refused on every write path; rows from
+ * before the rule stay behind and block the operator's replace of the
+ * agent's grant set. Runs at boot and whenever installed plugins or grants
+ * change, before the engine is attached. Logs every removal; a failure on one
+ * agent does not stop the others. Returns what it removed.
+ */
+export async function revokeForeignArchetypeGrants(
+  store: Pick<ConfigStore, 'listAgents' | 'listAgentPlugins' | 'removeAgentPlugin'>,
+  catalog: FacilitationEngineSources['catalog'],
+  log: (message: string) => void = () => undefined,
+): Promise<RevokedArchetypeGrant[]> {
+  if (!catalog) return [];
+  const revoked: RevokedArchetypeGrant[] = [];
+  for (const agent of await store.listAgents()) {
+    try {
+      const foreign = foreignArchetypeGrants(agent, await store.listAgentPlugins(agent.id), catalog);
+      for (const grant of foreign) {
+        await store.removeAgentPlugin(agent.id, grant.pluginId);
+        revoked.push({ agentSlug: agent.slug, pluginId: grant.pluginId, archetype: grant.archetype });
+        log(
+          `[archetype] removed the grant of '${grant.pluginId}' from agent '${agent.slug}': it delivers the archetype '${grant.archetype}', the agent is '${archetypeOf(agent)}'`,
+        );
+      }
+    } catch (err) {
+      log(
+        `[archetype] checking the grants of '${agent.slug}' for foreign archetype plugins failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  return revoked;
 }
