@@ -8,7 +8,7 @@ was read, not matched by name. Paths are relative to `middleware/` unless they s
 `web-ui/` or name a channel repository. `*.pg.test.ts` needs Postgres and skips without
 one, so the gate must run `npm run test:pg` against a database.
 
-**Result: 30 of 40 green, 10 partial, none missing** (G2: criterion 24 green; criterion 37 narrowed to semantic search and the embedding backfill). The partial ones are listed with what
+**Result: 31 of 40 green, 9 partial, none missing** (G2: criteria 24 and 37 green). The partial ones are listed with what
 remains. Most of the remainder is not a missing test but a missing implementation; those
 items are marked **not implemented**.
 
@@ -52,7 +52,7 @@ items are marked **not implemented**.
 | 34 | No claim to be human | green | |
 | 35 | Boundaries on data paths | green | |
 | 36 | Selection vs binding | green | |
-| 37 | Enforcement boundary | partial | semantic search and the real embedding backfill under `enforce` (see below); uninstall, SQL fixture and builders closed (G2) |
+| 37 | Enforcement boundary | green | |
 | 38 | Disclosure level none | green | for consultation grants; level `none` exists only there |
 | 39 | Deleted agent stays named | green | |
 | 40 | Availability | green | |
@@ -213,7 +213,7 @@ items are marked **not implemented**.
 ### 36. Selection vs binding — green
 - `test/managementRouter.test.ts` :: `U's messages reach B, V's reach C, everyone else's reach A — also from a fresh view (restart)`; `test/routingAfterRestart.pg.test.ts` (new store and reloaded snapshot per check); Telegram `tests/telegramAgentRouting.test.ts` :: `the group sender is routed by their own principal, not the group`.
 
-### 37. Enforcement boundary — partial
+### 37. Enforcement boundary — green
 Covered:
 - Archetype plugin: `ctx.llm` without a scope, raw `llm`/`anthropicClient`/provider pool via `ctx.services`, budget and kill switch — `test/enforcementBoundary.test.ts`, `test/modelWorkRuns.test.ts`, `test/executionScopes.pg.test.ts`.
 - Direct HTTP to a model provider, `fetch` and `node:http(s)`, archetype and capability — `test/pluginEgressGuard.test.ts`; `ctx.http` in every mode — `test/httpAccessor.test.ts`.
@@ -230,9 +230,7 @@ Covered:
 - Archetype uninstall (G2): `test/archetypeUninstallStates.pg.test.ts` :: `criterion 37: configuring, active, concluding, following_up — a failing plugin, a restart, one notice per home conversation` (process service and `onUninstall` both throw; afterwards no reservation, open scope or subscription, every model turn and invitation refused, also after the restart), `a notice not yet out when the instance restarts goes out once after it; a repeated uninstall owes nothing new`; `test/facilitatorContractGuards.pg.test.ts` (the `active` case, now with its notice). The `system` notice is implemented: registered code `archetype_plugin_removed` (plugin-api, Unreleased), localized, written to `system_notice_outbox` (migration 0126, `src/platform/systemNoticeOutbox.ts`) before the change and posted once through the channel's shared bot with speaker `system`; `test/agentEndOfService.test.ts` :: `criterion 37: each conversation gets one notice request naming the agent, and the procedure waits for it to be kept`.
 - SQL-granted archetype (G2): the fixture is the real core migration series; `test/archetypeDatabase.pg.test.ts` :: `criterion 37: neither the plugin role nor its migrations reach inbound events, scopes, reservations or grants`, `criterion 37: the plugin resumes its processes from its own schema after a restart`.
 - Builders (G2): `test/agentBuilderOperatorJob.test.ts` :: `every model-backed route of the Agent Builder and the Plugin Builder is an operator job` (`src/platform/operatorJobRoutes.ts`), `the Agent Builder's skill verdict runs as an operator job under enforce; outside the job the gateway refuses it` (the Agent Builder's only model-backed step). Plugin Builder preview capped: `ctx.services` read through to the kernel registry ungated (bug); it now passes the gates of an installed plugin judged by the draft's own manifest (`src/plugins/builder/previewServices.ts`) — `test/builder/previewRuntime.test.ts` :: `criterion 37: a preview gets no service right the draft lacks: undeclared names, the pool, raw model clients`.
-
-Remaining:
-- Semantic search and the real embedding backfill under `enforce`: only the generic gate and synthetic work are tested.
+- Embeddings under `enforce` (G2): `test/embeddingUnderEnforce.pg.test.ts` — the knowledge graph's real backfill sweep through the gated client and the kernel's maintenance-run shape: `the backfill embeds as a maintenance run and writes its vectors`, `the backfill stops at its budget; the rest waits for the next run`, `a maintenance run embeds only: a complete inside it is refused`, `without a maintenance run the sweep embeds nothing`; semantic search (`search_turns_semantic`): `semantic search embeds in the agent's turn, charged to it; outside any context the gateway refuses it`. No code gap: both already ran in the right context.
 
 ### 38. Disclosure level none — green
 - `test/consultation/consultationDiscretionE2e.test.ts` :: `criterion 38: withheld at \`none\` and non-existent look the same to the user and to A's model`. Residual: the withheld path runs B twice, so the latency differs. Level `none` exists only on consultation grants (`migrations/0097_agent_consultation.sql`).
