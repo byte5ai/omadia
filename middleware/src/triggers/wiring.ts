@@ -4,7 +4,14 @@
  * gate, the agent tools, the event intake and the worker.
  */
 
-import { currentDiscretion, currentDispatchCaller, resolvedTurnLabels, turnContext, UNKNOWN_READERS } from '@omadia/orchestrator';
+import {
+  currentDiscretion,
+  currentDispatchCaller,
+  fieldClassList,
+  resolvedTurnLabels,
+  turnContext,
+  UNKNOWN_READERS,
+} from '@omadia/orchestrator';
 import type { AgentSpeaker, AnswerEmitter, DataPlanGuard, NativeToolSpec } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 
@@ -126,7 +133,10 @@ function currentTurn(deps: TriggerWiringDeps): TriggerToolTurn | undefined {
       // own web chat. Anywhere else the room is not known: fail closed.
       const ownerOnly = state.contextKey.startsWith('owner:') && ctx.channel !== WEB_ROUTINE_CHANNEL;
       const readers = ownerOnly ? UNKNOWN_READERS : await state.resolveReaders();
-      return { contextKey: state.contextKey, readers, labels: await resolvedTurnLabels(state) };
+      // The room's field rights travel with the trigger: its firings post
+      // into this conversation and have no audience floor of their own.
+      const fieldClasses = fieldClassList(await state.resolveFieldClasses());
+      return { contextKey: state.contextKey, readers, labels: await resolvedTurnLabels(state), fieldClasses };
     },
   };
 }

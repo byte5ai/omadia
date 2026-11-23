@@ -11,7 +11,7 @@
  * like any tool the model dispatches there.
  */
 
-import { guardToolEgress, MAX_DATA_PAYLOADS_PER_TURN, turnContext } from '@omadia/orchestrator';
+import { guardToolEgress, MAX_DATA_PAYLOADS_PER_TURN, personalFieldsWithheld, turnContext } from '@omadia/orchestrator';
 import type { NativeToolSpec } from '@omadia/plugin-api';
 
 import { MAX_TABLE_ROWS, toTableData, type DataActionRunner } from './dataActions.js';
@@ -57,6 +57,11 @@ export function createDeliverDataHandler(deps: DeliverDataDeps): (input: unknown
 
     const refusal = await guardToolEgress(tool);
     if (refusal) return refusal;
+    // Spec 2042 criterion 18 — the rows reach the room unmasked, so only a room
+    // where every member may know personal fields gets them.
+    if (await personalFieldsWithheld()) {
+      return 'Error (field_rights): not everyone in this conversation may see personal data, so no table was delivered. Tell the user plainly; the person who asked can get it in a direct chat.';
+    }
     const result = await deps.dataActions.run(agentSlug, action);
     if (!result.ok) return `Error (data_action_failed): ${result.error}`;
 

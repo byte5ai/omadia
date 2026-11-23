@@ -11,7 +11,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { checkFlow } from '@omadia/orchestrator';
+import { checkFlow, fieldClassesFromList } from '@omadia/orchestrator';
 
 import type { NativeToolSpec } from '@omadia/plugin-api';
 
@@ -194,6 +194,7 @@ export function discretionAllowsRoom(discretion: TriggerDiscretion): boolean {
     kind: 'people',
     contextKey: discretion.contextKey,
     readers: discretion.readers,
+    fieldClasses: fieldClassesFromList(discretion.fieldClasses),
   }).allowed;
 }
 

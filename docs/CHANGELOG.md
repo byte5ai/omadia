@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Added — field rights per audience member, contribution ids for the consulting agent (spec 2042 criteria 3c, 18)
+
+- New audience-floor capability `privacy:field:personal` in the member baseline; deny it to a
+  person or role and every room with them keeps personal fields masked: no operator bypass,
+  no restore of prompt surrogates, rendered values masked again, no canvas rows or
+  `deliver_data` table, and an answer carrying a `classification` label is refused as a whole
+  (buffered and streamed `done`). Triggers keep their creating room's field rights.
+- The consulting agent's model sees the contribution header (`[contribution c1 from …]`)
+  outside the privacy digest and can cite the id; the colleague's words stay masked.
+
 ### Changed — ADR-0030: the kernel bounds closing scopes and the deadline wait (#2090)
 
 - `@omadia/plugin-api` 1.85.0, `@omadia/channel-sdk` 0.3.11 (additive types, stricter

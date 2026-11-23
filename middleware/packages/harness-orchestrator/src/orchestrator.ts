@@ -246,6 +246,7 @@ import {
   CONSULT_TOOL_NAME,
   createConsultTool,
   createConsultationTurnState,
+  splitContributionModelText,
   type ConsultationPort,
 } from './consultation/consultTool.js';
 import type { DiscretionPort } from './discretion/port.js';
@@ -260,6 +261,8 @@ import {
 } from './discretion/toolFlow.js';
 import { violationSummary } from './discretion/flowRule.js';
 import { peopleEgressDecision } from './discretion/turnLabels.js';
+import { fieldClassesForTurn, personalFieldsWithheld } from './discretion/fieldRights.js';
+import { FIELD_WITHHELD_NOTICE, renderedAnswerForAudience } from './privacyAudience.js';
 import { answerWithheldText } from './discretion/disclosure.js';
 import { labelSummary } from './discretion/labels.js';
 import {
@@ -340,6 +343,7 @@ import {
   crossScopeRecallRefused,
   guardContextRecall,
   guardToolEgress,
+  type AudienceFloorProvider,
 } from './audienceFloorGuard.js';
 import {
   audienceRoomFor,
@@ -1695,6 +1699,12 @@ async function restoreAnswerForUser(
   privacy: PrivacyTurnHandle,
   answer: string,
 ): Promise<string> {
+  // Criteria 3c / 18 — a room where someone may not know personal fields gets
+  // the surrogates, never the restored values.
+  if (await personalFieldsWithheld()) {
+    const masked = (await privacy.countUnresolvedSurrogates?.(answer, { unreadableLiterals: false })) ?? 0;
+    return masked === 0 || answer.includes(FIELD_WITHHELD_NOTICE) ? answer : `${answer}\n\n${FIELD_WITHHELD_NOTICE}`;
+  }
   const restored = await privacy.restorePromptPseudonyms(answer);
   const unresolved =
     (await privacy.countUnresolvedSurrogates?.(restored, { unreadableLiterals: false })) ?? 0;
@@ -1717,6 +1727,10 @@ async function restorePromptForPersistence(
   text: string,
 ): Promise<string> {
   if (privacy === undefined || text.length === 0) return text;
+  // Criteria 3c / 18 — what this turn writes reaches its room (answer,
+  // choices, follow-ups, the stored history of the room): a room where
+  // someone may not know personal fields keeps the surrogates.
+  if (await personalFieldsWithheld()) return text;
   try {
     return await privacy.restorePromptPseudonyms(text);
   } catch (err) {
@@ -5701,6 +5715,7 @@ export class Orchestrator {
 
     // #2085 — the turn's side-channel data, put on the result below.
     const dataSideChannel = this.dataCollectorFor(boundLedger);
+    const floorFields = this.audienceFloorFor(input, parent, runTraceUserId);
     const core = await turnContext.run(
       {
         turnId,
@@ -5738,7 +5753,7 @@ export class Orchestrator {
         // every call as `unresolved` and then fails closed. See the W4-1 block
         // above for where the value comes from.
         ...(mcpUserKey ? { mcpUserKey } : {}),
-        ...this.audienceFloorFor(input, parent, runTraceUserId),
+        ...floorFields,
         ...(privacyHandle ? { privacyHandle } : {}),
         ...(parent?.captureRawToolResult
           ? { captureRawToolResult: parent.captureRawToolResult }
@@ -5750,7 +5765,7 @@ export class Orchestrator {
           ? { canvasSentinelSink: parent.canvasSentinelSink }
           : {}),
         toolReplayLedger,
-        ...this.discretionTurnFields(input, parent, resolvedOmadiaUserId),
+        ...this.discretionTurnFields(input, parent, resolvedOmadiaUserId, floorFields.audienceFloor),
       },
       () => this.closePassOnThrow(undeliveredPass, async () => {
         // W2-1 (#544) — forced replay of the parked MCP tool call, before the
@@ -5812,7 +5827,8 @@ export class Orchestrator {
         // answer this turn it is final and already safe (real values
         // materialized server-side from ground truth). Swap it in.
         if (privacyHandle) {
-          const v4Rendered = await privacyHandle.takeRenderedAnswerV4();
+          const taken = await privacyHandle.takeRenderedAnswerV4();
+          const v4Rendered = taken !== undefined ? await renderedAnswerForAudience(taken) : undefined;
           if (v4Rendered !== undefined) {
             rendered = renderedVerifierHandOver(v4Rendered);
             result = {
@@ -7549,6 +7565,7 @@ export class Orchestrator {
         ? turnOwner.authSubjectKey || resolvedOmadiaUserId
         : undefined);
 
+    const streamFloorFields = this.audienceFloorFor(input, parent, runTraceUserId);
     const context: TurnContextValue = {
       turnId,
       turnDate: today(),
@@ -7576,7 +7593,7 @@ export class Orchestrator {
       // #2048 — the streaming path is what channel adapters and the web chat
       // call; it carried no floor at all before, so every guard stood down
       // on exactly the turns that have an audience.
-      ...this.audienceFloorFor(input, parent, runTraceUserId),
+      ...streamFloorFields,
       // W3-A / W4-1 — see the matching `turnContext.run` above.
       ...(mcpUserKey ? { mcpUserKey } : {}),
       ...(privacyHandle ? { privacyHandle } : {}),
@@ -7589,7 +7606,7 @@ export class Orchestrator {
         ? { canvasSentinelSink: parent.canvasSentinelSink }
         : {}),
       toolReplayLedger,
-      ...this.discretionTurnFields(input, parent, resolvedOmadiaUserId),
+      ...this.discretionTurnFields(input, parent, resolvedOmadiaUserId, streamFloorFields.audienceFloor),
     };
     // `input` is re-bound above (envelope normalisation); capture the final
     // value so the body cannot observe the pre-normalisation message.
@@ -7829,7 +7846,8 @@ export class Orchestrator {
           // Privacy-Shield v4 — swap in the server-materialized answer
           // (real values, never round-tripped through the LLM) before the
           // turn's privacy state is finalized.
-          const v4Rendered = await privacyHandle.takeRenderedAnswerV4();
+          const taken = await privacyHandle.takeRenderedAnswerV4();
+          const v4Rendered = taken !== undefined ? await renderedAnswerForAudience(taken) : undefined;
           let doneEvent =
             v4Rendered !== undefined
               ? {
@@ -7911,8 +7929,11 @@ export class Orchestrator {
               await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
             );
           }
-          await this.withholdRefusedSideChannelData();
-          yield this.discloseDoneEvent(doneEvent, input, bound?.ledger);
+          yield this.discloseDoneEvent(
+            await this.guardStreamedDone(doneEvent, this.turnLocale(input)),
+            input,
+            bound?.ledger,
+          );
           continue;
         }
         if (event.type === 'done') {
@@ -7926,8 +7947,11 @@ export class Orchestrator {
           // #644 — fold the disclosure at the boundary, AFTER the hook (which
           // records the raw answer, matching the non-streaming path where
           // `toSemanticAnswer` folds only after `runTurn` persisted the turn).
-          await this.withholdRefusedSideChannelData();
-          yield this.discloseDoneEvent(event, input, bound?.ledger);
+          yield this.discloseDoneEvent(
+            await this.guardStreamedDone(event, this.turnLocale(input)),
+            input,
+            bound?.ledger,
+          );
           continue;
         }
         yield event;
@@ -9345,7 +9369,7 @@ export class Orchestrator {
         await this.runV4ToolForTurn(privacy, name, input),
       );
       if (v4Tool.canvasSentinel !== undefined) {
-        tapCanvasSentinel(name, v4Tool.canvasSentinel);
+        await tapCanvasSentinel(name, v4Tool.canvasSentinel);
       }
       return v4Tool.llmText;
     }
@@ -9686,7 +9710,9 @@ export class Orchestrator {
       // entry on the receipt for transparency. Org-policy override
       // (`OMADIA_PRIVACY_FORCE_GUARDED=true`) clamps every plugin back
       // to `guarded` inside the resolver.
-      const bypass = privacy.checkBypass(name);
+      // Criterion 18 — mask at entry: no bypass in a room where someone may
+      // not know personal fields.
+      const bypass = (await personalFieldsWithheld()) ? undefined : privacy.checkBypass(name);
       if (bypass !== undefined) {
         // Mark the enclosing sub-agent scope (if any) so the parent
         // dispatch knows the sub-agent saw real values.
@@ -9742,7 +9768,7 @@ export class Orchestrator {
       // synthesis is server-side and must compose from the RAW directive
       // (incl. dataset rows resolved server-side that the LLM never sees).
       // Tap before interning; the LLM still gets only the digest below.
-      if (result.includes('"_pending')) tapCanvasSentinel(name, result);
+      if (result.includes('"_pending')) await tapCanvasSentinel(name, result);
       // #1105 / #1097 — a guarded tool that returned control-flow prose (the
       // orchestrator's `Error:` tool-error convention — the same prefix the
       // tool-result assembly reads to stamp `is_error` — or the MCP connect
@@ -9773,13 +9799,19 @@ export class Orchestrator {
       // identity-free digest — the raw rows never reach the LLM wire.
       try {
         const piiFields = this.nativeTools.get(name)?.piiFields;
+        // Spec §5.4 step 4 — a contribution's header (id, colleague, status)
+        // stays readable for A's model; only B's words pass the shield. By
+        // provenance: only the kernel's own consult tool, never a tool that
+        // merely carries the name.
+        const isKernelConsult = this.consultTool !== undefined && this.domainToolsByName.get(name) === this.consultTool;
+        const contribution = isKernelConsult ? splitContributionModelText(result) : undefined;
         const v4 = await privacy.internToolResultV4({
           toolName: name,
-          rawResult: result,
+          rawResult: contribution?.body ?? result,
           toolInput: input,
           ...(piiFields !== undefined ? { piiFields } : {}),
         });
-        return v4.digestText;
+        return contribution ? `${contribution.header}\n\n${v4.digestText}` : v4.digestText;
       } catch (err) {
         // Fail closed for every tool: a result the boundary could not intern
         // never reaches the model raw — on a re-entry's replay neither, so a
@@ -10826,6 +10858,8 @@ export class Orchestrator {
     parent: TurnContextValue | undefined,
     /** The turn owner's canonical id: the one reader of a turn without origin (web chat, API). */
     ownerId: string | undefined,
+    /** The turn's audience floor: whose field rights bound the answer (criterion 18). */
+    audienceFloor: AudienceFloorProvider | undefined,
   ): Pick<TurnContextValue, 'discretion' | 'consultation'> {
     // A turn without origin (web chat, API) is the owner's private context:
     // what it read must not resurface in a room with other readers.
@@ -10854,6 +10888,7 @@ export class Orchestrator {
         ...(contextKey !== undefined ? { contextKey } : {}),
         ...(initial !== undefined ? { initial } : {}),
         resolveReaders,
+        resolveFieldClasses: () => fieldClassesForTurn(audienceFloor, seed),
       }),
       consultation: createConsultationTurnState({
         ...(input.origin ? { origin: input.origin } : {}),
@@ -10929,19 +10964,33 @@ export class Orchestrator {
   }
 
   /**
-   * #2085 / #2079 — the streamed `done` carries side-channel rows only when
-   * every reader may know what the turn read. The prose already streamed
-   * (the streaming egress is an S5 residual), but the rows join the answer
-   * only here, so they can still be held back: refused as on the buffered
-   * path (`guardAnswerEgress`), never redacted.
+   * #2085 / #2079 / criterion 18 — the streamed `done` goes to the people of
+   * the conversation only when every reader may know what the turn read
+   * (field rights included). Otherwise it is refused as on the buffered path
+   * (`guardAnswerEgress`), never redacted: the `done` is rebuilt from
+   * bookkeeping fields with the withheld line as its answer, and the
+   * side-channel rows are held back. Text deltas already streamed are the
+   * streaming residual; channels that post the `done` post the refusal.
    */
-  private async withholdRefusedSideChannelData(): Promise<void> {
-    const collector = turnContext.current()?.dataSideChannel;
-    if (!collector || collector.list().length === 0) return;
+  private async guardStreamedDone(
+    done: Extract<ChatStreamEvent, { type: 'done' }>,
+    locale: string | undefined,
+  ): Promise<Extract<ChatStreamEvent, { type: 'done' }>> {
     const state = currentDiscretion();
-    if (!state || isConsultationRunOf(this.agentId)) return;
+    if (!state || isConsultationRunOf(this.agentId)) return done;
     const decision = await peopleEgressDecision(state);
-    if (decision !== undefined && !decision.allowed) collector.withhold();
+    if (decision === undefined || decision.allowed) return done;
+    turnContext.current()?.dataSideChannel?.withhold();
+    console.warn(`[discretion] streamed answer of ${this.agentId} withheld: ${violationSummary(decision).join(', ')}`);
+    return {
+      type: 'done',
+      answer: answerWithheldText(locale),
+      toolCalls: done.toolCalls,
+      iterations: done.iterations,
+      ...(done.turnId !== undefined ? { turnId: done.turnId } : {}),
+      ...(done.privacyReceipt !== undefined ? { privacyReceipt: done.privacyReceipt } : {}),
+      ...(done.receiptId !== undefined ? { receiptId: done.receiptId } : {}),
+    };
   }
 
   /** Spec 2042 §5.4 — `{ contributions }` for a result or `done` event, or `{}`. */
@@ -11516,9 +11565,12 @@ function collectTextBlocks(content: ContentBlock[]): string[] {
 /** Hand a raw, sentinel-bearing tool result to the turn's canvas-sentinel
  *  sink (installed by the canvas UI orchestrator), if one is set. The raw
  *  text is user-destined — callers keep it off the LLM wire. */
-function tapCanvasSentinel(toolName: string, raw: string): void {
+async function tapCanvasSentinel(toolName: string, raw: string): Promise<void> {
   const sentinelSink = turnContext.current()?.canvasSentinelSink;
   if (sentinelSink === undefined) return;
+  // Criterion 18 — the canvas shows real rows to the room: not where a member
+  // may not know personal fields.
+  if (await personalFieldsWithheld()) return;
   try {
     sentinelSink(toolName, raw);
   } catch (err) {

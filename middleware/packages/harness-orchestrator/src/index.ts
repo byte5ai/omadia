@@ -1059,6 +1059,8 @@ export * from './discretion/port.js';
 export * from './discretion/turnLabels.js';
 export * from './discretion/turnSetup.js';
 export * from './discretion/seededTurn.js';
+export * from './discretion/fieldRights.js';
+export * from './privacyAudience.js';
 // Spec 2042 §5.4 (#2047) — consultation instead of delegation.
 export * from './consultation/consultationScope.js';
 export * from './consultation/consultTool.js';

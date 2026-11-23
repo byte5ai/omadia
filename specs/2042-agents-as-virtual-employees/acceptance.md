@@ -18,7 +18,7 @@ items are marked **not implemented**.
 |---|---|---|---|
 | 1 | Strategist regression | partial | omadia-ui (desktop) has no test that a canvas turn sends `agentId`; real Teams/desktop only live |
 | 2 | Identity guard | green | |
-| 3 | Consultation views | partial | per-member field rights **not implemented** (sub-claim c) |
+| 3 | Consultation views | green | |
 | 4 | Consultation limits | green | |
 | 5 | Speaker everywhere | partial | iMessage has no speaker test; Teams plugin has no emitter enumeration |
 | 6 | Envelope | green | |
@@ -33,7 +33,7 @@ items are marked **not implemented**.
 | 15 | Plugin boundary | green | |
 | 16 | Discretion across agents | green | |
 | 17 | Discretion towards systems | green | |
-| 18 | Mask at entry | partial | masking per group member **not implemented** |
+| 18 | Mask at entry | green | |
 | 19 | Default on | green | |
 | 20 | Bounded triggers | green | |
 | 21 | Cheap first | green | |
@@ -86,10 +86,10 @@ items are marked **not implemented**.
 - `test/identityGuard.test.ts`: `blocks: …` for self-rename, quote, invented statement and human claim, DE and EN; `blocks with random chunk boundaries: …` (5 seeds); `catches a claim split across chunks before any of it is visible`; `fails closed when the judge times out`; `blocks the rest when the model layer times out mid-stream`.
 - End to end through the agent wrapper: `test/speakerEmission.test.ts` runs the shared table `test/_helpers/identityGuardCases.ts` through chat and stream with seeded chunkings, plus `invented statement after a consultation EN` and a delivered contribution paraphrased as a quote (system notice, contribution kept).
 
-### 3. Consultation views — partial
+### 3. Consultation views — green
 - (a) user view restored, (b) A's model view masked: `test/consultation/consultationPrivacyViews.test.ts` :: `criterion 3: the user view carries the restored value, A's model view stays masked` (real A and B orchestrators with the real privacy guard, real broker).
-- (c) **not implemented:** the shield restores per turn, not per audience member (`PrivacyDigestAudience = 'chat' | 'public-api'`, `packages/plugin-api/src/privacyReceipt.ts:336`); classifications pass the `people` egress unchecked (`src/discretion/flowRule.ts:116-120`).
-- Finding: A's model receives the consult result as a privacy digest with one masked field, so it never sees the `[contribution c1 from …]` header and cannot cite the contribution id (spec §5.4 step 4). Needs a decision on how the consult result passes the shield.
+- (c) a member without the field right sees it redacted: same file :: `criterion 3c: a member without the field right sees it redacted in the contribution` (group with one member denied `privacy:field:personal`; control: the same room without the denial gets the restored value). Field rights are an audience-floor capability (`packages/harness-orchestrator/src/discretion/fieldRights.ts`): in the member baseline, withdrawn by a denial; a room restores only what every member may know.
+- Contribution id (spec §5.4 step 4, owner decision 2026-11-23): the header `[contribution c1 from …]` reaches A's model outside the privacy digest, only B's words pass the shield (`splitContributionModelText`); asserted in the criterion 3 test (`A sees the contribution id`).
 
 ### 4. Consultation limits — green
 - `test/consultation/consultationBroker.test.ts` :: `criterion 4: no grant, revoked grant, no audience floor and exhausted budgets are refused`, `depth 1: no consultation starts inside a consultation run`, `criterion 4: two consultations get distinct ids; a failed run is shown as failed`, `criterion 4: a colleague that does not answer in time is shown as failed`.
@@ -145,9 +145,16 @@ items are marked **not implemented**.
 ### 17. Discretion towards systems — green
 - `test/consultation/consultationEnvelope.test.ts` :: `reading an HR record labels the turn, and the CRM write is refused before it runs`, `criterion 17: a full 1:1 turn — the CRM write carrying the HR record is refused, the answer says so without the record` (wording comes from the scripted model; the test proves the harness side).
 
-### 18. Mask at entry — partial
+### 18. Mask at entry — green
 - `test/discretion/answerEgress.test.ts` :: `an answer carrying a narrower room is refused as a whole and never stored`, `criterion 18: in a group the model never receives the classified field, and its paraphrase carries nothing of it`.
-- **Not implemented:** masking does not depend on who is present. Under an operator bypass the model sees the field for every room, the `classification` label is not checked at the `people` egress (`src/discretion/flowRule.ts:116-120`), and `v4_render_answer` renders real values to the whole group.
+- Masking per group member: `test/discretion/fieldRights.test.ts` — one member denied `privacy:field:personal`, each case with the same room without the denial as control:
+  - `criterion 18: under an operator bypass the model gets the field only when every member may know it` (mask at entry: no bypass for such a room);
+  - `criterion 18: prompt surrogates are restored only when every member may know the field`;
+  - `criterion 18: an answer carrying the classification label is refused as a whole for such a room` (the `people` egress checks `classification` labels against the readers' field rights, `readers_lack_field_right`; absent rights fail closed);
+  - `criterion 18: a rendered answer is masked again for a room without the field right` (`v4_render_answer`);
+  - `criterion 18: deliver_data puts no rows before a room without the field right`;
+  - pure parts: closed, throwing or denying floors grant no class; the classification check at the `people` egress.
+- Residual: in such a room the answer shows the shield's surrogates (pseudonymous values) plus a note that some details stay masked; a trigger's proactive post whose creating turn carried a `classification` label is refused (no field rights are stored with a trigger, fail closed).
 
 ### 19. Default on — green
 - `test/consultation/consultation.pg.test.ts` :: `criterion 19: a fresh agent starts in \`members\``; `test/orchestrator/freshAgentMembersMemory.pg.test.ts` (agent created without a mode, recall with a non-owner present returns nothing, owners only get it); `test/orchestrator/memberScopedMemory.test.ts`.

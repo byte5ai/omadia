@@ -14,7 +14,13 @@
 import { renderTableText, type ChatTurnInput, type SemanticAnswer } from '@omadia/channel-sdk';
 import type { AgentSpeaker, AnswerEmitter } from '@omadia/plugin-api';
 import { meterModelCalls, meterUsageCost } from '@omadia/usage-telemetry';
-import { checkFlow, isAnswerWithheldText, runWithSeededDiscretion, violationSummary } from '@omadia/orchestrator';
+import {
+  checkFlow,
+  fieldClassesFromList,
+  isAnswerWithheldText,
+  runWithSeededDiscretion,
+  violationSummary,
+} from '@omadia/orchestrator';
 
 import { storeContextChecks, type ContextLivenessProbe } from './contextChecks.js';
 import { toTableData, type DataActionRunner } from './dataActions.js';
@@ -96,6 +102,7 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
       kind: 'people',
       contextKey: discretion.contextKey,
       readers: discretion.readers,
+      fieldClasses: fieldClassesFromList(discretion.fieldClasses),
     });
     return decision.allowed
       ? undefined
