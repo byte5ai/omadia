@@ -1684,7 +1684,7 @@ Matching, keine Regression auf `event`).
 
 Fünf Lücken der #437-Oberfläche, die zusammen entscheiden, **was den Server
 verlässt** und **was ein Operator hinterher rekonstruieren kann**. Migration:
-`src/conductor/migrations/0014_webhook_hardening.sql`.
+`src/conductor/migrations/0015_webhook_hardening.sql`.
 
 **1. Run-Kontext ist opt-in.** Die Delivery-Payload trug den kompletten
 `context` des Runs, also jedes Step-Ergebnis inklusive Freitext-Antworten von
@@ -1728,9 +1728,8 @@ nichts. Audit-Write ist best-effort: ein Fehler loggt laut, lässt die Mutation
 aber stehen (sie ist schon passiert). Kein Audit für No-ops (Review-Finding): die
 `/status`-Routen antworteten für eine unbekannte Id mit `204` **und** schrieben
 eine Row über eine Zustandsänderung, die nie passierte — jetzt `404`, vor
-Mutation und Audit. DELETE bleibt idempotent (`204`, und der Store-Call läuft
-weiter, weil er auch Vault-Keys aus einem Teil-Write aufräumt), schreibt aber
-keine Audit-Row, wenn es nichts zu löschen gab. Beide Pre-Reads fangen ihren
+Mutation und Audit. DELETE antwortet für eine schon gelöschte Id `404` (#1706)
+und schreibt dann keine Audit-Row. Beide Pre-Reads fangen ihren
 eigenen Fehler nicht mehr weg: ein fehlgeschlagener Read endet in `500`, bevor
 mutiert wird, statt zu „kein before-State" zu degradieren.
 
@@ -9673,7 +9672,60 @@ Der Terminal-Handler antwortet immer JSON `{ code, message }`, nie mit Stack:
 - Routen, deren `:id` eine Postgres-`uuid`-Spalte ist, prüfen die Id per
   `router.param('id', requireUuidParam('<area>.not_found'))`
   (`src/http/uuidParam.ts`) — sonst wird ein Tippfehler zum `22P02`-500, der
-  die DB-Meldung zurückgibt. Aktuell: admin-users, routines (`:id`, `:runId`).
+  die DB-Meldung zurückgibt. Aktuell: admin-users, routines (`:id`, `:runId`),
+  Conductor (`:runId`, `:awaitId`, `:workflowId`, `:subscriptionId`).
+  Zweites Argument ist der Status für die **kaputte** Id: Default `404`
+  (admin-users, routines), `400` beim Conductor (#1706), wo dieselbe Route für
+  eine wohlgeformte Id ohne Zeile mit `404` antwortet und beide Fälle sonst
+  nicht unterscheidbar wären.
+
+## Conductor-Operator-API: Id-Form zuerst prüfen (#1706, 2026-11-17)
+
+Die id-tragenden Operator-Routen des Conductors gaben die Id des Aufrufers
+ungeprüft an den Store. `conductor_runs.id`, `conductor_awaits.id`,
+`conductor_workflows.id` und `conductor_webhook_subscriptions.id` sind
+`uuid`-Spalten, also scheiterte `999` in Postgres mit
+`22P02 invalid input syntax for type uuid: "999"`; der Catch-all jedes Handlers
+schrieb genau diesen Satz als `500` in den Response-Body — dieselbe Klasse wie
+#1318/#1398 (`conductor.get_run_failed`, `conductor.cancel_failed`,
+`conductor.respond_failed`, `conductor.facilitation_terminate_failed`,
+`conductor.webhook_{rotate,status,delete,deliveries}_failed`).
+
+- **Form zuerst, in `createConductorRouter`** (`src/conductor/routes.ts`):
+  `router.param` für `runId`, `awaitId`, `workflowId`, `subscriptionId` mit
+  `requireUuidParam('conductor.invalid_input', 400)`. Eine Nicht-UUID ist keine
+  unbekannte Zeile, sondern eine unbrauchbare Id → `400`; eine wohlgeformte Id
+  ohne Zeile behält das `404` des Handlers. Codes bleiben in dem Paar, das die
+  Admin-UI schon lokalisiert (`conductor.invalid_input` /
+  `conductor.not_found`, `shared.tsx` → `adminWebhooks.errors`).
+- **Bewusst nicht für `:id`**: `registerTemplateRoutes` benutzt diesen Namen für
+  slug-förmige Template-Ids (`notify-and-escalate`) auf demselben Router.
+  Deshalb heißt der Parameter der Subscription-Routen jetzt `:subscriptionId`
+  (`src/conductor/webhookRoutes.ts`) — die URLs sind unverändert, die
+  Web-UI-Clients (`web-ui/app/_lib/api.ts`) also auch.
+- **Der Param-Guard läuft vor dem `503 conductor.webhooks_unavailable`**, weil
+  er Router-Ebene ist: auf einem Host ohne Postgres antwortet eine kaputte Id
+  `400` statt `503`. Gewollt — unbrauchbar ist sie dort genauso; für die
+  wohlgeformten Ids echter Aufrufer bleibt das `503`.
+- **Inbound-Endpoints haben keine uuid-Spalte** (`endpoint_id` ist `TEXT`), also
+  gab es gar keinen Fehler: `status` und `DELETE` trafen null Zeilen und
+  meldeten trotzdem `204`, d. h. Erfolg für einen Endpoint, den es nicht gibt.
+  Alle drei Endpoint-Routen (`status`, `DELETE`, `deliveries`) prüfen jetzt per
+  `get()` und antworten `404 conductor.not_found`; `deliveries` liefert damit
+  statt `{deliveries: []}` ("noch nichts angekommen") die Wahrheit. Dasselbe
+  Muster für `subscriptions` (`status`, `DELETE`, `deliveries`) — `rotate-secret`
+  hatte die Prüfung beidseitig schon.
+- **`AwaitNotFoundError`** (`src/conductor/runExecutor.ts`, exportiert über
+  `src/conductor/index.ts`): `resolveAwait` wirft für "keine Await-Zeile mit
+  dieser Id" nicht mehr `AwaitNotPendingError`. Die Route antwortet dafür
+  `404 conductor.not_found` statt `409 conductor.await_not_pending`, das als
+  "dein Await ist geschlossen" las und den Operator nach einem Run suchen ließ,
+  den es nie gab. Der Karten-Pfad (`conductorAwaitResolver` in `src/index.ts`)
+  behandelt beide Klassen weiter als `already_resolved` — aus einem Button
+  heißen sie dasselbe.
+- Tests: `test/conductorRouteIdGuards.test.ts` (Stores als werfende Proxys, ein
+  Request, der den Store doch erreicht, fällt als 500 auf) und der Block
+  `#1706` in `test/conductorWebhookRoutes.test.ts`.
 
 ## Manifest-Text ist `{ en, de }` — Konvention mit Warnung (#1401, 2026-10-16)
 

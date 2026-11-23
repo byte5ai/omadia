@@ -17,6 +17,12 @@
 //     to infer it from senders that silently see success.
 //   - the subscription payload scope (`includeContext`), the opt-in that decides
 //     whether a delivery carries the run's step results at all.
+//
+// #1706 — every id-bearing route here answers 404 for an id with no row behind
+// it, including the status/delete writes that used to report 204 for an endpoint
+// that does not exist. The subscription param is named ':subscriptionId' (not
+// ':id') so `createConductorRouter`'s uuid guard can cover it without also
+// catching the slug-shaped ':id' of the template routes on the same router.
 
 import type { Request, Response, Router } from 'express';
 
@@ -252,24 +258,18 @@ export function registerWebhookRoutes(router: Router, deps: ConductorRouterDeps)
     }
     const endpointId = paramStr(req.params.endpointId);
     try {
-      // Read before the DELETE: afterwards there is nothing left to describe what the
-      // trail entry is about, and "an endpoint was deleted" alone is not an answer.
-      // No `.catch` — a failed read must not degrade into an audit row with no before
-      // state; it 500s before anything is deleted.
-      const before = await deps.webhookEndpoints.get(endpointId);
-      // DELETE stays idempotent (204 for an id that is already gone) — but the call
-      // still runs, because it also clears vault keys a partial write may have left
-      // behind. Only the AUDIT is skipped: a row for a delete that deleted nothing
-      // would be a trail entry for a no-op (#1707 review finding).
+      // #1706 — an unknown id is a 404, not a 204 for an endpoint that is not there.
+      // Read before the DELETE (#1707): afterwards there is nothing left to describe
+      // what the trail entry is about.
+      const before = await loadOr404(res, () => deps.webhookEndpoints!.get(endpointId), 'endpoint not found');
+      if (!before) return;
       await deps.webhookEndpoints.delete(endpointId);
-      if (before) {
-        await audit(req, {
-          kind: 'endpoint',
-          change: 'delete',
-          id: endpointId,
-          before: { eventId: before.eventId, enabled: before.enabled },
-        });
-      }
+      await audit(req, {
+        kind: 'endpoint',
+        change: 'delete',
+        id: endpointId,
+        before: { eventId: before.eventId, enabled: before.enabled },
+      });
       res.status(204).end();
     } catch (err) {
       res.status(500).json({ code: 'conductor.webhook_delete_failed', message: errMsg(err) });
@@ -281,8 +281,15 @@ export function registerWebhookRoutes(router: Router, deps: ConductorRouterDeps)
       res.status(503).json({ code: 'conductor.webhooks_unavailable', message: 'webhooks are not wired' });
       return;
     }
+    const endpointId = paramStr(req.params.endpointId);
     try {
-      res.json({ deliveries: await deps.webhookEndpoints.listDeliveries(paramStr(req.params.endpointId)) });
+      // An unknown endpoint answered `{deliveries: []}`, which reads as "this
+      // endpoint has received nothing yet" rather than "there is no such endpoint".
+      if (!(await deps.webhookEndpoints.get(endpointId))) {
+        res.status(404).json({ code: 'conductor.not_found', message: 'endpoint not found' });
+        return;
+      }
+      res.json({ deliveries: await deps.webhookEndpoints.listDeliveries(endpointId) });
     } catch (err) {
       res.status(500).json({ code: 'conductor.webhook_deliveries_failed', message: errMsg(err) });
     }
@@ -360,12 +367,12 @@ export function registerWebhookRoutes(router: Router, deps: ConductorRouterDeps)
    *  is the receiver's side of the contract — it has to accept both secrets while it
    *  is being reconfigured. The audit row is what tells the operator when to expect
    *  that receiver's verification to start failing. */
-  router.post('/webhooks/subscriptions/:id/rotate-secret', async (req: Request, res: Response): Promise<void> => {
+  router.post('/webhooks/subscriptions/:subscriptionId/rotate-secret', async (req: Request, res: Response): Promise<void> => {
     if (!deps.webhookSubscriptions) {
       res.status(503).json({ code: 'conductor.webhooks_unavailable', message: 'webhooks are not wired' });
       return;
     }
-    const id = paramStr(req.params.id);
+    const id = paramStr(req.params.subscriptionId);
     try {
       const existing = await loadOr404(res, () => deps.webhookSubscriptions!.get(id), 'subscription not found');
       if (!existing) return;
@@ -377,7 +384,7 @@ export function registerWebhookRoutes(router: Router, deps: ConductorRouterDeps)
     }
   });
 
-  router.post('/webhooks/subscriptions/:id/status', async (req: Request, res: Response): Promise<void> => {
+  router.post('/webhooks/subscriptions/:subscriptionId/status', async (req: Request, res: Response): Promise<void> => {
     if (!deps.webhookSubscriptions) {
       res.status(503).json({ code: 'conductor.webhooks_unavailable', message: 'webhooks are not wired' });
       return;
@@ -387,7 +394,7 @@ export function registerWebhookRoutes(router: Router, deps: ConductorRouterDeps)
       res.status(400).json({ code: 'conductor.invalid_input', message: 'enabled must be a boolean' });
       return;
     }
-    const id = paramStr(req.params.id);
+    const id = paramStr(req.params.subscriptionId);
     try {
       // Same as the endpoint status route: 404 an unknown id instead of auditing a
       // state change that never happened.
@@ -413,7 +420,7 @@ export function registerWebhookRoutes(router: Router, deps: ConductorRouterDeps)
    * text a human typed into an approval — to an external receiver. Takes effect on the
    * next delivery; payloads already stored are left to the retention sweep.
    */
-  router.post('/webhooks/subscriptions/:id/payload-scope', async (req: Request, res: Response): Promise<void> => {
+  router.post('/webhooks/subscriptions/:subscriptionId/payload-scope', async (req: Request, res: Response): Promise<void> => {
     if (!deps.webhookSubscriptions) {
       res.status(503).json({ code: 'conductor.webhooks_unavailable', message: 'webhooks are not wired' });
       return;
@@ -423,7 +430,7 @@ export function registerWebhookRoutes(router: Router, deps: ConductorRouterDeps)
       res.status(400).json({ code: 'conductor.invalid_input', message: 'includeContext must be a boolean' });
       return;
     }
-    const id = paramStr(req.params.id);
+    const id = paramStr(req.params.subscriptionId);
     try {
       const before = await loadOr404(res, () => deps.webhookSubscriptions!.get(id), 'subscription not found');
       if (!before) return;
@@ -441,38 +448,41 @@ export function registerWebhookRoutes(router: Router, deps: ConductorRouterDeps)
     }
   });
 
-  router.delete('/webhooks/subscriptions/:id', async (req: Request, res: Response): Promise<void> => {
+  router.delete('/webhooks/subscriptions/:subscriptionId', async (req: Request, res: Response): Promise<void> => {
     if (!deps.webhookSubscriptions) {
       res.status(503).json({ code: 'conductor.webhooks_unavailable', message: 'webhooks are not wired' });
       return;
     }
-    const id = paramStr(req.params.id);
+    const id = paramStr(req.params.subscriptionId);
     try {
-      const before = await deps.webhookSubscriptions.get(id);
-      // Idempotent like the endpoint delete, and for the same reason the call still
-      // runs on a missing row (vault-key cleanup); only the audit row is skipped.
+      // #1706 — 404 an unknown id; read before the DELETE for the audit row (#1707).
+      const before = await loadOr404(res, () => deps.webhookSubscriptions!.get(id), 'subscription not found');
+      if (!before) return;
       await deps.webhookSubscriptions.delete(id);
-      if (before) {
-        await audit(req, {
-          kind: 'subscription',
-          change: 'delete',
-          id,
-          before: { url: before.url, event: before.event, enabled: before.enabled },
-        });
-      }
+      await audit(req, {
+        kind: 'subscription',
+        change: 'delete',
+        id,
+        before: { url: before.url, event: before.event, enabled: before.enabled },
+      });
       res.status(204).end();
     } catch (err) {
       res.status(500).json({ code: 'conductor.webhook_delete_failed', message: errMsg(err) });
     }
   });
 
-  router.get('/webhooks/subscriptions/:id/deliveries', async (req: Request, res: Response): Promise<void> => {
+  router.get('/webhooks/subscriptions/:subscriptionId/deliveries', async (req: Request, res: Response): Promise<void> => {
     if (!deps.webhookSubscriptions) {
       res.status(503).json({ code: 'conductor.webhooks_unavailable', message: 'webhooks are not wired' });
       return;
     }
+    const id = paramStr(req.params.subscriptionId);
     try {
-      res.json({ deliveries: await deps.webhookSubscriptions.listForSubscription(paramStr(req.params.id)) });
+      if (!(await deps.webhookSubscriptions.get(id))) {
+        res.status(404).json({ code: 'conductor.not_found', message: 'subscription not found' });
+        return;
+      }
+      res.json({ deliveries: await deps.webhookSubscriptions.listForSubscription(id) });
     } catch (err) {
       res.status(500).json({ code: 'conductor.webhook_deliveries_failed', message: errMsg(err) });
     }

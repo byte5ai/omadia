@@ -3104,7 +3104,7 @@ can be seeded at all.
 
 Five gaps in the §7 surface that together decide what leaves the server and what
 an operator can reconstruct afterwards. Migration
-`src/conductor/migrations/0014_webhook_hardening.sql`.
+`src/conductor/migrations/0015_webhook_hardening.sql`.
 
 **Run context is opt-in.** An outbound delivery carried the run's whole
 `context` — every step result, including the free text a human typed into an
@@ -3151,10 +3151,8 @@ failure logs loudly and never fails a mutation that already happened.
 A trail is only worth reading if every row describes something that happened, so
 the mutation routes no longer audit no-ops. The status routes previously answered
 `204` for an unknown id and still wrote a row claiming a state change: they now
-`404` instead, before mutating or auditing. DELETE stays idempotent (`204` for an
-id that is already gone, and the store call still runs because it also clears
-vault keys a partial write may have left behind), but writes no audit row when
-there was nothing to delete. Neither pre-read swallows its own failure: a failed
+`404` instead, before mutating or auditing. DELETE answers `404` for an
+id that is already gone (#1706) and writes no audit row then. Neither pre-read swallows its own failure: a failed
 read answers `500` before anything is mutated, rather than degrading into a row
 with no `before` state.
 
