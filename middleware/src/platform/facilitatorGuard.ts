@@ -151,16 +151,35 @@ export function assertEngineOnlyForFacilitators(
   // attached to nobody else (spec 2042 §5.10). The facilitation engine is one
   // (the archetype `facilitator`), so this is the whole rule since K6.
   const own = archetypeOf(agent);
-  const foreign = grants
-    .filter((g) => g.enabled !== false)
-    .map((g) => ({ id: g.pluginId, plugin: sources.catalog?.get(g.pluginId)?.plugin }))
-    .filter(({ plugin }) => plugin?.kind === 'archetype' && plugin.archetype !== undefined && plugin.archetype.id !== own);
+  const foreign = foreignArchetypeGrants(agent, grants.filter((g) => g.enabled !== false), sources.catalog);
   if (foreign.length > 0) {
-    const named = foreign.map(({ id, plugin }) => `${id} (archetype '${plugin?.archetype?.id ?? '?'}')`).join(', ');
+    const named = foreign.map(({ pluginId, archetype }) => `${pluginId} (archetype '${archetype}')`).join(', ');
     throw new ConfigValidationError(
       `agent "${agent.slug}" has the archetype '${own}': an archetype plugin can only be granted to agents of its own archetype — refused: ${named}`,
     );
   }
+}
+
+/**
+ * S3c — the grants of `agent` that are archetype plugins of ANOTHER archetype
+ * (for example the facilitation engine on a standard agent). Such a grant is
+ * never valid (#2088); older instances still hold some from before the rule.
+ * Disabled grants count too: the caller decides whether that matters.
+ */
+export function foreignArchetypeGrants(
+  agent: ArchetypeBearer,
+  grants: readonly { readonly pluginId: string }[],
+  catalog: FacilitationEngineSources['catalog'],
+): { readonly pluginId: string; readonly archetype: string }[] {
+  const own = archetypeOf(agent);
+  const out: { pluginId: string; archetype: string }[] = [];
+  for (const g of grants) {
+    const plugin = catalog?.get(g.pluginId)?.plugin;
+    if (plugin?.kind === 'archetype' && plugin.archetype !== undefined && plugin.archetype.id !== own) {
+      out.push({ pluginId: g.pluginId, archetype: plugin.archetype.id });
+    }
+  }
+  return out;
 }
 
 /**

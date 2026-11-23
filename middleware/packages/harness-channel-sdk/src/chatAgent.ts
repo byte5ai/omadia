@@ -642,6 +642,16 @@ export interface ChatTurnInput {
    */
   canvasSessionId?: string;
   /**
+   * The agent (`agents.id`) this turn was addressed to, when the dispatcher
+   * hands it to a channel's `dispatch_service` instead of to the agent itself
+   * (the canvas presentation helper): the kernel has already resolved and
+   * checked that agent for this sender (`resolveAgent`), the service looks up
+   * its envelope by this id and works inside it. Set ONLY by the kernel
+   * dispatcher, after that check — never read from channel metadata by a
+   * service, never a routing hint. Never reaches the model prompt.
+   */
+  agentId?: string;
+  /**
    * Fixed, per-turn system directive from a TRUSTED in-process wrapper (the
    * canvas orchestrator's `[canvas-context]` protocol instructions). MUST be a
    * compile-time constant: no user text, no model output, no tool data — it
@@ -947,9 +957,8 @@ export interface PendingRoutineList {
  * Per-tool agent metadata. Attached by the chat route to `tool_use` events
  * (and `sub_tool_use`) so the UI can render a clickable agent pill without
  * a hardcoded `tool name → agent` table on the client. Resolution happens
- * server-side: built-in agents come from a curated map, Builder-uploaded
- * agents from `DynamicAgentRuntime.findAgentByToolName()`. When a tool is
- * not backed by an agent (helper tools like `memory`, `ask_user_choice`,
+ * server-side: curated kernel tools come from a map, plugin tools from the
+ * plugin that registered them. When a tool is not backed by a plugin (helper tools like `memory`, `ask_user_choice`,
  * `render_diagram`), the field stays `undefined`.
  *
  * Tone is one of four byte5 brand fills; see TONE_CLASS in the web-ui

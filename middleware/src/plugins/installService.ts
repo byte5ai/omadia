@@ -103,7 +103,7 @@ export interface InstallServiceDeps {
    *  `process.env`. Injectable for tests. */
   env?: NodeJS.ProcessEnv;
   /** Called after a successful `configure()` — e.g. to activate an uploaded
-   *  agent via DynamicAgentRuntime. Errors in the hook do not cause the
+   *  plugin in its runtime. Errors in the hook do not cause the
    *  installation to be marked `failed`: registry entries are already
    *  persisted and the agent counts as installed. The caller must handle
    *  hook errors separately. */

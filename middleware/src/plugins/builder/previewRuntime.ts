@@ -3,12 +3,12 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import yaml from 'yaml';
 
-import {
-  ServiceNotDeclaredError,
-  type HttpAccessor,
-  type NativeToolHandler,
-  type NativeToolSpec,
-  type RouteRegisterOptions,
+import { nativeToolResultText, ServiceNotDeclaredError } from '@omadia/plugin-api';
+import type {
+  HttpAccessor,
+  NativeToolHandler,
+  NativeToolSpec,
+  RouteRegisterOptions,
 } from '@omadia/plugin-api';
 
 import { extractZipToDir, type ExtractLimits } from '../zipExtractor.js';
@@ -397,7 +397,7 @@ export interface PreviewHostServices {
 export interface PreviewRuntimeDeps {
   /** Absolute path to `data/builder/.previews/`. */
   previewsRoot: string;
-  /** Default: 10s — same budget as activate() in dynamicAgentRuntime. */
+  /** Default: 10s — same budget as activate() in the tool plugin runtime. */
   activateTimeoutMs?: number;
   logger?: (...args: unknown[]) => void;
   /**
@@ -960,7 +960,7 @@ function createStubContext(opts: {
             id: spec.name,
             description: spec.description,
             inputSchema: spec.input_schema,
-            run: (input) => handler(input),
+            run: async (input) => nativeToolResultText(await handler(input)),
           },
           disposed: false,
         };

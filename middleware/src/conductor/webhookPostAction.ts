@@ -7,7 +7,7 @@ import { postWebhook } from './webhookOutbound.js';
  * `actionId` is this constant fires an ad-hoc outbound POST to an operator-supplied
  * URL, still behind the shared SSRF guard (`webhookOutbound.ts`). Registered as a
  * built-in in `index.ts` (prepended to the action catalog + special-cased ahead of
- * `dynamicAgentRuntime.invokeAgentTool`) rather than requiring an installed plugin.
+ * the plugin-tool dispatch) rather than requiring an installed plugin.
  *
  * Unlike the run-lifecycle dispatcher, an ad-hoc step has no subscription/secret to
  * sign with — the workflow author supplies the request shape directly in `step.input`,

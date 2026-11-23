@@ -163,13 +163,13 @@ describe('reach inputs', () => {
 });
 
 describe('isCapabilityPlugin', () => {
-  it('capabilities are integration, tool, skill and the retired agent kind; nothing else', () => {
+  it('capabilities are integration, tool and skill; nothing else, not the retired agent kind', () => {
     const p = (id: string, kind: string, extra: Record<string, unknown> = {}) =>
       ({ id, kind, ...extra }) as never;
     assert.equal(isCapabilityPlugin(p('@a/odoo', 'integration')), true);
     assert.equal(isCapabilityPlugin(p('@a/search', 'tool')), true);
     assert.equal(isCapabilityPlugin(p('@a/offers', 'skill')), true);
-    assert.equal(isCapabilityPlugin(p('@a/hr', 'agent')), true);
+    assert.equal(isCapabilityPlugin(p('@a/hr', 'agent')), false);
     assert.equal(isCapabilityPlugin(p('@a/teams', 'channel')), false);
     assert.equal(isCapabilityPlugin(p('@a/llm', 'extension')), false);
     assert.equal(isCapabilityPlugin(p('@a/facilitator', 'archetype')), false);

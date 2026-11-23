@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import type { ToolPIIField } from './types.js';
+
 /**
  * Toolkit = capability → executable handler with a Zod input schema.
  * Each tool entry mirrors 1:1 a capability from manifest.yaml.
@@ -26,6 +28,12 @@ export interface ToolDescriptor<I, O> {
   readonly id: string;
   readonly description: string;
   readonly input: z.ZodType<I>;
+  /** The fields of the result that hold personal data (names, e-mail
+   *  addresses, phone numbers …), e.g.
+   *  `[{ path: '[].name', idPath: '[].id', type: 'PERSON' }]` for an array of
+   *  rows. Declare every one: the Privacy Shield always masks a declared field
+   *  before the result reaches a model. */
+  readonly piiFields?: readonly ToolPIIField[];
   run(input: I): Promise<O>;
 }
 

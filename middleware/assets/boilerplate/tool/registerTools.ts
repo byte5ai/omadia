@@ -14,7 +14,9 @@ import type { NativeToolSpec, PluginContext } from './types.js';
  * `z.toJSONSchema`, so the model sees exactly what `run` accepts. The handler
  * parses the input with the same schema (a `ZodError` reaches the kernel,
  * which reports it to the model as a recoverable tool error) and returns the
- * result as text: strings verbatim, anything else as JSON.
+ * result as text: strings verbatim, anything else as JSON. A tool's
+ * `piiFields` go with its registration, so the Privacy Shield masks those
+ * fields of every result.
  *
  * Returns one dispose function that unregisters every tool; call it from
  * `close()`.
@@ -32,7 +34,7 @@ export function registerToolkit(ctx: PluginContext, toolkit: Toolkit): () => voi
           const result = await tool.run(input);
           // `JSON.stringify(undefined)` is undefined, not text.
           return typeof result === 'string' ? result : (JSON.stringify(result) ?? '');
-        }),
+        }, tool.piiFields !== undefined ? { piiFields: tool.piiFields } : undefined),
       );
     }
   } catch (err) {

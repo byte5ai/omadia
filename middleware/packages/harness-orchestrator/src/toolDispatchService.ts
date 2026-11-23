@@ -12,7 +12,12 @@
  */
 
 import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
-import { isUnknownOutcomeToolErrorNotice, isWriteCapableTool } from '@omadia/plugin-api';
+import {
+  isNativeToolResult,
+  isUnknownOutcomeToolErrorNotice,
+  isWriteCapableTool,
+  nativeToolDispatchText,
+} from '@omadia/plugin-api';
 import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
 import { replayMissNotice, runHandlerAtMostOnce } from './toolReplayLedger.js';
 import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
@@ -22,7 +27,7 @@ import {
   isGuardedControlFlowResult,
   withholdThrownToolError,
 } from './toolErrorRedaction.js';
-import type { NativeToolHandler, WriteCapability } from '@omadia/plugin-api';
+import type { NativeToolHandler, NativeToolOutput, WriteCapability } from '@omadia/plugin-api';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
 import type { DomainTool } from './tools/domainQueryTool.js';
 import { isOfferedThisTurn, type NativeToolRegistry } from './nativeToolRegistry.js';
@@ -440,7 +445,7 @@ export class ToolDispatchService {
   private async invoke(
     name: string,
     input: unknown,
-    handler: () => Promise<string>,
+    handler: () => Promise<NativeToolOutput>,
     options?: ToolDispatchOptions,
   ): Promise<ToolDispatchResult> {
     const privacy = this.privacyHandle();
@@ -470,14 +475,17 @@ export class ToolDispatchService {
     // One mint per dispatch: a connect prompt the MCP manager produces
     // while this handler runs is recorded in it (`mcpAuthPromptMint.ts`).
     const authPromptMint = new McpAuthPromptMint();
-    let raw: string;
+    // S3c — a plugin tool may return a structured result; it is recorded as
+    // is, and the caller gets its model-facing text (`output` + limit note).
+    // Its `postcondition` has no run trace to land in on this path.
+    let raw: NativeToolOutput;
     try {
       if (replay?.kind === 'rejection') throw replay.error;
       // The handler runs with this dispatch's handle as the ambient one, so a
       // sub-agent model loop inside it is guarded too (`handlerPrivacyScope.ts`).
       raw =
         replay?.kind === 'result'
-          ? (replay.value as string)
+          ? (replay.value as NativeToolOutput)
           : await runHandlerAtMostOnce(ledger, () =>
               runWithMcpAuthPromptMint(authPromptMint, () =>
                 runHandlerInPrivacyScope(privacy, handler),
@@ -487,12 +495,19 @@ export class ToolDispatchService {
       if (replay === undefined) ledger?.record('dispatch', name, input, { kind: 'rejection', error });
       return this.thrownResult(name, error, options);
     }
+    // A value that is neither text nor a structured result is refused here
+    // (fail closed): the shield below masks text only.
+    const text = nativeToolDispatchText(raw, name);
+    if (typeof raw !== 'string' && !isNativeToolResult(raw)) {
+      console.error(`[toolDispatchService:${name}] handler returned ${Array.isArray(raw) ? 'an array' : typeof raw}, neither text nor a structured result — refused`);
+      return { content: text, isError: true, origin: 'dispatcher' };
+    }
     if (replay === undefined) {
       ledger?.record('dispatch', name, input, { kind: 'result', value: raw });
-      if (isUnknownOutcomeToolErrorNotice(raw)) ledger?.noteUnknownOutcome(name, input);
+      if (isUnknownOutcomeToolErrorNotice(text)) ledger?.noteUnknownOutcome(name, input);
     }
     try {
-      return await this.afterDispatch(name, raw, authPromptMint, options, replay !== undefined);
+      return await this.afterDispatch(name, text, authPromptMint, options, replay !== undefined);
     } catch (error) {
       return this.thrownResult(name, error, options);
     }

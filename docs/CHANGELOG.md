@@ -36,6 +36,11 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — `@omadia/plugin-api` 1.87.0, `@omadia/channel-sdk` 0.3.13: the open acceptance criteria of spec 2042
+
+- The entries below (field rights, channel parity, criteria 29/33, explicit targets) ship
+  together; their additive types move from "Unreleased" into these versions.
+
 ### Added — field rights per audience member, contribution ids for the consulting agent (spec 2042 criteria 3c, 18)
 
 - New audience-floor capability `privacy:field:personal` in the member baseline; deny it to a
@@ -62,7 +67,7 @@ changelog.
 
 ### Added — Spec 2042 criteria 29 and 33: "how do you know?" and the fast-lane summary under the boundaries
 
-- **Criterion 29.** `SemanticAnswer.turnId` (additive, channel-sdk unreleased; `toSemanticAnswer`
+- **Criterion 29.** `SemanticAnswer.turnId` (additive, channel-sdk 0.3.13; `toSemanticAnswer`
   forwards `ChatTurnResult.turnId`) and `AnswerDetails.trace` (the trace reference; on its own it
   opens no details element). `AnswerDetails.systemData` now also counts side-channel data (a
   fast-lane table). The kernel is the caller of `buildAnswerDetails`/`answerDetailsText`:
@@ -90,10 +95,59 @@ changelog.
   The agent names a target by grant id; the target's readers are checked at send time.
 - **Migration 0126 `system_notice_outbox`:** the `system` notice each home conversation gets
   when an agent goes out of service (new code `archetype_plugin_removed`, plugin-api
-  Unreleased), sent once through the shared bot, kept across restarts.
+  1.87.0), sent once through the shared bot, kept across restarts.
 - **Fixed:** the Plugin Builder preview resolved any kernel service through `ctx.services`;
   it now passes the gates of an installed plugin. Teams trigger contexts were keyed
   `teams:msteams` (the reference's `channelId`) instead of the conversation id.
+
+### Changed — The agent plugin runtime is gone (#2042, S3c)
+
+- `@omadia/plugin-api` 1.86.0 (`NativeToolResult`, `NativeTextToolHandler`, `agentDirectory@1`),
+  `@omadia/channel-sdk` 0.3.12 (`ChatTurnInput.agentId`, `TargetedMessage.speaker` optional).
+  Additive for plugins; code that calls a `NativeToolHandler` and reads a string must read it with
+  `nativeToolResultText` (`ctx.tools.invoke` still answers with text).
+- **BREAKING for operators.** The kernel no longer runs plugins of the retired kind `agent`
+  (spec 2042 §5.10, ADR-0014). One still installed starts no code: it is `errored` with the
+  activation code `kind_retired` at boot and on every reactivation or update, keeps its setup
+  for the version that replaces it, and cannot be granted. `extension` plugins keep running as
+  system modules. Update or uninstall agent plugins before deploying this kernel.
+- A tool a plugin registers may return `{ output, limitSignal?, postcondition?, structured? }`
+  (plugin-api `NativeToolResult`): the limit note reaches the model, a postcondition the
+  verifier; `structured` never reaches the model.
+- Plugin Builder boilerplates pass a tool's `piiFields` to `ctx.tools.register`; declared PII
+  columns count toward the receipt's identity count (privacy-guard 0.16.3).
+- A grant of an archetype plugin on an agent of another archetype (from before #2088) is
+  removed at boot, and no longer blocks replacing that agent's grants.
+- Conductor action steps run only tools that declare `deterministic_action: true` (what the
+  Designer offers); before, an action id reached any active agent plugin's tool.
+- A tool result that is neither text nor a `NativeToolResult` is refused on every dispatch path
+  instead of being handed on unmasked.
+
+### Security — production audit exceptions run up to 90 days; zod/botbuilder renewed
+
+2026-11-23. A `"production": true` audit exception may now run up to 90 days
+from its review instead of 30, the same limit as a development-only exception
+(one shared `MAX_EXCEPTION_DAYS` in `.github/scripts/audit-gate.mjs`,
+security-architecture §4a). The only production exception, GHSA-mrhx-c7xc-m3w5 in
+`zod` 3.25.x via `botbuilder`, was reviewed again and runs until 2027-02-21.
+botbuilder and its three packages are still 4.23.3 on zod ^3.23.8, unchanged
+since 2025-08-27, and zod 3.x has no fixed release, so a monthly re-check found
+nothing new. The rest of the gate is unchanged: every route must still be named
+in `via`, an expired entry still fails the leg, and the 14-day expiry warning
+still applies.
+
+### Security — dependency rollup 2026-11-23; withdrawn picomatch exceptions removed
+
+2026-11-23. `@microsoft/microsoft-graph-client` 3.1.0, the host-provided Graph SDK
+that the M365 connector uses, fixes a token leak through host confusion with URL
+userinfo (msgraph-sdk-javascript #2000). It also drops `Authorization` and `Cookie`
+on cross-origin redirects and now requires Node 22 or later. Electron 45.4.1 brings
+upstream Chromium, V8, ANGLE, Dawn, FFmpeg and PDFium fixes to the desktop app.
+ESLint 10.15, which the Builder's auto-fix pass runs at runtime, no longer
+auto-fixes a `var` that is used before its definition through a hoisted function;
+the pass leaves those in place instead of risking a TDZ error. GitHub withdrew
+GHSA-fc5q-39xc-vjpf (picomatch) on 2026-11-18, so its three audit exceptions from
+#2072 are gone. The zod/botbuilder production exception is the only one left.
 
 ### Changed — ADR-0030: the kernel bounds closing scopes and the deadline wait (#2090)
 

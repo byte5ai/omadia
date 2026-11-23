@@ -4787,7 +4787,7 @@
       },
       "hubChip": "Hub · {registry}",
       "legacyChip": "Legacy",
-      "legacyChipTitle": "A retired plugin kind: it keeps running, but gets no new versions."
+      "legacyChipTitle": "A retired plugin kind: it gets no new versions. An agent plugin no longer runs at all."
     },
     "stateBadge": {
       "available": "Available",
@@ -4849,6 +4849,10 @@
       "database_not_available": {
         "what": "The plugin's own database could not be set up.",
         "next": "The technical detail below names the reason. If it says a role may create objects outside its schema, run the statement it names (usually REVOKE CREATE ON SCHEMA public FROM PUBLIC) as the database owner, then restart omadia."
+      },
+      "kind_retired": {
+        "what": "This plugin is of the retired kind 'agent'. omadia no longer runs plugins with an agent of their own.",
+        "next": "Nothing in the setup fixes this. Update the plugin to a version that delivers capabilities (or agent templates), or uninstall it. Its setup values are kept for the new version."
       },
       "unknown": {
         "what": "The plugin did not start.",
@@ -5202,7 +5206,7 @@
     "legacyKind": {
       "title": "Legacy plugin",
       "agent": {
-        "what": "This plugin is of the retired kind 'agent': a plugin with an agent of its own. It keeps running, but omadia accepts no new version of it.",
+        "what": "This plugin is of the retired kind 'agent': a plugin with an agent of its own. omadia no longer runs such plugins, and accepts no new version of one.",
         "next": "Rebuild it in the Plugin Builder as a capability (tool or integration), then create the agent in the Agent Builder and grant it that capability."
       },
       "extension": {

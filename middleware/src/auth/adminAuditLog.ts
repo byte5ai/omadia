@@ -77,6 +77,9 @@ export type AuditAction =
   // credential.
   | 'agent.broad_reach_grant'
   | 'agent.broad_reach_default'
+  // S3c — an invalid grant (an archetype plugin on an agent of another
+  // archetype, from before #2088) removed with a replace of the agent's grants.
+  | 'agent.plugin_grant_revoked'
   // #2090 — the operator's kill switch for the actions of archetype plugins
   // (instance, one agent, one process): set and cleared.
   | 'execution.kill_switch_set'

@@ -113,7 +113,11 @@ Extension-Allowlist im Host-Extractor:
 const disposeTools = registerToolkit(ctx, toolkit); // registerTools.ts
 return { async close() { disposeTools(); await toolkit.close(); } };
 ```
-`ToolDescriptor = { id, description, input: ZodSchema, run(input) }`.
+`ToolDescriptor = { id, description, input: ZodSchema, piiFields?, run(input) }`.
+`piiFields` deklariert die Felder des Ergebnisses mit Personendaten
+(`[{ path: '[].name', idPath: '[].id', type: 'PERSON' }]`); die Privacy
+Shield maskiert sie immer. Jedes Feld mit Namen, E-Mail, Telefon o. Ä.
+deklarieren.
 `registerTools.ts` (fester Boilerplate-Code, kein Slot) registriert jedes Tool
 beim Kernel: Name = `id`, Input-Schema aus `z.toJSONSchema(input)`, Ergebnis
 als Text (Strings 1:1, sonst JSON). Der Kernel bietet die Tools den Agenten

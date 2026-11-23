@@ -17,10 +17,7 @@ import {
   reactivateAfterProviderWrite,
 } from '../platform/providerDependents.js';
 import type { InstallSetupField, PluginActivationResult, SetupOption } from '../api/admin-v1.js';
-import {
-  SetupOptionsResolveError,
-  withTimeout,
-} from '../plugins/dynamicAgentRuntime.js';
+import { SetupOptionsResolveError, type SetupOptionsResolver } from '../plugins/setupOptionsResolver.js';
 import type { ConnectionProbeOutcome } from '../plugins/connectionProbe.js';
 import { coerceSetupFieldValue, extractSetupSchema } from '../plugins/installService.js';
 import type { InstalledAgent, InstalledRegistry } from '../plugins/installedRegistry.js';
@@ -106,13 +103,7 @@ interface RuntimeDeps {
    *  Optional so existing test wiring keeps compiling — the setup-options
    *  endpoint 503s when absent, and PATCH /config falls back to opaque-id
    *  validation for multiselect fields. */
-  dynamicAgentRuntime?: {
-    resolveSetupOptions(
-      agentId: string,
-      toolId: string,
-      input: unknown,
-    ): Promise<unknown>;
-  };
+  setupOptions?: SetupOptionsResolver;
   /** Epic #470 C4 / H1 — durable operator consent for unauthenticated plugin
    *  path prefixes. Optional so existing test wiring keeps compiling; the
    *  public-path endpoints 503 when absent. */
@@ -373,7 +364,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
             v,
             id,
             optField,
-            deps.dynamicAgentRuntime,
+            deps.setupOptions,
           );
           if ('error' in checked) {
             res.status(400).json(checked.error);
@@ -452,7 +443,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
         });
         return;
       }
-      const resolver = deps.dynamicAgentRuntime;
+      const resolver = deps.setupOptions;
       if (!resolver) {
         res.status(503).json({
           code: 'runtime.options_unavailable',
@@ -1384,7 +1375,7 @@ async function validateMultiselectValue(
   raw: unknown,
   pluginId: string,
   field: OptionsProviderField,
-  resolver: RuntimeDeps['dynamicAgentRuntime'],
+  resolver: RuntimeDeps['setupOptions'],
 ): Promise<{ value: string } | { error: { code: string; message: string } }> {
   if (!Array.isArray(raw) || !raw.every((x) => typeof x === 'string')) {
     return {
@@ -1477,4 +1468,16 @@ function activationWithRestart(
   const result = activationResultOf(entry);
   if (result === null || entry === undefined) return result;
   return deps.restartPending?.(entry.id) === true ? { ...result, restart_pending: true } : result;
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<T>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

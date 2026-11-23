@@ -1,4 +1,4 @@
-import { CHAT_AGENT_SERVICE, turnPrincipal } from '@omadia/channel-sdk';
+import { CHAT_AGENT_SERVICE, parseAgentCommand, turnPrincipal } from '@omadia/channel-sdk';
 import type {
   ChatAgent,
   ChatAgentBundle,
@@ -165,6 +165,69 @@ function addressedAgentId(metadata: Record<string, unknown> | undefined): string
   return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : undefined;
 }
 
+/** The canvas fields of a turn's metadata, shape-checked (a channel is a trust
+ *  boundary: anything of another shape counts as absent). */
+interface CanvasTurnFields {
+  readonly canvasSessionId?: string;
+  readonly action?: { type: string; payload?: unknown; target?: unknown };
+  readonly canvasRefresh?: { basedOnRevision: string; currentTree: unknown; scope?: string };
+  readonly canvasState?: { basedOnRevision: string; currentTree: unknown };
+  /** a turn with no words for a model: a refresh, an action, or a canvas turn without text */
+  readonly structured: boolean;
+}
+
+function readCanvasTurn(input: {
+  readonly text: string;
+  readonly target?: unknown;
+  readonly metadata?: Record<string, unknown> | undefined;
+}): CanvasTurnFields {
+  const metadata = input.metadata;
+  const canvasSessionId =
+    typeof metadata?.['canvasSessionId'] === 'string' ? (metadata['canvasSessionId'] as string) : undefined;
+  // The structured UI action (button click, choice pick) set by the canvas
+  // channel — protocol 1.0 §5.1's typed-field promise. The originating
+  // element's TargetRef rides along so Tier 2 knows WHICH element fired.
+  const rawAction = metadata?.['action'];
+  const action =
+    typeof rawAction === 'object' &&
+    rawAction !== null &&
+    typeof (rawAction as { type?: unknown }).type === 'string'
+      ? {
+          ...(rawAction as { type: string; payload?: unknown }),
+          ...(input.target !== undefined ? { target: input.target } : {}),
+        }
+      : undefined;
+  // Deterministic canvas refresh (omadia-ui#5) — same metadata ride as
+  // `action`; shape-validated by the channel, re-checked here.
+  const rawRefresh = metadata?.['canvasRefresh'];
+  const canvasRefresh =
+    typeof rawRefresh === 'object' &&
+    rawRefresh !== null &&
+    typeof (rawRefresh as { basedOnRevision?: unknown }).basedOnRevision === 'string'
+      ? (rawRefresh as { basedOnRevision: string; currentTree: unknown; scope?: string })
+      : undefined;
+  // PR-9b-3 in-place action — same metadata ride as `canvasRefresh`: the
+  // client's live tree so a canvas-aware orchestrator skips the skeleton
+  // and patches on top of it. Re-checked here (defence in depth).
+  const rawState = metadata?.['canvasState'];
+  const canvasState =
+    typeof rawState === 'object' &&
+    rawState !== null &&
+    typeof (rawState as { basedOnRevision?: unknown }).basedOnRevision === 'string'
+      ? (rawState as { basedOnRevision: string; currentTree: unknown })
+      : undefined;
+  return {
+    ...(canvasSessionId ? { canvasSessionId } : {}),
+    ...(action ? { action } : {}),
+    ...(canvasRefresh ? { canvasRefresh } : {}),
+    ...(canvasState ? { canvasState } : {}),
+    structured:
+      canvasRefresh !== undefined ||
+      action !== undefined ||
+      (canvasSessionId !== undefined && input.text.trim().length === 0),
+  };
+}
+
 /**
  * Build the real `TurnDispatcher`. Per turn:
  *
@@ -176,6 +239,14 @@ function addressedAgentId(metadata: Record<string, unknown> | undefined): string
  *      reaches the agent it named. A refusal is answered with the `system`
  *      notice, a platform that cannot address by id refuses the turn; neither
  *      ever falls through to another agent.
+ *      When the channel declares an explicit `dispatch_service` (the canvas
+ *      presentation helper) and the resolver BOUND the agent, the turn goes
+ *      to that service with `ChatTurnInput.agentId` — set here, after the
+ *      check, never from metadata — and the service works inside the agent's
+ *      envelope (`agentEnvelope@1`). `/agent` commands stay with the
+ *      management layer, and a structured canvas turn (`canvasRefresh`,
+ *      `action`, a canvas turn without text) never reaches an agent as a
+ *      model turn: without the service it ends in an error.
  *   1. **Per-binding routing (US7).** When the channel routes to the shared
  *      `chatAgent` (i.e. declares no explicit `dispatch_service`) and a
  *      `channelKey` is known, resolve the Agent the operator *bound* to this
@@ -204,7 +275,12 @@ export function createOrchestratorDispatcher(
       const dispatchService = resolveDispatchService(block);
 
       let agent: ChatAgent | undefined;
+      /** the agent id handed to the `dispatch_service` (set by stage 0 only) */
+      let handedAgentId: string | undefined;
+      /** the turn is answered by a notice or by the channel's own service, not by a model of an agent */
+      let modelFree = false;
       const origin = readTurnOrigin(input.metadata?.['origin']);
+      const canvas = readCanvasTurn(input);
 
       // (0) #2059 Explicit addressing. A turn that names an agent goes to
       // THAT agent's envelope, with no model in front of it. Missing,
@@ -212,14 +288,12 @@ export function createOrchestratorDispatcher(
       // resolver's `chatAgent` answers a `reject` with the `system` notice,
       // and a platform that cannot address by id refuses the turn.
       const addressedId = addressedAgentId(input.metadata);
+      const locale =
+        typeof input.metadata?.['locale'] === 'string' ? (input.metadata['locale'] as string) : undefined;
       if (addressedId !== undefined) {
         const channelType =
           input.channelType ?? deps.channelTypeFor?.(input.channelId) ?? input.channelId;
         const channelKey = input.channelKey ?? input.scope;
-        const locale =
-          typeof input.metadata?.['locale'] === 'string'
-            ? (input.metadata['locale'] as string)
-            : undefined;
         const routed = deps.resolveAgent?.(
           addressedId,
           { channelType, channelKey },
@@ -239,6 +313,24 @@ export function createOrchestratorDispatcher(
           return;
         }
         agent = routed.chatAgent;
+        // a refusal is a notice from `system`: no model runs
+        modelFree = routed.decision !== 'bound';
+        // The agent is bound and the channel has its own service (the canvas
+        // presentation helper): the service takes the turn, inside the
+        // envelope of the agent just checked. A refusal and a `/agent`
+        // command are the management layer's own answer, with no helper.
+        if (
+          routed.decision === 'bound' &&
+          dispatchService !== CHAT_AGENT_SERVICE &&
+          parseAgentCommand(input.text) === undefined
+        ) {
+          const service = deps.getAgentBundle(dispatchService)?.agent;
+          if (service) {
+            agent = service;
+            handedAgentId = addressedId;
+            modelFree = true;
+          }
+        }
       }
 
       // (1) Per-binding routing — only for channels that would otherwise hit
@@ -261,6 +353,7 @@ export function createOrchestratorDispatcher(
       // (2) Static dispatch_service fallback (legacy + canvas).
       if (!agent) {
         agent = deps.getAgentBundle(dispatchService)?.agent;
+        modelFree = agent !== undefined && dispatchService !== CHAT_AGENT_SERVICE;
       }
 
       if (!agent) {
@@ -270,46 +363,23 @@ export function createOrchestratorDispatcher(
         yield { type: 'error', message: NO_AGENT_AVAILABLE_MESSAGE };
         return;
       }
-      // Omadia UI: thread the canvas session id (set by the canvas channel in
-      // the turn metadata) into ChatTurnInput so a canvas-aware orchestrator can
-      // stamp it onto the surface_* events it synthesises. Classic channels set
-      // no such metadata — the field stays undefined and nothing changes.
-      const canvasSessionId =
-        typeof input.metadata?.['canvasSessionId'] === 'string'
-          ? (input.metadata['canvasSessionId'] as string)
-          : undefined;
-      // The structured UI action (button click, choice pick) set by the canvas
-      // channel — protocol 1.0 §5.1's typed-field promise. The originating
-      // element's TargetRef rides along so Tier 2 knows WHICH element fired.
-      const rawAction = input.metadata?.['action'];
-      const action =
-        typeof rawAction === 'object' &&
-        rawAction !== null &&
-        typeof (rawAction as { type?: unknown }).type === 'string'
-          ? {
-              ...(rawAction as { type: string; payload?: unknown }),
-              ...(input.target !== undefined ? { target: input.target } : {}),
-            }
-          : undefined;
-      // Deterministic canvas refresh (omadia-ui#5) — same metadata ride as
-      // `action`; shape-validated by the channel, re-checked here.
-      const rawRefresh = input.metadata?.['canvasRefresh'];
-      const canvasRefresh =
-        typeof rawRefresh === 'object' &&
-        rawRefresh !== null &&
-        typeof (rawRefresh as { basedOnRevision?: unknown }).basedOnRevision === 'string'
-          ? (rawRefresh as { basedOnRevision: string; currentTree: unknown; scope?: string })
-          : undefined;
-      // PR-9b-3 in-place action — same metadata ride as `canvasRefresh`: the
-      // client's live tree so a canvas-aware orchestrator skips the skeleton
-      // and patches on top of it. Re-checked here (defence in depth).
-      const rawState = input.metadata?.['canvasState'];
-      const canvasState =
-        typeof rawState === 'object' &&
-        rawState !== null &&
-        typeof (rawState as { basedOnRevision?: unknown }).basedOnRevision === 'string'
-          ? (rawState as { basedOnRevision: string; currentTree: unknown })
-          : undefined;
+      // Omadia UI: the canvas fields of the turn metadata (session id, structured
+      // action, refresh, live state) were read above; they are threaded into
+      // ChatTurnInput so a canvas-aware service can stamp the session id onto
+      // the surface_* events it synthesises. Classic channels set no such
+      // metadata — the fields stay undefined and nothing changes.
+      const { canvasSessionId, action, canvasRefresh, canvasState } = canvas;
+      // A structured canvas turn has no words for a model to answer: it runs in
+      // the channel's own service (deterministically, or as that service's own
+      // silent step), is answered by a notice, or does not run — never as a
+      // model turn at an agent.
+      if (canvas.structured && !modelFree) {
+        console.warn(
+          `[channels] structured canvas turn without a '${dispatchService}' service — refused, not run as a model turn (scope=${input.scope})`,
+        );
+        yield { type: 'error', message: 'canvas_helper_unavailable' };
+        return;
+      }
       // #430 fixup — the ONLY place a `ChatTurnInput.channelIdentity` is
       // produced. `userId` above stays the raw channel-native id (unchanged,
       // documented behaviour); `channelIdentity` gives downstream code
@@ -332,6 +402,10 @@ export function createOrchestratorDispatcher(
         sessionScope: input.scope,
         userId: input.userRef.id,
         ...(origin ? { origin } : {}),
+        // handed to the channel's service after the check above; the management
+        // layer's wrapper (which fills the locale) is not in front of it
+        ...(handedAgentId !== undefined ? { agentId: handedAgentId } : {}),
+        ...(handedAgentId !== undefined && locale ? { locale } : {}),
         ...(channelIdentity ? { channelIdentity } : {}),
         ...(canvasSessionId ? { canvasSessionId } : {}),
         ...(action ? { action } : {}),

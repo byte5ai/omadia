@@ -36,7 +36,7 @@ import {
  * connection state lives in the (async) vault. `refresh()` re-reads the
  * vault and is called once per plugin activation — the single choke point
  * shared by fresh install, boot-time reactivation, and post-Connect
- * reactivation (`ToolPluginRuntime.activate` / `DynamicAgentRuntime.activate`)
+ * reactivation (`ToolPluginRuntime.activate`)
  * — so the cached RAW token data self-heals on every activation, including a
  * restart.
  *

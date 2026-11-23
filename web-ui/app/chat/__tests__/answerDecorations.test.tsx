@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  REMOVED_DECORATIONS,
-  decorationsFor,
-} from '../../../../middleware/packages/harness-channel-sdk/src/decorations';
 import type { Message } from '../../_lib/chatSessions';
 import { renderWithIntl } from '../../_lib/test-utils';
 import { MessageRow } from '../page';
@@ -17,6 +13,18 @@ import { MessageRow } from '../page';
  */
 
 const NOOP = (): void => {};
+// The registry lives in the channel SDK. web-ui has no build-time dependency
+// on middleware packages (its Docker build context is web-ui/ alone), so the
+// module comes through the vitest-only alias `@channel-sdk-src`.
+type DecorationRegistry = {
+  REMOVED_DECORATIONS: readonly string[];
+  decorationsFor: (channel: string) => readonly { id: string }[];
+};
+const registry = (await import(
+  // @ts-expect-error -- resolved by vitest's alias only; tsc and next build never see it
+  '@channel-sdk-src/decorations'
+)) as DecorationRegistry;
+const { REMOVED_DECORATIONS, decorationsFor } = registry;
 const WEB = new Set(decorationsFor('web').map((d) => d.id));
 /** Content of the answer itself, not a decoration (INV-4 speaker, notices). */
 const ANSWER_PARTS = new Set(['speaker', 'prose', 'notice', 'attachments']);

@@ -27,13 +27,13 @@ describe('#2088 runtime of a plugin kind', () => {
       archetype: 'tool',
       'system-module': 'tool',
       'agent-template': 'tool',
-      agent: 'agent',
+      agent: 'none',
       extension: 'tool',
     });
   });
 
-  it('treats a plugin the catalog does not know as an agent plugin', () => {
-    assert.equal(pluginRuntimeOf(undefined), 'agent');
+  it('runs no code for a plugin the catalog does not know', () => {
+    assert.equal(pluginRuntimeOf(undefined), 'none');
   });
 
   it('the update and the deactivation path dispatch through it, not through a default branch', () => {
@@ -51,8 +51,8 @@ describe('#2088 runtime of a plugin kind', () => {
       const text = body(start);
       const dispatch = text.indexOf('switch (pluginRuntimeOf(');
       assert.ok(dispatch > 0, `${start} must switch on pluginRuntimeOf()`);
-      const end = text.indexOf("case 'agent':", dispatch);
-      assert.ok(end > dispatch, `${start} has no agent branch`);
+      const end = text.indexOf("case 'none':", dispatch);
+      assert.ok(end > dispatch, `${start} has no branch for the retired agent kind`);
       assert.ok(!text.slice(dispatch, end + 40).includes('default:'), `${start} must not have a default runtime`);
     }
   });

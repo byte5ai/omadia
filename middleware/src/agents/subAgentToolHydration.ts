@@ -17,7 +17,7 @@ import {
   type AnthropicClient,
 } from '@omadia/llm-adapter-anthropic';
 import type { EffortLevel } from '@omadia/llm-provider';
-import type { LocalSubAgentTool, ModelPolicy } from '@omadia/plugin-api';
+import { nativeToolResultText, type LocalSubAgentTool, type ModelPolicy } from '@omadia/plugin-api';
 import { resolveClaudeCliBin } from '../platform/cliBinary.js';
 import {
   buildSubAgentDomainTools,
@@ -386,7 +386,7 @@ export function mcpGrantToDomainTool(
     ...(descriptor.readOnlyHint === true && spec.name === untruncatedMcpName(cfg.name, descriptor.name)
       ? { readOnly: true }
       : {}),
-    handle: (input: unknown) => handler(input),
+    handle: async (input: unknown) => nativeToolResultText(await handler(input)),
   };
 }
 
