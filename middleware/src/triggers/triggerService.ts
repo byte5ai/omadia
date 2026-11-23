@@ -106,7 +106,7 @@ export class TriggerService {
     if (t.kind !== 'on_event' && !due) {
       return { ok: false, code: 'invalid', message: 'the trigger would never fire before its deadline' };
     }
-    const created: CreateResult = await this.deps.store.create(t, due, this.deps.limits.maxActivePerAgent);
+    const created: CreateResult = await this.deps.store.create(t, due, this.deps.limits.maxActivePerAgent, now);
     if (!created.ok) return { ok: false, code: created.code, message: created.message };
     this.deps.log?.(
       `[triggers] created ${created.trigger.kind} ${created.trigger.id} for '${created.trigger.agentSlug}' (${created.trigger.purpose})`,
@@ -131,7 +131,7 @@ export class TriggerService {
       await this.deps.store.noteActivity('conversation', conversationContextId(channel, conversationId), now);
       await this.deps.store.noteActivity('meeting', conversationContextId(channel, conversationId), now);
     }
-    const hooks = await this.deps.store.listHooks(eventId);
+    const hooks = await this.deps.store.listHooks(eventId, now);
     let enqueued = 0;
     for (const hook of hooks) {
       if (!this.hookMatches(hook, payload, conversationId)) continue;

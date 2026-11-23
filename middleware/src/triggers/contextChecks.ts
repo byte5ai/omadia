@@ -20,7 +20,9 @@ export function storeContextChecks(
       const activity = await store.contextActivity(trigger.contextKind, trigger.contextId);
       if (!activity) return false;
       const since = trigger.lastFiredAt ?? trigger.createdAt;
-      return activity.lastActivityAt.getTime() > since.getTime();
+      // Both on the trigger service's clock. Activity at the firing's own
+      // instant came after its check started: it is new.
+      return activity.lastActivityAt.getTime() >= since.getTime();
     },
     async contextLive(trigger: Trigger): Promise<boolean | undefined> {
       const activity = await store.contextActivity(trigger.contextKind, trigger.contextId);
