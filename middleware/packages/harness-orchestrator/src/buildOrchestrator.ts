@@ -155,11 +155,14 @@ export interface AgentRuntimeConfig {
    */
   readonly agentDirectory?: () => readonly GuardDirectoryEntry[];
   /**
-   * Names of known humans (people directory), read per turn. An own name of
+   * Names of known humans, read per turn: the display, first and last names
+   * of the install's active users (kernel `humanNames@1`). An own name of
    * this agent that equals one is masked like any person's name
-   * (`agentOwnNames`). Absent = no known humans.
+   * (`agentOwnNames`). `null` = not known yet (directory not loaded, load
+   * failed): fail safe, the turn exempts no own name at all. Absent = no
+   * known humans (hosts without a users table).
    */
-  readonly humanNames?: () => readonly string[];
+  readonly humanNames?: () => readonly string[] | null;
   /**
    * #2056 — the colleagues this agent may consult, by name (directed
    * consultation grants, #2047), named in its prompt. Absent = none.
@@ -694,15 +697,18 @@ function nameKey(name: string): string {
  * name it signs with (its identity name, else the platform assistant name,
  * the precedence of the AI-disclosure line). Deduplicated, blanks dropped.
  * A name that equals a known human's (`humanNames`, case-insensitive) is
- * dropped: a namesake employee "Max" stays masked. The privacy shield never
- * masks the rest in the agent's own turn.
+ * dropped: a namesake employee "Max" stays masked. `humanNames: null` (not
+ * known yet) drops every name — masking wins. The privacy shield never masks
+ * the rest in the agent's own turn.
  */
 export function agentOwnNames(input: {
   readonly speaker: Pick<AgentSpeaker, 'displayName' | 'slug'>;
   readonly identityName?: string | undefined;
   readonly assistantName?: string | undefined;
-  readonly humanNames?: readonly string[] | undefined;
+  readonly humanNames?: readonly string[] | null | undefined;
 }): readonly string[] {
+  // Fail safe: the known humans are not known yet — exempt no own name.
+  if (input.humanNames === null) return [];
   const signingName = input.identityName?.trim() || input.assistantName?.trim();
   const humans = new Set((input.humanNames ?? []).map(nameKey));
   const names = [input.speaker.displayName, input.speaker.slug, signingName]

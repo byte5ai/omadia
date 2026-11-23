@@ -333,6 +333,8 @@ export function buildForAgent(
       // #2045 — the speaker every answer of this agent carries.
       speaker: speakerFor(agent),
       ...(runtime.agentDirectory ? { agentDirectory: runtime.agentDirectory } : {}),
+      // #2042 — the active users' names; a namesake own name stays masked.
+      ...(runtime.humanNames ? { humanNames: runtime.humanNames } : {}),
       ...(consultableColleagues && consultableColleagues.length > 0 ? { consultableColleagues } : {}),
       model,
       maxTokens: runtime.maxTokens,

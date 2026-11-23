@@ -160,9 +160,11 @@ import type {
   RunTraceOutcomeStats,
 } from '@omadia/orchestrator';
 import {
+  HUMAN_NAMES_SERVICE,
   RUN_TRACE_STATS_SERVICE,
   setDatasetVaultKeyFallback,
 } from '@omadia/orchestrator';
+import type { HumanNamesProvider } from '@omadia/orchestrator';
 import { createMemoryRouter } from './routes/memory.js';
 import { createDatasetsRouter } from './routes/datasets.js';
 import { createBulkPromotionRouter } from './routes/bulkPromotion.js';
@@ -377,6 +379,7 @@ import {
   runDriftSweep,
 } from './profileSnapshots/driftWorker.js';
 import { UserStore } from './auth/userStore.js';
+import { HumanNameDirectory } from './auth/humanNameDirectory.js';
 import {
   ProviderCatalog,
   ProviderRegistry,
@@ -2558,6 +2561,15 @@ async function main(): Promise<void> {
   // and the Microsoft365Accessor provided by de.byte5.integration.microsoft365).
   // Agents below consume these services through ctx, so the tool runtime
   // must run before the agent runtime.
+  // #2042 — `humanNames@1`: the active users' names, so an agent's own name a
+  // colleague bears stays masked in its own turn. Published before plugin
+  // activation; the users table is attached once the database is up (UserStore
+  // below). Unknown until the first load, which exempts no own name. Names are
+  // never logged.
+  const humanNameDirectory = new HumanNameDirectory({ log: (m) => console.warn(m) });
+  serviceRegistry.provide<HumanNamesProvider>(HUMAN_NAMES_SERVICE, () =>
+    humanNameDirectory.snapshot(),
+  );
   await toolPluginRuntime.activateAllInstalled();
   console.log(
     `[middleware] tool plugin runtime: ${toolPluginRuntime.activeIds().length} tool/extension/integration package(s) active`,
@@ -5926,6 +5938,9 @@ async function main(): Promise<void> {
 
     const userStore = new UserStore(graphPool);
     sessionRevocation.attach(userStore);
+    // #2042 — `humanNames@1` (published before plugin activation) now reads
+    // this users table; every user write reloads the snapshot.
+    humanNameDirectory.attach(userStore);
 
     const bootstrapResult = await runAuthBootstrap({
       userStore,

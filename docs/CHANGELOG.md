@@ -50,6 +50,24 @@ noch aus dem Repo-Seed (`MEMORY_SEED_DIR`). System-Prompt, CLI-Memory-Text und
 Seed-README sagen das. Bereits angelegte Regeln bleiben bestehen; wie Regeln
 künftig gepflegt werden, ist als Diskussion offen.
 
+### Fixed — Der eigene Name eines Agents bleibt maskiert, wenn ein Mensch ihn trägt (#2042)
+
+2026-11-23. Die Ausnahme für die eigenen Namen eines Agents (`ownNames`) ließ
+`humanNames` bisher leer, also blieb z. B. „Karen“ in Karens eigenem Turn
+unmaskiert, obwohl eine Kollegin „Karen Müller“ heißt. Der Kernel liest jetzt
+den Anzeigenamen aller **aktiven** Benutzer aus der `users`-Tabelle, samt jedem
+seiner Wörter („Müller, Karen“, „Anna van der Berg“), und stellt sie als
+`humanNames@1` bereit; jeder Agent der Registry liest sie einmal pro Turn. Ein
+eigener Name, der einem davon gleicht (ohne Groß-/Kleinschreibung), ist nicht
+ausgenommen, auch ein einzelner Vorname. Deaktivierte Benutzer zählen bewusst
+nicht. Abgedeckt sind nur Menschen mit omadia-Login.
+Der Snapshot wird pro Prozess gehalten, nach jedem Schreibzugriff über
+`UserStore` (Anlegen, OIDC-Login, Umbenennen, Deaktivieren, Löschen) und
+spätestens nach 5 Minuten neu geladen. Solange er nicht geladen ist oder das
+Laden fehlschlägt, gilt kein eigener Name als ausgenommen — die Maskierung
+gewinnt. Die Namen werden nicht geloggt. Regeln:
+`docs/security-architecture.md` §6f.
+
 ### Fixed — Chat-Turns können das Promote-Audit-Log nicht mehr löschen (#1827)
 
 2026-11-17. Die Deny-Liste von `ScopedMemoryStore` prüfte nur den genannten
