@@ -7239,9 +7239,10 @@ own names, matched as a whole name of any length ("Ich bin Dark Clippy", not
 judge when the sentence it is in or the next one carries a negation or a word
 about being human or real ("I'm an AI? Ha, I'm actually a real person.",
 "Me, a bot? Never."), and "bin ich <Name>" is an introduction like "ich bin
-<Name>". The judge's reply must be the bare word PASS or BLOCK (markup aside);
-anything else is no verdict and withholds the text as `unavailable`, never as
-a pass.
+<Name>". The judge's verdict is the first word of its reply (markup aside, an
+explanation after it allowed); a reply that does not open with PASS or BLOCK
+is no verdict and withholds the text as `unavailable`, never as a pass. The
+operator log line of an unavailable guard names the cause and the error.
 
 ## 10za. Execution scopes bound closings and the deadline wait (#2090, ADR-0030)
 
