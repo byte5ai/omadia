@@ -10033,6 +10033,54 @@ keines mehr bekommen.
 Security: `docs/security-architecture.md` §7.
 Tests: `test/conductorReservedContextKeys.test.ts`.
 
+### Conductor: der Lauf-Verlauf überlebt eine Neu-Veröffentlichung (#1710)
+
+`GET /api/v1/operator/conductors/:slug/runs` filterte auf die **aktive** Version
+(`runStore.listForVersion(wf.activeVersionId)`). Wer denselben Slug erneut
+veröffentlichte, hatte damit einen leeren „Verlauf" — auch dann, wenn ein Lauf der
+Vorversion noch `waiting` war: sein Await stand weiter in „Wartende
+Human-Steps", `DELETE /:slug` lehnte den Workflow mit
+`conductor.has_active_runs` ab („cancel them first"), und der Abbrechen-Knopf
+liegt genau in jener Liste. Es gab keinen Weg aus dem Zustand heraus außer die
+Run-ID aus der Datenbank zu lesen und die Cancel-Route direkt zu rufen.
+
+Die Liste geht jetzt über den **Workflow**, nicht über eine Version:
+`runStore.listForWorkflow(workflowId)` joint `conductor_workflow_versions` und
+liefert jede Zeile mit `workflowVersion` (der Versions-**Nummer**; die
+`workflowVersionId` ist eine opake UUID und beantwortet die Frage „welche
+Version?" nicht). Damit deckt sich die Liste mit `hasActiveRuns`, das schon immer
+über alle Versionen zählte — die beiden Abfragen widersprachen sich, und genau
+dieser Widerspruch war der Issue. Beide lesen dafür jetzt dieselbe Konstante
+`ACTIVE_RUN_STATUSES` / `ACTIVE_RUN_STATUS_SQL` (`runStore.ts`); ein Test prüft,
+dass das Prädikat in beiden Abfragen landet.
+
+**Sortierung:** `ORDER BY (status IN ('running','waiting')) DESC, started_at
+DESC`. Aktive Läufe stehen vorn, denn sie sind die Zeilen, an denen der Betrieb
+handeln muss; wären sie nur chronologisch einsortiert, könnte ein alter wartender
+Lauf hinter 50 neueren fertigen aus dem `LIMIT`-Fenster fallen — dieselbe
+Unerreichbarkeit, nur später.
+
+Die Route antwortet 404 nur noch auf einen **unbekannten** Slug. Ein Workflow
+ohne aktive Version hat eine leere Historie, keinen Fehler (die alte Bedingung
+`!wf || !wf.activeVersionId` warf 404 für einen veröffentlichten Workflow, dessen
+aktive Version geleert wurde). `listForVersion` bleibt für die
+Ephemeral-/Discussion-Pfade (`discussionAdmin.ts`), wo ein Workflow per #330
+genau eine Version und einen Lauf hat.
+
+UI: die Verlaufszeile trägt ein Versions-Badge (`conductor.runVersionBadge`,
+Titel `conductor.runVersionTitle`) — und der geöffnete Lauf ebenfalls, gelesen aus
+der Listenzeile, aus der er geöffnet wurde (die Einzel-Lauf-Route liefert keine
+Versionsnummer). Fehlt das Feld (Middleware älter als #1710), entfällt das Badge,
+die Zeile bleibt vollständig bedienbar.
+
+Tests: `test/conductorRunHistoryVersions.test.ts` (SQL-Form des Joins,
+Versionsnummer, Sortierung, gemeinsames Aktiv-Prädikat mit `hasActiveRuns`;
+Route: wartender Lauf der Vorversion bleibt gelistet, leere Historie statt 404,
+und der komplette Ausweg Liste → Cancel → DELETE 200),
+`web-ui/app/conductor/_components/__tests__/ConductorRunHistory.test.tsx`
+(Badge je Zeile und im geöffneten Lauf, Abbrechen der Vorversion-Zeile, Zeile
+ohne Versionsfeld).
+
 
 ## Native Facilitators: Kernel-Seite (Epic #2043, 2026-11-18)
 

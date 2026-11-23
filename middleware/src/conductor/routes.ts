@@ -668,15 +668,19 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     }
   });
 
-  // List runs for a workflow's active version.
+  // #1710 — the workflow's runs across ALL of its versions, each row carrying
+  // its version number (see `runStore.listForWorkflow`).
   router.get('/:slug/runs', async (req: Request, res: Response): Promise<void> => {
     try {
       const wf = await deps.workflowStore.getBySlug(paramStr(req.params.slug));
-      if (!wf || !wf.activeVersionId) {
-        res.status(404).json({ code: 'conductor.not_found', message: 'workflow or active version missing' });
+      if (!wf) {
+        res.status(404).json({ code: 'conductor.not_found', message: 'workflow not found' });
         return;
       }
-      res.json({ runs: await deps.runStore.listForVersion(wf.activeVersionId) });
+      // No version yet → an empty history, not a 404 (the old
+      // `!wf.activeVersionId` guard 404'd a published workflow whose active
+      // version had been cleared).
+      res.json({ runs: await deps.runStore.listForWorkflow(wf.id) });
     } catch (err) {
       res.status(500).json({ code: 'conductor.list_runs_failed', message: errMsg(err) });
     }
