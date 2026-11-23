@@ -10667,3 +10667,55 @@ Audit-Aktionen: `agent.consultation_change` (je Agent eine Zeile),
   `system`-Hinweis des S1-Emitters.
 - Operator-UI gibt es für Schalter und Grants (Agent → Tab „Gespräche“ →
   `AgentConsultation`); die Leserschaften der Integrationen gibt es nur per API.
+
+## S3c: Kernel-Aufräumen nach dem Contract (Epic #2042, 2026-11-23)
+
+Spec 2042 §5.10, ADR-0014/0017. Folgt auf S3b (#2152).
+
+- **Keine Agent-Plugin-Laufzeit mehr.** `dynamicAgentRuntime.ts`,
+  `subAgentHostModel.ts`, die `query_*`-Domain-Tools und ihre Propagation über
+  die Per-Agent-Orchestratoren (`reconcileRuntimeDomainTool`, `liveDomainTools`,
+  `attachDynamicAgents`, `scopeDomainTools.ts`) sind gelöscht.
+  `pluginRuntimeOf(agent | undefined)` → `none`. `runtimeToolPropagation.ts`
+  hydriert nur noch die DB-definierten Sub-Agent-Tools (Agent Builder) und
+  bindet sie nach jeder Reaktivierung des Orchestrator-Plugins neu.
+- **Noch installiertes `agent`-Plugin:** startet keinen Code. Beim Boot
+  (`blockRetiredAgentPlugins`, nach dem Tool-Runtime-Boot) und bei jeder
+  Reaktivierung oder jedem Update (`RetiredPluginKindError` in
+  `onInstalled`/`onPackageReady`) steht es auf `errored` mit dem neuen
+  Aktivierungscode **`kind_retired`**; der Boot läuft weiter. Config und
+  Secrets bleiben für die Version, die es ersetzt. Es ist kein
+  Capability-Plugin mehr (`isCapabilityPlugin`), also nicht zuweisbar. Web-UI:
+  Text für `kind_retired`, `LegacyKindNotice` sagt nicht mehr „läuft weiter“.
+  `extension` läuft unverändert als Systemmodul weiter (canvas-core,
+  ui-orchestrator bis zu ihrem `system-module`-Release).
+- **Canvas-Output/Deterministic-Action:** Autodiscovery jetzt in
+  `toolPluginRuntime.ts`. `agentToolInvoker@1` und Conductor-Aktionsschritte
+  rufen ein vom Plugin registriertes Tool per Id
+  (`platform/pluginToolInvoker.ts`); `hasStream` ist immer `false`.
+  Tool-Pills (`resolveAgentForTool.ts`) nennen das Plugin, das das Tool
+  registriert hat.
+- **Native Tool-Ergebnisse** (plugin-api `NativeToolResult`): ein Handler darf
+  `{ output, limitSignal?, postcondition?, structured? }` liefern. Modell sieht
+  `output` + Limit-Hinweis; `postcondition` landet im Run-Trace (beide
+  Tool-Loops) und beim Verifier, auch bei einer Re-Entry (der Replay-Ledger hält
+  das Rohergebnis); `structured` geht nie ans Modell. Alle anderen Aufrufer
+  (`ctx.tools.invoke`, Invoker, Setup-Options, CLI-Dispatcher, MCP-/Preview-
+  Bridges) lesen den Text (`nativeToolResultText`). **Offen:** auf dem
+  CLI-Pfad (`ToolDispatchService`) gibt es keinen Run-Trace für
+  Orchestrator-Tool-Calls; eine `postcondition` erreicht dort den Verifier
+  nicht.
+- **Builder-Boilerplates:** `piiFields` auf dem `ToolDescriptor`,
+  `registerTools.ts` reicht sie an `ctx.tools.register` weiter.
+- **Receipt:** deklarierte PII-Spalten zählen zu den PII-Pfaden für
+  `identityValuesOnWire` (privacy-guard 0.16.2), auch ohne Klassifikator.
+- **Ungültige Archetype-Grants:** ein Grant eines Archetype-Plugins an einem
+  Agenten eines anderen Archetyps (Altbestand vor #2088, z. B. die
+  Facilitation-Engine am `fallback`) wird beim Boot und bei jeder
+  Plugin-/Grant-Änderung entfernt (`revokeForeignArchetypeGrants`, Warnung je
+  Entfernung). `PUT /api/v1/operator/agents/:slug/plugins` entfernt einen
+  solchen gehaltenen Grant, ob die Anfrage ihn nennt oder nicht, und scheitert
+  nicht mehr an ihm; ein neuer solcher Grant wird weiter abgelehnt.
+- **integration-odoo:** eigenes `undici` mit `ODOO_INSECURE_TLS=true` umgeht
+  die Egress-Prüfung, als Residualrisiko dokumentiert,
+  byte5ai/omadia-integration-odoo#10.

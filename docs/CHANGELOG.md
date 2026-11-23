@@ -36,6 +36,21 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — The agent plugin runtime is gone (#2042, S3c)
+
+- **BREAKING for operators.** The kernel no longer runs plugins of the retired kind `agent`
+  (spec 2042 §5.10, ADR-0014). One still installed starts no code: it is `errored` with the
+  activation code `kind_retired` at boot and on every reactivation or update, keeps its setup
+  for the version that replaces it, and cannot be granted. `extension` plugins keep running as
+  system modules. Update or uninstall agent plugins before deploying this kernel.
+- A tool a plugin registers may return `{ output, limitSignal?, postcondition?, structured? }`
+  (plugin-api `NativeToolResult`): the limit note reaches the model, a postcondition the
+  verifier; `structured` never reaches the model.
+- Plugin Builder boilerplates pass a tool's `piiFields` to `ctx.tools.register`; declared PII
+  columns count toward the receipt's identity count (privacy-guard 0.16.2).
+- A grant of an archetype plugin on an agent of another archetype (from before #2088) is
+  removed at boot, and no longer blocks replacing that agent's grants.
+
 ### Changed — ADR-0030: the kernel bounds closing scopes and the deadline wait (#2090)
 
 - `@omadia/plugin-api` 1.85.0, `@omadia/channel-sdk` 0.3.11 (additive types, stricter

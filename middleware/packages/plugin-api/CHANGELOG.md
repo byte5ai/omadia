@@ -10,11 +10,17 @@ implements, is a major.
 
 ## Unreleased
 
-Additive (spec 2042 §5.3, criterion 40; the canvas channel's agent picker).
-The version is set when the S3c contract cleanup merges this.
+Additive (spec 2042 §5.3, criterion 40, the canvas channel's agent picker;
+§5.10, the S3c contract cleanup). The version is set when S3c merges this.
 
 ### Added
 
+- **`NativeToolResult`, `NativeToolOutput`** (S3c, spec 2042 §5.10): a
+  `NativeToolHandler` may resolve to `{ output, limitSignal?, postcondition?,
+  structured? }` (the shape of `LocalSubAgentToolResult`) instead of text. The
+  model sees `output` plus the limit note; a `postcondition` goes to the run
+  trace and the verifier; `structured` never reaches the model. Helpers:
+  `normalizeNativeToolResult`, `nativeToolResultText`. Text stays valid.
 - **`agentDirectory@1`** (`AGENT_DIRECTORY_SERVICE_NAME`,
   `AgentDirectoryService`, `AgentDirectoryRequest`, `AgentDirectoryView`,
   `AgentDirectoryAgent`, `AgentDirectoryDefault`): the agents a person may

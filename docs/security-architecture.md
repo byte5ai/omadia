@@ -875,7 +875,8 @@ not read).
 
 Residual risks of the sandbox (in-process, a policy, not a boundary against
 hostile code): a plugin that imports its own `undici` or opens sockets with
-`node:net`/`node:tls` directly is not seen; the DNS-rebinding check runs
+`node:net`/`node:tls` directly is not seen (integration-odoo does so with
+`ODOO_INSECURE_TLS=true`: byte5ai/omadia-integration-odoo#10); the DNS-rebinding check runs
 only in `ctx.http`'s guarded dispatcher; bundled packages (system modules,
 built-in adapters) count as kernel code; a model server on a local or
 private host (a local Ollama) is not a model endpoint, because the host is
