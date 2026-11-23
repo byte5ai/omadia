@@ -14,7 +14,6 @@ import { WorkflowSlugExistsError } from './workflowStore.js';
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunStore } from './runStore.js';
 import { resolveAwaitHolders } from './awaitStore.js';
-import type { ConductorFacilitationAdmin } from './facilitationAdmin.js';
 import {
   DiscussionAgentHasNoIdentityError,
   DiscussionConversationBusyError,
@@ -26,6 +25,7 @@ import type { ConductorRoleStore } from './roleStore.js';
 import type { ConductorScheduleStore } from './scheduleStore.js';
 import type { ConductorEventRouter } from './eventRouter.js';
 import {
+  AwaitNotFoundError,
   AwaitNotPendingError,
   AwaitResponderNotHolderError,
   RunAlreadyEndedError,
@@ -41,6 +41,7 @@ import { registerTemplateRoutes } from './templateRoutes.js';
 import type { ConductorWebhookEndpointStore } from './webhookEndpointStore.js';
 import type { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
 import { registerWebhookRoutes } from './webhookRoutes.js';
+import { requireUuidParam } from '../http/uuidParam.js';
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -60,9 +61,6 @@ export interface ConductorRouterDeps {
   workflowStore: ConductorWorkflowStore;
   runStore: ConductorRunStore;
   awaitStore: ConductorAwaitStore;
-  /** #330 round 4 — operator lens + terminate for live facilitations
-   *  (ephemeral workflows are hidden from the library by design). */
-  facilitationAdmin?: ConductorFacilitationAdmin;
   /** Starts an agent topic discussion in a bound conversation. Optional: absent
    *  on hosts without Postgres (the whole ephemeral machinery is inert there). */
   discussionService?: ConductorDiscussionService;
@@ -174,6 +172,26 @@ const MAX_BUILDER_GRAPH_BYTES = 200_000;
 
 export function createConductorRouter(deps: ConductorRouterDeps): Router {
   const router = Router();
+
+  // #1706 — every id below names a Postgres `uuid` column (conductor_runs,
+  // conductor_awaits, conductor_workflows, conductor_webhook_subscriptions).
+  // Unchecked, a malformed id reached the query, Postgres failed it with
+  // `22P02 invalid input syntax for type uuid`, and each handler's catch-all
+  // turned that into a 500 carrying the database message. A non-UUID is not an
+  // unknown row but an unusable id, so it is a 400 here; a well-formed id with
+  // no row behind it keeps the handler's own 404. Codes stay inside the pair the
+  // admin UI already localizes (`conductor.invalid_input`/`conductor.not_found`).
+  //
+  // Registered per router, so they also cover the webhook-subscription routes
+  // `registerWebhookRoutes` adds below. Deliberately NOT registered for ':id':
+  // `registerTemplateRoutes` uses that name for slug-shaped template ids
+  // ('notify-and-escalate'), which is why the subscription routes name theirs
+  // ':subscriptionId'. ':slug' and ':key' are never uuids either.
+  const uuidId = requireUuidParam('conductor.invalid_input', 400);
+  router.param('runId', uuidId);
+  router.param('awaitId', uuidId);
+  router.param('workflowId', uuidId);
+  router.param('subscriptionId', uuidId);
 
   // List workflows. Rows with template provenance carry the additive
   // `template` update hint (#478) — viewer-scoped, one catalog read per request.
@@ -449,60 +467,10 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     }
   });
 
-  // Operator inbox — all pending human awaits across runs, with role principals resolved live.
-  // #330 round 4 — live facilitations (ephemeral workflows are hidden from
-  // the library by design, which made them invisible to operators). Declared
-  // BEFORE the parametric '/:slug' routes so 'facilitations' never reads as a
-  // workflow slug.
-  router.get('/facilitations', async (_req: Request, res: Response): Promise<void> => {
-    if (!deps.facilitationAdmin) {
-      res.status(501).json({ code: 'conductor.facilitations_unavailable', message: 'facilitation admin not wired on this host' });
-      return;
-    }
-    try {
-      res.json({ facilitations: await deps.facilitationAdmin.list() });
-    } catch (err) {
-      res.status(500).json({ code: 'conductor.facilitations_failed', message: errMsg(err) });
-    }
-  });
-
-  // Operator stop: cancel active runs (#759 semantics) + dispose of the
-  // scaffold (binding + role go with it). Idempotent.
-  router.post('/facilitations/:workflowId/terminate', async (req: Request, res: Response): Promise<void> => {
-    if (!deps.facilitationAdmin) {
-      res.status(501).json({ code: 'conductor.facilitations_unavailable', message: 'facilitation admin not wired on this host' });
-      return;
-    }
-    try {
-      const result = await deps.facilitationAdmin.terminate(
-        paramStr(req.params.workflowId),
-        req.session?.sub ?? 'operator',
-        auditActorFromRequest(req).id,
-      );
-      if (result.outcome === 'not_found') {
-        res.status(404).json({ code: 'conductor.not_found', message: 'no such facilitation' });
-        return;
-      }
-      if (result.outcome === 'cancel_failed') {
-        // Disposal was SKIPPED on purpose: reaping with a live run would hide
-        // it from this very lens. 502 tells the operator to retry.
-        res.status(502).json({
-          code: 'conductor.facilitation_cancel_failed',
-          message: `cancel failed for ${String(result.failedRuns)} run(s) — nothing was disposed, retry`,
-          cancelledRuns: result.cancelledRuns,
-        });
-        return;
-      }
-      res.json({ cancelledRuns: result.cancelledRuns, disposed: true });
-    } catch (err) {
-      res.status(500).json({ code: 'conductor.facilitation_terminate_failed', message: errMsg(err) });
-    }
-  });
-
   /**
    * Start a topic discussion between two agents in one conversation. The run
-   * is an ordinary ephemeral run, so it appears in the facilitation lens above
-   * and `POST /facilitations/:workflowId/terminate` stops it.
+   * is an ordinary ephemeral run: an operator sees and stops it under
+   * `/api/v1/operator/execution` (`discussions`, #2067).
    */
   router.post('/discussions', async (req: Request, res: Response): Promise<void> => {
     if (!deps.discussionService) {
@@ -578,7 +546,12 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       const run = await deps.executor.resolveAwait(awaitId, responder, response);
       res.json({ run });
     } catch (err) {
-      if (err instanceof AwaitNotPendingError) {
+      if (err instanceof AwaitNotFoundError) {
+        // #1706 — no such await row at all. 409 await_not_pending read as "your
+        // await is closed" and sent the operator looking for a run that never
+        // had this id.
+        res.status(404).json({ code: 'conductor.not_found', message: err.message });
+      } else if (err instanceof AwaitNotPendingError) {
         res.status(409).json({ code: 'conductor.await_not_pending', message: err.message });
       } else if (err instanceof AwaitResponderNotHolderError) {
         // A non-holder tried to answer. The authz gate already refused; surface it as 403,
@@ -722,15 +695,19 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     }
   });
 
-  // List runs for a workflow's active version.
+  // #1710 — the workflow's runs across ALL of its versions, each row carrying
+  // its version number (see `runStore.listForWorkflow`).
   router.get('/:slug/runs', async (req: Request, res: Response): Promise<void> => {
     try {
       const wf = await deps.workflowStore.getBySlug(paramStr(req.params.slug));
-      if (!wf || !wf.activeVersionId) {
-        res.status(404).json({ code: 'conductor.not_found', message: 'workflow or active version missing' });
+      if (!wf) {
+        res.status(404).json({ code: 'conductor.not_found', message: 'workflow not found' });
         return;
       }
-      res.json({ runs: await deps.runStore.listForVersion(wf.activeVersionId) });
+      // No version yet → an empty history, not a 404 (the old
+      // `!wf.activeVersionId` guard 404'd a published workflow whose active
+      // version had been cleared).
+      res.json({ runs: await deps.runStore.listForWorkflow(wf.id) });
     } catch (err) {
       res.status(500).json({ code: 'conductor.list_runs_failed', message: errMsg(err) });
     }

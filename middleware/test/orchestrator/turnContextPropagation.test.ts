@@ -359,7 +359,7 @@ describe('turnContext reaches tool handlers (W3-A)', () => {
   });
 
   it('MUTATION CHECK: a write onto the LIVE store survives to a later tool iteration', async () => {
-    // `activePersonaSkillId` and `mcpInputReplayNote` are documented to be
+    // `activeWorkingModeSkillId` and `mcpInputReplayNote` are documented to be
     // MUTATED onto the live store inside the turn scope. A propagation fix that
     // re-created the context object per generator step would silently drop
     // those writes, so pin the behaviour: iteration 1 writes, iteration 2 reads.
@@ -368,8 +368,8 @@ describe('turnContext reaches tool handlers (W3-A)', () => {
     registry.register(PROBE_TOOL, {
       handler: async () => {
         const ctx = turnContext.current();
-        observed.push(ctx?.activePersonaSkillId);
-        if (ctx) ctx.activePersonaSkillId = 'persona-x';
+        observed.push(ctx?.activeWorkingModeSkillId);
+        if (ctx) ctx.activeWorkingModeSkillId = 'persona-x';
         return 'ok';
       },
       spec: {

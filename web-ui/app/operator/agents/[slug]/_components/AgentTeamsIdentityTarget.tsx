@@ -111,6 +111,7 @@ export function AgentTeamsIdentityTarget({
       </p>
 
       <TeamsTargetField
+        slug={slug}
         targets={targets}
         targetsLoading={targetsLoading}
         value={teamId}

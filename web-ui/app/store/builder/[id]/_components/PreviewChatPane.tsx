@@ -738,6 +738,7 @@ function EmptyHint(): React.ReactElement {
 }
 
 function ChatItemView({ item }: { item: ChatItem }): React.ReactElement | null {
+  const t = useTranslations('builder.preview.chat');
   if (item.kind === 'message') {
     const isUser = item.role === 'user';
     return (
@@ -753,7 +754,17 @@ function ChatItemView({ item }: { item: ChatItem }): React.ReactElement | null {
           {isUser ? (
             <p className="whitespace-pre-wrap break-words">{item.text}</p>
           ) : (
-            <BuilderMarkdown source={item.text} />
+            <>
+              {/* Spec 2042 §5.10 — the reply comes from a neutral draft agent
+                  that holds only this plugin's tools; marked as preview. */}
+              <span
+                className="mb-1 inline-block text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]"
+                data-testid="preview-reply-marker"
+              >
+                {t('replyMarker')}
+              </span>
+              <BuilderMarkdown source={item.text} />
+            </>
           )}
         </div>
       </div>

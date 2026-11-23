@@ -65,6 +65,58 @@ export interface TurnOrigin {
    * the two disagree. See {@link memoryAxesForOrigin}.
    */
   readonly principal?: Principal;
+  /**
+   * Is this a group conversation, as the PLATFORM reports it (#2043)? A
+   * positive statement, not something to infer: a `conversation` scope is
+   * also what a 1:1 on most channels looks like, and member count says
+   * nothing (a two-person chat with a bot app is a group to Teams). Absent =
+   * unknown, and consumers treat unknown as `direct`, the same rule as
+   * `IncomingTurn.conversationType`. A facilitator answers a request to
+   * start a moderation only where this says `group`.
+   */
+  readonly conversationType?: 'direct' | 'group';
+  /**
+   * The channel-native id of the conversation this turn came from, exactly
+   * as the adapter uses it for conversation references, message
+   * subscriptions (`isAllMessagesSubscribed`, `emitConversationMessage`) and
+   * posts (#2043). STATED by the channel so that nobody has to take the
+   * session scope apart: {@link scope} folds in adapter-specific parts (a
+   * channel prefix, a bot key) that are not part of the id.
+   *
+   * Opaque to the kernel: never parsed, trimmed or re-cased. Where the
+   * platform has one id per thread (a Teams channel:
+   * `19:…@thread.tacv2;messageid=<root>`), that per-thread id is the
+   * conversation. Absent = the adapter predates the field, and consumers
+   * fall back to reading the scope.
+   */
+  readonly channelConversationId?: string;
+  /**
+   * The platform id of the message this turn answers (#2089), the same value
+   * the channel puts into `ConversationMessageEvent.messageId` for it. Lets
+   * the kernel tell which stored message a turn belongs to. Opaque. Absent =
+   * the adapter does not state it, or the turn answers no single message.
+   */
+  readonly messageId?: string;
+  /**
+   * The platform id of the message this turn's message replies to or quotes,
+   * when the platform states one (#2090, spec 2043 §5.3: a direct reply to a
+   * reminder is bound to that reminder). The same value as
+   * `ConversationMessageEvent.replyToMessageId`. Opaque. Absent = no reply,
+   * or the adapter does not state it. Since channel-sdk 0.3.11.
+   */
+  readonly replyToMessageId?: string;
+  /**
+   * Who spoke, as the CHANNEL names them (#2043): the channel's user kind and
+   * id and, when the platform gave one, the display name. The same person as
+   * {@link principal}, in the channel's own terms. It reaches a tool as
+   * `NativeToolCallContext.callerUserRef`, so an engine can name the person
+   * who started something without a roster lookup.
+   */
+  readonly speaker?: {
+    readonly kind: string;
+    readonly id: string;
+    readonly displayName?: string;
+  };
 }
 
 /** The memory axes a turn may reach, in the scope grammar of design §3. */
@@ -101,7 +153,7 @@ export const CONTEXT_FREE_MEMORY_AXES: MemoryAxes = Object.freeze({
  * `memoryContextKey` applies to its type segment.
  */
 export const CONTEXT_MEMORY_CHANNEL_TYPES: ReadonlySet<string> = Object.freeze(
-  new Set(['teams', 'telegram', 'http', 'api']),
+  new Set(['teams', 'telegram', 'slack', 'discord', 'whatsapp', 'imessage', 'http', 'api']),
 );
 
 /**

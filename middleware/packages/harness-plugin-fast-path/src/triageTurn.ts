@@ -97,6 +97,9 @@ export async function triageTurn(opts: {
   /** the zero-LLM answer cache — pass it only for a plain text turn whose
    *  `question` is the user's own text (not an action/target turn) */
   answerCache?: Pick<AnswerCache, 'load' | 'lookup'>;
+  /** #1876 — the agent whose fast lane this is: the cache is keyed by it
+   *  ('' = a caller that names no agent) */
+  agent?: string;
   /** told the cache verdict as soon as the lookup ran (before router and
    *  planner) — the canvas builds its skeleton from a hit without waiting */
   onCacheLookup?: (hit: boolean) => void;
@@ -182,7 +185,7 @@ async function triage(
     }
     if (routed?.kind === 'plan') {
       if (!opts.tools.some((t) => t.name === routed.tool)) return traced(agent('router-tool-not-offered'));
-      const ticket = opts.answerCache ? { cache: { source: 'llm' as const, question: opts.question, previous } } : {};
+      const ticket = opts.answerCache ? { cache: { source: 'llm' as const, question: opts.question, previous, agent: opts.agent ?? '' } } : {};
       if (decided?.direct) {
         return traced({ kind: 'plan', plan: decided.direct, ms: Date.now() - t0, ...ticket, ...decisionInput });
       }
@@ -224,7 +227,7 @@ async function triage(
     plan: planned.plan,
     ms: Date.now() - t0,
     ...decisionInput,
-    ...(opts.answerCache ? { cache: { source: 'llm' as const, question: opts.question, previous } } : {}),
+    ...(opts.answerCache ? { cache: { source: 'llm' as const, question: opts.question, previous, agent: opts.agent ?? '' } } : {}),
   };
 }
 
@@ -238,6 +241,7 @@ async function lookupAnswerCache(
     tools: readonly FastPathToolSpec[];
     allowedTools: ReadonlySet<string>;
     previous: boolean;
+    agent?: string;
     log: (message: string) => void;
   },
   t0: number,
@@ -245,7 +249,7 @@ async function lookupAnswerCache(
   try {
     await cache.load();
     const tools = new Set(opts.tools.map((t) => t.name).filter((n) => opts.allowedTools.has(n)));
-    const found = cache.lookup({ question: opts.question, tools, previous: opts.previous });
+    const found = cache.lookup({ question: opts.question, tools, previous: opts.previous, agent: opts.agent ?? '' });
     const ms = Date.now() - t0;
     if (!found.hit) {
       opts.log(`[fast-path] cache miss channel=${opts.channel} reason=${found.reason} ms=${ms}`);

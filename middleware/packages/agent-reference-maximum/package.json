@@ -1,10 +1,10 @@
 {
   "name": "@omadia/agent-reference-maximum",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
-  "description": "Reference-only Builder-Pattern-Source-Plugin (OB-29). Lauffähige, credential-lose Codebase, die alle heute auf der Plugin-API verfügbaren Patterns demonstriert. Wächst über OB-29-1..5 zum Reference-Maximum.",
+  "description": "Reference-only pattern source of the Plugin Builder (OB-29): a runnable capability plugin of kind integration that demonstrates the plugin-API patterns.",
   "license": "MIT",
   "scripts": {
     "build": "tsc",

@@ -329,7 +329,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
                 spellCheck={false}
                 rows={10}
                 className="w-full rounded-md border border-[color:var(--border)] bg-[color:var(--surface-muted)] p-2 font-mono text-[11px] leading-relaxed text-[color:var(--fg-strong)] focus:border-[color:var(--accent)] focus:outline-none"
-                placeholder='{\n  "query_odoo_hr": { "absences": [{ "name": "Anna" }] }\n}'
+                placeholder='{\n  "odoo_hr_query_graph": { "absences": [{ "name": "Anna" }] }\n}'
               />
             </div>
             <div className="space-y-1">

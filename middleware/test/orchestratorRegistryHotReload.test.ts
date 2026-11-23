@@ -100,7 +100,6 @@ const baseSnapshot: ConfigSnapshot = {
   ],
   agentPlugins: [],
   channelBindings: [],
-  platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
 };
 
 test('SC-001/SC-002: removing one Agent does NOT touch the other Agent\'s Orchestrator', async () => {
@@ -329,7 +328,39 @@ test('T020: an idempotent reload (no DB change) emits zero actions', async () =>
 
   const plan = await registry.reload();
   assert.equal(plan.actions.length, 0);
-  assert.equal(plan.platformChanged, false);
+});
+
+test('#2055: a default-agent entry change rebuilds nothing, yet routing follows it on reload', async () => {
+  const store = new MutableFakeStore(baseSnapshot);
+  const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
+    defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
+  });
+  await registry.start();
+  const publicBefore = registry.get('public')!.built.orchestrator;
+  assert.equal(registry.instanceDefaultSlug(), undefined);
+
+  store.set({
+    ...baseSnapshot,
+    defaultEntries: [
+      {
+        id: 'entry-instance',
+        principal: null,
+        channelType: null,
+        agentId: '00000000-0000-0000-0000-000000000002',
+        updatedBy: null,
+        updatedAt: new Date(1),
+      },
+    ],
+  });
+  const plan = await registry.reload();
+
+  assert.equal(plan.actions.length, 0, 'routing tables are not agent config');
+  assert.equal(registry.get('public')!.built.orchestrator, publicBefore);
+  assert.equal(registry.instanceDefaultSlug(), 'general');
+  assert.equal(
+    registry.routingView().defaultEntries()[0]?.agentId,
+    '00000000-0000-0000-0000-000000000002',
+  );
 });
 
 test('OM-95: consecutive reconciles quarantine the same dead binding only once', async () => {
@@ -593,15 +624,10 @@ test('T020: diffSnapshots is pure — exposes the action set without touching li
       }),
       agent('new-agent', '00000000-0000-0000-0000-000000000003'),
     ],
-    platformSettings: {
-      fallbackAgentId: '00000000-0000-0000-0000-000000000001',
-      updatedAt: new Date(1),
-    },
   };
 
   const plan = diffSnapshots(oldSnap, newSnap);
 
   const kinds = plan.actions.map((a) => a.kind).sort();
   assert.deepEqual(kinds, ['add', 'rebuild', 'remove']);
-  assert.equal(plan.platformChanged, true);
 });

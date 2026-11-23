@@ -17,9 +17,9 @@ import { publicScheme } from './publicScheme';
  *
  * Streaming passes through untouched in both directions (SSE spec-event
  * streams, multi-megabyte plugin-ZIP uploads). WebSockets are NOT proxied
- * here — route handlers cannot upgrade a connection; nothing in the web-ui
- * connects via WS on its own origin (the canvas WS goes to the middleware
- * directly).
+ * here — route handlers cannot upgrade a connection. The canvas socket this
+ * front advertises is relayed one level below Next, by the image's entry
+ * point (`scripts/runtime/canvasWsProxy.mjs`).
  */
 
 /** Hop-by-hop headers never travel through a proxy (RFC 9110 §7.6.1). */

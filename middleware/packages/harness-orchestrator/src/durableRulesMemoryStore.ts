@@ -30,6 +30,9 @@ export interface DurableRulesHookDeps {
   tenantId: string;
   embeddingClient?: EmbeddingClient;
   log?: (msg: string) => void;
+  /** Spec 2042 §5.11 — called with a newly promoted rule's memorable id, in the
+   *  writing turn's context (the memorable keeps the turn's labels). */
+  onPromoted?: (mkId: string) => Promise<void>;
 }
 
 export class DurableRulesMemoryStore implements MemoryStore {
@@ -56,9 +59,13 @@ export class DurableRulesMemoryStore implements MemoryStore {
         ? { embeddingClient: this.deps.embeddingClient }
         : {}),
       ...(this.deps.log ? { log: this.deps.log } : {}),
-    }).catch(() => {
-      /* promoteRuleFileToDurable already swallows + logs its own errors */
-    });
+    })
+      .then(async (result) => {
+        if (result.action === 'created' && result.mkId) await this.deps.onPromoted?.(result.mkId);
+      })
+      .catch(() => {
+        /* promoteRuleFileToDurable already swallows + logs its own errors */
+      });
   }
 
   async createFile(virtualPath: string, content: string): Promise<void> {

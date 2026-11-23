@@ -30,6 +30,7 @@ import {
 import { RoutineNameConflictError } from '../src/plugins/routines/routineStore.js';
 import { routineTurnContext } from '../src/plugins/routines/routineTurnContext.js';
 import { turnContext } from '@omadia/orchestrator';
+import { currentExecutionContext, runInExecutionContext, type ModelExecutionContext } from '@omadia/usage-telemetry';
 import type { RoutineOutputTemplate } from '../src/plugins/routines/routineOutputTemplate.js';
 import type {
   CreateRoutineInput,
@@ -872,6 +873,28 @@ describe('RoutineRunner — run-once delivery path', () => {
     assert.equal(h.runsStore.inserts.length, 1);
     assert.equal(h.runsStore.inserts[0]!.trigger, 'manual');
     assert.equal(h.runsStore.inserts[0]!.status, 'ok');
+  });
+
+  it('a run is the turn of the agent that runs it, whatever context the caller had (spec 2042 §5.10)', async () => {
+    const seen: (ModelExecutionContext | undefined)[] = [];
+    const orchestrator: OrchestratorLike = {
+      runTurn: async () => {
+        seen.push(currentExecutionContext());
+        return { answer: 'ok', toolCalls: 0, iterations: 1 };
+      },
+      speaker: { kind: 'agent', agentId: 'id-lena', slug: 'lena', displayName: 'Lena' },
+    };
+    const h = makeHarness({ orchestrator });
+    const routine = await h.runner.createRoutine(baseInput);
+    // "Run now" from another agent's chat turn, and from the HTTP route.
+    await runInExecutionContext({ kind: 'agent_turn', ownerId: 'other', agentSlug: 'other' }, () =>
+      h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE),
+    );
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.deepEqual(seen, [
+      { kind: 'agent_turn', ownerId: 'lena', agentSlug: 'lena' },
+      { kind: 'agent_turn', ownerId: 'lena', agentSlug: 'lena' },
+    ]);
   });
 });
 

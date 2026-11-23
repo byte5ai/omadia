@@ -1,4 +1,10 @@
-import type { CaptureDisclosure, MemoryStore } from '@omadia/plugin-api';
+import type {
+  CaptureDisclosure,
+  MemoryStore,
+  TurnAmend,
+  TurnIdentityGuardVerdict,
+  TurnIngest,
+} from '@omadia/plugin-api';
 import { scopeGraphKey } from '@omadia/channel-sdk';
 import {
   qualifyScope,
@@ -71,6 +77,14 @@ export interface SessionLogEntry {
   maskedView?: TurnMaskedView;
   /** #1507 — see `TurnIngest.unprotected`. Handed to the graph only. */
   unprotected?: boolean;
+  /** Spec 2042 — see `TurnIngest.identityGuard`. Handed to the graph only. */
+  identityGuard?: TurnIdentityGuardVerdict;
+  /**
+   * Spec 2042 — what the user saw when it differs from what the agent said:
+   * a withheld answer is recorded without text (`assistantAnswer: ''`), and
+   * the user-visible web-chat mirror keeps the notice instead.
+   */
+  transcriptAnswer?: string;
 }
 
 const USER_MSG_MAX = 1_500;
@@ -193,7 +207,7 @@ export class SessionLogger {
       try {
         await this.chatSessionStore.appendTurnFromServer(entry.scope, {
           userMessage: entry.userMessage,
-          assistantMessage: entry.assistantAnswer,
+          assistantMessage: entry.transcriptAnswer ?? entry.assistantAnswer,
           ...(entry.toolCalls !== undefined && entry.iterations !== undefined
             ? {
                 telemetry: {
@@ -217,20 +231,7 @@ export class SessionLogger {
       const turnExternalId = turnNodeId(gScope, iso);
       let captureDisclosure: CaptureDisclosure | undefined;
       try {
-        const ingested = await this.graph.ingestTurn({
-          scope: gScope,
-          time: iso,
-          userMessage: entry.userMessage,
-          assistantAnswer: entry.assistantAnswer,
-          toolCalls: entry.toolCalls,
-          iterations: entry.iterations,
-          entityRefs,
-          ...(entry.userId ? { userId: entry.userId } : {}),
-          ...(entry.owners !== undefined ? { owners: entry.owners } : {}),
-          ...(entry.speaker !== undefined ? { speaker: entry.speaker } : {}),
-          ...(entry.maskedView !== undefined ? { maskedView: entry.maskedView } : {}),
-          ...(entry.unprotected !== undefined ? { unprotected: entry.unprotected } : {}),
-        });
+        const ingested = await this.graph.ingestTurn(turnIngestOf(entry, gScope, iso, entityRefs));
         // #1082 — the capture filter wrote this turn for session continuity
         // only. Counted per TURN, with or without a trace: the number of
         // filtered turns is the metric, not a trace outcome. Optional chaining
@@ -279,6 +280,40 @@ export class SessionLogger {
     }
     return { turnExternalId: turnNodeId(gScope, iso) };
   }
+
+  /**
+   * Spec 2042 — patches a turn {@link log} wrote (`KnowledgeGraph.amendTurn`):
+   * the identity guard's verdict, and a withheld answer's removal. No new
+   * classification; the markdown transcript and the chat mirror are not
+   * touched. Best-effort: a graph without `amendTurn` keeps the turn as written.
+   */
+  async amendTurn(turnExternalId: string, amend: TurnAmend): Promise<void> {
+    if (!this.graph?.amendTurn) return;
+    try {
+      await this.graph.amendTurn(turnExternalId, amend);
+    } catch (err) {
+      console.error('[session-log] turn amend failed:', err instanceof Error ? err.message : err);
+    }
+  }
+}
+
+/** The graph turn of one session-log row. */
+function turnIngestOf(entry: SessionLogEntry, gScope: string, iso: string, entityRefs: EntityRef[]): TurnIngest {
+  return {
+    scope: gScope,
+    time: iso,
+    userMessage: entry.userMessage,
+    assistantAnswer: entry.assistantAnswer,
+    toolCalls: entry.toolCalls,
+    iterations: entry.iterations,
+    entityRefs,
+    ...(entry.userId ? { userId: entry.userId } : {}),
+    ...(entry.owners !== undefined ? { owners: entry.owners } : {}),
+    ...(entry.speaker !== undefined ? { speaker: entry.speaker } : {}),
+    ...(entry.maskedView !== undefined ? { maskedView: entry.maskedView } : {}),
+    ...(entry.unprotected !== undefined ? { unprotected: entry.unprotected } : {}),
+    ...(entry.identityGuard !== undefined ? { identityGuard: entry.identityGuard } : {}),
+  };
 }
 
 /**
@@ -344,7 +379,7 @@ function renderHeader(scope: string, day: string): string {
     'Chronologisches Protokoll der Q&A-Turns in diesem Scope. Wird von der',
     'Middleware geschrieben, nicht von Claude. Bei wiederkehrenden Themen oder',
     'Rückbezügen auf frühere Gespräche gezielt hier nachschlagen, statt den',
-    'gesamten Fach-Agent-Roundtrip zu wiederholen.',
+    'gesamten Fach-Werkzeug-Roundtrip zu wiederholen.',
     '',
     '---',
     '',

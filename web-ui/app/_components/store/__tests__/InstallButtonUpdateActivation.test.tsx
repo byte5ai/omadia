@@ -1,8 +1,9 @@
-import { fireEvent, screen, waitFor, type RenderResult } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within, type RenderResult } from '@testing-library/react';
 import type React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import en from '../../../../messages/en.json';
+import { ApiError } from '../../../_lib/api';
 import { renderWithIntl } from '../../../_lib/test-utils';
 import { InstallButton } from '../InstallButton';
 
@@ -149,5 +150,50 @@ void describe('#1452 — the update button reports a failed activation', () => {
       expect(mockRefresh).toHaveBeenCalled();
     });
     expect(screen.queryByText(new RegExp('did not start', 'i'))).toBeNull();
+  });
+});
+
+void describe('#2088 (D32) — an update that changes what the plugin is asks first', () => {
+  const refusal = (reasons: string[]): ApiError =>
+    new ApiError(
+      409,
+      'conflict',
+      JSON.stringify({
+        code: 'package.archetype_confirmation_required',
+        message: 'confirm the update explicitly',
+        details: { reasons, archetype: null, from_version: '0.2.0', to_version: '0.2.1' },
+      }),
+    );
+  const success = { ok: true, plugin_id: PLUGIN, version: '0.2.1', registry: 'hub', next: { install: '/api/v1/install/plugins/x' } };
+
+  void it('shows what is being confirmed and updates only after the operator said yes', async () => {
+    mockInstallFromRegistry.mockRejectedValueOnce(refusal(['becomes_archetype', 'moves_database', 'something_new']));
+    mockInstallFromRegistry.mockResolvedValueOnce(success);
+    renderUpdatable();
+    clickUpdate();
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).toContain('Update Update Activation Fixture to 0.2.1?');
+    expect(dialog.textContent).toContain('becomes an archetype plugin');
+    expect(dialog.textContent).toContain('cannot be undone');
+    expect(within(dialog).getAllByRole('listitem')).toHaveLength(2);
+    expect(mockInstallFromRegistry).toHaveBeenCalledTimes(1);
+    expect(mockInstallFromRegistry).toHaveBeenLastCalledWith(PLUGIN, '0.2.1', {});
+
+    fireEvent.click(within(dialog).getByRole('button', { name: en.store.install.updateConfirmYes }));
+    await waitFor(() => expect(mockInstallFromRegistry).toHaveBeenLastCalledWith(PLUGIN, '0.2.1', { confirmArchetype: true }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(mockRefresh).toHaveBeenCalled();
+  });
+
+  void it('does nothing when the operator declines', async () => {
+    mockInstallFromRegistry.mockRejectedValueOnce(refusal(['descriptor_changed']));
+    renderUpdatable();
+    clickUpdate();
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: en.store.install.updateConfirmNo }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(mockInstallFromRegistry).toHaveBeenCalledTimes(1);
+    expect(mockRefresh).not.toHaveBeenCalled();
   });
 });

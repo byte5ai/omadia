@@ -317,6 +317,15 @@ export interface VerifierInput {
    */
   domainToolsCalled?: readonly string[];
   /**
+   * The tools the answering agent holds (`ChatAgent.offeredToolNames`). A
+   * claim about what the agent cannot reach ("auf deine Mails habe ich
+   * keinen Zugriff") is withheld only when it names a system among these:
+   * then the agent could have checked, and the claim is false or a replay.
+   * About a system it does not hold, it is a true self-description.
+   * Undefined ⇒ not known; such claims are then judged as before.
+   */
+  offeredToolNames?: readonly string[];
+  /**
    * #130 — postcondition violations the bridge detected on tool returns
    * (output Zod schema mismatch). Extracted from the runTrace before the
    * pipeline runs; the pipeline manufactures a synthetic `tool_postcondition`

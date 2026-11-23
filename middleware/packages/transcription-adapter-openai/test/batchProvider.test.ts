@@ -109,6 +109,52 @@ describe('createOpenAiBatchTranscriber', () => {
     ]);
   });
 
+  it('reads billed duration and language from the json shape of the transcribe models (usage.seconds, languages[].code)', async () => {
+    // Verbatim shape of a live `gpt-transcribe` response: no top-level
+    // `duration`/`language`/`segments`.
+    const { transcriber } = make({
+      body: {
+        text: 'hallo welt',
+        languages: [{ code: 'de' }],
+        usage: { type: 'duration', seconds: 7 },
+      },
+    });
+    const result = await transcriber.transcribeFile({
+      bytes: new Uint8Array([1]),
+    });
+    assert.equal(result.durationMs, 7_000);
+    assert.equal(result.language, 'de');
+    assert.deepEqual(result.segments, [{ text: 'hallo welt' }]);
+  });
+
+  it('prefers the verbose_json top-level duration and language over usage', () => {
+    const transcript = parseTranscriptionResponse(
+      {
+        text: 'a',
+        language: 'en',
+        duration: 12.5,
+        languages: [{ code: 'de' }],
+        usage: { type: 'duration', seconds: 13 },
+      },
+      'openai:whisper-1',
+    );
+    assert.equal(transcript.durationMs, 12_500);
+    assert.equal(transcript.language, 'en');
+  });
+
+  it('leaves duration and language absent when the response carries neither (token usage, malformed fields)', () => {
+    const transcript = parseTranscriptionResponse(
+      {
+        text: 'a',
+        languages: ['de', {}],
+        usage: { type: 'tokens', total_tokens: 42 },
+      },
+      'openai:gpt-4o-transcribe',
+    );
+    assert.equal(transcript.durationMs, undefined);
+    assert.equal(transcript.language, undefined);
+  });
+
   it('surfaces HTTP failures as TranscriptionRequestError with the status', async () => {
     const { transcriber } = make({ status: 401, body: { error: 'bad key' } });
     await assert.rejects(

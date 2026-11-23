@@ -53,6 +53,7 @@
 import type {
   CaptureDisclosure,
   KnowledgeGraph,
+  TurnAmend,
   TurnIngest,
   TurnIngestResult,
   EntityIngest,
@@ -185,6 +186,11 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     if (innerCountHistory) this.countConversationHistory = innerCountHistory;
     const innerPurgeHistory = opts.inner.purgeConversationHistory?.bind(opts.inner);
     if (innerPurgeHistory) this.purgeConversationHistory = innerPurgeHistory;
+  }
+
+  /** Spec 2042 — no classification, no trigger: a patch of a written turn. */
+  amendTurn(turnExternalId: string, amend: TurnAmend): Promise<void> {
+    return this.inner.amendTurn?.(turnExternalId, amend) ?? Promise.resolve();
   }
 
   async ingestTurn(ingest: TurnIngest): Promise<TurnIngestResult> {

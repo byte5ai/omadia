@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl';
 import { Button } from '@/app/_components/ui/Button';
 import {
   classifyKnownTeamsTarget,
+  parseTeamsLink,
   TEAMS_TARGET_EXAMPLES,
   type KnownTeamsTarget,
   type TeamsTargetKind,
@@ -53,6 +54,9 @@ export interface TeamsTargetFieldProps {
    *  {@link TeamsTargetPicker}; either way the text field carries the load. */
   readonly targets: AgentTeamsTargetsDto | null;
   readonly targetsLoading: boolean;
+  /** The agent, for the chat search. Without it the picker offers the lists
+   *  it was handed and no search. */
+  readonly slug?: string;
   readonly value: string;
   /** `knownKind` is present only while `value` is exactly what the operator
    *  picked from the list; it is absent for anything typed. */
@@ -66,6 +70,7 @@ export interface TeamsTargetFieldProps {
 export function TeamsTargetField({
   targets,
   targetsLoading,
+  slug,
   value,
   onChange,
   disabled,
@@ -84,6 +89,7 @@ export function TeamsTargetField({
         disabled={disabled}
         value={value}
         onSelect={(id, kind) => onChange(id, kind)}
+        {...(slug !== undefined ? { slug } : {})}
       />
 
       <label className="flex flex-col gap-1 text-[11px] text-[color:var(--fg-muted)]">
@@ -94,11 +100,19 @@ export function TeamsTargetField({
           disabled={disabled}
           // No kind: typing is exactly the case the classifier was written
           // for, and a claim from an earlier pick must not survive an edit.
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            // #2043 — "Copy link" is what Teams gives people. A pasted link
+            // becomes the id it carries (a channel link: its team), shown in
+            // the field so the operator sees what will be submitted.
+            const linked = parseTeamsLink(e.target.value);
+            if (linked) onChange(linked.id);
+            else onChange(e.target.value);
+          }}
           aria-label={t('fieldTarget')}
           className="rounded-md border border-[color:var(--border)] bg-transparent px-2 py-1 font-mono text-sm text-[color:var(--fg-strong)]"
         />
         <span>{t('fieldTargetHint')}</span>
+        <span>{t('fieldTargetLinkHint')}</span>
         {/* Shown BEFORE anything is submitted: what a good answer looks
             like beats only being told the last one was wrong. */}
         <span className="font-mono text-[10px] opacity-70">

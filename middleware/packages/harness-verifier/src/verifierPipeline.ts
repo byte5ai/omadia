@@ -442,7 +442,7 @@ function traceMissingCallVerdict(
     source: 'odoo',
     basis: 'tool_not_called',
     detail:
-      'Claim ohne Fach-Agent-Call im Turn — Antwort hat keine Live-Daten aus Odoo abgerufen (Kontext-Replay).',
+      'Claim ohne Fach-Werkzeug-Aufruf im Turn — Antwort hat keine Live-Daten aus Odoo abgerufen (Kontext-Replay).',
   };
 }
 

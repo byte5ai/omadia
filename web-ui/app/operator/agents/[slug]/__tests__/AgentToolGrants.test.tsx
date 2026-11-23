@@ -137,10 +137,10 @@ describe('AgentToolGrants (#861)', () => {
     renderWithIntl(<AgentToolGrants slug="sales-bot" />);
 
     expect(
-      await screen.findByText('This orchestrator holds no tool grants yet.'),
+      await screen.findByText('This agent holds no tool grants yet.'),
     ).toBeTruthy();
     expect(
-      screen.getByText("No MCP servers are granted to this orchestrator's plugins."),
+      screen.getByText("No MCP servers are granted to this agent's plugins."),
     ).toBeTruthy();
   });
 
@@ -152,7 +152,7 @@ describe('AgentToolGrants (#861)', () => {
 
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain(
-      'This orchestrator does not exist anymore — reload the page.',
+      'This agent does not exist anymore — reload the page.',
     );
     expect(alert.textContent).not.toContain('not_found');
   });
