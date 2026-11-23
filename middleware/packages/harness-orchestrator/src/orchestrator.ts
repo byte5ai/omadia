@@ -184,6 +184,7 @@ import {
   agentScopePrefix,
   isUnknownOutcomeToolErrorNotice,
   isWriteCapableTool,
+  isNativeToolResult,
   normalizeNativeToolResult,
   resolveEffectivePrivacyMode,
 } from '@omadia/plugin-api';
@@ -9483,6 +9484,10 @@ export class Orchestrator {
     let rawResult: NativeToolOutput;
     const takeResult = (raw: NativeToolOutput): string => {
       rawResult = raw;
+      // A value that is neither text nor a structured result (a plugin that
+      // breaks the type) passes through unchanged, as before S3c: the
+      // string-only paths below never treat it as legitimate text.
+      if (typeof raw !== 'string' && !isNativeToolResult(raw)) return raw as unknown as string;
       const normalized = normalizeNativeToolResult(raw);
       if (meta && normalized.postcondition) meta.postcondition = normalized.postcondition;
       return normalized.text;

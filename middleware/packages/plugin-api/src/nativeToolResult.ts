@@ -32,6 +32,22 @@ export interface NormalizedNativeToolResult {
   readonly structured?: NativeToolResult['structured'];
 }
 
+/** A structured result: an object with a string `output`. */
+export function isNativeToolResult(value: unknown): value is NativeToolResult {
+  return typeof value === 'object' && value !== null && typeof (value as { output?: unknown }).output === 'string';
+}
+
+/**
+ * A handler's result for a dispatch path that guards on `typeof === 'string'`
+ * (the Privacy Shield masks text only): text stays text, a structured result
+ * becomes its model-facing text, and anything else — a plugin that breaks the
+ * type — is handed back UNCHANGED, so the path's non-string guard refuses it
+ * instead of the value being turned into text that looks legitimate.
+ */
+export function nativeToolDispatchText(raw: unknown): unknown {
+  return typeof raw === 'string' || isNativeToolResult(raw) ? nativeToolResultText(raw) : raw;
+}
+
 /**
  * Reads a handler's result. Tolerant of a plugin that breaks the type: a
  * value that is neither a string nor an object with a string `output` is
@@ -39,10 +55,8 @@ export interface NormalizedNativeToolResult {
  */
 export function normalizeNativeToolResult(raw: unknown): NormalizedNativeToolResult {
   if (typeof raw === 'string') return { text: raw };
-  if (typeof raw !== 'object' || raw === null || typeof (raw as { output?: unknown }).output !== 'string') {
-    return { text: JSON.stringify(raw) ?? '' };
-  }
-  const result = raw as NativeToolResult;
+  if (!isNativeToolResult(raw)) return { text: JSON.stringify(raw) ?? '' };
+  const result = raw;
   const issues = result.postcondition?.issues;
   return {
     text: appendLimitSignalNote(result.output, result.limitSignal),
