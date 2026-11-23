@@ -116,7 +116,10 @@ interface Harness {
   orchestrator: AutoFixOrchestrator;
 }
 
-function makeHarness(opts?: { autoFixEnabled?: boolean }): Harness {
+function makeHarness(opts?: {
+  autoFixEnabled?: boolean;
+  runAsJob?: <T>(startedBy: string, work: () => Promise<T>) => Promise<T>;
+}): Harness {
   const bus = new SpecEventBus();
   const fired: Harness['fired'] = [];
   let autoFixEnabled = opts?.autoFixEnabled ?? true;
@@ -126,7 +129,7 @@ function makeHarness(opts?: { autoFixEnabled?: boolean }): Harness {
     userEmail: 'op@example.com',
     name: 'Test Draft',
     spec: {
-      template: 'agent-integration',
+      template: 'integration',
       id: 'de.byte5.agent.test',
       name: 'Test',
       version: '0.1.0',
@@ -134,7 +137,6 @@ function makeHarness(opts?: { autoFixEnabled?: boolean }): Harness {
       category: 'analysis',
       depends_on: [],
       tools: [],
-      skill: { role: 'tester' },
       setup_fields: [],
       playbook: { when_to_use: 'tests' },
       network: { outbound: [] },
@@ -182,6 +184,7 @@ function makeHarness(opts?: { autoFixEnabled?: boolean }): Harness {
     builderAgent,
     defaultModel: 'claude-haiku-4-5-20251001',
     logger: () => {},
+    ...(opts?.runAsJob ? { runAsJob: opts.runAsJob } : {}),
   });
 
   return {
@@ -224,6 +227,21 @@ describe('AutoFixOrchestrator integration', () => {
       (e) => e.type === 'auto_fix_status' && e.phase === 'triggered',
     );
     assert.equal(triggers.length, 1);
+  });
+
+  it('spec 2042 §5.10: each fix turn runs as one operator job of the draft’s operator', async () => {
+    const jobs: string[] = [];
+    const h = makeHarness({
+      runAsJob: async (startedBy, work) => {
+        jobs.push(startedBy);
+        return work();
+      },
+    });
+    h.orchestrator.ensureSubscribed('d1', 'op@example.com');
+    h.bus.emit('d1', buildFailed([{ code: 'TS2322' }], 1));
+    await settle();
+    assert.deepEqual(jobs, ['op@example.com']);
+    assert.equal(h.fired.length, 1);
   });
 
   it('dedupes per-buildN: same buildN twice fires only one turn', async () => {
@@ -409,7 +427,6 @@ describe('AutoFixOrchestrator integration', () => {
           name: 'x',
           description: 'y',
           category: 'analysis',
-          skill: { role: 'r' },
           playbook: { when_to_use: 'w' },
           builder_settings: { auto_fix_enabled: true },
         },
@@ -459,12 +476,11 @@ describe('AutoFixOrchestrator integration', () => {
         userEmail: 'op@example.com',
         spec: {
           ...emptyAgentSpec(),
-          template: 'agent-integration',
+          template: 'integration',
           id: 'de.byte5.agent.x',
           name: 'X',
           description: 'd',
           category: 'analysis',
-          skill: { role: 'r' },
           playbook: { when_to_use: 'w' },
           builder_settings: { auto_fix_enabled: true },
         },
@@ -531,12 +547,11 @@ describe('AutoFixOrchestrator integration', () => {
         userEmail: 'op@example.com',
         spec: {
           ...emptyAgentSpec(),
-          template: 'agent-integration',
+          template: 'integration',
           id: 'de.byte5.agent.x',
           name: 'X',
           description: 'd',
           category: 'analysis',
-          skill: { role: 'r' },
           playbook: { when_to_use: 'w' },
           builder_settings: { auto_fix_enabled: true },
         },

@@ -20,7 +20,7 @@ import {
   type XlsxDescriptor,
   type DocxDescriptor,
 } from '@omadia/plugin-office';
-import { unzipToText } from './_helpers/unzipToText.js';
+import { unzipToText, zipEntryDosStamps } from './_helpers/unzipToText.js';
 
 const SECRET = 'z'.repeat(32);
 
@@ -231,9 +231,10 @@ describe('office docx renderer', () => {
   it('is deterministic — output is independent of the wall clock (#645)', async (t) => {
     // docx v9 stamps dcterms:created/modified in core.xml *and* the zip entry
     // mtimes from `new Date()`, with no API to pin either — the ooxmlNormalize
-    // pass rewrites both to a fixed epoch. Advancing a mocked clock between the
-    // two renders proves the bytes no longer depend on wall-clock time, so the
-    // sha256 cache key in officeService is stable across re-renders.
+    // pass drops the dcterms dates and pins the zip mtimes. Advancing a mocked
+    // clock between the two renders proves the bytes no longer depend on
+    // wall-clock time, so the sha256 cache key in officeService is stable
+    // across re-renders.
     t.mock.timers.enable({ apis: ['Date'] });
     try {
       t.mock.timers.setTime(1_700_000_000_000);
@@ -241,16 +242,61 @@ describe('office docx renderer', () => {
       t.mock.timers.setTime(1_811_000_000_000); // ~3.5 years later
       const b = await renderDocx(provenanceDescriptor);
       assert.ok(a.buffer.equals(b.buffer), 'wall-clock change must not change bytes');
-
-      // The dcterms timestamps are pinned to the epoch, not to either mocked
-      // wall-clock value — this is what makes the two renders identical.
-      const core = (await unzipToText(a.buffer)).get('docProps/core.xml') ?? '';
-      assert.match(core, /<dcterms:created[^>]*>1970-01-01T00:00:00\.000Z<\/dcterms:created>/);
-      assert.match(core, /<dcterms:modified[^>]*>1970-01-01T00:00:00\.000Z<\/dcterms:modified>/);
     } finally {
       t.mock.timers.reset();
     }
   });
+});
+
+describe('office file timestamps (#1977)', () => {
+  const renders: ReadonlyArray<readonly [string, () => Promise<{ buffer: Buffer }>]> = [
+    [
+      'xlsx',
+      () =>
+        renderXlsx({
+          filename: 'staedte',
+          sheets: [
+            {
+              name: 'Städte',
+              columns: [{ key: 'stadt', header: 'Stadt', type: 'text' }],
+              rows: [{ stadt: 'Berlin' }],
+            },
+          ],
+        }),
+    ],
+    [
+      'docx',
+      () =>
+        renderDocx({
+          filename: 'bericht',
+          title: 'Bericht',
+          blocks: [{ type: 'paragraph', text: 'Inhalt.' }],
+        }),
+    ],
+  ];
+
+  for (const [ext, render] of renders) {
+    it(`${ext}: every zip entry carries 1980-01-01 00:00, the earliest date the zip format can represent`, async () => {
+      // A date before 1980 underflows the 7-bit DOS year field and unzip tools
+      // show 2098.
+      const stamps = await zipEntryDosStamps((await render()).buffer);
+      assert.ok(stamps.size > 0, 'zip has entries');
+      for (const [name, stamp] of stamps) {
+        assert.deepEqual(stamp, { year: 1980, month: 1, day: 1, hour: 0, minute: 0 }, name);
+      }
+    });
+
+    it(`${ext}: core.xml carries no created/modified date instead of a made-up one`, async () => {
+      // The content-addressed cache forbids the real render time, and any fixed
+      // date would show up as a wrong "Created" date in Word/Excel. Both
+      // dcterms dates are optional in OPC core properties.
+      const core = (await unzipToText((await render()).buffer)).get('docProps/core.xml') ?? '';
+      assert.ok(core.includes('<cp:coreProperties'), 'core.xml present');
+      assert.doesNotMatch(core, /dcterms:created/);
+      assert.doesNotMatch(core, /dcterms:modified/);
+      assert.ok(core.includes(PROVENANCE_DESCRIPTION), 'provenance description kept');
+    });
+  }
 });
 
 describe('office content-addressed cache (#645 AC#2)', () => {

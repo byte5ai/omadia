@@ -5,7 +5,7 @@ export * from './types.js';
 export { evaluatePredicate, resolvePath } from './predicate.js';
 export { conductorGraphSchema, validateGraphShape, type ShapeResult } from './schema.js';
 export { validate } from './validate.js';
-export { nextStep } from './engine.js';
+export { nextStep, type NextStepOptions } from './engine.js';
 export { parseIsoDurationMs } from './duration.js';
 export {
   extractSlotRefs,
@@ -22,3 +22,6 @@ export {
   TEXT_SLOT_PREFIX,
   type TemplateTextSlotRef,
 } from './textSlots.js';
+// #1709 — the run-context token grammar, shared with the kernel's renderer so the
+// authoring check and the runtime substitution can never disagree about what a token is.
+export { isTemplateExpression, runTokenMatcher } from './runTokens.js';

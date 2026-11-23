@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { HardDrive, PackageCheck, Search, Store, X } from 'lucide-react';
 import { getTranslations } from 'next-intl/server';
 
-import { listProfiles, listStorePlugins } from '../../_lib/api';
+import { listProfiles, listRuntimeInstalled, listStorePlugins } from '../../_lib/api';
 import { APP_VERSION } from '../../_lib/appVersion';
 import {
   countReadiness,
@@ -13,17 +13,21 @@ import {
 } from '../../_lib/pluginCounts';
 import { deriveInitialsForSet } from '../../_lib/pluginInitials';
 import { redirectIfUnauthorized } from '../../_lib/authRedirect';
-import type {
-  Plugin,
-  PluginKind,
-  RegistrySourceStatus,
+import {
+  STORE_CATEGORIES,
+  storeCategoryOf,
+  type Plugin,
+  type RegistrySourceStatus,
+  type StoreCategory,
 } from '../../_lib/storeTypes';
 import type { ProfileSummary } from '../../_lib/profileTypes';
 import { OnboardingModal } from '../../_components/onboarding/OnboardingModal';
+import { PackagelessEntries } from '../../_components/store/PackagelessEntries';
 import { PluginCard } from '../../_components/store/PluginCard';
 import { UploadDropzone } from '../../_components/store/UploadDropzone';
 import { Button } from '../../_components/ui/Button';
 import { cn } from '../../_lib/cn';
+import { packagelessEntriesOf, type PackagelessEntry } from '../../_lib/packagelessEntries';
 import { registryErrorKey } from '../../_lib/registryErrors';
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -33,17 +37,11 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export const dynamic = 'force-dynamic';
 
-type CategoryFilter = 'all' | PluginKind;
+type CategoryFilter = 'all' | StoreCategory;
 
-/** #1470 — one pill per plugin kind, so the pill counts add up to "All". */
-const CATEGORY_FILTERS: readonly CategoryFilter[] = [
-  'all',
-  'integration',
-  'agent',
-  'channel',
-  'tool',
-  'extension',
-];
+/** #1470 — one pill per Hub category (spec 2042 §5.10), so the pill counts
+ *  add up to "All". */
+const CATEGORY_FILTERS: readonly CategoryFilter[] = ['all', ...STORE_CATEGORIES];
 
 /** Upper bound for `?q=`; the middleware substring-matches it per entry. */
 const MAX_QUERY_LENGTH = 100;
@@ -92,6 +90,19 @@ export default async function StorePage({
     profiles = [];
   }
 
+  // Installed entries without a package appear in no catalogue, so the list
+  // above cannot show them. Best-effort: an older middleware has no such
+  // field, and a failed read must not take the store down.
+  // Read only for the tab that shows them.
+  let packageless: PackagelessEntry[] = [];
+  if (source === 'installed') {
+    try {
+      packageless = packagelessEntriesOf((await listRuntimeInstalled())?.items);
+    } catch {
+      packageless = [];
+    }
+  }
+
   // Three origins, partitioned so every plugin lands in exactly one bucket
   // (`storeTab` in app/_lib/pluginCounts.ts):
   //   • Installiert — anything already in the runtime registry, whether or not
@@ -127,13 +138,13 @@ export default async function StorePage({
       : source === 'local'
         ? localPlugins
         : hubPlugins;
-  const countsByKind = countByKind(scoped);
+  const countsByCategory = countByCategory(scoped);
   // OM-31 — "MiniMax LLM Provider" and "Mistral LLM Provider" both used to
   // render "ML". Resolve collisions once across the WHOLE catalog (not just the
   // visible slice) so a tile's initials do not change when a filter is applied.
   const initialsByName = deriveInitialsForSet(plugins.map((p) => p.name));
   const visible =
-    filter === 'all' ? scoped : scoped.filter((p) => p.kind === filter);
+    filter === 'all' ? scoped : scoped.filter((p) => storeCategoryOf(p.kind) === filter);
 
   return (
     <main className="mx-auto max-w-[1280px] px-6 py-12 lg:px-8 lg:py-16">
@@ -247,7 +258,7 @@ export default async function StorePage({
         {CATEGORY_FILTERS.map(
           (f) => {
             const count =
-              f === 'all' ? scoped.length : countsByKind[f as PluginKind];
+              f === 'all' ? scoped.length : countsByCategory[f as StoreCategory];
             const active = f === filter;
             return (
               <Link
@@ -283,6 +294,8 @@ export default async function StorePage({
       {source === 'hub' && !loadError && failedRegistries.length > 0 ? (
         <RegistryErrors failed={failedRegistries} />
       ) : null}
+
+      {source === 'installed' ? <PackagelessEntries entries={packageless} /> : null}
 
       {/* Grid or error */}
       <section className="mt-8">
@@ -647,26 +660,11 @@ function parseQuery(raw: string | undefined): string {
 }
 
 function parseFilter(raw: string | undefined): CategoryFilter {
-  if (
-    raw === 'integration' ||
-    raw === 'agent' ||
-    raw === 'channel' ||
-    raw === 'tool' ||
-    raw === 'extension'
-  ) {
-    return raw;
-  }
-  return 'all';
+  return (STORE_CATEGORIES as readonly string[]).includes(raw ?? '') ? (raw as StoreCategory) : 'all';
 }
 
-function countByKind(plugins: Plugin[]): Record<PluginKind, number> {
-  const counts: Record<PluginKind, number> = {
-    agent: 0,
-    integration: 0,
-    channel: 0,
-    tool: 0,
-    extension: 0,
-  };
-  for (const p of plugins) counts[p.kind] += 1;
+function countByCategory(plugins: Plugin[]): Record<StoreCategory, number> {
+  const counts = Object.fromEntries(STORE_CATEGORIES.map((c) => [c, 0])) as Record<StoreCategory, number>;
+  for (const p of plugins) counts[storeCategoryOf(p.kind)] += 1;
   return counts;
 }

@@ -410,6 +410,28 @@ describe('PrivacyGuardService — identityValuesOnWire (Slice 2B)', () => {
     assert.ok(receipt);
     assert.equal(receipt.identityValuesOnWire, 0);
   });
+
+  // S3c — a column the tool declared as PII counts like a classified one,
+  // also without a classifier and when the classifier finds nothing.
+  for (const [label, options] of [
+    ['without a schema classifier', {}],
+    ['when the classifier finds no PII', { llmComplete: async () => ({ text: '[]' }) }],
+  ] as const) {
+    it(`counts the values of a declared PII column ${label}`, async () => {
+      const svc = createPrivacyGuardService(options);
+      const turnId = `t-iow-declared-${label}`;
+      await svc.internToolResultV4({
+        sessionId: 's',
+        turnId,
+        toolName: 'hr.leave',
+        rawResult: JSON.stringify(HR_LEAVE),
+        piiFields: [{ path: '[].employee', idPath: '[].employee_id' }],
+      });
+      const receipt = await svc.finalizeTurn(turnId, 'Wie viel Urlaub hat Marvin Vomberg?');
+      assert.ok(receipt);
+      assert.equal(receipt.identityValuesOnWire, 1);
+    });
+  }
 });
 
 /**

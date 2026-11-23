@@ -274,7 +274,6 @@ test('T035: SessionConfigSnapshot.memoryScope matches the Agent\'s computed scop
       plugin('00000000-0000-0000-0000-000000000001', '@omadia/agent-confluence'),
     ],
     channelBindings: [],
-    platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
   };
   const fakeStore: ConfigStore = {
     loadSnapshot: () => Promise.resolve(snap),

@@ -15,9 +15,9 @@
  * builder's own parity test exists to prevent.
  *
  * ORDER IS THE CONTRACT: instructions → persona → boundaries → sycophancy.
- * It mirrors `dynamicAgentRuntime`'s `[header, persona, boundaries,
- * sycophancy, skill]` for sub-agents: who you are, how you sound, what you
- * must not do, how not to flatter. Identity text takes the header slot
+ * It is the order the retired agent runtime used for its sub-agents
+ * (`[header, persona, boundaries, sycophancy, skill]`): who you are, how you
+ * sound, what you must not do, how not to flatter. Identity text takes the header slot
  * because it is the operator's own words about this agent.
  *
  * EMPTY IN, EMPTY OUT. An identity with nothing authored compiles to `''`,
@@ -25,7 +25,13 @@
  * assistant identity apply unchanged to every agent that never used this.
  */
 
-import { isModelRef } from '@omadia/orchestrator';
+import {
+  FACILITATOR_ARCHETYPE,
+  archetypeOf,
+  isModelRef,
+  applyArchetypeContract,
+  type ArchetypeId,
+} from '@omadia/orchestrator';
 import type { ModelPolicy } from '@omadia/plugin-api';
 
 import { compileBoundariesSection } from '../plugins/builder/boundaryPresets.js';
@@ -43,6 +49,7 @@ import {
   type PersonaModelFamily,
 } from '../plugins/personaDelta.js';
 import { compileSycophancyGuard } from '../plugins/sycophancyGuard.js';
+import { FACILITATOR_DEFAULT_SYCOPHANCY } from './facilitatorContract.js';
 
 export interface ComposeAgentIdentityPromptInput {
   /** The operator's own text about this agent. */
@@ -51,6 +58,12 @@ export interface ComposeAgentIdentityPromptInput {
   readonly quality: QualityConfig | null;
   /** Which model family the persona deltas are computed against. */
   readonly family: PersonaModelFamily;
+  /**
+   * #2060 — the agent's kind. For a `facilitator` the neutrality contract is
+   * appended as the LAST section, whatever the operator authored, and the
+   * sycophancy guard is never off. Absent = `standard`.
+   */
+  readonly archetype?: ArchetypeId;
 }
 
 export interface ComposedAgentIdentityPrompt {
@@ -82,11 +95,20 @@ export function composeAgentIdentityPrompt(
   );
   if (boundaries.text.length > 0) sections.push(boundaries.text);
 
-  const sycophancy = compileSycophancyGuard(input.quality?.sycophancy);
+  const isFacilitator = input.archetype === FACILITATOR_ARCHETYPE;
+  const configuredSycophancy = input.quality?.sycophancy;
+  const sycophancy = compileSycophancyGuard(
+    isFacilitator && (configuredSycophancy === undefined || configuredSycophancy === 'off')
+      ? FACILITATOR_DEFAULT_SYCOPHANCY
+      : configuredSycophancy,
+  );
   if (sycophancy.length > 0) sections.push(sycophancy);
 
+  const authored = sections.length > 0 ? sections.join('\n\n') : null;
   return {
-    text: sections.length > 0 ? sections.join('\n\n') : null,
+    // #2060 — LAST, and present even when nothing was authored: "empty in,
+    // empty out" holds for a standard agent only.
+    text: applyArchetypeContract(input.archetype, authored),
     droppedBoundaryPresets: boundaries.droppedIds,
   };
 }
@@ -106,6 +128,8 @@ export { inferFamilyFromModel } from '../plugins/personaDelta.js';
 export interface AgentPersonaFamilySource {
   readonly modelRouting?: Record<string, unknown> | null;
   readonly modelPolicy?: ModelPolicy;
+  /** #2060 — carried so the recompose path compiles the kind's contract. */
+  readonly archetype?: ArchetypeId;
 }
 
 /**
@@ -147,7 +171,12 @@ export function agentPersonaFamilies(
  * family is the primary and becomes `text`/`family`, the map carries all.
  */
 export function composeForFamilies(
-  input: { instructions: string | null; persona: PersonaConfig | null; quality: QualityConfig | null },
+  input: {
+    instructions: string | null;
+    persona: PersonaConfig | null;
+    quality: QualityConfig | null;
+    archetype?: ArchetypeId;
+  },
   families: readonly PersonaModelFamily[],
 ): { primary: ComposedAgentIdentityPrompt; family: PersonaModelFamily; byFamily: Record<string, string> } {
   const byFamily: Record<string, string> = {};
@@ -261,6 +290,7 @@ export async function recomposeStaleIdentities(
           instructions: identity.instructions,
           persona: identity.persona,
           quality: identity.quality,
+          archetype: archetypeOf(agent),
         },
         agentPersonaFamilies(agent),
       );

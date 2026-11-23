@@ -14,6 +14,7 @@
  * surface at zero. The token can ROTATE mid-process, so the bearer is resolved
  * per request via `bearerProvider` — never captured at build time.
  */
+import { admitModelCall } from '@omadia/llm-provider-api';
 import { randomUUID } from 'node:crypto';
 
 import type {
@@ -288,6 +289,8 @@ export function createOpenAiResponsesProvider(
   }
 
   async function* streamImpl(req: LlmRequest): AsyncGenerator<LlmStreamEvent> {
+    // #2090 — refused when the turn's reservation does not cover the call.
+    admitModelCall();
     noteOutputFormatIgnored(log, req);
     const token = await bearer();
     const res = await fetchImpl(url, {

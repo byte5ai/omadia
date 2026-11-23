@@ -11,10 +11,6 @@ import {
   ToolPluginRuntime,
   type ToolPluginRuntimeDeps,
 } from '../src/plugins/toolPluginRuntime.js';
-import {
-  DynamicAgentRuntime,
-  type DynamicAgentRuntimeDeps,
-} from '../src/plugins/dynamicAgentRuntime.js';
 
 /**
  * Regression (B2): deactivating a plugin must take the services it provided
@@ -134,7 +130,7 @@ describe('PluginContext — service ownership comes from the kernel', () => {
       registry: { has: () => true, list: () => [], get: () => undefined },
       catalog: { list: () => [], get: () => undefined },
       serviceRegistry: registry,
-      nativeToolRegistry: { register: stub, registerHandler: stub },
+      nativeToolRegistry: { register: stub, registerHandler: stub, unregisterBySource: (): string[] => [] },
       routeRegistry: { register: stub, disposeBySource: () => 0 },
       jobScheduler: { register: stub, stopForPlugin: (): void => {} },
       logger: (): void => {},
@@ -154,6 +150,7 @@ describe('ToolPluginRuntime.deactivate — service disposal', () => {
       pluginRouteRegistry: newTestRouteRegistry(),
       uiRouteCatalog: new UiRouteCatalog(),
       serviceRegistry,
+      nativeToolRegistry: { unregisterBySource: (): string[] => [] },
       jobScheduler: { stopForPlugin: (): void => {} },
       log: (): void => {},
     } as unknown as ToolPluginRuntimeDeps;
@@ -242,43 +239,6 @@ describe('ToolPluginRuntime.deactivate — service disposal', () => {
   });
 });
 
-describe('DynamicAgentRuntime.deactivate — service disposal', () => {
-  it('unregisters the services the agent provided, not just the kernel\'s subAgent entry', async () => {
-    const serviceRegistry = new ServiceRegistry();
-    const deps = {
-      serviceRegistry,
-      pluginRouteRegistry: newTestRouteRegistry(),
-      uiRouteCatalog: new UiRouteCatalog(),
-      jobScheduler: { stopForPlugin: (): void => {} },
-      log: (): void => {},
-    } as unknown as DynamicAgentRuntimeDeps;
-    const runtime = new DynamicAgentRuntime(deps);
-
-    const disposeSubAgentService = serviceRegistry.provide(
-      'subAgent:@agent/x',
-      { tool: true },
-    );
-    serviceRegistry.provide('agentOwned', { impl: 1 }, '@agent/x');
-
-    (runtime as unknown as { active: Map<string, unknown> }).active.set(
-      '@agent/x',
-      {
-        agentId: '@agent/x',
-        handle: { close: (): Promise<void> => Promise.resolve() },
-        domainTool: { name: 'x_domain' },
-        rawTools: [],
-        subAgentTools: [],
-        disposeSubAgentService,
-      },
-    );
-
-    await runtime.deactivate('@agent/x');
-
-    assert.equal(serviceRegistry.has('subAgent:@agent/x'), false);
-    assert.equal(serviceRegistry.has('agentOwned'), false);
-  });
-});
-
 describe('PluginRouteRegistry — unchanged behaviour alongside the new call', () => {
   it('still disposes routers by source', async () => {
     const routes = newTestRouteRegistry();
@@ -287,6 +247,7 @@ describe('PluginRouteRegistry — unchanged behaviour alongside the new call', (
       pluginRouteRegistry: routes,
       uiRouteCatalog: new UiRouteCatalog(),
       serviceRegistry,
+      nativeToolRegistry: { unregisterBySource: (): string[] => [] },
       jobScheduler: { stopForPlugin: (): void => {} },
       log: (): void => {},
     } as unknown as ToolPluginRuntimeDeps;
@@ -298,5 +259,32 @@ describe('PluginRouteRegistry — unchanged behaviour alongside the new call', (
     await runtime.deactivate('@plugin/dev');
 
     assert.equal(routes.list().every((e) => e.disposed), true);
+  });
+});
+
+// #1860 — a plugin whose provide another plugin wrapped with `replace` cannot
+// be restarted in place: its dispose leaves the wrapper, so the fresh provide
+// throws "duplicate provider".
+describe('ServiceRegistry.shadowedServicesOf (#1860)', () => {
+  it('names a provide that another owner wrapped, and stops once the wrapper is gone', () => {
+    const reg = new ServiceRegistry();
+    reg.provide('knowledgeGraph', { v: 'kg' }, 'kg-plugin');
+    reg.provide('graphPool', { v: 'pool' }, 'kg-plugin');
+    assert.deepEqual(reg.shadowedServicesOf('kg-plugin'), []);
+
+    const unwrap = reg.replace('knowledgeGraph', { v: 'wrapped' }, 'extras');
+    assert.deepEqual(reg.shadowedServicesOf('kg-plugin'), ['knowledgeGraph']);
+    assert.deepEqual(reg.shadowedServicesOf('extras'), []);
+
+    unwrap();
+    assert.deepEqual(reg.shadowedServicesOf('kg-plugin'), []);
+  });
+
+  it('forgets a provide that was disposed', () => {
+    const reg = new ServiceRegistry();
+    reg.provide('knowledgeGraph', { v: 'kg' }, 'kg-plugin');
+    reg.disposeBySource('kg-plugin');
+    reg.provide('knowledgeGraph', { v: 'other' });
+    assert.deepEqual(reg.shadowedServicesOf('kg-plugin'), []);
   });
 });

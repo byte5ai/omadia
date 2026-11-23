@@ -25,6 +25,9 @@ export {
   type ConversationParticipant,
   type ConversationRoster,
   type ConversationRosterProvider,
+  type ConversationRosterRequest,
+  type ConversationRosterStatus,
+  rosterStatusOf,
 } from './conversationRoster.js';
 // People directory — a channel plugin's searchable "who is <name>?" (Conductor
 // human-step principal resolution). Optional capability like the roster.
@@ -41,14 +44,51 @@ export type {
   MembersRemovedEvent,
 } from './membershipEvent.js';
 export type {
+  SendProviderCapabilities,
   TargetedDeliveryOutcome,
+  TargetedMention,
   TargetedMessage,
+  TargetedPoll,
+  TargetedSendOptions,
   TargetedSendDiagnostic,
   TargetedSendProvider,
   TargetedSendReport,
 } from './targetedSend.js';
+// #2089 - question cards; defined once in plugin-api.
+export { CARD_ID_PATTERN, CARD_QUESTION_KINDS } from '@omadia/plugin-api';
+export type {
+  CardAnswerValue,
+  CardOption,
+  CardQuestion,
+  CardQuestionKind,
+  CardSupport,
+  CardUpdate,
+  CardUpdateOutcome,
+  MessageCardAnswer,
+  QuestionCard,
+} from '@omadia/plugin-api';
 // #330 C3b - conversation-addressed proactive send (group nudges).
-export type { ConversationSendOptions, ConversationSendProvider } from './conversationSend.js';
+export type { ConversationReactionOutcome, ConversationSendOptions, ConversationSendProvider } from './conversationSend.js';
+export type {
+  AgentIdentityDescription,
+  AgentIdentityField,
+  AgentIdentityIdentifyOutcome,
+  AgentIdentityProvider,
+  AgentIdentityProvisionInput,
+  AgentIdentityProvisionOutcome,
+  AgentIdentityRefusal,
+  AgentIdentityRefusalCode,
+  AgentIdentityStatus,
+} from './agentIdentity.js';
+export { normalizeAgentIdentityKey } from './agentIdentity.js';
+// #2043 - native facilitators: authenticated inbound messages, readiness and
+// per-session capabilities.
+export type { ConversationMessageEvent } from './conversationMessage.js';
+export type {
+  ChannelReadinessProvider,
+  MeetingSourceProvider,
+  SessionEvent,
+} from './sessionCapabilities.js';
 
 // Orchestrator access — the typed, blessed way for a channel to resolve the
 // ChatAgent it drives turns with (alternative to CoreApi.handleTurnStream when
@@ -67,9 +107,11 @@ export {
 export {
   CHANNEL_RESOLVER_SERVICE,
   resolveChatAgentForChannel,
+  resolveChannelRoute,
   type ChannelBindingResolver,
   type ChannelResolveResult,
   type ChannelResolveDecision,
+  type ChannelRouteContext,
 } from './channelRouting.js';
 
 // Inbound message shape
@@ -156,9 +198,6 @@ export { ANSWER_VERBOSITY_LEVELS } from './chatAgent.js';
 // adapters can call it without crossing into kernel internals.
 export { toSemanticAnswer } from './toSemanticAnswer.js';
 
-// #332 Layer 1 — plain-text fallback so even a minimal connector (no rich-card
-// UI) can append a readable, harness-sourced consulted-agents footer line.
-export { agentsConsultedFooterText } from './toSemanticAnswer.js';
 // #544 W2-1 — plain-text fallback for channels without form support.
 export { withMcpInputPrompt } from './toSemanticAnswer.js';
 
@@ -183,6 +222,7 @@ export {
   InMemoryDisclosureSeenStore,
   composeDisclosureText,
   applyAiDisclosure,
+  withoutFoldedAiDisclosure,
   resolveAiDisclosure,
 } from './aiDisclosure.js';
 export type {
@@ -271,9 +311,24 @@ export type {
   OutgoingMcpInputForm,
   CaptureDisclosure,
   AgentConsultation,
-  DelegatedAnswer,
-  DirectLineSessionState,
+  // #2045 — speaker, system notices, contributions (types live in plugin-api).
+  AgentSpeaker,
+  Contribution,
+  ContributionStatus,
+  DataPayload,
+  Speaker,
+  SystemNotice,
+  SystemSpeaker,
+  TableData,
 } from './outgoing.js';
+// #2085 — side-channel data rendering (spec 2042 §5.13).
+export {
+  renderDataText,
+  renderTableText,
+  SIDE_CHANNEL_TEXT_MAX_ROWS,
+  withDataText,
+  withoutDataText,
+} from './sideChannelData.js';
 
 // Channel-agnostic store interfaces
 export type {
@@ -347,11 +402,13 @@ export {
 export {
   PRINCIPAL_KINDS,
   canonicalizePrincipalRef,
+  channelUserPrincipal,
   formatPrincipal,
   makePrincipal,
   parsePrincipal,
   principalRef,
   principalsEqual,
+  turnPrincipal,
   type Principal,
   type PrincipalKind,
 } from './principal.js';
@@ -393,6 +450,7 @@ export {
 export {
   audienceFloor,
   UNRESTRICTED_HOST_CAPABILITY,
+  UNRESTRICTED_TOOL_CAPABILITY,
   floorAllowsHost,
   floorDeniesHost,
   floorPermits,
@@ -441,3 +499,66 @@ export {
   type NewCredentialGrantInput,
   type NewCredentialInput,
 } from './credentials.js';
+
+// #2055 — choosing an agent in plain text (`/agent Mira`, `/agents`): the
+// parser every channel uses and the kernel service that carries it out.
+export {
+  parseAgentCommand,
+  type AgentCommand,
+  type AgentSelectionContext,
+  type AgentSelectionService,
+} from './agentCommand.js';
+
+// #2086 / #2087 — decoration registry, name line, plain-text renderer,
+// plain-text cards, AI-disclosure frequency (spec 2042 §5.14).
+export {
+  DECORATION_REGISTRY,
+  REMOVED_DECORATIONS,
+  admitDecorations,
+  decorationsFor,
+  getDecoration,
+  isDecorationAllowed,
+} from './decorations.js';
+export type {
+  AdmittedDecorations,
+  DecorationDeclaration,
+  DecorationId,
+  DecorationJustification,
+  DecorationKind,
+  DecorationRefusal,
+  DecorationRefusalReason,
+  RemovedDecorationId,
+} from './decorations.js';
+export {
+  AI_DISCLOSURE_FREQUENCIES,
+  DEFAULT_AI_DISCLOSURE_FREQUENCY,
+  DEFAULT_DISCLOSURE_PAUSE_MINUTES,
+  InMemoryDisclosureMarkerStore,
+  decideDisclosureMarkers,
+  isAiDisclosureFrequency,
+} from './disclosureFrequency.js';
+export type {
+  AiDisclosureFrequency,
+  DisclosureMarkerState,
+  DisclosureMarkerStore,
+  DisclosureMarkers,
+} from './disclosureFrequency.js';
+export { InMemorySpeakerHistoryStore, speakerLine, speakerLineFor } from './speakerLine.js';
+export type { SpeakerHistoryStore, SpeakerLineContext } from './speakerLine.js';
+export { renderPlainAnswer } from './plainAnswer.js';
+export type { PlainAnswerOptions } from './plainAnswer.js';
+export {
+  InMemoryPendingInteractiveStore,
+  PENDING_INTERACTIVE_TTL_MS,
+  isChoosableInteractive,
+  rememberInteractive,
+  resolveInteractiveReply,
+  resolveTypedInteractiveReply,
+} from './typedInteractiveReply.js';
+export type { PendingInteractive, PendingInteractiveStore } from './typedInteractiveReply.js';
+export { parseCardReply, renderCardAsText } from './questionCardText.js';
+export type { CardReplyParse } from './questionCardText.js';
+export { answerDetailsText, buildAnswerDetails } from './answerDetails.js';
+export type { AnswerDetails } from './answerDetails.js';
+export { DEFAULT_PACE_PROFILE, paceAckText, runPacedTurn } from './pace.js';
+export type { ChannelPaceProfile, PaceClock, PaceHooks, PacedOutcome } from './pace.js';

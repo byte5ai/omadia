@@ -24,6 +24,7 @@ export const BOUNDARY_PRESETS: readonly BoundaryPreset[] = [
   { id: 'no-financial-data', category: 'data', labelKey: 'presetNoFinancial' },
   { id: 'no-pii', category: 'data', labelKey: 'presetNoPii' },
   { id: 'no-medical-data', category: 'data', labelKey: 'presetNoMedical' },
+  { id: 'no-individual-rankings', category: 'data', labelKey: 'presetNoIndividualRankings' },
   { id: 'no-legal-advice', category: 'data', labelKey: 'presetNoLegal' },
   // scope
   { id: 'own-domain-only', category: 'scope', labelKey: 'presetOwnDomain' },

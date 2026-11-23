@@ -93,11 +93,12 @@ describe('rulesForSycophancy', () => {
 // ---------------------------------------------------------------------------
 
 describe('boundary presets', () => {
-  it('exposes the 12 shared ids plus the 8 legacy v0.1 ids', () => {
-    assert.equal(canonicalBoundaryPresetIds().length, 12);
+  it('exposes the 13 shared ids plus the 8 legacy v0.1 ids', () => {
+    // 12 from kemia + `no-individual-rankings` (#2085).
+    assert.equal(canonicalBoundaryPresetIds().length, 13);
     assert.equal(legacyBoundaryPresetIds().length, 8);
-    assert.equal(knownBoundaryPresetIds().length, 20);
-    assert.equal(new Set(knownBoundaryPresetIds()).size, 20, 'id collision');
+    assert.equal(knownBoundaryPresetIds().length, 21);
+    assert.equal(new Set(knownBoundaryPresetIds()).size, 21, 'id collision');
   });
 
   it('resolves every agent-UI id to the SAME wording the agent tab compiles (#1104)', () => {

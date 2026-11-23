@@ -1,5 +1,6 @@
 import {
   applyAiDisclosure,
+  withoutFoldedAiDisclosure,
   composeVerifierBlockedText,
   NO_REPLY_SENTINEL,
 } from '@omadia/channel-sdk';
@@ -72,7 +73,7 @@ type DoneEvent = Extract<ChatStreamEvent, { type: 'done' }>;
  * Events an `enforce` turn passes while the verdict is pending. A closed
  * allowlist: an event type not named here — including any added later — is
  * held. None of these carries model or tool output: iteration and usage
- * counters, routing and persona decisions (model and skill names), tool
+ * counters, routing and working-mode decisions (model and mode names), tool
  * progress pulses (the keepalive of a long tool call), route heartbeats, and
  * `steer_applied`, which echoes the user's own steering message.
  * `sub_iteration` carries no output either but is held with the `tool_use`
@@ -81,7 +82,7 @@ type DoneEvent = Extract<ChatStreamEvent, { type: 'done' }>;
 const LIVE_BEFORE_VERDICT: ReadonlySet<string> = new Set<ChatStreamEvent['type']>([
   'iteration_start',
   'turn_routing',
-  'turn_persona',
+  'turn_working_mode',
   'tool_progress',
   'heartbeat',
   'stream_token_chunk',
@@ -260,14 +261,14 @@ function skipLeavesUnconfirmed(reason: VerifierSkipReason): boolean {
  * The `done` that replaces a withheld answer, and the notice its single
  * `text_delta` carries. Built from an allowlist: the turn's identity and
  * telemetry stay (`toolCalls`, `iterations`, `runTrace`, `turnId`,
- * `receiptId`, `model`, `provenance`, `aiDisclosure`, `directLineSession`,
- * `agentsConsulted`, `privacyReceipt`, `captureDisclosure`, `correlationId`),
+ * `receiptId`, `model`, `provenance`, `aiDisclosure`, `agentsConsulted`,
+ * `privacyReceipt`, `captureDisclosure`, `correlationId`),
  * and so do a degraded turn's failure markers (`degraded`, `committedTools` —
  * tool names): the turn still threw after a tool committed, and the operator
  * health signal, the API-key audit and the web chat's turn-incomplete row read
  * them.
  * Everything that carried the withheld answer's content goes — attachments,
- * files, follow-ups, masked values, the delegated answer, cards, excerpts and
+ * files, follow-ups, masked values, cards, excerpts and
  * any field added later. The notice is in the turn's disclosure locale, then
  * the operator's, German by default; when the turn folded its AI disclosure
  * into `answer` (first turn of a scope), the notice carries the same block —
@@ -292,7 +293,6 @@ export function withheldDone(
       ...(done.model ? { model: done.model } : {}),
       ...(done.provenance ? { provenance: done.provenance } : {}),
       ...(done.aiDisclosure ? { aiDisclosure: done.aiDisclosure } : {}),
-      ...(done.directLineSession ? { directLineSession: done.directLineSession } : {}),
       ...(done.agentsConsulted ? { agentsConsulted: done.agentsConsulted } : {}),
       ...(done.answerVerbosity ? { answerVerbosity: done.answerVerbosity } : {}),
       ...(done.privacyReceipt ? { privacyReceipt: done.privacyReceipt } : {}),
@@ -331,7 +331,6 @@ export function withheldTurnResult(
     ...(result.runTrace ? { runTrace: result.runTrace } : {}),
     ...(result.turnId ? { turnId: result.turnId } : {}),
     ...(result.aiDisclosure ? { aiDisclosure: result.aiDisclosure } : {}),
-    ...(result.directLineSession ? { directLineSession: result.directLineSession } : {}),
     ...(result.privacyReceipt ? { privacyReceipt: result.privacyReceipt } : {}),
     ...(result.memoryUsed ? { memoryUsed: true } : {}),
     answerSource: 'verifier-blocked',
@@ -366,11 +365,7 @@ function withTurnDisclosure(
 /** `answer` without the disclosure block the fold added: its own paragraph
  *  after the answer, or the whole answer when the answer itself was blank. */
 function withoutFoldedDisclosure(answer: string, disclosure: AiDisclosure | undefined): string {
-  const block = foldedDisclosureBlock(answer, disclosure);
-  if (block === undefined) return answer;
-  if (answer === block) return '';
-  const paragraph = `\n\n${block}`;
-  return answer.endsWith(paragraph) ? answer.slice(0, -paragraph.length) : answer;
+  return withoutFoldedAiDisclosure(answer, disclosure);
 }
 
 /**

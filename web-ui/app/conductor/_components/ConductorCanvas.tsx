@@ -4,8 +4,6 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl';
 import {
   addEdge,
-  applyEdgeChanges,
-  applyNodeChanges,
   Background,
   Controls,
   Handle,
@@ -14,9 +12,9 @@ import {
   ReactFlowProvider,
   type Connection,
   type Edge,
-  type EdgeChange,
+  type EdgeChangeset,
   type Node,
-  type NodeChange,
+  type NodeChangeset,
   type NodeProps,
   type NodeTypes,
 } from '@xyflow/react';
@@ -266,11 +264,11 @@ function CanvasInner({
   const [previewResult, setPreviewResult] = useState<ConductorPreviewResult | null>(null);
   const [previewing, setPreviewing] = useState(false);
 
-  const onNodesChange = useCallback((changes: NodeChange[]) => {
-    setNodes((ns) => applyNodeChanges(changes, ns) as StepNode[]);
+  const onNodesChange = useCallback((changes: NodeChangeset<StepNode>) => {
+    setNodes((ns) => changes.applyTo(ns));
   }, []);
-  const onEdgesChange = useCallback((changes: EdgeChange[]) => {
-    setEdges((es) => applyEdgeChanges(changes, es));
+  const onEdgesChange = useCallback((changes: EdgeChangeset) => {
+    setEdges((es) => changes.applyTo(es));
   }, []);
   const onConnect = useCallback((c: Connection) => {
     if (!c.source || !c.target) return;

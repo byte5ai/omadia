@@ -10,8 +10,6 @@
  *    turn) behaves exactly as before.
  *  - A re-entry of an MCP input-card answer is abandoned before the parked
  *    call could be replayed a second time.
- *  - A direct-line turn swallows a refused dispatch into its own answer; the
- *    authoritative check at the end of the turn still abandons the re-entry.
  *
  * Imported from SOURCE (one AsyncLocalStorage). All values are synthetic.
  */
@@ -33,7 +31,6 @@ import {
   ToolReplayAbortError,
   ToolReplayLedger,
 } from '../packages/harness-orchestrator/src/toolReplayLedger.js';
-import type { DomainTool } from '../packages/harness-orchestrator/src/tools/domainQueryTool.js';
 import { turnContext } from '../packages/harness-orchestrator/src/turnContext.js';
 import {
   REQUEST,
@@ -148,41 +145,6 @@ describe('the orchestrator abandons a re-entry it cannot replay', () => {
 
     assert.equal(replays.length, 1, 'the parked call ran for the first run only');
     assert.equal(model.requests.length, 1, 'the re-entry never reached the model');
-  });
-
-  it('a direct-line turn that misses is abandoned by the check at the end of the turn', async () => {
-    const asked: unknown[] = [];
-    const crm: DomainTool = {
-      name: 'ask_crm',
-      spec: {
-        name: 'ask_crm',
-        description: 'CRM specialist (test)',
-        input_schema: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] },
-      },
-      domain: 'crm',
-      handle: (input: unknown) => {
-        asked.push(input);
-        return Promise.resolve('Adresse gespeichert.');
-      },
-    };
-    const model = scriptedModel([]);
-    const orchestrator = new Orchestrator({
-      provider: model.provider,
-      model: 'test',
-      maxTokens: 1024,
-      maxToolIterations: 3,
-      domainTools: [crm],
-      nativeToolRegistry: new NativeToolRegistry(),
-    });
-    const input = { ...REQUEST, userMessage: '#crm Speichere die Adresse von Partner 42.' };
-    const ledger = new ToolReplayLedger();
-    // A re-entry whose first run never asked the specialist this question.
-    ledger.beginReentry();
-    orchestrator.bindToolReplayLedger(input, ledger);
-
-    await assert.rejects(orchestrator.runTurn(input), ToolReplayAbortError);
-
-    assert.equal(asked.length, 0, 'the specialist was never asked');
   });
 
   it('control: a turn without a bound ledger never replays', async () => {

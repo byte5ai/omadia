@@ -245,11 +245,13 @@ describe('public MCP endpoint — the masking boundary must be CROSSED (W4)', ()
    * The containment is real but incidental, sitting in a dependency's outgoing
    * schema rather than in a control this endpoint owns.
    *
-   * So what this test pins is the DETERMINISTIC refusal: the call is rejected at
-   * the privacy boundary, with an audit row, rather than surviving to be caught
-   * by an SDK schema whose strictness is not this repo's to guarantee. Drives the
-   * REAL `ToolDispatchService` with a handler that violates its own contract,
-   * which is the only honest way to reach the branch.
+   * So what this test pins is the DETERMINISTIC refusal, rather than a value
+   * surviving to be caught by an SDK schema whose strictness is not this repo's
+   * to guarantee. Drives the REAL `ToolDispatchService` with a handler that
+   * violates its own contract. Since S3c the dispatcher itself refuses such a
+   * value before `afterDispatch` (`nativeToolDispatchText`), on every
+   * transport, so the endpoint's own masking assertion is no longer the first
+   * line; it stays pinned by the boundary-skipping tests above.
    */
   it('refuses a handler that returns a NON-STRING, which `afterDispatch` never masks', async (t) => {
     const registry = new NativeToolRegistry();
@@ -290,9 +292,9 @@ describe('public MCP endpoint — the masking boundary must be CROSSED (W4)', ()
     const res = await h.post(callToolRequest(TOOL), { token: KEY_TOKEN });
     const body = await res.text();
     assert.doesNotMatch(body, /sensitive\.person@customer\.example/);
-    // The load-bearing half: refused HERE, by this endpoint, not downstream.
-    assert.match(body, /privacy masking did not run/);
-    assert.equal(audit[0]?.error, 'privacy masking skipped');
+    // Refused by the dispatcher, as an error result: never an unmasked value.
+    assert.match(body, /returned a result that is neither text nor a structured result; it was not passed on/);
+    assert.match(body, /"isError":true/);
   });
 
   // ── the assertion must not fire on legitimate traffic ────────────────────

@@ -300,3 +300,43 @@ describe('PreviewCache', () => {
     });
   });
 });
+
+describe('PreviewCache — spec 2042 §5.10 draft agent cleanup', () => {
+  it('reports a preview closed for good (evict, drop, shutdown), never a rebuild', async () => {
+    const activate = fakeActivate();
+    const closed: string[] = [];
+    const cache = new PreviewCache({
+      activate: activate.fn,
+      warmSlots: 3,
+      logger: () => {},
+      onClosed: (_user, draftId) => {
+        closed.push(draftId);
+        return Promise.resolve();
+      },
+    });
+    await cache.ensureWarm({ userEmail: 'a@x', draftId: 'd1', build: buildCallback(1) });
+    cache.invalidate('a@x', 'd1');
+    await cache.ensureWarm({ userEmail: 'a@x', draftId: 'd1', build: buildCallback(2) });
+    assert.deepEqual(closed, [], 'a rebuild keeps the draft agent');
+
+    await cache.evict('a@x', 'd1');
+    assert.deepEqual(closed, ['d1']);
+
+    await cache.ensureWarm({ userEmail: 'a@x', draftId: 'd2', build: buildCallback(1) });
+    await cache.ensureWarm({ userEmail: 'b@x', draftId: 'd3', build: buildCallback(1) });
+    await cache.dropAll('a@x');
+    await cache.closeAll();
+    assert.deepEqual(closed, ['d1', 'd2', 'd3']);
+  });
+
+  it('a failing cleanup does not fail the eviction', async () => {
+    const activate = fakeActivate();
+    const cache = new PreviewCache({
+      activate: activate.fn,
+      logger: () => {},
+      onClosed: () => Promise.reject(new Error('db down')),
+    });
+    await cache.ensureWarm({ userEmail: 'a@x', draftId: 'd1', build: buildCallback(1) });
+    assert.equal(await cache.evict('a@x', 'd1'), true);
+  });
+});

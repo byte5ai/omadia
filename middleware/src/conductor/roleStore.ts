@@ -28,7 +28,29 @@ interface RoleRow {
  * store's own `string[]` return type cannot express.
  */
 export class ConductorRoleStore {
+  private readonly changeListeners = new Set<() => void>();
+
   constructor(private readonly pool: Pool) {}
+
+  /**
+   * Spec 2042 §5.3 — called after every role or assignment write of THIS
+   * process (the role-membership snapshot refreshes at once; other replicas
+   * catch up on their periodic refresh). Returns the unsubscribe.
+   */
+  onChange(listener: () => void): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+
+  private changed(): void {
+    for (const listener of this.changeListeners) {
+      try {
+        listener();
+      } catch (err) {
+        console.error('[conductor] role change listener failed:', err instanceof Error ? err.message : err);
+      }
+    }
+  }
 
   async createRole(input: { key: string; label: string; description?: string | null; scope?: string | null }): Promise<void> {
     await this.pool.query(
@@ -37,6 +59,7 @@ export class ConductorRoleStore {
        ON CONFLICT (key) DO UPDATE SET label = EXCLUDED.label, description = EXCLUDED.description, scope = EXCLUDED.scope`,
       [input.key, input.label, input.description ?? null, input.scope ?? null],
     );
+    this.changed();
   }
 
   /** Current holders of a role (the default resolver). Re-resolved live — never frozen. */
@@ -48,6 +71,12 @@ export class ConductorRoleStore {
       [roleKey],
     );
     return r.rows.map((row) => row.holder_id);
+  }
+
+  /** Every role key, without resolving holders. */
+  async listRoleKeys(): Promise<string[]> {
+    const { rows } = await this.pool.query<{ key: string }>('SELECT key FROM conductor_roles ORDER BY key');
+    return rows.map((row) => row.key);
   }
 
   async listRoles(): Promise<ConductorRole[]> {
@@ -68,6 +97,7 @@ export class ConductorRoleStore {
       `INSERT INTO conductor_role_assignments (role_key, holder_id, provenance) VALUES ($1, $2, 'manual')`,
       [roleKey, holderId],
     );
+    this.changed();
   }
 
   /** Move the baton: close the open holder's assignment (a removeHolder + addHolder = a move). */
@@ -77,5 +107,6 @@ export class ConductorRoleStore {
         WHERE role_key = $1 AND holder_id = $2 AND valid_to IS NULL`,
       [roleKey, holderId],
     );
+    this.changed();
   }
 }

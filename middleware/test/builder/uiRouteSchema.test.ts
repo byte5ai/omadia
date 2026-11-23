@@ -30,7 +30,6 @@ const validSpecBase = {
   description: 'PR inbox agent',
   category: 'productivity',
   domain: 'dev.github',
-  skill: { role: 'PR inbox assistant' },
   playbook: { when_to_use: 'when user asks about PRs' },
   tools: [
     { id: 'list_my_open_prs', description: 'Lists open PRs', input: {} },

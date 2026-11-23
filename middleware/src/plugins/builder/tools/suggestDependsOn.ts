@@ -54,19 +54,15 @@ const RULES: readonly KeywordRule[] = [
     agentId: '@omadia/plugin-web-search',
     reason: 'intent mentions web search',
   },
-  {
-    keywords: [/\bseo\b/i, /\bsearch engine\b/i, /\branking/i, /\bpagespeed/i],
-    agentId: '@omadia/agent-seo-analyst',
-    reason: 'intent mentions SEO / search-engine / ranking',
-  },
 ];
 
 export const suggestDependsOnTool: BuilderTool<Input, Result> = {
   id: 'suggest_depends_on',
   description:
     'Heuristic: given a free-form intent string ("invoice automation in Odoo", ' +
-    '"summarise Confluence playbooks"), return likely depends_on agent IDs from ' +
-    'the platform catalog. Suggestions are advisory — the BuilderAgent still ' +
+    '"summarise Confluence playbooks"), return likely depends_on plugin IDs ' +
+    '(integrations whose credentials or services the new plugin uses) from the ' +
+    'platform catalog. Suggestions are advisory — the BuilderAgent still ' +
     'decides which to keep, and lint_spec validates the final list.',
   input: InputSchema,
   async run({ intent }, _ctx) {
