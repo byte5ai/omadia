@@ -51,6 +51,19 @@ changelog.
 - A grant of an archetype plugin on an agent of another archetype (from before #2088) is
   removed at boot, and no longer blocks replacing that agent's grants.
 
+### Security — dependency rollup 2026-11-23; withdrawn picomatch exceptions removed
+
+2026-11-23. `@microsoft/microsoft-graph-client` 3.1.0, the host-provided Graph SDK
+that the M365 connector uses, fixes a token leak through host confusion with URL
+userinfo (msgraph-sdk-javascript #2000). It also drops `Authorization` and `Cookie`
+on cross-origin redirects and now requires Node 22 or later. Electron 45.4.1 brings
+upstream Chromium, V8, ANGLE, Dawn, FFmpeg and PDFium fixes to the desktop app.
+ESLint 10.15, which the Builder's auto-fix pass runs at runtime, no longer
+auto-fixes a `var` that is used before its definition through a hoisted function;
+the pass leaves those in place instead of risking a TDZ error. GitHub withdrew
+GHSA-fc5q-39xc-vjpf (picomatch) on 2026-11-18, so its three audit exceptions from
+#2072 are gone. The zod/botbuilder production exception is the only one left.
+
 ### Changed — ADR-0030: the kernel bounds closing scopes and the deadline wait (#2090)
 
 - `@omadia/plugin-api` 1.85.0, `@omadia/channel-sdk` 0.3.11 (additive types, stricter
