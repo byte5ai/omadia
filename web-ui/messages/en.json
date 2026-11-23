@@ -1265,6 +1265,10 @@
         "what": "This plugin is the only Privacy Shield, and the org policy OMADIA_PRIVACY_FORCE_GUARDED requires masking, so it cannot be uninstalled.",
         "next": "Install another Privacy Shield provider first, or turn the org policy off in the middleware environment."
       },
+      "persona_declared": {
+        "what": "This package declares a persona or speaker of its own. A plugin delivers capabilities and may ship agent templates; identity and personality belong to an agent.",
+        "next": "Install a version of the plugin without a persona, or create the agent in the Agent Builder and give it the capability."
+      },
       "retired_kind": {
         "what": "This package is of a retired kind ('agent' or 'extension'). A plugin delivers capabilities and may ship agent templates; it is never an agent of its own, and infrastructure is a 'system-module'.",
         "next": "Install the version of the plugin that delivers capabilities, agent templates, a system module or a model instead; create agents in the Agent Builder."

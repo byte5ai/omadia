@@ -1,6 +1,7 @@
 import { extractFromJsonFile } from './setupJsonFile.js';
 import { parseBooleanSetupValue, parseIntegerSetupValue } from './setupFieldValue.js';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -42,6 +43,7 @@ import {
 } from './installedRegistry.js';
 import type { BuiltInOptOutStore } from './builtInOptOuts.js';
 import { checkCoreCompat } from './coreCompat.js';
+import { checkPluginBoundary } from './pluginBoundary.js';
 import { readGrantGap } from './grantGap.js';
 import { extractTemplateDeclarations } from './manifestLoader.js';
 import { uninstallVoidsForceGuarded } from './privacyPosture.js';
@@ -276,6 +278,22 @@ export class InstallService {
         422,
         { kind: entry.plugin.kind },
       );
+    }
+
+    // Spec 2042 §5.10, criterion 15 — nor does a persona or speaker of its
+    // own come in at install. Ingest refuses such a package, but one uploaded
+    // before the boundary existed may still sit in the store. Packages that
+    // ship in the image are kernel code and not checked here.
+    if (entry.origin !== 'bundled') {
+      const boundary = checkPluginBoundary({
+        pluginId,
+        kind: entry.plugin.kind,
+        manifest: entry.manifest,
+        hasAgentMd: hasAgentMdFile(entry.source_path),
+      });
+      if (boundary) {
+        throw new InstallError('install.persona_declared', boundary.message, 422, { ...boundary.params });
+      }
     }
 
     // #2088 — an archetype plugin adds a new kind of agent to the instance:
@@ -1170,6 +1188,14 @@ export class InstallService {
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
+
+/** Whether the package of `manifestPath` holds the persona file of the
+ *  retired agent plugins. A catalog entry without a source path has none. */
+function hasAgentMdFile(manifestPath: string | undefined): boolean {
+  if (manifestPath === undefined || manifestPath.length === 0) return false;
+  const dir = path.dirname(manifestPath);
+  return existsSync(path.join(dir, 'AGENT.md')) || existsSync(path.join(dir, 'agent.md'));
+}
 
 export class InstallError extends Error {
   constructor(
