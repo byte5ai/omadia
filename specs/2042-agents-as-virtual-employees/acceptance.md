@@ -1,17 +1,18 @@
 # Acceptance gate for spec 2042 (§6, 40 criteria)
 
-Status of 2026-11-23: the acceptance gate (now on main via #2171) plus the gap round G1–G4
-(branch `feat/2042-gap-g1-audience-privacy`, plugin-api 1.87.0, channel-sdk 0.3.13). The live
-section below is the gate's reading of Fly `sha-9dddd0be` (plugin-api 1.83.0); the gap round
-is not deployed yet.
+Status of 2026-11-23 (evening): the acceptance gate (on main via #2171), the gap round G1–G4
+(plugin-api 1.87.0, channel-sdk 0.3.13) and the live follow-ups #2174–#2183. Fly runs
+`sha-29060932` (see "Live confirmations, 2026-11-23" below); the earlier gate reading of
+`sha-9dddd0be` is kept further down.
 
 Each criterion was split into its independently testable sub-claims, and every cited test
 was read, not matched by name. Paths are relative to `middleware/` unless they start with
 `web-ui/` or name a channel repository. `*.pg.test.ts` needs Postgres and skips without
 one, so the gate must run `npm run test:pg` against a database.
 
-**Result: 39 of 40 green, 1 partial (12), none missing.** The partial ones are listed with what
-remains.
+**Result: 40 of 40 green.** Criterion 12 turned green once omadia-ui-support #3 was merged and
+the Hub shows `@omadia/ui-orchestrator` 0.3.0 as "Omadia UI Presentation Helper"; the channel
+plugins and `plugin-llm-ollama` 0.2.1 are on the Hub with the fixed texts.
 
 ## Summary
 
@@ -28,7 +29,7 @@ remains.
 | 9 | No super-agent out of the box | green | live Fly is not reseeded and still has a default agent with 35 plugins (expected, §7) |
 | 10 | Pace | green | |
 | 11 | Helper envelope | green | |
-| 12 | Language | partial | Hub entry `@omadia/ui-orchestrator` ("Omadia UI Orchestrator", omadia-ui-support PR #3 still open); the channel repos and llm-ollama are fixed in PRs awaiting publish |
+| 12 | Language | green | |
 | 13 | No access through a colleague | green | |
 | 14 | Default-agent table | green | |
 | 15 | Plugin boundary | green | |
@@ -129,10 +130,10 @@ remains.
 ### 11. Helper envelope — green
 - `test/internalHelperEnvelope.test.ts` :: `a native grant the agent lacks is not materialised, and a call to it does not run`, the MCP and revocation variants; `test/internalHelperBuilderRoutes.test.ts`.
 
-### 12. Language — partial
+### 12. Language — green
 - web-ui: `web-ui/app/_lib/noOrchestratorTerm.test.ts`; middleware: `test/noOrchestratorTerm.test.ts` (bundled manifests' user-facing fields, LLM readiness labels).
 - Channel repos (PRs, text only plus tests): Slack #13, Discord #13, Telegram #15, WhatsApp #7, iMessage #4, llm-ollama #3 — manifests, package descriptions, READMEs, admin UI and runtime error texts.
-- **Remaining:** Hub entry `@omadia/ui-orchestrator` ("Omadia UI Orchestrator", byte5ai/omadia-ui-support): its fix waits for PR #3 to merge; the published channel/llm-ollama versions replace the old Hub texts after the publish.
+- Hub: omadia-ui-support #3 merged; `@omadia/ui-orchestrator` 0.3.0 is listed as "Omadia UI Presentation Helper". All channel plugins and `plugin-llm-ollama` 0.2.1 are published with the fixed texts.
 
 ### 13. No access through a colleague — green
 - `test/consultation/consultationEnvelope.test.ts` :: `the colleague is not offered and cannot run a system outside the envelope`; `test/consultation/consultationBroker.test.ts` :: `criterion 13: the colleague runs with grant ∩ its grants ∩ the asker's grants, no session, no memory`, `criterion 13: inside the run the HR system and memory are refused to the colleague`, `criterion 13: switches off are refused, facilitators are out, channel scope holds`.
@@ -282,6 +283,11 @@ Gates of the acceptance-gate branch (Node 22; the gap round's gates are in its P
 `npm run test:pg` on a fresh database 672/672; `npm test` 14 425 tests, 14 354 pass, 70
 skipped, 1 failure (`cliSpawnGate`, deny-list drift against the locally installed CLI, fails on
 main as well); web-ui lint, `tsc --noEmit` and vitest 2 507/2 507 pass.
+
+## Live confirmations, 2026-11-23
+
+- **Consultation in Teams (#2180, #2183):** Karen's consultation in a Teams test chat was delivered complete: the consulting turn's readers answer it, and the PASS/BLOCK judges no longer withhold on an always-thinking model.
+- **Canvas, Dark Clippy (`sha-29060932`, harness canvas over `wss://odoo-bot-harness.fly.dev/omadia-ui/canvas`):** model gateway `enforce`, `calls_outside_context` empty after the canvas turns; "wer bist du" answered in 7 of 8 runs, no `identity judge gave no verdict` since #2183, judge under 1.5 s; one run was blocked by the guard (its draft corrected its own name: the case the follow-up "a withheld answer stays out of the agent's memory" closes); "Welche Rechnungen sind diese Woche fällig?" answered (no replay withhold, Odoo named as out of reach).
 
 ## Live acceptance on Fly (`sha-9dddd0be`, read-only and test contexts)
 
