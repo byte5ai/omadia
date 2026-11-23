@@ -23,7 +23,14 @@ import { turnContext } from '../../packages/harness-orchestrator/src/turnContext
 import { readersOf, unionLabels, type LabelSet } from '../../packages/harness-orchestrator/src/discretion/labels.js';
 import { createDiscretionTurnState } from '../../packages/harness-orchestrator/src/discretion/turnLabels.js';
 import type { DiscretionAuditEntry, DiscretionPort } from '../../packages/harness-orchestrator/src/discretion/port.js';
-import { scriptedModel, text } from '../_helpers/replayTurnFixture.js';
+import { scriptedModel, text, toolCalls } from '../_helpers/replayTurnFixture.js';
+import type { LlmProvider, LlmRequest, LlmResponse } from '@omadia/llm-provider';
+import {
+  NativeToolRegistry as DistNativeToolRegistry,
+  Orchestrator as DistOrchestrator,
+  turnContext as distTurnContext,
+} from '@omadia/orchestrator';
+import { RAW_EMAIL, countingService } from '../_helpers/privacyEgressHarness.js';
 
 const SECRET = 'Paula verlässt das Unternehmen zum Monatsende';
 
@@ -167,5 +174,72 @@ describe('the answer egress (criterion 18)', () => {
     const kept = persisted.get('turn-new');
     const owner = kept?.labels.find((l) => l.kind === 'context');
     assert.deepEqual(owner, { kind: 'context', key: 'owner:a', readers: readersOf(['a']) });
+  });
+});
+
+/**
+ * The shield masks classified fields for the model whoever is present (the
+ * REAL privacy-guard service, built orchestrator). There are no per-member
+ * field rights: the mask does not depend on the audience, and a shield
+ * bypass lets the field through for every room alike.
+ */
+describe('mask at entry with the privacy shield (criterion 18)', () => {
+  const RECORD = JSON.stringify([{ name: 'Jana Beispiel', email: RAW_EMAIL, salary_band: 'E13' }]);
+  const ANY_EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
+
+  /** A model that reads the record, then "paraphrases" whatever e-mail it was given. */
+  function paraphrasingModel(requests: string[]): LlmProvider {
+    let calls = 0;
+    const complete = async (req: LlmRequest): Promise<LlmResponse> => {
+      const messages = JSON.stringify((req as { messages?: unknown }).messages);
+      requests.push(JSON.stringify(req));
+      calls += 1;
+      if (calls === 1) return toolCalls(['query_hr_people', { query: 'Jana' }]);
+      const seen = messages.includes(RAW_EMAIL) ? RAW_EMAIL : ANY_EMAIL.exec(messages)?.[0];
+      return text(`Umschrieben: die Adresse lautet ${seen ?? 'unbekannt'}, vor dem @ steht ${(seen ?? '').split('@')[0]}`);
+    };
+    return {
+      id: 'anthropic',
+      capabilities: { tools: true, vision: true, streaming: true, promptCaching: true, forcedToolChoice: true, parallelToolCalls: true },
+      complete,
+      stream: () => {
+        throw new Error('not streamed');
+      },
+      classifyError: () => ({ retryable: false, kind: 'other' as const }),
+    } as unknown as LlmProvider;
+  }
+
+  it('criterion 18: in a group the model never receives the classified field, and its paraphrase carries nothing of it', async () => {
+    const requests: string[] = [];
+    const orchestrator = new DistOrchestrator({
+      provider: paraphrasingModel(requests),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [
+        {
+          name: 'query_hr_people',
+          domain: 'hr',
+          agentId: '@omadia/odoo-hr',
+          spec: { name: 'query_hr_people', description: 'HR people', input_schema: { type: 'object', properties: {}, required: [] } },
+          handle: async () => RECORD,
+        },
+      ],
+      nativeToolRegistry: new DistNativeToolRegistry(),
+      agentId: 'mira',
+      knowledgeGraph,
+      privacyGuard: () => countingService().service,
+    } as never);
+    const { input, participants } = groupTurn(['a', 'b', 'c']);
+    const result = await distTurnContext.runWithChatParticipants(participants as never, () =>
+      orchestrator.chat({ ...input, userMessage: 'Umschreib bitte die E-Mail-Adresse von Jana.' }),
+    );
+    assert.ok(requests.length >= 2, 'the model read the record and answered');
+    assert.ok(
+      requests.every((r) => !r.includes(RAW_EMAIL) && !r.includes('jana.beispiel')),
+      'the model never received the field',
+    );
+    assert.equal(result.text.includes(RAW_EMAIL), false, 'nothing of it reaches the group');
+    assert.equal(result.text.includes('jana.beispiel'), false);
   });
 });

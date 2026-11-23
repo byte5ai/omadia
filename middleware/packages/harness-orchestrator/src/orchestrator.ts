@@ -632,6 +632,12 @@ export interface OrchestratorOptions {
    * (`buildOrchestratorForAgent`) always sets it. Defaults to `'default'`.
    */
   agentId?: string;
+  /**
+   * Spec 2042 §6 criterion 1 — the id the run trace names as the agent whose
+   * turn it is: its speaker's `agentId` (`agents.id` for a registry-built
+   * agent). Defaults to {@link agentId}.
+   */
+  traceAgentId?: string;
   provider: LlmProvider;
   model: string;
   /**
@@ -2991,6 +2997,8 @@ function abortGuardedObserver(
 export class Orchestrator {
   /** The Agent (orchestrator instance) this object serves. */
   readonly agentId: string;
+  /** The agent id every run trace of this agent carries. */
+  private readonly traceAgentId: string;
   private readonly provider: LlmProvider;
   private readonly model: string;
   private readonly modelRouting: ModelRoutingConfig | undefined;
@@ -3169,6 +3177,7 @@ export class Orchestrator {
 
   constructor(options: OrchestratorOptions) {
     this.agentId = options.agentId ?? 'default';
+    this.traceAgentId = options.traceAgentId ?? this.agentId;
     this.provider = options.provider;
     this.model = options.model;
     this.modelRouting = options.modelRouting;
@@ -6738,6 +6747,7 @@ export class Orchestrator {
     const traceCollector = input.sessionScope
       ? new RunTraceCollector({
           scope: input.sessionScope,
+          agentId: this.traceAgentId,
           ...runTraceUserSpread(input),
           turnId,
           ...(entityCollection ? { entityRefs: entityCollection } : {}),
@@ -7386,7 +7396,7 @@ export class Orchestrator {
       }
 
       throw new Error(
-        `Orchestrator exceeded maxToolIterations (${this.maxIterations}) without reaching a final answer.`,
+        `The agent exceeded maxToolIterations (${this.maxIterations}) without reaching a final answer.`,
       );
     } finally {
       // Guard against listener leaks on any non-happy exit (throw, iteration
@@ -8084,6 +8094,7 @@ export class Orchestrator {
     const traceCollector = input.sessionScope
       ? new RunTraceCollector({
           scope: input.sessionScope,
+          agentId: this.traceAgentId,
           ...runTraceUserSpread(input),
           turnId,
           ...(entityCollection ? { entityRefs: entityCollection } : {}),
@@ -8875,7 +8886,7 @@ export class Orchestrator {
         ...(turnContext.currentTurnId()
           ? { correlationId: turnContext.currentTurnId() as string }
           : {}),
-        message: `Orchestrator exceeded maxToolIterations (${String(this.maxIterations)}) without reaching a final answer.`,
+        message: `The agent exceeded maxToolIterations (${String(this.maxIterations)}) without reaching a final answer.`,
       };
     } catch (err) {
       // This catch did not log before — a turn failing on a transient

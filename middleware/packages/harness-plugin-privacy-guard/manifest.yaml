@@ -137,7 +137,7 @@ playbook:
     Prompt-Text bei `mask_user_prompt: off`, Namen ohne oder bei
     ausgefallenem C1-Detektor, Bilder, Modellaufrufe außerhalb des
     Privacy-Handles), steht in docs/security-architecture.md §6f. Das Plugin
-    published die `privacy.redact@1`-Capability; der Orchestrator-Hook ruft
+    published die `privacy.redact@1`-Capability; der Hook der Agentenlaufzeit ruft
     sie am Tool-Dispatch-Seam auf:
       - `internToolResultV4` interniert das rohe Tool-Ergebnis server-seitig
         hinter einer `datasetId` und gibt dem LLM nur einen identitätsfreien
@@ -180,39 +180,39 @@ playbook:
     Die Receipt landet als Message-Metadata im Channel-Output (Teams + Web)
     und kann dort als Collapsed-/Expanded-Card gerendert werden.
 
-    Versions-Paarung: Ein Orchestrator ab @omadia/plugin-api 1.20.0 erwartet
+    Versions-Paarung: Eine Agentenlaufzeit ab @omadia/plugin-api 1.20.0 erwartet
     vom Provider `redactToolErrorText`, `recordToolError`,
     `projectVerifierText` und `countUnresolvedSurrogates`. Dieses Plugin hat
     alle vier ab 0.6.0. Fehlen sie (bei einer älteren Kopie, die das
     gebündelte Plugin ersetzt, etwa per Upload mit
     `PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1`, oder bei einem anderen
-    `privacy.redact@1`-Provider), hält der Orchestrator zurückgegebene
+    `privacy.redact@1`-Provider), hält die Agentenlaufzeit zurückgegebene
     `Error:`-Texte vollständig zurück und loggt einmal pro Prozess
     `does not implement redactToolErrorText`. Jede Evidence-Judge-Anfrage des
     Antwort-Verifiers scheitert dann geschlossen (Claims bleiben ungeprüft),
     und die Prüfung auf ungelöste Platzhalter zählt 0, hält also eine zweite
     Antwort mit umgeschriebenen Platzhaltern nicht zurück.
-    Ab @omadia/plugin-api 1.23.0 maskiert der Orchestrator wiederholte
+    Ab @omadia/plugin-api 1.23.0 maskiert die Agentenlaufzeit wiederholte
     Antworten über `maskReplayedAnswer` (dieses Plugin ab 0.7.0). Fehlt es,
-    maskiert er sie über `maskUserPrompt`, also nur bei
+    maskiert sie diese über `maskUserPrompt`, also nur bei
     `mask_user_prompt: on`.
     Ab @omadia/plugin-api 1.25.0 maskieren die Memory-Jobs außerhalb eines
     Turns über `openStoredTextScope` (dieses Plugin ab 0.8.0). Fehlt es,
     überspringen sie ihren Modellaufruf.
     Ab @omadia/plugin-api 1.33.0 liefert `runV4Tool` den Canvas-Snapshot eines
     Tabellen-Renders als `canvasSentinel` (dieses Plugin ab 0.10.0), nie im
-    `resultText` (#1402). Ein neuerer Orchestrator mit einer älteren Kopie
-    zieht einen eingebetteten Snapshot selbst aus dem `tool_result`. Ein
-    älterer Orchestrator mit diesem Plugin leakt nichts, ignoriert aber
+    `resultText` (#1402). Eine neuere Agentenlaufzeit mit einer älteren Kopie
+    zieht einen eingebetteten Snapshot selbst aus dem `tool_result`. Eine
+    ältere Agentenlaufzeit mit diesem Plugin leakt nichts, ignoriert aber
     `canvasSentinel`: die Canvas zeigt die Tabelle dann nicht (der Chat schon).
     Ab @omadia/plugin-api 1.46.0 bucht dieses Plugin (ab 0.12.0) Text aus
     früheren Unterhaltungen als `maskedContextSpans`, meldet den Zustand des
     C1-Namensdetektors (`nameDetector`, `nameDetectorStatus`) und zählt jeden
-    maskierten Wert einmal. Ein älterer Orchestrator übergibt kein `origin`:
+    maskierten Wert einmal. Eine ältere Agentenlaufzeit übergibt kein `origin`:
     wiederholte User-Nachrichten landen dann weiter in `maskedPromptSpans`.
     Mit einer älteren Kopie dieses Plugins liefert die Privacy-Posture
     `name_detector: null`, und die UI zeigt keinen Detektor-Zustand.
-    Ab @omadia/plugin-api 1.47.0 gibt der Orchestrator Tools die echten Werte
+    Ab @omadia/plugin-api 1.47.0 gibt die Agentenlaufzeit Tools die echten Werte
     statt der Prompt-Pseudonyme, aber nur, wenn der Provider
     `restoreToolInputValues` und `remaskPromptValues` hat (dieses Plugin ab
     0.13.0, #1544). Fehlt es,

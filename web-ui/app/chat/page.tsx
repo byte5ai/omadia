@@ -23,6 +23,7 @@ import { AgentPicker } from '../_components/AgentPicker';
 import { AgentUnavailableBanner } from '../_components/AgentUnavailableBanner';
 import { AgentUsagePills } from '../_components/chat/AgentUsagePills';
 import { AgentsConsultedFooter } from '../_components/chat/AgentsConsultedFooter';
+import { AnswerDetails } from '../_components/chat/AnswerDetails';
 import { AutoPromotedBanner } from '../_components/chat/AutoPromotedBanner';
 import { CaptureDisclosure } from '../_components/chat/CaptureDisclosure';
 import { ConfirmDialog } from '../_components/ConfirmDialog';
@@ -994,6 +995,147 @@ export function MessageRow({
     ? incompleteFromText.cleaned
     : authFromNote.cleaned;
 
+  // Spec 2042 §5.14, criteria 29 and 31 — a settled answer shows its text
+  // and the decorations the registry declares for `web` (`data-decoration`).
+  // What explains it (trace, mode, verification, system data, consulted
+  // agents, privacy, memory) moves into the one collapsed answer-details
+  // element; while the turn runs it stays in view as progress.
+  const settled = !isUser && message.streaming !== true;
+  const explainAbove = (
+    <>
+      {message.proactive && <ProactiveBadge proactive={message.proactive} />}
+      {message.fastPathDecision !== undefined && <DecisionBadge decision={message.fastPathDecision} />}
+      {message.routing && <TriageBadge routing={message.routing} />}
+      {message.recalledContext && (
+        <RecalledContextCard recalled={message.recalledContext} />
+      )}
+      {message.plan && (
+        <PlanProgressCard
+          plan={message.plan}
+          streaming={message.streaming === true}
+        />
+      )}
+      {(message.tools?.length ?? 0) > 0 && (
+        <ToolTrace tools={message.tools ?? []} />
+      )}
+      {(message.nudges?.length ?? 0) > 0 && (
+        <NudgeList nudges={message.nudges ?? []} />
+      )}
+      {(message.steers?.length ?? 0) > 0 && (
+        <SteerList steers={message.steers ?? []} />
+      )}
+    </>
+  );
+  const explainBelow = (
+    <>
+      {message.agentsConsulted && message.agentsConsulted.length > 0 && (
+        <AgentsConsultedFooter
+          agents={message.agentsConsulted}
+          tools={message.tools ?? []}
+        />
+      )}
+      {!message.streaming &&
+        !message.error &&
+        // Same rule as the memory button: a withheld or degraded turn is
+        // a notice, and an open choice / MCP form is a question — none
+        // of them is an answer whose size the user would adjust.
+        !message.verifierBlocked &&
+        message.degradedTurn === undefined &&
+        message.pendingUserChoice === undefined &&
+        message.pendingMcpInput === undefined &&
+        message.answerVerbosity !== undefined &&
+        onResize !== undefined && (
+          <VerbosityStepButtons
+            level={message.answerVerbosity.effective}
+            disabled={disabled}
+            onResize={onResize}
+          />
+        )}
+      {message.captureDisclosure && (
+        <CaptureDisclosure disclosure={message.captureDisclosure} />
+      )}
+      {message.privacyReceipt && (
+        <PrivacyReceiptCard
+          receipt={message.privacyReceipt}
+          {...(message.receiptId ? { receiptId: message.receiptId } : {})}
+        />
+      )}
+    </>
+  );
+  const hasMeta =
+    message.telemetry !== undefined ||
+    elapsed !== null ||
+    message.turnId !== undefined ||
+    message.verifier !== undefined ||
+    message.workingMode !== undefined;
+  const meta = hasMeta ? (
+    <div
+      className={
+        settled
+          ? 'flex flex-wrap items-center text-[11px] text-[color:var(--fg-muted)]'
+          : 'mt-2 flex flex-wrap items-center border-t border-current/10 pt-2 text-[11px] text-[color:var(--fg-muted)]'
+      }
+    >
+      {message.telemetry && (
+        <span>
+          tools={message.telemetry.tool_calls} · iterations=
+          {message.telemetry.iterations}
+        </span>
+      )}
+      {message.model && (
+        <span
+          className="ml-3 rounded bg-current/10 px-2 py-0.5 font-medium"
+          title={message.model}
+        >
+          {shortModelName(message.model)}
+        </span>
+      )}
+      {message.workingMode && <WorkingModeDetail mode={message.workingMode} />}
+      {message.systemData && <SystemDataBadge />}
+      {message.verifier && (
+        <VerifierBadge summary={message.verifier} systemData={message.systemData === true} />
+      )}
+      {elapsed !== null && <span className="ml-3">⏱ {elapsed}s</span>}
+      {message.streaming && (
+        <span className="ml-3">{t('streamingSuffix')}</span>
+      )}
+      {!message.streaming &&
+        !message.error &&
+        // A withheld answer is a notice — nothing to keep in memory.
+        !message.verifierBlocked &&
+        message.turnId !== undefined &&
+        (message.autoPromotedMkId !== undefined ? (
+          <AutoPromotedBanner
+            mkId={message.autoPromotedMkId}
+            kind={message.palaiaExcerpt?.suggestedKind ?? 'insight'}
+            onDiscarded={() => onDiscardAutoPromoted(message.id)}
+          />
+        ) : (
+          <SaveMemoryButton
+            turnId={message.turnId}
+            messageContent={message.content}
+            {...(message.palaiaExcerpt
+              ? { palaiaExcerpt: message.palaiaExcerpt }
+              : {})}
+          />
+        ))}
+    </div>
+  ) : null;
+  const hasDetails =
+    hasMeta ||
+    message.proactive !== undefined ||
+    message.fastPathDecision !== undefined ||
+    message.routing !== undefined ||
+    message.recalledContext !== undefined ||
+    message.plan !== undefined ||
+    (message.tools?.length ?? 0) > 0 ||
+    (message.nudges?.length ?? 0) > 0 ||
+    (message.steers?.length ?? 0) > 0 ||
+    (message.agentsConsulted?.length ?? 0) > 0 ||
+    message.answerVerbosity !== undefined ||
+    message.captureDisclosure !== undefined ||
+    message.privacyReceipt !== undefined;
+
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
@@ -1022,49 +1164,39 @@ export function MessageRow({
           <div className="whitespace-pre-wrap text-sm">{message.content}</div>
         ) : (
           <>
-            {message.speaker && <MessageSpeakerLine speaker={message.speaker} />}
-            {message.proactive && <ProactiveBadge proactive={message.proactive} />}
-            {message.fastPathDecision !== undefined && <DecisionBadge decision={message.fastPathDecision} />}
-            {message.routing && <TriageBadge routing={message.routing} />}
-            {message.recalledContext && (
-              <RecalledContextCard recalled={message.recalledContext} />
+            {message.speaker && (
+              <div data-answer-part="speaker">
+                <MessageSpeakerLine speaker={message.speaker} />
+              </div>
             )}
-            {message.plan && (
-              <PlanProgressCard
-                plan={message.plan}
-                streaming={message.streaming === true}
-              />
-            )}
-            {(message.tools?.length ?? 0) > 0 && (
-              <ToolTrace tools={message.tools ?? []} />
-            )}
-            <McpAuthRequiredList tools={message.tools ?? []} content={message.content} />
-            {(message.nudges?.length ?? 0) > 0 && (
-              <NudgeList nudges={message.nudges ?? []} />
-            )}
-            {(message.steers?.length ?? 0) > 0 && (
-              <SteerList steers={message.steers ?? []} />
-            )}
+            {!settled && explainAbove}
+            <div data-decoration="consent_card">
+              <McpAuthRequiredList tools={message.tools ?? []} content={message.content} />
+            </div>
             {degradedTurn && (
-              <TurnIncompleteNotice
-                committedTools={degradedTurn.committedTools}
-                hasAnswerText={answerProse.length > 0}
-                {...(degradedTurn.correlationId
-                  ? { correlationId: degradedTurn.correlationId }
-                  : {})}
-              />
+              <div data-answer-part="notice">
+                <TurnIncompleteNotice
+                  committedTools={degradedTurn.committedTools}
+                  hasAnswerText={answerProse.length > 0}
+                  {...(degradedTurn.correlationId
+                    ? { correlationId: degradedTurn.correlationId }
+                    : {})}
+                />
+              </div>
             )}
             {message.verifierBlocked && (
-              <VerifierBlockedNotice
-                hasAnswerText={answerProse.length > 0}
-                cause={message.verifier?.withheldCause}
-                contradictionCount={message.verifier?.contradictionCount}
-              />
+              <div data-answer-part="notice">
+                <VerifierBlockedNotice
+                  hasAnswerText={answerProse.length > 0}
+                  cause={message.verifier?.withheldCause}
+                  contradictionCount={message.verifier?.contradictionCount}
+                />
+              </div>
             )}
             {answerProse.length > 0 ? (
               /* §2.7: agent narration renders in the prose register
                  (Source Serif 4); headings/tables/code stay structural. */
-              <div className="lume-prose">
+              <div className="lume-prose" data-answer-part="prose">
                 <Markdown
                   source={answerProse}
                   highlightTerms={message.maskedValues}
@@ -1073,12 +1205,7 @@ export function MessageRow({
             ) : message.streaming ? (
               <StreamingDots />
             ) : null}
-            {message.agentsConsulted && message.agentsConsulted.length > 0 && (
-              <AgentsConsultedFooter
-                agents={message.agentsConsulted}
-                tools={message.tools ?? []}
-              />
-            )}
+            {!settled && explainBelow}
             {showLiveness && (
               <LivenessRow
                 liveness={message.liveness}
@@ -1089,117 +1216,56 @@ export function MessageRow({
               />
             )}
             {message.pendingUserChoice && (
-              <ChoiceCard
-                choice={message.pendingUserChoice}
-                disabled={disabled}
-                onChoose={onChoose}
-              />
+              <div data-decoration="decision_card">
+                <ChoiceCard
+                  choice={message.pendingUserChoice}
+                  disabled={disabled}
+                  onChoose={onChoose}
+                />
+              </div>
             )}
             {/* #544 W2-1 — MCP mid-call input form. Mutually exclusive with the
                 choice card server-side (the choice card wins), so the two can
                 never render together. `onChoose` submits the returned envelope
                 as a fresh user turn, exactly like a choice-card click. */}
             {message.pendingMcpInput && (
-              <McpInputCard
-                request={message.pendingMcpInput}
-                disabled={disabled}
-                onSubmit={onChoose}
-              />
+              <div data-decoration="mcp_input_form">
+                <McpInputCard
+                  request={message.pendingMcpInput}
+                  disabled={disabled}
+                  onSubmit={onChoose}
+                />
+              </div>
             )}
             {message.attachments && message.attachments.length > 0 && (
-              <AttachmentGrid attachments={message.attachments} />
+              <div data-answer-part="attachments">
+                <AttachmentGrid attachments={message.attachments} />
+              </div>
             )}
             {message.fileAttachments && message.fileAttachments.length > 0 && (
-              <FileAttachmentList files={message.fileAttachments} />
+              <div data-answer-part="attachments">
+                <FileAttachmentList files={message.fileAttachments} />
+              </div>
             )}
             {message.followUpOptions && message.followUpOptions.length > 0 && (
-              <FollowUpButtons
-                options={message.followUpOptions}
-                disabled={disabled}
-                onChoose={onChoose}
-              />
-            )}
-            {!isUser &&
-              !message.streaming &&
-              !message.error &&
-              // Same rule as the memory button: a withheld or degraded turn is
-              // a notice, and an open choice / MCP form is a question — none
-              // of them is an answer whose size the user would adjust.
-              !message.verifierBlocked &&
-              message.degradedTurn === undefined &&
-              message.pendingUserChoice === undefined &&
-              message.pendingMcpInput === undefined &&
-              message.answerVerbosity !== undefined &&
-              onResize !== undefined && (
-                <VerbosityStepButtons
-                  level={message.answerVerbosity.effective}
+              <div data-decoration="follow_up_options">
+                <FollowUpButtons
+                  options={message.followUpOptions}
                   disabled={disabled}
-                  onResize={onResize}
+                  onChoose={onChoose}
                 />
-              )}
-            {message.captureDisclosure && (
-              <CaptureDisclosure disclosure={message.captureDisclosure} />
+              </div>
             )}
-            {message.privacyReceipt && (
-              <PrivacyReceiptCard
-                receipt={message.privacyReceipt}
-                {...(message.receiptId ? { receiptId: message.receiptId } : {})}
-              />
+            {settled && hasDetails && (
+              <AnswerDetails>
+                {explainAbove}
+                {explainBelow}
+                {meta}
+              </AnswerDetails>
             )}
           </>
         )}
-        {!isUser &&
-          (message.telemetry ||
-            elapsed ||
-            message.turnId !== undefined ||
-            message.verifier ||
-            message.workingMode) && (
-            <div className="mt-2 flex flex-wrap items-center border-t border-current/10 pt-2 text-[11px] text-[color:var(--fg-muted)]">
-              {message.telemetry && (
-                <span>
-                  tools={message.telemetry.tool_calls} · iterations=
-                  {message.telemetry.iterations}
-                </span>
-              )}
-              {message.model && (
-                <span
-                  className="ml-3 rounded bg-current/10 px-2 py-0.5 font-medium"
-                  title={message.model}
-                >
-                  {shortModelName(message.model)}
-                </span>
-              )}
-              {message.workingMode && <WorkingModeDetail mode={message.workingMode} />}
-              {message.systemData && <SystemDataBadge />}
-              {message.verifier && (
-                <VerifierBadge summary={message.verifier} systemData={message.systemData === true} />
-              )}
-              {elapsed !== null && <span className="ml-3">⏱ {elapsed}s</span>}
-              {message.streaming && (
-                <span className="ml-3">{t('streamingSuffix')}</span>
-              )}
-              {!message.streaming &&
-                !message.error &&
-                // A withheld answer is a notice — nothing to keep in memory.
-                !message.verifierBlocked &&
-                message.turnId !== undefined &&
-                (message.autoPromotedMkId !== undefined ? (
-                  <AutoPromotedBanner
-                    mkId={message.autoPromotedMkId}
-                    kind={message.palaiaExcerpt?.suggestedKind ?? 'insight'}
-                    onDiscarded={() => onDiscardAutoPromoted(message.id)}
-                  />
-                ) : (
-                  <SaveMemoryButton
-                    turnId={message.turnId}
-                    messageContent={message.content}
-                    {...(message.palaiaExcerpt
-                      ? { palaiaExcerpt: message.palaiaExcerpt }
-                      : {})}
-                  />
-                ))}
-            </div>
-          )}
+        {!isUser && !settled && meta}
       </div>
     </div>
   );

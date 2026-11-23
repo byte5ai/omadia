@@ -23,7 +23,7 @@ import { createBatchExecutor, createBatchTriggerSync, type KernelBatchJobRegistr
 import { createProactiveGate, RecipientProfileStore, type RecipientProfile } from './proactiveGate.js';
 import { TriggerEngine, type OperatorNotice, type TriggerAgentView } from './triggerEngine.js';
 import type { TriggerLimits } from './triggerPolicy.js';
-import { TriggerService, type EventSource } from './triggerService.js';
+import { conversationContextId, TriggerService, type EventSource } from './triggerService.js';
 import { TriggerStore } from './triggerStore.js';
 import { createTriggerToolHandler, TRIGGER_TOOL_NAMES, triggerToolSpecs, type TriggerToolTurn } from './triggerTools.js';
 import { TriggerWorker } from './triggerWorker.js';
@@ -89,6 +89,13 @@ export interface TriggerWiring {
   readonly worker: TriggerWorker;
   /** Hand an event from any bus to the hooks. Never throws. */
   onEvent(eventId: string, payload: Readonly<Record<string, unknown>>, eventKey: string): void;
+  /**
+   * A channel's meeting lifecycle (spec 2042 §5.12 "Bound to a context"): a
+   * meeting that ends ends its triggers, hooks and timers in one
+   * transaction; a meeting that starts again in the same chat reopens it.
+   * Never throws.
+   */
+  onSessionEvent(event: { readonly channelType: string; readonly conversationId: string; readonly kind: string }): Promise<void>;
   start(): void;
   stop(): void;
 }
@@ -273,6 +280,16 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
       void service.onEvent(eventId, payload, eventKey).catch((err: unknown) => {
         deps.log(`[triggers] event '${eventId}' could not reach the hooks: ${err instanceof Error ? err.message : String(err)}`);
       });
+    },
+    async onSessionEvent(event) {
+      if (event.kind !== 'session_ended' && event.kind !== 'session_started') return;
+      const contextId = conversationContextId(event.channelType, event.conversationId);
+      try {
+        if (event.kind === 'session_ended') await service.endContext('meeting', contextId);
+        else await store.reopenContext('meeting', contextId);
+      } catch (err) {
+        deps.log(`[triggers] meeting ${contextId} (${event.kind}) could not reach its triggers: ${err instanceof Error ? err.message : String(err)}`);
+      }
     },
     start() {
       if (!deps.enabled) {

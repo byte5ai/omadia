@@ -818,6 +818,15 @@ export class TriggerStore {
     });
   }
 
+  /** A context that had ended runs again (a recurring meeting in the same
+   *  chat starts anew): triggers set from now on may fire. */
+  async reopenContext(kind: TriggerContextKind, contextId: string): Promise<void> {
+    await this.pool.query(
+      'UPDATE agent_trigger_context_activity SET ended_at = NULL WHERE context_kind = $1 AND context_id = $2 AND ended_at IS NOT NULL',
+      [kind, contextId],
+    );
+  }
+
   /** Something happened in a context (a message, an event). */
   async noteActivity(kind: TriggerContextKind, contextId: string, at: Date): Promise<void> {
     await this.pool.query(

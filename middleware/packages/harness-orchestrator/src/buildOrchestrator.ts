@@ -1025,6 +1025,8 @@ export function buildOrchestratorForAgent(
   // Agent's DB-defined sub-agent tools once the registry exists.
   const orchestrator = new Orchestrator({
     agentId: config.agentId,
+    // Spec 2042 §6 criterion 1 — every run trace names the agent that answers.
+    traceAgentId: agentSpeaker.agentId,
     provider: deps.provider,
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),

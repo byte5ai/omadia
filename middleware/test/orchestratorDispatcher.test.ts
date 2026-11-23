@@ -7,7 +7,7 @@ import { buildSystemNotice } from '@omadia/orchestrator';
 import { managementChatAgent } from '../packages/harness-orchestrator/src/management/managementChatAgent.js';
 
 import type { ChannelManifestBlock } from '../src/api/admin-v1.js';
-import { createOrchestratorDispatcher } from '../src/channels/orchestratorDispatcher.js';
+import { NO_AGENT_AVAILABLE_MESSAGE, createOrchestratorDispatcher } from '../src/channels/orchestratorDispatcher.js';
 
 /**
  * PR-6 — the orchestrator dispatcher routes a turn to the channel's configured
@@ -144,13 +144,14 @@ describe('createOrchestratorDispatcher', () => {
     assert.deepEqual(input.target, { kind: 'item', containerId: 'courses', itemKey: 'k-7' });
   });
 
-  it('yields a single error event when no orchestrator is registered', async () => {
+  it('yields a single error event when no agent is registered (criterion 12: without saying "orchestrator")', async () => {
     const dispatcher = createOrchestratorDispatcher({
       getChannelBlock: () => undefined,
       getAgentBundle: () => undefined,
     });
     const events = await collect(dispatcher.streamTurn({ ...turn, channelId: 'x' }));
-    assert.deepEqual(events, [{ type: 'error', message: 'orchestrator unavailable' }]);
+    assert.deepEqual(events, [{ type: 'error', message: NO_AGENT_AVAILABLE_MESSAGE }]);
+    assert.doesNotMatch(NO_AGENT_AVAILABLE_MESSAGE, /orchestrator/i);
   });
 
   // ── US7 per-binding routing ───────────────────────────────────────────────

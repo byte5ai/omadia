@@ -246,3 +246,76 @@ describe('the guard on fetch and node:http', () => {
     }
   });
 });
+
+describe('direct HTTP to a model provider from archetype and capability plugins (criterion 37)', () => {
+  type DirectCaller = {
+    readonly viaHttps: (url: string) => Promise<number>;
+    readonly viaHttp: (url: string) => Promise<number>;
+  };
+  const permissions: Record<string, PluginEgressPermission> = {
+    // An archetype plugin in `public-web` mode that also lists the provider.
+    '@acme/archetype': perm({ publicWeb: true, hosts: ['api.anthropic.com'] }),
+    // A capability plugin that lists providers as ordinary outbound hosts.
+    '@acme/capability': perm({ hosts: ['api.openai.com', 'api.anthropic.com'] }),
+  };
+  const dirs = new Map<string, string>();
+  const plugins = new Map<string, DirectCaller>();
+
+  before(async () => {
+    for (const pluginId of Object.keys(permissions)) {
+      const dir = mkdtempSync(path.join(tmpdir(), 'egress-model-'));
+      const file = path.join(dir, 'plugin.mjs');
+      writeFileSync(
+        file,
+        [
+          "import https from 'node:https';",
+          "import { request as httpRequest } from 'node:http';",
+          'const call = (fn, url) => new Promise((resolve, reject) => {',
+          '  try { const req = fn(url, { method: "POST" }, (res) => { res.resume(); resolve(res.statusCode); }); req.on("error", reject); req.end("{}"); }',
+          '  catch (err) { reject(err); }',
+          '});',
+          'export const viaHttps = (url) => call(https.request, url);',
+          'export const viaHttp = (url) => call(httpRequest, url);',
+        ].join('\n'),
+      );
+      dirs.set(pluginId, dir);
+      plugins.set(pluginId, (await import(pathToFileURL(file).href)) as DirectCaller);
+    }
+    installPluginEgressGuard({
+      mode: 'enforce',
+      source: {
+        pluginRoots: () =>
+          [...dirs].flatMap(([pluginId, root]) => [
+            { root, pluginId },
+            { root: realpathSync(root), pluginId },
+          ]),
+        permissionOf: (pluginId) => permissions[pluginId],
+        modelProviderHosts: () => MODEL_HOSTS,
+      },
+    });
+  });
+
+  after(() => {
+    resetPluginEgressGuardForTests();
+    for (const dir of dirs.values()) rmSync(dir, { recursive: true, force: true });
+  });
+
+  for (const pluginId of Object.keys(permissions)) {
+    it(`criterion 37: ${pluginId} reaches no model provider through node:https or node:http`, async () => {
+      const plugin = plugins.get(pluginId);
+      assert.ok(plugin);
+      const attempts: ReadonlyArray<readonly [(url: string) => Promise<number>, string]> = [
+        [plugin.viaHttps, 'https://api.anthropic.com/v1/messages'],
+        [plugin.viaHttp, 'http://api.openai.com/v1/chat/completions'],
+      ];
+      for (const [call, url] of attempts) {
+        await assert.rejects(call(url), (err: unknown) => {
+          assert.ok(err instanceof PluginEgressRefusedError, String(err));
+          assert.equal(err.reason, 'model_provider');
+          assert.equal(err.pluginId, pluginId);
+          return true;
+        });
+      }
+    });
+  }
+});

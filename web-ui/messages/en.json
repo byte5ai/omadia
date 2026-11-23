@@ -1265,6 +1265,10 @@
         "what": "This plugin is the only Privacy Shield, and the org policy OMADIA_PRIVACY_FORCE_GUARDED requires masking, so it cannot be uninstalled.",
         "next": "Install another Privacy Shield provider first, or turn the org policy off in the middleware environment."
       },
+      "persona_declared": {
+        "what": "This package declares a persona or speaker of its own. A plugin delivers capabilities and may ship agent templates; identity and personality belong to an agent.",
+        "next": "Install a version of the plugin without a persona, or create the agent in the Agent Builder and give it the capability."
+      },
       "retired_kind": {
         "what": "This package is of a retired kind ('agent' or 'extension'). A plugin delivers capabilities and may ship agent templates; it is never an agent of its own, and infrastructure is a 'system-module'.",
         "next": "Install the version of the plugin that delivers capabilities, agent templates, a system module or a model instead; create agents in the Agent Builder."
@@ -1955,6 +1959,10 @@
         "chart_pie": "pie chart"
       }
     },
+    "answerDetails": {
+      "summary": "Details",
+      "hint": "How this answer came about: steps, verification, sources, colleagues consulted and privacy"
+    },
     "systemData": {
       "label": "Original system data",
       "hint": "The server inserted the values in this answer unchanged from the source system — the AI model did not write them. The text around them and the column headings come from the model."
@@ -2092,7 +2100,7 @@
     "actionReSnapshot": "Re-bind to the default agent",
     "actionDelete": "Delete session",
     "noAgentsTitle": "No agent is running",
-    "noAgentsBody": "No LLM provider is assigned to an agent yet, so no agent can answer. Open LLM access and assign an API key or a subscription CLI.",
+    "noAgentsBody": "No agent can answer: either no agent exists or is enabled yet, or no LLM provider is assigned. Create or enable an agent on the Agents page, and make sure an API key or a subscription CLI is assigned under LLM access.",
     "actionOpenLlmAccess": "Open LLM access"
   },
   "skills": {

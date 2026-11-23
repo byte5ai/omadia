@@ -5,7 +5,6 @@ import { isIP } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { buildHostMatcher } from './httpAccessor.js';
 import { isPublicIp } from './ssrfGuard.js';
 
 /**
@@ -106,6 +105,40 @@ export function decideEgress(
     return isIP(h) !== 0 && !isPublicIp(h) ? 'private_address' : undefined;
   }
   return 'not_allowed';
+}
+
+export function buildHostMatcher(pattern: string): (host: string) => boolean {
+  const p = pattern.trim().toLowerCase();
+  if (p.startsWith('*.')) {
+    const suffix = p.slice(2);
+    return (host: string): boolean => {
+      if (host === suffix) return false;
+      if (!host.endsWith('.' + suffix)) return false;
+      const sub = host.slice(0, host.length - suffix.length - 1);
+      // Leading-wildcard matches one label only — `*.example.com` accepts
+      // `api.example.com` but rejects `a.b.example.com`. Tightens the
+      // blast radius if a typo puts too-broad a wildcard in a manifest.
+      return sub.length > 0 && !sub.includes('.');
+    };
+  }
+  return (host: string): boolean => host === p;
+}
+
+/**
+ * Spec 2042 §5.10 — whether `host` is an installed model provider's endpoint
+ * that `pluginId` (not a model plugin) may not reach. Asked by `ctx.http`,
+ * whose requests this guard attributes to the kernel. `false` without an
+ * installed guard, and on a fault of the source (the guard's own rule).
+ */
+export function modelProviderDeniedTo(pluginId: string, host: string): boolean {
+  const source = state().source;
+  if (!source) return false;
+  try {
+    if (source.permissionOf(pluginId)?.isModelPlugin === true) return false;
+    return source.modelProviderHosts().has(normaliseHost(host));
+  } catch {
+    return false;
+  }
 }
 
 function normaliseHost(host: string): string {
