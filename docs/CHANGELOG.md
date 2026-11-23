@@ -64,6 +64,23 @@ die Deny-Prüfung läuft auf dem kanonischen Pfad. Andere Dateien unter
 (Regeln unter `_rules/` aus jedem Turn) braucht eine Entscheidung zum
 Zugriffsmodell und ist nicht Teil dieses Fixes.
 
+### Fixed — Ein Agent verliert seinen eigenen Namen nicht mehr an den Privacy Shield (#2042)
+
+2026-11-23. Der Shield maskierte im wiedergeholten Kontext eines Agents dessen
+eigenen Namen: C1 erkannte „Dark Clippy“ als Person, das Modell las „Ich bin
+<Platzhalter>“ in seinem Verlauf und „korrigierte“ sich in jedem Turn
+(„Falls ich mich als ‚Dark Clippy‘ vorgestellt habe: Das war falsch“). Der
+Turn-Handle reicht jetzt die eigenen Namen des Agents (Anzeigename, Slug,
+Identitätsname, sonst der Plattform-Assistentenname) als `ownNames` an
+`maskUserPrompt`, `maskReplayedAnswer` und `projectVerifierText`
+(plugin-api 1.90.0). Ein erkannter Span, dessen ganzer Wert einem davon
+gleicht (ohne Groß-/Kleinschreibung, umgebende Anführungszeichen und
+Satzzeichen), bleibt stehen und wird nicht gebucht; Known-Value-Sweep und
+Residual-Check lassen eigene Namen ebenfalls stehen. Die Deny-Liste gewinnt
+immer, Teilnamen und Possessive bleiben maskiert, ein eigener Name, der einem
+bekannten Menschen gleicht (`humanNames`), ist nicht ausgenommen. Regeln:
+`docs/security-architecture.md` §6f.
+
 ### Fixed — `delete /memories` löscht nicht mehr den ganzen Agent-Baum (#1828)
 
 2026-11-17. Der Memory-Namespacer bildet das modellseitige `/memories` auf

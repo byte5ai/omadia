@@ -8,6 +8,21 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.90.0 — 2026-11-23
+
+Additive (spec 2042 follow-up: an agent's own name is not masked in its own turn).
+
+### Added
+
+- **`PrivacyPromptMaskRequest.ownNames`**,
+  **`PrivacyReplayedAnswerRequest.ownNames`** and
+  **`PrivacyVerifierProjectionRequest.ownNames`** (optional): the speaking
+  agent's own names (display name, slug and identity name). A privacy
+  provider leaves a detected span whose whole value equals one of them
+  (ignoring case, surrounding quotes and punctuation) as written and does
+  not book it; the operator deny-list always wins, other names are masked
+  as before.
+
 ## 1.89.0 — 2026-11-23
 
 Additive (spec 2042 follow-up: a withheld answer is traceable, not remembered).

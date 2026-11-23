@@ -90,6 +90,7 @@ import {
   createCustomTermsDetector,
   maskPrompt,
 } from './promptMask.js';
+import { resolveOwnNames } from './ownNames.js';
 import {
   createToolErrorBaselineDetector,
   redactToolErrorSpans,
@@ -843,6 +844,9 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
     /** #1541 — whose text this is (see `PrivacyPromptMaskRequest.origin`). */
     readonly origin: PrivacyPromptOrigin;
     readonly preview: boolean;
+    /** The speaking agent's own names: never masked in its own turn
+     *  (`PrivacyPromptMaskRequest.ownNames`). */
+    readonly ownNames?: readonly string[];
     /** Refusal judged on the turn's map as it stands when this call's turn
      *  in the queue comes; `undefined` lets the call proceed. */
     readonly precheck?: (map: PseudonymMap | undefined) => PrivacyPromptMaskResult | undefined;
@@ -866,12 +870,18 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
     const refused = args.precheck?.(promptMaskMaps.get(turnId));
     if (refused !== undefined) return refused;
     try {
-      const result = await maskPrompt(text, detectors, promptMaskMaps.get(turnId));
+      const isOwnName = await resolveOwnNames(args.ownNames, detectors);
+      const result = await maskPrompt(text, detectors, promptMaskMaps.get(turnId), {
+        isOwnName,
+      });
       // Post-mask invariant: no detected real value may survive in the
       // wire-bound text outside a surrogate. A hit means substitution failed
       // — block. A term inside the shield's own placeholder is no hit
       // (#1529).
-      const residual = findResidualRealValues(result.maskedText, result.map);
+      // The agent's own names are allowed through (`ownNames.ts`).
+      const residual = findResidualRealValues(result.maskedText, result.map).filter(
+        (leak) => !isOwnName(leak.value),
+      );
       if (residual.length > 0) {
         console.error(
           `[privacy-guard v4] ${label}Blocked turn=${turnId} ` +
@@ -1316,6 +1326,7 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
         stage,
         origin: request.origin ?? 'message',
         preview,
+        ownNames: request.ownNames,
       });
     },
 
@@ -1347,6 +1358,7 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
         stage: 'verifier',
         origin: 'message',
         preview: false,
+        ownNames: request.ownNames,
         precheck: (map) => {
           if (!hasSurrogateCollision(request.text, map)) return undefined;
           console.error(
@@ -1396,6 +1408,7 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
         // message: its spans must not read as "masked in your message".
         origin: 'context',
         preview: false,
+        ownNames: request.ownNames,
       });
     },
 

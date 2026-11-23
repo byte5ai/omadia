@@ -1083,6 +1083,13 @@ export interface OrchestratorOptions {
    */
   identityName?: string;
   /**
+   * The names this Agent answers as (display name, slug and identity name —
+   * see `agentOwnNames`), read once per turn. The privacy shield never masks
+   * them in this Agent's own turn: masked, the model read "I am
+   * <surrogate>" in its recalled context and "corrected" its own name.
+   */
+  ownNames?: () => readonly string[];
+  /**
    * #2051 — skills attached to this Agent as working modes (the field keeps
    * the `agent_persona_skills` table's name). When non-empty, each turn runs a
    * cheap classifier ({@link routeTurnWorkingMode}) on a model the agent's
@@ -3139,6 +3146,8 @@ export class Orchestrator {
   /** #967 — this Agent's own authored name. See
    *  `OrchestratorOptions.identityName`. */
   private readonly identityName: string | undefined;
+  /** See `OrchestratorOptions.ownNames`. */
+  private readonly ownNames: (() => readonly string[]) | undefined;
   /** Operator's answer-size contract (see OrchestratorOptions.answerVerbosity). */
   private readonly answerVerbosity: AnswerVerbosity;
   /** #644 — resolved operator disclosure config (undefined → shipping default
@@ -3262,6 +3271,7 @@ export class Orchestrator {
     this.assistantIdentity =
       options.assistantIdentity?.trim() || DEFAULT_ASSISTANT_IDENTITY;
     this.identityName = options.identityName?.trim() || undefined;
+    this.ownNames = options.ownNames;
     this.answerVerbosity = options.answerVerbosity ?? DEFAULT_ANSWER_VERBOSITY;
     this.aiDisclosure = options.aiDisclosure;
     this.disclosureSeen =
@@ -9908,6 +9918,7 @@ export class Orchestrator {
       sessionId,
       turnId,
       resolveBypass,
+      ...(this.ownNames !== undefined ? { ownNames: this.ownNames() } : {}),
     });
   }
 
