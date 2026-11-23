@@ -4260,11 +4260,29 @@ in `wiring.ts` (aus `index.ts` aufgerufen).
   zurückgehaltene Antwort wird nicht gesendet und zählt als Fehler. `post` und
   `deliver` prüft `refusedByDiscretion` gegen die gespeicherten Labels, schon
   beim Anlegen (`Error (discretion)`). Routinen laufen in `runOnce` als Turn
-  des ausführenden Agenten (Gateway-Kontext), auch bei „Jetzt ausführen“. Die
-  Leser sind ein Schnappschuss vom Anlegen; spätere Mitglieder fehlen darin.
-- **Proaktives Gate** (`proactiveGate.ts`, Migration 0094): Zustellung nur in
-  den Kontext, in dem der Trigger entstand (`targetAllowed: () => false` bis
-  zu den Diskretions-Labels aus S5); Ruhezeiten und Rate-Limit pro Empfänger
+  des ausführenden Agenten (Gateway-Kontext), auch bei „Jetzt ausführen“.
+  Beim Senden liest `kernelExecutors.ts` die Leser des Raums frisch aus dem
+  Kanal-Roster (`conversationReaders.ts`, Kriterium 24): für ein explizites
+  Ziel immer (unbekannt = zurückgehalten), für den eigenen Raum des Triggers,
+  wo der Kanal ihn vollständig kennt (sonst der Schnappschuss vom Anlegen).
+  Der Roster wird mit dem geteilten Bot gelesen: ein Raum, den nur der eigene
+  Bot eines Agenten sieht, ist unbekannt.
+- **Explizite Ziele (Kriterium 24, Migration 0125):** Ein Operator gibt einem
+  Agenten Zielkonversationen frei (`agent_recipient_grants`,
+  `recipientGrants.ts`; `PUT/GET/DELETE /api/v1/operator/triggers/recipient-grants`,
+  Body `{ agent_id, channel, conversation_id, delivery_ref?, label? }`,
+  auditiert als `trigger.recipient_grant[_revoke]`). Ohne `delivery_ref` nimmt
+  der Kernel für Teams die Referenz des geteilten Bots aus
+  `teams_conversation_refs` (`bot_app_id = ''`), sonst `{ conversationId }`.
+  Der Agent nennt ein Ziel nur per Grant-Id (`target` an `on_event`/`wake_at`/
+  `wake_every`, Liste in `list_triggers` → `targets`); eine vom Modell gebaute
+  Referenz wird abgelehnt. Der Grant wird beim Anlegen, vor jedem Firing und
+  beim Senden geprüft; gesendet wird über seine aktuelle Referenz. Ruhezeiten
+  und Rate-Limit gelten für das Ziel. `conversationIdOf` nimmt bei einer
+  Bot-Framework-Referenz `conversation.id` vor `channelId` (`msteams`).
+- **Proaktives Gate** (`proactiveGate.ts`, Migration 0094): Zustellung in den
+  Kontext, in dem der Trigger entstand, oder an ein freigegebenes Ziel;
+  Ruhezeiten und Rate-Limit pro Empfänger
   aus `proactive_recipient_profiles` oder `PROACTIVE_*`, Verschieben vor jedem
   Lauf. Live-Meetings sind ausgenommen, Routinen von den Ruhezeiten (nicht vom
   Rate-Limit).
@@ -4294,6 +4312,25 @@ in `wiring.ts` (aus `index.ts` aufgerufen).
   (`deliverDataTool.ts`, `dataActions.ts`) ist nicht an `TRIGGERS_ENABLED`
   gebunden und steht auf jedem Orchestrator-Turn bereit; Details in §11
   „Daten-Seitenkanal“.
+
+### System-Notices außerhalb eines Turns (Spec 2042 §5.10, Kriterium 37)
+
+Geht ein Agent außer Dienst (deaktiviert, gelöscht, Archetyp-Plugin
+deinstalliert), bekommt jede betroffene Home-Konversation genau eine
+registrierte `system`-Notice (`agent_disabled`, `agent_deleted`,
+`archetype_plugin_removed`), lokalisiert nach `ai_disclosure_locale`.
+`platform/systemNoticeOutbox.ts` schreibt sie vor der Änderung in
+`system_notice_outbox` (Migration 0126; Dedupe pro Agent, Art und Konversation
+für 24 h unter einem Xact-Advisory-Lock) und sendet über
+`conversationSendRegistry` mit dem geteilten Bot (nie als eigener Bot des
+Agenten). Zustellung: Claim mit Lease (`FOR UPDATE SKIP LOCKED`), Abschluss nur
+durch den Lease-Halter, verlorene Lease zählt als Versuch, nach 5 Versuchen
+`failed`; ein Kanal, der noch nicht oben ist, verschiebt ohne Versuch. Der
+Worker leert die Outbox beim Boot und jede Minute.
+
+Operator-Jobs: die Routentabelle steht in `platform/operatorJobRoutes.ts`
+(Agent-Builder-Skill-Verdict, Plugin-Builder-Turn/-Preview, Workflow-Designer,
+Memory- und Issue-Tools).
 
 ### Operator-Agent-Routen: Reichweite, Erststart, Template, Bestätigung (#2054, #2049, #2050, Epic #2042)
 

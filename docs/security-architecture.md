@@ -869,6 +869,25 @@ shared with every other local service; a plugin that hands the kernel a
 bare `fetch` reference to call for it is not seen. A plugin can also patch
 the guard away, like any in-process check.
 
+### Plugin Builder preview: no service right the draft lacks (criterion 37)
+
+A preview reads kernel services through to the live registry so a draft can
+be tested against an installed integration. It used to do so ungated. Now
+`plugins/builder/previewServices.ts` applies the gates of an installed plugin,
+judged by the draft's own manifest: only declared capabilities (and of a
+versioned name only the declared major), never a pool-shaped capability, never
+a raw model client or provider pool (whatever kind the draft claims), and
+resolved as the draft plugin. A manifest that cannot be read declares nothing.
+
+### Recipient grants: where a proactive message may go (criterion 24)
+
+A trigger posts into the conversation it was created in, or into a target an
+operator granted the agent (`agent_recipient_grants`). The agent names a
+target only by grant id, so no model-made delivery reference reaches a
+sender; the grant is re-checked at every send and its stored reference is
+used. The discretion check runs against the target's readers read from the
+channel roster at send time; an unknown roster closes the room.
+
 ### Plugin-borne workflow templates (#478)
 
 Plugins may contribute Conductor workflow templates, and the capability is
