@@ -25,7 +25,7 @@ import {
   verdictReleasesAnswer,
   withheldTurnResult,
 } from './verifierDelivery.js';
-import { enforcedVerifierStream } from './verifierEnforceStream.js';
+import { enforcedVerifierStream, withCorrectionHint } from './verifierEnforceStream.js';
 import { VerifierJudge } from './verifierJudge.js';
 import {
   EgressLedger,
@@ -447,10 +447,7 @@ export class VerifierService implements ChatAgent {
     if (!correction) return deliverWithoutRetry();
 
     this.log(retryLogLine(this.judge.runLabel(runId), effectiveVerdict));
-    const retryInput: ChatTurnInput = {
-      ...input,
-      extraSystemHint: correction,
-    };
+    const retryInput: ChatTurnInput = withCorrectionHint(input, correction);
     let retry: PassTurn;
     try {
       const pass = prepareReentry(this.orchestrator, retryInput, ledger);
