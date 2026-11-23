@@ -386,6 +386,21 @@ describe('PreviewRuntime', () => {
         },
       }).activate({ zipBuffer: Buffer.alloc(0), draftId: 'd2', rev: 1, configValues: {}, secretValues: {} });
       assert.throws(() => bare!.services.get('odoo.client'), ServiceNotDeclaredError);
+
+      // A draft that calls itself a model plugin gets no raw client either.
+      let model: PreviewPluginContext | undefined;
+      await buildRuntime({
+        previewsRoot: freshRoot('services-model-kind'),
+        serviceRegistry: host,
+        manifestYaml: SERVICES_MANIFEST.replace('kind: "tool"', 'kind: "model"'),
+        onActivate: (c) => {
+          model = c;
+        },
+      }).activate({ zipBuffer: Buffer.alloc(0), draftId: 'd3', rev: 1, configValues: {}, secretValues: {} });
+      assert.ok(model);
+      assert.throws(() => model!.services.get('anthropicClient'), RawModelServiceRefusedError);
+      assert.throws(() => model!.services.get('llm'), RawModelServiceRefusedError);
+      assert.deepEqual(handed, []);
     });
 
     // ── ctx.llm (host-backed, manifest-gated) ─────────────────────────────

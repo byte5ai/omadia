@@ -12,8 +12,8 @@
  *     and of a versioned name only the declared major;
  *   - never a pool-shaped capability (the operator's database needs an
  *     operator grant a preview cannot have);
- *   - never a raw model client or provider pool: models go through the
- *     gateway, as for any plugin that is not a model plugin;
+ *   - never a raw model client or provider pool, whatever kind the draft's
+ *     manifest claims: models go through the gateway;
  *   - resolved as the draft plugin, so per-caller services see who asks.
  *
  * A manifest that cannot be read declares nothing: every lookup is refused.
@@ -28,7 +28,7 @@ import yaml from 'yaml';
 import {
   createServiceGrantGate,
   declaresServiceMajor,
-  rawModelServiceAccess,
+  isRawModelServiceName,
   versionedServiceRef,
 } from '../../platform/pluginServiceGrants.js';
 import { POOL_SHAPED_CAPABILITIES } from '../../platform/pluginSqlGrants.js';
@@ -61,7 +61,6 @@ export function createPreviewServiceGate(
       throw new ServiceNotDeclaredError(agentId, requested);
     };
   }
-  const kind = catalog.get(agentId)?.plugin.kind;
   const assertDeclared = createServiceGrantGate({ agentId, catalog, isRegisteredByPlugin: () => false, log });
   return (requested) => {
     const versioned = versionedServiceRef(requested);
@@ -71,9 +70,10 @@ export function createPreviewServiceGate(
       throw new ServiceNotDeclaredError(agentId, requested);
     }
     if (POOL_SHAPED_CAPABILITIES.has(name)) throw new SharedPoolRefusedError(agentId, name);
-    if (rawModelServiceAccess({ name, kind, bundled: false }) === 'refuse') {
-      throw new RawModelServiceRefusedError(agentId, name);
-    }
+    // Whatever kind the draft's own manifest claims: a draft written by the
+    // Builder is no model plugin of the operator's, and its preview reaches
+    // models only through the gateway.
+    if (isRawModelServiceName(name)) throw new RawModelServiceRefusedError(agentId, name);
   };
 }
 
