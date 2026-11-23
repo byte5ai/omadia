@@ -2902,6 +2902,44 @@ Runs behalten ihren Snapshot-Graph, also v4-Prompts).
 nur in `activate()` auflösen; Rehydrierung muss lazy beim ersten Tool-Call
 passieren (Facilitator 0.6.0: `Hydrator.ensure()`).
 
+### Conductor — Run-Kontext-Interpolation (`{{ctx.*}}` / `{{steps.*}}`, #1709)
+
+Ein Graph-Feld kann Werte des LAUFS einsetzen. Vier Felder tun das, und sie teilen
+*nicht* eine Policy für ein nicht aufgelöstes Token — genau das ist der Entwurf
+(`src/conductor/runInterpolation.ts`, ein Substitutions-Pass, vier benannte Policies):
+
+| Feld | Renderer | nicht aufgelöst |
+|---|---|---|
+| `step.human.message` | `renderAwaitMessage` | sichtbarer Gedankenstrich `—`, Ergebnis auf 4000 Zeichen gekappt |
+| `step.prompt` | `renderAgentPrompt` | leer |
+| `step.input` (jeder String, jede Tiefe) | `renderActionInput` | leer |
+| `step.agentId` | `renderAgentRef` | leer |
+
+Der Gedankenstrich gilt nur für das Feld, das ein MENSCH liest: eine Freigabe darf
+niemals `{{ctx.employeeName}}` zeigen. Die anderen drei bleiben leer, jedes aus
+eigenem Grund — ein Prompt, weil das Muster `discussion` auf „THE CONVERSATION SO FAR
+(empty if you are opening)" verzweigt; ein Ref, weil nur der leere Slug einen
+Agent-Schritt sauber ablehnen lässt („the run context does not name a speaker"); ein
+Action-Input, weil ein Gedankenstrich sonst nach außen gePOSTet wird. Substitution ist
+immer textuell: ein Token ergibt nie einen anderen JSON-Typ, damit die Form eines
+Connector-Inputs nicht vom Payload abhängt. Objekt-SCHLÜSSEL werden nie angefasst.
+
+**Wo gerendert wird.** `openHumanAwait` rendert die Nachricht EINMAL gegen den Kontext,
+mit dem der Run parkt — die Await-Zeile ist, was Inbox (`/awaits/pending`), Karte
+(`question`) und Reminder-Worker lesen. Await-Zeilen aus der Zeit VOR #1709 enthalten
+noch Template-Text; eine Await-Zeile wird einmal geschrieben und nie neu geschrieben,
+deshalb joint `ConductorAwaitStore` den Run-Kontext in jeden SELECT und rendert solche
+Zeilen beim Lesen (keine Migration, kein Re-Render pro Leser).
+
+**Eine Grammatik.** Sie liegt in `@omadia/conductor-core` (`runTokens.ts`:
+`isTemplateExpression`, `runTokenMatcher`) und wird von beiden Seiten benutzt — der
+Autoring-Prüfung, die ein getemplatetes `step.agentId` von `unknown_agent_ref`
+ausnimmt, und dem Runtime-Renderer. Driften die beiden, ist ein Token, das zur Laufzeit
+auflöst, beim Autoring ein unbekannter Ref. Pfad-Segmente sind `[A-Za-z0-9_-]+` (Step-IDs
+sind beliebige Strings, die gebündelten Templates nutzen Kebab-IDs). Disjunkt zu den
+`slot:text:<key>`-Tokens der Templates (`textSlots.ts`): ein `:` ist kein Pfadzeichen,
+Text-Slots werden einmal beim Instanziieren ersetzt, diese Tokens pro Lauf.
+
 ### Group-Conversation-Primitives im Channel-SDK (#330 Workstream B1)
 
 Strikt additive SDK-Erweiterung (Teams 0.12.7 / Telegram 0.2.0 laufen

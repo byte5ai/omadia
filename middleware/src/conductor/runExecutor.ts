@@ -18,6 +18,7 @@ import {
 } from './runError.js';
 import { appendTranscript } from './transcript.js';
 import { sanitizeRunContext } from './runContext.js';
+import { renderAwaitMessage } from './runInterpolation.js';
 import type { RoleHolderResolver } from './roleHolderResolver.js';
 import type { AggregateHolderLookup } from '@omadia/channel-sdk';
 
@@ -858,7 +859,12 @@ export class ConductorRunExecutor {
       principalKind: h?.principal.kind ?? 'role',
       principalRef: h?.principal.ref ?? '',
       channelType: h?.channel ?? 'teams',
-      message: h?.message ?? '',
+      // #1709 — the approver reads THIS string. Rendered once, here, against the
+      // context the run is parked with: the await row is what the inbox, the card
+      // and the reminder worker all read, so an unrendered message would reach a
+      // person through every one of them. (A row written BEFORE this fix still holds
+      // raw template text; awaitStore renders those on read.)
+      message: renderAwaitMessage(h?.message ?? '', context),
       quorum: h?.quorum ?? 'any',
       reminderIntervalMs: reminderMs,
       deadlineAt: deadlineMs ? new Date(Date.now() + deadlineMs) : null,
