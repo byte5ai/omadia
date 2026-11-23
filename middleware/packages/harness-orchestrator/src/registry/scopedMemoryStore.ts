@@ -287,8 +287,9 @@ const CORE_NOTES_PREFIXES = ['/memories/core/'];
  * `/memories/_rules/` (#1827): every file there reaches EVERY agent for EVERY
  * account — the system prompt has agents read it, and the durable-rules hook
  * copies each write into team-wide durable knowledge. A context-free turn
- * (mode "Off", the default, so any chat, Public API or channel turn) holds
- * plain `core`, which grants `_*`, so one chat could plant a rule for all.
+ * (every turn of an agent in mode "Off", the default until migration 0099, and
+ * any turn without a channel context) holds plain `core`, which grants `_*`,
+ * so one chat could plant a rule for all.
  * Rules now come from the repo seed only (`MEMORY_SEED_DIR`), written on the
  * root store at boot or by a re-seed purge.
  */
