@@ -1221,6 +1221,11 @@ export class CliChatAgent implements ChatAgent {
    */
   public async chat(input: ChatTurnInput, hooks?: CliChatHooks): Promise<SemanticAnswer> {
     if (this.refusedByPolicy()) return { text: this.refusalAnswer(input) };
+    // Spec 2042 §5.10 — the same gateway admission as `chatStream()`: one CLI
+    // run is one `run_loop` call, only inside an execution context, never
+    // with a kill switch on. Without it a turn through `chat()` (sub-agents,
+    // helpers) bypassed the gate entirely.
+    admitModelCall('run_loop');
     const lifecycle = this.runLifecycle(input, this.captureTurnContext(input));
 
     while (true) {
