@@ -333,14 +333,22 @@ permissions:
 
 ---
 
-## 4a. Implementieren — Agent
+## 4a. Implementieren — Capability-Plugin (`tool`, `integration`, `skill`)
 
-- **`activate(ctx)`** gibt fix zurück:
-  `{ toolkit: { tools: ToolDescriptor[]; close() }, close() }`.
-  `ToolDescriptor = { id, description, input: ZodSchema, run(input) }`.
-- Kein eigener LLM-Client, keine eigene Tool-Loop — die Runtime macht
-  SubAgent-Wrap, Tool-Bridge, Tool-Name-Derivation (`…agent.<slug>` →
-  `query_<slug>`) und System-Prompt-Concat aus `skills/*.md`.
+- **`activate(ctx)`** registriert jedes Tool mit
+  `ctx.tools.register(spec, handler, options?)` und gibt `{ close() }` zurück;
+  `close()` ruft die Dispose-Funktionen der Registrierungen auf
+  (Boilerplate: `registerTools.ts`).
+- Der Kern bietet die Tools den Agenten an, denen der Operator das Plugin
+  freigegeben hat; der aufrufende Agent entscheidet, wann er sie nutzt. Kein
+  eigener LLM-Client, keine eigene Tool-Loop, kein Sub-Agent: die Laufzeit für
+  Plugins vom Kind `agent` (`query_<slug>`-Tools) gibt es nicht mehr (S3c). Ein
+  noch installiertes `agent`-Plugin startet nicht und steht auf `errored` mit
+  dem Code `kind_retired`.
+- Der Handler gibt Text zurück — oder `{ output, postcondition?, limitSignal?,
+  structured? }` (`NativeToolResult`, siehe unten).
+- PII-Spalten des Ergebnisses deklarierst du mit `piiFields` in den Optionen von
+  `ctx.tools.register`; die Privacy Shield maskiert sie immer.
 - Secrets/Config nur über `ctx`:
   `await ctx.secrets.get(k)` / `.require(k)` (async), `ctx.config.get<T>(k)` (sync).
 - Kein System-Prompt, kein `AGENT.md`, keine `prompt_partial`-Skills: was ein

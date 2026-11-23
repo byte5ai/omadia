@@ -27,7 +27,9 @@ interface VerifierBadgeProps {
 }
 
 /**
- * Footer chip stating what the answer verifier concluded for this turn.
+ * Entry in the collapsed answer details (`AnswerDetails`, spec 2042 §5.14 —
+ * `verifier_badge` is no longer a decoration around the answer) stating what
+ * the answer verifier concluded for this turn.
  * Green only for a verified answer with checked claims; a turn with nothing
  * checkable, or a verifier that could not run, gets its own neutral chip so
  * it can never be mistaken for a check. The tooltip explains the state.
@@ -51,7 +53,8 @@ export function VerifierBadge({
 }
 
 /**
- * Footer chip for an answer Privacy Shield rendered server-side: its values
+ * Answer-details entry (not a `system_data_chip` decoration any more) for an
+ * answer Privacy Shield rendered server-side: its values
  * are the source system's original data, inserted by the server — not text
  * the model wrote. Deterministic, so the verifier does not check them; the
  * model's prose around them still is (`VerifierBadge`). The tooltip says

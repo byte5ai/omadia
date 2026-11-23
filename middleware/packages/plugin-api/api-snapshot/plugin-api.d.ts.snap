@@ -1,6 +1,40 @@
 // Golden API snapshot for @omadia/plugin-api — generated, do not hand-edit.
 // Regenerate deliberately: npm run api:update -w packages/plugin-api
 
+// ===== agentDirectory.d.ts =====
+export declare const AGENT_DIRECTORY_SERVICE_NAME = "agentDirectory";
+export interface AgentDirectoryRequest {
+readonly channel: string;
+readonly channelId: string;
+readonly tenantId?: string;
+readonly subject: string;
+readonly email?: string;
+readonly omadiaUserId?: string;
+readonly provider: string;
+}
+export interface AgentDirectoryAgent {
+readonly id: string;
+readonly slug: string;
+readonly display_name: string;
+readonly short_description: string | null;
+readonly avatar_url: string | null;
+readonly archetype: string | null;
+}
+export type AgentDirectoryDefault = {
+readonly slug: string;
+} | {
+readonly slug: null;
+readonly notice: string;
+};
+export interface AgentDirectoryView {
+readonly channel: string;
+readonly agents: readonly AgentDirectoryAgent[];
+readonly default_agent: AgentDirectoryDefault;
+}
+export interface AgentDirectoryService {
+listAvailable(request: AgentDirectoryRequest): Promise<AgentDirectoryView>;
+}
+
 // ===== agentEnvelope.d.ts =====
 export declare const AGENT_ENVELOPE_SERVICE_NAME = "agentEnvelope";
 export interface AgentEnvelope<TAgent = unknown> {
@@ -1194,6 +1228,7 @@ export * from './toolControlFlowText.js';
 export * from './toolErrorNotice.js';
 export * from './selfExtend.js';
 export * from './localSubAgentTool.js';
+export * from './nativeToolResult.js';
 export * from './piiAnnotation.js';
 export * from './targetRef.js';
 export * from './writeCapabilities.js';
@@ -1243,6 +1278,7 @@ export * from './speaker.js';
 export * from './maintenanceRun.js';
 export * from './modelPassthrough.js';
 export * from './agentEnvelope.js';
+export * from './agentDirectory.js';
 export * from './batchJobs.js';
 
 // ===== knowledgeGraph.d.ts =====
@@ -2167,6 +2203,23 @@ readonly signal?: AbortSignal;
 export declare const OPERATOR_JOBS_SERVICE_NAME = "operatorJobs";
 export declare const MODEL_PASSTHROUGH_SERVICE_NAME = "modelPassthrough";
 
+// ===== nativeToolResult.d.ts =====
+import type { LocalSubAgentToolResult } from './localSubAgentTool.js';
+export type NativeToolResult = LocalSubAgentToolResult;
+export type NativeToolOutput = string | NativeToolResult;
+export interface NormalizedNativeToolResult {
+readonly text: string;
+readonly postcondition?: {
+readonly issues: readonly string[];
+};
+readonly structured?: NativeToolResult['structured'];
+}
+export declare function isNativeToolResult(value: unknown): value is NativeToolResult;
+export declare function nativeToolDispatchText(raw: unknown, toolName: string): string;
+export declare function unreadableToolResultNotice(toolName: string): string;
+export declare function normalizeNativeToolResult(raw: unknown): NormalizedNativeToolResult;
+export declare function nativeToolResultText(raw: unknown): string;
+
 // ===== nudge.d.ts =====
 import type { ProcessMemoryService } from './processMemory.js';
 export declare const NUDGE_REGISTRY_SERVICE_NAME = "nudgeRegistry";
@@ -2327,6 +2380,7 @@ export declare function computeCodeChallenge(verifier: string): string;
 import type { Socket } from 'node:net';
 import type { ToolPIIField } from './piiAnnotation.js';
 import type { WriteCapability } from './writeCapabilities.js';
+import type { NativeToolOutput } from './nativeToolResult.js';
 import type { EntityCapturedTurnsHit, EntityCapturedTurnsOptions, EntityIngest, EntityIngestResult, FactIngest, FactIngestResult, GraphNode, GraphStats, SearchTurnsOptions, TurnSearchHit } from './knowledgeGraph.js';
 export interface PluginContext {
 readonly agentId: string;
@@ -2450,7 +2504,8 @@ domain: string;
 ok: false;
 message: string;
 };
-export type NativeToolHandler = (input: unknown, context?: NativeToolCallContext) => Promise<string>;
+export type NativeToolHandler = (input: unknown, context?: NativeToolCallContext) => Promise<NativeToolOutput>;
+export type NativeTextToolHandler = (input: unknown, context?: NativeToolCallContext) => Promise<string>;
 export interface NativeToolCallContext {
 readonly agentSlug?: string;
 readonly channelType?: string;
@@ -3359,6 +3414,7 @@ export interface CardSupport {
 kinds: readonly CardQuestionKind[];
 maxQuestions: number;
 update: boolean;
+asText?: boolean;
 }
 export type CardAnswerValue = {
 questionId: string;
@@ -3686,7 +3742,7 @@ export declare function isAgentSpeaker(speaker: Speaker | undefined): speaker is
 export declare function isSystemSpeaker(speaker: Speaker | undefined): speaker is SystemSpeaker;
 export declare const EMISSION_TYPES: readonly ["prose", "template", "data", "system"];
 export type EmissionType = (typeof EMISSION_TYPES)[number];
-export declare const SYSTEM_NOTICE_CODES: readonly ["agent_disabled", "agent_deleted", "agent_unknown", "agent_not_available", "no_agent", "agent_selected", "agent_selection_cleared", "agent_directory", "agent_error", "missing_grant", "quota_exceeded", "identity_guard_blocked", "identity_guard_unavailable", "agent_own_bot"];
+export declare const SYSTEM_NOTICE_CODES: readonly ["agent_disabled", "agent_deleted", "agent_unknown", "agent_not_available", "no_agent", "agent_selected", "agent_selection_cleared", "agent_directory", "agent_error", "missing_grant", "quota_exceeded", "identity_guard_blocked", "identity_guard_unavailable", "agent_own_bot", "archetype_plugin_removed"];
 export type SystemNoticeCode = (typeof SYSTEM_NOTICE_CODES)[number];
 export interface NoticeAgentRef {
 readonly slug: string;

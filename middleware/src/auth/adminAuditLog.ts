@@ -77,6 +77,9 @@ export type AuditAction =
   // credential.
   | 'agent.broad_reach_grant'
   | 'agent.broad_reach_default'
+  // S3c — an invalid grant (an archetype plugin on an agent of another
+  // archetype, from before #2088) removed with a replace of the agent's grants.
+  | 'agent.plugin_grant_revoked'
   // #2090 — the operator's kill switch for the actions of archetype plugins
   // (instance, one agent, one process): set and cleared.
   | 'execution.kill_switch_set'
@@ -91,6 +94,10 @@ export type AuditAction =
   | 'trigger.resume'
   | 'trigger.end'
   | 'trigger.recipient_profile'
+  // Criterion 24 — an explicit target an operator allowed (or took back)
+  // for an agent's proactive messages.
+  | 'trigger.recipient_grant'
+  | 'trigger.recipient_grant_revoke'
   // #2055 — the default-agent table and an agent's availability decide who
   // answers whom: who may reach which agent belongs in the trail.
   | 'agent.default_entry.set'

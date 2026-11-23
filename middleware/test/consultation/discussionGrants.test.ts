@@ -5,6 +5,8 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import {
@@ -75,5 +77,41 @@ describe('discussions need mutual consultation grants', () => {
       mutualGrant: () => Promise.reject(new Error('db down')),
     });
     assert.deepEqual(await capability.partnersHere(), []);
+  });
+
+  it('criterion 4: production wires the mutual-grant check into the only discussion capability it builds', () => {
+    // `mutualGrant` is optional in the factory (test harnesses without a
+    // store); the kernel must never build the capability without it.
+    const srcRoot = join(import.meta.dirname, '../../src');
+    const files = (function walk(dir: string): string[] {
+      return readdirSync(dir).flatMap((name) => {
+        const path = join(dir, name);
+        if (statSync(path).isDirectory()) return walk(path);
+        return path.endsWith('.ts') ? [path] : [];
+      });
+    })(srcRoot);
+    const callSites = files.flatMap((file) => {
+      const source = readFileSync(file, 'utf8');
+      const sites: string[] = [];
+      let from = 0;
+      for (;;) {
+        const at = source.indexOf('createDiscussionsCapability({', from);
+        if (at < 0) break;
+        // The argument object: up to its matching closing brace.
+        let depth = 0;
+        let end = at + 'createDiscussionsCapability('.length;
+        for (; end < source.length; end += 1) {
+          if (source[end] === '{') depth += 1;
+          else if (source[end] === '}' && --depth === 0) break;
+        }
+        sites.push(source.slice(at, end + 1));
+        from = end;
+      }
+      return sites;
+    });
+    assert.equal(callSites.length, 1, 'one production call site');
+    assert.match(callSites[0]!, /\bmutualGrant:/);
+    assert.match(callSites[0]!, /consultationStore\.hasMutualGrants\(/);
+    assert.match(callSites[0]!, /\bpeerGate\b/);
   });
 });

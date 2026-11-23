@@ -120,6 +120,14 @@ export interface SemanticAnswer {
   verifier?: VerifierBadge;
 
   /**
+   * Spec 2042 §5.14, criterion 29 — the persisted turn id
+   * (`ChatTurnResult.turnId`) of this answer: the reference to its trace in
+   * the operator UI. Never rendered into the message body; channels with an
+   * answer-details element may link it there.
+   */
+  turnId?: string;
+
+  /**
    * True when persisted memory could actually have CHANGED this answer —
    * topical recall (an entity / FTS hit from outside the live conversation
    * window), a cross-session plan / process / insight, or a successful read of

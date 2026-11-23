@@ -159,6 +159,7 @@ export async function contractSuite(
       await c.pool.query('UPDATE agent_default_entries SET agent_id = NULL');
       await c.pool.query('DELETE FROM agent_teams_identities');
       await c.pool.query('DELETE FROM agents');
+      await c.pool.query('DELETE FROM system_notice_outbox');
       c.k = await bootFacilitatorKernel({ pool: c.pool });
       c.k.channel.rosters.set(CHAT, {
         conversationType: 'group',

@@ -8,6 +8,7 @@ export * from './toolControlFlowText.js';
 export * from './toolErrorNotice.js';
 export * from './selfExtend.js';
 export * from './localSubAgentTool.js';
+export * from './nativeToolResult.js';
 export * from './piiAnnotation.js';
 
 // Omadia UI canvas: the shared `TargetRef` discriminated union (beam / mutation
@@ -220,6 +221,10 @@ export * from './modelPassthrough.js';
 // Spec 2042 §5.2 — the envelope of one agent for a system module working on
 // its behalf (`agentEnvelope@1`, the canvas presentation helper).
 export * from './agentEnvelope.js';
+
+// Spec 2042 §5.3 — the agents a person may address in a channel
+// (`agentDirectory@1`, the canvas channel's picker), channel plugins only.
+export * from './agentDirectory.js';
 
 // #2082 (epic #2042) — bounded batch jobs: learning and consolidation run as
 // agent batch triggers, not as free-running plugin intervals.

@@ -16,8 +16,10 @@
  * Channel plugins pass what they are about to attach through
  * {@link admitDecorations}; an undeclared id, or a channel the declaration
  * does not list, is refused (the element is dropped, the refusal is reported).
- * `decorations.test.ts` fails when a decoration id is used in the SDK without
- * an entry, so a new one cannot appear unnoticed.
+ * `middleware/test/decorationRegistry.test.ts` fails when a decoration id is
+ * used in SDK or kernel source without an entry, so a new one cannot appear
+ * unnoticed; the web UI's answer row has the same check
+ * (`web-ui/app/chat/__tests__/answerDecorations.test.tsx`).
  *
  * Everything else lives in the structured answer (`SemanticAnswer.details`)
  * and in on-demand details (spec §5.14 table), or in the agent's own words.

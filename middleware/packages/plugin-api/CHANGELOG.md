@@ -8,6 +8,80 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.88.0 — 2026-11-23
+
+Additive (live runs of native facilitators on Slack, Discord and Telegram).
+
+### Added
+
+- **`CardSupport.asText`**. `true` when the channel shows no native cards and
+  the kernel posts a card as numbered text, with a typed reply as its answer
+  (#2086). A sender that explains how to answer says "reply in the chat" for
+  such a channel, not "use the card". Absent on older kernels: read as `false`.
+
+### Clarified
+
+- **`NativeToolCallContext.callerPrincipalId`** is the conversation form
+  `user:<channel user id>` on every channel (ADR 0032). The kernel no longer
+  copies the routing principal a channel states on `TurnOrigin.principal`
+  (`user:discord-user:<id>`, `user:<e-mail>`) into it.
+
+## 1.87.0 — 2026-11-23
+
+Additive (spec 2042 §5.10, criterion 37): the end-of-service notice after an
+archetype plugin is removed.
+
+### Added
+
+- **`SYSTEM_NOTICE_CODES`: `archetype_plugin_removed`**. The registered
+  `system` notice each home conversation of an agent gets once when the plugin
+  that delivers its archetype is uninstalled: the agent is disabled, its
+  running processes ended, and closing documents that needed its voice are
+  not sent. Speaker `system`, posted through the channel's shared bot, never
+  under the agent's own bot.
+
+## 1.86.0 — 2026-11-23
+
+Additive (spec 2042 §5.3, criterion 40, the canvas channel's agent picker;
+§5.10, the S3c contract cleanup).
+
+### Added
+
+- **`NativeToolResult`, `NativeToolOutput`** (S3c, spec 2042 §5.10): a
+  `NativeToolHandler` may resolve to `{ output, limitSignal?, postcondition?,
+  structured? }` (the shape of `LocalSubAgentToolResult`) instead of text. The
+  model sees `output` plus the limit note; a `postcondition` goes to the run
+  trace and the verifier; `structured` never reaches the model. Helpers:
+  `normalizeNativeToolResult`, `nativeToolResultText`, `isNativeToolResult`,
+  `nativeToolDispatchText` (a value that is neither text nor a structured
+  result passes through, so a non-string guard still refuses it). Text stays
+  valid.
+- **`NativeTextToolHandler`**: a `NativeToolHandler` that always answers with
+  text; the kernel's own tools are typed with it.
+
+### Changed (types)
+
+- **`NativeToolHandler`** now resolves to `NativeToolOutput` (`string |
+  NativeToolResult`). Additive for plugins, which implement handlers. Code
+  that CALLS a `NativeToolHandler` and reads the result as a string no longer
+  compiles: read it with `nativeToolResultText`, or type the handler as
+  `NativeTextToolHandler` when it is known to answer with text.
+  `ctx.tools.invoke` still resolves to text.
+- **`agentDirectory@1`** (`AGENT_DIRECTORY_SERVICE_NAME`,
+  `AgentDirectoryService`, `AgentDirectoryRequest`, `AgentDirectoryView`,
+  `AgentDirectoryAgent`, `AgentDirectoryDefault`): the agents a person may
+  address in a channel and what an unaddressed message from them reaches —
+  the answer of `GET /api/v1/agents/directory`, for a channel plugin that
+  cannot call that route. Given to `channel` plugins only. It lists; whether a
+  turn runs is the channel resolver's decision.
+
+### Changed (kernel behaviour, no type change)
+
+- An addressed turn (`metadata.agentId`) of a channel with its own
+  `dispatch_service` goes to that service with `ChatTurnInput.agentId` (channel
+  SDK) once `resolveAgent` has bound the agent, instead of straight to the
+  agent. A refusal and `/agent` commands stay with the management layer.
+
 ## 1.85.0 — 2026-11-22
 
 Additive (#2090, spec 2043 §0, §5.2, §5.6; ADR 0030): the kernel bounds a

@@ -35,6 +35,9 @@ export interface VerifierJudgeOptions {
   readonly log: (msg: string) => void;
   /** #1571 — the agent whose answers are checked (`verifier_verdicts.agent`). */
   readonly agent?: string;
+  /** The tools the answering agent holds: a claim about what it cannot reach
+   *  is a self-description unless it names one of their systems. */
+  readonly offeredToolNames?: () => ReadonlySet<string> | undefined;
 }
 
 /** #1571 — what the judge knows about one verified request across its passes. */
@@ -156,6 +159,18 @@ export class VerifierJudge {
       : verify();
   }
 
+  /** The agent's tools as a list, or `undefined` when unknown (a lookup that
+   *  throws counts as unknown: the detector then keeps its older rule). */
+  private offeredTools(): string[] | undefined {
+    try {
+      const names = this.opts.offeredToolNames?.();
+      return names ? [...names] : undefined;
+    } catch (err) {
+      this.opts.log(`[verifier/service] offered tools unknown: ${errMsg(err)}`);
+      return undefined;
+    }
+  }
+
   /** The rendered answer's prose with the turn's prompt surrogates restored —
    *  what the user reads above the rows. The masked prose when restore fails:
    *  it holds no real value, so the pipeline may still see it. */
@@ -181,6 +196,7 @@ export class VerifierJudge {
     const knowledgeGraphToolsCalled = extractKnowledgeGraphToolsCalled(runTrace);
     const knowledgeGraphRefs = extractKnowledgeGraphRefs(runTrace);
     const failedToolsCalled = extractFailedToolsCalled(runTrace);
+    const offeredToolNames = this.offeredTools();
     let returned: unknown;
     try {
       returned = await this.opts.pipeline.verify({
@@ -197,6 +213,7 @@ export class VerifierJudge {
           : {}),
         ...(knowledgeGraphRefs ? { knowledgeGraphRefs } : {}),
         ...(failedToolsCalled ? { failedToolsCalled } : {}),
+        ...(offeredToolNames ? { offeredToolNames } : {}),
         ...(turnRecords && turnRecords.length > 0 ? { turnRecords } : {}),
         // The pass's privacy view: every model request of the verifier goes
         // through it (absent only when no shield is installed).

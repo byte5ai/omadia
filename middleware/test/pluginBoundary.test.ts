@@ -256,6 +256,13 @@ describe('spec 2042 §6 criterion 15 — the boundary at ingest', () => {
     assert.deepEqual(r.params, { pluginId: '@test/boundary', field: 'persona' });
   });
 
+  it('criterion 15: rejects a capability plugin that declares a speaker', async () => {
+    const r = await ingest({ 'manifest.yaml': manifest('tool', 'speaker:\n  name: "Mira"\n  avatar: "mira.png"\n'), ...code });
+    assert.equal(r.ok, false);
+    assert.equal(r.code, 'package.persona_declared');
+    assert.deepEqual(r.params, { pluginId: '@test/boundary', field: 'speaker' });
+  });
+
   it('rejects a tool that ships an AGENT.md', async () => {
     const r = await ingest({ 'manifest.yaml': manifest('tool'), 'AGENT.md': '---\nname: Mira\n---\n', ...code });
     assert.equal(r.code, 'package.persona_declared');
@@ -267,8 +274,32 @@ describe('spec 2042 §6 criterion 15 — the boundary at ingest', () => {
     assert.equal(r.ok, true, JSON.stringify(r));
   });
 
-  it('accepts a channel plugin', async () => {
-    const r = await ingest({ 'manifest.yaml': manifest('channel'), ...code });
+  it('criterion 15: accepts a channel plugin that transports two agents’ bots', async () => {
+    // The shape of the channel plugins with agents' own bots (S7): the
+    // shared bot's token in setup, one token per agent bot written at
+    // runtime into the plugin's vault (\`agent_bot_token_<appId>\`), the
+    // turns handed to the agents' chat agents. The identities are the
+    // kernel's (\`registerAgentIdentityProvider\`); the plugin has none.
+    const perAgentBots = [
+      'requires:',
+      '  - "chatAgent@^1"',
+      'setup:',
+      '  fields:',
+      '    - key: "bot_token"',
+      '      type: "secret"',
+      '      label: "Shared bot token"',
+      '      required: true',
+      'permissions:',
+      '  secrets:',
+      '    runtime_write: true',
+      '  network:',
+      '    outbound:',
+      '      - "discord.com"',
+      'playbook:',
+      '  when_to_use: "Messages of the agents Hanna and Sales on Discord, each through its own bot."',
+      '',
+    ].join('\n');
+    const r = await ingest({ 'manifest.yaml': manifest('channel', perAgentBots), ...code });
     assert.equal(r.ok, true, JSON.stringify(r));
   });
 

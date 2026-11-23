@@ -103,6 +103,7 @@ export class TriggerEngine {
       triggerId: trigger.id,
       agentId: trigger.agentId,
       month: spendMonth(now),
+      firedAt: now,
       breaker: { failures: this.deps.limits.breakerFailures, ineffective: this.deps.limits.breakerIneffective },
       ineffectiveTurn: false,
       effectiveTurn: false,

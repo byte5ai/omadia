@@ -18,7 +18,7 @@ import {
 import { ASSETS } from '../../platform/assets.js';
 import { recordForeignToolCall } from '../../platform/foreignToolMetrics.js';
 import { bridgedToolError, type BridgeStage } from '../bridgedToolError.js';
-import { warnIfEmptyInputSchema } from '../dynamicAgentRuntime.js';
+import { warnIfEmptyInputSchema } from '../emptyInputSchemaWarning.js';
 import { zodToJsonSchema } from '../zodToJsonSchema.js';
 import { canonicalTemplateId, effectivePluginKind, stripRetiredSpecKeys } from './agentSpec.js';
 import { type AuditLogger, createAuditLogger } from './audit.js';
@@ -932,8 +932,8 @@ function bridgeBuilderTool(
 }
 
 /**
- * OM-101 — the same branch the dynamic-agent runtime already makes for
- * uploaded agents (#309 recursive Shape 3): on the subscription provider the
+ * OM-101 — the same branch the retired agent runtime made for uploaded
+ * agents (#309 recursive Shape 3): on the subscription provider the
  * in-process `LocalSubAgent` cannot run a tool loop at all, because the
  * `claude-cli` completion adapter rejects any request carrying tools. The
  * builder is a tool-loop agent by nature (`fill_slot`, `read_reference`, the

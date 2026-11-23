@@ -3,6 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import yaml from 'yaml';
 
+import { nativeToolResultText, ServiceNotDeclaredError } from '@omadia/plugin-api';
 import type {
   HttpAccessor,
   NativeToolHandler,
@@ -11,6 +12,7 @@ import type {
 } from '@omadia/plugin-api';
 
 import { extractZipToDir, type ExtractLimits } from '../zipExtractor.js';
+import { previewServiceGateFor, type PreviewServiceGate } from './previewServices.js';
 import { createHttpAccessor, isAuditMode } from '../../platform/httpAccessor.js';
 import { pluginLlmUsageSource, recordPluginLlmUsage } from '../../platform/pluginLlmUsage.js';
 import {
@@ -387,14 +389,15 @@ export interface PreviewHandle {
  * previewRuntime stays decoupled from the platform ServiceRegistry type.
  */
 export interface PreviewHostServices {
-  get<T>(name: string): T | undefined;
+  /** `caller`: the draft plugin, for per-caller services (as an installed plugin asks). */
+  get<T>(name: string, caller?: { readonly agentId: string; readonly pluginId: string }): T | undefined;
   has(name: string): boolean;
 }
 
 export interface PreviewRuntimeDeps {
   /** Absolute path to `data/builder/.previews/`. */
   previewsRoot: string;
-  /** Default: 10s — same budget as activate() in dynamicAgentRuntime. */
+  /** Default: 10s — same budget as activate() in the tool plugin runtime. */
   activateTimeoutMs?: number;
   logger?: (...args: unknown[]) => void;
   /**
@@ -606,8 +609,12 @@ export class PreviewRuntime {
     const toolCaptures: PreviewToolCapture[] = [];
     const jobCaptures: PreviewJobCapture[] = [];
     const statusReports: PreviewStatusInput[] = [];
+    // Spec 2042 §5.10 — the draft resolves kernel services under the gates of
+    // an installed plugin, judged by its own manifest (`previewServices.ts`).
+    const serviceGate = await previewServiceGateFor(packageRoot, agentId, (...args) => this.log(`[${agentId}/services]`, ...args));
     const ctx = createStubContext({
       agentId,
+      serviceGate,
       configValues: opts.configValues,
       secretValues: opts.secretValues,
       smokeMode: opts.smokeMode === true,
@@ -857,6 +864,8 @@ function createStubContext(opts: {
   jobCaptures: PreviewJobCapture[];
   statusReports: PreviewStatusInput[];
   hostServices?: PreviewHostServices;
+  /** What the draft may resolve from the host; absent = every lookup refused. */
+  serviceGate?: PreviewServiceGate;
   provideMemory: boolean;
   http?: HttpAccessor;
   llm?: PreviewLlmAccessor;
@@ -869,6 +878,17 @@ function createStubContext(opts: {
   // integrations resolve.
   const localServices = new Map<string, unknown>();
   const host = opts.hostServices;
+  const caller = Object.freeze({ agentId: opts.agentId, pluginId: opts.agentId });
+  /** A kernel service, only past the gates an installed plugin passes. */
+  // Names the draft provided itself stay its own after it disposed them:
+  // they are never looked up in the kernel registry.
+  const ownNames = new Set<string>();
+  const fromHost = <T,>(name: string): T | undefined => {
+    if (!host || ownNames.has(name)) return undefined;
+    if (!opts.serviceGate) throw new ServiceNotDeclaredError(opts.agentId, name);
+    opts.serviceGate(name);
+    return host.get<T>(name, caller);
+  };
   const memory: PreviewMemoryAccessor | undefined = opts.provideMemory
     ? createPreviewMemoryAccessor()
     : undefined;
@@ -940,7 +960,7 @@ function createStubContext(opts: {
             id: spec.name,
             description: spec.description,
             inputSchema: spec.input_schema,
-            run: (input) => handler(input),
+            run: async (input) => nativeToolResultText(await handler(input)),
           },
           disposed: false,
         };
@@ -1008,7 +1028,7 @@ function createStubContext(opts: {
     services: {
       get: <T,>(name: string): T | undefined => {
         if (localServices.has(name)) return localServices.get(name) as T;
-        return host ? host.get<T>(name) : undefined;
+        return fromHost<T>(name);
       },
       // #795 — the preview runtime is ungated by design (there is no
       // installed manifest to check against), so optional and required
@@ -1016,17 +1036,18 @@ function createStubContext(opts: {
       // to a previewed agent is the return value, and that is identical.
       getOptional: <T,>(name: string): T | undefined => {
         if (localServices.has(name)) return localServices.get(name) as T;
-        return host ? host.get<T>(name) : undefined;
+        return fromHost<T>(name);
       },
-      has: (name: string): boolean =>
-        localServices.has(name) || (host ? host.has(name) : false),
+      has: (name: string): boolean => localServices.has(name) || (host ? host.has(name) : false),
       provide: <T,>(name: string, impl: T): (() => void) => {
+        ownNames.add(name);
         localServices.set(name, impl);
         return () => {
           localServices.delete(name);
         };
       },
       replace: <T,>(name: string, impl: T): (() => void) => {
+        ownNames.add(name);
         localServices.set(name, impl);
         return () => {
           localServices.delete(name);

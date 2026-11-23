@@ -73,7 +73,9 @@ export async function generateMetadata({
 async function orchestratorsUsing(plugin: Plugin): Promise<string[] | null> {
   const installed =
     plugin.install_state === 'installed' || plugin.install_state === 'update-available';
-  if (!installed || (plugin.kind !== 'agent' && plugin.kind !== 'tool')) return null;
+  // Spec 2042 §5.10 — only capability plugins are granted to agents.
+  const capability = plugin.kind === 'tool' || plugin.kind === 'integration' || plugin.kind === 'skill';
+  if (!installed || !capability) return null;
   try {
     const { agents } = await listOperatorAgents();
     return agents

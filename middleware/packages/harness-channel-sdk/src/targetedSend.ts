@@ -10,7 +10,7 @@
 import type { ChannelUserRef } from './incoming.js';
 import type { OutgoingAttachment } from './outgoing.js';
 import type { Principal } from './principal.js';
-import type { CardSupport, QuestionCard } from '@omadia/plugin-api';
+import type { CardSupport, QuestionCard, Speaker } from '@omadia/plugin-api';
 
 /** Deliberately narrower than SemanticAnswer: a targeted message is a report /
  *  status ping, not a full conversational reply. */
@@ -30,6 +30,10 @@ export interface TargetedMessage {
    *  kernel validates the card first. `delivered.cardMessageId` is the id a
    *  later `updateCard` names. Never together with `poll`. */
   card?: QuestionCard;
+  /** Who the message is from (spec 2042 INV-4), stamped by the kernel. A
+   *  message through the channel's shared bot is `system`; a message as an
+   *  agent's own identity is that agent (its bot is the speaker). */
+  speaker?: Speaker;
 }
 
 export interface TargetedPoll {

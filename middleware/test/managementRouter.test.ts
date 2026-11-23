@@ -257,11 +257,11 @@ describe('management router — availability (criterion 40)', () => {
     assert.equal(outcome.kind === 'notice' && outcome.agent?.slug, 'a');
   });
 
-  it('Anna addressing A in Slack gets the notice', () => {
-    assert.equal(
-      noticeOf(route(snap, { channelType: 'slack', channelKey: 'c', principal: anna, explicitSlug: 'a' })),
-      'agent_not_available',
-    );
+  it('criterion 40: Anna addressing A in Slack gets the notice naming A, no other agent answers', () => {
+    const outcome = route(snap, { channelType: 'slack', channelKey: 'c', principal: anna, explicitSlug: 'a' });
+    assert.equal(noticeOf(outcome), 'agent_not_available');
+    assert.equal(outcome.kind === 'notice' && outcome.agent?.slug, 'a');
+    assert.equal(outcome.kind === 'notice' && outcome.agent?.displayName, 'A');
   });
 
   it("Anna in Teams gets A's answer", () => {

@@ -48,6 +48,7 @@ const ACTIVATION_ERROR_CODES: ReadonlySet<string> = new Set<ActivationErrorCode>
   'provider_conflict',
   'target_unreachable',
   'database_not_available',
+  'kind_retired',
   'unknown',
 ]);
 
@@ -76,6 +77,7 @@ const BY_NAME: Readonly<Record<string, ActivationErrorCode>> = {
   HttpForbiddenError: 'network_not_permitted',
   NetForbiddenError: 'network_not_permitted',
   ArchetypeDatabaseError: 'database_not_available',
+  RetiredPluginKindError: 'kind_retired',
 };
 
 function readField(value: unknown, key: string): unknown {

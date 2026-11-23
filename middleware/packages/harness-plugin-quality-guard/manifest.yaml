@@ -105,10 +105,10 @@ setup:
 
 playbook:
   when_to_use: |
-    Aktiviere dieses Plugin, wenn der Orchestrator zuverlässig konkrete,
+    Aktiviere dieses Plugin, wenn der Agent zuverlässig konkrete,
     nicht-schmeichelnde Antworten liefern soll — Beratungs-Agents, SEO-
     Analyst, alle Profile mit Risiko für False-Positive-Bestätigungen.
-    Das Plugin published die `responseGuard@1`-Capability; der Orchestrator
+    Das Plugin published die `responseGuard@1`-Capability; die Agentenlaufzeit
     splice't den `prependRules`-Block VOR die Body-Prose des System-Prompts
     als eigenes Cache-Element. Profile ohne Quality-Frontmatter erben die
     globalen Defaults.

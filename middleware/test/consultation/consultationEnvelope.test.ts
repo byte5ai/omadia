@@ -19,7 +19,8 @@ import { InMemoryNudgeRegistry } from '@omadia/plugin-api';
 import type { EntityRefBus, KnowledgeGraph, MemoryStore } from '@omadia/plugin-api';
 
 import type { OrchestratorDeps } from '../../packages/harness-orchestrator/src/buildOrchestrator.js';
-import type { NativeToolRegistry } from '../../packages/harness-orchestrator/src/nativeToolRegistry.js';
+import { NativeToolRegistry } from '../../packages/harness-orchestrator/src/nativeToolRegistry.js';
+import { Orchestrator, type OrchestratorOptions } from '../../packages/harness-orchestrator/src/orchestrator.js';
 import type { AgentRow } from '../../packages/harness-orchestrator/src/registry/configStore.js';
 import { buildForAgent } from '../../packages/harness-orchestrator/src/registry/applyDiff.js';
 import { runAsConsultation } from '../../packages/harness-orchestrator/src/consultation/consultationScope.js';
@@ -32,6 +33,7 @@ import type {
   DiscretionPort,
   IntegrationDeclaration,
 } from '../../packages/harness-orchestrator/src/discretion/port.js';
+import { scriptedModel, text, toolCalls, toolResultContents } from '../_helpers/replayTurnFixture.js';
 
 const HR = '@omadia/odoo-hr';
 const CRM = '@omadia/crm';
@@ -121,6 +123,7 @@ describe('consultation envelope in the real orchestrator (criterion 13)', () => 
       // Anna has no HR grant: the envelope holds the CRM only.
       allowedPluginIds: new Set([CRM]),
       memoryAccess: 'none' as const,
+      readers: readersOf(['u-1']),
       result: {},
     };
     await runAsConsultation(scope, async () => {
@@ -161,6 +164,7 @@ describe('consultation envelope in the real orchestrator (criterion 13)', () => 
         callId: 'c',
         allowedPluginIds: new Set(),
         memoryAccess: 'none',
+        readers: readersOf(['u-1']),
         result: {},
       },
       async () => {
@@ -256,6 +260,119 @@ describe('discretion at the tool boundary (criterion 17)', () => {
     // No turn context at all (ad-hoc invocation): nothing is labelled, nothing refused.
     assert.match(await orch.dispatchTool('crm_create_note', {}, undefined, undefined), /result/);
   });
+  it('criterion 17: a full 1:1 turn — the CRM write carrying the HR record is refused, the answer says so without the record', async () => {
+    const RECORD = 'Personalakte: P. Muster, Kündigung zum 31.12., Abfindung 40.000 EUR';
+    const ran: string[] = [];
+    const notes: unknown[] = [];
+    const { port, audits } = discretionPort({
+      [HR]: {
+        sensitivity: 'restricted',
+        readership: { readers: readersOf(['hr-1']), acceptsSystems: [], acceptsClassifications: [] },
+      },
+      [CRM]: {
+        sensitivity: 'internal',
+        readership: { readers: EVERYONE, acceptsSystems: [CRM], acceptsClassifications: [] },
+      },
+    });
+    const hr = {
+      ...(tool('query_odoo_hr', HR, ran) as object),
+      handle: async () => {
+        ran.push('query_odoo_hr');
+        return RECORD;
+      },
+    } as never;
+    const crm = {
+      ...(tool('crm_create_note', CRM, ran, true) as object),
+      handle: async (input: unknown) => {
+        ran.push('crm_create_note');
+        notes.push(input);
+        return 'note created';
+      },
+    } as never;
+    const ANSWER = 'Ich kann diese Information nicht ins CRM übertragen, weil sie aus der Personalakte stammt.';
+    const model = scriptedModel([
+      toolCalls(['query_odoo_hr', { query: 'P. Muster' }]),
+      toolCalls(['crm_create_note', { note: RECORD }]),
+      text(ANSWER),
+    ]);
+    const orchestrator = new Orchestrator({
+      provider: model.provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 4,
+      domainTools: [hr, crm],
+      nativeToolRegistry: new NativeToolRegistry(),
+      agentId: 'anna',
+      discretion: port,
+    } as unknown as OrchestratorOptions);
+    // A 1:1 with the HR manager (web chat: the owner is the one reader).
+    const result = await orchestrator.chat({
+      userMessage: 'Lies die Akte von P. Muster und leg die Kündigung als CRM-Notiz an.',
+      sessionScope: 'web-hr-1',
+      userId: 'hr-1',
+    } as never);
+    assert.deepEqual(ran, ['query_odoo_hr'], 'the CRM write never ran');
+    assert.equal(notes.length, 0);
+    // The model got a structured refusal that quotes nothing of the record.
+    const refusal = toolResultContents(model.requests[2]).find((c) => c.includes('was not called'));
+    assert.ok(refusal, 'the model was told the write was refused');
+    assert.match(refusal, /without quoting it/);
+    assert.equal(refusal.includes('Abfindung'), false);
+    // The final answer states the refusal and carries no record text.
+    assert.ok(result.text.startsWith(ANSWER), "the answer states the refusal");
+    assert.equal(result.text.includes('Abfindung'), false);
+    assert.equal(result.text.includes('31.12.'), false);
+    const refused = audits.find((a) => !a.allowed && a.egress === 'integration');
+    assert.ok(refused?.violations.includes(`source:${HR}:integration_readership`));
+    assert.equal(JSON.stringify(audits).includes('Abfindung'), false, 'the audit carries no content');
+  });
+});
+
+describe('a consultation run answers into the consulting turn\'s room', () => {
+  it('B\'s label of A\'s conversation carries A\'s readers, never an `unknown` of its own', async () => {
+    const port: DiscretionPort = {
+      declarationOf: async () => undefined,
+      labelsOf: async () => new Map(),
+      persistLabels: async () => undefined,
+      audit: () => undefined,
+    };
+    const model = scriptedModel([text('Im klassischen Modell gelten 30 Urlaubstage.')]);
+    const orchestrator = new Orchestrator({
+      provider: model.provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 2,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      agentId: 'ben',
+      discretion: port,
+    } as unknown as OrchestratorOptions);
+    const origin = {
+      channelType: 'teams',
+      channelConversationId: '19:room@thread.tacv2;messageid=1',
+      scope: { kind: 'channel', id: 'room' },
+    };
+    const scope = {
+      agentSlug: 'ben',
+      fromAgentSlug: 'anna',
+      fromTurnId: 't-a',
+      callId: 'c-1',
+      allowedPluginIds: new Set<string>(),
+      memoryAccess: 'none' as const,
+      readers: readersOf(['u-1']),
+      result: {} as { labels?: { labels: readonly { kind: string; key?: string; readers?: unknown }[] } },
+    };
+    // B's turn carries A's origin but no sender: resolving the room itself
+    // would give `unknown`.
+    await runAsConsultation(scope as never, () =>
+      orchestrator.chat({ userMessage: 'Wie viele Urlaubstage?', sessionScope: 'consult-c-1', origin } as never),
+    );
+    const own = scope.result.labels?.labels.find(
+      (l) => l.kind === 'context' && l.key === 'teams:19:room@thread.tacv2;messageid=1',
+    );
+    assert.ok(own, 'B reports its label of A\'s conversation');
+    assert.deepEqual(own.readers, readersOf(['u-1']));
+  });
 });
 
 describe('consultation envelope on the subscription-CLI dispatcher', () => {
@@ -275,6 +392,7 @@ describe('consultation envelope on the subscription-CLI dispatcher', () => {
         callId: 'c',
         allowedPluginIds: new Set([CRM]),
         memoryAccess: 'none',
+        readers: readersOf(['u-1']),
         result: {},
       },
       async () => {

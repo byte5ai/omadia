@@ -99,6 +99,9 @@ export function withIdentityGuard<A extends ChatAgent>(inner: A, emitter: AgentA
       speaker: SYSTEM_SPEAKER,
       systemNotice: notice,
       ...(answer.aiDisclosure ? { aiDisclosure: answer.aiDisclosure } : {}),
+      // INV-5: colleagues' delivered blocks are theirs, not A's prose; A
+      // being withheld must not suppress them.
+      ...(answer.contributions ? { contributions: answer.contributions } : {}),
     };
   };
 
@@ -166,6 +169,7 @@ export function withIdentityGuard<A extends ChatAgent>(inner: A, emitter: AgentA
         iterations: event.iterations,
         ...(event.turnId ? { turnId: event.turnId } : {}),
         ...(event.aiDisclosure ? { aiDisclosure: event.aiDisclosure } : {}),
+        ...(event.contributions ? { contributions: event.contributions } : {}),
         ...(system ? { speaker: SYSTEM_SPEAKER } : {}),
         systemNotice: notice,
       };

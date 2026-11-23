@@ -131,12 +131,32 @@ function refusalText(message: string): string {
 
 /** The text A's model gets for a delivered contribution (A's shield masks it). */
 export function contributionModelText(contribution: Contribution): string {
+  // The header reaches A's model outside the privacy digest: keep the
+  // operator-set name on one line and free of the closing bracket.
+  const name = contribution.speaker.displayName.replace(/[\r\n\]]+/g, ' ').trim();
   const header =
     contribution.status === 'delivered'
-      ? `[contribution ${contribution.id} from ${contribution.speaker.displayName}: delivered to the user unchanged. ` +
+      ? `[contribution ${contribution.id} from ${name}: delivered to the user unchanged. ` +
         'Refer to it by its id; do not repeat or reword it.]'
-      : `[contribution ${contribution.id} from ${contribution.speaker.displayName}: FAILED, shown to the user as failed.]`;
+      : `[contribution ${contribution.id} from ${name}: FAILED, shown to the user as failed.]`;
   return `${header}\n\n${contribution.text}`;
+}
+
+const CONTRIBUTION_HEADER = /^(\[contribution c\d+ from [^\n]*\])\n\n/;
+
+/**
+ * Spec §5.4 step 4 (owner decision 2026-11-23): A refers to a contribution by
+ * its id, so the header — contribution id, colleague name, status: metadata
+ * without personal data — reaches A's model outside the privacy digest. Only
+ * the body (B's words) passes the shield. Undefined for any other text, which
+ * is then interned whole as before.
+ */
+export function splitContributionModelText(
+  text: string,
+): { readonly header: string; readonly body: string } | undefined {
+  const match = CONTRIBUTION_HEADER.exec(text);
+  if (!match?.[1]) return undefined;
+  return { header: match[1], body: text.slice(match[0].length) };
 }
 
 /**

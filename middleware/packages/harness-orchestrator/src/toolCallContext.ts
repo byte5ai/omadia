@@ -14,10 +14,11 @@
  * (`CliChatAgent.captureTurnContext`).
  */
 
-import { formatPrincipal, makePrincipal, type ChatTurnInput } from '@omadia/channel-sdk';
+import { formatPrincipal, type ChatTurnInput } from '@omadia/channel-sdk';
 import type { NativeToolCallContext } from '@omadia/plugin-api';
 
 import { channelConversationId } from './channelConversationId.js';
+import { conversationPrincipal } from './conversationPrincipal.js';
 import { currentEngineTurn, processWideStore } from './facilitatorAgent.js';
 import { turnContext } from './turnContext.js';
 
@@ -28,12 +29,29 @@ export function currentToolCallContext(): NativeToolCallContext | undefined {
   return toolCalls.getStore() ?? turnContext.current()?.toolCall;
 }
 
+/**
+ * The caller as the conversation layer names people: `user:<channel user id>`,
+ * the same value as a stored message's `author.principalId`
+ * (`principalOfChannelUser`) and a roster participant's key (ADR 0032).
+ *
+ * The channel user comes first: the speaker the channel named, else the
+ * channel identity of the turn. `TurnOrigin.principal` is NOT that form for
+ * every channel. Discord, Slack and Telegram state the routing principal of
+ * spec 2042 §5.3 there (`user:discord-user:<id>`, `user:<e-mail>`), which keys
+ * selections and availability, not message authors. A facilitator that keyed
+ * the initiator by it counted the same person twice. The stated principal is
+ * only the fallback for a turn without a channel user (web chat).
+ */
 function principalOf(input: ChatTurnInput): string | undefined {
+  const speakerId = input.origin?.speaker?.id;
+  const channelUserId =
+    (typeof speakerId === 'string' && speakerId.trim() !== '' ? speakerId : undefined) ??
+    input.channelIdentity?.channelUserId;
+  const fromChannel = conversationPrincipal(channelUserId);
+  if (fromChannel) return fromChannel;
   const stated = input.origin?.principal;
   if (stated?.kind === 'user') return formatPrincipal(stated);
-  const id = input.channelIdentity?.channelUserId ?? input.userId;
-  const principal = id ? makePrincipal('user', id) : undefined;
-  return principal ? formatPrincipal(principal) : undefined;
+  return conversationPrincipal(input.userId);
 }
 
 /**

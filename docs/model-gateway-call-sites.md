@@ -27,6 +27,7 @@ Line numbers drift; the names are what to search for.
 | `src/platform/claudeCliAdapter.ts` | complete | single-shot CLI provider |
 | `packages/harness-orchestrator/src/cliChatAgent.ts` | run_loop | CLI-owned loop |
 | `src/platform/modelGatewayServices.ts` (`gateModelService`) | embed, transcribe | wraps `embeddingClient.embed` and `transcription.transcribeFile` / `transcribeStream` for every consumer |
+| `packages/transcription-adapter-openai/src/plugin.ts`, `batchProvider.ts`, `realtimeProvider.ts` | transcribe | the transcription adapter's direct clients; consumers reach them only as the `transcription` service, which `gateModelService` wraps |
 
 ## Agent runtime (`harness-orchestrator`)
 
@@ -34,6 +35,7 @@ Line numbers drift; the names are what to search for.
 |---|---|---|---|
 | `streaming.ts` (`completeWithFallback`, stream) from `orchestrator.ts` and `localSubAgent.ts` | complete | AT | main loop, sub-agents, dynamic agents; routine turns through the ambient `turnContext` |
 | `orchestrator.ts` `maybeRouteCardsFromText`, `maybeDirectLineNote`; `modelRouter.ts`, `personaRouter.ts` | complete | AT | |
+| `workingModes.ts` (`routeTurnWorkingMode`), `dataPlanGuard.ts` (`createLlmDataPlanJudge`), `summaryBoundaryGuard.ts` (`createLlmSummaryJudge`), `identityGuard/llmJudge.ts` (`createLlmIdentityJudge`) | complete | AT | the agent's internal helpers: working-mode classifier, data-plan and fast-lane summary boundary judges, identity guard judge |
 | `securityScreener.ts` (`screenInboundTurn`) | complete | AT | on routine turns through the running agent's turn (`routineRunner.ts` `runOnce`, scheduled or "run now") |
 | `cliChatAgent.ts`, `cliSubAgent.ts` | run_loop | AT (OJ for the Plugin Builder) | |
 | `orchestrator.ts` `recallCliContext`, `recordCliTurn` | embed, complete | AT | |
@@ -99,6 +101,20 @@ Line numbers drift; the names are what to search for.
 | channel plugins' `transcription.transcribeFile`, `topicDetector.classify` | transcribe; embed, complete | IP | `inboundProcessing`; `transcribeStream` is not wrapped |
 | `src/mcp/publicMcpServer.ts` tool dispatch | any | AT | the turn of the agent the API key is bound to (S3b) |
 | `src/platform/modelPassthrough.ts` `forwardAnthropicMessages` (dev platform's coding jobs) | complete | OJ:`<plugin>:<kind>` (`operatorJobs@1`) | the system module's proxy, no provider key of its own |
+
+## Contracts and wrappers (no call of their own)
+
+These files contain a model call expression but only forward a call their
+caller makes, in the caller's context. They are listed so the inventory test
+(`middleware/test/modelGatewayCallSites.test.ts`) can tell them from call
+sites.
+
+| File | Forwards |
+|---|---|
+| `packages/llm-provider-api/src/modelCallGate.ts` | the gate itself (`admitModelCall`) |
+| `packages/harness-usage-telemetry/src/withProviderUsageTracking.ts` | `complete` / `stream` of the wrapped provider, for the ledger |
+| `packages/plugin-api/src/embeddingClient.ts` | `embed` of the wrapped client, with a concurrency limit |
+| `packages/plugin-api/src/transcription.ts`, `transcriptionGuardrails.ts` | the `transcription` service contract and its quota wrapper |
 
 ## Gaps: calls with no context today
 

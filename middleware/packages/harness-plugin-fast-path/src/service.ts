@@ -1,4 +1,4 @@
-import type { DataPlanGuard, DecisionModelService, PrivacyGuardService, TableData } from '@omadia/plugin-api';
+import type { DataPlanGuard, DataPlanVerdict, DecisionModelService, PrivacyGuardService, TableData } from '@omadia/plugin-api';
 
 import {
   ANSWER_CACHE_PRIVACY_JOB,
@@ -37,7 +37,7 @@ import {
   type PlanMemory,
 } from './learnedPlanStore.js';
 import { describeRefreshSource, resolveTimeZone, type RefreshSource } from './refreshRecipes.js';
-import { openStoredTextPrivacy, TRIAGE_PRIVACY_JOB } from './storedTextPrivacy.js';
+import { openStoredTextPrivacy, TRIAGE_PRIVACY_JOB, type StoredTextPrivacyRun } from './storedTextPrivacy.js';
 import type { DecisionTrace } from './router.js';
 import type { PreviousQuery, TriageRoute } from './triage.js';
 import { triageTurn, type TriageOutcome } from './triageTurn.js';
@@ -73,6 +73,11 @@ export interface ChatTriageRequest {
   /** #2085 — the agent's boundary check: every plan, new or from the cache,
    *  passes it before it runs; a refusal hands the turn to the agent. */
   checkPlan?: DataPlanGuard;
+  /** Spec 2042 criterion 33 — the agent's boundaries over the planner's
+   *  prose (summary template and column labels; no figure, no row). Runs
+   *  with `checkPlan`, before the fetch, on the shield-masked text; a
+   *  refusal hands the turn to the agent and settles the plan as failed. */
+  checkSummary?: (prose: string) => Promise<DataPlanVerdict>;
   /** the agent's own definitions of those tools (`ChatAgent.
    *  offeredToolDefinitions`): every read tool among them without a catalog
    *  spec gets a generic planner spec (genericToolSpecs.ts). Absent → only
@@ -357,6 +362,13 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
           return miss('boundary');
         }
       }
+      if (req.checkSummary) {
+        const verdict = await checkPlannedProse(decision, privacy, req.checkSummary);
+        if (!verdict.allowed) {
+          deps.log(`[fast-path] miss channel=${channel} reason=summary-boundary (${verdict.layer})`);
+          return miss('summary-boundary');
+        }
+      }
       const fetched = await fetchRecipeRows(invoke, decision.fetch, { rejectTruncated: true, timeZone });
       if (!fetched.ok) {
         if (fetched.detail !== undefined) {
@@ -474,4 +486,28 @@ export function turnInvoker(base: ToolInvoke, definitions?: readonly FastPathToo
   for (const d of definitions ?? []) if (d.invoke !== undefined && !own.has(d.name)) own.set(d.name, d.invoke);
   if (own.size === 0) return base;
   return (name, input) => own.get(name)?.(input) ?? base(name, input);
+}
+
+/**
+ * Criterion 33 — the planner's own words (summary template, column labels)
+ * against the agent's boundaries. Under a shield the check sees them masked
+ * through the turn's privacy run: the planner's strings were restored, so a
+ * name from the question would otherwise reach the judge's model. A text the
+ * shield refuses to mask is refused (fail-closed).
+ */
+async function checkPlannedProse(
+  plan: { readonly summary: string; readonly labels: Readonly<Record<string, string>> },
+  privacy: StoredTextPrivacyRun | undefined,
+  check: (prose: string) => Promise<DataPlanVerdict>,
+): Promise<DataPlanVerdict> {
+  const labels = Object.values(plan.labels);
+  const prose = labels.length > 0 ? `${plan.summary}\n${labels.join(' · ')}` : plan.summary;
+  try {
+    if (!privacy) return await check(prose);
+    const masked = await privacy.mask(prose);
+    if (!masked.send) return { allowed: false, reason: 'the shield refused to mask the summary', layer: 'model' };
+    return await check(masked.text);
+  } catch {
+    return { allowed: false, reason: 'the boundary check failed', layer: 'model' };
+  }
 }

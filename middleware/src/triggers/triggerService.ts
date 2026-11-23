@@ -8,7 +8,7 @@
 import { evaluatePredicate } from '@omadia/conductor-core';
 import type { JsonObject, Predicate } from '@omadia/conductor-core';
 
-import { asChannelKeyOf } from './ownBot.js';
+import { asChannelKeyOf, isOwnBotAuthor } from './ownBot.js';
 import { validateTriggerRequest, type TriggerEnvelope, type TriggerLimits } from './triggerPolicy.js';
 import { eventOccurrenceKey, firstDue, nextDue, runsUntil } from './triggerSchedule.js';
 import type { CreateResult, TriggerStore } from './triggerStore.js';
@@ -36,8 +36,9 @@ export interface TriggerServiceDeps {
   readonly eventSources: (agentSlug: string) => readonly EventSource[];
   /** Why the agent may not run this data action (undefined = it may). */
   readonly checkDataAction: (agentSlug: string, action: DataActionSpec) => string | undefined;
-  /** Whether a proactive message from this envelope may go to `target`. */
-  readonly targetAllowed: (env: TriggerEnvelope, target: TriggerTarget) => boolean;
+  /** Whether a proactive message from this envelope may go to `target`
+   *  (a recipient grant, criterion 24). Checked again at every send. */
+  readonly targetAllowed: (env: TriggerEnvelope, target: TriggerTarget) => boolean | Promise<boolean>;
   /** Whether `authorId` on `channel` is the agent's own bot: its own
    *  messages never fire its hooks (a hook that posts would hear itself). */
   readonly isOwnAuthor?: (agentSlug: string, channel: string, authorId: string) => boolean;
@@ -93,11 +94,11 @@ export class TriggerService {
       const why = this.deps.checkDataAction(env.agentSlug, action);
       if (why) return { ok: false, code: 'unknown_tool', message: why };
     }
-    if (t.target && !this.deps.targetAllowed(env, t.target)) {
+    if (t.target && !(await this.deps.targetAllowed(env, t.target))) {
       return {
         ok: false,
         code: 'target_not_allowed',
-        message: 'a proactive message from this conversation may not go to that target',
+        message: 'no recipient grant allows this agent to send to that target',
       };
     }
 
@@ -105,7 +106,7 @@ export class TriggerService {
     if (t.kind !== 'on_event' && !due) {
       return { ok: false, code: 'invalid', message: 'the trigger would never fire before its deadline' };
     }
-    const created: CreateResult = await this.deps.store.create(t, due, this.deps.limits.maxActivePerAgent);
+    const created: CreateResult = await this.deps.store.create(t, due, this.deps.limits.maxActivePerAgent, now);
     if (!created.ok) return { ok: false, code: created.code, message: created.message };
     this.deps.log?.(
       `[triggers] created ${created.trigger.kind} ${created.trigger.id} for '${created.trigger.agentSlug}' (${created.trigger.purpose})`,
@@ -126,11 +127,16 @@ export class TriggerService {
         : typeof payload['channel'] === 'string'
           ? payload['channel']
           : undefined;
-    if (conversationId && channel) {
+    // A bot's own post, reported back by its channel, is no news: else a
+    // trigger's post would make its next firing reach the model.
+    const authorId = typeof payload['authorId'] === 'string' ? payload['authorId'] : undefined;
+    const heardBy = typeof payload['receivedByChannelKey'] === 'string' ? payload['receivedByChannelKey'] : undefined;
+    const echo = authorId !== undefined && isOwnBotAuthor(heardBy, authorId);
+    if (conversationId && channel && !echo) {
       await this.deps.store.noteActivity('conversation', conversationContextId(channel, conversationId), now);
       await this.deps.store.noteActivity('meeting', conversationContextId(channel, conversationId), now);
     }
-    const hooks = await this.deps.store.listHooks(eventId);
+    const hooks = await this.deps.store.listHooks(eventId, now);
     let enqueued = 0;
     for (const hook of hooks) {
       if (!this.hookMatches(hook, payload, conversationId)) continue;

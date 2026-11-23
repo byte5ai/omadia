@@ -86,6 +86,10 @@ export interface FinishInput {
   readonly effectiveTurn: boolean;
   readonly costUsd: number;
   readonly month: string;
+  /** When the firing ran, on the engine's clock: becomes `last_fired_at`,
+   *  which the `new_activity` check compares with activity stamped on the
+   *  same clock. */
+  readonly firedAt: Date;
   readonly error?: string;
   /** The data fingerprint to remember for a `changed` check. */
   readonly fingerprint?: string;
@@ -156,9 +160,23 @@ interface TriggerRowDb {
 function parseDiscretion(value: unknown): TriggerDiscretion | null {
   if (Array.isArray(value)) return null;
   if (typeof value !== 'object' || value === null) return UNREADABLE_DISCRETION;
-  const { contextKey, readers, labels } = value as { contextKey?: unknown; readers?: unknown; labels?: unknown };
+  const { contextKey, readers, labels, fieldClasses } = value as {
+    contextKey?: unknown;
+    readers?: unknown;
+    labels?: unknown;
+    fieldClasses?: unknown;
+  };
   if (typeof contextKey !== 'string' || contextKey === '') return UNREADABLE_DISCRETION;
-  return { contextKey, readers: parseStoredReaders(readers), labels: parseLabelSet(labels) };
+  // Field rights: anything but a list of class names counts as none.
+  const classes = Array.isArray(fieldClasses)
+    ? fieldClasses.filter((c): c is string => typeof c === 'string' && c.length > 0 && c.length <= 64)
+    : [];
+  return {
+    contextKey,
+    readers: parseStoredReaders(readers),
+    labels: parseLabelSet(labels),
+    ...(classes.length > 0 ? { fieldClasses: classes } : {}),
+  };
 }
 
 const UNREADABLE_DISCRETION: TriggerDiscretion = {
@@ -169,7 +187,14 @@ const UNREADABLE_DISCRETION: TriggerDiscretion = {
 
 function serializeDiscretion(discretion: TriggerDiscretion | null): unknown {
   return discretion
-    ? { contextKey: discretion.contextKey, readers: discretion.readers, labels: serializeLabelSet(discretion.labels) }
+    ? {
+        contextKey: discretion.contextKey,
+        readers: discretion.readers,
+        labels: serializeLabelSet(discretion.labels),
+        ...(discretion.fieldClasses && discretion.fieldClasses.length > 0
+          ? { fieldClasses: [...discretion.fieldClasses] }
+          : {}),
+      }
     : [];
 }
 
@@ -281,7 +306,10 @@ export class TriggerStore {
 
   /** Store a validated trigger and its first occurrence, within the agent's
    *  limit of active triggers (serialised per agent). */
-  async create(input: NewTrigger, firstDueAt: Date | undefined, maxActivePerAgent: number): Promise<CreateResult> {
+  /** `at`: the service's clock, stored as `created_at` — the `new_activity`
+   *  check compares a never-fired trigger's creation with activity stamped
+   *  on that same clock. */
+  async create(input: NewTrigger, firstDueAt: Date | undefined, maxActivePerAgent: number, at: Date): Promise<CreateResult> {
     return this.inTransaction(async (client) => {
       await client.query('SELECT pg_advisory_xact_lock($1::int, hashtext($2)::int)', [LOCK_NAMESPACE, input.agentId]);
       // The cap bounds what the agent sets itself. A person's routine, an
@@ -306,9 +334,9 @@ export class TriggerStore {
            agent_id, agent_slug, kind, origin, owner_key, purpose, context_kind, context_id,
            delivery_channel, delivery_ref, target, labels, event_id, event_filter, fire_at,
            interval_seconds, cron, timezone, live_context, actions, delivery_class, until, max_runs,
-           budget_per_firing_usd, budget_total_usd, model_calls_per_firing, created_by)
+           budget_per_firing_usd, budget_total_usd, model_calls_per_firing, created_by, created_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,$14::jsonb,$15,
-                 $16,$17,$18,$19,$20::jsonb,$21,$22,$23,$24,$25,$26,$27)
+                 $16,$17,$18,$19,$20::jsonb,$21,$22,$23,$24,$25,$26,$27,$28)
          RETURNING *`,
         [
           input.agentId,
@@ -338,6 +366,7 @@ export class TriggerStore {
           input.budgetTotalUsd,
           input.modelCallsPerFiring,
           input.createdBy,
+          at,
         ],
       );
       const trigger = toTrigger(rows[0] as TriggerRowDb);
@@ -407,12 +436,14 @@ export class TriggerStore {
     return rows.map(toTrigger);
   }
 
-  /** Active hooks on an event id (the caller matches filter and context). */
-  async listHooks(eventId: string): Promise<Trigger[]> {
+  /** Active hooks on an event id at `now` (the caller matches filter and
+   *  context). `now` is the service's clock, like every other time decision
+   *  of the engine, not the database's. */
+  async listHooks(eventId: string, now: Date): Promise<Trigger[]> {
     const { rows } = await this.pool.query<TriggerRowDb>(
       `SELECT * FROM agent_triggers
-        WHERE kind = 'on_event' AND event_id = $1 AND state = 'active' AND until > now()`,
-      [eventId],
+        WHERE kind = 'on_event' AND event_id = $1 AND state = 'active' AND until > $2`,
+      [eventId, now],
     );
     return rows.map(toTrigger);
   }
@@ -595,7 +626,7 @@ export class TriggerStore {
                                            WHEN $5 THEN 0 ELSE consecutive_ineffective END,
             spent_usd = spent_usd + $6,
             reserved_usd = GREATEST(reserved_usd - $7, 0),
-            last_fired_at = now(),
+            last_fired_at = $11,
             last_outcome = $8,
             last_error = $9,
             last_fingerprint = COALESCE($10, last_fingerprint),
@@ -613,6 +644,7 @@ export class TriggerStore {
           input.outcome,
           input.error ?? null,
           input.fingerprint ?? null,
+          input.firedAt,
         ],
       );
       await this.settleSpendIn(client, input, released);
@@ -816,6 +848,15 @@ export class TriggerStore {
       for (const r of rows) await this.deleteIn(client, toTrigger(r), 'expired', {});
       return rows.length;
     });
+  }
+
+  /** A context that had ended runs again (a recurring meeting in the same
+   *  chat starts anew): triggers set from now on may fire. */
+  async reopenContext(kind: TriggerContextKind, contextId: string): Promise<void> {
+    await this.pool.query(
+      'UPDATE agent_trigger_context_activity SET ended_at = NULL WHERE context_kind = $1 AND context_id = $2 AND ended_at IS NOT NULL',
+      [kind, contextId],
+    );
   }
 
   /** Something happened in a context (a message, an event). */
