@@ -1678,7 +1678,7 @@ export class AgentGraphStore {
          *  authorization response WITHOUT `iss` must be rejected. */
         issRequired: boolean;
         /** RFC 8707 resource indicator of the authorization request; null for
-         *  flows started before migration 0081. */
+         *  flows started before migration 0111. */
         resource: string | null;
       }
     | undefined
