@@ -8,7 +8,7 @@ was read, not matched by name. Paths are relative to `middleware/` unless they s
 `web-ui/` or name a channel repository. `*.pg.test.ts` needs Postgres and skips without
 one, so the gate must run `npm run test:pg` against a database.
 
-**Result: 29 of 40 green, 11 partial, none missing.** The partial ones are listed with what
+**Result: 32 of 40 green (G4 adds 5, 10, 30), 8 partial, none missing.** The partial ones are listed with what
 remains. Most of the remainder is not a missing test but a missing implementation; those
 items are marked **not implemented**.
 
@@ -20,14 +20,14 @@ items are marked **not implemented**.
 | 2 | Identity guard | green | |
 | 3 | Consultation views | partial | per-member field rights **not implemented** (sub-claim c) |
 | 4 | Consultation limits | green | |
-| 5 | Speaker everywhere | partial | iMessage has no speaker test; Teams plugin has no emitter enumeration |
+| 5 | Speaker everywhere | green | desktop and mobile tests check consumers, not emitters (their repos' own gate) |
 | 6 | Envelope | green | |
 | 7 | Fail loud | green | |
 | 8 | No foreign model before the agent | green | |
 | 9 | No super-agent out of the box | green | live Fly is not reseeded and still has a default agent with 35 plugins (expected, §7) |
-| 10 | Pace | partial | Teams reply window undecided (omadia-channel-teams#42); failed-turn notice untested in Teams and Slack |
+| 10 | Pace | green | |
 | 11 | Helper envelope | green | |
-| 12 | Language | partial | kernel clean; channel repos (Slack, Discord, WhatsApp, Telegram) and Hub manifests (llm-ollama, ui-orchestrator) still say "Orchestrator" |
+| 12 | Language | partial | Hub entry `@omadia/ui-orchestrator` ("Omadia UI Orchestrator", omadia-ui-support PR #3 still open); the channel repos and llm-ollama are fixed in PRs awaiting publish |
 | 13 | No access through a colleague | green | |
 | 14 | Default-agent table | green | |
 | 15 | Plugin boundary | green | |
@@ -45,7 +45,7 @@ items are marked **not implemented**.
 | 27 | Labels persist | green | |
 | 28 | Kept advantages | green | |
 | 29 | Uncluttered answers | partial | trace reference in answer details and "by asking" **not implemented** in the kernel |
-| 30 | Channel parity | partial | typed answers to choice/topic/slots elements are not parsed; `assignment` cannot go out as text |
+| 30 | Channel parity | green | Telegram, Discord, iMessage keep their own pending-reply store (same behaviour, tested); Slack and WhatsApp use the SDK's |
 | 31 | Justified decorations | green | fixed in this branch (web chat) |
 | 32 | Waiting is not failing | green | |
 | 33 | Fast lane under the guard | partial | check of the planner summary against boundaries **not implemented** |
@@ -100,7 +100,8 @@ items are marked **not implemented**.
 - Kernel enumeration: `test/speakerEmission.test.ts` :: `no file produces an answer without being accounted for` and `criterion 5: every proactive post path (say, conversation send, DM, trigger and routine delivery, reminders) is enumerated and carries a speaker`, `criterion 5: a DM through the shared bot reaches the channel with the system speaker`.
 - Web: `web-ui/app/_lib/__tests__/chatStreamSpeaker.test.ts`; public API: `test/channelApi/apiChannelBindingRouting.test.ts` (agent and `system` speaker).
 - Channels: Telegram `tests/telegramEmitterPaths.test.ts`; Slack `tests/outbox.test.ts`, `tests/turn.test.ts` :: `every output of every emitter path carries a speaker (criterion 5)`; Discord `test/emitters.test.ts`; WhatsApp `tests/emitter.test.ts`; Teams `tests/teamsManagementLayer.test.ts`; omadia-ui `agentsStore.test.ts`; mobile `agentView.test.ts`.
-- **Remaining:** iMessage has no speaker test; the Teams plugin has no emitter enumeration; the desktop and mobile tests check consumers, not emitters.
+- iMessage (`tests/plugin.integration.test.ts` :: `criterion 5: every emitter path names its speaker`: agent answer, kernel notice, resolver-named speaker, failed turn, pace acknowledgement, refusal, DM through the shared line; `tests/emitters.test.ts`); Teams (`tests/teamsEmitterPaths.test.ts` :: `posts into a conversation from exactly the places this table lists`, `an agent's answer leaves through one function: sendAnswer`) — omadia-channel-imessage#4, omadia-channel-teams#69.
+- Note: the desktop and mobile tests check consumers, not emitters.
 
 ### 6. Envelope — green
 - Persona and boundaries: `test/agentIdentityRules.test.ts`, `test/agentIdentityPrompt.test.ts` :: `assembles the sections in the documented order`.
@@ -120,14 +121,16 @@ items are marked **not implemented**.
 ### 10. Pace — partial
 - SDK: `test/channelPace.test.ts` :: `acknowledges once after the threshold, in the agent locale, without a model`, `marks work that outlives the reply window as a follow-up`.
 - Channels: Teams `tests/teamsAnswerDelivery.test.ts`; Telegram `tests/telegramPace.test.ts`; Slack `tests/turn.test.ts` (ack and `response_url` follow-up); Discord `test/pace.test.ts`; WhatsApp `tests/pace.test.ts`.
-- **Remaining:** Teams has no reply window (omadia-channel-teams#42); a failing turn ending in a notice is untested in Teams and Slack, and Discord only checks the rejection.
+- Reply window decided (omadia-channel-teams#42 → #69): 15 s, a longer message turn is answered as a proactive follow-up (`tests/teamsReplyWindow.test.ts`: window, no window, failing follow-up).
+- A failing turn ends in a notice: Teams `tests/teamsReplyWindow.test.ts` :: `the agent call throwing is answered with a visible error line…`; Slack `tests/turn.test.ts` :: `a failing slow turn ends in a system notice after the acknowledgement…`, `a failing slash command answers with the notice…`; Discord `test/failedTurn.test.ts` (message with and without acknowledgement, slash command).
 
 ### 11. Helper envelope — green
 - `test/internalHelperEnvelope.test.ts` :: `a native grant the agent lacks is not materialised, and a call to it does not run`, the MCP and revocation variants; `test/internalHelperBuilderRoutes.test.ts`.
 
 ### 12. Language — partial
 - web-ui: `web-ui/app/_lib/noOrchestratorTerm.test.ts`; middleware: `test/noOrchestratorTerm.test.ts` (bundled manifests' user-facing fields, LLM readiness labels).
-- **Remaining:** Slack (`src/plugin.ts`, `manifest.yaml`, admin UI), Discord (`src/plugin.ts`, `package.json`), WhatsApp and Telegram manifests; Hub entries seen in the store: llm-ollama description, "Omadia UI Orchestrator" (`@omadia/ui-orchestrator`).
+- Channel repos (PRs, text only plus tests): Slack #13, Discord #13, Telegram #15, WhatsApp #7, iMessage #4, llm-ollama #3 — manifests, package descriptions, READMEs, admin UI and runtime error texts.
+- **Remaining:** Hub entry `@omadia/ui-orchestrator` ("Omadia UI Orchestrator", byte5ai/omadia-ui-support): its fix waits for PR #3 to merge; the published channel/llm-ollama versions replace the old Hub texts after the publish.
 
 ### 13. No access through a colleague — green
 - `test/consultation/consultationEnvelope.test.ts` :: `the colleague is not offered and cannot run a system outside the envelope`; `test/consultation/consultationBroker.test.ts` :: `criterion 13: the colleague runs with grant ∩ its grants ∩ the asker's grants, no session, no memory`, `criterion 13: inside the run the HR system and memory are refused to the colleague`, `criterion 13: switches off are refused, facilitators are out, channel scope holds`.
@@ -190,7 +193,8 @@ items are marked **not implemented**.
 ### 30. Channel parity — partial
 - Choosing an agent, contribution and poll answer in Telegram and Teams: Telegram `tests/telegramAgentRouting.test.ts`, `tests/telegramFacilitationEvents.test.ts`; Teams `tests/teamsManagementLayer.test.ts`, `tests/teamsPlainTextParity.test.ts`; kernel `test/agentOwnBotCardAnswer.test.ts`, `test/typedCardReplies.test.ts`.
 - Enumeration: `test/channelSdkPlainText.test.ts` (every card question kind and interactive element has a plain-text path).
-- **Remaining:** a typed "2" is not turned into the chosen value for choice/topic/slots answer elements (it goes back to the agent's model); `assignment` cannot go out as text (`canGoOutAsText`).
+- A typed "2" to a `choice`/`topic`/`slots` element becomes the option's value: `test/channelSdkPlainText.test.ts` :: `criterion 30: a typed reply to an answer element becomes the chosen value` (choice, topic by number/label, slot booking message, unnamed option stays a message, spent after one use, TTL); Slack `tests/turn.test.ts` :: `a typed "2" to a numbered question reaches the agent as the option it names`, WhatsApp `tests/pace.test.ts` :: `a typed "2" to a numbered question`; Telegram `tests/telegramPlainText.test.ts` :: `a slot question is numbered text and the pick books the slot` (own store), Discord `test/parity.test.ts` :: `answering a poll: a numbered question is answered by typing the number` (own store), iMessage `tests/plugin.integration.test.ts` :: `turns a bare number into the option it names, once` (own store).
+- `assignment` goes out as text where a typed reply can name the assignee: `test/typedCardReplies.test.ts` :: `criterion 30: an assignment goes out as text and "2" / "ich" come back as the typed assignee`; a member list without `allowVolunteer` is still refused (nothing is posted).
 
 ### 31. Justified decorations — green
 - `test/decorationRegistry.test.ts` :: `refuses undeclared, removed and foreign-channel decorations` plus the new source scan with its self-test; channel tests in Teams, Telegram, Slack, Discord, WhatsApp; web `web-ui/app/chat/__tests__/answerDecorations.test.tsx`. omadia-ui and omadia-ui-mobile have no registry test.
