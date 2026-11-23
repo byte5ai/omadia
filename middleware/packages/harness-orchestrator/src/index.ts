@@ -18,8 +18,10 @@
 
 // Plugin entry point
 export { activate, DEFAULT_MAX_TOKENS } from './plugin.js';
+export { HUMAN_NAMES_SERVICE } from './plugin.js';
 export type {
   ChatAgentBundle,
+  HumanNamesProvider,
   OrchestratorPluginHandle,
 } from './plugin.js';
 

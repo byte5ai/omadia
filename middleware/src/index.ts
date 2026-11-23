@@ -160,9 +160,11 @@ import type {
   RunTraceOutcomeStats,
 } from '@omadia/orchestrator';
 import {
+  HUMAN_NAMES_SERVICE,
   RUN_TRACE_STATS_SERVICE,
   setDatasetVaultKeyFallback,
 } from '@omadia/orchestrator';
+import type { HumanNamesProvider } from '@omadia/orchestrator';
 import { createMemoryRouter } from './routes/memory.js';
 import { createDatasetsRouter } from './routes/datasets.js';
 import { createBulkPromotionRouter } from './routes/bulkPromotion.js';
@@ -377,6 +379,7 @@ import {
   runDriftSweep,
 } from './profileSnapshots/driftWorker.js';
 import { UserStore } from './auth/userStore.js';
+import { createUserHumanNameDirectory } from './auth/humanNameDirectory.js';
 import {
   ProviderCatalog,
   ProviderRegistry,
@@ -5926,6 +5929,16 @@ async function main(): Promise<void> {
 
     const userStore = new UserStore(graphPool);
     sessionRevocation.attach(userStore);
+    // #2042 — `humanNames@1`: the active users' display, first and last
+    // names, so an agent's own name a colleague bears stays masked in its own
+    // turn. Snapshot reloaded on every user write (+ TTL); unknown until the
+    // first load, which exempts no own name. Names are never logged.
+    const humanNameDirectory = createUserHumanNameDirectory(userStore, {
+      log: (m) => console.warn(m),
+    });
+    serviceRegistry.provide<HumanNamesProvider>(HUMAN_NAMES_SERVICE, () =>
+      humanNameDirectory.snapshot(),
+    );
 
     const bootstrapResult = await runAuthBootstrap({
       userStore,

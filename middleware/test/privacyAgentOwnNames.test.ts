@@ -374,5 +374,8 @@ describe('buildOrchestratorForAgent — own names reach the privacy handle', () 
       await namesSeenBy({ ...base, agentId: 'solo', humanNames: () => ['Omadia'] }),
       ['solo'],
     );
+    // #2042 — the users-backed directory is not loaded yet: no own name is
+    // exempt, so the request carries none.
+    assert.equal(await namesSeenBy({ ...base, agentId: 'solo', humanNames: () => null }), undefined);
   });
 });

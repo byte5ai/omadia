@@ -2442,12 +2442,25 @@ reads "Ich bin <surrogate>" and "corrects" its own name. The rules
   and an own name that the deny-list matches is not treated as an own name in
   that call (sweep and residual check included).
 - **Human namesakes are not exempt.** An own name that equals a known human's
-  name (`AgentRuntimeConfig.humanNames`, case-insensitive) is dropped from the
-  list, so an employee "Max" stays masked even when an agent is called "Max".
-  Residual: no people directory feeds `humanNames` yet (the identity guard's
-  `agentDirectory` lists agents only). Until one does, a human whose full
-  name equals an agent's own name reaches that agent's model unmasked in that
-  agent's turns.
+  name (`AgentRuntimeConfig.humanNames`, case-insensitive, trimmed) is dropped
+  from the list, so an employee "Max" stays masked even when an agent is
+  called "Max". The humans are the **active** rows of the `users` table
+  (`status = 'active'`; disabled and deleted users do not count), each with
+  its display name, its first name and its last name (first and last word of
+  the display name; the table has no separate name columns). A single first
+  name counts: with a user "Karen Müller", an agent "Karen" is masked in its
+  own turns, as is an agent "Karen Müller". The kernel publishes the names as
+  `humanNames@1` (`src/auth/humanNameDirectory.ts`); every live agent of the
+  registry reads them once per turn. The directory keeps a per-process
+  snapshot: loaded at boot, reloaded after every write through `UserStore`
+  (create, first admin, OIDC sign-in upsert, name or status change, delete —
+  `UserStore.onChange`), and after 5 minutes as a safety net for writes from
+  another process; until a reload lands, the last snapshot is served.
+  **Fail safe:** before the first load has succeeded, after a failed load,
+  and while the service is not published yet, the names are unknown and the
+  turn exempts no own name at all — masking wins. The names are never logged.
+  Residual: a write from another process (a second instance, manual SQL) is
+  picked up only by the TTL reload, up to 5 minutes later.
 
 **Memory jobs, independent of `mask_user_prompt`.** The memory jobs of
 `@omadia/orchestrator-extras` send stored text, which holds real values,
