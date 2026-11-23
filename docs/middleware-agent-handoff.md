@@ -5994,7 +5994,7 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   Zugriff auf X“, „X nicht erreichbar“, „kann X nicht lesen“, wenn der Satz
   (bis Satz- oder Listenende) ein bekanntes System nennt, für das der Agent
   kein Werkzeug hat (`KNOWN_SYSTEMS`: Mail, Kalender, Lohn, Rechner,
-  Internet, Telefon, Bank — gegen `VerifierInput.offeredToolNames` aus
+  Internet, Telefon, Bank, ERP/Odoo, HR, Wiki, Jira, CRM — gegen `VerifierInput.offeredToolNames` aus
   `Orchestrator.offeredToolNames()`), und keines, das er hat. Nennt er nichts,
   ein Pronomen oder ein gehaltenes System: weiter zurückgehalten.
   „konnte nicht laden“, Zugriffsereignisse, Absenz und Bitte um Wiederholung

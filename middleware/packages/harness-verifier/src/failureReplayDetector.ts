@@ -113,6 +113,15 @@ const KNOWN_SYSTEMS: ReadonlyArray<{ readonly words: readonly string[]; readonly
   { words: ['internet', 'webseite', 'website', 'websites'], toolWords: ['web', 'browse', 'browser', 'url', 'internet'] },
   { words: ['telefon', 'handy', 'sms', 'anruf', 'phone'], toolWords: ['phone', 'sms', 'call', 'telefon'] },
   { words: ['bank', 'konto', 'kontoauszug', 'banking'], toolWords: ['bank', 'banking', 'finapi', 'account'] },
+  // business systems: an agent without their tools says so truthfully
+  {
+    words: ['odoo', 'erp', 'rechnung', 'buchhaltung', 'buchung', 'invoice', 'accounting', 'auftr', 'bestellung', 'lager', 'kundenauftr'],
+    toolWords: ['odoo', 'erp', 'accounting', 'invoice', 'invoices', 'sales', 'purchase', 'inventory'],
+  },
+  { words: ['hr', 'personal', 'mitarbeiterdaten', 'urlaub', 'abwesenheit', 'employee'], toolWords: ['hr', 'employee', 'employees', 'personio', 'leave', 'payroll'] },
+  { words: ['confluence', 'wiki'], toolWords: ['confluence', 'wiki'] },
+  { words: ['jira', 'ticket'], toolWords: ['jira', 'ticket', 'tickets', 'issue', 'issues'] },
+  { words: ['crm', 'salesforce', 'hubspot', 'lead'], toolWords: ['crm', 'salesforce', 'hubspot', 'lead', 'leads'] },
 ];
 
 /** Lower-case words of `text`. */

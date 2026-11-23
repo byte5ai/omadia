@@ -43,7 +43,8 @@ changelog.
   call as a replayed access failure. A claim about what the agent can reach ("kein Zugriff
   auf X", "X nicht erreichbar", "kann X nicht lesen") passes now when it names a known system
   the agent holds no tool for (mail, calendar, payroll, the user's computer, the internet,
-  phone, bank; against `VerifierInput.offeredToolNames`) and none it holds. A claim that names
+  phone, bank, and the business systems ERP/Odoo, HR, wiki, Jira, CRM; against
+  `VerifierInput.offeredToolNames`) and none it holds. A claim that names
   nothing, a pronoun or a held system is still withheld. Reported attempts ("konnte nicht
   laden"), access events (timeout, denied), absence and retry claims are unchanged; with the
   tools unknown the older rule holds.

@@ -277,6 +277,17 @@ describe('verifier/failureReplayDetector — a self-description is no replay', (
     }
   });
 
+  it('live: an agent without accounting tools says so about invoices', () => {
+    const confluenceOnly = ['confluence_search', 'confluence_get_page', 'query_knowledge_graph', 'memory'];
+    for (const answer of [
+      'Auf Rechnungen und die Buchhaltung habe ich keinen Zugriff, frag dafür einen Kollegen mit Odoo.',
+      'Auf Odoo habe ich keinen Zugriff.',
+    ]) {
+      const v = detectFailureReplay(input({ answer, domainToolsCalled: [], offeredToolNames: confluenceOnly }));
+      assert.deepEqual(v, [], answer);
+    }
+  });
+
   it('a system the agent holds a tool for is no limit to describe', () => {
     const v = detectFailureReplay(
       input({
