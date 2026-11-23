@@ -2,8 +2,8 @@
  * OM-76 (#996) — "no orchestrator at all" vs "this one is gone".
  *
  * Two states the chat UI must tell apart:
- *   - NO agent is active (fresh install, no LLM provider assigned) → 503
- *     `no_agents_active` (the banner points at LLM access).
+ *   - NO agent is active (none exists or is enabled, or no LLM provider is
+ *     assigned) → 503 `no_agents_active`, whose message names both fixes.
  *   - some agents ARE active, the requested one is gone → since #2055 the
  *     management layer answers: 200 with a `system` notice naming the agent,
  *     on both the JSON and the NDJSON route. Never another agent, never 503.
@@ -16,7 +16,7 @@ import type { Server } from 'node:http';
 import express from 'express';
 
 import type { ChatAgent } from '@omadia/orchestrator';
-import { createChatRouter } from '../src/routes/chat.js';
+import { createChatRouter, NO_AGENTS_ACTIVE_MESSAGE } from '../src/routes/chat.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
 import { routeTurnFrom } from './_helpers/webRouteTurn.js';
 
@@ -71,8 +71,14 @@ describe('createChatRouter — OM-76 no_agents_active vs a notice for a missing 
     hasActive = false; // registry empty, nothing published
     const res = await post();
     assert.equal(res.status, 503);
-    const body = (await res.json()) as { error: string };
+    const body = (await res.json()) as { error: string; message: string };
     assert.equal(body.error, 'no_agents_active');
+    // The registry cannot tell "no agent exists or is enabled" from "no LLM
+    // provider": a fresh instance with a provider but no agent hits this too,
+    // so the message names both fixes, not the provider alone.
+    assert.equal(body.message, NO_AGENTS_ACTIVE_MESSAGE);
+    assert.match(body.message, /create or enable an agent/);
+    assert.match(body.message, /LLM provider/);
   });
 
   it('agents active but the default one is gone → 200 system notice naming it', async () => {

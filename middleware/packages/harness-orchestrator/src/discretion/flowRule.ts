@@ -20,6 +20,7 @@ import {
   type LabelSet,
   type Readers,
 } from './labels.js';
+import { allowsFieldClass, type FieldClassAllowance } from './fieldRights.js';
 
 /**
  * What an operator declared about one integration (plugin or MCP server):
@@ -41,6 +42,11 @@ export type DiscretionEgress =
       /** The conversation the answer goes to; its own context label always passes. */
       readonly contextKey?: string;
       readonly readers: Readers;
+      /**
+       * The classifications every reader may know (their field rights,
+       * `fieldRights.ts`). Absent = none: a classification label fails.
+       */
+      readonly fieldClasses?: FieldClassAllowance;
     }
   | {
       readonly kind: 'agent';
@@ -68,7 +74,8 @@ export interface FlowViolation {
     | 'agent_lacks_grant'
     | 'integration_undeclared'
     | 'integration_readership'
-    | 'classification_not_accepted';
+    | 'classification_not_accepted'
+    | 'readers_lack_field_right';
 }
 
 export type FlowDecision =
@@ -114,9 +121,12 @@ function checkClassification(
 ): FlowViolation['reason'] | undefined {
   switch (egress.kind) {
     case 'people':
+      // The model saw a classified field unmasked (an operator bypass, maybe in
+      // an earlier turn this one reused): every reader must hold the right to
+      // that classification (criterion 18), else the answer is refused whole.
+      return allowsFieldClass(egress.fieldClasses, label.class) ? undefined : 'readers_lack_field_right';
     case 'memory':
-      // The model saw it unmasked because the operator bypassed the shield for
-      // this source; within the conversation the context label decides.
+      // Within the conversation the context label decides who reads the tier.
       return undefined;
     case 'agent':
       return 'classification_not_accepted';

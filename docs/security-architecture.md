@@ -49,9 +49,7 @@ Benefits:
   the shared host client falls back to `ANTHROPIC_API_KEY` when it is set,
   and on installs whose vault key was seeded from that env var at first boot
   it is the same key, so host consumers (plan-runner gate, Teams, builder)
-  keep using it until the env var is removed. Sub-agents that
-  `DynamicAgentRuntime` has already built keep their captured provider until
-  a restart or rebuild. Both limits are recorded as open items in
+  keep using it until the env var is removed. Both limits are recorded as open items in
   `middleware-agent-handoff.md` §13.
 
 Pattern: thin proxy handler → typed client → upstream API. Document the
@@ -800,8 +798,12 @@ not read).
   (`422 package.persona_declared`), and every package of the retired kinds
   `agent` and `extension`, also as the update of a package installed under
   that kind (`422 package.retired_kind`, `422 install.retired_kind`). An
-  installed plugin of a retired kind keeps running as legacy until it is
-  replaced; the agent runtime that runs agent plugins goes in S3c. An update
+  installed `extension` keeps running as a system module until it is
+  replaced. The kernel has no runtime for kind `agent` (S3c): an installed
+  agent plugin starts no code, is recorded `errored` with the code
+  `kind_retired` at boot and on every reactivation or update
+  (`src/plugins/retiredAgentPlugins.ts`), and is no capability plugin, so it
+  cannot be granted. An update
   that makes a plugin a system module needs the explicit confirmation of a
   fresh install (`becomes_system_module`). Agent templates
   (`agent_templates:`, `src/plugins/agentTemplateManifest.ts`) are inactive
@@ -829,6 +831,18 @@ not read).
   routing. An unknown, disabled or unbuilt agent has no envelope, and no
   other agent is returned in its place. Only system modules get it (the
   canvas presentation helper `@omadia/ui-orchestrator`).
+- **The canvas helper is reached only after the check.** The dispatcher
+  resolves an addressed turn (`resolveAgent`: enabled, available to this
+  sender here) first; only a `bound` agent is handed to the channel's
+  `dispatch_service` with `ChatTurnInput.agentId`, which the dispatcher sets
+  itself (channel metadata is never read as that field). A refused agent, a
+  `/agent` command and a turn the resolver cannot address never reach the
+  helper, and a structured canvas turn (`canvasRefresh`, `action`, empty text)
+  is never run as a model turn at an agent.
+- **The agent list of a channel is the route's list.** `agentDirectory@1`
+  (`src/platform/agentDirectoryService.ts`) is given to `channel` plugins only
+  and answers the function behind `GET /api/v1/agents/directory`; it lists,
+  never authorises.
 - **A system module's own model loop goes through the kernel.** The dev
   platform's coding jobs run the Claude CLI in a container against the
   module's Anthropic-compatible proxy. The proxy holds no provider key: it
@@ -861,13 +875,33 @@ not read).
 
 Residual risks of the sandbox (in-process, a policy, not a boundary against
 hostile code): a plugin that imports its own `undici` or opens sockets with
-`node:net`/`node:tls` directly is not seen; the DNS-rebinding check runs
+`node:net`/`node:tls` directly is not seen (integration-odoo does so with
+`ODOO_INSECURE_TLS=true`: byte5ai/omadia-integration-odoo#10); the DNS-rebinding check runs
 only in `ctx.http`'s guarded dispatcher; bundled packages (system modules,
 built-in adapters) count as kernel code; a model server on a local or
 private host (a local Ollama) is not a model endpoint, because the host is
 shared with every other local service; a plugin that hands the kernel a
 bare `fetch` reference to call for it is not seen. A plugin can also patch
 the guard away, like any in-process check.
+
+### Plugin Builder preview: no service right the draft lacks (criterion 37)
+
+A preview reads kernel services through to the live registry so a draft can
+be tested against an installed integration. It used to do so ungated. Now
+`plugins/builder/previewServices.ts` applies the gates of an installed plugin,
+judged by the draft's own manifest: only declared capabilities (and of a
+versioned name only the declared major), never a pool-shaped capability, never
+a raw model client or provider pool (whatever kind the draft claims), and
+resolved as the draft plugin. A manifest that cannot be read declares nothing.
+
+### Recipient grants: where a proactive message may go (criterion 24)
+
+A trigger posts into the conversation it was created in, or into a target an
+operator granted the agent (`agent_recipient_grants`). The agent names a
+target only by grant id, so no model-made delivery reference reaches a
+sender; the grant is re-checked at every send and its stored reference is
+used. The discretion check runs against the target's readers read from the
+channel roster at send time; an unknown roster closes the room.
 
 ### Plugin-borne workflow templates (#478)
 
@@ -1054,11 +1088,11 @@ of the turn carries all of it.
 
 | Egress | Rule | Where |
 |---|---|---|
-| Answer to people | every reader may know every label; otherwise the result is rebuilt from bookkeeping fields only (no attachments, files, cards, canvas, recall or contributions) and the session row stores only the replacement. Non-streaming path; a streamed answer is protected only in what is stored | `guardAnswerEgress`, `beforeTurnWritten` |
+| Answer to people | every reader may know every label, a `classification` label only when every reader holds the field right for it (below); otherwise the result is rebuilt from bookkeeping fields only (no attachments, files, cards, canvas, recall or contributions) and the session row stores only the replacement. On the streaming path the `done` event is rebuilt the same way; text deltas already sent are the residual | `guardAnswerEgress`, `guardStreamedDone`, `beforeTurnWritten` |
 | Contribution to an agent | the receiver's grants cover every source and its readers may know it; then the grant's disclosure level caps what is new to the receiver | consultation broker |
 | Persistence | a written turn keeps its label set | `onTurnWritten` |
 | Memory write | another conversation's knowledge only into a tier whose readers may all know it (members: the owners; context-bound: the room; else the agent's memory, readers unknown, which only the turn's own conversation may enter). Notes keep the union of their writers' labels by canonical physical path, stored before the content (no labels, no write); directory renames and deletes take the labels along; session transcripts keep every turn's labels; memorables (auto-promotion, MCP→KG ingestion, durable rules) keep them too; reading, recalling or replaying them (verifier re-entry) adds them back. The members index is kept out of the label layer (read for every room) | `guardMemoryEgress`, `LabelledMemoryStore`, `maybePromoteTurn` |
-| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and checked like a write, against every label (since the contract step, S3b); a plugin's sub-agent tool (`query_<plugin>`) is `write` when any of the plugin's tools declares `write`, else `unknown`, so checked as well | `guardIntegrationEgress`, before the call runs |
+| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and checked like a write, against every label (since the contract step, S3b) | `guardIntegrationEgress`, before the call runs |
 
 A refused flow is never redacted afterwards. The agent gets a structured refusal;
 at disclosure level `none` a consultation is regenerated without memory and without
@@ -1073,8 +1107,29 @@ label nobody may read (fail closed).
 Defaults: new agents start with context memory `members` (0099); `off` is refused
 for an agent that holds capability grants. Existing agents keep their mode.
 
+**Field rights per member (criteria 3c, 18).** The right to see fields the shield
+masks is an audience-floor capability, `privacy:field:<class>` (today only
+`personal`, `discretion/fieldRights.ts`). It is in the member baseline; an operator
+withdraws it per person or role with a denial, and a denial binds the whole room.
+Where not every member holds it: no operator bypass applies (the model gets the
+masked digest, at all three dispatch sites), prompt surrogates are not restored
+(answer, choices, follow-ups, stored history; a note says some details stay
+masked), values a `v4_render_answer` materialized are masked again, the canvas tap
+and `deliver_data` deliver nothing, and a `classification` label refuses the answer
+as a whole. A consulted colleague runs in the consulting room, so its contribution
+follows the same rule. A closed or failing floor grants no class; a turn without an
+audience floor (floor switched off) is not enforced. A trigger stores its creating
+room's field rights (`fieldClasses` in its discretion record); its firings and posts
+use them only in that room and only while every current reader was a reader then; an
+explicit target, a room that gained a reader, or a trigger stored without them gets none
+(fail closed). Residual: a denial added later for someone who was already in the room
+does not reach a trigger set before it; the trigger keeps the rights it stored until it
+ends or is cancelled. The consult result's header (contribution
+id, colleague, status) passes outside the privacy digest, decided by provenance
+(the kernel's own consult tool), never by tool name.
+
 Known residuals: the subscription-CLI path and sub-agent inner calls carry no
-discretion state yet; streamed answers are protected only in what is stored; reads
+discretion state yet; streamed text deltas go out before the egress decision; reads
 of memorables through `query_knowledge_graph` and the session briefing bring no
 labels; plugin memory (`ctx.memory`) is written outside the label layer; a write
 to the team memory tier is checked against the room's readers; a turn whose label write failed is recalled
@@ -1155,13 +1210,15 @@ one rule about what counts as a runtime.
   the package does not accept, and forcing it breaks that dependency. Its `via`
   names the production dependencies every route starts at (same route check as
   above, without the devDependency rule), its reason says why the vulnerable
-  code is not reachable from request data, and it expires at most 30 days after
-  its review, so it is re-checked against upstream every month. The first entry
-  (2026-10-28) covers GHSA-mrhx-c7xc-m3w5 in `zod` 3.25.x via `botbuilder`
-  4.23.3, the latest release, host-provided for the Teams channel plugin: the
-  fix is in zod 4.6.6, botbuilder throws on load under zod 4, and inbound Bot
-  Framework requests only reach `z.record(z.unknown())`, never the array
-  schemas the advisory is about.
+  code is not reachable from request data, and it expires at most 90 days after
+  its review, so it is re-checked against upstream at least once a quarter (30
+  days until 2026-11-23). The first entry (2026-10-28) covers
+  GHSA-mrhx-c7xc-m3w5 in `zod` 3.25.x via `botbuilder` 4.23.3, the latest
+  release, host-provided for the Teams channel plugin: the fix is in zod 4.6.6,
+  botbuilder throws on load under zod 4, and inbound Bot Framework requests only
+  reach `z.record(z.unknown())`, never the array schemas the advisory is about.
+  Re-reviewed and renewed 2026-11-23 until 2027-02-21: botbuilder has had no
+  release since 2025-08-27.
 - **Dependabot** has an npm block for every audited directory (`/desktop`,
   `/middleware`, `/web-ui`); a new package directory gets one together with its
   audit leg. GitHub's repository-level alerting is not counted on as a
@@ -1369,10 +1426,9 @@ are a separate mechanism and self-authenticate by contract.
 Follow-ups (S3-G):
 
 - Declared public paths are claimed by **every** runtime that activates
-  plugins: the tool runtime, the dynamic-agent runtime (Builder agents) and the
-  channel registry. All three go through `platform/publicPathClaim.ts`. Before,
-  only the tool runtime claimed, so a granted channel or agent prefix was never
-  served (404, the fail-closed direction).
+  plugins: the tool runtime and the channel registry. Both go through
+  `platform/publicPathClaim.ts`. Before, only the tool runtime claimed, so a
+  granted channel prefix was never served (404, the fail-closed direction).
 
 - `@omadia/channel-teams` 0.31.0 serves `/p/channel-teams/{hub,tab-config}`
   this way. The two pages are data-free shells; the plugin catalogue comes only
@@ -1694,7 +1750,7 @@ output too:
   reader only when the trigger delivers into the owner's own web chat.
   Anywhere else the readers are unknown, and anything labelled is refused.
 - A post or delivery the room may not receive is refused when the trigger is
-  set (`Error (discretion)`), not only on every firing.
+  set (`Error: (discretion)`), not only on every firing.
 - A firing's turn runs seeded with them (`runWithSeededDiscretion`,
   `discretion/seededTurn.ts`). It is a labelled turn of that conversation, and
   its answer passes the same people-egress check as a person's turn.
@@ -4588,7 +4644,7 @@ The real fix: `PluginContext` now exposes an optional `ctx.operatorAuth`
 published by the kernel (`middleware/src/auth/operatorAuthAccessor.ts`) and
 wired into every plugin-context factory
 (`middleware/src/platform/pluginContext.ts`, threaded through
-`ToolPluginRuntime`, `DynamicAgentRuntime`, and `DefaultChannelRegistry`).
+`ToolPluginRuntime` and `DefaultChannelRegistry`).
 `hasValidSession(cookieHeader)` reuses `evaluateSessionToken` — the EXACT
 SAME session-verification logic `requireAuth` runs (same cookie name, same
 signing key, same Entra-whitelist rule) — extracted into
@@ -5006,6 +5062,24 @@ owner-mismatch refusals, approve after revocation mints no grant).
 ---
 
 ## 10d. WebSocket upgrade authentication (#746 W1-1)
+
+**The canvas socket through the web-ui front (spec 2042).** The web-ui's
+pairing descriptor advertises `wss://<front host>/omadia-ui/canvas`, because
+the socket authenticates with the session cookie and that cookie belongs to the
+host the person signed in on (the front, through `/bot-api/*`). The web-ui
+image therefore starts through `web-ui/scripts/runtime/omadia-server.mjs`,
+which relays upgrades of exactly that path to `MIDDLEWARE_URL` before Next's
+own `upgrade` listener sees them (`canvasWsProxy.mjs`). The relay is
+transport only: the middleware's registry below authenticates the upgrade as
+it would a direct one. The relay forwards the client's headers, cookies
+included, minus hop-by-hop headers; it sets `X-Forwarded-Proto` from
+`WEB_UI_PUBLIC_SCHEME` and `X-Forwarded-Host` from the request's own `Host`,
+dropping both if the client sent them, like `/bot-api/*`. The path bypasses
+Next and its `proxy.ts` login gate on purpose: the gate's job, the session
+check, is the registry's. Like the middleware host, neither checks `Origin`;
+the SameSite cookie is what keeps a foreign page from opening the socket.
+`scripts/fly-deploy.sh` tries the upgrade at the advertised URL on both hosts
+and expects `401` without a session.
 
 `WebSocketRegistry` (`middleware/src/channels/webSocketRegistry.ts`) is the
 process's only `upgrade` listener. It routes each upgrade through a
@@ -7156,6 +7230,19 @@ introduces someone. A judge error, timeout (8 s) or missing judge withholds the
 text. Streaming releases complete sentences only, each checked with all text
 so far. The guard is a strong guard with test-defined coverage, not a proof
 (ADR-0013).
+
+What the deterministic layer settles without a model, so a plain "who are
+you?" answer is the same every time: an introduction by one of the agent's
+own names, matched as a whole name of any length ("Ich bin Dark Clippy", not
+"Dark Mira" or "Dark Clippy-Hans"), and the AI disclosure every agent owes
+("Ich bin eine KI", "I'm an AI assistant"). Identity talk still goes to the
+judge when the sentence it is in or the next one carries a negation or a word
+about being human or real ("I'm an AI? Ha, I'm actually a real person.",
+"Me, a bot? Never."), and "bin ich <Name>" is an introduction like "ich bin
+<Name>". The judge's verdict is the first word of its reply (markup aside, an
+explanation after it allowed); a reply that does not open with PASS or BLOCK
+is no verdict and withholds the text as `unavailable`, never as a pass. The
+operator log line of an unavailable guard names the cause and the error.
 
 ## 10za. Execution scopes bound closings and the deadline wait (#2090, ADR-0030)
 

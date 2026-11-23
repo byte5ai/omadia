@@ -155,7 +155,7 @@ describe('#2082 proactive triggers through the kernel wiring (pg, 0093 + 0094)',
     // The creating turn had read what only anna and carl may know.
     const narrow = { labels: [{ kind: 'context' as const, key: 'teams:dm-anna-carl', readers: readersOf(['anna', 'carl']) }] };
     const refused = await setIn(turnIn(narrow), [{ type: 'post', template: 'Bitte an {{purpose}} denken' }]);
-    assert.match(refused, /Error \(discretion\)/);
+    assert.match(refused, /^Error: \(discretion\)/);
 
     // A turn step is set; its firing runs as a labelled turn of the HR chat.
     assert.match(await setIn(turnIn(narrow), [{ type: 'turn', instruction: 'Erinnere' }]), /"created"/);

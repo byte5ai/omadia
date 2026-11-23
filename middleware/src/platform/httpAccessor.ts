@@ -9,6 +9,11 @@ import {
 } from '@omadia/plugin-api';
 
 import {
+  PluginEgressRefusedError,
+  buildHostMatcher,
+  modelProviderDeniedTo,
+} from './pluginEgressGuard.js';
+import {
   HttpBlockedAddressError,
   createGuardedAgent,
   isPublicIp,
@@ -76,6 +81,14 @@ export function createHttpAccessor(opts: {
    * Absent ⇒ not enforced, the same rule every other audience guard follows.
    */
   audienceDeniesHost?: (host: string) => Promise<boolean>;
+  /**
+   * Spec 2042 §5.10 — whether `host` is a model provider endpoint this plugin
+   * may not reach. Defaults to the kernel's network sandbox (the installed
+   * model providers; a model plugin is exempt). A request through `ctx.http`
+   * is the kernel's to the process-wide egress guard, so the block has to be
+   * here: no manifest host and no `public-web` mode opens a model provider.
+   */
+  modelProviderDeniesHost?: (host: string) => boolean;
 }): HttpAccessor {
   const { agentId, outbound } = opts;
   const limit = opts.rateLimitPerMinute ?? DEFAULT_RATE_LIMIT_PER_MINUTE;
@@ -95,6 +108,8 @@ export function createHttpAccessor(opts: {
   const matchers = staticHosts.map(buildHostMatcher);
 
   const bucket = new TokenBucket(limit, 60_000);
+  const modelProviderDeniesHost =
+    opts.modelProviderDeniesHost ?? ((host: string): boolean => modelProviderDeniedTo(agentId, host));
 
   // The rebinding-safe dispatcher is built once and reused. Only public-web
   // mode needs it — the static-allow-list modes trust the named hosts.
@@ -136,6 +151,12 @@ export function createHttpAccessor(opts: {
         throw new HttpForbiddenError(agentId, host);
       }
 
+      // Spec 2042 §5.10 — models are reached only through the model gateway
+      // (`ctx.llm`), in every mode and whatever the manifest lists.
+      if (modelProviderDeniesHost(host)) {
+        throw new PluginEgressRefusedError(agentId, host, 'model_provider');
+      }
+
       if (mode === 'public-web') {
         // Any public host is permitted; the guarded dispatcher enforces the
         // private-range blocklist at connect time. A literal-IP host never
@@ -162,23 +183,6 @@ export function createHttpAccessor(opts: {
       return fetch(url, init);
     },
   };
-}
-
-export function buildHostMatcher(pattern: string): (host: string) => boolean {
-  const p = pattern.trim().toLowerCase();
-  if (p.startsWith('*.')) {
-    const suffix = p.slice(2);
-    return (host: string): boolean => {
-      if (host === suffix) return false;
-      if (!host.endsWith('.' + suffix)) return false;
-      const sub = host.slice(0, host.length - suffix.length - 1);
-      // Leading-wildcard matches one label only — `*.example.com` accepts
-      // `api.example.com` but rejects `a.b.example.com`. Tightens the
-      // blast radius if a typo puts too-broad a wildcard in a manifest.
-      return sub.length > 0 && !sub.includes('.');
-    };
-  }
-  return (host: string): boolean => host === p;
 }
 
 function safeParseUrl(url: string): URL | undefined {

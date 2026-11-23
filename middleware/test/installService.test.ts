@@ -1,4 +1,7 @@
 import { strict as assert } from 'node:assert';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, it } from 'node:test';
 
 import type { Plugin } from '../src/api/admin-v1.js';
@@ -911,5 +914,86 @@ describe('InstallService.reactivate — #1462 depends_on cascade', () => {
     const { service, activated } = harness();
     assert.equal(await service.reactivate('not-installed'), undefined);
     assert.deepEqual(activated, []);
+  });
+});
+
+describe('InstallService.create — the plugin boundary (spec 2042 criterion 15)', () => {
+  function catalogOf(entry: {
+    kind: Plugin['kind'];
+    manifest: unknown;
+    dir?: string;
+    origin?: 'installed' | 'bundled';
+  }): PluginCatalog {
+    const plugin = makePlugin({ id: '@t/legacy', kind: entry.kind, provides: [], requires: [], depends_on: [] });
+    const value = {
+      plugin,
+      manifest: entry.manifest,
+      source_path: path.join(entry.dir ?? '/nonexistent', 'manifest.yaml'),
+      source_kind: 'manifest-v1' as const,
+      origin: entry.origin ?? 'installed',
+    };
+    return {
+      get: (id: string) => (id === plugin.id ? value : undefined),
+      list: () => [value],
+    } as unknown as PluginCatalog;
+  }
+
+  function create(catalog: PluginCatalog): () => unknown {
+    const service = new InstallService({ catalog, registry: makeRegistry(), vault: noopVault });
+    return () => service.create('@t/legacy');
+  }
+
+  for (const kind of ['agent', 'extension'] as const) {
+    it(`criterion 15: refuses kind \`${kind}\` at install with install.retired_kind`, () => {
+      assert.throws(create(catalogOf({ kind, manifest: {} })), (err: unknown) => {
+        assert.ok(err instanceof InstallError);
+        assert.equal(err.code, 'install.retired_kind');
+        assert.equal(err.status, 422);
+        assert.deepEqual(err.details, { kind });
+        return true;
+      });
+    });
+  }
+
+  // A package uploaded before the boundary existed still sits in the store;
+  // installing it anew must not bring its persona in.
+  for (const [label, manifest] of [
+    ['a persona', { persona: { tone: 'warm' } }],
+    ['a speaker', { speaker: { name: 'Mira' } }],
+    ['a prompt_partial skill', { skills: [{ id: 's', kind: 'prompt_partial', path: 'skills/x.md' }] }],
+  ] as const) {
+    it(`criterion 15: refuses a stored capability plugin that declares ${label} at install`, () => {
+      assert.throws(create(catalogOf({ kind: 'integration', manifest })), (err: unknown) => {
+        assert.ok(err instanceof InstallError);
+        assert.equal(err.code, 'install.persona_declared');
+        assert.equal(err.status, 422);
+        return true;
+      });
+    });
+  }
+
+  it('criterion 15: refuses a stored tool that ships an AGENT.md at install', (t) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'install-boundary-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    writeFileSync(path.join(dir, 'AGENT.md'), '---\nname: Mira\n---\n');
+    assert.throws(create(catalogOf({ kind: 'tool', manifest: {}, dir })), (err: unknown) => {
+      assert.ok(err instanceof InstallError);
+      assert.equal(err.code, 'install.persona_declared');
+      return true;
+    });
+  });
+
+  it('installs a channel plugin, an agent template with a personality, and a built-in as before', () => {
+    assert.doesNotThrow(create(catalogOf({ kind: 'channel', manifest: { permissions: { secrets: { runtime_write: true } } } })));
+    assert.doesNotThrow(
+      create(
+        catalogOf({
+          kind: 'agent-template',
+          manifest: { agent_templates: [{ id: 'hr', name: 'Hanna', persona: { axes: { warmth: 80 } } }] },
+        }),
+      ),
+    );
+    // Packages shipped in the image are kernel code, not checked here.
+    assert.doesNotThrow(create(catalogOf({ kind: 'tool', manifest: { skills: [{ id: 's', kind: 'prompt_partial' }] }, origin: 'bundled' })));
   });
 });

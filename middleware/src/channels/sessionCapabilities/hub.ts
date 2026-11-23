@@ -84,6 +84,7 @@ function notReady(code: string, message: string): ChannelReadinessReport {
 export class SessionCapabilityHub {
   private snapshotListeners: Listener<SessionCapabilitySnapshot>[] = [];
   private eventListeners: Listener<SessionEventRecord>[] = [];
+  private kernelObservers: Array<(event: Pick<SessionEventRecord, 'channelType' | 'conversationId' | 'kind'>) => void> = [];
   private readonly seen = new Set<string>();
   private readonly refusalsLogged = new Set<string>();
   private readonly log: (message: string) => void;
@@ -256,6 +257,18 @@ export class SessionCapabilityHub {
     };
   }
 
+  /**
+   * Spec 2042 §5.12 — the kernel's own view of a session's lifecycle (a
+   * meeting ended ends its triggers), independent of message subscriptions.
+   * Every valid event, possibly once per bot in the conversation.
+   */
+  observeLifecycle(observer: (event: Pick<SessionEventRecord, 'channelType' | 'conversationId' | 'kind'>) => void): () => void {
+    this.kernelObservers = [...this.kernelObservers, observer];
+    return () => {
+      this.kernelObservers = this.kernelObservers.filter((o) => o !== observer);
+    };
+  }
+
   // ── channel side ─────────────────────────────────────────────────────────
 
   emitSnapshot(snapshot: SessionCapabilitySnapshot): void {
@@ -286,6 +299,13 @@ export class SessionCapabilityHub {
     ) {
       this.log('[capabilities] dropped an invalid session event');
       return;
+    }
+    for (const observer of this.kernelObservers) {
+      try {
+        observer({ channelType: event.channelType, conversationId: event.conversationId, kind: event.kind });
+      } catch (err) {
+        this.log(`[capabilities] a lifecycle observer threw: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
     const subscribers = this.deps.subscriptionsIn?.(event.channelType, event.conversationId) ?? [];
     if (subscribers.length === 0) return; // nobody moderates here

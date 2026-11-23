@@ -121,7 +121,7 @@ function connectorVerifierBadge(
  * Humanize a run-trace `agentName` (which is the invoked tool name, e.g.
  * `ask_strategist` / `@omadia/agent-strategist`) into a footer label. Mirrors
  * the middleware-side `labelFromAgentId` (agents/resolveAgentForTool.ts) but
- * stays local — channel-sdk has no access to the dynamic agent runtime. Strips
+ * stays local — channel-sdk has no access to the kernel's tool registry. Strips
  * an `ask_`/`consult_` verb prefix and any npm-scope / legacy-namespace, then
  * Title-Cases the remainder.
  */
@@ -357,6 +357,7 @@ export function toSemanticAnswer(
     text: disclosed.text,
     ...(disclosed.aiDisclosure ? { aiDisclosure: disclosed.aiDisclosure } : {}),
     ...(verifier ? { verifier } : {}),
+    ...(r.turnId ? { turnId: r.turnId } : {}),
     ...(r.memoryUsed ? { memoryUsed: true } : {}),
     ...(r.answerVerbosity ? { answerVerbosity: r.answerVerbosity } : {}),
     ...(agentsConsulted && agentsConsulted.length > 0

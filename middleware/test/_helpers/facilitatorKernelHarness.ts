@@ -53,6 +53,7 @@ import {
   FACILITATION_ENGINE_CAPABILITY,
   InMemoryNudgeRegistry,
   SESSION_CAPABILITIES_SERVICE_NAME,
+  type ArchetypeProcessesService,
   type ChannelReadinessService,
   type ExecutionAuthorizationService,
   type NativeToolCallContext,
@@ -84,6 +85,7 @@ import { createTargetedDeliveryService } from '../../src/channels/targetedDelive
 import { TargetedSendRegistry } from '../../src/channels/targetedSendRegistry.js';
 import { wireExecutionAuthorization, type ExecutionWiring } from '../../src/execution/wiring.js';
 import { createAgentEndOfService } from '../../src/platform/agentEndOfService.js';
+import { createSystemNoticeOutbox, type SystemNoticeOutbox } from '../../src/platform/systemNoticeOutbox.js';
 import { createArchetypeRegistrySync } from '../../src/platform/archetypeRegistrySync.js';
 import { guardArchetypePluginUninstall } from '../../src/platform/archetypeUninstallGuard.js';
 import { attachEngineToFacilitators } from '../../src/platform/facilitatorEngineAttach.js';
@@ -155,8 +157,14 @@ export interface FacilitatorKernel {
   propagateInstall(): Promise<void>;
   /** What the uninstall hook does for an archetype plugin, in its order: the
    *  agents of its archetype go out of service, every execution scope of the
-   *  plugin ends, then the plugin and its archetype descriptor are gone. */
-  uninstall(pluginId: string): Promise<void>;
+   *  plugin ends, then the plugin's own `onUninstall` runs (its failure is
+   *  caught, as `InstallService` does), then the plugin and its archetype
+   *  descriptor are gone. */
+  uninstall(pluginId: string, opts?: { readonly onUninstall?: () => Promise<void> }): Promise<void>;
+  /** The engine's process service the end of service asks (`undefined` = it has none). */
+  processes: ArchetypeProcessesService | undefined;
+  /** The `system` notices owed outside a turn (criterion 37), on this database. */
+  readonly notices: SystemNoticeOutbox;
   stop(): Promise<void>;
 }
 
@@ -557,14 +565,28 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
   // What takes an agent out of service, as the kernel composes it. The fixture
   // engine has no process service of its own, so the kernel's part is all
   // there is: the agent's subscriptions end and its scopes are revoked.
+  // Criterion 37 — owed `system` notices go through the channel's shared bot.
+  const notices = createSystemNoticeOutbox({
+    pool: () => pool,
+    send: async (channelType, conversationId, message) => {
+      const provider = conversationProviders.get(channelType);
+      if (!provider) return { delivered: false, reason: `no conversation sender for '${channelType}'`, deferred: true };
+      const out = await provider.sendToConversation(conversationId, message);
+      return out.outcome === 'delivered' ? { delivered: true } : { delivered: false, reason: `${out.code}: ${out.message}` };
+    },
+    locale: () => 'de',
+    log,
+  });
+  const processHolder: { current: ArchetypeProcessesService | undefined } = { current: undefined };
   const endOfService = createAgentEndOfService({
-    processesFor: () => undefined,
+    processesFor: (archetypeId) => (archetypeId === FACILITATOR_ARCHETYPE ? processHolder.current : undefined),
     endSubscriptionsOf: (agentSlug, reason) => messagesWiring.hub.endAllOf(agentSlug, reason),
     revokeExecution: async (agentId, reason) => {
       const revoked = await execution.store.revokeAll({ agentId }, reason);
       return { scopesEnded: revoked.scopes.length, reservationsReleased: revoked.reservations };
     },
-    emitSystemNotice: () => undefined,
+    emitSystemNotice: (notice) => notices.emit(notice),
+    processTimeoutMs: 2_000,
     log,
   });
 
@@ -579,6 +601,13 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
     messagesWiring,
     execution,
     logs,
+    notices,
+    get processes(): ArchetypeProcessesService | undefined {
+      return processHolder.current;
+    },
+    set processes(next: ArchetypeProcessesService | undefined) {
+      processHolder.current = next;
+    },
     get installed(): string[] {
       return kernel.installed;
     },
@@ -624,7 +653,7 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
       const changed = await attachEngineToFacilitators(store, engineSources(), log);
       if (changed.length > 0) await registry.reload();
     },
-    async uninstall(pluginId) {
+    async uninstall(pluginId, opts) {
       await guardArchetypePluginUninstall(pluginId, {
         sources: engineSources,
         agents: () => ({
@@ -640,11 +669,18 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
         }),
         log,
       });
+      try {
+        await opts?.onUninstall?.();
+      } catch (err) {
+        log(`[install] onUninstall hook failed for ${pluginId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
       kernel.installed = kernel.installed.filter((id) => id !== pluginId);
       await archetypeRegistry.sync();
       await messagesWiring.reconcileNow();
     },
     async stop() {
+      notices.stop();
+      await notices.drain();
       execution.stop();
       await messagesWiring.stop();
       await new Promise<void>((resolve) => server.close(() => resolve()));

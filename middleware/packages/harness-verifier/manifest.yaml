@@ -175,7 +175,7 @@ playbook:
       - VERIFIER_MODE=shadow|enforce wählen (default shadow, sicher für
         Calibration im Live-Betrieb ohne Retry-Risiko)
     Ohne die Migration läuft der Bot weiterhin verifier-frei
-    (Orchestrator-Antwort geht direkt an die Channels).
+    (die Antwort des Agenten geht direkt an die Channels).
 
 permissions:
   memory:

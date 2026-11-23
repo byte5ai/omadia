@@ -85,6 +85,183 @@ documented interpolation for the other fields too.
   `middleware/test/conductorAwaitMessageRender.pg.test.ts` (the aliased join on a real
   Postgres, through every read path).
 
+### Fixed — the PASS/BLOCK judges answer on an always-thinking model (spec 2042 §5.5, #2085, criterion 33)
+
+- The identity guard's judge and the data-plan and summary boundary judges asked for 8 output
+  tokens. They run on the agent's classifier model, else its own model. On an always-thinking
+  model (Opus 5.5, Fable) thinking counts toward that cap, so the reply had no text. The
+  identity guard then withheld every suspicious answer of such an agent as `unavailable`, and
+  the boundary guards refused every plan and summary they judged. Found in the live Teams E2E:
+  Karen (`hr`, Opus 5.5) was consulted, and her contribution was always withheld (`identity judge
+  gave no verdict: ""`). The three judges now share `VERDICT_JUDGE_MAX_TOKENS` (1024) and
+  `VERDICT_JUDGE_REASONING` (low effort, no thinking where the model allows it) and send no
+  `temperature`. A reply without a verdict is a failed boundary check now ("the boundary check
+  failed"), not a broken boundary.
+
+### Fixed — a consultation no longer makes its conversation unreadable (spec 2042 §5.4, §5.11)
+
+- The consulted agent runs with the consulting turn's origin, but resolved that room's readers
+  itself. Its turn carries no sender, so the result was `unknown`. Its label of the
+  conversation came back with readers `unknown`, and the consulting turn merged it into its own
+  label of the same conversation (anything intersected with `unknown` is `unknown`). From then
+  on, every turn that recalled anything from that conversation was refused at the people egress
+  ("nicht alle hier dürfen diese Informationen kennen"), in every later thread. Found in the live
+  Teams E2E: after one consultation, Minerva could not answer "who are you?" in a new thread.
+  The consultation run now carries the consulting turn's readers (`ConsultationRunScope.readers`).
+  Labels persisted before this fix keep `unknown` readers until they are rewritten.
+
+### Fixed — a self-description is no replayed failure (spec 2042, live canvas)
+
+- "wer bist du" to Dark Clippy was withheld in 2 of 4 runs as `tool_not_called`: the
+  failure-replay detector read "auf deine Mails habe ich keinen Zugriff" in a turn without a
+  call as a replayed access failure. A claim about what the agent can reach ("kein Zugriff
+  auf X", "X nicht erreichbar", "kann X nicht lesen") passes now when it names a known system
+  the agent holds no tool for (mail, calendar, payroll, the user's computer, the internet,
+  phone, bank, and the business systems ERP/Odoo, HR, wiki, Jira, CRM; against
+  `VerifierInput.offeredToolNames`) and none it holds. A claim that names
+  nothing, a pronoun or a held system is still withheld. Reported attempts ("konnte nicht
+  laden"), access events (timeout, denied), absence and retry claims are unchanged; with the
+  tools unknown the older rule holds.
+
+### Fixed — agent triggers found in the live Teams E2E of spec 2042 (2026-11-23)
+
+- **A trigger tool's refusal reached the model as masked data.** `on_event`, `wake_at`,
+  `wake_every`, `list_triggers`, `cancel_trigger` and `deliver_data` refused with
+  `Error (code): …`, which the Privacy Shield does not read as the tool-error convention
+  (`Error:`), so it interned the refusal as a one-row dataset. The model saw only a digest
+  and told the user in Teams "the trigger is set" while none was. The refusals now read
+  `Error: (code) …`: they reach the model as an error (and get `is_error`).
+- **"In two minutes" needed a clock the model does not have.** The prompt names today's
+  date, not the time; the model computed `time`/`until` from a stale timestamp and the
+  deadline lay in the past. `time` and `until` now also take a duration from now (`'3m'`,
+  `'+2h'`, `'in 1d'`), the tool descriptions say to prefer it, and a time refusal names the
+  server time.
+- **A bot's own post was news.** A bot's own post, reported back by its channel, is no
+  longer booked as context activity, so a trigger's post cannot make its next firing reach
+  the model.
+
+### Fixed — the canvas, live (spec 2042 §5.10, §5.5): gateway context, the socket on the front, "wer bist du"
+
+- **Model gateway.** A canvas turn addressed to an agent is handed to the canvas helper
+  (`canvasChatAgent`), whose skeleton, fast lane and decision model ran before the agent's
+  own chat agent and so outside any execution context (`calls_outside_context` listed
+  `composeSkeleton`, `planQuery`, `routeTurn` and the gated decision model). The kernel
+  dispatcher now opens the addressed agent's `agent_turn` around the helper's whole stream.
+- **The canvas socket on the web-ui front.** `/.well-known/omadia-ui` on the front advertised
+  `wss://<front>/omadia-ui/canvas`, and the upgrade hung in Next. The web-ui image starts
+  through `omadia-server.mjs` now, which relays that one path to the middleware with the
+  session cookie. `scripts/fly-deploy.sh` tries the upgrade on both hosts and expects `401`.
+- **Identity guard.** "wer bist du" to an agent with a name of several words was blocked in
+  about 3 of 4 runs: the introduction captured one word, so every answer went to the model
+  judge. Own names of any length and the AI disclosure are settled without a model now;
+  the judge's verdict is the first word of its reply (PASS or BLOCK); a reply that does not
+  open with one withholds as `unavailable`, and the log line of an unavailable guard says why.
+
+### Changed — `@omadia/plugin-api` 1.87.0, `@omadia/channel-sdk` 0.3.13: the open acceptance criteria of spec 2042
+
+- The entries below (field rights, channel parity, criteria 29/33, explicit targets) ship
+  together; their additive types move from "Unreleased" into these versions.
+
+### Added — field rights per audience member, contribution ids for the consulting agent (spec 2042 criteria 3c, 18)
+
+- New audience-floor capability `privacy:field:personal` in the member baseline; deny it to a
+  person or role and every room with them keeps personal fields masked: no operator bypass,
+  no restore of prompt surrogates, rendered values masked again, no canvas rows or
+  `deliver_data` table, and an answer carrying a `classification` label is refused as a whole
+  (buffered and streamed `done`). Triggers keep their creating room's field rights.
+- The consulting agent's model sees the contribution header (`[contribution c1 from …]`)
+  outside the privacy digest and can cite the id; the colleague's words stay masked.
+
+### Changed — Channel parity: a typed "2" answers an answer element, an assignment goes out as text (spec 2042 §6 criterion 30)
+
+- `@omadia/channel-sdk` (additive, stays 0.3.x): `PendingInteractiveStore` / `InMemoryPendingInteractiveStore`,
+  `resolveTypedInteractiveReply`, `resolveInteractiveReply`. `renderPlainAnswer` remembers the
+  `choice`/`topic`/`slots` element it showed as numbered text (new optional
+  `PlainAnswerOptions.pendingInteractives`); the channel resolves the person's next message
+  deterministically to what a button click would have sent (choice/topic value, the slot booking
+  message) instead of handing "2" to the agent's model. A reply that names no option stays a message.
+- Kernel: an `assignment` question card goes out as numbered text (`canGoOutAsText`) when a typed
+  reply can name the assignee (fixed candidate list, or a member list with `allowVolunteer`), and
+  `conversationSend` capabilities list `assignment` for text-only channels. **Behaviour change of
+  `parseCardReply`:** "ich" is an answer to an assignment only where `allowVolunteer` is true
+  (before: always). Pending elements are kept per conversation key the channel passes in.
+
+### Added — Spec 2042 criteria 29 and 33: "how do you know?" and the fast-lane summary under the boundaries
+
+- **Criterion 29.** `SemanticAnswer.turnId` (additive, channel-sdk 0.3.13; `toSemanticAnswer`
+  forwards `ChatTurnResult.turnId`) and `AnswerDetails.trace` (the trace reference; on its own it
+  opens no details element). `AnswerDetails.systemData` now also counts side-channel data (a
+  fast-lane table). The kernel is the caller of `buildAnswerDetails`/`answerDetailsText`:
+  `packages/harness-orchestrator/src/answerDetailsRecall.ts` records, outside the identity guard,
+  the details of each answer a conversation received (a withheld or failed turn leaves none) and
+  hands them to the agent loop's next turn as a harness note in `extraSystemHint` (statuses,
+  counts, colleagues' names, a helper count and the turn id; never a value). The note sits inside
+  the fast lane, so it never turns the fast lane off; the verifier's correction retry now appends
+  its hint instead of replacing it (`withCorrectionHint`). Message bodies are unchanged. In-memory
+  per agent, bounded (1000 conversations), lost on restart.
+- **Criterion 33.** `packages/harness-orchestrator/src/summaryBoundaryGuard.ts`, run by the fast-path
+  service through the new `ChatTriageRequest.checkSummary` beside `checkPlan`, before the fetch and
+  for new and cached plans: the planner's summary template and column labels are checked against
+  the agent's boundaries — `no-individual-rankings` and `no-external-links` deterministically, every
+  other preset (curated wording) and free-text boundary by the agent's classifier model on the text
+  masked through the turn's privacy run and with figures masked; fail-closed (no judge, error, 8 s
+  timeout, shield refusal). A refusal is a fast-lane miss (`summary-boundary`, the cached plan is
+  evicted): the agent's full loop answers. Usage source `summary-boundary-guard`. No migration.
+
+### Added — Explicit targets for proactive messages, system notices on end of service (spec 2042 criteria 24, 37)
+
+- **Migration 0108 `agent_recipient_grants`:** operator-granted target conversations of an
+  agent's proactive messages; admin API `PUT/GET/DELETE /api/v1/operator/triggers/recipient-grants`.
+  The agent names a target by grant id; the target's readers are checked at send time.
+- **Migration 0109 `system_notice_outbox`:** the `system` notice each home conversation gets
+  when an agent goes out of service (new code `archetype_plugin_removed`, plugin-api
+  1.87.0), sent once through the shared bot, kept across restarts.
+- **Fixed:** the Plugin Builder preview resolved any kernel service through `ctx.services`;
+  it now passes the gates of an installed plugin. Teams trigger contexts were keyed
+  `teams:msteams` (the reference's `channelId`) instead of the conversation id, so all Teams
+  chats shared one context and `list_triggers` in any of them listed the agent's triggers of
+  every other Teams chat; **migration 0110** rewrites stored Teams triggers to their
+  conversation and drops the shared activity row.
+- **Changed:** a recipient grant for Teams takes its reference only from the bot's own
+  conversation references; a `delivery_ref` in the request body is refused for Teams (it
+  carries the host the bot posts to with its token).
+
+### Changed — The agent plugin runtime is gone (#2042, S3c)
+
+- `@omadia/plugin-api` 1.86.0 (`NativeToolResult`, `NativeTextToolHandler`, `agentDirectory@1`),
+  `@omadia/channel-sdk` 0.3.12 (`ChatTurnInput.agentId`, `TargetedMessage.speaker` optional).
+  Additive for plugins; code that calls a `NativeToolHandler` and reads a string must read it with
+  `nativeToolResultText` (`ctx.tools.invoke` still answers with text).
+- **BREAKING for operators.** The kernel no longer runs plugins of the retired kind `agent`
+  (spec 2042 §5.10, ADR-0014). One still installed starts no code: it is `errored` with the
+  activation code `kind_retired` at boot and on every reactivation or update, keeps its setup
+  for the version that replaces it, and cannot be granted. `extension` plugins keep running as
+  system modules. Update or uninstall agent plugins before deploying this kernel.
+- A tool a plugin registers may return `{ output, limitSignal?, postcondition?, structured? }`
+  (plugin-api `NativeToolResult`): the limit note reaches the model, a postcondition the
+  verifier; `structured` never reaches the model.
+- Plugin Builder boilerplates pass a tool's `piiFields` to `ctx.tools.register`; declared PII
+  columns count toward the receipt's identity count (privacy-guard 0.16.3).
+- A grant of an archetype plugin on an agent of another archetype (from before #2088) is
+  removed at boot, and no longer blocks replacing that agent's grants.
+- Conductor action steps run only tools that declare `deterministic_action: true` (what the
+  Designer offers); before, an action id reached any active agent plugin's tool.
+- A tool result that is neither text nor a `NativeToolResult` is refused on every dispatch path
+  instead of being handed on unmasked.
+
+### Security — production audit exceptions run up to 90 days; zod/botbuilder renewed
+
+2026-11-23. A `"production": true` audit exception may now run up to 90 days
+from its review instead of 30, the same limit as a development-only exception
+(one shared `MAX_EXCEPTION_DAYS` in `.github/scripts/audit-gate.mjs`,
+security-architecture §4a). The only production exception, GHSA-mrhx-c7xc-m3w5 in
+`zod` 3.25.x via `botbuilder`, was reviewed again and runs until 2027-02-21.
+botbuilder and its three packages are still 4.23.3 on zod ^3.23.8, unchanged
+since 2025-08-27, and zod 3.x has no fixed release, so a monthly re-check found
+nothing new. The rest of the gate is unchanged: every route must still be named
+in `via`, an expired entry still fails the leg, and the 14-day expiry warning
+still applies.
+
 ### Security — dependency rollup 2026-11-23; withdrawn picomatch exceptions removed
 
 2026-11-23. `@microsoft/microsoft-graph-client` 3.1.0, the host-provided Graph SDK

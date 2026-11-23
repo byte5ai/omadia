@@ -16,6 +16,7 @@
 
 import type { DataPlanGuard } from '@omadia/plugin-api';
 import { createDataPlanGuard, createLlmDataPlanJudge } from './dataPlanGuard.js';
+import { createLlmSummaryJudge, createSummaryBoundaryGuard } from './summaryBoundaryGuard.js';
 import type { ConsultationPort } from './consultation/consultTool.js';
 import type { DiscretionPort } from './discretion/port.js';
 import { LabelledMemoryStore } from './discretion/labelledMemoryStore.js';
@@ -123,6 +124,7 @@ import { findWorkingModeIdentityReplacement } from './workingModeIdentity.js';
 import type { AgentSpeaker } from '@omadia/plugin-api';
 import type { GuardDirectoryEntry } from './identityGuard/deterministic.js';
 import { IdentityGuard } from './identityGuard/guard.js';
+import { AnswerDetailsMemory, withAnswerDetailsNote, withAnswerDetailsRecall } from './answerDetailsRecall.js';
 import { maskRestoredValues, withIdentityGuard } from './identityGuard/guardedChatAgent.js';
 import { createLlmIdentityJudge } from './identityGuard/llmJudge.js';
 import { DEFAULT_AGENT_IDENTITY, withIdentityRules } from './management/agentIdentityPrompt.js';
@@ -269,7 +271,8 @@ export interface AgentRuntimeConfig {
    *
    * WHY AT DISPATCH AND NOT ONLY AT REGISTRATION. The per-Agent tool surface
    * is assembled by withholding un-granted tools when an orchestrator is
-   * hydrated (`scopeDomainToolsToPlugins`). That is one place, reached by
+   * hydrated (`scopeDomainToolsToPlugins`, removed with the agent plugin
+   * runtime in S3c). That was one place, reached by
    * several paths — boot hydrate, post-boot install reconcile, rebuild,
    * sub-agent hydration — and any path that forgets to scope turns a
    * registration bug into a PERMISSION bug: the tool is simply there, and the
@@ -738,6 +741,18 @@ export function buildOrchestratorForAgent(
         }
       : {}),
   });
+  // Criterion 33 — the same boundaries over the planner's summary.
+  const summaryGuard = createSummaryBoundaryGuard({
+    boundaries: config.quality?.boundaries,
+    ...(deps.provider
+      ? {
+          judge: createLlmSummaryJudge({
+            provider: deps.provider,
+            model: config.modelRouting?.classifierModel ?? config.model,
+          }),
+        }
+      : {}),
+  });
   const withFastPath = (agent: ChatAgent): ChatAgent =>
     isFacilitator
       ? wrapFacilitatorAgent(agent, {
@@ -776,6 +791,8 @@ export function buildOrchestratorForAgent(
           agentSlug: config.agentId,
           // #2085 — every plan, new or cached, passes this agent's boundaries.
           checkPlan: dataPlanGuard,
+          // Criterion 33 — and every summary, new or cached, before release.
+          checkSummary: summaryGuard,
           logSession: (entry) => sessionLogger.log(entry),
           privacyGuarded: () => deps.privacyGuard() !== undefined,
           log: (m) => console.log(m),
@@ -842,7 +859,8 @@ export function buildOrchestratorForAgent(
     onGuardResult: (result) => {
       if (result.outcome !== 'pass' || result.latencyMs > IDENTITY_GUARD_SLOW_MS) {
         console.log(
-          `[identity-guard] agent=${agentSpeaker.slug} outcome=${result.outcome} latencyMs=${String(result.latencyMs)}`,
+          `[identity-guard] agent=${agentSpeaker.slug} outcome=${result.outcome} latencyMs=${String(result.latencyMs)}` +
+            (result.outcome === 'unavailable' ? ` cause=${result.cause}${result.detail ? ` detail=${result.detail}` : ''}` : ''),
         );
       }
     },
@@ -850,9 +868,20 @@ export function buildOrchestratorForAgent(
   // Spec 2042 §5.10 — the outermost layer: everything this agent's chat
   // agent runs (fast lane, loop, verifier, identity guard) is this agent's
   // turn for the model gateway.
+  // Criterion 29 — one record per conversation of this agent's last answer.
+  const answerDetails = new AnswerDetailsMemory();
   const finalize = (agent: ChatAgent): ChatAgent =>
     withAgentTurnExecution(
-      withSpeaker(withIdentityGuard(withFastPath(agent), emitter), agentSpeaker, emitter),
+      withSpeaker(
+        // Criterion 29 — outside the guard: only what the user received is
+        // recalled when they ask "how do you know?".
+        withAnswerDetailsRecall(
+          withIdentityGuard(withFastPath(withAnswerDetailsNote(agent, answerDetails)), emitter),
+          answerDetails,
+        ),
+        agentSpeaker,
+        emitter,
+      ),
       config.agentId,
     );
 
@@ -1021,10 +1050,12 @@ export function buildOrchestratorForAgent(
         ...(deps.graphPool ? { graphPool: deps.graphPool } : {}),
       };
 
-  // domainTools is intentionally empty at construct — sub-agents self-register
-  // post-activate via `dynamicAgentRuntime.attachOrchestrator(bundle.raw)`.
+  // domainTools is intentionally empty at construct — the kernel registers an
+  // Agent's DB-defined sub-agent tools once the registry exists.
   const orchestrator = new Orchestrator({
     agentId: config.agentId,
+    // Spec 2042 §6 criterion 1 — every run trace names the agent that answers.
+    traceAgentId: agentSpeaker.agentId,
     provider: deps.provider,
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),

@@ -32,6 +32,12 @@ export interface SeededTurnDiscretion {
   readonly readers: Readers;
   /** What the creating turn had read, its own conversation label included. */
   readonly labels: LabelSet;
+  /**
+   * The classifications every reader of that conversation could know when
+   * the trigger was created (field rights, criterion 18). Absent = none: a
+   * firing then restores, renders and bypasses nothing (fail closed).
+   */
+  readonly fieldClasses?: readonly string[];
 }
 
 const storage = new AsyncLocalStorage<SeededTurnDiscretion>();

@@ -196,7 +196,7 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
     // reload the plugin entry would be gone from the store after DELETE,
     // but the in-memory catalog would still know it — a subsequent
     // install-create call would then create a "ghost job" whose
-    // onInstalled hook in DynamicAgentRuntime silently registers no tool.
+    // onInstalled hook silently activates nothing.
     // Reload here = accurate state for all following store/install calls.
     await deps.catalog.load();
     // #1490 — the removal used to leave no trace at all.

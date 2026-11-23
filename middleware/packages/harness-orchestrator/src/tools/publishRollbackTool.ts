@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { decideCommand, defaultCommandPolicy, type CommandPolicy } from '@omadia/channel-sdk';
-import type { NativeToolHandler, NativeToolSpec } from '@omadia/plugin-api';
+import type { NativeTextToolHandler, NativeToolSpec } from '@omadia/plugin-api';
 import { rollbackTo, type PublishStore } from '@omadia/publish';
 
 import { recordCommandPolicyOutcome } from '../commandPolicyMetrics.js';
@@ -42,7 +42,7 @@ export interface CreatePublishRollbackHandlerOptions {
   readonly resolveCommandPolicy?: () => CommandPolicy;
 }
 
-export function createPublishRollbackHandler(options: CreatePublishRollbackHandlerOptions): NativeToolHandler {
+export function createPublishRollbackHandler(options: CreatePublishRollbackHandlerOptions): NativeTextToolHandler {
   const resolvePolicy = options.resolveCommandPolicy ?? defaultCommandPolicy;
 
   return async (input) => {

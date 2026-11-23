@@ -16,6 +16,7 @@ import {
   type LabelSet,
   type Readers,
 } from './labels.js';
+import { NO_FIELD_CLASS, type FieldClassAllowance } from './fieldRights.js';
 
 export interface DiscretionTurnState {
   /** Grows during the turn; never shrinks. */
@@ -27,17 +28,25 @@ export interface DiscretionTurnState {
    * Resolved lazily (roster and identity lookups) and at most once.
    */
   readonly resolveReaders: () => Promise<Readers>;
+  /**
+   * The classifications every reader of this turn's answer may know (field
+   * rights, criterion 18). Re-evaluated per call; absent from the options =
+   * none (fail closed).
+   */
+  readonly resolveFieldClasses: () => Promise<FieldClassAllowance>;
 }
 
 export function createDiscretionTurnState(opts: {
   readonly contextKey?: string;
   readonly resolveReaders?: () => Promise<Readers>;
+  readonly resolveFieldClasses?: () => Promise<FieldClassAllowance>;
   readonly initial?: LabelSet;
 }): DiscretionTurnState {
   return {
     labels: opts.initial ?? EMPTY_LABEL_SET,
     ...(opts.contextKey !== undefined ? { contextKey: opts.contextKey } : {}),
     resolveReaders: opts.resolveReaders ?? (() => Promise.resolve(UNKNOWN_READERS)),
+    resolveFieldClasses: opts.resolveFieldClasses ?? (() => Promise.resolve(NO_FIELD_CLASS)),
   };
 }
 
@@ -85,5 +94,6 @@ export async function peopleEgressDecision(
     kind: 'people',
     ...(state.contextKey !== undefined ? { contextKey: state.contextKey } : {}),
     readers,
+    fieldClasses: await state.resolveFieldClasses(),
   });
 }

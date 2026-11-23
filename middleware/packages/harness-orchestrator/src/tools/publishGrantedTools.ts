@@ -1,4 +1,4 @@
-import type { NativeToolHandler } from '@omadia/plugin-api';
+import type { NativeTextToolHandler } from '@omadia/plugin-api';
 
 import { checkPublishAccess, type PublishSharingDeps } from './publishAccess.js';
 import { createPublishHandler, resolveScopeKey, type CreatePublishHandlerOptions } from './publishTool.js';
@@ -36,7 +36,7 @@ function readAppId(input: unknown): string | undefined {
   return typeof appId === 'string' && appId.length > 0 ? appId : undefined;
 }
 
-export function createGrantCheckedPublishHandler(options: CreateGrantCheckedPublishHandlerOptions): NativeToolHandler {
+export function createGrantCheckedPublishHandler(options: CreateGrantCheckedPublishHandlerOptions): NativeTextToolHandler {
   const inner = createPublishHandler(options);
   return async (input) => {
     const appId = readAppId(input);
@@ -56,7 +56,7 @@ export function createGrantCheckedPublishHandler(options: CreateGrantCheckedPubl
 
 export function createGrantCheckedPublishRollbackHandler(
   options: CreateGrantCheckedPublishRollbackHandlerOptions,
-): NativeToolHandler {
+): NativeTextToolHandler {
   const inner = createPublishRollbackHandler(options);
   return async (input) => {
     const appId = readAppId(input);

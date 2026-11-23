@@ -1094,6 +1094,9 @@ export type MissingGrant =
  *    capability.
  *  - `target_unreachable` — a host the plugin talks to during activation did
  *    not answer (DNS, refused, timeout).
+ *  - `kind_retired` — the plugin is of the retired kind `agent` (spec 2042
+ *    §5.10). Nothing in the setup fixes it: update the plugin to a version of
+ *    a capability or template kind, or uninstall it.
  *  - `unknown` — anything else, AND every registry entry written before this
  *    field existed. The raw message stays available as the technical detail.
  *
@@ -1112,6 +1115,10 @@ export type ActivationErrorCode =
   // #2088 — the plugin's own database (schema and roles) could not be set up,
   // or its roles are not limited to its schema.
   | 'database_not_available'
+  // Spec 2042 §5.10 — the plugin is of the retired kind `agent`. The kernel
+  // runs no such plugin; a newer version of a capability or template kind
+  // replaces it.
+  | 'kind_retired'
   | 'unknown';
 
 /**

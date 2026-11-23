@@ -11,7 +11,7 @@
  *
  * Stored as a single enum on the AgentSpec (`quality.sycophancy`).
  * `compileSycophancyGuard` turns the persisted level into a system-prompt
- * fragment that `dynamicAgentRuntime` injects between persona and skill.
+ * fragment that the agent identity prompt places after the boundaries.
  *
  * Ported 1:1 from kemia (`byte5ai/kemia` @ `main` — src/lib/sycophancy-guard.ts),
  * with ONE deliberate local divergence (#1100): the high-tier
@@ -75,8 +75,7 @@ export const SYCOPHANCY_PACKAGES: Record<Exclude<SycophancyLevel, 'off'>, Sycoph
  * Compile sycophancy guard rules into system-prompt text.
  *
  * Returns the empty string for `off` and for an `undefined` level (legacy
- * specs without the field). Callers in `dynamicAgentRuntime` test the
- * return for non-emptiness before pushing into the `parts` assembly.
+ * specs without the field). Callers test the return for non-emptiness before pushing into the `parts` assembly.
  */
 export function compileSycophancyGuard(level: SycophancyLevel | undefined): string {
   if (!level || level === 'off') return '';

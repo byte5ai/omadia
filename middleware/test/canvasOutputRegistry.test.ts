@@ -1,7 +1,7 @@
 /**
  * Canvas-output autodiscovery (declare → resolve → derive).
  *
- * The registry is the kernel-side resolve step: dynamicAgentRuntime registers
+ * The registry is the kernel-side resolve step: the tool plugin runtime registers
  * the capability ids a plugin's manifest declares with `canvas_output: true`,
  * the ui-orchestrator derives its sentinel allow-set from it lazily. These
  * tests pin the extraction tolerance (permissive manifests) and the

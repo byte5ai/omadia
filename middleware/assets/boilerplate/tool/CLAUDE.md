@@ -38,7 +38,7 @@ manifest.yaml      # kind: tool, playbook, capabilities
 package.json       # name = identity.id, peerDependencies (zod, express, …)
 tsconfig.json
 types.ts           # lokales PluginContext-Duplikat (inkl. ctx.tools)
-toolkit.ts         # Tools: { id, description, input: Zod, run }
+toolkit.ts         # Tools: { id, description, input: Zod, piiFields?, run }
 registerTools.ts   # fester Code: jedes Tool → ctx.tools.register
 plugin.ts          # activate(ctx) → registerToolkit → { close }
 index.ts
@@ -56,6 +56,10 @@ return { async close() { disposeTools(); await toolkit.close(); } };
 
 `registerTools.ts` registriert jedes Tool unter seiner `id`, leitet das
 Input-Schema mit `z.toJSONSchema` aus dem Zod-Schema ab, parst die Eingabe
-damit und gibt das Ergebnis als Text zurück (Strings 1:1, sonst JSON). Was
+damit und gibt das Ergebnis als Text zurück (Strings 1:1, sonst JSON). Die
+`piiFields` eines Tools gehen mit der Registrierung an den Kernel: die Felder
+des Ergebnisses mit Personendaten (`[{ path: '[].name', idPath: '[].id',
+type: 'PERSON' }]`), die die Privacy Shield immer maskiert. Jedes Feld mit
+Namen, E-Mail, Telefon o. Ä. deklarieren. Was
 ein Agent über das Plugin weiß, steht in den Tool-Beschreibungen und im
 `playbook:` (wann nutzen, wofür nicht).

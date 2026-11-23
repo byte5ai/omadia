@@ -1,9 +1,14 @@
 import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import { HttpForbiddenError, HttpRateLimitError } from '@omadia/plugin-api';
 
 import { createHttpAccessor } from '../src/platform/httpAccessor.js';
+import {
+  PluginEgressRefusedError,
+  installPluginEgressGuard,
+  resetPluginEgressGuardForTests,
+} from '../src/platform/pluginEgressGuard.js';
 import { HttpBlockedAddressError, isPublicIp } from '../src/platform/ssrfGuard.js';
 
 // ---------------------------------------------------------------------------
@@ -155,6 +160,81 @@ describe('createHttpAccessor — public-web', () => {
     const res = await http.fetch('https://wikipedia.org/wiki/Main_Page');
     assert.equal(await res.text(), 'ok');
     assert.equal(seen.length, 1);
+  });
+
+  describe('model provider endpoints (spec 2042 §5.10)', () => {
+    const MODEL_HOSTS = new Set(['api.anthropic.com', 'api.openai.com']);
+    let isModelPlugin = false;
+    beforeEach(() => {
+      isModelPlugin = false;
+      // The kernel's network sandbox knows the installed model providers; the
+      // plugin itself is not installed from a directory here (no roots), so
+      // only ctx.http's own check can refuse the request.
+      installPluginEgressGuard({
+        mode: 'enforce',
+        source: {
+          pluginRoots: () => [],
+          permissionOf: () => ({ isModelPlugin, hosts: [], publicWeb: false }),
+          modelProviderHosts: () => MODEL_HOSTS,
+        },
+      });
+    });
+    afterEach(() => resetPluginEgressGuardForTests());
+
+    function scanner(seen: string[]): ReturnType<typeof createHttpAccessor> {
+      return createHttpAccessor({
+        agentId: '@acme/scanner',
+        outbound: [],
+        webScanner: true,
+        auditMode: 'public-web',
+        guardedFetch: async (u: string) => {
+          seen.push(String(u));
+          return new Response('ok');
+        },
+      });
+    }
+
+    it('criterion 37: a public-web plugin reaches no model provider through ctx.http', async () => {
+      const seen: string[] = [];
+      const http = scanner(seen);
+      for (const url of ['https://api.anthropic.com/v1/messages', 'https://API.OpenAI.com/v1/chat/completions']) {
+        await assert.rejects(
+          () => http.fetch(url, { method: 'POST' }),
+          (err: unknown) => err instanceof PluginEgressRefusedError && err.reason === 'model_provider',
+          url,
+        );
+      }
+      assert.deepEqual(seen, [], 'no request left the process');
+    });
+
+    it('criterion 37: a manifest host does not open a model provider to ctx.http either', async (t) => {
+      const fetchMock = t.mock.method(globalThis, 'fetch', async () => new Response('ok'));
+      const http = createHttpAccessor({ agentId: '@acme/plugin', outbound: ['api.anthropic.com'] });
+      await assert.rejects(
+        () => http.fetch('https://api.anthropic.com/v1/messages'),
+        (err: unknown) => err instanceof PluginEgressRefusedError && err.reason === 'model_provider',
+      );
+      assert.equal(fetchMock.mock.callCount(), 0);
+    });
+
+    it('a model plugin still reaches its provider through ctx.http', async (t) => {
+      isModelPlugin = true;
+      t.mock.method(globalThis, 'fetch', async () => new Response('ok'));
+      const http = createHttpAccessor({ agentId: '@acme/model', outbound: ['api.anthropic.com'] });
+      assert.equal((await http.fetch('https://api.anthropic.com/v1/models')).status, 200);
+    });
+
+    it('criterion 37: a public-web plugin scans a previously unknown public domain while private addresses stay blocked', async () => {
+      const seen: string[] = [];
+      const http = scanner(seen);
+      const res = await http.fetch('https://never-seen-before-domain.example.net/robots.txt');
+      assert.equal(await res.text(), 'ok');
+      assert.deepEqual(seen, ['https://never-seen-before-domain.example.net/robots.txt']);
+      for (const url of ['http://10.1.2.3/', 'http://127.0.0.1:3979/api', 'http://169.254.169.254/latest/meta-data/', 'http://[fd00::1]/']) {
+        await assert.rejects(() => http.fetch(url), HttpBlockedAddressError, url);
+      }
+      assert.equal(seen.length, 1);
+    });
   });
 
   it('rejects non-http(s) URL schemes', async () => {

@@ -31,6 +31,12 @@ export interface AnswerDetails {
   readonly systemData: boolean;
   /** Memory could have changed this answer. */
   readonly memoryUsed: boolean;
+  /**
+   * Criterion 29 — the reference to this answer's trace in the operator UI
+   * (the persisted turn id). Present whenever the kernel recorded the turn;
+   * on its own it does not make the details non-empty.
+   */
+  readonly trace?: { readonly turnId: string };
 }
 
 /**
@@ -51,7 +57,12 @@ export function buildAnswerDetails(answer: SemanticAnswer): AnswerDetails | unde
         datasetsInterned: answer.privacyReceipt.datasetsInterned,
       }
     : undefined;
-  const systemData = (answer.maskedValues?.length ?? 0) > 0 || answer.answerSource === 'privacy-render';
+  // Side-channel data (a fast-lane table, `deliver_data`) comes straight
+  // from the source system, as do values the shield rendered server-side.
+  const systemData =
+    (answer.maskedValues?.length ?? 0) > 0 ||
+    answer.answerSource === 'privacy-render' ||
+    (answer.data?.length ?? 0) > 0;
   const memoryUsed = answer.memoryUsed === true;
   const answerSize = answer.answerVerbosity?.effective as AnswerDetails['answerSize'];
   if (
@@ -66,6 +77,7 @@ export function buildAnswerDetails(answer: SemanticAnswer): AnswerDetails | unde
   }
   return {
     ...(answer.speaker ? { speaker: answer.speaker } : {}),
+    ...(answer.turnId ? { trace: { turnId: answer.turnId } } : {}),
     ...(verification ? { verification } : {}),
     consulted,
     specialistsInvoked,

@@ -213,6 +213,7 @@ export type {
   PrivateTurnLookup,
   AddressedTurnLookup,
 } from './facilitatorAgent.js';
+export { conversationPrincipal } from './conversationPrincipal.js';
 export {
   buildToolCallContext,
   currentToolCallContext,
@@ -856,6 +857,7 @@ export {
   MEMBER_BASELINE_CAPABILITIES,
   MemberBaselineGrantStore,
 } from './memberBaselineGrantStore.js';
+export { CHANNEL_KIND_BY_ORIGIN } from './resolveTurnOwnerIdentity.js';
 export {
   audienceRoomFor,
   chatParticipantsFromRoster,
@@ -1059,6 +1061,8 @@ export * from './discretion/port.js';
 export * from './discretion/turnLabels.js';
 export * from './discretion/turnSetup.js';
 export * from './discretion/seededTurn.js';
+export * from './discretion/fieldRights.js';
+export * from './privacyAudience.js';
 // Spec 2042 §5.4 (#2047) — consultation instead of delegation.
 export * from './consultation/consultationScope.js';
 export * from './consultation/consultTool.js';

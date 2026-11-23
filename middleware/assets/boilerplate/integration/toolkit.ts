@@ -1,4 +1,6 @@
 import { z } from 'zod';
+
+import type { ToolPIIField } from './types.js';
 // #region builder:toolkit-imports
 import type { Client, SearchResult } from './client.js';
 // #endregion
@@ -7,19 +9,14 @@ import type { Client, SearchResult } from './client.js';
  * Toolkit = capability → executable handler with a Zod input schema.
  * Each tool entry mirrors 1:1 a capability from manifest.yaml.
  *
- * Tool-name derivation (runtime, NOT here):
- *   de.byte5.agent.<slug>  →  query_<slug_with_underscores>
- * The DomainTool description is composed at runtime from plugin.description +
- * playbook.when_to_use + playbook.not_for. Therefore the
- * "when-to-use-me" semantics belong in the manifest, NOT in the tool code.
+ * Each tool is registered with the kernel's tool runtime under its `id`
+ * (see `registerTools.ts`); `description` is what the calling agent reads.
+ * The "when to use this capability" semantics belong in manifest.yaml's
+ * `playbook:` block.
  *
- * Zod support of the bridge (Claude tool-schema generator):
- *   OK:        Object, String (.url/.email/.uuid/.min/.max/.regex),
- *              Number (.int/.min/.max), Boolean, Enum, Array,
- *              Optional, Nullable, Default, Literal, Effects
- *   FALLBACK:  Union, DiscriminatedUnion, Intersection, Record, Tuple → {}
- *              (Claude gets no structured schema → weak UX).
- *   Rule:      Stay within the supported types.
+ * Zod → JSON Schema: `registerTools.ts` uses `z.toJSONSchema`. Stay with
+ * Object, String, Number, Boolean, Enum, Array, Optional, Nullable, Default
+ * and Literal; the top-level input must be a `z.object(...)`.
  */
 
 export interface ToolkitOptions {
@@ -31,6 +28,12 @@ export interface ToolDescriptor<I, O> {
   readonly id: string;
   readonly description: string;
   readonly input: z.ZodType<I>;
+  /** The fields of the result that hold personal data (names, e-mail
+   *  addresses, phone numbers …), e.g.
+   *  `[{ path: '[].name', idPath: '[].id', type: 'PERSON' }]` for an array of
+   *  rows. Declare every one: the Privacy Shield always masks a declared field
+   *  before the result reaches a model. */
+  readonly piiFields?: readonly ToolPIIField[];
   run(input: I): Promise<O>;
 }
 

@@ -40,6 +40,9 @@ export interface InvocationHandle {
 
 export interface RunTraceCollectorOptions {
   scope: string;
+  /** Spec 2042 §6 criterion 1 — the agent whose turn this is (its speaker's
+   *  `agentId`). */
+  agentId?: string;
   userId?: string;
   /** ISO timestamp. Passed in so tests can pin it; production uses now(). */
   startedAt?: string;
@@ -251,6 +254,7 @@ export class RunTraceCollector {
     const finishMs = Date.parse(finishedAt);
     const payload: RunTracePayload = {
       scope: this.opts.scope,
+      ...(this.opts.agentId ? { agentId: this.opts.agentId } : {}),
       ...(this.opts.userId ? { userId: this.opts.userId } : {}),
       startedAt: this.startedAt,
       finishedAt,

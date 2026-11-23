@@ -123,6 +123,25 @@ function parseDate(v: unknown): Date | undefined {
   return Number.isNaN(d.getTime()) ? undefined : d;
 }
 
+/**
+ * A moment for `time` / `until`: an ISO date-time, or a duration from now
+ * (`'3m'`, `'+2h'`, `'in 1d'`). The model knows today's date but not the
+ * clock, so "in two minutes" must not depend on it guessing the time.
+ */
+export function parseMoment(v: unknown, now: Date): Date | undefined {
+  if (typeof v === 'string') {
+    const rel = /^\s*(?:in\s+|\+)?(\d{1,6}\s*[smhd])\s*$/i.exec(v);
+    if (rel) {
+      const seconds = parseIntervalSeconds(rel[1]!.toLowerCase());
+      return seconds === undefined ? undefined : new Date(now.getTime() + seconds * 1000);
+    }
+  }
+  return parseDate(v);
+}
+
+/** Said with every time refusal, so the model can correct itself. */
+const nowNote = (now: Date): string => ` (server time now: ${now.toISOString()}; a duration like '3m' counts from now)`;
+
 /** `90s`, `5m`, `2h`, `1d` → seconds. */
 export function parseIntervalSeconds(v: unknown): number | undefined {
   if (typeof v === 'number') return Number.isInteger(v) && v > 0 ? v : undefined;
@@ -306,9 +325,9 @@ export function validateTriggerRequest(
   if (raw['until'] === undefined || raw['until'] === null || raw['until'] === '') {
     return refuse('deadline_missing', 'every trigger needs a deadline (until)');
   }
-  const until = parseDate(raw['until']);
-  if (!until) return refuse('invalid', 'until must be an ISO date-time');
-  if (until.getTime() <= now.getTime()) return refuse('invalid', 'until must lie in the future');
+  const until = parseMoment(raw['until'], now);
+  if (!until) return refuse('invalid', `until must be an ISO date-time or a duration like '30m'${nowNote(now)}`);
+  if (until.getTime() <= now.getTime()) return refuse('invalid', `until must lie in the future${nowNote(now)}`);
   const capDays = kind === 'wake_at' ? limits.oneShotMaxDays : limits.recurringMaxDays;
   if (until.getTime() - now.getTime() > capDays * DAY_MS) {
     return refuse('deadline_too_far', `until may lie at most ${String(capDays)} days ahead for ${kind}`);
@@ -328,10 +347,10 @@ export function validateTriggerRequest(
   const minInterval = env.liveContext ? limits.minIntervalSecondsLive : limits.minIntervalSeconds;
 
   if (kind === 'wake_at') {
-    const time = parseDate(raw['time']);
-    if (!time) return refuse('invalid', 'time must be an ISO date-time');
-    if (time.getTime() <= now.getTime()) return refuse('invalid', 'time must lie in the future');
-    if (time.getTime() > until.getTime()) return refuse('invalid', 'time must not lie after until');
+    const time = parseMoment(raw['time'], now);
+    if (!time) return refuse('invalid', `time must be an ISO date-time or a duration like '3m'${nowNote(now)}`);
+    if (time.getTime() <= now.getTime()) return refuse('invalid', `time must lie in the future${nowNote(now)}`);
+    if (time.getTime() > until.getTime()) return refuse('invalid', `time must not lie after until${nowNote(now)}`);
     fireAt = time;
   } else {
     const rawMax = kind === 'on_event' ? (raw['max_fires'] ?? raw['max_runs']) : raw['max_runs'];

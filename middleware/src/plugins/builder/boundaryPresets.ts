@@ -1,9 +1,9 @@
 /**
  * Structured boundary presets for agent role configuration.
  *
- * Each preset maps to a kemia-curated prompt wording that
- * `dynamicAgentRuntime` compiles into the system prompt between persona
- * and sycophancy (compose order `[header, persona, boundaries, sycophancy, skill]`).
+ * Each preset maps to a kemia-curated prompt wording that the agent
+ * identity prompt (`services/agentIdentityPrompt.ts`) compiles into the
+ * system prompt between persona and sycophancy.
  *
  * Operators pick from this structured registry via the Builder UI;
  * unknown IDs (legacy persisted values, future presets) are surfaced

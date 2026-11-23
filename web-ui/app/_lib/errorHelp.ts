@@ -69,6 +69,9 @@ export const ERROR_HELP_CODES = [
   'install.not_installed',
   // #1507 — the last Privacy Shield provider under OMADIA_PRIVACY_FORCE_GUARDED.
   'install.privacy_guard_required',
+  // Spec 2042 §5.10 — a stored package with a persona or speaker of its own
+  // (uploaded before the boundary existed) is not installed.
+  'install.persona_declared',
   // Spec 2042 §5.10 — kind `agent` is never installed anew; a system module
   // is installed on confirmation only.
   'install.retired_kind',

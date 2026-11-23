@@ -14,14 +14,25 @@
 import { renderTableText, type ChatTurnInput, type SemanticAnswer } from '@omadia/channel-sdk';
 import type { AgentSpeaker, AnswerEmitter } from '@omadia/plugin-api';
 import { meterModelCalls, meterUsageCost } from '@omadia/usage-telemetry';
-import { checkFlow, isAnswerWithheldText, runWithSeededDiscretion, violationSummary } from '@omadia/orchestrator';
+import {
+  checkFlow,
+  fieldClassesFromList,
+  isAnswerWithheldText,
+  readersWithin,
+  runWithSeededDiscretion,
+  UNKNOWN_READERS,
+  violationSummary,
+  type Readers,
+} from '@omadia/orchestrator';
 
 import { storeContextChecks, type ContextLivenessProbe } from './contextChecks.js';
+import type { ConversationReaders } from './conversationReaders.js';
 import { toTableData, type DataActionRunner } from './dataActions.js';
 import { isHeadless } from './headless.js';
 import type { ProactiveGate } from './proactiveGate.js';
 import type { BatchOutcome, DeliveryOutcome, FiringStatus, StepExecutors, TurnOutcome } from './triggerChain.js';
 import type { TriggerStore } from './triggerStore.js';
+import { conversationIdOf, deliveryAddressOf } from './recipientGrants.js';
 import type { Trigger } from './types.js';
 
 /** The agent answers this, alone, when nothing is worth telling. */
@@ -53,6 +64,17 @@ export interface KernelExecutorDeps {
   readonly scheduleLive?: (trigger: Trigger) => Promise<boolean>;
   /** A registered batch job's step (`batchJobs.ts`). */
   readonly batch?: (trigger: Trigger, job: string) => Promise<BatchOutcome>;
+  /** Who reads a conversation now (criterion 24): the discretion check of a
+   *  proactive message runs against the room at send time. Absent = an
+   *  explicit target's readers are unknown (fail closed) and the trigger's
+   *  own conversation keeps the readers its creating turn resolved. */
+  readonly conversationReaders?: ConversationReaders;
+}
+
+/** The room a proactive message lands in, as the discretion check sees it. */
+interface Room {
+  readonly contextKey: string;
+  readonly readers: Readers;
 }
 
 
@@ -69,10 +91,25 @@ export function triggerTurnHint(trigger: Trigger, status: FiringStatus): string 
     status.occurrence.event ? `Event: ${JSON.stringify(status.occurrence.event).slice(0, 2000)}` : '',
     isHeadless(trigger)
       ? 'This is a standing order with no conversation: act through your tools. Your answer is recorded, not sent to anyone.'
-      : `Your answer is sent as your message to the conversation this trigger was created in. If nothing is worth telling, answer exactly ${NOTHING_TO_SAY} and nothing is sent.`,
+      : `Your answer is sent as your message to ${trigger.target ? 'the other conversation this trigger targets (granted by an operator), whose members may differ from the conversation it was created in' : 'the conversation this trigger was created in'}. If nothing is worth telling, answer exactly ${NOTHING_TO_SAY} and nothing is sent.`,
   ]
     .filter((line) => line.length > 0)
     .join('\n');
+}
+
+/**
+ * Criterion 18 — the field rights a message may use in the room it lands in:
+ * the ones stored at creation, only while that room is the creating
+ * conversation and every reader now was a reader then. An explicit target or
+ * a room that gained a reader gets none (fail closed).
+ */
+export function roomFieldClasses(
+  trigger: Trigger,
+  discretion: { readonly readers: Readers; readonly fieldClasses?: readonly string[] },
+  room: { readonly contextKey: string; readonly readers: Readers },
+): readonly string[] | undefined {
+  if (trigger.target) return undefined;
+  return readersWithin(room.readers, discretion.readers) ? discretion.fieldClasses : undefined;
 }
 
 export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
@@ -84,18 +121,43 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
     return deps.gate.send(trigger, speaker ? { ...message, speaker } : message);
   };
   /**
-   * Spec 2042 §5.11 (INV-9) — a templated post or a delivery goes to the
-   * conversation the trigger was created in only when its readers may know
-   * everything the creating turn had read (the template was written there).
-   * Refused as a whole, never redacted. Undefined = it may go.
+   * Criterion 24 — the room a message lands in, resolved at send time: an
+   * explicit target's members now (unknown = fail closed); the trigger's own
+   * conversation's members now where the channel can tell, else the readers
+   * its creating turn resolved.
    */
-  const refusedByDiscretion = (trigger: Trigger): DeliveryOutcome | undefined => {
+  const roomOf = async (trigger: Trigger, stored: Room): Promise<Room> => {
+    const address = deliveryAddressOf(trigger);
+    if (address.target) {
+      const { channel, conversationId } = address.target;
+      const readers = deps.conversationReaders ? await deps.conversationReaders(channel, conversationId) : UNKNOWN_READERS;
+      return { contextKey: `${channel}:${conversationId}`, readers };
+    }
+    const inConversation = trigger.contextKind === 'conversation' || trigger.contextKind === 'meeting';
+    if (!deps.conversationReaders || !inConversation || !address.channel) return stored;
+    const live = await deps.conversationReaders(address.channel, conversationIdOf(address.ref));
+    return live.kind === 'unknown' ? stored : { contextKey: stored.contextKey, readers: live };
+  };
+  /** A message to another conversation needs the creating turn's discretion record. */
+  const NO_RECORD: DeliveryOutcome = {
+    delivered: false,
+    reason: 'withheld by discretion: a message to another conversation needs the discretion record of the turn that set it',
+  };
+  /**
+   * Spec 2042 §5.11 (INV-9) — a templated post or a delivery goes to its
+   * room only when the readers there now may know everything the creating
+   * turn had read (the template was written there). Refused as a whole,
+   * never redacted. Undefined = it may go.
+   */
+  const refusedByDiscretion = async (trigger: Trigger): Promise<DeliveryOutcome | undefined> => {
     const discretion = trigger.discretion;
-    if (!discretion) return undefined;
+    if (!discretion) return trigger.target ? NO_RECORD : undefined;
+    const room = await roomOf(trigger, discretion);
     const decision = checkFlow(discretion.labels, {
       kind: 'people',
-      contextKey: discretion.contextKey,
-      readers: discretion.readers,
+      contextKey: room.contextKey,
+      readers: room.readers,
+      fieldClasses: fieldClassesFromList(roomFieldClasses(trigger, discretion, room)),
     });
     return decision.allowed
       ? undefined
@@ -116,7 +178,7 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
     ...checks,
     runDataAction: (trigger, action) => deps.dataActions.run(trigger.agentSlug, action),
     async post(trigger, text) {
-      const withheld = refusedByDiscretion(trigger);
+      const withheld = await refusedByDiscretion(trigger);
       if (withheld) return withheld;
       const refused = await refusedByEmitter(trigger, (speaker) => ({ type: 'prose', speaker, text }));
       return refused ?? send(trigger, { text });
@@ -124,7 +186,7 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
     // The side channel (§5.13): the rows go from the tool to the people as
     // `data`, rendered into `text` for channels that show only text.
     async deliver(trigger, result, title) {
-      const withheld = refusedByDiscretion(trigger);
+      const withheld = await refusedByDiscretion(trigger);
       if (withheld) return withheld;
       const table = toTableData(result.rows, result.columns, title);
       const refused = await refusedByEmitter(trigger, (speaker) => ({ type: 'data', speaker, data: table }));
@@ -140,6 +202,7 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
         await deps.store.end(trigger.id, 'cancelled', { schedule: trigger.contextId, why: 'schedule disabled or deleted' });
         return { delivered: false, costUsd: 0, modelCalls: 0 };
       }
+      if (trigger.target && !trigger.discretion) return { delivered: false, costUsd: 0, modelCalls: 0, error: NO_RECORD.reason };
       const agent = deps.agentChat(trigger.agentSlug);
       if (!agent) return { delivered: false, costUsd: 0, modelCalls: 0, error: `agent '${trigger.agentSlug}' is not in service` };
       const input: ChatTurnInput = {
@@ -147,13 +210,22 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
         sessionScope: `trigger:${trigger.id}`,
         extraSystemHint: triggerTurnHint(trigger, status),
       };
-      // INV-9 — the turn belongs to the conversation its trigger was created
-      // in: it starts with that turn's labels, and its answer is checked
-      // against that conversation's readers. A headless turn answers nobody.
+      // INV-9 — the turn starts with the labels of the turn that set its
+      // trigger, and its answer is checked against the readers of the room it
+      // goes to, as they are now (criterion 24). A headless turn answers nobody.
       const discretion = isHeadless(trigger) ? null : trigger.discretion;
+      const room = discretion ? await roomOf(trigger, discretion) : undefined;
       const chat = (): Promise<SemanticAnswer> =>
-        discretion
-          ? runWithSeededDiscretion({ agentSlug: trigger.agentSlug, ...discretion }, () => agent.chat(input))
+        discretion && room
+          ? runWithSeededDiscretion(
+              {
+                agentSlug: trigger.agentSlug,
+                labels: discretion.labels,
+                ...room,
+                fieldClasses: roomFieldClasses(trigger, discretion, room) ?? [],
+              },
+              () => agent.chat(input),
+            )
           : agent.chat(input);
       // A throwing turn still spent what it spent: measure around the catch.
       const metered = await meterUsageCost(() =>

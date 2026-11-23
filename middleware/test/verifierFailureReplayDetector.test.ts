@@ -7,12 +7,16 @@ function input(
     userMessage: string;
     answer: string;
     domainToolsCalled: readonly string[];
+    failedToolsCalled: readonly string[];
+    offeredToolNames: readonly string[];
   }>,
 ): {
   runId: string;
   userMessage: string;
   answer: string;
   domainToolsCalled?: readonly string[];
+  failedToolsCalled?: readonly string[];
+  offeredToolNames?: readonly string[];
 } {
   const base = {
     runId: 'r',
@@ -174,5 +178,135 @@ describe('verifier/failureReplayDetector — false-positive guards', () => {
       .filter((x) => x.status === 'contradicted')
       .map((x) => x.claim.text);
     assert.equal(new Set(texts).size, texts.length);
+  });
+});
+
+/**
+ * Live 2026-11-23: "wer bist du" to Dark Clippy on the canvas was withheld in
+ * 2 of 4 runs as `tool_not_called` — its self-description ("auf deine Mails
+ * habe ich keinen Zugriff") in a turn without a call. A claim about what the
+ * agent cannot reach is a replay only when it names a system the agent holds
+ * tools for: then it could have checked.
+ */
+/** The basis of a contradicted verdict (the only status that has one). */
+function basisOf(v: ReturnType<typeof detectFailureReplay>[number] | undefined): string | undefined {
+  return v?.status === 'contradicted' ? v.basis : undefined;
+}
+
+describe('verifier/failureReplayDetector — a self-description is no replay', () => {
+  const clippyTools = [
+    'confluence_search',
+    'confluence_get_page',
+    'odoo_query',
+    'query_knowledge_graph',
+    'memory',
+    'ask_user_choice',
+    'consult_colleague',
+  ];
+  const selfDescription =
+    'Ich bin Dark Clippy, ein KI-Agent. Ich durchsuche Confluence und Odoo für dich. ' +
+    'Auf deine Mails und deinen Kalender habe ich keinen Zugriff, und Dateien auf deinem Rechner kann ich nicht lesen.';
+
+  it('"wer bist du": limits on systems the agent does not hold pass', () => {
+    const v = detectFailureReplay(
+      input({ userMessage: 'wer bist du', answer: selfDescription, domainToolsCalled: [], offeredToolNames: clippyTools }),
+    );
+    assert.deepEqual(v, []);
+  });
+
+  it('also after calls that all succeeded', () => {
+    const v = detectFailureReplay(
+      input({
+        answer: 'Ich habe in Confluence nachgesehen. Auf deine Mails habe ich keinen Zugriff.',
+        domainToolsCalled: ['confluence_search'],
+        failedToolsCalled: [],
+        offeredToolNames: clippyTools,
+      }),
+    );
+    assert.deepEqual(v, []);
+  });
+
+  it('a replayed access failure on a system it holds, with no call, is withheld', () => {
+    const v = detectFailureReplay(
+      input({
+        answer: 'Leider habe ich gerade keinen Zugriff auf Odoo.',
+        domainToolsCalled: [],
+        offeredToolNames: clippyTools,
+      }),
+    );
+    assert.equal(v.length, 1);
+    assert.equal(basisOf(v[0]), 'tool_not_called');
+  });
+
+  it('"Odoo ist nicht erreichbar" and "kann Confluence nicht lesen" name held systems: withheld', () => {
+    for (const answer of ['Das Odoo-System ist nicht erreichbar.', 'Ich kann Confluence gerade nicht lesen.']) {
+      const v = detectFailureReplay(input({ answer, domainToolsCalled: [], offeredToolNames: clippyTools }));
+      assert.equal(v.length, 1, answer);
+    }
+  });
+
+  it('a reported attempt ("konnte nicht laden") with no call stays withheld, whatever it names', () => {
+    const v = detectFailureReplay(
+      input({ answer: 'Ich konnte deine Mails nicht laden.', domainToolsCalled: [], offeredToolNames: clippyTools }),
+    );
+    assert.equal(v.length, 1);
+  });
+
+  it('an access event ("Zugriff verweigert", "timeout") is no self-description', () => {
+    const v = detectFailureReplay(
+      input({ answer: 'Beim Kalender kam ein Timeout.', domainToolsCalled: [], offeredToolNames: clippyTools }),
+    );
+    assert.equal(v.length, 1);
+  });
+
+  it('a claim that names no known, unheld system stays a possible replay', () => {
+    for (const answer of [
+      'Leider habe ich gerade keinen Zugriff.',
+      'Odoo ist gestört. Darauf habe ich keinen Zugriff.',
+      'Auf die Buchhaltung habe ich keinen Zugriff.',
+      'Auf deine Rechnungen habe ich keinen Zugriff.',
+      'Ich habe keinen Zugriff auf Odoo und deine Mails.',
+    ]) {
+      const v = detectFailureReplay(input({ answer, domainToolsCalled: [], offeredToolNames: clippyTools }));
+      assert.equal(v.length, 1, answer);
+    }
+  });
+
+  it('a list of limits and an abbreviation stay one claim', () => {
+    for (const answer of [
+      'Keinen Zugriff habe ich auf:\n- deine Mails\n- deinen Kalender',
+      'Auf private Daten, z. B. deine Mails, habe ich keinen Zugriff.',
+    ]) {
+      const v = detectFailureReplay(input({ answer, domainToolsCalled: [], offeredToolNames: clippyTools }));
+      assert.deepEqual(v, [], answer);
+    }
+  });
+
+  it('live: an agent without accounting tools says so about invoices', () => {
+    const confluenceOnly = ['confluence_search', 'confluence_get_page', 'query_knowledge_graph', 'memory'];
+    for (const answer of [
+      'Auf Rechnungen und die Buchhaltung habe ich keinen Zugriff, frag dafür einen Kollegen mit Odoo.',
+      'Auf Odoo habe ich keinen Zugriff.',
+    ]) {
+      const v = detectFailureReplay(input({ answer, domainToolsCalled: [], offeredToolNames: confluenceOnly }));
+      assert.deepEqual(v, [], answer);
+    }
+  });
+
+  it('a system the agent holds a tool for is no limit to describe', () => {
+    const v = detectFailureReplay(
+      input({
+        answer: 'Auf deine Mails habe ich keinen Zugriff.',
+        domainToolsCalled: [],
+        offeredToolNames: [...clippyTools, 'ms365_mail_search'],
+      }),
+    );
+    assert.equal(v.length, 1);
+  });
+
+  it('with the tools unknown, the older rule holds', () => {
+    const v = detectFailureReplay(input({ answer: selfDescription, domainToolsCalled: [] }));
+    assert.ok(v.length >= 1);
+    assert.equal(basisOf(v[0]), 'tool_not_called');
   });
 });

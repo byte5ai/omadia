@@ -310,6 +310,12 @@ describe('#2082 event intake', () => {
   it('reads a conversation id from channel references', () => {
     assert.equal(conversationIdOf({ conversation: { id: '19:x@thread.v2' } }), '19:x@thread.v2');
     assert.equal(conversationIdOf({ sessionId: 's1' }), 's1');
+    // A Bot Framework reference: `channelId` names the platform, not the chat.
+    assert.equal(
+      conversationIdOf({ channelId: 'msteams', serviceUrl: 'https://smba.example/', conversation: { id: '19:x@thread.v2', conversationType: 'groupChat' }, bot: { id: '28:b' } }),
+      '19:x@thread.v2',
+    );
+    assert.equal(conversationIdOf({ channelId: 'C123' }), 'C123', 'a Slack channel reference');
     assert.match(conversationIdOf('opaque'), /^ref-/);
   });
 });

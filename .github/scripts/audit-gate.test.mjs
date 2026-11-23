@@ -1,5 +1,5 @@
 // The audit leg's decision (audit-gate.mjs): production findings fail unless a
-// "production": true exception (30 days at most) covers them; development-only
+// "production": true exception (90 days at most) covers them; development-only
 // findings pass only with a valid, unexpired exception. Either way `via` must
 // name every route package-lock.json gives into the tree.
 //
@@ -158,10 +158,11 @@ test('a production exception that does not name a route fails', () => {
   assert.match(result.failures[0], /does not name bot-sdk in "via"/);
 });
 
-test('a production exception expires like any other and runs at most 30 days', () => {
+test('a production exception expires like any other and runs at most 90 days', () => {
   assert.match(decideProd({ today: '2026-11-04' }).failures[0], /production exception expired on 2026-11-03/);
   assert.deepEqual(decideProd({ today: '2026-11-03' }).failures, []);
-  assert.deepEqual(exceptionProblems(prodException({ expires: '2026-11-04' })), ['"expires" lies more than 30 days after "reviewed"']);
+  assert.deepEqual(exceptionProblems(prodException({ expires: '2027-01-02' })), []);
+  assert.deepEqual(exceptionProblems(prodException({ expires: '2027-01-03' })), ['"expires" lies more than 90 days after "reviewed"']);
   assert.deepEqual(exceptionProblems(prodException({ production: 'yes' })), ['"production" must be true or false']);
 });
 

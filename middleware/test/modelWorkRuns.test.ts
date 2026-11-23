@@ -22,9 +22,11 @@ import { resetModelGatewayForTests, setModelGatewayMode } from '@omadia/usage-te
 
 import { ModelWorkBudgetError, createModelWorkRuns, type ModelWorkKind } from '../src/platform/modelWorkRuns.js';
 import {
+  BULK_PROMOTION,
   EMBEDDING_BACKFILL,
   FIELD_CLASSIFICATION,
   ISSUE_PREVIEW,
+  SKILL_VERIFICATION,
   TOPIC_REGROUPING,
 } from '../src/platform/modelWorkKinds.js';
 import { rawModelServiceAccess } from '../src/platform/pluginServiceGrants.js';
@@ -133,8 +135,11 @@ describe('operator jobs', () => {
     await assert.rejects(runs.run(job(10), 'op', async () => undefined), ModelWorkBudgetError);
   });
 
-  it('the known jobs declare budgets, deadlines and effects', () => {
-    for (const kind of [ISSUE_PREVIEW, TOPIC_REGROUPING]) {
+  it('criterion 37: the known jobs declare budgets, deadlines and effects', () => {
+    // The four operator jobs spec 2042 §6 criterion 37 names.
+    const jobs = [ISSUE_PREVIEW, SKILL_VERIFICATION, TOPIC_REGROUPING, BULK_PROMOTION];
+    assert.equal(new Set(jobs.map((job) => job.kind)).size, jobs.length, 'each job is its own budget');
+    for (const kind of jobs) {
       assert.equal(kind.context, 'operator_job');
       assert.ok(kind.budgetCalls > 0 && kind.deadlineMs > 0);
       assert.ok(kind.effects.length > 0);
