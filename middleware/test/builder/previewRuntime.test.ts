@@ -10,6 +10,8 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { RawModelServiceRefusedError, ServiceNotDeclaredError, SharedPoolRefusedError } from '@omadia/plugin-api';
+
 import {
   PreviewRuntime,
   type PreviewPluginHandle,
@@ -36,6 +38,20 @@ describe('PreviewRuntime', () => {
     mkdirSync(root, { recursive: true });
     return root;
   }
+
+  /** A draft that depends on the Odoo integration (and, wrongly, on the pool and raw model clients). */
+  const SERVICES_MANIFEST = [
+    'schema_version: "1"',
+    'identity:',
+    '  id: "de.byte5.agent.test"',
+    '  kind: "tool"',
+    '  domain: "test.preview"',
+    '  name: "Preview test"',
+    '  version: "0.1.0"',
+    'requires: ["odoo.client@^1", "graphPool@^1", "anthropicClient@^1", "llm@^1"]',
+    'optional_requires: ["reports.store@^1"]',
+    '',
+  ].join('\n');
 
   /** Test factory — bypasses zip extraction by writing a stub package.json
    *  directly into the preview dir. The activateModule override returns a
@@ -291,9 +307,12 @@ describe('PreviewRuntime', () => {
       // previewed agent resolve the real service its depends_on integration
       // provides.
       const odooClient = { execute: () => 'ok' };
+      const callers: unknown[] = [];
       const host: PreviewHostServices = {
-        get: <T,>(name: string): T | undefined =>
-          name === 'odoo.client' ? (odooClient as T) : undefined,
+        get: <T,>(name: string, caller?: unknown): T | undefined => {
+          callers.push(caller);
+          return name === 'odoo.client' ? (odooClient as T) : undefined;
+        },
         has: (name: string): boolean => name === 'odoo.client',
       };
       const root = freshRoot('services-readthrough');
@@ -301,6 +320,7 @@ describe('PreviewRuntime', () => {
       const runtime = buildRuntime({
         previewsRoot: root,
         serviceRegistry: host,
+        manifestYaml: SERVICES_MANIFEST,
         onActivate: (ctx) => {
           captured = ctx;
         },
@@ -313,10 +333,12 @@ describe('PreviewRuntime', () => {
         secretValues: {},
       });
       assert.ok(captured);
-      // Read-through to the host registry.
+      // Read-through to the host registry, for what the manifest declares,
+      // asked as the draft plugin.
       assert.equal(captured!.services.get('odoo.client'), odooClient);
+      assert.deepEqual(callers, [{ agentId: 'de.byte5.agent.test', pluginId: 'de.byte5.agent.test' }]);
       assert.equal(captured!.services.has('odoo.client'), true);
-      assert.equal(captured!.services.get('not.there'), undefined);
+      assert.equal(captured!.services.get('reports.store'), undefined, 'declared, nobody provides it');
       // Agent-provided services stay preview-local and do NOT mutate the host
       // registry; local entries are checked before the host.
       const dispose = captured!.services.provide('local.only', { y: 2 });
@@ -324,6 +346,46 @@ describe('PreviewRuntime', () => {
       assert.equal(host.has('local.only'), false);
       dispose();
       assert.equal(captured!.services.get('local.only'), undefined);
+    });
+
+    it('criterion 37: a preview gets no service right the draft lacks: undeclared names, the pool, raw model clients', async () => {
+      const handed: string[] = [];
+      const host: PreviewHostServices = {
+        get: <T,>(name: string): T | undefined => {
+          handed.push(name);
+          return { name } as T;
+        },
+        has: () => true,
+      };
+      let captured: PreviewPluginContext | undefined;
+      await buildRuntime({
+        previewsRoot: freshRoot('services-gated'),
+        serviceRegistry: host,
+        manifestYaml: SERVICES_MANIFEST,
+        onActivate: (ctx) => {
+          captured = ctx;
+        },
+      }).activate({ zipBuffer: Buffer.alloc(0), draftId: 'd1', rev: 1, configValues: {}, secretValues: {} });
+      const ctx = captured!;
+      assert.throws(() => ctx.services.get('knowledgeGraph'), ServiceNotDeclaredError, 'not in the manifest');
+      assert.throws(() => ctx.services.get('executionAuthorization'), ServiceNotDeclaredError);
+      assert.throws(() => ctx.services.getOptional('odoo.client@2'), ServiceNotDeclaredError, 'only the declared major');
+      // Declared, and still refused: the operator's pool and raw model clients.
+      assert.throws(() => ctx.services.get('graphPool'), SharedPoolRefusedError);
+      assert.throws(() => ctx.services.get('anthropicClient'), RawModelServiceRefusedError);
+      assert.throws(() => ctx.services.get('llm'), RawModelServiceRefusedError);
+      assert.deepEqual(handed, [], 'the host registry was never asked');
+
+      // Without a readable manifest the draft declares nothing.
+      let bare: PreviewPluginContext | undefined;
+      await buildRuntime({
+        previewsRoot: freshRoot('services-no-manifest'),
+        serviceRegistry: host,
+        onActivate: (c) => {
+          bare = c;
+        },
+      }).activate({ zipBuffer: Buffer.alloc(0), draftId: 'd2', rev: 1, configValues: {}, secretValues: {} });
+      assert.throws(() => bare!.services.get('odoo.client'), ServiceNotDeclaredError);
     });
 
     // ── ctx.llm (host-backed, manifest-gated) ─────────────────────────────
