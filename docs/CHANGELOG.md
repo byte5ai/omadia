@@ -36,6 +36,19 @@ changelog.
 
 ## [Unreleased]
 
+### Security — production audit exceptions run up to 90 days; zod/botbuilder renewed
+
+2026-11-23. A `"production": true` audit exception may now run up to 90 days
+from its review instead of 30, the same limit as a development-only exception
+(`MAX_PRODUCTION_EXCEPTION_DAYS` in `.github/scripts/audit-gate.mjs`,
+security-architecture §4a). The only production exception, GHSA-mrhx-c7xc-m3w5 in
+`zod` 3.25.x via `botbuilder`, was reviewed again and runs until 2027-02-21.
+botbuilder and its three packages are still 4.23.3 on zod ^3.23.8, unchanged
+since 2025-08-27, and zod 3.x has no fixed release, so a monthly re-check found
+nothing new. The rest of the gate is unchanged: every route must still be named
+in `via`, an expired entry still fails the leg, and the 14-day expiry warning
+still applies.
+
 ### Security — dependency rollup 2026-11-23; withdrawn picomatch exceptions removed
 
 2026-11-23. `@microsoft/microsoft-graph-client` 3.1.0, the host-provided Graph SDK

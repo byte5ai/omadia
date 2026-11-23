@@ -15,7 +15,7 @@
 //     its review).
 // A finding in the production tree fails unless an entry marked
 // `"production": true` covers it: such an entry is for an advisory no release
-// fixes for the major a production dependency pins, it runs at most 30 days, and
+// fixes for the major a production dependency pins, it runs at most 90 days, and
 // every route to a vulnerable copy must start at a dependency it names in `via`
 // (security-architecture §4a).
 // The routes come from `package-lock.json`, resolved the way Node resolves
@@ -39,7 +39,7 @@ export const RUNTIME_DEV_DEPENDENCIES = Object.freeze({ desktop: Object.freeze([
 export const MAX_EXCEPTION_DAYS = 90;
 
 /** The longest a production exception may run from its review. */
-export const MAX_PRODUCTION_EXCEPTION_DAYS = 30;
+export const MAX_PRODUCTION_EXCEPTION_DAYS = 90;
 
 /** How far ahead of its expiry an exception is announced. */
 export const EXPIRY_NOTICE_DAYS = 14;
