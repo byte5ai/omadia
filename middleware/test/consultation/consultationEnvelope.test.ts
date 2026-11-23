@@ -123,6 +123,7 @@ describe('consultation envelope in the real orchestrator (criterion 13)', () => 
       // Anna has no HR grant: the envelope holds the CRM only.
       allowedPluginIds: new Set([CRM]),
       memoryAccess: 'none' as const,
+      readers: readersOf(['u-1']),
       result: {},
     };
     await runAsConsultation(scope, async () => {
@@ -163,6 +164,7 @@ describe('consultation envelope in the real orchestrator (criterion 13)', () => 
         callId: 'c',
         allowedPluginIds: new Set(),
         memoryAccess: 'none',
+        readers: readersOf(['u-1']),
         result: {},
       },
       async () => {
@@ -326,6 +328,53 @@ describe('discretion at the tool boundary (criterion 17)', () => {
   });
 });
 
+describe('a consultation run answers into the consulting turn\'s room', () => {
+  it('B\'s label of A\'s conversation carries A\'s readers, never an `unknown` of its own', async () => {
+    const port: DiscretionPort = {
+      declarationOf: async () => undefined,
+      labelsOf: async () => new Map(),
+      persistLabels: async () => undefined,
+      audit: () => undefined,
+    };
+    const model = scriptedModel([text('Im klassischen Modell gelten 30 Urlaubstage.')]);
+    const orchestrator = new Orchestrator({
+      provider: model.provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 2,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      agentId: 'ben',
+      discretion: port,
+    } as unknown as OrchestratorOptions);
+    const origin = {
+      channelType: 'teams',
+      channelConversationId: '19:room@thread.tacv2;messageid=1',
+      scope: { kind: 'channel', id: 'room' },
+    };
+    const scope = {
+      agentSlug: 'ben',
+      fromAgentSlug: 'anna',
+      fromTurnId: 't-a',
+      callId: 'c-1',
+      allowedPluginIds: new Set<string>(),
+      memoryAccess: 'none' as const,
+      readers: readersOf(['u-1']),
+      result: {} as { labels?: { labels: readonly { kind: string; key?: string; readers?: unknown }[] } },
+    };
+    // B's turn carries A's origin but no sender: resolving the room itself
+    // would give `unknown`.
+    await runAsConsultation(scope as never, () =>
+      orchestrator.chat({ userMessage: 'Wie viele Urlaubstage?', sessionScope: 'consult-c-1', origin } as never),
+    );
+    const own = scope.result.labels?.labels.find(
+      (l) => l.kind === 'context' && l.key === 'teams:19:room@thread.tacv2;messageid=1',
+    );
+    assert.ok(own, 'B reports its label of A\'s conversation');
+    assert.deepEqual(own.readers, readersOf(['u-1']));
+  });
+});
+
 describe('consultation envelope on the subscription-CLI dispatcher', () => {
   it('isToolGranted, the only question the CLI dispatcher asks, honours the envelope', async () => {
     const built = buildForAgent(agentRow('ben'), deps(), RUNTIME, undefined, [HR, CRM]);
@@ -343,6 +392,7 @@ describe('consultation envelope on the subscription-CLI dispatcher', () => {
         callId: 'c',
         allowedPluginIds: new Set([CRM]),
         memoryAccess: 'none',
+        readers: readersOf(['u-1']),
         result: {},
       },
       async () => {

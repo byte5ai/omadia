@@ -204,6 +204,7 @@ export class VerifierService implements ChatAgent {
       host: this.host,
       log: this.log,
       agent: opts.orchestrator.agentId,
+      offeredToolNames: () => opts.orchestrator.offeredToolNames(),
     });
     this.turnHookRegistry = opts.turnHookRegistry;
     this.locale = opts.locale;

@@ -363,6 +363,7 @@ export function createConsultationBroker(deps: ConsultationBrokerDeps): Consulta
           allowedPluginIds: allowed,
           memoryAccess,
           initialLabels: request.labels,
+          readers: request.readers,
           result: {},
         };
         const answer = await runColleague(to, scope, request, fromSpeaker);

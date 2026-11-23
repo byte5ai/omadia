@@ -10906,6 +10906,8 @@ export class Orchestrator {
     const initial = seed ? unionLabels(seed.labels, consulted ?? []) : consulted;
     const resolveReaders = once(async (): Promise<Readers> => {
       if (seed) return seed.readers;
+      // A consultation run answers into the consulting turn's room.
+      if (consultation?.agentSlug === this.agentId) return consultation.readers;
       if (!input.origin) return ownerId ? readersOf([ownerId]) : UNKNOWN_READERS;
       return readersFromAudience(
         await resolveTurnAudience(this.knowledgeGraph, input, parent?.chatParticipants).catch(

@@ -54,6 +54,44 @@ changelog.
 - **`PG_TEST_FLOOR` 448 → 721.** Main measured ran=694 (246 tests of slack, enough for whole
   suites to vanish unnoticed); with the 27 moved tests the measured count is 721.
 
+### Fixed — the PASS/BLOCK judges answer on an always-thinking model (spec 2042 §5.5, #2085, criterion 33)
+
+- The identity guard's judge and the data-plan and summary boundary judges asked for 8 output
+  tokens. They run on the agent's classifier model, else its own model. On an always-thinking
+  model (Opus 5.5, Fable) thinking counts toward that cap, so the reply had no text. The
+  identity guard then withheld every suspicious answer of such an agent as `unavailable`, and
+  the boundary guards refused every plan and summary they judged. Found in the live Teams E2E:
+  Karen (`hr`, Opus 5.5) was consulted, and her contribution was always withheld (`identity judge
+  gave no verdict: ""`). The three judges now share `VERDICT_JUDGE_MAX_TOKENS` (1024) and
+  `VERDICT_JUDGE_REASONING` (low effort, no thinking where the model allows it) and send no
+  `temperature`. A reply without a verdict is a failed boundary check now ("the boundary check
+  failed"), not a broken boundary.
+
+### Fixed — a consultation no longer makes its conversation unreadable (spec 2042 §5.4, §5.11)
+
+- The consulted agent runs with the consulting turn's origin, but resolved that room's readers
+  itself. Its turn carries no sender, so the result was `unknown`. Its label of the
+  conversation came back with readers `unknown`, and the consulting turn merged it into its own
+  label of the same conversation (anything intersected with `unknown` is `unknown`). From then
+  on, every turn that recalled anything from that conversation was refused at the people egress
+  ("nicht alle hier dürfen diese Informationen kennen"), in every later thread. Found in the live
+  Teams E2E: after one consultation, Minerva could not answer "who are you?" in a new thread.
+  The consultation run now carries the consulting turn's readers (`ConsultationRunScope.readers`).
+  Labels persisted before this fix keep `unknown` readers until they are rewritten.
+
+### Fixed — a self-description is no replayed failure (spec 2042, live canvas)
+
+- "wer bist du" to Dark Clippy was withheld in 2 of 4 runs as `tool_not_called`: the
+  failure-replay detector read "auf deine Mails habe ich keinen Zugriff" in a turn without a
+  call as a replayed access failure. A claim about what the agent can reach ("kein Zugriff
+  auf X", "X nicht erreichbar", "kann X nicht lesen") passes now when it names a known system
+  the agent holds no tool for (mail, calendar, payroll, the user's computer, the internet,
+  phone, bank, and the business systems ERP/Odoo, HR, wiki, Jira, CRM; against
+  `VerifierInput.offeredToolNames`) and none it holds. A claim that names
+  nothing, a pronoun or a held system is still withheld. Reported attempts ("konnte nicht
+  laden"), access events (timeout, denied), absence and retry claims are unchanged; with the
+  tools unknown the older rule holds.
+
 ### Fixed — agent triggers found in the live Teams E2E of spec 2042 (2026-11-23)
 
 - **A trigger tool's refusal reached the model as masked data.** `on_event`, `wake_at`,
