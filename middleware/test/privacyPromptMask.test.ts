@@ -19,6 +19,7 @@ import type { PrivacyGuardService, PromptPiiDetector } from '@omadia/plugin-api'
 import { createPrivacyTurnHandle } from '@omadia/orchestrator/dist/privacyHandle.js';
 import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
 import {
+  baselineHasIdentityPii,
   createBaselineDetector,
   createC1StubDetector,
   dedupSpans,
@@ -74,6 +75,48 @@ describe('createBaselineDetector (C0)', () => {
     assert.equal(lookalike.filter((s) => s.type === 'email').length, 1);
   });
 
+  it('#1865 — takes a zero-led number for a phone only from seven digits on', async () => {
+    // The pattern's own comment said "≥7 digits total", the regex accepted
+    // four: customer numbers, postcodes with a leading zero and short codes
+    // were masked as phone numbers — and encrypted at rest in a dataset.
+    const phoneSpans = async (text: string) =>
+      (await createBaselineDetector().detect(text)).filter((s) => s.type === 'phone');
+    for (const text of [
+      'K-0001',
+      'A-0120',
+      '01067',
+      '04109',
+      'Bestellung 0042',
+      'Fehlercode 0815',
+      '0049',
+      '0611 12', // six digits: one short of the minimum
+    ]) {
+      assert.deepEqual(await phoneSpans(text), [], `'${text}' must not be detected as a phone`);
+      const masked = await maskPrompt(text, [createBaselineDetector()]);
+      assert.equal(masked.maskedText, text, `'${text}' must reach the model unchanged`);
+    }
+    // Real numbers are still caught — down to exactly seven digits.
+    for (const text of [
+      '030 8688401',
+      '0171 1234567',
+      '+49 30 1234567',
+      '0301234567',
+      'Ruf bitte 0611 123 an.',
+      '+290 2234',
+    ]) {
+      assert.equal((await phoneSpans(text)).length, 1, `'${text}' must be detected as a phone`);
+    }
+  });
+
+  it('#1865 — a short zero-led code does not make a column personal data', () => {
+    // The v4 shape classifier asks this booster per value; a postcode or
+    // customer-number column must keep its filterable verdict.
+    for (const value of ['K-0001', '01067', '0815']) {
+      assert.equal(baselineHasIdentityPii(value), false, `'${value}' is not identity PII`);
+    }
+    assert.equal(baselineHasIdentityPii('0171 1234567'), true);
+  });
+
   it('detects IBAN and DOB-style dates', async () => {
     const spans = await createBaselineDetector().detect(
       'Konto DE89 3704 0044 0532 0130 00, geboren am 24.12.1987.',
@@ -112,6 +155,33 @@ describe('dedupSpans', () => {
       { span: { start: 8, end: 20, type: 'email', confidence: 0.9 }, detector: 'c1' },
     ]);
     assert.equal(resolved[0]!.value, 'anna.schmidt@firma.de');
+  });
+
+  it('#1868 — leaves a full stop or dash after the value outside the span', () => {
+    const text = 'Mail anna.schmidt@firma.de. Danke, Ruf 030 1234567 an - oder 030 1234567...';
+    const resolved = dedupSpans(text, [
+      { span: { start: 5, end: 26, type: 'email', confidence: 1 }, detector: 'c0-regex' },
+      { span: { start: 39, end: 50, type: 'phone', confidence: 1 }, detector: 'c0-regex' },
+      { span: { start: 61, end: 72, type: 'phone', confidence: 1 }, detector: 'c0-regex' },
+    ]);
+    assert.deepEqual(
+      resolved.map((s) => s.value),
+      ['anna.schmidt@firma.de', '030 1234567', '030 1234567'],
+    );
+  });
+
+  it('#1868 — does not mask a full stop a winning span left outside itself', () => {
+    const text = 'Mail anna.schmidt@firma.de. Danke';
+    const resolved = dedupSpans(text, [
+      // A lower-confidence span that took the full stop along…
+      { span: { start: 5, end: 27, type: 'person', confidence: 0.4 }, detector: 'c1' },
+      // …loses to the email, whose span ends before the stop.
+      { span: { start: 5, end: 26, type: 'email', confidence: 1 }, detector: 'c0-regex' },
+    ]);
+    assert.deepEqual(
+      resolved.map((s) => [s.type, s.value]),
+      [['email', 'anna.schmidt@firma.de']],
+    );
   });
 
   it('keeps the uncovered remainder of a losing lower-confidence span (review finding)', () => {
@@ -337,6 +407,26 @@ describe('maskPrompt', () => {
     const text = `Mail ${email}. I repeat: ${email}`;
     const result = await maskPrompt(text, [createBaselineDetector()]);
     assert.equal(findIdentityLeaks(result.maskedText, [email]).length, 0);
+  });
+
+  it('#1868 — gives a value one pseudonym with or without a full stop after it', async () => {
+    const email = 'gerlinde.prochaska@beispiel.de';
+    const text = `Mein Kontakt ist ${email}. Kannst du ${email} bitte anrufen?`;
+    const result = await maskPrompt(text, [createBaselineDetector()]);
+    assert.deepEqual(
+      result.spans.map((s) => s.value),
+      [email, email],
+    );
+    const pseudonyms = new Set(
+      [...result.maskedText.matchAll(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/g)].map((m) => m[0]),
+    );
+    assert.equal(pseudonyms.size, 1, `expected one pseudonym, got ${[...pseudonyms].join(', ')}`);
+    const [pseudonym] = [...pseudonyms];
+    assert.ok(
+      result.maskedText.includes(`${pseudonym!}. Kannst`),
+      `full stop lost: ${result.maskedText}`,
+    );
+    assert.equal(resolvePseudonyms(result.maskedText, result.map), text);
   });
 
   it('is a no-op on PII-free text', async () => {
