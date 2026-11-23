@@ -11,7 +11,7 @@ import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
 import { recordUsage } from '@omadia/usage-telemetry';
 
-import { VERDICT_JUDGE_MAX_TOKENS } from '../classifierBudgets.js';
+import { VERDICT_JUDGE_MAX_TOKENS, VERDICT_JUDGE_REASONING } from '../classifierBudgets.js';
 
 import type { IdentityJudge, IdentityJudgeRequest, IdentityJudgeVerdict } from './guard.js';
 
@@ -63,9 +63,7 @@ export function createLlmIdentityJudge(options: {
         // cap. Low effort, and no thinking where the model allows it: the
         // guard's timeout runs while the judge thinks.
         maxTokens: VERDICT_JUDGE_MAX_TOKENS,
-        effort: 'low',
-        thinking: 'off',
-        temperature: 0,
+        ...VERDICT_JUDGE_REASONING,
         system: system(request),
         // The END of the answer: the guard sends all text so far, and the
         // sentence under check is the newest one.

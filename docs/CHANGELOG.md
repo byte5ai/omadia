@@ -44,8 +44,10 @@ changelog.
   identity guard then withheld every suspicious answer of such an agent as `unavailable`, and
   the boundary guards refused every plan and summary they judged. Found in the live Teams E2E:
   Karen (`hr`, Opus 5.5) was consulted, and her contribution was always withheld (`identity judge
-  gave no verdict: ""`). The three judges now share `VERDICT_JUDGE_MAX_TOKENS` (1024) and ask
-  for low effort and no thinking where the model allows it.
+  gave no verdict: ""`). The three judges now share `VERDICT_JUDGE_MAX_TOKENS` (1024) and
+  `VERDICT_JUDGE_REASONING` (low effort, no thinking where the model allows it) and send no
+  `temperature`. A reply without a verdict is a failed boundary check now ("the boundary check
+  failed"), not a broken boundary.
 
 ### Fixed — a consultation no longer makes its conversation unreadable (spec 2042 §5.4, §5.11)
 

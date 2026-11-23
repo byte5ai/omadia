@@ -18,7 +18,8 @@ import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
 import { getBoundaryPreset, type DataPlanVerdict, type ProfileQualityConfig } from '@omadia/plugin-api';
 import { recordUsage } from '@omadia/usage-telemetry';
-import { VERDICT_JUDGE_MAX_TOKENS } from './classifierBudgets.js';
+import { VERDICT_JUDGE_MAX_TOKENS, VERDICT_JUDGE_REASONING } from './classifierBudgets.js';
+import { parseJudgeVerdict } from './identityGuard/llmJudge.js';
 
 export const SUMMARY_JUDGE_TIMEOUT_MS = 8_000;
 
@@ -56,9 +57,7 @@ export function createLlmSummaryJudge(options: {
       const res = await options.provider.complete({
         model: options.model,
         maxTokens: VERDICT_JUDGE_MAX_TOKENS,
-        effort: 'low',
-        thinking: 'off',
-        temperature: 0,
+        ...VERDICT_JUDGE_REASONING,
         system: [
           'You check a short answer an AI agent is about to send against the rules its operator set.',
           'Rules:',
@@ -77,7 +76,9 @@ export function createLlmSummaryJudge(options: {
         cacheReadTokens: res.usage.cacheReadTokens ?? 0,
         cacheCreationTokens: res.usage.cacheWriteTokens ?? 0,
       });
-      return collectText(res.content).trim().toUpperCase().startsWith('PASS') ? 'pass' : 'block';
+      // No verdict (an empty reply) is a failed check, not a broken rule:
+      // it throws, and the guard refuses as "the boundary check failed".
+      return parseJudgeVerdict(collectText(res.content)).verdict;
     },
   };
 }

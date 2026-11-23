@@ -23,8 +23,10 @@
  *
  * Both are ceilings, not spend: a model that answers in four tokens is billed
  * for four. Sizing them for thinking costs nothing on a model that does not
- * think, which is why no `effort` is set alongside them — these routes may run
- * on Haiku or on a non-Anthropic provider.
+ * think. The screener and the working-mode router set no `effort`; the verdict
+ * judges add {@link VERDICT_JUDGE_REASONING}, hints every adapter maps or
+ * ignores, and send no `temperature` (a reasoning effort with a temperature
+ * other than 1 is refused by some providers).
  *
  * `modelRouter.ts` deliberately keeps its own tight `maxTokens: 8` and is not
  * listed here: it runs only with an explicitly configured Haiku-tier
@@ -49,3 +51,6 @@ export const WORKING_MODE_CLASSIFIER_MAX_TOKENS = 1024;
  * plan and summary they judged.
  */
 export const VERDICT_JUDGE_MAX_TOKENS = 1024;
+
+/** Reasoning of the PASS / BLOCK judges: as little thinking as the model allows. */
+export const VERDICT_JUDGE_REASONING = { effort: 'low', thinking: 'off' } as const;
