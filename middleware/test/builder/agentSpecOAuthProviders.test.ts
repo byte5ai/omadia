@@ -12,7 +12,7 @@ import { validateSpec } from '../../src/plugins/builder/manifestLinter.js';
 import type { AgentSpecSkeleton } from '../../src/plugins/builder/types.js';
 
 const baseSpec = (): Record<string, unknown> => ({
-  template: 'agent-integration',
+  template: 'integration',
   id: 'de.byte5.agent.gmailsummary',
   name: 'Gmail Summary',
   version: '0.1.0',
@@ -21,7 +21,6 @@ const baseSpec = (): Record<string, unknown> => ({
   domain: 'gmail',
   depends_on: [],
   tools: [],
-  skill: { role: 'helper' },
   setup_fields: [],
   jobs: [],
   playbook: { when_to_use: 'use it', not_for: [], example_prompts: [] },

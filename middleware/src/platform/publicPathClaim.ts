@@ -6,10 +6,9 @@ import type { PublicPathGrantStore } from './publicPathGrantStore.js';
  * Epic #470 C4 / H1 — claim a plugin's manifest-declared public-path prefixes,
  * AFTER its `activate()` ran.
  *
- * Shared by every runtime that activates plugins: the tool runtime, the
- * dynamic-agent runtime (Builder-generated agents) and the channel registry
- * (Teams, …). Until S3-G only the tool runtime claimed, so a channel or agent
- * plugin's `auth:'custom'` route behind a GRANTED declaration was never served:
+ * Shared by every runtime that activates plugins: the tool runtime and the
+ * channel registry (Teams, …). Until S3-G only the tool runtime claimed, so a
+ * channel plugin's `auth:'custom'` route behind a GRANTED declaration was never served:
  * the public-path mount only dispatches to claimed prefixes, the request fell
  * through and answered 404. That stayed invisible while `/p/` was a static
  * public path; #1596 removed it and Teams tabs broke.

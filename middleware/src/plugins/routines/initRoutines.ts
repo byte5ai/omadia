@@ -1,7 +1,7 @@
 import type { Pool } from 'pg';
 import { currentDispatchCaller, turnContext } from '@omadia/orchestrator';
 
-import type { JobScheduler } from '../jobScheduler.js';
+import type { JobSchedulerLike } from './routineRunner.js';
 import {
   ManageRoutineTool,
   manageRoutineToolSpec,
@@ -15,6 +15,7 @@ import {
 import {
   RoutineRunner,
   type OrchestratorLike,
+  type RoutineRunnerOptions,
 } from './routineRunner.js';
 import { RoutineRunsStore } from './routineRunsStore.js';
 import { RoutineStore } from './routineStore.js';
@@ -48,7 +49,8 @@ import { routineTurnContext } from './routineTurnContext.js';
  */
 export interface InitRoutinesOptions {
   pool: Pool;
-  scheduler: JobScheduler;
+  /** #2082 — the trigger engine's routine port (`createRoutineTriggerScheduler`). */
+  scheduler: JobSchedulerLike;
   /** #1598 — see `ManageRoutineToolOptions.requiresAgentSlug`. */
   requiresAgentSlug?: () => boolean;
   /**
@@ -82,6 +84,8 @@ export interface InitRoutinesOptions {
    *  initRoutines returns and before `runner.start()` — pass them here
    *  when the kernel knows them upfront. */
   proactiveSenders?: ProactiveSender[];
+  /** Spec 2042 §5.3 — see `RoutineRunnerOptions.deliveryRefusal`. */
+  deliveryRefusal?: RoutineRunnerOptions['deliveryRefusal'];
   log?: (msg: string) => void;
   /** Override the per-user active-routine cap. */
   maxActivePerUser?: number;
@@ -126,6 +130,7 @@ export async function initRoutines(
     scheduler: opts.scheduler,
     getOrchestrator: opts.getOrchestrator,
     senderRegistry,
+    ...(opts.deliveryRefusal ? { deliveryRefusal: opts.deliveryRefusal } : {}),
     log,
     maxActivePerUser: opts.maxActivePerUser,
   });
@@ -150,11 +155,13 @@ export async function initRoutines(
     {
       spec: manageRoutineToolSpec,
       // #1086 — offered only on a turn that carries a routines principal: the
-      // web chat, every `CoreApi.handleTurnStream` channel, and Teams. An
-      // adapter that calls `chatAgent` directly passes neither a channel nor a
-      // conversation, so the kernel cannot build one for it, and the tool
-      // would refuse every action there. A call that still arrives (a stale
-      // tool list, a replay) gets ROUTINE_NO_CONTEXT_ERROR.
+      // web chat, every `CoreApi.handleTurnStream` channel, and the channels
+      // that open the scope themselves (Teams; Telegram, Discord and Slack via
+      // `beginRoutineTurn`, spec 2042 §5.12). An adapter that calls `chatAgent`
+      // directly without it passes neither a channel nor a conversation, so the
+      // kernel cannot build one for it, and the tool would refuse every action
+      // there. A call that still arrives (a stale tool list, a replay) gets
+      // ROUTINE_NO_CONTEXT_ERROR.
       isAvailable: isManageRoutineOffered,
     },
   );

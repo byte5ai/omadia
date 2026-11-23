@@ -18,7 +18,7 @@ Ohne Doku-Update ist eine Änderung **nicht fertig**, selbst wenn der Build grü
 | Bugfix / Ops-Vorfall / Build-Problem | `docs/CHANGELOG.md` Eintrag anhängen | Datum + ein Absatz |
 | Security-Entscheidung / Credential-Verschiebung | `docs/security-architecture.md` aktualisieren | Abschnitt |
 | Neue ENV-Variable / Secret | `middleware/.env.example` + `docs/middleware-agent-handoff.md` §10 | Zeile + Erklärung |
-| Neue Route / Tool / Sub-Agent | `docs/middleware-agent-handoff.md` §3 und §8 | Abschnitt |
+| Neue Route / Tool / Sub-Agent | `docs/middleware-agent-handoff.md` §3 (Execution-Layer; Routen beim jeweiligen Feature-Abschnitt). §8 ist „Skills“, nur für neue Skills | Abschnitt |
 | Neue SQL-Migration | Datei in `middleware/migrations/` (Core-Serie; Subsystem-Serien wie `packages/harness-knowledge-graph-neon/src/migrations/` oder `src/conductor/migrations/` nur für deren eigene Tabellen — **nie** `src/services/graph/migrations/`, das liest kein Runner) — **plus** CHANGELOG-Eintrag mit ID und Zweck | Migration-ID |
 | Neue Skill-Version | `skills/<name>/SKILL.md` + CHANGELOG | Skill-Name + Kurzzusammenfassung |
 | Offener Punkt / Backlog / TODO | `docs/middleware-agent-handoff.md` §13 Roadmap | Bullet |
@@ -35,6 +35,55 @@ Wenn die Zuordnung unklar ist: lieber in CHANGELOG notieren als gar nicht — sp
 
 Ohne mindestens Punkte 1–3 darf kein Code geändert werden.
 
+**Agentenmodell (verbindlich):** Wer Agenten, Plugins, Kanäle, Modelle, Routing, Memory,
+Trigger oder Antwortdarstellung anfasst, liest vorher `docs/terminology.md` und die ADRs
+0012–0022 in `docs/adr/` (virtuelle Mitarbeiter, kein Orchestrator-Agent, Plugins nur als
+Lieferform, Archetypen, Model-Gateway, Konsultation, Diskretion, Trigger, Deterministic
+first, native Facilitators). Wer Facilitator-Sitzungen anfasst, liest zusätzlich ADR-0026
+(Lesetabelle und Link-Anfrage liegen im Kernel, Sprechererkennung setzt nie Autorschaft). Änderungen zahlen auf diese Konzepte ein; wer eine andere
+Richtung braucht, schreibt ein neues ADR, das das betroffene ablöst, statt dagegen zu bauen.
+
+**Facilitator-Entscheidungen (ADR 0023, #2060/#2066):** Facilitators dürfen Arbeitsmodi als
+Moderationsmethoden haben; Route und Build lehnen für jeden Nicht-`standard`-Archetyp
+Identitätsersatz ab (`workingModeIdentity.ts`, `services/workingModeContract.ts`), dazu
+Neutralitätsvertrag und `requires_tools`. Einstellungen pro Agent deklariert der Archetyp
+(`archetype.agent_settings`); der Kernel validiert, speichert (`agents.archetype_settings`)
+und gibt sie als `AgentProfile.archetypeSettings` ans Plugin; nicht gesetzt = Instanz-
+Einstellung des Plugins. Readiness ist pro Kanal-Identität (`own_identity_channels`), Teams
+wird nur für Teams geprüft. Persona-Grenzen bleiben im Kernel (`services/facilitatorContract.ts`).
+
+**Kanal-getriggerte Workflows (ADR 0028):** Eine Nachricht an einen Bot startet nur Workflows,
+deren Agent-Schritte alle als der Agent dieses Bots laufen (`ConductorEventRouter` mit
+`addressedAgentForEvent`, `channelBotOwnership.ts`). Andere werden übersprungen und geloggt,
+statt einen Lauf zu starten, den `assertChannelOriginAllows` am Agent-Schritt ohnehin ablehnt.
+Die Schritt-Regel bleibt als zweite Linie.
+
+**Facilitator-Abnahme und Audio (ADR 0029, ADR 0031, #2068):** Die Abnahmematrix für Spec B §9
+(Kriterien 1–64) liegt in `omadia-agent-facilitator` (`docs/acceptance-matrix.md`, geprüft von
+`scripts/check-acceptance-matrix.mjs` in dessen CI). Wer ein Kriterium ändert oder einen
+Kernel-Test aus der Matrix umbenennt, passt die Matrix an. #584 (Audio-Meeting-Source: Sidecar
+als Tenant-User mit eigener Lizenz pro Agent, GPT-Live-Transcribe) gehört seit der Owner-
+Entscheidung vom 2026-11-22 nicht mehr zum Epic #2043, sondern ist ein eigenes Folge-Vorhaben.
+
+**Aufrufer eines Tools (ADR 0032):** `NativeToolCallContext.callerPrincipalId` ist die
+Gesprächs-Form `user:<Kanal-User-Id>`, dieselbe wie `author.principalId` gespeicherter
+Nachrichten und die Teilnehmer der Mitgliederliste. Beide Wege nutzen den einen Helfer
+`conversationPrincipal` (`@omadia/orchestrator`); `buildToolCallContext` wendet ihn auf Sprecher bzw.
+Kanal-Identität an. `TurnOrigin.principal` ist bei Discord, Slack und Telegram die
+Routing-Form aus Spec 2042 §5.3 (`user:discord-user:<id>`, `user:<e-mail>`) und zählt nur ohne
+Kanal-User (Web-Chat). Wer die Routing-Form im Tool braucht, bildet sie mit
+`channelUserPrincipal` aus `callerUserRef`.
+`transcription@1` und der Capability-Snapshot pro Sitzung (#2077) stehen bereits. Eine Audio-
+Quelle deklariert nur `transcribed_speech`; Facilitator und Engine ändern sich dafür nicht.
+
+**Execution-Scopes (ADR 0030, #2090):** Der Kernel begrenzt `closing`-Scopes selbst: 30 Tage ab
+dem Ereignis (`eventAt` beim Öffnen, nicht ab dem Öffnen), nur `CLOSING_SCOPE_PURPOSES` (nie
+Moderation). Der Deadline-Wait eines `active`-Scopes braucht einen offenen `closing`-Scope
+desselben Prozesses und endet spätestens mit dessen absolutem Limit. Die Teile eines Closings
+(Zustellung, Bestätigung, Versand) und ihre 7-Tage-Limits bleiben im Plugin. Private Antworten
+tragen `replyToMessageId` (TurnOrigin → `PrivateMessageRequest`), damit „erledigt“/„stop“ an die
+Erinnerung gebunden werden; Kanal-Adapter müssen das Feld füllen.
+
 ## Task-Routing: welches Werkzeug für welche Aufgabengröße
 
 Bevor eine Aufgabe begonnen wird: welche Größenordnung hat sie, und passt eines der vorhandenen `scripts/*.workflow.mjs`-Pipelines besser als Ad-hoc-Arbeit in der aktuellen Session?
@@ -49,7 +98,7 @@ Bevor eine Aufgabe begonnen wird: welche Größenordnung hat sie, und passt eine
 Alle Skripte in `scripts/*.workflow.mjs` laufen über das `Workflow`-Tool (`Workflow({ scriptPath: "scripts/<name>.workflow.mjs", args: {...} })`), nicht als eigenständige Node-Prozesse. Keines von ihnen pusht oder merged selbstständig nach GitHub — "PR erstellen" bzw. "mergen" bleibt immer ein expliziter, von einer Top-Level-Session oder einem Menschen ausgelöster Schritt.
 
 **Review-Kriterien referenzieren statt duplizieren:**
-- Plugin-Contract (PluginContext, 10-Punkte-Package-Checklist): `middleware/assets/boilerplate/{agent-integration,agent-pure-llm}/CLAUDE.md` — das ist die kanonische Quelle; `docs/harness-platform/` ist nur lokales, gitignored Scratch und darf nicht als Referenz zitiert werden.
+- Plugin-Contract (PluginContext, 10-Punkte-Package-Checklist): `middleware/assets/boilerplate/{integration,tool}/CLAUDE.md` — das ist die kanonische Quelle; `docs/harness-platform/` ist nur lokales, gitignored Scratch und darf nicht als Referenz zitiert werden.
 - i18n-Regeln für Frontend-Komponenten: `web-ui/CLAUDE.md`.
 
 **Bekannte offene Baustelle beim Testen:** In der Middleware-Suite gibt es Cross-File-Test-Pollution (ein Test ist isoliert grün und scheitert im vollen `npm run test`-Lauf wegen State-Leak aus einer anderen Testdatei). Bevor Build-/Test-Caching (z. B. Turborepo) für die `middleware/packages/*`-Packages eingeführt wird, sollte diese Bug-Klasse behoben werden — sonst wird nur unzuverlässiges Grün schneller ausgeliefert.

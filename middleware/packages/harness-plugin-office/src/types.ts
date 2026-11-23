@@ -256,11 +256,6 @@ export interface OfficeArtifact {
   readonly cacheHit: boolean;
 }
 
-/** Fixed epoch stamped into document metadata so the same descriptor yields
- *  the same logical document (no wall-clock leakage). Byte-identical repro is
- *  explicitly out of scope — the OOXML zip still embeds its own entry order. */
-export const DETERMINISTIC_EPOCH = new Date(0);
-
 export class OfficeRenderError extends Error {
   constructor(message: string) {
     super(message);

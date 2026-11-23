@@ -34,6 +34,8 @@ const ACTION_FILTERS = [
   { key: 'profileSnapshot', prefix: 'profile_snapshot.' },
   { key: 'registry', prefix: 'registry.' },
   { key: 'channel', prefix: 'channel.' },
+  // #2088 — end of service, delete (tombstone) and purge of an agent.
+  { key: 'agent', prefix: 'agent.' },
   // Exact action name, not a prefix: one action covers every decision.
   { key: 'privacyFieldClassification', prefix: 'privacy.field_classification' },
   // An admin opened a field's real-value preview (count only, never values).

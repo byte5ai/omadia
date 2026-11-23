@@ -22,6 +22,12 @@
 
 import { createHash } from 'node:crypto';
 
+// #1482 — `err.message` plus its `cause`; a refused connection, a DNS miss or a
+// refused redirect all reach us as a bare "fetch failed". The rendering moved to
+// `platform/describeError.ts` when Conductor's webhook dispatcher needed the same
+// thing (#1704).
+import { describeError } from '../platform/describeError.js';
+
 import type {
   RegistryConfigEntry,
   RegistryIndexV1,
@@ -29,6 +35,7 @@ import type {
   RegistryPluginEntry,
   RegistryVersionEntry,
 } from '../api/registry-v1.js';
+import { PLUGIN_KINDS } from '../api/admin-v1.js';
 import type { PluginKind, RegistrySourceStatus } from '../api/admin-v1.js';
 
 const INDEX_PATH = '/registry/index.json';
@@ -48,13 +55,9 @@ const DEFAULT_FAILURE_TTL_MS = 60_000;
 const DEFAULT_MAX_INDEX_BYTES = 5 * 1024 * 1024; // 5 MiB
 const DEFAULT_MAX_ARTIFACT_BYTES = 50 * 1024 * 1024; // 50 MiB
 
-const VALID_KINDS: ReadonlySet<string> = new Set([
-  'agent',
-  'integration',
-  'channel',
-  'tool',
-  'extension',
-]);
+// The kinds this kernel can install (`PLUGIN_KINDS`); a registry entry of
+// any other kind is not offered.
+const VALID_KINDS: ReadonlySet<string> = new Set(PLUGIN_KINDS);
 
 export class RegistryError extends Error {
   readonly code: string;
@@ -605,24 +608,4 @@ function parseAuthors(
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-/**
- * #1482 — `err.message` plus its `cause`. Node's fetch reports a refused
- * connection, a DNS miss or a refused redirect as a bare "fetch failed" and
- * puts the reason in `err.cause`; without it the log could not say why.
- */
-export function describeError(err: unknown): string {
-  const message = errMsg(err);
-  const cause = err instanceof Error ? (err as { cause?: unknown }).cause : undefined;
-  if (cause === undefined || cause === null) return message;
-  const causeMessage =
-    cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : '';
-  const code =
-    isObject(cause) && typeof cause['code'] === 'string' ? cause['code'] : '';
-  const detail =
-    causeMessage && code && !causeMessage.includes(code)
-      ? `${code}: ${causeMessage}`
-      : causeMessage || code;
-  return detail && detail !== message ? `${message} (${detail})` : message;
 }

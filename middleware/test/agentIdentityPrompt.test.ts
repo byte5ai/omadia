@@ -7,8 +7,8 @@
  * thing is nothing at all.
  *
  * The order is a contract, not a preference. `[instructions, persona,
- * boundaries, sycophancy]` mirrors `dynamicAgentRuntime`'s section order for
- * sub-agents — who you are, how you sound, what you must not do, how not to
+ * boundaries, sycophancy]` is the section order the retired agent runtime
+ * used for its sub-agents — who you are, how you sound, what you must not do, how not to
  * flatter. A prompt that put limits before character would read as an agent
  * apologising before it introduces itself.
  */

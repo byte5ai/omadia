@@ -1,5 +1,3 @@
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import type { LlmProvider } from '@omadia/llm-provider';
@@ -14,14 +12,7 @@ import {
 import { recordForeignToolCall } from '../../platform/foreignToolMetrics.js';
 import { isForceGuarded } from '../privacyPosture.js';
 import { bridgedToolError, type BridgeStage } from '../bridgedToolError.js';
-import {
-  inferFamilyFromModel,
-  warnIfEmptyInputSchema,
-} from '../dynamicAgentRuntime.js';
-import { composePersonaSection } from '../personaCompose.js';
-import { compileSycophancyGuard } from '../sycophancyGuard.js';
-import { zodToJsonSchema } from '../zodToJsonSchema.js';
-import { compileBoundariesSection } from './boundaryPresets.js';
+import { effectivePluginKind } from './agentSpec.js';
 import {
   composeContextualMessage,
   type BuilderProviderResolution,
@@ -29,19 +20,32 @@ import {
 } from './builderAgent.js';
 import { BuilderLlmAccessError, builderResolverErrorCode } from './builderLlmAccess.js';
 import type { DraftStore } from './draftStore.js';
+import { PreviewDraftAgentUnavailableError, type PreviewDraftAgentRef } from './previewDraftAgents.js';
 import type { PreviewHandle, PreviewToolDescriptor } from './previewRuntime.js';
 import type { AgentSpecSkeleton, TranscriptEntry } from './types.js';
 
 /**
- * PreviewChatService — builder chat surface against an active preview agent.
+ * PreviewChatService — the Plugin Builder's preview chat against an active
+ * preview of the draft plugin.
+ *
+ * Spec 2042 §5.10 — a preview turn is a turn of a NEUTRAL DRAFT AGENT: it has
+ * no persona, no role text and no grants of its own; it holds exactly the
+ * tools the draft plugin registered via `ctx.tools.register` (captured on the
+ * preview handle, never in the kernel's tool registry) and speaks as itself,
+ * marked "preview". Its output goes only to the operator's admin UI (the
+ * builder SSE route behind the admin session).
+ *
+ * The draft agent is an `agents` row with status `draft`, one per Builder
+ * draft (`previewDraftAgents.ts`): never built by the registry, not
+ * addressable in any channel, removed when the preview closes. Its model loop
+ * runs here (a `LocalSubAgent` per turn) with exactly the captured tools.
  *
  * Exposes two entry points:
- *   - `runTurn(...)`: chat-style turn — bridges the preview tools (Zod) onto
- *      `LocalSubAgentTool`s, builds an ephemeral `LocalSubAgent` with a
- *      system prompt from `<previewDir>/skills/*.md`, drives a tool loop and
- *      streams `PreviewChatEvent`s as an AsyncIterable for SSE.
- *   - `runDirectTool(...)`: bypass — invokes a tool from the preview toolkit
- *      directly with Zod-validated input, without Anthropic.
+ *   - `runTurn(...)`: chat-style turn — hands the captured tools to the
+ *      neutral draft agent, drives its tool loop and streams
+ *      `PreviewChatEvent`s as an AsyncIterable for SSE.
+ *   - `runDirectTool(...)`: bypass — invokes one captured tool directly,
+ *      without a model.
  *
  * Statelessness caveat: `LocalSubAgent.ask(question, observer?)` is currently
  * a single-turn API (matching the old ManagedAgent profile). The service
@@ -90,21 +94,19 @@ export interface SubAgentBuildOptions {
   tools: LocalSubAgentTool[];
 }
 
+/** The draft agent a preview turn runs as (`PreviewDraftAgents`). */
+export interface PreviewDraftAgentSource {
+  ensure(draftId: string, pluginName: string): Promise<PreviewDraftAgentRef>;
+}
+
 export interface PreviewChatServiceDeps {
   resolveProvider: BuilderProviderResolver;
   draftStore: DraftStore;
-  /**
-   * Custom system-prompt-loader. Default: read `<previewDir>/skills/*.md`,
-   * strip frontmatter, concat with a header derived from the draft spec
-   * AND the live persona / boundaries / sycophancy from the spec — so
-   * the operator's slider/checkbox edits feed back into the preview
-   * chat **immediately**, without an Install round-trip.
-   */
-  systemPromptFor?: (
-    handle: PreviewHandle,
-    spec: AgentSpecSkeleton,
-    modelId: string,
-  ) => Promise<string>;
+  /** Spec 2042 §5.10 — every preview turn is a turn of a draft agent row. */
+  draftAgents: PreviewDraftAgentSource;
+  /** Override of the neutral draft agent's system prompt (test seam).
+   *  Default: `previewDraftAgentPrompt`. */
+  systemPromptFor?: (handle: PreviewHandle, spec: AgentSpecSkeleton) => string;
   /**
    * Override sub-agent construction (test-only fake). Default:
    * `new LocalSubAgent(opts)`.
@@ -145,6 +147,7 @@ export interface DirectToolResult {
 export class PreviewChatService {
   private readonly resolveProvider: BuilderProviderResolver;
   private readonly draftStore: DraftStore;
+  private readonly draftAgents: PreviewDraftAgentSource;
   private readonly systemPromptFor: NonNullable<
     PreviewChatServiceDeps['systemPromptFor']
   >;
@@ -159,7 +162,8 @@ export class PreviewChatService {
   constructor(deps: PreviewChatServiceDeps) {
     this.resolveProvider = deps.resolveProvider;
     this.draftStore = deps.draftStore;
-    this.systemPromptFor = deps.systemPromptFor ?? loadPreviewSystemPrompt;
+    this.draftAgents = deps.draftAgents;
+    this.systemPromptFor = deps.systemPromptFor ?? previewDraftAgentPrompt;
     this.buildSubAgent = deps.buildSubAgent ?? defaultBuildSubAgent;
     this.maxTokens = deps.subAgentMaxTokens ?? DEFAULT_MAX_TOKENS;
     this.maxIterations = deps.subAgentMaxIterations ?? DEFAULT_MAX_ITERATIONS;
@@ -190,6 +194,20 @@ export class PreviewChatService {
       );
     }
 
+    // Spec 2042 §5.10 — the turn runs as the draft's draft agent. Without
+    // one the preview does not run (fail loud, nothing stored).
+    let draftAgent: PreviewDraftAgentRef;
+    try {
+      draftAgent = await this.draftAgents.ensure(draftId, (draft.spec.name || opts.handle.agentId).trim());
+    } catch (err) {
+      yield {
+        type: 'error',
+        code: err instanceof PreviewDraftAgentUnavailableError ? err.code : 'builder.preview_draft_agent_failed',
+        message: err instanceof Error ? err.message : String(err),
+      };
+      return;
+    }
+
     const turnId = randomUUID();
 
     yield { type: 'chat_message', role: 'user', text: opts.userMessage };
@@ -217,15 +235,12 @@ export class PreviewChatService {
       return;
     }
 
+    // Exactly the draft plugin's tools — nothing else is offered.
     const tools = opts.handle.toolkit.tools.map(bridgePreviewTool);
-    const systemPrompt = await this.systemPromptFor(
-      opts.handle,
-      draft.spec,
-      resolved.modelId,
-    );
+    const systemPrompt = this.systemPromptFor(opts.handle, draft.spec);
 
     const subAgent = this.buildSubAgent({
-      name: `preview-${opts.handle.agentId}`,
+      name: draftAgent.slug,
       ...(resolved.provider ? { provider: resolved.provider } : {}),
       ...(resolved.cliModel ? { cliModel: resolved.cliModel } : {}),
       model: resolved.modelId,
@@ -327,7 +342,7 @@ export class PreviewChatService {
     yield { type: 'turn_done', turnId };
 
     this.log(
-      `[preview-chat] draft=${draftId} agent=${opts.handle.agentId} model=${opts.modelChoice} turn=${turnId} chars=${String(assistantText.length)}`,
+      `[preview-chat] draft=${draftId} draftAgent=${draftAgent.id} plugin=${opts.handle.agentId} model=${opts.modelChoice} turn=${turnId} chars=${String(assistantText.length)}`,
     );
   }
 
@@ -340,9 +355,8 @@ export class PreviewChatService {
       };
     }
     try {
-      const parsed = tool.input.parse(opts.input);
-      const result = await tool.run(parsed);
-      return { result, isError: false };
+      const text = await tool.run(opts.input);
+      return { result: parseToolText(text), isError: false };
     } catch (err) {
       return {
         result: { error: err instanceof Error ? err.message : String(err) },
@@ -357,37 +371,38 @@ export class PreviewChatService {
 // ---------------------------------------------------------------------------
 
 function bridgePreviewTool(td: PreviewToolDescriptor): LocalSubAgentTool {
-  const schema = zodToJsonSchema(td.input);
-  const properties =
-    schema.properties && typeof schema.properties === 'object'
-      ? schema.properties
-      : {};
-  const required = Array.isArray(schema.required) ? schema.required : [];
-  warnIfEmptyInputSchema(td.id, td.input, properties);
   return {
     spec: {
       name: td.id,
       description: td.description,
       input_schema: {
         type: 'object',
-        properties,
-        required,
+        properties: td.inputSchema.properties,
+        required: [...(td.inputSchema.required ?? [])],
       },
     },
     async handle(input: unknown): Promise<string> {
-      let stage: BridgeStage = 'input';
       try {
-        const parsed = td.input.parse(input);
-        stage = 'run';
-        const result = await td.run(parsed);
-        return typeof result === 'string'
-          ? result
-          : JSON.stringify(result, null, 2);
+        return await td.run(input);
       } catch (err) {
+        // The plugin's handler validates its own input (registerTools.ts):
+        // a ZodError is an input error the model can correct.
+        const stage: BridgeStage =
+          err instanceof Error && err.name === 'ZodError' ? 'input' : 'run';
         return bridgedToolError(td.id, err, stage, 'preview-chat');
       }
     },
   };
+}
+
+/** A tool returns text; a JSON result (the boilerplate stringifies
+ *  non-string results) is shown as the value it encodes. */
+function parseToolText(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
 }
 
 /**
@@ -425,99 +440,39 @@ function defaultBuildSubAgent(opts: SubAgentBuildOptions): Askable {
 }
 
 /**
- * Default system-prompt loader. Reads `<previewDir>/skills/*.md`, strips
- * leading frontmatter blocks (matching the boilerplate convention in
- * dynamicAgentRuntime.loadSystemPrompt), and concatenates with:
- *
- *   1. a header derived from the draft spec
- *   2. **the live persona section** from `spec.persona` (no AGENT.md
- *      round-trip — the operator's sliders feed into the preview chat
- *      directly)
- *   3. **the live boundaries section** from `spec.quality.boundaries`
- *   4. **the live sycophancy guard** from `spec.quality.sycophancy`
- *   5. the skill bodies from `<previewDir>/skills/*.md`
- *
- * Compose order matches the runtime path in
- * `dynamicAgentRuntime.loadSystemPrompt` so the preview behaves
- * byte-identically to what the installed agent would receive.
- *
- * Missing skills/ dir is non-fatal — the agent runs with header-only
- * guidance.
+ * System prompt of the neutral draft agent (spec 2042 §5.10). Built only from
+ * the plugin's identity, kind and playbook — "when to use this capability",
+ * which a calling agent also reads. It never carries a persona, role text,
+ * quality settings or skill files: a plugin has none, and fields an old draft
+ * still stores (`persona`, `quality`, `skill`) are ignored.
  */
-export async function loadPreviewSystemPrompt(
-  handle: PreviewHandle,
-  spec: AgentSpecSkeleton,
-  modelId: string,
-): Promise<string> {
-  const skillsDir = path.join(handle.previewDir, 'skills');
-  let entries: string[] = [];
-  try {
-    entries = await fs.readdir(skillsDir);
-  } catch {
-    // skills dir absent — fall through to header-only prompt.
-  }
-  entries.sort();
-  const skillBodies: string[] = [];
-  for (const name of entries) {
-    if (!name.endsWith('.md')) continue;
-    const abs = path.join(skillsDir, name);
-    if (!abs.startsWith(skillsDir + path.sep)) continue;
-    try {
-      const raw = await fs.readFile(abs, 'utf-8');
-      skillBodies.push(stripFrontmatter(raw).trim());
-    } catch {
-      // unreadable file — skip silently.
-    }
-  }
-
-  // Live compose — same inner-layer helpers the runtime uses (and the
-  // preview-prompt route from #55). Operator slider/checkbox edits land
-  // here on the very next preview turn, no Install needed.
-  const personaSection = spec.persona
-    ? composePersonaSection({
-        persona: spec.persona,
-        family: inferFamilyFromModel(modelId),
-      })
-    : '';
-
-  const boundaries = spec.quality?.boundaries;
-  const boundariesSection = boundaries
-    ? compileBoundariesSection(boundaries.presets ?? [], boundaries.custom ?? [])
-        .text
-    : '';
-
-  const sycophancySection = compileSycophancyGuard(spec.quality?.sycophancy);
-
-  const parts: string[] = [buildPreviewHeader(handle, spec)];
-  if (personaSection.length > 0) parts.push(personaSection);
-  if (
-    typeof spec.persona?.custom_notes === 'string' &&
-    spec.persona.custom_notes.length > 0
-  ) {
-    parts.push(spec.persona.custom_notes);
-  }
-  if (boundariesSection.length > 0) parts.push(boundariesSection);
-  if (sycophancySection.length > 0) parts.push(sycophancySection);
-  if (skillBodies.length > 0) parts.push(skillBodies.join('\n\n---\n\n'));
-
-  return parts.join('\n\n---\n\n');
-}
-
-function buildPreviewHeader(
+export function previewDraftAgentPrompt(
   handle: PreviewHandle,
   spec: AgentSpecSkeleton,
 ): string {
   const name = (spec.name || handle.agentId).trim();
   const id = (spec.id || handle.agentId).trim();
   const version = (spec.version || '0.1.0').trim();
+  const kind = effectivePluginKind(spec);
+  const toolNames = handle.toolkit.tools.map((t) => t.id);
+  const parts: string[] = [
+    '# Preview',
+    'You are a neutral draft agent in the Plugin Builder preview. You have no ' +
+      'persona and no role of your own. You test the capabilities of the draft ' +
+      `plugin "${name}" (${id} v${version}, kind ${kind}) for the operator who ` +
+      'is building it.',
+    toolNames.length > 0
+      ? `Your only tools are the ones this plugin registers: ${toolNames.join(', ')}. ` +
+        'Use them when the request needs them. Say plainly when a request is ' +
+        'outside them. Report tool errors as they come back.'
+      : 'This plugin registers no tools yet, so you cannot call anything. Say so.',
+    'Answer briefly and factually.',
+  ];
   const desc = (spec.description || '').trim();
+  if (desc) parts.push(`## The plugin\n\n${desc}`);
   const whenToUse = (spec.playbook?.when_to_use || '').trim();
-  const out: string[] = [`# ${name} (${id} v${version}) — preview`];
-  if (desc) out.push(desc);
-  if (whenToUse) out.push(`## Wann nutzen\n\n${whenToUse}`);
-  return out.filter(Boolean).join('\n\n');
-}
-
-function stripFrontmatter(md: string): string {
-  return md.replace(/^---\n[\s\S]*?\n---\n?/, '');
+  if (whenToUse) parts.push(`## When to use this capability\n\n${whenToUse}`);
+  const notFor = (spec.playbook?.not_for ?? []).map((l) => l.trim()).filter(Boolean);
+  if (notFor.length > 0) parts.push(`## Not for\n\n${notFor.map((l) => `- ${l}`).join('\n')}`);
+  return parts.join('\n\n');
 }

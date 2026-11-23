@@ -2,13 +2,26 @@ import { Router, raw } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 
+import type { AgentTombstone } from '@omadia/orchestrator';
+
+import { auditActorFromRequest, type AuditEntryInput } from '../auth/adminAuditLog.js';
+import type { AgentEndOfService, EndOfServiceReport } from '../platform/agentEndOfService.js';
+
+import { formatPrincipal, parsePrincipal } from '@omadia/channel-sdk';
 import {
-  attachAllPlugins,
+  ChannelResolver,
   ConfigValidationError,
-  FALLBACK_AGENT_SLUG,
   mcpToolNameFromRef,
   type AgentGraphStore,
   AGENT_TO_AGENT_MODES,
+  archetypeOmits,
+  assertArchetypeAllows,
+  FACILITATOR_ARCHETYPE,
+  STANDARD_ARCHETYPE,
+  archetypeOf,
+  getArchetype,
+  isArchetype,
+  isArchetypeId,
   DEFAULT_MODEL_POLICY,
   isModelRef,
   parseAgentToAgentMode,
@@ -22,6 +35,7 @@ import {
   type ChatSessionStore,
   type ConfigStore,
   type ContextMemoryMode,
+  type AgentRow,
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
 
@@ -32,9 +46,41 @@ import {
   type TeamsTargetKind,
 } from '../platform/teamsInstallTarget.js';
 import type { Plugin, PluginSetupField } from '../api/admin-v1.js';
+import {
+  assertEngineOnlyForFacilitators,
+  foreignArchetypeGrants,
+  assertFacilitatorPluginGrants,
+  respondFacilitatorRefusal,
+  type FacilitationEngineSources,
+} from '../platform/facilitatorGuard.js';
+import { attachEngineToFacilitator } from '../platform/facilitatorEngineAttach.js';
+import { erroredArchetypePlugin } from '../platform/archetypeRegistrySync.js';
+import {
+  PREVIEW_DRAFT_AGENT_SLUG_PREFIX,
+  isPreviewDraftAgentSlug,
+} from '../plugins/builder/previewDraftAgents.js';
+import { assertFacilitatorIdentity } from '../services/facilitatorContract.js';
+import { createFacilitationEngineStatusHandler } from './facilitationEngineStatus.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
-import { attachablePluginIds } from '../plugins/defaultOrchestratorAttach.js';
+import { isCapabilityPlugin } from '../plugins/capabilityPlugins.js';
+import {
+  loadAgentReach,
+  loadReachEnvironment,
+  reachDto,
+  type ReachSources,
+} from '../agents/agentReachSources.js';
+import {
+  requireBroadReachConfirmation,
+  withPluginRow,
+  type BroadReachConfirmation,
+} from '../agents/broadReachGate.js';
+import { firstAgentSlug, onboardingTarget } from '../agents/firstAgentOnboarding.js';
+import {
+  AgentTemplateExportError,
+  agentTemplateFromAgent,
+  agentTemplateYaml,
+} from '../agents/agentTemplateExport.js';
 import {
   buildBotHandle,
   TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION,
@@ -53,7 +99,18 @@ import type { RuntimeReadinessCause } from '../platform/pluginLlmReadiness.js';
 import type { BotPresenceStore } from '../conductor/botPresenceStore.js';
 import type { ChannelDirectoryRegistry } from '../channels/channelDirectoryRegistry.js';
 import type { ConversationRosterRegistry } from '../channels/rosterRegistry.js';
-import { loadTeamsTargetDirectory } from '../services/teamsTargetDirectoryService.js';
+import {
+  loadTeamsTargetChats,
+  loadTeamsTargetTeams,
+} from '../services/teamsTargetDirectoryService.js';
+import {
+  createTeamsTargetDirectoryCache,
+  type TeamsTargetDirectoryCache,
+} from '../services/teamsTargetDirectoryCache.js';
+import {
+  recentTeamsTargets,
+  type RecentTeamsConversationSource,
+} from '../services/teamsRecentTargets.js';
 import {
   resetTeamsIdentity,
   TEAMS_RESET_SCOPES,
@@ -121,6 +178,15 @@ interface AgentPluginCatalogEntry {
    *  operator dashboard to indent dependants under their parent in the
    *  plugin multi-select. */
   readonly depends_on: readonly string[];
+  /**
+   * A channel plugin's channel types as the kernel routes them (`discord`,
+   * not the plugin id `@omadia/channel-discord`): what the default-agent
+   * table, bindings and the routing tester offer. Channel plugins only.
+   */
+  readonly channel_types?: readonly string[];
+  /** #2054 — a capability plugin (`capabilityPlugins.ts`): the only kind the
+   *  install flow offers to grant to agents. */
+  readonly capability: boolean;
 }
 
 /**
@@ -138,6 +204,7 @@ interface AgentPluginCatalogEntry {
  *   PUT    /api/v1/operator/agents/:slug/plugins         replace agent plugin set
  *   PATCH  /api/v1/operator/agents/:slug/plugins         enable/disable ONE plugin (body: { id, enabled })
  *   GET    /api/v1/operator/agents/:slug/grants          per-agent tool grants + plugin MCP grants + grant epoch
+ *   GET    /api/v1/operator/agents/:slug/template        the agent as one agent_templates entry (#2049; ?format=yaml)
  *   GET    /api/v1/operator/agents/:slug/context-memory  read the W5 memory-ACL rollout mode (#899)
  *   PUT    /api/v1/operator/agents/:slug/context-memory  set the W5 memory-ACL rollout mode (body: { mode })
  *   POST   /api/v1/operator/agents/:slug/teams-identity   create-or-provision Teams identity (async, W1a #860)
@@ -163,8 +230,22 @@ const AgentCreateSchema = z.object({
   name: z.string().min(1).max(120),
   description: z.string().max(2000).optional(),
   privacy_profile: z.enum(['strict', 'default']).optional(),
-  status: z.enum(['enabled', 'disabled']).optional(),
+  // #2049 — `draft` only on create: a preview agent that is never addressable
+  // until an operator enables it. An existing agent never goes back to draft.
+  status: z.enum(['enabled', 'disabled', 'draft']).optional(),
+  // #2088 — only on create: the archetype is fixed for the agent's lifetime.
+  archetype: z.string().refine(isArchetypeId, 'archetype must be a registered archetype id').optional(),
+  // The name of `archetype` before #2088. Not accepted any more, and named
+  // here so a client that still sends it is told, instead of getting a
+  // standard agent where it asked for another archetype.
+  kind: z.unknown().optional(),
 });
+
+/** Slugs that collide with a static segment of this router. */
+// `deleted`: the list of tombstones and their purge (#2088). The placeholder
+// slug of a tombstone starts with `deleted-`, which no route addresses.
+// `onboarding`: the first-run flow (#2054).
+const RESERVED_AGENT_SLUGS: ReadonlySet<string> = new Set(['facilitation-engine', 'deleted', 'onboarding']);
 
 const AgentPatchSchema = z.object({
   name: z.string().min(1).max(120).optional(),
@@ -198,6 +279,8 @@ const ContextMemorySchema = z.object({
 // #1018 — the agent-to-agent switches. Same two-endpoint shape as
 // context-memory, for the same reason: a peer-talk switch must not ride along
 // on an unrelated rename.
+const FastLaneSchema = z.object({ enabled: z.boolean() }).strict();
+
 const AgentToAgentSchema = z.object({
   mode: z.enum(AGENT_TO_AGENT_MODES),
 });
@@ -228,6 +311,8 @@ const AgentPluginsSchema = z.object({
       enabled: z.boolean().optional(),
     }),
   ),
+  /** #2054 — confirms a set that gives the agent every connected system. */
+  confirmBroadReach: z.boolean().optional(),
 });
 
 /** W0c (#861) — single-plugin toggle. The plugin id lives in the BODY, not
@@ -236,6 +321,8 @@ const AgentPluginsSchema = z.object({
 const AgentPluginToggleSchema = z.object({
   id: z.string().min(1).max(200),
   enabled: z.boolean(),
+  /** #2054 — confirms a grant that gives the agent every connected system. */
+  confirmBroadReach: z.boolean().optional(),
 });
 
 const AgentBindingsSchema = z.object({
@@ -247,14 +334,59 @@ const AgentBindingsSchema = z.object({
   ),
 });
 
-const FallbackSchema = z.object({
-  slug: z.string().min(1).max(64).nullable(),
+/** #2054 — the first-run flow: the first agent and its explicitly chosen
+ *  capabilities (none preselected, zero allowed). */
+const FirstAgentSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().max(2000).optional(),
+  plugin_ids: z.array(z.string().min(1).max(200)).max(200),
+  confirmBroadReach: z.boolean().optional(),
 });
 
 const ResolveChannelSchema = z.object({
   channel_type: z.string().min(1).max(64),
   channel_key: z.string().min(1).max(500),
+  /** #2055 — the sender, `user:<id>`; absent = an unknown sender. */
+  principal: z.string().regex(/^user:.+/).max(320).optional(),
+  /** #2055 — an explicit address (web chat or API slug). */
+  agent_slug: z.string().min(1).max(64).optional(),
 });
+
+/** #2055 — `PUT /:slug/availability` (spec 2042 §5.3). */
+const AvailabilitySchema = z.object({
+  everyone: z.boolean(),
+  /** Channel types the agent serves; `null` = all. */
+  channels: z.array(z.string().min(1).max(64)).max(64).nullable(),
+  /**
+   * Named people (`user:<id>`) and groups (`role:<key>`, Conductor roles,
+   * resolved by the role-membership snapshot).
+   */
+  principals: z
+    .array(z.string().regex(/^(user|role):.+/, 'principals are user:<id> or role:<key>').max(320))
+    .max(500),
+});
+
+/**
+ * A user principal is canonical (trim + lowercase, channel SDK
+ * `canonicalizePrincipalRef`), a role key keeps its case (Conductor roles).
+ */
+function canonicalAvailabilityPrincipal(raw: string): string {
+  const parsed = parsePrincipal(raw);
+  if (!parsed) throw new ConfigValidationError(`invalid principal '${raw}'`);
+  return formatPrincipal(parsed);
+}
+
+/** #2055 — an agent's availability as the operator API shows it. */
+function availabilityDto(
+  agent: Pick<AgentRow, 'availableToEveryone' | 'availableChannels'>,
+  principals: readonly { readonly principal: string }[],
+): { everyone: boolean; channels: readonly string[] | null; principals: string[] } {
+  return {
+    everyone: agent.availableToEveryone === true,
+    channels: agent.availableChannels ?? null,
+    principals: principals.map((p) => p.principal),
+  };
+}
 
 /** W1a (#860) — create-or-provision a Teams identity. `team_id` is the Teams
  *  team (group) id the generated app is installed into. `bot_slug` /
@@ -497,6 +629,10 @@ export interface OperatorTeamsIdentityDeps {
    * {@link supportsTeamUninstall}.
    */
   readonly getProvisioner?: () => TeamsProvisionerAccessor | undefined;
+  /** #2043 D8 — the conversations the instance's bots already hold a
+   *  reference in, newest first: the target picker's default list. Optional
+   *  (no database, tests): the picker then has search and the id field. */
+  readonly recentConversations?: RecentTeamsConversationSource;
   /** Vault ref under which the bot's app password is held — surfaced by the
    *  status endpoint INSTEAD of the secret itself. Defaults to
    *  {@link defaultTeamsBotSecretRef} (the connector's deterministic ref).
@@ -1476,6 +1612,14 @@ const AgentIdentitySchema = z.object({
   // the manifest enum and the migration's CHECK use. `null` = inherit the
   // installation-wide `answer_verbosity`.
   verbosity: z.enum(ANSWER_VERBOSITY_LEVELS).nullish(),
+  // #2043 — the language this agent speaks (BCP 47: `de`, `en`, `de-CH`).
+  // Absent/null = the installation's language. Same shape as the CHECK of
+  // migration 0069.
+  language: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,2}$/, 'a BCP 47 language tag such as "de" or "en-GB"')
+    .nullish(),
   // The persona and quality blocks are validated by the SPEC's own schemas,
   // not by a second definition here. They are the same documents the Agent
   // Builder writes and `agent.md` frontmatter mirrors; a private copy would
@@ -1526,6 +1670,7 @@ export function projectAgentIdentity(
       instructions: identity?.instructions ?? null,
       accent_color: identity?.accentColor ?? null,
       verbosity: identity?.verbosity ?? null,
+      language: identity?.language ?? null,
       persona: identity?.persona ?? null,
       quality: identity?.quality ?? null,
       revision: identity?.revision ?? 1,
@@ -1587,20 +1732,45 @@ async function republishTeamsPackage(
 }
 
 export interface OperatorAgentsRouterOptions {
+  /** The channel types of a channel plugin (see `AgentPluginCatalogEntry.channel_types`). */
+  channelTypesOf?: ((pluginId: string) => readonly string[]) | undefined;
+  /**
+   * Spec 2042 §5.3 — before an agent is purged for good: ask the channel
+   * plugins to stop the agent's own bots and forget their credentials (the
+   * identity rows go with the agent row). `ok: false` = an active plugin could
+   * not stop a bot, and the purge waits; `notReleased` = bots whose plugin is
+   * not active (their credentials may still be in that plugin's vault).
+   */
+  releaseChannelIdentities?:
+    | ((agentId: string) => Promise<{ ok: boolean; failed: readonly string[]; notReleased: readonly string[] }>)
+    | undefined;
   /** Late-bound lookups so the router survives orchestrator-plugin
    *  re-activation. Each returns undefined when the orchestratorRegistry
    *  service is not currently published (no DATABASE_URL / first boot
    *  before migrations) — routes 503 in that case. */
   readonly getConfigStore: () => ConfigStore | undefined;
   readonly getRegistry: () => OrchestratorRegistry | undefined;
+  /**
+   * #2088 — end of service (`platform/agentEndOfService.ts`): what ends
+   * before an agent is disabled or deleted. Absent (minimal mounts, unit
+   * tests) = the change happens without it.
+   */
+  readonly endOfService?: AgentEndOfService;
+  /** The admin audit; absent = no database for it, the change is logged only. */
+  readonly recordAudit?: (entry: AuditEntryInput) => Promise<void>;
+  /** A tombstone younger than this needs a typed confirmation to be purged. Default 30. */
+  readonly tombstoneRetentionDays?: number;
   readonly getChatSessionStore: () => ChatSessionStore | undefined;
   /** Phase B — kernel-owned plugin catalog + installed-registry pair.
    *  Used by `/plugin-catalog` (B3a multi-select), `/resolve-channel`
-   *  (B3b routing tester surfaces installed channel-kind ids), and
-   *  `/fallback/rehydrate` (B3d). Optional so the router stays usable
+   *  (B3b routing tester surfaces installed channel-kind ids), the first-run
+   *  flow and `/:slug/template` (#2054, #2049). Optional so the router stays usable
    *  in tests that build it with a bare config store. */
   readonly getPluginCatalog?: () => PluginCatalog | undefined;
   readonly getInstalledRegistry?: () => InstalledRegistry | undefined;
+  /** #2043 — the state object the facilitation engine plugin publishes
+   *  (`facilitationEngine` service), for `GET /facilitation-engine`. */
+  readonly getFacilitationEngineState?: () => unknown;
   /** W0c (#861) — grant read model for the agent detail page. Late-bound like
    *  the config store; `GET /:slug/grants` 503s when absent (tests / minimal
    *  mounts, or no DATABASE_URL). Read-only: this router never writes through
@@ -1611,6 +1781,9 @@ export interface OperatorAgentsRouterOptions {
    *  store; the teams-identity routes 503 while it returns undefined (boot
    *  wiring not registered yet, tests / minimal mounts). */
   readonly getTeamsIdentity?: () => OperatorTeamsIdentityDeps | undefined;
+  /** #2043 D8 — the team/chat directory cache. ONE per router; injectable so
+   *  a test can put a slow source behind the real route. */
+  readonly teamsTargetCache?: TeamsTargetDirectoryCache;
   /** #914 — the agent identity store (migration 0052). Late-bound like the
    *  others; the identity routes 503 while it returns undefined (no
    *  DATABASE_URL, tests / minimal mounts). */
@@ -1706,6 +1879,7 @@ async function resolveChatName(
   channelType: string,
   conversationId: string,
   directoryEntries: ReadonlyMap<string, { label: string; members?: readonly string[] }>,
+  asChannelKey: string,
 ): Promise<{ label: string | null; members: readonly string[] }> {
   const fromDirectory = directoryEntries.get(`${channelType}|${conversationId}`);
   if (fromDirectory) {
@@ -1714,7 +1888,9 @@ async function resolveChatName(
       members: (fromDirectory.members ?? []).slice(0, CHAT_MEMBERS_CAP),
     };
   }
-  const roster = await sources.rosters?.getRoster(channelType, conversationId);
+  // Read as the agent's own bot (#2043): it is the one that is in this chat;
+  // the channel's default bot usually is not, and would name nobody.
+  const roster = await sources.rosters?.getRoster(channelType, conversationId, { asChannelKey });
   const members = (roster?.participants ?? [])
     .filter((p) => !p.isBot)
     .map((p) => p.userRef.displayName?.trim() ?? '')
@@ -1773,7 +1949,13 @@ async function listPeerChatCandidates(
       }
       // The reference's own `conversation.name` is the cheapest source (a
       // titled chat), then the plugin's directory / roster — see resolveChatName.
-      const named = await resolveChatName(names, identity.channelType, conv.conversationId, directoryEntries);
+      const named = await resolveChatName(
+        names,
+        identity.channelType,
+        conv.conversationId,
+        directoryEntries,
+        identity.channelKey,
+      );
       available.push({
         channelType: identity.channelType,
         channelKey: conv.conversationId,
@@ -1787,10 +1969,128 @@ async function listPeerChatCandidates(
   return { channelTypes, available };
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A tombstone for the operator: when it may be purged without typing its slug. */
+function tombstoneDto(tombstone: AgentTombstone, retentionDays: number) {
+  const purgeableFrom = new Date(Date.parse(tombstone.deletedAt) + retentionDays * DAY_MS);
+  return {
+    id: tombstone.id,
+    slug: tombstone.slug,
+    name: tombstone.name,
+    archetype: tombstone.archetype,
+    deleted_at: tombstone.deletedAt,
+    deleted_by: tombstone.deletedBy,
+    purgeable_from: purgeableFrom.toISOString(),
+    purgeable_without_confirmation: purgeableFrom.getTime() <= Date.now(),
+  };
+}
+
+/** What ended with an agent, in the wire names of this API. */
+function endOfServiceDto(report: EndOfServiceReport) {
+  return {
+    reason: report.reason,
+    process_outcome: report.processOutcome,
+    ...(report.processDetail !== undefined ? { process_detail: report.processDetail } : {}),
+    processes: report.processes.map((p) => ({
+      process_id: p.processId,
+      channel_type: p.channelType,
+      conversation_id: p.conversationId,
+      outcome: p.outcome,
+      ...(p.reportPosted !== undefined ? { report_posted: p.reportPosted } : {}),
+      ...(p.detail !== undefined ? { detail: p.detail } : {}),
+    })),
+    subscriptions_ended: report.subscriptionsEnded.map((s) => ({
+      channel_type: s.channelType,
+      conversation_id: s.conversationId,
+    })),
+    execution_scopes_ended: report.scopesEnded,
+    reservations_released: report.reservationsReleased.map((r) => ({
+      channel_type: r.channelType,
+      conversation_id: r.conversationId,
+    })),
+    system_notices_owed: report.noticesOwed,
+  };
+}
+
 export function createOperatorAgentsRouter(
   options: OperatorAgentsRouterOptions,
 ): Router {
   const router = Router();
+  // #2049 — the draft agent of a Plugin Builder preview is the preview's, not
+  // the operator's: it is read and deleted here, never configured (grants,
+  // bindings, identity, status).
+  router.use('/:slug', (req: Request, res: Response, next) => {
+    const slug = req.params['slug'];
+    if (typeof slug === 'string' && isPreviewDraftAgentSlug(slug) && !['GET', 'HEAD', 'DELETE'].includes(req.method)) {
+      res.status(409).json({
+        error: 'preview_draft_agent',
+        message: `"${slug}" is the draft agent of a Plugin Builder preview; it can only be read or deleted`,
+      });
+      return;
+    }
+    next();
+  });
+  const retentionDays = (): number => options.tombstoneRetentionDays ?? 30;
+  /** The audit never fails a request: without it the change is logged. */
+  const recordAudit = async (entry: AuditEntryInput): Promise<void> => {
+    try {
+      if (options.recordAudit) await options.recordAudit(entry);
+      else console.log(`[security-audit] ${entry.action} ${entry.target}`);
+    } catch (err) {
+      console.error(`[security-audit] ${entry.action} ${entry.target} could not be recorded:`, err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  /** #2054 — what an agent's reach is computed from; every source optional. */
+  const reachSources = (): ReachSources => ({
+    catalog: options.getPluginCatalog?.(),
+    installed: options.getInstalledRegistry?.(),
+    graph: options.getAgentGraphStore?.(),
+  });
+
+  /**
+   * #2054 — spec 2042 §5.10: an agent is granted capability plugins (and an
+   * archetype plugin of its own archetype, the facilitator's engine). A NEW
+   * grant of anything else (channel, model, system module, template) is
+   * refused with 400 `not_a_capability_plugin`; rows the agent already has
+   * stay as they are. Answers and returns `true` when refused. Without a
+   * plugin catalog wired (test seams) nothing can be classified and the
+   * archetype guards above are the only check.
+   */
+  const refusedNonCapabilityGrant = (
+    res: Response,
+    agent: AgentRow,
+    requested: readonly { readonly pluginId: string; readonly enabled?: boolean | undefined }[],
+    current: readonly { readonly pluginId: string }[],
+  ): boolean => {
+    const catalog = options.getPluginCatalog?.();
+    if (!catalog) return false;
+    const held = new Set(current.map((r) => r.pluginId));
+    const own = archetypeOf(agent);
+    const refused = requested
+      .filter((g) => g.enabled !== false && !held.has(g.pluginId))
+      .map((g) => g.pluginId)
+      .filter((id) => {
+        const plugin = catalog.get(id)?.plugin;
+        if (isCapabilityPlugin(plugin)) return false;
+        return !(plugin?.kind === 'archetype' && plugin.archetype?.id === own);
+      });
+    if (refused.length === 0) return false;
+    res.status(400).json({
+      error: 'not_a_capability_plugin',
+      message: `only capability plugins can be granted to an agent; refused: ${refused.join(', ')}`,
+      plugin_ids: refused,
+    });
+    return true;
+  };
+
+  /** #2054 — answers a refused broad-reach change; `true` = refused. */
+  const refusedBroadReach = (res: Response, gate: BroadReachConfirmation): boolean => {
+    if (gate.ok) return false;
+    res.status(gate.status).json(gate.body);
+    return true;
+  };
 
   function svc(): {
     store: ConfigStore;
@@ -1822,6 +2122,14 @@ export function createOperatorAgentsRouter(
       });
   }
 
+  /** #2060 — where the facilitation engine plugin is looked up. */
+  function engineSources(): FacilitationEngineSources {
+    return {
+      installedRegistry: options.getInstalledRegistry?.(),
+      catalog: options.getPluginCatalog?.(),
+    };
+  }
+
   function slugParam(req: Request, res: Response): string | undefined {
     const raw = req.params['slug'];
     if (typeof raw !== 'string' || raw.length === 0) {
@@ -1847,7 +2155,27 @@ export function createOperatorAgentsRouter(
     return deps;
   }
 
+  /**
+   * #2088 — an agent of an archetype whose plugin is installed but did not
+   * start is neither created nor enabled: nothing would run it. Answers 409
+   * with the plugin and the reason it gave, and returns `true`.
+   */
+  function refuseErroredArchetypePlugin(res: Response, archetype: string): boolean {
+    const errored = erroredArchetypePlugin(engineSources(), archetype);
+    if (!errored) return false;
+    res.status(409).json({
+      error: 'archetype_plugin_not_running',
+      archetype,
+      plugin_id: errored.pluginId,
+      message: `the plugin '${errored.pluginId}' that delivers the archetype '${archetype}' did not start${errored.reason ? `: ${errored.reason}` : ''}; fix it in the store first`,
+      ...(errored.reason ? { detail: errored.reason } : {}),
+    });
+    return true;
+  }
+
   function badRequest(res: Response, err: unknown): void {
+    // #2060 — one mapping for every facilitator refusal on this router.
+    if (respondFacilitatorRefusal(res, err)) return;
     if (err instanceof ConfigValidationError) {
       res.status(409).json({ error: 'config_validation', message: err.message });
       return;
@@ -1876,6 +2204,167 @@ export function createOperatorAgentsRouter(
     res.status(500).json({ error: 'internal', message: (err as Error).message });
   }
 
+  /**
+   * #2054 — the reach of every listed agent. The directory must not fail
+   * because the graph store hiccups: an agent whose reach could not be
+   * computed is listed with `reach: null` (the UI says so), and the cause is
+   * logged.
+   */
+  const directoryReach = async (
+    agents: readonly { id: string; plugins: readonly { pluginId: string; enabled: boolean }[] }[],
+  ): Promise<Map<string, ReturnType<typeof reachDto>>> => {
+    const out = new Map<string, ReturnType<typeof reachDto>>();
+    try {
+      const sources = reachSources();
+      const env = await loadReachEnvironment(sources);
+      for (const a of agents) {
+        out.set(a.id, reachDto(await loadAgentReach(sources, env, a.id, a.plugins)));
+      }
+    } catch (err) {
+      console.error(
+        '[operator-agents] agent reach for the directory FAILED:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    return out;
+  };
+
+  // ── first-run flow (#2054, spec 2042 §7 "Onboarding") ───────────────
+  // Due while the instance has no agent of the operator's making (see
+  // `firstAgentOnboarding.ts`). Offers the installed capability plugins with
+  // nothing preselected; the operator may choose none.
+  const installedCapabilities = (): Array<{ id: string; name: string; kind: string }> => {
+    const catalog = options.getPluginCatalog?.();
+    const installed = options.getInstalledRegistry?.();
+    if (!catalog || !installed) return [];
+    return installed
+      .list()
+      .flatMap((entry) => {
+        const plugin = catalog.get(entry.id)?.plugin;
+        return plugin && isCapabilityPlugin(plugin)
+          ? [{ id: plugin.id, name: plugin.name, kind: plugin.kind }]
+          : [];
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  };
+
+  const currentOnboardingTarget = async (store: ConfigStore) => {
+    // A Plugin Builder preview's draft agent is no agent of the operator's.
+    return onboardingTarget((await store.listAgents()).filter((a) => !isPreviewDraftAgentSlug(a.slug)));
+  };
+
+  router.get('/onboarding', async (_req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const target = await currentOnboardingTarget(live.store);
+      res.json({
+        required: target !== undefined,
+        capabilities: target ? installedCapabilities() : [],
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.post('/onboarding/first-agent', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const body = FirstAgentSchema.parse(req.body);
+      const target = await currentOnboardingTarget(live.store);
+      if (!target) {
+        res.status(409).json({
+          error: 'onboarding_not_required',
+          message: 'the instance already has an agent of the operator\'s making',
+        });
+        return;
+      }
+      const offered = new Set(installedCapabilities().map((c) => c.id));
+      const pluginIds = [...new Set(body.plugin_ids)];
+      const notOffered = pluginIds.filter((id) => !offered.has(id));
+      if (notOffered.length > 0) {
+        res.status(400).json({
+          error: 'not_a_capability_plugin',
+          message: `not an installed capability plugin: ${notOffered.join(', ')}`,
+          plugin_ids: notOffered,
+        });
+        return;
+      }
+      // The reach check runs against the agent the flow writes; a new agent
+      // does not exist yet and has no tool grants (`id: undefined`).
+      const agentRef = { id: undefined, slug: firstAgentSlug(body.name, RESERVED_AGENT_SLUGS) };
+      const gate = await requireBroadReachConfirmation({
+        sources: reachSources(),
+        agent: agentRef,
+        change: 'grant',
+        currentPlugins: [],
+        proposed: { plugins: pluginIds.map((pluginId) => ({ pluginId, enabled: true })) },
+        confirmed: body.confirmBroadReach === true,
+        actor: auditActorFromRequest(req),
+      });
+      if (refusedBroadReach(res, gate)) return;
+      const agent = await live.store.createAgent({
+        slug: agentRef.slug,
+        name: body.name,
+        ...(body.description !== undefined ? { description: body.description } : {}),
+        status: 'enabled',
+        archetype: STANDARD_ARCHETYPE,
+      });
+      for (const pluginId of pluginIds) {
+        await live.store.upsertAgentPlugin(agent.id, { pluginId, config: {}, enabled: true });
+      }
+      if (gate.ok && gate.audit) {
+        await recordAudit({ ...gate.audit, target: `agent:${agent.id}` });
+      }
+      await live.registry.reload();
+      res.status(201).json({
+        slug: agent.slug,
+        name: agent.name,
+        plugins: pluginIds,
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── reach of one agent (#2054, spec 2042 §5.7) ──────────────────────
+  // Every connected system the agent can read or write through its grants
+  // (plugin grants + MCP grants), read and write marked separately; derived
+  // deterministically by `computeAgentReach`.
+  router.get('/:slug/reach', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const existing = await live.store.getAgentBySlug(slug);
+      if (!existing) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const sources = reachSources();
+      const env = await loadReachEnvironment(sources);
+      const rows = await live.store.listAgentPlugins(existing.id);
+      res.json({
+        slug: existing.slug,
+        ...reachDto(await loadAgentReach(sources, env, existing.id, rows)),
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── facilitation engine state (#2043) ────────────────────────────────
+  // Registered before every `/:slug/...` route; it has no slug of its own.
+  router.get(
+    '/facilitation-engine',
+    createFacilitationEngineStatusHandler({
+      sources: engineSources,
+      reported: () => options.getFacilitationEngineState?.(),
+    }),
+  );
+
   // ── enabled list (chat-picker surface) ──────────────────────────────
   // Phase A — minimal-metadata list of enabled Agents for the chat
   // picker. Does NOT reveal plugin/binding internals; if a future role
@@ -1885,10 +2374,7 @@ export function createOperatorAgentsRouter(
     const live = svc();
     if (!live) return unavailable(res);
     try {
-      const [agents, settings] = await Promise.all([
-        live.store.listAgents(),
-        live.store.getPlatformSettings(),
-      ]);
+      const agents = await live.store.listAgents();
       res.json({
         agents: agents
           .filter((a) => a.status === 'enabled')
@@ -1897,10 +2383,11 @@ export function createOperatorAgentsRouter(
             name: a.name,
             description: a.description,
             privacy_profile: a.privacyProfile,
-            is_fallback: a.id === settings.fallbackAgentId,
+            archetype: archetypeOf(a),
           })),
-        fallback_slug:
-          agents.find((a) => a.id === settings.fallbackAgentId)?.slug ?? null,
+        // #2055 — no fallback agent: unaddressed traffic follows the
+        // default-agent table (`GET /default-agents`).
+        default_slug: live.registry.instanceDefaultSlug() ?? null,
       });
     } catch (err) {
       badRequest(res, err);
@@ -1912,15 +2399,24 @@ export function createOperatorAgentsRouter(
     const live = svc();
     if (!live) return unavailable(res);
     try {
-      const [agents, plugins, bindings, settings] = await Promise.all([
+      const [allAgents, plugins, bindings, availabilityPrincipals, channelIdentities] = await Promise.all([
         live.store.listAgents(),
         live.store.listAllAgentPlugins(),
         live.store.listChannelBindings(),
-        live.store.getPlatformSettings(),
+        live.store.routing.listAvailabilityPrincipals(),
+        ownChannelIdentities(live.store),
       ]);
+      // #2049 — the directory lists the operator's agents; a Plugin Builder
+      // preview's draft agent belongs to the preview (Plugin Builder only).
+      const agents = allAgents.filter((a) => !isPreviewDraftAgentSlug(a.slug));
       const pluginsByAgent = groupBy(plugins, (p) => p.agentId);
       const bindingsByAgent = groupBy(bindings, (b) => b.agentId);
+      const principalsByAgent = groupBy(availabilityPrincipals, (p) => p.agentId);
       const active = new Set(live.registry.list().map((a) => a.agent.id));
+      // #2054 — the directory shows every agent's reach (spec 2042 §5.7).
+      const reachByAgent = await directoryReach(
+        agents.map((a) => ({ id: a.id, plugins: pluginsByAgent.get(a.id) ?? [] })),
+      );
       res.json({
         agents: agents.map((a) => ({
           id: a.id,
@@ -1929,6 +2425,7 @@ export function createOperatorAgentsRouter(
           description: a.description,
           privacy_profile: a.privacyProfile,
           status: a.status,
+          archetype: archetypeOf(a),
           created_at: a.createdAt,
           updated_at: a.updatedAt,
           active: active.has(a.id),
@@ -1946,9 +2443,90 @@ export function createOperatorAgentsRouter(
             channel_type: b.channelType,
             channel_key: b.channelKey,
           })),
+          reach: reachByAgent.get(a.id) ?? null,
+          // #2055 — who may use the agent, where (spec 2042 §5.3).
+          availability: availabilityDto(a, principalsByAgent.get(a.id) ?? []),
+          // #2066 — channel types the agent has its own identity (bot) on, as
+          // the kernel routes them. A facilitator's readiness is per channel.
+          own_identity_channels: [
+            ...new Set(channelIdentities.filter((i) => i.agentId === a.id).map((i) => i.channelType)),
+          ].sort(),
         })),
-        fallback_agent_id: settings.fallbackAgentId,
+        // #2055 — the agent of the instance entry of the default-agent table
+        // (`null` = off): what an unaddressed message reaches when no user or
+        // channel entry applies. Informational; the table is
+        // `/api/v1/operator/default-agents`.
+        default_agent_id:
+          (await live.store.routing.listDefaultEntries()).find(
+            (e) => e.principal === null && e.channelType === null,
+          )?.agentId ?? null,
       });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── deleted agents (#2088) ──────────────────────────────────────────
+  // A delete keeps a tombstone. These two routes are the only way to see
+  // them and the only way to remove one for good. Registered before the
+  // `/:slug` routes; `deleted` is a reserved slug.
+  router.get('/deleted', async (_req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const tombstones = await live.store.listTombstones();
+      res.json({
+        retention_days: retentionDays(),
+        agents: tombstones.map((t) => tombstoneDto(t, retentionDays())),
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.post('/deleted/:id/purge', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const id = typeof req.params['id'] === 'string' ? req.params['id'] : '';
+      const tombstone = (await live.store.listTombstones()).find((t) => t.id === id);
+      if (!tombstone) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Inside the retention period the purge needs the slug typed out: it
+      // removes the agent's identity, grants, bindings and schedules with it.
+      const dto = tombstoneDto(tombstone, retentionDays());
+      const confirm = (req.body as { confirm?: unknown } | undefined)?.confirm;
+      if (!dto.purgeable_without_confirmation && confirm !== tombstone.slug) {
+        res.status(409).json({
+          error: 'purge_confirmation_required',
+          message: `agent "${tombstone.slug}" was deleted less than ${String(retentionDays())} days ago; send { "confirm": "${tombstone.slug}" } to purge it now`,
+          agent: dto,
+        });
+        return;
+      }
+      // The agent's own bots are stopped first; a bot an active plugin cannot
+      // stop would keep running with nobody behind it.
+      const bots = (await options.releaseChannelIdentities?.(tombstone.id)) ?? { ok: true, failed: [], notReleased: [] };
+      if (!bots.ok) {
+        res.status(502).json({
+          error: 'channel_identity_release_failed',
+          message: `the agent's own bots could not be stopped (${bots.failed.join(', ')}); nothing was purged — try again`,
+          failed: bots.failed,
+        });
+        return;
+      }
+      const purged = await live.store.purgeAgent(tombstone.id);
+      await recordAudit({
+        actor: auditActorFromRequest(req),
+        action: 'agent.purge',
+        target: `agent:${tombstone.id}`,
+        before: { slug: tombstone.slug, name: tombstone.name, archetype: tombstone.archetype, deleted_at: tombstone.deletedAt },
+        after: { purged, ...(bots.notReleased.length > 0 ? { bots_not_released: bots.notReleased } : {}) },
+      });
+      await live.registry.reload();
+      res.json({ ok: purged, ...(bots.notReleased.length > 0 ? { bots_not_released: bots.notReleased } : {}) });
     } catch (err) {
       badRequest(res, err);
     }
@@ -1960,6 +2538,25 @@ export function createOperatorAgentsRouter(
     if (!live) return unavailable(res);
     try {
       const body = AgentCreateSchema.parse(req.body);
+      // A slug that is also a static route of this router could never be
+      // addressed: `/facilitation-engine/...` answers the engine status.
+      if (RESERVED_AGENT_SLUGS.has(body.slug)) {
+        throw new ConfigValidationError(`agent slug "${body.slug}" is reserved`);
+      }
+      // #2049 — the draft agents of Plugin Builder previews own this prefix.
+      if (isPreviewDraftAgentSlug(body.slug)) {
+        throw new ConfigValidationError(
+          `agent slugs starting with "${PREVIEW_DRAFT_AGENT_SLUG_PREFIX}" are reserved for Plugin Builder previews`,
+        );
+      }
+      if (body.kind !== undefined) {
+        throw new ConfigValidationError('"kind" was replaced by "archetype"; send archetype');
+      }
+      const archetype = body.archetype ?? STANDARD_ARCHETYPE;
+      if (!getArchetype(archetype)) {
+        throw new ConfigValidationError(`archetype "${archetype}" is not registered on this instance`);
+      }
+      if (refuseErroredArchetypePlugin(res, archetype)) return;
       const created = await live.store.createAgent({
         slug: body.slug,
         name: body.name,
@@ -1970,9 +2567,24 @@ export function createOperatorAgentsRouter(
           ? { privacyProfile: body.privacy_profile }
           : {}),
         ...(body.status ? { status: body.status } : {}),
+        archetype,
       });
+      // Spec 2042 §5.11 — new agents start in `members` (migration 0099). An
+      // archetype without memory (a facilitator) has no memory to scope, and
+      // the context-memory route refuses every mode but `off` for it: keep
+      // the stored mode consistent with that.
+      if (archetypeOmits(created, 'memory') && normalizeContextMemoryMode(created.contextMemory) !== 'off') {
+        await live.store.updateAgent(created.id, { contextMemory: 'off' });
+      }
+      // #2043 — a facilitator gets the engine with its creation; nobody has
+      // to grant it by hand. No engine bound yet: it is attached on install.
+      await attachEngineToFacilitator(live.store, created, engineSources());
       await live.registry.reload();
-      res.status(201).json({ id: created.id, slug: created.slug });
+      res.status(201).json({
+        id: created.id,
+        slug: created.slug,
+        archetype: archetypeOf(created),
+      });
     } catch (err) {
       badRequest(res, err);
     }
@@ -1991,20 +2603,20 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      // The fallback orchestrator (the auto-seeded `fallback` slug, and/or
-      // whatever the platform currently points at) must stay enabled — it is
-      // the catch-all for unbound channel traffic. Disabling it would strand
-      // every un-routed turn.
-      if (body.status === 'disabled') {
-        const settings = await live.store.getPlatformSettings();
-        if (
-          existing.slug === FALLBACK_AGENT_SLUG ||
-          existing.id === settings.fallbackAgentId
-        ) {
-          res.status(409).json({ error: 'fallback_protected' });
-          return;
-        }
+      // #2055 — any agent may be disabled, a default agent too: its
+      // conversations get a `system` notice naming it (INV-7), never another
+      // agent's answer.
+      if (body.status === 'enabled' && existing.status !== 'enabled' && refuseErroredArchetypePlugin(res, archetypeOf(existing))) {
+        return;
       }
+      // #2088 — END OF SERVICE comes before the status changes: what the agent
+      // was doing ends while it is still enabled (its archetype plugin can
+      // close its processes), then nothing is delivered for it any more.
+      const disabling = body.status === 'disabled' && existing.status === 'enabled';
+      const actor = auditActorFromRequest(req);
+      const endOfService = disabling
+        ? await options.endOfService?.run(existing, 'agent_disabled', actor)
+        : undefined;
       await live.store.updateAgent(existing.id, {
         ...(body.name !== undefined ? { name: body.name } : {}),
         ...(body.description !== undefined
@@ -2015,8 +2627,17 @@ export function createOperatorAgentsRouter(
           : {}),
         ...(body.status ? { status: body.status } : {}),
       });
+      if (body.status && body.status !== existing.status) {
+        await recordAudit({
+          actor,
+          action: 'agent.disable',
+          target: `agent:${existing.id}`,
+          before: { status: existing.status },
+          after: { status: body.status, slug: existing.slug, archetype: archetypeOf(existing) },
+        });
+      }
       await live.registry.reload();
-      res.json({ ok: true });
+      res.json({ ok: true, ...(endOfService ? { end_of_service: endOfServiceDto(endOfService) } : {}) });
     } catch (err) {
       badRequest(res, err);
     }
@@ -2034,20 +2655,31 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      // Refuse to delete the fallback orchestrator (auto-seeded `fallback`
-      // slug, and/or the active platform fallback). It is the safety net for
-      // unbound channel traffic; deleting it would hard-reject those turns.
-      const settings = await live.store.getPlatformSettings();
-      if (
-        existing.slug === FALLBACK_AGENT_SLUG ||
-        existing.id === settings.fallbackAgentId
-      ) {
-        res.status(409).json({ error: 'fallback_protected' });
-        return;
-      }
-      await live.store.deleteAgent(existing.id);
+      // #2055 — a default agent may be deleted too: entries, selections and
+      // bindings keep pointing to the tombstone and yield "<name> was
+      // deleted" until someone changes the target (spec 2042 §5.10).
+      // #2088 — end of service first (see PATCH), then the row becomes a
+      // TOMBSTONE: it stays, with everything that references it, hidden from
+      // every list and from routing. The hard delete is `POST
+      // /deleted/:id/purge`.
+      const actor = auditActorFromRequest(req);
+      const endOfService = await options.endOfService?.run(existing, 'agent_deleted', actor);
+      const tombstone = await live.store.deleteAgent(existing.id, actor.email ?? actor.id);
+      await recordAudit({
+        actor,
+        action: 'agent.delete',
+        target: `agent:${existing.id}`,
+        before: { slug: existing.slug, name: existing.name, status: existing.status, archetype: archetypeOf(existing) },
+        after: { tombstone: true, deleted_at: tombstone?.deletedAt ?? null },
+      });
       await live.registry.reload();
-      res.json({ ok: true });
+      res.json({
+        ok: true,
+        ...(tombstone && typeof tombstone.deletedAt === 'string'
+          ? { tombstone: tombstoneDto(tombstone, retentionDays()) }
+          : {}),
+        ...(endOfService ? { end_of_service: endOfServiceDto(endOfService) } : {}),
+      });
     } catch (err) {
       badRequest(res, err);
     }
@@ -2098,6 +2730,22 @@ export function createOperatorAgentsRouter(
         return;
       }
       const previous = normalizeContextMemoryMode(agent.contextMemory);
+      // #2060 — every mode other than `off` scopes a memory a facilitator does not have.
+      if (body.mode !== 'off') assertArchetypeAllows(agent, 'memory');
+      // Spec 2042 §5.11 "Defaults" — never `off` for an agent with access to
+      // classified data: any capability grant can return such data, so an
+      // agent that holds one keeps a context-memory boundary.
+      if (body.mode === 'off' && !archetypeOmits(agent, 'memory')) {
+        const grants = (await live.store.listAgentPlugins(agent.id)).filter((p) => p.enabled);
+        if (grants.length > 0) {
+          res.status(409).json({
+            error: 'context_memory_required',
+            message:
+              'context memory cannot be off for an agent that holds capability grants; choose members, enforce or enforce-strict',
+          });
+          return;
+        }
+      }
       await live.store.updateAgent(agent.id, { contextMemory: body.mode });
       // Same reload contract as every other write on this router: the running
       // registry rebuilds the agent's `MemoryBinder` with the new mode, so the
@@ -2110,6 +2758,13 @@ export function createOperatorAgentsRouter(
         console.warn(
           `[security-audit] context_memory ${previous} -> ${body.mode} for agent ${agent.slug}`,
         );
+        await recordAudit({
+          actor: auditActorFromRequest(req),
+          action: 'agent.context_memory_change',
+          target: `agent:${agent.slug}`,
+          before: { mode: previous },
+          after: { mode: body.mode },
+        });
       }
       res.json({ ok: true, mode: body.mode });
     } catch (err) {
@@ -2153,6 +2808,7 @@ export function createOperatorAgentsRouter(
         return;
       }
       const previous = parseAgentToAgentMode(agent.agentToAgent);
+      if (body.mode === 'on') assertArchetypeAllows(agent, 'agent_to_agent');
       await live.store.updateAgent(agent.id, { agentToAgent: body.mode });
       await live.registry.reload();
       if (previous !== body.mode) {
@@ -2163,6 +2819,53 @@ export function createOperatorAgentsRouter(
         );
       }
       res.json({ ok: true, mode: body.mode });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── fast lane (#1876, spec 2042 §8 item 10) ───────────────────────────
+  // The fast path is the agent's own fast lane: simple data questions are
+  // answered without the full agent loop, under the agent's identity. The
+  // operator switches it per agent; a facilitator never has one.
+  router.get('/:slug/fast-lane', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const available = !archetypeOmits(agent, 'fast_path');
+      res.json({ slug: agent.slug, enabled: available && agent.fastLane !== false, available });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.put('/:slug/fast-lane', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const body = FastLaneSchema.parse(req.body);
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (body.enabled) assertArchetypeAllows(agent, 'fast_path');
+      const previous = agent.fastLane !== false;
+      await live.store.updateAgent(agent.id, { fastLane: body.enabled });
+      await live.registry.reload();
+      if (previous !== body.enabled) {
+        console.warn(`[security-audit] fast_lane ${String(previous)} -> ${String(body.enabled)} for agent ${agent.slug}`);
+      }
+      res.json({ ok: true, enabled: body.enabled });
     } catch (err) {
       badRequest(res, err);
     }
@@ -2253,6 +2956,7 @@ export function createOperatorAgentsRouter(
               instructions: identity.instructions,
               persona: identity.persona,
               quality: identity.quality,
+              archetype: archetypeOf(updated),
             },
             agentPersonaFamilies(updated),
           );
@@ -2343,6 +3047,7 @@ export function createOperatorAgentsRouter(
           channelKey,
           agent.id,
         );
+        if (body.enabled) assertArchetypeAllows(agent, 'agent_to_agent');
         const row = await live.store.upsertAgentChannelPolicy({
           channelType,
           channelKey,
@@ -2431,6 +3136,72 @@ export function createOperatorAgentsRouter(
     }
   });
 
+  // ── export as agent template (#2049, spec 2042 §5.2) ────────────────
+  // The agent as ONE `agent_templates:` entry in the format the manifest
+  // reader takes (`agents/agentTemplateExport.ts`): identity, persona,
+  // quality and the granted capability plugin ids. Never secrets (plugin
+  // configuration), memory, bindings or availability. `?format=yaml` is the
+  // download, JSON the default.
+  router.get('/:slug/template', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    const deps = agentIdentity(res);
+    if (!deps) return;
+    const catalog = options.getPluginCatalog?.();
+    if (!catalog) {
+      res.status(503).json({
+        error: 'plugin_catalog_unavailable',
+        message: 'the plugin catalog is not wired into the operator-agents router.',
+      });
+      return;
+    }
+    try {
+      const format = req.query['format'] ?? 'json';
+      if (format !== 'json' && format !== 'yaml') {
+        res.status(400).json({ error: 'invalid_format', message: 'format must be "json" or "yaml"' });
+        return;
+      }
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [identity, rows] = await Promise.all([
+        deps.store.getByAgentId(agent.id),
+        live.store.listAgentPlugins(agent.id),
+      ]);
+      const capabilities = rows
+        .filter((r) => r.enabled && isCapabilityPlugin(catalog.get(r.pluginId)?.plugin))
+        .map((r) => r.pluginId)
+        .sort();
+      const entry = agentTemplateFromAgent({
+        slug: agent.slug,
+        name: agent.name,
+        archetype: archetypeOf(agent),
+        identity,
+        capabilities,
+      });
+      if (format === 'yaml') {
+        res.setHeader('content-type', 'application/yaml; charset=utf-8');
+        res.setHeader(
+          'content-disposition',
+          `attachment; filename="${entry.id}.agent-template.yaml"`,
+        );
+        res.send(agentTemplateYaml(entry));
+        return;
+      }
+      res.json({ agent_templates: [entry] });
+    } catch (err) {
+      if (err instanceof AgentTemplateExportError) {
+        res.status(409).json({ error: 'template_export_invalid', message: err.message, reason: err.reason });
+        return;
+      }
+      badRequest(res, err);
+    }
+  });
+
   router.put('/:slug/identity', async (req: Request, res: Response) => {
     const live = svc();
     if (!live) return unavailable(res);
@@ -2455,8 +3226,23 @@ export function createOperatorAgentsRouter(
       // against it, so composing against the wrong one would emit the wrong
       // traits.
       // #1033 — one compile per family the policy names (primary first).
+      // #2043 — `language` is newer than most clients of this route. Absent
+      // leaves the stored value alone, so a client that does not know the
+      // field cannot wipe it; an explicit null clears it.
+      const language =
+        body.language === undefined ? (before?.language ?? null) : (body.language ?? null);
+      // #2060 — a facilitator's identity is checked against the neutrality
+      // contract before anything is stored (persona bounds, instructions).
+      if (isArchetype(agent, FACILITATOR_ARCHETYPE)) {
+        assertFacilitatorIdentity({ instructions: body.instructions, persona, quality });
+      }
       const compiled = composeForFamilies(
-        { instructions: body.instructions ?? null, persona, quality },
+        {
+          instructions: body.instructions ?? null,
+          persona,
+          quality,
+          archetype: archetypeOf(agent),
+        },
         agentPersonaFamilies(agent),
       );
       const family = compiled.family;
@@ -2468,6 +3254,7 @@ export function createOperatorAgentsRouter(
         instructions: body.instructions ?? null,
         accentColor: body.accent_color ?? null,
         verbosity: body.verbosity ?? null,
+        language,
         persona,
         quality,
         composed: { text: composed.text, family, byFamily: compiled.byFamily },
@@ -2504,11 +3291,15 @@ export function createOperatorAgentsRouter(
       // this Agent), so it is on this list for the same reason as the name.
       const verbosityChanged =
         (before?.verbosity ?? null) !== (body.verbosity ?? null);
+      // #2043 — the language reaches the built agent (its refusal text) and
+      // the engine's profile read, so a change reloads like the name does.
+      const languageChanged = (before?.language ?? null) !== language;
       if (
         (before?.composed.text ?? null) !== (composed.text ?? null) ||
         nameChanged ||
         descriptionChanged ||
-        verbosityChanged
+        verbosityChanged ||
+        languageChanged
       ) {
         await live.registry.reload();
       }
@@ -2681,13 +3472,9 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      const [settings, plugins] = await Promise.all([
-        live.store.getPlatformSettings(),
-        live.store.listAgentPlugins(existing.id),
-      ]);
+      const plugins = await live.store.listAgentPlugins(existing.id);
       res.json({
         slug: existing.slug,
-        fallback: settings.fallbackAgentId === existing.id,
         plugins: plugins.map((p) => ({
           id: p.pluginId,
           config: p.config,
@@ -2719,11 +3506,6 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      // Phase B contract (same invariant as PUT /:slug/plugins): the fallback
-      // Agent always runs plugins with the global store config — per-Agent
-      // config overrides are reserved for named Agents.
-      const settings = await live.store.getPlatformSettings();
-      const isFallback = settings.fallbackAgentId === existing.id;
       const current = await live.store.listAgentPlugins(existing.id);
       const row = current.find((p) => p.pluginId === body.id);
       if (!row && !body.enabled) {
@@ -2732,16 +3514,32 @@ export function createOperatorAgentsRouter(
       }
       // upsertAgentPlugin overwrites config on conflict — pass the existing
       // config through so a toggle never wipes a per-Agent configuration.
-      const config = isFallback ? {} : (row?.config ?? {});
+      const config = row?.config ?? {};
+      const toggled = [{ pluginId: body.id, enabled: body.enabled }];
+      assertFacilitatorPluginGrants(existing, toggled, engineSources());
+      assertEngineOnlyForFacilitators(existing, toggled, engineSources());
+      if (refusedNonCapabilityGrant(res, existing, toggled, current)) return;
+      // #2054 — a grant that gives the agent every connected system needs
+      // the operator's explicit confirmation, and is audited.
+      const gate = await requireBroadReachConfirmation({
+        sources: reachSources(),
+        agent: existing,
+        change: 'grant',
+        currentPlugins: current,
+        proposed: { plugins: withPluginRow(current, { pluginId: body.id, enabled: body.enabled }) },
+        confirmed: body.confirmBroadReach === true,
+        actor: auditActorFromRequest(req),
+      });
+      if (refusedBroadReach(res, gate)) return;
       await live.store.upsertAgentPlugin(existing.id, {
         pluginId: body.id,
         config,
         enabled: body.enabled,
       });
+      if (gate.ok && gate.audit) await recordAudit(gate.audit);
       await live.registry.reload();
       res.json({
         ok: true,
-        fallback: isFallback,
         plugin: { id: body.id, enabled: body.enabled },
       });
     } catch (err) {
@@ -3239,6 +4037,30 @@ export function createOperatorAgentsRouter(
     },
   );
 
+  // #2043 D8/D14 — ONE directory cache for this router, created here and
+  // kept for its lifetime. It must not hang off the object
+  // `getTeamsIdentity()` returns: that object is built anew for every
+  // request, and a cache keyed by it is a new, empty cache per request (the
+  // regression of the first version: every call started its own enumeration
+  // and answered `loading`). The loaders resolve the connector and the token
+  // custody when they run, so an installed, upgraded or removed connector is
+  // followed without rebuilding the cache.
+  const teamsTargetDirectoryOptions = () => {
+    const deps = options.getTeamsIdentity?.();
+    return {
+      getProvisioner: () => deps?.getProvisioner?.(),
+      ...(deps?.delegatedTokens ? { delegatedTokens: deps.delegatedTokens } : {}),
+      log: (m: string) => console.log(m),
+    };
+  };
+  const teamsTargetCache: TeamsTargetDirectoryCache =
+    options.teamsTargetCache ??
+    createTeamsTargetDirectoryCache({
+      loadTeams: () => loadTeamsTargetTeams(teamsTargetDirectoryOptions()),
+      loadChats: () => loadTeamsTargetChats(teamsTargetDirectoryOptions()),
+      log: (m) => console.log(m),
+    });
+
   /**
    * GET /:slug/teams/targets — what the operator can PICK instead of type.
    *
@@ -3273,15 +4095,32 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      const directory = await loadTeamsTargetDirectory({
-        getProvisioner: () => deps.getProvisioner?.(),
-        ...(deps.delegatedTokens ? { delegatedTokens: deps.delegatedTokens } : {}),
-      });
+      // #2043 D8 — one enumeration shared by every caller, kept for a few
+      // minutes, answered within a bounded wait (`reason: 'loading'` when the
+      // tenant is large) and searchable/limited on the server.
+      const limit = Number(req.query['limit']);
+      const q = typeof req.query['q'] === 'string' ? req.query['q'].trim().slice(0, 200) : '';
+      // The tenant's chats are enumerated only for a search or on explicit
+      // request (`chats=all`): nobody needs 4,560 chats to pick one target.
+      // Without either, the chat half answers `not_requested` and the picker
+      // works from `recent` (what the instance's bots already know) and the
+      // id / link field.
+      const wantChats = q !== '' || req.query['chats'] === 'all';
+      const [directory, recent] = await Promise.all([
+        teamsTargetCache.get({
+          ...(q !== '' ? { q } : {}),
+          ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
+          ...(req.query['refresh'] === '1' ? { refresh: true } : {}),
+          chats: wantChats,
+        }),
+        recentTeamsTargets(deps, agent.id),
+      ]);
       res.json({
         ok: true,
         agent: agent.slug,
         provisioner_installed: deps.isProvisionerInstalled(),
         ...directory,
+        recent,
       });
     } catch (err) {
       badRequest(res, err);
@@ -3829,30 +4668,63 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      // Phase B contract: the fallback Agent always runs plugins with the
-      // global store config — per-Agent overrides are reserved for named
-      // Agents (Agent-A talks to Odoo prod, Agent-B to Odoo staging, etc).
-      // Enforce here so a client that ignored the UI restriction can not
-      // still smuggle a per-Agent config into the fallback row.
-      const settings = await live.store.getPlatformSettings();
-      const isFallback = settings.fallbackAgentId === existing.id;
       const current = await live.store.listAgentPlugins(existing.id);
-      const desired = new Set(body.plugins.map((p) => p.id));
+      // S3c — a grant the agent already holds of an archetype plugin of
+      // ANOTHER archetype (a row from before #2088) is invalid, so the replace
+      // removes it, whether the request lists it or not; it never blocks the
+      // operator's change of the other grants. A NEW such grant is still
+      // refused below.
+      const invalidHeld = new Set(
+        foreignArchetypeGrants(existing, current, engineSources().catalog).map((g) => g.pluginId),
+      );
+      const plugins = body.plugins.filter((p) => !invalidHeld.has(p.id));
+      // #2060 — checked before the first write, so a refused set changes nothing.
+      const requested = plugins.map((p) => ({ pluginId: p.id, enabled: p.enabled }));
+      assertFacilitatorPluginGrants(existing, requested, engineSources());
+      assertEngineOnlyForFacilitators(existing, requested, engineSources());
+      if (refusedNonCapabilityGrant(res, existing, requested, current)) return;
+      // #2054 — see the PATCH above.
+      const gate = await requireBroadReachConfirmation({
+        sources: reachSources(),
+        agent: existing,
+        change: 'grant',
+        currentPlugins: current,
+        // `upsertAgentPlugin` writes `enabled: true` when none is given.
+        proposed: { plugins: plugins.map((p) => ({ pluginId: p.id, enabled: p.enabled ?? true })) },
+        confirmed: body.confirmBroadReach === true,
+        actor: auditActorFromRequest(req),
+      });
+      if (refusedBroadReach(res, gate)) return;
+      const desired = new Set(plugins.map((p) => p.id));
       for (const p of current) {
         if (!desired.has(p.pluginId)) {
           await live.store.removeAgentPlugin(existing.id, p.pluginId);
+          if (invalidHeld.has(p.pluginId)) {
+            console.warn(
+              `[operator-agents] removed the invalid grant of archetype plugin '${p.pluginId}' from agent '${existing.slug}' with the replace of its grants`,
+            );
+            await recordAudit({
+              actor: auditActorFromRequest(req),
+              action: 'agent.plugin_grant_revoked',
+              target: `agent:${existing.id}`,
+              before: { plugin_id: p.pluginId, reason: 'foreign_archetype' },
+            });
+          }
         }
       }
-      for (const p of body.plugins) {
-        const config = isFallback ? {} : p.config;
+      for (const p of plugins) {
+        const config = p.config;
         await live.store.upsertAgentPlugin(existing.id, {
           pluginId: p.id,
           ...(config ? { config } : {}),
           ...(p.enabled !== undefined ? { enabled: p.enabled } : {}),
         });
       }
+      if (gate.ok && gate.audit) await recordAudit(gate.audit);
       await live.registry.reload();
-      res.json({ ok: true, fallback: isFallback });
+      // S3c — say which held grants were invalid and are gone, so a client
+      // that listed one is not left believing it was kept.
+      res.json({ ok: true, ...(invalidHeld.size > 0 ? { removed_invalid_grants: [...invalidHeld] } : {}) });
     } catch (err) {
       badRequest(res, err);
     }
@@ -3871,6 +4743,9 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'not_found' });
         return;
       }
+      // #2060 — a facilitator speaks only as its own identity, which is not
+      // a binding. An empty set stays allowed, so stale rows can be cleared.
+      if (body.bindings.length > 0) assertArchetypeAllows(existing, 'channel_binding');
       const current = await live.store.listChannelBindingsForAgent(existing.id);
       const desired = new Set(
         body.bindings.map((b) => `${b.channel_type}|${b.channel_key}`),
@@ -3906,29 +4781,6 @@ export function createOperatorAgentsRouter(
     }
   });
 
-  // ── fallback ────────────────────────────────────────────────────────
-  router.put('/fallback', async (req: Request, res: Response) => {
-    const live = svc();
-    if (!live) return unavailable(res);
-    try {
-      const body = FallbackSchema.parse(req.body);
-      if (body.slug === null) {
-        await live.store.setFallbackAgentId(null);
-      } else {
-        const target = await live.store.getAgentBySlug(body.slug);
-        if (!target) {
-          res.status(404).json({ error: 'not_found' });
-          return;
-        }
-        await live.store.setFallbackAgentId(target.id);
-      }
-      await live.registry.reload();
-      res.json({ ok: true });
-    } catch (err) {
-      badRequest(res, err);
-    }
-  });
-
   // ── manual reload trigger ───────────────────────────────────────────
   router.post('/reload', async (_req: Request, res: Response) => {
     const live = svc();
@@ -3938,7 +4790,6 @@ export function createOperatorAgentsRouter(
       res.json({
         ok: true,
         actions: plan.actions.length,
-        platform_changed: plan.platformChanged,
       });
     } catch (err) {
       badRequest(res, err);
@@ -4042,6 +4893,10 @@ export function createOperatorAgentsRouter(
             network_outbound: summary?.network_outbound ?? [],
             setup_fields: p.setup_fields ?? [],
             depends_on: p.depends_on ?? [],
+            ...(p.kind === 'channel' && options.channelTypesOf
+              ? { channel_types: options.channelTypesOf(p.id) }
+              : {}),
+            capability: isCapabilityPlugin(p),
           } satisfies AgentPluginCatalogEntry;
         });
       res.json({ items: entries });
@@ -4050,122 +4905,83 @@ export function createOperatorAgentsRouter(
     }
   });
 
-  // ── routing tester (B3b) ────────────────────────────────────────────
-  // "Which Agent handles teams/<key>?" — returns the same decision the
-  // ChannelResolver would make for an inbound webhook, without invoking
-  // it. Hits an explicit binding first, then the platform fallback.
-  router.post('/resolve-channel', async (req: Request, res: Response) => {
+  // ── routing tester (B3b, #2055) ─────────────────────────────────────
+  // "Which agent answers here?" — the management layer's own decision for a
+  // turn in this channel, from this sender, without running it: the agent,
+  // or the `system` notice the sender would get. Nothing falls back.
+  router.post('/resolve-channel', (req: Request, res: Response) => {
     const live = svc();
     if (!live) return unavailable(res);
     try {
       const body = ResolveChannelSchema.parse(req.body);
-      const match = live.registry.resolveByChannel(
+      const result = new ChannelResolver({ registry: live.registry }).resolve(
         body.channel_type,
         body.channel_key,
+        {
+          ...(body.principal ? { principal: body.principal } : {}),
+          ...(body.agent_slug ? { explicitSlug: body.agent_slug } : {}),
+        },
       );
-      if (!match) {
+      if (result.decision === 'bound' && result.agent) {
         res.json({
-          matched: null,
-          via: 'none',
-          message:
-            'no binding for this channel and no platform fallback is configured',
+          matched: {
+            slug: result.agent.agent.slug,
+            name: result.agent.agent.name,
+            privacy_profile: result.agent.agent.privacyProfile,
+          },
+          via: result.match ?? null,
         });
         return;
       }
-      const settings = await live.store.getPlatformSettings();
-      // Order mirrors the resolver: a provisioned identity is checked first,
-      // so reporting it first is what keeps this tester an honest preview.
-      // Without this branch a provisioned bot whose agent also happens to be
-      // the platform fallback would be reported as "fallback" — the exact
-      // wrong explanation for the exact case operators come here to check.
-      const identity = live.registry.identityForChannel(
-        body.channel_type,
-        body.channel_key,
-      );
-      const via = identity
-        ? 'identity'
-        : match.agent.id === settings.fallbackAgentId &&
-            !match.bindings.some(
-              (b) =>
-                b.channelType === body.channel_type &&
-                b.channelKey === body.channel_key,
-            )
-          ? 'fallback'
-          : 'binding';
       res.json({
-        matched: {
-          slug: match.agent.slug,
-          name: match.agent.name,
-          privacy_profile: match.agent.privacyProfile,
-        },
-        via,
+        matched: null,
+        via: result.match ?? 'none',
+        notice: result.notice ?? null,
       });
     } catch (err) {
       badRequest(res, err);
     }
   });
 
-  // ── reset fallback to all installed plugins (B3d) ───────────────────
-  // Re-runs the B1 catalog-attach against the CURRENT fallback Agent.
-  // Consent-bearing — only invoked from an explicit operator button so
-  // an operator who pruned the fallback is not silently re-granted
-  // capabilities. Idempotent: upserts produce the same row shape.
-  router.post('/fallback/rehydrate', async (_req: Request, res: Response) => {
+  // ── availability (#2055, spec 2042 §5.3) ────────────────────────────
+  // Who may use the agent (everyone, or named people and groups) and in
+  // which channels (all, or the listed channel types). A fresh agent is
+  // available to nobody until this is set.
+  router.put('/:slug/availability', async (req: Request, res: Response) => {
     const live = svc();
     if (!live) return unavailable(res);
-    const installed = options.getInstalledRegistry?.();
-    if (!installed) {
-      res.status(503).json({
-        error: 'installed_registry_unavailable',
-        message:
-          'installedRegistry not wired into the operator-agents router.',
-      });
-      return;
-    }
     try {
-      const settings = await live.store.getPlatformSettings();
-      if (!settings.fallbackAgentId) {
-        res.status(409).json({
-          error: 'no_fallback',
-          message:
-            'no fallback agent is currently configured — set one before rehydrating',
-        });
+      const body = AvailabilitySchema.parse(req.body);
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const existing = await live.store.getAgentBySlug(slug);
+      if (!existing) {
+        res.status(404).json({ error: 'not_found' });
         return;
       }
-      const fallback = (await live.store.listAgents()).find(
-        (a) => a.id === settings.fallbackAgentId,
+      const before = availabilityDto(
+        existing,
+        (await live.store.routing.listAvailabilityPrincipals()).filter((p) => p.agentId === existing.id),
       );
-      if (!fallback) {
-        res.status(404).json({ error: 'fallback_missing' });
-        return;
-      }
-      // Skip `errored` entries (validateSnapshot would reject them anyway —
-      // installedRegistry treats `errored` as un-installable until the
-      // operator fixes the manifest). Include `inactive` so a plugin that
-      // briefly stopped activating still ends up attached.
-      // #1601 — reference-only plugins never run as an agent and the Plugins
-      // tab does not list them; attaching one shows it as both "active" and
-      // "no longer installed", and the next save drops it again.
-      const installedIds = installed
-        .list()
-        .filter((e) => e.status !== 'errored')
-        .map((e) => e.id);
-      const catalog = options.getPluginCatalog?.();
-      const pluginIds = catalog
-        ? attachablePluginIds(installedIds, catalog)
-        : installedIds;
-      const attached = await attachAllPlugins(
-        live.store,
-        fallback.id,
-        pluginIds,
-      );
-      await live.registry.reload();
-      res.json({
-        ok: true,
-        slug: fallback.slug,
-        attached,
-        requested: pluginIds.length,
+      await live.store.routing.setAvailability(existing.id, {
+        everyone: body.everyone,
+        channels: body.channels,
+        principals: body.principals.map(canonicalAvailabilityPrincipal),
       });
+      await live.registry.reload();
+      const principals = (await live.store.routing.listAvailabilityPrincipals()).filter(
+        (p) => p.agentId === existing.id,
+      );
+      const updated = (await live.store.getAgentBySlug(slug)) ?? existing;
+      const after = availabilityDto(updated, principals);
+      await recordAudit({
+        actor: auditActorFromRequest(req),
+        action: 'agent.availability_change',
+        target: `agent:${existing.id}`,
+        before,
+        after,
+      });
+      res.json({ ok: true, availability: after });
     } catch (err) {
       badRequest(res, err);
     }
@@ -4196,4 +5012,25 @@ function groupBy<T, K>(items: readonly T[], keyFn: (item: T) => K): Map<K, T[]> 
     else out.set(key, [item]);
   }
   return out;
+}
+
+/**
+ * #2066 — every own channel identity the kernel routes (Teams bots today,
+ * the other channels' bots where the store lists them). Feature-detected: a
+ * store without the method, or a failed read, lists none rather than failing
+ * the directory.
+ */
+async function ownChannelIdentities(
+  store: unknown,
+): Promise<readonly { readonly agentId: string; readonly channelType: string }[]> {
+  const list = (store as Partial<Pick<ConfigStore, 'listChannelIdentities'>>).listChannelIdentities;
+  if (typeof list !== 'function') return [];
+  try {
+    return await list.call(store);
+  } catch (err) {
+    console.warn(
+      `[operator-agents] channel identities could not be read: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return [];
+  }
 }

@@ -123,6 +123,22 @@ diese **Application Permissions**:
 | `AppCatalog.ReadWrite.All` | generiertes Teams-App-Paket in den Tenant-Katalog hochladen / auflösen | `POST /appCatalogs/teamsApps`, `GET /appCatalogs/teamsApps` |
 | `TeamsAppInstallation.ReadWriteForTeam.All` | Katalog-App ins Ziel-Team installieren | `POST /teams/{id}/installedApps` |
 
+**Facilitators (#2043).** Die Readiness-Prüfung und die Consent-Reparatur des
+Teams-Kanals laufen mit derselben Instanz-Registrierung, nicht mit der des
+einzelnen Bots. Sie brauchen zusätzlich:
+
+| Scope | Wofür | Graph-Call |
+|---|---|---|
+| `TeamsAppInstallation.ReadWriteAndConsentForChat.All` | Installation und RSC-Grants des Facilitator-Bots im Chat lesen; Installation auf den vollen Consent-Satz anheben (`repairConsent`) | `GET /chats/{id}/installedApps`, `GET /chats/{id}/permissionGrants`, `POST /chats/{id}/installedApps/{id}/upgrade` |
+| `AppCatalog.ReadWrite.All` | den deklarierten RSC-Satz der veröffentlichten App für die Reparatur lesen | `GET /appCatalogs/teamsApps?$expand=appDefinitions` |
+
+Fehlt eine davon, meldet der Kanal `graph_forbidden` (Readiness `ready: false`
+bzw. `repairConsent` → `failed`), und eine Moderation startet in keinem Chat.
+Der Kernel provisioniert diese Rechte nicht; sie werden wie oben einmalig per
+Admin-Consent vergeben. Das App-Paket trägt seit Template-Revision 2 die
+Meeting-RSC; die Manifest-Version ist `1.<Template-Revision>.<Identity-Revision>`,
+damit ein geändertes Template beim nächsten Publish bestehende Agents erreicht.
+
 Vergabe: **Azure Portal → App registrations → API permissions → Add a permission →
 Microsoft Graph → Application permissions**, danach **Grant admin consent for
 `<Tenant>`**. Alternativ einen Admin über die tenant-weite Consent-URL schicken (sie

@@ -40,9 +40,14 @@ const PATTERNS: readonly Pattern[] = [
   // Patterns cover English + German (omadia is German-facing), so a German
   // injection like "ignoriere alle vorherigen Anweisungen" is caught too. All
   // quantifiers stay upper-bounded — no catastrophic backtracking.
+  //
+  // `\b` only knows ASCII word characters: it never matches in front of "ü",
+  // so a verb list that contains a word STARTING with an umlaut ("überschreibe",
+  // "übermittle") opens with the lookbehind `(?<![\wäöüÄÖÜß])` instead. For the
+  // ASCII verbs in the same list it means the same as a leading `\b`.
   {
     code: 'instruction_override',
-    re: /\b(ignore|disregard|forget|override|ignorier(?:e|t)?|missachte|vergiss|überschreib(?:e|t)?)\b[^.\n]{0,48}\b(previous|prior|above|earlier|all|any|vorherige[nr]?|obige[nr]?|frühere[nr]?|alle|jegliche)\b[^.\n]{0,24}\b(instructions?|prompts?|rules?|guidelines?|context|anweisung(?:en)?|regeln?|vorgaben?|kontext)\b/i,
+    re: /(?<![\wäöüÄÖÜß])(ignore|disregard|forget|override|ignorier(?:e|t)?|missachte|vergiss|überschreib(?:e|t)?)\b[^.\n]{0,48}\b(previous|prior|above|earlier|all|any|vorherige[nr]?|obige[nr]?|frühere[nr]?|alle|jegliche)\b[^.\n]{0,24}\b(instructions?|prompts?|rules?|guidelines?|context|anweisung(?:en)?|regeln?|vorgaben?|kontext)\b/i,
   },
   {
     code: 'system_prompt_reference',
@@ -67,7 +72,7 @@ const PATTERNS: readonly Pattern[] = [
   },
   {
     code: 'data_exfiltration',
-    re: /\b(send|post|upload|exfiltrate|leak|forward|sende|poste|übermittle|leite\s+weiter|lade\s+hoch)\b[^.\n]{0,48}\b(api[ _-]?key|secret|token|password|credential|passwort|geheimnis|zugangsdaten|https?:\/\/)/i,
+    re: /(?<![\wäöüÄÖÜß])(send|post|upload|exfiltrate|leak|forward|sende|poste|übermittle|leite\s+weiter|lade\s+hoch)\b[^.\n]{0,48}\b(api[ _-]?key|secret|token|password|credential|passwort|geheimnis|zugangsdaten|https?:\/\/)/i,
   },
   {
     code: 'credential_harvest',

@@ -82,7 +82,7 @@ describe('<ToolList />', () => {
     );
     // The badge surfaces a title attribute starting with the German
     // marker phrase. Find any element whose title attribute matches.
-    const stuckEl = document.querySelector('[title^="Builder-Agent ist auf"]');
+    const stuckEl = document.querySelector('[title^="Der Plugin Builder ist auf"]');
     expect(stuckEl).not.toBeNull();
   });
 });

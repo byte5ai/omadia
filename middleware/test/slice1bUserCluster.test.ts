@@ -167,7 +167,7 @@ describe('Slice 1b · ChannelIdentityPropsSchema', () => {
   it('rejects unknown channelKind', () => {
     assert.throws(() =>
       validateNodeProps('ChannelIdentity', {
-        channelKind: 'discord',
+        channelKind: 'carrier-pigeon',
         channelUserId: 'x',
         firstSeenAt: now,
         lastSeenAt: now,

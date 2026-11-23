@@ -189,10 +189,17 @@ const twoAgentSnapshot: ConfigSnapshot = {
       createdAt: new Date(0),
     },
   ],
-  platformSettings: {
-    fallbackAgentId: '00000000-0000-0000-0000-000000000001',
-    updatedAt: new Date(0),
-  },
+  // #2055 — the instance entry of the default-agent table (the former fallback).
+  defaultEntries: [
+    {
+      id: 'entry-instance',
+      principal: null,
+      channelType: null,
+      agentId: '00000000-0000-0000-0000-000000000001',
+      updatedBy: null,
+      updatedAt: new Date(0),
+    },
+  ],
 };
 
 test('US4-1: builds two independent Orchestrators from a two-Agent snapshot', async () => {
@@ -254,7 +261,7 @@ test('US4-2: a disabled Agent is excluded from the registry', async () => {
   assert.equal(registry.get('general'), undefined);
 });
 
-test('US4-3: channel binding resolves to the bound Agent, fallback otherwise', async () => {
+test('US4-3: channel binding resolves to the bound Agent; an unbound key to nobody (#2055)', async () => {
   const registry = new OrchestratorRegistry(
     fakeStore(twoAgentSnapshot),
     deps(),
@@ -273,24 +280,38 @@ test('US4-3: channel binding resolves to the bound Agent, fallback otherwise', a
     registry.resolveByChannel('telegram', '@omadia_general_bot')?.agent.slug,
     'general',
   );
-  // Unbound key → fallback (configured to the public Agent in the fixture).
-  assert.equal(
-    registry.resolveByChannel('teams', '28:unbound')?.agent.slug,
-    'public',
-  );
+  // Unbound key → no agent: there is no fallback agent. The default-agent
+  // table is the management router's business, not this plain lookup.
+  assert.equal(registry.resolveByChannel('teams', '28:unbound'), undefined);
+  // The instance entry names the public Agent.
+  assert.equal(registry.instanceDefaultSlug(), 'public');
 });
 
-test('US4-3b: unbound key with no fallback returns undefined', async () => {
-  const snapshot: ConfigSnapshot = {
-    ...twoAgentSnapshot,
-    platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
+test('US4-3b: instanceDefaultSlug is undefined when the instance entry is off, missing or disabled', async () => {
+  const build = async (snapshot: ConfigSnapshot): Promise<OrchestratorRegistry> => {
+    const registry = new OrchestratorRegistry(fakeStore(snapshot), deps(), {
+      defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
+    });
+    await registry.start();
+    return registry;
   };
-  const registry = new OrchestratorRegistry(fakeStore(snapshot), deps(), {
-    defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
-  });
-  await registry.start();
+  const entry = twoAgentSnapshot.defaultEntries![0]!;
 
-  assert.equal(registry.resolveByChannel('teams', '28:unbound'), undefined);
+  const off = await build({ ...twoAgentSnapshot, defaultEntries: [{ ...entry, agentId: null }] });
+  assert.equal(off.instanceDefaultSlug(), undefined);
+  assert.equal(off.resolveByChannel('teams', '28:unbound'), undefined);
+
+  const missing = await build({ ...twoAgentSnapshot, defaultEntries: [] });
+  assert.equal(missing.instanceDefaultSlug(), undefined);
+
+  const disabled = await build({
+    ...twoAgentSnapshot,
+    agents: [
+      agentRow('public', '00000000-0000-0000-0000-000000000001', 'disabled'),
+      agentRow('general', '00000000-0000-0000-0000-000000000002'),
+    ],
+  });
+  assert.equal(disabled.instanceDefaultSlug(), undefined, 'a disabled default never serves');
 });
 
 test('US4-4: validateSnapshot rejects multi_instance: false on >1 Agent', () => {
@@ -505,7 +526,6 @@ test('issue #296 acceptance #4: `agent added` log includes effectiveModel + effe
     ],
     agentPlugins: [],
     channelBindings: [],
-    platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
   };
   const logged: Array<{ msg: string; fields?: Record<string, unknown> }> = [];
   const registry = new OrchestratorRegistry(fakeStore(snapshot), deps(), {
@@ -562,7 +582,6 @@ test('issue #296 acceptance #4: `agent rebuilt` log includes the new effectiveMo
     ],
     agentPlugins: [],
     channelBindings: [],
-    platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
   };
   const after: ConfigSnapshot = {
     ...before,
@@ -612,7 +631,6 @@ test('issue #296 AC#2: per-instance model resolution is 3-tier (per-Agent → pl
     ],
     agentPlugins: [],
     channelBindings: [],
-    platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
   };
 
   // Tier 1 + tier 2 with a real platform default.
@@ -675,7 +693,6 @@ test('issue #296 BLOCKER: per-Agent model ref resolves to the active provider ba
     ],
     agentPlugins: [],
     channelBindings: [],
-    platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
   };
   const registry = new OrchestratorRegistry(
     fakeStore(snapshot),
@@ -724,7 +741,6 @@ test('issue #296 FIX2: a cross-provider per-Agent pick is guarded at write time,
     ],
     agentPlugins: [],
     channelBindings: [],
-    platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
   };
   const registry = new OrchestratorRegistry(
     fakeStore(snapshot),
@@ -754,7 +770,6 @@ test('issue #296 BLOCKER (claude-cli): a provider-qualified CLI pick resolves to
     ],
     agentPlugins: [],
     channelBindings: [],
-    platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
   };
   const registry = new OrchestratorRegistry(
     fakeStore(snapshot),
@@ -788,7 +803,6 @@ test('issue #296 regression: a registry-unknown per-turn classifier is passed th
     ],
     agentPlugins: [],
     channelBindings: [],
-    platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
   };
   const registry = new OrchestratorRegistry(
     fakeStore(snapshot),

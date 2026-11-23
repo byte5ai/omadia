@@ -242,23 +242,6 @@ export function SpecEditor({ draftId, spec, agentStuck }: SpecEditorProps): Reac
           />
         </FieldGroup>
 
-        <FieldGroup title={t('groups.skill')}>
-          <ScalarField
-            label={t('fields.role')}
-            placeholder={t('placeholders.role')}
-            value={valueOf('/skill/role')}
-            onChange={(v) => onScalarChange('/skill/role', v)}
-            onBlur={() => onScalarCommit('/skill/role')}
-          />
-          <ScalarField
-            label={t('fields.tonality')}
-            placeholder={t('placeholders.tonality')}
-            value={valueOf('/skill/tonality')}
-            onChange={(v) => onScalarChange('/skill/tonality', v)}
-            onBlur={() => onScalarCommit('/skill/tonality')}
-          />
-        </FieldGroup>
-
         <FieldGroup title="Playbook">
           <TextareaField
             label="when_to_use"

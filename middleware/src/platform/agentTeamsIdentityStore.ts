@@ -43,6 +43,7 @@
  * share one bot identity and credential namespace.
  */
 
+import { ofLiveAgent } from '@omadia/orchestrator';
 import type { Pool } from 'pg';
 
 import type { TeamsTargetKind } from './teamsInstallTarget.js';
@@ -523,11 +524,24 @@ export class AgentTeamsIdentityStore {
    * re-POSTs.
    */
   async listResumable(): Promise<readonly AgentTeamsIdentityRecord[]> {
-    const res = await this.pool.query<AgentTeamsIdentityRow>(
-      `SELECT ${COLUMNS} FROM agent_teams_identities
-       WHERE state NOT IN ('installed', 'failed') AND team_id IS NOT NULL
-       ORDER BY created_at ASC`,
-    );
+    // #2088 — never for a deleted agent (its identity row is kept with its
+    // tombstone). This table has no foreign key to `agents` and can exist in
+    // a database without it (a host that mounts only the Teams identity
+    // store); no `agents` table means no tombstones.
+    // `agent_id` is TEXT here (migration 0049) and `agents.id` a uuid: the
+    // filter has to say so, or Postgres refuses the statement (`text = uuid`),
+    // which is what every boot logged from K2b until this was fixed (D40).
+    const resumable = (liveOnly: boolean): Promise<{ rows: AgentTeamsIdentityRow[] }> =>
+      this.pool.query<AgentTeamsIdentityRow>(
+        `SELECT ${COLUMNS} FROM agent_teams_identities
+         WHERE state NOT IN ('installed', 'failed') AND team_id IS NOT NULL
+           ${liveOnly ? `AND ${ofLiveAgent('agent_id', { textColumn: true })}` : ''}
+         ORDER BY created_at ASC`,
+      );
+    const res = await resumable(true).catch((err: unknown) => {
+      if ((err as { code?: unknown } | null)?.code === '42P01') return resumable(false);
+      throw err;
+    });
     return res.rows.map(mapRow);
   }
 }

@@ -24,6 +24,7 @@ import {
   type InstalledTeamDto,
   type TeamsAssignmentCapabilityKey,
   getAgentTeamsTargets,
+  loadAgentTeamsTargets,
   type AgentTeamsTargetsDto,
 } from '../../../../_lib/agents';
 import { TeamsTargetField } from './TeamsTargetField';
@@ -242,19 +243,16 @@ export function AgentTeamsInstalls({
   useEffect(() => {
     let cancelled = false;
     setTargetsLoading(true);
-    void getAgentTeamsTargets(slug)
-      .then((dto) => {
-        if (!cancelled) setTargets(dto);
-      })
-      .catch(() => {
-        // Swallowed on purpose. The text field below is fully functional
-        // without a directory, and an error banner for a failed convenience
-        // would read as though the install itself were broken.
-        if (!cancelled) setTargets(null);
-      })
-      .finally(() => {
-        if (!cancelled) setTargetsLoading(false);
-      });
+    // #2043 — asks again while the server is still enumerating a large
+    // tenant, and always ends in a state the picker shows (never `null`).
+    void loadAgentTeamsTargets(slug, {
+      isCancelled: () => cancelled,
+      fetchTargets: getAgentTeamsTargets,
+      onUpdate: (dto) => {
+        setTargets(dto);
+        setTargetsLoading(false);
+      },
+    });
     return () => {
       cancelled = true;
     };
@@ -501,6 +499,7 @@ export function AgentTeamsInstalls({
                 Teams identity panel, which asks the same question when a
                 target-less identity needs one before a run can start. */}
             <TeamsTargetField
+              slug={slug}
               targets={targets}
               targetsLoading={targetsLoading}
               value={teamId}

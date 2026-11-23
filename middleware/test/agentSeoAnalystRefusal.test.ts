@@ -123,27 +123,39 @@ describe('agent-seo-analyst — no report for a site it never reached (#1344)', 
   });
 });
 
+/** Tool names the plugin registered with the kernel's tool runtime. */
+let registeredTools: string[] = [];
+
 function contextWith(fetch: HttpAccessor['fetch']): PluginContext {
+  registeredTools = [];
   return {
     http: { fetch },
     config: { get: () => undefined },
+    tools: {
+      register: (spec: { name: string }) => {
+        registeredTools.push(spec.name);
+        return () => {};
+      },
+    },
     log: noopLog,
   } as unknown as PluginContext;
 }
 
+const SEO_TOOLS = ['analyze_page', 'check_technical_seo', 'audit_site'];
+
 describe('agent-seo-analyst — activation without network access (#1351)', () => {
   it('activates when the target fails fast (DNS failure, connection refused)', async () => {
-    const handle = await activate(
+    await activate(
       contextWith(async () => {
         throw new TypeError('fetch failed');
       }),
     );
-    assert.equal(handle.toolkit.tools.length, 3);
+    assert.deepEqual(registeredTools, SEO_TOOLS);
   });
 
   it('activates within its own 5 s budget when the connection hangs', async () => {
     const started = Date.now();
-    const handle = await activate(
+    await activate(
       contextWith(
         (_url, init) =>
           new Promise<Response>((_resolve, reject) => {
@@ -154,7 +166,7 @@ describe('agent-seo-analyst — activation without network access (#1351)', () =
       ),
     );
     const elapsed = Date.now() - started;
-    assert.equal(handle.toolkit.tools.length, 3);
+    assert.deepEqual(registeredTools, SEO_TOOLS);
     assert.ok(elapsed < 10_000, `activate() took ${String(elapsed)} ms — over the runtime's 10 s budget`);
   });
 
