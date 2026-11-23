@@ -36,6 +36,55 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Conductor renders `{{ctx.*}}` / `{{steps.*}}` in human messages and action inputs (#1709)
+
+2026-11-23. A human step's `message` and an action step's `input` reached their
+consumers with the template syntax of the workflow intact: the operator inbox, the
+approval card (`question`) and the reminder worker all showed `New hire
+{{ctx.employeeName}} starts on {{ctx.startDate}}.`, and a connector received the raw
+token as its input value. All four bundled templates rely on that interpolation, so a
+fresh instance of `onboarding-checklist`, `expense-approval`, `notify-and-escalate` or
+`weekly-report` asked people to decide on text they could not read. Only `step.prompt`
+and `step.agentId` were ever rendered (`realStepEffects.ts`), while the type contract
+documented interpolation for the other fields too.
+
+- One renderer for all four fields now, `src/conductor/runInterpolation.ts`, with ONE
+  substitution pass and four named policies over it. The policies differ only in what an
+  unresolved token becomes, and that difference is the design: `renderAwaitMessage` →
+  a visible dash `—` (a person reads it, and raw `{{…}}` must never reach an approver);
+  `renderAgentPrompt`, `renderAgentRef`, `renderActionInput` → empty. A prompt stays
+  empty because the discussion pattern opens with "THE CONVERSATION SO FAR (empty if you
+  are opening)" and branches on that emptiness; a ref stays empty because that is what
+  lets an agent step refuse a run whose context names no speaker; an action input stays
+  empty because a dash would be POSTed onward (`…/hire/—`).
+- `openHumanAwait` renders the message once, against the context the run parks with —
+  the await ROW is what the inbox, the card and the reminder worker read, so one
+  rendering covers all three. The escalation awaits of `expense-approval` /
+  `notify-and-escalate` are reached through `expireAwait` → `driveFrom` and render the
+  same way.
+- **Awaits parked before this fix** still hold raw template text, and an await row is
+  written once and never rewritten. `ConductorAwaitStore` therefore joins the run's
+  context into every read (`conductor_awaits a LEFT JOIN conductor_runs r`) and renders
+  such a row on the way out, so no migration and no per-reader re-render is needed. A
+  current row costs one `includes('{{')` scan; a row whose run is gone renders dashes.
+- The token grammar moved to `@omadia/conductor-core` (`runTokens.ts`,
+  `isTemplateExpression` / `runTokenMatcher`) and is now shared with the authoring check
+  that exempts a templated `step.agentId` from `unknown_agent_ref`. The two had drifted:
+  path segments now accept `-`, so `{{steps.hr-checklist.approved}}` resolves at run time
+  AND passes validation (a step id is any non-empty string, and the bundled templates use
+  kebab ids). Still disjoint from the `slot:text:<key>` grammar — a `:` is not a path
+  character.
+- A rendered await message is capped at 4000 characters with a visible ellipsis.
+  Interpolation can inline a whole agent answer (`weekly-report`'s
+  `{{steps.compose.text}}`) into `conductor_awaits.message` and into
+  `Reminder: <message>`; before this change the stored string was short template prose,
+  so nothing bounded it.
+- Tests: `middleware/test/conductorRunInterpolation.test.ts` (read-back on the await row
+  and on the object the action invoker receives, driven through all four bundled
+  manifests plus the shipped `discussion` pattern) and
+  `middleware/test/conductorAwaitMessageRender.pg.test.ts` (the aliased join on a real
+  Postgres, through every read path).
+
 ### Security — dependency rollup 2026-11-23; withdrawn picomatch exceptions removed
 
 2026-11-23. `@microsoft/microsoft-graph-client` 3.1.0, the host-provided Graph SDK
