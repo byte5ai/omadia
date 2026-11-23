@@ -5574,6 +5574,10 @@ async function main(): Promise<void> {
       },
       log: (m) => console.log(m),
     });
+    // Spec 2042 §5.12 — a meeting that ends ends its triggers (criterion 22).
+    sessionCapabilityHub.observeLifecycle((event) => {
+      void triggersRef.current?.onSessionEvent(event);
+    });
     const disposeEphemeralAttachment = async (
       attachment: { id: string; agentSlug: string; channelType: string; channelKey: string; roleKey: string | null },
       actor: string,
