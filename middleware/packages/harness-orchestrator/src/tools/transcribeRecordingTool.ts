@@ -6,6 +6,7 @@ import {
 } from '@omadia/plugin-api';
 import { z } from 'zod';
 
+import { isRecordingAttachment } from '../attachmentExtract.js';
 import type { SessionLogger } from '../sessionLogger.js';
 import type { AttachmentReader } from './readAttachmentTool.js';
 import { turnContext } from '../turnContext.js';
@@ -75,6 +76,14 @@ export const transcribeRecordingToolSpec = {
   },
 };
 
+/**
+ * Largest recording the tool hands to a provider. Matches the default upload
+ * cap of the channels that store attachments and the file limit of the
+ * bundled OpenAI adapter, so a larger object is either not an upload or would
+ * be rejected upstream after the bytes already left the installation.
+ */
+export const MAX_RECORDING_BYTES = 25_000_000;
+
 /** How much transcript text the tool result may carry back to the model. */
 const RESULT_TEXT_MAX = 12_000;
 
@@ -113,6 +122,15 @@ export class TranscribeRecordingTool {
       const found = await this.deps.reader.readByStorageKey(key);
       if (!found) {
         return `Error: attachment \`${key}\` not found (storage unconfigured or key unknown).`;
+      }
+      // Both gates sit BEFORE the provider call: transcription is an egress
+      // to an external service, so anything that is not a recording must be
+      // refused here rather than rejected upstream after it was sent.
+      if (!isRecordingAttachment(found.contentType, found.fileName)) {
+        return `Error: attachment \`${key}\` is not an audio or video recording (type ${found.contentType ?? 'unknown'}); transcribe_recording only accepts recordings. Nothing was sent to the transcription provider.`;
+      }
+      if (found.bytes.byteLength > MAX_RECORDING_BYTES) {
+        return `Error: attachment \`${key}\` is too large to transcribe (${formatMegabytes(found.bytes.byteLength)} MB, limit ${formatMegabytes(MAX_RECORDING_BYTES)} MB). Nothing was sent to the transcription provider; ask the user for a shorter or more compressed recording.`;
       }
       transcript = await service.transcribeFile(
         {
@@ -241,6 +259,10 @@ function renderResult(
       ? transcript.text
       : `${transcript.text.slice(0, RESULT_TEXT_MAX)}\n\n…[gekürzt, Original ${String(transcript.text.length)} Zeichen — vollständig im Session-Protokoll]`;
   return `Transkript von \`${key}\`\n${meta}\n\n${text}`;
+}
+
+function formatMegabytes(bytes: number): string {
+  return (bytes / 1_000_000).toFixed(1);
 }
 
 function sanitizeKey(key: string): string {
