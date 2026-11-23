@@ -38,6 +38,9 @@ changelog.
 
 ### Changed — The agent plugin runtime is gone (#2042, S3c)
 
+- `@omadia/plugin-api` 1.86.0 (`NativeToolResult`, `NativeTextToolHandler`, `agentDirectory@1`),
+  `@omadia/channel-sdk` 0.3.12 (`ChatTurnInput.agentId`, `TargetedMessage.speaker` optional),
+  all additive.
 - **BREAKING for operators.** The kernel no longer runs plugins of the retired kind `agent`
   (spec 2042 §5.10, ADR-0014). One still installed starts no code: it is `errored` with the
   activation code `kind_retired` at boot and on every reactivation or update, keeps its setup

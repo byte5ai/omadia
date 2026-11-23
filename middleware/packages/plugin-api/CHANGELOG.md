@@ -8,10 +8,10 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## Unreleased
+## 1.86.0 — 2026-11-23
 
 Additive (spec 2042 §5.3, criterion 40, the canvas channel's agent picker;
-§5.10, the S3c contract cleanup). The version is set when S3c merges this.
+§5.10, the S3c contract cleanup).
 
 ### Added
 
@@ -20,7 +20,12 @@ Additive (spec 2042 §5.3, criterion 40, the canvas channel's agent picker;
   structured? }` (the shape of `LocalSubAgentToolResult`) instead of text. The
   model sees `output` plus the limit note; a `postcondition` goes to the run
   trace and the verifier; `structured` never reaches the model. Helpers:
-  `normalizeNativeToolResult`, `nativeToolResultText`. Text stays valid.
+  `normalizeNativeToolResult`, `nativeToolResultText`, `isNativeToolResult`,
+  `nativeToolDispatchText` (a value that is neither text nor a structured
+  result passes through, so a non-string guard still refuses it). Text stays
+  valid.
+- **`NativeTextToolHandler`**: a `NativeToolHandler` that always answers with
+  text; the kernel's own tools are typed with it.
 - **`agentDirectory@1`** (`AGENT_DIRECTORY_SERVICE_NAME`,
   `AgentDirectoryService`, `AgentDirectoryRequest`, `AgentDirectoryView`,
   `AgentDirectoryAgent`, `AgentDirectoryDefault`): the agents a person may
