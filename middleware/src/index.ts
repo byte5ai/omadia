@@ -478,24 +478,18 @@ import { createModelWorkRuns } from './platform/modelWorkRuns.js';
 import { createModelWorkRouter } from './routes/modelWork.js';
 import { createOperatorTriggersRouter } from './routes/operatorTriggers.js';
 import { createConversationReaders } from './triggers/conversationReaders.js';
+import { OPERATOR_JOB_ROUTES } from './platform/operatorJobRoutes.js';
 import { createAgentTemplatesRouter } from './routes/agentTemplates.js';
 import { createSetupOptionsResolver } from './plugins/setupOptionsResolver.js';
 import { createModelGatewayStatusRouter } from './routes/modelGatewayStatus.js';
 import { agentEnvelopeService } from './platform/agentEnvelopeService.js';
 import {
-  BULK_PROMOTION,
   EMBEDDING_BACKFILL,
   FIELD_CLASSIFICATION,
   GRAPH_BACKFILL,
-  ISSUE_PREVIEW,
   MEMORY_EDIT,
-  MEMORY_REVIEW_DETECTION,
   PLUGIN_BUILDER_AUTOFIX,
   PLUGIN_BUILDER_PREVIEW,
-  PLUGIN_BUILDER_TURN,
-  SKILL_VERIFICATION,
-  TOPIC_REGROUPING,
-  WORKFLOW_DESIGNER_TURN,
 } from './platform/modelWorkKinds.js';
 import { onUncoveredModelCall, setModelGatewayMode } from '@omadia/usage-telemetry';
 import { decideCliProfile, setCliProfileDir } from '@omadia/orchestrator';
@@ -4032,25 +4026,7 @@ async function main(): Promise<void> {
   // Each admin function that calls a model is one operator job. Mounted
   // ahead of the routers that implement them: the job wraps the rest of the
   // request, and only POSTs start one.
-  for (const [route, kind] of [
-    ['/api/v1/issues/preview', ISSUE_PREVIEW],
-    ['/api/v1/admin/bulk-promote', BULK_PROMOTION],
-    ['/api/v1/admin/topics/recluster', TOPIC_REGROUPING],
-    ['/api/v1/admin/inconsistencies/bulk-detect', MEMORY_REVIEW_DETECTION],
-    ['/api/v1/admin/inconsistencies/detect', MEMORY_REVIEW_DETECTION],
-    ['/api/v1/admin/duplicates/bulk-detect', MEMORY_REVIEW_DETECTION],
-    ['/api/v1/admin/duplicates/detect', MEMORY_REVIEW_DETECTION],
-    ['/api/v1/admin/duplicates/excerpts/bulk-detect', MEMORY_REVIEW_DETECTION],
-    ['/api/v1/admin/duplicates/excerpts/detect', MEMORY_REVIEW_DETECTION],
-    ['/api/v1/operator/skills/:id/verdict/llm-scan', SKILL_VERIFICATION],
-    ['/api/v1/operator/skills/import', SKILL_VERIFICATION],
-    ['/api/v1/operator/skills', SKILL_VERIFICATION],
-    ['/api/v1/operator/skills/:id/fork', SKILL_VERIFICATION],
-    ['/api/v1/builder/drafts/:id/turn', PLUGIN_BUILDER_TURN],
-    ['/api/v1/builder/drafts/:id/preview/chat/turn', PLUGIN_BUILDER_PREVIEW],
-    ['/api/v1/builder/drafts/:id/preview/tool-call', PLUGIN_BUILDER_PREVIEW],
-    ['/api/v1/operator/conductors/builder/turn', WORKFLOW_DESIGNER_TURN],
-  ] as const) {
+  for (const [route, kind] of OPERATOR_JOB_ROUTES) {
     app.post(route, requireAuth, modelWork.middleware(kind));
   }
   // Memory REST writes embed the entry and run the review detectors: an
