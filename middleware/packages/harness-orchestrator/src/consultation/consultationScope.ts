@@ -38,11 +38,11 @@ export interface ConsultationRunScope {
   readonly initialLabels?: LabelSet;
   /**
    * Who reads A's conversation. B answers into that room (it runs with A's
-   * origin), so its conversation label carries A's readers: B resolving the
-   * room itself finds no roster and would mark A's conversation `unknown`,
-   * which then sticks to every later turn that recalls from it.
+   * origin but carries no sender), so its label of the conversation carries
+   * A's readers: resolving the room itself gives `unknown`, which would stick
+   * to A's label of the conversation and refuse every later recall from it.
    */
-  readonly readers?: Readers;
+  readonly readers: Readers;
   /**
    * Filled by B's orchestrator when its turn ends: the turn's label set
    * (everything B read, its conversation included) and B's answer as its
