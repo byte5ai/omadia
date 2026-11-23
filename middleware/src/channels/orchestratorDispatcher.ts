@@ -2,12 +2,14 @@ import { CHAT_AGENT_SERVICE, parseAgentCommand, turnPrincipal } from '@omadia/ch
 import type {
   ChatAgent,
   ChatAgentBundle,
+  ChatTurnInput,
   ChannelResolveResult,
   ChannelRouteContext,
   ChannelUserKind,
   TurnOrigin,
 } from '@omadia/channel-sdk';
 import type { ChannelKind } from '@omadia/plugin-api';
+import { runGeneratorInExecutionContext, type ModelExecutionContext } from '@omadia/usage-telemetry';
 
 /**
  * W5 memory-ACL (#860) — validate a `TurnOrigin` arriving from an
@@ -277,6 +279,9 @@ export function createOrchestratorDispatcher(
       let agent: ChatAgent | undefined;
       /** the agent id handed to the `dispatch_service` (set by stage 0 only) */
       let handedAgentId: string | undefined;
+      /** Spec 2042 §5.10 — the addressed agent's turn, opened around the
+       *  channel's service when it takes the turn (set with `handedAgentId`) */
+      let handedTurn: ModelExecutionContext | undefined;
       /** the turn is answered by a notice or by the channel's own service, not by a model of an agent */
       let modelFree = false;
       const origin = readTurnOrigin(input.metadata?.['origin']);
@@ -329,6 +334,12 @@ export function createOrchestratorDispatcher(
             agent = service;
             handedAgentId = addressedId;
             modelFree = true;
+            // The service's own model work (the canvas helper's skeleton,
+            // its fast lane and decision model) runs before and beside the
+            // agent's chat agent, which opens the agent turn only around its
+            // own stream. It is that agent's turn all the same.
+            const slug = routed.speaker?.slug ?? addressedId;
+            handedTurn = { kind: 'agent_turn', ownerId: slug, agentSlug: slug };
           }
         }
       }
@@ -397,7 +408,7 @@ export function createOrchestratorDispatcher(
       // Fail-closed applies to the transport too — an old plugin sends no
       // `origin` at all and gets exactly the same answer, so there is no flag
       // day in either direction.
-      yield* agent.chatStream({
+      const turnInput: ChatTurnInput = {
         userMessage: input.text,
         sessionScope: input.scope,
         userId: input.userRef.id,
@@ -414,7 +425,11 @@ export function createOrchestratorDispatcher(
         // a TEXT turn may be row-bound too (beam / context action) — thread
         // the TargetRef even without a structured action.
         ...(input.target !== undefined ? { target: input.target } : {}),
-      });
+      };
+      const chosen = agent;
+      yield* handedTurn
+        ? runGeneratorInExecutionContext(handedTurn, () => chosen.chatStream(turnInput))
+        : chosen.chatStream(turnInput);
     },
   };
 }

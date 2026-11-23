@@ -141,13 +141,46 @@ const HUMAN_CLAIMS: readonly RegExp[] = [
  * captured name is compared with the agent's own names.
  */
 const SELF_INTRODUCTION =
-  /(?:^|[^\p{L}])(?:[Mm]y\s+name\s+is|[Cc]all\s+me|[Tt]his\s+is|[Mm]ein\s+[Nn]ame\s+ist|[Ii]ch\s+hei(?:ß|ss)e|[Hh]ier\s+(?:ist|spricht|schreibt)|[Ii]['’]m|[Ii]\s+am|[Ii]ch\s+bin)\s+(\p{Lu}[\p{L}-]+)/gu;
+  /(?:^|[^\p{L}])(?:[Mm]y\s+name\s+is|[Cc]all\s+me|[Tt]his\s+is|[Mm]ein\s+[Nn]ame\s+ist|[Ii]ch\s+hei(?:ß|ss)e|[Hh]ier\s+(?:ist|spricht|schreibt)|[Ii]['’]m|[Ii]\s+am|[Ii]ch\s+bin|[Bb]in\s+ich)\s+(\p{Lu}[\p{L}-]+)/gu;
 
 /** First person near a word about being human or a machine. */
 const IDENTITY_TALK = new RegExp(
   String.raw`\b(?:i|i['’]m|ich|mich|me)\b[^.!?\n]{0,30}?\b(?:human|mensch|bot|robot|roboter|ki|ai|künstliche\s+intelligenz)${WORD_END}`,
-  'iu',
+  'giu',
 );
+
+/**
+ * What makes identity talk worth a look: being human or real, or a negation
+ * ("not an AI", "kein Bot", "Never."). "Ich bin eine KI" and "I'm an AI
+ * assistant" are the disclosure every agent owes, not a claim to look at.
+ * Read over {@link identityTalkWindow}, not the match alone: the match ends
+ * at the machine word, and the denial may come after it.
+ */
+const IDENTITY_TALK_SUSPICIOUS =
+  /\b(?:human|mensch\w*|person|people|real|really|actually|echt\w*|eigentlich|wirklich|leibhaftig\w*|not|no|never|kein\w*|nicht|nie|niemals)\b|n['’]t\b/iu;
+
+/** A sentence end: terminal punctuation (with closing quotes) or a line break. */
+const SENTENCE_BREAK = /[.!?…]+["'”’)\]]*(?=\s|$)|\n/gu;
+
+/** How many sentence ends after the identity talk the window reaches: its
+ *  own and the next ("I'm an AI? Ha, I'm actually a real person."). */
+const IDENTITY_TALK_SENTENCES = 2;
+
+/** The identity talk at `index` up to the end of the sentence after it. */
+function identityTalkWindow(text: string, index: number): string {
+  SENTENCE_BREAK.lastIndex = index;
+  let end = text.length;
+  for (let seen = 0; seen < IDENTITY_TALK_SENTENCES; seen += 1) {
+    const found = SENTENCE_BREAK.exec(text);
+    if (!found) break;
+    end = found.index + found[0].length;
+  }
+  return text.slice(index, end);
+}
+
+/** Letters, digits, connectors and a joining hyphen: what may continue a
+ *  name ("Dark Clippy-Hans" is not Dark Clippy). */
+const NAME_CHAR = /[\p{L}\p{N}_-]/u;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -212,14 +245,19 @@ function compileFor(entry: GuardDirectoryEntry, ownNames: ReadonlySet<string>): 
 /** Compiled directory for one speaker; build once per turn. */
 export class IdentityGuardPatterns {
   private readonly colleagues: readonly NamedPatterns[];
-  private readonly ownNames: ReadonlySet<string>;
+  /** The agent's own names, each anchored at the start of a string. */
+  private readonly ownNamePatterns: readonly RegExp[];
 
   constructor(self: GuardSelf, directory: readonly GuardDirectoryEntry[]) {
     const ownEntry = directory.find((entry) => entry.agentId === self.agentId);
     const ownNames = new Set(
-      [self.displayName, self.slug, ...(ownEntry?.aliases ?? [])].map(normalizeName),
+      // the directory's own entry too: its display name may be the agent's
+      // name where the speaker carries its identity name
+      [self.displayName, self.slug, ...(ownEntry ? namesOf(ownEntry) : [])].map(normalizeName),
     );
-    this.ownNames = ownNames;
+    this.ownNamePatterns = [...ownNames]
+      .filter((name) => name.length > 0)
+      .map((name) => new RegExp(`^${namePattern(name)}`, 'iu'));
     this.colleagues = directory
       .filter((entry) => entry.agentId !== self.agentId)
       .map((entry) => compileFor(entry, ownNames))
@@ -248,9 +286,27 @@ export class IdentityGuardPatterns {
   private introducesSomeoneElse(text: string): boolean {
     for (const match of text.matchAll(SELF_INTRODUCTION)) {
       const name = match[1];
-      if (name && !this.ownNames.has(normalizeName(name))) return true;
+      if (!name) continue;
+      const at = (match.index ?? 0) + match[0].length - name.length;
+      if (!this.startsWithOwnName(text.slice(at))) return true;
     }
-    return IDENTITY_TALK.test(text);
+    for (const match of text.matchAll(IDENTITY_TALK)) {
+      if (IDENTITY_TALK_SUSPICIOUS.test(identityTalkWindow(text, match.index ?? 0))) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Whether `rest` opens with one of the agent's own names as a whole name:
+   * "Dark Clippy, your assistant" for "Dark Clippy" (a name of several
+   * words), not "Darkness" or "Dark Mira".
+   */
+  private startsWithOwnName(rest: string): boolean {
+    for (const own of this.ownNamePatterns) {
+      const match = own.exec(rest);
+      if (match && !NAME_CHAR.test(rest.charAt(match[0].length))) return true;
+    }
+    return false;
   }
 }
 

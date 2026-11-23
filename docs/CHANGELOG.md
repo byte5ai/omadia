@@ -36,6 +36,22 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the canvas, live (spec 2042 §5.10, §5.5): gateway context, the socket on the front, "wer bist du"
+
+- **Model gateway.** A canvas turn addressed to an agent is handed to the canvas helper
+  (`canvasChatAgent`), whose skeleton, fast lane and decision model ran before the agent's
+  own chat agent and so outside any execution context (`calls_outside_context` listed
+  `composeSkeleton`, `planQuery`, `routeTurn` and the gated decision model). The kernel
+  dispatcher now opens the addressed agent's `agent_turn` around the helper's whole stream.
+- **The canvas socket on the web-ui front.** `/.well-known/omadia-ui` on the front advertised
+  `wss://<front>/omadia-ui/canvas`, and the upgrade hung in Next. The web-ui image starts
+  through `omadia-server.mjs` now, which relays that one path to the middleware with the
+  session cookie. `scripts/fly-deploy.sh` tries the upgrade on both hosts and expects `401`.
+- **Identity guard.** "wer bist du" to an agent with a name of several words was blocked in
+  about 3 of 4 runs: the introduction captured one word, so every answer went to the model
+  judge. Own names of any length and the AI disclosure are settled without a model now;
+  the judge's reply must be the bare PASS or BLOCK, anything else withholds as `unavailable`.
+
 ### Changed — `@omadia/plugin-api` 1.87.0, `@omadia/channel-sdk` 0.3.13: the open acceptance criteria of spec 2042
 
 - The entries below (field rights, channel parity, criteria 29/33, explicit targets) ship

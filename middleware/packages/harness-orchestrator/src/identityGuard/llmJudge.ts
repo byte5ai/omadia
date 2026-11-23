@@ -26,9 +26,23 @@ function system(request: IdentityJudgeRequest): string {
     '- the agent presents itself as anyone other than itself (another agent or a person);',
     '- the agent claims to be human or denies being an AI;',
     "- the agent states, quotes or paraphrases what a colleague said, thinks, recommends or decided (\"Mira thinks …\", \"according to Mira …\").",
-    'Answer PASS for everything else, including plain mentions such as "Mira can help with that, write to her".',
+    'Answer PASS for everything else, including plain mentions such as "Mira can help with that, write to her",',
+    `the agent introducing itself as "${request.speakerName}" and saying that it is an AI.`,
     'Reply with exactly one word: PASS or BLOCK.',
   ].join('\n');
+}
+
+/**
+ * The judge's one word, in whatever markup the model put around it
+ * (`**PASS**`, `"Block".`). Anything else, an empty reply, a sentence ("DO
+ * NOT PASS"), is no verdict: it throws, and the guard fails closed as
+ * `unavailable`, not as a block of the agent's words. Exported for tests.
+ */
+export function parseJudgeVerdict(reply: string): IdentityJudgeVerdict {
+  const word = reply.replace(/[^\p{L}]/gu, '').toUpperCase();
+  if (word === 'PASS') return { verdict: 'pass' };
+  if (word === 'BLOCK') return { verdict: 'block', reason: 'BLOCK' };
+  throw new Error(`identity judge gave no verdict: ${JSON.stringify(reply.slice(0, 40))}`);
 }
 
 export function createLlmIdentityJudge(options: {
@@ -59,8 +73,7 @@ export function createLlmIdentityJudge(options: {
         cacheReadTokens: res.usage.cacheReadTokens ?? 0,
         cacheCreationTokens: res.usage.cacheWriteTokens ?? 0,
       });
-      const verdict = collectText(res.content).trim().toUpperCase();
-      return verdict.startsWith('PASS') ? { verdict: 'pass' } : { verdict: 'block', reason: verdict.slice(0, 40) };
+      return parseJudgeVerdict(collectText(res.content));
     },
   };
 }

@@ -5063,6 +5063,24 @@ owner-mismatch refusals, approve after revocation mints no grant).
 
 ## 10d. WebSocket upgrade authentication (#746 W1-1)
 
+**The canvas socket through the web-ui front (spec 2042).** The web-ui's
+pairing descriptor advertises `wss://<front host>/omadia-ui/canvas`, because
+the socket authenticates with the session cookie and that cookie belongs to the
+host the person signed in on (the front, through `/bot-api/*`). The web-ui
+image therefore starts through `web-ui/scripts/runtime/omadia-server.mjs`,
+which relays upgrades of exactly that path to `MIDDLEWARE_URL` before Next's
+own `upgrade` listener sees them (`canvasWsProxy.mjs`). The relay is
+transport only: the middleware's registry below authenticates the upgrade as
+it would a direct one. The relay forwards the client's headers, cookies
+included, minus hop-by-hop headers; it sets `X-Forwarded-Proto` from
+`WEB_UI_PUBLIC_SCHEME` and `X-Forwarded-Host` from the request's own `Host`,
+dropping both if the client sent them, like `/bot-api/*`. The path bypasses
+Next and its `proxy.ts` login gate on purpose: the gate's job, the session
+check, is the registry's. Like the middleware host, neither checks `Origin`;
+the SameSite cookie is what keeps a foreign page from opening the socket.
+`scripts/fly-deploy.sh` tries the upgrade at the advertised URL on both hosts
+and expects `401` without a session.
+
 `WebSocketRegistry` (`middleware/src/channels/webSocketRegistry.ts`) is the
 process's only `upgrade` listener. It routes each upgrade through a
 path → route table, and every route authenticates **before** the handshake:
@@ -7212,6 +7230,18 @@ introduces someone. A judge error, timeout (8 s) or missing judge withholds the
 text. Streaming releases complete sentences only, each checked with all text
 so far. The guard is a strong guard with test-defined coverage, not a proof
 (ADR-0013).
+
+What the deterministic layer settles without a model, so a plain "who are
+you?" answer is the same every time: an introduction by one of the agent's
+own names, matched as a whole name of any length ("Ich bin Dark Clippy", not
+"Dark Mira" or "Dark Clippy-Hans"), and the AI disclosure every agent owes
+("Ich bin eine KI", "I'm an AI assistant"). Identity talk still goes to the
+judge when the sentence it is in or the next one carries a negation or a word
+about being human or real ("I'm an AI? Ha, I'm actually a real person.",
+"Me, a bot? Never."), and "bin ich <Name>" is an introduction like "ich bin
+<Name>". The judge's reply must be the bare word PASS or BLOCK (markup aside);
+anything else is no verdict and withholds the text as `unavailable`, never as
+a pass.
 
 ## 10za. Execution scopes bound closings and the deadline wait (#2090, ADR-0030)
 
