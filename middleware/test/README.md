@@ -65,6 +65,17 @@ export MEMORY_PG_TEST_URL='postgres://test:test@127.0.0.1:5544/test' GRAPH_PG_TE
 npm run test:pg
 ```
 
+## Memory access matrix (`memoryAccess/`)
+
+`memoryAccess/world.ts` is a fixed world of people, agents, conversations and
+memory items, each carrying a unique canary. `memoryAccess/oracle.ts` says, by
+hand and with a source per rule, which viewer may obtain which item in each
+context-memory mode. `memoryAccess/seed.ts` writes the world into a real store.
+The oracle is written from documented intent; rows nothing documents are tagged
+`pinned, not decided`. Never derive a verdict from production code, and never
+change a verdict to make a suite green: a disagreement is either a leak to
+report or a documented decision to record first.
+
 ## Env vars
 
 `MEMORY_PG_TEST_URL` is the shared fallback every suite accepts. Individual
