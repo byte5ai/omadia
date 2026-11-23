@@ -351,6 +351,7 @@ const EMITTERS: Readonly<Record<string, string>> = {
   'packages/harness-orchestrator/src/verifierService.ts': 'inside the agent bundle: withSpeaker + withIdentityGuard',
   'packages/harness-orchestrator/src/identityGuard/guardedChatAgent.ts': 'the guard itself: notice done with system or agent speaker',
   'packages/harness-plugin-fast-path/src/learningCapture.ts': 'observes done events, emits none',
+  'packages/harness-orchestrator/src/answerDetailsRecall.ts': 'observes done events (toSemanticAnswer for the record), emits none',
   'packages/harness-orchestrator/src/management/managementChatAgent.ts': 'systemNoticeDone / systemNoticeAnswer: speaker system',
   'src/plugins/routines/routineRunner.ts': 'publishRoutineAnswer: through the agent emitter, speaker stamped',
   'src/routes/chat.ts': 'management-layer notice: speaker system; agent turns stamped by the bundle',
