@@ -41,7 +41,9 @@ const MIGRATIONS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'm
 const SCHEMA = `recipient_grants_${String(process.pid)}`;
 const MIN = 60_000;
 
-const HR_CHAT = { conversationId: '19:hr-team@thread.v2' };
+const HR_ID = '19:hr-team@thread.v2';
+/** The HR chat as the Teams plugin captures it (a Bot Framework reference). */
+const HR_CHAT = { channelId: 'msteams', serviceUrl: 'https://smba.example/emea/', conversation: { id: HR_ID, conversationType: 'groupChat' }, bot: { id: '28:shared' } };
 const LEADS_CHAT = '19:hr-leads@thread.v2';
 const SALES_CHAT = '19:sales@thread.v2';
 
@@ -62,7 +64,7 @@ describe('criterion 24: delivery to an explicit target (pg, 0125)', { skip: !pgA
   /** The HR chat's turn: it read an HR record anna and ben may know. */
   const hrTurn = () =>
     createDiscretionTurnState({
-      contextKey: `teams:${HR_CHAT.conversationId}`,
+      contextKey: `teams:${HR_ID}`,
       resolveReaders: async () => readersOf(['anna', 'ben']),
       initial: { labels: [{ kind: 'context', key: 'odoo:hr.employee:ben', readers: readersOf(['anna', 'ben']) }] },
     });
@@ -155,7 +157,7 @@ describe('criterion 24: delivery to an explicit target (pg, 0125)', { skip: !pgA
         triggers: () => wiring,
         knownConversationRef: async (_channel, conversationId) =>
           conversationId === LEADS_CHAT || conversationId === SALES_CHAT
-            ? { conversation: { id: conversationId }, serviceUrl: 'https://smba.example/emea/' }
+            ? { channelId: 'msteams', serviceUrl: 'https://smba.example/emea/', conversation: { id: conversationId, conversationType: 'groupChat' }, bot: { id: '28:shared' } }
             : undefined,
         audit: async (entry) => {
           audits.push(entry);
@@ -178,7 +180,7 @@ describe('criterion 24: delivery to an explicit target (pg, 0125)', { skip: !pgA
     audits.length = 0;
     clock = new Date('2026-11-23T09:00:00Z');
     rooms.clear();
-    rooms.set(HR_CHAT.conversationId, readersOf(['anna', 'ben']));
+    rooms.set(HR_ID, readersOf(['anna', 'ben']));
     rooms.set(LEADS_CHAT, readersOf(['anna', 'ben']));
     rooms.set(SALES_CHAT, readersOf(['anna', 'ben', 'sam', 'tom']));
     await pool.query('DELETE FROM agent_triggers');
@@ -240,7 +242,10 @@ describe('criterion 24: delivery to an explicit target (pg, 0125)', { skip: !pgA
     assert.match(await setTargeted(id), /"created"/);
     await fireAt(new Date('2026-11-23T09:20:00Z'));
     assert.deepEqual(sent, [
-      { ref: { conversation: { id: LEADS_CHAT }, serviceUrl: 'https://smba.example/emea/' }, text: 'Bitte die Austrittsunterlagen vorbereiten' },
+      {
+        ref: { channelId: 'msteams', serviceUrl: 'https://smba.example/emea/', conversation: { id: LEADS_CHAT, conversationType: 'groupChat' }, bot: { id: '28:shared' } },
+        text: 'Bitte die Austrittsunterlagen vorbereiten',
+      },
     ]);
   });
 

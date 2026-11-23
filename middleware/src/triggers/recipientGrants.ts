@@ -41,15 +41,25 @@ export interface NewRecipientGrant {
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** A conversation id from a channel's opaque conversation reference. */
+/**
+ * A conversation id from a channel's opaque conversation reference.
+ *
+ * A Bot Framework reference (Teams) carries `conversation.id` AND a top-level
+ * `channelId: 'msteams'` naming the platform, not the conversation: the
+ * nested id wins over `channelId`, or every Teams chat would be "msteams".
+ */
 export function conversationIdOf(ref: unknown): string {
   if (isRecord(ref)) {
-    for (const key of ['conversationId', 'sessionId', 'chatId', 'channelId', 'threadId']) {
+    for (const key of ['conversationId', 'sessionId', 'chatId']) {
       const v = ref[key];
       if (typeof v === 'string' && v.length > 0) return v;
     }
     const conv = ref['conversation'];
     if (isRecord(conv) && typeof conv['id'] === 'string' && conv['id'].length > 0) return conv['id'];
+    for (const key of ['channelId', 'threadId']) {
+      const v = ref[key];
+      if (typeof v === 'string' && v.length > 0) return v;
+    }
   }
   return `ref-${createHash('sha256').update(JSON.stringify(ref ?? null)).digest('hex').slice(0, 24)}`;
 }
