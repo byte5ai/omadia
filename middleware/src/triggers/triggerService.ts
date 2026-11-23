@@ -36,8 +36,9 @@ export interface TriggerServiceDeps {
   readonly eventSources: (agentSlug: string) => readonly EventSource[];
   /** Why the agent may not run this data action (undefined = it may). */
   readonly checkDataAction: (agentSlug: string, action: DataActionSpec) => string | undefined;
-  /** Whether a proactive message from this envelope may go to `target`. */
-  readonly targetAllowed: (env: TriggerEnvelope, target: TriggerTarget) => boolean;
+  /** Whether a proactive message from this envelope may go to `target`
+   *  (a recipient grant, criterion 24). Checked again at every send. */
+  readonly targetAllowed: (env: TriggerEnvelope, target: TriggerTarget) => boolean | Promise<boolean>;
   /** Whether `authorId` on `channel` is the agent's own bot: its own
    *  messages never fire its hooks (a hook that posts would hear itself). */
   readonly isOwnAuthor?: (agentSlug: string, channel: string, authorId: string) => boolean;
@@ -93,11 +94,11 @@ export class TriggerService {
       const why = this.deps.checkDataAction(env.agentSlug, action);
       if (why) return { ok: false, code: 'unknown_tool', message: why };
     }
-    if (t.target && !this.deps.targetAllowed(env, t.target)) {
+    if (t.target && !(await this.deps.targetAllowed(env, t.target))) {
       return {
         ok: false,
         code: 'target_not_allowed',
-        message: 'a proactive message from this conversation may not go to that target',
+        message: 'no recipient grant allows this agent to send to that target',
       };
     }
 

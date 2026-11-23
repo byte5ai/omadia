@@ -45,6 +45,7 @@ changelog.
   (buffered and streamed `done`). Triggers keep their creating room's field rights.
 - The consulting agent's model sees the contribution header (`[contribution c1 from …]`)
   outside the privacy digest and can cite the id; the colleague's words stay masked.
+
 ### Changed — Channel parity: a typed "2" answers an answer element, an assignment goes out as text (spec 2042 §6 criterion 30)
 
 - `@omadia/channel-sdk` (additive, stays 0.3.x): `PendingInteractiveStore` / `InMemoryPendingInteractiveStore`,
@@ -81,6 +82,18 @@ changelog.
   timeout, shield refusal). A refusal is a fast-lane miss (`summary-boundary`, the cached plan is
   evicted): the agent's full loop answers. Usage source `summary-boundary-guard`. No migration, no
   version bump.
+
+### Added — Explicit targets for proactive messages, system notices on end of service (spec 2042 criteria 24, 37)
+
+- **Migration 0125 `agent_recipient_grants`:** operator-granted target conversations of an
+  agent's proactive messages; admin API `PUT/GET/DELETE /api/v1/operator/triggers/recipient-grants`.
+  The agent names a target by grant id; the target's readers are checked at send time.
+- **Migration 0126 `system_notice_outbox`:** the `system` notice each home conversation gets
+  when an agent goes out of service (new code `archetype_plugin_removed`, plugin-api
+  Unreleased), sent once through the shared bot, kept across restarts.
+- **Fixed:** the Plugin Builder preview resolved any kernel service through `ctx.services`;
+  it now passes the gates of an installed plugin. Teams trigger contexts were keyed
+  `teams:msteams` (the reference's `channelId`) instead of the conversation id.
 
 ### Changed — ADR-0030: the kernel bounds closing scopes and the deadline wait (#2090)
 

@@ -10,6 +10,10 @@
 //   POST   /:id/resume            resume one (breaker starts over)
 //   DELETE /:id                   end one now
 //   PUT    /recipient-profiles    { recipient_key, timezone?, quiet_from?, quiet_to?, max_per_hour? }
+//   GET    /recipient-grants      ?agent_id= — the explicit targets operators
+//                                  allowed for agents' proactive messages
+//   PUT    /recipient-grants      { agent_id, channel, conversation_id, delivery_ref?, label? }
+//   DELETE /recipient-grants/:id  take a grant back: its triggers deliver nothing
 //
 // The kill switch that stops all triggers at once is the execution kill
 // switch (/api/v1/operator/execution, level instance or agent).
@@ -18,6 +22,7 @@ import { Router, type Request, type Response } from 'express';
 
 import { auditActorFromRequest, type AuditEntryInput } from '../auth/adminAuditLog.js';
 import type { RecipientProfileStore } from '../triggers/proactiveGate.js';
+import { conversationIdOf, type RecipientGrant, type RecipientGrantStore } from '../triggers/recipientGrants.js';
 import type { TriggerService } from '../triggers/triggerService.js';
 import { spendMonth, type TriggerStore } from '../triggers/triggerStore.js';
 import { triggerSummary } from '../triggers/triggerTools.js';
@@ -30,8 +35,19 @@ const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 export interface OperatorTriggersDeps {
   /** Absent = no database or triggers not wired: the routes answer 503. */
   readonly triggers: () =>
-    | { readonly service: TriggerService; readonly store: TriggerStore; readonly profiles: RecipientProfileStore }
+    | {
+        readonly service: TriggerService;
+        readonly store: TriggerStore;
+        readonly profiles: RecipientProfileStore;
+        readonly grants: RecipientGrantStore;
+      }
     | undefined;
+  /**
+   * The channel's conversation reference for a conversation the instance
+   * already knows (a bot was added there or wrote there), for a grant that
+   * names no `delivery_ref`. Undefined = not known.
+   */
+  readonly knownConversationRef?: (channel: string, conversationId: string) => Promise<unknown>;
   readonly audit?: (entry: AuditEntryInput) => Promise<void>;
   /** Plugin background jobs and their recovery state (`JobScheduler.list`). */
   readonly jobs?: () => readonly JobStatus[];
@@ -211,5 +227,133 @@ export function createOperatorTriggersRouter(deps: OperatorTriggersDeps): Router
     }
   });
 
+  router.get('/recipient-grants', async (req: Request, res: Response) => {
+    const t = deps.triggers();
+    if (!t) return unavailable(res);
+    const agentId = typeof req.query['agent_id'] === 'string' ? req.query['agent_id'] : undefined;
+    if (agentId !== undefined && !UUID.test(agentId)) {
+      res.status(400).json({ code: 'triggers.invalid_grant', message: 'agent_id must be an agent id' });
+      return;
+    }
+    try {
+      res.json({ grants: (await t.grants.list(agentId)).map(grantView) });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  router.put('/recipient-grants', async (req: Request, res: Response) => {
+    const t = deps.triggers();
+    if (!t) return unavailable(res);
+    const parsed = parseGrantBody(req.body);
+    if (typeof parsed === 'string') {
+      res.status(400).json({ code: 'triggers.invalid_grant', message: parsed });
+      return;
+    }
+    try {
+      const deliveryRef =
+        parsed.deliveryRef ??
+        (await deps.knownConversationRef?.(parsed.channel, parsed.conversationId)) ??
+        (parsed.channel === 'teams' ? undefined : { conversationId: parsed.conversationId });
+      if (deliveryRef === undefined) {
+        res.status(422).json({
+          code: 'triggers.conversation_unknown',
+          message: 'no conversation reference is known for that conversation: add the bot there first, or pass delivery_ref',
+        });
+        return;
+      }
+      // The target is found again by the conversation its reference names.
+      if (conversationIdOf(deliveryRef) !== parsed.conversationId) {
+        res.status(400).json({ code: 'triggers.invalid_grant', message: 'delivery_ref names another conversation than conversation_id' });
+        return;
+      }
+      const actor = auditActorFromRequest(req);
+      const grant = await t.grants.grant({ ...parsed, deliveryRef, grantedBy: actor.email ?? actor.id ?? 'operator' });
+      await audit(req, 'trigger.recipient_grant', `agent:${grant.agentId}`, grantView(grant));
+      res.json({ grant: grantView(grant) });
+    } catch (err) {
+      // 23503: the agent does not exist.
+      if ((err as { code?: string }).code === '23503') {
+        res.status(404).json({ code: 'triggers.agent_not_found', message: 'no such agent' });
+        return;
+      }
+      fail(res, err);
+    }
+  });
+
+  router.delete('/recipient-grants/:id', async (req: Request, res: Response) => {
+    const t = deps.triggers();
+    if (!t) return unavailable(res);
+    const id = String(req.params['id'] ?? '');
+    if (!UUID.test(id)) {
+      res.status(400).json({ code: 'triggers.invalid_grant', message: 'id must be a grant id' });
+      return;
+    }
+    try {
+      const revoked = await t.grants.revoke(id);
+      if (!revoked) {
+        res.status(404).json({ code: 'triggers.grant_not_found', message: 'no such recipient grant' });
+        return;
+      }
+      await audit(req, 'trigger.recipient_grant_revoke', `agent:${revoked.agentId}`, grantView(revoked));
+      res.status(204).end();
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
   return router;
+}
+
+const CHANNEL = /^[a-z][a-z0-9_-]{0,63}$/;
+const MAX_CONVERSATION_ID = 512;
+const MAX_LABEL = 200;
+const MAX_REF_BYTES = 8_192;
+
+interface GrantBody {
+  readonly agentId: string;
+  readonly channel: string;
+  readonly conversationId: string;
+  readonly deliveryRef: Record<string, unknown> | undefined;
+  readonly label: string | null;
+}
+
+/** A valid grant request, or why it is not one. */
+function parseGrantBody(raw: unknown): GrantBody | string {
+  const body = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
+  const agentId = body['agent_id'];
+  const channel = body['channel'];
+  const conversationId = typeof body['conversation_id'] === 'string' ? body['conversation_id'].trim() : '';
+  const ref = body['delivery_ref'];
+  const label = body['label'];
+  if (typeof agentId !== 'string' || !UUID.test(agentId)) return 'agent_id must be an agent id';
+  if (typeof channel !== 'string' || !CHANNEL.test(channel)) return 'channel must be a channel type like teams';
+  if (conversationId === '' || conversationId.length > MAX_CONVERSATION_ID) return 'conversation_id is required';
+  if (ref !== undefined && ref !== null) {
+    if (typeof ref !== 'object' || Array.isArray(ref)) return 'delivery_ref must be an object';
+    if (JSON.stringify(ref).length > MAX_REF_BYTES) return 'delivery_ref is too large';
+  }
+  if (label !== undefined && label !== null && (typeof label !== 'string' || label.length > MAX_LABEL)) {
+    return `label is text of at most ${String(MAX_LABEL)} characters`;
+  }
+  return {
+    agentId,
+    channel,
+    conversationId,
+    deliveryRef: ref && typeof ref === 'object' ? (ref as Record<string, unknown>) : undefined,
+    label: typeof label === 'string' && label.trim() !== '' ? label.trim() : null,
+  };
+}
+
+/** A grant as operators see it: without the opaque delivery reference. */
+function grantView(g: RecipientGrant): Record<string, unknown> {
+  return {
+    id: g.id,
+    agentId: g.agentId,
+    channel: g.channel,
+    conversationId: g.conversationId,
+    label: g.label,
+    grantedBy: g.grantedBy,
+    grantedAt: g.grantedAt.toISOString(),
+  };
 }

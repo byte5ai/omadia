@@ -2,14 +2,16 @@
  * #2082 / #1035 — what a proactive message must pass before it goes out
  * (spec 2042 §5.12 "Same rules as any turn"), and the delivery itself.
  *
- *   - It goes to the context it was created in (the stored delivery target).
- *     Any other target is refused at creation (`targetAllowed`): until the
- *     discretion flow rule (INV-9) can label contexts, a message born in one
- *     conversation never reaches another one.
- *   - Quiet hours and a rate limit per recipient, from the recipient's
- *     profile or the instance default. A firing in quiet hours is deferred
- *     before anything runs: no data is read and nothing is spent. A live
- *     meeting is exempt: the people are there.
+ *   - It goes to the context it was created in (the stored delivery target),
+ *     or to an explicit target allowed by a recipient grant (criterion 24).
+ *     The grant is checked at creation and again before every firing and
+ *     every send; the message goes through the grant's current reference.
+ *     The discretion check for the target's readers runs at send time
+ *     (`kernelExecutors.ts`).
+ *   - Quiet hours and a rate limit per recipient (the target, when there is
+ *     one), from the recipient's profile or the instance default. A firing in
+ *     quiet hours is deferred before anything runs: no data is read and
+ *     nothing is spent. A live meeting is exempt: the people are there.
  */
 
 import { createHash } from 'node:crypto';
@@ -19,6 +21,7 @@ import type { Pool } from 'pg';
 
 import type { ProactiveSenderRegistry } from '../plugins/routines/proactiveSender.js';
 import { ownBotRefusal, type OwnChannelKey } from './ownBot.js';
+import { deliveryAddressOf, targetConversation, type RecipientGrant } from './recipientGrants.js';
 import type { SendWindow } from './triggerEngine.js';
 import { isHeadless } from './headless.js';
 import type { DeliveryOutcome } from './triggerChain.js';
@@ -82,8 +85,13 @@ export function quietUntil(now: Date, timezone: string, quiet: QuietHours | null
   return end;
 }
 
-/** The recipient a trigger's messages go to, as a stable key. */
-export function recipientKey(trigger: Pick<Trigger, 'contextKind' | 'contextId' | 'deliveryChannel' | 'deliveryRef'>): string {
+/** The recipient a trigger's messages go to, as a stable key: the explicit
+ *  target's conversation when there is one, else the trigger's own context. */
+export function recipientKey(
+  trigger: Pick<Trigger, 'contextKind' | 'contextId' | 'deliveryChannel' | 'deliveryRef'> & Partial<Pick<Trigger, 'target'>>,
+): string {
+  const target = trigger.target ? targetConversation(trigger.target) : undefined;
+  if (target) return `${target.channel}:${target.conversationId}`;
   if (trigger.contextKind === 'conversation' || trigger.contextKind === 'meeting') return trigger.contextId;
   const ref = createHash('sha256').update(JSON.stringify(trigger.deliveryRef ?? null)).digest('hex').slice(0, 24);
   return `${trigger.deliveryChannel ?? 'none'}:ref:${ref}`;
@@ -148,6 +156,9 @@ export interface ProactiveGateDeps {
   /** The agent's own bot on a channel (spec 2042 §5.3): a delivery ref that
    *  names a bot is delivered only while that bot is still the agent's. */
   readonly ownChannelKey?: OwnChannelKey;
+  /** The recipient grant behind a trigger's explicit target, now (criterion
+   *  24). Absent = no grants are wired: a target delivers nothing. */
+  readonly grantFor?: (trigger: Trigger) => Promise<RecipientGrant | undefined>;
   readonly now?: () => Date;
   readonly log?: (message: string) => void;
 }
@@ -159,16 +170,28 @@ export interface ProactiveGate {
 
 export function createProactiveGate(deps: ProactiveGateDeps): ProactiveGate {
   const clock = deps.now ?? (() => new Date());
+  /** Channel and reference a message goes through now; a string = why it may not go. */
+  const addressOf = async (trigger: Trigger): Promise<{ channel: string; ref: unknown } | string> => {
+    const address = deliveryAddressOf(trigger);
+    if (!address.channel) return 'no delivery target';
+    if (!address.target) return { channel: address.channel, ref: address.ref };
+    const grant = await deps.grantFor?.(trigger);
+    if (!grant) return 'target_not_granted';
+    return { channel: grant.channel, ref: grant.deliveryRef };
+  };
   return {
     async sendWindow(trigger, now) {
       // A schedule sends nothing: no recipient, no quiet hours, no rate limit.
       if (isHeadless(trigger)) return { ok: true };
       if (!trigger.deliveryChannel) return { ok: false, drop: 'no_delivery_target' };
+      const address = await addressOf(trigger);
+      if (typeof address === 'string') return { ok: false, drop: address === 'no delivery target' ? 'no_delivery_target' : address };
       // Before any model turn: a bot that is no longer the agent's (spec 2042 §5.3).
-      if (ownBotRefusal(trigger.deliveryRef, trigger.agentSlug, trigger.deliveryChannel, deps.ownChannelKey)) {
+      if (ownBotRefusal(address.ref, trigger.agentSlug, address.channel, deps.ownChannelKey)) {
         return { ok: false, drop: 'bot_no_longer_agents' };
       }
-      if (trigger.liveContext) return { ok: true };
+      // A live meeting is exempt from quiet hours; a target elsewhere is not.
+      if (trigger.liveContext && !trigger.target) return { ok: true };
       const key = recipientKey(trigger);
       const profile = await deps.profiles.get(key, deps.defaults);
       // A routine fires when its owner asked it to: their chosen time wins
@@ -184,15 +207,16 @@ export function createProactiveGate(deps: ProactiveGateDeps): ProactiveGate {
       return { ok: true };
     },
     async send(trigger, message) {
-      const channel = trigger.deliveryChannel;
-      if (!channel) return { delivered: false, reason: 'no delivery target' };
+      const address = await addressOf(trigger);
+      if (typeof address === 'string') return { delivered: false, reason: address };
+      const { channel, ref } = address;
       const sender = deps.senders()?.get(channel);
       if (!sender) return { delivered: false, reason: `no proactive sender for channel '${channel}'` };
-      const refused = ownBotRefusal(trigger.deliveryRef, trigger.agentSlug, channel, deps.ownChannelKey);
+      const refused = ownBotRefusal(ref, trigger.agentSlug, channel, deps.ownChannelKey);
       if (refused) return { delivered: false, reason: refused };
       try {
-        await sender.checkDeliverable?.(trigger.deliveryRef);
-        await sender.send({ conversationRef: trigger.deliveryRef, message });
+        await sender.checkDeliverable?.(ref);
+        await sender.send({ conversationRef: ref, message });
       } catch (err) {
         return { delivered: false, reason: err instanceof Error ? err.message : String(err) };
       }

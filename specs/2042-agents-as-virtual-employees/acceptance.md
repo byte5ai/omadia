@@ -8,7 +8,7 @@ was read, not matched by name. Paths are relative to `middleware/` unless they s
 `web-ui/` or name a channel repository. `*.pg.test.ts` needs Postgres and skips without
 one, so the gate must run `npm run test:pg` against a database.
 
-**Result: 37 of 40 green, 3 partial (12, 24, 37), none missing.** The partial ones are listed with what
+**Result: 38 of 40 green, 2 partial (12, 37), none missing** (criterion 37: semantic search and the embedding backfill under `enforce` remain). The partial ones are listed with what
 remains. Most of the remainder is not a missing test but a missing implementation; those
 items are marked **not implemented**.
 
@@ -39,7 +39,7 @@ items are marked **not implemented**.
 | 21 | Cheap first | green | |
 | 22 | Context end | green | fixed in this branch; the Teams `meetingEnd` event reaching the kernel is unconfirmed live |
 | 23 | One-shot wakeup | green | |
-| 24 | Proactive discretion | partial | delivery to an explicit target **not implemented** |
+| 24 | Proactive discretion | green | |
 | 25 | Side channel | green | |
 | 26 | Deterministic firings | green | |
 | 27 | Labels persist | green | |
@@ -52,7 +52,7 @@ items are marked **not implemented**.
 | 34 | No claim to be human | green | |
 | 35 | Boundaries on data paths | green | |
 | 36 | Selection vs binding | green | |
-| 37 | Enforcement boundary | partial | see the sub-claim list below |
+| 37 | Enforcement boundary | partial | semantic search and the real embedding backfill under `enforce` (see below); uninstall, SQL fixture and builders closed (G2) |
 | 38 | Disclosure level none | green | for consultation grants; level `none` exists only there |
 | 39 | Deleted agent stays named | green | |
 | 40 | Availability | green | |
@@ -64,6 +64,7 @@ items are marked **not implemented**.
 | 22 | `TriggerService.endContext` had no production caller, so a meeting's hook and timer ran until their deadline | session-capability hub `observeLifecycle()`, `TriggerWiring.onSessionEvent`: `session_ended` ends the meeting context in one transaction, `session_started` reopens it |
 | 37 | `ctx.http` reached model providers (`public-web` mode, or a provider host listed as outbound) | `httpAccessor.ts` refuses model provider endpoints for every non-model plugin in every mode |
 | 37 | `CliChatAgent.chat()` skipped the gateway (only `chatStream()` admitted `run_loop`) | `chat()` admits `run_loop` before the spawn |
+| 37 | The Plugin Builder preview resolved any kernel service through `ctx.services` (pool, raw model clients, undeclared names) | the preview passes the gates of an installed plugin, judged by the draft's manifest (`previewServices.ts`) |
 | 15 | Install from the store skipped the persona/speaker check for packages uploaded before the boundary | `InstallService.create` runs `checkPluginBoundary`, `install.persona_declared` (422) |
 | 12 | Operator-facing "Orchestrator": providers page label, two bundled manifest names, setup labels, help texts in 9 manifests, two error texts | product language ("Agent runtime", "Agent model"); ids, package names and config keys unchanged |
 | 31 | The web chat showed removed decorations (verifier chip, system data chip, "shorter/more detail" buttons) around the answer | settled answer shows its text and `web` decorations only; the rest is in one collapsed details element |
@@ -175,9 +176,10 @@ items are marked **not implemented**.
 ### 23. One-shot wakeup — green
 - `test/triggerAcceptance.pg.test.ts` :: `criterion 23: the month-end wakeup sends its owner the overview once and is gone, across a restart`; `test/agentTriggers.pg.test.ts` :: `fires once, sends the overview and is gone, also across a restart and two workers`.
 
-### 24. Proactive discretion — partial
-- `test/proactiveTriggers.pg.test.ts` :: `criterion 24: a trigger born in the HR chat posts there, never to the sales chat`, `criterion 24: nothing goes out during the recipient's quiet hours; it is deferred`; `test/triggerAcceptance.pg.test.ts` :: `criterion 24: with the sales chat granted as target, nothing reaches the sales chat`, `criterion 24: an HR-labelled trigger delivering into the sales chat is withheld at send time`.
-- **Not implemented:** delivery to an explicit target. Production allows none (`targetAllowed: () => false`, `src/triggers/wiring.ts`), `proactiveGate.ts` sends only to `trigger.deliveryRef`, and there is no recipient-grant store. Stored readers are a snapshot from creation time.
+### 24. Proactive discretion — green
+- `test/proactiveTriggers.pg.test.ts` :: `criterion 24: a trigger born in the HR chat posts there, never to the sales chat`, `criterion 24: nothing goes out during the recipient's quiet hours; it is deferred`; `test/triggerAcceptance.pg.test.ts` :: `criterion 24: with the sales chat granted as target, nothing reaches the sales chat`, `criterion 24: an HR-labelled trigger delivering into the sales chat is withheld at send time` (both through a real recipient grant and the production `targetAllowed`).
+- Explicit targets (G2): recipient grants (`agent_recipient_grants`, migration 0125, `src/triggers/recipientGrants.ts`), admin API `PUT/GET/DELETE /api/v1/operator/triggers/recipient-grants` (audited `trigger.recipient_grant[_revoke]`); the agent names a target only by grant id (`list_triggers` → `targets`); the grant is checked at creation, before each firing and at send, and the message goes through the grant's current reference. The target's readers are read from the channel roster at send time (`src/triggers/conversationReaders.ts`; unknown = closed); the trigger's own conversation is also checked against its readers at send time where the roster is known. `test/recipientGrants.pg.test.ts` :: `the operator grants, lists and revokes a target through the admin API; every change is audited`, `without a grant the agent cannot name a target; list_triggers shows only its granted ones`, `a granted target whose readers may know it gets the message, through the grant's reference, and the origin gets nothing`, `criterion 24: an HR message granted into the sales chat is withheld at send time, as a whole`, `the target's readers are read when the message goes out, not when the trigger was set`, `a room whose members cannot be read is closed`, `a revoked grant delivers nothing, even for a trigger set while it held`, `criterion 24: nothing goes out during the target recipient's quiet hours; it is deferred`, `a target needs the discretion record of the turn that set it`.
+- Residual (not part of the criterion): rosters are read with the shared bot, so a room only an agent's own bot sees is unknown (a target there gets nothing labelled; the trigger's own room keeps its creation-time readers).
 
 ### 25. Side channel — green
 - `test/sideChannelOrchestrator.test.ts` :: `criterion 25: the agent's table reaches the user under the agent's identity with AI disclosure; the model sees only the status`; `test/sideChannelData.test.ts`; Teams `tests/teamsSideChannelData.test.ts`.
@@ -236,10 +238,11 @@ Covered:
 - Plugin Builder: no persona, no kind `agent`, preview speaks as the marked draft — `test/builder/codegen.test.ts`, `test/builder/agentSpec.test.ts`, `test/builder/previewChatSystemPrompt.test.ts`, `test/builder/previewDraftAgents.test.ts`.
 - claude-cli: granted tools through `run_loop`, missing tool refused, extra/unoffered tool and disconnected loopback refused, deadline/idle/kill-switch stop, planted `CLAUDE.md` without effect on `complete` and `run_loop` — `test/cliBridge/loopbackMcpServer.test.ts`, `test/cliBridge/cliRunLoopIsolation.test.ts`, `test/cliBridge/cliChatAgent.test.ts`, `test/claudeCliAdapterCompletion.test.ts`.
 
+- Archetype uninstall (G2): `test/archetypeUninstallStates.pg.test.ts` :: `criterion 37: configuring, active, concluding, following_up — a failing plugin, a restart, one notice per home conversation` (process service and `onUninstall` both throw; afterwards no reservation, open scope or subscription, every model turn and invitation refused, also after the restart), `a notice not yet out when the instance restarts goes out once after it; a repeated uninstall owes nothing new`; `test/facilitatorContractGuards.pg.test.ts` (the `active` case, now with its notice). The `system` notice is implemented: registered code `archetype_plugin_removed` (plugin-api, Unreleased), localized, written to `system_notice_outbox` (migration 0126, `src/platform/systemNoticeOutbox.ts`) before the change and posted once through the channel's shared bot with speaker `system`; `test/agentEndOfService.test.ts` :: `criterion 37: each conversation gets one notice request naming the agent, and the procedure waits for it to be kept`.
+- SQL-granted archetype (G2): the fixture is the real core migration series; `test/archetypeDatabase.pg.test.ts` :: `criterion 37: neither the plugin role nor its migrations reach inbound events, scopes, reservations or grants`, `criterion 37: the plugin resumes its processes from its own schema after a restart`.
+- Builders (G2): `test/agentBuilderOperatorJob.test.ts` :: `every model-backed route of the Agent Builder and the Plugin Builder is an operator job` (`src/platform/operatorJobRoutes.ts`), `the Agent Builder's skill verdict runs as an operator job under enforce; outside the job the gateway refuses it` (the Agent Builder's only model-backed step). Plugin Builder preview capped: `ctx.services` read through to the kernel registry ungated (bug); it now passes the gates of an installed plugin judged by the draft's own manifest (`src/plugins/builder/previewServices.ts`) — `test/builder/previewRuntime.test.ts` :: `criterion 37: a preview gets no service right the draft lacks: undeclared names, the pool, raw model clients`.
+
 Remaining:
-- Archetype uninstall with processes in `configuring`, `concluding` and `following_up`, with a failing `onUninstall` and a restart: only the `active` case is tested (`test/facilitatorContractGuards.pg.test.ts`). The `system` notice per home conversation is **not implemented**: `logOwedSystemNotice` only logs (`test/agentEndOfService.test.ts` asserts that nothing is posted).
-- SQL sandbox fixture does not contain the kernel's inbound-event, scope and grant tables; process resumption after restart untested.
-- Agent Builder as operator job, and a preview capped by the operator's own rights: no test (no model-backed step found in the Agent Builder routes).
 - Semantic search and the real embedding backfill under `enforce`: only the generic gate and synthetic work are tested.
 
 ### 38. Disclosure level none — green

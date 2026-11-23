@@ -8,6 +8,20 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## Unreleased
+
+Additive (spec 2042 §5.10, criterion 37): the end-of-service notice after an
+archetype plugin is removed.
+
+### Added
+
+- **`SYSTEM_NOTICE_CODES`: `archetype_plugin_removed`**. The registered
+  `system` notice each home conversation of an agent gets once when the plugin
+  that delivers its archetype is uninstalled: the agent is disabled, its
+  running processes ended, and closing documents that needed its voice are
+  not sent. Speaker `system`, posted through the channel's shared bot, never
+  under the agent's own bot.
+
 ## 1.85.0 — 2026-11-22
 
 Additive (#2090, spec 2043 §0, §5.2, §5.6; ADR 0030): the kernel bounds a
