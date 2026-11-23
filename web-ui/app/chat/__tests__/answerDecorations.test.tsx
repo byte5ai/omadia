@@ -1,9 +1,7 @@
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
-import {
-  REMOVED_DECORATIONS,
-  decorationsFor,
-} from '../../../../middleware/packages/harness-channel-sdk/src/decorations';
 import type { Message } from '../../_lib/chatSessions';
 import { renderWithIntl } from '../../_lib/test-utils';
 import { MessageRow } from '../page';
@@ -17,6 +15,18 @@ import { MessageRow } from '../page';
  */
 
 const NOOP = (): void => {};
+// The registry lives in the channel SDK. web-ui has no build-time dependency
+// on middleware packages (its Docker build context is web-ui/ alone), so the
+// module is loaded at test time through a path the compiler does not resolve.
+const DECORATIONS_MODULE = path.resolve(
+  __dirname,
+  '../../../../middleware/packages/harness-channel-sdk/src/decorations.ts',
+);
+const registry = (await import(/* @vite-ignore */ DECORATIONS_MODULE)) as {
+  REMOVED_DECORATIONS: readonly string[];
+  decorationsFor: (channel: string) => readonly { id: string }[];
+};
+const { REMOVED_DECORATIONS, decorationsFor } = registry;
 const WEB = new Set(decorationsFor('web').map((d) => d.id));
 /** Content of the answer itself, not a decoration (INV-4 speaker, notices). */
 const ANSWER_PARTS = new Set(['speaker', 'prose', 'notice', 'attachments']);
