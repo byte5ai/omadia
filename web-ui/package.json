@@ -42,14 +42,14 @@
     "lucide-react": "^1.69.0",
     "monaco-editor": "^0.57.0",
     "next": "^16.4.5",
-    "next-intl": "^4.15.1",
+    "next-intl": "^4.15.3",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-force-graph-2d": "^1.29.2",
     "react-markdown": "^10.1.0",
-    "react-resizable-panels": "^4.18.1",
+    "react-resizable-panels": "^4.24.1",
     "remark-gfm": "^4.0.0",
-    "tailwind-merge": "^3.7.0"
+    "tailwind-merge": "^3.7.1"
   },
   "devDependencies": {
     "@formatjs/icu-messageformat-parser": "^3.5.23",
