@@ -36,6 +36,29 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Spec 2042 criteria 29 and 33: "how do you know?" and the fast-lane summary under the boundaries
+
+- **Criterion 29.** `SemanticAnswer.turnId` (additive, channel-sdk unreleased; `toSemanticAnswer`
+  forwards `ChatTurnResult.turnId`) and `AnswerDetails.trace` (the trace reference; on its own it
+  opens no details element). `AnswerDetails.systemData` now also counts side-channel data (a
+  fast-lane table). The kernel is the caller of `buildAnswerDetails`/`answerDetailsText`:
+  `packages/harness-orchestrator/src/answerDetailsRecall.ts` records, outside the identity guard,
+  the details of each answer a conversation received (a withheld or failed turn leaves none) and
+  hands them to the agent loop's next turn as a harness note in `extraSystemHint` (statuses,
+  counts, colleagues' names, a helper count and the turn id; never a value). The note sits inside
+  the fast lane, so it never turns the fast lane off; the verifier's correction retry now appends
+  its hint instead of replacing it (`withCorrectionHint`). Message bodies are unchanged. In-memory
+  per agent, bounded (1000 conversations), lost on restart.
+- **Criterion 33.** `packages/harness-orchestrator/src/summaryBoundaryGuard.ts`, run by the fast-path
+  service through the new `ChatTriageRequest.checkSummary` beside `checkPlan`, before the fetch and
+  for new and cached plans: the planner's summary template and column labels are checked against
+  the agent's boundaries — `no-individual-rankings` and `no-external-links` deterministically, every
+  other preset (curated wording) and free-text boundary by the agent's classifier model on the text
+  masked through the turn's privacy run and with figures masked; fail-closed (no judge, error, 8 s
+  timeout, shield refusal). A refusal is a fast-lane miss (`summary-boundary`, the cached plan is
+  evicted): the agent's full loop answers. Usage source `summary-boundary-guard`. No migration, no
+  version bump.
+
 ### Changed — ADR-0030: the kernel bounds closing scopes and the deadline wait (#2090)
 
 - `@omadia/plugin-api` 1.85.0, `@omadia/channel-sdk` 0.3.11 (additive types, stricter
