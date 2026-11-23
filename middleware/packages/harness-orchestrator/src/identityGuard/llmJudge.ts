@@ -33,15 +33,16 @@ function system(request: IdentityJudgeRequest): string {
 }
 
 /**
- * The judge's one word, in whatever markup the model put around it
- * (`**PASS**`, `"Block".`). Anything else, an empty reply, a sentence ("DO
- * NOT PASS"), is no verdict: it throws, and the guard fails closed as
- * `unavailable`, not as a block of the agent's words. Exported for tests.
+ * The judge's verdict: its FIRST word, in whatever markup the model put
+ * around it (`**PASS**`, `"Block".`, `PASS – nothing wrong`). A reply that
+ * does not open with PASS or BLOCK ("DO NOT PASS", an empty reply) is no
+ * verdict: it throws, and the guard fails closed as `unavailable`, not as a
+ * pass. Exported for tests.
  */
 export function parseJudgeVerdict(reply: string): IdentityJudgeVerdict {
-  const word = reply.replace(/[^\p{L}]/gu, '').toUpperCase();
-  if (word === 'PASS') return { verdict: 'pass' };
-  if (word === 'BLOCK') return { verdict: 'block', reason: 'BLOCK' };
+  const first = /\p{L}+/u.exec(reply)?.[0]?.toUpperCase();
+  if (first === 'PASS') return { verdict: 'pass' };
+  if (first === 'BLOCK') return { verdict: 'block', reason: 'BLOCK' };
   throw new Error(`identity judge gave no verdict: ${JSON.stringify(reply.slice(0, 40))}`);
 }
 

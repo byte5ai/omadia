@@ -116,7 +116,10 @@ describe('identity guard — model layer', () => {
       directory,
       judge: { judge: async () => { throw new Error('provider down'); } },
     });
-    assert.equal((await guard.check('Mira can help with that.')).outcome, 'unavailable');
+    const result = await guard.check('Mira can help with that.');
+    assert.equal(result.outcome, 'unavailable');
+    // the operator log names why
+    assert.equal(result.outcome === 'unavailable' && result.detail, 'provider down');
   });
 
   it('fails closed on suspicious text when no judge is configured', async () => {
@@ -329,12 +332,15 @@ describe('identity guard — the judge reply', () => {
     assert.deepEqual(parseJudgeVerdict('**PASS**'), { verdict: 'pass' });
     assert.deepEqual(parseJudgeVerdict(' "pass".'), { verdict: 'pass' });
     assert.deepEqual(parseJudgeVerdict('PASS\n'), { verdict: 'pass' });
+    // live 2026-11-23: a judge that explains itself after the word
+    assert.deepEqual(parseJudgeVerdict('PASS – the agent only names itself'), { verdict: 'pass' });
+    assert.equal(parseJudgeVerdict('BLOCK. It quotes Mira.').verdict, 'block');
     assert.equal(parseJudgeVerdict('BLOCK').verdict, 'block');
     assert.equal(parseJudgeVerdict('**BLOCK**').verdict, 'block');
   });
 
-  it('no verdict, or both, is an error (fail-closed as unavailable), not a block', () => {
-    for (const reply of ['', 'I think', 'PASS or BLOCK', 'DO NOT PASS', 'PASSED']) {
+  it('a reply that does not open with the verdict is an error (fail-closed as unavailable), not a pass', () => {
+    for (const reply of ['', 'I think', 'DO NOT PASS', 'PASSED', '...']) {
       assert.throws(() => parseJudgeVerdict(reply), /no verdict/);
     }
   });
