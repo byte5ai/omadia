@@ -1,5 +1,6 @@
 import { posix } from 'node:path';
 
+import { MemoryInvalidPathError } from '@omadia/memory';
 import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
 import {
   isUnprotectedNote,
@@ -90,6 +91,12 @@ const SHIELDED_SEGMENTS = new Set(['sessions']);
  * normalised physical path.
  */
 const SHIELDED_PHYSICAL = /^\/memories\/orchestrators\/[^/]+\/plugins(\/|$)/;
+
+/** Normalised physical path: no `.` segments, duplicate or trailing slashes. */
+function normalizePhysical(path: string): string {
+  const normalized = posix.normalize(path);
+  return normalized.length > 1 ? normalized.replace(/\/$/, '') : normalized;
+}
 
 /** Thrown for a path in {@link MODEL_DENIED_SEGMENTS}, in
  *  {@link SHIELDED_SEGMENTS} under a shield, or for an unprotected note under
@@ -291,15 +298,38 @@ abstract class MemoryNamespacerBase implements MemoryStore {
     return this.inner.writeFile(this.toInner(virtualPath), this.withProvenance(content));
   }
 
+  /**
+   * #1828 — the store's own root guard only knows the physical `/memories`,
+   * so a model-facing `/memories` (or `~agent`, `~team`) reached it as a
+   * plain directory and took the whole tree with it, plugin storage
+   * included. A bound root is refused as a whole, and a plugin's `ctx.memory`
+   * tree ({@link SHIELDED_PHYSICAL}) is never deleted, moved or moved into,
+   * shield or not; reading and writing it stay as they are.
+   */
+  private refuseStructuralChange(virtualPath: string, inner: string, verb: string): void {
+    const physical = normalizePhysical(inner);
+    if (this.bindings.some((b) => b.inner === physical)) {
+      throw new MemoryInvalidPathError(`Refusing to ${verb} the memory root ${virtualPath}.`);
+    }
+    if (SHIELDED_PHYSICAL.test(physical)) {
+      throw new MemoryInvalidPathError(
+        `Refusing to ${verb} ${virtualPath}: it holds plugin storage, which the memory tool may not delete or move.`,
+      );
+    }
+  }
+
   async delete(virtualPath: string): Promise<void> {
-    return this.inner.delete(this.toInner(virtualPath));
+    const inner = this.toInner(virtualPath);
+    this.refuseStructuralChange(virtualPath, inner, 'delete');
+    return this.inner.delete(inner);
   }
 
   async rename(fromVirtualPath: string, toVirtualPath: string): Promise<void> {
-    return this.inner.rename(
-      this.toInner(fromVirtualPath),
-      this.toInner(toVirtualPath),
-    );
+    const from = this.toInner(fromVirtualPath);
+    const to = this.toInner(toVirtualPath);
+    this.refuseStructuralChange(fromVirtualPath, from, 'rename');
+    this.refuseStructuralChange(toVirtualPath, to, 'rename into');
+    return this.inner.rename(from, to);
   }
 }
 

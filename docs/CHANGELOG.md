@@ -36,6 +36,18 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — `delete /memories` löscht nicht mehr den ganzen Agent-Baum (#1828)
+
+2026-11-17. Der Memory-Namespacer bildet das modellseitige `/memories` auf
+`/memories/orchestrators/<slug>` ab; der Root-Guard des Stores kennt nur das
+physische `/memories` und griff deshalb nie. Ein `delete /memories` entfernte
+alle Notizen des Agents samt dem `ctx.memory` jedes Plugins. Die Namespacer
+verweigern jetzt `delete`/`rename` eines gebundenen Roots (`/memories`,
+`~team`, `~agent`) und jedes Pfads im Plugin-Baum
+`/memories/orchestrators/<slug>/plugins/`, auch ohne Privacy Shield und auch
+als Rename-Ziel (`MemoryInvalidPathError`, für das Modell ein normales
+`Error:`-Ergebnis). Lesen und Schreiben im Plugin-Baum bleiben unverändert.
+
 ### Fixed — 2026-11-23 — Conductor: re-publishing a workflow no longer hides its runs (#1710)
 
 - `GET /conductors/:slug/runs` listed only runs of the **active** version, so publishing the
