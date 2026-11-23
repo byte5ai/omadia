@@ -258,6 +258,7 @@ describe('consultation broker', () => {
       callId: 'c',
       allowedPluginIds: new Set(['@omadia/crm']),
       memoryAccess: 'none' as const,
+      readers: salesReaders,
       result: {},
     };
     runAsConsultation(scope, () => {
@@ -469,6 +470,7 @@ describe('consultation broker', () => {
       callId: 'c',
       allowedPluginIds: new Set<string>(),
       memoryAccess: 'none' as const,
+      readers: salesReaders,
       result: {},
     };
     const out = await inTurn(() => runAsConsultation(scope, () => broker.consult(request())));
