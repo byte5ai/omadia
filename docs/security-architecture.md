@@ -829,6 +829,18 @@ not read).
   routing. An unknown, disabled or unbuilt agent has no envelope, and no
   other agent is returned in its place. Only system modules get it (the
   canvas presentation helper `@omadia/ui-orchestrator`).
+- **The canvas helper is reached only after the check.** The dispatcher
+  resolves an addressed turn (`resolveAgent`: enabled, available to this
+  sender here) first; only a `bound` agent is handed to the channel's
+  `dispatch_service` with `ChatTurnInput.agentId`, which the dispatcher sets
+  itself (channel metadata is never read as that field). A refused agent, a
+  `/agent` command and a turn the resolver cannot address never reach the
+  helper, and a structured canvas turn (`canvasRefresh`, `action`, empty text)
+  is never run as a model turn at an agent.
+- **The agent list of a channel is the route's list.** `agentDirectory@1`
+  (`src/platform/agentDirectoryService.ts`) is given to `channel` plugins only
+  and answers the function behind `GET /api/v1/agents/directory`; it lists,
+  never authorises.
 - **A system module's own model loop goes through the kernel.** The dev
   platform's coding jobs run the Claude CLI in a container against the
   module's Anthropic-compatible proxy. The proxy holds no provider key: it

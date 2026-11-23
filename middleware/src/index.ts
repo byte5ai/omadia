@@ -104,6 +104,7 @@ import {
   BATCH_JOB_REGISTRY_SERVICE,
   MAINTENANCE_RUN_SERVICE_NAME,
   MODEL_PASSTHROUGH_SERVICE_NAME,
+  AGENT_DIRECTORY_SERVICE_NAME,
   AGENT_ENVELOPE_SERVICE_NAME,
   OPERATOR_JOBS_SERVICE_NAME,
   TRANSCRIPTION_SERVICE_NAME,
@@ -479,6 +480,7 @@ import { createOperatorTriggersRouter } from './routes/operatorTriggers.js';
 import { createAgentTemplatesRouter } from './routes/agentTemplates.js';
 import { createSetupOptionsResolver } from './plugins/setupOptionsResolver.js';
 import { createModelGatewayStatusRouter } from './routes/modelGatewayStatus.js';
+import { agentDirectoryService } from './platform/agentDirectoryService.js';
 import { agentEnvelopeService } from './platform/agentEnvelopeService.js';
 import {
   BULK_PROMOTION,
@@ -2788,6 +2790,16 @@ async function main(): Promise<void> {
   serviceRegistry.provide(
     AGENT_ENVELOPE_SERVICE_NAME,
     agentEnvelopeService(kindOfPlugin, () =>
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+    ),
+  );
+  // Spec 2042 §5.3 / criterion 40 — the agents a person may address in a
+  // channel (the canvas channel's picker): the same view as
+  // `GET /api/v1/agents/directory`, from the same function, for channel
+  // plugins that cannot call the session-authenticated route.
+  serviceRegistry.provide(
+    AGENT_DIRECTORY_SERVICE_NAME,
+    agentDirectoryService(kindOfPlugin, () =>
       serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
     ),
   );

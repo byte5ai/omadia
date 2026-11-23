@@ -221,6 +221,10 @@ export * from './modelPassthrough.js';
 // its behalf (`agentEnvelope@1`, the canvas presentation helper).
 export * from './agentEnvelope.js';
 
+// Spec 2042 §5.3 — the agents a person may address in a channel
+// (`agentDirectory@1`, the canvas channel's picker), channel plugins only.
+export * from './agentDirectory.js';
+
 // #2082 (epic #2042) — bounded batch jobs: learning and consolidation run as
 // agent batch triggers, not as free-running plugin intervals.
 export * from './batchJobs.js';

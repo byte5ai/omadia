@@ -4228,6 +4228,24 @@ Details im gleichnamigen Abschnitt am Ende dieses Dokuments. Neue Routen
   `src/platform/agentEnvelopeService.ts`): die Hülle genau eines Agenten per
   `agents.id`, ohne Modell; für `@omadia/ui-orchestrator`. Details im
   Abschnitt „S3b: Contract-Schritt“ am Ende.
+- Kernel-Service `agentDirectory@1` (nur für `channel`-Plugins,
+  `src/platform/agentDirectoryService.ts`): die Agenten, die eine Person in
+  einem Kanal ansprechen darf, und was eine unadressierte Nachricht dort
+  erreicht (Picker des Canvas-Channels). **Eine Quelle** mit
+  `GET /api/v1/agents/directory`: beide rufen `buildAgentDirectory`. Der
+  Service listet für das Principal, nach dem der Canvas-Channel die Turns
+  routet (`user:<e-mail>`, sonst `user:custom:<subject>`). Er entscheidet nie,
+  ob ein Turn läuft; das tut der `channelResolver` pro Turn.
+- **Canvas-Turns mit Agent (`ChatTurnInput.agentId`).** Der Dispatcher
+  (`orchestratorDispatcher.ts`, Stufe 0) löst `metadata.agentId` mit
+  `resolveAgent` auf. Ist der Agent `bound` und deklariert der Kanal eine
+  eigene `dispatch_service` (der Canvas-Präsentationshelfer), geht der Turn an
+  diesen Service, mit `agentId` im Input (vom Dispatcher nach der Prüfung
+  gesetzt, nie aus Metadaten gelesen) und `locale`; der Service arbeitet in der
+  Hülle des Agenten (`agentEnvelope@1`). Eine Ablehnung und `/agent`-Befehle
+  beantwortet weiter die Management-Schicht, ohne Helfer. Ein strukturierter
+  Canvas-Turn (`canvasRefresh`, `action`, Canvas-Turn ohne Text) läuft nie als
+  Modell-Turn beim Agenten: ohne Service endet er in `canvas_helper_unavailable`.
 
 ### Agent-eigene Trigger: Hooks, Wakeups, Routinen, Schedules, Batch-Jobs (#2082, Spec 2042 §5.12)
 

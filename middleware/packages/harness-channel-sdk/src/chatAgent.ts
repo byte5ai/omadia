@@ -636,6 +636,16 @@ export interface ChatTurnInput {
    */
   canvasSessionId?: string;
   /**
+   * The agent (`agents.id`) this turn was addressed to, when the dispatcher
+   * hands it to a channel's `dispatch_service` instead of to the agent itself
+   * (the canvas presentation helper): the kernel has already resolved and
+   * checked that agent for this sender (`resolveAgent`), the service looks up
+   * its envelope by this id and works inside it. Set ONLY by the kernel
+   * dispatcher, after that check — never read from channel metadata by a
+   * service, never a routing hint. Never reaches the model prompt.
+   */
+  agentId?: string;
+  /**
    * Fixed, per-turn system directive from a TRUSTED in-process wrapper (the
    * canvas orchestrator's `[canvas-context]` protocol instructions). MUST be a
    * compile-time constant: no user text, no model output, no tool data — it
