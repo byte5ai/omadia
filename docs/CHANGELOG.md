@@ -50,7 +50,8 @@ changelog.
 - **Identity guard.** "wer bist du" to an agent with a name of several words was blocked in
   about 3 of 4 runs: the introduction captured one word, so every answer went to the model
   judge. Own names of any length and the AI disclosure are settled without a model now;
-  the judge's reply must be the bare PASS or BLOCK, anything else withholds as `unavailable`.
+  the judge's verdict is the first word of its reply (PASS or BLOCK); a reply that does not
+  open with one withholds as `unavailable`, and the log line of an unavailable guard says why.
 
 ### Changed — `@omadia/plugin-api` 1.87.0, `@omadia/channel-sdk` 0.3.13: the open acceptance criteria of spec 2042
 
