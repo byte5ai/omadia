@@ -15,6 +15,8 @@ import {
   type IdentityGuardResult,
 } from '../packages/harness-orchestrator/src/identityGuard/guard.js';
 
+import { BLOCKED, CHUNK_SEEDS, GUARD_COLLEAGUES, chunk } from './_helpers/identityGuardCases.js';
+
 /**
  * #2046 — spec 2042 §6 criteria 2 and 34: scripted model outputs that claim
  * another agent's identity, quote a colleague outside a delivered
@@ -32,31 +34,10 @@ const assistant: AgentSpeaker = {
 
 const directory: GuardDirectoryEntry[] = [
   { agentId: 'a-assistant', slug: 'assistant', displayName: 'Lena' },
-  { agentId: 'a-strategist', slug: 'strategist', displayName: 'Strategist', aliases: ['Strategin'] },
-  { agentId: 'a-mira', slug: 'mira-sales', displayName: 'Mira' },
-  { agentId: 'a-odoo', slug: 'odoo', displayName: 'Odoo' },
+  ...GUARD_COLLEAGUES,
 ];
 
 const self = { agentId: assistant.agentId, slug: assistant.slug, displayName: assistant.displayName };
-
-const BLOCKED: Array<[string, string]> = [
-  ['self-rename EN', 'Hi, I am the Strategist and I will plan this with you.'],
-  ['self-rename EN contraction', "I'm Strategist. Let's look at your market."],
-  ['self-rename DE', 'Hallo, ich bin der Strategist und helfe dir bei der Planung.'],
-  ['self-rename DE alias', 'Hier spricht die Strategin. Ich sehe drei Optionen.'],
-  ['quote EN', 'The Strategist says you should enter the Austrian market first.'],
-  ['quote EN according to', 'According to Mira, the deal closes next week.'],
-  ['quote EN possessive', "Mira's recommendation is to wait for Q3."],
-  ['quote DE', 'Der Strategist meint, ihr solltet zuerst nach Österreich gehen.'],
-  ['quote DE laut', 'Laut Mira schließt der Deal nächste Woche.'],
-  ['quote DE possessive', 'Miras Einschätzung: lieber bis Q3 warten.'],
-  ['invented statement after a consultation', 'Mira hat bestätigt, dass der Rabatt in Ordnung ist.'],
-  ['name line', 'Strategist: Fokus auf Bestandskunden.'],
-  ['human EN', 'I am a real person, not an AI.'],
-  ['human EN not a bot', "Don't worry, I'm not a bot."],
-  ['human DE', 'Ich bin Anna aus dem Vertrieb, kein Bot.'],
-  ['human DE Mensch', 'Ich bin ein echter Mensch und lese alles selbst.'],
-];
 
 const PASSED: Array<[string, string]> = [
   ['plain mention EN', 'Mira can help with that, write to her directly.'],
@@ -190,23 +171,6 @@ describe('identity guard — model layer', () => {
   });
 });
 
-/** Deterministic pseudo-random chunking, so a failure is reproducible. */
-function chunk(text: string, seed: number): string[] {
-  let state = seed;
-  const next = (): number => {
-    state = (state * 1103515245 + 12345) % 2147483648;
-    return state / 2147483648;
-  };
-  const parts: string[] = [];
-  let i = 0;
-  while (i < text.length) {
-    const size = 1 + Math.floor(next() * 7);
-    parts.push(text.slice(i, i + size));
-    i += size;
-  }
-  return parts;
-}
-
 async function streamThroughGate(
   text: string,
   seed: number,
@@ -227,7 +191,7 @@ describe('identity guard — streaming', () => {
 
   for (const [name, text] of BLOCKED) {
     it(`blocks with random chunk boundaries: ${name}`, async () => {
-      for (const seed of [1, 7, 42, 1234, 99991]) {
+      for (const seed of CHUNK_SEEDS) {
         const { visible, blocked } = await streamThroughGate(`Gern. ${text} Mehr dazu gleich.`, seed, guard);
         assert.ok(blocked, `seed ${seed}: not blocked`);
         assert.equal(visible, 'Gern. ', `seed ${seed}: published "${visible}"`);

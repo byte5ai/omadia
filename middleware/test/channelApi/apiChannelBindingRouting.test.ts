@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 
 import express from 'express';
 import type { ChatAgent, ChatAgentBundle, ChatStreamEvent } from '@omadia/channel-sdk';
-import { buildSystemNotice } from '@omadia/orchestrator';
+import { buildSystemNotice, withSpeaker } from '@omadia/orchestrator';
 
 import { createApiKeyStore } from '../../packages/harness-api-key-auth/src/apiKeyStore.js';
 import { createAuditLog } from '../../packages/harness-api-key-auth/src/auditLog.js';
@@ -142,6 +142,46 @@ describe('channelApi — end-to-end binding routing (#1106)', () => {
 
     assert.equal(done?.['answer'], notice.text, 'the notice is the answer');
     assert.notEqual(done?.['answer'], 'shared-agent');
+    // criterion 5 (public API): the refusal is spoken by `system`.
+    assert.deepEqual(done?.['speaker'], { kind: 'system' });
+    assert.equal((done?.['systemNotice'] as { code?: string } | undefined)?.code, 'no_agent');
+  });
+
+  it("criterion 5: the public API's done event carries the speaker: the agent for its answer, system for a refused key", async () => {
+    const strategist = { kind: 'agent', agentId: 'a-strategist', slug: 'strategist', displayName: 'Strategist' } as const;
+    // What the channelResolver hands out on `bound`: the management layer over
+    // the agent's runtime, which `buildOrchestratorForAgent` wraps in `withSpeaker`.
+    const boundKeys = new Set<string>();
+    const { client, apiKeys } = startServer({
+      fallback: tagAgent('shared-agent'),
+      resolveBinding: (channelType, channelKey) =>
+        boundKeys.has(channelKey)
+          ? managementChatAgent(withSpeaker(tagAgent('strategist-answer'), strategist), {
+              channelType,
+              conversationKey: channelKey,
+            })
+          : managementChatAgent(undefined, { channelType, conversationKey: channelKey }),
+    });
+    const bound = await apiKeys.create({ label: 'bound' });
+    const refused = await apiKeys.create({ label: 'refused' });
+    boundKeys.add(channelKeyOf(bound.record.id));
+
+    const ask = async (bearer: string): Promise<Record<string, unknown> | undefined> => {
+      const res = await client.fetch('/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer}` },
+        body: JSON.stringify({ message: 'hi' }),
+      });
+      return parseNdjson(await res.text()).find((e) => e['type'] === 'done');
+    };
+
+    const answered = await ask(bound.token);
+    assert.equal(answered?.['answer'], 'strategist-answer');
+    assert.deepEqual(answered?.['speaker'], strategist);
+
+    const notice = await ask(refused.token);
+    assert.deepEqual(notice?.['speaker'], { kind: 'system' });
+    assert.notEqual(notice?.['answer'], 'shared-agent');
   });
 
   it('without a resolver answer (Postgres-less) the static dispatch_service serves', async () => {

@@ -19,7 +19,7 @@ import {
  *
  * Express cannot unmount, so `PluginRouteRegistry` flips entries to
  * `disposed` and the mounted closure falls through to `next()`.
- * `DynamicAgentRuntime` calls `disposeBySource` on deactivate;
+ * The retired agent runtime called `disposeBySource` on deactivate;
  * `ToolPluginRuntime` held the same dependency and threaded it into every
  * plugin context, but never disposed by source — so an uninstalled tool
  * plugin kept serving its routes, and because Express matches

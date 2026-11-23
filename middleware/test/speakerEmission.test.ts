@@ -4,8 +4,8 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { ChatAgent, ChatStreamEvent, SemanticAnswer } from '@omadia/channel-sdk';
-import { SYSTEM_SPEAKER, type AgentSpeaker } from '@omadia/plugin-api';
+import type { ChatAgent, ChatStreamEvent, SemanticAnswer, TargetedMessage, TargetedSendProvider } from '@omadia/channel-sdk';
+import { SYSTEM_SPEAKER, type AgentSpeaker, type Contribution } from '@omadia/plugin-api';
 
 import { withSpeaker, speakerOf, emitterOf } from '../packages/harness-orchestrator/src/management/speakingChatAgent.js';
 import {
@@ -16,6 +16,10 @@ import { IdentityGuard } from '../packages/harness-orchestrator/src/identityGuar
 import { withIdentityGuard } from '../packages/harness-orchestrator/src/identityGuard/guardedChatAgent.js';
 import type { GuardDirectoryEntry } from '../packages/harness-orchestrator/src/identityGuard/deterministic.js';
 import { publishRoutineAnswer } from '../src/plugins/routines/routineRunner.js';
+import { createTargetedDeliveryService } from '../src/channels/targetedDeliveryService.js';
+import type { TargetedSendRegistry } from '../src/channels/targetedSendRegistry.js';
+
+import { BLOCKED, CHUNK_SEEDS, GUARD_COLLEAGUES, chunk } from './_helpers/identityGuardCases.js';
 
 /**
  * #2045 / #2046 — spec 2042 §6 criteria 2 and 5 at the agent boundary: every
@@ -28,7 +32,7 @@ import { publishRoutineAnswer } from '../src/plugins/routines/routineRunner.js';
 const lena: AgentSpeaker = { kind: 'agent', agentId: 'id-lena', slug: 'lena', displayName: 'Lena' };
 const directory: GuardDirectoryEntry[] = [
   { agentId: 'id-lena', slug: 'lena', displayName: 'Lena' },
-  { agentId: 'id-strategist', slug: 'strategist', displayName: 'Strategist' },
+  ...GUARD_COLLEAGUES,
 ];
 
 function emitter(judge: 'pass' | 'block' | 'hang' = 'pass'): AgentAnswerEmitter {
@@ -51,16 +55,20 @@ function emitter(judge: 'pass' | 'block' | 'hang' = 'pass'): AgentAnswerEmitter 
   });
 }
 
-function scripted(text: string, chunks?: readonly string[]): ChatAgent & { extra: () => string } {
+function scripted(
+  text: string,
+  chunks?: readonly string[],
+  contributions?: readonly Contribution[],
+): ChatAgent & { extra: () => string } {
   return {
     extra: () => 'forwarded',
     offeredToolNames: () => new Set(['odoo_read']),
     async chat(): Promise<SemanticAnswer> {
-      return { text };
+      return { text, ...(contributions ? { contributions } : {}) };
     },
     async *chatStream(): AsyncGenerator<ChatStreamEvent> {
       for (const part of chunks ?? [text]) yield { type: 'text_delta', text: part };
-      yield { type: 'done', answer: text, toolCalls: 0, iterations: 1 };
+      yield { type: 'done', answer: text, toolCalls: 0, iterations: 1, ...(contributions ? { contributions } : {}) };
     },
   };
 }
@@ -76,9 +84,14 @@ async function drain(agent: ChatAgent): Promise<{ deltas: string; done: Extract<
   return { deltas, done };
 }
 
-function bundle(text: string, chunks?: readonly string[], judge: 'pass' | 'block' | 'hang' = 'pass'): ChatAgent {
+function bundle(
+  text: string,
+  chunks?: readonly string[],
+  judge: 'pass' | 'block' | 'hang' = 'pass',
+  contributions?: readonly Contribution[],
+): ChatAgent {
   const e = emitter(judge);
-  return withSpeaker(withIdentityGuard(scripted(text, chunks), e), lena, e);
+  return withSpeaker(withIdentityGuard(scripted(text, chunks, contributions), e), lena, e);
 }
 
 describe('speaker stamping (#2045)', () => {
@@ -199,6 +212,77 @@ describe('identity guard at the agent boundary (#2046)', () => {
   });
 });
 
+describe('criterion 2: every blocked case end to end through the agent wrapper', () => {
+  for (const [name, text] of BLOCKED) {
+    it(`criterion 2: non-streaming, ${name} → system notice`, async () => {
+      const answer = await bundle(text).chat({ userMessage: 'x' });
+      assert.deepEqual(answer.speaker, SYSTEM_SPEAKER, text);
+      assert.equal(answer.systemNotice?.code, 'identity_guard_blocked', text);
+      assert.equal(answer.text, answer.systemNotice?.text);
+    });
+
+    it(`criterion 2: streaming with random chunk boundaries, ${name} → system notice`, async () => {
+      for (const seed of CHUNK_SEEDS) {
+        const alone = await drain(bundle(text, chunk(text, seed)));
+        assert.equal(alone.deltas, '', `seed ${String(seed)}: published "${alone.deltas}"`);
+        assert.deepEqual(alone.done.speaker, SYSTEM_SPEAKER, `seed ${String(seed)}`);
+        assert.equal(alone.done.systemNotice?.code, 'identity_guard_blocked', `seed ${String(seed)}`);
+        assert.equal(alone.done.answer, alone.done.systemNotice?.text);
+
+        const framed = `Gern. ${text} Mehr dazu gleich.`;
+        const after = await drain(bundle(framed, chunk(framed, seed)));
+        assert.equal(after.deltas, 'Gern. ', `seed ${String(seed)}: published "${after.deltas}"`);
+        assert.equal(after.done.systemNotice?.code, 'identity_guard_blocked', `seed ${String(seed)}`);
+        assert.ok(after.done.answer.endsWith(after.done.systemNotice.text), `seed ${String(seed)}`);
+        assert.doesNotMatch(after.done.answer, /Mehr dazu gleich/);
+      }
+    });
+  }
+
+  const mira: AgentSpeaker = { kind: 'agent', agentId: 'a-mira', slug: 'mira-sales', displayName: 'Mira' };
+  const delivered: Contribution = {
+    id: 'contribution-1',
+    speaker: mira,
+    text: 'Der Rabatt von 5 % ist für diesen Kunden in Ordnung.',
+    status: 'delivered',
+  };
+
+  it('criterion 2: a real contribution was delivered and A quotes it in its own words → system notice, the contribution stays', async () => {
+    const paraphrase = 'Mira said: the discount is fine, so we can send the offer.';
+    const answer = await bundle(paraphrase, undefined, 'pass', [delivered]).chat({ userMessage: 'x', locale: 'en' });
+    assert.equal(answer.systemNotice?.code, 'identity_guard_blocked');
+    assert.deepEqual(answer.speaker, SYSTEM_SPEAKER);
+    assert.doesNotMatch(answer.text, /send the offer/);
+    // INV-5: A cannot suppress B's delivered block, also not by being blocked.
+    assert.deepEqual(answer.contributions, [delivered]);
+
+    for (const seed of CHUNK_SEEDS) {
+      const { deltas, done } = await drain(bundle(paraphrase, chunk(paraphrase, seed), 'pass', [delivered]));
+      assert.equal(deltas, '', `seed ${String(seed)}`);
+      assert.equal(done.systemNotice?.code, 'identity_guard_blocked', `seed ${String(seed)}`);
+      assert.deepEqual(done.contributions, [delivered], `seed ${String(seed)}`);
+    }
+  });
+
+  it('criterion 2: after a delivered contribution, an invented statement in English and German is still blocked', async () => {
+    for (const text of ['Mira confirmed that the discount is fine.', 'Mira hat bestätigt, dass der Rabatt in Ordnung ist.']) {
+      const answer = await bundle(text, undefined, 'pass', [delivered]).chat({ userMessage: 'x' });
+      assert.equal(answer.systemNotice?.code, 'identity_guard_blocked', text);
+      const { done } = await drain(bundle(text, chunk(text, 42), 'pass', [delivered]));
+      assert.equal(done.systemNotice?.code, 'identity_guard_blocked', text);
+    }
+  });
+
+  it('criterion 2: a paraphrase only the model layer catches is blocked through the wrapper, streamed and not', async () => {
+    const text = 'As Mira put it, the discount is fine.';
+    const answer = await bundle(text, undefined, 'block', [delivered]).chat({ userMessage: 'x' });
+    assert.equal(answer.systemNotice?.code, 'identity_guard_blocked');
+    const { deltas, done } = await drain(bundle(text, chunk(text, 7), 'block', [delivered]));
+    assert.equal(deltas, '');
+    assert.equal(done.systemNotice?.code, 'identity_guard_blocked');
+  });
+});
+
 describe('the typed emitter (#2045)', () => {
   it('a template with registered id and typed values publishes without a model call', async () => {
     const outcome = await emitter('hang').emit({
@@ -303,4 +387,100 @@ describe('every emitter names its speaker (criterion 5)', () => {
     const unaccounted = found.filter((file) => EMITTERS[file] === undefined);
     assert.deepEqual(unaccounted, [], 'new emitter(s) without a speaker stamp — add them to EMITTERS with the stamp that covers them');
   });
+
+  it('criterion 5: every proactive post path (say, conversation send, DM, trigger and routine delivery, reminders) is enumerated and carries a speaker', () => {
+    const found = kernelSources()
+      .filter((file) => POSTS.test(readFileSync(file, 'utf8')))
+      .map((file) => path.relative(MIDDLEWARE, file).split(path.sep).join('/'))
+      .sort();
+    assert.deepEqual(
+      found.filter((file) => PROACTIVE_POSTS[file] === undefined),
+      [],
+      'new proactive post path(s) — add them to PROACTIVE_POSTS with the stamp that names the speaker',
+    );
+    for (const [file, { stamp, proofIn, proof }] of Object.entries(PROACTIVE_POSTS)) {
+      assert.ok(found.includes(file), `${file} no longer posts — remove it from PROACTIVE_POSTS`);
+      const source = readFileSync(path.join(MIDDLEWARE, proofIn ?? file), 'utf8');
+      assert.match(source, proof, `${file}: the speaker stamp is gone (${stamp})`);
+    }
+  });
+
+  it('criterion 5: a DM through the shared bot reaches the channel with the system speaker', async () => {
+    const seen: TargetedMessage[] = [];
+    const provider: TargetedSendProvider = {
+      channelType: 'teams',
+      sendToUser: async (_target, message) => {
+        seen.push(message);
+        return { outcome: 'delivered' };
+      },
+    };
+    const service = createTargetedDeliveryService({
+      providers: { get: () => provider } as unknown as TargetedSendRegistry,
+    });
+    const report = await service.sendToPrincipal({ channelType: 'teams', principal: 'user:anna', message: { text: 'Bitte freigeben.' } });
+    assert.equal(report.deliveries[0]?.outcome.outcome, 'delivered');
+    assert.deepEqual(seen[0]?.speaker, SYSTEM_SPEAKER);
+  });
 });
+
+/**
+ * Criterion 5, proactive half — a kernel call that posts into a channel
+ * outside a turn's answer. The stamp names the speaker: an agent's own
+ * channel identity (`asChannelKey`, refused when the agent has none), a
+ * stamped `SemanticAnswer.speaker`, or `system` for the harness's own
+ * messages. `proof` must stay in the source (in `proofIn` when the stamp is
+ * set before the message reaches the sending file).
+ */
+const PROACTIVE_POSTS: Readonly<Record<string, { stamp: string; proof: RegExp; proofIn?: string }>> = {
+  'src/conductor/sayService.ts': {
+    stamp: 'facilitation say: posted as the agent’s own identity, never another bot',
+    proof: /asChannelKey: identity\.channelKey/,
+  },
+  'src/channels/conversationSendService.ts': {
+    stamp: 'conversationSend@1: posted as the requesting agent’s own identity (agentSlug)',
+    proof: /provider\.sendToConversation\(input\.conversationId, marked\.message, \{ asChannelKey \}\)/,
+  },
+  'src/channels/scopedSendService.ts': {
+    stamp: 'scoped conversation send: delegates to conversationSendService with the agentSlug',
+    proof: /agentSlug: request\.agentSlug/,
+  },
+  'src/channels/ownIdentityDirectSend.ts': {
+    stamp: 'targetedSend asAgentSlug: DM as the agent’s own identity',
+    proof: /asChannelKey: identity\.channelKey/,
+  },
+  'src/channels/targetedDeliveryService.ts': {
+    stamp: 'targetedSend through the shared bot: speaker system',
+    proof: /\{ \.\.\.message, speaker: SYSTEM_SPEAKER \}/,
+  },
+  'src/triggers/proactiveGate.ts': {
+    stamp: 'trigger delivery: the trigger owner’s speaker, stamped by the kernel executors',
+    proofIn: 'src/triggers/kernelExecutors.ts',
+    proof: /const speaker = deps\.speakerOf\?\.\(trigger\.agentSlug\);\s*return deps\.gate\.send\(trigger, speaker \? \{ \.\.\.message, speaker \} : message\)/,
+  },
+  'src/plugins/routines/routineRunner.ts': {
+    stamp: 'routine delivery: publishRoutineAnswer through the agent emitter',
+    proof: /const answer = await asAgentTurn\(\(\) => publishRoutineAnswer\(orchestrator, finished\)\);\s*await sender\.send\(\{\s*conversationRef: fresh\.conversationRef,\s*message: answer,/,
+  },
+  'src/conductor/awaitWorker.ts': {
+    stamp: 'workflow reminder: speaker system',
+    proof: /message: \{ text, speaker: SYSTEM_SPEAKER \}/,
+  },
+  'src/index.ts': {
+    stamp: 'routine renewal question: speaker system',
+    proof: /conversationRef: routine\.conversationRef, message: \{ text, speaker: SYSTEM_SPEAKER \}/,
+  },
+};
+
+const POSTS = /\.sendToConversation\(|\.sendToUser\(|\.send\(\s*\{\s*conversationRef/;
+
+function kernelSources(): string[] {
+  return [path.join(MIDDLEWARE, 'src'), ...readdirSync(path.join(MIDDLEWARE, 'packages')).map((p) => path.join(MIDDLEWARE, 'packages', p, 'src'))]
+    .filter((root) => {
+      try {
+        return statSync(root).isDirectory();
+      } catch {
+        return false;
+      }
+    })
+    .flatMap((root) => sources(root));
+}

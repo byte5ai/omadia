@@ -190,13 +190,10 @@ import { describeSandboxResourceLimits, readSandboxResourceLimits } from './sand
  * `serviceRegistry.provide('nativeToolRegistry', ntr)` before
  * activateAllInstalled, and we late-resolve here.
  *
- * **DomainTools**: constructed empty here. The kernel's
- * `dynamicAgentRuntime.attachOrchestrator(bundle.raw)` call (post-
- * activate) registers each uploaded agent's tool via
- * `Orchestrator.registerDomainTool`. Kernel-built native sub-agents
- * (calendar, accounting, hr, confluence-playbook) similarly use
- * registerDomainTool from their kernel construction sites — no
- * change to the agent-side flow.
+ * **DomainTools**: constructed empty here. The kernel registers each
+ * Agent's DB-defined sub-agent tools on the registry's orchestrators via
+ * `Orchestrator.registerDomainTool` once the registry exists. Plugins
+ * contribute no domain tools (spec 2042 §5.10).
  *
  * **Always-Register-Bootstrap-Pattern (S+9.1 Rule #8)**: activate() is
  * tolerant of missing config. Without `anthropic_api_key`, the plugin
@@ -208,8 +205,7 @@ import { describeSandboxResourceLimits, readSandboxResourceLimits } from './sand
  * **S+10-4b** (next sub-commit): Teams + Telegram channel manifests
  * gain `requires: ["chatAgent@^1"]` and their plugin.ts files
  * late-resolve `chatAgent` from `ctx.services.get` instead of taking
- * it as a kernel-passed dep. After 4b the kernel only needs to
- * `attachOrchestrator` the dynamic-agent runtime; channels self-wire.
+ * it as a kernel-passed dep. Channels self-wire.
  */
 
 const CHAT_AGENT_SERVICE = 'chatAgent';
@@ -299,8 +295,8 @@ const DEFAULT_MAX_TURN_SECONDS = 0;
 /**
  * Public shape of the `chatAgent@1` capability. Channel-plugins (Teams,
  * Telegram, the kernel-side HTTP /api/chat route) consume `agent` for
- * `chat()` / `chatStream()`. The kernel late-resolves `raw` to wire the
- * `dynamicAgentRuntime.attachOrchestrator` call. `sessionLogger` and
+ * `chat()` / `chatStream()`. The kernel late-resolves `raw` for its own
+ * wiring. `sessionLogger` and
  * `chatSessionStore` are exposed because the kernel still owns the
  * graphBackfill (sessionLogger) call and the `/api/chat/sessions` route
  * (chatSessionStore) — both consume the plugin-owned instances rather

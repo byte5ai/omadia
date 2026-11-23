@@ -13,15 +13,18 @@ import { describe, it } from 'node:test';
 
 import type { ChatStreamEvent, ChatTurnInput } from '@omadia/channel-sdk';
 import type { LlmProvider, LlmRequest, LlmResponse, LlmStreamEvent } from '@omadia/llm-provider';
-import type { KnowledgeGraph } from '@omadia/plugin-api';
+import { InMemoryNudgeRegistry, type KnowledgeGraph } from '@omadia/plugin-api';
 import {
   addTurnLabels,
+  buildForAgent,
   NativeToolRegistry,
   Orchestrator,
   readersOf,
   ToolReplayLedger,
   turnContext,
+  type AgentRow,
   type DiscretionPort,
+  type OrchestratorDeps,
   type OrchestratorOptions,
 } from '@omadia/orchestrator';
 
@@ -62,7 +65,7 @@ function scriptedProvider(requests: LlmRequest[]): LlmProvider {
   } as unknown as LlmProvider;
 }
 
-function build(requests: LlmRequest[], extra: Partial<OrchestratorOptions> = {}, onRead?: () => void): Orchestrator {
+function deliverDataRegistry(onRead?: () => void): NativeToolRegistry {
   const registry = new NativeToolRegistry();
   const runner = createDataActionRunner(() =>
     new Map([
@@ -79,13 +82,17 @@ function build(requests: LlmRequest[], extra: Partial<OrchestratorOptions> = {},
     handler: createDeliverDataHandler({ dataActions: runner }),
     spec: deliverDataToolSpec,
   });
+  return registry;
+}
+
+function build(requests: LlmRequest[], extra: Partial<OrchestratorOptions> = {}, onRead?: () => void): Orchestrator {
   return new Orchestrator({
     provider: scriptedProvider(requests),
     model: 'test',
     maxTokens: 1024,
     maxToolIterations: 3,
     domainTools: [],
-    nativeToolRegistry: registry,
+    nativeToolRegistry: deliverDataRegistry(onRead),
     ...extra,
   });
 }
@@ -214,5 +221,45 @@ describe('#2085 side channel through the orchestrator', () => {
     );
     assert.equal(done.data, undefined, 'the streamed done carries no rows either');
     assert.equal(done.answer.includes(SECRET_ROW), false);
+  });
+
+  it('criterion 25: the agent\'s table reaches the user under the agent\'s identity with AI disclosure; the model sees only the status', async () => {
+    const requests: LlmRequest[] = [];
+    const agentRow = {
+      id: '00000000-0000-0000-0000-0000000000a1',
+      slug: 'buchhaltung',
+      name: 'Buchhaltung',
+      identityName: 'Berta',
+      description: null,
+      privacyProfile: 'default',
+      status: 'enabled',
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    } as unknown as AgentRow;
+    const deps = {
+      provider: scriptedProvider(requests),
+      knowledgeGraph: {} as KnowledgeGraph,
+      memoryStore: {},
+      nativeToolRegistry: deliverDataRegistry(),
+      nudgeRegistry: new InMemoryNudgeRegistry(),
+      responseGuard: () => undefined,
+      privacyGuard: () => undefined,
+    } as unknown as OrchestratorDeps;
+    const built = buildForAgent(agentRow, deps, { model: 'test', maxTokens: 1024, maxToolIterations: 3 });
+
+    const answer = await built.bundle.agent.chat({ userMessage: 'Offene Rechnungen von Müller?', sessionScope: 'sc-25' });
+    assert.deepEqual(answer.speaker, { kind: 'agent', agentId: agentRow.id, slug: 'buchhaltung', displayName: 'Berta' });
+    assert.equal(answer.data?.length, 1, 'the table reached the user');
+    assert.ok(answer.text.includes(`| ${SECRET_ROW} | 1234.5 |`));
+    assert.ok(answer.aiDisclosure, 'with AI disclosure');
+    assert.ok(answer.text.endsWith(answer.aiDisclosure.text));
+    const done = await streamDone(built.bundle.agent as unknown as Orchestrator, { userMessage: 'Offene Rechnungen von Müller?', sessionScope: 'sc-25b' });
+    assert.equal(done.speaker?.kind === 'agent' && done.speaker.agentId, agentRow.id);
+    assert.equal(done.data?.length, 1);
+    assert.ok(done.aiDisclosure);
+    // The model's trace: status (row count, columns), never a row.
+    assert.equal(modelSaw(requests).includes(SECRET_ROW), false, 'a row reached the model');
+    assert.ok(modelSaw(requests).includes('"rows\\":1'), 'the model got the row count');
+    assert.match(modelSaw(requests), /number.*amount/, 'and the columns');
   });
 });

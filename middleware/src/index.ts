@@ -104,15 +104,17 @@ import {
   BATCH_JOB_REGISTRY_SERVICE,
   MAINTENANCE_RUN_SERVICE_NAME,
   MODEL_PASSTHROUGH_SERVICE_NAME,
+  AGENT_DIRECTORY_SERVICE_NAME,
   AGENT_ENVELOPE_SERVICE_NAME,
   OPERATOR_JOBS_SERVICE_NAME,
   TRANSCRIPTION_SERVICE_NAME,
   TURN_RECEIPT_STORE_SERVICE_NAME,
+  nativeToolDispatchText,
   perCallerService,
   type MaintenanceRunService,
 } from '@omadia/plugin-api';
 import { createModelPassthrough, systemModuleOnlyService } from './platform/modelPassthrough.js';
-import { archetypeProcessesServiceName, type ArchetypeProcessesService } from '@omadia/plugin-api';
+import { archetypeProcessesServiceName, SYSTEM_SPEAKER, type ArchetypeProcessesService } from '@omadia/plugin-api';
 import type { TranscriptionService } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
 import { createReceiptRoutes } from './receipts/routes.js';
@@ -184,9 +186,6 @@ import { createClassDefaultRebuilder } from './platform/classDefaultRebuild.js';
 import {
   createOrchestratorToolRebinder,
   hydrateAgentRegistry,
-  kernelDomainTools,
-  liveDomainTools,
-  reconcileDomainToolAcrossAgents,
 } from './agents/runtimeToolPropagation.js';
 // `/attachments/<signed-key>` is now mounted by the de.byte5.channel.teams
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
@@ -426,7 +425,8 @@ import {
   OAuthBrokerService,
   PendingFlowStore,
 } from './plugins/oauth/index.js';
-import { DynamicAgentRuntime } from './plugins/dynamicAgentRuntime.js';
+import { blockRetiredAgentPlugins, noRuntimeError } from './plugins/retiredAgentPlugins.js';
+import { invokePluginTool, pluginToolOwner } from './platform/pluginToolInvoker.js';
 import { JobScheduler } from './plugins/jobScheduler.js';
 import { MigrationRunner } from './plugins/migrationRunner.js';
 import { PackageUploadService } from './plugins/packageUploadService.js';
@@ -458,7 +458,11 @@ import { publishSendServices } from './channels/sendServicesWiring.js';
 import { publishAgentTurnService } from './agents/agentTurnWiring.js';
 import { ChannelProviderRegistry } from './channels/sessionCapabilities/providerRegistry.js';
 import { wireSessionCapabilities } from './channels/sessionCapabilities/wiring.js';
-import { attachEngineToFacilitators, syncArchetypesAndAttachEngine } from './platform/facilitatorEngineAttach.js';
+import {
+  attachEngineToFacilitators,
+  revokeForeignArchetypeGrants,
+  syncArchetypesAndAttachEngine,
+} from './platform/facilitatorEngineAttach.js';
 import { createArchetypeRegistrySync } from './platform/archetypeRegistrySync.js';
 import { wireExecutionAuthorization, type ExecutionWiring } from './execution/wiring.js';
 import { AddressedMessageRouter } from './channels/addressedMessageRouter.js';
@@ -479,6 +483,7 @@ import { createOperatorTriggersRouter } from './routes/operatorTriggers.js';
 import { createAgentTemplatesRouter } from './routes/agentTemplates.js';
 import { createSetupOptionsResolver } from './plugins/setupOptionsResolver.js';
 import { createModelGatewayStatusRouter } from './routes/modelGatewayStatus.js';
+import { agentDirectoryService } from './platform/agentDirectoryService.js';
 import { agentEnvelopeService } from './platform/agentEnvelopeService.js';
 import {
   BULK_PROMOTION,
@@ -1144,8 +1149,6 @@ async function main(): Promise<void> {
   // and provides the runtime instances via ctx.services.provide. Kernel
   // late-resolves them after `toolPluginRuntime.activateAllInstalled()`.
 
-  const domainTools: DomainTool[] = [];
-
   // ────────────────────────────────────────────────────────────────────────
   // Harness Platform runtime — catalog, vault, installed registry, install
   // service. Lives before any sub-agent construction so every sub-agent can
@@ -1767,69 +1770,18 @@ async function main(): Promise<void> {
   });
   modelCatalogSync.start(config.LLM_MODEL_DISCOVERY_INTERVAL_MS);
 
-  // Dynamic runtime for uploaded packages — wired up with the orchestrator
-  // further below, once it exists. The install/uninstall service hooks in
-  // so tools are hot-registered and torn down (without middleware restart).
-  const dynamicAgentRuntime = new DynamicAgentRuntime({
-    catalog: pluginCatalog,
-    registry: installedRegistry,
-    vault: secretVault,
-    uploadedStore: uploadedPackageStore,
-    builtInStore: builtInPackageStore,
-    anthropic: client,
-    subAgentModel: config.SUB_AGENT_MODEL,
-    subAgentMaxTokens: config.SUB_AGENT_MAX_TOKENS,
-    subAgentMaxIterations: config.SUB_AGENT_MAX_ITERATIONS,
-    ...(config.SUB_AGENT_EFFORT !== undefined ? { subAgentEffort: config.SUB_AGENT_EFFORT } : {}),
-    // Dynamic sub-agents inherit the orchestrator's configured provider so the
-    // stack runs on any provider (incl. OpenAI-only, no Anthropic key). Both are
-    // late-bound: a post-boot provider/key change is picked up on next build.
-    hostProviderId: () => {
-      const raw = installedRegistry.get('@omadia/orchestrator')?.config?.[
-        'llm_provider'
-      ];
-      return typeof raw === 'string' && raw.trim().length > 0
-        ? raw.trim()
-        : 'anthropic';
-    },
-    hostGetSecret: (key: string) => secretVault.get('@omadia/orchestrator', key),
-    providerPool: kernelProviderPool,
-    serviceRegistry,
-    nativeToolRegistry,
-    pluginRouteRegistry,
-    // S3-G — Builder agents claim declared public paths like the tool runtime.
-    publicPathGrants,
-    publicPathGrantStore,
-    corePublicPaths: publicPaths(),
-    notificationRouter,
-    uiRouteCatalog,
-    jobScheduler,
-    flowSigningKey: sessionSigningKey,
-    flowPublicBaseUrl,
-    pluginStatusRegistry,
-    operatorAuth,
-    oauthConnectionTracker,
-    canvasOutputRegistry,
-    eventCatalogRegistry,
-    deterministicActionRegistry,
-    log: (...a) => console.log(...a),
-  });
   // agentToolInvoker — the kernel half of the deterministic-action fast-path.
-  // Lets the ui-orchestrator run ONE agent-plugin tool by id directly (no
-  // sub-agent model loop) when a canvas action names a deterministic tool.
-  // Also exposes the optional streaming variant (`hasStream` + `invokeStream`)
-  // for tools whose raw UploadedToolkit entry carries `runStream()`. This
-  // deliberately does NOT add these tools to the main orchestrator's offered-
-  // tool list, so agent isolation is preserved.
+  // Lets the ui-orchestrator run ONE plugin tool by id directly (no model
+  // loop) when a canvas action names a deterministic tool. This deliberately
+  // does NOT add these tools to the main orchestrator's offered-tool list.
+  // Spec 2042 §5.10 — the tools are the ones capability plugins registered
+  // with the kernel; plugin tools have no streaming variant.
   //
   // #1598 — the canvas runs on the standard orchestrator (chatAgent@1), so a
   // tool reached here must belong to a plugin assigned to it. Without a
   // registry (Postgres-less boot) there is no assignment to check.
-  const standardOrchestratorGrants = (
-    toolId: string,
-    kind: 'invoke' | 'stream',
-  ): boolean => {
-    const owner = dynamicAgentRuntime.ownerOfAgentTool(toolId, kind);
+  const standardOrchestratorGrants = (toolId: string): boolean => {
+    const owner = pluginToolOwner(nativeToolRegistry, toolId);
     if (owner === undefined) return true; // nothing to run — invoke answers undefined
     const registry =
       serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
@@ -1841,22 +1793,16 @@ async function main(): Promise<void> {
   };
   serviceRegistry.provide('agentToolInvoker', {
     invoke: (toolId: string, input: unknown): Promise<string | undefined> =>
-      standardOrchestratorGrants(toolId, 'invoke')
-        ? dynamicAgentRuntime.invokeAgentTool(toolId, input)
+      standardOrchestratorGrants(toolId)
+        ? invokePluginTool(nativeToolRegistry, toolId, input)
         : Promise.resolve(undefined),
-    hasStream: (toolId: string): boolean =>
-      standardOrchestratorGrants(toolId, 'stream') &&
-      dynamicAgentRuntime.hasStreamingTool(toolId),
-    invokeStream: (toolId: string, input: unknown): AsyncGenerator<string> =>
-      standardOrchestratorGrants(toolId, 'stream')
-        ? dynamicAgentRuntime.invokeAgentToolStream(toolId, input)
-        : (async function* () {})(),
+    hasStream: (): boolean => false,
+    invokeStream: (): AsyncGenerator<string> => (async function* () {})(),
   });
 
-  // Runtime for `kind: tool` / `kind: extension` plugins. These don't expose
-  // a toolkit like agent plugins — their activate() registers directly into
-  // the kernel's native-tool / route registries. Same package sources as
-  // DynamicAgentRuntime; the two runtimes coordinate by kind-filtering.
+  // Runtime for capability, model, archetype and system-module plugins
+  // (`pluginRuntimeOf` → `tool`). Their activate() registers directly into
+  // the kernel's native-tool / route registries.
   // Service-type auto-discovery (no-restart): tracks which `serviceTypeRegistry`
   // names each plugin registered at activation, so deactivation can
   // unregister EXACTLY those — independent of whether the catalog entry still
@@ -1951,6 +1897,8 @@ async function main(): Promise<void> {
     oauthConnectionTracker,
     selfExtendRegistry,
     extensionStore,
+    canvasOutputRegistry,
+    deterministicActionRegistry,
     eventCatalogRegistry,
     // When an integration plugin activates — at boot OR via a live hot-
     // install — register every `manifest.service_types` entry into the
@@ -2053,75 +2001,15 @@ async function main(): Promise<void> {
   // request arrives, the assignment there has already run.
   let conductorWebhookInboundDepsRef: ConductorWebhookInboundDeps | undefined;
 
-  // Forward refs — runtime propagation of a POST-BOOT agent-plugin
-  // (de)activation into the per-Agent registry orchestrators + the fallback
-  // Agent's enabled-plugin set. Assigned in the orchestrator-wiring block far
-  // below (they need `registryForHydrate` + `currentDomainTools`). The install
-  // hooks only fire at runtime, after assignment; when chat is disabled (no
-  // orchestrator) they stay undefined and the `?.` calls no-op. Without this,
-  // a plugin installed at runtime (operator install, Hub/registry install,
-  // package re-upload, or self-extension) only reaches the single legacy
-  // orchestrator — un-slugged chat routes to the fallback Agent, whose
-  // per-Agent orchestrator never learned the new tool, so it behaves as if the
-  // plugin were never activated.
-   
-  // --- Runtime plugin (de)activation propagation ------------------------
-  // A plugin (de)activated AFTER boot (operator install, Hub/registry
-  // install, package re-upload, self-extension) mutates only the standalone
-  // `dynamicAgentRuntime` + the single legacy orchestrator. The per-Agent
-  // registry orchestrators — which the chat router resolves for every turn,
-  // falling back to the fallback Agent for un-slugged turns — are a boot
-  // snapshot that the install path must reconcile.
-  //
-  // These closures are defined UNCONDITIONALLY here (not gated on the
-  // boot-time `orchestrator` being present) and resolve `configStore` /
-  // `orchestratorRegistry` LIVE from the serviceRegistry on every call.
-  // Previously they were assigned inside the `if (orchestrator) { … }`
-  // boot block, so on a chat-DISABLED boot (no ANTHROPIC_API_KEY at start —
-  // the keyless first-boot / Docker path) they stayed `undefined`. The
-  // `onInstalled` hook's `propagatePluginInstall?.(agentId)` then silently
-  // no-op'd: the agent activated in `dynamicAgentRuntime` but the fallback
-  // Agent's `agent_plugins` enablement row was never written, so
-  // `scopeDomainToolsToPlugins` withheld its `query_*` tool — at install
-  // time AND on every later restart, because the missing DB row persists.
-  // (Channels are unaffected: the channel install hook activates them
-  // directly, with no plugin-scoping — which is why connectors appear on a
-  // new session but specialist agents never did.) Resolving live here makes
-  // the propagation take effect the moment chat goes live on a key save.
+  // --- Runtime plugin activation propagation ------------------------
+  // A plugin activated AFTER boot (operator install, Hub/registry install,
+  // package re-upload, self-extension) may be the facilitation engine or carry
+  // conversation subscriptions; `propagatePluginInstall` reconciles both. It
+  // resolves its services LIVE from the serviceRegistry on every call, so it
+  // works on a chat-disabled (key-less) boot too. Spec 2042 §5.10 — there are
+  // no per-plugin domain tools to reconcile any more: a capability plugin's
+  // tools are in the kernel-wide native tool registry, gated per agent.
   const ORCHESTRATOR_PLUGIN_ID = '@omadia/orchestrator';
-
-  // Reconcile a single agent-plugin's DomainTool across every per-Agent
-  // orchestrator: (re-)register a fresh handle where the plugin is enabled,
-  // drop it where it is not. Idempotent and safe for re-uploads (the stale
-  // handle is replaced). No-ops for non-agent plugins (no DomainTool); on
-  // uninstall the runtime no longer knows the tool, so drop it by name.
-  const reconcileRuntimeDomainTool = (
-    pluginId: string,
-    removedToolName?: string,
-  ): void => {
-    const reg =
-      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
-    if (!reg) return;
-    const tool = dynamicAgentRuntime.domainToolFor(pluginId);
-    reconcileDomainToolAcrossAgents(
-      reg.list().map((entry) => ({
-        slug: entry.agent.slug,
-        enabled: entry.plugins.some(
-          (p) => p.enabled && p.pluginId === pluginId,
-        ),
-        orchestrator: entry.built.orchestrator,
-      })),
-      {
-        ...(tool ? { tool } : {}),
-        ...(removedToolName ? { removedToolName } : {}),
-        onError: (slug, err) =>
-          console.error(
-            `[middleware] reconcileRuntimeDomainTool(${pluginId}) on "${slug}" FAILED:`,
-            err instanceof Error ? err.message : String(err),
-          ),
-      },
-    );
-  };
 
   // #2054 / INV-8 (spec 2042) — no install path attaches a plugin to any
   // agent. Hub install, upload, store reinstall, profile apply and the
@@ -2139,7 +2027,13 @@ async function main(): Promise<void> {
       // config store (no LLM access yet), before anything is attached.
       sync: () => archetypeRegistry.sync(),
       getStore: () => serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
-      attach: (store) => attachEngineToFacilitators(store, facilitationEngineSources(), (m) => console.log(m)),
+      attach: async (store) => {
+        // S3c — first drop grants of an archetype plugin held by an agent of
+        // another archetype (rows from before #2088), each with a warning.
+        // Runs at boot too, before the admin audit log exists.
+        await revokeForeignArchetypeGrants(store, pluginCatalog, (m) => console.warn(m));
+        await attachEngineToFacilitators(store, facilitationEngineSources(), (m) => console.log(m));
+      },
       reload: () => serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')?.reload(),
       log: (m) => console.error(m),
     });
@@ -2150,37 +2044,7 @@ async function main(): Promise<void> {
     // attached to them; nothing else ever is.
     await attachFacilitationEngine();
     void conversationMessagesRef.current?.reconcileNow();
-    // No-op for non-agent plugins (no DomainTool).
-    reconcileRuntimeDomainTool(pluginId);
     console.log(`[middleware] runtime plugin install propagated: ${pluginId}`);
-  };
-
-  const propagatePluginUninstall = async (
-    pluginId: string,
-    removedToolName?: string,
-  ): Promise<void> => {
-    if (pluginId === ORCHESTRATOR_PLUGIN_ID) return;
-    // #2043 — an uninstalled engine ends its message subscriptions at once.
-    void conversationMessagesRef.current?.reconcileNow();
-
-    // #2054 — the uninstall already removed the plugin's grants from EVERY
-    // agent (`purgePluginAgentBindings`, before this hook); the registry only
-    // has to pick that up. It used to clean the fallback Agent alone.
-    const reg =
-      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
-    if (!reg) return;
-    try {
-      await reg.reload();
-    } catch (err) {
-      console.error(
-        `[middleware] propagatePluginUninstall(${pluginId}) disable/reload FAILED:`,
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-    reconcileRuntimeDomainTool(pluginId, removedToolName);
-    console.log(
-      `[middleware] runtime plugin uninstall propagated: ${pluginId}`,
-    );
   };
 
   // OM-95 / #1070 — one lazy getter for the `agent_plugins` binding store,
@@ -2228,11 +2092,9 @@ async function main(): Promise<void> {
       // catalog + model registry and appears on the admin Providers page
       // without a restart. No-ops when the manifest declares no provider.
       registerProviderFromPlugin(agentId);
-      // Dispatch by manifest.identity.kind. Without this, every uploaded
-      // package — channels, integrations, tools — is fed to the agent
-      // runtime, which crashes (channel: wrong handle shape; integration:
-      // no toolkit). Built-ins return early from each runtime's activate()
-      // when the agent isn't in their store, so the dispatch is safe.
+      // Dispatch by manifest.identity.kind. Built-ins return early from each
+      // runtime's activate() when the plugin isn't in their store, so the
+      // dispatch is safe.
       const kind = pluginCatalog.get(agentId)?.plugin.kind;
       switch (pluginRuntimeOf(kind)) {
         case 'channel':
@@ -2267,11 +2129,12 @@ async function main(): Promise<void> {
           }
           await propagatePluginInstall(agentId);
           return;
-        case 'agent':
-          await dynamicAgentRuntime.activate(agentId);
-          // Make the freshly-activated agent's tool reachable on the per-Agent
-          // orchestrators that hold it without a restart.
-          await propagatePluginInstall(agentId);
+        case 'none':
+          // Spec 2042 §5.10 — the retired kind `agent` has no runtime. A new
+          // one is refused at install; this is a reactivation (setup save) of
+          // one installed before. The caller records the error's
+          // `kind_retired` (another code for a plugin the catalog lacks).
+          throw noRuntimeError(agentId, kind);
       }
     },
     // #2088 — an uninstalled archetype plugin no longer delivers its archetype:
@@ -2365,19 +2228,9 @@ async function main(): Promise<void> {
           // services stayed registered after an uninstall.
           await toolPluginRuntime.deactivate(agentId);
           return;
-        case 'agent': {
-          // Capture the tool name BEFORE deactivate drops it from the runtime —
-          // the per-Agent orchestrators must be told which tool to unregister.
-          const removedToolName =
-            dynamicAgentRuntime.domainToolFor(agentId)?.name;
-          await dynamicAgentRuntime.deactivate(agentId);
-          if (reason === 'uninstall') {
-            await propagatePluginUninstall(agentId, removedToolName);
-          } else {
-            // Reactivation tears down the runtime, but retains operator grants.
-            reconcileRuntimeDomainTool(agentId, removedToolName);
-          }
-        }
+        case 'none':
+          // The retired kind `agent` runs no code: nothing to stop.
+          return;
       }
     },
   });
@@ -2534,6 +2387,17 @@ async function main(): Promise<void> {
     registry: installedRegistry,
     builtInStore: builtInPackageStore,
     uploadedStore: uploadedPackageStore,
+  });
+
+  // Spec 2042 §5.10 — the kernel runs no plugin of the retired kind `agent`.
+  // One still installed is recorded `errored` (`kind_retired`) so the store
+  // shows it as not started; the boot goes on. Right after the retry above
+  // (which may have lifted it to `active`) and before any runtime or the
+  // capability resolution reads the registry.
+  await blockRetiredAgentPlugins({
+    registry: installedRegistry,
+    catalog: pluginCatalog,
+    log: (m) => console.warn(m),
   });
 
   // ── Admin auth (A.1) ──────────────────────────────────────────────────────
@@ -2788,6 +2652,16 @@ async function main(): Promise<void> {
   serviceRegistry.provide(
     AGENT_ENVELOPE_SERVICE_NAME,
     agentEnvelopeService(kindOfPlugin, () =>
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+    ),
+  );
+  // Spec 2042 §5.3 / criterion 40 — the agents a person may address in a
+  // channel (the canvas channel's picker): the same view as
+  // `GET /api/v1/agents/directory`, from the same function, for channel
+  // plugins that cannot call the session-authenticated route.
+  serviceRegistry.provide(
+    AGENT_DIRECTORY_SERVICE_NAME,
+    agentDirectoryService(kindOfPlugin, () =>
       serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
     ),
   );
@@ -3208,14 +3082,6 @@ async function main(): Promise<void> {
     );
   }
 
-  // Phase 5B M3+M4 catch-up: the byte5-customer Odoo + Confluence sub-agent
-  // wiring lived here as inline kernel code that consumed the integration
-  // plugins' published services and built LocalSubAgent + DomainTool by
-  // hand. It now lives in three plugin packages (@omadia/agent-odoo-
-  // accounting, @omadia/agent-odoo-hr, @omadia/agent-confluence) which the
-  // dynamic-agent-runtime activates via the standard manifest path. The
-  // kernel no longer needs to know any byte5-specific agent ids.
-
   const memoryStore = serviceRegistry.get<MemoryStore>('memoryStore');
   if (!memoryStore) {
     throw new Error(
@@ -3255,26 +3121,6 @@ async function main(): Promise<void> {
       '[graph] backfill SKIPPED — set BACKFILL_AT_STARTUP=1 to enable (the 500-turn replay was the dominant boot delay; KG already holds the data)',
     );
   }
-  // Dynamic agent activation: uploaded packages already marked `active` in
-  // the registry are now actually started. `activate()` imports
-  // `dist/plugin.js`, calls `activate(ctx)` and builds the LocalSubAgent
-  // wrapper. Per-agent errors are logged but do not abort boot — a broken
-  // package must not block the whole middleware.
-  const dynamicDomainTools = await dynamicAgentRuntime.activateAllInstalled();
-  for (const t of dynamicDomainTools) domainTools.push(t);
-  // The LIVE domain-tool source. `domainTools[]` is frozen at boot, and its
-  // dynamic-agent entries are boot HANDLES: an agent re-uploaded, upgraded or
-  // uninstalled after boot holds a fresh handle (or none) in the runtime.
-  // So the kernel built-ins come from the boot set and every dynamic-agent
-  // tool from `dynamicAgentRuntime` — otherwise a later (re)hydration would
-  // re-bind a stale, already-closed handle or resurrect an uninstalled agent.
-  const bootKernelDomainTools = (): DomainTool[] =>
-    kernelDomainTools(domainTools, dynamicDomainTools);
-  const currentDomainTools = (): DomainTool[] =>
-    liveDomainTools(domainTools, dynamicDomainTools, dynamicAgentRuntime.activeDomainTools());
-  console.log(
-    `[middleware] dynamic agent runtime: ${dynamicAgentRuntime.activeIds().length} uploaded agent(s) active`,
-  );
 
   // S+10-4a: capability-flip — the @omadia/orchestrator plugin's
   // activate() owns Orchestrator + 5 native-tools + ChatSessionStore +
@@ -3296,17 +3142,14 @@ async function main(): Promise<void> {
   // routes below resolve those services LIVE from the registry per request,
   // so chat goes live the moment the key is saved — no restart needed.
   //
-  // The domain-tool wiring below (hydration of the chat and per-Agent
-  // orchestrators) runs at boot, and again on every later re-activation of
-  // the orchestrator plugin (provider switch, secret save, model assignment,
-  // reactivate — `rebindOrchestratorToolsRef`). It is installed on a key-less
-  // first boot too (#1358): there the first key save publishes the chat
-  // orchestrator and the registry, and the re-bind hydrates both, so neither
-  // chat nor routines need a restart to reach their sub-agents. Routines
-  // follow the same live-resolution pattern as chat (issue #473): the runner
-  // resolves chatAgent per run, i.e. the re-bound instance.
+  // The tool wiring below (hydration of the per-Agent orchestrators) runs at
+  // boot, and again on every later re-activation of the orchestrator plugin
+  // (provider switch, secret save, model assignment, reactivate —
+  // `rebindOrchestratorToolsRef`). It is installed on a key-less first boot
+  // too (#1358): there the first key save publishes the registry and the
+  // re-bind hydrates it. Routines follow the same live-resolution pattern as
+  // chat (issue #473): the runner resolves chatAgent per run.
   const chatAgentBundle = serviceRegistry.get<ChatAgentBundle>('chatAgent');
-  const orchestrator = chatAgentBundle?.raw;
   if (!chatAgentBundle) {
     console.warn(
       `[middleware] ⚠ chat DISABLED — chatAgent@1 not published — ${LLM_SETUP_HINT}; chat goes live on save. Admin UI + all other endpoints are up.`,
@@ -3340,56 +3183,28 @@ async function main(): Promise<void> {
   // consumers but no longer threaded through the kernel — graphBackfill
   // doesn't need it (uses memoryStore + KG directly), and the chat-API
   // route resolves the orchestrator live from the registry.
-  // Push all kernel-collected DomainTools (native sub-agents + uploaded
-  // dynamic agents) into the plugin-built Orchestrator. Plugin construction
-  // happens BEFORE these are accumulated, so the registerDomainTool calls
-  // here finish the wiring. Re-run on every later re-activation of the
+  // Re-run the registry hydration below on every later re-activation of the
   // orchestrator plugin (fired from `toolPluginRuntime.onActivated` via
-  // `rebindOrchestratorToolsRef`), which publishes a fresh chat Orchestrator
-  // and registry that start with no domain tools. Both are resolved LIVE.
+  // `rebindOrchestratorToolsRef`), which publishes a fresh registry whose
+  // orchestrators start without their sub-agent tools. Resolved LIVE.
   const orchestratorToolRebinder = createOrchestratorToolRebinder({
-    getChat: () => serviceRegistry.get<ChatAgentBundle>('chatAgent')?.raw,
     getRegistry: () =>
       serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
-    kernelTools: bootKernelDomainTools,
-    // Registers the runtime's LIVE dynamic-agent tools, and is the
-    // hot-register pathway for future agent installs while the process runs.
-    attachDynamicAgents: (chat) => dynamicAgentRuntime.attachOrchestrator(chat),
     log: (m) => console.log(`[middleware] ${m}`),
   });
-  if (orchestrator) orchestratorToolRebinder.bindChat(orchestrator);
   rebindOrchestratorToolsRef = (): void => orchestratorToolRebinder.rebind();
 
-  // Phase B fix — the multi-orchestrator registry built one Orchestrator per
-  // Agent earlier in boot (inside the orchestrator plugin's activate, during
-  // `toolPluginRuntime.activateAllInstalled`). At that point `domainTools`
-  // was still empty, so every per-Agent orchestrator started with
-  // `domainTools: []` — chat hitting the fallback Agent could not see
-  // `query_odoo_accounting`, `query_confluence`, etc. Push the populated
-  // list into every registry-built Orchestrator now. Skip duplicates so a
-  // hot-installed tool that already self-registered does not throw.
+  // The multi-orchestrator registry built one Orchestrator per Agent earlier
+  // in boot (inside the orchestrator plugin's activate, during
+  // `toolPluginRuntime.activateAllInstalled`), before the MCP pool behind
+  // the Agents' sub-agent tools existed. Hydrate every registry-built
+  // Orchestrator now.
   const registryForHydrate =
     serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
   // Installed on a key-less boot too: with a database the per-Agent registry
   // is published on the first key save, and it needs the same hydration (and
   // the MCP pool behind its sub-agent tools) as one that existed at boot.
   if (registryForHydrate !== undefined || graphPool !== undefined) {
-    // Per-Agent tool isolation. A domain tool's `agentId` is the id of the
-    // agent-plugin that exposes it (set by `createDomainTool` /
-    // `dynamicAgentRuntime`), e.g. `query_odoo_accounting` →
-    // `de.byte5.agent.odoo-accounting`. An Agent may only reach a sub-agent
-    // query tool when that backing plugin is ENABLED on it; a tool with no
-    // `agentId` is a core helper available to everyone. The fallback Agent
-    // has every plugin enabled, so it still receives the full set
-    // (preserving the original Phase-B hydration intent) — but a scoped
-    // Agent (e.g. "marketing", which only enables the X plugin) no longer
-    // inherits `query_odoo_accounting` et al. it was never granted.
-    // See `scopeDomainToolsToPlugins` for the rule.
-    //
-    // Tools come from the LIVE source `currentDomainTools` (defined after
-    // the dynamic-agent activation above), so a runtime-installed agent's
-    // tool reaches a per-Agent orchestrator on a later rebuild.
-
     // Agent Builder P2/P4 — shared MCP connection pool + a closure that
     // materialises each agent's DB-defined sub-agents into DomainTools and
     // registers them on its orchestrator. Called on initial hydrate AND
@@ -3732,7 +3547,6 @@ async function main(): Promise<void> {
     // every agent lost its sub-agents until the next restart.
     const hydrateRegistry = (reg: MultiOrchestratorRegistry): void => {
       hydrateAgentRegistry(reg, {
-        currentDomainTools,
         hydrateSubAgentTools: (slug, built) => hydrateSubAgentTools(reg, slug, built),
         log: (m: string) => console.log(`[middleware] ${m}`),
       });
@@ -3831,7 +3645,8 @@ async function main(): Promise<void> {
     askOwner: async (routine, text) => {
       const sender = routinesHandle?.senderRegistry.get(routine.channel);
       if (!sender) throw new Error(`no proactive sender for channel '${routine.channel}'`);
-      await sender.send({ conversationRef: routine.conversationRef, message: { text } });
+      // The renewal question is a harness template, not the agent's words (INV-4).
+      await sender.send({ conversationRef: routine.conversationRef, message: { text, speaker: SYSTEM_SPEAKER } });
     },
     limits: () => triggersRef.current?.service.limits ?? DEFAULT_TRIGGER_LIMITS,
     language: () => {
@@ -4200,7 +4015,9 @@ async function main(): Promise<void> {
   );
   console.log('[middleware] plugin UI bundles served at /p/<pluginId>/ui/');
 
-  const agentResolver = createAgentResolver({ dynamicRuntime: dynamicAgentRuntime });
+  const agentResolver = createAgentResolver({
+    toolOwner: (toolName) => pluginToolOwner(nativeToolRegistry, toolName),
+  });
   // Phase A — Chat router resolves per-Agent via the registry. Falls
   // back to the legacy default `chatAgent@1` for two cases:
   //   1. Boot with no registry (no DATABASE_URL) — only the default
@@ -5548,7 +5365,7 @@ async function main(): Promise<void> {
           // #2079 — what the read brought in labels the turn (S5 discretion):
           // an answer carrying these rows is checked against its readers.
           tools.set(def.name, async (input) => {
-            const out = await handler(input);
+            const out = nativeToolDispatchText(await handler(input), def.name);
             await entry.built.bundle.raw.labelHarnessRead(def.name);
             return out;
           });
@@ -5573,6 +5390,10 @@ async function main(): Promise<void> {
         await adminAudit?.record(entry);
       },
       log: (m) => console.log(m),
+    });
+    // Spec 2042 §5.12 — a meeting that ends ends its triggers (criterion 22).
+    sessionCapabilityHub.observeLifecycle((event) => {
+      void triggersRef.current?.onSessionEvent(event);
     });
     const disposeEphemeralAttachment = async (
       attachment: { id: string; agentSlug: string; channelType: string; channelKey: string; roleKey: string | null },
@@ -5819,7 +5640,7 @@ async function main(): Promise<void> {
       // the agent's next turn rather than at the end of the run.
       peerGate,
       // `webhook.post` (issue #437) is a built-in action, not a plugin tool — special-cased
-      // ahead of the dynamicAgentRuntime dispatch so a Designer action step can fire an
+      // ahead of the plugin-tool dispatch so a Designer action step can fire an
       // ad-hoc outbound webhook without an installed connector.
       // `mcp:<serverId>:<tool>` ids are connected MCP servers' tools — dispatched to the
       // McpManager in the operator trust class (same as the Control Center test-call),
@@ -5829,7 +5650,11 @@ async function main(): Promise<void> {
           ? invokeWebhookPostAction(input)
           : parseMcpActionId(toolId)
             ? invokeMcpAction(toolId, input)
-            : dynamicAgentRuntime.invokeAgentTool(toolId, input),
+            : // S3c — only what `listActions` offers: a plugin tool that declares
+              // `deterministic_action: true`. Any other id runs nothing.
+              deterministicActionRegistry.has(toolId)
+              ? invokePluginTool(nativeToolRegistry, toolId, input)
+              : Promise.resolve(undefined),
       listActions: async () => [
         WEBHOOK_POST_ACTION_ID,
         ...deterministicActionRegistry.list(),
@@ -6567,10 +6392,7 @@ async function main(): Promise<void> {
       // re-activation runs with the already migrated config.
       //
       // Dispatch by `manifest.identity.kind` — symmetric to
-      // InstallService.onInstalled. Without the dispatch, a channel/
-      // integration re-upload was routed through dynamicAgentRuntime; there
-      // the PluginContext lacks e.g. `core`, and plugin-activate crashed with
-      // "Cannot read properties of undefined (reading 'log')".
+      // InstallService.onInstalled.
       // #1452 — whether this hook runs at all is decided by the upload
       // service (`shouldReactivate`), not here. The gate used to sit on this
       // line as `status !== 'active'`, and it has to move because the service
@@ -6580,18 +6402,6 @@ async function main(): Promise<void> {
       // entry this hook silently declined to touch.
       onPackageReady: async (agentId) => {
         const kind = pluginCatalog.get(agentId)?.plugin.kind;
-        // Spec 2042 §5.10 — the release train moves `agent` packages to a
-        // capability or template kind. The old version still runs in the
-        // agent runtime as a `query_<short>` tool; that tool goes from every
-        // agent before the new version starts in its own runtime. The
-        // operator's grants of the plugin stay: the id is the same, and the
-        // capabilities it now delivers are what those grants were for.
-        const retireAgentRuntimeOf = async (id: string): Promise<void> => {
-          if (!dynamicAgentRuntime.isActive(id)) return;
-          const removedToolName = dynamicAgentRuntime.domainToolFor(id)?.name;
-          await dynamicAgentRuntime.deactivate(id);
-          reconcileRuntimeDomainTool(id, removedToolName);
-        };
         switch (pluginRuntimeOf(kind)) {
           case 'channel': {
             if (!channelRegistryRef) {
@@ -6614,7 +6424,6 @@ async function main(): Promise<void> {
             // records the verdict, file it as a fresh success. `deactivate`
             // returns early for a channel without a handle, so this is cheap.
             await channelRegistryRef.deactivate(agentId);
-            await retireAgentRuntimeOf(agentId);
             await channelRegistryRef.activate(agentId);
             // `channelRegistry.activate()` warns and returns when the resolver
             // yields no usable `ChannelPlugin` — a broken export in the new
@@ -6633,7 +6442,6 @@ async function main(): Promise<void> {
             if (toolPluginRuntime.isActive(agentId)) {
               await toolPluginRuntime.deactivate(agentId);
             }
-            await retireAgentRuntimeOf(agentId);
             // #2088 — an update may be the version that turns the plugin into
             // an archetype plugin, or one that changes its descriptor. Same
             // order as a first install: the registry first, whatever the
@@ -6644,27 +6452,11 @@ async function main(): Promise<void> {
             await toolPluginRuntime.activate(agentId);
             return;
           }
-          case 'agent': {
-            // If v1 is still active, deactivate cleanly first — v2 has a
-            // fresh DomainTool with potentially changed sub-tools.
-            if (dynamicAgentRuntime.isActive(agentId)) {
-              await dynamicAgentRuntime.deactivate(agentId);
-            }
-            // #1452 — `activate()` answers `null` when the agent is in no
-            // package store, i.e. it activated nothing. Same reason the
-            // channel branch asserts `isActive`: the caller records a normal
-            // return as "this plugin is running".
-            const domainTool = await dynamicAgentRuntime.activate(agentId);
-            if (!domainTool) {
-              throw new Error(
-                `agent '${agentId}' did not come up after activation — no package source in any store`,
-              );
-            }
-            // Hub/registry install + package re-upload land here. Propagate the
-            // (fresh) tool onto the per-Agent orchestrators so the new/updated
-            // capability is live for the next chat turn without a restart.
-            await propagatePluginInstall(agentId);
-          }
+          case 'none':
+            // Spec 2042 §5.10 — never reached by an upload (ingest refuses the
+            // retired kind `agent`); a throw, so the caller records
+            // `kind_retired` instead of a successful activation.
+            throw noRuntimeError(agentId, kind);
         }
       },
       log: (msg) => console.log(msg),
@@ -6800,22 +6592,16 @@ async function main(): Promise<void> {
       reactivate: reactivateAgent,
       onGrantsChanged: () => attachFacilitationEngine(),
       restartPending: (agentId) => installService.restartPending(agentId),
-      // Spec 2042 §5.10 — setup options come from the plugin's tool, whether
-      // it registered it with the kernel (capability plugin) or still runs
-      // in the retired agent runtime.
-      dynamicAgentRuntime: createSetupOptionsResolver({ agentRuntime: dynamicAgentRuntime, tools: nativeToolRegistry }),
+      // Spec 2042 §5.10 — setup options come from the tool the plugin
+      // registered with the kernel.
+      setupOptions: createSetupOptionsResolver({ tools: nativeToolRegistry }),
       // #1453 — the operator-facing half of the credential check: `GET
       // /installed` reports what a plugin pushed through `ctx.status`, and
       // `POST /installed/:id/verify` re-runs that plugin's own probe.
       pluginStatusRegistry,
-      verifyConnection: async (agentId: string) =>
-        // A plugin lives in exactly one of the two runtimes. Ask the tool
-        // runtime first (every `kind: integration` package is there) and fall
-        // through to the agent runtime; `undefined` from both means "this
-        // plugin declares no connection check", which the route reports as
-        // such rather than as health.
-        (await toolPluginRuntime.verifyConnectionNow(agentId)) ??
-        (await dynamicAgentRuntime.verifyConnectionNow(agentId)),
+      // `undefined` means "this plugin declares no connection check", which
+      // the route reports as such rather than as health.
+      verifyConnection: async (agentId: string) => toolPluginRuntime.verifyConnectionNow(agentId),
       // Epic #470 C4 / H1 — operator consent for unauthenticated plugin path
       // prefixes. Behind requireAuth like every other runtime endpoint.
       publicPathGrantStore,
@@ -8211,7 +7997,6 @@ async function main(): Promise<void> {
     console.log(`[middleware] skills dir: ${config.SKILLS_DIR}`);
     console.log(`[middleware] orchestrator model: ${config.ORCHESTRATOR_MODEL}`);
     console.log(`[middleware] sub-agent model:   ${config.SUB_AGENT_MODEL}`);
-    console.log(`[middleware] domain tools: ${domainTools.map((t) => t.name).join(', ')}`);
     void handOffCliLogin().catch((err: unknown) => {
       console.warn(
         `[providers] subscription hand-off at boot failed: ${err instanceof Error ? err.message : String(err)}`,

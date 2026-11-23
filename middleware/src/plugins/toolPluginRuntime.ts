@@ -7,6 +7,8 @@ import {
   PluginHandoffPlanError,
   loadHandoffPlan,
 } from '../platform/pluginHandoffPlan.js';
+import { canvasOutputToolIds } from '../platform/canvasOutputRegistry.js';
+import { deterministicActionToolIds } from '../platform/deterministicActionRegistry.js';
 import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
 import { claimDeclaredPublicPaths } from '../platform/publicPathClaim.js';
@@ -56,12 +58,10 @@ import type { UploadedPackageStore } from './uploadedPackageStore.js';
  * Runtime for `kind: tool`, `kind: extension`, and `kind: integration`
  * plugins.
  *
- * Tool / extension / integration plugins don't expose a toolkit like
- * agent plugins do — their `activate(ctx)` registers into the kernel's
- * native-tool / route / turn-hook / job / service registries during the
- * call and returns a close-only handle. The runtime's responsibilities
- * are thinner than DynamicAgentRuntime's: dynamic-import, invoke
- * activate with timeout, remember the handle so deactivate can call
+ * A plugin's `activate(ctx)` registers into the kernel's native-tool /
+ * route / turn-hook / job / service registries during the call and returns
+ * a close-only handle. The runtime's responsibilities: dynamic-import,
+ * invoke activate with timeout, remember the handle so deactivate can call
  * close().
  *
  * Idempotent across boots: if a plugin's activate() throws repeatedly, the
@@ -155,10 +155,26 @@ export interface ToolPluginRuntimeDeps {
    *  plugin that owns its database, before its context is built. Absent (no
    *  database, narrow test contexts): such a plugin gets no `ctx.sql`. */
   archetypeDatabase?: ArchetypeDatabase;
+  /** Canvas-output autodiscovery: manifest capability entries declaring
+   *  `canvas_output: true` are resolved into this registry on (de)activation
+   *  so the ui-orchestrator can derive its sentinel allow-set without
+   *  operator config. Optional — absent in narrow test contexts. */
+  canvasOutputRegistry?: {
+    register(pluginId: string, toolIds: readonly string[]): void;
+    unregister(pluginId: string): void;
+  };
+  /** Deterministic-action autodiscovery: manifest capability entries declaring
+   *  `deterministic_action: true` are resolved into this registry on
+   *  (de)activation so the ui-orchestrator can dispatch them without a model
+   *  turn (`agentToolInvoker@1`). Optional — absent in narrow test contexts. */
+  deterministicActionRegistry?: {
+    register(pluginId: string, toolIds: readonly string[]): void;
+    unregister(pluginId: string): void;
+  };
   /** Event-catalog autodiscovery (US4 Conductor Surface): capability entries declaring
    *  `event_emit: true` are resolved into this registry on (de)activation. This runtime is the
-   *  ONLY resolve site for built-in/static tool plugins (landmine K — the dynamic runtime has its
-   *  own). Optional — absent in narrow test contexts. */
+   *  only resolve site (spec 2042 §5.10: the agent runtime that had its own is gone).
+   *  Optional — absent in narrow test contexts. */
   eventCatalogRegistry?: {
     register(pluginId: string, eventIds: readonly string[]): void;
     unregister(pluginId: string): void;
@@ -250,10 +266,8 @@ export class ToolPluginRuntime {
       for (const pkg of this.deps.builtInStore.list()) ids.add(pkg.id);
     }
 
-    // Pre-filter to tool/extension candidates that are registry-active, then
-    // topologically sort so a plugin's dependencies activate first. Cross-
-    // runtime deps (agent→tool) are handled by the outer boot order in
-    // index.ts — this runtime runs before the agent runtime.
+    // Pre-filter to candidates of this runtime that are registry-active, then
+    // topologically sort so a plugin's dependencies activate first.
     const eligible: string[] = [];
     const installedAtById = new Map<string, string>();
     for (const id of ids) {
@@ -757,9 +771,27 @@ export class ToolPluginRuntime {
 
     this.active.set(agentId, { agentId, handle, extDisposes, ...(probe ? { probe } : {}) });
 
-    // Event-catalog autodiscovery (US4 / landmine K): static + built-in tool plugins resolve their
-    // `event_emit: true` capabilities here — the only place they are picked up (the dynamic runtime
-    // covers hot-installed agents). Lets the Designer list emittable events + ctx.events.emit deny-by-default.
+    // Canvas-output and deterministic-action autodiscovery: resolve the
+    // manifest's `canvas_output: true` / `deterministic_action: true`
+    // capability declarations into the kernel registries. Hot installs flow
+    // through this same path, so a fresh plugin needs no orchestrator
+    // re-activation to be authorised for canvas sentinels or the fast-path.
+    const canvasOutputIds = canvasOutputToolIds(catalogEntry.manifest);
+    if (canvasOutputIds.length > 0) {
+      this.deps.canvasOutputRegistry?.register(agentId, canvasOutputIds);
+      log(`[tool-runtime] canvas-output capabilities registered for ${agentId}: ${canvasOutputIds.join(', ')}`);
+    }
+    const deterministicActionIds = deterministicActionToolIds(catalogEntry.manifest);
+    if (deterministicActionIds.length > 0) {
+      this.deps.deterministicActionRegistry?.register(agentId, deterministicActionIds);
+      log(
+        `[tool-runtime] deterministic-action capabilities registered for ${agentId}: ${deterministicActionIds.join(', ')}`,
+      );
+    }
+
+    // Event-catalog autodiscovery (US4 / landmine K): the plugin's `event_emit: true`
+    // capabilities are resolved here. Lets the Designer list emittable events +
+    // ctx.events.emit deny-by-default.
     const eventEmitIdList = eventEmitIds(catalogEntry.manifest);
     if (eventEmitIdList.length > 0) {
       this.deps.eventCatalogRegistry?.register(agentId, eventEmitIdList);
@@ -842,6 +874,8 @@ export class ToolPluginRuntime {
       }
     }
     this.deps.selfExtendRegistry?.unregister(agentId);
+    this.deps.canvasOutputRegistry?.unregister(agentId);
+    this.deps.deterministicActionRegistry?.unregister(agentId);
     this.deps.eventCatalogRegistry?.unregister(agentId);
     // Take the externally-reachable surfaces down BEFORE awaiting close().
     // close() is plugin-controlled and gets a 5s budget, so disposing after
@@ -853,9 +887,7 @@ export class ToolPluginRuntime {
     // disposed and the mounted closure falls through to next(). Without
     // this call a deactivated plugin's routers stay live and — because
     // Express matches first-mount-wins — keep serving after uninstall or
-    // across a hot-upgrade. DynamicAgentRuntime already did this; the tool
-    // runtime held the dependency and threaded it into the plugin context
-    // but never disposed by source.
+    // across a hot-upgrade.
     //
     // Same reasoning one layer down for the service registry: a provider
     // whose close() forgets its handle leaves the service registered

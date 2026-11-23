@@ -14,11 +14,9 @@ export const AGENT_RUNTIME_PLUGIN_ID = '@omadia/orchestrator';
  * Every other plugin (channel, model, archetype, system module, template) is
  * never granted to an agent and never offered.
  *
- * Kind `agent` is retired by the spec (its plugins become capability plugins
- * with agent templates, §5.2), but such plugins are still installed today and
- * deliver exactly one thing an agent is granted: their tool. Until the kind is
- * gone they count as capability plugins here (S3's list leaves retired kinds
- * out), otherwise they could not be granted at all.
+ * Kind `agent` is retired (its plugins became capability plugins with agent
+ * templates, §5.2). The kernel runs no such plugin, so it delivers nothing to
+ * grant and is not a capability.
  *
  * Never a capability, whatever the manifest says:
  *  - the agent runtime itself (`@omadia/orchestrator`), which IS the agent;
@@ -32,7 +30,7 @@ export function isCapabilityPlugin(
   if (!plugin) return false;
   if (plugin.id === AGENT_RUNTIME_PLUGIN_ID) return false;
   if (plugin.is_reference_only === true) return false;
-  return CAPABILITY_PLUGIN_KINDS.has(plugin.kind) || plugin.kind === 'agent';
+  return CAPABILITY_PLUGIN_KINDS.has(plugin.kind);
 }
 
 /**

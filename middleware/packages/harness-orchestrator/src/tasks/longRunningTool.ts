@@ -40,7 +40,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import type { NativeToolHandler, NativeToolSpec } from '@omadia/plugin-api';
+import type { NativeTextToolHandler, NativeToolSpec } from '@omadia/plugin-api';
 import { toolErrorFromException } from '@omadia/plugin-api';
 
 import {
@@ -164,7 +164,7 @@ export interface LongRunningToolRegistration {
   readonly name: string;
   readonly spec: NativeToolSpec;
   readonly promptDoc: string;
-  readonly handler: NativeToolHandler;
+  readonly handler: NativeTextToolHandler;
 }
 
 /** How many event lines `<tool>_status` returns. */
@@ -660,7 +660,7 @@ export function defineLongRunningTool(
    * runner, return the handle. Never throws; refusals come back as
    * `Error: …` strings (the orchestrator contract).
    */
-  const handleStart: NativeToolHandler = async (raw: unknown) => {
+  const handleStart: NativeTextToolHandler = async (raw: unknown) => {
     if (typeof raw !== 'object' || raw === null) {
       return `Error: invalid ${names.start} input — expected an object.`;
     }
@@ -702,7 +702,7 @@ export function defineLongRunningTool(
     }
   };
 
-  const handleStatus: NativeToolHandler = async (raw: unknown) => {
+  const handleStatus: NativeTextToolHandler = async (raw: unknown) => {
     const taskId =
       typeof raw === 'object' && raw !== null
         ? (raw as Record<string, unknown>)['taskId']
@@ -731,7 +731,7 @@ export function defineLongRunningTool(
     }
   };
 
-  const handleList: NativeToolHandler = async (raw: unknown) => {
+  const handleList: NativeTextToolHandler = async (raw: unknown) => {
     const statusRaw =
       typeof raw === 'object' && raw !== null
         ? (raw as Record<string, unknown>)['status']

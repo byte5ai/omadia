@@ -19,6 +19,7 @@ import type { Socket } from 'node:net';
 
 import type { ToolPIIField } from './piiAnnotation.js';
 import type { WriteCapability } from './writeCapabilities.js';
+import type { NativeToolOutput } from './nativeToolResult.js';
 
 import type {
   EntityCapturedTurnsHit,
@@ -811,10 +812,20 @@ export function validatePluginDomain(
   return { ok: true, domain: trimmed };
 }
 
-/** Handler a plugin hands the kernel together with the tool spec. Must return
- *  a string — the tool-use reply sent back to Claude. Kernel wraps thrown
- *  errors into `Error: <message>` for symmetry with built-in tools. */
+/** Handler a plugin hands the kernel together with the tool spec. Returns the
+ *  tool-use reply — text, or (1.86.0) a {@link NativeToolResult} with
+ *  `output` plus an optional `limitSignal`, `postcondition` or `structured`
+ *  (see `nativeToolResult.ts`). Kernel wraps thrown errors into
+ *  `Error: <message>` for symmetry with built-in tools. */
 export type NativeToolHandler = (
+  input: unknown,
+  context?: NativeToolCallContext,
+) => Promise<NativeToolOutput>;
+
+/** A {@link NativeToolHandler} that always answers with text (1.86.0): what
+ *  the kernel's own tools are, and what a caller may rely on reading as a
+ *  string. Assignable to `NativeToolHandler`. */
+export type NativeTextToolHandler = (
   input: unknown,
   context?: NativeToolCallContext,
 ) => Promise<string>;

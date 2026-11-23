@@ -269,7 +269,8 @@ export interface AgentRuntimeConfig {
    *
    * WHY AT DISPATCH AND NOT ONLY AT REGISTRATION. The per-Agent tool surface
    * is assembled by withholding un-granted tools when an orchestrator is
-   * hydrated (`scopeDomainToolsToPlugins`). That is one place, reached by
+   * hydrated (`scopeDomainToolsToPlugins`, removed with the agent plugin
+   * runtime in S3c). That was one place, reached by
    * several paths — boot hydrate, post-boot install reconcile, rebuild,
    * sub-agent hydration — and any path that forgets to scope turns a
    * registration bug into a PERMISSION bug: the tool is simply there, and the
@@ -1021,10 +1022,12 @@ export function buildOrchestratorForAgent(
         ...(deps.graphPool ? { graphPool: deps.graphPool } : {}),
       };
 
-  // domainTools is intentionally empty at construct — sub-agents self-register
-  // post-activate via `dynamicAgentRuntime.attachOrchestrator(bundle.raw)`.
+  // domainTools is intentionally empty at construct — the kernel registers an
+  // Agent's DB-defined sub-agent tools once the registry exists.
   const orchestrator = new Orchestrator({
     agentId: config.agentId,
+    // Spec 2042 §6 criterion 1 — every run trace names the agent that answers.
+    traceAgentId: agentSpeaker.agentId,
     provider: deps.provider,
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),

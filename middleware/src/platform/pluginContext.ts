@@ -163,6 +163,7 @@ export {
   type ToolsAccessor,
   type UiRoutesAccessor,
 } from '@omadia/plugin-api';
+import { nativeToolResultText } from '@omadia/plugin-api';
 
 export interface CreatePluginContextOptions {
   agentId: string;
@@ -757,7 +758,8 @@ export function createPluginContext(
       if (!entry?.handler) {
         throw new Error(`tools.invoke: '${name}' is unknown or handler-less`);
       }
-      return entry.handler(input);
+      // S3c — the caller gets the model-facing text of a structured result.
+      return nativeToolResultText(await entry.handler(input));
     },
   };
 

@@ -73,6 +73,8 @@ export interface RoutesHarness {
   /** What the engine plugin reports about itself. */
   engineState: unknown;
   identitySaves: number;
+  /** S3c — the grants the store holds (`listAgentPlugins`); default none. */
+  grants: { agentId: string; pluginId: string; enabled: boolean; config: Record<string, unknown> }[];
   /** Plugin ids the catalog describes as archetype plugins, with the
    *  archetype each delivers. Default: the engine and the second engine
    *  deliver `facilitator`. */
@@ -116,7 +118,7 @@ export function routesHarness(): RoutesHarness {
           return Promise.resolve({ id: 'entry-1', ...input, updatedBy: null, updatedAt: new Date(0) });
         },
       },
-      listAgentPlugins: () => Promise.resolve([]),
+      listAgentPlugins: (agentId: string) => Promise.resolve(h.grants.filter((g) => g.agentId === agentId)),
       listAllAgentPlugins: () => Promise.resolve([]),
       listChannelBindings: () => Promise.resolve([]),
       listChannelBindingsForAgent: () => Promise.resolve([]),
@@ -251,6 +253,7 @@ export function routesHarness(): RoutesHarness {
   beforeEach(() => {
     h.writes = [];
     h.identitySaves = 0;
+    h.grants = [];
     h.skills = {
       [SKILL_ID]: {
         id: SKILL_ID,

@@ -49,9 +49,7 @@ Benefits:
   the shared host client falls back to `ANTHROPIC_API_KEY` when it is set,
   and on installs whose vault key was seeded from that env var at first boot
   it is the same key, so host consumers (plan-runner gate, Teams, builder)
-  keep using it until the env var is removed. Sub-agents that
-  `DynamicAgentRuntime` has already built keep their captured provider until
-  a restart or rebuild. Both limits are recorded as open items in
+  keep using it until the env var is removed. Both limits are recorded as open items in
   `middleware-agent-handoff.md` §13.
 
 Pattern: thin proxy handler → typed client → upstream API. Document the
@@ -800,8 +798,12 @@ not read).
   (`422 package.persona_declared`), and every package of the retired kinds
   `agent` and `extension`, also as the update of a package installed under
   that kind (`422 package.retired_kind`, `422 install.retired_kind`). An
-  installed plugin of a retired kind keeps running as legacy until it is
-  replaced; the agent runtime that runs agent plugins goes in S3c. An update
+  installed `extension` keeps running as a system module until it is
+  replaced. The kernel has no runtime for kind `agent` (S3c): an installed
+  agent plugin starts no code, is recorded `errored` with the code
+  `kind_retired` at boot and on every reactivation or update
+  (`src/plugins/retiredAgentPlugins.ts`), and is no capability plugin, so it
+  cannot be granted. An update
   that makes a plugin a system module needs the explicit confirmation of a
   fresh install (`becomes_system_module`). Agent templates
   (`agent_templates:`, `src/plugins/agentTemplateManifest.ts`) are inactive
@@ -829,6 +831,18 @@ not read).
   routing. An unknown, disabled or unbuilt agent has no envelope, and no
   other agent is returned in its place. Only system modules get it (the
   canvas presentation helper `@omadia/ui-orchestrator`).
+- **The canvas helper is reached only after the check.** The dispatcher
+  resolves an addressed turn (`resolveAgent`: enabled, available to this
+  sender here) first; only a `bound` agent is handed to the channel's
+  `dispatch_service` with `ChatTurnInput.agentId`, which the dispatcher sets
+  itself (channel metadata is never read as that field). A refused agent, a
+  `/agent` command and a turn the resolver cannot address never reach the
+  helper, and a structured canvas turn (`canvasRefresh`, `action`, empty text)
+  is never run as a model turn at an agent.
+- **The agent list of a channel is the route's list.** `agentDirectory@1`
+  (`src/platform/agentDirectoryService.ts`) is given to `channel` plugins only
+  and answers the function behind `GET /api/v1/agents/directory`; it lists,
+  never authorises.
 - **A system module's own model loop goes through the kernel.** The dev
   platform's coding jobs run the Claude CLI in a container against the
   module's Anthropic-compatible proxy. The proxy holds no provider key: it
@@ -861,7 +875,8 @@ not read).
 
 Residual risks of the sandbox (in-process, a policy, not a boundary against
 hostile code): a plugin that imports its own `undici` or opens sockets with
-`node:net`/`node:tls` directly is not seen; the DNS-rebinding check runs
+`node:net`/`node:tls` directly is not seen (integration-odoo does so with
+`ODOO_INSECURE_TLS=true`: byte5ai/omadia-integration-odoo#10); the DNS-rebinding check runs
 only in `ctx.http`'s guarded dispatcher; bundled packages (system modules,
 built-in adapters) count as kernel code; a model server on a local or
 private host (a local Ollama) is not a model endpoint, because the host is
@@ -1058,7 +1073,7 @@ of the turn carries all of it.
 | Contribution to an agent | the receiver's grants cover every source and its readers may know it; then the grant's disclosure level caps what is new to the receiver | consultation broker |
 | Persistence | a written turn keeps its label set | `onTurnWritten` |
 | Memory write | another conversation's knowledge only into a tier whose readers may all know it (members: the owners; context-bound: the room; else the agent's memory, readers unknown, which only the turn's own conversation may enter). Notes keep the union of their writers' labels by canonical physical path, stored before the content (no labels, no write); directory renames and deletes take the labels along; session transcripts keep every turn's labels; memorables (auto-promotion, MCP→KG ingestion, durable rules) keep them too; reading, recalling or replaying them (verifier re-entry) adds them back. The members index is kept out of the label layer (read for every room) | `guardMemoryEgress`, `LabelledMemoryStore`, `maybePromoteTurn` |
-| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and checked like a write, against every label (since the contract step, S3b); a plugin's sub-agent tool (`query_<plugin>`) is `write` when any of the plugin's tools declares `write`, else `unknown`, so checked as well | `guardIntegrationEgress`, before the call runs |
+| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and checked like a write, against every label (since the contract step, S3b) | `guardIntegrationEgress`, before the call runs |
 
 A refused flow is never redacted afterwards. The agent gets a structured refusal;
 at disclosure level `none` a consultation is regenerated without memory and without
@@ -1371,10 +1386,9 @@ are a separate mechanism and self-authenticate by contract.
 Follow-ups (S3-G):
 
 - Declared public paths are claimed by **every** runtime that activates
-  plugins: the tool runtime, the dynamic-agent runtime (Builder agents) and the
-  channel registry. All three go through `platform/publicPathClaim.ts`. Before,
-  only the tool runtime claimed, so a granted channel or agent prefix was never
-  served (404, the fail-closed direction).
+  plugins: the tool runtime and the channel registry. Both go through
+  `platform/publicPathClaim.ts`. Before, only the tool runtime claimed, so a
+  granted channel prefix was never served (404, the fail-closed direction).
 
 - `@omadia/channel-teams` 0.31.0 serves `/p/channel-teams/{hub,tab-config}`
   this way. The two pages are data-free shells; the plugin catalogue comes only
@@ -4590,7 +4604,7 @@ The real fix: `PluginContext` now exposes an optional `ctx.operatorAuth`
 published by the kernel (`middleware/src/auth/operatorAuthAccessor.ts`) and
 wired into every plugin-context factory
 (`middleware/src/platform/pluginContext.ts`, threaded through
-`ToolPluginRuntime`, `DynamicAgentRuntime`, and `DefaultChannelRegistry`).
+`ToolPluginRuntime` and `DefaultChannelRegistry`).
 `hasValidSession(cookieHeader)` reuses `evaluateSessionToken` — the EXACT
 SAME session-verification logic `requireAuth` runs (same cookie name, same
 signing key, same Entra-whitelist rule) — extracted into

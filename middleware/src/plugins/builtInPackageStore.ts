@@ -10,7 +10,7 @@ import { loadManifestFromPath } from './manifestLoader.js';
  *
  * Built-ins are the bridge between "pure kernel" and "uploaded plugins":
  * they ship inside the middleware image but go through the exact same
- * activation pathway (DynamicAgentRuntime.activate → dynamic-import → hook).
+ * activation pathway (ToolPluginRuntime.activate → dynamic-import → hook).
  * This lets us extract features out of the monolith one at a time without
  * breaking the deploy — the feature still boots, just via the plugin path.
  *
@@ -34,8 +34,8 @@ export class BuiltInPackageStore {
   private readonly packagesDir: string;
 
   constructor(packagesDir: string) {
-    // Resolve to absolute so downstream consumers (DynamicAgentRuntime,
-    // ToolPluginRuntime) can do `path.resolve(packagePath, entryRel)
+    // Resolve to absolute so downstream consumers (ToolPluginRuntime)
+    // can do `path.resolve(packagePath, entryRel)
     // .startsWith(packagePath + sep)` boundary checks without the
     // relative-vs-absolute mismatch that false-positives entry-path-escape
     // errors. Config default is `./packages` which resolves relative to

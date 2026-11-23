@@ -115,6 +115,7 @@ import {
 import { createStoredTextScope } from './storedTextScope.js';
 import { createTurnSerialQueue } from './turnSerialQueue.js';
 import { createFieldClassificationService } from './fieldClassificationService.js';
+import { declaredPiiColumns } from './v4/declaredPii.js';
 
 /**
  * Collect the identity-bearing string(s) of a single field VALUE into `out`
@@ -1026,39 +1027,49 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
       // + types, never a value); cached per tool shape. Never throws; the
       // verdict drives detection only, not masking. Canvas producers are
       // interned above but not classified (see CANVAS_PRODUCER_TOOLS).
-      if (piiClassifier !== undefined && !CANVAS_PRODUCER_TOOLS.has(request.toolName)) {
-        const dataset = stores.get(request.turnId)?.get(result.datasetId);
-        if (dataset !== undefined) {
-          // Envelope metadata is classified too (record paths win a name
-          // collision) — it used to be, as broadcast columns.
-          const metaFields = (dataset.envelope?.schema.fields ?? []).filter(
-            (m) => !dataset.schema.fields.some((f) => f.path === m.path),
-          );
-          const piiPaths = await piiClassifier.classify(
+      const dataset = stores.get(request.turnId)?.get(result.datasetId);
+      if (dataset !== undefined) {
+        // Envelope metadata is classified too (record paths win a name
+        // collision) — it used to be, as broadcast columns.
+        const metaFields = (dataset.envelope?.schema.fields ?? []).filter(
+          (m) => !dataset.schema.fields.some((f) => f.path === m.path),
+        );
+        // S3c — the columns the tool itself declared as PII count as PII
+        // paths here too, with or without a classifier verdict: their values
+        // are what the receipt reports the user named themselves.
+        const declaredRows = declaredPiiColumns(request.piiFields, dataset.envelope?.itemsPath);
+        const declaredMeta = declaredPiiColumns(request.piiFields);
+        const piiPaths = new Set<string>([
+          ...dataset.schema.fields.filter((f) => declaredRows.has(f.path)).map((f) => f.path),
+          ...metaFields.filter((m) => declaredMeta.has(m.path)).map((m) => m.path),
+        ]);
+        if (piiClassifier !== undefined && !CANVAS_PRODUCER_TOOLS.has(request.toolName)) {
+          const classified = await piiClassifier.classify(
             request.toolName,
             [...dataset.schema.fields, ...metaFields].map((f) => ({
               path: f.path,
               type: f.type,
             })),
           );
-          // Gather the REAL values of the PII-classified fields so the
-          // receipt can report which ones the user named themselves. The
-          // values stay server-side — only the count reaches the receipt.
-          if (piiPaths.size > 0) {
-            let bag = turnPiiValues.get(request.turnId);
-            if (bag === undefined) {
-              bag = new Set<string>();
-              turnPiiValues.set(request.turnId, bag);
+          for (const path of classified) piiPaths.add(path);
+        }
+        // Gather the REAL values of the PII fields so the receipt can report
+        // which ones the user named themselves. The values stay server-side —
+        // only the count reaches the receipt.
+        if (piiPaths.size > 0) {
+          let bag = turnPiiValues.get(request.turnId);
+          if (bag === undefined) {
+            bag = new Set<string>();
+            turnPiiValues.set(request.turnId, bag);
+          }
+          for (const row of dataset.rows) {
+            for (const path of piiPaths) {
+              collectIdentityValues(row[path], bag);
             }
-            for (const row of dataset.rows) {
-              for (const path of piiPaths) {
-                collectIdentityValues(row[path], bag);
-              }
-            }
-            for (const m of metaFields) {
-              if (piiPaths.has(m.path)) {
-                collectIdentityValues(dataset.envelope?.values[m.path], bag);
-              }
+          }
+          for (const m of metaFields) {
+            if (piiPaths.has(m.path)) {
+              collectIdentityValues(dataset.envelope?.values[m.path], bag);
             }
           }
         }

@@ -74,14 +74,13 @@ Tools live in two places, so dispatch tries both in order:
 
 1. **Native registry** (`ctx.tools.invoke`) — integration tools
    (`dynamics_fetchxml`, …) and the orchestrator's own producer tools. Top-level.
-2. **`agentToolInvoker` service** (NEW) — **agent-plugin** tools. These live
-   *inside* the `query_<domain>` sub-agent, not the native registry, so
-   `ctx.tools.invoke` misses them. `agentToolInvoker.invoke(toolId, input)`
-   resolves the owning active agent in `DynamicAgentRuntime` and runs that one
-   bridged tool handler directly — **invoke-only**: it deliberately does NOT add
-   the tool to the main orchestrator's offered-tool list, so agent isolation
-   holds (the main model still can't call agent internals; only a
-   deterministic, user-initiated action can, and only for declared tools).
+2. **`agentToolInvoker` service** (NEW) — originally for **agent-plugin**
+   tools, which lived *inside* the `query_<domain>` sub-agent, not the native
+   registry. Since S3c (spec 2042 §5.10) there are no agent plugins: the
+   service runs one tool a capability plugin registered with the kernel
+   (`src/platform/pluginToolInvoker.ts`), after checking that the plugin is
+   granted to the instance's default agent — **invoke-only**, it adds nothing
+   to an orchestrator's offered-tool list. `hasStream` is always `false`.
 
 > This two-source design is *why* the first naïve implementation failed live:
 > the unit test faked `ctx.tools.invoke` and resolved the tool; only the live
@@ -93,7 +92,8 @@ Tools live in two places, so dispatch tries both in order:
 | Layer | File | Role |
 |------|------|------|
 | Registry | `middleware/src/platform/deterministicActionRegistry.ts` | autodiscover `deterministic_action: true` (sibling of `canvasOutputRegistry`) |
-| Runtime | `middleware/src/plugins/dynamicAgentRuntime.ts` | register ids on activate; `invokeAgentTool(toolId, input)` runs one bridged tool directly |
+| Runtime | `middleware/src/plugins/toolPluginRuntime.ts` | register ids on activate (S3c; before, the retired agent runtime) |
+| Invoker | `middleware/src/platform/pluginToolInvoker.ts` | `invokePluginTool(tools, toolId, input)` runs one plugin-registered tool directly |
 | Wiring | `middleware/src/index.ts` | provide `deterministicActionRegistry` + `agentToolInvoker` services |
 | Orchestrator | `packages/omadia-ui-orchestrator/src/plugin.ts` | deterministic branch: native invoke → `agentToolInvoker` fallback |
 | Consumer | `omadia-x-studio` (`load_page`, nav shell) | first agent shipping a deterministic UI |

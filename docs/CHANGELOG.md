@@ -36,6 +36,29 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — The agent plugin runtime is gone (#2042, S3c)
+
+- `@omadia/plugin-api` 1.86.0 (`NativeToolResult`, `NativeTextToolHandler`, `agentDirectory@1`),
+  `@omadia/channel-sdk` 0.3.12 (`ChatTurnInput.agentId`, `TargetedMessage.speaker` optional).
+  Additive for plugins; code that calls a `NativeToolHandler` and reads a string must read it with
+  `nativeToolResultText` (`ctx.tools.invoke` still answers with text).
+- **BREAKING for operators.** The kernel no longer runs plugins of the retired kind `agent`
+  (spec 2042 §5.10, ADR-0014). One still installed starts no code: it is `errored` with the
+  activation code `kind_retired` at boot and on every reactivation or update, keeps its setup
+  for the version that replaces it, and cannot be granted. `extension` plugins keep running as
+  system modules. Update or uninstall agent plugins before deploying this kernel.
+- A tool a plugin registers may return `{ output, limitSignal?, postcondition?, structured? }`
+  (plugin-api `NativeToolResult`): the limit note reaches the model, a postcondition the
+  verifier; `structured` never reaches the model.
+- Plugin Builder boilerplates pass a tool's `piiFields` to `ctx.tools.register`; declared PII
+  columns count toward the receipt's identity count (privacy-guard 0.16.3).
+- A grant of an archetype plugin on an agent of another archetype (from before #2088) is
+  removed at boot, and no longer blocks replacing that agent's grants.
+- Conductor action steps run only tools that declare `deterministic_action: true` (what the
+  Designer offers); before, an action id reached any active agent plugin's tool.
+- A tool result that is neither text nor a `NativeToolResult` is refused on every dispatch path
+  instead of being handed on unmasked.
+
 ### Security — production audit exceptions run up to 90 days; zod/botbuilder renewed
 
 2026-11-23. A `"production": true` audit exception may now run up to 90 days

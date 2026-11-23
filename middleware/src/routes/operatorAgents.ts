@@ -48,6 +48,7 @@ import {
 import type { Plugin, PluginSetupField } from '../api/admin-v1.js';
 import {
   assertEngineOnlyForFacilitators,
+  foreignArchetypeGrants,
   assertFacilitatorPluginGrants,
   respondFacilitatorRefusal,
   type FacilitationEngineSources,
@@ -4667,11 +4668,20 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'not_found' });
         return;
       }
+      const current = await live.store.listAgentPlugins(existing.id);
+      // S3c — a grant the agent already holds of an archetype plugin of
+      // ANOTHER archetype (a row from before #2088) is invalid, so the replace
+      // removes it, whether the request lists it or not; it never blocks the
+      // operator's change of the other grants. A NEW such grant is still
+      // refused below.
+      const invalidHeld = new Set(
+        foreignArchetypeGrants(existing, current, engineSources().catalog).map((g) => g.pluginId),
+      );
+      const plugins = body.plugins.filter((p) => !invalidHeld.has(p.id));
       // #2060 — checked before the first write, so a refused set changes nothing.
-      const requested = body.plugins.map((p) => ({ pluginId: p.id, enabled: p.enabled }));
+      const requested = plugins.map((p) => ({ pluginId: p.id, enabled: p.enabled }));
       assertFacilitatorPluginGrants(existing, requested, engineSources());
       assertEngineOnlyForFacilitators(existing, requested, engineSources());
-      const current = await live.store.listAgentPlugins(existing.id);
       if (refusedNonCapabilityGrant(res, existing, requested, current)) return;
       // #2054 — see the PATCH above.
       const gate = await requireBroadReachConfirmation({
@@ -4680,18 +4690,29 @@ export function createOperatorAgentsRouter(
         change: 'grant',
         currentPlugins: current,
         // `upsertAgentPlugin` writes `enabled: true` when none is given.
-        proposed: { plugins: body.plugins.map((p) => ({ pluginId: p.id, enabled: p.enabled ?? true })) },
+        proposed: { plugins: plugins.map((p) => ({ pluginId: p.id, enabled: p.enabled ?? true })) },
         confirmed: body.confirmBroadReach === true,
         actor: auditActorFromRequest(req),
       });
       if (refusedBroadReach(res, gate)) return;
-      const desired = new Set(body.plugins.map((p) => p.id));
+      const desired = new Set(plugins.map((p) => p.id));
       for (const p of current) {
         if (!desired.has(p.pluginId)) {
           await live.store.removeAgentPlugin(existing.id, p.pluginId);
+          if (invalidHeld.has(p.pluginId)) {
+            console.warn(
+              `[operator-agents] removed the invalid grant of archetype plugin '${p.pluginId}' from agent '${existing.slug}' with the replace of its grants`,
+            );
+            await recordAudit({
+              actor: auditActorFromRequest(req),
+              action: 'agent.plugin_grant_revoked',
+              target: `agent:${existing.id}`,
+              before: { plugin_id: p.pluginId, reason: 'foreign_archetype' },
+            });
+          }
         }
       }
-      for (const p of body.plugins) {
+      for (const p of plugins) {
         const config = p.config;
         await live.store.upsertAgentPlugin(existing.id, {
           pluginId: p.id,
@@ -4701,7 +4722,9 @@ export function createOperatorAgentsRouter(
       }
       if (gate.ok && gate.audit) await recordAudit(gate.audit);
       await live.registry.reload();
-      res.json({ ok: true });
+      // S3c — say which held grants were invalid and are gone, so a client
+      // that listed one is not left believing it was kept.
+      res.json({ ok: true, ...(invalidHeld.size > 0 ? { removed_invalid_grants: [...invalidHeld] } : {}) });
     } catch (err) {
       badRequest(res, err);
     }

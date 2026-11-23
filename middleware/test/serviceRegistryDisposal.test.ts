@@ -11,10 +11,6 @@ import {
   ToolPluginRuntime,
   type ToolPluginRuntimeDeps,
 } from '../src/plugins/toolPluginRuntime.js';
-import {
-  DynamicAgentRuntime,
-  type DynamicAgentRuntimeDeps,
-} from '../src/plugins/dynamicAgentRuntime.js';
 
 /**
  * Regression (B2): deactivating a plugin must take the services it provided
@@ -240,44 +236,6 @@ describe('ToolPluginRuntime.deactivate — service disposal', () => {
       true,
       'deactivate cannot clean up what never activated — hence the rollback in activate()',
     );
-  });
-});
-
-describe('DynamicAgentRuntime.deactivate — service disposal', () => {
-  it('unregisters the services the agent provided, not just the kernel\'s subAgent entry', async () => {
-    const serviceRegistry = new ServiceRegistry();
-    const deps = {
-      serviceRegistry,
-      pluginRouteRegistry: newTestRouteRegistry(),
-      uiRouteCatalog: new UiRouteCatalog(),
-      nativeToolRegistry: { unregisterBySource: (): string[] => [] },
-      jobScheduler: { stopForPlugin: (): void => {} },
-      log: (): void => {},
-    } as unknown as DynamicAgentRuntimeDeps;
-    const runtime = new DynamicAgentRuntime(deps);
-
-    const disposeSubAgentService = serviceRegistry.provide(
-      'subAgent:@agent/x',
-      { tool: true },
-    );
-    serviceRegistry.provide('agentOwned', { impl: 1 }, '@agent/x');
-
-    (runtime as unknown as { active: Map<string, unknown> }).active.set(
-      '@agent/x',
-      {
-        agentId: '@agent/x',
-        handle: { close: (): Promise<void> => Promise.resolve() },
-        domainTool: { name: 'x_domain' },
-        rawTools: [],
-        subAgentTools: [],
-        disposeSubAgentService,
-      },
-    );
-
-    await runtime.deactivate('@agent/x');
-
-    assert.equal(serviceRegistry.has('subAgent:@agent/x'), false);
-    assert.equal(serviceRegistry.has('agentOwned'), false);
   });
 });
 

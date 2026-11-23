@@ -1265,6 +1265,10 @@
         "what": "Dieses Plugin ist der einzige Privacy Shield, und die Org-Richtlinie OMADIA_PRIVACY_FORCE_GUARDED verlangt Maskierung, deshalb lässt es sich nicht deinstallieren.",
         "next": "Installiere zuerst einen anderen Privacy-Shield-Provider oder schalte die Org-Richtlinie in der Middleware-Umgebung ab."
       },
+      "persona_declared": {
+        "what": "Dieses Paket legt eine eigene Persona oder einen eigenen Absender fest. Ein Plugin liefert Fähigkeiten und darf Agent-Vorlagen mitbringen; Identität und Persönlichkeit gehören zu einem Agenten.",
+        "next": "Installiere eine Version des Plugins ohne Persona, oder lege den Agenten im Agent Builder an und gib ihm die Fähigkeit."
+      },
       "retired_kind": {
         "what": "Dieses Paket hat eine ausgemusterte Art ('agent' oder 'extension'). Ein Plugin liefert Fähigkeiten und darf Agent-Vorlagen mitbringen; es ist nie selbst ein Agent, und Infrastruktur ist ein 'system-module'.",
         "next": "Installiere stattdessen die Version, die Fähigkeiten, Agent-Vorlagen, ein Systemmodul oder ein Modell liefert; Agenten legst du im Agent Builder an."
@@ -1955,6 +1959,10 @@
         "chart_pie": "Kreisdiagramm"
       }
     },
+    "answerDetails": {
+      "summary": "Details",
+      "hint": "Wie diese Antwort zustande kam: Schritte, Prüfung, Quellen, befragte Kolleg:innen und Datenschutz"
+    },
     "systemData": {
       "label": "Originaldaten aus dem System",
       "hint": "Die Werte dieser Antwort hat der Server unverändert aus dem Quellsystem eingesetzt – das KI-Modell hat sie nicht geschrieben. Der Text drumherum und die Spaltenüberschriften stammen vom Modell."
@@ -2092,7 +2100,7 @@
     "actionReSnapshot": "Auf den Standard-Ansprechpartner umbinden",
     "actionDelete": "Session löschen",
     "noAgentsTitle": "Es läuft kein Agent",
-    "noAgentsBody": "Es ist noch kein LLM-Anbieter einem Agenten zugeordnet, daher kann kein Agent antworten. Öffne den LLM-Zugang und hinterlege einen API-Schlüssel oder eine Abo-CLI.",
+    "noAgentsBody": "Kein Agent kann antworten: Entweder gibt es noch keinen aktiven Agenten, oder es ist kein LLM-Anbieter zugeordnet. Lege auf der Seite „Agenten“ einen Agenten an oder aktiviere ihn, und hinterlege im LLM-Zugang einen API-Schlüssel oder eine Abo-CLI.",
     "actionOpenLlmAccess": "LLM-Zugang öffnen"
   },
   "skills": {
@@ -4779,7 +4787,7 @@
       },
       "hubChip": "Hub · {registry}",
       "legacyChip": "Altbestand",
-      "legacyChipTitle": "Eine ausgemusterte Plugin-Art: Das Plugin läuft weiter, bekommt aber keine neuen Versionen."
+      "legacyChipTitle": "Eine ausgemusterte Plugin-Art: Das Plugin bekommt keine neuen Versionen. Ein Agent-Plugin läuft gar nicht mehr."
     },
     "stateBadge": {
       "available": "Verfügbar",
@@ -4841,6 +4849,10 @@
       "database_not_available": {
         "what": "Die eigene Datenbank des Plugins konnte nicht eingerichtet werden.",
         "next": "Das technische Detail unten nennt den Grund. Steht dort, dass eine Rolle außerhalb ihres Schemas Objekte anlegen darf, führe die genannte Anweisung (meist REVOKE CREATE ON SCHEMA public FROM PUBLIC) als Eigentümer der Datenbank aus und starte omadia danach neu."
+      },
+      "kind_retired": {
+        "what": "Dieses Plugin hat die ausgemusterte Art 'agent'. omadia führt Plugins mit eigenem Agenten nicht mehr aus.",
+        "next": "In der Einrichtung lässt sich das nicht beheben. Aktualisiere das Plugin auf eine Version, die Fähigkeiten (oder Agent-Vorlagen) liefert, oder deinstalliere es. Seine Einrichtungswerte bleiben für die neue Version erhalten."
       },
       "unknown": {
         "what": "Das Plugin ist nicht gestartet.",
@@ -5194,7 +5206,7 @@
     "legacyKind": {
       "title": "Altbestand",
       "agent": {
-        "what": "Dieses Plugin hat die ausgemusterte Art 'agent': ein Plugin mit eigenem Agenten. Es läuft weiter, aber omadia nimmt keine neue Version davon an.",
+        "what": "Dieses Plugin hat die ausgemusterte Art 'agent': ein Plugin mit eigenem Agenten. omadia führt solche Plugins nicht mehr aus und nimmt keine neue Version davon an.",
         "next": "Bau es im Plugin Builder als Fähigkeit (Tool oder Integration) neu, leg dann im Agent Builder den Agenten an und gib ihm diese Fähigkeit."
       },
       "extension": {

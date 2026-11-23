@@ -177,12 +177,16 @@ import type {
   TurnMaskedView,
   TurnReceiptStore,
   DataPayload,
+  NativeToolOutput,
 } from '@omadia/plugin-api';
 import { responseGuardProfileFor } from './agentQuality.js';
 import {
   agentScopePrefix,
   isUnknownOutcomeToolErrorNotice,
   isWriteCapableTool,
+  isNativeToolResult,
+  normalizeNativeToolResult,
+  unreadableToolResultNotice,
   resolveEffectivePrivacyMode,
 } from '@omadia/plugin-api';
 import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
@@ -393,7 +397,7 @@ function turnOwnersField(turnMemory: TurnMemoryBinding | undefined): {
 
 // S+10-2 back-compat re-exports: kernel-side callers that still
 // `import { … } from './orchestrator.js'` (verifierService.ts, routes/chat.ts,
-// services/sessionLogger.ts, plugins/dynamicAgentRuntime.ts and a few others)
+// services/sessionLogger.ts and a few others)
 // keep working unchanged. Sub-Commit S+10-3 flips those import paths to
 // `@omadia/channel-sdk` and these re-exports go away.
 export type {
@@ -629,6 +633,12 @@ export interface OrchestratorOptions {
    * (`buildOrchestratorForAgent`) always sets it. Defaults to `'default'`.
    */
   agentId?: string;
+  /**
+   * Spec 2042 §6 criterion 1 — the id the run trace names as the agent whose
+   * turn it is: its speaker's `agentId` (`agents.id` for a registry-built
+   * agent). Defaults to {@link agentId}.
+   */
+  traceAgentId?: string;
   provider: LlmProvider;
   model: string;
   /**
@@ -2657,6 +2667,10 @@ interface ToolDispatchMeta {
   /** A verifier re-entry handed back the first run's result; the handler did
    *  not run (`toolReplayLedger.ts`). The run trace flags the call. */
   replayed: boolean;
+  /** S3c — a plugin tool's result reported failed output checks
+   *  (`NativeToolResult.postcondition`). The run trace carries them to the
+   *  verifier, which raises a `tool_postcondition` claim. */
+  postcondition?: { readonly issues: readonly string[] };
 }
 
 /** The call's input asks the memory tool to read (`view`), not to write. */
@@ -2984,6 +2998,8 @@ function abortGuardedObserver(
 export class Orchestrator {
   /** The Agent (orchestrator instance) this object serves. */
   readonly agentId: string;
+  /** The agent id every run trace of this agent carries. */
+  private readonly traceAgentId: string;
   private readonly provider: LlmProvider;
   private readonly model: string;
   private readonly modelRouting: ModelRoutingConfig | undefined;
@@ -3162,6 +3178,7 @@ export class Orchestrator {
 
   constructor(options: OrchestratorOptions) {
     this.agentId = options.agentId ?? 'default';
+    this.traceAgentId = options.traceAgentId ?? this.agentId;
     this.provider = options.provider;
     this.model = options.model;
     this.modelRouting = options.modelRouting;
@@ -6112,6 +6129,8 @@ export class Orchestrator {
   private replayRecordFor(
     name: string,
     result: string,
+    /** What the handler returned (`result` is its model-facing text). */
+    rawResult: NativeToolOutput,
     shielded: boolean,
     scope: {
       readonly sink: readonly string[];
@@ -6135,7 +6154,7 @@ export class Orchestrator {
     const events = scope.recorder?.events ?? [];
     return {
       kind: 'result',
-      value: result,
+      value: rawResult,
       ...(events.length > 0 ? { subEvents: [...events] } : {}),
       ...(scope.labels && scope.labels.labels.length > 0 ? { labels: scope.labels } : {}),
     };
@@ -6729,6 +6748,7 @@ export class Orchestrator {
     const traceCollector = input.sessionScope
       ? new RunTraceCollector({
           scope: input.sessionScope,
+          agentId: this.traceAgentId,
           ...runTraceUserSpread(input),
           turnId,
           ...(entityCollection ? { entityRefs: entityCollection } : {}),
@@ -7154,6 +7174,7 @@ export class Orchestrator {
           const durationMs = Date.now() - startedTimes[i]!;
           const inv = invocations[i];
           const replayed = metas[i]?.replayed === true ? { replayed: true } : {};
+          const postcondition = metas[i]?.postcondition;
           if (inv) {
             inv.finish({
               durationMs,
@@ -7168,6 +7189,7 @@ export class Orchestrator {
                 durationMs,
                 isError,
                 ...replayed,
+                ...(postcondition ? { postcondition } : {}),
               },
               output,
             );
@@ -7375,7 +7397,7 @@ export class Orchestrator {
       }
 
       throw new Error(
-        `Orchestrator exceeded maxToolIterations (${this.maxIterations}) without reaching a final answer.`,
+        `The agent exceeded maxToolIterations (${this.maxIterations}) without reaching a final answer.`,
       );
     } finally {
       // Guard against listener leaks on any non-happy exit (throw, iteration
@@ -8073,6 +8095,7 @@ export class Orchestrator {
     const traceCollector = input.sessionScope
       ? new RunTraceCollector({
           scope: input.sessionScope,
+          agentId: this.traceAgentId,
           ...runTraceUserSpread(input),
           turnId,
           ...(entityCollection ? { entityRefs: entityCollection } : {}),
@@ -8864,7 +8887,7 @@ export class Orchestrator {
         ...(turnContext.currentTurnId()
           ? { correlationId: turnContext.currentTurnId() as string }
           : {}),
-        message: `Orchestrator exceeded maxToolIterations (${String(this.maxIterations)}) without reaching a final answer.`,
+        message: `The agent exceeded maxToolIterations (${String(this.maxIterations)}) without reaching a final answer.`,
       };
     } catch (err) {
       // This catch did not log before — a turn failing on a transient
@@ -9125,6 +9148,7 @@ export class Orchestrator {
           durationMs,
           isError,
           ...replayed,
+          ...(slot.meta.postcondition ? { postcondition: slot.meta.postcondition } : {}),
         },
         slot.output,
       );
@@ -9424,7 +9448,7 @@ export class Orchestrator {
       asksSubAgentModel || isInternExemptTool(name)
         ? input
       : restorePromptSurrogatesInToolInput(privacy, input);
-    const execute = async (): Promise<string> => {
+    const execute = async (): Promise<NativeToolOutput> => {
       if (
         privacy !== undefined &&
         ctx !== undefined &&
@@ -9467,13 +9491,31 @@ export class Orchestrator {
       return this.dispatchToolInner(name, handlerInput, dispatchObserver, turnMemory, kernelRefusal);
     };
     let result: string;
+    // S3c — what the handler returned: text, or a plugin tool's structured
+    // result. Recorded as is, so a replay reads its postcondition again.
+    let rawResult: NativeToolOutput;
+    const takeResult = (raw: NativeToolOutput): string => {
+      rawResult = raw;
+      // A value that is neither text nor a structured result (a plugin that
+      // breaks the type) is refused: the shield below masks text only, so
+      // passing it on would hand the model an unmasked value.
+      if (typeof raw !== 'string' && !isNativeToolResult(raw)) {
+        console.error(
+          `[orchestrator.dispatchTool:${name}] handler returned ${Array.isArray(raw) ? 'an array' : typeof raw}, neither text nor a structured result — refused`,
+        );
+        return unreadableToolResultNotice(name);
+      }
+      const normalized = normalizeNativeToolResult(raw);
+      if (meta && normalized.postcondition) meta.postcondition = normalized.postcondition;
+      return normalized.text;
+    };
     if (replay !== undefined) {
       // The first run's outcome, handed back. A thrown handler replays as the
       // same rejection, which `dispatchTool` withholds for THIS pass.
       if (meta) meta.replayed = true;
       replaySubEvents(observer, replay.kind === 'result' ? replay.subEvents : undefined);
       if (replay.kind === 'rejection') throw replay.error;
-      result = replay.value as string;
+      result = takeResult(replay.value as NativeToolOutput);
       // Spec 2042 §5.11 — a replayed memory read brings the labels the first
       // run's read added (they come from below the handler, which a replay skips).
       if (replay.kind === 'result' && replay.labels) addTurnLabels(replay.labels);
@@ -9486,7 +9528,7 @@ export class Orchestrator {
       try {
         // Inside a request a verifier may re-enter, no call beneath the
         // handler is re-sent by its transport (`runHandlerAtMostOnce`).
-        result = await runHandlerAtMostOnce(ledger, execute);
+        result = takeResult(await runHandlerAtMostOnce(ledger, execute));
       } catch (err) {
         if (tracked && deadlineSignal?.aborted !== true) {
           tracked.record('orchestrator', name, input, { kind: 'rejection', error: err });
@@ -9530,7 +9572,7 @@ export class Orchestrator {
         'orchestrator',
         name,
         input,
-        this.replayRecordFor(name, result, privacy !== undefined, {
+        this.replayRecordFor(name, result, rawResult!, privacy !== undefined, {
           sink: subAgentSink,
           bypass: subAgentBypassFlag,
           sentinelMint: mcpInputSentinelMint,
@@ -9842,7 +9884,7 @@ export class Orchestrator {
     turnMemory: TurnMemoryBinding | undefined,
     /** Receives the exact text of a kernel refusal this call returns. */
     refusal?: KernelRefusalBox,
-  ): Promise<string> {
+  ): Promise<NativeToolOutput> {
     const refuse = (text: string): string => {
       if (refusal !== undefined) refusal.text = text;
       return text;
@@ -10189,9 +10231,8 @@ export class Orchestrator {
   registerDomainTool(tool: DomainTool): void {
     // Hard collision check. Silent last-wins was the previous behavior and
     // it made two uploaded agents with the same shortName (last dot-segment
-    // of agentId) clobber each other's top-level tool. Caller — typically
-    // DynamicAgentRuntime.activate — is expected to probe first via
-    // `hasDomainTool(name)` and surface a clearer error with agent context.
+    // of agentId) clobber each other's top-level tool. A caller is expected
+    // to probe first via `hasDomainTool(name)` and surface a clearer error.
     if (this.nativeTools.has(tool.name)) {
       throw new Error(
         `registerDomainTool: name '${tool.name}' is already reserved by a native tool`,
@@ -10205,7 +10246,6 @@ export class Orchestrator {
     this.domainToolsByName.set(tool.name, tool);
   }
 
-  /** Probe used by DynamicAgentRuntime for pre-flight collision messages. */
   /**
    * Is the plugin that owns a tool granted to THIS Agent?
    *
@@ -10255,6 +10295,7 @@ export class Orchestrator {
     return this.isPluginGranted(pluginId);
   }
 
+  /** Probe for pre-flight collision messages. */
   hasDomainTool(name: string): boolean {
     return this.domainToolsByName.has(name);
   }

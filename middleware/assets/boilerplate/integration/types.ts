@@ -434,7 +434,23 @@ export interface NativeToolSpec {
 /** Mirror of `NativeToolHandler`: returns the tool result as text. */
 export type NativeToolHandler = (input: unknown) => Promise<string>;
 
+/** Mirror of `ToolPIIField` from `@omadia/plugin-api`: one PII-bearing field
+ *  of a tool's result. `path` names the field (`[].name`, `employees[].name`),
+ *  `idPath` the stable id of the same row (`[].id`). */
+export interface ToolPIIField {
+  readonly path: string;
+  readonly idPath: string;
+  readonly type?: 'PERSON' | 'EMAIL' | 'PHONE' | 'IBAN' | 'CARD' | 'ADDRESS' | 'ORG' | 'APIKEY';
+}
+
+/** Mirror of the `ToolRegistrationOptions` part the boilerplate uses. */
+export interface ToolRegistrationOptions {
+  /** The PII-bearing fields of the result. The Privacy Shield always masks a
+   *  declared field, whatever its own classifier says. */
+  readonly piiFields?: readonly ToolPIIField[];
+}
+
 /** Mirror of the `register` part of `ToolsAccessor` from `@omadia/plugin-api`. */
 export interface ToolsAccessor {
-  register(spec: NativeToolSpec, handler: NativeToolHandler): () => void;
+  register(spec: NativeToolSpec, handler: NativeToolHandler, options?: ToolRegistrationOptions): () => void;
 }
