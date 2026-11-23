@@ -6132,6 +6132,25 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+- **Memory-ACL automatisch prüfbar machen (Plan in 7 Schritten, ein PR pro Schritt).** Ziel:
+  Jede Änderung, die einem Nutzer Memory zeigt, das ihm nicht zusteht, macht CI rot.
+  Schritt 0 (#2179): Postgres-Beine der Memory-Suiten laufen in CI, Namens-Guard
+  `test:pg:names`, `PG_TEST_FLOOR` auf 721. Offen:
+  1. Zugriffsmatrix als Code (`middleware/test/memoryAccess/`): eine gesäte Welt mit Canary
+     pro Item und einem handgeschriebenen Orakel für `off`/`enforce`/`enforce-strict`/`members`.
+  2. ACL-Contract-Suite über In-Memory und Postgres. Heute prüft keine Postgres-Suite
+     `sharedOnly`, `viewerAgentSlug`, `addOwner`/`removeOwner` oder
+     `listMemorableKnowledgeFor`; `audienceOwners`, `members` und `enforce-strict` schon.
+  3. Canary-Sweep über alle Einstiegspunkte (Recall, Memory-Tool, KG-Tools, Plugin-Accessoren,
+     Memory-/Datasets-/Session-Routen, Admin, `/api/dev/*`), jeweils mit Positivkontrolle.
+  4. Vollständigkeits-Guards: Inventar-Test, ESLint-Regel gegen viewer-lose Graph-Reads,
+     Snapshot der Memory-Defaults, Matrix nach Migrationen.
+  5. Lifecycle-Invarianten (Promotion, Reaper, Merge, GC, Purge, Owner-Entfernung) mit Fake-Clock
+     und fast-check.
+  6. Mutationsnachweis (Prädikate einzeln löschen, Stryker nightly), Exfiltrations-Korpus.
+  Bekannte Test-Infrastruktur-Bugs: #2185 (`roleChangeAudit775.pg` löscht `admin_audit`
+  ohne Migrationszeile), #2186 (Orb-Setup scheitert am CUDA-Download von `onnxruntime-node`).
+
 - **#2090 Reply-Referenz in privaten Chats (ADR-0030):** Kernel und Facilitator binden
   private Antworten über `TurnOrigin.replyToMessageId` an die Erinnerung. Kein Kanal-Adapter
   füllt das Feld bisher (Teams: zitierte Antwort/`replyToId`, Slack `thread_ts`, Discord
@@ -6361,7 +6380,7 @@ Request und bei jedem WebSocket-Upgrade. Offen:
 
 ### CI-Schulden aus dem Security-Review (2026-09-29)
 
-- **`PG_TEST_FLOOR` nachziehen, sobald die Auth-Härtungen gemergt sind.** Serverseitiger
+- **`PG_TEST_FLOOR` nachziehen — erledigt (#2179, Floor 721 = gemessenes `ran=`).** Serverseitiger
   Sitzungs-Widerruf und die atomare Ersteinrichtung bringen neue Postgres-Suiten mit
   (`test/auth/userStoreSessionVersion.pg.test.ts`, `userStoreFirstAdmin.pg.test.ts`,
   `setupRouteConcurrency.pg.test.ts`). Der Floor in `.github/workflows/ci.yml` bleibt bis
@@ -8163,6 +8182,15 @@ GRAPH_PG_TEST_URL=postgresql://omadia:omadia@127.0.0.1:5432/omadia_test \
 MEMORY_PG_TEST_URL=postgresql://omadia:omadia@127.0.0.1:5432/omadia_test \
 npm run test:pg
 ```
+
+`test:pg` ist der einzige CI-Schritt mit Test-DSN und läuft nur über
+`test/**/*.pg.test.ts`. Ein Postgres-Fall in einer Datei ohne `.pg` läuft deshalb
+nirgends (in `npm test` überspringt er sich). `npm run test:pg:names` (CI-Schritt,
+#2179) bricht ab, wenn eine Testdatei `test/_helpers/pgTestDb.ts` direkt oder über
+einen Helfer erreicht, ohne `.pg.test.ts` zu heißen. Gemischte Suiten werden
+geteilt (`foo.test.ts` + `foo.pg.test.ts`, gemeinsamer Code in einem Nicht-Test-Modul).
+Neue Postgres-Tests heben `PG_TEST_FLOOR` in `.github/workflows/ci.yml` auf den
+gemessenen `ran=`-Wert. Regel: `middleware/test/README.md`.
 
 App-Server werden nicht automatisch gestartet. Bei Bedarf über
 `amp orb service start … --portal` betreiben, nicht per `nohup`/`&`.
