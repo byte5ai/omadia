@@ -286,10 +286,32 @@ const CORE_NOTES_PREFIXES = ['/memories/core/'];
  */
 const AGENT_UNWRITABLE_PREFIXES = ['/memories/core/audit/'];
 
+/**
+ * The path as the store will resolve it (#1827): the stores collapse duplicate
+ * slashes and drop a trailing one, so `/memories/core//audit/x` lands on the
+ * log although it does not start with `/memories/core/audit/`.
+ */
+function canonicalPath(path: string): string {
+  const collapsed = path.replace(/\/+/g, '/');
+  return collapsed.length > 1 ? collapsed.replace(/\/$/, '') : collapsed;
+}
+
 function isAgentUnwritable(path: string): boolean {
+  const p = canonicalPath(path);
   return AGENT_UNWRITABLE_PREFIXES.some(
-    (pre) => path === pre.slice(0, -1) || path.startsWith(pre),
+    (pre) => p === pre.slice(0, -1) || p.startsWith(pre),
   );
+}
+
+/**
+ * #1827 — does `path` CONTAIN an unwritable subtree? A directory delete or
+ * rename takes every descendant with it, so `delete /memories/core` removed
+ * the audit log although the path itself is not on the deny list.
+ */
+function containsAgentUnwritable(path: string): boolean {
+  const p = canonicalPath(path);
+  const dir = p.endsWith('/') ? p : `${p}/`;
+  return AGENT_UNWRITABLE_PREFIXES.some((pre) => pre.startsWith(dir));
 }
 
 /** Access modifier prefix: `ro:<pattern>` — read/list/exists only. */
@@ -562,7 +584,7 @@ export class ScopedMemoryStore implements MemoryStore {
   }
 
   async delete(virtualPath: string): Promise<void> {
-    if (!this.allowedWrite(virtualPath)) {
+    if (!this.allowedWrite(virtualPath) || containsAgentUnwritable(virtualPath)) {
       throw new MemoryScopeViolation(this.options.agentSlug, 'delete', virtualPath);
     }
     return this.options.inner.delete(virtualPath);
@@ -571,6 +593,7 @@ export class ScopedMemoryStore implements MemoryStore {
   async rename(fromVirtualPath: string, toVirtualPath: string): Promise<void> {
     if (
       !this.allowedWrite(fromVirtualPath) ||
+      containsAgentUnwritable(fromVirtualPath) ||
       !this.allowedWrite(toVirtualPath)
     ) {
       throw new MemoryScopeViolation(
