@@ -30,6 +30,10 @@ function questionText(question: CardQuestion): string[] {
       lines.push(`${question.agreeLabel ?? 'Ja'} oder ${question.objectLabel ?? 'Einwand'}`);
       break;
     case 'assignment':
+      if (question.candidates !== 'conversation_members') lines.push(...optionLines(question.candidates));
+      if (question.candidates === 'conversation_members') lines.push('(„ich“, wenn du es übernimmst)');
+      else lines.push(question.allowVolunteer === true ? '(eine Nummer oder „ich“, wenn du es übernimmst)' : '(eine Nummer)');
+      break;
     case 'text':
     case 'number':
     case 'date':
@@ -138,7 +142,9 @@ export function parseCardReply(question: CardQuestion, reply: string): CardReply
       return { ok: true, value: { questionId: question.id, kind: 'text', text } };
     }
     case 'assignment': {
-      if (/^(ich|me|self|i)$/i.test(text)) {
+      // "ich" takes it over: only where the card lets a person volunteer.
+      const mayVolunteer = question.allowVolunteer === true;
+      if (mayVolunteer && /^(ich|me|self|i)$/i.test(text)) {
         return { ok: true, value: { questionId: question.id, kind: 'assignment', assignee: 'self' } };
       }
       if (question.candidates !== 'conversation_members') {
@@ -154,7 +160,7 @@ export function parseCardReply(question: CardQuestion, reply: string): CardReply
           };
         }
       }
-      return fail('name a candidate or say "ich"');
+      return fail(mayVolunteer ? 'name a candidate or say "ich"' : 'name a candidate');
     }
   }
 }

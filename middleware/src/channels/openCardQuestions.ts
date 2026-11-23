@@ -117,10 +117,18 @@ export class PgOpenCardQuestionStore implements OpenCardQuestionStore {
   }
 }
 
-/** Whether a card can go out as text: one question, of a kind a person can type. */
+/**
+ * Whether a card can go out as text: one question, of a kind a person can type.
+ * An assignment can when a typed reply can name the assignee: a fixed list of
+ * candidates (by number or name), or the members of the conversation where a
+ * person can only take it over themselves ("ich"; names of members are not
+ * resolvable from text).
+ */
 export function canGoOutAsText(card: QuestionCard): boolean {
   const only = card.questions.length === 1 ? card.questions[0] : undefined;
-  return only !== undefined && only.kind !== 'assignment';
+  if (only === undefined) return false;
+  if (only.kind !== 'assignment') return true;
+  return only.candidates !== 'conversation_members' || only.allowVolunteer === true;
 }
 
 /** The text a card is posted as: the sender's lead-in, then the numbered question. */

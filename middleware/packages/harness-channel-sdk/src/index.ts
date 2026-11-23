@@ -547,6 +547,15 @@ export { InMemorySpeakerHistoryStore, speakerLine, speakerLineFor } from './spea
 export type { SpeakerHistoryStore, SpeakerLineContext } from './speakerLine.js';
 export { renderPlainAnswer } from './plainAnswer.js';
 export type { PlainAnswerOptions } from './plainAnswer.js';
+export {
+  InMemoryPendingInteractiveStore,
+  PENDING_INTERACTIVE_TTL_MS,
+  isChoosableInteractive,
+  rememberInteractive,
+  resolveInteractiveReply,
+  resolveTypedInteractiveReply,
+} from './typedInteractiveReply.js';
+export type { PendingInteractive, PendingInteractiveStore } from './typedInteractiveReply.js';
 export { parseCardReply, renderCardAsText } from './questionCardText.js';
 export type { CardReplyParse } from './questionCardText.js';
 export { answerDetailsText, buildAnswerDetails } from './answerDetails.js';

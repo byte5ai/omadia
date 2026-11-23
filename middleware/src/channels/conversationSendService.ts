@@ -97,8 +97,12 @@ export interface ConversationSendService {
   updateCard(input: ConversationCardUpdateInput, ground: AuthorizedSendGround): Promise<CardUpdateOutcome>;
 }
 
-/** The question kinds a person can answer by typing (#2086). */
-const TEXT_CARD_KINDS = CARD_QUESTION_KINDS.filter((kind) => kind !== 'assignment');
+/**
+ * The question kinds a person can answer by typing (#2086): all of them. An
+ * assignment goes out as text where a typed reply can name the assignee
+ * (`canGoOutAsText`); otherwise that one card is refused.
+ */
+const TEXT_CARD_KINDS = CARD_QUESTION_KINDS;
 
 const NO_GROUND =
   'an agent posts as itself only under an execution scope that authorized it (conversationSend@2)';
