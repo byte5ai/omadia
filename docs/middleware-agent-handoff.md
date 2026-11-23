@@ -143,6 +143,14 @@ src/
   Menschen-Behauptungen), `identityGuard/llmJudge.ts` (Modellschicht, Klassifizier-
   Modell des Agenten, nur bei verdächtigem Text), `identityGuard/guard.ts`
   (`SentenceGate`: satzweise Freigabe beim Streaming, Timeout 8 s → fail-closed).
+  `identityGuard/answerRecordGate.ts`: der Orchestrator schreibt die Turn-Zeile, bevor
+  der Guard (außen) entscheidet; der `TurnRecordWriter` meldet jede Zeile dem Record-Gate
+  des Turns und hält die Fakten-Extraktion zurück. Nach dem Urteil patcht der Guard den
+  Turn per `KnowledgeGraph.amendTurn` ohne neue Klassifikation (Property `identityGuard`:
+  outcome, layer, latencyMs, reason; plugin-api 1.89.0); eine zurückgehaltene Antwort
+  verliert Text und Embedding und wird `tailOnly` (die Frage bleibt),
+  Fakten werden nur aus behaltenen Antworten gelernt. Offen: Auto-Promotion und `onAfterTurn` sehen den Entwurf
+  noch (laufen vor dem Urteil); das Markdown-Transkript behält ihn.
 - **Prompt:** `management/agentIdentityPrompt.ts` (`DEFAULT_AGENT_IDENTITY`,
   `identityRules`), Snapshots in `test/fixtures/agentPrompt/` (`test/agentIdentityRules.test.ts`).
 - **Endpoints:** `/api/v1/operator/default-agents`,
@@ -10738,7 +10746,8 @@ Leserkreis, Offenlegungsstufe).
   - die Antwort gegen den Leserkreis (nicht-streamend): bei Verstoß wird das
     Ergebnis neu aus Buchhaltungsfeldern gebaut (Antwort = Ersatzzeile; keine
     Anhänge, Dateien, Karten, Canvas, Recall, Beiträge), und die Session-Zeile
-    speichert nur die Ersatzzeile (`beforeTurnWritten`);
+    speichert nur die Frage, keine Antwort (`beforeTurnWritten` → `withoutAnswer`;
+    der Web-Chat-Mirror behält die Ersatzzeile als `transcriptAnswer`);
   - Persistenz: jeder geschriebene Turn behält sein Label-Set (`discretion_labels`,
     Migration 0098), Recall bringt es zurück;
   - Memory: `memory`-Schreibvorgänge und die Auto-Promotion laufen vorher durch die

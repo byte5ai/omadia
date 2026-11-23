@@ -85,6 +85,38 @@ documented interpolation for the other fields too.
   `middleware/test/conductorAwaitMessageRender.pg.test.ts` (the aliased join on a real
   Postgres, through every read path).
 
+### Fixed — a withheld answer stays out of the agent's memory; the guard's verdict is on the turn (spec 2042 follow-up)
+
+- Live on the canvas, Dark Clippy's draft that the identity guard blocked ("Falls ich mich vorhin
+  hier als … vorgestellt habe: Das war falsch") was recorded as a turn, and every later
+  "wer bist du" recalled and repeated it ("…, und zwar mehrmals"). The orchestrator writes a
+  turn's record inside the turn, before the identity guard (outermost) decides. Now the record
+  writer reports every row to the turn's record gate and holds back the fact extraction; once
+  the guard has decided (on the authoritative answer, after the verifier and the privacy
+  render), the turn is patched in the graph without being classified again
+  (`KnowledgeGraph.amendTurn`, no capture-filter model call): it gets the verdict, and an
+  answer the identity guard withheld loses its text and its embedding and becomes `tailOnly` (no recall finds it; the user's message stays). Facts are learned only
+  from a kept answer. An answer refused at the people egress (discretion) is recorded without
+  its text too, instead of as the line that replaced it; the web-chat mirror keeps that line.
+- The verdict is stored with the turn: `TurnIngest.identityGuard` / `amendTurn`
+  (`@omadia/plugin-api` 1.89.0, Turn property `identityGuard`: outcome, deciding layer,
+  latency, rule or cause). A block like the one in the 2026-11-23 run can be traced without the
+  operator log.
+- Known residuals: auto-promotion (opt-in) and `onAfterTurn` hooks run before the verdict and
+  still see the draft; the markdown session transcript keeps it (and a startup backfill,
+  `BACKFILL_AT_STARTUP=1`, would re-ingest it); a stream the client abandons before `done` is
+  not patched; an answer the verifier withheld is the verifier's record, unchanged.
+
+### Fixed — a reasoning effort only for OpenAI's reasoning models (spec 2042 follow-up)
+
+- The verifier, the fast path and the PASS/BLOCK judges send `effort: 'low'`. Both OpenAI
+  adapters forwarded it to every native model, and `gpt-4o` / `gpt-4.1` answer
+  `reasoning_effort` (Responses: `reasoning.effort`) with a 400, so on such an agent those calls
+  failed. A shared `isOpenAiReasoningModel` (`@omadia/llm-provider-api` 1.6.0: o-series and
+  GPT-5, without `o1-mini`/`o1-preview` and the `*-chat-latest` aliases) now decides: other
+  models get no effort field (Chat Completions notes it once per model). The reasoning models
+  reject a temperature other than 1, so a caller's `temperature: 0` is dropped for them.
+
 ### Fixed — Conductor operator API: a malformed id no longer returns the Postgres error
 
 2026-11-17. `conductor_runs.id`, `conductor_awaits.id`, `conductor_workflows.id`
@@ -471,6 +503,7 @@ GHSA-fc5q-39xc-vjpf (picomatch) on 2026-11-18, so its three audit exceptions fro
   unless an operator released it.
 - Docs: ADR-0026; `AGENTS.md` points sessions work to ADR-0026;
   `docs/security-architecture.md` § native facilitators covers the link and read rules.
+
 ### Added — Facilitators: moderation working modes, per-facilitator defaults, readiness per channel (#2060, #2066, ADR-0023)
 
 - Facilitators may attach working modes that add moderation methods.
@@ -489,6 +522,7 @@ GHSA-fc5q-39xc-vjpf (picomatch) on 2026-11-18, so its three audit exceptions fro
 - The agent list carries `own_identity_channels`; the web-ui shows a
   facilitator ready with an own identity on any channel and has a
   "Moderation" tab (defaults and working modes).
+
 ### Added — An agent's own bot on Telegram, Discord and Slack (epic #2042, S7)
 
 - **Migration 0105 `agent_channel_identities`:** (agent, channel type, routing key)
@@ -1610,6 +1644,7 @@ GHSA-fc5q-39xc-vjpf (picomatch) on 2026-11-18, so its three audit exceptions fro
   from opening its own connection with credentials it finds there.
 - **Not yet:** an archetype plugin that still requires `graphPool` is not
   refused. That follows once the facilitation engine has moved.
+
 ### Fixed — An archetype plugin is updated and stopped in the runtime it runs in (#2088)
 
 - **Update to an archetype version.** Uploading or installing from the Hub a
@@ -1723,6 +1758,7 @@ client has no server session of its own outside a transaction.
   now run on a direct connection of their own, by the same address rule.
 - New optional setting `DATABASE_URL_DIRECT`, needed only behind a pooler
   that cannot be recognised from its address.
+
 ### Added — Question cards: contract and kernel side (#2089, epic #2043)
 
 - An engine can post a typed question card (`message.card` on
@@ -2414,6 +2450,7 @@ produced a value, so no turn carried one.
   `TurnIngestResult.embeddingScheduled`.
 - `graphRefs` stays unset: `done` also reaches Public API clients, which have no
   use for internal node ids. Non-streaming replies are unchanged.
+
 ### Fixed — raw-body webhooks: a missing `Content-Type` no longer fails the HMAC
 
 2026-11-10. Reported as #1700: a correctly signed inbound delivery sent without a
@@ -2478,6 +2515,7 @@ executor-owned keys — the two disagreed.
 - **Workflows carry their version number.** `GET /conductors` and
   `GET /conductors/:slug` return `activeVersionNumber` next to `activeVersionId`,
   null when nothing is published. Additive, no migration.
+
 ### Fixed — MCP auth discovery: a failed read is not "not protected"
 
 2026-11-04. Found on Figma in the new admin: the Authorization section vanished
@@ -2525,6 +2563,7 @@ answered 401 while its metadata took ~8 s and `api.figma.com` answered 503.
   desktop wizard's key does not read "stored, not verified". A pass is stored; an
   offline install repeats the bounded probe on later page opens.
 - **`latest-mac.yml`** describes the stapled DMGs (`refresh-mac-feed-dmg.mjs`).
+
 ### Fixed — Builder Teams tabs fail closed on hosts without `teams-sso` (#1620)
 
 2026-11-04. A generated plugin's Teams data router refuses every request that
@@ -2566,6 +2605,7 @@ data mount like a granted `'public'` route, without authentication.
   SIGTERM. They now attach to the app's window as a sheet and bring it forward.
 - **`OMADIA_VERSION`** is stamped for the kernel and the web UI of the packaged
   app, so `/health`, `/system` and the update page report the real version.
+
 ### Fixed — A CLI already signed in gets the orchestrator
 
 2026-11-04. Found in the desktop functional test of v0.195.2.
@@ -2991,8 +3031,6 @@ model or the user (#1542–#1546, #1550, #1553–#1556, #1559–#1561, #1577).
   `privacyMode.ts` comment now describe what the code masks.
 
 `@omadia/plugin-privacy-guard` 0.13.0, `@omadia/plugin-api` 1.47.0.
-
-
 
 ### Fixed — Verifier no longer refutes a "reference" on a model without reference fields (#1574 follow-up)
 
@@ -3463,7 +3501,6 @@ Postgres), and the stamp in `middleware/test/orchestrator/mcpKgIngestPrivacyClam
   storing `insight` plus a clipped prefix of the raw answer. Boots without an
   extractor keep the answer-prefix fallback.
 
-
 ### Fixed — store catalog: one tab per plugin, honest Hub tags, Hub permissions, search (#1469, #1459, #1470, #1471, #1457, #1474)
 
 2026-10-28. Six faults in the store listing and detail pages.
@@ -3592,6 +3629,7 @@ next boot removes; `blank` no longer points at `/store/upload`. Apply skips a
 plugin whose capability is already provided (`skipped[].reason:
 'capability_provided'`), the shipped profile descriptions are translated, and
 the outcome says that the plugins become active after a restart.
+
 ### Fixed — follow-ups to #1522: old false "done" plan steps, the preamble preview, card lead-ins (#1502, #1500)
 
 2026-10-28. Three gaps #1522 left open.
@@ -3768,8 +3806,6 @@ start-time plugin set. Since #989 it rebuilds the orchestrator
 the new plugin set applies from the next turn. The snapshot's `pluginIds` stay
 as a start-time record that nothing reads.
 
-
-
 ### Fixed — the store says truthfully whether a plugin is running, and why not (#1456, #1497, #1496, #1492, #1460)
 
 2026-10-28. Five places reported a plugin's activation state wrong.
@@ -3844,6 +3880,7 @@ integration repos: `byte5ai/omadia-integration-odoo` and
 report runtime 401s through `ctx.status` (separate PRs and releases).
 
 No plugin-api change; no new env var, migration or secret.
+
 ### Fixed — the storage overlay pulls again: SeaweedFS replaces MinIO (#1506)
 
 2026-10-28. `minio/minio` and `minio/mc` were removed from Docker Hub, and
@@ -3964,7 +4001,6 @@ fresh instance. DB-less boots keep re-seeding, as before.
 target `registry:<name>`) with the actor from `auditActorFromRequest`, and the
 url and `has_token` before and after. The token itself never appears. Admin ·
 Audit gains a "Plugin registries" filter.
-
 
 ### Fixed — the plugin UI host page keeps the plugin's state, names it, and stops claiming isolation (#1480, #1479, #1501)
 
@@ -5545,6 +5581,7 @@ of the turn through the identity resolver (`resolveRunTraceOwner` →
 uses), each group participant to their own cluster. `ingestRun` still never
 creates a cluster, and the turn's `resolvedOmadiaUserId`, dataset ACLs, MCP
 keys and `Principal` are unchanged for these turns.
+
 ### Fixed — the Conductor routes the default Teams bot like chat does
 
 2026-10-07 — Three runs of the workflow `test-teams` failed at their entry
@@ -5559,6 +5596,7 @@ unavailable provisioned owner refused, the configured default bot
 to the binding of the run’s conversation, then its own binding, then the
 fallback — as chat routes it — and every other unknown bot refused. The bot key
 is compared lowercased, as stored.
+
 ### Fixed — a withheld answer says why, and only what is true
 
 2026-10-07 — In production (v0.170.0) three Teams answers withheld for missing
@@ -5610,6 +5648,7 @@ hint point at the real fields and tell the model to repeat its first-run
 queries, which are answered from the stored results. `toSemanticAnswer` now
 strips the markers for every connector (Teams never did); the web UI's
 stripper takes the same id shape.
+
 ### Security — `@modelcontextprotocol/sdk` 1.32.1 (GHSA-6qxp-vccf-f47h)
 
 2026-10-07 — The MCP TypeScript SDK's OAuth client before 1.31.0 could send

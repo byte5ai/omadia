@@ -268,6 +268,7 @@ import { peopleEgressDecision } from './discretion/turnLabels.js';
 import { fieldClassesForTurn, personalFieldsWithheld } from './discretion/fieldRights.js';
 import { FIELD_WITHHELD_NOTICE, renderedAnswerForAudience } from './privacyAudience.js';
 import { answerWithheldText } from './discretion/disclosure.js';
+import { withoutAnswer } from './identityGuard/answerRecordGate.js';
 import { labelSummary } from './discretion/labels.js';
 import {
   addTurnLabels,
@@ -3279,9 +3280,11 @@ export class Orchestrator {
         ? {
             beforeTurnWritten: async (entry: SessionLogEntry, discretion: DiscretionTurnState | undefined) => {
               const decision = await peopleEgressDecision(discretion);
+              // A refused answer is recorded without its text: neither it nor
+              // the line that replaced it belongs in the agent's memory.
               return decision === undefined || decision.allowed
                 ? entry
-                : { ...entry, assistantAnswer: answerWithheldText(this.aiDisclosure?.locale) };
+                : withoutAnswer(entry, answerWithheldText(this.aiDisclosure?.locale));
             },
             onTurnWritten: async (turnId: string, discretion: DiscretionTurnState | undefined) => {
               if (!discretion) return;
