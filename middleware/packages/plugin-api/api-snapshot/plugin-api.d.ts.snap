@@ -1194,6 +1194,7 @@ export * from './toolControlFlowText.js';
 export * from './toolErrorNotice.js';
 export * from './selfExtend.js';
 export * from './localSubAgentTool.js';
+export * from './nativeToolResult.js';
 export * from './piiAnnotation.js';
 export * from './targetRef.js';
 export * from './writeCapabilities.js';
@@ -2167,6 +2168,20 @@ readonly signal?: AbortSignal;
 export declare const OPERATOR_JOBS_SERVICE_NAME = "operatorJobs";
 export declare const MODEL_PASSTHROUGH_SERVICE_NAME = "modelPassthrough";
 
+// ===== nativeToolResult.d.ts =====
+import type { LocalSubAgentToolResult } from './localSubAgentTool.js';
+export type NativeToolResult = LocalSubAgentToolResult;
+export type NativeToolOutput = string | NativeToolResult;
+export interface NormalizedNativeToolResult {
+readonly text: string;
+readonly postcondition?: {
+readonly issues: readonly string[];
+};
+readonly structured?: NativeToolResult['structured'];
+}
+export declare function normalizeNativeToolResult(raw: unknown): NormalizedNativeToolResult;
+export declare function nativeToolResultText(raw: unknown): string;
+
 // ===== nudge.d.ts =====
 import type { ProcessMemoryService } from './processMemory.js';
 export declare const NUDGE_REGISTRY_SERVICE_NAME = "nudgeRegistry";
@@ -2327,6 +2342,7 @@ export declare function computeCodeChallenge(verifier: string): string;
 import type { Socket } from 'node:net';
 import type { ToolPIIField } from './piiAnnotation.js';
 import type { WriteCapability } from './writeCapabilities.js';
+import type { NativeToolOutput } from './nativeToolResult.js';
 import type { EntityCapturedTurnsHit, EntityCapturedTurnsOptions, EntityIngest, EntityIngestResult, FactIngest, FactIngestResult, GraphNode, GraphStats, SearchTurnsOptions, TurnSearchHit } from './knowledgeGraph.js';
 export interface PluginContext {
 readonly agentId: string;
@@ -2450,7 +2466,7 @@ domain: string;
 ok: false;
 message: string;
 };
-export type NativeToolHandler = (input: unknown, context?: NativeToolCallContext) => Promise<string>;
+export type NativeToolHandler = (input: unknown, context?: NativeToolCallContext) => Promise<NativeToolOutput>;
 export interface NativeToolCallContext {
 readonly agentSlug?: string;
 readonly channelType?: string;

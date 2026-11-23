@@ -10,10 +10,12 @@
  * own native tools are not, they belong to a turn.
  */
 
+import { nativeToolResultText, type NativeToolOutput } from '@omadia/plugin-api';
+
 /** The slice of a native tool registration the invoker reads. */
 export interface PluginToolEntry {
   readonly agentId?: string;
-  readonly handler?: (input: unknown) => Promise<string>;
+  readonly handler?: (input: unknown) => Promise<NativeToolOutput>;
 }
 
 export interface PluginToolLookup {
@@ -27,8 +29,8 @@ export function pluginToolOwner(tools: PluginToolLookup, toolId: string): string
 }
 
 /**
- * The tool's result text, or `undefined` when no plugin registered a tool of
- * that id. A throw from the handler propagates: each caller reports it its
+ * The tool's result text (a structured result's `output` plus its limit
+ * note), or `undefined` when no plugin registered a tool of that id. A throw from the handler propagates: each caller reports it its
  * own way (the Conductor fails the step, the canvas falls back).
  */
 export async function invokePluginTool(
@@ -38,5 +40,5 @@ export async function invokePluginTool(
 ): Promise<string | undefined> {
   const entry = tools.get(toolId);
   if (entry?.agentId === undefined || entry.handler === undefined) return undefined;
-  return entry.handler(input);
+  return nativeToolResultText(await entry.handler(input));
 }

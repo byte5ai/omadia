@@ -3,6 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import yaml from 'yaml';
 
+import { nativeToolResultText } from '@omadia/plugin-api';
 import type {
   HttpAccessor,
   NativeToolHandler,
@@ -940,7 +941,7 @@ function createStubContext(opts: {
             id: spec.name,
             description: spec.description,
             inputSchema: spec.input_schema,
-            run: (input) => handler(input),
+            run: async (input) => nativeToolResultText(await handler(input)),
           },
           disposed: false,
         };

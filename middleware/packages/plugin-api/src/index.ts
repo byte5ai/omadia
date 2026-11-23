@@ -8,6 +8,7 @@ export * from './toolControlFlowText.js';
 export * from './toolErrorNotice.js';
 export * from './selfExtend.js';
 export * from './localSubAgentTool.js';
+export * from './nativeToolResult.js';
 export * from './piiAnnotation.js';
 
 // Omadia UI canvas: the shared `TargetRef` discriminated union (beam / mutation

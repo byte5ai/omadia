@@ -108,6 +108,7 @@ import {
   OPERATOR_JOBS_SERVICE_NAME,
   TRANSCRIPTION_SERVICE_NAME,
   TURN_RECEIPT_STORE_SERVICE_NAME,
+  nativeToolResultText,
   perCallerService,
   type MaintenanceRunService,
 } from '@omadia/plugin-api';
@@ -5338,7 +5339,7 @@ async function main(): Promise<void> {
           // #2079 — what the read brought in labels the turn (S5 discretion):
           // an answer carrying these rows is checked against its readers.
           tools.set(def.name, async (input) => {
-            const out = await handler(input);
+            const out = nativeToolResultText(await handler(input));
             await entry.built.bundle.raw.labelHarnessRead(def.name);
             return out;
           });

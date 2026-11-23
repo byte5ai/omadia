@@ -1,3 +1,5 @@
+import { nativeToolResultText, type NativeToolOutput } from '@omadia/plugin-api';
+
 /** Thrown for conditions the post-install setup-options endpoint maps to
  *  specific HTTP codes. A plain throw from the provider's own tool is
  *  deliberately NOT this type — the route maps that to 502 (provider failed). */
@@ -25,7 +27,7 @@ export interface SetupOptionsResolver {
 }
 
 export interface RegisteredToolLookup {
-  get(name: string): { readonly agentId?: string; readonly handler?: (input: unknown) => Promise<string> } | undefined;
+  get(name: string): { readonly agentId?: string; readonly handler?: (input: unknown) => Promise<NativeToolOutput> } | undefined;
 }
 
 export function createSetupOptionsResolver(deps: {
@@ -36,7 +38,7 @@ export function createSetupOptionsResolver(deps: {
       const entry = deps.tools.get(toolId);
       if (entry?.agentId === pluginId && entry.handler) {
         const raw = await entry.handler(input);
-        return parseToolResult(raw);
+        return parseToolResult(nativeToolResultText(raw));
       }
       throw new SetupOptionsResolveError('tool_not_found', `tool '${toolId}' is not exposed by plugin '${pluginId}'`);
     },
