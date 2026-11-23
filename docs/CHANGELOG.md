@@ -28,7 +28,18 @@ authoritative. It drifted for 145 versions between 2026-07-06 and 2026-08-28
 (#937), during which everything shipped in that span sat under `[Unreleased]`
 and read as unreleased to anyone outside the team.
 
-Add hand-written notes under `## [Unreleased]` any time; they carry over
+Add hand-written notes under `## [Unreleased]`
+### Fixed — a consultation no longer makes its conversation unreadable (spec 2042 §5.4, §5.11)
+
+- The consulted agent runs with the consulting turn's origin but resolved that room's readers
+  itself. It finds no roster there, so its conversation label came back with readers
+  `unknown`, and the consulting turn merged it into its own label of the same conversation.
+  From then on, every turn that recalled anything from that conversation was refused at the
+  people egress ("nicht alle hier dürfen diese Informationen kennen"), in every later thread.
+  Found in the live Teams E2E: after one consultation, Minerva could not answer "who are you?"
+  in a new thread. The consultation run now carries the consulting turn's readers
+  (`ConsultationRunScope.readers`).
+ any time; they carry over
 verbatim into the next version's entry. See `CONTRIBUTING.md` § Releases &
 changelog.
 

@@ -16,7 +16,7 @@
  */
 
 import { processWideStore } from '../facilitatorAgent.js';
-import type { LabelSet } from '../discretion/labels.js';
+import type { LabelSet, Readers } from '../discretion/labels.js';
 
 export type ConsultationMemoryAccess = 'none' | 'discreet';
 
@@ -36,6 +36,13 @@ export interface ConsultationRunScope {
    * B (an integration write of B is checked against A's labels too).
    */
   readonly initialLabels?: LabelSet;
+  /**
+   * Who reads A's conversation. B answers into that room (it runs with A's
+   * origin), so its conversation label carries A's readers: B resolving the
+   * room itself finds no roster and would mark A's conversation `unknown`,
+   * which then sticks to every later turn that recalls from it.
+   */
+  readonly readers?: Readers;
   /**
    * Filled by B's orchestrator when its turn ends: the turn's label set
    * (everything B read, its conversation included) and B's answer as its
