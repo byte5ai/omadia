@@ -14,6 +14,9 @@ import type { ConductorRunListEntry } from '../src/conductor/runStore.js';
 import { ConductorWorkflowStore } from '../src/conductor/workflowStore.js';
 import type { ConductorWorkflow } from '../src/conductor/workflowStore.js';
 
+// The run routes refuse an id that is not uuid-shaped (#1706), so the cancel step needs a real one.
+const RUN_OLD_ID = '3f1c2a4e-8b7d-4c6a-9e2f-1a2b3c4d5e6f';
+
 // #1710 — the operator run history spans every version of a workflow. It used to
 // be filtered to the ACTIVE version, so re-publishing a workflow emptied it —
 // including for a run still WAITING on an older version, whose cancel button
@@ -135,7 +138,7 @@ interface Harness {
 
 function waitingRun(overrides: Partial<ConductorRunListEntry> = {}): ConductorRunListEntry {
   return {
-    id: 'run-old',
+    id: RUN_OLD_ID,
     workflowVersionId: 'ver-1',
     workflowVersion: 1,
     status: 'waiting',
@@ -246,7 +249,7 @@ describe('GET /:slug/runs', () => {
     const body = (await res.json()) as { runs: Array<{ id: string; status: string; workflowVersion: number }> };
     assert.deepEqual(
       body.runs.map((r) => [r.id, r.status, r.workflowVersion]),
-      [['run-old', 'waiting', 1]],
+      [[RUN_OLD_ID, 'waiting', 1]],
       'the waiting run of superseded version 1 stays listed under active version 2',
     );
     assert.deepEqual(h.listedWorkflowIds, ['wf-1']);
@@ -279,7 +282,7 @@ describe('the cancel → delete escape for a superseded waiting run', () => {
     const listed = (await (await fetch(`${h.baseUrl}/p09-rolle/runs`)).json()) as {
       runs: Array<{ id: string; workflowVersion: number }>;
     };
-    assert.deepEqual(listed.runs.map((r) => r.id), ['run-old'], 'the cancel button needs this row');
+    assert.deepEqual(listed.runs.map((r) => r.id), [RUN_OLD_ID], 'the cancel button needs this row');
 
     const blocked = await fetch(`${h.baseUrl}/p09-rolle`, { method: 'DELETE' });
     assert.equal(blocked.status, 409);
