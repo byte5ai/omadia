@@ -36,6 +36,65 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Builder workspace footer reverted to `IDLE` after a reload following a failed build
+
+2026-11-10. #1737 — reported from the live workspace after an auto-rebuild
+failed with `reason=tsc`.
+
+- **`GET /drafts/:id/preview/status` only ever answered `ok` or `idle`.** It
+  checked the preview cache alone, and a failed build never populates that
+  cache, so a page reload after a failed build dropped the footer back to
+  `IDLE` and hid the "Fix with Builder" button even though the draft was
+  still broken. The route now falls back to `BuildPipeline.getLastBuildStatus`
+  (already recorded per #227, previously only read by the `get_build_status`
+  agent tool) and reports `failed` with `buildN`/`errorCount`/`reason` when
+  the cache is cold but the last build actually failed.
+- The Workspace's mount-time re-hydration effect now applies a `failed`
+  status the same way it already applied `ok`, so `BuildStatusStrip` and
+  "Fix with Builder" render correctly again after a reload.
+
+### Fixed — `transcribe_recording` only sends recordings to the provider (#1966)
+
+2026-11-17. The tool handed any stored attachment to the transcription
+provider with whatever content type it had, so asking it to "transcribe" a
+docx or xlsx sent that document to the external endpoint; the provider's 400
+came back only after the bytes had left. The tool now refuses, before the
+provider call, anything that is not a recording: a declared `audio/*` or
+`video/*` type (or `application/ogg`) passes, a missing or
+`application/octet-stream` type falls back to the file extension, and any
+other declared type is refused whatever the file is called. Recordings above
+25 MB (`MAX_RECORDING_BYTES`, the default upload cap and the OpenAI file limit)
+are refused the same way. Both refusals tell the model that nothing was sent.
+
+### Fixed — OpenAI transcription adapter meters the billed duration (#1968)
+
+2026-11-17. The current transcribe models (`gpt-transcribe`,
+`gpt-4o-transcribe`) answer only in the `json` format, which carries the
+billed audio length in `usage.seconds` and the language in
+`languages[].code`. The adapter read only the `verbose_json` fields
+`duration` and `language`, so every call against the real endpoint was
+metered as 0 minutes and the per-agent minute quota never triggered. It now
+reads both shapes; the top-level `verbose_json` fields win when present.
+Token-based usage has no duration and stays unmetered.
+
+### Fixed — 27 Postgres tests of memory suites never ran in CI (2026-11-23)
+
+- **Postgres legs in files not named `*.pg.test.ts` ran nowhere.** `npm run test:pg` globs
+  only `*.pg.test.ts` and is the only CI step with a test DSN; `npm run test` sets none, so
+  these legs skipped there. Affected: `memoryPurgeKg`, `processProvenancePg1540`,
+  `provenanceBackfill1540` (renamed to `.pg.test.ts`; the second is now
+  `processProvenance1540.pg.test.ts`), and the Postgres legs of `kgWalkSubgraph`,
+  `scratchPromotionReaper`, `recallDerivedUnprotected1536` and `memoryPurgeRoute` (split into
+  `.pg.test.ts` files; shared code in `recallDerivedUnprotected1536Contract.ts`,
+  `_helpers/scratchPromotionFakes.ts`, `_helpers/memoryPurgeHarness.ts`). All 27 pass on
+  pgvector. Assertions are unchanged; the purge-route audit case now gates on `probePgTest`
+  like the other suites, so a failing auth migration fails it instead of skipping it.
+- **Guard.** `npm run test:pg:names` (`scripts/check-pg-test-names.mjs`, a CI step) fails when
+  a test reaches `_helpers/pgTestDb.ts`, directly or through a helper, without the
+  `.pg.test.ts` name. Rule in `middleware/test/README.md`.
+- **`PG_TEST_FLOOR` 448 → 721.** Main measured ran=694 (246 tests of slack, enough for whole
+  suites to vanish unnoticed); with the 27 moved tests the measured count is 721.
+
 ### Fixed — the PASS/BLOCK judges answer on an always-thinking model (spec 2042 §5.5, #2085, criterion 33)
 
 - The identity guard's judge and the data-plan and summary boundary judges asked for 8 output
