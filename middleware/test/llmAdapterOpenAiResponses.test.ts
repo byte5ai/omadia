@@ -210,6 +210,36 @@ describe('#1033 — effort', () => {
     const body = JSON.parse(captured.init?.body as string);
     assert.deepEqual(body.reasoning, { effort: 'medium' });
   });
+
+  it('a model without reasoning (gpt-4o) gets no reasoning field and keeps its temperature', async () => {
+    const captured: { init?: RequestInit } = {};
+    const raw =
+      'event: response.completed\ndata: {"response":{"status":"completed","output":[]}}\n\n';
+    const provider = createOpenAiResponsesProvider({
+      baseURL: 'https://x/codex',
+      bearerProvider: async () => 'live-bearer',
+      fetchImpl: sseFetch(raw, { captured }),
+    });
+    await provider.complete({ ...REQ, model: 'gpt-4o', effort: 'low', temperature: 0 });
+    const body = JSON.parse(captured.init?.body as string);
+    assert.equal(body.reasoning, undefined);
+    assert.equal(body.temperature, 0);
+  });
+
+  it('a reasoning model drops a temperature other than the default', async () => {
+    const captured: { init?: RequestInit } = {};
+    const raw =
+      'event: response.completed\ndata: {"response":{"status":"completed","output":[]}}\n\n';
+    const provider = createOpenAiResponsesProvider({
+      baseURL: 'https://x/codex',
+      bearerProvider: async () => 'live-bearer',
+      fetchImpl: sseFetch(raw, { captured }),
+    });
+    await provider.complete({ ...REQ, model: 'gpt-5.4', effort: 'low', temperature: 0 });
+    const body = JSON.parse(captured.init?.body as string);
+    assert.deepEqual(body.reasoning, { effort: 'low' });
+    assert.equal(body.temperature, undefined);
+  });
 });
 
 describe('#1219 — outputFormat', () => {

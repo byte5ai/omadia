@@ -8,6 +8,22 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.89.0 — 2026-11-23
+
+Additive (spec 2042 follow-up: a withheld answer is traceable, not remembered).
+
+### Added
+
+- **`TurnIngest.identityGuard`** (`TurnIdentityGuardVerdict`): the identity
+  guard's verdict on the turn's answer: `outcome` (pass, blocked,
+  unavailable), the deciding `layer` (deterministic, model), the total
+  `latencyMs` and a `reason` (the rule, or why the judge was unavailable). A
+  knowledge-graph provider stores it with the Turn.
+- **`KnowledgeGraph.amendTurn?(turnExternalId, TurnAmend)`** (optional): patches
+  a written Turn without classifying it again: the guard's verdict, and for a
+  withheld answer its removal (answer emptied, embedding dropped, turn
+  `tailOnly`).
+
 ## 1.88.0 — 2026-11-23
 
 Additive (live runs of native facilitators on Slack, Discord and Telegram).
