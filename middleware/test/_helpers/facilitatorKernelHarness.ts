@@ -570,7 +570,7 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
     pool: () => pool,
     send: async (channelType, conversationId, message) => {
       const provider = conversationProviders.get(channelType);
-      if (!provider) return { delivered: false, reason: `no conversation sender for '${channelType}'` };
+      if (!provider) return { delivered: false, reason: `no conversation sender for '${channelType}'`, deferred: true };
       const out = await provider.sendToConversation(conversationId, message);
       return out.outcome === 'delivered' ? { delivered: true } : { delivered: false, reason: `${out.code}: ${out.message}` };
     },

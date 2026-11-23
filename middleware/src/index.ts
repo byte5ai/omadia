@@ -1354,7 +1354,8 @@ async function main(): Promise<void> {
     pool: () => serviceRegistry.get<Pool>('graphPool'),
     send: async (channelType, conversationId, message) => {
       const provider = conversationSendRegistry.get(channelType);
-      if (!provider) return { delivered: false, reason: `no conversation sender for channel '${channelType}'` };
+      // Not up yet (boot, a plugin that starts late): no attempt spent.
+      if (!provider) return { delivered: false, reason: `no conversation sender for channel '${channelType}'`, deferred: true };
       const out = await provider.sendToConversation(conversationId, message);
       return out.outcome === 'delivered' ? { delivered: true } : { delivered: false, reason: `${out.code}: ${out.message}` };
     },
@@ -5007,12 +5008,13 @@ async function main(): Promise<void> {
     requireAuth,
     createOperatorTriggersRouter({
       triggers: () => triggersRef.current,
-      // Criterion 24 — a Teams conversation needs its stored reference (the
-      // newest one a bot of this instance captured there).
+      // Criterion 24 — a Teams conversation needs its stored reference: the
+      // shared bot's (`bot_app_id = ''`), never an agent's own bot's, since
+      // the shared sender delivers it with the shared bot's credentials.
       knownConversationRef: async (channel, conversationId) => {
         if (channel !== 'teams' || !graphPool) return undefined;
         const { rows } = await graphPool.query<{ ref: unknown }>(
-          'SELECT ref FROM teams_conversation_refs WHERE conversation_id = $1 ORDER BY updated_at DESC LIMIT 1',
+          "SELECT ref FROM teams_conversation_refs WHERE conversation_id = $1 AND bot_app_id = '' ORDER BY updated_at DESC LIMIT 1",
           [conversationId],
         );
         return rows[0]?.ref;

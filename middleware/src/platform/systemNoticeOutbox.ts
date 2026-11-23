@@ -15,9 +15,13 @@
 //     conversation within the dedupe window is not written again. A genuine
 //     second end of service inside the window finds the first notice still
 //     standing in the conversation.
-//   - SENT ONCE. A row is claimed under a lease and marked sent; a sent row is
-//     never sent again. A crash between the platform's accept and the mark
-//     can repeat it after the lease (channels give no exactly-once delivery).
+//   - SENT ONCE. A row is claimed under a lease and marked sent by the worker
+//     that still holds that lease; a sent row is never sent again. A crash
+//     between the platform's accept and the mark can repeat it after the
+//     lease (channels give no exactly-once delivery); a lease that runs out
+//     spends an attempt, so a send that never returns ends `failed`.
+//   - A CHANNEL THAT IS NOT UP YET (boot, a plugin that starts late) defers
+//     the notice without spending an attempt.
 //   - SPEAKER `system`, through the channel's shared bot: never as the agent's
 //     own identity, which is exactly what went away.
 //
@@ -29,7 +33,11 @@ import { buildSystemNotice, type SystemNoticeRequest } from '@omadia/orchestrato
 import { SYSTEM_SPEAKER, type Speaker } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 
-export type NoticeSendOutcome = { readonly delivered: true } | { readonly delivered: false; readonly reason: string };
+export type NoticeSendOutcome =
+  | { readonly delivered: true }
+  /** `deferred`: nobody could take it yet (the channel is not up): retried
+   *  later without spending an attempt. */
+  | { readonly delivered: false; readonly reason: string; readonly deferred?: boolean };
 
 export interface SystemNoticeOutboxDeps {
   /** Absent = no database: a notice is logged as owed, nothing is sent. */
@@ -66,6 +74,8 @@ const DRAIN_BATCH = 20;
 
 interface DueRow {
   id: string;
+  /** The lease this worker holds; a settle under another lease changes nothing. */
+  lease: string;
   channel_type: string;
   conversation_id: string;
   text: string;
@@ -120,31 +130,50 @@ export function createSystemNoticeOutbox(deps: SystemNoticeOutboxDeps): SystemNo
   }
 
   async function claim(pool: Pool): Promise<DueRow[]> {
+    // A lease that ran out was an attempt without an outcome; the last one
+    // allowed ends the row.
+    await pool.query(
+      `UPDATE system_notice_outbox
+          SET state = 'failed', attempts = attempts + 1, lease_until = NULL, last_error = 'no outcome within the lease'
+        WHERE state = 'sending' AND lease_until < now() AND attempts + 1 >= $1`,
+      [maxAttempts],
+    );
     const { rows } = await pool.query<DueRow>(
-      `UPDATE system_notice_outbox SET state = 'sending', lease_until = now() + ($1::double precision * interval '1 millisecond')
-        WHERE id IN (
+      `UPDATE system_notice_outbox o
+          SET attempts = o.attempts + CASE WHEN o.state = 'sending' THEN 1 ELSE 0 END,
+              state = 'sending', lease_until = clock_timestamp() + ($1::double precision * interval '1 millisecond')
+        WHERE o.id IN (
           SELECT id FROM system_notice_outbox
            WHERE (state = 'pending' AND next_attempt_at <= now()) OR (state = 'sending' AND lease_until < now())
            ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED)
-        RETURNING id::text, channel_type, conversation_id, text, attempts`,
+        RETURNING o.id::text, o.lease_until::text AS lease, o.channel_type, o.conversation_id, o.text, o.attempts`,
       [leaseMs, DRAIN_BATCH],
     );
     return rows;
   }
 
   async function settle(pool: Pool, row: DueRow, outcome: NoticeSendOutcome): Promise<void> {
+    const held = `id = $1 AND state = 'sending' AND lease_until = $2::timestamptz`;
     if (outcome.delivered) {
-      await pool.query(`UPDATE system_notice_outbox SET state = 'sent', sent_at = now(), lease_until = NULL WHERE id = $1`, [row.id]);
+      await pool.query(`UPDATE system_notice_outbox SET state = 'sent', sent_at = now(), lease_until = NULL WHERE ${held}`, [row.id, row.lease]);
+      return;
+    }
+    if (outcome.deferred === true) {
+      await pool.query(
+        `UPDATE system_notice_outbox SET state = 'pending', lease_until = NULL, last_error = $3,
+                next_attempt_at = now() + ($4::double precision * interval '1 millisecond') WHERE ${held}`,
+        [row.id, row.lease, outcome.reason.slice(0, 500), RETRY_STEP_MS],
+      );
       return;
     }
     const attempts = row.attempts + 1;
     const final = attempts >= maxAttempts;
     await pool.query(
       `UPDATE system_notice_outbox
-          SET state = $2, attempts = $3, last_error = $4, lease_until = NULL,
-              next_attempt_at = now() + ($5::double precision * interval '1 millisecond')
-        WHERE id = $1`,
-      [row.id, final ? 'failed' : 'pending', attempts, outcome.reason.slice(0, 500), attempts * RETRY_STEP_MS],
+          SET state = $3, attempts = $4, last_error = $5, lease_until = NULL,
+              next_attempt_at = now() + ($6::double precision * interval '1 millisecond')
+        WHERE ${held}`,
+      [row.id, row.lease, final ? 'failed' : 'pending', attempts, outcome.reason.slice(0, 500), attempts * RETRY_STEP_MS],
     );
     log(
       `[system-notice] ${row.channel_type}/${row.conversation_id} not delivered (${outcome.reason})${final ? `; given up after ${String(attempts)} attempts` : '; will retry'}`,
