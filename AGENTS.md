@@ -64,6 +64,15 @@ Die Schritt-Regel bleibt als zweite Linie.
 Kernel-Test aus der Matrix umbenennt, passt die Matrix an. #584 (Audio-Meeting-Source: Sidecar
 als Tenant-User mit eigener Lizenz pro Agent, GPT-Live-Transcribe) gehört seit der Owner-
 Entscheidung vom 2026-11-22 nicht mehr zum Epic #2043, sondern ist ein eigenes Folge-Vorhaben.
+
+**Aufrufer eines Tools (ADR 0032):** `NativeToolCallContext.callerPrincipalId` ist die
+Gesprächs-Form `user:<Kanal-User-Id>`, dieselbe wie `author.principalId` gespeicherter
+Nachrichten und die Teilnehmer der Mitgliederliste. Beide Wege nutzen den einen Helfer
+`conversationPrincipal` (`@omadia/orchestrator`); `buildToolCallContext` wendet ihn auf Sprecher bzw.
+Kanal-Identität an. `TurnOrigin.principal` ist bei Discord, Slack und Telegram die
+Routing-Form aus Spec 2042 §5.3 (`user:discord-user:<id>`, `user:<e-mail>`) und zählt nur ohne
+Kanal-User (Web-Chat). Wer die Routing-Form im Tool braucht, bildet sie mit
+`channelUserPrincipal` aus `callerUserRef`.
 `transcription@1` und der Capability-Snapshot pro Sitzung (#2077) stehen bereits. Eine Audio-
 Quelle deklariert nur `transcribed_speech`; Facilitator und Engine ändern sich dafür nicht.
 

@@ -150,3 +150,31 @@ describe('#2082 schedule and templates', () => {
     assert.equal(text, 'Noch 5 Minuten für „Schritt 2" (offen)', 'ids and kinds only, never content');
   });
 });
+
+describe('trigger times the model can state without a clock (E2E 2026-11-23)', () => {
+  const post = [{ type: 'post', template: 'E2E-Ping' }];
+
+  it('takes durations from now for time and until', () => {
+    const res = validate('wake_at', { purpose: 'ping', time: '3m', until: 'in 30m', actions: post });
+    assert.ok(res.ok, JSON.stringify(res));
+    assert.equal(res.value.fireAt?.toISOString(), inMinutes(3));
+    assert.equal(res.value.until.toISOString(), inMinutes(30));
+    const plus = validate('wake_every', { purpose: 'tick', interval: '15m', max_runs: 2, until: '+2h', actions: post });
+    assert.ok(plus.ok, JSON.stringify(plus));
+    assert.equal(plus.value.until.toISOString(), inMinutes(120));
+  });
+
+  it('still takes ISO date-times and refuses garbage', () => {
+    assert.ok(validate('wake_at', { purpose: 'p', time: inMinutes(5), until: inMinutes(10), actions: post }).ok);
+    const bad = validate('wake_at', { purpose: 'p', time: 'soon', until: '30m', actions: post });
+    assert.equal(bad.ok, false);
+  });
+
+  it('names the server time when a moment lies in the past', () => {
+    const res = validate('wake_at', { purpose: 'p', time: '2026-11-20T06:08:00Z', until: '2026-11-20T06:35:00Z', actions: post });
+    assert.equal(res.ok, false);
+    if (res.ok) return;
+    assert.match(res.message, /until must lie in the future/);
+    assert.match(res.message, /server time now: 2026-11-20T10:00:00\.000Z/);
+  });
+});

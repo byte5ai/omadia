@@ -441,5 +441,13 @@ describe('the send service posts what the channel cannot show as text and keeps 
     assert.equal(caps?.card?.maxQuestions, 1);
     assert.equal(caps?.card?.kinds.includes('assignment'), true);
     assert.equal(caps?.card?.kinds.includes('ranking'), true);
+    // Live run on Slack (2026-11-23): the facilitator told the group to vote
+    // "on the card" when the card went out as numbered text.
+    assert.equal(caps?.card?.asText, true);
+  });
+
+  it('a channel with native cards does not say they go out as text', () => {
+    const { send } = service(true, new InMemoryOpenCardQuestionStore());
+    assert.notEqual(send.capabilities('telegram')?.card?.asText, true);
   });
 });

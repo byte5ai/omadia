@@ -2,10 +2,9 @@
 // builds the hub over Postgres, publishes the per-plugin service and starts
 // the retention job. Called once, from inside the database block.
 
-import { archetypeAdds } from '@omadia/orchestrator';
+import { archetypeAdds, conversationPrincipal } from '@omadia/orchestrator';
 import type { Pool } from 'pg';
 
-import { formatPrincipal, makePrincipal } from '@omadia/channel-sdk';
 import { ReloadBus, type ConfigStore, type OrchestratorRegistry } from '@omadia/orchestrator';
 import {
   CONVERSATION_MESSAGES_V2_SERVICE_NAME,
@@ -55,14 +54,13 @@ export function createBotPresenceCheck(deps: {
 }
 
 /**
- * The canonical principal of a channel user. In this kernel a user principal
- * IS the lower-cased channel user id (`makePrincipal`, the same rule the
- * Teams adapter applies to a turn's `userId`), so it is derived, not looked
- * up — and it is the same value `targetedSend` takes.
+ * The canonical principal of a channel user in a conversation: the
+ * lower-cased channel user id (`conversationPrincipal`, ADR 0032), the same
+ * helper the caller of a tool call is named by. It is derived, not looked
+ * up, and it is the same value `targetedSend` takes.
  */
 export function principalOfChannelUser(author: { readonly id: string }): string | undefined {
-  const principal = makePrincipal('user', author.id);
-  return principal ? formatPrincipal(principal) : undefined;
+  return conversationPrincipal(author.id);
 }
 
 /**

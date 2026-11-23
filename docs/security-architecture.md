@@ -1750,7 +1750,7 @@ output too:
   reader only when the trigger delivers into the owner's own web chat.
   Anywhere else the readers are unknown, and anything labelled is refused.
 - A post or delivery the room may not receive is refused when the trigger is
-  set (`Error (discretion)`), not only on every firing.
+  set (`Error: (discretion)`), not only on every firing.
 - A firing's turn runs seeded with them (`runWithSeededDiscretion`,
   `discretion/seededTurn.ts`). It is a labelled turn of that conversation, and
   its answer passes the same people-egress check as a person's turn.
