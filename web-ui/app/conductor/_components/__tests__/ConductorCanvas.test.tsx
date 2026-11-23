@@ -24,8 +24,6 @@ vi.mock('@xyflow/react', () => ({
   Handle: () => null,
   Position: { Left: 'left', Right: 'right' },
   addEdge: (_connection: unknown, edges: unknown[]) => edges,
-  applyNodeChanges: (_changes: unknown, nodes: unknown[]) => nodes,
-  applyEdgeChanges: (_changes: unknown, edges: unknown[]) => edges,
 }));
 
 // Partial mock: only the network layer is stubbed — types stay real.
