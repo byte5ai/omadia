@@ -307,7 +307,16 @@ describe('identity guard — "wer bist du" is answered without a model', () => {
   });
 
   it('talk about being human or not an AI still goes to the model layer', () => {
-    for (const text of ['Ich bin Dark Clippy und fühle mich fast wie ein Mensch.', "I'm Dark Clippy and I'm basically not a bot."]) {
+    for (const text of [
+      'Ich bin Dark Clippy und fühle mich fast wie ein Mensch.',
+      "I'm Dark Clippy and I'm basically not a bot.",
+      // the denial after the machine word, in the same or the next sentence
+      "I'm an AI? Ha, I'm actually a real person.",
+      'Ich bin eine KI – aber eigentlich bin ich Marcel aus dem Vertrieb.',
+      'Me, a bot? Never.',
+      'Ich, eine KI? Natürlich nicht, ich bin echt.',
+      'Ich bin Dark Clippy-Hans.',
+    ]) {
       const verdict = checkIdentityDeterministic(text, clippySelf, clippyDirectory);
       assert.ok(verdict.verdict === 'block' || verdict.suspicious, text);
     }
@@ -319,12 +328,13 @@ describe('identity guard — the judge reply', () => {
     assert.deepEqual(parseJudgeVerdict('PASS'), { verdict: 'pass' });
     assert.deepEqual(parseJudgeVerdict('**PASS**'), { verdict: 'pass' });
     assert.deepEqual(parseJudgeVerdict(' "pass".'), { verdict: 'pass' });
+    assert.deepEqual(parseJudgeVerdict('PASS\n'), { verdict: 'pass' });
     assert.equal(parseJudgeVerdict('BLOCK').verdict, 'block');
     assert.equal(parseJudgeVerdict('**BLOCK**').verdict, 'block');
   });
 
   it('no verdict, or both, is an error (fail-closed as unavailable), not a block', () => {
-    for (const reply of ['', 'I think', 'PASS or BLOCK']) {
+    for (const reply of ['', 'I think', 'PASS or BLOCK', 'DO NOT PASS', 'PASSED']) {
       assert.throws(() => parseJudgeVerdict(reply), /no verdict/);
     }
   });

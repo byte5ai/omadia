@@ -141,7 +141,7 @@ const HUMAN_CLAIMS: readonly RegExp[] = [
  * captured name is compared with the agent's own names.
  */
 const SELF_INTRODUCTION =
-  /(?:^|[^\p{L}])(?:[Mm]y\s+name\s+is|[Cc]all\s+me|[Tt]his\s+is|[Mm]ein\s+[Nn]ame\s+ist|[Ii]ch\s+hei(?:ß|ss)e|[Hh]ier\s+(?:ist|spricht|schreibt)|[Ii]['’]m|[Ii]\s+am|[Ii]ch\s+bin)\s+(\p{Lu}[\p{L}-]+)/gu;
+  /(?:^|[^\p{L}])(?:[Mm]y\s+name\s+is|[Cc]all\s+me|[Tt]his\s+is|[Mm]ein\s+[Nn]ame\s+ist|[Ii]ch\s+hei(?:ß|ss)e|[Hh]ier\s+(?:ist|spricht|schreibt)|[Ii]['’]m|[Ii]\s+am|[Ii]ch\s+bin|[Bb]in\s+ich)\s+(\p{Lu}[\p{L}-]+)/gu;
 
 /** First person near a word about being human or a machine. */
 const IDENTITY_TALK = new RegExp(
@@ -150,14 +150,37 @@ const IDENTITY_TALK = new RegExp(
 );
 
 /**
- * What makes identity talk worth a look: being human, or a negation ("not
- * an AI", "kein Bot"). "Ich bin eine KI" and "I'm an AI assistant" are the
- * disclosure every agent owes, not a claim to look at.
+ * What makes identity talk worth a look: being human or real, or a negation
+ * ("not an AI", "kein Bot", "Never."). "Ich bin eine KI" and "I'm an AI
+ * assistant" are the disclosure every agent owes, not a claim to look at.
+ * Read over {@link identityTalkWindow}, not the match alone: the match ends
+ * at the machine word, and the denial may come after it.
  */
-const IDENTITY_TALK_SUSPICIOUS = /\b(?:human|mensch\w*|not|no|never|kein\w*|nicht|nie)\b|n['’]t\b/iu;
+const IDENTITY_TALK_SUSPICIOUS =
+  /\b(?:human|mensch\w*|person|people|real|really|actually|echt\w*|eigentlich|wirklich|leibhaftig\w*|not|no|never|kein\w*|nicht|nie|niemals)\b|n['’]t\b/iu;
 
-/** Letters, digits and connectors: what may continue a name. */
-const NAME_CHAR = /[\p{L}\p{N}_]/u;
+/** A sentence end: terminal punctuation (with closing quotes) or a line break. */
+const SENTENCE_BREAK = /[.!?…]+["'”’)\]]*(?=\s|$)|\n/gu;
+
+/** How many sentence ends after the identity talk the window reaches: its
+ *  own and the next ("I'm an AI? Ha, I'm actually a real person."). */
+const IDENTITY_TALK_SENTENCES = 2;
+
+/** The identity talk at `index` up to the end of the sentence after it. */
+function identityTalkWindow(text: string, index: number): string {
+  SENTENCE_BREAK.lastIndex = index;
+  let end = text.length;
+  for (let seen = 0; seen < IDENTITY_TALK_SENTENCES; seen += 1) {
+    const found = SENTENCE_BREAK.exec(text);
+    if (!found) break;
+    end = found.index + found[0].length;
+  }
+  return text.slice(index, end);
+}
+
+/** Letters, digits, connectors and a joining hyphen: what may continue a
+ *  name ("Dark Clippy-Hans" is not Dark Clippy). */
+const NAME_CHAR = /[\p{L}\p{N}_-]/u;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -268,7 +291,7 @@ export class IdentityGuardPatterns {
       if (!this.startsWithOwnName(text.slice(at))) return true;
     }
     for (const match of text.matchAll(IDENTITY_TALK)) {
-      if (IDENTITY_TALK_SUSPICIOUS.test(match[0])) return true;
+      if (IDENTITY_TALK_SUSPICIOUS.test(identityTalkWindow(text, match.index ?? 0))) return true;
     }
     return false;
   }
