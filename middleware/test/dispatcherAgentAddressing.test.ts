@@ -1,5 +1,13 @@
 import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
+
+import { admitModelCall } from '@omadia/llm-provider';
+import {
+  currentExecutionContext,
+  resetModelGatewayForTests,
+  setModelGatewayMode,
+  uncoveredModelCalls,
+} from '@omadia/usage-telemetry';
 
 import type { ChannelResolveResult, ChatAgent, ChatStreamEvent, ChatTurnInput } from '@omadia/channel-sdk';
 
@@ -251,5 +259,60 @@ describe('createOrchestratorDispatcher — the canvas service takes an addressed
       h.dispatcher.streamTurn(turnFor('c1', { agentId: 'id-mira', canvasSessionId: 'cs1', origin: { agentId: 'id-evil' } })),
     );
     assert.equal(h.serviceInputs[0]!.agentId, 'id-mira');
+  });
+});
+
+describe('createOrchestratorDispatcher — the canvas helper runs in the addressed agent turn (spec 2042 §5.10)', () => {
+  afterEach(() => resetModelGatewayForTests());
+
+  /** A helper like the canvas one: its own model calls (skeleton, fast lane,
+   *  decision model) happen before and after it runs the agent. */
+  function helperCallingModels(contexts: Array<string | undefined>): ChatAgent {
+    return {
+      chat: () => Promise.resolve({ text: 'helper' }),
+      async *chatStream() {
+        admitModelCall('complete'); // skeleton, before the first event
+        contexts.push(currentExecutionContext()?.agentSlug);
+        await Promise.resolve();
+        yield { type: 'text_delta', text: 'hi' };
+        admitModelCall('complete'); // fast-lane planner, after a resume
+        contexts.push(currentExecutionContext()?.agentSlug);
+        yield { type: 'done', answer: 'helper', toolCalls: 0, iterations: 1 };
+      },
+    } as ChatAgent;
+  }
+
+  it('three addressed canvas turns: every helper model call is the agent turn, none is outside a context', async () => {
+    setModelGatewayMode('enforce');
+    const contexts: Array<string | undefined> = [];
+    const dispatcher = createOrchestratorDispatcher({
+      getChannelBlock: () => canvasBlock,
+      getAgentBundle: () => ({ agent: helperCallingModels(contexts) }),
+      channelTypeFor: () => 'canvas',
+      resolveAgent: () => ({
+        decision: 'bound',
+        chatAgent: agentSaying('agent'),
+        speaker: { kind: 'agent', agentId: 'id-clippy', slug: 'dark-clippy', displayName: 'Dark Clippy' },
+      }),
+    });
+    for (let i = 0; i < 3; i += 1) {
+      const events = await collect(
+        dispatcher.streamTurn(turnFor(`c${String(i)}`, { agentId: 'id-clippy', canvasSessionId: `cs${String(i)}` })),
+      );
+      assert.equal(events.at(-1)?.type, 'done', 'no call was refused');
+    }
+    assert.deepEqual([...uncoveredModelCalls()], []);
+    assert.deepEqual(contexts, Array(6).fill('dark-clippy'));
+  });
+
+  it('an unaddressed turn opens no agent turn for the service', async () => {
+    setModelGatewayMode('observe');
+    const contexts: Array<string | undefined> = [];
+    const dispatcher = createOrchestratorDispatcher({
+      getChannelBlock: () => canvasBlock,
+      getAgentBundle: () => ({ agent: helperCallingModels(contexts) }),
+    });
+    await collect(dispatcher.streamTurn(turnFor('c1', { canvasSessionId: 'cs1' })));
+    assert.deepEqual(contexts, [undefined, undefined]);
   });
 });

@@ -45,7 +45,7 @@ import {
   type DiscretionPort,
   type LabelSet,
 } from '@omadia/orchestrator';
-import type { KnowledgeGraph } from '@omadia/plugin-api';
+import { TOOL_ERROR_PREFIX, type KnowledgeGraph } from '@omadia/plugin-api';
 
 import { createDeliverDataHandler } from '../../src/triggers/deliverDataTool.js';
 import { RAW_EMAIL, countingService, drain, echoingProvider } from '../_helpers/privacyEgressHarness.js';
@@ -350,7 +350,11 @@ describe('field rights per audience member: through a real turn (criterion 18)',
       { turnId: 't', turnDate: '2026-11-23', agentSlug: 'mira', dataSideChannel: collector, audienceFloor: floor },
       () => handler({ tool: 'list_people' }),
     );
-    assert.match(status, /^Error \(field_rights\)/);
+    assert.match(status, /^Error: \(field_rights\)/);
+    // E2E 2026-11-23: a kernel tool's refusal carries the shared prefix, so
+    // the Privacy Shield hands it to the model as an error instead of
+    // interning it as a one-row dataset the model cannot read.
+    assert.ok(status.startsWith(TOOL_ERROR_PREFIX));
     assert.equal(ran, 0, 'the read never ran');
     assert.deepEqual(collector.list(), []);
   });

@@ -57,6 +57,8 @@ export type IdentityGuardResult =
       /** The model layer could not decide (error, timeout, no judge). */
       readonly outcome: 'unavailable';
       readonly cause: 'timeout' | 'error' | 'no_judge';
+      /** With `error`: the error's message, for the operator log. */
+      readonly detail?: string;
       readonly latencyMs: number;
     };
 
@@ -74,7 +76,7 @@ export interface IdentityGuardOptions {
 async function withTimeout<T>(
   run: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
-): Promise<{ ok: true; value: T } | { ok: false; cause: 'timeout' | 'error' }> {
+): Promise<{ ok: true; value: T } | { ok: false; cause: 'timeout' | 'error'; detail?: string }> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<'timeout'>((resolve) => {
@@ -87,8 +89,8 @@ async function withTimeout<T>(
       return { ok: false, cause: 'timeout' };
     }
     return { ok: true, value: raced };
-  } catch {
-    return { ok: false, cause: 'error' };
+  } catch (err) {
+    return { ok: false, cause: 'error', detail: (err instanceof Error ? err.message : String(err)).slice(0, 120) };
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -148,7 +150,14 @@ export class IdentityGuard {
       );
     }, timeoutMs);
     const latencyMs = this.now() - started;
-    if (!judged.ok) return { outcome: 'unavailable', cause: judged.cause, latencyMs };
+    if (!judged.ok) {
+      return {
+        outcome: 'unavailable',
+        cause: judged.cause,
+        ...(judged.detail !== undefined ? { detail: judged.detail } : {}),
+        latencyMs,
+      };
+    }
     if (judged.value.verdict === 'block') {
       return { outcome: 'blocked', layer: 'model', latencyMs };
     }

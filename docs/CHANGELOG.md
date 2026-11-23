@@ -55,6 +55,78 @@ changelog.
 - UI: every history row carries a `v{n}` badge, and so does an opened run's trace (the
   single-run route serves no version, so the badge is read off the row it was opened from).
 
+### Fixed — the PASS/BLOCK judges answer on an always-thinking model (spec 2042 §5.5, #2085, criterion 33)
+
+- The identity guard's judge and the data-plan and summary boundary judges asked for 8 output
+  tokens. They run on the agent's classifier model, else its own model. On an always-thinking
+  model (Opus 5.5, Fable) thinking counts toward that cap, so the reply had no text. The
+  identity guard then withheld every suspicious answer of such an agent as `unavailable`, and
+  the boundary guards refused every plan and summary they judged. Found in the live Teams E2E:
+  Karen (`hr`, Opus 5.5) was consulted, and her contribution was always withheld (`identity judge
+  gave no verdict: ""`). The three judges now share `VERDICT_JUDGE_MAX_TOKENS` (1024) and
+  `VERDICT_JUDGE_REASONING` (low effort, no thinking where the model allows it) and send no
+  `temperature`. A reply without a verdict is a failed boundary check now ("the boundary check
+  failed"), not a broken boundary.
+
+### Fixed — a consultation no longer makes its conversation unreadable (spec 2042 §5.4, §5.11)
+
+- The consulted agent runs with the consulting turn's origin, but resolved that room's readers
+  itself. Its turn carries no sender, so the result was `unknown`. Its label of the
+  conversation came back with readers `unknown`, and the consulting turn merged it into its own
+  label of the same conversation (anything intersected with `unknown` is `unknown`). From then
+  on, every turn that recalled anything from that conversation was refused at the people egress
+  ("nicht alle hier dürfen diese Informationen kennen"), in every later thread. Found in the live
+  Teams E2E: after one consultation, Minerva could not answer "who are you?" in a new thread.
+  The consultation run now carries the consulting turn's readers (`ConsultationRunScope.readers`).
+  Labels persisted before this fix keep `unknown` readers until they are rewritten.
+
+### Fixed — a self-description is no replayed failure (spec 2042, live canvas)
+
+- "wer bist du" to Dark Clippy was withheld in 2 of 4 runs as `tool_not_called`: the
+  failure-replay detector read "auf deine Mails habe ich keinen Zugriff" in a turn without a
+  call as a replayed access failure. A claim about what the agent can reach ("kein Zugriff
+  auf X", "X nicht erreichbar", "kann X nicht lesen") passes now when it names a known system
+  the agent holds no tool for (mail, calendar, payroll, the user's computer, the internet,
+  phone, bank, and the business systems ERP/Odoo, HR, wiki, Jira, CRM; against
+  `VerifierInput.offeredToolNames`) and none it holds. A claim that names
+  nothing, a pronoun or a held system is still withheld. Reported attempts ("konnte nicht
+  laden"), access events (timeout, denied), absence and retry claims are unchanged; with the
+  tools unknown the older rule holds.
+
+### Fixed — agent triggers found in the live Teams E2E of spec 2042 (2026-11-23)
+
+- **A trigger tool's refusal reached the model as masked data.** `on_event`, `wake_at`,
+  `wake_every`, `list_triggers`, `cancel_trigger` and `deliver_data` refused with
+  `Error (code): …`, which the Privacy Shield does not read as the tool-error convention
+  (`Error:`), so it interned the refusal as a one-row dataset. The model saw only a digest
+  and told the user in Teams "the trigger is set" while none was. The refusals now read
+  `Error: (code) …`: they reach the model as an error (and get `is_error`).
+- **"In two minutes" needed a clock the model does not have.** The prompt names today's
+  date, not the time; the model computed `time`/`until` from a stale timestamp and the
+  deadline lay in the past. `time` and `until` now also take a duration from now (`'3m'`,
+  `'+2h'`, `'in 1d'`), the tool descriptions say to prefer it, and a time refusal names the
+  server time.
+- **A bot's own post was news.** A bot's own post, reported back by its channel, is no
+  longer booked as context activity, so a trigger's post cannot make its next firing reach
+  the model.
+
+### Fixed — the canvas, live (spec 2042 §5.10, §5.5): gateway context, the socket on the front, "wer bist du"
+
+- **Model gateway.** A canvas turn addressed to an agent is handed to the canvas helper
+  (`canvasChatAgent`), whose skeleton, fast lane and decision model ran before the agent's
+  own chat agent and so outside any execution context (`calls_outside_context` listed
+  `composeSkeleton`, `planQuery`, `routeTurn` and the gated decision model). The kernel
+  dispatcher now opens the addressed agent's `agent_turn` around the helper's whole stream.
+- **The canvas socket on the web-ui front.** `/.well-known/omadia-ui` on the front advertised
+  `wss://<front>/omadia-ui/canvas`, and the upgrade hung in Next. The web-ui image starts
+  through `omadia-server.mjs` now, which relays that one path to the middleware with the
+  session cookie. `scripts/fly-deploy.sh` tries the upgrade on both hosts and expects `401`.
+- **Identity guard.** "wer bist du" to an agent with a name of several words was blocked in
+  about 3 of 4 runs: the introduction captured one word, so every answer went to the model
+  judge. Own names of any length and the AI disclosure are settled without a model now;
+  the judge's verdict is the first word of its reply (PASS or BLOCK); a reply that does not
+  open with one withholds as `unavailable`, and the log line of an unavailable guard says why.
+
 ### Changed — `@omadia/plugin-api` 1.87.0, `@omadia/channel-sdk` 0.3.13: the open acceptance criteria of spec 2042
 
 - The entries below (field rights, channel parity, criteria 29/33, explicit targets) ship

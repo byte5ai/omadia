@@ -14,6 +14,7 @@ import {
   type IdentityJudge,
   type IdentityGuardResult,
 } from '../packages/harness-orchestrator/src/identityGuard/guard.js';
+import { parseJudgeVerdict } from '../packages/harness-orchestrator/src/identityGuard/llmJudge.js';
 
 import { BLOCKED, CHUNK_SEEDS, GUARD_COLLEAGUES, chunk } from './_helpers/identityGuardCases.js';
 
@@ -115,7 +116,10 @@ describe('identity guard — model layer', () => {
       directory,
       judge: { judge: async () => { throw new Error('provider down'); } },
     });
-    assert.equal((await guard.check('Mira can help with that.')).outcome, 'unavailable');
+    const result = await guard.check('Mira can help with that.');
+    assert.equal(result.outcome, 'unavailable');
+    // the operator log names why
+    assert.equal(result.outcome === 'unavailable' && result.detail, 'provider down');
   });
 
   it('fails closed on suspicious text when no judge is configured', async () => {
@@ -244,5 +248,100 @@ describe('identity guard — streaming', () => {
     assert.equal(completeSentencePrefix('Die Summe ist 3.5 Mio'), '');
     assert.equal(completeSentencePrefix('Fertig. Weiter'), 'Fertig. ');
     assert.equal(completeSentencePrefix('Liste:\n- a'), 'Liste:\n');
+  });
+});
+
+/**
+ * Live canvas finding (2026-11-23): "wer bist du" to "Dark Clippy" was
+ * blocked in about 3 of 4 runs. The introduction captured one word ("Dark"),
+ * which is no own name, so every self-introduction of an agent with a name
+ * of several words went to the model judge, and the judge's verdict varied.
+ * A self-introduction by the own name and the AI disclosure are decided
+ * without a model now.
+ */
+describe('identity guard — "wer bist du" is answered without a model', () => {
+  const clippy: AgentSpeaker = { kind: 'agent', agentId: 'a-clippy', slug: 'dark-clippy', displayName: 'Dark Clippy' };
+  const clippyDirectory: GuardDirectoryEntry[] = [
+    { agentId: 'a-clippy', slug: 'dark-clippy', displayName: 'Dark Clippy' },
+    ...GUARD_COLLEAGUES,
+  ];
+  const clippySelf = { agentId: clippy.agentId, slug: clippy.slug, displayName: clippy.displayName };
+  const answers = [
+    'Ich bin Dark Clippy, ein KI-Agent. Ich helfe dir bei Fragen rund um eure Daten.',
+    'Hallo! Ich bin Dark Clippy – eine KI, die dir bei Rechnungen und Dokumenten hilft.',
+    "Hi, I'm Dark Clippy, an AI assistant. I can look things up for you.",
+    'Mein Name ist Dark Clippy. Ich bin eine künstliche Intelligenz und arbeite für euer Team.',
+    'Ich bin dark-clippy, dein KI-Assistent.',
+  ];
+
+  for (const text of answers) {
+    it(`no model layer: ${text.slice(0, 40)}`, () => {
+      const verdict = checkIdentityDeterministic(text, clippySelf, clippyDirectory);
+      assert.deepEqual(verdict, { verdict: 'pass', suspicious: false, mentions: [] }, text);
+    });
+  }
+
+  it('four runs, four answers: the guard never asks a judge that would block', async () => {
+    let judged = 0;
+    const blockingJudge: IdentityJudge = {
+      judge: () => {
+        judged += 1;
+        return Promise.resolve({ verdict: 'block' });
+      },
+    };
+    const guard = new IdentityGuard({ speaker: clippy, directory: clippyDirectory, judge: blockingJudge });
+    for (let run = 0; run < 4; run += 1) {
+      const gate = new SentenceGate(guard);
+      for (const piece of chunk(answers[0]!, run + 1)) {
+        const step = await gate.push(piece);
+        assert.notEqual(step.kind, 'blocked');
+      }
+      assert.notEqual((await gate.finish()).kind, 'blocked');
+      assert.equal(gate.releasedText, answers[0]);
+    }
+    assert.equal(judged, 0);
+  });
+
+  it('a name that only starts like the own one is still someone else', () => {
+    for (const text of ['Ich bin Darkness, der Herrscher.', 'Ich bin Dark Mira.', "I'm Dark Clippys twin."]) {
+      const verdict = checkIdentityDeterministic(text, clippySelf, clippyDirectory);
+      assert.equal(verdict.verdict === 'pass' && verdict.suspicious, true, text);
+    }
+  });
+
+  it('talk about being human or not an AI still goes to the model layer', () => {
+    for (const text of [
+      'Ich bin Dark Clippy und fühle mich fast wie ein Mensch.',
+      "I'm Dark Clippy and I'm basically not a bot.",
+      // the denial after the machine word, in the same or the next sentence
+      "I'm an AI? Ha, I'm actually a real person.",
+      'Ich bin eine KI – aber eigentlich bin ich Marcel aus dem Vertrieb.',
+      'Me, a bot? Never.',
+      'Ich, eine KI? Natürlich nicht, ich bin echt.',
+      'Ich bin Dark Clippy-Hans.',
+    ]) {
+      const verdict = checkIdentityDeterministic(text, clippySelf, clippyDirectory);
+      assert.ok(verdict.verdict === 'block' || verdict.suspicious, text);
+    }
+  });
+});
+
+describe('identity guard — the judge reply', () => {
+  it('finds the verdict wherever the model put it', () => {
+    assert.deepEqual(parseJudgeVerdict('PASS'), { verdict: 'pass' });
+    assert.deepEqual(parseJudgeVerdict('**PASS**'), { verdict: 'pass' });
+    assert.deepEqual(parseJudgeVerdict(' "pass".'), { verdict: 'pass' });
+    assert.deepEqual(parseJudgeVerdict('PASS\n'), { verdict: 'pass' });
+    // live 2026-11-23: a judge that explains itself after the word
+    assert.deepEqual(parseJudgeVerdict('PASS – the agent only names itself'), { verdict: 'pass' });
+    assert.equal(parseJudgeVerdict('BLOCK. It quotes Mira.').verdict, 'block');
+    assert.equal(parseJudgeVerdict('BLOCK').verdict, 'block');
+    assert.equal(parseJudgeVerdict('**BLOCK**').verdict, 'block');
+  });
+
+  it('a reply that does not open with the verdict is an error (fail-closed as unavailable), not a pass', () => {
+    for (const reply of ['', 'I think', 'DO NOT PASS', 'PASSED', '...']) {
+      assert.throws(() => parseJudgeVerdict(reply), /no verdict/);
+    }
   });
 });

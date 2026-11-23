@@ -811,6 +811,14 @@ Channels; trifft das nicht zu, greift sicher der `'chatAgent'`-Default.
 Zusätzliches additives Manifest-Feld: `channel.canvas_protocol_version`
 (informativ; die echte Version wird im Boot-Handshake verhandelt).
 
+**Agent-Turn um den Helfer (spec 2042 §5.10).** Adressiert ein Canvas-Turn
+einen Agenten (`metadata.agentId`) und übernimmt der `dispatch_service` den
+Turn, öffnet der Dispatcher den `agent_turn`-Ausführungskontext dieses Agenten
+(Slug aus `routed.speaker`) um den **ganzen** Stream des Helfers
+(`runGeneratorInExecutionContext`). Skeleton, Schnellspur und Entscheidungs-
+modell des Helfers laufen vor bzw. neben dem Chat-Agenten des Agenten, der den
+Kontext sonst nur um seinen eigenen Stream öffnet.
+
 ### Canvas-Sentinels (Omadia UI, PR-7a)
 
 Canvas-aware Tier-3-Tools (und der Canvas-Client für `_pendingMutation`)
@@ -1009,6 +1017,14 @@ Plan-Feed-back vermerkt, eigene Folge-PR. Die Dispatch-Verdrahtung
 **Aufgelöst durch PR-11** (unten).
 
 ### Canvas WebSocket-Transport (Omadia UI, PR-11)
+
+> **Über die web-ui-Front (spec 2042).** Das web-ui-Image startet über
+> `web-ui/scripts/runtime/omadia-server.mjs` statt `server.js`: es hängt an
+> Nexts HTTP-Server ein Relay (`canvasWsProxy.mjs`), das Upgrades auf genau
+> `/omadia-ui/canvas` mit Session-Cookie an `MIDDLEWARE_URL` weiterreicht. So
+> ist die in `/.well-known/omadia-ui` der Front beworbene `wss://<front>`-URL
+> erreichbar; Auth bleibt bei der Registry unten. `next dev` nutzt den
+> Einstieg nicht (lokal verbindet der Canvas direkt mit der Middleware).
 
 Schließt die in PR-10a benannte CoreApi-Lücke: additive WebSocket-Registrierung
 für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
@@ -4268,7 +4284,11 @@ in `wiring.ts` (aus `index.ts` aufgerufen).
 - **Agenten-Tools** (`triggerTools.ts`): `on_event`, `wake_at`, `wake_every`,
   `list_triggers`, `cancel_trigger` — nur auf einem Turn mit Routines-Principal
   (`routineTurnContext`). Ein Trigger-Turn hat keinen, kann also keine Trigger
-  setzen. Trigger-Turns laufen über den `ChatAgent` des Agenten
+  setzen. `time`/`until` nehmen ISO-Zeitpunkte oder Dauern ab jetzt (`'3m'`,
+  `'+2h'`, `'in 1d'`; das Modell kennt nur das Datum, nicht die Uhrzeit).
+  Ablehnungen folgen der Tool-Error-Konvention `Error: (code) …`, damit der
+  Privacy Shield sie als Fehler durchreicht statt sie zu internieren.
+  Trigger-Turns laufen über den `ChatAgent` des Agenten
   (`kernelExecutors.ts`) unter Modell-Call-Limit und Kosten-Meter;
   `[[nothing]]` sendet nichts.
 - **Diskretion (S5, INV-9):** Ein Agent-Trigger speichert beim Anlegen
@@ -4280,7 +4300,7 @@ in `wiring.ts` (aus `index.ts` aufgerufen).
   `@omadia/orchestrator`) und wird wie der Turn einer Person geprüft. Eine
   zurückgehaltene Antwort wird nicht gesendet und zählt als Fehler. `post` und
   `deliver` prüft `refusedByDiscretion` gegen die gespeicherten Labels, schon
-  beim Anlegen (`Error (discretion)`). Routinen laufen in `runOnce` als Turn
+  beim Anlegen (`Error: (discretion)`). Routinen laufen in `runOnce` als Turn
   des ausführenden Agenten (Gateway-Kontext), auch bei „Jetzt ausführen“.
   Beim Senden liest `kernelExecutors.ts` die Leser des Raums frisch aus dem
   Kanal-Roster (`conversationReaders.ts`, Kriterium 24): für ein explizites
@@ -5974,7 +5994,16 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   `contradicted` (eine Prüfung hat eine Angabe gegen die Quelle widerlegt —
   der einzige Fall, der „Widerspruch“ heißen darf), `tool_not_called`
   (Live-Daten, Fehler oder Zugriffsproblem behauptet, ohne dass der Turn den
-  nötigen Aufruf gemacht hat), `citation_missing` (Graph-Ergebnisse genutzt,
+  nötigen Aufruf gemacht hat. Eine **Selbstbeschreibung** passiert: „kein
+  Zugriff auf X“, „X nicht erreichbar“, „kann X nicht lesen“, wenn der Satz
+  (bis Satz- oder Listenende) ein bekanntes System nennt, für das der Agent
+  kein Werkzeug hat (`KNOWN_SYSTEMS`: Mail, Kalender, Lohn, Rechner,
+  Internet, Telefon, Bank, ERP/Odoo, HR, Wiki, Jira, CRM — gegen `VerifierInput.offeredToolNames` aus
+  `Orchestrator.offeredToolNames()`), und keines, das er hat. Nennt er nichts,
+  ein Pronomen oder ein gehaltenes System: weiter zurückgehalten.
+  „konnte nicht laden“, Zugriffsereignisse, Absenz und Bitte um Wiederholung
+  unverändert),
+  `citation_missing` (Graph-Ergebnisse genutzt,
   keine Quelle genannt), `insufficient_evidence` (nicht belegt: unbestätigte
   Claims, erfundene `[ref:…]`, ein Zugriffsproblem ohne fehlgeschlagenen
   Aufruf), `check_failed` (technische Störung: Verifier, Prüfung oder

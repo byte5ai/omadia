@@ -859,7 +859,8 @@ export function buildOrchestratorForAgent(
     onGuardResult: (result) => {
       if (result.outcome !== 'pass' || result.latencyMs > IDENTITY_GUARD_SLOW_MS) {
         console.log(
-          `[identity-guard] agent=${agentSpeaker.slug} outcome=${result.outcome} latencyMs=${String(result.latencyMs)}`,
+          `[identity-guard] agent=${agentSpeaker.slug} outcome=${result.outcome} latencyMs=${String(result.latencyMs)}` +
+            (result.outcome === 'unavailable' ? ` cause=${result.cause}${result.detail ? ` detail=${result.detail}` : ''}` : ''),
         );
       }
     },
