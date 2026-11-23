@@ -8,6 +8,24 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.88.0 — 2026-11-23
+
+Additive (live runs of native facilitators on Slack, Discord and Telegram).
+
+### Added
+
+- **`CardSupport.asText`**. `true` when the channel shows no native cards and
+  the kernel posts a card as numbered text, with a typed reply as its answer
+  (#2086). A sender that explains how to answer says "reply in the chat" for
+  such a channel, not "use the card". Absent on older kernels: read as `false`.
+
+### Clarified
+
+- **`NativeToolCallContext.callerPrincipalId`** is the conversation form
+  `user:<channel user id>` on every channel (ADR 0032). The kernel no longer
+  copies the routing principal a channel states on `TurnOrigin.principal`
+  (`user:discord-user:<id>`, `user:<e-mail>`) into it.
+
 ## 1.87.0 — 2026-11-23
 
 Additive (spec 2042 §5.10, criterion 37): the end-of-service notice after an

@@ -306,7 +306,7 @@ export function createConversationSendService(deps: {
       ...(card
         ? { card: { ...card, update: card.update && typeof provider.updateCard === 'function' } }
         : asText
-          ? { card: { kinds: TEXT_CARD_KINDS, maxQuestions: 1, update: false } }
+          ? { card: { kinds: TEXT_CARD_KINDS, maxQuestions: 1, update: false, asText: true } }
           : {}),
     };
   }
