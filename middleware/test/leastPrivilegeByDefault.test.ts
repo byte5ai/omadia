@@ -176,7 +176,84 @@ describe('#2054 — spec 2042 §6.9: no super-agent out of the box', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('criterion 9: boot with the host’s hooks backed by the agent store attaches nothing, also to an agent that existed before boot and on a reboot that adds a built-in', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'least-privilege-boot-'));
+    try {
+      const builtInDir = join(dir, 'built-in');
+      for (const p of FIVE) writeManifest(join(builtInDir, p.dir), p.id, p.kind);
+      const store = new InMemoryAgentStore();
+      // An instance whose operator already created an agent and made it the default.
+      const mira = await store.createAgent({ slug: 'mira', name: 'Mira' });
+      await store.setFallbackAgentId(mira.id);
+      const registry = new InMemoryInstalledRegistry();
+      const reported: string[] = [];
+
+      const boot = async (): Promise<void> => {
+        const builtInStore = new BuiltInPackageStore(builtInDir);
+        await builtInStore.load();
+        const catalog = new PluginCatalog({
+          manifestDir: '/nonexistent',
+          extraSources: () => builtInStore.list().map((p) => ({ packageRoot: p.path, origin: 'bundled' as const })),
+        });
+        await catalog.load();
+        await runLegacyBootstrap({
+          config: {} as Config,
+          catalog,
+          registry,
+          vault: new InMemorySecretVault(),
+          builtInStore,
+          log: () => {},
+          // The host's hooks, backed by the agent store (index.ts wires
+          // `onPluginRemoved` to the binding purge; `onPluginInstalled` is
+          // the seam #1498 used to attach boot installs to the default
+          // agent — here it is the host's, which must not grant anything).
+          onPluginRemoved: (pluginId) => {
+            void store.deleteAgentPluginsForPlugin(pluginId);
+          },
+          onPluginInstalled: (pluginId) => {
+            reported.push(pluginId);
+            hostOnPluginInstalled(store, pluginId);
+          },
+        });
+      };
+
+      await boot();
+      assert.deepEqual(reported.sort(), FIVE.map((p) => p.id).sort(), 'boot reports every plugin it installed');
+      assert.deepEqual(await store.listAllAgentPlugins(), [], 'no agent holds any of the five, not even the default agent');
+
+      // A new image ships a sixth built-in: the reboot installs it and grants it to no one.
+      writeManifest(join(builtInDir, SIXTH.dir), SIXTH.id, SIXTH.kind);
+      reported.length = 0;
+      await boot();
+      assert.deepEqual(reported, [SIXTH.id]);
+      assert.ok(registry.has(SIXTH.id));
+      assert.deepEqual(await store.listAllAgentPlugins(), [], 'the sixth built-in attaches to no agent');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('criterion 9: the host wires no install hook into its boot (the test above runs the host’s real hooks)', () => {
+    const index = readFileSync(join(MIDDLEWARE_ROOT, 'src', 'index.ts'), 'utf8');
+    const start = index.indexOf('await runLegacyBootstrap({');
+    assert.ok(start >= 0, 'index.ts no longer boots through runLegacyBootstrap — re-point this test');
+    const call = index.slice(start, index.indexOf('\n  });', start));
+    assert.deepEqual(
+      [...call.matchAll(/^\s{4}(\w+)[,:]/gm)].map((m) => m[1]).sort(),
+      ['builtInOptOuts', 'builtInStore', 'catalog', 'config', 'onPluginRemoved', 'registry', 'vault'],
+      'a new boot hook needs a reviewed entry in hostOnPluginInstalled above, which must not grant a plugin to an agent',
+    );
+  });
 });
+
+/**
+ * What index.ts does with a plugin the boot installed: nothing (it passes no
+ * `onPluginInstalled`, pinned by the test above). A host that starts using
+ * the hook mirrors it here, and the store-backed boot test fails the moment
+ * it grants a plugin to an agent.
+ */
+function hostOnPluginInstalled(_store: InMemoryAgentStore, _pluginId: string): void {}
 
 function kernelSources(): string[] {
   const roots = [join(MIDDLEWARE_ROOT, 'src'), join(MIDDLEWARE_ROOT, 'packages', 'harness-orchestrator', 'src')];
