@@ -36,6 +36,7 @@ const DROPPED_REQUEST_HEADERS = new Set([
   'trailer',
   'transfer-encoding',
   'x-forwarded-proto',
+  'x-forwarded-host',
 ]);
 
 /**
@@ -51,8 +52,9 @@ export function isCanvasUpgrade(url) {
 
 /**
  * The headers sent upstream: the client's, minus this hop's own, with the
- * declared scheme (`WEB_UI_PUBLIC_SCHEME`, like `/bot-api/*`) so a client
- * cannot choose it.
+ * declared scheme (`WEB_UI_PUBLIC_SCHEME`, like `/bot-api/*`) and the host
+ * the client reached (its `Host`, never a forwarded-host header it sent), so
+ * a client can choose neither.
  * @param {import('node:http').IncomingHttpHeaders} headers
  * @param {'http' | 'https'} scheme
  * @returns {Record<string, string | string[]>}
@@ -65,9 +67,7 @@ export function upstreamHeaders(headers, scheme) {
     out[key] = value;
   }
   out['x-forwarded-proto'] = scheme;
-  if (typeof headers.host === 'string' && out['x-forwarded-host'] === undefined) {
-    out['x-forwarded-host'] = headers.host;
-  }
+  if (typeof headers.host === 'string') out['x-forwarded-host'] = headers.host;
   return out;
 }
 

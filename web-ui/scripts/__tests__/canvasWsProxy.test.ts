@@ -143,7 +143,14 @@ describe('canvas WebSocket relay on the web-ui front', () => {
 
   it('drops this hop’s headers and keeps the upgrade handshake', () => {
     const headers = upstreamHeaders(
-      { host: 'front', upgrade: 'websocket', connection: 'Upgrade', cookie: 'a=b', 'x-forwarded-proto': 'http' },
+      {
+        host: 'front',
+        upgrade: 'websocket',
+        connection: 'Upgrade',
+        cookie: 'a=b',
+        'x-forwarded-proto': 'http',
+        'x-forwarded-host': 'evil.example',
+      },
       'https',
     );
     expect(headers).toEqual({
