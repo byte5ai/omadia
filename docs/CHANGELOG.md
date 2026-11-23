@@ -36,6 +36,24 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — 27 Postgres tests of memory suites never ran in CI (2026-11-23)
+
+- **Postgres legs in files not named `*.pg.test.ts` ran nowhere.** `npm run test:pg` globs
+  only `*.pg.test.ts` and is the only CI step with a test DSN; `npm run test` sets none, so
+  these legs skipped there. Affected: `memoryPurgeKg`, `processProvenancePg1540`,
+  `provenanceBackfill1540` (renamed to `.pg.test.ts`; the second is now
+  `processProvenance1540.pg.test.ts`), and the Postgres legs of `kgWalkSubgraph`,
+  `scratchPromotionReaper`, `recallDerivedUnprotected1536` and `memoryPurgeRoute` (split into
+  `.pg.test.ts` files; shared code in `recallDerivedUnprotected1536Contract.ts`,
+  `_helpers/scratchPromotionFakes.ts`, `_helpers/memoryPurgeHarness.ts`). All 27 pass on
+  pgvector. Assertions are unchanged; the purge-route audit case now gates on `probePgTest`
+  like the other suites, so a failing auth migration fails it instead of skipping it.
+- **Guard.** `npm run test:pg:names` (`scripts/check-pg-test-names.mjs`, a CI step) fails when
+  a test reaches `_helpers/pgTestDb.ts`, directly or through a helper, without the
+  `.pg.test.ts` name. Rule in `middleware/test/README.md`.
+- **`PG_TEST_FLOOR` 448 → 721.** Main measured ran=694 (246 tests of slack, enough for whole
+  suites to vanish unnoticed); with the 27 moved tests the measured count is 721.
+
 ### Fixed — the PASS/BLOCK judges answer on an always-thinking model (spec 2042 §5.5, #2085, criterion 33)
 
 - The identity guard's judge and the data-plan and summary boundary judges asked for 8 output

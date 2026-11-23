@@ -42,6 +42,29 @@ npm test
 Pick a port you know is free — the suite talks to exactly the URL you give it
 and nothing else.
 
+## Postgres tests must be named `*.pg.test.ts`
+
+CI runs the Postgres suites in exactly one step, `npm run test:pg`, which globs
+`test/**/*.pg.test.ts` and is the only step with a test DSN. `npm run test`
+sets none, so there a Postgres suite skips. A Postgres case in a file named
+`foo.test.ts` therefore runs nowhere in CI, and `PG_TEST_FLOOR` cannot notice,
+because it counts only what `test:pg` sees.
+
+`npm run test:pg:names` (a CI step) fails when a test file reaches
+`_helpers/pgTestDb.ts`, directly or through another helper, without the
+`.pg.test.ts` name. A suite with both legs is split: database-free cases in
+`foo.test.ts`, Postgres cases in `foo.pg.test.ts`, shared code in a module that
+is not a test (`memoryStoreConformance.ts`, `kgFindEntitiesByIdContract.ts`,
+`recallDerivedUnprotected1536Contract.ts`). After adding Postgres tests, raise
+`PG_TEST_FLOOR` in `.github/workflows/ci.yml` to the `ran=` the CI step prints.
+
+To run what CI runs:
+
+```bash
+export MEMORY_PG_TEST_URL='postgres://test:test@127.0.0.1:5544/test' GRAPH_PG_TEST_URL="$MEMORY_PG_TEST_URL"
+npm run test:pg
+```
+
 ## Env vars
 
 `MEMORY_PG_TEST_URL` is the shared fallback every suite accepts. Individual
