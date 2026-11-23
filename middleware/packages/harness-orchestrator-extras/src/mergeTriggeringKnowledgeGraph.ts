@@ -81,6 +81,7 @@ import type {
   SessionSummary,
   SessionReadOptions,
   SessionView,
+  TurnAmend,
   TurnIngest,
   TurnIngestResult,
   TurnSearchHit,
@@ -273,6 +274,11 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
   }
 
   // ─── Pure passthroughs ───────────────────────────────────────────
+
+  /** Spec 2042 — no classification, no trigger: a patch of a written turn. */
+  amendTurn(turnExternalId: string, amend: TurnAmend): Promise<void> {
+    return this.inner.amendTurn?.(turnExternalId, amend) ?? Promise.resolve();
+  }
 
   ingestTurn(turn: TurnIngest): Promise<TurnIngestResult> {
     return this.inner.ingestTurn(turn);

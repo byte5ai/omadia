@@ -36,6 +36,28 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a withheld answer stays out of the agent's memory; the guard's verdict is on the turn (spec 2042 follow-up)
+
+- Live on the canvas, Dark Clippy's draft that the identity guard blocked ("Falls ich mich vorhin
+  hier als … vorgestellt habe: Das war falsch") was recorded as a turn, and every later
+  "wer bist du" recalled and repeated it ("…, und zwar mehrmals"). The orchestrator writes a
+  turn's record inside the turn, before the identity guard (outermost) decides. Now the record
+  writer reports every row to the turn's record gate and holds back the fact extraction; once
+  the guard has decided (on the authoritative answer, after the verifier and the privacy
+  render), the turn is patched in the graph without being classified again
+  (`KnowledgeGraph.amendTurn`, no capture-filter model call): it gets the verdict, and an
+  answer the identity guard withheld loses its text and its embedding and becomes `tailOnly` (no recall finds it; the user's message stays). Facts are learned only
+  from a kept answer. An answer refused at the people egress (discretion) is recorded without
+  its text too, instead of as the line that replaced it; the web-chat mirror keeps that line.
+- The verdict is stored with the turn: `TurnIngest.identityGuard` / `amendTurn`
+  (`@omadia/plugin-api` 1.89.0, Turn property `identityGuard`: outcome, deciding layer,
+  latency, rule or cause). A block like the one in the 2026-11-23 run can be traced without the
+  operator log.
+- Known residuals: auto-promotion (opt-in) and `onAfterTurn` hooks run before the verdict and
+  still see the draft; the markdown session transcript keeps it (and a startup backfill,
+  `BACKFILL_AT_STARTUP=1`, would re-ingest it); a stream the client abandons before `done` is
+  not patched; an answer the verifier withheld is the verifier's record, unchanged.
+
 ### Fixed — a reasoning effort only for OpenAI's reasoning models (spec 2042 follow-up)
 
 - The verifier, the fast path and the PASS/BLOCK judges send `effort: 'low'`. Both OpenAI
