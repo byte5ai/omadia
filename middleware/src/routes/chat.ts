@@ -297,7 +297,7 @@ export interface CreateChatRouterOptions {
   /** OM-76 (#996) — is ANY Agent active right now? When this answers `false`
    *  the 503 carries `no_agents_active` instead of `agent_unavailable`: the
    *  requested slug is not "deleted or disabled", there simply is no
-   *  orchestrator running (fresh install, no LLM provider assigned). The UI
+   *  agent running (none exists or is enabled, or no LLM provider). The UI
    *  must not offer "re-bind to default" in that state — the default is the
    *  very thing that is missing. Optional so older mounts keep the old code. */
   hasActiveAgents?: () => boolean;
@@ -393,6 +393,14 @@ function webLocale(req: Request): string {
 }
 
 /**
+ * OM-76 — the registry holds no running agent. Two causes look the same from
+ * here: no agent exists or is enabled, or no LLM provider is assigned to it.
+ * The message names both, never only one of them.
+ */
+export const NO_AGENTS_ACTIVE_MESSAGE =
+  'no agent is active: create or enable an agent under Agents, and make sure an LLM provider (API key or subscription CLI) is assigned under LLM access.';
+
+/**
  * Phase A / #2055 — per-request agent resolution. Returns the agent that
  * answers, the `system` notice the sender gets instead, or sends an HTTP
  * error and returns `undefined`. The caller uses the returned slug to capture
@@ -428,8 +436,7 @@ async function resolveAgentForRequest(
   if (options.hasActiveAgents?.() === false) {
     res.status(503).json({
       error: 'no_agents_active',
-      message:
-        'no agent is active. Assign an LLM provider (API key or subscription CLI) under LLM access.',
+      message: NO_AGENTS_ACTIVE_MESSAGE,
     });
     return undefined;
   }

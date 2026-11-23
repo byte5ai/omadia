@@ -2096,7 +2096,7 @@
     "actionReSnapshot": "Re-bind to the default agent",
     "actionDelete": "Delete session",
     "noAgentsTitle": "No agent is running",
-    "noAgentsBody": "No LLM provider is assigned to an agent yet, so no agent can answer. Open LLM access and assign an API key or a subscription CLI.",
+    "noAgentsBody": "No agent can answer: either no agent exists or is enabled yet, or no LLM provider is assigned. Create or enable an agent on the Agents page, and make sure an API key or a subscription CLI is assigned under LLM access.",
     "actionOpenLlmAccess": "Open LLM access"
   },
   "skills": {

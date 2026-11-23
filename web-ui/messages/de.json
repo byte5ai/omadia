@@ -2096,7 +2096,7 @@
     "actionReSnapshot": "Auf den Standard-Ansprechpartner umbinden",
     "actionDelete": "Session löschen",
     "noAgentsTitle": "Es läuft kein Agent",
-    "noAgentsBody": "Es ist noch kein LLM-Anbieter einem Agenten zugeordnet, daher kann kein Agent antworten. Öffne den LLM-Zugang und hinterlege einen API-Schlüssel oder eine Abo-CLI.",
+    "noAgentsBody": "Kein Agent kann antworten: Entweder gibt es noch keinen aktiven Agenten, oder es ist kein LLM-Anbieter zugeordnet. Lege auf der Seite „Agenten“ einen Agenten an oder aktiviere ihn, und hinterlege im LLM-Zugang einen API-Schlüssel oder eine Abo-CLI.",
     "actionOpenLlmAccess": "LLM-Zugang öffnen"
   },
   "skills": {
