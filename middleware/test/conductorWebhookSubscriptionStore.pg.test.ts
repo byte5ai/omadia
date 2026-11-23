@@ -231,7 +231,7 @@ describe('ConductorWebhookSubscriptionStore (pg)', { skip: !pgAvailable }, () =>
       const missing = await store.listMissingRunDeliveries(sinceIso);
       assert.deepEqual(
         missing.filter((m) => m.runId === cancelledRunId),
-        [{ runId: cancelledRunId, status: 'cancelled', subscriptionId: cancelledSub }],
+        [{ runId: cancelledRunId, status: 'cancelled', subscriptionId: cancelledSub, includeContext: false }],
         'the cancelled run must be reconciled for the run.cancelled subscription and no other',
       );
       assert.ok(
