@@ -251,6 +251,14 @@ jobs:
         working-directory: middleware
         run: python3 -m unittest sidecars/pii-detector/test_server.py -v
 
+      # The step below runs only `*.pg.test.ts`, and `npm run test` sets no
+      # DSN, so a Postgres leg in a file named `foo.test.ts` runs nowhere and
+      # PG_TEST_FLOOR never sees it. Seven files had such legs (27 tests).
+      # This fails when a test reaches test/_helpers/pgTestDb.ts, directly or
+      # through a helper, without the `.pg.test.ts` name.
+      - name: Postgres tests are named *.pg.test.ts
+        run: npm run test:pg:names
+
       # Anti-silent-skip guard (#565). The pg suites self-skip when the DB
       # is unreachable, so a broken/renamed service would once again pass
       # green with zero Postgres coverage. Fail loudly here instead if the
@@ -340,7 +348,12 @@ jobs:
           # facilitatorContract.pg, 10 tests).
           # 444 → 447 with the kernel-side end of subscriptions and NOTIFY
           # (facilitatorContract.pg, 3 tests).
-          PG_TEST_FLOOR: '448'
+          # 448 → 721: main had drifted to ran=694 (CI run on 7c4a3fc), 246
+          # tests of slack; the Postgres legs moved into *.pg.test.ts files
+          # (memoryPurgeKg, kgWalkSubgraph, scratchPromotionReaper,
+          # recallDerivedUnprotected1536, processProvenance1540,
+          # provenanceBackfill1540, memoryPurgeRoute) add 27. Measured ran=721.
+          PG_TEST_FLOOR: '721'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out
