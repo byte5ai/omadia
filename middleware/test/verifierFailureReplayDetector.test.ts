@@ -188,6 +188,11 @@ describe('verifier/failureReplayDetector — false-positive guards', () => {
  * agent cannot reach is a replay only when it names a system the agent holds
  * tools for: then it could have checked.
  */
+/** The basis of a contradicted verdict (the only status that has one). */
+function basisOf(v: ReturnType<typeof detectFailureReplay>[number] | undefined): string | undefined {
+  return v?.status === 'contradicted' ? v.basis : undefined;
+}
+
 describe('verifier/failureReplayDetector — a self-description is no replay', () => {
   const clippyTools = [
     'confluence_search',
@@ -230,7 +235,7 @@ describe('verifier/failureReplayDetector — a self-description is no replay', (
       }),
     );
     assert.equal(v.length, 1);
-    assert.equal(v[0]!.basis, 'tool_not_called');
+    assert.equal(basisOf(v[0]), 'tool_not_called');
   });
 
   it('"Odoo ist nicht erreichbar" and "kann Confluence nicht lesen" name held systems: withheld', () => {
@@ -302,6 +307,6 @@ describe('verifier/failureReplayDetector — a self-description is no replay', (
   it('with the tools unknown, the older rule holds', () => {
     const v = detectFailureReplay(input({ answer: selfDescription, domainToolsCalled: [] }));
     assert.ok(v.length >= 1);
-    assert.equal(v[0]!.basis, 'tool_not_called');
+    assert.equal(basisOf(v[0]), 'tool_not_called');
   });
 });
