@@ -203,7 +203,7 @@ describe('AgentTeamsInstalls (#866)', () => {
     expect((screen.getByLabelText('Target ID') as HTMLInputElement).disabled).toBe(true);
     expect(
       screen.getByText(
-        'One orchestrator is tracked in one team. Assigning a second team would leave the first install untracked, so it is refused.',
+        'One agent is tracked in one team. Assigning a second team would leave the first install untracked, so it is refused.',
       ),
     ).toBeTruthy();
   });
@@ -258,7 +258,7 @@ describe('AgentTeamsInstalls (#866)', () => {
 
     expect(
       await screen.findByText(
-        'This orchestrator is already assigned to another team. Remove that assignment first — one orchestrator is tracked in one team.',
+        'This agent is already assigned to another team. Remove that assignment first — one agent is tracked in one team.',
       ),
     ).toBeTruthy();
     expect(screen.queryByText(/team_install_conflict/)).toBeNull();
@@ -349,7 +349,7 @@ describe('AgentTeamsInstalls (#866)', () => {
     // to verify something they cannot read.
     expect(
       screen.getByText(
-        "The orchestrator's app is removed from the team “Marketing” (team-abc) and stops answering there.",
+        "The agent's app is removed from the team “Marketing” (team-abc) and stops answering there.",
       ),
     ).toBeTruthy();
   });
@@ -435,7 +435,7 @@ describe('AgentTeamsInstalls (#866)', () => {
 
     expect(
       await screen.findByText(
-        'This orchestrator has no Teams identity yet. Create one in the Teams identity section before assigning it to a team.',
+        'This agent has no Teams identity yet. Create one in the Teams identity section before assigning it to a team.',
       ),
     ).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
@@ -473,7 +473,7 @@ describe('AgentTeamsInstalls (#866)', () => {
       ),
     ).toBeTruthy();
     expect(
-      screen.getByText("This orchestrator's app is not installed in any team yet."),
+      screen.getByText("This agent's app is not installed in any team yet."),
     ).toBeTruthy();
   });
 

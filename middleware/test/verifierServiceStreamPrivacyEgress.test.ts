@@ -97,7 +97,7 @@ describe('VerifierService.chatStream — privacy egress', () => {
     }
   });
 
-  it('a continuation without a view (Direct Line relay) is not verified; done still carries its receipt', async () => {
+  it('a continuation without a view (privacy refusal) is not verified; done still carries its receipt', async () => {
     const { orchestrator, state } = stubOrchestrator({
       stream: [DELTA, DONE],
       handOver: true,
@@ -107,7 +107,7 @@ describe('VerifierService.chatStream — privacy egress', () => {
     const { pipeline, inputs } = verdicts([APPROVED]);
     const service = new VerifierService({ orchestrator, pipeline, enabled: true, mode: 'shadow', log: SILENT });
 
-    const events = await collect(service.chatStream({ userMessage: '#spezialist frage' }));
+    const events = await collect(service.chatStream({ userMessage: 'frage' }));
 
     assert.deepEqual(events.map((e) => e.type), ['text_delta', 'done']);
     assert.equal(inputs.length, 0);

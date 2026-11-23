@@ -39,7 +39,7 @@ function makeHandle(
 }
 
 const minSpec = {
-  template: 'agent-integration',
+  template: 'integration',
   id: 'de.byte5.agent.test',
   name: 'Test',
   version: '0.1.0',
@@ -47,7 +47,6 @@ const minSpec = {
   category: 'analysis',
   depends_on: [],
   tools: [],
-  skill: { role: 'tester' },
   setup_fields: [],
   playbook: { when_to_use: 'tests', not_for: [], example_prompts: [] },
   network: { outbound: [] },

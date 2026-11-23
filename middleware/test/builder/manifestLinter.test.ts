@@ -47,7 +47,7 @@ function seedServiceTypeRegistry(): void {
 }
 
 const validSpec = {
-  template: 'agent-integration',
+  template: 'integration',
   id: 'de.byte5.agent.weather',
   name: 'Weather',
   version: '0.1.0',
@@ -58,7 +58,6 @@ const validSpec = {
     { id: 'get_forecast', description: 'a' },
     { id: 'get_history', description: 'b' },
   ],
-  skill: { role: 'tester' },
   setup_fields: [
     { key: 'api_key', type: 'secret' },
     { key: 'region_default', type: 'string' },

@@ -4,7 +4,7 @@ identity:
   id: "@omadia/transcription-adapter-openai"
   name: "Transkription (OpenAI)"
   version: "0.1.0"
-  kind: "extension"
+  kind: "model"
   domain: "core.transcription"
   description:
     en: "Turns speech into text with OpenAI's transcription models, either from a recording or live while someone is speaking. Only one transcription provider can be active."

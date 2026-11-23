@@ -40,21 +40,29 @@ import {
 } from '../src/profileStorage/migrator.js';
 
 /**
- * All eight SQL migrators are `read ledger → filter → apply` with no mutual
- * exclusion. Two replicas booting together both read the same pending list and
- * both execute it. `CREATE … IF NOT EXISTS` masks that; `ALTER TABLE … ADD
- * CONSTRAINT` does not — the loser gets 42710 and its boot fails. Three of the
- * eight run inside a plugin `activate()` that `ToolPluginRuntime` hard-caps at
- * 10s, so the fix cannot be an unbounded `pg_advisory_lock`.
+ * All eight SQL migrators are `read ledger → filter → apply`. Two replicas
+ * booting together both read the same pending list and both execute it.
+ * `CREATE … IF NOT EXISTS` masks that; `ALTER TABLE … ADD CONSTRAINT` does not
+ * — the loser gets 42710 and its boot fails. Three of the eight run inside a
+ * plugin `activate()` that `ToolPluginRuntime` hard-caps at 10s, so the wait
+ * for the lock has to be bounded.
  *
- * These tests pin the mechanism, not Postgres: a real server proves a lock is
- * free at the end, but it cannot force the cases that matter — an unlock that
- * FAILS, a lock that is never granted, a migration that throws while the lock
- * is held. A fake driver is the only way to reach those, and the observable
- * behaviour they must produce is exactly three things: which SQL was issued,
- * in which order, and whether the connection was POOLED (`release(false)`) or
- * DESTROYED (`release(true)` — the only other way a session-scoped advisory
- * lock is released).
+ * THE LOCK IS TRANSACTION-SCOPED. The first version took a session-level
+ * advisory lock (`pg_try_advisory_lock` … `pg_advisory_unlock`). Behind a
+ * transaction-mode connection pooler (PgBouncer, Neon's `-pooler` host, which
+ * is what the hosted instance connects through) the lock and the unlock run
+ * on different server sessions: the lock stays held by a session nobody owns
+ * and blocks the next boot that has a migration to apply, and two replicas
+ * that happen to share a server session both "hold" it. So every file is
+ * applied in a transaction that takes `pg_advisory_xact_lock` first, bounded
+ * by `SET LOCAL lock_timeout`, and re-reads the ledger under it.
+ *
+ * These tests pin the mechanism, not Postgres: a fake driver is the only way
+ * to force the cases that matter — a lock that is never granted, a migration
+ * that throws while the lock is held, a ROLLBACK that fails. What they observe
+ * is which SQL was issued, in which order, and whether the connection was
+ * POOLED (`release(false)`) or DESTROYED (`release(true)`).
+ * `coreMigrations.pg.test.ts` runs the real thing against Postgres.
  */
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
@@ -155,16 +163,15 @@ async function sqlFiles(dir: string): Promise<string[]> {
 interface FakeScript {
   /** Successive answers to the ledger SELECT; the last one repeats. */
   readonly ledgerReads?: readonly (readonly string[])[];
-  /** Successive answers to `pg_try_advisory_lock`; the last one repeats.
-   *  `null` models a driver that answers with no row at all. */
-  readonly lockAnswers?: readonly (boolean | null)[];
-  /** `pg_advisory_unlock` throws — what a connection stuck in an aborted
-   *  transaction actually does. */
-  readonly unlockThrows?: boolean;
-  /** `pg_advisory_unlock`'s answer; `null` models a driver with no row. */
-  readonly unlockAnswer?: boolean | null;
+  /** Files the ledger shows as applied when asked UNDER the lock. */
+  readonly appliedUnderLock?: readonly string[];
+  /** The lock is never granted: `pg_advisory_xact_lock` fails with 55P03
+   *  (lock_not_available), which is what `lock_timeout` produces. */
+  readonly lockTimesOut?: boolean;
   /** Thrown by the FIRST migration body that executes. */
   readonly migrationThrows?: Error;
+  /** ROLLBACK itself throws (a connection that is gone). */
+  readonly rollbackThrows?: boolean;
   /** Errors thrown by successive `CREATE TABLE IF NOT EXISTS` attempts. */
   readonly ledgerDdlErrors?: readonly unknown[];
 }
@@ -180,7 +187,6 @@ function makeFake(script: FakeScript = {}): Fake {
   const releases: boolean[] = [];
   const sql: string[] = [];
   let ledgerReadCount = 0;
-  let lockCount = 0;
   let ddlCount = 0;
   let migrationCount = 0;
 
@@ -198,7 +204,7 @@ function makeFake(script: FakeScript = {}): Fake {
     return list[Math.min(index, list.length - 1)] as T;
   }
 
-  const query = async (text: string): Promise<QueryResult> => {
+  const query = async (text: string, params?: readonly unknown[]): Promise<QueryResult> => {
     sql.push(text);
 
     if (/CREATE TABLE IF NOT EXISTS _[a-z_]+_migrations/i.test(text)) {
@@ -208,18 +214,17 @@ function makeFake(script: FakeScript = {}): Fake {
       return rows([]);
     }
 
-    if (/pg_try_advisory_lock/.test(text)) {
-      const answer = pick<boolean | null>(script.lockAnswers, lockCount, true);
-      lockCount += 1;
-      return answer === null ? rows([]) : rows([{ locked: answer }]);
+    if (/pg_advisory_xact_lock/.test(text)) {
+      if (script.lockTimesOut === true) {
+        throw Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
+      }
+      return rows([{}]);
     }
 
-    if (/pg_advisory_unlock/.test(text)) {
-      if (script.unlockThrows === true) {
-        throw new Error('current transaction is aborted, commands ignored');
-      }
-      const answer = script.unlockAnswer === undefined ? true : script.unlockAnswer;
-      return answer === null ? rows([]) : rows([{ unlocked: answer }]);
+    if (/^\s*SET LOCAL lock_timeout/i.test(text)) return rows([]);
+
+    if (/^\s*SELECT 1 FROM _[a-z_]+_migrations WHERE id = \$1/i.test(text)) {
+      return (script.appliedUnderLock ?? []).includes(String(params?.[0])) ? rows([{}]) : rows([]);
     }
 
     if (/^\s*SELECT id FROM _[a-z_]+_migrations/i.test(text)) {
@@ -228,7 +233,11 @@ function makeFake(script: FakeScript = {}): Fake {
       return rows(applied.map((id) => ({ id })));
     }
 
-    if (/^\s*(BEGIN|COMMIT|ROLLBACK)\s*$/i.test(text)) return rows([]);
+    if (/^\s*ROLLBACK\s*$/i.test(text)) {
+      if (script.rollbackThrows === true) throw new Error('Connection terminated unexpectedly');
+      return rows([]);
+    }
+    if (/^\s*(BEGIN|COMMIT)\s*$/i.test(text)) return rows([]);
     if (/^\s*INSERT INTO _[a-z_]+_migrations/i.test(text)) return rows([]);
 
     // Everything else is a migration body.
@@ -256,10 +265,13 @@ function makeFake(script: FakeScript = {}): Fake {
 const count = (sql: readonly string[], re: RegExp): number =>
   sql.filter((s) => re.test(s)).length;
 
-const LOCK_RE = /pg_try_advisory_lock/;
-const UNLOCK_RE = /pg_advisory_unlock/;
+const XACT_LOCK_RE = /pg_advisory_xact_lock/;
+const SESSION_LOCK_RE = /pg_(try_)?advisory_lock|pg_advisory_unlock/;
+const LOCK_TIMEOUT_RE = /^\s*SET LOCAL lock_timeout = '\d+ms'/i;
 const INSERT_RE = /^\s*INSERT INTO _[a-z_]+_migrations/i;
 const BEGIN_RE = /^\s*BEGIN\s*$/i;
+const COMMIT_RE = /^\s*COMMIT\s*$/i;
+const ROLLBACK_RE = /^\s*ROLLBACK\s*$/i;
 
 describe('SQL migrators — concurrent multi-replica boot', () => {
   it('never touches the lock when the ledger says there is nothing to apply', async () => {
@@ -273,24 +285,43 @@ describe('SQL migrators — concurrent multi-replica boot', () => {
       // The steady-state boot is the common case by orders of magnitude. It
       // must not pay a round-trip for the lock, and — more importantly — must
       // not be able to queue behind a replica that IS migrating.
-      assert.equal(count(fake.sql, LOCK_RE), 0, `${m.name}: locked with no work to do`);
+      assert.equal(count(fake.sql, XACT_LOCK_RE), 0, `${m.name}: locked with no work to do`);
+      assert.equal(count(fake.sql, BEGIN_RE), 0, `${m.name}: opened a transaction with no work to do`);
       assert.equal(count(fake.sql, INSERT_RE), 0, `${m.name}: re-applied a migration`);
       assert.deepEqual(fake.releases, [false], `${m.name}: connection must be pooled`);
     }
   });
 
-  it('takes the lock BEFORE the first migration and applies every pending file', async () => {
+  it('never takes a session-level advisory lock: it would not survive a transaction-mode pooler', async () => {
+    for (const m of MIGRATORS) {
+      const fake = makeFake({ ledgerReads: [[]] });
+      await m.run(fake.pool);
+      assert.equal(count(fake.sql, SESSION_LOCK_RE), 0, `${m.name}: session-level advisory lock`);
+      assert.equal(
+        fake.sql.filter((s) => /^\s*SET\s/i.test(s) && !/^\s*SET LOCAL\s/i.test(s)).length,
+        0,
+        `${m.name}: a SET outside SET LOCAL does not survive the pooler either`,
+      );
+    }
+  });
+
+  it('takes the lock INSIDE each file transaction, bounded, before the migration body', async () => {
     for (const m of MIGRATORS) {
       const files = await sqlFiles(m.migrationsDir);
       const fake = makeFake({ ledgerReads: [[]] });
       await m.run(fake.pool);
 
-      const lockAt = fake.sql.findIndex((s) => LOCK_RE.test(s));
-      const beginAt = fake.sql.findIndex((s) => BEGIN_RE.test(s));
-      assert.ok(lockAt >= 0, `${m.name}: no lock was taken`);
-      assert.ok(beginAt > lockAt, `${m.name}: migration started before the lock`);
+      assert.equal(count(fake.sql, BEGIN_RE), files.length, `${m.name}: one transaction per file`);
+      assert.equal(count(fake.sql, XACT_LOCK_RE), files.length, `${m.name}: one lock per transaction`);
+      assert.equal(count(fake.sql, COMMIT_RE), files.length, `${m.name}: every file committed`);
       assert.equal(count(fake.sql, INSERT_RE), files.length, `${m.name}: ledger writes`);
-      assert.equal(count(fake.sql, UNLOCK_RE), 1, `${m.name}: released exactly once`);
+      // The order inside the first transaction: BEGIN, bound the wait, lock,
+      // lift the bound, ask the ledger, and only then the migration.
+      const begin = fake.sql.findIndex((s) => BEGIN_RE.test(s));
+      assert.match(fake.sql[begin + 1] ?? '', LOCK_TIMEOUT_RE, `${m.name}: the wait is not bounded`);
+      assert.match(fake.sql[begin + 2] ?? '', XACT_LOCK_RE, `${m.name}: lock is not the first thing in the transaction`);
+      assert.match(fake.sql[begin + 3] ?? '', /^\s*SET LOCAL lock_timeout = DEFAULT/i, `${m.name}: the bound must not apply to the migration's own DDL`);
+      assert.match(fake.sql[begin + 4] ?? '', /^\s*SELECT 1 FROM _[a-z_]+_migrations WHERE id = \$1/i, `${m.name}: ledger not re-read under the lock`);
       assert.deepEqual(fake.releases, [false], `${m.name}: healthy connection is pooled`);
     }
   });
@@ -298,83 +329,72 @@ describe('SQL migrators — concurrent multi-replica boot', () => {
   it('re-reads the ledger UNDER the lock, so the winner is never re-run', async () => {
     for (const m of MIGRATORS) {
       const files = await sqlFiles(m.migrationsDir);
-      // Pending before the lock, complete once we hold it: exactly what a
+      // Pending before the lock, applied once we hold it: exactly what a
       // replica sees when it queues behind a winner that then finishes.
-      const fake = makeFake({ ledgerReads: [[], files] });
+      const fake = makeFake({ ledgerReads: [[]], appliedUnderLock: files });
       await m.run(fake.pool);
 
-      assert.equal(count(fake.sql, LOCK_RE), 1, `${m.name}: expected one lock attempt`);
-      assert.equal(
-        count(fake.sql, INSERT_RE),
-        0,
-        `${m.name}: applied migrations the winner had already applied`,
-      );
-      assert.equal(count(fake.sql, UNLOCK_RE), 1, `${m.name}: released the lock`);
+      assert.equal(count(fake.sql, INSERT_RE), 0, `${m.name}: applied migrations the winner had already applied`);
+      assert.equal(count(fake.sql, ROLLBACK_RE), files.length, `${m.name}: every skipped file ends its transaction, which releases the lock`);
+      assert.equal(count(fake.sql, COMMIT_RE), 0, `${m.name}: nothing to commit`);
       assert.deepEqual(fake.releases, [false], `${m.name}: connection pooled`);
     }
   });
 
+  it('applies only what the winner left: a file applied meanwhile is skipped, the rest runs', async () => {
+    for (const m of MIGRATORS) {
+      const files = await sqlFiles(m.migrationsDir);
+      if (files.length < 2) continue;
+      const fake = makeFake({ ledgerReads: [[]], appliedUnderLock: [files[0]!] });
+      await m.run(fake.pool);
+      assert.equal(count(fake.sql, INSERT_RE), files.length - 1, `${m.name}: ledger writes`);
+    }
+  });
+
   it('gives a loser a CLEAR RETRYABLE ERROR — never a silent skip', async () => {
-    // Runs the eight in parallel: each burns its full budget by design, and
-    // 8 x 2s sequentially would dominate the suite.
-    await Promise.all(
-      MIGRATORS.map(async (m) => {
-        const fake = makeFake({ ledgerReads: [[]], lockAnswers: [false] });
-        const started = Date.now();
+    for (const m of MIGRATORS) {
+      const fake = makeFake({ ledgerReads: [[]], lockTimesOut: true });
 
-        await assert.rejects(m.run(fake.pool), (err: unknown) => {
-          assert.ok(err instanceof Error);
-          // "timed out" is load-bearing: `bootstrap.retryErroredPlugins`
-          // matches it as a transient activation error and re-attempts the
-          // plugin instead of latching it `errored` forever.
-          assert.match(err.message, /timed out/);
-          assert.match(err.message, /still pending/);
-          assert.match(err.message, new RegExp(m.ledger));
-          return true;
-        });
+      await assert.rejects(m.run(fake.pool), (err: unknown) => {
+        assert.ok(err instanceof Error);
+        // "timed out" is load-bearing: `bootstrap.retryErroredPlugins`
+        // matches it as a transient activation error and re-attempts the
+        // plugin instead of latching it `errored` forever.
+        assert.match(err.message, /timed out/);
+        assert.match(err.message, /still pending/);
+        assert.match(err.message, new RegExp(m.ledger));
+        assert.match(err.message, new RegExp(`${String(m.budgetMs)}ms`));
+        return true;
+      });
 
-        const elapsed = Date.now() - started;
-        assert.ok(
-          elapsed >= m.budgetMs - 150,
-          `${m.name}: gave up after ${String(elapsed)}ms, before its ${String(m.budgetMs)}ms budget`,
-        );
-        assert.ok(
-          elapsed < m.budgetMs + 2_000,
-          `${m.name}: overran its budget (${String(elapsed)}ms)`,
-        );
-        assert.equal(count(fake.sql, INSERT_RE), 0, `${m.name}: applied without the lock`);
-        assert.equal(
-          count(fake.sql, UNLOCK_RE),
-          0,
-          `${m.name}: unlocked a lock it never held`,
-        );
-        // Never acquired ⇒ nothing to leak ⇒ a healthy connection must not be
-        // thrown away.
-        assert.deepEqual(fake.releases, [false], `${m.name}: connection pooled`);
-      }),
-    );
+      // The wait the server enforces is this migrator's budget.
+      const bound = fake.sql.find((s) => LOCK_TIMEOUT_RE.test(s)) ?? '';
+      assert.match(bound, new RegExp(`'${String(m.budgetMs)}ms'`), `${m.name}: lock_timeout is not the budget`);
+      assert.equal(count(fake.sql, INSERT_RE), 0, `${m.name}: applied without the lock`);
+      assert.equal(count(fake.sql, ROLLBACK_RE), 1, `${m.name}: the waiting transaction was not ended`);
+      // Nothing is held after the ROLLBACK, so a healthy connection is pooled.
+      assert.deepEqual(fake.releases, [false], `${m.name}: connection pooled`);
+    }
   });
 
   it('lets a loser finish cleanly when the winner applied everything while it waited', async () => {
-    await Promise.all(
-      MIGRATORS.map(async (m) => {
-        const files = await sqlFiles(m.migrationsDir);
-        const logs: string[] = [];
-        const fake = makeFake({ ledgerReads: [[], files], lockAnswers: [false] });
+    for (const m of MIGRATORS) {
+      const files = await sqlFiles(m.migrationsDir);
+      const logs: string[] = [];
+      const fake = makeFake({ ledgerReads: [[], files], lockTimesOut: true });
 
-        await m.run(fake.pool, (msg) => logs.push(msg));
+      await m.run(fake.pool, (msg) => logs.push(msg));
 
-        assert.ok(
-          logs.some((l) => /applied by another replica/.test(l)),
-          `${m.name}: the outcome must be stated, not silently assumed`,
-        );
-        assert.equal(count(fake.sql, INSERT_RE), 0, `${m.name}: applied without the lock`);
-        assert.deepEqual(fake.releases, [false], `${m.name}: connection pooled`);
-      }),
-    );
+      assert.ok(
+        logs.some((l) => /applied by another replica/.test(l)),
+        `${m.name}: the outcome must be stated, not silently assumed`,
+      );
+      assert.equal(count(fake.sql, INSERT_RE), 0, `${m.name}: applied without the lock`);
+      assert.deepEqual(fake.releases, [false], `${m.name}: connection pooled`);
+    }
   });
 
-  it('preserves the ORIGINAL error when a migration throws, and destroys the connection', async () => {
+  it('preserves the ORIGINAL error when a migration throws; the ROLLBACK releases the lock', async () => {
     for (const m of MIGRATORS) {
       const boom = Object.assign(
         new Error('constraint "x_pkey" for relation "x" already exists'),
@@ -383,60 +403,33 @@ describe('SQL migrators — concurrent multi-replica boot', () => {
       const fake = makeFake({ ledgerReads: [[]], migrationThrows: boom });
 
       await assert.rejects(m.run(fake.pool), (err: unknown) => {
-        // Identity, not shape: an unlock in `finally` would replace this.
         assert.equal(err, boom, `${m.name}: the original error was replaced`);
         return true;
       });
 
-      assert.ok(
-        fake.sql.some((s) => /^\s*ROLLBACK\s*$/i.test(s)),
-        `${m.name}: the failed migration was not rolled back`,
-      );
-      assert.equal(
-        count(fake.sql, UNLOCK_RE),
-        0,
-        `${m.name}: no unlock may be issued on the failure path — the pools set no statement_timeout, so it can hang the release, and a throwing unlock would mask the migration error`,
-      );
-      assert.deepEqual(
-        fake.releases,
-        [true],
-        `${m.name}: destroying the connection is what releases the session lock here`,
-      );
+      assert.equal(count(fake.sql, ROLLBACK_RE), 1, `${m.name}: the failed migration was not rolled back`);
+      assert.equal(count(fake.sql, INSERT_RE), 0, `${m.name}: a failed file was recorded`);
+      // The lock went with the transaction: nothing to destroy the connection for.
+      assert.deepEqual(fake.releases, [false], `${m.name}: a rolled-back connection is healthy and pooled`);
     }
   });
 
-  it('destroys the connection when the unlock THROWS on the success path', async () => {
+  it('destroys the connection when the ROLLBACK itself fails, and still reports the original error', async () => {
     for (const m of MIGRATORS) {
-      const fake = makeFake({ ledgerReads: [[]], unlockThrows: true });
-      // Everything committed; only the unlock failed. The migration itself
-      // succeeded, so this must NOT reject.
-      await m.run(fake.pool);
-      assert.deepEqual(fake.releases, [true], `${m.name}: unlock threw, connection pooled`);
-    }
-  });
-
-  it('destroys the connection when the driver says the lock was NOT released', async () => {
-    for (const m of MIGRATORS) {
-      const fake = makeFake({ ledgerReads: [[]], unlockAnswer: false });
-      await m.run(fake.pool);
-      // Reading `pg_advisory_unlock`'s boolean is the whole point: `false`
-      // means this session never held it / did not release it, and pooling
-      // the connection would strand the lock.
-      assert.deepEqual(fake.releases, [true], `${m.name}: ignored the unlock verdict`);
-    }
-  });
-
-  it('treats a driver that models no advisory locks as clean (no row ⇒ acquired ⇒ released)', async () => {
-    for (const m of MIGRATORS) {
-      const files = await sqlFiles(m.migrationsDir);
-      const fake = makeFake({
-        ledgerReads: [[]],
-        lockAnswers: [null],
-        unlockAnswer: null,
+      const boom = new Error('syntax error at or near "ALTR"');
+      const fake = makeFake({ ledgerReads: [[]], migrationThrows: boom, rollbackThrows: true });
+      await assert.rejects(m.run(fake.pool), (err: unknown) => {
+        assert.equal(err, boom, `${m.name}: the ROLLBACK failure replaced the migration error`);
+        return true;
       });
-      await m.run(fake.pool);
-      assert.equal(count(fake.sql, INSERT_RE), files.length, `${m.name}: migrations skipped`);
-      assert.deepEqual(fake.releases, [false], `${m.name}: nothing was held, nothing to destroy`);
+      assert.deepEqual(fake.releases, [true], `${m.name}: a connection in an unknown state was pooled`);
+
+      // The same when the lock wait timed out and the ROLLBACK then failed:
+      // the ledger cannot be re-read on that connection, so the file counts
+      // as still owed and the error stays retryable.
+      const lost = makeFake({ ledgerReads: [[]], lockTimesOut: true, rollbackThrows: true });
+      await assert.rejects(m.run(lost.pool), /timed out/);
+      assert.deepEqual(lost.releases, [true], `${m.name}: connection pooled after a failed ROLLBACK`);
     }
   });
 

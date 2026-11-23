@@ -186,8 +186,7 @@ function resolveBaseAxes(family: PersonaModelFamily | string): Required<PersonaA
  *
  * Lives HERE, next to {@link FAMILY_DEFAULTS}, because the family decides
  * which axes are emitted at all: a second mapper elsewhere would let a
- * preview and the running agent describe different characters. Re-exported
- * by `dynamicAgentRuntime.ts` for its existing callers.
+ * preview and the running agent describe different characters.
  */
 export function inferFamilyFromModel(modelId: string): PersonaModelFamily {
   const lower = modelId.toLowerCase();

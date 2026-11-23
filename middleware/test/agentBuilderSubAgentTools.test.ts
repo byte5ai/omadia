@@ -124,24 +124,29 @@ test('the delegation tool description carries the skill description + contract',
   const withDescription = build(
     skill({ description: '  Odoo HR: Mitarbeiter, Abwesenheiten\nund Verträge  ' }),
   );
-  assert.match(withDescription, /^Delegate a focused question to the "Researcher Bot" sub-agent\./);
+  // #2050 — an internal helper: never named, its answer is the agent's own work.
+  assert.match(withDescription, /^Internal helper of this agent, not a colleague:/);
+  assert.doesNotMatch(withDescription, /Researcher Bot/);
   assert.match(
     withDescription,
     /Handles: Odoo HR: Mitarbeiter, Abwesenheiten und Verträge\./,
   );
+  assert.match(withDescription, /without naming, quoting or crediting the helper/);
   assert.match(withDescription, /cannot ask follow-up questions/);
   assert.doesNotMatch(withDescription, /\n/);
 
   // An author-supplied final period is not doubled.
-  assert.match(build(skill({ description: 'Reads the CRM.' })), /Handles: Reads the CRM\. It sees/);
+  assert.match(build(skill({ description: 'Reads the CRM.' })), /Handles: Reads the CRM\. Its answer/);
 
   // No skill description → no dangling separator, contract still stated.
   const without = build(skill());
   assert.equal(
     without,
-    'Delegate a focused question to the "Researcher Bot" sub-agent. It sees none' +
-      ' of this conversation and cannot ask follow-up questions, so send one' +
-      ' self-contained question and expect a single answer back.',
+    'Internal helper of this agent, not a colleague: hand it a focused part of your' +
+      ' own work. Its answer is your own work: use it in your reply without naming,' +
+      ' quoting or crediting the helper. It sees none of this conversation and cannot' +
+      ' ask follow-up questions, so send one self-contained question and expect a' +
+      ' single answer back.',
   );
 
   // A sub-agent with no skill at all behaves like an empty description.
@@ -185,7 +190,7 @@ test('the skill description is sanitized and capped before it enters the roster 
   assert.doesNotMatch(capped, /ENDE/);
   // Cut at a word boundary: the kept text plus a space is a prefix of the input.
   assert.ok(long.startsWith(`${capped.slice(0, -1)} `), capped);
-  assert.ok(build(long).includes(`Handles: ${capped} It sees`));
+  assert.ok(build(long).includes(`Handles: ${capped} Its answer`));
 
   // At the cap exactly: untouched apart from the closing period.
   const exact = 'x'.repeat(MAX_ROSTER_SKILL_DESCRIPTION_CHARS);
@@ -385,7 +390,7 @@ test('mcp adapters: native tool name + spec + result rendering + command split',
  * The tool is skipped instead, like an unresolvable tool grant, and the skip is
  * logged.
  */
-test('a sub-agent whose class-ref model resolves to nothing is skipped, not built', () => {
+test('a sub-agent whose class-ref model resolves to nothing is out of service, loudly (#1451, #2050)', async () => {
   const logs: string[] = [];
   const tools = buildSubAgentDomainTools(
     { subAgents: [sub()], toolGrants: [nativeGrant()], skills: [skill()] },
@@ -401,11 +406,16 @@ test('a sub-agent whose class-ref model resolves to nothing is skipped, not buil
     },
   );
 
-  assert.equal(tools.length, 0, 'no delegation target may run on a class ref');
+  // No model loop is built on a class ref; the helper's tool stays and every
+  // call says why instead of the helper vanishing.
+  assert.equal(tools.length, 1);
   assert.equal(logs.length, 1);
   assert.match(logs[0]!, /Researcher Bot/);
   assert.match(logs[0]!, /class:balanced/);
-  assert.match(logs[0]!, /skipped/);
+  assert.match(logs[0]!, /out of service/);
+  const answer = await tools[0]!.handle({ question: 'q' });
+  assert.match(answer, /^Error: /);
+  assert.match(answer, /does not resolve for the provider 'anthropic'/);
 });
 
 test('a resolvable model still builds the sub-agent tool', () => {

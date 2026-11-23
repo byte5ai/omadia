@@ -1,8 +1,9 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import en from '../../../../messages/en.json';
 import { renderWithIntl } from '../../../_lib/test-utils';
+import { ApiError } from '../../../_lib/api';
 import { RequiresWizard } from '../RequiresWizard';
 import type {
   InstallChainResolution,
@@ -159,3 +160,49 @@ void describe('#833 review — RequiresWizard keeps chaining over errored instal
     expect(screen.queryByText(en.store.requiresWizard.notAllRunning)).toBeNull();
   });
 });
+
+void describe('spec 2042 §5.10 — RequiresWizard asks before installing a system module', () => {
+  const refusal = () =>
+    new (ApiError as unknown as new (status: number, message: string, body?: string) => Error)(
+      409,
+      'confirm',
+      JSON.stringify({ code: 'install.system_module_confirmation_required' }),
+    );
+
+  void it('pauses on the confirmation, then installs with it', async () => {
+    mockCreate.mockReset();
+    mockCreate
+      .mockRejectedValueOnce(refusal())
+      .mockResolvedValueOnce({ job: job(PROVIDER_ID, 'awaiting_config') })
+      .mockResolvedValueOnce({ job: job(TARGET_ID, 'awaiting_config') });
+    mockConfigure
+      .mockResolvedValueOnce({ job: job(PROVIDER_ID, 'active'), agent_id: PROVIDER_ID })
+      .mockResolvedValueOnce({ job: job(TARGET_ID, 'active'), agent_id: TARGET_ID });
+
+    renderWizard();
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(en.store.requiresWizard.installAll, 'i') }));
+    const confirm = await screen.findByRole('button', {
+      name: en.store.install.systemModuleConfirm.confirm,
+    });
+    fireEvent.click(confirm);
+    await waitFor(() => {
+      expect(screen.getByText(new RegExp(en.store.requiresWizard.allInstalledDot, 'i'))).toBeTruthy();
+    });
+    expect(mockCreate).toHaveBeenNthCalledWith(2, PROVIDER_ID, { confirmArchetype: true });
+  });
+
+  void it('stops the chain when the operator declines', async () => {
+    mockCreate.mockReset();
+    mockCreate.mockRejectedValueOnce(refusal());
+    renderWizard();
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(en.store.requiresWizard.installAll, 'i') }));
+    const box = await screen.findByTestId('system-module-install-confirm');
+    const cancel = within(box).getByRole('button', { name: en.store.install.systemModuleConfirm.cancel });
+    fireEvent.click(cancel);
+    await waitFor(() => {
+      expect(document.body.textContent).toContain('was not confirmed');
+    });
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+});
+

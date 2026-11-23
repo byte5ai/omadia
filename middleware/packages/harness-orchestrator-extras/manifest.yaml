@@ -2,9 +2,9 @@ schema_version: "1"
 
 identity:
   id: "@omadia/orchestrator-extras"
-  name: "Orchestrator Extras"
-  version: "0.1.1"
-  kind: "extension"
+  name: "Agent Runtime Extras"
+  version: "0.2.0"
+  kind: "system-module"
   domain: "core.orchestrator-extras"
   description:
     en: "Adds the steps around a chat turn that make answers better over time. It looks up relevant context before the turn, records facts in the knowledge graph afterwards, and recognises what a message is about."
@@ -59,6 +59,9 @@ optional_requires:
   # decision model (e.g. TypeSafe Jev) first when one runs, resolved per call;
   # without it, or on any failure, they ask the LLM as before.
   - "decisionModel@1"
+  # #2082 — the scratch-promotion reaper runs as a bounded agent batch
+  # trigger the kernel schedules; without the registry it does not run.
+  - "batchJobRegistry@1"
 
 # ---------------------------------------------------------------------------
 # S+9.2 Sub-Commit 2b: Capability lifetime flipped.
@@ -100,8 +103,8 @@ setup:
       type: "secret"
       required: false
       help:
-        en: "Optional. OM-102: FactExtractor, TopicDetector and the scratch reaper run on ANY available LLM provider — first their own assignment (llm_provider), then the orchestrator's (e.g. the Claude subscription via claude-cli), and only last this key. Only needed if these background jobs should deliberately run on a dedicated Anthropic key. Without any provider only the ContextRetriever remains. (S+12.6: type: secret — the key is stored in the vault, not in the installed.json config.)"
-        de: "Optional. OM-102: FactExtractor, TopicDetector und der Scratch-Reaper laufen auf JEDEM verfügbaren LLM-Provider — zuerst die eigene Zuordnung (llm_provider), dann die des Orchestrators (z. B. das Claude-Abo über claude-cli), erst zuletzt dieser Key. Nur nötig, wenn diese Hintergrund-Jobs bewusst auf einem eigenen Anthropic-Key laufen sollen. Ohne jeden Provider bleibt nur der ContextRetriever. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
+        en: "Optional. OM-102: FactExtractor, TopicDetector and the scratch reaper run on ANY available LLM provider — first their own assignment (llm_provider), then the agent runtime's (e.g. the Claude subscription via claude-cli), and only last this key. Only needed if these background jobs should deliberately run on a dedicated Anthropic key. Without any provider only the ContextRetriever remains. (S+12.6: type: secret — the key is stored in the vault, not in the installed.json config.)"
+        de: "Optional. OM-102: FactExtractor, TopicDetector und der Scratch-Reaper laufen auf JEDEM verfügbaren LLM-Provider — zuerst die eigene Zuordnung (llm_provider), dann die der Agentenlaufzeit (z. B. das Claude-Abo über claude-cli), erst zuletzt dieser Key. Nur nötig, wenn diese Hintergrund-Jobs bewusst auf einem eigenen Anthropic-Key laufen sollen. Ohne jeden Provider bleibt nur der ContextRetriever. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
     - key: "capture_level"
       label:
         en: "Capture level"

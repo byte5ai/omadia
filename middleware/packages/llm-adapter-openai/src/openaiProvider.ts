@@ -28,6 +28,7 @@
  *    on OpenAI-compatible servers (Mistral / Ollama / vLLM / Azure only speak
  *    the legacy param). Discriminated by the adapter id (`openai` vs not).
  */
+import { admitModelCall } from '@omadia/llm-provider-api';
 import type OpenAI from 'openai';
 import { APIConnectionError, APIConnectionTimeoutError } from 'openai';
 
@@ -647,6 +648,8 @@ export function createOpenAiProvider(opts: OpenAiProviderOptions): LlmProvider {
     capabilities,
 
     async complete(req: LlmRequest): Promise<LlmResponse> {
+      // #2090 — refused when the turn's reservation does not cover the call.
+      admitModelCall();
       const started = Date.now();
       const params = paramsFor(req) as unknown as Parameters<
         typeof client.chat.completions.create
@@ -668,6 +671,8 @@ export function createOpenAiProvider(opts: OpenAiProviderOptions): LlmProvider {
     },
 
     async *stream(req: LlmRequest): AsyncIterable<LlmStreamEvent> {
+      // #2090 — refused when the turn's reservation does not cover the call.
+      admitModelCall();
       const params = {
         ...paramsFor(req),
         stream: true,

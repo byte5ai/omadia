@@ -68,7 +68,11 @@ export function createInstallRouter(deps: InstallDeps): Router {
     }
     let job: InstallCreateResponse['job'];
     try {
-      job = deps.service.create(pluginId);
+      // #2088 — the explicit confirmation an archetype plugin needs; any other
+      // value than `true` is "not confirmed".
+      const confirmedArchetype =
+        (req.body as { confirm_archetype?: unknown } | undefined)?.confirm_archetype === true;
+      job = deps.service.create(pluginId, { confirmedArchetype });
     } catch (err) {
       if (
         deps.enrichMissingCapability &&

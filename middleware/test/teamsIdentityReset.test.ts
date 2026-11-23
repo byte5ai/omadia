@@ -123,6 +123,17 @@ interface StubOptions {
   readonly deleteBotResult?: TeamsResetDeleteBotResult;
   readonly failOn?: 'catalog' | 'bot' | 'delete' | 'purge';
   readonly purgeError?: Error;
+  /**
+   * #2043 D10 — Entra's replication lag: a just-deleted application becomes
+   * visible in the recycle bin only after this many looks. Until then the
+   * purge is answered like the real connector answers a 404
+   * (`already-absent`) and the search finds nothing. `Infinity` = never.
+   */
+  readonly tombstoneVisibleAfterLooks?: number;
+  /** Connector >= 0.9.2: the recycle bin cannot be read in this tenant. */
+  readonly binUnreadable?: boolean;
+  /** Connector >= 0.9.2: the purge itself answers `unconfirmed`. */
+  readonly purgeUnconfirmed?: string;
 }
 
 /**
@@ -135,6 +146,8 @@ function stubProvisioner(opts: StubOptions = {}): StubProvisioner {
   const calls: string[] = [];
   let live = opts.live ?? true;
   let deleted = opts.deleted ?? false;
+  let looks = 0;
+  const visible = (): boolean => looks >= (opts.tombstoneVisibleAfterLooks ?? 0);
 
   const base: TeamsResetProvisionerPort = {
     tenantMode: 'customer',
@@ -166,6 +179,10 @@ function stubProvisioner(opts: StubOptions = {}): StubProvisioner {
             if (opts.failOn === 'purge') {
               throw opts.purgeError ?? new Error('purge exploded');
             }
+            if (opts.purgeUnconfirmed !== undefined) {
+              return { outcome: 'unconfirmed', detail: opts.purgeUnconfirmed };
+            }
+            if (!deleted || !visible()) return { outcome: 'already-absent' };
             deleted = false;
             return { outcome: 'purged' };
           },
@@ -177,7 +194,14 @@ function stubProvisioner(opts: StubOptions = {}): StubProvisioner {
       : {
           findDeletedAppRegistration: async ({ appId }: { appId: string }) => {
             calls.push(`findDeleted:${appId}`);
-            return deleted
+            looks += 1;
+            if (opts.binUnreadable) {
+              throw Object.assign(
+                new Error(`recycle_bin_unreadable: could not read the application recycle bin while looking for '${appId}' (directory/deletedItems needs Application.ReadWrite.All). Whether a soft-deleted application still holds its name and client id is unknown`),
+                { name: 'RecycleBinUnreadableError', appId },
+              );
+            }
+            return deleted && visible()
               ? ({ found: true, objectId: OBJECT_ID } as const)
               : ({ found: false } as const);
           },
@@ -1218,5 +1242,138 @@ describe('teams identity reset — the channel-teams config entry', () => {
     assert.equal(result.status, 'incomplete');
     assert.equal(called, 0);
     assert.equal(outcomeOf(result.steps, 'config_unsynced'), undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2043 D10 — "deleted and removed from the recycle bin" has to be true
+//
+// At the rollout the reset deleted the application, purged it milliseconds
+// later, got "nothing there" (the tombstone was not replicated yet) and
+// reported success. The next provisioning run found the tombstone, restored
+// the application under its old client id and re-created the bot under an
+// app id it had just deleted: Teams called it an invalid bot from then on.
+// ---------------------------------------------------------------------------
+
+describe('teams identity reset — the purge is confirmed (#2043 D10)', () => {
+  const waits: number[] = [];
+  const fast = { purgeConfirmDelayMs: 7, sleep: async (ms: number) => void waits.push(ms) };
+
+  it('waits for the tombstone to appear, purges it, and only then reports the registration removed', async () => {
+    waits.length = 0;
+    const store = memoryStore({});
+    const provisioner = stubProvisioner({ tombstoneVisibleAfterLooks: 3 });
+    const result = await resetTeamsIdentity(options(store, provisioner, fast), 'agent-1');
+    assert.equal(result.status, 'reset', JSON.stringify(result));
+    assert.equal(outcomeOf(result.steps, 'app_deleted')?.outcome, 'removed');
+    const appCalls = provisioner.calls.filter((c) => /^(deleteApp|purge|findDeleted)/.test(c));
+    assert.deepEqual(appCalls, [
+      `deleteAppRegistration:${APP_ID}`,
+      `purge:${OBJECT_ID}`, // too early: answered "nothing there"
+      `findDeleted:${APP_ID}`,
+      `findDeleted:${APP_ID}`,
+      `findDeleted:${APP_ID}`, // now it is visible
+      `purge:${OBJECT_ID}`, // and this one really removes it
+    ]);
+    assert.deepEqual(waits, [7, 7], 'bounded waits between the looks');
+    assert.equal(store.resetCalls, 1, 'the identity is cleared only after the confirmed purge');
+  });
+
+  it('a purge that Entra confirmed at once costs no extra call', async () => {
+    const store = memoryStore({});
+    const provisioner = stubProvisioner();
+    await resetTeamsIdentity(options(store, provisioner, fast), 'agent-1');
+    assert.equal(provisioner.calls.filter((c) => c.startsWith('findDeleted')).length, 0);
+  });
+
+  it('never seen in the recycle bin: the reset stays incomplete and keeps app_id, so a second call can finish', async () => {
+    waits.length = 0;
+    const store = memoryStore({});
+    const provisioner = stubProvisioner({ tombstoneVisibleAfterLooks: 5 });
+    const first = await resetTeamsIdentity(
+      options(store, provisioner, { ...fast, purgeConfirmAttempts: 3 }),
+      'agent-1',
+    );
+    assert.equal(first.status, 'incomplete');
+    const step = outcomeOf(first.steps, 'app_deleted');
+    assert.equal(step?.outcome, 'failed');
+    // A code the UI has copy for, not a raw sentence.
+    assert.equal(step?.detail, 'app_purge_unconfirmed');
+    assert.equal(store.resetCalls, 0, 'not cleared: a new run must not start on a tombstone');
+    // The operator presses reset again; by now the tombstone is visible.
+    const second = await resetTeamsIdentity(options(store, provisioner, fast), 'agent-1');
+    assert.equal(second.status, 'reset', JSON.stringify(second));
+    assert.equal(store.resetCalls, 1);
+  });
+
+  it('an application that was already gone before the reset is not waited for', async () => {
+    waits.length = 0;
+    const store = memoryStore({});
+    const provisioner = stubProvisioner({ live: false, deleted: false });
+    const result = await resetTeamsIdentity(options(store, provisioner, fast), 'agent-1');
+    assert.equal(result.status, 'reset', JSON.stringify(result));
+    assert.deepEqual(waits, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M365 connector 0.9.2 and older connectors: "could not confirm" is said
+// ---------------------------------------------------------------------------
+
+describe('teams identity reset — what could not be confirmed is said (#2043 D10, connector 0.9.2)', () => {
+  const fast = { purgeConfirmDelayMs: 1, purgeConfirmAttempts: 2, sleep: async () => undefined };
+
+  it('a recycle bin this tenant cannot read: the reset finishes, with a note instead of a raw failure', async () => {
+    const logs: string[] = [];
+    const store = memoryStore({});
+    // The purge was sent too early (already-absent) and the bin is unreadable.
+    const provisioner = stubProvisioner({ tombstoneVisibleAfterLooks: 99, binUnreadable: true });
+    const result = await resetTeamsIdentity(
+      options(store, provisioner, { ...fast, log: (m) => logs.push(m) }),
+      'agent-1',
+    );
+    assert.equal(result.status, 'reset', JSON.stringify(result));
+    const step = outcomeOf(result.steps, 'app_deleted');
+    assert.equal(step?.outcome, 'removed');
+    assert.equal(step?.detail, 'app_purge_recycle_bin_unreadable');
+    assert.equal(provisioner.calls.filter((c) => c.startsWith('findDeleted')).length, 1, 'not asked again and again');
+    assert.match(logs.join('\n'), /recycle_bin_unreadable: could not read the application recycle bin/);
+  });
+
+  it('the connector answers `unconfirmed`: bounded confirmation, then an incomplete reset with its own code', async () => {
+    const logs: string[] = [];
+    const store = memoryStore({});
+    const provisioner = stubProvisioner({
+      purgeUnconfirmed: 'the application was deleted moments ago and its entry has not appeared in the recycle bin',
+      tombstoneVisibleAfterLooks: 99,
+    });
+    const result = await resetTeamsIdentity(
+      options(store, provisioner, { ...fast, log: (m) => logs.push(m) }),
+      'agent-1',
+    );
+    assert.equal(result.status, 'incomplete');
+    assert.equal(outcomeOf(result.steps, 'app_deleted')?.detail, 'app_purge_unconfirmed');
+    assert.equal(store.resetCalls, 0, 'app_id is kept so a second reset can finish');
+    assert.match(logs.join('\n'), /could not be confirmed within .*has not appeared in the recycle bin/);
+  });
+
+  it('a connector that cannot look into the recycle bin (< 0.9.2): finished, and it says the purge is unconfirmed', async () => {
+    const store = memoryStore({});
+    // The row carries its object id (the normal case), so nothing has to be
+    // looked up for the delete itself.
+    const provisioner = stubProvisioner({ canFind: false, tombstoneVisibleAfterLooks: 99 });
+    const result = await resetTeamsIdentity(options(store, provisioner, fast), 'agent-1');
+    assert.equal(result.status, 'reset', JSON.stringify(result));
+    const step = outcomeOf(result.steps, 'app_deleted');
+    assert.equal(step?.outcome, 'removed');
+    assert.equal(step?.detail, 'app_purge_confirmation_unsupported', 'said, not silently skipped');
+  });
+
+  it('a confirmed purge carries no note, with or without the lookup', async () => {
+    for (const canFind of [true, false]) {
+      const store = memoryStore({});
+      const result = await resetTeamsIdentity(options(store, stubProvisioner({ canFind }), fast), 'agent-1');
+      assert.equal(outcomeOf(result.steps, 'app_deleted')?.detail, undefined, String(canFind));
+    }
   });
 });

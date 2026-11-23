@@ -262,7 +262,7 @@ describe('OAuthReadinessTracker', () => {
         scope: '',
       });
 
-      // Single activation — mirrors ToolPluginRuntime/DynamicAgentRuntime's
+      // Single activation — mirrors ToolPluginRuntime's
       // activate() calling refresh() once.
       await tracker.refresh(ID, entry, vault);
       assert.equal(

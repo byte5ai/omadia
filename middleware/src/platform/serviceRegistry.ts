@@ -47,6 +47,7 @@ import {
   resolvePerCallerService,
   type ServiceCaller,
 } from '@omadia/plugin-api';
+import { gateModelService } from './modelGatewayServices.js';
 
 /** Attribution used when core resolves a service for itself rather than on
  *  behalf of a plugin. A per-caller factory can branch on it to hand the
@@ -118,25 +119,51 @@ export class ServiceRegistry {
    */
   private readonly liveByOwner = new Map<string, Map<ServiceName, number>>();
 
+  /**
+   * #1860 — the plugin-owned `provide` behind each name, so
+   * {@link shadowedServicesOf} can tell when another registration sits on
+   * top of it. Dropped once that provide is actually removed.
+   */
+  private readonly ownProvides = new Map<ServiceName, { owner: string; impl: unknown }>();
+
   /** Register a provider. Throws on duplicate — if two plugins both provide
    *  'graph', the operator needs to uninstall one.
    *
    *  `owner` is the registering plugin's agentId. `createPluginContext`
    *  supplies it from the kernel-known id, so attribution never comes from
    *  the caller. Omitted for core's own registrations. */
-  provide<T>(name: ServiceName, impl: T, owner?: string): () => void {
+  provide<T>(name: ServiceName, rawImpl: T, owner?: string): () => void {
+    // Spec 2042 §5.10 — a model service is only ever held through the gate.
+    const impl = gateModelService(name, rawImpl);
     if (this.providers.has(name)) {
       throw new Error(
         `ServiceRegistry: duplicate provider for '${String(name)}' — uninstall the existing provider first`,
       );
     }
     this.providers.set(name, impl);
+    if (owner !== undefined) this.ownProvides.set(name, { owner, impl });
     const dispose = (): boolean => {
       if (this.providers.get(name) !== impl) return false;
       this.providers.delete(name);
+      if (this.ownProvides.get(name)?.impl === impl) this.ownProvides.delete(name);
       return true;
     };
     return this.track(owner, name, dispose);
+  }
+
+  /**
+   * #1860 — names `owner` provided that another registration currently
+   * wraps (a `replace` on top of its provide, e.g. orchestrator-extras around
+   * `knowledgeGraph`). Tearing `owner` down cannot free such a name: its
+   * dispose leaves the wrapper in place, so a fresh activation hits the
+   * duplicate check, and consumers keep the wrapper around the old instance.
+   */
+  shadowedServicesOf(owner: string): ServiceName[] {
+    const names: ServiceName[] = [];
+    for (const [name, own] of this.ownProvides) {
+      if (own.owner === owner && this.providers.get(name) !== own.impl) names.push(name);
+    }
+    return names;
   }
 
   /**
@@ -151,7 +178,8 @@ export class ServiceRegistry {
    * the underlying KG provider stays live for the rest of the system.
    * Stacking multiple replacements is supported (LIFO restore).
    */
-  replace<T>(name: ServiceName, impl: T, owner?: string): () => void {
+  replace<T>(name: ServiceName, rawImpl: T, owner?: string): () => void {
+    const impl = gateModelService(name, rawImpl);
     const previous = this.providers.get(name);
     if (previous === undefined) {
       throw new Error(

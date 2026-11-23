@@ -53,7 +53,7 @@ import {
 import { z } from 'zod';
 import type {
   LocalSubAgentTool,
-  NativeToolHandler,
+  NativeTextToolHandler,
   NativeToolSpec,
 } from '@omadia/plugin-api';
 
@@ -321,8 +321,9 @@ export interface McpAuthProvider {
 // through this second, out-of-band channel instead of widening the return type.
 //
 // Widening was ruled out deliberately, for two reasons that are not stylistic:
-//   1. `NativeToolHandler = (input: unknown) => Promise<string>` is a published
-//      plugin contract; every in-tree and out-of-tree plugin implements it.
+//   1. An MCP tool answers as `NativeTextToolHandler` (text only). Plugin
+//      handlers may return a `NativeToolResult` since S3c, but every dispatch
+//      reduces it to its text before the shield; MCP has no use for it.
 //   2. The orchestrator gates Privacy Shield masking on
 //      `typeof result === 'string'`. A non-string result would silently skip
 //      masking — i.e. bypass the shield entirely.
@@ -1776,7 +1777,7 @@ export function mcpNativeHandler(
   manager: McpManager,
   cfg: McpServerConfig,
   toolName: string,
-): NativeToolHandler {
+): NativeTextToolHandler {
   return async (input: unknown): Promise<string> => {
     const args =
       input && typeof input === 'object'
@@ -1831,7 +1832,14 @@ export function renderToolResult(res: any): string {
       }
     }
     const joined = parts.join('\n').trim();
-    const out = joined.length > 0 ? joined : JSON.stringify(content);
+    // #1946 — a spec-compliant server may return its data in
+    // `structuredContent` alone (the text mirror is only a SHOULD), and the
+    // SDK schema defaults a missing `content` to `[]`. So when the blocks
+    // yield no text, the structured payload is the result; the raw content
+    // JSON stays the last resort. `null` counts as absent, as in
+    // `extractStructured`.
+    const out =
+      joined.length > 0 ? joined : JSON.stringify(res.structuredContent ?? content);
     return res?.isError ? `Error: ${out}` : out;
   }
   if (typeof res?.structuredContent !== 'undefined') {

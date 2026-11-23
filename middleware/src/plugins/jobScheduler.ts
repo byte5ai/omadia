@@ -1,4 +1,3 @@
-import { Cron } from 'croner';
 
 import {
   JOB_DEFAULT_TIMEOUT_MS,
@@ -7,6 +6,30 @@ import {
   type JobHandler,
   type JobSpec,
 } from '@omadia/plugin-api';
+
+import { meterModelCalls } from '@omadia/usage-telemetry';
+
+import { createCron } from '../scheduler/cronerCompat.js';
+
+/** The longest a failing job waits between recovery probes. */
+export const MAX_BACKOFF_MS = 60 * 60_000;
+/** The base window of a cron job's backoff (an interval job uses its interval). */
+const CRON_BACKOFF_BASE_MS = 60_000;
+
+export type JobRunStatus = 'ok' | 'error' | 'timeout';
+
+/** What an operator sees of a job. */
+export interface JobStatus {
+  readonly agentId: string;
+  readonly name: string;
+  readonly running: boolean;
+  readonly lastRunAt: string | null;
+  readonly lastStatus: JobRunStatus | null;
+  readonly lastError: string | null;
+  readonly consecutiveFailures: number;
+  /** While failing: the earliest time the next recovery probe may run. */
+  readonly nextProbeAt: string | null;
+}
 
 /**
  * Kernel-internal scheduler for plugin background jobs.
@@ -21,10 +44,18 @@ import {
  *   - Each tick runs the handler with a fresh `AbortController`. The signal
  *     fires when (a) the handler exceeds `timeoutMs` or (b) the plugin
  *     deactivates while the run is in flight.
- *   - Handlers that throw or reject are logged and dropped — the next tick
- *     fires regardless. (Treating a throw as fatal would let a transient
- *     network blip silently kill a sync loop. Operators stop a misbehaving
- *     job by deactivating the plugin.)
+ *   - Handlers that throw or reject (or time out) are logged. A failure never
+ *     ends the job — a transient network blip must not kill a sync loop —
+ *     but it backs off (#2082, spec 2042 §5.12): after N consecutive
+ *     failures the job runs only as a recovery probe, at most once per
+ *     backoff window, the window doubling up to {@link MAX_BACKOFF_MS}. The
+ *     first success resets it. A run that returns normally is a success,
+ *     also when it found nothing to do.
+ *   - A job never calls a generative model: its run is metered with a
+ *     limit of zero model calls, so a completion request inside it is
+ *     refused (embeddings are not model calls of that gate).
+ *   - Each job's last run, status, error, failure streak and next probe are
+ *     kept for the operator view ({@link list}).
  *
  * Overlap policy (per job, see {@link JobSpec.overlap}):
  *   - `'skip'` (default): if the previous run is still in flight when the
@@ -50,12 +81,22 @@ interface Registered {
   trigger: { stop: () => void };
   /** Active run's controller, if any — fires on timeout or stopForPlugin. */
   abortController: AbortController | null;
+  lastRunAt: number | null;
+  lastStatus: JobRunStatus | null;
+  lastError: string | null;
+  consecutiveFailures: number;
+  /** While failing: ticks before this time are skipped. */
+  nextProbeAt: number | null;
 }
 
 export interface JobSchedulerOptions {
   log?: (msg: string) => void;
   /** Test-only seam. Defaults to global setTimeout/clearTimeout/setInterval. */
   timers?: TimerSeam;
+  /** Test-only clock (ms). */
+  now?: () => number;
+  /** Consecutive failures before a job runs only as a recovery probe. */
+  failuresBeforeBackoff?: number;
 }
 
 export interface TimerSeam {
@@ -79,10 +120,14 @@ export class JobScheduler {
   private readonly entries = new Map<string, Registered>();
   private readonly log: (msg: string) => void;
   private readonly timers: TimerSeam;
+  private readonly now: () => number;
+  private readonly failuresBeforeBackoff: number;
 
   constructor(opts: JobSchedulerOptions = {}) {
     this.log = opts.log ?? ((m) => console.log(m));
     this.timers = opts.timers ?? REAL_TIMERS;
+    this.now = opts.now ?? (() => Date.now());
+    this.failuresBeforeBackoff = opts.failuresBeforeBackoff ?? 3;
   }
 
   /** Register a job. Throws on validation error or duplicate name within the
@@ -102,6 +147,11 @@ export class JobScheduler {
       pending: false,
       trigger: { stop: () => {} },
       abortController: null,
+      lastRunAt: null,
+      lastStatus: null,
+      lastError: null,
+      consecutiveFailures: 0,
+      nextProbeAt: null,
     };
 
     entry.trigger = this.makeTrigger(entry);
@@ -120,12 +170,17 @@ export class JobScheduler {
     }
   }
 
-  /** Snapshot of registered jobs. Used by tests and diagnostics. */
-  list(): Array<{ agentId: string; name: string; running: boolean }> {
+  /** Snapshot of registered jobs with their run state (operator view). */
+  list(): JobStatus[] {
     return [...this.entries.values()].map((e) => ({
       agentId: e.agentId,
       name: e.spec.name,
       running: e.running,
+      lastRunAt: e.lastRunAt === null ? null : new Date(e.lastRunAt).toISOString(),
+      lastStatus: e.lastStatus,
+      lastError: e.lastError,
+      consecutiveFailures: e.consecutiveFailures,
+      nextProbeAt: e.nextProbeAt === null ? null : new Date(e.nextProbeAt).toISOString(),
     }));
   }
 
@@ -151,7 +206,7 @@ export class JobScheduler {
     };
     const sched = entry.spec.schedule;
     if ('cron' in sched) {
-      const cron = new Cron(sched.cron, fire);
+      const cron = createCron(sched.cron, {}, fire);
       return { stop: () => cron.stop() };
     }
     const handle = this.timers.setInterval(fire, sched.intervalMs);
@@ -159,6 +214,8 @@ export class JobScheduler {
   }
 
   private tick(entry: Registered): void {
+    // A failing job runs only as a recovery probe, once per backoff window.
+    if (entry.nextProbeAt !== null && this.now() < entry.nextProbeAt) return;
     if (entry.running) {
       const overlap = entry.spec.overlap ?? 'skip';
       if (overlap === 'queue' && !entry.pending) {
@@ -179,17 +236,24 @@ export class JobScheduler {
       controller.abort(new Error(`job '${entry.spec.name}' exceeded ${timeoutMs}ms`));
     }, timeoutMs);
 
+    let failure: { status: JobRunStatus; message: string } | undefined;
     try {
-      await entry.handler(controller.signal);
+      // Maintenance only: a completion request inside a job is refused.
+      const run = await meterModelCalls(() => entry.handler(controller.signal), { limit: 0 });
+      if (run.refused > 0) {
+        failure = { status: 'error', message: 'a plugin job may not call a generative model' };
+      }
     } catch (err) {
+      failure = { status: controller.signal.aborted ? 'timeout' : 'error', message: errorMessage(err) };
       this.log(
-        `[job-scheduler] ${entry.agentId}/${entry.spec.name} threw: ${errorMessage(err)}`,
+        `[job-scheduler] ${entry.agentId}/${entry.spec.name} threw: ${failure.message}`,
       );
     } finally {
       this.timers.clearTimeout(timer);
       entry.abortController = null;
       entry.running = false;
     }
+    this.settle(entry, failure);
 
     // Drain a queued tick if one piled up while we were running.
     if (entry.pending && this.entries.has(compositeKey(entry.agentId, entry.spec.name))) {
@@ -197,6 +261,37 @@ export class JobScheduler {
       void this.runOnce(entry);
     }
   }
+
+  /** Record a run; a failure streak backs the job off, a success resets it. */
+  private settle(entry: Registered, failure: { status: JobRunStatus; message: string } | undefined): void {
+    const now = this.now();
+    entry.lastRunAt = now;
+    if (!failure) {
+      if (entry.consecutiveFailures > 0) {
+        this.log(`[job-scheduler] ${entry.agentId}/${entry.spec.name} recovered after ${String(entry.consecutiveFailures)} failure(s)`);
+      }
+      entry.lastStatus = 'ok';
+      entry.lastError = null;
+      entry.consecutiveFailures = 0;
+      entry.nextProbeAt = null;
+      return;
+    }
+    entry.lastStatus = failure.status;
+    entry.lastError = failure.message;
+    entry.consecutiveFailures += 1;
+    const over = entry.consecutiveFailures - this.failuresBeforeBackoff;
+    if (over >= 0) {
+      const wait = Math.min(baseWindowMs(entry.spec) * 2 ** over, MAX_BACKOFF_MS);
+      entry.nextProbeAt = now + wait;
+      this.log(
+        `[job-scheduler] ${entry.agentId}/${entry.spec.name} failed ${String(entry.consecutiveFailures)}× in a row; next recovery probe in ${String(Math.round(wait / 1000))}s`,
+      );
+    }
+  }
+}
+
+function baseWindowMs(spec: JobSpec): number {
+  return 'intervalMs' in spec.schedule ? Math.max(spec.schedule.intervalMs, 1_000) : CRON_BACKOFF_BASE_MS;
 }
 
 function compositeKey(agentId: string, name: string): string {
@@ -223,7 +318,7 @@ function validateSpec(agentId: string, spec: JobSpec): void {
     }
     // Cheap sanity check via croner constructor — throws on malformed cron.
     try {
-      const probe = new Cron(sched.cron, { paused: true });
+      const probe = createCron(sched.cron, { paused: true });
       probe.stop();
     } catch (err) {
       throw new JobValidationError(

@@ -7,7 +7,7 @@ import { emptyAgentSpec } from '../../src/plugins/builder/types.js';
 
 const sampleSpec = (overrides: Partial<ReturnType<typeof emptyAgentSpec>> = {}): ReturnType<typeof emptyAgentSpec> => ({
   ...emptyAgentSpec(),
-  template: 'agent-integration',
+  template: 'integration',
   id: 'de.byte5.agent.example',
   name: 'Example',
   description: 'desc',
@@ -46,7 +46,7 @@ describe('buildSpecHeader (Step #1)', () => {
   it('emits the slot checklist when a manifest is provided', () => {
     const out = buildSpecHeader(sampleSpec(), SLOT_MANIFEST);
     assert.match(out, /## Template-Slots — Checkliste/);
-    assert.match(out, /Template \*\*`agent-integration`\*\*/);
+    assert.match(out, /Template \*\*`integration`\*\*/);
     assert.match(out, /`client-impl` → `src\/client\.ts`/);
     assert.match(out, /`toolkit-impl` → `src\/toolkit\.ts`/);
     assert.match(out, /`activate-body` → `src\/plugin\.ts`/);

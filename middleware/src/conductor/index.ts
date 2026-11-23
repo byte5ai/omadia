@@ -3,7 +3,11 @@ import { randomUUID } from 'node:crypto';
 import type { Express, RequestHandler } from 'express';
 import type { Pool } from 'pg';
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
-import { speakingIdentityFor, type DefaultChannelBotKey } from './channelBotOwnership.js';
+import {
+  addressedAgentForEvent,
+  speakingIdentityFor,
+  type DefaultChannelBotKey,
+} from './channelBotOwnership.js';
 import type { JsonObject, KnownRefs } from '@omadia/conductor-core';
 
 import type { RoleHolderRegistry, RoleHolderSource } from '@omadia/channel-sdk';
@@ -17,6 +21,7 @@ import { ConductorAwaitStore } from './awaitStore.js';
 import type { ConductorAwait } from './awaitStore.js';
 import type { ApprovalReminder } from '@omadia/plugin-api';
 import { ConductorRoleStore } from './roleStore.js';
+import { RoleMembershipSnapshot } from './roleMembership.js';
 import { ConductorScheduleStore } from './scheduleStore.js';
 import { ConductorChannelBindingStore } from './channelBindingStore.js';
 import { ConductorRunExecutor } from './runExecutor.js';
@@ -41,10 +46,10 @@ import { createTemplateStore } from './templateStore.js';
 import type { ConductorTemplateStore } from './templateStore.js';
 import { createConductorRouter } from './routes.js';
 import type { ConductorRouterDeps } from './routes.js';
-import { ConductorFacilitationAdmin } from './facilitationAdmin.js';
+import { ConductorDiscussionAdmin } from './discussionAdmin.js';
 import { ConductorSayService } from './sayService.js';
 import type { AgentChannelIdentityResolver, ConductorSayDeps } from './sayService.js';
-import { ConductorDiscussionService } from './discussionService.js';
+import { ConductorDiscussionService, type DiscussionReservations } from './discussionService.js';
 import type { SecretVault } from '../secrets/vault.js';
 import { ConductorWebhookEndpointStore } from './webhookEndpointStore.js';
 import { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
@@ -78,8 +83,8 @@ async function buildRunEventPayload(run: ConductorRun, workflowStore: ConductorW
 }
 
 export { runConductorMigrations } from './migrator.js';
-export { ConductorFacilitationAdmin } from './facilitationAdmin.js';
-export type { FacilitationOverview } from './facilitationAdmin.js';
+export { ConductorDiscussionAdmin } from './discussionAdmin.js';
+export type { RunningDiscussion, StopDiscussionResult } from './discussionAdmin.js';
 export { ConductorWorkflowStore } from './workflowStore.js';
 export { ConductorRunStore } from './runStore.js';
 export { ConductorAwaitStore } from './awaitStore.js';
@@ -109,7 +114,7 @@ export { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js
 export type { ConductorWebhookSubscription, ConductorWebhookDelivery, WebhookDeliveryStatus } from './webhookSubscriptionStore.js';
 export { ConductorWebhookDispatcher } from './webhookDispatcher.js';
 export { ConductorWebhookRetryWorker } from './webhookRetryWorker.js';
-export { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './webhookPostAction.js';
+export { WEBHOOK_POST_ACTION_ID, WEBHOOK_POST_DEFAULT_POSTCONDITION, invokeWebhookPostAction } from './webhookPostAction.js';
 export { assertOutboundUrlAllowed, WebhookUrlNotAllowedError } from './webhookOutbound.js';
 export { projectRunEventPayload } from './webhookPayload.js';
 export { startWebhookPayloadRetention, resolveRetentionWindows, MIN_RETENTION_DAYS } from './webhookRetention.js';
@@ -170,8 +175,6 @@ export {
   TRANSCRIPT_TEXT_MAX_CHARS,
 } from './transcript.js';
 export type { TranscriptEntry } from './transcript.js';
-export { createScopedRoleAssignments, FACILITATION_ROLE_PREFIX, RoleKeyOutOfScopeError } from './scopedRoleAssignments.js';
-export type { ScopedRoleAssignments } from './scopedRoleAssignments.js';
 
 export interface ConductorWiring {
   workflowStore: ConductorWorkflowStore;
@@ -207,12 +210,19 @@ export interface ConductorWiring {
    *  through the same instance the executor uses for approvals: "who gets the
    *  report" and "who may approve" must never drift apart. */
   roleHolderRegistry: RoleHolderRegistry;
+  /** Spec 2042 §5.3 — synchronous "does this person hold this role?" for the
+   *  management layer's availability check (`role:<key>` entries), from a
+   *  snapshot of `roleHolderRegistry`, refreshed every 30 s and after every
+   *  role write of this process. */
+  roleMembership: RoleMembershipSnapshot;
   /** #330 C2a — auto-provisioned binding/role rows tied to ephemeral workflows;
    *  consumed by the kernel's onEphemeralReaped cleanup + the agent-setup seam. */
   ephemeralAttachments: ConductorEphemeralAttachmentsStore;
   /** Starts an agent topic discussion in a bound conversation (the `discussion`
    *  pattern plus the conversation floor its `say` steps speak on). */
   discussionService: ConductorDiscussionService;
+  /** Lists and stops the runs agents started themselves (operator surface). */
+  discussionAdmin: ConductorDiscussionAdmin;
   /** Deps for the unauthenticated `/api/hooks/:endpointId` router, which is mounted
    *  much earlier in `index.ts` (before `express.json()`) via a forward reference —
    *  `index.ts` assigns this once `wireConductor` returns. */
@@ -227,6 +237,9 @@ export interface ConductorWiring {
  */
 export async function wireConductor(deps: {
   pool: Pool;
+  /** #2090 — the conversation reservation agent discussions share with
+   *  native facilitations (spec 2043 §5.3). */
+  conversationReservations?: DiscussionReservations;
   app: Express;
   requireAuth: RequestHandler;
   /** resolves an Agent (orchestrator instance) by slug for agent steps. */
@@ -259,15 +272,6 @@ export async function wireConductor(deps: {
    * external source cannot shadow `conductor-local` and substitute its own approver list.
    */
   roleHolderSources?: readonly RoleHolderSource[];
-  /** #330 round 4 — kernel roster registry accessor for the facilitation
-   *  admin overview (participants column). Best-effort; omit on hosts
-   *  without channel rosters. */
-  getRoster?: (channelType: string, conversationId: string) => Promise<
-    { participants: readonly { userRef: { id: string; displayName?: string }; isBot?: boolean }[]; partial?: boolean } | undefined
-  >;
-  /** #330 round 4 — durable audit trace for the destructive operator
-   *  terminate. Late-bound thunk like auditRoleChange. */
-  auditFacilitationTerminate?: (entry: { actor: string; actorUserId?: string; workflowId: string; slug: string; cancelledRuns: number }) => Promise<void>;
   /** Conversation-send providers, so a `say` step can publish an agent's turn
    *  into the chat. Omit on hosts without a channel plugin — agent dialogue
    *  then degrades to silent turns rather than failing the run. */
@@ -349,6 +353,14 @@ export async function wireConductor(deps: {
   // table registered as an ordinary source. `deps.roleHolderSources` is where an integration
   // (Entra group, Odoo HR reporting line) plugs in; empty today, so behaviour is unchanged.
   const roleHolderRegistry = buildRoleHolderRegistry(roleStore, deps.roleHolderSources ?? []);
+  const roleMembership = new RoleMembershipSnapshot({
+    listRoleKeys: () => roleStore.listRoleKeys(),
+    resolveHolders: (key) => roleHolderRegistry.resolveHolders(key),
+    log: (m) => console.warn(m),
+  });
+  roleStore.onChange(() => void roleMembership.refresh());
+  void roleMembership.refresh();
+  roleMembership.start();
   const scheduleStore = new ConductorScheduleStore(deps.pool);
   const channelBindingStore = new ConductorChannelBindingStore(deps.pool);
 
@@ -436,7 +448,7 @@ export async function wireConductor(deps: {
       : undefined;
   };
   // Shared disposal path (terminal-state hook, TTL reaper safety net, and the
-  // operator's facilitation terminate — #330 round 4). Idempotent: an already
+  // operator's stop of a discussion — #2067). Idempotent: an already
   // reaped or non-ephemeral workflow is a no-op.
   const disposeEphemeralWorkflow = async (workflowId: string, reason: string): Promise<void> => {
     const workflow = await workflowStore.getById(workflowId);
@@ -584,6 +596,7 @@ export async function wireConductor(deps: {
     // rule must answer "can this agent speak as itself" identically, or a
     // discussion passes the gate and then goes half-silent.
     identityFor: agentChannelIdentity,
+    ...(deps.conversationReservations ? { reservations: deps.conversationReservations } : {}),
     log,
   });
   const ephemeralReaper = new ConductorEphemeralReaper({
@@ -595,7 +608,19 @@ export async function wireConductor(deps: {
   ephemeralReaper.start();
 
   // Event router — a domain event starts every subscribed workflow's run (US4).
-  const eventRouter = new ConductorEventRouter({ workflowStore, executor, log });
+  const eventRouter = new ConductorEventRouter({
+    workflowStore,
+    executor,
+    // Same owner resolution as the step-level origin rule, so a workflow that
+    // would be refused at its agent step is not started for that message.
+    addressedAgent: (eventId, payload) => {
+      const registry = deps.getRegistry();
+      return registry
+        ? addressedAgentForEvent(registry, eventId, payload, deps.defaultChannelBotKey)
+        : undefined;
+    },
+    log,
+  });
 
   // Template surface (#429 bundled files + #478 DB store): one composite,
   // viewer-scoped catalog over both, plus the plugin registration seam.
@@ -633,17 +658,14 @@ export async function wireConductor(deps: {
     log,
   });
 
-  // #330 round 4 — operator lens + stop for live facilitations (invisible in
-  // the library by design). Built on the SAME executor/disposal instances.
-  const facilitationAdmin = new ConductorFacilitationAdmin({
+  // #2067 — what an operator sees and stops of agent-started runs (hidden from
+  // the library by design). Same executor and disposal as the reaper.
+  const discussionAdmin = new ConductorDiscussionAdmin({
     workflowStore,
     runStore,
     ephemeralAttachments,
     executor,
-    disposeWorkflow: (workflowId) => disposeEphemeralWorkflow(workflowId, 'by operator terminate'),
-    ...(deps.auditFacilitationTerminate ? { auditTerminate: deps.auditFacilitationTerminate } : {}),
-    resolveRoleHolders: holdersOnly((key) => roleHolderRegistry.resolveHolders(key)),
-    ...(deps.getRoster ? { getRoster: deps.getRoster } : {}),
+    disposeWorkflow: (workflowId) => disposeEphemeralWorkflow(workflowId, 'stopped by an operator'),
     log,
   });
 
@@ -654,7 +676,6 @@ export async function wireConductor(deps: {
       workflowStore,
       runStore,
       awaitStore,
-      facilitationAdmin,
       discussionService,
       roleStore,
       scheduleStore,
@@ -722,6 +743,6 @@ export async function wireConductor(deps: {
     resumeWorker, scheduleWorker, eventRouter, builderAgent, templateStore, templateCatalog,
     webhookEndpoints, webhookSubscriptions, webhookDispatcher, webhookRetryWorker, webhookInboundDeps,
     patternCatalog, ephemeralStore, ephemeralRunService, ephemeralReaper, roleHolderRegistry,
-    ephemeralAttachments, discussionService,
+    roleMembership, ephemeralAttachments, discussionService, discussionAdmin,
   };
 }

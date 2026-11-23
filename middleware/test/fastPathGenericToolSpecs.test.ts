@@ -601,7 +601,15 @@ describe('sub-agent tools — orchestrator wiring', () => {
     const offered = built.bundle.agent.offeredToolNames?.() ?? new Set<string>();
     assert.ok(offered.has(VIA), 'the domain tool is offered');
     assert.equal(offered.has('dynamics_query'), false, 'the inner tool is NOT offered to the model');
-    const def = (built.bundle.agent.offeredToolDefinitions?.() ?? []).find((d) => d.name === 'dynamics_query');
+    // #1876 — the fast lane plans only the agent's OWN read tools: the
+    // wrapper leaves a sub-agent's inner tool out; the raw orchestrator
+    // still describes it (with `via`) for its other readers.
+    assert.equal(
+      (built.bundle.agent.offeredToolDefinitions?.() ?? []).some((d) => d.name === 'dynamics_query'),
+      false,
+      'no sub-agent tool in the fast lane',
+    );
+    const def = built.bundle.raw.offeredToolDefinitions().find((d) => d.name === 'dynamics_query');
     assert.equal(def?.via, VIA);
     assert.equal(def?.agentId, AGENT_ID);
     assert.equal(await def?.invoke?.({ entity: 'accounts' }), '[]');
@@ -642,5 +650,41 @@ describe('generic tools — an itemsPath that resolves to nothing', () => {
       assert.equal(out.detail, 'itemsPath=issues map=number,title,author output={open:array[2],closed:array[2],secret:string}');
       assert.doesNotMatch(out.detail ?? '', /Bug|anna|"x"/);
     }
+  });
+});
+
+// ── #1876 — the fast path as the agent's fast lane (spec 2042 §6 6, 28) ────
+
+describe('#1876 fast lane — the agent\'s own, switchable, under its identity', () => {
+  const answering = (seen: ChatTriageRequest[]): FastPathTriagePort => ({
+    channelEnabled: () => true,
+    triageChatTurn: (req) => {
+      seen.push(req);
+      return Promise.resolve({ kind: 'answer', text: '3 offene Posten', summary: '3 offene Posten', table: { kind: 'table' as const, columns: [], rows: [] }, tool: 'odoo_query', rows: 3, toolCalls: 1, ms: 1 });
+    },
+  });
+  const turn = { userMessage: 'Offene Posten?', sessionScope: 'conv-1876' };
+
+  it('a fast-lane answer carries the agent\'s AI disclosure and keys the cache by the agent', async () => {
+    const seen: ChatTriageRequest[] = [];
+    const built = buildForAgent(AGENT_ROW, orchestratorDeps(() => answering(seen), []), RUNTIME);
+    const answer = await built.bundle.agent.chat(turn);
+    assert.ok(answer.text.startsWith('3 offene Posten'));
+    assert.ok(answer.aiDisclosure, 'the structured carrier');
+    assert.ok(answer.text.endsWith(answer.aiDisclosure.text), 'the line is folded on the first turn');
+    assert.equal(seen[0]?.agentSlug, 'crm');
+
+    const events = await collect(built.bundle.agent.chatStream({ ...turn, sessionScope: 'conv-1876-b' }));
+    const delta = events.find((e) => e.type === 'text_delta');
+    const done = events.find((e) => e.type === 'done');
+    assert.equal(delta?.type === 'text_delta' ? delta.text : '', '3 offene Posten', 'no disclosure in a delta');
+    assert.ok(done?.type === 'done' && done.aiDisclosure && done.answer.endsWith(done.aiDisclosure.text));
+  });
+
+  it('with the fast lane off for this agent, no fast-path answer occurs', async () => {
+    const seen: ChatTriageRequest[] = [];
+    const built = buildForAgent({ ...AGENT_ROW, fastLane: false }, orchestratorDeps(() => answering(seen), []), RUNTIME);
+    await built.bundle.agent.chat(turn).catch(() => undefined);
+    assert.equal(seen.length, 0, 'the triage is never asked');
   });
 });

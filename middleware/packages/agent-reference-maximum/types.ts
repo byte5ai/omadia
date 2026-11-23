@@ -1,4 +1,4 @@
-export type { PluginContext } from '@omadia/plugin-api';
+export type { NativeToolSpec, PluginContext } from '@omadia/plugin-api';
 
 export interface NoteRecord {
   readonly id: string;

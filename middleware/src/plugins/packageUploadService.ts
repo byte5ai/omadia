@@ -26,8 +26,11 @@ import {
   recordActivationSuccess,
   type InstalledRegistry,
 } from './installedRegistry.js';
+import { archetypeUpdateReasons } from './archetypeUpdateConfirmation.js';
 import type { PluginCatalog } from './manifestLoader.js';
 import { loadManifestFromPath } from './manifestLoader.js';
+import { checkPluginBoundary } from './pluginBoundary.js';
+import { isDataOnlyPlugin } from './pluginRuntimeOf.js';
 import type { MigrationRunner } from './migrationRunner.js';
 import {
   retirePackageDir,
@@ -66,6 +69,14 @@ export interface IngestInput {
    * button — it is a confirmation, not a privilege.
    */
   allowDowngrade?: boolean;
+  /**
+   * #2088 — the caller's explicit confirmation of an update that makes an
+   * installed plugin an archetype plugin, changes what its archetype is
+   * allowed, or moves its tables into its own schema (see
+   * `archetypeUpdateConfirmation.ts`). Absent or false, such an ingest is
+   * refused with `package.archetype_confirmation_required`.
+   */
+  confirmArchetype?: boolean;
 }
 
 export interface IngestSuccess {
@@ -138,6 +149,7 @@ export const INGEST_CONFLICT_CODES: ReadonlySet<string> = new Set([
   'package.id_conflict_bundled',
   'package.duplicate_version',
   'package.downgrade_blocked',
+  'package.archetype_confirmation_required',
 ]);
 
 export interface PackageUploadServiceDeps {
@@ -322,6 +334,22 @@ export class PackageUploadService {
         });
       }
 
+      // --- 5c. Agent/plugin boundary (spec 2042 §5.10) ---------------------
+      // No persona, speaker or retired kind (`agent`, `extension`), not even
+      // as an update of a package installed under one: that one keeps
+      // running as legacy until it is rebuilt.
+      const boundary = checkPluginBoundary({
+        pluginId: plugin.id,
+        kind: plugin.kind,
+        manifest: entry.manifest,
+        hasAgentMd:
+          (await fileExists(path.join(packageRoot, 'AGENT.md'))) ||
+          (await fileExists(path.join(packageRoot, 'agent.md'))),
+      });
+      if (boundary) {
+        return fail(boundary.code, boundary.message, { field: boundary.field }, { ...boundary.params });
+      }
+
       // --- 6. package.json consistency --------------------------------------
       const pkgJsonPath = path.join(packageRoot, 'package.json');
       let pkgJson: Record<string, unknown> | null = null;
@@ -364,12 +392,15 @@ export class PackageUploadService {
       const peersMissing = this.resolvePeers(pkgJson);
 
       // --- 8. Entry point must exist in the zip -----------------------------
+      // Spec 2042 §5.10 — a data-only package (agent template, skill without
+      // code) has none; the tool runtime imports nothing for it.
+      const dataOnly = isDataOnlyPlugin(plugin.kind, entry.manifest);
       const entryRel =
         (asRecord(asRecord(entry.manifest)?.['lifecycle'])?.['entry'] as
           | string
           | undefined) ?? 'dist/plugin.js';
       const absEntry = path.resolve(packageRoot, entryRel);
-      if (!absEntry.startsWith(packageRoot + path.sep) || !(await fileExists(absEntry))) {
+      if (!dataOnly && (!absEntry.startsWith(packageRoot + path.sep) || !(await fileExists(absEntry)))) {
         return fail(
           'package.entry_missing',
           `lifecycle.entry '${entryRel}' ist im Zip nicht vorhanden.`,
@@ -381,9 +412,9 @@ export class PackageUploadService {
       // an entry point below such a path would EXECUTE code the scanner
       // never saw while the store shows a clean badge. No legitimate omadia
       // plugin does this (the boilerplate uses dist/plugin.js) → reject.
-      const unscannable = findUnscannableSegment(
-        path.relative(packageRoot, absEntry),
-      );
+      const unscannable = dataOnly
+        ? null
+        : findUnscannableSegment(path.relative(packageRoot, absEntry));
       if (unscannable !== null) {
         return fail(
           'package.entry_unscannable',
@@ -500,6 +531,27 @@ export class PackageUploadService {
             toVersion: plugin.version,
           },
         );
+      }
+
+      // --- 9a'. Archetype confirmation on an update (#2088) ----------------
+      // Only for a plugin that is installed: `onPackageReady` swaps its
+      // running instance further down, with no install job (where a fresh
+      // install is confirmed) in between.
+      if (catalogEntry && this.deps.registry?.has(plugin.id) && input.confirmArchetype !== true) {
+        const reasons = archetypeUpdateReasons(catalogEntry.plugin, plugin);
+        if (reasons.length > 0) {
+          return fail(
+            'package.archetype_confirmation_required',
+            `Version ${plugin.version} of ${plugin.id} changes what the plugin is to this instance (${reasons.join(', ')}); confirm the update explicitly (confirm_archetype).`,
+            {
+              reasons,
+              archetype: plugin.archetype ?? null,
+              from_version: catalogEntry.plugin.version,
+              to_version: plugin.version,
+            },
+            { pluginId: plugin.id, fromVersion: catalogEntry.plugin.version, toVersion: plugin.version },
+          );
+        }
       }
 
       // --- 9b. Migration-Hook (onMigrate) ----------------------------------

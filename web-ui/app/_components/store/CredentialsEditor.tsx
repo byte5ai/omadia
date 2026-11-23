@@ -595,7 +595,7 @@ export function CredentialsEditor({
         </Button>
         {savedAt !== null && activation?.state !== 'errored' ? (
           <span className="text-[11px] text-[color:var(--muted-ink)]">
-            {t('savedCheck')}
+            {activation?.restart_pending === true ? t('savedRestartPending') : t('savedCheck')}
           </span>
         ) : null}
         {error === null ? null : error.kind === 'hint' ? (
@@ -856,7 +856,7 @@ function MultiselectField({
         </Button>
         {savedAt !== null && activation?.state !== 'errored' ? (
           <span className="text-[11px] text-[color:var(--muted-ink)]">
-            {t('savedCheck')}
+            {activation?.restart_pending === true ? t('savedRestartPending') : t('savedCheck')}
           </span>
         ) : null}
         {status === 'loaded' ? (

@@ -5,7 +5,7 @@ export * from './types.js';
 export { evaluatePredicate, resolvePath } from './predicate.js';
 export { conductorGraphSchema, validateGraphShape, type ShapeResult } from './schema.js';
 export { validate } from './validate.js';
-export { nextStep } from './engine.js';
+export { nextStep, type NextStepOptions } from './engine.js';
 export { parseIsoDurationMs } from './duration.js';
 export {
   extractSlotRefs,

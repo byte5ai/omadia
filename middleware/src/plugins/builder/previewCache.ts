@@ -45,6 +45,12 @@ export interface PreviewCacheDeps {
   /** Bound activate function — usually `runtime.activate.bind(runtime)`. */
   activate: (opts: PreviewActivateOptions) => Promise<PreviewHandle>;
   logger?: (...args: unknown[]) => void;
+  /**
+   * Spec 2042 §5.10 — called once a preview is closed for good (evicted,
+   * dropped, shut down; not on a rebuild), so its draft agent goes with it.
+   * A failure is logged, never thrown into the caller.
+   */
+  onClosed?: (userEmail: string, draftId: string) => Promise<unknown>;
 }
 
 interface CacheEntry {
@@ -65,6 +71,7 @@ export class PreviewCache {
   private readonly warmSlots: number;
   private readonly activateFn: PreviewCacheDeps['activate'];
   private readonly log: (...args: unknown[]) => void;
+  private readonly onClosed: PreviewCacheDeps['onClosed'];
   private readonly entries = new Map<string, CacheEntry>();
   private readonly perUser = new Map<string, Set<string>>();
 
@@ -72,6 +79,7 @@ export class PreviewCache {
     this.warmSlots = deps.warmSlots ?? DEFAULT_WARM_SLOTS;
     this.activateFn = deps.activate;
     this.log = deps.logger ?? ((...args) => console.log('[preview-cache]', ...args));
+    this.onClosed = deps.onClosed;
   }
 
   /**
@@ -155,6 +163,7 @@ export class PreviewCache {
     this.entries.delete(key);
     this.perUser.get(userEmail)?.delete(draftId);
     await this.closeQuietly(entry);
+    await this.notifyClosed(entry);
     return true;
   }
 
@@ -173,6 +182,19 @@ export class PreviewCache {
     this.entries.clear();
     this.perUser.clear();
     await Promise.allSettled(all.map((e) => this.closeQuietly(e)));
+    await Promise.allSettled(all.map((e) => this.notifyClosed(e)));
+  }
+
+  private async notifyClosed(entry: CacheEntry): Promise<void> {
+    if (!this.onClosed) return;
+    try {
+      await this.onClosed(entry.userEmail, entry.draftId);
+    } catch (err) {
+      console.error(
+        `[preview-cache] cleanup after closing the preview of draft ${entry.draftId} failed:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 
   private async evictIfOverCap(userEmail: string): Promise<void> {

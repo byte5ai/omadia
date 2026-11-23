@@ -1,0 +1,453 @@
+import { screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { ApiError } from '../../../../_lib/api';
+import type {
+  OperatorAgentDto,
+  OperatorAgentsListDto,
+} from '../../../../_lib/agents';
+import type { FacilitationEngineStatus } from '../../../../_lib/facilitators';
+import { renderWithIntl } from '../../../../_lib/test-utils';
+import { AgentsDashboard } from '../AgentsDashboard';
+
+/**
+ * #2066 — "Facilitators" next to "Orchestrators" in the agent directory.
+ *
+ *   1. LISTED BY KIND. A facilitator is not an orchestrator: it is not in
+ *      that list, not in its count and cannot be picked as the standard
+ *      orchestrator.
+ *   2. CREATE sends `archetype: 'facilitator'` and continues on the new page.
+ *   3. NOT READY WITHOUT ITS OWN TEAMS IDENTITY, with a link to provisioning.
+ *   4. THE ENGINE NOTICE says what is missing — no engine, or no SQL grant.
+ *   5. A 409 `facilitator_omission` is a sentence, not a machine code.
+ */
+
+const {
+  mockCreate,
+  mockPatch,
+  mockSetDefault,
+  mockTeams,
+  mockEngine,
+  mockPush,
+  mockRefresh,
+} = vi.hoisted(() => ({
+  mockCreate: vi.fn(),
+  mockPatch: vi.fn(),
+  mockSetDefault: vi.fn(),
+  mockTeams: vi.fn(),
+  mockEngine: vi.fn(),
+  mockPush: vi.fn(),
+  mockRefresh: vi.fn(),
+}));
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ refresh: mockRefresh, push: mockPush }),
+}));
+
+vi.mock('next/link', () => ({
+  default: ({
+    children,
+    href,
+    ...rest
+  }: {
+    children: React.ReactNode;
+    href: string;
+  }): React.ReactElement => (
+    <a href={href} {...rest}>
+      {children}
+    </a>
+  ),
+}));
+
+vi.mock('../../../../_lib/agents', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../_lib/agents')>()),
+  listAgentPluginCatalog: vi.fn().mockResolvedValue({ items: [] }),
+  // #2088 — no deleted agents: that section stays away in these tests.
+  listDeletedAgents: vi.fn().mockResolvedValue({ retention_days: 30, agents: [] }),
+  createOperatorAgent: mockCreate,
+  patchOperatorAgent: mockPatch,
+  setInstanceDefaultAgent: mockSetDefault,
+  getAgentTeamsIdentity: mockTeams,
+}));
+
+vi.mock('../../../../_lib/facilitators', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../_lib/facilitators')>()),
+  loadFacilitationEngineStatus: mockEngine,
+}));
+
+vi.mock('../PluginsDnd', () => ({
+  PluginsDnd: () => <div data-testid="plugins-dnd" />,
+}));
+
+function agent(over: Partial<OperatorAgentDto>): OperatorAgentDto {
+  return {
+    id: `id-${over.slug ?? 'x'}`,
+    slug: 'x',
+    name: 'X',
+    description: null,
+    privacy_profile: 'default',
+    status: 'enabled',
+    created_at: '2026-11-18T00:00:00Z',
+    updated_at: '2026-11-18T00:00:00Z',
+    active: true,
+    memory_scope: [],
+    plugins: [],
+    bindings: [],
+    ...over,
+  };
+}
+
+const ENGINE = { id: '@omadia/agent-facilitator', name: 'Facilitation Engine' };
+const READY: FacilitationEngineStatus = { state: 'ready', pluginId: ENGINE.id };
+
+function list(...agents: OperatorAgentDto[]): OperatorAgentsListDto {
+  return { agents, default_agent_id: 'id-help' };
+}
+
+const HELP = agent({ slug: 'help', name: 'Help' });
+const SALES = agent({ slug: 'sales', name: 'Sales' });
+const MONA = agent({ slug: 'mona', name: 'Mona', archetype: 'facilitator' });
+
+function teamsMissing(): ApiError {
+  return new ApiError(404, 'GET failed: 404', JSON.stringify({ error: 'teams_identity_not_found' }));
+}
+
+afterEach(() => {
+  vi.clearAllMocks();
+});
+
+describe('AgentsDashboard — facilitators (#2066)', () => {
+  it('lists facilitators apart from orchestrators', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(<AgentsDashboard initial={list(HELP, SALES, MONA)} />);
+
+    const section = screen.getByTestId('facilitators-section');
+    expect(section.textContent).toContain('Facilitators (1)');
+    expect(screen.getByTestId('facilitator-card-mona')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /Standard agents \(2\)/ })).toBeTruthy();
+
+    // Not offered as the default agent.
+    const picker = screen.getByRole('combobox', { name: /Default agent/ });
+    const options = [...(picker as HTMLSelectElement).options].map((o) => o.value);
+    expect(options).toContain('sales');
+    expect(options).not.toContain('mona');
+
+    // The card says why it has no plugin editor.
+    expect(screen.getByTestId('facilitator-card-mona').textContent).toContain(
+      'would make a moderator partial',
+    );
+    await waitFor(() => expect(mockTeams).toHaveBeenCalledWith('mona'));
+  });
+
+  it('shows a facilitator without its own Teams identity as not ready', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} />);
+
+    const teams = await screen.findByTestId('facilitator-readiness-teams');
+    expect(screen.getByTestId('facilitator-readiness').getAttribute('data-ready')).toBe('false');
+    expect(teams.textContent).toContain('No identity of its own on any channel yet');
+    expect(teams.querySelector('a')?.getAttribute('href')).toBe(
+      '/operator/agents/mona?tab=teams',
+    );
+  });
+
+  it('is ready with an installed identity and the attached engine', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockResolvedValue({ state: 'installed' });
+    const granted = agent({
+      slug: 'mona',
+      name: 'Mona',
+      archetype: 'facilitator',
+      plugins: [{ id: ENGINE.id, enabled: true, config: {} }],
+    });
+    renderWithIntl(<AgentsDashboard initial={list(HELP, granted)} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('facilitator-readiness').getAttribute('data-ready')).toBe('true'),
+    );
+    expect(screen.queryByTestId('facilitation-engine-notice')).toBeNull();
+  });
+
+  // Review change 2026-11-18: readiness is per channel identity. Teams is
+  // checked only for Teams; on an instance without Teams configuration a
+  // facilitator with its own Telegram bot is ready.
+  it('is ready with its own Telegram bot on an instance without Teams', async () => {
+    mockEngine.mockResolvedValue(READY);
+    // No Teams configuration: the identity route answers 503.
+    mockTeams.mockRejectedValue(new ApiError(503, 'GET failed: 503', JSON.stringify({ error: 'teams_unavailable' })));
+    const telegramOnly = agent({
+      slug: 'mona',
+      name: 'Mona',
+      archetype: 'facilitator',
+      plugins: [{ id: ENGINE.id, enabled: true, config: {} }],
+      own_identity_channels: ['telegram'],
+    });
+    renderWithIntl(<AgentsDashboard initial={list(HELP, telegramOnly)} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('facilitator-readiness').getAttribute('data-ready')).toBe('true'),
+    );
+    const readiness = screen.getByTestId('facilitator-readiness');
+    expect(readiness.getAttribute('data-channels')).toBe('telegram');
+    expect(readiness.textContent).toContain('Telegram');
+    expect(screen.queryByTestId('facilitator-readiness-teams')).toBeNull();
+  });
+
+  it('lists every channel it has its own identity on', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockResolvedValue({ state: 'installed' });
+    const both = agent({
+      slug: 'mona',
+      name: 'Mona',
+      archetype: 'facilitator',
+      plugins: [{ id: ENGINE.id, enabled: true, config: {} }],
+      own_identity_channels: ['slack', 'teams'],
+    });
+    renderWithIntl(<AgentsDashboard initial={list(HELP, both)} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('facilitator-readiness').getAttribute('data-channels')).toBe('teams,slack'),
+    );
+  });
+
+  it('points at the repair when the engine row is missing', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockResolvedValue({ state: 'installed' });
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} />);
+    const grant = await screen.findByTestId('facilitator-readiness-grant');
+    expect(grant.textContent).toContain('normally happens automatically');
+    expect(grant.querySelector('a')?.getAttribute('href')).toBe(
+      '/operator/agents/mona?tab=engine',
+    );
+  });
+
+  it('says that no facilitation engine is installed', async () => {
+    mockEngine.mockResolvedValue({ state: 'none' });
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} />);
+    const notice = await screen.findByTestId('facilitation-engine-notice');
+    expect(notice.textContent).toContain('No facilitation engine is installed');
+    expect(notice.querySelector('a')?.getAttribute('href')).toBe('/store');
+    // What people in a group get from this facilitator meanwhile — the
+    // kernel's fixed answer (`facilitationNotSetUpText`), in the UI's words.
+    expect(screen.getByTestId('facilitator-readiness-engine').textContent).toContain(
+      'only answers that facilitation is not set up on this instance yet',
+    );
+  });
+
+  it('says that an installed engine did not start, where to look, and links to its store page', async () => {
+    mockEngine.mockResolvedValue({ state: 'unusable', pluginId: ENGINE.id, reason: 'inactive', engineReason: null });
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} />);
+    const notice = await screen.findByTestId('facilitation-engine-notice');
+    expect(notice.textContent).toContain('is installed but did not start');
+    expect(notice.textContent).toContain('database access that has not been granted');
+    expect(notice.querySelector('a')?.getAttribute('href')).toBe(`/store/${encodeURIComponent(ENGINE.id)}`);
+  });
+
+  it.each([
+    ['inactive', 'installed but did not start'],
+    ['not_reported', 'has not reported that it is ready'],
+    ['unknown', 'cannot run facilitations right now'],
+  ] as const)('has a sentence for the reason code %s', async (reason, text) => {
+    mockEngine.mockResolvedValue({
+      state: 'unusable',
+      pluginId: ENGINE.id,
+      reason,
+      engineReason: null,
+    });
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} />);
+    const notice = await screen.findByTestId('facilitation-engine-notice');
+    expect(notice.textContent).toContain(text);
+    expect(notice.querySelector('a')?.getAttribute('href')).toBe(
+      `/store/${encodeURIComponent(ENGINE.id)}`,
+    );
+    expect(screen.queryByTestId('facilitation-engine-reason')).toBeNull();
+  });
+
+  it('shows the engine plugin\'s own words apart from the translated sentence', async () => {
+    mockEngine.mockResolvedValue({
+      state: 'unusable',
+      pluginId: ENGINE.id,
+      reason: 'engine_reported',
+      engineReason: 'migrations not run',
+    });
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} />, { locale: 'de' });
+    const notice = await screen.findByTestId('facilitation-engine-notice');
+    expect(notice.textContent).toContain('meldet, dass sie nicht bereit ist');
+    // Verbatim, in an element of its own.
+    expect(screen.getByTestId('facilitation-engine-reason').textContent).toBe(
+      'migrations not run',
+    );
+  });
+
+  it('names the engines when more than one is installed', async () => {
+    mockEngine.mockResolvedValue({ state: 'ambiguous', pluginIds: ['a.engine', 'b.engine'] });
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} />);
+    const notice = await screen.findByTestId('facilitation-engine-notice');
+    expect(notice.textContent).toContain('a.engine, b.engine');
+  });
+
+  it('links to the facilitations view of a usable engine that has a nav entry', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(
+      <AgentsDashboard
+        initial={list(HELP, MONA)}
+        pluginNav={[
+          { pluginId: 'other', href: '/plugin-ui/other', label: 'Other' },
+          { pluginId: ENGINE.id, href: '/plugin-ui/engine', label: 'Facilitations' },
+        ]}
+      />,
+    );
+    const link = await screen.findByTestId('facilitations-view-link');
+    expect(link.getAttribute('href')).toBe('/plugin-ui/engine');
+    expect(link.textContent).toContain('Facilitations');
+  });
+
+  it('offers no facilitations link while the engine is not usable', async () => {
+    mockEngine.mockResolvedValue({ state: 'unusable', pluginId: ENGINE.id, reason: 'inactive', engineReason: null });
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(
+      <AgentsDashboard
+        initial={list(HELP, MONA)}
+        pluginNav={[{ pluginId: ENGINE.id, href: '/plugin-ui/engine', label: 'Facilitations' }]}
+      />,
+    );
+    await screen.findByTestId('facilitation-engine-notice');
+    expect(screen.queryByTestId('facilitations-view-link')).toBeNull();
+  });
+
+  it('does not claim "no engine" when the status cannot be read', async () => {
+    mockEngine.mockRejectedValue(new Error('store down'));
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} />);
+    const notice = await screen.findByTestId('facilitation-engine-notice');
+    expect(notice.textContent).toContain('could not be checked');
+    expect(notice.textContent).not.toContain('store down');
+  });
+
+  it('creates with the archetype facilitator and opens the new page', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockCreate.mockResolvedValue({ id: 'id-rita', slug: 'rita', archetype: 'facilitator' });
+    renderWithIntl(<AgentsDashboard initial={list(HELP)} />);
+
+    await userEvent.type(screen.getByTestId('facilitator-create-slug'), 'rita');
+    await userEvent.type(screen.getByTestId('facilitator-create-name'), 'Rita');
+    await userEvent.click(screen.getByRole('button', { name: 'Create facilitator' }));
+
+    await waitFor(() =>
+      expect(mockCreate).toHaveBeenCalledWith({
+        slug: 'rita',
+        name: 'Rita',
+        archetype: 'facilitator',
+      }),
+    );
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/operator/agents/rita'));
+  });
+
+  it('prints the omission sentence for a 409 facilitator_omission', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockRejectedValue(teamsMissing());
+    mockSetDefault.mockRejectedValue(
+      new ApiError(
+        409,
+        'PUT failed: 409',
+        JSON.stringify({
+          error: 'facilitator_omission',
+          omission: 'default_agent',
+          message: 'agent "mona" is a facilitator: server prose',
+        }),
+      ),
+    );
+    renderWithIntl(<AgentsDashboard initial={list(HELP, SALES, MONA)} />);
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: /Default agent/ }),
+      'sales',
+    );
+    await waitFor(() =>
+      expect(document.body.textContent).toContain(
+        'A facilitator cannot be the default agent',
+      ),
+    );
+    expect(document.body.textContent).not.toContain('server prose');
+    expect(document.body.textContent).not.toContain('facilitator_omission');
+  });
+});
+
+describe('AgentsDashboard — one section per archetype (#2088)', () => {
+  const COACH = agent({ slug: 'cora', name: 'Cora', archetype: 'coach' });
+  const archetype = (over: Record<string, unknown>) => ({
+    source: 'kernel',
+    built_in: false,
+    label: null,
+    label_plural: null,
+    description: null,
+    omits: [],
+    adds: [],
+    requires: [],
+    plugin: null,
+    agent_count: null,
+    ...over,
+  });
+  const REGISTERED = [
+    archetype({ id: 'standard', built_in: true }),
+    archetype({ id: 'facilitator' }),
+    archetype({
+      id: 'coach',
+      source: '@acme/archetype-coach',
+      label: { en: 'Coach' },
+      label_plural: { en: 'Coaches', de: 'Coaches' },
+      description: { en: 'Coaches one team at a time.' },
+      plugin: { id: '@acme/archetype-coach', status: 'active' },
+    }),
+  ] as never;
+
+  it('a registered archetype gets its own section, named by its descriptor, and creates agents of it', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockRejectedValue(teamsMissing());
+    mockCreate.mockResolvedValue({ id: 'id-nina', slug: 'nina', archetype: 'coach' });
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA, COACH)} archetypes={REGISTERED} />);
+
+    const section = screen.getByTestId('archetype-section-coach');
+    expect(section.textContent).toContain('Coaches (1)');
+    expect(section.textContent).toContain('Coaches one team at a time.');
+    expect(section.textContent).toContain('Delivered by the archetype plugin “@acme/archetype-coach”');
+    expect(screen.getByTestId('archetype-agent-card-cora')).toBeTruthy();
+    // The facilitator keeps its own section, and a coach is not an orchestrator.
+    expect(screen.getByTestId('facilitators-section').textContent).toContain('Facilitators (1)');
+    expect(screen.getByRole('heading', { name: /Standard agents \(1\)/ })).toBeTruthy();
+
+    const form = screen.getByTestId('archetype-create-form-coach');
+    const [slug, name] = Array.from(form.querySelectorAll('input'));
+    await userEvent.type(slug!, 'nina');
+    await userEvent.type(name!, 'Nina');
+    await userEvent.click(form.querySelector('button[type="submit"]')!);
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledWith({ slug: 'nina', name: 'Nina', archetype: 'coach' }));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/operator/agents/nina'));
+  });
+
+  it('agents of an archetype nobody delivers any more stay visible, with the reason and no create form', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(
+      <AgentsDashboard initial={list(HELP, COACH)} archetypes={[REGISTERED[0], REGISTERED[1]] as never} />,
+    );
+    const section = screen.getByTestId('archetype-section-coach');
+    expect(section.textContent).toContain('coach (1)');
+    expect(section.textContent).toContain('No installed plugin delivers the archetype “coach” any more');
+    expect(screen.queryByTestId('archetype-create-form-coach')).toBeNull();
+    expect(screen.getByTestId('archetype-agent-card-cora')).toBeTruthy();
+  });
+
+  it('a middleware that does not report archetypes: the facilitator section as before', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(<AgentsDashboard initial={list(HELP, MONA)} archetypes={null} />);
+    expect(screen.getByTestId('facilitators-section').textContent).toContain('Facilitators (1)');
+    expect(screen.queryByTestId('archetype-section-coach')).toBeNull();
+  });
+});
