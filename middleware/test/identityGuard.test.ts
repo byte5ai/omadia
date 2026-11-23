@@ -12,6 +12,7 @@ import {
   SentenceGate,
   completeSentencePrefix,
   type IdentityJudge,
+  type IdentityJudgeRequest,
   type IdentityGuardResult,
 } from '../packages/harness-orchestrator/src/identityGuard/guard.js';
 import type { LlmProvider, LlmRequest, LlmResponse } from '@omadia/llm-provider';
@@ -371,7 +372,7 @@ describe('identity guard — the judge call on an always-thinking model', () => 
     } as unknown as LlmProvider;
   }
 
-  const request = {
+  const request: IdentityJudgeRequest = {
     speakerName: 'Dark Clippy',
     colleagues: [],
     text: 'Ich bin Dark Clippy, ein KI-Agent und kein Mensch.',
@@ -380,16 +381,22 @@ describe('identity guard — the judge call on an always-thinking model', () => 
   it('leaves room for thinking before the one-word verdict (live 2026-11-23: 3 of 4 empty replies)', async () => {
     const seen: LlmRequest[] = [];
     const judge = createLlmIdentityJudge({ provider: thinkingProvider(200, seen), model: 'claude-opus-5-5' });
-    const verdict = await judge.judge(request as never, new AbortController().signal);
+    const verdict = await judge.judge(request, new AbortController().signal);
     assert.deepEqual(verdict, { verdict: 'pass' });
     assert.equal(seen[0]?.maxTokens, IDENTITY_JUDGE_MAX_TOKENS);
-    assert.ok(IDENTITY_JUDGE_MAX_TOKENS >= 1024);
+  });
+
+  it('the old 8-token budget left an always-thinking model no word (the live failure)', async () => {
+    const provider = thinkingProvider(200, []);
+    const res = await provider.complete({ model: 'claude-opus-5-5', maxTokens: 8, messages: [] } as never);
+    assert.deepEqual(res.content, []);
+    assert.throws(() => parseJudgeVerdict(''), /no verdict/);
   });
 
   it('asks for as little reasoning as the model allows', async () => {
     const seen: LlmRequest[] = [];
     const judge = createLlmIdentityJudge({ provider: thinkingProvider(0, seen), model: 'claude-haiku-5-5' });
-    await judge.judge(request as never, new AbortController().signal);
+    await judge.judge(request, new AbortController().signal);
     assert.equal(seen[0]?.effort, 'low');
     assert.equal(seen[0]?.thinking, 'off');
   });
