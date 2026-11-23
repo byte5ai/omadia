@@ -11,6 +11,7 @@ import type {
   WorkflowGraph,
 } from './types.js';
 import { validateGraphShape } from './schema.js';
+import { isTemplateExpression } from './runTokens.js';
 import { unguardedHappyTransitions } from './transitions.js';
 
 function unique(xs: string[]): string[] {
@@ -35,11 +36,6 @@ function computeReachable(entry: string, transitions: Transition[], stepIds: Set
     }
   }
   return seen;
-}
-
-/** `{{ctx.path}}` — a value the run supplies, not one the graph names. */
-export function isTemplateExpression(value: string): boolean {
-  return /\{\{\s*[\w.]+\s*\}\}/.test(value);
 }
 
 /** Find a cycle reachable through transitions that carry NO guard (a cycle with no progress

@@ -2561,16 +2561,21 @@ export async function refreshPreview(draftId: string): Promise<{
 
 /** Read-only probe of the current preview-cache state. Used on Workspace
  *  mount to re-hydrate buildStatus after a page reload — never triggers
- *  a build. */
+ *  a build. `failed` is reported from BuildPipeline's last-outcome record
+ *  even when the preview cache itself is cold (Issue #1737). */
 export async function getPreviewStatus(draftId: string): Promise<{
   phase: 'idle' | 'ok' | 'failed';
   buildN?: number;
   agentId?: string;
+  errorCount?: number;
+  reason?: string;
 }> {
   return getJson<{
     phase: 'idle' | 'ok' | 'failed';
     buildN?: number;
     agentId?: string;
+    errorCount?: number;
+    reason?: string;
   }>(`/v1/builder/drafts/${encodeURIComponent(draftId)}/preview/status`);
 }
 
@@ -5480,6 +5485,15 @@ export interface ConductorRun {
   errorMessage?: string | null;
 }
 
+/**
+ * #1710 — a run-history row: the history spans every version of the workflow, so
+ * a row carries the version NUMBER it ran. Optional — a middleware older than
+ * #1710 serves rows without it.
+ */
+export interface ConductorRunListEntry extends ConductorRun {
+  workflowVersion?: number | null;
+}
+
 export interface ConductorRunStep {
   id: string;
   runId: string;
@@ -5634,7 +5648,7 @@ export async function previewConductorWorkflow(slug: string, payload: unknown): 
   return postJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/preview`, { payload });
 }
 
-export async function listConductorRuns(slug: string): Promise<{ runs: ConductorRun[] }> {
+export async function listConductorRuns(slug: string): Promise<{ runs: ConductorRunListEntry[] }> {
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs`);
 }
 

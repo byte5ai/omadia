@@ -841,6 +841,7 @@ export {
 export type { AttachmentReader } from './tools/readAttachmentTool.js';
 // #584 WS I — batch ingestion of recorded audio via transcription@1.
 export {
+  MAX_RECORDING_BYTES,
   TRANSCRIBE_RECORDING_TOOL_NAME,
   TranscribeRecordingTool,
   transcribeRecordingToolSpec,

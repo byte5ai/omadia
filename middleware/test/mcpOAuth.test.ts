@@ -1462,3 +1462,185 @@ describe('W2-4 — GET /.well-known/omadia-mcp-client', () => {
     assert.equal(cimdMetadataUrl(null), null);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RFC 8707 — the `resource` indicator must reach the token endpoint too.
+// The MCP authorization spec requires it on authorization AND token requests
+// (code exchange and refresh); it was only sent on the authorize URL.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('RFC 8707 resource indicator on token requests', () => {
+  const RESOURCE = 'https://srv.example/mcp';
+
+  /** A token endpoint that records every form body it receives. */
+  function recordingFetch(): { fetchImpl: typeof fetch; bodies: URLSearchParams[] } {
+    const bodies: URLSearchParams[] = [];
+    const fetchImpl: typeof fetch = (async (_u: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      bodies.push(new URLSearchParams(String(init?.body)));
+      return new Response(
+        JSON.stringify({ access_token: 'AT', refresh_token: 'RT', expires_in: 3600 }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch;
+    return { fetchImpl, bodies };
+  }
+
+  it('exchangeCode sends resource when given', async () => {
+    const { fetchImpl, bodies } = recordingFetch();
+    await new McpOAuthClient({ fetchImpl }).exchangeCode({
+      server: AS,
+      client: CLIENT,
+      code: 'CODE',
+      codeVerifier: 'VERIFIER',
+      redirectUri: 'https://host/cb',
+      resource: RESOURCE,
+    });
+    assert.equal(bodies[0]?.get('grant_type'), 'authorization_code');
+    assert.equal(bodies[0]?.get('resource'), RESOURCE);
+  });
+
+  it('refresh sends resource when given', async () => {
+    const { fetchImpl, bodies } = recordingFetch();
+    await new McpOAuthClient({ fetchImpl }).refresh({
+      server: AS,
+      client: CLIENT,
+      refreshToken: 'RT-0',
+      resource: RESOURCE,
+    });
+    assert.equal(bodies[0]?.get('grant_type'), 'refresh_token');
+    assert.equal(bodies[0]?.get('resource'), RESOURCE);
+  });
+
+  it('omits resource when none is known (flows started before the migration)', async () => {
+    const { fetchImpl, bodies } = recordingFetch();
+    const client = new McpOAuthClient({ fetchImpl });
+    await client.exchangeCode({
+      server: AS,
+      client: CLIENT,
+      code: 'CODE',
+      codeVerifier: 'VERIFIER',
+      redirectUri: 'https://host/cb',
+      resource: null,
+    });
+    await client.refresh({ server: AS, client: CLIENT, refreshToken: 'RT-0' });
+    assert.equal(bodies.length, 2);
+    for (const b of bodies) assert.equal(b.has('resource'), false);
+  });
+
+  it('authorize, callback and refresh all carry the same resource (strict token endpoint)', async () => {
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    let authorizedResource: string | null = null;
+    const tokenResources: Array<string | null> = [];
+    // Behaves like an authorization server that enforces RFC 8707: a token
+    // request whose resource differs from the authorized one is refused.
+    const fetchImpl: typeof fetch = (async (_u: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const form = new URLSearchParams(String(init?.body));
+      const resource = form.get('resource');
+      tokenResources.push(resource);
+      if (resource !== authorizedResource) {
+        return new Response(JSON.stringify({ error: 'invalid_target' }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify({ access_token: 'AT', refresh_token: 'RT', expires_in: 3600 }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch;
+
+    // A graph whose flow store round-trips what beginAuthorization wrote, the
+    // way the Postgres store does.
+    let storedFlow: Record<string, unknown> | undefined;
+    const tokenWrites: Record<string, unknown>[] = [];
+    const vaultStore = new Map<string, string>();
+    const graph = {
+      createMcpOAuthFlow: async (input: Record<string, unknown>) => {
+        storedFlow = input;
+      },
+      takeMcpOAuthFlow: async (state: string) => {
+        if (!storedFlow || storedFlow['state'] !== state) return undefined;
+        const taken = storedFlow;
+        storedFlow = undefined;
+        return taken;
+      },
+      getMcpOAuthClient: async () => ({ clientId: 'cid', clientSecretRef: null }),
+      upsertMcpOAuthClient: async () => {},
+      upsertMcpOAuthToken: async (input: Record<string, unknown>) => {
+        tokenWrites.push(input);
+      },
+      getMcpOAuthToken: async () => ({
+        serverId: 'srv-1',
+        userKey: 'user-a',
+        accessTokenRef: 'a',
+        refreshTokenRef: 'r',
+        expiresAt: new Date(Date.now() - 60_000),
+        scopes: 'read',
+        issuer: 'https://as.example',
+      }),
+      deleteMcpOAuthToken: async () => {},
+    } as never;
+    const vault = {
+      get: async (_ns: string, k: string) => vaultStore.get(k),
+      set: async (_ns: string, k: string, v: string) => {
+        vaultStore.set(k, v);
+      },
+    } as never;
+    const discovery = {
+      discover: async () => ({
+        resource: {
+          resource: RESOURCE,
+          authorizationServers: ['https://as.example'],
+          scopesSupported: ['read'],
+          bearerMethods: ['header'],
+        },
+        server: AS,
+      }),
+    } as never;
+    const svc = new McpOAuthService({
+      graph,
+      vault,
+      redirectUri: 'https://host/cb',
+      discovery,
+      client: new McpOAuthClient({ fetchImpl }),
+    });
+    const server = {
+      id: 'srv-1',
+      name: 'srv',
+      endpoint: 'https://srv.example/mcp',
+      transport: 'http',
+      delegation: 'per_user',
+    } as never;
+
+    const { authorizeUrl } = await svc.beginAuthorization(server, 'user-a');
+    const u = new URL(authorizeUrl);
+    authorizedResource = u.searchParams.get('resource');
+    assert.equal(authorizedResource, RESOURCE);
+    assert.equal(storedFlow?.['resource'], RESOURCE, 'the flow remembers the resource');
+
+    // Callback: the code exchange must not be refused as invalid_target.
+    await svc.completeAuthorization(u.searchParams.get('state') ?? '', 'CODE');
+    assert.equal(tokenWrites.length, 1);
+
+    // Refresh: expired token, so the service refreshes against the same resource.
+    vaultStore.set('a', 'STALE-AT');
+    vaultStore.set('r', 'RT-0');
+    const at = await svc.getValidAccessToken(server, 'user-a');
+    assert.equal(at, 'AT');
+    assert.deepEqual(tokenResources, [RESOURCE, RESOURCE]);
+  });
+
+  it('a flow stored without a resource still completes (no resource parameter)', async () => {
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    const { fetchImpl, bodies } = recordingFetch();
+    const { graph, tokenWrites } = fakeGraph({ flow: { ...FLOW_BASE, resource: null } });
+    const svc = new McpOAuthService({
+      graph,
+      vault: { get: async () => undefined, set: async () => {} } as never,
+      redirectUri: 'https://host/cb',
+      client: new McpOAuthClient({ fetchImpl }),
+    });
+    await svc.completeAuthorization('ST', 'CODE');
+    assert.equal(tokenWrites.length, 1);
+    assert.equal(bodies[0]?.has('resource'), false);
+  });
+});

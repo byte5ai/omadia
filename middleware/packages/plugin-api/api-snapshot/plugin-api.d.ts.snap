@@ -1289,6 +1289,7 @@ import type { TopicNamingSource, TopicNode } from './topic.js';
 import type { CreateExcerptMergeCandidateInput, ExcerptMergeCandidateNode, ExcerptMergeResolution, ListExcerptMergeCandidatesOptions } from './excerptMerge.js';
 export interface KnowledgeGraph {
 ingestTurn(turn: TurnIngest): Promise<TurnIngestResult>;
+amendTurn?(turnExternalId: string, amend: TurnAmend): Promise<void>;
 ingestEntities(entities: EntityIngest[]): Promise<EntityIngestResult>;
 ingestFacts(facts: FactIngest[]): Promise<FactIngestResult>;
 ingestRun(trace: RunTrace): Promise<RunIngestResult>;
@@ -1724,6 +1725,16 @@ factIds: string[];
 inserted: number;
 updated: number;
 }
+export interface TurnAmend {
+readonly identityGuard?: TurnIdentityGuardVerdict;
+readonly withholdAnswer?: boolean;
+}
+export interface TurnIdentityGuardVerdict {
+readonly outcome: 'pass' | 'blocked' | 'unavailable';
+readonly layer: 'deterministic' | 'model';
+readonly latencyMs: number;
+readonly reason?: string;
+}
 export interface TurnIngest {
 scope: string;
 time: string;
@@ -1739,6 +1750,7 @@ visibility?: Visibility;
 significance?: number | null;
 tailOnly?: boolean;
 unprotected?: boolean;
+identityGuard?: TurnIdentityGuardVerdict;
 owners?: readonly string[];
 maskedView?: TurnMaskedView;
 }

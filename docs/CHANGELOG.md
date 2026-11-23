@@ -50,6 +50,226 @@ noch aus dem Repo-Seed (`MEMORY_SEED_DIR`). System-Prompt, CLI-Memory-Text und
 Seed-README sagen das. Bereits angelegte Regeln bleiben bestehen; wie Regeln
 künftig gepflegt werden, ist als Diskussion offen.
 
+### Fixed — Chat-Turns können das Promote-Audit-Log nicht mehr löschen (#1827)
+
+2026-11-17. Die Deny-Liste von `ScopedMemoryStore` prüfte nur den genannten
+Pfad. Ein `delete /memories/core` aus einem kontextfreien Turn (Modus „Aus“,
+der Default) entfernte im Postgres-Store alle Nachfahren, auch
+`/memories/core/audit/memory-promotions.jsonl`; ein `rename` hätte es
+verschoben, und `/memories/core//audit/…` umging die Prüfung, weil der Store
+den doppelten Slash erst danach zusammenfasst. `delete` und die
+`rename`-Quelle werden jetzt abgelehnt, wenn sie das Audit-Log enthalten, und
+die Deny-Prüfung läuft auf dem kanonischen Pfad. Andere Dateien unter
+`/memories/core/` bleiben schreib- und löschbar. Der zweite Teil von #1827
+(Regeln unter `_rules/` aus jedem Turn) braucht eine Entscheidung zum
+Zugriffsmodell und ist nicht Teil dieses Fixes.
+
+### Fixed — `delete /memories` löscht nicht mehr den ganzen Agent-Baum (#1828)
+
+2026-11-17. Der Memory-Namespacer bildet das modellseitige `/memories` auf
+`/memories/orchestrators/<slug>` ab; der Root-Guard des Stores kennt nur das
+physische `/memories` und griff deshalb nie. Ein `delete /memories` entfernte
+alle Notizen des Agents samt dem `ctx.memory` jedes Plugins. Die Namespacer
+verweigern jetzt `delete`/`rename` eines gebundenen Roots (`/memories`,
+`~team`, `~agent`) und jedes Pfads im Plugin-Baum
+`/memories/orchestrators/<slug>/plugins/`, auch ohne Privacy Shield und auch
+als Rename-Ziel (`MemoryInvalidPathError`, für das Modell ein normales
+`Error:`-Ergebnis). Lesen und Schreiben im Plugin-Baum bleiben unverändert.
+
+### Fixed — 2026-11-23 — Conductor: re-publishing a workflow no longer hides its runs (#1710)
+
+- `GET /conductors/:slug/runs` listed only runs of the **active** version, so publishing the
+  same slug again emptied the history — including for a run still `waiting`, whose await stayed
+  in the inbox while `DELETE /:slug` kept refusing the workflow with `conductor.has_active_runs`
+  ("cancel them first"). The cancel button lives in that very list, so the only way out was to
+  read the run id out of the database and call the cancel route by hand.
+- The list now spans every version of the workflow (`runStore.listForWorkflow`, joining
+  `conductor_workflow_versions`), and each row carries `workflowVersion` — the version
+  **number**, rendered as a badge in "Verlauf". Active runs sort ahead of terminal ones so a
+  waiting run cannot be pushed out of the `LIMIT` window by newer completed ones. Both the
+  history and the delete guard now read the same exported `ACTIVE_RUN_STATUSES`: `hasActiveRuns`
+  always counted across versions, and the contradiction between the two queries was the bug.
+  The route answers 404 only for an unknown slug — a workflow with no active version has an
+  empty history, not an error. `listForVersion` stays for the ephemeral/discussion paths, where
+  a workflow has exactly one version and one run (#330).
+- UI: every history row carries a `v{n}` badge, and so does an opened run's trace (the
+  single-run route serves no version, so the badge is read off the row it was opened from).
+
+### Fixed — Conductor renders `{{ctx.*}}` / `{{steps.*}}` in human messages and action inputs (#1709)
+
+2026-11-23. A human step's `message` and an action step's `input` reached their
+consumers with the template syntax of the workflow intact: the operator inbox, the
+approval card (`question`) and the reminder worker all showed `New hire
+{{ctx.employeeName}} starts on {{ctx.startDate}}.`, and a connector received the raw
+token as its input value. All four bundled templates rely on that interpolation, so a
+fresh instance of `onboarding-checklist`, `expense-approval`, `notify-and-escalate` or
+`weekly-report` asked people to decide on text they could not read. Only `step.prompt`
+and `step.agentId` were ever rendered (`realStepEffects.ts`), while the type contract
+documented interpolation for the other fields too.
+
+- One renderer for all four fields now, `src/conductor/runInterpolation.ts`, with ONE
+  substitution pass and four named policies over it. The policies differ only in what an
+  unresolved token becomes, and that difference is the design: `renderAwaitMessage` →
+  a visible dash `—` (a person reads it, and raw `{{…}}` must never reach an approver);
+  `renderAgentPrompt`, `renderAgentRef`, `renderActionInput` → empty. A prompt stays
+  empty because the discussion pattern opens with "THE CONVERSATION SO FAR (empty if you
+  are opening)" and branches on that emptiness; a ref stays empty because that is what
+  lets an agent step refuse a run whose context names no speaker; an action input stays
+  empty because a dash would be POSTed onward (`…/hire/—`).
+- `openHumanAwait` renders the message once, against the context the run parks with —
+  the await ROW is what the inbox, the card and the reminder worker read, so one
+  rendering covers all three. The escalation awaits of `expense-approval` /
+  `notify-and-escalate` are reached through `expireAwait` → `driveFrom` and render the
+  same way.
+- **Awaits parked before this fix** still hold raw template text, and an await row is
+  written once and never rewritten. `ConductorAwaitStore` therefore joins the run's
+  context into every read (`conductor_awaits a LEFT JOIN conductor_runs r`) and renders
+  such a row on the way out, so no migration and no per-reader re-render is needed. A
+  current row costs one `includes('{{')` scan; a row whose run is gone renders dashes.
+- The token grammar moved to `@omadia/conductor-core` (`runTokens.ts`,
+  `isTemplateExpression` / `runTokenMatcher`) and is now shared with the authoring check
+  that exempts a templated `step.agentId` from `unknown_agent_ref`. The two had drifted:
+  path segments now accept `-`, so `{{steps.hr-checklist.approved}}` resolves at run time
+  AND passes validation (a step id is any non-empty string, and the bundled templates use
+  kebab ids). Still disjoint from the `slot:text:<key>` grammar — a `:` is not a path
+  character.
+- A rendered await message is capped at 4000 characters with a visible ellipsis.
+  Interpolation can inline a whole agent answer (`weekly-report`'s
+  `{{steps.compose.text}}`) into `conductor_awaits.message` and into
+  `Reminder: <message>`; before this change the stored string was short template prose,
+  so nothing bounded it.
+- Tests: `middleware/test/conductorRunInterpolation.test.ts` (read-back on the await row
+  and on the object the action invoker receives, driven through all four bundled
+  manifests plus the shipped `discussion` pattern) and
+  `middleware/test/conductorAwaitMessageRender.pg.test.ts` (the aliased join on a real
+  Postgres, through every read path).
+
+### Fixed — a withheld answer stays out of the agent's memory; the guard's verdict is on the turn (spec 2042 follow-up)
+
+- Live on the canvas, Dark Clippy's draft that the identity guard blocked ("Falls ich mich vorhin
+  hier als … vorgestellt habe: Das war falsch") was recorded as a turn, and every later
+  "wer bist du" recalled and repeated it ("…, und zwar mehrmals"). The orchestrator writes a
+  turn's record inside the turn, before the identity guard (outermost) decides. Now the record
+  writer reports every row to the turn's record gate and holds back the fact extraction; once
+  the guard has decided (on the authoritative answer, after the verifier and the privacy
+  render), the turn is patched in the graph without being classified again
+  (`KnowledgeGraph.amendTurn`, no capture-filter model call): it gets the verdict, and an
+  answer the identity guard withheld loses its text and its embedding and becomes `tailOnly` (no recall finds it; the user's message stays). Facts are learned only
+  from a kept answer. An answer refused at the people egress (discretion) is recorded without
+  its text too, instead of as the line that replaced it; the web-chat mirror keeps that line.
+- The verdict is stored with the turn: `TurnIngest.identityGuard` / `amendTurn`
+  (`@omadia/plugin-api` 1.89.0, Turn property `identityGuard`: outcome, deciding layer,
+  latency, rule or cause). A block like the one in the 2026-11-23 run can be traced without the
+  operator log.
+- Known residuals: auto-promotion (opt-in) and `onAfterTurn` hooks run before the verdict and
+  still see the draft; the markdown session transcript keeps it (and a startup backfill,
+  `BACKFILL_AT_STARTUP=1`, would re-ingest it); a stream the client abandons before `done` is
+  not patched; an answer the verifier withheld is the verifier's record, unchanged.
+
+### Fixed — a reasoning effort only for OpenAI's reasoning models (spec 2042 follow-up)
+
+- The verifier, the fast path and the PASS/BLOCK judges send `effort: 'low'`. Both OpenAI
+  adapters forwarded it to every native model, and `gpt-4o` / `gpt-4.1` answer
+  `reasoning_effort` (Responses: `reasoning.effort`) with a 400, so on such an agent those calls
+  failed. A shared `isOpenAiReasoningModel` (`@omadia/llm-provider-api` 1.6.0: o-series and
+  GPT-5, without `o1-mini`/`o1-preview` and the `*-chat-latest` aliases) now decides: other
+  models get no effort field (Chat Completions notes it once per model). The reasoning models
+  reject a temperature other than 1, so a caller's `temperature: 0` is dropped for them.
+
+### Fixed — Conductor operator API: a malformed id no longer returns the Postgres error
+
+2026-11-17. `conductor_runs.id`, `conductor_awaits.id`, `conductor_workflows.id`
+and `conductor_webhook_subscriptions.id` are `uuid` columns, and the operator
+routes handed the caller's id to the store unchecked. `999` therefore failed in
+Postgres with `22P02 invalid input syntax for type uuid: "999"`, and each
+handler's catch-all copied that sentence into a 500 body — eight routes, from
+`GET /conductors/<slug>/runs/:runId` to
+`POST /conductors/webhooks/subscriptions/:id/rotate-secret`. Same class as
+#1318/#1398 (#1706).
+
+- **The shape is checked first.** `createConductorRouter` registers
+  `requireUuidParam('conductor.invalid_input', 400)` for `runId`, `awaitId`,
+  `workflowId` and `subscriptionId`: a non-UUID is not an unknown row but an
+  unusable id, so it is a `400` that never reaches the store, while a
+  well-formed id with no row behind it keeps the handler's `404`. The two codes
+  are the pair the admin UI already localizes.
+- **`requireUuidParam` takes the refusal status.** Default `404` — unchanged for
+  admin-users (#1318) and routines (#1398), whose malformed-id answer is
+  deliberately the same 404 an unknown id gets.
+- **The subscription param is now `:subscriptionId`.** `:id` on that router
+  belongs to the template routes and carries slug-shaped ids
+  (`notify-and-escalate`), which must not be uuid-guarded. URLs are unchanged.
+- **An unknown inbound endpoint no longer reports success.** `endpoint_id` is
+  `TEXT`, so there was no Postgres error to surface: the `status` and `DELETE`
+  writes matched zero rows and still answered `204`. Both now answer
+  `404 conductor.not_found`, as does `deliveries`, which used to return
+  `{"deliveries": []}` — "nothing has arrived yet" for an endpoint that does not
+  exist. Subscriptions got the same existence check.
+- **`POST /conductors/awaits/:awaitId/respond` answers 404 for an await that is
+  not there.** The new `AwaitNotFoundError` separates "no such await row" from
+  "this await is closed", which were one `409 conductor.await_not_pending`. An
+  approve/reject card button still reads both as `already_resolved`.
+- No migration, no URL change, no web-ui change.
+
+### Fixed — Builder workspace footer reverted to `IDLE` after a reload following a failed build
+
+2026-11-10. #1737 — reported from the live workspace after an auto-rebuild
+failed with `reason=tsc`.
+
+- **`GET /drafts/:id/preview/status` only ever answered `ok` or `idle`.** It
+  checked the preview cache alone, and a failed build never populates that
+  cache, so a page reload after a failed build dropped the footer back to
+  `IDLE` and hid the "Fix with Builder" button even though the draft was
+  still broken. The route now falls back to `BuildPipeline.getLastBuildStatus`
+  (already recorded per #227, previously only read by the `get_build_status`
+  agent tool) and reports `failed` with `buildN`/`errorCount`/`reason` when
+  the cache is cold but the last build actually failed.
+- The Workspace's mount-time re-hydration effect now applies a `failed`
+  status the same way it already applied `ok`, so `BuildStatusStrip` and
+  "Fix with Builder" render correctly again after a reload.
+
+### Fixed — `transcribe_recording` only sends recordings to the provider (#1966)
+
+2026-11-17. The tool handed any stored attachment to the transcription
+provider with whatever content type it had, so asking it to "transcribe" a
+docx or xlsx sent that document to the external endpoint; the provider's 400
+came back only after the bytes had left. The tool now refuses, before the
+provider call, anything that is not a recording: a declared `audio/*` or
+`video/*` type (or `application/ogg`) passes, a missing or
+`application/octet-stream` type falls back to the file extension, and any
+other declared type is refused whatever the file is called. Recordings above
+25 MB (`MAX_RECORDING_BYTES`, the default upload cap and the OpenAI file limit)
+are refused the same way. Both refusals tell the model that nothing was sent.
+
+### Fixed — OpenAI transcription adapter meters the billed duration (#1968)
+
+2026-11-17. The current transcribe models (`gpt-transcribe`,
+`gpt-4o-transcribe`) answer only in the `json` format, which carries the
+billed audio length in `usage.seconds` and the language in
+`languages[].code`. The adapter read only the `verbose_json` fields
+`duration` and `language`, so every call against the real endpoint was
+metered as 0 minutes and the per-agent minute quota never triggered. It now
+reads both shapes; the top-level `verbose_json` fields win when present.
+Token-based usage has no duration and stays unmetered.
+
+### Fixed — 27 Postgres tests of memory suites never ran in CI (2026-11-23)
+
+- **Postgres legs in files not named `*.pg.test.ts` ran nowhere.** `npm run test:pg` globs
+  only `*.pg.test.ts` and is the only CI step with a test DSN; `npm run test` sets none, so
+  these legs skipped there. Affected: `memoryPurgeKg`, `processProvenancePg1540`,
+  `provenanceBackfill1540` (renamed to `.pg.test.ts`; the second is now
+  `processProvenance1540.pg.test.ts`), and the Postgres legs of `kgWalkSubgraph`,
+  `scratchPromotionReaper`, `recallDerivedUnprotected1536` and `memoryPurgeRoute` (split into
+  `.pg.test.ts` files; shared code in `recallDerivedUnprotected1536Contract.ts`,
+  `_helpers/scratchPromotionFakes.ts`, `_helpers/memoryPurgeHarness.ts`). All 27 pass on
+  pgvector. Assertions are unchanged; the purge-route audit case now gates on `probePgTest`
+  like the other suites, so a failing auth migration fails it instead of skipping it.
+- **Guard.** `npm run test:pg:names` (`scripts/check-pg-test-names.mjs`, a CI step) fails when
+  a test reaches `_helpers/pgTestDb.ts`, directly or through a helper, without the
+  `.pg.test.ts` name. Rule in `middleware/test/README.md`.
+- **`PG_TEST_FLOOR` 448 → 721.** Main measured ran=694 (246 tests of slack, enough for whole
+  suites to vanish unnoticed); with the 27 moved tests the measured count is 721.
+
 ### Fixed — the PASS/BLOCK judges answer on an always-thinking model (spec 2042 §5.5, #2085, criterion 33)
 
 - The identity guard's judge and the data-plan and summary boundary judges asked for 8 output
@@ -342,6 +562,7 @@ GHSA-fc5q-39xc-vjpf (picomatch) on 2026-11-18, so its three audit exceptions fro
   unless an operator released it.
 - Docs: ADR-0026; `AGENTS.md` points sessions work to ADR-0026;
   `docs/security-architecture.md` § native facilitators covers the link and read rules.
+
 ### Added — Facilitators: moderation working modes, per-facilitator defaults, readiness per channel (#2060, #2066, ADR-0023)
 
 - Facilitators may attach working modes that add moderation methods.
@@ -360,6 +581,7 @@ GHSA-fc5q-39xc-vjpf (picomatch) on 2026-11-18, so its three audit exceptions fro
 - The agent list carries `own_identity_channels`; the web-ui shows a
   facilitator ready with an own identity on any channel and has a
   "Moderation" tab (defaults and working modes).
+
 ### Added — An agent's own bot on Telegram, Discord and Slack (epic #2042, S7)
 
 - **Migration 0105 `agent_channel_identities`:** (agent, channel type, routing key)
@@ -1481,6 +1703,7 @@ GHSA-fc5q-39xc-vjpf (picomatch) on 2026-11-18, so its three audit exceptions fro
   from opening its own connection with credentials it finds there.
 - **Not yet:** an archetype plugin that still requires `graphPool` is not
   refused. That follows once the facilitation engine has moved.
+
 ### Fixed — An archetype plugin is updated and stopped in the runtime it runs in (#2088)
 
 - **Update to an archetype version.** Uploading or installing from the Hub a
@@ -1594,6 +1817,7 @@ client has no server session of its own outside a transaction.
   now run on a direct connection of their own, by the same address rule.
 - New optional setting `DATABASE_URL_DIRECT`, needed only behind a pooler
   that cannot be recognised from its address.
+
 ### Added — Question cards: contract and kernel side (#2089, epic #2043)
 
 - An engine can post a typed question card (`message.card` on
@@ -2142,6 +2366,35 @@ styles, express table widths in fiftieths of a percent, and drop the control
 characters XML 1.0 forbids. Before this change those characters made Word
 refuse the file.
 
+### Fixed — Conductor: a cancelled run is delivered as `run.cancelled` (#1705)
+
+2026-11-16. A cancelled run went out as `x-omadia-event: run.failed` with
+`payload.status: "cancelled"`, because the outbound hook derived the event name as
+`status === 'completed' ? 'run.completed' : 'run.failed'` — every non-completed
+terminal status collapsed into the failure name. A receiver that treats an operator
+cancel differently from a crash therefore had to ignore the event it subscribed to
+and parse the payload instead. A subscription on `run.cancelled` was meanwhile
+accepted with a 201 and never fired, and the admin UI offered only the two names.
+
+- **A terminal run status now maps 1:1 to an event name** —
+  `completed`/`failed`/`cancelled` → `run.completed`/`run.failed`/`run.cancelled` —
+  in one place (`conductor/webhookEvents.ts`), used by both the live terminal-run
+  hook and the reconciliation pass. A non-terminal status maps to *nothing*; there
+  is no fallback name left to fall into.
+- **Breaking for receivers that relied on the old name:** a `run.failed`
+  subscription no longer receives cancels. A receiver that wants both needs a second
+  subscription on `run.cancelled` (the payload still carries `status`).
+- **`run.cancelled` is offered in the admin UI**, and a subscription to an event
+  nothing fires is now refused with a 400 naming the supported events, instead of
+  being accepted and staying silent forever. The DB column stays free text — the
+  vocabulary is enforced at the API edge, so rows written by an older build keep
+  working and existing `run.cancelled` rows simply start matching.
+- **A cancel lost to a crash is recoverable like any other outcome:** the
+  reconciliation pass considered only `completed`/`failed` runs, so a cancel lost in
+  the fire-and-forget window after the status was committed was gone for good.
+  Migration `0014_webhook_cancelled_event.sql` adds the partial index that pass
+  needs for the third status (no schema change to the webhook tables).
+
 ### Fixed — Conductor: a rejected approval no longer takes an unguarded transition (#1698)
 
 2026-11-10. The approval gate computed the decision and then ignored it: the
@@ -2270,6 +2523,7 @@ produced a value, so no turn carried one.
   `TurnIngestResult.embeddingScheduled`.
 - `graphRefs` stays unset: `done` also reaches Public API clients, which have no
   use for internal node ids. Non-streaming replies are unchanged.
+
 ### Fixed — raw-body webhooks: a missing `Content-Type` no longer fails the HMAC
 
 2026-11-10. Reported as #1700: a correctly signed inbound delivery sent without a
@@ -2334,6 +2588,7 @@ executor-owned keys — the two disagreed.
 - **Workflows carry their version number.** `GET /conductors` and
   `GET /conductors/:slug` return `activeVersionNumber` next to `activeVersionId`,
   null when nothing is published. Additive, no migration.
+
 ### Fixed — MCP auth discovery: a failed read is not "not protected"
 
 2026-11-04. Found on Figma in the new admin: the Authorization section vanished
@@ -2381,6 +2636,7 @@ answered 401 while its metadata took ~8 s and `api.figma.com` answered 503.
   desktop wizard's key does not read "stored, not verified". A pass is stored; an
   offline install repeats the bounded probe on later page opens.
 - **`latest-mac.yml`** describes the stapled DMGs (`refresh-mac-feed-dmg.mjs`).
+
 ### Fixed — Builder Teams tabs fail closed on hosts without `teams-sso` (#1620)
 
 2026-11-04. A generated plugin's Teams data router refuses every request that
@@ -2422,6 +2678,7 @@ data mount like a granted `'public'` route, without authentication.
   SIGTERM. They now attach to the app's window as a sheet and bring it forward.
 - **`OMADIA_VERSION`** is stamped for the kernel and the web UI of the packaged
   app, so `/health`, `/system` and the update page report the real version.
+
 ### Fixed — A CLI already signed in gets the orchestrator
 
 2026-11-04. Found in the desktop functional test of v0.195.2.
@@ -2847,8 +3104,6 @@ model or the user (#1542–#1546, #1550, #1553–#1556, #1559–#1561, #1577).
   `privacyMode.ts` comment now describe what the code masks.
 
 `@omadia/plugin-privacy-guard` 0.13.0, `@omadia/plugin-api` 1.47.0.
-
-
 
 ### Fixed — Verifier no longer refutes a "reference" on a model without reference fields (#1574 follow-up)
 
@@ -3319,7 +3574,6 @@ Postgres), and the stamp in `middleware/test/orchestrator/mcpKgIngestPrivacyClam
   storing `insight` plus a clipped prefix of the raw answer. Boots without an
   extractor keep the answer-prefix fallback.
 
-
 ### Fixed — store catalog: one tab per plugin, honest Hub tags, Hub permissions, search (#1469, #1459, #1470, #1471, #1457, #1474)
 
 2026-10-28. Six faults in the store listing and detail pages.
@@ -3448,6 +3702,7 @@ next boot removes; `blank` no longer points at `/store/upload`. Apply skips a
 plugin whose capability is already provided (`skipped[].reason:
 'capability_provided'`), the shipped profile descriptions are translated, and
 the outcome says that the plugins become active after a restart.
+
 ### Fixed — follow-ups to #1522: old false "done" plan steps, the preamble preview, card lead-ins (#1502, #1500)
 
 2026-10-28. Three gaps #1522 left open.
@@ -3624,8 +3879,6 @@ start-time plugin set. Since #989 it rebuilds the orchestrator
 the new plugin set applies from the next turn. The snapshot's `pluginIds` stay
 as a start-time record that nothing reads.
 
-
-
 ### Fixed — the store says truthfully whether a plugin is running, and why not (#1456, #1497, #1496, #1492, #1460)
 
 2026-10-28. Five places reported a plugin's activation state wrong.
@@ -3700,6 +3953,7 @@ integration repos: `byte5ai/omadia-integration-odoo` and
 report runtime 401s through `ctx.status` (separate PRs and releases).
 
 No plugin-api change; no new env var, migration or secret.
+
 ### Fixed — the storage overlay pulls again: SeaweedFS replaces MinIO (#1506)
 
 2026-10-28. `minio/minio` and `minio/mc` were removed from Docker Hub, and
@@ -3820,7 +4074,6 @@ fresh instance. DB-less boots keep re-seeding, as before.
 target `registry:<name>`) with the actor from `auditActorFromRequest`, and the
 url and `has_token` before and after. The token itself never appears. Admin ·
 Audit gains a "Plugin registries" filter.
-
 
 ### Fixed — the plugin UI host page keeps the plugin's state, names it, and stops claiming isolation (#1480, #1479, #1501)
 
@@ -5401,6 +5654,7 @@ of the turn through the identity resolver (`resolveRunTraceOwner` →
 uses), each group participant to their own cluster. `ingestRun` still never
 creates a cluster, and the turn's `resolvedOmadiaUserId`, dataset ACLs, MCP
 keys and `Principal` are unchanged for these turns.
+
 ### Fixed — the Conductor routes the default Teams bot like chat does
 
 2026-10-07 — Three runs of the workflow `test-teams` failed at their entry
@@ -5415,6 +5669,7 @@ unavailable provisioned owner refused, the configured default bot
 to the binding of the run’s conversation, then its own binding, then the
 fallback — as chat routes it — and every other unknown bot refused. The bot key
 is compared lowercased, as stored.
+
 ### Fixed — a withheld answer says why, and only what is true
 
 2026-10-07 — In production (v0.170.0) three Teams answers withheld for missing
@@ -5466,6 +5721,7 @@ hint point at the real fields and tell the model to repeat its first-run
 queries, which are answered from the stored results. `toSemanticAnswer` now
 strips the markers for every connector (Teams never did); the web UI's
 stripper takes the same id shape.
+
 ### Security — `@modelcontextprotocol/sdk` 1.32.1 (GHSA-6qxp-vccf-f47h)
 
 2026-10-07 — The MCP TypeScript SDK's OAuth client before 1.31.0 could send
