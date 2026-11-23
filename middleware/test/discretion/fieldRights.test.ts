@@ -50,6 +50,7 @@ import type { KnowledgeGraph } from '@omadia/plugin-api';
 import { createDeliverDataHandler } from '../../src/triggers/deliverDataTool.js';
 import { RAW_EMAIL, countingService, drain, echoingProvider } from '../_helpers/privacyEgressHarness.js';
 import { discretionAllowsRoom } from '../../src/triggers/triggerTools.js';
+import { roomFieldClasses } from '../../src/triggers/kernelExecutors.js';
 import { text, toolCalls } from '../_helpers/replayTurnFixture.js';
 
 const PERSONAL = fieldCapability('personal');
@@ -395,6 +396,16 @@ describe('field rights travel with a trigger (criterion 18)', () => {
     };
     assert.equal(discretionAllowsRoom(discretion), false, 'no stored rights: refused');
     assert.equal(discretionAllowsRoom({ ...discretion, fieldClasses: ['personal'] }), true);
+  });
+
+  it('criterion 18: stored rights hold only in the creating room with no new reader; a target gets none', () => {
+    const stored = { readers: readersOf(['a', 'b']), fieldClasses: ['personal'] };
+    const own = { target: null } as never;
+    const room = (ids: string[]) => ({ contextKey: 'telegram:group-1', readers: readersOf(ids) });
+    assert.deepEqual(roomFieldClasses(own, stored, room(['a', 'b'])), ['personal']);
+    assert.deepEqual(roomFieldClasses(own, stored, room(['a'])), ['personal'], 'a reader left: still covered');
+    assert.equal(roomFieldClasses(own, stored, room(['a', 'b', 'c'])), undefined, 'a new reader: none');
+    assert.equal(roomFieldClasses({ target: { grantId: 'g' } } as never, stored, room(['a'])), undefined, 'explicit target: none');
   });
 });
 

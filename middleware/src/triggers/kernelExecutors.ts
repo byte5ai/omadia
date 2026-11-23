@@ -103,7 +103,7 @@ export function triggerTurnHint(trigger: Trigger, status: FiringStatus): string 
  * conversation and every reader now was a reader then. An explicit target or
  * a room that gained a reader gets none (fail closed).
  */
-function roomFieldClasses(
+export function roomFieldClasses(
   trigger: Trigger,
   discretion: { readonly readers: Readers; readonly fieldClasses?: readonly string[] },
   room: { readonly contextKey: string; readonly readers: Readers },
