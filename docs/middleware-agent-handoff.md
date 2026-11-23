@@ -8360,9 +8360,13 @@ Write abgelehnt, auch wenn ein zweites Pattern ihn gewähren würde. Sonst re-ö
 `/memories/core/audit/` ist für **jeden** Agent unbeschreibbar (Deny-Prefix vor jeder
 positiven Prüfung). Dort liegt das Promote-Audit-Log; `core` ist ein Read/Write-Grant, das
 jeder Agent hält, also könnte ein Agent ohne diesen Ausschnitt das Protokoll dessen
-überschreiben, was ein Operator mit seinem Memory gemacht hat. Seit #1827 steht auch
-`/memories/_rules/` auf der Deny-Liste: `core` gewährt `_*`, und eine Regel-Datei wirkt
-für alle Agents und Accounts. Wie Regeln künftig gepflegt werden (Admin-Seite, Regeln pro
+überschreiben, was ein Operator mit seinem Memory gemacht hat.
+Seit #1827 gilt das auch für Eltern-Pfade: `delete` und die Quelle von `rename` werden
+abgelehnt, wenn der Pfad das Audit-Log enthält (`/memories/core`, `/memories`), denn die
+Stores nehmen bei Verzeichnissen alle Nachfahren mit. Geprüft wird der kanonische Pfad
+(doppelte und abschliessende Slashes zusammengefasst), wie ihn der Store auflöst.
+Außerdem steht `/memories/_rules/` auf der Deny-Liste: `core` gewährt `_*`, und eine
+Regel-Datei wirkt für alle Agents und Accounts. Wie Regeln künftig gepflegt werden (Admin-Seite, Regeln pro
 Agent/Account), ist offen (§13).
 
 ### Kontext-Key

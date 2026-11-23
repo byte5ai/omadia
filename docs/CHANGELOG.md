@@ -41,7 +41,8 @@ changelog.
 2026-11-17. Jede Datei unter `/memories/_rules/` wirkt für alle Agents und
 alle Accounts: der System-Prompt lässt Agents sie lesen, und der
 Durable-Rules-Hook kopiert jeden Write in team-weites kuratiertes Wissen. Im
-Default-Modus „Aus“ hält jeder Chat-, Public-API- und Kanal-Turn den
+Modus „Aus“ (bis Migration 0099 der Default, bestehende Agents laufen weiter so)
+und in jedem Turn ohne Kanal-Kontext hält der Turn den
 `core`-Grant, der `_*` schreibbar macht, also konnte ein einzelner Chat (oder
 eingeschleuster Text) eine Regel für alle anlegen. `_rules/` steht jetzt auf
 der Deny-Liste von `ScopedMemoryStore`; Lesen bleibt erlaubt. Regeln kommen nur
@@ -2086,6 +2087,20 @@ component `HeaderControls`; `ThemeControls` became `useThemePrefs` +
 `authBadge.loginLink`, `themeControls.menuAriaLabel`, `nav.dashboard`; added
 `authBadge.{preferences,palette,appearance,language}` and
 `themeControls.{switchToDark,switchToLight}`.
+
+### Fixed — Chat-Turns können das Promote-Audit-Log nicht mehr löschen (#1827)
+
+2026-11-17. Die Deny-Liste von `ScopedMemoryStore` prüfte nur den genannten
+Pfad. Ein `delete /memories/core` aus einem kontextfreien Turn (Modus „Aus“,
+der Default) entfernte im Postgres-Store alle Nachfahren, auch
+`/memories/core/audit/memory-promotions.jsonl`; ein `rename` hätte es
+verschoben, und `/memories/core//audit/…` umging die Prüfung, weil der Store
+den doppelten Slash erst danach zusammenfasst. `delete` und die
+`rename`-Quelle werden jetzt abgelehnt, wenn sie das Audit-Log enthalten, und
+die Deny-Prüfung läuft auf dem kanonischen Pfad. Andere Dateien unter
+`/memories/core/` bleiben schreib- und löschbar. Der zweite Teil von #1827
+(Regeln unter `_rules/` aus jedem Turn) braucht eine Entscheidung zum
+Zugriffsmodell und ist nicht Teil dieses Fixes.
 
 ### Fixed — Node-Aktivierung nach Amp-Snapshot-Restore
 
