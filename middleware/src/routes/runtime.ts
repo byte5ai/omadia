@@ -16,14 +16,11 @@ import {
   isEffectiveProviderChange,
   reactivateAfterProviderWrite,
 } from '../platform/providerDependents.js';
-import type { SetupOption } from '../api/admin-v1.js';
-import {
-  SetupOptionsResolveError,
-  withTimeout,
-} from '../plugins/dynamicAgentRuntime.js';
+import type { InstallSetupField, PluginActivationResult, SetupOption } from '../api/admin-v1.js';
+import { SetupOptionsResolveError, type SetupOptionsResolver } from '../plugins/setupOptionsResolver.js';
 import type { ConnectionProbeOutcome } from '../plugins/connectionProbe.js';
-import { extractSetupSchema } from '../plugins/installService.js';
-import type { InstalledRegistry } from '../plugins/installedRegistry.js';
+import { coerceSetupFieldValue, extractSetupSchema } from '../plugins/installService.js';
+import type { InstalledAgent, InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import {
   buildPrivacyPosture,
@@ -88,21 +85,25 @@ interface RuntimeDeps {
    *  existing test wiring without a catalog keeps compiling — the PATCH
    *  handler falls back to vault-only behaviour when absent. */
   catalog?: PluginCatalog;
+  /** Whether a package for this id is on disk (uploaded or built-in).
+   *  Without it `GET /installed` cannot tell and reports every entry as it
+   *  is stored. */
+  hasPackage?: (id: string) => boolean;
   /** Called after a successful config or secret edit. Tears down the
    *  current runtime instance and re-activates it so the plugin reads
    *  the fresh values — most plugins cache config at activate-time. */
   reactivate?: (agentId: string) => Promise<void>;
+  /** #2043 — see `GrantRouteDeps.onGrantsChanged`. */
+  onGrantsChanged?: (agentId: string) => Promise<void>;
+  /** #2043 — see `GrantRouteDeps.onGrantsWritten`. */
+  onGrantsWritten?: (agentId: string) => Promise<void>;
+  /** #1860 — did the last reactivation of `agentId` wait for a restart? */
+  restartPending?: (agentId: string) => boolean;
   /** Live-plugin tool invoker for dynamic setup-field options (post-install).
    *  Optional so existing test wiring keeps compiling — the setup-options
    *  endpoint 503s when absent, and PATCH /config falls back to opaque-id
    *  validation for multiselect fields. */
-  dynamicAgentRuntime?: {
-    resolveSetupOptions(
-      agentId: string,
-      toolId: string,
-      input: unknown,
-    ): Promise<unknown>;
-  };
+  setupOptions?: SetupOptionsResolver;
   /** Epic #470 C4 / H1 — durable operator consent for unauthenticated plugin
    *  path prefixes. Optional so existing test wiring keeps compiling; the
    *  public-path endpoints 503 when absent. */
@@ -140,25 +141,36 @@ interface RuntimeDeps {
   countOpenFieldClassification?: (visitor?: string) => Promise<OpenFieldClassificationCounts>;
 }
 
+/** `status` of an installed entry without a package in `GET /installed`. */
+export const PACKAGE_MISSING_STATUS = 'package_missing';
+
 export function createRuntimeRouter(deps: RuntimeDeps): Router {
   const router = Router();
 
   router.get('/installed', (_req: Request, res: Response) => {
-    const rows = deps.installedRegistry.list().map((entry) => ({
-      id: entry.id,
-      installed_version: entry.installed_version,
-      installed_at: entry.installed_at,
-      status: entry.status,
-      activation_failure_count: entry.activation_failure_count ?? 0,
-      last_activation_error: entry.last_activation_error ?? null,
-      last_activation_error_at: entry.last_activation_error_at ?? null,
-      last_activation_error_code: activationResultOf(entry)?.error_code ?? null,
-      // #1453 — a plugin can activate perfectly and still be unusable because
-      // the target system refuses its credentials. That verdict lives in the
-      // status channel, so an operator reading this endpoint alone used to see
-      // `active` / `last_activation_error: null` and nothing else.
-      action_status: deps.pluginStatusRegistry?.get(entry.id) ?? null,
-    }));
+    const rows = deps.installedRegistry.list().map((entry) => {
+      // An entry whose package is gone is visited by no runtime: it is not
+      // running, and the status the registry still holds says nothing. The
+      // answer is derived here; the registry is not rewritten.
+      const packageMissing = deps.hasPackage ? !deps.hasPackage(entry.id) : false;
+      return {
+        id: entry.id,
+        installed_version: entry.installed_version,
+        installed_at: entry.installed_at,
+        status: packageMissing ? PACKAGE_MISSING_STATUS : entry.status,
+        registry_status: entry.status,
+        package_missing: packageMissing,
+        activation_failure_count: entry.activation_failure_count ?? 0,
+        last_activation_error: entry.last_activation_error ?? null,
+        last_activation_error_at: entry.last_activation_error_at ?? null,
+        last_activation_error_code: activationResultOf(entry)?.error_code ?? null,
+        // #1453 — a plugin can activate perfectly and still be unusable because
+        // the target system refuses its credentials. That verdict lives in the
+        // status channel, so an operator reading this endpoint alone used to see
+        // `active` / `last_activation_error: null` and nothing else.
+        action_status: deps.pluginStatusRegistry?.get(entry.id) ?? null,
+      };
+    });
     res.json({ items: rows, total: rows.length });
   });
 
@@ -205,11 +217,15 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       });
       return;
     }
+    // The same derived answer as the list: an entry without a package.
+    const packageMissing = deps.hasPackage ? !deps.hasPackage(entry.id) : false;
     res.json({
       id: entry.id,
       installed_version: entry.installed_version,
       installed_at: entry.installed_at,
-      status: entry.status,
+      status: packageMissing ? PACKAGE_MISSING_STATUS : entry.status,
+      registry_status: entry.status,
+      package_missing: packageMissing,
       config: entry.config,
       activation_failure_count: entry.activation_failure_count ?? 0,
       last_activation_error: entry.last_activation_error ?? null,
@@ -348,7 +364,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
             v,
             id,
             optField,
-            deps.dynamicAgentRuntime,
+            deps.setupOptions,
           );
           if ('error' in checked) {
             res.status(400).json(checked.error);
@@ -378,7 +394,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
               }
             : null,
           // #1497 — did the plugin come back up on the new values?
-          activation: activationResultOf(updated),
+          activation: activationWithRestart(deps, updated),
         });
       } catch (err) {
         if (err instanceof ProviderDependentRebuildError) {
@@ -427,7 +443,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
         });
         return;
       }
-      const resolver = deps.dynamicAgentRuntime;
+      const resolver = deps.setupOptions;
       if (!resolver) {
         res.status(503).json({
           code: 'runtime.options_unavailable',
@@ -1068,21 +1084,29 @@ async function applySetupValues(
   const secretFieldKeys = resolveSecretFieldKeys(deps.catalog, id);
   const isSecret = (key: string): boolean =>
     secretFieldKeys === null ? true : secretFieldKeys.has(key);
-  // A `boolean` field edited after install arrives as the string 'true' /
-  // 'false' (the patch body is string-only). Store a real boolean, exactly like
-  // the install path does — plugins reading `config.get<boolean>()` would
-  // otherwise see a truthy "false". Anything else is not a boolean: refuse it
+  // #1464, #1958 — a `boolean` or `integer` field edited after install arrives
+  // as a string (the patch body is string-only). Convert it with the install
+  // path's own `coerceSetupFieldValue`, so an edit stores the same real type —
+  // and refuses the same values — as the install did. A plugin reading
+  // `config.get<number>()` would otherwise compute `now + "1800"`. Refused
   // before anything is written.
-  const booleanFieldKeys = resolveBooleanFieldKeys(deps.catalog, id);
+  const typedFields = resolveTypedFields(deps.catalog, id);
+  const typedValues: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(setEntries)) {
-    if (booleanFieldKeys.has(k) && v !== 'true' && v !== 'false') {
+    const field = typedFields.get(k);
+    if (!field) continue;
+    const coerced = coerceSetupFieldValue(field, v);
+    if ('error' in coerced) {
       res.status(400).json({
         code: 'runtime.setup_field_invalid',
-        message: `value for '${k}' must be 'true' or 'false'`,
+        message: `value for '${k}' ${typedValueExpectation(field)}`,
         field: k,
+        reason: coerced.error.code,
+        ...(coerced.error.params ? { params: coerced.error.params } : {}),
       });
       return;
     }
+    typedValues[k] = coerced.value;
   }
 
   const vaultSet: Record<string, string> = {};
@@ -1091,7 +1115,7 @@ async function applySetupValues(
   const configDelete: string[] = [];
   for (const [k, v] of Object.entries(setEntries)) {
     if (isSecret(k)) vaultSet[k] = v;
-    else configSet[k] = booleanFieldKeys.has(k) ? v === 'true' : v;
+    else configSet[k] = Object.hasOwn(typedValues, k) ? typedValues[k] : v;
   }
 
   try {
@@ -1147,7 +1171,7 @@ async function applySetupValues(
       // back up. Without it the store rendered "✓ Saved" over a plugin that
       // had just failed to start on the new values (or had just recovered),
       // and the page kept the old badge until a reload.
-      activation: activationResultOf(updated),
+      activation: activationWithRestart(deps, updated),
     });
   } catch (err) {
     if (err instanceof ProviderDependentRebuildError) {
@@ -1179,16 +1203,31 @@ function dependentRebuildFailure(err: ProviderDependentRebuildError): {
   };
 }
 
-/** Keys of the plugin's `boolean` setup fields; empty without a catalog entry. */
-function resolveBooleanFieldKeys(
+/**
+ * The plugin's `boolean` / `integer` setup fields by key — the types whose
+ * stored value is not the string the patch body carries. Empty without a
+ * catalog entry. Other types are stored as sent (their format check is the
+ * `pattern` gate above).
+ */
+function resolveTypedFields(
   catalog: PluginCatalog | undefined,
   pluginId: string,
-): Set<string> {
+): Map<string, InstallSetupField> {
   const entry = catalog?.get(pluginId);
   const schema = entry ? extractSetupSchema(entry) : null;
-  return new Set(
-    (schema?.fields ?? []).filter((f) => f.type === 'boolean').map((f) => f.key),
+  return new Map(
+    (schema?.fields ?? [])
+      .filter((f) => f.type === 'boolean' || f.type === 'integer')
+      .map((f) => [f.key, f]),
   );
+}
+
+/** English (no request locale) tail of the 400 message for a typed field. */
+function typedValueExpectation(field: InstallSetupField): string {
+  if (field.type === 'boolean') return "must be 'true' or 'false'";
+  return field.min !== undefined
+    ? `must be a whole number of at least ${field.min}`
+    : 'must be a whole number';
 }
 
 function resolveSecretFieldKeys(
@@ -1336,7 +1375,7 @@ async function validateMultiselectValue(
   raw: unknown,
   pluginId: string,
   field: OptionsProviderField,
-  resolver: RuntimeDeps['dynamicAgentRuntime'],
+  resolver: RuntimeDeps['setupOptions'],
 ): Promise<{ value: string } | { error: { code: string; message: string } }> {
   if (!Array.isArray(raw) || !raw.every((x) => typeof x === 'string')) {
     return {
@@ -1417,5 +1456,28 @@ async function auditPrivacyChange(
       `[runtime] privacy audit write failed for ${JSON.stringify(pluginId)}:`,
       err instanceof Error ? err.message : err,
     );
+  }
+}
+
+/** #1497 activation result, plus #1860's note when the new values wait for
+ *  the next restart instead of a hot reactivation. */
+function activationWithRestart(
+  deps: Pick<RuntimeDeps, 'restartPending'>,
+  entry: InstalledAgent | undefined,
+): PluginActivationResult | null {
+  const result = activationResultOf(entry);
+  if (result === null || entry === undefined) return result;
+  return deps.restartPending?.(entry.id) === true ? { ...result, restart_pending: true } : result;
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<T>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }

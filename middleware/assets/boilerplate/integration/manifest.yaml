@@ -1,0 +1,143 @@
+schema_version: "1"
+
+# ===========================================================================
+# Capability plugin (kind: integration) — {{AGENT_NAME}}
+# ---------------------------------------------------------------------------
+# Schema of truth:  adaptManifestV1 in middleware/src/plugins/manifestLoader.ts
+#                   (types: middleware/src/api/admin-v1.ts)
+# Entity types:     middleware/assets/entity-registry.v1.yaml
+# Sibling template: middleware/assets/boilerplate/tool/
+#
+# A capability plugin delivers tools to the agents the operator grants it
+# to (spec 2042 §5.10, ADR-0014). It has no persona, no system prompt and
+# no model loop of its own. Kind `integration`: an external system with
+# credentials. Codegen writes `identity.kind` from the spec.
+# ===========================================================================
+
+identity:
+  id: "{{AGENT_ID}}"                     # z.B. @omadia/sharepoint
+  kind: "integration"
+  domain: "{{AGENT_DOMAIN}}"             # z.B. m365.sharepoint, odoo.hr — lowercase, dotted, kebab-case mid-segment OK
+  name: "{{AGENT_NAME}}"
+  version: "{{AGENT_VERSION}}"
+  # Locale map, not a bare string (#885): a bare string is read as English, so
+  # German in this slot would show up as the English description in the Hub.
+  description:
+    en: "{{AGENT_DESCRIPTION_EN}}"
+    de: "{{AGENT_DESCRIPTION_DE}}"
+  authors:
+    - name: "{{AGENT_AUTHOR}}"
+  license: "Proprietary"
+  icon: "./assets/icon.png"
+  categories:
+    - "{{CATEGORY}}"                     # productivity | crm | documents | …
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+# Multi-orchestrator runtime — may the plugin be activated for >1 Agent
+# in one process? Builder-generated plugins default to multi-instance.
+multi_instance: true
+
+# Plugin data-handling class. Builder-generated plugins default to strict.
+privacy_class: "strict"
+
+# Integrations this plugin depends on. Auth/secrets are pulled via the
+# resolution chain (ctx.secret) from the integration. Codegen overwrites
+# this block directly in the YAML AST from `spec.depends_on` —
+# self-contained plugins (PAT/OAuth in their own setup_fields, no parent
+# integration plugin) get `depends_on: []`, others get the real block
+# list.
+depends_on: []
+
+lifecycle:
+  entry: "dist/index.js"
+  hooks:
+    onInstall: false
+    onConfigure: true                    # Pflicht wenn setup.self_test: true
+    onActivate: true
+    onDeactivate: true
+    onUninstall: true
+    onMigrate: true
+  uninstall_policy:
+    entities: "quarantine"               # keep | quarantine | delete
+    memory: "delete"
+    secrets: "delete"
+
+# Eigene Secrets/Config-Felder dieses Plugins. Erbt sonst von depends_on.
+setup:
+  fields: []
+  self_test: true                        # wenn true: onConfigure MUSS pingen
+
+# ---------------------------------------------------------------------------
+# Capabilities = die Tools, die ein berechtigter Agent aufrufen kann.
+# Pro Capability: input/output als JSON-Schema ODER $ref auf entity-registry.
+# ---------------------------------------------------------------------------
+capabilities:
+  - id: "{{CAPABILITY_ID}}"              # z.B. search_documents
+    description: "{{CAPABILITY_DESCRIPTION_DE}}"
+    input_schema:
+      type: "object"
+      required: ["query"]
+      properties:
+        query:
+          type: "string"
+          minLength: 1
+          maxLength: 500
+    output_schema:
+      type: "array"
+      items:
+        # $ref: "entity://DocumentRef"   # bevorzugt: Entity wiederverwenden
+        type: "object"
+        properties:
+          id:   { type: "string" }
+          title: { type: "string" }
+          url:   { type: "string" }
+    side_effects: "read"                 # read | write | none
+    idempotent: true
+    autonomous: true                     # false when OBO user token is required
+    timeout_ms: 20000
+
+playbook:
+  when_to_use: >
+    {{WHEN_TO_USE_DE}}
+  combines_with: []
+  not_for:
+    - "{{NOT_FOR_CASE_1}}"
+  example_prompts:
+    - "{{EXAMPLE_PROMPT_1}}"
+    - "{{EXAMPLE_PROMPT_2}}"
+
+entities:
+  produces: []
+  consumes: []
+
+permissions:
+  memory:
+    reads: ["agent:{{AGENT_ID}}:*"]
+    writes: ["agent:{{AGENT_ID}}:*"]
+  graph:
+    reads: []
+    writes: []
+  network:
+    # Static default — codegen overwrites this from spec.network.outbound via
+    # the YAML AST. Stays `[]` for integration-backed agents that egress only
+    # through a depended-on service (e.g. odoo.client); self-contained agents
+    # that call an external API directly get their host(s) written here.
+    outbound: []
+  filesystem:
+    scratch: false
+
+integrations: []
+
+# Scheduled background jobs. Codegen rewrites this block from spec.jobs[];
+# leave it as `[]` for plugins with no scheduled work. The kernel auto-
+# registers each entry before activate() returns; ctx.jobs.register(...) in
+# activate-body adds programmatic jobs on top.
+jobs: []
+
+ui:
+  settings_schema: null
+  commands: []
+  dashboard_cards: []

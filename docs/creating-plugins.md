@@ -3,19 +3,42 @@
 Diese Anleitung führt von „leeres Verzeichnis" bis „installierbar aus dem Hub".
 Ein Plugin ist ein **standalone Package**, das als `.zip` hochgeladen wird — der
 Server validiert das Manifest, prüft Peer-Dependencies und registriert es im
-Katalog. Es gibt drei `kind`s, und sie unterscheiden sich **nicht nur im
-Manifest, sondern auch im Code-Contract**:
+Katalog. Der Manifest-`kind` sagt, **was** das Plugin liefert (Spec 2042 §5.10,
+ADR-0014); ein Plugin liefert genau eines davon:
 
-| kind | Was es ist | `activate()` gibt zurück | Beispiel |
+| kind | Liefert | `activate()` gibt zurück | Beispiel |
 |---|---|---|---|
-| `agent` | Capability-Anbieter mit Toolkit (Zod-Tools) + System-Prompt | `{ toolkit, close }` | `agent-seo-analyst` |
-| `integration` | reiner Credential-/HTTP-Client, kein Toolkit | (kein Toolkit; nur Secrets/Config-Container) | `de.byte5.integration.odoo` |
-| `channel` | User-Surface (WhatsApp, Teams, Telegram, …) mit Transport + Adaptern | **`ChannelHandle` über `activate(ctx, core)`** | `@omadia/channel-whatsapp` |
+| `integration` | Capability: Zugang zu einem System (Credentials, Client, Tools) | `{ close }`; Tools per `ctx.tools.register` | `@omadia/integration-odoo` |
+| `tool` | Capability: ein Werkzeug (Zod-Tools) | `{ close }`; Tools per `ctx.tools.register` | `@omadia/plugin-web-search` |
+| `skill` | Capability: Know-how, auch ohne Code | – (reine Daten möglich) | |
+| `channel` | Wo Menschen Agenten erreichen (Transport + Adapter) | **`ChannelHandle` über `activate(ctx, core)`** | `@omadia/channel-whatsapp` |
+| `model` | Ein Modell (Text, Embeddings, Transkription); nur der Modell-Gateway ruft es | Provider über `llm_provider:` / `ctx.services.provide` | `omadia-llm-mistral` |
+| `archetype` | Ein Agenten-Archetyp (§1) | Prozess-Dienste | `omadia-agent-facilitator` |
+| `system-module` | Infrastruktur von omadia selbst | beliebig | `@omadia/verifier` |
+| `agent-template` | Vorlagen für Agenten (inaktive Metadaten, §1) | – (reine Daten, kein Code) | |
+
+Kein Plugin ist ein Akteur: keine Persona, kein Speaker, keine eigene Identität.
+Ein Manifest mit `persona`/`speaker`/`personality`/`system_prompt`, einem
+`prompt_partial`-Skill oder einem `AGENT.md` (außer in einer Agent-Vorlage)
+weist der Kern beim Upload ab (`422 package.persona_declared`). Die früheren
+Kinds `agent` und `extension` sind **ausgemustert**: Upload, Installation und
+Update eines solchen Pakets antworten `422 package.retired_kind` bzw. `422
+install.retired_kind`, auch als Update eines Pakets, das unter diesem Kind
+installiert ist (seit plugin-api 1.83.0). Bereits installierte Pakete laufen
+als Altbestand weiter, bis ihre migrierte Version sie ersetzt: ein
+Agent-Plugin wird zu einer Capability plus einem Agenten aus dem Agent
+Builder, eine `extension` zu `system-module` oder `model`. Ein Plugin hat
+keine Persona und keinen System-Prompt; Persona-Vorlagen liefert es als
+`agent_templates:`. Plugins mit den neuen Kinds, `agent_templates:` oder
+`side_effects` verlangen den Kern mit plugin-api 1.78.0:
+`compat.core: ">=1.78.0 <2.0"`.
 
 > **Quellen der Wahrheit (nicht halluzinieren):**
-> - Agent: Referenz `middleware/packages/agent-seo-analyst/`, Boilerplate
->   `middleware/assets/boilerplate/{agent-pure-llm,agent-integration}/`,
->   Package-Contract (10 Punkte) `…/agent-pure-llm/CLAUDE.md`.
+> - Capability-Plugin (`integration` / `tool`): Referenzen
+>   `middleware/packages/agent-reference-maximum/` und
+>   `middleware/packages/agent-seo-analyst/`, Boilerplate
+>   `middleware/assets/boilerplate/{integration,tool}/`,
+>   Package-Contract (10 Punkte) `…/integration/CLAUDE.md`.
 > - Channel: SDK-Contract `middleware/packages/harness-channel-sdk/src/`,
 >   öffentliches Referenz-Plugin **`byte5ai/omadia-channel-whatsapp`**
 >   (Teams/Telegram-Quelle liegt privat). Resolver
@@ -43,44 +66,186 @@ Manifest, sondern auch im Code-Contract**:
 
 ## 1. Welchen `kind` baust du?
 
-Bei vagem „Plugin" zuerst klären — die drei kinds teilen Manifest-Schema +
-Zip-Flow, aber der Code-Contract ist verschieden:
+Bei vagem „Plugin" zuerst klären, was es liefern soll (Tabelle oben):
 
-- **`agent`** — liefert Tools (Zod-Toolkit) + einen System-Prompt-Partial. Die
-  Runtime macht SubAgent-Wrap, Tool-Bridge und Prompt-Concat. → §2–§4a.
-- **`integration`** — nur Secrets/Config-Container, von dem `agent`s via
-  `depends_on` erben. Kein Toolkit.
+- **Capability** (`integration`, `tool`, `skill`): Tools, die ein Agent nutzt,
+  dem der Operator sie gewährt. Das Ergebnis geht als **Daten** an den
+  aufrufenden Agenten, nie als Text an einen Menschen. Installieren hängt das
+  Plugin an keinen Agenten (INV-8).
 - **`channel`** — User-Surface. Empfängt native Events, übersetzt sie in den
-  `IncomingTurn`-Shape, fährt einen Orchestrator-Turn und rendert die Antwort
-  zurück. **Keine** `capabilities`/`playbook`/`skills`. → §4b.
+  `IncomingTurn`-Shape, fährt einen Agenten-Turn und rendert die Antwort
+  zurück. Ein Kanal darf die Bots mehrerer Agenten transportieren; deren
+  Identität gehört dem Kern. **Keine** `capabilities`/`playbook`/`skills`. → §4b.
+- **`model`** — hält Modell-Credentials und spricht mit Modell-APIs. Nur
+  Modell-Plugins dürfen das (siehe „Modellzugriff und Netz“ unten).
+- **`archetype`**, **`system-module`**: Installation verlangt eine
+  ausdrückliche Bestätigung, ebenso ein Update, das ein Plugin zum
+  System-Modul macht (`becomes_system_module`). Ein System-Modul, das für
+  einen bestimmten Agenten arbeitet (etwa der Canvas-Helfer
+  `@omadia/ui-orchestrator`), holt dessen Hülle über `agentEnvelope@1`
+  (`AGENT_ENVELOPE_SERVICE_NAME`): `resolve(agentId)` liefert den Chat-Agenten
+  genau dieses Agenten oder `undefined`, ohne Modell. Andere Kinds bekommen
+  den Service nicht. Ein Plugin, das ihn nutzt, deklariert
+  `compat.core: ">=1.83.0 <2.0"`.
+- **`agent-template`** — nur Vorlagen (siehe unten).
+
+### Was ein Tool tut: `capabilities[].side_effects`
+
+Jedes Tool eines Capability-Plugins deklariert im `capabilities:`-Eintrag
+mit seiner `id` (= Tool-Name), was es tut: `read` (liest ein System), `write`
+(ändert eines) oder `none` (berührt kein System). Der Kern liest das als
+`Plugin.tool_side_effects` (`declaredToolEffect`, `src/plugins/toolSideEffects.ts`).
+Schreibzugriffe über ein Plugin-Tool werden gegen die Leserschaft des Ziels
+geprüft (Spec 2042 §5.11, Kriterium 17). Ein Tool ohne Deklaration gilt als
+`unknown` und wird seit plugin-api 1.83.0 wie `write` gegen alle Labels des
+Turns geprüft, nie als `read`; ein Wert außerhalb der drei wird mit Warnung
+verworfen. Deklariere deshalb jedes Tool.
+
+```yaml
+capabilities:
+  - id: "crm_create_note"
+    side_effects: "write"     # read | write | none
+```
+
+### Personenbezogene Felder eines Tool-Ergebnisses: `piiFields`
+
+Ein Tool, das Personendaten liefert, deklariert die Felder bei der
+Registrierung (`ToolRegistrationOptions.piiFields` an `ctx.tools.register`
+und `ctx.tools.registerHandler`, plugin-api 1.83.0; Typ `ToolPIIField` aus
+`piiAnnotation.ts`). Der Privacy Shield maskiert jede deklarierte Spalte
+eines internierten Ergebnisses, egal was sein Classifier oder ein
+Nicht-personenbezogen-Eintrag des Operators sagt. Die Deklaration maskiert
+nur zusätzlich, sie gibt nie ein Feld frei. Es zählen nur Pfade, die eine
+Spalte der Ergebniszeilen nennen: `name`, `[].name`, `<items>[].name`; ein
+abschließendes `[N]` (Odoo-many2one `[id, label]`) maskiert die ganze Spalte.
+Tiefere Pfade ignoriert der Kern. Kerne vor 1.83.0 lesen die Option nicht;
+ein Plugin, das sich auf die Maskierung verlässt, deklariert
+`compat.core: ">=1.83.0 <2.0"`.
+
+```ts
+ctx.tools.register(spec, handler, {
+  piiFields: [{ path: '[].name', idPath: '[].id', type: 'PERSON' }],
+});
+```
+
+### Agent-Vorlagen: `agent_templates:`
+
+Eine Vorlage ist ein Preset aus Identität, Persönlichkeit und vorgeschlagenen
+Capabilities für einen Agenten eines bestehenden Archetyps. Sie ist
+**inaktive Metadaten**: sie läuft nicht, gewährt nichts und spricht nie. Erst
+der Operator macht im Agent Builder einen Agenten daraus. Ein Paket vom
+`kind: agent-template` trägt nur Vorlagen (mindestens eine); Capability- und
+Archetyp-Plugins dürfen zusätzlich Vorlagen mitliefern, die sie nutzen.
+
+```yaml
+agent_templates:
+  - id: "hr-assistant"            # a-z 0-9 -, eindeutig im Paket
+    archetype: "standard"         # optional, Default standard
+    name: "Hanna"                 # vorgeschlagener Name
+    short_description: "HR-Kollegin"        # ≤ 80 Zeichen
+    long_description: "Beantwortet Fragen zu Urlaub und Abrechnung."
+    instructions: "Du bist die HR-Kollegin des Teams. …"
+    language: "de"                # BCP 47, optional
+    verbosity: "brief"            # Antwortumfang: tldr | brief | standard | detailed | max
+    persona: { axes: { warmth: 80, formality: 40 } }   # wie im Agent Builder
+    quality: { sycophancy: "low" }
+    capabilities: ["@omadia/integration-odoo"]         # nur Vorschläge
+```
+
+Der Kern liest den Block **streng**: ein unbekanntes Feld oder ein Wert über
+dem Limit weist das Manifest ab. `channel`-, `model`- und
+`system-module`-Pakete dürfen keine Vorlagen tragen. Der Agent Builder liest
+die Vorlagen installierter Plugins über `GET /api/v1/admin/agent-templates`
+und die Vorbelegung über `GET /api/v1/admin/agent-templates/prefill?plugin=…&template=…`.
+
+### Modellzugriff und Netz
+
+- **Modelle nur über `ctx.llm`.** Der Aufruf läuft im Kontext dessen, der das
+  Plugin gerade nutzt: im Turn des aufrufenden Agenten (dessen Modell-Policy,
+  Budget und Trace), für ein Archetyp-Plugin nur in einem Execution Scope
+  (sonst `LlmScopeRequiredError`). Rohe Modell-Services (`anthropicClient`,
+  `llm`, `llmProviderPool`) bekommt kein Plugin außer `model`-Plugins und den
+  mitgelieferten System-Modulen des Kerns (`RawModelServiceRefusedError`).
+  Ein Modellaufruf außerhalb jedes Ausführungskontexts wird verweigert, etwa
+  aus `activate()` oder einem Timer. `embeddingClient` und `transcription`
+  sind immer durch den Gateway gebunden. Seit plugin-api 1.83.0 gilt das
+  immer; `MODEL_GATEWAY_MODE` gibt es nicht mehr.
+- **Netz nur über `ctx.http`** (Allow-List aus `permissions.network.outbound`,
+  `$config.*`-Hosts, `web_scanner`-Modi). Der globale `fetch` und `node:http(s)`
+  sind für Plugin-Code sandboxed: eine Anfrage, die das Plugin selbst stellt,
+  muss von seiner Netzerlaubnis gedeckt sein, und **Modell-Provider-Endpunkte
+  sind für jedes Nicht-`model`-Plugin gesperrt**, auch wenn sie in der
+  Allow-List stehen. Der Kern verweigert eine solche Anfrage immer
+  (`PluginEgressRefusedError`); `PLUGIN_EGRESS_MODE` gibt es nicht mehr. Was
+  der Kern verweigert hat: `GET /api/v1/admin/model-gateway`.
 
 ---
 
-## 2. Scaffold aus der Boilerplate (agent)
+### `kind: archetype` — ein Archetyp-Plugin
 
-Wähle `agent-pure-llm` (kein externes API, reines Prompting) oder
-`agent-integration` (echter HTTP-Client + Secrets):
+Ein Archetyp-Plugin liefert **einen Agenten-Archetyp** (das Berufsbild eines
+Agenten, siehe `docs/terminology.md`). Es wird keinem Agenten angehängt; der
+Administrator legt im Agenten-Verzeichnis Agenten dieses Archetyps an. Es
+läuft in der Extension-Runtime.
+
+Das Manifest trägt den Deskriptor, den der Kern durchsetzt:
+
+```yaml
+identity:
+  kind: "archetype"
+archetype:
+  id: "facilitator"                # klein, a-z 0-9 -, nicht "standard"
+  label: { en: "Facilitator", de: "Facilitator" }
+  label_plural: { en: "Facilitators", de: "Facilitatoren" }
+  description: { en: "…", de: "…" }
+  noun: "a facilitator"            # für Ablehnungssätze der API
+  omits: [plugin_grant, tool_grant, memory, default_agent, channel_binding,
+          persona_skill, fast_path, agent_to_agent, consultation, sub_agent,
+          assistance]              # Pflicht, darf leer sein
+  omission_reasons: { memory: "…" }
+  adds: [conversation_messages, agent_turn, own_identity_send,
+         session_capabilities]     # Kern-Dienste nur für Agenten des Archetyps
+  requires: [own_channel_identity]
+  role_contract: |                 # schließt die Identität jedes Agenten ab
+    …
+```
+
+- Der Kern liest den Block **streng**: ein unbekannter Eintrag in `omits`,
+  `adds` oder `requires` weist das Manifest ab, statt ihn zu überspringen.
+- Ein unbekannter `identity.kind` wird beim Ingest abgewiesen (früher wurde er
+  stillschweigend zu `agent`).
+- Die Installation verlangt eine ausdrückliche Bestätigung; der Dialog zeigt
+  genau diese Listen.
+- Zwei installierte Plugins für denselben Archetyp: keines wird registriert.
+- `compat.core` muss den Kern verlangen, der `archetype` kennt (plugin-api
+  ≥ 1.60.0): ein älterer Kern bietet das Plugin aus dem Hub gar nicht an.
+
+## 2. Scaffold aus der Boilerplate (Capability-Plugin)
+
+Wähle `tool` (lokale Logik, kein externes System) oder `integration`
+(externes System mit Zugangsdaten). Ein Capability-Plugin hat keine Persona
+und keinen System-Prompt; Rolle und Charakter gehören einem Agenten (Agent
+Builder), siehe Spec 2042 §5.10 und ADR-0014.
 
 ```bash
-cp -R middleware/assets/boilerplate/agent-pure-llm \
-      middleware/packages/agent-<slug>
-cd middleware/packages/agent-<slug>
-mv skills/{{AGENT_SLUG}}-expert.md skills/<slug>-expert.md
+cp -R middleware/assets/boilerplate/tool \
+      middleware/packages/<slug>
+cd middleware/packages/<slug>
 ```
 
 Package-Layout (flach, am Root):
 
 ```
-agent-<slug>/
-├── manifest.yaml         # deklarative Definition (Schema v1) — Pflicht
+<slug>/
+├── manifest.yaml         # deklarative Definition (Schema v1), kind integration|tool
 ├── package.json          # name === manifest.identity.id, "type":"module", "private":true
 ├── tsconfig.json         # NodeNext, rootDir:"./", outDir:"./dist"
 ├── types.ts              # lokales PluginContext-Duplikat (KEIN Cross-Import!)
-├── plugin.ts             # activate(ctx) → { toolkit, close() }
+├── plugin.ts             # activate(ctx) → registerToolkit → { close() }
+├── registerTools.ts      # jedes Tool → ctx.tools.register
 ├── toolkit.ts            # Capability → ToolDescriptor[] (Zod-Input + run)
-├── client.ts             # externe API (LLM-frei, testbar) — nur agent-integration
+├── client.ts             # externe API (LLM-frei, testbar) — nur integration
 ├── index.ts              # Barrel
-├── skills/<slug>-expert.md   # System-Prompt-Partial (YAML-Frontmatter)
 ├── assets/               # icon.png etc. (optional)
 └── scripts/build-zip.mjs # tsc + stage + zip → out/<id>-<version>.zip
 ```
@@ -103,7 +268,8 @@ schema_version: "1"
 identity:
   id: "de.byte5.agent.<slug>"      # === package.json "name". byte5-privat: reverse-DNS;
                                    # public OSS: "@omadia/<slug>" (wie @omadia/plugin-office)
-  kind: "agent"                    # agent | integration | channel
+  kind: "integration"              # integration | tool | skill | channel | model | archetype
+                                   # | system-module | agent-template (agent/extension: Upload abgelehnt)
   domain: "<domain>"               # z.B. coaching, m365.sharepoint, whatsapp — lowercase, dotted
   name: "<Anzeigename>"
   version: "0.1.0"                 # SemVer; === package.json "version"
@@ -129,20 +295,14 @@ setup:
   fields: []                       # Setup-Felder → rendern automatisch im Install-Drawer
   self_test: false
 
-capabilities: []                   # Tools liefert das toolkit; [] = pure-LLM (NICHT für channel)
-
-skills:
-  - id: "<slug>_expert_system"
-    kind: "prompt_partial"
-    path: "skills/<slug>-expert.md"
-    description: "Rolle & Arbeitsweise."
+capabilities: []                   # Tools liefert das toolkit; je Capability side_effects (read|write|none) (NICHT für channel)
 
 permissions:
   memory:
     reads: ["session:*", "agent:de.byte5.agent.<slug>:*"]
     writes: ["agent:de.byte5.agent.<slug>:*"]
   network:
-    outbound: []                   # erlaubte Hosts (leer = pure-LLM)
+    outbound: []                   # erlaubte Hosts (leer = kein ausgehender Netzzugriff)
 ```
 
 **Regeln, die sonst erst zur Install-/Ingest-Zeit knallen:**
@@ -173,21 +333,30 @@ permissions:
 
 ---
 
-## 4a. Implementieren — Agent
+## 4a. Implementieren — Capability-Plugin (`tool`, `integration`, `skill`)
 
-- **`activate(ctx)`** gibt fix zurück:
-  `{ toolkit: { tools: ToolDescriptor[]; close() }, close() }`.
-  `ToolDescriptor = { id, description, input: ZodSchema, run(input) }`.
-- Kein eigener LLM-Client, keine eigene Tool-Loop — die Runtime macht
-  SubAgent-Wrap, Tool-Bridge, Tool-Name-Derivation (`…agent.<slug>` →
-  `query_<slug>`) und System-Prompt-Concat aus `skills/*.md`.
+- **`activate(ctx)`** registriert jedes Tool mit
+  `ctx.tools.register(spec, handler, options?)` und gibt `{ close() }` zurück;
+  `close()` ruft die Dispose-Funktionen der Registrierungen auf
+  (Boilerplate: `registerTools.ts`).
+- Der Kern bietet die Tools den Agenten an, denen der Operator das Plugin
+  freigegeben hat; der aufrufende Agent entscheidet, wann er sie nutzt. Kein
+  eigener LLM-Client, keine eigene Tool-Loop, kein Sub-Agent: die Laufzeit für
+  Plugins vom Kind `agent` (`query_<slug>`-Tools) gibt es nicht mehr (S3c). Ein
+  noch installiertes `agent`-Plugin startet nicht und steht auf `errored` mit
+  dem Code `kind_retired`.
+- Der Handler gibt Text zurück — oder `{ output, postcondition?, limitSignal?,
+  structured? }` (`NativeToolResult`, siehe unten).
+- PII-Spalten des Ergebnisses deklarierst du mit `piiFields` in den Optionen von
+  `ctx.tools.register`; die Privacy Shield maskiert sie immer.
 - Secrets/Config nur über `ctx`:
   `await ctx.secrets.get(k)` / `.require(k)` (async), `ctx.config.get<T>(k)` (sync).
-- System-Prompt gehört in `skills/<slug>-expert.md` (Markdown + YAML-Frontmatter),
-  **nicht** in den Code.
+- Kein System-Prompt, kein `AGENT.md`, keine `prompt_partial`-Skills: was ein
+  Agent über das Plugin wissen muss, steht in den Tool-Beschreibungen und im
+  `playbook:`.
 
 Details + Zod-Support-Matrix + Lifecycle-Budgets (`activate` ≤10s, `close` ≤5s):
-die 10 Punkte in `middleware/assets/boilerplate/agent-pure-llm/CLAUDE.md`.
+die 10 Punkte in `middleware/assets/boilerplate/integration/CLAUDE.md`.
 Kanonische Vorlage: `middleware/packages/agent-seo-analyst/`.
 
 ```bash
@@ -286,7 +455,7 @@ channel:
 + JSON-API), im Manifest `admin_ui_path` auf `…/index.html` zeigen → web-ui
 rendert automatisch ein `<iframe src="/bot-api{admin_ui_path}">` auf der
 Store-Detail-Page. Harte Regeln (siehe
-`middleware/assets/boilerplate/agent-integration/assets/admin-ui/CLAUDE.md`):
+`middleware/assets/boilerplate/integration/assets/admin-ui/CLAUDE.md`):
 `fetch()` **relativ** (`api/status`), jede Antwort `{ ok, … }`, Stylesheet
 `/bot-api/_harness/admin-ui.css`, nur `var(--*)`-Tokens, keine externen Scripts/Fonts.
 
@@ -527,8 +696,8 @@ lokal und startet dann den normalen Install-Job.
 
 ## Referenzen
 
-- Package-Contract Agent (10 Punkte): `middleware/assets/boilerplate/agent-pure-llm/CLAUDE.md`
-- Admin-UI-Constraints: `middleware/assets/boilerplate/agent-integration/assets/admin-ui/CLAUDE.md`
+- Package-Contract Capability-Plugin (10 Punkte): `middleware/assets/boilerplate/integration/CLAUDE.md`
+- Admin-UI-Constraints: `middleware/assets/boilerplate/integration/assets/admin-ui/CLAUDE.md`
 - Kanonischer Agent: `middleware/packages/agent-seo-analyst/`
 - Channel-SDK: `middleware/packages/harness-channel-sdk/src/` (`@omadia/channel-sdk`) — inkl. `getChatAgent(ctx)`
 - API-Key-Auth (server-to-server Bearer statt Session-Cookie): `middleware/packages/harness-api-key-auth/src/` (`@omadia/api-key-auth`) — `requireApiKey(...)` als mountbare Express-Middleware, inkl. Key-Store, Scopes, Rate-Limit, Audit-Log

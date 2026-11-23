@@ -55,9 +55,10 @@ own `package.json`, `manifest.yaml`, and TypeScript build. They publish to
 the in-tenant plugin catalog via the directory-scan in `BuiltInPackageStore`
 and activate through the dynamic-agent / tool / channel runtimes.
 
-The two reference agent packages — `agent-reference-maximum` and
-`agent-seo-analyst` — are starting points for fork-style plugin
-development. The Builder UI walks operators through cloning either
+The two reference capability plugins — `agent-reference-maximum`
+(kind `integration`) and `agent-seo-analyst` (kind `tool`) — are starting
+points for fork-style plugin development; each ships agent templates the
+Agent Builder turns into agents (spec 2042 §5.10). The Builder UI walks operators through cloning either
 reference, slot-filling the differentiating logic, and verifying with the
 smoke runner before install.
 

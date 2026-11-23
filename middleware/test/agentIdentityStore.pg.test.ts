@@ -98,6 +98,8 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
       '0059_agent_model_policy.sql',
       // Phase 2 of answer verbosity — `verbosity` is in `META_COLUMNS` too.
       '0063_agent_identity_verbosity.sql',
+      // #2043 — `language` is in `META_COLUMNS` as well.
+      '0069_agent_identity_language.sql',
     ]) {
       const sql = await readFile(resolve(MIGRATIONS_DIR, file), 'utf8');
       // Twice: the schema CI gate double-applies every file in the series.
@@ -128,6 +130,20 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
 
   it('reports no identity for an agent that never authored one', async () => {
     assert.equal(await store.getByAgentId(agentId), undefined);
+  });
+
+  it('round-trips the agent language and the CHECK refuses a non-tag (0069)', async () => {
+    const first = await store.save(agentId, { ...EMPTY, language: 'de' });
+    assert.equal(first.language, 'de');
+    const second = await store.save(agentId, { ...EMPTY, language: 'en-GB' });
+    assert.equal(second.language, 'en-GB');
+    assert.equal(second.revision, first.revision + 1, 'a language-only edit is content');
+    assert.equal((await store.save(agentId, { ...EMPTY, language: 'en-GB' })).revision, second.revision);
+    assert.equal((await store.save(agentId, { ...EMPTY, language: null })).language, null);
+    await assert.rejects(
+      pool.query(`UPDATE agent_identities SET language = 'german!' WHERE agent_id = $1`, [agentId]),
+      (err: { constraint?: string }) => err.constraint === 'agent_identities_language_check',
+    );
   });
 
   it('round-trips the answer-size level and treats a change as content (0063)', async () => {

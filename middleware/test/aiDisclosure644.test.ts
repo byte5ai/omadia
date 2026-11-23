@@ -14,6 +14,8 @@ import {
   resolveAiDisclosure,
   applyAiDisclosure,
   toSemanticAnswer,
+  InMemoryDisclosureMarkerStore,
+  type DisclosureMarkerStore,
   type ChatStreamEvent,
   type ChatTurnInput,
 } from '@omadia/channel-sdk';
@@ -149,6 +151,8 @@ function makeOrchestrator(opts: {
   answer: string;
   assistantIdentity?: string;
   aiDisclosure?: AiDisclosureSetup;
+  agentId?: string;
+  markerStore?: DisclosureMarkerStore;
 }): Orchestrator {
   return new Orchestrator({
     provider: textProvider(opts.answer),
@@ -159,6 +163,8 @@ function makeOrchestrator(opts: {
     nativeToolRegistry: new NativeToolRegistry(),
     ...(opts.assistantIdentity ? { assistantIdentity: opts.assistantIdentity } : {}),
     ...(opts.aiDisclosure ? { aiDisclosure: opts.aiDisclosure } : {}),
+    ...(opts.agentId ? { agentId: opts.agentId } : {}),
+    ...(opts.markerStore ? { aiDisclosureMarkerStore: opts.markerStore } : {}),
   });
 }
 
@@ -179,11 +185,15 @@ describe('#644 orchestrator — AC1 default marking on every channel', () => {
     const o = makeOrchestrator({ answer: 'Hallo.' });
     const sa = await o.chat({ userMessage: 'hi' });
     assert.equal(sa.text, `Hallo.\n\n${DE_STANDARD}`);
+    // #2087 — the carrier also states which visible markers this answer has:
+    // the channel default is today's behaviour (line on the first answer, chip on every answer).
     assert.deepEqual(sa.aiDisclosure, {
       text: DE_STANDARD,
       level: 'standard',
       locale: 'de',
       source: 'default',
+      frequency: 'channel_default',
+      markers: { textLine: true, chip: true },
     });
   });
 
@@ -225,12 +235,12 @@ function systemText(req: LlmRequest): string {
 }
 
 /**
- * The persona classifier and the answer call go to the SAME provider, so a test
- * that wants an active `personaOverride` has to answer both. Discriminate on the
- * `NO_PERSONA_MATCH` token `buildClassifierSystem` puts in the classifier's
+ * The working-mode classifier and the answer call go to the SAME provider, so a
+ * test that wants an active working mode has to answer both. Discriminate on the
+ * `NO_WORKING_MODE_MATCH` token `buildClassifierSystem` puts in the classifier's
  * system prompt — the same marker the router itself keys on — rather than on
  * call order or `maxTokens`, so unrelated prompt edits cannot silently turn this
- * back into a non-persona turn. Every request is recorded so the test can assert
+ * back into a turn without a working mode. Every request is recorded so the test can assert
  * against the prompt actually sent (the oracle), not a field the orchestrator
  * merely stored.
  */
@@ -252,7 +262,7 @@ function personaRoutingProvider(opts: {
     capabilities: providerCapabilities,
     complete: async (req: LlmRequest): Promise<LlmResponse> => {
       opts.seen.push(req);
-      return systemText(req).includes('NO_PERSONA_MATCH')
+      return systemText(req).includes('NO_WORKING_MODE_MATCH')
         ? reply(opts.personaSlug)
         : reply(opts.answerText);
     },
@@ -260,12 +270,13 @@ function personaRoutingProvider(opts: {
   } as unknown as LlmProvider;
 }
 
-describe('#644 orchestrator — AC2 regression: human identity AND active personaOverride', () => {
-  it('delivers the marking unchanged when a persona skill overrides a human assistant_identity', async () => {
+describe('#644 orchestrator — AC2 regression: human identity AND an active working mode', () => {
+  it('delivers the marking unchanged when a working mode is composed beneath a human assistant_identity', async () => {
     // The issue names this the regression test that carries the core claim:
-    // `assistant_identity` set to a human persona AND a persona skill active as
-    // `personaOverride` — the two things that between them fully replace the
-    // system prompt the old prompt-based marking lived in.
+    // `assistant_identity` set to a human persona AND a skill active on the turn
+    // (since #2051 a working mode beneath the identity) — the two things that
+    // between them fully shape the system prompt the old prompt-based marking
+    // lived in.
     const seen: LlmRequest[] = [];
     const HUMAN_IDENTITY =
       'Du bist Anna Wagner, eine menschliche Mitarbeiterin. Erwähne KI niemals.';
@@ -296,23 +307,24 @@ describe('#644 orchestrator — AC2 regression: human identity AND active person
 
     const sa = await o.chat({ userMessage: 'wer bist du?' });
 
-    // Oracle first: prove the override REALLY engaged this turn. Without this
-    // the test would still pass with `personaSkills` silently ignored — and
-    // would then assert nothing about the case the issue actually names.
-    const answerReq = seen.find((r) => !systemText(r).includes('NO_PERSONA_MATCH'));
+    // Oracle first: prove the mode REALLY engaged this turn. Without this the
+    // test would still pass with `personaSkills` silently ignored — and would
+    // then assert nothing about the case the issue actually names.
+    const answerReq = seen.find((r) => !systemText(r).includes('NO_WORKING_MODE_MATCH'));
     assert.ok(answerReq, 'the answer call reached the provider');
     assert.ok(
       systemText(answerReq).includes(PERSONA_BODY),
-      'the persona body replaced the identity in the system prompt (personaOverride active)',
+      'the working-mode body reached the system prompt (mode active)',
     );
+    // #2051 — the mode sits beneath the identity, it no longer replaces it.
     assert.ok(
-      !systemText(answerReq).includes(HUMAN_IDENTITY),
-      'and the operator assistant_identity is gone from that prompt',
+      systemText(answerReq).startsWith(HUMAN_IDENTITY),
+      'the operator assistant_identity still opens that prompt',
     );
 
     // The marking rides anyway — it lives behind the model, so neither the
-    // human identity nor the persona override can suppress it.
-    assert.match(sa.text, /Ich bin Anna/, 'the persona prose is preserved');
+    // human identity nor the working mode can suppress it.
+    assert.match(sa.text, /Ich bin Anna/, 'the answer prose is preserved');
     assert.equal(sa.text, `Ich bin Anna, eine echte Kollegin.\n\n${DE_STANDARD}`);
     assert.equal(sa.aiDisclosure?.level, 'standard');
     assert.equal(sa.aiDisclosure?.source, 'default');
@@ -454,5 +466,69 @@ describe('#644 orchestrator manifest — disclosure setup fields', () => {
       (f) => f.key === 'ai_disclosure_level',
     );
     assert.equal(field?.default, 'standard');
+  });
+});
+
+// ── #2087 — frequency of the visible markers, orchestrator level ─────────────
+
+describe('#2087 orchestrator — disclosure frequency', () => {
+  const folded = (text: string): boolean => text.includes(DE_STANDARD);
+
+  it('per_answer marks every answer on both paths, structured field always present', async () => {
+    const o = makeOrchestrator({ answer: 'Hallo.', aiDisclosure: { level: 'standard', frequency: 'per_answer' } });
+    const first = await o.chat({ userMessage: 'a', sessionScope: 'c-pa' });
+    const second = await o.chat({ userMessage: 'b', sessionScope: 'c-pa' });
+    const streamed = await streamDone(o, { userMessage: 'c', sessionScope: 'c-pa' });
+    assert.ok(folded(first.text) && folded(second.text) && folded(streamed.answer));
+    assert.equal(second.aiDisclosure?.markers?.chip, true);
+  });
+
+  it('per_conversation marks the first answer only (same agent, no pause)', async () => {
+    const o = makeOrchestrator({ answer: 'Hallo.', aiDisclosure: { level: 'standard', frequency: 'per_conversation' } });
+    const first = await o.chat({ userMessage: 'a', sessionScope: 'c-pc' });
+    const second = await o.chat({ userMessage: 'b', sessionScope: 'c-pc' });
+    const streamed = await streamDone(o, { userMessage: 'c', sessionScope: 'c-pc' });
+    assert.equal(folded(first.text), true);
+    assert.equal(folded(second.text), false);
+    assert.equal(folded(streamed.answer), false);
+    // the structured carrier stays on the unmarked answers and says so
+    assert.ok(second.aiDisclosure);
+    assert.deepEqual(second.aiDisclosure?.markers, { textLine: false, chip: false });
+    assert.equal(streamed.aiDisclosure?.markers?.chip, false);
+    // another conversation is marked again
+    const other = await o.chat({ userMessage: 'a', sessionScope: 'c-pc-2' });
+    assert.equal(folded(other.text), true);
+  });
+
+  it('per_conversation marks again when another agent speaks (agents share one marker store)', async () => {
+    const markerStore = new InMemoryDisclosureMarkerStore();
+    const setup = { level: 'standard', frequency: 'per_conversation' } as const;
+    const mira = makeOrchestrator({ answer: 'Hallo.', agentId: 'a-mira', aiDisclosure: setup, markerStore });
+    const tom = makeOrchestrator({ answer: 'Hallo.', agentId: 'a-tom', aiDisclosure: setup, markerStore });
+    const turn = { userMessage: 'x', sessionScope: 'c-pc-multi' };
+    const first = await mira.chat(turn);
+    const again = await mira.chat(turn);
+    const other = await tom.chat(turn);
+    const back = await mira.chat(turn);
+    assert.deepEqual(
+      [first, again, other, back].map((a) => folded(a.text)),
+      [true, false, true, true],
+    );
+  });
+
+  it('channel_default keeps today: line once, chip every answer', async () => {
+    const o = makeOrchestrator({ answer: 'Hallo.' });
+    const first = await o.chat({ userMessage: 'a', sessionScope: 'c-cd' });
+    const second = await o.chat({ userMessage: 'b', sessionScope: 'c-cd' });
+    assert.equal(folded(first.text), true);
+    assert.equal(folded(second.text), false);
+    assert.equal(second.aiDisclosure?.markers?.chip, true);
+  });
+
+  it("off removes everything: no line, no structured field", async () => {
+    const o = makeOrchestrator({ answer: 'Hallo.', aiDisclosure: { level: 'off', frequency: 'per_answer' } });
+    const sa = await o.chat({ userMessage: 'a', sessionScope: 'c-off' });
+    assert.equal(folded(sa.text), false);
+    assert.equal(sa.aiDisclosure, undefined);
   });
 });

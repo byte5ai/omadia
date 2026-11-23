@@ -77,6 +77,18 @@ export interface GrantRouteDeps {
    *  reads the resulting state from — this route never infers success from the
    *  absence of a throw. */
   reactivate?: (agentId: string) => Promise<unknown>;
+  /** #2043 — runs after a consent change was written and the plugin was
+   *  re-activated, for kernel state that is DERIVED from grants (which plugin
+   *  is the facilitation engine). Without it that state waited for a cache to
+   *  age out, so the operator granted SQL and was still told "not granted".
+   *  Must not throw; a throw is logged and never fails the consent. */
+  onGrantsChanged?: (agentId: string) => Promise<void>;
+  /** #2043 — runs after the consent was written and BEFORE the plugin is
+   *  re-activated, for kernel views of the grants that the plugin's own
+   *  `activate()` runs into (the engine re-subscribes there, and was refused
+   *  as "not the engine" because the view still showed the old grant). Must
+   *  not throw; a throw is logged and never fails the consent. */
+  onGrantsWritten?: (agentId: string) => Promise<void>;
   /** #1347 — every consent change writes one `plugin.grants_change` row with
    *  the granted set before and after, so the record of who opened an
    *  unauthenticated path survives the revoke that DELETEs its grant row. */
@@ -627,12 +639,33 @@ async function commitGrantsExclusively(
   // A failed re-activation is NOT an error response: the grant was written and
   // asking again would not help. It is reported as the resulting `state`, which
   // `InstallService.reactivate` has by then recorded truthfully (#799).
+  if (deps.onGrantsWritten) {
+    try {
+      await deps.onGrantsWritten(id);
+    } catch (err) {
+      console.error(
+        `[grants] refreshing grant views after a consent change failed for '${id}':`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
   if (deps.reactivate) {
     try {
       await deps.reactivate(id);
     } catch (err) {
       console.error(
         `[grants] re-activation after a consent change failed for '${id}':`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  if (deps.onGrantsChanged) {
+    try {
+      await deps.onGrantsChanged(id);
+    } catch (err) {
+      console.error(
+        `[grants] follow-up after a consent change failed for '${id}':`,
         err instanceof Error ? err.message : err,
       );
     }

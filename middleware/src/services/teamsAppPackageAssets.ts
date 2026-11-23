@@ -135,6 +135,69 @@ function truncate(value: string, max: number): string {
   return value.length <= max ? value : value.slice(0, max);
 }
 
+/**
+ * File in the channel plugin's `appPackage/` naming the template's revision.
+ *
+ * With an extension on purpose: the plugin zip ingest (`zipExtractor.ts`)
+ * accepts an extension-less file only as LICENSE / NOTICE / README, so a
+ * package that shipped a bare `TEMPLATE_REVISION` could not be installed at
+ * all (found at the first rollout). `.txt` is on the allowlist of every
+ * kernel in the field.
+ */
+export const TEMPLATE_REVISION_FILE = 'TEMPLATE_REVISION.txt';
+/** The name before that; still read, for a package unpacked by hand or
+ *  linked from a checkout. */
+export const LEGACY_TEMPLATE_REVISION_FILE = 'TEMPLATE_REVISION';
+
+/**
+ * The manifest version `1.<template revision>.<identity revision>`.
+ *
+ * Teams compares versions position by position, so a higher template revision
+ * wins over any identity revision of the older template. Revision 0 (a
+ * channel plugin that ships no `TEMPLATE_REVISION`) yields exactly the
+ * versions this module produced before the file existed.
+ */
+export function teamsAppVersion(
+  templateRevision: number,
+  identityRevision: number | undefined,
+  fallback?: string,
+): string {
+  if (identityRevision !== undefined) {
+    return `1.${String(templateRevision)}.${String(identityRevision)}`;
+  }
+  return templateRevision > 0 ? `1.${String(templateRevision)}.0` : (fallback ?? '1.0.0');
+}
+
+/**
+ * Read `appPackage/TEMPLATE_REVISION.txt` (or the legacy extension-less
+ * name): a non-negative integer. No file is revision 0. Content that is not
+ * such a number is an error, not 0: a silently ignored revision would publish
+ * the new template under an old version and Teams would keep the previous
+ * package.
+ */
+export async function readTemplateRevision(dir: string): Promise<number> {
+  for (const name of [TEMPLATE_REVISION_FILE, LEGACY_TEMPLATE_REVISION_FILE]) {
+    const file = path.join(dir, name);
+    let raw: string;
+    try {
+      raw = await readFile(file, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw new TeamsAppPackageAssetsError(
+        `cannot read ${file} (${err instanceof Error ? err.message : String(err)})`,
+      );
+    }
+    const text = raw.trim();
+    if (!/^\d{1,6}$/.test(text)) {
+      throw new TeamsAppPackageAssetsError(
+        `${file} must hold a non-negative integer, found ${JSON.stringify(text.slice(0, 40))}`,
+      );
+    }
+    return Number(text);
+  }
+  return 0;
+}
+
 /** Build the param map for exactly the placeholders the template uses. */
 function paramsForTemplate(
   template: string,
@@ -143,6 +206,7 @@ function paramsForTemplate(
   externalId: string,
   baseUrl: URL,
   opts: TeamsAppPackageAssetOptions,
+  templateRevision: number,
 ): TeamsAppPackageParams {
   // #914 — the authored identity names the app; `identity.displayName` (the
   // provisioning row) names the AZURE BOT RESOURCE and stays where it is.
@@ -153,10 +217,10 @@ function paramsForTemplate(
   const known: Record<string, string | readonly string[]> = {
     // A published package can only be REPLACED by a higher version, so an
     // identity's revision is the version: edit → bump → re-publish accepted.
-    VERSION:
-      authored !== undefined
-        ? `1.0.${authored.revision}`
-        : (opts.version ?? '1.0.0'),
+    // #2043 — and so is the TEMPLATE's revision, one position higher: a
+    // changed template (new permissions) outranks every version built from
+    // the previous one, whatever the identity's revision was.
+    VERSION: teamsAppVersion(templateRevision, authored?.revision, opts.version),
     // Teams app id (manifest `id`) — NOT the bot's Entra app id.
     APP_ID: externalId,
     BOT_ID: identity.appId ?? '',
@@ -262,6 +326,7 @@ export function createTeamsAppPackageAssetLoader(
       : undefined;
 
     const externalId = stableTeamsAppExternalId(identity.agentId);
+    const templateRevision = await readTemplateRevision(dir);
     return {
       manifestTemplate,
       params: paramsForTemplate(
@@ -271,6 +336,7 @@ export function createTeamsAppPackageAssetLoader(
         externalId,
         baseUrl,
         opts,
+        templateRevision,
       ),
       icons: {
         color: authored?.icons?.color ?? color,

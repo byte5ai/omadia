@@ -68,7 +68,6 @@ function renderDnd(
     <PluginsDnd
       agent={agent()}
       catalog={catalog(fields)}
-      isFallback={false}
       disabled={false}
       onReplace={vi.fn()}
     />,

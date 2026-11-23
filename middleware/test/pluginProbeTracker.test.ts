@@ -1,13 +1,13 @@
 /**
  * Issue #1453 — the per-runtime half of the connection probe.
  *
- * `PluginProbeTracker` is what both `ToolPluginRuntime` and
- * `DynamicAgentRuntime` hold: it reads a dynamically imported module's optional
+ * `PluginProbeTracker` is what `ToolPluginRuntime` holds: it reads a dynamically imported module's optional
  * `verifyConnection`, binds it to the plugin's context, keeps in-flight probes
  * observable, and makes the verdict sink fall silent once the plugin is gone.
  *
- * It exists as its own unit because the logic shipped twice, in two
- * near-identical copies — and only one of them was reachable from a test.
+ * It exists as its own unit because the logic once shipped twice, in two
+ * near-identical copies (one in the retired agent runtime) — and only one of
+ * them was reachable from a test.
  */
 
 import { strict as assert } from 'node:assert';

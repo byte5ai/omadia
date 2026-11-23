@@ -3,7 +3,6 @@ import { strict as assert } from 'node:assert';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { z } from 'zod';
 
 import { DraftStore } from '../../src/plugins/builder/draftStore.js';
 import { SpecEventBus } from '../../src/plugins/builder/specEventBus.js';
@@ -23,6 +22,7 @@ import {
 } from '../../src/plugins/builder/tools/index.js';
 import { noopSlotTypechecker } from './fixtures/noopSlotTypechecker.js';
 import { installFakeClaudeCli, type FakeClaudeCli } from '../_helpers/fakeClaudeCli.js';
+import { fakePreviewDraftAgents } from '../_helpers/fakePreviewDraftAgents.js';
 
 /**
  * #1072 (and #1077 rows `builderAgent.ts` defaultBuildSubAgent /
@@ -182,8 +182,8 @@ describe('PreviewChatService default factory on the subscription CLI (#1072)', {
           {
             id: 'echo',
             description: 'echo tool',
-            input: z.object({ q: z.string() }),
-            run: async (input: unknown) => ({ echo: input }),
+            inputSchema: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },
+            run: async (input: unknown) => JSON.stringify({ echo: input }),
           },
         ],
       },
@@ -193,9 +193,10 @@ describe('PreviewChatService default factory on the subscription CLI (#1072)', {
       close: async () => {},
     };
     const svc = new PreviewChatService({
+      draftAgents: fakePreviewDraftAgents(),
       resolveProvider: async () => ({ cliModel: 'sonnet', modelId: 'claude-sonnet-cli' }),
       draftStore,
-      systemPromptFor: async () => 'preview-system-prompt',
+      systemPromptFor: () => 'preview-system-prompt',
       logger: () => {},
     });
 

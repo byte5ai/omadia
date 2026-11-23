@@ -27,7 +27,7 @@
 import { execFile } from 'node:child_process';
 import { accessSync, constants as fsConstants } from 'node:fs';
 import path from 'node:path';
-import { CLI_ENV_SCRUB_KEYS } from '@omadia/orchestrator';
+import { CLI_ENV_SCRUB_KEYS, applyCliProfile } from '@omadia/orchestrator';
 
 /** Tri-state: we are honest about what a read-only probe can actually prove. */
 export type CliLoginState = 'yes' | 'no' | 'unknown';
@@ -211,6 +211,7 @@ const MAX_OUTPUT_BYTES = 64 * 1024;
 function runProbe(
   bin: string,
   args: readonly string[],
+  backendId?: string,
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     execFile(
@@ -221,7 +222,7 @@ function runProbe(
         maxBuffer: MAX_OUTPUT_BYTES,
         // Never inherit a shell; never pass user input. Scrub credential env
         // vars so a probe can't be tricked into an API-key path (#309 §2).
-        env: scrubbedEnv(),
+        env: scrubbedEnv(backendId),
         windowsHide: true,
       },
       (err, stdout, stderr) => {
@@ -245,12 +246,14 @@ function runProbe(
  * (and later, the real CLI spawn) on the subscription path — see #309 §2
  * "billing-precedence footgun".
  */
-export function scrubbedEnv(): NodeJS.ProcessEnv {
+export function scrubbedEnv(backendId?: string): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const key of CLI_ENV_SCRUB_KEYS) {
     delete env[key];
   }
-  return env;
+  // Spec 2042 §5.10 — the Claude CLI's probe, login and logout use the same
+  // isolated profile as every spawn, so a login lands where turns read it.
+  return backendId === 'claude' ? applyCliProfile(env) : env;
 }
 
 /** Parse the first top-level JSON object found in CLI output, or undefined. */
@@ -277,7 +280,7 @@ function pickString(obj: Record<string, unknown>, keys: readonly string[]): stri
 
 async function detectOne(spec: CliBackendSpec): Promise<CliBackendStatus> {
   const binPath = resolveCliBin(spec.bin);
-  const ver = await runProbe(binPath, spec.versionArgs);
+  const ver = await runProbe(binPath, spec.versionArgs, spec.id);
   if (!ver.ok && ver.stderr === 'not found') {
     return {
       id: spec.id,
@@ -296,7 +299,7 @@ async function detectOne(spec: CliBackendSpec): Promise<CliBackendStatus> {
   let loggedIn: CliLoginState = 'unknown';
   let account: string | undefined;
   if (spec.authArgs && spec.parseAuth) {
-    const auth = await runProbe(binPath, spec.authArgs);
+    const auth = await runProbe(binPath, spec.authArgs, spec.id);
     const parsed = spec.parseAuth(`${auth.stdout}\n${auth.stderr}`);
     loggedIn = parsed.state;
     account = parsed.account;

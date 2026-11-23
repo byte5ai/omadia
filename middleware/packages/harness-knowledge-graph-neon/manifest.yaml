@@ -4,7 +4,7 @@ identity:
   id: "@omadia/knowledge-graph-neon"
   name: "Knowledge Graph (Neon Postgres)"
   version: "0.1.0"
-  kind: "extension"
+  kind: "system-module"
   domain: "core.knowledge-graph"
   description:
     en: "Stores the knowledge graph in a Neon Postgres database with vector search, so it survives a restart and grows with the data. This is the provider for production. Only one knowledge graph provider can be active."
@@ -53,6 +53,12 @@ provides:
 
 requires:
   - "embeddingClient@^1"
+
+# Spec 2042 §5.10 — each embedding backfill sweep is a maintenance run of the
+# model gateway (embed only, maintenance budget). Published by the kernel
+# after this plugin activates, so resolved per sweep.
+optional_requires:
+  - "maintenanceRun@1"
 
 setup:
   fields:

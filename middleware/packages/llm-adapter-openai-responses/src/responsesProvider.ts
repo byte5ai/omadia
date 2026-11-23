@@ -14,6 +14,7 @@
  * surface at zero. The token can ROTATE mid-process, so the bearer is resolved
  * per request via `bearerProvider` — never captured at build time.
  */
+import { admitModelCall, isOpenAiReasoningModel } from '@omadia/llm-provider-api';
 import { randomUUID } from 'node:crypto';
 
 import type {
@@ -164,20 +165,25 @@ function toRequestBody(req: LlmRequest): Record<string, unknown> {
     req.toolChoice !== undefined &&
     'disableParallel' in req.toolChoice &&
     req.toolChoice.disableParallel === true;
+  const reasoningModel = isOpenAiReasoningModel(req.model);
   return {
     model: req.model,
     ...(instructions !== undefined ? { instructions } : {}),
     input: toInputItems(req),
     max_output_tokens: req.maxTokens,
-    ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+    // Reasoning models take only the default temperature (1): any other is a 400.
+    ...(req.temperature !== undefined && !(reasoningModel && req.temperature !== 1)
+      ? { temperature: req.temperature }
+      : {}),
     ...(tools.length > 0 ? { tools } : {}),
     ...(req.toolChoice !== undefined
       ? { tool_choice: toToolChoice(req.toolChoice) }
       : {}),
     ...(disableParallel ? { parallel_tool_calls: false } : {}),
     // #1033 — Responses API spells effort as `reasoning.effort`; the
-    // normalized vocabulary maps 1:1.
-    ...(req.effort !== undefined ? { reasoning: { effort: req.effort } } : {}),
+    // normalized vocabulary maps 1:1. Only reasoning models take it: gpt-4o /
+    // gpt-4.1 answer it with a 400, so there the hint is dropped.
+    ...(req.effort !== undefined && reasoningModel ? { reasoning: { effort: req.effort } } : {}),
     // Backend contract: stream-only, and omadia never stores server-side.
     stream: true,
     store: false,
@@ -288,6 +294,8 @@ export function createOpenAiResponsesProvider(
   }
 
   async function* streamImpl(req: LlmRequest): AsyncGenerator<LlmStreamEvent> {
+    // #2090 — refused when the turn's reservation does not cover the call.
+    admitModelCall();
     noteOutputFormatIgnored(log, req);
     const token = await bearer();
     const res = await fetchImpl(url, {

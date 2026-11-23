@@ -7,7 +7,7 @@ import { zodToJsonSchema } from '../../src/plugins/zodToJsonSchema.js';
 
 /**
  * Dynamic-import bridge test — closest possible reproduction of the
- * PreviewRuntime / dynamicAgentRuntime activation path without spinning
+ * PreviewRuntime activation path without spinning
  * up a real preview workspace.
  *
  * Loads the BUILT `dist/toolkit.js` of seo-analyst via dynamic import

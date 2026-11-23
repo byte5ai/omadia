@@ -14,6 +14,7 @@ import {
   turnContext,
   type ChatParticipant,
   type ChatParticipantsProvider,
+  type ContextMemoryMode,
 } from '@omadia/orchestrator';
 import { ContextRetriever } from '@omadia/orchestrator-extras';
 import type { TurnOrigin } from '../../packages/harness-channel-sdk/src/turnOrigin.js';
@@ -150,7 +151,9 @@ export interface World {
   agent(slug?: string): Orchestrator;
 }
 
-export function world(): World {
+/** `mode`: the binder's context-memory mode (criterion 19 passes the mode a
+ *  fresh agent row was built with); `members` by default. */
+export function world(mode: ContextMemoryMode = 'members'): World {
   const graph = new InMemoryKnowledgeGraph();
   const root = new InMemoryMemoryStore();
   const model = new ScriptedModel();
@@ -174,7 +177,7 @@ export function world(): World {
         contextRetriever: new ContextRetriever(graph),
         sessionLogger: new SessionLogger(root, graph, undefined, slug),
         memoryToolHandler: new MemoryToolHandler(root),
-        memoryBinder: new MemoryBinder({ agentSlug: slug, root, mode: 'members' }),
+        memoryBinder: new MemoryBinder({ agentSlug: slug, root, mode }),
       } as unknown as ConstructorParameters<typeof Orchestrator>[0]);
       agents.set(slug, created);
       return created;

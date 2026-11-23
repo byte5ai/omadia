@@ -176,6 +176,37 @@ export function detectTabularFormat(
   return undefined;
 }
 
+/** Container types that carry audio without an `audio/` or `video/` MIME. */
+const RECORDING_TYPES = new Set(['application/ogg']);
+
+/** MIME types that say nothing about the content: uploads from chat clients
+ *  and object stores often arrive like this, so the extension decides. */
+const GENERIC_BINARY_TYPES = new Set(['', 'application/octet-stream']);
+
+const RECORDING_EXTS = new Set([
+  'aac', 'flac', 'm4a', 'mp3', 'mpga', 'oga', 'ogg', 'opus', 'wav', 'weba',
+  'm4v', 'mkv', 'mov', 'mp4', 'mpeg', 'mpg', 'webm',
+]);
+
+/**
+ * True when an attachment is a recording (audio, or video with an audio
+ * track) that may be handed to a transcription provider. A declared
+ * `audio/*` / `video/*` type is enough; the extension only decides when the
+ * type is absent or generic. A specific non-media type (a document, a
+ * spreadsheet, an image) is never a recording, whatever the file is called —
+ * transcription sends the bytes to an external provider, so a wrong guess
+ * here is an unintended disclosure, not a failed parse.
+ */
+export function isRecordingAttachment(
+  contentType: string | undefined,
+  fileName: string | undefined,
+): boolean {
+  const ct = normalizeContentType(contentType);
+  if (ct.startsWith('audio/') || ct.startsWith('video/')) return true;
+  if (RECORDING_TYPES.has(ct)) return true;
+  return GENERIC_BINARY_TYPES.has(ct) && RECORDING_EXTS.has(extOf(fileName));
+}
+
 /** True for any attachment the structured dataset pipeline can import. */
 export function isTabularAttachment(
   contentType: string | undefined,

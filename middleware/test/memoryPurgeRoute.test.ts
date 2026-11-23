@@ -1,235 +1,41 @@
 import { strict as assert } from 'node:assert';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import type { Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { after, before, describe, it } from 'node:test';
+import { before, describe, it } from 'node:test';
 
-import express from 'express';
-import { Pool } from 'pg';
-
-import { resolvePgTestUrl } from './_helpers/pgTestDb.js';
-import { InMemoryMemoryStore } from '@omadia/memory';
-import { memoryContextKey } from '@omadia/channel-sdk';
-import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
-
-import {
-  createMemoryPurgeRouter,
-  PREVIEW_TOKEN_TTL_MS,
-  type MemoryPurgeDeps,
-} from '../src/routes/memoryPurge.js';
+import { PREVIEW_TOKEN_TTL_MS } from '../src/routes/memoryPurge.js';
 import type { MemoryPurgeAuditStore } from '../src/services/memoryPurgeAudit.js';
-import { runAuthMigrations } from '../src/auth/migrator.js';
 import { seedConversationTurn, seedTeamsIdentity } from './_helpers/conversationFixture.js';
-import { listenLoopback } from './_helpers/listenLoopback.js';
+import {
+  ADMIN_SESSION,
+  TEAM_SELECTOR,
+  TEAM_KEY,
+  BOB,
+  makeHarness,
+  call,
+  preview,
+  previewAndPurge,
+  codes,
+  assertPreviewMatches,
+  turnCount,
+} from './_helpers/memoryPurgeHarness.js';
 
 /**
  * HTTP integration test for the Danger-Zone memory-purge router
  * (`createMemoryPurgeRouter`, mounted in prod at
  * `/api/v1/admin/memory/purge`). Drives the REAL router end-to-end over an
  * express `listen(0)` server with a real `InMemoryMemoryStore` (scratch), a
- * real `InMemoryKnowledgeGraph` (MemorableKnowledge + conversation history)
- * and — when a throwaway Postgres is reachable — a real pg Pool for the
- * `memory_purge_audit` row.
+ * real `InMemoryKnowledgeGraph` (MemorableKnowledge + conversation history).
+ * The `memory_purge_audit` row on real Postgres is checked in
+ * `memoryPurgeRoute.pg.test.ts`; the harness is `_helpers/memoryPurgeHarness.ts`.
  *
  * `requireAuth` is applied at MOUNT time in prod, not inside the router; the
  * harness stands in for it by putting a session on the request, because the
  * router records that session as the purge's actor (#1336).
  */
 
-// No hardcoded default port (issue #572): the PG audit case runs only when an
-// explicit test-Postgres URL is set, else it skips.
-const PG_URL = resolvePgTestUrl('MEMORY_PG_TEST_URL', 'GRAPH_PG_TEST_URL');
-
-const MOUNT = '/api/v1/admin/memory/purge';
-const ADMIN_SESSION = {
-  sub: 'admin@example.com',
-  email: 'admin@example.com',
-  /** `users.id` — what `admin_audit.actor_id` records (C07). */
-  uid: '5d2e7a90-2222-4333-8444-a55566667777',
-  /** KG cluster id — another namespace, never the audit actor. */
-  omadia_user_id: '0b6f2c1e-1111-4222-8333-944455556666',
-};
-
-/** A real-shaped Teams team id (`:` + `@`) and the two spellings an operator
- *  may type for it. The route must confirm against the TYPED one. */
-const TEAM_NATIVE_ID = '19:team-alpha@thread.tacv2';
-const TEAM_SELECTOR = `teams~${TEAM_NATIVE_ID}`;
-const TEAM_KEY = memoryContextKey('teams', TEAM_NATIVE_ID);
-
-/** Two people, as omadia user ids — the spelling the KG `user_id` carries. */
-const ALICE = '7f1b8a52-0000-4000-8000-00000000a11c';
-const BOB = '7f1b8a52-0000-4000-8000-000000000b0b';
-
-async function seedScratch(store: InMemoryMemoryStore): Promise<void> {
-  await store.createFile('/memories/orchestrators/a/x.md', 'ax');
-  await store.createFile('/memories/orchestrators/a/notes/deep.md', 'deep');
-  await store.createFile('/memories/orchestrators/b/y.md', 'by');
-  await store.createFile('/memories/_rules/r.md', 'rule');
-  // Team ALPHA lives in BOTH agents — a context purge has to cross them.
-  await store.createFile(`/memories/contexts/a/team/${TEAM_KEY}/n.md`, 'a-team');
-  await store.createFile(`/memories/contexts/b/team/${TEAM_KEY}/n.md`, 'b-team');
-  await store.createFile(`/memories/contexts/a/user/teams~u-1/n.md`, 'a-user');
-  // User data that is never seed — no purge may take it (#1335).
-  await store.createFile('/memories/chat-sessions/u1/tabs.json', '[]');
-  await store.createFile('/memories/sessions/scope-1/log.md', 'q&a');
-  await store.createFile('/memories/_brand/logo.md', 'logo');
-  await store.createFile('/memories/core/kernel.md', 'core');
-  await store.createFile('/memories/ui-prefs/u1.json', '{}');
-}
-
-async function seedKg(kg: InMemoryKnowledgeGraph): Promise<void> {
-  await kg.createMemorableKnowledge({
-    kind: 'insight',
-    summary: 'A',
-    originAgent: 'a',
-    aclOwners: [ALICE],
-    createdBy: 'test',
-    involvedOmadiaUserIds: [],
-  });
-  await kg.createMemorableKnowledge({
-    kind: 'insight',
-    summary: 'B',
-    originAgent: 'b',
-    aclOwners: [BOB],
-    createdBy: 'test',
-    involvedOmadiaUserIds: [],
-  });
-  // Conversation history (#1334): agent a holds a group chat Alice and Bob
-  // both spoke in, agent b one turn of Bob's.
-  await seedConversationTurn(kg, { scope: 'a::teams::group', time: '2026-10-01T10:00:00Z', userId: ALICE, tag: 'a1' });
-  await seedConversationTurn(kg, { scope: 'a::teams::group', time: '2026-10-01T10:01:00Z', userId: BOB, tag: 'a2' });
-  await seedConversationTurn(kg, { scope: 'b::web::chat', time: '2026-10-01T11:00:00Z', userId: BOB, tag: 'b1' });
-}
-
-interface Harness {
-  baseUrl: string;
-  store: InMemoryMemoryStore;
-  kg: InMemoryKnowledgeGraph;
-  close: () => Promise<void>;
-}
-
-async function makeHarness(
-  overrides: Partial<MemoryPurgeDeps> = {},
-  session: Record<string, string> | null = ADMIN_SESSION,
-): Promise<Harness> {
-  const store = new InMemoryMemoryStore();
-  await seedScratch(store);
-  const kg = new InMemoryKnowledgeGraph();
-  await seedKg(kg);
-
-  const app = express();
-  app.use(express.json());
-  app.use((req, _res, next) => {
-    if (session) (req as unknown as { session: unknown }).session = session;
-    next();
-  });
-  app.use(MOUNT, createMemoryPurgeRouter({ store, knowledgeGraph: kg, ...overrides }));
-  const server: Server = await listenLoopback(app);
-  const { port } = server.address() as AddressInfo;
-  return {
-    baseUrl: `http://127.0.0.1:${String(port)}${MOUNT}`,
-    store,
-    kg,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
-  };
-}
-
-type Json = Record<string, unknown>;
-
-async function call(
-  url: string,
-  method: 'POST' | 'DELETE',
-  body: unknown,
-): Promise<{ status: number; body: Json }> {
-  const res = await fetch(url, {
-    method,
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  let parsed: Json;
-  try {
-    parsed = text ? (JSON.parse(text) as Json) : {};
-  } catch {
-    parsed = { raw: text };
-  }
-  return { status: res.status, body: parsed };
-}
-
-interface Selection {
-  axis: string;
-  selector?: string;
-  reseed?: boolean;
-}
-
-const preview = (h: Harness, sel: Selection) => call(`${h.baseUrl}/preview`, 'POST', sel);
-
-/** The UI flow: preview, then delete with the preview's token. */
-async function previewAndPurge(
-  h: Harness,
-  sel: Selection,
-  confirm: string = sel.axis === 'all' ? 'DELETE ALL MEMORY' : (sel.selector ?? ''),
-): Promise<{ preview: Json; status: number; body: Json }> {
-  const p = await preview(h, sel);
-  assert.equal(p.status, 200, JSON.stringify(p.body));
-  const d = await call(h.baseUrl, 'DELETE', {
-    ...sel,
-    confirm,
-    previewToken: p.body['previewToken'],
-  });
-  return { preview: p.body, ...d };
-}
-
-function codes(body: Json): string[] {
-  return ((body['warnings'] as Array<{ code: string }> | undefined) ?? []).map((w) => w.code);
-}
-
-/** The preview promised exactly what the delete then removed (#1335). */
-function assertPreviewMatches(previewBody: Json, deleteBody: Json): void {
-  assert.equal(deleteBody['scratchDeleted'], previewBody['scratchCount'], 'scratch');
-  assert.equal(deleteBody['kgDeleted'], previewBody['kgCount'], 'MemorableKnowledge');
-  assert.equal(deleteBody['conversationDeleted'], previewBody['conversationCount'], 'conversation');
-}
-
-async function turnCount(kg: InMemoryKnowledgeGraph, scope: string): Promise<number> {
-  const session = await kg.getSession(scope);
-  return session?.turns.length ?? 0;
-}
-
-async function maybePgPool(): Promise<Pool | undefined> {
-  if (!PG_URL) {
-    console.error(
-      '[memoryPurgeRoute] no MEMORY_PG_TEST_URL / GRAPH_PG_TEST_URL set — ' +
-        'skipping the PG audit cases (issue #572).',
-    );
-    return undefined;
-  }
-  const pool = new Pool({ connectionString: PG_URL, max: 2 });
-  try {
-    await pool.query('SELECT 1');
-    await pool.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
-    // `admin_audit` lives in the auth series; the purge writes to it.
-    await runAuthMigrations(pool);
-    return pool;
-  } catch {
-    await pool.end().catch(() => undefined);
-    return undefined;
-  }
-}
-
 describe('memory-purge router (HTTP, end-to-end)', () => {
-  let pgPool: Pool | undefined;
-
-  before(async () => {
-    pgPool = await maybePgPool();
-  });
-
-  after(async () => {
-    if (pgPool) await pgPool.end().catch(() => undefined);
-  });
-
   describe('agent axis', () => {
     it('preview counts the agent trees, its MemorableKnowledge and its conversation history', async () => {
       const h = await makeHarness();
@@ -657,55 +463,6 @@ describe('memory-purge router (HTTP, end-to-end)', () => {
         assert.equal(r.status, 200, JSON.stringify(r.body));
         assert.deepEqual(codes(r.body), ['audit_unavailable']);
         assert.equal(r.body['auditId'], undefined);
-      } finally {
-        await h.close();
-      }
-    });
-
-    it('PG: the audit row names the signed-in user and the counts', async (t) => {
-      if (!pgPool) {
-        t.skip('throwaway Postgres not reachable — audit case skipped');
-        return;
-      }
-      const pool = pgPool;
-      const h = await makeHarness({ graphPool: pool });
-      try {
-        const r = await previewAndPurge(h, { axis: 'agent', selector: 'a' });
-        assert.equal(r.status, 200, JSON.stringify(r.body));
-        const row = await pool.query<Record<string, unknown>>(
-          `SELECT actor, actor_id, actor_email, axis, selector, status,
-                  scratch_deleted, kg_deleted, conversation_deleted, completed_at
-             FROM memory_purge_audit WHERE id = $1`,
-          [r.body['auditId']],
-        );
-        const audit = row.rows[0]!;
-        assert.equal(audit['actor'], ADMIN_SESSION.email);
-        assert.equal(audit['actor_id'], ADMIN_SESSION.uid);
-        assert.equal(audit['actor_email'], ADMIN_SESSION.email);
-        assert.equal(audit['axis'], 'agent');
-        assert.equal(audit['selector'], 'a');
-        assert.equal(audit['status'], 'completed');
-        assert.equal(audit['scratch_deleted'], 2);
-        assert.equal(audit['kg_deleted'], 1);
-        assert.equal(audit['conversation_deleted'], 17);
-        assert.ok(audit['completed_at'] instanceof Date);
-
-        // The same purge sits in the admin trail (/admin/audit) next to the
-        // other admin actions.
-        const ledger = await pool.query<Record<string, unknown>>(
-          `SELECT actor_id, actor_email, after FROM admin_audit
-            WHERE action = 'memory.purge' AND target = $1`,
-          [`memory-purge:${String(r.body['auditId'])}`],
-        );
-        assert.equal(ledger.rowCount, 1);
-        assert.equal(ledger.rows[0]!['actor_id'], ADMIN_SESSION.uid);
-        assert.equal(ledger.rows[0]!['actor_email'], ADMIN_SESSION.email);
-        assert.deepEqual((ledger.rows[0]!['after'] as Record<string, unknown>)['planned'], {
-          scratch: 2,
-          kg: 1,
-          conversation: 17,
-          reseedEntries: [],
-        });
       } finally {
         await h.close();
       }

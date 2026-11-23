@@ -258,9 +258,9 @@ function parseLineList(raw: unknown): readonly string[] {
 
 /**
  * Public helper: validate an arbitrary input against the
- * `ProfileQualityConfig` shape. Used by the Builder-side `set_quality_config`
- * tool (Phase 1 Aufgabe 5) to reject malformed payloads BEFORE they touch
- * the draft. Re-exported through the plugin's public surface.
+ * `ProfileQualityConfig` shape, rejecting a malformed payload before it is
+ * used. Re-exported through the plugin's public surface (the Plugin Builder's
+ * `set_quality_config` tool that called it is gone, #2049).
  */
 export function parseProfileQualityConfig(
   raw: unknown,

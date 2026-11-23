@@ -45,6 +45,12 @@ export interface DimensionSliderProps {
   warning?: ConflictSeverity;
   /** Disable interaction (useful when the draft is read-only / locked). */
   disabled?: boolean;
+  /** Optional one-line note under the track, e.g. the range a caller clamps
+   *  to. Already localized by the caller. */
+  hint?: string;
+  /** Optional field error under the track (a server finding for this axis).
+   *  Already localized by the caller. */
+  error?: string;
 }
 
 export function DimensionSlider({
@@ -57,6 +63,8 @@ export function DimensionSlider({
   baseValue,
   warning,
   disabled,
+  hint,
+  error,
 }: DimensionSliderProps): React.ReactElement {
   const t = useTranslations('builder.persona.dimension');
   // Clamp the value-bubble's horizontal anchor so it doesn't escape the
@@ -97,6 +105,7 @@ export function DimensionSlider({
           onChange={(e) => onChange(Number(e.target.value))}
           disabled={disabled}
           aria-label={t('rangeLabel', { axis, labelLeft, labelRight })}
+          {...(error ? { 'aria-invalid': true } : {})}
           {...(description ? { title: description } : {})}
           className={cn(
             'w-full appearance-none bg-[color:var(--border)] rounded-full h-1.5',
@@ -128,6 +137,23 @@ export function DimensionSlider({
           <AlertTriangle className="size-3.5" aria-hidden />
           <span>{t('conflictHint')}</span>
         </div>
+      ) : null}
+      {hint ? (
+        <p
+          className="text-[11px] text-[color:var(--fg-muted)]"
+          data-testid={`dimension-slider-${axis}-hint`}
+        >
+          {hint}
+        </p>
+      ) : null}
+      {error ? (
+        <p
+          role="alert"
+          className="text-[11px] text-[color:var(--danger)]"
+          data-testid={`dimension-slider-${axis}-error`}
+        >
+          {error}
+        </p>
       ) : null}
     </div>
   );

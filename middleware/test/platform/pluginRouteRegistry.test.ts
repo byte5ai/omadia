@@ -121,6 +121,39 @@ describe('PluginRouteRegistry', () => {
     );
   });
 
+  it('#2043 — accepts a plain (req, res) handler and serves it under the prefix', async () => {
+    // A plugin package ships unbundled and need not import Express for a
+    // handful of routes. The facilitation engine hands over such a function;
+    // refusing it failed the plugin's whole activation.
+    const reg = newTestRouteRegistry();
+    const dispose = reg.register(
+      '/api/plain',
+      (req: express.Request, res: express.Response): void => {
+        res.json({ url: req.url });
+      },
+      'plain-plugin',
+    );
+    const app = express();
+    reg.mountAll(app);
+    const booted = await bootApp(app);
+    try {
+      const res = await fetch(`${booted.url}/api/plain/things/7?x=1`);
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { url: '/things/7?x=1' }, 'the handler sees the path below the prefix');
+      dispose();
+      assert.equal(await getStatus(`${booted.url}/api/plain/things/7`), 404, 'disposal works as for a router');
+    } finally {
+      await booted.close();
+    }
+  });
+
+  it('#2043 — still rejects an error handler (four parameters) and a non-function', () => {
+    const reg = newTestRouteRegistry();
+    const errorHandler = (_e: unknown, _q: unknown, _s: unknown, _n: unknown): void => {};
+    assert.throws(() => reg.register('/api/err', errorHandler, 'bad-plugin'), /non-Express router/);
+    assert.throws(() => reg.register('/api/str', 'nope', 'bad-plugin'), /non-Express router/);
+  });
+
   it('rejects a prefix that does not start with `/`', () => {
     const reg = newTestRouteRegistry();
     assert.throws(

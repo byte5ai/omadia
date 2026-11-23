@@ -39,7 +39,7 @@ export const ROUTINE_NO_CONTEXT_ERROR =
   'created, listed or changed from here. The Routines page can view, pause ' +
   'or delete existing routines.';
 
-const ActionSchema = z.enum(['create', 'list', 'pause', 'resume', 'delete']);
+const ActionSchema = z.enum(['create', 'list', 'pause', 'resume', 'renew', 'delete']);
 const ListFilterSchema = z.enum(['all', 'active', 'paused']);
 
 const ManageRoutineInputSchema = z.object({
@@ -110,10 +110,11 @@ export const manageRoutineToolSpec = {
     '**Aktionen:**\n' +
     '- `create` — neue Routine. Pflicht: `name` (eindeutig pro User), `cron` (5-Feld: Min Std DOM Mon DOW), `prompt` (was der Agent zur Trigger-Zeit ausführen soll). Optional: `timeoutMs` (Default 10 min = 600000), `targetEmail` (proaktiv eine ANDERE Person im 1:1 anschreiben statt den aktuellen User — nur erlaubt, wenn der User dafür berechtigt ist; sonst Fehler).\n' +
     '- `list` — alle Routinen des aktuellen Users (aktiv + pausiert).\n' +
-    '- `pause` / `resume` / `delete` — Pflicht: `id` aus einer vorigen `list`-Antwort.\n\n' +
+    '- `pause` / `resume` / `renew` / `delete` — Pflicht: `id` aus einer vorigen `list`-Antwort. `renew` verlängert eine Routine um einen weiteren Zeitraum (wenn der User das auf die Nachfrage vor dem Ablauf wünscht).\n\n' +
+    '**Laufzeit:** Jede Routine läuft bis zu ihrer Frist (`until`, Standard 30 Tage). Vor dem Ablauf fragt der Kernel den User, ob sie weiterlaufen soll; danach ist sie pausiert, bis sie fortgesetzt oder verlängert wird.\n\n' +
     '**Cron-Regeln:**\n' +
     '- Standard 5-Feld-Format. Beispiele: `0 9 * * 1` (Montag 9:00), `*/30 * * * *` (alle 30min), `0 8 1 * *` (Monatlich am 1.).\n' +
-    '- Minimum-Tick-Rate: 60s (kein Sub-Minuten-Cron).\n' +
+    '- Höchstens alle 15 Minuten (der Kernel lehnt engere Muster ab).\n' +
     '- Bei mehrdeutigen Zeitangaben des Users (z.B. "morgens"): nachfragen via `ask_user_choice`, nicht raten.\n\n' +
     '**Quota:** max 50 aktive Routinen pro User.\n\n' +
     '**Fehlerverhalten:** Tool-Antwort beginnt bei Fehler mit `Error: …` (Cron malformed, Quota erreicht, Name kollidiert, id nicht gefunden). Das Modell erklärt dem User in eigenen Worten, was schief lief.',
@@ -122,7 +123,7 @@ export const manageRoutineToolSpec = {
     properties: {
       action: {
         type: 'string',
-        enum: ['create', 'list', 'pause', 'resume', 'delete'],
+        enum: ['create', 'list', 'pause', 'resume', 'renew', 'delete'],
         description: 'Welche Operation auf die Routinen ausgeführt wird.',
       },
       name: {
@@ -211,6 +212,8 @@ export class ManageRoutineTool {
           return await this.handlePause(args);
         case 'resume':
           return await this.handleResume(args);
+        case 'renew':
+          return await this.handleRenew(args);
         case 'delete':
           return await this.handleDelete(args);
       }
@@ -332,6 +335,17 @@ export class ManageRoutineTool {
     });
   }
 
+  private async handleRenew(args: ManageRoutineInput): Promise<string> {
+    if (!args.id) return 'Error: `renew` requires `id`.';
+    const ctx = this.resolveContext();
+    if (!ctx) return ROUTINE_NO_CONTEXT_ERROR;
+    const updated = await this.runner.renewRoutine(args.id, actorScope(ctx));
+    return JSON.stringify({
+      action: 'renewed',
+      routine: summariseRoutine(updated),
+    });
+  }
+
   private async handleDelete(args: ManageRoutineInput): Promise<string> {
     if (!args.id) return 'Error: `delete` requires `id`.';
     const ctx = this.resolveContext();
@@ -368,6 +382,8 @@ interface SummarisedRoutine {
   lastRunAt: string | null;
   lastRunStatus: string | null;
   lastRunError: string | null;
+  /** #2082 — the routine's deadline; null until it is first scheduled. */
+  until: string | null;
 }
 
 function summariseRoutine(r: Routine): SummarisedRoutine {
@@ -383,6 +399,7 @@ function summariseRoutine(r: Routine): SummarisedRoutine {
     lastRunAt: r.lastRunAt ? r.lastRunAt.toISOString() : null,
     lastRunStatus: r.lastRunStatus,
     lastRunError: r.lastRunError,
+    until: r.until ? r.until.toISOString() : null,
   };
 }
 

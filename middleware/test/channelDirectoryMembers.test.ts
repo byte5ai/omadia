@@ -122,7 +122,13 @@ async function makeRouteHarness(
       { id: 'a1', slug: 'hr', name: 'HR', status: 'enabled' },
     ],
     listChannelBindings: async () => bindings,
-    getPlatformSettings: async () => ({ fallbackAgentId: 'a1' }),
+    listTombstones: async () => [],
+    // #2055 — the instance entry of the default-agent table (the former fallback).
+    routing: {
+      listDefaultEntries: async () => [
+        { id: 'e-instance', principal: null, channelType: null, agentId: 'a1' },
+      ],
+    },
   } as unknown as ConfigStore;
   const orchestratorRegistry = {
     reload: async () => undefined,
@@ -201,10 +207,18 @@ describe('GET /api/v1/operator/channels members mapping', () => {
     assert.equal(res.status, 200);
     const body = (await res.json()) as {
       channels: Array<Record<string, unknown>>;
+      instance_default_slug?: string | null;
     };
     const stale = body.channels.find((c) => c['stale'] === true);
     assert.ok(stale);
     assert.equal(stale['channel_key'], '19:gone@thread.skype');
+    // #2055 / #1880 — the bound agent's state rides along; the instance
+    // default replaces the fallback slug.
+    assert.equal(stale['bound_agent_slug'], 'hr');
+    assert.equal(stale['bound_agent_status'], 'enabled');
+    assert.equal(stale['bound_agent_name'], 'HR');
+    assert.equal(body.instance_default_slug, 'hr');
+    assert.equal('fallback_slug' in body, false);
     assert.equal('members' in stale, false);
     assert.equal('member_count' in stale, false);
   });

@@ -21,6 +21,7 @@ import express from 'express';
 
 import type { ChatAgent } from '@omadia/orchestrator';
 import { createChatRouter } from '../src/routes/chat.js';
+import { routeTurnFrom } from './_helpers/webRouteTurn.js';
 import {
   getForeignToolMetrics,
   resetForeignToolMetrics,
@@ -49,8 +50,10 @@ async function collectStream(
   app.use(express.json());
   app.use(
     createChatRouter({
-      resolveChatAgent: (slug) => (slug === SLUG ? streamingAgent(events) : undefined),
-      getDefaultSlug: () => SLUG,
+      routeTurn: routeTurnFrom(
+        (slug) => (slug === SLUG ? streamingAgent(events) : undefined),
+        () => SLUG,
+      ),
     }),
   );
 
