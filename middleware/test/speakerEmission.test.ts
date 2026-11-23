@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { ChatAgent, ChatStreamEvent, SemanticAnswer } from '@omadia/channel-sdk';
-import { SYSTEM_SPEAKER, type AgentSpeaker } from '@omadia/plugin-api';
+import { SYSTEM_SPEAKER, type AgentSpeaker, type Contribution } from '@omadia/plugin-api';
 
 import { withSpeaker, speakerOf, emitterOf } from '../packages/harness-orchestrator/src/management/speakingChatAgent.js';
 import {
@@ -16,6 +16,8 @@ import { IdentityGuard } from '../packages/harness-orchestrator/src/identityGuar
 import { withIdentityGuard } from '../packages/harness-orchestrator/src/identityGuard/guardedChatAgent.js';
 import type { GuardDirectoryEntry } from '../packages/harness-orchestrator/src/identityGuard/deterministic.js';
 import { publishRoutineAnswer } from '../src/plugins/routines/routineRunner.js';
+
+import { BLOCKED, CHUNK_SEEDS, GUARD_COLLEAGUES, chunk } from './_helpers/identityGuardCases.js';
 
 /**
  * #2045 / #2046 — spec 2042 §6 criteria 2 and 5 at the agent boundary: every
@@ -28,7 +30,7 @@ import { publishRoutineAnswer } from '../src/plugins/routines/routineRunner.js';
 const lena: AgentSpeaker = { kind: 'agent', agentId: 'id-lena', slug: 'lena', displayName: 'Lena' };
 const directory: GuardDirectoryEntry[] = [
   { agentId: 'id-lena', slug: 'lena', displayName: 'Lena' },
-  { agentId: 'id-strategist', slug: 'strategist', displayName: 'Strategist' },
+  ...GUARD_COLLEAGUES,
 ];
 
 function emitter(judge: 'pass' | 'block' | 'hang' = 'pass'): AgentAnswerEmitter {
@@ -51,16 +53,20 @@ function emitter(judge: 'pass' | 'block' | 'hang' = 'pass'): AgentAnswerEmitter 
   });
 }
 
-function scripted(text: string, chunks?: readonly string[]): ChatAgent & { extra: () => string } {
+function scripted(
+  text: string,
+  chunks?: readonly string[],
+  contributions?: readonly Contribution[],
+): ChatAgent & { extra: () => string } {
   return {
     extra: () => 'forwarded',
     offeredToolNames: () => new Set(['odoo_read']),
     async chat(): Promise<SemanticAnswer> {
-      return { text };
+      return { text, ...(contributions ? { contributions } : {}) };
     },
     async *chatStream(): AsyncGenerator<ChatStreamEvent> {
       for (const part of chunks ?? [text]) yield { type: 'text_delta', text: part };
-      yield { type: 'done', answer: text, toolCalls: 0, iterations: 1 };
+      yield { type: 'done', answer: text, toolCalls: 0, iterations: 1, ...(contributions ? { contributions } : {}) };
     },
   };
 }
@@ -76,9 +82,14 @@ async function drain(agent: ChatAgent): Promise<{ deltas: string; done: Extract<
   return { deltas, done };
 }
 
-function bundle(text: string, chunks?: readonly string[], judge: 'pass' | 'block' | 'hang' = 'pass'): ChatAgent {
+function bundle(
+  text: string,
+  chunks?: readonly string[],
+  judge: 'pass' | 'block' | 'hang' = 'pass',
+  contributions?: readonly Contribution[],
+): ChatAgent {
   const e = emitter(judge);
-  return withSpeaker(withIdentityGuard(scripted(text, chunks), e), lena, e);
+  return withSpeaker(withIdentityGuard(scripted(text, chunks, contributions), e), lena, e);
 }
 
 describe('speaker stamping (#2045)', () => {
@@ -196,6 +207,77 @@ describe('identity guard at the agent boundary (#2046)', () => {
         { type: 'text_delta', text: 'Fertig.' },
       ],
     );
+  });
+});
+
+describe('criterion 2: every blocked case end to end through the agent wrapper', () => {
+  for (const [name, text] of BLOCKED) {
+    it(`criterion 2: non-streaming, ${name} → system notice`, async () => {
+      const answer = await bundle(text).chat({ userMessage: 'x' });
+      assert.deepEqual(answer.speaker, SYSTEM_SPEAKER, text);
+      assert.equal(answer.systemNotice?.code, 'identity_guard_blocked', text);
+      assert.equal(answer.text, answer.systemNotice?.text);
+    });
+
+    it(`criterion 2: streaming with random chunk boundaries, ${name} → system notice`, async () => {
+      for (const seed of CHUNK_SEEDS) {
+        const alone = await drain(bundle(text, chunk(text, seed)));
+        assert.equal(alone.deltas, '', `seed ${String(seed)}: published "${alone.deltas}"`);
+        assert.deepEqual(alone.done.speaker, SYSTEM_SPEAKER, `seed ${String(seed)}`);
+        assert.equal(alone.done.systemNotice?.code, 'identity_guard_blocked', `seed ${String(seed)}`);
+        assert.equal(alone.done.answer, alone.done.systemNotice?.text);
+
+        const framed = `Gern. ${text} Mehr dazu gleich.`;
+        const after = await drain(bundle(framed, chunk(framed, seed)));
+        assert.equal(after.deltas, 'Gern. ', `seed ${String(seed)}: published "${after.deltas}"`);
+        assert.equal(after.done.systemNotice?.code, 'identity_guard_blocked', `seed ${String(seed)}`);
+        assert.ok(after.done.answer.endsWith(after.done.systemNotice.text), `seed ${String(seed)}`);
+        assert.doesNotMatch(after.done.answer, /Mehr dazu gleich/);
+      }
+    });
+  }
+
+  const mira: AgentSpeaker = { kind: 'agent', agentId: 'a-mira', slug: 'mira-sales', displayName: 'Mira' };
+  const delivered: Contribution = {
+    id: 'contribution-1',
+    speaker: mira,
+    text: 'Der Rabatt von 5 % ist für diesen Kunden in Ordnung.',
+    status: 'delivered',
+  };
+
+  it('criterion 2: a real contribution was delivered and A quotes it in its own words → system notice, the contribution stays', async () => {
+    const paraphrase = 'Mira said: the discount is fine, so we can send the offer.';
+    const answer = await bundle(paraphrase, undefined, 'pass', [delivered]).chat({ userMessage: 'x', locale: 'en' });
+    assert.equal(answer.systemNotice?.code, 'identity_guard_blocked');
+    assert.deepEqual(answer.speaker, SYSTEM_SPEAKER);
+    assert.doesNotMatch(answer.text, /send the offer/);
+    // INV-5: A cannot suppress B's delivered block, also not by being blocked.
+    assert.deepEqual(answer.contributions, [delivered]);
+
+    for (const seed of CHUNK_SEEDS) {
+      const { deltas, done } = await drain(bundle(paraphrase, chunk(paraphrase, seed), 'pass', [delivered]));
+      assert.equal(deltas, '', `seed ${String(seed)}`);
+      assert.equal(done.systemNotice?.code, 'identity_guard_blocked', `seed ${String(seed)}`);
+      assert.deepEqual(done.contributions, [delivered], `seed ${String(seed)}`);
+    }
+  });
+
+  it('criterion 2: after a delivered contribution, an invented statement in English and German is still blocked', async () => {
+    for (const text of ['Mira confirmed that the discount is fine.', 'Mira hat bestätigt, dass der Rabatt in Ordnung ist.']) {
+      const answer = await bundle(text, undefined, 'pass', [delivered]).chat({ userMessage: 'x' });
+      assert.equal(answer.systemNotice?.code, 'identity_guard_blocked', text);
+      const { done } = await drain(bundle(text, chunk(text, 42), 'pass', [delivered]));
+      assert.equal(done.systemNotice?.code, 'identity_guard_blocked', text);
+    }
+  });
+
+  it('criterion 2: a paraphrase only the model layer catches is blocked through the wrapper, streamed and not', async () => {
+    const text = 'As Mira put it, the discount is fine.';
+    const answer = await bundle(text, undefined, 'block', [delivered]).chat({ userMessage: 'x' });
+    assert.equal(answer.systemNotice?.code, 'identity_guard_blocked');
+    const { deltas, done } = await drain(bundle(text, chunk(text, 7), 'block', [delivered]));
+    assert.equal(deltas, '');
+    assert.equal(done.systemNotice?.code, 'identity_guard_blocked');
   });
 });
 
