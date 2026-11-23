@@ -24,6 +24,17 @@ export class RetiredPluginKindError extends Error {
 }
 
 /**
+ * Why a plugin the kernel has no runtime for (`pluginRuntimeOf` → `none`) did
+ * not start: the retired kind `agent`, or no catalog entry at all (a package
+ * missing from every store). Only the first is `kind_retired`.
+ */
+export function noRuntimeError(pluginId: string, kind: string | undefined): Error {
+  return kind === 'agent'
+    ? new RetiredPluginKindError(pluginId)
+    : new Error(`'${pluginId}' is not in the plugin catalog: no package of it was found, so nothing was started`);
+}
+
+/**
  * At boot: every installed plugin of the retired kind `agent` is recorded as
  * `errored` with `kind_retired`. Never throws, so a registry write that fails
  * for one entry neither crashes the boot nor stops the others. Returns the ids

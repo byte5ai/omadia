@@ -12,7 +12,7 @@ import { describe, it } from 'node:test';
 
 import { activationResultOf, classifyActivationError } from '../src/plugins/activationFailure.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
-import { blockRetiredAgentPlugins, RetiredPluginKindError } from '../src/plugins/retiredAgentPlugins.js';
+import { blockRetiredAgentPlugins, noRuntimeError, RetiredPluginKindError } from '../src/plugins/retiredAgentPlugins.js';
 
 const AGENT = 'de.byte5.agent.legacy';
 const TOOL = '@omadia/integration-odoo';
@@ -79,14 +79,23 @@ describe('retired agent plugins (S3c)', () => {
 
   it('a reactivation throws an error the install service classifies as kind_retired', () => {
     assert.equal(classifyActivationError(new RetiredPluginKindError(AGENT)), 'kind_retired');
+    assert.equal(classifyActivationError(noRuntimeError(AGENT, 'agent')), 'kind_retired');
   });
 
-  it('the boot records them after the tool runtime started, and every dispatch site has a branch for them', () => {
+  it('a plugin the catalog does not know is not reported as a retired agent plugin', () => {
+    const err = noRuntimeError('@acme/missing', undefined);
+    assert.equal(classifyActivationError(err), 'unknown');
+    assert.match(err.message, /not in the plugin catalog/);
+  });
+
+  it('the boot records them after the errored-plugin retry and before the tool runtime starts', () => {
     const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8');
-    const toolBoot = source.indexOf('await toolPluginRuntime.activateAllInstalled()');
+    const retry = source.indexOf('await retryErroredPlugins(');
     const retired = source.indexOf('await blockRetiredAgentPlugins(');
-    assert.ok(toolBoot > 0 && retired > toolBoot, 'blockRetiredAgentPlugins runs after the tool runtime boot');
+    const toolBoot = source.indexOf('await toolPluginRuntime.activateAllInstalled()');
+    assert.ok(retry > 0 && retired > retry, 'after the retry, which may lift `errored` to `active`');
+    assert.ok(toolBoot > retired, 'before any runtime or capability resolution reads the registry');
     assert.equal(source.includes('DynamicAgentRuntime'), false, 'no agent runtime is wired');
-    assert.equal(source.match(/throw new RetiredPluginKindError\(agentId\)/g)?.length, 2, 'install and update refuse to start one');
+    assert.equal(source.match(/throw noRuntimeError\(agentId, kind\)/g)?.length, 2, 'install and update refuse to start one');
   });
 });

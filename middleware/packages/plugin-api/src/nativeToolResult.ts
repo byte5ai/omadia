@@ -38,14 +38,22 @@ export function isNativeToolResult(value: unknown): value is NativeToolResult {
 }
 
 /**
- * A handler's result for a dispatch path that guards on `typeof === 'string'`
- * (the Privacy Shield masks text only): text stays text, a structured result
- * becomes its model-facing text, and anything else — a plugin that breaks the
- * type — is handed back UNCHANGED, so the path's non-string guard refuses it
- * instead of the value being turned into text that looks legitimate.
+ * The text a dispatch path hands on for a handler's result: text stays text,
+ * a structured result becomes its model-facing text, and anything else — a
+ * plugin that breaks the type (an object, a content-block array) — becomes
+ * a refusal. Such a value is never passed on: the Privacy Shield masks text
+ * only, so a non-string would reach the model unmasked, and turning it into
+ * JSON would make it look like a legitimate result.
  */
-export function nativeToolDispatchText(raw: unknown): unknown {
-  return typeof raw === 'string' || isNativeToolResult(raw) ? nativeToolResultText(raw) : raw;
+export function nativeToolDispatchText(raw: unknown, toolName: string): string {
+  if (typeof raw === 'string' || isNativeToolResult(raw)) return nativeToolResultText(raw);
+  return unreadableToolResultNotice(toolName);
+}
+
+/** The refusal for a result that is neither text nor a structured result. */
+export function unreadableToolResultNotice(toolName: string): string {
+  const name = toolName.replace(/[`\r\n]/g, '');
+  return `Error: tool \`${name}\` returned a result that is neither text nor a structured result; it was not passed on.`;
 }
 
 /**

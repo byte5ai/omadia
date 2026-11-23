@@ -186,6 +186,7 @@ import {
   isWriteCapableTool,
   isNativeToolResult,
   normalizeNativeToolResult,
+  unreadableToolResultNotice,
   resolveEffectivePrivacyMode,
 } from '@omadia/plugin-api';
 import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
@@ -9496,9 +9497,14 @@ export class Orchestrator {
     const takeResult = (raw: NativeToolOutput): string => {
       rawResult = raw;
       // A value that is neither text nor a structured result (a plugin that
-      // breaks the type) passes through unchanged, as before S3c: the
-      // string-only paths below never treat it as legitimate text.
-      if (typeof raw !== 'string' && !isNativeToolResult(raw)) return raw as unknown as string;
+      // breaks the type) is refused: the shield below masks text only, so
+      // passing it on would hand the model an unmasked value.
+      if (typeof raw !== 'string' && !isNativeToolResult(raw)) {
+        console.error(
+          `[orchestrator.dispatchTool:${name}] handler returned ${Array.isArray(raw) ? 'an array' : typeof raw}, neither text nor a structured result — refused`,
+        );
+        return unreadableToolResultNotice(name);
+      }
       const normalized = normalizeNativeToolResult(raw);
       if (meta && normalized.postcondition) meta.postcondition = normalized.postcondition;
       return normalized.text;

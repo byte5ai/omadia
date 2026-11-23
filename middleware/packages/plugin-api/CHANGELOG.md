@@ -26,6 +26,15 @@ Additive (spec 2042 §5.3, criterion 40, the canvas channel's agent picker;
   valid.
 - **`NativeTextToolHandler`**: a `NativeToolHandler` that always answers with
   text; the kernel's own tools are typed with it.
+
+### Changed (types)
+
+- **`NativeToolHandler`** now resolves to `NativeToolOutput` (`string |
+  NativeToolResult`). Additive for plugins, which implement handlers. Code
+  that CALLS a `NativeToolHandler` and reads the result as a string no longer
+  compiles: read it with `nativeToolResultText`, or type the handler as
+  `NativeTextToolHandler` when it is known to answer with text.
+  `ctx.tools.invoke` still resolves to text.
 - **`agentDirectory@1`** (`AGENT_DIRECTORY_SERVICE_NAME`,
   `AgentDirectoryService`, `AgentDirectoryRequest`, `AgentDirectoryView`,
   `AgentDirectoryAgent`, `AgentDirectoryDefault`): the agents a person may

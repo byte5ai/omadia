@@ -425,7 +425,7 @@ import {
   OAuthBrokerService,
   PendingFlowStore,
 } from './plugins/oauth/index.js';
-import { blockRetiredAgentPlugins, RetiredPluginKindError } from './plugins/retiredAgentPlugins.js';
+import { blockRetiredAgentPlugins, noRuntimeError } from './plugins/retiredAgentPlugins.js';
 import { invokePluginTool, pluginToolOwner } from './platform/pluginToolInvoker.js';
 import { JobScheduler } from './plugins/jobScheduler.js';
 import { MigrationRunner } from './plugins/migrationRunner.js';
@@ -2133,8 +2133,8 @@ async function main(): Promise<void> {
           // Spec 2042 §5.10 — the retired kind `agent` has no runtime. A new
           // one is refused at install; this is a reactivation (setup save) of
           // one installed before. The caller records the error's
-          // `kind_retired`.
-          throw new RetiredPluginKindError(agentId);
+          // `kind_retired` (another code for a plugin the catalog lacks).
+          throw noRuntimeError(agentId, kind);
       }
     },
     // #2088 — an uninstalled archetype plugin no longer delivers its archetype:
@@ -2387,6 +2387,17 @@ async function main(): Promise<void> {
     registry: installedRegistry,
     builtInStore: builtInPackageStore,
     uploadedStore: uploadedPackageStore,
+  });
+
+  // Spec 2042 §5.10 — the kernel runs no plugin of the retired kind `agent`.
+  // One still installed is recorded `errored` (`kind_retired`) so the store
+  // shows it as not started; the boot goes on. Right after the retry above
+  // (which may have lifted it to `active`) and before any runtime or the
+  // capability resolution reads the registry.
+  await blockRetiredAgentPlugins({
+    registry: installedRegistry,
+    catalog: pluginCatalog,
+    log: (m) => console.warn(m),
   });
 
   // ── Admin auth (A.1) ──────────────────────────────────────────────────────
@@ -3110,14 +3121,6 @@ async function main(): Promise<void> {
       '[graph] backfill SKIPPED — set BACKFILL_AT_STARTUP=1 to enable (the 500-turn replay was the dominant boot delay; KG already holds the data)',
     );
   }
-  // Spec 2042 §5.10 — the kernel runs no plugin of the retired kind `agent`.
-  // One still installed is recorded `errored` (`kind_retired`) so the store
-  // shows it as not started; the boot goes on.
-  await blockRetiredAgentPlugins({
-    registry: installedRegistry,
-    catalog: pluginCatalog,
-    log: (m) => console.warn(m),
-  });
 
   // S+10-4a: capability-flip — the @omadia/orchestrator plugin's
   // activate() owns Orchestrator + 5 native-tools + ChatSessionStore +
@@ -5362,7 +5365,7 @@ async function main(): Promise<void> {
           // #2079 — what the read brought in labels the turn (S5 discretion):
           // an answer carrying these rows is checked against its readers.
           tools.set(def.name, async (input) => {
-            const out = nativeToolDispatchText(await handler(input)) as string;
+            const out = nativeToolDispatchText(await handler(input), def.name);
             await entry.built.bundle.raw.labelHarnessRead(def.name);
             return out;
           });
@@ -5647,7 +5650,11 @@ async function main(): Promise<void> {
           ? invokeWebhookPostAction(input)
           : parseMcpActionId(toolId)
             ? invokeMcpAction(toolId, input)
-            : invokePluginTool(nativeToolRegistry, toolId, input),
+            : // S3c — only what `listActions` offers: a plugin tool that declares
+              // `deterministic_action: true`. Any other id runs nothing.
+              deterministicActionRegistry.has(toolId)
+              ? invokePluginTool(nativeToolRegistry, toolId, input)
+              : Promise.resolve(undefined),
       listActions: async () => [
         WEBHOOK_POST_ACTION_ID,
         ...deterministicActionRegistry.list(),
@@ -6449,7 +6456,7 @@ async function main(): Promise<void> {
             // Spec 2042 §5.10 — never reached by an upload (ingest refuses the
             // retired kind `agent`); a throw, so the caller records
             // `kind_retired` instead of a successful activation.
-            throw new RetiredPluginKindError(agentId);
+            throw noRuntimeError(agentId, kind);
         }
       },
       log: (msg) => console.log(msg),

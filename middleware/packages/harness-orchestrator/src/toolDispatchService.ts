@@ -12,7 +12,12 @@
  */
 
 import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
-import { isUnknownOutcomeToolErrorNotice, isWriteCapableTool, nativeToolDispatchText } from '@omadia/plugin-api';
+import {
+  isNativeToolResult,
+  isUnknownOutcomeToolErrorNotice,
+  isWriteCapableTool,
+  nativeToolDispatchText,
+} from '@omadia/plugin-api';
 import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
 import { replayMissNotice, runHandlerAtMostOnce } from './toolReplayLedger.js';
 import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
@@ -489,9 +494,13 @@ export class ToolDispatchService {
       if (replay === undefined) ledger?.record('dispatch', name, input, { kind: 'rejection', error });
       return this.thrownResult(name, error, options);
     }
-    // A value that is neither text nor a structured result passes through
-    // unchanged: `afterDispatch` refuses a non-string (fail closed).
-    const text = nativeToolDispatchText(raw) as string;
+    // A value that is neither text nor a structured result is refused here
+    // (fail closed): the shield below masks text only.
+    const text = nativeToolDispatchText(raw, name);
+    if (typeof raw !== 'string' && !isNativeToolResult(raw)) {
+      console.error(`[toolDispatchService:${name}] handler returned ${Array.isArray(raw) ? 'an array' : typeof raw}, neither text nor a structured result — refused`);
+      return { content: text, isError: true, origin: 'dispatcher' };
+    }
     if (replay === undefined) {
       ledger?.record('dispatch', name, input, { kind: 'result', value: raw });
       if (isUnknownOutcomeToolErrorNotice(text)) ledger?.noteUnknownOutcome(name, input);

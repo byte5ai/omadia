@@ -10692,7 +10692,9 @@ Spec 2042 §5.10, ADR-0014/0017. Folgt auf S3b (#2152).
 - **Canvas-Output/Deterministic-Action:** Autodiscovery jetzt in
   `toolPluginRuntime.ts`. `agentToolInvoker@1` und Conductor-Aktionsschritte
   rufen ein vom Plugin registriertes Tool per Id
-  (`platform/pluginToolInvoker.ts`); `hasStream` ist immer `false`.
+  (`platform/pluginToolInvoker.ts`); `hasStream` ist immer `false`. Conductor:
+  nur Tools mit `deterministic_action: true` (dieselbe Liste wie
+  `listActions`), sonst schlägt der Schritt fehl.
   Tool-Pills (`resolveAgentForTool.ts`) nennen das Plugin, das das Tool
   registriert hat.
 - **Native Tool-Ergebnisse** (plugin-api `NativeToolResult`): ein Handler darf
@@ -10701,7 +10703,9 @@ Spec 2042 §5.10, ADR-0014/0017. Folgt auf S3b (#2152).
   Tool-Loops) und beim Verifier, auch bei einer Re-Entry (der Replay-Ledger hält
   das Rohergebnis); `structured` geht nie ans Modell. Alle anderen Aufrufer
   (`ctx.tools.invoke`, Invoker, Setup-Options, CLI-Dispatcher, MCP-/Preview-
-  Bridges) lesen den Text (`nativeToolResultText`). **Offen:** auf dem
+  Bridges) lesen den Text (`nativeToolResultText`). Ein Ergebnis, das weder Text
+  noch `NativeToolResult` ist, wird auf jedem Dispatch-Pfad abgelehnt
+  (`nativeToolDispatchText`), nie unmaskiert weitergegeben. **Offen:** auf dem
   CLI-Pfad (`ToolDispatchService`) gibt es keinen Run-Trace für
   Orchestrator-Tool-Calls; eine `postcondition` erreicht dort den Verifier
   nicht.
@@ -10715,7 +10719,10 @@ Spec 2042 §5.10, ADR-0014/0017. Folgt auf S3b (#2152).
   Plugin-/Grant-Änderung entfernt (`revokeForeignArchetypeGrants`, Warnung je
   Entfernung). `PUT /api/v1/operator/agents/:slug/plugins` entfernt einen
   solchen gehaltenen Grant, ob die Anfrage ihn nennt oder nicht, und scheitert
-  nicht mehr an ihm; ein neuer solcher Grant wird weiter abgelehnt.
+  nicht mehr an ihm (Antwort `removed_invalid_grants`, Audit
+  `agent.plugin_grant_revoked`); ein neuer solcher Grant wird weiter abgelehnt.
+  Der Boot-Abgleich schreibt nur ein Warn-Log (das Admin-Audit existiert dann
+  noch nicht).
 - **integration-odoo:** eigenes `undici` mit `ODOO_INSECURE_TLS=true` umgeht
   die Egress-Prüfung, als Residualrisiko dokumentiert,
   byte5ai/omadia-integration-odoo#10.

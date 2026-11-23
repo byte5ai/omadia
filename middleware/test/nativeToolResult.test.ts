@@ -133,6 +133,30 @@ describe('a native tool’s structured result in a turn', () => {
     assert.deepEqual(calls.map((c) => c.postcondition), [{ issues: ['partner: missing'] }]);
   });
 
+  it('a result that is neither text nor a structured result is refused, never handed on unmasked', async () => {
+    const registry = new NativeToolRegistry();
+    registry.register('list_partners', {
+      // Breaks the type on purpose: a content-block array with a personal value.
+      handler: (() => Promise.resolve([{ type: 'text', text: 'erika.mustermann@example.com' }])) as never,
+      spec: {
+        name: 'list_partners',
+        description: 'lists partners (test)',
+        input_schema: { type: 'object' as const, properties: {}, required: [] },
+      } as never,
+      agentId: '@acme/integration-crm',
+    });
+    const t = verifiedTurn({
+      registry,
+      responses: [toolCalls(['list_partners', {}]), text(ANSWER)],
+      verdicts: [approved()],
+    });
+
+    await t.service.chat(REQUEST);
+
+    assert.equal(JSON.stringify(t.model.requests).includes('erika.mustermann'), false);
+    assert.match(toolResultContents(t.model.requests[1])[0] ?? '', /neither text nor a structured result; it was not passed on/);
+  });
+
   it('a deterministic caller (canvas, Conductor) gets the same model-facing text', async () => {
     const { registry } = registryReturning({ output: ROWS, limitSignal: LIMIT });
     assert.equal(await invokePluginTool(registry, 'list_partners', {}), `${ROWS}\n\n${formatLimitSignalNote(LIMIT)}`);

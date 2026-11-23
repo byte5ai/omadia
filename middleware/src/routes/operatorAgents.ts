@@ -4703,6 +4703,12 @@ export function createOperatorAgentsRouter(
             console.warn(
               `[operator-agents] removed the invalid grant of archetype plugin '${p.pluginId}' from agent '${existing.slug}' with the replace of its grants`,
             );
+            await recordAudit({
+              actor: auditActorFromRequest(req),
+              action: 'agent.plugin_grant_revoked',
+              target: `agent:${existing.id}`,
+              before: { plugin_id: p.pluginId, reason: 'foreign_archetype' },
+            });
           }
         }
       }
@@ -4716,7 +4722,9 @@ export function createOperatorAgentsRouter(
       }
       if (gate.ok && gate.audit) await recordAudit(gate.audit);
       await live.registry.reload();
-      res.json({ ok: true });
+      // S3c — say which held grants were invalid and are gone, so a client
+      // that listed one is not left believing it was kept.
+      res.json({ ok: true, ...(invalidHeld.size > 0 ? { removed_invalid_grants: [...invalidHeld] } : {}) });
     } catch (err) {
       badRequest(res, err);
     }

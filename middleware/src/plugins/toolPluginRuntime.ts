@@ -266,10 +266,8 @@ export class ToolPluginRuntime {
       for (const pkg of this.deps.builtInStore.list()) ids.add(pkg.id);
     }
 
-    // Pre-filter to tool/extension candidates that are registry-active, then
-    // topologically sort so a plugin's dependencies activate first. Cross-
-    // runtime deps (agent→tool) are handled by the outer boot order in
-    // index.ts — this runtime runs before the agent runtime.
+    // Pre-filter to candidates of this runtime that are registry-active, then
+    // topologically sort so a plugin's dependencies activate first.
     const eligible: string[] = [];
     const installedAtById = new Map<string, string>();
     for (const id of ids) {

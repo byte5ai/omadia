@@ -2215,7 +2215,8 @@ readonly issues: readonly string[];
 readonly structured?: NativeToolResult['structured'];
 }
 export declare function isNativeToolResult(value: unknown): value is NativeToolResult;
-export declare function nativeToolDispatchText(raw: unknown): unknown;
+export declare function nativeToolDispatchText(raw: unknown, toolName: string): string;
+export declare function unreadableToolResultNotice(toolName: string): string;
 export declare function normalizeNativeToolResult(raw: unknown): NormalizedNativeToolResult;
 export declare function nativeToolResultText(raw: unknown): string;
 

@@ -95,6 +95,7 @@ describe('foreign archetype grants: replacing an agent’s grant set', () => {
       ],
     });
     assert.equal(res.status, 200, JSON.stringify(res.json));
+    assert.deepEqual(res.json['removed_invalid_grants'], [ENGINE], 'the answer says the legacy grant is gone');
     const removed = h.writes.filter((w) => w.startsWith('removeAgentPlugin'));
     assert.deepEqual(removed, [
       `removeAgentPlugin(["id-hr","${ENGINE}"])`,
