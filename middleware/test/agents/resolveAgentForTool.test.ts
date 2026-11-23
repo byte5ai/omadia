@@ -2,34 +2,28 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createAgentResolver } from '../../src/agents/resolveAgentForTool.js';
-import type { DynamicAgentRuntime } from '../../src/plugins/dynamicAgentRuntime.js';
-
-function stubRuntime(map: Record<string, string>): DynamicAgentRuntime {
-  return {
-    findAgentIdByToolName(toolName: string): string | undefined {
-      return map[toolName];
-    },
-  } as unknown as DynamicAgentRuntime;
+function stubRuntime(map: Record<string, string>): (toolName: string) => string | undefined {
+  return (toolName) => map[toolName];
 }
 
 describe('createAgentResolver', () => {
-  it('resolves built-in agents from the curated map', () => {
+  it('resolves curated kernel tools from the map', () => {
     const resolve = createAgentResolver({
-      dynamicRuntime: stubRuntime({}),
+      toolOwner: stubRuntime({}),
     });
 
-    assert.deepEqual(resolve('query_confluence_playbook'), {
-      id: 'de.byte5.agent.confluence',
-      label: 'Confluence',
+    assert.deepEqual(resolve('book_meeting'), {
+      id: 'de.byte5.agent.calendar',
+      label: 'Calendar',
       tone: 'cyan',
     });
-    assert.equal(resolve('query_odoo_hr')?.label, 'Odoo HR');
-    assert.equal(resolve('book_meeting')?.id, 'de.byte5.agent.calendar');
+    // Spec 2042 §5.10 — the retired agent plugins' `query_*` tools are gone.
+    assert.equal(resolve('query_odoo_hr'), undefined);
   });
 
-  it('resolves Builder-uploaded agents via the dynamic runtime', () => {
+  it('resolves a plugin tool to the plugin that registered it', () => {
     const resolve = createAgentResolver({
-      dynamicRuntime: stubRuntime({
+      toolOwner: stubRuntime({
         query_wanderlust_concierge: 'de.byte5.agent.wanderlust-concierge',
         query_flight_scout: 'de.byte5.agent.flight-scout',
       }),
@@ -47,7 +41,7 @@ describe('createAgentResolver', () => {
 
   it('produces the same tone for the same agent id (deterministic)', () => {
     const resolve = createAgentResolver({
-      dynamicRuntime: stubRuntime({
+      toolOwner: stubRuntime({
         query_a: 'de.byte5.agent.foo',
         query_b: 'de.byte5.agent.foo',
       }),
@@ -58,7 +52,7 @@ describe('createAgentResolver', () => {
 
   it('returns undefined for helper / unknown tools', () => {
     const resolve = createAgentResolver({
-      dynamicRuntime: stubRuntime({}),
+      toolOwner: stubRuntime({}),
     });
 
     assert.equal(resolve('memory'), undefined);
@@ -67,13 +61,13 @@ describe('createAgentResolver', () => {
     assert.equal(resolve('definitely_not_a_real_tool'), undefined);
   });
 
-  it('built-in mapping wins over a dynamic collision', () => {
+  it('built-in mapping wins over a plugin collision', () => {
     const resolve = createAgentResolver({
-      dynamicRuntime: stubRuntime({
-        query_odoo_hr: 'de.byte5.agent.rogue-hr-clone',
+      toolOwner: stubRuntime({
+        book_meeting: 'de.byte5.agent.rogue-calendar-clone',
       }),
     });
 
-    assert.equal(resolve('query_odoo_hr')?.id, 'de.byte5.agent.odoo-hr');
+    assert.equal(resolve('book_meeting')?.id, 'de.byte5.agent.calendar');
   });
 });

@@ -2,6 +2,12 @@ import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 
 import { MCP_INVOKE_SCOPE, MCP_LIST_SCOPE, mcpWriteScope, WILDCARD_SCOPE } from '@omadia/api-key-auth';
+import { admitModelCall } from '@omadia/llm-provider';
+import {
+  currentExecutionContext,
+  resetModelGatewayForTests,
+  setModelGatewayMode,
+} from '@omadia/usage-telemetry';
 // From source (not the `@omadia/channel-sdk` dist barrel): added in #647, after
 // the last dist build.
 import {
@@ -206,6 +212,38 @@ describe('public MCP endpoint', () => {
     const second = await h.rpc(callToolRequest(READ_TOOL, { q: 'two' }, 11), { token: KEY_TOKEN });
     assert.equal(second.status, 200, `second call failed: ${JSON.stringify(second.payload)}`);
     assert.equal(callResultText(second.payload), `dispatched:${READ_TOOL}`);
+  });
+
+  // Spec 2042 §5.10, call-site gap 5 — a public call is a turn of the agent
+  // the key is bound to: a tool that asks a model is admitted under the
+  // enforced gateway, in that agent's context.
+  it('dispatches in the bound agent’s turn context, so its model calls are admitted', async (t) => {
+    setModelGatewayMode('enforce');
+    let seen: ReturnType<typeof currentExecutionContext>;
+    const h = await start(
+      baseOptions({
+        dispatchers: {
+          sales: fakeDispatcher([
+            {
+              name: READ_TOOL,
+              handle: async () => {
+                seen = currentExecutionContext();
+                admitModelCall('complete');
+                return { content: 'asked a model' };
+              },
+            },
+          ]),
+        },
+      }),
+      t,
+    );
+    if (!h) return;
+    const res = await h.rpc(callToolRequest(READ_TOOL, {}, 12), { token: KEY_TOKEN });
+    resetModelGatewayForTests();
+    assert.equal(res.status, 200, JSON.stringify(res.payload));
+    assert.equal(callResultText(res.payload), 'asked a model');
+    assert.equal(seen?.kind, 'agent_turn');
+    assert.equal(seen?.ownerId, 'sales');
   });
 
   it('never issues an Mcp-Session-Id', async (t) => {

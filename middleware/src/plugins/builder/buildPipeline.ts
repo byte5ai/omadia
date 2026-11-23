@@ -8,7 +8,6 @@ import {
   cleanupStagingDir,
 } from './buildTemplate.js';
 import type { DraftStore } from './draftStore.js';
-import { specToAgentMd } from './specToAgentMd.js';
 import type { Draft } from './types.js';
 
 /**
@@ -242,20 +241,6 @@ export class BuildPipeline {
       }
       throw err;
     }
-
-    // Phase 3 (OB-67): emit `AGENT.md` alongside the generated source.
-    // The frontmatter carries `quality:` and `persona:` blocks so the
-    // runtime `loadSystemPrompt` can splice them into the system prompt.
-    // Without this file the persona/quality slider settings would never
-    // reach the LLM — they'd live only in the Builder draft state.
-    files.set(
-      'AGENT.md',
-      specToAgentMd({
-        draftId: opts.draftId,
-        draftName: draft.name,
-        spec: draft.spec,
-      }),
-    );
 
     const buildN = ++this.buildCounter;
 

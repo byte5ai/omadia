@@ -104,7 +104,7 @@ answer:
   redacts that message like a returned `Error:` text. It masks prompt text
   only while an operator has switched on prompt masking (`mask_user_prompt`,
   default off). The user's message, text inlined from uploads, the user
-  messages a channel replays and a direct-line relay are
+  messages a channel replays are
   then masked, and so is the text the turn's routing, fact-extraction and
   memory-excerpt passes read. Masking finds values such as e-mail addresses,
   IBANs, phone numbers, amounts and dates by pattern, plus the terms on the
@@ -234,8 +234,8 @@ answer:
   and a rendered answer without prose goes out as system data (verdict
   `skipped` / `system_data`, chip "Original system data"). The rows themselves
   are never sent to the verifier. `enforce` still withholds a rendered tool
-  error or sign-in prompt, a render whose provider reports no prose field, and
-  a Direct Line relay behind the shield. A turn with an input card goes out
+  error or sign-in prompt and a render whose provider reports no prose field.
+  A turn with an input card goes out
   unchecked, a rendered answer included: the card exemption runs first. Agents
   on the Claude subscription CLI and routines are not verified, and the
   verifier itself cannot be assigned to the subscription CLI (#1583) ([`docs/security-architecture.md`](security-architecture.md)

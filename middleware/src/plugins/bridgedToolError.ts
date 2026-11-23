@@ -1,8 +1,7 @@
 /**
  * The tool result a platform tool bridge returns when a bridged tool fails —
- * `bridgeTool` (`dynamicAgentRuntime.ts`), `bridgePreviewTool`
- * (`builder/previewChatService.ts`) and `bridgeBuilderTool`
- * (`builder/builderAgent.ts`).
+ * `bridgePreviewTool` (`builder/previewChatService.ts`) and
+ * `bridgeBuilderTool` (`builder/builderAgent.ts`).
  *
  * The bridges used to answer every failure with `Error: ${err.message}`, which
  * put exception text on the model's wire: an ORM or HTTP client echoes the

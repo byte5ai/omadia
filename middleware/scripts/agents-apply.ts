@@ -28,7 +28,7 @@
  *       channel_bindings:
  *         - channel_type: teams
  *           channel_key: 28:bot-id-1234
- *   fallback_agent: public                # optional slug; null/missing ⇒ hard-reject
+ *   default_agent: public                 # optional slug for the instance default-agent entry; null ⇒ off
  *
  * The apply is **replace-by-slug**: any agent in the YAML is upserted, its
  * plugins + bindings are fully replaced. Agents present in the DB but absent
@@ -74,7 +74,8 @@ interface AgentYaml {
 
 interface ConfigYaml {
   agents?: AgentYaml[];
-  fallback_agent?: string | null;
+  /** #2055 — the instance entry of the default-agent table; null = `off`. */
+  default_agent?: string | null;
 }
 
 function parseArgs(argv: readonly string[]): {
@@ -211,21 +212,18 @@ async function applyConfig(
     }
   }
 
-  // Fallback agent.
-  if (config.fallback_agent !== undefined) {
-    if (config.fallback_agent === null) {
-      await store.setFallbackAgentId(null);
-      log('cleared fallback_agent');
-    } else {
-      const fallback = await store.getAgentBySlug(config.fallback_agent);
-      if (!fallback) {
-        throw new Error(
-          `fallback_agent "${config.fallback_agent}" does not exist after apply`,
-        );
+  // #2055 — the instance entry of the default-agent table.
+  if (config.default_agent !== undefined) {
+    let agentId: string | null = null;
+    if (config.default_agent !== null) {
+      const target = await store.getAgentBySlug(config.default_agent);
+      if (!target) {
+        throw new Error(`default_agent "${config.default_agent}" does not exist after apply`);
       }
-      await store.setFallbackAgentId(fallback.id);
-      log(`set fallback_agent slug=${fallback.slug} id=${fallback.id}`);
+      agentId = target.id;
     }
+    await store.routing.upsertDefaultEntry({ principal: null, channelType: null, agentId, updatedBy: 'agents-apply' });
+    log(agentId ? `set instance default agent slug=${config.default_agent}` : 'set instance default agent off');
   }
 }
 

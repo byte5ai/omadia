@@ -8,7 +8,8 @@ import {
   type JobSpec,
 } from '@omadia/plugin-api';
 
-import { JobScheduler, type TimerSeam } from '../src/plugins/jobScheduler.js';
+import { admitModelCall } from '../packages/llm-provider-api/src/index.js';
+import { JobScheduler, MAX_BACKOFF_MS, type TimerSeam } from '../src/plugins/jobScheduler.js';
 
 /**
  * The scheduler is exercised through its public surface only — register,
@@ -288,6 +289,14 @@ describe('JobScheduler — spec validation', () => {
     dispose();
   });
 
+  it('accepts cron syntax croner 9.x accepted (N/S stepping, ?)', () => {
+    const s = sched();
+    for (const cron of ['0/15 * * * *', '5/15 9-17 * * 1-5', '/10 * * * *', '0 9 ? * MON']) {
+      const dispose = s.register(ANY_AGENT, { name: cron, schedule: { cron } }, async () => {});
+      dispose();
+    }
+  });
+
   it('rejects non-positive intervalMs', () => {
     assert.throws(
       () =>
@@ -335,6 +344,98 @@ describe('JobScheduler — spec validation', () => {
         ),
       JobValidationError,
     );
+  });
+});
+
+describe('JobScheduler — bounded recovery (#2082)', () => {
+  /** Let a run settle: the model-call meter adds a few awaits. */
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+  };
+
+  it('backs a failing job off to recovery probes and resets on the first success', async () => {
+    const timers = makeMockTimers();
+    let now = 0;
+    let failing = true;
+    let runs = 0;
+    const scheduler = new JobScheduler({ log: () => {}, timers, now: () => now, failuresBeforeBackoff: 2 });
+    scheduler.register(ANY_AGENT, intervalSpec(), async () => {
+      runs += 1;
+      if (failing) throw new Error('network down');
+    });
+    for (let i = 0; i < 2; i += 1) {
+      now += 1000;
+      timers.tick();
+      await settle();
+    }
+    assert.equal(runs, 2);
+    const backedOff = scheduler.list()[0];
+    assert.equal(backedOff?.consecutiveFailures, 2);
+    assert.equal(backedOff?.lastStatus, 'error');
+    assert.equal(backedOff?.lastError, 'network down');
+    assert.equal(backedOff?.nextProbeAt, new Date(now + 1000).toISOString());
+
+    // Ticks inside the backoff window are skipped; the job is never ended.
+    timers.tick();
+    await settle();
+    assert.equal(runs, 2);
+    now += 1000;
+    timers.tick();
+    await settle();
+    assert.equal(runs, 3, 'one recovery probe');
+    assert.equal(scheduler.list()[0]?.nextProbeAt, new Date(now + 2000).toISOString(), 'the window doubles');
+
+    failing = false;
+    now += 2000;
+    timers.tick();
+    await settle();
+    const recovered = scheduler.list()[0];
+    assert.equal(recovered?.consecutiveFailures, 0);
+    assert.equal(recovered?.lastStatus, 'ok');
+    assert.equal(recovered?.nextProbeAt, null);
+  });
+
+  it('caps the backoff window at an hour', async () => {
+    const timers = makeMockTimers();
+    let now = 0;
+    const scheduler = new JobScheduler({ log: () => {}, timers, now: () => now, failuresBeforeBackoff: 1 });
+    scheduler.register(ANY_AGENT, intervalSpec({ schedule: { intervalMs: 20 * 60_000 } }), async () => {
+      throw new Error('down');
+    });
+    for (let i = 0; i < 5; i += 1) {
+      now += 2 * 60 * 60_000;
+      timers.tick();
+      await settle();
+    }
+    const job = scheduler.list()[0];
+    assert.equal(job?.consecutiveFailures, 5);
+    assert.equal(Date.parse(job?.nextProbeAt ?? '') - now, MAX_BACKOFF_MS);
+  });
+
+  it('a run that finds nothing to do is a success', async () => {
+    const timers = makeMockTimers();
+    const scheduler = new JobScheduler({ log: () => {}, timers });
+    scheduler.register(ANY_AGENT, intervalSpec(), async () => undefined);
+    timers.tick();
+    await settle();
+    assert.equal(scheduler.list()[0]?.lastStatus, 'ok');
+  });
+
+  it('a job that calls a generative model is refused and counted as a failure', async () => {
+    const timers = makeMockTimers();
+    const scheduler = new JobScheduler({ log: () => {}, timers });
+    scheduler.register(ANY_AGENT, intervalSpec(), async () => {
+      try {
+        admitModelCall();
+      } catch {
+        // a helper that swallows the refusal
+      }
+    });
+    timers.tick();
+    await settle();
+    const job = scheduler.list()[0];
+    assert.equal(job?.lastStatus, 'error');
+    assert.match(job?.lastError ?? '', /may not call a generative model/);
   });
 });
 

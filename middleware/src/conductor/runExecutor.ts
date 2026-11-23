@@ -394,7 +394,11 @@ export class ConductorRunExecutor {
           break;
         }
 
-        const decision = nextStep(graph, stepId, exec.result, context);
+        // #1703 — an effect may supply the postcondition for a step that declared
+        // none (a refused `webhook.post` delivery); `nextStep` treats it as a default.
+        const decision = nextStep(graph, stepId, exec.result, context, {
+          ...(exec.defaultPostcondition ? { defaultPostcondition: exec.defaultPostcondition } : {}),
+        });
         context = this.accumulate(context, stepId, exec.result);
         context = appendTranscript(context, step, exec.result);
         currentStepId = await this.applyDecision(runId, seq, stepId, exec.actor, decision, context, lease, stepStartedAt);

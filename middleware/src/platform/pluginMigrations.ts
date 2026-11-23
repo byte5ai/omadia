@@ -127,6 +127,20 @@ export interface RunPluginMigrationsOptions {
   /** Accept a file whose bytes changed after it was applied. Off by default —
    *  see `RunMigrationsOptions.allowChecksumDrift`. */
   readonly allowChecksumDrift?: boolean;
+  /**
+   * #2088 — the schema the ledger and the migrated tables live in, for a
+   * plugin whose `pool` is logged in as a role limited to that schema. Set
+   * with `SET LOCAL` inside the batch's transaction, so it holds on whatever
+   * server session a pooler picked. Absent: the connection's own path.
+   */
+  readonly searchPath?: string;
+  /**
+   * #2088 — a role that may read the ledger but never write it (the plugin's
+   * runtime role, which gets write access to every other table of the
+   * schema). Revoked inside the batch's transaction, right after the ledger
+   * exists.
+   */
+  readonly ledgerReadOnlyFor?: string;
   readonly log?: (msg: string) => void;
 }
 
@@ -198,6 +212,9 @@ export async function runPluginMigrations(
       await client.query(
         `SET LOCAL statement_timeout = '${String(PLUGIN_MIGRATION_STATEMENT_TIMEOUT_MS)}ms'`,
       );
+      if (opts.searchPath !== undefined) {
+        await client.query(`SET LOCAL search_path = ${quoteIdentifier(opts.searchPath)}`);
+      }
       await client.query(
         'SELECT pg_advisory_xact_lock($1::int, hashtext($2)::int)',
         [PLUGIN_MIGRATION_LOCK_NS, ledger],
@@ -209,6 +226,11 @@ export async function runPluginMigrations(
       // core migrators had to special-case, because the check and the catalog
       // insert are separate steps.
       await client.query(pluginLedgerDdl(ledger));
+      if (opts.ledgerReadOnlyFor !== undefined) {
+        await client.query(
+          `REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ${quoteIdentifier(ledger)} FROM ${quoteIdentifier(opts.ledgerReadOnlyFor)}`,
+        );
+      }
       const alreadyApplied = await readLedger(client, ledger);
 
       for (const file of files) {

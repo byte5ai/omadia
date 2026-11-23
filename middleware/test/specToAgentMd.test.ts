@@ -11,8 +11,11 @@ import { emptyAgentSpec } from '../src/plugins/builder/types.js';
  *
  * The bridge mirrors every draft save into `profile_agent_md`; the bytes
  * have to be deterministic so Snapshot bundle_hash isn't churned by
- * spurious key reorderings. Frontmatter schema-syncs with persona-ui-v1.md
- * §6 (identity + quality blocks).
+ * spurious key reorderings.
+ *
+ * Spec 2042 §5.10 — a Plugin Builder draft is a capability plugin: the
+ * document carries identity, kind and playbook, never a persona, quality
+ * settings or role text — also not for a draft stored before the change.
  */
 
 function makeSpec(overrides: Partial<ReturnType<typeof emptyAgentSpec>> = {}) {
@@ -41,7 +44,7 @@ describe('specToAgentMd · frontmatter', () => {
       spec: makeSpec({
         id: 'spec-id',
         name: 'Spec Name',
-        description: 'A useful agent',
+        description: 'A useful plugin',
         category: 'productivity',
         version: '0.2.0',
       }),
@@ -49,68 +52,49 @@ describe('specToAgentMd · frontmatter', () => {
     const fm = extractFrontmatter(buf.toString('utf8'));
     assert.equal(fm.identity.id, 'spec-id');
     assert.equal(fm.identity.display_name, 'Spec Name');
-    assert.equal(fm.identity.description, 'A useful agent');
+    assert.equal(fm.identity.description, 'A useful plugin');
     assert.equal(fm.identity.category, 'productivity');
     assert.equal(fm.identity.version, '0.2.0');
   });
 
-  it('omits quality block when spec has no real quality content', () => {
-    const buf = specToAgentMd({
-      draftId: 'd',
-      draftName: 'D',
-      spec: makeSpec(),
-    });
-    const fm = extractFrontmatter(buf.toString('utf8'));
-    assert.equal(fm.quality, undefined);
+  it('carries the effective plugin kind', () => {
+    const tool = extractFrontmatter(
+      specToAgentMd({ draftId: 'd', draftName: 'D', spec: makeSpec() }).toString('utf8'),
+    );
+    assert.equal(tool.identity.kind, 'tool');
+    const integration = extractFrontmatter(
+      specToAgentMd({
+        draftId: 'd',
+        draftName: 'D',
+        spec: makeSpec({ depends_on: ['@omadia/integration-odoo'] }),
+      }).toString('utf8'),
+    );
+    assert.equal(integration.identity.kind, 'integration');
   });
 
-  it('omits quality block when sycophancy is "off" with empty boundaries', () => {
-    const buf = specToAgentMd({
-      draftId: 'd',
-      draftName: 'D',
-      spec: makeSpec({
-        quality: { sycophancy: 'off', boundaries: { presets: [], custom: [] } },
-      }),
-    });
-    const fm = extractFrontmatter(buf.toString('utf8'));
-    assert.equal(fm.quality, undefined);
-  });
-
-  it('serialises quality block when sycophancy is non-off', () => {
-    const buf = specToAgentMd({
-      draftId: 'd',
-      draftName: 'D',
-      spec: makeSpec({
-        quality: { sycophancy: 'high', boundaries: { presets: ['factual-only'], custom: [] } },
-      }),
-    });
-    const fm = extractFrontmatter(buf.toString('utf8'));
-    assert.deepEqual(fm.quality, {
-      sycophancy: 'high',
-      boundaries: { presets: ['factual-only'], custom: [] },
-    });
-  });
-
-  it('serialises quality block when only custom rules are set', () => {
-    const buf = specToAgentMd({
-      draftId: 'd',
-      draftName: 'D',
-      spec: makeSpec({
-        quality: { boundaries: { presets: [], custom: ['no-medical-advice'] } },
-      }),
-    });
-    const fm = extractFrontmatter(buf.toString('utf8'));
-    assert.equal(fm.quality?.boundaries?.custom?.[0], 'no-medical-advice');
+  it('never emits persona, quality or role text, even from an old draft', () => {
+    const legacy = {
+      ...makeSpec({ id: 'demo', name: 'Demo' }),
+      skill: { role: 'Du bist ein Stratege.', tonality: 'scharf' },
+      persona: { template: 'strategist', custom_notes: 'sei frech' },
+      quality: { sycophancy: 'high' },
+    };
+    const text = specToAgentMd({ draftId: 'demo', draftName: 'Demo', spec: legacy }).toString('utf8');
+    const fm = extractFrontmatter(text) as Record<string, unknown>;
+    assert.equal(fm['persona'], undefined);
+    assert.equal(fm['quality'], undefined);
+    assert.doesNotMatch(text, /Stratege|scharf|frech|# Role|Tonality/);
   });
 });
 
 describe('specToAgentMd · body', () => {
-  it('renders skill.role + tonality + playbook sections in stable order', () => {
+  it('renders description + playbook sections in stable order', () => {
     const buf = specToAgentMd({
       draftId: 'd',
       draftName: 'D',
       spec: makeSpec({
-        skill: { role: 'You are a careful editor.', tonality: 'precise, friendly' },
+        name: 'Editor',
+        description: 'Checks prose for clarity.',
         playbook: {
           when_to_use: 'Editing prose for clarity',
           not_for: ['code review'],
@@ -120,14 +104,12 @@ describe('specToAgentMd · body', () => {
     });
     const text = buf.toString('utf8');
     const body = text.split('---\n').slice(2).join('---\n');
-    const roleIdx = body.indexOf('# Role');
-    const tonIdx = body.indexOf('## Tonality');
+    const descIdx = body.indexOf('# Editor');
     const whenIdx = body.indexOf('## When to use');
     const notIdx = body.indexOf('## Not for');
     const exIdx = body.indexOf('## Example prompts');
-    assert.ok(roleIdx >= 0, 'Role section must render');
-    assert.ok(tonIdx > roleIdx, 'Tonality after Role');
-    assert.ok(whenIdx > tonIdx, 'When-to-use after Tonality');
+    assert.ok(descIdx >= 0, 'description section must render');
+    assert.ok(whenIdx > descIdx, 'When-to-use after description');
     assert.ok(notIdx > whenIdx, 'Not-for after When-to-use');
     assert.ok(exIdx > notIdx, 'Examples after Not-for');
   });
@@ -136,85 +118,10 @@ describe('specToAgentMd · body', () => {
     const buf = specToAgentMd({
       draftId: 'd',
       draftName: 'D',
-      spec: makeSpec({ skill: { role: '' }, playbook: { when_to_use: '', not_for: [], example_prompts: [] } }),
+      spec: makeSpec({ playbook: { when_to_use: '', not_for: [], example_prompts: [] } }),
     });
     const text = buf.toString('utf8');
-    assert.ok(text.includes('agent body not yet authored'));
-  });
-});
-
-describe('specToAgentMd · persona block (Phase 3 / OB-67)', () => {
-  it('omits persona block when spec has no persona field', () => {
-    const buf = specToAgentMd({
-      draftId: 'd',
-      draftName: 'D',
-      spec: makeSpec({ skill: { role: 'something' } }),
-    });
-    const fm = extractFrontmatter(buf.toString('utf8'));
-    assert.equal(fm.persona, undefined);
-  });
-
-  it('omits persona block when all axes are empty / template + notes blank', () => {
-    const buf = specToAgentMd({
-      draftId: 'd',
-      draftName: 'D',
-      spec: makeSpec({
-        skill: { role: 'something' },
-        persona: { axes: {}, template: '', custom_notes: '   ' },
-      }),
-    });
-    const fm = extractFrontmatter(buf.toString('utf8'));
-    assert.equal(fm.persona, undefined);
-  });
-
-  it('emits persona.axes when at least one axis is set', () => {
-    const buf = specToAgentMd({
-      draftId: 'd',
-      draftName: 'D',
-      spec: makeSpec({
-        skill: { role: 'something' },
-        persona: {
-          axes: { directness: 80, warmth: 30 },
-        },
-      }),
-    });
-    const fm = extractFrontmatter(buf.toString('utf8'));
-    assert.deepEqual(fm.persona, { axes: { directness: 80, warmth: 30 } });
-  });
-
-  it('emits template + custom_notes (trimmed) when set', () => {
-    const buf = specToAgentMd({
-      draftId: 'd',
-      draftName: 'D',
-      spec: makeSpec({
-        skill: { role: 'something' },
-        persona: {
-          template: 'software-engineer',
-          custom_notes: '  Antworte auf Deutsch.  ',
-        },
-      }),
-    });
-    const fm = extractFrontmatter(buf.toString('utf8'));
-    assert.equal(fm.persona?.template, 'software-engineer');
-    assert.equal(fm.persona?.custom_notes, 'Antworte auf Deutsch.');
-  });
-
-  it('determinism: same persona input → byte-identical output', () => {
-    const spec = makeSpec({
-      id: 'demo',
-      name: 'Demo',
-      description: 'short',
-      skill: { role: 'do things' },
-      playbook: { when_to_use: 'now', not_for: [], example_prompts: [] },
-      persona: {
-        template: 'software-engineer',
-        axes: { directness: 80, warmth: 30, formality: 40 },
-        custom_notes: 'metrische Einheiten',
-      },
-    });
-    const a = specToAgentMd({ draftId: 'demo', draftName: 'Demo', spec });
-    const b = specToAgentMd({ draftId: 'demo', draftName: 'Demo', spec });
-    assert.equal(a.toString('utf8'), b.toString('utf8'));
+    assert.ok(text.includes('plugin description not yet authored'));
   });
 });
 
@@ -224,9 +131,7 @@ describe('specToAgentMd · determinism', () => {
       id: 'demo',
       name: 'Demo',
       description: 'short',
-      skill: { role: 'do things' },
       playbook: { when_to_use: 'now', not_for: ['x'], example_prompts: ['y'] },
-      quality: { sycophancy: 'low' },
     });
     const a = specToAgentMd({ draftId: 'demo', draftName: 'Demo', spec });
     const b = specToAgentMd({ draftId: 'demo', draftName: 'Demo', spec });
@@ -237,7 +142,7 @@ describe('specToAgentMd · determinism', () => {
     const buf = specToAgentMd({
       draftId: 'd',
       draftName: 'D',
-      spec: makeSpec({ skill: { role: 'a' } }),
+      spec: makeSpec({ description: 'a' }),
     });
     assert.equal(buf.includes('\r\n'), false);
   });
@@ -247,12 +152,13 @@ describe('specToAgentMd · determinism', () => {
 
 function extractFrontmatter(text: string): {
   schema_version: number;
-  identity: { id: string; display_name: string; description?: string; category?: string; version?: string };
-  quality?: { sycophancy?: string; boundaries?: { presets?: string[]; custom?: string[] } };
-  persona?: {
-    template?: string;
-    axes?: Record<string, number>;
-    custom_notes?: string;
+  identity: {
+    id: string;
+    display_name: string;
+    description?: string;
+    category?: string;
+    version?: string;
+    kind?: string;
   };
 } {
   const match = /^---\n([\s\S]*?)\n---\n/.exec(text);

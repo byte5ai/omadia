@@ -3,7 +3,7 @@ import { AlertTriangle, ArrowUpRight, RefreshCw, Store, Wrench } from 'lucide-re
 import { useFormatter, useLocale, useTranslations } from 'next-intl';
 
 import { pickLocalized } from '../../_lib/localized';
-import type { Plugin } from '../../_lib/storeTypes';
+import { isLegacyKind, type Plugin } from '../../_lib/storeTypes';
 import { Chip } from './Chip';
 import { PluginIcon } from './PluginIcon';
 import { StateBadge } from './StateBadge';
@@ -178,6 +178,12 @@ export function PluginCard({
         {/* Origin marker — present when the bytes are the hub's artifact:
             hub-only entries and packages downloaded from that registry, never
             an operator upload of the same id (#1459). */}
+        {isLegacyKind(plugin.kind) &&
+        (plugin.install_state === 'installed' || plugin.install_state === 'update-available') ? (
+          <Chip tone="muted" className="border-[color:var(--warning)]/60 text-[color:var(--warning)]">
+            <span title={t('legacyChipTitle')}>{t('legacyChip')}</span>
+          </Chip>
+        ) : null}
         {plugin.source ? (
           <Chip tone="accent">
             <Store className="mr-1 size-3" aria-hidden />

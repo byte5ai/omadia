@@ -5,7 +5,8 @@
  *
  * This is the seam the issue assumed already existed. omadia's native tool
  * registry is a process-wide singleton with unique tool names; per-agent
- * scoping existed only for DomainTools (`scopeDomainToolsToPlugins`), and the
+ * scoping existed only for DomainTools (`scopeDomainToolsToPlugins`, since
+ * removed with the agent plugin runtime), and the
  * loopback MCP server's own security note says as much: "the subscription CLI
  * sees the FULL native tool registry via the loopback MCP server, with no
  * allowlist beyond MCP server scoping; a per-agent tool allowlist is a

@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ApiError } from '../../_lib/api';
+import { useFacilitatorRefusalMessage } from '../../operator/agents/_components/useFacilitatorCopy';
 import { getAgentGraph, type AgentGraph } from '../../_lib/agentBuilder';
+import { helperRefusalCode } from './helperRefusal';
 
 /** Translator threaded in from the calling component (see messages/README.md). */
 type TFn = (key: string, values?: Record<string, string | number>) => string;
@@ -32,7 +34,19 @@ export interface UseAgentGraph {
   ) => Promise<void>;
 }
 
-function friendlyError(err: unknown, t: TFn): string {
+function friendlyError(
+  err: unknown,
+  t: TFn,
+  refusal: (err: unknown) => string | null,
+): string {
+  // #2066 — a facilitator refusal has its own sentence; "API error 409"
+  // would not say that the thing is not available for the kind at all.
+  const refused = refusal(err);
+  if (refused !== null) return refused;
+  // #2050 — a refused helper write says why (name taken, tool or model the
+  // agent does not have) instead of a bare status.
+  const helperCode = helperRefusalCode(err);
+  if (helperCode !== null) return t(`helperErrors.${helperCode}`);
   if (err instanceof ApiError) return t('apiError', { status: err.status });
   return err instanceof Error ? err.message : String(err);
 }
@@ -50,6 +64,7 @@ export function useAgentGraph(slug: string | null, t: TFn): UseAgentGraph {
     slug ? { kind: 'loading' } : { kind: 'error', message: '' },
   );
   const [actionError, setActionError] = useState<string | null>(null);
+  const refusal = useFacilitatorRefusalMessage();
   const stateRef = useRef<GraphState>(state);
   useEffect(() => {
     stateRef.current = state;
@@ -62,9 +77,9 @@ export function useAgentGraph(slug: string | null, t: TFn): UseAgentGraph {
       const graph = await getAgentGraph(slug);
       setState({ kind: 'ready', graph });
     } catch (err) {
-      setState({ kind: 'error', message: friendlyError(err, t) });
+      setState({ kind: 'error', message: friendlyError(err, t, refusal) });
     }
-  }, [slug, t]);
+  }, [slug, t, refusal]);
 
   useEffect(() => {
     if (!slug) return;
@@ -86,10 +101,10 @@ export function useAgentGraph(slug: string | null, t: TFn): UseAgentGraph {
       } catch (err) {
         // Rollback to the authoritative pre-mutation snapshot.
         setState({ kind: 'ready', graph: snapshot });
-        setActionError(friendlyError(err, t));
+        setActionError(friendlyError(err, t, refusal));
       }
     },
-    [t],
+    [t, refusal],
   );
 
   return {

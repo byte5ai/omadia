@@ -12,7 +12,7 @@ import {
   resolveModelRefStrict,
   UnresolvedModelRefError,
 } from '@omadia/llm-provider';
-import type { PluginContext } from '@omadia/plugin-api';
+import type { BatchJobRegistry, PluginContext } from '@omadia/plugin-api';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type {
   AgentPrioritiesStore,
@@ -24,6 +24,7 @@ import type {
   Visibility,
 } from '@omadia/plugin-api';
 import {
+  BATCH_JOB_REGISTRY_SERVICE,
   BULK_EXCERPT_MERGE_DETECT_SERVICE_NAME,
   BULK_INCONSISTENCY_SERVICE_NAME,
   BULK_MERGE_DETECT_SERVICE_NAME,
@@ -886,14 +887,19 @@ export async function activate(
         dropUnpromoted: scratchPromotionDropUnpromoted,
         log: (msg) => { console.error(msg); },
       });
-      reaper.start();
-      stopScratchReaper = () => { reaper.stop(); };
-      // Kick a first pass off the boot critical-path (don't await in
-      // activate). Errors are swallowed inside runOnce.
-      const kick = setTimeout(() => { void reaper.runOnce(); }, 30_000);
-      if (typeof kick.unref === 'function') kick.unref();
+      // #2082 (spec 2042 §5.12) — the kernel runs it as a bounded batch
+      // trigger per agent (deadline, budget, breaker); no own interval.
+      const batchJobs = ctx.services.getOptional<BatchJobRegistry>(BATCH_JOB_REGISTRY_SERVICE);
+      if (batchJobs) {
+        stopScratchReaper = batchJobs.register(reaper.asBatchJob());
+      } else {
+        scratchReaperReason = 'no_batch_job_registry';
+        ctx.log(
+          '[harness-orchestrator-extras] scratch-promotion reaper not scheduled: the kernel offers no batch job registry',
+        );
+      }
       ctx.log(
-        `[harness-orchestrator-extras] scratch-promotion reaper on every ${String(scratchPromotionIntervalMinutes)}min, age=${String(scratchPromotionAgeHours)}h, threshold=${scratchPromotionThreshold.toFixed(2)}, dropUnpromoted=${String(scratchPromotionDropUnpromoted)}`,
+        `[harness-orchestrator-extras] scratch-promotion batch job: at most every ${String(scratchPromotionIntervalMinutes)}min per agent, age=${String(scratchPromotionAgeHours)}h, threshold=${scratchPromotionThreshold.toFixed(2)}, dropUnpromoted=${String(scratchPromotionDropUnpromoted)}`,
       );
     }
   }

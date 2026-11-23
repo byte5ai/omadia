@@ -408,7 +408,30 @@ verify_well_known() {
   body="$(curl -fsS --max-time "$CURL_TIMEOUT_SECONDS" "$base/.well-known/omadia-ui" 2>/dev/null || true)"
   case "$body" in
     *'"wsUrl":"wss://'*) record OK "$label /.well-known/omadia-ui wsUrl is wss://" ;;
-    *) record FAIL "$label /.well-known/omadia-ui has no wss:// wsUrl: $(printf '%s' "$body" | head -c 200)" ;;
+    *)
+      record FAIL "$label /.well-known/omadia-ui has no wss:// wsUrl: $(printf '%s' "$body" | head -c 200)"
+      return
+      ;;
+  esac
+  verify_ws_upgrade "$label" "$(printf '%s' "$body" | sed -n 's/.*"wsUrl":"\(wss:[^"]*\)".*/\1/p')"
+}
+
+# The advertised canvas URL must answer an upgrade: 401 without a session (it
+# reached the socket's auth) or 101. A hang or any other status means the host
+# advertises a socket it cannot serve (the harness front before #2042's relay).
+verify_ws_upgrade() {
+  local label="$1" ws_url="$2" code
+  if [ -z "$ws_url" ]; then
+    record FAIL "$label could not read wsUrl from /.well-known/omadia-ui"
+    return
+  fi
+  code="$(curl --http1.1 -sS -o /dev/null -w '%{http_code}' --max-time "$CURL_TIMEOUT_SECONDS" \
+    -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
+    -H 'Sec-WebSocket-Key: b21hZGlhLWRlcGxveS1jaGs=' \
+    "https://${ws_url#wss://}" 2>/dev/null || true)"
+  case "$code" in
+    401|101) record OK "$label canvas upgrade at $ws_url answers ($code)" ;;
+    *) record FAIL "$label canvas upgrade at $ws_url got '${code:-no answer}', expected 401 without a session" ;;
   esac
 }
 

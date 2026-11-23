@@ -73,6 +73,7 @@ import {
   ENVELOPE_PROVENANCE,
 } from '@omadia/channel-sdk';
 import { REPLAY_ARG_KEY } from '@omadia/orchestrator';
+import { runInExecutionContext } from '@omadia/usage-telemetry';
 import type {
   DispatchableToolSpec,
   PrivacyTurnHandle,
@@ -1178,7 +1179,14 @@ export class PublicMcpServer {
       this.inFlight -= 1;
     };
     try {
-      const work = this.dispatchWithPrivacy(dispatcher, name, input, options, gate);
+      // Spec 2042 §5.10 (call-site gap 5) — a public MCP call is a turn of
+      // the ONE agent the key is bound to: its model calls (a tool that asks
+      // a model, a sub-agent) run in that agent's turn context, charged to
+      // it, and are not refused as calls outside any context.
+      const work = runInExecutionContext(
+        { kind: 'agent_turn', ownerId: binding.agentId, agentSlug: binding.agentId },
+        () => this.dispatchWithPrivacy(dispatcher, name, input, options, gate),
+      );
       // Attached to the WORK, so a post-timeout settle still frees the slot.
       // Both arms, so a late rejection is handled rather than surfacing as an
       // unhandled rejection once the race has already rejected.

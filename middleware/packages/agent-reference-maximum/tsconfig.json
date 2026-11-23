@@ -25,6 +25,7 @@
     "./toolkit.ts",
     "./notesStore.ts",
     "./attachments.ts",
+    "./registerTools.ts",
     "./extractor.ts",
     "./types.ts",
     "./index.ts",

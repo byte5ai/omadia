@@ -793,7 +793,7 @@ describe('BuilderAgent — B.8 manifest-linter E2E', () => {
     // Seed a near-valid spec the agent only has to fix the depends_on on.
     await harness.draftStore.update(harness.userEmail, harness.draftId, {
       spec: {
-        template: 'agent-integration',
+        template: 'integration',
         id: 'de.byte5.agent.weather',
         name: 'Weather',
         version: '0.1.0',
@@ -801,7 +801,6 @@ describe('BuilderAgent — B.8 manifest-linter E2E', () => {
         category: 'analysis',
         depends_on: [],
         tools: [{ id: 'get_forecast', description: 'a' }],
-        skill: { role: 'tester' },
         setup_fields: [],
         playbook: { when_to_use: 'tests', not_for: [], example_prompts: [] },
         network: { outbound: ['api.openweather.org'] },
@@ -942,7 +941,8 @@ describe('BuilderAgent — system prompt seed', () => {
       '../../src/plugins/builder/builderAgent.js'
     );
     const seed = await defaultSystemPromptSeed();
-    assert.match(seed, /Builder Agent/);
+    assert.match(seed, /Plugin Builder/);
+    assert.match(seed, /Capability-Plugin/);
     assert.match(seed, /<boilerplate-contract>/);
     assert.match(seed, /agent-seo-analyst/);
   });
