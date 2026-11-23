@@ -69,6 +69,7 @@ function contributionText(contribution: Contribution): string {
  */
 export function renderPlainAnswer(answer: SemanticAnswer, opts: PlainAnswerOptions): string {
   if (answer.speaker?.kind === 'system') {
+    // A notice is not part of the turn: it neither shows nor spends a pending element.
     return answer.systemNotice?.text ?? answer.text;
   }
   const parts: string[] = [];

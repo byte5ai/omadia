@@ -30,15 +30,15 @@ interface Pickable {
 function pickablesOf(interactive: ChoosableInteractive): readonly Pickable[] {
   switch (interactive.kind) {
     case 'choice':
-      return interactive.options.map((o, i) => ({ echo: o.value, option: { id: `o${String(i + 1)}`, label: o.label } }));
+      return interactive.options.map((o, i) => ({ echo: o.value, option: { id: `__pick${String(i + 1)}`, label: o.label } }));
     case 'topic':
-      return interactive.topics.map((t, i) => ({ echo: t.value, option: { id: `o${String(i + 1)}`, label: t.label } }));
+      return interactive.topics.map((t, i) => ({ echo: t.value, option: { id: `__pick${String(i + 1)}`, label: t.label } }));
     case 'slots':
       // The click of a slot says which slot to book and by which id (Teams'
       // `handleBookSlotClick`); the typed pick says the same.
       return interactive.slots.map((s, i) => ({
         echo: `Bitte diesen Termin buchen: ${s.label}. Nutze book_meeting mit slotId="${s.slotId}" und leite einen sinnvollen Betreff aus dem vorherigen Kontext ab.`,
-        option: { id: `o${String(i + 1)}`, label: s.label },
+        option: { id: `__pick${String(i + 1)}`, label: s.label },
       }));
   }
 }
@@ -86,6 +86,10 @@ export class InMemoryPendingInteractiveStore implements PendingInteractiveStore 
     return this.#byConversation.get(conversationKey);
   }
   set(conversationKey: string, pending: PendingInteractive): void {
+    const now = Date.now();
+    for (const [key, held] of this.#byConversation) {
+      if (now - held.shownAt > PENDING_INTERACTIVE_TTL_MS) this.#byConversation.delete(key);
+    }
     this.#byConversation.set(conversationKey, pending);
   }
   clear(conversationKey: string): void {

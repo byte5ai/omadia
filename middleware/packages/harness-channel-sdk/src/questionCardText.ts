@@ -31,11 +31,8 @@ function questionText(question: CardQuestion): string[] {
       break;
     case 'assignment':
       if (question.candidates !== 'conversation_members') lines.push(...optionLines(question.candidates));
-      lines.push(
-        question.allowVolunteer === true
-          ? '(eine Nummer oder „ich“, wenn du es übernimmst)'
-          : '(eine Nummer)',
-      );
+      if (question.candidates === 'conversation_members') lines.push('(„ich“, wenn du es übernimmst)');
+      else lines.push(question.allowVolunteer === true ? '(eine Nummer oder „ich“, wenn du es übernimmst)' : '(eine Nummer)');
       break;
     case 'text':
     case 'number':

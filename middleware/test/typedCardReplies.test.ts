@@ -411,6 +411,11 @@ describe('the send service posts what the channel cannot show as text and keeps 
     // without volunteering, "ich" is not an answer to a fixed list
     const noVolunteer = { ...asked, allowVolunteer: false } as typeof asked;
     assert.equal(parseCardReply(noVolunteer, 'ich').ok, false);
+    // a member list nobody may volunteer for cannot go out as text at all
+    const closedMembers: QuestionCard = { cardId: 'as-4', title: 'T', questions: [{ id: 'q', kind: 'assignment', label: 'Wer?', candidates: 'conversation_members' }] };
+    const before = sent.length;
+    assert.equal((await send.sendToConversation(input({ card: closedMembers }), ground)).outcome, 'unreachable');
+    assert.equal(sent.length, before, 'nothing was posted');
   });
 
   it('a close far in the future does not keep a question open for ever', async () => {

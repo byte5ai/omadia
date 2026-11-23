@@ -317,6 +317,19 @@ describe('criterion 30: a typed reply to an answer element becomes the chosen va
     assert.match(text, /slotId="s2"/);
   });
 
+  it('criterion 30: an internal option id is not an answer: "o2" is just a message', () => {
+    assert.equal(resolveTypedInteractiveReply(shown(choice), 'c1', 'o2').resolved, false);
+  });
+
+  it('criterion 30: a system notice neither shows nor spends the pending element', () => {
+    const store = shown(choice);
+    renderPlainAnswer(
+      { text: 'x', speaker: { kind: 'system' }, systemNotice: { code: 'agent_selected', text: 'Hinweis.', locale: 'de' } },
+      { nativeIdentity: true, conversationKey: 'c1', speakerHistory: new InMemorySpeakerHistoryStore(), pendingInteractives: store },
+    );
+    assert.deepEqual(resolveTypedInteractiveReply(store, 'c1', '2'), { text: 'variante-b', resolved: true });
+  });
+
   it('criterion 30: a reply that names no option stays an ordinary message, and the element is spent', () => {
     const store = shown(choice);
     assert.deepEqual(resolveTypedInteractiveReply(store, 'c1', 'Lieber etwas anderes'), { text: 'Lieber etwas anderes', resolved: false });
