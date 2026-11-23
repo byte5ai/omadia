@@ -1955,6 +1955,10 @@
         "chart_pie": "Kreisdiagramm"
       }
     },
+    "answerDetails": {
+      "summary": "Details",
+      "hint": "Wie diese Antwort zustande kam: Schritte, Prüfung, Quellen, befragte Kolleg:innen und Datenschutz"
+    },
     "systemData": {
       "label": "Originaldaten aus dem System",
       "hint": "Die Werte dieser Antwort hat der Server unverändert aus dem Quellsystem eingesetzt – das KI-Modell hat sie nicht geschrieben. Der Text drumherum und die Spaltenüberschriften stammen vom Modell."
