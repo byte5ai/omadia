@@ -822,6 +822,14 @@ export type NativeToolHandler = (
   context?: NativeToolCallContext,
 ) => Promise<NativeToolOutput>;
 
+/** A {@link NativeToolHandler} that always answers with text (1.86.0): what
+ *  the kernel's own tools are, and what a caller may rely on reading as a
+ *  string. Assignable to `NativeToolHandler`. */
+export type NativeTextToolHandler = (
+  input: unknown,
+  context?: NativeToolCallContext,
+) => Promise<string>;
+
 /**
  * Where a tool call comes from (#2043). Passed by the kernel as the handler's
  * second argument; absent on kernels that predate it and for calls outside a

@@ -2502,6 +2502,7 @@ ok: false;
 message: string;
 };
 export type NativeToolHandler = (input: unknown, context?: NativeToolCallContext) => Promise<NativeToolOutput>;
+export type NativeTextToolHandler = (input: unknown, context?: NativeToolCallContext) => Promise<string>;
 export interface NativeToolCallContext {
 readonly agentSlug?: string;
 readonly channelType?: string;
