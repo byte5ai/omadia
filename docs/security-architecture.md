@@ -49,9 +49,7 @@ Benefits:
   the shared host client falls back to `ANTHROPIC_API_KEY` when it is set,
   and on installs whose vault key was seeded from that env var at first boot
   it is the same key, so host consumers (plan-runner gate, Teams, builder)
-  keep using it until the env var is removed. Sub-agents that
-  `DynamicAgentRuntime` has already built keep their captured provider until
-  a restart or rebuild. Both limits are recorded as open items in
+  keep using it until the env var is removed. Both limits are recorded as open items in
   `middleware-agent-handoff.md` §13.
 
 Pattern: thin proxy handler → typed client → upstream API. Document the
@@ -783,6 +781,128 @@ This keeps the supply chain explicit:
   unless the step sets `human.strictApproval` (§7a); an EXPLICIT rejection
   never advances on an unguarded transition in either mode (#1698, §7a).
 
+### The agent/plugin boundary, the model gateway and the plugin network sandbox (spec 2042 §5.10, ADR-0014/0017)
+
+Only agents are actors. These rules hold for every plugin and are enforced
+since the contract step (S3b). The expand step before it (S3a) only logged a
+model call outside any context, a raw model service handed to a plugin and a
+request outside a plugin's network permission, so the live instance kept
+working while the plugin release train moved the packages; there is no
+`observe` mode any more (`MODEL_GATEWAY_MODE` and `PLUGIN_EGRESS_MODE` are
+not read).
+
+- **No persona at ingest.** `checkPluginBoundary`
+  (`src/plugins/pluginBoundary.ts`) refuses a manifest with a persona,
+  speaker, personality or system prompt of its own, a `prompt_partial`
+  skill or an `AGENT.md` outside an agent template
+  (`422 package.persona_declared`), and every package of the retired kinds
+  `agent` and `extension`, also as the update of a package installed under
+  that kind (`422 package.retired_kind`, `422 install.retired_kind`). An
+  installed `extension` keeps running as a system module until it is
+  replaced. The kernel has no runtime for kind `agent` (S3c): an installed
+  agent plugin starts no code, is recorded `errored` with the code
+  `kind_retired` at boot and on every reactivation or update
+  (`src/plugins/retiredAgentPlugins.ts`), and is no capability plugin, so it
+  cannot be granted. An update
+  that makes a plugin a system module needs the explicit confirmation of a
+  fresh install (`becomes_system_module`). Agent templates
+  (`agent_templates:`, `src/plugins/agentTemplateManifest.ts`) are inactive
+  data, read strictly; the admin API only serves them as a prefill and
+  creates and grants nothing.
+- **Every model call in one execution context.** The gate every provider
+  adapter passes (`admitModelCall(operation)`) sees the context around the
+  call (agent turn, execution scope, inbound processing, operator job,
+  maintenance run) and refuses a call outside any context, operations the
+  context does not allow, past deadlines, cancels and kill switches.
+  `decisionModel@1` (Jev) passes the gate as `complete` in its caller's
+  context. Embedding and transcription services are held only behind the gate
+  (`src/platform/modelGatewayServices.ts`). A channel plugin's
+  `transcribeFile` runs as inbound processing set by the kernel, never by
+  the plugin. The call sites and their contexts: `docs/model-gateway-call-sites.md`.
+- **No raw model service for a plugin.** `anthropicClient`, `llm` and
+  `llmProviderPool` are refused to every plugin except `model` plugins and
+  the kernel's own bundled system modules (`rawModelServiceAccess`,
+  `src/platform/pluginServiceGrants.ts`). Other plugins reach models through
+  `ctx.llm`, in their caller's context; an archetype plugin's `ctx.llm` works
+  only inside an execution scope.
+- **One agent's envelope for a system module.** `agentEnvelope@1`
+  (`src/platform/agentEnvelopeService.ts`) resolves an agent by `agents.id`
+  to its own chat agent: a lookup in the live agent registry, no model, no
+  routing. An unknown, disabled or unbuilt agent has no envelope, and no
+  other agent is returned in its place. Only system modules get it (the
+  canvas presentation helper `@omadia/ui-orchestrator`).
+- **The canvas helper is reached only after the check.** The dispatcher
+  resolves an addressed turn (`resolveAgent`: enabled, available to this
+  sender here) first; only a `bound` agent is handed to the channel's
+  `dispatch_service` with `ChatTurnInput.agentId`, which the dispatcher sets
+  itself (channel metadata is never read as that field). A refused agent, a
+  `/agent` command and a turn the resolver cannot address never reach the
+  helper, and a structured canvas turn (`canvasRefresh`, `action`, empty text)
+  is never run as a model turn at an agent.
+- **The agent list of a channel is the route's list.** `agentDirectory@1`
+  (`src/platform/agentDirectoryService.ts`) is given to `channel` plugins only
+  and answers the function behind `GET /api/v1/agents/directory`; it lists,
+  never authorises.
+- **A system module's own model loop goes through the kernel.** The dev
+  platform's coding jobs run the Claude CLI in a container against the
+  module's Anthropic-compatible proxy. The proxy holds no provider key: it
+  opens an operator job (`operatorJobs@1`) and forwards each request through
+  `modelPassthrough@1`, which adds the instance's credentials, forwards only
+  four protocol headers, admits the call in the job's context and hands the
+  response back with auth-like headers dropped and the key scrubbed from
+  the body (also across stream chunks). Both
+  services are given only to `system-module` plugins, and a job object is
+  valid only for the plugin the kernel issued it to.
+- **Network sandbox** (`src/platform/pluginEgressGuard.ts`). `ctx.http` has
+  always enforced the allow-list, but the global `fetch` and `node:http(s)`
+  were reachable past it. The guard sits on those entries and attributes a
+  request to the plugin whose code made it, read from the call stack: the
+  innermost frame that is neither Node's nor a kernel dependency. A frame in
+  an installed package's directory (its code or its own `node_modules`)
+  makes it that plugin's; kernel code acting on a plugin's behalf (`ctx.http`,
+  `ctx.llm`, kernel services) stays the kernel's. The request must be
+  covered by the plugin's effective permission (the same resolution as
+  `ctx.http`: manifest hosts, `$config.*` hosts, the operator's hosts in
+  `allowlist` mode, any public host in `public-web` with literal private
+  addresses refused), and **model provider endpoints** (the provider
+  catalog's base URLs and the literal hosts of model plugins) are refused to
+  every plugin that is not a model plugin, before any allow-list entry.
+  A request that fails the check is refused (`PluginEgressRefusedError`)
+  and counted once per plugin, host and reason. A fault of the guard itself
+  lets the request through, so it never takes the kernel's own network down.
+  `GET /api/v1/admin/model-gateway` lists what the gateway and the guard
+  refused since boot.
+
+Residual risks of the sandbox (in-process, a policy, not a boundary against
+hostile code): a plugin that imports its own `undici` or opens sockets with
+`node:net`/`node:tls` directly is not seen (integration-odoo does so with
+`ODOO_INSECURE_TLS=true`: byte5ai/omadia-integration-odoo#10); the DNS-rebinding check runs
+only in `ctx.http`'s guarded dispatcher; bundled packages (system modules,
+built-in adapters) count as kernel code; a model server on a local or
+private host (a local Ollama) is not a model endpoint, because the host is
+shared with every other local service; a plugin that hands the kernel a
+bare `fetch` reference to call for it is not seen. A plugin can also patch
+the guard away, like any in-process check.
+
+### Plugin Builder preview: no service right the draft lacks (criterion 37)
+
+A preview reads kernel services through to the live registry so a draft can
+be tested against an installed integration. It used to do so ungated. Now
+`plugins/builder/previewServices.ts` applies the gates of an installed plugin,
+judged by the draft's own manifest: only declared capabilities (and of a
+versioned name only the declared major), never a pool-shaped capability, never
+a raw model client or provider pool (whatever kind the draft claims), and
+resolved as the draft plugin. A manifest that cannot be read declares nothing.
+
+### Recipient grants: where a proactive message may go (criterion 24)
+
+A trigger posts into the conversation it was created in, or into a target an
+operator granted the agent (`agent_recipient_grants`). The agent names a
+target only by grant id, so no model-made delivery reference reaches a
+sender; the grant is re-checked at every send and its stored reference is
+used. The discretion check runs against the target's readers read from the
+channel roster at send time; an unknown roster closes the room.
+
 ### Plugin-borne workflow templates (#478)
 
 Plugins may contribute Conductor workflow templates, and the capability is
@@ -850,6 +970,23 @@ registry handler (`src/platform/pluginContext.ts`):
   A new native tool bound to shared or unscoped state must be routed or denied
   the same way before it is registered.
 
+### The audience floor is on by default (#2048)
+
+Since #2048 every deployment enforces the audience floor (#575) unless the
+operator sets `AUDIENCE_FLOOR_ENABLED=false`. The default answer to "what may a
+person do" is the member baseline (`MemberBaselineGrantStore`): `tool:*`,
+recall and attachment reads for every person resolved to a `user:` principal.
+That is never more than the agent itself may do — the floor is only consulted
+for tools the agent holds (INV-8) — and explicit prohibitions beat it.
+
+What closes a room, deliberately: a group in a channel without a participant
+list, a roster that cannot be read, a participant who cannot be resolved, a 1:1
+whose owner cannot be resolved. Turns with no channel and no owner (schedules,
+Conductor steps) have no reader, so the floor does not apply; they stay bounded
+by the agent's own grants. Known gap: a channel roster that lists only part of
+the members (Telegram administrators) still bounds the room by the listed part;
+member-scoped memory (`completeRoster`) is stricter.
+
 ### Context memory: what a turn may recall (`enforce-strict`, `members`)
 
 Per-agent switch `agents.context_memory`. Two modes put a boundary around
@@ -904,6 +1041,114 @@ Known residuals:
 - A knowledge-graph provider that predates plugin-api 1.26.0 ignores
   `audienceOwners` and returns everything. The in-tree providers honour it.
 - Only turns that carry a `TurnOrigin` are context-bound.
+
+### Consultation: a colleague adds judgement, never access (spec 2042 §5.4, #2047)
+
+Agent A may ask agent B through the harness tool `consult`. The boundary:
+
+- **Authorization, fresh on every call:** A's `may_consult`, B's `consultable`, a
+  directed operator grant A→B (`agent_consultation_grants`, migration 0097), its
+  channel scope, per-turn and per-day budgets (the per-turn slot is reserved before
+  the first await, so parallel calls cannot overrun it; the day budget is counted
+  and recorded in one transaction under a transaction-scoped advisory lock), depth 1
+  (no consultation starts inside a consultation run), and an **active audience
+  floor** for A's turn. A revoked grant is refused on the next call. Facilitators
+  neither hold nor receive grants.
+- **A's request is an agent egress:** it carries A's turn label set and reaches B
+  only when B's grants cover every source and the room may know every context;
+  otherwise it is refused (`discretion`). B's turn starts with A's labels, so B
+  cannot write to an integration what A was refused.
+- **B's envelope** (`runAsConsultation`, `consultationAllowsTool`): tools only from
+  `grant.allowed_capabilities ∩ B's grants ∩ A's grants`; no memory writes, no
+  further consultation, no interactive kernel tools; memory only with
+  `memory_access: discreet` and only through `members` recall bounded by A's
+  audience. Enforced in the offered list, at dispatch and in `isToolGranted` (the
+  subscription CLI's only question). B's run has no session scope: nothing is
+  logged, ingested or promoted. Past its deadline B gets no tool at all (the run
+  cannot be aborted) and its answer is discarded.
+- **What comes back:** the user view (B's restored answer) is delivered as B's
+  contribution; A's model gets the same text through A's privacy shield (masked).
+  The discretion rule and the grant's disclosure levels decide what may reach A at
+  all (below). A discussion between agents needs grants in both directions on top
+  of the #1018 switches.
+
+### Discretion: labels at entry, flow rule at every egress (spec 2042 §5.11, #2079)
+
+Every turn carries a label set (`packages/harness-orchestrator/src/discretion/`):
+`context{key, readers}`, `source{system, restricted}`, `classification{class}`.
+The set only grows; model output cannot be traced token by token, so every output
+of the turn carries all of it.
+
+| Entry | Label |
+|---|---|
+| Tool result | its plugin or MCP server; `restricted` when the operator declared the integration so; `classification:personal` when the shield let fields through unmasked (bypass) |
+| Recall | the label set the recalled turn was written with (`discretion_labels`, persisted transitively) |
+| The conversation | its key and the room's readers; a turn without origin (web chat, API) is the owner's private context `owner:<id>` |
+| A colleague's contribution | B's labels |
+
+| Egress | Rule | Where |
+|---|---|---|
+| Answer to people | every reader may know every label, a `classification` label only when every reader holds the field right for it (below); otherwise the result is rebuilt from bookkeeping fields only (no attachments, files, cards, canvas, recall or contributions) and the session row stores only the replacement. On the streaming path the `done` event is rebuilt the same way; text deltas already sent are the residual | `guardAnswerEgress`, `guardStreamedDone`, `beforeTurnWritten` |
+| Contribution to an agent | the receiver's grants cover every source and its readers may know it; then the grant's disclosure level caps what is new to the receiver | consultation broker |
+| Persistence | a written turn keeps its label set | `onTurnWritten` |
+| Memory write | another conversation's knowledge only into a tier whose readers may all know it (members: the owners; context-bound: the room; else the agent's memory, readers unknown, which only the turn's own conversation may enter). Notes keep the union of their writers' labels by canonical physical path, stored before the content (no labels, no write); directory renames and deletes take the labels along; session transcripts keep every turn's labels; memorables (auto-promotion, MCP→KG ingestion, durable rules) keep them too; reading, recalling or replaying them (verifier re-entry) adds them back. The members index is kept out of the label layer (read for every room) | `guardMemoryEgress`, `LabelledMemoryStore`, `maybePromoteTurn` |
+| Write to an integration | its declared readership (`integration_readerships`) covers every label; undeclared integrations get nothing from foreign contexts, restricted sources or classified fields. Effect of a tool: `write` (manifest `capabilities[].side_effects: write`, `writeCapabilities`, MCP without `readOnlyHint`) is checked against every label; `read`/`none` is not checked; a tool that declared nothing is `unknown` and checked like a write, against every label (since the contract step, S3b) | `guardIntegrationEgress`, before the call runs |
+
+A refused flow is never redacted afterwards. The agent gets a structured refusal;
+at disclosure level `none` a consultation is regenerated without memory and without
+tools (so no write runs twice) so the visible answer does not reveal that something
+was withheld. `redacted` delivers the masked view only when B ran with a privacy
+shield; otherwise A gets `existence`. While the integration declarations were never
+loaded, every integration counts as restricted with no known reader (fail closed).
+`discretion_flow_audit` records every refusal and every allowed cross-context flow
+with label ids and reasons, never content. Damaged persisted labels parse as a
+label nobody may read (fail closed).
+
+Defaults: new agents start with context memory `members` (0099); `off` is refused
+for an agent that holds capability grants. Existing agents keep their mode.
+
+**Field rights per member (criteria 3c, 18).** The right to see fields the shield
+masks is an audience-floor capability, `privacy:field:<class>` (today only
+`personal`, `discretion/fieldRights.ts`). It is in the member baseline; an operator
+withdraws it per person or role with a denial, and a denial binds the whole room.
+Where not every member holds it: no operator bypass applies (the model gets the
+masked digest, at all three dispatch sites), prompt surrogates are not restored
+(answer, choices, follow-ups, stored history; a note says some details stay
+masked), values a `v4_render_answer` materialized are masked again, the canvas tap
+and `deliver_data` deliver nothing, and a `classification` label refuses the answer
+as a whole. A consulted colleague runs in the consulting room, so its contribution
+follows the same rule. A closed or failing floor grants no class; a turn without an
+audience floor (floor switched off) is not enforced. A trigger stores its creating
+room's field rights (`fieldClasses` in its discretion record); its firings and posts
+use them only in that room and only while every current reader was a reader then; an
+explicit target, a room that gained a reader, or a trigger stored without them gets none
+(fail closed). Residual: a denial added later for someone who was already in the room
+does not reach a trigger set before it; the trigger keeps the rights it stored until it
+ends or is cancelled. The consult result's header (contribution
+id, colleague, status) passes outside the privacy digest, decided by provenance
+(the kernel's own consult tool), never by tool name.
+
+Known residuals: the subscription-CLI path and sub-agent inner calls carry no
+discretion state yet; streamed text deltas go out before the egress decision; reads
+of memorables through `query_knowledge_graph` and the session briefing bring no
+labels; plugin memory (`ctx.memory`) is written outside the label layer; a write
+to the team memory tier is checked against the room's readers; a turn whose label write failed is recalled
+without labels; `off` is refused only on the context-memory switch, not when
+plugins are granted to an agent that already runs `off`; `say` re-checks consultation
+grants only at the start of a discussion; there is no existence probe for knowledge
+B never saw.
+
+### Which channels reach a context tree, and who may address an agent by id (#2042, #2059)
+
+`slack`, `discord`, `whatsapp` and `imessage` are in `CONTEXT_MEMORY_CHANNEL_TYPES` and `CHANNEL_KIND_BY_ORIGIN`, like `teams` and `telegram`. The effect is narrow:
+
+- A turn reaches a tier only through the `TurnOrigin` the channel plugin sends. No origin, an `unscoped` or `system` scope, or a blank group or user id stays context-free. A conversation or group gets its own `channel:` tier, a 1:1 chat its `user:` tier, two groups never share one (`test/memoryAxesForOrigin.test.ts`).
+- Member-scoped memory (`members`) needs a known audience. A group is known only when the plugin marks its roster complete. A Slack, Discord, WhatsApp or iMessage plugin that does not stays `unknown`, so no member-owned knowledge comes in (`test/turnAudience.test.ts`). The scope kind and the completeness flag come from the channel plugin, the same trust as for Teams and Telegram.
+- An allowlist entry is a deliberate act: a channel without a reviewed recipe in §4 of the memory design stays context-free.
+
+A typed reply is turned into a `card_answer` only for a question the receiving identity posted itself (`identityFor(agent, channel)` equals the event's `receivedByChannelKey`), only where the channel leaves the message alone (it reported it, or a process reads everything), and never for a forwarded message. The kernel sets `answererVerified: true` from the channel's statement of who wrote the message, so the authenticity of the sender rests on the channel plugin, as it does for `emitConversationMessage`. Like a native card, a question takes an answer from anyone in the conversation until it closes (at most seven days); each answer is one event and the receiver decides which counts. `core.reportConversationMessage` is scoped like `emitConversationMessage`: a channel reports only events of its own channel type (`test/scopedCoreApi.test.ts`).
+
+Explicit addressing by agent id (`metadata.agentId`, canvas and UI pickers) goes through `ChannelResolver.resolveAgent`: the agent is checked like any routing target (status, tombstone, channel and sender availability). A refusal is answered by the management layer as a `system` notice naming the agent. It never becomes another agent, and a platform without `resolveAgent` refuses the turn. A provisioned bot identity on the channel key outranks the id, so a bot never answers for another agent (`test/channelResolverExplicitAgent.test.ts`, `test/dispatcherAgentAddressing.test.ts`).
 
 ## 4a. Third-party npm dependencies: audit gate, Dependabot scope, the desktop runtime
 
@@ -965,13 +1210,15 @@ one rule about what counts as a runtime.
   the package does not accept, and forcing it breaks that dependency. Its `via`
   names the production dependencies every route starts at (same route check as
   above, without the devDependency rule), its reason says why the vulnerable
-  code is not reachable from request data, and it expires at most 30 days after
-  its review, so it is re-checked against upstream every month. The first entry
-  (2026-10-28) covers GHSA-mrhx-c7xc-m3w5 in `zod` 3.25.x via `botbuilder`
-  4.23.3, the latest release, host-provided for the Teams channel plugin: the
-  fix is in zod 4.6.6, botbuilder throws on load under zod 4, and inbound Bot
-  Framework requests only reach `z.record(z.unknown())`, never the array
-  schemas the advisory is about.
+  code is not reachable from request data, and it expires at most 90 days after
+  its review, so it is re-checked against upstream at least once a quarter (30
+  days until 2026-11-23). The first entry (2026-10-28) covers
+  GHSA-mrhx-c7xc-m3w5 in `zod` 3.25.x via `botbuilder` 4.23.3, the latest
+  release, host-provided for the Teams channel plugin: the fix is in zod 4.6.6,
+  botbuilder throws on load under zod 4, and inbound Bot Framework requests only
+  reach `z.record(z.unknown())`, never the array schemas the advisory is about.
+  Re-reviewed and renewed 2026-11-23 until 2027-02-21: botbuilder has had no
+  release since 2025-08-27.
 - **Dependabot** has an npm block for every audited directory (`/desktop`,
   `/middleware`, `/web-ui`); a new package directory gets one together with its
   audit leg. GitHub's repository-level alerting is not counted on as a
@@ -1179,10 +1426,9 @@ are a separate mechanism and self-authenticate by contract.
 Follow-ups (S3-G):
 
 - Declared public paths are claimed by **every** runtime that activates
-  plugins: the tool runtime, the dynamic-agent runtime (Builder agents) and the
-  channel registry. All three go through `platform/publicPathClaim.ts`. Before,
-  only the tool runtime claimed, so a granted channel or agent prefix was never
-  served (404, the fail-closed direction).
+  plugins: the tool runtime and the channel registry. Both go through
+  `platform/publicPathClaim.ts`. Before, only the tool runtime claimed, so a
+  granted channel prefix was never served (404, the fail-closed direction).
 
 - `@omadia/channel-teams` 0.31.0 serves `/p/channel-teams/{hub,tab-config}`
   this way. The two pages are data-free shells; the plugin catalogue comes only
@@ -1336,6 +1582,111 @@ have no orchestrator of their own (canvas, unbound channel keys, routines
 created before migration 0005) are refused instead of answered with every
 plugin's tools. Set a standard orchestrator under Orchestrators.
 
+## 5d. Internal helpers stay inside their agent's envelope (#2050)
+
+A DB sub-agent (`agent_subagents`, tool `ask_<name>`, Builder node "helper") is
+an internal helper of one agent (spec 2042 §5.6, criterion 11): it may use a
+subset of what its agent holds, never more.
+
+- **Capabilities, on save.** The Builder refuses a helper tool grant
+  (`409 helper_refused`, code `helper_grant_not_held_by_agent`) unless the
+  helper belongs to the agent in the path and the agent holds the tool itself:
+  an MCP tool needs an agent-level grant for the same server and tool (before
+  this, a helper could hold an MCP grant its agent lacked), a native tool must
+  pass `Orchestrator.holdsNativeTool` (registered and its plugin assigned). A
+  disabled agent is not built, so its native grants are only checked at runtime.
+- **Capabilities, at runtime.** `buildSubAgentDomainTools` does not materialise a
+  grant the agent lacks, and wraps every helper tool so each CALL re-checks the
+  agent as it is now (`liveParent`: the registry's live entry, refreshed by every
+  Builder write). Revoking the agent's grant therefore removes the helper's
+  access on the next call without waiting for a rebuild; the refusal is a
+  `ToolRefusalError` the helper's model reads. An agent that is gone refuses every helper call. Not covered by the
+  per-call check: deleting the helper's OWN grant row while the agent keeps the
+  tool takes effect with the rebuild the Builder write triggers.
+- **Model.** With an explicit primary in the agent's model policy, a helper
+  model must be on the policy's provider(s) and of a class no stronger than the
+  primary (`helper_model_not_allowed` on save). A helper that violates it at
+  runtime (for example after a policy change or a deploy) fails loud, never
+  silently: its tool stays and refuses every call with the reason
+  (`ToolRefusalError`, so the agent can say why), and the Agent Builder marks
+  the helper "out of service" with the code and reason (`outOfService` on the
+  graph's helper node, `helpersOutOfService`). A helper without a model never
+  inherits a class stronger than the agent's pinned primary.
+- **Budget.** A helper's `maxTokens`/`maxIterations` are capped by its agent's
+  per-call output budget and step cap; its model calls are booked on the
+  agent's turn (`token_usage.turn_id`). There is still no per-turn spend cap
+  across helpers (spec G18).
+- **Names.** `ask_<name>` is not injective (`A B` and `A-B`), so a helper name
+  whose tool name another helper of the agent or one of the agent's own tools
+  already has is refused on save (`helper_name_collision`), and at runtime every
+  member of a colliding group is left out (logged and shown "out of service"
+  in the Agent Builder), never first-wins. Before
+  this, a helper called `User Choice` threw on registration against the native
+  `ask_user_choice` and aborted the rest of that agent's tool hydration.
+- **Presentation.** A helper never introduces itself (a fixed contract is
+  appended to its system prompt), the agent's tool description tells its model
+  to present the result as its own work, and helper runs are flagged
+  `internalHelper` in the run trace so `agentsConsulted` never lists them.
+
+## 5e. Least privilege by default (#2054, spec 2042 INV-8, §5.7)
+
+Before #2054, first boot and every kernel install path (Hub, upload,
+reinstall, profile apply, boot-seeded built-ins) attached every plugin to the
+default agent, so whoever could reach that agent held every connected system.
+Now an agent holds exactly what an operator granted it, and a grant that gives
+one agent everything needs a second, explicit yes.
+
+- **No auto-attach.** `attachAllPlugins`, `attachNewPluginsToFallbackAgent`,
+  `attachToDefaultOrchestrator`, the pending-attach queue and the "reset
+  standard to all plugins" route are gone. The boot seed (`ensureFallbackAgent`)
+  stays for routing and holds no plugin. Installing a capability plugin only
+  offers it to agents the operator picks, none preselected. The one attach left
+  is the facilitation engine's, which only facilitator agents receive.
+- **Deterministic reach** (`agents/agentReach.ts`, `GET
+  /api/v1/operator/agents/:slug/reach`, the directory list). A connected system
+  is an installed capability plugin or an enabled MCP server. An agent reaches
+  one through an enabled plugin grant, an MCP tool grant (its own or a
+  helper's), or a `plugin_mcp_grants` row of a plugin it holds. Read and write
+  come from what the system declares: the manifest capabilities'
+  `side_effects`, the MCP tools' `annotations.readOnlyHint` from the last
+  discovery. Unknown (nothing declared, a tool the discovery does not know, a
+  server granted whole without discovered tools) counts as read and write and
+  is marked undeclared, the same conservative rule the runtime applies.
+- **Broad-reach confirmation** (`agents/broadReachGate.ts`). An agent is broad
+  when its reach covers every connected system and there are at least two.
+  The check asks only when a change makes an agent broad (not broad before,
+  broad after), so ordinary grants pass without a prompt. Such a write answers
+  `409 broad_reach_confirmation_required` (with the reach it would produce)
+  unless the body carries `confirmBroadReach: true`. Gated writes:
+  `PUT|PATCH /api/v1/operator/agents/:slug/plugins`,
+  `PUT /api/v1/operator/mcp-grants`, Agent Builder graph `tool_grant` edges,
+  `PUT /api/v1/operator/plugin-mcp-grants` (checked for every agent holding
+  the plugin) and the first-run flow. A confirmed change is audited as
+  `agent.broad_reach_grant` only after the write succeeded, so a failed write
+  leaves no row claiming a change that did not happen. If the audit write
+  itself fails, the failure is logged and the grant is not rolled back. That is
+  by design: the grant already happened, and the audit records it, it does not
+  authorise it.
+- **Only capability plugins are granted** (`plugins/capabilityPlugins.ts`,
+  `isCapabilityPlugin`). The plugin grant routes refuse a new grant of a plugin
+  that is not a capability plugin (`integration`, `tool`, `skill`; a still
+  installed retired `agent` package counts too) with
+  `400 not_a_capability_plugin`. Never a capability: the agent runtime itself
+  (`@omadia/orchestrator`), reference-only plugins, channels, models,
+  archetypes, system modules and templates. Rows that already exist stay.
+- **Preview draft agents are never addressable** (#2049). A Plugin Builder
+  preview runs as an `agents` row with status `draft` under the reserved slug
+  prefix `builder-preview-`: the registry never builds it, create refuses the
+  prefix, only GET and DELETE are allowed on such a slug, and it is hidden from
+  the directory, the first-run flow and every grant offer. It holds no grant
+  row; the preview turn gets only the draft plugin's captured tools.
+
+**Default agents.** Making an agent with every connected system a default
+agent (`PUT /api/v1/operator/default-agents`, `change: 'default_agent'`) needs
+the same confirmation and is audited as `agent.broad_reach_default`. Existing
+grants on a live instance are unchanged by #2054; only new
+installs stop attaching.
+
 ## 6. Defence in depth for cached data
 
 The Odoo / external-system response cache and the in-memory conversation
@@ -1362,6 +1713,70 @@ still embeds a `_pending*` sentinel in `resultText` is caught at the same
 seam (`v4RenderSideChannel.ts`): the sentinel goes to the sink and the model
 gets a kernel-authored note. The user-facing answer (`takeRenderedAnswerV4`)
 and the verifier hand-over of its prose are unchanged.
+
+### Data side channel: `deliver_data` rows never reach a model (#2085)
+
+The kernel tool `deliver_data` (`src/triggers/deliverDataTool.ts`, spec 2042
+§5.13) lets an agent show records without its model reading them. It runs
+one of the agent's own read tools only after the audience-floor check
+(`guardToolEgress`). "Own read tool" (`readToolsOf` in `index.ts`,
+`dataActions.ts`) means a tool the agent was granted and is offered, that
+declares no write capability, and that is neither a sub-agent's inner tool
+(`via`) nor an MCP tool. The rows go to the turn's `TurnDataCollector` and
+from there onto the answer as `data` (`SemanticAnswer`, `ChatTurnResult`,
+`done`). `text` gets a markdown rendering of them after the prose and before
+the AI disclosure (`sideChannelData.ts`); `textWithoutData` omits it. The
+model gets a status only: row count, columns, or the refusal. The verifier
+checks the prose only (`withoutDataText` in `verifierJudge.ts`), and an
+answer it withholds (`verifier-blocked`) goes out without its data:
+`withheldDone` and `withheldTurnResult` do not copy `data`.
+
+Proactive messages from triggers (#2082) use the same channel for the rows
+of a data action. A proactive message goes only to the context its trigger
+was created in: any other target is refused when the trigger is created
+(`targetAllowed` in `src/triggers/wiring.ts`). Delivery into other contexts
+stays refused.
+
+Within that context, discretion (§5.11, INV-9, #2079) holds for trigger
+output too:
+
+- When an agent sets a trigger, the trigger stores its conversation's context
+  key, the room's roster as the turn resolved it, and the creating turn's
+  label set (`currentTurn` in `src/triggers/wiring.ts`; the
+  `agent_triggers.labels` column). The roster is stored on its own. The room
+  label inside the label set is an intersection with older turns of the room,
+  so it can name fewer readers than the room has.
+- A turn without origin (the owner's private context) gets the owner as its
+  reader only when the trigger delivers into the owner's own web chat.
+  Anywhere else the readers are unknown, and anything labelled is refused.
+- A post or delivery the room may not receive is refused when the trigger is
+  set (`Error: (discretion)`), not only on every firing.
+- A firing's turn runs seeded with them (`runWithSeededDiscretion`,
+  `discretion/seededTurn.ts`). It is a labelled turn of that conversation, and
+  its answer passes the same people-egress check as a person's turn.
+- An answer refused there is not sent; nobody asked, so there is nothing to
+  decline. The refusal counts as a failure for the trigger's breaker.
+- A templated post or a delivery is checked against the stored labels before
+  it goes out (`refusedByDiscretion` in `kernelExecutors.ts`) and is refused
+  as a whole.
+- A damaged stored record fails closed: unknown readers and an unreadable
+  label set. It is never read as "no discretion".
+
+Residual: the readers are a snapshot taken when the trigger was created. A
+person who joins the conversation later is not among them, and the trigger's
+output can still reach them there until the trigger ends (at most 30 days for
+recurring triggers, 90 for a one-shot). Further residuals:
+
+- Triggers from routines, schedules and batch jobs were not created in a
+  conversation and carry no labels; routines run under their owner's
+  identity.
+- Agent triggers set before this change carry none either (`[]`). Their posts
+  and deliveries go out unchecked, as before, until they end.
+- An agent on the `claude-cli` runtime has no labelled turn, so its triggers
+  carry no labels.
+- A firing turn's withheld answer is recognised by its text
+  (`isAnswerWithheldText`). If that text changes, the decline line is posted
+  instead. It reveals nothing of the withheld content.
 
 ## 6a. Dataset link keys — a deliberate identity handle inside the Privacy Shield
 
@@ -1487,8 +1902,8 @@ The seams, each applying the helper after the operator bypass and before
 interning, and for an intern-exempt tool before the exemption (the exemption
 covers the tool's result, not its error):
 
-- `Orchestrator.dispatchTool` — the one choke point for both chat loops, the
-  streaming slots and the Direct-Line relay. It never rejects: a thrown error
+- `Orchestrator.dispatchTool` — the one choke point for both chat loops and
+  the streaming slots. It never rejects: a thrown error
   resolves as the notice, also with the dispatch deadline disabled. The loops'
   own rejection handlers are backstops that build the same notice.
 - `Orchestrator.dispatchToolDeadlined` and `Orchestrator.guardReplayResult`
@@ -1727,9 +2142,10 @@ answer they check:
   wrapper calls `markPrivacyFinalizeHeld(input)`. The pass then does not
   finalize: it returns without a receipt and hands a
   `PrivacyEgressContinuation` (`harness-orchestrator/src/privacyEgress.ts`)
-  over, keyed on the caller's input object (one-shot mark, weak maps). All
-  three finalize sites hand over — buffered `runTurn`, streaming `done`,
-  streaming Direct Line. Every verifier request about a pass's answer goes
+  over, keyed on the caller's input object (one-shot mark, weak maps). Both
+  finalize sites hand over — buffered `runTurn` and streaming `done` (the
+  third, streaming Direct Line, went with Direct Line itself, spec 2042).
+  Every verifier request about a pass's answer goes
   through that pass's continuation, and every pass that handed over is
   finalized exactly once, after them (`EgressLedger` on `chat()`,
   `StreamPasses` on the stream; also on errors, abandoned re-entries and
@@ -1767,7 +2183,7 @@ answer they check:
   pipeline's own `userMessage` (server-side checks; the extraction prompt when
   no shield is installed) is the same normalised text, never the envelope.
   A server-rendered v4 answer (`answerSource: 'privacy-render'`, real values
-  the model never saw), a Direct Line relay and the privacy refusal are never
+  the model never saw) and the privacy refusal are never
   verified (`verifierGate`; what `enforce` delivers instead is in §7c). The
   extraction window and the verbatim guard (§7c) apply to the wire answer,
   the text the model saw. Claims come back with placeholders and are
@@ -1855,7 +2271,8 @@ answer they check:
   then goes out with the receipt, followed by the `verifier` event.
 
 Callers: every `bundle.agent` caller goes through the wrapper — chat routes,
-channel adapters, the scheduler (`scheduleWorker.ts`) and conductor steps
+channel adapters, trigger turns (`src/triggers/kernelExecutors.ts`, which
+replaced the Agent Builder `scheduleWorker.ts`) and conductor steps
 (`realStepEffects.ts`, `builderAgent.ts`). The subscription-CLI chat runtime
 is never wrapped (§3a); the verifier's own provider cannot be `claude-cli`
 (#1583). Deliberately unchanged: `verifier_contradictions`
@@ -1922,8 +2339,8 @@ requests, and only there, the shield acts on four kinds of text:
   blocks the turn (`PromptMaskBlockedError`).
 - **Prompt text, only while `mask_user_prompt` is on.** The setting is off by
   default. While it is on, the user's message, document text inlined at
-  upload, the user messages a channel replays in `priorTurns`, live steering text, a direct-line relay's
-  payload and a verifier correction hint are masked in the turn's own model
+  upload, the user messages a channel replays in `priorTurns`, live steering text
+  and a verifier correction hint are masked in the turn's own model
   requests through the turn's prompt map (`maskPromptForWire`): the C0
   baseline and the operator's deny-list, plus names when the C1 detector is
   configured. The turn's model and persona routing, its card routing, fact
@@ -1933,7 +2350,7 @@ requests, and only there, the shield acts on four kinds of text:
   detection or the deny-list fails, or a detected span survives
   substitution, the guard reports `blocked` and the request is not sent
   unmasked (`PromptMaskBlockedError`: the turn answers with a privacy
-  notice, a direct-line (#specialist) turn included, a fact-extraction pass
+  notice, a fact-extraction pass
   is skipped and a verifier re-entry is abandoned, §7c). If the configured
   C1 detector fails, C1 stays off for the rest of the turn and masking falls
   back to the C0 baseline (`c1DetectorFor`, logged as `promptMaskDegraded`),
@@ -2206,7 +2623,18 @@ its raw value, not by the person's name. Each cleared field is recorded on the
 receipt (`operatorClearedFields` with its `scope`, "In clear by admin rule" in
 the card).
 
-**Suggestions for that list (#1556 follow-up, contract v2).** omadia proposes
+**Tool-declared PII fields (spec 2042 §5.10, plugin-api 1.83.0).** The
+opposite direction: a native tool can declare the PII fields of its result on
+its registration (`ToolRegistrationOptions.piiFields` on `ctx.tools.register`
+and `registerHandler`). The kernel hands them to the Privacy Shield with every
+interned result of that tool (orchestrator dispatch, `ToolDispatchService`),
+and `v4/declaredPii.ts` masks every declared column, whatever the classifier
+or an operator's non-personal entry says. A declaration only adds masking; it
+never clears a field. Only paths that name one column of the result rows apply
+(`field`, `[].field`, `<items>[].field`; a trailing `[N]` masks the whole
+column); a deeper path names no column and is ignored.
+
+**Suggestions for the `non_personal_fields` list (#1556 follow-up, contract v2).** omadia proposes
 entries; it writes one itself only through the auto-approval below. The privacy guard records masked fields of every
 interned tool result schema-only, one observation per tool + scope + field
 (`fieldObservations.ts`; never `sub-agent`, canvas producers or `v4_*` verbs,
@@ -2443,7 +2871,7 @@ These tool results skip the digest:
   running (failed boot activation, a reactivation in flight, a tripped
   breaker) is caught per turn instead: the clamp makes the turn fail closed
   with a refusal (`PrivacyShieldRequiredError`, `PRIVACY_SHIELD_REQUIRED_ANSWER`)
-  before the screener, a Direct Line dispatch or the model see it (#1535). The
+  before the screener or the model see it (#1535). The
   instance still boots, and the admin UI and the store keep working, so the
   guard can be repaired; only chat answers with the refusal until it is back.
   A turn on the subscription CLI (`claude-cli`), which has no shield, is
@@ -2522,8 +2950,7 @@ their requests; the kernel hands them text the handle already masked.
   handle the orchestrator hands the row its masked view
   (`TurnIngest.maskedView`): the user message as the model received it and
   the answer as the model wrote it, the texts the fact extraction gets, never
-  the restored answer. A direct-line turn's specialist answer is masked like
-  a replayed answer, whatever `mask_user_prompt` says.
+  the restored answer.
   `CaptureFilteringKnowledgeGraph` strips the view before the turn is stored,
   and an empty view (its masking was `blocked`) skips the scorer.
   `capture_level: minimal` switches the scorer off.
@@ -3124,7 +3551,7 @@ trace does not support.
   any tool query) and its column labels and rank header, which it writes as
   free text into the rendered table.
 - **Never verified: what the verifier may not see.** Behind a shield, a pass
-  that handed over no privacy view (a Direct Line relay) leaves nothing the
+  that handed over no privacy view leaves nothing the
   verifier may read (§6e), and neither does a rendered failure (#1097:
   `answerIsError`, control flow rather than system data) or a render whose
   provider does not report `prose` (it predates plugin-api 1.27.0, so prose
@@ -3311,7 +3738,7 @@ replayed result the shield cannot intern again is withheld, never sent raw.
   the streaming tool loop stop after the batch (post-batch fail-fast), a
   `LocalSubAgent` stops after its batch, and the one authoritative check at
   the end of `runTurnCore` (and on the stream's terminal event) catches what
-  a direct-line dispatch or a sub-agent folded into an answer. An abandoned
+  a sub-agent folded into an answer. An abandoned
   resample keeps the first answer; an abandoned retry withholds it with the
   `failed` badge. A recorded MCP input sentinel or connect prompt is not
   replayable (its provenance exists only in the dispatch that produced it),
@@ -3435,7 +3862,7 @@ hint still carries no verifier evidence. The open points are in handoff §13.
 
 Tests: `middleware/test/toolReplayLedger.test.ts`,
 `middleware/test/toolReplaySeams.test.ts` (the standalone dispatcher with and
-without an ambient ledger, the MCP input-card and direct-line aborts),
+without an ambient ledger, the MCP input-card abort),
 `middleware/test/verifierServiceWriteSafety.test.ts` (resample, chained
 resample and retry, abandoned re-entries, read-only misses, thrown and
 returned errors replayed through the shield),
@@ -3686,16 +4113,55 @@ explicit here so a deployment can reason about them:
   Facilitator's `bot_added` handshake trigger) stays a channel-adapter
   privilege on the CoreApi, so a granted agent plugin cannot spoof an
   invitation.
-- **Proactive group posting is conversation-scoped (#330 C3b).** The
-  `conversationSend` service (deny-by-default) lets a granted agent plugin
-  post INTO a group — but only into conversations the calling agent holds an
-  ephemeral attachment for (its own auto-bound facilitation, the same rows
-  the reaper disposes of). Everything else — foreign conversations, guessed
-  thread ids, operator-bound chats — is a named `not_permitted` outcome, and
-  without a database the scope authority is absent and the service **fails
-  closed**. The channel-side provider registries enforce first-registrant
+- **Proactive group posting is conversation-scoped and identity-bound
+  (#2043, replaces #330 C3b).** The `conversationSend` service
+  (deny-by-default, per calling plugin) posts INTO a group only as the
+  agent's OWN channel identity and only into a conversation that agent holds
+  a message subscription for, created by the calling plugin. No own identity
+  is `no_identity`; there is no fallback to the default bot. Everything else
+  — foreign conversations, guessed thread ids, a call without
+  `asOwnIdentity` — is a named `not_permitted` outcome, and without a
+  database there are no subscriptions, so the service **fails closed**. The
+  earlier scope (an ephemeral attachment, posted through the default bot)
+  was removed with the plugin-era facilitation.
+- **Native facilitators (#2043).** A facilitator is an agent kind that the
+  kernel keeps impartial by construction. Fixed at creation and never the
+  default agent (database triggers, migration 0067). Its only grant is the
+  one installed archetype plugin that delivers the archetype `facilitator`
+  (installed only on the operator's explicit confirmation); every
+  other plugin, tool or MCP grant, memory, recall and capture, persona
+  skills, the fast path, agent-to-agent talk and consultation are refused at
+  write time and not wired at runtime. Every human message of a conversation
+  it moderates is stored by the kernel with the platform-stated author
+  (`conversationMessages@1`, migration 0068) and handed only to the engine
+  plugin, only for its own subscriptions; a subscription needs the agent's
+  own identity, the bot observed in the conversation and channel readiness.
+  A tool handler learns its conversation and caller from the kernel
+  (`NativeToolCallContext`), never from a model argument. The engine runs
+  turns through `agentTurn@1` inside the agent's normal envelope (neutrality
+  block, model policy, Privacy Shield, receipts). Stored messages are purged
+  a grace period after the subscription ends and after a maximum age. The channel-side provider registries enforce first-registrant
   ownership per channel type, so a second plugin can neither hijack the
   delivery path nor speak through another channel's identity.
+- **Linked session conversations (#2076, #2089, ADR-0026, migration 0107).**
+  A facilitation reads a second conversation (a meeting chat) only after a
+  link request was made INSIDE that conversation: a mention of the
+  facilitator where none of its processes reads is handed to the archetype
+  plugin as a typed request (author as the platform stated it, text only;
+  not stored, no read access) and recorded in `conversation_link_requests`.
+  `reserveConversation` takes a session conversation only with such a
+  request from exactly that conversation, offered to that process, unused
+  and unexpired; it is consumed atomically with the reservation. Whether the
+  author may link (an active home participant who names the facilitation) is
+  checked by the plugin; the kernel guarantees the "from inside" part. The
+  kernel keeps the session state of the reservation and reads by it
+  (`scheduled` addressed only, `live`/`confirming` everything, `closed`/
+  `cancelled` nothing and the subscription ends); `live` needs the channel's
+  readiness for every message there. A released session conversation is
+  written to only from a `closing` scope, a `confirming` one only with
+  consent, status and stop. A process takes back its own home reservation
+  after losing it, but never after an operator released it. Records of
+  superseded message revisions are marked on every read path.
 
 ## 8. What lives in the vault
 
@@ -3716,6 +4182,51 @@ At a minimum, your deployment vault holds:
 
 Nothing from this list should appear in `git grep` output of this repository.
 If it does, that is a bug — file an issue and rotate.
+
+### Agents' own channel bots: tokens stay in the channel plugin (spec 2042 §5.3)
+
+An agent's own Telegram, Discord or Slack bot is registered through
+`PUT /api/v1/operator/agents/:slug/channel-identities/:channelType`. The
+credentials pass through the kernel once, from the request to the channel
+plugin: `AgentIdentityProvider.identify` checks them with the platform and names
+the bot WITHOUT a side effect; the kernel then refuses the channel's default bot
+and a bot another agent owns, and only for a free bot calls `provision`, which
+stores the credentials in the plugin's OWN vault namespace
+(`agent_bot_token_<id>`, `agent_app_<member id>`) and starts it. So typing agent
+A's token on agent B's page cannot touch A's bot or its stored credentials.
+
+The kernel stores only (agent, channel type, routing key) in
+`agent_channel_identities` (migration 0105, no credential column). It does not
+log credentials: a plugin's refusal or `identify`/`provision` error text is
+scrubbed of every credential value before it is logged or answered, and a
+`release` error is logged by its class only. The audit entries
+(`agent.channel_identity.set|delete`, refused attempts included) carry the
+channel type, the routing key or the refusal code, never a credential.
+
+Removing a bot asks the plugin to stop it and delete the credentials; if the
+plugin fails, nothing is removed. If the plugin is not active, the row goes and
+the answer says `released: false` (the UI then asks the operator to revoke the
+token on the platform, since the inactive plugin may still hold it). Purging a
+deleted agent first stops its bots the same way and is held when an active
+plugin cannot. Until then a bot whose agent is deleted keeps its row (tombstone)
+and is refused, never answered by another agent with other permissions; an agent
+bot the kernel does not know as an identity answers only with a `system` notice.
+
+**Triggers and routines through an agent's own bot (spec 2042 §5.12).** A turn
+through an agent's bot files its delivery ref with that bot (`asChannelKey`). A
+later delivery would otherwise say one agent's words through another agent's bot
+once the bot is removed or provisioned for someone else, with no name line,
+indistinguishable in the chat from that agent speaking. So every delivery path
+checks `ownBotRefusal` (`src/triggers/ownBot.ts`) against the agent's own key at
+delivery time: the trigger gate before the model turn (`sendWindow`, the firing
+is refused) and again before sending, and the routine runner before the turn
+(the routine pauses and says why, also for "trigger now"). A hook set on an own
+bot hears only messages that bot received (`receivedByChannelKey`), because a
+Telegram DM has the same chat id with every bot. These turns pass
+`conductorBinding: false`: a group or an agent's bot never becomes the place a
+person's Conductor reminders and approvals are posted. A plugin's proactive
+sender is removed when it deactivates (the disposer of `publishProactiveSend`
+removes only its own sender).
 
 ### Master-key posture is not on the public `/health` (#1385, #1387, #1332)
 
@@ -3816,6 +4327,49 @@ rules, in the Electron-free `secretsBlob.ts` and `secretsStore.ts`:
 **Starting over** is a manual step: move the whole data folder aside, or pick a
 different, empty folder in setup. Deleting only `secrets.enc` produces new keys
 next to the old kernel vault, which the kernel then cannot open.
+
+## 8a-1. Database notifications are hints, never facts (#2088)
+
+Postgres has no privilege for `NOTIFY`. Every role that can log in to the
+kernel's database can send on every channel, with any payload of up to 8000
+bytes. Since archetype plugins have database roles of their own
+(`omadia_plg_<id>_rt`, `omadia_plg_<id>_mig`), a plugin can send on the
+channels the kernel listens on: `agents_changed` (agent registry) and
+`conversation_message_subscriptions_changed` (message subscriptions). Schema
+limits and table rights do not help here; nothing in Postgres does.
+
+So the rule is on the receiving side, in `ReloadBus`
+(`middleware/packages/harness-orchestrator/src/registry/reloadBus.ts`), the
+kernel's only `LISTEN` consumer:
+
+- **The payload is never read.** A notification means "something may have
+  changed". What changed is read from the tables by the bus' `reload`, which
+  the plugin's role cannot write. A forged notification can therefore cause a
+  reload and nothing else: no subscription appears, none ends, no agent
+  changes.
+- **The payload is never logged.** Only its size, and only through the
+  optional `debug` sink. Before, the full payload went to the kernel log with
+  every notification, so a database role could write log lines of its choice.
+- **A flood is bounded.** The first notification reloads at once; those that
+  follow within `minNotifyIntervalMs` (250 ms) are answered by one reload at
+  the end of the interval, measured on a monotonic clock. The last
+  notification is never dropped, so a real change is never lost in a flood.
+- **Not a boundary against load.** Up to four reloads a second remain
+  possible; each re-reads the agent registry's snapshot or the active
+  subscriptions.
+
+What does not depend on notifications at all: execution scopes, conversation
+reservations, kill switches and grants. They are read from the database at
+every authorization. The Conductor's triggers (`conductor_await_resolved`,
+`conductor_role_changed`) send notifications nobody in the kernel listens to.
+
+**For a new listener:** a payload is at most a key to look up, never a fact.
+Use `ReloadBus` rather than a `LISTEN` of your own.
+
+Tests: `middleware/test/reloadBusNotifyHint.test.ts` (forged, empty and
+oversized payloads, flood), `middleware/test/facilitatorContractGuards.pg.test.ts`
+("a forged NOTIFY changes nothing", against a second kernel on a real
+Postgres).
 
 ## 8b. Desktop embedded Postgres: SCRAM passwords and a restricted kernel role
 
@@ -4094,7 +4648,7 @@ The real fix: `PluginContext` now exposes an optional `ctx.operatorAuth`
 published by the kernel (`middleware/src/auth/operatorAuthAccessor.ts`) and
 wired into every plugin-context factory
 (`middleware/src/platform/pluginContext.ts`, threaded through
-`ToolPluginRuntime`, `DynamicAgentRuntime`, and `DefaultChannelRegistry`).
+`ToolPluginRuntime` and `DefaultChannelRegistry`).
 `hasValidSession(cookieHeader)` reuses `evaluateSessionToken` — the EXACT
 SAME session-verification logic `requireAuth` runs (same cookie name, same
 signing key, same Entra-whitelist rule) — extracted into
@@ -4512,6 +5066,24 @@ owner-mismatch refusals, approve after revocation mints no grant).
 ---
 
 ## 10d. WebSocket upgrade authentication (#746 W1-1)
+
+**The canvas socket through the web-ui front (spec 2042).** The web-ui's
+pairing descriptor advertises `wss://<front host>/omadia-ui/canvas`, because
+the socket authenticates with the session cookie and that cookie belongs to the
+host the person signed in on (the front, through `/bot-api/*`). The web-ui
+image therefore starts through `web-ui/scripts/runtime/omadia-server.mjs`,
+which relays upgrades of exactly that path to `MIDDLEWARE_URL` before Next's
+own `upgrade` listener sees them (`canvasWsProxy.mjs`). The relay is
+transport only: the middleware's registry below authenticates the upgrade as
+it would a direct one. The relay forwards the client's headers, cookies
+included, minus hop-by-hop headers; it sets `X-Forwarded-Proto` from
+`WEB_UI_PUBLIC_SCHEME` and `X-Forwarded-Host` from the request's own `Host`,
+dropping both if the client sent them, like `/bot-api/*`. The path bypasses
+Next and its `proxy.ts` login gate on purpose: the gate's job, the session
+check, is the registry's. Like the middleware host, neither checks `Origin`;
+the SameSite cookie is what keeps a foreign page from opening the socket.
+`scripts/fly-deploy.sh` tries the upgrade at the advertised URL on both hosts
+and expects `401` without a session.
 
 `WebSocketRegistry` (`middleware/src/channels/webSocketRegistry.ts`) is the
 process's only `upgrade` listener. It routes each upgrade through a
@@ -6626,6 +7198,76 @@ whitelist, per-frame session check) before the channel's handler sees the
 socket, whoever installed the package under that id; without the channel the
 upgrade on `/omadia-ui/canvas` is a raw 404. Pairing discovery
 (`/.well-known/omadia-ui`) keeps advertising that path either way.
+
+## 10z. One agent speaks: routing, speaker, identity guard (spec 2042, #2045 #2046 #2055 #1880)
+
+**Routing never hands a turn to a broader agent.** Before #2055 a binding to a
+disabled agent, an unknown channel key or an unbound conversation reached the
+fallback agent, which typically held every installed plugin: a quiet privilege
+escalation. Routing is now deterministic and closed: the addressed, selected,
+bound or default-table agent answers, or nobody does and the sender gets a
+`system` notice naming the agent. There is no fallback agent. Only
+`status = 'enabled'` agents are addressable; availability (who, which
+channels) is checked before every turn, also for explicit addressing; a fresh
+agent is available to nobody. A purge of a deleted agent is refused while a
+default-agent entry still names it (`ON DELETE RESTRICT`); users' selections
+of it go with the purge.
+
+`chatAgent@1` is not a way around routing either: with a registry it answers
+every non-canvas turn with the `no_agent` notice, so a channel that falls back
+to it after a refusal (the shipped Teams plugin does) never reaches the
+instance's default agent. The canvas still runs on the instance's default
+agent until it dispatches per agent (#2059). Availability lists only named
+people (`user:<id>`) for now; groups are refused at save time until routing
+resolves role membership.
+
+**Speaker is structural.** Every answer carries the speaker the harness stamped
+from routing (`withSpeaker` around every agent bundle); no model output can set
+it.
+
+**Identity guard (textual, fail-closed).** Every `prose` emission passes
+`identityGuard/` before publication, independent of the fact verifier's
+settings: a deterministic layer against all agents' names and aliases and
+claims to be human, then a model layer on the masked text (values the privacy
+shield restored are masked again) for text that mentions a colleague or
+introduces someone. A judge error, timeout (8 s) or missing judge withholds the
+text. Streaming releases complete sentences only, each checked with all text
+so far. The guard is a strong guard with test-defined coverage, not a proof
+(ADR-0013).
+
+What the deterministic layer settles without a model, so a plain "who are
+you?" answer is the same every time: an introduction by one of the agent's
+own names, matched as a whole name of any length ("Ich bin Dark Clippy", not
+"Dark Mira" or "Dark Clippy-Hans"), and the AI disclosure every agent owes
+("Ich bin eine KI", "I'm an AI assistant"). Identity talk still goes to the
+judge when the sentence it is in or the next one carries a negation or a word
+about being human or real ("I'm an AI? Ha, I'm actually a real person.",
+"Me, a bot? Never."), and "bin ich <Name>" is an introduction like "ich bin
+<Name>". The judge's verdict is the first word of its reply (markup aside, an
+explanation after it allowed); a reply that does not open with PASS or BLOCK
+is no verdict and withholds the text as `unavailable`, never as a pass. The
+operator log line of an unavailable guard names the cause and the error.
+
+## 10za. Execution scopes bound closings and the deadline wait (#2090, ADR-0030)
+
+An archetype plugin's actions are authorized from execution scopes (§0 of spec 2043). Three
+rules are the kernel's, not the plugin's bookkeeping:
+
+- **A closing never moderates.** A `closing` scope authorizes only `CLOSING_SCOPE_PURPOSES`
+  (essential messages, protocol dispatch, consent, status, stop, invitations, checks);
+  `moderation`, `handshake`, `link` and `reminder` are refused, model turns included.
+- **A closing ends 30 days after its event.** `eventAt` sets the base of the absolute limit;
+  an event in the future is refused, an earlier one only shortens the limit. This guards
+  against a plugin that opens its closing late (restart, retried send); a plugin that omits
+  `eventAt` or invents a fresh event id still gets 30 days from the opening. A hostile
+  plugin is bounded by the per-process once-index and budgets, not by this rule.
+- **The deadline wait is bounded by its closings.** It needs an open `closing` scope of the
+  same process, never runs past the latest absolute limit of those, and `authorize` refuses
+  (`deadline_passed`) once they have ended, whatever deadline the wait was given.
+
+Private replies: `replyToMessageId` is a channel statement; the plugin binds a reply only to
+a private message it sent that very person (outbox row with `target_principal`), so a forged
+reference to someone else's message binds nothing.
 
 ## 11. Reviewer checklist
 

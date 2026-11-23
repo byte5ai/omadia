@@ -27,8 +27,12 @@ vi.mock('next-intl/server', async () => {
   return {
     getTranslations: async (namespace: string) =>
       createTranslator({ locale: 'en', messages, namespace: namespace as never }),
+    getLocale: async () => 'en',
   };
 });
+
+// #2066 — the page reads the plugin nav for the facilitations-view link.
+vi.mock('../../../_lib/navigation', () => ({ fetchNavEntries: async () => [] }));
 
 vi.mock('next/link', () => ({
   default: ({ children, href }: { children: React.ReactNode; href: string }) => (
@@ -36,7 +40,11 @@ vi.mock('next/link', () => ({
   ),
 }));
 
-vi.mock('../../../_lib/agents', () => ({ listOperatorAgents: mockListAgents }));
+vi.mock('../../../_lib/agents', () => ({
+  listOperatorAgents: mockListAgents,
+  // #2088 — a middleware without the endpoint: the directory falls back.
+  listOperatorArchetypes: () => Promise.resolve(null),
+}));
 vi.mock('../../../_lib/channels', () => ({ listOperatorChannels: mockListChannels }));
 vi.mock('../../../_lib/authRedirect', () => ({ redirectIfUnauthorized: mockRedirect }));
 vi.mock('../_components/AgentsDashboard', () => ({
@@ -69,13 +77,13 @@ describe('<OperatorAgentsPage /> first start', () => {
 
     const state = screen.getByTestId('orchestrator-setup-state');
     expect(state).toHaveAttribute('data-cause', 'no_llm_access');
-    expect(screen.getByText('No orchestrator is running yet')).toBeInTheDocument();
+    expect(screen.getByText('No agent is running yet')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open LLM access' })).toHaveAttribute(
       'href',
       '/admin/providers',
     );
     expect(screen.getByTestId('channels-await-setup')).toHaveTextContent(
-      'Channel routing becomes available once an orchestrator is running.',
+      'Channel routing becomes available once an agent is running.',
     );
     expect(screen.queryByText(/failed: 503/)).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
@@ -90,7 +98,7 @@ describe('<OperatorAgentsPage /> first start', () => {
       'data-cause',
       'no_assignment',
     );
-    expect(screen.getByText('Orchestrator not assigned yet')).toBeInTheDocument();
+    expect(screen.getByText('Agent not assigned yet')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open assignment' })).toBeInTheDocument();
   });
 });
@@ -110,7 +118,7 @@ describe('<OperatorAgentsPage /> real failures stay errors', () => {
     expect(screen.queryByTestId('channels-await-setup')).toBeNull();
     const alerts = screen.getAllByRole('alert');
     expect(alerts).toHaveLength(2);
-    expect(alerts[0]).toHaveTextContent('Failed to load orchestrators');
+    expect(alerts[0]).toHaveTextContent('Failed to load agents');
     expect(alerts[0]).toHaveTextContent(error.message);
     expect(alerts[1]).toHaveTextContent('Failed to load channels');
   });

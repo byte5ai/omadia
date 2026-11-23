@@ -14,7 +14,7 @@
  *     receipt: its own row, or under a request ledger the request's one row
  *     (a re-entry's receipt joins it; the first run, finalized later, still
  *     takes the row over);
- *   - the streaming paths (model turn, Direct Line) hand over the same way.
+ *   - the streaming path hands over the same way.
  *
  * The verifier wrapped around this, end to end: verifierPrivacyEgressEndToEnd.
  */
@@ -23,7 +23,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import type { LlmProvider, LlmRequest, LlmResponse } from '@omadia/llm-provider';
-import { ToolReplayLedger, createDomainTool, type ChatTurnInput } from '@omadia/orchestrator';
+import { ToolReplayLedger, type ChatTurnInput } from '@omadia/orchestrator';
 import type { PrivacyGuardService, TurnReceiptRecordInput } from '@omadia/plugin-api';
 import { findIdentityLeaks } from '@omadia/plugin-privacy-guard/dist/v4/onTheWire.js';
 
@@ -378,36 +378,6 @@ describe('orchestrator — privacy hand-over for the verifier (chatStream)', () 
     assert.equal(finalizeCalls(), 1);
     assert.equal(recorded.length, 1);
     assert.equal(recorded[0]!.turnId, egress.receiptId);
-  });
-
-  it('the Direct Line site hands over too — with no view for the verifier', async () => {
-    const { service, finalizeCalls } = countingService();
-    const recorded: TurnReceiptRecordInput[] = [];
-    const tool = createDomainTool({
-      name: 'ask_strategist',
-      description: 'Strategy sparring partner',
-      domain: 'strategy',
-      agentId: 'de.byte5.agent.strategist',
-      agent: { ask: async (question: string) => `Antwort auf: ${question}` },
-    });
-    const orch = buildOrch({ service, provider: echoingProvider(), recorded, domainTools: [tool] });
-    const input = {
-      userMessage: `#strategist Schreib an ${RAW_EMAIL} bitte`,
-      sessionScope: 'sess-direct',
-    };
-
-    orch.markPrivacyFinalizeHeld(input);
-    const done = doneOf(await drain(orch.chatStream(input)));
-
-    assert.ok(done?.delegatedAnswer, 'not a Direct Line turn');
-    assert.equal(done.privacyReceipt, undefined);
-    const egress = orch.takePrivacyEgress(input);
-    assert.ok(egress, 'the Direct Line site did not hand over');
-    assert.equal(egress.verifierPrivacy, undefined, 'a restored relay must not reach the verifier');
-    assert.equal(finalizeCalls(), 0);
-    await egress.finalize();
-    assert.equal(finalizeCalls(), 1);
-    assert.equal(recorded.length, 1);
   });
 
   it('a stream abandoned before done drops its privacy state and keeps its receipt', async () => {

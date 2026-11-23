@@ -493,3 +493,34 @@ describe('buildTeamsBotMessagingEndpoint', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2043 D10 — the bot probe is forwarded only when the connector has it
+// ---------------------------------------------------------------------------
+
+describe('probeBot — connector version skew', () => {
+  it('is absent on the wrapper when the connector does not publish it', () => {
+    const stub = createStubTeamsProvisioner();
+    const provisioner = requireTeamsProvisioner(registryWith(stub.accessor));
+    assert.equal(typeof provisioner.probeBot, 'undefined');
+  });
+
+  it('is forwarded, with its answer, when the connector publishes it', async () => {
+    const stub = createStubTeamsProvisioner();
+    const asked: string[] = [];
+    const accessor = {
+      ...stub.accessor,
+      probeBot: async (input: { readonly appId: string }) => {
+        asked.push(input.appId);
+        return { status: 'rejected' as const, httpStatus: 401, detail: 'Authorization has been denied for this request.' };
+      },
+    } as TeamsProvisionerAccessor;
+    const provisioner = requireTeamsProvisioner(registryWith(accessor));
+    assert.deepEqual(await provisioner.probeBot?.({ appId: 'app-1' }), {
+      status: 'rejected',
+      httpStatus: 401,
+      detail: 'Authorization has been denied for this request.',
+    });
+    assert.deepEqual(asked, ['app-1']);
+  });
+});

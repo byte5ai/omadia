@@ -14,7 +14,7 @@ export function SubAgentNodeView({
       kind="subagent"
       title={subAgent.name}
       subtitle={subAgent.model}
-      badge={labels['subAgent']}
+      badge={subAgent.outOfService ? labels['subAgentOutOfService'] : labels['subAgent']}
       selected={selected}
       hasTarget
       hasSource

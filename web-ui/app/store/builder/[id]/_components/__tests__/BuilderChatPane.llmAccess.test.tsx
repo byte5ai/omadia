@@ -26,7 +26,7 @@ vi.mock('../../../../../_lib/api', async (importOriginal) => ({
 }));
 
 const LLM_ACCESS_MISSING =
-  'The plugin builder needs LLM access (an API key or a connected subscription).';
+  'The Plugin Builder needs LLM access (an API key or a connected subscription).';
 
 function streamOf(...events: BuilderTurnEvent[]): void {
   mockStreamBuilderTurn.mockImplementation(async function* () {
@@ -85,7 +85,7 @@ describe('<BuilderChatPane /> — missing LLM access', () => {
 
     expect(
       await screen.findByText(
-        'Der Plugin-Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo).',
+        'Der Plugin Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo).',
       ),
     ).toBeInTheDocument();
   });

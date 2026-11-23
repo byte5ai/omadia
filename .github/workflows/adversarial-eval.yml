@@ -32,6 +32,15 @@ concurrency:
 permissions:
   contents: read
 
+# onnxruntime-node (a dependency of @huggingface/transformers) downloads the
+# CUDA execution provider from github.com/microsoft/onnxruntime in its install
+# script on linux-x64. Nothing here runs on a GPU, and on 2026-11-18 that
+# download answered 404 and took every `npm ci` in this workflow down with it.
+# The CPU binaries ship inside the npm package; the Docker images already
+# install with --ignore-scripts and never fetched it.
+env:
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+
 jobs:
   adversarial:
     name: adversarial injection/manipulation (#498)

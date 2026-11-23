@@ -14,7 +14,6 @@ const baseSpec = {
     { id: 'get_forecast', description: 'a' },
     { id: 'get_history', description: 'b' },
   ],
-  skill: { role: 'tester' },
   setup_fields: [
     { key: 'api_key', type: 'secret' },
     { key: 'region_default', type: 'string' },

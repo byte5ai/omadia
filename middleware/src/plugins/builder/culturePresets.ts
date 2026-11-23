@@ -3,8 +3,8 @@
  *
  * Orthogonal to F3 personaTemplates: a template sets identity + axes;
  * a culture preset overlays axes only. Selection is one-shot — the
- * UI assembles the full merged persona and sends a single
- * `setPersonaConfig` call. Preset id itself is NOT persisted.
+ * Agent Builder's persona editor assembles the full merged persona and
+ * saves it with the agent's identity. Preset id itself is NOT persisted.
  *
  * Ported 1:1 from `byte5ai/kemia@main:src/lib/culture-presets.ts`.
  * The kemia axis names are camelCase (`riskTolerance`); the omadia

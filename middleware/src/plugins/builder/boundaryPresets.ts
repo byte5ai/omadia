@@ -1,9 +1,9 @@
 /**
  * Structured boundary presets for agent role configuration.
  *
- * Each preset maps to a kemia-curated prompt wording that
- * `dynamicAgentRuntime` compiles into the system prompt between persona
- * and sycophancy (compose order `[header, persona, boundaries, sycophancy, skill]`).
+ * Each preset maps to a kemia-curated prompt wording that the agent
+ * identity prompt (`services/agentIdentityPrompt.ts`) compiles into the
+ * system prompt between persona and sycophancy.
  *
  * Operators pick from this structured registry via the Builder UI;
  * unknown IDs (legacy persisted values, future presets) are surfaced
@@ -47,6 +47,7 @@ export const BOUNDARY_LABELS_DE: Readonly<Record<string, string>> = {
   presetNoFinancial: 'Keine Finanzdaten',
   presetNoPii: 'Keine personenbezogenen Daten (PII)',
   presetNoMedical: 'Keine medizinischen Daten',
+  presetNoIndividualRankings: 'Keine Ranglisten einzelner Kunden oder Personen',
   presetNoLegal: 'Keine Rechtsberatung',
   presetOwnDomain: 'Nur eigene Domäne',
   presetNoCode: 'Keine Code-Ausführung',
@@ -62,8 +63,8 @@ export const BOUNDARY_LABELS_DE: Readonly<Record<string, string>> = {
  * Compile a list of boundary preset IDs + custom lines into prompt text.
  *
  * Unknown IDs are reported via `droppedIds`, not silently dropped, so the
- * preview/quality panel and the `setQualityConfig` tool result can surface
- * them to the operator.
+ * agent identity prompt (`droppedBoundaryPresets`) can surface them to the
+ * operator.
  */
 export function compileBoundaries(
   presetIds: readonly string[],

@@ -9,8 +9,8 @@ import type { BuilderTool } from './types.js';
  * resumed sessions where a previous turn filled the slot. Pure read, no
  * side effects, no tsc gate.
  *
- * "Filled" semantics match the rest of the builder (codegen.ts
- * `filledPartialIndices`, agentSpec.ts ui_route slot-existence check,
+ * "Filled" semantics match the rest of the builder (agentSpec.ts ui_route
+ * slot-existence check,
  * lintSpec.ts empty-slot diagnostic): a slot counts as filled iff its
  * source is a non-empty string. `fill_slot` rejects empty source via
  * Zod (`min(1)`), so the empty-string branch only triggers on DB drift

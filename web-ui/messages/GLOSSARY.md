@@ -1,5 +1,10 @@
 # omadia UI glossary — which terms stay English in German
 
+The product vocabulary itself is defined in [`docs/terminology.md`](../../docs/terminology.md)
+and is binding for every UI text. This file adds the translation layer on top:
+which of those terms and which technical nouns stay English in German, and which
+German word the UI uses for each defined term.
+
 Issue #601 (findings OM-28/OM-29). The customer's complaint was not "translate
 everything". It was sharper than that:
 
@@ -20,10 +25,10 @@ points here.
 
 **Translate the sentence. Keep the noun that names a thing in omadia.**
 
-A German business user reading "Der Orchestrator hat den Turn abgebrochen"
+A German business user reading "Der Agent hat den Turn abgebrochen"
 understands the sentence and learns two product nouns. The same user reading
-"The orchestrator aborted the turn" learns nothing and feels addressed as a
-developer. Inventing "Der Dirigent hat die Runde abgebrochen" is worse than
+"The agent aborted the turn" learns nothing and feels addressed as a
+developer. Inventing "Der Agent hat die Runde abgebrochen" is worse than
 either: it is not the word in the docs, not the word in the API, and not the
 word another operator will say out loud.
 
@@ -33,7 +38,6 @@ So: **grammar, verbs, and connective prose go to German. Product nouns stay.**
 
 | Term | Why |
 |---|---|
-| **Orchestrator** | The product's own name for a configured agent. It is what the UI, the docs and the API all call it; a translation would exist only in the UI. |
 | **Turn** | One request/response cycle. "Runde"/"Zug" both mean something else in German business software. Appears in traces the operator correlates against logs. |
 | **Run** | A single execution of a routine or job. Same reason as Turn — it is a log/trace identifier before it is a word. |
 | **Tool** | Already the standard German loanword in this domain, and the API field is `tools`. |
@@ -42,6 +46,50 @@ So: **grammar, verbs, and connective prose go to German. Product nouns stay.**
 | **Sycophancy** | A persona metric with a defined scale. No German term exists that a user would recognise; translating it would invent one. |
 | **Privacy Shield** | Product name. |
 | **Trace**, **Token**, **Cache**, **Stream** | Established German loanwords in this field; the German text uses them as German words. |
+
+## Product terms from `docs/terminology.md`
+
+These are the defined terms. The UI uses exactly these words, in this form, in
+every locale. Where the German column differs from English, German texts use the
+German word, never the English one.
+
+| English | German | Note |
+|---|---|---|
+| agent | Agent (plural: Agenten) | A virtual colleague. Never "bot", never "assistant". |
+| archetype | Archetyp | Job profile of an agent, fixed at creation. Never "agent type". |
+| standard agent | Standard-Agent | An agent of the built-in archetype `standard`. |
+| facilitator | Facilitator | An agent of the archetype `facilitator`. |
+| default agent | Standard-Ansprechpartner | Answers what nobody addressed. Formerly "fallback agent" / "standard orchestrator". |
+| operator | Administrator | The person who runs the instance. |
+| user | Nutzer | A human working with agents. |
+| capability | Fähigkeit | What an agent is given: system access, a tool, a skill. |
+| capability plugin | Fähigkeits-Plugin | Formerly "agent plugin" (kind `agent` is retired). |
+| archetype plugin | Archetyp-Plugin | Delivers an archetype, e.g. the facilitator. |
+| channel plugin | Kanal-Plugin | Delivers a channel. |
+| model plugin | Modell-Plugin | Delivers a model. |
+| channel | Kanal | Teams, Slack, Telegram, web chat. |
+| model | Modell | The AI an agent thinks with. |
+| system module | Systemmodul | Infrastructure of omadia itself (Conductor, memory, omadia Proof). |
+| management layer | Verwaltungsebene | The deterministic layer below the agents: routing, permissions, discretion, audit. Never answers. Formerly "orchestrator" in the product sense. |
+| agent runtime | Agentenlaufzeit | The code that runs one agent's turns. |
+| availability | Verfügbarkeit | Which users may use an agent, in which channels. |
+| reach | Reichweite | Every connected system an agent can read or write. |
+| grant | Freigabe | Gives one agent one capability. |
+| identity / personality / instructions | Identität / Persönlichkeit / Anweisungen | Parts of an agent. |
+| working mode | Arbeitsmodus | Formerly "persona skill". |
+| internal helper | interner Helfer | Formerly "sub-agent" (towards users). |
+| consultation | Rückfrage | One agent asking another. |
+| conversation | Gespräch | 1:1 chat, group chat, channel thread, meeting chat. |
+| selection | Auswahl | A user's stored choice of an agent for one conversation. |
+| binding | Zuordnung | A configured link from a conversation to one agent. |
+| trigger | Auslöser | Hook, wakeup or timer. |
+| Agent Builder, Plugin Builder | Agent Builder, Plugin Builder | Product names, stay English. |
+
+**"Orchestrator" is retired.** It is a code name of the agent runtime package and
+appears in identifiers only. In texts, say **agent** when the thing a person talks
+to is meant, and **management layer** (German: Verwaltungsebene) when the
+deterministic layer below the agents is meant. `app/_lib/noOrchestratorTerm.test.ts`
+fails on any message or readable source string that still says it.
 
 ## Terms that must be German
 

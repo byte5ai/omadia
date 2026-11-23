@@ -35,6 +35,9 @@ export interface VerifierJudgeOptions {
   readonly log: (msg: string) => void;
   /** #1571 — the agent whose answers are checked (`verifier_verdicts.agent`). */
   readonly agent?: string;
+  /** The tools the answering agent holds: a claim about what it cannot reach
+   *  is a self-description unless it names one of their systems. */
+  readonly offeredToolNames?: () => ReadonlySet<string> | undefined;
 }
 
 /** #1571 — what the judge knows about one verified request across its passes. */
@@ -119,7 +122,7 @@ export class VerifierJudge {
   async verdictFor(
     runId: string,
     input: ChatTurnInput,
-    turn: Pick<ChatTurnResult, 'answer' | 'runTrace' | 'answerSource'>,
+    turn: Pick<ChatTurnResult, 'answer' | 'runTrace' | 'answerSource'> & { readonly textWithoutData?: string },
     egress: PrivacyEgressContinuation | undefined,
   ): Promise<VerifierVerdict | undefined> {
     const run = this.noteRun(runId, turn);
@@ -133,10 +136,14 @@ export class VerifierJudge {
     }
     // A server-rendered answer: the pipeline checks the prose its model
     // wrote, never `turn.answer`, which holds the rendered real values.
+    // #2085 — likewise side-channel data: a streamed `done` carries its
+    // rendering in `answer` and the text without it, made at render time, in
+    // `textWithoutData`; those rows are system data, never checked. A buffered
+    // result's `answer` never holds them (`toSemanticAnswer` renders later).
     const answer =
       gate.renderedProse === true && gate.privacy !== undefined
         ? await this.restoredProse(gate.privacy)
-        : turn.answer;
+        : (turn.textWithoutData ?? turn.answer);
     // #1571 — the verifier's model calls run after the turn's own context
     // closed; their token-usage rows carry the request's turn id explicitly.
     const verify = (): Promise<VerifierVerdict> =>
@@ -150,6 +157,18 @@ export class VerifierJudge {
           verify,
         )
       : verify();
+  }
+
+  /** The agent's tools as a list, or `undefined` when unknown (a lookup that
+   *  throws counts as unknown: the detector then keeps its older rule). */
+  private offeredTools(): string[] | undefined {
+    try {
+      const names = this.opts.offeredToolNames?.();
+      return names ? [...names] : undefined;
+    } catch (err) {
+      this.opts.log(`[verifier/service] offered tools unknown: ${errMsg(err)}`);
+      return undefined;
+    }
   }
 
   /** The rendered answer's prose with the turn's prompt surrogates restored —
@@ -177,6 +196,7 @@ export class VerifierJudge {
     const knowledgeGraphToolsCalled = extractKnowledgeGraphToolsCalled(runTrace);
     const knowledgeGraphRefs = extractKnowledgeGraphRefs(runTrace);
     const failedToolsCalled = extractFailedToolsCalled(runTrace);
+    const offeredToolNames = this.offeredTools();
     let returned: unknown;
     try {
       returned = await this.opts.pipeline.verify({
@@ -193,6 +213,7 @@ export class VerifierJudge {
           : {}),
         ...(knowledgeGraphRefs ? { knowledgeGraphRefs } : {}),
         ...(failedToolsCalled ? { failedToolsCalled } : {}),
+        ...(offeredToolNames ? { offeredToolNames } : {}),
         ...(turnRecords && turnRecords.length > 0 ? { turnRecords } : {}),
         // The pass's privacy view: every model request of the verifier goes
         // through it (absent only when no shield is installed).

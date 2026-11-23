@@ -55,7 +55,9 @@ export type MemoryFeatureReasonCode =
   | 'no_embedding_provider'
   | 'no_graph_pool'
   | 'disabled_by_config'
-  | 'plugin_inactive';
+  | 'plugin_inactive'
+  /** #2082 — the kernel offers no batch job registry to run it. */
+  | 'no_batch_job_registry';
 
 export interface MemoryFeatureStatus {
   readonly factExtractor: MemoryFeatureState;

@@ -445,9 +445,9 @@ export interface PluginProbeTrackerOptions {
  * Issue #1453 — the per-runtime half of the probe: binding, backgrounding and
  * the "don't haunt a dead plugin" guard.
  *
- * Owned by `ToolPluginRuntime` and `DynamicAgentRuntime`. It lives here, once,
- * because it first shipped as two near-identical copies in those two files —
- * and only one of the copies was reachable from a test.
+ * Owned by `ToolPluginRuntime`. It lives here because it first shipped as
+ * two near-identical copies (the other in the retired agent runtime) — and
+ * only one of the copies was reachable from a test.
  */
 export class PluginProbeTracker {
   /** Probes still in flight, by plugin id. Activation deliberately does not

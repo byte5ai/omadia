@@ -28,6 +28,7 @@
  *    on OpenAI-compatible servers (Mistral / Ollama / vLLM / Azure only speak
  *    the legacy param). Discriminated by the adapter id (`openai` vs not).
  */
+import { admitModelCall, isOpenAiReasoningModel } from '@omadia/llm-provider-api';
 import type OpenAI from 'openai';
 import { APIConnectionError, APIConnectionTimeoutError } from 'openai';
 
@@ -302,11 +303,16 @@ function buildParams(
     quirks?.maxTokensField ??
     (nativeOpenAi ? 'max_completion_tokens' : 'max_tokens');
   const dropToolChoice = quirks?.dropToolChoice === true;
+  const reasoningModel = nativeOpenAi && isOpenAiReasoningModel(req.model);
   return {
     model: req.model,
     messages,
     [maxTokensKey]: req.maxTokens,
-    ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+    // OpenAI's reasoning models take only the default temperature (1); any
+    // other value is a 400, so a caller's `temperature: 0` is dropped there.
+    ...(req.temperature !== undefined && !(reasoningModel && req.temperature !== 1)
+      ? { temperature: req.temperature }
+      : {}),
     ...(hasTools ? { tools: toOpenAiTools(tools, strictTools) } : {}),
     // tool_choice (incl. parallel_tool_calls) is only valid alongside tools —
     // OpenAI rejects 'required'/named/`parallel_tool_calls` with no tools, so a
@@ -318,11 +324,12 @@ function buildParams(
     ...(!dropToolChoice && hasTools && disablesParallel(req.toolChoice)
       ? { parallel_tool_calls: false }
       : {}),
-    // #1033 — `reasoning_effort` is a native-OpenAI reasoning-model field.
-    // OpenAI-compatible servers (Mistral / Ollama / vLLM / MiniMax) mostly
-    // reject unknown body fields, so there the effort is dropped — with a
-    // one-time note, never an error: a policy's effort must not break a turn.
-    ...(req.effort !== undefined && nativeOpenAi
+    // #1033 — `reasoning_effort` is a native-OpenAI REASONING-model field:
+    // gpt-4o / gpt-4.1 answer it with a 400, and OpenAI-compatible servers
+    // (Mistral / Ollama / vLLM / MiniMax) mostly reject unknown body fields.
+    // Everywhere else the effort is dropped — with a one-time note, never an
+    // error: a policy's effort must not break a turn.
+    ...(req.effort !== undefined && reasoningModel
       ? { reasoning_effort: req.effort }
       : {}),
     // Vendor-only request fields (e.g. MiniMax `reasoning_split`). Merged last.
@@ -341,10 +348,13 @@ function noteEffortIgnored(
   req: LlmRequest,
   nativeOpenAi: boolean,
 ): void {
-  if (req.effort === undefined || nativeOpenAi || effortIgnoredWarned.has(req.model)) return;
+  if (req.effort === undefined || effortIgnoredWarned.has(req.model)) return;
+  if (nativeOpenAi && isOpenAiReasoningModel(req.model)) return;
   effortIgnoredWarned.add(req.model);
   log(
-    `[llm-adapter-openai] model '${req.model}' is served by an OpenAI-compatible endpoint without a reasoning-effort field — effort '${req.effort}' ignored`,
+    nativeOpenAi
+      ? `[llm-adapter-openai] model '${req.model}' is no reasoning model and takes no reasoning-effort field — effort '${req.effort}' ignored`
+      : `[llm-adapter-openai] model '${req.model}' is served by an OpenAI-compatible endpoint without a reasoning-effort field — effort '${req.effort}' ignored`,
   );
 }
 
@@ -647,6 +657,8 @@ export function createOpenAiProvider(opts: OpenAiProviderOptions): LlmProvider {
     capabilities,
 
     async complete(req: LlmRequest): Promise<LlmResponse> {
+      // #2090 — refused when the turn's reservation does not cover the call.
+      admitModelCall();
       const started = Date.now();
       const params = paramsFor(req) as unknown as Parameters<
         typeof client.chat.completions.create
@@ -668,6 +680,8 @@ export function createOpenAiProvider(opts: OpenAiProviderOptions): LlmProvider {
     },
 
     async *stream(req: LlmRequest): AsyncIterable<LlmStreamEvent> {
+      // #2090 — refused when the turn's reservation does not cover the call.
+      admitModelCall();
       const params = {
         ...paramsFor(req),
         stream: true,

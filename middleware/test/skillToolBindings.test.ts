@@ -155,7 +155,7 @@ describe('skill capability bindings at hydration (#456)', () => {
     assert.ok(tool);
     const { turnContext } = await import('@omadia/orchestrator');
     const result = await turnContext.run(
-      { turnId: 't1', turnDate: '2026-07-06', agentSlug: 'main', activePersonaSkillId: SKILL_ID },
+      { turnId: 't1', turnDate: '2026-07-06', agentSlug: 'main', activeWorkingModeSkillId: SKILL_ID },
       () => tool.handle({ q: 'acme' }),
     );
     assert.equal(result, 'ok');
@@ -163,7 +163,7 @@ describe('skill capability bindings at hydration (#456)', () => {
     assert.equal(recorded[0]?.callerId, 'crm-helper');
   });
 
-  it('a bound tool is denied when its skill is not the active persona (codex fold)', async () => {
+  it('a bound tool is denied when its skill is not the active working mode (codex fold)', async () => {
     const recorded: Recorded[] = [];
     const h = host();
     registerDbSubAgentTools(
@@ -181,19 +181,19 @@ describe('skill capability bindings at hydration (#456)', () => {
       { turnId: 't2', turnDate: '2026-07-06', agentSlug: 'main' },
       () => tool.handle({}),
     );
-    assert.ok(noPersona.includes('not the active persona'));
+    assert.ok(noPersona.includes('not the active working mode'));
     const otherPersona = await turnContext.run(
       {
         turnId: 't3',
         turnDate: '2026-07-06',
         agentSlug: 'main',
-        activePersonaSkillId: '00000000-0000-4000-8000-0000000000ee',
+        activeWorkingModeSkillId: '00000000-0000-4000-8000-0000000000ee',
       },
       () => tool.handle({}),
     );
-    assert.ok(otherPersona.includes('not the active persona'));
+    assert.ok(otherPersona.includes('not the active working mode'));
     const outside = await tool.handle({});
-    assert.ok(outside.includes('not the active persona'));
+    assert.ok(outside.includes('not the active working mode'));
     assert.equal(recorded.length, 0);
   });
 

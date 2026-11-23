@@ -3,7 +3,7 @@
  * privacy-guard service: every request the verifier's own model receives
  * falls under the verified turn's privacy policy, and one receipt covers
  * the turn and its verifier. Also pins where the verifier does NOT run:
- * server-rendered answers, Direct Line relays, a disabled verifier, and the
+ * server-rendered answers, a disabled verifier, and the
  * subscription-CLI runtime (never wrapped).
  */
 
@@ -17,7 +17,6 @@ import {
 import type { LlmProvider, LlmRequest, LlmResponse } from '@omadia/llm-provider';
 import {
   VerifierService as BuiltVerifierService,
-  createDomainTool,
   type Orchestrator,
 } from '@omadia/orchestrator';
 import { InMemoryNudgeRegistry } from '@omadia/plugin-api';
@@ -346,32 +345,6 @@ describe('end to end — where the verifier sends nothing', () => {
     assert.ok(answer.privacyReceipt);
     assert.equal(answer.privacyReceipt.verifierEgress, undefined);
     assert.equal(recorded.length, 1);
-  });
-
-  it('a streaming Direct Line relay is not verified; done still carries the receipt', async () => {
-    const requests: string[] = [];
-    const recorded: TurnReceiptRecordInput[] = [];
-    const tool = createDomainTool({
-      name: 'ask_strategist',
-      description: 'Strategy sparring partner',
-      domain: 'strategy',
-      agentId: 'de.byte5.agent.strategist',
-      agent: { ask: async (question: string) => `Rechnung INV/2026/0042: ${question}` },
-    });
-    const { agent, finalizeCalls } = wrapped({ requests, recorded, domainTools: [tool] });
-
-    const events = await drain(
-      agent.chatStream({ userMessage: `#strategist ${ASK}`, sessionScope: 'sess-e2e-direct' }),
-    );
-    const done = doneOf(events);
-
-    assert.ok(done?.delegatedAnswer, 'not a Direct Line turn');
-    assert.equal(requests.length, 0, 'the relay reached the verifier');
-    assert.equal(events.at(-1)?.type, 'done', 'no verifier event for an unverified relay');
-    assert.equal(finalizeCalls(), 1);
-    assert.equal(recorded.length, 1);
-    assert.ok(done.privacyReceipt);
-    assert.equal(done.receiptId, recorded[0]!.turnId);
   });
 
   it('a disabled verifier leaves the turn to finalize itself, exactly as before', async () => {

@@ -7,6 +7,7 @@ import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import { ConfirmDialog } from '@/app/_components/ConfirmDialog';
+import { useBroadReachConfirm } from '@/app/_components/agents/useBroadReachConfirm';
 import { SkillVerdictBadge } from '@/app/_components/admin/SkillVerdictBadge';
 import { McpAuthSection } from '@/app/_components/mcp/McpAuthSection';
 import {
@@ -84,6 +85,7 @@ function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
  */
 export function AgentMcpServers({ slug }: { slug: string }): React.ReactElement {
   const t = useTranslations('operatorAgents');
+  const broadReach = useBroadReachConfirm();
   const [servers, setServers] = useState<McpServerNode[] | null>(null);
   const [grants, setGrants] = useState<AgentGrantsDto | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -153,7 +155,13 @@ export function AgentMcpServers({ slug }: { slug: string }): React.ReactElement 
     setError(null);
     setSaved(null);
     try {
-      const res = await replaceMcpToolAllowlist(slug, server.id, [...toolNames].sort());
+      // #2054 — a grant into every connected system asks first.
+      const res = await broadReach.guard(slug, (confirm) =>
+        replaceMcpToolAllowlist(slug, server.id, [...toolNames].sort(), {
+          confirmBroadReach: confirm,
+        }),
+      );
+      if (!res) return;
       setSaved({ id: server.id, granted: res.granted.length, revoked: res.revoked.length });
       await refresh();
       clearDraft(server.id);
@@ -194,6 +202,7 @@ export function AgentMcpServers({ slug }: { slug: string }): React.ReactElement 
 
   return (
     <section className="flex flex-col gap-3">
+      {broadReach.dialog}
       <div>
         <h2 className="text-lg font-medium text-[color:var(--fg-strong)]">{t('mcp.heading')}</h2>
         <p className="mt-1 text-sm leading-[1.55] text-[color:var(--fg-muted)]">{t('mcp.hint')}</p>

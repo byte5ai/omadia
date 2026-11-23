@@ -247,7 +247,12 @@ export class McpOAuthService {
         }
         const client = await this.loadClient(discovered.server.issuer);
         if (!client) return null;
-        const tok = await this.client.refresh({ server: discovered.server, client, refreshToken });
+        const tok = await this.client.refresh({
+          server: discovered.server,
+          client,
+          refreshToken,
+          resource: discovered.resource.resource,
+        });
         await this.persistToken(server.id, userKey, tok, discovered.server.issuer);
         return tok.accessToken;
       } catch (err) {
@@ -302,6 +307,10 @@ export class McpOAuthService {
       // callback — a server that could flip the flag in between would simply
       // opt itself out of the check.
       issRequired: discovered.server.issParameterSupported,
+      // RFC 8707: the token request must carry the same `resource` the
+      // authorization request did, so keep the value used above rather than
+      // recomputing it at the callback.
+      resource: discovered.resource.resource,
     });
     return { authorizeUrl: url };
   }
@@ -365,6 +374,7 @@ export class McpOAuthService {
       code,
       codeVerifier: flow.codeVerifier,
       redirectUri: flow.redirectUri,
+      resource: flow.resource,
     });
     await this.persistToken(flow.serverId, flow.userKey, tok, flow.issuer);
     return { serverId: flow.serverId };

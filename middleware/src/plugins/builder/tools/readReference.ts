@@ -7,7 +7,7 @@ import type { BuilderTool, ReferenceCatalogEntry } from './types.js';
 
 /**
  * Read a file from one of the workspace's reference-implementation roots
- * (other built-in agents, integration plugins, the boilerplate template,
+ * (built-in capability plugins, integration plugins, the boilerplate templates,
  * …). The LLM picks one of the catalog `name` values via `list_references`
  * and reads files relative to that root.
  *
@@ -106,9 +106,9 @@ export const readReferenceTool: BuilderTool<Input, Result> = {
   description:
     'Read a file from one of the reference-implementation packages. ' +
     'Pass `name` to choose the catalog entry (call `list_references` to ' +
-    'see available agents, integrations, boilerplate). `file` is relative ' +
+    'see available plugins, integrations, boilerplates). `file` is relative ' +
     'to that root — bare basenames work (e.g. "manifest.yaml", ' +
-    '"toolkit.ts", "skills/expert.md"). Path traversal and generated ' +
+    '"toolkit.ts", "registerTools.ts"). Path traversal and generated ' +
     'directories (node_modules, dist, .git) are rejected. Max 200 KB.',
   input: InputSchema,
   async run({ name, file }, ctx) {
@@ -141,7 +141,7 @@ export const readReferenceTool: BuilderTool<Input, Result> = {
       return {
         ok: false,
         error: `file '${file}' must be relative to the reference root`,
-        hint: `try '${path.basename(stripped)}' or 'skills/<file>.md'`,
+        hint: `try '${path.basename(stripped)}' (paths are relative to the reference root)`,
       };
     }
     const segments = stripped.split(/[/\\]/);

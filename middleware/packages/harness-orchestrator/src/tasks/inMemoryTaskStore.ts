@@ -29,6 +29,7 @@ import { randomUUID } from 'node:crypto';
 import {
   TASK_LEASE_UUID_RE,
   TaskLeaseLostError,
+  carryTaskContext,
   isTerminalTaskStatus,
   type NewTaskInput,
   type TaskDescriptor,
@@ -287,7 +288,8 @@ export class InMemoryTaskStore implements TaskStore {
     // does NOT overwrite the input again: the first resume already installed the
     // answer, and a re-claim may be in flight.
     if (row.descriptor.status === 'working') return row.descriptor;
-    row.input = input;
+    // The task keeps the agent turn it was started in; the answer brings none.
+    row.input = carryTaskContext(row.input, input);
     const ts = this.nowIso();
     row.descriptor = {
       ...row.descriptor,

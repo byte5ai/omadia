@@ -3,6 +3,8 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 
 import {
+  archetypeOf,
+  assertArchetypeAllows,
   ConfigValidationError,
   type ChannelIdentityRow,
   type ConfigStore,
@@ -10,6 +12,7 @@ import {
 } from '@omadia/orchestrator';
 
 import type { ChannelDirectoryRegistry } from '../channels/channelDirectoryRegistry.js';
+import { respondFacilitatorRefusal } from '../platform/facilitatorGuard.js';
 
 /**
  * Operator-facing channel dashboard (`/operator/channels`).
@@ -78,6 +81,14 @@ interface OperatorChannelDto {
   readonly member_count?: number;
   readonly origin_plugin_id: string;
   readonly bound_agent_slug: string | null;
+  /**
+   * #1880 — the bound agent's state. A binding to a disabled or deleted agent
+   * is still that agent's binding: the conversation gets a `system` notice
+   * naming it, never another agent's answer. `null` = not bound.
+   */
+  readonly bound_agent_status: 'enabled' | 'disabled' | 'deleted' | null;
+  /** #1880 — the name the bound agent wears (a deleted one: the name it had). */
+  readonly bound_agent_name: string | null;
   /** True when this row is only known from the binding table (the channel
    *  plugin no longer lists it, e.g. uninstalled / config changed). The
    *  dashboard surfaces these as "stale binding" so the operator can
@@ -111,6 +122,7 @@ export function createOperatorChannelsRouter(
   }
 
   function badRequest(res: Response, err: unknown): void {
+    if (respondFacilitatorRefusal(res, err)) return;
     if (err instanceof ConfigValidationError) {
       res
         .status(409)
@@ -140,14 +152,37 @@ export function createOperatorChannelsRouter(
     const live = svc();
     if (!live) return unavailable(res);
     try {
-      const [directoryEntries, agents, bindings, settings] = await Promise.all([
+      const [directoryEntries, agents, bindings, tombstones, defaultEntries] = await Promise.all([
         live.directory.listAll(),
         live.store.listAgents(),
         live.store.listChannelBindings(),
-        live.store.getPlatformSettings(),
+        live.store.listTombstones(),
+        live.store.routing.listDefaultEntries(),
       ]);
 
       const agentById = new Map(agents.map((a) => [a.id, a]));
+      const tombstoneById = new Map(tombstones.map((t) => [t.id, t]));
+      const boundAgent = (
+        agentId: string | undefined,
+      ): Pick<OperatorChannelDto, 'bound_agent_slug' | 'bound_agent_status' | 'bound_agent_name'> => {
+        if (agentId === undefined) {
+          return { bound_agent_slug: null, bound_agent_status: null, bound_agent_name: null };
+        }
+        const live = agentById.get(agentId);
+        if (live) {
+          return {
+            bound_agent_slug: live.slug,
+            bound_agent_status: live.status === 'enabled' ? 'enabled' : 'disabled',
+            bound_agent_name: live.identityName?.trim() || live.name,
+          };
+        }
+        const deleted = tombstoneById.get(agentId);
+        return {
+          bound_agent_slug: deleted?.slug ?? null,
+          bound_agent_status: 'deleted',
+          bound_agent_name: deleted?.name ?? null,
+        };
+      };
       const bindingByKey = new Map<string, { agentId: string }>();
       for (const b of bindings) {
         bindingByKey.set(`${b.channelType}:${b.channelKey}`, {
@@ -160,7 +195,6 @@ export function createOperatorChannelsRouter(
         const k = `${entry.channelType}:${entry.key}`;
         seen.add(k);
         const bound = bindingByKey.get(k);
-        const slug = bound ? agentById.get(bound.agentId)?.slug ?? null : null;
         return {
           channel_type: entry.channelType,
           channel_key: entry.key,
@@ -171,7 +205,7 @@ export function createOperatorChannelsRouter(
             ? { member_count: entry.memberCount }
             : {}),
           origin_plugin_id: entry.originPluginId,
-          bound_agent_slug: slug,
+          ...boundAgent(bound?.agentId),
           stale: false,
         };
       });
@@ -182,26 +216,38 @@ export function createOperatorChannelsRouter(
       for (const b of bindings) {
         const k = `${b.channelType}:${b.channelKey}`;
         if (seen.has(k)) continue;
-        const slug = agentById.get(b.agentId)?.slug ?? null;
         channels.push({
           channel_type: b.channelType,
           channel_key: b.channelKey,
           label: b.channelKey,
           origin_plugin_id: '',
-          bound_agent_slug: slug,
+          ...boundAgent(b.agentId),
           stale: true,
         });
       }
 
-      const fallback_slug =
-        agents.find((a) => a.id === settings.fallbackAgentId)?.slug ?? null;
+      // #2055 — what an unbound conversation gets: the instance entry of the
+      // default-agent table (`null` slug = `off`). Per-user and per-channel
+      // entries are listed on the default-agents endpoint.
+      const instanceEntry = defaultEntries.find(
+        (e) => e.principal === null && e.channelType === null,
+      );
+      const instance_default_slug =
+        instanceEntry?.agentId ? agentById.get(instanceEntry.agentId)?.slug ?? null : null;
 
       res.json({
         channels,
         agents: agents
           .filter((a) => a.status === 'enabled')
-          .map((a) => ({ slug: a.slug, name: a.name })),
-        fallback_slug,
+          // #2043 — `kind` rides along so the dashboard can leave
+          // facilitators out of the binding picker without a second request
+          // (a binding to one is refused anyway).
+          .map((a) => ({
+            slug: a.slug,
+            name: a.name,
+            archetype: archetypeOf(a),
+          })),
+        instance_default_slug,
         directory_types: live.directory.types(),
       });
     } catch (err) {
@@ -239,6 +285,20 @@ export function createOperatorChannelsRouter(
       const target = await live.store.getAgentBySlug(body.agent_slug);
       if (!target) {
         res.status(404).json({ error: 'agent_not_found', slug: body.agent_slug });
+        return;
+      }
+      // #2060 — never a binding to a facilitator; it has its own bot or none.
+      assertArchetypeAllows(target, 'channel_binding');
+      // #2055 — a binding names only an agent that serves this channel
+      // (availability, spec 2042 §5.3); otherwise every message there would
+      // get "not available" while the screen shows the binding.
+      if (target.availableChannels && !target.availableChannels.includes(body.channel_type)) {
+        res.status(409).json({
+          error: 'agent_not_available_in_channel',
+          message: `agent '${target.slug}' is not available in channel type '${body.channel_type}'`,
+          slug: target.slug,
+          channel_type: body.channel_type,
+        });
         return;
       }
 

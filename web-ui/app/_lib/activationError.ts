@@ -18,6 +18,8 @@ export const ACTIVATION_ERROR_CODES = [
   'dependency_unresolved',
   'provider_conflict',
   'target_unreachable',
+  'database_not_available',
+  'kind_retired',
   'unknown',
 ] as const;
 
@@ -38,6 +40,8 @@ export interface PluginActivationResult {
   ok: boolean;
   error: string | null;
   error_code: ActivationErrorCode | null;
+  /** #1860 — saved, but the plugin keeps its current instance until the next restart. */
+  restart_pending: boolean;
 }
 
 /** Tolerant narrowing of a response's `activation` field; `null` when absent
@@ -52,5 +56,6 @@ export function parseActivationResult(value: unknown): PluginActivationResult | 
     ok: state === 'active',
     error: typeof v['error'] === 'string' ? v['error'] : null,
     error_code: state === 'errored' ? parseActivationErrorCode(v['error_code']) : null,
+    restart_pending: v['restart_pending'] === true,
   };
 }

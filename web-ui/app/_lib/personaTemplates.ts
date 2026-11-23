@@ -8,7 +8,12 @@
  * @see Issue #53
  */
 
-import type { PersonaAxes } from './personaTypes';
+import {
+  ALL_PERSONA_AXES,
+  PERSONA_AXIS_NEUTRAL,
+  type PersonaAxes,
+  type PersonaConfig,
+} from './personaTypes';
 
 export type PersonaTemplateId =
   | 'customer-service'
@@ -129,4 +134,29 @@ export const PERSONA_TEMPLATES: readonly PersonaTemplate[] = [
 
 export function getPersonaTemplate(id: string): PersonaTemplate | undefined {
   return PERSONA_TEMPLATES.find((t) => t.id === id);
+}
+
+/**
+ * The axes after switching `current` to `next` (#1897, #1791).
+ *
+ * A template supplies all twelve axes, so the stored axes cannot tell an
+ * operator's tuning apart from the previous template's profile. The baseline
+ * makes that distinction: the previous template's profile, or neutral when no
+ * template was set. Only axes that differ from it are the operator's own and
+ * stay on top of the new template; every other axis follows the new one.
+ */
+export function axesForTemplate(
+  current: PersonaConfig | undefined,
+  next: PersonaTemplate,
+): Required<PersonaAxes> {
+  const baseline = current?.template
+    ? getPersonaTemplate(current.template)?.axes
+    : undefined;
+  const axes: Required<PersonaAxes> = { ...next.axes };
+  for (const axis of ALL_PERSONA_AXES) {
+    const value = current?.axes?.[axis];
+    if (value === undefined) continue;
+    if (value !== (baseline?.[axis] ?? PERSONA_AXIS_NEUTRAL)) axes[axis] = value;
+  }
+  return axes;
 }

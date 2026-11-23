@@ -7,10 +7,12 @@ import { publicScheme, publicWsScheme, type PublicScheme } from '../_lib/publicS
  * Public path: `/.well-known/omadia-ui` (rewritten to this handler in
  * `next.config.ts`). A desktop client GETs the one URL the user already
  * knows — the operator/browser URL — and gets back a connect-ready descriptor.
- * This closes the split-deployment gap: the Next operator front gates the
- * browser UI and does NOT route the canvas WebSocket (that lives on the
- * separate middleware service), so without this endpoint the desktop app has
- * no in-product way to discover the transport URL.
+ * This closes the split-deployment gap: the canvas WebSocket lives on the
+ * separate middleware service, so without this endpoint the desktop app has
+ * no in-product way to discover the transport URL. The image's entry point
+ * relays `/omadia-ui/canvas` upgrades on this origin to the middleware
+ * (`scripts/runtime/canvasWsProxy.mjs`), so the derived URL below is
+ * reachable and carries the session cookie of this host.
  *
  * The server owns the mapping "human URL → transport URL":
  *   - `wsUrl`        absolute canvas WS URL. Set `OMADIA_UI_PUBLIC_WS_URL` to

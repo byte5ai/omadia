@@ -37,6 +37,7 @@ interface HarnessOpts {
   setupFields?: Array<{
     key: string;
     type: 'secret' | 'oauth' | 'string' | 'url' | 'enum' | 'boolean' | 'integer';
+    min?: number;
   }>;
   /** Initial registry config — simulates non-secret values seeded at install time. */
   initialConfig?: Record<string, unknown>;
@@ -534,5 +535,91 @@ describe('runtime secrets route — boolean setup fields edited after install', 
     assert.equal(body.field, 'card_trace');
     const config = h.registry.get('de.byte5.agent.test')?.config ?? {};
     assert.equal(config['label'], undefined);
+  });
+});
+
+describe('runtime secrets route — integer setup fields edited after install (#1958)', () => {
+  let h: Harness;
+  afterEach(async () => {
+    if (h) await h.close();
+  });
+
+  const url = (): string =>
+    `${h.baseUrl}/api/v1/admin/runtime/installed/de.byte5.agent.test/secrets`;
+  const patch = (set: Record<string, string>): Promise<Response> =>
+    fetch(url(), {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ set }),
+    });
+
+  it('stores an integer value as a number, like the install path does', async () => {
+    h = await makeHarness({
+      setupFields: [
+        { key: 'signed_url_ttl_sec', type: 'integer', min: 1 },
+        { key: 'label', type: 'string' },
+      ],
+    });
+    const res = await patch({ signed_url_ttl_sec: '1800', label: '1800' });
+    assert.equal(res.status, 200);
+    const config = h.registry.get('de.byte5.agent.test')?.config ?? {};
+    assert.equal(config['signed_url_ttl_sec'], 1800);
+    // A string field that happens to hold digits stays a string.
+    assert.equal(config['label'], '1800');
+    const body = (await res.json()) as { config_values: Record<string, string> };
+    assert.equal(body.config_values['signed_url_ttl_sec'], '1800');
+  });
+
+  for (const value of ['abc', '1.5', '1e3', '']) {
+    it(`refuses the non-integer ${JSON.stringify(value)} and writes nothing`, async () => {
+      h = await makeHarness({
+        setupFields: [
+          { key: 'max_rows', type: 'integer' },
+          { key: 'label', type: 'string' },
+        ],
+        initialConfig: { max_rows: 100 },
+      });
+      const res = await patch({ max_rows: value, label: 'x' });
+      assert.equal(res.status, 400);
+      const body = (await res.json()) as { code: string; field: string; reason: string };
+      assert.equal(body.code, 'runtime.setup_field_invalid');
+      assert.equal(body.field, 'max_rows');
+      assert.equal(body.reason, 'wrong_type');
+      const config = h.registry.get('de.byte5.agent.test')?.config ?? {};
+      assert.equal(config['max_rows'], 100);
+      assert.equal(config['label'], undefined);
+    });
+  }
+
+  it("refuses a value below the manifest's `min` and writes nothing", async () => {
+    h = await makeHarness({
+      setupFields: [{ key: 'signed_url_ttl_sec', type: 'integer', min: 1 }],
+      initialConfig: { signed_url_ttl_sec: 3600 },
+    });
+    for (const value of ['-60', '0']) {
+      const res = await patch({ signed_url_ttl_sec: value });
+      assert.equal(res.status, 400);
+      const body = (await res.json()) as {
+        code: string;
+        field: string;
+        reason: string;
+        params: Record<string, string>;
+        message: string;
+      };
+      assert.equal(body.code, 'runtime.setup_field_invalid');
+      assert.equal(body.field, 'signed_url_ttl_sec');
+      assert.equal(body.reason, 'below_min');
+      assert.deepEqual(body.params, { min: '1' });
+      assert.match(body.message, /at least 1/);
+    }
+    const config = h.registry.get('de.byte5.agent.test')?.config ?? {};
+    assert.equal(config['signed_url_ttl_sec'], 3600);
+  });
+
+  it('accepts a negative integer when the field declares no `min`', async () => {
+    h = await makeHarness({ setupFields: [{ key: 'offset', type: 'integer' }] });
+    const res = await patch({ offset: '-5' });
+    assert.equal(res.status, 200);
+    assert.equal(h.registry.get('de.byte5.agent.test')?.config['offset'], -5);
   });
 });

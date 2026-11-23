@@ -16,7 +16,7 @@ import type { Pool } from 'pg';
 import { CliChatAgent } from '../../packages/harness-orchestrator/src/cliChatAgent.js';
 import type { CliChatAgentDeps } from '../../packages/harness-orchestrator/src/cliChatAgent.js';
 import { routeTurnModel } from '../../packages/harness-orchestrator/src/modelRouter.js';
-import { routeTurnPersona } from '../../packages/harness-orchestrator/src/personaRouter.js';
+import { routeTurnWorkingMode } from '../../packages/harness-orchestrator/src/workingModes.js';
 import { streamMessageEvents } from '../../packages/harness-orchestrator/src/streaming.js';
 import {
   currentUsageContext,
@@ -298,7 +298,7 @@ describe('#1098 — each capture seam names the provider that generated the cost
     assert.equal((await flushedRows()).length, 0);
   });
 
-  it('the model and persona routers record their classifier provider', async () => {
+  it('the model and working-mode routers record their classifier provider', async () => {
     const classifier = { id: 'router-prov', complete: () => Promise.resolve(response) };
 
     await routeTurnModel(
@@ -307,7 +307,7 @@ describe('#1098 — each capture seam names the provider that generated the cost
       'hi',
       'fb',
     );
-    await routeTurnPersona(
+    await routeTurnWorkingMode(
       classifier as never,
       [{ skillId: 'sk-1', slug: 'simple', name: 'Simple', description: 'd' }],
       'hi',
@@ -319,7 +319,7 @@ describe('#1098 — each capture seam names the provider that generated the cost
       rows.map((r) => [r[COL.source], r[COL.provider]]),
       [
         ['model-router', 'router-prov'],
-        ['persona-router', 'router-prov'],
+        ['working-mode-router', 'router-prov'],
       ],
     );
   });

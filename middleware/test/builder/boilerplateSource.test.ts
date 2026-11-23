@@ -14,17 +14,17 @@ describe('boilerplateSource', () => {
     _resetCacheForTests();
   });
 
-  describe('loadBoilerplate(agent-integration)', () => {
+  describe('loadBoilerplate(integration)', () => {
     it('loads the expected boilerplate files', async () => {
-      const bundle = await loadBoilerplate('agent-integration');
+      const bundle = await loadBoilerplate('integration');
       const expected = [
         'client.ts',
         'index.ts',
         'manifest.yaml',
         'package.json',
         'plugin.ts',
+        'registerTools.ts',
         'scripts/build-zip.mjs',
-        'skills/{{AGENT_SLUG}}-expert.md',
         'toolkit.ts',
         'tsconfig.json',
         'types.ts',
@@ -41,7 +41,7 @@ describe('boilerplateSource', () => {
       // .gitkeep / .gitignore added 2026-05-01 (live-test fix): zipExtractor's
       // allowlist rejects extension-less names; git-state markers must not
       // ship in the built zip.
-      const bundle = await loadBoilerplate('agent-integration');
+      const bundle = await loadBoilerplate('integration');
       assert.equal(bundle.files.has('CLAUDE.md'), false);
       assert.equal(bundle.files.has('template.yaml'), false);
       assert.equal(bundle.files.has('README.md'), false);
@@ -49,27 +49,28 @@ describe('boilerplateSource', () => {
     });
 
     it('parses the template manifest with declared slots and placeholders', async () => {
-      const bundle = await loadBoilerplate('agent-integration');
-      assert.equal(bundle.manifest.id, 'agent-integration');
+      const bundle = await loadBoilerplate('integration');
+      assert.equal(bundle.manifest.id, 'integration');
       assert.ok(bundle.manifest.slots.length >= 4, 'at least 4 slots declared');
       const slotKeys = bundle.manifest.slots.map((s) => s.key);
       assert.ok(slotKeys.includes('client-impl'));
       assert.ok(slotKeys.includes('toolkit-impl'));
-      assert.ok(slotKeys.includes('skill-prompt'));
+      // Spec 2042 §5.10 — a capability plugin has no system prompt.
+      assert.ok(!slotKeys.includes('skill-prompt'));
       assert.ok(Object.keys(bundle.manifest.placeholders).length >= 5);
       assert.equal(bundle.manifest.placeholders['AGENT_ID'], 'id');
     });
 
     it('memoizes per template id (second call returns identical bundle reference)', async () => {
-      const a = await loadBoilerplate('agent-integration');
-      const b = await loadBoilerplate('agent-integration');
+      const a = await loadBoilerplate('integration');
+      const b = await loadBoilerplate('integration');
       assert.equal(a, b);
       assert.equal(a.files, b.files);
       assert.equal(a.manifest, b.manifest);
     });
 
     it('returns Buffer values for file content', async () => {
-      const bundle = await loadBoilerplate('agent-integration');
+      const bundle = await loadBoilerplate('integration');
       const manifest = bundle.files.get('manifest.yaml');
       assert.ok(Buffer.isBuffer(manifest));
       assert.ok(manifest.length > 0);
@@ -84,14 +85,14 @@ describe('boilerplateSource', () => {
   });
 
   describe('discoverTemplates', () => {
-    it('returns at least agent-integration', async () => {
+    it('returns at least integration', async () => {
       const ids = await discoverTemplates();
-      assert.ok(ids.includes('agent-integration'));
+      assert.ok(ids.includes('integration'));
     });
 
-    it('returns agent-pure-llm (B.6-8)', async () => {
+    it('returns tool', async () => {
       const ids = await discoverTemplates();
-      assert.ok(ids.includes('agent-pure-llm'), `expected agent-pure-llm in ${JSON.stringify(ids)}`);
+      assert.ok(ids.includes('tool'), `expected tool in ${JSON.stringify(ids)}`);
     });
 
     it('returns ids sorted', async () => {
@@ -104,32 +105,56 @@ describe('boilerplateSource', () => {
     it('registers all discovered templates with the AgentSpec registry', async () => {
       await bootstrapTemplates();
       const known = getKnownAgentTemplates();
-      assert.ok(known.includes('agent-integration'));
-      assert.ok(known.includes('agent-pure-llm'));
+      assert.ok(known.includes('integration'));
+      assert.ok(known.includes('tool'));
     });
   });
 
-  describe('loadBoilerplate(agent-pure-llm)', () => {
-    it('loads with the expected manifest shape', async () => {
-      const bundle = await loadBoilerplate('agent-pure-llm');
-      assert.equal(bundle.manifest.id, 'agent-pure-llm');
-      // Pure-LLM only has the skill-prompt slot — no client/toolkit slots
-      // and no INTEGRATION_ID/OUTBOUND_HOST placeholders.
-      assert.deepEqual(
-        bundle.manifest.slots.map((s) => s.key).sort(),
-        ['skill-prompt'],
-      );
+  describe('loadBoilerplate(tool)', () => {
+    it('loads with the expected manifest shape: toolkit slots, no client slots', async () => {
+      const bundle = await loadBoilerplate('tool');
+      assert.equal(bundle.manifest.id, 'tool');
+      const keys = bundle.manifest.slots.map((s) => s.key);
+      assert.ok(keys.includes('toolkit-impl'));
+      assert.ok(keys.includes('activate-body'));
+      assert.ok(!keys.includes('client-impl'));
+      assert.ok(!keys.includes('skill-prompt'));
       assert.ok(!('INTEGRATION_ID' in bundle.manifest.placeholders));
       assert.ok(!('OUTBOUND_HOST' in bundle.manifest.placeholders));
     });
 
-    it('ships only runtime files (no client.ts, no toolkit.ts)', async () => {
-      const bundle = await loadBoilerplate('agent-pure-llm');
-      assert.ok(bundle.files.has('manifest.yaml'));
-      assert.ok(bundle.files.has('plugin.ts'));
-      assert.ok(bundle.files.has('package.json'));
+    it('ships toolkit + tool registration, no client.ts', async () => {
+      const bundle = await loadBoilerplate('tool');
+      for (const f of ['manifest.yaml', 'plugin.ts', 'package.json', 'toolkit.ts', 'registerTools.ts']) {
+        assert.ok(bundle.files.has(f), `missing ${f}`);
+      }
       assert.ok(!bundle.files.has('client.ts'));
-      assert.ok(!bundle.files.has('toolkit.ts'));
     });
   });
+
+  // Spec 2042 §5.10 — both boilerplates are capability plugins: manifest
+  // kind integration/tool, no persona, no prompt_partial skill, no AGENT.md,
+  // tools registered through ctx.tools.register.
+  for (const [id, kind] of [['integration', 'integration'], ['tool', 'tool']] as const) {
+    describe(`boilerplate ${id} is a capability plugin`, () => {
+      it(`declares kind ${kind} and no persona/skills`, async () => {
+        const bundle = await loadBoilerplate(id);
+        const manifest = bundle.files.get('manifest.yaml')!.toString('utf-8');
+        assert.match(manifest, new RegExp(`^  kind: "${kind}"`, 'm'));
+        assert.doesNotMatch(manifest, /prompt_partial/);
+        assert.doesNotMatch(manifest, /^skills:/m);
+        assert.doesNotMatch(manifest, /^(persona|speaker|personality|system_prompt):/m);
+        assert.ok(![...bundle.files.keys()].some((f) => /(^|\/)agent\.md$/i.test(f) || f.startsWith('skills/')));
+      });
+
+      it('registers its toolkit through ctx.tools.register', async () => {
+        const bundle = await loadBoilerplate(id);
+        const plugin = bundle.files.get('plugin.ts')!.toString('utf-8');
+        const register = bundle.files.get('registerTools.ts')!.toString('utf-8');
+        assert.match(plugin, /registerToolkit\(ctx, toolkit\)/);
+        assert.doesNotMatch(plugin, /return \{\s*toolkit/);
+        assert.match(register, /ctx\.tools\.register\(/);
+      });
+    });
+  }
 });
