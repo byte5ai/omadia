@@ -1474,7 +1474,7 @@ describe('RFC 8707 resource indicator on token requests', () => {
   /** A token endpoint that records every form body it receives. */
   function recordingFetch(): { fetchImpl: typeof fetch; bodies: URLSearchParams[] } {
     const bodies: URLSearchParams[] = [];
-    const fetchImpl: typeof fetch = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImpl: typeof fetch = (async (_u: Parameters<typeof fetch>[0], init?: RequestInit) => {
       bodies.push(new URLSearchParams(String(init?.body)));
       return new Response(
         JSON.stringify({ access_token: 'AT', refresh_token: 'RT', expires_in: 3600 }),
@@ -1532,7 +1532,7 @@ describe('RFC 8707 resource indicator on token requests', () => {
     const tokenResources: Array<string | null> = [];
     // Behaves like an authorization server that enforces RFC 8707: a token
     // request whose resource differs from the authorized one is refused.
-    const fetchImpl: typeof fetch = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImpl: typeof fetch = (async (_u: Parameters<typeof fetch>[0], init?: RequestInit) => {
       const form = new URLSearchParams(String(init?.body));
       const resource = form.get('resource');
       tokenResources.push(resource);
