@@ -21,6 +21,10 @@ function summary(overrides: Partial<VerifierSummary> = {}): VerifierSummary {
 
 const GREEN = 'var(--success)';
 
+// Spec 2042 §5.14 — these render inside the collapsed answer details only
+// (`AnswerDetails`); `app/chat/__tests__/answerDecorations.test.tsx` pins that
+// neither appears as a chip around the answer.
+
 describe('<SystemDataBadge>', () => {
   it('marks a server-rendered answer as original system data, in German too', () => {
     renderWithIntl(<SystemDataBadge />, { locale: 'de' });

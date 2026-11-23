@@ -79,7 +79,6 @@ function renderDnd(config: Record<string, unknown> = {}): {
     <PluginsDnd
       agent={agent(config)}
       catalog={catalog()}
-      isFallback={false}
       disabled={false}
       onReplace={onReplace}
     />,

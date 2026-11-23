@@ -146,7 +146,7 @@ export function isWithheldToolErrorNotice(text: string): boolean {
 export interface ToolErrorFromExceptionOptions {
   /** Log reference. Default: a fresh {@link newToolErrorRef}. */
   readonly ref?: string;
-  /** Log prefix naming the producer, e.g. `dynamic-agent`. Default `tool`. */
+  /** Log prefix naming the producer, e.g. `preview`. Default `tool`. */
   readonly site?: string;
   /**
    * Where the FULL error goes. Default `console.error`. `null` when the caller

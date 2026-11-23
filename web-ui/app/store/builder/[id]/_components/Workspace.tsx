@@ -43,6 +43,7 @@ import { useIsDesktop } from '../../../../_lib/useMediaQuery';
 import type {
   BuilderModelId,
   BuilderModelInfo,
+  BuilderPluginKind,
   BuilderTemplateInfo,
   Draft,
   TemplateSlotDef,
@@ -55,7 +56,7 @@ import {
 import { BuilderChatPane } from './BuilderChatPane';
 import { InstallDiffModal } from './InstallDiffModal';
 import { PaneCard } from './PaneCard';
-import { PersonaPillar } from './PersonaPillar';
+import { effectivePluginKind, normalizeTemplateId } from './pluginKind';
 import {
   PreviewChatPane,
   type BuildStatusSnapshot,
@@ -67,7 +68,6 @@ import { SkillsRegistry } from '../../../../_components/admin/SkillsRegistry';
 import { SpecOverview } from './SpecOverview';
 import { UiSurfacesTabPane } from './UiSurfacesTabPane';
 import { AuditTimelinePane } from './AuditTimelinePane';
-import { PreviewPromptPanel } from './PreviewPromptPanel';
 import { VersionsTab } from './VersionsTab';
 import { useSpecEvents } from './useSpecEvents';
 
@@ -75,7 +75,7 @@ interface WorkspaceProps {
   initialDraft: Draft;
 }
 
-type EditorTab = 'overview' | 'spec' | 'slots' | 'persona' | 'skills' | 'versions';
+type EditorTab = 'overview' | 'spec' | 'slots' | 'skills' | 'versions';
 type MobilePane = 'chat' | 'editor' | 'preview' | 'ui-surfaces';
 type ViewMode = 'simple' | 'extended';
 
@@ -87,7 +87,6 @@ const TAB_KEY: Record<EditorTab, string> = {
   overview: 'tabOverview',
   spec: 'tabSpec',
   slots: 'tabSlots',
-  persona: 'tabPersona',
   skills: 'tabSkills',
   versions: 'tabVersions',
 };
@@ -646,7 +645,6 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
     overview: 0,
     spec: 0,
     slots: missingRequiredSlots,
-    persona: 0,
     skills: 0,
     versions: 0,
   };
@@ -730,7 +728,7 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
         onInstallClick={() => setInstallModalOpen(true)}
         templates={templates}
         models={models}
-        currentTemplate={draft.spec.template ?? 'agent-integration'}
+        currentTemplate={normalizeTemplateId(draft.spec.template)}
         templateSwitchEnabled={isDraftSwitchable}
         onTemplateChange={async (next) => {
           try {
@@ -802,12 +800,6 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
           draft={draft}
           model={draft.codegenModel}
           onBuildStatus={setBuildStatus}
-          onPersonaPersisted={(next) =>
-            setDraft((prev) => ({
-              ...prev,
-              spec: { ...prev.spec, persona: next },
-            }))
-          }
           pendingUserChoice={pendingUserChoice}
           onUserChoiceResolved={() => setPendingUserChoice(null)}
           onIntakeStreamingChange={setBuilderChatStreaming}
@@ -870,27 +862,6 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
                   if (!isDesktop) setMobilePane('chat');
                 }}
               />
-            )}
-            {tab === 'persona' && (
-              <div className="overflow-y-auto">
-                <PersonaPillar
-                  draftId={draft.id}
-                  initialPersona={draft.spec.persona ?? {}}
-                  {...(draft.spec.quality ? { quality: draft.spec.quality } : {})}
-                  onPersisted={(next) => {
-                    setDraft((prev) => ({
-                      ...prev,
-                      spec: { ...prev.spec, persona: next },
-                    }));
-                  }}
-                />
-                {/* Issue #55 — live compiled-prompt preview panel.
-                 *  Refetches whenever the draft state changes. */}
-                <PreviewPromptPanel
-                  draftId={draft.id}
-                  refetchKey={draft.updatedAt}
-                />
-              </div>
             )}
             {tab === 'skills' && (
               <div className="overflow-y-auto p-1">
@@ -1415,6 +1386,7 @@ function WorkspaceHeader({
           {draft.name}
         </h1>
         <StatusBadge status={draft.status} />
+        <PluginKindBadge kind={effectivePluginKind(draft.spec)} />
       </div>
 
       {/* Technical controls — only in the Extended view. The Simplified
@@ -1558,6 +1530,21 @@ function StatusBadge({ status }: { status: Draft['status'] }): React.ReactElemen
       )}
     >
       {tw(STATUS_KEY[status])}
+    </span>
+  );
+}
+
+/** Spec 2042 §5.10 — the manifest kind of the plugin this draft builds
+ *  (`integration` or `tool`); the Plugin Builder builds nothing else. */
+function PluginKindBadge({ kind }: { kind: BuilderPluginKind }): React.ReactElement {
+  const tw = useTranslations('builder.workspace');
+  return (
+    <span
+      className="inline-flex items-center rounded-full border border-[color:var(--divider)] px-3 py-0.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]"
+      title={tw(kind === 'integration' ? 'kindIntegrationHint' : 'kindToolHint')}
+      data-testid="plugin-kind-badge"
+    >
+      {tw(kind === 'integration' ? 'kindIntegration' : 'kindTool')}
     </span>
   );
 }
@@ -1842,7 +1829,7 @@ function EditorTabs({
   const tw = useTranslations('builder.workspace');
   return (
     <div role="tablist" className="flex items-center gap-1">
-      {(['overview', 'spec', 'slots', 'persona', 'skills', 'versions'] as EditorTab[]).map((t) => {
+      {(['overview', 'spec', 'slots', 'skills', 'versions'] as EditorTab[]).map((t) => {
         const active = t === current;
         const warningCount = warnings?.[t] ?? 0;
         return (

@@ -168,6 +168,21 @@ export function runTaskStoreConformance(
       );
     });
 
+    it('provideInput keeps the stored execution context; the answer cannot bring one (spec 2042 §5.10)', async () => {
+      const store = await makeStore();
+      const ctx = { kind: 'agent_turn', ownerId: 'hr-agent', agentSlug: 'hr-agent' };
+      const t = await store.create({ kind: 'k', input: { answer: null, __omadia_execution_context: ctx } });
+      const lease = randomUUID();
+      await store.claimNextPending(lease);
+      await store.requireInput(t.id, lease);
+      await store.provideInput(t.id, {
+        answer: 'yes',
+        __omadia_execution_context: { kind: 'agent_turn', ownerId: 'someone-else' },
+      });
+      const reclaim = await store.claimNextPending(randomUUID());
+      assert.deepEqual(reclaim?.input, { answer: 'yes', __omadia_execution_context: ctx });
+    });
+
     it('provideInput is idempotent on a working task and rejects a terminal/missing one', async () => {
       const store = await makeStore();
       const t = await store.create({ kind: 'k', input: {} });

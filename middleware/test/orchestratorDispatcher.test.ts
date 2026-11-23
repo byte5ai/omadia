@@ -2,9 +2,12 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import type { ChatAgentBundle, ChatStreamEvent } from '@omadia/channel-sdk';
+import { buildSystemNotice } from '@omadia/orchestrator';
+
+import { managementChatAgent } from '../packages/harness-orchestrator/src/management/managementChatAgent.js';
 
 import type { ChannelManifestBlock } from '../src/api/admin-v1.js';
-import { createOrchestratorDispatcher } from '../src/channels/orchestratorDispatcher.js';
+import { NO_AGENT_AVAILABLE_MESSAGE, createOrchestratorDispatcher } from '../src/channels/orchestratorDispatcher.js';
 
 /**
  * PR-6 — the orchestrator dispatcher routes a turn to the channel's configured
@@ -141,13 +144,14 @@ describe('createOrchestratorDispatcher', () => {
     assert.deepEqual(input.target, { kind: 'item', containerId: 'courses', itemKey: 'k-7' });
   });
 
-  it('yields a single error event when no orchestrator is registered', async () => {
+  it('yields a single error event when no agent is registered (criterion 12: without saying "orchestrator")', async () => {
     const dispatcher = createOrchestratorDispatcher({
       getChannelBlock: () => undefined,
       getAgentBundle: () => undefined,
     });
     const events = await collect(dispatcher.streamTurn({ ...turn, channelId: 'x' }));
-    assert.deepEqual(events, [{ type: 'error', message: 'orchestrator unavailable' }]);
+    assert.deepEqual(events, [{ type: 'error', message: NO_AGENT_AVAILABLE_MESSAGE }]);
+    assert.doesNotMatch(NO_AGENT_AVAILABLE_MESSAGE, /orchestrator/i);
   });
 
   // ── US7 per-binding routing ───────────────────────────────────────────────
@@ -155,6 +159,7 @@ describe('createOrchestratorDispatcher', () => {
   it('routes a classic-channel turn to the bound Agent (channelResolver wins over the chatAgent singleton)', async () => {
     const asked: string[] = [];
     const resolved: Array<[string, string]> = [];
+    const principals: Array<string | undefined> = [];
     const boundAgent = stubBundle([
       { type: 'done', answer: 'scoped', toolCalls: 0, iterations: 1 },
     ]).agent;
@@ -165,8 +170,9 @@ describe('createOrchestratorDispatcher', () => {
         return stubBundle([{ type: 'done', answer: 'singleton', toolCalls: 0, iterations: 1 }]);
       },
       channelTypeFor: (channelId) => channelId.split('.').pop() ?? channelId,
-      resolveBinding: (channelType, channelKey) => {
+      resolveBinding: (channelType, channelKey, context) => {
         resolved.push([channelType, channelKey]);
+        principals.push(context.principal);
         return boundAgent;
       },
     });
@@ -178,6 +184,9 @@ describe('createOrchestratorDispatcher', () => {
       }),
     );
     assert.deepEqual(resolved, [['teams', 'conv-42']]);
+    // #2055 — routing knows the sender: selections and default entries key on it.
+    assert.equal(principals.length, 1);
+    assert.match(principals[0] ?? '', /^user:.*u1/);
     assert.deepEqual(asked, []); // singleton never consulted
     assert.equal(
       (events.at(-1) as { answer?: string }).answer,
@@ -207,7 +216,7 @@ describe('createOrchestratorDispatcher', () => {
     assert.equal((events.at(-1) as { answer?: string }).answer, 'singleton');
   });
 
-  it('#1598 — an explicit resolver REJECT refuses the turn instead of falling back', async () => {
+  it('#1598/#2055 — a resolver REJECT is the management layer answering with its notice, never the shared agent', async () => {
     const asked: string[] = [];
     const dispatcher = createOrchestratorDispatcher({
       getChannelBlock: () => undefined,
@@ -216,7 +225,17 @@ describe('createOrchestratorDispatcher', () => {
         return stubBundle([{ type: 'done', answer: 'ungated', toolCalls: 0, iterations: 1 }]);
       },
       channelTypeFor: (channelId) => channelId.split('.').pop() ?? channelId,
-      resolveBinding: () => null,
+      // What the channelResolver hands out on `reject`: the management layer
+      // with no agent behind it, answering with the refusal.
+      resolveBinding: (channelType, channelKey) =>
+        managementChatAgent(
+          undefined,
+          { channelType, conversationKey: channelKey },
+          buildSystemNotice('agent_disabled', {
+            agent: { slug: 'hr', displayName: 'HR', agentId: 'a-hr' },
+            locale: 'en',
+          }),
+        ),
     });
     const events = await collect(
       dispatcher.streamTurn({
@@ -226,9 +245,18 @@ describe('createOrchestratorDispatcher', () => {
       }),
     );
     assert.deepEqual(asked, [], 'the shared bundle must not be consulted');
-    assert.deepEqual(events, [
-      { type: 'error', message: 'no orchestrator is assigned to this conversation' },
-    ]);
+    assert.equal(events.length, 1);
+    const done = events[0] as {
+      type: string;
+      answer?: string;
+      speaker?: unknown;
+      systemNotice?: { code: string; agent?: { slug: string }; text: string };
+    };
+    assert.equal(done.type, 'done', 'a notice is a finished turn, not an error');
+    assert.deepEqual(done.speaker, { kind: 'system' });
+    assert.equal(done.systemNotice?.code, 'agent_disabled');
+    assert.equal(done.systemNotice?.agent?.slug, 'hr', 'the notice names the agent');
+    assert.equal(done.answer, done.systemNotice?.text);
   });
 
   it('never re-routes a channel with an explicit dispatch_service (canvas opt-out)', async () => {

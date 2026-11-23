@@ -41,6 +41,9 @@ export const MAX_CACHE_ENTRIES = 500;
 export const ANSWER_CACHE_PRIVACY_JOB = 'fast-path-answer-cache';
 
 export interface AnswerCacheEntry extends CacheShape {
+  /** #1876 — the agent whose fast lane stored it ('' = a caller that names
+   *  no agent). A plan is reused only for the same agent. */
+  agent: string;
   tool: string;
   hits: number;
   createdAt: string;
@@ -54,18 +57,19 @@ export type CacheLookup =
 /** Where a triage plan came from — the caller settles it after executing. */
 export type CacheTicket =
   | { source: 'cache'; key: string; slots: number }
-  | { source: 'llm'; question: string; previous: boolean };
+  | { source: 'llm'; question: string; previous: boolean; agent: string };
 
 export interface AnswerCache {
   /** Load once (idempotent); a missing/corrupt file starts empty. */
   load(): Promise<void>;
   /** Deterministic lookup — no model, no I/O. */
-  lookup(req: { question: string; tools: ReadonlySet<string>; previous: boolean }): CacheLookup;
+  lookup(req: { question: string; tools: ReadonlySet<string>; previous: boolean; agent: string }): CacheLookup;
   /** Store the shape of an LLM-planned hit (privacy-checked, async). */
   remember(req: {
     question: string;
     plan: PlannedQuery;
     previous: boolean;
+    agent: string;
     openScope?: () => PrivacyStoredTextScope | undefined;
   }): Promise<{ stored: boolean; reason?: string }>;
   /** A cache-sourced plan answered. */
@@ -78,6 +82,9 @@ export interface AnswerCache {
 }
 
 const SLOT_TYPES: ReadonlySet<string> = new Set(['string', 'number']);
+
+/** The in-memory key of an entry: one shape per agent. */
+const entryKey = (e: Pick<AnswerCacheEntry, 'agent' | 'key'>): string => `${e.agent}\n${e.key}`;
 const LETTER_CASES: ReadonlySet<string> = new Set(['keep', 'lower', 'upper']);
 const PLACEHOLDER = /^\{\{(text|email|id)_\d+\}\}$/;
 const AFFIX = /^[%*_]{1,4}$/;
@@ -132,7 +139,11 @@ function parseEntry(raw: unknown): AnswerCacheEntry | null {
     summary: plan['summary'],
     ...(typeof plan['locale'] === 'string' ? { locale: plan['locale'] } : {}),
   };
+  // #1876 — an entry from before the cache was keyed by agent belongs to
+  // no agent's fast lane: dropped.
+  if (typeof o['agent'] !== 'string') return null;
   return {
+    agent: o['agent'],
     key: o['key'],
     tool: fetch.tool,
     plan: cached,
@@ -285,7 +296,7 @@ export function createAnswerCache(opts: {
       const parsed = doc.entries.map(parseEntry).filter((e): e is AnswerCacheEntry => e !== null);
       // Map order doubles as recency: oldest first
       parsed.sort((a, b) => a.lastUsedAt.localeCompare(b.lastUsedAt));
-      for (const e of parsed.slice(-maxEntries)) entries.set(e.key, e);
+      for (const e of parsed.slice(-maxEntries)) entries.set(entryKey(e), e);
       opts.log(`[fast-path] answer cache loaded: ${entries.size}`);
     } catch (err) {
       opts.log(`[fast-path] answer cache: unreadable file — starting empty: ${err instanceof Error ? err.message : String(err)}`);
@@ -306,8 +317,8 @@ export function createAnswerCache(opts: {
   }
 
   function touch(entry: AnswerCacheEntry): void {
-    entries.delete(entry.key);
-    entries.set(entry.key, entry);
+    entries.delete(entryKey(entry));
+    entries.set(entryKey(entry), entry);
     while (entries.size > maxEntries) {
       const oldest = entries.keys().next().value;
       if (oldest === undefined) break;
@@ -315,12 +326,13 @@ export function createAnswerCache(opts: {
     }
   }
 
-  function lookup(req: { question: string; tools: ReadonlySet<string>; previous: boolean }): CacheLookup {
+  function lookup(req: Parameters<AnswerCache['lookup']>[0]): CacheLookup {
     if (entries.size === 0) return { hit: false, reason: 'empty' };
     if (req.previous && isFollowUpShaped(req.question)) return { hit: false, reason: 'follow-up' };
     const matched: Array<{ entry: AnswerCacheEntry; plan: PlannedQuery }> = [];
     let lastReason = 'no-match';
     for (const entry of entries.values()) {
+      if (entry.agent !== req.agent) continue;
       const filled = fillShape(entry, req.question);
       if (!filled.ok) {
         if (filled.reason !== 'shape-mismatch') lastReason = filled.reason;
@@ -352,7 +364,7 @@ export function createAnswerCache(opts: {
     const top = matched.filter((m) => m.entry.slots.length === best);
     if (top.length > 1) return { hit: false, reason: 'ambiguous' };
     const { entry, plan } = top[0]!;
-    return { hit: true, key: entry.key, plan, slots: entry.slots.length };
+    return { hit: true, key: entryKey(entry), plan, slots: entry.slots.length };
   }
 
   async function remember(req: Parameters<AnswerCache['remember']>[0]): Promise<{ stored: boolean; reason?: string }> {
@@ -377,9 +389,10 @@ export function createAnswerCache(opts: {
     if (refused !== undefined) return skip(`privacy:${refused}`);
     await (loading ??= readFromMemory());
     const t = now();
-    const prev = entries.get(shape.key);
+    const prev = entries.get(entryKey({ agent: req.agent, key: shape.key }));
     touch({
       ...shape,
+      agent: req.agent,
       tool: shape.plan.fetch.tool,
       hits: prev?.hits ?? 0,
       createdAt: prev?.createdAt ?? t,
@@ -468,6 +481,7 @@ export function settleAnswerCache(
     question: ticket.question,
     plan,
     previous: ticket.previous,
+    agent: ticket.agent,
     ...(openScope ? { openScope } : {}),
   });
 }

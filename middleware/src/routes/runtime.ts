@@ -17,10 +17,7 @@ import {
   reactivateAfterProviderWrite,
 } from '../platform/providerDependents.js';
 import type { InstallSetupField, PluginActivationResult, SetupOption } from '../api/admin-v1.js';
-import {
-  SetupOptionsResolveError,
-  withTimeout,
-} from '../plugins/dynamicAgentRuntime.js';
+import { SetupOptionsResolveError, type SetupOptionsResolver } from '../plugins/setupOptionsResolver.js';
 import type { ConnectionProbeOutcome } from '../plugins/connectionProbe.js';
 import { coerceSetupFieldValue, extractSetupSchema } from '../plugins/installService.js';
 import type { InstalledAgent, InstalledRegistry } from '../plugins/installedRegistry.js';
@@ -88,23 +85,25 @@ interface RuntimeDeps {
    *  existing test wiring without a catalog keeps compiling — the PATCH
    *  handler falls back to vault-only behaviour when absent. */
   catalog?: PluginCatalog;
+  /** Whether a package for this id is on disk (uploaded or built-in).
+   *  Without it `GET /installed` cannot tell and reports every entry as it
+   *  is stored. */
+  hasPackage?: (id: string) => boolean;
   /** Called after a successful config or secret edit. Tears down the
    *  current runtime instance and re-activates it so the plugin reads
    *  the fresh values — most plugins cache config at activate-time. */
   reactivate?: (agentId: string) => Promise<void>;
+  /** #2043 — see `GrantRouteDeps.onGrantsChanged`. */
+  onGrantsChanged?: (agentId: string) => Promise<void>;
+  /** #2043 — see `GrantRouteDeps.onGrantsWritten`. */
+  onGrantsWritten?: (agentId: string) => Promise<void>;
   /** #1860 — did the last reactivation of `agentId` wait for a restart? */
   restartPending?: (agentId: string) => boolean;
   /** Live-plugin tool invoker for dynamic setup-field options (post-install).
    *  Optional so existing test wiring keeps compiling — the setup-options
    *  endpoint 503s when absent, and PATCH /config falls back to opaque-id
    *  validation for multiselect fields. */
-  dynamicAgentRuntime?: {
-    resolveSetupOptions(
-      agentId: string,
-      toolId: string,
-      input: unknown,
-    ): Promise<unknown>;
-  };
+  setupOptions?: SetupOptionsResolver;
   /** Epic #470 C4 / H1 — durable operator consent for unauthenticated plugin
    *  path prefixes. Optional so existing test wiring keeps compiling; the
    *  public-path endpoints 503 when absent. */
@@ -142,25 +141,36 @@ interface RuntimeDeps {
   countOpenFieldClassification?: (visitor?: string) => Promise<OpenFieldClassificationCounts>;
 }
 
+/** `status` of an installed entry without a package in `GET /installed`. */
+export const PACKAGE_MISSING_STATUS = 'package_missing';
+
 export function createRuntimeRouter(deps: RuntimeDeps): Router {
   const router = Router();
 
   router.get('/installed', (_req: Request, res: Response) => {
-    const rows = deps.installedRegistry.list().map((entry) => ({
-      id: entry.id,
-      installed_version: entry.installed_version,
-      installed_at: entry.installed_at,
-      status: entry.status,
-      activation_failure_count: entry.activation_failure_count ?? 0,
-      last_activation_error: entry.last_activation_error ?? null,
-      last_activation_error_at: entry.last_activation_error_at ?? null,
-      last_activation_error_code: activationResultOf(entry)?.error_code ?? null,
-      // #1453 — a plugin can activate perfectly and still be unusable because
-      // the target system refuses its credentials. That verdict lives in the
-      // status channel, so an operator reading this endpoint alone used to see
-      // `active` / `last_activation_error: null` and nothing else.
-      action_status: deps.pluginStatusRegistry?.get(entry.id) ?? null,
-    }));
+    const rows = deps.installedRegistry.list().map((entry) => {
+      // An entry whose package is gone is visited by no runtime: it is not
+      // running, and the status the registry still holds says nothing. The
+      // answer is derived here; the registry is not rewritten.
+      const packageMissing = deps.hasPackage ? !deps.hasPackage(entry.id) : false;
+      return {
+        id: entry.id,
+        installed_version: entry.installed_version,
+        installed_at: entry.installed_at,
+        status: packageMissing ? PACKAGE_MISSING_STATUS : entry.status,
+        registry_status: entry.status,
+        package_missing: packageMissing,
+        activation_failure_count: entry.activation_failure_count ?? 0,
+        last_activation_error: entry.last_activation_error ?? null,
+        last_activation_error_at: entry.last_activation_error_at ?? null,
+        last_activation_error_code: activationResultOf(entry)?.error_code ?? null,
+        // #1453 — a plugin can activate perfectly and still be unusable because
+        // the target system refuses its credentials. That verdict lives in the
+        // status channel, so an operator reading this endpoint alone used to see
+        // `active` / `last_activation_error: null` and nothing else.
+        action_status: deps.pluginStatusRegistry?.get(entry.id) ?? null,
+      };
+    });
     res.json({ items: rows, total: rows.length });
   });
 
@@ -207,11 +217,15 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       });
       return;
     }
+    // The same derived answer as the list: an entry without a package.
+    const packageMissing = deps.hasPackage ? !deps.hasPackage(entry.id) : false;
     res.json({
       id: entry.id,
       installed_version: entry.installed_version,
       installed_at: entry.installed_at,
-      status: entry.status,
+      status: packageMissing ? PACKAGE_MISSING_STATUS : entry.status,
+      registry_status: entry.status,
+      package_missing: packageMissing,
       config: entry.config,
       activation_failure_count: entry.activation_failure_count ?? 0,
       last_activation_error: entry.last_activation_error ?? null,
@@ -350,7 +364,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
             v,
             id,
             optField,
-            deps.dynamicAgentRuntime,
+            deps.setupOptions,
           );
           if ('error' in checked) {
             res.status(400).json(checked.error);
@@ -429,7 +443,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
         });
         return;
       }
-      const resolver = deps.dynamicAgentRuntime;
+      const resolver = deps.setupOptions;
       if (!resolver) {
         res.status(503).json({
           code: 'runtime.options_unavailable',
@@ -1361,7 +1375,7 @@ async function validateMultiselectValue(
   raw: unknown,
   pluginId: string,
   field: OptionsProviderField,
-  resolver: RuntimeDeps['dynamicAgentRuntime'],
+  resolver: RuntimeDeps['setupOptions'],
 ): Promise<{ value: string } | { error: { code: string; message: string } }> {
   if (!Array.isArray(raw) || !raw.every((x) => typeof x === 'string')) {
     return {
@@ -1454,4 +1468,16 @@ function activationWithRestart(
   const result = activationResultOf(entry);
   if (result === null || entry === undefined) return result;
   return deps.restartPending?.(entry.id) === true ? { ...result, restart_pending: true } : result;
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<T>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

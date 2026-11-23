@@ -78,7 +78,6 @@ function snapshot(a: AgentRow): ConfigSnapshot {
     agents: [a],
     agentPlugins: [],
     channelBindings: [],
-    platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
   };
 }
 

@@ -8,11 +8,8 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/app/_components/ui/Button';
 import { DimensionSlider } from '@/app/_components/persona/DimensionSlider';
 import { PersonaRadar } from '@/app/_components/persona/PersonaRadar';
-import {
-  applyCulturePreset,
-  CULTURE_PRESETS,
-  diffCulturePreset,
-} from '../../../../_lib/culturePresets';
+import { CulturePresetDropdown } from '@/app/_components/persona/CulturePresetDropdown';
+import { PersonaTemplateGallery } from '@/app/_components/persona/PersonaTemplateGallery';
 import {
   CORE_PERSONA_AXES,
   EXTENDED_PERSONA_AXES,
@@ -23,12 +20,14 @@ import {
   type PersonaAxisKey,
   type PersonaConfig,
 } from '../../../../_lib/personaTypes';
-import {
-  axesForTemplate,
-  getPersonaTemplate,
-  PERSONA_TEMPLATES,
-} from '../../../../_lib/personaTemplates';
+import { getPersonaTemplate } from '../../../../_lib/personaTemplates';
 import type { PersonaConflictWarning } from '../../../../_lib/personaConflicts';
+import {
+  clampFacilitatorAxes,
+  clampFacilitatorAxis,
+  facilitatorAxisBound,
+  facilitatorAxisDisplayValue,
+} from '../../../../_lib/facilitators';
 
 /**
  * The character half of an agent's identity (#914 follow-up): the same
@@ -36,9 +35,10 @@ import type { PersonaConflictWarning } from '../../../../_lib/personaConflicts';
  * agent.
  *
  * Every piece of logic here is imported, not re-implemented: the axis
- * vocabulary and labels from `personaTypes`, the archetypes from
- * `personaTemplates`, the industry calibration from `culturePresets`, the
- * radar and the sliders from `_components/persona`. What this file adds is
+ * vocabulary and labels from `personaTypes`, the archetype gallery, the
+ * industry preset dropdown, the radar and the sliders from
+ * `_components/persona` (#2049: the gallery and the dropdown moved there
+ * from the Plugin Builder, spec 2042 §5.2). What this file adds is
  * the composition and the wiring to ONE controlled value — the parent owns
  * the state, saves everything in one request, and therefore knows whether
  * anything is unsaved.
@@ -55,10 +55,28 @@ export interface AgentPersonaEditorProps {
    *  detector — rendered per axis, next to the slider that caused them. */
   readonly warnings: readonly PersonaConflictWarning[];
   readonly disabled?: boolean;
+  /**
+   * #2066 — edit a FACILITATOR's character: every axis stays inside the
+   * bounds of the neutrality contract (spec 2043 §2.4). Sliders, archetypes
+   * and culture presets are clamped here, so what the operator sees is what
+   * the kernel will accept; the kernel still validates on save.
+   */
+  readonly facilitatorBounds?: boolean;
+  /** Server findings of the last refused save, already localized, per axis. */
+  readonly axisErrors?: Readonly<Partial<Record<PersonaAxisKey, string>>>;
+  /** Server finding for the free-text notes, already localized. */
+  readonly notesError?: string;
 }
 
-function axisValue(persona: PersonaConfig, axis: PersonaAxisKey): number {
-  return persona.axes?.[axis] ?? PERSONA_AXIS_NEUTRAL;
+function axisValue(
+  persona: PersonaConfig,
+  axis: PersonaAxisKey,
+  bounded: boolean,
+): number {
+  const value = persona.axes?.[axis];
+  return bounded
+    ? facilitatorAxisDisplayValue(axis, value)
+    : (value ?? PERSONA_AXIS_NEUTRAL);
 }
 
 export function AgentPersonaEditor(
@@ -87,25 +105,40 @@ export function AgentPersonaEditor(
     return out;
   }, [props.warnings]);
 
+  const bounded = props.facilitatorBounds === true;
+  /** Presets and archetypes move many axes at once; a facilitator gets the
+   *  same result pulled into its bounds rather than a save that is refused. */
+  const withinBounds = (axes: PersonaConfig['axes']): PersonaConfig['axes'] =>
+    bounded ? clampFacilitatorAxes(axes) : axes;
+
   const setAxis = (axis: PersonaAxisKey, next: number): void => {
     props.onChange({
       ...props.value,
-      axes: { ...(props.value.axes ?? {}), [axis]: next },
+      axes: {
+        ...(props.value.axes ?? {}),
+        [axis]: bounded ? clampFacilitatorAxis(axis, next) : next,
+      },
     });
   };
 
-  const applyTemplate = (templateId: string): void => {
-    const template = getPersonaTemplate(templateId);
-    if (!template) return;
-    props.onChange({
-      ...props.value,
-      template: templateId,
-      // The archetype supplies the axes; only sliders the operator moved away
-      // from the previous archetype stay on top — the same rule the Builder's
-      // template gallery applies.
-      axes: axesForTemplate(props.value, template),
-    });
-    setGalleryOpen(false);
+  const sliderExtras = (
+    axis: PersonaAxisKey,
+  ): { hint?: string; error?: string } => {
+    const bound = bounded ? facilitatorAxisBound(axis) : null;
+    const error = props.axisErrors?.[axis];
+    return {
+      ...(bound
+        ? { hint: t('bounds.axisRange', { min: bound.min, max: bound.max }) }
+        : {}),
+      ...(error ? { error } : {}),
+    };
+  };
+
+  /** The gallery and the culture dropdown merge the persona; a facilitator
+   *  gets the result pulled into its bounds. Nothing is saved here: the
+   *  merged persona is the next value of the controlled input. */
+  const applyPersona = (next: PersonaConfig): void => {
+    props.onChange({ ...next, axes: withinBounds(next.axes) });
   };
 
   const clearTemplate = (): void => {
@@ -123,6 +156,14 @@ export function AgentPersonaEditor(
 
   return (
     <div className="space-y-5" data-testid="agent-persona-editor">
+      {bounded && (
+        <p
+          data-testid="agent-persona-bounds-note"
+          className="rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)]/40 p-3 text-[11px] text-[color:var(--fg-muted)]"
+        >
+          {t('bounds.note')}
+        </p>
+      )}
       {/* ── archetype ─────────────────────────────────────────────── */}
       <div className="rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)]/40 p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -166,31 +207,12 @@ export function AgentPersonaEditor(
           </div>
         </div>
         {galleryOpen && (
-          <ul className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-            {PERSONA_TEMPLATES.map((template) => (
-              <li key={template.id}>
-                {/* eslint-disable-next-line no-restricted-syntax -- selectable card, no §4.2 variant fits */}
-                <button
-                  type="button"
-                  disabled={props.disabled}
-                  onClick={() => applyTemplate(template.id)}
-                  data-testid={`agent-persona-template-${template.id}`}
-                  className="h-full w-full rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-3 text-left transition-colors hover:border-[color:var(--accent)]"
-                >
-                  <span className="block text-sm font-medium">
-                    {tBuilder(
-                      `gallery.templates.${personaMessageId(template.id)}.label`,
-                    )}
-                  </span>
-                  <span className="mt-1 block text-[11px] leading-relaxed text-[color:var(--fg-muted)]">
-                    {tBuilder(
-                      `gallery.templates.${personaMessageId(template.id)}.description`,
-                    )}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
+          <PersonaTemplateGallery
+            persona={props.value}
+            onApply={applyPersona}
+            onClose={() => setGalleryOpen(false)}
+            {...(props.disabled ? { disabled: true } : {})}
+          />
         )}
       </div>
 
@@ -200,31 +222,12 @@ export function AgentPersonaEditor(
         <p className="mt-1 text-[11px] text-[color:var(--fg-muted)]">
           {t('culture.hint')}
         </p>
-        <div className="mt-2 flex flex-wrap gap-2">
-          {CULTURE_PRESETS.map((preset) => {
-            // How many axes this preset would actually move — an operator
-            // deserves to know a click changes six sliders, not one.
-            const changes = diffCulturePreset(props.value.axes, preset.id);
-            return (
-              // eslint-disable-next-line no-restricted-syntax -- filter chip, not a §4.2 CTA
-              <button
-                key={preset.id}
-                type="button"
-                disabled={props.disabled}
-                onClick={() =>
-                  props.onChange({
-                    ...props.value,
-                    axes: applyCulturePreset(props.value.axes, preset.id),
-                  })
-                }
-                data-testid={`agent-persona-culture-${preset.id}`}
-                title={t('culture.changes', { count: changes.length })}
-                className="rounded-full border border-[color:var(--border)] px-3 py-1 text-[11px] transition-colors hover:border-[color:var(--accent)] hover:text-[color:var(--accent)]"
-              >
-                {tBuilder(`culture.presets.${personaMessageId(preset.id)}.label`)}
-              </button>
-            );
-          })}
+        <div className="mt-2">
+          <CulturePresetDropdown
+            persona={props.value}
+            onApply={applyPersona}
+            {...(props.disabled ? { disabled: true } : {})}
+          />
         </div>
       </div>
 
@@ -241,8 +244,9 @@ export function AgentPersonaEditor(
               labelLeft={PERSONA_AXIS_LABELS[axis].left}
               labelRight={PERSONA_AXIS_LABELS[axis].right}
               description={tAxes(`${axis}.description`)}
-              value={axisValue(props.value, axis)}
+              value={axisValue(props.value, axis, bounded)}
               onChange={(next) => setAxis(axis, next)}
+              {...sliderExtras(axis)}
               {...(warningByAxis.get(axis)
                 ? { warning: warningByAxis.get(axis)?.severity }
                 : {})}
@@ -273,8 +277,9 @@ export function AgentPersonaEditor(
                 labelLeft={PERSONA_AXIS_LABELS[axis].left}
                 labelRight={PERSONA_AXIS_LABELS[axis].right}
                 description={tAxes(`${axis}.description`)}
-                value={axisValue(props.value, axis)}
+                value={axisValue(props.value, axis, bounded)}
                 onChange={(next) => setAxis(axis, next)}
+                {...sliderExtras(axis)}
                 {...(warningByAxis.get(axis)
                   ? { warning: warningByAxis.get(axis)?.severity }
                   : {})}
@@ -305,6 +310,15 @@ export function AgentPersonaEditor(
         <p className="mt-1 text-[11px] text-[color:var(--fg-muted)]">
           {t('notes.hint')}
         </p>
+        {props.notesError && (
+          <p
+            role="alert"
+            data-testid="agent-persona-notes-error"
+            className="mt-1 text-[11px] text-[color:var(--danger)]"
+          >
+            {props.notesError}
+          </p>
+        )}
       </div>
     </div>
   );

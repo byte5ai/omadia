@@ -144,7 +144,8 @@ export type MemoryFeatureReason =
   | 'no_embedding_provider'
   | 'no_graph_pool'
   | 'disabled_by_config'
-  | 'plugin_inactive';
+  | 'plugin_inactive'
+  | 'no_batch_job_registry';
 
 export interface MemoryFeatureStatusView {
   readonly factExtractor: 'active' | 'disabled';

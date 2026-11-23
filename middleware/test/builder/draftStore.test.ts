@@ -254,7 +254,6 @@ describe('DraftStore', () => {
       version: '0.1.0',
       description: 'd',
       category: 'other',
-      skill: { role: 'r' },
       // intentionally missing: depends_on, tools, setup_fields,
       // network, playbook, external_reads, ui_routes
       slots: {},

@@ -16,6 +16,7 @@ import type {
   ChannelTransportRoute,
   OAuthProviderDescriptor,
   Plugin,
+  PluginArchetype,
   PluginJobSchedule,
   PluginJobSpec,
   PluginKind,
@@ -25,8 +26,12 @@ import type {
   SetupAudience,
   SetupProfile,
   SetupEnumOption,
+  ToolSideEffect,
 } from '../api/admin-v1.js';
+import { PLUGIN_KINDS, TOOL_SIDE_EFFECTS } from '../api/admin-v1.js';
 import { parseSqlPermission } from '../platform/pluginSqlGrants.js';
+import { readArchetypeManifest, type ArchetypeManifestDescriptor } from './archetypeManifest.js';
+import { readAgentTemplates, type AgentTemplate } from './agentTemplateManifest.js';
 import {
   MAX_DECLARED_PUBLIC_PATHS,
   publicPathEntrySchema,
@@ -324,6 +329,25 @@ function warnManifestI18nGaps(id: string, version: string, doc: unknown): void {
   );
 }
 
+/** The descriptor in the JSON-safe shape of the admin API (mutable copies). */
+function toPluginArchetype(descriptor: ArchetypeManifestDescriptor): PluginArchetype {
+  return {
+    id: descriptor.id,
+    omits: [...descriptor.omits],
+    adds: [...(descriptor.adds ?? [])],
+    requires: [...(descriptor.requires ?? [])],
+    noun: descriptor.noun,
+    ...(descriptor.label !== undefined ? { label: descriptor.label } : {}),
+    ...(descriptor.labelPlural !== undefined ? { labelPlural: descriptor.labelPlural } : {}),
+    ...(descriptor.description !== undefined ? { description: descriptor.description } : {}),
+    ...(descriptor.omissionReasons ? { omissionReasons: { ...descriptor.omissionReasons } } : {}),
+    ...(descriptor.roleContract !== undefined ? { roleContract: descriptor.roleContract } : {}),
+    ...(descriptor.agentSettings && descriptor.agentSettings.length > 0
+      ? { agentSettings: [...descriptor.agentSettings] }
+      : {}),
+  };
+}
+
 export function adaptManifestV1(
   doc: Record<string, unknown>,
   reportUnknownPermissions: UnknownPermissionReporter = reportUnknownPermissionKeys,
@@ -507,17 +531,43 @@ export function adaptManifestV1(
     setupFields.push(entry);
   }
 
-  const rawKind = asString(identity['kind']);
-  const kind: PluginKind =
-    rawKind === 'integration'
-      ? 'integration'
-      : rawKind === 'channel'
-        ? 'channel'
-        : rawKind === 'tool'
-          ? 'tool'
-          : rawKind === 'extension'
-            ? 'extension'
-            : 'agent';
+  // #2088 — `identity.kind` decides which runtime runs the package and what
+  // it may be attached to, so a value the kernel does not know is REJECTED.
+  // It used to become `agent` silently: a manifest of a newer kind (or with a
+  // typo) was then loaded as a persona-bearing agent plugin. A manifest
+  // without the field keeps its historical meaning, `agent`.
+  const rawKind = identity['kind'];
+  if (rawKind !== undefined && rawKind !== null && !(PLUGIN_KINDS as readonly unknown[]).includes(rawKind)) {
+    console.warn(
+      `[catalog] manifest rejected: plugin '${id}' has identity.kind ${JSON.stringify(rawKind)}, which this kernel does not know (it knows: ${PLUGIN_KINDS.join(', ')}).`,
+    );
+    return null;
+  }
+  const kind: PluginKind = typeof rawKind === 'string' ? (rawKind as PluginKind) : 'agent';
+  // The descriptor of the archetype the plugin delivers. Read strictly: the
+  // kernel enforces it, so a block it cannot read in full rejects the manifest.
+  let archetype: ArchetypeManifestDescriptor | undefined;
+  if (kind === 'archetype') {
+    const read = readArchetypeManifest(doc['archetype']);
+    if ('error' in read) {
+      console.warn(`[catalog] manifest rejected: plugin '${id}': ${read.error}.`);
+      return null;
+    }
+    archetype = read.descriptor;
+  } else if (doc['archetype'] !== undefined && doc['archetype'] !== null) {
+    console.warn(
+      `[manifest:${id}] an \`archetype:\` block is only read for identity.kind 'archetype' (this plugin is '${kind}') — ignored.`,
+    );
+  }
+  // Spec 2042 §5.10 — inactive presets the operator turns into agents. Read
+  // strictly for the same reason as the archetype block above.
+  const templatesRead = readAgentTemplates(doc['agent_templates'], kind);
+  if ('error' in templatesRead) {
+    console.warn(`[catalog] manifest rejected: plugin '${id}': ${templatesRead.error}.`);
+    return null;
+  }
+  const agentTemplates: readonly AgentTemplate[] = templatesRead.templates;
+  const toolSideEffects = extractToolSideEffects(doc['capabilities'], id);
   const dependsOn = extractStringArray(doc['depends_on']);
   const jobs = extractJobs(doc['jobs']);
   const provides = extractCapabilityList(doc['provides'], id, 'provides');
@@ -664,6 +714,9 @@ export function adaptManifestV1(
   if (setupGuide) result = { ...result, setup_guide: setupGuide };
   if (setupProfile) result = { ...result, setup_profile: setupProfile };
   if (channel) result = { ...result, channel };
+  if (archetype) result = { ...result, archetype: toPluginArchetype(archetype) };
+  if (agentTemplates.length > 0) result = { ...result, agent_templates: [...agentTemplates] };
+  if (Object.keys(toolSideEffects).length > 0) result = { ...result, tool_side_effects: toolSideEffects };
   if (adminUiPath) result = { ...result, admin_ui_path: adminUiPath };
   if (isReferenceOnly) result = { ...result, is_reference_only: true };
   if (multiInstanceJustification) {
@@ -675,6 +728,32 @@ export function adaptManifestV1(
   // Last, so only a manifest that actually loads is reported (#1401).
   warnManifestI18nGaps(id, version, doc);
   return result;
+}
+
+/**
+ * Spec 2042 §5.10/§5.11 — the effect each tool declares in the manifest's
+ * `capabilities:` list (`id` = the tool id, `side_effects: read | write |
+ * none`, the field the boilerplates and the Plugin Builder already write).
+ * A value outside the vocabulary is dropped with a warning: the tool then
+ * declared nothing, which the kernel reads as `unknown`, never as `read`.
+ */
+function extractToolSideEffects(raw: unknown, pluginId: string): Record<string, ToolSideEffect> {
+  // No prototype: a tool id is manifest text (`__proto__`, `constructor`).
+  const out: Record<string, ToolSideEffect> = Object.create(null) as Record<string, ToolSideEffect>;
+  for (const entry of asArray(raw)) {
+    const rec = asRecord(entry);
+    const toolId = asString(rec?.['id']);
+    const effect = rec?.['side_effects'];
+    if (!toolId || effect === undefined || effect === null) continue;
+    if (typeof effect === 'string' && (TOOL_SIDE_EFFECTS as readonly string[]).includes(effect)) {
+      out[toolId] = effect as ToolSideEffect;
+    } else {
+      console.warn(
+        `[manifest:${pluginId}] capabilities '${toolId}': side_effects ${JSON.stringify(effect)} is not one of ${TOOL_SIDE_EFFECTS.join(', ')}; the tool declares no effect.`,
+      );
+    }
+  }
+  return out;
 }
 
 /**

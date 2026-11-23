@@ -110,7 +110,7 @@ function makeCatalog(): PluginCatalog {
   const entry = {
     plugin: {
       id: PLUGIN,
-      kind: 'extension',
+      kind: 'tool',
       domain: 'test',
       name: 'Activation State Fixture',
       version: '0.1.0',

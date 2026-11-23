@@ -111,3 +111,49 @@ describe('bot presence', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2043 D8 — the conversations the instance's bots already know
+// ---------------------------------------------------------------------------
+
+describe('recentConversations (#2043 D8)', () => {
+  it('asks for one row per conversation, newest first, bounded, and maps it', async () => {
+    const seen: { sql: string; params: unknown[] }[] = [];
+    const pool = {
+      query: async (sql: string, params: unknown[]) => {
+        seen.push({ sql, params });
+        return {
+          rows: [
+            {
+              conversation_id: '19:meeting_abc@thread.v2',
+              teams_type: 'groupChat',
+              name: 'Testbesprechung',
+              updated_at: new Date('2026-11-18T17:05:00Z'),
+              bot_app_ids: ['app-mona', 'app-other'],
+            },
+            { conversation_id: 'a:1personal', teams_type: 'personal', name: ' ', updated_at: new Date(0), bot_app_ids: null },
+          ],
+        };
+      },
+    };
+    const got = await createBotPresenceStore(pool as never).recentConversations(5000);
+    assert.equal(seen.length, 1);
+    assert.match(seen[0]?.sql ?? '', /GROUP BY conversation_id\s+ORDER BY max\(updated_at\) DESC\s+LIMIT \$1/);
+    assert.deepEqual(seen[0]?.params, [1000], 'the limit is bounded');
+    assert.deepEqual(got, [
+      {
+        conversationId: '19:meeting_abc@thread.v2',
+        teamsType: 'groupChat',
+        name: 'Testbesprechung',
+        updatedAt: new Date('2026-11-18T17:05:00Z'),
+        botAppIds: ['app-mona', 'app-other'],
+      },
+      { conversationId: 'a:1personal', teamsType: 'personal', name: null, updatedAt: new Date(0), botAppIds: [] },
+    ]);
+  });
+
+  it('a failing lookup throws, so the picker can say "could not be read" instead of "none"', async () => {
+    const pool = { query: async () => Promise.reject(new Error('relation does not exist')) };
+    await assert.rejects(createBotPresenceStore(pool as never).recentConversations(10), /relation does not exist/);
+  });
+});

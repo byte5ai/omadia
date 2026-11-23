@@ -1,6 +1,6 @@
 {
   "name": "@omadia/channel-sdk",
-  "version": "0.2.0",
+  "version": "0.3.13",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -26,6 +26,6 @@
   "engines": {
     "node": ">=20"
   },
-  "description": "Channel SDK for byte5 Harness — contracts shared by every channel plugin (Teams, Slack, Telegram, WhatsApp, Discord, custom webhooks). Defines ChannelPlugin / CoreApi / IncomingTurn / ChannelUserRef / PlatformIdentity. Semantic outgoing-message contracts and channel-agnostic store interfaces land here incrementally as connector packages extract them.",
+  "description": "Channel SDK for byte5 Harness \u2014 contracts shared by every channel plugin (Teams, Slack, Telegram, WhatsApp, Discord, custom webhooks). Defines ChannelPlugin / CoreApi / IncomingTurn / ChannelUserRef / PlatformIdentity. Semantic outgoing-message contracts and channel-agnostic store interfaces land here incrementally as connector packages extract them.",
   "license": "MIT"
 }

@@ -1,7 +1,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import express from 'express';
-import { z } from 'zod';
 
 import type {
   PreviewActivateOptions,
@@ -18,14 +17,25 @@ import {
 function makeTool(
   id: string,
   run: (input: unknown) => Promise<unknown>,
+  inputSchema: PreviewToolDescriptor['inputSchema'] = { type: 'object', properties: {} },
 ): PreviewToolDescriptor {
   return {
     id,
     description: `tool-${id}`,
-    input: z.unknown(),
-    run,
+    inputSchema,
+    run: async (input) => {
+      const out = await run(input);
+      return typeof out === 'string' ? out : JSON.stringify(out);
+    },
   };
 }
+
+/** The schema the plugin registers for `get_thing` (see validSpec). */
+const GET_THING_SCHEMA: PreviewToolDescriptor['inputSchema'] = {
+  type: 'object',
+  required: ['x'],
+  properties: { x: { type: 'string' } },
+};
 
 function makeHandle(
   tools: ReadonlyArray<PreviewToolDescriptor>,
@@ -57,7 +67,7 @@ function makeRouteCapture(
 const dummyRuntime: PreviewRuntime = {} as PreviewRuntime;
 
 const validSpec = {
-  template: 'agent-integration',
+  template: 'integration',
   id: 'de.byte5.agent.test',
   name: 'Test',
   version: '0.1.0',
@@ -71,7 +81,6 @@ const validSpec = {
       input: { type: 'object', required: ['x'], properties: { x: { type: 'string' } } },
     },
   ],
-  skill: { role: 'tester' },
   setup_fields: [],
   playbook: { when_to_use: 'tests', not_for: [], example_prompts: [] },
   network: { outbound: [] },
@@ -82,10 +91,14 @@ describe('runRuntimeSmoke — happy path', () => {
   it('returns ok=true with per-tool results when all tools succeed', async () => {
     const calls: unknown[] = [];
     const handle = makeHandle([
-      makeTool('get_thing', async (input) => {
-        calls.push(input);
-        return { result: 'ok' };
-      }),
+      makeTool(
+        'get_thing',
+        async (input) => {
+          calls.push(input);
+          return { result: 'ok' };
+        },
+        GET_THING_SCHEMA,
+      ),
     ]);
 
     const result = await runRuntimeSmoke({
@@ -102,7 +115,7 @@ describe('runRuntimeSmoke — happy path', () => {
     assert.equal(result.results.length, 1);
     assert.equal(result.results[0]?.toolId, 'get_thing');
     assert.equal(result.results[0]?.status, 'ok');
-    // Synthetic input was generated from the JSON-schema in spec.tools[0].input
+    // Synthetic input was generated from the input schema the plugin registered
     assert.deepEqual(calls[0], { x: 'test' });
   });
 

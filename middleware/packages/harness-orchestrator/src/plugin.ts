@@ -1,5 +1,9 @@
+import type { ConsultationPort } from './consultation/consultTool.js';
+import type { DiscretionPort } from './discretion/port.js';
 import {
+  InMemoryDisclosureMarkerStore,
   InMemoryDisclosureSeenStore,
+  isAiDisclosureFrequency,
   POSTURE_ORDER,
   RoleSourceRegistry as RoleSourceRegistryImpl,
   type ChatAgent,
@@ -8,6 +12,8 @@ import {
   type GrantStore,
   type SecurityPosture,
 } from '@omadia/channel-sdk';
+import { KernelAgentSelectionService } from './management/agentSelection.js';
+import type { FacilitatorRuntimeLookup } from './facilitatorAgent.js';
 import type {
   SecurityPostureSetup,
   SecurityScreenMode,
@@ -67,8 +73,8 @@ import {
 import type { VerifierBundle } from '@omadia/verifier';
 
 import type { Pool } from 'pg';
-import { initUsageRecorder, setUsageContextProvider } from '@omadia/usage-telemetry';
-import { currentUsageContext } from './turnContext.js';
+import { initUsageRecorder, setAmbientExecutionContext, setUsageContextProvider } from '@omadia/usage-telemetry';
+import { currentAgentTurnExecutionContext, currentUsageContext } from './turnContext.js';
 
 import {
   buildOrchestratorForAgent,
@@ -88,7 +94,6 @@ import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatSessionStore } from './chatSessionStore.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { Orchestrator, AiDisclosureSetup } from './orchestrator.js';
-import { InMemoryDirectLineStickyStore } from './directLineSticky.js';
 import {
   sharedMcpInputReplayer,
   sharedPendingMcpInputStore,
@@ -103,7 +108,6 @@ import {
   type PluginCapabilityLookup,
 } from './registry/index.js';
 import { runMultiOrchestratorMigrations } from './registry/migrator.js';
-import { ensureFallbackAgent } from './registry/onboarding.js';
 import { ReloadBus } from './registry/reloadBus.js';
 import { ChannelResolver } from './routing/channelResolver.js';
 import type { FastPathTriagePort } from './fastPathAgent.js';
@@ -186,13 +190,10 @@ import { describeSandboxResourceLimits, readSandboxResourceLimits } from './sand
  * `serviceRegistry.provide('nativeToolRegistry', ntr)` before
  * activateAllInstalled, and we late-resolve here.
  *
- * **DomainTools**: constructed empty here. The kernel's
- * `dynamicAgentRuntime.attachOrchestrator(bundle.raw)` call (post-
- * activate) registers each uploaded agent's tool via
- * `Orchestrator.registerDomainTool`. Kernel-built native sub-agents
- * (calendar, accounting, hr, confluence-playbook) similarly use
- * registerDomainTool from their kernel construction sites — no
- * change to the agent-side flow.
+ * **DomainTools**: constructed empty here. The kernel registers each
+ * Agent's DB-defined sub-agent tools on the registry's orchestrators via
+ * `Orchestrator.registerDomainTool` once the registry exists. Plugins
+ * contribute no domain tools (spec 2042 §5.10).
  *
  * **Always-Register-Bootstrap-Pattern (S+9.1 Rule #8)**: activate() is
  * tolerant of missing config. Without `anthropic_api_key`, the plugin
@@ -204,8 +205,7 @@ import { describeSandboxResourceLimits, readSandboxResourceLimits } from './sand
  * **S+10-4b** (next sub-commit): Teams + Telegram channel manifests
  * gain `requires: ["chatAgent@^1"]` and their plugin.ts files
  * late-resolve `chatAgent` from `ctx.services.get` instead of taking
- * it as a kernel-passed dep. After 4b the kernel only needs to
- * `attachOrchestrator` the dynamic-agent runtime; channels self-wire.
+ * it as a kernel-passed dep. Channels self-wire.
  */
 
 const CHAT_AGENT_SERVICE = 'chatAgent';
@@ -257,6 +257,8 @@ export const CLI_BINARY_RESOLVER_SERVICE = 'cliBinaryResolver';
  * block, which may come up after this plugin.
  */
 export const CHAT_PEER_AGENTS_SERVICE = 'chatPeerAgents';
+/** #2043 — kernel-published lookup, see `OrchestratorDeps.isEngineDrivenConversation`. */
+export const FACILITATOR_CONVERSATIONS_SERVICE = 'facilitatorConversations';
 
 /** #1033 W3 — the kernel's shared provider pool (see `optional_requires`). */
 export const LLM_PROVIDER_POOL_SERVICE = 'llmProviderPool';
@@ -293,8 +295,8 @@ const DEFAULT_MAX_TURN_SECONDS = 0;
 /**
  * Public shape of the `chatAgent@1` capability. Channel-plugins (Teams,
  * Telegram, the kernel-side HTTP /api/chat route) consume `agent` for
- * `chat()` / `chatStream()`. The kernel late-resolves `raw` to wire the
- * `dynamicAgentRuntime.attachOrchestrator` call. `sessionLogger` and
+ * `chat()` / `chatStream()`. The kernel late-resolves `raw` for its own
+ * wiring. `sessionLogger` and
  * `chatSessionStore` are exposed because the kernel still owns the
  * graphBackfill (sessionLogger) call and the `/api/chat/sessions` route
  * (chatSessionStore) — both consume the plugin-owned instances rather
@@ -408,6 +410,12 @@ function resolveAiDisclosureSetup(
     typeof nameRaw === 'string' && nameRaw.trim().length > 0
       ? nameRaw.trim()
       : undefined;
+  const frequencyRaw = read('ai_disclosure_frequency');
+  const frequency = isAiDisclosureFrequency(frequencyRaw) ? frequencyRaw : undefined;
+  const pauseRaw = read('ai_disclosure_pause_minutes');
+  const pauseParsed = parseNumberOrDefault(pauseRaw, Number.NaN);
+  const pauseMinutes =
+    Number.isFinite(pauseParsed) && pauseParsed >= 1 ? Math.floor(pauseParsed) : undefined;
   const noteRaw = read('ai_disclosure_operator_note');
   const operatorNote =
     typeof noteRaw === 'string' && noteRaw.trim().length > 0
@@ -419,7 +427,9 @@ function resolveAiDisclosureSetup(
     overrides === undefined &&
     locale === undefined &&
     assistantName === undefined &&
-    operatorNote === undefined
+    operatorNote === undefined &&
+    frequency === undefined &&
+    pauseMinutes === undefined
   ) {
     return undefined;
   }
@@ -432,6 +442,8 @@ function resolveAiDisclosureSetup(
     ...(locale ? { locale } : {}),
     ...(assistantName ? { assistantName } : {}),
     ...(operatorNote ? { operatorNote } : {}),
+    ...(frequency ? { frequency } : {}),
+    ...(pauseMinutes !== undefined ? { pauseMinutes } : {}),
   };
 }
 
@@ -837,6 +849,11 @@ export async function activate(
   // ordinary case: the orchestrator then installs no audience provider at all
   // and every guard short-circuits, leaving behaviour unchanged.
   const audienceGrants = ctx.services.get<GrantStore>('audienceGrants');
+  // Spec 2042 §5.4 / §5.11 — the consultation broker and the discretion
+  // stores, published by the kernel before plugin activation (late-bound to
+  // Postgres). Absent: no `consult` tool, labels live only for the turn.
+  const consultation = ctx.services.getOptional<ConsultationPort>('consultation');
+  const discretion = ctx.services.getOptional<DiscretionPort>('discretion');
   // #648 — publish the RESOLVED posture so `/health` and the operator
   // dashboard can read what this instance actually does, and warn once at boot
   // when it deviates from the delivered state. A reduced marking is a
@@ -951,6 +968,9 @@ export async function activate(
   // scorers run after the orchestrator's scope has closed, and the claude-cli
   // runtime never opens one (`CliChatAgent` passes its own ids explicitly).
   setUsageContextProvider(currentUsageContext);
+  // Spec 2042 §5.10 — and the model gateway reads the same scope as the
+  // agent turn every model call inside it belongs to.
+  setAmbientExecutionContext(currentAgentTurnExecutionContext);
 
   // (LLM provider built above from the configured provider id.)
 
@@ -1209,6 +1229,34 @@ export async function activate(
     // inside its database block, possibly after this plugin activated).
     chatPeerAgents: async () =>
       (await ctx.services.getOptional<ChatPeerAgentsProvider>(CHAT_PEER_AGENTS_SERVICE)?.()) ?? [],
+    // #2043 — resolved PER TURN for the same reason. Absent (older kernel):
+    // no conversation is engine-driven and no engine is usable.
+    isEngineDrivenConversation: (agentSlug, channelType, conversationId) =>
+      ctx.services
+        .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
+        ?.isEngineDriven(agentSlug, channelType, conversationId) ?? false,
+    isFacilitationEngineUsable: (agentSlug) =>
+      ctx.services
+        .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
+        ?.isEngineUsable(agentSlug) ?? false,
+    facilitatorOwnPostCount: (agentSlug, channelType, conversationId) =>
+      ctx.services
+        .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
+        ?.ownPostCount?.(agentSlug, channelType, conversationId) ?? 0,
+    // #2089 — a participant's private message to a facilitator.
+    facilitatorPrivateTurn: async (agentSlug, message) =>
+      ctx.services
+        .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
+        ?.privateTurn?.(agentSlug, message),
+    // #2089 — a mention in a conversation where a process listens for them.
+    // #2089 — and a link request in a conversation no process reads yet: a
+    // fixed answer may come back.
+    facilitatorAddressedTurn: async (agentSlug, message) => {
+      const taken = await ctx.services
+        .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
+        ?.addressedTurn?.(agentSlug, message);
+      return typeof taken === 'object' && taken !== null ? taken : taken === true;
+    },
     ...(contextRetriever ? { contextRetriever } : {}),
     ...(sessionBriefing ? { sessionBriefing } : {}),
     ...(factExtractor ? { factExtractor } : {}),
@@ -1235,18 +1283,16 @@ export async function activate(
     // when the operator enabled the floor. Absent is the normal case and means
     // the guards stay inert; see `OrchestratorDeps.audienceGrants`.
     ...(audienceGrants ? { audienceGrants } : {}),
+    ...(consultation ? { consultation } : {}),
+    ...(discretion ? { discretion } : {}),
     // #644 — one fold-dedup store for the whole process, shared by every Agent
-    // the registry builds (same lifetime rationale as `directLineStickyStore`
-    // below): a per-instance store would re-fold the marking into a live
-    // conversation whenever an unrelated config tweak rebuilt the Agent.
+    // the registry builds: a per-instance store would re-fold the marking into
+    // a live conversation whenever an unrelated config tweak rebuilt the Agent.
     aiDisclosureSeenStore: new InMemoryDisclosureSeenStore(),
+    // #2087 — likewise one marker store: a speaker change is only visible to a
+    // store that sees every agent of the conversation.
+    aiDisclosureMarkerStore: new InMemoryDisclosureMarkerStore(),
     ...(turnHookRegistry ? { turnHookRegistry } : {}),
-    // #445 — one binding store for the whole process, shared by every Agent
-    // the registry builds and rebuilt by none of them. Constructed
-    // unconditionally: it is an empty Map until the flag is on, and holding it
-    // in deps means toggling the flag at runtime never strands a binding in a
-    // store that has been thrown away.
-    directLineStickyStore: new InMemoryDirectLineStickyStore(),
     runTraceStats,
     // W2-1 (#544) — the SAME store instance the kernel's `McpManager` parks
     // into, plus the replayer the kernel registered once it had a manager and a
@@ -1303,24 +1349,11 @@ export async function activate(
     );
   }
 
-  // #445 — sticky Direct Line (see `readBooleanSetting` for why it is read
-  // defensively).
-  const directLineSticky = readBooleanSetting(
-    ctx.config.get<unknown>('orchestrator_direct_line_sticky'),
-  );
-  if (directLineSticky) {
-    console.log(
-      '[harness-orchestrator] direct-line sticky mode ON — a bare `#<agent>` binds the ' +
-        'conversation until `#end`.',
-    );
-  }
-
   const built = buildOrchestratorForAgent(
     {
       agentId: 'default',
       model,
       ...(modelRouting ? { modelRouting } : {}),
-      ...(directLineSticky ? { directLineSticky: true } : {}),
       maxTokens,
       maxToolIterations: maxIterations,
       ...(maxTurnSeconds > 0 ? { maxTurnSeconds } : {}),
@@ -1380,25 +1413,6 @@ export async function activate(
       // through the same trigger → reload-bus pipeline).
       disposeServices.push(ctx.services.provide(CONFIG_STORE_SERVICE, store));
 
-      // US7 / T029 — first-boot fallback Agent seed. Runs before the
-      // registry's `start()` so the very first boot already has a fallback
-      // available for unbound channel keys.
-      //
-      // Phase B (B1) — when the kernel publishes `pluginCapabilities@1`
-      // with `listInstalled()`, the fallback Agent is hydrated with every
-      // installed plugin on first creation. Without the lookup (older
-      // kernel boot, tests) it falls back to the legacy zero-plugin seed.
-      const installedPluginIds = pluginLookup?.listInstalled?.();
-      await ensureFallbackAgent(store, {
-        log: (msg, fields) =>
-          ctx.log(
-            `[harness-orchestrator] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`,
-          ),
-        ...(installedPluginIds
-          ? { pluginIds: [...installedPluginIds] }
-          : {}),
-      });
-
       // SEAM (M3-followup): the `claude-cli` -> CliChatAgent swap lives in
       // buildOrchestratorForAgent (buildOrchestrator.ts), which both the
       // default `chatAgent@1` path and the US4 registry call via buildForAgent.
@@ -1408,7 +1422,6 @@ export async function activate(
         defaultRuntimeConfig: {
           model,
           ...(modelRouting ? { modelRouting } : {}),
-          ...(directLineSticky ? { directLineSticky: true } : {}),
           maxTokens,
           maxToolIterations: maxIterations,
           ...(maxTurnSeconds > 0 ? { maxTurnSeconds } : {}),
@@ -1433,8 +1446,11 @@ export async function activate(
       // US7 / T028 — publish the channel resolver so channel plugins can
       // route inbound webhooks per-binding. Opt-in: the legacy
       // `chatAgent@1` keeps serving anything that does not consume it.
+      // #2055 — the resolver's ChatAgent handles `/agent` in every channel.
+      const routedRegistry = registry;
       const resolver = new ChannelResolver({
         registry,
+        selection: new KernelAgentSelectionService({ registry: routedRegistry, tables: store.routing }),
         log: (msg, fields) =>
           ctx.log(
             `[harness-orchestrator] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`,

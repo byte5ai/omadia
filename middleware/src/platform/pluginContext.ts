@@ -60,6 +60,10 @@ import {
   type LedgerSeedReport,
   type SeedLedgerOptions,
   SqlMigrationError,
+  ServiceNotDeclaredError,
+  SharedPoolRefusedError,
+  LlmScopeRequiredError,
+  RawModelServiceRefusedError,
 } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 import type { DomainTool } from '@omadia/orchestrator';
@@ -111,14 +115,21 @@ import { neighborsForPlugin } from './shieldedNeighbors.js';
 import type { ServiceRegistry } from './serviceRegistry.js';
 import {
   createServiceGrantGate,
+  declaresServiceMajor,
   legacyServiceGrantsFor,
+  isRawModelServiceName,
+  rawModelServiceAccess,
+  versionedServiceRef,
 } from './pluginServiceGrants.js';
+import { executionContextChain } from '@omadia/usage-telemetry';
+import { inboundProcessing, isInboundProcessingService } from './modelGatewayServices.js';
 import {
   createSqlGate,
   DEFAULT_MIGRATIONS_DIR,
   POOL_SHAPED_CAPABILITIES,
   sqlPermissionOf,
 } from './pluginSqlGrants.js';
+import { ownsItsDatabase, type ArchetypeDatabaseHandle } from './archetypeDatabase.js';
 import { borrowPool } from './borrowedPool.js';
 import { runPluginMigrations } from './pluginMigrations.js';
 import {
@@ -152,6 +163,7 @@ export {
   type ToolsAccessor,
   type UiRoutesAccessor,
 } from '@omadia/plugin-api';
+import { nativeToolResultText } from '@omadia/plugin-api';
 
 export interface CreatePluginContextOptions {
   agentId: string;
@@ -234,6 +246,14 @@ export interface CreatePluginContextOptions {
    * `../../` into arbitrary SQL at boot.
    */
   packageRoot?: string;
+  /**
+   * #2088 — the schema-limited database of an archetype plugin that owns its
+   * database (`ownsItsDatabase`), set up before the context is built
+   * (`ArchetypeDatabase.ensure`). With it, `ctx.sql` runs migrations as the
+   * plugin's migration role and carries `schema`, `query` and `transaction`.
+   * Without it such a plugin has no `ctx.sql`.
+   */
+  archetypeDatabase?: ArchetypeDatabaseHandle;
   logger?: (...args: unknown[]) => void;
 }
 
@@ -316,6 +336,10 @@ export function createPluginContext(
   // core writes user data through — so `graphPool` additionally needs a
   // `permissions.sql` declaration and an operator grant.
   const sqlPermission = sqlPermissionOf(agentId, catalog);
+  // #2088 — an archetype plugin that does not ask for the shared pool has a
+  // database of its own (schema and login roles), or none.
+  const hasOwnDatabase = catalogEntry ? ownsItsDatabase(catalogEntry.plugin) : false;
+  const isArchetypePlugin = catalogEntry?.plugin.kind === 'archetype';
   const assertSqlAccess = createSqlGate({
     agentId,
     catalog,
@@ -339,13 +363,44 @@ export function createPluginContext(
   });
 
   const services: ServicesAccessor = {
-    get<T>(name: string): T | undefined {
+    get<T>(requested: string): T | undefined {
+      // #2090 — `name@2` asks for that major, registered under that key. The
+      // gates below judge the capability by its name; this adds that the
+      // manifest must declare THIS major, so `foo@^1` does not buy `foo@2`.
+      const versioned = versionedServiceRef(requested);
+      const name = versioned ? versioned.name : requested;
       assertServiceGranted(name);
+      if (versioned && !declaresServiceMajor(agentId, catalog, versioned)) {
+        throw new ServiceNotDeclaredError(agentId, requested);
+      }
       // Order matters: declaration first, permission second. A plugin that
       // declared neither should hear about the manifest line it is missing
       // before it hears about a grant it could not have obtained anyway.
       assertSqlAccess(name);
-      const resolved = serviceRegistry.get<T>(name, serviceCaller);
+      // #2088 — after the two gates, so a missing declaration or grant is
+      // still reported as what it is. An archetype plugin with both still
+      // gets no pool: its database is its own schema, through `ctx.sql`.
+      if (isArchetypePlugin && POOL_SHAPED_CAPABILITIES.has(name)) {
+        throw new SharedPoolRefusedError(agentId, name);
+      }
+      // Spec 2042 §5.10 — raw model clients and provider pools are never a
+      // plugin's: it reaches models through ctx.llm, in its caller's context.
+      const modelAccess = isRawModelServiceName(name)
+        ? rawModelServiceAccess({
+            name,
+            kind: catalogEntry?.plugin.kind,
+            bundled: catalogEntry?.origin === 'bundled' || catalog.isBundledId(agentId),
+          })
+        : 'allow';
+      if (modelAccess === 'refuse') throw new RawModelServiceRefusedError(agentId, name);
+      const found = serviceRegistry.get<T>(requested, serviceCaller);
+      // Spec 2042 §5.10 — what a channel does with a message before the turn
+      // (transcribe a voice message, detect a topic change) runs in an
+      // inbound-processing context (`inboundProcessing`).
+      const resolved =
+        found !== undefined && catalogEntry?.plugin.kind === 'channel' && isInboundProcessingService(name)
+          ? inboundProcessing(name, found, agentId)
+          : found;
       // Epic #470 C7 / G4 — a pool-shaped capability is BORROWED, not handed
       // over. Passing the raw `pg.Pool` would mean one `.end()` in one plugin
       // tears down the connection pool core writes user data through. Applied
@@ -636,6 +691,9 @@ export function createPluginContext(
         ...(options?.writeCapabilities !== undefined
           ? { writeCapabilities: options.writeCapabilities }
           : {}),
+        // Spec 2042 §5.10 — the tool's declared PII fields, handed to the
+        // Privacy Shield with every interned result of this tool.
+        ...(options?.piiFields !== undefined ? { piiFields: options.piiFields } : {}),
         // #1346 — per-turn availability; the orchestrator reads it when it
         // builds the tool list and prompt docs (`isOfferedThisTurn`).
         ...(options?.isAvailable !== undefined
@@ -666,6 +724,9 @@ export function createPluginContext(
         ...(options?.writeCapabilities !== undefined
           ? { writeCapabilities: options.writeCapabilities }
           : {}),
+        // Spec 2042 §5.10 — the tool's declared PII fields, handed to the
+        // Privacy Shield with every interned result of this tool.
+        ...(options?.piiFields !== undefined ? { piiFields: options.piiFields } : {}),
         // #1346 — per-turn availability; the orchestrator reads it when it
         // builds the tool list and prompt docs (`isOfferedThisTurn`).
         ...(options?.isAvailable !== undefined
@@ -697,7 +758,8 @@ export function createPluginContext(
       if (!entry?.handler) {
         throw new Error(`tools.invoke: '${name}' is unknown or handler-less`);
       }
-      return entry.handler(input);
+      // S3c — the caller gets the model-facing text of a structured result.
+      return nativeToolResultText(await entry.handler(input));
     },
   };
 
@@ -994,6 +1056,7 @@ export function createPluginContext(
   // permissions.llm.models_allowed with at least one entry.
   const llm = createLlmAccessor({
     callerAgentId: agentId,
+    requiresScope: isArchetypePlugin,
     permissions: extractLlmPermissions(agentId, catalog),
     serviceRegistry,
     serviceCaller,
@@ -1050,8 +1113,14 @@ export function createPluginContext(
   // a withheld grant are indistinguishable — all three meaning "do not touch
   // the database".
   const sql: SqlAccessor | undefined =
-    sqlPermission && (opts.sqlGranted ?? false) && opts.packageRoot
+    sqlPermission &&
+    (opts.sqlGranted ?? false) &&
+    opts.packageRoot &&
+    (isArchetypePlugin ? hasOwnDatabase && opts.archetypeDatabase : true)
       ? createSqlAccessor({
+          ...(hasOwnDatabase && opts.archetypeDatabase
+            ? { archetypeDatabase: opts.archetypeDatabase }
+            : {}),
           agentId,
           ledger: sqlPermission.ledger,
           packageRoot: opts.packageRoot,
@@ -1105,6 +1174,9 @@ interface SqlAccessorOptions {
   readonly serviceRegistry: ServiceRegistry;
   readonly serviceCaller: ServiceCaller;
   readonly log: (msg: string) => void;
+  /** #2088 — set for an archetype plugin: migrations run as its migration
+   *  role in its schema, and the accessor carries `query` / `transaction`. */
+  readonly archetypeDatabase?: ArchetypeDatabaseHandle;
 }
 
 /**
@@ -1120,6 +1192,39 @@ interface SqlAccessorOptions {
  */
 function createSqlAccessor(opts: SqlAccessorOptions): SqlAccessor {
   const { agentId, ledger, packageRoot, defaultDir, log } = opts;
+
+  // #2088 — a plugin with its own database: nothing here touches the kernel's pool. No
+  // `seedLedger` either: it reads the core ledger, a kernel table, which no
+  // plugin role can reach.
+  const database = opts.archetypeDatabase;
+  if (database) {
+    return {
+      ledger,
+      schema: database.sql.schema,
+      query: database.sql.query,
+      transaction: database.sql.transaction,
+      async runMigrations(runOpts): Promise<MigrationReport> {
+        const dir = resolveMigrationsDir(
+          agentId,
+          ledger,
+          packageRoot,
+          runOpts?.dir ?? defaultDir,
+        );
+        return database.withMigrationPool((pool) =>
+          runPluginMigrations({
+            pool,
+            pluginId: agentId,
+            ledger,
+            dir,
+            allowChecksumDrift: runOpts?.allowChecksumDrift ?? false,
+            searchPath: database.schema,
+            ledgerReadOnlyFor: database.runtimeRole,
+            log,
+          }),
+        );
+      },
+    };
+  }
 
   return {
     ledger,
@@ -1720,6 +1825,9 @@ function modelMatch(
 
 interface LlmAccessorOptions {
   callerAgentId: string;
+  /** Spec 2042 §5.10 — an archetype plugin's calls run only under an
+   *  execution scope. */
+  requiresScope: boolean;
   permissions: LlmPermissions | undefined;
   serviceRegistry: ServiceRegistry;
   serviceCaller: ServiceCaller;
@@ -1738,6 +1846,7 @@ function createLlmAccessor(
 ): LlmAccessor | undefined {
   const {
     callerAgentId,
+    requiresScope,
     permissions,
     serviceRegistry,
     serviceCaller,
@@ -1783,6 +1892,15 @@ function createLlmAccessor(
   return {
     modelsAllowed: permissions.modelsAllowed,
     async complete(req: LlmCompleteRequest): Promise<LlmCompleteResult> {
+      // Spec 2042 §5.10 — the call runs in its caller's execution context:
+      // the agent turn whose capability called it (charged to and limited by
+      // that agent's envelope, recorded under its turn), or for an archetype
+      // plugin only the execution scope of its process.
+      // A scoped turn is an agent turn nested in the scope: the scope may sit
+      // anywhere along the chain.
+      if (requiresScope && !executionContextChain().some((c) => c.kind === 'execution_scope')) {
+        throw new LlmScopeRequiredError(callerAgentId);
+      }
       if (callsUsed >= permissions.callsPerInvocation) {
         throw new LlmBudgetExceededError(
           callerAgentId,
@@ -1963,7 +2081,7 @@ function memoryDeclared(agentId: string, catalog: PluginCatalog): boolean {
   return reads.length > 0 || writes.length > 0;
 }
 
-function extractOutboundAllowlist(
+export function extractOutboundAllowlist(
   agentId: string,
   catalog: PluginCatalog,
   configGet: (key: string) => unknown,
@@ -1992,7 +2110,7 @@ function extractOutboundAllowlist(
       const resolved = configGet(key);
       if (typeof resolved === 'string') {
         for (const host of resolved.split(/[\s,]+/)) {
-          const h = host.trim();
+          const h = hostOfConfiguredTarget(host.trim());
           if (h.length > 0) out.push(h);
         }
       }
@@ -2001,6 +2119,21 @@ function extractOutboundAllowlist(
     }
   }
   return out;
+}
+
+/**
+ * A `$config.*` outbound value names a host; a field that holds a base URL
+ * (`https://api.example.com/v1`, the usual setup field of a provider or a
+ * gateway) allows that URL's host. Anything that does not parse as a URL is
+ * taken as the host it states, as before.
+ */
+function hostOfConfiguredTarget(value: string): string {
+  if (!value.includes('://')) return value;
+  try {
+    return new URL(value).hostname.toLowerCase();
+  } catch {
+    return value;
+  }
 }
 
 /**
@@ -2067,7 +2200,7 @@ function resolveTcpTargets(
  * mode-switch UI); unset or malformed entries are simply ignored, so a
  * fresh install defaults to `single-host` with no extra hosts.
  */
-function extractAuditConfig(
+export function extractAuditConfig(
   agentId: string,
   catalog: PluginCatalog,
   registry: InstalledRegistry,

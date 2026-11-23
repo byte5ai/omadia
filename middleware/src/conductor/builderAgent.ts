@@ -155,6 +155,8 @@ const DEFAULT_BUILDER_SLUG = 'fallback';
 /** The minimal SemanticAnswer shape we depend on (the orchestrator chat result). */
 interface ChatAnswerLike {
   text: string;
+  /** #2085 — `text` without side-channel rows, when the turn delivered any. */
+  textWithoutData?: string;
 }
 
 export class ConductorBuilderAgent {
@@ -222,7 +224,9 @@ export class ConductorBuilderAgent {
         `conductor builder turn (Agent '${this.slug}')`,
       )) as ChatAnswerLike;
 
-      const text = typeof answer?.text === 'string' ? answer.text : '';
+      // #2085 — parse the prose, never side-channel rows rendered into `text`.
+      const raw = typeof answer?.textWithoutData === 'string' ? answer.textWithoutData : answer?.text;
+      const text = typeof raw === 'string' ? raw : '';
       const parsed = parseTurnResponse(text);
       const applyRes = applyGraphPatches(baseGraph, parsed.patches);
       const validation = validate(applyRes.graph, knownRefs);

@@ -29,6 +29,8 @@
 
 import type { PromptPiiDetector, PromptPiiSpan } from '@omadia/plugin-api';
 
+import { isRoleNounOnly } from './roleNouns.js';
+
 export interface C1HttpDetectorOptions {
   /**
    * Live URL resolver — read on every `detect()` call so an operator
@@ -333,10 +335,14 @@ function toPromptSpans(
         `C1 sidecar span text does not match its offsets (${String(s.start)}..${String(s.end)})`,
       );
     }
+    const type = toSpanType(s.label);
+    // A lone role noun ("User", "der Kunde") is no one's name: masking it
+    // turns every later "user" in the turn into a surrogate person.
+    if (type === 'person' && isRoleNounOnly(s.text)) continue;
     result.push({
       start,
       end,
-      type: toSpanType(s.label),
+      type,
       confidence: Math.min(1, Math.max(0, s.score)),
     });
   }

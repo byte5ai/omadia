@@ -1,6 +1,50 @@
 // Golden API snapshot for @omadia/plugin-api — generated, do not hand-edit.
 // Regenerate deliberately: npm run api:update -w packages/plugin-api
 
+// ===== agentDirectory.d.ts =====
+export declare const AGENT_DIRECTORY_SERVICE_NAME = "agentDirectory";
+export interface AgentDirectoryRequest {
+readonly channel: string;
+readonly channelId: string;
+readonly tenantId?: string;
+readonly subject: string;
+readonly email?: string;
+readonly omadiaUserId?: string;
+readonly provider: string;
+}
+export interface AgentDirectoryAgent {
+readonly id: string;
+readonly slug: string;
+readonly display_name: string;
+readonly short_description: string | null;
+readonly avatar_url: string | null;
+readonly archetype: string | null;
+}
+export type AgentDirectoryDefault = {
+readonly slug: string;
+} | {
+readonly slug: null;
+readonly notice: string;
+};
+export interface AgentDirectoryView {
+readonly channel: string;
+readonly agents: readonly AgentDirectoryAgent[];
+readonly default_agent: AgentDirectoryDefault;
+}
+export interface AgentDirectoryService {
+listAvailable(request: AgentDirectoryRequest): Promise<AgentDirectoryView>;
+}
+
+// ===== agentEnvelope.d.ts =====
+export declare const AGENT_ENVELOPE_SERVICE_NAME = "agentEnvelope";
+export interface AgentEnvelope<TAgent = unknown> {
+readonly agentId: string;
+readonly agent: TAgent;
+}
+export interface AgentEnvelopeResolver<TAgent = unknown> {
+resolve(agentId: string): AgentEnvelope<TAgent> | undefined;
+}
+
 // ===== agentGraph.d.ts =====
 export interface CanvasPosition {
 readonly x: number;
@@ -96,6 +140,7 @@ readonly timezone: string;
 readonly payload: Record<string, unknown>;
 readonly status: 'enabled' | 'disabled';
 readonly lastRunAt: string | null;
+readonly until?: string | null;
 }
 export type EdgeKind = 'channel_bind' | 'subagent' | 'skill' | 'tool_grant' | 'schedule';
 export interface CanvasEdge {
@@ -142,6 +187,130 @@ export declare class NoopAgentPrioritiesStore implements AgentPrioritiesStore {
 listForAgent(_agentId: string): Promise<readonly AgentPriorityRecord[]>;
 upsert(_record: AgentPriorityUpsert): Promise<void>;
 remove(_agentId: string, _entryExternalId: string): Promise<void>;
+}
+
+// ===== agentTurn.d.ts =====
+import type { ExecutionPhase, ExecutionPurpose, ExecutionRefusalCode, ExecutionTarget } from './executionAuthorization.js';
+export declare const AGENT_TURN_SERVICE_NAME = "agentTurn";
+export interface AgentTurnRequest {
+agentSlug: string;
+sessionKey: string;
+channelType: string;
+conversationId: string;
+inboundEventId?: string;
+input: string;
+engineContext?: string;
+}
+export type AgentTurnOutcome = {
+outcome: 'completed';
+text: string;
+turnId?: string;
+} | {
+outcome: 'refused';
+code: 'unknown_agent' | 'not_bound' | 'budget_exceeded' | 'unavailable';
+message: string;
+} | {
+outcome: 'failed';
+message: string;
+};
+export interface AgentProfile {
+agentSlug: string;
+kind: 'standard' | 'facilitator';
+archetype?: string;
+displayName: string;
+shortDescription?: string;
+language?: string;
+ownIdentityChannelTypes: readonly string[];
+archetypeSettings?: Readonly<Record<string, string | readonly number[]>>;
+}
+export interface AgentTurnService {
+runTurn(request: AgentTurnRequest): Promise<AgentTurnOutcome>;
+getProfile?(agentSlug: string): Promise<AgentProfile | undefined>;
+}
+export declare const AGENT_TURN_V2_SERVICE_NAME = "agentTurn@2";
+export interface ScopedAgentTurnRequest extends AgentTurnRequest {
+readonly scopeId: string;
+readonly processId: string;
+readonly phase: ExecutionPhase;
+readonly purpose: ExecutionPurpose;
+readonly emission: 'prose';
+readonly budget: {
+readonly modelCalls: number;
+};
+readonly target?: ExecutionTarget;
+}
+export type ScopedAgentTurnOutcome = {
+outcome: 'completed';
+text: string;
+turnId?: string;
+authorizationId: string;
+modelCalls: {
+reserved: number;
+used: number;
+};
+} | {
+outcome: 'refused';
+code: 'unknown_agent' | 'not_bound' | 'budget_exceeded' | 'unavailable' | 'not_authorized' | 'reservation_exceeded';
+message: string;
+executionCode?: ExecutionRefusalCode;
+authorizationId?: string;
+modelCalls?: {
+reserved: number;
+used: number;
+refused: number;
+};
+} | {
+outcome: 'failed';
+message: string;
+authorizationId?: string;
+};
+export interface ScopedAgentTurnService {
+runTurn(request: ScopedAgentTurnRequest): Promise<ScopedAgentTurnOutcome>;
+getProfile(agentSlug: string): Promise<AgentProfile | undefined>;
+}
+
+// ===== archetypeProcesses.d.ts =====
+export type AgentEndOfServiceReason = 'agent_disabled' | 'agent_deleted' | 'archetype_plugin_removed';
+export declare function archetypeProcessesServiceName(archetypeId: string): string;
+export interface ArchetypeProcessEndRequest {
+agentSlug: string;
+reason: AgentEndOfServiceReason;
+}
+export interface ArchetypeProcessEnded {
+processId: string;
+channelType: string;
+conversationId: string;
+outcome: 'aborted' | 'failed';
+reportPosted?: boolean;
+detail?: string;
+}
+export interface ArchetypeProcessEndReport {
+ended: readonly ArchetypeProcessEnded[];
+}
+export interface ArchetypeProcessesService {
+endProcessesOfAgent(request: ArchetypeProcessEndRequest): Promise<ArchetypeProcessEndReport>;
+}
+
+// ===== batchJobs.d.ts =====
+export declare const BATCH_JOB_REGISTRY_SERVICE = "batchJobRegistry";
+export interface BatchJobRunOptions {
+readonly limit: number;
+readonly signal: AbortSignal;
+}
+export interface BatchJobResult {
+readonly processed: number;
+readonly failed: number;
+}
+export interface BatchJob {
+readonly id: string;
+readonly purpose: string;
+readonly intervalMinutes: number;
+readonly batchSize: number;
+due(agentSlug: string): Promise<number>;
+run(agentSlug: string, options: BatchJobRunOptions): Promise<BatchJobResult>;
+}
+export interface BatchJobRegistry {
+register(job: BatchJob): () => void;
 }
 
 // ===== boundaryPresets.d.ts =====
@@ -241,7 +410,179 @@ assistantAnswer: string;
 at: number;
 }
 
+// ===== conversationMessages.d.ts =====
+import type { SendAuthorization } from './conversationSend.js';
+import type { CardAnswerValue } from './questionCard.js';
+export declare const CONVERSATION_MESSAGES_SERVICE_NAME = "conversationMessages";
+export type ConversationMessageKind = 'created' | 'edited' | 'deleted' | 'reaction' | 'card_answer'
+| 'transcript_segment';
+export interface ConversationMessageAuthor {
+kind: string;
+id: string;
+displayName?: string;
+principalId?: string;
+}
+export interface ConversationMessageRecord {
+eventId: string;
+channelType: string;
+conversationId: string;
+messageId: string;
+revision: number;
+kind: ConversationMessageKind;
+author: ConversationMessageAuthor;
+tenantId?: string;
+receivedByChannelKey: string;
+text?: string;
+replyToMessageId?: string;
+quoted?: boolean;
+forwarded?: boolean;
+reaction?: {
+name: string;
+removed: boolean;
+};
+cardAnswer?: MessageCardAnswer;
+occurredAt: string;
+receivedAt: string;
+addressedToBot?: boolean;
+transcript?: MessageTranscriptSegment;
+superseded?: boolean;
+latestRevision?: number;
+}
+export interface MessageTranscriptSegment {
+sessionId: string;
+segmentId: string;
+source: 'participant' | 'shared';
+speakerHint?: string;
+}
+export interface ConversationMessageScope {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+}
+export type ConversationMessageSubscribeOutcome = {
+outcome: 'subscribed';
+} | {
+outcome: 'refused';
+code: 'no_identity' | 'not_facilitator' | 'not_present' | 'not_ready' | 'unavailable';
+message: string;
+};
+export interface ConversationMessagePage {
+events: readonly ConversationMessageRecord[];
+nextCursor?: string;
+}
+export interface ConversationMessagesService {
+subscribe(scope: ConversationMessageScope): Promise<ConversationMessageSubscribeOutcome>;
+unsubscribe(scope: ConversationMessageScope): Promise<void>;
+onMessage(agentSlug: string, handler: (record: ConversationMessageRecord) => void | Promise<void>): () => void;
+getEvent(scope: ConversationMessageScope, messageId: string, revision?: number): Promise<ConversationMessageRecord | undefined>;
+listSince(scope: ConversationMessageScope, opts?: {
+after?: string;
+limit?: number;
+}): Promise<ConversationMessagePage>;
+isSubscribed?(scope: ConversationMessageScope): Promise<boolean>;
+}
+export interface MessageCardAnswer {
+cardId: string;
+value: unknown;
+answererVerified?: boolean;
+proposalId?: string;
+proposalVersion?: number;
+answers?: readonly CardAnswerValue[];
+}
+export declare const CONVERSATION_MESSAGES_V2_SERVICE_NAME = "conversationMessages@2";
+export type ConversationMessageMode = 'all' | 'addressed' | 'none';
+export interface ProcessMessageScope extends ConversationMessageScope {
+processId: string;
+}
+export interface ProcessConversationMessageRecord extends ConversationMessageRecord {
+processId: string;
+}
+export type ProcessSubscribeOutcome = {
+outcome: 'subscribed';
+mode: ConversationMessageMode;
+} | {
+outcome: 'refused';
+code: 'no_identity' | 'not_facilitator' | 'not_present' | 'not_ready' | 'unavailable'
+| 'not_reserved'
+| 'no_scope'
+| 'ended'
+| 'session_state';
+message: string;
+};
+export interface ProcessConversationMessagesService {
+subscribe(scope: ProcessMessageScope, options: {
+mode: ConversationMessageMode;
+}): Promise<ProcessSubscribeOutcome>;
+modeOf(scope: ProcessMessageScope): Promise<ConversationMessageMode | undefined>;
+onMessage(agentSlug: string, handler: (record: ProcessConversationMessageRecord) => void | Promise<void>): () => void;
+getEvent(scope: ProcessMessageScope, messageId: string, revision?: number): Promise<ProcessConversationMessageRecord | undefined>;
+getEventById(scope: ProcessMessageScope, eventId: string): Promise<ProcessConversationMessageRecord | undefined>;
+listSince(scope: ProcessMessageScope, opts?: {
+after?: string;
+limit?: number;
+}): Promise<{
+events: readonly ProcessConversationMessageRecord[];
+nextCursor?: string;
+}>;
+bindMessage(scope: ProcessMessageScope, ref: {
+messageId?: string;
+cardId?: string;
+}): Promise<boolean>;
+onPrivateMessage?(agentSlug: string, handler: (request: PrivateMessageRequest) => Promise<PrivateMessageReply>): () => void;
+onAddressedMessage?(agentSlug: string, handler: (request: AddressedMessageRequest) => Promise<AddressedMessageReply>): () => void;
+onLinkRequest?(agentSlug: string, handler: (request: LinkRequest) => Promise<LinkRequestReply>): () => void;
+}
+export interface LinkRequest {
+linkRequestId: string;
+agentSlug: string;
+channelType: string;
+conversationId: string;
+principalId: string;
+displayName?: string;
+text: string;
+messageId?: string;
+processIds: readonly string[];
+expiresAt: string;
+}
+export type LinkRequestReply = {
+handled: false;
+} | {
+handled: true;
+answer?: string;
+};
+export interface AddressedMessageRequest {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+principalId: string;
+text: string;
+messageId?: string;
+eventId?: string;
+processIds: readonly string[];
+}
+export interface AddressedMessageReply {
+handled: boolean;
+}
+export interface PrivateMessageRequest {
+agentSlug: string;
+channelType: string;
+principalId: string;
+text: string;
+replyToMessageId?: string;
+processIds: readonly string[];
+}
+export type PrivateMessageReply = {
+handled: false;
+} | {
+handled: true;
+text: string;
+authorization: SendAuthorization;
+};
+
 // ===== conversationSend.d.ts =====
+import type { ExecutionPhase, ExecutionPurpose, ExecutionRefusalCode } from './executionAuthorization.js';
+import type { CardSupport, CardUpdate, CardUpdateOutcome, QuestionCard } from './questionCard.js';
+import type { ChannelReadinessReport } from './sessionCapabilities.js';
 export declare const CONVERSATION_SEND_SERVICE_NAME = "conversationSend";
 export interface ConversationSendRequest {
 agentSlug: string;
@@ -249,18 +590,166 @@ channelType: string;
 conversationId: string;
 message: {
 text: string;
+mentions?: readonly ConversationSendMention[];
+poll?: SendPoll;
+card?: QuestionCard;
 };
+asOwnIdentity?: boolean;
 }
-export type ConversationSendOutcome = {
+export interface SendPoll {
+pollId: string;
+question: string;
+options: readonly {
+id: string;
+label: string;
+}[];
+hint?: string;
+multipleAnswers?: boolean;
+}
+export interface ConversationSendMention {
+user: string;
+text: string;
+}
+export type ConversationSendOutcome =
+{
 outcome: 'delivered';
+messageId?: string;
+cardMessageId?: string;
 } | {
 outcome: 'unreachable';
 code: string;
 message: string;
 };
+export interface ConversationSendCapabilities {
+asOwnIdentity: boolean;
+mentions: boolean;
+poll: boolean;
+card?: CardSupport;
+reactions?: boolean;
+}
+export type ConversationReaction = 'acknowledge';
+export declare const CONVERSATION_REACTIONS: readonly ConversationReaction[];
+export interface ConversationCardUpdateRequest {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+cardMessageId: string;
+update: CardUpdate;
+}
 export interface ConversationSendService {
 sendToConversation(request: ConversationSendRequest): Promise<ConversationSendOutcome>;
+capabilities?(channelType: string): ConversationSendCapabilities | undefined;
+updateCard?(request: ConversationCardUpdateRequest): Promise<CardUpdateOutcome>;
 }
+export declare const CONVERSATION_SEND_V2_SERVICE_NAME = "conversationSend@2";
+export interface SendAuthorization {
+scopeId: string;
+processId: string;
+phase: ExecutionPhase;
+purpose: ExecutionPurpose;
+emission: 'prose' | 'template';
+}
+export type ScopedSendOutcome =
+{
+outcome: 'delivered';
+authorizationId: string;
+messageId?: string;
+cardMessageId?: string;
+conversationId?: string;
+} | {
+outcome: 'unreachable';
+code: string;
+message: string;
+executionCode?: ExecutionRefusalCode;
+authorizationId?: string;
+};
+export interface ScopedConversationSendRequest {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+message: ConversationSendRequest['message'];
+authorization: SendAuthorization;
+}
+export interface ScopedDirectSendRequest {
+agentSlug: string;
+channelType: string;
+principal: string;
+userRef?: {
+kind: string;
+id: string;
+};
+message: {
+text: string;
+};
+authorization: SendAuthorization;
+}
+export interface ScopedCardUpdateRequest extends ConversationCardUpdateRequest {
+authorization: SendAuthorization;
+}
+export interface ScopedReactionRequest {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+messageEventId: string;
+reaction: ConversationReaction;
+authorization: Omit<SendAuthorization, 'emission'> & {
+emission?: SendAuthorization['emission'];
+};
+}
+export type ScopedReactionOutcome = {
+outcome: 'reacted';
+authorizationId: string;
+} | Extract<ScopedSendOutcome, {
+outcome: 'unreachable';
+}>;
+export interface ScopedReadinessRequest {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+authorization: Omit<SendAuthorization, 'emission' | 'purpose'>;
+}
+export interface ScopedConversationSendService {
+sendToConversation(request: ScopedConversationSendRequest): Promise<ScopedSendOutcome>;
+sendToPerson(request: ScopedDirectSendRequest): Promise<ScopedSendOutcome>;
+updateCard(request: ScopedCardUpdateRequest): Promise<CardUpdateOutcome | Extract<ScopedSendOutcome, {
+outcome: 'unreachable';
+}>>;
+capabilities(channelType: string): ConversationSendCapabilities | undefined;
+react?(request: ScopedReactionRequest): Promise<ScopedReactionOutcome>;
+checkReadiness(request: ScopedReadinessRequest): Promise<{
+outcome: 'checked';
+report: ChannelReadinessReport;
+authorizationId: string;
+} | Extract<ScopedSendOutcome, {
+outcome: 'unreachable';
+}>>;
+}
+
+// ===== dataPlanBoundaries.d.ts =====
+export interface DataPlanDescription {
+readonly tool: string;
+readonly inputKeys: readonly string[];
+readonly inputIdentifiers: readonly string[];
+readonly sort: readonly {
+readonly field: string;
+readonly dir: 'asc' | 'desc';
+}[];
+readonly groupBy: readonly string[];
+readonly take?: number;
+readonly filterFields: readonly string[];
+}
+export type DataPlanVerdict = {
+readonly allowed: true;
+} | {
+readonly allowed: false;
+readonly reason: string;
+readonly layer: 'preset' | 'model';
+};
+export type DataPlanGuard = (plan: DataPlanDescription) => Promise<DataPlanVerdict>;
+export declare function describeToolCall(tool: string, input: unknown): DataPlanDescription;
+export declare function ranksIndividuals(plan: DataPlanDescription): boolean;
+export declare function checkDataPlanPresets(plan: DataPlanDescription, presets: readonly string[]): DataPlanVerdict;
+export declare function dataPlanText(plan: DataPlanDescription): string;
 
 // ===== datasetId.d.ts =====
 export declare function normalizeDatasetUuid(raw: string): string | undefined;
@@ -424,6 +913,270 @@ run(options?: BulkExcerptMergeDetectRunOptions): Promise<BulkExcerptMergeDetectR
 export declare const BULK_EXCERPT_MERGE_DETECT_SERVICE_NAME = "bulkExcerptMergeDetect";
 export declare const BULK_EXCERPT_MERGE_DETECT_CAPABILITY = "bulkExcerptMergeDetect@1";
 
+// ===== executionAuthorization.d.ts =====
+import type { EmissionType } from './speaker.js';
+export declare const EXECUTION_AUTHORIZATION_SERVICE_NAME = "executionAuthorization";
+export type ExecutionScopeKind = 'configuring' | 'active' | 'closing' | 'scheduling' | 'follow_up';
+export declare const EXECUTION_SCOPE_KINDS: readonly ExecutionScopeKind[];
+export type ExecutionPhase = 'configuring' | 'active' | 'concluding' | 'closed' | 'aborted' | 'following_up' | 'ended';
+export declare const EXECUTION_SCOPE_PHASES: Readonly<Record<ExecutionScopeKind, readonly ExecutionPhase[]>>;
+export type ExecutionActionType = 'model_turn' | 'post' | 'direct_message' | 'card_update' | 'check' | 'delivery';
+export type ExecutionEmissionType = Exclude<EmissionType, 'system'>;
+export type ExecutionPurpose = 'moderation' | 'handshake' | 'link' | 'reminder' | 'status' | 'consent' | 'stop' | 'essential_message' | 'protocol_dispatch' | 'invitation' | 'readiness_check' | 'roster_check' | 'other';
+export declare const CLOSING_SCOPE_PURPOSES: readonly ExecutionPurpose[];
+export type ExecutionTarget = {
+readonly kind: 'conversation';
+readonly channelType: string;
+readonly conversationId: string;
+} | {
+readonly kind: 'person';
+readonly channelType: string;
+readonly principalId: string;
+readonly restriction?: 'status_only';
+};
+export interface ExecutionBudget {
+readonly actions: number;
+readonly modelCalls: number;
+}
+export interface ExecutionScope {
+readonly id: string;
+readonly agentSlug: string;
+readonly processId: string;
+readonly kind: ExecutionScopeKind;
+readonly eventId: string;
+readonly state: 'open' | 'ended';
+readonly deadline: string;
+readonly absoluteLimit: string;
+readonly deadlineWait: boolean;
+readonly budget: ExecutionBudget;
+readonly used: ExecutionBudget;
+readonly targets: readonly ExecutionTarget[];
+readonly openedAt: string;
+readonly endedAt?: string;
+readonly endReason?: string;
+}
+export type ExecutionRefusalCode = 'not_permitted' | 'unknown_agent' | 'unknown_scope' | 'invalid_request' | 'scope_exists' | 'scope_order' | 'scope_ended' | 'deadline_passed' | 'limit_exceeded' | 'budget_exhausted' | 'kill_switch' | 'phase_mismatch' | 'purpose_not_allowed' | 'target_not_allowed' | 'conversation_busy'
+| 'link_not_authorized'
+| 'not_ready'
+| 'session_state' | 'unavailable';
+export interface ExecutionRefusal {
+readonly outcome: 'refused';
+readonly code: ExecutionRefusalCode;
+readonly message: string;
+}
+export interface OpenExecutionScopeRequest {
+readonly agentSlug: string;
+readonly processId: string;
+readonly kind: ExecutionScopeKind;
+readonly eventId?: string;
+readonly eventAt?: string;
+readonly deadline?: string;
+readonly budget: ExecutionBudget;
+readonly targets?: readonly ExecutionTarget[];
+readonly home?: {
+readonly channelType: string;
+readonly conversationId: string;
+};
+}
+export interface AuthorizeActionRequest {
+readonly scopeId: string;
+readonly phase: ExecutionPhase;
+readonly purpose: ExecutionPurpose;
+readonly action: ExecutionActionType;
+readonly target?: ExecutionTarget;
+readonly emission?: ExecutionEmissionType;
+readonly modelCalls?: number;
+}
+export interface ExecutionAuthorization {
+readonly outcome: 'authorized';
+readonly authorizationId: string;
+readonly scopeId: string;
+readonly remaining: ExecutionBudget;
+}
+export type SessionConversationState = 'scheduled' | 'live' | 'confirming' | 'closed' | 'cancelled';
+export declare const SESSION_CONVERSATION_TRANSITIONS: Readonly<Record<SessionConversationState, readonly SessionConversationState[]>>;
+export interface ConversationReservation {
+readonly channelType: string;
+readonly conversationId: string;
+readonly processId: string;
+readonly role: 'home' | 'session';
+readonly reservedAt: string;
+readonly releasedAt?: string;
+readonly sessionState?: SessionConversationState;
+readonly sessionId?: string;
+}
+export interface ExecutionAuthorizationService {
+openScope(request: OpenExecutionScopeRequest): Promise<{
+outcome: 'opened';
+scope: ExecutionScope;
+} | ExecutionRefusal>;
+authorize(request: AuthorizeActionRequest): Promise<ExecutionAuthorization | ExecutionRefusal>;
+settle(authorizationId: string, used: {
+modelCalls: number;
+}): Promise<void>;
+setPeople(scopeId: string, people: readonly Extract<ExecutionTarget, {
+kind: 'person';
+}>[]): Promise<{
+outcome: 'updated';
+scope: ExecutionScope;
+} | ExecutionRefusal>;
+extendScope(scopeId: string, change: {
+deadline: string;
+deadlineWait?: boolean;
+}): Promise<{
+outcome: 'extended';
+scope: ExecutionScope;
+} | ExecutionRefusal>;
+endScope(scopeId: string, reason: string): Promise<void>;
+listScopes(processId: string): Promise<readonly ExecutionScope[]>;
+reserveConversation(request: {
+agentSlug: string;
+processId: string;
+channelType: string;
+conversationId: string;
+linkRequestId?: string;
+sessionId?: string;
+}): Promise<{
+outcome: 'reserved';
+reservation: ConversationReservation;
+} | ExecutionRefusal>;
+setSessionState?(request: {
+processId: string;
+channelType: string;
+conversationId: string;
+state: SessionConversationState;
+reason?: string;
+}): Promise<{
+outcome: 'updated';
+reservation: ConversationReservation;
+} | ExecutionRefusal>;
+releaseConversation(request: {
+processId: string;
+channelType: string;
+conversationId: string;
+reason: string;
+}): Promise<void>;
+listReservations(processId: string): Promise<readonly ConversationReservation[]>;
+}
+
+// ===== executionGrants.d.ts =====
+import type { ExecutionRefusal } from './executionAuthorization.js';
+export declare const EXECUTION_GRANTS_SERVICE_NAME = "executionGrants";
+export declare const GRANT_VERIFICATION_SERVICE_NAME = "grantVerification";
+export type ExecutionGrantKind = 'protocol_dispatch' | 'followup_scheduling' | 'followup_reminders';
+export type GrantOperation = 'send_mail' | 'free_busy' | 'create_invitation';
+export declare const EXECUTION_GRANT_RULES: Readonly<Record<ExecutionGrantKind, {
+readonly scope: 'closing' | 'scheduling' | 'follow_up';
+readonly operations: readonly GrantOperation[];
+}>>;
+export interface ExecutionGrant {
+readonly id: string;
+readonly scopeId: string;
+readonly processId: string;
+readonly kind: ExecutionGrantKind;
+readonly subject: string;
+readonly recipients: readonly string[];
+readonly issuedAt: string;
+readonly expiresAt: string;
+readonly revokedAt?: string;
+readonly revokeReason?: string;
+readonly live: boolean;
+}
+export interface IssueGrantRequest {
+readonly scopeId: string;
+readonly kind: ExecutionGrantKind;
+readonly subject?: string;
+readonly recipients: readonly string[];
+readonly expiresAt?: string;
+}
+export interface ExecutionGrantsService {
+issueGrant(request: IssueGrantRequest): Promise<{
+outcome: 'issued';
+grant: ExecutionGrant;
+} | ExecutionRefusal>;
+revokeGrant(grantId: string, reason: string): Promise<void>;
+listGrants(processId: string): Promise<readonly (ExecutionGrant & {
+readonly uses: readonly ExecutionGrantUse[];
+})[]>;
+}
+export interface ExecutionGrantUse {
+readonly operation: GrantOperation;
+readonly recipients: readonly string[];
+readonly askedBy: string;
+readonly allowed: boolean;
+readonly refusal?: GrantRefusalCode;
+readonly usedAt: string;
+}
+export type GrantRefusalCode = 'unknown_grant' | 'revoked' | 'expired' | 'scope_ended' | 'kill_switch' | 'operation_not_covered' | 'recipient_not_covered' | 'invalid_request' | 'unavailable';
+export interface GrantVerificationRequest {
+readonly grantId: string;
+readonly operation: GrantOperation;
+readonly recipients: readonly string[];
+}
+export type GrantVerificationOutcome = {
+readonly allowed: true;
+readonly kind: ExecutionGrantKind;
+readonly processId: string;
+} | {
+readonly allowed: false;
+readonly code: GrantRefusalCode;
+readonly message: string;
+readonly notCovered?: readonly string[];
+};
+export interface GrantVerificationService {
+verify(request: GrantVerificationRequest): Promise<GrantVerificationOutcome>;
+}
+
+// ===== facilitation.d.ts =====
+export declare const FACILITATION_ENGINE_CAPABILITY = "facilitationEngine@1";
+export declare const FACILITATION_FOLLOWUP_SERVICE_NAME = "facilitation.followup";
+export interface FollowupGrant {
+facilitationId: string;
+allowed: readonly string[];
+grantId?: string;
+}
+export type FollowupRefusal = {
+outcome: 'refused';
+code: 'recipient_not_allowed' | 'not_configured' | 'provider_error' | 'grant_refused';
+message: string;
+rejected?: readonly string[];
+};
+export interface FacilitationFollowupService {
+freeBusy(grant: FollowupGrant, request: {
+attendees: readonly string[];
+from: string;
+to: string;
+}): Promise<{
+outcome: 'ok';
+busy: readonly {
+attendee: string;
+intervals: readonly {
+start: string;
+end: string;
+}[];
+}[];
+} | FollowupRefusal>;
+createInvitation(grant: FollowupGrant, request: {
+attendees: readonly string[];
+subject: string;
+start: string;
+end: string;
+body: string;
+online?: boolean;
+}): Promise<{
+outcome: 'created';
+eventId: string;
+joinUrl?: string;
+} | FollowupRefusal>;
+sendMail(grant: FollowupGrant, request: {
+recipients: readonly string[];
+subject: string;
+body: string;
+}): Promise<{
+outcome: 'sent';
+} | FollowupRefusal>;
+}
+
 // ===== inconsistency.d.ts =====
 export type InconsistencyStatus = 'open' | 'resolved' | 'dismissed';
 export type InconsistencyResolution =
@@ -475,6 +1228,7 @@ export * from './toolControlFlowText.js';
 export * from './toolErrorNotice.js';
 export * from './selfExtend.js';
 export * from './localSubAgentTool.js';
+export * from './nativeToolResult.js';
 export * from './piiAnnotation.js';
 export * from './targetRef.js';
 export * from './writeCapabilities.js';
@@ -486,6 +1240,7 @@ export * from './datasetId.js';
 export * from './embeddingClient.js';
 export * from './responseGuard.js';
 export * from './boundaryPresets.js';
+export * from './dataPlanBoundaries.js';
 export * from './agentPriorities.js';
 export * from './privacyReceipt.js';
 export * from './privacyFieldClassification.js';
@@ -511,6 +1266,20 @@ export * from './transcription.js';
 export * from './transcriptionGuardrails.js';
 export * from './decisionModel.js';
 export * from './conversationSend.js';
+export * from './archetypeProcesses.js';
+export * from './questionCard.js';
+export * from './conversationMessages.js';
+export * from './agentTurn.js';
+export * from './sessionCapabilities.js';
+export * from './facilitation.js';
+export * from './executionAuthorization.js';
+export * from './executionGrants.js';
+export * from './speaker.js';
+export * from './maintenanceRun.js';
+export * from './modelPassthrough.js';
+export * from './agentEnvelope.js';
+export * from './agentDirectory.js';
+export * from './batchJobs.js';
 
 // ===== knowledgeGraph.d.ts =====
 import type { EntityRef } from './entityRef.js';
@@ -838,7 +1607,7 @@ entityIds: string[];
 inserted: number;
 updated: number;
 }
-export type ChannelKind = 'teams' | 'telegram' | 'slack' | 'email' | 'web' | 'api';
+export type ChannelKind = 'teams' | 'telegram' | 'slack' | 'discord' | 'whatsapp' | 'imessage' | 'email' | 'web' | 'api';
 export interface ChannelIdentityIngest {
 channelKind: ChannelKind;
 channelUserId: string;
@@ -1037,6 +1806,10 @@ agentInvocations: RunAgentInvocation[];
 error?: string;
 model?: string;
 provider?: string;
+workingMode?: {
+skillId: string;
+name: string;
+};
 }
 export interface RunIngestResult {
 runId: string;
@@ -1329,6 +2102,12 @@ handle(input: unknown): Promise<string | LocalSubAgentToolResult>;
 piiFields?: readonly ToolPIIField[];
 }
 
+// ===== maintenanceRun.d.ts =====
+export interface MaintenanceRunService {
+run<T>(name: string, work: () => Promise<T>): Promise<T>;
+}
+export declare const MAINTENANCE_RUN_SERVICE_NAME = "maintenanceRun";
+
 // ===== mergeCandidate.d.ts =====
 export type MergeCandidateStatus = 'open' | 'resolved' | 'dismissed';
 export type MergeCandidateResolution =
@@ -1393,6 +2172,53 @@ run(options?: BulkMergeDetectRunOptions): Promise<BulkMergeDetectResult>;
 }
 export declare const BULK_MERGE_DETECT_SERVICE_NAME = "bulkMergeDetect";
 export declare const BULK_MERGE_DETECT_CAPABILITY = "bulkMergeDetect@1";
+
+// ===== modelPassthrough.d.ts =====
+export interface OperatorJob {
+readonly id: string;
+readonly signal: AbortSignal;
+end(outcome?: {
+readonly failed?: boolean;
+readonly message?: string;
+}): Promise<void>;
+}
+export interface OperatorJobsService {
+open(input: {
+readonly kind: string;
+readonly startedBy?: string;
+readonly budgetCalls: number;
+readonly deadlineMs: number;
+readonly effects: readonly string[];
+}): Promise<OperatorJob>;
+}
+export interface ModelPassthroughService {
+forwardAnthropicMessages(input: {
+readonly job: OperatorJob;
+readonly query?: string;
+readonly headers: Readonly<Record<string, string | undefined>>;
+readonly body: Uint8Array | string;
+readonly signal?: AbortSignal;
+}): Promise<Response>;
+}
+export declare const OPERATOR_JOBS_SERVICE_NAME = "operatorJobs";
+export declare const MODEL_PASSTHROUGH_SERVICE_NAME = "modelPassthrough";
+
+// ===== nativeToolResult.d.ts =====
+import type { LocalSubAgentToolResult } from './localSubAgentTool.js';
+export type NativeToolResult = LocalSubAgentToolResult;
+export type NativeToolOutput = string | NativeToolResult;
+export interface NormalizedNativeToolResult {
+readonly text: string;
+readonly postcondition?: {
+readonly issues: readonly string[];
+};
+readonly structured?: NativeToolResult['structured'];
+}
+export declare function isNativeToolResult(value: unknown): value is NativeToolResult;
+export declare function nativeToolDispatchText(raw: unknown, toolName: string): string;
+export declare function unreadableToolResultNotice(toolName: string): string;
+export declare function normalizeNativeToolResult(raw: unknown): NormalizedNativeToolResult;
+export declare function nativeToolResultText(raw: unknown): string;
 
 // ===== nudge.d.ts =====
 import type { ProcessMemoryService } from './processMemory.js';
@@ -1552,7 +2378,9 @@ export declare function computeCodeChallenge(verifier: string): string;
 
 // ===== pluginContext.d.ts =====
 import type { Socket } from 'node:net';
+import type { ToolPIIField } from './piiAnnotation.js';
 import type { WriteCapability } from './writeCapabilities.js';
+import type { NativeToolOutput } from './nativeToolResult.js';
 import type { EntityCapturedTurnsHit, EntityCapturedTurnsOptions, EntityIngest, EntityIngestResult, FactIngest, FactIngestResult, GraphNode, GraphStats, SearchTurnsOptions, TurnSearchHit } from './knowledgeGraph.js';
 export interface PluginContext {
 readonly agentId: string;
@@ -1676,7 +2504,20 @@ domain: string;
 ok: false;
 message: string;
 };
-export type NativeToolHandler = (input: unknown) => Promise<string>;
+export type NativeToolHandler = (input: unknown, context?: NativeToolCallContext) => Promise<NativeToolOutput>;
+export type NativeTextToolHandler = (input: unknown, context?: NativeToolCallContext) => Promise<string>;
+export interface NativeToolCallContext {
+readonly agentSlug?: string;
+readonly channelType?: string;
+readonly conversationId?: string;
+readonly inboundEventId?: string;
+readonly callerPrincipalId?: string;
+readonly callerUserRef?: {
+readonly kind: string;
+readonly id: string;
+readonly displayName?: string;
+};
+}
 export type NativeToolAttachmentSink = () => NativeToolAttachment[] | undefined;
 export interface NativeToolAttachment {
 readonly kind: string;
@@ -1691,6 +2532,7 @@ export interface ToolRegistrationOptions {
 readonly promptDoc?: string;
 readonly attachmentSink?: NativeToolAttachmentSink;
 readonly writeCapabilities?: readonly WriteCapability[];
+readonly piiFields?: readonly ToolPIIField[];
 readonly isAvailable?: () => boolean;
 }
 export type RouteAuthMode = 'session' | 'public' | 'custom' | 'teams-sso';
@@ -1990,6 +2832,14 @@ constructor(callerAgentId: string);
 export declare class LlmModelNotAllowedError extends Error {
 constructor(callerAgentId: string, model: string);
 }
+export declare class LlmScopeRequiredError extends Error {
+constructor(callerAgentId: string);
+}
+export declare class RawModelServiceRefusedError extends Error {
+readonly pluginId: string;
+readonly capability: string;
+constructor(pluginId: string, capability: string);
+}
 export declare class LlmBudgetExceededError extends Error {
 constructor(callerAgentId: string, budget: number);
 }
@@ -2059,12 +2909,27 @@ export interface SqlAccessor {
 readonly ledger: string;
 runMigrations(opts?: RunMigrationsOptions): Promise<MigrationReport>;
 seedLedger?(opts: SeedLedgerOptions): Promise<LedgerSeedReport>;
+readonly schema?: string;
+query?<R extends Record<string, unknown> = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<SqlStatementResult<R>>;
+transaction?<T>(work: (tx: SqlTransaction) => Promise<T>): Promise<T>;
+}
+export interface SqlStatementResult<R extends Record<string, unknown> = Record<string, unknown>> {
+readonly rows: readonly R[];
+readonly rowCount: number;
+}
+export interface SqlTransaction {
+query<R extends Record<string, unknown> = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<SqlStatementResult<R>>;
 }
 export declare class SqlPermissionError extends Error {
 readonly pluginId: string;
 readonly capability: string;
 readonly reason: 'undeclared' | 'ungranted';
 constructor(pluginId: string, capability: string, reason: 'undeclared' | 'ungranted');
+}
+export declare class SharedPoolRefusedError extends Error {
+readonly pluginId: string;
+readonly capability: string;
+constructor(pluginId: string, capability: string);
 }
 export declare class LedgerNameError extends Error {
 readonly pluginId: string;
@@ -2140,6 +3005,7 @@ export declare function parseScopes(stored: unknown): readonly string[];
 
 // ===== privacyReceipt.d.ts =====
 import type { FieldKey, FieldObservation, FieldSampleVerdict, ModelClassificationRequest, ModelClassificationResult } from './privacyFieldClassification.js';
+import type { ToolPIIField } from './piiAnnotation.js';
 export declare const PRIVACY_REDACT_SERVICE_NAME = "privacyRedact";
 export declare const PRIVACY_REDACT_CAPABILITY = "privacy.redact@1";
 export interface OperatorClearedFieldEntry {
@@ -2203,6 +3069,7 @@ readonly toolName: string;
 readonly rawResult: string;
 readonly toolInput?: unknown;
 readonly audience?: PrivacyDigestAudience;
+readonly piiFields?: readonly ToolPIIField[];
 }
 export type PrivacyDigestAudience = 'chat' | 'public-api';
 export interface PrivacyDatasetVerbStep {
@@ -2484,6 +3351,125 @@ history(_id: string): Promise<readonly ProcessRecord[]>;
 export declare function slugifyProcessTitle(title: string): string;
 export declare function buildProcessId(scope: string, title: string): string;
 
+// ===== questionCard.d.ts =====
+export declare const CARD_QUESTION_KINDS: readonly ["single_choice", "multiple_choice", "ranking", "consent", "assignment", "text", "number", "date"];
+export type CardQuestionKind = (typeof CARD_QUESTION_KINDS)[number];
+export declare const CARD_ID_PATTERN: RegExp;
+export interface CardOption {
+id: string;
+label: string;
+}
+interface CardQuestionBase {
+id: string;
+label: string;
+help?: string;
+required?: boolean;
+}
+export type CardQuestion = CardQuestionBase & ({
+kind: 'single_choice';
+options: readonly CardOption[];
+} | {
+kind: 'multiple_choice';
+options: readonly CardOption[];
+min?: number;
+max?: number;
+} | {
+kind: 'ranking';
+options: readonly CardOption[];
+ranks?: number;
+rankLabels?: readonly string[];
+} | {
+kind: 'consent';
+agreeLabel?: string;
+objectLabel?: string;
+reasonRequiredOnObject?: boolean;
+} | {
+kind: 'assignment';
+candidates: 'conversation_members' | readonly CardOption[];
+allowVolunteer?: boolean;
+} | {
+kind: 'text';
+multiline?: boolean;
+maxLength?: number;
+mode?: 'replace' | 'append';
+} | {
+kind: 'number';
+min?: number;
+max?: number;
+} | {
+kind: 'date';
+});
+export interface QuestionCard {
+cardId: string;
+proposalId?: string;
+proposalVersion?: number;
+title: string;
+intro?: string;
+questions: readonly CardQuestion[];
+closesAt?: string;
+changeable?: boolean;
+locale?: string;
+}
+export interface CardSupport {
+kinds: readonly CardQuestionKind[];
+maxQuestions: number;
+update: boolean;
+asText?: boolean;
+}
+export type CardAnswerValue = {
+questionId: string;
+} & ({
+kind: 'single_choice';
+optionId: string;
+} | {
+kind: 'multiple_choice';
+optionIds: readonly string[];
+}
+| {
+kind: 'ranking';
+ranking: readonly string[];
+} | {
+kind: 'consent';
+decision: 'agree' | 'object';
+reason?: string;
+} | {
+kind: 'assignment';
+assignee: 'self' | {
+kind: string;
+id: string;
+displayName?: string;
+};
+} | {
+kind: 'text';
+text: string;
+} | {
+kind: 'number';
+value: number;
+}
+| {
+kind: 'date';
+value: string;
+});
+export type CardUpdate =
+{
+state: 'closed';
+title: string;
+resultLines: readonly string[];
+closedAt: string;
+}
+| {
+state: 'open';
+card: QuestionCard;
+};
+export type CardUpdateOutcome = {
+outcome: 'updated';
+} | {
+outcome: 'unreachable';
+code: string;
+message: string;
+};
+export {};
+
 // ===== responseGuard.d.ts =====
 export declare const RESPONSE_GUARD_SERVICE_NAME = "responseGuard";
 export declare const RESPONSE_GUARD_CAPABILITY = "responseGuard@1";
@@ -2547,6 +3533,7 @@ orchestratorProfile?: RoutineOrchestratorProfile;
 
 // ===== routinesIntegration.d.ts =====
 import type { ApprovalReminder } from './conductorApproval.js';
+import type { Speaker } from './speaker.js';
 export declare const ROUTINES_INTEGRATION_SERVICE_NAME = "routinesIntegration";
 export interface RoutineCardAttachment {
 contentType: string;
@@ -2571,10 +3558,11 @@ lastRunStatus: 'ok' | 'error' | 'timeout' | null;
 }
 export type RoutineTurnRunner = <T>(fn: () => Promise<T>) => Promise<T>;
 export interface RoutineTurnInput {
-tenant: string;
+tenant?: string;
 userId: string;
 channel: string;
 conversationRef: unknown;
+conductorBinding?: boolean;
 principalRef?: string;
 canTargetOthers?: boolean;
 }
@@ -2586,11 +3574,12 @@ publishProactiveSend(channel: string, send: (conversationRef: unknown, message: 
 text: string;
 cardBody?: readonly unknown[];
 approval?: ApprovalReminder;
+speaker?: Speaker;
 }, routine?: {
 id: string;
 name: string;
 cron: string;
-}) => Promise<void>): void;
+}) => Promise<void>): (() => void) | void;
 handleRoutineAction(input: {
 action: 'pause' | 'resume' | 'trigger_now' | 'delete';
 id: string;
@@ -2661,6 +3650,160 @@ tokensUsed: number;
 }
 export interface SessionBriefingService {
 loadSessionBriefing(input: LoadSessionBriefingInput): Promise<SessionBriefingResult>;
+}
+
+// ===== sessionCapabilities.d.ts =====
+export declare const CHANNEL_READINESS_SERVICE_NAME = "channelReadiness";
+export declare const SESSION_CAPABILITIES_SERVICE_NAME = "sessionCapabilities";
+export type ChannelReadinessCode = 'no_identity' | 'app_not_installed' | 'consent_missing' | 'cannot_post' | 'graph_forbidden' | 'graph_error' | 'graph_unavailable' | 'team_unknown' | 'unsupported_conversation' | 'package_outdated';
+export interface ChannelReadinessIssue {
+code: ChannelReadinessCode | (string & {});
+message: string;
+}
+export interface ChannelReadinessReport {
+ready: boolean;
+installed: boolean;
+canReadAllMessages: boolean;
+canPost: boolean;
+missing: readonly ChannelReadinessIssue[];
+verified?: boolean;
+}
+export interface ChannelReadinessRequest {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+}
+export type ChannelConsentRepairOutcome = {
+outcome: 'upgraded';
+installationId?: string;
+permissions?: readonly string[];
+} | {
+outcome: 'not_needed';
+} | {
+outcome: 'failed';
+code: ChannelReadinessCode | 'unsupported' | (string & {});
+message: string;
+};
+export interface ChannelReadinessService {
+check(request: ChannelReadinessRequest): Promise<ChannelReadinessReport>;
+repairConsent?(request: ChannelReadinessRequest): Promise<ChannelConsentRepairOutcome>;
+}
+export type SessionInputCapability = 'text' | 'message_edits' | 'reactions' | 'card_answers' | 'presence' | 'hand_raise' | 'transcribed_speech' | 'shared_documents';
+export type SessionOutputCapability = 'text' | 'mentions' | 'cards' | 'polls' | 'private_messages' | 'pinned_surface' | 'voice' | 'screen';
+export interface SessionCapabilitySnapshot {
+channelType: string;
+conversationId: string;
+sessionRef?: string;
+modality: 'chat' | 'online' | 'hybrid';
+inputs: readonly SessionInputCapability[];
+outputs: readonly SessionOutputCapability[];
+capturedAt: string;
+}
+export interface SessionCapabilitiesService {
+getSnapshot(request: {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+sessionRef?: string;
+}): Promise<SessionCapabilitySnapshot>;
+onChange(agentSlug: string, handler: (snapshot: SessionCapabilitySnapshot) => void | Promise<void>): () => void;
+onSessionEvent?(agentSlug: string, handler: (event: SessionEventRecord) => void | Promise<void>): () => void;
+}
+export type SessionEventKind = 'session_started' | 'session_ended' | 'participant_joined' | 'participant_left';
+export interface SessionEventParticipant {
+kind: string;
+id: string;
+displayName?: string;
+principalId?: string;
+}
+export interface SessionEventRecord {
+channelType: string;
+conversationId: string;
+sessionRef: string;
+kind: SessionEventKind;
+participants?: readonly SessionEventParticipant[];
+occurredAt: string;
+}
+
+// ===== speaker.d.ts =====
+export interface AgentSpeaker {
+readonly kind: 'agent';
+readonly agentId: string;
+readonly slug: string;
+readonly displayName: string;
+readonly avatarUrl?: string;
+}
+export interface SystemSpeaker {
+readonly kind: 'system';
+}
+export type Speaker = AgentSpeaker | SystemSpeaker;
+export declare const SYSTEM_SPEAKER: SystemSpeaker;
+export declare function isAgentSpeaker(speaker: Speaker | undefined): speaker is AgentSpeaker;
+export declare function isSystemSpeaker(speaker: Speaker | undefined): speaker is SystemSpeaker;
+export declare const EMISSION_TYPES: readonly ["prose", "template", "data", "system"];
+export type EmissionType = (typeof EMISSION_TYPES)[number];
+export declare const SYSTEM_NOTICE_CODES: readonly ["agent_disabled", "agent_deleted", "agent_unknown", "agent_not_available", "no_agent", "agent_selected", "agent_selection_cleared", "agent_directory", "agent_error", "missing_grant", "quota_exceeded", "identity_guard_blocked", "identity_guard_unavailable", "agent_own_bot", "archetype_plugin_removed"];
+export type SystemNoticeCode = (typeof SYSTEM_NOTICE_CODES)[number];
+export interface NoticeAgentRef {
+readonly slug: string;
+readonly displayName: string;
+readonly agentId?: string;
+}
+export interface SystemNotice {
+readonly code: SystemNoticeCode;
+readonly agent?: NoticeAgentRef;
+readonly text: string;
+readonly locale: string;
+}
+export interface Contribution {
+readonly id: string;
+readonly speaker: AgentSpeaker;
+readonly text: string;
+readonly status: ContributionStatus;
+}
+export type ContributionStatus = 'delivered' | 'failed';
+export type TemplateValue = string | number | boolean;
+export interface TableData {
+readonly kind: 'table';
+readonly columns: readonly string[];
+readonly rows: readonly (readonly (string | number | boolean | null)[])[];
+readonly caption?: string;
+}
+export type DataPayload = TableData;
+export interface ProseEmission {
+readonly type: 'prose';
+readonly speaker: AgentSpeaker;
+readonly text: string;
+readonly restoredValues?: readonly string[];
+}
+export interface TemplateEmission {
+readonly type: 'template';
+readonly speaker: AgentSpeaker;
+readonly templateId: string;
+readonly values: Readonly<Record<string, TemplateValue>>;
+}
+export interface DataEmission {
+readonly type: 'data';
+readonly speaker: AgentSpeaker;
+readonly data: DataPayload;
+}
+export interface SystemEmission {
+readonly type: 'system';
+readonly speaker: SystemSpeaker;
+readonly notice: SystemNotice;
+}
+export type Emission = ProseEmission | TemplateEmission | DataEmission | SystemEmission;
+export type EmissionRefusalReason = 'identity_guard_blocked' | 'identity_guard_unavailable' | 'template_unknown' | 'template_values_invalid' | 'speaker_missing';
+export type EmitOutcome = {
+readonly published: true;
+readonly emission: Emission;
+} | {
+readonly published: false;
+readonly reason: EmissionRefusalReason;
+readonly replacement: SystemEmission;
+};
+export interface AnswerEmitter {
+emit(emission: Emission): Promise<EmitOutcome>;
 }
 
 // ===== targetRef.d.ts =====
@@ -2747,9 +3890,17 @@ principal: string;
 message: {
 text: string;
 };
+asAgentSlug?: string;
+userRef?: {
+kind: string;
+id: string;
+};
 }
-export type TargetedSendDeliveryOutcome = {
+export type TargetedSendDeliveryOutcome =
+{
 outcome: 'delivered';
+messageId?: string;
+conversationId?: string;
 } | {
 outcome: 'unreachable';
 code: string;

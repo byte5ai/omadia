@@ -1,0 +1,144 @@
+# Builder template manifest
+#
+# Describes how the CodegenEngine maps an AgentSpec onto the boilerplate layout
+# in this directory:
+#
+#   - slots[]:        marked code regions that receive LLM-generated content
+#                     (markers: `// #region builder:<key>` ...
+#                     `// #endregion`)
+#   - placeholders:   `{{TOKEN}}` -> source path into the AgentSpec (dotted
+#                     path, `[i]` indexing allowed; `__derived__/<name>` for
+#                     computed values)
+#   - skip_files:     files omitted in the output (top-level or as a
+#                     path segment)
+#
+# Templates must carry an `id` matching the directory name — the resolver
+# verifies this on load so that registry and filesystem do not drift apart.
+
+id: tool
+description: |
+  Capability plugin with local logic: no external system, no credentials.
+  Pattern: toolkit.ts exposes tools with a Zod input schema and plugin.ts
+  registers every tool with the kernel's tool runtime
+  (`ctx.tools.register`, see registerTools.ts). Examples: text statistics,
+  unit conversion, format validation, scoring over data the agent passes in.
+  No persona, no system prompt, no model loop. Switch to `integration` the
+  moment a tool needs an authenticated external API.
+
+slots:
+  - key: toolkit-impl
+    target_file: toolkit.ts
+    required: true
+    description: Tool array with Anthropic tool spec + handler bodies
+  - key: activate-body
+    target_file: plugin.ts
+    required: false
+    description: Custom activate code (optional; default leaves the boilerplate body)
+  - key: admin-ui-body
+    target_file: assets/admin-ui/index.html
+    required: false
+    description: |
+      Optional operator admin UI body content (HTML, inline <style>+<script>
+      allowed). Mounted via ctx.routes.register() in the activate-body
+      and declared in manifest.yaml as the top-level admin_ui_path. When
+      not set: the default placeholder explains to the operator that
+      no admin UI is configured.
+  - key: plugin-imports
+    target_file: plugin.ts
+    required: false
+    description: |
+      Auto-managed by codegen — DO NOT fill via fill_slot. Codegen scans
+      the activate-body slot content and decides whether the value import
+      `createToolkit` from './toolkit.js' is actually referenced.
+      `type Toolkit` is always emitted because activate() annotates the
+      toolkit with it. createToolkit is conditional and disappears from the import line
+      when a custom activate-body builds the toolkit inline.
+  - key: plugin-module-imports
+    target_file: plugin.ts
+    required: false
+    description: |
+      LLM-authored top-level imports for the activate-body. Use this to
+      add `import express from 'express'`, `import path from 'node:path'`,
+      `import { fileURLToPath } from 'node:url'` and similar when mounting
+      an admin-UI router or doing anything else that needs module-top
+      imports beyond the auto-managed ones. Third-party imports must be
+      backed by entries in package.json#peerDependencies — express, zod,
+      and @omadia/plugin-ui-helpers ship by default.
+  - key: external-reads-imports
+    target_file: plugin.ts
+    required: false
+    description: |
+      Auto-managed by codegen — DO NOT fill via fill_slot. Codegen splices
+      the `import { z } from 'zod'` line plus `import type { … }` lines
+      for each unique service in spec.external_reads here.
+  - key: external-reads-init
+    target_file: plugin.ts
+    required: false
+    description: |
+      Auto-managed by codegen — DO NOT fill via fill_slot. Codegen
+      synthesises the body of this region from spec.external_reads[]:
+      typed `ctx.services.get(...)` lookups + tool descriptors that get
+      pushed onto the toolkit. Empty when spec.external_reads is empty.
+      To wire cross-integration data, add entries to spec.external_reads
+      via patch_spec, NOT by hand-coding the activate-body slot.
+  - key: ui-routes-imports
+    target_file: plugin.ts
+    required: false
+    description: |
+      Auto-managed by codegen (B.12) — DO NOT fill via fill_slot. Codegen
+      splices Express Router + per-route UiRouter factory imports here
+      from spec.ui_routes[]. Empty by default. To add a Dashboard-Tab,
+      append a UiRoute to spec.ui_routes via patch_spec.
+  - key: ui-routes-init
+    target_file: plugin.ts
+    required: false
+    description: |
+      Auto-managed by codegen (B.12) — DO NOT fill via fill_slot. Codegen
+      synthesises per-route Express router instantiation,
+      `ctx.routes.register(...)` mounts, and `ctx.uiRoutes.register(...)`
+      descriptor wiring from spec.ui_routes[]. Each register-return-value
+      is pushed onto the `__uiRouteDisposers` array so close() tears
+      everything down. Empty by default.
+
+placeholders:
+  AGENT_ID: id
+  AGENT_NAME: name
+  AGENT_SLUG: __derived__/agentSlug
+  # #885 — `identity.description` in the manifest is a locale map, so both
+  # placeholders must resolve or the scaffold ships an unsubstituted `{{…}}`.
+  # #1022 — each locale now has its own spec field. `description` is the
+  # German one; `description_en` is asked for separately, so a scaffolded
+  # plugin is correct in both locales without a manual translation step.
+  # The `|` is a fallback chain (see resolveSource in codegen.ts): a spec
+  # written before `description_en` existed still generates, falling back to
+  # the single description it has.
+  AGENT_DESCRIPTION_DE: description
+  AGENT_DESCRIPTION_EN: description_en|description
+  AGENT_AUTHOR: author
+  AGENT_VERSION: version
+  AGENT_DOMAIN: domain
+  CATEGORY: category
+  # Removed INTEGRATION_ID (depends_on[0]). Codegen now writes spec.depends_on
+  # directly into the manifest YAML AST so self-contained agents (PAT/OAuth
+  # in their own setup_fields, no parent integration plugin) work without a
+  # placeholder residue error. See `reproduceManifestCapabilities` in
+  # codegen.ts for the AST-level depends_on overwrite.
+  WHEN_TO_USE_DE: playbook.when_to_use
+  NOT_FOR_CASE_1: playbook.not_for[0]
+  EXAMPLE_PROMPT_1: playbook.example_prompts[0]
+  EXAMPLE_PROMPT_2: playbook.example_prompts[1]
+  # Removed OUTBOUND_HOST (network.outbound[0]). Codegen now writes
+  # spec.network.outbound directly into permissions.network.outbound via the
+  # YAML AST (same pattern as depends_on above), so an integration-backed
+  # agent that reaches external systems THROUGH a depended-on service (e.g.
+  # ctx.services.get('odoo.client')) and has an empty network.outbound builds
+  # without a placeholder-residue error. See `reproduceManifestCapabilities`
+  # in codegen.ts for the AST-level outbound overwrite.
+
+skip_files:
+  - CLAUDE.md
+  - template.yaml
+  # README.md is a doc-only file with literal {{PLACEHOLDER}} examples in
+  # code-block bodies (illustrating the placeholder mechanism). Skipping it
+  # avoids the post-codegen no-residue check tripping over those examples.
+  - README.md

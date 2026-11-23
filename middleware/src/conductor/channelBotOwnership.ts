@@ -1,3 +1,4 @@
+import type { JsonObject } from '@omadia/conductor-core';
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
 
 /**
@@ -119,4 +120,45 @@ export function speakingIdentityFor(
   return resolved.kind === 'agent' && resolved.agentSlug === agentSlug
     ? { channelType, channelKey: channelBotKey(configured) }
     : undefined;
+}
+
+/**
+ * Channel events whose payload identifies the bot a person addressed.
+ *
+ * A prefix list rather than a wildcard: a channel that does NOT carry an
+ * addressed bot must not be silently treated as if it did, because the origin
+ * rule (`assertChannelOriginAllows`) would then refuse every run it starts.
+ * Adding a channel here is a deliberate statement that its events name their bot.
+ */
+const CHANNEL_EVENT_PREFIXES: readonly string[] = ['teams.'];
+
+/** True for a domain event that a channel emits on behalf of an addressed bot. */
+export function isChannelEvent(eventId: string): boolean {
+  return CHANNEL_EVENT_PREFIXES.some((p) => eventId.startsWith(p));
+}
+
+/** The addressed bot's routing key, as the channel put it in the payload. */
+export function addressedBotKey(context: JsonObject): string | undefined {
+  const raw = context['botId'];
+  return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : undefined;
+}
+
+/**
+ * The agent a channel event was addressed to, or undefined when the event is
+ * not a channel event or its bot does not resolve to an active agent (those
+ * cases stay with the step-level refusal, which names the precise reason).
+ */
+export function addressedAgentForEvent(
+  registry: BotRegistry,
+  eventId: string,
+  payload: JsonObject,
+  defaultBotKey: DefaultChannelBotKey | undefined,
+): string | undefined {
+  if (!isChannelEvent(eventId)) return undefined;
+  const botKey = addressedBotKey(payload);
+  if (botKey === undefined) return undefined;
+  const conversationId =
+    typeof payload['conversationId'] === 'string' ? payload['conversationId'] : undefined;
+  const owner = resolveAddressedBot(registry, 'teams', botKey, defaultBotKey, conversationId);
+  return owner.kind === 'agent' ? owner.agentSlug : undefined;
 }

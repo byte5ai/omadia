@@ -4,7 +4,7 @@ identity:
   id: "@omadia/plugin-plan-runner"
   name: "Plan Runner"
   version: "0.2.1"
-  kind: "extension"
+  kind: "system-module"
   domain: "orchestrator.plan-runner"
   description:
     en: "Writes down a plan for a task with several steps and tracks progress against those named steps, instead of trusting the model to remember them. A cheap check keeps it out of the way on simple questions."
@@ -178,7 +178,7 @@ permissions:
 
 playbook:
   when_to_use: |
-    Aktiviere dieses Plugin (experimentell), wenn der Orchestrator bei
+    Aktiviere dieses Plugin (experimentell), wenn der Agent bei
     langen, mehrstufigen Turns frühere Sub-Goals strukturell festhalten soll,
     statt sich auf das LLM-Gedächtnis zu verlassen. Es hängt sich an den
     onBeforeTurn-Hook, klassifiziert per Haiku, ob ein Plan nötig ist, und

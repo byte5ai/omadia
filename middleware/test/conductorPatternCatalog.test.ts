@@ -13,40 +13,16 @@ import { loadPatternCatalog } from '../src/conductor/patternCatalog.js';
 // valid (same contract as conductorTemplateCatalog.test.ts for templates/).
 
 describe('bundled pattern catalog', () => {
-  it('ships a valid facilitation pattern (id, slots, checkTemplateManifest)', () => {
+  it('ships a valid discussion pattern and no facilitation pattern (#2043)', () => {
     const catalog = loadPatternCatalog({ log: (m) => assert.fail(`unexpected loader warning: ${m}`) });
-    const facilitation = catalog.get('facilitation');
-
-    assert.ok(facilitation, 'patterns/facilitation.json must load');
-    const result = checkTemplateManifest(facilitation);
-    assert.deepEqual(result.errors, []);
-    // The Facilitator (Workstream C) fills exactly these slots.
-    assert.deepEqual(
-      {
-        agents: facilitation.slots.agents?.map((s) => s.key),
-        roles: facilitation.slots.roles?.map((s) => s.key),
-        channels: facilitation.slots.channels?.map((s) => s.key),
-      },
-      { agents: ['facilitator'], roles: ['initiator'], channels: ['report'] },
-    );
-  });
-
-  it('facilitation v6 hands the conversationId to every tool-calling step', () => {
-    const catalog = loadPatternCatalog({ log: () => undefined });
-    const facilitation = catalog.get('facilitation');
-    assert.ok(facilitation);
-    assert.equal((facilitation as { version?: number }).version, 6);
-    // A restarted plugin resolves the facilitation by conversationId; without it
-    // in the prompt the tick falls back to "latest" and can hit the wrong one.
-    const prompts = new Map(
-      facilitation.graph.steps.map((s) => [s.id, (s as { prompt?: string }).prompt ?? '']),
-    );
-    for (const id of ['moderate', 'report', 'abort-report']) {
-      assert.ok(prompts.get(id)?.includes('{{ctx.conversationId}}'), `step '${id}' must carry {{ctx.conversationId}}`);
-    }
-    assert.ok(prompts.get('moderate')?.includes('{{ctx.deadline}}'));
-    // Step ids are load-bearing for running runs' snapshotted graphs.
-    assert.deepEqual([...prompts.keys()], ['moderate', 'wait', 'confirm', 'report', 'abort-report']);
+    const discussion = catalog.get('discussion');
+    assert.ok(discussion, 'patterns/discussion.json must load');
+    assert.deepEqual(checkTemplateManifest(discussion).errors, []);
+    // Facilitation is no workflow pattern any more: the engine plugin runs it
+    // through the kernel's facilitator services. A plugin of the earlier
+    // generation asking for the pattern gets "unknown pattern", not a run.
+    assert.equal(catalog.get('facilitation'), undefined);
+    assert.deepEqual(catalog.list().map((p) => p.id), ['discussion']);
   });
 
   it('every bundled pattern passes the manifest gate', () => {

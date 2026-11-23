@@ -7,14 +7,16 @@
  *     DELETE /:slug removes it.
  *  3. PUT /:slug/plugins replaces the plugin set; PUT /:slug/bindings
  *     replaces the channel bindings (both call reload() afterwards).
- *  4. PUT /fallback sets/clears platform_settings.fallback_agent_id.
+ *  4. #2055: there is no fallback agent — no `PUT /fallback`; the default
+ *     agent may be disabled and deleted; `GET /enabled` names the instance
+ *     default; `PUT /:slug/availability` sets who may use an agent.
  *  5. POST /:slug/drain and /:slug/kill call registry.forceInvalidate.
  *  6. ConfigValidationError surfaces as HTTP 409.
  *  7. Zod errors surface as HTTP 400 with a structured `issues` array.
  *  8. 503 when no orchestratorRegistry is published.
  *  9. W0c (#861): GET /:slug/plugins reads the assignment; PATCH
- *     /:slug/plugins flips ONE plugin (config preserved, fallback keeps the
- *     global config, unassigned+disable → 404); GET /:slug/grants returns
+ *     /:slug/plugins flips ONE plugin (config preserved, also for the default
+ *     agent, unassigned+disable → 404); GET /:slug/grants returns
  *     the agent's tool grants (grant epoch included) + the plugin MCP
  *     grants of its assigned plugins, and 503s without a graph store.
  * 10. W1a (#860): POST /:slug/teams-identity ensures the identity row (one
@@ -125,6 +127,9 @@ interface AgentMem {
   agentToAgent?: 'off' | 'on';
   /** #1033 — optional like the real row; absent models a pre-0059 agent. */
   modelPolicy?: Record<string, unknown>;
+  /** #2055 — optional like the real row; absent = available to nobody. */
+  availableToEveryone?: boolean;
+  availableChannels?: string[] | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -167,7 +172,35 @@ class FakeConfigStore {
   agents = new Map<string, AgentMem>();
   plugins = new Map<string, PluginMem>(); // key: agentId|pluginId
   bindings = new Map<string, BindingMem>(); // key: type|key
-  fallbackId: string | null = null;
+  /** #2055 — named people and groups per agent (migration 0083). */
+  availabilityPrincipals: Array<{ agentId: string; principal: string }> = [];
+  /** #2055 — the slice of `RoutingTables` the router uses. */
+  /** #2055 — the instance entry's agent (`null` = off). */
+  instanceDefaultAgentId: string | null = null;
+  readonly routing = {
+    listDefaultEntries: (): Promise<Array<{ principal: null; channelType: null; agentId: string | null }>> =>
+      Promise.resolve([{ principal: null, channelType: null, agentId: this.instanceDefaultAgentId }]),
+    listAvailabilityPrincipals: (): Promise<Array<{ agentId: string; principal: string }>> =>
+      Promise.resolve(this.availabilityPrincipals.slice()),
+    setAvailability: (
+      agentId: string,
+      availability: { everyone: boolean; channels: readonly string[] | null; principals: readonly string[] },
+    ): Promise<void> => {
+      const agent = this.agents.get(agentId);
+      if (agent) {
+        this.agents.set(agentId, {
+          ...agent,
+          availableToEveryone: availability.everyone,
+          availableChannels: availability.channels ? [...availability.channels] : null,
+        });
+      }
+      this.availabilityPrincipals = [
+        ...this.availabilityPrincipals.filter((p) => p.agentId !== agentId),
+        ...[...new Set(availability.principals)].map((principal) => ({ agentId, principal })),
+      ];
+      return Promise.resolve();
+    },
+  };
   /** Provisioned bot identities (`28:<app id>` per agent) — what the
    *  peer-chat picker derives its candidates from. */
   identities: Array<{ channelType: string; channelKey: string; agentId: string }> = [];
@@ -193,9 +226,6 @@ class FakeConfigStore {
     return Promise.resolve(
       Array.from(this.bindings.values()).filter((b) => b.agentId === agentId),
     );
-  }
-  getPlatformSettings(): Promise<{ fallbackAgentId: string | null; updatedAt: Date }> {
-    return Promise.resolve({ fallbackAgentId: this.fallbackId, updatedAt: new Date() });
   }
   getAgentBySlug(slug: string): Promise<AgentMem | undefined> {
     for (const a of this.agents.values()) if (a.slug === slug) return Promise.resolve(a);
@@ -324,10 +354,6 @@ class FakeConfigStore {
   }
   resolveBinding(channelType: string, channelKey: string): Promise<BindingMem | undefined> {
     return Promise.resolve(this.bindings.get(`${channelType}|${channelKey}`));
-  }
-  setFallbackAgentId(id: string | null): Promise<{ fallbackAgentId: string | null; updatedAt: Date }> {
-    this.fallbackId = id;
-    return Promise.resolve({ fallbackAgentId: id, updatedAt: new Date() });
   }
 }
 
@@ -647,7 +673,12 @@ class FakeRegistry {
   invalidateCalls: Array<{ slug: string; mode: 'drain' | 'kill' }> = [];
   /** Live owners of bot keys — the partner names the peer-chat picker shows. */
   owners = new Map<string, { id: string; slug: string; name: string }>();
+  /** #2055 — the instance entry's agent, when it serves. */
+  instanceDefault: string | undefined;
 
+  instanceDefaultSlug(): string | undefined {
+    return this.instanceDefault;
+  }
   list() {
     return [];
   }
@@ -658,9 +689,9 @@ class FakeRegistry {
   get(slug: string) {
     return { memoryScope: [`agent:fake:${slug}:*`, 'core'] };
   }
-  reload(): Promise<{ actions: unknown[]; platformChanged: boolean }> {
+  reload(): Promise<{ actions: unknown[] }> {
     this.reloadCalls += 1;
-    return Promise.resolve({ actions: [], platformChanged: false });
+    return Promise.resolve({ actions: [] });
   }
   forceInvalidate(slug: string, mode: 'drain' | 'kill'): Promise<number> {
     this.invalidateCalls.push({ slug, mode });
@@ -701,6 +732,7 @@ describe('createOperatorAgentsRouter', () => {
    *  answers per `channelType|conversationId`. `undefined` = source absent. */
   let chatDirectory: Array<{ channelType: string; key: string; label: string; members?: string[] }> | undefined;
   let chatRosters: Record<string, ConversationRoster | undefined> | undefined;
+  let rosterRequests: { channelType: string; id: string; asChannelKey?: string }[] = [];
 
   before(async () => {
     store = new FakeConfigStore();
@@ -731,7 +763,10 @@ describe('createOperatorAgentsRouter', () => {
         getConversationRosters: () =>
           chatRosters
             ? ({
-                getRoster: async (channelType: string, id: string) => chatRosters?.[`${channelType}|${id}`],
+                getRoster: async (channelType: string, id: string, opts?: { asChannelKey?: string }) => {
+                  rosterRequests.push({ channelType, id, asChannelKey: opts?.asChannelKey });
+                  return chatRosters?.[`${channelType}|${id}`];
+                },
               } as unknown as ConversationRosterRegistry)
             : undefined,
         // #1033 — a two-provider catalogue; only anthropic holds a key.
@@ -768,9 +803,11 @@ describe('createOperatorAgentsRouter', () => {
     registry.reloadCalls = 0;
     registry.invalidateCalls = [];
     registry.owners = new Map();
+    registry.instanceDefault = undefined;
     peerChats = undefined;
     chatDirectory = undefined;
     chatRosters = undefined;
+    rosterRequests = [];
     teamsStore = new FakeTeamsIdentityStore();
     teamsRunner = new FakeTeamsRunner();
     provisionerInstalled = true;
@@ -779,6 +816,48 @@ describe('createOperatorAgentsRouter', () => {
     teamsInstalls = undefined;
     resolveTeamName = undefined;
     teamsEvents = undefined;
+  });
+
+  // ── Plugin Builder preview drafts (#2049) ────────────────────────────
+  describe('Plugin Builder preview draft agents (#2049)', () => {
+    it('refuses an operator agent in the preview slug space', async () => {
+      const res = await fetch(baseUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug: 'builder-preview-d1', name: 'Sneaky' }),
+      });
+      assert.equal(res.status, 409);
+      assert.equal(await store.getAgentBySlug('builder-preview-d1'), undefined);
+    });
+
+    it('never enables a preview draft agent', async () => {
+      await store.createAgent({ slug: 'builder-preview-d1', name: 'Preview: Weather', status: 'draft' as never });
+      const res = await fetch(`${baseUrl}/builder-preview-d1`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ status: 'enabled' }),
+      });
+      assert.equal(res.status, 409);
+      assert.equal((await store.getAgentBySlug('builder-preview-d1'))?.status, 'draft');
+    });
+
+    it('is not in the directory and gets no grant', async () => {
+      await store.createAgent({ slug: 'builder-preview-d1', name: 'Preview: Weather', status: 'draft' as never });
+      await store.createAgent({ slug: 'mira', name: 'Mira' });
+      const list = (await (await fetch(baseUrl)).json()) as { agents: Array<{ slug: string }> };
+      const slugs = list.agents.map((a) => a.slug);
+      assert.ok(slugs.includes('mira'));
+      assert.equal(slugs.includes('builder-preview-d1'), false);
+
+      const grant = await fetch(`${baseUrl}/builder-preview-d1/plugins`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ plugins: [] }),
+      });
+      assert.equal(grant.status, 409);
+      const read = await fetch(`${baseUrl}/builder-preview-d1`);
+      assert.notEqual(read.status, 409, 'reading stays possible');
+    });
   });
 
   // ── model policy (#1033) ─────────────────────────────────────────────
@@ -967,6 +1046,7 @@ describe('createOperatorAgentsRouter', () => {
       const asked: string[] = [];
       peerChats = {
         botAppIdsIn: async () => [],
+        recentConversations: async () => [],
         conversationsOf: async (appId) => {
           asked.push(appId);
           if (appId !== 'aaaa') return [];
@@ -1014,6 +1094,7 @@ describe('createOperatorAgentsRouter', () => {
       const at = new Date('2026-09-07T10:00:00Z');
       peerChats = {
         botAppIdsIn: async () => [],
+        recentConversations: async () => [],
         conversationsOf: async () => [
           { conversationId: '19:dir@thread.skype', teamsType: 'groupChat', name: null, updatedAt: at, botAppIds: ['aaaa'] },
           { conversationId: '19:roster@thread.skype', teamsType: 'groupChat', name: null, updatedAt: at, botAppIds: ['aaaa'] },
@@ -1051,6 +1132,10 @@ describe('createOperatorAgentsRouter', () => {
         label: 'Carla Diaz, Dieter Fink, Eva Gross, +1',
         members: ['Carla Diaz', 'Dieter Fink', 'Eva Gross', 'Finn Hahn'],
       });
+      // #2043 — the roster is read as the agent's own bot, the one that is
+      // in the chat; the default bot would name nobody.
+      assert.ok(rosterRequests.length > 0);
+      assert.ok(rosterRequests.every((r) => r.asChannelKey === '28:aaaa'), JSON.stringify(rosterRequests));
       // A titled chat keeps its own title.
       assert.equal(byKey.get('19:titled@thread.skype')?.label, 'Budget 2027');
       // Nothing knows this one: id it is, and the UI says so.
@@ -1285,42 +1370,35 @@ describe('createOperatorAgentsRouter', () => {
     assert.equal(await store.getAgentBySlug('public'), undefined);
   });
 
-  it('PATCH /:slug refuses to DISABLE the fallback orchestrator (409 fallback_protected)', async () => {
-    await store.createAgent({ slug: 'fallback', name: 'Standard Orchestrator' });
-    const res = await fetch(`${baseUrl}/fallback`, {
+  it('#2055: PATCH /:slug may DISABLE the instance default agent (no fallback_protected)', async () => {
+    await store.createAgent({ slug: 'standard', name: 'Standard' });
+    registry.instanceDefault = 'standard';
+    const res = await fetch(`${baseUrl}/standard`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ status: 'disabled' }),
     });
-    assert.equal(res.status, 409);
-    assert.equal(((await res.json()) as { error: string }).error, 'fallback_protected');
-    assert.equal((await store.getAgentBySlug('fallback'))?.status, 'enabled', 'stayed enabled');
+    assert.equal(res.status, 200, 'its conversations get a notice naming it, not another agent');
+    assert.equal((await store.getAgentBySlug('standard'))?.status, 'disabled');
   });
 
-  it('PATCH /:slug still allows ENABLING / renaming the fallback orchestrator', async () => {
-    await store.createAgent({ slug: 'fallback', name: 'Standard Orchestrator' });
-    const res = await fetch(`${baseUrl}/fallback`, {
+  it('PATCH /:slug allows ENABLING / renaming the default agent', async () => {
+    await store.createAgent({ slug: 'standard', name: 'Standard' });
+    registry.instanceDefault = 'standard';
+    const res = await fetch(`${baseUrl}/standard`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ status: 'enabled', name: 'Renamed' }),
     });
-    assert.equal(res.status, 200, 'only disable/delete are blocked');
+    assert.equal(res.status, 200);
   });
 
-  it('DELETE /:slug refuses to delete the fallback orchestrator (409 fallback_protected)', async () => {
-    await store.createAgent({ slug: 'fallback', name: 'Standard Orchestrator' });
-    const res = await fetch(`${baseUrl}/fallback`, { method: 'DELETE' });
-    assert.equal(res.status, 409);
-    assert.equal(((await res.json()) as { error: string }).error, 'fallback_protected');
-    assert.ok(await store.getAgentBySlug('fallback'), 'not deleted');
-  });
-
-  it('protects whatever the platform fallbackAgentId points at (id-based, non-"fallback" slug)', async () => {
-    const agent = await store.createAgent({ slug: 'special', name: 'Special' });
-    await store.setFallbackAgentId(agent.id);
-    const res = await fetch(`${baseUrl}/special`, { method: 'DELETE' });
-    assert.equal(res.status, 409, 'active platform fallback protected by id');
-    assert.equal(((await res.json()) as { error: string }).error, 'fallback_protected');
+  it('#2055: DELETE /:slug may delete the instance default agent (no fallback_protected)', async () => {
+    await store.createAgent({ slug: 'standard', name: 'Standard' });
+    registry.instanceDefault = 'standard';
+    const res = await fetch(`${baseUrl}/standard`, { method: 'DELETE' });
+    assert.equal(res.status, 200);
+    assert.equal(await store.getAgentBySlug('standard'), undefined);
   });
 
   it('PUT /:slug/plugins replaces the plugin set', async () => {
@@ -1357,11 +1435,10 @@ describe('createOperatorAgentsRouter', () => {
     assert.equal(res.status, 200);
     const body = (await res.json()) as {
       slug: string;
-      fallback: boolean;
       plugins: Array<{ id: string; config: Record<string, unknown>; enabled: boolean }>;
     };
     assert.equal(body.slug, 'public');
-    assert.equal(body.fallback, false);
+    assert.equal('fallback' in body, false, '#2055: no fallback flag any more');
     const byId = new Map(body.plugins.map((p) => [p.id, p]));
     assert.equal(byId.size, 2);
     assert.deepEqual(byId.get('@omadia/odoo')?.config, { url: 'https://odoo.example' });
@@ -1435,12 +1512,12 @@ describe('createOperatorAgentsRouter', () => {
     assert.equal(registry.reloadCalls, 0, 'no reload on a rejected toggle');
   });
 
-  it('PATCH /:slug/plugins keeps the fallback agent on the global config ({})', async () => {
+  it('#2055: PATCH /:slug/plugins keeps the default agent\'s per-agent config (no global-config special case)', async () => {
     const agent = await store.createAgent({ slug: 'special', name: 'Special' });
-    await store.setFallbackAgentId(agent.id);
+    registry.instanceDefault = 'special';
     await store.upsertAgentPlugin(agent.id, {
       pluginId: '@omadia/odoo',
-      config: { smuggled: true },
+      config: { url: 'https://odoo.example' },
       enabled: true,
     });
     const res = await fetch(`${baseUrl}/special/plugins`, {
@@ -1449,13 +1526,9 @@ describe('createOperatorAgentsRouter', () => {
       body: JSON.stringify({ id: '@omadia/odoo', enabled: false }),
     });
     assert.equal(res.status, 200);
-    assert.equal(((await res.json()) as { fallback: boolean }).fallback, true);
+    assert.equal('fallback' in ((await res.json()) as object), false);
     const rows = await store.listAgentPlugins(agent.id);
-    assert.deepEqual(
-      rows[0]!.config,
-      {},
-      'fallback Agent always runs plugins with the global store config',
-    );
+    assert.deepEqual(rows[0]!.config, { url: 'https://odoo.example' });
   });
 
   it('GET /:slug/grants returns tool grants + plugin MCP grants + grant epoch (W0c #861)', async () => {
@@ -3729,23 +3802,63 @@ describe('createOperatorAgentsRouter', () => {
     assert.equal(bindings.length, 2);
   });
 
-  it('PUT /fallback sets and clears the fallback agent', async () => {
+  it('#2055: GET /enabled names the instance default agent instead of a fallback', async () => {
     await store.createAgent({ slug: 'pub', name: 'Pub' });
-    let res = await fetch(`${baseUrl}/fallback`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ slug: 'pub' }),
-    });
+    await store.createAgent({ slug: 'off', name: 'Off', status: 'disabled' });
+    registry.instanceDefault = 'pub';
+    const res = await fetch(`${baseUrl}/enabled`);
     assert.equal(res.status, 200);
-    assert.ok(store.fallbackId);
+    const body = (await res.json()) as {
+      agents: Array<Record<string, unknown>>;
+      default_slug: string | null;
+    };
+    assert.deepEqual(body.agents.map((a) => a['slug']), ['pub']);
+    assert.equal(body.default_slug, 'pub');
+    assert.equal('fallback_slug' in body, false);
+    assert.equal('is_fallback' in body.agents[0]!, false);
+  });
 
-    res = await fetch(`${baseUrl}/fallback`, {
+  it('#2055: PUT /:slug/availability sets who may use the agent; GET / shows it', async () => {
+    await store.createAgent({ slug: 'pub', name: 'Pub' });
+    const res = await fetch(`${baseUrl}/pub/availability`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ slug: null }),
+      body: JSON.stringify({
+        everyone: false,
+        channels: ['teams'],
+        principals: ['user:Anna@Example.com'],
+      }),
     });
     assert.equal(res.status, 200);
-    assert.equal(store.fallbackId, null);
+    const expected = { everyone: false, channels: ['teams'], principals: ['user:anna@example.com'] };
+    assert.deepEqual(((await res.json()) as { availability: unknown }).availability, expected);
+    assert.equal(registry.reloadCalls, 1);
+
+    const list = (await (await fetch(baseUrl)).json()) as {
+      agents: Array<{ slug: string; availability: unknown }>;
+      fallback_agent_id?: unknown;
+    };
+    assert.deepEqual(list.agents.find((a) => a.slug === 'pub')?.availability, expected);
+    assert.equal('fallback_agent_id' in list, false);
+
+    // Groups are Conductor roles (spec §5.3): accepted, the role key keeps
+    // its case; anything that is neither a user nor a role is refused.
+    const group = await fetch(`${baseUrl}/pub/availability`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ everyone: false, channels: null, principals: ['role:Sales-Team', 'user:Ben@Example.com'] }),
+    });
+    assert.equal(group.status, 200);
+    assert.deepEqual(((await group.json()) as { availability: { principals: string[] } }).availability.principals.sort(), [
+      'role:Sales-Team',
+      'user:ben@example.com',
+    ]);
+    const bogus = await fetch(`${baseUrl}/pub/availability`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ everyone: false, channels: null, principals: ['team:sales'] }),
+    });
+    assert.equal(bogus.status, 400);
   });
 
   it('POST /:slug/drain calls forceInvalidate(drain)', async () => {
