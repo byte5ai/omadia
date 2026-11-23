@@ -1155,13 +1155,15 @@ one rule about what counts as a runtime.
   the package does not accept, and forcing it breaks that dependency. Its `via`
   names the production dependencies every route starts at (same route check as
   above, without the devDependency rule), its reason says why the vulnerable
-  code is not reachable from request data, and it expires at most 30 days after
-  its review, so it is re-checked against upstream every month. The first entry
-  (2026-10-28) covers GHSA-mrhx-c7xc-m3w5 in `zod` 3.25.x via `botbuilder`
-  4.23.3, the latest release, host-provided for the Teams channel plugin: the
-  fix is in zod 4.6.6, botbuilder throws on load under zod 4, and inbound Bot
-  Framework requests only reach `z.record(z.unknown())`, never the array
-  schemas the advisory is about.
+  code is not reachable from request data, and it expires at most 90 days after
+  its review, so it is re-checked against upstream at least once a quarter (30
+  days until 2026-11-23). The first entry (2026-10-28) covers
+  GHSA-mrhx-c7xc-m3w5 in `zod` 3.25.x via `botbuilder` 4.23.3, the latest
+  release, host-provided for the Teams channel plugin: the fix is in zod 4.6.6,
+  botbuilder throws on load under zod 4, and inbound Bot Framework requests only
+  reach `z.record(z.unknown())`, never the array schemas the advisory is about.
+  Re-reviewed and renewed 2026-11-23 until 2027-02-21: botbuilder has had no
+  release since 2025-08-27.
 - **Dependabot** has an npm block for every audited directory (`/desktop`,
   `/middleware`, `/web-ui`); a new package directory gets one together with its
   audit leg. GitHub's repository-level alerting is not counted on as a
