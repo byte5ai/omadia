@@ -1,0 +1,220 @@
+import { strict as assert } from 'node:assert';
+import { after, before, describe, it } from 'node:test';
+
+import { Pool } from 'pg';
+
+import { NeonKnowledgeGraph } from '@omadia/knowledge-graph-neon/dist/neonKnowledgeGraph.js';
+import { runGraphMigrations } from '@omadia/knowledge-graph-neon/dist/migrator.js';
+import { buildKgWalkPayload } from '@omadia/orchestrator-extras/dist/kgWalkPayload.js';
+import type {
+  KgWalkEdge,
+  KnowledgeGraph,
+  RecalledContext,
+} from '@omadia/plugin-api';
+
+import { probePgTest } from './_helpers/pgTestDb.js';
+
+/**
+ * KG-walk chat visualization on the Neon backend — the Postgres leg of
+ * `kgWalkSubgraph.test.ts` (in-memory leg there). Runs against a throwaway
+ * pgvector PG — point KG_PG_TEST_URL (or MEMORY_PG_TEST_URL) at it. It skips
+ * cleanly, with a logged reason, when no URL is set, the DB is unreachable, or
+ * the DB lacks pgvector (issue #572). In CI it runs in `npm run test:pg`,
+ * which only globs `*.pg.test.ts`.
+ */
+
+const TENANT = 'kgwalk-tenant';
+const OTHER_TENANT = 'other-tenant';
+
+// hop monotonicity from the roots: an edge's hop must be >= 1 and edges must
+// appear in non-decreasing discovery order overall (every reachable node sits
+// at a finite BFS distance, and an edge's hop is the nearer endpoint's
+// distance + 1).
+function assertHopsMonotonic(edges: KgWalkEdge[]): void {
+  for (const e of edges) {
+    assert.ok(e.hop >= 1, `edge hop must be >= 1, got ${e.hop}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Neon leg — throwaway PG, skips when unreachable.
+// ---------------------------------------------------------------------------
+const { url: PG_URL, reachable: pgUp } = await probePgTest({
+  label: 'kgWalkSubgraph',
+  vars: ['KG_PG_TEST_URL', 'MEMORY_PG_TEST_URL'],
+  requireVector: true,
+});
+
+if (pgUp) {
+  const pool = new Pool({ connectionString: PG_URL });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  describe('KG-walk · Neon getMemorableKnowledgeSubgraph (real PG)', () => {
+    let kg: KnowledgeGraph;
+
+    // External ids for the hand-seeded subgraph.
+    const root = 'mk:root';
+    const turn = 'turn:kgwalk:t1';
+    const user = 'user:u1';
+    const entity = 'odoo:res.partner:7';
+    const sibling = 'mk:sibling'; // shares the Turn → reachable at hop 2
+    const otherTenantMk = 'mk:other-tenant';
+
+    before(async () => {
+      await runGraphMigrations(pool);
+      kg = new NeonKnowledgeGraph({ pool, tenantId: TENANT });
+
+      // Clean prior runs (idempotent).
+      await pool.query(`DELETE FROM graph_edges WHERE tenant_id = ANY($1)`, [
+        [TENANT, OTHER_TENANT],
+      ]);
+      await pool.query(`DELETE FROM graph_nodes WHERE tenant_id = ANY($1)`, [
+        [TENANT, OTHER_TENANT],
+      ]);
+
+      const node = async (
+        tenant: string,
+        extId: string,
+        type: string,
+        props: Record<string, unknown>,
+      ): Promise<string> => {
+        const r = await pool.query<{ id: string }>(
+          `INSERT INTO graph_nodes (external_id, type, tenant_id, properties)
+           VALUES ($1, $2, $3, $4::jsonb) RETURNING id`,
+          [extId, type, tenant, JSON.stringify(props)],
+        );
+        return r.rows[0]!.id;
+      };
+      const edge = async (
+        tenant: string,
+        from: string,
+        to: string,
+        type: string,
+      ): Promise<void> => {
+        await pool.query(
+          `INSERT INTO graph_edges (type, from_node, to_node, tenant_id)
+           VALUES ($1, $2, $3, $4)`,
+          [type, from, to, tenant],
+        );
+      };
+
+      const rootU = await node(TENANT, root, 'MemorableKnowledge', {
+        summary: 'Root MK summary',
+      });
+      const turnU = await node(TENANT, turn, 'Turn', { time: '2026-01-01' });
+      const userU = await node(TENANT, user, 'User', { name: 'Alice' });
+      const entU = await node(TENANT, entity, 'OdooEntity', {
+        displayName: 'Partner 7',
+      });
+      const sibU = await node(TENANT, sibling, 'MemorableKnowledge', {
+        summary: 'Sibling MK',
+      });
+
+      // root -DERIVED_FROM-> turn (hop1), root -INVOLVED-> user (hop1),
+      // root -REQUIRES-> entity (hop1). sibling -DERIVED_FROM-> turn so the
+      // walk reaches sibling at hop 2 (root -> turn -> sibling).
+      await edge(TENANT, rootU, turnU, 'DERIVED_FROM');
+      await edge(TENANT, rootU, userU, 'INVOLVED');
+      await edge(TENANT, rootU, entU, 'REQUIRES');
+      await edge(TENANT, sibU, turnU, 'DERIVED_FROM');
+
+      // Cross-tenant decoy — must NEVER appear in TENANT's walk.
+      const otherU = await node(
+        OTHER_TENANT,
+        otherTenantMk,
+        'MemorableKnowledge',
+        { summary: 'Other tenant MK' },
+      );
+      const otherTurn = await node(OTHER_TENANT, turn, 'Turn', {});
+      await edge(OTHER_TENANT, otherU, otherTurn, 'DERIVED_FROM');
+    });
+
+    it('BFS returns root + hop-1 neighbours, hop numbers correct, tenant-scoped', async () => {
+      const { nodes, edges } = await kg.getMemorableKnowledgeSubgraph([root]);
+      const ids = new Set(nodes.map((n) => n.id));
+      assert.ok(ids.has(root), 'root present');
+      assert.ok(ids.has(turn), 'turn at hop 1');
+      assert.ok(ids.has(user), 'user at hop 1');
+      assert.ok(ids.has(entity), 'entity at hop 1');
+      assert.ok(!ids.has(otherTenantMk), 'cross-tenant node excluded');
+
+      assertHopsMonotonic(edges);
+      const hop1Edges = edges.filter((e) => e.hop === 1);
+      assert.ok(hop1Edges.length >= 3, 'three hop-1 edges from the root');
+
+      // Labels resolved from properties.
+      assert.equal(
+        nodes.find((n) => n.id === root)!.label,
+        'Root MK summary',
+      );
+      assert.equal(
+        nodes.find((n) => n.id === entity)!.label,
+        'Partner 7',
+      );
+    });
+
+    it('reaches the sibling MK at hop 2 via the shared Turn', async () => {
+      const { nodes, edges } = await kg.getMemorableKnowledgeSubgraph([root], {
+        maxHops: 2,
+      });
+      const ids = new Set(nodes.map((n) => n.id));
+      assert.ok(ids.has(sibling), 'sibling reached at hop 2');
+      assert.ok(
+        edges.some((e) => e.hop === 2),
+        'an edge discovered at hop 2',
+      );
+    });
+
+    it('respects maxHops=1 (sibling unreachable)', async () => {
+      const { nodes } = await kg.getMemorableKnowledgeSubgraph([root], {
+        maxHops: 1,
+      });
+      assert.ok(
+        !new Set(nodes.map((n) => n.id)).has(sibling),
+        'sibling excluded at maxHops=1',
+      );
+    });
+
+    it('respects maxNodes cap and stays internally consistent', async () => {
+      const { nodes, edges } = await kg.getMemorableKnowledgeSubgraph([root], {
+        maxHops: 3,
+        maxNodes: 2,
+      });
+      assert.ok(nodes.length <= 2, `cap honoured, got ${nodes.length}`);
+      // Every emitted edge references two emitted nodes (no dangling).
+      const ids = new Set(nodes.map((n) => n.id));
+      for (const e of edges) {
+        assert.ok(ids.has(e.from) && ids.has(e.to), 'edge endpoints emitted');
+      }
+    });
+
+    it('unknown roots → empty payload', async () => {
+      const { nodes, edges } = await kg.getMemorableKnowledgeSubgraph([
+        'mk:does-not-exist',
+      ]);
+      assert.equal(nodes.length, 0);
+      assert.equal(edges.length, 0);
+    });
+
+    it('buildKgWalkPayload emits a payload from a non-empty recall', async () => {
+      const recalled: RecalledContext = {
+        plans: [],
+        processes: [],
+        insights: [
+          { mkId: root, kind: 'decision', summary: 'x', score: 0.5 },
+        ],
+      };
+      const payload = await buildKgWalkPayload(recalled, kg);
+      assert.ok(payload, 'payload present');
+      assert.deepEqual(payload!.rootIds, [root]);
+      assert.equal(
+        payload!.nodes.find((n) => n.id === root)!.score,
+        0.5,
+        'recall score stamped on root',
+      );
+    });
+  });
+}

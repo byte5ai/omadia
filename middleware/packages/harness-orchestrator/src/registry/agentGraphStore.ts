@@ -1634,13 +1634,16 @@ export class AgentGraphStore {
      *  at authorize time (W0-1, D1). Captured HERE, never re-discovered at the
      *  callback — same reasoning as the endpoint binding in migration 0016. */
     issRequired?: boolean;
+    /** RFC 8707 resource indicator sent on the authorization request; the
+     *  callback must send the same value on the code exchange. */
+    resource?: string | null;
   }): Promise<void> {
     // Opportunistic prune of stale flows (older than 15 min) on each create.
     await this.pool.query("DELETE FROM mcp_oauth_flows WHERE created_at < now() - interval '15 minutes'");
     await this.pool.query(
       `INSERT INTO mcp_oauth_flows
-         (state, server_id, user_key, issuer, code_verifier, redirect_uri, scopes, token_endpoint, authorization_endpoint, iss_required)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+         (state, server_id, user_key, issuer, code_verifier, redirect_uri, scopes, token_endpoint, authorization_endpoint, iss_required, resource)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
       [
         input.state,
         input.serverId,
@@ -1652,6 +1655,7 @@ export class AgentGraphStore {
         input.tokenEndpoint,
         input.authorizationEndpoint,
         input.issRequired ?? false,
+        input.resource ?? null,
       ],
     );
   }
@@ -1673,6 +1677,9 @@ export class AgentGraphStore {
         /** The AS advertised RFC 9207 when this flow started (W0-1, D1), so an
          *  authorization response WITHOUT `iss` must be rejected. */
         issRequired: boolean;
+        /** RFC 8707 resource indicator of the authorization request; null for
+         *  flows started before migration 0111. */
+        resource: string | null;
       }
     | undefined
   > {
@@ -1687,6 +1694,7 @@ export class AgentGraphStore {
       token_endpoint: string | null;
       authorization_endpoint: string | null;
       iss_required?: boolean | null;
+      resource?: string | null;
     }>(
       "DELETE FROM mcp_oauth_flows WHERE state = $1 AND created_at > now() - interval '15 minutes' RETURNING *",
       [state],
@@ -1706,6 +1714,7 @@ export class AgentGraphStore {
           // Pre-0031 in-flight flows read false — they are not retroactively
           // rejected for a missing `iss` (a MISMATCHED one still is).
           issRequired: r.iss_required === true,
+          resource: r.resource ?? null,
         }
       : undefined;
   }
