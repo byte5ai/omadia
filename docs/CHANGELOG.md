@@ -36,6 +36,23 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Builder workspace footer reverted to `IDLE` after a reload following a failed build
+
+2026-11-10. #1737 — reported from the live workspace after an auto-rebuild
+failed with `reason=tsc`.
+
+- **`GET /drafts/:id/preview/status` only ever answered `ok` or `idle`.** It
+  checked the preview cache alone, and a failed build never populates that
+  cache, so a page reload after a failed build dropped the footer back to
+  `IDLE` and hid the "Fix with Builder" button even though the draft was
+  still broken. The route now falls back to `BuildPipeline.getLastBuildStatus`
+  (already recorded per #227, previously only read by the `get_build_status`
+  agent tool) and reports `failed` with `buildN`/`errorCount`/`reason` when
+  the cache is cold but the last build actually failed.
+- The Workspace's mount-time re-hydration effect now applies a `failed`
+  status the same way it already applied `ok`, so `BuildStatusStrip` and
+  "Fix with Builder" render correctly again after a reload.
+
 ### Fixed — `transcribe_recording` only sends recordings to the provider (#1966)
 
 2026-11-17. The tool handed any stored attachment to the transcription
