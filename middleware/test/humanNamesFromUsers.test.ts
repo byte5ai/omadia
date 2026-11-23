@@ -81,16 +81,41 @@ function namesC1(...names: readonly string[]): PromptPiiDetector {
   };
 }
 
-describe('humanNamesOf — display, first and last name', () => {
-  it('splits a display name into the full name, first and last word', () => {
+describe('humanNamesOf — the full name and every word of it', () => {
+  it('splits a display name into the full name and its words', () => {
     assert.deepEqual(humanNamesOf('  Karen   Müller '), ['Karen Müller', 'Karen', 'Müller']);
-    assert.deepEqual(humanNamesOf('Anna Maria Schmidt'), ['Anna Maria Schmidt', 'Anna', 'Schmidt']);
     assert.deepEqual(humanNamesOf('Cher'), ['Cher']);
     assert.deepEqual(humanNamesOf('   '), []);
+  });
+
+  it('handles "Last, First" by stripping the punctuation around words', () => {
+    assert.deepEqual(humanNamesOf('Müller, Karen'), ['Müller, Karen', 'Müller', 'Karen']);
+  });
+
+  it('keeps every word of a multi-word surname', () => {
+    assert.deepEqual(humanNamesOf('Anna van der Berg'), [
+      'Anna van der Berg',
+      'Anna',
+      'van',
+      'der',
+      'Berg',
+    ]);
+  });
+
+  it('drops words under 2 characters and keeps inner hyphens', () => {
+    assert.deepEqual(humanNamesOf('Hans-Peter J. (Ko)'), ['Hans-Peter J. (Ko)', 'Hans-Peter', 'Ko']);
   });
 });
 
 describe('agentOwnNames with the users-backed human names', () => {
+  it('drops "Karen" for an active user "Müller, Karen" (Last, First)', async () => {
+    const directory = createUserHumanNameDirectory(
+      fakeUsers([{ displayName: 'Müller, Karen', status: 'active' }]),
+    );
+    await settled(directory);
+    assert.deepEqual(agentOwnNames({ ...KAREN_AGENT, humanNames: directory.snapshot() }), []);
+  });
+
   it('drops "Karen" when an active user is "Karen Müller" (first name counts)', async () => {
     const directory = createUserHumanNameDirectory(
       fakeUsers([{ displayName: 'Karen Müller', status: 'active' }]),
@@ -135,12 +160,18 @@ describe('agentOwnNames with the users-backed human names', () => {
 describe('HumanNameDirectory — snapshot cache', () => {
   it('is unknown before the first load completes', async () => {
     let release: (names: readonly string[]) => void = () => undefined;
-    const directory = new HumanNameDirectory({
-      loadDisplayNames: () =>
+    const directory = new HumanNameDirectory();
+    // Published before the users table is attached: unknown, no load to run.
+    assert.equal(directory.snapshot(), null);
+    directory.attach({
+      listActiveDisplayNames: () =>
         new Promise<readonly string[]>((resolve) => {
           release = resolve;
         }),
+      onChange: () => () => undefined,
     });
+    // Let the source-less load finish and the real one start; it hangs.
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(directory.snapshot(), null);
     assert.deepEqual(agentOwnNames({ ...KAREN_AGENT, humanNames: directory.snapshot() }), []);
     release(['Erika Muster']);
@@ -197,13 +228,16 @@ describe('HumanNameDirectory — snapshot cache', () => {
   it('turns unknown after a failed load and never logs a name', async () => {
     let fail = false;
     const logged: string[] = [];
-    const directory = new HumanNameDirectory({
-      loadDisplayNames: async () => {
-        if (fail) throw new Error('connection refused');
-        return ['Karen Müller'];
+    const directory = createUserHumanNameDirectory(
+      {
+        listActiveDisplayNames: async () => {
+          if (fail) throw new Error('connection refused');
+          return ['Karen Müller'];
+        },
+        onChange: () => () => undefined,
       },
-      log: (m) => logged.push(m),
-    });
+      { log: (m) => logged.push(m) },
+    );
     await directory.refresh();
     assert.ok(directory.snapshot()?.includes('Karen'));
     fail = true;

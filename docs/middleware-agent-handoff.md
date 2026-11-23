@@ -464,6 +464,29 @@ Versions-Probe des Spawn-Gates (`clearCliVersionCache`). Bei einem In-Place-
 Update ändert sich der Binary-Pfad nicht, also bliebe der Cache-Key sonst
 gleich und der Turn liefe bis zu fünf Minuten weiter gegen die alte Version.
 
+### Menschennamen für den Privacy Shield (`humanNames@1`, `UserStore.onChange`, #2042)
+
+Kernel-Service nach demselben Muster: `serviceRegistry.provide('humanNames',
+() => humanNameDirectory.snapshot())` in `middleware/src/index.ts`, **vor**
+`activateAllInstalled()` registriert; die `users`-Tabelle wird erst nach dem
+Datenbank-Start angehängt (`humanNameDirectory.attach(userStore)`), was den
+ersten Load startet. Deklariert im Orchestrator-Manifest unter
+`optional_requires: ["humanNames@1"]`, pro Turn aufgelöst über
+`kernelHumanNames(ctx.services)` (plugin.ts) und über die
+`defaultRuntimeConfig` der Registry + `buildForAgent` (applyDiff.ts) an
+`agentOwnNames` gereicht. Inhalt: Anzeigename aktiver Benutzer plus jedes Wort
+davon (`humanNamesOf` in `src/auth/humanNameDirectory.ts`). Ein eigener Name
+des Agents, den ein Mensch trägt, bleibt maskiert. `null` (nicht publiziert,
+nicht geladen, Load fehlgeschlagen) heißt unbekannt: kein eigener Name ist
+ausgenommen. Namen nie loggen. Regeln: `docs/security-architecture.md` §6f.
+
+`UserStore.onChange(listener)` ist der Change-Hook der `users`-Tabelle: feuert
+nach `create`, `createFirstAdmin` (nach COMMIT), `upsertOidcIdentity`,
+`update` mit Namens- oder Statusänderung und erfolgreichem `deleteById`
+(nicht `markLoginNow`). Wer `users` an `UserStore` vorbei schreibt, umgeht ihn;
+dann greift nur der 5-Minuten-TTL des Snapshots. Ein Listener-Fehler wird
+geloggt und bricht den Write nicht ab.
+
 ### Plugin-Tool-Readiness-Gate (#474)
 
 `Orchestrator.isToolAvailable(agentId)` entscheidet pro Tool, ob es dem

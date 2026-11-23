@@ -266,6 +266,17 @@ export const CHAT_PEER_AGENTS_SERVICE = 'chatPeerAgents';
  */
 export const HUMAN_NAMES_SERVICE = 'humanNames';
 export type HumanNamesProvider = () => readonly string[] | null;
+
+/**
+ * #2042 — the registry agents' `humanNames`: the kernel's `humanNames@1`
+ * snapshot, looked up per turn. A service that is not published (yet) yields
+ * `null` — unknown, so the turn exempts no own name (fail safe).
+ */
+export function kernelHumanNames(
+  services: Pick<PluginContext['services'], 'getOptional'>,
+): () => readonly string[] | null {
+  return () => services.getOptional<HumanNamesProvider>(HUMAN_NAMES_SERVICE)?.() ?? null;
+}
 /** #2043 — kernel-published lookup, see `OrchestratorDeps.isEngineDrivenConversation`. */
 export const FACILITATOR_CONVERSATIONS_SERVICE = 'facilitatorConversations';
 
@@ -1438,10 +1449,9 @@ export async function activate(
           ...(loopRepeatSoft > 0 ? { loopRepeatSoft } : {}),
           ...(loopRepeatHard > 0 ? { loopRepeatHard } : {}),
           // #2042 — the registry runs only with a database, where the kernel
-          // publishes `humanNames@1`; not published yet = unknown, so the
-          // turn exempts no own name (fail safe).
-          humanNames: () =>
-            ctx.services.getOptional<HumanNamesProvider>(HUMAN_NAMES_SERVICE)?.() ?? null,
+          // publishes `humanNames@1`; not published = unknown, so the turn
+          // exempts no own name (fail safe).
+          humanNames: kernelHumanNames(ctx.services),
         },
         ...(pluginLookup ? { pluginLookup } : {}),
         log: (msg, fields) =>
