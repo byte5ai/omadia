@@ -83,7 +83,7 @@ describe('ConductorWebhookSubscriptionStore (pg)', { skip: !pgAvailable }, () =>
 
   /** Creates a real workflow + published version + run driven all the way to a
    *  terminal status — the exact row shape `listMissingRunDeliveries` JOINs against. */
-  async function terminalRun(status: 'completed' | 'failed', opts?: { isDryRun?: boolean }): Promise<string> {
+  async function terminalRun(status: 'completed' | 'failed' | 'cancelled', opts?: { isDryRun?: boolean }): Promise<string> {
     const slug = `${MARK}-${randomUUID().slice(0, 8)}`;
     const graph = { entryStepId: 's1', steps: [{ id: 's1', kind: 'action', actionId: 'noop' }], transitions: [] };
     const { version } = await workflowStore.createOrPublish({ slug, name: slug, graph: graph as never, enable: true });
@@ -215,6 +215,28 @@ describe('ConductorWebhookSubscriptionStore (pg)', { skip: !pgAvailable }, () =>
       assert.ok(
         !missing.some((m) => m.runId === completedRunId && m.subscriptionId === subscriptionId),
         'the completed run must not match THIS run.failed subscription',
+      );
+    });
+
+    // #1705 — a cancelled run used to be excluded from the reconciliation pass
+    // entirely (`status IN ('completed','failed')`), so a cancel lost to a crash in
+    // the fire-and-forget window was unrecoverable, and a `run.cancelled`
+    // subscription had nothing that could ever match it.
+    it('reconciles a cancelled run against a run.cancelled subscription only', async () => {
+      const cancelledSub = await newSubscription('run.cancelled');
+      const failedSub = await newSubscription('run.failed');
+      const cancelledRunId = await terminalRun('cancelled');
+      const sinceIso = new Date(Date.now() - 60_000).toISOString();
+
+      const missing = await store.listMissingRunDeliveries(sinceIso);
+      assert.deepEqual(
+        missing.filter((m) => m.runId === cancelledRunId),
+        [{ runId: cancelledRunId, status: 'cancelled', subscriptionId: cancelledSub }],
+        'the cancelled run must be reconciled for the run.cancelled subscription and no other',
+      );
+      assert.ok(
+        !missing.some((m) => m.runId === cancelledRunId && m.subscriptionId === failedSub),
+        'a cancel must not reconcile into a run.failed subscription',
       );
     });
 

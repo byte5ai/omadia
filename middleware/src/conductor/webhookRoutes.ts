@@ -25,6 +25,7 @@ import { auditActorFromRequest } from '../auth/adminAuditLog.js';
 import type { WebhookAuditChange } from '../auth/adminAuditLog.js';
 import type { ConductorRouterDeps } from './routes.js';
 import type { ConductorWebhookEndpoint } from './webhookEndpointStore.js';
+import { CONDUCTOR_WEBHOOK_EVENTS, isConductorWebhookEvent } from './webhookEvents.js';
 
 /**
  * #1707 — the operator-visible state of the webhook surface, served verbatim by
@@ -311,6 +312,17 @@ export function registerWebhookRoutes(router: Router, deps: ConductorRouterDeps)
     const event = typeof body.event === 'string' ? body.event.trim() : '';
     if (!url || !event) {
       res.status(400).json({ code: 'conductor.invalid_input', message: 'url and event are required' });
+      return;
+    }
+    // #1705 — a subscription to an event that never fires used to be accepted with a
+    // 201 and then stay silent forever (the column is free text). Refuse it here
+    // instead: the vocabulary is `CONDUCTOR_WEBHOOK_EVENTS`, and the message names it
+    // so the operator can correct the request.
+    if (!isConductorWebhookEvent(event)) {
+      res.status(400).json({
+        code: 'conductor.invalid_input',
+        message: `unknown event '${event}' — must be one of: ${CONDUCTOR_WEBHOOK_EVENTS.join(', ')}`,
+      });
       return;
     }
     // #1707 — absent or non-boolean means NO context. The opt-in has to be explicit:
