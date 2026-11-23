@@ -10708,7 +10708,7 @@ Spec 2042 §5.10, ADR-0014/0017. Folgt auf S3b (#2152).
 - **Builder-Boilerplates:** `piiFields` auf dem `ToolDescriptor`,
   `registerTools.ts` reicht sie an `ctx.tools.register` weiter.
 - **Receipt:** deklarierte PII-Spalten zählen zu den PII-Pfaden für
-  `identityValuesOnWire` (privacy-guard 0.16.2), auch ohne Klassifikator.
+  `identityValuesOnWire` (privacy-guard 0.16.3), auch ohne Klassifikator.
 - **Ungültige Archetype-Grants:** ein Grant eines Archetype-Plugins an einem
   Agenten eines anderen Archetyps (Altbestand vor #2088, z. B. die
   Facilitation-Engine am `fallback`) wird beim Boot und bei jeder

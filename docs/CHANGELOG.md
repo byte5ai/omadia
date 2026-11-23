@@ -47,7 +47,7 @@ changelog.
   (plugin-api `NativeToolResult`): the limit note reaches the model, a postcondition the
   verifier; `structured` never reaches the model.
 - Plugin Builder boilerplates pass a tool's `piiFields` to `ctx.tools.register`; declared PII
-  columns count toward the receipt's identity count (privacy-guard 0.16.2).
+  columns count toward the receipt's identity count (privacy-guard 0.16.3).
 - A grant of an archetype plugin on an agent of another archetype (from before #2088) is
   removed at boot, and no longer blocks replacing that agent's grants.
 
