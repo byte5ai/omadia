@@ -112,7 +112,7 @@ import {
   type MaintenanceRunService,
 } from '@omadia/plugin-api';
 import { createModelPassthrough, systemModuleOnlyService } from './platform/modelPassthrough.js';
-import { archetypeProcessesServiceName, type ArchetypeProcessesService } from '@omadia/plugin-api';
+import { archetypeProcessesServiceName, SYSTEM_SPEAKER, type ArchetypeProcessesService } from '@omadia/plugin-api';
 import type { TranscriptionService } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
 import { createReceiptRoutes } from './receipts/routes.js';
@@ -3831,7 +3831,8 @@ async function main(): Promise<void> {
     askOwner: async (routine, text) => {
       const sender = routinesHandle?.senderRegistry.get(routine.channel);
       if (!sender) throw new Error(`no proactive sender for channel '${routine.channel}'`);
-      await sender.send({ conversationRef: routine.conversationRef, message: { text } });
+      // The renewal question is a harness template, not the agent's words (INV-4).
+      await sender.send({ conversationRef: routine.conversationRef, message: { text, speaker: SYSTEM_SPEAKER } });
     },
     limits: () => triggersRef.current?.service.limits ?? DEFAULT_TRIGGER_LIMITS,
     language: () => {

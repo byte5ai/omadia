@@ -4,7 +4,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { ChatAgent, ChatStreamEvent, SemanticAnswer } from '@omadia/channel-sdk';
+import type { ChatAgent, ChatStreamEvent, SemanticAnswer, TargetedMessage, TargetedSendProvider } from '@omadia/channel-sdk';
 import { SYSTEM_SPEAKER, type AgentSpeaker, type Contribution } from '@omadia/plugin-api';
 
 import { withSpeaker, speakerOf, emitterOf } from '../packages/harness-orchestrator/src/management/speakingChatAgent.js';
@@ -16,6 +16,8 @@ import { IdentityGuard } from '../packages/harness-orchestrator/src/identityGuar
 import { withIdentityGuard } from '../packages/harness-orchestrator/src/identityGuard/guardedChatAgent.js';
 import type { GuardDirectoryEntry } from '../packages/harness-orchestrator/src/identityGuard/deterministic.js';
 import { publishRoutineAnswer } from '../src/plugins/routines/routineRunner.js';
+import { createTargetedDeliveryService } from '../src/channels/targetedDeliveryService.js';
+import type { TargetedSendRegistry } from '../src/channels/targetedSendRegistry.js';
 
 import { BLOCKED, CHUNK_SEEDS, GUARD_COLLEAGUES, chunk } from './_helpers/identityGuardCases.js';
 
@@ -385,4 +387,100 @@ describe('every emitter names its speaker (criterion 5)', () => {
     const unaccounted = found.filter((file) => EMITTERS[file] === undefined);
     assert.deepEqual(unaccounted, [], 'new emitter(s) without a speaker stamp — add them to EMITTERS with the stamp that covers them');
   });
+
+  it('criterion 5: every proactive post path (say, conversation send, DM, trigger and routine delivery, reminders) is enumerated and carries a speaker', () => {
+    const found = kernelSources()
+      .filter((file) => POSTS.test(readFileSync(file, 'utf8')))
+      .map((file) => path.relative(MIDDLEWARE, file).split(path.sep).join('/'))
+      .sort();
+    assert.deepEqual(
+      found.filter((file) => PROACTIVE_POSTS[file] === undefined),
+      [],
+      'new proactive post path(s) — add them to PROACTIVE_POSTS with the stamp that names the speaker',
+    );
+    for (const [file, { stamp, proofIn, proof }] of Object.entries(PROACTIVE_POSTS)) {
+      assert.ok(found.includes(file), `${file} no longer posts — remove it from PROACTIVE_POSTS`);
+      const source = readFileSync(path.join(MIDDLEWARE, proofIn ?? file), 'utf8');
+      assert.match(source, proof, `${file}: the speaker stamp is gone (${stamp})`);
+    }
+  });
+
+  it('criterion 5: a DM through the shared bot reaches the channel with the system speaker', async () => {
+    const seen: TargetedMessage[] = [];
+    const provider: TargetedSendProvider = {
+      channelType: 'teams',
+      sendToUser: async (_target, message) => {
+        seen.push(message);
+        return { outcome: 'delivered' };
+      },
+    };
+    const service = createTargetedDeliveryService({
+      providers: { get: () => provider } as unknown as TargetedSendRegistry,
+    });
+    const report = await service.sendToPrincipal({ channelType: 'teams', principal: 'user:anna', message: { text: 'Bitte freigeben.' } });
+    assert.equal(report.deliveries[0]?.outcome.outcome, 'delivered');
+    assert.deepEqual(seen[0]?.speaker, SYSTEM_SPEAKER);
+  });
 });
+
+/**
+ * Criterion 5, proactive half — a kernel call that posts into a channel
+ * outside a turn's answer. The stamp names the speaker: an agent's own
+ * channel identity (`asChannelKey`, refused when the agent has none), a
+ * stamped `SemanticAnswer.speaker`, or `system` for the harness's own
+ * messages. `proof` must stay in the source (in `proofIn` when the stamp is
+ * set before the message reaches the sending file).
+ */
+const PROACTIVE_POSTS: Readonly<Record<string, { stamp: string; proof: RegExp; proofIn?: string }>> = {
+  'src/conductor/sayService.ts': {
+    stamp: 'facilitation say: posted as the agent’s own identity, never another bot',
+    proof: /asChannelKey: identity\.channelKey/,
+  },
+  'src/channels/conversationSendService.ts': {
+    stamp: 'conversationSend@1: posted as the requesting agent’s own identity (agentSlug)',
+    proof: /provider\.sendToConversation\(input\.conversationId, marked\.message, \{ asChannelKey \}\)/,
+  },
+  'src/channels/scopedSendService.ts': {
+    stamp: 'scoped conversation send: delegates to conversationSendService with the agentSlug',
+    proof: /agentSlug: request\.agentSlug/,
+  },
+  'src/channels/ownIdentityDirectSend.ts': {
+    stamp: 'targetedSend asAgentSlug: DM as the agent’s own identity',
+    proof: /asChannelKey: identity\.channelKey/,
+  },
+  'src/channels/targetedDeliveryService.ts': {
+    stamp: 'targetedSend through the shared bot: speaker system',
+    proof: /\{ \.\.\.message, speaker: SYSTEM_SPEAKER \}/,
+  },
+  'src/triggers/proactiveGate.ts': {
+    stamp: 'trigger delivery: the trigger owner’s speaker, stamped by the kernel executors',
+    proofIn: 'src/triggers/kernelExecutors.ts',
+    proof: /const speaker = deps\.speakerOf\?\.\(trigger\.agentSlug\);\s*return deps\.gate\.send\(trigger, speaker \? \{ \.\.\.message, speaker \} : message\)/,
+  },
+  'src/plugins/routines/routineRunner.ts': {
+    stamp: 'routine delivery: publishRoutineAnswer through the agent emitter',
+    proof: /const answer = await asAgentTurn\(\(\) => publishRoutineAnswer\(orchestrator, finished\)\);\s*await sender\.send\(\{\s*conversationRef: fresh\.conversationRef,\s*message: answer,/,
+  },
+  'src/conductor/awaitWorker.ts': {
+    stamp: 'workflow reminder: speaker system',
+    proof: /message: \{ text, speaker: SYSTEM_SPEAKER \}/,
+  },
+  'src/index.ts': {
+    stamp: 'routine renewal question: speaker system',
+    proof: /conversationRef: routine\.conversationRef, message: \{ text, speaker: SYSTEM_SPEAKER \}/,
+  },
+};
+
+const POSTS = /\.sendToConversation\(|\.sendToUser\(|\.send\(\s*\{\s*conversationRef/;
+
+function kernelSources(): string[] {
+  return [path.join(MIDDLEWARE, 'src'), ...readdirSync(path.join(MIDDLEWARE, 'packages')).map((p) => path.join(MIDDLEWARE, 'packages', p, 'src'))]
+    .filter((root) => {
+      try {
+        return statSync(root).isDirectory();
+      } catch {
+        return false;
+      }
+    })
+    .flatMap((root) => sources(root));
+}

@@ -15,6 +15,7 @@ import type {
   TargetedSendReport,
 } from '@omadia/channel-sdk';
 import { parsePrincipal } from '@omadia/channel-sdk';
+import { SYSTEM_SPEAKER } from '@omadia/plugin-api';
 
 import { sendDirectAsOwnIdentity } from './ownIdentityDirectSend.js';
 import type { OwnIdentityDeps } from './ownIdentitySend.js';
@@ -92,9 +93,11 @@ export function createTargetedDeliveryService(deps: {
       const conversationRef = refs.get(principalId);
       let outcome: TargetedDeliveryOutcome;
       try {
+        // Spec 2042 INV-4: the channel's shared bot is no agent; what it
+        // posts for a plugin is from `system`.
         outcome = await provider.sendToUser(
           { principalId, ...(conversationRef !== undefined ? { conversationRef } : {}) },
-          message,
+          { ...message, speaker: SYSTEM_SPEAKER },
         );
       } catch (err) {
         // Providers should RETURN unreachability; a throw is still confined to

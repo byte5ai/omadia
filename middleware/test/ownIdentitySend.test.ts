@@ -486,7 +486,8 @@ describe('own-identity sends', () => {
       assert.deepEqual(sent, [
         {
           target: ANNA,
-          message: { text: 'Approval needed.' },
+          // Spec 2042 INV-4: the shared bot posts from `system`.
+          message: { text: 'Approval needed.', speaker: { kind: 'system' } },
           opts: undefined,
           userRef: undefined,
           conversationRef: { ref: 'default-bot-1:1' },
