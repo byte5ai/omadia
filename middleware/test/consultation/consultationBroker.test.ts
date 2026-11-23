@@ -21,6 +21,7 @@ import {
   type ConsultRequest,
   type DiscretionLabel,
   type LabelSet,
+  type Readers,
 } from '@omadia/orchestrator';
 import {
   consultationEnvelope,
@@ -40,6 +41,7 @@ interface Seen {
   memoryAccess: string;
   input: ChatTurnInput;
   initialLabels: LabelSet | undefined;
+  readers: Readers | undefined;
 }
 
 /** A colleague whose run reports `labels` (per attempt) and answers `text`. */
@@ -78,6 +80,7 @@ function colleague(opts: {
               memoryAccess: scope.memoryAccess,
               input,
               initialLabels: scope.initialLabels,
+              readers: scope.readers,
             });
             if (opts.fail) throw new Error('model down');
             scope.result.labels = unionLabels([salesLabel], opts.labels?.(attempt, scope.memoryAccess) ?? []);
@@ -255,6 +258,7 @@ describe('consultation broker', () => {
       callId: 'c',
       allowedPluginIds: new Set(['@omadia/crm']),
       memoryAccess: 'none' as const,
+      readers: salesReaders,
       result: {},
     };
     runAsConsultation(scope, () => {
@@ -448,6 +452,9 @@ describe('consultation broker', () => {
     assert.equal(out.kind, 'answered');
     // B's turn starts with what A had read: its own egress checks see it.
     assert.ok(seen[0]!.initialLabels?.labels.some((l) => l.kind === 'source' && l.system === '@omadia/odoo-hr'));
+    // B answers into A's room: its conversation label carries A's readers,
+    // never an `unknown` of its own that would stick to A's conversation.
+    assert.deepEqual(seen[0]!.readers, salesReaders);
   });
 
   it('depth 1: no consultation starts inside a consultation run', async () => {
@@ -463,6 +470,7 @@ describe('consultation broker', () => {
       callId: 'c',
       allowedPluginIds: new Set<string>(),
       memoryAccess: 'none' as const,
+      readers: salesReaders,
       result: {},
     };
     const out = await inTurn(() => runAsConsultation(scope, () => broker.consult(request())));
