@@ -36,6 +36,15 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the identity judge has room to think (spec 2042 §5.5, live canvas)
+
+- After #2175 logged why the guard was unavailable, "wer bist du" to Dark Clippy was withheld
+  in 3 of 4 runs with `identity judge gave no verdict: ""`. The judge runs on the agent's own
+  model when it has no classifier model, and Opus 5.5 always thinks: its thinking spent the
+  judge's 8 output tokens and no word was left. The judge now has the same thinking budget as
+  the other one-word classifiers (`IDENTITY_JUDGE_MAX_TOKENS = 1024`, a ceiling, not spend)
+  and asks for low effort with thinking off where the model allows it.
+
 ### Fixed — a self-description is no replayed failure (spec 2042, live canvas)
 
 - "wer bist du" to Dark Clippy was withheld in 2 of 4 runs as `tool_not_called`: the

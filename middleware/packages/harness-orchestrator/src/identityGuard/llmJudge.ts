@@ -11,9 +11,15 @@ import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
 import { recordUsage } from '@omadia/usage-telemetry';
 
+import { IDENTITY_JUDGE_MAX_TOKENS } from '../classifierBudgets.js';
 import type { IdentityJudge, IdentityJudgeRequest, IdentityJudgeVerdict } from './guard.js';
 
-const JUDGE_MAX_TOKENS = 8;
+/**
+ * As little reasoning as the model allows: the verdict is one word, and the
+ * guard's timeout (8 s) bounds the whole call. Both are hints adapters apply
+ * where the model takes them (the same pair the verifier and fast path send).
+ */
+const JUDGE_REASONING = { effort: 'low', thinking: 'off' } as const;
 /** How much of the answer the judge sees, from its end. */
 const JUDGE_MAX_CHARS = 8_000;
 
@@ -53,12 +59,15 @@ export function createLlmIdentityJudge(options: {
   return {
     async judge(request: IdentityJudgeRequest, signal: AbortSignal): Promise<IdentityJudgeVerdict> {
       // The provider API takes no abort signal: a timed-out call finishes in
-      // the background (bounded by JUDGE_MAX_TOKENS) and its verdict is
+      // the background (bounded by IDENTITY_JUDGE_MAX_TOKENS) and its verdict is
       // ignored; the guard has already failed closed.
       if (signal.aborted) throw new Error('identity judge aborted');
       const res = await options.provider.complete({
         model: options.model,
-        maxTokens: JUDGE_MAX_TOKENS,
+        // Room for the thinking of an always-thinking model before its one
+        // word; a ceiling, not spend (see classifierBudgets.ts).
+        maxTokens: IDENTITY_JUDGE_MAX_TOKENS,
+        ...JUDGE_REASONING,
         temperature: 0,
         system: system(request),
         // The END of the answer: the guard sends all text so far, and the

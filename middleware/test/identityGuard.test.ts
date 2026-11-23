@@ -14,7 +14,13 @@ import {
   type IdentityJudge,
   type IdentityGuardResult,
 } from '../packages/harness-orchestrator/src/identityGuard/guard.js';
-import { parseJudgeVerdict } from '../packages/harness-orchestrator/src/identityGuard/llmJudge.js';
+import type { LlmProvider, LlmRequest, LlmResponse } from '@omadia/llm-provider';
+
+import { IDENTITY_JUDGE_MAX_TOKENS } from '../packages/harness-orchestrator/src/classifierBudgets.js';
+import {
+  createLlmIdentityJudge,
+  parseJudgeVerdict,
+} from '../packages/harness-orchestrator/src/identityGuard/llmJudge.js';
 
 import { BLOCKED, CHUNK_SEEDS, GUARD_COLLEAGUES, chunk } from './_helpers/identityGuardCases.js';
 
@@ -343,5 +349,48 @@ describe('identity guard — the judge reply', () => {
     for (const reply of ['', 'I think', 'DO NOT PASS', 'PASSED', '...']) {
       assert.throws(() => parseJudgeVerdict(reply), /no verdict/);
     }
+  });
+});
+
+describe('identity guard — the judge call on an always-thinking model', () => {
+  /** A provider that, like Opus 5.5, spends its thinking from max_tokens:
+   *  below the thinking it needs, the reply carries no text at all. */
+  function thinkingProvider(thinkingTokens: number, seen: LlmRequest[]): LlmProvider {
+    return {
+      id: 'fake-thinking',
+      async complete(req: LlmRequest): Promise<LlmResponse> {
+        seen.push(req);
+        const room = req.maxTokens - thinkingTokens;
+        return {
+          content: room > 0 ? [{ type: 'text', text: 'PASS' }] : [],
+          finishReason: room > 0 ? 'stop' : 'max_tokens',
+          model: req.model,
+          usage: { inputTokens: 100, outputTokens: Math.min(req.maxTokens, thinkingTokens + 1) },
+        };
+      },
+    } as unknown as LlmProvider;
+  }
+
+  const request = {
+    speakerName: 'Dark Clippy',
+    colleagues: [],
+    text: 'Ich bin Dark Clippy, ein KI-Agent und kein Mensch.',
+  };
+
+  it('leaves room for thinking before the one-word verdict (live 2026-11-23: 3 of 4 empty replies)', async () => {
+    const seen: LlmRequest[] = [];
+    const judge = createLlmIdentityJudge({ provider: thinkingProvider(200, seen), model: 'claude-opus-5-5' });
+    const verdict = await judge.judge(request as never, new AbortController().signal);
+    assert.deepEqual(verdict, { verdict: 'pass' });
+    assert.equal(seen[0]?.maxTokens, IDENTITY_JUDGE_MAX_TOKENS);
+    assert.ok(IDENTITY_JUDGE_MAX_TOKENS >= 1024);
+  });
+
+  it('asks for as little reasoning as the model allows', async () => {
+    const seen: LlmRequest[] = [];
+    const judge = createLlmIdentityJudge({ provider: thinkingProvider(0, seen), model: 'claude-haiku-5-5' });
+    await judge.judge(request as never, new AbortController().signal);
+    assert.equal(seen[0]?.effort, 'low');
+    assert.equal(seen[0]?.thinking, 'off');
   });
 });
