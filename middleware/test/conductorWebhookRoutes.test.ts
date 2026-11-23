@@ -392,6 +392,30 @@ describe('outbound webhook subscriptions admin routes (#437)', () => {
     assert.equal((await post(`${h.baseUrl}/webhooks/subscriptions`, { url: 'https://example.com/hook' })).status, 400);
   });
 
+  // #1705 — an operator cancel now has its own event name, and a subscription to a
+  // name that nothing fires is refused instead of accepted-and-silent.
+  it('creates a run.cancelled subscription', async () => {
+    const h = await makeHarness();
+    const res = await post(`${h.baseUrl}/webhooks/subscriptions`, { url: 'https://example.com/hook', event: 'run.cancelled' });
+    assert.equal(res.status, 201);
+    const body = (await res.json()) as { subscription: ConductorWebhookSubscription };
+    assert.equal(body.subscription.event, 'run.cancelled');
+  });
+
+  it('400s a create for an event that never fires, WITHOUT ever calling the store', async () => {
+    const h = await makeHarness();
+    const res = await post(`${h.baseUrl}/webhooks/subscriptions`, { url: 'https://example.com/hook', event: 'run.exploded' });
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { code: string; message: string };
+    assert.equal(body.code, 'conductor.invalid_input');
+    assert.match(body.message, /run\.cancelled/, 'the message must name the events an operator CAN subscribe to');
+    assert.deepEqual(
+      ((await (await get(`${h.baseUrl}/webhooks/subscriptions`)).json()) as { subscriptions: unknown[] }).subscriptions,
+      [],
+      'a refused event must not leave a subscription row behind',
+    );
+  });
+
   it('400s a create whose URL the SSRF guard rejects, WITHOUT ever calling the store', async () => {
     const h = await makeHarness({ rejectUrl: 'http://169.254.169.254/latest/meta-data' });
     const res = await post(`${h.baseUrl}/webhooks/subscriptions`, {
