@@ -8,7 +8,7 @@ was read, not matched by name. Paths are relative to `middleware/` unless they s
 `web-ui/` or name a channel repository. `*.pg.test.ts` needs Postgres and skips without
 one, so the gate must run `npm run test:pg` against a database.
 
-**Result: 32 of 40 green (G4 adds 5, 10, 30), 8 partial, none missing.** The partial ones are listed with what
+**Result: 37 of 40 green, 3 partial (12, 24, 37), none missing.** The partial ones are listed with what
 remains. Most of the remainder is not a missing test but a missing implementation; those
 items are marked **not implemented**.
 
@@ -16,7 +16,7 @@ items are marked **not implemented**.
 
 | # | Criterion | Status | What remains |
 |---|---|---|---|
-| 1 | Strategist regression | partial | omadia-ui (desktop) has no test that a canvas turn sends `agentId`; real Teams/desktop only live |
+| 1 | Strategist regression | green | real Teams/desktop rendering only live |
 | 2 | Identity guard | green | |
 | 3 | Consultation views | green | |
 | 4 | Consultation limits | green | |
@@ -44,11 +44,11 @@ items are marked **not implemented**.
 | 26 | Deterministic firings | green | |
 | 27 | Labels persist | green | |
 | 28 | Kept advantages | green | |
-| 29 | Uncluttered answers | partial | trace reference in answer details and "by asking" **not implemented** in the kernel |
+| 29 | Uncluttered answers | green | real-platform rendering only live |
 | 30 | Channel parity | green | Telegram, Discord, iMessage keep their own pending-reply store (same behaviour, tested); Slack and WhatsApp use the SDK's |
 | 31 | Justified decorations | green | fixed in this branch (web chat) |
 | 32 | Waiting is not failing | green | |
-| 33 | Fast lane under the guard | partial | check of the planner summary against boundaries **not implemented** |
+| 33 | Fast lane under the guard | green | |
 | 34 | No claim to be human | green | |
 | 35 | Boundaries on data paths | green | |
 | 36 | Selection vs binding | green | |
@@ -75,12 +75,12 @@ items are marked **not implemented**.
 
 ## Criteria in detail
 
-### 1. Strategist regression — partial
+### 1. Strategist regression — green
 - Explicit address reaches the named agent, never another: `test/chatRouterAgentRouting.test.ts` :: `3: explicit slug active → that agent serves`; `test/channelResolverExplicitAgent.test.ts` :: `#2059: the named agent answers, not the default and not a binding`; `test/managementRouter.test.ts` :: `an explicit address to an unknown agent is refused, not rerouted`.
 - Trace shows the agent id: `test/strategistTraceAndTools.test.ts` (run trace and speaker carry the Strategist's id; `criterion 1: the second agent answers with its own id, never the Strategist’s`).
 - Never a hidden tool: `test/strategistTraceAndTools.test.ts` :: `criterion 1: no tool offered to the second agent reaches the Strategist`; `test/orchestrator/hashNameIsOrdinaryText.test.ts`.
 - Teams: `test/channelIdentityRouting.test.ts` :: `two provisioned bots in one chat route to two different agents`; Teams `tests/agentForTurn.test.ts`.
-- Desktop: kernel `test/dispatcherAgentAddressing.test.ts` :: `two canvases, two agents: each turn reaches its own agent and no model sits in front`. **Remaining:** omadia-ui has no test that the turn frame carries `agentId` (mobile has `wireTap.test.ts` :: `sends the agentId with the turn`).
+- Desktop: kernel `test/dispatcherAgentAddressing.test.ts` :: `two canvases, two agents: each turn reaches its own agent and no model sits in front`. omadia-ui (byte5ai/omadia-ui#68, merged dbc7f0c3): `app/test/renderer/turnAgentId.test.ts` :: `a text turn carries the agentId of its canvas`, `a canvas without an agent (or an unknown canvas) sends no turn`; `app/test/node/canvasSocket.test.ts` :: `puts the turn on the wire with its agentId unchanged`; mobile `wireTap.test.ts` :: `sends the agentId with the turn`.
 
 ### 2. Identity guard — green
 - `test/identityGuard.test.ts`: `blocks: …` for self-rename, quote, invented statement and human claim, DE and EN; `blocks with random chunk boundaries: …` (5 seeds); `catches a claim split across chunks before any of it is visible`; `fails closed when the judge times out`; `blocks the rest when the model layer times out mid-stream`.
@@ -96,7 +96,7 @@ items are marked **not implemented**.
 - `test/consultation/discussionGrants.test.ts` :: `without mutual grants the partner is not a candidate and the start is refused`, `criterion 4: production wires the mutual-grant check into the only discussion capability it builds`.
 - `test/consultation/consultation.pg.test.ts` :: `a directed grant defaults to nothing, can be narrowed and is revoked by delete`.
 
-### 5. Speaker everywhere — partial
+### 5. Speaker everywhere — green
 - Kernel enumeration: `test/speakerEmission.test.ts` :: `no file produces an answer without being accounted for` and `criterion 5: every proactive post path (say, conversation send, DM, trigger and routine delivery, reminders) is enumerated and carries a speaker`, `criterion 5: a DM through the shared bot reaches the channel with the system speaker`.
 - Web: `web-ui/app/_lib/__tests__/chatStreamSpeaker.test.ts`; public API: `test/channelApi/apiChannelBindingRouting.test.ts` (agent and `system` speaker).
 - Channels: Telegram `tests/telegramEmitterPaths.test.ts`; Slack `tests/outbox.test.ts`, `tests/turn.test.ts` :: `every output of every emitter path carries a speaker (criterion 5)`; Discord `test/emitters.test.ts`; WhatsApp `tests/emitter.test.ts`; Teams `tests/teamsManagementLayer.test.ts`; omadia-ui `agentsStore.test.ts`; mobile `agentView.test.ts`.
@@ -118,7 +118,7 @@ items are marked **not implemented**.
 ### 9. No super-agent out of the box — green
 - `test/leastPrivilegeByDefault.test.ts` :: `a fresh installation with five plugins installed has no agent holding any of them; a sixth attaches to no agent`, now with store-backed boot hooks and a pinned hook list.
 
-### 10. Pace — partial
+### 10. Pace — green
 - SDK: `test/channelPace.test.ts` :: `acknowledges once after the threshold, in the agent locale, without a model`, `marks work that outlives the reply window as a follow-up`.
 - Channels: Teams `tests/teamsAnswerDelivery.test.ts`; Telegram `tests/telegramPace.test.ts`; Slack `tests/turn.test.ts` (ack and `response_url` follow-up); Discord `test/pace.test.ts`; WhatsApp `tests/pace.test.ts`.
 - Reply window decided (omadia-channel-teams#42 → #69): 15 s, a longer message turn is answered as a proactive follow-up (`tests/teamsReplyWindow.test.ts`: window, no window, failing follow-up).
@@ -193,11 +193,11 @@ items are marked **not implemented**.
 - Helper: `test/internalHelperTurn.test.ts` :: `a helper runs on a cheaper model within the agent budget and is never named to the user`.
 - Working mode: `test/orchestrator/workingModes2051.test.ts`. Routine: `test/routineTriggers.pg.test.ts` :: `criterion 28: the owner pauses, resumes and deletes; the trigger follows`. Sync recovery: `test/jobScheduler.test.ts` :: `backs a failing job off to recovery probes and resets on the first success`.
 
-### 29. Uncluttered answers — partial
+### 29. Uncluttered answers — green
 - Teams: `tests/teamsCard.test.ts` :: `snapshot: chip plus text, no buttons, no footer, no details`, `channel_default: a chip on every card, …`; Telegram `tests/telegramPlainText.test.ts` :: `sends the text and nothing else: no markup, no reaction, no footer`; web: `web-ui/app/chat/__tests__/answerDecorations.test.tsx` (`criterion 29: verification, system data, trace and consulted agents are inside the collapsed answer details`).
-- **Not implemented:** `AnswerDetails` (`packages/harness-channel-sdk/src/answerDetails.ts`) has no trace reference, `SemanticAnswer` has no `turnId`, `answerDetailsText`/`buildAnswerDetails` have no kernel caller, and nothing gives the agent the previous turn's verification when asked. Telegram declares no answer details, so it has no route to the trace.
+- Trace reference and "by asking": `test/answerDetailsRecall.test.ts` :: `toSemanticAnswer forwards the turn id; the details carry it as the trace reference`, `the next turn of the same conversation gets the record; the body is untouched` (verification, system data, colleagues, privacy counts, trace id; no value), `streaming: the record follows done and a trailing shadow verdict`, `a withheld answer (system notice) records nothing; conversations stay apart`, `a fast-lane answer (a table from the source system) is recorded as system data, not denied`, `a failed turn clears the record: …`, `a verifier correction retry keeps the record and adds the correction`; wiring `test/fastPathChatTriage.test.ts` :: `criterion 6 / 28: …` (the agent loop's model request carries the record, the fast lane stays on). Kernel: `packages/harness-orchestrator/src/answerDetailsRecall.ts`. Telegram has no details element; its route is asking the agent.
 
-### 30. Channel parity — partial
+### 30. Channel parity — green
 - Choosing an agent, contribution and poll answer in Telegram and Teams: Telegram `tests/telegramAgentRouting.test.ts`, `tests/telegramFacilitationEvents.test.ts`; Teams `tests/teamsManagementLayer.test.ts`, `tests/teamsPlainTextParity.test.ts`; kernel `test/agentOwnBotCardAnswer.test.ts`, `test/typedCardReplies.test.ts`.
 - Enumeration: `test/channelSdkPlainText.test.ts` (every card question kind and interactive element has a plain-text path).
 - A typed "2" to a `choice`/`topic`/`slots` element becomes the option's value: `test/channelSdkPlainText.test.ts` :: `criterion 30: a typed reply to an answer element becomes the chosen value` (choice, topic by number/label, slot booking message, unnamed option stays a message, spent after one use, TTL); Slack `tests/turn.test.ts` :: `a typed "2" to a numbered question reaches the agent as the option it names`, WhatsApp `tests/pace.test.ts` :: `a typed "2" to a numbered question`; Telegram `tests/telegramPlainText.test.ts` :: `a slot question is numbered text and the pick books the slot` (own store), Discord `test/parity.test.ts` :: `answering a poll: a numbered question is answered by typing the number` (own store), iMessage `tests/plugin.integration.test.ts` :: `turns a bare number into the option it names, once` (own store).
@@ -209,9 +209,9 @@ items are marked **not implemented**.
 ### 32. Waiting is not failing — green
 - `test/agentTriggers.pg.test.ts` :: `five empty checks, then an overdue invoice on the sixth: it still acts`.
 
-### 33. Fast lane under the guard — partial
+### 33. Fast lane under the guard — green
 - `test/fastLaneIdentityGuard.test.ts` :: `a planner summary claiming another agent is blocked, streamed and not`; `test/dataPlanBoundaries.test.ts` :: `criterion 33: a ranking plan cached without boundaries is re-checked after no-rankings: refused and evicted`, `criterion 33: an edit of the agent's boundaries rebuilds the agent, and with it its data-plan guard`.
-- **Not implemented:** the planner summary text is never checked against the boundaries (identity guard only, `packages/fast-path/src/fastPathAgent.ts`); boundaries reach only the system prompt and the data-plan description.
+- Summary against the boundaries: `test/fastLaneSummaryBoundaries.test.ts` :: `a summary contradicting a free-text boundary is refused before anything runs; the agent takes the turn`, `the same summary as a cache hit is refused and evicted`, `a summary that keeps the boundaries is answered; the judge sees the shield-masked template and labels`, `presets with a text constraint are decided without a model`, `fails closed: no judge for model rules, a throwing judge, a timeout`. Kernel: `packages/harness-orchestrator/src/summaryBoundaryGuard.ts`, run by `packages/harness-plugin-fast-path/src/service.ts` (`checkSummary`).
 
 ### 34. No claim to be human — green
 - `test/identityGuard.test.ts` :: `blocks: human DE`, `blocks: human EN`, `blocks: human EN not a bot` and their streaming variants; `passes: honest AI EN/DE`.

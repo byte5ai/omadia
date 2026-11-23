@@ -645,7 +645,12 @@ describe('fast-path chat triage — orchestrator wiring', () => {
     assert.ok(missDone.answer.startsWith(answerText));
     assert.equal(missDone.speaker?.kind === 'agent' && missDone.speaker.agentId, AGENT_ROW.id, 'the same agent');
     assert.ok(missDone.aiDisclosure);
-    assert.equal(triaged, 3);
+    assert.equal(triaged, 3, 'the record of a previous answer never turns the fast lane off');
+    // Criterion 29 — the agent loop gets the record of the previous answer.
+    assert.ok(
+      JSON.stringify(modelRequests.at(-1)).includes('Harness record of your previous answer'),
+      'the miss sees the previous answer\'s details',
+    );
   });
 
   it('a routeHint replaces the router classifier call', async () => {

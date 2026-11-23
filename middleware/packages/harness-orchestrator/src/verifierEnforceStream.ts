@@ -35,6 +35,19 @@ import {
 } from './verifierVerdicts.js';
 
 /** What the `enforce` stream needs from `VerifierService`. */
+/**
+ * The retry's input: the correction joins the turn's own hint instead of
+ * replacing it, so a kernel note the turn carried (the record of the
+ * previous answer, spec 2042 criterion 29) still reaches the answer the user
+ * gets.
+ */
+export function withCorrectionHint(input: ChatTurnInput, correction: string): ChatTurnInput {
+  return {
+    ...input,
+    extraSystemHint: input.extraSystemHint ? `${input.extraSystemHint}\n\n${correction}` : correction,
+  };
+}
+
 export interface EnforceStreamHost {
   readonly orchestrator: Orchestrator;
   /** The orchestrator's privacy hand-over surface (feature-detected). */
@@ -171,7 +184,7 @@ async function streamRetry(
   }
   if (!correction) return undefined;
   host.log(`${retryLogLine(host.judge.runLabel(runId), first)} (stream)`);
-  const retryInput: ChatTurnInput = { ...input, extraSystemHint: correction };
+  const retryInput: ChatTurnInput = withCorrectionHint(input, correction);
   const pass = prepareReentry(host.orchestrator, retryInput, ledger);
   const retryEgress = passes.open(retryInput);
   return {
