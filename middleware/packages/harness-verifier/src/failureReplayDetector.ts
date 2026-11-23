@@ -37,6 +37,15 @@ import type { Claim, ClaimVerdict, VerifierInput } from './claimTypes.js';
  *   (the attempt was omitted); one where calls ran has
  *   `unsupported_failure_claim` (no call backs the claim).
  *
+ *   Self-descriptions pass: a claim about what the agent can reach (2a's
+ *   "kein Zugriff", "nicht erreichbar", and a present-tense "kann … nicht
+ *   lesen" of 2b) that names a known system the agent holds no tool for
+ *   (`KNOWN_SYSTEMS` against `offeredToolNames`), and none it holds, states
+ *   a real limit ("auf deine Mails habe ich keinen Zugriff"). A claim that
+ *   names nothing, a pronoun, or a system the agent holds stays a possible
+ *   replay. Reported attempts ("konnte nicht laden"), access events,
+ *   absence and retry claims are unchanged.
+ *
  *   3. Retry request (`bitte nochmal hochladen/senden/versuchen`)  →
  *      combined check: if a file actually came in (attachments-info
  *      present) OR a tool was called, the retry ask is a replay.
@@ -69,13 +78,104 @@ const ABSENCE_PATTERNS: readonly RegExp[] = [
  * attempt can show this, so these need a FAILED call in the turn; a turn
  * whose calls all succeeded never saw an access fail.
  */
-const ACCESS_PATTERNS: readonly RegExp[] = [
+/** What the agent can reach: also how an agent states a real limit. */
+const CAPABILITY_ACCESS_PATTERNS: readonly RegExp[] = [
   /\b(kein|keine|keinen|keinerlei)\s+(?:\S+\s+){0,2}?(zugriff|zugang|verbindung)\b/i,
   /\bnicht\s+(erreichbar|zugänglich|verbunden)\b/i,
   /\b(no|without)\s+access\b/i,
   /\b(not|isn't|is\s+not)\s+(reachable|accessible)\b/i,
+];
+
+/** An access event that happened: only a failed call can show it. */
+const ACCESS_EVENT_PATTERNS: readonly RegExp[] = [
   /\b(zugriff\s+verweigert|access\s+denied|permission\s+denied|timeout|timed\s+out)\b/i,
 ];
+
+const ACCESS_PATTERNS: readonly RegExp[] = [...CAPABILITY_ACCESS_PATTERNS, ...ACCESS_EVENT_PATTERNS];
+
+/** A present-tense "kann … nicht": what the agent can do, not an attempt. */
+const CAPABILITY_FAILURE_START = /^(kann|kannst)\b/i;
+
+/**
+ * Systems an agent may honestly say it cannot reach, by the words people use
+ * for them (German and English, prefix match) and the words a tool for them
+ * carries (`mail_send`, `outlook_read`, `calendar_list`). A capability claim
+ * passes as a self-description only when it names one of these and the
+ * agent holds no tool for it — a positive, checkable limit. A claim that
+ * names nothing ("Leider habe ich keinen Zugriff."), a pronoun, or a system
+ * not listed here stays a possible replay.
+ */
+const KNOWN_SYSTEMS: ReadonlyArray<{ readonly words: readonly string[]; readonly toolWords: readonly string[] }> = [
+  { words: ['mail', 'e-mail', 'email', 'postfach', 'posteingang', 'inbox', 'outlook', 'gmail'], toolWords: ['mail', 'email', 'outlook', 'gmail', 'exchange', 'inbox'] },
+  { words: ['kalender', 'calendar', 'termin'], toolWords: ['calendar', 'kalender', 'event', 'events', 'meeting', 'meetings'] },
+  { words: ['lohn', 'gehalt', 'gehälter', 'payroll', 'salary', 'salaries'], toolWords: ['payroll', 'salary', 'lohn', 'gehalt'] },
+  { words: ['rechner', 'computer', 'festplatte', 'laptop', 'desktop', 'lokale'], toolWords: ['filesystem', 'local', 'desktop', 'computer'] },
+  { words: ['internet', 'webseite', 'website', 'websites'], toolWords: ['web', 'browse', 'browser', 'url', 'internet'] },
+  { words: ['telefon', 'handy', 'sms', 'anruf', 'phone'], toolWords: ['phone', 'sms', 'call', 'telefon'] },
+  { words: ['bank', 'konto', 'kontoauszug', 'banking'], toolWords: ['bank', 'banking', 'finapi', 'account'] },
+  // business systems: an agent without their tools says so truthfully
+  {
+    words: ['odoo', 'erp', 'rechnung', 'buchhaltung', 'buchung', 'invoice', 'accounting', 'auftr', 'bestellung', 'lager', 'kundenauftr'],
+    toolWords: ['odoo', 'erp', 'accounting', 'invoice', 'invoices', 'sales', 'purchase', 'inventory'],
+  },
+  { words: ['hr', 'personal', 'mitarbeiterdaten', 'urlaub', 'abwesenheit', 'employee'], toolWords: ['hr', 'employee', 'employees', 'personio', 'leave', 'payroll'] },
+  { words: ['confluence', 'wiki'], toolWords: ['confluence', 'wiki'] },
+  { words: ['jira', 'ticket'], toolWords: ['jira', 'ticket', 'tickets', 'issue', 'issues'] },
+  { words: ['crm', 'salesforce', 'hubspot', 'lead'], toolWords: ['crm', 'salesforce', 'hubspot', 'lead', 'leads'] },
+];
+
+/** Lower-case words of `text`. */
+function wordsOf(text: string): string[] {
+  return text.toLowerCase().split(/[^\p{L}\p{N}-]+/u).flatMap((w) => [w, ...w.split('-')]).filter((w) => w.length > 0);
+}
+
+/** The words of the agent's tool names (`query_odoo_hr` → `query`, `odoo`, `hr`). */
+function toolWordsOf(offeredToolNames: readonly string[]): ReadonlySet<string> {
+  return new Set(offeredToolNames.flatMap((name) => name.toLowerCase().split(/[^\p{L}\p{N}]+/u)).filter((w) => w.length >= 2));
+}
+
+/**
+ * The claim and what it is about: from the start of its sentence to the end
+ * of its paragraph's sentence or list ("keinen Zugriff auf:\n- Mails"). A
+ * sentence ends at `.`/`!`/`?` before whitespace and an upper-case letter, or
+ * at a blank line, so "z. B." or "Odoo 17.0" do not cut it.
+ */
+function claimWindow(text: string, index: number): string {
+  const ends = /[.!?]+\s+(?=\p{Lu})|\n\s*\n/gu;
+  let start = 0;
+  let end = text.length;
+  for (const m of text.matchAll(ends)) {
+    const at = m.index ?? 0;
+    if (at + m[0].length <= index) start = at + m[0].length;
+    else if (at >= index) {
+      end = at;
+      break;
+    }
+  }
+  return text.slice(start, end);
+}
+
+/**
+ * Whether `window` states a real limit: it names a known system the agent
+ * holds no tool for, and none it does hold.
+ */
+function namesOnlyUnheldSystems(window: string, toolWords: ReadonlySet<string>): boolean {
+  const words = wordsOf(window);
+  const named = KNOWN_SYSTEMS.filter((sys) => words.some((w) => sys.words.some((alias) => w.startsWith(alias))));
+  if (named.length === 0) return false;
+  if (named.some((sys) => sys.toolWords.some((t) => toolWords.has(t)))) return false;
+  // a held system named alongside ("kein Zugriff auf Odoo und Mails") keeps it a claim to check
+  return !words.some((w) => [...toolWords].some((t) => t.length >= 4 && w.startsWith(t) && !GENERIC_TOOL_WORDS.has(t)));
+}
+
+/** Words of tool names that name no system: they never make a word "held". */
+const GENERIC_TOOL_WORDS: ReadonlySet<string> = new Set([
+  'query', 'list', 'search', 'read', 'create', 'update', 'delete', 'find', 'fetch', 'execute',
+  'tool', 'tools', 'data', 'generic', 'describe', 'write', 'send', 'remove', 'info', 'user', 'users',
+  'choice', 'render', 'publish', 'agent', 'agents', 'colleague', 'consult', 'contribution', 'note',
+  'notes', 'task', 'tasks', 'trigger', 'triggers', 'schedule', 'wake', 'every', 'event', 'events',
+  'current', 'time', 'status', 'view', 'message', 'messages', 'lookup', 'deliver',
+]);
 
 /** Generic failure — "konnte nicht finden / laden". A search that ran and
  *  found nothing backs these, so any call in the turn is enough. */
@@ -125,6 +225,15 @@ export function detectFailureReplay(
   const failedCalls = input.failedToolsCalled;
   const anyToolFailed = failedCalls !== undefined ? failedCalls.length > 0 : anyToolCalled;
   const hasAttachmentsInfo = userMessageHasAttachmentsInfo(input.userMessage);
+  const toolWords =
+    input.offeredToolNames !== undefined
+      ? toolWordsOf([...input.offeredToolNames, ...(toolsCalled ?? [])])
+      : undefined;
+  /** A capability claim ("keinen Zugriff auf deine Mails", "kann Dateien auf
+   *  deinem Rechner nicht lesen") that names only known systems the agent
+   *  holds no tool for is a true self-description. */
+  const isSelfDescription = (match: RegExpExecArray): boolean =>
+    toolWords !== undefined && namesOnlyUnheldSystems(claimWindow(answer, match.index), toolWords);
 
   const push = (match: string, detail: string): void => {
     const id = `c_replay_${String(nextId++).padStart(3, '0')}`;
@@ -179,6 +288,7 @@ export function detectFailureReplay(
     if (!m) continue;
     if (toolsCalled === undefined) continue;
     if (anyToolFailed) continue;
+    if (CAPABILITY_ACCESS_PATTERNS.includes(re) && isSelfDescription(m)) continue;
     push(
       m[0],
       anyToolCalled
@@ -193,6 +303,7 @@ export function detectFailureReplay(
     if (!m) continue;
     if (toolsCalled === undefined) continue;
     if (anyToolCalled) continue;
+    if (CAPABILITY_FAILURE_START.test(m[0]) && isSelfDescription(m)) continue;
     push(
       m[0],
       'Antwort behauptet einen Operationsfehler, aber der Run-Trace hat keinen einzigen Tool-Call — die Operation wurde in diesem Turn gar nicht versucht.',
