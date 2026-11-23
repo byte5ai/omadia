@@ -155,6 +155,12 @@ export interface AgentRuntimeConfig {
    */
   readonly agentDirectory?: () => readonly GuardDirectoryEntry[];
   /**
+   * Names of known humans (people directory), read per turn. An own name of
+   * this agent that equals one is masked like any person's name
+   * (`agentOwnNames`). Absent = no known humans.
+   */
+  readonly humanNames?: () => readonly string[];
+  /**
    * #2056 — the colleagues this agent may consult, by name (directed
    * consultation grants, #2047), named in its prompt. Absent = none.
    */
@@ -677,19 +683,31 @@ export function withAgentIdentity(
   );
 }
 
+/** Case-insensitive, trimmed comparison key of a name. */
+function nameKey(name: string): string {
+  return name.trim().toLocaleLowerCase();
+}
+
 /**
- * The names an agent answers as, from the same speaker the identity guard
- * checks: its display name, its slug and its authored identity name
- * (deduplicated, blanks dropped). The privacy shield never masks them in
- * the agent's own turn.
+ * The names an agent answers as — only operator-set agent identity: the
+ * display name and slug of the speaker the identity guard checks, and the
+ * name it signs with (its identity name, else the platform assistant name,
+ * the precedence of the AI-disclosure line). Deduplicated, blanks dropped.
+ * A name that equals a known human's (`humanNames`, case-insensitive) is
+ * dropped: a namesake employee "Max" stays masked. The privacy shield never
+ * masks the rest in the agent's own turn.
  */
-export function agentOwnNames(
-  speaker: Pick<AgentSpeaker, 'displayName' | 'slug'>,
-  identityName?: string,
-): readonly string[] {
-  const names = [speaker.displayName, speaker.slug, identityName]
+export function agentOwnNames(input: {
+  readonly speaker: Pick<AgentSpeaker, 'displayName' | 'slug'>;
+  readonly identityName?: string | undefined;
+  readonly assistantName?: string | undefined;
+  readonly humanNames?: readonly string[] | undefined;
+}): readonly string[] {
+  const signingName = input.identityName?.trim() || input.assistantName?.trim();
+  const humans = new Set((input.humanNames ?? []).map(nameKey));
+  const names = [input.speaker.displayName, input.speaker.slug, signingName]
     .map((n) => n?.trim() ?? '')
-    .filter((n) => n.length > 0);
+    .filter((n) => n.length > 0 && !humans.has(nameKey(n)));
   return [...new Set(names)];
 }
 
@@ -1072,8 +1090,15 @@ export function buildOrchestratorForAgent(
     agentId: config.agentId,
     // Spec 2042 §6 criterion 1 — every run trace names the agent that answers.
     traceAgentId: agentSpeaker.agentId,
-    // Never masked by the privacy shield in this agent's own turn.
-    ownNames: agentOwnNames(agentSpeaker, config.identityName),
+    // Never masked by the privacy shield in this agent's own turn; read per
+    // turn so a human added to the directory masks a namesake right away.
+    ownNames: () =>
+      agentOwnNames({
+        speaker: agentSpeaker,
+        identityName: config.identityName,
+        assistantName: deps.aiDisclosure?.assistantName,
+        humanNames: config.humanNames?.(),
+      }),
     provider: deps.provider,
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),

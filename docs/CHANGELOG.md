@@ -57,12 +57,15 @@ eigenen Namen: C1 erkannte „Dark Clippy“ als Person, das Modell las „Ich b
 <Platzhalter>“ in seinem Verlauf und „korrigierte“ sich in jedem Turn
 („Falls ich mich als ‚Dark Clippy‘ vorgestellt habe: Das war falsch“). Der
 Turn-Handle reicht jetzt die eigenen Namen des Agents (Anzeigename, Slug,
-Identitätsname — dieselbe Quelle wie der Identity Guard) als `ownNames` an
-`maskUserPrompt` und `maskReplayedAnswer` (plugin-api 1.90.0); ein erkannter
-Span, dessen ganzer Wert einem davon gleicht (ohne Groß-/Kleinschreibung,
-ohne Satzzeichen am Ende), bleibt stehen und wird nicht gebucht. Nur exakte
-Gleichheit: „Mira Schulz“ bleibt für einen Agent „Mira“ maskiert, andere
-Namen ebenso wie bisher.
+Identitätsname, sonst der Plattform-Assistentenname) als `ownNames` an
+`maskUserPrompt`, `maskReplayedAnswer` und `projectVerifierText`
+(plugin-api 1.90.0). Ein erkannter Span, dessen ganzer Wert einem davon
+gleicht (ohne Groß-/Kleinschreibung, umgebende Anführungszeichen und
+Satzzeichen), bleibt stehen und wird nicht gebucht; Known-Value-Sweep und
+Residual-Check lassen eigene Namen ebenfalls stehen. Die Deny-Liste gewinnt
+immer, Teilnamen und Possessive bleiben maskiert, ein eigener Name, der einem
+bekannten Menschen gleicht (`humanNames`), ist nicht ausgenommen. Regeln:
+`docs/security-architecture.md` §6f.
 
 ### Fixed — `delete /memories` löscht nicht mehr den ganzen Agent-Baum (#1828)
 

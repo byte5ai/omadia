@@ -22,6 +22,8 @@
 
 import type { PromptPiiDetector, PromptPiiSpan } from '@omadia/plugin-api';
 
+import { DENY_LIST_DETECTOR_ID, NO_OWN_NAMES, type OwnNameMatcher } from './ownNames.js';
+
 import {
   createPromptPseudonymMap,
   type PromptSpanValue,
@@ -571,7 +573,7 @@ export function createCustomTermsDetector(config: CustomTermsConfig): {
   return {
     rejected,
     detector: {
-      id: 'custom-terms',
+      id: DENY_LIST_DETECTOR_ID,
       async detect(text: string): Promise<readonly PromptPiiSpan[]> {
         const spans: PromptPiiSpan[] = [];
         if (termsRe !== undefined) {
@@ -816,32 +818,11 @@ export function dedupSpans(
 
 /** Options of {@link maskPrompt}. */
 export interface MaskPromptOptions {
-  /** The speaking agent's own names (`PrivacyPromptMaskRequest.ownNames`):
-   *  a resolved span whose whole value equals one is left as written. */
-  readonly ownNames?: readonly string[];
-}
-
-/** Shortest own name that exempts a span; shorter ones are ignored. */
-const MIN_OWN_NAME_LENGTH = 2;
-/** Trailing punctuation that is not part of a name ("Dark Clippy."). */
-const TRAILING_NAME_PUNCTUATION = /[\s.,;:!?]+$/u;
-
-function normalizeName(value: string): string {
-  return value.trim().replace(TRAILING_NAME_PUNCTUATION, '').toLocaleLowerCase();
-}
-
-/**
- * Exact equality only (case-insensitive, trimmed, trailing punctuation
- * dropped): an agent "Mira" leaves "Mira" unmasked, never "Mira Schulz".
- */
-export function ownNameMatcher(
-  ownNames: readonly string[] | undefined,
-): (value: string) => boolean {
-  const names = new Set(
-    (ownNames ?? []).map(normalizeName).filter((n) => n.length >= MIN_OWN_NAME_LENGTH),
-  );
-  if (names.size === 0) return () => false;
-  return (value) => names.has(normalizeName(value));
+  /** The speaking agent's own names, resolved for this call
+   *  ({@link resolveOwnNames}): a resolved span whose whole value is one
+   *  stays as written unless the operator deny-list found it, and the
+   *  known-value sweep leaves them alone. */
+  readonly isOwnName?: OwnNameMatcher;
 }
 
 export interface MaskPromptResult {
@@ -884,7 +865,7 @@ export async function maskPrompt(
   options?: MaskPromptOptions,
 ): Promise<MaskPromptResult> {
   const detected = await collectDetectorSpans(text, detectors);
-  const isOwnName = ownNameMatcher(options?.ownNames);
+  const isOwnName = options?.isOwnName ?? NO_OWN_NAMES;
   // #1528 / #1529 — a surrogate is not a new real value. A span that is (or,
   // after word-boundary extension, swallowed) a reserved surrogate shape — a
   // replayed answer that kept `LUKAS.BECKER@EXAMPLE.NET`, a deny-list term
@@ -895,7 +876,9 @@ export async function maskPrompt(
   // The speaking agent's own name is not PII in its own turn: masked, its
   // model reads "I am <surrogate>" in its history and "corrects" itself.
   const spans = dedupSpans(text, detected).filter(
-    (s) => !isReservedSurrogateShape(s.value) && !isOwnName(s.value),
+    (s) =>
+      !isReservedSurrogateShape(s.value) &&
+      !(isOwnName(s.value) && s.detector !== DENY_LIST_DETECTOR_ID),
   );
   if (spans.length === 0) {
     // NOTHING DETECTED IN *THIS* TEXT IS NOT NOTHING TO MASK.
@@ -914,7 +897,7 @@ export async function maskPrompt(
     // turn already decided are PII, and never touches anything else.
     const carried = existingMap ?? { forward: new Map(), reverse: new Map() };
     return {
-      maskedText: sweepKnownValues(text, carried),
+      maskedText: sweepKnownValues(text, carried, isOwnName),
       map: carried,
       spans,
     };
@@ -933,7 +916,7 @@ export async function maskPrompt(
     if (surrogate === undefined) continue;
     masked = masked.slice(0, span.start) + surrogate + masked.slice(span.end);
   }
-  return { maskedText: sweepKnownValues(masked, map), map, spans };
+  return { maskedText: sweepKnownValues(masked, map, isOwnName), map, spans };
 }
 
 /**
@@ -951,11 +934,18 @@ export async function maskPrompt(
  * one's surrogate; doing the long ones first leaves the short sweep to clean up
  * whatever it re-introduced, never the other way round.
  */
-function sweepKnownValues(text: string, map: PseudonymMap): string {
+function sweepKnownValues(
+  text: string,
+  map: PseudonymMap,
+  isOwnName: OwnNameMatcher,
+): string {
   let masked = text;
   for (const [real, surrogate] of [...map.forward.entries()].sort(
     (a, b) => b[0].length - a[0].length,
   )) {
+    // The agent's own name stays clear even if an earlier call of the turn
+    // (without own names) put it into the map.
+    if (isOwnName(real)) continue;
     if (masked.includes(real)) masked = replaceOutsideSurrogates(masked, real, surrogate, map);
   }
   return masked;

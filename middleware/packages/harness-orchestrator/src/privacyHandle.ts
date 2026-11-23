@@ -249,9 +249,10 @@ export function createPrivacyTurnHandle(deps: {
    */
   readonly resolveBypass?: (toolName: string) => { pluginId: string } | undefined;
   /**
-   * The speaking agent's own names (display name, slug), handed to the
-   * provider with every user-message and recalled-context mask so they are
-   * never masked in the agent's own turn. Absent ⇒ nothing exempt.
+   * The speaking agent's own names (display name, slug and identity name),
+   * handed to the provider with every user-message, recalled-context and
+   * verifier mask so they are never masked in the agent's own turn.
+   * Absent ⇒ nothing exempt.
    */
   readonly ownNames?: readonly string[];
 }): PrivacyTurnHandle {
@@ -372,6 +373,7 @@ export function createPrivacyTurnHandle(deps: {
         turnId: deps.turnId,
         text,
         identityValues,
+        ...ownNames,
       });
     },
 

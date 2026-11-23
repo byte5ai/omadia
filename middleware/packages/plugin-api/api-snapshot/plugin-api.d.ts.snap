@@ -3180,6 +3180,7 @@ readonly sessionId: string;
 readonly turnId: string;
 readonly text: string;
 readonly identityValues?: readonly string[];
+readonly ownNames?: readonly string[];
 }
 export interface PrivacyReplayedAnswerRequest {
 readonly sessionId: string;

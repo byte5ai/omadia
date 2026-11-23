@@ -90,6 +90,7 @@ import {
   createCustomTermsDetector,
   maskPrompt,
 } from './promptMask.js';
+import { resolveOwnNames } from './ownNames.js';
 import {
   createToolErrorBaselineDetector,
   redactToolErrorSpans,
@@ -869,14 +870,18 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
     const refused = args.precheck?.(promptMaskMaps.get(turnId));
     if (refused !== undefined) return refused;
     try {
+      const isOwnName = await resolveOwnNames(args.ownNames, detectors);
       const result = await maskPrompt(text, detectors, promptMaskMaps.get(turnId), {
-        ownNames: args.ownNames,
+        isOwnName,
       });
       // Post-mask invariant: no detected real value may survive in the
       // wire-bound text outside a surrogate. A hit means substitution failed
       // — block. A term inside the shield's own placeholder is no hit
       // (#1529).
-      const residual = findResidualRealValues(result.maskedText, result.map);
+      // The agent's own names are allowed through (`ownNames.ts`).
+      const residual = findResidualRealValues(result.maskedText, result.map).filter(
+        (leak) => !isOwnName(leak.value),
+      );
       if (residual.length > 0) {
         console.error(
           `[privacy-guard v4] ${label}Blocked turn=${turnId} ` +
@@ -1353,6 +1358,7 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
         stage: 'verifier',
         origin: 'message',
         preview: false,
+        ownNames: request.ownNames,
         precheck: (map) => {
           if (!hasSurrogateCollision(request.text, map)) return undefined;
           console.error(

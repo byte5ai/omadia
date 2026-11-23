@@ -2417,6 +2417,38 @@ whatever `mask_user_prompt` says (§6e). The subscription-CLI path has no
 shield at all (§3a), and without an active privacy-guard provider nothing is
 interned or masked (§6c, residuals).
 
+**The agent's own names (spec 2042, plugin-api 1.90.0).** In an agent's own
+turn the shield does not mask that agent's own names. Otherwise C1 tags "Dark
+Clippy" in the agent's recalled self-introductions as a person, and the model
+reads "Ich bin <surrogate>" and "corrects" its own name. The rules
+(`harness-plugin-privacy-guard/src/ownNames.ts`):
+
+- **Who supplies them.** Only operator-set agent identity:
+  `buildOrchestratorForAgent` derives `ownNames` from the agent's display
+  name, slug and identity name (else the platform
+  `ai_disclosure_assistant_name` it signs with), and the turn handle passes
+  them to `maskUserPrompt`, `maskReplayedAnswer` and `projectVerifierText`.
+  Nothing from a prompt, a message or a tool result can add one.
+- **Exact equality.** A detected span is exempt only if its whole value
+  equals an own name, ignoring case, whitespace, surrounding quotes
+  (`„“”"'‚‘’«»`) and trailing punctuation. A partial name ("Mira Schulz" for
+  an agent "Mira") and a possessive ("Dark Clippys") stay masked, which is the
+  safe direction. Names under 2 characters are ignored.
+- **Not booked.** An exempt span never enters the turn's surrogate map or the
+  receipt. The known-value sweep and the residual check skip own names, so a
+  name that an earlier call of the turn put into the map stays clear and does
+  not block.
+- **The deny-list wins.** A span from the operator deny-list is never exempt,
+  and an own name that the deny-list matches is not treated as an own name in
+  that call (sweep and residual check included).
+- **Human namesakes are not exempt.** An own name that equals a known human's
+  name (`AgentRuntimeConfig.humanNames`, case-insensitive) is dropped from the
+  list, so an employee "Max" stays masked even when an agent is called "Max".
+  Residual: no people directory feeds `humanNames` yet (the identity guard's
+  `agentDirectory` lists agents only). Until one does, a human whose full
+  name equals an agent's own name reaches that agent's model unmasked in that
+  agent's turns.
+
 **Memory jobs, independent of `mask_user_prompt`.** The memory jobs of
 `@omadia/orchestrator-extras` send stored text, which holds real values,
 through that plugin's own provider, and with a privacy-guard provider active

@@ -14,11 +14,14 @@ Additive (spec 2042 follow-up: an agent's own name is not masked in its own turn
 
 ### Added
 
-- **`PrivacyPromptMaskRequest.ownNames`** and
-  **`PrivacyReplayedAnswerRequest.ownNames`** (optional): the speaking
-  agent's own names. A privacy provider leaves a detected span whose whole
-  value equals one of them as written and does not book it; other names are
-  masked as before.
+- **`PrivacyPromptMaskRequest.ownNames`**,
+  **`PrivacyReplayedAnswerRequest.ownNames`** and
+  **`PrivacyVerifierProjectionRequest.ownNames`** (optional): the speaking
+  agent's own names (display name, slug and identity name). A privacy
+  provider leaves a detected span whose whole value equals one of them
+  (ignoring case, surrounding quotes and punctuation) as written and does
+  not book it; the operator deny-list always wins, other names are masked
+  as before.
 
 ## 1.89.0 — 2026-11-23
 
