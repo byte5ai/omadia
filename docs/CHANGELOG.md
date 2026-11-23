@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — `/memories/_rules/` ist für Agents nur lesbar (#1827)
+
+2026-11-17. Jede Datei unter `/memories/_rules/` wirkt für alle Agents und
+alle Accounts: der System-Prompt lässt Agents sie lesen, und der
+Durable-Rules-Hook kopiert jeden Write in team-weites kuratiertes Wissen. Im
+Modus „Aus“ (bis Migration 0099 der Default, bestehende Agents laufen weiter so)
+und in jedem Turn ohne Kanal-Kontext hält der Turn den
+`core`-Grant, der `_*` schreibbar macht, also konnte ein einzelner Chat (oder
+eingeschleuster Text) eine Regel für alle anlegen. `_rules/` steht jetzt auf
+der Deny-Liste von `ScopedMemoryStore`; Lesen bleibt erlaubt. Regeln kommen nur
+noch aus dem Repo-Seed (`MEMORY_SEED_DIR`). System-Prompt, CLI-Memory-Text und
+Seed-README sagen das. Bereits angelegte Regeln bleiben bestehen; wie Regeln
+künftig gepflegt werden, ist als Diskussion offen.
+
 ### Fixed — Chat-Turns können das Promote-Audit-Log nicht mehr löschen (#1827)
 
 2026-11-17. Die Deny-Liste von `ScopedMemoryStore` prüfte nur den genannten
