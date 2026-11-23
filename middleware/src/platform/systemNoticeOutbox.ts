@@ -5,7 +5,7 @@
 // `system` notice. This is the #2045 seam the end-of-service procedure calls
 // (`agentEndOfService.ts`), made real:
 //
-//   - THE NOTICE IS WRITTEN FIRST (`system_notice_outbox`, migration 0126),
+//   - THE NOTICE IS WRITTEN FIRST (`system_notice_outbox`, migration 0109),
 //     with its rendered, localized text. A restart before it went out still
 //     delivers it: the worker drains pending rows at boot.
 //   - ONCE PER END OF SERVICE. The procedure runs again only when a crash

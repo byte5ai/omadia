@@ -26,6 +26,7 @@ import {
   withAnswerDetailsNote,
   withAnswerDetailsRecall,
 } from '../packages/harness-orchestrator/src/answerDetailsRecall.js';
+import { answerWithheldText } from '../packages/harness-orchestrator/src/discretion/disclosure.js';
 import { buildSystemNotice } from '../packages/harness-orchestrator/src/management/systemNotices.js';
 import { withCorrectionHint } from '../packages/harness-orchestrator/src/verifierEnforceStream.js';
 
@@ -131,6 +132,20 @@ describe('criterion 29 — "how do you know?" reaches the previous answer\'s det
     await recalled.chat({ userMessage: '3', sessionScope: 's1' });
     assert.equal(inputs[2]?.extraSystemHint, undefined, 'a withheld answer has nothing to explain');
     assert.equal(memory.get('s2'), undefined);
+  });
+
+  it('an answer refused by discretion records nothing, though it carries the agent as speaker', async () => {
+    const memory = new AnswerDetailsMemory();
+    const { agent, inputs } = scripted([
+      { text: 'a', speaker: mira, verifier: { status: 'verified' } },
+      { text: answerWithheldText('de'), speaker: mira, verifier: { status: 'verified' } },
+      { text: 'b', speaker: mira },
+    ]);
+    const recalled = recalling(agent, memory);
+    await recalled.chat({ userMessage: '1', sessionScope: 's1' });
+    await recalled.chat({ userMessage: '2', sessionScope: 's1' });
+    await recalled.chat({ userMessage: '3', sessionScope: 's1' });
+    assert.equal(inputs[2]?.extraSystemHint, undefined, 'nothing about the refused turn reaches the next one');
   });
 
   it('streaming: the record follows done and a trailing shadow verdict', async () => {

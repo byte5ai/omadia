@@ -10989,7 +10989,6 @@ export class Orchestrator {
       ...(result.turnId !== undefined ? { turnId: result.turnId } : {}),
       ...(result.privacyReceipt !== undefined ? { privacyReceipt: result.privacyReceipt } : {}),
       ...(result.answerSource !== undefined ? { answerSource: result.answerSource } : {}),
-      ...(result.memoryUsed !== undefined ? { memoryUsed: result.memoryUsed } : {}),
     };
   }
 

@@ -1,7 +1,7 @@
 /**
  * Spec 2042 §5.12 "Same rules as any turn", §6 criterion 24 — delivery to an
  * explicit target through the kernel wiring on a real Postgres (migrations
- * 0093, 0094, 0125): an operator grants an agent a target conversation
+ * 0093, 0094, 0108): an operator grants an agent a target conversation
  * through the admin API, the agent names it by grant id, the message goes
  * only there and through the grant's reference, the target's readers are
  * read when the message goes out (not when the trigger was set), a revoked
@@ -47,7 +47,7 @@ const HR_CHAT = { channelId: 'msteams', serviceUrl: 'https://smba.example/emea/'
 const LEADS_CHAT = '19:hr-leads@thread.v2';
 const SALES_CHAT = '19:sales@thread.v2';
 
-describe('criterion 24: delivery to an explicit target (pg, 0125)', { skip: !pgAvailable }, () => {
+describe('criterion 24: delivery to an explicit target (pg, 0108)', { skip: !pgAvailable }, () => {
   let pool: Pool;
   let wiring: TriggerWiring;
   let base = '';
@@ -203,11 +203,19 @@ describe('criterion 24: delivery to an explicit target (pg, 0125)', { skip: !pgA
     assert.equal(unknown.status, 422);
     const mismatch = await api('PUT', '/recipient-grants', {
       agent_id: agentId,
-      channel: 'teams',
-      conversation_id: SALES_CHAT,
-      delivery_ref: { conversationId: LEADS_CHAT },
+      channel: 'slack',
+      conversation_id: 'C-SALES',
+      delivery_ref: { conversationId: 'C-LEADS' },
     });
     assert.equal(mismatch.status, 400, 'a reference must name the granted conversation');
+    // A Teams reference carries the host the bot posts to with its token: never from a body.
+    const teamsBodyRef = await api('PUT', '/recipient-grants', {
+      agent_id: agentId,
+      channel: 'teams',
+      conversation_id: SALES_CHAT,
+      delivery_ref: { serviceUrl: 'https://attacker.example/', conversation: { id: SALES_CHAT } },
+    });
+    assert.equal(teamsBodyRef.status, 400, 'a Teams reference comes only from the bot');
     const noAgent = await api('PUT', '/recipient-grants', {
       agent_id: '00000000-0000-4000-8000-000000000000',
       channel: 'slack',

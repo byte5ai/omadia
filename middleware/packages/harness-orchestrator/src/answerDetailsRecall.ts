@@ -32,6 +32,8 @@ import {
 } from '@omadia/channel-sdk';
 import { SYSTEM_SPEAKER } from '@omadia/plugin-api';
 
+import { isAnswerWithheldText } from './discretion/disclosure.js';
+
 /** Conversations whose last answer details are kept per agent (LRU). */
 const DEFAULT_MAX_CONVERSATIONS = 1000;
 
@@ -71,7 +73,9 @@ export class AnswerDetailsMemory {
 
   record(scope: string, answer: SemanticAnswer): void {
     this.notes.delete(scope);
-    if (answer.speaker?.kind === 'system' || answer.systemNotice) return;
+    // A system notice, or an answer refused by discretion (its text is the
+    // withheld line), is not the agent's: nothing of it is recalled.
+    if (answer.speaker?.kind === 'system' || answer.systemNotice || isAnswerWithheldText(answer.text)) return;
     this.notes.set(scope, answerDetailsNote(answer));
     if (this.notes.size > this.maxConversations) {
       const oldest = this.notes.keys().next().value;

@@ -1,6 +1,6 @@
 /**
  * Spec 2042 §5.10, criterion 37 — the outbox of owed `system` notices on a
- * real Postgres (migration 0126): written once per agent, kind and
+ * real Postgres (migration 0109): written once per agent, kind and
  * conversation; sent by the worker that holds the lease; a lost lease never
  * overwrites the outcome of the worker that took it over; a channel that is
  * not up yet defers without spending an attempt; a send that never returns
@@ -37,7 +37,7 @@ const NOTICE = {
   agentSlug: 'mara',
 };
 
-describe('system notice outbox (pg, 0126)', { skip: !pgAvailable }, () => {
+describe('system notice outbox (pg, 0109)', { skip: !pgAvailable }, () => {
   let pool: Pool;
   const logs: string[] = [];
 

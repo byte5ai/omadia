@@ -85,20 +85,25 @@ changelog.
   other preset (curated wording) and free-text boundary by the agent's classifier model on the text
   masked through the turn's privacy run and with figures masked; fail-closed (no judge, error, 8 s
   timeout, shield refusal). A refusal is a fast-lane miss (`summary-boundary`, the cached plan is
-  evicted): the agent's full loop answers. Usage source `summary-boundary-guard`. No migration, no
-  version bump.
+  evicted): the agent's full loop answers. Usage source `summary-boundary-guard`. No migration.
 
 ### Added — Explicit targets for proactive messages, system notices on end of service (spec 2042 criteria 24, 37)
 
-- **Migration 0125 `agent_recipient_grants`:** operator-granted target conversations of an
+- **Migration 0108 `agent_recipient_grants`:** operator-granted target conversations of an
   agent's proactive messages; admin API `PUT/GET/DELETE /api/v1/operator/triggers/recipient-grants`.
   The agent names a target by grant id; the target's readers are checked at send time.
-- **Migration 0126 `system_notice_outbox`:** the `system` notice each home conversation gets
+- **Migration 0109 `system_notice_outbox`:** the `system` notice each home conversation gets
   when an agent goes out of service (new code `archetype_plugin_removed`, plugin-api
   1.87.0), sent once through the shared bot, kept across restarts.
 - **Fixed:** the Plugin Builder preview resolved any kernel service through `ctx.services`;
   it now passes the gates of an installed plugin. Teams trigger contexts were keyed
-  `teams:msteams` (the reference's `channelId`) instead of the conversation id.
+  `teams:msteams` (the reference's `channelId`) instead of the conversation id, so all Teams
+  chats shared one context and `list_triggers` in any of them listed the agent's triggers of
+  every other Teams chat; **migration 0110** rewrites stored Teams triggers to their
+  conversation and drops the shared activity row.
+- **Changed:** a recipient grant for Teams takes its reference only from the bot's own
+  conversation references; a `delivery_ref` in the request body is refused for Teams (it
+  carries the host the bot posts to with its token).
 
 ### Changed — The agent plugin runtime is gone (#2042, S3c)
 

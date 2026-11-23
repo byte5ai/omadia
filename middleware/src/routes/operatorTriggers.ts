@@ -330,6 +330,10 @@ function parseGrantBody(raw: unknown): GrantBody | string {
   if (typeof channel !== 'string' || !CHANNEL.test(channel)) return 'channel must be a channel type like teams';
   if (conversationId === '' || conversationId.length > MAX_CONVERSATION_ID) return 'conversation_id is required';
   if (ref !== undefined && ref !== null) {
+    // A Teams reference carries the `serviceUrl` the shared bot posts to with
+    // its bearer token: it comes only from the bot's own conversation
+    // references, never from a request body.
+    if (channel === 'teams') return 'for teams, omit delivery_ref: the reference is taken from the conversation the bot is in';
     if (typeof ref !== 'object' || Array.isArray(ref)) return 'delivery_ref must be an object';
     if (JSON.stringify(ref).length > MAX_REF_BYTES) return 'delivery_ref is too large';
   }

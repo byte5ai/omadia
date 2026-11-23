@@ -4288,7 +4288,7 @@ in `wiring.ts` (aus `index.ts` aufgerufen).
   wo der Kanal ihn vollständig kennt (sonst der Schnappschuss vom Anlegen).
   Der Roster wird mit dem geteilten Bot gelesen: ein Raum, den nur der eigene
   Bot eines Agenten sieht, ist unbekannt.
-- **Explizite Ziele (Kriterium 24, Migration 0125):** Ein Operator gibt einem
+- **Explizite Ziele (Kriterium 24, Migration 0108):** Ein Operator gibt einem
   Agenten Zielkonversationen frei (`agent_recipient_grants`,
   `recipientGrants.ts`; `PUT/GET/DELETE /api/v1/operator/triggers/recipient-grants`,
   Body `{ agent_id, channel, conversation_id, delivery_ref?, label? }`,
@@ -4341,7 +4341,7 @@ deinstalliert), bekommt jede betroffene Home-Konversation genau eine
 registrierte `system`-Notice (`agent_disabled`, `agent_deleted`,
 `archetype_plugin_removed`), lokalisiert nach `ai_disclosure_locale`.
 `platform/systemNoticeOutbox.ts` schreibt sie vor der Änderung in
-`system_notice_outbox` (Migration 0126; Dedupe pro Agent, Art und Konversation
+`system_notice_outbox` (Migration 0109; Dedupe pro Agent, Art und Konversation
 für 24 h unter einem Xact-Advisory-Lock) und sendet über
 `conversationSendRegistry` mit dem geteilten Bot (nie als eigener Bot des
 Agenten). Zustellung: Claim mit Lease (`FOR UPDATE SKIP LOCKED`), Abschluss nur

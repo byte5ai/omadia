@@ -1119,8 +1119,12 @@ and `deliver_data` deliver nothing, and a `classification` label refuses the ans
 as a whole. A consulted colleague runs in the consulting room, so its contribution
 follows the same rule. A closed or failing floor grants no class; a turn without an
 audience floor (floor switched off) is not enforced. A trigger stores its creating
-room's field rights (`labels.fieldClasses`); its firings and posts use them, and a
-trigger stored without them fails closed. The consult result's header (contribution
+room's field rights (`fieldClasses` in its discretion record); its firings and posts
+use them only in that room and only while every current reader was a reader then; an
+explicit target, a room that gained a reader, or a trigger stored without them gets none
+(fail closed). Residual: a denial added later for someone who was already in the room
+does not reach a trigger set before it; the trigger keeps the rights it stored until it
+ends or is cancelled. The consult result's header (contribution
 id, colleague, status) passes outside the privacy digest, decided by provenance
 (the kernel's own consult tool), never by tool name.
 
