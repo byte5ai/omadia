@@ -1025,6 +1025,8 @@ export function buildOrchestratorForAgent(
   // post-activate via `dynamicAgentRuntime.attachOrchestrator(bundle.raw)`.
   const orchestrator = new Orchestrator({
     agentId: config.agentId,
+    // Spec 2042 §6 criterion 1 — every run trace names the agent that answers.
+    traceAgentId: agentSpeaker.agentId,
     provider: deps.provider,
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),

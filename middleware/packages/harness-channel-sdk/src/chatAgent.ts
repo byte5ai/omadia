@@ -372,6 +372,12 @@ export interface RunAgentInvocation {
  */
 export interface RunTracePayload {
   scope: string;
+  /**
+   * Spec 2042 §6 criterion 1 — the agent whose turn this is: its speaker's
+   * `agentId` (`agents.id` for a registry-built agent). Optional so every
+   * trace written before this existed stays readable.
+   */
+  agentId?: string;
   userId?: string;
   startedAt: string;
   finishedAt: string;
