@@ -36,6 +36,25 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — 2026-11-23 — Conductor: re-publishing a workflow no longer hides its runs (#1710)
+
+- `GET /conductors/:slug/runs` listed only runs of the **active** version, so publishing the
+  same slug again emptied the history — including for a run still `waiting`, whose await stayed
+  in the inbox while `DELETE /:slug` kept refusing the workflow with `conductor.has_active_runs`
+  ("cancel them first"). The cancel button lives in that very list, so the only way out was to
+  read the run id out of the database and call the cancel route by hand.
+- The list now spans every version of the workflow (`runStore.listForWorkflow`, joining
+  `conductor_workflow_versions`), and each row carries `workflowVersion` — the version
+  **number**, rendered as a badge in "Verlauf". Active runs sort ahead of terminal ones so a
+  waiting run cannot be pushed out of the `LIMIT` window by newer completed ones. Both the
+  history and the delete guard now read the same exported `ACTIVE_RUN_STATUSES`: `hasActiveRuns`
+  always counted across versions, and the contradiction between the two queries was the bug.
+  The route answers 404 only for an unknown slug — a workflow with no active version has an
+  empty history, not an error. `listForVersion` stays for the ephemeral/discussion paths, where
+  a workflow has exactly one version and one run (#330).
+- UI: every history row carries a `v{n}` badge, and so does an opened run's trace (the
+  single-run route serves no version, so the badge is read off the row it was opened from).
+
 ### Fixed — Conductor renders `{{ctx.*}}` / `{{steps.*}}` in human messages and action inputs (#1709)
 
 2026-11-23. A human step's `message` and an action step's `input` reached their
