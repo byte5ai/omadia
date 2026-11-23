@@ -678,6 +678,22 @@ export function withAgentIdentity(
 }
 
 /**
+ * The names an agent answers as, from the same speaker the identity guard
+ * checks: its display name, its slug and its authored identity name
+ * (deduplicated, blanks dropped). The privacy shield never masks them in
+ * the agent's own turn.
+ */
+export function agentOwnNames(
+  speaker: Pick<AgentSpeaker, 'displayName' | 'slug'>,
+  identityName?: string,
+): readonly string[] {
+  const names = [speaker.displayName, speaker.slug, identityName]
+    .map((n) => n?.trim() ?? '')
+    .filter((n) => n.length > 0);
+  return [...new Set(names)];
+}
+
+/**
  * Build one Agent's `Orchestrator`, its optional verifier wrapper, and its
  * `chatAgent` bundle. Each call produces a fully independent instance set —
  * no mutable state is shared between two calls.
@@ -1056,6 +1072,8 @@ export function buildOrchestratorForAgent(
     agentId: config.agentId,
     // Spec 2042 §6 criterion 1 — every run trace names the agent that answers.
     traceAgentId: agentSpeaker.agentId,
+    // Never masked by the privacy shield in this agent's own turn.
+    ownNames: agentOwnNames(agentSpeaker, config.identityName),
     provider: deps.provider,
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),

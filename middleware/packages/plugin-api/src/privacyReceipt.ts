@@ -615,6 +615,15 @@ export interface PrivacyPromptMaskRequest {
    * replays as chat history) and books into `maskedContextSpans`.
    */
   readonly origin?: PrivacyPromptOrigin;
+  /**
+   * The speaking agent's own names (display name, slug). Never masked in
+   * its own turn: a detected span whose whole value equals one of them
+   * (case-insensitive, trimmed) stays as written and is not booked. Exact
+   * equality only — a longer name that contains one ("Mira Schulz" for an
+   * agent "Mira") is masked as before. Names shorter than 2 characters are
+   * ignored.
+   */
+  readonly ownNames?: readonly string[];
 }
 
 /** See {@link PrivacyPromptMaskRequest.origin}. */
@@ -665,6 +674,8 @@ export interface PrivacyReplayedAnswerRequest {
    * on every turn that recalls it. The C0 baseline always sees `text` whole.
    */
   readonly segments?: readonly string[];
+  /** See {@link PrivacyPromptMaskRequest.ownNames}. */
+  readonly ownNames?: readonly string[];
 }
 
 /**

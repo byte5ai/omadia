@@ -843,6 +843,9 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
     /** #1541 — whose text this is (see `PrivacyPromptMaskRequest.origin`). */
     readonly origin: PrivacyPromptOrigin;
     readonly preview: boolean;
+    /** The speaking agent's own names: never masked in its own turn
+     *  (`PrivacyPromptMaskRequest.ownNames`). */
+    readonly ownNames?: readonly string[];
     /** Refusal judged on the turn's map as it stands when this call's turn
      *  in the queue comes; `undefined` lets the call proceed. */
     readonly precheck?: (map: PseudonymMap | undefined) => PrivacyPromptMaskResult | undefined;
@@ -866,7 +869,9 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
     const refused = args.precheck?.(promptMaskMaps.get(turnId));
     if (refused !== undefined) return refused;
     try {
-      const result = await maskPrompt(text, detectors, promptMaskMaps.get(turnId));
+      const result = await maskPrompt(text, detectors, promptMaskMaps.get(turnId), {
+        ownNames: args.ownNames,
+      });
       // Post-mask invariant: no detected real value may survive in the
       // wire-bound text outside a surrogate. A hit means substitution failed
       // — block. A term inside the shield's own placeholder is no hit
@@ -1316,6 +1321,7 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
         stage,
         origin: request.origin ?? 'message',
         preview,
+        ownNames: request.ownNames,
       });
     },
 
@@ -1396,6 +1402,7 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
         // message: its spans must not read as "masked in your message".
         origin: 'context',
         preview: false,
+        ownNames: request.ownNames,
       });
     },
 

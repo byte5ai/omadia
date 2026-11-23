@@ -248,7 +248,15 @@ export function createPrivacyTurnHandle(deps: {
    * tool ever bypasses (byte-identical pre-Slice-2.5 behaviour).
    */
   readonly resolveBypass?: (toolName: string) => { pluginId: string } | undefined;
+  /**
+   * The speaking agent's own names (display name, slug), handed to the
+   * provider with every user-message and recalled-context mask so they are
+   * never masked in the agent's own turn. Absent ⇒ nothing exempt.
+   */
+  readonly ownNames?: readonly string[];
 }): PrivacyTurnHandle {
+  const ownNames =
+    deps.ownNames !== undefined && deps.ownNames.length > 0 ? { ownNames: deps.ownNames } : {};
   let bypassed = false;
   return {
     async internToolResultV4(input) {
@@ -348,6 +356,7 @@ export function createPrivacyTurnHandle(deps: {
         ...(opts?.stage !== undefined ? { stage: opts.stage } : {}),
         ...(opts?.preview === true ? { preview: true } : {}),
         ...(opts?.origin !== undefined ? { origin: opts.origin } : {}),
+        ...ownNames,
       });
     },
 
@@ -367,7 +376,7 @@ export function createPrivacyTurnHandle(deps: {
     },
 
     async maskReplayedAnswer(text, segments) {
-      const request = { sessionId: deps.sessionId, turnId: deps.turnId, text };
+      const request = { sessionId: deps.sessionId, turnId: deps.turnId, text, ...ownNames };
       // Optional on the service contract. A provider that predates it masks a
       // replayed answer like any prompt text: only while `mask_user_prompt`
       // is on, the behaviour before the member existed.

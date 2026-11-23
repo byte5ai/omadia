@@ -814,6 +814,36 @@ export function dedupSpans(
 // Substitution.
 // ---------------------------------------------------------------------------
 
+/** Options of {@link maskPrompt}. */
+export interface MaskPromptOptions {
+  /** The speaking agent's own names (`PrivacyPromptMaskRequest.ownNames`):
+   *  a resolved span whose whole value equals one is left as written. */
+  readonly ownNames?: readonly string[];
+}
+
+/** Shortest own name that exempts a span; shorter ones are ignored. */
+const MIN_OWN_NAME_LENGTH = 2;
+/** Trailing punctuation that is not part of a name ("Dark Clippy."). */
+const TRAILING_NAME_PUNCTUATION = /[\s.,;:!?]+$/u;
+
+function normalizeName(value: string): string {
+  return value.trim().replace(TRAILING_NAME_PUNCTUATION, '').toLocaleLowerCase();
+}
+
+/**
+ * Exact equality only (case-insensitive, trimmed, trailing punctuation
+ * dropped): an agent "Mira" leaves "Mira" unmasked, never "Mira Schulz".
+ */
+export function ownNameMatcher(
+  ownNames: readonly string[] | undefined,
+): (value: string) => boolean {
+  const names = new Set(
+    (ownNames ?? []).map(normalizeName).filter((n) => n.length >= MIN_OWN_NAME_LENGTH),
+  );
+  if (names.size === 0) return () => false;
+  return (value) => names.has(normalizeName(value));
+}
+
 export interface MaskPromptResult {
   readonly maskedText: string;
   /** Server-held map (extended from `existingMap` when given). */
@@ -851,8 +881,10 @@ export async function maskPrompt(
   text: string,
   detectors: readonly PromptPiiDetector[],
   existingMap?: PseudonymMap,
+  options?: MaskPromptOptions,
 ): Promise<MaskPromptResult> {
   const detected = await collectDetectorSpans(text, detectors);
+  const isOwnName = ownNameMatcher(options?.ownNames);
   // #1528 / #1529 — a surrogate is not a new real value. A span that is (or,
   // after word-boundary extension, swallowed) a reserved surrogate shape — a
   // replayed answer that kept `LUKAS.BECKER@EXAMPLE.NET`, a deny-list term
@@ -860,8 +892,10 @@ export async function maskPrompt(
   // give the model a second stand-in for the same person. Realistic
   // surrogates ("Lukas Becker") are not exempt: a real person may bear the
   // name.
+  // The speaking agent's own name is not PII in its own turn: masked, its
+  // model reads "I am <surrogate>" in its history and "corrects" itself.
   const spans = dedupSpans(text, detected).filter(
-    (s) => !isReservedSurrogateShape(s.value),
+    (s) => !isReservedSurrogateShape(s.value) && !isOwnName(s.value),
   );
   if (spans.length === 0) {
     // NOTHING DETECTED IN *THIS* TEXT IS NOT NOTHING TO MASK.
