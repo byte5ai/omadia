@@ -251,8 +251,8 @@ describe('#1528 one surrogate per value, none re-masked', () => {
     });
     assert.equal(result.outcome, 'masked');
     if (result.outcome !== 'masked') return;
-    // Word-boundary extension takes the trailing '.' into the span.
-    assert.match(result.maskedText, /^Gemeint war PLATZHALTER-CUSTOM-1, nicht PLATZHALTER-CUSTOM-\d+$/);
+    // The sentence's full stop stays outside the span (#1868).
+    assert.match(result.maskedText, /^Gemeint war PLATZHALTER-CUSTOM-1, nicht PLATZHALTER-CUSTOM-\d+\.$/);
     assert.notEqual(
       /nicht (PLATZHALTER-CUSTOM-\d+)/.exec(result.maskedText)?.[1],
       'PLATZHALTER-CUSTOM-1',
