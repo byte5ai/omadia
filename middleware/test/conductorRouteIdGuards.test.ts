@@ -6,7 +6,6 @@ import { after, describe, it } from 'node:test';
 import express from 'express';
 
 import type { ConductorAwaitStore } from '../src/conductor/awaitStore.js';
-import type { ConductorFacilitationAdmin } from '../src/conductor/facilitationAdmin.js';
 import type { ConductorRunStore } from '../src/conductor/runStore.js';
 import { ConductorRunExecutor } from '../src/conductor/runExecutor.js';
 import type { ConductorRouterDeps } from '../src/conductor/routes.js';
@@ -21,7 +20,8 @@ import { listenLoopback } from './_helpers/listenLoopback.js';
  * `22P02 invalid input syntax for type uuid: "999"`, each handler's catch-all
  * copied that message into the response, and the operator got a 500 carrying the
  * database error (`conductor.get_run_failed`, `conductor.cancel_failed`,
- * `conductor.respond_failed`, `conductor.facilitation_terminate_failed`).
+ * `conductor.respond_failed`; the facilitation terminate route the issue also
+ * lists left this router with the native facilitators, #2043).
  *
  * The router now refuses the shape first: 400 for an id that cannot name a row,
  * and the handler's own 404 for a well-formed id that names none. Every store
@@ -55,7 +55,6 @@ describe('conductor router — malformed ids (#1706)', () => {
     ['GET', '/orders/runs/999', undefined],
     ['POST', '/orders/runs/999/cancel', {}],
     ['POST', '/awaits/999/respond', { response: { approved: true } }],
-    ['POST', '/facilitations/999/terminate', {}],
   ];
 
   for (const [method, path, body] of cases) {
@@ -65,7 +64,6 @@ describe('conductor router — malformed ids (#1706)', () => {
         runStore: throwingProxy<ConductorRunStore>(),
         awaitStore: throwingProxy<ConductorAwaitStore>(),
         executor: throwingProxy<ConductorRouterDeps['executor']>(),
-        facilitationAdmin: throwingProxy<ConductorFacilitationAdmin>(),
       });
       const res = await fetch(`${baseUrl}${path}`, {
         method,
