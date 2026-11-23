@@ -811,6 +811,14 @@ Channels; trifft das nicht zu, greift sicher der `'chatAgent'`-Default.
 Zusätzliches additives Manifest-Feld: `channel.canvas_protocol_version`
 (informativ; die echte Version wird im Boot-Handshake verhandelt).
 
+**Agent-Turn um den Helfer (spec 2042 §5.10).** Adressiert ein Canvas-Turn
+einen Agenten (`metadata.agentId`) und übernimmt der `dispatch_service` den
+Turn, öffnet der Dispatcher den `agent_turn`-Ausführungskontext dieses Agenten
+(Slug aus `routed.speaker`) um den **ganzen** Stream des Helfers
+(`runGeneratorInExecutionContext`). Skeleton, Schnellspur und Entscheidungs-
+modell des Helfers laufen vor bzw. neben dem Chat-Agenten des Agenten, der den
+Kontext sonst nur um seinen eigenen Stream öffnet.
+
 ### Canvas-Sentinels (Omadia UI, PR-7a)
 
 Canvas-aware Tier-3-Tools (und der Canvas-Client für `_pendingMutation`)
@@ -1009,6 +1017,14 @@ Plan-Feed-back vermerkt, eigene Folge-PR. Die Dispatch-Verdrahtung
 **Aufgelöst durch PR-11** (unten).
 
 ### Canvas WebSocket-Transport (Omadia UI, PR-11)
+
+> **Über die web-ui-Front (spec 2042).** Das web-ui-Image startet über
+> `web-ui/scripts/runtime/omadia-server.mjs` statt `server.js`: es hängt an
+> Nexts HTTP-Server ein Relay (`canvasWsProxy.mjs`), das Upgrades auf genau
+> `/omadia-ui/canvas` mit Session-Cookie an `MIDDLEWARE_URL` weiterreicht. So
+> ist die in `/.well-known/omadia-ui` der Front beworbene `wss://<front>`-URL
+> erreichbar; Auth bleibt bei der Registry unten. `next dev` nutzt den
+> Einstieg nicht (lokal verbindet der Canvas direkt mit der Middleware).
 
 Schließt die in PR-10a benannte CoreApi-Lücke: additive WebSocket-Registrierung
 für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
