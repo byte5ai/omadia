@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a reasoning effort only for OpenAI's reasoning models (spec 2042 follow-up)
+
+- The verifier, the fast path and the PASS/BLOCK judges send `effort: 'low'`. Both OpenAI
+  adapters forwarded it to every native model, and `gpt-4o` / `gpt-4.1` answer
+  `reasoning_effort` (Responses: `reasoning.effort`) with a 400, so on such an agent those calls
+  failed. A shared `isOpenAiReasoningModel` (`@omadia/llm-provider-api` 1.6.0: o-series and
+  GPT-5, without `o1-mini`/`o1-preview` and the `*-chat-latest` aliases) now decides: other
+  models get no effort field (Chat Completions notes it once per model). The reasoning models
+  reject a temperature other than 1, so a caller's `temperature: 0` is dropped for them.
+
 ### Fixed — Builder workspace footer reverted to `IDLE` after a reload following a failed build
 
 2026-11-10. #1737 — reported from the live workspace after an auto-rebuild
