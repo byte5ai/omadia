@@ -142,7 +142,7 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { archetypeAdds, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, MemberBaselineGrantStore, resolveScopedBundle } from '@omadia/orchestrator';
+import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, MemberBaselineGrantStore, resolveScopedBundle } from '@omadia/orchestrator';
 import {
   buildSystemNotice,
   ChannelResolver as ManagementChannelResolver,
@@ -476,6 +476,7 @@ import { createModelCallHaltMirror } from './execution/modelCallHalts.js';
 import { createModelWorkRuns } from './platform/modelWorkRuns.js';
 import { createModelWorkRouter } from './routes/modelWork.js';
 import { createOperatorTriggersRouter } from './routes/operatorTriggers.js';
+import { createConversationReaders } from './triggers/conversationReaders.js';
 import { createAgentTemplatesRouter } from './routes/agentTemplates.js';
 import { createSetupOptionsResolver } from './plugins/setupOptionsResolver.js';
 import { createModelGatewayStatusRouter } from './routes/modelGatewayStatus.js';
@@ -5013,6 +5014,16 @@ async function main(): Promise<void> {
     requireAuth,
     createOperatorTriggersRouter({
       triggers: () => triggersRef.current,
+      // Criterion 24 — a Teams conversation needs its stored reference (the
+      // newest one a bot of this instance captured there).
+      knownConversationRef: async (channel, conversationId) => {
+        if (channel !== 'teams' || !graphPool) return undefined;
+        const { rows } = await graphPool.query<{ ref: unknown }>(
+          'SELECT ref FROM teams_conversation_refs WHERE conversation_id = $1 ORDER BY updated_at DESC LIMIT 1',
+          [conversationId],
+        );
+        return rows[0]?.ref;
+      },
       jobs: () => jobScheduler.list(),
       batchJobs: () => batchJobRegistry.list(),
       audit: async (entry) => {
@@ -5573,6 +5584,14 @@ async function main(): Promise<void> {
       audit: () => async (entry) => {
         await adminAudit?.record(entry);
       },
+      // Criterion 24 — a proactive message is checked against the room's
+      // members when it goes out, read fresh from the channel's roster.
+      conversationReaders: createConversationReaders({
+        getRoster: (channel, conversationId, opts) => conversationRosterRegistry.getRoster(channel, conversationId, opts),
+        knowledgeGraph: () => serviceRegistry.get<KnowledgeGraph>('knowledgeGraph'),
+        channelKindOf: (channel) => CHANNEL_KIND_BY_ORIGIN[channel],
+        log: (m) => console.log(m),
+      }),
       log: (m) => console.log(m),
     });
     // Spec 2042 §5.12 — a meeting that ends ends its triggers (criterion 22).

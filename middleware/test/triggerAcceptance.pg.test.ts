@@ -112,6 +112,9 @@ describe('spec 2042 triggers through the kernel wiring (pg)', { skip: !pgAvailab
         tools.set(name, handler);
         return () => tools.delete(name);
       },
+      // The channel's rosters as of the send (criterion 24).
+      conversationReaders: async (_channel, conversationId) =>
+        conversationId === SALES_CHAT.conversationId ? readersOf(['anna', 'ben', 'sam', 'tom']) : readersOf(['anna', 'ben']),
       now: () => clock,
       log: () => undefined,
     });
@@ -164,6 +167,7 @@ describe('spec 2042 triggers through the kernel wiring (pg)', { skip: !pgAvailab
     guard = createDataPlanGuard({ boundaries: undefined });
     clock = new Date('2026-11-23T09:00:00Z');
     await pool.query('DELETE FROM agent_triggers');
+    await pool.query('DELETE FROM agent_recipient_grants');
     await pool.query('DELETE FROM agent_trigger_context_activity');
     await pool.query('DELETE FROM proactive_deliveries');
   });
@@ -291,16 +295,18 @@ describe('spec 2042 triggers through the kernel wiring (pg)', { skip: !pgAvailab
 
   describe('proactive discretion (HR → sales)', () => {
     const hrLabels = unionLabels([{ kind: 'context', key: 'teams:19:hr-team', readers: readersOf(['anna', 'ben']) }]);
-    const granted = (wiring: TriggerWiring): TriggerService =>
-      new TriggerService({
-        store: wiring.store,
-        limits: DEFAULT_TRIGGER_LIMITS,
-        eventSources: () => [],
-        checkDataAction: () => undefined,
-        // The recipient grant allows the sales chat as a target.
-        targetAllowed: () => true,
-        now: () => clock,
+    // An operator's recipient grant allows the sales chat as the HR agent's target.
+    const granted = async (wiring: TriggerWiring): Promise<TriggerService> => {
+      await wiring.grants.grant({
+        agentId: (agents.get('hr') as { id: string }).id,
+        channel: 'teams',
+        conversationId: SALES_CHAT.conversationId,
+        deliveryRef: SALES_CHAT,
+        label: 'Vertrieb',
+        grantedBy: 'op',
       });
+      return wiring.service;
+    };
     const envIn = (ref: { conversationId: string }, readers: readonly string[], contextKey: string): TriggerEnvelope => ({
       agentId: (agents.get('hr') as { id: string }).id,
       agentSlug: 'hr',
@@ -318,7 +324,7 @@ describe('spec 2042 triggers through the kernel wiring (pg)', { skip: !pgAvailab
 
     it('criterion 24: with the sales chat granted as target, nothing reaches the sales chat', async () => {
       const { wiring } = wire();
-      const res = await granted(wiring).create(
+      const res = await (await granted(wiring)).create(
         'wake_at',
         {
           purpose: 'Austritt vorbereiten',
@@ -333,13 +339,14 @@ describe('spec 2042 triggers through the kernel wiring (pg)', { skip: !pgAvailab
       clock = new Date(clock.getTime() + 20 * MIN);
       await tick(wiring);
       assert.equal(sent.filter((s) => JSON.stringify(s.ref) === JSON.stringify(SALES_CHAT)).length, 0);
+      assert.equal(sent.length, 0, 'and not to the HR chat either: a trigger with a target posts only there');
     });
 
     it('criterion 24: an HR-labelled trigger delivering into the sales chat is withheld at send time', async () => {
       const { wiring } = wire();
       // The HR read happened in a turn of the sales chat; the trigger was
       // granted at creation (no creation-time refusal to lean on).
-      const res = await granted(wiring).create(
+      const res = await (await granted(wiring)).create(
         'wake_at',
         {
           purpose: 'Austritt vorbereiten',
