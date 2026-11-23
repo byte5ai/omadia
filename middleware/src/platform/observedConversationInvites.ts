@@ -1,10 +1,12 @@
 // Kernel-side invite index (#330 C2a). Subscribes DIRECTLY to the
 // ConversationEventHub — before any plugin sees the event and independent of
 // the subscribe-only service facade — and remembers which GROUP conversations
-// this deployment's channel adapters reported a bot_added for. The
-// conversationBindings service consults it as its scope guard: a plugin can
-// only auto-bind a conversation the transport actually observed an invite
-// for, never an arbitrary conversation id it made up.
+// this deployment's channel adapters reported a bot_added for. It is a
+// presence signal the kernel reads itself: a message subscription
+// ('conversationMessages@1', #2043) is refused for a conversation the
+// transport never reported a bot in, so a plugin cannot subscribe to an
+// arbitrary conversation id it made up. (Its first consumer, the plugin-era
+// `conversationBindings` service, is gone.)
 
 import type { ChannelUserRef, ConversationMembershipEvent } from '@omadia/channel-sdk';
 

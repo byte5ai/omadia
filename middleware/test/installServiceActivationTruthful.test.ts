@@ -35,7 +35,7 @@ const MANIFEST = {
   schema_version: '1',
   identity: {
     id: '@test/activation-truthful',
-    kind: 'extension',
+    kind: 'tool',
     domain: 'test',
     name: 'Activation Truthful',
     version: '0.1.0',

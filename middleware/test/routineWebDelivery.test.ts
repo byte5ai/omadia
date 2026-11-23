@@ -282,3 +282,47 @@ describe('#1071 — routines created from the web chat', () => {
     assert.equal(store.rows.size, 0);
   });
 });
+
+describe('spec 2042 §5.3 — a routine on an agent\'s own bot', () => {
+  const viaMira = { kind: 'channel', conversationId: '42', asChannelKey: 'tg:7000000001' };
+
+  function rig(ownKey: string | undefined) {
+    const store = new FakeRoutineStore();
+    const sent: unknown[] = [];
+    const senderRegistry = new InMemoryProactiveSenderRegistry();
+    senderRegistry.register({ channel: 'telegram', send: async (opts) => void sent.push(opts.conversationRef) });
+    const runner = new RoutineRunner({
+      store: store as unknown as RoutineStore,
+      runsStore: new FakeRunsStore() as unknown as RoutineRunsStore,
+      scheduler: new NoopScheduler(),
+      getOrchestrator: () => orchestrator,
+      senderRegistry,
+      deliveryRefusal: ({ conversationRef }) =>
+        (conversationRef as { asChannelKey?: string }).asChannelKey === ownKey ? undefined : 'the bot is no longer mira\'s own bot',
+      log: () => {},
+    });
+    return { store, sent, runner };
+  }
+
+  const telegramInput = (): CreateRoutineInput => ({ ...createInput(viaMira), channel: 'telegram', agentSlug: 'mira' });
+
+  it('delivers through the bot while it is still the agent\'s', async () => {
+    turns = 0;
+    const r = rig('tg:7000000001');
+    const routine = await r.runner.createRoutine(telegramInput());
+    await r.runner.triggerRoutineNow(routine.id, OWNER);
+    assert.deepEqual(r.sent, [viaMira]);
+    assert.equal(turns, 1);
+  });
+
+  it('a bot given to another agent or removed: no turn, nothing sent, the routine pauses and says why', async () => {
+    turns = 0;
+    const r = rig('tg:7000000009');
+    const routine = await r.runner.createRoutine(telegramInput());
+    await r.runner.triggerRoutineNow(routine.id, OWNER);
+    assert.equal(turns, 0);
+    assert.deepEqual(r.sent, []);
+    assert.equal(r.store.rows.get(routine.id)?.status, 'paused');
+    assert.match(r.store.runs.at(-1)?.error ?? '', /no longer mira's own bot; the routine was paused — resume it once the bot is the agent's own again/);
+  });
+});

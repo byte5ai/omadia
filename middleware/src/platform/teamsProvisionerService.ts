@@ -244,6 +244,13 @@ export interface CatalogTeamsApp {
   readonly version: string;
 }
 
+/** Structural twin of `TeamsBotProbeResult` (kept here so this module has no
+ *  import back into the runner). */
+export type TeamsBotProbeOutcome =
+  | { readonly status: 'known'; readonly detail?: string }
+  | { readonly status: 'rejected'; readonly httpStatus?: number; readonly detail?: string }
+  | { readonly status: 'unverified'; readonly detail?: string };
+
 export interface UploadToCatalogInput {
   readonly packageZip: Uint8Array;
   readonly externalId: string;
@@ -402,6 +409,19 @@ export interface TeamsProvisionerAccessor
 
   uploadToCatalog(input: UploadToCatalogInput): Promise<Idempotent<CatalogTeamsApp>>;
   getCatalogApp(input: GetCatalogAppInput): Promise<GetCatalogAppResult>;
+
+  /**
+   * Connector >= 0.9.2 only — ABSENT on older installs (#2043 D10).
+   *
+   * Does the Bot Connector know this bot? The connector takes a token AS THE
+   * BOT (client credentials of `appId`, scope
+   * `https://api.botframework.com/.default`) and makes one Bot Connector call
+   * that a registered, Teams-enabled bot may make. A 401 on that call means
+   * the bot is not valid, whatever Azure Resource Manager says about its
+   * resource; any 2xx, or a 4xx about the request itself, means it is known.
+   * See `TeamsBotProbeResult` in `services/teamsProvisioningJob.ts`.
+   */
+  probeBot?(input: { readonly appId: string }): Promise<TeamsBotProbeOutcome>;
 
   installToTeam(input: InstallToTeamRequest): Promise<Idempotent<TeamAppInstallation>>;
 
@@ -768,6 +788,14 @@ function guardAccessor(raw: TeamsProvisionerAccessor): TeamsProvisionerAccessor 
     uploadToCatalog: (input) => raw.uploadToCatalog(input),
     getCatalogApp: (input) => raw.getCatalogApp(input),
     installToTeam: (input) => raw.installToTeam(input),
+    // #2043 D10 — forwarded only when the connector has it, so the runner's
+    // feature detection reads the truth through this wrapper.
+    ...(typeof raw.probeBot === 'function'
+      ? {
+          probeBot: (input: { readonly appId: string }) =>
+            (raw.probeBot as NonNullable<TeamsProvisionerAccessor['probeBot']>).call(raw, input),
+        }
+      : {}),
     // Same conditional-spread contract as the two below, for the same reason:
     // `supportsChatInstall` must read the WRAPPER and still get the truth
     // about the connector behind it. A `installToChat: (i) =>

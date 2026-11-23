@@ -266,12 +266,12 @@ describe('#1100 boot wiring — recomposeStaleIdentities in index.ts', () => {
   const indexSource = (): Promise<string> =>
     readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
 
-  it('runs after orchestrator activation and before domain-tool hydration and listen', async () => {
+  it('runs after orchestrator activation and before the registry hydration and listen', async () => {
     const src = await indexSource();
     const order: readonly [string, string][] = [
       ['await toolPluginRuntime.activateAllInstalled()', 'orchestrator plugin activation'],
       ['await recomposeStaleIdentities(', 'the boot recompose'],
-      ['dynamicAgentRuntime.activateAllInstalled()', 'domain-tool hydration'],
+      ['hydrateAgentRegistry(reg, {', 'the registry hydration'],
       ['createAppServer(app, terminalHandler).listen(', 'the HTTP listener'],
     ];
     const at = order.map(([needle, what]) => {

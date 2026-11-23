@@ -19,7 +19,7 @@ import {
  *
  * Express cannot unmount, so `PluginRouteRegistry` flips entries to
  * `disposed` and the mounted closure falls through to `next()`.
- * `DynamicAgentRuntime` calls `disposeBySource` on deactivate;
+ * The retired agent runtime called `disposeBySource` on deactivate;
  * `ToolPluginRuntime` held the same dependency and threaded it into every
  * plugin context, but never disposed by source — so an uninstalled tool
  * plugin kept serving its routes, and because Express matches
@@ -47,6 +47,7 @@ function makeRuntime(
     // Service disposal is the sibling of route disposal on the same
     // deactivate path — see serviceRegistryDisposal.test.ts for its coverage.
     serviceRegistry: new ServiceRegistry(),
+    nativeToolRegistry: { unregisterBySource: (): string[] => [] },
     jobScheduler: {
       stopForPlugin: (id: string): void => {
         stoppedJobsFor.push(id);
@@ -143,6 +144,7 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
       pluginRouteRegistry: registry,
       uiRouteCatalog: catalog,
       serviceRegistry: new ServiceRegistry(),
+      nativeToolRegistry: { unregisterBySource: (): string[] => [] },
       jobScheduler: { stopForPlugin: (): void => {} },
       log: (): void => {},
     } as unknown as ToolPluginRuntimeDeps;

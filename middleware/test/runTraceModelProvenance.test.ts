@@ -155,4 +155,30 @@ describe('#650 — the Neon Run schema accepts both shapes', () => {
     assert.ok(schema);
     assert.equal(schema.safeParse({ ...stored, model: 42 }).success, false);
   });
+
+  it('#2051: a Run with a working mode validates', () => {
+    assert.ok(schema);
+    const parsed = schema.safeParse({ ...stored, workingMode: 'Angebote', workingModeSkillId: 'sk-1' });
+    assert.equal(parsed.success, true, JSON.stringify(parsed));
+  });
+});
+
+describe('#2051 — the working mode is trace data', () => {
+  it('MUTATION CHECK: a recorded mode reaches the payload; none is omitted', () => {
+    const withMode = new RunTraceCollector({ scope: 's' });
+    withMode.recordWorkingMode('sk-1', 'Angebote');
+    const payload = withMode.finish({ iterations: 1, status: 'success' });
+    assert.deepEqual(payload.workingMode, { skillId: 'sk-1', name: 'Angebote' });
+
+    const plain = new RunTraceCollector({ scope: 's' }).finish({ iterations: 1, status: 'success' });
+    assert.equal('workingMode' in plain, false);
+  });
+
+  it('MUTATION CHECK: the in-memory graph persists the mode flattened on the Run node', async () => {
+    const props = await storeRun({ workingMode: { skillId: 'sk-1', name: 'Angebote' } });
+    assert.equal(props['workingMode'], 'Angebote');
+    assert.equal(props['workingModeSkillId'], 'sk-1');
+    const none = await storeRun({});
+    assert.equal('workingMode' in none, false);
+  });
 });

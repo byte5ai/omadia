@@ -5,12 +5,13 @@
  * lookup table that has to be edited every time a Builder agent ships.
  *
  * Two sources are merged:
- *   1. Built-in agents (Confluence, Odoo HR/Accounting, Calendar) — curated
- *      tones to match the byte5 brand pairing the design team agreed on.
- *   2. Dynamic / Builder-uploaded agents — id comes from
- *      `DynamicAgentRuntime.findAgentIdByToolName`, label from the agent id's
- *      last dot-segment (`de.byte5.agent.wanderlust-concierge` →
- *      "Wanderlust Concierge"), tone from a deterministic agent-id hash.
+ *   1. Kernel tools with a curated label (Calendar) — tones to match the
+ *      byte5 brand pairing the design team agreed on.
+ *   2. Plugin tools — the id is the plugin that registered the tool
+ *      (`toolOwner`, the native tool registry), the label its id's last
+ *      segment (`de.byte5.agent.odoo-hr` → "Odoo Hr"), the tone a
+ *      deterministic hash of the id. The pill names where a result came
+ *      from; the plugin is not an actor (spec 2042 §5.10).
  *
  * Helper / built-in tools without a backing agent (memory, ask_user_choice,
  * render_diagram, suggest_follow_ups, …) return `undefined` and the UI
@@ -19,24 +20,7 @@
 
 import type { AgentMeta } from '@omadia/channel-sdk';
 
-import type { DynamicAgentRuntime } from '../plugins/dynamicAgentRuntime.js';
-
 const BUILT_IN_TOOL_TO_AGENT: Record<string, AgentMeta> = {
-  query_confluence_playbook: {
-    id: 'de.byte5.agent.confluence',
-    label: 'Confluence',
-    tone: 'cyan',
-  },
-  query_odoo_hr: {
-    id: 'de.byte5.agent.odoo-hr',
-    label: 'Odoo HR',
-    tone: 'navy',
-  },
-  query_odoo_accounting: {
-    id: 'de.byte5.agent.odoo-accounting',
-    label: 'Odoo Accounting',
-    tone: 'navy',
-  },
   find_free_slots: {
     id: 'de.byte5.agent.calendar',
     label: 'Calendar',
@@ -80,7 +64,8 @@ function labelFromAgentId(agentId: string): string {
 export type AgentResolver = (toolName: string) => AgentMeta | undefined;
 
 export interface AgentResolverDeps {
-  dynamicRuntime?: DynamicAgentRuntime;
+  /** The plugin that registered `toolName`, `undefined` for a kernel tool. */
+  toolOwner?: (toolName: string) => string | undefined;
 }
 
 export function createAgentResolver(deps: AgentResolverDeps): AgentResolver {
@@ -88,13 +73,13 @@ export function createAgentResolver(deps: AgentResolverDeps): AgentResolver {
     const builtIn = BUILT_IN_TOOL_TO_AGENT[toolName];
     if (builtIn) return builtIn;
 
-    const dynamicAgentId = deps.dynamicRuntime?.findAgentIdByToolName(toolName);
-    if (!dynamicAgentId) return undefined;
+    const ownerId = deps.toolOwner?.(toolName);
+    if (!ownerId) return undefined;
 
     return {
-      id: dynamicAgentId,
-      label: labelFromAgentId(dynamicAgentId),
-      tone: toneForDynamicAgent(dynamicAgentId),
+      id: ownerId,
+      label: labelFromAgentId(ownerId),
+      tone: toneForDynamicAgent(ownerId),
     };
   };
 }

@@ -12,6 +12,7 @@
 // than restated. A second declaration would drift from the one plugin authors
 // actually compile against.
 import type { SqlPermission } from '@omadia/plugin-api';
+import type { ArchetypeAgentSetting } from '@omadia/orchestrator';
 
 export type { SqlPermission };
 
@@ -121,6 +122,9 @@ export interface PluginSetupField {
    *  `type === 'boolean'` (#1464 — `"true"` normalized), a `number` for
    *  `type === 'integer'` (#1524), a `string` otherwise. */
   default?: string | string[] | boolean | number;
+  /** #1958 — `integer` only: the smallest accepted value. Enforced on install
+   *  and on every post-install edit; mirrors `InstallSetupField.min`. */
+  min?: number;
   /** Allowed values for `type === 'enum'`. Mirrors the install-wizard
    *  schema so the post-install editor can render a `<select>` instead of
    *  a free-text input. */
@@ -334,18 +338,155 @@ export type PluginInstallState =
   | 'update-available'
   | 'incompatible';
 
+/**
+ * What a plugin delivers (spec 2042 §5.10, ADR-0014). A plugin is only the
+ * delivery form; its manifest `kind` names the one thing it delivers.
+ */
 export type PluginKind =
-  | 'agent'
+  /** Capability: access to a system. Granted per agent. */
   | 'integration'
-  | 'channel'
-  /** Headless native-tool package. activate() registers via ctx.tools /
-   *  ctx.routes and returns a close-only handle (no toolkit). Example:
+  /** Capability: a tool. Headless native-tool package; activate() registers
+   *  via ctx.tools / ctx.routes and returns a close-only handle. Example:
    *  @omadia/diagrams contributes `render_diagram` + the `/diagrams`
-   *  signed-url proxy. */
+   *  signed-url proxy. Granted per agent. */
   | 'tool'
-  /** Cross-cutting extension (turn-hooks, background jobs, prompt blocks).
-   *  Reserved for Phase 4 (Verifier + KG). No runtime support yet. */
+  /** Capability: know-how. Granted per agent. */
+  | 'skill'
+  /** Where people reach agents. Transports messages for kernel-managed agent
+   *  identities; never attached to an agent. */
+  | 'channel'
+  /** A model (also embeddings and transcription). Only model plugins hold
+   *  model credentials, and only the kernel's model gateway calls them. */
+  | 'model'
+  /** #2088 — delivers an agent archetype: its manifest carries the
+   *  descriptor the kernel enforces (`Plugin.archetype`). Never attached to
+   *  an agent; the operator creates agents OF the archetype. Installing it
+   *  needs a confirmation. */
+  | 'archetype'
+  /** Infrastructure of omadia itself (agent runtime, verifier, fast lane,
+   *  memory system, Conductor …). Never attached to an agent; installing it
+   *  needs a confirmation. */
+  | 'system-module'
+  /** Presets of identity, personality and suggested capabilities that the
+   *  operator turns into agents. Inactive metadata; never runs itself. */
+  | 'agent-template'
+  /** Retired (spec 2042 §5.10): a persona-bearing plugin. Still LOADED for a
+   *  package that is already installed (legacy, `isLegacyKind`), so a live
+   *  instance keeps working until the agent is rebuilt; never uploaded,
+   *  installed or updated (`isInstallableKind`). The runtime goes in S3c. */
+  | 'agent'
+  /** Retired: became `system-module`, and `model` for the LLM plugins. An
+   *  installed one still loads, read as `system-module` everywhere
+   *  ({@link effectiveKind}); never uploaded, installed or updated. */
   | 'extension';
+
+/** Every manifest `kind` this kernel accepts. Anything else is rejected at
+ *  ingest: a kind the kernel does not know is not silently run as another.
+ *  `provider` and `ui` were never kernel kinds and stay rejected. */
+export const PLUGIN_KINDS = [
+  'integration',
+  'tool',
+  'skill',
+  'channel',
+  'model',
+  'archetype',
+  'system-module',
+  'agent-template',
+  'agent',
+  'extension',
+] as const;
+
+/** Kinds that deliver capabilities — the only ones an agent can be granted. */
+export const CAPABILITY_PLUGIN_KINDS: ReadonlySet<PluginKind> = new Set<PluginKind>([
+  'integration',
+  'tool',
+  'skill',
+]);
+
+/** Retired kinds, kept loadable for packages already installed. */
+export const RETIRED_PLUGIN_KINDS: ReadonlySet<PluginKind> = new Set<PluginKind>(['agent', 'extension']);
+
+/**
+ * The kind a plugin is treated as. `extension` reads as `system-module`; every
+ * other kind is itself. Use this wherever behaviour depends on the kind, so
+ * a package that still says `extension` behaves exactly like one that says
+ * `system-module`.
+ */
+export function effectiveKind(kind: PluginKind): Exclude<PluginKind, 'extension'> {
+  return kind === 'extension' ? 'system-module' : kind;
+}
+
+/** Whether a package of this kind may enter the instance at all: uploaded,
+ *  installed or updated (spec 2042 §5.10, §6 criterion 15; the contract step).
+ *  The retired kinds are refused. A plugin already installed under one keeps
+ *  running as legacy (`isLegacyKind`) until it is rebuilt: an `agent` as a
+ *  capability plus an agent, an `extension` as a `system-module` or `model`. */
+export function isInstallableKind(kind: PluginKind): boolean {
+  return !RETIRED_PLUGIN_KINDS.has(kind);
+}
+
+/** An installed plugin of a retired kind: it runs, but no new version of it
+ *  under that kind is accepted. */
+export function isLegacyKind(kind: PluginKind): boolean {
+  return RETIRED_PLUGIN_KINDS.has(kind);
+}
+
+/** Kinds whose install adds something the operator confirms explicitly: a
+ *  new kind of agent, or infrastructure of omadia itself. (The retired kinds
+ *  are not installed at all.) */
+export function installNeedsConfirmation(kind: PluginKind): boolean {
+  return kind === 'archetype' || kind === 'system-module';
+}
+
+/**
+ * The archetype a plugin of kind `archetype` delivers, as its manifest states
+ * it (`archetype:` block). Mirrors the kernel's `ArchetypeDescriptor` without
+ * `source`; the lists are closed vocabularies the kernel enforces.
+ */
+export interface PluginArchetype {
+  id: string;
+  omits: string[];
+  adds: string[];
+  requires: string[];
+  noun: string;
+  label?: string | { en?: string; de?: string };
+  labelPlural?: string | { en?: string; de?: string };
+  description?: string | { en?: string; de?: string };
+  omissionReasons?: Record<string, string>;
+  roleContract?: string;
+  /** #2066 — per-agent settings the archetype declares (`agent_settings`). */
+  agentSettings?: ArchetypeAgentSetting[];
+}
+
+/** A tool's declared effect: `read` reads a system, `write` changes one,
+ *  `none` touches no system (a computation). */
+export type ToolSideEffect = 'read' | 'write' | 'none';
+
+export const TOOL_SIDE_EFFECTS: readonly ToolSideEffect[] = ['read', 'write', 'none'];
+
+/**
+ * One agent template of a plugin (`agent_templates:` block, spec 2042
+ * §5.10): a preset of identity, personality and suggested capabilities for
+ * an agent of an existing archetype. Inactive metadata: it runs nothing and
+ * grants nothing. `persona` and `quality` are the Agent Builder's documents
+ * (`PersonaConfigSchema`, `QualityConfigSchema`), validated when the
+ * manifest is read.
+ */
+export interface PluginAgentTemplate {
+  readonly id: string;
+  readonly archetype: string;
+  readonly name: string;
+  readonly short_description?: string;
+  readonly long_description?: string;
+  readonly instructions?: string;
+  readonly language?: string;
+  /** One of the identity's answer-size levels (`ANSWER_VERBOSITY_LEVELS`). */
+  readonly verbosity?: string;
+  readonly persona?: Readonly<Record<string, unknown>>;
+  readonly quality?: Readonly<Record<string, unknown>>;
+  /** Plugin ids the template suggests granting; never granted by it. */
+  readonly capabilities: readonly string[];
+}
 
 export type ChannelTransportKind = 'webhook' | 'websocket' | 'long-poll';
 
@@ -528,6 +669,17 @@ export type PluginInstallOrigin = 'bundled' | 'operator';
 export interface Plugin {
   id: AgentId;
   kind: PluginKind;
+  /** #2088 — present exactly when `kind === 'archetype'`. */
+  archetype?: PluginArchetype;
+  /** Spec 2042 §5.10 — the `agent_templates:` block: inactive presets the
+   *  operator turns into agents in the Agent Builder. Absent when the
+   *  manifest declares none. */
+  agent_templates?: PluginAgentTemplate[];
+  /** Spec 2042 §5.10/§5.11 — what each tool of the plugin declares it does,
+   *  from `capabilities[].side_effects`, keyed by the tool id. A tool not
+   *  listed declared nothing (`declaredToolEffect` → `unknown`). Absent when
+   *  no tool declares one. */
+  tool_side_effects?: Readonly<Record<string, ToolSideEffect>>;
   name: string;
   version: string;
   latest_version: string;
@@ -942,6 +1094,9 @@ export type MissingGrant =
  *    capability.
  *  - `target_unreachable` — a host the plugin talks to during activation did
  *    not answer (DNS, refused, timeout).
+ *  - `kind_retired` — the plugin is of the retired kind `agent` (spec 2042
+ *    §5.10). Nothing in the setup fixes it: update the plugin to a version of
+ *    a capability or template kind, or uninstall it.
  *  - `unknown` — anything else, AND every registry entry written before this
  *    field existed. The raw message stays available as the technical detail.
  *
@@ -957,6 +1112,13 @@ export type ActivationErrorCode =
   | 'dependency_unresolved'
   | 'provider_conflict'
   | 'target_unreachable'
+  // #2088 — the plugin's own database (schema and roles) could not be set up,
+  // or its roles are not limited to its schema.
+  | 'database_not_available'
+  // Spec 2042 §5.10 — the plugin is of the retired kind `agent`. The kernel
+  // runs no such plugin; a newer version of a capability or template kind
+  // replaces it.
+  | 'kind_retired'
   | 'unknown';
 
 /**
@@ -1045,6 +1207,9 @@ export interface InstallSetupField {
   help?: LocalizedMarkdown;
   required: boolean;
   default?: unknown;
+  /** #1958 — `integer` only: the smallest accepted value. See
+   *  `PluginSetupField.min`; parsed by the same rule in both projections. */
+  min?: number;
   enum?: SetupEnumOption[];
   provider?: string;
   scopes?: string[];

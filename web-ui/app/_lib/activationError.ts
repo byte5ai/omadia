@@ -18,6 +18,8 @@ export const ACTIVATION_ERROR_CODES = [
   'dependency_unresolved',
   'provider_conflict',
   'target_unreachable',
+  'database_not_available',
+  'kind_retired',
   'unknown',
 ] as const;
 

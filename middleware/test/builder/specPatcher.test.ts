@@ -14,7 +14,6 @@ const validBase = {
   name: 'Weather Agent',
   description: 'Weather forecast agent',
   category: 'analysis',
-  skill: { role: 'a weather expert' },
   playbook: { when_to_use: 'when user asks about weather' },
 } as const;
 
@@ -280,4 +279,20 @@ describe('specPatcher', () => {
       assert.equal(result.spec.slots['activate-body'], 'init();');
     });
   });
+});
+
+// Spec 2042 §5.10 — persona, quality and the role prompt belong to agents.
+describe('specPatcher — retired persona fields', () => {
+  for (const path of ['/persona', '/quality', '/skill', '/persona/custom_notes']) {
+    it(`refuses add/replace on ${path}`, () => {
+      const spec = parseAgentSpec(validBase);
+      for (const op of ['add', 'replace'] as const) {
+        assert.throws(
+          () => applySpecPatches(spec, [{ op, path, value: { role: 'x' } }]),
+          (err: unknown) =>
+            err instanceof IllegalSpecState && /Agent Builder/.test(err.message),
+        );
+      }
+    });
+  }
 });

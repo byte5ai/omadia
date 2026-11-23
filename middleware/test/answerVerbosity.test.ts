@@ -196,7 +196,7 @@ describe('buildAnswerVerbosityBlock', () => {
       assert.ok(block.endsWith('\n'), `${level}: trailing newline for splicing`);
       // Domain-agent results are raw material — the block must say so on
       // every level, otherwise the orchestrator re-tells them in full.
-      assert.match(block, /Fach-Agenten sind Rohmaterial/, `${level}: condense rule`);
+      assert.match(block, /Fach-Werkzeugen sind Rohmaterial/, `${level}: condense rule`);
       // The operator's default never fights the person asking.
       assert.match(block, /gewinnt seine Bitte/, `${level}: user wording wins`);
     }
@@ -217,7 +217,7 @@ describe('buildAnswerVerbosityBlock', () => {
   });
 
   it('long levels ask for provenance and completeness', () => {
-    assert.match(buildAnswerVerbosityBlock('detailed'), /welcher Fach-Agent/);
+    assert.match(buildAnswerVerbosityBlock('detailed'), /welches Fach-Werkzeug/);
     assert.match(buildAnswerVerbosityBlock('max'), /Zwischenschritt/);
   });
 });
@@ -239,7 +239,7 @@ describe('buildOrchestratorForAgent — answerVerbosity reaches the system promp
     // Everything else is untouched: the block is an insertion, not a rewrite.
     const standard = await systemPromptFor('standard');
     assert.ok(prompt.length > standard.length);
-    assert.ok(prompt.includes('Fach-Agenten (Routing-Regel'), 'routing block still present');
+    assert.ok(prompt.includes('Fach-Werkzeuge deiner Fähigkeiten (Routing-Regel'), 'routing block still present');
   });
 
   it("the agent's own level replaces the installation default — one block, never two", async () => {

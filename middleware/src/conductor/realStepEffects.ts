@@ -1,5 +1,10 @@
-import type { OrchestratorRegistry } from '@omadia/orchestrator';
-import { resolveAddressedBot, type DefaultChannelBotKey } from './channelBotOwnership.js';
+import { assertArchetypeAllows, type OrchestratorRegistry } from '@omadia/orchestrator';
+import {
+  addressedBotKey,
+  isChannelEvent,
+  resolveAddressedBot,
+  type DefaultChannelBotKey,
+} from './channelBotOwnership.js';
 import type { JsonObject, JsonValue, Step } from '@omadia/conductor-core';
 
 import type { ConductorSayOutcome, ConductorSayService } from './sayService.js';
@@ -44,7 +49,7 @@ export class StepTimeoutError extends Error {
  * step being re-executed). Best-effort: the underlying turn isn't force-killed, but the run stops
  * waiting and records the step `failed`, so it can take its fallback deterministically.
  *
- * NOTE: this Promise.race timeout shape is duplicated in toolPluginRuntime / dynamicAgentRuntime /
+ * NOTE: this Promise.race timeout shape is duplicated in toolPluginRuntime / routes/runtime /
  * previewRuntime / migrationRunner. Follow-up: extract one shared `withTimeout` util. This copy adds
  * the typed StepTimeoutError + the `ms<=0` disable guard the others lack.
  */
@@ -70,7 +75,7 @@ export interface RealStepEffectsDeps {
    *  without an identity row that still has an owner (`channelBotOwnership`).
    *  Absent: only provisioned bots can start an agent step. */
   defaultChannelBotKey?: DefaultChannelBotKey;
-  /** invoke a deterministic-action / connector tool by id (dynamicAgentRuntime). */
+  /** invoke a deterministic-action / connector tool by id (a plugin-registered tool). */
   invokeAction?: (toolId: string, input: unknown) => Promise<string | undefined>;
   /** Per-step hard budget in ms. MUST be < the resume worker's staleMs (default 900_000). 0 disables. */
   stepTimeoutMs?: number;
@@ -151,6 +156,9 @@ export class RealStepEffects implements StepEffects {
     if (!entry) {
       throw new Error(`Agent '${slug}' is not active in the orchestrator registry`);
     }
+    // #2060 — a workflow step consults an agent on somebody's behalf. A
+    // facilitator is run by its engine only (`agentTurn`), never as a step.
+    assertArchetypeAllows(entry.agent, 'consultation');
 
     const root: JsonObject = { ctx: context, steps: asObject(context.steps) };
     const userMessage = step.prompt
@@ -191,7 +199,10 @@ export class RealStepEffects implements StepEffects {
     // transition guards can branch on `stepResult.data.…` deterministically.
     // Tolerant by design: missing/broken JSON just means no `data` — a guard
     // like `ne stepResult.data.dodMet true` then keeps the bounded loop going.
-    const data = extractFencedJson(answer.text);
+    // #2085 — the run context feeds later steps' models: side-channel rows
+    // stay out of it; only a published `say` carries them to people.
+    const prose = answer.textWithoutData ?? answer.text;
+    const data = extractFencedJson(prose);
     // The agent-dialogue seam: without `say` an agent step's prose never leaves
     // the run context (which is why two agent bots could not converse). With
     // it, the turn is published into the run's bound conversation — and the
@@ -200,7 +211,7 @@ export class RealStepEffects implements StepEffects {
     const said = step.say ? await this.publish(step, context, meta, slug, answer.text) : undefined;
     return {
       result: {
-        text: answer.text,
+        text: prose,
         ...(data !== undefined ? { data } : {}),
         ...(said !== undefined ? { said: said.said, ...(said.said ? {} : { sayError: said.reason }) } : {}),
       },
@@ -289,22 +300,6 @@ export function extractFencedJson(text: string, maxBytes = 16_384): JsonValue | 
 }
 
 /**
- * Channel events whose payload identifies the bot a person addressed.
- *
- * A prefix list rather than a wildcard: a channel that does NOT carry an
- * addressed bot must not be silently treated as if it did, because the rule
- * below would then refuse every run it starts. Adding a channel here is a
- * deliberate statement that its events name their bot.
- */
-const CHANNEL_EVENT_PREFIXES: readonly string[] = ['teams.'];
-
-/** The addressed bot's routing key, as the channel put it in the payload. */
-function addressedBotKey(context: JsonObject): string | undefined {
-  const raw = context['botId'];
-  return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : undefined;
-}
-
-/**
  * Refuse an agent step whose run began with a message to a DIFFERENT bot.
  *
  * Three outcomes, and the middle one is the point:
@@ -329,7 +324,7 @@ function assertChannelOriginAllows(
   const isChannelTrigger =
     (meta.triggerKind === 'event' || meta.triggerKind === 'webhook') &&
     eventId !== undefined &&
-    CHANNEL_EVENT_PREFIXES.some((p) => eventId.startsWith(p));
+    isChannelEvent(eventId);
   if (!isChannelTrigger) return;
 
   const botKey = addressedBotKey(context);

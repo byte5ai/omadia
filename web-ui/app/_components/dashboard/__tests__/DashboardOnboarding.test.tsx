@@ -184,12 +184,12 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
     renderCard({ cliLoggedIn: true, runtimeState: 'down' });
 
     expect(screen.getByTestId('onboarding-step-1-assign-hint')).toBeTruthy();
-    expect(screen.getByText(/Zuordnung des Orchestrators/)).toBeTruthy();
+    expect(screen.getByText(/Zuordnung des Agenten/)).toBeTruthy();
     const step1 = screen.getByTestId('onboarding-step-1');
     const links = Array.from(step1.querySelectorAll('a'));
     expect(links).toHaveLength(1);
     expect(links[0]?.getAttribute('href')).toBe('/admin/providers');
-    expect(screen.getByText(/Orchestrator zuordnen/)).toBeTruthy();
+    expect(screen.getByText(/Agent zuordnen/)).toBeTruthy();
     // The "connect an access" CTAs are gone: the operator already has one.
     expect(screen.queryByText(/API-Schlüssel hinterlegen/)).toBeNull();
   });
@@ -207,7 +207,7 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
 
   /**
    * #1088 — with the middleware container stopped, step 1 used to show a green
-   * checkmark and „Die Agent-Runtime läuft." while the health tile on the same
+   * checkmark and „Die Agentenlaufzeit läuft." while the health tile on the same
    * page read „Nicht erreichbar". An unreachable backend must never tick a
    * setup step, and must not borrow either of the two copies that make claims
    * about an access it cannot see.
@@ -219,7 +219,7 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
       const step1 = screen.getByTestId('onboarding-step-1');
       expect(step1.dataset['done']).toBe('false');
       expect(screen.queryByTestId('onboarding-step-1-check')).toBeNull();
-      expect(screen.queryByText(/Die Agent-Runtime läuft/)).toBeNull();
+      expect(screen.queryByText(/Die Agentenlaufzeit läuft/)).toBeNull();
       expect(screen.queryByTestId('onboarding-step-1-done-copy')).toBeNull();
     });
 
@@ -243,7 +243,7 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
       renderCard({ cliLoggedIn: true, runtimeState: 'unreachable' });
 
       expect(screen.queryByTestId('onboarding-step-1-assign-hint')).toBeNull();
-      expect(screen.queryByText(/Zuordnung des Orchestrators/)).toBeNull();
+      expect(screen.queryByText(/Zuordnung des Agenten/)).toBeNull();
       expect(screen.queryByText(/API-Schlüssel hinterlegen/)).toBeNull();
     });
 
@@ -308,7 +308,7 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
       assignedProviderLabel: 'Anthropic',
     });
     const copy = screen.getByTestId('onboarding-step-1-done-copy');
-    expect(copy.textContent).toMatch(/Agent-Runtime läuft über Anthropic/);
+    expect(copy.textContent).toMatch(/Agentenlaufzeit läuft über Anthropic/);
     expect(copy.textContent).not.toMatch(/geprüft/);
   });
 
@@ -345,7 +345,7 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
       assignedProviderLabel: null,
     });
     const copy = screen.getByTestId('onboarding-step-1-done-copy');
-    expect(copy.textContent).toMatch(/Die Agent-Runtime läuft\./);
+    expect(copy.textContent).toMatch(/Die Agentenlaufzeit läuft\./);
     expect(copy.textContent).not.toMatch(/geprüft/);
   });
 

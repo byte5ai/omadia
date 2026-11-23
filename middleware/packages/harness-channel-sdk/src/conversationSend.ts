@@ -5,7 +5,13 @@
 // deny-by-default service over it, and unreachability is RETURNED, never
 // thrown.
 
-import type { TargetedDeliveryOutcome, TargetedMessage } from './targetedSend.js';
+import type { CardUpdate, CardUpdateOutcome, ConversationReaction } from '@omadia/plugin-api';
+
+import type {
+  SendProviderCapabilities,
+  TargetedDeliveryOutcome,
+  TargetedMessage,
+} from './targetedSend.js';
 
 /**
  * Who the message is posted AS.
@@ -31,6 +37,9 @@ export interface ConversationSendOptions {
 export interface ConversationSendProvider {
   /** The `channel_bindings.channel_type` this provider serves (e.g. 'teams'). */
   channelType: string;
+  /** Declared capabilities (#2043). Without `asChannelKey: true` the kernel
+   *  sends nothing as an agent's own identity through this provider. */
+  supports?: SendProviderCapabilities;
   sendToConversation(
     conversationId: string,
     message: TargetedMessage,
@@ -49,4 +58,39 @@ export interface ConversationSendProvider {
    * longer than that calls this repeatedly rather than once.
    */
   sendTyping?(conversationId: string, opts?: ConversationSendOptions): Promise<void>;
+  /**
+   * Update a posted question card (#2089); declared through
+   * `supports.card.update`. `cardMessageId` is what the send returned as
+   * `delivered.cardMessageId`. The update goes out as `opts.asChannelKey`,
+   * the identity that posted the card: a provider updates only a message
+   * that identity posted and answers `unreachable` otherwise, never through
+   * another identity. Unreachability (message deleted, too old) is returned,
+   * not thrown.
+   */
+  updateCard?(
+    conversationId: string,
+    cardMessageId: string,
+    update: CardUpdate,
+    opts: { asChannelKey: string },
+  ): Promise<CardUpdateOutcome>;
+  /**
+   * Set a reaction on a message of the conversation as `opts.asChannelKey`
+   * (spec 2043 §5.14); declared through `supports.reactions`. `messageId` is
+   * the platform id of the message as its inbound event stated it. The
+   * provider maps the {@link ConversationReaction} to its platform's form
+   * (a thumbs-up). It reacts as exactly that identity or answers
+   * `unreachable`, never through another one; a failure (message deleted,
+   * not allowed, rate limit) is returned, not thrown.
+   */
+  react?(
+    conversationId: string,
+    messageId: string,
+    reaction: ConversationReaction,
+    opts: { asChannelKey: string },
+  ): Promise<ConversationReactionOutcome>;
 }
+
+/** What a provider answers to {@link ConversationSendProvider.react}. */
+export type ConversationReactionOutcome =
+  | { outcome: 'reacted' }
+  | { outcome: 'unreachable'; code: string; message: string };

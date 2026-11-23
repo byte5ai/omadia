@@ -35,6 +35,7 @@ import type {
   RegistryPluginEntry,
   RegistryVersionEntry,
 } from '../api/registry-v1.js';
+import { PLUGIN_KINDS } from '../api/admin-v1.js';
 import type { PluginKind, RegistrySourceStatus } from '../api/admin-v1.js';
 
 const INDEX_PATH = '/registry/index.json';
@@ -54,13 +55,9 @@ const DEFAULT_FAILURE_TTL_MS = 60_000;
 const DEFAULT_MAX_INDEX_BYTES = 5 * 1024 * 1024; // 5 MiB
 const DEFAULT_MAX_ARTIFACT_BYTES = 50 * 1024 * 1024; // 50 MiB
 
-const VALID_KINDS: ReadonlySet<string> = new Set([
-  'agent',
-  'integration',
-  'channel',
-  'tool',
-  'extension',
-]);
+// The kinds this kernel can install (`PLUGIN_KINDS`); a registry entry of
+// any other kind is not offered.
+const VALID_KINDS: ReadonlySet<string> = new Set(PLUGIN_KINDS);
 
 export class RegistryError extends Error {
   readonly code: string;

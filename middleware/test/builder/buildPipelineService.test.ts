@@ -179,7 +179,10 @@ describe('BuildPipeline', () => {
     assert.equal(throwSnap?.phase, 'draft_not_found');
   });
 
-  it('writes AGENT.md (with persona/quality frontmatter) into the staging dir (Phase 3 / OB-67)', async () => {
+  // Spec 2042 §5.10 — a capability plugin ships no persona: no AGENT.md,
+  // even for a draft stored before the change that still carries
+  // persona/quality.
+  it('writes no AGENT.md and no skills, even for an old draft with persona/quality', async () => {
     const { spec, slots } = loadFixtureSpec();
     const draft = await store.create('alice@example.com', 'Weather');
     await store.update('alice@example.com', draft.id, {
@@ -190,20 +193,19 @@ describe('BuildPipeline', () => {
           custom_notes: 'Antworte auf Deutsch.',
         },
         quality: { sycophancy: 'high' },
-      },
+      } as typeof spec,
       slots,
     });
 
     const queue = new BuildQueue({ concurrency: 1 });
-    let agentMdContent = '';
+    let staged: string[] = [];
     const pipeline = new BuildPipeline({
       draftStore: store,
       buildQueue: queue,
       templateRoot,
       stagingBaseDir,
       buildSandbox: async (opts) => {
-        const agentMdPath = path.join(opts.stagingDir, 'AGENT.md');
-        agentMdContent = readFileSync(agentMdPath, 'utf-8');
+        staged = readdirSync(opts.stagingDir);
         return makeBuildSuccess();
       },
       logger: () => {},
@@ -214,26 +216,9 @@ describe('BuildPipeline', () => {
       draftId: draft.id,
     });
 
-    assert.match(
-      agentMdContent,
-      /^---\n/,
-      'AGENT.md must lead with frontmatter',
-    );
-    assert.match(
-      agentMdContent,
-      /persona:[\s\S]*sarcasm:\s*90/,
-      'persona.axes.sarcasm=90 must land in frontmatter',
-    );
-    assert.match(
-      agentMdContent,
-      /quality:[\s\S]*sycophancy:\s*high/,
-      'quality.sycophancy=high must land in frontmatter',
-    );
-    assert.match(
-      agentMdContent,
-      /Antworte auf Deutsch/,
-      'custom_notes must be preserved verbatim',
-    );
+    assert.ok(staged.includes('manifest.yaml'), 'staging dir was observed');
+    assert.ok(!staged.some((f) => /^agent\.md$/i.test(f)), 'no AGENT.md');
+    assert.ok(!staged.includes('skills'), 'no skills dir');
   });
 
   it('cleans up the staging dir even when the sandbox returns a failure', async () => {

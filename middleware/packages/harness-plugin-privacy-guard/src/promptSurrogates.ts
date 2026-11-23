@@ -495,14 +495,16 @@ export function countUnresolvedForms(text: string, map: PseudonymMap | undefined
  * read as any run of spaces, `-` or `_` (a slug of the value in a path). For a
  * tool result the model reads in clear after the kernel restored the user's
  * values into the tool's input. One pass, longest value first, so a surrogate
- * just put in is never rewritten. A shorter spelling (a first name alone) is
- * not caught: the tool must echo the value it was given.
+ * just put in is never rewritten. Inside a longer word only the exact
+ * spelling is replaced. A shorter spelling (a first name alone) is not
+ * caught: the tool must echo the value it was given.
  */
 export function remaskKnownValues(text: string, map: PseudonymMap): string {
   const reals = [...map.forward.keys()]
     .filter((real) => real.trim().length > 0)
     .sort((a, b) => b.length - a.length);
   if (reals.length === 0 || text.length === 0) return text;
+  const exact = new Set(reals);
   const byKey = new Map<string, string>();
   for (const real of reals) {
     const key = slugKey(real);
@@ -511,10 +513,25 @@ export function remaskKnownValues(text: string, map: PseudonymMap): string {
   const alternation = reals
     .map((real) => real.trim().split(/\s+/u).map(escapeRegExp).join('[\\s_-]+'))
     .join('|');
-  return text.replace(new RegExp(alternation, 'giu'), (match: string) => {
+  return text.replace(new RegExp(alternation, 'giu'), (match: string, offset: number) => {
     const surrogate = byKey.get(slugKey(match));
-    return surrogate === undefined ? match : caseLike(match, surrogate);
+    if (surrogate === undefined) return match;
+    // Inside a longer word only the exact spelling is the value
+    // (`projektFalkenstein`); a case variant there is an ordinary word part
+    // ("user" in "username" when "User" was masked). `_` and `-` count as
+    // separators, so a slug (`notes_projekt-falkenstein`) is a whole word.
+    if (!exact.has(match) && !onLetterBoundaries(text, offset, offset + match.length)) return match;
+    return caseLike(match, surrogate);
   });
+}
+
+const LETTER_OR_DIGIT = /[\p{L}\p{M}\p{N}]/u;
+
+/** No letter or digit directly before `start` or after `end`. */
+function onLetterBoundaries(text: string, start: number, end: number): boolean {
+  const before = start > 0 ? text[start - 1]! : '';
+  const after = end < text.length ? text[end]! : '';
+  return !LETTER_OR_DIGIT.test(before) && !LETTER_OR_DIGIT.test(after);
 }
 
 /** Lower case, every run of whitespace, `-` or `_` as one space. */

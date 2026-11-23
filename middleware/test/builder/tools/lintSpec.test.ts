@@ -19,7 +19,6 @@ const validBaseline = [
   { op: 'replace' as const, path: '/description_en', value: 'forecast agent' },
   { op: 'replace' as const, path: '/category', value: 'analysis' },
   { op: 'replace' as const, path: '/domain', value: 'weather' },
-  { op: 'replace' as const, path: '/skill', value: { role: 'a weather expert' } },
   {
     op: 'replace' as const,
     path: '/playbook',
@@ -125,7 +124,6 @@ describe('lintSpecTool', () => {
         name: 'Weather',
         description: 'forecast agent',
         category: 'analysis',
-        skill: { role: 'a weather expert' },
         playbook: { when_to_use: 'when user asks about weather' },
         tools: [
           { id: 'foo', description: 'a', input: { type: 'object' } },
@@ -147,7 +145,6 @@ describe('lintSpecTool', () => {
         name: 'Weather',
         description: 'forecast agent',
         category: 'analysis',
-        skill: { role: 'a weather expert' },
         playbook: { when_to_use: 'when user asks about weather' },
         depends_on: ['de.byte5.agent.weather'],
       } as never,
@@ -203,7 +200,7 @@ describe('lintSpecTool', () => {
     assert.ok(result.issues.some((i) => i.code === 'inline_system_prompt'));
   });
 
-  it('warns when a slot uses a gated accessor without granting the permission', async () => {
+  it('ctx.subAgent is an error: a capability plugin never consults an agent (spec 2042 §5.4)', async () => {
     await patchSpecTool.run({ patches: validBaseline }, harness.context());
     await fillSlotTool.run(
       {
@@ -214,13 +211,36 @@ describe('lintSpecTool', () => {
       harness.context(),
     );
     const result = await lintSpecTool.run({}, harness.context());
-    const warns = result.issues.filter(
-      (i) => i.code === 'accessor_permission_undeclared',
+    const errors = result.issues.filter((i) => i.code === 'retired_accessor');
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0]!.severity, 'error');
+    assert.match(errors[0]!.message, /ctx\.subAgent/);
+    assert.equal(result.ok, false);
+  });
+
+  it('a permissions.subAgents patch is refused', async () => {
+    await patchSpecTool.run({ patches: validBaseline }, harness.context());
+    const refused = await patchSpecTool.run(
+      {
+        patches: [{ op: 'add', path: '/permissions', value: { subAgents: { calls: ['@omadia/agent-seo-analyst'] } } }],
+      },
+      harness.context(),
     );
+    assert.match(JSON.stringify(refused), /never consults an agent/);
+  });
+
+  it('warns when a slot uses a gated accessor without granting the permission', async () => {
+    await patchSpecTool.run({ patches: validBaseline }, harness.context());
+    await fillSlotTool.run(
+      { slotKey: 'activate-body', source: "const out = await ctx.llm.complete({ prompt: 'q' });" },
+      harness.context(),
+    );
+    const result = await lintSpecTool.run({}, harness.context());
+    const warns = result.issues.filter((i) => i.code === 'accessor_permission_undeclared');
     assert.equal(warns.length, 1);
-    assert.equal(warns[0].severity, 'warning');
-    assert.match(warns[0].message, /ctx\.subAgent/);
-    assert.match(warns[0].message, /permissions\.subAgents\.calls/);
+    assert.equal(warns[0]!.severity, 'warning');
+    assert.match(warns[0]!.message, /ctx\.llm/);
+    assert.match(warns[0]!.message, /permissions\.llm\.models_allowed/);
     // It's a smell, not a build-breaker.
     assert.equal(result.ok, true);
   });
@@ -230,21 +250,13 @@ describe('lintSpecTool', () => {
       {
         patches: [
           ...validBaseline,
-          {
-            op: 'add',
-            path: '/permissions',
-            value: { subAgents: { calls: ['@omadia/agent-seo-analyst'] } },
-          },
+          { op: 'add', path: '/permissions', value: { llm: { models_allowed: ['class:fast'] } } },
         ],
       },
       harness.context(),
     );
     await fillSlotTool.run(
-      {
-        slotKey: 'activate-body',
-        source:
-          "const answer = await ctx.subAgent.ask('@omadia/agent-seo-analyst', 'q');",
-      },
+      { slotKey: 'activate-body', source: "const out = await ctx.llm.complete({ prompt: 'q' });" },
       harness.context(),
     );
     const result = await lintSpecTool.run({}, harness.context());

@@ -1,9 +1,10 @@
 import { strict as assert } from 'node:assert';
 import { describe, it, beforeEach } from 'node:test';
 
-import type { SubAgentAccessor } from '@omadia/plugin-api';
+import type { NativeToolSpec, PluginContext } from '@omadia/plugin-api';
 
 import type { NotesStore } from '../../packages/agent-reference-maximum/notesStore.js';
+import { registerToolkit } from '../../packages/agent-reference-maximum/registerTools.js';
 import {
   createToolkit,
   type Toolkit,
@@ -32,6 +33,13 @@ function makeFakeNotesStore(): NotesStore {
   };
 }
 
+/** Runs a toolkit tool and returns its result as the tool runtime sends it. */
+async function callTool(toolkit: Toolkit, id: string, input: unknown): Promise<string> {
+  const tool = toolkit.getTool(id);
+  assert.ok(tool, `tool ${id} present`);
+  return JSON.stringify(await tool.run(input));
+}
+
 describe('agent-reference / Toolkit add_note', () => {
   let toolkit: Toolkit;
 
@@ -39,126 +47,92 @@ describe('agent-reference / Toolkit add_note', () => {
     toolkit = createToolkit({ notes: makeFakeNotesStore(), log: () => {} });
   });
 
-  it('returns JSON with noteId and pushes a note-card attachment', async () => {
-    const result = await toolkit.handlers.addNote({ body: 'hello' });
+  it('returns JSON with noteId and buffers a note-card attachment', async () => {
+    const result = await callTool(toolkit, 'add_note', { body: 'hello' });
     const parsed = JSON.parse(result) as { noteId: string };
     assert.match(parsed.noteId, /^n\d+$/);
 
-    const attachments = toolkit.takeAddNoteAttachments();
+    const attachments = toolkit.getTool('add_note')!.attachmentSink!();
     assert.ok(attachments);
     assert.equal(attachments!.length, 1);
     assert.equal(attachments![0]!.kind, 'note-card');
   });
 
-  it('takeAddNoteAttachments returns undefined when buffer is empty', () => {
-    assert.equal(toolkit.takeAddNoteAttachments(), undefined);
+  it('the attachment sink returns undefined when the buffer is empty', () => {
+    assert.equal(toolkit.getTool('add_note')!.attachmentSink!(), undefined);
   });
 
-  it('takeAddNoteAttachments drains the buffer', async () => {
-    await toolkit.handlers.addNote({ body: 'one' });
-    toolkit.takeAddNoteAttachments();
-    assert.equal(toolkit.takeAddNoteAttachments(), undefined);
+  it('the attachment sink drains the buffer', async () => {
+    await callTool(toolkit, 'add_note', { body: 'one' });
+    toolkit.getTool('add_note')!.attachmentSink!();
+    assert.equal(toolkit.getTool('add_note')!.attachmentSink!(), undefined);
+  });
+
+  it('reports each stored note to onNoteAdded', async () => {
+    const seen: string[] = [];
+    const withHook = createToolkit({
+      notes: makeFakeNotesStore(),
+      log: () => {},
+      onNoteAdded: (record) => seen.push(record.body),
+    });
+    await callTool(withHook, 'add_note', { body: 'hello' });
+    assert.deepEqual(seen, ['hello']);
   });
 
   it('rejects empty body', async () => {
-    await assert.rejects(() => toolkit.handlers.addNote({ body: '' }));
+    await assert.rejects(() => callTool(toolkit, 'add_note', { body: '' }));
   });
 
   it('rejects missing body', async () => {
-    await assert.rejects(() => toolkit.handlers.addNote({ title: 'foo' }));
+    await assert.rejects(() => callTool(toolkit, 'add_note', { title: 'foo' }));
   });
 });
 
-describe('agent-reference / Toolkit analyze_url (OB-29-1)', () => {
-  it('returns permission-error result when subAgent is undefined', async () => {
-    const toolkit = createToolkit({
-      notes: makeFakeNotesStore(),
-      log: () => {},
-    });
-    const result = await toolkit.handlers.analyzeUrl({
-      url: 'https://example.com',
-    });
-    const parsed = JSON.parse(result) as { ok: boolean; error: string };
-    assert.equal(parsed.ok, false);
-    assert.match(parsed.error, /subAgent accessor unavailable/);
-  });
-
-  it('delegates to ctx.subAgent.ask and persists answer as note', async () => {
-    const askedQuestions: { target: string; question: string }[] = [];
-    const fakeSubAgent: SubAgentAccessor = {
-      async ask(targetAgentId: string, question: string) {
-        askedQuestions.push({ target: targetAgentId, question });
-        return 'Issue 1: missing meta description.\nIssue 2: H1 too short.\nIssue 3: no JSON-LD.';
+describe('agent-reference / registerToolkit — tool-runtime contract (#2049)', () => {
+  it('registers every tool with a JSON schema derived from its Zod input and disposes them all', async () => {
+    const toolkit = createToolkit({ notes: makeFakeNotesStore(), log: () => {} });
+    const registered = new Map<
+      string,
+      { spec: NativeToolSpec; handler: (input: unknown) => Promise<string>; hasSink: boolean }
+    >();
+    let disposed = 0;
+    const ctx = {
+      tools: {
+        register(
+          spec: NativeToolSpec,
+          handler: (input: unknown) => Promise<string>,
+          options?: { attachmentSink?: unknown },
+        ) {
+          registered.set(spec.name, { spec, handler, hasSink: options?.attachmentSink !== undefined });
+          return () => {
+            disposed += 1;
+          };
+        },
       },
-      has: () => true,
-      list: () => ['@omadia/agent-seo-analyst'],
-    };
-    const notesStore = makeFakeNotesStore();
-    const toolkit = createToolkit({
-      notes: notesStore,
-      log: () => {},
-      subAgent: fakeSubAgent,
-    });
+    } as unknown as PluginContext;
 
-    const result = await toolkit.handlers.analyzeUrl({
-      url: 'https://example.com/page',
-    });
-    const parsed = JSON.parse(result) as {
-      ok: boolean;
-      noteId: string;
-      delegateAgent: string;
-    };
-    assert.equal(parsed.ok, true);
-    assert.equal(parsed.delegateAgent, '@omadia/agent-seo-analyst');
-    assert.match(parsed.noteId, /^n\d+$/);
+    const dispose = registerToolkit(ctx, toolkit);
+    assert.deepEqual([...registered.keys()], ['add_note', 'smart_extract_entities', 'query_notes_by_person']);
 
-    // Sub-agent saw the URL in the question.
-    assert.equal(askedQuestions.length, 1);
-    assert.equal(askedQuestions[0]!.target, '@omadia/agent-seo-analyst');
-    assert.match(
-      askedQuestions[0]!.question,
-      /https:\/\/example\.com\/page/,
-    );
+    const addNote = registered.get('add_note')!;
+    assert.equal(addNote.spec.input_schema.type, 'object');
+    assert.deepEqual(addNote.spec.input_schema.required, ['body']);
+    assert.deepEqual(Object.keys(addNote.spec.input_schema.properties).sort(), ['body', 'title']);
+    assert.equal(addNote.hasSink, true);
+    assert.equal(registered.get('query_notes_by_person')!.hasSink, false);
 
-    // Note was persisted.
-    const list = await notesStore.list();
-    assert.equal(list.length, 1);
-    assert.match(list[0]!.body, /Issue 1: missing meta description/);
+    const out = JSON.parse(await addNote.handler({ body: 'via runtime' })) as { noteId: string };
+    assert.match(out.noteId, /^n\d+$/);
+    await assert.rejects(() => addNote.handler({ body: '' }), { name: 'ZodError' });
 
-    // Smart-Card-Attachment was buffered.
-    const attachments = toolkit.takeAnalyzeUrlAttachments();
-    assert.ok(attachments);
-    assert.equal(attachments![0]!.kind, 'note-card');
+    dispose();
+    assert.equal(disposed, 3);
   });
+});
 
-  it('returns subAgent error in result instead of throwing', async () => {
-    const fakeSubAgent: SubAgentAccessor = {
-      async ask() {
-        throw new Error('upstream offline');
-      },
-      has: () => true,
-      list: () => [],
-    };
-    const toolkit = createToolkit({
-      notes: makeFakeNotesStore(),
-      log: () => {},
-      subAgent: fakeSubAgent,
-    });
-    const result = await toolkit.handlers.analyzeUrl({
-      url: 'https://example.com',
-    });
-    const parsed = JSON.parse(result) as { ok: boolean; error: string };
-    assert.equal(parsed.ok, false);
-    assert.match(parsed.error, /upstream offline/);
-  });
-
-  it('rejects non-URL input', async () => {
-    const toolkit = createToolkit({
-      notes: makeFakeNotesStore(),
-      log: () => {},
-    });
-    await assert.rejects(() =>
-      toolkit.handlers.analyzeUrl({ url: 'not-a-url' }),
-    );
+describe('agent-reference / no delegation to other agents (#2049)', () => {
+  it('offers no analyze_url tool: a capability plugin never asks an agent', () => {
+    const toolkit = createToolkit({ notes: makeFakeNotesStore(), log: () => {} });
+    assert.equal(toolkit.getTool('analyze_url'), undefined);
   });
 });

@@ -164,3 +164,56 @@ export const TEAMS_TARGET_EXAMPLES = {
    *  finds one in their own picker should recognise it in the help text. */
   legacyGroupChat: '19:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6@thread.skype',
 } as const;
+
+/**
+ * A Teams link the operator pasted, read as an install target (#2043).
+ *
+ * "Copy link" is what Teams offers; nobody has a chat id at hand. Three link
+ * shapes carry a target:
+ *
+ *   chat / meeting chat   …/l/chat/19:…@thread.v2/…, …/l/message/19:…/<id>,
+ *                         …/l/meetup-join/19:meeting_…@thread.v2/0
+ *   team or channel       …/l/team/19:…@thread.tacv2/…?groupId=<guid>
+ *                         …/l/channel/19:…@thread.tacv2/<name>?groupId=<guid>
+ *
+ * A channel link yields its TEAM (`groupId`): an app is installed into a
+ * team, never into one channel. Anything else answers `null` and the input
+ * is classified as typed. The result is still only a string; the server
+ * decides on every POST.
+ */
+export function parseTeamsLink(value: string): { id: string; kind: TeamsTargetKind } | null {
+  const text = value.trim();
+  if (!/^https?:\/\//i.test(text)) return null;
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return null;
+  }
+  if (!/(^|\.)teams\.(microsoft|live)\.com$/i.test(url.hostname) && !/(^|\.)teams\.cloud\.microsoft$/i.test(url.hostname)) {
+    return null;
+  }
+  const segments = url.pathname.split('/').filter((part) => part !== '');
+  const at = segments.indexOf('l');
+  const type = at >= 0 ? segments[at + 1] : undefined;
+  const rawId = at >= 0 ? segments[at + 2] : undefined;
+  if (type === undefined || rawId === undefined) return null;
+  let conversationId: string;
+  try {
+    conversationId = decodeURIComponent(rawId);
+  } catch {
+    return null;
+  }
+  if (type === 'team' || type === 'channel') {
+    const groupId = url.searchParams.get('groupId') ?? '';
+    const team = classifyTeamsInstallTarget(groupId);
+    return team.kind === 'team' ? { id: team.id, kind: 'team' } : null;
+  }
+  if (type === 'chat' || type === 'message' || type === 'meetup-join') {
+    const chat = classifyTeamsInstallTarget(conversationId);
+    return chat.kind === 'group-chat' || chat.kind === 'one-on-one-chat'
+      ? { id: chat.id, kind: chat.kind }
+      : null;
+  }
+  return null;
+}

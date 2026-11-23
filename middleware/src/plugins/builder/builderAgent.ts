@@ -18,8 +18,9 @@ import {
 import { ASSETS } from '../../platform/assets.js';
 import { recordForeignToolCall } from '../../platform/foreignToolMetrics.js';
 import { bridgedToolError, type BridgeStage } from '../bridgedToolError.js';
-import { warnIfEmptyInputSchema } from '../dynamicAgentRuntime.js';
+import { warnIfEmptyInputSchema } from '../emptyInputSchemaWarning.js';
 import { zodToJsonSchema } from '../zodToJsonSchema.js';
+import { canonicalTemplateId, effectivePluginKind, stripRetiredSpecKeys } from './agentSpec.js';
 import { type AuditLogger, createAuditLogger } from './audit.js';
 import { BuilderLlmAccessError, builderResolverErrorCode } from './builderLlmAccess.js';
 import { loadBoilerplate, type SlotDef } from './boilerplateSource.js';
@@ -162,11 +163,11 @@ export const BUILDER_HEARTBEAT_INTERVAL_MS = 2000;
 
 const DEFAULT_MAX_TOKENS = 4096;
 // Bumped 12 → 20 (Step #3): a complete first-turn-from-empty needs
-// patch_spec for identity + skill + tools, plus N fill_slot per template
+// patch_spec for identity + tools, plus N fill_slot per template
 // slot, plus 1-3 retries on tsc errors. The 12-cap was killing turns
 // before all required slots were filled even with the new slot manifest
 // (Step #1) and turn-end gate (Step #2). 20 gives enough headroom for
-// agent-integration's 4-5 required slots without inviting runaway loops
+// the integration template's required slots without inviting runaway loops
 // (the 3-retry-per-slot cap + agent_stuck path still bound retries).
 const DEFAULT_MAX_ITERATIONS = 20;
 
@@ -830,7 +831,7 @@ export class BuilderAgent {
     // without the slot block — the agent still works, it just doesn't
     // get the hint.
     let slotManifest: ReadonlyArray<SlotDef> | null = null;
-    const templateId = typeof spec.template === 'string' ? spec.template : '';
+    const templateId = typeof spec.template === 'string' ? canonicalTemplateId(spec.template) : '';
     if (templateId.length > 0) {
       try {
         const bundle = await loadBoilerplate(templateId);
@@ -931,8 +932,8 @@ function bridgeBuilderTool(
 }
 
 /**
- * OM-101 — the same branch the dynamic-agent runtime already makes for
- * uploaded agents (#309 recursive Shape 3): on the subscription provider the
+ * OM-101 — the same branch the retired agent runtime made for uploaded
+ * agents (#309 recursive Shape 3): on the subscription provider the
  * in-process `LocalSubAgent` cannot run a tool loop at all, because the
  * `claude-cli` completion adapter rejects any request carrying tools. The
  * builder is a tool-loop agent by nature (`fill_slot`, `read_reference`, the
@@ -985,11 +986,16 @@ export function buildSpecHeader(
 ): string {
   const out: string[] = ['# Aktueller Draft-Stand'];
   out.push('```json');
-  out.push(JSON.stringify(spec, null, 2));
+  // A draft stored before spec 2042 may still carry persona/quality/skill;
+  // they are ignored, so the model never sees them.
+  out.push(JSON.stringify(stripRetiredSpecKeys(spec), null, 2));
   out.push('```');
+  const kind = effectivePluginKind(spec);
   out.push(
-    'Dies ist der aktuelle Stand der `AgentSpec`. Mutiere ihn inkrementell ' +
-      'mit `patch_spec`. Slots werden separat über `fill_slot` gesetzt.',
+    'Dies ist der aktuelle Stand der Plugin-Spec. Mutiere ihn inkrementell ' +
+      'mit `patch_spec`. Slots werden separat über `fill_slot` gesetzt. ' +
+      `Plugin-Kind: \`${kind}\`` +
+      (spec.kind === undefined ? ' (abgeleitet; mit `/kind` explizit setzen).' : '.'),
   );
 
   if (slotManifest && slotManifest.length > 0) {
@@ -1036,7 +1042,7 @@ function renderSlotManifest(
   const lines: string[] = [];
   lines.push('## Template-Slots — Checkliste');
   lines.push(
-    `Template **\`${spec.template ?? 'unknown'}\`** declares the following slot keys. ` +
+    `Template **\`${spec.template ? canonicalTemplateId(spec.template) : 'unknown'}\`** declares the following slot keys. ` +
       'Use `fill_slot { slotKey, source }` for each. The agent is **not done** ' +
       'until every required slot has been filled with real implementation code ' +
       '(no stubs, no `// TODO`).',
@@ -1143,7 +1149,7 @@ const PROMPT_FILE = 'builder-system.md';
 const PROMPT_DIR = 'prompts';
 const BOILERPLATE_CLAUDE_PATH = path.join(
   ASSETS.boilerplate.root,
-  'agent-integration',
+  'integration',
   'CLAUDE.md',
 );
 const BUILDER_PROMPT_PATH = path.resolve(

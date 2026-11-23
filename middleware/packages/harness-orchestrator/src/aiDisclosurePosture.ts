@@ -31,7 +31,9 @@
  */
 
 import {
+  DEFAULT_AI_DISCLOSURE_FREQUENCY,
   DEFAULT_AI_DISCLOSURE_POLICY,
+  type AiDisclosureFrequency,
   type AiDisclosureLevel,
 } from '@omadia/channel-sdk';
 import type { AiDisclosureSetup } from './orchestrator.js';
@@ -141,6 +143,10 @@ export interface AiDisclosurePosture {
   /** Operator attached a verbatim addendum. Its text is deliberately NOT
    *  reported — it is free-form. */
   readonly operatorNoteConfigured: boolean;
+  /** #2087 — how often the visible markers appear. */
+  readonly frequency: AiDisclosureFrequency;
+  /** #2087 — `true` when the frequency differs from `channel_default`. */
+  readonly frequencyDeviates: boolean;
 }
 
 /** ServiceRegistry name the orchestrator plugin publishes the posture under.
@@ -181,11 +187,16 @@ export function describeAiDisclosurePosture(
     // The global level counts too: an operator who set `ai_disclosure_level=off`
     // and no overrides has deviated on every channel at once.
     deviates:
-      defaultLevel !== shippedLevel || channels.some((c) => c.deviates),
+      defaultLevel !== shippedLevel ||
+      channels.some((c) => c.deviates) ||
+      (setup?.frequency ?? DEFAULT_AI_DISCLOSURE_FREQUENCY) !== DEFAULT_AI_DISCLOSURE_FREQUENCY,
     channels: Object.freeze(channels),
     localeConfigured: setup?.locale !== undefined,
     assistantNameConfigured: setup?.assistantName !== undefined,
     operatorNoteConfigured: setup?.operatorNote !== undefined,
+    frequency: setup?.frequency ?? DEFAULT_AI_DISCLOSURE_FREQUENCY,
+    frequencyDeviates:
+      (setup?.frequency ?? DEFAULT_AI_DISCLOSURE_FREQUENCY) !== DEFAULT_AI_DISCLOSURE_FREQUENCY,
   });
 }
 
@@ -202,9 +213,10 @@ export function formatDisclosureBootWarning(
     .filter((c) => c.deviates)
     .map((c) => `${c.channel}=${c.level}${c.effective ? '' : ' (not dispatched yet)'}`)
     .join(', ');
+  const frequency = posture.frequencyDeviates ? `; frequency=${posture.frequency}` : '';
   return (
     `[orchestrator] AI-Act marking deviates from the delivered state: ` +
-    `default=${posture.defaultLevel} (shipped ${posture.shippedLevel}); ${changed}. ` +
+    `default=${posture.defaultLevel} (shipped ${posture.shippedLevel}); ${changed}${frequency}. ` +
     `This is an operator decision and nothing is blocked — logged so a config ` +
     `left over from a test setup does not go unnoticed.`
   );

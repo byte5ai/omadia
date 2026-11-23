@@ -12,6 +12,8 @@
  *   specs/001-privacy-shield-v4/data-model.md
  */
 
+import type { ToolPIIField } from '@omadia/plugin-api';
+
 import type { FieldSource } from '../nonPersonalFields.js';
 
 // ---------------------------------------------------------------------------
@@ -192,7 +194,14 @@ export interface DigestEnvelope {
 export interface DatasetStore {
   /** Intern a raw tool result; store the real rows behind a `datasetId`,
    *  return the identity-free Digest. */
-  internToolResult(toolName: string, rawResult: unknown, toolInput?: unknown): DigestEnvelope;
+  /** `piiFields` (spec 2042 §5.10): the tool's declared PII fields, masked
+   *  whatever the classifier says (`declaredPii.ts`). */
+  internToolResult(
+    toolName: string,
+    rawResult: unknown,
+    toolInput?: unknown,
+    piiFields?: readonly ToolPIIField[],
+  ): DigestEnvelope;
   /** Register a verb-produced dataset; return its `datasetId` + Digest. */
   put(dataset: Dataset): DigestEnvelope;
   /** Server-side resolution of the real rows. Trusted callers only (verbs,

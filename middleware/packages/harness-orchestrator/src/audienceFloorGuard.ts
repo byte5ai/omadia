@@ -296,5 +296,9 @@ export async function guardToolEgress(name: string): Promise<string | undefined>
  * do next — an unexplained denial produces a retry loop against a wall.
  */
 function audienceRefusal(name: string, reason: string): string {
+  // The model sees this text; the operator otherwise sees nothing. A room the
+  // floor closes for a systemic reason (nobody resolvable) looks like a model
+  // quirk in the chat, so every refusal is logged once with its reason.
+  console.warn(`[audience-floor] refused tool '${name}': ${reason}`);
   return `Error: tool \`${name}\` was refused for this conversation — ${reason}. This is a permission boundary, not a transient failure: retrying will not help. Continue without it, or tell the user which participants would need access.`;
 }
