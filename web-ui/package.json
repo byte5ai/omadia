@@ -57,7 +57,7 @@
     "@testing-library/dom": "^10.4.2",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
-    "@testing-library/user-event": "^14.6.10",
+    "@testing-library/user-event": "^14.6.13",
     "@types/cytoscape": "^3.31.0",
     "@types/node": "^22.20.5",
     "@types/react": "^19.2.17",
@@ -66,16 +66,16 @@
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.4.5",
     "jsdom": "^31.0.0",
-    "postcss": "8.5.32",
+    "postcss": "8.5.33",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.3",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.1"
   },
   "overrides": {
     "@swc/helpers": "0.5.21",
     "esbuild": "^0.28.1",
     "undici": "^7.28.0",
-    "postcss": "8.5.32",
+    "postcss": "8.5.33",
     "sharp": "0.35.5",
     "brace-expansion": "5.0.12",
     "minimatch": "10.2.5",
