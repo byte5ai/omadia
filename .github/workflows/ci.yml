@@ -55,7 +55,11 @@ jobs:
   middleware:
     name: middleware (lint + typecheck + test)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 15 minutes was too tight: the unit suite alone runs 9 to 10 minutes on
+    # the runner, and `test:pg` starts after it. Two runs were cancelled by
+    # the limit in the middle of `test:pg` (2026-11-19), which reads as a hang
+    # and is not a test failure.
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: middleware
@@ -326,7 +330,17 @@ jobs:
           # (memberScopedOwners.pg, 5 tests); measured ran=419.
           # 421 → 423 with the receipt chain order regression (#1526,
           # receiptChainOrder.pg, 2 tests).
-          PG_TEST_FLOOR: '423'
+          # 423 → 427 with the agent kind constraints (#2060, agentKind.pg,
+          # 4 tests).
+          # 427 → 433 with stored conversation messages (#2043,
+          # conversationMessages.pg, 6 tests).
+          # 433 → 434 with the agent language column (#2043,
+          # agentIdentityStore.pg, 1 test).
+          # 434 → 444 with the facilitator kernel contract suite (#2068,
+          # facilitatorContract.pg, 10 tests).
+          # 444 → 447 with the kernel-side end of subscriptions and NOTIFY
+          # (facilitatorContract.pg, 3 tests).
+          PG_TEST_FLOOR: '448'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out
@@ -634,10 +648,12 @@ jobs:
         #
         # The decision itself is `.github/scripts/audit-gate.mjs`. A high or
         # critical finding in the full tree needs a production-only report
-        # (`--omit=dev`) as well: a production finding always fails, and a
-        # finding that only development tooling pulls in passes only with a dated,
-        # reasoned entry in `.github/audit-exceptions.json` whose `via` names
-        # every route `package-lock.json` gives into the tree; `electron` counts
+        # (`--omit=dev`) as well: a production finding passes only with a dated
+        # `"production": true` entry for an advisory no release fixes in the
+        # pinned major, and a finding that only development tooling pulls in
+        # passes only with a dated, reasoned entry in
+        # `.github/audit-exceptions.json` (90 days at most for both) whose `via`
+        # names every route `package-lock.json` gives into the tree; `electron` counts
         # as production (security-architecture §4a). The override above never
         # applies once the full tree has findings: an unknown production split is
         # not a pass. A clean tree goes through the gate too, so an exception

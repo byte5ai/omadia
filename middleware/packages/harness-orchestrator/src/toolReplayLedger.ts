@@ -86,6 +86,7 @@ import { REENTRY_ABANDONED } from './reentryAbandonment.js';
 import { RequestReceipts } from './requestReceipts.js';
 import { RequestTurnRecord } from './requestTurnRecord.js';
 import { turnContext } from './turnContext.js';
+import type { LabelSet } from './discretion/labels.js';
 
 export {
   REENTRY_ABANDONED,
@@ -121,7 +122,14 @@ export type ReplayedSubEvent =
 export type ToolReplayRecord =
   /** The raw value the turn used (a string, or a sub-agent tool's structured
    *  result), with the sub-agent events its dispatch emitted. */
-  | { readonly kind: 'result'; readonly value: unknown; readonly subEvents?: readonly ReplayedSubEvent[] }
+  | {
+      readonly kind: 'result';
+      readonly value: unknown;
+      readonly subEvents?: readonly ReplayedSubEvent[];
+      /** Spec 2042 §5.11 — the turn's labels after a call whose labels come
+       *  from below the handler (a memory read); a replay adds them again. */
+      readonly labels?: LabelSet;
+    }
   /** The handler threw; a replay rejects with the same value. */
   | { readonly kind: 'rejection'; readonly error: unknown }
   /** Runs again on a re-entry; the calls beneath it replay at their own seam
@@ -193,6 +201,13 @@ export class ToolReplayLedger {
    * request folds the line too (`requestDisclosureSeen` in the orchestrator).
    */
   disclosureFolded = false;
+  /**
+   * #2087 — the `per_conversation` marker state as it was BEFORE this request
+   * first looked at it. Every pass of one request (a verifier correction, a
+   * resample) decides "is the marker due" from this same state, so the answer
+   * the user receives carries the marker whichever pass it comes from.
+   */
+  disclosureMarkerPrior: { scope: string; state: unknown } | undefined = undefined;
 
   constructor(options: ToolReplayLedgerOptions = {}) {
     this.#retainResults = options.retainResults ?? true;

@@ -4,7 +4,7 @@ identity:
   id: "@omadia/embedding-adapter-openai"
   name: "Embeddings (OpenAI-compatible)"
   version: "0.1.0"
-  kind: "extension"
+  kind: "model"
   domain: "core.embeddings"
   description:
     en: "Connects omadia to an OpenAI compatible embedding server, so semantic search and memory can run on OpenAI, Azure, vLLM, LM Studio or LiteLLM. Use it instead of the Ollama based Embeddings plugin, only one of the two can be active."

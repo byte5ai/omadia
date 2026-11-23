@@ -23,11 +23,10 @@ import { AgentPicker } from '../_components/AgentPicker';
 import { AgentUnavailableBanner } from '../_components/AgentUnavailableBanner';
 import { AgentUsagePills } from '../_components/chat/AgentUsagePills';
 import { AgentsConsultedFooter } from '../_components/chat/AgentsConsultedFooter';
+import { AnswerDetails } from '../_components/chat/AnswerDetails';
 import { AutoPromotedBanner } from '../_components/chat/AutoPromotedBanner';
 import { CaptureDisclosure } from '../_components/chat/CaptureDisclosure';
 import { ConfirmDialog } from '../_components/ConfirmDialog';
-import { DelegatedAnswerCard } from '../_components/chat/DelegatedAnswerCard';
-import { DirectLineStickyBanner } from '../_components/chat/DirectLineStickyBanner';
 import { NudgeCard, parseNudgeBlock } from '../_components/chat/NudgeCard';
 import {
   McpAuthRequiredCard,
@@ -38,6 +37,7 @@ import { PlanProgressCard } from '../_components/chat/PlanProgressCard';
 import { RecalledContextCard } from '../_components/chat/RecalledContextCard';
 import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from '../_components/chat/SaveMemoryButton';
+import { MessageSpeakerLine } from '../_components/chat/MessageSpeakerLine';
 import { TurnIncompleteNotice } from '../_components/chat/TurnIncompleteNotice';
 import { SystemDataBadge, VerifierBadge } from '../_components/chat/VerifierBadge';
 import { DecisionBadge } from '../_components/chat/DecisionBadge';
@@ -72,7 +72,6 @@ import {
 import { KgWalkPane } from '../_components/KgWalkPane';
 import { PlanDagPane } from '../_components/PlanDagPane';
 import type {
-  DirectLineSessionState,
   KgWalkPayload,
   PlanSnapshot,
 } from '../_lib/chatSessions';
@@ -232,18 +231,6 @@ export default function ChatPage(): React.ReactElement {
     }
     return kgMockEnabled ? MOCK_KG_WALK : null;
   }, [activeSession.messages, kgMockEnabled]);
-
-  // #445 — the sticky Direct-Line binding = whatever the most recent carrier
-  // says. The server stamps EVERY turn while the feature is on (including
-  // `{active:false}`), so scanning back to the newest carrier and trusting it
-  // is what keeps the banner from outliving the binding it describes.
-  const activeDirectLine = useMemo<DirectLineSessionState | null>(() => {
-    for (let i = activeSession.messages.length - 1; i >= 0; i -= 1) {
-      const m = activeSession.messages[i];
-      if (m?.directLineSession) return m.directLineSession;
-    }
-    return null;
-  }, [activeSession.messages]);
 
   // The live plan surfaced in the left pane = the most recent assistant message
   // carrying a plan snapshot (re-emitted on every step change / replan).
@@ -550,13 +537,11 @@ export default function ChatPage(): React.ReactElement {
 
       <div className="border-b border-[color:var(--border)] bg-[color:var(--bg-elevated)]/75 px-6 py-2 text-xs">
         <div className="mx-auto flex max-w-4xl flex-col gap-2">
-          {/* Row 1 — orchestrator picker. The stream-path + session-scope
-              debug labels were removed 2026-06-26 (noise). The picker self-
-              hides when there is only one orchestrator (nothing to choose). */}
+          {/* Row 1 — agent picker. The stream-path + session-scope
+              debug labels were removed 2026-06-26 (noise). The picker is always
+              shown (#2057): a menu before the first turn, the pinned agent
+              after it, the only agent when there is just one. */}
           <div className="flex flex-wrap items-center gap-3 text-[color:var(--fg-muted)] empty:hidden">
-            {/* Phase A — Orchestrator picker. Read-only pinned label after the
-                first turn; dropdown before it. Renders null unless there is
-                more than one orchestrator. */}
             <AgentPicker
               pinnedSlug={activeSession.snapshot?.agentSlug}
               selectedSlug={selectedAgentSlug}
@@ -712,17 +697,6 @@ export default function ChatPage(): React.ReactElement {
 
       <footer className="border-t border-[color:var(--border)] bg-[color:var(--bg-elevated)]/85 px-6 py-4 backdrop-blur">
         <div className="mx-auto flex max-w-4xl flex-col gap-2">
-          {/* #445 — persistent "you are talking to X" indicator, directly above
-              the composer. Exits via the normal turn path (no new endpoint). */}
-          {activeDirectLine && (
-            <DirectLineStickyBanner
-              session={activeDirectLine}
-              onExit={() => {
-                send('#end');
-              }}
-              disabled={sending || hydrating}
-            />
-          )}
           {/* Mid-turn steering hint / feedback — only while a turn streams. */}
           {sending && (
             <div className="flex items-center gap-2 text-[11px]">
@@ -996,23 +970,10 @@ export function MessageRow({
   const liveElapsedSec = showLiveness
     ? Math.max(0, Math.round((liveNow - message.startedAt) / 1000))
     : null;
-  // #332 Layer 2 (gap-closure) — `content` already carries the delegated
-  // answer's verbatim text (backend graceful-degrade design: even a
-  // connector that ignores `delegatedAnswer` shows the specialist's words).
-  // `<DelegatedAnswerCard>` renders that verbatim block attributed; render
-  // the ordinary content block ONLY for whatever the orchestrator added
-  // beyond it (the guarded-mode `▸ omadia note: …` suffix), so the answer
-  // never appears twice. Falls back to the full content if it doesn't start
-  // with the expected prefix (defensive — never silently drops text).
-  const rawNote =
-    message.delegatedAnswer &&
-    message.content.startsWith(message.delegatedAnswer.text)
-      ? message.content.slice(message.delegatedAnswer.text.length).replace(/^\s+/, '')
-      : message.content;
   // A sub-agent's MCP auth-required tool result can bubble the machine
   // <mcp-auth-required> block into the final answer text — strip it from the
   // prose (it renders as the Connect card via McpAuthRequiredList instead).
-  const authFromNote = parseMcpAuthRequired(rawNote);
+  const authFromNote = parseMcpAuthRequired(message.content);
   // #1094 — a DEGRADED turn: the tools it names really did commit, but the
   // turn threw before any answer existed. The `done` event carries the facts
   // (`message.degradedTurn`); parsing the answer covers a session restored
@@ -1030,9 +991,150 @@ export function MessageRow({
             : {}),
         }
       : undefined);
-  const delegatedNote = incompleteFromText
+  const answerProse = incompleteFromText
     ? incompleteFromText.cleaned
     : authFromNote.cleaned;
+
+  // Spec 2042 §5.14, criteria 29 and 31 — a settled answer shows its text
+  // and the decorations the registry declares for `web` (`data-decoration`).
+  // What explains it (trace, mode, verification, system data, consulted
+  // agents, privacy, memory) moves into the one collapsed answer-details
+  // element; while the turn runs it stays in view as progress.
+  const settled = !isUser && message.streaming !== true;
+  const explainAbove = (
+    <>
+      {message.proactive && <ProactiveBadge proactive={message.proactive} />}
+      {message.fastPathDecision !== undefined && <DecisionBadge decision={message.fastPathDecision} />}
+      {message.routing && <TriageBadge routing={message.routing} />}
+      {message.recalledContext && (
+        <RecalledContextCard recalled={message.recalledContext} />
+      )}
+      {message.plan && (
+        <PlanProgressCard
+          plan={message.plan}
+          streaming={message.streaming === true}
+        />
+      )}
+      {(message.tools?.length ?? 0) > 0 && (
+        <ToolTrace tools={message.tools ?? []} />
+      )}
+      {(message.nudges?.length ?? 0) > 0 && (
+        <NudgeList nudges={message.nudges ?? []} />
+      )}
+      {(message.steers?.length ?? 0) > 0 && (
+        <SteerList steers={message.steers ?? []} />
+      )}
+    </>
+  );
+  const explainBelow = (
+    <>
+      {message.agentsConsulted && message.agentsConsulted.length > 0 && (
+        <AgentsConsultedFooter
+          agents={message.agentsConsulted}
+          tools={message.tools ?? []}
+        />
+      )}
+      {!message.streaming &&
+        !message.error &&
+        // Same rule as the memory button: a withheld or degraded turn is
+        // a notice, and an open choice / MCP form is a question — none
+        // of them is an answer whose size the user would adjust.
+        !message.verifierBlocked &&
+        message.degradedTurn === undefined &&
+        message.pendingUserChoice === undefined &&
+        message.pendingMcpInput === undefined &&
+        message.answerVerbosity !== undefined &&
+        onResize !== undefined && (
+          <VerbosityStepButtons
+            level={message.answerVerbosity.effective}
+            disabled={disabled}
+            onResize={onResize}
+          />
+        )}
+      {message.captureDisclosure && (
+        <CaptureDisclosure disclosure={message.captureDisclosure} />
+      )}
+      {message.privacyReceipt && (
+        <PrivacyReceiptCard
+          receipt={message.privacyReceipt}
+          {...(message.receiptId ? { receiptId: message.receiptId } : {})}
+        />
+      )}
+    </>
+  );
+  const hasMeta =
+    message.telemetry !== undefined ||
+    elapsed !== null ||
+    message.turnId !== undefined ||
+    message.verifier !== undefined ||
+    message.workingMode !== undefined;
+  const meta = hasMeta ? (
+    <div
+      className={
+        settled
+          ? 'flex flex-wrap items-center text-[11px] text-[color:var(--fg-muted)]'
+          : 'mt-2 flex flex-wrap items-center border-t border-current/10 pt-2 text-[11px] text-[color:var(--fg-muted)]'
+      }
+    >
+      {message.telemetry && (
+        <span>
+          tools={message.telemetry.tool_calls} · iterations=
+          {message.telemetry.iterations}
+        </span>
+      )}
+      {message.model && (
+        <span
+          className="ml-3 rounded bg-current/10 px-2 py-0.5 font-medium"
+          title={message.model}
+        >
+          {shortModelName(message.model)}
+        </span>
+      )}
+      {message.workingMode && <WorkingModeDetail mode={message.workingMode} />}
+      {message.systemData && <SystemDataBadge />}
+      {message.verifier && (
+        <VerifierBadge summary={message.verifier} systemData={message.systemData === true} />
+      )}
+      {elapsed !== null && <span className="ml-3">⏱ {elapsed}s</span>}
+      {message.streaming && (
+        <span className="ml-3">{t('streamingSuffix')}</span>
+      )}
+      {!message.streaming &&
+        !message.error &&
+        // A withheld answer is a notice — nothing to keep in memory.
+        !message.verifierBlocked &&
+        message.turnId !== undefined &&
+        (message.autoPromotedMkId !== undefined ? (
+          <AutoPromotedBanner
+            mkId={message.autoPromotedMkId}
+            kind={message.palaiaExcerpt?.suggestedKind ?? 'insight'}
+            onDiscarded={() => onDiscardAutoPromoted(message.id)}
+          />
+        ) : (
+          <SaveMemoryButton
+            turnId={message.turnId}
+            messageContent={message.content}
+            {...(message.palaiaExcerpt
+              ? { palaiaExcerpt: message.palaiaExcerpt }
+              : {})}
+          />
+        ))}
+    </div>
+  ) : null;
+  const hasDetails =
+    hasMeta ||
+    message.proactive !== undefined ||
+    message.fastPathDecision !== undefined ||
+    message.routing !== undefined ||
+    message.recalledContext !== undefined ||
+    message.plan !== undefined ||
+    (message.tools?.length ?? 0) > 0 ||
+    (message.nudges?.length ?? 0) > 0 ||
+    (message.steers?.length ?? 0) > 0 ||
+    (message.agentsConsulted?.length ?? 0) > 0 ||
+    message.answerVerbosity !== undefined ||
+    message.captureDisclosure !== undefined ||
+    message.privacyReceipt !== undefined;
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -1051,6 +1153,10 @@ export function MessageRow({
                 // the verifier withheld: the bubble holds its notice.
                 degradedTurn || message.verifierBlocked
                 ? 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-strong)] ring-1 ring-[color:var(--warning)]'
+                : // #2045 — a management-layer notice is not an agent's
+                  // answer: muted and dashed, never in agent styling.
+                  message.speaker?.kind === 'system'
+                ? 'bg-[color:var(--bg)] text-[color:var(--fg-muted)] border border-dashed border-[color:var(--border)]'
                 : 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-strong)] ring-1 ring-[color:var(--border)]',
         ].join(' ')}
       >
@@ -1058,66 +1164,48 @@ export function MessageRow({
           <div className="whitespace-pre-wrap text-sm">{message.content}</div>
         ) : (
           <>
-            {message.proactive && <ProactiveBadge proactive={message.proactive} />}
-            {message.fastPathDecision !== undefined && <DecisionBadge decision={message.fastPathDecision} />}
-            {message.routing && <TriageBadge routing={message.routing} />}
-            {message.persona && <PersonaBadge persona={message.persona} />}
-            {message.recalledContext && (
-              <RecalledContextCard recalled={message.recalledContext} />
+            {message.speaker && (
+              <div data-answer-part="speaker">
+                <MessageSpeakerLine speaker={message.speaker} />
+              </div>
             )}
-            {message.plan && (
-              <PlanProgressCard
-                plan={message.plan}
-                streaming={message.streaming === true}
-              />
-            )}
-            {(message.tools?.length ?? 0) > 0 && (
-              <ToolTrace tools={message.tools ?? []} />
-            )}
-            <McpAuthRequiredList tools={message.tools ?? []} content={rawNote} />
-            {(message.nudges?.length ?? 0) > 0 && (
-              <NudgeList nudges={message.nudges ?? []} />
-            )}
-            {(message.steers?.length ?? 0) > 0 && (
-              <SteerList steers={message.steers ?? []} />
-            )}
-            {message.delegatedAnswer && (
-              <DelegatedAnswerCard answer={message.delegatedAnswer} />
-            )}
+            {!settled && explainAbove}
+            <div data-decoration="consent_card">
+              <McpAuthRequiredList tools={message.tools ?? []} content={message.content} />
+            </div>
             {degradedTurn && (
-              <TurnIncompleteNotice
-                committedTools={degradedTurn.committedTools}
-                hasAnswerText={delegatedNote.length > 0}
-                {...(degradedTurn.correlationId
-                  ? { correlationId: degradedTurn.correlationId }
-                  : {})}
-              />
+              <div data-answer-part="notice">
+                <TurnIncompleteNotice
+                  committedTools={degradedTurn.committedTools}
+                  hasAnswerText={answerProse.length > 0}
+                  {...(degradedTurn.correlationId
+                    ? { correlationId: degradedTurn.correlationId }
+                    : {})}
+                />
+              </div>
             )}
             {message.verifierBlocked && (
-              <VerifierBlockedNotice
-                hasAnswerText={delegatedNote.length > 0}
-                cause={message.verifier?.withheldCause}
-                contradictionCount={message.verifier?.contradictionCount}
-              />
+              <div data-answer-part="notice">
+                <VerifierBlockedNotice
+                  hasAnswerText={answerProse.length > 0}
+                  cause={message.verifier?.withheldCause}
+                  contradictionCount={message.verifier?.contradictionCount}
+                />
+              </div>
             )}
-            {delegatedNote.length > 0 ? (
+            {answerProse.length > 0 ? (
               /* §2.7: agent narration renders in the prose register
                  (Source Serif 4); headings/tables/code stay structural. */
-              <div className="lume-prose">
+              <div className="lume-prose" data-answer-part="prose">
                 <Markdown
-                  source={delegatedNote}
+                  source={answerProse}
                   highlightTerms={message.maskedValues}
                 />
               </div>
             ) : message.streaming ? (
               <StreamingDots />
             ) : null}
-            {message.agentsConsulted && message.agentsConsulted.length > 0 && (
-              <AgentsConsultedFooter
-                agents={message.agentsConsulted}
-                tools={message.tools ?? []}
-              />
-            )}
+            {!settled && explainBelow}
             {showLiveness && (
               <LivenessRow
                 liveness={message.liveness}
@@ -1128,115 +1216,56 @@ export function MessageRow({
               />
             )}
             {message.pendingUserChoice && (
-              <ChoiceCard
-                choice={message.pendingUserChoice}
-                disabled={disabled}
-                onChoose={onChoose}
-              />
+              <div data-decoration="decision_card">
+                <ChoiceCard
+                  choice={message.pendingUserChoice}
+                  disabled={disabled}
+                  onChoose={onChoose}
+                />
+              </div>
             )}
             {/* #544 W2-1 — MCP mid-call input form. Mutually exclusive with the
                 choice card server-side (the choice card wins), so the two can
                 never render together. `onChoose` submits the returned envelope
                 as a fresh user turn, exactly like a choice-card click. */}
             {message.pendingMcpInput && (
-              <McpInputCard
-                request={message.pendingMcpInput}
-                disabled={disabled}
-                onSubmit={onChoose}
-              />
+              <div data-decoration="mcp_input_form">
+                <McpInputCard
+                  request={message.pendingMcpInput}
+                  disabled={disabled}
+                  onSubmit={onChoose}
+                />
+              </div>
             )}
             {message.attachments && message.attachments.length > 0 && (
-              <AttachmentGrid attachments={message.attachments} />
+              <div data-answer-part="attachments">
+                <AttachmentGrid attachments={message.attachments} />
+              </div>
             )}
             {message.fileAttachments && message.fileAttachments.length > 0 && (
-              <FileAttachmentList files={message.fileAttachments} />
+              <div data-answer-part="attachments">
+                <FileAttachmentList files={message.fileAttachments} />
+              </div>
             )}
             {message.followUpOptions && message.followUpOptions.length > 0 && (
-              <FollowUpButtons
-                options={message.followUpOptions}
-                disabled={disabled}
-                onChoose={onChoose}
-              />
-            )}
-            {!isUser &&
-              !message.streaming &&
-              !message.error &&
-              // Same rule as the memory button: a withheld or degraded turn is
-              // a notice, and an open choice / MCP form is a question — none
-              // of them is an answer whose size the user would adjust.
-              !message.verifierBlocked &&
-              message.degradedTurn === undefined &&
-              message.pendingUserChoice === undefined &&
-              message.pendingMcpInput === undefined &&
-              message.answerVerbosity !== undefined &&
-              onResize !== undefined && (
-                <VerbosityStepButtons
-                  level={message.answerVerbosity.effective}
+              <div data-decoration="follow_up_options">
+                <FollowUpButtons
+                  options={message.followUpOptions}
                   disabled={disabled}
-                  onResize={onResize}
+                  onChoose={onChoose}
                 />
-              )}
-            {message.captureDisclosure && (
-              <CaptureDisclosure disclosure={message.captureDisclosure} />
+              </div>
             )}
-            {message.privacyReceipt && (
-              <PrivacyReceiptCard
-                receipt={message.privacyReceipt}
-                {...(message.receiptId ? { receiptId: message.receiptId } : {})}
-              />
+            {settled && hasDetails && (
+              <AnswerDetails>
+                {explainAbove}
+                {explainBelow}
+                {meta}
+              </AnswerDetails>
             )}
           </>
         )}
-        {!isUser &&
-          (message.telemetry ||
-            elapsed ||
-            message.turnId !== undefined ||
-            message.verifier) && (
-            <div className="mt-2 flex flex-wrap items-center border-t border-current/10 pt-2 text-[11px] text-[color:var(--fg-muted)]">
-              {message.telemetry && (
-                <span>
-                  tools={message.telemetry.tool_calls} · iterations=
-                  {message.telemetry.iterations}
-                </span>
-              )}
-              {message.model && (
-                <span
-                  className="ml-3 rounded bg-current/10 px-2 py-0.5 font-medium"
-                  title={message.model}
-                >
-                  {shortModelName(message.model)}
-                </span>
-              )}
-              {message.systemData && <SystemDataBadge />}
-              {message.verifier && (
-                <VerifierBadge summary={message.verifier} systemData={message.systemData === true} />
-              )}
-              {elapsed !== null && <span className="ml-3">⏱ {elapsed}s</span>}
-              {message.streaming && (
-                <span className="ml-3">{t('streamingSuffix')}</span>
-              )}
-              {!message.streaming &&
-                !message.error &&
-                // A withheld answer is a notice — nothing to keep in memory.
-                !message.verifierBlocked &&
-                message.turnId !== undefined &&
-                (message.autoPromotedMkId !== undefined ? (
-                  <AutoPromotedBanner
-                    mkId={message.autoPromotedMkId}
-                    kind={message.palaiaExcerpt?.suggestedKind ?? 'insight'}
-                    onDiscarded={() => onDiscardAutoPromoted(message.id)}
-                  />
-                ) : (
-                  <SaveMemoryButton
-                    turnId={message.turnId}
-                    messageContent={message.content}
-                    {...(message.palaiaExcerpt
-                      ? { palaiaExcerpt: message.palaiaExcerpt }
-                      : {})}
-                  />
-                ))}
-            </div>
-          )}
+        {!isUser && !settled && meta}
       </div>
     </div>
   );
@@ -1481,46 +1510,26 @@ function TriageBadge({
 }
 
 /**
- * Wave 8 — inline persona chip — rendered at the top of an assistant turn as
- * soon as the direct-answer persona classifier resolves (the `turn_persona`
- * event). Shows which persona skill answered this turn, or that the Agent
- * kept its default identity.
+ * #2051 — the turn's working mode, in the answer's details row (§5.14: not a
+ * chip above the message). Rendered only when a mode was selected; a turn
+ * without one ran on the agent's default behaviour and needs no note. A mode
+ * is how the agent worked, never who answered — so the label says "mode: X",
+ * and the agent's name stays where it is.
  */
-function PersonaBadge({
-  persona,
+function WorkingModeDetail({
+  mode,
 }: {
-  persona: {
-    bucket: 'matched' | 'none' | 'fallback';
-    classifierModel: string;
-    skillId: string | null;
-    skillName: string | null;
-  };
-}): React.ReactElement {
-  const t = useTranslations('chat');
-  const isMatched = persona.bucket === 'matched' && persona.skillName;
-  const isFallback = persona.bucket === 'fallback';
-  const cls = isMatched
-    ? 'bg-[color:var(--accent)]/10 text-[color:var(--accent)] ring-[color:var(--accent)]'
-    : isFallback
-      ? 'bg-[color:var(--warning)]/10 text-[color:var(--warning)] ring-[color:var(--warning)]'
-      : 'bg-[color:var(--fg-subtle)]/10 text-[color:var(--fg-subtle)] ring-[color:var(--fg-subtle)]';
-  const label = isMatched
-    ? t('persona.matched', { name: persona.skillName ?? '' })
-    : isFallback
-      ? t('persona.fallback')
-      : t('persona.none');
+  mode: NonNullable<Message['workingMode']>;
+}): React.ReactElement | null {
+  const t = useTranslations('chat.workingMode');
+  if (mode.bucket !== 'matched' || !mode.modeName) return null;
   return (
-    <div
-      className="mb-2 inline-flex flex-wrap items-center gap-2 text-[11px] text-[color:var(--fg-muted)]"
-      title={`${t('persona.title')}: ${shortModelName(persona.classifierModel)} → ${persona.bucket}`}
+    <span
+      className="ml-3"
+      title={t('title', { classifier: shortModelName(mode.classifierModel) })}
     >
-      <span className="font-medium uppercase tracking-[0.12em]">{t('persona.title')}</span>
-      <span
-        className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ring-1 ${cls}`}
-      >
-        {label}
-      </span>
-    </div>
+      {t('label', { name: mode.modeName })}
+    </span>
   );
 }
 

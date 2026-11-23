@@ -5,15 +5,24 @@ import { useRouter } from 'next/navigation';
 import { useFormatter, useTranslations } from 'next-intl';
 
 import { ApiError } from '../../../_lib/api';
+import { isFacilitatorAgent } from '../../../_lib/agents';
 import {
   clearChannelBinding,
   setChannelBinding,
   type ChannelsListDto,
   type OperatorChannelDto,
 } from '../../../_lib/channels';
+import { useFacilitatorRefusalMessage } from '../../agents/_components/useFacilitatorCopy';
 
 interface Props {
   initial: ChannelsListDto;
+  /**
+   * #2066 — slugs of facilitators. A facilitator is never routed
+   * to: it joins a conversation under its own Teams identity, and the kernel
+   * refuses a binding with 409 `facilitator_omission`. So it is not offered
+   * as a target. The channels route does not say which agents are facilitators, hence the prop.
+   */
+  facilitatorSlugs?: readonly string[];
 }
 
 /**
@@ -27,13 +36,20 @@ interface Props {
  * the channel plugin no longer reports it (uninstalled, config drift).
  * The operator can clear them with one click.
  */
-export function ChannelsDashboard({ initial }: Props): React.ReactElement {
+export function ChannelsDashboard({
+  initial,
+  facilitatorSlugs,
+}: Props): React.ReactElement {
   const t = useTranslations('operatorChannels');
   const format = useFormatter();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const refusalMessage = useFacilitatorRefusalMessage();
+  const bindableAgents = initial.agents.filter(
+    (a) => !isFacilitatorAgent(a) && !(facilitatorSlugs ?? []).includes(a.slug),
+  );
 
   function run(label: string, op: () => Promise<unknown>): void {
     setError(null);
@@ -43,7 +59,7 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
         startTransition(() => router.refresh());
       })
       .catch((err: unknown) => {
-        setError(humanizeApiError(err));
+        setError(refusalMessage(err) ?? humanizeApiError(err));
       })
       .finally(() => setBusy(null));
   }
@@ -81,8 +97,8 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
         </div>
       )}
       <p className="text-xs text-[color:var(--fg-muted)]">
-        {t('fallbackHint', {
-          fallback: initial.fallback_slug ?? t('fallbackHintNone'),
+        {t('defaultAgentHint', {
+          agent: initial.instance_default_slug ?? t('defaultAgentHintOff'),
         })}
       </p>
       {groups.map((group) => (
@@ -146,7 +162,11 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
                 <label className="flex items-center gap-2 text-xs text-[color:var(--fg-muted)]">
                   <span>{t('routesTo')}</span>
                   <select
-                    value={c.bound_agent_slug ?? ''}
+                    value={
+                      isUnavailableBinding(c)
+                        ? UNAVAILABLE_BINDING_VALUE
+                        : (c.bound_agent_slug ?? '')
+                    }
                     disabled={pending || !!busy}
                     onChange={(e) => {
                       const v = e.target.value;
@@ -160,11 +180,22 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
                     className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-1 text-xs"
                   >
                     <option value="">
-                      {t('routesToFallback', {
-                        fallback: initial.fallback_slug ?? '—',
+                      {t('routesToDefault', {
+                        agent: initial.instance_default_slug ?? t('defaultAgentHintOff'),
                       })}
                     </option>
-                    {initial.agents.map((a) => (
+                    {/* #1880 — a binding to a disabled or deleted agent is
+                        still that agent's binding; show it instead of letting
+                        the select fall back to its first option. */}
+                    {isUnavailableBinding(c) && (
+                      <option value={UNAVAILABLE_BINDING_VALUE} disabled>
+                        {t('boundAgentUnavailable', {
+                          name: c.bound_agent_name ?? c.bound_agent_slug ?? '—',
+                          status: c.bound_agent_status ?? 'disabled',
+                        })}
+                      </option>
+                    )}
+                    {bindableAgents.map((a) => (
                       <option key={a.slug} value={a.slug}>
                         {a.slug}
                       </option>
@@ -194,6 +225,15 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
       ))}
     </div>
   );
+}
+
+/** Select value of the bound-but-unavailable agent's option; no agent slug
+ *  can collide with it (slugs are kebab-case). */
+const UNAVAILABLE_BINDING_VALUE = '__unavailable__';
+
+/** #1880 — bound to an agent that can no longer answer (disabled/deleted). */
+function isUnavailableBinding(c: OperatorChannelDto): boolean {
+  return c.bound_agent_status === 'disabled' || c.bound_agent_status === 'deleted';
 }
 
 interface Grouped {

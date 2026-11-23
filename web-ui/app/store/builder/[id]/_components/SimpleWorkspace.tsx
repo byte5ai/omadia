@@ -1,15 +1,13 @@
 'use client';
 
-import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { motion } from 'framer-motion';
-import { ChevronDown, MessageCircleHeart, Sparkles, Wand2 } from 'lucide-react';
+import { MessageCircleHeart, Sparkles, Wand2 } from 'lucide-react';
 
 import { cn } from '../../../../_lib/cn';
 import type { BuilderModelId, Draft } from '../../../../_lib/builderTypes';
-import type { PersonaConfig } from '../../../../_lib/personaTypes';
 
-import { PersonaPillar } from './PersonaPillar';
+import { effectivePluginKind } from './pluginKind';
 import { PreviewChatPane, type BuildStatusSnapshot } from './PreviewChatPane';
 import { SimpleIntakePane } from './SimpleIntakePane';
 
@@ -20,8 +18,6 @@ interface SimpleWorkspaceProps {
   /** Lifts preview build status up so the shared footer / publish gate
    *  stays in sync with the Extended view. */
   onBuildStatus: (status: BuildStatusSnapshot) => void;
-  /** Persists a persona edit back into the draft state. */
-  onPersonaPersisted: (next: PersonaConfig) => void;
   /** Shared `ask_user_choice` card hoisted by the Workspace bus. */
   pendingUserChoice?: {
     choiceId: string;
@@ -49,15 +45,16 @@ const EASE_OUT = [0.22, 0.61, 0.36, 1] as const;
  * non-technical operators.
  *
  * Where the Extended {@link Workspace} exposes four resizable panes (a chat
- * with full tool transcript, a tabbed spec/slot/persona editor with a Monaco
+ * with full tool transcript, a tabbed spec/slot editor with a Monaco
  * source view, and a build-status footer), this view collapses the whole
  * flow into one calm, guided vertical column:
  *
- *   1. Beschreiben   — describe the assistant in plain language; progress
+ *   1. Beschreiben   — describe the plugin in plain language; progress
  *                      shows as a single breathing status line (no steps).
- *   2. Übersicht     — a friendly, non-technical summary plus an optional
- *                      "Persönlichkeit" section (the persona editor).
- *   3. Ausprobieren  — a reduced preview chat to test the assistant.
+ *   2. Übersicht     — a friendly, non-technical summary including the
+ *                      plugin kind (integration or tool).
+ *   3. Ausprobieren  — a reduced preview chat with a neutral draft agent
+ *                      that holds only this plugin's tools.
  *
  * The aesthetic leans on the byte5 brand's warmer register: a cyan hero
  * wash, the Days One display face, soft blue-tinted shadows, and staggered
@@ -70,18 +67,17 @@ export function SimpleWorkspace({
   draft,
   model,
   onBuildStatus,
-  onPersonaPersisted,
   pendingUserChoice,
   onUserChoiceResolved,
   onIntakeStreamingChange,
   onPreviewStreamingChange,
 }: SimpleWorkspaceProps): React.ReactElement {
   const t = useTranslations('builder.simple');
-  const [personaOpen, setPersonaOpen] = useState(false);
 
   const { spec } = draft;
   const toolCount = spec.tools?.length ?? 0;
   const hasBeenBuilt = Boolean(spec.description) || toolCount > 0;
+  const kind = effectivePluginKind(spec);
 
   return (
     <div className="flex w-full flex-col gap-6 pb-8">
@@ -156,7 +152,7 @@ export function SimpleWorkspace({
         </SimpleStepCard>
       </div>
 
-      {/* 3 — Reduced overview + persona, full width beneath the panes */}
+      {/* 3 — Reduced overview, full width beneath the panes */}
       <SimpleStepCard
         step={3}
         icon={<Sparkles className="size-4" aria-hidden />}
@@ -195,48 +191,12 @@ export function SimpleWorkspace({
             </div>
           ) : null}
 
-          {/* Persona — opt-in, collapsed by default to keep things calm. */}
-          <div className="overflow-hidden rounded-lg border border-[color:var(--divider)]">
-            {/* eslint-disable-next-line no-restricted-syntax -- full-width expand/collapse disclosure header (aria-expanded, icon + text + chevron) */}
-            <button
-              type="button"
-              onClick={() => setPersonaOpen((v) => !v)}
-              aria-expanded={personaOpen}
-              className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-[color:var(--bg-soft)]"
-            >
-              <span className="inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-[color:var(--highlight)]/12 text-[color:var(--highlight)]">
-                <MessageCircleHeart className="size-4" aria-hidden />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-[14px] font-semibold text-[color:var(--fg-strong)]">
-                  {t('persona.title')}
-                </span>
-                <span className="block text-[12.5px] text-[color:var(--fg-subtle)]">
-                  {t('persona.subtitle')}
-                </span>
-              </span>
-              <span className="rounded-full bg-[color:var(--bg-soft)] px-3 py-0.5 text-[11px] font-medium text-[color:var(--fg-subtle)]">
-                {t('persona.optional')}
-              </span>
-              <ChevronDown
-                className={cn(
-                  'size-4 shrink-0 text-[color:var(--fg-subtle)] transition-transform duration-200',
-                  personaOpen && 'rotate-180',
-                )}
-                aria-hidden
-              />
-            </button>
-            {personaOpen ? (
-              <div className="border-t border-[color:var(--divider)]">
-                <PersonaPillar
-                  draftId={draft.id}
-                  initialPersona={spec.persona ?? {}}
-                  {...(spec.quality ? { quality: spec.quality } : {})}
-                  onPersisted={onPersonaPersisted}
-                />
-              </div>
-            ) : null}
-          </div>
+          {/* The manifest kind of the plugin (spec 2042 §5.10). */}
+          <OverviewField label={t('overview.kindLabel')}>
+            <span className="text-[15px] leading-relaxed text-[color:var(--fg-default)]">
+              {t(kind === 'integration' ? 'overview.kindIntegration' : 'overview.kindTool')}
+            </span>
+          </OverviewField>
         </div>
       </SimpleStepCard>
     </div>

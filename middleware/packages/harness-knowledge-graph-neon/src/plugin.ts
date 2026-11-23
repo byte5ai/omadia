@@ -1,5 +1,5 @@
-import type { EmbeddingClient, PluginContext } from '@omadia/plugin-api';
-import { EntityRefBus } from '@omadia/plugin-api';
+import type { EmbeddingClient, MaintenanceRunService, PluginContext } from '@omadia/plugin-api';
+import { EntityRefBus, MAINTENANCE_RUN_SERVICE_NAME } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 
 import {
@@ -242,6 +242,16 @@ export async function activate(
     }
     if (!wanted) return;
     backfill = startEmbeddingBackfill({
+      // Spec 2042 §5.10 — each sweep is a maintenance run (embed only,
+      // maintenance budget). Resolved per sweep: the kernel publishes the
+      // service after this plugin activated. Without it the sweep is not
+      // run: outside a context the gateway would refuse every embed anyway.
+      asMaintenanceRun: (sweep) => {
+        const maintenance = ctx.services.getOptional<MaintenanceRunService>(MAINTENANCE_RUN_SERVICE_NAME);
+        return maintenance
+          ? maintenance.run('embedding_backfill', sweep)
+          : Promise.reject(new Error(`${MAINTENANCE_RUN_SERVICE_NAME}@1 is not available; the sweep needs a maintenance run`));
+      },
       pool: graphPool,
       embeddingClient: wanted,
       tenantId,

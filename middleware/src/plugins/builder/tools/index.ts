@@ -12,8 +12,6 @@ import { readReferenceTool } from './readReference.js';
 import { readSlotTool } from './readSlot.js';
 import { reportPlatformIssueTool } from './reportPlatformIssue.js';
 import { runtimeSmokeStatusTool } from './runtimeSmokeStatus.js';
-import { setPersonaConfigTool } from './setPersonaConfig.js';
-import { setQualityConfigTool } from './setQualityConfig.js';
 import { suggestDependsOnTool } from './suggestDependsOn.js';
 import type { BuilderTool } from './types.js';
 
@@ -43,8 +41,6 @@ export {
   readSlotTool,
   reportPlatformIssueTool,
   runtimeSmokeStatusTool,
-  setPersonaConfigTool,
-  setQualityConfigTool,
   suggestDependsOnTool,
 };
 
@@ -67,8 +63,6 @@ export function builderTools(): ReadonlyArray<BuilderTool<unknown, unknown>> {
     inspectGeneratedArtifactTool as unknown as BuilderTool<unknown, unknown>,
     getBuildStatusTool as unknown as BuilderTool<unknown, unknown>,
     runtimeSmokeStatusTool as unknown as BuilderTool<unknown, unknown>,
-    setQualityConfigTool as unknown as BuilderTool<unknown, unknown>,
-    setPersonaConfigTool as unknown as BuilderTool<unknown, unknown>,
     suggestDependsOnTool as unknown as BuilderTool<unknown, unknown>,
     askUserChoiceTool as unknown as BuilderTool<unknown, unknown>,
     reportPlatformIssueTool as unknown as BuilderTool<unknown, unknown>,

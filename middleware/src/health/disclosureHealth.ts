@@ -61,6 +61,8 @@ export interface AiDisclosurePostureStatus {
   readonly localeConfigured: boolean;
   readonly assistantNameConfigured: boolean;
   readonly operatorNoteConfigured: boolean;
+  /** #2087 — how often the visible markers appear; absent on an older publisher. */
+  readonly frequency?: 'channel_default' | 'per_answer' | 'per_conversation';
 }
 
 /** The `/health` projection. */
@@ -80,6 +82,8 @@ export interface DisclosureHealth {
    *  carries their `channelKind`. Only listed when actually overridden — an
    *  un-overridden channel is not a surprise worth reporting. */
   inertOverrides: string[];
+  /** #2087 — how often the visible markers appear (`channel_default` = today). */
+  frequency: 'channel_default' | 'per_answer' | 'per_conversation';
   /** Operator-facing notes, empty at the delivered state. */
   warnings: string[];
 }
@@ -90,6 +94,7 @@ const UNKNOWN: DisclosureHealth = {
   deviates: false,
   channels: {},
   inertOverrides: [],
+  frequency: 'channel_default',
   warnings: [
     'no orchestrator is active, so the AI-marking posture could not be read',
   ],
@@ -134,12 +139,20 @@ export function buildDisclosureHealth(
     );
   }
 
+  const frequency = posture.frequency ?? 'channel_default';
+  if (frequency !== 'channel_default') {
+    warnings.push(
+      `AI marking frequency deviates from the delivered state (channel_default): ${frequency}`,
+    );
+  }
+
   return {
     known: true,
     source: posture.source,
     deviates: Boolean(posture.deviates),
     channels,
     inertOverrides,
+    frequency,
     warnings,
   };
 }

@@ -1,6 +1,7 @@
 import type { Pool } from 'pg';
 
 import { ConfigValidationError, validateModelRef } from './configStore.js';
+import { ofLiveAgent } from './tombstones.js';
 import { computeSkillHash } from './skillHash.js';
 import type { McpCallerKind } from '../mcp/mcpClient.js';
 import { normalizeDiscoveredToolOrder } from '../toolOrdering.js';
@@ -296,6 +297,8 @@ export interface ScheduleRow {
   readonly status: 'enabled' | 'disabled';
   readonly lastRunAt: Date | null;
   readonly createdAt: Date;
+  /** #2082 — the deadline its trigger runs to; null until first armed. */
+  readonly until: Date | null;
 }
 
 // ── inputs ──────────────────────────────────────────────────────────────────
@@ -628,6 +631,7 @@ interface ScheduleDbRow {
   status: 'enabled' | 'disabled';
   last_run_at: Date | null;
   created_at: Date;
+  until: Date | null;
 }
 
 // ── mappers ─────────────────────────────────────────────────────────────────
@@ -878,6 +882,7 @@ function mapSchedule(r: ScheduleDbRow): ScheduleRow {
     status: r.status,
     lastRunAt: r.last_run_at,
     createdAt: r.created_at,
+    until: r.until ?? null,
   };
 }
 
@@ -894,7 +899,7 @@ export class AgentGraphStore {
   // ── sub-agents ───────────────────────────────────────────────────────────
   async listAllSubAgents(): Promise<readonly SubAgentRow[]> {
     const { rows } = await this.pool.query<SubAgentDbRow>(
-      'SELECT * FROM agent_subagents ORDER BY parent_agent_id, name',
+      `SELECT * FROM agent_subagents WHERE ${ofLiveAgent('parent_agent_id')} ORDER BY parent_agent_id, name`,
     );
     return rows.map(mapSubAgent);
   }
@@ -2087,7 +2092,7 @@ export class AgentGraphStore {
    */
   async listSubAgentsBySkillId(skillId: string): Promise<readonly SubAgentRow[]> {
     const { rows } = await this.pool.query<SubAgentDbRow>(
-      'SELECT * FROM agent_subagents WHERE skill_id = $1 ORDER BY name',
+      `SELECT * FROM agent_subagents WHERE skill_id = $1 AND ${ofLiveAgent('parent_agent_id')} ORDER BY name`,
       [skillId],
     );
     return rows.map(mapSubAgent);
@@ -2228,7 +2233,7 @@ export class AgentGraphStore {
   /** Full cross-agent link set, for `ConfigStore.loadSnapshot`. */
   async listAllPersonaSkillLinks(): Promise<readonly PersonaSkillRow[]> {
     const { rows } = await this.pool.query<PersonaSkillDbRow>(
-      'SELECT * FROM agent_persona_skills ORDER BY agent_id, position, created_at',
+      `SELECT * FROM agent_persona_skills WHERE ${ofLiveAgent('agent_id')} ORDER BY agent_id, position, created_at`,
     );
     return rows.map(mapPersonaSkill);
   }
@@ -2291,7 +2296,7 @@ export class AgentGraphStore {
    */
   async listAgentsByPersonaSkillId(skillId: string): Promise<readonly string[]> {
     const { rows } = await this.pool.query<{ agent_id: string }>(
-      'SELECT agent_id FROM agent_persona_skills WHERE skill_id = $1 ORDER BY agent_id',
+      `SELECT agent_id FROM agent_persona_skills WHERE skill_id = $1 AND ${ofLiveAgent('agent_id')} ORDER BY agent_id`,
       [skillId],
     );
     return rows.map((r) => r.agent_id);
@@ -2370,7 +2375,7 @@ export class AgentGraphStore {
   // ── tool grants ───────────────────────────────────────────────────────────
   async listAllToolGrants(): Promise<readonly ToolGrantRow[]> {
     const { rows } = await this.pool.query<ToolGrantDbRow>(
-      'SELECT * FROM agent_tool_grants ORDER BY created_at',
+      `SELECT * FROM agent_tool_grants WHERE agent_id IS NULL OR ${ofLiveAgent('agent_id')} ORDER BY created_at`,
     );
     return rows.map(mapToolGrant);
   }
@@ -2488,7 +2493,7 @@ export class AgentGraphStore {
   // ── schedules ─────────────────────────────────────────────────────────────
   async listAllSchedules(): Promise<readonly ScheduleRow[]> {
     const { rows } = await this.pool.query<ScheduleDbRow>(
-      'SELECT * FROM agent_schedules ORDER BY agent_id, created_at',
+      `SELECT * FROM agent_schedules WHERE ${ofLiveAgent('agent_id')} ORDER BY agent_id, created_at`,
     );
     return rows.map(mapSchedule);
   }
@@ -2511,6 +2516,33 @@ export class AgentGraphStore {
 
   async deleteSchedule(id: string): Promise<void> {
     await this.pool.query('DELETE FROM agent_schedules WHERE id = $1', [id]);
+  }
+
+  async getSchedule(id: string): Promise<ScheduleRow | undefined> {
+    const { rows } = await this.pool.query<ScheduleDbRow>('SELECT * FROM agent_schedules WHERE id = $1', [id]);
+    return rows[0] ? mapSchedule(rows[0]) : undefined;
+  }
+
+  /**
+   * #2082 — set the deadline (and with `enable`, re-enable): arming a new
+   * schedule, or an operator's renewal. Undefined when the row is gone.
+   */
+  async setScheduleDeadline(id: string, until: Date, enable: boolean): Promise<ScheduleRow | undefined> {
+    const { rows } = await this.pool.query<ScheduleDbRow>(
+      `UPDATE agent_schedules SET until = $2, status = CASE WHEN $3 THEN 'enabled' ELSE status END
+        WHERE id = $1 RETURNING *`,
+      [id, until, enable],
+    );
+    return rows[0] ? mapSchedule(rows[0]) : undefined;
+  }
+
+  /** #2082 — its deadline passed (or the harness stopped it): disable it. */
+  async disableSchedule(id: string): Promise<boolean> {
+    const { rowCount } = await this.pool.query(
+      "UPDATE agent_schedules SET status = 'disabled' WHERE id = $1 AND status = 'enabled'",
+      [id],
+    );
+    return (rowCount ?? 0) > 0;
   }
 
   /** Stamp a schedule's last fire time (scheduler worker). */

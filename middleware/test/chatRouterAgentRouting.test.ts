@@ -1,10 +1,11 @@
 /**
  * Phase A / TA09 — chat router per-Agent resolution tests.
  *
- *  1. No agentSlug + no fallback → 412 no_fallback
- *  2. No agentSlug + fallback set → fallback's ChatAgent serves the turn
+ *  1. No agentSlug + no default agent → 200 `no_agent` notice from `system`
+ *     (#2055: there is no fallback agent and no 412 any more)
+ *  2. No agentSlug + default agent set → the default's ChatAgent serves
  *  3. agentSlug provided + slug active → that ChatAgent serves the turn
- *  4. agentSlug for an inactive slug → 503 agent_unavailable
+ *  4. agentSlug for an unknown slug → 200 notice naming it, never another agent
  *  5. Session has pinned snapshot + matching agentSlug → pinned wins
  *  6. Session has pinned snapshot + DIFFERENT agentSlug → 409 agent_mismatch
  *  7. First turn captures the snapshot (subsequent reads see the pin)
@@ -30,6 +31,7 @@ import type {
 } from '@omadia/orchestrator';
 import { createChatRouter } from '../src/routes/chat.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
+import { routeTurnFrom } from './_helpers/webRouteTurn.js';
 
 function fakeChatAgent(label: string): ChatAgent {
   return {
@@ -82,7 +84,7 @@ describe('createChatRouter (Phase A)', () => {
   let baseUrl: string;
   let store: FakeStore;
   let availableAgents: Map<string, ChatAgent>;
-  let fallbackSlug: string | undefined;
+  let defaultSlug: string | undefined;
 
   async function mountApp(): Promise<void> {
     const app = express();
@@ -91,8 +93,10 @@ describe('createChatRouter (Phase A)', () => {
       '/api',
       createChatRouter({
         chatSessionStore: store as unknown as ChatSessionStore,
-        resolveChatAgent: (slug) => availableAgents.get(slug),
-        getDefaultSlug: () => fallbackSlug,
+        routeTurn: routeTurnFrom(
+          (slug) => availableAgents.get(slug),
+          () => defaultSlug,
+        ),
         snapshotForAgent: (slug) => ({
           agentSlug: slug,
           pluginIds: [],
@@ -112,7 +116,7 @@ describe('createChatRouter (Phase A)', () => {
     availableAgents = new Map();
     availableAgents.set(SLUG_PUBLIC, fakeChatAgent(SLUG_PUBLIC));
     availableAgents.set(SLUG_GENERAL, fakeChatAgent(SLUG_GENERAL));
-    fallbackSlug = SLUG_PUBLIC;
+    defaultSlug = SLUG_PUBLIC;
     await mountApp();
   });
 
@@ -125,31 +129,45 @@ describe('createChatRouter (Phase A)', () => {
     availableAgents.clear();
     availableAgents.set(SLUG_PUBLIC, fakeChatAgent(SLUG_PUBLIC));
     availableAgents.set(SLUG_GENERAL, fakeChatAgent(SLUG_GENERAL));
-    fallbackSlug = SLUG_PUBLIC;
+    defaultSlug = SLUG_PUBLIC;
   });
 
-  it('1: no slug + no fallback → 412 no_fallback', async () => {
-    fallbackSlug = undefined;
-    const res = await fetch(baseUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message: 'hi' }),
-    });
-    assert.equal(res.status, 412);
-    const body = (await res.json()) as { error: string };
-    assert.equal(body.error, 'no_fallback');
-  });
-
-  it('2: no slug + fallback set → fallback serves', async () => {
+  it('1: no slug + no default agent → no_agent notice from system', async () => {
+    defaultSlug = undefined;
     const res = await fetch(baseUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ message: 'hi' }),
     });
     assert.equal(res.status, 200);
-    const body = (await res.json()) as { answer: string; agent_slug: string };
+    const body = (await res.json()) as {
+      answer: string;
+      speaker: { kind: string };
+      systemNotice: { code: string; text: string };
+      agent_slug?: string;
+    };
+    assert.deepEqual(body.speaker, { kind: 'system' });
+    assert.equal(body.systemNotice.code, 'no_agent');
+    assert.equal(body.answer, body.systemNotice.text);
+    assert.equal(body.agent_slug, undefined, 'no agent answered');
+  });
+
+  it('2: no slug + default agent set → the default agent serves', async () => {
+    const res = await fetch(baseUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hi' }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      answer: string;
+      agent_slug: string;
+      speaker: { kind: string; slug?: string };
+    };
     assert.equal(body.agent_slug, SLUG_PUBLIC);
     assert.equal(body.answer, `hello from ${SLUG_PUBLIC}`);
+    assert.equal(body.speaker.kind, 'agent');
+    assert.equal(body.speaker.slug, SLUG_PUBLIC);
   });
 
   it('3: explicit slug active → that agent serves', async () => {
@@ -164,16 +182,23 @@ describe('createChatRouter (Phase A)', () => {
     assert.equal(body.answer, `hello from ${SLUG_GENERAL}`);
   });
 
-  it('4: explicit slug for inactive agent → 503 agent_unavailable', async () => {
+  it('4: explicit slug for an unknown agent → notice naming it, no other agent', async () => {
     const res = await fetch(baseUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ message: 'hi', agentSlug: 'ghost' }),
     });
-    assert.equal(res.status, 503);
-    const body = (await res.json()) as { error: string; slug: string };
-    assert.equal(body.error, 'agent_unavailable');
-    assert.equal(body.slug, 'ghost');
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      answer: string;
+      speaker: { kind: string };
+      systemNotice: { code: string; agent?: { slug: string } };
+      agent_slug?: string;
+    };
+    assert.deepEqual(body.speaker, { kind: 'system' });
+    assert.equal(body.systemNotice.code, 'agent_unknown');
+    assert.equal(body.systemNotice.agent?.slug, 'ghost');
+    assert.equal(body.agent_slug, undefined, 'the default agent must not answer instead');
   });
 
   it('5: pinned snapshot + matching slug → pinned wins', async () => {

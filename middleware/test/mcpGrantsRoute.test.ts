@@ -39,10 +39,13 @@ interface StubOptions {
   verdicts?: Record<string, string>;
   /** toolNames whose needing-ack verdict has a matching ack. */
   acked?: readonly string[];
+  /** #2054 — installed capability plugins (all granted to the agent). */
+  heldPlugins?: readonly string[];
 }
 
 interface Harness {
   baseUrl: string;
+  audits: Array<Record<string, unknown>>;
   calls: {
     applyAllowlist: Array<Record<string, unknown>>;
     setDelegation: Array<[string, string]>;
@@ -74,6 +77,7 @@ async function makeHarness(opts: StubOptions = {}): Promise<Harness> {
     deleteGrant: [],
   };
   const verdicts = opts.verdicts ?? {};
+  const audits: Array<Record<string, unknown>> = [];
   const acked = new Set(opts.acked ?? []);
   const server = {
     id: SERVER_ID,
@@ -98,6 +102,9 @@ async function makeHarness(opts: StubOptions = {}): Promise<Harness> {
   const graph = {
     listMcpServers: () => Promise.resolve([server]),
     listAllToolGrants: () => Promise.resolve(opts.grants ?? []),
+    // #2054 — the reach the broad-reach check computes.
+    listToolGrantsForAgent: () => Promise.resolve(opts.grants ?? []),
+    listPluginMcpGrantsForPlugins: () => Promise.resolve([]),
     getMcpToolVerdict: (_sid: string, toolName: string, version: number) => {
       assert.equal(version, CURRENT_VERIFIER_VERSION);
       const severity = verdicts[toolName];
@@ -135,6 +142,8 @@ async function makeHarness(opts: StubOptions = {}): Promise<Harness> {
   };
   const config = {
     listAgents: () => Promise.resolve([{ id: AGENT_ID, slug: 'sales' }]),
+    listAgentPlugins: () =>
+      Promise.resolve((opts.heldPlugins ?? []).map((pluginId) => ({ agentId: AGENT_ID, pluginId, enabled: true }))),
     getAgentBySlug: () => Promise.resolve(undefined),
   };
 
@@ -146,6 +155,18 @@ async function makeHarness(opts: StubOptions = {}): Promise<Harness> {
       getConfigStore: () => config as never,
       getGraphStore: () => graph as never,
       getRegistry: () => undefined,
+      getReachPluginSources: () => ({
+        catalog: {
+          get: (id: string) =>
+            (opts.heldPlugins ?? []).includes(id)
+              ? { plugin: { id, name: id, kind: 'integration' }, manifest: {} }
+              : undefined,
+        } as never,
+        installed: { list: () => (opts.heldPlugins ?? []).map((id) => ({ id })) } as never,
+      }),
+      recordAudit: async (entry) => {
+        audits.push(entry as unknown as Record<string, unknown>);
+      },
     }),
   );
   const httpServer: Server = await new Promise((resolve) => {
@@ -154,6 +175,7 @@ async function makeHarness(opts: StubOptions = {}): Promise<Harness> {
   const port = (httpServer.address() as AddressInfo).port;
   return {
     baseUrl: `http://127.0.0.1:${String(port)}`,
+    audits,
     calls,
     async close() {
       await new Promise<void>((resolve) => httpServer.close(() => resolve()));
@@ -365,5 +387,45 @@ describe('DELETE /mcp-grants/:grantId (W0c #862)', () => {
     });
     assert.equal(res.status, 404);
     assert.equal(((await res.json()) as Record<string, unknown>)['error'], 'grant_not_found');
+  });
+});
+
+describe('#2054 — PUT /mcp-grants: broad reach needs a confirmation (spec 2042 §5.7)', () => {
+  let h: Harness | undefined;
+  afterEach(async () => {
+    if (h) await h.close();
+    h = undefined;
+  });
+
+  it('a grant that gives the agent every connected system is refused without confirmBroadReach, audited with it', async () => {
+    // Two connected systems: the Odoo plugin (already held) and this server.
+    h = await makeHarness({ verdicts: { read_ticket: 'no_signals' }, heldPlugins: ['@acme/odoo'] });
+    const refused = await putGrants(h, { agentSlug: 'sales', mcpServerId: SERVER_ID, toolName: 'read_ticket' });
+    assert.equal(refused.status, 409);
+    const body = (await refused.json()) as { error: string; reach: { broad: boolean; connected_systems: number } };
+    assert.equal(body.error, 'broad_reach_confirmation_required');
+    assert.equal(body.reach.broad, true);
+    assert.equal(body.reach.connected_systems, 2);
+    assert.equal(h.calls.applyAllowlist.length, 0, 'nothing written');
+    assert.equal(h.audits.length, 0);
+
+    const confirmed = await putGrants(h, {
+      agentSlug: 'sales',
+      mcpServerId: SERVER_ID,
+      toolName: 'read_ticket',
+      confirmBroadReach: true,
+    });
+    assert.equal(confirmed.status, 200);
+    assert.equal(h.calls.applyAllowlist.length, 1);
+    assert.equal(h.audits.length, 1);
+    assert.equal(h.audits[0]!['action'], 'agent.broad_reach_grant');
+    assert.equal(h.audits[0]!['target'], `agent:${AGENT_ID}`);
+  });
+
+  it('a grant short of every connected system needs no confirmation', async () => {
+    h = await makeHarness({ verdicts: { read_ticket: 'no_signals' } });
+    const res = await putGrants(h, { agentSlug: 'sales', mcpServerId: SERVER_ID, toolName: 'read_ticket' });
+    assert.equal(res.status, 200);
+    assert.equal(h.audits.length, 0);
   });
 });

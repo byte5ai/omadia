@@ -46,7 +46,7 @@ const checkTechnicalInput = z.object({
     .string()
     .url()
     .optional()
-    .describe('Domain-Root. Weggelassen → die für diesen Agenten konfigurierte Domain.'),
+    .describe('Domain-Root. Weggelassen → die im Plugin-Setup konfigurierte Domain.'),
 });
 
 const auditSiteInput = z.object({
@@ -87,7 +87,11 @@ export function createToolkit(opts: ToolkitOptions): Toolkit {
         'für eine konkrete Seite; für eine ganze Domain `audit_site`. Liegt der ' +
         'Host außerhalb des erlaubten Audit-Modus, schlägt der Call mit einem ' +
         'Fehler fehl und es wird NICHTS analysiert — dann muss der Operator den ' +
-        'Audit-Modus weiten oder den Host freigeben.',
+        'Audit-Modus weiten oder den Host freigeben. Der Score ist eine ' +
+        'deterministische Heuristik, kein Google-Ranking: max. 100 Punkte, je ' +
+        '20 für Meta, Headings, Links, Bilder und Structured Data; Grade A ab ' +
+        '90, B ab 75, C ab 60, D ab 40, sonst F. Bei Widerspruch zwischen ' +
+        'Grade und Issues zählen die Issues.',
       input: analyzePageInput as z.ZodType<unknown>,
       async run(raw): Promise<PageReport> {
         const { url } = analyzePageInput.parse(raw);
@@ -104,7 +108,7 @@ export function createToolkit(opts: ToolkitOptions): Toolkit {
         'Prüft robots.txt, sitemap.xml, HTTPS-Config und Security-Header einer ' +
         'Domain. Nutze das Tool bei Fragen zu Crawlbarkeit, Indexierung oder ' +
         'Transport-Sicherheit. Ohne `base_url` läuft die Prüfung gegen die für ' +
-        'diesen Agenten konfigurierte Domain. Ist die Root-URL gesperrt oder ' +
+        'dieses Plugin konfigurierte Domain. Ist die Root-URL gesperrt oder ' +
         'nicht erreichbar, schlägt der Call fehl und es wird NICHTS geprüft.',
       input: checkTechnicalInput as z.ZodType<unknown>,
       async run(raw): Promise<TechnicalReport> {
@@ -122,8 +126,8 @@ export function createToolkit(opts: ToolkitOptions): Toolkit {
         'einzelne Seite `analyze_page`. `max_pages` muss zwischen 1 und 100 ' +
         'liegen, `max_depth` zwischen 1 und 5 — höhere Werte werden nicht ' +
         'gekappt, sondern abgelehnt. Ohne `start_url` startet der Crawl auf der ' +
-        'konfigurierten Domain, ohne die beiden Grenzen auf den für diesen ' +
-        'Agenten konfigurierten Werten. Ist die Einstiegs-URL gesperrt oder ' +
+        'konfigurierten Domain, ohne die beiden Grenzen auf den für dieses ' +
+        'Plugin konfigurierten Werten. Ist die Einstiegs-URL gesperrt oder ' +
         'nicht erreichbar, schlägt der Call fehl und es wird NICHTS gecrawlt.',
       input: auditSiteInput as z.ZodType<unknown>,
       async run(raw): Promise<SiteAuditReport> {

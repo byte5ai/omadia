@@ -104,7 +104,66 @@ export const MINIMUM_STARTABLE_VERSIONS: Readonly<Record<string, string>> =
     '@omadia/agent-odoo-hr': '0.2.8',
     '@omadia/agent-odoo-accounting': '0.1.4',
     '@omadia/agent-confluence': '0.3.3',
+    // #2043 — see MINIMUM_STARTABLE_REASONS.
+    '@omadia/agent-facilitator': '1.0.0',
   });
+
+const LEGACY_GRANTS_REASON =
+  'it resolves services this core no longer grants to packages that do not declare them, ' +
+  'and the plugin declares them from that version on';
+
+/**
+ * Why a version below its minimum cannot start, per plugin (default: the
+ * retired legacy service grants of #1463).
+ *
+ * `@omadia/agent-facilitator` before 1.0.0 ran a facilitation as a Conductor
+ * pattern and through kernel services that were removed when facilitators
+ * became native (#2043). On this core it still loaded: `query_facilitator`
+ * stayed on every agent it was attached to, its start failed inside
+ * ("ephemeral pattern 'facilitation' not found") and the group was told "the
+ * facilitation is started" while nothing ran. Nothing was posted through
+ * another bot, but an agent that offers a moderation that cannot run is what
+ * the native facilitator exists to prevent, so the core does not start it.
+ */
+export const MINIMUM_STARTABLE_REASONS: Readonly<Record<string, string>> = Object.freeze({
+  '@omadia/agent-facilitator':
+    'it runs facilitations through the Conductor pattern and kernel services that were removed ' +
+    'when facilitators became native; it would offer moderations that cannot start',
+});
+
+/** A plugin version this core refuses to start (see {@link startableRefusal}). */
+export class PluginNotStartableError extends Error {
+  override readonly name = 'PluginNotStartableError';
+  constructor(readonly refusal: CoreCompatRefusal) {
+    super(refusal.message);
+  }
+}
+
+/**
+ * The refusal for a version below {@link MINIMUM_STARTABLE_VERSIONS}, or
+ * `null`. This is the part of the compat check that also applies to a plugin
+ * that is ALREADY installed: the runtimes ask it before they activate, so a
+ * core update takes such a version out of service instead of leaving it
+ * half-working. (An unsatisfied `compat.core` range is still only refused
+ * where a package comes in.)
+ */
+export function startableRefusal(
+  plugin: CoreCompatSubject,
+  host: string = hostPluginApiVersion(),
+): CoreCompatRefusal | null {
+  const minimum = MINIMUM_STARTABLE_VERSIONS[plugin.id];
+  const version = semver.valid(plugin.version);
+  if (minimum === undefined || version === null || semver.gte(version, minimum)) return null;
+  return {
+    reason: 'below_minimum',
+    message:
+      `Plugin '${plugin.id}' ${plugin.version} cannot start on this host: ` +
+      `${MINIMUM_STARTABLE_REASONS[plugin.id] ?? LEGACY_GRANTS_REASON}. ` +
+      `Install ${plugin.id} ${minimum} or newer.`,
+    compat_core: plugin.compat_core ?? DEFAULT_COMPAT_CORE,
+    host_plugin_api: host,
+  };
+}
 
 /**
  * `null` when the plugin's `compat.core` admits `host`, otherwise why not.
@@ -129,20 +188,7 @@ export function checkCoreCompat(
     };
   }
   if (semver.satisfies(host, range, { includePrerelease: true })) {
-    const minimum = MINIMUM_STARTABLE_VERSIONS[plugin.id];
-    const version = semver.valid(plugin.version);
-    if (minimum === undefined || version === null || semver.gte(version, minimum)) {
-      return null;
-    }
-    return {
-      reason: 'below_minimum',
-      message:
-        `${subject} cannot start on this host: it resolves services this core no longer ` +
-        `grants to packages that do not declare them, and ${plugin.id} declares them from ` +
-        `${minimum} on. Install ${plugin.id} ${minimum} or newer.`,
-      compat_core: range,
-      host_plugin_api: host,
-    };
+    return startableRefusal(plugin, host);
   }
   return {
     reason: 'unsatisfied',
@@ -153,4 +199,11 @@ export function checkCoreCompat(
     compat_core: range,
     host_plugin_api: host,
   };
+}
+
+/** Throws {@link PluginNotStartableError} for a version this core refuses to
+ *  start. Called by the runtimes before a plugin's own `activate()`. */
+export function assertStartable(plugin: CoreCompatSubject): void {
+  const refusal = startableRefusal(plugin);
+  if (refusal) throw new PluginNotStartableError(refusal);
 }

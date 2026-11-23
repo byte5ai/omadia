@@ -174,6 +174,8 @@ export interface ScheduleNode {
   readonly payload: Record<string, unknown>;
   readonly status: 'enabled' | 'disabled';
   readonly lastRunAt: string | null;
+  /** #2082 — the deadline it runs to; a renewal moves it (ADR-0020). */
+  readonly until?: string | null;
 }
 
 // ── edges ─────────────────────────────────────────────────────────────────

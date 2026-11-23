@@ -17,22 +17,9 @@ export interface AgentMeta {
   tone: 'cyan' | 'navy' | 'magenta' | 'warning';
 }
 
+// Spec 2042 §5.10 (S3c) — the retired agent plugins' `query_*` tools are gone;
+// a plugin tool's pill comes from the server (`tool_use.agent`).
 const TOOL_NAME_TO_AGENT: Record<string, AgentMeta> = {
-  query_confluence_playbook: {
-    id: 'de.byte5.agent.confluence',
-    label: 'Confluence',
-    tone: 'cyan',
-  },
-  query_odoo_hr: {
-    id: 'de.byte5.agent.odoo-hr',
-    label: 'Odoo HR',
-    tone: 'navy',
-  },
-  query_odoo_accounting: {
-    id: 'de.byte5.agent.odoo-accounting',
-    label: 'Odoo Accounting',
-    tone: 'navy',
-  },
   find_free_slots: {
     id: 'de.byte5.agent.calendar',
     label: 'Calendar',

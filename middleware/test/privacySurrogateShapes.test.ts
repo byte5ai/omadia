@@ -189,6 +189,60 @@ describe('#1545 person surrogate parts', () => {
     assert.equal(resolvePromptPseudonyms(`Hallo ${first} Schmidt`, map), `Hallo ${first} Schmidt`);
   });
 
+  it('a lone part is restored when the full surrogate stands in the same text', () => {
+    // Field report 2026-11-18: the answer listed two people by full name and
+    // went on with their first names; those reached the chat as placeholders.
+    const two = mapOf([
+      ['Teresita Biel', 'Laura Schmitt'],
+      ['Christian Wendler', 'Lukas Becker'],
+    ]);
+    const answer =
+      'Fehlen noch: Laura Schmitt, Lukas Becker. Entschieden ist noch nichts: Laura und Lukas können zusammen bis zu 6 Punkte vergeben.';
+    assert.equal(
+      resolvePromptPseudonyms(answer, two),
+      'Fehlen noch: Teresita Biel, Christian Wendler. Entschieden ist noch nichts: Teresita und Christian können zusammen bis zu 6 Punkte vergeben.',
+    );
+    assert.equal(countUnresolvedForms(answer, two), 0);
+    // A last name alone, after a noun (German capitalises it) — still that person.
+    assert.equal(
+      resolvePromptPseudonyms('Lukas Becker fehlt. Die Stimme von Becker steht aus.', two),
+      'Christian Wendler fehlt. Die Stimme von Wendler steht aus.',
+    );
+  });
+
+  it('without the full surrogate, or next to another name word, the part still stays', () => {
+    const two = mapOf([
+      ['Teresita Biel', 'Laura Schmitt'],
+      ['Christian Wendler', 'Lukas Becker'],
+    ]);
+    // No anchor: the #1545 rule is unchanged.
+    const bare = 'Laura und Lukas können zusammen bis zu 6 Punkte vergeben.';
+    assert.equal(resolvePromptPseudonyms(bare, two), bare);
+    assert.equal(countUnresolvedForms(bare, two), 2);
+    // Anchored, but the part continues into another name: someone else.
+    const other = 'Laura Schmitt fehlt. Laut Odoo ist Laura Meier zuständig, ebenso Anna Becker.';
+    assert.equal(
+      resolvePromptPseudonyms(other, two),
+      'Teresita Biel fehlt. Laut Odoo ist Laura Meier zuständig, ebenso Anna Becker.',
+    );
+    assert.equal(countUnresolvedForms(other, two), 2);
+    // Only the anchored person is restored, never the other one.
+    assert.equal(
+      resolvePromptPseudonyms('Laura Schmitt fehlt. Laura und Lukas stimmen noch ab.', two),
+      'Teresita Biel fehlt. Teresita und Lukas stimmen noch ab.',
+    );
+  });
+
+  it('a part two surrogates share has no owner and is never anchored', () => {
+    const shared = mapOf([
+      ['Jonas Weber', 'Lukas Becker'],
+      ['Anna Meier', 'Lukas Schulz'],
+    ]);
+    const text = 'Lukas Becker und Lukas Schulz fehlen. Lukas stimmt morgen ab.';
+    assert.equal(resolvePromptPseudonyms(text, shared), 'Jonas Weber und Anna Meier fehlen. Lukas stimmt morgen ab.');
+    assert.equal(countUnresolvedForms(text, shared), 1);
+  });
+
   it('a real name that is not two plain words gives its parts no real value', () => {
     const comma = createPromptPseudonymMap([{ value: 'Weber, Jonas', type: 'person' }], 'an Weber, Jonas');
     const [, cLast] = comma.forward.get('Weber, Jonas')!.split(' ') as [string, string];

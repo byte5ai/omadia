@@ -170,7 +170,7 @@ async function makeRuntime(
       list: () => [...packages.values()],
     },
     serviceRegistry,
-    nativeToolRegistry: { register: stub, registerHandler: stub },
+    nativeToolRegistry: { register: stub, registerHandler: stub, unregisterBySource: (): string[] => [] },
     pluginRouteRegistry: newTestRouteRegistry(),
     notificationRouter: { dispatch: (): void => {}, registerChannel: stub },
     uiRouteCatalog: new UiRouteCatalog(),
@@ -321,6 +321,29 @@ describe('ToolPluginRuntime.activateAllInstalled — duplicate providers (OM-87)
     assert.equal(harness.registry.failureCalls.length, CIRCUIT_BREAKER_THRESHOLD,
       'errored plugins are skipped until the retry policy resets them');
     assert.deepEqual(harness.activated, []);
+  });
+
+  it('checks a plugin again on the next boot when it failed on its own database, and only then (#2088)', async (t) => {
+    const harness = await makeRuntime(t, { pluginIds: [OLDER] });
+    const entry = harness.registry.get(OLDER);
+    assert.ok(entry);
+    const failed = {
+      ...entry,
+      status: 'errored' as const,
+      activation_failure_count: CIRCUIT_BREAKER_THRESHOLD,
+      last_activation_error: "archetype plugin 'x': database not available (not_isolated): role r may create objects outside plg_x",
+      last_activation_error_at: new Date().toISOString(),
+    };
+
+    // The same sentence without the code is an ordinary failure: it stays.
+    await harness.registry.register({ ...failed, last_activation_error_code: 'unknown' });
+    await retryErroredPlugins(harness.retryDeps);
+    assert.equal(harness.registry.get(OLDER)?.status, 'errored');
+
+    await harness.registry.register({ ...failed, last_activation_error_code: 'database_not_available' });
+    await retryErroredPlugins(harness.retryDeps);
+    assert.equal(harness.registry.get(OLDER)?.status, 'active');
+    assert.equal(harness.registry.get(OLDER)?.last_activation_error, undefined);
   });
 
   it('keeps unresolved requires persisted on the counted circuit-breaker path', async (t) => {

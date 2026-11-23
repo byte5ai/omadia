@@ -26,7 +26,7 @@ import {
   type GraphReadScope,
 } from '@omadia/orchestrator';
 import type { LlmProvider } from '@omadia/llm-provider';
-import type { SearchTurnsOptions } from '@omadia/plugin-api';
+import { nativeToolResultText, type SearchTurnsOptions } from '@omadia/plugin-api';
 
 import { boundTurnSearch } from '../src/platform/pluginContext.js';
 
@@ -68,7 +68,7 @@ describe('graph boundary — the registered (CLI-path) graph tool', () => {
     it(`sees nothing for an agent in ${mode}`, async () => {
       const handler = agent(await graphWithSecret(), mode).get('query_knowledge_graph')?.handler;
       assert.ok(handler, 'the graph tool is not registered');
-      assert.doesNotMatch(await handler(search), /4,2 Mio/);
+      assert.doesNotMatch(nativeToolResultText(await handler(search)), /4,2 Mio/);
     });
   }
 
