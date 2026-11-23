@@ -41,13 +41,20 @@ export interface OperatorChannelDto {
   member_count?: number;
   origin_plugin_id: string;
   bound_agent_slug: string | null;
+  /** #1880 — state of the bound agent; a binding to a disabled or deleted
+   *  agent stays that agent's binding. `null` = not bound. */
+  bound_agent_status: 'enabled' | 'disabled' | 'deleted' | null;
+  /** #1880 — the name the bound agent wears (a deleted one: the name it had). */
+  bound_agent_name: string | null;
   stale: boolean;
 }
 
 export interface ChannelsListDto {
   channels: OperatorChannelDto[];
   agents: Array<{ slug: string; name: string; archetype?: string }>;
-  fallback_slug: string | null;
+  /** #2055 — the instance default agent an unbound conversation reaches
+   *  (`null` = off). */
+  instance_default_slug: string | null;
   directory_types: string[];
 }
 

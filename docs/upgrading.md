@@ -356,6 +356,139 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.210.0 — agents' own bots on Telegram, Discord and Slack
+
+Spec 2042 §5.3, §5.12 (S7), plugin-api 1.79.0, additive. Migration
+`0105_agent_channel_identities` runs on boot.
+
+1. **Operators:** an agent can get its own bot per channel under **Operator →
+   Agents → the agent → Channels → Own bots**. It needs the channel plugin
+   versions that declare `compat.core: ">=1.79.0 <2.0"` (Telegram, Discord,
+   Slack). Without an own bot nothing changes: the shared bot with `/agent`
+   and the name line.
+2. **Behaviour change:** with those plugin versions every Telegram, Discord and
+   Slack turn opens the routines scope, so agents there are offered the
+   trigger tools and `manage_routine` (as in Teams and the web chat), and
+   deliveries go out through the bot the conversation came through. The
+   trigger limits and the kill switch apply unchanged (`TRIGGERS_ENABLED`).
+   These turns do not become the person's Conductor reminder target
+   (`conductorBinding: false`), so reminders and approvals still go where
+   they went before.
+3. **Purging a deleted agent** stops its own bots first; it answers `502
+   channel_identity_release_failed` when an active plugin cannot stop one.
+
+## Upgrading past v0.210.0 — the model gateway and the plugin sandbox enforce; `agent` and `extension` are retired
+
+Spec 2042 §5.10 (#2053), plugin-api 1.83.0, contract step (S3b). It follows
+the expand step below. **Breaking for operators** who relied on `observe`.
+
+1. **Check before you deploy:**
+   - on the live instance, still on the expand-step kernel,
+     `GET /api/v1/admin/model-gateway` must be empty: no entry under
+     `model_gateway.calls_outside_context` and none under
+     `plugin_egress.observations`. Every entry there is a call the new kernel
+     refuses. The remaining kernel call sites are fixed in this release; see
+     `docs/model-gateway-call-sites.md`;
+   - `MODEL_GATEWAY_MODE` and `PLUGIN_EGRESS_MODE` are no longer read. Both
+     are always enforced. Remove them from your `.env` or Fly secrets; a
+     value of `observe` has no effect any more;
+   - raw model services (`anthropicClient`, `llm`, `llmProviderPool`) are
+     refused to every plugin except `model` plugins and the kernel's own
+     bundled system modules. Update plugins that still asked for one (for
+     example older `channel-teams` versions that used `anthropicClient@1`)
+     before you deploy;
+   - a long-running task stored before this release has no execution
+     context: its model calls are refused and the task fails with that
+     reason.
+2. **Installed plugins of kind `agent` or `extension`** keep running as
+   legacy ("Legacy" chip on the card, a notice on the plugin page). They can
+   no longer be updated: an upload, install or update of a package of either
+   kind answers `422 package.retired_kind` / `422 install.retired_kind`, also
+   when the package is already installed under that kind. Install the
+   migrated version instead: a capability (`tool`, `integration`) plus an
+   agent built in the Agent Builder, or a `system-module` or `model`. The
+   store lists registry and local packages of a retired kind as
+   `incompatible`. A profile bundle or snapshot that brings such a package
+   at another version, or onto a fresh instance, fails to import it with
+   `package.retired_kind`.
+3. **An update that makes a plugin a system module** needs the same explicit
+   confirmation as a fresh install (`becomes_system_module`, the
+   `confirm_archetype` flag). `extension` → `system-module` needs none. The
+   prerequisites wizard asks for it and pauses until the operator answers.
+4. **Plugin authors:**
+   - declare one of the current kinds (`integration`, `tool`, `skill`,
+     `channel`, `model`, `archetype`, `system-module`, `agent-template`);
+   - declare `capabilities[].side_effects` for every tool. A tool that
+     declares nothing is now checked like a `write` by discretion, against
+     every label of the turn (`UNKNOWN_TOOL_EFFECT_POLICY` is gone);
+   - reach models only through `ctx.llm`, and the network only through
+     `ctx.http` or a request covered by the network permission;
+   - a native tool can declare the PII fields of its result with the new
+     `piiFields` option of `ctx.tools.register` / `registerHandler`. The
+     Privacy Shield masks every declared column, whatever its classifier
+     says. Kernels before 1.83.0 do not read it;
+   - system modules can resolve one agent's envelope through the new
+     `agentEnvelope@1` service;
+   - a plugin that relies on `piiFields` or `agentEnvelope@1` declares
+     `compat.core: ">=1.83.0 <2.0"`.
+   See `docs/creating-plugins.md`.
+
+## Upgrading past v0.210.0 — plugin kinds, the model gateway and the plugin network sandbox
+
+Spec 2042 §5.10 (#2053), plugin-api 1.78.0, expand step: everything new is
+accepted, the old paths keep working and are observed. The contract step
+above (plugin-api 1.83.0) ends `observe` and the retired kinds.
+
+1. **Plugin authors:** the manifest `kind` says what a plugin delivers
+   (`integration`, `tool`, `skill`, `channel`, `model`, `archetype`,
+   `system-module`, `agent-template`). A new package of kind `agent`, or one
+   with a persona, speaker, `prompt_partial` skill or `AGENT.md`, is refused at
+   upload (`422 package.retired_kind`, `package.persona_declared`); a package
+   already installed keeps running until its migrated version replaces it.
+   Personas ship as `agent_templates:`. Declare every tool's
+   `capabilities[].side_effects`. Packages that use any of this declare
+   `compat.core: ">=1.78.0 <2.0"`. See `docs/creating-plugins.md`.
+2. **Operators, new settings (all optional):** `MODEL_GATEWAY_MODE` and
+   `PLUGIN_EGRESS_MODE` (`observe`, the default, logs model calls outside an
+   execution context and plugins' own network requests outside their
+   permission; `enforce` refuses them), `OPERATOR_TOOLS_DAILY_MODEL_CALLS`,
+   `MAINTENANCE_DAILY_MODEL_CALLS`, `OMADIA_CLI_PROFILE`. What observe saw:
+   `GET /api/v1/admin/model-gateway`. Migration `0089_model_work_runs` runs on
+   boot. Since the contract step the two modes are no longer read and both
+   always enforce.
+3. **Check before you deploy:**
+   - an instance or agent kill switch that is still set now halts every model
+     call of the instance or agent (chat, verifier, embeddings), not only
+     execution scopes: clear stale ones (`execution_kill_switches`);
+   - every Claude CLI spawn runs in one profile directory (`CLAUDE_CONFIG_DIR`,
+     in the image `/data/claude-cli`); a `CLAUDE.md` or `.claude/CLAUDE.md`
+     there refuses every spawn. Locally, set `OMADIA_CLI_PROFILE=inherit` if
+     your shell's `CLAUDE_CONFIG_DIR` points at a personal configuration;
+   - the CLI's tool list must match the offered loopback tools exactly, or the
+     turn is refused.
+4. **Dev platform 0.4.0** holds no provider key any more: it needs the
+   instance's Anthropic model provider configured.
+
+## Upgrading past v0.210.0 — Direct Line (`#agent` addressing) is gone
+
+Spec 2042 (§5.2, #2052) replaces Direct Line with direct addressing of an
+agent. For operators, channel authors and anybody who reads the chat stream.
+
+1. **Users:** `#strategist <question>` is no longer routed to a specialist and
+   sticky mode (`#strategist`, `#end`, `#orchestrator`) no longer exists. The
+   text goes to the agent the user is talking to, unchanged.
+2. **Operators:** `ORCHESTRATOR_DIRECT_LINE_STICKY` and the orchestrator setup
+   field `orchestrator_direct_line_sticky` are gone. A value that is still set
+   is ignored; remove it at your convenience.
+3. **Channel and client code (`@omadia/channel-sdk`):** `SemanticAnswer`,
+   `ChatTurnResult` and the stream `done` event no longer carry
+   `delegatedAnswer` or `directLineSession`, and the types `DelegatedAnswer`
+   and `DirectLineSessionState` are no longer exported. What a colleague
+   contributed now arrives in `SemanticAnswer.contributions[]` (types in
+   `@omadia/plugin-api`, `speaker.ts`). `agentsConsulted` stays.
+4. Stored web chats: a `directLineSession` on an old message is dropped the
+   next time the session is saved. Nothing to migrate.
+
 ## Upgrading past v0.210.0 — facilitator plugins: the first majors of three services are gone
 
 For an instance with the facilitation engine installed, and for anybody
@@ -597,9 +730,10 @@ do not combine" point under v0.167.13 below.
   any tool query) and the column labels and rank header it writes into the
   table.
 - **Still withheld in `enforce`:** a rendered tool error or sign-in prompt
-  (`answerIsError`), a render from a privacy guard older than 0.9.0 (it
-  reports no `prose`, so prose and values cannot be told apart), and behind
-  the shield a Direct Line relay. Upgrade the privacy guard together with the
+  (`answerIsError`) and a render from a privacy guard older than 0.9.0 (it
+  reports no `prose`, so prose and values cannot be told apart). (Behind the
+  shield a Direct Line relay was withheld too; Direct Line was removed with
+  spec 2042.) Upgrade the privacy guard together with the
   core.
 - **`shadow` costs more.** Rendered answers with prose now run the full
   pipeline in `shadow` too: extra verifier model calls and rows that were not
@@ -927,9 +1061,9 @@ know and show no badge for turns without evidence.
   shield renders server-side holds real values the model never saw, so it is
   never sent to the verifier; `enforce` withholds it (summary `unavailable`,
   reason `privacy_shield`, a `verifier_verdicts` row with status
-  `unavailable`). That includes rendered tool errors and sign-in prompts, and
-  behind the shield a Direct Line relay, which hands over no privacy view to
-  verify through. With v4 rendering active, expect no rendered answer to
+  `unavailable`). That includes rendered tool errors and sign-in prompts (and,
+  until Direct Line was removed with spec 2042, a Direct Line relay behind the
+  shield). With v4 rendering active, expect no rendered answer to
   reach users in `enforce`, except on a turn that also carries an input card:
   that exemption (next point) is checked first and releases the turn
   unchecked, rendered answer included. The shield's own refusal of a prompt

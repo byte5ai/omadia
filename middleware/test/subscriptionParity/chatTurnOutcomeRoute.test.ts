@@ -23,6 +23,7 @@ import type {
 } from '@omadia/orchestrator';
 
 import { createChatRouter } from '../../src/routes/chat.js';
+import { routeTurnFrom } from '../_helpers/webRouteTurn.js';
 import {
   getLastTurnOutcome,
   resetLastTurnOutcome,
@@ -92,8 +93,10 @@ describe('OM-100b — chat routes record the turn outcome', () => {
     app.use(
       '/api',
       createChatRouter({
-        resolveChatAgent: (slug) => (slug === SLUG ? scriptedChatAgent() : undefined),
-        getDefaultSlug: () => SLUG,
+        routeTurn: routeTurnFrom(
+          (slug) => (slug === SLUG ? scriptedChatAgent() : undefined),
+          () => SLUG,
+        ),
       }),
     );
     server = await listenLoopback(app);

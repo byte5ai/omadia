@@ -3,7 +3,11 @@ import { randomUUID } from 'node:crypto';
 import type { Express, RequestHandler } from 'express';
 import type { Pool } from 'pg';
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
-import { speakingIdentityFor, type DefaultChannelBotKey } from './channelBotOwnership.js';
+import {
+  addressedAgentForEvent,
+  speakingIdentityFor,
+  type DefaultChannelBotKey,
+} from './channelBotOwnership.js';
 import type { JsonObject, KnownRefs } from '@omadia/conductor-core';
 
 import type { RoleHolderRegistry, RoleHolderSource } from '@omadia/channel-sdk';
@@ -17,6 +21,7 @@ import { ConductorAwaitStore } from './awaitStore.js';
 import type { ConductorAwait } from './awaitStore.js';
 import type { ApprovalReminder } from '@omadia/plugin-api';
 import { ConductorRoleStore } from './roleStore.js';
+import { RoleMembershipSnapshot } from './roleMembership.js';
 import { ConductorScheduleStore } from './scheduleStore.js';
 import { ConductorChannelBindingStore } from './channelBindingStore.js';
 import { ConductorRunExecutor } from './runExecutor.js';
@@ -200,6 +205,11 @@ export interface ConductorWiring {
    *  through the same instance the executor uses for approvals: "who gets the
    *  report" and "who may approve" must never drift apart. */
   roleHolderRegistry: RoleHolderRegistry;
+  /** Spec 2042 §5.3 — synchronous "does this person hold this role?" for the
+   *  management layer's availability check (`role:<key>` entries), from a
+   *  snapshot of `roleHolderRegistry`, refreshed every 30 s and after every
+   *  role write of this process. */
+  roleMembership: RoleMembershipSnapshot;
   /** #330 C2a — auto-provisioned binding/role rows tied to ephemeral workflows;
    *  consumed by the kernel's onEphemeralReaped cleanup + the agent-setup seam. */
   ephemeralAttachments: ConductorEphemeralAttachmentsStore;
@@ -318,6 +328,14 @@ export async function wireConductor(deps: {
   // table registered as an ordinary source. `deps.roleHolderSources` is where an integration
   // (Entra group, Odoo HR reporting line) plugs in; empty today, so behaviour is unchanged.
   const roleHolderRegistry = buildRoleHolderRegistry(roleStore, deps.roleHolderSources ?? []);
+  const roleMembership = new RoleMembershipSnapshot({
+    listRoleKeys: () => roleStore.listRoleKeys(),
+    resolveHolders: (key) => roleHolderRegistry.resolveHolders(key),
+    log: (m) => console.warn(m),
+  });
+  roleStore.onChange(() => void roleMembership.refresh());
+  void roleMembership.refresh();
+  roleMembership.start();
   const scheduleStore = new ConductorScheduleStore(deps.pool);
   const channelBindingStore = new ConductorChannelBindingStore(deps.pool);
 
@@ -540,7 +558,19 @@ export async function wireConductor(deps: {
   ephemeralReaper.start();
 
   // Event router — a domain event starts every subscribed workflow's run (US4).
-  const eventRouter = new ConductorEventRouter({ workflowStore, executor, log });
+  const eventRouter = new ConductorEventRouter({
+    workflowStore,
+    executor,
+    // Same owner resolution as the step-level origin rule, so a workflow that
+    // would be refused at its agent step is not started for that message.
+    addressedAgent: (eventId, payload) => {
+      const registry = deps.getRegistry();
+      return registry
+        ? addressedAgentForEvent(registry, eventId, payload, deps.defaultChannelBotKey)
+        : undefined;
+    },
+    log,
+  });
 
   // Template surface (#429 bundled files + #478 DB store): one composite,
   // viewer-scoped catalog over both, plus the plugin registration seam.
@@ -645,6 +675,6 @@ export async function wireConductor(deps: {
     resumeWorker, scheduleWorker, eventRouter, builderAgent, templateStore, templateCatalog,
     webhookEndpoints, webhookSubscriptions, webhookDispatcher, webhookRetryWorker, webhookInboundDeps,
     patternCatalog, ephemeralStore, ephemeralRunService, ephemeralReaper, roleHolderRegistry,
-    ephemeralAttachments, discussionService, discussionAdmin,
+    roleMembership, ephemeralAttachments, discussionService, discussionAdmin,
   };
 }

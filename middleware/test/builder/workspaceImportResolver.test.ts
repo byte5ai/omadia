@@ -178,7 +178,6 @@ describe('workspaceImportResolver', () => {
         description: 'Test agent description',
         category: 'productivity',
         domain: 'dev.test',
-        skill: { role: 'tester' },
         playbook: {
           when_to_use: 'when testing',
           not_for: ['not used for unit tests'],
@@ -229,7 +228,7 @@ describe('workspaceImportResolver', () => {
       const here = path.dirname(url.fileURLToPath(import.meta.url));
       const boilerplate = path.resolve(
         here,
-        '../../assets/boilerplate/agent-integration/types.ts',
+        '../../assets/boilerplate/integration/types.ts',
       );
       const buf = await readFile(boilerplate);
       const files = new Map<string, Buffer>([['types.ts', buf]]);

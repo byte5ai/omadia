@@ -10,7 +10,7 @@
 import type { ChannelUserRef } from './incoming.js';
 import type { OutgoingAttachment } from './outgoing.js';
 import type { Principal } from './principal.js';
-import type { CardSupport, QuestionCard } from '@omadia/plugin-api';
+import type { CardSupport, QuestionCard, Speaker } from '@omadia/plugin-api';
 
 /** Deliberately narrower than SemanticAnswer: a targeted message is a report /
  *  status ping, not a full conversational reply. */
@@ -30,6 +30,10 @@ export interface TargetedMessage {
    *  kernel validates the card first. `delivered.cardMessageId` is the id a
    *  later `updateCard` names. Never together with `poll`. */
   card?: QuestionCard;
+  /** Who the message is from (spec 2042 INV-4), stamped by the kernel. A
+   *  message through the channel's shared bot is `system`; a message as an
+   *  agent's own identity is that agent (its bot is the speaker). */
+  speaker?: Speaker;
 }
 
 export interface TargetedPoll {
@@ -39,6 +43,10 @@ export interface TargetedPoll {
   /** 2..6 options, ids unique. */
   options: readonly { id: string; label: string }[];
   hint?: string;
+  /** Several options may be chosen (an approval vote). A channel posts it as
+   *  a multi-answer poll and reports `{ optionIds }`; one that cannot, does not
+   *  post a single-choice poll for it. Absent = one option. */
+  multipleAnswers?: boolean;
 }
 
 export interface TargetedMention {
@@ -117,6 +125,9 @@ export interface SendProviderCapabilities {
    *  (`ConversationSendProvider.updateCard`). Absent = no cards; the kernel
    *  then refuses a card instead of handing it over. */
   card?: CardSupport;
+  /** Sets a reaction as the named identity
+   *  (`ConversationSendProvider.react`, spec 2043 §5.14). */
+  reactions?: boolean;
 }
 
 export interface TargetedSendProvider {

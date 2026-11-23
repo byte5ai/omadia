@@ -27,6 +27,7 @@ import type {
   NativeToolAttachmentSink,
   NativeToolHandler,
   NativeToolSpec,
+  ToolPIIField,
   WriteCapability,
 } from '@omadia/plugin-api';
 
@@ -93,6 +94,10 @@ export interface NativeToolRegistration {
    * mutates data MUST declare this or it forfeits duplicate-write protection.
    */
   readonly writeCapabilities?: readonly WriteCapability[];
+  /** Spec 2042 §5.10 — the PII fields of the tool's result
+   *  (`ToolRegistrationOptions.piiFields`), handed to the Privacy Shield with
+   *  every interned result of this tool. */
+  readonly piiFields?: readonly ToolPIIField[];
   /**
    * #1346 — per-turn availability (`ToolRegistrationOptions.isAvailable`).
    * Read through {@link isOfferedThisTurn}, never directly. Absent ⇒ offered.
@@ -151,6 +156,8 @@ export interface NativeToolRegistrationOptions {
   readConfig?: (key: string) => unknown | undefined;
   /** #542 — see `NativeToolRegistration.writeCapabilities`. */
   writeCapabilities?: readonly WriteCapability[];
+  /** Spec 2042 §5.10 — see `NativeToolRegistration.piiFields`. */
+  piiFields?: readonly ToolPIIField[];
   /** #1346 — see `NativeToolRegistration.isAvailable`. */
   isAvailable?: () => boolean;
 }
@@ -177,6 +184,8 @@ export interface NativeToolHandlerRegistrationOptions {
    *  path too: a handler-only registration is dispatchable by name, so it needs
    *  the same duplicate-write protection as a `register()`-contributed tool. */
   writeCapabilities?: readonly WriteCapability[];
+  /** Spec 2042 §5.10 — see `NativeToolRegistration.piiFields`. */
+  piiFields?: readonly ToolPIIField[];
   /** #1346 — see `NativeToolRegistration.isAvailable`. Gates the promptDoc
    *  on this path (there is no spec to hide). */
   isAvailable?: () => boolean;
@@ -225,6 +234,7 @@ export class NativeToolRegistry {
           ...(options.writeCapabilities !== undefined
             ? { writeCapabilities: options.writeCapabilities }
             : {}),
+          ...(options.piiFields !== undefined ? { piiFields: options.piiFields } : {}),
           ...(options.isAvailable !== undefined
             ? { isAvailable: options.isAvailable }
             : {}),
@@ -270,6 +280,7 @@ export class NativeToolRegistry {
       ...(options.writeCapabilities !== undefined
         ? { writeCapabilities: options.writeCapabilities }
         : {}),
+      ...(options.piiFields !== undefined ? { piiFields: options.piiFields } : {}),
       ...(options.isAvailable !== undefined
         ? { isAvailable: options.isAvailable }
         : {}),

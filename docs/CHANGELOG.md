@@ -36,6 +36,1023 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the PASS/BLOCK judges answer on an always-thinking model (spec 2042 §5.5, #2085, criterion 33)
+
+- The identity guard's judge and the data-plan and summary boundary judges asked for 8 output
+  tokens. They run on the agent's classifier model, else its own model. On an always-thinking
+  model (Opus 5.5, Fable) thinking counts toward that cap, so the reply had no text. The
+  identity guard then withheld every suspicious answer of such an agent as `unavailable`, and
+  the boundary guards refused every plan and summary they judged. Found in the live Teams E2E:
+  Karen (`hr`, Opus 5.5) was consulted, and her contribution was always withheld (`identity judge
+  gave no verdict: ""`). The three judges now share `VERDICT_JUDGE_MAX_TOKENS` (1024) and
+  `VERDICT_JUDGE_REASONING` (low effort, no thinking where the model allows it) and send no
+  `temperature`. A reply without a verdict is a failed boundary check now ("the boundary check
+  failed"), not a broken boundary.
+
+### Fixed — a consultation no longer makes its conversation unreadable (spec 2042 §5.4, §5.11)
+
+- The consulted agent runs with the consulting turn's origin, but resolved that room's readers
+  itself. Its turn carries no sender, so the result was `unknown`. Its label of the
+  conversation came back with readers `unknown`, and the consulting turn merged it into its own
+  label of the same conversation (anything intersected with `unknown` is `unknown`). From then
+  on, every turn that recalled anything from that conversation was refused at the people egress
+  ("nicht alle hier dürfen diese Informationen kennen"), in every later thread. Found in the live
+  Teams E2E: after one consultation, Minerva could not answer "who are you?" in a new thread.
+  The consultation run now carries the consulting turn's readers (`ConsultationRunScope.readers`).
+  Labels persisted before this fix keep `unknown` readers until they are rewritten.
+
+### Fixed — a self-description is no replayed failure (spec 2042, live canvas)
+
+- "wer bist du" to Dark Clippy was withheld in 2 of 4 runs as `tool_not_called`: the
+  failure-replay detector read "auf deine Mails habe ich keinen Zugriff" in a turn without a
+  call as a replayed access failure. A claim about what the agent can reach ("kein Zugriff
+  auf X", "X nicht erreichbar", "kann X nicht lesen") passes now when it names a known system
+  the agent holds no tool for (mail, calendar, payroll, the user's computer, the internet,
+  phone, bank, and the business systems ERP/Odoo, HR, wiki, Jira, CRM; against
+  `VerifierInput.offeredToolNames`) and none it holds. A claim that names
+  nothing, a pronoun or a held system is still withheld. Reported attempts ("konnte nicht
+  laden"), access events (timeout, denied), absence and retry claims are unchanged; with the
+  tools unknown the older rule holds.
+
+### Fixed — agent triggers found in the live Teams E2E of spec 2042 (2026-11-23)
+
+- **A trigger tool's refusal reached the model as masked data.** `on_event`, `wake_at`,
+  `wake_every`, `list_triggers`, `cancel_trigger` and `deliver_data` refused with
+  `Error (code): …`, which the Privacy Shield does not read as the tool-error convention
+  (`Error:`), so it interned the refusal as a one-row dataset. The model saw only a digest
+  and told the user in Teams "the trigger is set" while none was. The refusals now read
+  `Error: (code) …`: they reach the model as an error (and get `is_error`).
+- **"In two minutes" needed a clock the model does not have.** The prompt names today's
+  date, not the time; the model computed `time`/`until` from a stale timestamp and the
+  deadline lay in the past. `time` and `until` now also take a duration from now (`'3m'`,
+  `'+2h'`, `'in 1d'`), the tool descriptions say to prefer it, and a time refusal names the
+  server time.
+- **A bot's own post was news.** A bot's own post, reported back by its channel, is no
+  longer booked as context activity, so a trigger's post cannot make its next firing reach
+  the model.
+
+### Fixed — the canvas, live (spec 2042 §5.10, §5.5): gateway context, the socket on the front, "wer bist du"
+
+- **Model gateway.** A canvas turn addressed to an agent is handed to the canvas helper
+  (`canvasChatAgent`), whose skeleton, fast lane and decision model ran before the agent's
+  own chat agent and so outside any execution context (`calls_outside_context` listed
+  `composeSkeleton`, `planQuery`, `routeTurn` and the gated decision model). The kernel
+  dispatcher now opens the addressed agent's `agent_turn` around the helper's whole stream.
+- **The canvas socket on the web-ui front.** `/.well-known/omadia-ui` on the front advertised
+  `wss://<front>/omadia-ui/canvas`, and the upgrade hung in Next. The web-ui image starts
+  through `omadia-server.mjs` now, which relays that one path to the middleware with the
+  session cookie. `scripts/fly-deploy.sh` tries the upgrade on both hosts and expects `401`.
+- **Identity guard.** "wer bist du" to an agent with a name of several words was blocked in
+  about 3 of 4 runs: the introduction captured one word, so every answer went to the model
+  judge. Own names of any length and the AI disclosure are settled without a model now;
+  the judge's verdict is the first word of its reply (PASS or BLOCK); a reply that does not
+  open with one withholds as `unavailable`, and the log line of an unavailable guard says why.
+
+### Changed — `@omadia/plugin-api` 1.87.0, `@omadia/channel-sdk` 0.3.13: the open acceptance criteria of spec 2042
+
+- The entries below (field rights, channel parity, criteria 29/33, explicit targets) ship
+  together; their additive types move from "Unreleased" into these versions.
+
+### Added — field rights per audience member, contribution ids for the consulting agent (spec 2042 criteria 3c, 18)
+
+- New audience-floor capability `privacy:field:personal` in the member baseline; deny it to a
+  person or role and every room with them keeps personal fields masked: no operator bypass,
+  no restore of prompt surrogates, rendered values masked again, no canvas rows or
+  `deliver_data` table, and an answer carrying a `classification` label is refused as a whole
+  (buffered and streamed `done`). Triggers keep their creating room's field rights.
+- The consulting agent's model sees the contribution header (`[contribution c1 from …]`)
+  outside the privacy digest and can cite the id; the colleague's words stay masked.
+
+### Changed — Channel parity: a typed "2" answers an answer element, an assignment goes out as text (spec 2042 §6 criterion 30)
+
+- `@omadia/channel-sdk` (additive, stays 0.3.x): `PendingInteractiveStore` / `InMemoryPendingInteractiveStore`,
+  `resolveTypedInteractiveReply`, `resolveInteractiveReply`. `renderPlainAnswer` remembers the
+  `choice`/`topic`/`slots` element it showed as numbered text (new optional
+  `PlainAnswerOptions.pendingInteractives`); the channel resolves the person's next message
+  deterministically to what a button click would have sent (choice/topic value, the slot booking
+  message) instead of handing "2" to the agent's model. A reply that names no option stays a message.
+- Kernel: an `assignment` question card goes out as numbered text (`canGoOutAsText`) when a typed
+  reply can name the assignee (fixed candidate list, or a member list with `allowVolunteer`), and
+  `conversationSend` capabilities list `assignment` for text-only channels. **Behaviour change of
+  `parseCardReply`:** "ich" is an answer to an assignment only where `allowVolunteer` is true
+  (before: always). Pending elements are kept per conversation key the channel passes in.
+
+### Added — Spec 2042 criteria 29 and 33: "how do you know?" and the fast-lane summary under the boundaries
+
+- **Criterion 29.** `SemanticAnswer.turnId` (additive, channel-sdk 0.3.13; `toSemanticAnswer`
+  forwards `ChatTurnResult.turnId`) and `AnswerDetails.trace` (the trace reference; on its own it
+  opens no details element). `AnswerDetails.systemData` now also counts side-channel data (a
+  fast-lane table). The kernel is the caller of `buildAnswerDetails`/`answerDetailsText`:
+  `packages/harness-orchestrator/src/answerDetailsRecall.ts` records, outside the identity guard,
+  the details of each answer a conversation received (a withheld or failed turn leaves none) and
+  hands them to the agent loop's next turn as a harness note in `extraSystemHint` (statuses,
+  counts, colleagues' names, a helper count and the turn id; never a value). The note sits inside
+  the fast lane, so it never turns the fast lane off; the verifier's correction retry now appends
+  its hint instead of replacing it (`withCorrectionHint`). Message bodies are unchanged. In-memory
+  per agent, bounded (1000 conversations), lost on restart.
+- **Criterion 33.** `packages/harness-orchestrator/src/summaryBoundaryGuard.ts`, run by the fast-path
+  service through the new `ChatTriageRequest.checkSummary` beside `checkPlan`, before the fetch and
+  for new and cached plans: the planner's summary template and column labels are checked against
+  the agent's boundaries — `no-individual-rankings` and `no-external-links` deterministically, every
+  other preset (curated wording) and free-text boundary by the agent's classifier model on the text
+  masked through the turn's privacy run and with figures masked; fail-closed (no judge, error, 8 s
+  timeout, shield refusal). A refusal is a fast-lane miss (`summary-boundary`, the cached plan is
+  evicted): the agent's full loop answers. Usage source `summary-boundary-guard`. No migration.
+
+### Added — Explicit targets for proactive messages, system notices on end of service (spec 2042 criteria 24, 37)
+
+- **Migration 0108 `agent_recipient_grants`:** operator-granted target conversations of an
+  agent's proactive messages; admin API `PUT/GET/DELETE /api/v1/operator/triggers/recipient-grants`.
+  The agent names a target by grant id; the target's readers are checked at send time.
+- **Migration 0109 `system_notice_outbox`:** the `system` notice each home conversation gets
+  when an agent goes out of service (new code `archetype_plugin_removed`, plugin-api
+  1.87.0), sent once through the shared bot, kept across restarts.
+- **Fixed:** the Plugin Builder preview resolved any kernel service through `ctx.services`;
+  it now passes the gates of an installed plugin. Teams trigger contexts were keyed
+  `teams:msteams` (the reference's `channelId`) instead of the conversation id, so all Teams
+  chats shared one context and `list_triggers` in any of them listed the agent's triggers of
+  every other Teams chat; **migration 0110** rewrites stored Teams triggers to their
+  conversation and drops the shared activity row.
+- **Changed:** a recipient grant for Teams takes its reference only from the bot's own
+  conversation references; a `delivery_ref` in the request body is refused for Teams (it
+  carries the host the bot posts to with its token).
+
+### Changed — The agent plugin runtime is gone (#2042, S3c)
+
+- `@omadia/plugin-api` 1.86.0 (`NativeToolResult`, `NativeTextToolHandler`, `agentDirectory@1`),
+  `@omadia/channel-sdk` 0.3.12 (`ChatTurnInput.agentId`, `TargetedMessage.speaker` optional).
+  Additive for plugins; code that calls a `NativeToolHandler` and reads a string must read it with
+  `nativeToolResultText` (`ctx.tools.invoke` still answers with text).
+- **BREAKING for operators.** The kernel no longer runs plugins of the retired kind `agent`
+  (spec 2042 §5.10, ADR-0014). One still installed starts no code: it is `errored` with the
+  activation code `kind_retired` at boot and on every reactivation or update, keeps its setup
+  for the version that replaces it, and cannot be granted. `extension` plugins keep running as
+  system modules. Update or uninstall agent plugins before deploying this kernel.
+- A tool a plugin registers may return `{ output, limitSignal?, postcondition?, structured? }`
+  (plugin-api `NativeToolResult`): the limit note reaches the model, a postcondition the
+  verifier; `structured` never reaches the model.
+- Plugin Builder boilerplates pass a tool's `piiFields` to `ctx.tools.register`; declared PII
+  columns count toward the receipt's identity count (privacy-guard 0.16.3).
+- A grant of an archetype plugin on an agent of another archetype (from before #2088) is
+  removed at boot, and no longer blocks replacing that agent's grants.
+- Conductor action steps run only tools that declare `deterministic_action: true` (what the
+  Designer offers); before, an action id reached any active agent plugin's tool.
+- A tool result that is neither text nor a `NativeToolResult` is refused on every dispatch path
+  instead of being handed on unmasked.
+
+### Security — production audit exceptions run up to 90 days; zod/botbuilder renewed
+
+2026-11-23. A `"production": true` audit exception may now run up to 90 days
+from its review instead of 30, the same limit as a development-only exception
+(one shared `MAX_EXCEPTION_DAYS` in `.github/scripts/audit-gate.mjs`,
+security-architecture §4a). The only production exception, GHSA-mrhx-c7xc-m3w5 in
+`zod` 3.25.x via `botbuilder`, was reviewed again and runs until 2027-02-21.
+botbuilder and its three packages are still 4.23.3 on zod ^3.23.8, unchanged
+since 2025-08-27, and zod 3.x has no fixed release, so a monthly re-check found
+nothing new. The rest of the gate is unchanged: every route must still be named
+in `via`, an expired entry still fails the leg, and the 14-day expiry warning
+still applies.
+
+### Security — dependency rollup 2026-11-23; withdrawn picomatch exceptions removed
+
+2026-11-23. `@microsoft/microsoft-graph-client` 3.1.0, the host-provided Graph SDK
+that the M365 connector uses, fixes a token leak through host confusion with URL
+userinfo (msgraph-sdk-javascript #2000). It also drops `Authorization` and `Cookie`
+on cross-origin redirects and now requires Node 22 or later. Electron 45.4.1 brings
+upstream Chromium, V8, ANGLE, Dawn, FFmpeg and PDFium fixes to the desktop app.
+ESLint 10.15, which the Builder's auto-fix pass runs at runtime, no longer
+auto-fixes a `var` that is used before its definition through a hoisted function;
+the pass leaves those in place instead of risking a TDZ error. GitHub withdrew
+GHSA-fc5q-39xc-vjpf (picomatch) on 2026-11-18, so its three audit exceptions from
+#2072 are gone. The zod/botbuilder production exception is the only one left.
+
+### Changed — ADR-0030: the kernel bounds closing scopes and the deadline wait (#2090)
+
+- `@omadia/plugin-api` 1.85.0, `@omadia/channel-sdk` 0.3.11 (additive types, stricter
+  enforcement): a `closing` scope counts its 30 days from `eventAt` (when the closing event
+  happened) and authorizes only `CLOSING_SCOPE_PURPOSES` (never moderation); the deadline wait
+  of an `active` scope needs an open `closing` scope of the process, is bounded by its absolute
+  limit and ends when those closings end. `TurnOrigin.replyToMessageId` →
+  `PrivateMessageRequest.replyToMessageId` binds a private reply to a reminder. No migration.
+- **Rollout order:** facilitator plugin first (it works on kernels from 1.82.0), then this
+  kernel. Facilitator 1.6.0 on a 1.85 kernel loses moderation-mapped posts under a closing and
+  its deadline wait (it opens closings lazily).
+
+### Changed — The plugin boundary and the model gateway enforce (#2053, epic #2042): S3 contract step
+
+- **BREAKING for operators.** Spec 2042 §5.10, the contract step (S3b). The
+  model gateway and the plugin network sandbox always enforce:
+  `MODEL_GATEWAY_MODE` and `PLUGIN_EGRESS_MODE` are no longer read (removed
+  from `middleware/src/config.ts` and `.env.example`). A model call outside
+  any execution context is refused, and so is a request a plugin's own code
+  makes through the global `fetch` or `node:http(s)` outside its network
+  permission, or to a model provider from a plugin that is not a `model`
+  plugin. A deployment that set either to `observe` now runs enforced.
+  `GET /api/v1/admin/model-gateway` lists what was refused since boot.
+- Raw model services (`anthropicClient`, `llm`, `llmProviderPool`) are
+  refused to every plugin except `model` plugins and the kernel's own
+  bundled system modules. Other plugins reach models through `ctx.llm`, in
+  their caller's context.
+- The kinds `agent` and `extension` are no longer uploaded, installed or
+  updated, also not as the update of a package installed under that kind
+  (`422 package.retired_kind`, `422 install.retired_kind`). Its migrated
+  version (a capability, `system-module` or `model`) is accepted. An
+  installed plugin of a retired kind keeps running as legacy: a "Legacy"
+  chip on its card and a notice on its page that says what replaces it. The
+  store lists registry and local packages of a retired kind as
+  `incompatible`. The agent runtime (`dynamicAgentRuntime`) stays until the
+  remaining agent plugins are rebuilt (S3c).
+- An update that makes a plugin a system module needs the explicit
+  confirmation of a fresh install (`becomes_system_module`, the same
+  `confirm_archetype` flag as archetype updates). `extension` →
+  `system-module` needs none. The prerequisites wizard pauses for that
+  confirmation instead of failing the step.
+- Call sites that had no context now run in one, or are refused by design:
+  the field-classification recompute is the operator job
+  `privacy_field_classification`, the boot graph backfill the maintenance run
+  `graph_backfill`; the knowledge graph's embedding sweep is not run without
+  `maintenanceRun@1`; a long-running task carries the context of the turn
+  that started it (a task stored before this change fails); a public MCP
+  tool call runs in the bound agent's turn; the Plugin Builder's auto-fix
+  and runtime smoke are the operator jobs `plugin_builder_autofix` and
+  `plugin_builder_preview`; `decisionModel@1` (Jev) passes the gateway as
+  `complete`. A reported call site skips the kernel bridges and names the
+  plugin code. Details: `docs/model-gateway-call-sites.md`.
+- Discretion: a tool that declares no effect (`unknown`) is checked like a
+  `write`, against every label of the turn (spec 2042 §5.11, criterion 17).
+  `UNKNOWN_TOOL_EFFECT_POLICY` is gone.
+- New kernel service `agentEnvelope@1`
+  (`middleware/src/platform/agentEnvelopeService.ts`): resolves an agent by
+  `agents.id` to its own chat agent, without a model. An unknown, disabled
+  or unbuilt agent has none, and no other agent is returned in its place.
+  Given to system modules only, for the canvas presentation helper
+  `@omadia/ui-orchestrator`.
+- `ToolRegistrationOptions.piiFields` on `ctx.tools.register` and
+  `registerHandler`: a native tool declares the PII fields of its result.
+  The Privacy Shield masks every declared column of an interned result,
+  whatever its classifier or an operator's non-personal entry says
+  (`packages/harness-plugin-privacy-guard/src/v4/declaredPii.ts`). Only paths
+  that name a row column apply (`field`, `[].field`, `<items>[].field`, a
+  trailing `[N]` masks the whole column); deeper paths are ignored.
+- **`@omadia/plugin-api` 1.83.0 (additive):** `AGENT_ENVELOPE_SERVICE_NAME`,
+  `AgentEnvelope`, `AgentEnvelopeResolver`,
+  `ToolRegistrationOptions.piiFields`, `PrivacyToolResultV4Request.piiFields`.
+  Upgrade notes: `docs/upgrading.md`.
+
+### Changed — ADR-0026: session electorate and guests in media consent (#2076)
+
+- ADR-0026 records the per-session electorate of spec 2043 §5.5 and the guests' part in a
+  linked session's media consent (both in the facilitator plugin, migration `0011`; no
+  kernel contract change).
+
+### Added — Linked session conversations and session state (#2076, #2077, #2089; ADR-0026)
+
+- `@omadia/plugin-api` 1.81.0 (additive): `ExecutionAuthorizationService.setSessionState`,
+  `SessionConversationState`, `SESSION_CONVERSATION_TRANSITIONS`,
+  `ConversationReservation.sessionState`/`sessionId`,
+  `ProcessConversationMessagesService.onLinkRequest` (`LinkRequest`, `LinkRequestReply`),
+  `reserveConversation({ linkRequestId, sessionId })`, `ConversationMessageRecord.superseded`
+  and `.latestRevision`, refusal codes `link_not_authorized`, `not_ready`, `session_state`.
+- Migration `0107_session_conversations`: `conversation_reservations.session_state` and
+  `.session_id`; table `conversation_link_requests` (link requests made inside a not yet
+  linked conversation, consumed by the reservation they authorize).
+- The kernel reads a linked session conversation as its session's state allows
+  (`scheduled` addressed only, `live`/`confirming` everything, `closed`/`cancelled` nothing,
+  reservation released); `live` needs the conversation's readiness for every message; a
+  released session conversation is written to only from a `closing` scope.
+- A mention in a conversation no process of the facilitator reads is offered to the
+  archetype plugin as a typed link request (not stored, no read access); a short answer of
+  the plugin becomes the turn's answer.
+- Every read path marks an older revision of a message or transcript segment as superseded.
+- A process takes back its own home conversation's reservation without a link request,
+  unless an operator released it.
+- Docs: ADR-0026; `AGENTS.md` points sessions work to ADR-0026;
+  `docs/security-architecture.md` § native facilitators covers the link and read rules.
+### Added — Facilitators: moderation working modes, per-facilitator defaults, readiness per channel (#2060, #2066, ADR-0023)
+
+- Facilitators may attach working modes that add moderation methods.
+  `POST /builder/agents/:slug/persona-skills` refuses, for every archetype but
+  `standard`, identity replacement, a mode against the neutrality contract
+  (facilitator) and a mode with `requires_tools` (422
+  `facilitator_contract_violation`); `PATCH /builder/skills/:id` re-checks a
+  skill held as such a mode; the build drops identity-replacing modes.
+- Migration `0106_agent_archetype_settings`: `agents.archetype_settings`
+  (JSON object) for the per-agent settings an archetype declares
+  (`archetype.agent_settings`, types `enum`, `number_list`).
+  `GET/PUT /api/v1/operator/agents/:slug/archetype-settings`, audited as
+  `agent.archetype_settings_change`.
+- `@omadia/plugin-api` 1.80.0 (additive): optional
+  `AgentProfile.archetypeSettings`.
+- The agent list carries `own_identity_channels`; the web-ui shows a
+  facilitator ready with an own identity on any channel and has a
+  "Moderation" tab (defaults and working modes).
+### Added — An agent's own bot on Telegram, Discord and Slack (epic #2042, S7)
+
+- **Migration 0105 `agent_channel_identities`:** (agent, channel type, routing key)
+  for an agent's own bot on channels other than Teams; no credential column, the
+  token stays in the channel plugin's vault. Routing reads it together with
+  `agent_teams_identities`, so a turn through the bot goes to its agent and to
+  nobody else, and the agent answers and posts through it (`asChannelKey`:
+  conversation and targeted sends, rosters, card updates, and trigger and
+  routine deliveries).
+- **Triggers and routines on Telegram, Discord and Slack:** the channel plugins
+  open the kernel's routines scope on every turn (`beginRoutineTurn`), so agents
+  get the trigger tools and `manage_routine` there too, and register a proactive
+  send. A delivery goes out through the bot the conversation came through
+  (`asChannelKey` on the delivery ref); the proactive gate delivers such a ref
+  only while that bot is still the agent's. `publishProactiveSend` now passes the
+  message's `speaker`; `RoutineTurnInput.tenant` is optional (deployment tenant).
+  The check runs before the model turn (trigger send window; the routine runner
+  pauses a routine whose bot is no longer its agent's, also on "trigger now").
+  A hook never hears the agent's own bot (`isOwnAuthor` matches `tg:`,
+  `discord-app:`, `slack-bot:` keys against the raw author id), and a hook set
+  on an own bot hears only what that bot received (`receivedByChannelKey`).
+  These turns pass `conductorBinding: false` (no Conductor reminder target);
+  `publishProactiveSend` returns a disposer the plugins call on deactivation.
+- **Channel SDK:** `registerAgentIdentityProvider` / `AgentIdentityProvider`
+  (additive). **Operator API:** `GET/PUT/DELETE
+  /api/v1/operator/agents/:slug/channel-identities[/:channelType]`, audited.
+  **web-ui:** the agent's "Teams" tab is now "Channels" with an "Own bots" section.
+  Purging a deleted agent stops its own bots first and says which ones it could
+  not stop. A Plugin Builder preview's draft agent never gets a bot (`409`).
+- **`@omadia/plugin-api` 1.79.0 (additive):** `SystemNoticeCode` `agent_own_bot`,
+  the answer to `/agent` sent to an agent's own bot; the optional `speaker` on a
+  `publishProactiveSend` message; `RoutineTurnInput.tenant` optional. Channel
+  plugins with own bots declare `compat.core: ">=1.79.0 <2.0"`. Upgrade notes:
+  `docs/upgrading.md`.
+- **Live findings of the S6 Teams rollout:** `/agent` in a provisioned Teams agent's
+  own bot chat now answers `agent_own_bot` (no selection stored); the identity
+  guard's notice is written in the turn's language (`ChatTurnInput.locale`, additive);
+  the operator UI offers channel types the server names (`plugin-catalog`
+  `channel_types`) instead of plugin ids such as `channel-discord`.
+
+### Changed — Trigger firings run in their agent's turn context (#2082, #2053, epic #2042): S4 follow-up
+
+- Every trigger firing now runs in its agent's turn context of the model
+  gateway: the turn, a routine's security screener and a batch job such as the
+  scratch-promotion reaper are charged to that agent and stopped by its kill
+  switch. A routine run, scheduled or "run now", is the turn of the agent that
+  actually runs it. This closes gaps 1 and 3 in
+  `docs/model-gateway-call-sites.md`.
+- A trigger an agent sets in a conversation keeps that conversation's
+  discretion labels (spec 2042 §5.11, INV-9). Its firings are labelled turns
+  of that conversation and pass the same people-egress check as a person's
+  turn; a withheld answer is not sent. A templated post or a delivery is
+  refused when the room may not know what the creating turn had read, already
+  when the trigger is set. The room's roster is stored with the trigger. The
+  proactive gate is unchanged: output goes only to the trigger's own
+  conversation.
+
+### Changed — plugin-api 1.78.0 (#2053, epic #2042): S3 expand step
+
+- `@omadia/plugin-api` 1.78.0 (additive): `MaintenanceRunService`,
+  `OperatorJobsService`, `OperatorJob`, `ModelPassthroughService`,
+  `LlmScopeRequiredError`, `RawModelServiceRefusedError`. It marks the kernel
+  that loads the new plugin kinds, `agent_templates:` and
+  `capabilities[].side_effects`; plugins using them declare
+  `compat.core: ">=1.78.0 <2.0"`. Upgrade notes: `docs/upgrading.md`.
+
+### Changed — The system prompt speaks of domain tools of capabilities, not "Fach-Agenten" (#2053, epic #2042)
+
+- Spec 2042 §5.10: a plugin delivers capabilities and is never an agent.
+  The agent's system prompt (orchestrator, answer size, session log,
+  verifier notice) and the prompt docs of `render_diagram`, `create_xlsx`
+  and `create_docx` now call the domain tools "Fach-Werkzeuge"; the roster
+  heading reads "Fach-Werkzeuge deiner Fähigkeiten". Wording only, the
+  routing rules are unchanged.
+
+### Added — Operator jobs and model passthrough for system modules (#2053, epic #2042): S3 expand step
+
+- Kernel services `operatorJobs@1` and `modelPassthrough@1` (plugin-api
+  `modelPassthrough.ts`, additive), given only to plugins of kind
+  `system-module` (`model_passthrough.not_system_module` otherwise).
+- `operatorJobs.open({ kind, startedBy, budgetCalls, deadlineMs, effects })`
+  opens a recorded operator job (`model_work_runs`, kind
+  `<plugin id>:<kind>`, at most 10000 calls and 24 h) whose model calls
+  arrive over time; cancel and deadline abort `job.signal`.
+- `modelPassthrough.forwardAnthropicMessages({ job, query, headers, body })`
+  forwards one Anthropic Messages request with the instance's Anthropic
+  credentials, admitted in the job's context (budget across calls, deadline,
+  cancel, kill switch), and returns the provider's response as it is. Only
+  `anthropic-version`, `anthropic-beta`, `accept` and `content-type` are
+  forwarded; a job the kernel did not issue to that plugin is refused. The
+  response comes back without the credential: auth-like headers are dropped
+  and the key is scrubbed from the body, also where a stream splits it.
+- For the dev platform's coding jobs: the Claude CLI in a job container
+  keeps talking to the dev platform's proxy, which no longer holds a
+  provider key or calls `api.anthropic.com` itself. `ModelWorkRuns.open`
+  is the handle form of `run` (`src/platform/modelWorkRuns.ts`).
+
+### Fixed — Setup options come from a capability plugin's registered tool (#2053, epic #2042): S3 expand step
+
+- A setup field's `options_provider` (e.g. Notion's `list_notion_roots`) was
+  answered only from the retired agent runtime's toolkit, so a plugin moved
+  to a capability kind answered `agent_inactive`. The setup-options endpoint
+  and the multiselect check now ask the plugin's own tool registered via
+  `ctx.tools` first (`src/plugins/setupOptionsResolver.ts`; only that
+  plugin's tool, never another plugin's of the same name), and the agent
+  runtime only for a plugin still running there.
+
+### Added — A channel's topic detection before the turn is inbound processing (#2053, epic #2042): S3 expand step
+
+- `topicDetector.classify`, resolved by a channel plugin, runs in an
+  `inbound_processing` context owned by that channel (embed and complete
+  only) when no other context is around the call, like `transcribeFile`
+  (`inboundProcessing`, `src/platform/modelGatewayServices.ts`). channel-teams
+  calls it before the turn to decide how much history the turn gets.
+
+### Fixed — `$config.*` base URLs allow their host; local model servers are no model endpoint (#2053, epic #2042): S3 expand step
+
+- A `permissions.network.outbound` entry `$config.<field>` whose value is a
+  URL (`https://gateway.example.net/v1`, the usual base-URL setup field)
+  now allows that URL's host, for `ctx.http` and the network sandbox alike.
+  Before, such a value matched no host.
+- The sandbox's model endpoints leave out local and private hosts
+  (`localhost`, `host.docker.internal`, private IPs): a local Ollama shares
+  its host with every other local service, and blocking it would cut every
+  plugin off loopback. Reaching them is decided by the plugin's permission.
+
+### Added — Tools declare their effect; templates carry the answer size; memory writes as an operator job (#2053, epic #2042): S3 expand step
+
+### Added — Agents act unasked only through bounded triggers; data reaches people without a model (#2082, #2085, #1876, #1035, epic #2042): S4
+
+- **Agent-owned triggers.** On a turn with a person's conversation an agent
+  gets the harness tools `on_event`, `wake_at`, `wake_every`, `list_triggers`
+  and `cancel_trigger`. The harness fixes agent, context and delivery target;
+  a trigger turn is offered none of these tools, so a trigger cannot set
+  further triggers. Every trigger has a mandatory deadline (one-shot 90 days,
+  recurring and hooks 30 days), run limits, a minimum interval (15 minutes,
+  1 minute in a live meeting), a budget per firing, per trigger and per month
+  (agent and instance), the execution kill switch (instance and agent level)
+  and a circuit breaker on failures and on ineffective turns. A firing is
+  claimed at most once (the lease is renewed right before it runs; each
+  firing's budget reservation is its own row and settles exactly once);
+  model-free checks run before any model turn, and a check that finds
+  nothing ends the firing quietly. `list_triggers` and `cancel_trigger` see
+  only what the agent set itself in the current conversation; the
+  per-agent cap counts only those. A hook never fires on the agent's own
+  messages, and a turn hint or a post template carries only an event's ids
+  and kind, never its content. `TRIGGERS_ENABLED=false` stops all firing,
+  routines, schedules and consolidation included; limits are `TRIGGER_*` in
+  `.env.example`.
+- **Proactive gate.** A proactive message goes only to the context its
+  trigger was created in, until discretion labels exist (S5). Quiet hours and
+  a per-recipient rate limit come from a recipient profile or the instance
+  default (`PROACTIVE_QUIET_HOURS`, `PROACTIVE_TIMEZONE`,
+  `PROACTIVE_MAX_PER_HOUR`); a firing in quiet hours is deferred before
+  anything runs. Every proactive message names its agent as speaker.
+- **Routines fire through triggers.** One trigger per routine; owner,
+  controls, templates, run history and cron semantics stay. A routine now has
+  a deadline: three days before it the owner is asked once, `manage_routine`
+  `renew` (or resuming an expired routine) starts a new period, and past it
+  the routine is paused with an error that says so. A harness pause (budget,
+  breaker) also pauses the row. No catch-up storm after downtime; routines
+  run at most every 15 minutes; the owner's chosen time is exempt from the
+  default quiet hours.
+- **Agent Builder schedules fire through triggers.** Each enabled schedule
+  has one headless trigger (no recipient, no quiet hours or rate limit) with a
+  deadline (`agent_schedules.until`); an expired schedule is disabled with an
+  operator notice and re-enabled with
+  `POST /api/v1/operator/agents/:slug/schedules/:id/renew`. The minute poller
+  `src/scheduler/scheduleWorker.ts` is removed.
+- **Plugin jobs back off.** After three consecutive failures a job runs only
+  as a recovery probe, once per backoff window (doubling up to one hour); the
+  first success resets it, failures never end a job. A job's run may not call
+  a generative model.
+- **Consolidation as agent batch triggers.** Built-in plugins register
+  batch jobs (`batchJobRegistry@1`, plugin-api additive; any other plugin is
+  refused); the kernel arms one bounded trigger per job and agent with due
+  items. The scratch-promotion reaper drops
+  its own interval and registers as a batch job; promoted scratch is
+  `visibility: 'private'` with its origin agent instead of `team`
+  (orchestrator-extras 0.2.0).
+- **Side channel for data.** The kernel tool `deliver_data` runs one of the
+  agent's own read tools and puts the rows on the answer as
+  `SemanticAnswer.data` (also on `ChatTurnResult` and `done`); the model gets
+  a status only (row count, columns). `text` carries a rendering of the table
+  after the prose and before the AI disclosure; `textWithoutData` is the same
+  text without it. The verifier, the facilitation engine's history and the
+  Conductor run context get the prose only.
+- **Fast lane per agent.** The fast path is the addressed agent's fast lane:
+  per-agent switch `agents.fast_lane` (default on,
+  `GET/PUT /api/v1/operator/agents/:slug/fast-lane`, checkbox in the agent's
+  model tab), only the agent's own read tools (no sub-agent `via` tools), the
+  agent's AI disclosure on every fast-lane answer, and an answer cache keyed
+  by agent; older entries are dropped (fast-path 0.6.0).
+- **Boundaries on data paths (spec §5.13 1a, criterion 35).** Before a
+  fast-lane plan runs (new or from the cache), and before `deliver_data` or
+  a trigger's data action runs, its description (tool, identifiers, filter
+  fields, order, top-N; no values) is checked against the agent's
+  boundaries: presets deterministically (new preset
+  `no-individual-rankings`), free-text rules by the agent's classifier
+  model; an error or timeout refuses. A refused fast-lane plan hands the
+  turn to the agent.
+- **Operator view.** `/operator/triggers` (Setup menu, backed by
+  `/api/v1/operator/triggers`) lists every trigger with purpose, schedule,
+  deadline, runs and cost against its budget, the month's spend against the
+  caps, plugin jobs with their recovery state and the batch jobs; each
+  trigger can be paused, resumed or ended.
+- **Migrations:** `0093_agent_triggers.sql`,
+  `0094_proactive_recipient_profiles.sql`,
+  `0095_agent_schedules_deadline.sql`, `0096_agent_fast_lane.sql`, and in the
+  routines series `0006_routines_deadline.sql`.
+
+### Added — Tools declare their effect (#2053, epic #2042; cherry-picked from S3)
+
+- The kernel reads `capabilities[].side_effects` (`read | write | none`, the
+  field the boilerplates and the Plugin Builder already write) as
+  `Plugin.tool_side_effects`; `declaredToolEffect(plugin, toolId)`
+  (`src/plugins/toolSideEffects.ts`) answers `unknown` for a tool without a
+  declaration. Basis for the readership check of writes (§6 criterion 17).
+- `agent_templates[].verbosity` (one of `ANSWER_VERBOSITY_LEVELS`), served in
+  the identity prefill.
+- `POST /api/v1/memory`, `PATCH /api/v1/memory/:id` and
+  `PATCH /api/v1/memory/:id/excerpts/:position` run as the operator job
+  `memory_edit` (50 calls, 5 min) with the writing user as its actor.
+
+### Fixed — Operator jobs answer when they cannot start; scoped archetype turns reach ctx.llm (#2053, epic #2042): S3 expand step
+
+- An admin route wrapped as an operator job left the request open when the
+  run could not be recorded (database unreachable): it now answers
+  `503 model_work.unavailable` without running the route; the daily budget
+  still answers `429`. A run whose process died while `running` stops
+  holding its budget at its deadline instead of for 24 h.
+- An archetype plugin's `ctx.llm` accepts an execution scope anywhere along
+  the context chain (`executionContextChain`, `@omadia/usage-telemetry`):
+  its own scoped turn is an agent turn nested in the scope.
+- The embedding backfill opens no maintenance run for a tick that skips,
+  and logs a run that cannot start instead of an unhandled rejection.
+- Network sandbox: the kernel's own `@omadia/*` packages count as kernel
+  code wherever they are installed (desktop runtime), `localhost` is a
+  private address in `public-web`, the observation list is bounded (1000),
+  and the package roots are rebuilt at most every 5 s.
+- `LlmScopeRequiredError` counts as a gate refusal (`isModelCallNotCovered`),
+  so no helper turns it into a silent fallback.
+
+### Added — Network sandbox of installed plugins; agent templates; inbound transcription context (#2053, epic #2042): S3 expand step
+
+- Spec 2042 §5.10. **Network sandbox** (`src/platform/pluginEgressGuard.ts`):
+  a request an installed plugin's own code makes through the global `fetch`
+  or `node:http(s)` is attributed to it from the call stack and checked
+  against the permission `ctx.http` already enforced (manifest and
+  `$config.*` hosts, operator hosts, `public-web`), with model provider
+  endpoints refused to every plugin that is not a model plugin.
+  `PLUGIN_EGRESS_MODE=observe|enforce` (new, default `observe`: logged once
+  per plugin and host as `[plugin-egress] observed …`). Kernel code acting
+  for a plugin (`ctx.http`, `ctx.llm`) stays the kernel's.
+- `GET /api/v1/admin/model-gateway`: model calls seen outside any execution
+  context and the sandbox's observations since boot. Both must be empty on
+  the live instance before the contract step switches to `enforce`.
+- **Agent templates**: the manifest block `agent_templates:` (inactive
+  presets of identity, personality and suggested capabilities, read
+  strictly) on capability, archetype and `agent-template` packages;
+  `GET /api/v1/admin/agent-templates` and
+  `GET /api/v1/admin/agent-templates/prefill?plugin=&template=` serve them
+  to the Agent Builder as the bodies of the existing create and identity
+  routes. Nothing is created or granted by them.
+- **Inbound processing**: a channel plugin's `transcription.transcribeFile`
+  runs in an `inbound_processing` context (transcribe only) when no other
+  context is around the call.
+- Model call sites and their contexts: `docs/model-gateway-call-sites.md`.
+
+### Added — The model gateway: every model call in one execution context (#2053, epic #2042): S3 expand step
+
+- Spec 2042 §5.10, ADR-0017. The gate every provider already passed
+  (`admitModelCall`, #2090) now takes the operation (`complete`, `embed`,
+  `transcribe`, `run_loop`) and the execution context around the call:
+  agent turn, execution scope, inbound processing, operator job or
+  maintenance run (`@omadia/usage-telemetry` `runInExecutionContext`,
+  `meterModelCalls({ context })`). The agent runtime's turn scope is an
+  agent turn (`currentAgentTurnExecutionContext`), and every agent's chat
+  agent is wrapped so the fast lane before the loop, the verifier after it
+  and the `claude-cli` runtime are that agent's turn too
+  (`withAgentTurnExecution`). `agentTurn@2` runs under its execution scope.
+- `MODEL_GATEWAY_MODE=observe|enforce` (new, default `observe`): a call
+  outside any context is logged once per call site
+  (`[model-gateway] observed a 'complete' call …`) in `observe` and refused in
+  `enforce` (the contract step). Operations a context does not allow (a
+  maintenance run only embeds), deadlines, cancels and kill switches are
+  refused in both modes.
+- Kill switches reach the gate: an instance switch halts every model call, an
+  agent switch that agent's (`src/execution/modelCallHalts.ts`, refreshed on
+  set/clear and every 10 s).
+- Embedding and transcription services (`embeddingClient`, `transcription`)
+  are handed out by the service registry only behind the gate, for kernel and
+  plugin consumers alike (`src/platform/modelGatewayServices.ts`).
+- Raw model services (`anthropicClient`, `llm`, `llmProviderPool`) are never
+  an archetype plugin's (`RawModelServiceRefusedError`); for other plugins
+  they are logged in `observe` and refused in `enforce`; model plugins and
+  the kernel's own system modules keep them. An archetype plugin's
+  `ctx.llm` works only inside an execution scope (`LlmScopeRequiredError`).
+- Operator jobs and maintenance runs (migration **0089** `model_work_runs`):
+  the issue preview, skill verification, topic regrouping, bulk promotion,
+  memory review detection, the Plugin Builder's chat and preview and the
+  Conductor's workflow designer each run as one operator job with a budget,
+  a deadline and a cancel (`GET /api/v1/admin/model-work`,
+  `POST /api/v1/admin/model-work/:id/cancel`); daily caps
+  `OPERATOR_TOOLS_DAILY_MODEL_CALLS` (20000) and
+  `MAINTENANCE_DAILY_MODEL_CALLS` (200000). The embedding backfill runs each
+  sweep as a maintenance run through the new kernel service
+  `maintenanceRun@1` (embed only).
+- `claude-cli` (`run_loop`): every CLI spawn runs with `HOME` and
+  `CLAUDE_CONFIG_DIR` set to one profile holding only the login
+  (`OMADIA_CLI_PROFILE=auto|isolated|inherit`; the image's
+  `CLAUDE_CONFIG_DIR=/data/claude-cli` is that profile; on a macOS keychain
+  login `auto` keeps the environment and says so at boot). An instruction
+  file in the profile refuses the spawn. The CLI's tool list must be exactly
+  the loopback tools offered this turn with the loopback server connected.
+  A kill switch ends a running CLI turn.
+- plugin-api (additive, version bump by the release): `MaintenanceRunService`,
+  `MAINTENANCE_RUN_SERVICE_NAME`, `LlmScopeRequiredError`,
+  `RawModelServiceRefusedError`.
+
+### Added — Agents consult colleagues without gaining access (#2047, epic #2042)
+
+- New harness tool `consult(agent, request)`. An agent may ask a colleague only
+  when the operator switched on `may_consult` for it and `consultable` for the
+  colleague and granted the pair (`agent_consultation_grants`, migration 0097).
+  The colleague answers as itself, with at most the capabilities both agents hold
+  and the grant allows, writes nothing to its memory and cannot consult further.
+  Its answer reaches the user as its own contribution
+  (`SemanticAnswer.contributions`); the asking agent sees a masked copy.
+- A consultation needs an active audience floor; without one it is refused. The
+  request carries what the asking turn has read and reaches the colleague only when
+  the colleague's grants cover it.
+- Agent discussions (`discussion_start`) now need consultation grants in both
+  directions (each covering the channel), in addition to the existing per-agent and
+  per-chat switches.
+  **Behaviour change:** a discussion between agents without grants is refused
+  until an operator grants the pairs.
+- Operator API: `/api/v1/operator/agents/:slug/consultation` (switches, grants);
+  audit action `agent.consultation_change`. In the web UI under the agent's
+  Conversations tab ("Consulting other agents"): both switches, the grants with
+  capabilities offered only from plugins both agents hold, and who may consult
+  the agent.
+
+### Added — Discretion: information flows only to those who may know it (#2079, epic #2042)
+
+- Every turn carries labels of what it read (source system, conversation and its
+  readers, classified data seen unmasked); written turns keep them
+  (`discretion_labels`, migration 0098) and recall brings them back.
+- Writes to an integration are checked against its declared readership before
+  they run (`/api/v1/operator/discretion/readerships`, `integration_readerships`):
+  every label for a declared write (manifest `side_effects: write`, write
+  capability, MCP without `readOnlyHint`); a tool that declared nothing gets no
+  restricted source and no classified data. A non-streamed answer whose
+  labels exceed the room's readers is replaced as a whole (no attachments, cards or
+  contributions go with it) and never stored; a streamed one is protected only in
+  what is stored. Every refusal is audited without content (`discretion_flow_audit`).
+- Web chat and API turns are the owner's private context (`owner:<id>`): what they
+  read does not resurface in a room with other readers.
+- Memory keeps labels too: a `memory` note keeps the labels of the turn that wrote it
+  and a later reader carries them; memorables (auto-promotion, MCP→KG ingestion) do
+  the same on recall. `memory` writes and auto-promotion move another conversation's
+  knowledge only into a tier whose readers may all know it (criterion 27).
+- Migration 0100: agents enabled for agent-to-agent talk in the same chat (#1018) get
+  consultation grants in both directions for that channel type and both consultation
+  switches, so configured discussions keep working.
+- Each agent's prompt names the colleagues it may consult (active grants), and a
+  changed grant, switch or colleague name rebuilds the agent; grant writes notify
+  `agents_changed` (trigger in 0097).
+- Availability groups: `PUT /api/v1/operator/agents/:slug/availability` accepts
+  `role:<key>` (Conductor roles); every router answers it synchronously from a
+  snapshot of the Conductor's role holders (30 s and after every role write; a
+  partial lookup admits nobody).
+- New agents start with context memory `members` (migration 0099; facilitators
+  `off`); existing agents keep their mode. Context memory can no longer be switched `off` for an agent
+  that holds capability grants (`409 context_memory_required`).
+
+### Changed — Agent Builder and Plugin Builder separated; agents from templates (#2049, epic #2042)
+- **Plugin Builder** (`/store/builder`) generates capability plugins only:
+  manifest kind `integration` (an external system with credentials) or `tool`
+  (`spec.kind`, derived when absent). No persona, no `AGENT.md`, no
+  `prompt_partial` skill; the generated `plugin.ts` registers its tools with
+  `ctx.tools.register`. Boilerplates renamed to `integration` and `tool`.
+  Removed without a compatibility layer: the builder tools
+  `set_persona_config` / `set_quality_config`, `PATCH …/persona|quality`,
+  `GET …/quality`, `POST …/preview-prompt`, the persona and quality pillars of
+  the workspace. Old drafts still load; their persona, quality and skill fields
+  are dropped on read, and a patch that sets them is refused with a pointer to
+  the Agent Builder.
+- **Preview** is a turn of a draft agent: an `agents` row with status `draft`
+  (`builder-preview-<draft>`, a reserved slug prefix), never built by the
+  registry, never enabled, holding exactly the draft plugin's tools and
+  nothing else, with a neutral prompt (identity, kind, playbook) and answers
+  marked "preview", only in the admin UI. It is removed when its preview
+  closes (evicted, draft discarded, logout, shutdown) and by a boot sweep
+  after a crash. Without it the preview does not run
+  (`builder.preview_draft_agent_unavailable`). Preview draft agents are hidden
+  from the agent directory, the first-run flow and every grant offer; on a
+  `builder-preview-` slug the operator routes allow only GET and DELETE.
+- **Spec:** `permissions.subAgents` is refused in the Plugin Builder spec: a
+  capability plugin never consults an agent (spec 2042 §5.4).
+- **Built-ins:** `@omadia/agent-seo-analyst` 0.3.0 (kind `tool`) and
+  `@omadia/agent-reference-maximum` 0.4.0 (kind `integration`, still the
+  Builder's reference-only pattern source) are capability plugins; their former
+  personas are `agent_templates` (English and German). The tool runtime never
+  starts a reference-only plugin.
+- **Agent Builder** (`/admin/builder`): "New agent" from a template of an
+  installed plugin (`GET /api/v1/admin/agent-templates[/prefill]`) or blank:
+  draft (`agents.status = 'draft'`, migration 0085, never addressable) →
+  identity → availability → capabilities the operator ticks (none preselected,
+  broad-reach confirmation) → enable only when asked. A failed step is named
+  and the draft stays. Export an agent as a template:
+  `GET /api/v1/operator/agents/:slug/template[?format=yaml]`, validated
+  against the strict template format before it is served (never secrets,
+  memory, bindings or availability).
+- **Persona templates and culture presets** moved from the Plugin Builder to
+  the agent's persona editor.
+- **Availability** is set when an agent is created and editable in the
+  inspector (`PUT /api/v1/operator/agents/:slug/availability`, delivered by
+  the S1 stream).
+- **Texts:** "Plugin Builder" for `/store/builder` everywhere, "Agent Builder"
+  only for `/admin/builder`.
+
+### Changed — Least privilege by default: no auto-attach, reach, explicit grants (#2054, epic #2042)
+- **Before:** first boot and every kernel install path (Hub, upload,
+  reinstall, profile apply, boot-seeded built-ins) attached every plugin to the
+  default agent, so whoever reached it held every connected system.
+- **Now:** nothing is attached automatically (`attachAllPlugins`,
+  `attachNewPluginsToFallbackAgent`, `attachToDefaultOrchestrator`, the
+  pending-attach queue and the "reset standard to all plugins" route are
+  gone). The boot seed holds no plugin. Installing a capability plugin offers
+  it to agents the operator picks, none preselected; channels, models,
+  archetypes, system modules and templates are never offered.
+- **Reach:** `GET /api/v1/operator/agents/:slug/reach` and the directory list
+  show each agent's systems, read and write separately (manifest
+  `side_effects`, MCP `readOnlyHint`).
+- **Confirmation:** a grant write that gives an agent every connected system
+  (`PUT|PATCH /api/v1/operator/agents/:slug/plugins`,
+  `PUT /api/v1/operator/mcp-grants`, Agent Builder `tool_grant` edges,
+  `PUT /api/v1/operator/plugin-mcp-grants`, the first-run flow) answers
+  `409 broad_reach_confirmation_required` unless the request carries
+  `confirmBroadReach: true`; a confirmed change is audited as
+  `agent.broad_reach_grant` after the write succeeded. Making such an agent a
+  default agent (`PUT /api/v1/operator/default-agents`) asks the same way and
+  is audited as `agent.broad_reach_default`.
+- **Only capability plugins are granted:** the plugin grant routes answer
+  `400 not_a_capability_plugin` for a new grant of a plugin that is not a
+  capability plugin (`integration`, `tool`, `skill`; a still installed `agent`
+  package counts too); existing rows stay.
+  `/api/v1/operator/agents/plugin-catalog` carries a `capability` flag.
+- **First run:** `GET|POST /api/v1/operator/agents/onboarding[/first-agent]`
+  creates the first agent with an explicit capability choice (zero allowed).
+- **Live effect:** existing grants stay as they are; only new installs stop
+  attaching.
+
+### Changed — DB sub-agents are internal helpers of their agent (#2050, epic #2042)
+
+- **Before:** a DB sub-agent had its own name and system prompt and could hold
+  an MCP grant its agent lacked; users could meet it as a named specialist
+  (spec 2042 G3), and two names like `A B` and `A-B` mapped to the same
+  `ask_a_b` tool, first one wins.
+- **Now:** helpers run strictly inside their agent's envelope. Their prompt
+  carries a fixed contract (no introduction, no name); the agent's model is
+  told to use the result as its own work. Every helper grant must be held by
+  the agent: checked on save (`409 helper_refused`, codes
+  `helper_name_collision`, `helper_grant_not_held_by_agent`,
+  `helper_model_not_allowed`) and on every tool call against the agent's live
+  grants, so revoking the agent's grant locks the helper out at once (native
+  and MCP). The helper model must be allowed by the agent's model policy;
+  tokens and steps are capped by the agent's budget and booked on its turn.
+  Helper runs are marked `internalHelper` in the run trace and never listed in
+  `agentsConsulted`. Colliding tool names are refused on save and dropped at
+  runtime. Builder PATCH and grants check that the helper belongs to the agent
+  in the path. The Agent Builder calls the node "Helfer" and explains it.
+- **Live effect, fail loud:** an existing helper whose model is stronger than
+  a pinned primary model (or on another provider) is out of service after the
+  deploy, but never silently: its tool stays, and every call is refused with
+  the reason, so the agent can tell the person why. Colliding helper pairs are
+  not offered. The Agent Builder marks each such helper "out of service" with
+  the reason (`outOfService` on the graph's helper node).
+- **Fixed:** a helper whose name collided with a native tool (`ask_user_choice`)
+  aborted the rest of the agent's tool hydration.
+
+### Changed — Persona skills are working modes beneath the agent's identity (#2051, epic #2042)
+
+- **Before:** the skill a per-turn classifier picked replaced the agent's
+  identity in the system prompt, and the web chat said "Answering as X" — one
+  agent spoke under another name without calling anyone (spec 2042 G5, INV-3).
+- **Now:** the selection stays (classifier on names and descriptions, skill
+  body loaded afterwards, fallback to no mode) and runs as the agent's internal
+  helper on a model its policy allows (`working-mode-router` usage source). The
+  chosen skill is appended as "Arbeitsmodus: <name>" beneath identity,
+  personality and boundaries, which keep precedence; without a mode the prompt
+  is byte-identical.
+- **Renamed without a compatibility layer:** stream event `turn_persona` →
+  `turn_working_mode` (`modeName` instead of `skillName`), turn context
+  `activePersonaSkillId` → `activeWorkingModeSkillId`. New optional
+  `RunTrace.workingMode` (additive). The web chat shows "Modus: X" in the
+  answer details only. Table `agent_persona_skills` and its routes keep their
+  names (spec §7).
+
+### Changed — The audience floor is on by default (#2048, epic #2042)
+
+- **Before:** the floor that limits a room to what every person present may do
+  ran only with `AUDIENCE_FLOOR_ENABLED=true` and a seeded grant table, and
+  even then never on the streaming turn path (web chat, every channel).
+  Consultations between agents (#2047) need it active (spec 2042 G15, §5.4).
+- **Now:** `AUDIENCE_FLOOR_ENABLED` defaults to `true` and is installed on both
+  turn paths. Every resolved person holds a member baseline
+  (`AUDIENCE_BASELINE_GRANTS=member`: any tool the agent itself holds via the
+  new `tool:*` capability, recall, attachment reads); explicit prohibitions per
+  person or role still bind the whole room and beat the baseline. Works without
+  Postgres (baseline only); `AUDIENCE_BASELINE_GRANTS=none` keeps the strict
+  #575 reading and still needs Postgres.
+- **Who the audience is:** web, desktop, CLI, API and 1:1 channel turns: the
+  turn owner. Group turns: the channel's participant list, without other
+  agents' bots. Facilitator turns (`agentTurn@2`) read the conversation's
+  roster as the agent's own identity. Schedules and Conductor steps have no
+  reader and no floor.
+- **Fail-closed, by design:** a group in a channel that provides no
+  participant list (today Slack, Discord, WhatsApp, iMessage — S6 adds them),
+  or a participant who cannot be resolved, refuses every tool. The refusal now
+  says why ("this channel does not tell omadia who is in the conversation …").
+  Switch off with `AUDIENCE_FLOOR_ENABLED=false`.
+
+### Added — Plugin kinds name what a plugin delivers; the agent/plugin boundary at ingest (#2053, epic #2042): S3 expand step
+
+- Spec 2042 §5.10, ADR-0014. The kernel accepts the manifest kinds
+  `integration`, `tool`, `skill` (capabilities), `channel`, `model`,
+  `archetype`, `system-module` and `agent-template`
+  (`middleware/src/api/admin-v1.ts`, `PluginKind`, `PLUGIN_KINDS`,
+  `CAPABILITY_PLUGIN_KINDS`, `effectiveKind`). `provider` and `ui` were never
+  kernel kinds and stay rejected.
+- Expand step of the plugin release train: the retired `agent` and
+  `extension` still load for packages that are installed, so the live
+  instance keeps running. `extension` is read as `system-module`. A package
+  of kind `agent` is never installed anew: the upload answers
+  `422 package.retired_kind`, the install `422 install.retired_kind`. An
+  update of an installed `agent` package still enters, and when the update
+  changes its kind (the migrated version), the old agent runtime and its
+  `query_<short>` tool go first; the operator's grants of the plugin id stay.
+- Ingest refuses a manifest with a persona, speaker, personality or system
+  prompt of its own, a `prompt_partial` skill, or an `AGENT.md` outside an
+  agent template: `422 package.persona_declared` with the field
+  (`middleware/src/plugins/pluginBoundary.ts`). Agent templates (kind
+  `agent-template`, or an `agent_templates:` block in a capability plugin)
+  carry identity and personality as inactive metadata and load; channel
+  plugins transporting several agents' bots load. Spec §6 criterion 15.
+- Kind `agent-template` (and `skill` without code) is data only: no entry
+  file at upload, the tool runtime imports nothing and marks it active.
+- Installing a `system-module` asks for an explicit confirmation like an
+  archetype (`409 install.system_module_confirmation_required`; the store's
+  install dialog shows it). The retired `extension` is not asked about.
+- Built-in packages use the new kinds: 9 × `system-module` (orchestrator,
+  verifier, fast lane, plan runner, memory, knowledge graphs,
+  orchestrator-extras), 4 × `model` (embeddings, embedding and
+  transcription adapters).
+- Store: the category pills are the Hub categories capabilities, channels,
+  models, archetypes, system modules and templates (`?kind=capabilities` …).
+
+### Changed — Channels and UIs: agents as colleagues (epic #2042, S6)
+
+- **Channel SDK:** `resolveChannelRoute` (full routing result with notice and
+  speaker), `match` on the resolve result, decoration registry
+  (`admitDecorations`), plain-text renderer, speaker line, answer details,
+  `runPacedTurn` (one acknowledgement, a follow-up instead of a timeout), AI
+  disclosure frequency (`ai_disclosure_frequency`, `per_conversation` marks
+  again when another agent speaks). Removed: `agentsConsultedFooterText`.
+- **Canvas per agent (#2059):** a turn with `metadata.agentId` goes to that
+  agent's envelope through `resolveAgent`, never to another agent.
+- **Group audience:** `slack`, `discord`, `whatsapp`, `imessage` in
+  `CHANNEL_KIND_BY_ORIGIN` and `CONTEXT_MEMORY_CHANNEL_TYPES`; `ChannelKind`
+  (plugin-api, additive) and the Neon `CHANNEL_KINDS` list them.
+- **Cards and polls as text (#2086):** a card (one question) or poll a channel
+  cannot show natively goes out as numbered text; a typed reply becomes the
+  `card_answer` event. `core.reportConversationMessage` tells a channel when it
+  was taken, so it starts no turn for it.
+  - Migration `0101_open_card_questions` — the open questions (message id,
+    agent, card, close; pruned when they close).
+- **web-ui (#2057):** the agent picker reads `GET /api/v1/agents/directory`,
+  the operator page has a table of default agents (user × channel, `off`), the
+  routing tester shows the notice; "Orchestrator" is gone from visible texts.
+
+### Changed — One agent speaks: management layer, speaker, identity guard (epic #2042, S1)
+
+- **No fallback agent any more (#2055, #1880).** The management layer routes
+  every turn deterministically: the agent's own channel identity, an explicit
+  address (web chat / API slug, or `resolveAgent` by id), the sender's
+  selection for the conversation, the conversation's binding, then the
+  default-agent table — (user, channel), (user), (channel), instance; the first
+  existing entry wins, `off` included. Whatever names an agent, that agent
+  answers or nobody does: a disabled, deleted or unavailable target, or no
+  target at all, gets a `system` notice naming the agent (INV-7). A binding to
+  a disabled agent no longer falls through to another agent.
+- **Migrations (S1 range):**
+  - `0081_agent_default_entries` — the default-agent table. The former
+    `multi_orchestrator_settings.fallback_agent_id` becomes the instance entry
+    (a database without one starts with the instance entry `off`); the
+    settings table and its facilitator trigger are dropped; the tombstone guard
+    no longer refuses deleting a default agent.
+  - `0082_agent_selections` — a user's agent selection per conversation.
+  - `0083_agent_availability` — `agents.available_to_everyone` (default
+    `false`: a fresh agent is available to nobody), `agents.available_channels`
+    (`NULL` = all), `agent_availability_principals` (`user:<id>`,
+    `role:<key>`). Existing agents are set available to everyone.
+- **Plain-text agent choice:** `/agent <name>`, `/agent`, `/agents` in every
+  channel, handled by the ChatAgent the channel resolver returns.
+- **API:** new `GET/PUT/DELETE /api/v1/operator/default-agents`,
+  `PUT /api/v1/operator/agents/:slug/availability`,
+  `GET /api/v1/agents/directory?channel=…`. Removed: `PUT
+  /api/v1/operator/agents/fallback`, `POST …/fallback/rehydrate`,
+  `is_fallback`/`fallback_slug`/`fallback_agent_id` fields and the
+  `fallback_protected` refusal. The web chat answers a notice with 200 and
+  `speaker: {kind:'system'}` instead of 412 `no_fallback`.
+  `scripts/agents-apply.ts` reads `default_agent` instead of `fallback_agent`.
+- **Speaker on every answer (#2045):** every agent bundle stamps its
+  `AgentSpeaker` on `SemanticAnswer.speaker`, stream `done` and `error`;
+  management-layer notices carry `system`. One typed emitter per agent
+  (`prose`, `template`, `data`, `system`); routine answers go through it. The
+  web chat shows name and avatar on every message and styles notices apart.
+- **Identity guard (#2046):** mandatory and fail-closed, independent of the
+  fact verifier. Deterministic layer (agent names and aliases, claims to be
+  human), model layer on masked text for suspicious text; streamed answers are
+  released sentence by sentence; a refusal or a guard timeout withholds the
+  rest and appends a `system` notice.
+- **Operator web UI** follows the removed fallback: the "default agent"
+  picker sets the instance entry of the default-agent table, the rehydrate
+  button is gone, every agent can be disabled or deleted, the channels page
+  shows a binding to a disabled or deleted agent as such (#1880).
+- **Agent prompt (#2056):** the default identity is a virtual colleague, no
+  longer "an assistant that delegates to specialised domain agents"; every
+  agent's prompt carries the identity rules.
+
+### Fixed — Stopping a single process no longer needs the agent's name (#2090, epic #2043)
+
+- `POST /api/v1/operator/execution/kill-switches` with `level: "process"`
+  answered `404 no such agent` when `agent_slug` was left out. The kernel now
+  takes the agent from the process's execution scopes. `agent_slug` stays
+  optional and is only needed when two plugins use the same process id for
+  different agents: that case answers `400 execution.ambiguous_process` and
+  names the agents. A process id without any execution scope answers
+  `404 execution.unknown_process`.
+- `level: "agent"` without `agent_slug` answers `400 execution.invalid`
+  ("agent_slug is required for level agent") instead of `404`.
+
+### Fixed — A subscription could be turned up to every message without the channel being ready (#2089, epic #2043)
+
+- A process that listened only for messages addressing its facilitator could
+  switch to reading every message of the conversation without the check a
+  new subscription gets: that the channel can deliver every message there
+  (in Teams, the chat's own permission). The facilitation then counted as
+  reading everything, and the facilitator's own answers in that chat were
+  held back, while messages never arrived. The switch is now refused with
+  `not_ready` and the subscription keeps the mode it had.
+
+### Fixed — A stopped reload bus could run one more reload (#2043)
+
+- `ReloadBus.stop()` returned before its LISTEN session had ended, so a
+  notification already on its way still ran a reload afterwards, and a reload
+  queued behind a running one ran after the stop as well. A stopped bus now
+  reloads nothing, and `stop()` waits for a session of its own to end (at most
+  two seconds), also when it is called while the bus is still connecting. This
+  was the cause of the occasional failure of `reloadBusListen.pg.test.ts` in
+  full runs (two reloads counted where one was expected).
+
+### Removed — The implementations behind the first majors (#2067, epic #2043): K6.4
+
+- **The code behind `agentTurn`, `conversationMessages` and `conversationSend`
+  without a version is gone.** No plugin could reach it since K6.3. Nothing
+  changes for a plugin that uses the second majors.
+- **A message subscription always belongs to a process.** The kernel no
+  longer creates, reads or ends a subscription without one. Should a row
+  without a process still be active in the database, it is ignored: it does
+  not lift a channel's mention gate and nothing is stored for it.
+- **An agent posts into a conversation only under an execution scope.** The
+  earlier permission, a message subscription for that conversation, is no
+  longer asked anywhere. A direct message through `targetedSend` is unchanged.
+- **A model turn always belongs to a process.** A turn without an execution
+  scope can no longer be run, also not from inside the kernel.
+- **Stored messages of a running process are not removed by age.** The
+  maximum age applies once the subscription has ended, as before for process
+  subscriptions.
+- The kernel's contract tests for native facilitators now run through the
+  second majors, with real execution scopes and reservations.
+- Unchanged: the plugin API and the channel SDK (types and versions),
+  `targetedSend`, `sessionCapabilities`, `channelReadiness`,
+  `conversationRosters`, `conversationEvents`, and the database schema.
+
+### Security — A database notification is only a hint to the kernel (#2088, epic #2043)
+
+- Postgres has no privilege for `NOTIFY`: every role that can log in, the
+  database role of an archetype plugin included, can send on the channels the
+  kernel listens on (`agents_changed`,
+  `conversation_message_subscriptions_changed`) with any payload. The kernel's
+  listener (`ReloadBus`, the only one) never read the payload to decide
+  anything, and that is now stated and tested: a notification means
+  "something may have changed" and the state is read from the tables. Scopes,
+  reservations, kill switches and grants use no notification at all; they are
+  read from the database at every authorization.
+- **The payload is no longer written to the log.** It was logged in full with
+  every notification, so anyone who could log in to the database could write
+  lines of their choice into the kernel's log. One line per reload now states
+  how many notifications it answers.
+- **A flood of notifications no longer keeps the kernel reloading.** The first
+  notification reloads at once; those that follow within 250 ms
+  (`minNotifyIntervalMs`) are answered by one reload at the end of the
+  interval. The last notification is never dropped.
+
 ### Removed — The first majors of the facilitator services (#2089, #2090, #2091, epic #2043): K6.3, the contract step
 
 - **`agentTurn`, `conversationMessages` and `conversationSend` without a
@@ -59,6 +1076,17 @@ changelog.
   stay. The plugin API's types are unchanged; the first-major types stay
   exported and deprecated.
 
+### Fixed — Interrupted Teams provisioning was not resumed at boot (D40, #2088)
+
+- Since tombstones for deleted agents (K2b, v0.210.0 line) every boot logged
+  `teams-identity provisioning resume scan failed: error: operator does not
+  exist: text = uuid`. The scan compared `agent_teams_identities.agent_id`
+  (text) with `agents.id` (uuid), Postgres refused the statement, and no
+  interrupted provisioning run was picked up again after a restart. Nothing
+  was lost: the rows kept their state, and the first boot with this fix
+  resumes them. A run an operator started again by hand in the meantime is
+  unaffected.
+
 ### Removed — The old way a plugin became the facilitation engine (#2088, epic #2042): K6.2, the contract step
 
 - **The engine is found by what it delivers, and by nothing else.** The
@@ -76,6 +1104,26 @@ changelog.
   `capability`, and `state` is `bound`, `none` or `ambiguous`.
 - Facilitator 1.2.0 and later are unaffected. They may keep the `provides`
   line: it is what lets the plugin publish its own status.
+
+### Fixed — An installed entry without a package stayed "active" unseen
+
+- Every runtime activates by walking the packages on disk. An entry of the
+  installed registry whose package is gone was therefore visited by nobody: it
+  was never activated, never failed, kept the status it had (usually
+  `active`), and appeared nowhere in the web-ui, because the store lists what
+  the catalogue has packages for.
+- **One warning per boot** names every such entry:
+  `[plugins] N installed entries have no package and are not running, …`.
+- **`GET /api/v1/admin/runtime/installed`** (and `/installed/:id`) reports them with
+  `status: "package_missing"` and `package_missing: true`; the status the
+  registry holds is next to it as `registry_status`. Both fields are new on
+  every row.
+- **The store's "Installed" tab** lists them in a notice with the badge
+  "Package missing" and an "Uninstall entry" button per entry (confirmed, one
+  at a time).
+- The state is derived on every read. The registry is not rewritten and
+  nothing is removed automatically; an entry whose package comes back is
+  ordinary again. Uninstalling such an entry works as for any other.
 
 ### Removed — `kind`, the predecessor of an agent's archetype (#2088, epic #2042): K6.1, the contract step
 

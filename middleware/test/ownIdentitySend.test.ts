@@ -1,10 +1,11 @@
 /**
  * #2043 — sending as an agent's OWN channel identity.
  *
- * A facilitator never speaks through another bot. These tests pin the two
- * send services' `asOwnIdentity` / `asAgentSlug` branches, that a
- * conversation send has no other scope any more, and that a targeted send
- * without `asAgentSlug` behaves as before.
+ * A facilitator never speaks through another bot. These tests pin what a
+ * post into a conversation does once an execution scope authorized it (the
+ * delivery behind 'conversationSend@2'; the authorization itself is in
+ * `scopedSendService.test.ts`), the `asAgentSlug` branch of the targeted
+ * send, and that a targeted send without `asAgentSlug` behaves as before.
  */
 
 import { strict as assert } from 'node:assert';
@@ -29,7 +30,8 @@ import {
   hubFixture,
   MARA_KEY,
   messageEvent,
-  scopeOf,
+  processOf,
+  readAll,
   type HubFixture,
 } from './_helpers/conversationMessagesFixture.js';
 
@@ -115,20 +117,25 @@ describe('own-identity sends', () => {
       lookupConversationRefs: () => Promise.resolve(new Map([[ANNA, { ref: 'default-bot-1:1' }]])),
       ownIdentity,
     });
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(f, 'mara');
   });
 
-  const post = (over: Record<string, unknown> = {}, caller: string | undefined = ENGINE) =>
+  /** What `conversationSend@2` hands the delivery once the scope authorized
+   *  the post: the subscriptions of the process, to resolve mentions against. */
+  const ground = () => ({
+    subscriptions: f.hub.subscriptionsOfProcess(ENGINE, processOf('mara').processId, 'mara'),
+  });
+
+  const post = (over: Record<string, unknown> = {}) =>
     conversationSend.sendToConversation(
       {
         agentSlug: 'mara',
         channelType: 'teams',
         conversationId: CONVERSATION,
         message: { text: 'Welcome.' },
-        asOwnIdentity: true,
         ...over,
       } as never,
-      caller,
+      ground(),
     );
 
   describe('conversationSend', () => {
@@ -158,19 +165,6 @@ describe('own-identity sends', () => {
       assert.equal(outcome.outcome === 'unreachable' && outcome.code, 'no_identity');
       assert.match(outcome.outcome === 'unreachable' ? outcome.message : '', /does not post through another agent's bot/);
       assert.deepEqual(sent, [], 'nothing was posted, under any identity');
-    });
-
-    it('takes its permission from the message subscription, of the calling plugin', async () => {
-      const elsewhere = await post({ conversationId: '19:other@thread.v2' });
-      assert.equal(elsewhere.outcome === 'unreachable' && elsewhere.code, 'not_permitted');
-      const otherAgent = await post({ agentSlug: 'nora' });
-      assert.equal(otherAgent.outcome === 'unreachable' && otherAgent.code, 'not_permitted');
-      const otherPlugin = await post({}, '@acme/snoop');
-      assert.equal(otherPlugin.outcome === 'unreachable' && otherPlugin.code, 'not_permitted');
-      assert.deepEqual(sent, []);
-      await f.hub.unsubscribe(scopeOf('mara'), ENGINE);
-      const after = await post();
-      assert.equal(after.outcome === 'unreachable' && after.code, 'not_permitted');
     });
 
     it('resolves mentions to the channel user reference (Entra object id)', async () => {
@@ -260,8 +254,8 @@ describe('own-identity sends', () => {
         ownIdentity: { identityFor: () => ({ channelKey: MARA_KEY }), subscriptions: f.hub },
       });
       const outcome = await service.sendToConversation(
-        { agentSlug: 'mara', channelType: 'teams', conversationId: CONVERSATION, message: { text: 'x' }, asOwnIdentity: true },
-        ENGINE,
+        { agentSlug: 'mara', channelType: 'teams', conversationId: CONVERSATION, message: { text: 'x' } },
+        ground(),
       );
       assert.deepEqual(outcome, { outcome: 'unreachable', code: 'channel_error', message: 'socket hang up' });
     });
@@ -303,8 +297,8 @@ describe('own-identity sends', () => {
         ownIdentity: { identityFor: () => ({ channelKey: MARA_KEY }), subscriptions: f.hub },
       });
       const outcome = await service.sendToConversation(
-        { agentSlug: 'mara', channelType: 'teams', conversationId: CONVERSATION, message: { text: 'x' }, asOwnIdentity: true },
-        ENGINE,
+        { agentSlug: 'mara', channelType: 'teams', conversationId: CONVERSATION, message: { text: 'x' } },
+        ground(),
       );
       assert.equal(outcome.outcome === 'unreachable' && outcome.code, 'no_identity');
       assert.match(outcome.outcome === 'unreachable' ? outcome.message : '', /does not declare that it sends as a named identity/);
@@ -330,7 +324,7 @@ describe('own-identity sends', () => {
           getRoster: () => Promise.resolve(roster),
         },
       });
-      const base = { agentSlug: 'mara', channelType: 'teams', conversationId: CONVERSATION, asOwnIdentity: true };
+      const base = { agentSlug: 'mara', channelType: 'teams', conversationId: CONVERSATION };
       const poll = await service.sendToConversation(
         {
           ...base,
@@ -339,7 +333,7 @@ describe('own-identity sends', () => {
             poll: { pollId: 'p', question: 'q', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] },
           },
         },
-        ENGINE,
+        ground(),
       );
       assert.deepEqual(poll, {
         outcome: 'unreachable',
@@ -349,17 +343,28 @@ describe('own-identity sends', () => {
       assert.deepEqual(got, [], 'the question was not posted as plain text instead');
       const mention = await service.sendToConversation(
         { ...base, message: { text: '@Ben hello', mentions: [{ user: `user:${BEN}`, text: '@Ben' }] } },
-        ENGINE,
+        ground(),
       );
       assert.equal(mention.outcome, 'delivered');
       assert.deepEqual(got, [{ text: '@Ben hello' }]);
     });
 
-    it('without the flag the send is refused: there is no other scope', async () => {
-      const refused = await post({ asOwnIdentity: undefined });
-      assert.equal(refused.outcome === 'unreachable' && refused.code, 'not_permitted');
-      assert.match(refused.outcome === 'unreachable' ? refused.message : '', /set asOwnIdentity/);
-      assert.deepEqual(sent, []);
+    it('mentions nobody when the process has no subscription to look people up in', async () => {
+      // A closing scope may still post after its subscription ended; the
+      // text goes out, and nobody is notified through a mention.
+      const outcome = await conversationSend.sendToConversation(
+        {
+          agentSlug: 'mara',
+          channelType: 'teams',
+          conversationId: CONVERSATION,
+          message: { text: '@Ben the protocol is attached.', mentions: [{ user: `user:${BEN}`, text: '@Ben' }] },
+        },
+        { subscriptions: [] },
+      );
+      assert.equal(outcome.outcome, 'delivered');
+      assert.deepEqual(sent, [
+        { target: CONVERSATION, message: { text: '@Ben the protocol is attached.' }, opts: { asChannelKey: MARA_KEY } },
+      ]);
     });
   });
 
@@ -481,7 +486,8 @@ describe('own-identity sends', () => {
       assert.deepEqual(sent, [
         {
           target: ANNA,
-          message: { text: 'Approval needed.' },
+          // Spec 2042 INV-4: the shared bot posts from `system`.
+          message: { text: 'Approval needed.', speaker: { kind: 'system' } },
           opts: undefined,
           userRef: undefined,
           conversationRef: { ref: 'default-bot-1:1' },

@@ -1,4 +1,6 @@
 import { archetypeOf } from './archetype.js';
+import { consultableColleaguesOf } from './consultationColleagues.js';
+import { speakerFor } from '../management/speakerFor.js';
 import {
   buildOrchestratorForAgent,
   type AgentRuntimeConfig,
@@ -96,8 +98,6 @@ export type DiffAction =
 
 export interface DiffPlan {
   readonly actions: readonly DiffAction[];
-  /** True iff the platform-wide settings (e.g. fallback_agent_id) changed. */
-  readonly platformChanged: boolean;
 }
 
 export function diffSnapshots(
@@ -155,6 +155,11 @@ export function diffSnapshots(
     const reasons = [
       ...runtimeChangeReasons(oldAgent!, newAgent),
       ...graphChangeReasons(oldAgent!.id, newAgent.id, oldSnap, newSnap),
+      // #2047/#2056 — the colleagues named in the prompt are built in.
+      ...(consultableColleaguesOf(oldAgent!.id, oldSnap).join('\n') ===
+      consultableColleaguesOf(newAgent.id, newSnap).join('\n')
+        ? []
+        : ['consultation_colleagues']),
       // The enabled plugin set IS this agent's authorisation. It reaches the
       // running orchestrator only through a build, so a grant change that
       // produced a metadata-only `update` was persisted, reported as saved
@@ -191,12 +196,7 @@ export function diffSnapshots(
     actions.push({ kind: 'remove', slug });
   }
 
-  const platformChanged =
-    !oldSnap ||
-    oldSnap.platformSettings.fallbackAgentId !==
-      newSnap.platformSettings.fallbackAgentId;
-
-  return { actions, platformChanged };
+  return { actions };
 }
 
 /**
@@ -217,6 +217,9 @@ export function buildForAgent(
    *  Passed separately for the same reason as `personaSkills`: it is per-agent
    *  and the caller is the one holding the snapshot. Omitted ⇒ ungated. */
   grantedPluginIds?: readonly string[],
+  /** #2047/#2056 — the colleagues this agent may consult, by name, for its
+   *  prompt (`consultableColleaguesOf`). Omitted ⇒ none. */
+  consultableColleagues?: readonly string[],
 ): BuiltOrchestrator {
   // Agent Builder P5 — overlay the agent's persisted model_routing onto the
   // platform default: `main` overrides the model, `triage` mode adds per-turn
@@ -327,6 +330,10 @@ export function buildForAgent(
   return buildOrchestratorForAgent(
     {
       agentId: agent.slug,
+      // #2045 — the speaker every answer of this agent carries.
+      speaker: speakerFor(agent),
+      ...(runtime.agentDirectory ? { agentDirectory: runtime.agentDirectory } : {}),
+      ...(consultableColleagues && consultableColleagues.length > 0 ? { consultableColleagues } : {}),
       model,
       maxTokens: runtime.maxTokens,
       maxToolIterations: runtime.maxToolIterations,
@@ -370,10 +377,6 @@ export function buildForAgent(
       ...(runtime.cliTurnSeconds !== undefined
         ? { cliTurnSeconds: runtime.cliTurnSeconds }
         : {}),
-      // #445 — registry-managed Agents inherit the platform sticky flag, so
-      // the knob means the same thing for the legacy default Agent and for
-      // every Agent the registry builds.
-      ...(runtime.directLineSticky ? { directLineSticky: true } : {}),
       ...(personaSkills?.length ? { personaSkills } : {}),
       // #914 — the agent's authored behaviour text. Blank/absent falls
       // through to the platform-wide assistant identity, so an agent that
@@ -401,6 +404,8 @@ export function buildForAgent(
       // installation default inside `buildOrchestratorForAgent`, so exactly
       // one verbosity block ever reaches the prompt.
       ...(agent.answerVerbosity ? { answerVerbosity: agent.answerVerbosity } : {}),
+      // #1876 — the operator switched this agent's fast lane off.
+      ...(agent.fastLane === false ? { fastLane: false } : {}),
       // #2043 — the agent's own language (a facilitator's refusal text).
       ...(agent.identityLanguage ? { identityLanguage: agent.identityLanguage } : {}),
       // #1569 — the agent's own quality settings, so the Quality Guard plugin

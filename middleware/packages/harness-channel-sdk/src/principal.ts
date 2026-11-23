@@ -151,3 +151,42 @@ export function principalsEqual(a: Principal, b: Principal): boolean {
 function isPrincipalKind(value: string): value is PrincipalKind {
   return (PRINCIPAL_KINDS as readonly string[]).includes(value);
 }
+
+/**
+ * #2055 — the ONE principal form for a person in any channel (spec 2042
+ * §5.3, §5.6). Selections, default-agent entries and availability are keyed
+ * by it, so every channel must produce it the same way:
+ *
+ *  - `user:<e-mail>` when the channel verified the person's e-mail
+ *    (`ChannelUserRef.email`, e.g. Teams AAD, Slack with `users:read.email`):
+ *    the same person in the web chat, Teams and Slack is one principal, and an
+ *    operator can name them by address;
+ *  - otherwise `user:<kind>:<id>` with the channel user kind
+ *    (`user:telegram-chat:12345`, `user:discord-user:<snowflake>`,
+ *    `user:whatsapp-phone:<jid>`, `user:custom:<id>`).
+ *
+ * Canonical like every user principal (trim + lowercase).
+ */
+export function channelUserPrincipal(ref: {
+  readonly kind: string;
+  readonly id: string;
+  readonly email?: string;
+}): string {
+  const email = ref.email?.trim();
+  const principal =
+    (email && email.includes('@') ? makePrincipal('user', email) : undefined) ??
+    makePrincipal('user', `${ref.kind}:${ref.id}`);
+  return principal ? formatPrincipal(principal) : `user:${ref.kind}:${ref.id}`.toLowerCase();
+}
+
+/**
+ * #2055 — the principal a turn is routed by: the channel's own typed user
+ * principal when it sent one (`TurnOrigin.principal`), else
+ * {@link channelUserPrincipal} of the sender.
+ */
+export function turnPrincipal(
+  userRef: { readonly kind: string; readonly id: string; readonly email?: string },
+  originPrincipal?: Principal,
+): string {
+  return originPrincipal?.kind === 'user' ? formatPrincipal(originPrincipal) : channelUserPrincipal(userRef);
+}

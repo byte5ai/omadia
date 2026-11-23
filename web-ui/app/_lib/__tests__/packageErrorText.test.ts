@@ -124,6 +124,7 @@ describe('UPLOAD_ERRORS stays in step with the server', () => {
     '../../../../middleware/src/plugins/packageUploadService.ts',
     '../../../../middleware/src/routes/packages.ts',
     '../../../../middleware/src/plugins/zipExtractor.ts',
+    '../../../../middleware/src/plugins/pluginBoundary.ts',
   ].map((rel) => readFileSync(path.resolve(__dirname, rel), 'utf-8'));
 
   for (const [code, [, needed]] of Object.entries(UPLOAD_ERRORS)) {

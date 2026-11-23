@@ -67,7 +67,7 @@ describe('#2089 subscribing a process', () => {
     assert.deepEqual(await h.service.subscribe(h.scope('f3'), { mode: 'all' }), { outcome: 'subscribed', mode: 'all' });
   });
 
-  it('applies the checks of the first major: archetype, own identity, and readiness for every message only', async () => {
+  it('checks the archetype and the own identity, and readiness for every message only', async () => {
     const h = setup();
     h.grant('f1', {});
     const hr = await h.service.subscribe({ ...h.scope('f1'), agentSlug: 'hr' }, { mode: 'all' });
@@ -76,6 +76,27 @@ describe('#2089 subscribing a process', () => {
     const all = await h.service.subscribe(h.scope('f1'), { mode: 'all' });
     assert.equal(all.outcome === 'refused' && all.code, 'not_ready');
     assert.equal((await h.service.subscribe(h.scope('f1'), { mode: 'addressed' })).outcome, 'subscribed', 'addressed messages need no permission for all');
+  });
+
+  it('turning an existing subscription up to every message needs the same readiness as a new one', async () => {
+    const h = setup();
+    h.grant('f1', {});
+    h.setReady(false);
+    assert.equal((await h.service.subscribe(h.scope('f1'), { mode: 'addressed' })).outcome, 'subscribed');
+    // Without the check the process would "read everything" where the channel
+    // cannot deliver it, and the agent's own turns there would be suppressed.
+    const up = await h.service.subscribe(h.scope('f1'), { mode: 'all' });
+    assert.equal(up.outcome === 'refused' && up.code, 'not_ready');
+    assert.equal(await h.service.modeOf(h.scope('f1')), 'addressed', 'the subscription keeps what it had');
+    assert.equal(h.hub.readsEverything({ agentSlug: 'mara', channelType: 'teams', conversationId: h.scope('f1').conversationId }), false);
+
+    h.setReady(true);
+    assert.equal((await h.service.subscribe(h.scope('f1'), { mode: 'all' })).outcome, 'subscribed');
+    assert.equal(await h.service.modeOf(h.scope('f1')), 'all');
+    // Turning it down, and asking for what it already has, needs no readiness.
+    h.setReady(false);
+    assert.equal((await h.service.subscribe(h.scope('f1'), { mode: 'all' })).outcome, 'subscribed');
+    assert.equal((await h.service.subscribe(h.scope('f1'), { mode: 'addressed' })).outcome, 'subscribed');
   });
 
   it('the channel is told what the identity gets: all, addressed or nothing', async () => {
@@ -113,19 +134,6 @@ describe('#2089 subscribing a process', () => {
     assert.equal(lookup.isEngineDriven('nora', 'teams', CONVERSATION), false);
   });
 
-  it('an identity reads a conversation through processes or without one, never both', async () => {
-    const h = setup();
-    h.grant('f1', {});
-    await h.service.subscribe(h.scope('f1'), { mode: 'all' });
-    const v1 = await h.hub.subscribe({ agentSlug: 'mara', channelType: 'teams', conversationId: CONVERSATION }, ENGINE);
-    assert.equal(v1.outcome === 'refused' && v1.code, 'unavailable');
-
-    const other = setup();
-    assert.equal((await other.hub.subscribe({ agentSlug: 'mara', channelType: 'teams', conversationId: CONVERSATION }, ENGINE)).outcome, 'subscribed');
-    other.grant('f1', {});
-    const v2 = await other.service.subscribe(other.scope('f1'), { mode: 'all' });
-    assert.equal(v2.outcome === 'refused' && v2.code, 'unavailable');
-  });
 });
 
 describe('#2089 no reading across processes (criterion 53)', () => {
@@ -221,12 +229,6 @@ describe('#2089 no reading across processes (criterion 53)', () => {
     await h.hub.ingest(messageEvent({ messageId: 'm2' }));
     await new Promise((r) => setImmediate(r));
     assert.deepEqual(seen, []);
-    // And the first major's handlers get nothing of a process subscription.
-    const v1: unknown[] = [];
-    h.hub.onMessage('mara', ENGINE, (r) => void v1.push(r));
-    await h.hub.ingest(messageEvent({ messageId: 'm3' }));
-    await new Promise((r) => setImmediate(r));
-    assert.deepEqual(v1, []);
   });
 
   it('keeps the order of a message and its edit', async () => {
@@ -369,5 +371,69 @@ describe('#2089 access ends with the permission', () => {
     await store.endSubscription(created.subscription.id);
     now += 7 * 3_600_000;
     assert.deepEqual(await store.purge({ endedBefore: new Date(now - 6 * 3_600_000) }), { events: 1, subscriptions: 1 });
+  });
+});
+
+describe('#2089 superseded revisions are marked on every read path', () => {
+  it('an edited message: the latest revision is plain, the earlier one says it was superseded', async () => {
+    const h = setup();
+    h.grant('f1', {});
+    await h.service.subscribe(h.scope('f1'), { mode: 'all' });
+    const first = await h.hub.ingest(messageEvent({ messageId: 'm1', text: 'A > B' }));
+    await h.hub.ingest(messageEvent({ messageId: 'm1', kind: 'edited', text: 'B > A' }));
+    const latest = await h.service.getEvent(h.scope('f1'), 'm1');
+    assert.equal(latest?.text, 'B > A');
+    assert.equal(latest?.superseded, undefined);
+    const old = await h.service.getEvent(h.scope('f1'), 'm1', 0);
+    assert.deepEqual([old?.text, old?.superseded, old?.latestRevision], ['A > B', true, 1]);
+    const byId = await h.service.getEventById(h.scope('f1'), first!.eventId);
+    assert.equal(byId?.superseded, true);
+    const listed = (await h.service.listSince(h.scope('f1'))).events.map((e) => [e.revision, e.superseded === true]);
+    assert.deepEqual(listed, [[0, true], [1, false]]);
+  });
+
+  it('a corrected transcript segment marks its earlier text; a reaction has no revisions of its own', async () => {
+    const h = setup();
+    h.grant('f1', {});
+    await h.service.subscribe(h.scope('f1'), { mode: 'all' });
+    const shared = { kind: 'custom', id: 'media:room-1' };
+    const seg = (text: string) =>
+      messageEvent({ kind: 'transcript_segment', messageId: 'seg-9', text, author: shared, transcript: { sessionId: 's-1', segmentId: 'seg-9', source: 'shared' } } as never);
+    const r0 = await h.hub.ingest(seg('Option A'));
+    await h.hub.ingest(seg('Option B'));
+    assert.equal((await h.service.getEventById(h.scope('f1'), r0!.eventId))?.superseded, true);
+    const reaction = await h.hub.ingest(messageEvent({ kind: 'reaction', messageId: 'm7', reaction: { name: 'like', removed: false } } as never));
+    assert.equal((await h.service.getEventById(h.scope('f1'), reaction!.eventId))?.superseded, undefined);
+  });
+});
+
+describe('#2076 a linked session conversation is read as its session state allows', () => {
+  const SESSION_CHAT = '19:meeting_abc@thread.v2';
+  it('scheduled: addressed only; live: everything; closed: the subscription ends', async () => {
+    const h = setup();
+    const scope = h.scope('f1', SESSION_CHAT);
+    h.grant('f1', { session: { state: 'scheduled', released: false } });
+    const all = await h.service.subscribe(scope, { mode: 'all' });
+    assert.equal(all.outcome === 'refused' && all.code, 'session_state');
+    assert.equal((await h.service.subscribe(scope, { mode: 'addressed' })).outcome, 'subscribed');
+    h.grant('f1', { session: { state: 'live', released: false } });
+    assert.equal((await h.service.subscribe(scope, { mode: 'all' })).outcome, 'subscribed');
+    // A restart finds a stale `all` on a session that is only scheduled
+    // (it never went live): reconcile turns it down.
+    h.grant('f1', { session: { state: 'scheduled', released: false } });
+    assert.deepEqual(await h.hub.reconcile(), []);
+    assert.equal(await h.service.modeOf(scope), 'addressed');
+    h.grant('f1', { session: { state: 'confirming', released: false } });
+    assert.equal((await h.service.subscribe(scope, { mode: 'all' })).outcome, 'subscribed');
+    h.grant('f1', { reserved: false, session: { state: 'closed', released: true } });
+    const ended = await h.hub.reconcile();
+    assert.equal(ended.length, 1);
+    assert.match(ended[0]!.reason, /session conversation is released/);
+    assert.equal(await h.service.modeOf(scope), undefined);
+    const again = await h.service.subscribe(scope, { mode: 'addressed' });
+    assert.equal(again.outcome === 'refused' && again.code, 'session_state');
+    // Nothing of the conversation reaches the process any more.
+    await h.hub.ingest(messageEvent({ conversationId: SESSION_CHAT, messageId: 'late' }));
+    assert.deepEqual((await h.service.listSince(scope)).events, []);
   });
 });

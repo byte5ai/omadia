@@ -42,6 +42,7 @@ export {
   isModelCallNotCovered,
   MODEL_CALL_GATE_SLOT,
   ModelCallNotCoveredError,
+  ModelCallRefusedError,
   collectText,
   EFFORT_LEVELS,
   LLM_PROVIDER_API_VERSION,
@@ -171,3 +172,6 @@ export {
   type ProviderHealth,
   type ProviderHealthEntry,
 } from './providerHealth.js';
+
+// Spec 2042 §5.10 — the model gateway's operations.
+export type { ModelOperation } from '@omadia/llm-provider-api';

@@ -91,6 +91,10 @@ describe('PATCH /skills/:id — a description-only edit is rescanned (#1219)', (
     // Mirrors `AgentGraphStore.updateSkill`: COALESCE the patch over the row
     // and hash the effective values.
     const graph = {
+      // #2060 — the edit re-checks agents that hold the skill as a working
+      // mode; none here.
+      getSkill: () => Promise.resolve(row),
+      listAgentsByPersonaSkillId: () => Promise.resolve([]),
       updateSkill: (id: string, patch: { description?: string | null }) => {
         assert.equal(id, row.id);
         const description = patch.description ?? row.description;

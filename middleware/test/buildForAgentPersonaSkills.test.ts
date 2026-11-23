@@ -81,7 +81,7 @@ test('buildForAgent forwards personaSkills into the per-Agent orchestrator', () 
   assert.deepEqual(
     personaSkillsOf(built),
     persona,
-    'per-Agent orchestrator must carry the persona candidates so it emits turn_persona',
+    'per-Agent orchestrator must carry the persona candidates so it emits turn_working_mode',
   );
 });
 

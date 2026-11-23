@@ -1,7 +1,7 @@
 // A scripted model at the provider seam: records every request the
 // orchestrator sends and answers from a queue (text, or one tool call).
 
-import type { LlmProvider, LlmRequest, LlmResponse } from '@omadia/llm-provider';
+import { admitModelCall, type LlmProvider, type LlmRequest, type LlmResponse } from '@omadia/llm-provider';
 
 export type ModelStep =
   | { readonly text: string }
@@ -49,7 +49,13 @@ export function scriptedModel(): ScriptedModel {
       forcedToolChoice: true,
       parallelToolCalls: false,
     },
-    complete: (request: LlmRequest): Promise<LlmResponse> => Promise.resolve(next(request)),
+    complete: (request: LlmRequest): Promise<LlmResponse> => {
+      // What every provider does before it reaches its backend: a call the
+      // turn's reservation does not cover is refused here. A no-op where no
+      // host installed the gate.
+      admitModelCall();
+      return Promise.resolve(next(request));
+    },
     stream: (): never => {
       throw new Error('scripted model: stream() is not scripted');
     },

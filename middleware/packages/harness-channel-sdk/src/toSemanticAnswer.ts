@@ -16,6 +16,7 @@ import {
   type ApplyAiDisclosureContext,
 } from './aiDisclosure.js';
 import { stripCitationMarkers } from './citationMarkers.js';
+import { withDataText, withoutDataText } from './sideChannelData.js';
 
 /** Claims the verifier confirmed: every claim it neither found contradicted
  *  nor left unconfirmed. */
@@ -117,33 +118,10 @@ function connectorVerifierBadge(
 }
 
 /**
- * #332 Layer 1 — plain-text fallback footer for connectors without rich-card
- * UI. Renders the harness-sourced `agentsConsulted` projection as a single
- * readable line, e.g. `🔎 Consulted: Strategist ✓ · 2 steps`. Returns
- * `undefined` when no sub-agent ran (caller appends nothing). Rich connectors
- * (web-ui, Teams) render their own UI from the structured field instead.
- */
-export function agentsConsultedFooterText(
-  answer: Pick<SemanticAnswer, 'agentsConsulted'>,
-): string | undefined {
-  const consulted = answer.agentsConsulted;
-  if (!consulted || consulted.length === 0) return undefined;
-  const parts = consulted.map((c) => {
-    const mark = c.status === 'success' ? '✓' : '✗';
-    const steps =
-      typeof c.toolCalls === 'number' && c.toolCalls > 0
-        ? ` · ${c.toolCalls} ${c.toolCalls === 1 ? 'step' : 'steps'}`
-        : '';
-    return `${c.label} ${mark}${steps}`;
-  });
-  return `🔎 Consulted: ${parts.join(' · ')}`;
-}
-
-/**
  * Humanize a run-trace `agentName` (which is the invoked tool name, e.g.
  * `ask_strategist` / `@omadia/agent-strategist`) into a footer label. Mirrors
  * the middleware-side `labelFromAgentId` (agents/resolveAgentForTool.ts) but
- * stays local — channel-sdk has no access to the dynamic agent runtime. Strips
+ * stays local — channel-sdk has no access to the kernel's tool registry. Strips
  * an `ask_`/`consult_` verb prefix and any npm-scope / legacy-namespace, then
  * Title-Cases the remainder.
  */
@@ -170,8 +148,13 @@ function humanizeAgentLabel(agentName: string): string {
 export function deriveAgentsConsulted(
   runTrace: Pick<RunTracePayload, 'agentInvocations'> | undefined,
 ): AgentConsultation[] | undefined {
-  return runTrace?.agentInvocations && runTrace.agentInvocations.length > 0
-    ? runTrace.agentInvocations.map((inv) => ({
+  // #2050 — an internal helper's run is the agent's own work, never a
+  // consulted agent (spec 2042 §5.2 "DB sub-agents"). It stays in the trace.
+  const consulted = (runTrace?.agentInvocations ?? []).filter(
+    (inv) => inv.internalHelper !== true,
+  );
+  return consulted.length > 0
+    ? consulted.map((inv) => ({
         ...(inv.agentId !== undefined ? { agentId: inv.agentId } : {}),
         label: humanizeAgentLabel(inv.agentName),
         status: inv.status,
@@ -329,7 +312,13 @@ export function toSemanticAnswer(
   // `text`, which every connector MUST render.
   // #131 — the `[ref:…]` markers the verifier checked are not for the reader;
   // removed here, the one text every connector renders.
-  const baseText = withMcpInputPrompt(stripCitationMarkers(r.answer), r.pendingMcpInput);
+  // #2085 — side-channel data goes after the prose and before the disclosure
+  // fold, so a connector that renders only `text` still shows it, marked.
+  const data = r.data && r.data.length > 0 ? r.data : undefined;
+  const baseText = withDataText(
+    withMcpInputPrompt(stripCitationMarkers(r.answer), r.pendingMcpInput),
+    data,
+  );
 
   // #643 (epic #642) — AI-Act Art. 50 disclosure. Fold the harness-owned
   // marking into `text` (the one field every connector renders) and forward the
@@ -354,6 +343,13 @@ export function toSemanticAnswer(
           ...(disclosure?.assistantName !== undefined
             ? { assistantName: disclosure.assistantName }
             : {}),
+          // #2087 — frequency inputs of the visible markers.
+          ...(disclosure?.frequency !== undefined ? { frequency: disclosure.frequency } : {}),
+          ...(disclosure?.agentId !== undefined ? { agentId: disclosure.agentId } : {}),
+          ...(disclosure?.pauseMinutes !== undefined ? { pauseMinutes: disclosure.pauseMinutes } : {}),
+          ...(disclosure?.markerStore !== undefined ? { markerStore: disclosure.markerStore } : {}),
+          ...(disclosure?.markerScope !== undefined ? { markerScope: disclosure.markerScope } : {}),
+          ...(disclosure?.now !== undefined ? { now: disclosure.now } : {}),
         })
       : { text: baseText };
 
@@ -361,16 +357,14 @@ export function toSemanticAnswer(
     text: disclosed.text,
     ...(disclosed.aiDisclosure ? { aiDisclosure: disclosed.aiDisclosure } : {}),
     ...(verifier ? { verifier } : {}),
+    ...(r.turnId ? { turnId: r.turnId } : {}),
     ...(r.memoryUsed ? { memoryUsed: true } : {}),
     ...(r.answerVerbosity ? { answerVerbosity: r.answerVerbosity } : {}),
     ...(agentsConsulted && agentsConsulted.length > 0
       ? { agentsConsulted }
       : {}),
-    ...(r.delegatedAnswer ? { delegatedAnswer: r.delegatedAnswer } : {}),
-    // #445 — forward the sticky indicator verbatim. Guarded on PRESENCE, not
-    // on `.active`: `{ active: false }` is the signal that clears a stale
-    // banner, so dropping it would be the one bug this field exists to prevent.
-    ...(r.directLineSession ? { directLineSession: r.directLineSession } : {}),
+    ...(r.contributions && r.contributions.length > 0 ? { contributions: r.contributions } : {}),
+    ...(data ? { data, textWithoutData: withoutDataText(disclosed.text, data) } : {}),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
     ...(r.followUpOptions && r.followUpOptions.length > 0
       ? { followUps: r.followUpOptions }

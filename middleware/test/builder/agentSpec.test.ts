@@ -7,6 +7,8 @@ import {
   registerAgentTemplate,
   getKnownAgentTemplates,
   getAllowedKeysAtPath,
+  effectivePluginKind,
+  retiredSpecKeyOf,
 } from '../../src/plugins/builder/agentSpec.js';
 
 const validBase = {
@@ -14,7 +16,6 @@ const validBase = {
   name: 'Weather Agent',
   description: 'Weather forecast agent',
   category: 'analysis',
-  skill: { role: 'a weather expert' },
   playbook: { when_to_use: 'when user asks about weather' },
 } as const;
 
@@ -22,7 +23,7 @@ describe('agentSpec', () => {
   describe('parseAgentSpec', () => {
     it('accepts a minimal valid spec and applies defaults', () => {
       const spec = parseAgentSpec(validBase);
-      assert.equal(spec.template, 'agent-integration');
+      assert.equal(spec.template, 'integration');
       assert.equal(spec.version, '0.1.0');
       assert.deepEqual(spec.depends_on, []);
       assert.deepEqual(spec.tools, []);
@@ -68,7 +69,8 @@ describe('agentSpec', () => {
       } catch (err) {
         const msg = (err as Error).message;
         assert.match(msg, /\/permissions:/);
-        assert.match(msg, /allowed keys at this path: .*graph.*subAgents.*llm/);
+        assert.match(msg, /allowed keys at this path: .*graph.*llm/);
+        assert.doesNotMatch(msg, /subAgents/);
       }
     });
 
@@ -279,7 +281,7 @@ describe('agentSpec', () => {
       );
     });
 
-    it('accepts spec.permissions with all three sub-blocks (Phase B)', () => {
+    it('accepts spec.permissions with its sub-blocks; a stored subAgents block is dropped (spec 2042 §5.4)', () => {
       const spec = parseAgentSpec({
         ...validBase,
         permissions: {
@@ -300,7 +302,7 @@ describe('agentSpec', () => {
         },
       });
       assert.deepEqual(spec.permissions?.graph?.entity_systems, ['audit-reports']);
-      assert.equal(spec.permissions?.subAgents?.calls.length, 2);
+      assert.equal('subAgents' in (spec.permissions ?? {}), false, 'a capability plugin never consults an agent');
       assert.equal(spec.permissions?.llm?.max_tokens_per_call, 1024);
     });
 
@@ -319,7 +321,7 @@ describe('agentSpec', () => {
       }
     });
 
-    it('permissions.subAgents.calls accepts both ID formats (mirrors depends_on)', () => {
+    it('an old draft with permissions.subAgents still loads, without it', () => {
       const spec = parseAgentSpec({
         ...validBase,
         permissions: {
@@ -328,7 +330,7 @@ describe('agentSpec', () => {
           },
         },
       });
-      assert.equal(spec.permissions?.subAgents?.calls.length, 2);
+      assert.deepEqual(spec.permissions, {});
     });
 
     it('rejects llm models_allowed with non-positive caps', () => {
@@ -544,5 +546,57 @@ describe('agentSpec', () => {
       // /tools is an array; without an index we land on the array itself.
       assert.equal(getAllowedKeysAtPath(['tools']), null);
     });
+  });
+});
+
+// Spec 2042 §5.10 — the Plugin Builder generates capability plugins only.
+describe('agentSpec — capability plugin kind and retired persona fields', () => {
+  it('reads a draft stored before the change: old template ids, persona/quality/skill ignored', () => {
+    const spec = parseAgentSpec({
+      ...validBase,
+      template: 'agent-pure-llm',
+      skill: { role: 'Du bist ein Stratege', tonality: 'scharf' },
+      persona: { template: 'strategist', custom_notes: 'sei frech' },
+      quality: { sycophancy: 'high' },
+    });
+    assert.equal(spec.template, 'tool');
+    const raw = spec as unknown as Record<string, unknown>;
+    assert.equal(raw['skill'], undefined);
+    assert.equal(raw['persona'], undefined);
+    assert.equal(raw['quality'], undefined);
+    assert.equal(parseAgentSpec({ ...validBase, template: 'agent-integration' }).template, 'integration');
+  });
+
+  it('accepts kind integration | tool and rejects any other kind', () => {
+    assert.equal(parseAgentSpec({ ...validBase, kind: 'tool' }).kind, 'tool');
+    assert.equal(parseAgentSpec({ ...validBase, kind: 'integration' }).kind, 'integration');
+    assert.throws(() => parseAgentSpec({ ...validBase, kind: 'agent' }));
+    assert.throws(() => parseAgentSpec({ ...validBase, kind: 'archetype' }));
+  });
+
+  it('derives the kind: integration with credentials, else tool; an explicit kind wins', () => {
+    const base = parseAgentSpec(validBase);
+    assert.equal(effectivePluginKind(base), 'tool');
+    assert.equal(effectivePluginKind(parseAgentSpec({ ...validBase, network: { outbound: ['example.com'] } })), 'tool');
+    assert.equal(effectivePluginKind({ ...base, depends_on: ['@omadia/integration-odoo'] }), 'integration');
+    assert.equal(
+      effectivePluginKind({ ...base, setup_fields: [{ key: 'api_key', type: 'secret' }] }),
+      'integration',
+    );
+    assert.equal(
+      effectivePluginKind({ ...base, setup_fields: [{ key: 'base_url', type: 'url' }] }),
+      'tool',
+    );
+    assert.equal(
+      effectivePluginKind({ ...base, kind: 'tool', depends_on: ['@omadia/integration-odoo'] }),
+      'tool',
+    );
+  });
+
+  it('names the retired key a JSON pointer targets', () => {
+    assert.equal(retiredSpecKeyOf('/persona'), 'persona');
+    assert.equal(retiredSpecKeyOf('/quality/sycophancy'), 'quality');
+    assert.equal(retiredSpecKeyOf('/skill/role'), 'skill');
+    assert.equal(retiredSpecKeyOf('/playbook/when_to_use'), undefined);
   });
 });

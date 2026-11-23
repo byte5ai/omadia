@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { DeletedAgentDto, EndOfServiceDto } from '../../../../_lib/agents';
+import { ApiError } from '../../../../_lib/api';
 import { renderWithIntl } from '../../../../_lib/test-utils';
 import { DeletedAgentsSection, EndOfServiceNotice } from '../EndOfService';
 
@@ -147,5 +148,29 @@ describe('<DeletedAgentsSection />', () => {
     dialog = screen.getByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: 'Remove for good' }));
     await waitFor(() => expect(mockPurge).toHaveBeenCalledWith('id-mara', undefined));
+  });
+
+  async function purgeWithoutTyping(): Promise<void> {
+    mockList.mockResolvedValue({ retention_days: 30, agents: [tombstone({ purgeable_without_confirmation: true })] });
+    const user = userEvent.setup();
+    renderWithIntl(<DeletedAgentsSection refreshKey={0} />);
+    await user.click(await screen.findByRole('button', { name: 'Remove for good' }));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Remove for good' }));
+  }
+
+  it('says which own bots kept running because their channel plugin was not active (spec 2042 §5.3)', async () => {
+    mockPurge.mockResolvedValue({ ok: true, bots_not_released: ['telegram:tg:7000000001'] });
+    await purgeWithoutTyping();
+    const notice = await screen.findByTestId('deleted-agents-notice');
+    expect(notice.textContent).toContain('telegram:tg:7000000001');
+    expect(notice.textContent).toContain('revoke them on the platform');
+  });
+
+  it('a bot that could not be stopped is named as the reason nothing was removed', async () => {
+    mockPurge.mockRejectedValue(
+      new ApiError(502, 'POST failed: 502', JSON.stringify({ error: 'channel_identity_release_failed', message: 'x' })),
+    );
+    await purgeWithoutTyping();
+    expect(await screen.findByText("The agent's own bots could not be stopped, so nothing was removed. Try again.")).toBeTruthy();
   });
 });

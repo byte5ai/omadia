@@ -21,6 +21,7 @@ import type {
   PrivacyV4ToolResult,
   PrivacyDigestAudience,
   PrivacyV4ToolSpec,
+  ToolPIIField,
   PromptMaskedSpanInfo,
   ToolErrorCarrier,
   ToolErrorOutcome,
@@ -51,6 +52,8 @@ export interface PrivacyTurnHandle {
     readonly toolInput?: unknown;
     /** #1561 — who reads the digest text; absent ⇒ the chat model. */
     readonly audience?: PrivacyDigestAudience;
+    /** Spec 2042 §5.10 — the tool's declared PII fields, always masked. */
+    readonly piiFields?: readonly ToolPIIField[];
   }): Promise<{ readonly digestText: string; readonly datasetId: string }>;
   /**
    * Slice 2.5 — record that a tool's raw result was passed through
@@ -256,6 +259,7 @@ export function createPrivacyTurnHandle(deps: {
         rawResult: input.rawResult,
         ...(input.toolInput !== undefined ? { toolInput: input.toolInput } : {}),
         ...(input.audience !== undefined ? { audience: input.audience } : {}),
+        ...(input.piiFields !== undefined && input.piiFields.length > 0 ? { piiFields: input.piiFields } : {}),
       });
     },
 

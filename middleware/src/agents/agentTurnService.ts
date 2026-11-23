@@ -1,6 +1,9 @@
-// The kernel-run agent turn ('agentTurn@1', #2043): the facilitation engine
-// asks the kernel to run ONE turn as a facilitator and gets the text back.
-// Nothing is posted; the engine decides what to send, through its own outbox.
+// The kernel-run agent turn ('agentTurn@2', #2043, #2090): the facilitation
+// engine asks the kernel to run ONE turn as a facilitator and gets the text
+// back. Nothing is posted; the engine decides what to send, through its own
+// outbox. Every turn is an authorized action under an execution scope of one
+// of the engine's processes; a turn without a scope (the first major) is gone
+// (#2067).
 //
 // The turn runs through the agent's own `ChatAgent` bundle, so everything
 // that makes it this agent's turn applies without being repeated here: the
@@ -17,11 +20,17 @@ import {
   makePrincipal,
   withoutFoldedAiDisclosure,
   type ChatTurnInput,
+  type ConversationRoster,
 } from '@omadia/channel-sdk';
 import {
   archetypeAdds,
   archetypeOf,
+  effectiveArchetypeAgentSettings,
+  getArchetype,
+  type ArchetypeAgentSettingValue,
+  chatParticipantsFromRoster,
   runAsEngineTurn,
+  turnContext,
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
 import type {
@@ -33,7 +42,6 @@ import type {
   AgentProfile,
   AgentTurnOutcome,
   AgentTurnRequest,
-  AgentTurnService,
   ConversationMessageRecord,
 } from '@omadia/plugin-api';
 
@@ -49,7 +57,7 @@ export interface AgentTurnServiceDeps {
   readonly getRegistry: () => OrchestratorRegistry | undefined;
   /** For the stored inbound event a turn answers. Absent = no database; a
    *  request naming an inbound event is then refused. */
-  readonly messages?: Pick<ConversationMessageHub, 'getEventById' | 'getProcessEventById'>;
+  readonly messages?: Pick<ConversationMessageHub, 'getProcessEventById'>;
   /** The calling plugin; `undefined` for the kernel itself. */
   readonly callerPluginId: string | undefined;
   /** Is the caller the instance's facilitation engine right now? */
@@ -58,6 +66,22 @@ export interface AgentTurnServiceDeps {
   readonly budget: AgentTurnBudget;
   /** The language the instance answers in, when configured. */
   readonly language?: () => string | undefined;
+  /**
+   * #2048 — the conversation's roster, read as the agent's own identity. Gives
+   * the turn an audience, so the audience floor bounds it by the people in
+   * the conversation. Absent (or unreadable) = no roster: the floor closes for
+   * a group turn and every tool is refused, never widened.
+   */
+  readonly roster?: (
+    channelType: string,
+    conversationId: string,
+    agentSlug: string,
+  ) => Promise<ConversationRoster | undefined>;
+  /**
+   * #2066 — the agent's stored archetype settings (migration 0106). Absent
+   * (no database) = none: the plugin's instance settings apply.
+   */
+  readonly archetypeSettings?: (agentId: string) => Promise<Readonly<Record<string, unknown>>>;
   readonly log?: (message: string) => void;
 }
 
@@ -117,12 +141,23 @@ function refused(
   return { outcome: 'refused', code, message };
 }
 
-/** The first major's service plus the guarded run `agentTurn@2` builds on. */
-export type GuardedAgentTurnService = AgentTurnService & {
-  /** `processId`: the process the turn belongs to (`agentTurn@2`). The
-   *  inbound event is then looked up among what THAT process received. */
-  runGuarded(request: AgentTurnRequest, accept?: () => boolean, processId?: string): Promise<AgentTurnOutcome>;
-};
+/**
+ * The turn itself, without its authorization: what `agentTurn@2` runs once
+ * the execution scope has granted it. Kernel-internal; no plugin gets this.
+ */
+export interface GuardedAgentTurnService {
+  /**
+   * Run one turn. `processId` is the process the turn belongs to: a named
+   * inbound event is looked up among what THAT process received.
+   *
+   * `accept` is asked once the answer exists and before anything keeps it
+   * (the session history): a turn whose answer must not stand is failed
+   * instead, and leaves no trace for the next turn to build on.
+   */
+  runGuarded(request: AgentTurnRequest, processId: string, accept?: () => boolean): Promise<AgentTurnOutcome>;
+  /** The agent's profile when the caller may run it; `undefined` otherwise. */
+  getProfile(agentSlug: string): Promise<AgentProfile | undefined>;
+}
 
 export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgentTurnService {
   const log = deps.log ?? (() => undefined);
@@ -150,12 +185,7 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
     return { entry };
   }
 
-  /**
-   * `accept` is asked once the answer exists and before anything keeps it
-   * (the session history): a turn whose answer must not stand is failed
-   * instead, and leaves no trace for the next turn to build on.
-   */
-  const run = async (request: AgentTurnRequest, accept?: () => boolean, processId?: string): Promise<AgentTurnOutcome> => {
+  const run = async (request: AgentTurnRequest, processId: string, accept?: () => boolean): Promise<AgentTurnOutcome> => {
       if (
         !isText(request?.agentSlug, 128) ||
         !isText(request.sessionKey, MAX_KEY) ||
@@ -181,12 +211,11 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
           channelType: request.channelType,
           conversationId: request.conversationId,
         };
-        // A process (`agentTurn@2`) reads conversations through subscriptions
-        // of its own (`conversationMessages@2`), so the event is one THAT
-        // process received: never another process's, also not of the same
-        // plugin. (Rollout defect D35: this once looked only among
-        // subscriptions without a process, which no longer exist.)
-        if (processId !== undefined && deps.callerPluginId !== undefined) {
+        // A process reads conversations through subscriptions of its own
+        // (`conversationMessages@2`), so the event is one THAT process
+        // received: never another process's, also not of the same plugin.
+        // The kernel itself runs no process and has no such event.
+        if (deps.callerPluginId !== undefined) {
           inbound = await deps.messages
             ?.getProcessEventById({ ...scope, processId }, deps.callerPluginId, request.inboundEventId)
             .catch(() => undefined);
@@ -236,7 +265,17 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
                 : {}),
             },
           },
-          () => resolved.entry.built.bundle.agent.chat(turn),
+          () => {
+            const run = () => resolved.entry.built.bundle.agent.chat(turn);
+            const readRoster = deps.roster;
+            if (!readRoster) return run();
+            return turnContext.runWithChatParticipants(
+              chatParticipantsFromRoster(() =>
+                readRoster(request.channelType, request.conversationId, request.agentSlug),
+              ),
+              run,
+            );
+          },
         );
         // The engine gets the text WITHOUT the AI disclosure sentence a turn
         // folds into its answer. It posts this text through an own-identity
@@ -246,7 +285,13 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
         if (accept && !accept()) {
           return { outcome: 'failed', message: 'the answer was not accepted' };
         }
-        deps.history.append(sessionScope, request.input, text);
+        // #2085 — the history feeds the next turn's model: side-channel rows
+        // stay out of it (they reach people through `text` only).
+        const prose =
+          answer.textWithoutData !== undefined
+            ? withoutFoldedAiDisclosure(answer.textWithoutData, answer.aiDisclosure)
+            : text;
+        deps.history.append(sessionScope, request.input, prose);
         const turnId = (answer as { turnId?: unknown }).turnId;
         return {
           outcome: 'completed',
@@ -261,7 +306,6 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
   };
 
   return {
-    runTurn: (request: AgentTurnRequest) => run(request),
     runGuarded: run,
 
     async getProfile(agentSlug: string): Promise<AgentProfile | undefined> {
@@ -271,6 +315,7 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
       const { agent } = resolved.entry;
       const registry = deps.getRegistry();
       const language = agent.identityLanguage?.trim() || deps.language?.();
+      const archetypeSettings = await readArchetypeSettings(deps, agent);
       return {
         agentSlug: agent.slug,
         kind: 'facilitator',
@@ -281,9 +326,31 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
           : {}),
         ...(language ? { language } : {}),
         ownIdentityChannelTypes: registry?.channelTypesWithIdentity?.(agent.slug) ?? [],
+        ...(Object.keys(archetypeSettings).length > 0 ? { archetypeSettings } : {}),
       };
     },
   };
+}
+
+/**
+ * #2066 — the settings that still fit the archetype's declared fields. A read
+ * failure is logged and answered with none: the plugin then uses its instance
+ * settings, which is what an unset field means anyway.
+ */
+async function readArchetypeSettings(
+  deps: AgentTurnServiceDeps,
+  agent: { readonly id: string; readonly slug: string; readonly archetype?: string },
+): Promise<Readonly<Record<string, ArchetypeAgentSettingValue>>> {
+  if (!deps.archetypeSettings) return {};
+  try {
+    const stored = await deps.archetypeSettings(agent.id);
+    return effectiveArchetypeAgentSettings(getArchetype(archetypeOf(agent)), stored);
+  } catch (err) {
+    deps.log?.(
+      `[agent-turn] archetype settings of '${agent.slug}' could not be read, instance settings apply: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return {};
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -300,7 +367,11 @@ export interface ScopedAgentTurnServiceDeps extends AgentTurnServiceDeps {
    */
   readonly meter: <T>(
     work: (probe: () => { modelCalls: number; refused: number }) => Promise<T>,
-    options: { limit: number },
+    options: {
+      limit: number;
+      /** Spec 2042 §5.10 — the execution scope is the model calls' context. */
+      context?: { kind: 'execution_scope'; ownerId: string; agentSlug: string };
+    },
   ) => Promise<{ value: T; modelCalls: number; refused: number }>;
 }
 
@@ -321,7 +392,7 @@ export function createScopedAgentTurnService(deps: ScopedAgentTurnServiceDeps): 
   });
 
   return {
-    getProfile: (agentSlug) => base.getProfile?.(agentSlug) ?? Promise.resolve(undefined),
+    getProfile: (agentSlug) => base.getProfile(agentSlug),
 
     async runTurn(request: ScopedAgentTurnRequest): Promise<ScopedAgentTurnOutcome> {
       if (
@@ -344,7 +415,7 @@ export function createScopedAgentTurnService(deps: ScopedAgentTurnServiceDeps): 
       if (!execution) return refusedV2('unavailable', 'execution authorization needs a database');
       // The caller must be allowed to run this agent at all, before a unit of
       // the scope is spent on finding out.
-      if ((await base.getProfile?.(request.agentSlug)) === undefined) {
+      if ((await base.getProfile(request.agentSlug)) === undefined) {
         return refusedV2('not_bound', `agent '${request.agentSlug}' is not an agent this plugin runs`);
       }
       // The scope must be this process's and this agent's. A scope of another
@@ -375,8 +446,11 @@ export function createScopedAgentTurnService(deps: ScopedAgentTurnServiceDeps): 
       let outcome: AgentTurnOutcome;
       try {
         const metered = await deps.meter(
-          (probe) => base.runGuarded(request, () => probe().refused === 0, request.processId),
-          { limit: reserved },
+          (probe) => base.runGuarded(request, request.processId, () => probe().refused === 0),
+          {
+            limit: reserved,
+            context: { kind: 'execution_scope', ownerId: scope.id, agentSlug: request.agentSlug },
+          },
         );
         used = metered.modelCalls;
         refusedCalls = metered.refused;

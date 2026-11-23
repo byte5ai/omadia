@@ -16,6 +16,8 @@
  * simply falls back to the silent agent-turn refresh.
  */
 
+import { describeToolCall, type DataPlanDescription } from '@omadia/plugin-api';
+
 export interface RefreshSource {
   /** registered native tool name (e.g. dynamics_fetchxml) */
   tool: string;
@@ -57,6 +59,21 @@ export interface RefreshSort {
 export type RefreshFilter =
   | { field: string; datePart: 'year' | 'month' | 'day'; eq: number }
   | { field: string; eq: string | number | boolean };
+
+/**
+ * #2085 — what a recipe does, for the agent's boundary check (spec 2042
+ * §5.13 1a): tool, the identifiers its input names, filter fields, order and
+ * top-N. Never a filter value or any other input value.
+ */
+export function describeRefreshSource(source: RefreshSource): DataPlanDescription {
+  const call = describeToolCall(source.tool, source.input);
+  return {
+    ...call,
+    sort: [...call.sort, ...(source.sort ?? []).map((s) => ({ field: s.field, dir: s.dir }))],
+    ...(source.take !== undefined ? { take: source.take } : call.take !== undefined ? { take: call.take } : {}),
+    filterFields: (source.filter ?? []).map((f) => f.field),
+  };
+}
 
 const MAX_RECIPE_BYTES = 32_768;
 const MAX_FILTER_CLAUSES = 4;

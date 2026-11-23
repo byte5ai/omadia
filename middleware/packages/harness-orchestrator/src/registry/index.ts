@@ -4,6 +4,7 @@ import type {
   OrchestratorDeps,
 } from '../buildOrchestrator.js';
 
+import type { GuardDirectoryEntry } from '../identityGuard/deterministic.js';
 import type { ChatSessionStore, SessionConfigSnapshot } from '../chatSessionStore.js';
 
 import type {
@@ -19,6 +20,7 @@ import {
   type DiffAction,
   type DiffPlan,
 } from './applyDiff.js';
+import { consultableColleaguesOf } from './consultationColleagues.js';
 import { FACILITATOR_ARCHETYPE, isArchetype } from './archetype.js';
 import {
   ConfigValidationError,
@@ -28,8 +30,9 @@ import {
   type ChannelIdentityRow,
   type ConfigSnapshot,
   type ConfigStore,
-  type PlatformSettingsRow,
 } from './configStore.js';
+import type { AgentSelectionRow } from './routingTables.js';
+import { SnapshotRoutingView } from './routingView.js';
 import { orchestratorMemoryScope } from './scopedMemoryStore.js';
 import type { AgentTombstone } from './tombstones.js';
 
@@ -87,18 +90,6 @@ export interface PluginCapabilityLookup {
    * blowing the boot path open.
    */
   getMemoryScope?(pluginId: string): readonly string[] | undefined;
-  /**
-   * Phase B (B1) — returns the plugin IDs currently installed on the
-   * platform. Used by `ensureFallbackAgent` to hydrate a fresh fallback
-   * Agent with every plugin so day-1 chat is useful out-of-the-box, and
-   * by the operator dashboard's "Reset fallback to all plugins" action
-   * (B3d) to re-hydrate after pruning.
-   *
-   * Returns `undefined` when the platform has no opinion (e.g. tests with
-   * no kernel-published catalog) — callers degrade to "do not attach any
-   * plugins" rather than failing the seed.
-   */
-  listInstalled?(): readonly string[] | undefined;
   /**
    * #2060 — the plugin ids a facilitator-kind agent may be granted: the one
    * installed plugin whose manifest provides the facilitation engine
@@ -183,10 +174,8 @@ export class OrchestratorRegistry {
   // JSON encodes the string tuple unambiguously, even when an id contains
   // a separator, quote, or NUL. Replace per snapshot so recovery re-arms logs.
   private quarantinedPluginBindings = new Set<string>();
-  private platformSettings: PlatformSettingsRow = {
-    fallbackAgentId: null,
-    updatedAt: new Date(0),
-  };
+  /** #2055 — the routing view of the current snapshot, built on demand. */
+  private routing: SnapshotRoutingView | undefined;
   private snapshot: ConfigSnapshot | undefined;
   /** #2043 — the grants each active facilitator was BUILT with (see
    *  `withEngineGrantDrift`), by slug. */
@@ -250,7 +239,7 @@ export class OrchestratorRegistry {
     const safe = this.quarantineUnsatisfiablePlugins(snap);
     validateSnapshot(safe, this.options.pluginLookup);
     const plan = this.withEngineGrantDrift(diffSnapshots(this.snapshot, safe), safe);
-    if (plan.actions.length === 0 && !plan.platformChanged) {
+    if (plan.actions.length === 0) {
       // Identities are NOT part of the diff: an agent whose bot finished
       // provisioning has the same row, plugins and bindings it had a minute
       // ago, so the plan is empty and the fast path returns here. Adopting
@@ -259,7 +248,7 @@ export class OrchestratorRegistry {
       // config edit forces a rebuild.
       this.channelIdentities = safe.channelIdentities ?? [];
       this.deletedBindings = bindingsOfTombstones(safe);
-      this.snapshot = safe;
+      this.adoptSnapshot(safe);
       return plan;
     }
     this.applyDiffActions(plan, safe);
@@ -357,15 +346,95 @@ export class OrchestratorRegistry {
       }
     }
 
-    if (plan.platformChanged) {
-      this.platformSettings = snap.platformSettings;
-      this.log(`registry: platform settings updated`, {
-        fallbackAgentId: snap.platformSettings.fallbackAgentId,
-      });
-    }
     this.channelIdentities = snap.channelIdentities ?? [];
     this.deletedBindings = bindingsOfTombstones(snap);
+    this.adoptSnapshot(snap);
+  }
+
+  /** The snapshot routing reads from; the routing view follows it. */
+  private adoptSnapshot(snap: ConfigSnapshot): void {
     this.snapshot = snap;
+    this.routing = undefined;
+  }
+
+  /**
+   * #2055 — what the management layer routes on: every live agent with its
+   * status and availability, the tombstones, identities, bindings, selections
+   * and default-agent entries of the current snapshot.
+   */
+  routingView(): SnapshotRoutingView {
+    if (!this.routing) this.routing = new SnapshotRoutingView(this.snapshot);
+    return this.routing;
+  }
+
+  /**
+   * #2055 — records a selection the store just wrote, so the sender's next
+   * message routes by it even before the reload notification arrives.
+   */
+  adoptSelection(selection: AgentSelectionRow): void {
+    const snap = this.snapshot;
+    if (!snap) return;
+    const others = this.selectionsWithout(selection.channelType, selection.conversationKey, selection.principal);
+    this.adoptSnapshot({ ...snap, selections: [...others, selection] });
+  }
+
+  /** #2055 — the counterpart of {@link adoptSelection} for a cleared selection. */
+  forgetSelection(channelType: string, conversationKey: string, principal: string): void {
+    const snap = this.snapshot;
+    if (!snap) return;
+    this.adoptSnapshot({ ...snap, selections: this.selectionsWithout(channelType, conversationKey, principal) });
+  }
+
+  private selectionsWithout(channelType: string, conversationKey: string, principal: string): AgentSelectionRow[] {
+    return (this.snapshot?.selections ?? []).filter(
+      (s) => !(s.channelType === channelType && s.conversationKey === conversationKey && s.principal === principal),
+    );
+  }
+
+  /**
+   * #2055 — the instance entry of the default-agent table, when it names an
+   * agent the registry serves. `undefined` for `off`, no entry, or an agent
+   * that is not enabled or not built. For consumers without a conversation
+   * (`chatAgent@1`); conversations route through `ManagementRouter`.
+   */
+  instanceDefaultSlug(): string | undefined {
+    const entry = (this.snapshot?.defaultEntries ?? []).find(
+      (e) => e.principal === null && e.channelType === null,
+    );
+    if (!entry?.agentId) return undefined;
+    return this.getById(entry.agentId)?.agent.slug;
+  }
+
+  /**
+   * The runtime every agent is built with, plus #2046: the directory of all
+   * agents' names (live and deleted) the identity guard checks against, read
+   * per turn so a renamed colleague is known without a rebuild.
+   */
+  private runtimeConfig(): Omit<AgentRuntimeConfig, 'agentId'> {
+    return {
+      ...this.options.defaultRuntimeConfig,
+      agentDirectory: () => this.guardDirectory(),
+    };
+  }
+
+  /** #2046 — every agent's names, for the identity guard. */
+  guardDirectory(): GuardDirectoryEntry[] {
+    const view = this.routingView();
+    const live = view.liveAgents().map((a) => ({ agentId: a.id, slug: a.slug, displayName: a.displayName }));
+    const deleted = (this.snapshot?.tombstones ?? []).map((t) => ({
+      agentId: t.id,
+      slug: t.slug,
+      displayName: t.name,
+    }));
+    return [...live, ...deleted];
+  }
+
+  /** The built agent with this id, if the registry serves it. */
+  getById(agentId: string): ActiveAgent | undefined {
+    for (const entry of this.active.values()) {
+      if (entry.agent.id === agentId) return entry;
+    }
+    return undefined;
   }
 
   /**
@@ -444,9 +513,10 @@ export class OrchestratorRegistry {
         const built = buildForAgent(
           action.agent,
           this.deps,
-          this.options.defaultRuntimeConfig,
+          this.runtimeConfig(),
           personaSkillsFor(graph.personaSkillsByAgent.get(action.agent.id) ?? []),
           this.grantedPluginIdsFor(action.agent, plugins),
+          consultableColleaguesOf(action.agent.id, graph.snapshot),
         );
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
         const memoryScope = computeMemoryScope(action.agent.slug);
@@ -496,9 +566,10 @@ export class OrchestratorRegistry {
         const built = buildForAgent(
           action.agent,
           this.deps,
-          this.options.defaultRuntimeConfig,
+          this.runtimeConfig(),
           personaSkillsFor(graph.personaSkillsByAgent.get(action.agent.id) ?? []),
           this.grantedPluginIdsFor(action.agent, plugins),
+          consultableColleaguesOf(action.agent.id, graph.snapshot),
         );
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
         const memoryScope = computeMemoryScope(action.agent.slug);
@@ -568,11 +639,10 @@ export class OrchestratorRegistry {
   }
 
   /**
-   * Resolve a webhook → Agent via the channel_bindings table. Returns
-   * `undefined` when no binding matches AND no fallback Agent is configured;
-   * returns the fallback Agent when one is set; the caller decides how to
-   * surface the unbound case (hard-reject vs. fall through). US7 wires the
-   * static channel adapters through this method.
+   * The live agent a key belongs to: its provisioned identity, else its
+   * `channel_bindings` row. `undefined` when neither names a live agent.
+   * There is no fallback agent (#2055): routing decisions with notices go
+   * through `ManagementRouter`; this is the plain lookup.
    */
   resolveByChannel(
     channelType: string,
@@ -589,11 +659,6 @@ export class OrchestratorRegistry {
           return entry;
         }
       }
-    }
-    const fallbackId = this.platformSettings.fallbackAgentId;
-    if (!fallbackId) return undefined;
-    for (const entry of this.active.values()) {
-      if (entry.agent.id === fallbackId) return entry;
     }
     return undefined;
   }
@@ -731,22 +796,6 @@ export class OrchestratorRegistry {
     cb: OrchestratorRegistryOptions['onAgentBuilt'],
   ): void {
     this.options = { ...this.options, onAgentBuilt: cb };
-  }
-
-  /**
-   * Phase A — chat-router fallback resolution. Returns the slug of the
-   * Agent currently bound to `platform_settings.fallback_agent_id`, or
-   * `undefined` when no fallback is set OR the referenced Agent no
-   * longer exists (deleted, disabled, never built). Callers use this
-   * as the no-pick default for inbound chat turns.
-   */
-  slugForFallback(): string | undefined {
-    const fallbackId = this.platformSettings.fallbackAgentId;
-    if (!fallbackId) return undefined;
-    for (const entry of this.active.values()) {
-      if (entry.agent.id === fallbackId) return entry.agent.slug;
-    }
-    return undefined;
   }
 
   /**
@@ -958,6 +1007,8 @@ interface GraphIndex {
   /** Wave 8 — direct-answer persona skills attached directly to the Agent
    *  (via `agent_persona_skills`), independent of any sub-agent. */
   readonly personaSkillsByAgent: Map<string, SkillRow[]>;
+  /** #2047/#2056 — the snapshot the index was built from (colleague names). */
+  readonly snapshot: ConfigSnapshot;
 }
 
 function indexGraph(snap: ConfigSnapshot): GraphIndex {
@@ -1005,7 +1056,7 @@ function indexGraph(snap: ConfigSnapshot): GraphIndex {
     skillsByAgent.set(agentId, refSkills);
   }
 
-  return { subAgentsByAgent, grantsByAgent, skillsByAgent, personaSkillsByAgent };
+  return { subAgentsByAgent, grantsByAgent, skillsByAgent, personaSkillsByAgent, snapshot: snap };
 }
 
 function groupBy<T, K>(

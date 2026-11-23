@@ -5,8 +5,10 @@
  * that renders it. It refuses what the channel could not show (so the engine
  * falls back to a chat ballot), hands on only fields of the contract, stores
  * an answer only in the contract's typed form, and updates a posted card
- * under the same identity rules as a send. Tested through the service object
- * a plugin gets.
+ * under the same identity rules as a send. Tested through the delivery
+ * behind 'conversationSend@2', called as the scoped send calls it once an
+ * execution scope authorized the action (`scopedSendService.test.ts` has the
+ * authorization).
  */
 
 import { strict as assert } from 'node:assert';
@@ -20,14 +22,18 @@ import type {
   TargetedDeliveryOutcome,
   TargetedMessage,
 } from '@omadia/channel-sdk';
-import type { ConversationSendService as PluginConversationSend } from '@omadia/plugin-api';
 
 import { ConversationSendRegistry } from '../src/channels/conversationSendRegistry.js';
-import { createConversationSendService } from '../src/channels/conversationSendService.js';
+import {
+  createConversationSendService,
+  type ConversationCardUpdateInput,
+  type ConversationSendInput,
+  type ConversationSendService,
+} from '../src/channels/conversationSendService.js';
 import { toStoredEvent, validateMessageEvent } from '../src/channels/conversationMessages/eventIntake.js';
 import { InMemoryConversationMessageStore } from '../src/channels/conversationMessages/store.js';
 import { readCardAnswerFields, readCardUpdate, readQuestionCard } from '../src/channels/questionCard.js';
-import { CONVERSATION, ENGINE, hubFixture, MARA_KEY, messageEvent, scopeOf } from './_helpers/conversationMessagesFixture.js';
+import { CONVERSATION, ENGINE, hubFixture, MARA_KEY, messageEvent, processOf, readAll } from './_helpers/conversationMessagesFixture.js';
 
 const OPTIONS = [
   { id: 'a', label: 'Tuesday' },
@@ -120,14 +126,21 @@ describe('readQuestionCard', () => {
   });
 });
 
-describe('question cards through conversationSend, as a plugin calls it', () => {
+/** The delivery with the ground of the engine's process already handed in. */
+interface AuthorizedSend {
+  sendToConversation(input: ConversationSendInput): ReturnType<ConversationSendService['sendToConversation']>;
+  capabilities: ConversationSendService['capabilities'];
+  updateCard(input: ConversationCardUpdateInput): ReturnType<ConversationSendService['updateCard']>;
+}
+
+describe('question cards through conversationSend, as an authorized send', () => {
   let support: CardSupport | undefined;
   let withUpdate: boolean;
   let posted: TargetedMessage[];
   let updates: { conversationId: string; cardMessageId: string; update: CardUpdate; opts: unknown }[];
   let updateOutcome: { outcome: 'updated' } | { outcome: 'unreachable'; code: string; message: string };
-  let engine: Required<PluginConversationSend>;
-  let stranger: Required<PluginConversationSend>;
+  let engine: AuthorizedSend;
+  let conversation: ConversationSendService;
 
   beforeEach(async () => {
     support = ALL_KINDS;
@@ -136,7 +149,7 @@ describe('question cards through conversationSend, as a plugin calls it', () => 
     updates = [];
     updateOutcome = { outcome: 'updated' };
     const f = hubFixture(new InMemoryConversationMessageStore());
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(f, 'mara');
     const providers = new ConversationSendRegistry();
     const provider: ConversationSendProvider = {
       channelType: 'teams',
@@ -157,23 +170,21 @@ describe('question cards through conversationSend, as a plugin calls it', () => 
       },
     };
     providers.register('@omadia/channel-teams', provider);
-    // The card logic of the send, called as the kernel's scoped send calls
-    // it for a plugin. (The first major's facade, which this suite used to
-    // go through, is no longer provided since K6.)
-    const conversation = createConversationSendService({
+    conversation = createConversationSendService({
       providers,
       ownIdentity: {
         identityFor: (slug: string) => (slug === 'mara' ? { channelKey: MARA_KEY } : undefined),
         subscriptions: f.hub,
       } as never,
     });
-    const as = (pluginId: string): Required<PluginConversationSend> => ({
-      sendToConversation: (input) => conversation.sendToConversation(input as never, pluginId),
-      capabilities: (channelType) => conversation.capabilities(channelType),
-      updateCard: (input) => conversation.updateCard(input as never, pluginId),
+    const ground = () => ({
+      subscriptions: f.hub.subscriptionsOfProcess(ENGINE, processOf('mara').processId, 'mara'),
     });
-    engine = as(ENGINE);
-    stranger = as('@acme/other');
+    engine = {
+      sendToConversation: (input) => conversation.sendToConversation(input, ground()),
+      capabilities: (channelType) => conversation.capabilities(channelType),
+      updateCard: (input) => conversation.updateCard(input, ground()),
+    };
   });
 
   const send = (card: unknown, over: Record<string, unknown> = {}) =>
@@ -182,10 +193,9 @@ describe('question cards through conversationSend, as a plugin calls it', () => 
       channelType: 'teams',
       conversationId: CONVERSATION,
       message: { text: 'Please answer.', card: card as QuestionCard, ...over },
-      asOwnIdentity: true,
     });
   const update = (
-    target: Required<PluginConversationSend>,
+    target: AuthorizedSend,
     cardUpdate: unknown,
     over: Record<string, unknown> = {},
   ) =>
@@ -210,10 +220,10 @@ describe('question cards through conversationSend, as a plugin calls it', () => 
   });
 
   it('says what the channel declares, so the engine can choose card or chat ballot', () => {
-    assert.deepEqual(engine.capabilities('teams'), { asOwnIdentity: true, mentions: false, poll: true, card: ALL_KINDS });
+    assert.deepEqual(engine.capabilities('teams'), { asOwnIdentity: true, mentions: false, reactions: false, poll: true, card: ALL_KINDS });
     assert.equal(engine.capabilities('slack'), undefined, 'no channel plugin for that type');
     support = undefined;
-    assert.deepEqual(engine.capabilities('teams'), { asOwnIdentity: true, mentions: false, poll: true });
+    assert.deepEqual(engine.capabilities('teams'), { asOwnIdentity: true, mentions: false, reactions: false, poll: true });
     // `update` is only reported when the method exists, and a nonsense declaration is cut down.
     support = { kinds: ['single_choice', 'matrix' as never], maxQuestions: 99, update: true };
     withUpdate = false;
@@ -252,7 +262,6 @@ describe('question cards through conversationSend, as a plugin calls it', () => 
       channelType: 'teams',
       conversationId: CONVERSATION,
       message: { text: 'Vote.', poll: { pollId: 'p1', question: 'Which?', options: OPTIONS } },
-      asOwnIdentity: true,
     });
     assert.equal(outcome.outcome, 'delivered');
     assert.deepEqual(posted[0]?.poll, { pollId: 'p1', question: 'Which?', options: OPTIONS });
@@ -269,10 +278,15 @@ describe('question cards through conversationSend, as a plugin calls it', () => 
   });
 
   it('an update follows the identity rules of a send', async () => {
-    const other = await update(stranger, CLOSED);
-    assert.deepEqual([other.outcome, other.outcome === 'unreachable' && other.code], ['unreachable', 'not_permitted']);
-    const elsewhere = await update(engine, CLOSED, { conversationId: '19:other@thread.v2' });
-    assert.equal(elsewhere.outcome === 'unreachable' && elsewhere.code, 'not_permitted');
+    // Without the ground an authorization leaves, nothing is updated.
+    const unauthorized = await conversation.updateCard(
+      { agentSlug: 'mara', channelType: 'teams', conversationId: CONVERSATION, cardMessageId: 'card-m1', update: CLOSED },
+      undefined as never,
+    );
+    assert.deepEqual(
+      [unauthorized.outcome, unauthorized.outcome === 'unreachable' && unauthorized.code],
+      ['unreachable', 'not_permitted'],
+    );
     const noIdentity = await update(engine, CLOSED, { agentSlug: 'hr' });
     assert.equal(noIdentity.outcome === 'unreachable' && noIdentity.code, 'no_identity');
     const noId = await update(engine, CLOSED, { cardMessageId: '' });

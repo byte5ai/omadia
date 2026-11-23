@@ -1,5 +1,5 @@
 // Storage for authenticated inbound conversation messages (#2043,
-// 'conversationMessages@1'): the store contract, the pure rules both
+// 'conversationMessages@2'): the store contract, the pure rules both
 // implementations share, and an in-memory implementation.
 //
 // The Postgres implementation (`pgStore.ts`, migration 0068) is what a
@@ -25,6 +25,13 @@ export function isRevisionKind(kind: ConversationMessageKind): boolean {
   return REVISION_KINDS.includes(kind);
 }
 
+/** #2089 — messages and transcript segments count their revisions apart;
+ *  reactions and card answers have none of their own (`undefined`). */
+export function revisionFamilyKey(kind: ConversationMessageKind, messageId: string): string | undefined {
+  if (kind === 'transcript_segment') return `transcript\u0000${messageId}`;
+  return isRevisionKind(kind) ? `message\u0000${messageId}` : undefined;
+}
+
 /** Identity keys are compared lower-cased on both sides (Teams adapters ask
  *  with `28:<appid lowercase>` on the hot path). */
 export function normalizeChannelKey(channelKey: string): string {
@@ -39,12 +46,11 @@ export interface MessageSubscription {
   readonly conversationId: string;
   /** Lower-cased. */
   readonly channelKey: string;
-  /** The engine plugin that subscribed. */
+  /** The plugin that subscribed. */
   readonly pluginId: string;
   readonly createdAt: Date;
-  /** #2089 — the process the subscription belongs to. Absent: a subscription
-   *  of the first major (no process, always `all`). */
-  readonly processId?: string;
+  /** #2089 — the process (of that plugin) the subscription belongs to. */
+  readonly processId: string;
   /** What is delivered: every human message, only messages addressed to the
    *  agent, or nothing. */
   readonly mode: SubscriptionMode;
@@ -62,16 +68,13 @@ export interface ProcessMessageBinding {
 
 export const cardRef = (cardId: string): string => `card:${cardId}`;
 
-export interface NewSubscription {
+export interface NewProcessSubscription {
   readonly agentId: string;
   readonly agentSlug: string;
   readonly channelType: string;
   readonly conversationId: string;
   readonly channelKey: string;
   readonly pluginId: string;
-}
-
-export interface NewProcessSubscription extends NewSubscription {
   readonly processId: string;
   readonly mode: SubscriptionMode;
 }
@@ -124,10 +127,9 @@ export interface PurgeResult {
 }
 
 export interface ConversationMessageStore {
+  /** The active subscriptions of processes. A row without a process is the
+   *  earlier form's (ended by migration 0080) and is never returned. */
   listActiveSubscriptions(): Promise<readonly MessageSubscription[]>;
-  /** Idempotent: an active subscription for the same (type, conversation,
-   *  identity) is returned as it is. */
-  createSubscription(input: NewSubscription): Promise<MessageSubscription>;
   endSubscription(subscriptionId: string): Promise<void>;
   /** Stores the event with a kernel-assigned revision. `undefined` when the
    *  same platform event was already stored (redelivery). */
@@ -145,6 +147,12 @@ export interface ConversationMessageStore {
     subscription: MessageSubscription,
     eventId: string,
   ): Promise<ConversationMessageRecord | undefined>;
+  /** #2089 — the latest stored revision per message and per transcript
+   *  segment of these ids, keyed by {@link revisionFamilyKey}. */
+  latestRevisions(
+    subscription: MessageSubscription,
+    messageIds: readonly string[],
+  ): Promise<ReadonlyMap<string, number>>;
   /** Events after the cursor in storage order, at most `limit`. */
   listSince(
     subscription: MessageSubscription,
@@ -159,11 +167,9 @@ export interface ConversationMessageStore {
   ): Promise<StoredAuthor | undefined>;
   /** Remove events (and the rows) of subscriptions that ended before
    *  `endedBefore`, and any event received before `receivedBefore`. Events
-   *  of a process subscription that has not ended are kept whatever their
-   *  age: its process's scopes bound it (#2089, spec 2043 §9 criterion 61). */
+   *  of a subscription that has not ended are kept whatever their age: its
+   *  process's scopes bound it (#2089, spec 2043 §9 criterion 61). */
   purge(cutoffs: { endedBefore: Date; receivedBefore?: Date }): Promise<PurgeResult>;
-
-  // ── #2089: process-bound subscriptions ('conversationMessages@2') ────────
 
   /**
    * The one subscription of a process for a conversation and identity. A
@@ -321,22 +327,6 @@ export class InMemoryConversationMessageStore implements ConversationMessageStor
     return Promise.resolve(this.subscriptions.filter((s) => s.endedAt === undefined));
   }
 
-  createSubscription(input: NewSubscription): Promise<MessageSubscription> {
-    const channelKey = normalizeChannelKey(input.channelKey);
-    const existing = this.subscriptions.find(
-      (s) =>
-        s.endedAt === undefined &&
-        s.processId === undefined &&
-        s.channelType === input.channelType &&
-        s.conversationId === input.conversationId &&
-        s.channelKey === channelKey,
-    );
-    if (existing) return Promise.resolve(existing);
-    const created: MessageSubscription = { ...input, channelKey, id: randomUUID(), createdAt: this.now(), mode: 'all' };
-    this.subscriptions = [...this.subscriptions, created];
-    return Promise.resolve(created);
-  }
-
   endSubscription(subscriptionId: string): Promise<void> {
     this.subscriptions = this.subscriptions.map((s) =>
       s.id === subscriptionId && s.endedAt === undefined ? { ...s, endedAt: this.now() } : s,
@@ -392,6 +382,20 @@ export class InMemoryConversationMessageStore implements ConversationMessageStor
     );
   }
 
+  latestRevisions(
+    subscription: MessageSubscription,
+    messageIds: readonly string[],
+  ): Promise<ReadonlyMap<string, number>> {
+    const wanted = new Set(messageIds);
+    const latest = new Map<string, number>();
+    for (const e of this.events) {
+      if (e.subscriptionId !== subscription.id || !wanted.has(e.record.messageId)) continue;
+      const key = revisionFamilyKey(e.record.kind, e.record.messageId);
+      if (key !== undefined) latest.set(key, Math.max(latest.get(key) ?? -1, e.record.revision));
+    }
+    return Promise.resolve(latest);
+  }
+
   listSince(
     subscription: MessageSubscription,
     after: string | undefined,
@@ -440,7 +444,7 @@ export class InMemoryConversationMessageStore implements ConversationMessageStor
   setSubscriptionMode(subscriptionId: string, mode: SubscriptionMode): Promise<MessageSubscription | undefined> {
     let changed: MessageSubscription | undefined;
     this.subscriptions = this.subscriptions.map((s) => {
-      if (s.id !== subscriptionId || s.endedAt !== undefined || s.processId === undefined) return s;
+      if (s.id !== subscriptionId || s.endedAt !== undefined) return s;
       changed = { ...s, mode };
       return changed;
     });
@@ -487,9 +491,7 @@ export class InMemoryConversationMessageStore implements ConversationMessageStor
   }
 
   purge(cutoffs: { endedBefore: Date; receivedBefore?: Date }): Promise<PurgeResult> {
-    const liveProcess = new Set(
-      this.subscriptions.filter((s) => s.endedAt === undefined && s.processId !== undefined).map((s) => s.id),
-    );
+    const live = new Set(this.subscriptions.filter((s) => s.endedAt === undefined).map((s) => s.id));
     const dead = new Set(
       this.subscriptions
         .filter((s) => s.endedAt !== undefined && s.endedAt.getTime() < cutoffs.endedBefore.getTime())
@@ -500,7 +502,7 @@ export class InMemoryConversationMessageStore implements ConversationMessageStor
       (e) =>
         !dead.has(e.subscriptionId) &&
         (cutoffs.receivedBefore === undefined ||
-          liveProcess.has(e.subscriptionId) ||
+          live.has(e.subscriptionId) ||
           e.receivedAt.getTime() >= cutoffs.receivedBefore.getTime()),
     );
     this.subscriptions = this.subscriptions.filter((s) => !dead.has(s.id));

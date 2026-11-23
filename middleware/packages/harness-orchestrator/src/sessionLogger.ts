@@ -344,7 +344,7 @@ function renderHeader(scope: string, day: string): string {
     'Chronologisches Protokoll der Q&A-Turns in diesem Scope. Wird von der',
     'Middleware geschrieben, nicht von Claude. Bei wiederkehrenden Themen oder',
     'Rückbezügen auf frühere Gespräche gezielt hier nachschlagen, statt den',
-    'gesamten Fach-Agent-Roundtrip zu wiederholen.',
+    'gesamten Fach-Werkzeug-Roundtrip zu wiederholen.',
     '',
     '---',
     '',

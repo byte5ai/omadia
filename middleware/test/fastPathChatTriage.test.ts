@@ -373,7 +373,7 @@ function port(outcome: ChatTriageOutcome, calls: string[] = []): FastPathTriageP
   };
 }
 
-const HIT: ChatTriageOutcome = { kind: 'answer', text: '2 Treffer.\n\n| A |\n| --- |\n| x |', tool: 'odoo_query', rows: 1, toolCalls: 1, ms: 5 };
+const HIT: ChatTriageOutcome = { kind: 'answer', text: '2 Treffer.\n\n| A |\n| --- |\n| x |', summary: '2 Treffer.', table: { kind: 'table', columns: ['A'], rows: [['x']] }, tool: 'odoo_query', rows: 1, toolCalls: 1, ms: 5 };
 
 async function collect(it: AsyncIterable<ChatStreamEvent>): Promise<ChatStreamEvent[]> {
   const out: ChatStreamEvent[] = [];
@@ -397,10 +397,21 @@ describe('fast-path chat triage — wrapper', () => {
     });
     const events = await collect(agent.chatStream({ userMessage: 'Geburtstage?', sessionScope: 'sess-1', userId: 'u1' }));
     assert.equal(inner.inputs.length, 0);
+    // #2085 — the summary streams as prose; the rows ride `done` as
+    // side-channel data, rendered into its answer.
     assert.deepEqual(events, [
-      { type: 'text_delta', text: HIT.kind === 'answer' ? HIT.text : '' },
-      { type: 'done', answer: HIT.kind === 'answer' ? HIT.text : '', toolCalls: 1, iterations: 0, turnId: 'turn:sess-1:t' },
+      { type: 'text_delta', text: '2 Treffer.' },
+      {
+        type: 'done',
+        answer: HIT.kind === 'answer' ? HIT.text : '',
+        toolCalls: 1,
+        iterations: 0,
+        turnId: 'turn:sess-1:t',
+        data: [{ kind: 'table', columns: ['A'], rows: [['x']] }],
+        textWithoutData: '2 Treffer.',
+      },
     ]);
+    assert.equal(logged[0]?.assistantAnswer, '2 Treffer.', 'the transcript keeps the prose, not the rows');
     assert.equal(logged.length, 1);
     assert.equal(logged[0]?.scope, 'sess-1');
     assert.equal(logged[0]?.userMessage, 'Geburtstage?');
@@ -566,12 +577,80 @@ describe('fast-path chat triage — orchestrator wiring', () => {
   it('every built bundle agent answers a hit itself (outside the verifier)', async () => {
     const built = buildForAgent(AGENT_ROW, orchestratorDeps(() => port(HIT)), RUNTIME);
     const events = await collect(built.bundle.agent.chatStream({ userMessage: 'Geburtstage?', sessionScope: 'tab_1' }));
-    assert.deepEqual(
-      events.map((e) => e.type),
-      ['text_delta', 'done'],
+    // #2046 — the identity guard releases the text sentence by sentence, so
+    // the one fast-lane delta may arrive in several; together they are it.
+    assert.equal(events.at(-1)?.type, 'done');
+    assert.ok(events.slice(0, -1).every((e) => e.type === 'text_delta'));
+    assert.equal(events.map((e) => (e.type === 'text_delta' ? e.text : '')).join(''), '2 Treffer.');
+    const done = events.at(-1);
+    assert.ok(
+      (done?.type === 'done' ? done.answer : '').startsWith(HIT.kind === 'answer' ? HIT.text : '-'),
+      'the rows ride done (then the AI disclosure)',
     );
     const bare = buildForAgent(AGENT_ROW, orchestratorDeps(), RUNTIME);
-    assert.equal(bare.bundle.agent, bare.orchestrator, 'no fast path dep → no wrapper');
+    // No fast path dep → no fast-lane wrapper: a hit question goes to the
+    // model loop (the agent is the orchestrator behind speaker and guard).
+    assert.equal(bare.bundle.raw, bare.orchestrator);
+  });
+
+  it('criterion 6 / 28: a fast-lane hit speaks as the agent with AI disclosure; a miss reaches the same agent', async () => {
+    let triaged = 0;
+    let decision: ChatTriageOutcome = HIT;
+    const counting: FastPathTriagePort = {
+      channelEnabled: () => true,
+      triageChatTurn: () => ((triaged += 1), Promise.resolve(decision)),
+    };
+    const modelRequests: unknown[] = [];
+    const answerText = 'Das schaue ich mir genauer an.';
+    const response = { content: [{ type: 'text', text: answerText }], finishReason: 'stop', model: 'm', usage: { inputTokens: 1, outputTokens: 1 } };
+    const deps = {
+      ...orchestratorDeps(() => counting),
+      // The agent loop of a miss runs for real: no entity collection here.
+      entityRefBus: undefined as unknown as OrchestratorDeps['entityRefBus'],
+      provider: {
+        id: 'anthropic',
+        capabilities: { tools: true, vision: false, streaming: true, promptCaching: false, forcedToolChoice: true, parallelToolCalls: false },
+        complete: (req: unknown) => (modelRequests.push(req), Promise.resolve(response)),
+        stream: (req: unknown) => ({
+          async *[Symbol.asyncIterator]() {
+            modelRequests.push(req);
+            yield { type: 'text_delta', text: answerText };
+            yield { type: 'final', response };
+          },
+        }),
+        classifyError: () => ({ retryable: false, kind: 'other' }),
+      } as unknown as OrchestratorDeps['provider'],
+    };
+    const built = buildForAgent({ ...AGENT_ROW, identityName: 'Klara' } as AgentRow, deps, { ...RUNTIME, modelRouting: undefined });
+
+    // Hit: no model call, the agent's speaker, its AI disclosure.
+    const hit = await collect(built.bundle.agent.chatStream({ userMessage: 'Geburtstage?', sessionScope: 'tab_1' }));
+    const hitDone = hit.at(-1);
+    assert.ok(hitDone?.type === 'done');
+    assert.equal(modelRequests.length, 0, 'the fast lane answered without the agent loop');
+    assert.equal(hitDone.speaker?.kind, 'agent');
+    assert.equal(hitDone.speaker?.kind === 'agent' && hitDone.speaker.agentId, AGENT_ROW.id);
+    assert.ok(hitDone.aiDisclosure, 'the hit carries the AI disclosure');
+    assert.ok(hitDone.answer.includes(hitDone.aiDisclosure.text), 'and renders it');
+    const buffered = await built.bundle.agent.chat({ userMessage: 'Geburtstage?', sessionScope: 'tab_1' });
+    assert.equal(buffered.speaker?.kind === 'agent' && buffered.speaker.agentId, AGENT_ROW.id);
+    assert.ok(buffered.aiDisclosure);
+
+    // Miss: the same agent answers through its loop, under the same speaker.
+    decision = { kind: 'agent', reason: 'router-invalid', ms: 1 };
+    const miss = await collect(built.bundle.agent.chatStream({ userMessage: 'Wie geht es weiter?', sessionScope: 'tab_1' }));
+    const missDone = miss.at(-1);
+    assert.ok(missDone?.type === 'done');
+    assert.ok(modelRequests.length > 0, 'the miss reached the agent loop');
+    assert.ok(missDone.answer.startsWith(answerText));
+    assert.equal(missDone.speaker?.kind === 'agent' && missDone.speaker.agentId, AGENT_ROW.id, 'the same agent');
+    assert.ok(missDone.aiDisclosure);
+    assert.equal(triaged, 3, 'the record of a previous answer never turns the fast lane off');
+    // Criterion 29 — the agent loop gets the record of the previous answer.
+    assert.ok(
+      JSON.stringify(modelRequests.at(-1)).includes('Harness record of your previous answer'),
+      'the miss sees the previous answer\'s details',
+    );
   });
 
   it('a routeHint replaces the router classifier call', async () => {

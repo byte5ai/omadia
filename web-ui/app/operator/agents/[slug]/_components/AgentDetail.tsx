@@ -13,14 +13,19 @@ import {
   type OperatorAgentDto,
   type PluginCatalogEntryDto,
 } from '../../../../_lib/agents';
+import { AgentReachPanel } from '@/app/_components/agents/AgentReach';
+import { useBroadReachConfirm } from '@/app/_components/agents/useBroadReachConfirm';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
 import { useFacilitatorRefusalMessage } from '../../_components/useFacilitatorCopy';
 import { PluginsDnd } from '../../_components/PluginsDnd';
+import { AgentChannelIdentities } from './AgentChannelIdentities';
 import { AgentContextMemory } from './AgentContextMemory';
-import { AgentDetailTabs } from './AgentDetailTabs';
+import { AgentDetailTabs, type AgentDetailTab } from './AgentDetailTabs';
 import { AgentIdentity } from './AgentIdentity';
 import { AgentMcpServers } from './AgentMcpServers';
 import { AgentModelPolicy } from './AgentModelPolicy';
+import { AgentFastLane } from './AgentFastLane';
+import { AgentConsultation } from './AgentConsultation';
 import { AgentPeers } from './AgentPeers';
 import { AgentTeamsIdentity } from './AgentTeamsIdentity';
 import { AgentTeamsInstalls } from './AgentTeamsInstalls';
@@ -43,10 +48,8 @@ import { FacilitatorDetail } from './FacilitatorDetail';
  */
 interface AgentDetailProps {
   readonly agent: OperatorAgentDto;
-  /** Fallback agents always run plugins with the global store config —
-   *  surfaced as a notice and forwarded to PluginsDnd, which hides the
-   *  per-agent config drawer and wipes overrides on save. */
-  readonly isFallback: boolean;
+  /** The tab `?tab=` names, read by the page on the server. */
+  readonly initialTab?: AgentDetailTab;
 }
 
 /**
@@ -82,7 +85,7 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
   // has no plugin editor, grants, peers or memory, so none of their read
   // models are fetched for it.
   return isFacilitatorAgent(props.agent) ? (
-    <FacilitatorDetail agent={props.agent} />
+    <FacilitatorDetail agent={props.agent} {...(props.initialTab ? { initialTab: props.initialTab } : {})} />
   ) : (
     <StandardAgentDetail {...props} />
   );
@@ -90,6 +93,7 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
 
 function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
   const t = useTranslations('operatorAgents');
+  const broadReach = useBroadReachConfirm();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [busy, setBusy] = useState<string | null>(null);
@@ -212,10 +216,10 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
                       })}
                       onChange={() =>
                         run(`toggle:${p.id}`, () =>
-                          toggleAgentPlugin(
-                            props.agent.slug,
-                            p.id,
-                            !p.enabled,
+                          broadReach.guard(props.agent.name, (confirm) =>
+                            toggleAgentPlugin(props.agent.slug, p.id, !p.enabled, {
+                              confirmBroadReach: confirm,
+                            }),
                           ),
                         )
                       }
@@ -230,22 +234,19 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
       </section>
 
       <section>
-        {props.isFallback && (
-          <div className="mb-3 rounded border border-[color:var(--accent)] bg-[color:var(--accent)]/10 px-3 py-2 text-xs text-[color:var(--accent)]">
-            {t('fallbackStoreOnlyNotice')}
-          </div>
-        )}
         {catalog ? (
           <PluginsDnd
             key={`${props.agent.id}:${editorRevision}`}
             agent={props.agent}
             catalog={catalog}
-            isFallback={props.isFallback}
             disabled={disabled}
             onReplace={(plugins) =>
               run(
                 'plugins',
-                () => replaceAgentPlugins(props.agent.slug, plugins),
+                () =>
+                  broadReach.guard(props.agent.name, (confirm) =>
+                    replaceAgentPlugins(props.agent.slug, plugins, { confirmBroadReach: confirm }),
+                  ),
                 { remountEditor: true },
               )
             }
@@ -263,6 +264,10 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
 
   return (
     <div className="space-y-8">
+      {broadReach.dialog}
+      {/* #2054 — the agent's reach: every connected system it can read or
+          write through its grants (spec 2042 §5.7). */}
+      <AgentReachPanel reach={props.agent.reach} />
       {error && (
         <div
           role="alert"
@@ -284,14 +289,26 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
           Every section fetches its own read model by slug and is safe to
           mount on its own — which is exactly what a tab does. */}
       <AgentDetailTabs
+        {...(props.initialTab ? { initialTab: props.initialTab } : {})}
         panels={{
           identity: () => <AgentIdentity slug={props.agent.slug} />,
-          model: () => <AgentModelPolicy slug={props.agent.slug} />,
-          peers: () => <AgentPeers slug={props.agent.slug} />,
+          model: () => (
+            <>
+              <AgentModelPolicy slug={props.agent.slug} />
+              <AgentFastLane slug={props.agent.slug} />
+            </>
+          ),
+          peers: () => (
+            <>
+              <AgentPeers slug={props.agent.slug} />
+              <AgentConsultation agent={props.agent} />
+            </>
+          ),
           teams: () => (
             <>
               <AgentTeamsIdentity slug={props.agent.slug} />
               <AgentTeamsInstalls slug={props.agent.slug} />
+              <AgentChannelIdentities slug={props.agent.slug} />
             </>
           ),
           plugins: () => pluginsPanel,

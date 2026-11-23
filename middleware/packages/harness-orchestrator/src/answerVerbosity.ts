@@ -86,7 +86,7 @@ const LEVEL_CONTRACT: Record<Exclude<AnswerVerbosity, 'standard'>, string> = {
   brief: `- **Ergebnis zuerst**, dann höchstens 5 Stichpunkte mit den wichtigsten Zahlen und Fakten.
 - Keine Einleitung, keine Wiederholung der Frage, keine Erklärung des Vorgehens.
 - Datentabellen auf die angefragten Spalten beschränken; Rankings per \`v4_top_n\` auf höchstens 10 Zeilen, den Rest als Anzahl nennen.`,
-  detailed: `- Ergebnis **mit Begründung**: woher die Zahlen stammen (welcher Fach-Agent, welcher Zeitraum, welche Filter), welche Annahmen und Einschränkungen gelten.
+  detailed: `- Ergebnis **mit Begründung**: woher die Zahlen stammen (welches Fach-Werkzeug, welcher Zeitraum, welche Filter), welche Annahmen und Einschränkungen gelten.
 - Abschnitte, Aufzählungen und vollständige Tabellen sind erwünscht.
 - Nenne Unsicherheiten und sinnvolle nächste Schritte.`,
   max: `- **Vollständig**: Ergebnis, Herleitung, jeden Zwischenschritt (welches Werkzeug mit welchen Parametern), alle relevanten Rohwerte, Annahmen, Unsicherheiten und offene Punkte.
@@ -114,7 +114,7 @@ export function buildAnswerVerbosityTurnBlock(level: AnswerVerbosity): string {
 
 Für diesen EINEN Turn ersetzt diese Vorgabe den Abschnitt »Antwortumfang« im stabilen System-Prompt (falls vorhanden). Der User hat gerade dieselbe Frage noch einmal gestellt, weil ihm die vorige Antwort zu lang oder zu kurz war — liefere jetzt genau diesen Umfang:
 ${contract}
-- Ergebnisse von Fach-Agenten sind Rohmaterial: verdichte sie auf diesen Umfang, gib sie nicht wörtlich oder nacherzählt weiter.`;
+- Ergebnisse von Fach-Werkzeugen sind Rohmaterial: verdichte sie auf diesen Umfang, gib sie nicht wörtlich oder nacherzählt weiter.`;
 }
 
 /**
@@ -126,7 +126,7 @@ export function buildAnswerVerbosityBlock(level: AnswerVerbosity): string {
   const label = LEVEL_LABEL[level];
   return `Antwortumfang (vom Betreiber auf «${label}» gestellt):
 ${LEVEL_CONTRACT[level]}
-- Ergebnisse von Fach-Agenten sind Rohmaterial: verdichte sie auf diesen Umfang, gib sie nicht wörtlich oder nacherzählt weiter.
+- Ergebnisse von Fach-Werkzeugen sind Rohmaterial: verdichte sie auf diesen Umfang, gib sie nicht wörtlich oder nacherzählt weiter.
 - Bittet der User in seiner Nachricht ausdrücklich um mehr oder weniger Umfang («kurz», «nur die Zahl», «ausführlich», «alle Details»), gewinnt seine Bitte für diesen Turn.
 `;
 }

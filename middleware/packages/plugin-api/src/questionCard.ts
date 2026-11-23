@@ -99,6 +99,11 @@ export interface CardSupport {
   maxQuestions: number;
   /** The channel can update a posted card (`updateCard`). */
   update: boolean;
+  /** 1.88.0 — the channel shows no native cards: the kernel posts a card as
+   *  numbered text and a typed reply comes back as its answer (#2086). A
+   *  sender that explains how to answer says "reply in the chat", not "use
+   *  the card". Absent on older kernels: read it as `false`. */
+  asText?: boolean;
 }
 
 /** One answered question of a submission. */

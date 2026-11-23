@@ -21,7 +21,8 @@ import {
   hubFixture,
   MARA_KEY,
   messageEvent,
-  scopeOf,
+  processOf,
+  readAll,
 } from './_helpers/conversationMessagesFixture.js';
 
 const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
@@ -29,7 +30,7 @@ const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
 describe('CoreApi scoped to one channel plugin', () => {
   async function setup() {
     const messages = hubFixture(new InMemoryConversationMessageStore());
-    await messages.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(messages, 'mara');
     const events = new ConversationEventHub();
     const membership: { channelId: string; channelType?: string; kind: string }[] = [];
     events.subscribe((e) => void membership.push({ channelId: e.channelId, kind: e.kind, ...(e.channelType ? { channelType: e.channelType } : {}) }));
@@ -76,7 +77,7 @@ describe('CoreApi scoped to one channel plugin', () => {
     // A Slack channel plugin forging a Teams vote from Anna.
     s.rogue.emitConversationMessage!(messageEvent({ channelId: '@omadia/channel-teams', messageId: 'forged' }));
     await flush();
-    assert.deepEqual((await s.messages.hub.listSince(scopeOf('mara'), ENGINE)).events, []);
+    assert.deepEqual((await s.messages.hub.listProcessEventsSince(processOf('mara'), ENGINE)).events, []);
     assert.match(
       s.logs[0]!,
       /@acme\/channel-slack tried to emit a message event for channel type 'teams', which belongs to @omadia\/channel-teams/,
@@ -85,8 +86,27 @@ describe('CoreApi scoped to one channel plugin', () => {
     s.teams.emitConversationMessage!(messageEvent({ channelId: 'whatever-it-claims', messageId: 'real' }));
     await flush();
     assert.deepEqual(
-      (await s.messages.hub.listSince(scopeOf('mara'), ENGINE)).events.map((e) => e.messageId),
+      (await s.messages.hub.listProcessEventsSince(processOf('mara'), ENGINE)).events.map((e) => e.messageId),
       ['real'],
+    );
+  });
+
+  it('nor report a message event for a channel type it does not serve (#2086)', async () => {
+    const s = await setup();
+    assert.ok(s.rogue.reportConversationMessage, 'feature-detectable');
+    const forged = await s.rogue.reportConversationMessage!(
+      messageEvent({ channelId: '@omadia/channel-teams', messageId: 'forged-report' }),
+    );
+    assert.deepEqual(forged, { answeredCard: false });
+    assert.deepEqual((await s.messages.hub.listProcessEventsSince(processOf('mara'), ENGINE)).events, []);
+    assert.match(s.logs.join('\n'), /tried to report a message event for channel type 'teams'/);
+    // the Teams plugin's own report goes through, stamped with its own id
+    assert.deepEqual(await s.teams.reportConversationMessage!(messageEvent({ channelId: 'whatever', messageId: 'own-report' })), {
+      answeredCard: false,
+    });
+    assert.deepEqual(
+      (await s.messages.hub.listProcessEventsSince(processOf('mara'), ENGINE)).events.map((e) => e.messageId),
+      ['own-report'],
     );
   });
 

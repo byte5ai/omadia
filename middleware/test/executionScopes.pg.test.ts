@@ -27,6 +27,7 @@ import {
 } from '../src/execution/executionAuthorizationService.js';
 import { createExecutionGrantsService, createGrantVerificationService } from '../src/execution/grantService.js';
 import { ExecutionScopeStore } from '../src/execution/scopeStore.js';
+import { SessionConversationStore } from '../src/execution/sessionConversationStore.js';
 import { createScopedSendService } from '../src/channels/scopedSendService.js';
 import { wrapFacilitatorAgent } from '../packages/harness-orchestrator/src/facilitatorAgent.js';
 import { admitModelCall } from '../packages/llm-provider-api/src/index.js';
@@ -48,6 +49,9 @@ const HOUR = 3_600_000;
 describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, () => {
   let pool: Pool;
   let store: ExecutionScopeStore;
+  let sessions: SessionConversationStore;
+  /** Conversations whose channel cannot deliver every message, with why. */
+  const notReady = new Map<string, string>();
   const agents = new Map<string, ExecutionAgent>();
   let clock = (): Date => new Date();
   let seq = 0;
@@ -65,6 +69,8 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       resolveAgent: (slug) => agents.get(slug),
       archetypePluginIdFor: (archetype) => (archetype === 'facilitator' ? ENGINE : archetype === 'other' ? OTHER : undefined),
       configuringMaxMs: 72 * HOUR,
+      sessions,
+      notReadyForAll: (_agent, _channel, conversationId) => Promise.resolve(notReady.get(conversationId)),
       now: () => clock(),
     });
   let engine: ExecutionAuthorizationService;
@@ -108,6 +114,7 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       agents.set(slug, { id: agent.id, slug, archetype, enabled: true });
     }
     store = new ExecutionScopeStore(pool);
+    sessions = new SessionConversationStore(pool);
     engine = serviceFor(ENGINE);
   });
 
@@ -497,6 +504,8 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       await pool.query("UPDATE execution_scopes SET deadline = now() - interval '1 second' WHERE id = $1", [scope.id]);
       assert.equal(code(await engine.extendScope(scope.id, { deadline: inHours(1) })), 'deadline_passed', 'an expired scope never re-opens moderation');
       assert.equal(code(await engine.extendScope(scope.id, { deadline: inHours(24 * 31), deadlineWait: true })), 'limit_exceeded');
+      // The session closing the wait is for is opened first (spec 2043 §5.6).
+      await engine.openScope({ agentSlug: 'mara', processId: scope.processId, kind: 'closing', eventId: 'session:s1', deadline: inHours(24 * 7), budget: { actions: 5, modelCalls: 0 } });
       const wait = await engine.extendScope(scope.id, { deadline: inHours(24), deadlineWait: true });
       assert.equal(wait.outcome, 'extended');
       const target = { kind: 'conversation' as const, ...home };
@@ -519,6 +528,160 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
     });
   });
 
+  describe('#2090 closing limits, closing purposes and the bounded deadline wait (plugin-api 1.85.0)', () => {
+    const budget = { actions: 20, modelCalls: 0 };
+    type Home = { channelType: string; conversationId: string };
+    const closingOf = (processId: string, eventId: string, extra: { eventAt?: string; deadline?: string; home?: Home } = {}) =>
+      engine.openScope({
+        agentSlug: 'mara',
+        processId,
+        kind: 'closing',
+        eventId,
+        deadline: extra.deadline ?? inHours(24),
+        budget,
+        ...(extra.eventAt ? { eventAt: extra.eventAt } : {}),
+        ...(extra.home ? { targets: [{ kind: 'conversation' as const, ...extra.home }] } : {}),
+      });
+
+    it('the 30 days of a closing count from its event, also when the scope is opened later', async () => {
+      const { processId } = await activeProcess();
+      const started = clock().getTime();
+      // The plugin comes round to the closing 3 days after the event (a restart).
+      clock = () => new Date(started + 3 * 24 * HOUR);
+      try {
+        const eventAt = new Date(started + HOUR).toISOString();
+        assert.equal(code(await closingOf(processId, 'late', { eventAt, deadline: inHours(24 * 28) })), 'limit_exceeded', 'not 30 days from the opening');
+        const opened = await closingOf(processId, 'late', { eventAt, deadline: inHours(24 * 26) });
+        assert.equal(opened.outcome, 'opened', JSON.stringify(opened));
+        if (opened.outcome !== 'opened') return;
+        assert.equal(opened.scope.absoluteLimit, new Date(started + HOUR + 30 * 24 * HOUR).toISOString());
+        assert.equal(code(await engine.extendScope(opened.scope.id, { deadline: inHours(24 * 28) })), 'limit_exceeded');
+        assert.equal(code(await closingOf(processId, 'future', { eventAt: inHours(1) })), 'invalid_request', 'an event cannot lie ahead');
+        const early = await closingOf(processId, 'early', { eventAt: new Date(started - 2 * 24 * HOUR).toISOString(), deadline: inHours(24) });
+        assert.equal(early.outcome === 'opened' ? early.scope.absoluteLimit : '', new Date(started + 28 * 24 * HOUR).toISOString(), 'an earlier event only shortens the limit');
+        assert.equal(
+          code(await engine.openScope({ agentSlug: 'mara', processId, kind: 'follow_up', eventAt: new Date(started).toISOString(), deadline: inHours(2), budget })),
+          'invalid_request',
+          'only a closing names its event time',
+        );
+      } finally {
+        clock = () => new Date();
+      }
+    });
+
+    it('a closing event older than 30 days opens nothing: nothing is sent after the absolute limit', async () => {
+      const { processId } = await activeProcess();
+      const started = clock().getTime();
+      clock = () => new Date(started + 31 * 24 * HOUR);
+      try {
+        assert.equal(code(await closingOf(processId, 'stale', { eventAt: new Date(started + HOUR).toISOString() })), 'limit_exceeded');
+        assert.equal((await engine.listScopes(processId)).some((s) => s.eventId === 'stale'), false);
+      } finally {
+        clock = () => new Date();
+      }
+    });
+
+    it('a closing never re-opens moderation: only its messages, consent answers, status, stop and checks', async () => {
+      const { processId, home } = await activeProcess();
+      const opened = await closingOf(processId, 'result', { home });
+      if (opened.outcome !== 'opened') throw new Error(JSON.stringify(opened));
+      const post = { scopeId: opened.scope.id, phase: 'concluding' as const, action: 'post' as const, target: { kind: 'conversation' as const, ...home } };
+      for (const purpose of ['moderation', 'handshake', 'link', 'reminder'] as const) {
+        assert.equal(code(await engine.authorize({ ...post, purpose })), 'purpose_not_allowed', purpose);
+      }
+      assert.equal(code(await engine.authorize({ ...post, purpose: 'other' })), 'purpose_not_allowed', "'other' is a check only");
+      assert.equal(code(await engine.authorize({ ...post, action: 'model_turn', target: undefined, purpose: 'moderation', modelCalls: 1 })), 'purpose_not_allowed');
+      for (const purpose of ['essential_message', 'protocol_dispatch', 'consent', 'status', 'stop'] as const) {
+        assert.equal((await engine.authorize({ ...post, purpose })).outcome, 'authorized', purpose);
+      }
+      assert.equal((await engine.authorize({ ...post, action: 'check', target: undefined, purpose: 'other' })).outcome, 'authorized');
+      const used = await pool.query<{ used_actions: number }>('SELECT used_actions FROM execution_scopes WHERE id = $1', [opened.scope.id]);
+      assert.equal(used.rows[0]?.used_actions, 6, 'a refusal spends nothing');
+    });
+
+    it('a deadline wait needs an open closing scope and ends with its limit', async () => {
+      const { processId, scope } = await activeProcess();
+      const started = clock().getTime();
+      await pool.query("UPDATE execution_scopes SET deadline = now() - interval '1 second' WHERE id = $1", [scope.id]);
+      // Five days later: the session closed at the start of the process.
+      clock = () => new Date(started + 5 * 24 * HOUR);
+      try {
+        assert.equal(code(await engine.extendScope(scope.id, { deadline: inHours(24), deadlineWait: true })), 'scope_order', 'nothing to wait for');
+        const session = await closingOf(processId, 'session:last', { eventAt: new Date(started).toISOString(), deadline: inHours(24 * 7) });
+        if (session.outcome !== 'opened') throw new Error(JSON.stringify(session));
+        assert.equal(
+          code(await engine.extendScope(scope.id, { deadline: inHours(24 * 26), deadlineWait: true })),
+          'limit_exceeded',
+          'never past the closing it waits for (30 days after its event, 25 days from now)',
+        );
+        assert.equal((await engine.extendScope(scope.id, { deadline: inHours(48), deadlineWait: true })).outcome, 'extended');
+        const status = { scopeId: scope.id, phase: 'active' as const, purpose: 'status' as const, action: 'check' as const };
+        assert.equal((await engine.authorize(status)).outcome, 'authorized', 'consent, status and stop run in the wait');
+        await engine.endScope(session.scope.id, 'confirmed');
+        assert.equal(code(await engine.authorize(status)), 'deadline_passed', 'the wait ends with its closings, not at its own deadline');
+        assert.equal(code(await engine.extendScope(scope.id, { deadline: inHours(72), deadlineWait: true })), 'scope_order', 'the wait is over with its closings');
+      } finally {
+        clock = () => new Date();
+      }
+    });
+
+    describe('criterion 59 across the kernel boundary: the last session ends exactly at the deadline', () => {
+      /**
+       * The two jobs due at the same moment run in either order: the
+       * session's end (its closing is opened) and the facilitation's
+       * deadline (the active scope goes into its wait). In both, the wait
+       * only stands once the closing is open, only consent, status and stop
+       * run during it, the summary goes out under its own closing, and the
+       * result closing that follows counts from the deadline.
+       */
+      for (const order of ['session end first', 'deadline first'] as const) {
+        it(order, async () => {
+          const { processId, scope, home } = await activeProcess({ actions: 20, modelCalls: 4 });
+          const started = clock().getTime();
+          const deadline = new Date(started + 2 * HOUR);
+          await engine.extendScope(scope.id, { deadline: deadline.toISOString() });
+          clock = () => new Date(deadline.getTime());
+          try {
+            await pool.query('UPDATE execution_scopes SET deadline = $2 WHERE id = $1', [scope.id, new Date(Date.now() - 1000)]);
+            const waitUntil = new Date(deadline.getTime() + 25 * HOUR).toISOString();
+            const openSessionClosing = () => closingOf(processId, 'session:last', { home, eventAt: deadline.toISOString(), deadline: new Date(deadline.getTime() + 7 * 24 * HOUR).toISOString() });
+            if (order === 'deadline first') {
+              assert.equal(code(await engine.extendScope(scope.id, { deadline: waitUntil, deadlineWait: true })), 'scope_order');
+              assert.equal((await engine.listScopes(processId)).find((s) => s.id === scope.id)?.deadlineWait, false, 'nothing changed');
+            }
+            const closing = await openSessionClosing();
+            if (closing.outcome !== 'opened') throw new Error(JSON.stringify(closing));
+            const waiting = await engine.extendScope(scope.id, { deadline: waitUntil, deadlineWait: true });
+            assert.equal(waiting.outcome, 'extended', JSON.stringify(waiting));
+
+            const home$ = { kind: 'conversation' as const, ...home };
+            const active = { scopeId: scope.id, phase: 'active' as const, action: 'post' as const, target: home$ };
+            assert.equal(code(await engine.authorize({ ...active, purpose: 'moderation' })), 'purpose_not_allowed');
+            assert.equal(code(await engine.authorize({ ...active, action: 'model_turn', target: undefined, purpose: 'moderation', modelCalls: 1 })), 'purpose_not_allowed');
+            for (const purpose of ['consent', 'status', 'stop'] as const) {
+              assert.equal((await engine.authorize({ ...active, purpose })).outcome, 'authorized', purpose);
+            }
+            const summary = { scopeId: closing.scope.id, phase: 'active' as const, action: 'post' as const, target: home$ };
+            assert.equal((await engine.authorize({ ...summary, purpose: 'essential_message' })).outcome, 'authorized');
+
+            // The summary's window ends; the closing ends, and so does the wait.
+            await engine.endScope(closing.scope.id, 'confirmed');
+            assert.equal(code(await engine.extendScope(scope.id, { deadline: new Date(deadline.getTime() + 30 * HOUR).toISOString(), deadlineWait: true })), 'scope_order');
+            await engine.endScope(scope.id, 'concluding');
+            const result = await closingOf(processId, 'result', { home, eventAt: deadline.toISOString(), deadline: new Date(deadline.getTime() + 7 * 24 * HOUR).toISOString() });
+            assert.equal(result.outcome, 'opened', JSON.stringify(result));
+            if (result.outcome !== 'opened') return;
+            assert.equal(result.scope.absoluteLimit, new Date(deadline.getTime() + 30 * 24 * HOUR).toISOString());
+            assert.equal(code(await engine.authorize({ scopeId: result.scope.id, phase: 'concluding', action: 'post', target: home$, purpose: 'moderation' })), 'purpose_not_allowed', 'moderation never re-opens');
+            assert.equal((await engine.authorize({ scopeId: result.scope.id, phase: 'concluding', action: 'post', target: home$, purpose: 'essential_message' })).outcome, 'authorized');
+          } finally {
+            clock = () => new Date();
+          }
+        });
+      }
+    });
+  });
+
   describe('kill switch', () => {
     const check = (scopeId: string) => ({ scopeId, phase: 'active' as const, purpose: 'status' as const, action: 'check' as const });
 
@@ -527,6 +690,11 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       const mara2 = await activeProcess();
       const finn = await activeProcess(undefined, 'finn');
       const maraId = agents.get('mara')!.id;
+
+      // A process id names its agent (what the operator route asks without agent_slug).
+      assert.deepEqual(await store.agentsOfProcess(mara1.processId), [maraId]);
+      assert.deepEqual(await store.agentsOfProcess(finn.processId), [agents.get('finn')!.id]);
+      assert.deepEqual(await store.agentsOfProcess('no-such-process'), []);
 
       const processSwitch = await store.setKillSwitch({ level: 'process', agentId: maraId, processId: mara1.processId, reason: 'runaway', setBy: 'op@example.test' });
       assert.equal(code(await engine.authorize(check(mara1.scope.id))), 'kill_switch');
@@ -578,22 +746,149 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       await engine.openScope({ agentSlug: 'finn', processId, kind: 'configuring', budget: { actions: 1, modelCalls: 0 }, home: first.home });
       assert.deepEqual(await engine.listScopes(processId), []);
     });
+  });
 
-    it('a session conversation is linked with its own reservation and released on its own', async () => {
+  describe('#2076 / #2089 linked session conversations (migration 0107)', () => {
+    /** A link request made inside `conversation` for these processes. */
+    const linkRequest = async (
+      conversation: { channelType: string; conversationId: string },
+      processIds: readonly string[],
+      agentSlug = 'mara',
+      ttlMs = HOUR,
+    ): Promise<string> =>
+      (
+        await sessions.createLinkRequest({
+          pluginId: ENGINE,
+          agentId: agents.get(agentSlug)!.id,
+          ...conversation,
+          principalId: 'aad-anna',
+          processIds,
+          ttlMs,
+        })
+      ).id;
+
+    it('a session conversation is linked only on a link request made inside it (criterion 48)', async () => {
       const { processId, home } = await activeProcess();
       const session = chat();
+      const elsewhere = chat();
+      // No request, or one made in another conversation (the home one): nothing.
+      assert.equal(code(await engine.reserveConversation({ agentSlug: 'mara', processId, ...session })), 'link_not_authorized');
+      // Its own home conversation, lost, it takes back without a link...
+      await engine.releaseConversation({ processId, ...home, reason: 'lost' });
+      const back = await engine.reserveConversation({ agentSlug: 'mara', processId, ...home });
+      assert.equal(back.outcome === 'reserved' && back.reservation.role, 'home');
+      // ...but not after an operator released it.
+      const heldNow = await store.holder(home.channelType, home.conversationId);
+      await store.releaseReservation(heldNow!.id, 'released by ops@example.com');
+      assert.equal(code(await engine.reserveConversation({ agentSlug: 'mara', processId, ...home })), 'link_not_authorized');
+      assert.equal(code(await engine.reserveConversation({ agentSlug: 'mara', processId, ...session, linkRequestId: 'not-a-uuid' })), 'link_not_authorized');
+      const fromElsewhere = await linkRequest(elsewhere, [processId]);
+      assert.equal(
+        code(await engine.reserveConversation({ agentSlug: 'mara', processId, ...session, linkRequestId: fromElsewhere })),
+        'link_not_authorized',
+      );
+      // A request offered to another process does not authorize this one.
+      const forOther = await linkRequest(session, ['someone-else']);
+      assert.equal(code(await engine.reserveConversation({ agentSlug: 'mara', processId, ...session, linkRequestId: forOther })), 'link_not_authorized');
+      assert.equal(await store.holder(session.channelType, session.conversationId), undefined, 'nothing was taken');
+
+      const request = await linkRequest(session, [processId]);
+      const linked = await engine.reserveConversation({ agentSlug: 'mara', processId, ...session, linkRequestId: request, sessionId: 's-1' });
+      assert.equal(linked.outcome, 'reserved', JSON.stringify(linked));
+      if (linked.outcome !== 'reserved') return;
+      assert.equal(linked.reservation.role, 'session');
+      assert.equal(linked.reservation.sessionState, 'scheduled');
+      assert.equal(linked.reservation.sessionId, 's-1');
+      // A restart asks again: the same reservation, without a new request.
+      assert.equal((await serviceFor(ENGINE, new ExecutionScopeStore(pool)).reserveConversation({ agentSlug: 'mara', processId, ...session })).outcome, 'reserved');
+      // The request is used up.
+      const { rows } = await pool.query<{ consumed: boolean }>('SELECT consumed_at IS NOT NULL AS consumed FROM conversation_link_requests WHERE id = $1', [request]);
+      assert.equal(rows[0]?.consumed, true);
+      // The open scopes may now address it.
+      const active = (await engine.listScopes(processId)).find((sc) => sc.kind === 'active' && sc.state === 'open');
+      assert.ok(active?.targets.some((t) => t.kind === 'conversation' && t.conversationId === session.conversationId));
+    });
+
+    it('an expired request, or a conversation held by another process or a discussion, takes nothing (criterion 45)', async () => {
+      const first = await activeProcess();
+      const second = await activeProcess(undefined, 'finn');
+      const session = chat();
+      // Two processes link the same chat at the same moment: exactly one wins.
+      const [a, b] = await Promise.all([linkRequest(session, [first.processId]), linkRequest(session, [second.processId], 'finn')]);
+      const results = await Promise.all([
+        engine.reserveConversation({ agentSlug: 'mara', processId: first.processId, ...session, linkRequestId: a }),
+        engine.reserveConversation({ agentSlug: 'finn', processId: second.processId, ...session, linkRequestId: b }),
+      ]);
+      assert.deepEqual(results.map((r) => r.outcome === 'reserved' ? 'reserved' : code(r)).sort(), ['conversation_busy', 'reserved']);
+      // A chat held by an agent discussion.
+      const talk = chat();
+      assert.equal((await store.reserve({ ...talk, holderKind: 'agent_discussion', processId: 'discussion:9', role: 'home' })).ok, true);
+      const onTalk = await linkRequest(talk, [first.processId]);
+      assert.equal(code(await engine.reserveConversation({ agentSlug: 'mara', processId: first.processId, ...talk, linkRequestId: onTalk })), 'conversation_busy');
+      // An expired request.
+      const late = chat();
+      const expired = await linkRequest(late, [first.processId], 'mara', 1);
+      await new Promise((r) => setTimeout(r, 20));
+      assert.equal(code(await engine.reserveConversation({ agentSlug: 'mara', processId: first.processId, ...late, linkRequestId: expired })), 'link_not_authorized');
+    });
+
+    async function linkedSession() {
+      const process = await activeProcess({ actions: 20, modelCalls: 0 });
+      const session = chat();
+      const request = await linkRequest(session, [process.processId]);
+      const linked = await engine.reserveConversation({ agentSlug: 'mara', processId: process.processId, ...session, linkRequestId: request });
+      assert.equal(linked.outcome, 'reserved');
+      return { ...process, session };
+    }
+    const setState = (processId: string, session: { channelType: string; conversationId: string }, state: 'live' | 'confirming' | 'closed' | 'cancelled' | 'scheduled') =>
+      engine.setSessionState!({ processId, ...session, state });
+
+    it('the session state follows the table; live needs readiness (criterion 60); closed releases', async () => {
+      const { processId, session, scope } = await linkedSession();
+      const access = () => store.processAccess({ pluginId: ENGINE, processId, ...session });
+      assert.deepEqual((await access()).session, { state: 'scheduled', released: false });
+      // Not ready: the session does not go live and nothing changes.
+      notReady.set(session.conversationId, 'rsc_missing: ChatMessage.Read.Chat is not consented');
+      const refused = await setState(processId, session, 'live');
+      assert.equal(code(refused), 'not_ready');
+      assert.match((refused as ExecutionRefusal).message, /ChatMessage\.Read\.Chat/);
+      assert.equal((await access()).session?.state, 'scheduled');
+      notReady.delete(session.conversationId);
+      assert.equal((await setState(processId, session, 'live')).outcome, 'updated');
+      assert.equal((await setState(processId, session, 'live')).outcome, 'updated', 'the same state again');
+      assert.equal(code(await setState(processId, session, 'scheduled')), 'session_state', 'no way back');
+      assert.equal((await setState(processId, session, 'confirming')).outcome, 'updated');
+      // In confirming: consent and status go out, moderation does not.
+      const authorize = (purpose: 'moderation' | 'consent') =>
+        engine.authorize({ scopeId: scope.id, phase: 'active', purpose, action: 'post', target: { kind: 'conversation', ...session }, emission: 'template' });
+      assert.equal(code(await authorize('moderation')), 'purpose_not_allowed');
+      assert.equal((await authorize('consent')).outcome, 'authorized');
+      const closed = await setState(processId, session, 'closed');
+      assert.equal(closed.outcome === 'updated' && closed.reservation.releasedAt !== undefined, true);
+      assert.deepEqual((await access()).session, { state: 'closed', released: true });
+      assert.equal(await store.holder(session.channelType, session.conversationId), undefined, 'the conversation is free');
+      // Released: only a closing scope sends there.
+      assert.equal(code(await authorize('consent')), 'target_not_allowed');
+      const closing = await engine.openScope({
+        agentSlug: 'mara', processId, kind: 'closing', eventId: 'session-close-1', deadline: inHours(24),
+        budget: { actions: 5, modelCalls: 0 }, targets: [{ kind: 'conversation', ...session }],
+      });
+      assert.equal(closing.outcome, 'opened', JSON.stringify(closing));
+      if (closing.outcome !== 'opened') return;
+      const protocol = await engine.authorize({
+        scopeId: closing.scope.id, phase: 'active', purpose: 'protocol_dispatch', action: 'post', target: { kind: 'conversation', ...session }, emission: 'template',
+      });
+      assert.equal(protocol.outcome, 'authorized');
+      assert.equal(code(await setState(processId, session, 'live')), 'session_state', 'a released session never re-opens');
+    });
+
+    it('a scheduled session is cancelled and released; another process asks nothing of it', async () => {
+      const { processId, session } = await linkedSession();
       const other = await activeProcess(undefined, 'finn');
-      assert.equal(code(await engine.reserveConversation({ agentSlug: 'mara', processId, ...other.home })), 'conversation_busy');
-      assert.equal(code(await engine.reserveConversation({ agentSlug: 'mara', processId: 'never-started', ...session })), 'scope_order');
-      const linked = await engine.reserveConversation({ agentSlug: 'mara', processId, ...session });
-      assert.equal(linked.outcome === 'reserved' && linked.reservation.role, 'session');
-      assert.equal((await engine.reserveConversation({ agentSlug: 'mara', processId, ...session })).outcome, 'reserved', 'idempotent');
-      await engine.releaseConversation({ processId, ...session, reason: 'session closed' });
-      const held = (await engine.listReservations(processId)).filter((r) => !r.releasedAt).map((r) => r.conversationId);
-      assert.deepEqual(held, [home.conversationId]);
-      // One process cannot release another's.
-      await engine.releaseConversation({ processId, ...other.home, reason: 'hostile' });
-      assert.equal((await store.holder(other.home.channelType, other.home.conversationId))?.processId, other.processId);
+      assert.equal(code(await serviceFor(ENGINE).setSessionState!({ processId: other.processId, ...session, state: 'cancelled' })), 'unknown_scope');
+      assert.equal(code(await serviceFor(OTHER).setSessionState!({ processId, ...session, state: 'cancelled' })), 'unknown_scope');
+      assert.equal((await setState(processId, session, 'cancelled')).outcome, 'updated');
+      assert.equal(await store.holder(session.channelType, session.conversationId), undefined);
     });
   });
 

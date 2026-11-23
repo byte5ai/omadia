@@ -17,13 +17,16 @@ import { strict as assert } from 'node:assert';
 import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { after, before, describe, it } from 'node:test';
 
 import { ServiceNotDeclaredError, SharedPoolRefusedError } from '@omadia/plugin-api';
 import { Pool } from 'pg';
 
 import { probePgTest } from './_helpers/pgTestDb.js';
+
+import { runMultiOrchestratorMigrations } from '../packages/harness-orchestrator/src/registry/migrator.js';
 
 import { adaptManifestV1 } from '../src/plugins/manifestLoader.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
@@ -52,6 +55,21 @@ const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
   timeoutMs: 1_500,
 });
 
+const MIGRATIONS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
+/** Kernel tables a plugin role must not reach (criterion 37): inbound events,
+ *  other processes' state, execution scopes, reservations and grants. */
+const KERNEL_TABLES = [
+  'agents',
+  'plugin_sql_grants',
+  'conversation_message_events',
+  'conversation_message_subscriptions',
+  'conversation_reservations',
+  'execution_scopes',
+  'execution_grants',
+  'agent_recipient_grants',
+  'agent_triggers',
+  'system_notice_outbox',
+] as const;
 const RUN = randomBytes(4).toString('hex');
 const PLUGIN = `@k3t${RUN}/arch`;
 const SIBLING = `@k3t${RUN}/arch-x`;
@@ -106,13 +124,13 @@ describe('#2088 archetype plugin database', { skip: !pgAvailable }, () => {
     await superuser.query(`CREATE DATABASE ${database} OWNER ${adminRole}`);
     adminUrl = withUser(PG_URL as string, adminRole, adminPassword, database);
     admin = new Pool({ connectionString: adminUrl, max: 4 });
-    // What the kernel has in `public`: its own tables, and a plugin's tables
-    // from the time it still ran on the shared pool.
+    // What the kernel has in `public`: its own tables (the real core
+    // migration series, as the kernel's non-superuser role applies it), and a
+    // plugin's tables from the time it still ran on the shared pool.
+    await runMultiOrchestratorMigrations(admin, () => undefined, MIGRATIONS_DIR);
     await admin.query(`
-      CREATE TABLE agents (id serial PRIMARY KEY, slug text NOT NULL);
-      INSERT INTO agents (slug) VALUES ('mira');
-      CREATE TABLE plugin_sql_grants (plugin_id text PRIMARY KEY, ledger text NOT NULL);
-      INSERT INTO plugin_sql_grants VALUES ('${PLUGIN}', '${LEDGER}'), ('${SIBLING}', 'x');
+      INSERT INTO agents (slug, name) VALUES ('mira', 'Mira');
+      INSERT INTO plugin_sql_grants (plugin_id, ledger, granted_by) VALUES ('${PLUGIN}', '${LEDGER}', 'op'), ('${SIBLING}', 'x', 'op');
       CREATE TABLE ${LEDGER} (filename text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now());
       CREATE TABLE ${NAMES.tablePrefix}things (id serial PRIMARY KEY, label text NOT NULL);
       CREATE INDEX ${NAMES.tablePrefix}things_label ON ${NAMES.tablePrefix}things (label);
@@ -275,7 +293,7 @@ describe('#2088 archetype plugin database', { skip: !pgAvailable }, () => {
 
     const DENIED = '42501';
     assert.equal(await codeOf(() => sql.query('SELECT * FROM public.agents')), DENIED);
-    assert.equal(await codeOf(() => sql.query("INSERT INTO public.agents (slug) VALUES ('x')")), DENIED);
+    assert.equal(await codeOf(() => sql.query("INSERT INTO public.agents (slug, name) VALUES ('x', 'x')")), DENIED);
     assert.equal(await codeOf(() => sql.query('SELECT * FROM public.plugin_sql_grants')), DENIED);
     assert.equal(await codeOf(() => sql.query(`SELECT * FROM public.${NAMES.tablePrefix}x_other`)), DENIED);
     assert.equal(await codeOf(() => sql.query('CREATE TABLE public.k3_escape (id int)')), DENIED);
@@ -562,6 +580,50 @@ describe('#2088 archetype plugin database', { skip: !pgAvailable }, () => {
     assert.notEqual(kept.rows[0]?.t, null, 'deactivation keeps the schema and its tables');
     const again = await db.ensure(PLUGIN);
     assert.ok((await again.sql.query(`SELECT 1 FROM ${NAMES.tablePrefix}things`)).rowCount > 0, 'and their rows');
+  });
+
+  it('criterion 37: neither the plugin role nor its migrations reach inbound events, scopes, reservations or grants', async () => {
+    const { sql } = await db.ensure(PLUGIN);
+    const DENIED = '42501';
+    for (const table of KERNEL_TABLES) {
+      assert.ok((await admin.query(`SELECT to_regclass('public.${table}') AS t`)).rows[0].t, `the kernel has ${table}`);
+      assert.equal(await codeOf(() => sql.query(`SELECT * FROM public.${table} LIMIT 1`)), DENIED, `read ${table}`);
+      assert.equal(await codeOf(() => sql.query(`DELETE FROM public.${table}`)), DENIED, `write ${table}`);
+      // Not on its path either: an unqualified name is not the kernel's table.
+      assert.equal(await codeOf(() => sql.query(`SELECT * FROM ${table} LIMIT 1`)), '42P01', `unqualified ${table}`);
+    }
+    const dir = join(root, 'kernel-reach');
+    await mkdir(dir, { recursive: true });
+    const ctx = await context(true);
+    for (const table of KERNEL_TABLES) {
+      await writeFile(join(dir, '0001_reach.sql'), `CREATE TABLE ${NAMES.tablePrefix}loot AS SELECT * FROM public.${table};`);
+      assert.equal(await codeOf(() => ctx.sql!.runMigrations({ dir: 'kernel-reach', allowChecksumDrift: true })), DENIED, `migration reads ${table}`);
+    }
+    assert.equal((await admin.query(`SELECT to_regclass('${NAMES.schema}.${NAMES.tablePrefix}loot') AS t`)).rows[0].t, null);
+  });
+
+  it('criterion 37: the plugin resumes its processes from its own schema after a restart', async () => {
+    const dir = join(root, 'processes');
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, '0001_processes.sql'),
+      `CREATE TABLE IF NOT EXISTS ${NAMES.tablePrefix}processes (id text PRIMARY KEY, state text NOT NULL, step int NOT NULL DEFAULT 0);`,
+    );
+    const before = await context(true);
+    await before.sql!.runMigrations({ dir: 'processes' });
+    await before.sql!.query!(`INSERT INTO ${NAMES.tablePrefix}processes (id, state, step) VALUES ('p-1', 'active', 3), ('p-2', 'closed', 9)`);
+    // Restart: every pool of the kernel's archetype databases is gone; a new
+    // instance logs the plugin in again with the same derived credentials.
+    await db.closeAll();
+    db = createArchetypeDatabase({ adminPool: () => admin, connectionString: adminUrl, secret: SECRET, log: (m) => void logs.push(m) });
+    const after = await context(true);
+    const open = await after.sql!.query!<{ id: string; step: number }>(
+      `SELECT id, step FROM ${NAMES.tablePrefix}processes WHERE state = 'active'`,
+    );
+    assert.deepEqual(open.rows, [{ id: 'p-1', step: 3 }], 'it finds the process it was running');
+    await after.sql!.query!(`UPDATE ${NAMES.tablePrefix}processes SET step = step + 1 WHERE id = 'p-1'`);
+    assert.equal((await after.sql!.query!<{ step: number }>(`SELECT step FROM ${NAMES.tablePrefix}processes WHERE id = 'p-1'`)).rows[0]?.step, 4);
+    assert.deepEqual((await after.sql!.runMigrations({ dir: 'processes' })).applied, [], 'its migrations are not applied twice');
   });
 
   it('answers no_database without a pool', async () => {

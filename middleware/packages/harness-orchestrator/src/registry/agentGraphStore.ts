@@ -297,6 +297,8 @@ export interface ScheduleRow {
   readonly status: 'enabled' | 'disabled';
   readonly lastRunAt: Date | null;
   readonly createdAt: Date;
+  /** #2082 — the deadline its trigger runs to; null until first armed. */
+  readonly until: Date | null;
 }
 
 // ── inputs ──────────────────────────────────────────────────────────────────
@@ -629,6 +631,7 @@ interface ScheduleDbRow {
   status: 'enabled' | 'disabled';
   last_run_at: Date | null;
   created_at: Date;
+  until: Date | null;
 }
 
 // ── mappers ─────────────────────────────────────────────────────────────────
@@ -879,6 +882,7 @@ function mapSchedule(r: ScheduleDbRow): ScheduleRow {
     status: r.status,
     lastRunAt: r.last_run_at,
     createdAt: r.created_at,
+    until: r.until ?? null,
   };
 }
 
@@ -2521,6 +2525,33 @@ export class AgentGraphStore {
 
   async deleteSchedule(id: string): Promise<void> {
     await this.pool.query('DELETE FROM agent_schedules WHERE id = $1', [id]);
+  }
+
+  async getSchedule(id: string): Promise<ScheduleRow | undefined> {
+    const { rows } = await this.pool.query<ScheduleDbRow>('SELECT * FROM agent_schedules WHERE id = $1', [id]);
+    return rows[0] ? mapSchedule(rows[0]) : undefined;
+  }
+
+  /**
+   * #2082 — set the deadline (and with `enable`, re-enable): arming a new
+   * schedule, or an operator's renewal. Undefined when the row is gone.
+   */
+  async setScheduleDeadline(id: string, until: Date, enable: boolean): Promise<ScheduleRow | undefined> {
+    const { rows } = await this.pool.query<ScheduleDbRow>(
+      `UPDATE agent_schedules SET until = $2, status = CASE WHEN $3 THEN 'enabled' ELSE status END
+        WHERE id = $1 RETURNING *`,
+      [id, until, enable],
+    );
+    return rows[0] ? mapSchedule(rows[0]) : undefined;
+  }
+
+  /** #2082 — its deadline passed (or the harness stopped it): disable it. */
+  async disableSchedule(id: string): Promise<boolean> {
+    const { rowCount } = await this.pool.query(
+      "UPDATE agent_schedules SET status = 'disabled' WHERE id = $1 AND status = 'enabled'",
+      [id],
+    );
+    return (rowCount ?? 0) > 0;
   }
 
   /** Stamp a schedule's last fire time (scheduler worker). */

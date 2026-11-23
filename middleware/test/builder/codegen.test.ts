@@ -9,6 +9,8 @@ import yaml from 'yaml';
 
 import { generate, CodegenError } from '../../src/plugins/builder/codegen.js';
 import { loadManifestFromPath } from '../../src/plugins/manifestLoader.js';
+import { checkPluginBoundary } from '../../src/plugins/pluginBoundary.js';
+import type { PluginKind } from '../../src/api/admin-v1.js';
 import { parseAgentSpec, type AgentSpec } from '../../src/plugins/builder/agentSpec.js';
 import { _resetCacheForTests } from '../../src/plugins/builder/boilerplateSource.js';
 import {
@@ -84,9 +86,9 @@ describe('codegen.generate', () => {
     assert.ok(out.has('types.ts'));
     assert.ok(out.has('index.ts'));
     assert.ok(out.has('tsconfig.json'));
-    assert.ok(out.has('skills/weather-expert.md'));
-    // Original placeholder filename must be gone
-    assert.equal(out.has('skills/{{AGENT_SLUG}}-expert.md'), false);
+    assert.ok(out.has('registerTools.ts'));
+    // Spec 2042 §5.10 — no persona file, no skill partials.
+    assert.ok(![...out.keys()].some((f) => f.startsWith('skills/') || /agent\.md$/i.test(f)));
   });
 
   it('substitutes top-level placeholders', async () => {
@@ -100,7 +102,7 @@ describe('codegen.generate', () => {
     assert.match(manifestText, /de\.byte5\.integration\.openweather/);
 
     const pluginText = out.get('plugin.ts')!.toString('utf-8');
-    assert.match(pluginText, /AGENT_ID = 'de\.byte5\.agent\.weather'/);
+    assert.match(pluginText, /PLUGIN_ID = 'de\.byte5\.agent\.weather'/);
   });
 
   // #225 — author must come from spec.author, NOT the old hardcoded
@@ -139,13 +141,9 @@ describe('codegen.generate', () => {
     assert.match(manifestText, /id:\s*"@omadia\/agent-monty-python"/);
     assert.match(manifestText, /agent:@omadia\/agent-monty-python:\*/);
 
-    // plugin.ts AGENT_ID constant gets the scoped id.
+    // plugin.ts PLUGIN_ID constant gets the scoped id.
     const pluginText = out.get('plugin.ts')!.toString('utf-8');
-    assert.match(pluginText, /AGENT_ID = '@omadia\/agent-monty-python'/);
-
-    // deriveAgentSlug strips the npm scope → URL-safe directory/file name.
-    assert.ok(out.has('skills/agent-monty-python-expert.md'));
-    assert.equal(out.has('skills/{{AGENT_SLUG}}-expert.md'), false);
+    assert.match(pluginText, /PLUGIN_ID = '@omadia\/agent-monty-python'/);
   });
 
   it('injects the toolkit-impl slot between markers', async () => {
@@ -215,7 +213,7 @@ describe('codegen.generate', () => {
     const out = await generate({ spec, slots });
 
     const pluginText = out.get('plugin.ts')!.toString('utf-8');
-    const header = pluginText.split('export const AGENT_ID')[0] ?? '';
+    const header = pluginText.split('export const PLUGIN_ID')[0] ?? '';
     assert.match(
       header,
       /import \{ createClient \} from '\.\/client\.js';/,
@@ -241,7 +239,7 @@ describe('codegen.generate', () => {
     const out = await generate({ spec, slots: enriched });
 
     const pluginText = out.get('plugin.ts')!.toString('utf-8');
-    const header = pluginText.split('export const AGENT_ID')[0] ?? '';
+    const header = pluginText.split('export const PLUGIN_ID')[0] ?? '';
     assert.equal(
       /import \{ createClient \}/.test(header),
       false,
@@ -290,7 +288,7 @@ describe('codegen.generate', () => {
     const out = await generate({ spec, slots: enriched });
 
     const pluginText = out.get('plugin.ts')!.toString('utf-8');
-    const header = pluginText.split('export const AGENT_ID')[0] ?? '';
+    const header = pluginText.split('export const PLUGIN_ID')[0] ?? '';
     assert.equal(/import \{ createClient \}/.test(header), false);
     assert.equal(/import \{ createToolkit/.test(header), false);
     assert.match(
@@ -361,18 +359,6 @@ describe('codegen.generate', () => {
     assert.match(clientText, /weather client impl placeholder/);
     assert.match(clientText, /\/\/ #region builder:client-impl/);
     assert.match(clientText, /\/\/ #endregion/);
-  });
-
-  it('injects the skill-prompt slot via HTML-comment markers in MD', async () => {
-    const { spec, slots } = loadFixture();
-    const out = await generate({ spec, slots });
-
-    const skillText = out.get('skills/weather-expert.md')!.toString('utf-8');
-    assert.match(skillText, /Wetter-Recherche-Assistent/);
-    assert.match(skillText, /<!-- #region builder:skill-prompt -->/);
-    assert.match(skillText, /<!-- #endregion -->/);
-    // Frontmatter survived
-    assert.match(skillText, /id: weather_expert_system/);
   });
 
   it('leaves no {{TOKEN}} residue in any text file', async () => {
@@ -537,7 +523,6 @@ describe('codegen.generate', () => {
       category: 'other',
       depends_on: [],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       // Only one example prompt → EXAMPLE_PROMPT_2 (example_prompts[1]) is
       // unresolved; everything else resolves.
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x'] },
@@ -575,7 +560,6 @@ describe('codegen.generate', () => {
       category: 'other',
       depends_on: ['@omadia/integration-odoo'],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: [] },
     });
@@ -596,7 +580,6 @@ describe('codegen.generate', () => {
       category: 'other',
       depends_on: [],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['api.example.com'] },
     });
@@ -616,7 +599,6 @@ describe('codegen.generate', () => {
       category: 'communication',
       depends_on: [],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['gmail.googleapis.com'] },
       setup_fields: [
@@ -675,7 +657,6 @@ describe('codegen.generate', () => {
       category: 'other',
       depends_on: [],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: [] },
       setup_fields: [
@@ -712,7 +693,6 @@ describe('codegen.generate', () => {
       category: 'communication',
       depends_on: [],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['gmail.googleapis.com'] },
       setup_fields: [
@@ -761,7 +741,6 @@ describe('codegen.generate', () => {
       category: 'other',
       depends_on: [],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: [] },
     });
@@ -783,7 +762,6 @@ describe('codegen.generate', () => {
       category: 'communication',
       depends_on: [],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['gmail.googleapis.com'] },
       setup_fields: [
@@ -847,7 +825,6 @@ describe('codegen.generate', () => {
       category: 'other',
       depends_on: [],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['api.example.com'] },
     });
@@ -872,7 +849,6 @@ describe('codegen.generate', () => {
         'de.byte5.integration.geocode',
       ],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['api.example.com'] },
     });
@@ -900,7 +876,6 @@ describe('codegen.generate', () => {
       category: 'other',
       depends_on: [],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['api.github.com'] },
       setup_fields: [
@@ -941,7 +916,6 @@ describe('codegen.generate', () => {
       category: 'other',
       depends_on: [],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['api.github.com'] },
       setup_fields: [
@@ -973,7 +947,6 @@ describe('codegen.generate', () => {
       category: 'other',
       depends_on: [],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['api.example.com'] },
       admin_ui_path: '/api/unifi/admin/index.html',
@@ -998,7 +971,6 @@ describe('codegen.generate', () => {
       category: 'other',
       depends_on: [],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['api.example.com'] },
       jobs: [
@@ -1026,7 +998,7 @@ describe('codegen.generate', () => {
     assert.match(text, /^jobs: \[\]/m);
   });
 
-  it('emits permissions.{subAgents,llm,graph.entity_systems} from spec.permissions (Phase B)', async () => {
+  it('emits permissions.{llm,graph.entity_systems}, never subAgents (spec 2042 §5.4)', async () => {
     const { slots } = loadFixture();
     const spec = parseAgentSpec({
       id: 'de.byte5.agent.crosswire',
@@ -1035,7 +1007,6 @@ describe('codegen.generate', () => {
       category: 'other',
       depends_on: [],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['api.example.com'] },
       permissions: {
@@ -1056,9 +1027,8 @@ describe('codegen.generate', () => {
       },
     });
     const text = (await generate({ spec, slots })).get('manifest.yaml')!.toString('utf-8');
-    assert.match(text, /subAgents:/);
-    assert.match(text, /- "@omadia\/agent-seo-analyst"|- '@omadia\/agent-seo-analyst'|- @omadia\/agent-seo-analyst/);
-    assert.match(text, /calls_per_invocation: 3/);
+    assert.doesNotMatch(text, /subAgents:/);
+    assert.doesNotMatch(text, /agent-seo-analyst/);
     assert.match(text, /llm:/);
     assert.match(text, /models_allowed:/);
     assert.match(text, /max_tokens_per_call: 1024/);
@@ -1075,7 +1045,6 @@ describe('codegen.generate', () => {
       category: 'other',
       depends_on: [],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['api.example.com'] },
       permissions: { public_paths: ['/api/plugins/hooky/webhook'] },
@@ -1095,7 +1064,6 @@ describe('codegen.generate', () => {
       category: 'other',
       depends_on: [],
       tools: [{ id: 'list_absences', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: [] },
       permissions: { public_paths: ['/api/plugins/agent-hr-dash/webhook'] },
@@ -1154,7 +1122,6 @@ describe('codegen.generate', () => {
       category: 'other',
       depends_on: [],
       tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['api.example.com'] },
     });
@@ -1240,7 +1207,7 @@ describe('codegen.generate', () => {
       '..',
       'assets',
       'boilerplate',
-      'agent-integration',
+      'integration',
       'assets',
       'admin-ui',
     );
@@ -1265,7 +1232,6 @@ describe('codegen.generate', () => {
       category: 'analysis',
       depends_on: ['de.byte5.integration.openweather'],
       tools: [{ id: 'query_memory', description: 'x', input: { type: 'object' } }],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['x.example.com'] },
     });
@@ -1340,7 +1306,6 @@ describe('codegen.generate', () => {
           kwargs: {},
         },
       ],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['x.example.com'] },
     });
@@ -1401,7 +1366,6 @@ describe('codegen.generate', () => {
           args: ['222'],
         },
       ],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['x.example.com'] },
     });
@@ -1433,7 +1397,6 @@ describe('codegen.generate', () => {
           method: 'm',
         },
       ],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['x.example.com'] },
     });
@@ -1471,7 +1434,6 @@ describe('codegen.generate', () => {
           result_mapping: { employees: 'data', count: 'length' },
         },
       ],
-      skill: { role: 'x' },
       playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
       network: { outbound: ['x.example.com'] },
     });
@@ -1482,83 +1444,82 @@ describe('codegen.generate', () => {
     assert.match(pluginText, /return __mapped;/);
   });
 
-  describe('partial slots (large skill markdowns)', () => {
-    it('synthesises one output file per filled partial of skill-prompt', async () => {
+  // Spec 2042 §5.10 — the Plugin Builder generates capability plugins only.
+  describe('capability plugin output', () => {
+    it('writes the effective kind into identity.kind and ships no persona', async () => {
       const { spec, slots } = loadFixture();
-      const augmented: Record<string, string> = {
-        ...slots,
-        'skill-prompt-1': '## Chunk 2\n\nSecond section body.',
-        'skill-prompt-2': '## Chunk 3\n\nThird section body.',
-      };
-      const out = await generate({ spec, slots: augmented });
+      // The fixture depends on an integration → derived kind `integration`.
+      const derived = yaml.parse(
+        (await generate({ spec, slots })).get('manifest.yaml')!.toString('utf-8'),
+      ) as Record<string, unknown> & { identity: { kind: string } };
+      assert.equal(derived.identity.kind, 'integration');
+      for (const key of ['skills', 'persona', 'speaker', 'personality', 'system_prompt', 'llm']) {
+        assert.equal(derived[key], undefined, `manifest must not carry ${key}`);
+      }
 
-      assert.ok(out.has('skills/weather-expert.md'), 'base skill file');
-      assert.ok(out.has('skills/weather-expert-1.md'), 'partial 1 file');
-      assert.ok(out.has('skills/weather-expert-2.md'), 'partial 2 file');
-      assert.equal(
-        out.has('skills/weather-expert-3.md'),
-        false,
-        'unfilled partial must not produce a file',
-      );
-
-      const p1 = out.get('skills/weather-expert-1.md')!.toString('utf-8');
-      assert.match(p1, /^---\n/, 'partial has frontmatter');
-      assert.match(p1, /id:\s*weather_expert_system_1/);
-      assert.match(p1, /kind:\s*prompt_partial/);
-      assert.match(p1, /<!-- #region builder:skill-prompt-1 -->/);
-      assert.match(p1, /## Chunk 2/);
-
-      const p2 = out.get('skills/weather-expert-2.md')!.toString('utf-8');
-      assert.match(p2, /id:\s*weather_expert_system_2/);
-      assert.match(p2, /## Chunk 3/);
-      // No residual placeholders allowed in synthesised files.
-      assert.equal(p1.includes('{{'), false);
-      assert.equal(p2.includes('{{'), false);
+      const explicit = yaml.parse(
+        (await generate({ spec: { ...spec, kind: 'tool' }, slots }))
+          .get('manifest.yaml')!
+          .toString('utf-8'),
+      ) as { identity: { kind: string } };
+      assert.equal(explicit.identity.kind, 'tool');
     });
 
-    it('lists partials in manifest.skills[] in ascending order', async () => {
+    it('passes the ingest boundary (criterion 15): no persona, no retired kind', async () => {
       const { spec, slots } = loadFixture();
-      const augmented: Record<string, string> = {
-        ...slots,
-        'skill-prompt-1': '## Chunk 2',
-        'skill-prompt-2': '## Chunk 3',
-      };
-      const out = await generate({ spec, slots: augmented });
-      const manifest = yaml.parse(
-        out.get('manifest.yaml')!.toString('utf-8'),
-      ) as { skills: Array<{ id: string; path: string; kind: string }> };
-
-      const ids = manifest.skills.map((s) => s.id);
-      const paths = manifest.skills.map((s) => s.path);
-      assert.deepEqual(ids, [
-        'weather_expert_system',
-        'weather_expert_system_1',
-        'weather_expert_system_2',
-      ]);
-      assert.deepEqual(paths, [
-        'skills/weather-expert.md',
-        'skills/weather-expert-1.md',
-        'skills/weather-expert-2.md',
-      ]);
-      for (const s of manifest.skills) {
-        assert.equal(s.kind, 'prompt_partial');
+      for (const variant of [spec, { ...spec, kind: 'tool' as const }]) {
+        const out = await generate({ spec: variant, slots });
+        const manifest = yaml.parse(out.get('manifest.yaml')!.toString('utf-8')) as {
+          identity: { id: string; kind: PluginKind };
+        };
+        assert.equal(
+          checkPluginBoundary({
+            pluginId: manifest.identity.id,
+            kind: manifest.identity.kind,
+            manifest,
+            hasAgentMd: [...out.keys()].some((f) => /^agent\.md$/i.test(f)),
+          }),
+          undefined,
+        );
       }
     });
 
-    it('leaves manifest and file layout unchanged when no partials are filled', async () => {
+    it('ignores skill-prompt slots an old draft still stores', async () => {
       const { spec, slots } = loadFixture();
-      const out = await generate({ spec, slots });
+      const out = await generate({
+        spec,
+        slots: { ...slots, 'skill-prompt': '# Rolle: Stratege', 'skill-prompt-1': '## mehr' },
+      });
+      assert.ok(![...out.keys()].some((f) => f.startsWith('skills/')));
+      const manifest = out.get('manifest.yaml')!.toString('utf-8');
+      assert.doesNotMatch(manifest, /prompt_partial|Stratege/);
+    });
 
-      assert.ok(out.has('skills/weather-expert.md'));
-      assert.equal(out.has('skills/weather-expert-1.md'), false);
-      assert.equal(out.has('skills/weather-expert-2.md'), false);
-
-      const manifest = yaml.parse(
-        out.get('manifest.yaml')!.toString('utf-8'),
-      ) as { skills: Array<{ id: string; path: string }> };
-      assert.equal(manifest.skills.length, 1);
-      assert.equal(manifest.skills[0]!.id, 'weather_expert_system');
-      assert.equal(manifest.skills[0]!.path, 'skills/weather-expert.md');
+    it('generates the tool template: no client, toolkit registered via ctx.tools', async () => {
+      const { spec } = loadFixture();
+      const toolSpec = parseAgentSpec({
+        ...spec,
+        template: 'tool',
+        depends_on: [],
+        network: { outbound: [] },
+      });
+      const out = await generate({
+        spec: toolSpec,
+        slots: {
+          'toolkit-impl':
+            'export function createToolkit(opts: ToolkitOptions): Toolkit {\n' +
+            '  void opts;\n  return { tools: [], async close() {} };\n}',
+        },
+      });
+      assert.equal(out.has('client.ts'), false);
+      const manifest = yaml.parse(out.get('manifest.yaml')!.toString('utf-8')) as {
+        identity: { kind: string };
+      };
+      assert.equal(manifest.identity.kind, 'tool');
+      const pluginText = out.get('plugin.ts')!.toString('utf-8');
+      assert.doesNotMatch(pluginText, /createClient/);
+      assert.match(pluginText, /import \{ createToolkit, type Toolkit \} from '\.\/toolkit\.js';/);
+      assert.match(pluginText, /registerToolkit\(ctx, toolkit\)/);
     });
   });
 });

@@ -71,7 +71,6 @@ describe('#1958 orchestrator activate() reads boolean settings of either spellin
       const consoleLog = t.mock.method(console, 'log', () => undefined);
       const { ctx, provided } = contextWith({
         orchestrator_model_routing: value,
-        orchestrator_direct_line_sticky: value,
       });
       const handle = await activate(ctx);
       try {
@@ -81,11 +80,6 @@ describe('#1958 orchestrator activate() reads boolean settings of either spellin
           lines.some((l) => l.includes('per-turn model routing ON')),
           routing,
           'model routing follows the setting',
-        );
-        assert.equal(
-          lines.some((l) => l.includes('direct-line sticky mode ON')),
-          routing,
-          'sticky Direct Line follows the setting',
         );
       } finally {
         await handle.close();

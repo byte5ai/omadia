@@ -1,5 +1,6 @@
 'use client';
 
+import { channelTypesOfCatalog } from '../../../_lib/channelTypes';
 import { useEffect, useMemo, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -8,6 +9,8 @@ import { useTranslations } from 'next-intl';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 
 import { Button } from '@/app/_components/ui/Button';
+import { AgentReachPanel, AgentReachSummary } from '@/app/_components/agents/AgentReach';
+import { useBroadReachConfirm } from '@/app/_components/agents/useBroadReachConfirm';
 import { ApiError } from '../../../_lib/api';
 import {
   createOperatorAgent,
@@ -17,13 +20,11 @@ import {
   listAgentPluginCatalog,
   patchOperatorAgent,
   isSeededAgentDescription,
-  rehydrateFallback,
   replaceAgentBindings,
   replaceAgentPlugins,
   resolveAgentForChannel,
-  setFallbackAgent,
+  setInstanceDefaultAgent,
   triggerAgentReload,
-  FALLBACK_AGENT_SLUG,
   FACILITATOR_ARCHETYPE,
   STANDARD_ARCHETYPE,
   type AgentChangeResult,
@@ -39,11 +40,17 @@ import {
 import type { OperatorArchetypeDto } from '../../../_lib/archetypes';
 import { ArchetypeSection } from './ArchetypeSection';
 import { DeletedAgentsSection, EndOfServiceNotice, type EndOfServiceResult } from './EndOfService';
+import { DefaultAgentsSection } from './DefaultAgentsSection';
 import { ExecutionControlSection } from './ExecutionControl';
 import { FacilitatorsSection, type PluginNavLink } from './FacilitatorsSection';
+import { FirstAgentCard } from './FirstAgentCard';
 import { PluginsDnd } from './PluginsDnd';
 import { useFacilitatorRefusalMessage } from './useFacilitatorCopy';
 import { useConfirmAction } from './useConfirmAction';
+
+/** `run()` label of the default-agent write — its 409 gets its own sentence. */
+const DEFAULT_AGENT_LABEL = 'default-agent';
+const HTTP_CONFLICT = 409;
 
 interface AgentsDashboardProps {
   initial: OperatorAgentsListDto;
@@ -64,7 +71,9 @@ interface AgentsDashboardProps {
  *       memory-scope chips, kind badge) replaces the raw plugin-id textarea.
  * B3b — channel-binding form with type dropdown + routing tester.
  * B3c — per-(Agent × plugin) config editor rendered from `setup_fields`.
- * B3d — operator-facing "Reset fallback to all installed plugins" button.
+ * #2054 — no "reset to all plugins" any more (INV-8: no agent gets every
+ *       plugin by default); a grant that gives an agent every connected
+ *       system asks for an explicit confirmation (`useBroadReachConfirm`).
  *
  * The catalog is fetched once on mount via `listAgentPluginCatalog()` and
  * shared across every AgentCard; we treat it as read-only for the lifetime
@@ -78,7 +87,7 @@ export function AgentsDashboard({
   archetypes,
 }: AgentsDashboardProps): React.ReactElement {
   const t = useTranslations('operatorAgents');
-  const confirmAction = useConfirmAction();
+  const broadReach = useBroadReachConfirm();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -107,8 +116,8 @@ export function AgentsDashboard({
   const refusalMessage = useFacilitatorRefusalMessage();
 
   // #2066 — two kinds, two lists. A facilitator is never routed to, never the
-  // standard orchestrator and never gets plugins, so it does not appear in
-  // the orchestrator list, its count or the fallback picker.
+  // default agent and never gets plugins, so it does not appear in the
+  // orchestrator list, its count or the default-agent picker.
   const standardAgents = useMemo(
     () => initial.agents.filter((a) => archetypeOfAgent(a) === STANDARD_ARCHETYPE),
     [initial.agents],
@@ -138,21 +147,12 @@ export function AgentsDashboard({
       }));
   }, [archetypes, initial.agents]);
 
-  const fallbackSlug =
-    initial.agents.find((a) => a.id === initial.fallback_agent_id)?.slug ??
+  // #2055 — the instance entry of the default-agent table (`null` = off).
+  const defaultSlug =
+    initial.agents.find((a) => a.id === initial.default_agent_id)?.slug ??
     null;
 
-  const channelTypes = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          (catalog ?? [])
-            .filter((p) => p.kind === 'channel')
-            .map((p) => deriveChannelType(p.id)),
-        ),
-      ).sort(),
-    [catalog],
-  );
+  const channelTypes = useMemo(() => channelTypesOfCatalog(catalog), [catalog]);
 
   function run(label: string, op: () => Promise<unknown>): void {
     setError(null);
@@ -176,14 +176,20 @@ export function AgentsDashboard({
       .catch((err: unknown) => {
         // A facilitator refusal has its own sentence in the catalogue; the
         // generic path would print the machine code and the server's English.
-        setError(refusalMessage(err) ?? humanizeApiError(err));
+        setError(
+          refusalMessage(err) ??
+            (label === DEFAULT_AGENT_LABEL && isConflict(err)
+              ? t('defaultAgentRefused')
+              : humanizeApiError(err)),
+        );
       })
       .finally(() => setBusy(null));
   }
 
   return (
     <div className="space-y-8">
-      {confirmAction.dialog}
+      {broadReach.dialog}
+      <FirstAgentCard />
       {error && (
         <div className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-3 text-sm text-[color:var(--danger)]">
           {error}
@@ -205,30 +211,6 @@ export function AgentsDashboard({
             <Button
               variant="secondary"
               size="sm"
-              disabled={pending || !!busy || !fallbackSlug}
-              onClick={() =>
-                confirmAction.ask({
-                  title: t('rehydrateConfirm'),
-                  confirmLabel: t('rehydrateConfirmYes'),
-                  onConfirm: () =>
-                    run('rehydrate', async () => {
-                      const res = await rehydrateFallback();
-                      setError(
-                        t('rehydrateDone', {
-                          attached: res.attached,
-                          requested: res.requested,
-                        }),
-                      );
-                    }),
-                })
-              }
-              title={t('rehydrateTooltip')}
-            >
-              {t('actionRehydrateFallback')}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
               disabled={pending || !!busy}
               onClick={() => run('reload', () => triggerAgentReload())}
             >
@@ -236,13 +218,25 @@ export function AgentsDashboard({
             </Button>
           </div>
         </div>
-        <FallbackPicker
+        <DefaultAgentPicker
           agents={standardAgents}
-          currentSlug={fallbackSlug}
+          currentSlug={defaultSlug}
           disabled={pending || !!busy}
-          onChange={(slug) => run('fallback', () => setFallbackAgent(slug))}
+          onChange={(slug) =>
+            run(DEFAULT_AGENT_LABEL, () =>
+              broadReach.guard(standardAgents.find((a) => a.slug === slug)?.name ?? '', (confirm) =>
+                setInstanceDefaultAgent(slug, { confirmBroadReach: confirm }),
+              ),
+            )
+          }
         />
       </section>
+
+      <DefaultAgentsSection
+        agents={standardAgents}
+        channelTypes={channelTypes}
+        disabled={pending || !!busy}
+      />
 
       <RoutingTester
         channelTypes={channelTypes}
@@ -270,10 +264,6 @@ export function AgentsDashboard({
               agent={agent}
               catalog={catalog}
               channelTypes={channelTypes}
-              isFallback={
-                agent.slug === FALLBACK_AGENT_SLUG ||
-                agent.id === initial.fallback_agent_id
-              }
               disabled={pending || !!busy}
               onPatch={(patch) =>
                 run(`patch:${agent.slug}`, () =>
@@ -287,7 +277,9 @@ export function AgentsDashboard({
               }
               onReplacePlugins={(plugins) =>
                 run(`plugins:${agent.slug}`, () =>
-                  replaceAgentPlugins(agent.slug, plugins),
+                  broadReach.guard(agent.name, (confirm) =>
+                    replaceAgentPlugins(agent.slug, plugins, { confirmBroadReach: confirm }),
+                  ),
                 )
               }
               onReplaceBindings={(bindings) =>
@@ -369,21 +361,7 @@ export function AgentsDashboard({
   );
 }
 
-/**
- * Heuristic: derive the channel binding "type" string from a channel
- * plugin id. `de.byte5.channel.teams` → `teams`, `@omadia/channel-foo` →
- * `foo`. Operators bind by type-string in `channel_bindings`, not by
- * plugin id, so the dashboard does the mapping client-side. Unknown
- * formats fall back to the last segment.
- */
-function deriveChannelType(pluginId: string): string {
-  const match = pluginId.match(/(?:^|[./])channel[./]([a-z0-9_-]+)/i);
-  if (match?.[1]) return match[1].toLowerCase();
-  const last = pluginId.split(/[./]/).pop();
-  return (last ?? pluginId).toLowerCase();
-}
-
-function FallbackPicker(props: {
+function DefaultAgentPicker(props: {
   agents: OperatorAgentDto[];
   currentSlug: string | null;
   disabled: boolean;
@@ -392,7 +370,7 @@ function FallbackPicker(props: {
   const t = useTranslations('operatorAgents');
   return (
     <label className="flex items-center gap-3 text-sm">
-      <span className="text-[color:var(--fg-muted)]">{t('fallbackLabel')}</span>
+      <span className="text-[color:var(--fg-muted)]">{t('defaultAgentLabel')}</span>
       <select
         className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] px-2 py-1"
         value={props.currentSlug ?? ''}
@@ -401,7 +379,7 @@ function FallbackPicker(props: {
           props.onChange(e.target.value === '' ? null : e.target.value)
         }
       >
-        <option value="">{t('fallbackNone')}</option>
+        <option value="">{t('defaultAgentOff')}</option>
         {props.agents
           .filter((a) => a.status === 'enabled')
           .map((a) => (
@@ -513,7 +491,7 @@ function RoutingTester(props: {
             </p>
           ) : (
             <p className="text-[color:var(--fg-muted)]">
-              {result.message ?? t('routingTesterNoMatch')}
+              {result.notice?.text ?? t('routingTesterNoMatch')}
             </p>
           )}
         </div>
@@ -602,7 +580,6 @@ function AgentCard(props: {
   agent: OperatorAgentDto;
   catalog: PluginCatalogEntryDto[] | null;
   channelTypes: readonly string[];
-  isFallback: boolean;
   disabled: boolean;
   onPatch: (patch: {
     name?: string;
@@ -685,6 +662,8 @@ function AgentCard(props: {
                 })}
               </span>
             )}
+            {/* #2054 — every agent's reach, at a glance (spec 2042 §5.7). */}
+            <AgentReachSummary reach={agent.reach} />
           </span>
         </button>
         <div className="flex flex-col items-end gap-2">
@@ -698,44 +677,37 @@ function AgentCard(props: {
             >
               {t('detailOpenLink')}
             </Link>
-            {/* The standard orchestrator is the catch-all for unbound traffic;
-                disabling or deleting it would strand that traffic, so those
-                actions are not offered for it at all. */}
-            {!props.isFallback && (
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={props.disabled}
-                onClick={() =>
-                  props.onPatch({
-                    status: agent.status === 'enabled' ? 'disabled' : 'enabled',
-                  })
-                }
-              >
-                {agent.status === 'enabled'
-                  ? t('actionDisable')
-                  : t('actionEnable')}
-              </Button>
-            )}
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={props.disabled}
+              onClick={() =>
+                props.onPatch({
+                  status: agent.status === 'enabled' ? 'disabled' : 'enabled',
+                })
+              }
+            >
+              {agent.status === 'enabled'
+                ? t('actionDisable')
+                : t('actionEnable')}
+            </Button>
             {/* #978 — no privacy toggle: `privacy_profile` is reserved and
                 not enforced. The value is still shown (labelled "not
                 enforced") in the summary line above. */}
-            {!props.isFallback && (
-              <Button
-                variant="danger"
-                size="sm"
-                disabled={props.disabled}
-                onClick={() =>
-                  confirmAction.ask({
-                    title: t('deleteConfirm', { slug: agent.slug }),
-                    confirmLabel: t('actionDelete'),
-                    onConfirm: props.onDelete,
-                  })
-                }
-              >
-                {t('actionDelete')}
-              </Button>
-            )}
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={props.disabled}
+              onClick={() =>
+                confirmAction.ask({
+                  title: t('deleteConfirm', { slug: agent.slug }),
+                  confirmLabel: t('actionDelete'),
+                  onConfirm: props.onDelete,
+                })
+              }
+            >
+              {t('actionDelete')}
+            </Button>
           </div>
         </div>
       </header>
@@ -784,6 +756,12 @@ function AgentCard(props: {
             </Button>
           </div>
 
+          {agent.reach !== undefined ? (
+            <div className="mb-6">
+              <AgentReachPanel reach={agent.reach} />
+            </div>
+          ) : null}
+
           <div className="mb-6">
             <h4 className="mb-2 text-sm font-medium">
               {t('memoryScopeHeading')}
@@ -806,17 +784,11 @@ function AgentCard(props: {
             )}
           </div>
 
-          {props.isFallback && (
-            <div className="mb-3 rounded border border-[color:var(--accent)] bg-[color:var(--accent)]/10 px-3 py-2 text-xs text-[color:var(--accent)]">
-              {t('fallbackStoreOnlyNotice')}
-            </div>
-          )}
           {props.catalog ? (
             <PluginsDnd
               key={pluginsRevisionKey(agent)}
               agent={agent}
               catalog={props.catalog}
-              isFallback={props.isFallback}
               disabled={props.disabled}
               onReplace={props.onReplacePlugins}
             />
@@ -1018,6 +990,12 @@ function bindingsRevisionKey(agent: OperatorAgentDto): string {
  * `validateSnapshot`); the bare `error.message` is just
  * `"PUT /v1/... failed: 409"` which tells the operator nothing.
  */
+/** `true` for a 409 — the default-agent PUT's refusal (agent not available
+ *  to everyone in every channel, or disabled). */
+function isConflict(err: unknown): boolean {
+  return err instanceof ApiError && err.status === HTTP_CONFLICT;
+}
+
 export function humanizeApiError(err: unknown): string {
   if (err instanceof ApiError) {
     try {

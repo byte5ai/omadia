@@ -14,6 +14,12 @@ import {
 } from './agentToAgent.js';
 import { parseArchetype, type ArchetypeId } from './archetype.js';
 import { liveAgentRow, ofLiveAgent, tombstoneSlug, type AgentTombstone } from './tombstones.js';
+import {
+  RoutingTables,
+  type AgentSelectionRow,
+  type AvailabilityPrincipalRow,
+  type DefaultAgentEntryRow,
+} from './routingTables.js';
 import { parseModelPolicy } from './modelPolicy.js';
 import type { ModelPolicy } from '@omadia/plugin-api';
 
@@ -51,7 +57,11 @@ import {
  * (see docs/middleware-agent-handoff.md §13).
  */
 export type PrivacyProfile = 'strict' | 'default';
-export type AgentStatus = 'enabled' | 'disabled';
+/**
+ * `draft` (#2049): a preview agent of the Agent Builder or the Plugin Builder.
+ * Never built into the registry and never addressable; only `enabled` is.
+ */
+export type AgentStatus = 'enabled' | 'disabled' | 'draft';
 
 export interface CanvasPosition {
   readonly x: number;
@@ -96,6 +106,12 @@ export interface AgentRow {
    * reasons as `contextMemory` (see {@link parseAgentToAgentMode}).
    */
   readonly agentToAgent?: AgentToAgentMode;
+  /**
+   * #1876 — the agent's fast lane switch (`agents.fast_lane`, 0096): may the
+   * fast path answer simple data questions for it? Absent on a DB that
+   * predates 0096, which reads as on (today's behaviour).
+   */
+  readonly fastLane?: boolean;
   /**
    * #1033 — the agent's model policy (`agents.model_policy`, migration 0059),
    * narrowed deny-default by {@link parseModelPolicy}: absent column or an
@@ -174,6 +190,16 @@ export interface AgentRow {
    * agent set none.
    */
   readonly quality?: ProfileQualityConfig | null;
+  /**
+   * #2055 — availability (migration 0083, spec 2042 §5.3): everyone in the
+   * tenant may use the agent. Optional for fixtures; absent reads as `false`
+   * (a fresh agent is available to nobody), see `isAvailableTo`.
+   */
+  readonly availableToEveryone?: boolean;
+  /** #2055 — the channel types the agent serves; `null`/absent = all. */
+  readonly availableChannels?: readonly string[] | null;
+  /** #2045 — `agent_identities.avatar_etag`: the agent has an avatar; `null`/absent = none. */
+  readonly avatarEtag?: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -224,11 +250,6 @@ export interface ChannelIdentityRow {
   readonly agentId: string;
 }
 
-export interface PlatformSettingsRow {
-  readonly fallbackAgentId: string | null;
-  readonly updatedAt: Date;
-}
-
 export interface AgentInput {
   readonly slug: string;
   readonly name: string;
@@ -258,6 +279,8 @@ export interface AgentPatch {
   readonly contextMemory?: ContextMemoryMode;
   /** #1018 — same COALESCE contract as `contextMemory`: absent leaves it. */
   readonly agentToAgent?: AgentToAgentMode;
+  /** #1876 — same COALESCE contract: absent leaves the fast lane switch. */
+  readonly fastLane?: boolean;
   /** #1033 — validated by the caller ({@link validateModelPolicy}); absent leaves it. */
   readonly modelPolicy?: ModelPolicy;
 }
@@ -386,6 +409,8 @@ interface AgentDbRow {
   context_memory?: string | null;
   /** #1018 — `agents.agent_to_agent`; absent on a DB that predates 0058. */
   agent_to_agent?: string | null;
+  /** #1876 — `agents.fast_lane`; absent on a DB that predates 0096. */
+  fast_lane?: boolean | null;
   /** #1033 — `agents.model_policy`; absent on a DB that predates 0059. */
   model_policy?: unknown;
   /** #1033 — `agent_identities.composed_prompts`, joined by the read queries. */
@@ -409,6 +434,10 @@ interface AgentDbRow {
   identity_language?: string | null;
   /** #1569 — `agent_identities.quality` (JSONB), same join / same absence on writes. */
   identity_quality?: unknown;
+  /** #2055 — absent on a DB that predates migration 0083. */
+  available_to_everyone?: boolean | null;
+  available_channels?: string[] | null;
+  identity_avatar_etag?: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -440,11 +469,6 @@ interface ChannelBindingDbRow {
   channel_key: string;
   agent_id: string;
   created_at: Date;
-}
-
-interface PlatformSettingsDbRow {
-  fallback_agent_id: string | null;
-  updated_at: Date;
 }
 
 interface AgentChannelPolicyDbRow {
@@ -500,6 +524,7 @@ function mapAgent(row: AgentDbRow): AgentRow {
     canvasPosition: row.canvas_position ?? null,
     contextMemory: parseContextMemoryMode(row.context_memory),
     agentToAgent: parseAgentToAgentMode(row.agent_to_agent),
+    fastLane: row.fast_lane !== false,
     modelPolicy: parseModelPolicy(row.model_policy),
     ...(row.identity_composed_prompts && typeof row.identity_composed_prompts === 'object'
       ? {
@@ -520,6 +545,10 @@ function mapAgent(row: AgentDbRow): AgentRow {
     answerVerbosity: parseAnswerVerbosity(row.identity_verbosity) ?? null,
     identityLanguage: row.identity_language?.trim() || null,
     quality: parseAgentQuality(row.identity_quality) ?? null,
+    // Deny-default: an absent column (pre-0083) is "nobody", never "everyone".
+    availableToEveryone: row.available_to_everyone === true,
+    availableChannels: Array.isArray(row.available_channels) ? row.available_channels : null,
+    avatarEtag: row.identity_avatar_etag ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -541,15 +570,6 @@ function mapBinding(row: ChannelBindingDbRow): ChannelBindingRow {
     channelKey: row.channel_key,
     agentId: row.agent_id,
     createdAt: row.created_at,
-  };
-}
-
-function mapPlatformSettings(
-  row: PlatformSettingsDbRow,
-): PlatformSettingsRow {
-  return {
-    fallbackAgentId: row.fallback_agent_id,
-    updatedAt: row.updated_at,
   };
 }
 
@@ -587,14 +607,21 @@ const AGENT_SELECT =
   // to_jsonb, not the bare column: a database that predates migration 0069
   // has no `language`, and this SELECT runs before any migration check.
   "to_jsonb(i) ->> 'language' AS identity_language, " +
-  'i.quality AS identity_quality ' +
+  'i.quality AS identity_quality, ' +
+  // #2045 — the etag only (text), so a speaker can name its avatar URL.
+  'i.avatar_etag AS identity_avatar_etag ' +
   'FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id ' +
   // #2088 — LIVE agents only. This is the one read of `agents`; a deleted
   // agent (tombstone, migration 0072) is reached through `listTombstones`.
   `WHERE ${liveAgentRow('a')}`;
 
 export class ConfigStore {
-  constructor(private readonly pool: Pool) {}
+  /** #2055 — default-agent entries, selections, availability. */
+  readonly routing: RoutingTables;
+
+  constructor(private readonly pool: Pool) {
+    this.routing = new RoutingTables(pool);
+  }
 
   // ── agents ────────────────────────────────────────────────────────────
   async listAgents(): Promise<readonly AgentRow[]> {
@@ -669,6 +696,7 @@ export class ConfigStore {
          context_memory  = COALESCE($8, context_memory),
          agent_to_agent  = COALESCE($9, agent_to_agent),
          model_policy    = COALESCE($10::jsonb, model_policy),
+         fast_lane       = COALESCE($11, fast_lane),
          updated_at      = now()
        WHERE id = $1
        RETURNING *`,
@@ -683,6 +711,7 @@ export class ConfigStore {
         patch.contextMemory ?? null,
         patch.agentToAgent ?? null,
         patch.modelPolicy ? JSON.stringify(patch.modelPolicy) : null,
+        patch.fastLane ?? null,
       ],
     );
     const row = rows[0];
@@ -806,8 +835,19 @@ export class ConfigStore {
    * a live agent is deleted first. Returns whether a row was removed.
    */
   async purgeAgent(id: string): Promise<boolean> {
-    const result = await this.pool.query('DELETE FROM agents WHERE id = $1 AND deleted_at IS NOT NULL', [id]);
-    return (result.rowCount ?? 0) > 0;
+    try {
+      const result = await this.pool.query('DELETE FROM agents WHERE id = $1 AND deleted_at IS NOT NULL', [id]);
+      return (result.rowCount ?? 0) > 0;
+    } catch (err) {
+      // #2055 — a default-agent entry or a user's selection still names the
+      // tombstone (ON DELETE RESTRICT): purged only when nothing refers to it.
+      if ((err as { code?: unknown } | null)?.code === '23503') {
+        throw new ConfigValidationError(
+          'the deleted agent is still named by a default-agent entry; change the entry first',
+        );
+      }
+      throw err;
+    }
   }
 
   /** Agent Builder — set (or clear, with null) the per-agent model routing.
@@ -991,7 +1031,10 @@ export class ConfigStore {
 
   // ── channel identities (provisioned bots) ─────────────────────────────
   /**
-   * Every provisioned Microsoft Teams bot as a routing key.
+   * Every agent's own bot as a routing key: the provisioned Microsoft Teams
+   * bots below, plus the bots of other channels (`agent_channel_identities`).
+   *
+   * Teams:
    *
    * `agent_teams_identities` already holds the only mapping that matters —
    * `app_id` (the bot's Entra application id) against the agent it was
@@ -1014,6 +1057,14 @@ export class ConfigStore {
    * snapshot load, and with it the registry boot, down with it.
    */
   async listChannelIdentities(): Promise<readonly ChannelIdentityRow[]> {
+    const [teams, others] = await Promise.all([
+      this.listTeamsIdentities(),
+      this.listOtherChannelIdentities(),
+    ]);
+    return [...teams, ...others];
+  }
+
+  private async listTeamsIdentities(): Promise<readonly ChannelIdentityRow[]> {
     try {
       const { rows } = await this.pool.query<{
         agent_id: string;
@@ -1035,44 +1086,32 @@ export class ConfigStore {
     }
   }
 
-  // ── multi_orchestrator_settings ─────────────────────────────────────────────────
-  async getPlatformSettings(): Promise<PlatformSettingsRow> {
-    const { rows } = await this.pool.query<PlatformSettingsDbRow>(
-      'SELECT fallback_agent_id, updated_at FROM multi_orchestrator_settings WHERE id = true',
-    );
-    if (rows[0]) return mapPlatformSettings(rows[0]);
-    // Migration seeds a row, but defensively upsert in case it was wiped.
-    await this.pool.query(
-      'INSERT INTO multi_orchestrator_settings (id) VALUES (true) ON CONFLICT (id) DO NOTHING',
-    );
-    return { fallbackAgentId: null, updatedAt: new Date() };
-  }
-
-  async setFallbackAgentId(agentId: string | null): Promise<PlatformSettingsRow> {
-    let rows: PlatformSettingsDbRow[];
+  /**
+   * Spec 2042 §5.3 — an agent's own bot on every other channel (Telegram,
+   * Discord, Slack; migration 0105). The channel plugin that runs the bot
+   * chose the key when it was registered, so it is read as stored. Same
+   * missing-table tolerance as the Teams source.
+   */
+  private async listOtherChannelIdentities(): Promise<readonly ChannelIdentityRow[]> {
     try {
-      ({ rows } = await this.pool.query<PlatformSettingsDbRow>(
-        `INSERT INTO multi_orchestrator_settings (id, fallback_agent_id, updated_at)
-         VALUES (true, $1, now())
-         ON CONFLICT (id) DO UPDATE SET
-           fallback_agent_id = EXCLUDED.fallback_agent_id,
-           updated_at        = now()
-         RETURNING fallback_agent_id, updated_at`,
-        [agentId],
-      ));
+      const { rows } = await this.pool.query<{
+        agent_id: string;
+        channel_type: string;
+        channel_key: string;
+      }>(
+        `SELECT agent_id::text AS agent_id, channel_type, channel_key
+           FROM agent_channel_identities
+          ORDER BY channel_type, channel_key`,
+      );
+      return rows.map((r) => ({
+        channelType: r.channel_type,
+        channelKey: r.channel_key,
+        agentId: r.agent_id,
+      }));
     } catch (err) {
-      // #2060 — the trigger of migration 0067 is the last line of defence;
-      // surface it as a domain error instead of a raw pg failure.
-      if (isConstraintViolation(err, 'fallback_agent_not_facilitator')) {
-        throw new ConfigValidationError('a facilitator cannot be the default agent');
-      }
+      if (isUndefinedTable(err)) return [];
       throw err;
     }
-    const row = rows[0];
-    if (!row) {
-      throw new Error('setFallbackAgentId: RETURNING produced no row');
-    }
-    return mapPlatformSettings(row);
   }
 
   // ── aggregate read for the registry ───────────────────────────────────
@@ -1092,7 +1131,7 @@ export class ConfigStore {
       plugins,
       bindings,
       identities,
-      settings,
+      defaultEntries,
       subAgents,
       toolGrants,
       schedules,
@@ -1100,12 +1139,15 @@ export class ConfigStore {
       mcpServers,
       personaSkillLinks,
       skillToolBindings,
+      selections,
+      availabilityPrincipals,
+      consultationPairs,
     ] = await Promise.all([
       this.listAgents(),
       this.listAllAgentPlugins(),
       this.listChannelBindings(),
       this.listChannelIdentities(),
-      this.getPlatformSettings(),
+      this.routing.listDefaultEntries(),
       graph.listAllSubAgents(),
       graph.listAllToolGrants(),
       graph.listAllSchedules(),
@@ -1113,6 +1155,9 @@ export class ConfigStore {
       graph.listMcpServers(),
       graph.listAllPersonaSkillLinks(),
       graph.listAllSkillToolBindings(),
+      this.routing.listSelections(),
+      this.routing.listAvailabilityPrincipals(),
+      this.listConsultationPairs(),
     ]);
     // #2088 — the deleted agents, so routing can tell "bound to a deleted
     // agent" from "bound to nobody". A database before migration 0072 has no
@@ -1126,7 +1171,7 @@ export class ConfigStore {
       agentPlugins: plugins,
       channelBindings: bindings,
       channelIdentities: identities,
-      platformSettings: settings,
+      defaultEntries,
       subAgents,
       toolGrants,
       schedules,
@@ -1135,8 +1180,38 @@ export class ConfigStore {
       personaSkillLinks,
       skillToolBindings,
       tombstones,
+      selections,
+      availabilityPrincipals,
+      consultationPairs,
     };
   }
+
+  /**
+   * #2047 — every active consultation pair between live agents. A database
+   * before migration 0097 (no table, no switch columns) has none.
+   */
+  async listConsultationPairs(): Promise<ConsultationPairRow[]> {
+    try {
+      const { rows } = await this.pool.query<{ from_agent_id: string; to_agent_id: string }>(
+        `SELECT g.from_agent_id, g.to_agent_id
+           FROM agent_consultation_grants g
+           JOIN agents f ON f.id = g.from_agent_id AND ${liveAgentRow('f')} AND f.may_consult
+           JOIN agents t ON t.id = g.to_agent_id AND ${liveAgentRow('t')} AND t.consultable
+          ORDER BY g.from_agent_id, g.to_agent_id`,
+      );
+      return rows.map((r) => ({ fromAgentId: r.from_agent_id, toAgentId: r.to_agent_id }));
+    } catch (err) {
+      const code = (err as { code?: unknown } | null)?.code;
+      if (isUndefinedTable(err) || code === '42703') return [];
+      throw err;
+    }
+  }
+}
+
+/** #2047 — one active consultation pair: `fromAgentId` may consult `toAgentId`. */
+export interface ConsultationPairRow {
+  readonly fromAgentId: string;
+  readonly toAgentId: string;
 }
 
 export interface ConfigSnapshot {
@@ -1159,7 +1234,18 @@ export interface ConfigSnapshot {
    * never had the field.
    */
   readonly channelIdentities?: readonly ChannelIdentityRow[];
-  readonly platformSettings: PlatformSettingsRow;
+  /** #2055 — default-agent entries (migration 0081). Optional for fixtures. */
+  readonly defaultEntries?: readonly DefaultAgentEntryRow[];
+  /** #2055 — users' agent selections per conversation (migration 0082). */
+  readonly selections?: readonly AgentSelectionRow[];
+  /** #2055 — named people and groups per agent (migration 0083). */
+  readonly availabilityPrincipals?: readonly AvailabilityPrincipalRow[];
+  /**
+   * #2047 — active consultation pairs (migration 0097): a directed grant
+   * between two live agents whose switches are both on. Feeds each agent's
+   * `consultableColleagues`. Optional for fixtures.
+   */
+  readonly consultationPairs?: readonly ConsultationPairRow[];
   // Agent Builder graph (P0). Optional so pre-existing snapshot literals
   // (tests, fixtures) stay valid; `loadSnapshot` always populates them.
   readonly subAgents?: readonly SubAgentRow[];
@@ -1179,15 +1265,6 @@ function isUndefinedTable(err: unknown): boolean {
     !!err &&
     typeof err === 'object' &&
     (err as { code?: string }).code === '42P01'
-  );
-}
-
-/** A violation raised with a named constraint (CHECK or a trigger's RAISE). */
-function isConstraintViolation(err: unknown, constraint: string): boolean {
-  return (
-    !!err &&
-    typeof err === 'object' &&
-    (err as { constraint?: string }).constraint === constraint
   );
 }
 

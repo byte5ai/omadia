@@ -78,7 +78,7 @@ describe('audit log — DraftStore v4 migration (issue #56)', () => {
     db.prepare(
       `INSERT INTO drafts (id, user_email, name, spec_json, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run('legacy-draft', 'alice@example.com', 'Legacy', '{"template":"agent-integration"}', 1000, 1000);
+    ).run('legacy-draft', 'alice@example.com', 'Legacy', '{"template":"integration"}', 1000, 1000);
     db.pragma('user_version = 1');
     db.close();
 

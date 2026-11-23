@@ -12,6 +12,10 @@ import { Router, type Request, type Response } from 'express';
 import { listArchetypes, STANDARD_ARCHETYPE, type ArchetypeDescriptor } from '@omadia/orchestrator';
 
 import {
+  archetypeSettingFields,
+  type ArchetypeSettingFieldDto,
+} from './operatorAgentArchetypeSettings.js';
+import {
   installedArchetypePlugins,
   type ArchetypePluginSources,
 } from '../platform/archetypeRegistrySync.js';
@@ -31,6 +35,8 @@ export interface OperatorArchetypeDto {
   readonly plugin: { readonly id: string; readonly status: string } | null;
   /** Number of agents of this archetype; `null` without a config store. */
   readonly agent_count: number | null;
+  /** #2066 — the per-agent settings the archetype declares; `[]` = none. */
+  readonly agent_settings: readonly ArchetypeSettingFieldDto[];
 }
 
 export interface OperatorArchetypesDeps {
@@ -63,6 +69,7 @@ export function buildOperatorArchetypes(
         requires: [...(descriptor.requires ?? [])],
         plugin: plugin ? { id: plugin.pluginId, status: plugin.status } : null,
         agent_count: agentArchetypes ? agentArchetypes.filter((a) => a === descriptor.id).length : null,
+        agent_settings: archetypeSettingFields(descriptor.agentSettings),
       };
     });
 }

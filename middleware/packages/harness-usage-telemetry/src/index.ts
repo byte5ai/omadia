@@ -33,6 +33,7 @@ export {
 } from './recorder.js';
 
 export { withProviderUsageTracking } from './withProviderUsageTracking.js';
+export { addMeteredCost, meterUsageCost } from './costMeter.js';
 
 export { type FxRate, createEcbEurRateSource } from './exchangeRate.js';
 
@@ -65,8 +66,28 @@ export const CLI_COMPLETION_USAGE_SOURCE: (typeof SUBSCRIPTION_SOURCES)[1] =
 
 // #2090 — count and bound the model calls of an async scope: the host half of
 // the provider contract's `admitModelCall` (`@omadia/llm-provider-api`).
+// Spec 2042 §5.10 — the model gateway's execution contexts, mode and halts.
 export {
+  callSiteOf,
+  currentExecutionContext,
+  executionContextChain,
   installModelCallGate,
   meterModelCalls,
+  modelCallHaltFor,
+  modelGatewayMode,
+  onUncoveredModelCall,
+  resetModelGatewayForTests,
+  runDetachedInExecutionContext,
+  runInExecutionContext,
+  runGeneratorInExecutionContext,
+  runInExecutionContextSync,
+  setAmbientExecutionContext,
+  setModelCallHalts,
+  setModelGatewayMode,
+  uncoveredModelCalls,
+  type ExecutionContextKind,
   type ModelCallCount,
+  type ModelExecutionContext,
+  type ModelGatewayMode,
+  type UncoveredModelCall,
 } from './modelCallMeter.js';

@@ -15,9 +15,9 @@
  * builder's own parity test exists to prevent.
  *
  * ORDER IS THE CONTRACT: instructions → persona → boundaries → sycophancy.
- * It mirrors `dynamicAgentRuntime`'s `[header, persona, boundaries,
- * sycophancy, skill]` for sub-agents: who you are, how you sound, what you
- * must not do, how not to flatter. Identity text takes the header slot
+ * It is the order the retired agent runtime used for its sub-agents
+ * (`[header, persona, boundaries, sycophancy, skill]`): who you are, how you
+ * sound, what you must not do, how not to flatter. Identity text takes the header slot
  * because it is the operator's own words about this agent.
  *
  * EMPTY IN, EMPTY OUT. An identity with nothing authored compiles to `''`,

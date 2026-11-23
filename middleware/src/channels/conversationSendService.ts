@@ -1,25 +1,29 @@
-// Conversation-addressed proactive send — the kernel service a plugin reaches
-// as 'conversationSend'. Deliberately thin next to targetedDeliveryService: no
-// principal resolution, one conversation, one delivery — and like every
-// delivery path here, unreachability is a named outcome, never a throw.
+// Posting into a conversation as an agent's OWN identity: the kernel-internal
+// delivery behind 'conversationSend@2' (`scopedSendService.ts`). Deliberately
+// thin next to targetedDeliveryService: no principal resolution, one
+// conversation, one delivery, and like every delivery path here,
+// unreachability is a named outcome, never a throw.
 //
-// ONE scope (#2043): the message is posted as the agent's OWN bot
-// (`asOwnIdentity`). No identity → `no_identity`, never another bot.
-// Permission comes from the agent's message subscription for the
-// conversation, held by the calling plugin.
+// The message is posted as the agent's own bot. No identity → `no_identity`,
+// never another bot. This module does not decide WHETHER the agent may post:
+// its caller drew an authorization from an execution scope (#2091) and hands
+// in the ground it stands on, the subscriptions of the process. Mentions are
+// resolved against those.
 //
-// The earlier scope — an ephemeral attachment, posted through the channel's
-// default bot (#330 C3b) — existed for the plugin-era facilitation and went
-// with it. A call without `asOwnIdentity` is refused and says so. Agent
-// discussions never used this service; they speak through `sayService`.
+// Two earlier permissions are gone: an ephemeral attachment with a post
+// through the channel's default bot (#330 C3b, the plugin-era facilitation),
+// and a message subscription without a process (the first major of
+// 'conversationSend', removed with #2067). Agent discussions never used this
+// service; they speak through `sayService`.
 
 import type {
   CardUpdateOutcome,
+  ConversationReactionOutcome,
   ConversationSendProvider,
   TargetedDeliveryOutcome,
   TargetedMessage,
 } from '@omadia/channel-sdk';
-import type { ConversationSendCapabilities } from '@omadia/plugin-api';
+import { CARD_QUESTION_KINDS, CONVERSATION_REACTIONS, type ConversationReaction, type ConversationSendCapabilities, type QuestionCard } from '@omadia/plugin-api';
 
 import type { MessageSubscription } from './conversationMessages/store.js';
 import type { ConversationSendRegistry } from './conversationSendRegistry.js';
@@ -31,6 +35,14 @@ import {
   unreachable,
   type OwnIdentityDeps,
 } from './ownIdentitySend.js';
+import {
+  canGoOutAsText,
+  cardAsPlainMessage,
+  pollAsCard,
+  pollAsPlainMessage,
+  questionExpiry,
+  type OpenCardQuestionStore,
+} from './openCardQuestions.js';
 import { cardRefusalFor, readCardSupport, readCardUpdate, readQuestionCard } from './questionCard.js';
 
 export interface ConversationSendInput {
@@ -45,7 +57,6 @@ export interface ConversationSendInput {
     /** #2089 — validated here; see `questionCard.ts`. */
     card?: unknown;
   };
-  asOwnIdentity?: boolean;
 }
 
 export interface ConversationCardUpdateInput {
@@ -57,41 +68,120 @@ export interface ConversationCardUpdateInput {
 }
 
 /**
- * #2091 — the permission of an own-identity action that was established
- * elsewhere: an execution scope authorized it (`conversationSend@2`). With
- * it, the message-subscription check of the first major is not asked.
- * `subscriptions` are what mentions are resolved against.
+ * #2091 — what an own-identity action stands on: an execution scope
+ * authorized it (`conversationSend@2`) for a process, and `subscriptions`
+ * are that process's. Mentions are resolved against them.
  */
 export interface AuthorizedSendGround {
   readonly subscriptions: readonly MessageSubscription[];
 }
 
+/** spec 2043 §5.14 — a reaction on one message of the conversation. */
+export interface ConversationReactionInput {
+  agentSlug: string;
+  channelType: string;
+  conversationId: string;
+  /** The platform id of the message, from its stored inbound event. */
+  messageId: string;
+  reaction: ConversationReaction;
+}
+
 export interface ConversationSendService {
-  /** `callerPluginId` is set by the per-plugin facade; absent = the kernel. */
-  sendToConversation(
-    input: ConversationSendInput,
-    callerPluginId?: string,
-    ground?: AuthorizedSendGround,
-  ): Promise<TargetedDeliveryOutcome>;
+  /** Post as the agent's own identity. The caller has authorized the post. */
+  sendToConversation(input: ConversationSendInput, ground: AuthorizedSendGround): Promise<TargetedDeliveryOutcome>;
+  /** Set a reaction as the agent's own identity; same identity rules as a send. */
+  react(input: ConversationReactionInput, ground: AuthorizedSendGround): Promise<ConversationReactionOutcome>;
   /** #2089 — what the channel's plugin declares; `undefined` = no provider. */
   capabilities(channelType: string): ConversationSendCapabilities | undefined;
   /** #2089 — update a card the agent posted; same identity rules as a send. */
-  updateCard(
-    input: ConversationCardUpdateInput,
-    callerPluginId?: string,
-    ground?: AuthorizedSendGround,
-  ): Promise<CardUpdateOutcome>;
+  updateCard(input: ConversationCardUpdateInput, ground: AuthorizedSendGround): Promise<CardUpdateOutcome>;
 }
+
+/**
+ * The question kinds a person can answer by typing (#2086): all of them. An
+ * assignment goes out as text where a typed reply can name the assignee
+ * (`canGoOutAsText`); otherwise that one card is refused.
+ */
+const TEXT_CARD_KINDS = CARD_QUESTION_KINDS;
+
+const NO_GROUND =
+  'an agent posts as itself only under an execution scope that authorized it (conversationSend@2)';
 
 export function createConversationSendService(deps: {
   providers: ConversationSendRegistry;
   /** Own-identity sends. Absent (no registry) → every send is refused. */
   ownIdentity?: OwnIdentityDeps;
+  /**
+   * #2086 — where a card or poll that went out as plain text keeps its open
+   * question, so a typed reply can become a `card_answer`. Absent: such a card
+   * is refused as before and the sender posts its own chat ballot.
+   */
+  openQuestions?: OpenCardQuestionStore;
   /** Told about every message that went out as an agent's own identity. */
   onOwnIdentityDelivered?: (agentSlug: string, channelType: string, conversationId: string) => void;
   log?: (msg: string) => void;
 }): ConversationSendService {
   const log = deps.log ?? (() => undefined);
+
+  /** What goes to the provider: the message as it is, or its plain-text form. */
+  type PlainForm =
+    | { message: TargetedMessage; question?: OpenQuestionToKeep }
+    | { refusal: string };
+  interface OpenQuestionToKeep {
+    card: QuestionCard;
+    asPoll: boolean;
+  }
+
+  function plainFormOf(message: TargetedMessage, provider: ConversationSendProvider, channelType: string): PlainForm {
+    const { poll, card, ...rest } = message;
+    const canKeep = deps.openQuestions !== undefined;
+    if (poll && provider.supports?.poll !== true) {
+      if (!canKeep) return { refusal: `the '${channelType}' channel plugin does not declare poll support` };
+      return {
+        message: { ...rest, text: pollAsPlainMessage(message.text, poll) },
+        question: { card: pollAsCard(poll), asPoll: true },
+      };
+    }
+    if (card) {
+      const refusal = cardRefusalFor(card, readCardSupport(provider.supports?.card), channelType);
+      if (refusal === undefined) return { message };
+      if (!canKeep || !canGoOutAsText(card)) return { refusal: `${refusal} — nothing was posted` };
+      return {
+        message: { ...rest, text: cardAsPlainMessage(message.text, card) },
+        question: { card, asPoll: false },
+      };
+    }
+    return { message };
+  }
+
+  /** Remember the question of a card or poll that went out as text, and say which message carries it. */
+  async function keepQuestionOpen(
+    input: ConversationSendInput,
+    outcome: Extract<TargetedDeliveryOutcome, { outcome: 'delivered' }>,
+    question: OpenQuestionToKeep,
+  ): Promise<TargetedDeliveryOutcome> {
+    // A channel that reports no message id still gets its question tracked:
+    // an addressed reply in a conversation with one open question is matched
+    // without one.
+    const messageId = outcome.cardMessageId ?? outcome.messageId ?? `card:${question.card.cardId}`;
+    try {
+      await deps.openQuestions?.register({
+        channelType: input.channelType,
+        conversationId: input.conversationId,
+        messageId,
+        agentSlug: input.agentSlug,
+        card: question.card,
+        ...(question.asPoll ? { asPoll: true } : {}),
+        expiresAt: questionExpiry(question.card, new Date()),
+      });
+    } catch (err) {
+      // The message is out; a lost question only means a typed reply stays a message.
+      log(
+        `[channels] could not keep the question of ${question.card.cardId} open: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return { ...outcome, cardMessageId: messageId };
+  }
 
   async function deliver(
     input: ConversationSendInput,
@@ -117,27 +207,27 @@ export function createConversationSendService(deps: {
         `the '${input.channelType}' channel plugin does not declare that it sends as a named identity — nothing was posted, so nothing could go out under another bot's name`,
       );
     }
-    if (message.poll && provider.supports.poll !== true) {
-      return unreachable('channel_error', `the '${input.channelType}' channel plugin does not declare poll support`);
-    }
-    // A card only goes to a channel that declared every kind on it. The
-    // refusal is a `channel_error` that says which, so the sender falls back
-    // to a chat ballot instead of guessing.
-    if (message.card) {
-      const refusal = cardRefusalFor(message.card, readCardSupport(provider.supports.card), input.channelType);
-      if (refusal) return unreachable('channel_error', `${refusal} — nothing was posted`);
-    }
+    // #2086 — a card or poll the channel does not show natively goes out as
+    // numbered text, and its question stays open for a typed reply. Only with a
+    // store to keep it in: otherwise the sender gets the refusal it always got
+    // and posts its own chat ballot.
+    const plain = plainFormOf(message, provider, input.channelType);
+    if ('refusal' in plain) return unreachable('channel_error', plain.refusal);
+    const outgoing = plain.message;
     // Mentions degrade by contract: a channel without them shows plain text.
-    const { mentions, ...withoutMentions } = message;
+    const { mentions, ...withoutMentions } = outgoing;
     const marked = markOwnIdentityMessage(
       deps.ownIdentity?.disclosure,
       { agentSlug: input.agentSlug, channelType: input.channelType, target: input.conversationId },
-      mentions && provider.supports.mentions !== true ? withoutMentions : message,
+      mentions && provider.supports.mentions !== true ? withoutMentions : outgoing,
       provider.supports,
     );
     try {
       const outcome = await provider.sendToConversation(input.conversationId, marked.message, { asChannelKey });
-      if (outcome.outcome === 'delivered') marked.delivered();
+      if (outcome.outcome === 'delivered') {
+        marked.delivered();
+        if (plain.question) return keepQuestionOpen(input, outcome, plain.question);
+      }
       return outcome;
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err);
@@ -148,35 +238,10 @@ export function createConversationSendService(deps: {
 
   async function sendAsOwnIdentity(
     input: ConversationSendInput,
-    callerPluginId: string | undefined,
-    ground: AuthorizedSendGround | undefined,
+    ground: AuthorizedSendGround,
   ): Promise<TargetedDeliveryOutcome> {
-    const own = deps.ownIdentity;
-    const notAdded = ownIdentitySendNotAdded(own, input.agentSlug);
-    if (notAdded) return unreachable('not_permitted', notAdded);
-    const identity = own?.identityFor(input.agentSlug, input.channelType);
-    if (!own || !identity) {
-      return unreachable(
-        'no_identity',
-        `agent '${input.agentSlug}' has no ${input.channelType} identity of its own — it does not post through another agent's bot`,
-      );
-    }
-    const subscription = ground
-      ? undefined
-      : own.subscriptions?.subscriptionFor({
-          agentSlug: input.agentSlug,
-          channelType: input.channelType,
-          conversationId: input.conversationId,
-        });
-    if (!ground && (!subscription || (callerPluginId !== undefined && subscription.pluginId !== callerPluginId))) {
-      log(
-        `[channels] own-identity send by '${input.agentSlug}' to ${input.channelType}/${input.conversationId} refused (no message subscription)`,
-      );
-      return unreachable(
-        'not_permitted',
-        `agent '${input.agentSlug}' holds no message subscription for this conversation — it only posts where it moderates`,
-      );
-    }
+    const identity = ownIdentityOf(input);
+    if ('outcome' in identity) return identity;
     let poll: TargetedMessage['poll'];
     if (input.message.poll !== undefined) {
       const read = readPoll(input.message.poll);
@@ -190,11 +255,7 @@ export function createConversationSendService(deps: {
       if ('error' in read) return unreachable('channel_error', `invalid card: ${read.error}`);
       card = read.card;
     }
-    const mentions = await resolveMentions(
-      own,
-      ground ? ground.subscriptions : subscription ? [subscription] : [],
-      input.message.mentions,
-    );
+    const mentions = await resolveMentions(identity.own, ground.subscriptions, input.message.mentions);
     const message: TargetedMessage = {
       text: input.message.text,
       ...(input.message.attachments ? { attachments: input.message.attachments } : {}),
@@ -209,13 +270,11 @@ export function createConversationSendService(deps: {
     return outcome;
   }
 
-  /** Identity and subscription of an own-identity action, or the refusal. */
-  function ownIdentityOf(
-    scope: { agentSlug: string; channelType: string; conversationId: string },
-    callerPluginId: string | undefined,
-    action: string,
-    ground?: AuthorizedSendGround,
-  ): { channelKey: string } | Extract<TargetedDeliveryOutcome, { outcome: 'unreachable' }> {
+  /** The identity an own-identity action goes out as, or the refusal. */
+  function ownIdentityOf(scope: {
+    agentSlug: string;
+    channelType: string;
+  }): { own: OwnIdentityDeps; channelKey: string } | Extract<TargetedDeliveryOutcome, { outcome: 'unreachable' }> {
     const own = deps.ownIdentity;
     const notAdded = ownIdentitySendNotAdded(own, scope.agentSlug);
     if (notAdded) {
@@ -228,28 +287,27 @@ export function createConversationSendService(deps: {
         `agent '${scope.agentSlug}' has no ${scope.channelType} identity of its own — it does not post through another agent's bot`,
       ) as Extract<TargetedDeliveryOutcome, { outcome: 'unreachable' }>;
     }
-    if (ground) return { channelKey: identity.channelKey };
-    const subscription = own.subscriptions?.subscriptionFor(scope);
-    if (!subscription || (callerPluginId !== undefined && subscription.pluginId !== callerPluginId)) {
-      log(
-        `[channels] ${action} by '${scope.agentSlug}' in ${scope.channelType}/${scope.conversationId} refused (no message subscription)`,
-      );
-      return unreachable(
-        'not_permitted',
-        `agent '${scope.agentSlug}' holds no message subscription for this conversation — it only posts where it moderates`,
-      ) as Extract<TargetedDeliveryOutcome, { outcome: 'unreachable' }>;
-    }
-    return { channelKey: identity.channelKey };
+    return { own, channelKey: identity.channelKey };
   }
 
   function capabilitiesOf(provider: ConversationSendProvider): ConversationSendCapabilities {
     const card = readCardSupport(provider.supports?.card);
+    // #2086 — with a store for open questions every channel can ask: what it
+    // does not show natively goes out as numbered text and a typed reply comes
+    // back as the same answer event.
+    const asText = deps.openQuestions !== undefined;
     return {
       asOwnIdentity: provider.supports?.asChannelKey === true,
       mentions: provider.supports?.mentions === true,
-      poll: provider.supports?.poll === true,
+      // Only when the method is really there, and as a named identity.
+      reactions: provider.supports?.reactions === true && provider.supports.asChannelKey === true && typeof provider.react === 'function',
+      poll: provider.supports?.poll === true || asText,
       // `update` is only true when the method is really there.
-      ...(card ? { card: { ...card, update: card.update && typeof provider.updateCard === 'function' } } : {}),
+      ...(card
+        ? { card: { ...card, update: card.update && typeof provider.updateCard === 'function' } }
+        : asText
+          ? { card: { kinds: TEXT_CARD_KINDS, maxQuestions: 1, update: false, asText: true } }
+          : {}),
     };
   }
 
@@ -259,7 +317,7 @@ export function createConversationSendService(deps: {
       return provider ? capabilitiesOf(provider) : undefined;
     },
 
-    async updateCard(input, callerPluginId, ground) {
+    async updateCard(input, ground) {
       const isText = (v: unknown, max: number): v is string => typeof v === 'string' && v.trim().length > 0 && v.length <= max;
       if (
         !isText(input?.agentSlug, 128) ||
@@ -273,8 +331,10 @@ export function createConversationSendService(deps: {
           message: 'agentSlug, channelType, conversationId and cardMessageId are required',
         };
       }
-      const scope = { agentSlug: input.agentSlug, channelType: input.channelType, conversationId: input.conversationId };
-      const identity = ownIdentityOf(scope, callerPluginId, 'card update', ground);
+      if (!ground) {
+        return { outcome: 'unreachable', code: 'not_permitted', message: NO_GROUND };
+      }
+      const identity = ownIdentityOf(input);
       if ('outcome' in identity) return identity;
       const provider = deps.providers.get(input.channelType);
       if (!provider) {
@@ -312,20 +372,43 @@ export function createConversationSendService(deps: {
       }
     },
 
-    async sendToConversation(input, callerPluginId, ground) {
+    async react(input, ground) {
+      const isText = (v: unknown, max: number): v is string => typeof v === 'string' && v.trim().length > 0 && v.length <= max;
+      if (!isText(input?.agentSlug, 128) || !isText(input.channelType, 64) || !isText(input.conversationId, 512) || !isText(input.messageId, 512)) {
+        return { outcome: 'unreachable', code: 'not_permitted', message: 'agentSlug, channelType, conversationId and messageId are required' };
+      }
+      if (!CONVERSATION_REACTIONS.includes(input.reaction)) {
+        return { outcome: 'unreachable', code: 'channel_error', message: `unknown reaction '${String(input.reaction)}'` };
+      }
+      if (!ground) return { outcome: 'unreachable', code: 'not_permitted', message: NO_GROUND };
+      const identity = ownIdentityOf(input);
+      if ('outcome' in identity) return { outcome: 'unreachable', code: identity.code, message: identity.message };
+      const provider = deps.providers.get(input.channelType);
+      if (!provider || !capabilitiesOf(provider).reactions || !provider.react) {
+        return { outcome: 'unreachable', code: 'channel_error', message: `the '${input.channelType}' channel plugin does not declare reactions — nothing was set` };
+      }
+      try {
+        return await provider.react(input.conversationId, input.messageId, input.reaction, { asChannelKey: identity.channelKey });
+      } catch (err) {
+        const text = err instanceof Error ? err.message : String(err);
+        log(`[channels] reaction in ${input.channelType}/${input.conversationId} threw: ${text}`);
+        return { outcome: 'unreachable', code: 'channel_error', message: text };
+      }
+    },
+
+    async sendToConversation(input, ground) {
       if (typeof input.agentSlug !== 'string' || input.agentSlug.trim().length === 0) {
         return { outcome: 'unreachable', code: 'not_permitted', message: 'agentSlug is required' };
       }
-      if (input.asOwnIdentity === true) return sendAsOwnIdentity(input, callerPluginId, ground);
-      log(
-        `[channels] conversation send by '${input.agentSlug}' to ${input.channelType}/${input.conversationId} refused (asOwnIdentity not set)`,
-      );
-      return {
-        outcome: 'unreachable',
-        code: 'not_permitted',
-        message:
-          'conversationSend posts as the agent\'s own identity only: set asOwnIdentity and hold a message subscription for the conversation',
-      };
+      // The type requires the ground; a caller that got here without one (a
+      // cast, plain JavaScript) has no authorization, so nothing is posted.
+      if (!ground) {
+        log(
+          `[channels] conversation send by '${input.agentSlug}' to ${input.channelType}/${input.conversationId} refused (no authorization)`,
+        );
+        return { outcome: 'unreachable', code: 'not_permitted', message: NO_GROUND };
+      }
+      return sendAsOwnIdentity(input, ground);
     },
   };
 }

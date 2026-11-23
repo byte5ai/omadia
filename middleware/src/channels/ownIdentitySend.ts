@@ -4,9 +4,10 @@
 // A facilitator never speaks through another agent's bot. So an own-identity
 // send resolves the agent's identity and stops with `no_identity` when there
 // is none; there is no fallback to the default bot. Permission does not come
-// from an ephemeral attachment (the discussion relay's scope) but from the
-// agent's message subscription: it may post into a conversation it moderates,
-// and DM the people of such a conversation.
+// from an ephemeral attachment (the discussion relay's scope): a post into a
+// conversation is authorized by an execution scope (`scopedSendService.ts`),
+// and a person is only written to when they are part of a conversation one
+// of the agent's processes is subscribed to.
 
 import type {
   AiDisclosure,
@@ -28,9 +29,9 @@ import type { MessageSubscription } from './conversationMessages/store.js';
 export interface OwnIdentityDeps {
   /** The agent's OWN identity on a channel; never the default bot. */
   readonly identityFor: (agentSlug: string, channelType: string) => { channelKey: string } | undefined;
-  /** The subscriptions that carry the permission. Absent (no database) =
-   *  no own-identity send is permitted. */
-  readonly subscriptions?: Pick<ConversationMessageHub, 'subscriptionFor' | 'subscriptionsOf' | 'findAuthor'>;
+  /** The message subscriptions people are looked up in. Absent (no
+   *  database) = nobody is found, so no person is mentioned or written to. */
+  readonly subscriptions?: Pick<ConversationMessageHub, 'subscriptionsOf' | 'findAuthor'>;
   /** `asChannelKey`: the roster is read as the agent's own identity (the
    *  subscription's), never as the channel's default bot. */
   readonly getRoster?: (
@@ -218,7 +219,7 @@ function isShortText(value: unknown): value is string {
  *  it is refused (nothing is posted then). */
 export function readPoll(raw: unknown): { poll: TargetedPoll } | { error: string } {
   if (raw === null || typeof raw !== 'object') return { error: 'poll must be an object' };
-  const poll = raw as { pollId?: unknown; question?: unknown; options?: unknown; hint?: unknown };
+  const poll = raw as { pollId?: unknown; question?: unknown; options?: unknown; hint?: unknown; multipleAnswers?: unknown };
   if (!isShortText(poll.pollId)) return { error: 'pollId must be 1..128 characters' };
   if (typeof poll.question !== 'string' || poll.question.trim().length === 0) {
     return { error: 'question must not be empty' };
@@ -244,6 +245,7 @@ export function readPoll(raw: unknown): { poll: TargetedPoll } | { error: string
       question: poll.question,
       options,
       ...(typeof poll.hint === 'string' && poll.hint.trim().length > 0 ? { hint: poll.hint } : {}),
+      ...(poll.multipleAnswers === true ? { multipleAnswers: true } : {}),
     },
   };
 }

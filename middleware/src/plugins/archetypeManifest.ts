@@ -9,11 +9,14 @@
 
 import {
   ARCHETYPE_ADDITIONS,
+  ARCHETYPE_AGENT_SETTING_TYPES,
   ARCHETYPE_OMISSIONS,
   ARCHETYPE_REQUIREMENTS,
   STANDARD_ARCHETYPE,
   isArchetypeId,
   type ArchetypeAddition,
+  type ArchetypeAgentSetting,
+  type ArchetypeAgentSettingOption,
   type ArchetypeDescriptor,
   type ArchetypeOmission,
   type ArchetypeRequirement,
@@ -64,6 +67,70 @@ function readList<T extends string>(
     };
   }
   return { value: [...new Set(raw as T[])] };
+}
+
+const MAX_SETTINGS = 20;
+const MAX_OPTIONS = 20;
+const MAX_LIST_ITEMS = 20;
+const SETTING_KEY_RE = /^[a-z][a-z0-9_]{0,62}$/;
+
+/**
+ * #2066 — `archetype.agent_settings`: fields the operator sets per agent of
+ * the archetype. Read as strictly as the rest of the block: a type the kernel
+ * cannot validate rejects the manifest.
+ */
+function readAgentSettings(raw: unknown): { value: ArchetypeAgentSetting[] } | { error: string } {
+  if (raw === undefined || raw === null) return { value: [] };
+  if (!Array.isArray(raw) || raw.length > MAX_SETTINGS) {
+    return { error: `archetype.agent_settings must be a list of up to ${String(MAX_SETTINGS)} fields` };
+  }
+  const out: ArchetypeAgentSetting[] = [];
+  const keys = new Set<string>();
+  for (const [index, entry] of raw.entries()) {
+    const at = `archetype.agent_settings[${String(index)}]`;
+    if (!isObject(entry)) return { error: `${at} must be a map` };
+    const key = entry['key'];
+    if (typeof key !== 'string' || !SETTING_KEY_RE.test(key)) {
+      return { error: `${at}.key must be lowercase letters, digits and underscores` };
+    }
+    if (keys.has(key)) return { error: `${at}.key '${key}' is declared twice` };
+    keys.add(key);
+    const label = readText(entry['label'], MAX_LABEL);
+    if (label === undefined || label === 'invalid') return { error: `${at}.label must be a text or an { en, de } map` };
+    const help = readText(entry['help'], MAX_TEXT);
+    if (help === 'invalid') return { error: `${at}.help must be a text or an { en, de } map` };
+    const base = { key, label, ...(help !== undefined ? { help } : {}) };
+    const type = entry['type'];
+    if (type === 'enum') {
+      const rawOptions = entry['options'];
+      if (!Array.isArray(rawOptions) || rawOptions.length === 0 || rawOptions.length > MAX_OPTIONS) {
+        return { error: `${at}.options must be a list of 1..${String(MAX_OPTIONS)} options` };
+      }
+      const options: ArchetypeAgentSettingOption[] = [];
+      for (const option of rawOptions) {
+        const value = isObject(option) ? option['value'] : undefined;
+        const optionLabel = isObject(option) ? readText(option['label'], MAX_LABEL) : 'invalid';
+        if (!isText(value, MAX_LABEL) || optionLabel === undefined || optionLabel === 'invalid') {
+          return { error: `${at}.options: every option needs a value and a label` };
+        }
+        options.push({ value, label: optionLabel });
+      }
+      out.push({ ...base, type, options });
+      continue;
+    }
+    if (type === 'number_list') {
+      const maxItems = entry['max_items'] ?? 10;
+      if (typeof maxItems !== 'number' || !Number.isInteger(maxItems) || maxItems < 1 || maxItems > MAX_LIST_ITEMS) {
+        return { error: `${at}.max_items must be a whole number from 1 to ${String(MAX_LIST_ITEMS)}` };
+      }
+      out.push({ ...base, type, maxItems });
+      continue;
+    }
+    return {
+      error: `${at}.type ${JSON.stringify(type)} is not a setting type this kernel can validate (it knows: ${ARCHETYPE_AGENT_SETTING_TYPES.join(', ')})`,
+    };
+  }
+  return { value: out };
 }
 
 /**
@@ -119,6 +186,9 @@ export function readArchetypeManifest(
     return { error: `archetype.role_contract must be a text of up to ${String(MAX_ROLE_CONTRACT)} characters` };
   }
 
+  const agentSettings = readAgentSettings(raw['agent_settings']);
+  if ('error' in agentSettings) return agentSettings;
+
   return {
     descriptor: {
       id,
@@ -129,6 +199,7 @@ export function readArchetypeManifest(
       ...texts,
       ...(omissionReasons && Object.keys(omissionReasons).length > 0 ? { omissionReasons } : {}),
       ...(typeof roleContract === 'string' ? { roleContract: roleContract.trim() } : {}),
+      ...(agentSettings.value.length > 0 ? { agentSettings: agentSettings.value } : {}),
     },
   };
 }

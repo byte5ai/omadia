@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '../../_lib/api';
 import { useFacilitatorRefusalMessage } from '../../operator/agents/_components/useFacilitatorCopy';
 import { getAgentGraph, type AgentGraph } from '../../_lib/agentBuilder';
+import { helperRefusalCode } from './helperRefusal';
 
 /** Translator threaded in from the calling component (see messages/README.md). */
 type TFn = (key: string, values?: Record<string, string | number>) => string;
@@ -42,6 +43,10 @@ function friendlyError(
   // would not say that the thing is not available for the kind at all.
   const refused = refusal(err);
   if (refused !== null) return refused;
+  // #2050 — a refused helper write says why (name taken, tool or model the
+  // agent does not have) instead of a bare status.
+  const helperCode = helperRefusalCode(err);
+  if (helperCode !== null) return t(`helperErrors.${helperCode}`);
   if (err instanceof ApiError) return t('apiError', { status: err.status });
   return err instanceof Error ? err.message : String(err);
 }

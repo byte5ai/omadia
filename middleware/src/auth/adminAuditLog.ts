@@ -71,12 +71,43 @@ export type AuditAction =
   | 'agent.disable'
   | 'agent.delete'
   | 'agent.purge'
+  // #2054 — spec 2042 §5.7: the operator confirmed a grant that gives an agent
+  // access to every connected system, or made such an agent the default
+  // agent. `before`/`after` carry the reach (system keys + count), never a
+  // credential.
+  | 'agent.broad_reach_grant'
+  | 'agent.broad_reach_default'
+  // S3c — an invalid grant (an archetype plugin on an agent of another
+  // archetype, from before #2088) removed with a replace of the agent's grants.
+  | 'agent.plugin_grant_revoked'
   // #2090 — the operator's kill switch for the actions of archetype plugins
   // (instance, one agent, one process): set and cleared.
   | 'execution.kill_switch_set'
   // D34 — an operator released a held conversation reservation.
   | 'execution.reservation_release'
   | 'execution.kill_switch_clear'
+  // #2082 — agent-owned triggers: a trigger the harness paused (budget cap,
+  // circuit breaker, agent unavailable; actor `system:triggers`), and the
+  // operator's pause, resume and end, and a recipient's proactive profile.
+  | 'trigger.notice'
+  | 'trigger.pause'
+  | 'trigger.resume'
+  | 'trigger.end'
+  | 'trigger.recipient_profile'
+  // Criterion 24 — an explicit target an operator allowed (or took back)
+  // for an agent's proactive messages.
+  | 'trigger.recipient_grant'
+  | 'trigger.recipient_grant_revoke'
+  // #2055 — the default-agent table and an agent's availability decide who
+  // answers whom: who may reach which agent belongs in the trail.
+  | 'agent.default_entry.set'
+  | 'agent.default_entry.delete'
+  | 'agent.availability_change'
+  // Spec 2042 §5.3 — an agent's own bot on a channel was registered or
+  // removed: who gave an agent a face (and its token) belongs in the trail.
+  // `before`/`after` carry the channel type and the routing key, never a credential.
+  | 'agent.channel_identity.set'
+  | 'agent.channel_identity.delete'
   | 'plugin.uninstall'
   // #1510/#1508 — a plugin's Privacy Shield setting (`_privacy_mode`,
   // `_privacy_bypass_scopes`) changed. A switch to `bypass` sends that
@@ -127,7 +158,19 @@ export type AuditAction =
   | 'memory.purge'
   | 'api_key.create'
   | 'api_key.revoke'
-  | 'api_key.delete';
+  | 'api_key.delete'
+  // Spec 2042 §5.4 (#2047) — consultation switches and directed grants. A
+  // grant change is written twice, once per agent (`target` `agent:<slug>`),
+  // so the trail of either agent shows it. `before`/`after` carry the grant.
+  | 'agent.consultation_change'
+  // Spec 2042 §5.11 (#2079) — an integration's declared readership and
+  // sensitivity (`target` `integration:<id>`), and an agent's context-memory
+  // mode (`target` `agent:<slug>`).
+  | 'discretion.readership_change'
+  | 'agent.context_memory_change'
+  // #2066 — per-agent settings of the agent's archetype (a facilitator's
+  // default methods and reminder policy).
+  | 'agent.archetype_settings_change';
 
 /**
  * #1329 — the actions a PLUGIN may write via

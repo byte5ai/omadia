@@ -58,6 +58,8 @@ export class PrivateMessageRouter {
     channelType: string;
     principalId: string;
     text: string;
+    /** #2090 — the message it replies to, when the channel states one. */
+    replyToMessageId?: string;
   }): Promise<{ answer: string } | undefined> {
     const log = this.deps.log ?? (() => undefined);
     try {
@@ -76,6 +78,9 @@ export class PrivateMessageRouter {
           channelType: message.channelType,
           principalId: message.principalId,
           text: message.text,
+          ...(typeof message.replyToMessageId === 'string' && message.replyToMessageId.length > 0
+            ? { replyToMessageId: message.replyToMessageId }
+            : {}),
           processIds,
         });
         if (!reply || reply.handled !== true) continue;

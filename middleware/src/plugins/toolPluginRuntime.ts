@@ -7,6 +7,8 @@ import {
   PluginHandoffPlanError,
   loadHandoffPlan,
 } from '../platform/pluginHandoffPlan.js';
+import { canvasOutputToolIds } from '../platform/canvasOutputRegistry.js';
+import { deterministicActionToolIds } from '../platform/deterministicActionRegistry.js';
 import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
 import { claimDeclaredPublicPaths } from '../platform/publicPathClaim.js';
@@ -48,6 +50,7 @@ import { assertStartable, PluginNotStartableError } from './coreCompat.js';
 import type { InstalledRegistry } from './installedRegistry.js';
 import type { JobScheduler } from './jobScheduler.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
+import { isDataOnlyPlugin, pluginRuntimeOf } from './pluginRuntimeOf.js';
 import { topoSortByDependsOn } from './topoSort.js';
 import type { UploadedPackageStore } from './uploadedPackageStore.js';
 
@@ -55,12 +58,10 @@ import type { UploadedPackageStore } from './uploadedPackageStore.js';
  * Runtime for `kind: tool`, `kind: extension`, and `kind: integration`
  * plugins.
  *
- * Tool / extension / integration plugins don't expose a toolkit like
- * agent plugins do — their `activate(ctx)` registers into the kernel's
- * native-tool / route / turn-hook / job / service registries during the
- * call and returns a close-only handle. The runtime's responsibilities
- * are thinner than DynamicAgentRuntime's: dynamic-import, invoke
- * activate with timeout, remember the handle so deactivate can call
+ * A plugin's `activate(ctx)` registers into the kernel's native-tool /
+ * route / turn-hook / job / service registries during the call and returns
+ * a close-only handle. The runtime's responsibilities: dynamic-import,
+ * invoke activate with timeout, remember the handle so deactivate can call
  * close().
  *
  * Idempotent across boots: if a plugin's activate() throws repeatedly, the
@@ -154,10 +155,26 @@ export interface ToolPluginRuntimeDeps {
    *  plugin that owns its database, before its context is built. Absent (no
    *  database, narrow test contexts): such a plugin gets no `ctx.sql`. */
   archetypeDatabase?: ArchetypeDatabase;
+  /** Canvas-output autodiscovery: manifest capability entries declaring
+   *  `canvas_output: true` are resolved into this registry on (de)activation
+   *  so the ui-orchestrator can derive its sentinel allow-set without
+   *  operator config. Optional — absent in narrow test contexts. */
+  canvasOutputRegistry?: {
+    register(pluginId: string, toolIds: readonly string[]): void;
+    unregister(pluginId: string): void;
+  };
+  /** Deterministic-action autodiscovery: manifest capability entries declaring
+   *  `deterministic_action: true` are resolved into this registry on
+   *  (de)activation so the ui-orchestrator can dispatch them without a model
+   *  turn (`agentToolInvoker@1`). Optional — absent in narrow test contexts. */
+  deterministicActionRegistry?: {
+    register(pluginId: string, toolIds: readonly string[]): void;
+    unregister(pluginId: string): void;
+  };
   /** Event-catalog autodiscovery (US4 Conductor Surface): capability entries declaring
    *  `event_emit: true` are resolved into this registry on (de)activation. This runtime is the
-   *  ONLY resolve site for built-in/static tool plugins (landmine K — the dynamic runtime has its
-   *  own). Optional — absent in narrow test contexts. */
+   *  only resolve site (spec 2042 §5.10: the agent runtime that had its own is gone).
+   *  Optional — absent in narrow test contexts. */
   eventCatalogRegistry?: {
     register(pluginId: string, eventIds: readonly string[]): void;
     unregister(pluginId: string): void;
@@ -249,25 +266,18 @@ export class ToolPluginRuntime {
       for (const pkg of this.deps.builtInStore.list()) ids.add(pkg.id);
     }
 
-    // Pre-filter to tool/extension candidates that are registry-active, then
-    // topologically sort so a plugin's dependencies activate first. Cross-
-    // runtime deps (agent→tool) are handled by the outer boot order in
-    // index.ts — this runtime runs before the agent runtime.
+    // Pre-filter to candidates of this runtime that are registry-active, then
+    // topologically sort so a plugin's dependencies activate first.
     const eligible: string[] = [];
     const installedAtById = new Map<string, string>();
     for (const id of ids) {
       const catalogEntry = this.deps.catalog.get(id);
       if (!catalogEntry) continue;
-      if (
-        catalogEntry.plugin.kind !== 'tool' &&
-        catalogEntry.plugin.kind !== 'extension' &&
-        // #2088 — an archetype plugin runs like an extension: it registers
-        // tools and jobs for the agents of its archetype.
-        catalogEntry.plugin.kind !== 'archetype' &&
-        catalogEntry.plugin.kind !== 'integration'
-      ) {
-        continue;
-      }
+      // Every kind this runtime runs (`pluginRuntimeOf`), archetype plugins
+      // included (#2088): they register tools and jobs for their agents.
+      if (pluginRuntimeOf(catalogEntry.plugin.kind) !== 'tool') continue;
+      // OB-29-5 — builder-reference plugins never run (see activate()).
+      if (catalogEntry.plugin.is_reference_only === true) continue;
       const reg = this.deps.registry.get(id);
       if (!reg || reg.status !== 'active') continue;
       eligible.push(id);
@@ -386,6 +396,13 @@ export class ToolPluginRuntime {
       throw new Error(`tool-runtime: ${agentId} not in plugin catalog`);
     }
     assertStartable(catalogEntry.plugin);
+    // OB-29-5 — a builder-reference plugin (now a capability plugin, spec
+    // 2042 §5.10) is a read_reference pattern source only; it never runs.
+    if (catalogEntry.plugin.is_reference_only === true) {
+      throw new Error(
+        `tool-runtime: cannot activate '${agentId}' — plugin is marked is_reference_only=true (Builder-Reference, read_reference-only)`,
+      );
+    }
 
     // Issue #474 (round 5) — refresh the automatic OAuth-connection signal
     // BEFORE the plugin's own activate() runs, so a plugin that separately
@@ -399,6 +416,13 @@ export class ToolPluginRuntime {
         catalogEntry,
         this.deps.vault,
       );
+    }
+
+    // Spec 2042 §5.10 — an agent template (or a skill package without code)
+    // delivers data only: nothing is imported, nothing runs.
+    if (isDataOnlyPlugin(catalogEntry.plugin.kind, catalogEntry.manifest)) {
+      await this.activateDataOnly(catalogEntry, packagePath);
+      return;
     }
 
     const entryRel = extractEntryPath(catalogEntry) ?? 'dist/plugin.js';
@@ -747,9 +771,27 @@ export class ToolPluginRuntime {
 
     this.active.set(agentId, { agentId, handle, extDisposes, ...(probe ? { probe } : {}) });
 
-    // Event-catalog autodiscovery (US4 / landmine K): static + built-in tool plugins resolve their
-    // `event_emit: true` capabilities here — the only place they are picked up (the dynamic runtime
-    // covers hot-installed agents). Lets the Designer list emittable events + ctx.events.emit deny-by-default.
+    // Canvas-output and deterministic-action autodiscovery: resolve the
+    // manifest's `canvas_output: true` / `deterministic_action: true`
+    // capability declarations into the kernel registries. Hot installs flow
+    // through this same path, so a fresh plugin needs no orchestrator
+    // re-activation to be authorised for canvas sentinels or the fast-path.
+    const canvasOutputIds = canvasOutputToolIds(catalogEntry.manifest);
+    if (canvasOutputIds.length > 0) {
+      this.deps.canvasOutputRegistry?.register(agentId, canvasOutputIds);
+      log(`[tool-runtime] canvas-output capabilities registered for ${agentId}: ${canvasOutputIds.join(', ')}`);
+    }
+    const deterministicActionIds = deterministicActionToolIds(catalogEntry.manifest);
+    if (deterministicActionIds.length > 0) {
+      this.deps.deterministicActionRegistry?.register(agentId, deterministicActionIds);
+      log(
+        `[tool-runtime] deterministic-action capabilities registered for ${agentId}: ${deterministicActionIds.join(', ')}`,
+      );
+    }
+
+    // Event-catalog autodiscovery (US4 / landmine K): the plugin's `event_emit: true`
+    // capabilities are resolved here. Lets the Designer list emittable events +
+    // ctx.events.emit deny-by-default.
     const eventEmitIdList = eventEmitIds(catalogEntry.manifest);
     if (eventEmitIdList.length > 0) {
       this.deps.eventCatalogRegistry?.register(agentId, eventEmitIdList);
@@ -832,6 +874,8 @@ export class ToolPluginRuntime {
       }
     }
     this.deps.selfExtendRegistry?.unregister(agentId);
+    this.deps.canvasOutputRegistry?.unregister(agentId);
+    this.deps.deterministicActionRegistry?.unregister(agentId);
     this.deps.eventCatalogRegistry?.unregister(agentId);
     // Take the externally-reachable surfaces down BEFORE awaiting close().
     // close() is plugin-controlled and gets a 5s budget, so disposing after
@@ -843,9 +887,7 @@ export class ToolPluginRuntime {
     // disposed and the mounted closure falls through to next(). Without
     // this call a deactivated plugin's routers stay live and — because
     // Express matches first-mount-wins — keep serving after uninstall or
-    // across a hot-upgrade. DynamicAgentRuntime already did this; the tool
-    // runtime held the dependency and threaded it into the plugin context
-    // but never disposed by source.
+    // across a hot-upgrade.
     //
     // Same reasoning one layer down for the service registry: a provider
     // whose close() forgets its handle leaves the service registered
@@ -906,6 +948,31 @@ export class ToolPluginRuntime {
 
   activeIds(): string[] {
     return Array.from(this.active.keys());
+  }
+
+  /** A data-only package is active once it is in the catalog: no code, no
+   *  context, nothing to close. */
+  private async activateDataOnly(catalogEntry: PluginCatalogEntry, packagePath: string): Promise<void> {
+    const log = this.deps.log ?? ((m) => console.log(m));
+    const agentId = catalogEntry.plugin.id;
+    this.active.set(agentId, { agentId, handle: { close: async () => {} }, extDisposes: [] });
+    try {
+      await this.deps.registry.markActivationSucceeded(agentId);
+    } catch (err) {
+      log(
+        `[tool-runtime] registry markActivationSucceeded FAILED for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (this.deps.onActivated) {
+      try {
+        await this.deps.onActivated(catalogEntry, packagePath);
+      } catch (err) {
+        log(
+          `[tool-runtime] onActivated hook FAILED for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    log(`[tool-runtime] ACTIVATED ${agentId} (${catalogEntry.plugin.kind}, data only)`);
   }
 
   private resolvePackagePath(agentId: string): string | undefined {

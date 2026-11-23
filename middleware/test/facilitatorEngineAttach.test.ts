@@ -5,18 +5,20 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import {
   attachEngineToFacilitator,
   attachEngineToFacilitators,
+  syncArchetypesAndAttachEngine,
 } from '../src/platform/facilitatorEngineAttach.js';
 import { createSubscriptionGroundCheck } from '../src/channels/conversationMessages/wiring.js';
 import {
   assertEngineOnlyForFacilitators,
   resolveFacilitationEngine,
 } from '../src/platform/facilitatorGuard.js';
-import { attachablePluginIds } from '../src/plugins/defaultOrchestratorAttach.js';
+import { capabilityPluginIds } from '../src/plugins/capabilityPlugins.js';
 
 const ENGINE = '@omadia/agent-facilitator';
 const ODOO = '@omadia/integration-odoo';
@@ -105,7 +107,7 @@ describe('facilitation engine auto-attach', () => {
     assert.deepEqual(two.rows, []);
   });
 
-  it('the ground of a subscription: engine, agent, identity', async () => {
+  it('the ground of a subscription: a running plugin, the agent, its identity', async () => {
     const w = world([ENGINE]);
     let status = 'active';
     let agent: { id: string; status: string; archetype: string } | undefined = { id: 'a-mara', status: 'enabled', archetype: 'facilitator' };
@@ -130,16 +132,21 @@ describe('facilitation engine auto-attach', () => {
       channelKey: '28:aaaa-mara',
       pluginId: ENGINE,
       createdAt: new Date(0),
+      processId: 'facilitation-1',
       mode: 'all' as const,
     };
     assert.equal(await ground(subscription), undefined, 'stands');
     status = 'inactive';
-    assert.match((await ground(subscription))!, /engine plugin is inactive/);
+    assert.equal(await ground(subscription), 'the plugin that subscribed is inactive');
     status = 'active';
+    // Who may run a process of this agent is not asked here: the subscription
+    // stands on its process's execution scope, which the hub checks, and which
+    // was revoked if the plugin was uninstalled. A second engine next to it,
+    // or the plugin missing from the registry, ends nothing by itself.
     w.state.installed = [ENGINE, '@acme/engine-2'];
-    assert.match((await ground(subscription))!, /no longer the facilitation engine/);
+    assert.equal(await ground(subscription), undefined);
     w.state.installed = [];
-    assert.match((await ground(subscription))!, /no longer the facilitation engine/);
+    assert.equal(await ground(subscription), undefined);
     w.state.installed = [ENGINE];
     agent = { id: 'a-mara', status: 'disabled', archetype: 'facilitator' };
     assert.equal(await ground(subscription), 'the agent is disabled');
@@ -152,10 +159,11 @@ describe('facilitation engine auto-attach', () => {
     assert.match((await ground(subscription))!, /no longer has the teams identity/);
   });
 
-  it('the engine is never part of a default attach, and cannot be granted to a standard agent', () => {
+  it('the engine is never offered as a capability, and cannot be granted to a standard agent', () => {
     const w = world([ENGINE, ODOO]);
     const catalog = w.sources.catalog as { get(id: string): never };
-    assert.deepEqual(attachablePluginIds([ENGINE, ODOO, '@unknown/x'], catalog), [ODOO, '@unknown/x']);
+    // #2054 — an id the catalog does not know is not offered either.
+    assert.deepEqual(capabilityPluginIds([ENGINE, ODOO, '@unknown/x'], catalog), [ODOO]);
     assert.throws(
       () => assertEngineOnlyForFacilitators(w.agents[2]!, [{ pluginId: ENGINE, enabled: true }], w.sources),
       /an archetype plugin can only be granted to agents of its own archetype/,
@@ -166,5 +174,57 @@ describe('facilitation engine auto-attach', () => {
     assert.doesNotThrow(() =>
       assertEngineOnlyForFacilitators(w.agents[0]!, [{ pluginId: ENGINE, enabled: true }], w.sources),
     );
+  });
+});
+
+describe('syncArchetypesAndAttachEngine: the boot and install path', () => {
+  const run = async (opts: { store?: object; syncFails?: boolean; attachFails?: boolean }) => {
+    const calls: string[] = [];
+    const logs: string[] = [];
+    await syncArchetypesAndAttachEngine({
+      sync: () => {
+        calls.push('sync');
+        return opts.syncFails ? Promise.reject(new Error('catalog down')) : Promise.resolve();
+      },
+      getStore: () => opts.store as never,
+      attach: () => {
+        calls.push('attach');
+        return opts.attachFails ? Promise.reject(new Error('db down')) : Promise.resolve();
+      },
+      reload: () => {
+        calls.push('reload');
+        return Promise.resolve();
+      },
+      log: (m) => logs.push(m),
+    });
+    return { calls, logs };
+  };
+
+  it('syncs the archetypes also without a config store, and attaches nothing then', async () => {
+    assert.deepEqual((await run({})).calls, ['sync']);
+  });
+
+  it('with a config store: sync, then attach, then rebuild', async () => {
+    assert.deepEqual((await run({ store: {} })).calls, ['sync', 'attach', 'reload']);
+  });
+
+  it('a failed sync attaches nothing and says so; a failed attach is logged, never thrown', async () => {
+    const failedSync = await run({ store: {}, syncFails: true });
+    assert.deepEqual(failedSync.calls, ['sync']);
+    assert.match(failedSync.logs.join('\n'), /archetype sync FAILED: catalog down/);
+    const failedAttach = await run({ store: {}, attachFails: true });
+    assert.deepEqual(failedAttach.calls, ['sync', 'attach']);
+    assert.match(failedAttach.logs.join('\n'), /facilitation engine attach FAILED: db down/);
+  });
+});
+
+describe('wiring: the boot path syncs archetypes before it needs a config store', () => {
+  it('index.ts builds attachFacilitationEngine on syncArchetypesAndAttachEngine', () => {
+    const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf-8');
+    const start = source.indexOf('const attachFacilitationEngine');
+    assert.ok(start > 0, 'attachFacilitationEngine is defined');
+    const body = source.slice(start, source.indexOf('const propagatePluginInstall', start));
+    assert.match(body, /syncArchetypesAndAttachEngine\(/);
+    assert.doesNotMatch(body, /if \(!store\) return/, 'no early return before the sync');
   });
 });

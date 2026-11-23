@@ -102,8 +102,14 @@ export interface BoundTurnMemory {
 
 export interface MemoryBinderOptions {
   readonly agentSlug: string;
-  /** The kernel `MemoryStore`, undecorated. */
+  /** The kernel `MemoryStore` (wrapped by the discretion label layer, if any). */
   readonly root: MemoryStore;
+  /**
+   * Spec 2042 §5.11 — the store the members index lives in: the undecorated
+   * kernel store, because index files are read on behalf of every room and
+   * must not lend one room's labels to another's turn. Defaults to `root`.
+   */
+  readonly indexStore?: MemoryStore;
   /** Durable-rules live hook, when the graph pool is available. */
   readonly durableRules?: DurableRulesHookDeps;
   /** LRU capacity; defaults to {@link DEFAULT_BINDER_CACHE_CAP}. */
@@ -234,7 +240,7 @@ export class MemoryBinder {
     if (axes.isContextFree) return this.forOrigin(origin);
     if (audience.kind === 'unknown') return this.forMembers(axes, null, []);
     try {
-      this.membersIndex ??= new MembersIndex(this.options.root, this.options.agentSlug);
+      this.membersIndex ??= new MembersIndex(this.options.indexStore ?? this.options.root, this.options.agentSlug);
       const own = await this.membersIndex.register(audience.members);
       const shared = (await this.membersIndex.coveringAudience(audience.members))
         .map((entry) => entry.key)

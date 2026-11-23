@@ -1,5 +1,5 @@
-// Publishes 'agentTurn' (#2043) as a per-caller service: the kernel knows
-// which plugin asks, and only the facilitation engine is answered.
+// Publishes 'agentTurn@2' (#2043, #2090) as a per-caller service: the kernel
+// knows which plugin asks, and only the facilitation engine is answered.
 
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
 import {
@@ -25,13 +25,17 @@ import {
 export function publishAgentTurnService(deps: {
   serviceRegistry: ServiceRegistry;
   getRegistry: () => OrchestratorRegistry | undefined;
-  messages?: Pick<ConversationMessageHub, 'getEventById' | 'getProcessEventById'>;
+  messages?: Pick<ConversationMessageHub, 'getProcessEventById'>;
   engineSources: () => FacilitationEngineSources;
   /** #2090 — the calling plugin's execution authorization, for `agentTurn@2`.
    *  Answers `undefined` without a database. */
   executionFor?: (pluginId: string) => ExecutionAuthorizationService | undefined;
   maxTurnsPerMinute: number;
   language?: () => string | undefined;
+  /** #2048 — the conversation roster as the agent's own identity. */
+  roster?: AgentTurnServiceDeps['roster'];
+  /** #2066 — the agent's archetype settings, for the profile. */
+  archetypeSettings?: AgentTurnServiceDeps['archetypeSettings'];
   log: (message: string) => void;
 }): void {
   // One history and one budget for the process, shared by every facade.
@@ -50,12 +54,13 @@ export function publishAgentTurnService(deps: {
       history,
       budget,
       ...(deps.language ? { language: deps.language } : {}),
+      ...(deps.roster ? { roster: deps.roster } : {}),
+      ...(deps.archetypeSettings ? { archetypeSettings: deps.archetypeSettings } : {}),
       log: deps.log,
     };
   };
   // #2090 — a model turn is an authorized action under an execution scope
-  // (`agentTurn@2`). The first major, a turn without a scope, is no longer
-  // provided since K6.
+  // (`agentTurn@2`); the bare name `agentTurn` provides nothing.
   deps.serviceRegistry.provide(
     AGENT_TURN_V2_SERVICE_NAME,
     perCallerService((caller) =>
