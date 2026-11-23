@@ -8,7 +8,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import type { ConversationMessageEvent, TargetedMessage } from '@omadia/channel-sdk';
+import { parseCardReply, type ConversationMessageEvent, type TargetedMessage } from '@omadia/channel-sdk';
 import type { QuestionCard } from '@omadia/plugin-api';
 
 import { ConversationMessageHub, type ProcessAccess } from '../src/channels/conversationMessages/hub.js';
@@ -381,7 +381,7 @@ describe('the send service posts what the channel cannot show as text and keeps 
     assert.deepEqual(await open.listOpen('telegram', CONVERSATION, new Date()), []);
   });
 
-  it('a card with several questions, or an assignment, is still refused and nothing is posted', async () => {
+  it('a card with several questions, or an assignment nobody could name by typing, is still refused and nothing is posted', async () => {
     const { send, sent } = service(false, new InMemoryOpenCardQuestionStore());
     const two: QuestionCard = { ...ranking, questions: [...ranking.questions, { id: 'q2', kind: 'number', label: 'Wie viele?' }] };
     const refused = await send.sendToConversation(input({ card: two }), ground);
@@ -389,6 +389,33 @@ describe('the send service posts what the channel cannot show as text and keeps 
     const assignment: QuestionCard = { cardId: 'as-1', title: 'T', questions: [{ id: 'q', kind: 'assignment', label: 'Wer?', candidates: 'conversation_members' }] };
     assert.equal((await send.sendToConversation(input({ card: assignment }), ground)).outcome, 'unreachable');
     assert.equal(sent.length, 0);
+  });
+
+  it('criterion 30: an assignment goes out as text and "2" / "ich" come back as the typed assignee', async () => {
+    const open = new InMemoryOpenCardQuestionStore();
+    const { send, sent } = service(false, open);
+    const fixed: QuestionCard = {
+      cardId: 'as-2',
+      title: 'Wer übernimmt?',
+      questions: [{ id: 'q', kind: 'assignment', label: 'Wer?', candidates: [{ id: 'anna', label: 'Anna' }, { id: 'ben', label: 'Ben' }], allowVolunteer: true }],
+    };
+    assert.equal((await send.sendToConversation(input({ card: fixed }), ground)).outcome, 'delivered');
+    assert.match(sent[0]?.text ?? '', /1\) Anna\n2\) Ben/);
+    const asked = (await open.listOpen('telegram', CONVERSATION, new Date()))[0]?.card.questions[0];
+    assert.ok(asked);
+    assert.deepEqual(parseCardReply(asked, '2'), { ok: true, value: { questionId: 'q', kind: 'assignment', assignee: { kind: 'user', id: 'ben', displayName: 'Ben' } } });
+    assert.deepEqual(parseCardReply(asked, 'ich'), { ok: true, value: { questionId: 'q', kind: 'assignment', assignee: 'self' } });
+    // a member list can only be volunteered for
+    const members: QuestionCard = { cardId: 'as-3', title: 'T', questions: [{ id: 'q', kind: 'assignment', label: 'Wer?', candidates: 'conversation_members', allowVolunteer: true }] };
+    assert.equal((await send.sendToConversation(input({ card: members }), ground)).outcome, 'delivered');
+    // without volunteering, "ich" is not an answer to a fixed list
+    const noVolunteer = { ...asked, allowVolunteer: false } as typeof asked;
+    assert.equal(parseCardReply(noVolunteer, 'ich').ok, false);
+    // a member list nobody may volunteer for cannot go out as text at all
+    const closedMembers: QuestionCard = { cardId: 'as-4', title: 'T', questions: [{ id: 'q', kind: 'assignment', label: 'Wer?', candidates: 'conversation_members' }] };
+    const before = sent.length;
+    assert.equal((await send.sendToConversation(input({ card: closedMembers }), ground)).outcome, 'unreachable');
+    assert.equal(sent.length, before, 'nothing was posted');
   });
 
   it('a close far in the future does not keep a question open for ever', async () => {
@@ -412,7 +439,7 @@ describe('the send service posts what the channel cannot show as text and keeps 
     const caps = send.capabilities('telegram');
     assert.equal(caps?.poll, true);
     assert.equal(caps?.card?.maxQuestions, 1);
-    assert.equal(caps?.card?.kinds.includes('assignment'), false);
+    assert.equal(caps?.card?.kinds.includes('assignment'), true);
     assert.equal(caps?.card?.kinds.includes('ranking'), true);
   });
 });

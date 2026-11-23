@@ -76,6 +76,10 @@ export type EmissionType = (typeof EMISSION_TYPES)[number];
  * - `identity_guard_blocked`: the identity guard refused the agent's text.
  * - `identity_guard_unavailable`: the guard could not decide (error or
  *   timeout); fail-closed, the text stays unpublished.
+ * - `archetype_plugin_removed`: the plugin that delivers the agent's
+ *   archetype was uninstalled; the agent is disabled and its running
+ *   processes ended without their closing documents (spec §5.10). Posted
+ *   once in each affected home conversation.
  */
 export const SYSTEM_NOTICE_CODES = [
   'agent_disabled',
@@ -94,6 +98,8 @@ export const SYSTEM_NOTICE_CODES = [
   // Spec 2042 §5.3 — `/agent` sent to an agent's own bot: that bot is always
   // this agent, there is nothing to select.
   'agent_own_bot',
+  // Spec 2042 §5.10 — end of service after the archetype plugin was removed.
+  'archetype_plugin_removed',
 ] as const;
 
 export type SystemNoticeCode = (typeof SYSTEM_NOTICE_CODES)[number];

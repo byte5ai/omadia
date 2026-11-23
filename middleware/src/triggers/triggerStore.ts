@@ -156,9 +156,23 @@ interface TriggerRowDb {
 function parseDiscretion(value: unknown): TriggerDiscretion | null {
   if (Array.isArray(value)) return null;
   if (typeof value !== 'object' || value === null) return UNREADABLE_DISCRETION;
-  const { contextKey, readers, labels } = value as { contextKey?: unknown; readers?: unknown; labels?: unknown };
+  const { contextKey, readers, labels, fieldClasses } = value as {
+    contextKey?: unknown;
+    readers?: unknown;
+    labels?: unknown;
+    fieldClasses?: unknown;
+  };
   if (typeof contextKey !== 'string' || contextKey === '') return UNREADABLE_DISCRETION;
-  return { contextKey, readers: parseStoredReaders(readers), labels: parseLabelSet(labels) };
+  // Field rights: anything but a list of class names counts as none.
+  const classes = Array.isArray(fieldClasses)
+    ? fieldClasses.filter((c): c is string => typeof c === 'string' && c.length > 0 && c.length <= 64)
+    : [];
+  return {
+    contextKey,
+    readers: parseStoredReaders(readers),
+    labels: parseLabelSet(labels),
+    ...(classes.length > 0 ? { fieldClasses: classes } : {}),
+  };
 }
 
 const UNREADABLE_DISCRETION: TriggerDiscretion = {
@@ -169,7 +183,14 @@ const UNREADABLE_DISCRETION: TriggerDiscretion = {
 
 function serializeDiscretion(discretion: TriggerDiscretion | null): unknown {
   return discretion
-    ? { contextKey: discretion.contextKey, readers: discretion.readers, labels: serializeLabelSet(discretion.labels) }
+    ? {
+        contextKey: discretion.contextKey,
+        readers: discretion.readers,
+        labels: serializeLabelSet(discretion.labels),
+        ...(discretion.fieldClasses && discretion.fieldClasses.length > 0
+          ? { fieldClasses: [...discretion.fieldClasses] }
+          : {}),
+      }
     : [];
 }
 

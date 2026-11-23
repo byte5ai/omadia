@@ -33,6 +33,7 @@ import type { DomainTool } from './tools/domainQueryTool.js';
 import { isOfferedThisTurn, type NativeToolRegistry } from './nativeToolRegistry.js';
 import { sortByToolName } from './toolOrdering.js';
 import { turnContext } from './turnContext.js';
+import { personalFieldsWithheld } from './discretion/fieldRights.js';
 import { runHandlerInPrivacyScope } from './handlerPrivacyScope.js';
 import { currentToolCallContext } from './toolCallContext.js';
 import { runWithDispatchCaller } from './toolCallerContext.js';
@@ -570,7 +571,8 @@ export class ToolDispatchService {
 
     // Operator-owned per-plugin bypass (Slice 2.5). Raw passthrough, but the
     // receipt entry keeps it transparent.
-    const bypass = privacy.checkBypass(name);
+    // Criterion 18 — mask at entry: no bypass where a member lacks the field right.
+    const bypass = (await personalFieldsWithheld()) ? undefined : privacy.checkBypass(name);
     if (bypass !== undefined) {
       // A replayed bypass is on the first run's receipt already.
       if (!replayed) {

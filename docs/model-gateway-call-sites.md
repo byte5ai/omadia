@@ -35,7 +35,7 @@ Line numbers drift; the names are what to search for.
 |---|---|---|---|
 | `streaming.ts` (`completeWithFallback`, stream) from `orchestrator.ts` and `localSubAgent.ts` | complete | AT | main loop, sub-agents, dynamic agents; routine turns through the ambient `turnContext` |
 | `orchestrator.ts` `maybeRouteCardsFromText`, `maybeDirectLineNote`; `modelRouter.ts`, `personaRouter.ts` | complete | AT | |
-| `workingModes.ts` (`routeTurnWorkingMode`), `dataPlanGuard.ts` (`createLlmDataPlanJudge`), `identityGuard/llmJudge.ts` (`createLlmIdentityJudge`) | complete | AT | the agent's internal helpers: working-mode classifier, data-plan boundary judge, identity guard judge |
+| `workingModes.ts` (`routeTurnWorkingMode`), `dataPlanGuard.ts` (`createLlmDataPlanJudge`), `summaryBoundaryGuard.ts` (`createLlmSummaryJudge`), `identityGuard/llmJudge.ts` (`createLlmIdentityJudge`) | complete | AT | the agent's internal helpers: working-mode classifier, data-plan and fast-lane summary boundary judges, identity guard judge |
 | `securityScreener.ts` (`screenInboundTurn`) | complete | AT | on routine turns through the running agent's turn (`routineRunner.ts` `runOnce`, scheduled or "run now") |
 | `cliChatAgent.ts`, `cliSubAgent.ts` | run_loop | AT (OJ for the Plugin Builder) | |
 | `orchestrator.ts` `recallCliContext`, `recordCliTurn` | embed, complete | AT | |

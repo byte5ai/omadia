@@ -179,9 +179,9 @@ describe('the answer egress (criterion 18)', () => {
 
 /**
  * The shield masks classified fields for the model whoever is present (the
- * REAL privacy-guard service, built orchestrator). There are no per-member
- * field rights: the mask does not depend on the audience, and a shield
- * bypass lets the field through for every room alike.
+ * REAL privacy-guard service, built orchestrator). Field rights per member
+ * (bypass, restore, render, classification egress) are covered in
+ * `fieldRights.test.ts`.
  */
 describe('mask at entry with the privacy shield (criterion 18)', () => {
   const RECORD = JSON.stringify([{ name: 'Jana Beispiel', email: RAW_EMAIL, salary_band: 'E13' }]);

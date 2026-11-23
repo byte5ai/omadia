@@ -5,10 +5,11 @@
  * it out of service. Before the change takes effect: the archetype plugin
  * ends its processes (while agent and plugin are still there, so it can
  * close them in the agent's own voice), the kernel ends every message
- * subscription whatever the plugin answered, the `system` notice the
- * conversation is owed goes to the #2045 seam (nothing is posted under the
- * agent's bot), and the audit says what happened to which agent and
- * conversation. A delete then keeps a tombstone.
+ * subscription whatever the plugin answered, each affected conversation is
+ * handed one `system` notice (the outbox posts it through the shared bot,
+ * `systemNoticeOutbox.ts`; nothing under the agent's bot), and the audit says
+ * what happened to which agent and conversation. A delete then keeps a
+ * tombstone.
  */
 
 import { strict as assert } from 'node:assert';
@@ -22,7 +23,7 @@ import type { AgentEndOfServiceReason, ArchetypeProcessesService } from '@omadia
 import type { AgentTombstone, ConfigStore, OrchestratorRegistry, SystemNoticeRequest } from '@omadia/orchestrator';
 
 import type { AuditEntryInput } from '../src/auth/adminAuditLog.js';
-import { createAgentEndOfService, logOwedSystemNotice } from '../src/platform/agentEndOfService.js';
+import { createAgentEndOfService } from '../src/platform/agentEndOfService.js';
 import { guardArchetypePluginUninstall } from '../src/platform/archetypeUninstallGuard.js';
 import { createOperatorAgentsRouter } from '../src/routes/operatorAgents.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
@@ -106,6 +107,7 @@ describe('end of service: the procedure', () => {
       channelKey: '19:offsite@thread.v2',
       agentId: 'id-mara',
       agentName: 'Mara',
+      agentSlug: 'mara',
       processId: 'fac-7',
     });
   });
@@ -207,19 +209,32 @@ describe('end of service: the procedure', () => {
     assert.equal(report.processes[0]?.detail?.length, 500);
   });
 
-  it('the #2045 seam today: an owed notice is logged, nothing is posted', () => {
-    const lines: string[] = [];
-    logOwedSystemNotice((m) => lines.push(m))({
-      kind: 'agent_deleted',
-      channelType: 'teams',
-      channelKey: '19:offsite@thread.v2',
-      agentId: 'id-mara',
-      agentName: 'Mara',
-      processId: 'fac-7',
+  it('criterion 37: each conversation gets one notice request naming the agent, and the procedure waits for it to be kept', async () => {
+    const kept: string[] = [];
+    const endOfService = createAgentEndOfService({
+      processesFor: () => undefined,
+      endSubscriptionsOf: () => Promise.resolve([HOME, HOME, SESSION]),
+      emitSystemNotice: async (notice) => {
+        await new Promise((r) => setTimeout(r, 5));
+        kept.push(`${notice.kind}:${notice.agentSlug ?? ''}:${notice.agentName}:${notice.channelKey}`);
+      },
     });
-    assert.deepEqual(lines, [
-      "[system-notice] owed, not sent (#2045): agent_deleted for 'Mara' in teams/19:offsite@thread.v2 (process fac-7)",
+    const report = await endOfService.run(MARA, 'archetype_plugin_removed', ACTOR);
+    assert.deepEqual(kept, [
+      `archetype_plugin_removed:mara:Mara:${HOME.conversationId}`,
+      `archetype_plugin_removed:mara:Mara:${SESSION.conversationId}`,
     ]);
+    assert.equal(report.noticesOwed, 2);
+  });
+
+  it('a notice that cannot be kept does not stop the end of service', async () => {
+    const endOfService = createAgentEndOfService({
+      processesFor: () => undefined,
+      endSubscriptionsOf: () => Promise.resolve([HOME]),
+      emitSystemNotice: () => Promise.reject(new Error('outbox down')),
+    });
+    const report = await endOfService.run(MARA, 'agent_disabled', ACTOR);
+    assert.equal(report.noticesOwed, 1);
   });
 });
 

@@ -3741,7 +3741,7 @@ export declare function isAgentSpeaker(speaker: Speaker | undefined): speaker is
 export declare function isSystemSpeaker(speaker: Speaker | undefined): speaker is SystemSpeaker;
 export declare const EMISSION_TYPES: readonly ["prose", "template", "data", "system"];
 export type EmissionType = (typeof EMISSION_TYPES)[number];
-export declare const SYSTEM_NOTICE_CODES: readonly ["agent_disabled", "agent_deleted", "agent_unknown", "agent_not_available", "no_agent", "agent_selected", "agent_selection_cleared", "agent_directory", "agent_error", "missing_grant", "quota_exceeded", "identity_guard_blocked", "identity_guard_unavailable", "agent_own_bot"];
+export declare const SYSTEM_NOTICE_CODES: readonly ["agent_disabled", "agent_deleted", "agent_unknown", "agent_not_available", "no_agent", "agent_selected", "agent_selection_cleared", "agent_directory", "agent_error", "missing_grant", "quota_exceeded", "identity_guard_blocked", "identity_guard_unavailable", "agent_own_bot", "archetype_plugin_removed"];
 export type SystemNoticeCode = (typeof SYSTEM_NOTICE_CODES)[number];
 export interface NoticeAgentRef {
 readonly slug: string;

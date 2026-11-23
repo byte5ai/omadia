@@ -884,6 +884,25 @@ shared with every other local service; a plugin that hands the kernel a
 bare `fetch` reference to call for it is not seen. A plugin can also patch
 the guard away, like any in-process check.
 
+### Plugin Builder preview: no service right the draft lacks (criterion 37)
+
+A preview reads kernel services through to the live registry so a draft can
+be tested against an installed integration. It used to do so ungated. Now
+`plugins/builder/previewServices.ts` applies the gates of an installed plugin,
+judged by the draft's own manifest: only declared capabilities (and of a
+versioned name only the declared major), never a pool-shaped capability, never
+a raw model client or provider pool (whatever kind the draft claims), and
+resolved as the draft plugin. A manifest that cannot be read declares nothing.
+
+### Recipient grants: where a proactive message may go (criterion 24)
+
+A trigger posts into the conversation it was created in, or into a target an
+operator granted the agent (`agent_recipient_grants`). The agent names a
+target only by grant id, so no model-made delivery reference reaches a
+sender; the grant is re-checked at every send and its stored reference is
+used. The discretion check runs against the target's readers read from the
+channel roster at send time; an unknown roster closes the room.
+
 ### Plugin-borne workflow templates (#478)
 
 Plugins may contribute Conductor workflow templates, and the capability is
@@ -1069,7 +1088,7 @@ of the turn carries all of it.
 
 | Egress | Rule | Where |
 |---|---|---|
-| Answer to people | every reader may know every label; otherwise the result is rebuilt from bookkeeping fields only (no attachments, files, cards, canvas, recall or contributions) and the session row stores only the replacement. Non-streaming path; a streamed answer is protected only in what is stored | `guardAnswerEgress`, `beforeTurnWritten` |
+| Answer to people | every reader may know every label, a `classification` label only when every reader holds the field right for it (below); otherwise the result is rebuilt from bookkeeping fields only (no attachments, files, cards, canvas, recall or contributions) and the session row stores only the replacement. On the streaming path the `done` event is rebuilt the same way; text deltas already sent are the residual | `guardAnswerEgress`, `guardStreamedDone`, `beforeTurnWritten` |
 | Contribution to an agent | the receiver's grants cover every source and its readers may know it; then the grant's disclosure level caps what is new to the receiver | consultation broker |
 | Persistence | a written turn keeps its label set | `onTurnWritten` |
 | Memory write | another conversation's knowledge only into a tier whose readers may all know it (members: the owners; context-bound: the room; else the agent's memory, readers unknown, which only the turn's own conversation may enter). Notes keep the union of their writers' labels by canonical physical path, stored before the content (no labels, no write); directory renames and deletes take the labels along; session transcripts keep every turn's labels; memorables (auto-promotion, MCP→KG ingestion, durable rules) keep them too; reading, recalling or replaying them (verifier re-entry) adds them back. The members index is kept out of the label layer (read for every room) | `guardMemoryEgress`, `LabelledMemoryStore`, `maybePromoteTurn` |
@@ -1088,8 +1107,29 @@ label nobody may read (fail closed).
 Defaults: new agents start with context memory `members` (0099); `off` is refused
 for an agent that holds capability grants. Existing agents keep their mode.
 
+**Field rights per member (criteria 3c, 18).** The right to see fields the shield
+masks is an audience-floor capability, `privacy:field:<class>` (today only
+`personal`, `discretion/fieldRights.ts`). It is in the member baseline; an operator
+withdraws it per person or role with a denial, and a denial binds the whole room.
+Where not every member holds it: no operator bypass applies (the model gets the
+masked digest, at all three dispatch sites), prompt surrogates are not restored
+(answer, choices, follow-ups, stored history; a note says some details stay
+masked), values a `v4_render_answer` materialized are masked again, the canvas tap
+and `deliver_data` deliver nothing, and a `classification` label refuses the answer
+as a whole. A consulted colleague runs in the consulting room, so its contribution
+follows the same rule. A closed or failing floor grants no class; a turn without an
+audience floor (floor switched off) is not enforced. A trigger stores its creating
+room's field rights (`fieldClasses` in its discretion record); its firings and posts
+use them only in that room and only while every current reader was a reader then; an
+explicit target, a room that gained a reader, or a trigger stored without them gets none
+(fail closed). Residual: a denial added later for someone who was already in the room
+does not reach a trigger set before it; the trigger keeps the rights it stored until it
+ends or is cancelled. The consult result's header (contribution
+id, colleague, status) passes outside the privacy digest, decided by provenance
+(the kernel's own consult tool), never by tool name.
+
 Known residuals: the subscription-CLI path and sub-agent inner calls carry no
-discretion state yet; streamed answers are protected only in what is stored; reads
+discretion state yet; streamed text deltas go out before the egress decision; reads
 of memorables through `query_knowledge_graph` and the session briefing bring no
 labels; plugin memory (`ctx.memory`) is written outside the label layer; a write
 to the team memory tier is checked against the room's readers; a turn whose label write failed is recalled

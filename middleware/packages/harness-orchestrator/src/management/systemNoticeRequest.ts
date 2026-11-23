@@ -13,6 +13,8 @@ export interface SystemNoticeRequest {
   readonly agentId: string;
   /** The name the agent wore, for the sentence. */
   readonly agentName: string;
+  /** The agent's slug, for the notice's agent reference. */
+  readonly agentSlug?: string;
   /** What ended with it, when something did (a process id of its archetype). */
   readonly processId?: string;
 }

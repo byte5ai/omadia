@@ -9,12 +9,11 @@
  * delivery target and limits; the model chooses purpose, time, actions.
  */
 
-import { createHash } from 'node:crypto';
-
-import { checkFlow } from '@omadia/orchestrator';
+import { checkFlow, fieldClassesFromList } from '@omadia/orchestrator';
 
 import type { NativeToolSpec } from '@omadia/plugin-api';
 
+import { conversationIdOf, type RecipientGrant } from './recipientGrants.js';
 import type { TriggerEnvelope } from './triggerPolicy.js';
 import type { CreateTriggerResult, TriggerService } from './triggerService.js';
 import { conversationContextId } from './triggerService.js';
@@ -68,6 +67,11 @@ const COMMON = {
     type: 'string',
     enum: ['conversation', 'meeting'],
     description: "What the trigger belongs to: this conversation (default) or this conversation as a live meeting (1-minute minimum interval; ends with the meeting).",
+  },
+  target: {
+    type: 'string',
+    description:
+      'Optional: send this trigger\'s messages to another conversation instead of this one. Only the id of one of your granted targets (see `list_triggers` → targets); an operator grants them. What this conversation touched must be allowed for that conversation\'s members when the message goes out, else it is withheld.',
   },
   delivery: { type: 'string', enum: ['droppable', 'essential'], description: "'droppable' (default): reminders and nudges, never repeated after an unknown outcome. 'essential': retried until confirmed." },
   budget: {
@@ -130,7 +134,7 @@ export const triggerToolSpecs: Record<TriggerToolName, NativeToolSpec> = {
   list_triggers: {
     name: 'list_triggers',
     description:
-      'What you are currently watching or waiting for in this conversation (your hooks, wakeups and timers with purpose, deadline and cost so far), and the events you could hook. Use it when someone asks what you are watching for them.',
+      'What you are currently watching or waiting for in this conversation (your hooks, wakeups and timers with purpose, deadline and cost so far), the events you could hook, and the other conversations you may send to (`targets`, granted by an operator). Use it when someone asks what you are watching for them.',
     input_schema: { type: 'object', properties: {} },
   },
   cancel_trigger: {
@@ -142,18 +146,7 @@ export const triggerToolSpecs: Record<TriggerToolName, NativeToolSpec> = {
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** A conversation id from a channel's opaque conversation reference. */
-export function conversationIdOf(ref: unknown): string {
-  if (isRecord(ref)) {
-    for (const key of ['conversationId', 'sessionId', 'chatId', 'channelId', 'threadId']) {
-      const v = ref[key];
-      if (typeof v === 'string' && v.length > 0) return v;
-    }
-    const conv = ref['conversation'];
-    if (isRecord(conv) && typeof conv['id'] === 'string' && conv['id'].length > 0) return conv['id'];
-  }
-  return `ref-${createHash('sha256').update(JSON.stringify(ref ?? null)).digest('hex').slice(0, 24)}`;
-}
+export { conversationIdOf };
 
 /** Teams meeting chats carry `meeting` in their conversation id. */
 const isMeetingConversation = (conversationId: string): boolean => /meeting/i.test(conversationId);
@@ -186,7 +179,16 @@ export interface TriggerToolDeps {
   readonly service: TriggerService;
   /** The person's turn, or undefined outside one (the tool is not offered). */
   readonly currentTurn: () => TriggerToolTurn | undefined;
+  /** The agent's recipient grants (criterion 24); absent = it has none. */
+  readonly targetsOf?: (agentId: string) => Promise<readonly RecipientGrant[]>;
 }
+
+/** What the agent sees of a granted target: id, label and channel, never the reference. */
+const targetSummary = (g: RecipientGrant): Record<string, unknown> => ({
+  id: g.id,
+  channel: g.channel,
+  ...(g.label ? { label: g.label } : {}),
+});
 
 /** May the trigger's own conversation know everything its creating turn had read? */
 export function discretionAllowsRoom(discretion: TriggerDiscretion): boolean {
@@ -194,6 +196,7 @@ export function discretionAllowsRoom(discretion: TriggerDiscretion): boolean {
     kind: 'people',
     contextKey: discretion.contextKey,
     readers: discretion.readers,
+    fieldClasses: fieldClassesFromList(discretion.fieldClasses),
   }).allowed;
 }
 
@@ -217,6 +220,7 @@ export function createTriggerToolHandler(name: TriggerToolName, deps: TriggerToo
       return JSON.stringify({
         triggers: mine.filter(ownHere).map(triggerSummary),
         eventSources: deps.service.eventSourcesFor(turn.agentSlug),
+        targets: ((await deps.targetsOf?.(turn.agentId)) ?? []).map(targetSummary),
       });
     }
     if (name === 'cancel_trigger') {
@@ -244,13 +248,29 @@ export function createTriggerToolHandler(name: TriggerToolName, deps: TriggerToo
       discretion: await turn.discretion(),
       createdBy: `agent:${turn.agentSlug} for ${turn.tenant}/${turn.userId}`,
     };
+    // Criterion 24 — an explicit target is one of the agent's recipient
+    // grants, named by id: the conversation reference comes from the grant,
+    // never from the model.
+    const targetId = raw['target'];
+    let request: Record<string, unknown> = raw;
+    if (targetId !== undefined && targetId !== null) {
+      const grant =
+        typeof targetId === 'string'
+          ? ((await deps.targetsOf?.(turn.agentId)) ?? []).find((g) => g.id === targetId)
+          : undefined;
+      if (!grant) {
+        return 'Error (target_not_allowed): target must be the id of one of your granted targets (list_triggers → targets).';
+      }
+      request = { ...raw, target: { kind: 'conversation', channel: grant.channel, ref: grant.deliveryRef } };
+    }
     // INV-9 — a post or delivery this conversation may not receive would be
-    // withheld on every firing; say so now instead.
+    // withheld on every firing; say so now instead. A trigger with a target
+    // posts there: that room is checked at send time, with its readers then.
     const sends = Array.isArray(raw['actions']) && raw['actions'].some((a) => isRecord(a) && (a['type'] === 'post' || a['type'] === 'deliver'));
-    if (sends && env.discretion && !discretionAllowsRoom(env.discretion)) {
+    if (request === raw && sends && env.discretion && !discretionAllowsRoom(env.discretion)) {
       return 'Error (discretion): this conversation has touched information not everyone here may know, so a post or delivery from this trigger would be withheld. Set it where everyone may know what it refers to.';
     }
-    const res = await deps.service.create(name as TriggerKind, raw, env);
+    const res = await deps.service.create(name as TriggerKind, request, env);
     return res.ok ? JSON.stringify({ created: triggerSummary(res.trigger) }) : errorText(res);
   };
 }

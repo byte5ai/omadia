@@ -353,7 +353,13 @@ await contractSuite('native facilitators: kernel contract, guards (pg)', 'facili
     // Nora went out of service with the plugin, so the refusal names the agent.
     assert.deepEqual(refusalOf(late), ['unreachable', 'not_authorized', 'unknown_agent']);
     assert.equal((await c.k.store.getAgentBySlug('nora'))?.status, 'disabled');
-    assert.deepEqual(c.k.channel.sent, []);
+    // Criterion 37 — the one thing posted: the `system` notice in nora's home
+    // conversation, through the shared bot (never as nora's own identity).
+    await c.k.notices.drain();
+    assert.deepEqual(
+      c.k.channel.sent.map((s) => [s.target, s.asChannelKey, s.message.speaker?.kind]),
+      [[CHAT_2, undefined, 'system']],
+    );
   });
 
   it('a second machine learns of a subscribe and of its end through NOTIFY', async () => {

@@ -37,6 +37,7 @@ import {
   runHandlerAtMostOnce,
 } from './toolReplayLedger.js';
 import { buildDateHeader, turnContext } from './turnContext.js';
+import { personalFieldsWithheld } from './discretion/fieldRights.js';
 
 // `LocalSubAgentTool` and `LocalSubAgentToolSpec` were inlined here
 // pre-S+9.3. They have moved to `@omadia/plugin-api` so plugin-side
@@ -718,7 +719,8 @@ export class LocalSubAgent {
       // the sub-agent's LLM sees real values (not `[masked]`), record a
       // receipt entry, AND flip the parent scope's bypass flag so the
       // parent doesn't re-intern this sub-agent's narration.
-      const bypass = privacy.checkBypass(toolName);
+      // Criterion 18 — mask at entry: no bypass where a member lacks the field right.
+      const bypass = (await personalFieldsWithheld()) ? undefined : privacy.checkBypass(toolName);
       if (bypass !== undefined) {
         const flag = turnContext.current()?.subAgentBypassFlag;
         if (flag) flag.value = true;
@@ -746,7 +748,8 @@ export class LocalSubAgent {
       // raw form while the LLM keeps the digest. Same contract as the main
       // dispatch site.
       const sentinelSink = turnContext.current()?.canvasSentinelSink;
-      if (sentinelSink !== undefined && result.includes('"_pending')) {
+      // Criterion 18 — not for a room where a member may not know personal fields.
+      if (sentinelSink !== undefined && result.includes('"_pending') && !(await personalFieldsWithheld())) {
         try {
           sentinelSink(toolName, result);
         } catch (err) {

@@ -74,6 +74,9 @@ export interface TriggerDiscretion {
    *  with older turns of the room). */
   readonly readers: Readers;
   readonly labels: LabelSet;
+  /** The classifications every reader could know at creation (field rights,
+   *  criterion 18). Absent (older triggers) = none: fails closed. */
+  readonly fieldClasses?: readonly string[];
 }
 
 export interface Trigger {

@@ -16,6 +16,7 @@ import type { CaptureDisclosure, DataPayload, DataPlanGuard } from '@omadia/plug
 
 import { isValidSessionId } from './chatSessionStore.js';
 import type { SessionLogEntry } from './sessionLogger.js';
+import type { SummaryBoundaryGuard } from './summaryBoundaryGuard.js';
 
 /**
  * Deterministic fast path for every NON-canvas channel (web chat, HTTP API,
@@ -84,6 +85,11 @@ export interface FastPathAgentDeps {
   /** #2085 — the agent's boundary check, applied to every plan (new or
    *  cached) before it runs (spec 2042 §5.13 1a). */
   checkPlan?: DataPlanGuard;
+  /** Criterion 33 — the agent's boundaries over the planner's summary
+   *  template and column labels (model-written prose), new or cached; the
+   *  service runs it with `checkPlan`, before the fetch. A refusal is a
+   *  miss: the agent's full loop answers instead. */
+  checkSummary?: SummaryBoundaryGuard;
   log: (message: string) => void;
 }
 
@@ -243,6 +249,7 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
         ...(input.sessionScope !== undefined ? { sessionKey: input.sessionScope } : {}),
         ...(deps.agentSlug !== undefined ? { agentSlug: deps.agentSlug } : {}),
         ...(deps.checkPlan !== undefined ? { checkPlan: deps.checkPlan } : {}),
+        ...(deps.checkSummary !== undefined ? { checkSummary: deps.checkSummary } : {}),
         userMessage: input.userMessage,
       });
     } catch (err) {

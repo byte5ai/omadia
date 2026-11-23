@@ -10,6 +10,7 @@ import {
   CROSS_SCOPE_RECALL_CAPABILITY,
   MEMORY_RECALL_CAPABILITY,
 } from './audienceFloorGuard.js';
+import { fieldCapability, PERSONAL_FIELD_CLASS } from './discretion/fieldRights.js';
 
 /**
  * #2048 (spec 2042 G15, §5.4 step 5) — the audience floor is on by default, so
@@ -21,8 +22,9 @@ import {
  * working while still bounding it:
  *
  *  - every **resolved** person (a `user:` principal in omadia's id space) holds
- *    the member baseline below — any tool the agent itself was granted, recall
- *    and attachment reads;
+ *    the member baseline below — any tool the agent itself was granted, recall,
+ *    attachment reads and the right to see personal fields the privacy shield
+ *    masked (`privacy:field:personal`, spec 2042 criteria 3c / 18);
  *  - explicit prohibitions (`/api/v1/admin/audience-grants/.../deny`) still
  *    bind the whole room, and a prohibition beats the baseline;
  *  - a participant nobody can resolve still closes the floor: the baseline is
@@ -42,6 +44,7 @@ export const MEMBER_BASELINE_CAPABILITIES: readonly Capability[] = Object.freeze
   MEMORY_RECALL_CAPABILITY,
   CROSS_SCOPE_RECALL_CAPABILITY,
   ATTACHMENT_READ_CAPABILITY,
+  fieldCapability(PERSONAL_FIELD_CLASS),
 ]);
 
 /**

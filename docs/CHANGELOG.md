@@ -36,6 +36,75 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — `@omadia/plugin-api` 1.87.0, `@omadia/channel-sdk` 0.3.13: the open acceptance criteria of spec 2042
+
+- The entries below (field rights, channel parity, criteria 29/33, explicit targets) ship
+  together; their additive types move from "Unreleased" into these versions.
+
+### Added — field rights per audience member, contribution ids for the consulting agent (spec 2042 criteria 3c, 18)
+
+- New audience-floor capability `privacy:field:personal` in the member baseline; deny it to a
+  person or role and every room with them keeps personal fields masked: no operator bypass,
+  no restore of prompt surrogates, rendered values masked again, no canvas rows or
+  `deliver_data` table, and an answer carrying a `classification` label is refused as a whole
+  (buffered and streamed `done`). Triggers keep their creating room's field rights.
+- The consulting agent's model sees the contribution header (`[contribution c1 from …]`)
+  outside the privacy digest and can cite the id; the colleague's words stay masked.
+
+### Changed — Channel parity: a typed "2" answers an answer element, an assignment goes out as text (spec 2042 §6 criterion 30)
+
+- `@omadia/channel-sdk` (additive, stays 0.3.x): `PendingInteractiveStore` / `InMemoryPendingInteractiveStore`,
+  `resolveTypedInteractiveReply`, `resolveInteractiveReply`. `renderPlainAnswer` remembers the
+  `choice`/`topic`/`slots` element it showed as numbered text (new optional
+  `PlainAnswerOptions.pendingInteractives`); the channel resolves the person's next message
+  deterministically to what a button click would have sent (choice/topic value, the slot booking
+  message) instead of handing "2" to the agent's model. A reply that names no option stays a message.
+- Kernel: an `assignment` question card goes out as numbered text (`canGoOutAsText`) when a typed
+  reply can name the assignee (fixed candidate list, or a member list with `allowVolunteer`), and
+  `conversationSend` capabilities list `assignment` for text-only channels. **Behaviour change of
+  `parseCardReply`:** "ich" is an answer to an assignment only where `allowVolunteer` is true
+  (before: always). Pending elements are kept per conversation key the channel passes in.
+
+### Added — Spec 2042 criteria 29 and 33: "how do you know?" and the fast-lane summary under the boundaries
+
+- **Criterion 29.** `SemanticAnswer.turnId` (additive, channel-sdk 0.3.13; `toSemanticAnswer`
+  forwards `ChatTurnResult.turnId`) and `AnswerDetails.trace` (the trace reference; on its own it
+  opens no details element). `AnswerDetails.systemData` now also counts side-channel data (a
+  fast-lane table). The kernel is the caller of `buildAnswerDetails`/`answerDetailsText`:
+  `packages/harness-orchestrator/src/answerDetailsRecall.ts` records, outside the identity guard,
+  the details of each answer a conversation received (a withheld or failed turn leaves none) and
+  hands them to the agent loop's next turn as a harness note in `extraSystemHint` (statuses,
+  counts, colleagues' names, a helper count and the turn id; never a value). The note sits inside
+  the fast lane, so it never turns the fast lane off; the verifier's correction retry now appends
+  its hint instead of replacing it (`withCorrectionHint`). Message bodies are unchanged. In-memory
+  per agent, bounded (1000 conversations), lost on restart.
+- **Criterion 33.** `packages/harness-orchestrator/src/summaryBoundaryGuard.ts`, run by the fast-path
+  service through the new `ChatTriageRequest.checkSummary` beside `checkPlan`, before the fetch and
+  for new and cached plans: the planner's summary template and column labels are checked against
+  the agent's boundaries — `no-individual-rankings` and `no-external-links` deterministically, every
+  other preset (curated wording) and free-text boundary by the agent's classifier model on the text
+  masked through the turn's privacy run and with figures masked; fail-closed (no judge, error, 8 s
+  timeout, shield refusal). A refusal is a fast-lane miss (`summary-boundary`, the cached plan is
+  evicted): the agent's full loop answers. Usage source `summary-boundary-guard`. No migration.
+
+### Added — Explicit targets for proactive messages, system notices on end of service (spec 2042 criteria 24, 37)
+
+- **Migration 0108 `agent_recipient_grants`:** operator-granted target conversations of an
+  agent's proactive messages; admin API `PUT/GET/DELETE /api/v1/operator/triggers/recipient-grants`.
+  The agent names a target by grant id; the target's readers are checked at send time.
+- **Migration 0109 `system_notice_outbox`:** the `system` notice each home conversation gets
+  when an agent goes out of service (new code `archetype_plugin_removed`, plugin-api
+  1.87.0), sent once through the shared bot, kept across restarts.
+- **Fixed:** the Plugin Builder preview resolved any kernel service through `ctx.services`;
+  it now passes the gates of an installed plugin. Teams trigger contexts were keyed
+  `teams:msteams` (the reference's `channelId`) instead of the conversation id, so all Teams
+  chats shared one context and `list_triggers` in any of them listed the agent's triggers of
+  every other Teams chat; **migration 0110** rewrites stored Teams triggers to their
+  conversation and drops the shared activity row.
+- **Changed:** a recipient grant for Teams takes its reference only from the bot's own
+  conversation references; a `delivery_ref` in the request body is refused for Teams (it
+  carries the host the bot posts to with its token).
+
 ### Changed — The agent plugin runtime is gone (#2042, S3c)
 
 - `@omadia/plugin-api` 1.86.0 (`NativeToolResult`, `NativeTextToolHandler`, `agentDirectory@1`),

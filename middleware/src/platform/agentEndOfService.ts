@@ -13,9 +13,10 @@
 //   2. THE KERNEL ENDS EVERY MESSAGE SUBSCRIPTION of the agent itself,
 //      whatever step 1 answered. From here nothing is delivered for the
 //      agent, so a process the plugin failed to close cannot go on.
-//   3. THE `system` NOTICE the conversation is owed for an agent that goes
-//      away. The kernel cannot send one yet (#2045): the seam is called and
-//      records that it was owed. Nothing is posted under the agent's bot.
+//   3. THE `system` NOTICE each affected home conversation is owed for an
+//      agent that goes away: written to the outbox before the change happens
+//      and posted once through the channel's shared bot, speaker `system`
+//      (`systemNoticeOutbox.ts`). Nothing is posted under the agent's bot.
 //   4. THE AUDIT says what happened to which agent and conversation.
 //
 // Then the caller changes the status, writes the tombstone or unloads the
@@ -66,7 +67,7 @@ export interface EndOfServiceReport {
    *  any more) and conversations whose reservation it released. */
   readonly scopesEnded: number;
   readonly reservationsReleased: readonly EndedSubscription[];
-  /** `system` notices owed and not sent (#2045). */
+  /** `system` notices owed (one per affected conversation), handed to the outbox. */
   readonly noticesOwed: number;
 }
 
@@ -86,8 +87,8 @@ export interface AgentEndOfServiceDeps {
     reason: string,
   ) => Promise<{ scopesEnded: number; reservationsReleased: readonly EndedSubscription[] }>;
   readonly audit?: (entry: AuditEntryInput) => Promise<void>;
-  /** #2045 seam. Called once per conversation that is owed a notice. */
-  readonly emitSystemNotice: (notice: SystemNoticeRequest) => void;
+  /** Called once per conversation that is owed a notice (the outbox). */
+  readonly emitSystemNotice: (notice: SystemNoticeRequest) => void | Promise<void>;
   /** How long the plugin gets to end its processes. Default 20 s. */
   readonly processTimeoutMs?: number;
   readonly log?: (message: string) => void;
@@ -224,12 +225,13 @@ export function createAgentEndOfService(deps: AgentEndOfServiceDeps): AgentEndOf
       }
       for (const conversation of conversations.values()) {
         try {
-          deps.emitSystemNotice({
+          await deps.emitSystemNotice({
             kind: NOTICE_KIND[reason],
             channelType: conversation.channelType,
             channelKey: conversation.conversationId,
             agentId: agent.id,
             agentName: agent.name,
+            agentSlug: agent.slug,
             ...(conversation.processId !== undefined ? { processId: conversation.processId } : {}),
           });
         } catch {
@@ -276,19 +278,5 @@ export function createAgentEndOfService(deps: AgentEndOfServiceDeps): AgentEndOf
       );
       return report;
     },
-  };
-}
-
-/**
- * The #2045 seam as the kernel wires it today: a `system` notice that is owed
- * and cannot be sent is logged, nothing else. Never post it as an agent.
- */
-export function logOwedSystemNotice(log: (message: string) => void): (notice: SystemNoticeRequest) => void {
-  return (notice) => {
-    log(
-      `[system-notice] owed, not sent (#2045): ${notice.kind} for '${notice.agentName}' in ${notice.channelType}/${notice.channelKey}${
-        notice.processId ? ` (process ${notice.processId})` : ''
-      }`,
-    );
   };
 }

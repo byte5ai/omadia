@@ -16,6 +16,7 @@
 
 import type { DataPlanGuard } from '@omadia/plugin-api';
 import { createDataPlanGuard, createLlmDataPlanJudge } from './dataPlanGuard.js';
+import { createLlmSummaryJudge, createSummaryBoundaryGuard } from './summaryBoundaryGuard.js';
 import type { ConsultationPort } from './consultation/consultTool.js';
 import type { DiscretionPort } from './discretion/port.js';
 import { LabelledMemoryStore } from './discretion/labelledMemoryStore.js';
@@ -123,6 +124,7 @@ import { findWorkingModeIdentityReplacement } from './workingModeIdentity.js';
 import type { AgentSpeaker } from '@omadia/plugin-api';
 import type { GuardDirectoryEntry } from './identityGuard/deterministic.js';
 import { IdentityGuard } from './identityGuard/guard.js';
+import { AnswerDetailsMemory, withAnswerDetailsNote, withAnswerDetailsRecall } from './answerDetailsRecall.js';
 import { maskRestoredValues, withIdentityGuard } from './identityGuard/guardedChatAgent.js';
 import { createLlmIdentityJudge } from './identityGuard/llmJudge.js';
 import { DEFAULT_AGENT_IDENTITY, withIdentityRules } from './management/agentIdentityPrompt.js';
@@ -739,6 +741,18 @@ export function buildOrchestratorForAgent(
         }
       : {}),
   });
+  // Criterion 33 — the same boundaries over the planner's summary.
+  const summaryGuard = createSummaryBoundaryGuard({
+    boundaries: config.quality?.boundaries,
+    ...(deps.provider
+      ? {
+          judge: createLlmSummaryJudge({
+            provider: deps.provider,
+            model: config.modelRouting?.classifierModel ?? config.model,
+          }),
+        }
+      : {}),
+  });
   const withFastPath = (agent: ChatAgent): ChatAgent =>
     isFacilitator
       ? wrapFacilitatorAgent(agent, {
@@ -777,6 +791,8 @@ export function buildOrchestratorForAgent(
           agentSlug: config.agentId,
           // #2085 — every plan, new or cached, passes this agent's boundaries.
           checkPlan: dataPlanGuard,
+          // Criterion 33 — and every summary, new or cached, before release.
+          checkSummary: summaryGuard,
           logSession: (entry) => sessionLogger.log(entry),
           privacyGuarded: () => deps.privacyGuard() !== undefined,
           log: (m) => console.log(m),
@@ -851,9 +867,20 @@ export function buildOrchestratorForAgent(
   // Spec 2042 §5.10 — the outermost layer: everything this agent's chat
   // agent runs (fast lane, loop, verifier, identity guard) is this agent's
   // turn for the model gateway.
+  // Criterion 29 — one record per conversation of this agent's last answer.
+  const answerDetails = new AnswerDetailsMemory();
   const finalize = (agent: ChatAgent): ChatAgent =>
     withAgentTurnExecution(
-      withSpeaker(withIdentityGuard(withFastPath(agent), emitter), agentSpeaker, emitter),
+      withSpeaker(
+        // Criterion 29 — outside the guard: only what the user received is
+        // recalled when they ask "how do you know?".
+        withAnswerDetailsRecall(
+          withIdentityGuard(withFastPath(withAnswerDetailsNote(agent, answerDetails)), emitter),
+          answerDetails,
+        ),
+        agentSpeaker,
+        emitter,
+      ),
       config.agentId,
     );
 

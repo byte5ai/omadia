@@ -4,7 +4,14 @@
  * gate, the agent tools, the event intake and the worker.
  */
 
-import { currentDiscretion, currentDispatchCaller, resolvedTurnLabels, turnContext, UNKNOWN_READERS } from '@omadia/orchestrator';
+import {
+  currentDiscretion,
+  currentDispatchCaller,
+  fieldClassList,
+  resolvedTurnLabels,
+  turnContext,
+  UNKNOWN_READERS,
+} from '@omadia/orchestrator';
 import type { AgentSpeaker, AnswerEmitter, DataPlanGuard, NativeToolSpec } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 
@@ -20,7 +27,9 @@ import { createKernelExecutors, type AgentChat } from './kernelExecutors.js';
 import type { RoutineTriggerScheduler } from './routineTriggers.js';
 import type { ScheduleTriggerScheduler } from './scheduleTriggers.js';
 import { createBatchExecutor, createBatchTriggerSync, type KernelBatchJobRegistry } from './batchJobs.js';
+import type { ConversationReaders } from './conversationReaders.js';
 import { createProactiveGate, RecipientProfileStore, type RecipientProfile } from './proactiveGate.js';
+import { RecipientGrantStore, targetConversation } from './recipientGrants.js';
 import { TriggerEngine, type OperatorNotice, type TriggerAgentView } from './triggerEngine.js';
 import type { TriggerLimits } from './triggerPolicy.js';
 import { conversationContextId, TriggerService, type EventSource } from './triggerService.js';
@@ -77,6 +86,9 @@ export interface TriggerWiringDeps {
   readonly batchJobs?: KernelBatchJobRegistry;
   /** The agents in service, for batch triggers. */
   readonly enabledAgents?: () => readonly { readonly id: string; readonly slug: string }[];
+  /** Who reads a conversation now, for the send-time discretion check
+   *  (criterion 24). Absent = explicit targets fail closed. */
+  readonly conversationReaders?: ConversationReaders;
   /** Injectable clock for tests. */
   readonly now?: () => Date;
   readonly log: (message: string) => void;
@@ -86,6 +98,8 @@ export interface TriggerWiring {
   readonly store: TriggerStore;
   readonly service: TriggerService;
   readonly profiles: RecipientProfileStore;
+  /** Operator-granted explicit targets of proactive messages (criterion 24). */
+  readonly grants: RecipientGrantStore;
   readonly worker: TriggerWorker;
   /** Hand an event from any bus to the hooks. Never throws. */
   onEvent(eventId: string, payload: Readonly<Record<string, unknown>>, eventKey: string): void;
@@ -126,7 +140,10 @@ function currentTurn(deps: TriggerWiringDeps): TriggerToolTurn | undefined {
       // own web chat. Anywhere else the room is not known: fail closed.
       const ownerOnly = state.contextKey.startsWith('owner:') && ctx.channel !== WEB_ROUTINE_CHANNEL;
       const readers = ownerOnly ? UNKNOWN_READERS : await state.resolveReaders();
-      return { contextKey: state.contextKey, readers, labels: await resolvedTurnLabels(state) };
+      // The room's field rights travel with the trigger: its firings post
+      // into this conversation and have no audience floor of their own.
+      const fieldClasses = fieldClassList(await state.resolveFieldClasses());
+      return { contextKey: state.contextKey, readers, labels: await resolvedTurnLabels(state), fieldClasses };
     },
   };
 }
@@ -134,6 +151,7 @@ function currentTurn(deps: TriggerWiringDeps): TriggerToolTurn | undefined {
 export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
   const store = new TriggerStore(deps.pool);
   const profiles = new RecipientProfileStore(deps.pool);
+  const grants = new RecipientGrantStore(deps.pool);
   const dataActions = createDataActionRunner(deps.readToolsOf, deps.dataPlanGuardOf);
   const clock = deps.now ?? (() => new Date());
   const gate = createProactiveGate({
@@ -141,6 +159,10 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
     defaults: deps.recipientDefaults,
     senders: deps.senders,
     ...(deps.ownChannelKey ? { ownChannelKey: deps.ownChannelKey } : {}),
+    grantFor: async (trigger) => {
+      const conv = trigger.target ? targetConversation(trigger.target) : undefined;
+      return conv ? grants.find(trigger.agentId, conv.channel, conv.conversationId) : undefined;
+    },
     now: clock,
     log: deps.log,
   });
@@ -161,9 +183,10 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
     limits: deps.limits,
     eventSources,
     checkDataAction: (slug, action) => dataActions.check(slug, action),
-    // A proactive message goes to the conversation it was born in, nowhere
-    // else, until discretion labels can tell what may flow where (INV-9).
-    targetAllowed: () => false,
+    // A proactive message goes to the conversation it was born in, or to a
+    // target an operator granted this agent (criterion 24); the target's
+    // readers are checked when the message goes out.
+    targetAllowed: (env, target) => grants.allows(env.agentId, target),
     isOwnAuthor: (slug, channel, authorId) => isOwnBotAuthor(deps.ownChannelKey?.(slug, channel), authorId),
     now: clock,
     log: deps.log,
@@ -203,6 +226,7 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
       },
       ...(deps.emitterOf ? { emitterOf: deps.emitterOf } : {}),
       ...(deps.batchJobs ? { batch: createBatchExecutor(deps.batchJobs) } : {}),
+      ...(deps.conversationReaders ? { conversationReaders: deps.conversationReaders } : {}),
       scheduleRan: async (trigger) => deps.schedules?.()?.ran(trigger),
       scheduleLive: async (trigger) => (await deps.schedules?.()?.isLive(trigger)) ?? false,
       routineTurn: async (trigger) => {
@@ -236,7 +260,11 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
   const disposers: Array<() => void> = [];
   for (const name of TRIGGER_TOOL_NAMES) {
     disposers.push(
-      deps.registerNativeTool(name, createTriggerToolHandler(name, { service, currentTurn: () => currentTurn(deps) }), {
+      deps.registerNativeTool(name, createTriggerToolHandler(name, {
+        service,
+        currentTurn: () => currentTurn(deps),
+        targetsOf: (agentId) => grants.list(agentId),
+      }), {
         spec: triggerToolSpecs[name],
         // Only on a turn with a person's conversation: a trigger turn has
         // none, so a trigger cannot set further triggers.
@@ -274,6 +302,7 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
     store,
     service,
     profiles,
+    grants,
     worker,
     onEvent(eventId, payload, eventKey) {
       if (!deps.enabled) return;

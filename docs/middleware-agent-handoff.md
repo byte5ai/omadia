@@ -2906,11 +2906,14 @@ Der Chat ist die primäre UI; eine Antwort liest sich wie die Nachricht eines Ko
 
 - **Dekorations-Registry** (`decorations.ts`): jede Zeile, jeder Chip, Footer, jede Reaction, jeder Button oder jede Karte über oder unter einer Antwort ist einmal mit Begründung (`legal` oder `next_action`) und den rendernden Kanälen deklariert. Kanäle schicken Dekorationen durch `admitDecorations(channelType, …)`; Undeklariertes, Entferntes (`REMOVED_DECORATIONS`: Verifier-Badge, System-Data-Chip, „Konsultiert"-Footer, „Direkte Antwort von", „Kürzer/Mehr Details", Direct-Line-Buttons, 👀) und Kanal-Fremdes wird verworfen. `test/decorationRegistry.test.ts` pinnt die Id-Liste der Registry: Eine neue Dekoration braucht Registry-Eintrag, Begründung und bewusste Anpassung der erwarteten Liste im Test (Review). Dass ein Kanal nur durch `admitDecorations` rendert, prüft der Kanal in seinem eigenen Repo (die Plugin-Tests von Teams, Slack, Discord und iMessage tun es); der Kernel erzwingt es nicht.
 - **Details** (`answerDetails.ts`): `buildAnswerDetails(answer)` ist die eine Projektion von Verifikation, Beiträgen, Systemdaten-Herkunft, Privacy-Zählern und Speicher-Nutzung; `answerDetailsText` die Klartextform (für Kanäle ohne eingeklapptes Element und für „woher weißt du das?"). Nichts davon gehört in den Nachrichtentext.
+- **„Woher weißt du das?" (Kriterium 29)**: `SemanticAnswer.turnId` → `AnswerDetails.trace` (Trace-Referenz; allein öffnet sie kein Details-Element). Der Kernel ruft `buildAnswerDetails` selbst: `harness-orchestrator/src/answerDetailsRecall.ts` zeichnet außerhalb des Identity Guards die Details jeder ausgelieferten Antwort pro Konversation auf (zurückgehaltene Antwort = nichts) und gibt sie dem nächsten Turn der Agentenschleife als Harness-Notiz in `extraSystemHint` (`withAnswerDetailsNote`, innerhalb der Fast Lane, sonst wäre jeder Folge-Turn für die Fast Lane ein System-Turn). Nur Status, Zähler, Kollegennamen, Helfer-Anzahl, Turn-Id; nie Werte (der CLI-Pfad maskiert Hints nicht). Ein fehlgeschlagener Turn löscht den Eintrag; der Verifier-Retry hängt seine Korrektur an (`withCorrectionHint`). In-Memory, begrenzt, pro Agent.
+- **Fast-Lane-Summary unter den Boundaries (Kriterium 33)**: `harness-orchestrator/src/summaryBoundaryGuard.ts` prüft im Fast-Path-Service (`ChatTriageRequest.checkSummary`, neben `checkPlan`, vor dem Fetch) Summary-Template und Spaltenlabels jedes Plans (neu und aus dem Cache): `no-individual-rankings`/`no-external-links` deterministisch, übrige Presets (kuratierter Wortlaut) und Freitext-Boundaries per Klassifikator-Modell auf dem durch den Privacy-Run maskierten Text mit maskierten Zahlen, fail-closed. Abgelehnt = Fast-Lane-Miss `summary-boundary` (Cache-Eintrag wird verworfen), die volle Agentenschleife antwortet.
 - **Klartext-Renderer** (`plainAnswer.ts`, `speakerLine.ts`, `questionCardText.ts`): Kanäle ohne Rich-Elemente rendern über `renderPlainAnswer`. Namenszeile nur wo INV-4 sie verlangt (Kanal ohne eigene Identität und mehr als ein Agent oder erster Beitrag nach Sprecherwechsel), Beiträge anderer Agenten als „Mira: …", `system`-Notices als eigener Text, Karten als nummerierter Text. `renderCardAsText`/`parseCardReply` machen Umfragen, Zustimmung und Auswahl über Klartext nutzbar (Kanalparität, Kriterium 30).
 - **Disclosure-Frequenz** (`disclosureFrequency.ts`, Operator-Setting `ai_disclosure_frequency` am Orchestrator-Plugin, optional `ai_disclosure_pause_minutes`): `channel_default` (Default, heutiges Verhalten: Textzeile einmal pro Konversation, Kanal-Chips bei jeder Antwort), `per_answer`, `per_conversation` (erste Antwort eines Agenten in der Konversation, bei Sprecherwechsel, nach Pause); `off` bleibt `ai_disclosure_level=off`. `SemanticAnswer.aiDisclosure.markers = { textLine, chip }` sagt dem Kanal, welche sichtbaren Marker diese Antwort trägt; das strukturierte Feld steht bei jeder Antwort. Eine Abweichung steht in `/health` (`disclosure.frequency`), auf der Operator-Kanalseite und im Boot-Log. Verifier-Wiederholungen eines Requests entscheiden aus demselben Zustand (`ToolReplayLedger.disclosureMarkerPrior`).
 - **Pace** (`pace.ts`): `runPacedTurn` gibt jedem Kanal dasselbe Zeitverhalten: Typing-Indikator ab Start, genau eine Bestätigung nach `ackThresholdMs` (Template, kein Modell), und `deliverAsFollowUp`, wenn die Arbeit das Antwortfenster des Kanals überschreitet. Kein Fortschritts-Chatter.
 
-- **Karten und Polls als Text, getippte Antworten als `card_answer`** (`src/channels/openCardQuestions.ts`, Migration 0101 `open_card_questions`, `conversationSendService.ts`, Hub `asTypedAnswer`): Ein Kanal deklariert nur, was er nativ zeigt. Eine Karte (genau eine Frage, nicht `assignment`) oder ein Poll, den er nicht zeigt, schickt `sendToConversation` selbst als nummerierten Text (`renderCardAsText`), registriert die offene Frage mit der von der Plattform gemeldeten Nachrichten-Id (`delivered.cardMessageId`) und schließt sie mit der Karte (`closesAt`, sonst nach 24 h). Der Hub macht aus einer `created`-Nachricht, die auf diese Nachricht antwortet (`replyToMessageId`) oder die den Bot anspricht, während genau eine Frage offen ist (nie bei Freitext), per `parseCardReply` ein typisiertes `card_answer` (`answererVerified: true`, Autor = der Absender; Polls als `{ optionId }`), das statt der Nachricht gespeichert wird. Was nicht passt, bleibt eine normale Nachricht. `capabilities(channelType)` meldet mit dem Store jeden Kanal als fähig zu Polls und Ein-Fragen-Karten. Ein Kanal, der für dieselbe Nachricht einen eigenen Turn startet, fragt vorher `core.reportConversationMessage(event)` (statt `emitConversationMessage`): `answeredCard: true` heißt, der Kernel hat sie als Antwort verbraucht, der Kanal startet keinen Turn (sonst antwortet der Agent zusätzlich auf „2“). Der Scoped-CoreApi stempelt und prüft den Kanal wie bei `emitConversationMessage`. Kanal-Plugins brauchen dafür nur `created`-Events mit `replyToMessageId` und `addressedToBot` und die richtige `messageId` beim Senden; eigene Karten-Antwort-Logik entfällt. Wirksam ist das, wo der Hub einen Abonnenten kennt (Identität des Agenten im Kanal: heute Teams, mit S7 weitere).
+- **Getippte Antwort auf ein Antwort-Element** (`typedInteractiveReply.ts`, Kriterium 30): Ein Kanal, der `choice`/`topic`/`slots` als nummerierten Text zeigt, übergibt `renderPlainAnswer` einen `PendingInteractiveStore` (`pendingInteractives`) und löst die nächste Nachricht der Konversation mit `resolveTypedInteractiveReply(store, conversationKey, text)` auf: die getippte „2" wird zum Wert der Option (bei `slots` zur Buchungsnachricht des Klicks), alles andere bleibt Nachricht; das Element ist nach der nächsten Nachricht verbraucht (TTL 24 h). Der Schlüssel ist, was der Kanal übergibt: in Mehrpersonen-Konversationen nimmt es die nächste Nachricht von irgendwem (wie eine Karte), ein Kanal, der das enger will, nimmt die Person in den Schlüssel.
+- **Karten und Polls als Text, getippte Antworten als `card_answer`** (`src/channels/openCardQuestions.ts`, Migration 0101 `open_card_questions`, `conversationSendService.ts`, Hub `asTypedAnswer`): Ein Kanal deklariert nur, was er nativ zeigt. Eine Karte (genau eine Frage; `assignment` nur mit Kandidatenliste oder `allowVolunteer`) oder ein Poll, den er nicht zeigt, schickt `sendToConversation` selbst als nummerierten Text (`renderCardAsText`), registriert die offene Frage mit der von der Plattform gemeldeten Nachrichten-Id (`delivered.cardMessageId`) und schließt sie mit der Karte (`closesAt`, sonst nach 24 h). Der Hub macht aus einer `created`-Nachricht, die auf diese Nachricht antwortet (`replyToMessageId`) oder die den Bot anspricht, während genau eine Frage offen ist (nie bei Freitext), per `parseCardReply` ein typisiertes `card_answer` (`answererVerified: true`, Autor = der Absender; Polls als `{ optionId }`), das statt der Nachricht gespeichert wird. Was nicht passt, bleibt eine normale Nachricht. `capabilities(channelType)` meldet mit dem Store jeden Kanal als fähig zu Polls und Ein-Fragen-Karten. Ein Kanal, der für dieselbe Nachricht einen eigenen Turn startet, fragt vorher `core.reportConversationMessage(event)` (statt `emitConversationMessage`): `answeredCard: true` heißt, der Kernel hat sie als Antwort verbraucht, der Kanal startet keinen Turn (sonst antwortet der Agent zusätzlich auf „2“). Der Scoped-CoreApi stempelt und prüft den Kanal wie bei `emitConversationMessage`. Kanal-Plugins brauchen dafür nur `created`-Events mit `replyToMessageId` und `addressedToBot` und die richtige `messageId` beim Senden; eigene Karten-Antwort-Logik entfällt. Wirksam ist das, wo der Hub einen Abonnenten kennt (Identität des Agenten im Kanal: heute Teams, mit S7 weitere).
 - **Routing eines Kanals** (S1-Kontrakt, `channelRouting.ts`, `principal.ts`): pro Turn `resolveChannelRoute(ctx, type, key, { principal, locale })` (volles Ergebnis: `decision` `bound|reject`, `notice`, `speaker`, `chatAgent`) oder `resolveChatAgentForChannel` (nur der ChatAgent). Der Text geht unverändert an `chatAgent`: `/agent <Name>`, `/agent` (leer löscht die Auswahl) und `/agents` (Liste) fängt der Resolver-ChatAgent ab, kein Kanal parst sie. Bei `reject` antwortet dieser ChatAgent mit der `system`-Notice; ein Kanal postet sie als `system`, nie als Agent. Principal ausschließlich über `channelUserPrincipal(userRef)` bzw. `turnPrincipal(userRef, origin.principal)` (`user:<email>`, wenn der Kanal sie verifiziert hat, sonst `user:<kind>:<id>`). Der `speaker` kommt vorab im Ergebnis: Die Pace-Bestätigung geht in den Worten des Agenten unter seinem Namen raus. Ohne Speaker an einer Agentenantwort posten die Kanalplugins fail-closed nichts, sondern eine `system`-Notice.
 - **Gruppen-Audience**: `CHANNEL_KIND_BY_ORIGIN` (`resolveTurnOwnerIdentity.ts`) kennt `slack`, `discord`, `whatsapp`, `imessage`, `CONTEXT_MEMORY_CHANNEL_TYPES` (`turnOrigin.ts`) ebenso; `ChannelKind` (plugin-api, additiv) und die Neon-`CHANNEL_KINDS` führen `discord`, `whatsapp`, `imessage`. Ohne Kind bleibt die Audience einer Gruppe `unknown` und es gibt kein Gruppengedächtnis.
 - **Canvas pro Agent** (#2059, `orchestratorDispatcher.ts`): Ein Turn mit `metadata.agentId` geht über `channelResolver.resolveAgent(agentId, { channelType, channelKey }, { principal, locale })` an die Hülle genau dieses Agenten, ohne Modell davor. Unbekannt oder nicht verfügbar: der Resolver-ChatAgent antwortet mit der `system`-Notice; ohne `resolveAgent` im Resolver endet der Turn mit einem Fehler. Nie ein anderer Agent.
@@ -4278,11 +4281,29 @@ in `wiring.ts` (aus `index.ts` aufgerufen).
   zurückgehaltene Antwort wird nicht gesendet und zählt als Fehler. `post` und
   `deliver` prüft `refusedByDiscretion` gegen die gespeicherten Labels, schon
   beim Anlegen (`Error (discretion)`). Routinen laufen in `runOnce` als Turn
-  des ausführenden Agenten (Gateway-Kontext), auch bei „Jetzt ausführen“. Die
-  Leser sind ein Schnappschuss vom Anlegen; spätere Mitglieder fehlen darin.
-- **Proaktives Gate** (`proactiveGate.ts`, Migration 0094): Zustellung nur in
-  den Kontext, in dem der Trigger entstand (`targetAllowed: () => false` bis
-  zu den Diskretions-Labels aus S5); Ruhezeiten und Rate-Limit pro Empfänger
+  des ausführenden Agenten (Gateway-Kontext), auch bei „Jetzt ausführen“.
+  Beim Senden liest `kernelExecutors.ts` die Leser des Raums frisch aus dem
+  Kanal-Roster (`conversationReaders.ts`, Kriterium 24): für ein explizites
+  Ziel immer (unbekannt = zurückgehalten), für den eigenen Raum des Triggers,
+  wo der Kanal ihn vollständig kennt (sonst der Schnappschuss vom Anlegen).
+  Der Roster wird mit dem geteilten Bot gelesen: ein Raum, den nur der eigene
+  Bot eines Agenten sieht, ist unbekannt.
+- **Explizite Ziele (Kriterium 24, Migration 0108):** Ein Operator gibt einem
+  Agenten Zielkonversationen frei (`agent_recipient_grants`,
+  `recipientGrants.ts`; `PUT/GET/DELETE /api/v1/operator/triggers/recipient-grants`,
+  Body `{ agent_id, channel, conversation_id, delivery_ref?, label? }`,
+  auditiert als `trigger.recipient_grant[_revoke]`). Ohne `delivery_ref` nimmt
+  der Kernel für Teams die Referenz des geteilten Bots aus
+  `teams_conversation_refs` (`bot_app_id = ''`), sonst `{ conversationId }`.
+  Der Agent nennt ein Ziel nur per Grant-Id (`target` an `on_event`/`wake_at`/
+  `wake_every`, Liste in `list_triggers` → `targets`); eine vom Modell gebaute
+  Referenz wird abgelehnt. Der Grant wird beim Anlegen, vor jedem Firing und
+  beim Senden geprüft; gesendet wird über seine aktuelle Referenz. Ruhezeiten
+  und Rate-Limit gelten für das Ziel. `conversationIdOf` nimmt bei einer
+  Bot-Framework-Referenz `conversation.id` vor `channelId` (`msteams`).
+- **Proaktives Gate** (`proactiveGate.ts`, Migration 0094): Zustellung in den
+  Kontext, in dem der Trigger entstand, oder an ein freigegebenes Ziel;
+  Ruhezeiten und Rate-Limit pro Empfänger
   aus `proactive_recipient_profiles` oder `PROACTIVE_*`, Verschieben vor jedem
   Lauf. Live-Meetings sind ausgenommen, Routinen von den Ruhezeiten (nicht vom
   Rate-Limit).
@@ -4312,6 +4333,25 @@ in `wiring.ts` (aus `index.ts` aufgerufen).
   (`deliverDataTool.ts`, `dataActions.ts`) ist nicht an `TRIGGERS_ENABLED`
   gebunden und steht auf jedem Orchestrator-Turn bereit; Details in §11
   „Daten-Seitenkanal“.
+
+### System-Notices außerhalb eines Turns (Spec 2042 §5.10, Kriterium 37)
+
+Geht ein Agent außer Dienst (deaktiviert, gelöscht, Archetyp-Plugin
+deinstalliert), bekommt jede betroffene Home-Konversation genau eine
+registrierte `system`-Notice (`agent_disabled`, `agent_deleted`,
+`archetype_plugin_removed`), lokalisiert nach `ai_disclosure_locale`.
+`platform/systemNoticeOutbox.ts` schreibt sie vor der Änderung in
+`system_notice_outbox` (Migration 0109; Dedupe pro Agent, Art und Konversation
+für 24 h unter einem Xact-Advisory-Lock) und sendet über
+`conversationSendRegistry` mit dem geteilten Bot (nie als eigener Bot des
+Agenten). Zustellung: Claim mit Lease (`FOR UPDATE SKIP LOCKED`), Abschluss nur
+durch den Lease-Halter, verlorene Lease zählt als Versuch, nach 5 Versuchen
+`failed`; ein Kanal, der noch nicht oben ist, verschiebt ohne Versuch. Der
+Worker leert die Outbox beim Boot und jede Minute.
+
+Operator-Jobs: die Routentabelle steht in `platform/operatorJobRoutes.ts`
+(Agent-Builder-Skill-Verdict, Plugin-Builder-Turn/-Preview, Workflow-Designer,
+Memory- und Issue-Tools).
 
 ### Operator-Agent-Routen: Reichweite, Erststart, Template, Bestätigung (#2054, #2049, #2050, Epic #2042)
 
@@ -4808,7 +4848,7 @@ Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf�
 | Variable | Wirkung |
 |---|---|
 | `AUDIENCE_FLOOR_ENABLED` | Default **`true`** seit #2048 (Spec 2042 G15). Ein Raum darf einen Agenten nur tun lassen, was **jede** anwesende Person darf (Egress-, Recall- und Attachment-Guard in `audienceFloorGuard.ts`). Installiert auf beiden Turn-Pfaden (`runTurn` und `chatStream`; der Streaming-Pfad hatte vorher gar keinen Floor). Raumart aus `audienceRoomFor`: Web/Desktop/CLI/API und 1:1-Kanalturns = nur der Turn-Owner; Gruppen = Teilnehmerliste des Kanals (Agenten-Bots zählen nicht); Turns ohne Kanal und ohne Owner (Schedules, Conductor-Steps) = kein Floor. Fail-closed: Kanal ohne Teilnehmerliste in Gruppen (heute Slack, Discord, WhatsApp, iMessage) oder eine nicht auflösbare Person ⇒ jedes Tool wird mit Begründung verweigert. Facilitator-Turns (`agentTurn@2`) lesen die Teilnehmerliste der Konversation als eigene Identität des Agenten. `false` schaltet alle Guards ab; Rückfragen zwischen Agenten (#2047) brauchen den Floor. |
-| `AUDIENCE_BASELINE_GRANTS` | `member` (Default): jede aufgelöste Person hält `tool:*` (jedes Tool, das der Agent selbst hat), `memory:recall`, `memory:recall:cross_scope`, `attachment:read` (`MemberBaselineGrantStore`); Verbote pro Person/Rolle über `/api/v1/admin/audience-grants/{direct,roles}/deny` schlagen die Basis. Läuft auch ohne Postgres (dann nur Basis). `none`: strikte #575-Lesart, nur explizite Grants; braucht Postgres, sonst Boot-Abbruch. |
+| `AUDIENCE_BASELINE_GRANTS` | `member` (Default): jede aufgelöste Person hält `tool:*` (jedes Tool, das der Agent selbst hat), `memory:recall`, `memory:recall:cross_scope`, `attachment:read`, `privacy:field:personal` (Feldrecht: maskierte Personendaten sehen; fehlt es einem Mitglied, bleibt im ganzen Raum maskiert, Spec 2042 Kriterien 3c/18) (`MemberBaselineGrantStore`); Verbote pro Person/Rolle über `/api/v1/admin/audience-grants/{direct,roles}/deny` schlagen die Basis. Läuft auch ohne Postgres (dann nur Basis). `none`: strikte #575-Lesart, nur explizite Grants; braucht Postgres, sonst Boot-Abbruch. |
 
 ### Request-Trust-Boundary (#1310, security-architecture §10o)
 

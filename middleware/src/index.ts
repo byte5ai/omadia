@@ -144,7 +144,7 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { archetypeAdds, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, MemberBaselineGrantStore, resolveScopedBundle } from '@omadia/orchestrator';
+import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
 import {
   buildSystemNotice,
   ChannelResolver as ManagementChannelResolver,
@@ -470,7 +470,8 @@ import { LinkRequestRouter } from './channels/linkRequestRouter.js';
 import { PrivateMessageRouter } from './channels/privateMessageRouter.js';
 import { createArchetypeDatabase } from './platform/archetypeDatabase.js';
 import { pluginRuntimeOf } from './plugins/pluginRuntimeOf.js';
-import { createAgentEndOfService, logOwedSystemNotice } from './platform/agentEndOfService.js';
+import { createAgentEndOfService } from './platform/agentEndOfService.js';
+import { createSystemNoticeOutbox } from './platform/systemNoticeOutbox.js';
 import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
 import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
 import { createOperatorAgentArchetypeSettingsRouter } from './routes/operatorAgentArchetypeSettings.js';
@@ -480,25 +481,20 @@ import { createModelCallHaltMirror } from './execution/modelCallHalts.js';
 import { createModelWorkRuns } from './platform/modelWorkRuns.js';
 import { createModelWorkRouter } from './routes/modelWork.js';
 import { createOperatorTriggersRouter } from './routes/operatorTriggers.js';
+import { createConversationReaders } from './triggers/conversationReaders.js';
+import { OPERATOR_JOB_ROUTES } from './platform/operatorJobRoutes.js';
 import { createAgentTemplatesRouter } from './routes/agentTemplates.js';
 import { createSetupOptionsResolver } from './plugins/setupOptionsResolver.js';
 import { createModelGatewayStatusRouter } from './routes/modelGatewayStatus.js';
 import { agentDirectoryService } from './platform/agentDirectoryService.js';
 import { agentEnvelopeService } from './platform/agentEnvelopeService.js';
 import {
-  BULK_PROMOTION,
   EMBEDDING_BACKFILL,
   FIELD_CLASSIFICATION,
   GRAPH_BACKFILL,
-  ISSUE_PREVIEW,
   MEMORY_EDIT,
-  MEMORY_REVIEW_DETECTION,
   PLUGIN_BUILDER_AUTOFIX,
   PLUGIN_BUILDER_PREVIEW,
-  PLUGIN_BUILDER_TURN,
-  SKILL_VERIFICATION,
-  TOPIC_REGROUPING,
-  WORKFLOW_DESIGNER_TURN,
 } from './platform/modelWorkKinds.js';
 import { onUncoveredModelCall, setModelGatewayMode } from '@omadia/usage-telemetry';
 import { decideCliProfile, setCliProfileDir } from '@omadia/orchestrator';
@@ -1354,9 +1350,26 @@ async function main(): Promise<void> {
     log: (m) => console.log(m),
   });
   // #2088 — end of service: what ends before an agent is disabled or deleted
-  // and before its archetype plugin is removed. `system` notices are owed and
-  // not sent yet (#2045): the seam logs them.
-  const emitSystemNotice = logOwedSystemNotice((m) => console.log(m));
+  // and before its archetype plugin is removed. Each affected home
+  // conversation gets one `system` notice through the channel's shared bot,
+  // kept in an outbox so a restart still delivers it (criterion 37).
+  const systemNoticeOutbox = createSystemNoticeOutbox({
+    pool: () => serviceRegistry.get<Pool>('graphPool'),
+    send: async (channelType, conversationId, message) => {
+      const provider = conversationSendRegistry.get(channelType);
+      // Not up yet (boot, a plugin that starts late): no attempt spent.
+      if (!provider) return { delivered: false, reason: `no conversation sender for channel '${channelType}'`, deferred: true };
+      const out = await provider.sendToConversation(conversationId, message);
+      return out.outcome === 'delivered' ? { delivered: true } : { delivered: false, reason: `${out.code}: ${out.message}` };
+    },
+    locale: () => {
+      const raw = installedRegistry.get('@omadia/orchestrator')?.config?.['ai_disclosure_locale'];
+      return typeof raw === 'string' ? raw : undefined;
+    },
+    log: (m) => console.log(m),
+  });
+  systemNoticeOutbox.start(60_000);
+  const emitSystemNotice = (notice: SystemNoticeRequest): Promise<void> => systemNoticeOutbox.emit(notice);
   const agentEndOfService = createAgentEndOfService({
     // Only the plugin that delivers the archetype is asked; the same service
     // name provided by anybody else is not its process service.
@@ -3828,25 +3841,7 @@ async function main(): Promise<void> {
   // Each admin function that calls a model is one operator job. Mounted
   // ahead of the routers that implement them: the job wraps the rest of the
   // request, and only POSTs start one.
-  for (const [route, kind] of [
-    ['/api/v1/issues/preview', ISSUE_PREVIEW],
-    ['/api/v1/admin/bulk-promote', BULK_PROMOTION],
-    ['/api/v1/admin/topics/recluster', TOPIC_REGROUPING],
-    ['/api/v1/admin/inconsistencies/bulk-detect', MEMORY_REVIEW_DETECTION],
-    ['/api/v1/admin/inconsistencies/detect', MEMORY_REVIEW_DETECTION],
-    ['/api/v1/admin/duplicates/bulk-detect', MEMORY_REVIEW_DETECTION],
-    ['/api/v1/admin/duplicates/detect', MEMORY_REVIEW_DETECTION],
-    ['/api/v1/admin/duplicates/excerpts/bulk-detect', MEMORY_REVIEW_DETECTION],
-    ['/api/v1/admin/duplicates/excerpts/detect', MEMORY_REVIEW_DETECTION],
-    ['/api/v1/operator/skills/:id/verdict/llm-scan', SKILL_VERIFICATION],
-    ['/api/v1/operator/skills/import', SKILL_VERIFICATION],
-    ['/api/v1/operator/skills', SKILL_VERIFICATION],
-    ['/api/v1/operator/skills/:id/fork', SKILL_VERIFICATION],
-    ['/api/v1/builder/drafts/:id/turn', PLUGIN_BUILDER_TURN],
-    ['/api/v1/builder/drafts/:id/preview/chat/turn', PLUGIN_BUILDER_PREVIEW],
-    ['/api/v1/builder/drafts/:id/preview/tool-call', PLUGIN_BUILDER_PREVIEW],
-    ['/api/v1/operator/conductors/builder/turn', WORKFLOW_DESIGNER_TURN],
-  ] as const) {
+  for (const [route, kind] of OPERATOR_JOB_ROUTES) {
     app.post(route, requireAuth, modelWork.middleware(kind));
   }
   // Memory REST writes embed the entry and run the review detectors: an
@@ -4829,6 +4824,17 @@ async function main(): Promise<void> {
     requireAuth,
     createOperatorTriggersRouter({
       triggers: () => triggersRef.current,
+      // Criterion 24 — a Teams conversation needs its stored reference: the
+      // shared bot's (`bot_app_id = ''`), never an agent's own bot's, since
+      // the shared sender delivers it with the shared bot's credentials.
+      knownConversationRef: async (channel, conversationId) => {
+        if (channel !== 'teams' || !graphPool) return undefined;
+        const { rows } = await graphPool.query<{ ref: unknown }>(
+          "SELECT ref FROM teams_conversation_refs WHERE conversation_id = $1 AND bot_app_id = '' ORDER BY updated_at DESC LIMIT 1",
+          [conversationId],
+        );
+        return rows[0]?.ref;
+      },
       jobs: () => jobScheduler.list(),
       batchJobs: () => batchJobRegistry.list(),
       audit: async (entry) => {
@@ -5389,6 +5395,14 @@ async function main(): Promise<void> {
       audit: () => async (entry) => {
         await adminAudit?.record(entry);
       },
+      // Criterion 24 — a proactive message is checked against the room's
+      // members when it goes out, read fresh from the channel's roster.
+      conversationReaders: createConversationReaders({
+        getRoster: (channel, conversationId, opts) => conversationRosterRegistry.getRoster(channel, conversationId, opts),
+        knowledgeGraph: () => serviceRegistry.get<KnowledgeGraph>('knowledgeGraph'),
+        channelKindOf: (channel) => CHANNEL_KIND_BY_ORIGIN[channel],
+        log: (m) => console.log(m),
+      }),
       log: (m) => console.log(m),
     });
     // Spec 2042 §5.12 — a meeting that ends ends its triggers (criterion 22).

@@ -357,6 +357,7 @@ export function toSemanticAnswer(
     text: disclosed.text,
     ...(disclosed.aiDisclosure ? { aiDisclosure: disclosed.aiDisclosure } : {}),
     ...(verifier ? { verifier } : {}),
+    ...(r.turnId ? { turnId: r.turnId } : {}),
     ...(r.memoryUsed ? { memoryUsed: true } : {}),
     ...(r.answerVerbosity ? { answerVerbosity: r.answerVerbosity } : {}),
     ...(agentsConsulted && agentsConsulted.length > 0
