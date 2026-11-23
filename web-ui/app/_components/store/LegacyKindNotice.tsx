@@ -10,11 +10,12 @@ interface LegacyKindNoticeProps {
 }
 
 /**
- * Spec 2042 §5.10, the contract step — an installed plugin of a retired kind
- * (`agent`, `extension`) keeps running, but the kernel accepts no new version
- * of it under that kind. Says so on the plugin's page, with what to do: an
- * `agent` is rebuilt as a capability plus an agent, an `extension` comes back
- * as a `system-module` or `model`. Renders nothing for every other kind.
+ * Spec 2042 §5.10, the contract step — the kernel accepts no new version of
+ * a plugin of a retired kind. An installed `extension` keeps running as a
+ * system module; an installed `agent` no longer runs at all (S3c). Says so on
+ * the plugin's page, with what to do: an `agent` is rebuilt as a capability
+ * plus an agent, an `extension` comes back as a `system-module` or `model`.
+ * Renders nothing for every other kind.
  */
 export function LegacyKindNotice({
   kind,

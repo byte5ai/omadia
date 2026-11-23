@@ -49,7 +49,7 @@ export class StepTimeoutError extends Error {
  * step being re-executed). Best-effort: the underlying turn isn't force-killed, but the run stops
  * waiting and records the step `failed`, so it can take its fallback deterministically.
  *
- * NOTE: this Promise.race timeout shape is duplicated in toolPluginRuntime / dynamicAgentRuntime /
+ * NOTE: this Promise.race timeout shape is duplicated in toolPluginRuntime / routes/runtime /
  * previewRuntime / migrationRunner. Follow-up: extract one shared `withTimeout` util. This copy adds
  * the typed StepTimeoutError + the `ms<=0` disable guard the others lack.
  */
@@ -75,7 +75,7 @@ export interface RealStepEffectsDeps {
    *  without an identity row that still has an owner (`channelBotOwnership`).
    *  Absent: only provisioned bots can start an agent step. */
   defaultChannelBotKey?: DefaultChannelBotKey;
-  /** invoke a deterministic-action / connector tool by id (dynamicAgentRuntime). */
+  /** invoke a deterministic-action / connector tool by id (a plugin-registered tool). */
   invokeAction?: (toolId: string, input: unknown) => Promise<string | undefined>;
   /** Per-step hard budget in ms. MUST be < the resume worker's staleMs (default 900_000). 0 disables. */
   stepTimeoutMs?: number;

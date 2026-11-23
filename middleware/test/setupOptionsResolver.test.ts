@@ -1,14 +1,12 @@
 /**
  * Spec 2042 §5.10 — a setup field's `options_provider` is answered by the
- * plugin's own tool registered with the kernel (capability plugin), and by
- * the retired agent runtime only for a plugin still running there.
+ * plugin's own tool registered with the kernel.
  */
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { SetupOptionsResolveError } from '../src/plugins/dynamicAgentRuntime.js';
-import { createSetupOptionsResolver } from '../src/plugins/setupOptionsResolver.js';
+import { createSetupOptionsResolver, SetupOptionsResolveError } from '../src/plugins/setupOptionsResolver.js';
 
 const options = [{ value: 'root-1', label: 'Wiki' }];
 const tools = new Map([
@@ -22,29 +20,14 @@ describe('setup options resolver', () => {
   });
 
   it('never asks another plugin’s tool of the same name', async () => {
-    const asked: string[] = [];
-    const resolver = createSetupOptionsResolver({
-      tools,
-      agentRuntime: {
-        resolveSetupOptions: async (pluginId) => {
-          asked.push(pluginId);
-          throw new SetupOptionsResolveError('agent_inactive', 'not active');
-        },
-      },
-    });
-    await assert.rejects(resolver.resolveSetupOptions('@acme/other', 'list_notion_roots', {}), SetupOptionsResolveError);
-    assert.deepEqual(asked, ['@acme/other']);
+    const resolver = createSetupOptionsResolver({ tools });
+    await assert.rejects(
+      resolver.resolveSetupOptions('@acme/other', 'list_notion_roots', {}),
+      (err: unknown) => err instanceof SetupOptionsResolveError && err.code === 'tool_not_found',
+    );
   });
 
-  it('falls back to the agent runtime for a plugin still running there', async () => {
-    const resolver = createSetupOptionsResolver({
-      tools: new Map(),
-      agentRuntime: { resolveSetupOptions: async () => options },
-    });
-    assert.deepEqual(await resolver.resolveSetupOptions('@legacy/agent', 'list_things', {}), options);
-  });
-
-  it('says tool_not_found without either', async () => {
+  it('says tool_not_found for a tool no plugin registered', async () => {
     const resolver = createSetupOptionsResolver({ tools: new Map() });
     await assert.rejects(
       resolver.resolveSetupOptions('@acme/x', 'nope', {}),

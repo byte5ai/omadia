@@ -1,15 +1,24 @@
-import { SetupOptionsResolveError } from './dynamicAgentRuntime.js';
+/** Thrown for conditions the post-install setup-options endpoint maps to
+ *  specific HTTP codes. A plain throw from the provider's own tool is
+ *  deliberately NOT this type — the route maps that to 502 (provider failed). */
+export class SetupOptionsResolveError extends Error {
+  constructor(
+    public readonly code: 'agent_inactive' | 'tool_not_found',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SetupOptionsResolveError';
+  }
+}
 
 /**
  * Spec 2042 §5.10 — a setup field's `options_provider` names a tool of the
  * plugin that offers the choices (for example Notion's `list_notion_roots`).
- * The retired agent runtime answered it from the plugin's toolkit; a
- * capability plugin registers its tools with the kernel (`ctx.tools`), so the
- * same field is answered from there.
+ * A plugin registers its tools with the kernel (`ctx.tools`), so the field is
+ * answered from there.
  *
  * Only the named plugin's own tool is asked (never another plugin's tool of
- * the same name: that would be a confused deputy). A plugin still running in
- * the agent runtime keeps being answered by it.
+ * the same name: that would be a confused deputy).
  */
 export interface SetupOptionsResolver {
   resolveSetupOptions(pluginId: string, toolId: string, input: unknown): Promise<unknown>;
@@ -20,7 +29,6 @@ export interface RegisteredToolLookup {
 }
 
 export function createSetupOptionsResolver(deps: {
-  readonly agentRuntime?: SetupOptionsResolver;
   readonly tools: RegisteredToolLookup;
 }): SetupOptionsResolver {
   return {
@@ -30,7 +38,6 @@ export function createSetupOptionsResolver(deps: {
         const raw = await entry.handler(input);
         return parseToolResult(raw);
       }
-      if (deps.agentRuntime) return deps.agentRuntime.resolveSetupOptions(pluginId, toolId, input);
       throw new SetupOptionsResolveError('tool_not_found', `tool '${toolId}' is not exposed by plugin '${pluginId}'`);
     },
   };

@@ -146,7 +146,7 @@ describe('cliBinaryResolver service grant (#1085)', () => {
     // likeliest place for the next forgotten call site. The call text is cut
     // at its real closing paren rather than a fixed window, so a neighbouring
     // branch that does pass the option cannot vouch for one that does not —
-    // the shape `dynamicAgentRuntime.ts` already has.
+    // the shape the retired agent runtime had.
     //
     // KNOWN BLIND SPOT: the check is textual, so it proves the option was not
     // FORGOTTEN — not that it is live. A site written as the conditional

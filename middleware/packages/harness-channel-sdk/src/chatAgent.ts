@@ -941,9 +941,8 @@ export interface PendingRoutineList {
  * Per-tool agent metadata. Attached by the chat route to `tool_use` events
  * (and `sub_tool_use`) so the UI can render a clickable agent pill without
  * a hardcoded `tool name → agent` table on the client. Resolution happens
- * server-side: built-in agents come from a curated map, Builder-uploaded
- * agents from `DynamicAgentRuntime.findAgentByToolName()`. When a tool is
- * not backed by an agent (helper tools like `memory`, `ask_user_choice`,
+ * server-side: curated kernel tools come from a map, plugin tools from the
+ * plugin that registered them. When a tool is not backed by a plugin (helper tools like `memory`, `ask_user_choice`,
  * `render_diagram`), the field stays `undefined`.
  *
  * Tone is one of four byte5 brand fills; see TONE_CLASS in the web-ui

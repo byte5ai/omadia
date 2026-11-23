@@ -393,7 +393,7 @@ function turnOwnersField(turnMemory: TurnMemoryBinding | undefined): {
 
 // S+10-2 back-compat re-exports: kernel-side callers that still
 // `import { … } from './orchestrator.js'` (verifierService.ts, routes/chat.ts,
-// services/sessionLogger.ts, plugins/dynamicAgentRuntime.ts and a few others)
+// services/sessionLogger.ts and a few others)
 // keep working unchanged. Sub-Commit S+10-3 flips those import paths to
 // `@omadia/channel-sdk` and these re-exports go away.
 export type {
@@ -10189,9 +10189,8 @@ export class Orchestrator {
   registerDomainTool(tool: DomainTool): void {
     // Hard collision check. Silent last-wins was the previous behavior and
     // it made two uploaded agents with the same shortName (last dot-segment
-    // of agentId) clobber each other's top-level tool. Caller — typically
-    // DynamicAgentRuntime.activate — is expected to probe first via
-    // `hasDomainTool(name)` and surface a clearer error with agent context.
+    // of agentId) clobber each other's top-level tool. A caller is expected
+    // to probe first via `hasDomainTool(name)` and surface a clearer error.
     if (this.nativeTools.has(tool.name)) {
       throw new Error(
         `registerDomainTool: name '${tool.name}' is already reserved by a native tool`,
@@ -10205,7 +10204,6 @@ export class Orchestrator {
     this.domainToolsByName.set(tool.name, tool);
   }
 
-  /** Probe used by DynamicAgentRuntime for pre-flight collision messages. */
   /**
    * Is the plugin that owns a tool granted to THIS Agent?
    *
@@ -10255,6 +10253,7 @@ export class Orchestrator {
     return this.isPluginGranted(pluginId);
   }
 
+  /** Probe for pre-flight collision messages. */
   hasDomainTool(name: string): boolean {
     return this.domainToolsByName.has(name);
   }

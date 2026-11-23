@@ -1021,8 +1021,8 @@ export function buildOrchestratorForAgent(
         ...(deps.graphPool ? { graphPool: deps.graphPool } : {}),
       };
 
-  // domainTools is intentionally empty at construct — sub-agents self-register
-  // post-activate via `dynamicAgentRuntime.attachOrchestrator(bundle.raw)`.
+  // domainTools is intentionally empty at construct — the kernel registers an
+  // Agent's DB-defined sub-agent tools once the registry exists.
   const orchestrator = new Orchestrator({
     agentId: config.agentId,
     provider: deps.provider,

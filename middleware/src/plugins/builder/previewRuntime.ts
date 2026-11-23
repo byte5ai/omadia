@@ -394,7 +394,7 @@ export interface PreviewHostServices {
 export interface PreviewRuntimeDeps {
   /** Absolute path to `data/builder/.previews/`. */
   previewsRoot: string;
-  /** Default: 10s — same budget as activate() in dynamicAgentRuntime. */
+  /** Default: 10s — same budget as activate() in the tool plugin runtime. */
   activateTimeoutMs?: number;
   logger?: (...args: unknown[]) => void;
   /**

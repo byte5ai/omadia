@@ -4779,7 +4779,7 @@
       },
       "hubChip": "Hub · {registry}",
       "legacyChip": "Altbestand",
-      "legacyChipTitle": "Eine ausgemusterte Plugin-Art: Das Plugin läuft weiter, bekommt aber keine neuen Versionen."
+      "legacyChipTitle": "Eine ausgemusterte Plugin-Art: Das Plugin bekommt keine neuen Versionen. Ein Agent-Plugin läuft gar nicht mehr."
     },
     "stateBadge": {
       "available": "Verfügbar",
@@ -4841,6 +4841,10 @@
       "database_not_available": {
         "what": "Die eigene Datenbank des Plugins konnte nicht eingerichtet werden.",
         "next": "Das technische Detail unten nennt den Grund. Steht dort, dass eine Rolle außerhalb ihres Schemas Objekte anlegen darf, führe die genannte Anweisung (meist REVOKE CREATE ON SCHEMA public FROM PUBLIC) als Eigentümer der Datenbank aus und starte omadia danach neu."
+      },
+      "kind_retired": {
+        "what": "Dieses Plugin hat die ausgemusterte Art 'agent'. omadia führt Plugins mit eigenem Agenten nicht mehr aus.",
+        "next": "In der Einrichtung lässt sich das nicht beheben. Aktualisiere das Plugin auf eine Version, die Fähigkeiten (oder Agent-Vorlagen) liefert, oder deinstalliere es. Seine Einrichtungswerte bleiben für die neue Version erhalten."
       },
       "unknown": {
         "what": "Das Plugin ist nicht gestartet.",
@@ -5194,7 +5198,7 @@
     "legacyKind": {
       "title": "Altbestand",
       "agent": {
-        "what": "Dieses Plugin hat die ausgemusterte Art 'agent': ein Plugin mit eigenem Agenten. Es läuft weiter, aber omadia nimmt keine neue Version davon an.",
+        "what": "Dieses Plugin hat die ausgemusterte Art 'agent': ein Plugin mit eigenem Agenten. omadia führt solche Plugins nicht mehr aus und nimmt keine neue Version davon an.",
         "next": "Bau es im Plugin Builder als Fähigkeit (Tool oder Integration) neu, leg dann im Agent Builder den Agenten an und gib ihm diese Fähigkeit."
       },
       "extension": {
