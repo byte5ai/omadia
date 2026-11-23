@@ -593,6 +593,61 @@ describe('fast-path chat triage — orchestrator wiring', () => {
     assert.equal(bare.bundle.raw, bare.orchestrator);
   });
 
+  it('criterion 6 / 28: a fast-lane hit speaks as the agent with AI disclosure; a miss reaches the same agent', async () => {
+    let triaged = 0;
+    let decision: ChatTriageOutcome = HIT;
+    const counting: FastPathTriagePort = {
+      channelEnabled: () => true,
+      triageChatTurn: () => ((triaged += 1), Promise.resolve(decision)),
+    };
+    const modelRequests: unknown[] = [];
+    const answerText = 'Das schaue ich mir genauer an.';
+    const response = { content: [{ type: 'text', text: answerText }], finishReason: 'stop', model: 'm', usage: { inputTokens: 1, outputTokens: 1 } };
+    const deps = {
+      ...orchestratorDeps(() => counting),
+      // The agent loop of a miss runs for real: no entity collection here.
+      entityRefBus: undefined as unknown as OrchestratorDeps['entityRefBus'],
+      provider: {
+        id: 'anthropic',
+        capabilities: { tools: true, vision: false, streaming: true, promptCaching: false, forcedToolChoice: true, parallelToolCalls: false },
+        complete: (req: unknown) => (modelRequests.push(req), Promise.resolve(response)),
+        stream: (req: unknown) => ({
+          async *[Symbol.asyncIterator]() {
+            modelRequests.push(req);
+            yield { type: 'text_delta', text: answerText };
+            yield { type: 'final', response };
+          },
+        }),
+        classifyError: () => ({ retryable: false, kind: 'other' }),
+      } as unknown as OrchestratorDeps['provider'],
+    };
+    const built = buildForAgent({ ...AGENT_ROW, identityName: 'Klara' } as AgentRow, deps, { ...RUNTIME, modelRouting: undefined });
+
+    // Hit: no model call, the agent's speaker, its AI disclosure.
+    const hit = await collect(built.bundle.agent.chatStream({ userMessage: 'Geburtstage?', sessionScope: 'tab_1' }));
+    const hitDone = hit.at(-1);
+    assert.ok(hitDone?.type === 'done');
+    assert.equal(modelRequests.length, 0, 'the fast lane answered without the agent loop');
+    assert.equal(hitDone.speaker?.kind, 'agent');
+    assert.equal(hitDone.speaker?.kind === 'agent' && hitDone.speaker.agentId, AGENT_ROW.id);
+    assert.ok(hitDone.aiDisclosure, 'the hit carries the AI disclosure');
+    assert.ok(hitDone.answer.includes(hitDone.aiDisclosure.text), 'and renders it');
+    const buffered = await built.bundle.agent.chat({ userMessage: 'Geburtstage?', sessionScope: 'tab_1' });
+    assert.equal(buffered.speaker?.kind === 'agent' && buffered.speaker.agentId, AGENT_ROW.id);
+    assert.ok(buffered.aiDisclosure);
+
+    // Miss: the same agent answers through its loop, under the same speaker.
+    decision = { kind: 'agent', reason: 'router-invalid', ms: 1 };
+    const miss = await collect(built.bundle.agent.chatStream({ userMessage: 'Wie geht es weiter?', sessionScope: 'tab_1' }));
+    const missDone = miss.at(-1);
+    assert.ok(missDone?.type === 'done');
+    assert.ok(modelRequests.length > 0, 'the miss reached the agent loop');
+    assert.ok(missDone.answer.startsWith(answerText));
+    assert.equal(missDone.speaker?.kind === 'agent' && missDone.speaker.agentId, AGENT_ROW.id, 'the same agent');
+    assert.ok(missDone.aiDisclosure);
+    assert.equal(triaged, 3);
+  });
+
   it('a routeHint replaces the router classifier call', async () => {
     const built = buildForAgent(AGENT_ROW, orchestratorDeps(), RUNTIME);
     const resolve = (
