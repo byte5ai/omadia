@@ -1,6 +1,40 @@
 // Golden API snapshot for @omadia/plugin-api — generated, do not hand-edit.
 // Regenerate deliberately: npm run api:update -w packages/plugin-api
 
+// ===== agentDirectory.d.ts =====
+export declare const AGENT_DIRECTORY_SERVICE_NAME = "agentDirectory";
+export interface AgentDirectoryRequest {
+readonly channel: string;
+readonly channelId: string;
+readonly tenantId?: string;
+readonly subject: string;
+readonly email?: string;
+readonly omadiaUserId?: string;
+readonly provider: string;
+}
+export interface AgentDirectoryAgent {
+readonly id: string;
+readonly slug: string;
+readonly display_name: string;
+readonly short_description: string | null;
+readonly avatar_url: string | null;
+readonly archetype: string | null;
+}
+export type AgentDirectoryDefault = {
+readonly slug: string;
+} | {
+readonly slug: null;
+readonly notice: string;
+};
+export interface AgentDirectoryView {
+readonly channel: string;
+readonly agents: readonly AgentDirectoryAgent[];
+readonly default_agent: AgentDirectoryDefault;
+}
+export interface AgentDirectoryService {
+listAvailable(request: AgentDirectoryRequest): Promise<AgentDirectoryView>;
+}
+
 // ===== agentEnvelope.d.ts =====
 export declare const AGENT_ENVELOPE_SERVICE_NAME = "agentEnvelope";
 export interface AgentEnvelope<TAgent = unknown> {
@@ -1244,6 +1278,7 @@ export * from './speaker.js';
 export * from './maintenanceRun.js';
 export * from './modelPassthrough.js';
 export * from './agentEnvelope.js';
+export * from './agentDirectory.js';
 export * from './batchJobs.js';
 
 // ===== knowledgeGraph.d.ts =====

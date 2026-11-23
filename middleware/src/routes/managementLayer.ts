@@ -18,11 +18,8 @@ import { formatPrincipal, makePrincipal, parsePrincipal } from '@omadia/channel-
 import {
   ADDRESSABLE_STATUS,
   assertArchetypeAllows,
-  ChannelResolver,
   ConfigValidationError,
   ManagementRouter,
-  archetypeOf,
-  speakerFor,
   type ConfigStore,
   type DefaultAgentEntryRow,
   type OrchestratorRegistry,
@@ -32,6 +29,7 @@ import {
 import { auditActorFromRequest, type AuditEntryInput } from '../auth/adminAuditLog.js';
 import { requireBroadReachConfirmation } from '../agents/broadReachGate.js';
 import type { ReachSources } from '../agents/agentReachSources.js';
+import { buildAgentDirectory } from '../platform/agentDirectoryService.js';
 import { respondFacilitatorRefusal } from '../platform/facilitatorGuard.js';
 
 export interface ManagementLayerRouterOptions {
@@ -271,42 +269,8 @@ export function createAgentDirectoryRouter(options: ManagementLayerRouterOptions
     try {
       const { channel } = DirectoryQuerySchema.parse(req.query);
       const principal = requestPrincipal(req);
-      const view = svc.registry.routingView();
-      const router = new ManagementRouter({ view });
-      const request = { channelType: channel, ...(principal ? { principal } : {}) };
-      const agents = view
-        .liveAgents()
-        .filter((a) => a.status === ADDRESSABLE_STATUS && a.bindable && router.isAvailable(a, request))
-        .map((a) => {
-          const row = svc.registry.getById(a.id)?.agent;
-          const speaker = row ? speakerFor(row) : undefined;
-          return {
-            // The agent id: what explicit addressing by id (`resolveAgent`,
-            // a canvas turn's `metadata.agentId`) takes.
-            id: a.id,
-            slug: a.slug,
-            display_name: a.displayName,
-            short_description: row?.identityShortDescription ?? null,
-            avatar_url: speaker?.avatarUrl ?? null,
-            archetype: row ? archetypeOf(row) : null,
-          };
-        })
-        .sort((x, y) => x.display_name.localeCompare(y.display_name));
-      // What an unaddressed message from this user in this channel reaches:
-      // the default agent, or the notice (`off`, unavailable, …).
-      const unaddressed = new ChannelResolver({ registry: svc.registry }).resolve(
-        channel,
-        `directory:${principal ?? 'anonymous'}`,
-        principal ? { principal } : {},
-      );
-      res.json({
-        channel,
-        agents,
-        default_agent:
-          unaddressed.decision === 'bound' && unaddressed.agent
-            ? { slug: unaddressed.agent.agent.slug }
-            : { slug: null, notice: unaddressed.notice?.code ?? 'no_agent' },
-      });
+      // One source with the `agentDirectory@1` service (platform/agentDirectoryService.ts).
+      res.json(buildAgentDirectory(svc.registry, { channel, ...(principal ? { principal } : {}) }));
     } catch (err) {
       badRequest(res, err);
     }

@@ -8,6 +8,28 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## Unreleased
+
+Additive (spec 2042 §5.3, criterion 40; the canvas channel's agent picker).
+The version is set when the S3c contract cleanup merges this.
+
+### Added
+
+- **`agentDirectory@1`** (`AGENT_DIRECTORY_SERVICE_NAME`,
+  `AgentDirectoryService`, `AgentDirectoryRequest`, `AgentDirectoryView`,
+  `AgentDirectoryAgent`, `AgentDirectoryDefault`): the agents a person may
+  address in a channel and what an unaddressed message from them reaches —
+  the answer of `GET /api/v1/agents/directory`, for a channel plugin that
+  cannot call that route. Given to `channel` plugins only. It lists; whether a
+  turn runs is the channel resolver's decision.
+
+### Changed (kernel behaviour, no type change)
+
+- An addressed turn (`metadata.agentId`) of a channel with its own
+  `dispatch_service` goes to that service with `ChatTurnInput.agentId` (channel
+  SDK) once `resolveAgent` has bound the agent, instead of straight to the
+  agent. A refusal and `/agent` commands stay with the management layer.
+
 ## 1.85.0 — 2026-11-22
 
 Additive (#2090, spec 2043 §0, §5.2, §5.6; ADR 0030): the kernel bounds a
