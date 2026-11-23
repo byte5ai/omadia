@@ -178,7 +178,7 @@ permissions:
 
 playbook:
   when_to_use: |
-    Aktiviere dieses Plugin (experimentell), wenn der Orchestrator bei
+    Aktiviere dieses Plugin (experimentell), wenn der Agent bei
     langen, mehrstufigen Turns frühere Sub-Goals strukturell festhalten soll,
     statt sich auf das LLM-Gedächtnis zu verlassen. Es hängt sich an den
     onBeforeTurn-Hook, klassifiziert per Haiku, ob ein Plan nötig ist, und

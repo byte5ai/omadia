@@ -97,7 +97,7 @@ setup:
 playbook:
   when_to_use: |
     Wird vom Knowledge-Graph-Plugin (`requires: embeddingClient@^1`) und
-    späteren Tool-Sets (Orchestrator-Extras: ContextRetriever +
+    späteren Tool-Sets (Agent Runtime Extras: ContextRetriever +
     TopicDetector + FactExtractor) konsumiert. Operator-Touchpoint:
     `ollama_base_url` muss im Setup-Feld stehen ODER auf .env-Werte
     bootstrappen — sonst published das Plugin keinen Client und

@@ -65,7 +65,7 @@ export interface LlmPluginDesc {
 export const LLM_PLUGINS: ReadonlyArray<LlmPluginDesc> = [
   {
     id: '@omadia/orchestrator',
-    label: 'Orchestrator',
+    label: 'Agent runtime',
     modelKeys: ['orchestrator_model'],
     // Per-turn Sonnet/Opus routing only makes sense within Anthropic; the
     // default chatAgent path now accepts the subscription CLI via Shape 3.

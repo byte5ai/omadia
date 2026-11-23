@@ -7385,7 +7385,7 @@ export class Orchestrator {
       }
 
       throw new Error(
-        `Orchestrator exceeded maxToolIterations (${this.maxIterations}) without reaching a final answer.`,
+        `The agent exceeded maxToolIterations (${this.maxIterations}) without reaching a final answer.`,
       );
     } finally {
       // Guard against listener leaks on any non-happy exit (throw, iteration
@@ -8875,7 +8875,7 @@ export class Orchestrator {
         ...(turnContext.currentTurnId()
           ? { correlationId: turnContext.currentTurnId() as string }
           : {}),
-        message: `Orchestrator exceeded maxToolIterations (${String(this.maxIterations)}) without reaching a final answer.`,
+        message: `The agent exceeded maxToolIterations (${String(this.maxIterations)}) without reaching a final answer.`,
       };
     } catch (err) {
       // This catch did not log before — a turn failing on a transient

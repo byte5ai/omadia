@@ -192,6 +192,9 @@ function addressedAgentId(metadata: Record<string, unknown> | undefined): string
  * live binding table, post hot-reload) is always used. Classic channels with no
  * bindings and no `dispatch_service` dispatch to `chatAgent` exactly as before.
  */
+/** The error a turn gets when no agent can take it. Shown in the chat. */
+export const NO_AGENT_AVAILABLE_MESSAGE = 'no agent is available for this conversation';
+
 export function createOrchestratorDispatcher(
   deps: OrchestratorDispatcherDeps,
 ): TurnDispatcher {
@@ -264,7 +267,7 @@ export function createOrchestratorDispatcher(
         console.warn(
           `[channels] no '${dispatchService}' agent registered — turn ignored (scope=${input.scope})`,
         );
-        yield { type: 'error', message: 'orchestrator unavailable' };
+        yield { type: 'error', message: NO_AGENT_AVAILABLE_MESSAGE };
         return;
       }
       // Omadia UI: thread the canvas session id (set by the canvas channel in
