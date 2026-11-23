@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the PASS/BLOCK judges answer on an always-thinking model (spec 2042 §5.5, #2085, criterion 33)
+
+- The identity guard's judge and the data-plan and summary boundary judges asked for 8 output
+  tokens. They run on the agent's classifier model, else its own model. On an always-thinking
+  model (Opus 5.5, Fable) thinking counts toward that cap, so the reply had no text. The
+  identity guard then withheld every suspicious answer of such an agent as `unavailable`, and
+  the boundary guards refused every plan and summary they judged. Found in the live Teams E2E:
+  Karen (`hr`, Opus 5.5) was consulted, and her contribution was always withheld (`identity judge
+  gave no verdict: ""`). The three judges now share `VERDICT_JUDGE_MAX_TOKENS` (1024) and ask
+  for low effort and no thinking where the model allows it.
+
 ### Fixed — a consultation no longer makes its conversation unreadable (spec 2042 §5.4, §5.11)
 
 - The consulted agent runs with the consulting turn's origin, but resolved that room's readers

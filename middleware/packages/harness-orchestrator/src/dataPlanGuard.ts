@@ -18,9 +18,9 @@ import {
   type ProfileQualityConfig,
 } from '@omadia/plugin-api';
 import { recordUsage } from '@omadia/usage-telemetry';
+import { VERDICT_JUDGE_MAX_TOKENS } from './classifierBudgets.js';
 
 export const DATA_PLAN_JUDGE_TIMEOUT_MS = 8_000;
-const JUDGE_MAX_TOKENS = 8;
 
 /** The model layer: does this plan break one of these rules? */
 export interface DataPlanJudge {
@@ -32,7 +32,9 @@ export function createLlmDataPlanJudge(options: { readonly provider: LlmProvider
     async judge(planText, rules) {
       const res = await options.provider.complete({
         model: options.model,
-        maxTokens: JUDGE_MAX_TOKENS,
+        maxTokens: VERDICT_JUDGE_MAX_TOKENS,
+        effort: 'low',
+        thinking: 'off',
         temperature: 0,
         system: [
           'You check a planned data query of an AI agent against the rules its operator set.',

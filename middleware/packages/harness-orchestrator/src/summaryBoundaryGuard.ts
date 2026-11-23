@@ -18,9 +18,9 @@ import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
 import { getBoundaryPreset, type DataPlanVerdict, type ProfileQualityConfig } from '@omadia/plugin-api';
 import { recordUsage } from '@omadia/usage-telemetry';
+import { VERDICT_JUDGE_MAX_TOKENS } from './classifierBudgets.js';
 
 export const SUMMARY_JUDGE_TIMEOUT_MS = 8_000;
-const JUDGE_MAX_TOKENS = 8;
 
 /** The agent's check of one fast-lane summary. Fails closed. */
 export type SummaryBoundaryGuard = (summary: string) => Promise<DataPlanVerdict>;
@@ -55,7 +55,9 @@ export function createLlmSummaryJudge(options: {
     async judge(text, rules) {
       const res = await options.provider.complete({
         model: options.model,
-        maxTokens: JUDGE_MAX_TOKENS,
+        maxTokens: VERDICT_JUDGE_MAX_TOKENS,
+        effort: 'low',
+        thinking: 'off',
         temperature: 0,
         system: [
           'You check a short answer an AI agent is about to send against the rules its operator set.',
