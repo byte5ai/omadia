@@ -146,8 +146,18 @@ const SELF_INTRODUCTION =
 /** First person near a word about being human or a machine. */
 const IDENTITY_TALK = new RegExp(
   String.raw`\b(?:i|i['’]m|ich|mich|me)\b[^.!?\n]{0,30}?\b(?:human|mensch|bot|robot|roboter|ki|ai|künstliche\s+intelligenz)${WORD_END}`,
-  'iu',
+  'giu',
 );
+
+/**
+ * What makes identity talk worth a look: being human, or a negation ("not
+ * an AI", "kein Bot"). "Ich bin eine KI" and "I'm an AI assistant" are the
+ * disclosure every agent owes, not a claim to look at.
+ */
+const IDENTITY_TALK_SUSPICIOUS = /\b(?:human|mensch\w*|not|no|never|kein\w*|nicht|nie)\b|n['’]t\b/iu;
+
+/** Letters, digits and connectors: what may continue a name. */
+const NAME_CHAR = /[\p{L}\p{N}_]/u;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -212,14 +222,19 @@ function compileFor(entry: GuardDirectoryEntry, ownNames: ReadonlySet<string>): 
 /** Compiled directory for one speaker; build once per turn. */
 export class IdentityGuardPatterns {
   private readonly colleagues: readonly NamedPatterns[];
-  private readonly ownNames: ReadonlySet<string>;
+  /** The agent's own names, each anchored at the start of a string. */
+  private readonly ownNamePatterns: readonly RegExp[];
 
   constructor(self: GuardSelf, directory: readonly GuardDirectoryEntry[]) {
     const ownEntry = directory.find((entry) => entry.agentId === self.agentId);
     const ownNames = new Set(
-      [self.displayName, self.slug, ...(ownEntry?.aliases ?? [])].map(normalizeName),
+      // the directory's own entry too: its display name may be the agent's
+      // name where the speaker carries its identity name
+      [self.displayName, self.slug, ...(ownEntry ? namesOf(ownEntry) : [])].map(normalizeName),
     );
-    this.ownNames = ownNames;
+    this.ownNamePatterns = [...ownNames]
+      .filter((name) => name.length > 0)
+      .map((name) => new RegExp(`^${namePattern(name)}`, 'iu'));
     this.colleagues = directory
       .filter((entry) => entry.agentId !== self.agentId)
       .map((entry) => compileFor(entry, ownNames))
@@ -248,9 +263,27 @@ export class IdentityGuardPatterns {
   private introducesSomeoneElse(text: string): boolean {
     for (const match of text.matchAll(SELF_INTRODUCTION)) {
       const name = match[1];
-      if (name && !this.ownNames.has(normalizeName(name))) return true;
+      if (!name) continue;
+      const at = (match.index ?? 0) + match[0].length - name.length;
+      if (!this.startsWithOwnName(text.slice(at))) return true;
     }
-    return IDENTITY_TALK.test(text);
+    for (const match of text.matchAll(IDENTITY_TALK)) {
+      if (IDENTITY_TALK_SUSPICIOUS.test(match[0])) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Whether `rest` opens with one of the agent's own names as a whole name:
+   * "Dark Clippy, your assistant" for "Dark Clippy" (a name of several
+   * words), not "Darkness" or "Dark Mira".
+   */
+  private startsWithOwnName(rest: string): boolean {
+    for (const own of this.ownNamePatterns) {
+      const match = own.exec(rest);
+      if (match && !NAME_CHAR.test(rest.charAt(match[0].length))) return true;
+    }
+    return false;
   }
 }
 
