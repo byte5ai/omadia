@@ -1,30 +1,25 @@
 import { stringify as stringifyYaml } from 'yaml';
 
+import { effectivePluginKind } from './agentSpec.js';
 import type { AgentSpecSkeleton } from './types.js';
 
 /**
- * Render a builder draft's `AgentSpecSkeleton` into the canonical
- * `agent.md` byte form (YAML frontmatter + markdown body).
+ * Render a builder draft's `AgentSpecSkeleton` into the `agent.md` byte form
+ * (YAML frontmatter + markdown body) that Profile Storage keys its snapshots
+ * on.
  *
  * This is the bridge serialiser used by `DraftStorageBridge` (OB-83) to
  * mirror builder drafts into `profile_agent_md` so Phase 2.2 snapshots /
- * rollback / diff have a non-empty source. Frontmatter shape stays in
- * sync with persona-ui-v1.md §6 and the `responseGuard@1` schema in
- * `plugin-api/src/responseGuard.ts`.
+ * rollback / diff have a non-empty source. The full spec rides along as
+ * `knowledge/spec.json`; this document is the human-readable summary.
+ *
+ * Spec 2042 §5.10 — a Plugin Builder draft is a capability plugin: the
+ * document carries the plugin's identity, kind and playbook, never a persona,
+ * quality settings or role instructions (those belong to an agent).
  *
  * Determinism — two calls with identical input produce byte-identical
  * output. yaml.stringify normalises key order; the body is a
- * deterministic concatenation of role / tonality / playbook fields.
- *
- * Out of scope:
- *   - Knowledge files (builder has no knowledge concept yet)
- *   - Reverse parser (frontmatter → spec is the Phase-3.5 follow-up;
- *     Phase 3 reads/writes through `AgentSpec.persona` directly).
- *
- * Phase 3 update (OB-67): the `persona:` block now mirrors here when the
- * spec carries one. Empty axes / templates are omitted; the runtime
- * `personaCompose@1` provider (Phase 4 conditional) consumes the same
- * shape from the frontmatter once it lands.
+ * deterministic concatenation of the playbook fields.
  */
 
 export interface SpecToAgentMdInput {
@@ -46,13 +41,13 @@ interface FrontmatterIdentity {
    *  so a roundtrip through agent.md preserves the field. */
   domain?: string;
   version?: string;
+  /** Manifest kind of the generated capability plugin. */
+  kind: 'integration' | 'tool';
 }
 
 interface Frontmatter {
   schema_version: 1;
   identity: FrontmatterIdentity;
-  quality?: AgentSpecSkeleton['quality'];
-  persona?: AgentSpecSkeleton['persona'];
 }
 
 export function specToAgentMd(input: SpecToAgentMdInput): Buffer {
@@ -62,6 +57,7 @@ export function specToAgentMd(input: SpecToAgentMdInput): Buffer {
       input.spec.name && input.spec.name.length > 0
         ? input.spec.name
         : input.draftName,
+    kind: effectivePluginKind(input.spec),
   };
   if (input.spec.description && input.spec.description.length > 0) {
     identity.description = input.spec.description;
@@ -80,13 +76,6 @@ export function specToAgentMd(input: SpecToAgentMdInput): Buffer {
     schema_version: 1,
     identity,
   };
-  if (input.spec.quality && hasQualityContent(input.spec.quality)) {
-    frontmatter.quality = input.spec.quality;
-  }
-  if (input.spec.persona) {
-    const compactedPersona = compactPersona(input.spec.persona);
-    if (compactedPersona) frontmatter.persona = compactedPersona;
-  }
 
   const body = renderBody(input.spec);
 
@@ -97,54 +86,12 @@ export function specToAgentMd(input: SpecToAgentMdInput): Buffer {
   return Buffer.from(markdown, 'utf8');
 }
 
-function hasQualityContent(quality: NonNullable<AgentSpecSkeleton['quality']>): boolean {
-  if (quality.sycophancy && quality.sycophancy !== 'off') return true;
-  const presets = quality.boundaries?.presets ?? [];
-  const custom = quality.boundaries?.custom ?? [];
-  return presets.length > 0 || custom.length > 0;
-}
-
-/**
- * Drop empty axes (so the YAML doesn't carry `formality: undefined`) and
- * skip the whole block when nothing meaningful is set. Returns `null`
- * when the persona block would be empty after compaction — the caller
- * then omits the frontmatter key entirely.
- */
-function compactPersona(
-  persona: NonNullable<AgentSpecSkeleton['persona']>,
-): NonNullable<AgentSpecSkeleton['persona']> | null {
-  const out: NonNullable<AgentSpecSkeleton['persona']> = {};
-
-  if (persona.template && persona.template.length > 0) {
-    out.template = persona.template;
-  }
-  if (persona.custom_notes && persona.custom_notes.trim().length > 0) {
-    out.custom_notes = persona.custom_notes.trim();
-  }
-  if (persona.axes) {
-    const compactedAxes: NonNullable<AgentSpecSkeleton['persona']>['axes'] = {};
-    let any = false;
-    for (const [key, value] of Object.entries(persona.axes)) {
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        (compactedAxes as Record<string, number>)[key] = value;
-        any = true;
-      }
-    }
-    if (any) out.axes = compactedAxes;
-  }
-
-  if (!out.template && !out.custom_notes && !out.axes) return null;
-  return out;
-}
-
 function renderBody(spec: AgentSpecSkeleton): string {
   const parts: string[] = [];
 
-  if (spec.skill?.role && spec.skill.role.length > 0) {
-    parts.push(`# Role\n\n${spec.skill.role.trim()}`);
-  }
-  if (spec.skill?.tonality && spec.skill.tonality.length > 0) {
-    parts.push(`## Tonality\n\n${spec.skill.tonality.trim()}`);
+  const description = spec.description?.trim();
+  if (description && description.length > 0) {
+    parts.push(`# ${spec.name?.trim() || spec.id}\n\n${description}`);
   }
 
   const whenTo = spec.playbook?.when_to_use?.trim();
@@ -167,7 +114,7 @@ function renderBody(spec: AgentSpecSkeleton): string {
   if (parts.length === 0) {
     // Fresh-draft fallback — keep the body non-empty so downstream
     // markdown processors don't trip on an empty document.
-    return '<!-- agent body not yet authored -->\n';
+    return '<!-- plugin description not yet authored -->\n';
   }
   return parts.join('\n\n') + '\n';
 }

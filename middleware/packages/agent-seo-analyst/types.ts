@@ -3,7 +3,7 @@
  * Re-Export hier, damit lokale Files weiter `./types.js`-Imports nutzen
  * können — kein Strukturtyp-Duplikat mehr, keine Cross-Package-Drift.
  */
-export type { PluginContext } from '@omadia/plugin-api';
+export type { NativeToolSpec, PluginContext } from '@omadia/plugin-api';
 
 export interface PageMeta {
   title: string | null;

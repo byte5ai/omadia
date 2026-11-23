@@ -3,13 +3,19 @@ import { isDeepStrictEqual } from 'node:util';
 import type {
   ChatTurnInput,
   ChatTurnResult,
+  SemanticAnswer,
 } from '@omadia/channel-sdk';
 import { toSemanticAnswer } from '@omadia/channel-sdk';
 import { turnContext, today } from '@omadia/orchestrator';
-import type { JobHandler, JobSpec } from '@omadia/plugin-api';
-import type { Cron } from 'croner';
+import { runInExecutionContext } from '@omadia/usage-telemetry';
+import {
+  SYSTEM_SPEAKER,
+  type AgentSpeaker,
+  type AnswerEmitter,
+  type JobHandler,
+  type JobSpec,
+} from '@omadia/plugin-api';
 
-import { createCron } from '../../scheduler/cronerCompat.js';
 
 import {
   buildSlotDirective,
@@ -44,6 +50,38 @@ export interface JobSchedulerLike {
  */
 export interface OrchestratorLike {
   runTurn(input: ChatTurnInput): Promise<ChatTurnResult>;
+  /**
+   * #2045 / #2046 — the agent's single typed emitter. A routine's answer is
+   * this agent's prose: it is published through the emitter (identity guard,
+   * speaker), never straight from the turn. Absent only on the registry-less
+   * legacy boot and in tests.
+   */
+  readonly emitter?: AnswerEmitter;
+  /** #2045 — the agent the routine's answers are from. */
+  readonly speaker?: AgentSpeaker;
+}
+
+/**
+ * #2045 / #2046 — a routine's answer as the agent publishes it: its prose
+ * passes the agent's emitter; a refused answer becomes the honest `system`
+ * notice instead.
+ */
+export async function publishRoutineAnswer(
+  orchestrator: OrchestratorLike,
+  result: ChatTurnResult,
+): Promise<SemanticAnswer> {
+  const answer = toSemanticAnswer(result);
+  const { emitter, speaker } = orchestrator;
+  if (!emitter || !speaker) return answer;
+  const outcome = await emitter.emit({
+    type: 'prose',
+    speaker,
+    text: result.answer,
+    ...(answer.maskedValues ? { restoredValues: answer.maskedValues } : {}),
+  });
+  if (outcome.published) return { ...answer, speaker };
+  const notice = outcome.replacement.notice;
+  return { text: notice.text, speaker: SYSTEM_SPEAKER, systemNotice: notice };
 }
 import {
   ProactiveTargetGoneError,
@@ -196,6 +234,12 @@ export interface RoutineRunnerOptions {
    */
   getOrchestrator: (agentSlug: string | null) => OrchestratorLike | undefined;
   senderRegistry: ProactiveSenderRegistry;
+  /**
+   * Spec 2042 §5.3 — why a routine's delivery may not go out (its ref names a
+   * bot that is no longer the routine's agent's own), or undefined. Checked
+   * before the agent turn; a refusal pauses the routine like a gone target.
+   */
+  deliveryRefusal?: (routine: { agentSlug: string | null; channel: string; conversationRef: unknown }) => string | undefined;
   log?: (msg: string) => void;
   /** Override the per-user active-routine cap. */
   maxActivePerUser?: number;
@@ -219,11 +263,32 @@ export interface RoutineRunnerOptions {
  * `JobValidationError` on malformed input. The tool layer translates
  * those errors into user-facing messages.
  */
+/**
+ * Spec 2042 §5.3 — the routine's conversation runs through a bot that is no
+ * longer its agent's own. Its words would appear as another agent's (or
+ * through a bot nobody stands behind): never delivered, the routine pauses.
+ */
+class OwnBotDeliveryRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OwnBotDeliveryRefusedError';
+  }
+}
+
+// The chat can be gone from the server yet still live in a browser (its first
+// PUT failed, or another device deleted it): loading the chat there stores it
+// again, and the routine can simply be resumed.
+const WEB_CHAT_PAUSE_ADVICE =
+  'if the chat still exists in your browser, open it and resume the routine; otherwise delete the routine and create it again from an existing conversation';
+const OWN_BOT_PAUSE_ADVICE =
+  "resume it once the bot is the agent's own again, or delete it and create it again in a conversation with the agent";
+
 export class RoutineRunner {
   private readonly store: RoutineStore;
   private readonly runsStore: RoutineRunsStore;
   private readonly scheduler: JobSchedulerLike;
   private readonly getOrchestrator: (agentSlug: string | null) => OrchestratorLike | undefined;
+  private readonly deliveryRefusal: RoutineRunnerOptions['deliveryRefusal'];
   private readonly senders: ProactiveSenderRegistry;
   private readonly log: (msg: string) => void;
   private readonly maxActivePerUser: number;
@@ -237,6 +302,7 @@ export class RoutineRunner {
     this.scheduler = opts.scheduler;
     this.getOrchestrator = opts.getOrchestrator;
     this.senders = opts.senderRegistry;
+    this.deliveryRefusal = opts.deliveryRefusal;
     this.log = opts.log ?? ((msg) => console.log(msg));
     this.maxActivePerUser =
       opts.maxActivePerUser ?? DEFAULT_MAX_ACTIVE_PER_USER;
@@ -256,7 +322,6 @@ export class RoutineRunner {
 
     const rows = await this.store.listAllActive();
     let registered = 0;
-    let caughtUp = 0;
     for (const row of rows) {
       try {
         this.registerInScheduler(row);
@@ -265,61 +330,11 @@ export class RoutineRunner {
         this.log(
           `[routines/runner] failed to register routine ${row.id} ('${row.name}'): ${errMsg(err)}`,
         );
-        continue;
-      }
-      // Catch-up: if a cron match elapsed between this routine's last
-      // observed run (or its creation, if it never ran) and now, fire
-      // exactly one make-up run. Fire-and-forget — don't block start()
-      // on the agent turn or the channel send. Multiple missed slots
-      // collapse into a single catch-up; this is intentional, prevents
-      // a "deploy storm" where a long outage produces N back-to-back
-      // runs the user can't keep up with.
-      if (this.shouldCatchUp(row)) {
-        caughtUp += 1;
-        this.log(
-          `[routines/runner] catch-up firing routine ${row.id} ('${row.name}') — missed slot since ${row.lastRunAt?.toISOString() ?? 'creation'}`,
-        );
-        const controller = new AbortController();
-        void this.runOnce(row, controller.signal, 'catchup').catch((err) => {
-          this.log(
-            `[routines/runner] catch-up runOnce threw for ${row.id}: ${errMsg(err)}`,
-          );
-        });
       }
     }
     this.log(
-      `[routines/runner] started — ${registered}/${rows.length} routines registered, ${caughtUp} caught up`,
+      `[routines/runner] started — ${registered}/${rows.length} routines registered`,
     );
-  }
-
-  /**
-   * Return true iff the routine has at least one cron match between its
-   * last-observed run (or creation, if it never ran) and now. Used by
-   * `start()` to decide whether to fire a make-up run after a process
-   * downtime window.
-   *
-   * The reference timestamp is `last_run_at` if present, else
-   * `created_at`. We don't use `now()` minus one cron interval because
-   * cron expressions aren't fixed-rate — `0 9 * * 1` (Monday 9am) has
-   * irregular gaps. Croner's `nextRun(after)` walks the cron tree
-   * exactly.
-   */
-  private shouldCatchUp(routine: Routine): boolean {
-    const reference = routine.lastRunAt ?? routine.createdAt;
-    let probe: Cron | undefined;
-    try {
-      probe = createCron(routine.cron, { paused: true });
-      const next = probe.nextRun(reference);
-      if (!next) return false;
-      return next.getTime() <= Date.now();
-    } catch (err) {
-      this.log(
-        `[routines/runner] catch-up probe failed for ${routine.id}: ${errMsg(err)}`,
-      );
-      return false;
-    } finally {
-      probe?.stop();
-    }
   }
 
   /**
@@ -512,12 +527,17 @@ export class RoutineRunner {
   }
 
   async resumeRoutine(id: string, scope: RoutineActorScope): Promise<Routine> {
-    const updated = await this.store.setStatus(
+    let updated = await this.store.setStatus(
       id,
       'active',
       ownerFilter(scope),
     );
     if (!updated) throw new RoutineNotFoundError(id);
+    // #2082 — resuming a routine past its deadline is its owner's choice to
+    // go on: a new period starts when it is scheduled.
+    if (updated.until && updated.until.getTime() <= Date.now()) {
+      updated = (await this.store.setUntil(id, null)) ?? updated;
+    }
     if (!this.senders.get(updated.channel)) {
       // Resume the row but report the misconfiguration; trigger will
       // record an error each time it fires until a sender exists.
@@ -527,6 +547,21 @@ export class RoutineRunner {
     }
     this.registerInScheduler(updated);
     return updated;
+  }
+
+  /**
+   * #2082 — the owner wants the routine to go on: a new deadline period
+   * starts (and the renewal question will be asked again before it ends).
+   * A paused routine stays paused; an active one is rescheduled.
+   */
+  async renewRoutine(id: string, scope: RoutineActorScope): Promise<Routine> {
+    const owned = await this.store.get(id);
+    if (!owned || (scope.kind === 'channel-user' && (owned.tenant !== scope.tenant || owned.userId !== scope.userId))) {
+      throw new RoutineNotFoundError(id);
+    }
+    const renewed = (await this.store.setUntil(id, null)) ?? owned;
+    if (renewed.status === 'active') this.registerInScheduler(renewed);
+    return renewed;
   }
 
   /**
@@ -642,6 +677,12 @@ export class RoutineRunner {
       // chat) fails here, BEFORE the agent turn: otherwise every cron fire
       // would run a full turn whose output nobody can receive.
       await sender.checkDeliverable?.(fresh.conversationRef);
+      const refused = this.deliveryRefusal?.({
+        agentSlug: fresh.agentSlug ?? null,
+        channel: fresh.channel,
+        conversationRef: fresh.conversationRef,
+      });
+      if (refused) throw new OwnBotDeliveryRefusedError(refused);
 
       if (signal.aborted) {
         status = 'timeout';
@@ -661,7 +702,14 @@ export class RoutineRunner {
       // data sections directly from the tool handler's output instead
       // of letting the LLM author markdown rows. Non-templated routines
       // skip the wrap entirely — byte-identical to pre-C.2 behaviour.
-      const turn = await this.runTurnWithOptionalCapture(fresh, orchestrator);
+      // Spec 2042 §5.10 — the run (its security screener before the turn
+      // scope, the turn, the emitter's guard) is the turn of the agent that
+      // actually runs it, scheduled or "run now", whatever context the
+      // caller had: charged to that agent and stopped by its kill switch.
+      const slug = orchestrator.speaker?.slug;
+      const asAgentTurn = <T>(work: () => Promise<T>): Promise<T> =>
+        slug ? runInExecutionContext({ kind: 'agent_turn', ownerId: slug, agentSlug: slug }, work) : work();
+      const turn = await asAgentTurn(() => this.runTurnWithOptionalCapture(fresh, orchestrator));
       result = turn.result;
       cardBody = turn.cardBody;
 
@@ -674,7 +722,8 @@ export class RoutineRunner {
         return;
       }
 
-      const answer = toSemanticAnswer(result);
+      const finished = result;
+      const answer = await asAgentTurn(() => publishRoutineAnswer(orchestrator, finished));
       await sender.send({
         conversationRef: fresh.conversationRef,
         message: answer,
@@ -690,6 +739,8 @@ export class RoutineRunner {
       errorMessage = errMsg(err);
       if (err instanceof ProactiveTargetGoneError) {
         errorMessage = await this.pauseOrphanedRoutine(routine.id, errorMessage);
+      } else if (err instanceof OwnBotDeliveryRefusedError) {
+        errorMessage = await this.pauseOrphanedRoutine(routine.id, errorMessage, OWN_BOT_PAUSE_ADVICE);
       }
       this.log(
         `[routines/runner] routine ${routine.id} ('${routine.name}') ${status}: ${errorMessage}`,
@@ -735,15 +786,12 @@ export class RoutineRunner {
    * says the routine was paused. A failed pause is logged, never thrown:
    * the run is still recorded, and the next fire's pre-flight tries again.
    */
-  private async pauseOrphanedRoutine(id: string, reason: string): Promise<string> {
+  private async pauseOrphanedRoutine(id: string, reason: string, advice = WEB_CHAT_PAUSE_ADVICE): Promise<string> {
     try {
       const paused = await this.store.setStatus(id, 'paused');
       if (!paused) return reason;
       this.unregisterFromScheduler(id);
-      // The chat can be gone from the server yet still live in a browser
-      // (its first PUT failed, or another device deleted it): loading the
-      // chat there stores it again, and the routine can simply be resumed.
-      return `${reason}; the routine was paused — if the chat still exists in your browser, open it and resume the routine; otherwise delete the routine and create it again from an existing conversation`;
+      return `${reason}; the routine was paused — ${advice}`;
     } catch (err) {
       this.log(`[routines/runner] could not pause orphaned routine ${id}: ${errMsg(err)}`);
       return reason;

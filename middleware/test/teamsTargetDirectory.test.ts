@@ -19,6 +19,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import {
+  listMarksOf,
   loadTeamsTargetDirectory,
   type TeamsTargetDirectoryProvisioner,
 } from '../src/services/teamsTargetDirectoryService.js';
@@ -547,5 +548,63 @@ describe('teams target directory — the mirrored contract', () => {
     assert.equal(teamsChatTargetKind('oneOnOne'), 'one-on-one-chat');
     assert.equal(teamsChatTargetKind('group'), 'group-chat');
     assert.equal(teamsChatTargetKind('meeting'), 'group-chat');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Connector 0.9.1 — a list says whether it is complete (#2043 rollout, D8)
+// ---------------------------------------------------------------------------
+
+/** The connector's `markList`: the marks are non-enumerable on the array. */
+function marked<T>(items: readonly T[], marks: Record<string, unknown>): readonly T[] {
+  return Object.defineProperties(
+    [...items],
+    Object.fromEntries(Object.entries(marks).map(([key, value]) => [key, { value, enumerable: false }])),
+  );
+}
+
+describe('teams target directory — completeness marks of connector 0.9.1', () => {
+  it('reads the non-enumerable marks before anything copies the array', async () => {
+    const result = await directoryOf({
+      listTeams: async () => marked([TEAM], { truncated: false }),
+      listChats: async () => marked([CHAT], { truncated: true, withoutMemberNames: 3 }),
+    });
+    assert.ok(result.teams.available && result.chats.available);
+    assert.equal(result.teams.sourceTruncated, false);
+    assert.equal(result.chats.sourceTruncated, true);
+    assert.equal(result.chats.withoutMemberNames, 3);
+    // And they are plain fields now: they survive the JSON the route sends.
+    assert.deepEqual(JSON.parse(JSON.stringify(result.chats)), {
+      available: true,
+      items: [CHAT],
+      sourceTruncated: true,
+      withoutMemberNames: 3,
+    });
+  });
+
+  it('the marks survive the delegated-token refresh path', async () => {
+    const { custody, refreshDelegatedToken } = refreshingSetup();
+    const result = await loadTeamsTargetDirectory({
+      now: () => NOW,
+      getProvisioner: () => ({
+        listTeams: async () => [TEAM],
+        listChats: async () => marked([CHAT], { truncated: true, withoutMemberNames: 0 }),
+        refreshDelegatedToken,
+      }),
+      delegatedTokens: custody,
+    });
+    assert.ok(result.chats.available);
+    assert.equal(result.chats.sourceTruncated, true);
+  });
+
+  it('a connector 0.9.0 array (no marks) reads exactly as before', async () => {
+    const result = await directoryOf({
+      listTeams: async () => [TEAM],
+      listChats: async () => [CHAT],
+    });
+    assert.deepEqual(result.teams, { available: true, items: [TEAM] });
+    assert.deepEqual(result.chats, { available: true, items: [CHAT] });
+    assert.deepEqual(listMarksOf([CHAT]), {});
+    assert.deepEqual(listMarksOf(marked([], { truncated: 'yes', withoutMemberNames: -1 })), {}, 'only a boolean and a count are believed');
   });
 });

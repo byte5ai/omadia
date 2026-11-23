@@ -3,12 +3,14 @@ import { describe, it } from 'node:test';
 
 import express from 'express';
 import type { ChatAgent, ChatAgentBundle, ChatStreamEvent } from '@omadia/channel-sdk';
+import { buildSystemNotice, withSpeaker } from '@omadia/orchestrator';
 
 import { createApiKeyStore } from '../../packages/harness-api-key-auth/src/apiKeyStore.js';
 import { createAuditLog } from '../../packages/harness-api-key-auth/src/auditLog.js';
 import { createRateLimiter } from '../../packages/harness-api-key-auth/src/rateLimiter.js';
 import { createApiChatRouter } from '../../packages/harness-channel-api/src/chatRouter.js';
 import { channelKeyOf } from '../../packages/harness-channel-api/src/channelKey.js';
+import { managementChatAgent } from '../../packages/harness-orchestrator/src/management/managementChatAgent.js';
 import { createCoreApi } from '../../src/channels/coreApi.js';
 import { createOrchestratorDispatcher } from '../../src/channels/orchestratorDispatcher.js';
 import { deriveChannelType } from '../../src/channels/channelType.js';
@@ -17,8 +19,10 @@ import { createFakeSecrets } from './testSecrets.js';
 
 /**
  * #1106 end-to-end routing (suggested regression tests 2 & 3): a turn made with
- * an API key must reach the agent an operator BOUND to that key, and fall back
- * only when there is no binding. This wires the REAL path a live turn takes —
+ * an API key must reach the agent an operator BOUND to that key. Since #2055
+ * there is no fallback agent: a key the management layer refuses gets the
+ * `system` notice, and only a deployment WITHOUT a resolver (Postgres-less)
+ * takes the static dispatch_service. This wires the REAL path a live turn takes —
  * `createApiChatRouter` → `createCoreApi` → `createOrchestratorDispatcher` —
  * with the real `deriveChannelType` (the value an operator binds under) and a
  * spy `resolveBinding` standing in for the multi-orchestrator channelResolver.
@@ -117,12 +121,74 @@ describe('channelApi — end-to-end binding routing (#1106)', () => {
     assert.equal(seen[0]?.[1], channelKeyOf(key.record.id));
   });
 
-  it('falls back to the platform agent when the key has no binding', async () => {
+  it('a key the management layer refuses gets the system notice, not the shared agent', async () => {
+    const shared = tagAgent('shared-agent');
+    const notice = buildSystemNotice('no_agent', { locale: 'en' });
+    // What the channelResolver hands out on `reject`: the management layer
+    // with no agent behind it, answering with the refusal.
+    const { client, apiKeys } = startServer({
+      fallback: shared,
+      resolveBinding: (channelType, channelKey) =>
+        managementChatAgent(undefined, { channelType, conversationKey: channelKey }, notice),
+    });
+    const key = await apiKeys.create({ label: 'unbound' });
+
+    const res = await client.fetch('/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${key.token}` },
+      body: JSON.stringify({ message: 'hi' }),
+    });
+    const done = parseNdjson(await res.text()).find((e) => e['type'] === 'done');
+
+    assert.equal(done?.['answer'], notice.text, 'the notice is the answer');
+    assert.notEqual(done?.['answer'], 'shared-agent');
+    // criterion 5 (public API): the refusal is spoken by `system`.
+    assert.deepEqual(done?.['speaker'], { kind: 'system' });
+    assert.equal((done?.['systemNotice'] as { code?: string } | undefined)?.code, 'no_agent');
+  });
+
+  it("criterion 5: the public API's done event carries the speaker: the agent for its answer, system for a refused key", async () => {
+    const strategist = { kind: 'agent', agentId: 'a-strategist', slug: 'strategist', displayName: 'Strategist' } as const;
+    // What the channelResolver hands out on `bound`: the management layer over
+    // the agent's runtime, which `buildOrchestratorForAgent` wraps in `withSpeaker`.
+    const boundKeys = new Set<string>();
+    const { client, apiKeys } = startServer({
+      fallback: tagAgent('shared-agent'),
+      resolveBinding: (channelType, channelKey) =>
+        boundKeys.has(channelKey)
+          ? managementChatAgent(withSpeaker(tagAgent('strategist-answer'), strategist), {
+              channelType,
+              conversationKey: channelKey,
+            })
+          : managementChatAgent(undefined, { channelType, conversationKey: channelKey }),
+    });
+    const bound = await apiKeys.create({ label: 'bound' });
+    const refused = await apiKeys.create({ label: 'refused' });
+    boundKeys.add(channelKeyOf(bound.record.id));
+
+    const ask = async (bearer: string): Promise<Record<string, unknown> | undefined> => {
+      const res = await client.fetch('/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer}` },
+        body: JSON.stringify({ message: 'hi' }),
+      });
+      return parseNdjson(await res.text()).find((e) => e['type'] === 'done');
+    };
+
+    const answered = await ask(bound.token);
+    assert.equal(answered?.['answer'], 'strategist-answer');
+    assert.deepEqual(answered?.['speaker'], strategist);
+
+    const notice = await ask(refused.token);
+    assert.deepEqual(notice?.['speaker'], { kind: 'system' });
+    assert.notEqual(notice?.['answer'], 'shared-agent');
+  });
+
+  it('without a resolver answer (Postgres-less) the static dispatch_service serves', async () => {
     const fallback = tagAgent('fallback-agent');
     const { client, apiKeys } = startServer({
       fallback,
-      // No binding for this key → resolver returns undefined, dispatcher takes
-      // the static dispatch_service (fallback) path.
+      // No resolver answer → the dispatcher takes the static dispatch_service.
       resolveBinding: () => undefined,
     });
     const key = await apiKeys.create({ label: 'unbound' });
@@ -134,6 +200,6 @@ describe('channelApi — end-to-end binding routing (#1106)', () => {
     });
     const done = parseNdjson(await res.text()).find((e) => e['type'] === 'done');
 
-    assert.equal(done?.['answer'], 'fallback-agent', 'unbound key served by the fallback agent');
+    assert.equal(done?.['answer'], 'fallback-agent', 'served by the static dispatch_service');
   });
 });

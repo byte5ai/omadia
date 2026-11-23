@@ -33,6 +33,15 @@ export const UPLOAD_ERRORS: Readonly<Record<string, readonly [string, readonly s
     'downgradeBlocked',
     ['pluginId', 'fromVersion', 'toVersion'],
   ],
+  // #2088 — an update that makes the installed plugin an archetype plugin,
+  // changes its descriptor or moves its tables, refused unless confirmed.
+  'package.archetype_confirmation_required': [
+    'archetypeConfirmationRequired',
+    ['pluginId', 'fromVersion', 'toVersion'],
+  ],
+  // Spec 2042 §5.10 — the agent/plugin boundary: no kind `agent`, no persona.
+  'package.retired_kind': ['retiredKind', ['pluginId']],
+  'package.persona_declared': ['personaDeclared', ['pluginId', 'field']],
   'upload.no_file': ['noFile', []],
   // #1489 — a multipart body the server could not read (truncated, malformed).
   'upload.multipart': ['multipart', []],

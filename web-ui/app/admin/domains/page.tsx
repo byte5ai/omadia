@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 
 import { useTranslations } from 'next-intl';
+import type { PluginKind } from '../../_lib/storeTypes';
 
 /**
  * Admin → Plugin-Domains overview (Palaia Phase 8 / OB-77 Slice 3c).
@@ -23,7 +24,7 @@ import { useTranslations } from 'next-intl';
 type DomainPlugin = {
   id: string;
   name: string;
-  kind: 'agent' | 'tool' | 'integration' | 'channel' | 'extension';
+  kind: PluginKind;
   domain: string;
   version: string;
   installState: string;

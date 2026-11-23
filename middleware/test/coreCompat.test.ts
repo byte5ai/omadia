@@ -11,7 +11,13 @@ import express from 'express';
 import YAML from 'yaml';
 import yazl from 'yazl';
 
-import { checkCoreCompat, readHostPluginApiVersion } from '../src/plugins/coreCompat.js';
+import {
+  assertStartable,
+  checkCoreCompat,
+  PluginNotStartableError,
+  readHostPluginApiVersion,
+  startableRefusal,
+} from '../src/plugins/coreCompat.js';
 import type { InstalledRegistry } from '../src/plugins/installedRegistry.js';
 import { InstallError, InstallService } from '../src/plugins/installService.js';
 import { loadManifestFromPath, type PluginCatalog } from '../src/plugins/manifestLoader.js';
@@ -188,6 +194,22 @@ describe('#1463 — versions the range admits but this core cannot start', () =>
     assert.equal(checkCoreCompat({ id: '@omadia/integration-odoo', version: '0.2.1' }, HOST), null);
     assert.equal(checkCoreCompat({ id: '@omadia/integration-odoo', version: '0.3.0' }, HOST), null);
     assert.equal(checkCoreCompat({ id: '@acme/integration-odoo', version: '0.0.1' }, HOST), null);
+  });
+
+  it('#2043 — facilitator 0.7.x is not started: it would offer moderations that cannot run', () => {
+    const refusal = checkCoreCompat({ id: '@omadia/agent-facilitator', version: '0.7.3' }, '1.56.0');
+    assert.equal(refusal?.reason, 'below_minimum');
+    assert.match(refusal?.message ?? '', /removed when facilitators became native/);
+    assert.match(refusal?.message ?? '', /Install @omadia\/agent-facilitator 1\.0\.0 or newer/);
+    assert.equal(checkCoreCompat({ id: '@omadia/agent-facilitator', version: '1.0.0' }, '1.56.0'), null);
+    // The part the runtimes ask before activating an installed plugin.
+    assert.equal(startableRefusal({ id: '@omadia/agent-facilitator', version: '0.6.0' })?.reason, 'below_minimum');
+    assert.equal(startableRefusal({ id: '@omadia/agent-facilitator', version: '1.0.1' }), null);
+    assert.throws(
+      () => assertStartable({ id: '@omadia/agent-facilitator', version: '0.7.3' }),
+      (err: unknown) => err instanceof PluginNotStartableError && /cannot start on this host/.test(err.message),
+    );
+    assert.doesNotThrow(() => assertStartable({ id: '@acme/anything', version: '0.0.1' }));
   });
 
   it('still reports an unsatisfied range first', () => {

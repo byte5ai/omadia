@@ -24,6 +24,8 @@ function channel(over: Partial<OperatorChannelDto>): OperatorChannelDto {
     label: 'Project Group',
     origin_plugin_id: '@omadia/channel-teams',
     bound_agent_slug: null,
+    bound_agent_status: null,
+    bound_agent_name: null,
     stale: false,
     ...over,
   };
@@ -33,7 +35,7 @@ function dto(channels: OperatorChannelDto[]): ChannelsListDto {
   return {
     channels,
     agents: [{ slug: 'hr', name: 'HR' }],
-    fallback_slug: 'hr',
+    instance_default_slug: 'hr',
     directory_types: ['teams'],
   };
 }

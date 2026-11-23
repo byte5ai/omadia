@@ -41,14 +41,6 @@ interface SelectedEntry {
 interface PluginsDndProps {
   readonly agent: OperatorAgentDto;
   readonly catalog: PluginCatalogEntryDto[];
-  /**
-   * Fallback Agents always run their plugins with the global store config
-   * (the one set during plugin install). The per-(Agent × plugin) config
-   * drawer is hidden + the saved config payload is wiped to `{}` before
-   * the PUT so the server-side contract stays consistent: only NON-fallback
-   * Agents may override.
-   */
-  readonly isFallback: boolean;
   readonly disabled: boolean;
   readonly onReplace: (
     plugins: Array<{
@@ -285,11 +277,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
       // is why "STALE" used to grow on each rehydrate. The operator can
       // still toggle them back in via the "Keep" checkbox on each orphan.
       if (!catalogById.has(id) && !keptOrphans.has(id)) continue;
-      // Fallback contract: per-Agent config is meaningless on the fallback
-      // — wipe to {} so the server never has to second-guess which copy
-      // wins. Non-fallback Agents persist whatever the operator entered.
-      const config = props.isFallback ? {} : entry.config;
-      out.push({ id, enabled: entry.enabled, config });
+      out.push({ id, enabled: entry.enabled, config: entry.config });
     }
     props.onReplace(out);
   }
@@ -315,12 +303,7 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
   }
 
   const activeEntry = activeId ? catalogById.get(activeId) : undefined;
-  // The config dialog is per-(orchestrator × plugin) and therefore meaningless
-  // on the fallback, which always runs the store config — `storeConfigOnly`
-  // already hides the trigger, this keeps a stale `expanded` id from reopening
-  // it if the agent becomes the fallback while the page is mounted.
-  const configEntry =
-    expanded && !props.isFallback ? catalogById.get(expanded) : undefined;
+  const configEntry = expanded ? catalogById.get(expanded) : undefined;
   const configSelection = configEntry
     ? selected.get(configEntry.id)
     : undefined;
@@ -373,7 +356,6 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
                   depth={row.depth}
                   parentSatisfied={row.parentSatisfied}
                   selection={null}
-                  storeConfigOnly={props.isFallback}
                   disabled={props.disabled}
                   onAttach={() => attach(row.id)}
                   overrideCount={0}
@@ -401,7 +383,6 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
                   depth={row.depth}
                   parentSatisfied={row.parentSatisfied}
                   selection={selection}
-                  storeConfigOnly={props.isFallback}
                   disabled={props.disabled}
                   onAttach={() => undefined}
                   overrideCount={countOverrides(
@@ -606,9 +587,6 @@ function DraggablePluginTile(props: {
   depth: number;
   parentSatisfied: boolean;
   selection: SelectedEntry | null;
-  /** Hide the per-plugin config drawer when the parent Agent is the
-   *  fallback — fallback always uses the store-config. */
-  storeConfigOnly: boolean;
   disabled: boolean;
   /** How many setup fields this orchestrator overrides — 0 = pure store config. */
   overrideCount: number;
@@ -637,7 +615,7 @@ function DraggablePluginTile(props: {
   };
 
   const attached = props.selection !== null;
-  const hasFields = entry.setup_fields.length > 0 && !props.storeConfigOnly;
+  const hasFields = entry.setup_fields.length > 0;
   const isStrict = entry.privacy_class === 'strict';
 
   return (

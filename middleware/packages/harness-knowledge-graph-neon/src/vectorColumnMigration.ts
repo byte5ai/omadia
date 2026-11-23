@@ -1,5 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 
+import { connectForSession } from './sessionConnection.js';
+
 import { ATTEMPT_RESETS } from './staleVectorClear.js';
 import {
   captureIndexDefs,
@@ -301,7 +303,9 @@ export async function migrateVectorColumns(
   const migrated: MigratedVectorColumn[] = [];
   let attemptsResetPending = false;
 
-  const client = await opts.pool.connect();
+  // Its own server session: both advisory locks below are session-level and
+  // are held across several transactions (see sessionConnection.ts).
+  const client = await connectForSession(opts.pool);
   let poisoned = false;
   // Tracks whether either SESSION-scoped advisory lock may still be held on
   // this connection. Together they are the only thing that decides pooling vs

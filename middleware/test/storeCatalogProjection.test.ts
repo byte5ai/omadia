@@ -43,7 +43,7 @@ function hubEntry(
   return {
     id,
     name,
-    kind: 'agent',
+    kind: 'tool',
     domain: 'x.y',
     description: '',
     categories: [],
@@ -116,7 +116,7 @@ function fetchImpl(): RegistryClientDeps['fetchImpl'] {
 function plugin(id: string, over: Partial<Plugin> = {}): Plugin {
   return {
     id,
-    kind: 'agent',
+    kind: 'tool',
     name: id,
     version: '1.0.0',
     latest_version: '1.0.0',
@@ -471,6 +471,52 @@ describe('store · search + order (#1471)', () => {
     await withStore({ catalog: [] }, async (base) => {
       const ids = (await list(base, '?search=aufgaben')).map((p) => p.id);
       assert.deepEqual(ids, [TODOIST]);
+    });
+  });
+});
+
+// Spec 2042 §5.10, the contract step — a package of a retired kind is
+// listed, never offered for install (the install would be refused); one
+// that is installed stays installed (legacy).
+describe('store · retired kinds', () => {
+  it('a hub or local package of kind agent/extension is incompatible unless installed', async () => {
+    await withStore(
+      {
+        catalog: [
+          plugin('@acme/old-agent', { kind: 'agent' }),
+          plugin('@acme/legacy-agent', { kind: 'agent' }),
+        ],
+        installed: { '@acme/legacy-agent': '1.0.0' },
+      },
+      async (base) => {
+        const items = await list(base);
+        assert.equal(items.find((p) => p.id === DEV)?.install_state, 'incompatible', 'hub extension');
+        assert.equal(items.find((p) => p.id === '@acme/old-agent')?.install_state, 'incompatible');
+        assert.equal(items.find((p) => p.id === '@acme/legacy-agent')?.install_state, 'installed');
+        assert.equal(items.find((p) => p.id === TODOIST)?.install_state, 'available', 'a current kind is offered');
+      },
+    );
+  });
+
+  it('an uninstalled hub download of a retired kind yields to the hub’s migrated version', async () => {
+    await withStore(
+      {
+        catalog: [plugin(CONFLUENCE, { version: '0.3.0', kind: 'agent', setup_fields: [] })],
+        packages: [pkg(CONFLUENCE, '0.3.0', 'registry:omadia-public', HUB_SHA_030)],
+      },
+      async (base) => {
+        const item = (await list(base)).find((p) => p.id === CONFLUENCE)!;
+        assert.equal(item.install_state, 'available');
+        assert.equal(item.version, '0.3.3');
+        assert.equal(item.kind, 'tool');
+      },
+    );
+  });
+
+  it('says why a retired-kind package is incompatible', async () => {
+    await withStore({ catalog: [plugin('@acme/old-agent', { kind: 'agent' })] }, async (base) => {
+      const item = (await list(base)).find((p) => p.id === '@acme/old-agent')!;
+      assert.match((item.incompatibility_reasons ?? []).join(' '), /kind 'agent' is retired/);
     });
   });
 });

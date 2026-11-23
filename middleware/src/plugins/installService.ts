@@ -1,6 +1,7 @@
 import { extractFromJsonFile } from './setupJsonFile.js';
-import { booleanSetupDefault, integerSetupDefault } from './setupFieldDefault.js';
+import { parseBooleanSetupValue, parseIntegerSetupValue } from './setupFieldValue.js';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -21,6 +22,7 @@ import type {
   InstallSetupSchema,
   SetupEnumOption,
 } from '../api/admin-v1.js';
+import { isInstallableKind } from '../api/admin-v1.js';
 import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
 import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
 import type { SecretVault } from '../secrets/vault.js';
@@ -41,6 +43,7 @@ import {
 } from './installedRegistry.js';
 import type { BuiltInOptOutStore } from './builtInOptOuts.js';
 import { checkCoreCompat } from './coreCompat.js';
+import { checkPluginBoundary } from './pluginBoundary.js';
 import { readGrantGap } from './grantGap.js';
 import { extractTemplateDeclarations } from './manifestLoader.js';
 import { uninstallVoidsForceGuarded } from './privacyPosture.js';
@@ -100,7 +103,7 @@ export interface InstallServiceDeps {
    *  `process.env`. Injectable for tests. */
   env?: NodeJS.ProcessEnv;
   /** Called after a successful `configure()` — e.g. to activate an uploaded
-   *  agent via DynamicAgentRuntime. Errors in the hook do not cause the
+   *  plugin in its runtime. Errors in the hook do not cause the
    *  installation to be marked `failed`: registry entries are already
    *  persisted and the agent counts as installed. The caller must handle
    *  hook errors separately. */
@@ -159,6 +162,9 @@ export interface InstallServiceDeps {
   /** OM-95 — late-resolved orchestrator config store. Bindings are purged only
    *  on real uninstall; `onUninstall` also runs during `reactivate()`. */
   agentPluginBindingStore?: () => AgentPluginBindingStore | undefined;
+  /** #2088 — after a real uninstall, once the registry entry is gone. A
+   *  failure is logged; the uninstall is complete. */
+  onUninstalled?: (agentId: string) => Promise<void>;
   /** #1481 — uninstalling a package that ships in the image records the id
    *  here so the boot seeders stop re-installing it; installing it again
    *  clears the mark. Optional: without it built-ins come back at boot. */
@@ -216,7 +222,12 @@ export class InstallService {
   // Create — derives the setup schema from the plugin manifest
   // -------------------------------------------------------------------------
 
-  create(pluginId: string): InstallJob {
+  /**
+   * `opts.confirmedArchetype` (#2088): the operator's explicit confirmation
+   * that a new kind of agent is added. Required for a plugin of kind
+   * `archetype`, ignored for every other kind.
+   */
+  create(pluginId: string, opts: { readonly confirmedArchetype?: boolean } = {}): InstallJob {
     const entry = this.deps.catalog.get(pluginId);
     if (!entry) {
       throw new InstallError(
@@ -253,6 +264,62 @@ export class InstallService {
         compat_core: coreRefusal.compat_core,
         host_plugin_api: coreRefusal.host_plugin_api,
       });
+    }
+
+    // Spec 2042 §5.10, criterion 15 — the kinds `agent` and `extension` are
+    // retired: never installed anew. A package uploaded before the boundary
+    // existed may still sit in the store; it stays there, uninstalled.
+    if (!isInstallableKind(entry.plugin.kind)) {
+      throw new InstallError(
+        'install.retired_kind',
+        entry.plugin.kind === 'agent'
+          ? `'${pluginId}' is of the retired kind 'agent'; a plugin delivers capabilities and may ship agent templates, never an agent of its own`
+          : `'${pluginId}' is of the retired kind '${entry.plugin.kind}'; install a version that declares 'system-module' or 'model'`,
+        422,
+        { kind: entry.plugin.kind },
+      );
+    }
+
+    // Spec 2042 §5.10, criterion 15 — nor does a persona or speaker of its
+    // own come in at install. Ingest refuses such a package, but one uploaded
+    // before the boundary existed may still sit in the store. Packages that
+    // ship in the image are kernel code and not checked here.
+    if (entry.origin !== 'bundled') {
+      const boundary = checkPluginBoundary({
+        pluginId,
+        kind: entry.plugin.kind,
+        manifest: entry.manifest,
+        hasAgentMd: hasAgentMdFile(entry.source_path),
+      });
+      if (boundary) {
+        throw new InstallError('install.persona_declared', boundary.message, 422, { ...boundary.params });
+      }
+    }
+
+    // #2088 — an archetype plugin adds a new kind of agent to the instance:
+    // what agents of it may do and never get is decided by its descriptor,
+    // not by per-agent grants. That is installed only on an explicit
+    // confirmation, and the refusal carries what is being confirmed so the
+    // UI shows exactly the descriptor the kernel will enforce.
+    if (entry.plugin.kind === 'archetype' && opts.confirmedArchetype !== true) {
+      throw new InstallError(
+        'install.archetype_confirmation_required',
+        `'${pluginId}' adds the agent archetype '${entry.plugin.archetype?.id ?? '?'}' to this instance; confirm the install explicitly`,
+        409,
+        { archetype: entry.plugin.archetype ?? null },
+      );
+    }
+    // Spec 2042 §5.10 — a system module is infrastructure of omadia itself;
+    // it is installed on an explicit confirmation, like an archetype. The
+    // same flag carries both confirmations: the operator confirmed exactly
+    // the kind the refusal named.
+    if (entry.plugin.kind === 'system-module' && opts.confirmedArchetype !== true) {
+      throw new InstallError(
+        'install.system_module_confirmation_required',
+        `'${pluginId}' is a system module (infrastructure of omadia itself); confirm the install explicitly`,
+        409,
+        { kind: entry.plugin.kind },
+      );
     }
 
     // Dependency gate: every parent in depends_on must already be installed.
@@ -941,6 +1008,19 @@ export class InstallService {
     this.deps.conductorTemplates?.()?.unregisterPluginTemplates(agentId);
     await this.deps.registry.remove(agentId);
     await this.recordBuiltInOptOut(agentId);
+    // #2088 — the plugin is no longer installed NOW; whoever derives state
+    // from the set of installed plugins (the archetype registry) reads it
+    // here, not in `onUninstall`, which runs while the entry still exists.
+    if (this.deps.onUninstalled) {
+      try {
+        await this.deps.onUninstalled(agentId);
+      } catch (err) {
+        console.error(
+          `[install] onUninstalled hook failed for ${agentId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
   }
 
   /**
@@ -1109,6 +1189,14 @@ export class InstallService {
 // Errors
 // ---------------------------------------------------------------------------
 
+/** Whether the package of `manifestPath` holds the persona file of the
+ *  retired agent plugins. A catalog entry without a source path has none. */
+function hasAgentMdFile(manifestPath: string | undefined): boolean {
+  if (manifestPath === undefined || manifestPath.length === 0) return false;
+  const dir = path.dirname(manifestPath);
+  return existsSync(path.join(dir, 'AGENT.md')) || existsSync(path.join(dir, 'agent.md'));
+}
+
 export class InstallError extends Error {
   constructor(
     public readonly code: string,
@@ -1198,12 +1286,16 @@ export function extractSetupSchema(
       // #1464 — normalized exactly like the catalog projection (manifestLoader),
       // so a `default: "true"` pre-checks the box and the missing-value
       // fallback below stores `true`, not the string.
-      const defaultValue = booleanSetupDefault(f['default']);
+      const defaultValue = parseBooleanSetupValue(f['default']);
       if (defaultValue !== undefined) field.default = defaultValue;
     } else if (type === 'integer') {
       // #1524 — normalized exactly like the catalog projection (manifestLoader).
-      const defaultValue = integerSetupDefault(f['default']);
+      const defaultValue = parseIntegerSetupValue(f['default']);
       if (defaultValue !== undefined) field.default = defaultValue;
+      // #1958 — lower bound, enforced by `coerceSetupFieldValue` on install and
+      // on every later edit. Parsed exactly like the catalog projection.
+      const min = parseIntegerSetupValue(f['min']);
+      if (min !== undefined) field.min = min;
     } else if (f['default'] !== undefined) {
       field.default = f['default'];
     }
@@ -1439,7 +1531,7 @@ async function validateValues(
       continue;
     }
 
-    const coerced = coerce(field, raw);
+    const coerced = coerceSetupFieldValue(field, raw);
     if ('error' in coerced) {
       errors.push({
         key: field.key,
@@ -1500,7 +1592,7 @@ interface InstallFieldError {
   params?: Record<string, string>;
 }
 
-type CoerceResult =
+export type CoerceResult =
   | { value: unknown }
   | {
       error: {
@@ -1510,7 +1602,19 @@ type CoerceResult =
       };
     };
 
-function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
+/**
+ * One submitted setup value → the value to store, or a field-level error.
+ *
+ * #1958 — exported so the post-install edit (`PATCH …/secrets` in
+ * routes/runtime.ts) converts typed values with this same function instead of
+ * a second implementation. Two implementations had drifted: the edit path
+ * converted only `boolean`, and every `integer` edited after install was stored
+ * as a string.
+ */
+export function coerceSetupFieldValue(
+  field: InstallSetupField,
+  raw: unknown,
+): CoerceResult {
   // #602 (OM-17) — see validateValues: German templates, no request locale.
   const label = resolveLocalized(field.label, 'de') ?? field.key;
   switch (field.type) {
@@ -1562,23 +1666,34 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
       }
       return { value: raw };
     }
-    case 'boolean':
-      if (typeof raw === 'boolean') return { value: raw };
-      if (raw === 'true') return { value: true };
-      if (raw === 'false') return { value: false };
-      return {
-        error: {
-          code: 'wrong_type',
-          message: `"${label}" muss true oder false sein.`,
-        },
-      };
+    case 'boolean': {
+      const b = parseBooleanSetupValue(raw);
+      if (b === undefined) {
+        return {
+          error: {
+            code: 'wrong_type',
+            message: `"${label}" muss true oder false sein.`,
+          },
+        };
+      }
+      return { value: b };
+    }
     case 'integer': {
-      const n = typeof raw === 'number' ? raw : Number(raw);
-      if (!Number.isInteger(n)) {
+      const n = parseIntegerSetupValue(raw);
+      if (n === undefined) {
         return {
           error: {
             code: 'wrong_type',
             message: `"${label}" muss eine ganze Zahl sein.`,
+          },
+        };
+      }
+      if (field.min !== undefined && n < field.min) {
+        return {
+          error: {
+            code: 'below_min',
+            message: `"${label}" muss mindestens ${field.min} sein.`,
+            params: { min: String(field.min) },
           },
         };
       }

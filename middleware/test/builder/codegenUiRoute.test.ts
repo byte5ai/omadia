@@ -26,7 +26,6 @@ const baseSpec = {
   description: 'Test agent description',
   category: 'productivity',
   domain: 'dev.test',
-  skill: { role: 'tester' },
   playbook: {
     when_to_use: 'when testing',
     not_for: ['not used for unit tests'],

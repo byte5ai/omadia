@@ -1,5 +1,4 @@
 import type { MemoryStore } from '@omadia/plugin-api';
-import type { DirectLineSessionState } from '@omadia/channel-sdk';
 
 import { withSessionLock } from './chatSessionLock.js';
 import { mergeServerProactiveMessages } from './chatSessionProactive.js';
@@ -63,11 +62,6 @@ export interface ChatMessage {
   error?: boolean;
   startedAt: number;
   finishedAt?: number;
-  /**
-   * #445 — sticky Direct-Line indicator as of this turn, so a reload restores
-   * the banner instead of dropping it. Optional: legacy messages pre-date it.
-   */
-  directLineSession?: DirectLineSessionState;
   /**
    * #1071 — set only on messages the SERVER wrote into the session without a
    * user turn: a scheduled routine's output delivered to the web chat. The

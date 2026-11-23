@@ -56,19 +56,32 @@ describe('resolveChatAgentForChannel', () => {
     assert.equal(resolveChatAgentForChannel(ctx, 'teams', 'c1'), bound);
   });
 
-  it('returns the platform fallback Agent on a fallback decision', () => {
-    const fallback = agent('fallback');
+  it('returns the default agent the resolver chose (#2055: a default is a bound decision)', () => {
+    const instanceDefault = agent('default');
     const ctx = ctxWith({
       [CHANNEL_RESOLVER_SERVICE]: resolver({
-        decision: 'fallback',
-        chatAgent: fallback,
+        decision: 'bound',
+        chatAgent: instanceDefault,
       }),
       [CHAT_AGENT_SERVICE]: { agent: agent('singleton') },
     });
-    assert.equal(resolveChatAgentForChannel(ctx, 'teams', 'c1'), fallback);
+    assert.equal(resolveChatAgentForChannel(ctx, 'teams', 'c1'), instanceDefault);
   });
 
-  it('#1598 — refuses (undefined) when the resolver rejects, never the singleton', () => {
+  it('#2055 — on reject returns the resolver\'s notice-answering agent, never the singleton', () => {
+    const management = agent('management-layer');
+    const ctx = ctxWith({
+      [CHANNEL_RESOLVER_SERVICE]: resolver({
+        decision: 'reject',
+        chatAgent: management,
+        notice: { code: 'no_agent', text: 'no agent', locale: 'en' },
+      }),
+      [CHAT_AGENT_SERVICE]: { agent: agent('singleton') },
+    });
+    assert.equal(resolveChatAgentForChannel(ctx, 'teams', 'c1'), management);
+  });
+
+  it('#1598 — refuses (undefined) on a reject without an agent (older platform), never the singleton', () => {
     const ctx = ctxWith({
       [CHANNEL_RESOLVER_SERVICE]: resolver({ decision: 'reject' }),
       [CHAT_AGENT_SERVICE]: { agent: agent('singleton') },

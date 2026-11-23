@@ -183,7 +183,7 @@ COPY middleware/profiles ./profiles
 ENV PROFILES_DIR=/app/profiles
 # Plugin-Builder boilerplate — boilerplateSource.ts reads the template files
 # for the codegen engine here. Whole-tree COPY so both templates
-# (agent-integration, agent-pure-llm) land in the image; BUILDER_BOILERPLATE_DIR
+# (integration, tool) land in the image; BUILDER_BOILERPLATE_DIR
 # points at the root, individual templates are resolved via templateId.
 COPY middleware/assets/boilerplate ./boilerplate
 ENV BUILDER_BOILERPLATE_DIR=/app/boilerplate

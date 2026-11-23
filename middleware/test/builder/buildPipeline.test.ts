@@ -69,7 +69,9 @@ describe('Builder pipeline (B.1 codegen → B.2 build)', () => {
     assert.ok(files.size > 0);
     assert.ok(files.has('manifest.yaml'));
     assert.ok(files.has('package.json'));
-    assert.ok(files.has('skills/weather-expert.md'));
+    assert.ok(files.has('registerTools.ts'));
+    // Spec 2042 §5.10 — no persona file, no skill partials.
+    assert.ok(![...files.keys()].some((f) => f.startsWith('skills/') || /agent\.md$/i.test(f)));
 
     // 2. Build template (skipNpmInstall — workspace deps only)
     const templateRoot = path.join(tmp, 'build-template');

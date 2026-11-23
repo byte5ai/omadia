@@ -53,6 +53,7 @@ import {
 import type { KnowledgeGraph } from '@omadia/plugin-api';
 
 import { createChatRouter } from '../../src/routes/chat.js';
+import { routeTurnFrom } from '../_helpers/webRouteTurn.js';
 import {
   UNRESOLVED_IDENTITY,
   auditIdentity,
@@ -149,8 +150,10 @@ async function mountChat(): Promise<HttpHarness> {
   app.use(
     '/api',
     createChatRouter({
-      resolveChatAgent: () => agent,
-      getDefaultSlug: () => 'probe-agent',
+      routeTurn: routeTurnFrom(
+        () => agent,
+        () => 'probe-agent',
+      ),
     }),
   );
   const server: Server = app.listen(0, '127.0.0.1');
