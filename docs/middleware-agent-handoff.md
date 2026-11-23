@@ -5994,7 +5994,16 @@ Auslieferungs-Gate (`verifierDelivery.ts`, Regeln und Grenzen in
   `contradicted` (eine Prüfung hat eine Angabe gegen die Quelle widerlegt —
   der einzige Fall, der „Widerspruch“ heißen darf), `tool_not_called`
   (Live-Daten, Fehler oder Zugriffsproblem behauptet, ohne dass der Turn den
-  nötigen Aufruf gemacht hat), `citation_missing` (Graph-Ergebnisse genutzt,
+  nötigen Aufruf gemacht hat. Eine **Selbstbeschreibung** passiert: „kein
+  Zugriff auf X“, „X nicht erreichbar“, „kann X nicht lesen“, wenn der Satz
+  (bis Satz- oder Listenende) ein bekanntes System nennt, für das der Agent
+  kein Werkzeug hat (`KNOWN_SYSTEMS`: Mail, Kalender, Lohn, Rechner,
+  Internet, Telefon, Bank, ERP/Odoo, HR, Wiki, Jira, CRM — gegen `VerifierInput.offeredToolNames` aus
+  `Orchestrator.offeredToolNames()`), und keines, das er hat. Nennt er nichts,
+  ein Pronomen oder ein gehaltenes System: weiter zurückgehalten.
+  „konnte nicht laden“, Zugriffsereignisse, Absenz und Bitte um Wiederholung
+  unverändert),
+  `citation_missing` (Graph-Ergebnisse genutzt,
   keine Quelle genannt), `insufficient_evidence` (nicht belegt: unbestätigte
   Claims, erfundene `[ref:…]`, ein Zugriffsproblem ohne fehlgeschlagenen
   Aufruf), `check_failed` (technische Störung: Verifier, Prüfung oder
