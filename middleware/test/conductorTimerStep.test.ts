@@ -28,19 +28,11 @@ describe('validate — timer step rules', () => {
       steps: base.steps,
       transitions: [
         ...base.transitions,
-        {
-          id: 't-loop',
-          source: 'a',
-          target: 'w',
-          guard: { op: 'lt', path: 'ctx.stepAttempts.a', value: 3 },
-        },
+        { id: 't-loop', source: 'a', target: 'w', guard: { op: 'lt', path: 'ctx.stepAttempts.a', value: 3 } },
       ],
     };
     const result = validate(looped);
-    assert.ok(
-      !result.errors.some((e) => e.code === 'unguarded_cycle'),
-      JSON.stringify(result.errors),
-    );
+    assert.ok(!result.errors.some((e) => e.code === 'unguarded_cycle'), JSON.stringify(result.errors));
   });
 
   it('rejects a missing/invalid duration and a timer without the on-expiry edge', () => {
@@ -52,10 +44,7 @@ describe('validate — timer step rules', () => {
 
     const zero = validate({
       ...base,
-      steps: [
-        { id: 'w', kind: 'timer', timer: { duration: 'PT' }, fallbackTransitionId: 't-tick' },
-        base.steps[1]!,
-      ],
+      steps: [{ id: 'w', kind: 'timer', timer: { duration: 'PT' }, fallbackTransitionId: 't-tick' }, base.steps[1]!],
     });
     assert.ok(zero.errors.some((e) => e.code === 'timer_step_invalid_duration'));
 
@@ -78,37 +67,20 @@ interface RecordedStep {
   context: Record<string, unknown>;
 }
 
-function makeHarness(
-  graph: WorkflowGraph,
-  opts?: { agentText?: (stepId: string, callIndex: number) => string },
-) {
+function makeHarness(graph: WorkflowGraph, opts?: { agentText?: (stepId: string, callIndex: number) => string }) {
   const recorded: RecordedStep[] = [];
   const awaitsCreated: Array<Record<string, unknown>> = [];
   let agentCalls = 0;
   const run: Record<string, unknown> = {
-    id: 'run1',
-    workflowVersionId: 'v1',
-    status: 'running',
-    currentStepId: graph.entryStepId,
-    context: {},
-    triggerKind: 'agent',
-    triggerSource: null,
-    isDryRun: false,
-    startedAt: new Date(0),
-    endedAt: null,
-    cancelRequestedBy: null,
-    cancelRequestedAt: null,
+    id: 'run1', workflowVersionId: 'v1', status: 'running', currentStepId: graph.entryStepId,
+    context: {}, triggerKind: 'agent', triggerSource: null, isDryRun: false,
+    startedAt: new Date(0), endedAt: null, cancelRequestedBy: null, cancelRequestedAt: null,
   };
   const awaitRows: Array<Record<string, unknown>> = [];
 
   const executor = new ConductorRunExecutor({
     workflowStore: {
-      getBySlug: async () => ({
-        id: 'w1',
-        slug: 'eph-x',
-        status: 'enabled',
-        activeVersionId: 'v1',
-      }),
+      getBySlug: async () => ({ id: 'w1', slug: 'eph-x', status: 'enabled', activeVersionId: 'v1' }),
       getVersion: async () => ({ id: 'v1', workflowId: 'w1', version: 1, graph }),
     } as never,
     runStore: {
@@ -122,9 +94,7 @@ function makeHarness(
         run.currentStepId = stepId;
         run.context = context;
       },
-      recordStepAndAdvance: async (
-        input: RecordedStep & { nextStepId: string | null; status: string },
-      ) => {
+      recordStepAndAdvance: async (input: RecordedStep & { nextStepId: string | null; status: string }) => {
         recorded.push(input);
         run.status = input.status;
         run.context = input.context;
@@ -132,12 +102,7 @@ function makeHarness(
     } as never,
     awaitStore: {
       create: async (input: Record<string, unknown>) => {
-        const row = {
-          id: `aw${String(awaitsCreated.length + 1)}`,
-          status: 'waiting',
-          createdAt: new Date(0),
-          ...input,
-        };
+        const row = { id: `aw${String(awaitsCreated.length + 1)}`, status: 'waiting', createdAt: new Date(0), ...input };
         awaitsCreated.push(input);
         awaitRows.push(row);
         return row;
@@ -150,10 +115,7 @@ function makeHarness(
         agentCalls += 1;
         const text = opts?.agentText?.(step.id, agentCalls) ?? 'ok';
         const data = extractFencedJson(text);
-        return {
-          result: { text, ...(data !== undefined ? { data } : {}) },
-          actor: { kind: 'agent', agentSlug: 'x' },
-        };
+        return { result: { text, ...(data !== undefined ? { data } : {}) }, actor: { kind: 'agent', agentSlug: 'x' } };
       },
       runActionStep: async () => ({ result: { text: 'action' }, actor: { kind: 'action' } }),
     } as never,
@@ -166,24 +128,13 @@ describe('ConductorRunExecutor — timer park + tick loop', () => {
   const graph: WorkflowGraph = {
     entryStepId: 'moderate',
     steps: [
-      {
-        id: 'moderate',
-        kind: 'agent',
-        agentId: 'facilitator',
-        prompt: 'assess',
-        fallbackTransitionId: 't-exhausted',
-      },
+      { id: 'moderate', kind: 'agent', agentId: 'facilitator', prompt: 'assess', fallbackTransitionId: 't-exhausted' },
       { id: 'wait', kind: 'timer', timer: { duration: 'PT1S' }, fallbackTransitionId: 't-tick' },
       { id: 'done', kind: 'agent', agentId: 'facilitator', prompt: 'report' },
       { id: 'aborted', kind: 'agent', agentId: 'facilitator', prompt: 'abort' },
     ],
     transitions: [
-      {
-        id: 't-met',
-        source: 'moderate',
-        target: 'done',
-        guard: { op: 'eq', path: 'stepResult.data.dodMet', value: true },
-      },
+      { id: 't-met', source: 'moderate', target: 'done', guard: { op: 'eq', path: 'stepResult.data.dodMet', value: true } },
       {
         id: 't-wait',
         source: 'moderate',
@@ -219,11 +170,7 @@ describe('ConductorRunExecutor — timer park + tick loop', () => {
   });
 
   it('expireAwait follows the tick edge with an honest timer actor and re-runs the assess step', async () => {
-    const texts = [
-      '```json\n{"dodMet": false}\n```',
-      '```json\n{"dodMet": true, "summary": "done"}\n```',
-      'final report',
-    ];
+    const texts = ['```json\n{"dodMet": false}\n```', '```json\n{"dodMet": true, "summary": "done"}\n```', 'final report'];
     const { executor, recorded, awaitRows, run, agentCallCount } = makeHarness(graph, {
       agentText: (_stepId, call) => texts[call - 1] ?? 'ok',
     });
@@ -263,8 +210,7 @@ describe('ConductorRunExecutor — timer park + tick loop', () => {
 
   it('previewRun simulates a timer instantly along the on-expiry edge', async () => {
     const { executor } = makeHarness(graph, {
-      agentText: (_s, call) =>
-        call === 1 ? '```json\n{"dodMet": false}\n```' : '```json\n{"dodMet": true}\n```',
+      agentText: (_s, call) => (call === 1 ? '```json\n{"dodMet": false}\n```' : '```json\n{"dodMet": true}\n```'),
     });
     const preview = await executor.previewRun('eph-x', {});
     const timerStep = preview.steps.find((s) => s.kind === 'timer');
