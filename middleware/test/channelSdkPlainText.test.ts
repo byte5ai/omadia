@@ -6,7 +6,9 @@ import { describe, it } from 'node:test';
 import {
   InMemoryDisclosureMarkerStore,
   InMemoryDisclosureSeenStore,
+  InMemoryPendingInteractiveStore,
   InMemorySpeakerHistoryStore,
+  resolveTypedInteractiveReply,
   answerDetailsText,
   applyAiDisclosure,
   buildAnswerDetails,
@@ -275,5 +277,60 @@ describe('answer details (criterion 29: reachable on demand, not in the body)', 
     assert.match(text, /4 Felder wurden maskiert/);
     // and none of it is in the plain body
     assert.equal(plain(answer).includes('geprüft'), false);
+  });
+});
+
+describe('criterion 30: a typed reply to an answer element becomes the chosen value', () => {
+  const choice: OutgoingInteractive = { kind: 'choice', question: 'Welche?', options: [{ label: 'A', value: 'variante-a' }, { label: 'B', value: 'variante-b' }] };
+  const topic: OutgoingInteractive = { kind: 'topic', question: 'Welche Firma?', topics: [{ label: 'ACME GmbH', value: 'acme' }, { label: 'ACME AG', value: 'acme-ag' }] };
+  const slots: OutgoingInteractive = {
+    kind: 'slots',
+    question: 'Wann?',
+    slots: [
+      { slotId: 's1', start: '2026-12-01T09:00:00Z', end: '2026-12-01T09:30:00Z', timeZone: 'Europe/Berlin', label: 'Di 10:00', confidence: 0.9 },
+      { slotId: 's2', start: '2026-12-02T09:00:00Z', end: '2026-12-02T09:30:00Z', timeZone: 'Europe/Berlin', label: 'Mi 10:00', confidence: 0.5 },
+    ],
+  };
+
+  function shown(interactive: OutgoingInteractive) {
+    const pendingInteractives = new InMemoryPendingInteractiveStore();
+    renderPlainAnswer(
+      { text: 'Antwort.', speaker: mira, interactive },
+      { nativeIdentity: true, conversationKey: 'c1', speakerHistory: new InMemorySpeakerHistoryStore(), pendingInteractives },
+    );
+    return pendingInteractives;
+  }
+
+  it('criterion 30: "2" picks the second option of a choice and sends its value, not the digit', () => {
+    assert.deepEqual(resolveTypedInteractiveReply(shown(choice), 'c1', '2'), { text: 'variante-b', resolved: true });
+  });
+
+  it('criterion 30: a topic is picked by number or by its label', () => {
+    assert.deepEqual(resolveTypedInteractiveReply(shown(topic), 'c1', '1'), { text: 'acme', resolved: true });
+    assert.deepEqual(resolveTypedInteractiveReply(shown(topic), 'c1', 'acme ag'), { text: 'acme-ag', resolved: true });
+  });
+
+  it('criterion 30: a slot is picked as the click would: book this slot by its id', () => {
+    const { text, resolved } = resolveTypedInteractiveReply(shown(slots), 'c1', '2');
+    assert.equal(resolved, true);
+    assert.match(text, /Mi 10:00/);
+    assert.match(text, /slotId="s2"/);
+  });
+
+  it('criterion 30: a reply that names no option stays an ordinary message, and the element is spent', () => {
+    const store = shown(choice);
+    assert.deepEqual(resolveTypedInteractiveReply(store, 'c1', 'Lieber etwas anderes'), { text: 'Lieber etwas anderes', resolved: false });
+    assert.deepEqual(resolveTypedInteractiveReply(store, 'c1', '2'), { text: '2', resolved: false });
+  });
+
+  it('criterion 30: a "2" in another conversation, after a later plain answer, or after a day is just a "2"', () => {
+    assert.equal(resolveTypedInteractiveReply(shown(choice), 'other', '2').resolved, false);
+    const store = shown(choice);
+    renderPlainAnswer(
+      { text: 'Nur Text.', speaker: mira },
+      { nativeIdentity: true, conversationKey: 'c1', speakerHistory: new InMemorySpeakerHistoryStore(), pendingInteractives: store },
+    );
+    assert.equal(resolveTypedInteractiveReply(store, 'c1', '2').resolved, false);
+    assert.equal(resolveTypedInteractiveReply(shown(choice), 'c1', '2', Date.now() + 25 * 3600_000).resolved, false);
   });
 });

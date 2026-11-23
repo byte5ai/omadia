@@ -19,6 +19,7 @@
 import type { Contribution } from '@omadia/plugin-api';
 import type { OutgoingChoiceCard, OutgoingInteractive, SemanticAnswer } from './outgoing.js';
 import { speakerLineFor, type SpeakerHistoryStore } from './speakerLine.js';
+import { rememberInteractive, type PendingInteractiveStore } from './typedInteractiveReply.js';
 
 export interface PlainAnswerOptions {
   /** The channel shows one identity per agent; no name line then. */
@@ -26,6 +27,12 @@ export interface PlainAnswerOptions {
   /** Conversation key for the speaker history (name-line decision). */
   readonly conversationKey: string;
   readonly speakerHistory: SpeakerHistoryStore;
+  /**
+   * Where the element shown as numbered text is kept, so the channel can turn
+   * the person's typed "2" into the chosen value ({@link resolveTypedInteractiveReply},
+   * criterion 30). Absent: a typed reply is an ordinary message.
+   */
+  readonly pendingInteractives?: PendingInteractiveStore;
 }
 
 function numbered(labels: readonly string[]): string {
@@ -73,5 +80,6 @@ export function renderPlainAnswer(answer: SemanticAnswer, opts: PlainAnswerOptio
     const text = interactiveText(answer.interactive);
     if (text) parts.push(text);
   }
+  if (opts.pendingInteractives) rememberInteractive(opts.pendingInteractives, opts.conversationKey, answer.interactive);
   return parts.filter((p) => p.length > 0).join('\n\n');
 }

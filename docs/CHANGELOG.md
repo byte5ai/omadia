@@ -36,6 +36,19 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — Channel parity: a typed "2" answers an answer element, an assignment goes out as text (spec 2042 §6 criterion 30)
+
+- `@omadia/channel-sdk` (additive, stays 0.3.x): `PendingInteractiveStore` / `InMemoryPendingInteractiveStore`,
+  `resolveTypedInteractiveReply`, `resolveInteractiveReply`. `renderPlainAnswer` remembers the
+  `choice`/`topic`/`slots` element it showed as numbered text (new optional
+  `PlainAnswerOptions.pendingInteractives`); the channel resolves the person's next message
+  deterministically to what a button click would have sent (choice/topic value, the slot booking
+  message) instead of handing "2" to the agent's model. A reply that names no option stays a message.
+- Kernel: an `assignment` question card goes out as numbered text (`canGoOutAsText`) when a typed
+  reply can name the assignee (fixed candidate list, or a member list with `allowVolunteer`), and
+  `conversationSend` capabilities list `assignment` for text-only channels; "ich" is an answer only
+  where `allowVolunteer` is true.
+
 ### Changed — ADR-0030: the kernel bounds closing scopes and the deadline wait (#2090)
 
 - `@omadia/plugin-api` 1.85.0, `@omadia/channel-sdk` 0.3.11 (additive types, stricter
