@@ -35,11 +35,11 @@ import { fileURLToPath } from 'node:url';
 /** devDependencies that ship as a runtime: their advisories count like production ones. */
 export const RUNTIME_DEV_DEPENDENCIES = Object.freeze({ desktop: Object.freeze(['electron']) });
 
-/** The longest an exception may run from its review before it has to be reviewed again. */
+/**
+ * The longest an exception may run from its review before it has to be reviewed
+ * again. Production exceptions share it since 2026-11-23 (30 days before).
+ */
 export const MAX_EXCEPTION_DAYS = 90;
-
-/** The longest a production exception may run from its review. */
-export const MAX_PRODUCTION_EXCEPTION_DAYS = 90;
 
 /** How far ahead of its expiry an exception is announced. */
 export const EXPIRY_NOTICE_DAYS = 14;
@@ -201,9 +201,8 @@ export function exceptionProblems(entry) {
   if (expires === null) problems.push('"expires" must be a valid YYYY-MM-DD date');
   if (reviewed !== null && expires !== null) {
     const days = (expires - reviewed) / DAY_MS;
-    const maxDays = production ? MAX_PRODUCTION_EXCEPTION_DAYS : MAX_EXCEPTION_DAYS;
     if (days < 0) problems.push('"expires" lies before "reviewed"');
-    else if (days > maxDays) problems.push(`"expires" lies more than ${maxDays} days after "reviewed"`);
+    else if (days > MAX_EXCEPTION_DAYS) problems.push(`"expires" lies more than ${MAX_EXCEPTION_DAYS} days after "reviewed"`);
   }
   return problems;
 }

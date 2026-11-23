@@ -648,10 +648,12 @@ jobs:
         #
         # The decision itself is `.github/scripts/audit-gate.mjs`. A high or
         # critical finding in the full tree needs a production-only report
-        # (`--omit=dev`) as well: a production finding always fails, and a
-        # finding that only development tooling pulls in passes only with a dated,
-        # reasoned entry in `.github/audit-exceptions.json` whose `via` names
-        # every route `package-lock.json` gives into the tree; `electron` counts
+        # (`--omit=dev`) as well: a production finding passes only with a dated
+        # `"production": true` entry for an advisory no release fixes in the
+        # pinned major, and a finding that only development tooling pulls in
+        # passes only with a dated, reasoned entry in
+        # `.github/audit-exceptions.json` (90 days at most for both) whose `via`
+        # names every route `package-lock.json` gives into the tree; `electron` counts
         # as production (security-architecture §4a). The override above never
         # applies once the full tree has findings: an unknown production split is
         # not a pass. A clean tree goes through the gate too, so an exception
