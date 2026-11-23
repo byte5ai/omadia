@@ -213,6 +213,7 @@ export type {
   PrivateTurnLookup,
   AddressedTurnLookup,
 } from './facilitatorAgent.js';
+export { conversationPrincipal } from './conversationPrincipal.js';
 export {
   buildToolCallContext,
   currentToolCallContext,
