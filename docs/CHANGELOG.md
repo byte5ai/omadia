@@ -54,6 +54,29 @@ the read while receiving a clean verdict.
   embedding/override/isolate controls. A bare `<system>` role name and the LRM/RLM/ALM
   marks of ordinary Hebrew and Arabic text are not flagged.
 
+### Fixed — Agents können Transkripte nicht mehr löschen oder verschieben (#2216)
+
+2026-11-24. Im Modus „Aus“ und in jedem Turn ohne Kanal-Kontext hält der Turn
+den `core`-Grant, und der machte `/memories/sessions/` schreibbar. Ein
+`delete /memories/sessions` aus einem einzigen Chat löschte damit die
+Transkripte aller Agents; ein `rename` hätte sie verschoben oder eine
+gefälschte Datei in den Baum gelegt. `/memories/sessions/` und
+`/memories/chat-sessions/` stehen jetzt auf der Deny-Liste von
+`ScopedMemoryStore`, samt der Prüfung auf Eltern-Pfade und kanonische Pfade aus
+#1827. Lesen bleibt erlaubt. Kein Agent braucht dort Schreibrechte:
+`SessionLogger` und `ChatSessionStore` schreiben als Kernel und bekommen in
+`buildOrchestratorForAgent` jetzt den ungescopten Store statt des
+Agent-Scopes.
+
+### Changed — Anthropic SDK 1.x: no sampling parameters on Anthropic models (#2167)
+
+- `@anthropic-ai/sdk` 0.126 → 1.12 sends `anthropic-version: 2026-10-21`, which rejects
+  `temperature`/`top_p`/`top_k` with a 400 on every model. The Anthropic adapter never sends
+  them now; `LlmRequest.temperature` (and `ctx.llm` for plugins) is ignored for Anthropic. The
+  per-model `supportsTemperature` table is gone.
+- Custom Anthropic-compatible base URLs keep `X-Api-Key` instead of the SDK's new
+  `Authorization: Bearer` default.
+
 ### Changed — Kernel ohne Plugin-IDs: Teams-Standard-Bot kommt vom Plugin, tote v0.1.0-Reste entfernt
 
 2026-11-24. Der Kernel kannte noch Plugin-IDs aus v0.1.0. Der Teams-Standard-Bot

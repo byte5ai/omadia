@@ -442,3 +442,54 @@ test('rules under /memories/_rules/ are readable but never writable by an agent'
   // Other shared `_*` trees keep their grant on a context-free turn.
   await binder.forOrigin(undefined).store.writeFile('/memories/_brand/logo.md', 'ok');
 });
+
+// No agent may delete or move the conversation transcripts: the plain `core`
+// of a context-free turn (mode "Off", or any turn without a channel context)
+// granted writes on `/memories/sessions/`, so one `delete /memories/sessions`
+// wiped every agent's transcripts. The kernel writes them on the root store.
+test('transcripts are readable by an agent but never written, deleted or moved', async () => {
+  const { root, binder } = fixture();
+  const transcript = '/memories/sessions/teams-a/2026-11-24.md';
+  await root.createFile(transcript, '# transcript');
+  await root.createFile('/memories/chat-sessions/c1.json', '{}');
+  await root.createFile('/memories/core/notes.md', 'shared note');
+  const store = binder.forOrigin(undefined).store; // context-free turn: plain `core`
+
+  assert.equal(await store.readFile(transcript), '# transcript');
+  for (const path of ['/memories/sessions', '/memories/sessions/', '/memories//sessions', '/memories/sessions/teams-a', transcript]) {
+    await assert.rejects(() => store.delete(path), MemoryScopeViolation, path);
+    await assert.rejects(() => store.rename(path, '/memories/core/moved'), MemoryScopeViolation, path);
+  }
+  await assert.rejects(() => store.writeFile(transcript, 'forged'), MemoryScopeViolation);
+  await assert.rejects(() => store.createFile('/memories/sessions/teams-a/forged.md', 'x'), MemoryScopeViolation);
+  // Renaming a note INTO the tree would forge a transcript.
+  await assert.rejects(
+    () => store.rename('/memories/core/notes.md', '/memories/sessions/teams-a/forged.md'),
+    MemoryScopeViolation,
+  );
+  // `chat-sessions` is refused to the memory tool outright, by any verb.
+  await assert.rejects(() => store.delete('/memories/chat-sessions'));
+  await assert.rejects(() => store.rename('/memories/chat-sessions/c1.json', '/memories/core/c1.json'));
+  // The memory root, the ancestor of both trees, stays refused as well.
+  await assert.rejects(() => store.delete('/memories'));
+
+  assert.equal(await root.readFile(transcript), '# transcript');
+  assert.equal(await root.readFile('/memories/chat-sessions/c1.json'), '{}');
+  assert.equal(await root.readFile('/memories/core/notes.md'), 'shared note');
+});
+
+test('the scoped store itself refuses transcript trees and every ancestor of them', async () => {
+  const root = new InMemoryMemoryStore();
+  await root.createFile('/memories/sessions/s/2026-11-24.md', 't');
+  await root.createFile('/memories/chat-sessions/c1.json', '{}');
+  // `/memories/*` grants the root itself — the ancestor check must still hold.
+  const store = new ScopedMemoryStore({ agentSlug: AGENT, scope: ['core', '/memories/*'], inner: root });
+  for (const path of ['/memories', '/memories/', '/memories/sessions', '/memories/chat-sessions', '/memories/chat-sessions/c1.json']) {
+    await assert.rejects(() => store.delete(path), MemoryScopeViolation, path);
+    await assert.rejects(() => store.rename(path, '/memories/elsewhere'), MemoryScopeViolation, path);
+  }
+  await assert.rejects(() => store.writeFile('/memories/chat-sessions/c2.json', '{}'), MemoryScopeViolation);
+  assert.equal(await store.readFile('/memories/chat-sessions/c1.json'), '{}');
+  assert.equal(await root.readFile('/memories/sessions/s/2026-11-24.md'), 't');
+});
+
