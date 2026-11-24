@@ -36,7 +36,7 @@ changelog.
 
 ## [Unreleased]
 
-### Fixed — Agents können Transkripte nicht mehr löschen oder verschieben (#2215)
+### Fixed — Agents können Transkripte nicht mehr löschen oder verschieben (#2216)
 
 2026-11-24. Im Modus „Aus“ und in jedem Turn ohne Kanal-Kontext hält der Turn
 den `core`-Grant, und der machte `/memories/sessions/` schreibbar. Ein

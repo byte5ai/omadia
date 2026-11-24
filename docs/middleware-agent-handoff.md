@@ -8477,7 +8477,7 @@ Stores nehmen bei Verzeichnissen alle Nachfahren mit. Geprüft wird der kanonisc
 Außerdem steht `/memories/_rules/` auf der Deny-Liste: `core` gewährt `_*`, und eine
 Regel-Datei wirkt für alle Agents und Accounts. Wie Regeln künftig gepflegt werden (Admin-Seite, Regeln pro
 Agent/Account), ist offen (§13).
-Ebenso `/memories/sessions/` und `/memories/chat-sessions/` (#2215): die Transkripte aller
+Ebenso `/memories/sessions/` und `/memories/chat-sessions/` (#2216): die Transkripte aller
 Agents liegen in einem flachen Baum, und `delete /memories/sessions` aus einem kontextfreien
 Turn hätte sie alle gelöscht. Geschrieben werden sie nur vom Kernel: `SessionLogger` und
 `ChatSessionStore` bekommen in `buildOrchestratorForAgent` den ungescopten Store.
