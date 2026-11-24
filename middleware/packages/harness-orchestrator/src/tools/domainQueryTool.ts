@@ -169,6 +169,12 @@ export interface DomainTool {
    *  tool); the fast path's read classifier and the operator's allow-list
    *  (`fast_path_agent_tools`) decide which it may plan. */
   subAgentTools?: () => ReadonlyArray<SubAgentToolHandle>;
+  /**
+   * #2050 — set on the `ask_<name>` tool of a DB sub-agent: an internal helper
+   * of THIS agent (spec 2042 §5.6), not an agent. Its run is recorded in the
+   * trace as the agent's own work and never listed as a consulted agent.
+   */
+  internalHelper?: { readonly helperId: string };
   handle(input: unknown, observer?: AskObserver): Promise<string>;
   /**
    * Privacy-Shield v3 (stable-id tokenization, slice 1) — optional PII
@@ -244,7 +250,7 @@ export function createDomainTool(options: DomainToolOptions): DomainTool {
         question: {
           type: 'string',
           description:
-            'Natürlichsprachige Einzel-Frage für den Fach-Agenten, auf Deutsch wenn der Nutzer Deutsch geschrieben hat. Inklusive aller IDs/Namen/Zeiträume, die der Agent braucht.',
+            'Natürlichsprachige Einzel-Frage für das Fach-Werkzeug, auf Deutsch wenn der Nutzer Deutsch geschrieben hat. Inklusive aller IDs/Namen/Zeiträume, die der Agent braucht.',
         },
       },
       required: ['question'],

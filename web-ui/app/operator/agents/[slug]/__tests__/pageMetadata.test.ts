@@ -11,7 +11,6 @@ import enMessages from '../../../../../messages/en.json';
 const listOperatorAgents = vi.fn();
 
 vi.mock('../../../../_lib/agents', () => ({
-  FALLBACK_AGENT_SLUG: 'fallback',
   listOperatorAgents: () => listOperatorAgents(),
 }));
 
@@ -37,18 +36,18 @@ describe('operator agent detail — tab title (#1398)', () => {
 
   it('names an existing agent', async () => {
     listOperatorAgents.mockResolvedValue({ agents: [{ slug: 'odoo' }] });
-    expect((await generateMetadata(params('odoo'))).title).toBe('Orchestrator: odoo · omadia');
+    expect((await generateMetadata(params('odoo'))).title).toBe('Agent: odoo · omadia');
   });
 
   it('uses a generic title for an unknown slug', async () => {
     listOperatorAgents.mockResolvedValue({ agents: [{ slug: 'odoo' }] });
     expect((await generateMetadata(params('nope'))).title).toBe(
-      'Orchestrator not found · omadia',
+      'Agent not found · omadia',
     );
   });
 
   it('keeps the slug title when the list cannot be loaded', async () => {
     listOperatorAgents.mockRejectedValue(new Error('down'));
-    expect((await generateMetadata(params('odoo'))).title).toBe('Orchestrator: odoo · omadia');
+    expect((await generateMetadata(params('odoo'))).title).toBe('Agent: odoo · omadia');
   });
 });

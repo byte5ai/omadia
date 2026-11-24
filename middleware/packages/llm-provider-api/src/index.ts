@@ -64,3 +64,16 @@ export type {
 } from './adapter.js';
 
 export { LLM_PROVIDER_API_VERSION } from './version.js';
+
+// Which OpenAI models take a reasoning effort (and only the default temperature).
+export { isOpenAiReasoningModel } from './reasoningModels.js';
+
+// #2090 — the gate every provider passes before a model call.
+export {
+  admitModelCall,
+  isModelCallNotCovered,
+  MODEL_CALL_GATE_SLOT,
+  ModelCallNotCoveredError,
+  ModelCallRefusedError,
+} from './modelCallGate.js';
+export type { ModelOperation } from './modelCallGate.js';

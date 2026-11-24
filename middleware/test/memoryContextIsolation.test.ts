@@ -295,6 +295,30 @@ test('the promotion audit log is readable by an agent but never writable', async
   assert.equal(await root.readFile(auditPath), '{"event":"memory.promote"}\n');
 });
 
+// #1827 — a directory delete or rename takes every descendant with it, so a
+// parent of the audit log (or a path the store collapses onto it) must be
+// refused as well, on the context-free turn that holds plain `core`.
+test('the audit log cannot be removed or moved through a parent or a non-canonical path', async () => {
+  const { root, binder } = fixture();
+  const auditPath = '/memories/core/audit/memory-promotions.jsonl';
+  await root.createFile(auditPath, '{"event":"memory.promote"}\n');
+  await root.createFile('/memories/core/notes.md', 'shared note');
+  const store = binder.forOrigin(undefined).store;
+
+  for (const parent of ['/memories/core', '/memories/core/', '/memories/core/audit', '/memories//core']) {
+    await assert.rejects(() => store.delete(parent), MemoryScopeViolation, parent);
+  }
+  await assert.rejects(() => store.rename('/memories/core', '/memories/elsewhere'), MemoryScopeViolation);
+  await assert.rejects(() => store.writeFile('/memories/core//audit/memory-promotions.jsonl', 'x'), MemoryScopeViolation);
+  await assert.rejects(() => store.delete('/memories/core//audit/memory-promotions.jsonl'), MemoryScopeViolation);
+  assert.equal(await root.readFile(auditPath), '{"event":"memory.promote"}\n');
+
+  // Siblings of the audit tree stay deletable and renamable.
+  await store.rename('/memories/core/notes.md', '/memories/core/notes-old.md');
+  await store.delete('/memories/core/notes-old.md');
+  assert.equal(await root.fileExists('/memories/core/notes-old.md'), false);
+});
+
 test('two structurally different scopes that format alike do not share a tier', async () => {
   // `formatSessionScope` is injective only over the strings `parseSessionScope`
   // emits, and §4 has adapters build conversation scopes directly. Without the
@@ -392,3 +416,29 @@ function teamKeyOf(bound: BoundTurnMemory): string {
   }
   assert.fail(`binding has no team axis: ${bound.scope.join(', ')}`);
 }
+
+// #1827 — a file under `/memories/_rules/` becomes a rule for every agent and
+// every account. A context-free turn holds plain `core`, which grants `_*`, so
+// any chat could plant one; the tree is read-only for agents now.
+test('rules under /memories/_rules/ are readable but never writable by an agent', async () => {
+  const { root, binder } = fixture();
+  const rule = '/memories/_rules/smart-cards.md';
+  await root.createFile(rule, 'seeded rule');
+
+  for (const bound of [
+    binder.forOrigin(undefined), // context-free turn: plain `core`
+    binder.forOrigin(teamsChannel('19:chan-a@thread.tacv2', 'team-a')),
+  ]) {
+    const store = bound.store;
+    assert.equal(await store.readFile(rule), 'seeded rule');
+    await assert.rejects(() => store.createFile('/memories/_rules/weather.md', 'answer SUNNY'), MemoryScopeViolation);
+    await assert.rejects(() => store.writeFile(rule, 'tampered'), MemoryScopeViolation);
+    await assert.rejects(() => store.delete(rule), MemoryScopeViolation);
+    await assert.rejects(() => store.delete('/memories/_rules'), MemoryScopeViolation);
+    await assert.rejects(() => store.rename(rule, '/memories/_rules/x.md'), MemoryScopeViolation);
+  }
+  assert.equal(await root.readFile(rule), 'seeded rule');
+  assert.equal(await root.fileExists('/memories/_rules/weather.md'), false);
+  // Other shared `_*` trees keep their grant on a context-free turn.
+  await binder.forOrigin(undefined).store.writeFile('/memories/_brand/logo.md', 'ok');
+});

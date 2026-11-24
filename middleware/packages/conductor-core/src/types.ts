@@ -125,6 +125,10 @@ export type Quorum = 'any' | 'all';
 export interface HumanStepConfig {
   principal: Principal;
   channel: string;
+  /** The prose the responder is shown. Supports `{{ctx.path}}` /
+   *  `{{steps.stepId.field}}` interpolation against the run context, rendered
+   *  once when the await is opened (#1709); an unresolved token renders as a
+   *  visible dash, never as raw `{{...}}` syntax. */
   message: string;
   /** ISO-8601 duration; null/absent = no reminders. */
   reminderInterval?: string | null;
@@ -180,9 +184,14 @@ export interface Step {
   /** required when kind='action'. The deterministic-action / connector tool id to invoke. */
   actionId?: string;
   /** kind='agent': the message sent to the orchestrator turn. Supports `{{ctx.path}}` /
-   *  `{{steps.stepId.field}}` interpolation against the run context. */
+   *  `{{steps.stepId.field}}` interpolation against the run context; an unresolved
+   *  token renders as a visible dash. */
   prompt?: string;
-  /** kind='action': the input object passed to the connector action. */
+  /** kind='action': the input object passed to the connector action. Every string
+   *  VALUE (at any depth) supports the same `{{ctx.path}}` / `{{steps.stepId.field}}`
+   *  interpolation as `prompt`, rendered per call (#1709); object keys are parameter
+   *  names and are never interpolated. Substitution is textual, so a token always
+   *  yields a string. */
   input?: JsonObject;
   /** required when kind='human'. */
   human?: HumanStepConfig;
@@ -280,7 +289,11 @@ export interface ValidationError {
 
 /** #759 — non-blocking validation findings. A warning never fails `ok`; it
  *  surfaces a legal-but-dangerous shape the designer should consciously keep. */
-export type ValidationWarningCode = 'timeout_equals_approval' | 'approval_fail_open';
+export type ValidationWarningCode =
+  | 'timeout_equals_approval'
+  | 'approval_fail_open'
+  /** #1698 — a human step with an unguarded outgoing edge has no path for a rejection. */
+  | 'rejection_unguarded_edge';
 
 export interface ValidationWarning {
   code: ValidationWarningCode;
@@ -423,7 +436,9 @@ export type StuckCode =
   | 'postcondition_unmet_no_fallback'
   | 'no_transition_no_fallback'
   | 'ambiguous_guards'
-  | 'fallback_transition_missing';
+  | 'fallback_transition_missing'
+  /** #1698 — a human step was rejected and no outgoing guard asks for a rejection. */
+  | 'approval_rejected_no_transition';
 
 export type Decision =
   | {

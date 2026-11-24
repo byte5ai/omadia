@@ -179,3 +179,22 @@ updates:
       # Node bumps go through a deliberate migration, not a weekly bot PR.
       - dependency-name: 'node'
         update-types: ['version-update:semver-major']
+  # Updater sidecar (middleware/sidecars/updater/Dockerfile) — the one
+  # container that can replace every other container. Its node:http control
+  # plane needs Node security releases as fast as the main images do.
+  - package-ecosystem: 'docker'
+    directory: '/middleware/sidecars/updater'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '06:00'
+      timezone: 'Europe/Berlin'
+    open-pull-requests-limit: 3
+    labels: ['deps', 'docker']
+    commit-message:
+      prefix: 'chore(deps,docker,updater)'
+    ignore:
+      # Same Node 22 line as the middleware image; major Node bumps are a
+      # deliberate migration, not a weekly bot PR.
+      - dependency-name: 'node'
+        update-types: ['version-update:semver-major']

@@ -55,6 +55,7 @@ import type {
   PromptPiiDetector,
   PromptPiiSpan,
   ToolErrorEntry,
+  ToolPIIField,
   UnresolvedSurrogateCountOptions,
 } from '@omadia/plugin-api';
 import { isControlFlowToolResult } from '@omadia/plugin-api';
@@ -89,6 +90,7 @@ import {
   createCustomTermsDetector,
   maskPrompt,
 } from './promptMask.js';
+import { resolveOwnNames } from './ownNames.js';
 import {
   createToolErrorBaselineDetector,
   redactToolErrorSpans,
@@ -114,6 +116,7 @@ import {
 import { createStoredTextScope } from './storedTextScope.js';
 import { createTurnSerialQueue } from './turnSerialQueue.js';
 import { createFieldClassificationService } from './fieldClassificationService.js';
+import { declaredPiiColumns } from './v4/declaredPii.js';
 
 /**
  * Collect the identity-bearing string(s) of a single field VALUE into `out`
@@ -462,6 +465,14 @@ export interface PrivacyGuardServiceDeps {
    * configured (`c1CacheScope`).
    */
   readonly c1NearMissDetector?: PromptPiiDetector;
+  /**
+   * Spec 2042 (#2191, #2192) — the roster's agent names (`agentNames@1`),
+   * read per mask call. Never masked, under the rules of `ownNames.ts`: in
+   * every turn (a colleague named in a consultation) and in stored-text
+   * scopes (a background job over an agent's turns). `null`, absent or a
+   * throwing reader exempts nothing beyond the request's own names.
+   */
+  readonly agentNames?: () => readonly string[] | null;
 }
 
 export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): PrivacyGuardServices {
@@ -484,6 +495,35 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
   // only tool/plugin names + a byte count (no values).
   const bypassedTools = new Map<string, BypassedToolEntry[]>();
   const operatorClearedFields = new Map<string, Map<string, OperatorClearedFieldEntry>>();
+  /**
+   * Spec 2042 — the roster's agent names (`PrivacyGuardServiceDeps.agentNames`).
+   * Fail safe: unknown or a failing reader exempts nothing.
+   */
+  function readAgentNames(): readonly string[] {
+    try {
+      return deps?.agentNames?.() ?? [];
+    } catch (err) {
+      console.warn(
+        `[privacy-guard v4] agentNames lookup failed, no agent name exempt: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return [];
+    }
+  }
+  // Read once per turn: a roster or human-name change in the middle of a turn
+  // would otherwise let the known-value sweep skip a value an earlier call of
+  // the same turn masked. Dropped by `finalizeTurn` with the turn's map.
+  const turnAgentNames = new Map<string, readonly string[]>();
+  function agentNamesOfTurn(turnId: string): readonly string[] {
+    let names = turnAgentNames.get(turnId);
+    if (names === undefined) {
+      names = readAgentNames();
+      turnAgentNames.set(turnId, names);
+    }
+    return names;
+  }
+
   // #547 / #569 — per-turn list of external MCP tools that returned
   // `structuredContent`. Recorded by the boot-wired `structuredSink` so the
   // receipt accounts for the sidecar that otherwise fires beneath every
@@ -841,6 +881,9 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
     /** #1541 — whose text this is (see `PrivacyPromptMaskRequest.origin`). */
     readonly origin: PrivacyPromptOrigin;
     readonly preview: boolean;
+    /** The speaking agent's own names: never masked in its own turn
+     *  (`PrivacyPromptMaskRequest.ownNames`). */
+    readonly ownNames?: readonly string[];
     /** Refusal judged on the turn's map as it stands when this call's turn
      *  in the queue comes; `undefined` lets the call proceed. */
     readonly precheck?: (map: PseudonymMap | undefined) => PrivacyPromptMaskResult | undefined;
@@ -864,12 +907,22 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
     const refused = args.precheck?.(promptMaskMaps.get(turnId));
     if (refused !== undefined) return refused;
     try {
-      const result = await maskPrompt(text, detectors, promptMaskMaps.get(turnId));
+      const isOwnName = await resolveOwnNames(
+        // A preview keeps no turn state (it extends no map), so no cache either.
+        [...(args.ownNames ?? []), ...(preview ? readAgentNames() : agentNamesOfTurn(turnId))],
+        detectors,
+      );
+      const result = await maskPrompt(text, detectors, promptMaskMaps.get(turnId), {
+        isOwnName,
+      });
       // Post-mask invariant: no detected real value may survive in the
       // wire-bound text outside a surrogate. A hit means substitution failed
       // — block. A term inside the shield's own placeholder is no hit
       // (#1529).
-      const residual = findResidualRealValues(result.maskedText, result.map);
+      // The agent's own names are allowed through (`ownNames.ts`).
+      const residual = findResidualRealValues(result.maskedText, result.map).filter(
+        (leak) => !isOwnName(leak.value),
+      );
       if (residual.length > 0) {
         console.error(
           `[privacy-guard v4] ${label}Blocked turn=${turnId} ` +
@@ -979,9 +1032,10 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
     rawResult: string,
     toolInput?: unknown,
     audience?: PrivacyDigestAudience,
+    piiFields?: readonly ToolPIIField[],
   ): PrivacyToolResultV4Result {
     const store = storeFor(turnId);
-    const { digest } = store.internToolResult(toolName, rawResult, toolInput);
+    const { digest } = store.internToolResult(toolName, rawResult, toolInput, piiFields);
     // The receipt counts every field the digest exposes — record columns AND
     // envelope metadata (both reach the model, masked or in clear).
     const metadata = digest.metadata ?? [];
@@ -1018,44 +1072,55 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
         request.rawResult,
         request.toolInput,
         request.audience,
+        request.piiFields,
       );
       // Slice 2 — schema-level PII classification. Schema only (field names
       // + types, never a value); cached per tool shape. Never throws; the
       // verdict drives detection only, not masking. Canvas producers are
       // interned above but not classified (see CANVAS_PRODUCER_TOOLS).
-      if (piiClassifier !== undefined && !CANVAS_PRODUCER_TOOLS.has(request.toolName)) {
-        const dataset = stores.get(request.turnId)?.get(result.datasetId);
-        if (dataset !== undefined) {
-          // Envelope metadata is classified too (record paths win a name
-          // collision) — it used to be, as broadcast columns.
-          const metaFields = (dataset.envelope?.schema.fields ?? []).filter(
-            (m) => !dataset.schema.fields.some((f) => f.path === m.path),
-          );
-          const piiPaths = await piiClassifier.classify(
+      const dataset = stores.get(request.turnId)?.get(result.datasetId);
+      if (dataset !== undefined) {
+        // Envelope metadata is classified too (record paths win a name
+        // collision) — it used to be, as broadcast columns.
+        const metaFields = (dataset.envelope?.schema.fields ?? []).filter(
+          (m) => !dataset.schema.fields.some((f) => f.path === m.path),
+        );
+        // S3c — the columns the tool itself declared as PII count as PII
+        // paths here too, with or without a classifier verdict: their values
+        // are what the receipt reports the user named themselves.
+        const declaredRows = declaredPiiColumns(request.piiFields, dataset.envelope?.itemsPath);
+        const declaredMeta = declaredPiiColumns(request.piiFields);
+        const piiPaths = new Set<string>([
+          ...dataset.schema.fields.filter((f) => declaredRows.has(f.path)).map((f) => f.path),
+          ...metaFields.filter((m) => declaredMeta.has(m.path)).map((m) => m.path),
+        ]);
+        if (piiClassifier !== undefined && !CANVAS_PRODUCER_TOOLS.has(request.toolName)) {
+          const classified = await piiClassifier.classify(
             request.toolName,
             [...dataset.schema.fields, ...metaFields].map((f) => ({
               path: f.path,
               type: f.type,
             })),
           );
-          // Gather the REAL values of the PII-classified fields so the
-          // receipt can report which ones the user named themselves. The
-          // values stay server-side — only the count reaches the receipt.
-          if (piiPaths.size > 0) {
-            let bag = turnPiiValues.get(request.turnId);
-            if (bag === undefined) {
-              bag = new Set<string>();
-              turnPiiValues.set(request.turnId, bag);
+          for (const path of classified) piiPaths.add(path);
+        }
+        // Gather the REAL values of the PII fields so the receipt can report
+        // which ones the user named themselves. The values stay server-side —
+        // only the count reaches the receipt.
+        if (piiPaths.size > 0) {
+          let bag = turnPiiValues.get(request.turnId);
+          if (bag === undefined) {
+            bag = new Set<string>();
+            turnPiiValues.set(request.turnId, bag);
+          }
+          for (const row of dataset.rows) {
+            for (const path of piiPaths) {
+              collectIdentityValues(row[path], bag);
             }
-            for (const row of dataset.rows) {
-              for (const path of piiPaths) {
-                collectIdentityValues(row[path], bag);
-              }
-            }
-            for (const m of metaFields) {
-              if (piiPaths.has(m.path)) {
-                collectIdentityValues(dataset.envelope?.values[m.path], bag);
-              }
+          }
+          for (const m of metaFields) {
+            if (piiPaths.has(m.path)) {
+              collectIdentityValues(dataset.envelope?.values[m.path], bag);
             }
           }
         }
@@ -1302,6 +1367,7 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
         stage,
         origin: request.origin ?? 'message',
         preview,
+        ownNames: request.ownNames,
       });
     },
 
@@ -1333,6 +1399,7 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
         stage: 'verifier',
         origin: 'message',
         preview: false,
+        ownNames: request.ownNames,
         precheck: (map) => {
           if (!hasSurrogateCollision(request.text, map)) return undefined;
           console.error(
@@ -1382,6 +1449,7 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
         // message: its spans must not read as "masked in your message".
         origin: 'context',
         preview: false,
+        ownNames: request.ownNames,
       });
     },
 
@@ -1395,8 +1463,11 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
       const detectors: PromptPiiDetector[] = [createBaselineIdentityDetector()];
       const customDetector = resolveCustomDetector(deps?.readConfig);
       if (customDetector) detectors.push(customDetector);
+      // Read once per run, like the turn's: a stable exemption for the run's map.
+      const agentNames = readAgentNames();
       return createStoredTextScope({
         job: request.job,
+        ...(agentNames.length > 0 ? { ownNames: agentNames } : {}),
         detectors,
         ...(request.priority !== undefined ? { priority: request.priority } : {}),
         ...(deps?.c1Detector !== undefined ? { c1Detector: deps.c1Detector } : {}),
@@ -1569,6 +1640,7 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
       // #361 — drop the prompt-surrogate map. `restorePromptPseudonyms`
       // must have run over the final answer before this point.
       promptMaskMaps.delete(turnId);
+      turnAgentNames.delete(turnId);
       // #979 — cached C1 spans carry real PII values; drop them with the
       // rest of the turn's server-side state. The degrade latch goes too, so
       // the next turn gets a fresh attempt at a sidecar that may have

@@ -19,6 +19,7 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Pool } from 'pg';
+import { addMeteredCost } from './costMeter.js';
 import { computeCostUsd, type UsageTokens } from './pricing.js';
 
 /** A single LLM call's usage, as handed to {@link recordUsage}. */
@@ -164,6 +165,9 @@ export function isUsageRecorderReady(): boolean {
  * immediately; never awaits the DB.
  */
 export function recordUsage(record: UsageRecord): void {
+  // #2082 — budgets settle with actual usage, also without a database.
+  const costUsd = record.costUsd ?? computeCostUsd(record.model, record);
+  addMeteredCost(costUsd);
   if (!pool) {
     if (!warnedDroppedNoPool) {
       warnedDroppedNoPool = true;
@@ -205,7 +209,7 @@ export function recordUsage(record: UsageRecord): void {
     // #1098: freeze the call time now; the flush that writes this row may be
     // up to FLUSH_INTERVAL_MS later.
     occurredAt: record.occurredAt ?? new Date(),
-    costUsd: record.costUsd ?? computeCostUsd(record.model, record),
+    costUsd,
     referenceCostUsd: record.referenceCostUsd ?? 0,
   });
   if (buffer.length >= FLUSH_MAX_BATCH) void flush();

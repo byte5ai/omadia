@@ -1,45 +1,37 @@
 # `agent-reference-maximum`
 
-> **Reference-only-Plugin** — wird vom BuilderAgent als **PRIMÄRE**
+> **Reference-only-Plugin** — wird vom Plugin Builder als **PRIMÄRE**
 > Pattern-Quelle verwendet (Catalog-Key `reference-maximum`). Nicht im
 > Operator-Plugin-Catalog sichtbar (siehe `is_reference_only: true` im
 > `manifest.yaml`).
 
-Lauffähige, credential-lose Codebase, die ALLE auf der Plugin-API
-verfügbaren Patterns in einer Stelle demonstriert.
+Lauffähiges, credential-loses **Capability-Plugin** (Kind `integration`, spec
+2042 §5.10, ADR-0014), das die Patterns der Plugin-API an einer Stelle zeigt —
+in derselben Form wie die Boilerplates des Plugin Builders: `toolkit.ts`
+(Zod-Tools) + `registerTools.ts` (`ctx.tools.register`) + `plugin.ts`
+(`activate(ctx) → { close() }`). Keine Persona, keine `AGENT.md`, keine
+`prompt_partial`-Skills; die frühere Rolle steht als Agent-Vorlage im Manifest
+(`agent_templates:`, `knowledge-companion` auf Englisch und
+`knowledge-companion-de` auf Deutsch).
 
-Sekundär-Use-Case: Personal-Knowledge-Companion. User können kurze Notizen
-schreiben (`add_note`), die im Plugin-Memory-Scope persistiert, automatisch
-als PluginEntity-Nodes in den Knowledge-Graph ingested und als
-note-card-Smart-Card gerendert werden.
+Die Plugin-Id behält ihr historisches `agent-`-Präfix, weil installierte
+Instanzen sie referenzieren.
 
 ## Pattern-Index
 
 Siehe [INTEGRATION.md](./INTEGRATION.md) — strukturierter Pattern-Index für
-den BuilderAgent. **Pflicht-Lektüre** vor jedem Code-Zitat aus diesem
+den Plugin Builder. **Pflicht-Lektüre** vor jedem Code-Zitat aus diesem
 Package; jeder Pattern-Block trägt Datei:Zeile-Refs, die ein CI-Bitrot-
 Check (`npm run check:integration-md`) gegen den realen Code validiert.
-
-## Geliefertes (OB-29 abgeschlossen)
-
-| Etappe | Pattern-Erweiterung |
-|---|---|
-| 0 | Skelett + Catalog-Marker `is_reference_only: true` + CI-Bitrot |
-| 1 | `ctx.subAgent.ask` (cross-agent delegation) |
-| 2 | generic `ctx.knowledgeGraph.ingestEntities` (PluginEntity namespace) |
-| 3 | `ctx.llm.complete` (host-paid mit Whitelist + Budget) |
-| 4 | tool-emittiertes `_pendingUserChoice` (Smart-Card-Short-Circuit) |
-| 5 | Rename + Builder-Prompt-Final-Routing (PRIMÄR-Reference) |
 
 ## Tools
 
 - `add_note` (write) — Notiz speichern, KG-Ingest + Smart-Card
-- `analyze_url` (write) — delegiert via `ctx.subAgent.ask` an seo-analyst
 - `smart_extract_entities` (read) — LLM-NER via `ctx.llm.complete`
 - `query_notes_by_person` (read) — emittiert `_pendingUserChoice` bei
   Mehrdeutigkeit
 
 ## Status
 
-`is_reference_only: true` — nicht im Operator-Catalog. BuilderAgent
-zugriff via `read_reference({ name: 'reference-maximum', file: '...' })`.
+`is_reference_only: true` — nicht im Operator-Catalog. Plugin-Builder-Zugriff
+via `read_reference({ name: 'reference-maximum', file: '...' })`.

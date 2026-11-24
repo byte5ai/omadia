@@ -8,7 +8,7 @@
  *
  *   - `ctx.uiRoutes` IS stubbed in preview (always was). Not the culprit.
  *   - The real gap: the boilerplate PluginContext contract
- *     (assets/boilerplate/agent-integration/types.ts) declares `jobs:
+ *     (assets/boilerplate/integration/types.ts) declares `jobs:
  *     JobsAccessor` and `status: StatusAccessor` as NON-optional, the kernel's
  *     createPluginContext provides both, but the preview's createStubContext
  *     omitted BOTH. Any plugin that registers a scheduled job compiled cleanly,
@@ -65,7 +65,7 @@ describe('REGRESSION: preview ctx provides jobs/status accessors', () => {
       },
       activateModule: async (_entry, ctx) => {
         await onActivate(ctx);
-        return { toolkit: { tools: [] }, close: async () => {} };
+        return { close: async () => {} };
       },
     });
   }

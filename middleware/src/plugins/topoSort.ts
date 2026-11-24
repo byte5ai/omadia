@@ -3,9 +3,8 @@ import type { PluginCatalog } from './manifestLoader.js';
 /**
  * Topologically sort plugin ids so that every plugin appears AFTER the
  * plugins it declares in its manifest's `depends_on` AND after any provider
- * it implicitly depends on via a capability `requires`. Used by both the
- * DynamicAgentRuntime and ToolPluginRuntime to guarantee activation order
- * within each runtime.
+ * it implicitly depends on via a capability `requires`. Used by the
+ * ToolPluginRuntime to guarantee activation order.
  *
  * Dependencies that are not part of the input set (e.g. an agent plugin
  * depending on a tool plugin that a different runtime activates) are

@@ -7,6 +7,7 @@
  * mapping, `cache_control`, stop_reason normalisation, and the retryable
  * error taxonomy that `streaming.ts` historically owned.
  */
+import { admitModelCall } from '@omadia/llm-provider-api';
 import type Anthropic from '@anthropic-ai/sdk';
 
 import type {
@@ -338,6 +339,11 @@ function buildSystem(req: LlmRequest): unknown {
  * is not the rule, and a version comparison would be a plausible, wrong gate.
  * `temperature: 1` is always accepted because it IS the default; the API only
  * objects to being asked for a value it no longer honours.
+ *
+ * Mythos is not in the measured table. It is listed with Fable because
+ * Mythos 5.1 shares the Fable 5.1 API surface (see
+ * {@link FORCED_TOOL_CHOICE_UNSUPPORTED}); dropping a temperature costs only
+ * determinism, while sending one a model refuses is a 400.
  */
 const TEMPERATURE_UNSUPPORTED = [
   'claude-opus-4-7',
@@ -345,6 +351,7 @@ const TEMPERATURE_UNSUPPORTED = [
   'claude-opus-5',
   'claude-sonnet-5',
   'claude-fable-5',
+  'claude-mythos-5',
 ];
 
 /**
@@ -848,6 +855,8 @@ export function createAnthropicProvider(
     },
 
     async complete(req: LlmRequest): Promise<LlmResponse> {
+      // #2090 — refused when the turn's reservation does not cover the call.
+      admitModelCall();
       const started = Date.now();
       const options = toRequestOptions(req);
       const response = requiresStreaming(req.maxTokens)
@@ -862,6 +871,8 @@ export function createAnthropicProvider(
     },
 
     async *stream(req: LlmRequest): AsyncIterable<LlmStreamEvent> {
+      // #2090 — refused when the turn's reservation does not cover the call.
+      admitModelCall();
       const params = buildParams(req) as unknown as Parameters<
         typeof client.messages.stream
       >[0];

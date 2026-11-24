@@ -4,7 +4,7 @@ identity:
   id: "@omadia/knowledge-graph-inmemory"
   name: "Knowledge Graph (in-memory)"
   version: "0.1.0"
-  kind: "extension"
+  kind: "system-module"
   domain: "core.knowledge-graph"
   description:
     en: "Keeps the knowledge graph in memory only, with no database and no embeddings. Everything is gone after a restart, which suits a demo, local development or a test run. Only one knowledge graph provider can be active."

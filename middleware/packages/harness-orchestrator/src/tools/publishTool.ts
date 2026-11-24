@@ -7,7 +7,7 @@ import {
   parseSessionScope,
   type CommandPolicy,
 } from '@omadia/channel-sdk';
-import type { NativeToolHandler, NativeToolSpec } from '@omadia/plugin-api';
+import type { NativeTextToolHandler, NativeToolSpec } from '@omadia/plugin-api';
 import { resolveAgentComputerProfile, type AgentComputerProfile, type SandboxBackend } from '@omadia/sandbox';
 import { publish, type PublishRuntime, type PublishStore } from '@omadia/publish';
 
@@ -89,7 +89,7 @@ function resolveScopeKey(): string {
   return `unscoped:${turnId && turnId.length > 0 ? turnId : 'no-turn'}`;
 }
 
-export function createPublishHandler(options: CreatePublishHandlerOptions): NativeToolHandler {
+export function createPublishHandler(options: CreatePublishHandlerOptions): NativeTextToolHandler {
   const resolvePolicy = options.resolveCommandPolicy ?? defaultCommandPolicy;
   const profile = options.profile ?? resolveAgentComputerProfile();
 

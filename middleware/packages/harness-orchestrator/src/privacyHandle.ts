@@ -21,6 +21,7 @@ import type {
   PrivacyV4ToolResult,
   PrivacyDigestAudience,
   PrivacyV4ToolSpec,
+  ToolPIIField,
   PromptMaskedSpanInfo,
   ToolErrorCarrier,
   ToolErrorOutcome,
@@ -51,6 +52,8 @@ export interface PrivacyTurnHandle {
     readonly toolInput?: unknown;
     /** #1561 — who reads the digest text; absent ⇒ the chat model. */
     readonly audience?: PrivacyDigestAudience;
+    /** Spec 2042 §5.10 — the tool's declared PII fields, always masked. */
+    readonly piiFields?: readonly ToolPIIField[];
   }): Promise<{ readonly digestText: string; readonly datasetId: string }>;
   /**
    * Slice 2.5 — record that a tool's raw result was passed through
@@ -245,7 +248,16 @@ export function createPrivacyTurnHandle(deps: {
    * tool ever bypasses (byte-identical pre-Slice-2.5 behaviour).
    */
   readonly resolveBypass?: (toolName: string) => { pluginId: string } | undefined;
+  /**
+   * The speaking agent's own names (display name, slug and identity name),
+   * handed to the provider with every user-message, recalled-context and
+   * verifier mask so they are never masked in the agent's own turn.
+   * Absent ⇒ nothing exempt.
+   */
+  readonly ownNames?: readonly string[];
 }): PrivacyTurnHandle {
+  const ownNames =
+    deps.ownNames !== undefined && deps.ownNames.length > 0 ? { ownNames: deps.ownNames } : {};
   let bypassed = false;
   return {
     async internToolResultV4(input) {
@@ -256,6 +268,7 @@ export function createPrivacyTurnHandle(deps: {
         rawResult: input.rawResult,
         ...(input.toolInput !== undefined ? { toolInput: input.toolInput } : {}),
         ...(input.audience !== undefined ? { audience: input.audience } : {}),
+        ...(input.piiFields !== undefined && input.piiFields.length > 0 ? { piiFields: input.piiFields } : {}),
       });
     },
 
@@ -344,6 +357,7 @@ export function createPrivacyTurnHandle(deps: {
         ...(opts?.stage !== undefined ? { stage: opts.stage } : {}),
         ...(opts?.preview === true ? { preview: true } : {}),
         ...(opts?.origin !== undefined ? { origin: opts.origin } : {}),
+        ...ownNames,
       });
     },
 
@@ -359,11 +373,12 @@ export function createPrivacyTurnHandle(deps: {
         turnId: deps.turnId,
         text,
         identityValues,
+        ...ownNames,
       });
     },
 
     async maskReplayedAnswer(text, segments) {
-      const request = { sessionId: deps.sessionId, turnId: deps.turnId, text };
+      const request = { sessionId: deps.sessionId, turnId: deps.turnId, text, ...ownNames };
       // Optional on the service contract. A provider that predates it masks a
       // replayed answer like any prompt text: only while `mask_user_prompt`
       // is on, the behaviour before the member existed.

@@ -58,6 +58,15 @@ export interface PostWebhookResult {
   bodySnippet: string;
 }
 
+/** One sentence for a non-2xx response. The body is the only diagnosis the
+ *  receiver offers, so it is kept — but an empty one must not leave the dangling
+ *  `http 500: ` the delivery log showed before #1704. Lives here, with the type
+ *  it reads, rather than in the dispatcher that happens to call it. */
+export function describeHttpFailure(result: PostWebhookResult): string {
+  const snippet = result.bodySnippet.trim();
+  return snippet ? `http ${String(result.status)}: ${snippet}` : `http ${String(result.status)}`;
+}
+
 /**
  * POST `body` to `url` behind the SSRF-guarded dispatcher, with the signature +
  * delivery headers already attached by the caller. Throws `WebhookUrlNotAllowedError`

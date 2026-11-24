@@ -22,9 +22,23 @@ type UploadState =
       /** #1490 — the version this upload replaced, when it replaced one. */
       replacedVersion?: string;
     }
-  // #1455 — `downgrade` carries the refused file back, so the operator can
+  // #1455 / #2088 — `retry` carries the refused file back with the consents
+  // given so far plus the one this refusal asks for, so the operator can
   // confirm without picking the same zip a second time.
-  | { kind: 'error'; code: string; message: string; downgrade?: File };
+  | { kind: 'error'; code: string; message: string; retry?: { file: File; consent: UploadConsent } };
+
+/** What the operator confirmed for one zip. A zip may need both, one after
+ *  the other, so a confirmation never drops an earlier one. */
+interface UploadConsent {
+  allowDowngrade?: boolean;
+  confirmArchetype?: boolean;
+}
+
+/** The refusals the operator can lift by confirming, and what that confirms. */
+const CONSENT_FOR: Readonly<Record<string, UploadConsent>> = {
+  'package.downgrade_blocked': { allowDowngrade: true },
+  'package.archetype_confirmation_required': { confirmArchetype: true },
+};
 
 const ACCEPTED_MIME = 'application/zip,application/x-zip-compressed,.zip';
 
@@ -38,7 +52,7 @@ export function UploadDropzone(): React.ReactElement {
   const router = useRouter();
 
   const handleFile = useCallback(
-    async (file: File, allowDowngrade = false) => {
+    async (file: File, consent: UploadConsent = {}) => {
       if (!file.name.toLowerCase().endsWith('.zip')) {
         setState({
           kind: 'error',
@@ -64,7 +78,7 @@ export function UploadDropzone(): React.ReactElement {
           onProgress: (loaded, total) => {
             setState({ kind: 'uploading', filename: file.name, loaded, total });
           },
-          ...(allowDowngrade ? { allowDowngrade: true } : {}),
+          ...consent,
         });
         setState({
           kind: 'success',
@@ -94,9 +108,9 @@ export function UploadDropzone(): React.ReactElement {
               parsed.message ?? err.message,
               tErr,
             ),
-            // Only the downgrade refusal is retryable as-is: every other code
-            // means the zip itself has to change.
-            ...(code === 'package.downgrade_blocked' ? { downgrade: file } : {}),
+            // Only a refusal that asks for a confirmation is retryable as-is:
+            // every other code means the zip itself has to change.
+            ...(CONSENT_FOR[code] ? { retry: { file, consent: { ...consent, ...CONSENT_FOR[code] } } } : {}),
           });
         } else {
           setState({
@@ -134,9 +148,9 @@ export function UploadDropzone(): React.ReactElement {
     setState({ kind: 'idle' });
   }, []);
 
-  // #1455 — the zip a downgrade refusal sent back, narrowed once so the
-  // confirm handler closes over a `File` rather than over the state union.
-  const refusedDowngrade = state.kind === 'error' ? state.downgrade : undefined;
+  // #1455 — the zip a refusal sent back, narrowed once so the confirm
+  // handler closes over it rather than over the state union.
+  const retry = state.kind === 'error' ? state.retry : undefined;
 
   return (
     <section
@@ -239,10 +253,10 @@ export function UploadDropzone(): React.ReactElement {
               code={state.code}
               message={state.message}
               onDismiss={reset}
-              {...(refusedDowngrade
+              {...(retry
                 ? {
-                    onConfirmDowngrade: () => {
-                      void handleFile(refusedDowngrade, true);
+                    onConfirm: () => {
+                      void handleFile(retry.file, retry.consent);
                     },
                   }
                 : {})}
@@ -397,14 +411,15 @@ function ErrorRow({
   code,
   message,
   onDismiss,
-  onConfirmDowngrade,
+  onConfirm,
 }: {
   code: string;
   message: string;
   onDismiss: () => void;
-  /** #1455 — present only for `package.downgrade_blocked`: re-sends the zip
-   *  that was refused, with the operator's consent. */
-  onConfirmDowngrade?: () => void;
+  /** #1455 / #2088 — present only for a refusal that asks for a
+   *  confirmation: re-sends the zip that was refused, with the operator's
+   *  consent. */
+  onConfirm?: () => void;
 }): React.ReactElement {
   const t = useTranslations('store.upload');
   return (
@@ -418,9 +433,9 @@ function ErrorRow({
       </div>
       <p className="mt-2 text-sm text-[color:var(--fg-strong)]">{message}</p>
       <div className="mt-3 flex flex-wrap items-center gap-3">
-        {onConfirmDowngrade && (
-          <Button variant="secondary" pill onClick={onConfirmDowngrade}>
-            {t('confirmDowngrade')}
+        {onConfirm && (
+          <Button variant="secondary" pill onClick={onConfirm}>
+            {t(code === 'package.archetype_confirmation_required' ? 'confirmArchetypeUpdate' : 'confirmDowngrade')}
           </Button>
         )}
         {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare text, no border/bg) */}

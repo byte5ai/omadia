@@ -87,16 +87,6 @@ export const ConfigSchema = z.object({
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
     .default(false),
-  // #445 — sticky Direct Line. When on, a bare `#<agent>` binds the
-  // conversation to that specialist until the user sends `#end` /
-  // `#orchestrator`. Default OFF: not every channel can show which specialist
-  // is answering (Telegram renders neither the consulted footer nor the
-  // delegated-answer attribution today), and an invisible sticky mode would
-  // break the "never ambiguous who is answering" requirement this exists for.
-  ORCHESTRATOR_DIRECT_LINE_STICKY: z
-    .enum(['true', 'false'])
-    .transform((v) => v === 'true')
-    .default(false),
   MODEL_ROUTING_CLASSIFIER_MODEL: z.string().min(1).optional(),
   MODEL_ROUTING_SIMPLE_MODEL: z.string().min(1).optional(),
   MODEL_ROUTING_COMPLEX_MODEL: z.string().min(1).optional(),
@@ -336,19 +326,27 @@ export const ConfigSchema = z.object({
     .transform((v) => v === 'true')
     .default(true),
 
-  // #575 — enforce the audience floor: a room may only do what EVERY
-  // participant is granted. Off by default, and that default is load-bearing
-  // rather than cautious. The floor fails closed by design, so switching it on
-  // against an empty grant table does not mean "no policy yet" — it means every
-  // tool refused, no context recalled and no attachment readable, in every
-  // room, at once. Seed and review the grants through
-  // /api/v1/admin/audience-grants (available whenever Postgres is), THEN set
-  // this. It also needs Postgres: with the in-memory backend there is nowhere
-  // durable for grants to live, and a restart would shut the rooms.
+  // #575 / #2048 — enforce the audience floor: a room may only do what EVERY
+  // participant may do. ON by default since #2048 (spec 2042 G15): a person
+  // who cannot be resolved closes the room, and an explicit prohibition from
+  // /api/v1/admin/audience-grants binds the whole room. What an ordinary,
+  // resolved person may do by default is AUDIENCE_BASELINE_GRANTS below.
+  // `false` switches every guard off (the pre-#2048 behaviour); consultations
+  // between agents need the floor and are refused without it (spec §5.4).
   AUDIENCE_FLOOR_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
-    .default(false),
+    .default(true),
+
+  // #2048 — what every resolved person holds before any explicit grant:
+  //  - `member` (default): any tool the agent itself was granted (`tool:*`),
+  //    recall and attachment reads; narrowed per person or role by explicit
+  //    prohibitions. Works without Postgres (prohibitions then cannot be
+  //    stored, so only the baseline applies).
+  //  - `none`: the strict #575 reading — only explicit grants count, so an
+  //    empty grant table refuses every tool in every room. Needs Postgres;
+  //    seed the grants BEFORE switching to it.
+  AUDIENCE_BASELINE_GRANTS: z.enum(['member', 'none']).default('member'),
 
   // #575 — read the audience floor's host policy as an ALLOW-LIST rather than
   // as prohibitions only.
@@ -428,6 +426,61 @@ export const ConfigSchema = z.object({
   // (`turn_receipts`). The payload is PII-free (counts only) but turn_id +
   // scope are personal-data linkage, so rows are reaped after this many days.
   RECEIPT_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
+  // #2043 — retention of stored inbound conversation messages
+  // ('conversationMessages@2'). Events outlive the END of their subscription
+  // by the grace period; once it has ended they also go after the maximum
+  // age. Nothing of a running process is removed by age.
+  // The engine plugin keeps its own record.
+  CONVERSATION_MESSAGES_GRACE_MS: z.coerce.number().int().nonnegative().default(6 * 60 * 60 * 1000),
+  // Always bounded: there is no "keep forever" (a subscription that is never
+  // ended would grow without limit).
+  CONVERSATION_MESSAGES_MAX_AGE_DAYS: z.coerce.number().int().positive().default(30),
+  // How other machines learn of a subscribe / unsubscribe: LISTEN on the
+  // table's NOTIFY (one pooled connection) plus a periodic reconcile, which is
+  // also where the kernel ends subscriptions whose ground is gone.
+  CONVERSATION_MESSAGES_LISTEN: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  CONVERSATION_MESSAGES_RECONCILE_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
+  CONVERSATION_MESSAGES_PURGE_INTERVAL_MS: z.coerce.number().int().positive().default(10 * 60 * 1000),
+  // #2090 — execution scopes of archetype plugins. A `configuring` scope (the
+  // time between the start request and the handshake) lasts at most this
+  // long; then the facilitation ends as aborted (spec 2043 §0, default 72 h).
+  EXECUTION_SCOPE_CONFIGURING_MAX_HOURS: z.coerce.number().int().positive().max(24 * 30).default(72),
+  // How often scopes past their deadline are ended and reservations of
+  // processes without an open scope released.
+  EXECUTION_SCOPE_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
+  // #2043 — ceiling on kernel-run turns ('agentTurn@2') per agent and minute;
+  // a loop in an engine plugin must not spend without bound. 0 = no ceiling.
+  AGENT_TURN_MAX_PER_MINUTE: z.coerce.number().int().nonnegative().default(60),
+  // #2082 — agent-owned triggers (spec 2042 §5.12). Instance caps the harness
+  // enforces on every hook, wakeup and timer; no prompt or plugin can lift
+  // them. TRIGGERS_ENABLED=false is a config-level stop: nothing fires —
+  // also no routine, Agent Builder schedule or memory consolidation, which
+  // fire through triggers (the operator's live kill switch is
+  // /api/v1/operator/execution).
+  TRIGGERS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  TRIGGER_TICK_MS: z.coerce.number().int().min(1_000).default(15_000),
+  TRIGGER_LEASE_MS: z.coerce.number().int().min(60_000).default(20 * 60_000),
+  TRIGGER_ONE_SHOT_MAX_DAYS: z.coerce.number().int().positive().max(365).default(90),
+  TRIGGER_RECURRING_MAX_DAYS: z.coerce.number().int().positive().max(365).default(30),
+  TRIGGER_MIN_INTERVAL_MINUTES: z.coerce.number().int().positive().default(15),
+  TRIGGER_MIN_INTERVAL_LIVE_MINUTES: z.coerce.number().int().positive().default(1),
+  TRIGGER_MAX_ACTIVE_PER_AGENT: z.coerce.number().int().positive().default(50),
+  TRIGGER_MAX_USD_PER_FIRING: z.coerce.number().nonnegative().default(1),
+  TRIGGER_MAX_USD_PER_TRIGGER: z.coerce.number().nonnegative().default(20),
+  TRIGGER_MONTHLY_USD_PER_AGENT: z.coerce.number().nonnegative().default(25),
+  TRIGGER_MONTHLY_USD_PER_INSTANCE: z.coerce.number().nonnegative().default(200),
+  // #1035 — instance defaults of a recipient's communication profile for
+  // proactive messages: quiet hours (`HH:MM-HH:MM` or `off`), their time zone,
+  // and messages per hour. A recipient profile overrides them.
+  PROACTIVE_QUIET_HOURS: z.string().default('22:00-07:00'),
+  PROACTIVE_TIMEZONE: z.string().default('Europe/Berlin'),
+  PROACTIVE_MAX_PER_HOUR: z.coerce.number().int().nonnegative().default(6),
 
   // #758 — Ed25519 checkpoint signing for the receipt hash chain. The
   // private key (base64 PKCS#8 DER; generate with
@@ -454,6 +507,20 @@ export const ConfigSchema = z.object({
     .string()
     .optional()
     .transform((v) => (v && v.length > 0 ? v : undefined)),
+  // The same database WITHOUT a transaction-mode connection pooler, for the
+  // one thing that needs a server session of its own: LISTEN. Optional. For
+  // a Neon `-pooler` address the direct host is derived when this is unset;
+  // behind any other pooler set it, or set CONVERSATION_MESSAGES_LISTEN=false
+  // (the periodic reconcile then carries subscription changes alone).
+  // #2088 — how long a deleted agent's tombstone (its row and everything that
+  // references it) is kept before the operator can purge it without typing a
+  // confirmation. A purge is always an explicit action; this is not a timer
+  // that deletes anything.
+  AGENT_TOMBSTONE_RETENTION_DAYS: z.coerce.number().int().min(0).default(30),
+  DATABASE_URL_DIRECT: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.length > 0 ? v : undefined)),
 
   // Knowledge-graph tenant scope. Same value the NeonKnowledgeGraph reads
   // directly from process.env; declared here too so the diagram service can
@@ -469,11 +536,9 @@ export const ConfigSchema = z.object({
     .default('MultiTenant'),
   MICROSOFT_APP_TENANT_ID: z.string().optional(),
   /**
-   * Bot Framework OAuth Connection Name (configured in Azure Bot Service).
-   * When set, the Teams bot attempts to retrieve a Teams SSO assertion for
-   * each message and threads it into the orchestrator as `ssoAssertion`,
-   * enabling the calendar tools. Unset → calendar tools stay dormant (no
-   * OAuth flow, no consent prompts).
+   * Legacy: the Bot Framework OAuth connection name now lives in the Teams
+   * plugin's setup (`teams_sso_connection_name`). The kernel no longer reads
+   * this value; kept so an existing .env still parses.
    */
   TEAMS_SSO_CONNECTION_NAME: z.string().optional(),
 
@@ -491,10 +556,9 @@ export const ConfigSchema = z.object({
    */
   TEAMS_PUBLIC_BASE_URL: z.string().url().optional(),
 
-  // Telegram channel. When TELEGRAM_BOT_TOKEN is set, the channel package is
-  // auto-installed at boot. TELEGRAM_WEBHOOK_SECRET is required alongside it
-  // (HMAC-style header validation on the webhook). TELEGRAM_PUBLIC_BASE_URL
-  // is optional — when missing, the channel falls back to long-polling.
+  // Telegram channel env (legacy). The kernel no longer auto-installs a
+  // channel from these; the Telegram plugin is installed from the store and
+  // configured through its setup form. Kept so an existing .env still parses.
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_WEBHOOK_SECRET: z.string().optional(),
   TELEGRAM_PUBLIC_BASE_URL: z.string().url().optional(),
@@ -686,6 +750,26 @@ export const ConfigSchema = z.object({
     .transform((v) => v === 'true')
     .default(false),
   VERIFIER_MODE: z.enum(['shadow', 'enforce']).default('shadow'),
+  // Spec 2042 §5.10 — the model gateway and the plugin network sandbox are
+  // always enforced since the contract step (S3b): a model call outside an
+  // execution context and a plugin request outside its network permission
+  // are refused. There is no observe mode any more; what was refused is
+  // listed at GET /api/v1/admin/model-gateway.
+  // Spec 2042 §5.10 — the instance's daily budgets of the two execution
+  // contexts that belong to no agent: operator jobs (admin functions an
+  // operator starts: issue preview, skill verification, topic regrouping,
+  // bulk promotion, the builders' chats) and maintenance runs (index upkeep
+  // such as the embedding backfill, embed only). Model calls per 24 hours,
+  // summed over every run of the context; each run has its own budget too.
+  OPERATOR_TOOLS_DAILY_MODEL_CALLS: z.coerce.number().int().positive().default(20_000),
+  MAINTENANCE_DAILY_MODEL_CALLS: z.coerce.number().int().positive().default(200_000),
+  // Spec 2042 §5.10 — the isolated profile of every Claude CLI spawn: HOME
+  // and CLAUDE_CONFIG_DIR point to a directory holding only the subscription
+  // login, so no ~/.claude/CLAUDE.md reaches the model. `auto` isolates where
+  // the login can follow (CLAUDE_CONFIG_DIR set, or a login file to take
+  // over); `isolated` always (on a macOS keychain login: sign in once more);
+  // `inherit` keeps the environment as it is.
+  OMADIA_CLI_PROFILE: z.enum(['auto', 'isolated', 'inherit']).default('auto'),
   VERIFIER_MODEL: z.string().min(1).default('claude-haiku-4-5-20251001'),
   VERIFIER_MAX_CLAIMS: z.coerce.number().int().positive().default(20),
   VERIFIER_AMOUNT_TOLERANCE: z.coerce.number().nonnegative().default(0.01),

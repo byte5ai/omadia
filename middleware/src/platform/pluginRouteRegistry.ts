@@ -272,6 +272,15 @@ export class PluginRouteRegistry {
     source: string,
     options?: PluginRouteOptions,
   ): () => void {
+    // A plain request handler `(req, res[, next])` is accepted and wrapped:
+    // a plugin package ships unbundled and need not import Express to serve a
+    // handful of routes. Everything else about the mount (auth gate, prefix
+    // ownership, disposal) is the same.
+    if (isPlainRequestHandler(router)) {
+      const wrapped = createRouter();
+      wrapped.use(router);
+      router = wrapped;
+    }
     if (!isExpressRouter(router)) {
       throw new Error(
         `PluginRouteRegistry: '${source}' registered a non-Express router at '${prefix}' — got ${typeof router}`,
@@ -550,8 +559,7 @@ function guarded(entry: RouteEntry): RequestHandler {
 }
 
 /**
- * `express.raw()` with a wildcard content-type matcher, plus the `req.rawBody`
- * alias.
+ * `express.raw()` that accepts every content type, plus the `req.rawBody` alias.
  *
  * The matcher accepts ANY content type on purpose: a webhook sender chooses its
  * own `Content-Type` (GitHub sends `application/json`, others send
@@ -559,12 +567,22 @@ function guarded(entry: RouteEntry): RequestHandler {
  * computed over bytes, not over a media type. Matching on type here would make
  * signature verification silently content-type dependent.
  *
+ * Which is why the matcher is a FUNCTION and not body-parser's wildcard type
+ * STRING (issue #1700): a string matcher goes through `type-is`, which needs a
+ * media type to compare against, so a request with NO `content-type` header —
+ * the "or nothing at all" case above — matches nothing, the wildcard included.
+ * body-parser then skips parsing, `req.rawBody` is never set, and the plugin's
+ * HMAC runs over the wrong bytes (or none) while the delivery was signed
+ * correctly. A function matcher skips the type check altogether. Bodyless
+ * requests still skip the parser via body-parser's own `hasBody` guard, so
+ * nothing is read where there is nothing to read.
+ *
  * Idempotent: when `pluginRawBodyMount` already parsed the body ahead of the
  * global JSON parser, body-parser short-circuits on its own `_body` marker and
  * `req.body` is already the Buffer this sets `rawBody` from.
  */
 function rawBodyCapture(limit: string): RequestHandler {
-  const parse = expressRaw({ type: '*/*', limit });
+  const parse = expressRaw({ type: () => true, limit });
   return (req, res, next) => {
     parse(req, res, (err?: unknown) => {
       if (err) {
@@ -591,6 +609,16 @@ function isUnderPrefix(child: string, parent: string): boolean {
 /** Path segments that carry a name — `/` is 0, `/api` is 1, `/api/x` is 2. */
 function countNonEmptySegments(path: string): number {
   return path.split('/').filter((segment) => segment.length > 0).length;
+}
+
+/** A function that is not a router and takes at most (req, res, next). Four
+ *  parameters would be an Express error handler, which is not a route. */
+function isPlainRequestHandler(value: unknown): value is RequestHandler {
+  return (
+    typeof value === 'function' &&
+    typeof (value as { use?: unknown }).use !== 'function' &&
+    value.length <= 3
+  );
 }
 
 function isExpressRouter(value: unknown): value is Router {

@@ -21,6 +21,7 @@ import type { ChatStreamEvent } from '../../packages/harness-channel-sdk/src/cha
 import { CliIncompatibleError } from '../../packages/harness-orchestrator/src/cliSpawnGate.js';
 import { KERNEL_NATIVE_TOOL_NAMES } from '../../packages/harness-orchestrator/src/orchestrator.js';
 import { turnContext } from '../../packages/harness-orchestrator/src/turnContext.js';
+import { resetModelGatewayForTests, setModelCallHalts } from '@omadia/usage-telemetry';
 
 // Unit tests for the M2 stream-json → omadia mapping. The `claude -p
 // --output-format stream-json` terminal `result` line is the authoritative
@@ -1398,5 +1399,98 @@ describe('CliChatAgent conversation memory (#1087)', () => {
     assert.match(without, /never claim that no conversation has taken place/i);
     // The note is additive: persona and runtime context stay untouched.
     assert.ok(without.startsWith('Persona.'), without);
+  });
+});
+
+/**
+ * Spec 2042 §5.10, §6 criterion 37 — a running `claude-cli` turn ends itself:
+ * at its deadline, on idle timeout and on a kill switch flipped while it runs.
+ * The fake child never produces a result and only ends when it is killed.
+ */
+describe('CliChatAgent ends a running turn (spec 2042 criterion 37)', () => {
+  function makeHangingAgent(opts: {
+    readonly spawnTimeoutMs?: number;
+    readonly idleTimeoutMs?: number;
+    readonly agentSlug?: string;
+  }): { readonly agent: CliChatAgent; readonly kills: NodeJS.Signals[]; readonly spawned: () => boolean } {
+    const kills: NodeJS.Signals[] = [];
+    let spawned = false;
+    const agent = new CliChatAgent({
+      dispatch: {
+        listDispatchableToolSpecs: () => [],
+        ...(opts.agentSlug !== undefined ? { agentSlug: opts.agentSlug } : {}),
+      } as unknown as CliChatAgentDeps['dispatch'],
+      createLoopbackServer: () =>
+        ({
+          start: async () => ({ url: 'http://127.0.0.1:1/mcp', port: 1, bearer: 'bearer' }),
+          stop: async () => {},
+        }) as never,
+      resolveCliVersion: async () => '2.1.259',
+      logger: { info: () => {}, warn: () => {} },
+      spawnTimeoutMs: opts.spawnTimeoutMs ?? 60_000,
+      idleTimeoutMs: opts.idleTimeoutMs ?? 60_000,
+      spawnFn: (() => {
+        spawned = true;
+        const stdout = new PassThrough();
+        const stderr = new PassThrough();
+        const stdin = new PassThrough();
+        const child = Object.assign(new PassThrough(), {
+          stdin,
+          stdout,
+          stderr,
+          exitCode: null as number | null,
+          signalCode: null as NodeJS.Signals | null,
+          kill: (signal: NodeJS.Signals = 'SIGTERM') => {
+            kills.push(signal);
+            if (child.signalCode !== null) return true;
+            child.signalCode = signal;
+            stdout.end();
+            stderr.end();
+            child.emit('close', null, signal);
+            return true;
+          },
+        });
+        // The CLI reads its prompt and then never answers and never exits.
+        stdin.resume();
+        return child;
+      }) as unknown as CliChatAgentDeps['spawnFn'],
+    });
+    return { agent, kills, spawned: () => spawned };
+  }
+
+  it('criterion 37: a running claude-cli turn stops at its deadline (spawnTimeoutMs)', async () => {
+    const { agent, kills } = makeHangingAgent({ spawnTimeoutMs: 150 });
+    const started = Date.now();
+    await assert.rejects(agent.chat({ userMessage: 'hang' }), /CLI timed out after 150ms/);
+    assert.ok(Date.now() - started < 5_000, 'the turn ended near its deadline');
+    assert.deepEqual(kills.slice(0, 1), ['SIGTERM']);
+  });
+
+  it('criterion 37: a running claude-cli turn stops on idle timeout', async () => {
+    const { agent, kills } = makeHangingAgent({ idleTimeoutMs: 150 });
+    await assert.rejects(agent.chat({ userMessage: 'hang' }), /CLI idle timeout after 150ms/);
+    assert.deepEqual(kills.slice(0, 1), ['SIGTERM']);
+  });
+
+  it('criterion 37: a running claude-cli turn stops when the kill switch is flipped while it runs', async () => {
+    resetModelGatewayForTests();
+    const { agent, kills, spawned } = makeHangingAgent({ agentSlug: 'sales' });
+    try {
+      const turn = agent.chat({ userMessage: 'hang' });
+      const flip = (async (): Promise<void> => {
+        while (!spawned()) await new Promise((r) => setTimeout(r, 10));
+        setModelCallHalts({ agents: new Map([['sales', 'runaway']]) });
+      })();
+      await assert.rejects(turn, (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.equal((err as { code?: unknown }).code, 'kill_switch');
+        assert.match(err.message, /runaway/);
+        return true;
+      });
+      await flip;
+      assert.deepEqual(kills.slice(0, 1), ['SIGTERM']);
+    } finally {
+      resetModelGatewayForTests();
+    }
   });
 });

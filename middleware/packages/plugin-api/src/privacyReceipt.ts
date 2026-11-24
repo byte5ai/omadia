@@ -5,6 +5,7 @@ import type {
   ModelClassificationRequest,
   ModelClassificationResult,
 } from './privacyFieldClassification.js';
+import type { ToolPIIField } from './piiAnnotation.js';
 /**
  * `privacy.redact@1` — capability contract for the Privacy Shield v4
  * Data-Plane Boundary.
@@ -22,6 +23,24 @@ import type {
 
 export const PRIVACY_REDACT_SERVICE_NAME = 'privacyRedact';
 export const PRIVACY_REDACT_CAPABILITY = 'privacy.redact@1';
+
+/**
+ * Spec 2042 — service name of `agentNames@1`, published by the kernel: the
+ * names of the agents on the roster (the slugs, names and identity names of
+ * the agents that exist), minus every name an active user bears. Agent
+ * names are not personal data: a privacy provider leaves a span whose whole
+ * value equals one of them as written, under the rules of
+ * {@link PrivacyPromptMaskRequest.ownNames}, in every turn and in stored-text
+ * scopes. Read once per turn and once per job run.
+ */
+export const AGENT_NAMES_SERVICE_NAME = 'agentNames';
+
+/**
+ * The `agentNames@1` provider ({@link AGENT_NAMES_SERVICE_NAME}). `null` while
+ * the roster or the human names are not known yet: then no name is exempt
+ * (masking wins).
+ */
+export type AgentNamesProvider = () => readonly string[] | null;
 
 /** #1556 — one field a `non_personal_fields` rule sent to the model in clear. */
 export interface OperatorClearedFieldEntry {
@@ -321,6 +340,13 @@ export interface PrivacyToolResultV4Request {
    * the caller cannot call. Same masking either way.
    */
   readonly audience?: PrivacyDigestAudience;
+  /**
+   * Spec 2042 §5.10 (1.83.0) — the tool's declared PII fields
+   * (`ToolRegistrationOptions.piiFields`): masked in the digest whatever the
+   * classifier says. Absent ⇒ the classifier alone decides. Honoured by the
+   * bundled privacy guard; another `privacy.redact@1` provider may ignore it.
+   */
+  readonly piiFields?: readonly ToolPIIField[];
 }
 
 /** #1561 — the reader of a digest text; see
@@ -607,6 +633,17 @@ export interface PrivacyPromptMaskRequest {
    * replays as chat history) and books into `maskedContextSpans`.
    */
   readonly origin?: PrivacyPromptOrigin;
+  /**
+   * The speaking agent's own names (display name, slug and identity name),
+   * set from operator-configured agent identity only. Never masked in its
+   * own turn: a detected span whose whole value equals one of them
+   * (ignoring case, surrounding quotes and punctuation) stays as written
+   * and is not booked. Exact equality only — a longer name that contains
+   * one ("Mira Schulz" for an agent "Mira") or a possessive is masked as
+   * before. The operator deny-list always wins. Names shorter than 2
+   * characters are ignored.
+   */
+  readonly ownNames?: readonly string[];
 }
 
 /** See {@link PrivacyPromptMaskRequest.origin}. */
@@ -631,6 +668,8 @@ export interface PrivacyVerifierProjectionRequest {
    * whether or not a detector would have found it.
    */
   readonly identityValues?: readonly string[];
+  /** See {@link PrivacyPromptMaskRequest.ownNames}. */
+  readonly ownNames?: readonly string[];
 }
 
 /**
@@ -657,6 +696,8 @@ export interface PrivacyReplayedAnswerRequest {
    * on every turn that recalls it. The C0 baseline always sees `text` whole.
    */
   readonly segments?: readonly string[];
+  /** See {@link PrivacyPromptMaskRequest.ownNames}. */
+  readonly ownNames?: readonly string[];
 }
 
 /**

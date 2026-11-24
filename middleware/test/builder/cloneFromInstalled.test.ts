@@ -51,7 +51,7 @@ async function makeInstalledSource(
 ): Promise<string> {
   const draft = await store.create(userEmail, overrides.name ?? 'Source Agent');
   const spec = overrides.spec ?? {
-    template: 'agent-integration',
+    template: 'integration',
     id: agentId,
     version: '0.1.0',
     name: overrides.name ?? 'Source Agent',
@@ -59,7 +59,6 @@ async function makeInstalledSource(
     category: 'analysis',
     depends_on: ['de.byte5.integration.openweather'],
     tools: [],
-    skill: { role: 'tester' },
     setup_fields: [],
     playbook: { when_to_use: 'tests', not_for: [], example_prompts: [] },
     network: { outbound: ['api.example.com'] },
@@ -160,7 +159,7 @@ describe('cloneFromInstalled (B.6-3)', () => {
     const draft = await h.store.create('alice@example.com', 'Weather (Kopie 2)');
     await h.store.update('alice@example.com', draft.id, {
       spec: {
-        template: 'agent-integration',
+        template: 'integration',
         id: 'de.byte5.agent.foo',
         version: '0.1.0',
         name: 'Weather (Kopie 2)',

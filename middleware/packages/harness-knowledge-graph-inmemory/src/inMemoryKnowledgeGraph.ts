@@ -104,6 +104,7 @@ import {
   type SessionSummary,
   type SessionView,
   type SessionReadOptions,
+  type TurnAmend,
   type TurnIngest,
   type TurnIngestResult,
   type TurnSearchHit,
@@ -299,6 +300,18 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     this.nodes.set(externalId, { ...node, manuallyAuthored: value });
   }
 
+  async amendTurn(turnExternalId: string, amend: TurnAmend): Promise<void> {
+    const node = this.nodes.get(turnExternalId);
+    if (!node || node.type !== 'Turn') return;
+    const props: Record<string, unknown> = { ...node.props };
+    if (amend.identityGuard !== undefined) props['identityGuard'] = amend.identityGuard;
+    if (amend.withholdAnswer === true) {
+      props['assistantAnswer'] = '';
+      props['tailOnly'] = true;
+    }
+    this.nodes.set(turnExternalId, { ...node, props });
+  }
+
   async ingestTurn(turn: TurnIngest): Promise<TurnIngestResult> {
     const sessionId = sessionNodeId(turn.scope);
     const turnId = turnNodeId(turn.scope, turn.time);
@@ -334,6 +347,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         // session transcript (backfill, replay) carries no flag and must not
         // clear one the live turn recorded.
         ...(turn.unprotected !== undefined ? { unprotected: turn.unprotected } : {}),
+        // Spec 2042 — the identity guard's verdict, for tracing a withheld answer.
+        ...(turn.identityGuard !== undefined ? { identityGuard: turn.identityGuard } : {}),
         // Member-scoped memory — see the Neon backend. Only written when set,
         // so a re-ingest without it keeps the owners the live turn recorded.
         ...(turn.owners !== undefined ? { owners: canonicalOwners(turn.owners) } : {}),
@@ -651,6 +666,13 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         // which store the deployment happens to run.
         ...(trace.model ? { model: trace.model } : {}),
         ...(trace.provider ? { provider: trace.provider } : {}),
+        // #2051 — the working mode, flattened like the Neon twin.
+        ...(trace.workingMode
+          ? {
+              workingMode: trace.workingMode.name,
+              workingModeSkillId: trace.workingMode.skillId,
+            }
+          : {}),
         ...(trace.error ? { error: trace.error } : {}),
       },
     });

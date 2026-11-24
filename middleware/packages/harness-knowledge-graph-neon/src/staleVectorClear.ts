@@ -1,5 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 
+import { connectForSession } from './sessionConnection.js';
+
 /**
  * #440 — the stale-vector clear, extracted from `embeddingModelGate.ts`.
  *
@@ -134,7 +136,9 @@ export async function clearStaleVectors(
   let attemptsReset = 0;
   let pending = false;
 
-  const client: PoolClient = await pool.connect();
+  // Its own server session: the clear lock is session-level and is held
+  // across many transactions (see sessionConnection.ts).
+  const client: PoolClient = await connectForSession(pool);
   const session: ClearSession = { poisoned: false };
   try {
     if (!(await tryAcquireClearLock(client, tenantId))) {

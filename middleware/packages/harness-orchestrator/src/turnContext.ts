@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { NativeToolCallContext } from '@omadia/plugin-api';
 import type { LlmProvider } from '@omadia/llm-provider';
 import type { AudienceFloorProvider } from './audienceFloorGuard.js';
 import type { CommandPolicyProvider } from './commandPolicyGuard.js';
@@ -6,6 +7,9 @@ import type { ChatParticipantsProvider } from './chatParticipants.js';
 import type { McpInputSentinelMint } from './mcp/pendingMcpInput.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
 import type { ToolReplayLedger } from './toolReplayLedger.js';
+import type { TurnDataCollector } from './turnDataCollector.js';
+import type { DiscretionTurnState } from './discretion/turnLabels.js';
+import type { ConsultationTurnState } from './consultation/consultTool.js';
 
 /**
  * Per-turn context that propagates implicitly through every `await` triggered
@@ -57,6 +61,12 @@ export type GraphReadScope =
 export interface TurnContextValue {
   turnId: string;
   turnDate: string;
+  /**
+   * #2043 — where a tool call of this turn comes from, handed to a plugin's
+   * tool handler as its second argument. Built once at turn start from the
+   * turn input (see `toolCallContext.ts`); kernel-stated, never model-supplied.
+   */
+  toolCall?: NativeToolCallContext;
   /**
    * Per-orchestrator isolation — slug of the Agent (orchestrator) handling
    * this turn. Set by the orchestrator at turn start (= `this.agentId`).
@@ -235,14 +245,15 @@ export interface TurnContextValue {
    */
   mcpUserKey?: string;
   /**
-   * Epic #459 W4/W5 (codex fold) — the persona skill the W8 per-turn router
-   * selected as this turn's acting identity, or undefined when no persona is
-   * active. Skill-bound MCP DomainTools check it at dispatch: a tool bound to
-   * skill X must not be callable on a turn where X is not the active persona
-   * (that would exceed the bind-time consent). Set by the orchestrator right
-   * after persona routing, mutated on the live store so nested scopes see it.
+   * Epic #459 W4/W5 (codex fold), #2051 — the working mode (skill) the
+   * per-turn selector chose for this turn, or undefined when the turn runs
+   * without one. Skill-bound MCP DomainTools check it at dispatch: a tool
+   * bound to skill X must not be callable on a turn where X is not the active
+   * working mode (that would exceed the bind-time consent). Set by the
+   * orchestrator right after mode selection, mutated on the live store so
+   * nested scopes see it.
    */
-  activePersonaSkillId?: string;
+  activeWorkingModeSkillId?: string;
   /**
    * W2-1 (#544) — outcome of an MCP `input_required` REPLAY performed at turn
    * start, as a note to append to the user's wire message so the model can
@@ -253,7 +264,7 @@ export interface TurnContextValue {
    * `runTurn → chatInContext → chatInContextInner` and the streaming mirror of
    * all three, on both of which every call site already passes `input`. Written
    * onto the LIVE store inside the turn scope (same technique as
-   * `activePersonaSkillId`), read once when the wire messages are assembled.
+   * `activeWorkingModeSkillId`), read once when the wire messages are assembled.
    *
    * Carries no collected values — those may be secrets the user typed for the
    * server, and this string reaches the LLM and the session log.
@@ -328,6 +339,14 @@ export interface TurnContextValue {
    */
   renderProvenance?: { notes: string[] };
   /**
+   * #2085 — this turn's side-channel data (spec 2042 §5.13): what the kernel
+   * tool `deliver_data` collected for the answer, never shown to a model. Set
+   * by the orchestrator at turn start and shared by reference with every
+   * nested scope; `undefined` outside an orchestrator turn, where
+   * `deliver_data` refuses.
+   */
+  dataSideChannel?: TurnDataCollector;
+  /**
    * Where the orchestrator's own model calls run this turn — its provider and
    * model after `resolveTurnExecution`, and after a fallback hop the fallback.
    * Read by `LocalSubAgent` as ITS fallback: a sub-agent whose configured model
@@ -373,6 +392,20 @@ export interface TurnContextValue {
    * executes as before. Holds raw handler results: never log or persist it.
    */
   toolReplayLedger?: ToolReplayLedger;
+  /**
+   * Spec 2042 §5.11 — the turn's discretion state: the union of the labels of
+   * everything read this turn, the turn's own conversation and its readers.
+   * Installed once per turn; a mutable box for the same shallow-copy reason
+   * as {@link memoryFileRead}. Undefined outside a turn: nothing is labelled
+   * and no egress is checked (see `discretion/turnLabels.ts`).
+   */
+  discretion?: DiscretionTurnState;
+  /**
+   * Spec 2042 §5.4 — the turn's consultations: the origin and user a
+   * consulted colleague runs with, and the contributions the harness delivers
+   * with the answer. Mutable box, installed once per turn.
+   */
+  consultation?: ConsultationTurnState;
 }
 
 /** See `TurnContextValue.orchestratorExecution`. */
@@ -395,6 +428,14 @@ const storage = new AsyncLocalStorage<TurnContextValue>();
 export const turnContext = {
   /** Runs `fn` with `value` as the active turn. Use from regular async fns. */
   run<T>(value: TurnContextValue, fn: () => Promise<T>): Promise<T> {
+    return storage.run(value, fn);
+  },
+  /**
+   * `run` for any return type (a sync value, a promise, a generator): the
+   * subscription-CLI turn wraps every call it makes in its captured context
+   * this way (#2194).
+   */
+  runScoped<T>(value: TurnContextValue, fn: () => T): T {
     return storage.run(value, fn);
   },
   /**
@@ -423,7 +464,7 @@ export const turnContext = {
    * the context is active for exactly the spans that execute generator body
    * code, and is NOT active while the consumer processes a yielded value.
    * `value` is passed by reference on every step, so writes onto the live store
-   * (`activePersonaSkillId`, `mcpInputReplayNote`) stay visible to later steps
+   * (`activeWorkingModeSkillId`, `mcpInputReplayNote`) stay visible to later steps
    * — same semantics `run()` gives a plain async function.
    */
   runGenerator<T>(
@@ -536,6 +577,21 @@ export interface TurnUsageAttribution {
  *  orchestrator registers with `setUsageContextProvider`. */
 export function currentUsageContext(): TurnUsageAttribution | undefined {
   return usageContextFromTurn(storage.getStore());
+}
+
+/**
+ * Spec 2042 §5.10 — the agent turn around the caller as the model gateway's
+ * execution context: every model call inside an agent's turn (its helpers,
+ * turn hooks, plugin `ctx.llm`, memory and embeddings) runs in that agent's
+ * envelope. Only a real turn counts — the placeholder scopes routes open
+ * around a turn carry no turn id and no agent.
+ */
+export function currentAgentTurnExecutionContext():
+  | { readonly kind: 'agent_turn'; readonly ownerId: string; readonly agentSlug: string }
+  | undefined {
+  const ctx = storage.getStore();
+  if (!ctx || ctx.turnId === '' || !ctx.agentSlug) return undefined;
+  return { kind: 'agent_turn', ownerId: ctx.agentSlug, agentSlug: ctx.agentSlug };
 }
 
 /**

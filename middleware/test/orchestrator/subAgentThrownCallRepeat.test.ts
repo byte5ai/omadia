@@ -26,7 +26,7 @@ import type { LocalSubAgentTool } from '@omadia/plugin-api';
 import { LocalSubAgent } from '../../packages/harness-orchestrator/src/localSubAgent.js';
 import type { PrivacyTurnHandle } from '../../packages/harness-orchestrator/src/privacyHandle.js';
 import { turnContext } from '../../packages/harness-orchestrator/src/turnContext.js';
-import { bridgeTool } from '../../src/plugins/dynamicAgentRuntime.js';
+import { bridgedToolError } from '../../src/plugins/bridgedToolError.js';
 
 const ANSWER = 'Ob die Adresse gespeichert wurde, ist unklar.';
 const INPUT = { partner_id: 42, street: 'Musterweg 1' };
@@ -233,15 +233,24 @@ describe('LocalSubAgent — a call that ended in an exception is not repeated', 
 
   it('refuses the repeat when a tool bridge caught the exception and returned the notice', async () => {
     const effects: unknown[] = [];
-    const bridged = bridgeTool({
-      id: 'crm_write',
-      description: 'update a partner address',
-      input: z.object({ partner_id: z.number(), street: z.string() }),
-      run: async (parsed: unknown) => {
-        effects.push(parsed);
-        throw new Error('upstream timed out after the write');
+    // A bridge (`bridgeBuilderTool`, `bridgePreviewTool`) catches the
+    // exception itself and returns the withheld notice.
+    const input = z.object({ partner_id: z.number(), street: z.string() });
+    const bridged: LocalSubAgentTool = {
+      spec: {
+        name: 'crm_write',
+        description: 'update a partner address',
+        input_schema: { type: 'object', properties: {}, required: [] },
       },
-    });
+      async handle(raw: unknown) {
+        try {
+          effects.push(input.parse(raw));
+          throw new Error('upstream timed out after the write');
+        } catch (err) {
+          return bridgedToolError('crm_write', err, 'run', 'test');
+        }
+      },
+    };
     const { provider, seen } = scripted([
       toolCalls(['crm_write', INPUT]),
       toolCalls(['crm_write', INPUT]),

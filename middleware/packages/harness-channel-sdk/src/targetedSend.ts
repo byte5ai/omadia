@@ -10,22 +10,80 @@
 import type { ChannelUserRef } from './incoming.js';
 import type { OutgoingAttachment } from './outgoing.js';
 import type { Principal } from './principal.js';
+import type { CardSupport, QuestionCard, Speaker } from '@omadia/plugin-api';
 
 /** Deliberately narrower than SemanticAnswer: a targeted message is a report /
  *  status ping, not a full conversational reply. */
 export interface TargetedMessage {
   text: string;
   attachments?: OutgoingAttachment[];
+  /** People to @mention (#2043). Each `text` occurs in `text`; the provider
+   *  turns that occurrence into a platform mention. A provider without
+   *  mentions leaves the text as it is. */
+  mentions?: readonly TargetedMention[];
+  /** Post the message as a poll (#2043). A provider without polls returns
+   *  `unreachable` (`channel_error`) instead of posting plain text; an
+   *  invalid poll is refused the same way and nothing is posted. */
+  poll?: TargetedPoll;
+  /** Post the message as a question card (#2089). Only handed to a provider
+   *  that declares `supports.card` with every question kind of the card; the
+   *  kernel validates the card first. `delivered.cardMessageId` is the id a
+   *  later `updateCard` names. Never together with `poll`. */
+  card?: QuestionCard;
+  /** Who the message is from (spec 2042 INV-4), stamped by the kernel. A
+   *  message through the channel's shared bot is `system`; a message as an
+   *  agent's own identity is that agent (its bot is the speaker). */
+  speaker?: Speaker;
+}
+
+export interface TargetedPoll {
+  /** 1..128 characters; round-tripped as `cardAnswer.cardId`. */
+  pollId: string;
+  question: string;
+  /** 2..6 options, ids unique. */
+  options: readonly { id: string; label: string }[];
+  hint?: string;
+  /** Several options may be chosen (an approval vote). A channel posts it as
+   *  a multi-answer poll and reports `{ optionIds }`; one that cannot, does not
+   *  post a single-choice poll for it. Absent = one option. */
+  multipleAnswers?: boolean;
+}
+
+export interface TargetedMention {
+  user: ChannelUserRef;
+  /** The display text standing in the message (e.g. '@Anna Köhler'). */
+  text: string;
+}
+
+/** Options for a user-addressed send (#2043). */
+export interface TargetedSendOptions {
+  /** Identity the DM must come from (Teams: `28:<appId>`). Same contract as
+   *  `ConversationSendOptions.asChannelKey`: a provider that implements it
+   *  returns `unreachable` rather than substituting another identity. */
+  asChannelKey?: string;
 }
 
 /** Per-delivery outcome. Providers RETURN unreachability (like holdersFor in
  *  roleHolderSource.ts) — they never throw for it, so one unreachable holder
  *  cannot abort the remaining fan-out deliveries. */
 export type TargetedDeliveryOutcome =
-  | { outcome: 'delivered' }
+  /** `messageId` is the platform id of the sent message when known. A poll
+   *  may go out as two messages (text, then card): `cardMessageId` is the
+   *  card, and the `messageId` of every `card_answer` event for it.
+   *  `conversationId` is the private conversation the message went into, when
+   *  the channel reports it: a later reply there can be matched to this send. */
+  | { outcome: 'delivered'; messageId?: string; cardMessageId?: string; conversationId?: string }
   | {
       outcome: 'unreachable';
-      code: 'no_binding' | 'user_not_found' | 'channel_error' | 'not_permitted';
+      /** 'app_not_installed': first contact is impossible because the user
+       *  never installed this identity's app. 'blocked': the user blocked it. */
+      code:
+        | 'no_binding'
+        | 'user_not_found'
+        | 'channel_error'
+        | 'not_permitted'
+        | 'app_not_installed'
+        | 'blocked';
       message: string;
     };
 
@@ -37,12 +95,50 @@ export type TargetedDeliveryOutcome =
  * channel_bindings row) — a provider that can materialize a 1:1 conversation
  * itself (proactive messaging) may ignore it.
  */
+/**
+ * What a send provider DECLARES it implements (#2043). The kernel cannot see
+ * whether a provider honoured an option: an older provider ignores an
+ * argument it does not know and still answers `delivered` — through its
+ * default bot. So the kernel sends as a named identity, with mentions or as a
+ * poll only to a provider that declared the capability, and refuses
+ * otherwise (`no_identity` for an identity it cannot guarantee,
+ * `channel_error` for a poll). Absent = the provider implements none.
+ */
+export interface SendProviderCapabilities {
+  /** Honours `opts.asChannelKey`: posts as exactly that identity or returns
+   *  `unreachable`, never as another one. */
+  asChannelKey?: boolean;
+  /** Turns `message.mentions` into platform mentions. */
+  mentions?: boolean;
+  /** Posts `message.poll` as a poll and refuses an invalid one. */
+  poll?: boolean;
+  /**
+   * The channel marks EVERY message of these sends as AI-generated with its
+   * own label (Teams: the `AIGeneratedContent` entity). The kernel then adds
+   * no disclosure sentence to the text. Without it the kernel folds the
+   * instance's disclosure line into the first message an agent posts as
+   * itself into a conversation: the marking is there once, never twice.
+   */
+  aiLabel?: boolean;
+  /** Renders question cards (#2089): which question kinds, how many
+   *  questions on one card, and whether a posted card can be updated
+   *  (`ConversationSendProvider.updateCard`). Absent = no cards; the kernel
+   *  then refuses a card instead of handing it over. */
+  card?: CardSupport;
+  /** Sets a reaction as the named identity
+   *  (`ConversationSendProvider.react`, spec 2043 §5.14). */
+  reactions?: boolean;
+}
+
 export interface TargetedSendProvider {
   /** The `channel_bindings.channel_type` this provider serves (e.g. 'teams'). */
   channelType: string;
+  /** Declared capabilities; see {@link SendProviderCapabilities}. */
+  supports?: SendProviderCapabilities;
   sendToUser(
     target: { principalId: string; conversationRef?: unknown; userRef?: ChannelUserRef },
     message: TargetedMessage,
+    opts?: TargetedSendOptions,
   ): Promise<TargetedDeliveryOutcome>;
 }
 

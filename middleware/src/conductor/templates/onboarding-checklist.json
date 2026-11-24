@@ -55,12 +55,52 @@
         "agentId": "slot:agent:notifier",
         "prompt": "Confirm that onboarding for {{ctx.employeeName}} is complete: HR, IT, and the manager have each finished their checklist. Summarize what was completed.",
         "position": { "x": 860, "y": 160 }
+      },
+      {
+        "id": "halted",
+        "kind": "agent",
+        "agentId": "slot:agent:notifier",
+        "prompt": "Report that the onboarding of {{ctx.employeeName}} was stopped: a checklist step was answered with a rejection instead of a confirmation. Name the step that stopped it and what the responder said, and ask the people involved to resolve it.",
+        "position": { "x": 340, "y": 340 }
       }
     ],
     "transitions": [
-      { "id": "t-hr-done", "source": "hr-checklist", "target": "it-checklist" },
-      { "id": "t-it-done", "source": "it-checklist", "target": "manager-checklist" },
-      { "id": "t-manager-done", "source": "manager-checklist", "target": "confirm" }
+      {
+        "id": "t-hr-done",
+        "source": "hr-checklist",
+        "target": "it-checklist",
+        "guard": { "op": "ne", "path": "stepResult.approved", "value": false }
+      },
+      {
+        "id": "t-hr-stopped",
+        "source": "hr-checklist",
+        "target": "halted",
+        "guard": { "op": "eq", "path": "stepResult.approved", "value": false }
+      },
+      {
+        "id": "t-it-done",
+        "source": "it-checklist",
+        "target": "manager-checklist",
+        "guard": { "op": "ne", "path": "stepResult.approved", "value": false }
+      },
+      {
+        "id": "t-it-stopped",
+        "source": "it-checklist",
+        "target": "halted",
+        "guard": { "op": "eq", "path": "stepResult.approved", "value": false }
+      },
+      {
+        "id": "t-manager-done",
+        "source": "manager-checklist",
+        "target": "confirm",
+        "guard": { "op": "ne", "path": "stepResult.approved", "value": false }
+      },
+      {
+        "id": "t-manager-stopped",
+        "source": "manager-checklist",
+        "target": "halted",
+        "guard": { "op": "eq", "path": "stepResult.approved", "value": false }
+      }
     ],
     "triggers": [{ "id": "trigger-manual", "kind": "manual" }]
   },

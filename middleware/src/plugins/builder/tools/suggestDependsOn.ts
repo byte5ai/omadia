@@ -28,12 +28,12 @@ interface KeywordRule {
 const RULES: readonly KeywordRule[] = [
   {
     keywords: [/\bodoo\b/i, /\baccounting\b/i, /\bbuchhalt/i, /\binvoice/i, /\brechnung/i],
-    agentId: 'de.byte5.integration.odoo',
+    agentId: '@omadia/integration-odoo',
     reason: 'intent mentions Odoo / accounting / invoicing',
   },
   {
     keywords: [/\bconfluence\b/i, /\bplaybook\b/i, /\bwiki\b/i],
-    agentId: 'de.byte5.integration.confluence',
+    agentId: '@omadia/integration-confluence',
     reason: 'intent mentions Confluence / playbooks / wiki',
   },
   {
@@ -46,7 +46,7 @@ const RULES: readonly KeywordRule[] = [
       /\bcalendar\b/i,
       /\bkalender\b/i,
     ],
-    agentId: 'de.byte5.integration.microsoft365',
+    agentId: '@omadia/integration-microsoft365',
     reason: 'intent mentions Microsoft 365 / Outlook / Teams / calendar / email',
   },
   {
@@ -54,19 +54,15 @@ const RULES: readonly KeywordRule[] = [
     agentId: '@omadia/plugin-web-search',
     reason: 'intent mentions web search',
   },
-  {
-    keywords: [/\bseo\b/i, /\bsearch engine\b/i, /\branking/i, /\bpagespeed/i],
-    agentId: '@omadia/agent-seo-analyst',
-    reason: 'intent mentions SEO / search-engine / ranking',
-  },
 ];
 
 export const suggestDependsOnTool: BuilderTool<Input, Result> = {
   id: 'suggest_depends_on',
   description:
     'Heuristic: given a free-form intent string ("invoice automation in Odoo", ' +
-    '"summarise Confluence playbooks"), return likely depends_on agent IDs from ' +
-    'the platform catalog. Suggestions are advisory — the BuilderAgent still ' +
+    '"summarise Confluence playbooks"), return likely depends_on plugin IDs ' +
+    '(integrations whose credentials or services the new plugin uses) from the ' +
+    'platform catalog. Suggestions are advisory — the BuilderAgent still ' +
     'decides which to keep, and lint_spec validates the final list.',
   input: InputSchema,
   async run({ intent }, _ctx) {

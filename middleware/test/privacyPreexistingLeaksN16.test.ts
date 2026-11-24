@@ -62,6 +62,7 @@ import {
   PREVIEW_PRIVACY_REFUSED_CODE,
   PreviewChatService,
 } from '../src/plugins/builder/previewChatService.js';
+import { fakePreviewDraftAgents } from './_helpers/fakePreviewDraftAgents.js';
 
 // --- shared fakes -----------------------------------------------------------
 
@@ -493,6 +494,7 @@ describe('#1540 · builder preview chat under OMADIA_PRIVACY_FORCE_GUARDED', () 
   it('refuses before the draft is touched or a model resolved', async () => {
     let touched = 0;
     const service = new PreviewChatService({
+      draftAgents: fakePreviewDraftAgents(),
       resolveProvider: async () => {
         touched += 1;
         throw new Error('no');

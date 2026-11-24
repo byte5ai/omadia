@@ -1,4 +1,3 @@
-import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
@@ -260,11 +259,27 @@ async function maybeMtimeReason(
 const TRANSIENT_ACTIVATION_ERROR_RE =
   /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|getaddrinfo|Connection terminated|connection refused|the database system is starting up|timed out/i;
 
+// #1860 — a duplicate service registration only exists inside the process
+// that recorded it: a fresh boot starts with an empty service registry. Left
+// latched, it kept the required knowledge-graph plugin off and crash-looped
+// every following boot.
+const PROCESS_LOCAL_ACTIVATION_ERROR_RE = /ServiceRegistry: duplicate provider for /;
+
 function maybeTransientErrorReason(entry: InstalledAgent): string | null {
   const err = entry.last_activation_error;
   if (!err) return null;
+  // #2088 — the plugin's own database could not be set up or was not
+  // isolated. The cause lies in the database, not in the plugin's files, so
+  // nothing else here would notice the operator's fix. The setup is checked
+  // again on every boot and blocks again at once when it still fails.
+  if (entry.last_activation_error_code === 'database_not_available') {
+    return `last activation failed on the plugin's own database; checking it again: "${err}"`;
+  }
   if (TRANSIENT_ACTIVATION_ERROR_RE.test(err)) {
     return `last_activation_error looks transient (infra dependency unreachable): "${err}"`;
+  }
+  if (PROCESS_LOCAL_ACTIVATION_ERROR_RE.test(err)) {
+    return `last_activation_error was process-local (service registry starts empty): "${err}"`;
   }
   return null;
 }
@@ -313,12 +328,10 @@ function resolvePackagePath(
 export async function runLegacyBootstrap(deps: BootstrapDeps): Promise<void> {
   const log = deps.log ?? ((m) => console.log(m));
   const before = new Set(deps.registry.list().map((e) => e.id));
-  // bootstrapConfluenceFromEnv + bootstrapOdooFromEnv removed in Phase 5B
-  // M3+M4 catch-up — those byte5-customer integrations no longer ship in
-  // the public core. Operators install them via Admin-UI ZIP upload and
-  // configure credentials through the plugin's setup form instead.
-  await bootstrapMicrosoft365FromEnv(deps);
-  await bootstrapTelegramFromEnv(deps);
+  // The env migrations of the retired v0.1.0 plugin ids (Confluence, Odoo,
+  // Microsoft 365 + Calendar + Teams, Telegram) are gone: no catalog carries
+  // those ids any more. Their successors are installed from the store and
+  // configured through their setup forms.
   await bootstrapDiagramsFromEnv(deps);
   await bootstrapOfficeFromEnv(deps);
   await bootstrapMemoryFromEnv(deps);
@@ -1244,12 +1257,6 @@ async function bootstrapOrchestratorFromEnv(
   config['orchestrator_model_routing'] = deps.config.ORCHESTRATOR_MODEL_ROUTING
     ? 'true'
     : 'false';
-  // #445 — sticky Direct Line. Always seeded so the runtime read has a
-  // definite value rather than depending on an absent key.
-  config['orchestrator_direct_line_sticky'] = deps.config
-    .ORCHESTRATOR_DIRECT_LINE_STICKY
-    ? 'true'
-    : 'false';
   if (deps.config.MODEL_ROUTING_CLASSIFIER_MODEL) {
     config['model_routing_classifier_model'] =
       deps.config.MODEL_ROUTING_CLASSIFIER_MODEL;
@@ -1550,284 +1557,4 @@ export async function bootstrapBuiltInPackages(
           : ''),
     );
   }
-}
-
-// ---------------------------------------------------------------------------
-// Microsoft 365 (integration + Calendar dependent)
-// ---------------------------------------------------------------------------
-
-const MS365_INTEGRATION_ID = 'de.byte5.integration.microsoft365';
-const CALENDAR_AGENT_ID = 'de.byte5.agent.calendar';
-const TEAMS_CHANNEL_ID = 'de.byte5.channel.teams';
-const TELEGRAM_CHANNEL_ID = 'de.byte5.channel.telegram';
-
-async function bootstrapMicrosoft365FromEnv(
-  deps: BootstrapDeps,
-): Promise<void> {
-  const log = deps.log ?? ((m) => console.log(m));
-  const {
-    MICROSOFT_APP_ID,
-    MICROSOFT_APP_PASSWORD,
-    MICROSOFT_APP_TENANT_ID,
-  } = deps.config;
-
-  const envHasMinimum =
-    Boolean(MICROSOFT_APP_ID) &&
-    Boolean(MICROSOFT_APP_PASSWORD) &&
-    Boolean(MICROSOFT_APP_TENANT_ID);
-
-  // 1) Integration layer — credentials
-  if (!deps.registry.has(MS365_INTEGRATION_ID)) {
-    if (!envHasMinimum) return;
-    const catalogEntry = deps.catalog.get(MS365_INTEGRATION_ID);
-    if (!catalogEntry) {
-      log(
-        `[bootstrap] cannot migrate ${MS365_INTEGRATION_ID}: not in plugin catalog`,
-      );
-      return;
-    }
-    await deps.vault.setMany(MS365_INTEGRATION_ID, {
-      microsoft_app_password: MICROSOFT_APP_PASSWORD as string,
-    });
-    await deps.registry.register({
-      id: MS365_INTEGRATION_ID,
-      installed_version: catalogEntry.plugin.version,
-      installed_at: new Date().toISOString(),
-      status: 'active',
-      origin: 'bundled',
-      config: {
-        microsoft_tenant_id: MICROSOFT_APP_TENANT_ID as string,
-        microsoft_app_id: MICROSOFT_APP_ID as string,
-      },
-    });
-    log(
-      `[bootstrap] ⚐ migrated ${MS365_INTEGRATION_ID} from .env — ` +
-        `app_password → vault, tenant_id/app_id → registry.`,
-    );
-  }
-
-  // 2) Calendar dependent
-  await autoInstallDependent(
-    deps,
-    CALENDAR_AGENT_ID,
-    MS365_INTEGRATION_ID,
-    log,
-  );
-
-  // 3) Teams channel dependent — inherits MS App creds from the integration,
-  //    plus carries Teams-specific non-secret config (SSO connection name,
-  //    attachment key prefix) lifted from legacy .env for the first install.
-  await autoInstallDependentWithConfig(
-    deps,
-    TEAMS_CHANNEL_ID,
-    MS365_INTEGRATION_ID,
-    {
-      teams_sso_connection_name: deps.config.TEAMS_SSO_CONNECTION_NAME ?? '',
-      teams_attachment_key_prefix: deps.config.TEAMS_ATTACHMENT_KEY_PREFIX,
-    },
-    log,
-  );
-}
-
-/**
- * Telegram channel — self-contained (no parent integration). When the
- * `.env` carries TELEGRAM_BOT_TOKEN + TELEGRAM_WEBHOOK_SECRET on first
- * boot, the secrets land in the plugin's vault entry and the registry
- * gets the optional public-base-URL config; subsequent boots skip the
- * migration and respect any operator-set values.
- */
-async function bootstrapTelegramFromEnv(deps: BootstrapDeps): Promise<void> {
-  const log = deps.log ?? ((m) => console.log(m));
-  const {
-    TELEGRAM_BOT_TOKEN,
-    TELEGRAM_WEBHOOK_SECRET,
-    TELEGRAM_PUBLIC_BASE_URL,
-  } = deps.config;
-
-  // Backfill path for pre-existing registry entries with incomplete
-  // vaults. Idempotent + additive: only writes keys that are missing.
-  // Covers two real-world scenarios:
-  //   (a) S+7 → S+7.6/7.7 upgrade — bot_token + webhook_secret exist,
-  //       admin_token doesn't. Backfill admin_token.
-  //   (b) Vault was manually cleared but registry entry stayed —
-  //       resurrect bot_token + webhook_secret from env, generate
-  //       admin_token. Plugin activates fully again.
-  if (deps.registry.has(TELEGRAM_CHANNEL_ID)) {
-    const existingBotToken = await deps.vault.get(
-      TELEGRAM_CHANNEL_ID,
-      'telegram_bot_token',
-    );
-    const existingWebhookSecret = await deps.vault.get(
-      TELEGRAM_CHANNEL_ID,
-      'telegram_webhook_secret',
-    );
-    const existingAdminToken = await deps.vault.get(
-      TELEGRAM_CHANNEL_ID,
-      'telegram_admin_token',
-    );
-    const updates: Record<string, string> = {};
-    let backfilledAdmin: string | undefined;
-
-    if (!existingBotToken && TELEGRAM_BOT_TOKEN) {
-      updates.telegram_bot_token = TELEGRAM_BOT_TOKEN;
-    }
-    if (!existingWebhookSecret && TELEGRAM_WEBHOOK_SECRET) {
-      updates.telegram_webhook_secret = TELEGRAM_WEBHOOK_SECRET;
-    }
-    if (!existingAdminToken) {
-      backfilledAdmin = randomBytes(32).toString('hex');
-      updates.telegram_admin_token = backfilledAdmin;
-    }
-
-    if (Object.keys(updates).length === 0) return; // fully provisioned
-
-    await deps.vault.setMany(TELEGRAM_CHANNEL_ID, updates);
-    const backfilledKeys = Object.keys(updates).join(', ');
-    log(
-      `[bootstrap] ⚐ backfilled vault keys for existing ${TELEGRAM_CHANNEL_ID}: ${backfilledKeys}`,
-    );
-    if (backfilledAdmin) {
-      log(
-        `[bootstrap] ⚑ telegram_admin_token backfilled (fp ${tokenFingerprint(backfilledAdmin)}). ` +
-          `Recover via vault decryption (VAULT_KEY required); ` +
-          `or rotate by deleting the telegram_admin_token vault key and rebooting.`,
-      );
-    }
-    return;
-  }
-
-  const envHasMinimum =
-    Boolean(TELEGRAM_BOT_TOKEN) && Boolean(TELEGRAM_WEBHOOK_SECRET);
-  if (!envHasMinimum) return;
-
-  const catalogEntry = deps.catalog.get(TELEGRAM_CHANNEL_ID);
-  if (!catalogEntry) {
-    log(
-      `[bootstrap] cannot migrate ${TELEGRAM_CHANNEL_ID}: not in plugin catalog`,
-    );
-    return;
-  }
-
-  // S+7.7 — admin-token for the plugin's self-contained operator-admin
-  // surface. Random 32 bytes → 64-char hex. Operator captures from this
-  // log line on first boot (or reads via vault inspection later).
-  const telegramAdminToken = randomBytes(32).toString('hex');
-  await deps.vault.setMany(TELEGRAM_CHANNEL_ID, {
-    telegram_bot_token: TELEGRAM_BOT_TOKEN as string,
-    telegram_webhook_secret: TELEGRAM_WEBHOOK_SECRET as string,
-    telegram_admin_token: telegramAdminToken,
-  });
-  const initialConfig: Record<string, unknown> = {
-    // S+7.6 — safer-default for first-installs. Existing installs (pre-
-    // S+7.6 boots that already registered the plugin) keep their absent
-    // dm_policy field which the plugin runtime reads as the parseDmPolicy
-    // fallback ('pairing' too, but operators of pre-S+7.6 installs may
-    // explicitly set 'open' to keep prior behaviour).
-    dm_policy: 'pairing',
-  };
-  if (TELEGRAM_PUBLIC_BASE_URL) {
-    initialConfig.telegram_public_base_url = TELEGRAM_PUBLIC_BASE_URL;
-  }
-  await deps.registry.register({
-    id: TELEGRAM_CHANNEL_ID,
-    installed_version: catalogEntry.plugin.version,
-    installed_at: new Date().toISOString(),
-    status: 'active',
-    origin: 'bundled',
-    config: initialConfig,
-  });
-  log(
-    `[bootstrap] ⚐ migrated ${TELEGRAM_CHANNEL_ID} from .env — ` +
-      `bot_token + webhook_secret → vault, public_base_url → registry (${TELEGRAM_PUBLIC_BASE_URL ? 'webhook mode' : 'long-poll mode'}).`,
-  );
-  // Operator NEEDS this token to log into the admin UI, but logs leak
-  // (aggregators, screenshots, CI). Print a fingerprint only; the value
-  // lives encrypted in the vault. Recover via offline vault decryption
-  // with VAULT_KEY, or rotate by deleting the telegram_admin_token vault
-  // key and rebooting (the backfill branch above regenerates).
-  log(
-    `[bootstrap] ⚑ telegram_admin_token issued (fp ${tokenFingerprint(telegramAdminToken)}). ` +
-      `Recover via vault decryption (VAULT_KEY required); ` +
-      `or rotate by deleting the telegram_admin_token vault key and rebooting.`,
-  );
-}
-
-/**
- * Short identity fingerprint for a secret. Lets the operator confirm "I
- * have the right token" without ever putting the secret itself in logs.
- * First 16 hex chars of SHA-256 = 64 bits of identity — not reversible.
- */
-function tokenFingerprint(token: string): string {
-  return createHash('sha256').update(token).digest('hex').slice(0, 16);
-}
-
-/**
- * Variant of autoInstallDependent that seeds the child's registry entry
- * with initial (non-secret) config values. Used e.g. for Teams where the
- * channel carries its own SSO-connection-name + attachment-prefix
- * alongside the inherited MS365 credentials.
- */
-async function autoInstallDependentWithConfig(
-  deps: BootstrapDeps,
-  agentId: string,
-  parentId: string,
-  initialConfig: Record<string, unknown>,
-  log: (m: string) => void,
-): Promise<void> {
-  if (deps.registry.has(agentId)) return;
-  if (!deps.registry.has(parentId)) return;
-  const catalogEntry = deps.catalog.get(agentId);
-  if (!catalogEntry) {
-    log(`[bootstrap] cannot auto-install ${agentId}: not in plugin catalog`);
-    return;
-  }
-  // Strip empty-string values so `ctx.config.get()` returns undefined for
-  // them (cleaner than storing an empty string that passes a truthiness
-  // check but fails URL/enum validation downstream).
-  const cleaned: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(initialConfig)) {
-    if (v === '' || v === null || v === undefined) continue;
-    cleaned[k] = v;
-  }
-  await deps.registry.register({
-    id: agentId,
-    installed_version: catalogEntry.plugin.version,
-    installed_at: new Date().toISOString(),
-    status: 'active',
-    origin: 'bundled',
-    config: cleaned,
-  });
-  log(
-    `[bootstrap] ⚐ auto-installed ${agentId} (depends on ${parentId}; config=${Object.keys(cleaned).join(',') || 'none'})`,
-  );
-}
-
-/**
- * Installs a child agent that has no own secrets/config — its ctx inherits
- * everything from the parent integration. Idempotent and safe.
- */
-async function autoInstallDependent(
-  deps: BootstrapDeps,
-  agentId: string,
-  parentId: string,
-  log: (m: string) => void,
-): Promise<void> {
-  if (deps.registry.has(agentId)) return;
-  if (!deps.registry.has(parentId)) return;
-  const catalogEntry = deps.catalog.get(agentId);
-  if (!catalogEntry) {
-    log(`[bootstrap] cannot auto-install ${agentId}: not in plugin catalog`);
-    return;
-  }
-  await deps.registry.register({
-    id: agentId,
-    installed_version: catalogEntry.plugin.version,
-    installed_at: new Date().toISOString(),
-    status: 'active',
-    origin: 'bundled',
-    config: {},
-  });
-  log(
-    `[bootstrap] ⚐ auto-installed ${agentId} (depends on ${parentId}; no own secrets)`,
-  );
 }

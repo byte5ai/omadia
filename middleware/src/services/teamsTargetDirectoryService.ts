@@ -116,7 +116,19 @@ export type TeamsTargetListingUnavailable =
   | 'lookup_failed';
 
 export type TeamsTargetListing<T> =
-  | { readonly available: true; readonly items: readonly T[] }
+  | {
+      readonly available: true;
+      readonly items: readonly T[];
+      /**
+       * The connector stopped before Graph's last page (connector >= 0.9.1
+       * says so with a non-enumerable `truncated` mark on the array). Absent
+       * = the connector did not say, which an older one never does.
+       */
+      readonly sourceTruncated?: boolean;
+      /** Chats only: how many untitled chats came back without member names
+       *  (non-enumerable `withoutMemberNames` mark, connector >= 0.9.1). */
+      readonly withoutMemberNames?: number;
+    }
   | {
       readonly available: false;
       readonly reason: TeamsTargetListingUnavailable;
@@ -189,6 +201,29 @@ function classifyListingFailure(err: unknown): TeamsTargetListingUnavailable {
   return 'lookup_failed';
 }
 
+/**
+ * What a connector list says about itself (connector >= 0.9.1).
+ *
+ * The marks are NON-ENUMERABLE properties on the array, so they survive
+ * neither a spread nor `JSON.stringify`: they are read here, from the very
+ * array the connector returned, before anything copies it. A list without
+ * them (0.9.0 and older) yields nothing, and the listing reads as before.
+ */
+export function listMarksOf(items: unknown): {
+  sourceTruncated?: boolean;
+  withoutMemberNames?: number;
+} {
+  if (!Array.isArray(items)) return {};
+  const marks = items as unknown as { truncated?: unknown; withoutMemberNames?: unknown };
+  const missing = marks.withoutMemberNames;
+  return {
+    ...(typeof marks.truncated === 'boolean' ? { sourceTruncated: marks.truncated } : {}),
+    ...(typeof missing === 'number' && Number.isFinite(missing) && missing >= 0
+      ? { withoutMemberNames: missing }
+      : {}),
+  };
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -217,6 +252,24 @@ export async function loadTeamsTargetDirectory(
   };
 }
 
+/** One half on its own, for a caller that needs only the teams. */
+export async function loadTeamsTargetTeams(
+  opts: TeamsTargetDirectoryOptions,
+): Promise<TeamsTargetListing<TeamsTeamSummary>> {
+  const provisioner = opts.getProvisioner();
+  if (provisioner === undefined) return { available: false, reason: 'connector_unavailable' };
+  return listTeamsSafely(opts, provisioner);
+}
+
+/** The other half on its own: the slow one in a large tenant. */
+export async function loadTeamsTargetChats(
+  opts: TeamsTargetDirectoryOptions,
+): Promise<TeamsTargetListing<TeamsChatSummary>> {
+  const provisioner = opts.getProvisioner();
+  if (provisioner === undefined) return { available: false, reason: 'connector_unavailable' };
+  return listChatsSafely(opts, provisioner);
+}
+
 async function listTeamsSafely(
   opts: TeamsTargetDirectoryOptions,
   provisioner: TeamsTargetDirectoryProvisioner,
@@ -230,7 +283,12 @@ async function listTeamsSafely(
         TeamsTargetDirectoryProvisioner['listTeams']
       >
     ).call(provisioner);
-    return { available: true, items };
+    const { sourceTruncated } = listMarksOf(items);
+    return {
+      available: true,
+      items,
+      ...(sourceTruncated !== undefined ? { sourceTruncated } : {}),
+    };
   } catch (err) {
     opts.log?.(`[teams-targets] listTeams failed: ${errorMessage(err)}`);
     return { available: false, reason: classifyListingFailure(err) };
@@ -283,7 +341,7 @@ async function listChatsSafely(
             // replayed the spent set would fail identically forever.
             (set) => call(set),
           );
-    return { available: true, items };
+    return { available: true, items, ...listMarksOf(items) };
   } catch (err) {
     opts.log?.(`[teams-targets] listChats failed: ${errorMessage(err)}`);
     return { available: false, reason: classifyListingFailure(err) };

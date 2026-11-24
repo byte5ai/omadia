@@ -18,6 +18,8 @@
 
 import { randomUUID } from 'node:crypto';
 
+import { declaredPiiColumns, withDeclaredPii } from './declaredPii.js';
+
 import { normalizeDatasetUuid } from '@omadia/plugin-api';
 
 import {
@@ -385,14 +387,15 @@ export function createDatasetStore(deps: DatasetStoreDeps): DatasetStore {
   }
 
   return {
-    internToolResult(toolName, rawResult, toolInput): DigestEnvelope {
+    internToolResult(toolName, rawResult, toolInput, piiFields): DigestEnvelope {
       const parsed = parseToolResult(rawResult, maxChars);
       const sources: readonly FieldSource[] = [
         { tool: toolName, scope: scopeOf(toolName, toolInput, parsed.envelope?.values) },
       ];
       const context = { sources };
-      const schema = deps.classify(parsed.rows, parsed.shape, context);
       const envelope = parsed.envelope;
+      const declared = declaredPiiColumns(piiFields, envelope?.itemsPath);
+      const schema = withDeclaredPii(deps.classify(parsed.rows, parsed.shape, context), declared);
       const dataset: Dataset = {
         datasetId: `ds_${randomUUID()}`,
         rows: parsed.rows,
@@ -412,7 +415,10 @@ export function createDatasetStore(deps: DatasetStoreDeps): DatasetStore {
               envelope: {
                 itemsPath: envelope.itemsPath,
                 values: envelope.values,
-                schema: deps.classify([envelope.values], 'object', context),
+                schema: withDeclaredPii(
+                  deps.classify([envelope.values], 'object', context),
+                  declaredPiiColumns(piiFields),
+                ),
               },
             }
           : {}),

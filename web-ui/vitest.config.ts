@@ -43,6 +43,11 @@ export default defineConfig({
       // diverged from tsconfig; it surfaced once the first `@/app/...` imports
       // landed.)
       '@': path.resolve(__dirname, '.'),
+      // Test-only view of the channel SDK's sources. web-ui has no build-time
+      // dependency on middleware packages (its Docker build context is web-ui/
+      // alone), so tests reach SDK registries through this alias, which only
+      // vitest resolves.
+      '@channel-sdk-src': path.resolve(__dirname, '../middleware/packages/harness-channel-sdk/src'),
     },
   },
 });

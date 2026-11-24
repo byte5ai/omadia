@@ -835,8 +835,7 @@ export function mcpInputReplyLabel(reply: McpInputReply): string {
 
 /**
  * Executes the replay. Implemented outside the orchestrator (which holds no
- * `McpManager`) and injected, the same way the sticky Direct Line store is —
- * see `OrchestratorDeps`.
+ * `McpManager`) and injected — see `OrchestratorDeps`.
  */
 export interface McpInputReplayer {
   /**

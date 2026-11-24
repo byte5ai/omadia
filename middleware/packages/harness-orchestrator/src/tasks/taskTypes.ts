@@ -85,6 +85,28 @@ export function isTerminalTaskStatus(x: unknown): x is TaskLifecycleStatus {
  * rejected LOUDLY at the seam rather than surfacing as an opaque Postgres
  * `22P02` from a `uuid` column cast further down.
  */
+/**
+ * Spec 2042 §5.10 — the key under which a task's stored input carries the
+ * agent turn that started it (`longRunningTool.ts`). Kernel-written only: a
+ * key in model- or human-supplied input is dropped.
+ */
+export const TASK_CONTEXT_KEY = '__omadia_execution_context';
+
+/**
+ * The input a resumed task is stored with (`provideInput`): the new input
+ * without any context key of its own, plus the context the task already
+ * carried. A non-object input carries none.
+ */
+export function carryTaskContext(previous: unknown, next: unknown): unknown {
+  if (typeof next !== 'object' || next === null || Array.isArray(next)) return next;
+  const { [TASK_CONTEXT_KEY]: _dropped, ...rest } = next as Record<string, unknown>;
+  const carried =
+    typeof previous === 'object' && previous !== null && !Array.isArray(previous)
+      ? (previous as Record<string, unknown>)[TASK_CONTEXT_KEY]
+      : undefined;
+  return carried === undefined ? rest : { ...rest, [TASK_CONTEXT_KEY]: carried };
+}
+
 export const TASK_LEASE_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

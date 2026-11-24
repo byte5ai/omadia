@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import type {
-  NativeToolHandler,
+  NativeTextToolHandler,
   NativeToolSpec,
   ProcessMemoryService,
   ProcessRecord,
@@ -235,7 +235,7 @@ function recordToBrief(record: ProcessRecord): {
 
 export function createWriteProcessHandler(
   service: ProcessMemoryService,
-): NativeToolHandler {
+): NativeTextToolHandler {
   return async (input) => {
     const parsed = WriteProcessInputSchema.safeParse(input);
     if (!parsed.success) {
@@ -284,7 +284,7 @@ export function createWriteProcessHandler(
 
 export function createEditProcessHandler(
   service: ProcessMemoryService,
-): NativeToolHandler {
+): NativeTextToolHandler {
   return async (input) => {
     const parsed = EditProcessInputSchema.safeParse(input);
     if (!parsed.success) {
@@ -328,7 +328,7 @@ export function createEditProcessHandler(
 
 export function createQueryProcessesHandler(
   service: ProcessMemoryService,
-): NativeToolHandler {
+): NativeTextToolHandler {
   return async (input) => {
     const parsed = QueryProcessesInputSchema.safeParse(input);
     if (!parsed.success) {
@@ -361,7 +361,7 @@ export function createQueryProcessesHandler(
 
 export function createRunStoredProcessHandler(
   service: ProcessMemoryService,
-): NativeToolHandler {
+): NativeTextToolHandler {
   return async (input) => {
     const parsed = RunStoredProcessInputSchema.safeParse(input);
     if (!parsed.success) {

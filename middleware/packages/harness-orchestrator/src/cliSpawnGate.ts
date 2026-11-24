@@ -63,15 +63,18 @@
  * {@link buildGatedCliEnv} keeps `CLAUDE_CONFIG_DIR` and `HOME` in the child
  * env for exactly that reason.
  *
- * NOT closed by these flags, and deliberately recorded here rather than left
- * implied: the CLI hardcodes `CLAUDE.md` / `AGENTS.md` discovery, and only
- * `--bare` skips it. Both call sites therefore spawn with `cwd` set to an
- * empty temp directory so no project memory file is in scope. A
- * `~/.claude/CLAUDE.md` in the operator's home directory can still be read;
- * with the built-ins gone that is instruction injection rather than code
- * execution, but it is a residual, not a solved problem.
+ * Not closed by these flags: the CLI hardcodes `CLAUDE.md` / `AGENTS.md`
+ * discovery, and only `--bare` skips it. Both call sites therefore spawn with
+ * `cwd` set to an empty temp directory so no project memory file is in scope,
+ * and (spec 2042 §5.10) with `HOME` and `CLAUDE_CONFIG_DIR` pointing to the
+ * kernel's CLI profile, which holds only the login, so the operator's
+ * `~/.claude/CLAUDE.md` is not read either (`cliProfile.ts`; in mode `auto`
+ * on a keychain login the profile stays inherited until the operator signs
+ * in once more, and the boot log says so).
  */
 import { execFile } from 'node:child_process';
+
+import { applyCliProfile } from './cliProfile.js';
 
 /**
  * The CLI's built-in tool inventory, denied by name at spawn time.
@@ -576,7 +579,9 @@ export function buildGatedCliEnv(
   env[CLI_RESTRICTED_ENV_KEY] = '1';
   env[CLI_TOOL_SEARCH_ENV_KEY] = 'false';
 
-  return env;
+  // Spec 2042 §5.10 — `HOME` and `CLAUDE_CONFIG_DIR` point to the kernel's
+  // CLI profile, which holds only the subscription login (`cliProfile.ts`).
+  return applyCliProfile(env);
 }
 
 /** The `execFile` shape {@link resolveCliVersion} needs; a test injects a fake. */
