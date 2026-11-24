@@ -17,6 +17,11 @@ import type { KnowledgeGraph, MemoryStore, ProcessMemoryService } from '@omadia/
 
 import {
   AGENTS,
+  AGENT_KEYS,
+  CONTEXT_KEYS,
+  USER_KEYS,
+  MK_OWNER_SETS,
+  MK_VISIBILITIES,
   NATIVE_CONVERSATION,
   TEAMS_TEAM_ID,
   USERS,
@@ -28,6 +33,7 @@ import {
   type TenantKey,
   type TurnItem,
   type World,
+  turnKeyword,
 } from './world.js';
 
 export interface TenantStores {
@@ -37,7 +43,50 @@ export interface TenantStores {
 }
 
 /** Writes a vector for a graph node (in-memory: `setEmbedding`; Neon: SQL). */
-export type Embed = (tenant: TenantKey, externalId: string) => Promise<void>;
+export type Embed = (
+  tenant: TenantKey,
+  externalId: string,
+  vector: readonly number[],
+) => Promise<void>;
+
+/** Vector width of the Neon embedding columns (migration 0005). */
+export const EMBEDDING_DIM = 768;
+
+/**
+ * Search groups. Read paths cap results at 50, so every memory and excerpt is
+ * embedded on the one-hot axis of its (owners × visibility) group: a query on
+ * that axis with `minSimilarity` 0.5 returns that group and nothing else
+ * (≤ 27 items). Turns sit on the axis of their conversation keyword.
+ */
+export function mkGroup(mk: Pick<MkItem, 'owners' | 'visibility'>): number {
+  return (
+    MK_OWNER_SETS.findIndex((o) => JSON.stringify(o) === JSON.stringify(mk.owners)) *
+      MK_VISIBILITIES.length +
+    MK_VISIBILITIES.indexOf(mk.visibility)
+  );
+}
+export const MK_GROUP_COUNT = MK_OWNER_SETS.length * MK_VISIBILITIES.length;
+
+export function axis(index: number): number[] {
+  const v = Array.from({ length: EMBEDDING_DIM }, () => 0);
+  v[index] = 1;
+  return v;
+}
+
+const TURN_AXIS_BASE = 100;
+function turnAxis(t: TurnItem): number {
+  const agent = [...AGENT_KEYS, 'legacy'].indexOf(t.agent);
+  return (
+    TURN_AXIS_BASE +
+    (agent * CONTEXT_KEYS.length + CONTEXT_KEYS.indexOf(t.context)) * USER_KEYS.length +
+    USER_KEYS.indexOf(t.sender)
+  );
+}
+
+/** The vector a turn search for `t`'s conversation uses. */
+export function turnQueryVector(t: Pick<TurnItem, 'agent' | 'context' | 'sender'>): number[] {
+  return axis(turnAxis(t as TurnItem));
+}
 
 export interface Seeded {
   readonly world: World;
@@ -98,7 +147,7 @@ export async function seedWorld(
     const res = await stores[t.tenant].graph.ingestTurn({
       scope: graphScope(t.agent, t.context, t.sender),
       time: time(clock++),
-      userMessage: `Notiz ${t.canary}`,
+      userMessage: `Notiz ${t.canary} ${turnKeyword(t)}`,
       assistantAnswer: 'Notiert.',
       entityRefs: entity
         ? [
@@ -120,7 +169,7 @@ export async function seedWorld(
     turnIds.set(t, res.turnId);
     location.set(t.canary, res.turnId);
     if (entity) location.set(entity, res.turnId);
-    await embed(t.tenant, res.turnId);
+    await embed(t.tenant, res.turnId, axis(turnAxis(t)));
   }
 
   const unprotectedTurn = (tenant: TenantKey): string =>
@@ -151,9 +200,10 @@ export async function seedWorld(
     mkIds.set(mk, id);
     location.set(mk.canary, id);
     location.set(excerpt, id);
-    await embed(mk.tenant, id);
-    for (const ex of await stores[mk.tenant].graph.listExcerptsForMemory(id))
-      await embed(mk.tenant, ex.id);
+    await embed(mk.tenant, id, axis(mkGroup(mk)));
+    for (const ex of await stores[mk.tenant].graph.listExcerptsForMemory(id)) {
+      await embed(mk.tenant, ex.id, axis(mkGroup(mk)));
+    }
   }
 
   for (const p of world.byStore.plan) {

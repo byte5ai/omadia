@@ -15,11 +15,9 @@
 import { strict as assert } from 'node:assert';
 import { before, describe, it } from 'node:test';
 
-import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
-import { InMemoryMemoryStore } from '@omadia/memory';
-
 import { EXPECTED_DIVERGENCES, MODES, PINNED, expected } from './oracle.js';
-import { readBack, seedWorld, type Seeded } from './seed.js';
+import { seedInMemory } from './backends.js';
+import { readBack, type Seeded } from './seed.js';
 import { allViewers, buildWorld, viewerId, type MkItem, type Store, type Viewer } from './world.js';
 
 const world = buildWorld();
@@ -244,18 +242,9 @@ describe('memory-access oracle', () => {
 
 describe('memory-access seed · InMemoryKnowledgeGraph', () => {
   let seeded: Seeded;
-  const VEC = [1, 0, 0];
 
   before(async () => {
-    const graphs = { main: new InMemoryKnowledgeGraph(), other: new InMemoryKnowledgeGraph() };
-    seeded = await seedWorld(
-      world,
-      {
-        main: { graph: graphs.main, memory: new InMemoryMemoryStore() },
-        other: { graph: graphs.other, memory: new InMemoryMemoryStore() },
-      },
-      async (tenant, id) => graphs[tenant].setEmbedding(id, VEC),
-    );
+    seeded = await seedInMemory(world);
   });
 
   it('every canary reads back from its store (positive control)', async () => {

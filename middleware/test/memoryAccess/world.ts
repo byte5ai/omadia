@@ -85,6 +85,21 @@ export function graphScope(agent: AgentKey | 'legacy', ctx: ContextKey, sender: 
   return agent === 'legacy' ? conv : `${AGENTS[agent]}::${conv}`;
 }
 
+/**
+ * A search keyword shared by the turns of one conversation of one agent
+ * (`kx<agent><context><sender>`). Plain lowercase letters and digits, so both
+ * backends' full-text search treat it as one token, and no keyword contains
+ * another. Read paths cap results at 50; querying one keyword returns one
+ * group of turns, never a truncated mix.
+ */
+export function turnKeyword(t: {
+  agent: AgentKey | 'legacy';
+  context: ContextKey;
+  sender: UserKey;
+}): string {
+  return `kx${t.agent}${t.context}${t.sender}`;
+}
+
 // ---------------------------------------------------------------------------
 // Viewers
 // ---------------------------------------------------------------------------

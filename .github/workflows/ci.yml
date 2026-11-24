@@ -355,7 +355,9 @@ jobs:
           # provenanceBackfill1540, memoryPurgeRoute) add 27. Measured ran=721.
           # 721 → 722 with the memory-access seed on Neon (memoryAccess/seed.pg,
           # 1 test); measured ran=722.
-          PG_TEST_FLOOR: '722'
+          # 722 → 727 with the memory ACL contract on Neon (memoryAccess/aclContract.pg,
+          # 5 tests); measured ran=727.
+          PG_TEST_FLOOR: '727'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

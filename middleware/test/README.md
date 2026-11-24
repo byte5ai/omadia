@@ -76,6 +76,15 @@ The oracle is written from documented intent; rows nothing documents are tagged
 change a verdict to make a suite green: a disagreement is either a leak to
 report or a documented decision to record first.
 
+`memoryAccess/aclContract.ts` is the store-level contract: for every viewer
+and mode it calls the memorable-knowledge and excerpt search with the options
+that mode passes and requires the result to equal the oracle's set, item for
+item. It runs on the in-memory graph (`aclContract*.test.ts`) and on Neon
+(`aclContract.pg.test.ts`, `aclContractExcerpts.pg.test.ts`), with team recall
+on (today's default) and off.
+Queries are batched under the 50-row cap; a full batch is split again, so the
+cap never hides a row.
+
 ## Env vars
 
 `MEMORY_PG_TEST_URL` is the shared fallback every suite accepts. Individual

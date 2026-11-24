@@ -54,6 +54,17 @@ export interface Verdict {
   readonly source: string;
 }
 
+/**
+ * Instance settings that change who sees what. Defaults are today's
+ * (`KG_RECALL_TEAM_VISIBILITY` unset = on, pinned, not decided). The contract
+ * suite also runs the documented owner-only setting (`teamVisibility: false`,
+ * PA "Default false (the historical owner-only behaviour)").
+ */
+export interface Settings {
+  readonly teamVisibility: boolean;
+}
+export const DEFAULT_SETTINGS: Settings = { teamVisibility: true };
+
 const doc = (allowed: boolean, source: string): Verdict => ({
   allowed,
   basis: 'documented',
@@ -100,7 +111,12 @@ function isOwnConversation(
 // The oracle
 // ---------------------------------------------------------------------------
 
-export function expected(v: Viewer, mode: Mode, item: Item): Verdict {
+export function expected(
+  v: Viewer,
+  mode: Mode,
+  item: Item,
+  settings: Settings = DEFAULT_SETTINGS,
+): Verdict {
   if (item.tenant !== v.tenant) {
     return doc(
       false,
@@ -109,9 +125,9 @@ export function expected(v: Viewer, mode: Mode, item: Item): Verdict {
   }
   switch (item.store) {
     case 'memorable-knowledge':
-      return memorableKnowledge(v, mode, item);
+      return memorableKnowledge(v, mode, item, settings);
     case 'excerpt':
-      return excerpt(v, mode, item);
+      return excerpt(v, mode, item, settings);
     case 'turn':
       return turn(v, mode, item);
     case 'entity':
@@ -129,7 +145,7 @@ export function expected(v: Viewer, mode: Mode, item: Item): Verdict {
   }
 }
 
-function memorableKnowledge(v: Viewer, mode: Mode, mk: MkItem): Verdict {
+function memorableKnowledge(v: Viewer, mode: Mode, mk: MkItem, settings: Settings): Verdict {
   if (v.shielded && mk.provenance !== 'protected') {
     return doc(
       false,
@@ -192,6 +208,12 @@ function memorableKnowledge(v: Viewer, mode: Mode, mk: MkItem): Verdict {
       'owner branch: viewer in acl_owners, origin_agent is this agent or unset (PA viewerAgentSlug)',
     );
   }
+  if (shared && !settings.teamVisibility) {
+    return doc(
+      false,
+      'teamVisibility off: owner-only recall (PA teamVisibility \"Default false (the historical owner-only behaviour)\")',
+    );
+  }
   if (shared) {
     // KG_RECALL_TEAM_VISIBILITY is undocumented; today it defaults to true.
     return pin(
@@ -216,8 +238,8 @@ function memorableKnowledge(v: Viewer, mode: Mode, mk: MkItem): Verdict {
   );
 }
 
-function excerpt(v: Viewer, mode: Mode, ex: ExcerptItem): Verdict {
-  const parent = memorableKnowledge(v, mode, ex.parent);
+function excerpt(v: Viewer, mode: Mode, ex: ExcerptItem, settings: Settings): Verdict {
+  const parent = memorableKnowledge(v, mode, ex.parent, settings);
   return {
     ...parent,
     source: `${parent.source} [excerpt follows its parent MK, PA ExcerptSearchOptions]`,
@@ -408,6 +430,8 @@ export interface Divergence {
   readonly id: string;
   readonly oracle: string;
   readonly code: string;
+  /** Set once a suite has run it: where, and what it showed. */
+  readonly confirmed?: string;
 }
 
 export const EXPECTED_DIVERGENCES: readonly Divergence[] = [
@@ -426,6 +450,8 @@ export const EXPECTED_DIVERGENCES: readonly Divergence[] = [
     id: 'empty-audience-inmemory',
     oracle: 'an empty audience matches nothing (PA ownersCoverAudience)',
     code: 'InMemory MK/excerpt search with audienceOwners [] still admits operator-authored rows; Neon returns []',
+    confirmed:
+      'step 2, aclContract.test.ts (todo): 50 operator-authored memories and their excerpts come back for audienceOwners []; Neon returns none',
   },
   {
     id: 'process-cross-agent',
