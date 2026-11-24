@@ -1029,6 +1029,9 @@ The surfaces that boundary must cover, and how each one does:
   operator-authored row. "Operator-authored" means `manually_authored` and a
   `created_by` that is not `auto:…`, because T3 durable auto-promotion sets
   `manually_authored` too. `teamVisibility` does not widen the rule.
+  Under `enforce-strict` every curated-memory leg (memory, excerpts and
+  durable knowledge) gets `sharedOnly`: only `team` / `public` rows, never
+  one participant's private or `shared:<x>` memory (#2205).
 
 The audience is the security input. A group counts as known only when its
 channel marks the roster complete (`ChatParticipantsProvider.completeRoster`).
@@ -1050,10 +1053,6 @@ Known residuals:
 - #2204: in `off` and `enforce`, `query_knowledge_graph` (both
   registrations) reads the whole tenant: other agents' turns, pre-agent
   scopes and other users' chats. Breaks the decision above and SP INV-2.
-- #2205: in `enforce-strict`, the durable recall leg gets no `sharedOnly`, so
-  operator-authored and durably auto-promoted private memories reach a
-  context-bound turn.
-
 - #2204 also covers a plugin's `ctx.knowledgeGraph.searchTurns` /
   `findEntityCapturedTurns` in `off` and `enforce`: `boundTurnSearch` passes
   the plugin's options through unchanged there.

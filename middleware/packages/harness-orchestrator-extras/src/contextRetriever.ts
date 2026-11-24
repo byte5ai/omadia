@@ -698,7 +698,9 @@ export class ContextRetriever {
       runMemoryRecall
         ? this.loadMemoryHits({ ...buildInput, ...(sharedRecallOnly ? { sharedRecallOnly } : {}) })
         : emptyMemory,
-      this.loadDurableHits(buildInput),
+      // #2205 — durable knowledge is curated memory too: a restricted room gets
+      // only its shared tier, never one participant's private notes.
+      this.loadDurableHits({ ...buildInput, ...(sharedRecallOnly ? { sharedRecallOnly } : {}) }),
     ]);
 
     // Build candidate pool. Tail first (chronological → fills first).
@@ -1500,6 +1502,7 @@ export class ContextRetriever {
         // Rank durable MK among itself at the SQL level — otherwise higher-cosine
         // session noise crowds durable knowledge out of the over-fetch window.
         manuallyAuthoredOnly: true,
+        ...(input.sharedRecallOnly ? { sharedOnly: true } : {}),
         ...(input.agentSlug ? { viewerAgentSlug: input.agentSlug } : {}),
         ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
         ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
