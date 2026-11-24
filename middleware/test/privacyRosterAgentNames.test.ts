@@ -131,7 +131,7 @@ describe('#2192 — a colleague agent\'s name stays clear in a consultation', ()
     assert.ok(!inA.maskedText.includes(HUMAN), inA.maskedText);
 
     // B's run reads A's request.
-    const inB = await svc.maskUserPrompt({
+    const inB = await svc.maskUserPrompt!({
       sessionId: 's-b',
       turnId: 't-b',
       text: `${MINERVA} fragt: Wie viel Resturlaub hat ${HUMAN}?`,
