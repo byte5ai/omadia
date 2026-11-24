@@ -124,8 +124,8 @@
           "de": "Vorfall-Event"
         },
         "description": {
-          "en": "Catalog event that starts a run of this workflow.",
-          "de": "Katalog-Event, das einen Lauf dieses Workflows startet."
+          "en": "Event id that starts a run of this workflow \u2014 pick a declared one or type the id senders will post (an inbound webhook endpoint, or POST /conductors/emit).",
+          "de": "Event-ID, die einen Lauf dieses Workflows startet \u2014 w\u00e4hle eine deklarierte oder gib die ID ein, die Sender senden werden (eingehender Webhook-Endpoint oder POST /conductors/emit)."
         }
       }
     ],

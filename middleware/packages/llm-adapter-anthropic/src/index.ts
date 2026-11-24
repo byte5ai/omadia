@@ -15,7 +15,6 @@ export {
   acceptsEffort,
   supportsForcedToolChoice,
   supportsStrictTools,
-  supportsTemperature,
   supportsThinkingReplay,
   EFFORT_BETA,
   THINKING_BINDING_BETA,
@@ -26,6 +25,7 @@ export {
   createAnthropicClient,
   type AnthropicClient,
   type AnthropicClientOptions,
+  usesLegacyApiKeyHeader,
 } from './anthropicClient.js';
 
 export {

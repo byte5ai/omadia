@@ -293,7 +293,16 @@ export type ValidationWarningCode =
   | 'timeout_equals_approval'
   | 'approval_fail_open'
   /** #1698 — a human step with an unguarded outgoing edge has no path for a rejection. */
-  | 'rejection_unguarded_edge';
+  | 'rejection_unguarded_edge'
+  /**
+   * #1713 — an event/webhook trigger whose eventId nothing currently emits. NOT an
+   * error: an event id is sender-chosen free text (`POST /conductors/emit`, an inbound
+   * webhook endpoint's operator-configured id), not an install-local entity, so a
+   * known-refs miss only means "nothing declares this yet" — the designer accepts the
+   * same free text. A blocking error here made the bundled event templates
+   * un-instantiable on any stack whose event catalog was empty.
+   */
+  | 'unmatched_event_ref';
 
 export interface ValidationWarning {
   code: ValidationWarningCode;

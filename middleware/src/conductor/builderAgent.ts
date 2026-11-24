@@ -342,12 +342,17 @@ const MAX_PROPOSAL_REASON_CHARS = 300;
 
 /** Ref-slot kind → the KnownRefs set its prefill guesses must resolve against.
  *  `channels` has no KnownRefs set — like validate(), an absent set means the
- *  value is accepted structurally (the form's channel picker is the real gate). */
+ *  value is accepted structurally (the form's channel picker is the real gate).
+ *  `events` has none either (#1713): the form's event slot is free text over a
+ *  suggestion datalist, so an id outside the catalog is exactly what an operator may
+ *  type there — dropping the guess would hand them an empty field for a value the
+ *  route accepts. The known ids still reach the PROMPT (below), so the agent guesses
+ *  from the catalog first. */
 const PREFILL_REFS: Record<TemplateSlotKind, keyof KnownRefs | null> = {
   agents: 'agentIds',
   actions: 'actionIds',
   roles: 'roleKeys',
-  events: 'eventIds',
+  events: null,
   channels: null,
 };
 
@@ -477,7 +482,11 @@ function buildPrompt(
     history.length > 0
       ? history.map((m) => `${m.role === 'user' ? 'User' : 'Builder'}: ${m.text}`).join('\n')
       : '(no prior turns)';
-  const eventIds = knownRefs.eventIds && knownRefs.eventIds.length > 0 ? knownRefs.eventIds.join(', ') : '(none declared)';
+  // #1713 — the known set is a SUGGESTION list (plugin-declared ids + inbound webhook
+  // endpoint ids), not the legal values: any id a sender posts starts a run, so an empty
+  // set must not read as "event triggers are unavailable here".
+  const eventIds =
+    knownRefs.eventIds && knownRefs.eventIds.length > 0 ? knownRefs.eventIds.join(', ') : '(none known yet)';
 
   const correctionBlock = correction
     ? `\nYOUR PREVIOUS RESPONSE NEEDS CORRECTION. ${correctionSummary(correction)}\nFix it and respond again with ONLY the JSON object.\n`
@@ -523,6 +532,7 @@ function buildPrompt(
     '  { "op":"set_entry", "stepId": stepId }',
     '',
     `KNOWN EVENT IDS (for event triggers): ${eventIds}`,
+    'An event id is free text chosen by whoever emits it, so prefer a known id but use a descriptive <domain>.<thing>.<happened> id when none fits — say in your reply which id senders must then post.',
     renderKnownIdsBlock('KNOWN ACTION IDS (for action steps; `mcp:<serverId>:<tool>` ids are connected MCP tools)', known.actionIds),
     renderKnownIdsBlock('KNOWN AGENT SLUGS (for agent steps)', known.agentIds),
     "If unsure of an Agent slug, use 'fallback' (the standard orchestrator).",
