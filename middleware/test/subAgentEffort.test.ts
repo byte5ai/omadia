@@ -1,8 +1,7 @@
 /**
  * `SUB_AGENT_EFFORT`: a `LocalSubAgent` sends the configured reasoning effort
  * on its model calls — only to a model whose catalogue entry declares the
- * level (the Anthropic adapter forwards `output_config.effort` unchecked, and
- * a model without the knob answers 400) — and nothing when it is unset.
+ * level — and nothing when it is unset.
  */
 
 import assert from 'node:assert/strict';

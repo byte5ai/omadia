@@ -9,10 +9,12 @@ import { resolveModelRef, type EffortLevel } from '@omadia/llm-provider';
  * only bounds the THINKING: tool results arrive as input and the answer keeps
  * the full `max_tokens` budget, so a large deterministic result still fits.
  *
- * Sent only to a model whose catalogue entry declares the level: the Anthropic
- * adapter forwards `output_config.effort` unchecked, and a model without the
- * knob (Haiku 4.5, …) answers 400. Unknown model → no effort, never a broken
- * turn.
+ * Sent only to a model whose catalogue entry declares the level. The adapters
+ * now drop an effort the model cannot take themselves (Anthropic's
+ * `acceptsEffort`, OpenAI's reasoning-model gate), with a one-time warning;
+ * the catalogue check keeps a sub-agent from sending a level its model does
+ * not offer at all, so it never relies on that fallback. Unknown model → no
+ * effort, never a broken turn.
  */
 export type SubAgentEffortFor = (providerId: string, model: string) => EffortLevel | undefined;
 
