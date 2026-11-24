@@ -24,6 +24,7 @@ import { turnContext } from '../../packages/harness-orchestrator/src/turnContext
 import { readersOf, unionLabels, type DiscretionLabel, type LabelSet } from '../../packages/harness-orchestrator/src/discretion/labels.js';
 import type { DiscretionAuditEntry, DiscretionPort, LabelSubjectKind } from '../../packages/harness-orchestrator/src/discretion/port.js';
 import {
+  addTurnLabels,
   createDiscretionTurnState,
   currentTurnLabels,
 } from '../../packages/harness-orchestrator/src/discretion/turnLabels.js';
@@ -35,6 +36,8 @@ import {
 import { labelProcessMemory } from '../../packages/harness-orchestrator/src/discretion/labelledProcessMemory.js';
 import { ServiceRegistry } from '../../src/platform/serviceRegistry.js';
 import { scriptedModel, text } from '../_helpers/replayTurnFixture.js';
+import { enforcedVerifiedStream } from '../../packages/harness-orchestrator/src/verifierDelivery.js';
+import { answerWithheldText } from '../../packages/harness-orchestrator/src/discretion/disclosure.js';
 
 const HR_DM = 'teams:dm-hr';
 const hrReaders = readersOf(['hr-mgr', 'p']);
@@ -110,7 +113,7 @@ interface Setup {
   readonly seed?: Array<[LabelSubjectKind, string, LabelSet]>;
 }
 
-function build(setup: Setup) {
+function build(setup: Setup, extra: Partial<OrchestratorOptions> = {}) {
   const { port, audits } = fakePort(setup.seed);
   const model = scriptedModel([text(ANSWER)]);
   const orchestrator = new Orchestrator({
@@ -132,6 +135,7 @@ function build(setup: Setup) {
         stats: { candidatePool: 1, compactMode: false, tokensUsed: 10 },
       }),
     },
+    ...extra,
   } as unknown as OrchestratorOptions);
   return { orchestrator, audits };
 }
@@ -152,8 +156,8 @@ function isRecallCard(e: { type: string; channel?: string }): boolean {
   return e.type === 'turn_annotation' && e.channel === 'kg_recall';
 }
 
-async function streamInProcess(setup: Setup, members: string[]) {
-  const { orchestrator } = build(setup);
+async function streamInProcess(setup: Setup, members: string[], extra: Partial<OrchestratorOptions> = {}) {
+  const { orchestrator } = build(setup, extra);
   const { input, participants } = groupTurn(members);
   const events: ChatStreamEvent[] = [];
   await turnContext.runWithChatParticipants(participants as never, async () => {
@@ -411,5 +415,63 @@ describe('a CLI turn runs with the in-process discretion state (#2194)', () => {
     assert.equal((done as { followUpOptions?: unknown }).followUpOptions, undefined);
     assert.equal(done.turnId, 'turn-cli');
     assert.equal(events.some((e) => e.type === 'turn_annotation'), false);
+  });
+});
+
+describe('cards derived from a withheld answer stay back on the stream (#2198)', () => {
+  // A plan-runner-like hook: before the turn it reuses a process from the HR
+  // 1:1 (reading it labels the turn, as the labelled service does) and shows
+  // its plan; after the turn it shows the plan again.
+  const planHooks = {
+    run: async (point: string) => {
+      if (point === 'onBeforeTurn') addTurnLabels(narrow);
+      return point === 'onBeforeTurn' || point === 'onAfterTurn'
+        ? [{ channel: 'plan', payload: { steps: ['Aufhebungsvertrag für P vorbereiten'], point } }]
+        : [];
+    },
+  };
+
+  it('no plan card and no after-turn annotation goes to the group with the withheld answer', async () => {
+    const events = await streamInProcess(planFromHr, ['hr-mgr', 's1'], { turnHookRegistry: planHooks } as never);
+    assert.equal(events.some((e) => e.type === 'turn_annotation'), false, JSON.stringify(events.map((e) => e.type)));
+    const done = events.find((e) => e.type === 'done');
+    assert.ok(done && done.type === 'done' && !done.answer.includes('Aufhebungsvertrag'));
+  });
+
+  it('the room that may read it gets the after-turn annotation', async () => {
+    const events = await streamInProcess(planFromHr, ['hr-mgr', 'p'], { turnHookRegistry: planHooks } as never);
+    const plans = events.filter((e) => e.type === 'turn_annotation' && (e as { channel?: string }).channel === 'plan');
+    assert.ok(
+      plans.some((e) => (e as { payload?: { point?: string } }).payload?.point === 'onAfterTurn'),
+      'the after-turn card goes out with an answer that goes out',
+    );
+  });
+});
+
+describe('the verifier releases nothing derived from a withheld answer (#2198)', () => {
+  const kgInsert = { type: 'turn_annotation', channel: 'kg_insert', payload: { mk: 'P' } } as ChatStreamEvent;
+
+  async function released(answer: string) {
+    const base = (async function* (): AsyncGenerator<ChatStreamEvent> {
+      yield { type: 'done', answer, toolCalls: 0, iterations: 1 };
+    })();
+    const out: ChatStreamEvent[] = [];
+    for await (const ev of enforcedVerifiedStream(
+      base,
+      async () => ({ releases: true, summary: { status: 'approved' } as never }),
+      'de',
+      async (done) => ({ done, events: [kgInsert] }),
+    )) {
+      out.push(ev);
+    }
+    return out.filter((e) => e.type === 'turn_annotation');
+  }
+
+  it('a withheld answer: the request record\'s annotations stay back', async () => {
+    assert.equal((await released(answerWithheldText('de'))).length, 0);
+  });
+
+  it('an ordinary answer: they go out with it', async () => {
+    assert.equal((await released('Freitag.')).length, 1);
   });
 });

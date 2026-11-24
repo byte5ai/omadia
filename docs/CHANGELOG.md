@@ -36,6 +36,30 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Diskretion: Karten zurückgehaltener Antworten, Pläne ohne Turn, Label-Rennen (#2198)
+
+2026-11-24. Folgepunkte aus #2194 (Spec 2042 §5.11). Im Streaming-Pfad gingen
+Annotationen, die aus der Antwort abgeleitet sind, vor deren People-Egress-
+Check raus: die `onAfterTurn`-Annotationen (Plan-Karte am Turn-Ende) und der
+`kg_insert`-Puls des aus der Antwort promoteten memorables. Wurde die Antwort
+dann zurückgehalten, hatte der Client sie schon. Jetzt warten beide auf den
+Check und gehen nur mit einer Antwort raus, die rausgeht; das gilt auch, wenn
+der Verifier (enforce, Request-Ledger) den Request-Record erst nach seinem
+Urteil freigibt. Plan-Karten während
+des Turns (`onBeforeTurn`, nach jedem Tool) und jede andere Karte des Streams
+gehen nur an einen Raum, der lesen darf, was der Turn bis dahin gelesen hat.
+Ein Plan ohne bekannten Schreib-Turn (`plan.props.turnId` fehlt) wird nicht
+mehr abgerufen, wenn der Orchestrator Diskretions-Labels führt
+(`requireKnownPlanTurn`): ohne Turn sagt nichts, wer ihn lesen darf. Labels
+von Prozessen und Memory-Notizen wachsen jetzt atomar
+(`DiscretionPort.mergeLabels`: Zeilen-Lock in einer Transaktion), zwei
+gleichzeitige Schreiber verlieren keine Labels mehr; wächst ein Set über
+256 Labels (liest sich dann als unlesbar), schreibt der Store eine Logzeile.
+Ein Konsultationslauf über das Claude-Abo hat keinen Privacy-Shield und damit
+keine maskierte Antwort: der Broker macht aus `redacted` dann nur „B kann
+helfen“, es fließt nichts. Prozesse werden nirgends gelöscht, also gibt es
+keine Labels zu entfernen. Keine Migration.
+
 ### Fixed — Diskretion: Pläne und Prozesse aus dem Recall, CLI-Turns (#2194)
 
 2026-11-24. Zwei Lücken der Recall-Karte „🧠 Aus früheren Sessions“

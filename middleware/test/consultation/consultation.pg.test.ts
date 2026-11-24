@@ -21,7 +21,7 @@ import { probePgTest } from '../_helpers/pgTestDb.js';
 
 import { ConfigStore } from '../../packages/harness-orchestrator/src/registry/configStore.js';
 import { runMultiOrchestratorMigrations } from '../../packages/harness-orchestrator/src/registry/migrator.js';
-import { readersOf, unionLabels, EVERYONE } from '../../packages/harness-orchestrator/src/discretion/labels.js';
+import { readersOf, serializeLabelSet, unionLabels, EVERYONE } from '../../packages/harness-orchestrator/src/discretion/labels.js';
 import { ConsultationStore } from '../../src/consultation/consultationStore.js';
 import { DiscretionStore } from '../../src/discretion/discretionStore.js';
 
@@ -219,6 +219,35 @@ describe('consultation and discretion stores (pg, migrations 0097–0099, 0112)'
     const many = Array.from({ length: 501 }, (_, i) => `turn-many-${String(i)}`);
     await discretion.persistLabels('turn', 'turn-many-500', 'anna', labels);
     assert.ok((await discretion.labelsOf('turn', many)).has('turn-many-500'));
+  });
+
+  it('#2198: concurrent label merges both stay', async () => {
+    const a = unionLabels([{ kind: 'context', key: 'teams:a', readers: readersOf(['a']) }]);
+    const b = unionLabels([{ kind: 'context', key: 'teams:b', readers: readersOf(['b']) }]);
+    await discretion.mergeLabels('process', 'process:race', 'anna', unionLabels([]));
+    // A holds the row (as a concurrent merge would) and writes `a` while B
+    // merges `b`: B must wait for A and add to what A stored.
+    const holder = await pool.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query(
+        `SELECT labels FROM discretion_labels WHERE subject_kind = 'process' AND subject_id = 'process:race' FOR UPDATE`,
+      );
+      const merging = discretion.mergeLabels('process', 'process:race', 'ben', b);
+      await new Promise((r) => setTimeout(r, 150));
+      await holder.query(
+        `UPDATE discretion_labels SET labels = $1::jsonb WHERE subject_kind = 'process' AND subject_id = 'process:race'`,
+        [JSON.stringify(serializeLabelSet(a))],
+      );
+      await holder.query('COMMIT');
+      await merging;
+    } finally {
+      holder.release();
+    }
+    const keys = (await discretion.labelsOf('process', ['process:race']))
+      .get('process:race')
+      ?.labels.flatMap((l) => (l.kind === 'context' ? [l.key] : []));
+    assert.deepEqual(keys?.sort(), ['teams:a', 'teams:b']);
   });
 
   it('the audit stores label ids and reasons only', async () => {
