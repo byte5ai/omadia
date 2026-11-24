@@ -361,7 +361,9 @@ jobs:
           # (memoryAccess/canarySweep<Mode>.pg, 23 tests); measured ran=750.
           # 750 → 749: the strict sweep's known-leak test for #2205 folds into
           # its main assertion once the leak is fixed; measured ran=749.
-          PG_TEST_FLOOR: '749'
+          # 749 → 747: the off/enforce known-leak tests for #2204 fold into
+          # the main sweep assertion once the leak is fixed; measured ran=747.
+          PG_TEST_FLOOR: '747'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

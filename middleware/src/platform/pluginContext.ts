@@ -163,7 +163,7 @@ export {
   type ToolsAccessor,
   type UiRoutesAccessor,
 } from '@omadia/plugin-api';
-import { nativeToolResultText } from '@omadia/plugin-api';
+import { nativeToolResultText, scopeBelongsToAgent } from '@omadia/plugin-api';
 
 export interface CreatePluginContextOptions {
   agentId: string;
@@ -1648,9 +1648,9 @@ function createKnowledgeGraphAccessor(
       // hardening pass MAY parse out the prefix and assert it's allowed.
       return resolveKg().ingestFacts(facts);
     },
-    // A domain tool running inside a turn whose agent restricts the graph
-    // (`enforce-strict`, `members`) searches within that turn's boundary, not
-    // the tenant: otherwise it would be a side door past the recall legs.
+    // A domain tool running inside a turn searches within that turn's
+    // boundary, not the tenant: otherwise it would be a side door past the
+    // recall legs (`off` / `enforce`: the user's own chats, #2204).
     searchTurns: async (opts2) => {
       const bounded = boundTurnSearch(opts2);
       if (bounded === null) return [];
@@ -1684,6 +1684,7 @@ export function boundTurnSearch<
   T extends {
     agentScopePrefix?: string;
     audienceOwners?: readonly string[];
+    userId?: string;
     excludeUnprotected?: boolean;
   },
 >(
@@ -1698,6 +1699,14 @@ export function boundTurnSearch<
   const bound = turnContext.current()?.graphReadScope?.value;
   if (!bound) return { options, scopeAllowed: () => true };
   if (bound.kind === 'nothing') return null;
+  if (bound.kind === 'user') {
+    // `off` / `enforce` (#2204): this agent's turns the turn's user sent.
+    if (!bound.userId) return null;
+    return {
+      options: { ...options, agentScopePrefix: bound.agentScopePrefix, userId: bound.userId },
+      scopeAllowed: (scope) => scopeBelongsToAgent(scope, bound.agentScopePrefix),
+    };
+  }
   if (bound.kind === 'members') {
     if (!bound.audience) return null;
     return {

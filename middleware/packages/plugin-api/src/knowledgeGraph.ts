@@ -2280,6 +2280,13 @@ export interface SessionReadOptions {
    * here. See {@link TurnIngest.owners}.
    */
   audienceOwners?: readonly string[];
+  /**
+   * Keep only turns this user sent (the turn's `userId`, as on
+   * {@link SearchTurnsOptions.userId}). A session left with no turn reads as
+   * `null`. Set by the graph tool in `off` / `enforce` context memory, where a
+   * turn may read its user's own chats with the agent (#2204).
+   */
+  userId?: string;
 }
 
 export interface EntityCapturedTurnsOptions {
@@ -2378,6 +2385,16 @@ export function qualifyScope(agentSlug: string, conversationScope: string): stri
 /** The `LIKE` prefix (`<agentSlug>::`) that selects one Agent's scopes. */
 export function agentScopePrefix(agentSlug: string): string {
   return `${agentSlug}${AGENT_SCOPE_SEP}`;
+}
+
+/**
+ * Does `scope` belong to the Agent whose {@link agentScopePrefix} is `prefix`?
+ * The same rule the backends apply to `agentScopePrefix`: the default Agent
+ * (`default::`) also owns the legacy unqualified scopes (no `::`).
+ */
+export function scopeBelongsToAgent(scope: string, prefix: string): boolean {
+  if (scope.startsWith(prefix)) return true;
+  return prefix === agentScopePrefix('default') && !scope.includes(AGENT_SCOPE_SEP);
 }
 
 // ---------------------------------------------------------------------------

@@ -8410,7 +8410,10 @@ für einen kontextgebundenen Turn eines Agenten in `enforce-strict`:
 **Offen (Folgearbeit):** Owner-basiertes Teilen innerhalb eines Kontexts über Konversationen
 hinweg (z. B. teamweit) braucht einen Kontext-Key auf Turn- und Session-Knoten. Den gibt es
 nicht; strict schränkt deshalb auf die Konversation ein, also enger als die Partition.
-`enforce` und `off` bleiben unverändert und teilen weiter agentweit. Kanäle im Repo
+`enforce` und `off` teilen den Recall weiter agentweit über die eigenen Chats des Users.
+`query_knowledge_graph` und die Plugin-Turn-Suche sehen dort seit #2204 nur Turns dieses
+Agenten, die der User geschickt hat, plus die eigene Konversation ganz
+(`GraphReadScope` `user`); der registrierte CLI-Handler sieht in jedem Modus nichts. Kanäle im Repo
 (Web, API, Canvas) senden kein `origin`, und Teams/Telegram senden es erst mit dem
 SDK-Release, das in ihren Repos aussteht. Der Claude-CLI-Pfad nutzt den Binder nicht.
 Tests: `test/orchestrator/strictContextIsolation.test.ts` (echte Turns, Kontrolle in

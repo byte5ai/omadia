@@ -43,16 +43,6 @@ const viaGraphWalk = (sweep: TurnSweep, s: Sighting): boolean =>
 
 export const KNOWN_LEAKS: readonly KnownLeak[] = [
   {
-    issue: '#2204',
-    title: 'query_knowledge_graph stays within the agent and the user',
-    modes: ['off', 'enforce'],
-    recall: 'any',
-    // Both query_knowledge_graph registrations and a plugin's turn search.
-    matches: (sweep, s) =>
-      (s.entry === 'graph-tool' || s.entry === 'plugin-accessor') &&
-      (sweep.mode === 'off' || sweep.mode === 'enforce'),
-  },
-  {
     issue: '#2207',
     title: 'query_processes / run_stored_process stay within the agent and the context-memory bound',
     modes: ['off', 'enforce', 'enforce-strict', 'members'],
@@ -215,10 +205,8 @@ export function canarySweepSuite(modes: readonly Mode[], options: SweepOptions =
       // The kernel-native registration of the graph tool (subscription-CLI
       // path) knows no turn. Positive control: the in-turn graph tool above
       // reads the same graph.
-      const strict = mode === 'enforce-strict' || mode === 'members';
       it(
         `${mode}: the CLI-path registration of query_knowledge_graph returns no canary`,
-        strict ? {} : { todo: '#2204' },
         async (t) => {
           if (!seeded) return t.skip('no test database');
           for (const agent of AGENT_KEYS) {

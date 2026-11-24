@@ -36,6 +36,21 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the graph tool read the whole tenant in `off` / `enforce` (#2204) (2026-11-24)
+
+- In context memory `off` and `enforce`, `query_knowledge_graph` and a plugin's
+  `ctx.knowledgeGraph.searchTurns` / `findEntityCapturedTurns` read every chat of the tenant:
+  other agents' conversations, pre-agent scopes and other users' private 1:1s. They now see
+  only this agent's turns the turn's user sent, plus the turn's own conversation in full (like
+  recall's tail). A turn without a user sees nothing.
+- The registered (subscription-CLI) handler knows no turn and now sees nothing in every mode,
+  not only in `enforce-strict` / `members`. **Behaviour change:** cross-agent and cross-user
+  search through the tool is gone.
+- plugin-api 1.89.0: `SessionReadOptions.userId` (both in-tree backends honour it) and
+  `scopeBelongsToAgent`.
+- `graphBoundarySideDoors.test.ts` drops its "unrestricted in enforce" control; the canary
+  sweep's `todo` for #2204 is now part of the ordinary assertion. `PG_TEST_FLOOR` 749 → 747.
+
 ### Fixed — `enforce-strict` recalled private durable knowledge into a room (#2205) (2026-11-24)
 
 - In a context-bound `enforce-strict` turn, the durable recall leg (operator-authored and

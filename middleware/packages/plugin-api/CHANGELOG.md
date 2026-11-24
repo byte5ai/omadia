@@ -8,6 +8,22 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.89.0 — 2026-11-24
+
+Additive (#2204).
+
+### Added
+
+- **`SessionReadOptions.userId`**. `getSession(scope, { userId })` keeps only
+  the turns that user sent; a session left with none reads as `null`. The
+  graph tool and a plugin's turn reads use it in `off` / `enforce` context
+  memory, where a turn may read only its user's own chats with the agent. A
+  provider that ignores it returns other users' turns; the in-tree providers
+  honour it.
+- **`scopeBelongsToAgent(scope, prefix)`**. The rule the backends apply to
+  `agentScopePrefix`, for a caller that re-checks a hit's scope: the default
+  agent also owns the legacy unqualified scopes.
+
 ## 1.88.0 — 2026-11-23
 
 Additive (live runs of native facilitators on Slack, Discord and Telegram).
