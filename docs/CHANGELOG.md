@@ -50,6 +50,15 @@ gefälschte Datei in den Baum gelegt. `/memories/sessions/` und
 `buildOrchestratorForAgent` jetzt den ungescopten Store statt des
 Agent-Scopes.
 
+### Changed — Anthropic SDK 1.x: no sampling parameters on Anthropic models (#2167)
+
+- `@anthropic-ai/sdk` 0.126 → 1.12 sends `anthropic-version: 2026-10-21`, which rejects
+  `temperature`/`top_p`/`top_k` with a 400 on every model. The Anthropic adapter never sends
+  them now; `LlmRequest.temperature` (and `ctx.llm` for plugins) is ignored for Anthropic. The
+  per-model `supportsTemperature` table is gone.
+- Custom Anthropic-compatible base URLs keep `X-Api-Key` instead of the SDK's new
+  `Authorization: Bearer` default.
+
 ### Changed — Kernel ohne Plugin-IDs: Teams-Standard-Bot kommt vom Plugin, tote v0.1.0-Reste entfernt
 
 2026-11-24. Der Kernel kannte noch Plugin-IDs aus v0.1.0. Der Teams-Standard-Bot
