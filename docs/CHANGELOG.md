@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Agents können Transkripte nicht mehr löschen oder verschieben (#2215)
+
+2026-11-24. Im Modus „Aus“ und in jedem Turn ohne Kanal-Kontext hält der Turn
+den `core`-Grant, und der machte `/memories/sessions/` schreibbar. Ein
+`delete /memories/sessions` aus einem einzigen Chat löschte damit die
+Transkripte aller Agents; ein `rename` hätte sie verschoben oder eine
+gefälschte Datei in den Baum gelegt. `/memories/sessions/` und
+`/memories/chat-sessions/` stehen jetzt auf der Deny-Liste von
+`ScopedMemoryStore`, samt der Prüfung auf Eltern-Pfade und kanonische Pfade aus
+#1827. Lesen bleibt erlaubt. Kein Agent braucht dort Schreibrechte:
+`SessionLogger` und `ChatSessionStore` schreiben als Kernel und bekommen in
+`buildOrchestratorForAgent` jetzt den ungescopten Store statt des
+Agent-Scopes.
+
 ### Changed — Kernel ohne Plugin-IDs: Teams-Standard-Bot kommt vom Plugin, tote v0.1.0-Reste entfernt
 
 2026-11-24. Der Kernel kannte noch Plugin-IDs aus v0.1.0. Der Teams-Standard-Bot
