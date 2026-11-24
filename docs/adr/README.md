@@ -68,8 +68,8 @@ decision, write a new ADR and mark the old one **Superseded by …**.
 | 0038 | [Conductor operator routes: a malformed id is a 400, an unknown id a 404](0038-conductor-routes-check-id-shape-400-then-404.md) | Accepted | 2026-11-23 |
 | 0039 | [Memory access is verified against a hand-written oracle and a canary sweep](0039-memory-access-verified-by-oracle-and-canary-sweep.md) | Proposed | 2026-11-24 |
 | 0040 | [Private knowledge stays private: one graph read boundary per turn for every read path](0040-one-graph-read-boundary-per-turn.md) | Proposed | 2026-11-24 |
-| 0041 | [Conductor webhooks: context opt-in, bounded retention, signed timestamps, rotation grace](0041-conductor-webhook-hardening.md) | Proposed | 2026-11-24 |
-| 0042 | [Conductor event ids belong to the sender; the catalog only suggests](0042-conductor-event-ids-belong-to-the-sender.md) | Proposed | 2026-11-24 |
+| 0041 | [Conductor webhooks: context opt-in, bounded retention, signed timestamps, rotation grace](0041-conductor-webhook-hardening.md) | Accepted | 2026-11-24 |
+| 0042 | [Conductor event ids belong to the sender; the catalog only suggests](0042-conductor-event-ids-belong-to-the-sender.md) | Accepted | 2026-11-24 |
 
 ### The agent model (0012–0022)
 

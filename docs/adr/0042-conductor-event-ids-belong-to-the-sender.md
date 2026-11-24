@@ -2,10 +2,10 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-24
-- **Deciders:** Maintainers, from issue #1713; PR #2211 (open). Reverses the rule in
+- **Deciders:** Maintainers, from issue #1713; PR #2211. Reverses the rule in
   `specs/005-omadia-conductor/spec.md` FR-003, which the PR amends with an explicit carve-out.
 
 ## Context and Problem Statement

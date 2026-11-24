@@ -2,10 +2,10 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-24
-- **Deciders:** Maintainers, from issue #1707; PR #2033 (open). Builds on #2021, which made
+- **Deciders:** Maintainers, from issue #1707; PR #2033. Builds on #2021, which made
   the outbound event name follow the run's terminal status 1:1 (`run.cancelled`).
 
 ## Context and Problem Statement
