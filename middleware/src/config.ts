@@ -558,10 +558,9 @@ export const ConfigSchema = z.object({
    */
   TEAMS_PUBLIC_BASE_URL: z.string().url().optional(),
 
-  // Telegram channel. When TELEGRAM_BOT_TOKEN is set, the channel package is
-  // auto-installed at boot. TELEGRAM_WEBHOOK_SECRET is required alongside it
-  // (HMAC-style header validation on the webhook). TELEGRAM_PUBLIC_BASE_URL
-  // is optional — when missing, the channel falls back to long-polling.
+  // Telegram channel env (legacy). The kernel no longer auto-installs a
+  // channel from these; the Telegram plugin is installed from the store and
+  // configured through its setup form. Kept so an existing .env still parses.
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_WEBHOOK_SECRET: z.string().optional(),
   TELEGRAM_PUBLIC_BASE_URL: z.string().url().optional(),
