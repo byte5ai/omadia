@@ -434,6 +434,45 @@ describe('ConductorBuilderAgent template awareness', () => {
     assert.deepEqual(p.prefill, { agents: { approver: 'fallback' }, channels: { notify: 'teams' }, text: { greeting: 'Hi team' } });
   });
 
+  // #1713 — an event-slot guess outside the catalog survives: the instantiate form's
+  // event slot is free text (an event id is minted by whoever emits it), so stripping the
+  // guess would hand the operator an empty field for a value the route accepts.
+  it('keeps an event-slot prefill the known-event catalog does not contain', async () => {
+    const eventTemplate: TemplateSummary = {
+      ...vacationTemplate,
+      id: 'incident-flow',
+      graph: {
+        entryStepId: 's1',
+        steps: [{ id: 's1', kind: 'agent', agentId: 'slot:agent:approver', prompt: 'slot:text:greeting' }],
+        transitions: [],
+        triggers: [{ id: 'tr', kind: 'event', eventId: 'slot:event:incident' }],
+      },
+      slots: { ...vacationTemplate.slots, events: [{ key: 'incident', label: 'Incident event' }] },
+    };
+    const { registry } = stubRegistry([
+      JSON.stringify({
+        reply: 'this one',
+        patches: [],
+        templateProposals: [
+          {
+            templateId: 'incident-flow',
+            version: 2,
+            reason: 'fits',
+            prefill: { events: { incident: 'my.incident' } },
+          },
+        ],
+      }),
+    ]);
+    const agent = new ConductorBuilderAgent({
+      getRegistry: () => registry,
+      templateCatalog: stubCatalog([eventTemplate]),
+      // Empty event catalog — the case from the issue.
+      templateKnownRefs: () => ({ agentIds: ['fallback'], eventIds: [] }),
+    });
+    const res = await agent.runTurn({ graph: validBaseGraph(), message: 'incident flow', viewer: 'op-b' });
+    assert.deepEqual(res.templateProposals![0].prefill, { events: { incident: 'my.incident' } });
+  });
+
   it('drops unknown/invisible template ids, dedupes, and caps at 3', async () => {
     const many = [1, 2, 3, 4].map((n) => ({ ...vacationTemplate, id: `t-${n}`, name: `T${n}` }));
     const { registry } = stubRegistry([

@@ -36,6 +36,38 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Conductor: Event-Vorlagen bei leerem Event-Katalog instanziierbar (#1713)
+
+2026-11-24. Die gebündelte Vorlage „Benachrichtigen und eskalieren bei Vorfall"
+deklariert einen Pflicht-Slot `kind: "events"`. Die strenge Validierung der
+Routes `POST /conductors/templates/:id/{resolve,instantiate}` prüft Event-Ids
+gegen den **lebenden** Event-Katalog, und auf einem Stack ohne Event-emittierendes
+Plugin ist der leer: jede Id wurde mit
+`400 conductor.invalid_graph` / `unknown_event_ref` abgelehnt, das Formular bot
+ein leeres Select. Die Vorlage stand damit in der Galerie, war aber über keine
+der beiden Oberflächen nutzbar — während derselbe Graph über `POST /conductors`
+(validiert ohne `KnownRefs`) publishbar war und danach normal lief.
+Eine Event-Id ist Freitext des Senders (`POST /conductors/emit` nimmt jede Id,
+ein eingehender Webhook-Endpoint aus #437 trägt eine vom Operator vergebene, die
+in keinem Manifest steht), der Katalog also eine Vorschlagsliste. Eine Id ohne
+Treffer ist jetzt die nicht blockierende Warnung `unmatched_event_ref`
+(`validate()` in `@omadia/conductor-core`), die `resolve`/`instantiate` als
+`warnings` zurückgeben und das Formular nach dem Anlegen anzeigt; ein
+**fehlendes** `eventId` an einem `event`/`webhook`-Trigger bleibt der harte
+Fehler `unknown_event_ref` (ein solcher Trigger kann nie feuern, #437).
+Weil der Slot jetzt Freitext ist, **trimmt** `applyTemplateSlots` die Werte der
+Ref-Slots (`mappedValue`, derselbe Trim, mit dem das Pflichtfeld-Gate „gemappt"
+entscheidet): ein eingefügtes `" my.incident"` hätte sonst einen Trigger
+publiziert, den `eventRouter#emit` (`tr.eventId === eventId`) nie trifft — ein
+still toter Workflow statt einer Ablehnung.
+Das Event-Slot-Feld ist Freitext mit Datalist — wie das Event-Trigger-Feld des
+Designers — und `GET /conductors/events/catalog` liefert zusätzlich
+`endpointEvents` (die `eventId`s der eingehenden Webhook-Endpoints), die auch in
+die `KnownRefs` von Validierung, Builder-Prompt und Proposal-Prefill eingehen
+(`knownEventIds()` in `src/conductor/index.ts`). FR-003 in
+`specs/005-omadia-conductor/{spec,data-model}.md` trägt die Ausnahme jetzt
+ausdrücklich (fehlendes `eventId` bleibt harter Fehler). Keine Migration.
+
 ### Changed — Kernel ohne Plugin-IDs: Teams-Standard-Bot kommt vom Plugin, tote v0.1.0-Reste entfernt
 
 2026-11-24. Der Kernel kannte noch Plugin-IDs aus v0.1.0. Der Teams-Standard-Bot
