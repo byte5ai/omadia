@@ -121,9 +121,18 @@ export function extractSlotRefs(graph: WorkflowGraph): TemplateSlotRef[] {
   return [...byId.values()];
 }
 
+/** The mapped value for a ref slot, TRIMMED, or null when absent/blank — the same
+ *  trim the missing-slot gate tests with, so a value that passes that gate is the value
+ *  substituted. #1713: event slots are free text now, and a pasted ' my.incident' would
+ *  otherwise publish a trigger whose eventId no emitted id can ever equal
+ *  (`eventRouter#emit` compares `tr.eventId === eventId`) — a silently dead workflow
+ *  instead of a refusal. Ref fields are ids and channel names throughout, so leading or
+ *  trailing whitespace is never meaningful in any of them. */
 function mappedValue(mapping: TemplateSlotMapping, kind: TemplateSlotKind, key: string): string | null {
   const value = mapping[kind]?.[key];
-  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /**

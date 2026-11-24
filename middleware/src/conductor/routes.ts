@@ -294,11 +294,29 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     }
   });
 
-  // Event catalog (US4) — the events plugins declared they emit, for the Designer's trigger picker.
-  // Registered before '/:slug' so it is not swallowed by the catch-all workflow route.
-  router.get('/events/catalog', (_req: Request, res: Response): void => {
+  // Event catalog (US4) — the events plugins declared they emit, for the Designer's trigger
+  // picker and the template form's event slots. Registered before '/:slug' so it is not
+  // swallowed by the catch-all workflow route.
+  //
+  // `endpointEvents` is ADDITIVE (#1713): the ids operators configured on inbound webhook
+  // endpoints (#437). They are emittable on this install too, but no manifest declares them,
+  // so they are kept out of `events`/`byPlugin` (which mean "declared by a plugin") and
+  // offered as further suggestions. A failed endpoint read degrades to an empty list —
+  // suggestions must never 500 a picker, and event ids stay free text either way.
+  router.get('/events/catalog', async (_req: Request, res: Response): Promise<void> => {
     try {
-      res.json({ events: deps.eventCatalog?.list() ?? [], byPlugin: deps.eventCatalog?.byPluginId() ?? {} });
+      let endpointEvents: string[] = [];
+      try {
+        const endpoints = (await deps.webhookEndpoints?.list()) ?? [];
+        endpointEvents = [...new Set(endpoints.map((ep) => ep.eventId))].sort();
+      } catch (err) {
+        console.warn('[conductor] inbound webhook endpoints unavailable for the event catalog:', errMsg(err));
+      }
+      res.json({
+        events: deps.eventCatalog?.list() ?? [],
+        byPlugin: deps.eventCatalog?.byPluginId() ?? {},
+        endpointEvents,
+      });
     } catch (err) {
       res.status(500).json({ code: 'conductor.event_catalog_failed', message: errMsg(err) });
     }

@@ -6,6 +6,7 @@ import type { JsonObject, JsonValue, Step, WorkflowGraph } from '@omadia/conduct
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRun, ConductorRunStore, TriggerKind } from './runStore.js';
 import { RunLeaseLostError } from './runStore.js';
+import { isTimerAwait } from './awaitStore.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { StepEffects } from './stepEffects.js';
 import { canonicalizePrincipalId } from './principalId.js';
@@ -670,15 +671,15 @@ export class ConductorRunExecutor {
     const fallback = aw.fallbackTransitionId ? graph.transitions.find((tr) => tr.id === aw.fallbackTransitionId) : undefined;
     // #330 C3 — a timer expiry is the step doing exactly its job, not a
     // missed deadline; the actor says so, and the trace stays honest.
-    const actor: JsonValue = aw.principalKind === 'timer' ? { kind: 'timer', ticked: true } : { kind: 'human', timedOut: true };
+    const actor: JsonValue = isTimerAwait(aw) ? { kind: 'timer', ticked: true } : { kind: 'human', timedOut: true };
     // A timer expiring is the step working as designed — 'unmet' would lie.
-    const expiredOutcome = aw.principalKind === 'timer' ? 'n/a' : 'unmet';
+    const expiredOutcome = isTimerAwait(aw) ? 'n/a' : 'unmet';
     // #1699 — a human deadline passing unanswered is a cause worth recording, on
     // the fallback path too (the run can end `completed` and the operator still
     // needs to know nobody answered). A TIMER expiring is the step doing exactly
     // its job — same reasoning as `expiredOutcome` above — so it records none.
     const expiryError: ConductorRunError | null =
-      aw.principalKind === 'timer'
+      isTimerAwait(aw)
         ? null
         : runError(
             'await_timed_out',

@@ -5532,8 +5532,18 @@ export async function getConductorWorkflowGraph(
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}`);
 }
 
-/** Declared emittable domain events (US4), for the Designer's event-trigger picker. */
-export async function getConductorEventCatalog(): Promise<{ events: string[]; byPlugin: Record<string, string[]> }> {
+/**
+ * Declared emittable domain events (US4), for the Designer's event-trigger picker and the
+ * template form's event slots. `endpointEvents` (#1713) are the ids configured on inbound
+ * webhook endpoints — emittable here too, but declared by an operator instead of a plugin
+ * manifest, so they are suggested separately. Both lists are suggestions: an event id is
+ * free text everywhere it is entered.
+ */
+export async function getConductorEventCatalog(): Promise<{
+  events: string[];
+  byPlugin: Record<string, string[]>;
+  endpointEvents?: string[];
+}> {
   return getJson(`${CONDUCTOR_BASE}/events/catalog`);
 }
 
@@ -5679,6 +5689,19 @@ export async function deleteConductorWorkflow(slug: string): Promise<{ deleted: 
     throw new ApiError(res.status, `DELETE ${path} failed: ${res.status}`, text);
   }
   return JSON.parse(text) as { deleted: boolean; mode: 'hard' | 'soft' };
+}
+
+/** Enable or disable a workflow (#1711). The middleware answers 204; postJson
+ *  maps that to `undefined`, so there is no body to read. A template
+ *  instantiated without `enable: true` lands in `disabled`, where every run
+ *  start answers 409 `conductor.disabled` — this is the operator UI's way back
+ *  out of that state. Reserved ephemeral slugs are refused with 400 by the
+ *  route (their status belongs to the reaper, #330). */
+export async function setConductorWorkflowStatus(
+  slug: string,
+  status: 'enabled' | 'disabled',
+): Promise<void> {
+  await postJson<void>(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/status`, { status });
 }
 
 /** #759 — cancel a run. 'waiting' finalizes immediately; 'running' flags the
@@ -5890,7 +5913,7 @@ export async function resolveConductorTemplate(
   id: string,
   mapping: ConductorTemplateSlotMapping,
   version?: number,
-): Promise<{ graph: unknown }> {
+): Promise<{ graph: unknown; warnings?: ConductorValidationWarning[] }> {
   return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/resolve`, {
     mapping,
     ...(version !== undefined ? { version } : {}),
@@ -5910,7 +5933,13 @@ export async function instantiateConductorTemplate(
     enable?: boolean;
     version?: number;
   },
-): Promise<{ workflow: ConductorWorkflow; version: { id: string; version: number } }> {
+): Promise<{
+  workflow: ConductorWorkflow;
+  version: { id: string; version: number };
+  /** #759/#1713 — non-blocking findings on the resolved graph (e.g. an event id nothing
+   *  installed declares yet). The instantiation stands; the operator must still see them. */
+  warnings?: ConductorValidationWarning[];
+}> {
   return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/instantiate`, body);
 }
 
