@@ -28,12 +28,12 @@ interface KeywordRule {
 const RULES: readonly KeywordRule[] = [
   {
     keywords: [/\bodoo\b/i, /\baccounting\b/i, /\bbuchhalt/i, /\binvoice/i, /\brechnung/i],
-    agentId: 'de.byte5.integration.odoo',
+    agentId: '@omadia/integration-odoo',
     reason: 'intent mentions Odoo / accounting / invoicing',
   },
   {
     keywords: [/\bconfluence\b/i, /\bplaybook\b/i, /\bwiki\b/i],
-    agentId: 'de.byte5.integration.confluence',
+    agentId: '@omadia/integration-confluence',
     reason: 'intent mentions Confluence / playbooks / wiki',
   },
   {
@@ -46,7 +46,7 @@ const RULES: readonly KeywordRule[] = [
       /\bcalendar\b/i,
       /\bkalender\b/i,
     ],
-    agentId: 'de.byte5.integration.microsoft365',
+    agentId: '@omadia/integration-microsoft365',
     reason: 'intent mentions Microsoft 365 / Outlook / Teams / calendar / email',
   },
   {
