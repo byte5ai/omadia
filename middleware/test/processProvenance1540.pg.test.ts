@@ -33,7 +33,7 @@ const embedder: EmbeddingClient = {
 } as unknown as EmbeddingClient;
 
 const { url: PG_URL, reachable: pgUp } = await probePgTest({
-  label: 'processProvenancePg1540',
+  label: 'processProvenance1540',
   vars: ['GRAPH_PG_TEST_URL', 'KG_PG_TEST_URL', 'MEMORY_PG_TEST_URL'],
   requireVector: true,
 });

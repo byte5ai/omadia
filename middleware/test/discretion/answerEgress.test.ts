@@ -68,8 +68,29 @@ function groupTurn(members: string[]): { input: ChatTurnInput; participants: () 
   };
 }
 
-function build(recalledLabels: LabelSet) {
-  const model = scriptedModel([text(`Kurz gesagt: ${SECRET}.`)]);
+/** The scripted model, streaming its text in chunks before the final response. */
+function streamingInChunks(model: ReturnType<typeof scriptedModel>): ReturnType<typeof scriptedModel> {
+  const inner = model.provider;
+  const provider = {
+    ...inner,
+    stream: (request: LlmRequest) => ({
+      async *[Symbol.asyncIterator]() {
+        for await (const event of inner.stream(request) as AsyncIterable<{ type: string; response?: LlmResponse }>) {
+          const answer = event.response?.content.find((c) => c.type === 'text');
+          if (answer?.type === 'text') {
+            for (let i = 0; i < answer.text.length; i += 7) yield { type: 'text_delta', text: answer.text.slice(i, i + 7) };
+          }
+          yield event;
+        }
+      },
+    }),
+  } as unknown as LlmProvider;
+  return { ...model, provider };
+}
+
+function build(recalledLabels: LabelSet, opts: { streamChunks?: boolean } = {}) {
+  const scripted = scriptedModel([text(`Kurz gesagt: ${SECRET}.`)]);
+  const model = opts.streamChunks ? streamingInChunks(scripted) : scripted;
   const logged: Array<{ assistantAnswer: string }> = [];
   const persisted = new Map<string, LabelSet>();
   const audits: DiscretionAuditEntry[] = [];
@@ -137,6 +158,43 @@ describe('the answer egress (criterion 18)', () => {
     const result = await turnContext.runWithChatParticipants(participants as never, () => orchestrator.chat(input));
     assert.match(result.text, /Paula/);
     assert.match(logged[0]!.assistantAnswer, /Paula/);
+  });
+
+  it('a streamed answer that is withheld takes back the text it already streamed', async () => {
+    const narrow = unionLabels([{ kind: 'context', key: 'telegram:dm-ab', readers: readersOf(['a', 'b']) }]);
+    const { orchestrator } = build(narrow, { streamChunks: true });
+    const { input, participants } = groupTurn(['a', 'b', 'c']);
+    const events: Array<{ type: string; text?: string; chars?: number; answer?: string }> = [];
+    await turnContext.runWithChatParticipants(participants as never, async () => {
+      for await (const event of orchestrator.chatStream(input)) events.push(event as never);
+    });
+    const streamed = events.filter((e) => e.type === 'text_delta').map((e) => e.text ?? '').join('');
+    assert.match(streamed, /Paula/, 'the model streamed the draft');
+    // What a client shows: the deltas, trimmed by every retract.
+    let preview = '';
+    for (const e of events) {
+      if (e.type === 'text_delta') preview += e.text ?? '';
+      if (e.type === 'text_retract') preview = preview.slice(0, Math.max(0, preview.length - (e.chars ?? 0)));
+    }
+    assert.equal(preview, '', 'nothing of the draft stays in the preview');
+    const retractAt = events.findIndex((e) => e.type === 'text_retract');
+    const doneAt = events.findIndex((e) => e.type === 'done');
+    assert.ok(retractAt >= 0 && retractAt < doneAt, 'the retract comes before the done');
+    const done = events[doneAt]!;
+    assert.equal(done.answer?.includes('Paula'), false);
+    assert.match(done.answer ?? '', /nicht alle hier|not everyone here/);
+  });
+
+  it('a streamed answer everyone may know is not retracted', async () => {
+    const wide = unionLabels([{ kind: 'context', key: 'telegram:dm-ab', readers: readersOf(['a', 'b', 'c']) }]);
+    const { orchestrator } = build(wide, { streamChunks: true });
+    const { input, participants } = groupTurn(['a', 'b', 'c']);
+    const types: string[] = [];
+    await turnContext.runWithChatParticipants(participants as never, async () => {
+      for await (const event of orchestrator.chatStream(input)) types.push(event.type);
+    });
+    assert.ok(types.includes('text_delta'));
+    assert.equal(types.includes('text_retract'), false);
   });
 
   it('a withheld answer goes out without anything derived from it', async () => {

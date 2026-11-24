@@ -1,5 +1,7 @@
 import type { Pool } from 'pg';
-import type { JsonValue } from '@omadia/conductor-core';
+import type { JsonObject, JsonValue } from '@omadia/conductor-core';
+
+import { renderAwaitMessage } from './runInterpolation.js';
 
 export type AwaitStatus = 'waiting' | 'resolved' | 'timed_out' | 'cancelled';
 
@@ -48,10 +50,39 @@ interface AwaitRow {
   status: AwaitStatus;
   unreachable: boolean;
   created_at: Date;
+  /** The run's context, joined in by every SELECT below — see {@link storedMessage}.
+   *  Absent on an INSERT ... RETURNING row, which needs no rendering. */
+  run_context?: JsonObject | null;
 }
 
 const COLS = `id, run_id, step_id, principal_kind, principal_ref, channel_type, message, quorum,
   reminder_interval_ms, deadline_at, fallback_transition_id, status, unreachable, created_at`;
+
+// #1709 — the same columns for a READ, plus the run's context, so a row written before
+// the interpolation fix can be rendered on the way out (`storedMessage`). One join here
+// instead of a re-render at each of the three readers (operator inbox, reminder worker,
+// approval card), and no per-row extra query.
+const SELECT_COLS = `a.id, a.run_id, a.step_id, a.principal_kind, a.principal_ref, a.channel_type,
+  a.message, a.quorum, a.reminder_interval_ms, a.deadline_at, a.fallback_transition_id, a.status,
+  a.unreachable, a.created_at, r.context AS run_context`;
+const SELECT_FROM = `conductor_awaits a LEFT JOIN conductor_runs r ON r.id = a.run_id`;
+
+/**
+ * #1709 — the message a person reads. `openHumanAwait` renders it at WRITE time, so the
+ * normal case is a string with no token left in it and this returns it untouched. A row
+ * parked before that fix still holds raw `{{ctx.…}}` template text, and it would keep
+ * showing it in the inbox forever (an await is written once and never rewritten), so such
+ * a row is rendered here against the run's context instead of being migrated.
+ *
+ * Cheap by design: the `includes('{{')` guard means a current row costs one substring
+ * scan. A run row that has since been deleted leaves no context, and the message then
+ * renders with the ordinary unresolved-token dashes rather than raw syntax.
+ */
+function storedMessage(r: AwaitRow): string {
+  if (!r.message.includes('{{')) return r.message;
+  const context = typeof r.run_context === 'object' && r.run_context !== null ? r.run_context : {};
+  return renderAwaitMessage(r.message, context);
+}
 
 function toAwait(r: AwaitRow): ConductorAwait {
   return {
@@ -61,7 +92,7 @@ function toAwait(r: AwaitRow): ConductorAwait {
     principalKind: r.principal_kind,
     principalRef: r.principal_ref,
     channelType: r.channel_type,
-    message: r.message,
+    message: storedMessage(r),
     quorum: r.quorum,
     reminderIntervalMs: r.reminder_interval_ms === null ? null : Number(r.reminder_interval_ms),
     deadlineAt: r.deadline_at,
@@ -105,14 +136,18 @@ export class ConductorAwaitStore {
     );
     if (r.rows[0]) return toAwait(r.rows[0]);
     const existing = await this.pool.query<AwaitRow>(
-      `SELECT ${COLS} FROM conductor_awaits WHERE run_id = $1 AND step_id = $2 AND status = 'waiting' LIMIT 1`,
+      `SELECT ${SELECT_COLS} FROM ${SELECT_FROM}
+        WHERE a.run_id = $1 AND a.step_id = $2 AND a.status = 'waiting' LIMIT 1`,
       [input.runId, input.stepId],
     );
     return toAwait(existing.rows[0]!);
   }
 
   async get(awaitId: string): Promise<ConductorAwait | null> {
-    const r = await this.pool.query<AwaitRow>(`SELECT ${COLS} FROM conductor_awaits WHERE id = $1`, [awaitId]);
+    const r = await this.pool.query<AwaitRow>(
+      `SELECT ${SELECT_COLS} FROM ${SELECT_FROM} WHERE a.id = $1`,
+      [awaitId],
+    );
     return r.rows[0] ? toAwait(r.rows[0]) : null;
   }
 
@@ -133,9 +168,9 @@ export class ConductorAwaitStore {
    *  group already reached its outcome instead of waiting out the interval. */
   async openTimerAwaitForRun(runId: string): Promise<ConductorAwait | null> {
     const r = await this.pool.query<AwaitRow>(
-      `SELECT ${COLS} FROM conductor_awaits
-        WHERE run_id = $1 AND status = 'waiting' AND principal_kind = 'timer'
-        ORDER BY created_at ASC LIMIT 1`,
+      `SELECT ${SELECT_COLS} FROM ${SELECT_FROM}
+        WHERE a.run_id = $1 AND a.status = 'waiting' AND a.principal_kind = 'timer'
+        ORDER BY a.created_at ASC LIMIT 1`,
       [runId],
     );
     return r.rows[0] ? toAwait(r.rows[0]) : null;
@@ -143,9 +178,9 @@ export class ConductorAwaitStore {
 
   async listWaiting(limit = 100): Promise<ConductorAwait[]> {
     const r = await this.pool.query<AwaitRow>(
-      `SELECT ${COLS} FROM conductor_awaits
-        WHERE status = 'waiting'
-        ORDER BY created_at ASC LIMIT $1`,
+      `SELECT ${SELECT_COLS} FROM ${SELECT_FROM}
+        WHERE a.status = 'waiting'
+        ORDER BY a.created_at ASC LIMIT $1`,
       [Math.min(Math.max(1, limit), 500)],
     );
     return r.rows.map(toAwait);
@@ -154,9 +189,9 @@ export class ConductorAwaitStore {
   /** Waiting awaits whose deadline has passed (for the deadline worker). */
   async listDue(now: Date): Promise<ConductorAwait[]> {
     const r = await this.pool.query<AwaitRow>(
-      `SELECT ${COLS} FROM conductor_awaits
-        WHERE status = 'waiting' AND deadline_at IS NOT NULL AND deadline_at <= $1
-        ORDER BY deadline_at ASC LIMIT 100`,
+      `SELECT ${SELECT_COLS} FROM ${SELECT_FROM}
+        WHERE a.status = 'waiting' AND a.deadline_at IS NOT NULL AND a.deadline_at <= $1
+        ORDER BY a.deadline_at ASC LIMIT 100`,
       [now],
     );
     return r.rows.map(toAwait);
@@ -170,12 +205,12 @@ export class ConductorAwaitStore {
    */
   async listRemindersDue(now: Date): Promise<ConductorAwait[]> {
     const r = await this.pool.query<AwaitRow>(
-      `SELECT ${COLS} FROM conductor_awaits
-        WHERE status = 'waiting'
-          AND reminder_interval_ms IS NOT NULL
-          AND COALESCE(last_reminder_at, created_at) + (reminder_interval_ms * interval '1 millisecond') <= $1
-          AND (deadline_at IS NULL OR deadline_at > $1)
-        ORDER BY created_at ASC LIMIT 100`,
+      `SELECT ${SELECT_COLS} FROM ${SELECT_FROM}
+        WHERE a.status = 'waiting'
+          AND a.reminder_interval_ms IS NOT NULL
+          AND COALESCE(a.last_reminder_at, a.created_at) + (a.reminder_interval_ms * interval '1 millisecond') <= $1
+          AND (a.deadline_at IS NULL OR a.deadline_at > $1)
+        ORDER BY a.created_at ASC LIMIT 100`,
       [now],
     );
     return r.rows.map(toAwait);

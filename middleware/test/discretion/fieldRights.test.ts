@@ -20,6 +20,7 @@ import {
   audienceFloor,
   InMemoryGrantStore,
   makePrincipal,
+  RoleSourceRegistry,
   type AudienceFloor,
   type Principal,
 } from '@omadia/channel-sdk';
@@ -31,6 +32,7 @@ import {
   FIELD_WITHHELD_NOTICE,
   fieldCapability,
   fieldClassesOf,
+  fieldClassesOfReaders,
   MemberBaselineGrantStore,
   maskValuesInText,
   NativeToolRegistry,
@@ -50,7 +52,7 @@ import { TOOL_ERROR_PREFIX, type KnowledgeGraph } from '@omadia/plugin-api';
 import { createDeliverDataHandler } from '../../src/triggers/deliverDataTool.js';
 import { RAW_EMAIL, countingService, drain, echoingProvider } from '../_helpers/privacyEgressHarness.js';
 import { discretionAllowsRoom } from '../../src/triggers/triggerTools.js';
-import { roomFieldClasses } from '../../src/triggers/kernelExecutors.js';
+import { firingFieldClasses, roomFieldClasses } from '../../src/triggers/kernelExecutors.js';
 import { text, toolCalls } from '../_helpers/replayTurnFixture.js';
 
 const PERSONAL = fieldCapability('personal');
@@ -410,6 +412,52 @@ describe('field rights travel with a trigger (criterion 18)', () => {
     assert.deepEqual(roomFieldClasses(own, stored, room(['a'])), ['personal'], 'a reader left: still covered');
     assert.equal(roomFieldClasses(own, stored, room(['a', 'b', 'c'])), undefined, 'a new reader: none');
     assert.equal(roomFieldClasses({ target: { grantId: 'g' } } as never, stored, room(['a'])), undefined, 'explicit target: none');
+  });
+});
+
+describe('a firing reads field rights now, never wider than at creation (criterion 18)', () => {
+  const stored = { readers: readersOf(['a', 'b']), fieldClasses: ['personal'] };
+  const own = { target: null } as never;
+  const room = { contextKey: 'telegram:group-1', readers: readersOf(['a', 'b']) };
+  const sources = (denied?: string) => ({ grants: grants(denied), roles: new RoleSourceRegistry() });
+
+  it('criterion 18: a right withdrawn after creation is gone at firing', async () => {
+    assert.deepEqual(await firingFieldClasses(own, stored, room, sources()), ['personal'], 'still held: kept');
+    assert.deepEqual(await firingFieldClasses(own, stored, room, sources('b')), [], 'withdrawn from b since: none');
+  });
+
+  it('criterion 18: a right granted after creation does not widen the firing', async () => {
+    const none = { ...stored, fieldClasses: [] };
+    assert.deepEqual(await firingFieldClasses(own, none, room, sources()), []);
+    assert.equal(await firingFieldClasses(own, { readers: stored.readers }, room, sources()), undefined, 'no snapshot: none');
+  });
+
+  it('criterion 18: without the floor only the snapshot applies; unknown readers grant none', async () => {
+    assert.deepEqual(await firingFieldClasses(own, stored, room, undefined), ['personal']);
+    assert.deepEqual(await fieldClassesOfReaders({ kind: 'unknown' }, sources()), NO_FIELD_CLASS);
+    assert.deepEqual(await fieldClassesOfReaders({ kind: 'everyone' }, sources()), NO_FIELD_CLASS);
+    assert.deepEqual(await fieldClassesOfReaders(readersOf(['a']), undefined), ANY_FIELD_CLASS);
+  });
+
+  it('criterion 18: the firing turn does not restore a field a reader lost since the trigger was set', async () => {
+    const firing = new Orchestrator({
+      provider: echoingProvider([], (email) => `Erinnerung: ${email}`),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      agentId: 'mira',
+      knowledgeGraph,
+      audienceGrants: grants(),
+      privacyGuard: () => countingService().service,
+    } as never);
+    const fieldClasses = (await firingFieldClasses(own, stored, room, sources('b'))) ?? [];
+    const answer = await runWithSeededDiscretion(
+      { agentSlug: 'mira', contextKey: room.contextKey, readers: room.readers, labels: unionLabels([]), fieldClasses },
+      () => firing.chat({ userMessage: `Erinnere an ${RAW_EMAIL}` } as never),
+    );
+    assert.equal(answer.text.includes(RAW_EMAIL), false);
   });
 });
 

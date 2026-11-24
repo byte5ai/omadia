@@ -2,11 +2,12 @@
 // fields, substituted at instantiation from `TemplateSlotMapping.text` (or a declared
 // default). Split out of template.ts to keep both files under the 500-line budget.
 //
-// Explicitly disjoint from `{{...}}` run-context interpolation (renderTemplate in the
-// middleware's realStepEffects.ts): text slots are resolved ONCE at instantiation with
-// operator-supplied install text, while `{{ctx.*}}` / `{{steps.*}}` survive into the
-// instantiated graph and are rendered per run. The grammars cannot collide -- a text
-// token is exactly `slot:text:` followed by a `[A-Za-z0-9_-]+` key.
+// Explicitly disjoint from `{{...}}` run-context interpolation (the token grammar in
+// runTokens.ts, rendered by the middleware's conductor/runInterpolation.ts): text slots
+// are resolved ONCE at instantiation with operator-supplied install text, while
+// `{{ctx.*}}` / `{{steps.*}}` survive into the instantiated graph and are rendered per
+// run. The grammars cannot collide -- a text token is exactly `slot:text:` followed by a
+// `[A-Za-z0-9_-]+` key, and `:` is not a run-token path character.
 //
 // TEXT_SLOT_FIELDS: the only fields walked for tokens are `step.prompt` (agent steps)
 // and `step.human.message` (human steps) -- the two operator-authored prose fields of

@@ -155,6 +155,15 @@ export interface AgentRuntimeConfig {
    */
   readonly agentDirectory?: () => readonly GuardDirectoryEntry[];
   /**
+   * Names of known humans, read per turn: the display, first and last names
+   * of the install's active users (kernel `humanNames@1`). An own name of
+   * this agent that equals one is masked like any person's name
+   * (`agentOwnNames`). `null` = not known yet (directory not loaded, load
+   * failed): fail safe, the turn exempts no own name at all. Absent = no
+   * known humans (hosts without a users table).
+   */
+  readonly humanNames?: () => readonly string[] | null;
+  /**
    * #2056 — the colleagues this agent may consult, by name (directed
    * consultation grants, #2047), named in its prompt. Absent = none.
    */
@@ -677,6 +686,67 @@ export function withAgentIdentity(
   );
 }
 
+/*
+ * Comparison key of a name: the privacy guard's `normalizeOwnName`
+ * (harness-plugin-privacy-guard/src/ownNames.ts), repeated here because the
+ * orchestrator cannot import the guard. Both sides must agree: an agent
+ * "„Karen“" whose key kept the quotes would survive the human veto below and
+ * then exempt a plain "Karen" in the guard.
+ */
+const NAME_QUOTES = `"'„“”‚‘’«»`;
+const NAME_LEADING_NOISE = new RegExp(`^[\\s${NAME_QUOTES}]+`, 'u');
+const NAME_TRAILING_NOISE = new RegExp(`[\\s.,;:!?${NAME_QUOTES}]+$`, 'u');
+
+function nameKey(name: string): string {
+  return name.replace(NAME_LEADING_NOISE, '').replace(NAME_TRAILING_NOISE, '').toLocaleLowerCase();
+}
+
+/**
+ * The names an agent answers as — only operator-set agent identity: the
+ * display name and slug of the speaker the identity guard checks, and the
+ * name it signs with (its identity name, else the platform assistant name,
+ * the precedence of the AI-disclosure line). Deduplicated, blanks dropped.
+ * A name that equals a known human's (`humanNames`, case-insensitive) is
+ * dropped: a namesake employee "Max" stays masked. `humanNames: null` (not
+ * known yet) drops every name — masking wins. The privacy shield never masks
+ * the rest in the agent's own turn.
+ */
+export function agentOwnNames(input: {
+  readonly speaker: Pick<AgentSpeaker, 'displayName' | 'slug'>;
+  readonly identityName?: string | undefined;
+  readonly assistantName?: string | undefined;
+  readonly humanNames?: readonly string[] | null | undefined;
+}): readonly string[] {
+  // Fail safe: the known humans are not known yet — exempt no own name.
+  if (input.humanNames === null) return [];
+  const signingName = input.identityName?.trim() || input.assistantName?.trim();
+  const humans = new Set((input.humanNames ?? []).map(nameKey));
+  const names = [input.speaker.displayName, input.speaker.slug, signingName]
+    .map((n) => n?.trim() ?? '')
+    .filter((n) => n.length > 0 && !humans.has(nameKey(n)));
+  return [...new Set(names)];
+}
+
+/**
+ * Spec 2042 (#2191, #2192) — the names of the roster's agents for
+ * `agentNames@1`: every given name (slugs, display names, identity names of
+ * the agents that exist), trimmed and deduplicated, minus every name a
+ * known human bears (`humanNames`, case-insensitive), the rule of
+ * {@link agentOwnNames}. `humanNames: null` (not known yet) yields `null`:
+ * no agent name is exempt, masking wins.
+ */
+export function rosterAgentNames(input: {
+  readonly names: readonly (string | null | undefined)[];
+  readonly humanNames: readonly string[] | null;
+}): readonly string[] | null {
+  if (input.humanNames === null) return null;
+  const humans = new Set(input.humanNames.map(nameKey));
+  const names = input.names
+    .map((n) => n?.trim() ?? '')
+    .filter((n) => n.length > 0 && !humans.has(nameKey(n)));
+  return [...new Set(names)];
+}
+
 /**
  * Build one Agent's `Orchestrator`, its optional verifier wrapper, and its
  * `chatAgent` bundle. Each call produces a fully independent instance set —
@@ -1056,6 +1126,15 @@ export function buildOrchestratorForAgent(
     agentId: config.agentId,
     // Spec 2042 §6 criterion 1 — every run trace names the agent that answers.
     traceAgentId: agentSpeaker.agentId,
+    // Never masked by the privacy shield in this agent's own turn; read per
+    // turn so a human added to the directory masks a namesake right away.
+    ownNames: () =>
+      agentOwnNames({
+        speaker: agentSpeaker,
+        identityName: config.identityName,
+        assistantName: deps.aiDisclosure?.assistantName,
+        humanNames: config.humanNames?.(),
+      }),
     provider: deps.provider,
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),
@@ -1239,6 +1318,10 @@ export function buildOrchestratorForAgent(
           // #1102 — `memory` from the stack this turn is bound to, served by a
           // per-turn dispatch rather than the shared registry.
           bindTurnMemory: (input) => orchestrator.bindCliTurnMemory(input),
+          // Spec 2042 §5.11 / #2194 — the in-process turn's discretion state
+          // and the people-egress check of its answer, for this path too.
+          discretionTurnFields: (input) => orchestrator.cliDiscretionTurnFields(input),
+          guardAnswer: (answer, input) => orchestrator.guardCliAnswer(answer, input),
           // #1087 — the CLI child is stateless by design, so the composed
           // prompt is the only memory a turn has. Feed it from the RAW chat
           // session, not the ContextRetriever tail: that one reads Session
