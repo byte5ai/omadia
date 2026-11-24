@@ -7,13 +7,11 @@ import {
   Controls,
   type Connection,
   type Edge,
-  type EdgeChange,
-  type NodeChange,
+  type EdgeChangeset,
+  type NodeChangeset,
   type NodeTypes,
   ReactFlow,
   ReactFlowProvider,
-  applyEdgeChanges,
-  applyNodeChanges,
   useReactFlow,
 } from '@xyflow/react';
 import { useTranslations } from 'next-intl';
@@ -102,12 +100,12 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
     setEdges(flow.edges);
   }, [state, labels]);
 
-  const onNodesChange = useCallback((changes: NodeChange[]) => {
-    setNodes((ns) => applyNodeChanges(changes, ns) as BuilderNode[]);
+  const onNodesChange = useCallback((changes: NodeChangeset<BuilderNode>) => {
+    setNodes((ns) => changes.applyTo(ns));
   }, []);
 
-  const onEdgesChange = useCallback((changes: EdgeChange[]) => {
-    setEdges((es) => applyEdgeChanges(changes, es));
+  const onEdgesChange = useCallback((changes: EdgeChangeset) => {
+    setEdges((es) => changes.applyTo(es));
   }, []);
 
   const isValidConnection = useCallback((c: Connection | Edge): boolean => {
@@ -295,7 +293,7 @@ function CanvasInner({ slug }: BuilderCanvasProps): React.ReactElement {
           onSelectionChange={onSelectionChange}
           isValidConnection={isValidConnection}
           fitView
-          colorMode="dark"
+          forceColorMode="dark"
           proOptions={{ hideAttribution: true }}
         >
           <Background />

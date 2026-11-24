@@ -809,6 +809,9 @@ test('complete() drops temperature for models that reject it', async () => {
     'claude-opus-5',
     'claude-sonnet-5',
     'claude-sonnet-5-20260101',
+    'claude-fable-5-1',
+    'claude-mythos-5',
+    'claude-mythos-5-1',
   ]) {
     const captured: Captured = {};
     const provider = createAnthropicProvider({

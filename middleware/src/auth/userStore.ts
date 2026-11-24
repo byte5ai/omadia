@@ -178,8 +178,50 @@ function rowToRecordWithHash(row: UserRow): UserRecord {
     : base;
 }
 
+/** Called after a write that may change who the active users are or their names. */
+export type UserChangeListener = () => void;
+
 export class UserStore {
+  private readonly changeListeners = new Set<UserChangeListener>();
+
   constructor(private readonly pool: Pool) {}
+
+  /**
+   * Subscribe to user changes (create, first admin, OIDC upsert, a name or
+   * status update, delete). The privacy shield's human-name directory
+   * invalidates its snapshot here (#2042). Returns the unsubscribe function.
+   */
+  onChange(listener: UserChangeListener): () => void {
+    this.changeListeners.add(listener);
+    return () => {
+      this.changeListeners.delete(listener);
+    };
+  }
+
+  private notifyChange(): void {
+    for (const listener of this.changeListeners) {
+      try {
+        listener();
+      } catch (err) {
+        // A listener must never fail the write that already committed.
+        console.warn(
+          `[userStore] user change listener failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Display names of the ACTIVE users (`status = 'active'`), blanks dropped.
+   * The source of the privacy shield's human names (#2042).
+   */
+  async listActiveDisplayNames(): Promise<string[]> {
+    const res = await this.pool.query<{ display_name: string }>(
+      `SELECT display_name FROM users
+       WHERE status = 'active' AND btrim(display_name) <> ''`,
+    );
+    return res.rows.map((r) => r.display_name);
+  }
 
   async count(): Promise<number> {
     const res = await this.pool.query<{ count: string }>(COUNT_USERS_SQL);
@@ -268,6 +310,7 @@ export class UserStore {
     ]);
     const row = res.rows[0];
     if (!row) throw new Error('users INSERT returned no row');
+    this.notifyChange();
     return rowToRecord(row);
   }
 
@@ -329,6 +372,7 @@ export class UserStore {
           SETUP_TOKEN_SETTING_KEY,
         ]);
         await client.query('COMMIT');
+        this.notifyChange();
         return { outcome: 'created', user };
       } catch (err) {
         // ROLLBACK also releases the table lock. Its own failure must not
@@ -385,6 +429,7 @@ export class UserStore {
     );
     const row = res.rows[0];
     if (!row) throw new Error('users UPSERT returned no row');
+    this.notifyChange();
     return rowToRecord(row);
   }
 
@@ -424,6 +469,9 @@ export class UserStore {
       values,
     );
     const row = res.rows[0];
+    if (row && (patch.displayName !== undefined || patch.status !== undefined)) {
+      this.notifyChange();
+    }
     return row ? rowToRecord(row) : null;
   }
 
@@ -436,6 +484,8 @@ export class UserStore {
 
   async deleteById(id: string): Promise<boolean> {
     const res = await this.pool.query('DELETE FROM users WHERE id = $1', [id]);
-    return (res.rowCount ?? 0) > 0;
+    const removed = (res.rowCount ?? 0) > 0;
+    if (removed) this.notifyChange();
+    return removed;
   }
 }

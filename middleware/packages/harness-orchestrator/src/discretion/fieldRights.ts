@@ -27,10 +27,22 @@
  * follow.
  */
 
-import { floorPermits, type AudienceFloor, type Capability } from '@omadia/channel-sdk';
+import {
+  audienceFloor,
+  floorPermits,
+  makePrincipal,
+  resolveAudience,
+  resolveCapabilities,
+  type AudienceFloor,
+  type Capability,
+  type GrantStore,
+  type Principal,
+  type RoleSourceRegistry,
+} from '@omadia/channel-sdk';
 
 import type { AudienceFloorProvider } from '../audienceFloorGuard.js';
 import { turnContext } from '../turnContext.js';
+import type { Readers } from './labels.js';
 import { seededDiscretionFor, type SeededTurnDiscretion } from './seededTurn.js';
 
 /** The classification the shield masks today: personal data. */
@@ -90,6 +102,48 @@ export async function fieldClassesOf(
 /** The allowance a list of classes stands for (stored with a trigger). */
 export function fieldClassesFromList(classes: readonly string[] | undefined): FieldClassAllowance {
   return { kind: 'only', classes: new Set(classes ?? []) };
+}
+
+/** Where a person's rights are read from: the audience floor's grants and roles. */
+export interface FieldRightSources {
+  readonly grants: GrantStore;
+  readonly roles: RoleSourceRegistry;
+}
+
+/**
+ * The classes every one of `readers` may know NOW, read from the same grants
+ * the audience floor uses. For a trigger's firing, which has no roster of its
+ * own: a set of canonical user ids resolves member by member; `everyone` or
+ * `unknown` cannot be enumerated and grants none (fail closed), as does a
+ * failing lookup. No sources (floor switched off): `any`, not enforced.
+ */
+export async function fieldClassesOfReaders(
+  readers: Readers,
+  sources: FieldRightSources | undefined,
+): Promise<FieldClassAllowance> {
+  if (!sources) return ANY_FIELD_CLASS;
+  if (readers.kind !== 'set') return NO_FIELD_CLASS;
+  const principals = readers.ids
+    .map((id) => makePrincipal('user', id))
+    .filter((p): p is Principal => p !== undefined);
+  if (principals.length !== readers.ids.length) return NO_FIELD_CLASS;
+  try {
+    const audience = await resolveAudience(principals, (principal) =>
+      resolveCapabilities(principal, sources.roles, sources.grants),
+    );
+    return allowanceFromFloor(audienceFloor(audience));
+  } catch {
+    return NO_FIELD_CLASS;
+  }
+}
+
+/** The stored classes `now` still allows: never wider than either. */
+export function narrowFieldClasses(
+  stored: readonly string[] | undefined,
+  now: FieldClassAllowance,
+): readonly string[] | undefined {
+  if (!stored) return undefined;
+  return stored.filter((cls) => allowsFieldClass(now, cls));
 }
 
 /** An allowance as the list stored with a trigger: `any` = every known class. */

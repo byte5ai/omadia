@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-privacy-guard"
   name: "Privacy Guard"
-  version: "0.16.3"
+  version: "0.16.4"
   kind: "tool"
   domain: "privacy.redact"
   description:
@@ -281,3 +281,9 @@ permissions:
 provides:
   - "privacy.redact@1"
 requires: []
+optional_requires:
+  # Spec 2042 (#2191, #2192) — kernel-published with a database: the names of
+  # the roster's agents minus every name an active user bears. Never masked,
+  # in a turn or a stored-text scope. Resolved per call; absent or not loaded
+  # → no agent name is exempt (fail safe).
+  - "agentNames@1"

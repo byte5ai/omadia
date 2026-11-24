@@ -8,6 +8,10 @@
  * honest `system` notice instead of the rest. Non-streaming: the whole answer
  * is checked before it is returned.
  *
+ * Either way the verdict reaches the turn's record ({@link AnswerRecordGate}):
+ * the rows the agent wrote get the verdict, a withheld answer's rows lose
+ * their text and no facts are learned from it, so no later turn recalls it.
+ *
  * Only model prose is checked. A management-layer notice (`system`), the
  * verifier's withheld notice and the server-rendered data of the privacy
  * shield are not the agent's prose; for a privacy-rendered answer the model
@@ -15,12 +19,22 @@
  */
 
 import type { ChatAgent, ChatStreamEvent, SemanticAnswer } from '@omadia/channel-sdk';
-import { SYSTEM_SPEAKER, type AgentSpeaker, type SystemNotice } from '@omadia/plugin-api';
+import {
+  SYSTEM_SPEAKER,
+  type AgentSpeaker,
+  type SystemNotice,
+  type TurnIdentityGuardVerdict,
+} from '@omadia/plugin-api';
 
 import type { AgentAnswerEmitter } from '../management/answerEmitter.js';
 import { buildSystemNotice } from '../management/systemNotices.js';
 
-import { SentenceGate, type IdentityGuardResult } from './guard.js';
+import {
+  AnswerRecordGate,
+  runGeneratorWithAnswerRecordGate,
+  runWithAnswerRecordGate,
+} from './answerRecordGate.js';
+import { SentenceGate, usedModelLayer, type IdentityGuardResult } from './guard.js';
 
 /** Masks values the privacy shield restored server-side (the model never saw them). */
 export function maskRestoredValues(text: string, values: readonly string[] | undefined): string {
@@ -67,6 +81,19 @@ function guardNotice(result: Exclude<IdentityGuardResult, { outcome: 'pass' }>, 
  * then the notice. Without any passed text the answer IS the notice, from
  * `system`.
  */
+/** The guard's verdict as the turn's record stores it (spec 2042, tracing). */
+export function recordedGuardVerdict(
+  result: IdentityGuardResult,
+  latencyMs: number = result.latencyMs,
+): TurnIdentityGuardVerdict {
+  const layer = usedModelLayer(result) ? 'model' : 'deterministic';
+  if (result.outcome === 'pass') return { outcome: 'pass', layer, latencyMs };
+  if (result.outcome === 'blocked') {
+    return { outcome: 'blocked', layer, latencyMs, ...(result.rule ? { reason: result.rule } : {}) };
+  }
+  return { outcome: 'unavailable', layer, latencyMs, reason: result.cause };
+}
+
 function withheld(passed: string, notice: SystemNotice): { answer: string; system: boolean } {
   const kept = passed.trimEnd();
   return kept.length === 0
@@ -78,15 +105,27 @@ export function withIdentityGuard<A extends ChatAgent>(inner: A, emitter: AgentA
   const speaker = emitter.speaker;
 
   const chat = async (input: Parameters<ChatAgent['chat']>[0]): Promise<SemanticAnswer> => {
-    const answer = await inner.chat(input);
-    if (answer.speaker?.kind === 'system' || !isAgentProse(answer.answerSource)) return answer;
-    const outcome = await emitter.emit({
-      type: 'prose',
-      speaker,
-      text: proseToCheck(answer),
-      ...(answer.maskedValues ? { restoredValues: answer.maskedValues } : {}),
-    });
-    if (outcome.published) return answer;
+    const recordGate = new AnswerRecordGate();
+    const answer = await runWithAnswerRecordGate(recordGate, () => inner.chat(input));
+    if (answer.speaker?.kind === 'system' || !isAgentProse(answer.answerSource)) {
+      void recordGate.resolve({ kept: true });
+      return answer;
+    }
+    const text = proseToCheck(answer);
+    const result = await emitter.guardFor(answer.maskedValues).check(text);
+    const outcome = await emitter.emit(
+      {
+        type: 'prose',
+        speaker,
+        text,
+        ...(answer.maskedValues ? { restoredValues: answer.maskedValues } : {}),
+      },
+      result,
+    );
+    if (outcome.published) {
+      void recordGate.resolve({ kept: true, guard: recordedGuardVerdict(result) });
+      return answer;
+    }
     // The sender's language, when the turn names it, outranks the agent's.
     const notice = input.locale
       ? buildSystemNotice(outcome.replacement.notice.code, {
@@ -94,6 +133,7 @@ export function withIdentityGuard<A extends ChatAgent>(inner: A, emitter: AgentA
           locale: input.locale,
         })
       : outcome.replacement.notice;
+    void recordGate.resolve({ kept: false, guard: recordedGuardVerdict(result) });
     return {
       text: notice.text,
       speaker: SYSTEM_SPEAKER,
@@ -110,7 +150,10 @@ export function withIdentityGuard<A extends ChatAgent>(inner: A, emitter: AgentA
     observer?: Parameters<ChatAgent['chatStream']>[1],
   ): AsyncGenerator<ChatStreamEvent> {
     const gate = new SentenceGate(emitter.guardFor());
+    const recordGate = new AnswerRecordGate();
     let failure: Exclude<IdentityGuardResult, { outcome: 'pass' }> | undefined;
+    let judged = false;
+    let doneLatency = 0;
     const note = (step: Awaited<ReturnType<SentenceGate['push']>>): ChatStreamEvent | undefined => {
       if (step.kind === 'release') return { type: 'text_delta', text: step.text };
       if (step.kind === 'blocked') {
@@ -119,7 +162,9 @@ export function withIdentityGuard<A extends ChatAgent>(inner: A, emitter: AgentA
       }
       return undefined;
     };
-    for await (const event of inner.chatStream(input, observer)) {
+    const latency = (): number => gate.latencyMs.reduce((sum, ms) => sum + ms, 0) + doneLatency;
+    const stream = runGeneratorWithAnswerRecordGate(recordGate, () => inner.chatStream(input, observer));
+    for await (const event of stream) {
       if (event.type === 'text_delta') {
         if (failure) continue;
         const out = note(await gate.push(event.text));
@@ -136,6 +181,8 @@ export function withIdentityGuard<A extends ChatAgent>(inner: A, emitter: AgentA
         continue;
       }
       if (event.speaker?.kind === 'system' || !isAgentProse(event.answerSource)) {
+        // A draft the gate already stopped stays withheld from the record.
+        void recordGate.resolve(failure ? { kept: false, guard: recordedGuardVerdict(failure, latency()) } : { kept: true });
         yield event;
         continue;
       }
@@ -154,14 +201,25 @@ export function withIdentityGuard<A extends ChatAgent>(inner: A, emitter: AgentA
           segment !== undefined && released.length > 0 ? segment : undefined,
         );
         emitter.reportGuardResult(result);
+        doneLatency = result.latencyMs;
+        judged = usedModelLayer(result);
         if (result.outcome !== 'pass') failure = result;
       }
       if (!failure) {
+        void recordGate.resolve({
+          kept: true,
+          guard: {
+            outcome: 'pass',
+            layer: gate.usedModelLayer || judged ? 'model' : 'deterministic',
+            latencyMs: latency(),
+          },
+        });
         yield event;
         continue;
       }
       const notice = guardNotice(failure, speaker, input.locale ?? emitter.noticeLocale());
       const { answer, system } = withheld(gate.releasedText, notice);
+      void recordGate.resolve({ kept: false, guard: recordedGuardVerdict(failure, latency()) });
       yield {
         type: 'done',
         answer,

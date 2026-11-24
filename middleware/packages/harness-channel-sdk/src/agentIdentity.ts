@@ -134,6 +134,22 @@ export interface AgentIdentityProvider {
   presentIn?(conversationId: string): Promise<readonly string[]>;
 }
 
+/**
+ * The channel's own default bot, for a channel that registers no
+ * {@link AgentIdentityProvider} — Teams, whose agent bots the kernel
+ * provisions itself. Same meaning as
+ * {@link AgentIdentityProvider.defaultChannelKey}: the bot every agent without
+ * its own bot answers through, and the only unknown bot key the Conductor may
+ * route to a binding or a default agent. Read per call; undefined when the
+ * plugin serves no default bot.
+ */
+export interface DefaultChannelKeyProvider {
+  /** The channel type this provider serves (`teams`). */
+  readonly channelType: string;
+  /** The default bot's routing key (Teams `28:<appId>`). */
+  defaultChannelKey(): string | undefined;
+}
+
 /** Routing keys are compared lowercase, like every bot key (`channelBotKey`). */
 export function normalizeAgentIdentityKey(raw: string): string {
   return raw.trim().toLowerCase();

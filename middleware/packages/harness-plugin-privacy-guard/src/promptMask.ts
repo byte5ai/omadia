@@ -22,6 +22,8 @@
 
 import type { PromptPiiDetector, PromptPiiSpan } from '@omadia/plugin-api';
 
+import { DENY_LIST_DETECTOR_ID, NO_OWN_NAMES, type OwnNameMatcher } from './ownNames.js';
+
 import {
   createPromptPseudonymMap,
   type PromptSpanValue,
@@ -67,6 +69,19 @@ function isConversationIdHost(match: string): boolean {
   return CONVERSATION_ID_HOSTS.includes(host);
 }
 
+// The phone regex below only fixes the SHAPE of a number (prefix, then digit
+// groups); on its own it accepts a zero-led run of four digits. Customer
+// numbers ("K-0001"), postcodes with a leading zero ("01067") and short codes
+// ("0815") were masked as phone numbers, and a dataset import encrypted those
+// cells at rest, which took them out of every filter and grouping. Seven
+// digits, trunk zero or country code included, is the shortest number the
+// pattern is meant for.
+const PHONE_MIN_DIGITS = 7;
+
+function isTooShortForPhone(match: string): boolean {
+  return match.replace(/\D/g, '').length < PHONE_MIN_DIGITS;
+}
+
 // Written-out month names across the six shipped locales (de/en/es/fr/it/nl),
 // deduplicated. Feeds the written-date branch below; matched case-insensitively
 // so a sentence-initial capitalised month ("Le 17 Septembre 1984") is caught.
@@ -104,10 +119,12 @@ const C0_PATTERNS: readonly C0Pattern[] = [
     re: /\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?\b/g,
   },
   {
-    // Phone — international (+49 30 …) or local (030 / 0171 …) forms with
-    // ≥7 digits total, tolerant of space/dash/paren grouping.
+    // Phone — international (+49 30 …) or local (030 / 0171 …) forms,
+    // tolerant of space/dash/slash grouping. The ≥7-digit minimum is not in
+    // the regex; `isTooShortForPhone` enforces it on the match.
     type: 'phone',
     re: /(?:\+\d{1,3}[\s-]?|\b0)\d{1,4}(?:[\s\-/]?\d{2,6}){1,4}\b/g,
+    isFalsePositive: isTooShortForPhone,
   },
   {
     // Spanish local mobile/landline: nine digits grouped 3-3-3 with no
@@ -556,7 +573,7 @@ export function createCustomTermsDetector(config: CustomTermsConfig): {
   return {
     rejected,
     detector: {
-      id: 'custom-terms',
+      id: DENY_LIST_DETECTOR_ID,
       async detect(text: string): Promise<readonly PromptPiiSpan[]> {
         const spans: PromptPiiSpan[] = [];
         if (termsRe !== undefined) {
@@ -643,9 +660,17 @@ export interface ResolvedSpan {
 }
 
 const WORD_CHAR = /[\p{L}\p{N}_@.-]/u;
+/** Letters and digits: the part of a word that can identify anyone. */
+const IDENTIFYING_CHAR = /[\p{L}\p{N}]/u;
+/** Word characters that also close a sentence or a clause. */
+const TRAILING_SEPARATOR = /[.-]/;
 
 /** Extend a span outward while it splits a word-like run — a half-masked
- *  identifier is a leak (the RFC's word-boundary-extension trick). */
+ *  identifier is a leak (the RFC's word-boundary-extension trick). A `.` or
+ *  `-` at the very end is sentence punctuation, not part of the value
+ *  ("Mail anna@firma.de. Danke"): it stays outside the span, so the same
+ *  value gets one pseudonym with or without a full stop after it, and the
+ *  stop survives in the masked text (#1868). */
 function extendToWordBoundaries(
   text: string,
   start: number,
@@ -655,6 +680,7 @@ function extendToWordBoundaries(
   let e = end;
   while (s > 0 && WORD_CHAR.test(text[s - 1]!) && WORD_CHAR.test(text[s]!)) s--;
   while (e < text.length && WORD_CHAR.test(text[e]!) && WORD_CHAR.test(text[e - 1]!)) e++;
+  while (e - 1 > s && TRAILING_SEPARATOR.test(text[e - 1]!)) e--;
   return { start: s, end: e };
 }
 
@@ -688,12 +714,13 @@ function uncoveredParts(
   return parts;
 }
 
-/** True when the slice holds at least one word-like character — a remainder
- *  of pure whitespace/punctuation carries nothing identifying and masking it
- *  would substitute separators. */
-function hasWordChar(text: string, start: number, end: number): boolean {
+/** True when the slice holds at least one letter or digit — a remainder of
+ *  pure whitespace/punctuation (incl. a full stop a winning span left
+ *  outside itself) carries nothing identifying and masking it would
+ *  substitute separators. */
+function hasIdentifyingChar(text: string, start: number, end: number): boolean {
   for (let i = start; i < end; i++) {
-    if (WORD_CHAR.test(text[i]!)) return true;
+    if (IDENTIFYING_CHAR.test(text[i]!)) return true;
   }
   return false;
 }
@@ -767,7 +794,7 @@ export function dedupSpans(
     // re-enter a kept span; if it ever would, fall back to the exact
     // remainder, which is non-overlapping by construction).
     for (const part of uncoveredParts(candidate, overlapping)) {
-      if (!hasWordChar(text, part.start, part.end)) continue;
+      if (!hasIdentifyingChar(text, part.start, part.end)) continue;
       const grown = extendToWordBoundaries(text, part.start, part.end);
       const collides = kept.some((k) => grown.start < k.end && k.start < grown.end);
       const bounds = collides ? part : grown;
@@ -788,6 +815,15 @@ export function dedupSpans(
 // ---------------------------------------------------------------------------
 // Substitution.
 // ---------------------------------------------------------------------------
+
+/** Options of {@link maskPrompt}. */
+export interface MaskPromptOptions {
+  /** The speaking agent's own names, resolved for this call
+   *  ({@link resolveOwnNames}): a resolved span whose whole value is one
+   *  stays as written unless the operator deny-list found it, and the
+   *  known-value sweep leaves them alone. */
+  readonly isOwnName?: OwnNameMatcher;
+}
 
 export interface MaskPromptResult {
   readonly maskedText: string;
@@ -826,8 +862,10 @@ export async function maskPrompt(
   text: string,
   detectors: readonly PromptPiiDetector[],
   existingMap?: PseudonymMap,
+  options?: MaskPromptOptions,
 ): Promise<MaskPromptResult> {
   const detected = await collectDetectorSpans(text, detectors);
+  const isOwnName = options?.isOwnName ?? NO_OWN_NAMES;
   // #1528 / #1529 — a surrogate is not a new real value. A span that is (or,
   // after word-boundary extension, swallowed) a reserved surrogate shape — a
   // replayed answer that kept `LUKAS.BECKER@EXAMPLE.NET`, a deny-list term
@@ -835,8 +873,12 @@ export async function maskPrompt(
   // give the model a second stand-in for the same person. Realistic
   // surrogates ("Lukas Becker") are not exempt: a real person may bear the
   // name.
+  // The speaking agent's own name is not PII in its own turn: masked, its
+  // model reads "I am <surrogate>" in its history and "corrects" itself.
   const spans = dedupSpans(text, detected).filter(
-    (s) => !isReservedSurrogateShape(s.value),
+    (s) =>
+      !isReservedSurrogateShape(s.value) &&
+      !(isOwnName(s.value) && s.detector !== DENY_LIST_DETECTOR_ID),
   );
   if (spans.length === 0) {
     // NOTHING DETECTED IN *THIS* TEXT IS NOT NOTHING TO MASK.
@@ -855,7 +897,7 @@ export async function maskPrompt(
     // turn already decided are PII, and never touches anything else.
     const carried = existingMap ?? { forward: new Map(), reverse: new Map() };
     return {
-      maskedText: sweepKnownValues(text, carried),
+      maskedText: sweepKnownValues(text, carried, isOwnName),
       map: carried,
       spans,
     };
@@ -874,7 +916,7 @@ export async function maskPrompt(
     if (surrogate === undefined) continue;
     masked = masked.slice(0, span.start) + surrogate + masked.slice(span.end);
   }
-  return { maskedText: sweepKnownValues(masked, map), map, spans };
+  return { maskedText: sweepKnownValues(masked, map, isOwnName), map, spans };
 }
 
 /**
@@ -892,11 +934,18 @@ export async function maskPrompt(
  * one's surrogate; doing the long ones first leaves the short sweep to clean up
  * whatever it re-introduced, never the other way round.
  */
-function sweepKnownValues(text: string, map: PseudonymMap): string {
+function sweepKnownValues(
+  text: string,
+  map: PseudonymMap,
+  isOwnName: OwnNameMatcher,
+): string {
   let masked = text;
   for (const [real, surrogate] of [...map.forward.entries()].sort(
     (a, b) => b[0].length - a[0].length,
   )) {
+    // The agent's own name stays clear even if an earlier call of the turn
+    // (without own names) put it into the map.
+    if (isOwnName(real)) continue;
     if (masked.includes(real)) masked = replaceOutsideSurrogates(masked, real, surrogate, map);
   }
   return masked;

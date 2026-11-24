@@ -757,6 +757,8 @@
     "closeButton": "Schließen",
     "backToRuns": "Zurück zu den Läufen",
     "noRuns": "Noch keine Läufe.",
+    "runVersionBadge": "v{version}",
+    "runVersionTitle": "Workflow-Version {version}",
     "noSteps": "Noch keine Schritte erfasst.",
     "colActor": "Akteur",
     "runTriggerLabel": "Auslöser",

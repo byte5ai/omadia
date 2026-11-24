@@ -2417,6 +2417,91 @@ whatever `mask_user_prompt` says (§6e). The subscription-CLI path has no
 shield at all (§3a), and without an active privacy-guard provider nothing is
 interned or masked (§6c, residuals).
 
+**The agent's own names (spec 2042, plugin-api 1.90.0).** In an agent's own
+turn the shield does not mask that agent's own names. Otherwise C1 tags "Dark
+Clippy" in the agent's recalled self-introductions as a person, and the model
+reads "Ich bin <surrogate>" and "corrects" its own name. The rules
+(`harness-plugin-privacy-guard/src/ownNames.ts`):
+
+- **Who supplies them.** Only operator-set agent identity:
+  `buildOrchestratorForAgent` derives `ownNames` from the agent's display
+  name, slug and identity name (else the platform
+  `ai_disclosure_assistant_name` it signs with), and the turn handle passes
+  them to `maskUserPrompt`, `maskReplayedAnswer` and `projectVerifierText`.
+  Nothing from a prompt, a message or a tool result can add one.
+- **Exact equality.** A detected span is exempt only if its whole value
+  equals an own name, ignoring case, whitespace, surrounding quotes
+  (`„“”"'‚‘’«»`) and trailing punctuation. A partial name ("Mira Schulz" for
+  an agent "Mira") and a possessive ("Dark Clippys") stay masked, which is the
+  safe direction. Names under 2 characters are ignored.
+- **Not booked.** An exempt span never enters the turn's surrogate map or the
+  receipt. The known-value sweep and the residual check skip own names, so a
+  name that an earlier call of the turn put into the map stays clear and does
+  not block.
+- **The deny-list wins.** A span from the operator deny-list is never exempt,
+  and an own name that the deny-list matches is not treated as an own name in
+  that call (sweep and residual check included).
+- **Human namesakes are not exempt.** An own name that equals a known human's
+  name (`AgentRuntimeConfig.humanNames`, case-insensitive, trimmed) is dropped
+  from the list, so an employee "Max" stays masked even when an agent is
+  called "Max". The humans are the **active** rows of the `users` table
+  (`status = 'active'`). That is a deliberate owner decision: disabling a
+  user lifts the masking veto for that name, and a deleted user no longer
+  counts either. Each user counts with the full display name and every word
+  of it, with surrounding punctuation stripped and words under 2 characters
+  dropped (the table has no separate name columns), so "Karen Müller",
+  "Müller, Karen" and "Anna van der Berg" are all covered. A single first
+  name counts: with a user "Karen Müller", an agent "Karen" is masked in its
+  own turns, as is an agent "Karen Müller". The kernel publishes the names
+  as `humanNames@1` (`src/auth/humanNameDirectory.ts`) before plugin
+  activation and attaches the users table once the database is up; every
+  live agent of the registry reads them once per turn. The directory keeps
+  a per-process snapshot: loaded when the users table is attached, reloaded
+  after every write through `UserStore` (create, first admin, OIDC sign-in
+  upsert, name or status change, delete — `UserStore.onChange`), and after
+  5 minutes as a safety net for writes from another process; until a reload
+  lands, the last snapshot is served. **Fail safe:** before the first load
+  has succeeded, after a failed load (deliberately: the last snapshot is
+  dropped, not served), and wherever the service is not published, the
+  names are unknown and the turn exempts no own name at all — masking wins.
+  The names are never logged.
+  Residuals: `humanNames` covers only people with an omadia login. Odoo
+  partners and employees without a login, customers, and people of a
+  directory (Entra, the Conductor people directory) who never signed in are
+  not covered: if one of them bears an agent's own name exactly, that name
+  reaches the agent's model unmasked in the agent's own turns (and, since
+  #2191/#2192, in every agent's turns: see the roster bullet below). A user write
+  from another process (a second instance, manual SQL) is picked up only by
+  the TTL reload, up to 5 minutes later.
+- **The roster's agent names (#2191, #2192, plugin-api 1.91.0).** Owner
+  decision (2026-11-24, spec 2042 round G1): the names of the roster's agents
+  are not personal data, in any turn of any agent and in background jobs. The
+  kernel publishes `agentNames@1` (`src/platform/agentNamesService.ts`): the
+  slugs, names and identity names of the agents that exist, enabled or not
+  (`OrchestratorRegistry.agentNames`; deleted agents are left out, so their
+  names are masked again), minus every name a known human bears
+  (`rosterAgentNames`, the namesake rule above, compared with the guard's
+  normalisation so quotes or punctuation cannot get a name past the veto).
+  The privacy guard declares it under `optional_requires` and exempts those
+  names under the same rules: in every turn's `maskUserPrompt`,
+  `maskReplayedAnswer` and `projectVerifierText` (in a consultation, A's turn
+  keeps colleague B's name and B's run keeps A's), and in every stored-text
+  scope (`openStoredTextScope`: the significance scorer, the canvas skeleton
+  and the other memory jobs over an agent's turns no longer feed a surrogate
+  of the agent's name back into its context). A turn reads the list once (a
+  change mid-turn cannot unmask a value the turn already masked), a job run
+  once when its scope opens. Exact equality, the deny-list wins, names under
+  2 characters are ignored. **Fail safe:** no registry yet, human names not
+  loaded (`null`), the service not published or a failing lookup exempts no
+  roster name; the turn's own `ownNames` still apply.
+  **Residual, wider than the own-name one above:** a person without an
+  omadia login who bears an agent's name exactly ("Karen" for an Odoo
+  employee and an agent "Karen") reaches the model unmasked in every agent's
+  turns and in the memory jobs, not only in that agent's own turns. A
+  caller-named `identityValues` entry of `projectVerifierText` that equals a
+  roster name is not masked either. The operator deny-list is the remedy for
+  such a name.
+
 **Memory jobs, independent of `mask_user_prompt`.** The memory jobs of
 `@omadia/orchestrator-extras` send stored text, which holds real values,
 through that plugin's own provider, and with a privacy-guard provider active
@@ -2525,6 +2610,10 @@ The same provenance reaches three more readers (#1540):
   the agent's private root and holds what the plugin fetched in clear, so
   under a shield the namespacers refuse that physical tree for every
   operation (`SHIELDED_PHYSICAL`), whatever model-facing path reaches it.
+  Without a shield the tree stays readable and writable, but the namespacers
+  never delete or move it, or move anything into it (#1828); they also refuse
+  `delete`/`rename` of a bound root (`/memories`, `~team`, `~agent`), which
+  the store's own guard only knows as the physical `/memories`.
 - **Stored processes.** `processes.unprotected` (migration 0035, plugin-api
   1.40.0) is set by `write_process`/`edit_process` in an unprotected turn and
   never cleared by an edit. Under a turn's privacy handle `query_processes`,

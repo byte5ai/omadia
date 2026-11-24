@@ -1,6 +1,8 @@
 import type { Pool, PoolClient } from 'pg';
 import type { WorkflowGraph } from '@omadia/conductor-core';
 
+import { ACTIVE_RUN_STATUS_SQL } from './runStore.js';
+
 export interface ConductorWorkflow {
   id: string;
   slug: string;
@@ -268,15 +270,17 @@ export class ConductorWorkflowStore {
     );
   }
 
-  /** True while any run of any of the workflow's versions is running/waiting —
-   *  deletion is blocked then (the operator cancels via the #759 route first). */
+  /** True while any run of any of the workflow's versions is active —
+   *  deletion is blocked then (the operator cancels via the #759 route first).
+   *  Shares `ACTIVE_RUN_STATUSES` with the run history that holds that cancel
+   *  button: the two drifting apart was #1710. */
   async hasActiveRuns(workflowId: string): Promise<boolean> {
     const r = await this.pool.query<{ count: string }>(
       `SELECT count(*) AS count
          FROM conductor_runs r
          JOIN conductor_workflow_versions v ON r.workflow_version_id = v.id
         WHERE v.workflow_id = $1
-          AND r.status IN ('running', 'waiting')`,
+          AND r.status IN (${ACTIVE_RUN_STATUS_SQL})`,
       [workflowId],
     );
     return Number(r.rows[0]?.count ?? 0) > 0;
