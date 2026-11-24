@@ -195,9 +195,9 @@ function memorableKnowledge(v: Viewer, mode: Mode, mk: MkItem, settings: Setting
     // (sharedOnly). Nothing documents which MK a strict turn may see.
     if (shared)
       return pin(true, `enforce-strict: only the shared tier (sharedOnly floor). ${sharedSource}`);
-    return pin(
+    return doc(
       false,
-      'enforce-strict: rows the user owns privately stay out of a context-bound turn (sharedOnly floor, C #575 reasoning)',
+      'enforce-strict: private knowledge stays out of a context-bound turn (owner decision 2026-11-24, #2205; sharedOnly floor, C #575)',
     );
   }
 
@@ -440,11 +440,15 @@ export const EXPECTED_DIVERGENCES: readonly Divergence[] = [
     oracle:
       "off/enforce: another agent's and another user's turns are not readable (SP INV-2; S \"user's other chats\")",
     code: 'query_knowledge_graph runs without a view in off/enforce: listSessions/getSession/search over the whole tenant',
+    confirmed:
+      "step 3, canarySweep.test.ts (todo, #2204): in off/enforce the in-turn tool returns other agents', legacy and other users' turns; the CLI-path registration returns them outside any turn",
   },
   {
     id: 'strict-durable-leg',
     oracle: 'enforce-strict context-bound: privately owned MK stays out',
     code: 'the durable recall leg gets no sharedOnly, so owned manually_authored private MK is recalled',
+    confirmed:
+      'step 3, canarySweep.test.ts (todo, #2205): operator-authored and auto-durable private / shared:<x> memories reach the recall of a context-bound enforce-strict turn',
   },
   {
     id: 'empty-audience-inmemory',

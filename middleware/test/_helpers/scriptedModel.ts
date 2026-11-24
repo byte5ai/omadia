@@ -5,7 +5,9 @@ import { admitModelCall, type LlmProvider, type LlmRequest, type LlmResponse } f
 
 export type ModelStep =
   | { readonly text: string }
-  | { readonly tool: string; readonly input?: unknown };
+  | { readonly tool: string; readonly input?: unknown }
+  /** Several tool calls in one answer. */
+  | { readonly tools: readonly { readonly tool: string; readonly input?: unknown }[] };
 
 export interface ScriptedModel {
   readonly provider: LlmProvider;
@@ -20,24 +22,32 @@ export function systemText(request: LlmRequest): string {
   return typeof system === 'string' ? system : system.map((block) => block.text).join('\n\n');
 }
 
-export function scriptedModel(): ScriptedModel {
+/**
+ * `respond`, when given, answers a request the queue has no step for, from
+ * the request itself (a model that reacts to what its tools returned).
+ */
+export function scriptedModel(respond?: (request: LlmRequest) => ModelStep | undefined): ScriptedModel {
   const requests: LlmRequest[] = [];
   const queue: ModelStep[] = [];
   let callId = 0;
   const next = (request: LlmRequest): LlmResponse => {
     requests.push(request);
-    const step = queue.shift();
+    const step = queue.shift() ?? respond?.(request);
     if (!step) throw new Error(`scripted model: no answer scripted for request ${String(requests.length)}`);
-    callId += 1;
     const usage = { inputTokens: 1, outputTokens: 1 };
-    return 'text' in step
-      ? { content: [{ type: 'text', text: step.text }], finishReason: 'stop', model: 'm', usage }
-      : {
-          content: [{ type: 'tool_call', id: `call-${String(callId)}`, name: step.tool, input: step.input ?? {} }],
-          finishReason: 'tool_calls',
-          model: 'm',
-          usage,
-        };
+    if ('text' in step) {
+      return { content: [{ type: 'text', text: step.text }], finishReason: 'stop', model: 'm', usage };
+    }
+    const calls = 'tools' in step ? step.tools : [step];
+    return {
+      content: calls.map((call) => {
+        callId += 1;
+        return { type: 'tool_call', id: `call-${String(callId)}`, name: call.tool, input: call.input ?? {} };
+      }),
+      finishReason: 'tool_calls',
+      model: 'm',
+      usage,
+    };
   };
   const provider = {
     id: 'anthropic',

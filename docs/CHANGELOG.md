@@ -36,6 +36,28 @@ changelog.
 
 ## [Unreleased]
 
+### Added — memory canary sweep through real turns (memory-ACL test plan, step 3) (2026-11-24)
+
+- **`middleware/test/memoryAccess/canarySweep.ts`.** Every viewer of the memory-access world
+  runs one real turn per context-memory mode (256 turns, in-memory graph, about 10 s). The
+  agent is built by `buildOrchestratorForAgent` with the default-on audience floor; only the
+  model is scripted. It recalls, views every `/memories` path and runs every
+  `query_knowledge_graph` query, then follows every listed file and session. A forbidden
+  canary anywhere in what the model was sent fails the suite; each mode must also deliver
+  allowed canaries through recall, the memory tool and the graph tool. Removing the
+  `userId`/`audienceOwners` filter from any turn search (`searchTurns`,
+  `searchTurnsByEmbedding`, `findEntityCapturedTurns`) turns it red in every mode.
+- **Two leaks confirmed**, kept as `todo` tests until their fixes land:
+  #2204 (`query_knowledge_graph` reads other agents' and other users' chats in `off` and
+  `enforce`, in both registrations) and #2205 (the `enforce-strict` durable recall leg
+  returns private memories). `members` and the memory tool are clean.
+- **Owner decision recorded:** private knowledge always stays private
+  (`docs/security-architecture.md`, context memory). The oracle's `enforce-strict` row for
+  private memories is now documented, not pinned. Tail-only turns are no access rule for
+  session reads (plugin-api `TurnIngest.tailOnly`); the sweep pins that.
+- `test/_helpers/scriptedModel.ts` answers several tool calls in one step and takes an
+  optional responder for requests the queue does not cover.
+
 ### Added — memory ACL contract across backends (memory-ACL test plan, step 2) (2026-11-24)
 
 - **`middleware/test/memoryAccess/aclContract.ts`.** For every viewer (user × agent × DM,
