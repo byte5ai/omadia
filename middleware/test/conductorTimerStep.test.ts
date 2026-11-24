@@ -218,6 +218,53 @@ describe('ConductorRunExecutor — timer park + tick loop', () => {
     assert.equal(timerStep?.transition, 't-tick');
     assert.equal(preview.status, 'completed');
   });
+
+  it('previewRun stubs agent and action steps without invoking effects', async () => {
+    const previewGraph: WorkflowGraph = {
+      entryStepId: 'agent',
+      steps: [
+        { id: 'agent', kind: 'agent', agentId: 'writer', prompt: 'draft' },
+        { id: 'action', kind: 'action', actionId: 'send-message' },
+      ],
+      transitions: [{ id: 'to-action', source: 'agent', target: 'action' }],
+    };
+    let agentCalls = 0;
+    let actionCalls = 0;
+    const executor = new ConductorRunExecutor({
+      workflowStore: {
+        getBySlug: async () => ({
+          id: 'w1',
+          slug: 'eph-preview',
+          status: 'enabled',
+          activeVersionId: 'v1',
+        }),
+        getVersion: async () => ({ id: 'v1', workflowId: 'w1', version: 1, graph: previewGraph }),
+      } as never,
+      runStore: {} as never,
+      awaitStore: {} as never,
+      effects: {
+        runAgentStep: async () => {
+          agentCalls += 1;
+          throw new Error('preview must not execute an agent turn');
+        },
+        runActionStep: async () => {
+          actionCalls += 1;
+          throw new Error('preview must not execute an action');
+        },
+      } as never,
+      resolveRoleHolders: async () => ({ holders: [], partial: false, bySource: [] }),
+    });
+
+    const preview = await executor.previewRun('eph-preview', {});
+
+    assert.equal(agentCalls, 0);
+    assert.equal(actionCalls, 0);
+    assert.equal(preview.status, 'completed');
+    assert.equal(preview.steps[0]?.actor, 'agent (stubbed):writer');
+    assert.deepEqual(preview.steps[0]?.result, { simulated: true, agentId: 'writer' });
+    assert.equal(preview.steps[1]?.actor, 'action (stubbed):send-message');
+    assert.deepEqual(preview.steps[1]?.result, { simulated: true, actionId: 'send-message' });
+  });
 });
 
 describe('extractFencedJson', () => {

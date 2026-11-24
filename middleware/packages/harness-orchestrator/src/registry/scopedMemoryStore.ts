@@ -152,7 +152,8 @@ const CONTEXT_AXIS_PATTERN = /^(?:team|channel|user):[^:]+:\*$/;
  *     model-facing surface that two different chat contexts address by the same
  *     path. Writable, `/memories/core/notes.md` would be a one-line bypass of
  *     every tier boundary below it. They stay writable from a context-FREE turn
- *     (operator, CLI, pre-W5 plugin).
+ *     (operator, CLI, pre-W5 plugin) — except the transcript trees, the audit
+ *     log and `_rules`, which no agent writes (`AGENT_UNWRITABLE_PREFIXES`).
  *  4. **Never a throw on the message path.** A malformed `axes` is a bug in a
  *     channel plugin, not a reason to drop a user's turn; it degrades to the
  *     agent-private scope and says so in the log. Never a throw, never a wider
@@ -292,8 +293,21 @@ const CORE_NOTES_PREFIXES = ['/memories/core/'];
  * so one chat could plant a rule for all.
  * Rules now come from the repo seed only (`MEMORY_SEED_DIR`), written on the
  * root store at boot or by a re-seed purge.
+ *
+ * `/memories/sessions/` and `/memories/chat-sessions/`: every agent's
+ * conversation transcripts in one flat tree (decision A3a). The same plain
+ * `core` grant let one context-free turn `delete /memories/sessions` and wipe
+ * the transcripts of every agent, or rename a forged file into it. They are
+ * written by the kernel only — `SessionLogger` and `ChatSessionStore` get the
+ * unscoped store in `buildOrchestratorForAgent` — so for agents the trees are
+ * read-only, like the two above.
  */
-const AGENT_UNWRITABLE_PREFIXES = ['/memories/core/audit/', '/memories/_rules/'];
+const AGENT_UNWRITABLE_PREFIXES = [
+  '/memories/core/audit/',
+  '/memories/_rules/',
+  '/memories/sessions/',
+  '/memories/chat-sessions/',
+];
 
 /**
  * The path as the store will resolve it (#1827): the stores collapse duplicate

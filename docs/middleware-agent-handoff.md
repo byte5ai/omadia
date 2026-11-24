@@ -1377,6 +1377,9 @@ werden mit Log-Zeile übersprungen, CI-Gate ist
   `400 conductor.template_slot_mapping_incomplete` mit
   `missing: [{ kind, key, label }]` (fail-clear vor allem anderen);
   `400 conductor.invalid_graph` mit den bekannten `unknown_*_ref`-Codes.
+  Seit #1713 zusätzlich **`warnings`** im Erfolgsfall (`200 { graph, warnings? }`,
+  gleiche Form wie bei `POST /`) — nicht blockierende Validator-Funde, allen voran
+  `unmatched_event_ref`.
 - **`POST /templates/:id/instantiate`** — Body
   `{ slug, name?, description?, mapping, enable? }`. Gleiche Fehlerpfade wie
   `resolve`, plus: fehlender/leerer `slug` → `400 conductor.invalid_input`;
@@ -1391,13 +1394,37 @@ werden mit Log-Zeile übersprungen, CI-Gate ist
   `POST /` inkl. atomarem Cron-Schedule-Reconcile (`onPublished` →
   `scheduleStore.reconcileOnClient`); `enable` default `false`; `name`/
   `description` defaulten aufs Manifest (en-aufgelöst) →
-  `201 { workflow, version }`.
+  `201 { workflow, version, warnings? }` (die `warnings` wie bei `resolve`, #1713).
 
 **Validierungs-Unterschied zu `POST /`:** beide Template-Routes validieren mit
 **live `KnownRefs`** (Agent-Slugs aus der Registry, Action-Ids, Role-Keys,
-Event-Katalog — `templateKnownRefs` in `src/conductor/index.ts`), `POST /` nur
+Event-Ids — `templateKnownRefs` in `src/conductor/index.ts`), `POST /` nur
 strukturell. Bewusst strenger: eine Template-Instanz muss lauffähig sein, nicht
-nur wohlgeformt. Ergebnis der Instanziierung ist ein gewöhnlicher versionierter
+nur wohlgeformt.
+
+**Ausnahme Event-Ids (#1713):** eine Event-Id ist Freitext des Senders —
+`POST /conductors/emit` nimmt jede Id, und ein eingehender Webhook-Endpoint
+(#437) trägt eine vom Operator vergebene Id, die in keinem Plugin-Manifest
+steht. Der Katalog ist also eine Vorschlagsliste, nie die Menge der erlaubten
+Werte: eine Id ohne Treffer ist seit #1713 die **Warnung**
+`unmatched_event_ref` (`validate()` in `@omadia/conductor-core`), keine
+Fehler-Code mehr. Ein **fehlendes** `eventId` an einem `event`/`webhook`-Trigger
+bleibt der harte Fehler `unknown_event_ref` (sonst unerreichbarer Trigger,
+#437). Vorher war jede Id ein Fehler, sobald der Katalog leer war — die
+gebündelte Vorlage „Benachrichtigen und eskalieren bei Vorfall" war damit auf
+jedem Stack ohne Event-Plugin nicht instanziierbar, obwohl derselbe Graph über
+`POST /conductors` (ohne `KnownRefs`) publishbar war.
+`knownEventIds()` in `src/conductor/index.ts` vereinigt dafür den
+Plugin-Katalog mit den `eventId`s der eingehenden Webhook-Endpoints; dieselbe
+Menge speist Builder-Prompt und Proposal-Prefill-Prüfung.
+Ref-Slot-Werte werden beim Substituieren **getrimmt** (`mappedValue` in
+`packages/conductor-core/src/template.ts`) — Freitext-Ids dürfen nicht mit
+Leerraum in einen Trigger wandern, den `eventRouter#emit` nie trifft.
+`GET /events/catalog` liefert diese Endpoint-Ids additiv als
+`endpointEvents: string[]` (getrennt von `events`/`byPlugin` = „von einem Plugin
+deklariert"; Lesefehler degradiert zu `[]`, nie 500). Das Event-Slot-Feld des
+Instanziierungs-Formulars ist entsprechend Freitext mit Datalist — wie das
+Event-Trigger-Feld des Designers. Ergebnis der Instanziierung ist ein gewöhnlicher versionierter
 Workflow ohne Rückverweis aufs Template (Copy, not Reference — seit #478 mit
 `template_id`/`template_version`-Provenance-Stempel auf der Workflow-Row, aber
 weiterhin nie zur Laufzeit dereferenziert).
@@ -1728,6 +1755,145 @@ Noise), `test/conductorWebhookDispatcher.test.ts` (Signing/Retry/Backoff),
 `test/conductorWebhookPostAction.test.ts` + SSRF-Guard-Unit-Tests,
 `test/conductorEventRouterWebhookTrigger.test.ts` (`webhook`-Trigger-Kind
 Matching, keine Regression auf `event`).
+
+### Conductor Webhooks — Hardening (#1707)
+
+Fünf Lücken der #437-Oberfläche, die zusammen entscheiden, **was den Server
+verlässt** und **was ein Operator hinterher rekonstruieren kann**. Migration:
+`src/conductor/migrations/0015_webhook_hardening.sql`.
+
+**1. Run-Kontext ist opt-in.** Die Delivery-Payload trug den kompletten
+`context` des Runs, also jedes Step-Ergebnis inklusive Freitext-Antworten von
+Menschen (`{"kommentar": "P09 Testkommentar"}` im Report) — an den externen
+Empfänger UND unbefristet in `conductor_webhook_deliveries.payload`. Neu:
+`conductor_webhook_subscriptions.include_context`, **Default `false` auch für
+bestehende Rows** (bewusst breaking: die Alternative wäre, das Leak in jeder
+Installation zu behalten). `projectRunEventPayload` (`webhookPayload.ts`)
+projiziert das einmal gebaute Run-Event **pro Subscription**, und zwar VOR
+`createDelivery` — eine nicht-opted-in Subscription hat den Kontext also weder
+auf der Leitung noch in der Row; stattdessen steht `contextOmitted: true` drin
+(unterscheidet „darf ich nicht sehen" von „gab es nicht"). Beide Erzeugerpfade
+nutzen dieselbe Funktion: der Inline-Hook (`webhookDispatcher.ts`) und der
+Reconciliation-Pass (`listMissingRunDeliveries` liefert `include_context` mit).
+Schalter: `POST …/subscriptions/:id/payload-scope` + Checkbox/Badge in der
+Admin-UI.
+
+**2. Retention für gespeicherte Payloads** (`webhookRetention.ts`, unref'd
+6h-Intervall mit Eager-Boot-Pass wie der `turn_receipts`-Reaper): nach
+`CONDUCTOR_WEBHOOK_PAYLOAD_RETENTION_DAYS` wird die Payload auf
+`{runId, status, redacted}` redigiert (Row bleibt — Delivery-Historie ist nicht
+der sensible Teil), nach `CONDUCTOR_WEBHOOK_DELIVERY_RETENTION_DAYS` wird die
+**terminale** Row gelöscht (`pending` nie: die schuldet noch einen Versuch).
+Zwei Fallen, beide abgesichert: die Redaktion **behält `runId`**, weil
+`run_id` eine generierte Spalte über `payload->>'runId'` ist und der partielle
+Unique-Index `(subscription_id, run_id)` das Einzige ist, was eine zweite
+Delivery pro Run verhindert; und beide Fenster sind auf `MIN_RETENTION_DAYS`
+(2d) geclampt, deutlich außerhalb des 24h-Lookbacks des Reconciliation-Passes —
+sonst löscht der Sweep eine Row, die der Pass danach neu anlegt und ewig
+erneut zustellt.
+
+**3. Audit.** `admin_audit` hatte keine einzige Row auf `%webhook%`. Neu neun
+Actions (`conductor.webhook_endpoint_{create,rotate_secret,status,delete}`,
+`conductor.webhook_subscription_{create,rotate_secret,status,delete,payload_scope}`),
+gemappt in `webhookChangeAuditEntry` (`auth/adminAuditLog.ts`) — dort, weil die
+#775-Regel „eine E-Mail darf nie in die uuid-Spalte `actor_id`" einen Test
+braucht, der sie mit einer E-Mail fährt. `before`/`after` tragen URL, Event-Id,
+Enabled-State und den Payload-Scope, **nie** ein Secret und nie eine Payload.
+Der Delete-Pfad liest die Row **vor** dem DELETE, sonst beschreibt der Eintrag
+nichts. Audit-Write ist best-effort: ein Fehler loggt laut, lässt die Mutation
+aber stehen (sie ist schon passiert). Kein Audit für No-ops (Review-Finding): die
+`/status`-Routen antworteten für eine unbekannte Id mit `204` **und** schrieben
+eine Row über eine Zustandsänderung, die nie passierte — jetzt `404`, vor
+Mutation und Audit. DELETE antwortet für eine schon gelöschte Id `404` (#1706)
+und schreibt dann keine Audit-Row. Beide Pre-Reads fangen ihren
+eigenen Fehler nicht mehr weg: ein fehlgeschlagener Read endet in `500`, bevor
+mutiert wird, statt zu „kein before-State" zu degradieren.
+
+**4. Replay-Fenster.** Eine Inbound-Request trug Signatur und Delivery-Id, aber
+keinen Zeitstempel — eine mitgeschnittene Request blieb ewig gültig, nur das
+Delivery-Id-Ledger verhinderte die wörtliche Wiederholung. Neu: ein Sender darf
+`X-Webhook-Timestamp` (Unix-Sekunden) setzen und signiert dann
+`<timestamp>.<delivery id>.<body>` statt des nackten Bodys. Stempel **und**
+Delivery-Id liegen damit **im** HMAC: ein Replay kann den Stempel weder behalten
+(außerhalb der Toleranz) noch erneuern (Signatur bricht).
+
+Die Delivery-Id gehört zwingend mit hinein (Review-Finding): das Ledger ist das
+Einzige, was eine Wiederholung stoppt, sein Schlüssel ist der vom Aufrufer
+gelieferte `X-Webhook-Delivery-Id`-Header, und der ist nicht geheim. Mit einer
+Signatur nur über `<timestamp>.<body>` blieb das Fenster offen — eine
+mitgeschnittene Request mit **frischer** Delivery-Id passierte Signatur,
+Toleranz und Dedupe und startete bei jeder Wiederholung einen echten Run
+(begrenzt nur durch das Rate-Limit). Aus demselben Grund **muss** eine
+getimestampte Request den Header tragen (`401 webhook.delivery_id_required`):
+für einen Aufrufer ohne Id generiert der Server eine, das Auslassen würde also
+dasselbe Loch zurückgeben. Geprüft wird **vor** jedem Endpoint-Lookup (hängt
+nur an Header + Serveruhr, leakt also keine Endpoint-Existenz) und in **beide**
+Richtungen (ein Stempel weit in der Zukunft wäre ein Capture, der bis dahin
+gültig bleibt). Ohne Header gilt weiter das Bare-Body-Schema — erst
+`CONDUCTOR_WEBHOOK_REQUIRE_TIMESTAMP=true` schließt das Fenster wirklich
+(401 `webhook.timestamp_required`). Neue Codes: `webhook.stale_timestamp`,
+`webhook.timestamp_required`, `webhook.delivery_id_required`. Outbound signiert unverändert über den Body; eine
+v2-Signatur dort wäre ein Bruch für jeden bestehenden Empfänger und ist nicht
+Teil dieser Änderung.
+
+**5. Rotation mit Grace.** `POST …/rotate-secret` wirkte sofort: die nächste
+Request mit dem alten Secret bekam 401, es gab also kein Fenster, in dem der
+Sender umgestellt werden konnte. Neu liegt das abgelöste Secret unter eigenem
+Vault-Key (`webhook-endpoint/<id>/secret.previous`) und bleibt bis
+`conductor_webhook_endpoints.secret_previous_until` gültig
+(`now() + CONDUCTOR_WEBHOOK_SECRET_GRACE_SECONDS`). Gespeichert wird die
+**Deadline**, nicht der Rotationszeitpunkt: der Verify-Pfad entscheidet aus
+dieser einen Spalte, ob er überhaupt nach einem Previous sucht, und eine
+abgelaufene Grace wird genau einmal aufgeräumt (Spalte auf NULL, Vault-Key
+gelöscht) statt pro Request neu bewertet. `?immediate=true` erzwingt den alten
+Sofort-Cutover — richtig genau dann, wenn die Rotation die Antwort auf ein
+geleaktes Secret ist; dann wird der alte Key gelöscht statt geparkt.
+
+Deadline und Previous-Vault-Key liegen in **zwei** Stores, keine Transaktion
+spannt beide — der erste Wurf verlor die Grace deshalb an einen Race: eine
+Rotation, die den neuen Previous-Key schon geschrieben, die Deadline aber noch
+nicht gestempelt hatte, wurde von einer Verification gesehen, die noch die
+**vorherige**, abgelaufene Deadline las; deren Lazy-Cleanup löschte genau den Key,
+den die Rotation gerade geschrieben hatte (Sender bekam 401 für eine zugesagte
+Stunde). Fix: die beiden einzigen Schreiber des Paars serialisieren. Rotation und
+Lapsed-Cleanup halten denselben Per-Endpoint-Advisory-Lock
+(`pg_advisory_xact_lock(1707, hashtext(endpointId))` — eigener Namespace, damit
+eine Operator-Rotation nie den `claim()`-Hot-Path desselben Endpoints blockiert),
+und das Cleanup prüft `secret_previous_until <= now()` **innerhalb** des Locks,
+mit dem Vault-Delete konditional auf „UPDATE hat eine Row getroffen". Eine
+Rotation, die während der Lock-Wartezeit eine frische Deadline gestempelt hat,
+fällt damit aus dem Prädikat und das Cleanup fasst nichts an. Derselbe Lock macht
+zwei gleichzeitige Rotationen eines Endpoints zu einer Kette (die zweite löst die
+erste ab), statt beide dasselbe Original zu lesen.
+
+**6. Der Kill-Switch ist sichtbar.** Mit `CONDUCTOR_WEBHOOKS_ENABLED=false`
+wurde **jede** Inbound-Request (unsigniert, falsches Secret, erfundene
+Endpoint-Id) mit `200 {"ok":true,"outcome":"disabled"}` beantwortet: Sender
+sahen Erfolg und verwarfen das Event, das Log druckte seine übliche
+Mount-Zeile, die Admin-Seite zeigte nichts. Jetzt: `503
+webhook.inbound_disabled` (ehrlich **und** retrybar), die Boot-Zeile nennt den
+Zustand, und `GET /api/v1/operator/conductors/webhooks/posture` liefert ihn
+plus die geltenden Hardening-Fenster — gebaut aus genau denselben Werten, die
+Inbound-Router und Retention-Sweep bekommen, damit die Seite nie eine Posture
+anzeigt, die der Server nicht durchsetzt. Die Route antwortet auch unwired mit
+200 (`configured: false`): „Webhooks sind aus" ist die Antwort, für die sie
+existiert, ein 503 wäre vom Kill-Switch nicht unterscheidbar. Auf einer Instanz
+ohne Postgres ist der ganze Conductor-Operator-Router nicht gemountet, die Route
+404t also und diese Antwort kommt nie an — der Banner liest einen 404 deshalb als
+genau denselben Zustand („hier gibt es keine Webhook-Oberfläche") statt als
+fehlgeschlagenen Request. Die Admin-Seite rendert das als erstes Element
+(`WebhookPostureBanner`).
+
+Tests: `test/conductorWebhookInbound.test.ts` (Replay-Fenster, Rotation-Grace,
+503-Kill-Switch), `test/conductorWebhookRoutes.test.ts` (Audit pro Mutation,
+kein Secret im Trail, 404 statt No-op-Audit, Payload-Scope, Posture),
+`test/conductorWebhookRetention.test.ts`
+(Projektion, Redaktion, Clamping), `test/webhookChangeAudit1707.test.ts`
+(#775-Mapping), `test/conductorWebhook{Endpoint,Subscription}Store.pg.test.ts`
+(Grace-SQL inkl. der zwei Race-Regressionstests — Verification gegen
+Re-Rotation und zwei gleichzeitige Rotationen —, Redaktion behält `runId`,
+`pending` wird nie gelöscht) sowie
+`web-ui/app/admin/webhooks/_components/__tests__/` (Banner + Opt-in).
 ### Dataset-Routen + `query_dataset`-Tool (#430)
 
 Neue REST-Oberfläche `src/routes/datasets.ts`, gemountet unter
@@ -2651,6 +2817,36 @@ ephemeralStore). Web-UI: Delete-Button + ConfirmDialog auf `/conductor`,
 `deleteConductorWorkflow` in `api.ts`, i18n `conductor.delete*` en+de.
 Tests: `test/conductorWorkflowDelete.test.ts`.
 
+### Conductor-Enable/Disable in der Workflow-Liste (#1711)
+
+`POST /conductors/templates/:id/instantiate` ohne `enable: true` legt den
+Workflow mit `status='disabled'` an — jeder Run-Start antwortet dann 409
+`conductor.disabled`. Die Backend-Route **`POST
+/api/v1/operator/conductors/:slug/status`** (`{"status":"enabled"|"disabled"}`
+⇒ 204) existiert seit Spec 005 US3-AS4, hatte aber **keinen Aufrufer im
+Web-UI**: die Liste druckte den Status nur als Text und „Starten“ zeigte das
+rohe 409. Der einzige Ausweg aus dem Default-Zustand einer
+Template-Instanziierung war ein handgeschriebener API-Call.
+
+Web-UI: `WorkflowStatusToggle` (`web-ui/app/conductor/_components/`) sitzt auf
+jeder Listenzeile neben Starten/Löschen und ruft
+`setConductorWorkflowStatus(slug, status)` (`api.ts`, 204 ⇒ kein Body);
+Fehler landen als Katalogsatz (`conductor.statusChangeFailed`) im geteilten
+Fehler-Slot der Liste, nie als roher `ApiError`-Text. Der Status selbst wird
+lokalisiert gerendert (`conductor.statusEnabled`/`statusDisabled` — „aktiv“/
+„inaktiv“ statt des Wire-Werts). Die drei Refusals der Run-Start-Route
+(`conductor.disabled`, `conductor.not_published` als 409,
+`conductor.not_found` als 404) mappt `app/_lib/conductorRunStartError.ts` auf
+je einen i18n-Key; alles andere behält den generischen Satz
+(`conductor.runError`) und trägt den Servertext als Detailzeile darunter.
+`eph-`-Slugs bleiben für die Status-Route 400 (Reaper-Lifecycle, #330).
+
+Tests: `test/conductorDisabledWorkflowEscape.test.ts` pinnt den Refusal-CODE
+(nicht nur den 409-Status, denn das UI keyt seinen Satz darauf) und den
+kompletten Ausweg 409 → Status-Route 204 → 202;
+`WorkflowStatusToggle.test.tsx` und `conductorRunStartError.test.ts` im
+Web-UI.
+
 ### Turn-Receipts (#757) — persistierte Per-Turn-Privacy-Receipts
 
 S3-C (#1541, #1549, #1557, #1562, #1573): Die Receipt-Card sagt nur, was
@@ -3219,6 +3415,19 @@ tolerant + size-capped). Pattern `facilitation` ist **v4** (Assess-Tick
 PT1H, max 24 Runden, DoD-met → confirm, exhausted → abort-report);
 Pattern `discussion` ist **v3**.
 `conductorEphemeralRuns.poke(runId)` feuert den offenen Timer-Await sofort.
+Ein Timer-Await ist **kein** Human-Await: `listWaiting` (Operator-Inbox,
+`GET /awaits/pending`) filtert `principal_kind = 'timer'` heraus (#1712) — die
+Zeile hat keinen Holder, also konnte `POST /awaits/:id/respond` darauf nur mit
+403 `conductor.await_forbidden` antworten. Auf den Tick wirkt allein der
+Deadline-Poll (`listDue`). Gefiltert wird auf den Principal, nicht auf den
+`timer`-Channel: was die Zeile disqualifiziert, ist niemand zum Fragen.
+**Preis der Filterung:** Der geparkte Lauf ist danach nur noch über „Verlauf"
+pro Workflow zu sehen (Status `waiting`), und dort OHNE Deadline — `deadlineAt`
+wird in der Web-UI an genau einer Stelle gerendert, in der Inbox-Zeile
+(`web-ui/app/conductor/page.tsx`), die ein Timer jetzt nicht mehr erreicht. Die
+im Issue alternativ vorgeschlagene read-only-Zeile („läuft bis …") ist damit
+nicht gebaut; wer die Deadline im Operator-Blick braucht, baut sie in die
+Run-Liste, nicht in die Inbox.
 Neuer Service **`conversationSend`** (deny-by-default; SDK-Seam
 `registerConversationSendProvider`, Kernel `src/channels/
 conversationSend{Registry,Service}.ts`, plugin-api 1.8.0) — Gruppen-Nudges,
@@ -5281,9 +5490,18 @@ BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 # Die Desktop-App setzt ihn, wenn der Wizard-Schalter „Anhänge“ an ist.
 # GET /health → attachments.store: 's3' | 'filesystem' | 'none' (nie Pfad/Bucket).
 ATTACHMENT_STORE_DIR=/data/attachments     # Objekte unter sha256(key), 0700/0600, kein Ablauf
-# Conductor generic webhooks (issue #437) — Kill-Switch für POST /api/hooks/:endpointId
+# Conductor generic webhooks (issue #437) — Kill-Switch für POST /api/hooks/:endpointId.
+# Aus heißt seit #1707 **503 webhook.inbound_disabled** (vorher 200 {"outcome":"disabled"},
+# d.h. jeder Sender sah Erfolg); Zustand steht in der Boot-Log-Zeile und in
+# GET /api/v1/operator/conductors/webhooks/posture.
 CONDUCTOR_WEBHOOKS_ENABLED=true
 CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE=60   # Rate-Limit pro Endpoint (rolling minute)
+# Webhook-Hardening (#1707)
+CONDUCTOR_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS=300  # Replay-Fenster für X-Webhook-Timestamp (beide Richtungen)
+CONDUCTOR_WEBHOOK_REQUIRE_TIMESTAMP=false          # true = Legacy-Pfad (Signatur nur über den Body) zu
+CONDUCTOR_WEBHOOK_SECRET_GRACE_SECONDS=3600        # alter Endpoint-Secret bleibt so lange gültig (0 = Sofort-Cutover)
+CONDUCTOR_WEBHOOK_PAYLOAD_RETENTION_DAYS=30        # gespeicherte Delivery-Payload wird danach redigiert
+CONDUCTOR_WEBHOOK_DELIVERY_RETENTION_DAYS=180      # terminale Delivery-Row wird danach gelöscht (min. Payload-Fenster, Floor 2d)
 # Conductor ephemeral/JIT workflows (#330 Workstream A) — Guardrails für createEphemeralRun
 CONDUCTOR_EPHEMERAL_DEFAULT_TTL_MS=86400000      # 24h Default-TTL
 CONDUCTOR_EPHEMERAL_MAX_TTL_MS=604800000         # 7d Obergrenze (Requests werden geclampt)
@@ -6253,6 +6471,25 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+- **Memory-ACL automatisch prüfbar machen (Plan in 7 Schritten, ein PR pro Schritt).** Ziel:
+  Jede Änderung, die einem Nutzer Memory zeigt, das ihm nicht zusteht, macht CI rot.
+  Schritt 0 (#2179): Postgres-Beine der Memory-Suiten laufen in CI, Namens-Guard
+  `test:pg:names`, `PG_TEST_FLOOR` auf 721. Offen:
+  1. Zugriffsmatrix als Code (`middleware/test/memoryAccess/`): eine gesäte Welt mit Canary
+     pro Item und einem handgeschriebenen Orakel für `off`/`enforce`/`enforce-strict`/`members`.
+  2. ACL-Contract-Suite über In-Memory und Postgres. Heute prüft keine Postgres-Suite
+     `sharedOnly`, `viewerAgentSlug`, `addOwner`/`removeOwner` oder
+     `listMemorableKnowledgeFor`; `audienceOwners`, `members` und `enforce-strict` schon.
+  3. Canary-Sweep über alle Einstiegspunkte (Recall, Memory-Tool, KG-Tools, Plugin-Accessoren,
+     Memory-/Datasets-/Session-Routen, Admin, `/api/dev/*`), jeweils mit Positivkontrolle.
+  4. Vollständigkeits-Guards: Inventar-Test, ESLint-Regel gegen viewer-lose Graph-Reads,
+     Snapshot der Memory-Defaults, Matrix nach Migrationen.
+  5. Lifecycle-Invarianten (Promotion, Reaper, Merge, GC, Purge, Owner-Entfernung) mit Fake-Clock
+     und fast-check.
+  6. Mutationsnachweis (Prädikate einzeln löschen, Stryker nightly), Exfiltrations-Korpus.
+  Bekannte Test-Infrastruktur-Bugs: #2185 (`roleChangeAudit775.pg` löscht `admin_audit`
+  ohne Migrationszeile), #2186 (Orb-Setup scheitert am CUDA-Download von `onnxruntime-node`).
+
 - **Pflege von Memory-Regeln (#1827-Folge).** `/memories/_rules/` ist für
   Agents nur lesbar; Regeln kommen nur aus dem Repo-Seed. Offen
   (Diskussion #2041): Admin-Seite für globale Regeln, persönliche bzw. Agent-Regeln
@@ -6488,7 +6725,7 @@ Request und bei jedem WebSocket-Upgrade. Offen:
 
 ### CI-Schulden aus dem Security-Review (2026-09-29)
 
-- **`PG_TEST_FLOOR` nachziehen, sobald die Auth-Härtungen gemergt sind.** Serverseitiger
+- **`PG_TEST_FLOOR` nachziehen — erledigt (#2179, Floor 721 = gemessenes `ran=`).** Serverseitiger
   Sitzungs-Widerruf und die atomare Ersteinrichtung bringen neue Postgres-Suiten mit
   (`test/auth/userStoreSessionVersion.pg.test.ts`, `userStoreFirstAdmin.pg.test.ts`,
   `setupRouteConcurrency.pg.test.ts`). Der Floor in `.github/workflows/ci.yml` bleibt bis
@@ -8291,6 +8528,15 @@ MEMORY_PG_TEST_URL=postgresql://omadia:omadia@127.0.0.1:5432/omadia_test \
 npm run test:pg
 ```
 
+`test:pg` ist der einzige CI-Schritt mit Test-DSN und läuft nur über
+`test/**/*.pg.test.ts`. Ein Postgres-Fall in einer Datei ohne `.pg` läuft deshalb
+nirgends (in `npm test` überspringt er sich). `npm run test:pg:names` (CI-Schritt,
+#2179) bricht ab, wenn eine Testdatei `test/_helpers/pgTestDb.ts` direkt oder über
+einen Helfer erreicht, ohne `.pg.test.ts` zu heißen. Gemischte Suiten werden
+geteilt (`foo.test.ts` + `foo.pg.test.ts`, gemeinsamer Code in einem Nicht-Test-Modul).
+Neue Postgres-Tests heben `PG_TEST_FLOOR` in `.github/workflows/ci.yml` auf den
+gemessenen `ran=`-Wert. Regel: `middleware/test/README.md`.
+
 App-Server werden nicht automatisch gestartet. Bei Bedarf über
 `amp orb service start … --portal` betreiben, nicht per `nohup`/`&`.
 Portal-Manifeste unter `.amp/portals/` sind ignoriert.
@@ -8477,6 +8723,10 @@ Stores nehmen bei Verzeichnissen alle Nachfahren mit. Geprüft wird der kanonisc
 Außerdem steht `/memories/_rules/` auf der Deny-Liste: `core` gewährt `_*`, und eine
 Regel-Datei wirkt für alle Agents und Accounts. Wie Regeln künftig gepflegt werden (Admin-Seite, Regeln pro
 Agent/Account), ist offen (§13).
+Ebenso `/memories/sessions/` und `/memories/chat-sessions/` (#2216): die Transkripte aller
+Agents liegen in einem flachen Baum, und `delete /memories/sessions` aus einem kontextfreien
+Turn hätte sie alle gelöscht. Geschrieben werden sie nur vom Kernel: `SessionLogger` und
+`ChatSessionStore` bekommen in `buildOrchestratorForAgent` den ungescopten Store.
 
 ### Kontext-Key
 
