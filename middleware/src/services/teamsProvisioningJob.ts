@@ -415,6 +415,14 @@ export type TeamsAppPackageParams = Readonly<
   Record<string, string | readonly string[]>
 >;
 
+export type TeamsBotProbeResult =
+  | { readonly status: 'known'; readonly detail?: string }
+  | { readonly status: 'rejected'; readonly httpStatus?: number; readonly detail?: string }
+  | { readonly status: 'unverified'; readonly detail?: string };
+
+/** `detail` of the `progress` event while the run verifies the bot. */
+export const VERIFYING_BOT_DETAIL = 'verifying_bot';
+
 /** The accessor methods the runner drives — one per chain step. */
 export interface TeamsProvisionerPort {
   createAppRegistration(input: {
@@ -484,6 +492,24 @@ export interface TeamsProvisionerPort {
   getCatalogApp(input: {
     readonly teamsAppExternalId: string;
   }): Promise<{ readonly found: false } | { readonly found: true; readonly teamsAppId: string }>;
+
+  /**
+   * #2043 D10 — does the Bot Connector know this bot? The connector
+   * authenticates AS THE BOT (its own app id and secret) and makes one call
+   * that only a registered, Teams-enabled bot is allowed to make.
+   *
+   *   `known`       the Bot Connector accepted the bot's token: any 2xx, or a
+   *                 4xx about the REQUEST (403 `BadArgument` "not installed in
+   *                 user's personal scope" is the usual answer);
+   *   `rejected`    401: the Bot Connector does not accept this bot. Azure
+   *                 can report such a bot as healthy; Teams shows "invalid
+   *                 bot" and delivers nothing;
+   *   `unverified`  the question could not be asked (no token, no network).
+   *
+   * Optional (connector >= 0.9.2): feature-detect it. Without it the run
+   * cannot verify the bot and says so in the log.
+   */
+  probeBot?(input: { readonly appId: string }): Promise<TeamsBotProbeResult>;
 
   installToTeam(input: {
     readonly teamId: string;
@@ -736,7 +762,14 @@ const TERMINAL_INSTALL_400_MARKERS: readonly string[] = [
  */
 function isCatalogReplicationFailure(err: unknown): boolean {
   if (!(err instanceof Error) || err.name !== 'ProvisioningRequestError') return false;
-  if ((err as Error & { status?: unknown }).status !== 400) return false;
+  // 400 is how the Teams app service usually reports an entry it cannot see
+  // yet; 404 `NotFound` is the same race said plainly (#2043 D12: an install
+  // two seconds after the upload, which passed untouched on the re-run). The
+  // other gates are unchanged: only the two install verbs, only in a run
+  // that published the entry itself, never a body that names a
+  // configuration reason.
+  const status = (err as Error & { status?: unknown }).status;
+  if (status !== 400 && status !== 404) return false;
   const step = (err as Error & { step?: unknown }).step;
   if (
     typeof step !== 'string' ||
@@ -748,6 +781,29 @@ function isCatalogReplicationFailure(err: unknown): boolean {
   return !TERMINAL_INSTALL_400_MARKERS.some((marker) =>
     message.includes(marker.toLowerCase()),
   );
+}
+
+/**
+ * Is the PUBLISHED Teams app version older than the one a run would build?
+ * Versions are `major.minor.patch`, compared position by position as Teams
+ * does (`1.<template revision>.<identity revision>`). Anything that is not
+ * such a version on either side answers `false`: without a comparison the
+ * published package is kept, never replaced on a guess.
+ */
+export function isOlderTeamsAppVersion(published: unknown, wanted: unknown): boolean {
+  const parse = (value: unknown): readonly number[] | undefined => {
+    if (typeof value !== 'string' || !/^\d{1,9}(\.\d{1,9}){0,3}$/.test(value.trim())) return undefined;
+    return value.trim().split('.').map(Number);
+  };
+  const have = parse(published);
+  const want = parse(wanted);
+  if (!have || !want) return false;
+  for (let i = 0; i < Math.max(have.length, want.length); i += 1) {
+    const a = have[i] ?? 0;
+    const b = want[i] ?? 0;
+    if (a !== b) return a < b;
+  }
+  return false;
 }
 
 function isProvisionerUnavailable(err: unknown): boolean {
@@ -860,6 +916,10 @@ export type ProvisioningRunResult =
          *  may consent to. Terminal: a tenant role grant fixes it, a retry
          *  does not. */
         | 'rsc_permissions_mismatch'
+        | 'rsc_consent_refused'
+        | 'bot_rejected'
+        | 'bot_app_id_retired'
+        | 'app_registration_not_ready'
         | 'error';
       readonly detail: string;
     }
@@ -943,6 +1003,16 @@ export interface TeamsProvisioningJobOptions {
   /** Delay between those attempts (default 4s), capped by
    *  {@link maxRetryDelayMs} like every other delay in this runner. */
   readonly catalogReplicationDelayMs?: number;
+  /** #2043 D22 — waits for a 403 on a follow-up call to a fresh app
+   *  registration (default 4), and the first wait (default 5 s, doubling up
+   *  to 20 s). `0` attempts = report at once. */
+  readonly appReplicationAttempts?: number;
+  readonly appReplicationDelayMs?: number;
+  /** #2043 D10 — how often and how far apart a `rejected` bot probe is
+   *  repeated before the run fails (a bot created seconds ago can need a
+   *  moment). Defaults: 6 probes, 10 s apart. */
+  readonly botProbeAttempts?: number;
+  readonly botProbeDelayMs?: number;
   /** Test seam — defaults to real timers. */
   readonly timers?: TimerSeam;
   /** #910 — the finishing move that makes the bot live. Absent means the
@@ -989,7 +1059,14 @@ const DEFAULT_MAX_RETRY_DELAY_MS = 300_000;
  *  by hand, i.e. tens of seconds later, always succeeded) and against the
  *  opposite risk: a genuinely misconfigured install must still reach the
  *  operator quickly, so this is bounded in seconds, not minutes. */
+const DEFAULT_BOT_PROBE_ATTEMPTS = 6;
+const DEFAULT_BOT_PROBE_DELAY_MS = 10_000;
 const DEFAULT_CATALOG_REPLICATION_ATTEMPTS = 4;
+/** #2043 D22 — waits for a fresh app registration whose follow-up call
+ *  Graph answers with 403: 5 + 10 + 20 + 20 s, about a minute in all. */
+const DEFAULT_APP_REPLICATION_ATTEMPTS = 4;
+const DEFAULT_APP_REPLICATION_DELAY_MS = 5_000;
+const MAX_APP_REPLICATION_DELAY_MS = 20_000;
 const DEFAULT_CATALOG_REPLICATION_DELAY_MS = 4_000;
 /** Node's setTimeout ceiling (2^31 − 1 ms) — a longer delay would overflow
  *  to ~1 ms and burn the whole retry budget instantly. */
@@ -1013,6 +1090,8 @@ export class TeamsProvisioningJobRunner {
   private readonly maxRetryDelayMs: number;
   private readonly catalogReplicationAttempts: number;
   private readonly catalogReplicationDelayMs: number;
+  private readonly botProbeAttempts: number;
+  private readonly botProbeDelayMs: number;
   private readonly timers: TimerSeam;
   private readonly syncBotConfig: TeamsBotsConfigSyncPort | undefined;
   private readonly installs: TeamsInstallJobStore | undefined;
@@ -1066,6 +1145,11 @@ export class TeamsProvisioningJobRunner {
    *  Its OWN budget, deliberately not the chain's `maxAttempts`: this wait is
    *  seconds of eventual consistency, not a failing chain. */
   private readonly catalogReplicationRetries = new Map<string, number>();
+  /** #2043 D22 — replication waits already spent by the current run on a 403
+   *  that follows the app registration. Cleared per run like the above. */
+  private readonly appReplicationRetries = new Map<string, number>();
+  private readonly appReplicationAttempts: number;
+  private readonly appReplicationDelayMs: number;
   /**
    * Agents held by an operation that is NOT a provisioning run — today only
    * the teardown (`services/teamsIdentityReset.ts`), reserved through
@@ -1101,10 +1185,14 @@ export class TeamsProvisioningJobRunner {
       0,
       opts.catalogReplicationAttempts ?? DEFAULT_CATALOG_REPLICATION_ATTEMPTS,
     );
+    this.appReplicationAttempts = Math.max(0, opts.appReplicationAttempts ?? DEFAULT_APP_REPLICATION_ATTEMPTS);
+    this.appReplicationDelayMs = Math.max(0, opts.appReplicationDelayMs ?? DEFAULT_APP_REPLICATION_DELAY_MS);
     this.catalogReplicationDelayMs = Math.min(
       opts.catalogReplicationDelayMs ?? DEFAULT_CATALOG_REPLICATION_DELAY_MS,
       this.maxRetryDelayMs,
     );
+    this.botProbeAttempts = Math.max(1, opts.botProbeAttempts ?? DEFAULT_BOT_PROBE_ATTEMPTS);
+    this.botProbeDelayMs = Math.min(opts.botProbeDelayMs ?? DEFAULT_BOT_PROBE_DELAY_MS, this.maxRetryDelayMs);
     this.timers = opts.timers ?? REAL_TIMERS;
     this.syncBotConfig = opts.syncBotConfig;
     this.installs = opts.installs;
@@ -1362,6 +1450,7 @@ export class TeamsProvisioningJobRunner {
     // replication window it never opened.
     this.catalogPublishedInRun.delete(agentId);
     this.catalogReplicationRetries.delete(agentId);
+    this.appReplicationRetries.delete(agentId);
   }
 
   /** Stop accepting work and release every pending retry delay. An
@@ -1462,6 +1551,37 @@ export class TeamsProvisioningJobRunner {
     }
 
     const scopes = missingScopesOf(err);
+    if (isFollowUpRefusalOnAppRegistration(err)) {
+      // #2043 D22 — NOT missing consent. The connector reports every 403 as
+      // missing consent, but this one answers a follow-up call (add the
+      // secret, create the service principal) on an app registration that
+      // the SAME permission created or found a moment ago. Entra replicates
+      // the new object and its owner independently of the write path, and
+      // until it has, a write to it is refused. That ends by itself: wait a
+      // bounded time, then walk the chain again (it resumes on the existing
+      // registration).
+      const spent = this.appReplicationRetries.get(agentId) ?? 0;
+      if (spent < this.appReplicationAttempts) {
+        this.appReplicationRetries.set(agentId, spent + 1);
+        const delayMs = Math.min(this.appReplicationDelayMs * 2 ** spent, MAX_APP_REPLICATION_DELAY_MS);
+        this.log(
+          `[teams-provisioning] ${agentId} follow-up call on the new app registration refused with 403; ` +
+            `Entra is probably still replicating it (wait ${spent + 1}/${this.appReplicationAttempts}); ` +
+            `retrying in ${delayMs}ms: ${followUpRefusalText(err)}`,
+        );
+        await this.emit(agentId, this.currentStep.get(agentId) ?? 'run', 'retrying', {
+          attempt: spent + 1,
+          detail: AWAITING_ENTRA_REPLICATION_DETAIL,
+        });
+        await this.sleep(delayMs);
+        return undefined;
+      }
+      // Still refused after the wait. It is not a consent the operator could
+      // grant (the permission is in use), so it gets its own code and says so.
+      const failure = appRegistrationNotReadyFailure(followUpRefusalText(err));
+      await this.recordError(agentId, { state: 'failed', ...failure });
+      return { status: 'failed', agentId, reason: 'app_registration_not_ready', detail: failure.lastError };
+    }
     if (scopes !== undefined) {
       // TERMINAL — an admin has to consent; retrying is pointless.
       const failure = consentMissingFailure(scopes);
@@ -1505,6 +1625,15 @@ export class TeamsProvisioningJobRunner {
         reason: 'bot_handle_unavailable',
         detail: failure.lastError,
       };
+    }
+
+    // #2043 D10 — the connector (>= 0.9.2) refuses to create a bot under an
+    // app id whose bot resource was deleted before: the Bot Connector would
+    // reject it for good. TERMINAL, with its own instruction.
+    if (err instanceof Error && err.name === 'BotAppIdRetiredError') {
+      const failure = botAppIdRetiredFailure(errorMessage(err));
+      await this.recordError(agentId, { state: 'failed', ...failure });
+      return { status: 'failed', agentId, reason: 'bot_app_id_retired', detail: failure.lastError };
     }
 
     // #924 — THE FOUR DELEGATED ERRORS, EACH WITH A DIFFERENT INSTRUCTION.
@@ -1595,9 +1724,9 @@ export class TeamsProvisioningJobRunner {
         this.catalogReplicationRetries.set(agentId, spent + 1);
         const delayMs = this.catalogReplicationDelayMs;
         this.log(
-          `[teams-provisioning] ${agentId} install rejected with 400 while the catalog entry ` +
-            `is still replicating (wait ${spent + 1}/${this.catalogReplicationAttempts}); ` +
-            `retrying in ${delayMs}ms`,
+          `[teams-provisioning] ${agentId} install rejected with a ${String((err as { status?: unknown }).status)} that names no reason; ` +
+            `the catalog entry may still be replicating (wait ${spent + 1}/${this.catalogReplicationAttempts}); ` +
+            `retrying in ${delayMs}ms: ${fullConnectorErrorText(err)}`,
         );
         // Its own detail, not the generic retry one: this wait ends by itself,
         // and the operator should be told to sit still rather than to look for
@@ -1626,10 +1755,10 @@ export class TeamsProvisioningJobRunner {
         (this.catalogReplicationRetries.get(agentId) ?? 0) >=
           this.catalogReplicationAttempts && isCatalogReplicationFailure(err);
       const detail = exhausted
-        ? `${errorMessage(err)} (still refused after waiting ` +
+        ? `${fullConnectorErrorText(err)} (still refused after waiting ` +
           `${this.catalogReplicationAttempts} times for the catalog entry to replicate — ` +
           `treat as a configuration error, not a timing one)`
-        : `${errorMessage(err)} (deterministic — not retried)`;
+        : `${fullConnectorErrorText(err)} (deterministic — not retried)`;
       // No dedicated code: the operator UI renders a raw connector verdict as
       // `unknown` with the sentence as the technical detail.
       await this.recordError(agentId, { state: 'failed', ...unknownFailure(detail) });
@@ -1777,6 +1906,11 @@ export class TeamsProvisioningJobRunner {
       for (const step of SKIPPABLE_CHAIN_STEPS) {
         await this.emit(agentId, step, 'succeeded', { detail: SKIPPED_DETAIL });
       }
+      // #2043 D10 — "run provisioning again" on an installed identity is
+      // also how an operator asks "is this bot alive?". A bot the Bot
+      // Connector rejects is not installed in any useful sense.
+      const dead = await this.verifyBot(agentId, this.getProvisioner(), row);
+      if (dead) return dead;
       await this.syncTeamsBotsConfig(row);
       return { status: 'installed', agentId };
     }
@@ -1943,68 +2077,21 @@ export class TeamsProvisioningJobRunner {
     if (this.stopped) return { status: 'stopped', agentId };
 
     // Steps 3+4 — app package + catalog upload (idempotent by externalId).
-    if (STATE_RANK[row.state] < STATE_RANK.catalog_uploaded || !row.teamsAppId) {
-      await this.emit(agentId, 'package_built', 'started');
-      const assets = await this.loadPackageAssets(row);
-      if (STATE_RANK[row.state] < STATE_RANK.package_built) {
-        row = await this.store.update(agentId, {
-          state: 'package_built',
-          teamsAppExternalId: assets.externalId,
-          lastError: null,
-        });
-      }
-      await this.emit(agentId, 'package_built', 'succeeded');
-      // The catalog leg is its own step for the operator even though the two
-      // share a guard: it is the one that talks to Graph, so it is the one
-      // that can sit there.
-      await this.emit(agentId, 'catalog_uploaded', 'started');
-      let teamsAppId = row.teamsAppId;
-      if (!teamsAppId) {
-        const existing = await provisioner.getCatalogApp({
-          teamsAppExternalId: assets.externalId,
-        });
-        if (existing.found) {
-          teamsAppId = existing.teamsAppId;
-        } else {
-          const packageZip = provisioner.buildAppPackage({
-            manifestTemplate: assets.manifestTemplate,
-            params: assets.params,
-            icons: assets.icons,
-          });
-          const uploaded = await this.uploadPackage(
-            agentId,
-            provisioner,
-            packageZip,
-            assets.externalId,
-          );
-          // PARKED, not failed: the package is built and every earlier step
-          // is real. The row keeps `package_built`, `last_error` says which
-          // human action is missing, and the next run resumes right here.
-          if (uploaded.kind === 'sign_in_required') return uploaded.result;
-          teamsAppId = uploaded.teamsAppId;
-        }
-      }
-      row = await this.store.update(agentId, {
-        state: 'catalog_uploaded',
-        teamsAppId,
-        lastError: null,
-      });
-      // Gate 3 of isCatalogReplicationFailure: this run just put the entry
-      // there (uploaded it, or resolved one so fresh the lookup was the first
-      // thing that could see it), so an install 400 in the next few seconds is
-      // allowed to be a replication race rather than a verdict.
-      this.catalogPublishedInRun.add(agentId);
-      await this.emit(agentId, 'catalog_uploaded', 'succeeded');
-    } else {
-      await this.emit(agentId, 'package_built', 'succeeded', {
-        detail: SKIPPED_DETAIL,
-      });
-      await this.emit(agentId, 'catalog_uploaded', 'succeeded', {
-        detail: SKIPPED_DETAIL,
-      });
-    }
+    const packaged = await this.ensureCatalogPackage(agentId, provisioner, row, request);
+    if (packaged.kind === 'halted') return packaged.result;
+    row = packaged.row;
 
     if (this.stopped) return { status: 'stopped', agentId };
+
+    // #2043 rollout (D6) — SERVE THE BOT BEFORE THE INSTALL, not after it.
+    // From `catalog_uploaded` on the app is published in the org catalog, so
+    // anybody may add it personally or to a chat, whatever happens to the one
+    // install this run was asked for. Until now the `teams_bots` entry was
+    // only written after that install succeeded: when it failed (a consent
+    // refusal on the team), Teams delivered the personal chat to
+    // `/api/teams/<slug>/messages` and the channel answered "unknown botSlug":
+    // a bot users could add and that never replied.
+    await this.serveBotBeforeInstall(row);
 
     // Step 5 — install into the target (idempotent on Graph's side).
     //
@@ -2063,8 +2150,32 @@ export class TeamsProvisioningJobRunner {
           detail: failure.lastError,
         };
       }
+      // #2043 D7 — the target's own RSC consent check refused. Also TERMINAL,
+      // and never a replication wait: the catalog entry was found, its
+      // permission set was judged.
+      if (isRscConsentRefusal(err)) {
+        const failure = rscConsentRefusedFailure(targetKind, err);
+        this.log(
+          `[teams-provisioning] ${agentId} install refused by the target's resource-specific consent check — not retried: ${fullConnectorErrorText(err)}`,
+        );
+        await this.recordError(agentId, { state: 'failed', ...failure });
+        return {
+          status: 'failed',
+          agentId,
+          reason: 'rsc_consent_refused',
+          detail: failure.lastError,
+        };
+      }
       throw err;
     }
+    // #2043 D10 — the install went through, but is the BOT alive? Azure
+    // reports a bot resource as healthy that the Bot Connector rejects (a bot
+    // re-created under an app id that was used before). Such an identity must
+    // not become `installed`, or the operator sees "ready" for a bot Teams
+    // calls invalid.
+    const dead = await this.verifyBot(agentId, provisioner, row);
+    if (dead) return dead;
+
     // Same ordering rule as recordError (#915): the chain is finished, so the
     // run stops calling itself running BEFORE the terminal state becomes
     // readable. Everything past this line — the binding write, the
@@ -2307,6 +2418,189 @@ export class TeamsProvisioningJobRunner {
    * operator UI renders as "paste the block by hand, here is why") while the
    * identity stays `installed`.
    */
+  /**
+   * Steps 3+4: make sure the org catalog holds THIS agent's CURRENT package.
+   *
+   * Three cases, decided by what the catalog says, not by how far an earlier
+   * run got:
+   *
+   *   * no entry under the package's external id: build and upload;
+   *   * an entry whose version is OLDER than the one this run would build:
+   *     build and upload again, which updates the entry in place (same
+   *     external id, higher version). This is #2043 D9: a run that failed at
+   *     the install kept its catalog app, and every re-run skipped these two
+   *     steps for good, so a corrected template (a new template revision) or
+   *     a changed identity never reached the catalog. The only way forward
+   *     was a full reset, which deletes the bot and every install users made;
+   *   * an entry that is current (or whose version the connector does not
+   *     report): adopt it and skip, as before.
+   *
+   * The state only ever moves FORWARD here: an `installed` identity whose
+   * package is refreshed on the way to an additional team stays `installed`.
+   */
+  private async ensureCatalogPackage(
+    agentId: string,
+    provisioner: TeamsProvisionerPort,
+    current: TeamsIdentityJobRecord,
+    request: ProvisionTeamsIdentityRequest,
+  ): Promise<
+    | { readonly kind: 'ready'; readonly row: TeamsIdentityJobRecord }
+    | { readonly kind: 'halted'; readonly result: ProvisioningRunResult }
+  > {
+    let row = current;
+    const skip = async (): Promise<{ kind: 'ready'; row: TeamsIdentityJobRecord }> => {
+      await this.emit(agentId, 'package_built', 'succeeded', { detail: SKIPPED_DETAIL });
+      await this.emit(agentId, 'catalog_uploaded', 'succeeded', { detail: SKIPPED_DETAIL });
+      return { kind: 'ready', row };
+    };
+    const reached = STATE_RANK[row.state] >= STATE_RANK.catalog_uploaded && Boolean(row.teamsAppId);
+    // The republish branch above has just uploaded: nothing can be newer.
+    if (reached && request.republish === true) return skip();
+
+    const assets = await this.loadPackageAssets(row);
+    const wanted = String(assets.params['VERSION'] ?? '');
+    let existing: Awaited<ReturnType<TeamsProvisionerPort['getCatalogApp']>> | undefined;
+    if (reached) {
+      // A row that already names its catalog app: one read to learn whether
+      // that app still exists and which version it holds. A failing read is
+      // not a reason to fail a run that had nothing to do here.
+      try {
+        existing = await provisioner.getCatalogApp({ teamsAppExternalId: assets.externalId });
+      } catch (err) {
+        this.log(
+          `[teams-provisioning] ${agentId} could not read the catalog entry to compare versions (${errorMessage(err)}) — keeping the published package`,
+        );
+        return skip();
+      }
+      const published = existing.found
+        ? (existing as { readonly publishedVersion?: unknown }).publishedVersion
+        : undefined;
+      if (existing.found && !isOlderTeamsAppVersion(published, wanted)) return skip();
+      this.log(
+        existing.found
+          ? `[teams-provisioning] ${agentId} catalog app holds version ${String(published)}, this run builds ${wanted} — rebuilding and updating it`
+          : `[teams-provisioning] ${agentId} catalog app '${String(row.teamsAppId)}' is gone from the catalog — uploading again`,
+      );
+    }
+
+    await this.emit(agentId, 'package_built', 'started');
+    if (STATE_RANK[row.state] < STATE_RANK.package_built) {
+      row = await this.store.update(agentId, {
+        state: 'package_built',
+        teamsAppExternalId: assets.externalId,
+        lastError: null,
+      });
+    }
+    await this.emit(agentId, 'package_built', 'succeeded');
+    // The catalog leg is its own step for the operator even though the two
+    // share a guard: it is the one that talks to Graph, so it is the one
+    // that can sit there.
+    await this.emit(agentId, 'catalog_uploaded', 'started');
+    existing ??= await provisioner.getCatalogApp({ teamsAppExternalId: assets.externalId });
+    const stale =
+      existing.found &&
+      isOlderTeamsAppVersion((existing as { readonly publishedVersion?: unknown }).publishedVersion, wanted);
+    let teamsAppId: string;
+    if (existing.found && !stale) {
+      teamsAppId = existing.teamsAppId;
+    } else {
+      const packageZip = provisioner.buildAppPackage({
+        manifestTemplate: assets.manifestTemplate,
+        params: assets.params,
+        icons: assets.icons,
+      });
+      const uploaded = await this.uploadPackage(agentId, provisioner, packageZip, assets.externalId);
+      // PARKED, not failed: the package is built and every earlier step
+      // is real. The row keeps its state, `last_error` says which human
+      // action is missing, and the next run resumes right here.
+      if (uploaded.kind === 'sign_in_required') return { kind: 'halted', result: uploaded.result };
+      teamsAppId = uploaded.teamsAppId;
+    }
+    row = await this.store.update(agentId, {
+      ...(STATE_RANK[row.state] < STATE_RANK.catalog_uploaded ? { state: 'catalog_uploaded' as const } : {}),
+      teamsAppId,
+      teamsAppExternalId: assets.externalId,
+      lastError: null,
+    });
+    // Gate 3 of isCatalogReplicationFailure: this run just put the entry
+    // there (uploaded it, or resolved one so fresh the lookup was the first
+    // thing that could see it), so an install 400 in the next few seconds is
+    // allowed to be a replication race rather than a verdict.
+    this.catalogPublishedInRun.add(agentId);
+    await this.emit(agentId, 'catalog_uploaded', 'succeeded');
+    return { kind: 'ready', row };
+  }
+
+  /**
+   * Ask the connector whether the Bot Connector knows this bot (#2043 D10).
+   * Returns a terminal `failed` result when it does not, `undefined` when
+   * the run may go on: the bot is known, or the question could not be asked
+   * (an older connector, no network), which is logged and never blocks.
+   */
+  private async verifyBot(
+    agentId: string,
+    provisioner: TeamsProvisionerPort,
+    row: TeamsIdentityJobRecord,
+  ): Promise<ProvisioningRunResult | undefined> {
+    const probe = provisioner.probeBot;
+    if (typeof probe !== 'function' || !row.appId) {
+      this.log(
+        `[teams-provisioning] ${agentId} bot not verified against the Bot Connector: the installed connector publishes no probeBot (upgrade @omadia/integration-microsoft365)`,
+      );
+      return undefined;
+    }
+    await this.emit(agentId, 'installed', 'progress', { detail: VERIFYING_BOT_DETAIL });
+    let last: TeamsBotProbeResult = { status: 'unverified' };
+    for (let attempt = 1; attempt <= this.botProbeAttempts; attempt += 1) {
+      try {
+        last = await probe.call(provisioner, { appId: row.appId });
+      } catch (err) {
+        last = { status: 'unverified', detail: errorMessage(err) };
+      }
+      if (last.status === 'known') return undefined;
+      if (last.status === 'unverified') {
+        this.log(
+          `[teams-provisioning] ${agentId} bot could not be verified against the Bot Connector (${last.detail ?? 'no detail'}) — continuing`,
+        );
+        return undefined;
+      }
+      if (attempt < this.botProbeAttempts) {
+        this.log(
+          `[teams-provisioning] ${agentId} the Bot Connector rejects the bot (probe ${String(attempt)}/${String(this.botProbeAttempts)}); asking again in ${String(this.botProbeDelayMs)}ms`,
+        );
+        await this.sleep(this.botProbeDelayMs);
+        if (this.stopped) return { status: 'stopped', agentId };
+      }
+    }
+    const failure = botRejectedFailure(last.status === 'rejected' ? last.detail : undefined);
+    this.log(`[teams-provisioning] ${agentId} ${failure.lastError}`);
+    await this.recordError(agentId, { state: 'failed', ...failure });
+    return { status: 'failed', agentId, reason: 'bot_rejected', detail: failure.lastError };
+  }
+
+  /**
+   * The early `teams_bots` write (see the call site). Quiet on purpose: the
+   * `config_sync` step of the timeline and the `config_sync_failed` warning
+   * belong to the sync that ends the run, which still runs after a successful
+   * install and then finds the entry in place (`unchanged`). A failure here is
+   * logged and never fails or delays the install; the row's `teams_bots_sync`
+   * state shows `missing` until a later run writes it.
+   */
+  private async serveBotBeforeInstall(row: TeamsIdentityJobRecord): Promise<void> {
+    const sync = this.syncBotConfig;
+    if (!sync) return;
+    try {
+      const report = await sync(row);
+      this.log(
+        `[teams-provisioning] teams_bots config written before the install for ${row.agentId} (${row.botSlug}): ${report.status}`,
+      );
+    } catch (err) {
+      this.log(
+        `[teams-provisioning] teams_bots config could not be written before the install for ${row.agentId} (${row.botSlug}): ${errorMessage(err)} — the bot is published but not served until a run writes it`,
+      );
+    }
+  }
+
   private async syncTeamsBotsConfig(row: TeamsIdentityJobRecord): Promise<void> {
     const sync = this.syncBotConfig;
     if (!sync) return;
@@ -2421,6 +2715,113 @@ export function rscPermissionsMismatchDetail(targetKind: TeamsTargetKind): strin
 export function isRscPermissionsMismatch(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   return /ResourceSpecificPermissionsMismatch/i.test(`${err.name} ${err.message}`);
+}
+
+/**
+ * #2043 rollout (D7) — the target's RSC CONSENT CHECK refused the install.
+ *
+ * Different from {@link isRscPermissionsMismatch}: there Graph names a
+ * missing role of the installing identity. Here Teams asked its own backend
+ * whether the app's resource-specific permissions may be granted on this
+ * team or chat (`isUserAuthorizedToGrantResourceSpecificPermissions`) and
+ * that check answered 4xx. At the rollout it was a permission in the app
+ * manifest the team scope does not accept: a permanent refusal that the
+ * runner reported as "catalog still replicating" and retried.
+ *
+ * Read from the connector's structured Graph error when it sends one
+ * (`graphError: { code, innerCode, message, body }`), else from the message.
+ */
+export const RSC_CONSENT_REFUSED_PREFIX = 'rsc_consent_refused:';
+
+const RSC_CONSENT_CHECK = /isUserAuthorizedToGrant\w*ResourceSpecificPermissions|GrantGroupResourceSpecificPermissions|GrantChatResourceSpecificPermissions/i;
+
+/** What a connector error says about the Graph answer behind it. */
+export interface GraphErrorFacts {
+  /** Graph `error.code`, e.g. `BadRequest`. */
+  readonly graphCode?: string;
+  /** Graph `error.innerError.code`, e.g. `InvalidRequest`. */
+  readonly innerCode?: string;
+  /** The Teams backend request Graph relayed, e.g.
+   *  `IsUserAuthorizedToGrantGroupResourceSpecificPermissionsRequest`. */
+  readonly backendRequest?: string;
+}
+
+const short = (value: unknown): string | undefined =>
+  typeof value === 'string' && /^[\w.-]{1,120}$/.test(value.trim()) ? value.trim() : undefined;
+
+export function graphErrorFactsOf(err: unknown): GraphErrorFacts {
+  if (!(err instanceof Error)) return {};
+  const structured = (err as Error & { graphError?: unknown }).graphError;
+  const fields =
+    typeof structured === 'object' && structured !== null
+      ? (structured as Record<string, unknown>)
+      : {};
+  const text = `${err.message} ${typeof fields['message'] === 'string' ? fields['message'] : ''} ${
+    typeof fields['body'] === 'string' ? fields['body'] : ''
+  }`;
+  const graphCode = short(fields['code']) ?? short(/"code"\s*:\s*"([\w.-]+)"/.exec(text)?.[1]);
+  const innerCode =
+    short(fields['innerCode']) ??
+    short(/"inner[Ee]rror"\s*:\s*\{[^}]*?"code"\s*:\s*"([\w.-]+)"/.exec(text)?.[1]);
+  const backendRequest = short(/backend request (\w+Request)\b/.exec(text)?.[1]);
+  return {
+    ...(graphCode !== undefined ? { graphCode } : {}),
+    ...(innerCode !== undefined ? { innerCode } : {}),
+    ...(backendRequest !== undefined ? { backendRequest } : {}),
+  };
+}
+
+/** Everything the connector reported, untruncated: its message plus the
+ *  structured Graph message/body when present and not already contained. */
+export function fullConnectorErrorText(err: unknown): string {
+  const message = errorMessage(err);
+  if (!(err instanceof Error)) return message;
+  const structured = (err as Error & { graphError?: unknown }).graphError;
+  if (typeof structured !== 'object' || structured === null) return message;
+  const fields = structured as Record<string, unknown>;
+  const extra = [fields['body'], fields['message']].find(
+    (value): value is string => typeof value === 'string' && value.trim() !== '' && !message.includes(value.trim()),
+  );
+  return extra !== undefined ? `${message} — Graph: ${extra.trim()}` : message;
+}
+
+export function isRscConsentRefusal(err: unknown): boolean {
+  if (!(err instanceof Error) || isRscPermissionsMismatch(err)) return false;
+  const status = (err as Error & { status?: unknown }).status;
+  if (typeof status === 'number' && (status < 400 || status >= 500 || status === 408 || status === 429)) {
+    return false;
+  }
+  return RSC_CONSENT_CHECK.test(fullConnectorErrorText(err));
+}
+
+export function rscConsentRefusedDetail(targetKind: TeamsTargetKind, raw: string): string {
+  const where = targetKind === 'team' ? 'team' : 'chat';
+  return `${RSC_CONSENT_REFUSED_PREFIX} Teams refused to grant this app's resource-specific permissions in the target ${where} (its consent check rejected the request), so the app was not installed. This is permanent, not a replication delay: re-running changes nothing. Check the tenant's resource-specific consent settings and whether every permission the app package declares is allowed for a ${where}. Reported by Microsoft: ${raw}`;
+}
+
+/**
+ * #2043 D10 — the Bot Connector answers 401 to the bot's own credentials.
+ * Seen when a bot resource is deleted and created again under an app id that
+ * was used before (an app registration restored from the recycle bin): Azure
+ * reports the resource as healthy, Teams says "invalid bot". Waiting did not
+ * heal it (26 minutes observed). The way out is a new app registration.
+ */
+export const BOT_REJECTED_PREFIX = 'bot_rejected:';
+/** Same wording as the connector's `BotAppIdRetiredError` message prefix. */
+export const BOT_APP_ID_RETIRED_PREFIX = 'bot_app_id_retired:';
+export const APP_REGISTRATION_NOT_READY_PREFIX = 'app_registration_not_ready:';
+
+export function botRejectedDetail(detail?: string): string {
+  const reported = detail?.replace(/\s+/g, ' ').trim();
+  const tail = reported ? ` Reported: ${reported}` : '';
+  // The connector reports two different refusals as `rejected` (its
+  // `botProbe.ts`): Entra does not accept the stored secret (`token …`,
+  // `invalid_client`), or the Bot Connector does not accept the bot's valid
+  // token (`connector 401`). Different causes, said apart.
+  if (reported !== undefined && /^token\b/i.test(reported)) {
+    return `${BOT_REJECTED_PREFIX} Microsoft Entra does not accept this bot's stored client secret, so the bot cannot authenticate and delivers nothing. Run provisioning again to rotate the secret; if that does not help, delete this Teams identity completely and provision it again.${tail}`;
+  }
+  return `${BOT_REJECTED_PREFIX} the Bot Connector does not accept this bot (it answers 401 to the bot's own credentials), so Teams shows it as an invalid bot and delivers nothing. This happens when a bot is created again under an app id that was used before. Delete this Teams identity completely and provision it again, so that it gets a new app registration.${tail}`;
 }
 
 export function consentMissingDetail(missingScopes: readonly string[]): string {
@@ -2581,6 +2982,15 @@ export type TeamsProvisioningErrorCode =
   /** Graph refused the install because the app package's RSC permissions
    *  exceed what the installing identity may consent to. */
   | 'rsc_permissions_mismatch'
+  /** #2043 D7 — the target's own RSC consent check refused the install. */
+  | 'rsc_consent_refused'
+  /** #2043 D10 — the Bot Connector does not accept the bot's own token. */
+  | 'bot_rejected'
+  /** #2043 D10 — the connector refused to re-create a bot under a used app id. */
+  | 'bot_app_id_retired'
+  /** #2043 D22 — a follow-up call on the app registration stayed refused
+   *  (403) after the replication wait. Not a consent the operator can grant. */
+  | 'app_registration_not_ready'
   | 'arm_not_configured'
   | 'throttled'
   | 'config_sync_failed'
@@ -2614,6 +3024,12 @@ export interface TeamsProvisioningErrorDetail {
    *  A technical sentence, shown as the argument of a localized line — never
    *  as the copy itself. */
   readonly reason?: string;
+  /** Graph `error.code` of the refusal (`rsc_consent_refused`). */
+  readonly graphCode?: string;
+  /** Graph `error.innerError.code` (`rsc_consent_refused`). */
+  readonly innerCode?: string;
+  /** The Teams backend request Graph relayed (`rsc_consent_refused`). */
+  readonly backendRequest?: string;
   readonly raw: string;
 }
 
@@ -2691,6 +3107,18 @@ export function classifyTeamsProvisioningError(
   if (sentence.startsWith(RSC_PERMISSIONS_MISMATCH_PREFIX)) {
     return { code: 'rsc_permissions_mismatch', raw };
   }
+  if (sentence.startsWith(BOT_APP_ID_RETIRED_PREFIX)) {
+    return { code: 'bot_app_id_retired', raw };
+  }
+  if (sentence.startsWith(APP_REGISTRATION_NOT_READY_PREFIX)) {
+    return { code: 'app_registration_not_ready', raw };
+  }
+  if (sentence.startsWith(BOT_REJECTED_PREFIX)) {
+    return { code: 'bot_rejected', raw };
+  }
+  if (sentence.startsWith(RSC_CONSENT_REFUSED_PREFIX)) {
+    return { code: 'rsc_consent_refused', ...graphErrorFactsOf(new Error(sentence)), raw };
+  }
   if (sentence.startsWith(CONFIG_SYNC_FAILED_PREFIX)) {
     const inner = /\[([^\]]*)\]/.exec(sentence)?.[1]?.trim() ?? '';
     return {
@@ -2762,6 +3190,10 @@ const TEAMS_PROVISIONING_ERROR_CODE_SET: {
 } = {
   consent_missing: true,
   rsc_permissions_mismatch: true,
+  rsc_consent_refused: true,
+  bot_rejected: true,
+  bot_app_id_retired: true,
+  app_registration_not_ready: true,
   arm_not_configured: true,
   throttled: true,
   config_sync_failed: true,
@@ -2846,6 +3278,79 @@ export function rscPermissionsMismatchFailure(
   targetKind: TeamsTargetKind,
 ): TeamsProvisioningFailure {
   return failureOf('rsc_permissions_mismatch', rscPermissionsMismatchDetail(targetKind));
+}
+
+export function botRejectedFailure(detail?: string): TeamsProvisioningFailure {
+  return failureOf('bot_rejected', botRejectedDetail(detail));
+}
+
+/** The connector's sentence already starts with the code and says what to
+ *  do; it is kept whole (bounded) as the technical detail. */
+export function botAppIdRetiredFailure(connectorMessage: string): TeamsProvisioningFailure {
+  const text = connectorMessage.replace(/\s+/g, ' ').trim();
+  const sentence = text.startsWith(BOT_APP_ID_RETIRED_PREFIX)
+    ? text
+    : `${BOT_APP_ID_RETIRED_PREFIX} ${text}`;
+  return failureOf('bot_app_id_retired', sentence.slice(0, 1200));
+}
+
+/** #2043 D22 — see the consent branch of the runner's failure handling. */
+export function appRegistrationNotReadyFailure(connectorText: string): TeamsProvisioningFailure {
+  const text = connectorText.replace(/\s+/g, ' ').trim();
+  return failureOf(
+    'app_registration_not_ready',
+    `${APP_REGISTRATION_NOT_READY_PREFIX} Microsoft Graph kept answering 403 to a follow-up call on the app registration this run created or found; the permission itself is in use, so this is not missing admin consent. ${text}`.slice(
+      0,
+      1200,
+    ),
+  );
+}
+
+/**
+ * Is this "consent missing" really a 403 on a FOLLOW-UP call to an app
+ * registration (#2043 D22)? Two shapes, by connector version. Up to 0.9.2 the
+ * HTTP layer reports it as `ConsentMissingError` and names the step in the
+ * cause (`graph <step> 403 body=…`). From 0.9.3 the connector waits through
+ * its own replication budget first and then throws `DirectoryReplicationError`
+ * with `lastStatus: 403`. A step that acts on an existing
+ * registration can only be reached after `applications.create` or
+ * `applications.findByUniqueName` succeeded with the same application
+ * permission, so the permission is granted; what refuses is the object not
+ * being replicated yet (or, if it stays, this app not owning it).
+ */
+const APP_FOLLOW_UP_403 = /^graph (applications\.(addPassword|awaitReplication|get|readCredentials|removePassword)|servicePrincipals\.create) 403\b/;
+/** What Graph said: the connector keeps the step, the status and the body in
+ *  the error's cause, the error itself only says "consent_missing". */
+function followUpRefusalText(err: unknown): string {
+  // `DirectoryReplicationError` (connector >= 0.9.3) words it in its message.
+  if (err instanceof Error && err.name === 'DirectoryReplicationError') return fullConnectorErrorText(err);
+  const cause = (err as { cause?: unknown } | null)?.cause;
+  return cause instanceof Error ? cause.message : fullConnectorErrorText(err);
+}
+
+export function isFollowUpRefusalOnAppRegistration(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  // Connector >= 0.9.3 says it itself: it waited through its own replication
+  // budget on the follow-up call and the last answer was still a 403.
+  if (err.name === 'DirectoryReplicationError') {
+    return (err as { lastStatus?: unknown }).lastStatus === 403;
+  }
+  if (err.name !== 'ConsentMissingError') return false;
+  const resource = (err as { resource?: unknown }).resource;
+  if (resource !== undefined && resource !== 'graph') return false;
+  const cause = (err as { cause?: unknown }).cause;
+  return cause instanceof Error && APP_FOLLOW_UP_403.test(cause.message);
+}
+
+export function rscConsentRefusedFailure(
+  targetKind: TeamsTargetKind,
+  err: unknown,
+): TeamsProvisioningFailure {
+  return failureOf(
+    'rsc_consent_refused',
+    rscConsentRefusedDetail(targetKind, fullConnectorErrorText(err)),
+    graphErrorFactsOf(err),
+  );
 }
 
 export function throttledFailure(
@@ -2992,6 +3497,20 @@ export function teamsProvisioningErrorDetailOf(
       const reason = args['reason'];
       const valid = typeof reason === 'string' && reason !== '';
       return { code, ...(valid ? { reason } : {}), raw };
+    }
+    case 'rsc_consent_refused': {
+      const text = (key: string): string | undefined =>
+        typeof args[key] === 'string' && args[key] !== '' ? (args[key] as string) : undefined;
+      const graphCode = text('graphCode');
+      const innerCode = text('innerCode');
+      const backendRequest = text('backendRequest');
+      return {
+        code,
+        ...(graphCode !== undefined ? { graphCode } : {}),
+        ...(innerCode !== undefined ? { innerCode } : {}),
+        ...(backendRequest !== undefined ? { backendRequest } : {}),
+        raw,
+      };
     }
     default:
       return { code, raw };

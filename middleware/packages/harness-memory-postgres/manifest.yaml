@@ -4,7 +4,7 @@ identity:
   id: "@omadia/memory-postgres"
   name: "Memory (Postgres)"
   version: "0.1.0"
-  kind: "extension"
+  kind: "system-module"
   domain: "core.memory"
   description:
     en: "Stores the agents' memory in Postgres, so it survives a restart. It shares the knowledge graph database connection and brings its own schema. Use it instead of Memory, only one of the two can be active."

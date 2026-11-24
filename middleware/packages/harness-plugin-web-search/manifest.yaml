@@ -157,8 +157,8 @@ playbook:
     Verifier-Citations für externe Fakten. Das Plugin published die
     `webSearch@1`-Capability; konsumierende Plugins müssen
     `requires: ["webSearch@^1"]` deklarieren. Außerdem hängt sich das
-    `web_search`-Tool automatisch in die System-Prompt-Tool-Liste des
-    Orchestrators — Agents nutzen es ohne weitere Verkabelung.
+    `web_search`-Tool automatisch in die System-Prompt-Tool-Liste
+    jedes Agenten — Agents nutzen es ohne weitere Verkabelung.
 
 # ---------------------------------------------------------------------------
 # Permissions. The HttpAccessor enforces an exact-hostname allow-list, so

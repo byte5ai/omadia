@@ -25,15 +25,15 @@ const SEO_ANALYST_ROOT = path.join(
 );
 
 /**
- * BuilderAgent reference-implementation **essentials**. The `read_reference`
- * tool exposes whitelisted views of multiple packages so the LLM can pick
- * the closest reference for the agent it is designing.
+ * Plugin Builder reference-implementation **essentials**. The
+ * `read_reference` tool exposes whitelisted views of multiple packages so
+ * the LLM can pick the closest reference for the plugin it is designing.
  *
  * What lives here vs. auto-discovered (Theme G, 2026-05-04):
- *   - **Essentials** (this map): things the BuilderAgent always needs but
- *     that are NOT integration-kind plugins — the seo-analyst reference
- *     and the two boilerplate templates. They live outside the plugin
- *     catalog (no manifest.yaml at the boilerplate root).
+ *   - **Essentials** (this map): things the Plugin Builder always needs —
+ *     the reference-maximum and seo-analyst capability plugins and the two
+ *     boilerplate templates (`integration`, `tool`). The boilerplates live
+ *     outside the plugin catalog (no manifest.yaml at the template root).
  *   - **Integrations** (auto-discovered): every plugin with `kind: integration`
  *     in the live `PluginCatalog` is added at boot by
  *     `resolveBuilderReferenceCatalog()`. The short-name is
@@ -46,41 +46,42 @@ const BUILDER_REFERENCE_ESSENTIALS: Readonly<
   'reference-maximum': {
     root: ASSETS.referencePackage.root,
     description:
-      'Builder-Reference-Maximum (OB-29 abgeschlossen). Lauffähige, ' +
-      'credential-lose Codebase, die ALLE auf der Plugin-API verfügbaren ' +
+      'Builder-Reference-Maximum (OB-29 abgeschlossen), ein Capability-Plugin ' +
+      'vom kind `integration`. Lauffähige, credential-lose Codebase, die ALLE auf der Plugin-API verfügbaren ' +
       'Patterns in einer Stelle demonstriert: Multi-Tool, Smart-Cards, ' +
-      'BG-Jobs, Routes, ctx.memory, Service.provide, ctx.subAgent.ask ' +
-      '(OB-29-1), generic ctx.knowledgeGraph.ingestEntities (OB-29-2), ' +
+      'BG-Jobs, Routes, ctx.memory, Service.provide, ' +
+      'generic ctx.knowledgeGraph.ingestEntities (OB-29-2), ' +
       'ctx.llm.complete (OB-29-3), ctx.mcp.callTool (#458 — nur wenn der ' +
       'Nutzer MCP-Server-Zugriff will: setze permissions.mcp, der Operator ' +
       'grantet danach konkrete Server), tool-emittiertes _pendingUserChoice ' +
       '(OB-29-4). Lies INTEGRATION.md ZUERST — sie ist der kanonische ' +
       'Pattern-Index, jeder Pattern-Block trägt Datei:Zeile-Referenzen. ' +
       'PRIMÄRE Pattern-Quelle für komplexe Specs (≥2 Tools, KG-Ingest, ' +
-      'Smart-Cards, Sub-Agent-Delegation, LLM-Calls). seo-analyst bleibt ' +
+      'Smart-Cards, LLM-Calls). seo-analyst bleibt ' +
       'als Sekundär für Compact-No-API-Cases.',
   },
   'seo-analyst': {
     root: SEO_ANALYST_ROOT,
     description:
-      'Compact agent reference: manifest.yaml, plugin.ts, toolkit.ts, ' +
-      'fetcher.ts, skills/. Best for an agent without external HTTP API.',
+      'Compact capability plugin of kind `tool` (public web pages, no ' +
+      'credentials): manifest.yaml, plugin.ts, registerTools.ts, toolkit.ts, ' +
+      'fetcher.ts. Best for a plugin without an authenticated external API.',
   },
-  boilerplate: {
-    root: path.join(ASSETS.boilerplate.root, 'agent-integration'),
+  'boilerplate-integration': {
+    root: path.join(ASSETS.boilerplate.root, 'integration'),
     description:
-      'The template the BuilderAgent fills slots into for an agent that ' +
-      'wraps a single external API. manifest.yaml, plugin.ts, client.ts, ' +
-      'toolkit.ts, skills/, template.yaml — pick this when the spec has ' +
-      'a non-empty `depends_on` and at least one tool.',
+      'The template the Plugin Builder fills slots into for a capability ' +
+      'plugin of kind `integration` (an external system with credentials): ' +
+      'manifest.yaml, plugin.ts, registerTools.ts, client.ts, toolkit.ts, ' +
+      'template.yaml. Pick this when a tool calls an external API.',
   },
-  'boilerplate-pure-llm': {
-    root: path.join(ASSETS.boilerplate.root, 'agent-pure-llm'),
+  'boilerplate-tool': {
+    root: path.join(ASSETS.boilerplate.root, 'tool'),
     description:
-      'Sister template for agents that need NO external API: pure system-' +
-      'prompt + LLM reasoning. manifest.yaml, plugin.ts (empty toolkit), ' +
-      'skills/, template.yaml — pick this when the spec has empty ' +
-      '`depends_on` and no tools, e.g. a brainstorming coach.',
+      'Sister template for a capability plugin of kind `tool` (local logic, ' +
+      'no external system): manifest.yaml, plugin.ts, registerTools.ts, ' +
+      'toolkit.ts, template.yaml. Pick this when the tools compute over the ' +
+      'input the calling agent passes in.',
   },
 };
 
@@ -112,8 +113,12 @@ export function resolveBuilderReferenceCatalog(
   const out: Record<string, { root: string; description: string }> = {
     ...BUILDER_REFERENCE_ESSENTIALS,
   };
+  const essentialRoots = new Set(Object.values(out).map((e) => path.resolve(e.root)));
   for (const entry of pluginCatalog.list()) {
     if (entry.plugin.kind !== 'integration') continue;
+    // reference-maximum is itself an integration; it is listed as an
+    // essential already.
+    if (essentialRoots.has(path.resolve(path.dirname(entry.source_path)))) continue;
     // Split on `.` (legacy `de.byte5.integration.X`) or `/` (post-Welle-1
     // `@omadia/integration-X`) so the npm-scope namespace doesn't bleed
     // into the integration key.

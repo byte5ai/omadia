@@ -14,9 +14,18 @@
  * than once in one process.
  */
 
+import type { DataPlanGuard } from '@omadia/plugin-api';
+import { createDataPlanGuard, createLlmDataPlanJudge } from './dataPlanGuard.js';
+import { createLlmSummaryJudge, createSummaryBoundaryGuard } from './summaryBoundaryGuard.js';
+import type { ConsultationPort } from './consultation/consultTool.js';
+import type { DiscretionPort } from './discretion/port.js';
+import { LabelledMemoryStore } from './discretion/labelledMemoryStore.js';
+import { labelSubjectWithTurn } from './discretion/toolFlow.js';
+
 import type {
   ChatAgent,
   ChatTurnInput,
+  DisclosureMarkerStore,
   DisclosureSeenStore,
   GrantStore,
 } from '@omadia/channel-sdk';
@@ -46,6 +55,7 @@ import type { Pool } from 'pg';
 
 import { MemoryToolHandler } from '@omadia/memory';
 
+import { withAgentTurnExecution } from './agentTurnExecution.js';
 import { ChatSessionStore, chatSessionTailTurns } from './chatSessionStore.js';
 import { wrapChatAgentWithFastPath, type FastPathTriagePort } from './fastPathAgent.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
@@ -64,7 +74,6 @@ import {
   type SecurityPostureSetup,
   type SecurityAuditEvent,
 } from './securityScreener.js';
-import type { DirectLineStickyStore } from './directLineSticky.js';
 import type {
   McpInputReplayer,
   PendingMcpInputStore,
@@ -94,6 +103,36 @@ import { FindFreeSlotsTool } from './tools/findFreeSlotsTool.js';
 import { SuggestFollowUpsTool } from './tools/suggestFollowUpsTool.js';
 import type { AttachmentReader } from './tools/readAttachmentTool.js';
 import { VerifierService } from './verifierService.js';
+import {
+  wrapFacilitatorAgent,
+  type EngineDrivenConversationLookup,
+  type OwnPostCountLookup,
+  type PrivateTurnLookup,
+  type AddressedTurnLookup,
+} from './facilitatorAgent.js';
+import {
+  FACILITATOR_ARCHETYPE,
+  STANDARD_ARCHETYPE,
+  archetypeOmits,
+  type ArchetypeId,
+  type ArchetypeOmission,
+} from './registry/archetype.js';
+import {
+  applyArchetypeContract,
+} from './registry/facilitatorNeutrality.js';
+import { findWorkingModeIdentityReplacement } from './workingModeIdentity.js';
+import type { AgentSpeaker } from '@omadia/plugin-api';
+import type { GuardDirectoryEntry } from './identityGuard/deterministic.js';
+import { IdentityGuard } from './identityGuard/guard.js';
+import { AnswerDetailsMemory, withAnswerDetailsNote, withAnswerDetailsRecall } from './answerDetailsRecall.js';
+import { maskRestoredValues, withIdentityGuard } from './identityGuard/guardedChatAgent.js';
+import { createLlmIdentityJudge } from './identityGuard/llmJudge.js';
+import { DEFAULT_AGENT_IDENTITY, withIdentityRules } from './management/agentIdentityPrompt.js';
+import { AgentAnswerEmitter } from './management/answerEmitter.js';
+import { withSpeaker } from './management/speakingChatAgent.js';
+
+/** A guard check slower than this is logged even when it passes (trace). */
+const IDENTITY_GUARD_SLOW_MS = 1_500;
 
 /**
  * The per-Agent knobs — everything that differs between two Agents built in
@@ -102,6 +141,33 @@ import { VerifierService } from './verifierService.js';
 export interface AgentRuntimeConfig {
   /** Stable id of the Agent (orchestrator instance) being built. */
   readonly agentId: string;
+  /**
+   * #2045 — who this agent's answers are from (its `agents.id`, slug, the name
+   * it wears, its avatar), stamped on every answer. Set by the registry from
+   * the agent row; absent (legacy single-agent boot, fixtures) = derived from
+   * `agentId` and `identityName`.
+   */
+  readonly speaker?: AgentSpeaker;
+  /**
+   * #2046 — the directory of every agent's names and aliases the identity
+   * guard checks this agent's prose against, read per turn. Absent = only the
+   * agent itself (human claims are still checked).
+   */
+  readonly agentDirectory?: () => readonly GuardDirectoryEntry[];
+  /**
+   * Names of known humans, read per turn: the display, first and last names
+   * of the install's active users (kernel `humanNames@1`). An own name of
+   * this agent that equals one is masked like any person's name
+   * (`agentOwnNames`). `null` = not known yet (directory not loaded, load
+   * failed): fail safe, the turn exempts no own name at all. Absent = no
+   * known humans (hosts without a users table).
+   */
+  readonly humanNames?: () => readonly string[] | null;
+  /**
+   * #2056 — the colleagues this agent may consult, by name (directed
+   * consultation grants, #2047), named in its prompt. Absent = none.
+   */
+  readonly consultableColleagues?: readonly string[];
   readonly model: string;
   /** Optional per-turn Sonnet/Opus routing (see {@link OrchestratorOptions}). */
   readonly modelRouting?: ModelRoutingConfig;
@@ -129,10 +195,9 @@ export interface AgentRuntimeConfig {
    * silently overruled by a stale deployment variable.
    */
   readonly cliTurnSeconds?: number;
-  /** #445 — sticky Direct Line for this Agent (see {@link OrchestratorOptions}). */
-  readonly directLineSticky?: boolean;
-  /** Wave 8 — this Agent's direct-answer persona-skill candidates, resolved
-   *  by the caller from `agent_persona_skills` (see {@link OrchestratorOptions}).
+  /** #2051 — this Agent's working-mode candidates, resolved by the caller
+   *  from `agent_persona_skills` (see {@link OrchestratorOptions}). A mode is
+   *  composed beneath the identity for one turn; it never replaces it.
    *  Per-agent, unlike the platform-shared `OrchestratorDeps` fields below. */
   readonly personaSkills?: readonly OrchestratorPersonaSkill[];
   /**
@@ -145,8 +210,8 @@ export interface AgentRuntimeConfig {
    * behaviour down means that text, not that text appended to a generic
    * one. Absent/blank → the platform identity, exactly as before.
    *
-   * Per-turn persona skills (Wave 8) still win over both — they replace this
-   * slot for one turn, which is what they always did.
+   * A per-turn working mode (#2051) never touches this slot: it is composed
+   * beneath whichever identity applies, for one turn.
    */
   readonly identityInstructions?: string;
   /**
@@ -215,7 +280,8 @@ export interface AgentRuntimeConfig {
    *
    * WHY AT DISPATCH AND NOT ONLY AT REGISTRATION. The per-Agent tool surface
    * is assembled by withholding un-granted tools when an orchestrator is
-   * hydrated (`scopeDomainToolsToPlugins`). That is one place, reached by
+   * hydrated (`scopeDomainToolsToPlugins`, removed with the agent plugin
+   * runtime in S3c). That was one place, reached by
    * several paths — boot hydrate, post-boot install reconcile, rebuild,
    * sub-agent hydration — and any path that forgets to scope turns a
    * registration bug into a PERMISSION bug: the tool is simply there, and the
@@ -233,6 +299,21 @@ export interface AgentRuntimeConfig {
    * which knows each Agent's rows, passes this.
    */
   readonly grantedPluginIds?: readonly string[];
+  /**
+   * #2088 — the agent's archetype (`agents.archetype`). This factory wires
+   * NOTHING the archetype's descriptor omits (`archetypeOmits`). For a
+   * `facilitator` that is everything that would make a moderator partial: no
+   * memory tool or binder, no recall, capture or learning, no knowledge
+   * graph, no calendar tools, no persona skills, no fast path. Its identity
+   * ends with the neutrality contract, its tools are exactly those of its
+   * granted plugins, and outside a group or an engine-run turn its
+   * `ChatAgent` answers with a fixed refusal. Absent = `standard`.
+   */
+  readonly archetype?: ArchetypeId;
+  /** #1876 — `false`: the operator switched this agent's fast lane off. */
+  readonly fastLane?: boolean;
+  /** #2043 — the agent's own language (BCP 47), when its identity names one. */
+  readonly identityLanguage?: string;
 }
 
 /**
@@ -253,25 +334,18 @@ export interface OrchestratorDeps {
   readonly nativeToolRegistry: NativeToolRegistry;
   readonly nudgeRegistry: NudgeRegistry;
   /**
-   * #445 — process-shared sticky Direct Line binding store. Deps, not
-   * per-Agent config, because the registry REPLACES an Orchestrator instance
-   * on any config diff: a per-instance store would silently unbind every live
-   * conversation whenever an operator tweaked something unrelated.
-   */
-  readonly directLineStickyStore?: DirectLineStickyStore;
-  /**
    * #1082 — process-shared run-trace / capture tallies, handed to every
-   * `SessionLogger` this factory builds. Deps for the SAME reason as
-   * `directLineStickyStore`: a per-instance tally would split the counts per
-   * Agent and reset whenever a config diff rebuilt one. Absent ⇒ each logger
-   * keeps its own.
+   * `SessionLogger` this factory builds. Deps, not per-Agent config, because
+   * the registry REPLACES an Orchestrator instance on any config diff: a
+   * per-instance tally would split the counts per Agent and reset whenever a
+   * config diff rebuilt one. Absent ⇒ each logger keeps its own.
    */
   readonly runTraceStats?: RunTraceOutcomeStats;
   /**
    * W2-1 (#544) — process-shared MCP pending-input store + replayer.
    *
-   * Deps, not per-Agent config, for the SAME reason as
-   * `directLineStickyStore`: the registry replaces an Orchestrator instance on
+   * Deps, not per-Agent config, for the SAME reason as `runTraceStats`: the
+   * registry replaces an Orchestrator instance on
    * any config diff, and a per-instance store would drop every parked call
    * whenever an operator changed something unrelated — after the user had
    * already seen the card. Must be the same store instance the kernel's
@@ -311,6 +385,21 @@ export interface OrchestratorDeps {
    * non-canvas channel gets the one-call triage. Absent → no wrapper.
    */
   readonly fastPath?: () => FastPathTriagePort | undefined;
+  /**
+   * #2043 — does the facilitation engine drive this conversation for this
+   * agent (it holds the agent's message subscription there)? Then a
+   * facilitator's own chat turn is suppressed; see `facilitatorAgent.ts`.
+   */
+  readonly isEngineDrivenConversation?: EngineDrivenConversationLookup;
+  /** #2043 — is the facilitation engine usable for this agent right now?
+   *  Absent = no (then a facilitator says that facilitation is not set up). */
+  readonly isFacilitationEngineUsable?: (agentSlug: string) => boolean;
+  /** #2043 — see `FacilitatorAgentDeps.ownPostCount`. */
+  readonly facilitatorOwnPostCount?: OwnPostCountLookup;
+  /** #2089 — see `FacilitatorAgentDeps.privateTurn`. */
+  readonly facilitatorPrivateTurn?: PrivateTurnLookup;
+  /** #2089 — see `FacilitatorAgentDeps.addressedTurn`. */
+  readonly facilitatorAddressedTurn?: AddressedTurnLookup;
   /**
    * #1018 — resolves the peer AGENTS the calling agent may see in the current
    * chat, merged into `get_chat_participants` as `kind: 'agent'` entries.
@@ -376,12 +465,18 @@ export interface OrchestratorDeps {
   readonly aiDisclosure?: AiDisclosureSetup;
   /**
    * #644 — process-shared first-turn-per-scope fold-dedup store. Deps, not
-   * per-Agent config, for the SAME reason as `directLineStickyStore`: the
+   * per-Agent config, for the SAME reason as `runTraceStats`: the
    * registry replaces an Orchestrator instance on any config diff, and a
    * per-instance store would re-fold the marking into every live conversation
    * whenever an operator changed something unrelated.
    */
   readonly aiDisclosureSeenStore?: DisclosureSeenStore;
+  /**
+   * #2087 — process-shared `per_conversation` marker state, for the same
+   * reason: a speaker change is only visible to a store that sees every agent
+   * of the conversation.
+   */
+  readonly aiDisclosureMarkerStore?: DisclosureMarkerStore;
   /**
    * #579 — resolved org security posture (org floor + optional scope tighten +
    * shadow/enforce mode + optional external screen URL). Absent → the shipping
@@ -402,6 +497,10 @@ export interface OrchestratorDeps {
    * bounds every room to nothing.
    */
   readonly audienceGrants?: GrantStore;
+  /** Spec 2042 §5.4 — the kernel's consultation broker (`consult` tool). */
+  readonly consultation?: ConsultationPort;
+  /** Spec 2042 §5.11 — the kernel's discretion stores. */
+  readonly discretion?: DiscretionPort;
   /** #133 E0 — side-channel turn-hook runner, fired during each turn. */
   readonly turnHookRegistry?: TurnHookRunner;
   /**
@@ -428,6 +527,12 @@ export interface BuiltOrchestrator {
   /** Same as `config.modelRouting` — surfaced so callers can describe the
    *  per-turn routing the Agent is on without inspecting the orchestrator. */
   readonly effectiveModelRouting?: ModelRoutingConfig;
+  /**
+   * #2085 — this agent's boundary check of a data plan (spec 2042 §5.13 1a):
+   * the fast lane, `deliver_data` and trigger data actions run a plan only
+   * when it passes.
+   */
+  readonly dataPlanGuard: DataPlanGuard;
 }
 
 /**
@@ -581,6 +686,67 @@ export function withAgentIdentity(
   );
 }
 
+/*
+ * Comparison key of a name: the privacy guard's `normalizeOwnName`
+ * (harness-plugin-privacy-guard/src/ownNames.ts), repeated here because the
+ * orchestrator cannot import the guard. Both sides must agree: an agent
+ * "„Karen“" whose key kept the quotes would survive the human veto below and
+ * then exempt a plain "Karen" in the guard.
+ */
+const NAME_QUOTES = `"'„“”‚‘’«»`;
+const NAME_LEADING_NOISE = new RegExp(`^[\\s${NAME_QUOTES}]+`, 'u');
+const NAME_TRAILING_NOISE = new RegExp(`[\\s.,;:!?${NAME_QUOTES}]+$`, 'u');
+
+function nameKey(name: string): string {
+  return name.replace(NAME_LEADING_NOISE, '').replace(NAME_TRAILING_NOISE, '').toLocaleLowerCase();
+}
+
+/**
+ * The names an agent answers as — only operator-set agent identity: the
+ * display name and slug of the speaker the identity guard checks, and the
+ * name it signs with (its identity name, else the platform assistant name,
+ * the precedence of the AI-disclosure line). Deduplicated, blanks dropped.
+ * A name that equals a known human's (`humanNames`, case-insensitive) is
+ * dropped: a namesake employee "Max" stays masked. `humanNames: null` (not
+ * known yet) drops every name — masking wins. The privacy shield never masks
+ * the rest in the agent's own turn.
+ */
+export function agentOwnNames(input: {
+  readonly speaker: Pick<AgentSpeaker, 'displayName' | 'slug'>;
+  readonly identityName?: string | undefined;
+  readonly assistantName?: string | undefined;
+  readonly humanNames?: readonly string[] | null | undefined;
+}): readonly string[] {
+  // Fail safe: the known humans are not known yet — exempt no own name.
+  if (input.humanNames === null) return [];
+  const signingName = input.identityName?.trim() || input.assistantName?.trim();
+  const humans = new Set((input.humanNames ?? []).map(nameKey));
+  const names = [input.speaker.displayName, input.speaker.slug, signingName]
+    .map((n) => n?.trim() ?? '')
+    .filter((n) => n.length > 0 && !humans.has(nameKey(n)));
+  return [...new Set(names)];
+}
+
+/**
+ * Spec 2042 (#2191, #2192) — the names of the roster's agents for
+ * `agentNames@1`: every given name (slugs, display names, identity names of
+ * the agents that exist), trimmed and deduplicated, minus every name a
+ * known human bears (`humanNames`, case-insensitive), the rule of
+ * {@link agentOwnNames}. `humanNames: null` (not known yet) yields `null`:
+ * no agent name is exempt, masking wins.
+ */
+export function rosterAgentNames(input: {
+  readonly names: readonly (string | null | undefined)[];
+  readonly humanNames: readonly string[] | null;
+}): readonly string[] | null {
+  if (input.humanNames === null) return null;
+  const humans = new Set(input.humanNames.map(nameKey));
+  const names = input.names
+    .map((n) => n?.trim() ?? '')
+    .filter((n) => n.length > 0 && !humans.has(nameKey(n)));
+  return [...new Set(names)];
+}
+
 /**
  * Build one Agent's `Orchestrator`, its optional verifier wrapper, and its
  * `chatAgent` bundle. Each call produces a fully independent instance set —
@@ -602,7 +768,11 @@ export function buildOrchestratorForAgent(
   const scopedStore = new ScopedMemoryStore({
     agentSlug: config.agentId,
     scope: orchestratorMemoryScope(config.agentId),
-    inner: deps.memoryStore,
+    // Spec 2042 §5.11 — a transcript keeps the labels of every turn written
+    // into it, so a `memory` read of it (same physical path) carries them.
+    inner: deps.discretion
+      ? new LabelledMemoryStore(deps.memoryStore, deps.discretion, config.agentId, { labelReads: false })
+      : deps.memoryStore,
   });
   const chatSessionStore = new ChatSessionStore(scopedStore);
   const sessionLogger = new SessionLogger(
@@ -615,9 +785,64 @@ export function buildOrchestratorForAgent(
   // Fast path for every non-canvas channel — outermost, outside the verifier
   // (fastPathAgent.ts says why a hit may bypass it). A hit is recorded
   // through THIS bundle's session logger like any other turn.
-  const fastPathDeps = deps.fastPath;
+  // #2060 — a facilitator takes no fast path (it would answer for someone)
+  // and is wrapped by the refusal gate instead; see `facilitatorAgent.ts`.
+  // #2088 — one question per thing left out, answered by the descriptor.
+  const omits = (omission: ArchetypeOmission): boolean => archetypeOmits(config, omission);
+  // The facilitator's own runtime (refusal gate, engine-driven turns,
+  // neutrality contract) is what the archetype ADDS, not an omission.
+  const isFacilitator = config.archetype === FACILITATOR_ARCHETYPE;
+  const workingModes = omits('persona_skill')
+    ? []
+    : workingModesKeepingIdentity(config.personaSkills ?? [], config.archetype, config.agentId);
+  // #1876 — the fast lane is the agent's own, switchable per agent.
+  const fastPathDeps =
+    isFacilitator || omits('fast_path') || config.fastLane === false ? undefined : deps.fastPath;
+  // #2085 — the agent's boundaries over its data plans: presets checked
+  // deterministically, free-text rules by its classifier model.
+  const dataPlanGuard = createDataPlanGuard({
+    boundaries: config.quality?.boundaries,
+    ...(deps.provider
+      ? {
+          judge: createLlmDataPlanJudge({
+            provider: deps.provider,
+            model: config.modelRouting?.classifierModel ?? config.model,
+          }),
+        }
+      : {}),
+  });
+  // Criterion 33 — the same boundaries over the planner's summary.
+  const summaryGuard = createSummaryBoundaryGuard({
+    boundaries: config.quality?.boundaries,
+    ...(deps.provider
+      ? {
+          judge: createLlmSummaryJudge({
+            provider: deps.provider,
+            model: config.modelRouting?.classifierModel ?? config.model,
+          }),
+        }
+      : {}),
+  });
   const withFastPath = (agent: ChatAgent): ChatAgent =>
-    fastPathDeps === undefined
+    isFacilitator
+      ? wrapFacilitatorAgent(agent, {
+          agentSlug: config.agentId,
+          name: config.identityName,
+          locale: config.identityLanguage ?? deps.aiDisclosure?.locale,
+          ...(deps.isEngineDrivenConversation
+            ? { isEngineDriven: deps.isEngineDrivenConversation }
+            : {}),
+          ...(deps.isFacilitationEngineUsable
+            ? { isEngineUsable: deps.isFacilitationEngineUsable }
+            : {}),
+          ...(deps.facilitatorOwnPostCount ? { ownPostCount: deps.facilitatorOwnPostCount } : {}),
+          ...(deps.facilitatorPrivateTurn ? { privateTurn: deps.facilitatorPrivateTurn } : {}),
+          ...(deps.facilitatorAddressedTurn ? { addressedTurn: deps.facilitatorAddressedTurn } : {}),
+          // The fixed answers are marked by this Agent's own disclosure rule.
+          disclose: (answer, input) => orchestrator.discloseCliAnswer(answer, input),
+          log: (m) => console.log(m),
+        })
+      : fastPathDeps === undefined
       ? agent
       : wrapChatAgentWithFastPath(agent, {
           fastPath: fastPathDeps,
@@ -625,8 +850,19 @@ export function buildOrchestratorForAgent(
           // nothing else (a per-Agent tool set is respected)
           permittedTools: () => orchestrator.offeredToolNames(),
           // …and their definitions: read tools of every plugin get a generic
-          // planner spec (@omadia/fast-path genericToolSpecs.ts)
-          toolDefinitions: () => orchestrator.offeredToolDefinitions(),
+          // planner spec (@omadia/fast-path genericToolSpecs.ts). #1876 —
+          // only the agent's OWN read tools: a sub-agent's inner tools
+          // (`via`) reach the agent only through their domain tool.
+          toolDefinitions: () => orchestrator.offeredToolDefinitions().filter((d) => d.via === undefined),
+          // #1876 — the fast lane answers under this agent's identity, with
+          // its AI disclosure (spec 2042 INV-2).
+          disclose: (answer, input) => orchestrator.discloseCliAnswer(answer, input),
+          // #1876 — learned plans and the answer cache are this agent's.
+          agentSlug: config.agentId,
+          // #2085 — every plan, new or cached, passes this agent's boundaries.
+          checkPlan: dataPlanGuard,
+          // Criterion 33 — and every summary, new or cached, before release.
+          checkSummary: summaryGuard,
           logSession: (entry) => sessionLogger.log(entry),
           privacyGuarded: () => deps.privacyGuard() !== undefined,
           log: (m) => console.log(m),
@@ -666,6 +902,59 @@ export function buildOrchestratorForAgent(
     : namespacedStore;
   const memoryToolHandler = new MemoryToolHandler(memoryToolStore);
 
+  // #2045 / #2046 — the outermost layers of every agent, whatever produced
+  // its answer: the mandatory identity guard on its prose, then the speaker
+  // stamp from routing (spec 2042 INV-3, INV-4).
+  const agentSpeaker: AgentSpeaker = config.speaker ?? {
+    kind: 'agent',
+    agentId: config.agentId,
+    slug: config.agentId,
+    displayName: config.identityName ?? config.agentId,
+  };
+  const emitter = new AgentAnswerEmitter({
+    speaker: agentSpeaker,
+    guard: (restoredValues) =>
+      new IdentityGuard({
+        speaker: agentSpeaker,
+        directory: config.agentDirectory?.() ?? [],
+        judge: createLlmIdentityJudge({
+          provider: deps.provider,
+          // An internal helper on the agent's own policy: its classifier
+          // model when it routes per turn, else its model.
+          model: config.modelRouting?.classifierModel ?? config.model,
+        }),
+        mask: (text) => Promise.resolve(maskRestoredValues(text, restoredValues)),
+      }),
+    locale: () => config.identityLanguage ?? deps.aiDisclosure?.locale,
+    onGuardResult: (result) => {
+      if (result.outcome !== 'pass' || result.latencyMs > IDENTITY_GUARD_SLOW_MS) {
+        console.log(
+          `[identity-guard] agent=${agentSpeaker.slug} outcome=${result.outcome} latencyMs=${String(result.latencyMs)}` +
+            (result.outcome === 'unavailable' ? ` cause=${result.cause}${result.detail ? ` detail=${result.detail}` : ''}` : ''),
+        );
+      }
+    },
+  });
+  // Spec 2042 §5.10 — the outermost layer: everything this agent's chat
+  // agent runs (fast lane, loop, verifier, identity guard) is this agent's
+  // turn for the model gateway.
+  // Criterion 29 — one record per conversation of this agent's last answer.
+  const answerDetails = new AnswerDetailsMemory();
+  const finalize = (agent: ChatAgent): ChatAgent =>
+    withAgentTurnExecution(
+      withSpeaker(
+        // Criterion 29 — outside the guard: only what the user received is
+        // recalled when they ask "how do you know?".
+        withAnswerDetailsRecall(
+          withIdentityGuard(withFastPath(withAnswerDetailsNote(agent, answerDetails)), emitter),
+          answerDetails,
+        ),
+        agentSpeaker,
+        emitter,
+      ),
+      config.agentId,
+    );
+
   // W5 memory-ACL — the per-CHAT-CONTEXT binder. `memoryToolHandler` above is
   // resolved once, here, for the whole process lifetime; the binder resolves a
   // stack per turn from the turn's `TurnOrigin` instead, so what an Agent
@@ -686,7 +975,13 @@ export function buildOrchestratorForAgent(
   // (decision A3a) and must not be partitioned by chat context.
   const memoryBinder = new MemoryBinder({
     agentSlug: config.agentId,
-    root: deps.memoryStore,
+    // Spec 2042 §5.11 — notes keep the labels of the turn that wrote them,
+    // keyed by physical path (below the binder's scoping).
+    root: deps.discretion
+      ? new LabelledMemoryStore(deps.memoryStore, deps.discretion, config.agentId)
+      : deps.memoryStore,
+    // The members index is read across rooms: never through the label layer.
+    indexStore: deps.memoryStore,
     mode: config.contextMemory ?? 'off',
     shieldActive,
     noteProvenance: TURN_NOTE_PROVENANCE,
@@ -702,6 +997,13 @@ export function buildOrchestratorForAgent(
             log: (msg: string): void => {
               console.error(msg);
             },
+            // Spec 2042 §5.11 — a promoted rule keeps the writing turn's labels.
+            ...(deps.discretion
+              ? {
+                  onPromoted: (mkId: string) =>
+                    labelSubjectWithTurn(deps.discretion, 'memorable', mkId, config.agentId),
+                }
+              : {}),
           },
         }
       : {}),
@@ -719,14 +1021,15 @@ export function buildOrchestratorForAgent(
   );
   const askUserChoiceTool = new AskUserChoiceTool();
   const suggestFollowUpsTool = new SuggestFollowUpsTool();
-  const findFreeSlotsTool = deps.microsoft365
+  // #2060 — calendar tools act for a user (delegated tokens); never for a facilitator.
+  const findFreeSlotsTool = deps.microsoft365 && !omits('tool_grant')
     ? new FindFreeSlotsTool(
         deps.microsoft365.obo,
         deps.microsoft365.calendar,
         deps.microsoft365.slots,
       )
     : undefined;
-  const bookMeetingTool = deps.microsoft365
+  const bookMeetingTool = deps.microsoft365 && !omits('tool_grant')
     ? new BookMeetingTool(
         deps.microsoft365.obo,
         deps.microsoft365.calendar,
@@ -762,7 +1065,8 @@ export function buildOrchestratorForAgent(
   // append the Steckbrief, then append the name last); see its doc comment for
   // why each field sits where it does and why the accent colour and avatar are
   // deliberately not in it.
-  const assistantIdentityWithName = withAgentIdentity(deps.assistantIdentity, {
+  // #2056 — the base is the platform's agent identity, else the default one.
+  const layeredIdentity = withAgentIdentity(deps.assistantIdentity?.trim() || DEFAULT_AGENT_IDENTITY, {
     ...(config.identityInstructions !== undefined
       ? { identityInstructions: config.identityInstructions }
       : {}),
@@ -777,10 +1081,60 @@ export function buildOrchestratorForAgent(
       : {}),
   });
 
-  // domainTools is intentionally empty at construct — sub-agents self-register
-  // post-activate via `dynamicAgentRuntime.attachOrchestrator(bundle.raw)`.
+  // #2060 — the neutrality contract closes a facilitator's identity, AFTER
+  // the name and self-description layered on above, and on every per-family
+  // variant. Applied here as well as at compose time so an agent without a
+  // stored identity (or with one compiled before the kind existed) has it.
+  // #2056 — every agent's prompt starts from its own identity (the default
+  // one when none is authored) and carries the identity rules: it speaks only
+  // as itself, never as a colleague or a person.
+  const assistantIdentityWithName = applyArchetypeContract(
+    config.archetype,
+    withIdentityRules(layeredIdentity, config.consultableColleagues),
+  );
+  const identityByFamily = config.identityByFamily
+    ? Object.fromEntries(
+        Object.entries(config.identityByFamily).map(([family, text]) => [
+          family,
+          applyArchetypeContract(config.archetype, withIdentityRules(text, config.consultableColleagues)),
+        ]),
+      )
+    : config.identityByFamily;
+  // What a facilitator is built WITHOUT (spec 2043 §2.3). One object so the
+  // list is readable in one place; each key is simply not handed to the
+  // Orchestrator, which treats absence as "not wired".
+  const memoryAndLearning = omits('memory')
+    ? {}
+    : {
+        memoryToolHandler,
+        memoryBinder,
+        sessionLogger,
+        knowledgeGraph: deps.knowledgeGraph,
+        ...(deps.contextRetriever ? { contextRetriever: deps.contextRetriever } : {}),
+        ...(deps.sessionBriefing ? { sessionBriefing: deps.sessionBriefing } : {}),
+        ...(deps.factExtractor ? { factExtractor: deps.factExtractor } : {}),
+        ...(deps.excerptExtractor ? { excerptExtractor: deps.excerptExtractor } : {}),
+        ...(deps.embeddingClient ? { embeddingClient: deps.embeddingClient } : {}),
+        ...(deps.processMemory ? { nudgeProcessMemory: deps.processMemory } : {}),
+        ...(deps.autoPromote !== undefined ? { autoPromote: deps.autoPromote } : {}),
+        ...(deps.graphPool ? { graphPool: deps.graphPool } : {}),
+      };
+
+  // domainTools is intentionally empty at construct — the kernel registers an
+  // Agent's DB-defined sub-agent tools once the registry exists.
   const orchestrator = new Orchestrator({
     agentId: config.agentId,
+    // Spec 2042 §6 criterion 1 — every run trace names the agent that answers.
+    traceAgentId: agentSpeaker.agentId,
+    // Never masked by the privacy shield in this agent's own turn; read per
+    // turn so a human added to the directory masks a namesake right away.
+    ownNames: () =>
+      agentOwnNames({
+        speaker: agentSpeaker,
+        identityName: config.identityName,
+        assistantName: deps.aiDisclosure?.assistantName,
+        humanNames: config.humanNames?.(),
+      }),
     provider: deps.provider,
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),
@@ -789,17 +1143,15 @@ export function buildOrchestratorForAgent(
     ...(deps.providerPool ? { providerPool: deps.providerPool } : {}),
     ...(config.primaryRef ? { primaryRef: config.primaryRef } : {}),
     ...(config.fallbackRef ? { fallbackRef: config.fallbackRef } : {}),
-    ...(config.identityByFamily ? { identityByFamily: config.identityByFamily } : {}),
+    ...(identityByFamily ? { identityByFamily } : {}),
+    archetypeOmissions: { memory: omits('memory'), toolGrant: omits('tool_grant') },
+    // Who a channel user is, even for an archetype built without memory: the
+    // audience floor and the turn owner need it in every group conversation.
+    identityGraph: deps.knowledgeGraph,
     ...(config.fallbackVisionSupported !== undefined
       ? { fallbackVisionSupported: config.fallbackVisionSupported }
       : {}),
-    ...(config.directLineSticky ? { directLineSticky: true } : {}),
-    ...(deps.directLineStickyStore
-      ? { directLineStickyStore: deps.directLineStickyStore }
-      : {}),
-    ...(config.personaSkills?.length
-      ? { personaSkills: config.personaSkills }
-      : {}),
+    ...(workingModes.length > 0 ? { personaSkills: workingModes } : {}),
     maxTokens: config.maxTokens,
     maxToolIterations: config.maxToolIterations,
     ...(config.loopRepeatSoft !== undefined
@@ -816,19 +1168,12 @@ export function buildOrchestratorForAgent(
       ? { grantedPluginIds: config.grantedPluginIds }
       : {}),
     nativeToolRegistry: deps.nativeToolRegistry,
-    memoryToolHandler,
-    memoryBinder,
-    sessionLogger,
+    ...memoryAndLearning,
     entityRefBus: deps.entityRefBus,
-    knowledgeGraph: deps.knowledgeGraph,
-    ...(deps.contextRetriever
-      ? { contextRetriever: deps.contextRetriever }
-      : {}),
-    ...(deps.sessionBriefing ? { sessionBriefing: deps.sessionBriefing } : {}),
-    ...(deps.factExtractor ? { factExtractor: deps.factExtractor } : {}),
-    ...(deps.excerptExtractor ? { excerptExtractor: deps.excerptExtractor } : {}),
-    chatParticipantsTool,
-    askUserChoiceTool,
+    // #2060 — a facilitator's tools are the engine's and nothing else, on
+    // both tool loops: no choice cards, follow-up chips, roster or attachment
+    // tool of the kernel (the engine has its own, bound to the facilitation).
+    ...(omits('tool_grant') ? {} : { chatParticipantsTool, askUserChoiceTool }),
     // W2-1 (#544) — both or neither: a store with no replayer would park calls
     // the user can answer but nothing can deliver.
     ...(deps.pendingMcpInput && deps.mcpInputReplay
@@ -837,10 +1182,9 @@ export function buildOrchestratorForAgent(
           mcpInputReplay: deps.mcpInputReplay,
         }
       : {}),
-    suggestFollowUpsTool,
+    ...(omits('tool_grant') ? {} : { suggestFollowUpsTool }),
     ...(findFreeSlotsTool ? { findFreeSlotsTool } : {}),
     ...(bookMeetingTool ? { bookMeetingTool } : {}),
-    ...(deps.embeddingClient ? { embeddingClient: deps.embeddingClient } : {}),
     responseGuard: deps.responseGuard,
     ...(config.quality ? { agentQuality: config.quality } : {}),
     privacyGuard: deps.privacyGuard,
@@ -855,8 +1199,6 @@ export function buildOrchestratorForAgent(
       : {}),
     nudgeRegistry: deps.nudgeRegistry,
     ...(deps.nudgeStateStore ? { nudgeStateStore: deps.nudgeStateStore } : {}),
-    ...(deps.processMemory ? { nudgeProcessMemory: deps.processMemory } : {}),
-    ...(deps.autoPromote !== undefined ? { autoPromote: deps.autoPromote } : {}),
     ...(deps.autoPromoteThreshold !== undefined
       ? { autoPromoteThreshold: deps.autoPromoteThreshold }
       : {}),
@@ -869,7 +1211,6 @@ export function buildOrchestratorForAgent(
     ...(deps.autoPromoteDurableKinds !== undefined
       ? { autoPromoteDurableKinds: deps.autoPromoteDurableKinds }
       : {}),
-    ...(deps.graphPool ? { graphPool: deps.graphPool } : {}),
     ...(deps.graphTenantId ? { graphTenantId: deps.graphTenantId } : {}),
     // #914 — the Agent's own behaviour text wins over the platform-wide one.
     // Resolved once, here, so the two call sites below cannot disagree about
@@ -896,18 +1237,23 @@ export function buildOrchestratorForAgent(
     ...(deps.aiDisclosureSeenStore
       ? { aiDisclosureSeenStore: deps.aiDisclosureSeenStore }
       : {}),
+    ...(deps.aiDisclosureMarkerStore
+      ? { aiDisclosureMarkerStore: deps.aiDisclosureMarkerStore }
+      : {}),
     // #579 — org security posture + its screener/audit sink. Posture absent →
     // orchestrator applies the shipping default (`auto`); the screener + sink
     // are always wired (inert unless screening is enabled for the posture).
     ...(deps.securityPosture ? { securityPosture: deps.securityPosture } : {}),
     // #575 — supplying this is what makes the audience guards non-inert.
     ...(deps.audienceGrants ? { audienceGrants: deps.audienceGrants } : {}),
+    ...(deps.consultation ? { consultation: deps.consultation } : {}),
+    ...(deps.discretion ? { discretion: deps.discretion } : {}),
     securityScreener,
     securityAuditSink,
     ...(deps.turnHookRegistry
       ? { turnHookRegistry: deps.turnHookRegistry }
       : {}),
-    ...(deps.attachmentReader
+    ...(deps.attachmentReader && !omits('tool_grant')
       ? { attachmentReader: deps.attachmentReader }
       : {}),
   });
@@ -950,7 +1296,7 @@ export function buildOrchestratorForAgent(
     return {
       orchestrator,
       bundle: {
-        agent: withFastPath(new CliChatAgent({
+        agent: finalize(new CliChatAgent({
           dispatch,
           // #1102 — surface the choice card / follow-up chips / slot picker a
           // kernel-native tool scheduled this turn on the `done` event, so the
@@ -972,6 +1318,10 @@ export function buildOrchestratorForAgent(
           // #1102 — `memory` from the stack this turn is bound to, served by a
           // per-turn dispatch rather than the shared registry.
           bindTurnMemory: (input) => orchestrator.bindCliTurnMemory(input),
+          // Spec 2042 §5.11 / #2194 — the in-process turn's discretion state
+          // and the people-egress check of its answer, for this path too.
+          discretionTurnFields: (input) => orchestrator.cliDiscretionTurnFields(input),
+          guardAnswer: (answer, input) => orchestrator.guardCliAnswer(answer, input),
           // #1087 — the CLI child is stateless by design, so the composed
           // prompt is the only memory a turn has. Feed it from the RAW chat
           // session, not the ContextRetriever tail: that one reads Session
@@ -1046,6 +1396,7 @@ export function buildOrchestratorForAgent(
       },
       effectiveModel: config.model,
       ...(config.modelRouting ? { effectiveModelRouting: config.modelRouting } : {}),
+      dataPlanGuard,
     };
   }
 
@@ -1079,8 +1430,32 @@ export function buildOrchestratorForAgent(
 
   return {
     orchestrator,
-    bundle: { agent: withFastPath(agent), raw: orchestrator, sessionLogger, chatSessionStore },
+    bundle: { agent: finalize(agent), raw: orchestrator, sessionLogger, chatSessionStore },
     effectiveModel: config.model,
     ...(config.modelRouting ? { effectiveModelRouting: config.modelRouting } : {}),
+    dataPlanGuard,
   };
+}
+
+/**
+ * #2060 — the working modes an agent is built with. A `standard` agent keeps
+ * every attached mode (each is composed beneath its identity anyway). An agent
+ * of any other archetype has a fixed identity: a mode written as an identity
+ * of its own is left out here as well, so a skill edited after it was
+ * attached cannot bring back what the route refused (fail closed).
+ */
+export function workingModesKeepingIdentity(
+  modes: readonly OrchestratorPersonaSkill[],
+  archetype: string | undefined,
+  agentId: string,
+): readonly OrchestratorPersonaSkill[] {
+  if (archetype === undefined || archetype === STANDARD_ARCHETYPE) return modes;
+  return modes.filter((mode) => {
+    const findings = findWorkingModeIdentityReplacement(mode);
+    if (findings.length === 0) return true;
+    console.warn(
+      `[working-modes] agent ${agentId}: mode "${mode.slug}" left out, it replaces who speaks (${findings.map((f) => f.path).join(', ')})`,
+    );
+    return false;
+  });
 }

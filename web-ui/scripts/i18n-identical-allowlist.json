@@ -28,6 +28,7 @@
     "operatorAgents.modelPolicy.summaryAuto": "loanword",
     "adminDatasets.fields.nameOptional": "loanword",
     "dashboard.onboarding.cases.hr.name": "loanword",
+    "conductor.durationMinutes": "loanword",
     "conductor.graphLabel": "loanword",
     "conductor.guardLabel": "glossary",
     "conductor.payloadLabel": "loanword",
@@ -50,11 +51,9 @@
     "agentPicker.label": "glossary",
     "operatorAgents.detailMetaTitle": "brand",
     "operatorAgents.detailOpenLink": "loanword",
-    "builder.simple.persona.optional": "loanword",
     "builder.workspace.buildBusLive": "loanword",
     "builder.spec.setupFields.required.off": "loanword",
     "builder.persona.radar.comparisonNeutral": "loanword",
-    "builder.persona.quality.tokensPrefix": "loanword",
     "builder.uiSurfaces.pageForm.dataBinding.toolLabel": "glossary",
     "builder.uiSurfaces.pageForm.componentSlot.label": "code",
     "builder.uiSurfaces.pageForm.componentSlot.hint": "code",
@@ -93,11 +92,14 @@
     "memory.audit.mode.copy": "diagnostic",
     "memory.audit.mode.move": "diagnostic",
     "operatorAgents.peers.chatSelectLabel": "loanword",
-    "operatorAgents.detailTabs.teams": "brand",
+    "operatorAgents.channelIdentities.channelNames.discord": "brand",
+    "operatorAgents.channelIdentities.channelNames.slack": "brand",
+    "operatorAgents.channelIdentities.channelNames.telegram": "brand",
     "operatorAgents.detailTabs.plugins": "loanword",
     "operatorAgents.detailTabs.memory": "glossary",
     "system.vaultStatus.keySourceEnv": "code",
     "system.platformHealth.eyebrow": "code",
-    "chat.decision.stats": "placeholder"
+    "chat.decision.stats": "placeholder",
+    "agentAvailability.channelsPlaceholder": "placeholder"
   }
 }

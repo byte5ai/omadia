@@ -29,8 +29,8 @@ export class DiscussionInvalidInputError extends Error {
  *  `conductor_ephemeral_attachments` is UNIQUE per conversation, and two agents
  *  moderating the same chat was the exact #330 field-report incident. */
 export class DiscussionConversationBusyError extends Error {
-  constructor(readonly workflowId: string) {
-    super(`conversation is already attached to workflow ${workflowId}`);
+  constructor(readonly workflowId: string, message?: string) {
+    super(message ?? `conversation is already attached to workflow ${workflowId}`);
     this.name = 'DiscussionConversationBusyError';
   }
 }
@@ -86,8 +86,22 @@ export interface DiscussionServiceDeps {
   /** Resolves the bot an agent speaks as — the same resolver the say service
    *  uses, so the start gate and the delivery rule cannot drift apart. */
   identityFor?: AgentChannelIdentityResolver;
+  /**
+   * #2090 (spec 2043 §5.3) — the reservation a conversation's one running
+   * process holds, shared with native facilitations. A discussion takes it
+   * before it claims the floor and is refused while a facilitation holds it.
+   * Absent (no database-backed kernel store): the Conductor's own row is the
+   * only guard, as before.
+   */
+  reservations?: DiscussionReservations;
   now?: () => Date;
   log?: (msg: string) => void;
+}
+
+export interface DiscussionReservations {
+  /** `false`: another kind of process (a facilitation) holds the conversation. */
+  reserve(channelType: string, conversationId: string): Promise<boolean>;
+  release(channelType: string, conversationId: string, reason: string): Promise<void>;
 }
 
 function requireText(value: unknown, field: string, max = 2000): string {
@@ -148,6 +162,33 @@ export class ConductorDiscussionService {
       throw new DiscussionConversationBusyError(existing.workflowId);
     }
 
+    // The shared reservation, before the floor is claimed: a facilitation in
+    // this conversation refuses the discussion, and a discussion that holds
+    // it refuses a facilitation.
+    if (this.deps.reservations && !(await this.deps.reservations.reserve(channelType, conversationId))) {
+      throw new DiscussionConversationBusyError('', 'a facilitation is running in this conversation');
+    }
+    try {
+      return await this.claimAndStart({ input, agentA, participants, topic, guidingQuestion, channelType, conversationId, maxTurns });
+    } catch (err) {
+      await this.deps.reservations
+        ?.release(channelType, conversationId, 'discussion did not start')
+        .catch(() => undefined);
+      throw err;
+    }
+  }
+
+  private async claimAndStart(args: {
+    input: StartDiscussionInput;
+    agentA: string;
+    participants: string[];
+    topic: string;
+    guidingQuestion: string;
+    channelType: string;
+    conversationId: string;
+    maxTurns: number;
+  }): Promise<EphemeralRunHandle> {
+    const { input, agentA, participants, topic, guidingQuestion, channelType, conversationId, maxTurns } = args;
     const now = (this.deps.now ?? (() => new Date()))();
     const ttlMs = input.ttlMs && input.ttlMs > 0 ? input.ttlMs : DISCUSSION_DEFAULT_TTL_MS;
     const expiresAt = new Date(now.getTime() + ttlMs);

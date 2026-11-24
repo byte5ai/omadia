@@ -17,7 +17,9 @@
 
 import type { Socket } from 'node:net';
 
+import type { ToolPIIField } from './piiAnnotation.js';
 import type { WriteCapability } from './writeCapabilities.js';
+import type { NativeToolOutput } from './nativeToolResult.js';
 
 import type {
   EntityCapturedTurnsHit,
@@ -267,9 +269,15 @@ export const JOB_DEFAULT_TIMEOUT_MS = 30_000;
  * Handler the kernel calls on every scheduled tick. The supplied
  * `AbortSignal` is aborted on plugin deactivate or when `timeoutMs`
  * elapses — long-running handlers must respect it (e.g. pass it to fetch
- * or check `signal.aborted` between work units). Throwing is logged but
- * does NOT cancel future ticks; if the operator wants the job stopped, they
- * deactivate the plugin.
+ * or check `signal.aborted` between work units). Throwing is logged and
+ * backs the job off: after a failure the kernel runs bounded recovery
+ * probes (growing intervals, at most one hour apart) instead of every tick;
+ * the first success returns it to its schedule.
+ *
+ * A job is deterministic work (a sync, a cleanup). It runs no model call:
+ * every model call inside a job run is refused (spec 2042 §5.12). Learning
+ * or consolidation that needs a model registers a `BatchJob` instead, which
+ * the kernel runs as a bounded agent batch trigger.
  */
 export type JobHandler = (signal: AbortSignal) => Promise<void>;
 
@@ -804,10 +812,53 @@ export function validatePluginDomain(
   return { ok: true, domain: trimmed };
 }
 
-/** Handler a plugin hands the kernel together with the tool spec. Must return
- *  a string — the tool-use reply sent back to Claude. Kernel wraps thrown
- *  errors into `Error: <message>` for symmetry with built-in tools. */
-export type NativeToolHandler = (input: unknown) => Promise<string>;
+/** Handler a plugin hands the kernel together with the tool spec. Returns the
+ *  tool-use reply — text, or (1.86.0) a {@link NativeToolResult} with
+ *  `output` plus an optional `limitSignal`, `postcondition` or `structured`
+ *  (see `nativeToolResult.ts`). Kernel wraps thrown errors into
+ *  `Error: <message>` for symmetry with built-in tools. */
+export type NativeToolHandler = (
+  input: unknown,
+  context?: NativeToolCallContext,
+) => Promise<NativeToolOutput>;
+
+/** A {@link NativeToolHandler} that always answers with text (1.86.0): what
+ *  the kernel's own tools are, and what a caller may rely on reading as a
+ *  string. Assignable to `NativeToolHandler`. */
+export type NativeTextToolHandler = (
+  input: unknown,
+  context?: NativeToolCallContext,
+) => Promise<string>;
+
+/**
+ * Where a tool call comes from (#2043). Passed by the kernel as the handler's
+ * second argument; absent on kernels that predate it and for calls outside a
+ * turn. Every field is kernel-stated, never model-supplied, so a handler can
+ * key state on the conversation without trusting a tool argument.
+ */
+export interface NativeToolCallContext {
+  /** Slug of the agent whose turn dispatched the tool. */
+  readonly agentSlug?: string;
+  readonly channelType?: string;
+  /** Channel-native conversation the turn runs in. */
+  readonly conversationId?: string;
+  /** Stored inbound event the turn answers ('conversationMessages@1'). */
+  readonly inboundEventId?: string;
+  /** Canonical principal of the person the turn answers ('user:<id>', the
+   *  lower-cased channel user id; the same value as
+   *  `ConversationMessageRecord.author.principalId`). */
+  readonly callerPrincipalId?: string;
+  /** The caller in the channel's own namespace, as the platform stated it
+   *  (the same `kind` / `id` as `ConversationMessageRecord.author` and roster
+   *  participants). Absent when the turn has no channel user. */
+  readonly callerUserRef?: {
+    readonly kind: string;
+    readonly id: string;
+    /** The person's name as the channel stated it for this turn (1.57.0).
+     *  Absent when the channel gave none: fall back to the id, never guess. */
+    readonly displayName?: string;
+  };
+}
 
 /**
  * Optional per-turn attachment sink. Called once at the end of each orchestrator
@@ -895,6 +946,16 @@ export interface ToolRegistrationOptions {
    * a public endpoint, that means a duplicate is possible.
    */
   readonly writeCapabilities?: readonly WriteCapability[];
+  /**
+   * Spec 2042 §5.10 (1.83.0) — the PII-bearing fields of this tool's result
+   * (`piiAnnotation.ts`), on the registration for the same reason as
+   * `writeCapabilities`. The Privacy Shield masks every declared field of an
+   * interned result, whatever its own classifier would have said; a declared
+   * field is never let through in clear. Only paths that name a column of the
+   * result rows are applied (`field`, `[].field`, `<items>[].field`, with an
+   * optional trailing `[N]`); deeper paths are ignored.
+   */
+  readonly piiFields?: readonly ToolPIIField[];
   /**
    * #1346 — per-turn availability. The kernel calls it inside the turn scope
    * each time it builds the tool list and the system-prompt tool docs; `false`
@@ -2207,6 +2268,44 @@ export class LlmModelNotAllowedError extends Error {
   }
 }
 
+/**
+ * Spec 2042 §5.10 — thrown by `ctx.llm` of an archetype plugin outside an
+ * execution scope. Every model call of an archetype plugin's process runs
+ * through the kernel under a scope (deadline, budget, kill switch); the
+ * plugin runs it through `agentTurn@2`, or calls `ctx.llm` while one of its
+ * scope's actions runs.
+ */
+export class LlmScopeRequiredError extends Error {
+  constructor(callerAgentId: string) {
+    super(
+      `archetype plugin '${callerAgentId}' called ctx.llm outside an execution scope; an archetype plugin's model calls run only under a scope (spec 2042 §5.10)`,
+    );
+    this.name = 'LlmScopeRequiredError';
+  }
+}
+
+/**
+ * Spec 2042 §5.10 — thrown when a plugin asks for a raw model service
+ * (`anthropicClient`, `llm`, `llmProviderPool`). Raw model clients and
+ * provider pools are never granted to plugins: a plugin reaches models only
+ * through `ctx.llm`, inside the calling agent's execution context. Model
+ * plugins (kind `model`) and the kernel's own system modules are the
+ * exceptions.
+ */
+export class RawModelServiceRefusedError extends Error {
+  public readonly pluginId: string;
+  public readonly capability: string;
+  constructor(pluginId: string, capability: string) {
+    super(
+      `plugin '${pluginId}' asked for the raw model service '${capability}': plugins reach models only through ctx.llm, ` +
+        "inside the calling agent's execution context (spec 2042 §5.10). Remove it from the manifest and declare permissions.llm",
+    );
+    this.name = 'RawModelServiceRefusedError';
+    this.pluginId = pluginId;
+    this.capability = capability;
+  }
+}
+
 export class LlmBudgetExceededError extends Error {
   constructor(callerAgentId: string, budget: number) {
     super(
@@ -2535,6 +2634,58 @@ export interface SqlAccessor {
    * core's own migrator re-run them on the next boot.
    */
   seedLedger?(opts: SeedLedgerOptions): Promise<LedgerSeedReport>;
+  /**
+   * #2088 — the Postgres schema this plugin's tables live in. Present for a
+   * plugin of kind `archetype` whose manifest does not require `graphPool`:
+   * such a plugin has a database of its own instead of the shared pool. It
+   * reaches it as its own role, which can read and write this schema and
+   * nothing else.
+   *
+   * The role's `search_path` is this schema, so unqualified table names
+   * resolve to it. Name no schema in a statement.
+   */
+  readonly schema?: string;
+  /**
+   * #2088 — run ONE statement as the plugin's own database role. Present
+   * together with {@link SqlAccessor.schema}.
+   *
+   * There is no client to hold: the instance may sit behind a pooler that
+   * hands every transaction a different server session, so nothing set on a
+   * session (`SET`, `LISTEN`, a session-level advisory lock, a prepared
+   * statement) survives the call. Use {@link SqlAccessor.transaction} for
+   * statements that belong together.
+   */
+  query?<R extends Record<string, unknown> = Record<string, unknown>>(
+    text: string,
+    params?: readonly unknown[],
+  ): Promise<SqlStatementResult<R>>;
+  /**
+   * #2088 — run `work` inside one transaction as the plugin's own database
+   * role: committed when it resolves, rolled back when it throws. Present
+   * together with {@link SqlAccessor.schema}.
+   *
+   * `tx` is only valid until `work` settles; a statement sent afterwards is
+   * refused. Transaction-scoped state (`SET LOCAL`, `pg_advisory_xact_lock`,
+   * row locks) works and ends with the transaction.
+   */
+  transaction?<T>(work: (tx: SqlTransaction) => Promise<T>): Promise<T>;
+}
+
+/** #2088 — what one statement answered. */
+export interface SqlStatementResult<
+  R extends Record<string, unknown> = Record<string, unknown>,
+> {
+  readonly rows: readonly R[];
+  /** Rows affected or returned; 0 when the server reported none. */
+  readonly rowCount: number;
+}
+
+/** #2088 — the handle {@link SqlAccessor.transaction} passes to its callback. */
+export interface SqlTransaction {
+  query<R extends Record<string, unknown> = Record<string, unknown>>(
+    text: string,
+    params?: readonly unknown[],
+  ): Promise<SqlStatementResult<R>>;
 }
 
 /**
@@ -2570,6 +2721,30 @@ export class SqlPermissionError extends Error {
     this.pluginId = pluginId;
     this.capability = capability;
     this.reason = reason;
+  }
+}
+
+/**
+ * #2088 — thrown when a plugin of kind `archetype` asks for a pool-shaped
+ * capability (`graphPool`). An archetype plugin never gets the shared pool,
+ * whatever its manifest declares and whatever the operator granted: it
+ * reaches the database through {@link SqlAccessor.query} and
+ * {@link SqlAccessor.transaction} on `ctx.sql`, as its own role, in its own
+ * schema. For that, its manifest must not list the capability under
+ * `requires`.
+ */
+export class SharedPoolRefusedError extends Error {
+  public readonly pluginId: string;
+  public readonly capability: string;
+  constructor(pluginId: string, capability: string) {
+    super(
+      `archetype plugin '${pluginId}' asked for '${capability}': an archetype plugin never gets the shared database pool. ` +
+        `Remove '${capability}' from the manifest's requires and use ctx.sql.query() and ctx.sql.transaction(); ` +
+        'they run as the plugin\'s own database role, limited to its schema (ctx.sql.schema)',
+    );
+    this.name = 'SharedPoolRefusedError';
+    this.pluginId = pluginId;
+    this.capability = capability;
   }
 }
 

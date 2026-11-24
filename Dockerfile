@@ -9,7 +9,7 @@
 # botbuilder (@azure/msal-node family) have post-install hooks that break on
 # Alpine's musl libc without extra build tools. Slim keeps the image small
 # while staying on glibc.
-FROM node:22.23.4-slim AS builder
+FROM node:22.23.5-slim AS builder
 ARG TARGETARCH
 WORKDIR /app
 
@@ -55,7 +55,7 @@ COPY middleware/scripts ./scripts
 RUN npm run build
 
 # --- runtime ----------------------------------------------------------------
-FROM node:22.23.4-slim AS runtime
+FROM node:22.23.5-slim AS runtime
 ARG TARGETARCH
 WORKDIR /app
 
@@ -183,7 +183,7 @@ COPY middleware/profiles ./profiles
 ENV PROFILES_DIR=/app/profiles
 # Plugin-Builder boilerplate — boilerplateSource.ts reads the template files
 # for the codegen engine here. Whole-tree COPY so both templates
-# (agent-integration, agent-pure-llm) land in the image; BUILDER_BOILERPLATE_DIR
+# (integration, tool) land in the image; BUILDER_BOILERPLATE_DIR
 # points at the root, individual templates are resolved via templateId.
 COPY middleware/assets/boilerplate ./boilerplate
 ENV BUILDER_BOILERPLATE_DIR=/app/boilerplate

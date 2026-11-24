@@ -21,7 +21,9 @@ describe('extractPermissionSurface', () => {
     assert.deepEqual([...s.graphReads], ['agent:dynamics:*']);
     assert.deepEqual([...s.graphWrites], ['agent:dynamics:*']);
     assert.deepEqual([...s.graphEntitySystems], ['sales-reports']);
-    assert.deepEqual([...s.subAgentCalls], ['de.byte5.agent.helper']);
+    // A Builder spec never consults an agent (spec 2042 §5.4); a stored
+    // subAgents block is dropped on parse.
+    assert.deepEqual([...s.subAgentCalls], []);
     assert.deepEqual([...s.llmModels], ['claude-haiku-4-5*']);
     assert.deepEqual([...s.networkOutbound], ['api.dynamics.com']);
     assert.equal(s.webScanner, false);

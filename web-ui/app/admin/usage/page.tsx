@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { useFormatter, useTimeZone, useTranslations } from 'next-intl';
+import { useFormatter, useLocale, useTimeZone, useTranslations } from 'next-intl';
 
 /**
  * Cost dashboard — visualises the LLM token-usage ledger written by
@@ -28,6 +28,9 @@ interface UsageTotals {
   unpricedCalls?: number;
   /** #1389 — the model ids behind `unpricedCalls`. */
   unpricedModels?: string[];
+  /** Net USD prompt caching saved on metered calls. Optional: an older
+   *  middleware does not send it. */
+  cacheSavingsUsd?: number;
 }
 interface UsageByKey {
   key: string;
@@ -45,18 +48,31 @@ interface UsageByKey {
   members?: number;
   /** #1389 — how many of `calls` have no known price; absent when none. */
   unpricedCalls?: number;
+  /** Net cache saving of this model's metered calls; "By model" rows only. */
+  cacheSavingsUsd?: number;
 }
 interface UsageBucket {
   bucket: string;
   costUsd: number;
   calls: number;
 }
+/** The ECB rate the middleware converts with; `date` is its publication day. */
+interface FxRate {
+  eurPerUsd: number;
+  date: string;
+  source: 'ECB';
+}
 interface UsageDashboard {
   totals: UsageTotals;
   byModel: UsageByKey[];
   bySource: UsageByKey[];
   timeSeries: UsageBucket[];
+  /** Absent from an older middleware, null when no rate could be fetched. */
+  fx?: FxRate | null;
 }
+
+type DisplayCurrency = 'EUR' | 'USD';
+const DISPLAY_CURRENCIES: readonly DisplayCurrency[] = ['EUR', 'USD'];
 
 type RangeKey = '24h' | '7d' | '30d' | 'all';
 type BucketSize = 'hour' | 'day';
@@ -82,13 +98,11 @@ const RANGES: ReadonlyArray<{ key: RangeKey; labelKey: string; buckets: number |
  * #679 / I6 — the ledger records cost in US dollars (`costUsd`, written by
  * `@omadia/usage-telemetry` from provider pricing).
  *
- * The currency is therefore NOT localised, and that is the point: converting
- * to euros for a German operator would require an exchange rate this app does
- * not have and cannot honestly invent — the resulting number would be a
- * fabrication presented as a ledger figure. What IS localised is the
- * PRESENTATION: symbol placement, decimal separator and grouping all follow
- * the active locale, so a German operator reads `1.234,56 $` instead of
- * `$1,234.56`. The amount stays the amount.
+ * The EUR view converts with the ECB reference rate the middleware sends along
+ * (`fx`), and the page names that rate and its date — a converted figure is
+ * never presented as a ledger figure. Without a rate there is no EUR view: the
+ * page stays in USD rather than invent one. Presentation (symbol placement,
+ * separators, grouping) follows the active locale either way.
  */
 const LEDGER_CURRENCY = 'USD';
 
@@ -103,8 +117,10 @@ function currencyDigits(n: number): number {
 }
 
 interface UsageFormatters {
-  /** Ledger cost, presented in the active locale. */
+  /** Ledger cost in USD, presented in the active locale. */
   usd: (n: number) => string;
+  /** Ledger cost in the display currency (EUR when a rate is set). */
+  money: (n: number) => string;
   /** Token / call counts in compact notation (`1,2 Mio.` / `1.2M`). */
   compact: (n: number) => string;
   /** A 0–1 ratio as a percentage. */
@@ -123,21 +139,25 @@ interface UsageFormatters {
  * options in both is how a currency ends up with four decimals in one table
  * and two in the next.
  */
-function useUsageFormatters(): UsageFormatters {
+function useUsageFormatters(eurPerUsd: number | null = null): UsageFormatters {
   // next-intl's formatter, not a hand-built `Intl.NumberFormat`: `compact`
   // previously pinned `de-DE`, so an English operator read German grouping —
   // the mirror image of the bug #679 filed for the currency. Both now follow
   // the active locale (`web-ui/CLAUDE.md` § no hardcoded locale formatting).
   const format = useFormatter();
-  return useMemo(
-    () => ({
-      usd: (n: number): string =>
-        format.number(n, {
-          style: 'currency',
-          currency: LEDGER_CURRENCY,
-          minimumFractionDigits: currencyDigits(n),
-          maximumFractionDigits: currencyDigits(n),
-        }),
+  return useMemo(() => {
+    const currency = (n: number, code: string): string =>
+      format.number(n, {
+        style: 'currency',
+        currency: code,
+        minimumFractionDigits: currencyDigits(Math.abs(n)),
+        maximumFractionDigits: currencyDigits(Math.abs(n)),
+      });
+    const usd = (n: number): string => currency(n, LEDGER_CURRENCY);
+    return {
+      usd,
+      money: (n: number): string =>
+        eurPerUsd === null ? usd(n) : currency(n * eurPerUsd, 'EUR'),
       compact: (n: number): string =>
         format.number(n, { notation: 'compact', maximumFractionDigits: 1 }),
       // `style: 'percent'` scales by 100 itself, so the ratio goes in
@@ -149,14 +169,17 @@ function useUsageFormatters(): UsageFormatters {
           d,
           bucket === 'day' ? { dateStyle: 'medium' } : { dateStyle: 'medium', timeStyle: 'short' },
         ),
-    }),
-    [format],
-  );
+    };
+  }, [format, eurPerUsd]);
 }
 
 export default function UsageDashboardPage(): React.ReactElement {
   const t = useTranslations('adminUsage');
-  const { usd, compact, pct, bucketLabel } = useUsageFormatters();
+  const format = useFormatter();
+  // EUR first for a German operator, the ledger's USD for everyone else;
+  // either way the toggle switches.
+  const locale = useLocale();
+  const [currency, setCurrency] = useState<DisplayCurrency>(locale === 'de' ? 'EUR' : 'USD');
   // #1396 — the zone next-intl formats in (the `omadia-tz` cookie); the
   // middleware cuts the buckets in the same one, so a daily bar is a local day.
   const timeZone = useTimeZone();
@@ -164,6 +187,11 @@ export default function UsageDashboardPage(): React.ReactElement {
   const [data, setData] = useState<UsageDashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // EUR only with a rate to convert by; otherwise the ledger's USD.
+  const fx = data?.fx ?? null;
+  const eurPerUsd = currency === 'EUR' && fx ? fx.eurPerUsd : null;
+  const { usd, money, compact, pct, bucketLabel } = useUsageFormatters(eurPerUsd);
+  const cacheSavingsUsd = data?.totals.cacheSavingsUsd ?? 0;
 
   // No setState before the first `await` — keeping the effect free of
   // synchronous state updates (react-hooks/set-state-in-effect). The loading
@@ -238,22 +266,48 @@ export default function UsageDashboardPage(): React.ReactElement {
             {t('intro')}
           </p>
         </div>
-        <div className="flex gap-1 rounded-lg border border-[color:var(--border)] p-1">
-          {RANGES.map((r) => (
-            // eslint-disable-next-line no-restricted-syntax -- stateful toggle/segmented selector
-            <button
-              key={r.key}
-              type="button"
-              onClick={() => selectRange(r.key)}
-              className={`rounded-md px-3 py-2 text-sm transition-colors ${
-                range === r.key
-                  ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)]'
-                  : 'text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]'
-              }`}
+        <div className="flex flex-wrap gap-2">
+          {fx && (
+            <div
+              className="flex gap-1 rounded-lg border border-[color:var(--border)] p-1"
+              role="group"
+              aria-label={t('currency.label')}
             >
-              {t(`ranges.${r.labelKey}`)}
-            </button>
-          ))}
+              {DISPLAY_CURRENCIES.map((c) => (
+                // eslint-disable-next-line no-restricted-syntax -- stateful toggle/segmented selector
+                <button
+                  key={c}
+                  type="button"
+                  aria-pressed={currency === c}
+                  onClick={() => setCurrency(c)}
+                  className={`rounded-md px-3 py-2 text-sm transition-colors ${
+                    currency === c
+                      ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)]'
+                      : 'text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]'
+                  }`}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="flex gap-1 rounded-lg border border-[color:var(--border)] p-1">
+            {RANGES.map((r) => (
+              // eslint-disable-next-line no-restricted-syntax -- stateful toggle/segmented selector
+              <button
+                key={r.key}
+                type="button"
+                onClick={() => selectRange(r.key)}
+                className={`rounded-md px-3 py-2 text-sm transition-colors ${
+                  range === r.key
+                    ? 'bg-[color:var(--accent)] text-[color:var(--fg-on-dark)]'
+                    : 'text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]'
+                }`}
+              >
+                {t(`ranges.${r.labelKey}`)}
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 
@@ -290,8 +344,33 @@ export default function UsageDashboardPage(): React.ReactElement {
             </section>
           )}
 
-          <section className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Kpi label={t('kpi.totalCost')} value={usd(data.totals.costUsd)} />
+          <section className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+            <Kpi
+              label={t('kpi.totalCost')}
+              value={money(data.totals.costUsd)}
+              hint={
+                eurPerUsd !== null && fx
+                  ? t('currency.converted', {
+                      usd: usd(data.totals.costUsd),
+                      // A publication day, not an instant: formatted at noon
+                      // UTC so no zone shifts it to the day before.
+                      date: format.dateTime(new Date(`${fx.date}T12:00:00Z`), {
+                        dateStyle: 'medium',
+                        timeZone: 'UTC',
+                      }),
+                    })
+                  : undefined
+              }
+            />
+            {/* Net of the cache-write premium, metered calls only — so it
+                compares to the billed total beside it. */}
+            <Kpi
+              label={t('kpi.cacheSavings')}
+              value={money(cacheSavingsUsd)}
+              hint={t('kpi.cacheSavingsHint', {
+                uncached: money(data.totals.costUsd + cacheSavingsUsd),
+              })}
+            />
             <Kpi label={t('kpi.calls')} value={compact(data.totals.calls)} />
             <Kpi
               label={t('kpi.cacheHitRate')}
@@ -319,7 +398,7 @@ export default function UsageDashboardPage(): React.ReactElement {
               </p>
               <p className="mt-1">
                 {t('subscription.explainer', {
-                  reference: usd(data.totals.referenceCostUsd),
+                  reference: money(data.totals.referenceCostUsd),
                 })}
               </p>
             </section>
@@ -335,7 +414,7 @@ export default function UsageDashboardPage(): React.ReactElement {
                 label={(b) =>
                   t('barTitle', {
                     date: bucketLabel(new Date(b.bucket), bucketSize),
-                    cost: usd(b.costUsd),
+                    cost: money(b.costUsd),
                     calls: b.calls,
                   })
                 }
@@ -346,10 +425,10 @@ export default function UsageDashboardPage(): React.ReactElement {
 
           <div className="mt-6 grid gap-6 lg:grid-cols-2">
             <Panel title={t('panels.byModel')}>
-              <BreakdownTable rows={data.byModel} max={maxModelCost} />
+              <BreakdownTable rows={data.byModel} max={maxModelCost} money={money} />
             </Panel>
             <Panel title={t('panels.bySource')}>
-              <BreakdownTable rows={data.bySource} max={maxSourceCost} />
+              <BreakdownTable rows={data.bySource} max={maxSourceCost} money={money} />
             </Panel>
           </div>
         </>
@@ -432,9 +511,16 @@ function Empty(): React.ReactElement {
   return <p className="text-sm text-[color:var(--fg-muted)]">{t('empty')}</p>;
 }
 
-function BreakdownTable({ rows, max }: { rows: UsageByKey[]; max: number }): React.ReactElement {
+interface BreakdownTableProps {
+  rows: UsageByKey[];
+  max: number;
+  /** The page's money formatter, so rows use the currency the page shows. */
+  money: (n: number) => string;
+}
+
+function BreakdownTable({ rows, max, money }: BreakdownTableProps): React.ReactElement {
   const t = useTranslations('adminUsage');
-  const { usd, compact } = useUsageFormatters();
+  const { compact } = useUsageFormatters();
   if (rows.length === 0) return <Empty />;
   // #1393 — a grouped row gets a readable name instead of its raw key.
   const rowLabel = (r: UsageByKey): string =>
@@ -465,7 +551,7 @@ function BreakdownTable({ rows, max }: { rows: UsageByKey[]; max: number }): Rea
               {/* #1389 — a row with no priced call has no cost to show; $0.00
                   would be a price. */}
               <span className="tabular-nums text-[color:var(--fg-strong)]">
-                {(r.unpricedCalls ?? 0) >= r.calls ? t('unpriced.noCost') : usd(r.costUsd)}
+                {(r.unpricedCalls ?? 0) >= r.calls ? t('unpriced.noCost') : money(r.costUsd)}
               </span>
             </span>
           </div>
@@ -486,7 +572,9 @@ function BreakdownTable({ rows, max }: { rows: UsageByKey[]; max: number }): Rea
             {/* #1393 — subscription calls bill $0; say what they would have
                 cost. Worded as the subscription share, because a row can mix
                 metered and subscription calls on one model id. */}
-            {r.referenceCostUsd > 0 && t('rowReference', { reference: usd(r.referenceCostUsd) })}
+            {r.referenceCostUsd > 0 && t('rowReference', { reference: money(r.referenceCostUsd) })}
+            {(r.cacheSavingsUsd ?? 0) !== 0 &&
+              t('rowCacheSavings', { saving: money(r.cacheSavingsUsd ?? 0) })}
           </div>
         </li>
       ))}

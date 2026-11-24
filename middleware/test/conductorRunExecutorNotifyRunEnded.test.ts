@@ -39,6 +39,9 @@ function makeHarness(opts: { isDryRun: boolean; fallbackTransitionId?: string | 
     endedAt: null,
     cancelRequestedBy: null,
     cancelRequestedAt: null,
+    // #1699 — the stored failure cause; null on a run that has not failed.
+    errorCode: null,
+    errorMessage: null,
   };
   const awaitRow = {
     id: 'aw1', runId: 'run1', stepId: 'h1', principalKind: 'user', principalRef: 'alice',
@@ -107,7 +110,7 @@ describe('ConductorRunExecutor — notifyRunEnded (issue #437)', () => {
     let run: ConductorRun & { status: RunStatus } = {
       id: 'run1', workflowVersionId: 'v1', status: 'waiting', currentStepId: 'h1', context: {},
       triggerKind: 'manual', triggerSource: null, isDryRun: false, startedAt: new Date(0), endedAt: null,
-      cancelRequestedBy: null, cancelRequestedAt: null,
+      cancelRequestedBy: null, cancelRequestedAt: null, errorCode: null, errorMessage: null,
     };
     const awaitRow = {
       id: 'aw1', runId: 'run1', stepId: 'h1', principalKind: 'user', principalRef: 'alice',

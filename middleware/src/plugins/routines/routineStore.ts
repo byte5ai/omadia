@@ -38,6 +38,10 @@ export interface Routine {
    * plugins its orchestrator is granted. `null` = the standard orchestrator.
    */
   agentSlug?: string | null;
+  /** #2082 — the deadline of the routine's trigger (migration 0006). */
+  until?: Date | null;
+  /** #2082 — when the owner was asked whether the routine should go on. */
+  renewalAskedAt?: Date | null;
 }
 
 export interface CreateRoutineInput {
@@ -110,13 +114,16 @@ interface RoutineRow {
   output_template: unknown;
   /** #1598 — migration 0005. */
   agent_slug: string | null;
+  /** #2082 — migration 0006. */
+  until: Date | null;
+  renewal_asked_at: Date | null;
 }
 
 const SELECT_COLUMNS = `
   id, tenant, user_id, name, cron, prompt, channel, conversation_ref,
   status, timeout_ms, created_at, updated_at,
   last_run_at, last_run_status, last_run_error,
-  output_template, agent_slug
+  output_template, agent_slug, until, renewal_asked_at
 `;
 
 function rowToRoutine(row: RoutineRow): Routine {
@@ -152,6 +159,8 @@ function rowToRoutine(row: RoutineRow): Routine {
     lastRunError: row.last_run_error,
     outputTemplate,
     agentSlug: row.agent_slug ?? null,
+    until: row.until ?? null,
+    renewalAskedAt: row.renewal_asked_at ?? null,
   };
 }
 
@@ -402,6 +411,51 @@ export class RoutineStore {
             RETURNING ${SELECT_COLUMNS}`,
           [id, status],
         );
+    const row = result.rows[0];
+    return row ? rowToRoutine(row) : null;
+  }
+
+  /**
+   * #2082 — set the deadline of a routine's trigger. A new deadline clears
+   * the renewal question, so the owner is asked again before it ends.
+   */
+  async setUntil(id: string, until: Date | null): Promise<Routine | null> {
+    const result = await this.pool.query<RoutineRow>(
+      `UPDATE routines SET until = $2, renewal_asked_at = NULL, updated_at = now()
+        WHERE id = $1 RETURNING ${SELECT_COLUMNS}`,
+      [id, until],
+    );
+    const row = result.rows[0];
+    return row ? rowToRoutine(row) : null;
+  }
+
+  /** #2082 — active routines whose deadline lies before `before`. */
+  async listActiveEndingBefore(before: Date): Promise<Routine[]> {
+    const result = await this.pool.query<RoutineRow>(
+      `SELECT ${SELECT_COLUMNS} FROM routines
+        WHERE status = 'active' AND until IS NOT NULL AND until < $1
+        ORDER BY until`,
+      [before],
+    );
+    return result.rows.map(rowToRoutine);
+  }
+
+  /** #2082 — the owner was asked about renewal (once per deadline). */
+  async markRenewalAsked(id: string, at: Date): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE routines SET renewal_asked_at = $2 WHERE id = $1 AND renewal_asked_at IS NULL`,
+      [id, at],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  /** #2082 — the deadline passed: paused, with an error that says so. */
+  async markExpired(id: string, message: string): Promise<Routine | null> {
+    const result = await this.pool.query<RoutineRow>(
+      `UPDATE routines SET status = 'paused', last_run_error = $2, updated_at = now()
+        WHERE id = $1 AND status = 'active' RETURNING ${SELECT_COLUMNS}`,
+      [id, message],
+    );
     const row = result.rows[0];
     return row ? rowToRoutine(row) : null;
   }

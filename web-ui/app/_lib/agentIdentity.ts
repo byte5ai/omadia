@@ -98,6 +98,9 @@ export interface AgentIdentityFieldsDto {
   /** Per-agent answer size; `null`/absent = inherit the installation default.
    *  Optional so a middleware that predates the column still parses. */
   verbosity?: AnswerVerbosity | null;
+  /** #2043 — BCP 47 tag the agent speaks (`de`, `en-GB`); `null`/absent =
+   *  the installation language. Optional for a middleware without the column. */
+  language?: string | null;
   /** The 12-axis character block — same shape the Agent Builder writes. */
   persona: PersonaConfig | null;
   /** Boundaries + sycophancy — same shape the Agent Builder writes. */
@@ -176,6 +179,9 @@ export interface AgentIdentityInput {
   instructions: string | null;
   accent_color: string | null;
   verbosity: AnswerVerbosity | null;
+  /** Absent = keep the stored language; `null` = clear it (installation
+   *  language). The one field of this PUT that is not replaced wholesale. */
+  language?: string | null;
   persona: PersonaConfig | null;
   quality: QualityConfig | null;
 }
@@ -301,7 +307,17 @@ export async function deleteAgentAvatar(
 export function avatarPreviewUrl(
   identity: AgentIdentityFieldsDto,
 ): string | null {
-  if (!identity.avatar) return null;
-  const path = identity.avatar.url.replace(/^\/api\//, '/bot-api/');
-  return `${path}?v=${identity.avatar.etag.slice(0, 16)}`;
+  return agentAvatarImageUrl(identity.avatar);
+}
+
+/**
+ * The same URL for any `{ etag, url }` avatar reference — the identity DTO and
+ * the agent lists (picker, directory) report it in the same shape.
+ */
+export function agentAvatarImageUrl(
+  avatar: { etag: string; url: string } | null | undefined,
+): string | null {
+  if (!avatar) return null;
+  const path = avatar.url.replace(/^\/api\//, '/bot-api/');
+  return `${path}?v=${avatar.etag.slice(0, 16)}`;
 }

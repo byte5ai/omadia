@@ -1,6 +1,7 @@
 import type {
   JsonObject,
   JsonValue,
+  Predicate,
   Step,
   TriggerKind,
 } from '@omadia/conductor-core';
@@ -10,6 +11,14 @@ export interface StepExecution {
   result: JsonValue;
   /** audit actor record persisted on the run step. */
   actor: JsonValue;
+  /**
+   * Exit postcondition to apply when the STEP declares none (issue #1703). Set by an
+   * effect whose result carries its own success flag — `webhook.post`, whose
+   * `{ ok: false, status }` must not advance the graph like a delivered one. The
+   * executor hands it to `nextStep`, which treats it as a default and never an
+   * override; absent here, the engine's "absent ≡ always met" rule is unchanged.
+   */
+  defaultPostcondition?: Predicate;
 }
 
 /** Per-call context the executor passes to effects (for session bucketing / tracing). */

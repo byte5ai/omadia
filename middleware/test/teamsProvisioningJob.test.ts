@@ -135,9 +135,21 @@ interface StubBehaviour {
   uploadToCatalog?: () => Promise<void> | void;
   installToTeam?: () => Promise<void> | void;
   catalogAppFound?: string;
+  /** The version the catalog reports for the entry (connector >= 0.6). */
+  publishedVersion?: string;
+  /** The catalog entry the row names was deleted behind our back. */
+  catalogEmpty?: boolean;
 }
 
-function makeProvisioner(behaviour: StubBehaviour = {}): StubProvisioner {
+/**
+ * The stub's catalog behaves like one: an entry exists when the test says so,
+ * when the row under test already names one (`preexisting`, a resume), or
+ * once this run uploaded it.
+ */
+function makeProvisioner(behaviour: StubBehaviour = {}, preexisting?: string | null): StubProvisioner {
+  let inCatalog: string | undefined =
+    behaviour.catalogEmpty === true ? undefined : (behaviour.catalogAppFound ?? preexisting ?? undefined);
+  let version = behaviour.publishedVersion;
   const calls: string[] = [];
   return {
     calls,
@@ -175,12 +187,19 @@ function makeProvisioner(behaviour: StubBehaviour = {}): StubProvisioner {
     async uploadToCatalog(input) {
       calls.push(`uploadToCatalog:${input.externalId}`);
       await behaviour.uploadToCatalog?.();
-      return { outcome: 'created', value: { teamsAppId: 'catalog-77' } };
+      inCatalog ??= 'catalog-77';
+      // An upload publishes what was built: the entry is current afterwards.
+      version = undefined;
+      return { outcome: 'created', value: { teamsAppId: inCatalog } };
     },
     async getCatalogApp(input) {
       calls.push(`getCatalogApp:${input.teamsAppExternalId}`);
-      if (behaviour.catalogAppFound) {
-        return { found: true, teamsAppId: behaviour.catalogAppFound };
+      if (inCatalog !== undefined) {
+        return {
+          found: true,
+          teamsAppId: inCatalog,
+          ...(version !== undefined ? { publishedVersion: version } : {}),
+        };
       }
       return { found: false };
     },
@@ -279,7 +298,7 @@ function makeRunner(opts: {
   resolveTeamName?: (teamId: string) => Promise<string | null>;
 } = {}): RunnerFixture {
   const store = makeStore(opts.storeOverrides);
-  const provisioner = makeProvisioner(opts.behaviour);
+  const provisioner = makeProvisioner(opts.behaviour, opts.storeOverrides?.teamsAppId);
   const timers = immediateTimers();
   const runner = new TeamsProvisioningJobRunner({
     store,
@@ -413,7 +432,12 @@ describe('TeamsProvisioningJobRunner — chain and resume', () => {
     });
     const result = await runner.enqueue(REQUEST);
     assert.equal(result.status, 'installed');
-    assert.deepEqual(provisioner.calls, ['installToTeam:team-42:catalog-known']);
+    // One catalog read first since #2043 D9: is the published package still
+    // the one this run would build? It is, so nothing is rebuilt.
+    assert.deepEqual(provisioner.calls, [
+      'getCatalogApp:external-abc',
+      'installToTeam:team-42:catalog-known',
+    ]);
   });
 
   it('reuses an existing catalog app instead of uploading again', async () => {
@@ -459,7 +483,7 @@ describe('TeamsProvisioningJobRunner — chain and resume', () => {
     const result = await runner.enqueue(REQUEST);
     assert.equal(result.status, 'installed');
     // Exactly the per-team step — nothing re-registered, nothing re-uploaded.
-    assert.deepEqual(provisioner.calls, ['installToTeam:team-42:c']);
+    assert.deepEqual(provisioner.calls, ['getCatalogApp:external-abc', 'installToTeam:team-42:c']);
     // …and the binding is recorded, with the name resolved while we were there.
     assert.deepEqual(
       installs.rows.map((row) => [row.teamId, row.teamDisplayName]),
@@ -1029,14 +1053,90 @@ describe('TeamsProvisioningJobRunner — teams_bots config sync (#910)', () => {
     });
     const result = await runner.enqueue(REQUEST);
     assert.equal(result.status, 'installed');
-    assert.equal(seen.length, 1);
-    // The record handed over is the row AFTER the terminal write, so the
-    // provisioned app/tenant are on it — a projection built from a pre-install
-    // snapshot would be `null` and silently write nothing.
-    assert.equal(seen[0]?.state, 'installed');
-    assert.ok(seen[0]?.appId);
-    assert.ok(seen[0]?.tenantId);
+    // Twice since #2043 D6: once before the install (the app is published, so
+    // the bot must be served), once after the terminal write.
+    assert.deepEqual(seen.map((row) => row.state), ['catalog_uploaded', 'installed']);
+    // Both records carry the provisioned app/tenant — a projection built from
+    // a row without them would be `null` and silently write nothing.
+    for (const row of seen) {
+      assert.ok(row.appId);
+      assert.ok(row.tenantId);
+    }
     assert.equal(store.row?.lastError, null);
+  });
+
+  it('#2043 D6 — a published bot is served even when the install is refused', async () => {
+    // Found at the rollout: the team refused the install (consent check), the
+    // catalog app was published by then and a user added it personally. The
+    // `teams_bots` entry was only written after a successful install, so the
+    // channel logged "unknown botSlug" and the bot never answered.
+    const seen: string[] = [];
+    const events: string[] = [];
+    const { runner, store } = makeRunner({
+      syncBotConfig: async (identity) => {
+        seen.push(`${identity.state}:${identity.botSlug}:${String(identity.appId)}`);
+        return { status: 'synced' };
+      },
+      behaviour: {
+        installToTeam: async () => {
+          events.push(`install after ${String(seen.length)} sync(s)`);
+          throw namedError('ProvisioningRequestError', 'graph teams.installedApps.add 403 Forbidden', {
+            status: 403,
+            step: 'teams.installedApps.add',
+          });
+        },
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'failed');
+    assert.equal(store.row?.state, 'failed');
+    assert.equal(seen.length, 1, 'written once, before the install');
+    assert.match(seen[0] ?? '', /^catalog_uploaded:[^:]+:app-123$/);
+    assert.deepEqual(events, ['install after 1 sync(s)']);
+  });
+
+  it('#2043 D6 — a failing early write neither fails nor delays the install, and leaves no warning behind', async () => {
+    let calls = 0;
+    const { runner, store, provisioner } = makeRunner({
+      syncBotConfig: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('registry is busy');
+        return { status: 'synced' };
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'installed');
+    assert.ok(provisioner.calls.some((call) => call.startsWith('installToTeam:')));
+    assert.equal(calls, 2, 'the sync that ends the run still runs and writes it');
+    assert.equal(store.row?.lastError, null);
+  });
+
+  it('#2043 D6 — a re-run of a row that failed at the install writes the entry too', async () => {
+    const seen: string[] = [];
+    const { runner } = makeRunner({
+      storeOverrides: {
+        state: 'failed',
+        appId: 'app-123',
+        tenantId: 'tenant-9',
+        teamsAppId: 'catalog-77',
+        teamsAppExternalId: 'external-abc',
+      },
+      syncBotConfig: async (identity) => {
+        seen.push(identity.state);
+        return { status: 'synced' };
+      },
+      behaviour: {
+        installToTeam: async () => {
+          throw namedError('ProvisioningRequestError', 'graph teams.installedApps.add 403 Forbidden', {
+            status: 403,
+            step: 'teams.installedApps.add',
+          });
+        },
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'failed');
+    assert.equal(seen.length, 1, 'the bot of the existing catalog app is served now');
   });
 
   it('keeps the run installed and records an ACTIONABLE warning when the write fails', async () => {
@@ -1596,6 +1696,85 @@ describe('TeamsProvisioningJobRunner — catalog replication window', () => {
       provisioner.calls.filter((c) => c.startsWith('uploadToCatalog')).length,
       1,
     );
+  });
+
+  it('#2043 D12 — rides out a 404 NotFound two seconds after the upload as well', async () => {
+    // Found at the rollout: catalog upload at :14, install at :14-:16 → 404
+    // NotFound, run failed; the identical re-run 53 s later went through.
+    let installs = 0;
+    const notFound = (): Error =>
+      namedError(
+        'ProvisioningRequestError',
+        'graph teams.installedApps.add 404 POST https://graph.microsoft.com/v1.0/teams/team-42/installedApps body={"error":{"code":"NotFound","message":""}}',
+        { resource: 'graph', step: 'teams.installedApps.add', status: 404 },
+      );
+    const { runner, store, timers } = makeRunner({
+      catalogReplicationDelayMs: 10,
+      behaviour: {
+        installToTeam: () => {
+          installs += 1;
+          return installs <= 1 ? Promise.reject(notFound()) : undefined;
+        },
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'installed');
+    assert.equal(installs, 2);
+    assert.equal(store.row?.lastError, null);
+    assert.deepEqual(timers.delays, [10], 'one bounded wait, of the replication kind');
+  });
+
+  it('#2043 D12 — the wait is bounded: a 404 that never goes away fails with what it is', async () => {
+    let installs = 0;
+    const { runner, store } = makeRunner({
+      catalogReplicationAttempts: 2,
+      catalogReplicationDelayMs: 10,
+      behaviour: {
+        installToTeam: () => {
+          installs += 1;
+          return Promise.reject(
+            namedError('ProvisioningRequestError', 'graph teams.installedApps.add 404 body={"error":{"code":"NotFound"}}', {
+              resource: 'graph',
+              step: 'teams.installedApps.add',
+              status: 404,
+            }),
+          );
+        },
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'failed');
+    assert.equal(installs, 3, 'two waits, then the verdict');
+    assert.match(store.row?.lastError ?? '', /still refused after waiting 2 times/);
+  });
+
+  it('#2043 D12 — a 404 on a run that did NOT publish the entry is a verdict at once', async () => {
+    let installs = 0;
+    const { runner } = makeRunner({
+      storeOverrides: {
+        state: 'catalog_uploaded',
+        appId: 'app-123',
+        tenantId: 'tenant-9',
+        teamsAppId: 'catalog-77',
+        teamsAppExternalId: 'external-abc',
+      },
+      catalogReplicationDelayMs: 10,
+      behaviour: {
+        installToTeam: () => {
+          installs += 1;
+          return Promise.reject(
+            namedError('ProvisioningRequestError', 'graph teams.installedApps.add 404 body={"error":{"code":"NotFound"}}', {
+              resource: 'graph',
+              step: 'teams.installedApps.add',
+              status: 404,
+            }),
+          );
+        },
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'failed');
+    assert.equal(installs, 1);
   });
 
   it('a 400 that NAMES a configuration reason still fails on attempt 1', async () => {

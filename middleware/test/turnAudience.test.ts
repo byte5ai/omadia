@@ -65,6 +65,42 @@ describe('resolveTurnAudience', () => {
     assert.ok(members.includes(omadiaUserId));
   });
 
+  for (const channelType of ['slack', 'discord', 'whatsapp', 'imessage']) {
+    it(`a ${channelType} group with a complete roster has a known audience (#2042)`, async () => {
+      const kg = new InMemoryKnowledgeGraph();
+      const roster = (ids: string[]): ChatParticipant[] =>
+        ids.map((id) => ({
+          channelUserId: id,
+          aadObjectId: null,
+          displayName: id,
+          email: null,
+          userPrincipalName: null,
+        }));
+      const audience = await resolveTurnAudience(
+        kg,
+        { userId: 'u1', origin: { channelType, scope: parseSessionScope('c1') } },
+        provider(roster(['u1', 'u2']), true),
+      );
+      assert.equal(audience.kind, 'known');
+      assert.equal(audience.kind === 'known' ? audience.members.length : 0, 2);
+    });
+  }
+
+  for (const channelType of ['slack', 'discord', 'whatsapp', 'imessage']) {
+    it(`a ${channelType} group whose roster is not complete has an unknown audience (#2042)`, async () => {
+      const kg = new InMemoryKnowledgeGraph();
+      const audience = await resolveTurnAudience(
+        kg,
+        { userId: 'u1', origin: { channelType, scope: parseSessionScope('c1') } },
+        provider(
+          [{ channelUserId: 'u1', aadObjectId: null, displayName: 'u1', email: null, userPrincipalName: null }],
+          false,
+        ),
+      );
+      assert.deepEqual(audience, { kind: 'unknown', reason: 'roster-incomplete' });
+    });
+  }
+
   it('leaves agents out of the room', async () => {
     const kg = new InMemoryKnowledgeGraph();
     const audience = await resolveTurnAudience(

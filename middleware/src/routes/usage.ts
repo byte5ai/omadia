@@ -3,7 +3,7 @@ import type { Request, Response } from 'express';
 import type { Pool } from 'pg';
 import { z } from 'zod';
 
-import { getUsageDashboard } from '@omadia/usage-telemetry';
+import { createEcbEurRateSource, getUsageDashboard, type FxRate } from '@omadia/usage-telemetry';
 
 /**
  * Cost-telemetry read surface for the web-ui dashboard. Mounted at
@@ -11,6 +11,7 @@ import { getUsageDashboard } from '@omadia/usage-telemetry';
  * ledger written by @omadia/usage-telemetry.
  *
  *   GET /dashboard?since&until&bucket&tz   totals + per-model + per-source + series
+ *                                          + `fx` (ECB USD→EUR rate, or null)
  *
  * `since`/`until` are ISO timestamps (omit for all-time); `bucket` is
  * 'hour' | 'day' (default 'hour'); `tz` is the IANA zone the buckets are cut in
@@ -61,8 +62,40 @@ function requireSessionUserId(req: Request, res: Response): string | null {
   return id;
 }
 
-export function createUsageRouter(deps: { pool: Pool }): Router {
+export interface UsageRouterDeps {
+  readonly pool: Pool;
+  /**
+   * USD→EUR rate for the EUR view. Defaults to the cached ECB daily rate;
+   * `USAGE_FX_DISABLED=true` turns that outbound call off (no EUR view).
+   */
+  readonly eurRate?: () => Promise<FxRate | null>;
+}
+
+/**
+ * How long the dashboard waits for a rate refresh before answering without
+ * one. The refresh keeps running and fills the cache for the next load, so a
+ * slow or unreachable ECB never slows the page down by more than this.
+ */
+const FX_WAIT_MS = 1500;
+
+function defaultEurRate(): () => Promise<FxRate | null> {
+  if (process.env['USAGE_FX_DISABLED'] === 'true') return async () => null;
+  return createEcbEurRateSource();
+}
+
+function withinBudget<T>(p: Promise<T | null>, ms: number): Promise<T | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    void p.then((v) => {
+      clearTimeout(timer);
+      resolve(v);
+    });
+  });
+}
+
+export function createUsageRouter(deps: UsageRouterDeps): Router {
   const router = Router();
+  const eurRate = deps.eurRate ?? defaultEurRate();
 
   router.get('/dashboard', async (req: Request, res: Response) => {
     if (!requireSessionUserId(req, res)) return;
@@ -80,6 +113,8 @@ export function createUsageRouter(deps: { pool: Pool }): Router {
       if (parsed.data.until !== undefined) window.until = parsed.data.until;
       const bucket = parsed.data.bucket ?? 'hour';
       const tz = parsed.data.tz ?? 'UTC';
+      // Started alongside the queries; it never throws (null = USD only).
+      const fx = withinBudget(eurRate(), FX_WAIT_MS);
       let dashboard;
       try {
         dashboard = await getUsageDashboard(deps.pool, window, bucket, tz);
@@ -90,7 +125,7 @@ export function createUsageRouter(deps: { pool: Pool }): Router {
         console.warn(`[usage] time zone '${tz}' unknown to Postgres — bucketing in UTC`);
         dashboard = await getUsageDashboard(deps.pool, window, bucket, 'UTC');
       }
-      res.json(dashboard);
+      res.json({ ...dashboard, fx: await fx });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ code: 'usage.dashboard_failed', message });

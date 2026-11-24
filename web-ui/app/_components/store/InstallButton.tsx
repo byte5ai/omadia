@@ -52,6 +52,11 @@ import {
 } from './setupForm';
 import { Markdown } from '../Markdown';
 import { Button } from '@/app/_components/ui/Button';
+import { ConfirmDialog } from '@/app/_components/ConfirmDialog';
+import { parsePluginArchetype, type PluginArchetype } from '@/app/_lib/archetypes';
+
+import { ArchetypeInstallConfirm } from './ArchetypeInstallConfirm';
+import { SystemModuleInstallConfirm } from './SystemModuleInstallConfirm';
 import { RemovePackageAction } from './RemovePackageAction';
 import { useStoreErrorText } from './useStoreErrorText';
 import { errorHelpLine } from '../../_lib/errorHelp';
@@ -115,6 +120,12 @@ type Phase =
       activation?: { code: unknown; detail: string | null };
     }
   | { kind: 'wizard'; resolution: InstallChainResolution }
+  /** #2088 — the plugin is an archetype plugin: the middleware refused the
+   *  install until the operator confirms that a new kind of agent is added.
+   *  `busy` while the confirmed install job is being created. */
+  | { kind: 'confirm_archetype'; archetype: PluginArchetype; busy: boolean }
+  /** Spec 2042 §5.10 — a system module is installed on confirmation only. */
+  | { kind: 'confirm_system_module'; busy: boolean }
   /** Epic #470 C16 (#817) — the install succeeded and the manifest asks for at
    *  least one operator grant. Entered INSTEAD of `success`, so a plugin is
    *  never quietly left in the state issue #817 describes: installed, asking
@@ -158,6 +169,8 @@ export function InstallButton({
     phase.kind === 'submitting' ||
     phase.kind === 'error' ||
     phase.kind === 'permissions' ||
+    phase.kind === 'confirm_archetype' ||
+    phase.kind === 'confirm_system_module' ||
     phase.kind === 'creating';
 
   // --- visual dispatch -----------------------------------------------------
@@ -254,6 +267,7 @@ export function InstallButton({
           fieldErrors={fieldErrors}
           onClose={handleClose}
           onSubmit={handleSubmit}
+          onConfirmArchetype={handleConfirmArchetype}
           {...(setupGuideText ? { setupGuide: setupGuideText } : {})}
         />
       ) : null}
@@ -306,6 +320,21 @@ export function InstallButton({
       //   wizard with the verbatim payload, no client-side recursion.
       if (err instanceof ApiError && err.status === 409) {
         const parsed = tryParseErrorBody(err.body);
+        // #2088 — an archetype plugin: show what it adds and ask before
+        // anything is installed.
+        if (parsed?.code === 'install.archetype_confirmation_required') {
+          const archetype = parsePluginArchetype(
+            (parsed.details as { archetype?: unknown } | undefined)?.archetype,
+          );
+          if (archetype) {
+            setPhase({ kind: 'confirm_archetype', archetype, busy: false });
+            return;
+          }
+        }
+        if (parsed?.code === 'install.system_module_confirmation_required') {
+          setPhase({ kind: 'confirm_system_module', busy: false });
+          return;
+        }
         if (parsed?.code === 'install.missing_capability' && parsed.details) {
           const resolution = parsed.details as InstallChainResolution;
           if (
@@ -324,6 +353,18 @@ export function InstallButton({
         (err instanceof ApiError ? registryUnavailableMessage(err.body, t) : null) ??
         errorText(err);
       setPhase({ kind: 'error', job: null, message });
+    }
+  }
+
+  /** #2088 — the operator confirmed the archetype: create the job for real. */
+  async function handleConfirmArchetype(): Promise<void> {
+    if ((phase.kind !== 'confirm_archetype' && phase.kind !== 'confirm_system_module') || phase.busy) return;
+    setPhase({ ...phase, busy: true });
+    try {
+      const resp = await createInstallJob(pluginId, { confirmArchetype: true });
+      setPhase({ kind: 'form', job: resp.job });
+    } catch (err) {
+      setPhase({ kind: 'error', job: null, message: errorText(err) });
     }
   }
 
@@ -563,12 +604,17 @@ function InstalledPanel({
     | null
   >(null);
 
-  async function doUpdate(): Promise<void> {
+  // #2088 (D32) — an update that changes what the plugin is to the instance
+  // is refused until confirmed; the refusal says what is being confirmed.
+  const [updateConfirm, setUpdateConfirm] = useState<{ reasons: ArchetypeUpdateReason[] } | null>(null);
+
+  async function doUpdate(confirmArchetype = false): Promise<void> {
     if (!update) return;
     setUpdating(true);
     setUpdateError(null);
     try {
-      const res = await installFromRegistry(pluginId, update.to);
+      const res = await installFromRegistry(pluginId, update.to, confirmArchetype ? { confirmArchetype: true } : {});
+      setUpdateConfirm(null);
       // #1452 — the ingest succeeded and the new version did not come up. The
       // middleware has flipped the registry entry to `errored`, so the refresh
       // below now repaints an honest badge; naming the reason here is what
@@ -590,6 +636,14 @@ function InstalledPanel({
       }
       router.refresh();
     } catch (err) {
+      if (err instanceof ApiError && err.status === 409 && !confirmArchetype) {
+        const parsed = tryParseErrorBody(err.body);
+        if (parsed?.code === 'package.archetype_confirmation_required') {
+          setUpdateConfirm({ reasons: parseArchetypeUpdateReasons(parsed.details) });
+          return;
+        }
+      }
+      setUpdateConfirm(null);
       // #1477 — e.g. a refused downgrade or an incompatible core, now with
       // the same code + params as the upload, in the operator's locale.
       // #1518 — an unreachable registry has its own copy, checked first.
@@ -683,6 +737,26 @@ function InstalledPanel({
         </p>
       ) : null}
       {update ? (
+        <ConfirmDialog
+          open={updateConfirm !== null}
+          tone="danger"
+          title={t('updateConfirmTitle', { name: pluginName, version: update.to })}
+          confirmLabel={t('updateConfirmYes')}
+          cancelLabel={t('updateConfirmNo')}
+          busy={updating}
+          busyLabel={t('updating')}
+          onConfirm={() => void doUpdate(true)}
+          onCancel={() => setUpdateConfirm(null)}
+        >
+          <p className="text-[13px]">{t('updateConfirmIntro')}</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-[13px]" data-testid="archetype-update-reasons">
+            {(updateConfirm?.reasons ?? []).map((reason) => (
+              <li key={reason}>{t(UPDATE_REASON_KEY[reason])}</li>
+            ))}
+          </ul>
+        </ConfirmDialog>
+      ) : null}
+      {update ? (
         <div className="rounded-md border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-4 py-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="flex items-center gap-2 text-[13px] text-[color:var(--fg)]">
@@ -752,10 +826,12 @@ function InstalledPanel({
         />
       ) : null}
 
-      {/* OM-06/07 — installing is not the finish line: a plugin does nothing
-          until it is attached to an orchestrator. Mirrors the skill-import
-          success flow in DashboardOnboarding → BringYourSkills. */}
+      {/* OM-06/07 — installing is not the finish line: a capability does
+          nothing until it is granted to an agent (#2054: the install itself
+          grants it to none). Mirrors the skill-import success flow in
+          DashboardOnboarding → BringYourSkills. */}
       <PostInstallNextSteps
+        pluginId={pluginId}
         pluginName={pluginName}
         {...(readiness ? { readiness } : {})}
         {...(kind ? { kind } : {})}
@@ -909,6 +985,8 @@ interface InstallDrawerProps {
     values: Record<string, unknown>,
     jsonFiles?: Record<string, string>,
   ) => void | Promise<void>;
+  /** #2088 — the operator confirmed the archetype of an archetype plugin. */
+  onConfirmArchetype: () => void | Promise<void>;
   /** Markdown setup guide rendered above the fields. */
   setupGuide?: string;
 }
@@ -956,6 +1034,7 @@ function InstallDrawer({
   fieldErrors,
   onClose,
   onSubmit,
+  onConfirmArchetype,
   setupGuide,
 }: InstallDrawerProps): React.ReactElement {
   const t = useTranslations('store.install');
@@ -1046,6 +1125,25 @@ function InstallDrawer({
              would invite an edit the wizard can no longer apply. */
           <div className="min-h-0 flex-1 overflow-y-auto p-8">
             <PermissionsStep grants={phase.grants} onFinish={onClose} />
+          </div>
+        ) : phase.kind === 'confirm_archetype' ? (
+          <div className="min-h-0 flex-1 overflow-y-auto p-8">
+            <ArchetypeInstallConfirm
+              pluginName={pluginName}
+              archetype={phase.archetype}
+              busy={phase.busy}
+              onConfirm={onConfirmArchetype}
+              onCancel={onClose}
+            />
+          </div>
+        ) : phase.kind === 'confirm_system_module' ? (
+          <div className="min-h-0 flex-1 overflow-y-auto p-8">
+            <SystemModuleInstallConfirm
+              pluginName={pluginName}
+              busy={phase.busy}
+              onConfirm={onConfirmArchetype}
+              onCancel={onClose}
+            />
           </div>
         ) : phase.kind === 'error' && !jobFromPhase ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-8">
@@ -1181,6 +1279,22 @@ function InstallErrorBlock({
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+type ArchetypeUpdateReason = 'becomes_archetype' | 'descriptor_changed' | 'moves_database';
+
+const UPDATE_REASON_KEY = {
+  becomes_archetype: 'updateReasonBecomesArchetype',
+  descriptor_changed: 'updateReasonDescriptorChanged',
+  moves_database: 'updateReasonMovesDatabase',
+} as const;
+
+/** The reasons the middleware names; one it does not know is dropped, and an
+ *  empty list still opens the dialog (the confirmation is required either way). */
+function parseArchetypeUpdateReasons(details: unknown): ArchetypeUpdateReason[] {
+  const raw = (details as { reasons?: unknown } | undefined)?.reasons;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((r): r is ArchetypeUpdateReason => typeof r === 'string' && r in UPDATE_REASON_KEY);
+}
 
 function tryParseErrorBody(body: string): {
   code?: string;

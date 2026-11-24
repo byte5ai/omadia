@@ -80,7 +80,8 @@ export function extractPermissionSurface(spec: AgentSpec): PermissionSurface {
     graphReads: new Set(graph?.reads ?? []),
     graphWrites: new Set(graph?.writes ?? []),
     graphEntitySystems: new Set(graph?.entity_systems ?? []),
-    subAgentCalls: new Set(spec.permissions?.subAgents?.calls ?? []),
+    // A Builder spec has no sub-agent calls any more (spec 2042 §5.4).
+    subAgentCalls: new Set<string>(),
     llmModels: new Set(spec.permissions?.llm?.models_allowed ?? []),
     networkOutbound: new Set(spec.network?.outbound ?? []),
     webScanner: spec.network?.web_scanner === true,

@@ -52,8 +52,7 @@ export interface SandboxRegistry {
  * In-memory `SandboxRegistry` — used by tests and by any deployment that
  * has not wired a durable store. Durability then reduces to whatever the
  * backend itself provides (for `DockerSandboxBackend`, its deterministic
- * naming) — a strictly weaker but still-correct posture, same trade-off
- * `InMemoryDirectLineStickyStore` documents elsewhere in this codebase.
+ * naming) — a strictly weaker but still-correct posture.
  */
 export class InMemorySandboxRegistry implements SandboxRegistry {
   private readonly entries = new Map<string, SandboxRegistryEntry>();

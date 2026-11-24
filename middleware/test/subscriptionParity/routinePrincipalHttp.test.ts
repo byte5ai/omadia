@@ -35,6 +35,7 @@ import type {
 } from '@omadia/orchestrator';
 
 import { createChatRouter } from '../../src/routes/chat.js';
+import { routeTurnFrom } from '../_helpers/webRouteTurn.js';
 import { routineTurnContext } from '../../src/plugins/routines/routineTurnContext.js';
 import type { ManageRoutineContext } from '../../src/plugins/routines/manageRoutineTool.js';
 import { listenLoopback } from '../_helpers/listenLoopback.js';
@@ -125,9 +126,10 @@ describe('OM-82 — routines principal on the HTTP chat path', () => {
     app.use(
       '/api',
       createChatRouter({
-        resolveChatAgent: (slug) =>
-          slug === SLUG || slug === OTHER_SLUG ? bridgeLikeChatAgent() : undefined,
-        getDefaultSlug: () => SLUG,
+        routeTurn: routeTurnFrom(
+          (slug) => (slug === SLUG || slug === OTHER_SLUG ? bridgeLikeChatAgent() : undefined),
+          () => SLUG,
+        ),
       }),
     );
     server = await listenLoopback(app);

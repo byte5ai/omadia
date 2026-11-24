@@ -130,7 +130,7 @@ describe('<RuntimeReadinessBanner />', () => {
     renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
     await flush();
 
-    expect(screen.getByText('Orchestrator nicht zugeordnet')).toBeInTheDocument();
+    expect(screen.getByText('Agent nicht zugeordnet')).toBeInTheDocument();
     expect(screen.queryByText(TITLE_DE)).not.toBeInTheDocument();
     expect(screen.getByText(/keinem Provider mit Zugang zugeordnet/)).toBeInTheDocument();
     expect(
@@ -150,7 +150,7 @@ describe('<RuntimeReadinessBanner />', () => {
     await flush();
 
     expect(screen.getByText(TITLE_DE)).toBeInTheDocument();
-    expect(screen.queryByText('Orchestrator nicht zugeordnet')).not.toBeInTheDocument();
+    expect(screen.queryByText('Agent nicht zugeordnet')).not.toBeInTheDocument();
   });
 
   // `unknown` is derived as "access AND assignment are set" — e.g. an invalid
@@ -163,7 +163,7 @@ describe('<RuntimeReadinessBanner />', () => {
     renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
     await flush();
 
-    expect(screen.getByText('Agent-Runtime antwortet nicht')).toBeInTheDocument();
+    expect(screen.getByText('Agentenlaufzeit antwortet nicht')).toBeInTheDocument();
     expect(screen.queryByText(TITLE_DE)).not.toBeInTheDocument();
     const card = screen.getByTestId('runtime-readiness-card');
     expect(card.dataset['cause']).toBe('unknown');

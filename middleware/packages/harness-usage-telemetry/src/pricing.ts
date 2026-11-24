@@ -242,6 +242,34 @@ export function computeCostUsd(model: string, usage: UsageTokens): number {
 }
 
 /**
+ * What prompt caching saved on a model's cache traffic, in USD: the cache
+ * reads billed at the full input rate instead of the cached rate, minus the
+ * premium the cache writes paid over the full input rate (Anthropic's 1.25×).
+ * Negative when a cache was written more than it was read.
+ *
+ * Takes summed counters, not a single call, so it prices at the model's BASE
+ * rates: the long-context tier is decided per call and cannot be recovered
+ * from a sum. For Haiku 5.5 calls above 100k that understates the saving —
+ * an underestimate, never a claim the ledger cannot back. Unknown models save
+ * nothing (and log nothing; {@link hasKnownPrice} is the gate).
+ */
+export function computeCacheSavingsUsd(
+  model: string,
+  cache: Pick<UsageTokens, 'cacheReadTokens' | 'cacheCreationTokens'>,
+): number {
+  if (!hasKnownPrice(model)) return 0;
+  const price = priceForModel(model);
+  const inRate = price.inputPerMTok / 1_000_000;
+  const cacheReadRate =
+    price.cachedInputPerMTok !== undefined
+      ? price.cachedInputPerMTok / 1_000_000
+      : inRate * CACHE_READ_MULTIPLIER;
+  const readSavings = cache.cacheReadTokens * (inRate - cacheReadRate);
+  const writePremium = cache.cacheCreationTokens * inRate * (CACHE_WRITE_MULTIPLIER - 1);
+  return Math.round((readSavings - writePremium) * 1e8) / 1e8;
+}
+
+/**
  * Normalises a raw Anthropic `message.usage` object (snake_case, nullable
  * fields) into the {@link UsageTokens} shape. Missing fields default to 0.
  */

@@ -1,6 +1,11 @@
 import yaml from 'yaml';
 
-import { type AgentSpec, type ToolSpec, validateSpecForCodegen } from './agentSpec.js';
+import {
+  type AgentSpec,
+  type ToolSpec,
+  effectivePluginKind,
+  validateSpecForCodegen,
+} from './agentSpec.js';
 import {
   loadBoilerplate,
   type BoilerplateBundle,
@@ -31,8 +36,8 @@ import { lookupServiceType } from './serviceTypeRegistry.js';
  *   3. Placeholder substitution: replace `{{TOKEN}}` against the map
  *      derived from `template.placeholders` (per spec) plus the per-tool
  *      placeholders if `spec.tools.length === 1`.
- *   4. Path placeholders: filenames like `skills/{{AGENT_SLUG}}-expert.md`
- *      get rewritten using the same map.
+ *   4. Path placeholders: filenames carrying `{{TOKEN}}` get rewritten
+ *      using the same map.
  *   5. No-residue check: any `{{TOKEN}}` left in any text file is an error.
  */
 
@@ -88,37 +93,6 @@ function deriveAgentSlug(spec: AgentSpec): string {
   // Split on `.` (legacy `de.byte5.agent.X`) or `/` (post-Welle-1 `@omadia/X`)
   // so the npm-scope namespace doesn't end up in generated filenames.
   return spec.id.split(/[./]/).pop() ?? spec.id;
-}
-
-// Insert a numeric suffix before the last extension of a target file path.
-//   skills/foo-expert.md, 1 → skills/foo-expert-1.md
-//   skills/foo-expert,    2 → skills/foo-expert-2  (no extension)
-//   skills/{{SLUG}}-expert.md, 1 → skills/{{SLUG}}-expert-1.md
-// Used by the partial-slot pipeline to derive output paths for synthesised
-// partial files from a base slot's target_file.
-export function partialTargetFile(baseTarget: string, n: number): string {
-  const lastSlash = baseTarget.lastIndexOf('/');
-  const dir = lastSlash >= 0 ? baseTarget.slice(0, lastSlash + 1) : '';
-  const filename = lastSlash >= 0 ? baseTarget.slice(lastSlash + 1) : baseTarget;
-  const lastDot = filename.lastIndexOf('.');
-  if (lastDot < 0) return `${dir}${filename}-${String(n)}`;
-  return `${dir}${filename.slice(0, lastDot)}-${String(n)}${filename.slice(lastDot)}`;
-}
-
-// Collect the indices of non-empty partial slots for a given base slot.
-// Returns numerically-ascending indices in [1, slot.max_partials] whose
-// `<slot.key>-<n>` entry is non-empty in allSlots.
-function filledPartialIndices(
-  slot: SlotDef,
-  allSlots: Readonly<Record<string, string>>,
-): number[] {
-  if (slot.max_partials <= 0) return [];
-  const out: number[] = [];
-  for (let n = 1; n <= slot.max_partials; n++) {
-    const v = allSlots[`${slot.key}-${String(n)}`];
-    if (v !== undefined && v.length > 0) out.push(n);
-  }
-  return out;
 }
 
 /**
@@ -236,13 +210,12 @@ function placeholderHintFor(rawSource: string): string {
   }
   if (source === 'depends_on[0]') {
     return 'Set spec.depends_on to an integration plugin id (e.g. ' +
-      'de.byte5.integration.confluence) — the agent-integration template ' +
+      '@omadia/integration-confluence) — the integration template ' +
       'requires at least one entry to wire the vault scope.';
   }
-  if (source === 'id') return 'Set spec.id to an npm-scoped name (e.g. @omadia/agent-example).';
-  if (source === 'name') return 'Set spec.name to a human-readable agent name.';
+  if (source === 'id') return 'Set spec.id to an npm-scoped name (e.g. @omadia/example).';
+  if (source === 'name') return 'Set spec.name to a human-readable plugin name.';
   if (source === 'category') return 'Set spec.category (e.g. "communication", "analytics").';
-  if (source === 'skill.role') return 'Set spec.skill.role to describe the agent\'s persona.';
   if (source === 'description') return 'Set spec.description to a one-line summary.';
   if (source.startsWith('playbook.')) {
     return `Fill spec.${source} so the playbook section in README.md/manifest.yaml has content.`;
@@ -360,53 +333,13 @@ function injectSlots(
   return result;
 }
 
-function reproduceManifestCapabilities(
-  manifestText: string,
-  spec: AgentSpec,
-  manifestSlots: readonly SlotDef[],
-  allSlots: Readonly<Record<string, string>>,
-): string {
+function reproduceManifestCapabilities(manifestText: string, spec: AgentSpec): string {
   const doc = yaml.parseDocument(manifestText);
 
-  // Skills-array expansion (multi-partial slots). For each declared slot
-  // with `max_partials > 0`, clone the matching skill entry (matched by
-  // its `path` against `slot.target_file`) once per non-empty partial.
-  // Clones land immediately after the base entry, in ascending numeric
-  // order. Done before string substitution so the cloned paths still
-  // carry `{{AGENT_SLUG}}` etc. — the later placeholder pass resolves them.
-  const skillsNode = doc.get('skills', true);
-  if (yaml.isSeq(skillsNode) && skillsNode.items.length > 0) {
-    for (const slot of manifestSlots) {
-      const indices = filledPartialIndices(slot, allSlots);
-      if (indices.length === 0) continue;
-      const baseIdx = skillsNode.items.findIndex((item) => {
-        if (!yaml.isMap(item)) return false;
-        const pathNode = item.get('path');
-        return typeof pathNode === 'string' && pathNode === slot.target_file;
-      });
-      if (baseIdx < 0) continue;
-      const baseJson = (skillsNode.items[baseIdx] as yaml.Node).toJSON() as Record<
-        string,
-        unknown
-      >;
-      const clones: unknown[] = [];
-      for (const n of indices) {
-        const cloneJson = JSON.parse(JSON.stringify(baseJson)) as Record<string, unknown>;
-        cloneJson['path'] = partialTargetFile(slot.target_file, n);
-        const idVal = cloneJson['id'];
-        if (typeof idVal === 'string') {
-          cloneJson['id'] = `${idVal}_${String(n)}`;
-        }
-        clones.push(cloneJson);
-      }
-      const cloneNodes = clones.map((c) => doc.createNode(c));
-      skillsNode.items.splice(
-        baseIdx + 1,
-        0,
-        ...(cloneNodes as typeof skillsNode.items),
-      );
-    }
-  }
+  // Spec 2042 §5.10 — the Plugin Builder generates capability plugins only.
+  // `identity.kind` is the spec's effective kind (`integration` or `tool`),
+  // whichever boilerplate the code was generated from.
+  doc.setIn(['identity', 'kind'], effectivePluginKind(spec));
 
   // depends_on overwrite (B.6-9.1) — the boilerplate ships
   // `depends_on: []` as a static placeholder; we replace it with
@@ -477,7 +410,8 @@ function reproduceManifestCapabilities(
     doc.set('jobs', doc.createNode(spec.jobs));
   }
 
-  // Phase B — permissions.{graph,subAgents,llm} from spec.permissions.
+  // Phase B — permissions.{graph,llm} from spec.permissions (no subAgents:
+  // a capability plugin never consults an agent, spec 2042 §5.4).
   // Each sub-block is optional; only non-empty entries land in the manifest
   // so the principle-of-least-authority default holds (kernel sees no
   // permission → withholds the corresponding ctx accessor). Boilerplate
@@ -505,13 +439,6 @@ function reproduceManifestCapabilities(
         } else {
           permsNode.set('graph', doc.createNode(incoming));
         }
-      }
-      if (perms.subAgents && perms.subAgents.calls.length > 0) {
-        const sub: Record<string, unknown> = { calls: perms.subAgents.calls };
-        if (perms.subAgents.calls_per_invocation !== undefined) {
-          sub['calls_per_invocation'] = perms.subAgents.calls_per_invocation;
-        }
-        permsNode.set('subAgents', doc.createNode(sub));
       }
       if (perms.llm && perms.llm.models_allowed.length > 0) {
         const llm: Record<string, unknown> = {
@@ -976,40 +903,35 @@ function buildToolkitImportsArtifact(
  * imports from `./client.js` and `./toolkit.js` are referenced in the
  * activate-body slot.
  *
- * `Toolkit` (type) is always emitted because it appears in the
- * AgentHandle interface outside any marker. `createClient` and
- * `createToolkit` are conditional — when a custom activate-body
- * inlines the client/toolkit construction (no helper call), the
- * unused-value-import would trip noUnusedLocals.
+ * `Toolkit` (type) is always emitted because activate() annotates the
+ * toolkit with it outside any marker. `createClient` and `createToolkit`
+ * are conditional — when a custom activate-body inlines the client/toolkit
+ * construction (no helper call), the unused-value-import would trip
+ * noUnusedLocals. `createClient` is only ever emitted for a template that
+ * ships a `client.ts` (`integration`); the `tool` template has none.
  *
  * When the activate-body slot is undefined (LLM did not customise),
  * the boilerplate's default activate body remains in place — that body
- * uses both helpers, so we emit both imports.
+ * uses the helpers its template ships, so we emit those imports.
  *
  * Same comment-stripping as buildToolkitImportsArtifact to avoid false
  * positives from in-code-comment mentions.
  */
 function buildPluginImportsArtifact(
   activateBodySlot: string | undefined,
+  templateHasClient: boolean,
 ): string {
-  if (activateBodySlot === undefined) {
-    return [
-      "import { createClient } from './client.js';",
-      "import { createToolkit, type Toolkit } from './toolkit.js';",
-    ].join('\n');
-  }
-  const stripped = activateBodySlot
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/.*$/gm, '');
-  const usesCreateClient = /\bcreateClient\b/.test(stripped);
-  const usesCreateToolkit = /\bcreateToolkit\b/.test(stripped);
+  const stripped =
+    activateBodySlot === undefined
+      ? undefined
+      : activateBodySlot.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  const usesCreateClient =
+    templateHasClient && (stripped === undefined || /\bcreateClient\b/.test(stripped));
+  const usesCreateToolkit = stripped === undefined || /\bcreateToolkit\b/.test(stripped);
   const lines: string[] = [];
   if (usesCreateClient) {
     lines.push("import { createClient } from './client.js';");
   }
-  // `Toolkit` (type) is always needed by AgentHandle, but the value
-  // export `createToolkit` is conditional. Combine when both are
-  // referenced to keep the import list compact.
   lines.push(
     usesCreateToolkit
       ? "import { createToolkit, type Toolkit } from './toolkit.js';"
@@ -1104,6 +1026,7 @@ export async function generate(
   );
   allSlots['plugin-imports'] = buildPluginImportsArtifact(
     allSlots['activate-body'],
+    bundle.files.has('client.ts'),
   );
 
   // 3b. Theme A — codegen-managed slots from spec.external_reads. These
@@ -1169,7 +1092,7 @@ export async function generate(
 
     // 5a. manifest.yaml — capability reproduction before string mangling
     if (origPath === 'manifest.yaml') {
-      text = reproduceManifestCapabilities(text, spec, manifest.slots, allSlots);
+      text = reproduceManifestCapabilities(text, spec);
     }
 
     // 5a.2. package.json — peerDependencies merge for Theme A + B.12.
@@ -1227,54 +1150,6 @@ export async function generate(
       continue;
     }
     out.set(relPath, buf);
-  }
-
-  // 7. Partial-slot file synthesis. For every declared slot with
-  //    `max_partials > 0`, materialise one output file per filled partial
-  //    (`<slot.key>-1`, …, `<slot.key>-N`). The output path is derived from
-  //    the base slot's target_file via `partialTargetFile()`. The file's
-  //    frontmatter is cloned from the base bundle file (so `kind`,
-  //    `description`, etc. stay aligned) with the `id` suffixed by `_<n>`.
-  //    The slot body is wrapped in matching marker comments so a future
-  //    re-edit cycle can re-locate the slot region.
-  for (const slot of manifest.slots) {
-    const indices = filledPartialIndices(slot, allSlots);
-    if (indices.length === 0) continue;
-    const baseBuf = bundle.files.get(slot.target_file);
-    let baseFrontmatter = '';
-    if (baseBuf) {
-      const baseText = baseBuf.toString('utf-8');
-      const fmMatch = /^---\n([\s\S]*?)\n---/.exec(baseText);
-      if (fmMatch) baseFrontmatter = fmMatch[1] ?? '';
-    }
-    for (const n of indices) {
-      const partialKey = `${slot.key}-${String(n)}`;
-      const body = allSlots[partialKey] ?? '';
-      const fmLines = (baseFrontmatter || 'kind: prompt_partial')
-        .split('\n')
-        .map((line) => {
-          const m = /^id:\s*(.+)$/.exec(line);
-          if (m) return `id: ${m[1]}_${String(n)}`;
-          return line;
-        });
-      const trimmedBody = body.endsWith('\n') ? body.slice(0, -1) : body;
-      const partialPath = partialTargetFile(slot.target_file, n);
-      const outPath = substitutePlaceholders(partialPath, placeholderMap);
-      let text =
-        `---\n${fmLines.join('\n')}\n---\n\n` +
-        `<!-- #region builder:${partialKey} -->\n` +
-        `${trimmedBody}\n` +
-        `<!-- #endregion -->\n`;
-      text = substitutePlaceholders(text, placeholderMap);
-      const residue = collectResidue(text);
-      if (residue.length > 0) {
-        issues.push({
-          code: 'placeholder_residue',
-          detail: `Unresolved placeholders in partial '${outPath}': ${residue.join(', ')}`,
-        });
-      }
-      out.set(outPath, Buffer.from(text, 'utf-8'));
-    }
   }
 
   if (issues.length > 0) throw new CodegenError(issues);

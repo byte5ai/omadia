@@ -3,7 +3,6 @@ import { strict as assert } from 'node:assert';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { z } from 'zod';
 
 import { DraftStore } from '../../src/plugins/builder/draftStore.js';
 import type {
@@ -17,7 +16,15 @@ function makeTool(
   id: string,
   run: (input: unknown) => Promise<unknown>,
 ): PreviewToolDescriptor {
-  return { id, description: `tool-${id}`, input: z.unknown(), run };
+  return {
+    id,
+    description: `tool-${id}`,
+    inputSchema: { type: 'object', properties: {} },
+    run: async (input) => {
+      const out = await run(input);
+      return typeof out === 'string' ? out : JSON.stringify(out);
+    },
+  };
 }
 
 function makeHandle(
@@ -36,7 +43,7 @@ function makeHandle(
 }
 
 const fixtureSpec = {
-  template: 'agent-integration',
+  template: 'integration',
   id: 'de.byte5.agent.test',
   name: 'Test',
   version: '0.1.0',
@@ -44,7 +51,6 @@ const fixtureSpec = {
   category: 'analysis',
   depends_on: [],
   tools: [{ id: 'noop', description: 'a', input: { type: 'object' } }],
-  skill: { role: 'tester' },
   setup_fields: [],
   playbook: { when_to_use: 't', not_for: [], example_prompts: [] },
   network: { outbound: [] },

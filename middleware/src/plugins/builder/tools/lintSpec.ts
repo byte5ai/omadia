@@ -104,6 +104,7 @@ export const lintSpecTool: BuilderTool<Input, Result> = {
     //    tool handler. Needs the parsed spec (permissions/network), so it
     //    only runs on the success path.
     issues.push(...lintAccessorPermissions(spec, draft.slots));
+    issues.push(...lintRetiredAccessors(draft.slots));
 
     // 6. #1022 — the English store description. Warning, not error: the
     //    codegen fallback keeps an older spec buildable, so blocking here
@@ -202,11 +203,6 @@ interface GatedAccessor {
 
 const GATED_ACCESSORS: readonly GatedAccessor[] = [
   {
-    accessor: 'subAgent',
-    specField: 'permissions.subAgents.calls',
-    granted: (s) => (s.permissions?.subAgents?.calls?.length ?? 0) > 0,
-  },
-  {
     accessor: 'llm',
     specField: 'permissions.llm.models_allowed',
     granted: (s) => (s.permissions?.llm?.models_allowed?.length ?? 0) > 0,
@@ -258,6 +254,25 @@ function lintAccessorPermissions(
     }
   }
   return issues;
+}
+
+/**
+ * Spec 2042 §5.4 — a capability plugin never consults an agent: `ctx.subAgent`
+ * is not offered to it (no spec field grants it), so using it is an error,
+ * not a missing permission.
+ */
+function lintRetiredAccessors(slots: Record<string, string | undefined>): LintIssue[] {
+  const usage = /\bctx\.subAgent\s*[!?]?\s*\.\s*\w/;
+  return Object.entries(slots)
+    .filter(([, source]) => typeof source === 'string' && usage.test(source))
+    .map(([key]) => ({
+      severity: 'error' as const,
+      code: 'retired_accessor',
+      message:
+        `slot '${key}' uses ctx.subAgent: a capability plugin never consults an agent ` +
+        '(spec 2042 §5.4). Return data to the agent that calls the tool instead.',
+      path: `/slots/${key}`,
+    }));
 }
 
 function lintSlots(slots: Record<string, string | undefined>): LintIssue[] {

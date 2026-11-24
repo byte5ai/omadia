@@ -5,7 +5,7 @@
 # Final image ~150 MB (node 22 slim + standalone server + static assets).
 
 # --- deps -------------------------------------------------------------------
-FROM node:22.23.4-slim AS deps
+FROM node:22.23.5-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 # npm's registry fetches are retried harder than the default (2 attempts, short
@@ -20,7 +20,7 @@ ENV NPM_CONFIG_FETCH_RETRIES=5 \
 RUN npm ci --no-audit --no-fund
 
 # --- builder ----------------------------------------------------------------
-FROM node:22.23.4-slim AS builder
+FROM node:22.23.5-slim AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -34,7 +34,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 # --- runtime ----------------------------------------------------------------
-FROM node:22.23.4-slim AS runtime
+FROM node:22.23.5-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -69,6 +69,9 @@ ENV PORT=3000
 COPY --from=builder --chown=node:node /app/public ./public
 COPY --from=builder --chown=node:node /app/.next/standalone ./
 COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+# The entry point: server.js with the canvas WebSocket relayed to the
+# middleware (spec 2042; Next's route handlers cannot upgrade a connection).
+COPY --from=builder --chown=node:node /app/scripts/runtime/omadia-server.mjs /app/scripts/runtime/canvasWsProxy.mjs ./
 
 # Run as the base image's unprivileged `node` user (uid 1000). The middleware
 # image drops privileges in its entrypoint via gosu because it must chown a
@@ -78,4 +81,4 @@ COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 USER node
 
 EXPOSE 3000
-CMD ["node", "server.js"]
+CMD ["node", "omadia-server.mjs"]

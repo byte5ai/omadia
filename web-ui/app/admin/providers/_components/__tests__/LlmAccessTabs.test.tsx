@@ -77,7 +77,7 @@ describe('<LlmAccessTabs /> cross-panel navigation', () => {
     // orchestrator to this CLI under LLM access"), no longer an aside about
     // selecting a model. It is still the in-page switch to the API-keys panel.
     const switchControl = screen.getByRole('button', {
-      name: /assign the orchestrator to this CLI/i,
+      name: /assign the agent to this CLI/i,
     });
     fireEvent.click(switchControl);
 
