@@ -43,6 +43,12 @@ export interface DiscretionPort {
   labelsOf(kind: LabelSubjectKind, ids: readonly string[]): Promise<ReadonlyMap<string, LabelSet>>;
   /** Persist the label set a written subject keeps. */
   persistLabels(kind: LabelSubjectKind, id: string, agentSlug: string, labels: LabelSet): Promise<void>;
+  /**
+   * #2198 — add `labels` to what a subject keeps, atomically: two writers at
+   * once both end up in the stored set. Optional: absent = read, union and
+   * persist (`mergeSubjectLabels`), which a concurrent writer can overtake.
+   */
+  mergeLabels?(kind: LabelSubjectKind, id: string, agentSlug: string, labels: LabelSet): Promise<void>;
   /** Drop a subject's labels (a deleted or renamed note). Optional: absent = kept. */
   dropLabels?(kind: LabelSubjectKind, id: string): Promise<void>;
   /**

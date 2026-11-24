@@ -221,6 +221,19 @@ describe('consultation and discretion stores (pg, migrations 0097–0099, 0112)'
     assert.ok((await discretion.labelsOf('turn', many)).has('turn-many-500'));
   });
 
+  it('#2198: concurrent label merges both stay', async () => {
+    const a = unionLabels([{ kind: 'context', key: 'teams:a', readers: readersOf(['a']) }]);
+    const b = unionLabels([{ kind: 'context', key: 'teams:b', readers: readersOf(['b']) }]);
+    await Promise.all([
+      discretion.mergeLabels('process', 'process:race', 'anna', a),
+      discretion.mergeLabels('process', 'process:race', 'ben', b),
+    ]);
+    const keys = (await discretion.labelsOf('process', ['process:race']))
+      .get('process:race')
+      ?.labels.flatMap((l) => (l.kind === 'context' ? [l.key] : []));
+    assert.deepEqual(keys?.sort(), ['teams:a', 'teams:b']);
+  });
+
   it('the audit stores label ids and reasons only', async () => {
     discretion.audit({
       turnId: 't-1',

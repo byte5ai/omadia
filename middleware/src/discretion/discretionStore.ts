@@ -16,6 +16,7 @@ import {
   parseLabelSet,
   readersOf,
   serializeLabelSet,
+  unionLabels,
   UNKNOWN_READERS,
   type DiscretionAuditEntry,
   type DiscretionPort,
@@ -170,6 +171,43 @@ export class DiscretionStore implements DiscretionPort {
          SET labels = EXCLUDED.labels, agent_slug = EXCLUDED.agent_slug, updated_at = now()`,
       [kind, id, agentSlug, JSON.stringify(serializeLabelSet(labels))],
     );
+  }
+
+  /**
+   * #2198 — the union of what the subject keeps and `labels`, in one
+   * transaction holding the row lock: a concurrent writer waits and then adds
+   * to the set this one stored. Transaction-scoped only (Neon's pooler).
+   */
+  async mergeLabels(kind: LabelSubjectKind, id: string, agentSlug: string, labels: LabelSet): Promise<void> {
+    const pool = this.pool;
+    if (!pool) return;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      // The row exists before it is locked, so two first writers serialise too.
+      await client.query(
+        `INSERT INTO discretion_labels (subject_kind, subject_id, agent_slug, labels)
+         VALUES ($1, $2, $3, '[]'::jsonb)
+         ON CONFLICT (subject_kind, subject_id) DO NOTHING`,
+        [kind, id, agentSlug],
+      );
+      const { rows } = await client.query<{ labels: unknown }>(
+        'SELECT labels FROM discretion_labels WHERE subject_kind = $1 AND subject_id = $2 FOR UPDATE',
+        [kind, id],
+      );
+      const merged = unionLabels(parseLabelSet(rows[0]?.labels ?? []), labels);
+      await client.query(
+        `UPDATE discretion_labels SET labels = $3::jsonb, agent_slug = $4, updated_at = now()
+          WHERE subject_kind = $1 AND subject_id = $2`,
+        [kind, id, JSON.stringify(serializeLabelSet(merged)), agentSlug],
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async dropLabels(kind: LabelSubjectKind, id: string): Promise<void> {

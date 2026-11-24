@@ -24,6 +24,7 @@ import { turnContext } from '../../packages/harness-orchestrator/src/turnContext
 import { readersOf, unionLabels, type DiscretionLabel, type LabelSet } from '../../packages/harness-orchestrator/src/discretion/labels.js';
 import type { DiscretionAuditEntry, DiscretionPort, LabelSubjectKind } from '../../packages/harness-orchestrator/src/discretion/port.js';
 import {
+  addTurnLabels,
   createDiscretionTurnState,
   currentTurnLabels,
 } from '../../packages/harness-orchestrator/src/discretion/turnLabels.js';
@@ -110,7 +111,7 @@ interface Setup {
   readonly seed?: Array<[LabelSubjectKind, string, LabelSet]>;
 }
 
-function build(setup: Setup) {
+function build(setup: Setup, extra: Partial<OrchestratorOptions> = {}) {
   const { port, audits } = fakePort(setup.seed);
   const model = scriptedModel([text(ANSWER)]);
   const orchestrator = new Orchestrator({
@@ -132,6 +133,7 @@ function build(setup: Setup) {
         stats: { candidatePool: 1, compactMode: false, tokensUsed: 10 },
       }),
     },
+    ...extra,
   } as unknown as OrchestratorOptions);
   return { orchestrator, audits };
 }
@@ -152,8 +154,8 @@ function isRecallCard(e: { type: string; channel?: string }): boolean {
   return e.type === 'turn_annotation' && e.channel === 'kg_recall';
 }
 
-async function streamInProcess(setup: Setup, members: string[]) {
-  const { orchestrator } = build(setup);
+async function streamInProcess(setup: Setup, members: string[], extra: Partial<OrchestratorOptions> = {}) {
+  const { orchestrator } = build(setup, extra);
   const { input, participants } = groupTurn(members);
   const events: ChatStreamEvent[] = [];
   await turnContext.runWithChatParticipants(participants as never, async () => {
@@ -411,5 +413,35 @@ describe('a CLI turn runs with the in-process discretion state (#2194)', () => {
     assert.equal((done as { followUpOptions?: unknown }).followUpOptions, undefined);
     assert.equal(done.turnId, 'turn-cli');
     assert.equal(events.some((e) => e.type === 'turn_annotation'), false);
+  });
+});
+
+describe('cards derived from a withheld answer stay back on the stream (#2198)', () => {
+  // A plan-runner-like hook: before the turn it reuses a process from the HR
+  // 1:1 (reading it labels the turn, as the labelled service does) and shows
+  // its plan; after the turn it shows the plan again.
+  const planHooks = {
+    run: async (point: string) => {
+      if (point === 'onBeforeTurn') addTurnLabels(narrow);
+      return point === 'onBeforeTurn' || point === 'onAfterTurn'
+        ? [{ channel: 'plan', payload: { steps: ['Aufhebungsvertrag für P vorbereiten'], point } }]
+        : [];
+    },
+  };
+
+  it('no plan card and no after-turn annotation goes to the group with the withheld answer', async () => {
+    const events = await streamInProcess(planFromHr, ['hr-mgr', 's1'], { turnHookRegistry: planHooks } as never);
+    assert.equal(events.some((e) => e.type === 'turn_annotation'), false, JSON.stringify(events.map((e) => e.type)));
+    const done = events.find((e) => e.type === 'done');
+    assert.ok(done && done.type === 'done' && !done.answer.includes('Aufhebungsvertrag'));
+  });
+
+  it('the room that may read it gets the after-turn annotation', async () => {
+    const events = await streamInProcess(planFromHr, ['hr-mgr', 'p'], { turnHookRegistry: planHooks } as never);
+    const plans = events.filter((e) => e.type === 'turn_annotation' && (e as { channel?: string }).channel === 'plan');
+    assert.ok(
+      plans.some((e) => (e as { payload?: { point?: string } }).payload?.point === 'onAfterTurn'),
+      'the after-turn card goes out with an answer that goes out',
+    );
   });
 });

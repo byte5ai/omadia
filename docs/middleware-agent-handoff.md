@@ -10872,7 +10872,11 @@ Leserkreis, Offenlegungsstufe).
     (Subjekt `process`, Migration 0112): der Kernel dekoriert den
     `processMemory@1`-Provider beim Registrieren (`decorateOnProvide`,
     `LabelledProcessMemory`), also gilt das für jeden Leser (Tools, Plan-Runner,
-    Recall) (#2194);
+    Recall) (#2194); ein Plan ohne bekannten Schreib-Turn wird dann nicht abgerufen,
+    und Labels von Prozessen und Notizen wachsen atomar (`mergeLabels`) (#2198);
+  - Karten im Stream (Recall, Plan, Graph) gehen nur an einen Raum, der lesen darf,
+    was der Turn bis dahin gelesen hat; `onAfterTurn`-Annotationen und der
+    `kg_insert`-Puls warten auf den Check der Antwort (#2198);
   - CLI-Turns (Claude-Abo, `CliChatAgent`) laufen mit demselben Turn-Zustand und
     derselben Audience-Floor (`cliDiscretionTurnFields`, fail-closed) und derselben
     Antwortprüfung (`guardCliAnswer`) wie In-Process-Turns (#2194);

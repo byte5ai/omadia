@@ -8,16 +8,18 @@
  * Wraps the `processMemory@1` provider itself (the kernel decorates it when
  * the provider registers, `ServiceRegistry.decorateOnProvide`), so no
  * consumer reaches a process around its labels:
- *  - `write` keeps the active turn's labels under the subject `process`;
- *  - `edit` adds the earlier writes' labels to the turn first and then keeps
- *    the union (labels only grow per process);
+ *  - `write` and `edit` add the active turn's labels to what the process
+ *    keeps under the subject `process`, atomically (labels only grow per
+ *    process; two edits at once both stay, #2198);
+ *  - `edit` adds the earlier writes' labels to the turn first;
  *  - `query`, `get`, `history` and a duplicate hit on `write` (it names the
  *    stored process back) add the process's labels to the turn.
  *
  * Fail closed as for recalled turns: a failed lookup labels the turn
  * unreadable. Outside a labelled turn (background jobs) nothing is recorded
  * or added. A failed label write is logged and the process stays as written
- * (`labelSubjectWithTurn`).
+ * (`mergeSubjectWithTurn`). No path deletes a process today, so none drops
+ * its labels.
  */
 
 import type {
@@ -33,7 +35,7 @@ import type {
 
 import { turnContext } from '../turnContext.js';
 import type { DiscretionPort } from './port.js';
-import { labelSubjectWithTurn, labelTurnWithSubjects } from './toolFlow.js';
+import { labelTurnWithSubjects, mergeSubjectWithTurn } from './toolFlow.js';
 
 const SUBJECT = 'process' as const;
 
@@ -82,7 +84,7 @@ export class LabelledProcessMemory implements ProcessMemoryService {
   }
 
   private async keep(id: string): Promise<void> {
-    await labelSubjectWithTurn(this.port, SUBJECT, id, turnContext.currentAgentSlug() ?? 'default');
+    await mergeSubjectWithTurn(this.port, SUBJECT, id, turnContext.currentAgentSlug() ?? 'default');
   }
 }
 
