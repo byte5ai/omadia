@@ -36,6 +36,21 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Timer-Awaits erscheinen nicht mehr in der Operator-Inbox (#1712)
+
+2026-11-24.
+- **Operator-Inbox:** Ein auf einem Timer-Step geparkter Lauf schrieb eine
+  Await-Zeile mit `principal_kind = 'timer'`, und „Wartende Human-Steps" zeigte
+  sie mit Freigeben/Ablehnen. Ein Timer hat keinen Holder, deshalb antwortete
+  `POST /conductors/awaits/<id>/respond` darauf immer mit
+  403 `conductor.await_forbidden`. `listWaiting` filtert Timer-Awaits jetzt
+  heraus; auf den Tick wirkt allein der Deadline-Poll. Gefiltert wird auf den
+  Principal, nicht auf den `timer`-Channel — die Inbox bleibt channel-agnostisch.
+  Der geparkte Lauf ist danach nur noch über „Verlauf" pro Workflow sichtbar
+  (Status `waiting`), und dort ohne Deadline: die Deadline wird nur in der
+  Inbox-Zeile gerendert, die ein Timer jetzt nicht mehr erreicht. Eine
+  read-only-Zeile „läuft bis …" ist bewusst nicht gebaut.
+
 ### Fixed — Conductor: Event-Vorlagen bei leerem Event-Katalog instanziierbar (#1713)
 
 2026-11-24. Die gebündelte Vorlage „Benachrichtigen und eskalieren bei Vorfall"

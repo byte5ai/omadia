@@ -3246,6 +3246,19 @@ tolerant + size-capped). Pattern `facilitation` ist **v4** (Assess-Tick
 PT1H, max 24 Runden, DoD-met → confirm, exhausted → abort-report);
 Pattern `discussion` ist **v3**.
 `conductorEphemeralRuns.poke(runId)` feuert den offenen Timer-Await sofort.
+Ein Timer-Await ist **kein** Human-Await: `listWaiting` (Operator-Inbox,
+`GET /awaits/pending`) filtert `principal_kind = 'timer'` heraus (#1712) — die
+Zeile hat keinen Holder, also konnte `POST /awaits/:id/respond` darauf nur mit
+403 `conductor.await_forbidden` antworten. Auf den Tick wirkt allein der
+Deadline-Poll (`listDue`). Gefiltert wird auf den Principal, nicht auf den
+`timer`-Channel: was die Zeile disqualifiziert, ist niemand zum Fragen.
+**Preis der Filterung:** Der geparkte Lauf ist danach nur noch über „Verlauf"
+pro Workflow zu sehen (Status `waiting`), und dort OHNE Deadline — `deadlineAt`
+wird in der Web-UI an genau einer Stelle gerendert, in der Inbox-Zeile
+(`web-ui/app/conductor/page.tsx`), die ein Timer jetzt nicht mehr erreicht. Die
+im Issue alternativ vorgeschlagene read-only-Zeile („läuft bis …") ist damit
+nicht gebaut; wer die Deadline im Operator-Blick braucht, baut sie in die
+Run-Liste, nicht in die Inbox.
 Neuer Service **`conversationSend`** (deny-by-default; SDK-Seam
 `registerConversationSendProvider`, Kernel `src/channels/
 conversationSend{Registry,Service}.ts`, plugin-api 1.8.0) — Gruppen-Nudges,
