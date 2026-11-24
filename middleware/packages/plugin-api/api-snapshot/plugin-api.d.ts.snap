@@ -1926,6 +1926,7 @@ excludeUnprotected?: boolean;
 }
 export interface SessionReadOptions {
 audienceOwners?: readonly string[];
+userId?: string;
 }
 export interface EntityCapturedTurnsOptions {
 terms: readonly string[];
@@ -1956,6 +1957,7 @@ assistantAnswer: string;
 export declare const AGENT_SCOPE_SEP = "::";
 export declare function qualifyScope(agentSlug: string, conversationScope: string): string;
 export declare function agentScopePrefix(agentSlug: string): string;
+export declare function scopeBelongsToAgent(scope: string, prefix: string): boolean;
 export declare function sessionNodeId(scope: string): string;
 export declare function turnNodeId(scope: string, time: string): string;
 export declare function planNodeId(planId: string): string;
