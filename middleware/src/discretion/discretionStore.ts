@@ -13,6 +13,7 @@ import type { Pool } from 'pg';
 
 import {
   EVERYONE,
+  MAX_PERSISTED_LABELS,
   parseLabelSet,
   readersOf,
   serializeLabelSet,
@@ -196,6 +197,12 @@ export class DiscretionStore implements DiscretionPort {
         [kind, id],
       );
       const merged = unionLabels(parseLabelSet(rows[0]?.labels ?? []), labels);
+      if (merged.labels.length > MAX_PERSISTED_LABELS) {
+        // Reads back as unreadable from now on: fail closed, but say so.
+        this.log(
+          `[discretion] ${kind} ${id} keeps ${String(merged.labels.length)} labels (> ${String(MAX_PERSISTED_LABELS)}): readable by nobody from now on`,
+        );
+      }
       await client.query(
         `UPDATE discretion_labels SET labels = $3::jsonb, agent_slug = $4, updated_at = now()
           WHERE subject_kind = $1 AND subject_id = $2`,

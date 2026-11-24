@@ -15,6 +15,7 @@ import type {
 } from './orchestrator.js';
 import { isPromptMaskBlockedNotice, SECURITY_QUARANTINE_NOTICE } from './orchestrator.js';
 import { withheldCauseOf } from './verifierVerdicts.js';
+import { isAnswerWithheldText } from './discretion/disclosure.js';
 
 /**
  * Delivery policy of the answer-verifier wrapper (`VerifierService`): what a
@@ -379,7 +380,8 @@ function withoutFoldedDisclosure(answer: string, disclosure: AiDisclosure | unde
  * `done.answer`. The delta leaves out the disclosure block a first turn folds
  * into `answer` — disclosures never go out as a delta. A held `done` other
  * than the terminal one is dropped. The events finishing the request
- * produced (`FinishedDone.events`) go out right before the text.
+ * produced (`FinishedDone.events`) go out right before the text, unless the
+ * answer was withheld at the people egress (#2198).
  */
 function* releasedTurn(
   held: readonly ChatStreamEvent[],
@@ -388,7 +390,10 @@ function* releasedTurn(
 ): Generator<ChatStreamEvent> {
   for (const event of held) {
     if (event === terminal) {
-      yield* released.events;
+      // #2198 — an answer withheld at the people egress releases nothing
+      // derived from it: the request's `onAfterTurn` cards and the `kg_insert`
+      // pulse of the committed promotion come from the raw answer.
+      if (!isAnswerWithheldText(terminal.answer)) yield* released.events;
       const { done } = released;
       const text = withoutFoldedDisclosure(done.answer, done.aiDisclosure);
       if (text.length > 0) yield { type: 'text_delta', text };

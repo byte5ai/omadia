@@ -36,6 +36,8 @@ import {
 import { labelProcessMemory } from '../../packages/harness-orchestrator/src/discretion/labelledProcessMemory.js';
 import { ServiceRegistry } from '../../src/platform/serviceRegistry.js';
 import { scriptedModel, text } from '../_helpers/replayTurnFixture.js';
+import { enforcedVerifiedStream } from '../../packages/harness-orchestrator/src/verifierDelivery.js';
+import { answerWithheldText } from '../../packages/harness-orchestrator/src/discretion/disclosure.js';
 
 const HR_DM = 'teams:dm-hr';
 const hrReaders = readersOf(['hr-mgr', 'p']);
@@ -443,5 +445,33 @@ describe('cards derived from a withheld answer stay back on the stream (#2198)',
       plans.some((e) => (e as { payload?: { point?: string } }).payload?.point === 'onAfterTurn'),
       'the after-turn card goes out with an answer that goes out',
     );
+  });
+});
+
+describe('the verifier releases nothing derived from a withheld answer (#2198)', () => {
+  const kgInsert = { type: 'turn_annotation', channel: 'kg_insert', payload: { mk: 'P' } } as ChatStreamEvent;
+
+  async function released(answer: string) {
+    const base = (async function* (): AsyncGenerator<ChatStreamEvent> {
+      yield { type: 'done', answer, toolCalls: 0, iterations: 1 };
+    })();
+    const out: ChatStreamEvent[] = [];
+    for await (const ev of enforcedVerifiedStream(
+      base,
+      async () => ({ releases: true, summary: { status: 'approved' } as never }),
+      'de',
+      async (done) => ({ done, events: [kgInsert] }),
+    )) {
+      out.push(ev);
+    }
+    return out.filter((e) => e.type === 'turn_annotation');
+  }
+
+  it('a withheld answer: the request record\'s annotations stay back', async () => {
+    assert.equal((await released(answerWithheldText('de'))).length, 0);
+  });
+
+  it('an ordinary answer: they go out with it', async () => {
+    assert.equal((await released('Freitag.')).length, 1);
   });
 });
