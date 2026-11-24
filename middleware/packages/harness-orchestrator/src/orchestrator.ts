@@ -260,6 +260,7 @@ import {
   guardIntegrationEgress,
   guardMemoryEgress,
   labelSubjectWithTurn,
+  labelTurnWithSubjects,
   labelToolRead,
   type ToolSystem,
 } from './discretion/toolFlow.js';
@@ -268,6 +269,7 @@ import { peopleEgressDecision } from './discretion/turnLabels.js';
 import { fieldClassesForTurn, personalFieldsWithheld } from './discretion/fieldRights.js';
 import { FIELD_WITHHELD_NOTICE, renderedAnswerForAudience } from './privacyAudience.js';
 import { answerWithheldText } from './discretion/disclosure.js';
+import { withoutAnswer } from './identityGuard/answerRecordGate.js';
 import { labelSummary } from './discretion/labels.js';
 import {
   addTurnLabels,
@@ -1081,6 +1083,13 @@ export interface OrchestratorOptions {
    * completely unaffected.
    */
   identityName?: string;
+  /**
+   * The names this Agent answers as (display name, slug and identity name —
+   * see `agentOwnNames`), read once per turn. The privacy shield never masks
+   * them in this Agent's own turn: masked, the model read "I am
+   * <surrogate>" in its recalled context and "corrected" its own name.
+   */
+  ownNames?: () => readonly string[];
   /**
    * #2051 — skills attached to this Agent as working modes (the field keeps
    * the `agent_persona_skills` table's name). When non-empty, each turn runs a
@@ -2585,7 +2594,7 @@ ${domainList}
 - Formuliere eine Anfrage an ein Fach-Werkzeug vollständig in EINER Frage (Zeitraum, Filter, Gruppierung z. B. „je Monat“, gewünschte Felder), statt erst zu sondieren und dann nachzufassen.
 
 Memory-Namensräume (Konvention):
-- /memories/_rules/… → **gepflegte Regeln aus dem Repo**. Nicht eigenständig überschreiben oder löschen. Nur ergänzen, wenn der Nutzer es ausdrücklich bestätigt.
+- /memories/_rules/… → **gepflegte Regeln aus dem Repo**, für dich nur lesbar. Will der Nutzer eine Regel anlegen oder ändern, sag ihm, dass das ein Operator im Repo pflegt; schreib sie nicht als Notiz woandershin.
 - /memories/customers/… → stabile Fakten zu einzelnen Kunden.
 - /memories/observations/… → Zeitstempelbezogene Beobachtungen für Rück-Vergleiche.
 - /memories/sessions/<scope>/YYYY-MM-DD.md → **chronologische Q&A-Transkripte**, von der Middleware geschrieben (nicht von dir). Diese enthalten echte vorangegangene Konversationen. Wenn der Nutzer auf ein früheres Gespräch verweist ("wie wir das letztens diskutiert haben", "so wie bei den Kostenstellen", "mach das wie beim letzten Mal"), **zuerst den passenden Eintrag in /memories/sessions/ suchen**, bevor du ein Fach-Werkzeug neu befragst — du sparst dir damit typischerweise einen ganzen Roundtrip. Aber: lies nicht standardmäßig alle Sessions, das wäre Token-Verschwendung. Nur auf Rückbezug gezielt nachschlagen. Bei aktivem Datenschutz-Schild verweigert das memory-Tool diesen Pfad (die Transkripte tragen echte Werte); frühere Gespräche kommen dann nur über den mitgegebenen Kontext — versuch es dort nicht erneut.
@@ -3138,6 +3147,8 @@ export class Orchestrator {
   /** #967 — this Agent's own authored name. See
    *  `OrchestratorOptions.identityName`. */
   private readonly identityName: string | undefined;
+  /** See `OrchestratorOptions.ownNames`. */
+  private readonly ownNames: (() => readonly string[]) | undefined;
   /** Operator's answer-size contract (see OrchestratorOptions.answerVerbosity). */
   private readonly answerVerbosity: AnswerVerbosity;
   /** #644 — resolved operator disclosure config (undefined → shipping default
@@ -3261,6 +3272,7 @@ export class Orchestrator {
     this.assistantIdentity =
       options.assistantIdentity?.trim() || DEFAULT_ASSISTANT_IDENTITY;
     this.identityName = options.identityName?.trim() || undefined;
+    this.ownNames = options.ownNames;
     this.answerVerbosity = options.answerVerbosity ?? DEFAULT_ANSWER_VERBOSITY;
     this.aiDisclosure = options.aiDisclosure;
     this.disclosureSeen =
@@ -3279,9 +3291,11 @@ export class Orchestrator {
         ? {
             beforeTurnWritten: async (entry: SessionLogEntry, discretion: DiscretionTurnState | undefined) => {
               const decision = await peopleEgressDecision(discretion);
+              // A refused answer is recorded without its text: neither it nor
+              // the line that replaced it belongs in the agent's memory.
               return decision === undefined || decision.allowed
                 ? entry
-                : { ...entry, assistantAnswer: answerWithheldText(this.aiDisclosure?.locale) };
+                : withoutAnswer(entry, answerWithheldText(this.aiDisclosure?.locale));
             },
             onTurnWritten: async (turnId: string, discretion: DiscretionTurnState | undefined) => {
               if (!discretion) return;
@@ -4263,14 +4277,53 @@ export class Orchestrator {
       input.userMessage,
       turnMemory?.isolation,
     );
-    const events: ChatStreamEvent[] = [
-      ...this.toRecallAnnotationEvents(recalled),
-      ...(await this.toKgGraphAnnotationEvents(recalled)),
-    ];
+    const events = await this.recallCardEvents(recalled);
     return {
       ...(text !== undefined && text.trim().length > 0 ? { text } : {}),
       ...(events.length > 0 ? { events } : {}),
     };
+  }
+
+  /**
+   * Spec 2042 §5.11 / #2194 — the discretion state and audience floor of a
+   * turn the subscription CLI answers, built as the in-process turn builds
+   * its own (same owner, room readers, field rights, trigger and consultation
+   * seeds). `CliChatAgent` puts them on the turn's context, so the recall, the
+   * memory binding, the loopback tools and the record label and check
+   * through them.
+   */
+  public async cliDiscretionTurnFields(
+    input: ChatTurnInput,
+  ): Promise<Pick<TurnContextValue, 'discretion' | 'audienceFloor'>> {
+    const parent = turnContext.current();
+    const turnOwner = await resolveTurnOwnerIdentity(this.identityGraph, input);
+    const runTraceUserId = await resolveRunTraceOwner(this.knowledgeGraph, input, turnOwner.omadiaUserId);
+    const floorFields = this.audienceFloorFor(input, parent, runTraceUserId);
+    const { discretion } = this.discretionTurnFields(input, parent, turnOwner.omadiaUserId, floorFields.audienceFloor);
+    return { ...floorFields, discretion };
+  }
+
+  /**
+   * Spec 2042 §5.11 / #2194 — the people-egress check of a CLI turn's answer
+   * (`guardAnswerEgress`, audit included). A consultation run hands its labels
+   * to the broker instead, as in-process. A check that throws withholds: the
+   * answer is not known to be allowed.
+   */
+  public async guardCliAnswer(
+    answer: string,
+    input: ChatTurnInput,
+  ): Promise<{ readonly answer: string; readonly withheld: boolean }> {
+    const locale = this.turnLocale(input);
+    try {
+      await this.exportConsultationResult();
+      const result: ChatTurnResult = { answer, toolCalls: 0, iterations: 0 };
+      // `guardAnswerEgress` hands back the result itself when it goes out.
+      const guarded = await this.guardAnswerEgress(result, locale);
+      return guarded === result ? { answer, withheld: false } : { answer: guarded.answer, withheld: true };
+    } catch (err) {
+      console.error('[discretion] CLI answer check failed — withholding the answer:', err);
+      return { answer: answerWithheldText(locale), withheld: true };
+    }
   }
 
   /**
@@ -4574,6 +4627,9 @@ export class Orchestrator {
         ...(turnContext.current()?.privacyHandle !== undefined
           ? { excludeUnprotected: true }
           : {}),
+        // #2198 — a recalled plan brings its writing turn's labels; one whose
+        // turn is unknown has none to bring, so it is not recalled.
+        ...(this.discretion ? { requireKnownPlanTurn: true } : {}),
         // A canvas turn carries its context in the skeleton: recall only the
         // last few tail turns (see CANVAS_RECALL_TAIL_TURNS).
         ...(input.canvasSessionId !== undefined
@@ -4582,8 +4638,22 @@ export class Orchestrator {
       });
       // Spec 2042 §5.11 — reusing a written turn adds the labels it kept.
       await this.labelRecalledTurns(result.included.map((hit) => hit.turnId));
-      // … and so does reusing a memorable.
-      await this.labelRecalledMemorables(result.recalled?.insights.map((insight) => insight.mkId) ?? []);
+      // … and so does reusing a memorable …
+      await labelTurnWithSubjects(
+        this.discretion,
+        'memorable',
+        result.recalled?.insights.map((insight) => insight.mkId) ?? [],
+      );
+      // … a plan, the labels of the turn that wrote it (#2194) …
+      await this.labelRecalledTurns(
+        (result.recalled?.plans ?? []).flatMap((plan) => (plan.turnId !== undefined ? [plan.turnId] : [])),
+      );
+      // … and a process, the labels its writes kept.
+      await labelTurnWithSubjects(
+        this.discretion,
+        'process',
+        result.recalled?.processes.map((process) => process.id) ?? [],
+      );
       console.error(
         `[context] assembled scope=${input.sessionScope ?? '-'} user=${input.userId ?? '-'} pool=${String(result.stats.candidatePool)} included=${String(result.included.length)} excluded=${String(result.excluded.length)} compact=${String(result.stats.compactMode)} tokens=${String(result.stats.tokensUsed)} rendered=${String(result.text.length)}B`,
       );
@@ -4663,6 +4733,38 @@ export class Orchestrator {
       );
       return { text: undefined, recalled: undefined };
     }
+  }
+
+  /**
+   * Spec 2042 §5.11 — the `kg_recall` and `kg_graph` cards of a recall, for
+   * the paths that emit them before the answer (streaming, the CLI turn).
+   * They show recalled content to the people of the conversation, so they get
+   * the people-egress decision the answer gets (`guardAnswerEgress`,
+   * `guardStreamedDone`), taken right after the recall labelled the turn:
+   * a reader who may not know a recalled entry sees no card. The buffered
+   * path needs no early check: a withheld result drops `recalled` whole.
+   * No audit row here: the answer's own egress check decides on the same
+   * labels later in the turn and writes it. A CLI turn gets the same state
+   * (`cliDiscretionTurnState`, #2194), so the check holds there too.
+   */
+  private async recallCardEvents(recalled: RecalledContext | undefined): Promise<ChatStreamEvent[]> {
+    if (!recalled || (await this.annotationsRefused())) return [];
+    return [...this.toRecallAnnotationEvents(recalled), ...(await this.toKgGraphAnnotationEvents(recalled))];
+  }
+
+  /**
+   * Spec 2042 §5.11 — may the people of this conversation see a card built
+   * from what the turn has read so far (recall, plan, graph)? Same decision
+   * as the answer's; a consultation run is checked by the broker. No audit
+   * row: the answer's own check writes it. True = withhold the card.
+   */
+  private async annotationsRefused(): Promise<boolean> {
+    const state = currentDiscretion();
+    if (!state || isConsultationRunOf(this.agentId)) return false;
+    const decision = await peopleEgressDecision(state);
+    if (decision === undefined || decision.allowed) return false;
+    console.warn(`[discretion] cards of ${this.agentId} withheld: ${violationSummary(decision).join(', ')}`);
+    return true;
   }
 
   /** Cross-session recall probe — map the assembled `recalled` payload to a
@@ -7769,13 +7871,16 @@ export class Orchestrator {
         // replayed turns) refuses with the notice that does not claim the
         // message stayed unsent.
         beforeTurnFired = this.turnHookRegistry !== undefined;
-        yield* this.toAnnotationEvents(
+        const planCards = this.toAnnotationEvents(
           await this.fireTurnHook('onBeforeTurn', turnId, input, {
             userMessage: input.userMessage,
             ...(input.routeHint !== undefined ? { routeHint: input.routeHint } : {}),
             ...(input.planHint !== undefined ? { planHint: input.planHint } : {}),
           }),
         );
+        // #2198 — a plan reused from a stored process carries its labels
+        // (read in the hook): its card only to a room that may know them.
+        if (planCards.length > 0 && !(await this.annotationsRefused())) yield* planCards;
       }
       // Mid-turn steering — register this turn as live so `/chat/steer` can
       // inject extra user messages keyed by the same session scope. The inner
@@ -7816,7 +7921,24 @@ export class Orchestrator {
           throw err;
         }
       })();
+      // Preview characters this turn has streamed so far: a `done` the
+      // discretion check withholds takes them back first.
+      let streamedChars = 0;
+      // #2198 — the `kg_insert` pulse shows the memorable promoted from this
+      // turn's answer: it waits for the answer's egress check.
+      const heldUntilDone: ChatStreamEvent[] = [];
       for await (const event of guardedInner) {
+        if (event.type === 'turn_annotation') {
+          if (event.channel === 'kg_insert') {
+            heldUntilDone.push(event);
+            continue;
+          }
+          // #2198 — a card (plan, graph, recall) shows what the turn read:
+          // only to a room that may know it.
+          if (await this.annotationsRefused()) continue;
+        }
+        if (event.type === 'text_delta') streamedChars += event.text.length;
+        else if (event.type === 'text_retract') streamedChars = Math.max(0, streamedChars - event.chars);
         if (
           (event.type === 'done' || event.type === 'error') &&
           toolReplayLedger.abortedTool !== undefined
@@ -7837,8 +7959,9 @@ export class Orchestrator {
         } else if (event.type === 'sub_tool_result') {
           subToolTally.record(event.parentId, event.isError);
         } else if (event.type === 'tool_result') {
-          // Live step updates: emit the refreshed plan snapshot after each tool.
-          yield* this.toAnnotationEvents(
+          // Live step updates: emit the refreshed plan snapshot after each tool
+          // (#2198: only to a room that may know what the plan holds).
+          const stepAnnotations = this.toAnnotationEvents(
             await this.fireTurnHook(
               'onAfterToolCall',
               turnId,
@@ -7853,6 +7976,7 @@ export class Orchestrator {
               2000,
             ),
           );
+          if (stepAnnotations.length > 0 && !(await this.annotationsRefused())) yield* stepAnnotations;
         }
         if (event.type === 'done' && privacyHandle) {
           // Privacy-Shield v4 — swap in the server-materialized answer
@@ -7936,34 +8060,32 @@ export class Orchestrator {
           }
           // #133 (E8) — persisted Turn node id for graph-linking observers.
           // Not for a refused turn (see the branch below).
-          if (!promptMaskBlocked) {
-            yield* this.toAnnotationEvents(
-              await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
-            );
-          }
-          yield this.discloseDoneEvent(
-            await this.guardStreamedDone(doneEvent, this.turnLocale(input)),
-            input,
-            bound?.ledger,
-          );
+          const afterTurnEvents = promptMaskBlocked
+            ? []
+            : this.toAnnotationEvents(
+                await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
+              );
+          const guardedDone = await this.guardStreamedDone(doneEvent, this.turnLocale(input));
+          // #2198 — what derives from the answer goes out with it, or not at all.
+          if (!guardedDone.withheld) yield* [...heldUntilDone, ...afterTurnEvents];
+          if (guardedDone.withheld && streamedChars > 0) yield { type: 'text_retract', chars: streamedChars };
+          yield this.discloseDoneEvent(guardedDone.done, input, bound?.ledger);
           continue;
         }
         if (event.type === 'done') {
           // A refused turn fires no `onAfterTurn`, as on the buffered path,
           // where only `chatInContextInner` fires it (#1535 security review).
-          if (!promptMaskBlocked) {
-            yield* this.toAnnotationEvents(
-              await this.afterTurn(turnId, input, event.answer, event.turnId),
-            );
-          }
+          const afterTurnEvents = promptMaskBlocked
+            ? []
+            : this.toAnnotationEvents(await this.afterTurn(turnId, input, event.answer, event.turnId));
           // #644 — fold the disclosure at the boundary, AFTER the hook (which
           // records the raw answer, matching the non-streaming path where
           // `toSemanticAnswer` folds only after `runTurn` persisted the turn).
-          yield this.discloseDoneEvent(
-            await this.guardStreamedDone(event, this.turnLocale(input)),
-            input,
-            bound?.ledger,
-          );
+          const guarded = await this.guardStreamedDone(event, this.turnLocale(input));
+          // #2198 — what derives from the answer goes out with it, or not at all.
+          if (!guarded.withheld) yield* [...heldUntilDone, ...afterTurnEvents];
+          if (guarded.withheld && streamedChars > 0) yield { type: 'text_retract', chars: streamedChars };
+          yield this.discloseDoneEvent(guarded.done, input, bound?.ledger);
           continue;
         }
         yield event;
@@ -8009,11 +8131,11 @@ export class Orchestrator {
     // Cross-session recall probe — surface plans/processes/insights pulled
     // from prior sessions as a visible `kg_recall` card before the answer
     // streams in. No-op when every recall leg was empty.
-    yield* this.toRecallAnnotationEvents(recalled);
     // KG-walk chat visualization — a sibling `kg_graph` annotation carrying the
     // recalled KG neighbourhood. Best-effort & guarded inside the helper so it
-    // can never break or delay the turn; additive/opaque to the model.
-    yield* await this.toKgGraphAnnotationEvents(recalled);
+    // can never break or delay the turn; additive/opaque to the model. Both
+    // only when every reader of the room may know what the recall brought in.
+    yield* await this.recallCardEvents(recalled);
     // #268 — pre-fetch + extract any uploaded document text for this turn.
     // #504/#505 — same pass also resolves image attachments into vision
     // content-blocks; see chatInContextInner for the full rationale,
@@ -9905,6 +10027,7 @@ export class Orchestrator {
       sessionId,
       turnId,
       resolveBypass,
+      ...(this.ownNames !== undefined ? { ownNames: this.ownNames() } : {}),
     });
   }
 
@@ -11000,20 +11123,21 @@ export class Orchestrator {
    * (field rights included). Otherwise it is refused as on the buffered path
    * (`guardAnswerEgress`), never redacted: the `done` is rebuilt from
    * bookkeeping fields with the withheld line as its answer, and the
-   * side-channel rows are held back. Text deltas already streamed are the
-   * streaming residual; channels that post the `done` post the refusal.
+   * side-channel rows are held back. `withheld` tells the caller to take
+   * back the text deltas already streamed (`text_retract`) before the
+   * `done`, so a client that shows the preview never keeps the answer.
    */
   private async guardStreamedDone(
     done: Extract<ChatStreamEvent, { type: 'done' }>,
     locale: string | undefined,
-  ): Promise<Extract<ChatStreamEvent, { type: 'done' }>> {
+  ): Promise<{ readonly done: Extract<ChatStreamEvent, { type: 'done' }>; readonly withheld: boolean }> {
     const state = currentDiscretion();
-    if (!state || isConsultationRunOf(this.agentId)) return done;
+    if (!state || isConsultationRunOf(this.agentId)) return { done, withheld: false };
     const decision = await peopleEgressDecision(state);
-    if (decision === undefined || decision.allowed) return done;
+    if (decision === undefined || decision.allowed) return { done, withheld: false };
     turnContext.current()?.dataSideChannel?.withhold();
     console.warn(`[discretion] streamed answer of ${this.agentId} withheld: ${violationSummary(decision).join(', ')}`);
-    return {
+    const refused: Extract<ChatStreamEvent, { type: 'done' }> = {
       type: 'done',
       answer: answerWithheldText(locale),
       toolCalls: done.toolCalls,
@@ -11022,6 +11146,7 @@ export class Orchestrator {
       ...(done.privacyReceipt !== undefined ? { privacyReceipt: done.privacyReceipt } : {}),
       ...(done.receiptId !== undefined ? { receiptId: done.receiptId } : {}),
     };
+    return { done: refused, withheld: true };
   }
 
   /** Spec 2042 §5.4 — `{ contributions }` for a result or `done` event, or `{}`. */
@@ -11058,31 +11183,11 @@ export class Orchestrator {
 
   /**
    * Spec 2042 §5.11 — labels persist transitively: a recalled turn brings the
-   * label set it was written with into this turn. A lookup failure fails
-   * closed: the turn gets a label nobody is known to be allowed to read, so
-   * nothing of it can flow outside this conversation.
+   * label set it was written with into this turn (a lookup failure fails
+   * closed, see `labelTurnWithSubjects`).
    */
   private async labelRecalledTurns(turnIds: readonly string[]): Promise<void> {
-    if (!this.discretion || turnIds.length === 0 || !currentDiscretion()) return;
-    try {
-      const found = await this.discretion.labelsOf('turn', turnIds);
-      for (const labels of found.values()) addTurnLabels(labels);
-    } catch (err) {
-      console.error('[discretion] recalled-turn label lookup failed — labelling the turn unreadable:', err);
-      addTurnLabels([{ kind: 'context', key: 'unreadable', readers: UNKNOWN_READERS }]);
-    }
-  }
-
-  /** Spec 2042 §5.11 — recalled memorables bring the labels they were written with. */
-  private async labelRecalledMemorables(mkIds: readonly string[]): Promise<void> {
-    if (!this.discretion || mkIds.length === 0 || !currentDiscretion()) return;
-    try {
-      const found = await this.discretion.labelsOf('memorable', mkIds);
-      for (const labels of found.values()) addTurnLabels(labels);
-    } catch (err) {
-      console.error('[discretion] recalled-memorable label lookup failed — labelling the turn unreadable:', err);
-      addTurnLabels([{ kind: 'context', key: 'unreadable', readers: UNKNOWN_READERS }]);
-    }
+    await labelTurnWithSubjects(this.discretion, 'turn', turnIds);
   }
 
   /** Spec 2042 §5.11 — a memorable keeps the labels of the turn that wrote it. */

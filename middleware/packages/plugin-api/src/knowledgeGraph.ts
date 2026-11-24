@@ -31,6 +31,15 @@ import type {
 export interface KnowledgeGraph {
   ingestTurn(turn: TurnIngest): Promise<TurnIngestResult>;
   /**
+   * Spec 2042 — patches a written Turn without classifying it again (no
+   * capture filter, no significance model call): the identity guard's
+   * verdict, and for a withheld answer its removal (`assistantAnswer`
+   * emptied, the embedding dropped, the turn `tailOnly`, so no recall finds
+   * it). A no-op for an unknown id. Optional: a provider without
+   * it keeps the turn as written.
+   */
+  amendTurn?(turnExternalId: string, amend: TurnAmend): Promise<void>;
+  /**
    * Upsert a batch of standalone business entities (no Turn relationship).
    * Used by the Odoo / Confluence sync to populate `OdooEntity` and
    * `ConfluencePage` nodes proactively so `findEntityCapturedTurns` (name
@@ -1037,6 +1046,10 @@ export interface RecalledPlan {
   /** External id `plan:<planId>`. */
   planId: string;
   scope: string;
+  /** External id of the turn that wrote the plan (`plan.props.turnId`), when
+   *  it is known. A recall brings that turn's discretion labels into the
+   *  recalling turn (spec 2042 §5.11, #2194). */
+  turnId?: string;
   strategy?: string;
   createdAt?: string;
   openStepGoals: string[];
@@ -1691,6 +1704,24 @@ export interface FactIngestResult {
   updated: number;
 }
 
+/** Spec 2042 — see {@link KnowledgeGraph.amendTurn}. */
+export interface TurnAmend {
+  readonly identityGuard?: TurnIdentityGuardVerdict;
+  /** The answer was withheld: it is no part of the agent's memory. */
+  readonly withholdAnswer?: boolean;
+}
+
+/** Spec 2042 — what the identity guard decided about a turn's answer. */
+export interface TurnIdentityGuardVerdict {
+  readonly outcome: 'pass' | 'blocked' | 'unavailable';
+  /** The layer that decided: the rules alone, or the model judge. */
+  readonly layer: 'deterministic' | 'model';
+  /** Total guard latency of the answer's checks. */
+  readonly latencyMs: number;
+  /** blocked: the deterministic rule, if one; unavailable: timeout | error | no_judge. */
+  readonly reason?: string;
+}
+
 export interface TurnIngest {
   scope: string;
   /** ISO timestamp at turn completion. */
@@ -1752,6 +1783,13 @@ export interface TurnIngest {
    * as a Turn property.
    */
   unprotected?: boolean;
+  /**
+   * Spec 2042 — the identity guard's verdict on this turn's answer, so a
+   * withheld answer can be traced later. Absent for a turn no guard checked.
+   * A withheld answer is stored with an empty `assistantAnswer`: the draft is
+   * no part of the agent's memory.
+   */
+  identityGuard?: TurnIdentityGuardVerdict;
   /**
    * Member-scoped memory — the canonical omadia user ids of everyone present
    * in the room when the turn happened, sorted and de-duplicated. The turn's

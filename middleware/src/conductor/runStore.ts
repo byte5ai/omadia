@@ -7,6 +7,17 @@ export type RunStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'cancel
 export type TriggerKind = 'manual' | 'cron' | 'channel' | 'agent' | 'webhook' | 'workflow' | 'event';
 
 /**
+ * #1710 — the ONE definition of an active run (still driven, or still waiting on
+ * a human). `ConductorRunStore.listForWorkflow` and
+ * `ConductorWorkflowStore.hasActiveRuns` must agree on it: the run history is the
+ * only UI path to the cancel button that clears the delete guard, and those two
+ * queries disagreeing is what made a waiting run uncancellable.
+ */
+export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['running', 'waiting'];
+/** `ACTIVE_RUN_STATUSES` as a SQL literal list, for `status IN (...)`. */
+export const ACTIVE_RUN_STATUS_SQL = ACTIVE_RUN_STATUSES.map((s) => `'${s}'`).join(', ');
+
+/**
  * Thrown when a step/park write is fenced out because the run's lease (`claimed_by`) no
  * longer matches the driver's token — i.e. a resume worker has taken the run over. The
  * superseded driver catches this and stops, so a run is never driven by two owners at once.
@@ -41,6 +52,14 @@ export interface ConductorRun {
    *  guess. */
   errorCode: ConductorRunErrorCode | null;
   errorMessage: string | null;
+}
+
+/**
+ * #1710 — a run row plus the NUMBER of the workflow version it ran: the history
+ * spans every version, and `workflowVersionId` alone is an opaque uuid.
+ */
+export interface ConductorRunListEntry extends ConductorRun {
+  workflowVersion: number;
 }
 
 export interface ConductorRunStep {
@@ -116,6 +135,14 @@ function toRun(r: RunRow): ConductorRun {
   };
 }
 
+/** A run row joined to its version number. pg returns INT as a number, but the
+ *  driver's type parsing is configurable — hence `number | string` + `Number()`. */
+type RunListRow = RunRow & { workflow_version: number | string };
+
+function toRunListEntry(r: RunListRow): ConductorRunListEntry {
+  return { ...toRun(r), workflowVersion: Number(r.workflow_version) };
+}
+
 function toStep(r: StepRow): ConductorRunStep {
   return {
     id: r.id,
@@ -133,7 +160,17 @@ function toStep(r: StepRow): ConductorRunStep {
   };
 }
 
-const RUN_COLS = `id, workflow_version_id, status, current_step_id, context, trigger_kind, trigger_source, is_dry_run, started_at, ended_at, cancel_requested_by, cancel_requested_at, error_code, error_message`;
+const RUN_COL_NAMES = [
+  'id', 'workflow_version_id', 'status', 'current_step_id', 'context', 'trigger_kind', 'trigger_source',
+  'is_dry_run', 'started_at', 'ended_at', 'cancel_requested_by', 'cancel_requested_at', 'error_code', 'error_message',
+] as const;
+const RUN_COLS = RUN_COL_NAMES.join(', ');
+/** `RUN_COLS` qualified for the joined workflow-wide listing — same source of
+ *  truth, so the two column lists can never drift apart. */
+const RUN_COLS_JOINED = RUN_COL_NAMES.map((c) => `r.${c}`).join(', ');
+/** Page size of the workflow-wide history. Active runs sort first, so the window
+ *  can never hide a run that still needs an operator (#1710). */
+const RUN_HISTORY_LIMIT = 50;
 const STEP_COLS = `id, run_id, step_id, seq, actor, postcondition_outcome, transition_taken, started_at, ended_at, error_code, error_message, error_detail`;
 
 /** Persistence for runs + their durable per-step record (resume checkpoint + audit trace). */
@@ -194,6 +231,27 @@ export class ConductorRunStore {
       [workflowVersionId, safe],
     );
     return r.rows.map(toRun);
+  }
+
+  /**
+   * #1710 — every run of a workflow, across all of its versions: active runs
+   * first, then newest first. Filtering to the ACTIVE version emptied the
+   * history on every re-publish, and with it went the cancel button of a run
+   * still waiting on an older version — the one thing that clears the
+   * `has_active_runs` guard on DELETE /:slug. Hence `ACTIVE_RUN_STATUSES`,
+   * shared with `hasActiveRuns`: the two predicates must not drift again.
+   */
+  async listForWorkflow(workflowId: string): Promise<ConductorRunListEntry[]> {
+    const r = await this.pool.query<RunListRow>(
+      `SELECT ${RUN_COLS_JOINED}, v.version AS workflow_version
+         FROM conductor_runs r
+         JOIN conductor_workflow_versions v ON v.id = r.workflow_version_id
+        WHERE v.workflow_id = $1
+        ORDER BY (r.status IN (${ACTIVE_RUN_STATUS_SQL})) DESC, r.started_at DESC
+        LIMIT $2`,
+      [workflowId, RUN_HISTORY_LIMIT],
+    );
+    return r.rows.map(toRunListEntry);
   }
 
   /** Persist a completed step (the resume checkpoint + audit record) and the run's

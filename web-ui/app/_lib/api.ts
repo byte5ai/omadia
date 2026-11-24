@@ -5485,6 +5485,15 @@ export interface ConductorRun {
   errorMessage?: string | null;
 }
 
+/**
+ * #1710 — a run-history row: the history spans every version of the workflow, so
+ * a row carries the version NUMBER it ran. Optional — a middleware older than
+ * #1710 serves rows without it.
+ */
+export interface ConductorRunListEntry extends ConductorRun {
+  workflowVersion?: number | null;
+}
+
 export interface ConductorRunStep {
   id: string;
   runId: string;
@@ -5639,7 +5648,7 @@ export async function previewConductorWorkflow(slug: string, payload: unknown): 
   return postJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/preview`, { payload });
 }
 
-export async function listConductorRuns(slug: string): Promise<{ runs: ConductorRun[] }> {
+export async function listConductorRuns(slug: string): Promise<{ runs: ConductorRunListEntry[] }> {
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs`);
 }
 

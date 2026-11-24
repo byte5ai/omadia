@@ -65,3 +65,46 @@ test('two orchestrators do not collide at the same model path', async () => {
   assert.equal(await a.readFile('/memories/shared-name.md'), 'from-a');
   assert.equal(await b.readFile('/memories/shared-name.md'), 'from-b');
 });
+
+// #1828 — `delete /memories` reached the store as the agent's physical root,
+// which the store's own root guard does not recognise, and wiped the tree
+// including every plugin's `ctx.memory`.
+async function seeded(): Promise<{ store: InMemoryMemoryStore; nsr: OrchestratorMemoryNamespacer }> {
+  const { store, nsr } = ns('public');
+  await nsr.createFile('/memories/notes/a.md', 'note');
+  await store.createFile('/memories/orchestrators/public/plugins/p1/state.json', '{}');
+  return { store, nsr };
+}
+
+async function assertTreeIntact(store: InMemoryMemoryStore): Promise<void> {
+  assert.equal(await store.readFile('/memories/orchestrators/public/notes/a.md'), 'note');
+  assert.equal(await store.readFile('/memories/orchestrators/public/plugins/p1/state.json'), '{}');
+}
+
+test('delete and rename of the /memories root are refused (#1828)', async () => {
+  const { store, nsr } = await seeded();
+  for (const root of ['/memories', '/memories/', '/memories//']) {
+    await assert.rejects(nsr.delete(root), { name: 'MemoryInvalidPathError', message: /root/ });
+  }
+  await assert.rejects(nsr.rename('/memories', '/memories/old'), { name: 'MemoryInvalidPathError' });
+  await assertTreeIntact(store);
+});
+
+test('plugin storage cannot be deleted or moved through the memory tool, without a shield (#1828)', async () => {
+  const { store, nsr } = await seeded();
+  await assert.rejects(nsr.delete('/memories/plugins'), { name: 'MemoryInvalidPathError', message: /plugin storage/ });
+  await assert.rejects(nsr.delete('/memories/plugins/p1/state.json'), { name: 'MemoryInvalidPathError' });
+  await assert.rejects(nsr.rename('/memories/plugins/p1', '/memories/moved'), { name: 'MemoryInvalidPathError' });
+  await assert.rejects(nsr.rename('/memories/notes/a.md', '/memories/plugins/p1/a.md'), { name: 'MemoryInvalidPathError' });
+  await assertTreeIntact(store);
+  // Reading and writing plugin storage stay as before.
+  assert.equal(await nsr.readFile('/memories/plugins/p1/state.json'), '{}');
+  await nsr.writeFile('/memories/plugins/p1/state.json', '{"v":1}');
+  // A folder that merely starts with "plugins" is an ordinary note folder.
+  await nsr.createFile('/memories/plugins-notes/x.md', 'x');
+  await nsr.delete('/memories/plugins-notes');
+  // Ordinary notes and folders are still deleted and renamed.
+  await nsr.rename('/memories/notes', '/memories/archive');
+  await nsr.delete('/memories/archive');
+  assert.equal(await store.fileExists('/memories/orchestrators/public/archive/a.md'), false);
+});
