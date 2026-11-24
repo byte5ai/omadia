@@ -686,9 +686,19 @@ export function withAgentIdentity(
   );
 }
 
-/** Case-insensitive, trimmed comparison key of a name. */
+/*
+ * Comparison key of a name: the privacy guard's `normalizeOwnName`
+ * (harness-plugin-privacy-guard/src/ownNames.ts), repeated here because the
+ * orchestrator cannot import the guard. Both sides must agree: an agent
+ * "„Karen“" whose key kept the quotes would survive the human veto below and
+ * then exempt a plain "Karen" in the guard.
+ */
+const NAME_QUOTES = `"'„“”‚‘’«»`;
+const NAME_LEADING_NOISE = new RegExp(`^[\\s${NAME_QUOTES}]+`, 'u');
+const NAME_TRAILING_NOISE = new RegExp(`[\\s.,;:!?${NAME_QUOTES}]+$`, 'u');
+
 function nameKey(name: string): string {
-  return name.trim().toLocaleLowerCase();
+  return name.replace(NAME_LEADING_NOISE, '').replace(NAME_TRAILING_NOISE, '').toLocaleLowerCase();
 }
 
 /**
@@ -712,6 +722,26 @@ export function agentOwnNames(input: {
   const signingName = input.identityName?.trim() || input.assistantName?.trim();
   const humans = new Set((input.humanNames ?? []).map(nameKey));
   const names = [input.speaker.displayName, input.speaker.slug, signingName]
+    .map((n) => n?.trim() ?? '')
+    .filter((n) => n.length > 0 && !humans.has(nameKey(n)));
+  return [...new Set(names)];
+}
+
+/**
+ * Spec 2042 (#2191, #2192) — the names of the roster's agents for
+ * `agentNames@1`: every given name (slugs, display names, identity names of
+ * the agents that exist), trimmed and deduplicated, minus every name a
+ * known human bears (`humanNames`, case-insensitive), the rule of
+ * {@link agentOwnNames}. `humanNames: null` (not known yet) yields `null`:
+ * no agent name is exempt, masking wins.
+ */
+export function rosterAgentNames(input: {
+  readonly names: readonly (string | null | undefined)[];
+  readonly humanNames: readonly string[] | null;
+}): readonly string[] | null {
+  if (input.humanNames === null) return null;
+  const humans = new Set(input.humanNames.map(nameKey));
+  const names = input.names
     .map((n) => n?.trim() ?? '')
     .filter((n) => n.length > 0 && !humans.has(nameKey(n)));
   return [...new Set(names)];

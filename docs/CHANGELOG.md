@@ -36,6 +36,32 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Agent-Namen bleiben im Klartext, auch in Hintergrund-Jobs und Konsultationen (#2191, #2192)
+
+2026-11-24. #2190 nahm nur den eigenen Namen eines Agents in seinem eigenen
+Turn von der Maskierung aus. Hintergrund-Jobs über die Turns eines Agents
+(Signifikanz-Bewertung, Canvas-Skelett) maskierten seinen Namen weiter, und in
+einer Konsultation sah A den Namen von B (und B den von A) als Platzhalter. Der
+Kernel stellt jetzt `agentNames@1` bereit: die Namen aller bestehenden Agents
+(Slug, Name, Identitätsname; gelöschte Agents nicht), ohne die Namen, die ein
+aktiver Benutzer trägt. Der Privacy Guard nimmt sie in jedem Turn und in jedem
+Stored-Text-Scope aus, nach den Regeln von #2190 (exakte Gleichheit, die
+Deny-Liste gewinnt). Menschen bleiben maskiert; solange die Namen unbekannt
+sind, ist kein Agent-Name ausgenommen. Restrisiko: Eine Person ohne
+omadia-Login, die genau wie ein Agent heißt, bleibt jetzt in allen Turns
+unmaskiert; dagegen hilft die Deny-Liste. plugin-api 1.91.0, privacy-guard
+0.16.4.
+
+### Fixed — Recall-Karte im Streaming nur für Leser, die den Inhalt kennen dürfen (#2042)
+
+2026-11-24. Die Karte „Aus früheren Sessions“ (`kg_recall`, dazu `kg_graph`)
+ging im Streaming-Pfad vor der Antwort hinaus, ohne die Diskretionsprüfung der
+Antwort. Ein Raum mit einem Leser, der einen erinnerten
+Eintrag nicht kennen darf, sah ihn so in der Karte, obwohl die Antwort
+zurückgehalten wurde. Die Karten bekommen jetzt dieselbe People-Egress-Prüfung
+direkt nach dem Recall. Der gepufferte Pfad (Teams) war schon abgedeckt: eine
+zurückgehaltene Antwort verwirft `recalled` ganz.
+
 ### Fixed — Restlücken aus Spec 2042: Vorschau-Rücknahme, Trigger-Feldrechte, Budgets (#2042)
 
 2026-11-24.

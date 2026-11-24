@@ -2469,9 +2469,38 @@ reads "Ich bin <surrogate>" and "corrects" its own name. The rules
   partners and employees without a login, customers, and people of a
   directory (Entra, the Conductor people directory) who never signed in are
   not covered: if one of them bears an agent's own name exactly, that name
-  reaches the agent's model unmasked in the agent's own turns. A user write
+  reaches the agent's model unmasked in the agent's own turns (and, since
+  #2191/#2192, in every agent's turns: see the roster bullet below). A user write
   from another process (a second instance, manual SQL) is picked up only by
   the TTL reload, up to 5 minutes later.
+- **The roster's agent names (#2191, #2192, plugin-api 1.91.0).** Owner
+  decision (2026-11-24, spec 2042 round G1): the names of the roster's agents
+  are not personal data, in any turn of any agent and in background jobs. The
+  kernel publishes `agentNames@1` (`src/platform/agentNamesService.ts`): the
+  slugs, names and identity names of the agents that exist, enabled or not
+  (`OrchestratorRegistry.agentNames`; deleted agents are left out, so their
+  names are masked again), minus every name a known human bears
+  (`rosterAgentNames`, the namesake rule above, compared with the guard's
+  normalisation so quotes or punctuation cannot get a name past the veto).
+  The privacy guard declares it under `optional_requires` and exempts those
+  names under the same rules: in every turn's `maskUserPrompt`,
+  `maskReplayedAnswer` and `projectVerifierText` (in a consultation, A's turn
+  keeps colleague B's name and B's run keeps A's), and in every stored-text
+  scope (`openStoredTextScope`: the significance scorer, the canvas skeleton
+  and the other memory jobs over an agent's turns no longer feed a surrogate
+  of the agent's name back into its context). A turn reads the list once (a
+  change mid-turn cannot unmask a value the turn already masked), a job run
+  once when its scope opens. Exact equality, the deny-list wins, names under
+  2 characters are ignored. **Fail safe:** no registry yet, human names not
+  loaded (`null`), the service not published or a failing lookup exempts no
+  roster name; the turn's own `ownNames` still apply.
+  **Residual, wider than the own-name one above:** a person without an
+  omadia login who bears an agent's name exactly ("Karen" for an Odoo
+  employee and an agent "Karen") reaches the model unmasked in every agent's
+  turns and in the memory jobs, not only in that agent's own turns. A
+  caller-named `identityValues` entry of `projectVerifierText` that equals a
+  roster name is not masked either. The operator deny-list is the remedy for
+  such a name.
 
 **Memory jobs, independent of `mask_user_prompt`.** The memory jobs of
 `@omadia/orchestrator-extras` send stored text, which holds real values,

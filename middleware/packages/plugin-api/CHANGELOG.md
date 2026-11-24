@@ -8,6 +8,20 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.91.0 — 2026-11-24
+
+Additive (spec 2042 follow-up: agent names are not masked, #2191, #2192).
+
+### Added
+
+- **`AGENT_NAMES_SERVICE_NAME`** (`agentNames@1`) and **`AgentNamesProvider`**:
+  the kernel's snapshot of the roster's agent names (slugs, display names,
+  identity names of the existing agents) minus every name an active user
+  bears; `null` while not known. A privacy provider exempts them under the
+  `ownNames` rules in every turn and in stored-text scopes, so a colleague
+  agent named in a consultation and an agent's own name in a background job
+  stay as written.
+
 ## 1.90.0 — 2026-11-23
 
 Additive (spec 2042 follow-up: an agent's own name is not masked in its own turn).

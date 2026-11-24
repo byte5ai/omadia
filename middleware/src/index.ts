@@ -105,12 +105,14 @@ import {
   MAINTENANCE_RUN_SERVICE_NAME,
   MODEL_PASSTHROUGH_SERVICE_NAME,
   AGENT_DIRECTORY_SERVICE_NAME,
+  AGENT_NAMES_SERVICE_NAME,
   AGENT_ENVELOPE_SERVICE_NAME,
   OPERATOR_JOBS_SERVICE_NAME,
   TRANSCRIPTION_SERVICE_NAME,
   TURN_RECEIPT_STORE_SERVICE_NAME,
   nativeToolDispatchText,
   perCallerService,
+  type AgentNamesProvider,
   type MaintenanceRunService,
 } from '@omadia/plugin-api';
 import { createModelPassthrough, systemModuleOnlyService } from './platform/modelPassthrough.js';
@@ -490,6 +492,7 @@ import { createAgentTemplatesRouter } from './routes/agentTemplates.js';
 import { createSetupOptionsResolver } from './plugins/setupOptionsResolver.js';
 import { createModelGatewayStatusRouter } from './routes/modelGatewayStatus.js';
 import { agentDirectoryService } from './platform/agentDirectoryService.js';
+import { createAgentNamesProvider } from './platform/agentNamesService.js';
 import { agentEnvelopeService } from './platform/agentEnvelopeService.js';
 import {
   EMBEDDING_BACKFILL,
@@ -2569,6 +2572,16 @@ async function main(): Promise<void> {
   const humanNameDirectory = new HumanNameDirectory({ log: (m) => console.warn(m) });
   serviceRegistry.provide<HumanNamesProvider>(HUMAN_NAMES_SERVICE, () =>
     humanNameDirectory.snapshot(),
+  );
+  // #2191 / #2192 — `agentNames@1`: the roster's agent names minus every name
+  // an active user bears, never masked by the privacy guard. Published before
+  // plugin activation like `humanNames@1`; `null` until the registry is up.
+  serviceRegistry.provide<AgentNamesProvider>(
+    AGENT_NAMES_SERVICE_NAME,
+    createAgentNamesProvider({
+      registry: () => serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+      humanNames: () => humanNameDirectory.snapshot(),
+    }),
   );
   await toolPluginRuntime.activateAllInstalled();
   console.log(

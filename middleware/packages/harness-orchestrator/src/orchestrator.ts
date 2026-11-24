@@ -4276,10 +4276,7 @@ export class Orchestrator {
       input.userMessage,
       turnMemory?.isolation,
     );
-    const events: ChatStreamEvent[] = [
-      ...this.toRecallAnnotationEvents(recalled),
-      ...(await this.toKgGraphAnnotationEvents(recalled)),
-    ];
+    const events = await this.recallCardEvents(recalled);
     return {
       ...(text !== undefined && text.trim().length > 0 ? { text } : {}),
       ...(events.length > 0 ? { events } : {}),
@@ -4676,6 +4673,33 @@ export class Orchestrator {
       );
       return { text: undefined, recalled: undefined };
     }
+  }
+
+  /**
+   * Spec 2042 §5.11 — the `kg_recall` and `kg_graph` cards of a recall, for
+   * the paths that emit them before the answer (streaming, the CLI turn).
+   * They show recalled content to the people of the conversation, so they get
+   * the people-egress decision the answer gets (`guardAnswerEgress`,
+   * `guardStreamedDone`), taken right after the recall labelled the turn:
+   * a reader who may not know a recalled entry sees no card. The buffered
+   * path needs no early check: a withheld result drops `recalled` whole.
+   * No audit row here: the answer's own egress check decides on the same
+   * labels later in the turn and writes it. A CLI turn runs without
+   * discretion state, so the check is a no-op there.
+   */
+  private async recallCardEvents(recalled: RecalledContext | undefined): Promise<ChatStreamEvent[]> {
+    if (!recalled) return [];
+    const state = currentDiscretion();
+    if (state && !isConsultationRunOf(this.agentId)) {
+      const decision = await peopleEgressDecision(state);
+      if (decision !== undefined && !decision.allowed) {
+        console.warn(
+          `[discretion] recall card of ${this.agentId} withheld: ${violationSummary(decision).join(', ')}`,
+        );
+        return [];
+      }
+    }
+    return [...this.toRecallAnnotationEvents(recalled), ...(await this.toKgGraphAnnotationEvents(recalled))];
   }
 
   /** Cross-session recall probe — map the assembled `recalled` payload to a
@@ -8023,11 +8047,11 @@ export class Orchestrator {
     // Cross-session recall probe — surface plans/processes/insights pulled
     // from prior sessions as a visible `kg_recall` card before the answer
     // streams in. No-op when every recall leg was empty.
-    yield* this.toRecallAnnotationEvents(recalled);
     // KG-walk chat visualization — a sibling `kg_graph` annotation carrying the
     // recalled KG neighbourhood. Best-effort & guarded inside the helper so it
-    // can never break or delay the turn; additive/opaque to the model.
-    yield* await this.toKgGraphAnnotationEvents(recalled);
+    // can never break or delay the turn; additive/opaque to the model. Both
+    // only when every reader of the room may know what the recall brought in.
+    yield* await this.recallCardEvents(recalled);
     // #268 — pre-fetch + extract any uploaded document text for this turn.
     // #504/#505 — same pass also resolves image attachments into vision
     // content-blocks; see chatInContextInner for the full rationale,
