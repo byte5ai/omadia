@@ -6,7 +6,7 @@ Accepted
 
 - **Date:** 2026-11-23
 - **Deciders:** Maintainers, from issues #1827 and #1828 (security fast track of the issue
-  sweep of 2026-11-23); PRs #2034, #2037 and #2040. Option A for `_rules` was agreed on #1827.
+  sweep of 2026-11-23); PRs #2034, #2037, #2040 and #2216 (transcript trees). Option A for `_rules` was agreed on #1827.
 
 ## Context and Problem Statement
 
@@ -55,8 +55,12 @@ Chosen option: **A**, because it closes all three gaps in the store and namespac
 changing the grant model every turn already has.
 
 - **Agent-unwritable prefixes.** `AGENT_UNWRITABLE_PREFIXES` in `ScopedMemoryStore` holds
-  `/memories/core/audit/` and `/memories/_rules/`. Create, write, delete and rename there are
-  refused with `MemoryScopeViolation`; reading stays allowed.
+  `/memories/core/audit/`, `/memories/_rules/`, `/memories/sessions/` and
+  `/memories/chat-sessions/`. Create, write, delete and rename there are refused with
+  `MemoryScopeViolation`; reading stays allowed.
+- **Transcripts are kernel-written.** `SessionLogger` and `ChatSessionStore` write
+  transcripts through the unscoped store (still wrapped in `LabelledMemoryStore` when
+  discretion is on); no agent scope writes there, so `session:*` grants reads only (#2216).
 - **Ancestors count.** `delete` and the `rename` source are refused when the path *contains*
   a protected prefix (`/memories`, `/memories/core`). Siblings under `/memories/core/` stay
   writable, deletable and renamable.
