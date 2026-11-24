@@ -536,11 +536,9 @@ export const ConfigSchema = z.object({
     .default('MultiTenant'),
   MICROSOFT_APP_TENANT_ID: z.string().optional(),
   /**
-   * Bot Framework OAuth Connection Name (configured in Azure Bot Service).
-   * When set, the Teams bot attempts to retrieve a Teams SSO assertion for
-   * each message and threads it into the orchestrator as `ssoAssertion`,
-   * enabling the calendar tools. Unset → calendar tools stay dormant (no
-   * OAuth flow, no consent prompts).
+   * Legacy: the Bot Framework OAuth connection name now lives in the Teams
+   * plugin's setup (`teams_sso_connection_name`). The kernel no longer reads
+   * this value; kept so an existing .env still parses.
    */
   TEAMS_SSO_CONNECTION_NAME: z.string().optional(),
 

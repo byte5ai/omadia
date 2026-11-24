@@ -8,6 +8,22 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.93.0 — 2026-11-24
+
+Additive (channel-sdk 0.3.14): the kernel no longer knows a plugin id for the
+Teams default bot.
+
+### Added
+
+- **`DefaultChannelKeyProvider`** and the optional
+  **`ChannelCoreApi.registerDefaultChannelKeyProvider(channelId, provider)`**
+  (`@omadia/channel-sdk`): a channel plugin that registers no
+  `AgentIdentityProvider` (Teams, whose agent bots the kernel provisions)
+  names its own default bot, the only unknown bot key the Conductor routes
+  to a binding or the fallback agent. Same lifecycle as the other channel
+  providers: one owner per channel type, dropped when the channel
+  deactivates. `@omadia/channel-teams` 0.45.0 registers it.
+
 ## 1.92.0 — 2026-11-24
 
 Additive (spec 2042 follow-up: recalled plans carry discretion labels, #2194).
