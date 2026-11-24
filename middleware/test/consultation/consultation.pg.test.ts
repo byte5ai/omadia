@@ -1,5 +1,5 @@
 /**
- * Spec 2042 §5.4 / §5.11 (pg, migrations 0097–0099):
+ * Spec 2042 §5.4 / §5.11 (pg, migrations 0097–0099, 0112):
  *  - consultation switches and directed grants: default off, revoke, mutual
  *    grants for discussions, the call ledger and its per-day count;
  *  - discretion stores: integration declarations, persisted label sets that
@@ -21,7 +21,7 @@ import { probePgTest } from '../_helpers/pgTestDb.js';
 
 import { ConfigStore } from '../../packages/harness-orchestrator/src/registry/configStore.js';
 import { runMultiOrchestratorMigrations } from '../../packages/harness-orchestrator/src/registry/migrator.js';
-import { readersOf, unionLabels, EVERYONE } from '../../packages/harness-orchestrator/src/discretion/labels.js';
+import { readersOf, serializeLabelSet, unionLabels, EVERYONE } from '../../packages/harness-orchestrator/src/discretion/labels.js';
 import { ConsultationStore } from '../../src/consultation/consultationStore.js';
 import { DiscretionStore } from '../../src/discretion/discretionStore.js';
 
@@ -34,7 +34,7 @@ const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
 const MIGRATIONS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations');
 const SCHEMA = `consultation_${String(process.pid)}`;
 
-describe('consultation and discretion stores (pg, migrations 0097–0099)', { skip: !pgAvailable }, () => {
+describe('consultation and discretion stores (pg, migrations 0097–0099, 0112)', { skip: !pgAvailable }, () => {
   let pool: Pool;
   let config: ConfigStore;
   let consultation: ConsultationStore;
@@ -49,7 +49,12 @@ describe('consultation and discretion stores (pg, migrations 0097–0099)', { sk
     pool = new Pool({ connectionString: PG_URL, max: 3, options: `-c search_path=${SCHEMA},public` });
     // An agent that exists before 0099 keeps its mode.
     await runMultiOrchestratorMigrations(pool, () => undefined, MIGRATIONS_DIR);
-    for (const file of ['0097_agent_consultation.sql', '0098_discretion.sql', '0099_context_memory_default_members.sql']) {
+    for (const file of [
+      '0097_agent_consultation.sql',
+      '0098_discretion.sql',
+      '0099_context_memory_default_members.sql',
+      '0112_discretion_process_labels.sql',
+    ]) {
       await pool.query(await readFile(resolve(MIGRATIONS_DIR, file), 'utf8'));
     }
     config = new ConfigStore(pool);
@@ -203,10 +208,46 @@ describe('consultation and discretion stores (pg, migrations 0097–0099)', { sk
     assert.deepEqual((await discretion.labelsOf('memorable', ['mk:1'])).get('mk:1'), labels);
     await discretion.dropLabels('memory_file', '/memories/orchestrator/anna/p.md');
     assert.equal((await discretion.labelsOf('memory_file', ['/memories/orchestrator/anna/p.md'])).size, 0);
+    // #2194 (migration 0112) — a stored process keeps labels too.
+    await discretion.persistLabels('process', 'process:hr:offboarding', 'anna', labels);
+    assert.deepEqual((await discretion.labelsOf('process', ['process:hr:offboarding'])).get('process:hr:offboarding'), labels);
+    await assert.rejects(
+      pool.query(`INSERT INTO discretion_labels (subject_kind, subject_id, labels) VALUES ('plan', 'p-1', '[]')`),
+      'a kind outside the check is refused',
+    );
     // More ids than one lookup takes: none is dropped.
     const many = Array.from({ length: 501 }, (_, i) => `turn-many-${String(i)}`);
     await discretion.persistLabels('turn', 'turn-many-500', 'anna', labels);
     assert.ok((await discretion.labelsOf('turn', many)).has('turn-many-500'));
+  });
+
+  it('#2198: concurrent label merges both stay', async () => {
+    const a = unionLabels([{ kind: 'context', key: 'teams:a', readers: readersOf(['a']) }]);
+    const b = unionLabels([{ kind: 'context', key: 'teams:b', readers: readersOf(['b']) }]);
+    await discretion.mergeLabels('process', 'process:race', 'anna', unionLabels([]));
+    // A holds the row (as a concurrent merge would) and writes `a` while B
+    // merges `b`: B must wait for A and add to what A stored.
+    const holder = await pool.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query(
+        `SELECT labels FROM discretion_labels WHERE subject_kind = 'process' AND subject_id = 'process:race' FOR UPDATE`,
+      );
+      const merging = discretion.mergeLabels('process', 'process:race', 'ben', b);
+      await new Promise((r) => setTimeout(r, 150));
+      await holder.query(
+        `UPDATE discretion_labels SET labels = $1::jsonb WHERE subject_kind = 'process' AND subject_id = 'process:race'`,
+        [JSON.stringify(serializeLabelSet(a))],
+      );
+      await holder.query('COMMIT');
+      await merging;
+    } finally {
+      holder.release();
+    }
+    const keys = (await discretion.labelsOf('process', ['process:race']))
+      .get('process:race')
+      ?.labels.flatMap((l) => (l.kind === 'context' ? [l.key] : []));
+    assert.deepEqual(keys?.sort(), ['teams:a', 'teams:b']);
   });
 
   it('the audit stores label ids and reasons only', async () => {

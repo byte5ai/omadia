@@ -143,6 +143,14 @@ src/
   Menschen-Behauptungen), `identityGuard/llmJudge.ts` (Modellschicht, Klassifizier-
   Modell des Agenten, nur bei verdächtigem Text), `identityGuard/guard.ts`
   (`SentenceGate`: satzweise Freigabe beim Streaming, Timeout 8 s → fail-closed).
+  `identityGuard/answerRecordGate.ts`: der Orchestrator schreibt die Turn-Zeile, bevor
+  der Guard (außen) entscheidet; der `TurnRecordWriter` meldet jede Zeile dem Record-Gate
+  des Turns und hält die Fakten-Extraktion zurück. Nach dem Urteil patcht der Guard den
+  Turn per `KnowledgeGraph.amendTurn` ohne neue Klassifikation (Property `identityGuard`:
+  outcome, layer, latencyMs, reason; plugin-api 1.89.0); eine zurückgehaltene Antwort
+  verliert Text und Embedding und wird `tailOnly` (die Frage bleibt),
+  Fakten werden nur aus behaltenen Antworten gelernt. Offen: Auto-Promotion und `onAfterTurn` sehen den Entwurf
+  noch (laufen vor dem Urteil); das Markdown-Transkript behält ihn.
 - **Prompt:** `management/agentIdentityPrompt.ts` (`DEFAULT_AGENT_IDENTITY`,
   `identityRules`), Snapshots in `test/fixtures/agentPrompt/` (`test/agentIdentityRules.test.ts`).
 - **Endpoints:** `/api/v1/operator/default-agents`,
@@ -177,6 +185,11 @@ src/
   wird abgelehnt. Die Kernel-Registry ist `ChannelProviderRegistry<AgentIdentityProvider>`
   (`src/index.ts`); `defaultChannelBotKey` (Conductor) und `presentBots`
   (`get_chat_participants`) fragen außerhalb von Teams den Provider.
+- **Standard-Bot ohne Identity-Provider (Teams):**
+  `CoreApi.registerDefaultChannelKeyProvider(channelId, DefaultChannelKeyProvider)`
+  (`{ channelType, defaultChannelKey() }`, channel-sdk 0.3.14 / plugin-api 1.93.0).
+  Registry `ChannelProviderRegistry<DefaultChannelKeyProvider>('defaultChannelKey')`;
+  Kanal-Claim (`scopedCoreApi.ts`) und Deactivate wie bei den anderen Providern.
 - **Operator-API** (`src/routes/operatorAgentChannelIdentities.ts`,
   Service `src/platform/agentChannelIdentityService.ts`):
   `GET /api/v1/operator/agents/:slug/channel-identities` (Kanäle, Felder, Bot mit
@@ -455,6 +468,42 @@ Caches — den Detector-Snapshot (`__resetCliBackendCache`) und die
 Versions-Probe des Spawn-Gates (`clearCliVersionCache`). Bei einem In-Place-
 Update ändert sich der Binary-Pfad nicht, also bliebe der Cache-Key sonst
 gleich und der Turn liefe bis zu fünf Minuten weiter gegen die alte Version.
+
+### Menschennamen für den Privacy Shield (`humanNames@1`, `UserStore.onChange`, #2042)
+
+Kernel-Service nach demselben Muster: `serviceRegistry.provide('humanNames',
+() => humanNameDirectory.snapshot())` in `middleware/src/index.ts`, **vor**
+`activateAllInstalled()` registriert; die `users`-Tabelle wird erst nach dem
+Datenbank-Start angehängt (`humanNameDirectory.attach(userStore)`), was den
+ersten Load startet. Deklariert im Orchestrator-Manifest unter
+`optional_requires: ["humanNames@1"]`, pro Turn aufgelöst über
+`kernelHumanNames(ctx.services)` (plugin.ts) und über die
+`defaultRuntimeConfig` der Registry + `buildForAgent` (applyDiff.ts) an
+`agentOwnNames` gereicht. Inhalt: Anzeigename aktiver Benutzer plus jedes Wort
+davon (`humanNamesOf` in `src/auth/humanNameDirectory.ts`). Ein eigener Name
+des Agents, den ein Mensch trägt, bleibt maskiert. `null` (nicht publiziert,
+nicht geladen, Load fehlgeschlagen) heißt unbekannt: kein eigener Name ist
+ausgenommen. Namen nie loggen. Regeln: `docs/security-architecture.md` §6f.
+
+`UserStore.onChange(listener)` ist der Change-Hook der `users`-Tabelle: feuert
+nach `create`, `createFirstAdmin` (nach COMMIT), `upsertOidcIdentity`,
+`update` mit Namens- oder Statusänderung und erfolgreichem `deleteById`
+(nicht `markLoginNow`). Wer `users` an `UserStore` vorbei schreibt, umgeht ihn;
+dann greift nur der 5-Minuten-TTL des Snapshots. Ein Listener-Fehler wird
+geloggt und bricht den Write nicht ab.
+
+### Agent-Namen für den Privacy Shield (`agentNames@1`, #2191, #2192)
+
+Kernel-Service direkt nach `humanNames@1` in `middleware/src/index.ts`:
+`rosterAgentNames({ names: registry.agentNames(), humanNames })` über die
+`orchestratorRegistry` (Slugs, Namen und Identitätsnamen bestehender Agents,
+gelöschte nicht), abzüglich jedes Namens, den ein aktiver Benutzer trägt
+(`createAgentNamesProvider` in `src/platform/agentNamesService.ts`). `null`, solange Registry oder Menschennamen unbekannt sind. Konstante
+und Typ in plugin-api (`AGENT_NAMES_SERVICE_NAME`, `AgentNamesProvider`,
+1.91.0). Der Privacy Guard deklariert `optional_requires: ["agentNames@1"]`,
+liest pro Aufruf (`PrivacyGuardServiceDeps.agentNames`) und nimmt die Namen in
+jeder Turn-Maskierung und in jedem Stored-Text-Scope aus. Regeln:
+`docs/security-architecture.md` §6f.
 
 ### Plugin-Tool-Readiness-Gate (#474)
 
@@ -1566,7 +1615,21 @@ neuer `notifyRunEnded`-Hook in `ConductorRunExecutor` (feuert exakt an jedem
 Punkt, an dem ein echter, nicht-Dry-Run-Run terminal wird — `driveFrom`s
 Loop-Exit UND die drei direkten Terminal-Returns in `resolveAwait`/
 `resolveDevJobAwait`/`expireAwait`, zentralisiert in `finalizeIfEnded`) löst
-`run.completed`/`run.failed` aus. Der Dispatcher fächert an jede enabled
+`run.completed`/`run.failed`/`run.cancelled` aus. Das Event-Vokabular und das
+1:1-Mapping Status→Event liegen in **`webhookEvents.ts`**
+(`CONDUCTOR_WEBHOOK_EVENTS`, `runEndedEvent`, `isConductorWebhookEvent`) — #1705:
+vorher leitete der Hook den Namen inline ab (`completed ? run.completed :
+run.failed`), ein Operator-Cancel ging damit als `run.failed` mit
+`payload.status: "cancelled"` raus. `runEndedEvent` antwortet für einen nicht
+terminalen Status mit `null` (kein Fallback-Name), `isConductorWebhookEvent` ist
+der Guard, mit dem `webhookRoutes.ts` eine Subscription auf ein Event ablehnt,
+das nie feuert (400 statt 201-und-stumm). Die Spalte `event` bleibt Free-Text —
+die Vokabular-Prüfung sitzt an der API-Kante, damit Rows älterer Builds
+weiterlaufen. **Breaking für Empfänger:** eine `run.failed`-Subscription bekommt
+keine Cancels mehr, wer beides will, braucht eine zweite Subscription auf
+`run.cancelled`. Der Reconciliation-Pass (`listMissingRunDeliveries`) deckt
+denselben dritten Status ab; `0014_webhook_cancelled_event.sql` liefert nur den
+passenden Partial-Index auf `conductor_runs` dafür. Der Dispatcher fächert an jede enabled
 `conductor_webhook_subscriptions`-Row für das Event auf, signiert HMAC
 (`x-omadia-signature`), und retried mit exponentiellem Backoff (Default 6
 Attempts, 30s verdoppelnd bis 30min Cap) — `conductor_webhook_deliveries` ist
@@ -2787,10 +2850,16 @@ Beide Richtungen beantwortet **ein** Modul, `src/conductor/channelBotOwnership.t
 - `speakingIdentityFor`: eigene Identität, sonst der Standard-Bot — nur für
   genau den Agenten, auf den er in dieser Konversation auflöst.
 
-Der Standard-Bot kommt aus `wireConductor({ defaultChannelBotKey })`, in
-`src/index.ts` pro Aufruf gelesen: `microsoft_app_id` der
-Microsoft-365-Integration, sonst `MICROSOFT_APP_ID`. Ohne ihn gilt das alte
-Verhalten (nur provisionierte Bots).
+Der Standard-Bot kommt aus `wireConductor({ defaultChannelBotKey })` =
+`defaultChannelBotKeyFrom([agentIdentities, defaultChannelKeys])`
+(`src/conductor/channelBotOwnership.ts`), pro Aufruf gelesen: zuerst
+`AgentIdentityProvider.defaultChannelKey?()` des Kanal-Plugins, sonst
+`DefaultChannelKeyProvider.defaultChannelKey()` (Teams). Der Kernel kennt dafür
+keine Plugin-ID und kein Env mehr. Wirft der Provider oder nennt er nichts, gibt
+es keinen Standard-Bot (nur provisionierte Bots routen, der Turn scheitert nicht).
+`@omadia/channel-teams` ab 0.45.0 nennt `28:<appId>` der Microsoft-365-App
+(`microsoft_app_id`, sonst env `MICROSOFT_APP_ID`), nur wenn es diesen Bot bedient;
+ein älteres Teams-Plugin nennt keinen.
 
 ### Conductor Ephemeral/JIT-Workflows (#330 Workstream A)
 
@@ -2879,6 +2948,44 @@ Runs behalten ihren Snapshot-Graph, also v4-Prompts).
 `if (graphPool)`-Block provided. Ein Plugin darf Kernel-Services daher nicht
 nur in `activate()` auflösen; Rehydrierung muss lazy beim ersten Tool-Call
 passieren (Facilitator 0.6.0: `Hydrator.ensure()`).
+
+### Conductor — Run-Kontext-Interpolation (`{{ctx.*}}` / `{{steps.*}}`, #1709)
+
+Ein Graph-Feld kann Werte des LAUFS einsetzen. Vier Felder tun das, und sie teilen
+*nicht* eine Policy für ein nicht aufgelöstes Token — genau das ist der Entwurf
+(`src/conductor/runInterpolation.ts`, ein Substitutions-Pass, vier benannte Policies):
+
+| Feld | Renderer | nicht aufgelöst |
+|---|---|---|
+| `step.human.message` | `renderAwaitMessage` | sichtbarer Gedankenstrich `—`, Ergebnis auf 4000 Zeichen gekappt |
+| `step.prompt` | `renderAgentPrompt` | leer |
+| `step.input` (jeder String, jede Tiefe) | `renderActionInput` | leer |
+| `step.agentId` | `renderAgentRef` | leer |
+
+Der Gedankenstrich gilt nur für das Feld, das ein MENSCH liest: eine Freigabe darf
+niemals `{{ctx.employeeName}}` zeigen. Die anderen drei bleiben leer, jedes aus
+eigenem Grund — ein Prompt, weil das Muster `discussion` auf „THE CONVERSATION SO FAR
+(empty if you are opening)" verzweigt; ein Ref, weil nur der leere Slug einen
+Agent-Schritt sauber ablehnen lässt („the run context does not name a speaker"); ein
+Action-Input, weil ein Gedankenstrich sonst nach außen gePOSTet wird. Substitution ist
+immer textuell: ein Token ergibt nie einen anderen JSON-Typ, damit die Form eines
+Connector-Inputs nicht vom Payload abhängt. Objekt-SCHLÜSSEL werden nie angefasst.
+
+**Wo gerendert wird.** `openHumanAwait` rendert die Nachricht EINMAL gegen den Kontext,
+mit dem der Run parkt — die Await-Zeile ist, was Inbox (`/awaits/pending`), Karte
+(`question`) und Reminder-Worker lesen. Await-Zeilen aus der Zeit VOR #1709 enthalten
+noch Template-Text; eine Await-Zeile wird einmal geschrieben und nie neu geschrieben,
+deshalb joint `ConductorAwaitStore` den Run-Kontext in jeden SELECT und rendert solche
+Zeilen beim Lesen (keine Migration, kein Re-Render pro Leser).
+
+**Eine Grammatik.** Sie liegt in `@omadia/conductor-core` (`runTokens.ts`:
+`isTemplateExpression`, `runTokenMatcher`) und wird von beiden Seiten benutzt — der
+Autoring-Prüfung, die ein getemplatetes `step.agentId` von `unknown_agent_ref`
+ausnimmt, und dem Runtime-Renderer. Driften die beiden, ist ein Token, das zur Laufzeit
+auflöst, beim Autoring ein unbekannter Ref. Pfad-Segmente sind `[A-Za-z0-9_-]+` (Step-IDs
+sind beliebige Strings, die gebündelten Templates nutzen Kebab-IDs). Disjunkt zu den
+`slot:text:<key>`-Tokens der Templates (`textSlots.ts`): ein `:` ist kein Pfadzeichen,
+Text-Slots werden einmal beim Instanziieren ersetzt, diese Tokens pro Lauf.
 
 ### Group-Conversation-Primitives im Channel-SDK (#330 Workstream B1)
 
@@ -4555,8 +4662,11 @@ spätere Migrationen trivial.
   Startup aus `middleware/seed/memory/_rules/` kopiert. Modus `missing`
   bedeutet: neue Files werden angelegt, existierende nicht überschrieben
   (Runtime-Edits bleiben). Modus `overwrite` würde pinning erzwingen.
-  Der Orchestrator-Prompt sagt: nur mit expliziter User-Bestätigung
-  ändern.
+  Für Agents nur lesbar (#1827, Deny-Prefix in `ScopedMemoryStore`): jede
+  Datei hier wirkt für alle Agents und Accounts, darum entstehen Regeln nur
+  über den Repo-Seed. Der `DurableRulesMemoryStore`-Hook feuert damit aus dem
+  Chat nicht mehr; Seed-Regeln erreichen den Durable-Tier über
+  `scripts/backfill-durable-rules.ts`.
 - `/memories/customers/<name>.md` — stabile Fakten pro Kunde.
 - `/memories/observations/YYYY-QX.md` — Zeitstempelbezogen.
 - `/memories/sessions/<scope>/YYYY-MM-DD.md` — Transkripte, *geschrieben
@@ -5016,7 +5126,9 @@ Scratch-Reaper übernehmen den Marker als `unprotected`-Stempel.
 Builder-Preview-Chat unter `OMADIA_PRIVACY_FORCE_GUARDED` verweigert
 (`builder.privacy_shield_required`). Unter Shield verweigern die Namespacer
 auch den physischen Plugin-Memory-Baum
-`/memories/orchestrators/<slug>/plugins/` (`SHIELDED_PHYSICAL`). Offen:
+`/memories/orchestrators/<slug>/plugins/` (`SHIELDED_PHYSICAL`); `delete`/`rename`
+dieses Baums und eines gebundenen Roots (`/memories`, `~team`, `~agent`) verweigern
+sie immer, auch ohne Shield (#1828). Offen:
 Backfill für Altbestände ohne Flag (§13).
 
 ### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
@@ -6159,6 +6271,12 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   6. Mutationsnachweis (Prädikate einzeln löschen, Stryker nightly), Exfiltrations-Korpus.
   Bekannte Test-Infrastruktur-Bugs: #2185 (`roleChangeAudit775.pg` löscht `admin_audit`
   ohne Migrationszeile), #2186 (Orb-Setup scheitert am CUDA-Download von `onnxruntime-node`).
+
+- **Pflege von Memory-Regeln (#1827-Folge).** `/memories/_rules/` ist für
+  Agents nur lesbar; Regeln kommen nur aus dem Repo-Seed. Offen
+  (Diskussion #2041): Admin-Seite für globale Regeln, persönliche bzw. Agent-Regeln
+  aus dem Chat, und Aufräumen von Regeln ohne Owner, die vor dem Fix angelegt
+  wurden (#1829, #1831).
 
 - **#2090 Reply-Referenz in privaten Chats (ADR-0030):** Kernel und Facilitator binden
   private Antworten über `TurnOrigin.replyToMessageId` an die Erinnerung. Kein Kanal-Adapter
@@ -8380,6 +8498,13 @@ Write abgelehnt, auch wenn ein zweites Pattern ihn gewähren würde. Sonst re-ö
 positiven Prüfung). Dort liegt das Promote-Audit-Log; `core` ist ein Read/Write-Grant, das
 jeder Agent hält, also könnte ein Agent ohne diesen Ausschnitt das Protokoll dessen
 überschreiben, was ein Operator mit seinem Memory gemacht hat.
+Seit #1827 gilt das auch für Eltern-Pfade: `delete` und die Quelle von `rename` werden
+abgelehnt, wenn der Pfad das Audit-Log enthält (`/memories/core`, `/memories`), denn die
+Stores nehmen bei Verzeichnissen alle Nachfahren mit. Geprüft wird der kanonische Pfad
+(doppelte und abschliessende Slashes zusammengefasst), wie ihn der Store auflöst.
+Außerdem steht `/memories/_rules/` auf der Deny-Liste: `core` gewährt `_*`, und eine
+Regel-Datei wirkt für alle Agents und Accounts. Wie Regeln künftig gepflegt werden (Admin-Seite, Regeln pro
+Agent/Account), ist offen (§13).
 
 ### Kontext-Key
 
@@ -9538,7 +9663,60 @@ Der Terminal-Handler antwortet immer JSON `{ code, message }`, nie mit Stack:
 - Routen, deren `:id` eine Postgres-`uuid`-Spalte ist, prüfen die Id per
   `router.param('id', requireUuidParam('<area>.not_found'))`
   (`src/http/uuidParam.ts`) — sonst wird ein Tippfehler zum `22P02`-500, der
-  die DB-Meldung zurückgibt. Aktuell: admin-users, routines (`:id`, `:runId`).
+  die DB-Meldung zurückgibt. Aktuell: admin-users, routines (`:id`, `:runId`),
+  Conductor (`:runId`, `:awaitId`, `:workflowId`, `:subscriptionId`).
+  Zweites Argument ist der Status für die **kaputte** Id: Default `404`
+  (admin-users, routines), `400` beim Conductor (#1706), wo dieselbe Route für
+  eine wohlgeformte Id ohne Zeile mit `404` antwortet und beide Fälle sonst
+  nicht unterscheidbar wären.
+
+## Conductor-Operator-API: Id-Form zuerst prüfen (#1706, 2026-11-17)
+
+Die id-tragenden Operator-Routen des Conductors gaben die Id des Aufrufers
+ungeprüft an den Store. `conductor_runs.id`, `conductor_awaits.id`,
+`conductor_workflows.id` und `conductor_webhook_subscriptions.id` sind
+`uuid`-Spalten, also scheiterte `999` in Postgres mit
+`22P02 invalid input syntax for type uuid: "999"`; der Catch-all jedes Handlers
+schrieb genau diesen Satz als `500` in den Response-Body — dieselbe Klasse wie
+#1318/#1398 (`conductor.get_run_failed`, `conductor.cancel_failed`,
+`conductor.respond_failed`, `conductor.facilitation_terminate_failed`,
+`conductor.webhook_{rotate,status,delete,deliveries}_failed`).
+
+- **Form zuerst, in `createConductorRouter`** (`src/conductor/routes.ts`):
+  `router.param` für `runId`, `awaitId`, `workflowId`, `subscriptionId` mit
+  `requireUuidParam('conductor.invalid_input', 400)`. Eine Nicht-UUID ist keine
+  unbekannte Zeile, sondern eine unbrauchbare Id → `400`; eine wohlgeformte Id
+  ohne Zeile behält das `404` des Handlers. Codes bleiben in dem Paar, das die
+  Admin-UI schon lokalisiert (`conductor.invalid_input` /
+  `conductor.not_found`, `shared.tsx` → `adminWebhooks.errors`).
+- **Bewusst nicht für `:id`**: `registerTemplateRoutes` benutzt diesen Namen für
+  slug-förmige Template-Ids (`notify-and-escalate`) auf demselben Router.
+  Deshalb heißt der Parameter der Subscription-Routen jetzt `:subscriptionId`
+  (`src/conductor/webhookRoutes.ts`) — die URLs sind unverändert, die
+  Web-UI-Clients (`web-ui/app/_lib/api.ts`) also auch.
+- **Der Param-Guard läuft vor dem `503 conductor.webhooks_unavailable`**, weil
+  er Router-Ebene ist: auf einem Host ohne Postgres antwortet eine kaputte Id
+  `400` statt `503`. Gewollt — unbrauchbar ist sie dort genauso; für die
+  wohlgeformten Ids echter Aufrufer bleibt das `503`.
+- **Inbound-Endpoints haben keine uuid-Spalte** (`endpoint_id` ist `TEXT`), also
+  gab es gar keinen Fehler: `status` und `DELETE` trafen null Zeilen und
+  meldeten trotzdem `204`, d. h. Erfolg für einen Endpoint, den es nicht gibt.
+  Alle drei Endpoint-Routen (`status`, `DELETE`, `deliveries`) prüfen jetzt per
+  `get()` und antworten `404 conductor.not_found`; `deliveries` liefert damit
+  statt `{deliveries: []}` ("noch nichts angekommen") die Wahrheit. Dasselbe
+  Muster für `subscriptions` (`status`, `DELETE`, `deliveries`) — `rotate-secret`
+  hatte die Prüfung beidseitig schon.
+- **`AwaitNotFoundError`** (`src/conductor/runExecutor.ts`, exportiert über
+  `src/conductor/index.ts`): `resolveAwait` wirft für "keine Await-Zeile mit
+  dieser Id" nicht mehr `AwaitNotPendingError`. Die Route antwortet dafür
+  `404 conductor.not_found` statt `409 conductor.await_not_pending`, das als
+  "dein Await ist geschlossen" las und den Operator nach einem Run suchen ließ,
+  den es nie gab. Der Karten-Pfad (`conductorAwaitResolver` in `src/index.ts`)
+  behandelt beide Klassen weiter als `already_resolved` — aus einem Button
+  heißen sie dasselbe.
+- Tests: `test/conductorRouteIdGuards.test.ts` (Stores als werfende Proxys, ein
+  Request, der den Store doch erreicht, fällt als 500 auf) und der Block
+  `#1706` in `test/conductorWebhookRoutes.test.ts`.
 
 ## Manifest-Text ist `{ en, de }` — Konvention mit Warnung (#1401, 2026-10-16)
 
@@ -10089,6 +10267,54 @@ keines mehr bekommen.
 
 Security: `docs/security-architecture.md` §7.
 Tests: `test/conductorReservedContextKeys.test.ts`.
+
+### Conductor: der Lauf-Verlauf überlebt eine Neu-Veröffentlichung (#1710)
+
+`GET /api/v1/operator/conductors/:slug/runs` filterte auf die **aktive** Version
+(`runStore.listForVersion(wf.activeVersionId)`). Wer denselben Slug erneut
+veröffentlichte, hatte damit einen leeren „Verlauf" — auch dann, wenn ein Lauf der
+Vorversion noch `waiting` war: sein Await stand weiter in „Wartende
+Human-Steps", `DELETE /:slug` lehnte den Workflow mit
+`conductor.has_active_runs` ab („cancel them first"), und der Abbrechen-Knopf
+liegt genau in jener Liste. Es gab keinen Weg aus dem Zustand heraus außer die
+Run-ID aus der Datenbank zu lesen und die Cancel-Route direkt zu rufen.
+
+Die Liste geht jetzt über den **Workflow**, nicht über eine Version:
+`runStore.listForWorkflow(workflowId)` joint `conductor_workflow_versions` und
+liefert jede Zeile mit `workflowVersion` (der Versions-**Nummer**; die
+`workflowVersionId` ist eine opake UUID und beantwortet die Frage „welche
+Version?" nicht). Damit deckt sich die Liste mit `hasActiveRuns`, das schon immer
+über alle Versionen zählte — die beiden Abfragen widersprachen sich, und genau
+dieser Widerspruch war der Issue. Beide lesen dafür jetzt dieselbe Konstante
+`ACTIVE_RUN_STATUSES` / `ACTIVE_RUN_STATUS_SQL` (`runStore.ts`); ein Test prüft,
+dass das Prädikat in beiden Abfragen landet.
+
+**Sortierung:** `ORDER BY (status IN ('running','waiting')) DESC, started_at
+DESC`. Aktive Läufe stehen vorn, denn sie sind die Zeilen, an denen der Betrieb
+handeln muss; wären sie nur chronologisch einsortiert, könnte ein alter wartender
+Lauf hinter 50 neueren fertigen aus dem `LIMIT`-Fenster fallen — dieselbe
+Unerreichbarkeit, nur später.
+
+Die Route antwortet 404 nur noch auf einen **unbekannten** Slug. Ein Workflow
+ohne aktive Version hat eine leere Historie, keinen Fehler (die alte Bedingung
+`!wf || !wf.activeVersionId` warf 404 für einen veröffentlichten Workflow, dessen
+aktive Version geleert wurde). `listForVersion` bleibt für die
+Ephemeral-/Discussion-Pfade (`discussionAdmin.ts`), wo ein Workflow per #330
+genau eine Version und einen Lauf hat.
+
+UI: die Verlaufszeile trägt ein Versions-Badge (`conductor.runVersionBadge`,
+Titel `conductor.runVersionTitle`) — und der geöffnete Lauf ebenfalls, gelesen aus
+der Listenzeile, aus der er geöffnet wurde (die Einzel-Lauf-Route liefert keine
+Versionsnummer). Fehlt das Feld (Middleware älter als #1710), entfällt das Badge,
+die Zeile bleibt vollständig bedienbar.
+
+Tests: `test/conductorRunHistoryVersions.test.ts` (SQL-Form des Joins,
+Versionsnummer, Sortierung, gemeinsames Aktiv-Prädikat mit `hasActiveRuns`;
+Route: wartender Lauf der Vorversion bleibt gelistet, leere Historie statt 404,
+und der komplette Ausweg Liste → Cancel → DELETE 200),
+`web-ui/app/conductor/_components/__tests__/ConductorRunHistory.test.tsx`
+(Badge je Zeile und im geöffneten Lauf, Abbrechen der Vorversion-Zeile, Zeile
+ohne Versionsfeld).
 
 
 ## Native Facilitators: Kernel-Seite (Epic #2043, 2026-11-18)
@@ -10661,7 +10887,8 @@ Leserkreis, Offenlegungsstufe).
   - die Antwort gegen den Leserkreis (nicht-streamend): bei Verstoß wird das
     Ergebnis neu aus Buchhaltungsfeldern gebaut (Antwort = Ersatzzeile; keine
     Anhänge, Dateien, Karten, Canvas, Recall, Beiträge), und die Session-Zeile
-    speichert nur die Ersatzzeile (`beforeTurnWritten`);
+    speichert nur die Frage, keine Antwort (`beforeTurnWritten` → `withoutAnswer`;
+    der Web-Chat-Mirror behält die Ersatzzeile als `transcriptAnswer`);
   - Persistenz: jeder geschriebene Turn behält sein Label-Set (`discretion_labels`,
     Migration 0098), Recall bringt es zurück;
   - Memory: `memory`-Schreibvorgänge und die Auto-Promotion laufen vorher durch die
@@ -10679,6 +10906,19 @@ Leserkreis, Offenlegungsstufe).
     Raum gelesen wird. Durable Rules behalten bei der Promotion die Turn-Labels;
     memorables (Auto-Promotion, MCP→KG-Ingestion mit dem Server als Quelle)
     behalten die Labels (`memorable`), Recall eines memorable bringt sie zurück;
+    ein abgerufener Plan bringt die Labels des Turns mit, der ihn schrieb
+    (`RecalledPlan.turnId`), ein Prozess die Labels seiner Schreib-Turns
+    (Subjekt `process`, Migration 0112): der Kernel dekoriert den
+    `processMemory@1`-Provider beim Registrieren (`decorateOnProvide`,
+    `LabelledProcessMemory`), also gilt das für jeden Leser (Tools, Plan-Runner,
+    Recall) (#2194); ein Plan ohne bekannten Schreib-Turn wird dann nicht abgerufen,
+    und Labels von Prozessen und Notizen wachsen atomar (`mergeLabels`) (#2198);
+  - Karten im Stream (Recall, Plan, Graph) gehen nur an einen Raum, der lesen darf,
+    was der Turn bis dahin gelesen hat; `onAfterTurn`-Annotationen und der
+    `kg_insert`-Puls warten auf den Check der Antwort (#2198);
+  - CLI-Turns (Claude-Abo, `CliChatAgent`) laufen mit demselben Turn-Zustand und
+    derselben Audience-Floor (`cliDiscretionTurnFields`, fail-closed) und derselben
+    Antwortprüfung (`guardCliAnswer`) wie In-Process-Turns (#2194);
   - Beiträge an andere Agenten im Broker.
 - **Leserschaft** (`integration_readerships`): `sensitivity` internal|restricted,
   `readers` everyone|Menge, akzeptierte Systeme und Klassifizierungen. Ohne

@@ -89,8 +89,9 @@ import {
   createTeamsAppPackageAssetLoader,
 } from './services/teamsAppPackageAssets.js';
 import { createBotPresenceStore } from './conductor/botPresenceStore.js';
+import { defaultChannelBotKeyFrom } from './conductor/channelBotOwnership.js';
 import { createChatPeerAgentsProvider, createPeerGate } from './conductor/peerPolicy.js';
-import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore, ambientTurnFrom, createDiscussionsCapability, bindEphemeralRunsToCaller } from './conductor/index.js';
+import { wireConductor, AwaitNotFoundError, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore, ambientTurnFrom, createDiscussionsCapability, bindEphemeralRunsToCaller } from './conductor/index.js';
 import { createMissReportRoutes } from './privacy/missReportRoutes.js';
 import { readNonPersonalFieldsConfig } from './privacy/fieldClassification/guardConfig.js';
 import {
@@ -105,17 +106,19 @@ import {
   MAINTENANCE_RUN_SERVICE_NAME,
   MODEL_PASSTHROUGH_SERVICE_NAME,
   AGENT_DIRECTORY_SERVICE_NAME,
+  AGENT_NAMES_SERVICE_NAME,
   AGENT_ENVELOPE_SERVICE_NAME,
   OPERATOR_JOBS_SERVICE_NAME,
   TRANSCRIPTION_SERVICE_NAME,
   TURN_RECEIPT_STORE_SERVICE_NAME,
   nativeToolDispatchText,
   perCallerService,
+  type AgentNamesProvider,
   type MaintenanceRunService,
 } from '@omadia/plugin-api';
 import { createModelPassthrough, systemModuleOnlyService } from './platform/modelPassthrough.js';
 import { archetypeProcessesServiceName, SYSTEM_SPEAKER, type ArchetypeProcessesService } from '@omadia/plugin-api';
-import type { TranscriptionService } from '@omadia/plugin-api';
+import type { ProcessMemoryService, TranscriptionService } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
 import { createReceiptRoutes } from './receipts/routes.js';
 import { ChainWitness } from './receipts/anchor.js';
@@ -144,7 +147,7 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
+import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
 import {
   buildSystemNotice,
   ChannelResolver as ManagementChannelResolver,
@@ -160,9 +163,11 @@ import type {
   RunTraceOutcomeStats,
 } from '@omadia/orchestrator';
 import {
+  HUMAN_NAMES_SERVICE,
   RUN_TRACE_STATS_SERVICE,
   setDatasetVaultKeyFallback,
 } from '@omadia/orchestrator';
+import type { HumanNamesProvider } from '@omadia/orchestrator';
 import { createMemoryRouter } from './routes/memory.js';
 import { createDatasetsRouter } from './routes/datasets.js';
 import { createBulkPromotionRouter } from './routes/bulkPromotion.js';
@@ -377,6 +382,7 @@ import {
   runDriftSweep,
 } from './profileSnapshots/driftWorker.js';
 import { UserStore } from './auth/userStore.js';
+import { HumanNameDirectory } from './auth/humanNameDirectory.js';
 import {
   ProviderCatalog,
   ProviderRegistry,
@@ -487,6 +493,7 @@ import { createAgentTemplatesRouter } from './routes/agentTemplates.js';
 import { createSetupOptionsResolver } from './plugins/setupOptionsResolver.js';
 import { createModelGatewayStatusRouter } from './routes/modelGatewayStatus.js';
 import { agentDirectoryService } from './platform/agentDirectoryService.js';
+import { createAgentNamesProvider } from './platform/agentNamesService.js';
 import { agentEnvelopeService } from './platform/agentEnvelopeService.js';
 import {
   EMBEDDING_BACKFILL,
@@ -659,8 +666,13 @@ import { PgObservedInvitePersistence } from './platform/observedInvitePersistenc
 import { startEphemeralAttachmentSweep } from './platform/ephemeralAttachmentSweep.js';
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
 import type { AggregateHolderLookup, ChannelRegistry, ChannelBindingResolver } from '@omadia/channel-sdk';
-import type { AgentIdentityProvider, ChannelReadinessProvider, MeetingSourceProvider } from '@omadia/channel-sdk';
-import { InMemoryDisclosureSeenStore, normalizeAgentIdentityKey } from '@omadia/channel-sdk';
+import type {
+  AgentIdentityProvider,
+  ChannelReadinessProvider,
+  DefaultChannelKeyProvider,
+  MeetingSourceProvider,
+} from '@omadia/channel-sdk';
+import { InMemoryDisclosureSeenStore, normalizeAgentIdentityKey, RoleSourceRegistry, type GrantStore } from '@omadia/channel-sdk';
 import { DynamicChannelPluginResolver } from './channels/dynamicChannelResolver.js';
 import type { TurnDispatcher } from './channels/coreApi.js';
 import { createOrchestratorDispatcher } from './channels/orchestratorDispatcher.js';
@@ -685,17 +697,6 @@ import type {
   ChatSessionStore,
   DomainTool,
 } from '@omadia/orchestrator';
-
-// Phase 5B: structural shims for kernel-side reads of plugin-published
-// services. These replace direct type-imports from the 5 byte5-internal
-// plugins (`@omadia/integration-confluence`, `@omadia/integration-odoo`,
-// `@omadia/integration-microsoft365`, `@omadia/channel-teams`,
-// `@omadia/channel-telegram`) which are removed in this commit. The
-// kernel only ever reads the small subset of fields below; full plugin
-// types stay inside the plugins.
-interface Microsoft365AccessorShim {
-  readonly app: unknown;
-}
 
 /** Escape a value for safe inclusion inside a double-quoted XML/HTML attribute
  *  (used for the <mcp-auth-required> chat block, #459 W9). */
@@ -1008,6 +1009,12 @@ async function main(): Promise<void> {
   // Spec 2042 §5.3 — channel plugins that run one bot per agent.
   const agentIdentityProviderRegistry = new ChannelProviderRegistry<AgentIdentityProvider>(
     'agentIdentity',
+    registryLog,
+  );
+  // The default bot of a channel that runs no identity provider (Teams, whose
+  // agent bots the kernel provisions into `agent_teams_identities`).
+  const defaultChannelKeyRegistry = new ChannelProviderRegistry<DefaultChannelKeyProvider>(
+    'defaultChannelKey',
     registryLog,
   );
   // #330 C2a — kernel-side invite index: subscribes directly at the hub (before
@@ -1656,6 +1663,12 @@ async function main(): Promise<void> {
     log: (m) => console.log(m),
   });
   serviceRegistry.provide('discretion', discretionStore);
+  // #2194 — a stored process keeps the labels of the turns that wrote it and
+  // hands them to every turn that reads it (process tools, plan-runner reuse,
+  // context recall), whoever provides `processMemory`.
+  serviceRegistry.decorateOnProvide<ProcessMemoryService>('processMemory', (inner) =>
+    labelProcessMemory(inner, discretionStore),
+  );
   serviceRegistry.provide('consultation', consultationBroker);
   // The offering snapshot is read once the pool exists (after plugin
   // activation, below); until then `consult` is simply not offered.
@@ -2525,9 +2538,6 @@ async function main(): Promise<void> {
   // now constructed inside the @omadia/orchestrator plugin's
   // activate() — they're orchestrator-internal concerns, no kernel-side
   // consumer left them.
-  const ms365IntegrationId = 'de.byte5.integration.microsoft365';
-  const calendarAgentId = 'de.byte5.agent.calendar';
-
   // #796 (epic #470 C9 / G3) — core's own base schema, applied by core,
   // BEFORE any plugin activates and independent of every provider key.
   //
@@ -2555,9 +2565,28 @@ async function main(): Promise<void> {
   // Activate tool / extension / integration plugins FIRST. Their
   // activate() populates nativeToolRegistry + pluginRouteRegistry +
   // serviceRegistry (incl. the MemoryStore provided by @omadia/memory
-  // and the Microsoft365Accessor provided by de.byte5.integration.microsoft365).
+  // and the Microsoft365Accessor provided by @omadia/integration-microsoft365).
   // Agents below consume these services through ctx, so the tool runtime
   // must run before the agent runtime.
+  // #2042 — `humanNames@1`: the active users' names, so an agent's own name a
+  // colleague bears stays masked in its own turn. Published before plugin
+  // activation; the users table is attached once the database is up (UserStore
+  // below). Unknown until the first load, which exempts no own name. Names are
+  // never logged.
+  const humanNameDirectory = new HumanNameDirectory({ log: (m) => console.warn(m) });
+  serviceRegistry.provide<HumanNamesProvider>(HUMAN_NAMES_SERVICE, () =>
+    humanNameDirectory.snapshot(),
+  );
+  // #2191 / #2192 — `agentNames@1`: the roster's agent names minus every name
+  // an active user bears, never masked by the privacy guard. Published before
+  // plugin activation like `humanNames@1`; `null` until the registry is up.
+  serviceRegistry.provide<AgentNamesProvider>(
+    AGENT_NAMES_SERVICE_NAME,
+    createAgentNamesProvider({
+      registry: () => serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+      humanNames: () => humanNameDirectory.snapshot(),
+    }),
+  );
   await toolPluginRuntime.activateAllInstalled();
   console.log(
     `[middleware] tool plugin runtime: ${toolPluginRuntime.activeIds().length} tool/extension/integration package(s) active`,
@@ -3064,34 +3093,6 @@ async function main(): Promise<void> {
     // honest remaining causes are "plugin missing" or "no provider at all".
     console.log(
       '[middleware] fact extractor DISABLED (orchestrator-extras plugin missing, or no LLM provider assigned to the orchestrator / this plugin and no anthropic_api_key)',
-    );
-  }
-
-  // Calendar tools (find_free_slots + book_meeting) are constructed by the
-  // @omadia/orchestrator plugin's activate() against the
-  // microsoft365.graph capability. The kernel-side log lines below only
-  // describe the wiring status of the integration + calendar agent — the
-  // tools themselves live plugin-internal.
-  if (installedRegistry.has(ms365IntegrationId)) {
-    const microsoft365 = serviceRegistry.get<Microsoft365AccessorShim>(
-      'microsoft365.graph',
-    );
-    if (microsoft365 && installedRegistry.has(calendarAgentId)) {
-      console.log(
-        '[middleware] sub-agent calendar ready (find_free_slots + book_meeting wired plugin-side, credentials=vault)',
-      );
-    } else if (microsoft365) {
-      console.log(
-        '[middleware] sub-agent calendar DISABLED (de.byte5.agent.calendar not installed — integration ready but tools not wired)',
-      );
-    } else {
-      console.log(
-        '[middleware] microsoft365 integration installed but accessor not in service registry — activate() failed? calendar tools DISABLED',
-      );
-    }
-  } else {
-    console.log(
-      '[middleware] microsoft365 integration DISABLED (de.byte5.integration.microsoft365 not installed — set MICROSOFT_APP_* in .env for auto-bootstrap, or install via /store)',
     );
   }
 
@@ -5395,6 +5396,14 @@ async function main(): Promise<void> {
       audit: () => async (entry) => {
         await adminAudit?.record(entry);
       },
+      // Criterion 18 — a firing reads its room's field rights now, from the
+      // same grants as the audience floor (none published = floor off). No
+      // role sources are wired for the live floor either (the orchestrator
+      // plugin passes an empty registry); wire them here too once it does.
+      fieldRightSources: () => {
+        const grants = serviceRegistry.get<GrantStore>('audienceGrants');
+        return grants ? { grants, roles: new RoleSourceRegistry() } : undefined;
+      },
       // Criterion 24 — a proactive message is checked against the room's
       // members when it goes out, read fresh from the channel's roster.
       conversationReaders: createConversationReaders({
@@ -5630,19 +5639,11 @@ async function main(): Promise<void> {
       app,
       requireAuth,
       getRegistry,
-      // The deployment's own Teams bot — the Microsoft 365 integration's app
-      // id, which channel-teams serves as its default bot. Read per call, so
-      // an operator's change applies without a restart. Only this explicitly
-      // configured bot may route to its binding / the fallback agent in the
-      // Conductor; any other unknown bot stays refused.
-      // Other channels: the plugin's own default bot (`agentIdentities@1`).
-      defaultChannelBotKey: (channelType) => {
-        if (channelType !== 'teams') return agentIdentityProviderRegistry.get(channelType)?.defaultChannelKey?.();
-        const raw = installedRegistry.get(ms365IntegrationId)?.config?.['microsoft_app_id'];
-        const appId =
-          typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : config.MICROSOFT_APP_ID;
-        return appId ? `28:${appId}` : undefined;
-      },
+      // The channel's own default bot, as its plugin names it per call
+      // (`agentIdentities@1`, or the default-key provider of a channel without
+      // one, Teams). Only this bot may route to its binding / the fallback
+      // agent in the Conductor; any other unknown bot stays refused.
+      defaultChannelBotKey: defaultChannelBotKeyFrom([agentIdentityProviderRegistry, defaultChannelKeyRegistry]),
       // People directory union for the builder's person suggestions + `GET /people`.
       searchPeople: (query, opts) => peopleDirectoryRegistry.search(query, opts),
       peopleChannelTypes: () => peopleDirectoryRegistry.types(),
@@ -5739,7 +5740,10 @@ async function main(): Promise<void> {
           return run.status === 'waiting' ? 'recorded' : 'resumed';
         } catch (err) {
           if (err instanceof AwaitResponderNotHolderError) return 'not_a_holder';
-          if (err instanceof AwaitNotPendingError) return 'already_resolved'; // stale card / double-click
+          // stale card / double-click. #1706 split the "no such await row" case out
+          // of AwaitNotPendingError for the operator route's 404; from a card button
+          // both still mean "nothing left to answer here".
+          if (err instanceof AwaitNotFoundError || err instanceof AwaitNotPendingError) return 'already_resolved';
           throw err;
         }
       },
@@ -5923,6 +5927,9 @@ async function main(): Promise<void> {
 
     const userStore = new UserStore(graphPool);
     sessionRevocation.attach(userStore);
+    // #2042 — `humanNames@1` (published before plugin activation) now reads
+    // this users table; every user write reloads the snapshot.
+    humanNameDirectory.attach(userStore);
 
     const bootstrapResult = await runAuthBootstrap({
       userStore,
@@ -7870,6 +7877,7 @@ async function main(): Promise<void> {
     readinessProviders: readinessProviderRegistry,
     meetingSources: meetingSourceRegistry,
     agentIdentities: agentIdentityProviderRegistry,
+    defaultChannelKeys: defaultChannelKeyRegistry,
     sessionCapabilities: sessionCapabilityHub,
     // #1086 — the channel-agnostic producer of the routines principal, for
     // every channel that drives its turn through `handleTurnStream` (in-tree:
@@ -7932,6 +7940,7 @@ async function main(): Promise<void> {
     readinessProviders: readinessProviderRegistry,
     meetingSources: meetingSourceRegistry,
     agentIdentities: agentIdentityProviderRegistry,
+    defaultChannelKeys: defaultChannelKeyRegistry,
   });
   channelPluginIdsRef.current = () => channelRegistry.activeIds();
   channelRegistryRef = channelRegistry;

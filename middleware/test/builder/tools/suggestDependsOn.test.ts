@@ -23,7 +23,7 @@ describe('suggestDependsOnTool', () => {
       { intent: 'invoice automation in Odoo accounting' },
       harness.context(),
     );
-    assert.ok(result.suggestions.some((s) => s.agentId === 'de.byte5.integration.odoo'));
+    assert.ok(result.suggestions.some((s) => s.agentId === '@omadia/integration-odoo'));
   });
 
   it('suggests confluence for playbook intent', async () => {
@@ -32,7 +32,7 @@ describe('suggestDependsOnTool', () => {
       harness.context(),
     );
     assert.ok(
-      result.suggestions.some((s) => s.agentId === 'de.byte5.integration.confluence'),
+      result.suggestions.some((s) => s.agentId === '@omadia/integration-confluence'),
     );
   });
 
@@ -42,7 +42,7 @@ describe('suggestDependsOnTool', () => {
       harness.context(),
     );
     assert.ok(
-      result.suggestions.some((s) => s.agentId === 'de.byte5.integration.microsoft365'),
+      result.suggestions.some((s) => s.agentId === '@omadia/integration-microsoft365'),
     );
   });
 
@@ -60,7 +60,7 @@ describe('suggestDependsOnTool', () => {
       harness.context(),
     );
     const odooHits = result.suggestions.filter(
-      (s) => s.agentId === 'de.byte5.integration.odoo',
+      (s) => s.agentId === '@omadia/integration-odoo',
     );
     assert.equal(odooHits.length, 1);
   });

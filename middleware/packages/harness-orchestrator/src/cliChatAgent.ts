@@ -40,7 +40,9 @@ import {
 // Aliased: `turnContext` is already a parameter name inside this module
 // (the caller's captured async context), and the store is a different thing.
 import { buildToolCallContext, runWithToolCallContext } from './toolCallContext.js';
-import { turnContext as turnContextStore } from './turnContext.js';
+import { turnContext as turnContextStore, today, type TurnContextValue } from './turnContext.js';
+import { createDiscretionTurnState } from './discretion/turnLabels.js';
+import { UNKNOWN_READERS, unionLabels } from './discretion/labels.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
 import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import type { LoopbackMcpServerHandle } from './loopbackMcpServer.js';
@@ -1031,6 +1033,35 @@ export interface CliChatAgentDeps {
    */
   readonly bindTurnMemory?: (input: ChatTurnInput) => Promise<CliTurnMemory | undefined>;
   /**
+   * Spec 2042 §5.11 / #2194 — the discretion state (and the audience floor
+   * whose field rights bound it) of a CLI turn, built the way the in-process
+   * turn builds its own (conversation key, readers, field rights, a trigger's
+   * or a consultation's seed). Asked once per turn, in the context captured at
+   * the public entry, before the memory binding and the recall; from then on
+   * every call this turn makes (recall, memory, loopback tools, record, answer
+   * guard) runs with it, so what the turn reads labels it. Wired by
+   * `buildOrchestratorForAgent` to `orchestrator.cliDiscretionTurnFields()`.
+   * Unset (unit tests, CLI sub-agents): the turn runs without discretion
+   * state. A rejection fails closed: the turn runs with a label nobody is
+   * known to read, so its answer is withheld wherever someone else reads it.
+   */
+  readonly discretionTurnFields?: (
+    input: ChatTurnInput,
+  ) => Promise<Pick<TurnContextValue, 'discretion' | 'audienceFloor'>>;
+  /**
+   * Spec 2042 §5.11 / #2194 — the people-egress check of a CLI turn's answer,
+   * as the in-process `done` gets it: `withheld` with the honest line as the
+   * answer when a reader of the conversation may not know what the turn read.
+   * Run in the turn's captured context. Wired by `buildOrchestratorForAgent`
+   * to `orchestrator.guardCliAnswer()`; unset, the answer goes out unchanged.
+   */
+  readonly guardAnswer?: (
+    answer: string,
+    input: ChatTurnInput,
+  ) => Promise<{ readonly answer: string; readonly withheld: boolean }>;
+  // Must not reject: a check that fails withholds (the orchestrator's guard
+  // decides that itself, it knows the withheld line's language).
+  /**
    * #1535 — the environment the org policy `OMADIA_PRIVACY_FORCE_GUARDED` is
    * read from. Defaults to `process.env`; a seam for tests.
    */
@@ -1124,6 +1155,13 @@ export interface CliTurnCards {
 interface CapturedTurnContext {
   readonly runInTurnContext: <T>(fn: () => T) => T;
   readonly assertTurnOwner?: () => void;
+  /**
+   * #2194 — the turn context with this turn's discretion state, set once by
+   * `beginDiscretion`; from then on `runInTurnContext` runs every call in it.
+   * One object for the whole turn, so a write onto the live store survives
+   * from one call to the next.
+   */
+  readonly scope: { value?: TurnContextValue };
 }
 
 /** #1535 — the answer of a CLI turn refused by the org policy, in German. */
@@ -1181,6 +1219,8 @@ async function* refusedTurnStream(
 // SEAM (M3): boot/resolveChatAgent/provider routing constructs + selects this agent.
 export class CliChatAgent implements ChatAgent {
   private readonly turnSemaphore: TurnSemaphore;
+  /** #2194 — the `done` events whose answer the egress check withheld. */
+  private readonly withheldDones = new WeakSet<ChatStreamEvent>();
 
   public constructor(private readonly deps: CliChatAgentDeps) {
     this.turnSemaphore = new TurnSemaphore(
@@ -1203,10 +1243,67 @@ export class CliChatAgent implements ChatAgent {
     // #2043 — the tool call context is bound INSIDE the restored snapshot: the
     // snapshot predates it, so binding outside would be overwritten.
     const toolCall = buildToolCallContext(this.deps.dispatch.agentSlug ?? 'default', input);
+    const scope: CapturedTurnContext['scope'] = {};
     const runInTurnContext = <T>(fn: () => T): T =>
-      snapshot(() => runWithToolCallContext(toolCall, fn));
+      snapshot(() =>
+        runWithToolCallContext(toolCall, () => {
+          const value = scope.value;
+          return value ? turnContextStore.runScoped(value, fn) : fn();
+        }),
+      );
     const guard = this.deps.turnOwnerGuard?.(input);
-    return guard ? { runInTurnContext, assertTurnOwner: guard } : { runInTurnContext };
+    return guard ? { runInTurnContext, assertTurnOwner: guard, scope } : { runInTurnContext, scope };
+  }
+
+  /**
+   * #2194 — {@link CliChatAgentDeps.discretionTurnFields}: the turn's
+   * discretion state goes onto the captured context (a copy of the caller's
+   * turn context, or a fresh one under this CLI turn's id). One object for the
+   * whole turn. A failure fails closed (see the dep).
+   */
+  private async beginDiscretion(
+    input: ChatTurnInput,
+    turnContext: CapturedTurnContext,
+    cliTurnId: string,
+  ): Promise<void> {
+    const build = this.deps.discretionTurnFields;
+    if (build === undefined) return;
+    let fields: Pick<TurnContextValue, 'discretion' | 'audienceFloor'>;
+    try {
+      fields = await turnContext.runInTurnContext(() => build(input));
+    } catch (error) {
+      (this.deps.logger ?? consoleSpawnLogger).warn('discretion state failed (turn labelled unreadable)', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      fields = {
+        discretion: createDiscretionTurnState({
+          initial: unionLabels([{ kind: 'context', key: 'unreadable', readers: UNKNOWN_READERS }]),
+        }),
+      };
+    }
+    const parent = turnContext.runInTurnContext(() => turnContextStore.current());
+    const agentSlug = this.deps.dispatch.agentSlug;
+    turnContext.scope.value = {
+      ...(parent ?? {
+        turnDate: today(),
+        ...(agentSlug !== undefined ? { agentSlug } : {}),
+      }),
+      // A channel's outer scope carries a placeholder id (`''`); the audit
+      // rows of this turn name the CLI turn instead.
+      turnId: parent?.turnId || cliTurnId,
+      ...fields,
+    };
+  }
+
+  /** #2194 — {@link CliChatAgentDeps.guardAnswer} in the turn's context. */
+  private async guardTurnAnswer(
+    answer: string,
+    input: ChatTurnInput,
+    turnContext: CapturedTurnContext,
+  ): Promise<{ readonly answer: string; readonly withheld: boolean }> {
+    const guardAnswer = this.deps.guardAnswer;
+    if (guardAnswer === undefined) return { answer, withheld: false };
+    return await turnContext.runInTurnContext(() => guardAnswer(answer, input));
   }
 
   /**
@@ -1227,6 +1324,9 @@ export class CliChatAgent implements ChatAgent {
     // helpers) bypassed the gate entirely.
     admitModelCall('run_loop');
     const lifecycle = this.runLifecycle(input, this.captureTurnContext(input));
+    // #2194 — the answer the lifecycle released (the withheld line when the
+    // egress check refused it), not the CLI's raw result.
+    let releasedAnswer: string | undefined;
 
     while (true) {
       const step = await lifecycle.next();
@@ -1243,12 +1343,13 @@ export class CliChatAgent implements ChatAgent {
           const usage = parser.usage();
           this.runHook('onUsage', () => onUsage(usage));
         }
-        const disclosed = this.disclose(parser.finalAnswer(), input);
+        const disclosed = this.disclose(releasedAnswer ?? parser.finalAnswer(), input);
         return {
           text: disclosed.answer,
           ...(disclosed.aiDisclosure ? { aiDisclosure: disclosed.aiDisclosure } : {}),
         };
       }
+      if (step.value.type === 'done') releasedAnswer = step.value.answer;
       if (hooks?.onEvent) {
         const onEvent = hooks.onEvent;
         const event = step.value;
@@ -1341,9 +1442,12 @@ export class CliChatAgent implements ChatAgent {
         if (step.value.type === 'done' && !cardsDrained) {
           cardsDrained = true;
           const disclosed = this.disclose(step.value.answer, input);
+          // Drained either way (the tool state must not leak into the next
+          // turn); a withheld answer carries none of its cards.
+          const cards = this.deps.drainTurnCards?.() ?? {};
           yield {
             ...step.value,
-            ...(this.deps.drainTurnCards?.() ?? {}),
+            ...(this.withheldDones.has(step.value) ? {} : cards),
             answer: disclosed.answer,
             ...(disclosed.aiDisclosure ? { aiDisclosure: disclosed.aiDisclosure } : {}),
           };
@@ -1722,6 +1826,9 @@ export class CliChatAgent implements ChatAgent {
     const lineQueue: string[] = [];
     let lineWaiter: (() => void) | undefined;
     let terminalDone: Extract<ChatStreamEvent, { type: 'done' }> | undefined;
+    // #2194 — what the client was shown before the `done`, to take back when
+    // the answer is withheld.
+    let streamedChars = 0;
     const toolTrace = new CliToolTrace();
 
     const wakeReader = (): void => {
@@ -1782,6 +1889,10 @@ export class CliChatAgent implements ChatAgent {
     try {
       await this.turnSemaphore.acquire();
       permitAcquired = true;
+
+      // #2194 — the discretion state first: the memory binding, the recall
+      // and every loopback tool call label the turn through it.
+      await this.beginDiscretion(input, turnContext, cliTurnId);
 
       // #1102 — `memory` only with a handler bound to THIS turn; refused
       // outright otherwise.
@@ -1981,6 +2092,7 @@ export class CliChatAgent implements ChatAgent {
               continue;
             }
             toolTrace.observe(event);
+            if (event.type === 'text_delta') streamedChars += event.text.length;
             yield event;
           }
           // #1581 — the CLI reports what it actually loaded before the first
@@ -2114,8 +2226,29 @@ export class CliChatAgent implements ChatAgent {
             model: this.deps.model ?? DEFAULT_MODEL,
           }),
         });
-        for (const event of record.events ?? []) {
-          yield event;
+        // #2194 — the people-egress check the in-process `done` gets. A
+        // withheld answer goes out as the honest line alone, with the
+        // streamed preview taken back first; nothing derived from it (the
+        // record's annotations, cards, excerpt, promotion) goes with it.
+        const guarded = await this.guardTurnAnswer(terminalDone.answer, input, turnContext);
+        if (!guarded.withheld) {
+          for (const event of record.events ?? []) {
+            yield event;
+          }
+        }
+        if (guarded.withheld) {
+          if (streamedChars > 0) yield { type: 'text_retract', chars: streamedChars };
+          const withheld: Extract<ChatStreamEvent, { type: 'done' }> = {
+            type: 'done',
+            answer: guarded.answer,
+            toolCalls: terminalDone.toolCalls,
+            iterations: terminalDone.iterations,
+            model: this.deps.model ?? DEFAULT_MODEL,
+            ...(record.turnId !== undefined ? { turnId: record.turnId } : {}),
+          };
+          this.withheldDones.add(withheld);
+          yield withheld;
+          return parser;
         }
         yield {
           ...terminalDone,

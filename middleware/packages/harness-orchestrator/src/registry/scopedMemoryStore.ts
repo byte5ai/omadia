@@ -272,8 +272,8 @@ const CORE_PREFIXES = [
 const CORE_NOTES_PREFIXES = ['/memories/core/'];
 
 /**
- * Subtrees inside `core` that no agent may ever write, whatever else its scope
- * grants — a deny list, evaluated before any positive pattern.
+ * Subtrees that no agent may ever write, whatever else its scope grants — a
+ * deny list, evaluated before any positive pattern.
  *
  * `/memories/core/audit/` holds the tamper-evident record of privileged
  * OPERATOR actions (currently the promotion log written by
@@ -283,13 +283,44 @@ const CORE_NOTES_PREFIXES = ['/memories/core/'];
  * operator did to its memory — which is precisely the property an audit trail
  * must not have. It is written by kernel services on the ROOT store, which
  * never passes through this wrapper, so nothing legitimate loses a write.
+ *
+ * `/memories/_rules/` (#1827): every file there reaches EVERY agent for EVERY
+ * account — the system prompt has agents read it, and the durable-rules hook
+ * copies each write into team-wide durable knowledge. A context-free turn
+ * (every turn of an agent in mode "Off", the default until migration 0099, and
+ * any turn without a channel context) holds plain `core`, which grants `_*`,
+ * so one chat could plant a rule for all.
+ * Rules now come from the repo seed only (`MEMORY_SEED_DIR`), written on the
+ * root store at boot or by a re-seed purge.
  */
-const AGENT_UNWRITABLE_PREFIXES = ['/memories/core/audit/'];
+const AGENT_UNWRITABLE_PREFIXES = ['/memories/core/audit/', '/memories/_rules/'];
+
+/**
+ * The path as the store will resolve it (#1827): the stores collapse duplicate
+ * slashes and drop a trailing one, so `/memories/core//audit/x` lands on the
+ * log although it does not start with `/memories/core/audit/`.
+ */
+function canonicalPath(path: string): string {
+  const collapsed = path.replace(/\/+/g, '/');
+  return collapsed.length > 1 ? collapsed.replace(/\/$/, '') : collapsed;
+}
 
 function isAgentUnwritable(path: string): boolean {
+  const p = canonicalPath(path);
   return AGENT_UNWRITABLE_PREFIXES.some(
-    (pre) => path === pre.slice(0, -1) || path.startsWith(pre),
+    (pre) => p === pre.slice(0, -1) || p.startsWith(pre),
   );
+}
+
+/**
+ * #1827 — does `path` CONTAIN an unwritable subtree? A directory delete or
+ * rename takes every descendant with it, so `delete /memories/core` removed
+ * the audit log although the path itself is not on the deny list.
+ */
+function containsAgentUnwritable(path: string): boolean {
+  const p = canonicalPath(path);
+  const dir = p.endsWith('/') ? p : `${p}/`;
+  return AGENT_UNWRITABLE_PREFIXES.some((pre) => pre.startsWith(dir));
 }
 
 /** Access modifier prefix: `ro:<pattern>` — read/list/exists only. */
@@ -562,7 +593,7 @@ export class ScopedMemoryStore implements MemoryStore {
   }
 
   async delete(virtualPath: string): Promise<void> {
-    if (!this.allowedWrite(virtualPath)) {
+    if (!this.allowedWrite(virtualPath) || containsAgentUnwritable(virtualPath)) {
       throw new MemoryScopeViolation(this.options.agentSlug, 'delete', virtualPath);
     }
     return this.options.inner.delete(virtualPath);
@@ -571,6 +602,7 @@ export class ScopedMemoryStore implements MemoryStore {
   async rename(fromVirtualPath: string, toVirtualPath: string): Promise<void> {
     if (
       !this.allowedWrite(fromVirtualPath) ||
+      containsAgentUnwritable(fromVirtualPath) ||
       !this.allowedWrite(toVirtualPath)
     ) {
       throw new MemoryScopeViolation(

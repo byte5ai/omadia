@@ -10,6 +10,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { isOpenAiReasoningModel } from '@omadia/llm-provider-api';
+
 import type OpenAI from 'openai';
 import { APIConnectionError, APIConnectionTimeoutError } from 'openai';
 
@@ -850,6 +852,64 @@ test('effort maps to reasoning_effort on native OpenAI', async () => {
     messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
   });
   assert.equal(captured.params?.['reasoning_effort'], 'high');
+});
+
+test('effort is dropped on a native model without reasoning (gpt-4o, gpt-4.1: the field is a 400)', async () => {
+  for (const model of ['gpt-4o', 'gpt-4.1', 'gpt-4o-mini']) {
+    const captured: Captured = {};
+    const logs: unknown[][] = [];
+    const provider = createOpenAiProvider({
+      client: mockClient(captured, completion()),
+      log: (...args: unknown[]) => logs.push(args),
+    });
+    await provider.complete({
+      model,
+      maxTokens: 64,
+      effort: 'low',
+      temperature: 0,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+    });
+    assert.equal(captured.params?.['reasoning_effort'], undefined, model);
+    assert.equal(captured.params?.['temperature'], 0, `${model} keeps its temperature`);
+  }
+});
+
+test('a native reasoning model gets the effort and drops a non-default temperature', async () => {
+  for (const model of ['gpt-5.4', 'o3-mini', 'o4-mini', 'gpt-5']) {
+    const captured: Captured = {};
+    const provider = createOpenAiProvider({ client: mockClient(captured, completion()) });
+    await provider.complete({
+      model,
+      maxTokens: 64,
+      effort: 'low',
+      temperature: 0,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+    });
+    assert.equal(captured.params?.['reasoning_effort'], 'low', model);
+    assert.equal(captured.params?.['temperature'], undefined, model);
+  }
+});
+
+test('isOpenAiReasoningModel: o-series and GPT-5, not gpt-4o / gpt-4.1', () => {
+  for (const m of ['o1', 'o3', 'o3-mini', 'o4-mini', 'gpt-5', 'gpt-5.4', 'gpt-5-mini', 'gpt-5.6-sol', 'openai/gpt-5']) {
+    assert.equal(isOpenAiReasoningModel(m), true, m);
+  }
+  for (const m of [
+    'gpt-4o',
+    'gpt-4o-mini',
+    'gpt-4.1',
+    'gpt-4.1-nano',
+    'gpt-50x',
+    'omni',
+    'ollama/llama3',
+    'mistral-large',
+    'o1-mini',
+    'o1-preview',
+    'gpt-5-chat-latest',
+    'gpt-5.1-chat-latest',
+  ]) {
+    assert.equal(isOpenAiReasoningModel(m), false, m);
+  }
 });
 
 test('effort is dropped (not errored) on OpenAI-compatible servers, noted once per model', async () => {

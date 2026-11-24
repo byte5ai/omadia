@@ -84,7 +84,12 @@ export class AgentAnswerEmitter implements AnswerEmitter {
     this.options.onGuardResult?.(result);
   }
 
-  async emit(emission: Emission): Promise<EmitOutcome> {
+  /**
+   * @param checked the guard's result for this very text when it was already
+   *   checked (the record gate settles an answer before it is recorded): the
+   *   answer is judged once, so the record and the reply cannot disagree.
+   */
+  async emit(emission: Emission, checked?: IdentityGuardResult): Promise<EmitOutcome> {
     if (emission.type === 'system') return { published: true, emission };
     if (emission.speaker.agentId !== this.options.speaker.agentId) {
       return this.refuse('speaker_missing', 'agent_error');
@@ -94,7 +99,7 @@ export class AgentAnswerEmitter implements AnswerEmitter {
       const refusal = (this.options.templates ?? new TemplateRegistry()).check(emission.templateId, emission.values);
       return refusal ? this.refuse(refusal, 'agent_error') : { published: true, emission };
     }
-    const result = await this.options.guard(emission.restoredValues).check(emission.text);
+    const result = checked ?? (await this.options.guard(emission.restoredValues).check(emission.text));
     this.options.onGuardResult?.(result);
     if (result.outcome === 'pass') return { published: true, emission };
     return result.outcome === 'blocked'
