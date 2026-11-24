@@ -18,6 +18,7 @@ import {
 } from './runError.js';
 import { appendTranscript } from './transcript.js';
 import { sanitizeRunContext } from './runContext.js';
+import { renderAwaitMessage } from './runInterpolation.js';
 import type { RoleHolderResolver } from './roleHolderResolver.js';
 import type { AggregateHolderLookup } from '@omadia/channel-sdk';
 
@@ -25,6 +26,11 @@ export class WorkflowNotFoundError extends Error {}
 export class WorkflowDisabledError extends Error {}
 export class WorkflowNotPublishedError extends Error {}
 export class AwaitNotPendingError extends Error {}
+/** #1706 — no await row carries this id at all (a stale or made-up awaitId), as
+ *  opposed to one that exists but has already been answered/expired/cancelled.
+ *  Separate so the operator route can answer 404 instead of the 409 that reads
+ *  as "this await of yours is closed". */
+export class AwaitNotFoundError extends Error {}
 /** A responder who is not a current holder tried to resolve an await (authorization gate). */
 export class AwaitResponderNotHolderError extends Error {}
 /** #759 — cancel asked for a run that is already terminal (surfaced as 409). */
@@ -554,7 +560,8 @@ export class ConductorRunExecutor {
   /** A human responded — resolve the await and resume the run. */
   async resolveAwait(awaitId: string, responderId: string, response: JsonValue): Promise<ConductorRun> {
     const aw = await this.awaitStore.get(awaitId);
-    if (!aw || aw.status !== 'waiting') throw new AwaitNotPendingError(`await '${awaitId}' is not pending`);
+    if (!aw) throw new AwaitNotFoundError(`await '${awaitId}' not found`);
+    if (aw.status !== 'waiting') throw new AwaitNotPendingError(`await '${awaitId}' is not pending`);
 
     // Holders resolved LIVE (baton moves re-target) and canonicalized so a lowercased-email responder
     // (the channel layer always lowercases) matches an operator-typed holder. Used for BOTH the
@@ -844,7 +851,12 @@ export class ConductorRunExecutor {
       principalKind: h?.principal.kind ?? 'role',
       principalRef: h?.principal.ref ?? '',
       channelType: h?.channel ?? 'teams',
-      message: h?.message ?? '',
+      // #1709 — the approver reads THIS string. Rendered once, here, against the
+      // context the run is parked with: the await row is what the inbox, the card
+      // and the reminder worker all read, so an unrendered message would reach a
+      // person through every one of them. (A row written BEFORE this fix still holds
+      // raw template text; awaitStore renders those on read.)
+      message: renderAwaitMessage(h?.message ?? '', context),
       quorum: h?.quorum ?? 'any',
       reminderIntervalMs: reminderMs,
       deadlineAt: deadlineMs ? new Date(Date.now() + deadlineMs) : null,

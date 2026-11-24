@@ -211,6 +211,26 @@ describe('buildDatasetFromCsv — privacy scan', () => {
     );
   });
 
+  it('#1865 — customer numbers and postcodes with a leading zero are stored as they are, not masked as phone numbers', async () => {
+    // The phone pattern accepted any zero-led run of four digits, so `K-0001`
+    // and `01067` were flagged, encrypted at rest and lost to filters and
+    // grouping. Nothing in this file is personal data.
+    const csv = 'Name,CustomerNo,Postcode\nAnna,K-0001,01067\nBen,K-0002,10115\nClara,K-1000,04109\n';
+    const built = await buildDatasetFromCsv(Buffer.from(csv, 'utf8'));
+    assert.equal(built.ok, true);
+    if (!built.ok) return;
+
+    assert.equal(built.privacyScan.maskedCells, 0);
+    assert.deepEqual(
+      built.rows.map((row) => [row['CustomerNo'], row['Postcode']]),
+      [
+        ['K-0001', '01067'],
+        ['K-0002', '10115'],
+        ['K-1000', '04109'],
+      ],
+    );
+  });
+
   it('#727 — an ISO-8601 date column is stored as its real dates, not masked to a phone surrogate at rest', async () => {
     // The reported corruption: a `date`-typed column of ISO dates was run
     // through the masker, which mis-typed `2026-07-02` as a phone and

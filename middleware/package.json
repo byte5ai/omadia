@@ -47,6 +47,7 @@
     "pretest": "node scripts/check-node-version.mjs",
     "test": "node --import tsx --test --test-timeout=120000 --test-concurrency=4 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./scripts/testFileDurations.reporter.mjs --test-reporter-destination=test-file-durations.json 'test/**/*.test.ts' 'packages/plugin-api/test/**/*.test.ts'",
     "test:filetimes": "node scripts/check-test-file-durations.mjs",
+    "test:pg:names": "node scripts/check-pg-test-names.mjs",
     "test:pg": "node --import tsx --test --test-timeout=120000 --test-concurrency=1 --test-reporter=spec 'test/**/*.pg.test.ts'",
     "test:updater": "node --test 'sidecars/updater/test/*.test.mjs'"
   },
@@ -57,7 +58,7 @@
   "license": "MIT",
   "_dependencyNote": "epic #470 §5 — express, pg and zod must NOT be dropped even though core no longer runs any Dev Platform code. They are peerDependencies of the extracted Dev Platform plugin and of every other Hub plugin, resolved through the host node_modules symlink. Removing them breaks every installed plugin at runtime, with no compile-time signal in this repo.",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.126.0",
+    "@anthropic-ai/sdk": "^1.12.0",
     "@aws-sdk/client-s3": "^3.1163.0",
     "@azure/msal-node": "^7.1.0",
     "@huggingface/transformers": "^3.7.6",

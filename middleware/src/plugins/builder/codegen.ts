@@ -210,7 +210,7 @@ function placeholderHintFor(rawSource: string): string {
   }
   if (source === 'depends_on[0]') {
     return 'Set spec.depends_on to an integration plugin id (e.g. ' +
-      'de.byte5.integration.confluence) — the integration template ' +
+      '@omadia/integration-confluence) — the integration template ' +
       'requires at least one entry to wire the vault scope.';
   }
   if (source === 'id') return 'Set spec.id to an npm-scoped name (e.g. @omadia/example).';

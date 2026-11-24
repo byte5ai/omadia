@@ -8,6 +8,7 @@ import Link from 'next/link';
 import { Button } from '@/app/_components/ui/Button';
 
 import {
+  ApiError,
   deleteMemory,
   getMemory,
   getMemoryAudit,
@@ -67,6 +68,13 @@ const SOURCE_BADGE: Record<ExcerptSource, string> = {
 };
 
 /**
+ * Why loading the entry failed. The server answers `memory.not_found` both for
+ * an unknown id and for an entry the caller does not own; that case has its
+ * own text, every other failure shows its message.
+ */
+type LoadError = { notFound: true } | { notFound: false; message: string };
+
+/**
  * Slice 5 — MemorableKnowledge detail view.
  *
  * Loads a single MK by external_id (the dynamic `[id]` segment), shows
@@ -88,7 +96,7 @@ export default function MemoryDetailPage(): React.ReactElement {
 
   const [node, setNode] = useState<MemorableKnowledgeNode | null>(null);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<LoadError | null>(null);
 
   const [editing, setEditing] = useState(false);
   const [kind, setKind] = useState<MemorableKind>('insight');
@@ -201,7 +209,11 @@ export default function MemoryDetailPage(): React.ReactElement {
       setSummary(fetched.props.summary);
       setRationale(fetched.props.rationale ?? '');
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
+      setLoadError(
+        err instanceof ApiError && err.code === 'memory.not_found'
+          ? { notFound: true }
+          : { notFound: false, message: err instanceof Error ? err.message : String(err) },
+      );
       setNode(null);
     } finally {
       setLoading(false);
@@ -310,9 +322,9 @@ export default function MemoryDetailPage(): React.ReactElement {
         )}
         {loadError !== null && (
           <div className="border-l-2 border-[color:var(--danger-edge)] px-3 py-2 text-xs text-[color:var(--danger)]">
-            {loadError === 'memory.not_found'
+            {loadError.notFound
               ? t('detail.notFound')
-              : t('detail.errorPrefix', { error: loadError })}
+              : t('detail.errorPrefix', { error: loadError.message })}
           </div>
         )}
 

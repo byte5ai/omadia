@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { TopicDetector } from '@omadia/orchestrator-extras';
+import { TOPIC_CLASSIFIER_MAX_TOKENS, TopicDetector } from '@omadia/orchestrator-extras';
+import type { LlmRequest } from '@omadia/llm-provider';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type { ConversationTurn } from '@omadia/plugin-api';
 
@@ -154,5 +155,27 @@ describe('TopicDetector', () => {
     });
     assert.equal(r.decision, 'continue');
     assert.equal(r.reason, 'embedding-failed');
+  });
+
+  it('budgets the classifier for an always-thinking model: room for thinking, low effort, no thinking where allowed', async () => {
+    const embeddings = stubEmbeddings({ topicA: [1, 0, 0, 0], topicMid: [0.8, 0.3, 0, 0] });
+    const seen: LlmRequest[] = [];
+    const llm = {
+      complete: (req: LlmRequest) => {
+        seen.push(req);
+        // An always-thinking model on the old 64-token budget: thinking ate
+        // it all and the reply came back empty.
+        const text = req.maxTokens <= 64 ? '' : 'continue';
+        return Promise.resolve({ content: [{ type: 'text', text }] });
+      },
+    };
+    const det = new TopicDetector(embeddings, llm as never, { upperThreshold: 0.95, lowerThreshold: 0.05 });
+    const r = await det.classify({ userMessage: 'topicMid: irgendwas dazu', history: [A, A2] });
+    assert.equal(r.classifier, 'continue');
+    assert.equal(seen[0]?.maxTokens, TOPIC_CLASSIFIER_MAX_TOKENS);
+    assert.ok(TOPIC_CLASSIFIER_MAX_TOKENS >= 1024);
+    assert.equal(seen[0]?.effort, 'low');
+    assert.equal(seen[0]?.thinking, 'off');
+    assert.equal(seen[0]?.temperature, undefined, 'no temperature next to an effort');
   });
 });

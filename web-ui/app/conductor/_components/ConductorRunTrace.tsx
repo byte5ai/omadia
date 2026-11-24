@@ -11,7 +11,7 @@ import {
   cancelConductorRun,
   getConductorRun,
   listConductorRuns,
-  type ConductorRun,
+  type ConductorRunListEntry,
   type ConductorRunResult,
   type ConductorRunStep,
 } from '@/app/_lib/api';
@@ -249,6 +249,19 @@ export function ConductorRunTrace({ result }: { result: ConductorRunResult }): R
   );
 }
 
+/** #1710 — the workflow version a run ran, as a `v{n}` badge. The history spans
+ *  every version, so a run has to name its own; absent only on a middleware
+ *  older than #1710, where the row stays fully usable without it. */
+function RunVersionBadge({ version }: { version?: number | null }): React.JSX.Element | null {
+  const t = useTranslations('conductor');
+  if (typeof version !== 'number') return null;
+  return (
+    <span className="font-mono text-[11px] text-[color:var(--fg-muted)]" title={t('runVersionTitle', { version })}>
+      {t('runVersionBadge', { version })}
+    </span>
+  );
+}
+
 /**
  * Run-history audit panel for a workflow (US9): lists recent runs and opens any run's full
  * trace. The data already lives in conductor_runs / conductor_run_steps — this is the operator
@@ -260,7 +273,7 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
   // filed about, and the list carries the cause because the run row mirrors it.
   const codeLabel = useRunErrorCodeLabel();
   const format = useFormatter();
-  const [runs, setRuns] = useState<ConductorRun[]>([]);
+  const [runs, setRuns] = useState<ConductorRunListEntry[]>([]);
   const [selected, setSelected] = useState<ConductorRunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -323,6 +336,11 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
     [slug, t, reload, selected],
   );
 
+  // #1710 — the version of the OPENED run, read off the list row it came from:
+  // the single-run route serves the run without one, and an operator who has
+  // drilled into a trace still needs the answer.
+  const selectedVersion = selected ? runs.find((r) => r.id === selected.run.id)?.workflowVersion : null;
+
   return (
     <div className={`${card} mt-4`}>
       <div className="mb-3 flex items-center justify-between">
@@ -342,9 +360,12 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
       {selected ? (
         <div>
           <div className="flex items-center justify-between">
-            <Button variant="ghost" onClick={() => setSelected(null)}>
-              ← {t('backToRuns')}
-            </Button>
+            <span className="flex min-w-0 items-center gap-3">
+              <Button variant="ghost" onClick={() => setSelected(null)}>
+                ← {t('backToRuns')}
+              </Button>
+              <RunVersionBadge version={selectedVersion} />
+            </span>
             {(selected.run.status === 'running' || selected.run.status === 'waiting') && (
               <Button
                 variant="danger"
@@ -377,6 +398,7 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
               >
                 <span className="flex min-w-0 items-center gap-3">
                   <StatusBadge status={r.status} />
+                  <RunVersionBadge version={r.workflowVersion} />
                   <span className="font-mono text-[12px] text-[color:var(--fg-muted)]">{r.triggerKind}</span>
                   {r.status === 'failed' ? (
                     <span

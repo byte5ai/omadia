@@ -11,6 +11,7 @@ import {
   resolvedTurnLabels,
   turnContext,
   UNKNOWN_READERS,
+  type FieldRightSources,
 } from '@omadia/orchestrator';
 import type { AgentSpeaker, AnswerEmitter, DataPlanGuard, NativeToolSpec } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
@@ -89,6 +90,9 @@ export interface TriggerWiringDeps {
   /** Who reads a conversation now, for the send-time discretion check
    *  (criterion 24). Absent = explicit targets fail closed. */
   readonly conversationReaders?: ConversationReaders;
+  /** The audience floor's grants and roles: a firing reads its room's field
+   *  rights from them (criterion 18). Absent = the floor is off. */
+  readonly fieldRightSources?: () => FieldRightSources | undefined;
   /** Injectable clock for tests. */
   readonly now?: () => Date;
   readonly log: (message: string) => void;
@@ -227,6 +231,7 @@ export function wireTriggers(deps: TriggerWiringDeps): TriggerWiring {
       ...(deps.emitterOf ? { emitterOf: deps.emitterOf } : {}),
       ...(deps.batchJobs ? { batch: createBatchExecutor(deps.batchJobs) } : {}),
       ...(deps.conversationReaders ? { conversationReaders: deps.conversationReaders } : {}),
+      ...(deps.fieldRightSources ? { fieldRightSources: deps.fieldRightSources } : {}),
       scheduleRan: async (trigger) => deps.schedules?.()?.ran(trigger),
       scheduleLive: async (trigger) => (await deps.schedules?.()?.isLive(trigger)) ?? false,
       routineTurn: async (trigger) => {
