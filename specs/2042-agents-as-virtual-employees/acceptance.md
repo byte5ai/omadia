@@ -160,7 +160,7 @@ plugins and `plugin-llm-ollama` 0.2.1 are on the Hub with the fixed texts.
   - `criterion 18: a rendered answer is masked again for a room without the field right` (`v4_render_answer`);
   - `criterion 18: deliver_data puts no rows before a room without the field right`;
   - pure parts: closed, throwing or denying floors grant no class; the classification check at the `people` egress.
-- Residual: in such a room the answer shows the shield's surrogates (pseudonymous values) plus a note that some details stay masked; a trigger's proactive post whose creating turn carried a `classification` label is refused (no field rights are stored with a trigger, fail closed).
+- Residual: in such a room the answer shows the shield's surrogates (pseudonymous values) plus a note that some details stay masked; a trigger's proactive post or turn uses the field rights its room's readers hold when it fires, never wider than the ones stored at creation (`firingFieldClasses`; a trigger stored without rights fails closed). Where the channel cannot read the room's members at firing, the readers stored at creation are checked with their current rights; an explicit target or a room that gained a reader gets none. `test/discretion/fieldRights.test.ts` :: `criterion 18: a right withdrawn after creation is gone at firing`, `criterion 18: the firing turn does not restore a field a reader lost since the trigger was set`.
 
 ### 19. Default on — green
 - `test/consultation/consultation.pg.test.ts` :: `criterion 19: a fresh agent starts in \`members\``; `test/orchestrator/freshAgentMembersMemory.pg.test.ts` (agent created without a mode, recall with a non-owner present returns nothing, owners only get it); `test/orchestrator/memberScopedMemory.test.ts`.

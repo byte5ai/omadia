@@ -339,6 +339,11 @@ function buildSystem(req: LlmRequest): unknown {
  * is not the rule, and a version comparison would be a plausible, wrong gate.
  * `temperature: 1` is always accepted because it IS the default; the API only
  * objects to being asked for a value it no longer honours.
+ *
+ * Mythos is not in the measured table. It is listed with Fable because
+ * Mythos 5.1 shares the Fable 5.1 API surface (see
+ * {@link FORCED_TOOL_CHOICE_UNSUPPORTED}); dropping a temperature costs only
+ * determinism, while sending one a model refuses is a 400.
  */
 const TEMPERATURE_UNSUPPORTED = [
   'claude-opus-4-7',
@@ -346,6 +351,7 @@ const TEMPERATURE_UNSUPPORTED = [
   'claude-opus-5',
   'claude-sonnet-5',
   'claude-fable-5',
+  'claude-mythos-5',
 ];
 
 /**
