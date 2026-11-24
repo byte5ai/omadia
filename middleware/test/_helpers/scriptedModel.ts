@@ -66,8 +66,17 @@ export function scriptedModel(respond?: (request: LlmRequest) => ModelStep | und
       admitModelCall();
       return Promise.resolve(next(request));
     },
-    stream: (): never => {
-      throw new Error('scripted model: stream() is not scripted');
+    // The streaming path gets the same answers, as a delta plus the final.
+    stream: (request: LlmRequest) => {
+      admitModelCall();
+      const response = next(request);
+      const text = response.content.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('');
+      return {
+        async *[Symbol.asyncIterator]() {
+          if (text) yield { type: 'text_delta', text };
+          yield { type: 'final', response };
+        },
+      };
     },
   } as unknown as LlmProvider;
   return { provider, requests, script: (...steps) => void queue.push(...steps) };

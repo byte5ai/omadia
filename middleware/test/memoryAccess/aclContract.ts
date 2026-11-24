@@ -32,8 +32,8 @@ import {
   type Mode,
   type Settings,
 } from './oracle.js';
-import { MK_GROUP_COUNT, axis, mkGroup, type Seeded } from './seed.js';
-import { AGENTS, USERS, allViewers, presentIn, viewerId, type Viewer } from './world.js';
+import { MK_GROUP_COUNT, axis, mkGroup, type Seeded, type UserIds } from './seed.js';
+import { AGENTS, allViewers, presentIn, viewerId, type Viewer } from './world.js';
 
 type SearchOptions = Omit<
   MemorableKnowledgeSearchOptions,
@@ -41,10 +41,15 @@ type SearchOptions = Omit<
 >;
 
 /** The store options a turn of `v` in `mode` passes. */
-export function turnSearchOptions(v: Viewer, mode: Mode, settings: Settings): SearchOptions {
+export function turnSearchOptions(
+  v: Viewer,
+  mode: Mode,
+  settings: Settings,
+  users: UserIds,
+): SearchOptions {
   const bound = isContextBound(v, mode);
   const base = {
-    viewerOmadiaUserId: USERS[v.user],
+    viewerOmadiaUserId: users[v.tenant][v.user],
     viewerAgentSlug: AGENTS[v.agent],
     ...(v.shielded ? { excludeUnprotected: true } : {}),
   };
@@ -52,7 +57,7 @@ export function turnSearchOptions(v: Viewer, mode: Mode, settings: Settings): Se
     return {
       ...base,
       audienceOwners: presentIn(v.context, v.user)
-        .map((u) => USERS[u])
+        .map((u) => users[v.tenant][u])
         .sort(),
     };
   }
@@ -220,7 +225,7 @@ export function runAclContract(
     const cache = new Map<string, Set<string>>();
     for (const v of contractViewers()) {
       for (const mode of MODES) {
-        const options = turnSearchOptions(v, mode, settings);
+        const options = turnSearchOptions(v, mode, settings, seeded.users);
         const key = JSON.stringify([v.tenant, options]);
         let got = cache.get(key);
         if (!got) {
@@ -290,7 +295,7 @@ export function runEmptyAudienceContract(
       const graph = seeded.stores.main.graph;
       const query = {
         queryEmbedding: batchVector(Array.from({ length: MK_GROUP_COUNT }, (_, i) => i)),
-        viewerOmadiaUserId: USERS.alice,
+        viewerOmadiaUserId: seeded.users.main.alice,
         audienceOwners: [] as string[],
         minSimilarity: MIN_SIMILARITY,
         limit: LIMIT,
@@ -298,7 +303,7 @@ export function runEmptyAudienceContract(
       // Positive control: the same query with a real audience returns rows.
       const control = await graph.searchMemorableKnowledgeByEmbedding({
         ...query,
-        audienceOwners: [USERS.alice],
+        audienceOwners: [seeded.users.main.alice],
       });
       assert.ok(control.length > 0, 'the control audience got nothing back');
       const mk = canariesIn(

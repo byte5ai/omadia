@@ -1054,8 +1054,23 @@ Known residuals:
   operator-authored and durably auto-promoted private memories reach a
   context-bound turn.
 
-Both residuals are pinned as known failures in
-`middleware/test/memoryAccess/canarySweep.test.ts`.
+- #2204 also covers a plugin's `ctx.knowledgeGraph.searchTurns` /
+  `findEntityCapturedTurns` in `off` and `enforce`: `boundTurnSearch` passes
+  the plugin's options through unchanged there.
+- #2207: `query_processes` and `run_stored_process` read process memory with
+  no agent or context-memory bound (other agents' processes in every mode; any
+  process in a context-bound `enforce-strict` / `members` turn, which recall
+  skips).
+- #2208: a plugin's `ctx.knowledgeGraph.getNeighbors` applies only the shield
+  filter, in every mode: private memories, plans and turns next to any node
+  the plugin found. Related: #1825 (the `kg_graph` walk around recalled
+  memories, also without access checks).
+- #1762: web chat tabs (`/api/chat/sessions`) have no owner; every account
+  lists and reads every tab.
+
+All of these are pinned as known failures (`todo`, naming the issue) in the
+canary sweep under `middleware/test/memoryAccess/` (`canarySweep*.test.ts`,
+`canarySweep*.pg.test.ts`, `canaryHttp.test.ts`).
 
 ### Consultation: a colleague adds judgement, never access (spec 2042 §5.4, #2047)
 

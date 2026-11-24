@@ -18,6 +18,14 @@ import {
   turnContext,
   type ChatParticipantsProvider,
 } from '@omadia/orchestrator';
+import {
+  QUERY_PROCESSES_TOOL_NAME,
+  RUN_STORED_PROCESS_TOOL_NAME,
+  createQueryProcessesHandler,
+  createRunStoredProcessHandler,
+  queryProcessesToolSpec,
+  runStoredProcessToolSpec,
+} from '@omadia/orchestrator/dist/tools/processMemoryTool.js';
 import { ContextRetriever } from '@omadia/orchestrator-extras';
 import type { EmbeddingClient, KnowledgeGraph, MemoryStore } from '@omadia/plugin-api';
 import { EntityRefBus, InMemoryNudgeRegistry, nativeToolResultText } from '@omadia/plugin-api';
@@ -25,6 +33,9 @@ import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/ind
 import { parseSessionScope } from '../../packages/harness-channel-sdk/src/scopeId.js';
 import type { TurnOrigin } from '../../packages/harness-channel-sdk/src/turnOrigin.js';
 
+import { createPluginContext } from '../../src/platform/pluginContext.js';
+import { ServiceRegistry } from '../../src/platform/serviceRegistry.js';
+import type { PluginCatalog } from '../../src/plugins/manifestLoader.js';
 import { scriptedModel, type ModelStep } from '../_helpers/scriptedModel.js';
 import { expected, type Mode, type Verdict } from './oracle.js';
 import { EMBEDDING_DIM, axis, turnQueryVector, type Seeded } from './seed.js';
@@ -53,7 +64,15 @@ export type EntryPoint =
   /** The first request: recall, session tail, memory index, briefing. */
   | 'context'
   | 'memory-tool'
-  | 'graph-tool';
+  | 'graph-tool'
+  /** Stream events the client gets besides tool calls: recall cards, the graph walk, the answer. */
+  | 'client-stream'
+  /** `query_processes` / `run_stored_process` (Neon: process memory). */
+  | 'process-tool'
+  /** A plugin's domain tool: `ctx.knowledgeGraph` turn searches and `ctx.memory`. */
+  | 'plugin-accessor'
+  /** The same plugin: `ctx.knowledgeGraph.getNeighbors` of every node it found. */
+  | 'plugin-neighbors';
 
 export interface Sighting {
   readonly entry: EntryPoint;
@@ -125,6 +144,11 @@ function firstProbe(): ModelStep {
       { tool: 'query_knowledge_graph', input: { query: 'stats' } },
       { tool: 'query_knowledge_graph', input: { query: 'list_sessions', limit: 100 } },
       { tool: 'query_knowledge_graph', input: { query: 'find_entity', name_contains: 'CANARY', limit: 100 } },
+      // Only offered where the store has process memory (Neon); elsewhere the
+      // orchestrator answers "unknown tool".
+      { tool: QUERY_PROCESSES_TOOL_NAME, input: { query: 'Ablauf Schritte', limit: 50 } },
+      { tool: PROBE_TOOL, input: { part: 'search' } },
+      { tool: PROBE_TOOL, input: { part: 'neighbors' } },
       ...ALL_KEYWORDS.flatMap((text) => [
         { tool: 'query_knowledge_graph', input: { query: 'search_turns', text, limit: 100 } },
         { tool: 'query_knowledge_graph', input: { query: 'search_turns_semantic', text, limit: 100 } },
@@ -177,6 +201,9 @@ function followUps(request: LlmRequest, round: number): ModelStep {
       .filter((e) => e.tool === 'query_knowledge_graph' && e.input['query'] === 'session_summary')
       .map((e) => String(e.input['scope'])),
   );
+  const opened = new Set(
+    seen.filter((e) => e.tool === RUN_STORED_PROCESS_TOOL_NAME).map((e) => String(e.input['id'])),
+  );
   const next: { tool: string; input: unknown }[] = [];
   for (const e of seen) {
     if (e.tool === 'memory') {
@@ -185,6 +212,15 @@ function followUps(request: LlmRequest, round: number): ModelStep {
         if (!viewed.has(path)) {
           viewed.add(path);
           next.push({ tool: 'memory', input: { command: 'view', path } });
+        }
+      }
+    }
+    if (e.tool === QUERY_PROCESSES_TOOL_NAME) {
+      for (const m of e.result.matchAll(/"id":"([^"]+)"/g)) {
+        const id = m[1]!;
+        if (!opened.has(id)) {
+          opened.add(id);
+          next.push({ tool: RUN_STORED_PROCESS_TOOL_NAME, input: { id } });
         }
       }
     }
@@ -204,20 +240,14 @@ function followUps(request: LlmRequest, round: number): ModelStep {
 let probeTurns = 0;
 
 /**
- * The seeded graph as a sweep turn sees it: identity resolution maps each
- * world user's channel id onto their world uuid, and the turn's own ingest
- * (session logger) is dropped, so every turn reads exactly the seeded world.
+ * The seeded graph as a sweep turn sees it: the turn's own writes (session
+ * logger, run trace) are dropped, so every turn reads exactly the seeded
+ * world. Identity resolution is the real one.
  */
 function sweepGraph(graph: KnowledgeGraph): KnowledgeGraph {
-  const known = new Set(Object.values(USERS));
   return new Proxy(graph, {
     get(target, prop, receiver) {
-      if (prop === 'resolveOrCreateChannelIdentity') {
-        return async (ingest: { channelUserId: string }) =>
-          known.has(ingest.channelUserId)
-            ? { omadiaUserId: ingest.channelUserId, created: false }
-            : target.resolveOrCreateChannelIdentity(ingest as never);
-      }
+      if (prop === 'ingestRun') return async () => ({ runId: 'sweep' });
       if (prop === 'ingestTurn') {
         return async () => {
           probeTurns += 1;
@@ -274,6 +304,16 @@ function rosterOf(ctx: ContextKey, sender: UserKey): ChatParticipantsProvider {
  * through instead of the top few: the sweep tests who may see, not ranking.
  * The ACL-relevant options are production's (`teamVisibility` on, pinned).
  */
+/**
+ * How much recall returns. `wide` opens every limit, so the prompt shows
+ * everything the ACL lets through. `production` keeps the plugin's defaults
+ * (top few hits): what is recalled then drives what the graph walk around it
+ * reaches, which a wide recall would crowd out under the walk's node cap.
+ */
+export type RecallLimits = 'wide' | 'production';
+
+const PRODUCTION_RECALL = { teamVisibility: true } as const;
+
 const WIDE_RECALL = {
   teamVisibility: true,
   tailSize: 100,
@@ -294,6 +334,120 @@ const WIDE_RECALL = {
   compactModeThreshold: 1_000_000,
 } as const;
 
+export const PROBE_TOOL = 'query_probe_plugin';
+const PROBE_PLUGIN = '@omadia/memory-access-probe';
+
+/**
+ * A plugin domain tool that reads what a domain tool may read mid-turn:
+ * `ctx.knowledgeGraph` (`searchTurns`, `findEntityCapturedTurns`,
+ * `getNeighbors` of every hit) and `ctx.memory` (its own tree, plus escapes
+ * the accessor must refuse). Its context comes from the real
+ * `createPluginContext`, so the turn's graph boundary applies as in
+ * production.
+ */
+function probePlugin(graph: KnowledgeGraph, memory: MemoryStore) {
+  const services = new ServiceRegistry();
+  services.provide('knowledgeGraph', graph, '@omadia/knowledge-graph');
+  services.provide('memoryStore', memory, '@omadia/memory');
+  const entry = {
+    plugin: {
+      id: PROBE_PLUGIN,
+      kind: 'integration',
+      name: PROBE_PLUGIN,
+      version: '0.1.0',
+      domain: 'test',
+      setup_fields: [],
+      permissions_summary: {
+        memory_reads: [],
+        memory_writes: [],
+        graph_reads: [],
+        graph_writes: [],
+        network_outbound: [],
+        graph_entity_systems: ['odoo'],
+      },
+      depends_on: [],
+      provides: [],
+      requires: [],
+    },
+    manifest: { permissions: { memory: { reads: ['*'], writes: ['*'] } } },
+    source_path: '/abs/probe/manifest.yaml',
+    source_kind: 'manifest-v1',
+    origin: 'installed',
+  };
+  const catalog = {
+    list: () => [entry],
+    get: (id: string) => (id === PROBE_PLUGIN ? entry : undefined),
+  } as unknown as PluginCatalog;
+  type Opts = Parameters<typeof createPluginContext>[0];
+  const ctx = createPluginContext({
+    agentId: PROBE_PLUGIN,
+    vault: { get: async () => undefined, listKeys: async () => [] } as unknown as Opts['vault'],
+    registry: { has: () => true, list: () => [], get: () => ({ config: {} }) } as unknown as Opts['registry'],
+    catalog,
+    serviceRegistry: services,
+    nativeToolRegistry: {
+      register: () => () => undefined,
+      registerHandler: () => () => undefined,
+      get: () => undefined,
+    } as unknown as Opts['nativeToolRegistry'],
+    routeRegistry: { register: () => () => undefined, disposeBySource: () => 0 } as unknown as Opts['routeRegistry'],
+    jobScheduler: { register: () => () => undefined, stopForPlugin: () => undefined } as unknown as Opts['jobScheduler'],
+    // Not used by the accessors probed here.
+    notificationRouter: {} as Opts['notificationRouter'],
+    uiRouteCatalog: {} as Opts['uiRouteCatalog'],
+  });
+  const kg = ctx.knowledgeGraph;
+  const mem = ctx.memory;
+  if (!kg || !mem) throw new Error('probe plugin: accessors not granted');
+  const handle = async (input: unknown): Promise<string> => {
+    const part = (input as { part?: string } | undefined)?.part;
+    const found: unknown[] = [];
+    const nodeIds = new Set<string>();
+    for (const query of ALL_KEYWORDS) {
+      const hits = await kg.searchTurns({ query, limit: 50 });
+      found.push(hits);
+      for (const h of hits) nodeIds.add(h.turnId);
+    }
+    const captured = await kg.findEntityCapturedTurns({ terms: ['CANARY-ENTITY'], limit: 100 } as never);
+    found.push(captured);
+    for (const hit of captured) {
+      nodeIds.add(hit.entity.id);
+      for (const t of hit.turns) nodeIds.add(t.turnId);
+    }
+    if (part === 'neighbors') {
+      const neighbors: unknown[] = [];
+      for (const id of nodeIds) neighbors.push(await kg.getNeighbors(id));
+      return JSON.stringify(neighbors);
+    }
+    const out: unknown[] = [found];
+    for (const path of ['', 'memories', '../../core', '/memories/core', '..']) {
+      try {
+        const listed = await mem.list(path);
+        out.push(listed);
+        for (const e of listed) if (!e.isDirectory) out.push(await mem.readFile(e.relPath));
+      } catch (err) {
+        out.push(String(err));
+      }
+    }
+    return JSON.stringify(out);
+  };
+  return {
+    name: PROBE_TOOL,
+    domain: 'test',
+    agentId: PROBE_PLUGIN,
+    spec: {
+      name: PROBE_TOOL,
+      description: 'Memory-access probe.',
+      input_schema: {
+        type: 'object' as const,
+        properties: { part: { type: 'string', description: 'search or neighbors' } },
+        required: [],
+      },
+    },
+    handle,
+  };
+}
+
 /**
  * An agent built the way production builds one (`buildOrchestratorForAgent`):
  * binder, namespacer, shield wiring, session logger, the default-on audience
@@ -306,6 +460,7 @@ function buildAgent(
   mode: Mode,
   provider: LlmProvider,
   shielded: boolean,
+  recall: RecallLimits = 'wide',
 ) {
   const stores = seeded.stores[tenant];
   const graph = sweepGraph(stores.graph);
@@ -329,15 +484,42 @@ function buildAgent(
       responseGuard: () => undefined,
       privacyGuard: () => privacy,
       embeddingClient: sweepEmbedder,
-      contextRetriever: new ContextRetriever(graph, WIDE_RECALL, sweepEmbedder),
+      contextRetriever: new ContextRetriever(
+        graph,
+        recall === 'wide' ? WIDE_RECALL : PRODUCTION_RECALL,
+        sweepEmbedder,
+        undefined,
+        stores.processes,
+      ),
+      ...(stores.processes ? { processMemory: stores.processes } : {}),
       audienceGrants: new MemberBaselineGrantStore(new InMemoryGrantStore()),
     },
+  );
+  // Registered the way the orchestrator plugin registers them, once a
+  // `processMemory@1` provider runs (plugin.ts).
+  if (stores.processes) {
+    nativeToolRegistry.register(QUERY_PROCESSES_TOOL_NAME, {
+      handler: createQueryProcessesHandler(stores.processes),
+      spec: queryProcessesToolSpec,
+    });
+    nativeToolRegistry.register(RUN_STORED_PROCESS_TOOL_NAME, {
+      handler: createRunStoredProcessHandler(stores.processes),
+      spec: runStoredProcessToolSpec,
+    });
+  }
+  built.orchestrator.registerDomainTool(
+    probePlugin(graph, stores.memory) as unknown as Parameters<typeof built.orchestrator.registerDomainTool>[0],
   );
   return { orchestrator: built.orchestrator, nativeToolRegistry };
 }
 
 /** One real turn of `viewer` in `mode`; every canary the model was sent. */
-export async function sweepTurn(seeded: Seeded, viewer: Viewer, mode: Mode): Promise<TurnSweep> {
+export async function sweepTurn(
+  seeded: Seeded,
+  viewer: Viewer,
+  mode: Mode,
+  recall: RecallLimits = 'wide',
+): Promise<TurnSweep> {
   let round = 0;
   const model = scriptedModel((request) => {
     round += 1;
@@ -350,17 +532,30 @@ export async function sweepTurn(seeded: Seeded, viewer: Viewer, mode: Mode): Pro
     mode,
     model.provider,
     viewer.shielded,
+    recall,
   );
 
   const origin = originOf(viewer.context);
-  const run = () =>
-    orchestrator.chat({
+  /** What the client was sent besides the tool calls (the model's view covers those). */
+  const toClient: unknown[] = [];
+  const run = async (): Promise<void> => {
+    for await (const event of orchestrator.chatStream({
       // Names every conversation (turn legs) and every entity (entity leg).
       userMessage: `Was wissen wir zu CANARY-ENTITY ${ALL_KEYWORDS.join(' ')}?`,
       sessionScope: conversationOf(viewer.context, viewer.user),
-      userId: USERS[viewer.user],
-      ...(origin ? { origin } : {}),
-    });
+      // Like production: the session's omadia id on the web; the raw channel
+      // id plus the channel identity on Teams (orchestratorDispatcher).
+      ...(origin
+        ? {
+            origin,
+            userId: USERS[viewer.user],
+            channelIdentity: { channelKind: 'teams' as const, channelUserId: USERS[viewer.user] },
+          }
+        : { userId: seeded.users[viewer.tenant][viewer.user] }),
+    })) {
+      if (!/^(tool_|sub_)/.test(event.type)) toClient.push(event);
+    }
+  };
   await (CONTEXTS[viewer.context].kind === 'group'
     ? turnContext.runWithChatParticipants(rosterOf(viewer.context, viewer.user), run)
     : run());
@@ -378,8 +573,20 @@ export async function sweepTurn(seeded: Seeded, viewer: Viewer, mode: Mode): Pro
   if (first) record('context', JSON.stringify({ system: first.system, messages: first.messages }));
   const last = model.requests.at(-1);
   for (const e of last ? exchanges(last) : []) {
-    record(e.tool === 'memory' ? 'memory-tool' : 'graph-tool', e.result);
+    record(
+      e.tool === 'memory'
+        ? 'memory-tool'
+        : e.tool === QUERY_PROCESSES_TOOL_NAME || e.tool === RUN_STORED_PROCESS_TOOL_NAME
+          ? 'process-tool'
+          : e.tool === PROBE_TOOL
+            ? e.input['part'] === 'neighbors'
+              ? 'plugin-neighbors'
+              : 'plugin-accessor'
+            : 'graph-tool',
+      e.result,
+    );
   }
+  record('client-stream', JSON.stringify(toClient));
   return { viewer, mode, sightings };
 }
 

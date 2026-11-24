@@ -36,6 +36,27 @@ changelog.
 
 ## [Unreleased]
 
+### Added — memory canary sweep, part 2: REST routes, plugins, Neon (memory-ACL test plan, step 3) (2026-11-24)
+
+- **Client stream.** The sweep now also checks every stream event the client gets besides tool
+  calls (recall cards, the `kg_graph` walk, the answer), and runs each mode a second time with
+  the production recall limits, where the walk shows. One file per mode and recall setting.
+- **Per-person REST routes** (`canaryHttp.test.ts`): `/api/v1/memory`, `/api/v1/datasets` and
+  `/api/chat/sessions` from the production routers, called as every person of both tenants,
+  including every read-by-id route with every id. Memory and datasets are clean. Admin,
+  operator and dev routes are operator-only today (every account is an administrator).
+- **Plugin accessors:** a probe plugin built with the real `createPluginContext` reads
+  `ctx.knowledgeGraph` and `ctx.memory` as a domain tool mid-turn.
+- **Neon** (`canarySweep<Mode>.pg.test.ts`, about 20 s each): process memory and
+  `query_processes` / `run_stored_process`. `PG_TEST_FLOOR` 727 → 750.
+- **Leaks confirmed**, kept as `todo` tests naming their issue: #2207 (process tools ignore
+  agent and context-memory bounds), #2208 (plugin `getNeighbors` ignores ACL and the turn's
+  boundary, every mode), #1825 (the `kg_graph` walk), #1762 (chat sessions have no owner), and a
+  plugin's turn search in `off`/`enforce` under #2204.
+- The seed mints omadia user ids through identity resolution and links turns to their sender's
+  cluster (run trace), as production does; memories name owners in both id forms.
+- `test/_helpers/scriptedModel.ts` also answers the streaming path.
+
 ### Added — memory canary sweep through real turns (memory-ACL test plan, step 3) (2026-11-24)
 
 - **`middleware/test/memoryAccess/canarySweep.ts`.** Every viewer of the memory-access world
