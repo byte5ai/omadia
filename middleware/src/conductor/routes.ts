@@ -2,6 +2,8 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import { auditActorFromRequest } from '../auth/adminAuditLog.js';
+import type { WebhookAuditEntryInput } from '../auth/adminAuditLog.js';
+import type { ConductorWebhookPosture } from './webhookRoutes.js';
 
 import { validate } from '@omadia/conductor-core';
 import type { JsonObject, KnownRefs, WorkflowGraph } from '@omadia/conductor-core';
@@ -133,6 +135,23 @@ export interface ConductorRouterDeps {
     holderId: string;
     holdersAfter: string[];
   }) => Promise<void>;
+  /**
+   * #1707 — audit sink for webhook administration. Creating, rotating, disabling and
+   * deleting an inbound endpoint or an outbound subscription decides what may start a
+   * workflow run and where run data is sent; before this, `admin_audit` held no row
+   * matching `%webhook%` at all. Optional like `auditRoleChange` (tests and hosts
+   * without an audit log keep working) and best-effort at the call site.
+   */
+  auditWebhookChange?: (entry: WebhookAuditEntryInput) => Promise<void>;
+  /** #1707 — how long a rotated inbound endpoint secret keeps its predecessor valid
+   *  (`CONDUCTOR_WEBHOOK_SECRET_GRACE_SECONDS`). 0/absent restores the pre-#1707
+   *  instant cutover. */
+  webhookSecretGraceMs?: number;
+  /** #1707 — the operator-visible state of the webhook surface, served verbatim by
+   *  `GET /webhooks/posture`: whether the inbound route is live at all (the
+   *  `CONDUCTOR_WEBHOOKS_ENABLED` kill switch, previously invisible everywhere) plus
+   *  the hardening windows in force. */
+  webhookPosture?: ConductorWebhookPosture;
 }
 
 /**
@@ -275,11 +294,29 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     }
   });
 
-  // Event catalog (US4) — the events plugins declared they emit, for the Designer's trigger picker.
-  // Registered before '/:slug' so it is not swallowed by the catch-all workflow route.
-  router.get('/events/catalog', (_req: Request, res: Response): void => {
+  // Event catalog (US4) — the events plugins declared they emit, for the Designer's trigger
+  // picker and the template form's event slots. Registered before '/:slug' so it is not
+  // swallowed by the catch-all workflow route.
+  //
+  // `endpointEvents` is ADDITIVE (#1713): the ids operators configured on inbound webhook
+  // endpoints (#437). They are emittable on this install too, but no manifest declares them,
+  // so they are kept out of `events`/`byPlugin` (which mean "declared by a plugin") and
+  // offered as further suggestions. A failed endpoint read degrades to an empty list —
+  // suggestions must never 500 a picker, and event ids stay free text either way.
+  router.get('/events/catalog', async (_req: Request, res: Response): Promise<void> => {
     try {
-      res.json({ events: deps.eventCatalog?.list() ?? [], byPlugin: deps.eventCatalog?.byPluginId() ?? {} });
+      let endpointEvents: string[] = [];
+      try {
+        const endpoints = (await deps.webhookEndpoints?.list()) ?? [];
+        endpointEvents = [...new Set(endpoints.map((ep) => ep.eventId))].sort();
+      } catch (err) {
+        console.warn('[conductor] inbound webhook endpoints unavailable for the event catalog:', errMsg(err));
+      }
+      res.json({
+        events: deps.eventCatalog?.list() ?? [],
+        byPlugin: deps.eventCatalog?.byPluginId() ?? {},
+        endpointEvents,
+      });
     } catch (err) {
       res.status(500).json({ code: 'conductor.event_catalog_failed', message: errMsg(err) });
     }
