@@ -5691,6 +5691,19 @@ export async function deleteConductorWorkflow(slug: string): Promise<{ deleted: 
   return JSON.parse(text) as { deleted: boolean; mode: 'hard' | 'soft' };
 }
 
+/** Enable or disable a workflow (#1711). The middleware answers 204; postJson
+ *  maps that to `undefined`, so there is no body to read. A template
+ *  instantiated without `enable: true` lands in `disabled`, where every run
+ *  start answers 409 `conductor.disabled` — this is the operator UI's way back
+ *  out of that state. Reserved ephemeral slugs are refused with 400 by the
+ *  route (their status belongs to the reaper, #330). */
+export async function setConductorWorkflowStatus(
+  slug: string,
+  status: 'enabled' | 'disabled',
+): Promise<void> {
+  await postJson<void>(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/status`, { status });
+}
+
 /** #759 — cancel a run. 'waiting' finalizes immediately; 'running' flags the
  *  driver (honoured at the next step boundary); terminal runs 409. */
 export async function cancelConductorRun(slug: string, runId: string): Promise<{ run: ConductorRun }> {

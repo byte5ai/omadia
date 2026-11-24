@@ -36,6 +36,21 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a workflow from a template can be activated in the UI (#1711)
+
+- A workflow instantiated from a template without "Workflow sofort aktivieren" is created
+  `disabled`, and every run start then refuses with 409 `conductor.disabled`. The route that
+  flips it (`POST /api/v1/operator/conductors/:slug/status`, 204) had no caller in the web UI:
+  the workflow list printed the status as text and "Starten" surfaced the raw 409, so the only
+  way out of the default state was a hand-written API call. The list row now carries an
+  Activate/Deactivate button, and the status is rendered localized ("active"/"inactive")
+  instead of the wire value.
+- The three refusals of the run-start route — `conductor.disabled`, `conductor.not_published`
+  (409) and `conductor.not_found` (404) — now read as sentences that say what to do; the
+  disabled one points at the switch on the row. Any other failure keeps the generic sentence
+  and carries the server's text as a detail line below it, so no raw `… failed: 409` is ever
+  the primary message. Same for a failed await response, which shares that slot.
+
 ### Fixed — Timer-Awaits erscheinen nicht mehr in der Operator-Inbox (#1712)
 
 2026-11-24.

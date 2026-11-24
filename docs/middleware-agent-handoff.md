@@ -2678,6 +2678,36 @@ ephemeralStore). Web-UI: Delete-Button + ConfirmDialog auf `/conductor`,
 `deleteConductorWorkflow` in `api.ts`, i18n `conductor.delete*` en+de.
 Tests: `test/conductorWorkflowDelete.test.ts`.
 
+### Conductor-Enable/Disable in der Workflow-Liste (#1711)
+
+`POST /conductors/templates/:id/instantiate` ohne `enable: true` legt den
+Workflow mit `status='disabled'` an — jeder Run-Start antwortet dann 409
+`conductor.disabled`. Die Backend-Route **`POST
+/api/v1/operator/conductors/:slug/status`** (`{"status":"enabled"|"disabled"}`
+⇒ 204) existiert seit Spec 005 US3-AS4, hatte aber **keinen Aufrufer im
+Web-UI**: die Liste druckte den Status nur als Text und „Starten“ zeigte das
+rohe 409. Der einzige Ausweg aus dem Default-Zustand einer
+Template-Instanziierung war ein handgeschriebener API-Call.
+
+Web-UI: `WorkflowStatusToggle` (`web-ui/app/conductor/_components/`) sitzt auf
+jeder Listenzeile neben Starten/Löschen und ruft
+`setConductorWorkflowStatus(slug, status)` (`api.ts`, 204 ⇒ kein Body);
+Fehler landen als Katalogsatz (`conductor.statusChangeFailed`) im geteilten
+Fehler-Slot der Liste, nie als roher `ApiError`-Text. Der Status selbst wird
+lokalisiert gerendert (`conductor.statusEnabled`/`statusDisabled` — „aktiv“/
+„inaktiv“ statt des Wire-Werts). Die drei Refusals der Run-Start-Route
+(`conductor.disabled`, `conductor.not_published` als 409,
+`conductor.not_found` als 404) mappt `app/_lib/conductorRunStartError.ts` auf
+je einen i18n-Key; alles andere behält den generischen Satz
+(`conductor.runError`) und trägt den Servertext als Detailzeile darunter.
+`eph-`-Slugs bleiben für die Status-Route 400 (Reaper-Lifecycle, #330).
+
+Tests: `test/conductorDisabledWorkflowEscape.test.ts` pinnt den Refusal-CODE
+(nicht nur den 409-Status, denn das UI keyt seinen Satz darauf) und den
+kompletten Ausweg 409 → Status-Route 204 → 202;
+`WorkflowStatusToggle.test.tsx` und `conductorRunStartError.test.ts` im
+Web-UI.
+
 ### Turn-Receipts (#757) — persistierte Per-Turn-Privacy-Receipts
 
 S3-C (#1541, #1549, #1557, #1562, #1573): Die Receipt-Card sagt nur, was
