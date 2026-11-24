@@ -7,7 +7,7 @@ import type { PeopleDirectoryProvider } from './peopleDirectory.js';
 import type { ConversationMembershipEvent } from './membershipEvent.js';
 import type { TargetedSendProvider } from './targetedSend.js';
 import type { ConversationSendProvider } from './conversationSend.js';
-import type { AgentIdentityProvider } from './agentIdentity.js';
+import type { AgentIdentityProvider, DefaultChannelKeyProvider } from './agentIdentity.js';
 import type { ConversationMessageEvent } from './conversationMessage.js';
 import type {
   ChannelReadinessProvider,
@@ -238,6 +238,14 @@ export interface CoreApi {
    * channel type, the first registrant owns it. See {@link AgentIdentityProvider}.
    */
   registerAgentIdentityProvider?(channelId: string, provider: AgentIdentityProvider): void;
+
+  /**
+   * Name the channel's own default bot when the plugin registers no
+   * {@link AgentIdentityProvider} (Teams). Optional — same feature-detect +
+   * deactivate lifecycle as {@link registerRosterProvider}; one provider per
+   * channel type. See {@link DefaultChannelKeyProvider}.
+   */
+  registerDefaultChannelKeyProvider?(channelId: string, provider: DefaultChannelKeyProvider): void;
 
   /**
    * Emit an inbound conversation message (#2043): every human message, edit,

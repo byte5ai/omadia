@@ -24,6 +24,24 @@ import type { ToolPIIField } from './piiAnnotation.js';
 export const PRIVACY_REDACT_SERVICE_NAME = 'privacyRedact';
 export const PRIVACY_REDACT_CAPABILITY = 'privacy.redact@1';
 
+/**
+ * Spec 2042 — service name of `agentNames@1`, published by the kernel: the
+ * names of the agents on the roster (the slugs, names and identity names of
+ * the agents that exist), minus every name an active user bears. Agent
+ * names are not personal data: a privacy provider leaves a span whose whole
+ * value equals one of them as written, under the rules of
+ * {@link PrivacyPromptMaskRequest.ownNames}, in every turn and in stored-text
+ * scopes. Read once per turn and once per job run.
+ */
+export const AGENT_NAMES_SERVICE_NAME = 'agentNames';
+
+/**
+ * The `agentNames@1` provider ({@link AGENT_NAMES_SERVICE_NAME}). `null` while
+ * the roster or the human names are not known yet: then no name is exempt
+ * (masking wins).
+ */
+export type AgentNamesProvider = () => readonly string[] | null;
+
 /** #1556 — one field a `non_personal_fields` rule sent to the model in clear. */
 export interface OperatorClearedFieldEntry {
   readonly toolName: string;

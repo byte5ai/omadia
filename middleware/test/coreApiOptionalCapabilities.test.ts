@@ -1,11 +1,17 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import type { ChatStreamEvent, ConversationRosterProvider, TargetedSendProvider } from '@omadia/channel-sdk';
+import type {
+  ChatStreamEvent,
+  ConversationRosterProvider,
+  DefaultChannelKeyProvider,
+  TargetedSendProvider,
+} from '@omadia/channel-sdk';
 
 import { createCoreApi } from '../src/channels/coreApi.js';
 import type { CreateCoreApiOptions } from '../src/channels/coreApi.js';
 import { ConversationRosterRegistry } from '../src/channels/rosterRegistry.js';
+import { ChannelProviderRegistry } from '../src/channels/sessionCapabilities/providerRegistry.js';
 import { ConversationEventHub } from '../src/channels/conversationEventHub.js';
 import { TargetedSendRegistry } from '../src/channels/targetedSendRegistry.js';
 
@@ -74,5 +80,23 @@ describe('createCoreApi — #330 optional group capabilities', () => {
       occurredAt: '2026-08-21T10:00:00.000Z',
     });
     assert.deepEqual(kinds, ['members_added']);
+  });
+});
+
+describe('createCoreApi — the default bot of a channel without identity provider', () => {
+  it('is absent without the registry (feature-detect holds)', () => {
+    assert.equal(createCoreApi(baseOptions()).registerDefaultChannelKeyProvider, undefined);
+  });
+
+  it('registers the provider per channel type and drops it with its channel', () => {
+    const defaultChannelKeys = new ChannelProviderRegistry<DefaultChannelKeyProvider>('defaultChannelKey');
+    const api = createCoreApi({ ...baseOptions(), defaultChannelKeys });
+    const provider: DefaultChannelKeyProvider = { channelType: 'teams', defaultChannelKey: () => '28:app' };
+    api.registerDefaultChannelKeyProvider?.('@omadia/channel-teams', provider);
+    assert.equal(defaultChannelKeys.get('teams')?.defaultChannelKey(), '28:app');
+    // One owner per channel type: another plugin cannot take it over.
+    assert.throws(() => api.registerDefaultChannelKeyProvider?.('other-plugin', provider), /already owned/);
+    defaultChannelKeys.unregisterChannel('@omadia/channel-teams');
+    assert.equal(defaultChannelKeys.get('teams'), undefined);
   });
 });

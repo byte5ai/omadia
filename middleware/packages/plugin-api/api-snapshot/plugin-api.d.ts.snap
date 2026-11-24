@@ -1509,6 +1509,7 @@ cosineSim: number;
 export interface RecalledPlan {
 planId: string;
 scope: string;
+turnId?: string;
 strategy?: string;
 createdAt?: string;
 openStepGoals: string[];
@@ -3020,6 +3021,8 @@ import type { FieldKey, FieldObservation, FieldSampleVerdict, ModelClassificatio
 import type { ToolPIIField } from './piiAnnotation.js';
 export declare const PRIVACY_REDACT_SERVICE_NAME = "privacyRedact";
 export declare const PRIVACY_REDACT_CAPABILITY = "privacy.redact@1";
+export declare const AGENT_NAMES_SERVICE_NAME = "agentNames";
+export type AgentNamesProvider = () => readonly string[] | null;
 export interface OperatorClearedFieldEntry {
 readonly toolName: string;
 readonly field: string;

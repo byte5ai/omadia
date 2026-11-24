@@ -185,6 +185,11 @@ src/
   wird abgelehnt. Die Kernel-Registry ist `ChannelProviderRegistry<AgentIdentityProvider>`
   (`src/index.ts`); `defaultChannelBotKey` (Conductor) und `presentBots`
   (`get_chat_participants`) fragen außerhalb von Teams den Provider.
+- **Standard-Bot ohne Identity-Provider (Teams):**
+  `CoreApi.registerDefaultChannelKeyProvider(channelId, DefaultChannelKeyProvider)`
+  (`{ channelType, defaultChannelKey() }`, channel-sdk 0.3.14 / plugin-api 1.93.0).
+  Registry `ChannelProviderRegistry<DefaultChannelKeyProvider>('defaultChannelKey')`;
+  Kanal-Claim (`scopedCoreApi.ts`) und Deactivate wie bei den anderen Providern.
 - **Operator-API** (`src/routes/operatorAgentChannelIdentities.ts`,
   Service `src/platform/agentChannelIdentityService.ts`):
   `GET /api/v1/operator/agents/:slug/channel-identities` (Kanäle, Felder, Bot mit
@@ -486,6 +491,19 @@ nach `create`, `createFirstAdmin` (nach COMMIT), `upsertOidcIdentity`,
 (nicht `markLoginNow`). Wer `users` an `UserStore` vorbei schreibt, umgeht ihn;
 dann greift nur der 5-Minuten-TTL des Snapshots. Ein Listener-Fehler wird
 geloggt und bricht den Write nicht ab.
+
+### Agent-Namen für den Privacy Shield (`agentNames@1`, #2191, #2192)
+
+Kernel-Service direkt nach `humanNames@1` in `middleware/src/index.ts`:
+`rosterAgentNames({ names: registry.agentNames(), humanNames })` über die
+`orchestratorRegistry` (Slugs, Namen und Identitätsnamen bestehender Agents,
+gelöschte nicht), abzüglich jedes Namens, den ein aktiver Benutzer trägt
+(`createAgentNamesProvider` in `src/platform/agentNamesService.ts`). `null`, solange Registry oder Menschennamen unbekannt sind. Konstante
+und Typ in plugin-api (`AGENT_NAMES_SERVICE_NAME`, `AgentNamesProvider`,
+1.91.0). Der Privacy Guard deklariert `optional_requires: ["agentNames@1"]`,
+liest pro Aufruf (`PrivacyGuardServiceDeps.agentNames`) und nimmt die Namen in
+jeder Turn-Maskierung und in jedem Stored-Text-Scope aus. Regeln:
+`docs/security-architecture.md` §6f.
 
 ### Plugin-Tool-Readiness-Gate (#474)
 
@@ -2832,10 +2850,16 @@ Beide Richtungen beantwortet **ein** Modul, `src/conductor/channelBotOwnership.t
 - `speakingIdentityFor`: eigene Identität, sonst der Standard-Bot — nur für
   genau den Agenten, auf den er in dieser Konversation auflöst.
 
-Der Standard-Bot kommt aus `wireConductor({ defaultChannelBotKey })`, in
-`src/index.ts` pro Aufruf gelesen: `microsoft_app_id` der
-Microsoft-365-Integration, sonst `MICROSOFT_APP_ID`. Ohne ihn gilt das alte
-Verhalten (nur provisionierte Bots).
+Der Standard-Bot kommt aus `wireConductor({ defaultChannelBotKey })` =
+`defaultChannelBotKeyFrom([agentIdentities, defaultChannelKeys])`
+(`src/conductor/channelBotOwnership.ts`), pro Aufruf gelesen: zuerst
+`AgentIdentityProvider.defaultChannelKey?()` des Kanal-Plugins, sonst
+`DefaultChannelKeyProvider.defaultChannelKey()` (Teams). Der Kernel kennt dafür
+keine Plugin-ID und kein Env mehr. Wirft der Provider oder nennt er nichts, gibt
+es keinen Standard-Bot (nur provisionierte Bots routen, der Turn scheitert nicht).
+`@omadia/channel-teams` ab 0.45.0 nennt `28:<appId>` der Microsoft-365-App
+(`microsoft_app_id`, sonst env `MICROSOFT_APP_ID`), nur wenn es diesen Bot bedient;
+ein älteres Teams-Plugin nennt keinen.
 
 ### Conductor Ephemeral/JIT-Workflows (#330 Workstream A)
 
@@ -10867,6 +10891,19 @@ Leserkreis, Offenlegungsstufe).
     Raum gelesen wird. Durable Rules behalten bei der Promotion die Turn-Labels;
     memorables (Auto-Promotion, MCP→KG-Ingestion mit dem Server als Quelle)
     behalten die Labels (`memorable`), Recall eines memorable bringt sie zurück;
+    ein abgerufener Plan bringt die Labels des Turns mit, der ihn schrieb
+    (`RecalledPlan.turnId`), ein Prozess die Labels seiner Schreib-Turns
+    (Subjekt `process`, Migration 0112): der Kernel dekoriert den
+    `processMemory@1`-Provider beim Registrieren (`decorateOnProvide`,
+    `LabelledProcessMemory`), also gilt das für jeden Leser (Tools, Plan-Runner,
+    Recall) (#2194); ein Plan ohne bekannten Schreib-Turn wird dann nicht abgerufen,
+    und Labels von Prozessen und Notizen wachsen atomar (`mergeLabels`) (#2198);
+  - Karten im Stream (Recall, Plan, Graph) gehen nur an einen Raum, der lesen darf,
+    was der Turn bis dahin gelesen hat; `onAfterTurn`-Annotationen und der
+    `kg_insert`-Puls warten auf den Check der Antwort (#2198);
+  - CLI-Turns (Claude-Abo, `CliChatAgent`) laufen mit demselben Turn-Zustand und
+    derselben Audience-Floor (`cliDiscretionTurnFields`, fail-closed) und derselben
+    Antwortprüfung (`guardCliAnswer`) wie In-Process-Turns (#2194);
   - Beiträge an andere Agenten im Broker.
 - **Leserschaft** (`integration_readerships`): `sensitivity` internal|restricted,
   `readers` everyone|Menge, akzeptierte Systeme und Klassifizierungen. Ohne

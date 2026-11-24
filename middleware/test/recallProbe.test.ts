@@ -199,6 +199,8 @@ describe('R2 · ContextRetriever cross-session recall legs', () => {
     await kg.ingestPlan({
       planId: 'prior',
       scope: 'sess-prior',
+      // #2194 — the writing turn, whose discretion labels the plan carries.
+      turnExternalId: 'turn:sess-prior:1',
       strategy: 'Migrate the billing module',
       createdAt: '2026-06-01T10:00:00.000Z',
     });
@@ -265,6 +267,7 @@ describe('R2 · ContextRetriever cross-session recall legs', () => {
     assert.equal(result.recalled.plans[0]!.openStepGoals.length, 1);
     assert.equal(result.recalled.plans[0]!.doneCount, 1);
     assert.equal(result.recalled.plans[0]!.totalCount, 2);
+    assert.equal(result.recalled.plans[0]!.turnId, 'turn:sess-prior:1', 'the writing turn rides along');
     // Resume: interrupted plan carries its completed step goals + renders the
     // "do not redo / resume from" framing into the injected recall text.
     assert.deepEqual(
@@ -288,6 +291,38 @@ describe('R2 · ContextRetriever cross-session recall legs', () => {
     assert.match(result.text, /Aus früheren Sessions — offene Pläne/);
     assert.match(result.text, /Aus früheren Sessions — gespeicherte Prozesse/);
     assert.match(result.text, /Aus früheren Sessions — verwandte Erkenntnisse/);
+  });
+
+  it('#2198 — with requireKnownPlanTurn, a plan without a known writing turn is not recalled', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    for (const [planId, turn] of [['known', 'turn:sess-a:1'], ['unknown', undefined]] as const) {
+      await kg.ingestPlan({
+        planId,
+        scope: `sess-${planId}`,
+        ...(turn ? { turnExternalId: turn } : {}),
+        strategy: 'Migrate the billing module',
+        createdAt: '2026-06-01T10:00:00.000Z',
+      });
+      await kg.upsertPlanStep({
+        stepId: `${planId}-s1`,
+        planId,
+        scope: `sess-${planId}`,
+        goal: 'run billing migration in staging',
+        order: 0,
+        status: 'pending',
+      });
+    }
+    const retriever = new ContextRetriever(kg, {}, stubEmbedder);
+    const ask = (requireKnownPlanTurn: boolean) =>
+      retriever.assembleForBudget({
+        userMessage: 'billing migration staging',
+        agentId: 'test-agent',
+        sessionScope: 'sess-now',
+        userId: 'alice',
+        ...(requireKnownPlanTurn ? { requireKnownPlanTurn: true } : {}),
+      });
+    assert.deepEqual((await ask(true)).recalled.plans.map((p) => p.turnId), ['turn:sess-a:1']);
+    assert.equal((await ask(false)).recalled.plans.length, 2, 'without the flag both are recalled');
   });
 
   it('excludes the current session’s own plan from recall', async () => {

@@ -25,6 +25,7 @@ import type {
 } from '@omadia/plugin-api';
 
 import { withC1Priority, type C1Priority } from './c1Detector.js';
+import { resolveOwnNames } from './ownNames.js';
 import { maskPrompt } from './promptMask.js';
 import { findResidualRealValues, resolvePromptPseudonyms } from './promptSurrogates.js';
 import type { PseudonymMap } from './v4/types.js';
@@ -39,6 +40,13 @@ export interface StoredTextScopeDeps {
   /** Sidecar lane of the C1 calls. Default `background` (job work); a mask
    *  a turn waits on passes `interactive`. */
   readonly priority?: C1Priority;
+  /**
+   * Spec 2042 (#2191) — agent names (`agentNames@1`, read when the scope
+   * opens): never masked, under the rules of `ownNames.ts`. A job over an
+   * agent's turns otherwise fed a surrogate of the agent's name back into its
+   * context. The operator deny-list still wins.
+   */
+  readonly ownNames?: readonly string[];
 }
 
 function messageOf(err: unknown): string {
@@ -82,8 +90,12 @@ export function createStoredTextScope(deps: StoredTextScopeDeps): PrivacyStoredT
     const c1 = await c1Step(text);
     const detectors = c1.detector ? [...deps.detectors, c1.detector] : deps.detectors;
     try {
-      const result = await maskPrompt(text, detectors, map);
-      const residual = findResidualRealValues(result.maskedText, result.map);
+      const isOwnName = await resolveOwnNames(deps.ownNames, detectors);
+      const result = await maskPrompt(text, detectors, map, { isOwnName });
+      // Agent names are allowed through (`ownNames.ts`).
+      const residual = findResidualRealValues(result.maskedText, result.map).filter(
+        (leak) => !isOwnName(leak.value),
+      );
       if (residual.length > 0) {
         console.error(
           `[privacy-guard v4] storedTextMaskBlocked job=${deps.job} ` +

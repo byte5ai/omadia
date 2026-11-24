@@ -51,6 +51,120 @@ changelog.
   Inbox-Zeile gerendert, die ein Timer jetzt nicht mehr erreicht. Eine
   read-only-Zeile „läuft bis …" ist bewusst nicht gebaut.
 
+### Changed — Kernel ohne Plugin-IDs: Teams-Standard-Bot kommt vom Plugin, tote v0.1.0-Reste entfernt
+
+2026-11-24. Der Kernel kannte noch Plugin-IDs aus v0.1.0. Der Teams-Standard-Bot
+(der einzige unbekannte Bot-Key, den der Conductor an eine Bindung oder den
+Fallback-Agenten routet) wurde aus dem Registry-Eintrag
+`de.byte5.integration.microsoft365` gelesen, ersatzweise aus `MICROSOFT_APP_ID`.
+Jetzt nennt ihn das Plugin selbst: neuer optionaler Vertrag
+`registerDefaultChannelKeyProvider` (channel-sdk 0.3.14, plugin-api 1.93.0) für
+Kanäle ohne `agentIdentities@1`-Provider. `@omadia/channel-teams` 0.45.0
+registriert ihn (Teams-Agenten-Bots bleiben in `agent_teams_identities`). Ein
+Provider, der wirft oder nichts nennt, bedeutet „kein Standard-Bot“: der Bot
+wird abgelehnt, der Turn scheitert nicht. Der Provider ist wie die anderen an
+den Kanal-Claim gebunden: nur das Plugin, das `teams` hält, nennt den Bot.
+
+**Upgrade-Reihenfolge:** zuerst `@omadia/channel-teams` ≥ 0.45.0, dann dieser
+Kernel. Mit einem älteren Teams-Plugin kennt dieser Kernel keinen
+Teams-Standard-Bot mehr, Nachrichten an ihn verweigert der Conductor
+(`unknown-bot`); der normale Chat-Pfad des Plugins ist nicht betroffen.
+
+Entfernt, weil tot: der Boot-Log zum Kalender-/M365-Wiring (`de.byte5.agent.calendar`,
+meldete nach der Deinstallation der Alt-Einträge fälschlich „microsoft365 integration
+DISABLED“), die Env-Migrationen `bootstrapMicrosoft365FromEnv` und
+`bootstrapTelegramFromEnv` (Ziel-IDs `de.byte5.integration.microsoft365`,
+`de.byte5.agent.calendar`, `de.byte5.channel.teams`, `de.byte5.channel.telegram` stehen
+in keinem Katalog mehr) und der `Microsoft365AccessorShim`. Der Builder schlägt als
+`depends_on` jetzt die heutigen IDs vor (`@omadia/integration-odoo`,
+`-confluence`, `-microsoft365`). Bleiben bewusst: die Migration der Alt-ID
+`de.byte5.tool.knowledge-graph`, das reservierte Präfix `de.byte5.platform.` im
+Manifest-Linter, `ROUTINES_AGENT_ID` (Principal, kein Plugin) und die
+Channel-Typ-Normalisierung. Die Env-Werte `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_PUBLIC_BASE_URL` und `TEAMS_SSO_CONNECTION_NAME`
+liest der Kernel nicht mehr (sie fütterten nur die entfernten Migrationen); sie
+parsen weiter, wirken aber nicht. Plugins konfiguriert man über ihr Setup.
+
+### Fixed — Diskretion: Karten zurückgehaltener Antworten, Pläne ohne Turn, Label-Rennen (#2198)
+
+2026-11-24. Folgepunkte aus #2194 (Spec 2042 §5.11). Im Streaming-Pfad gingen
+Annotationen, die aus der Antwort abgeleitet sind, vor deren People-Egress-
+Check raus: die `onAfterTurn`-Annotationen (Plan-Karte am Turn-Ende) und der
+`kg_insert`-Puls des aus der Antwort promoteten memorables. Wurde die Antwort
+dann zurückgehalten, hatte der Client sie schon. Jetzt warten beide auf den
+Check und gehen nur mit einer Antwort raus, die rausgeht; das gilt auch, wenn
+der Verifier (enforce, Request-Ledger) den Request-Record erst nach seinem
+Urteil freigibt. Plan-Karten während
+des Turns (`onBeforeTurn`, nach jedem Tool) und jede andere Karte des Streams
+gehen nur an einen Raum, der lesen darf, was der Turn bis dahin gelesen hat.
+Ein Plan ohne bekannten Schreib-Turn (`plan.props.turnId` fehlt) wird nicht
+mehr abgerufen, wenn der Orchestrator Diskretions-Labels führt
+(`requireKnownPlanTurn`): ohne Turn sagt nichts, wer ihn lesen darf. Labels
+von Prozessen und Memory-Notizen wachsen jetzt atomar
+(`DiscretionPort.mergeLabels`: Zeilen-Lock in einer Transaktion), zwei
+gleichzeitige Schreiber verlieren keine Labels mehr; wächst ein Set über
+256 Labels (liest sich dann als unlesbar), schreibt der Store eine Logzeile.
+Ein Konsultationslauf über das Claude-Abo hat keinen Privacy-Shield und damit
+keine maskierte Antwort: der Broker macht aus `redacted` dann nur „B kann
+helfen“, es fließt nichts. Prozesse werden nirgends gelöscht, also gibt es
+keine Labels zu entfernen. Keine Migration.
+
+### Fixed — Diskretion: Pläne und Prozesse aus dem Recall, CLI-Turns (#2194)
+
+2026-11-24. Zwei Lücken der Recall-Karte „🧠 Aus früheren Sessions“
+(Spec 2042 §5.11). Erstens kamen abgerufene Pläne und Prozesse ohne Labels in
+den Turn: ein Plan aus einem HR-1:1 ging als Karte und im Prompt an eine Gruppe
+mit anderen Lesern, und die Antwort konnte ihn wiederholen. Ein Plan trägt
+schon die Id des Turns, der ihn schrieb (`plan.props.turnId`); der Recall gibt
+sie jetzt als `RecalledPlan.turnId` mit (plugin-api 1.92.0), und der Turn
+übernimmt dessen gespeicherte Labels. Prozesse werden über mehrere Turns
+bearbeitet und haben keinen Turn: der Kernel dekoriert den
+`processMemory@1`-Provider beim Registrieren
+(`ServiceRegistry.decorateOnProvide`, `LabelledProcessMemory`). Schreiben und
+Bearbeiten speichern die Labels des schreibenden Turns unter dem neuen Subjekt
+`process` (ein Edit behält die früheren dazu); jedes Lesen (Prozess-Tools,
+Wiederverwendung durch den Plan-Runner, Recall, Duplikat-Treffer) bringt sie
+in den lesenden Turn. Migration **0112_discretion_process_labels** erweitert
+dafür den Subjekt-Check von `discretion_labels`. Zweitens liefen Turns über
+das Claude-Abo (`CliChatAgent`) ohne Diskretions-Zustand, die Prüfung der
+Recall-Karte war dort wirkungslos und die Antwort ging ungeprüft raus. Der
+CLI-Turn bekommt jetzt denselben Zustand und dieselbe Audience-Floor wie ein
+In-Process-Turn (`orchestrator.cliDiscretionTurnFields`: Raum, Leser,
+Feldrechte, Trigger- und Konsultations-Seed); Recall, Memory-Binding,
+Loopback-Tools und Session-Record laufen darin. Kann der Zustand nicht gebaut
+werden, läuft der Turn mit einem Label, das niemand lesen darf (fail-closed).
+Die Antwort geht durch denselben People-Egress-Check
+(`orchestrator.guardCliAnswer`, mit Audit; ein Konsultationslauf gibt seine
+Labels an den Broker): zurückgehalten wird sie als Ersatzzeile, die gestreamte
+Vorschau wird per `text_retract` zurückgenommen, Karten und die Annotationen
+des Turn-Records gehen nicht mit.
+
+### Fixed — Agent-Namen bleiben im Klartext, auch in Hintergrund-Jobs und Konsultationen (#2191, #2192)
+
+2026-11-24. #2190 nahm nur den eigenen Namen eines Agents in seinem eigenen
+Turn von der Maskierung aus. Hintergrund-Jobs über die Turns eines Agents
+(Signifikanz-Bewertung, Canvas-Skelett) maskierten seinen Namen weiter, und in
+einer Konsultation sah A den Namen von B (und B den von A) als Platzhalter. Der
+Kernel stellt jetzt `agentNames@1` bereit: die Namen aller bestehenden Agents
+(Slug, Name, Identitätsname; gelöschte Agents nicht), ohne die Namen, die ein
+aktiver Benutzer trägt. Der Privacy Guard nimmt sie in jedem Turn und in jedem
+Stored-Text-Scope aus, nach den Regeln von #2190 (exakte Gleichheit, die
+Deny-Liste gewinnt). Menschen bleiben maskiert; solange die Namen unbekannt
+sind, ist kein Agent-Name ausgenommen. Restrisiko: Eine Person ohne
+omadia-Login, die genau wie ein Agent heißt, bleibt jetzt in allen Turns
+unmaskiert; dagegen hilft die Deny-Liste. plugin-api 1.91.0, privacy-guard
+0.16.4.
+
+### Fixed — Recall-Karte im Streaming nur für Leser, die den Inhalt kennen dürfen (#2042)
+
+2026-11-24. Die Karte „Aus früheren Sessions“ (`kg_recall`, dazu `kg_graph`)
+ging im Streaming-Pfad vor der Antwort hinaus, ohne die Diskretionsprüfung der
+Antwort. Ein Raum mit einem Leser, der einen erinnerten
+Eintrag nicht kennen darf, sah ihn so in der Karte, obwohl die Antwort
+zurückgehalten wurde. Die Karten bekommen jetzt dieselbe People-Egress-Prüfung
+direkt nach dem Recall. Der gepufferte Pfad (Teams) war schon abgedeckt: eine
+zurückgehaltene Antwort verwirft `recalled` ganz.
+
 ### Fixed — Restlücken aus Spec 2042: Vorschau-Rücknahme, Trigger-Feldrechte, Budgets (#2042)
 
 2026-11-24.
