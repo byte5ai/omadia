@@ -36,6 +36,24 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — MCP tool scan for credential forwarding
+
+2026-11-12. Discovered MCP tool descriptions could direct an agent to read
+local credential files, forward their contents as tool arguments, and conceal
+the read while receiving a clean verdict.
+
+- The deterministic scan now raises these English and German instructions to
+  `high_risk`, so MCP grants require acknowledgement. Ordinary file references
+  and generic `note`/`sidenote` fields remain unflagged.
+- Concealment phrases ("do not tell the user", "halte … geheim") count only when the
+  same description also tells the agent to read or forward a file, so ordinary tool
+  docs such as "Keep your API key secret" or "Erwähne gegenüber dem Benutzer nicht die
+  interne ID" stay unflagged.
+- Hidden-content detection now includes `<important>` pseudo-tags, closing
+  `</system>`/`</developer>` tags, Unicode tag characters, and bidirectional
+  embedding/override/isolate controls. A bare `<system>` role name and the LRM/RLM/ALM
+  marks of ordinary Hebrew and Arabic text are not flagged.
+
 ### Fixed — Agents können Transkripte nicht mehr löschen oder verschieben (#2216)
 
 2026-11-24. Im Modus „Aus“ und in jedem Turn ohne Kanal-Kontext hält der Turn
