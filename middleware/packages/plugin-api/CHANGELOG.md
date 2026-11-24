@@ -8,6 +8,17 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.92.0 — 2026-11-24
+
+Additive (spec 2042 follow-up: recalled plans carry discretion labels, #2194).
+
+### Added
+
+- **`RecalledPlan.turnId`** (optional): the external id of the turn that
+  wrote the plan. The recall brings that turn's discretion labels into the
+  recalling turn, so a plan written in a 1:1 is not shown to, or restated
+  for, a room with other readers.
+
 ## 1.91.0 — 2026-11-24
 
 Additive (spec 2042 follow-up: agent names are not masked, #2191, #2192).

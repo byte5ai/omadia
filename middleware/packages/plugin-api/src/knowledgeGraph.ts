@@ -1046,6 +1046,10 @@ export interface RecalledPlan {
   /** External id `plan:<planId>`. */
   planId: string;
   scope: string;
+  /** External id of the turn that wrote the plan (`plan.props.turnId`), when
+   *  it is known. A recall brings that turn's discretion labels into the
+   *  recalling turn (spec 2042 §5.11, #2194). */
+  turnId?: string;
   strategy?: string;
   createdAt?: string;
   openStepGoals: string[];

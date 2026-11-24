@@ -1249,6 +1249,8 @@ export class ContextRetriever {
           hit: {
             planId: p.id,
             scope: String(p.props['scope'] ?? ''),
+            // #2194 — the writing turn, whose discretion labels the plan has.
+            ...(typeof p.props['turnId'] === 'string' ? { turnId: p.props['turnId'] } : {}),
             ...(typeof p.props['strategy'] === 'string'
               ? { strategy: p.props['strategy'] }
               : {}),

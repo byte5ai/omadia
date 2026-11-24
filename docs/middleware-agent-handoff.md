@@ -10867,6 +10867,15 @@ Leserkreis, Offenlegungsstufe).
     Raum gelesen wird. Durable Rules behalten bei der Promotion die Turn-Labels;
     memorables (Auto-Promotion, MCP→KG-Ingestion mit dem Server als Quelle)
     behalten die Labels (`memorable`), Recall eines memorable bringt sie zurück;
+    ein abgerufener Plan bringt die Labels des Turns mit, der ihn schrieb
+    (`RecalledPlan.turnId`), ein Prozess die Labels seiner Schreib-Turns
+    (Subjekt `process`, Migration 0112): der Kernel dekoriert den
+    `processMemory@1`-Provider beim Registrieren (`decorateOnProvide`,
+    `LabelledProcessMemory`), also gilt das für jeden Leser (Tools, Plan-Runner,
+    Recall) (#2194);
+  - CLI-Turns (Claude-Abo, `CliChatAgent`) laufen mit demselben Turn-Zustand und
+    derselben Audience-Floor (`cliDiscretionTurnFields`, fail-closed) und derselben
+    Antwortprüfung (`guardCliAnswer`) wie In-Process-Turns (#2194);
   - Beiträge an andere Agenten im Broker.
 - **Leserschaft** (`integration_readerships`): `sensitivity` internal|restricted,
   `readers` everyone|Menge, akzeptierte Systeme und Klassifizierungen. Ohne

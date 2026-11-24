@@ -17,11 +17,13 @@ export interface IntegrationDeclaration {
 }
 
 /**
- * What a persisted label set belongs to: a written turn, a memorable, or a
- * note of the memory tool (by its physical store path, so every tier that
- * reads the same file finds its labels).
+ * What a persisted label set belongs to: a written turn, a memorable, a note
+ * of the memory tool (by its physical store path, so every tier that reads
+ * the same file finds its labels), or a stored process (by its id; #2194).
+ * A plan has no subject of its own: it keeps the id of the turn that wrote
+ * it, and that turn's labels are the plan's.
  */
-export type LabelSubjectKind = 'turn' | 'memorable' | 'memory_file';
+export type LabelSubjectKind = 'turn' | 'memorable' | 'memory_file' | 'process';
 
 export interface DiscretionAuditEntry {
   readonly turnId?: string;

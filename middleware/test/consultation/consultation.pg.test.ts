@@ -1,5 +1,5 @@
 /**
- * Spec 2042 §5.4 / §5.11 (pg, migrations 0097–0099):
+ * Spec 2042 §5.4 / §5.11 (pg, migrations 0097–0099, 0112):
  *  - consultation switches and directed grants: default off, revoke, mutual
  *    grants for discussions, the call ledger and its per-day count;
  *  - discretion stores: integration declarations, persisted label sets that
@@ -34,7 +34,7 @@ const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
 const MIGRATIONS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'migrations');
 const SCHEMA = `consultation_${String(process.pid)}`;
 
-describe('consultation and discretion stores (pg, migrations 0097–0099)', { skip: !pgAvailable }, () => {
+describe('consultation and discretion stores (pg, migrations 0097–0099, 0112)', { skip: !pgAvailable }, () => {
   let pool: Pool;
   let config: ConfigStore;
   let consultation: ConsultationStore;
@@ -49,7 +49,12 @@ describe('consultation and discretion stores (pg, migrations 0097–0099)', { sk
     pool = new Pool({ connectionString: PG_URL, max: 3, options: `-c search_path=${SCHEMA},public` });
     // An agent that exists before 0099 keeps its mode.
     await runMultiOrchestratorMigrations(pool, () => undefined, MIGRATIONS_DIR);
-    for (const file of ['0097_agent_consultation.sql', '0098_discretion.sql', '0099_context_memory_default_members.sql']) {
+    for (const file of [
+      '0097_agent_consultation.sql',
+      '0098_discretion.sql',
+      '0099_context_memory_default_members.sql',
+      '0112_discretion_process_labels.sql',
+    ]) {
       await pool.query(await readFile(resolve(MIGRATIONS_DIR, file), 'utf8'));
     }
     config = new ConfigStore(pool);
@@ -203,6 +208,13 @@ describe('consultation and discretion stores (pg, migrations 0097–0099)', { sk
     assert.deepEqual((await discretion.labelsOf('memorable', ['mk:1'])).get('mk:1'), labels);
     await discretion.dropLabels('memory_file', '/memories/orchestrator/anna/p.md');
     assert.equal((await discretion.labelsOf('memory_file', ['/memories/orchestrator/anna/p.md'])).size, 0);
+    // #2194 (migration 0112) — a stored process keeps labels too.
+    await discretion.persistLabels('process', 'process:hr:offboarding', 'anna', labels);
+    assert.deepEqual((await discretion.labelsOf('process', ['process:hr:offboarding'])).get('process:hr:offboarding'), labels);
+    await assert.rejects(
+      pool.query(`INSERT INTO discretion_labels (subject_kind, subject_id, labels) VALUES ('plan', 'p-1', '[]')`),
+      'a kind outside the check is refused',
+    );
     // More ids than one lookup takes: none is dropped.
     const many = Array.from({ length: 501 }, (_, i) => `turn-many-${String(i)}`);
     await discretion.persistLabels('turn', 'turn-many-500', 'anna', labels);

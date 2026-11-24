@@ -36,6 +36,36 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Diskretion: Pläne und Prozesse aus dem Recall, CLI-Turns (#2194)
+
+2026-11-24. Zwei Lücken der Recall-Karte „🧠 Aus früheren Sessions“
+(Spec 2042 §5.11). Erstens kamen abgerufene Pläne und Prozesse ohne Labels in
+den Turn: ein Plan aus einem HR-1:1 ging als Karte und im Prompt an eine Gruppe
+mit anderen Lesern, und die Antwort konnte ihn wiederholen. Ein Plan trägt
+schon die Id des Turns, der ihn schrieb (`plan.props.turnId`); der Recall gibt
+sie jetzt als `RecalledPlan.turnId` mit (plugin-api 1.92.0), und der Turn
+übernimmt dessen gespeicherte Labels. Prozesse werden über mehrere Turns
+bearbeitet und haben keinen Turn: der Kernel dekoriert den
+`processMemory@1`-Provider beim Registrieren
+(`ServiceRegistry.decorateOnProvide`, `LabelledProcessMemory`). Schreiben und
+Bearbeiten speichern die Labels des schreibenden Turns unter dem neuen Subjekt
+`process` (ein Edit behält die früheren dazu); jedes Lesen (Prozess-Tools,
+Wiederverwendung durch den Plan-Runner, Recall, Duplikat-Treffer) bringt sie
+in den lesenden Turn. Migration **0112_discretion_process_labels** erweitert
+dafür den Subjekt-Check von `discretion_labels`. Zweitens liefen Turns über
+das Claude-Abo (`CliChatAgent`) ohne Diskretions-Zustand, die Prüfung der
+Recall-Karte war dort wirkungslos und die Antwort ging ungeprüft raus. Der
+CLI-Turn bekommt jetzt denselben Zustand und dieselbe Audience-Floor wie ein
+In-Process-Turn (`orchestrator.cliDiscretionTurnFields`: Raum, Leser,
+Feldrechte, Trigger- und Konsultations-Seed); Recall, Memory-Binding,
+Loopback-Tools und Session-Record laufen darin. Kann der Zustand nicht gebaut
+werden, läuft der Turn mit einem Label, das niemand lesen darf (fail-closed).
+Die Antwort geht durch denselben People-Egress-Check
+(`orchestrator.guardCliAnswer`, mit Audit; ein Konsultationslauf gibt seine
+Labels an den Broker): zurückgehalten wird sie als Ersatzzeile, die gestreamte
+Vorschau wird per `text_retract` zurückgenommen, Karten und die Annotationen
+des Turn-Records gehen nicht mit.
+
 ### Fixed — Agent-Namen bleiben im Klartext, auch in Hintergrund-Jobs und Konsultationen (#2191, #2192)
 
 2026-11-24. #2190 nahm nur den eigenen Namen eines Agents in seinem eigenen
