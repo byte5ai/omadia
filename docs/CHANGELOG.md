@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — process tools read every agent's processes (#2207) (2026-11-24)
+
+- `query_processes` and `run_stored_process` read process memory with no agent or
+  context-memory bound: other agents' processes in every mode, and any process in a
+  context-bound `enforce-strict` / `members` turn, where recall skips processes. Both now apply
+  the turn's graph boundary: this agent's processes only, none in those turns. Outside a turn
+  (jobs, activation) nothing changes.
+- The canary sweep has no known leaks left in recall, tools, plugins or the client stream;
+  #1762 (chat sessions) stays on the REST routes. `PG_TEST_FLOOR` 743 → 739.
+
 ### Fixed — graph walks showed what the viewer may not see (#2208, #1825) (2026-11-24)
 
 - A plugin's `ctx.knowledgeGraph.getNeighbors` returned every neighbour of a node: private

@@ -1046,6 +1046,10 @@ The surfaces that boundary must cover, and how each one does:
   The walk never passes through a node it may not show, so another person's
   User node no longer leads to their other chats. Outside a turn with a graph
   boundary there is no walk.
+- **Process tools (#2207):** `query_processes` and `run_stored_process` return
+  only this agent's processes, and none in a context-bound `enforce-strict` /
+  `members` turn, where recall skips processes too. A process the turn may not
+  read answers like a missing one.
 
 The audience is the security input. A group counts as known only when its
 channel marks the roster complete (`ChatParticipantsProvider.completeRoster`).
@@ -1064,10 +1068,6 @@ Known residuals:
 - A knowledge-graph provider that predates plugin-api 1.26.0 ignores
   `audienceOwners` and returns everything. The in-tree providers honour it.
 - Only turns that carry a `TurnOrigin` are context-bound.
-- #2207: `query_processes` and `run_stored_process` read process memory with
-  no agent or context-memory bound (other agents' processes in every mode; any
-  process in a context-bound `enforce-strict` / `members` turn, which recall
-  skips).
 - #1762: web chat tabs (`/api/chat/sessions`) have no owner; every account
   lists and reads every tab.
 

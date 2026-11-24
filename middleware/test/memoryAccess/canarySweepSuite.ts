@@ -37,14 +37,6 @@ interface KnownLeak {
 }
 
 export const KNOWN_LEAKS: readonly KnownLeak[] = [
-  {
-    issue: '#2207',
-    title: 'query_processes / run_stored_process stay within the agent and the context-memory bound',
-    modes: ['off', 'enforce', 'enforce-strict', 'members'],
-    recall: 'any',
-    backend: 'neon',
-    matches: (_sweep, s) => s.entry === 'process-tool',
-  },
 ];
 
 /**
