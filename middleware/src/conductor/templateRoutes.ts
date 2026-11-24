@@ -19,7 +19,14 @@ import {
   templateManifestVersion,
   validate,
 } from '@omadia/conductor-core';
-import type { JsonObject, LocalizedText, TemplateManifest, TemplateSlotMapping, WorkflowGraph } from '@omadia/conductor-core';
+import type {
+  JsonObject,
+  LocalizedText,
+  TemplateManifest,
+  TemplateSlotMapping,
+  ValidationWarning,
+  WorkflowGraph,
+} from '@omadia/conductor-core';
 
 import { EPHEMERAL_SLUG_PREFIX } from './ephemeralRunService.js';
 import { WorkflowSlugExistsError } from './workflowStore.js';
@@ -84,7 +91,12 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
   // stricter than 'POST /' (structural only): a template instance must be runnable against
   // this install's agents/actions/roles/events, not merely well-formed. Writes the error
   // response and returns null on any failure.
-  async function resolveTemplateGraph(id: string, body: JsonObject, res: Response, viewer: string): Promise<{ manifest: TemplateManifest; graph: WorkflowGraph } | null> {
+  async function resolveTemplateGraph(
+    id: string,
+    body: JsonObject,
+    res: Response,
+    viewer: string,
+  ): Promise<{ manifest: TemplateManifest; graph: WorkflowGraph; warnings: ValidationWarning[] } | null> {
     const manifest = await templateManifestFor(id, body, res, viewer);
     if (!manifest) return null;
     // Fail-clear before anything else: name every declared-but-unmapped slot
@@ -102,7 +114,11 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
       res.status(400).json({ code: 'conductor.invalid_graph', errors: result.errors });
       return null;
     }
-    return { manifest, graph };
+    // #759/#1713 — non-blocking findings travel to the caller so the instantiate form
+    // can show them. `unmatched_event_ref` matters most here: a mapped event id that
+    // nothing installed declares is legal (ids are sender-chosen), and the operator
+    // must still SEE that no run starts until something emits that exact id.
+    return { manifest, graph, warnings: result.warnings ?? [] };
   }
 
   // Resolves :id to a USER template the viewer may WRITE (author-only). Visibility
@@ -338,7 +354,10 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
     try {
       const resolved = await resolveTemplateGraph(paramStr(req.params.id), asObject(req.body), res, viewerOf(req));
       if (!resolved) return;
-      res.json({ graph: resolved.graph });
+      res.json({
+        graph: resolved.graph,
+        ...(resolved.warnings.length > 0 ? { warnings: resolved.warnings } : {}),
+      });
     } catch (err) {
       console.error('[conductor] template resolve failed:', err);
       res.status(500).json({ code: 'conductor.template_resolve_failed', message: errMsg(err) });
@@ -404,6 +423,7 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
       res.status(201).json({
         workflow: out.workflow,
         version: { id: out.version.id, version: out.version.version },
+        ...(resolved.warnings.length > 0 ? { warnings: resolved.warnings } : {}),
       });
     } catch (err) {
       if (err instanceof WorkflowSlugExistsError) {

@@ -1377,6 +1377,9 @@ werden mit Log-Zeile übersprungen, CI-Gate ist
   `400 conductor.template_slot_mapping_incomplete` mit
   `missing: [{ kind, key, label }]` (fail-clear vor allem anderen);
   `400 conductor.invalid_graph` mit den bekannten `unknown_*_ref`-Codes.
+  Seit #1713 zusätzlich **`warnings`** im Erfolgsfall (`200 { graph, warnings? }`,
+  gleiche Form wie bei `POST /`) — nicht blockierende Validator-Funde, allen voran
+  `unmatched_event_ref`.
 - **`POST /templates/:id/instantiate`** — Body
   `{ slug, name?, description?, mapping, enable? }`. Gleiche Fehlerpfade wie
   `resolve`, plus: fehlender/leerer `slug` → `400 conductor.invalid_input`;
@@ -1391,13 +1394,37 @@ werden mit Log-Zeile übersprungen, CI-Gate ist
   `POST /` inkl. atomarem Cron-Schedule-Reconcile (`onPublished` →
   `scheduleStore.reconcileOnClient`); `enable` default `false`; `name`/
   `description` defaulten aufs Manifest (en-aufgelöst) →
-  `201 { workflow, version }`.
+  `201 { workflow, version, warnings? }` (die `warnings` wie bei `resolve`, #1713).
 
 **Validierungs-Unterschied zu `POST /`:** beide Template-Routes validieren mit
 **live `KnownRefs`** (Agent-Slugs aus der Registry, Action-Ids, Role-Keys,
-Event-Katalog — `templateKnownRefs` in `src/conductor/index.ts`), `POST /` nur
+Event-Ids — `templateKnownRefs` in `src/conductor/index.ts`), `POST /` nur
 strukturell. Bewusst strenger: eine Template-Instanz muss lauffähig sein, nicht
-nur wohlgeformt. Ergebnis der Instanziierung ist ein gewöhnlicher versionierter
+nur wohlgeformt.
+
+**Ausnahme Event-Ids (#1713):** eine Event-Id ist Freitext des Senders —
+`POST /conductors/emit` nimmt jede Id, und ein eingehender Webhook-Endpoint
+(#437) trägt eine vom Operator vergebene Id, die in keinem Plugin-Manifest
+steht. Der Katalog ist also eine Vorschlagsliste, nie die Menge der erlaubten
+Werte: eine Id ohne Treffer ist seit #1713 die **Warnung**
+`unmatched_event_ref` (`validate()` in `@omadia/conductor-core`), keine
+Fehler-Code mehr. Ein **fehlendes** `eventId` an einem `event`/`webhook`-Trigger
+bleibt der harte Fehler `unknown_event_ref` (sonst unerreichbarer Trigger,
+#437). Vorher war jede Id ein Fehler, sobald der Katalog leer war — die
+gebündelte Vorlage „Benachrichtigen und eskalieren bei Vorfall" war damit auf
+jedem Stack ohne Event-Plugin nicht instanziierbar, obwohl derselbe Graph über
+`POST /conductors` (ohne `KnownRefs`) publishbar war.
+`knownEventIds()` in `src/conductor/index.ts` vereinigt dafür den
+Plugin-Katalog mit den `eventId`s der eingehenden Webhook-Endpoints; dieselbe
+Menge speist Builder-Prompt und Proposal-Prefill-Prüfung.
+Ref-Slot-Werte werden beim Substituieren **getrimmt** (`mappedValue` in
+`packages/conductor-core/src/template.ts`) — Freitext-Ids dürfen nicht mit
+Leerraum in einen Trigger wandern, den `eventRouter#emit` nie trifft.
+`GET /events/catalog` liefert diese Endpoint-Ids additiv als
+`endpointEvents: string[]` (getrennt von `events`/`byPlugin` = „von einem Plugin
+deklariert"; Lesefehler degradiert zu `[]`, nie 500). Das Event-Slot-Feld des
+Instanziierungs-Formulars ist entsprechend Freitext mit Datalist — wie das
+Event-Trigger-Feld des Designers. Ergebnis der Instanziierung ist ein gewöhnlicher versionierter
 Workflow ohne Rückverweis aufs Template (Copy, not Reference — seit #478 mit
 `template_id`/`template_version`-Provenance-Stempel auf der Workflow-Row, aber
 weiterhin nie zur Laufzeit dereferenziert).

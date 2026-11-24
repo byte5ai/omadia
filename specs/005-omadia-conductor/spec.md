@@ -476,7 +476,15 @@ all present and ordered.
   declared.
 - **FR-003**: Workflow validation MUST reject unreachable steps, unguarded cycles, a
   deadline-bearing human step without a fallback transition, and references to unknown
-  roles, events, agents, or actions — naming the offending node.
+  roles, agents, or actions — naming the offending node. An `event`/`webhook` trigger
+  MUST carry an `eventId` (a trigger without one can never match an emitted event), but
+  an **unrecognised** event id MUST NOT be rejected: it is a non-blocking warning
+  (`unmatched_event_ref`) naming the trigger. An event id is chosen by whoever emits it
+  — `POST /conductors/emit` accepts any id and an inbound webhook endpoint (#437) carries
+  an operator-configured id that no plugin manifest declares — so the catalogue of known
+  ids is a suggestion list, never the set of legal values. Rejecting an unrecognised id
+  made every bundled event template un-instantiable on an install whose event catalogue
+  was empty while the identical graph published fine through `POST /conductors` (#1713).
 - **FR-004**: A workflow **run** MUST be persisted such that each completed step and the
   run's accumulated context are durable before the next step begins, and a `waiting`
   run MUST survive a process restart and resume without re-executing or skipping a step.

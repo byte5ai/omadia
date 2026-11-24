@@ -574,3 +574,32 @@ describe('webhook admin routes — id handling (#1706)', () => {
     assert.equal((await del(`${h.baseUrl}/webhooks/subscriptions/${MALFORMED}`)).status, 400);
   });
 });
+
+// Issue #1713 — an inbound endpoint's eventId is minted by an OPERATOR, so no plugin
+// manifest declares it and `EventCatalogRegistry.list()` never knows it. The pickers
+// (designer trigger field, template event slot) must still suggest it, so the catalog
+// route reports those ids additively, beside the plugin-declared ones.
+describe('GET /events/catalog — inbound endpoint event ids (#1713)', () => {
+  it('reports configured endpoint eventIds as endpointEvents, deduped and sorted', async () => {
+    const h = await makeHarness();
+    for (const eventId of ['orders.created', 'alerts.raised', 'orders.created']) {
+      assert.equal((await post(`${h.baseUrl}/webhooks/endpoints`, { eventId }, 'op')).status, 201);
+    }
+    const res = await get(`${h.baseUrl}/events/catalog`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { events: string[]; byPlugin: Record<string, string[]>; endpointEvents: string[] };
+    assert.deepEqual(body.endpointEvents, ['alerts.raised', 'orders.created']);
+    // Kept OUT of the plugin-declared halves: `events`/`byPlugin` keep meaning
+    // "a plugin declared it emits this".
+    assert.deepEqual(body.events, []);
+    assert.deepEqual(body.byPlugin, {});
+  });
+
+  it('degrades to an empty endpointEvents list when the endpoint store is not wired', async () => {
+    const h = await makeHarness({ wired: false });
+    const res = await get(`${h.baseUrl}/events/catalog`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { endpointEvents: string[] };
+    assert.deepEqual(body.endpointEvents, []);
+  });
+});
