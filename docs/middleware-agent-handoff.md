@@ -1377,6 +1377,9 @@ werden mit Log-Zeile übersprungen, CI-Gate ist
   `400 conductor.template_slot_mapping_incomplete` mit
   `missing: [{ kind, key, label }]` (fail-clear vor allem anderen);
   `400 conductor.invalid_graph` mit den bekannten `unknown_*_ref`-Codes.
+  Seit #1713 zusätzlich **`warnings`** im Erfolgsfall (`200 { graph, warnings? }`,
+  gleiche Form wie bei `POST /`) — nicht blockierende Validator-Funde, allen voran
+  `unmatched_event_ref`.
 - **`POST /templates/:id/instantiate`** — Body
   `{ slug, name?, description?, mapping, enable? }`. Gleiche Fehlerpfade wie
   `resolve`, plus: fehlender/leerer `slug` → `400 conductor.invalid_input`;
@@ -1391,13 +1394,37 @@ werden mit Log-Zeile übersprungen, CI-Gate ist
   `POST /` inkl. atomarem Cron-Schedule-Reconcile (`onPublished` →
   `scheduleStore.reconcileOnClient`); `enable` default `false`; `name`/
   `description` defaulten aufs Manifest (en-aufgelöst) →
-  `201 { workflow, version }`.
+  `201 { workflow, version, warnings? }` (die `warnings` wie bei `resolve`, #1713).
 
 **Validierungs-Unterschied zu `POST /`:** beide Template-Routes validieren mit
 **live `KnownRefs`** (Agent-Slugs aus der Registry, Action-Ids, Role-Keys,
-Event-Katalog — `templateKnownRefs` in `src/conductor/index.ts`), `POST /` nur
+Event-Ids — `templateKnownRefs` in `src/conductor/index.ts`), `POST /` nur
 strukturell. Bewusst strenger: eine Template-Instanz muss lauffähig sein, nicht
-nur wohlgeformt. Ergebnis der Instanziierung ist ein gewöhnlicher versionierter
+nur wohlgeformt.
+
+**Ausnahme Event-Ids (#1713):** eine Event-Id ist Freitext des Senders —
+`POST /conductors/emit` nimmt jede Id, und ein eingehender Webhook-Endpoint
+(#437) trägt eine vom Operator vergebene Id, die in keinem Plugin-Manifest
+steht. Der Katalog ist also eine Vorschlagsliste, nie die Menge der erlaubten
+Werte: eine Id ohne Treffer ist seit #1713 die **Warnung**
+`unmatched_event_ref` (`validate()` in `@omadia/conductor-core`), keine
+Fehler-Code mehr. Ein **fehlendes** `eventId` an einem `event`/`webhook`-Trigger
+bleibt der harte Fehler `unknown_event_ref` (sonst unerreichbarer Trigger,
+#437). Vorher war jede Id ein Fehler, sobald der Katalog leer war — die
+gebündelte Vorlage „Benachrichtigen und eskalieren bei Vorfall" war damit auf
+jedem Stack ohne Event-Plugin nicht instanziierbar, obwohl derselbe Graph über
+`POST /conductors` (ohne `KnownRefs`) publishbar war.
+`knownEventIds()` in `src/conductor/index.ts` vereinigt dafür den
+Plugin-Katalog mit den `eventId`s der eingehenden Webhook-Endpoints; dieselbe
+Menge speist Builder-Prompt und Proposal-Prefill-Prüfung.
+Ref-Slot-Werte werden beim Substituieren **getrimmt** (`mappedValue` in
+`packages/conductor-core/src/template.ts`) — Freitext-Ids dürfen nicht mit
+Leerraum in einen Trigger wandern, den `eventRouter#emit` nie trifft.
+`GET /events/catalog` liefert diese Endpoint-Ids additiv als
+`endpointEvents: string[]` (getrennt von `events`/`byPlugin` = „von einem Plugin
+deklariert"; Lesefehler degradiert zu `[]`, nie 500). Das Event-Slot-Feld des
+Instanziierungs-Formulars ist entsprechend Freitext mit Datalist — wie das
+Event-Trigger-Feld des Designers. Ergebnis der Instanziierung ist ein gewöhnlicher versionierter
 Workflow ohne Rückverweis aufs Template (Copy, not Reference — seit #478 mit
 `template_id`/`template_version`-Provenance-Stempel auf der Workflow-Row, aber
 weiterhin nie zur Laufzeit dereferenziert).
@@ -3249,6 +3276,19 @@ tolerant + size-capped). Pattern `facilitation` ist **v4** (Assess-Tick
 PT1H, max 24 Runden, DoD-met → confirm, exhausted → abort-report);
 Pattern `discussion` ist **v3**.
 `conductorEphemeralRuns.poke(runId)` feuert den offenen Timer-Await sofort.
+Ein Timer-Await ist **kein** Human-Await: `listWaiting` (Operator-Inbox,
+`GET /awaits/pending`) filtert `principal_kind = 'timer'` heraus (#1712) — die
+Zeile hat keinen Holder, also konnte `POST /awaits/:id/respond` darauf nur mit
+403 `conductor.await_forbidden` antworten. Auf den Tick wirkt allein der
+Deadline-Poll (`listDue`). Gefiltert wird auf den Principal, nicht auf den
+`timer`-Channel: was die Zeile disqualifiziert, ist niemand zum Fragen.
+**Preis der Filterung:** Der geparkte Lauf ist danach nur noch über „Verlauf"
+pro Workflow zu sehen (Status `waiting`), und dort OHNE Deadline — `deadlineAt`
+wird in der Web-UI an genau einer Stelle gerendert, in der Inbox-Zeile
+(`web-ui/app/conductor/page.tsx`), die ein Timer jetzt nicht mehr erreicht. Die
+im Issue alternativ vorgeschlagene read-only-Zeile („läuft bis …") ist damit
+nicht gebaut; wer die Deadline im Operator-Blick braucht, baut sie in die
+Run-Liste, nicht in die Inbox.
 Neuer Service **`conversationSend`** (deny-by-default; SDK-Seam
 `registerConversationSendProvider`, Kernel `src/channels/
 conversationSend{Registry,Service}.ts`, plugin-api 1.8.0) — Gruppen-Nudges,
@@ -6283,6 +6323,25 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+- **Memory-ACL automatisch prüfbar machen (Plan in 7 Schritten, ein PR pro Schritt).** Ziel:
+  Jede Änderung, die einem Nutzer Memory zeigt, das ihm nicht zusteht, macht CI rot.
+  Schritt 0 (#2179): Postgres-Beine der Memory-Suiten laufen in CI, Namens-Guard
+  `test:pg:names`, `PG_TEST_FLOOR` auf 721. Offen:
+  1. Zugriffsmatrix als Code (`middleware/test/memoryAccess/`): eine gesäte Welt mit Canary
+     pro Item und einem handgeschriebenen Orakel für `off`/`enforce`/`enforce-strict`/`members`.
+  2. ACL-Contract-Suite über In-Memory und Postgres. Heute prüft keine Postgres-Suite
+     `sharedOnly`, `viewerAgentSlug`, `addOwner`/`removeOwner` oder
+     `listMemorableKnowledgeFor`; `audienceOwners`, `members` und `enforce-strict` schon.
+  3. Canary-Sweep über alle Einstiegspunkte (Recall, Memory-Tool, KG-Tools, Plugin-Accessoren,
+     Memory-/Datasets-/Session-Routen, Admin, `/api/dev/*`), jeweils mit Positivkontrolle.
+  4. Vollständigkeits-Guards: Inventar-Test, ESLint-Regel gegen viewer-lose Graph-Reads,
+     Snapshot der Memory-Defaults, Matrix nach Migrationen.
+  5. Lifecycle-Invarianten (Promotion, Reaper, Merge, GC, Purge, Owner-Entfernung) mit Fake-Clock
+     und fast-check.
+  6. Mutationsnachweis (Prädikate einzeln löschen, Stryker nightly), Exfiltrations-Korpus.
+  Bekannte Test-Infrastruktur-Bugs: #2185 (`roleChangeAudit775.pg` löscht `admin_audit`
+  ohne Migrationszeile), #2186 (Orb-Setup scheitert am CUDA-Download von `onnxruntime-node`).
+
 - **Pflege von Memory-Regeln (#1827-Folge).** `/memories/_rules/` ist für
   Agents nur lesbar; Regeln kommen nur aus dem Repo-Seed. Offen
   (Diskussion #2041): Admin-Seite für globale Regeln, persönliche bzw. Agent-Regeln
@@ -6518,7 +6577,7 @@ Request und bei jedem WebSocket-Upgrade. Offen:
 
 ### CI-Schulden aus dem Security-Review (2026-09-29)
 
-- **`PG_TEST_FLOOR` nachziehen, sobald die Auth-Härtungen gemergt sind.** Serverseitiger
+- **`PG_TEST_FLOOR` nachziehen — erledigt (#2179, Floor 721 = gemessenes `ran=`).** Serverseitiger
   Sitzungs-Widerruf und die atomare Ersteinrichtung bringen neue Postgres-Suiten mit
   (`test/auth/userStoreSessionVersion.pg.test.ts`, `userStoreFirstAdmin.pg.test.ts`,
   `setupRouteConcurrency.pg.test.ts`). Der Floor in `.github/workflows/ci.yml` bleibt bis
@@ -8321,6 +8380,15 @@ MEMORY_PG_TEST_URL=postgresql://omadia:omadia@127.0.0.1:5432/omadia_test \
 npm run test:pg
 ```
 
+`test:pg` ist der einzige CI-Schritt mit Test-DSN und läuft nur über
+`test/**/*.pg.test.ts`. Ein Postgres-Fall in einer Datei ohne `.pg` läuft deshalb
+nirgends (in `npm test` überspringt er sich). `npm run test:pg:names` (CI-Schritt,
+#2179) bricht ab, wenn eine Testdatei `test/_helpers/pgTestDb.ts` direkt oder über
+einen Helfer erreicht, ohne `.pg.test.ts` zu heißen. Gemischte Suiten werden
+geteilt (`foo.test.ts` + `foo.pg.test.ts`, gemeinsamer Code in einem Nicht-Test-Modul).
+Neue Postgres-Tests heben `PG_TEST_FLOOR` in `.github/workflows/ci.yml` auf den
+gemessenen `ran=`-Wert. Regel: `middleware/test/README.md`.
+
 App-Server werden nicht automatisch gestartet. Bei Bedarf über
 `amp orb service start … --portal` betreiben, nicht per `nohup`/`&`.
 Portal-Manifeste unter `.amp/portals/` sind ignoriert.
@@ -8507,6 +8575,10 @@ Stores nehmen bei Verzeichnissen alle Nachfahren mit. Geprüft wird der kanonisc
 Außerdem steht `/memories/_rules/` auf der Deny-Liste: `core` gewährt `_*`, und eine
 Regel-Datei wirkt für alle Agents und Accounts. Wie Regeln künftig gepflegt werden (Admin-Seite, Regeln pro
 Agent/Account), ist offen (§13).
+Ebenso `/memories/sessions/` und `/memories/chat-sessions/` (#2216): die Transkripte aller
+Agents liegen in einem flachen Baum, und `delete /memories/sessions` aus einem kontextfreien
+Turn hätte sie alle gelöscht. Geschrieben werden sie nur vom Kernel: `SessionLogger` und
+`ChatSessionStore` bekommen in `buildOrchestratorForAgent` den ungescopten Store.
 
 ### Kontext-Key
 

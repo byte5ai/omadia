@@ -189,11 +189,11 @@ interface Harness {
 
 const servers: Server[] = [];
 
-async function makeHarness(opts?: { withCatalog?: boolean }): Promise<Harness> {
+async function makeHarness(opts?: { withCatalog?: boolean; manifest?: TemplateManifest }): Promise<Harness> {
   const publishCalls: PublishCall[] = [];
   const reconcileCalls: Array<{ workflowId: string; graph: WorkflowGraph }> = [];
   const existingSlugs = new Set<string>();
-  const manifest = fixtureManifest();
+  const manifest = opts?.manifest ?? fixtureManifest();
   const fake = fakeTemplateStore();
   const workflowRows: ConductorWorkflow[] = [];
   const versionRows = new Map<string, { id: string; workflowId: string; version: number; graph: WorkflowGraph }>();
@@ -1075,5 +1075,89 @@ describe('plugin-contributed templates (#478 read-only catalog source)', () => {
     h.catalog!.unregisterPluginTemplates('acme');
     assert.ok(!(await listIds(h, 'operator-a')).includes(id));
     assert.equal((await get(`${h.baseUrl}/templates/${encodeURIComponent(id)}`, 'operator-a')).status, 404);
+  });
+});
+
+// Issue #1713 — the bundled "notify and escalate on incident" template declares a
+// required `kind:'events'` slot, and on a stack with no event-emitting plugin the strict
+// resolve/instantiate validation rejected EVERY id the operator could enter
+// (`unknown_event_ref`), while publishing the identical graph through `POST /conductors`
+// (no known refs) worked. The known-event set is a suggestion list, so an unmatched id is
+// now a non-blocking warning that travels back to the form.
+function eventManifest(id = 'fixture-incident'): TemplateManifest {
+  return {
+    id,
+    name: 'Fixture incident',
+    description: 'Event-triggered template used by the #1713 route tests.',
+    useCase: 'escalation',
+    defaultSlug: id,
+    graph: {
+      entryStepId: 'work',
+      steps: [{ id: 'work', kind: 'agent', agentId: 'slot:agent:worker', prompt: 'Handle the incident.' }],
+      transitions: [],
+      triggers: [{ id: 'tr-incident', kind: 'event', eventId: 'slot:event:incident' }],
+    },
+    slots: {
+      agents: [{ key: 'worker', label: 'Worker agent' }],
+      events: [{ key: 'incident', label: 'Incident event' }],
+    },
+  };
+}
+
+describe('event slots against an empty event catalog (#1713)', () => {
+  const mapping = { agents: { worker: KNOWN_AGENT }, events: { incident: 'my.incident' } };
+
+  it('instantiates with a free-text event id and reports it as a warning, not a 400', async () => {
+    const h = await makeHarness({ manifest: eventManifest() });
+    const res = await post(`${h.baseUrl}/templates/fixture-incident/instantiate`, {
+      slug: 'incident-probe',
+      mapping,
+    });
+    assert.equal(res.status, 201);
+    const body = (await res.json()) as { warnings?: Array<{ code: string; nodeIds: string[] }> };
+    assert.deepEqual(
+      (body.warnings ?? []).map((w) => w.code),
+      ['unmatched_event_ref'],
+    );
+    assert.deepEqual(body.warnings![0]!.nodeIds, ['tr-incident']);
+    // The substituted id is what actually got published — the event trigger the
+    // inbound/emit path will match on, read back off the publish call.
+    assert.equal(h.publishCalls[0]!.graph.triggers![0]!.eventId, 'my.incident');
+  });
+
+  it('resolve returns the same warning alongside the graph', async () => {
+    const h = await makeHarness({ manifest: eventManifest() });
+    const res = await post(`${h.baseUrl}/templates/fixture-incident/resolve`, { mapping });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { graph: WorkflowGraph; warnings?: Array<{ code: string }> };
+    assert.equal(body.graph.triggers![0]!.eventId, 'my.incident');
+    assert.deepEqual(
+      (body.warnings ?? []).map((w) => w.code),
+      ['unmatched_event_ref'],
+    );
+  });
+
+  it('trims a whitespace-padded event id before publishing the trigger', async () => {
+    const h = await makeHarness({ manifest: eventManifest() });
+    const res = await post(`${h.baseUrl}/templates/fixture-incident/instantiate`, {
+      slug: 'incident-probe',
+      mapping: { agents: { worker: KNOWN_AGENT }, events: { incident: '  my.incident\n' } },
+    });
+    assert.equal(res.status, 201);
+    // Read back off the publish call: an untrimmed id would publish a trigger that
+    // `eventRouter#emit` (tr.eventId === eventId) can never match — dead, not refused.
+    assert.equal(h.publishCalls[0]!.graph.triggers![0]!.eventId, 'my.incident');
+  });
+
+  it('still refuses an unmapped event slot (the completeness gate is untouched)', async () => {
+    const h = await makeHarness({ manifest: eventManifest() });
+    const res = await post(`${h.baseUrl}/templates/fixture-incident/instantiate`, {
+      slug: 'incident-probe',
+      mapping: { agents: { worker: KNOWN_AGENT } },
+    });
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { code: string; missing: Array<{ kind: string; key: string }> };
+    assert.equal(body.code, 'conductor.template_slot_mapping_incomplete');
+    assert.deepEqual(body.missing, [{ kind: 'events', key: 'incident', label: 'Incident event' }]);
   });
 });

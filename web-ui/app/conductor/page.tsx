@@ -22,6 +22,7 @@ import {
   type ConductorTemplate,
   type ConductorTemplateProposal,
   type ConductorTemplateSlotMapping,
+  type ConductorValidationWarning,
   type ConductorWorkflow,
 } from '@/app/_lib/api';
 import { describeConductorRunStartError } from '@/app/_lib/conductorRunStartError';
@@ -104,6 +105,10 @@ export default function ConductorPage(): React.JSX.Element {
   // owned id as taken while the identity probe is merely pending (#478 F1).
   const [viewerPending, setViewerPending] = useState(true);
   const [templateNotice, setTemplateNotice] = useState<string | null>(null);
+  // #1713 — non-blocking findings the instantiate route returned (typically an event id
+  // nothing installed declares yet). The workflow IS published; this is the one place the
+  // operator learns that no run starts until a sender emits that exact id.
+  const [instantiateWarnings, setInstantiateWarnings] = useState<ConductorValidationWarning[]>([]);
 
   const reload = useCallback(async () => {
     try {
@@ -303,6 +308,7 @@ export default function ConductorPage(): React.JSX.Element {
               // Ordinary selection instantiates the latest version — clear any pin
               // a previous "Re-instantiate from v{n}" left behind, and any prefill
               // a previous chat proposal seeded.
+              setInstantiateWarnings([]);
               setInstantiatePrefill(null);
               setSelectedVersion(undefined);
               setSelectedTemplate(tpl);
@@ -319,9 +325,11 @@ export default function ConductorPage(): React.JSX.Element {
                 template={selectedTemplate}
                 version={selectedVersion}
                 initialMapping={instantiatePrefill?.mapping}
-                onCreated={() => {
+                onCreated={(_slug, warnings) => {
                   // Same success feedback as the canvas publish path (onSaved): reload
-                  // the lists so the new workflow appears immediately.
+                  // the lists so the new workflow appears immediately. Validator warnings
+                  // (#1713) outlive the closing form — they render below the gallery.
+                  setInstantiateWarnings(warnings ?? []);
                   setSelectedTemplate(null);
                   setSelectedVersion(undefined);
                   setInstantiatePrefill(null);
@@ -349,6 +357,24 @@ export default function ConductorPage(): React.JSX.Element {
                   setInstantiatePrefill(null);
                 }}
               />
+            </div>
+          )}
+          {/* Post-instantiate validator warnings (#1713) — warning-colored TEXT only
+              (Lume state rule), outside the form so they survive it closing. */}
+          {instantiateWarnings.length > 0 && (
+            <div className="mt-3 rounded-md border border-[color:var(--warning,#f5a623)] p-3">
+              {/* Same shape and catalog key as the canvas publish path — one reading for
+                  "it is live, and here is what the validator still wants you to see". */}
+              <div className="mb-1 text-[13px] font-semibold text-[color:var(--warning,#f5a623)]">
+                {t('validationWarningsHeading')}
+              </div>
+              <ul className="list-inside list-disc text-[13px] text-[color:var(--fg-muted)]">
+                {instantiateWarnings.map((warning) => (
+                  <li key={`${warning.code}:${warning.nodeIds.join(',')}`}>
+                    <span className="font-mono">{warning.code}</span>: {warning.message}
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
         </section>

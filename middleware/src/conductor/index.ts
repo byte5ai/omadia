@@ -597,6 +597,22 @@ export async function wireConductor(deps: {
     log,
   });
 
+  // Every event id this install can already name: what plugins DECLARE they emit plus
+  // the ids operators configured on inbound webhook endpoints (#437) — those are minted
+  // by an operator, never by a manifest, so the plugin catalog alone does not know them
+  // (#1713). Feeds the builder prompt, the proposal-prefill vetting and validate()'s
+  // `unmatched_event_ref` warning — all suggestion-grade, so an endpoint read that fails
+  // degrades to the plugin catalog instead of failing the caller.
+  const knownEventIds = async (): Promise<string[]> => {
+    const ids = new Set(deps.eventCatalog?.list() ?? []);
+    try {
+      for (const ep of await webhookEndpoints.list()) ids.add(ep.eventId);
+    } catch (err) {
+      log(`[conductor] inbound webhook endpoints unavailable for the event catalog: ${String(err)}`);
+    }
+    return [...ids].sort();
+  };
+
   // Live known-reference sets, shared by the STRICT template validation on the
   // resolve/instantiate routes AND the builder's proposal-prefill vetting (#478 B4)
   // — one definition so the two gates can never drift apart.
@@ -604,7 +620,7 @@ export async function wireConductor(deps: {
     agentIds: (deps.getRegistry()?.list() ?? []).map((a) => a.agent.slug),
     actionIds: (await deps.listActions?.()) ?? [],
     roleKeys: (await roleStore.listRoles()).map((r) => r.key),
-    eventIds: deps.eventCatalog?.list() ?? [],
+    eventIds: await knownEventIds(),
   });
 
   // Conversational builder agent (US7) — drives draft co-design via a registry Agent turn. Known
@@ -615,7 +631,7 @@ export async function wireConductor(deps: {
   // placeholder step the operator needs to see ("connector missing → connect it inline").
   const builderAgent = new ConductorBuilderAgent({
     getRegistry: deps.getRegistry,
-    knownRefs: () => ({ eventIds: deps.eventCatalog?.list() ?? [] }),
+    knownRefs: async () => ({ eventIds: await knownEventIds() }),
     ...(deps.listActions ? { listActions: deps.listActions } : {}),
     listAgents: () => (deps.getRegistry()?.list() ?? []).map((a) => a.agent.slug),
     ...(deps.searchPeople ? { searchPeople: deps.searchPeople } : {}),

@@ -220,7 +220,11 @@ function CanvasInner({
     void getConductorEventCatalog()
       .then((c) => {
         // Defensive: a 200 with an unexpected body would otherwise make state non-array and crash render.
-        if (!cancelled) setEventCatalog(Array.isArray(c?.events) ? c.events : []);
+        // #1713: the ids of inbound webhook endpoints are emittable here too (operator-minted,
+        // so no manifest declares them) — suggested alongside the plugin-declared ones.
+        const declared = Array.isArray(c?.events) ? c.events : [];
+        const endpoints = Array.isArray(c?.endpointEvents) ? c.endpointEvents : [];
+        if (!cancelled) setEventCatalog([...new Set([...declared, ...endpoints])].sort());
       })
       // Errors degrade to the empty-catalog hint + free-text entry. (A 401 still triggers getJson's
       // standard login redirect — same as every other page fetch — which is the desired behaviour.)
@@ -609,7 +613,7 @@ function CanvasInner({
         {triggerKind === 'event' && (
           <label className={lbl}>
             {t('eventIdLabel')}
-            {/* Pick a declared event from the live catalog (datalist), or type a custom id. */}
+            {/* Pick a known id from the live catalog (datalist), or type the id senders will post. */}
             <input
               className={input}
               list={eventListId}
