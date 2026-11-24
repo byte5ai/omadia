@@ -487,6 +487,19 @@ nach `create`, `createFirstAdmin` (nach COMMIT), `upsertOidcIdentity`,
 dann greift nur der 5-Minuten-TTL des Snapshots. Ein Listener-Fehler wird
 geloggt und bricht den Write nicht ab.
 
+### Agent-Namen für den Privacy Shield (`agentNames@1`, #2191, #2192)
+
+Kernel-Service direkt nach `humanNames@1` in `middleware/src/index.ts`:
+`rosterAgentNames({ names: registry.agentNames(), humanNames })` über die
+`orchestratorRegistry` (Slugs, Namen und Identitätsnamen bestehender Agents,
+gelöschte nicht), abzüglich jedes Namens, den ein aktiver Benutzer trägt
+(`createAgentNamesProvider` in `src/platform/agentNamesService.ts`). `null`, solange Registry oder Menschennamen unbekannt sind. Konstante
+und Typ in plugin-api (`AGENT_NAMES_SERVICE_NAME`, `AgentNamesProvider`,
+1.91.0). Der Privacy Guard deklariert `optional_requires: ["agentNames@1"]`,
+liest pro Aufruf (`PrivacyGuardServiceDeps.agentNames`) und nimmt die Namen in
+jeder Turn-Maskierung und in jedem Stored-Text-Scope aus. Regeln:
+`docs/security-architecture.md` §6f.
+
 ### Plugin-Tool-Readiness-Gate (#474)
 
 `Orchestrator.isToolAvailable(agentId)` entscheidet pro Tool, ob es dem

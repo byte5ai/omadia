@@ -36,6 +36,22 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Agent-Namen bleiben im Klartext, auch in Hintergrund-Jobs und Konsultationen (#2191, #2192)
+
+2026-11-24. #2190 nahm nur den eigenen Namen eines Agents in seinem eigenen
+Turn von der Maskierung aus. Hintergrund-Jobs über die Turns eines Agents
+(Signifikanz-Bewertung, Canvas-Skelett) maskierten seinen Namen weiter, und in
+einer Konsultation sah A den Namen von B (und B den von A) als Platzhalter. Der
+Kernel stellt jetzt `agentNames@1` bereit: die Namen aller bestehenden Agents
+(Slug, Name, Identitätsname; gelöschte Agents nicht), ohne die Namen, die ein
+aktiver Benutzer trägt. Der Privacy Guard nimmt sie in jedem Turn und in jedem
+Stored-Text-Scope aus, nach den Regeln von #2190 (exakte Gleichheit, die
+Deny-Liste gewinnt). Menschen bleiben maskiert; solange die Namen unbekannt
+sind, ist kein Agent-Name ausgenommen. Restrisiko: Eine Person ohne
+omadia-Login, die genau wie ein Agent heißt, bleibt jetzt in allen Turns
+unmaskiert; dagegen hilft die Deny-Liste. plugin-api 1.91.0, privacy-guard
+0.16.4.
+
 ### Fixed — `/memories/_rules/` ist für Agents nur lesbar (#1827)
 
 2026-11-17. Jede Datei unter `/memories/_rules/` wirkt für alle Agents und

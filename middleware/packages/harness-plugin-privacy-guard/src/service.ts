@@ -465,6 +465,14 @@ export interface PrivacyGuardServiceDeps {
    * configured (`c1CacheScope`).
    */
   readonly c1NearMissDetector?: PromptPiiDetector;
+  /**
+   * Spec 2042 (#2191, #2192) — the roster's agent names (`agentNames@1`),
+   * read per mask call. Never masked, under the rules of `ownNames.ts`: in
+   * every turn (a colleague named in a consultation) and in stored-text
+   * scopes (a background job over an agent's turns). `null`, absent or a
+   * throwing reader exempts nothing beyond the request's own names.
+   */
+  readonly agentNames?: () => readonly string[] | null;
 }
 
 export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): PrivacyGuardServices {
@@ -487,6 +495,35 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
   // only tool/plugin names + a byte count (no values).
   const bypassedTools = new Map<string, BypassedToolEntry[]>();
   const operatorClearedFields = new Map<string, Map<string, OperatorClearedFieldEntry>>();
+  /**
+   * Spec 2042 — the roster's agent names (`PrivacyGuardServiceDeps.agentNames`).
+   * Fail safe: unknown or a failing reader exempts nothing.
+   */
+  function readAgentNames(): readonly string[] {
+    try {
+      return deps?.agentNames?.() ?? [];
+    } catch (err) {
+      console.warn(
+        `[privacy-guard v4] agentNames lookup failed, no agent name exempt: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return [];
+    }
+  }
+  // Read once per turn: a roster or human-name change in the middle of a turn
+  // would otherwise let the known-value sweep skip a value an earlier call of
+  // the same turn masked. Dropped by `finalizeTurn` with the turn's map.
+  const turnAgentNames = new Map<string, readonly string[]>();
+  function agentNamesOfTurn(turnId: string): readonly string[] {
+    let names = turnAgentNames.get(turnId);
+    if (names === undefined) {
+      names = readAgentNames();
+      turnAgentNames.set(turnId, names);
+    }
+    return names;
+  }
+
   // #547 / #569 — per-turn list of external MCP tools that returned
   // `structuredContent`. Recorded by the boot-wired `structuredSink` so the
   // receipt accounts for the sidecar that otherwise fires beneath every
@@ -870,7 +907,11 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
     const refused = args.precheck?.(promptMaskMaps.get(turnId));
     if (refused !== undefined) return refused;
     try {
-      const isOwnName = await resolveOwnNames(args.ownNames, detectors);
+      const isOwnName = await resolveOwnNames(
+        // A preview keeps no turn state (it extends no map), so no cache either.
+        [...(args.ownNames ?? []), ...(preview ? readAgentNames() : agentNamesOfTurn(turnId))],
+        detectors,
+      );
       const result = await maskPrompt(text, detectors, promptMaskMaps.get(turnId), {
         isOwnName,
       });
@@ -1422,8 +1463,11 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
       const detectors: PromptPiiDetector[] = [createBaselineIdentityDetector()];
       const customDetector = resolveCustomDetector(deps?.readConfig);
       if (customDetector) detectors.push(customDetector);
+      // Read once per run, like the turn's: a stable exemption for the run's map.
+      const agentNames = readAgentNames();
       return createStoredTextScope({
         job: request.job,
+        ...(agentNames.length > 0 ? { ownNames: agentNames } : {}),
         detectors,
         ...(request.priority !== undefined ? { priority: request.priority } : {}),
         ...(deps?.c1Detector !== undefined ? { c1Detector: deps.c1Detector } : {}),
@@ -1596,6 +1640,7 @@ export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): Priv
       // #361 — drop the prompt-surrogate map. `restorePromptPseudonyms`
       // must have run over the final answer before this point.
       promptMaskMaps.delete(turnId);
+      turnAgentNames.delete(turnId);
       // #979 — cached C1 spans carry real PII values; drop them with the
       // rest of the turn's server-side state. The degrade latch goes too, so
       // the next turn gets a fresh attempt at a sidecar that may have
