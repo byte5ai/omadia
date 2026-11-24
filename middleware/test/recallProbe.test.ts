@@ -199,6 +199,8 @@ describe('R2 · ContextRetriever cross-session recall legs', () => {
     await kg.ingestPlan({
       planId: 'prior',
       scope: 'sess-prior',
+      // #2194 — the writing turn, whose discretion labels the plan carries.
+      turnExternalId: 'turn:sess-prior:1',
       strategy: 'Migrate the billing module',
       createdAt: '2026-06-01T10:00:00.000Z',
     });
@@ -265,6 +267,7 @@ describe('R2 · ContextRetriever cross-session recall legs', () => {
     assert.equal(result.recalled.plans[0]!.openStepGoals.length, 1);
     assert.equal(result.recalled.plans[0]!.doneCount, 1);
     assert.equal(result.recalled.plans[0]!.totalCount, 2);
+    assert.equal(result.recalled.plans[0]!.turnId, 'turn:sess-prior:1', 'the writing turn rides along');
     // Resume: interrupted plan carries its completed step goals + renders the
     // "do not redo / resume from" framing into the injected recall text.
     assert.deepEqual(

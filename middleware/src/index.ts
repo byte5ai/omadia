@@ -117,7 +117,7 @@ import {
 } from '@omadia/plugin-api';
 import { createModelPassthrough, systemModuleOnlyService } from './platform/modelPassthrough.js';
 import { archetypeProcessesServiceName, SYSTEM_SPEAKER, type ArchetypeProcessesService } from '@omadia/plugin-api';
-import type { TranscriptionService } from '@omadia/plugin-api';
+import type { ProcessMemoryService, TranscriptionService } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
 import { createReceiptRoutes } from './receipts/routes.js';
 import { ChainWitness } from './receipts/anchor.js';
@@ -146,7 +146,7 @@ import {
   createPluginVerdictLookup,
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
-import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
+import { archetypeAdds, CHANNEL_KIND_BY_ORIGIN, archetypeOf, archetypeOmits, getArchetype, directDatabaseUrl, isPooledDatabaseUrl, labelProcessMemory, MemberBaselineGrantStore, resolveScopedBundle, type SystemNoticeRequest } from '@omadia/orchestrator';
 import {
   buildSystemNotice,
   ChannelResolver as ManagementChannelResolver,
@@ -1662,6 +1662,12 @@ async function main(): Promise<void> {
     log: (m) => console.log(m),
   });
   serviceRegistry.provide('discretion', discretionStore);
+  // #2194 — a stored process keeps the labels of the turns that wrote it and
+  // hands them to every turn that reads it (process tools, plan-runner reuse,
+  // context recall), whoever provides `processMemory`.
+  serviceRegistry.decorateOnProvide<ProcessMemoryService>('processMemory', (inner) =>
+    labelProcessMemory(inner, discretionStore),
+  );
   serviceRegistry.provide('consultation', consultationBroker);
   // The offering snapshot is read once the pool exists (after plugin
   // activation, below); until then `consult` is simply not offered.

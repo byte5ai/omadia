@@ -1318,6 +1318,10 @@ export function buildOrchestratorForAgent(
           // #1102 — `memory` from the stack this turn is bound to, served by a
           // per-turn dispatch rather than the shared registry.
           bindTurnMemory: (input) => orchestrator.bindCliTurnMemory(input),
+          // Spec 2042 §5.11 / #2194 — the in-process turn's discretion state
+          // and the people-egress check of its answer, for this path too.
+          discretionTurnFields: (input) => orchestrator.cliDiscretionTurnFields(input),
+          guardAnswer: (answer, input) => orchestrator.guardCliAnswer(answer, input),
           // #1087 — the CLI child is stateless by design, so the composed
           // prompt is the only memory a turn has. Feed it from the RAW chat
           // session, not the ContextRetriever tail: that one reads Session

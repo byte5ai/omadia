@@ -20,7 +20,7 @@
 
 import { turnContext } from '../turnContext.js';
 import { checkFlow, violationSummary } from './flowRule.js';
-import { labelSummary, unionLabels, type DiscretionLabel, type Readers } from './labels.js';
+import { labelSummary, unionLabels, UNKNOWN_READERS, type DiscretionLabel, type Readers } from './labels.js';
 import type { DiscretionPort, LabelSubjectKind } from './port.js';
 import { addTurnLabels, currentDiscretion, resolvedTurnLabels } from './turnLabels.js';
 
@@ -176,4 +176,25 @@ export async function labelSubjectWithTurn(
   await port.persistLabels(kind, id, agentSlug, labels).catch((err: unknown) => {
     console.error(`[discretion] persisting the labels of ${kind} ${id} failed:`, err);
   });
+}
+
+/**
+ * Spec 2042 §5.11 — reusing written subjects (recalled turns, memorables,
+ * processes) adds the labels they kept to the active turn. A lookup failure
+ * fails closed: the turn gets a label nobody is known to be allowed to read,
+ * so nothing of it can flow outside this conversation. Never throws.
+ */
+export async function labelTurnWithSubjects(
+  port: DiscretionPort | undefined,
+  kind: LabelSubjectKind,
+  ids: readonly string[],
+): Promise<void> {
+  if (!port || ids.length === 0 || !currentDiscretion()) return;
+  try {
+    const found = await port.labelsOf(kind, ids);
+    for (const labels of found.values()) addTurnLabels(labels);
+  } catch (err) {
+    console.error(`[discretion] ${kind} label lookup failed — labelling the turn unreadable:`, err);
+    addTurnLabels([{ kind: 'context', key: 'unreadable', readers: UNKNOWN_READERS }]);
+  }
 }

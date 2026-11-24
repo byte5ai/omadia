@@ -1509,6 +1509,7 @@ cosineSim: number;
 export interface RecalledPlan {
 planId: string;
 scope: string;
+turnId?: string;
 strategy?: string;
 createdAt?: string;
 openStepGoals: string[];

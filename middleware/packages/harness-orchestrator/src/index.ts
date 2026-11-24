@@ -1070,3 +1070,4 @@ export * from './privacyAudience.js';
 export * from './consultation/consultationScope.js';
 export * from './consultation/consultTool.js';
 export * from './discretion/toolFlow.js';
+export * from './discretion/labelledProcessMemory.js';
