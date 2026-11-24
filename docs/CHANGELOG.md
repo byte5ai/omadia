@@ -52,6 +52,16 @@ omadia-Login, die genau wie ein Agent heißt, bleibt jetzt in allen Turns
 unmaskiert; dagegen hilft die Deny-Liste. plugin-api 1.91.0, privacy-guard
 0.16.4.
 
+### Fixed — Recall-Karte im Streaming nur für Leser, die den Inhalt kennen dürfen (#2042)
+
+2026-11-24. Die Karte „Aus früheren Sessions“ (`kg_recall`, dazu `kg_graph`)
+ging im Streaming-Pfad vor der Antwort hinaus, ohne die Diskretionsprüfung der
+Antwort. Ein Raum mit einem Leser, der einen erinnerten
+Eintrag nicht kennen darf, sah ihn so in der Karte, obwohl die Antwort
+zurückgehalten wurde. Die Karten bekommen jetzt dieselbe People-Egress-Prüfung
+direkt nach dem Recall. Der gepufferte Pfad (Teams) war schon abgedeckt: eine
+zurückgehaltene Antwort verwirft `recalled` ganz.
+
 ### Fixed — `/memories/_rules/` ist für Agents nur lesbar (#1827)
 
 2026-11-17. Jede Datei unter `/memories/_rules/` wirkt für alle Agents und
