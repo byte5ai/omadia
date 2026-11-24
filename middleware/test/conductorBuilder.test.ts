@@ -470,7 +470,7 @@ describe('ConductorBuilderAgent template awareness', () => {
       templateKnownRefs: () => ({ agentIds: ['fallback'], eventIds: [] }),
     });
     const res = await agent.runTurn({ graph: validBaseGraph(), message: 'incident flow', viewer: 'op-b' });
-    assert.deepEqual(res.templateProposals![0].prefill, { events: { incident: 'my.incident' } });
+    assert.deepEqual(res.templateProposals?.[0]?.prefill, { events: { incident: 'my.incident' } });
   });
 
   it('drops unknown/invisible template ids, dedupes, and caps at 3', async () => {
