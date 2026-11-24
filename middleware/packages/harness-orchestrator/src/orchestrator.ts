@@ -7853,7 +7853,12 @@ export class Orchestrator {
           throw err;
         }
       })();
+      // Preview characters this turn has streamed so far: a `done` the
+      // discretion check withholds takes them back first.
+      let streamedChars = 0;
       for await (const event of guardedInner) {
+        if (event.type === 'text_delta') streamedChars += event.text.length;
+        else if (event.type === 'text_retract') streamedChars = Math.max(0, streamedChars - event.chars);
         if (
           (event.type === 'done' || event.type === 'error') &&
           toolReplayLedger.abortedTool !== undefined
@@ -7978,11 +7983,9 @@ export class Orchestrator {
               await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
             );
           }
-          yield this.discloseDoneEvent(
-            await this.guardStreamedDone(doneEvent, this.turnLocale(input)),
-            input,
-            bound?.ledger,
-          );
+          const guardedDone = await this.guardStreamedDone(doneEvent, this.turnLocale(input));
+          if (guardedDone.withheld && streamedChars > 0) yield { type: 'text_retract', chars: streamedChars };
+          yield this.discloseDoneEvent(guardedDone.done, input, bound?.ledger);
           continue;
         }
         if (event.type === 'done') {
@@ -7996,11 +7999,9 @@ export class Orchestrator {
           // #644 — fold the disclosure at the boundary, AFTER the hook (which
           // records the raw answer, matching the non-streaming path where
           // `toSemanticAnswer` folds only after `runTurn` persisted the turn).
-          yield this.discloseDoneEvent(
-            await this.guardStreamedDone(event, this.turnLocale(input)),
-            input,
-            bound?.ledger,
-          );
+          const guarded = await this.guardStreamedDone(event, this.turnLocale(input));
+          if (guarded.withheld && streamedChars > 0) yield { type: 'text_retract', chars: streamedChars };
+          yield this.discloseDoneEvent(guarded.done, input, bound?.ledger);
           continue;
         }
         yield event;
@@ -11038,20 +11039,21 @@ export class Orchestrator {
    * (field rights included). Otherwise it is refused as on the buffered path
    * (`guardAnswerEgress`), never redacted: the `done` is rebuilt from
    * bookkeeping fields with the withheld line as its answer, and the
-   * side-channel rows are held back. Text deltas already streamed are the
-   * streaming residual; channels that post the `done` post the refusal.
+   * side-channel rows are held back. `withheld` tells the caller to take
+   * back the text deltas already streamed (`text_retract`) before the
+   * `done`, so a client that shows the preview never keeps the answer.
    */
   private async guardStreamedDone(
     done: Extract<ChatStreamEvent, { type: 'done' }>,
     locale: string | undefined,
-  ): Promise<Extract<ChatStreamEvent, { type: 'done' }>> {
+  ): Promise<{ readonly done: Extract<ChatStreamEvent, { type: 'done' }>; readonly withheld: boolean }> {
     const state = currentDiscretion();
-    if (!state || isConsultationRunOf(this.agentId)) return done;
+    if (!state || isConsultationRunOf(this.agentId)) return { done, withheld: false };
     const decision = await peopleEgressDecision(state);
-    if (decision === undefined || decision.allowed) return done;
+    if (decision === undefined || decision.allowed) return { done, withheld: false };
     turnContext.current()?.dataSideChannel?.withhold();
     console.warn(`[discretion] streamed answer of ${this.agentId} withheld: ${violationSummary(decision).join(', ')}`);
-    return {
+    const refused: Extract<ChatStreamEvent, { type: 'done' }> = {
       type: 'done',
       answer: answerWithheldText(locale),
       toolCalls: done.toolCalls,
@@ -11060,6 +11062,7 @@ export class Orchestrator {
       ...(done.privacyReceipt !== undefined ? { privacyReceipt: done.privacyReceipt } : {}),
       ...(done.receiptId !== undefined ? { receiptId: done.receiptId } : {}),
     };
+    return { done: refused, withheld: true };
   }
 
   /** Spec 2042 §5.4 — `{ contributions }` for a result or `done` event, or `{}`. */

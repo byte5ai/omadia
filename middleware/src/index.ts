@@ -666,7 +666,7 @@ import { startEphemeralAttachmentSweep } from './platform/ephemeralAttachmentSwe
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
 import type { AggregateHolderLookup, ChannelRegistry, ChannelBindingResolver } from '@omadia/channel-sdk';
 import type { AgentIdentityProvider, ChannelReadinessProvider, MeetingSourceProvider } from '@omadia/channel-sdk';
-import { InMemoryDisclosureSeenStore, normalizeAgentIdentityKey } from '@omadia/channel-sdk';
+import { InMemoryDisclosureSeenStore, normalizeAgentIdentityKey, RoleSourceRegistry, type GrantStore } from '@omadia/channel-sdk';
 import { DynamicChannelPluginResolver } from './channels/dynamicChannelResolver.js';
 import type { TurnDispatcher } from './channels/coreApi.js';
 import { createOrchestratorDispatcher } from './channels/orchestratorDispatcher.js';
@@ -5419,6 +5419,14 @@ async function main(): Promise<void> {
         nativeToolRegistry.register(name, { handler, spec: options.spec, isAvailable: options.isAvailable }),
       audit: () => async (entry) => {
         await adminAudit?.record(entry);
+      },
+      // Criterion 18 — a firing reads its room's field rights now, from the
+      // same grants as the audience floor (none published = floor off). No
+      // role sources are wired for the live floor either (the orchestrator
+      // plugin passes an empty registry); wire them here too once it does.
+      fieldRightSources: () => {
+        const grants = serviceRegistry.get<GrantStore>('audienceGrants');
+        return grants ? { grants, roles: new RoleSourceRegistry() } : undefined;
       },
       // Criterion 24 — a proactive message is checked against the room's
       // members when it goes out, read fresh from the channel's roster.
