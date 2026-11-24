@@ -36,6 +36,34 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Restlücken aus Spec 2042: Vorschau-Rücknahme, Trigger-Feldrechte, Budgets (#2042)
+
+2026-11-24.
+- **Zurückgehaltene Antwort im Stream:** Hält die Diskretionsprüfung eine
+  gestreamte Antwort zurück (`readers_not_covered`, fehlendes Feldrecht),
+  schickt der Kernel vor dem `done` jetzt ein `text_retract` über alle schon
+  gestreamten Zeichen. Bisher blieb der Entwurf in jeder Vorschau stehen, die
+  `done.answer` nicht übernimmt. Die Web-UI ersetzte ihn schon beim `done`.
+  Der Canvas zeigt die Rücknahme erst, wenn ui-channel einen eigenen Frame
+  dafür sendet (byte5ai/omadia-ui-support#6).
+- **Feldrechte beim Auslösen eines Triggers:** Ein Trigger nutzt die
+  Feldrechte, die die Leser seines Raums beim Auslösen haben, nie mehr als
+  bei der Erstellung gespeichert. Wird einem Leser das Recht
+  (`privacy:field:<class>`) nach dem Setzen entzogen, gilt das ab der
+  nächsten Auslösung. Gelesen wird aus denselben Grants wie beim
+  Audience-Floor. Ist der Floor aus, gilt nur der gespeicherte Stand.
+- **Mythos ohne `temperature`:** Der Anthropic-Adapter lässt die Temperatur
+  jetzt auch für Mythos 5 / 5.1 weg, wie für Fable. Bisher endete etwa
+  `temperature: 0` vom Screener oder von Plugins dort mit 400.
+- **Budget des Topic-Detektors:** Der Klassifikator (`continue` / `reset` /
+  `unsure`) hat jetzt 1024 statt 64 Tokens und sendet `effort: low`,
+  `thinking: off`. Auf einem Modell, das immer denkt, war die Antwort vorher
+  leer, und jede unklare Nachfrage wurde zu `unsure`. Die Budgets liegen
+  jetzt in `@omadia/orchestrator-extras` (`classifierBudgets.ts`); der
+  Orchestrator re-exportiert sie.
+- Veralteter Kommentar in `subAgentEffort.ts` korrigiert: Die Adapter
+  verwerfen einen nicht unterstützten Effort inzwischen selbst.
+
 ### Fixed — `/memories/_rules/` ist für Agents nur lesbar (#1827)
 
 2026-11-17. Jede Datei unter `/memories/_rules/` wirkt für alle Agents und
