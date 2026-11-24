@@ -759,24 +759,26 @@ export function buildOrchestratorForAgent(
   // Per-orchestrator memory isolation. The shared kernel `MemoryStore` is
   // wrapped so this Agent can only touch its own tree (`orchestrator:<slug>:*`)
   // plus the shared `core` namespace — enforced by `ScopedMemoryStore`.
-  //   - ChatSessionStore + SessionLogger write to the shared `core`
-  //     `sessions`/`chat-sessions` paths (session transcripts stay common,
-  //     decision A3a), so they use the scoped store directly.
+  //   - ChatSessionStore + SessionLogger are KERNEL writers of the shared
+  //     `sessions`/`chat-sessions` trees (session transcripts stay common,
+  //     decision A3a). Those trees are read-only for agents, so the two get
+  //     the unscoped store; only the model-facing stack below is scoped.
   //   - The model-facing `memory` tool additionally goes through the
   //     namespacer, which rewrites its arbitrary `/memories/<x>` notes into
   //     the Agent-private `/memories/orchestrators/<slug>/<x>` tree.
+  // Spec 2042 §5.11 — a transcript keeps the labels of every turn written
+  // into it, so a `memory` read of it (same physical path) carries them.
+  const transcriptStore: MemoryStore = deps.discretion
+    ? new LabelledMemoryStore(deps.memoryStore, deps.discretion, config.agentId, { labelReads: false })
+    : deps.memoryStore;
   const scopedStore = new ScopedMemoryStore({
     agentSlug: config.agentId,
     scope: orchestratorMemoryScope(config.agentId),
-    // Spec 2042 §5.11 — a transcript keeps the labels of every turn written
-    // into it, so a `memory` read of it (same physical path) carries them.
-    inner: deps.discretion
-      ? new LabelledMemoryStore(deps.memoryStore, deps.discretion, config.agentId, { labelReads: false })
-      : deps.memoryStore,
+    inner: transcriptStore,
   });
-  const chatSessionStore = new ChatSessionStore(scopedStore);
+  const chatSessionStore = new ChatSessionStore(transcriptStore);
   const sessionLogger = new SessionLogger(
-    scopedStore,
+    transcriptStore,
     deps.knowledgeGraph,
     chatSessionStore,
     config.agentId,
@@ -970,8 +972,8 @@ export function buildOrchestratorForAgent(
   //
   // The binder takes `deps.memoryStore` UNDECORATED on purpose: it owns the
   // whole decorator chain, because the scope it enforces is what decides which
-  // wrappers apply. `chatSessionStore` / `sessionLogger` keep the static
-  // `scopedStore` — session transcripts stay shared under `core/sessions`
+  // wrappers apply. `chatSessionStore` / `sessionLogger` keep the unscoped
+  // `transcriptStore` — session transcripts stay shared under `sessions`
   // (decision A3a) and must not be partitioned by chat context.
   const memoryBinder = new MemoryBinder({
     agentSlug: config.agentId,
