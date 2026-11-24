@@ -713,7 +713,7 @@ export class ConductorRunExecutor {
    * Dry-run / preview (US8 / FR-029): simulate the workflow path in memory with NO persistence
    * and NO side effects — no conductor_runs/awaits rows, no real notification, no durable await.
    * Human steps are answered inline (supplied `humanResponses[stepId]`, default `{approved:true}`);
-   * agent steps run a real turn; action steps are stubbed (irreversible connector actions are not
+   * agent and action steps are stubbed (irreversible connector actions and LLM turns are not
    * executed). Returns the full simulated step path so the operator gains confidence before activating.
    */
   async previewRun(slug: string, payload: JsonObject, humanResponses: Record<string, JsonValue> = {}): Promise<PreviewResult> {
@@ -777,16 +777,8 @@ export class ConductorRunExecutor {
         result = normalizeHumanResult(humanResponses[stepId] ?? { approved: true }, step.human?.strictApproval === true);
         actor = 'human (inline)';
       } else if (step.kind === 'agent') {
-        // A rehearsal must report a throwing agent step, not 500 the preview route.
-        try {
-          const exec = await this.effects.runAgentStep(step, context, { runId: `preview:${slug}` });
-          result = exec.result;
-        } catch (err) {
-          error = runErrorFromThrow(err, { stepKind: step.kind, ref: step.agentId ?? null });
-          this.log(`[conductor] preview '${slug}' step '${stepId}' threw: ${error.message ?? '(no message)'}`);
-          break;
-        }
-        actor = `agent:${step.agentId ?? '?'}`;
+        result = { simulated: true, agentId: step.agentId ?? null };
+        actor = `agent (stubbed):${step.agentId ?? '?'}`;
       } else {
         result = { simulated: true, actionId: step.actionId ?? null };
         actor = `action (stubbed):${step.actionId ?? '?'}`;
