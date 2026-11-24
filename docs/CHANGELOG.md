@@ -45,7 +45,14 @@ the read while receiving a clean verdict.
 - The deterministic scan now raises these English and German instructions to
   `high_risk`, so MCP grants require acknowledgement. Ordinary file references
   and generic `note`/`sidenote` fields remain unflagged.
-- Hidden-content detection now includes pseudo-tags, Unicode tag characters, and bidirectional formatting controls.
+- Concealment phrases ("do not tell the user", "halte … geheim") count only when the
+  same description also tells the agent to read or forward a file, so ordinary tool
+  docs such as "Keep your API key secret" or "Erwähne gegenüber dem Benutzer nicht die
+  interne ID" stay unflagged.
+- Hidden-content detection now includes `<important>` pseudo-tags, closing
+  `</system>`/`</developer>` tags, Unicode tag characters, and bidirectional
+  embedding/override/isolate controls. A bare `<system>` role name and the LRM/RLM/ALM
+  marks of ordinary Hebrew and Arabic text are not flagged.
 
 ### Changed — Kernel ohne Plugin-IDs: Teams-Standard-Bot kommt vom Plugin, tote v0.1.0-Reste entfernt
 

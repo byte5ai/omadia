@@ -34,6 +34,8 @@ export type Verifier = (
 interface Pattern {
   readonly code: SkillRiskCode;
   readonly re: RegExp;
+  /** The match only counts when this also matches somewhere in the same text. */
+  readonly requires?: RegExp;
 }
 
 /**
@@ -76,6 +78,20 @@ const SILENT_PERMISSION_ESCALATION_RE = new RegExp(
     String.raw`\b(grant|enable|request|claim|get|add|vergib|aktiviere|fordere|beanspruche|hole|füge)\b[^.\n]{0,40}\b(extra|additional|broader|admin|root|full|elevated|mehr|zusätzliche|erweiterte|admin|root|volle)\b[^.\n]{0,24}\b(permission|permissions|scope|access|rechte|berechtigungen|zugriff)\b`,
     String.raw`\bwithout\b[^.\n]{0,24}\b(telling|informing|mentioning)\b[^.\n]{0,24}\b(user|users)\b[^.\n]{0,24}\b(permission|permissions|scope|access)\b`,
     String.raw`\bohne\b[^.\n]{0,24}\b(den nutzer|die nutzer|zu informieren|zu erwähnen)\b[^.\n]{0,24}\b(rechte|berechtigungen|zugriff)\b`,
+  ].join('|'),
+  'iu',
+);
+
+/**
+ * Concealment phrasing ("do not tell the user", "halte … geheim"). On its own
+ * it is ordinary tool documentation — "Keep your API key secret", "Erwähne
+ * gegenüber dem Benutzer nicht die interne ID" — so it only counts as
+ * `silent_permission_escalation` when the same text also tells the agent to
+ * read or forward a file ({@link FILE_ACCESS_RE}), the #1915 tool-poisoning
+ * shape: read a local file, hide that you did.
+ */
+const CONCEALMENT_RE = new RegExp(
+  [
     String.raw`\b(?:do not|don't|never)\b[^.!?\n]{0,32}\b(?:mention|tell|inform|disclose|reveal)\b[\s\S]{0,96}\b(?:user|anyone|read(?:ing)?|file|action)\b`,
     String.raw`\b(?:hide|conceal)\b[\s\S]{0,80}\b(?:from\s+the\s+user|the\s+user|this\s+action|the\s+file)\b`,
     String.raw`\bkeep\b[\s\S]{0,64}\b(?:from\s+the\s+user|secret|hidden)\b`,
@@ -87,11 +103,28 @@ const SILENT_PERMISSION_ESCALATION_RE = new RegExp(
   'iu',
 );
 
+/**
+ * An instruction to read a file or to forward file content: a read verb with a
+ * path or the word "file" later in the same sentence, or a forward verb with
+ * "content" right after it. Gates {@link CONCEALMENT_RE}.
+ */
+const FILE_ACCESS_RE = new RegExp(
+  [
+    String.raw`(?<![\p{L}\p{N}_])(?:read|open|access|load|cat|inspect|retrieve|lies|lese|lesen|öffne|öffnen|auslesen|lade)(?![\p{L}\p{N}_])[^.!?\n]{0,64}?(?:~|[\\/]|(?<![\p{L}\p{N}_])(?:files?|datei(?:en)?)(?![\p{L}\p{N}_]))`,
+    String.raw`(?<![\p{L}\p{N}_])(?:pass|send|forward|include|gib|übermittle|leite)(?![\p{L}\p{N}_])[^.!?\n]{0,24}\b(?:content|contents|inhalt)\b`,
+  ].join('|'),
+  'iu',
+);
+
 // The pseudo-tag body is bounded: an unbounded `[^>]*` rescans to the end of
-// the text from every unclosed `<system ` and goes quadratic on attacker-
-// controlled MCP tool text (up to 256 KB, scanned synchronously).
+// the text from every unclosed `<important ` and goes quadratic on attacker-
+// controlled MCP tool text (up to 256 KB, scanned synchronously). `<system>` /
+// `<developer>` count only as a CLOSING tag: the opening one alone is how tool
+// docs name a chat role ("Use <system> role messages"). LRM/RLM/ALM
+// (U+200E, U+200F, U+061C) are left out: ordinary Hebrew and Arabic text
+// carries them; the embedding/override/isolate controls stay flagged.
 const HIDDEN_CONTENT_RE = new RegExp(
-  String.raw`<!--|<\/?\s*(?:important|system|developer)\b[^>]{0,200}>|[\u200B-\u200D\uFEFF\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\u{E0000}-\u{E007F}]|[A-Za-z0-9+/]{200,}={0,2}`,
+  String.raw`<!--|<\s*important\b[^>]{0,200}>|<\/\s*(?:important|system|developer)\s*>|[\u200B-\u200D\uFEFF\u202A-\u202E\u2066-\u2069\u{E0000}-\u{E007F}]|[A-Za-z0-9+/]{200,}={0,2}`,
   'iu',
 );
 
@@ -143,6 +176,11 @@ const PATTERNS: readonly Pattern[] = [
     re: SILENT_PERMISSION_ESCALATION_RE,
   },
   {
+    code: 'silent_permission_escalation',
+    re: CONCEALMENT_RE,
+    requires: FILE_ACCESS_RE,
+  },
+  {
     code: 'hidden_content',
     // Pseudo-tags and invisible formatting controls, plus long base64 blobs.
     re: HIDDEN_CONTENT_RE,
@@ -166,9 +204,10 @@ export function regexPatternVerifier(
 ): SkillRisk[] {
   const haystack = `${JSON.stringify(frontmatter)}\n${body}`;
   const risks: SkillRisk[] = [];
-  for (const { code, re } of PATTERNS) {
+  for (const { code, re, requires } of PATTERNS) {
+    if (risks.some((r) => r.code === code)) continue;
     const m = re.exec(haystack);
-    if (m) {
+    if (m && (requires === undefined || requires.test(haystack))) {
       risks.push({
         code,
         severity: 'warn',
