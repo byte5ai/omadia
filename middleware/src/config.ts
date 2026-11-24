@@ -536,11 +536,9 @@ export const ConfigSchema = z.object({
     .default('MultiTenant'),
   MICROSOFT_APP_TENANT_ID: z.string().optional(),
   /**
-   * Bot Framework OAuth Connection Name (configured in Azure Bot Service).
-   * When set, the Teams bot attempts to retrieve a Teams SSO assertion for
-   * each message and threads it into the orchestrator as `ssoAssertion`,
-   * enabling the calendar tools. Unset → calendar tools stay dormant (no
-   * OAuth flow, no consent prompts).
+   * Legacy: the Bot Framework OAuth connection name now lives in the Teams
+   * plugin's setup (`teams_sso_connection_name`). The kernel no longer reads
+   * this value; kept so an existing .env still parses.
    */
   TEAMS_SSO_CONNECTION_NAME: z.string().optional(),
 
@@ -558,10 +556,9 @@ export const ConfigSchema = z.object({
    */
   TEAMS_PUBLIC_BASE_URL: z.string().url().optional(),
 
-  // Telegram channel. When TELEGRAM_BOT_TOKEN is set, the channel package is
-  // auto-installed at boot. TELEGRAM_WEBHOOK_SECRET is required alongside it
-  // (HMAC-style header validation on the webhook). TELEGRAM_PUBLIC_BASE_URL
-  // is optional — when missing, the channel falls back to long-polling.
+  // Telegram channel env (legacy). The kernel no longer auto-installs a
+  // channel from these; the Telegram plugin is installed from the store and
+  // configured through its setup form. Kept so an existing .env still parses.
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_WEBHOOK_SECRET: z.string().optional(),
   TELEGRAM_PUBLIC_BASE_URL: z.string().url().optional(),

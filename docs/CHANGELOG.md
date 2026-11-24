@@ -36,6 +36,40 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — Kernel ohne Plugin-IDs: Teams-Standard-Bot kommt vom Plugin, tote v0.1.0-Reste entfernt
+
+2026-11-24. Der Kernel kannte noch Plugin-IDs aus v0.1.0. Der Teams-Standard-Bot
+(der einzige unbekannte Bot-Key, den der Conductor an eine Bindung oder den
+Fallback-Agenten routet) wurde aus dem Registry-Eintrag
+`de.byte5.integration.microsoft365` gelesen, ersatzweise aus `MICROSOFT_APP_ID`.
+Jetzt nennt ihn das Plugin selbst: neuer optionaler Vertrag
+`registerDefaultChannelKeyProvider` (channel-sdk 0.3.14, plugin-api 1.93.0) für
+Kanäle ohne `agentIdentities@1`-Provider. `@omadia/channel-teams` 0.45.0
+registriert ihn (Teams-Agenten-Bots bleiben in `agent_teams_identities`). Ein
+Provider, der wirft oder nichts nennt, bedeutet „kein Standard-Bot“: der Bot
+wird abgelehnt, der Turn scheitert nicht. Der Provider ist wie die anderen an
+den Kanal-Claim gebunden: nur das Plugin, das `teams` hält, nennt den Bot.
+
+**Upgrade-Reihenfolge:** zuerst `@omadia/channel-teams` ≥ 0.45.0, dann dieser
+Kernel. Mit einem älteren Teams-Plugin kennt dieser Kernel keinen
+Teams-Standard-Bot mehr, Nachrichten an ihn verweigert der Conductor
+(`unknown-bot`); der normale Chat-Pfad des Plugins ist nicht betroffen.
+
+Entfernt, weil tot: der Boot-Log zum Kalender-/M365-Wiring (`de.byte5.agent.calendar`,
+meldete nach der Deinstallation der Alt-Einträge fälschlich „microsoft365 integration
+DISABLED“), die Env-Migrationen `bootstrapMicrosoft365FromEnv` und
+`bootstrapTelegramFromEnv` (Ziel-IDs `de.byte5.integration.microsoft365`,
+`de.byte5.agent.calendar`, `de.byte5.channel.teams`, `de.byte5.channel.telegram` stehen
+in keinem Katalog mehr) und der `Microsoft365AccessorShim`. Der Builder schlägt als
+`depends_on` jetzt die heutigen IDs vor (`@omadia/integration-odoo`,
+`-confluence`, `-microsoft365`). Bleiben bewusst: die Migration der Alt-ID
+`de.byte5.tool.knowledge-graph`, das reservierte Präfix `de.byte5.platform.` im
+Manifest-Linter, `ROUTINES_AGENT_ID` (Principal, kein Plugin) und die
+Channel-Typ-Normalisierung. Die Env-Werte `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_PUBLIC_BASE_URL` und `TEAMS_SSO_CONNECTION_NAME`
+liest der Kernel nicht mehr (sie fütterten nur die entfernten Migrationen); sie
+parsen weiter, wirken aber nicht. Plugins konfiguriert man über ihr Setup.
+
 ### Fixed — Diskretion: Karten zurückgehaltener Antworten, Pläne ohne Turn, Label-Rennen (#2198)
 
 2026-11-24. Folgepunkte aus #2194 (Spec 2042 §5.11). Im Streaming-Pfad gingen

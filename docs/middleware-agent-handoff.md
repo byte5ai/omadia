@@ -185,6 +185,11 @@ src/
   wird abgelehnt. Die Kernel-Registry ist `ChannelProviderRegistry<AgentIdentityProvider>`
   (`src/index.ts`); `defaultChannelBotKey` (Conductor) und `presentBots`
   (`get_chat_participants`) fragen außerhalb von Teams den Provider.
+- **Standard-Bot ohne Identity-Provider (Teams):**
+  `CoreApi.registerDefaultChannelKeyProvider(channelId, DefaultChannelKeyProvider)`
+  (`{ channelType, defaultChannelKey() }`, channel-sdk 0.3.14 / plugin-api 1.93.0).
+  Registry `ChannelProviderRegistry<DefaultChannelKeyProvider>('defaultChannelKey')`;
+  Kanal-Claim (`scopedCoreApi.ts`) und Deactivate wie bei den anderen Providern.
 - **Operator-API** (`src/routes/operatorAgentChannelIdentities.ts`,
   Service `src/platform/agentChannelIdentityService.ts`):
   `GET /api/v1/operator/agents/:slug/channel-identities` (Kanäle, Felder, Bot mit
@@ -2845,10 +2850,16 @@ Beide Richtungen beantwortet **ein** Modul, `src/conductor/channelBotOwnership.t
 - `speakingIdentityFor`: eigene Identität, sonst der Standard-Bot — nur für
   genau den Agenten, auf den er in dieser Konversation auflöst.
 
-Der Standard-Bot kommt aus `wireConductor({ defaultChannelBotKey })`, in
-`src/index.ts` pro Aufruf gelesen: `microsoft_app_id` der
-Microsoft-365-Integration, sonst `MICROSOFT_APP_ID`. Ohne ihn gilt das alte
-Verhalten (nur provisionierte Bots).
+Der Standard-Bot kommt aus `wireConductor({ defaultChannelBotKey })` =
+`defaultChannelBotKeyFrom([agentIdentities, defaultChannelKeys])`
+(`src/conductor/channelBotOwnership.ts`), pro Aufruf gelesen: zuerst
+`AgentIdentityProvider.defaultChannelKey?()` des Kanal-Plugins, sonst
+`DefaultChannelKeyProvider.defaultChannelKey()` (Teams). Der Kernel kennt dafür
+keine Plugin-ID und kein Env mehr. Wirft der Provider oder nennt er nichts, gibt
+es keinen Standard-Bot (nur provisionierte Bots routen, der Turn scheitert nicht).
+`@omadia/channel-teams` ab 0.45.0 nennt `28:<appId>` der Microsoft-365-App
+(`microsoft_app_id`, sonst env `MICROSOFT_APP_ID`), nur wenn es diesen Bot bedient;
+ein älteres Teams-Plugin nennt keinen.
 
 ### Conductor Ephemeral/JIT-Workflows (#330 Workstream A)
 
