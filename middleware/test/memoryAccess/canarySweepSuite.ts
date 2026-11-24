@@ -36,11 +36,6 @@ interface KnownLeak {
   readonly matches: (sweep: TurnSweep, s: Sighting) => boolean;
 }
 
-/** In the client stream but not in what the model was sent: the graph walk. */
-const viaGraphWalk = (sweep: TurnSweep, s: Sighting): boolean =>
-  s.entry === 'client-stream' &&
-  !sweep.sightings.some((o) => o.entry === 'context' && o.canary === s.canary);
-
 export const KNOWN_LEAKS: readonly KnownLeak[] = [
   {
     issue: '#2207',
@@ -49,20 +44,6 @@ export const KNOWN_LEAKS: readonly KnownLeak[] = [
     recall: 'any',
     backend: 'neon',
     matches: (_sweep, s) => s.entry === 'process-tool',
-  },
-  {
-    issue: '#2208',
-    title: "a plugin's ctx.knowledgeGraph.getNeighbors returns only what the turn may see",
-    modes: ['off', 'enforce', 'enforce-strict', 'members'],
-    recall: 'any',
-    matches: (_sweep, s) => s.entry === 'plugin-neighbors',
-  },
-  {
-    issue: '#1825',
-    title: 'the kg_graph walk around recalled memories shows only what the viewer may see',
-    modes: ['off', 'enforce', 'enforce-strict', 'members'],
-    recall: 'production',
-    matches: viaGraphWalk,
   },
 ];
 

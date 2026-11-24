@@ -36,6 +36,21 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — graph walks showed what the viewer may not see (#2208, #1825) (2026-11-24)
+
+- A plugin's `ctx.knowledgeGraph.getNeighbors` returned every neighbour of a node: private
+  memories of other people, plans and turns the turn may not read, in every context-memory
+  mode. The `kg_graph` / `kg_insert` walk the client receives around recalled memories did the
+  same, and through another person's User node reached their unrelated conversations.
+- Both now pass through one node filter per turn (`graphNodeAccess.ts` in
+  `@omadia/orchestrator`), built from the turn's graph boundary and the mode's recall rules.
+  The walk keeps the recall hits as roots and follows only admitted nodes. Outside the own
+  conversation, tail-only turns and (under a shield) unprotected turns stay out, as in recall.
+- **Behaviour change:** the knowledge-graph side panel shows fewer nodes, and none for a turn
+  without a graph boundary.
+- The canary sweep's `todo` tests for #2208 and #1825 are now part of the ordinary assertion.
+  `PG_TEST_FLOOR` 747 → 743.
+
 ### Fixed — the graph tool read the whole tenant in `off` / `enforce` (#2204) (2026-11-24)
 
 - In context memory `off` and `enforce`, `query_knowledge_graph` and a plugin's

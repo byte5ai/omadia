@@ -1038,6 +1038,14 @@ The surfaces that boundary must cover, and how each one does:
   (`agentScopePrefix` + `userId`, `getSession(scope, { userId })`), plus the
   turn's own conversation in full. A turn without a user sees nothing; the
   registered (CLI-path) handler knows no turn and sees nothing in every mode.
+- **Graph walks (#2208, #1825):** a plugin's `getNeighbors` and the `kg_graph` /
+  `kg_insert` walk sent to the client keep only nodes the turn may see
+  (`graphNodeAccess.ts`): turns and sessions through the same boundary as the
+  graph tool, memories by the recall ACL of the mode, entities, plans and facts
+  only where their turns or agent allow, a User node only the viewer's own.
+  The walk never passes through a node it may not show, so another person's
+  User node no longer leads to their other chats. Outside a turn with a graph
+  boundary there is no walk.
 
 The audience is the security input. A group counts as known only when its
 channel marks the roster complete (`ChatParticipantsProvider.completeRoster`).
@@ -1060,10 +1068,6 @@ Known residuals:
   no agent or context-memory bound (other agents' processes in every mode; any
   process in a context-bound `enforce-strict` / `members` turn, which recall
   skips).
-- #2208: a plugin's `ctx.knowledgeGraph.getNeighbors` applies only the shield
-  filter, in every mode: private memories, plans and turns next to any node
-  the plugin found. Related: #1825 (the `kg_graph` walk around recalled
-  memories, also without access checks).
 - #1762: web chat tabs (`/api/chat/sessions`) have no owner; every account
   lists and reads every tab.
 

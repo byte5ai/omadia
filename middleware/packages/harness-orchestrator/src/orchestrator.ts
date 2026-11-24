@@ -85,6 +85,7 @@ import {
   KNOWLEDGE_GRAPH_TOOL_NAME,
   knowledgeGraphToolSpec,
 } from './knowledgeGraphTool.js';
+import { boundKgWalk, currentGraphNodeViewer, graphNodeFilter } from './graphNodeAccess.js';
 import type { MemoryToolHandler } from '@omadia/memory';
 import type { BoundTurnMemory, MemoryBinder } from './memoryBinder.js';
 import { memoryIndexHint, prefetchMemoryIndex } from './memoryIndexPrefetch.js';
@@ -303,7 +304,7 @@ import type {
   SeamMessage,
 } from './llmProviderSeam.js';
 import { completeWithFallback, streamMessageEvents } from './streaming.js';
-import type { ModelRef } from '@omadia/plugin-api';
+import type { KgWalkPayload, ModelRef } from '@omadia/plugin-api';
 import type { LlmProviderPool } from '@omadia/llm-provider';
 
 /**
@@ -4700,7 +4701,9 @@ export class Orchestrator {
   ): Promise<ChatStreamEvent[]> {
     if (!recalled || !this.knowledgeGraph) return [];
     try {
-      const payload = await buildKgWalkPayload(recalled, this.knowledgeGraph);
+      const payload = await this.boundToViewer(
+        await buildKgWalkPayload(recalled, this.knowledgeGraph),
+      );
       if (!payload) return [];
       return [
         {
@@ -4720,6 +4723,19 @@ export class Orchestrator {
   }
 
   /**
+   * #1825 — a walk shows only what this turn's viewer may see, and never
+   * reaches a node through one they may not (another person's User node).
+   * The roots are this turn's own recall hits (or its own new memory). No
+   * graph boundary: no walk.
+   */
+  private async boundToViewer(payload: KgWalkPayload | undefined): Promise<KgWalkPayload | undefined> {
+    if (!payload || !this.knowledgeGraph) return undefined;
+    const viewer = currentGraphNodeViewer({ trusted: new Set(payload.rootIds) });
+    if (!viewer) return undefined;
+    return boundKgWalk(payload, this.knowledgeGraph, graphNodeFilter(this.knowledgeGraph, viewer));
+  }
+
+  /**
    * KG-insert chat visualization — the WRITE-side sibling of
    * {@link toKgGraphAnnotationEvents}. Emitted just before `done` once a turn
    * auto-promotes a MemorableKnowledge node: walks a tight 1-hop neighbourhood
@@ -4736,9 +4752,8 @@ export class Orchestrator {
   ): Promise<ChatStreamEvent[]> {
     if (!insertedMkId || !this.knowledgeGraph) return [];
     try {
-      const payload = await buildKgInsertPayload(
-        insertedMkId,
-        this.knowledgeGraph,
+      const payload = await this.boundToViewer(
+        await buildKgInsertPayload(insertedMkId, this.knowledgeGraph),
       );
       if (!payload) return [];
       return [

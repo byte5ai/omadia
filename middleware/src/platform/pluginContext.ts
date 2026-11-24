@@ -67,7 +67,12 @@ import {
 } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 import type { DomainTool } from '@omadia/orchestrator';
-import { MEMORY_TOOL_NAME, turnContext } from '@omadia/orchestrator';
+import {
+  MEMORY_TOOL_NAME,
+  currentGraphNodeViewer,
+  graphNodeFilter,
+  turnContext,
+} from '@omadia/orchestrator';
 import { MemoryToolHandler } from '@omadia/memory';
 import {
   isClassRef,
@@ -1666,9 +1671,17 @@ function createKnowledgeGraphAccessor(
         .filter((hit) => hit.turns.length > 0);
     },
     // #1540 — under a shield, as the turn search: no content of a turn
-    // stored `unprotected` (shieldedNeighbors.ts).
-    getNeighbors: (nodeId) =>
-      neighborsForPlugin(resolveKg(), nodeId, turnContext.current()?.privacyHandle !== undefined),
+    // stored `unprotected` (shieldedNeighbors.ts). #2208 — inside a turn, only
+    // the neighbours that turn may see (graphNodeAccess.ts), as its searches.
+    getNeighbors: async (nodeId) => {
+      const kg = resolveKg();
+      const shielded = await neighborsForPlugin(kg, nodeId, turnContext.current()?.privacyHandle !== undefined);
+      const viewer = currentGraphNodeViewer();
+      if (!viewer) return shielded;
+      const visible = graphNodeFilter(kg, viewer);
+      const keep = await Promise.all(shielded.map(visible));
+      return shielded.filter((_, i) => keep[i]);
+    },
     stats: () => resolveKg().stats(),
   };
 }
