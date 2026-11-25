@@ -60,6 +60,16 @@ decision, write a new ADR and mark the old one **Superseded by …**.
 | 0030 | [The kernel bounds closing scopes and the deadline wait](0030-kernel-bounds-closing-scopes-and-the-deadline-wait.md) | Accepted | 2026-11-21 |
 | 0031 | [Audio meeting source split from the native facilitator epic](0031-audio-meeting-source-split-from-native-facilitators.md) | Accepted | 2026-11-22 |
 | 0032 | [The caller of a tool call is named like the author of a message](0032-tool-caller-principal-is-the-conversation-form.md) | Accepted | 2026-11-23 |
+| 0033 | [The memory tool protects shared trees by path; rules come only from the seed](0033-memory-tool-protected-trees-and-seeded-rules.md) | Accepted | 2026-11-23 |
+| 0034 | [No session-scoped Postgres state on the shared pool; a notification is only a hint](0034-no-session-state-behind-a-transaction-pooler.md) | Accepted | 2026-11-20 |
+| 0035 | [Postgres tests are found by their name; CI guards the name and holds a floor](0035-postgres-tests-are-found-by-name-and-held-by-a-floor.md) | Accepted | 2026-11-23 |
+| 0036 | [Agent names are not personal data; a human's name vetoes the exemption](0036-agent-names-are-not-personal-data.md) | Accepted | 2026-11-24 |
+| 0037 | [Question cards: typed questions out, typed answers in](0037-typed-question-cards-in-the-send-contract.md) | Accepted | 2026-11-19 |
+| 0038 | [Conductor operator routes: a malformed id is a 400, an unknown id a 404](0038-conductor-routes-check-id-shape-400-then-404.md) | Accepted | 2026-11-23 |
+| 0039 | [Memory access is verified against a hand-written oracle and a canary sweep](0039-memory-access-verified-by-oracle-and-canary-sweep.md) | Proposed | 2026-11-24 |
+| 0040 | [Private knowledge stays private: one graph read boundary per turn for every read path](0040-one-graph-read-boundary-per-turn.md) | Proposed | 2026-11-24 |
+| 0041 | [Conductor webhooks: context opt-in, bounded retention, signed timestamps, rotation grace](0041-conductor-webhook-hardening.md) | Accepted | 2026-11-24 |
+| 0042 | [Conductor event ids belong to the sender; the catalog only suggests](0042-conductor-event-ids-belong-to-the-sender.md) | Accepted | 2026-11-24 |
 
 ### The agent model (0012–0022)
 

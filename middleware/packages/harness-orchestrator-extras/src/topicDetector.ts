@@ -6,6 +6,7 @@ import {
   type EmbeddingClient,
 } from '@omadia/embeddings';
 
+import { TOPIC_CLASSIFIER_MAX_TOKENS, VERDICT_JUDGE_REASONING } from './classifierBudgets.js';
 import type { OpenJobPrivacy } from './jobPrivacy.js';
 
 /**
@@ -50,7 +51,7 @@ export interface TopicDetectorOptions {
   centroidDepth?: number;
   /** Haiku model id for the classifier step. */
   classifierModel?: string;
-  /** Token budget for the classifier call (tight — verdict is JSON). */
+  /** Token budget for the classifier call: one word plus the model's thinking. */
   classifierMaxTokens?: number;
   /** When every stage fails unexpectedly (network, timeouts), fall back to
    *  this decision. `continue` is the forgiving default — we'd rather keep
@@ -72,7 +73,7 @@ const DEFAULTS: TopicDetectorTuning = {
   lowerThreshold: 0.15,
   centroidDepth: 5,
   classifierModel: 'claude-haiku-4-5-20251001',
-  classifierMaxTokens: 64,
+  classifierMaxTokens: TOPIC_CLASSIFIER_MAX_TOKENS,
   fallbackDecision: 'continue',
 };
 
@@ -212,6 +213,7 @@ ${truncate(input.userMessage, 400)}`;
     const response = await this.llm.complete({
       model: this.opts.classifierModel,
       maxTokens: this.opts.classifierMaxTokens,
+      ...VERDICT_JUDGE_REASONING,
       system,
       messages: [textMessage('user', masked.text)],
     });

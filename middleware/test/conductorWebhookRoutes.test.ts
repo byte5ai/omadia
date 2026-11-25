@@ -30,11 +30,11 @@ type EndpointWithUrl = ConductorWebhookEndpoint & { inboundUrl?: string };
 // about the HTTP contract — status codes, error codes, and the 503-when-unwired /
 // 404 / 400 branches the routes are responsible for.
 
-function fakeEndpointStore(): { store: ConductorWebhookEndpointStore; rotate: string[] } {
+function fakeEndpointStore(): { store: ConductorWebhookEndpointStore; rotate: Array<{ endpointId: string; graceMs: number }> } {
   const rows = new Map<string, ConductorWebhookEndpoint>();
   const deliveries = new Map<string, ConductorWebhookInboundDelivery[]>();
   const secrets = new Map<string, string>();
-  const rotate: string[] = [];
+  const rotate: Array<{ endpointId: string; graceMs: number }> = [];
   let seq = 0;
   const store: ConductorWebhookEndpointStore = {
     async create(input) {
@@ -46,6 +46,7 @@ function fakeEndpointStore(): { store: ConductorWebhookEndpointStore; rotate: st
         eventId: input.eventId,
         description: input.description ?? null,
         enabled: true,
+        secretPreviousUntil: null,
         createdBy: input.createdBy,
         createdAt: new Date('2026-07-28T00:00:00.000Z'),
       };
@@ -62,10 +63,25 @@ function fakeEndpointStore(): { store: ConductorWebhookEndpointStore; rotate: st
     async getSecret(endpointId) {
       return secrets.get(endpointId);
     },
-    async rotateSecret(endpointId) {
-      rotate.push(endpointId);
+    // Annotated explicitly: the surrounding object is cast through `unknown`, so TS
+    // infers nothing for these parameters (the pre-existing debt in this file).
+    async getVerificationSecrets(endpointId: string) {
+      const current = secrets.get(endpointId);
+      return current === undefined ? {} : { current };
+    },
+    // #1707 — records the grace the route asked for, so the test can assert that the
+    // configured window (and `?immediate=true`'s zero) actually reaches the store.
+    async rotateSecret(endpointId: string, graceMs = 0) {
+      rotate.push({ endpointId, graceMs });
       const secret = `rotated-${endpointId}`;
       secrets.set(endpointId, secret);
+      const row = rows.get(endpointId);
+      if (row) {
+        rows.set(endpointId, {
+          ...row,
+          secretPreviousUntil: graceMs > 0 ? new Date(Date.now() + graceMs) : null,
+        });
+      }
       return secret;
     },
     async setEnabled(endpointId, enabled) {
@@ -100,7 +116,9 @@ function fakeSubscriptionStore(): { store: ConductorWebhookSubscriptionStore; ro
   const store: ConductorWebhookSubscriptionStore = {
     async create(input) {
       seq += 1;
-      const id = `sub-${String(seq)}`;
+      // uuid-shaped like the real `conductor_webhook_subscriptions.id` column —
+      // the router's #1706 param guard refuses any other shape with a 400.
+      const id = `00000000-0000-4000-8000-00000000000${String(seq)}`;
       const secret = `secret-${String(seq)}`;
       const subscription: ConductorWebhookSubscription = {
         id,
@@ -108,6 +126,7 @@ function fakeSubscriptionStore(): { store: ConductorWebhookSubscriptionStore; ro
         event: input.event,
         description: input.description ?? null,
         enabled: true,
+        includeContext: input.includeContext ?? false,
         createdBy: input.createdBy,
         createdAt: new Date('2026-07-28T00:00:00.000Z'),
       };
@@ -137,9 +156,19 @@ function fakeSubscriptionStore(): { store: ConductorWebhookSubscriptionStore; ro
       const row = rows.get(id);
       if (row) rows.set(id, { ...row, enabled });
     },
+    async setIncludeContext(id: string, includeContext: boolean) {
+      const row = rows.get(id);
+      if (row) rows.set(id, { ...row, includeContext });
+    },
     async delete(id) {
       rows.delete(id);
       secrets.delete(id);
+    },
+    async redactDeliveryPayloadsOlderThan() {
+      return 0;
+    },
+    async deleteDeliveriesOlderThan() {
+      return 0;
     },
     async createDelivery() {
       throw new Error('not used by the admin routes');
@@ -164,21 +193,34 @@ function fakeSubscriptionStore(): { store: ConductorWebhookSubscriptionStore; ro
   return { store, rotate };
 }
 
+/** #1707 — what `deps.auditWebhookChange` was handed, so the tests can assert the
+ *  trail exists AND that it never carries a secret. */
+type AuditCall = Parameters<NonNullable<ConductorRouterDeps['auditWebhookChange']>>[0];
+
 interface Harness {
   baseUrl: string;
   endpoints: ReturnType<typeof fakeEndpointStore>;
   subscriptions: ReturnType<typeof fakeSubscriptionStore>;
   urlChecks: string[];
+  audits: AuditCall[];
   rejectUrl?: string;
 }
 
 const servers: Server[] = [];
 
-async function makeHarness(opts?: { wired?: boolean; rejectUrl?: string; webhookInboundBaseUrl?: string }): Promise<Harness> {
+async function makeHarness(opts?: {
+  wired?: boolean;
+  rejectUrl?: string;
+  webhookInboundBaseUrl?: string;
+  secretGraceMs?: number;
+  posture?: Record<string, unknown>;
+  auditThrows?: boolean;
+}): Promise<Harness> {
   const wired = opts?.wired ?? true;
   const endpoints = fakeEndpointStore();
   const subscriptions = fakeSubscriptionStore();
   const urlChecks: string[] = [];
+  const audits: AuditCall[] = [];
 
   const deps = {
     workflowStore: {},
@@ -190,6 +232,12 @@ async function makeHarness(opts?: { wired?: boolean; rejectUrl?: string; webhook
     eventRouter: {},
     ...(wired ? { webhookEndpoints: endpoints.store, webhookSubscriptions: subscriptions.store } : {}),
     ...(opts?.webhookInboundBaseUrl ? { webhookInboundBaseUrl: opts.webhookInboundBaseUrl } : {}),
+    ...(opts?.secretGraceMs !== undefined ? { webhookSecretGraceMs: opts.secretGraceMs } : {}),
+    ...(opts?.posture ? { webhookPosture: opts.posture } : {}),
+    auditWebhookChange: async (entry: AuditCall) => {
+      audits.push(entry);
+      if (opts?.auditThrows === true) throw new Error('audit sink exploded');
+    },
     assertOutboundUrlAllowed: (url: string) => {
       urlChecks.push(url);
       if (opts?.rejectUrl && url === opts.rejectUrl) {
@@ -202,7 +250,13 @@ async function makeHarness(opts?: { wired?: boolean; rejectUrl?: string; webhook
   app.use(express.json());
   app.use((req, _res, next) => {
     const viewer = req.header('x-viewer');
-    if (viewer) (req as Request & { session?: { sub: string } }).session = { sub: viewer };
+    const viewerEmail = req.header('x-viewer-email');
+    if (viewer || viewerEmail) {
+      (req as Request & { session?: { sub?: string; email?: string } }).session = {
+        ...(viewer ? { sub: viewer } : {}),
+        ...(viewerEmail ? { email: viewerEmail } : {}),
+      };
+    }
     next();
   });
   app.use('/api/v1/operator/conductors', createConductorRouter(deps));
@@ -216,6 +270,7 @@ async function makeHarness(opts?: { wired?: boolean; rejectUrl?: string; webhook
     endpoints,
     subscriptions,
     urlChecks,
+    audits,
   };
 }
 
@@ -223,8 +278,15 @@ after(async () => {
   await Promise.all(servers.map((s) => new Promise<void>((resolve) => s.close(() => resolve()))));
 });
 
-function headers(viewer?: string): Record<string, string> {
-  return { 'content-type': 'application/json', ...(viewer ? { 'x-viewer': viewer } : {}) };
+/** Well-formed but unused — the fake mints `…0001` upward. */
+const UNKNOWN_UUID = '00000000-0000-4000-8000-0000000009ff';
+
+function headers(viewer?: string, viewerEmail?: string): Record<string, string> {
+  return {
+    'content-type': 'application/json',
+    ...(viewer ? { 'x-viewer': viewer } : {}),
+    ...(viewerEmail ? { 'x-viewer-email': viewerEmail } : {}),
+  };
 }
 
 async function get(url: string, viewer?: string): Promise<Response> {
@@ -303,7 +365,7 @@ describe('inbound webhook endpoints admin routes (#437)', () => {
     assert.equal(rotated.status, 200);
     const { secret: next } = (await rotated.json()) as { secret: string };
     assert.notEqual(next, original);
-    assert.deepEqual(h.endpoints.rotate, [endpoint.endpointId]);
+    assert.deepEqual(h.endpoints.rotate.map((r) => r.endpointId), [endpoint.endpointId]);
   });
 
   it('status toggles enabled and 400s a non-boolean body', async () => {
@@ -359,10 +421,10 @@ describe('outbound webhook subscriptions admin routes (#437)', () => {
     const h = await makeHarness({ wired: false });
     assert.equal((await get(`${h.baseUrl}/webhooks/subscriptions`)).status, 503);
     assert.equal((await post(`${h.baseUrl}/webhooks/subscriptions`, { url: 'https://example.com/hook', event: 'run.completed' })).status, 503);
-    assert.equal((await post(`${h.baseUrl}/webhooks/subscriptions/sub-1/rotate-secret`, {})).status, 503);
-    assert.equal((await post(`${h.baseUrl}/webhooks/subscriptions/sub-1/status`, { enabled: false })).status, 503);
-    assert.equal((await del(`${h.baseUrl}/webhooks/subscriptions/sub-1`)).status, 503);
-    assert.equal((await get(`${h.baseUrl}/webhooks/subscriptions/sub-1/deliveries`)).status, 503);
+    assert.equal((await post(`${h.baseUrl}/webhooks/subscriptions/${UNKNOWN_UUID}/rotate-secret`, {})).status, 503);
+    assert.equal((await post(`${h.baseUrl}/webhooks/subscriptions/${UNKNOWN_UUID}/status`, { enabled: false })).status, 503);
+    assert.equal((await del(`${h.baseUrl}/webhooks/subscriptions/${UNKNOWN_UUID}`)).status, 503);
+    assert.equal((await get(`${h.baseUrl}/webhooks/subscriptions/${UNKNOWN_UUID}/deliveries`)).status, 503);
   });
 
   it('creates a subscription (checking the URL via assertOutboundUrlAllowed) and returns the secret once', async () => {
@@ -392,6 +454,30 @@ describe('outbound webhook subscriptions admin routes (#437)', () => {
     assert.equal((await post(`${h.baseUrl}/webhooks/subscriptions`, { url: 'https://example.com/hook' })).status, 400);
   });
 
+  // #1705 — an operator cancel now has its own event name, and a subscription to a
+  // name that nothing fires is refused instead of accepted-and-silent.
+  it('creates a run.cancelled subscription', async () => {
+    const h = await makeHarness();
+    const res = await post(`${h.baseUrl}/webhooks/subscriptions`, { url: 'https://example.com/hook', event: 'run.cancelled' });
+    assert.equal(res.status, 201);
+    const body = (await res.json()) as { subscription: ConductorWebhookSubscription };
+    assert.equal(body.subscription.event, 'run.cancelled');
+  });
+
+  it('400s a create for an event that never fires, WITHOUT ever calling the store', async () => {
+    const h = await makeHarness();
+    const res = await post(`${h.baseUrl}/webhooks/subscriptions`, { url: 'https://example.com/hook', event: 'run.exploded' });
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { code: string; message: string };
+    assert.equal(body.code, 'conductor.invalid_input');
+    assert.match(body.message, /run\.cancelled/, 'the message must name the events an operator CAN subscribe to');
+    assert.deepEqual(
+      ((await (await get(`${h.baseUrl}/webhooks/subscriptions`)).json()) as { subscriptions: unknown[] }).subscriptions,
+      [],
+      'a refused event must not leave a subscription row behind',
+    );
+  });
+
   it('400s a create whose URL the SSRF guard rejects, WITHOUT ever calling the store', async () => {
     const h = await makeHarness({ rejectUrl: 'http://169.254.169.254/latest/meta-data' });
     const res = await post(`${h.baseUrl}/webhooks/subscriptions`, {
@@ -407,7 +493,7 @@ describe('outbound webhook subscriptions admin routes (#437)', () => {
 
   it('rotate-secret 404s an unknown subscription and 200s a known one with a NEW secret', async () => {
     const h = await makeHarness();
-    assert.equal((await post(`${h.baseUrl}/webhooks/subscriptions/does-not-exist/rotate-secret`, {})).status, 404);
+    assert.equal((await post(`${h.baseUrl}/webhooks/subscriptions/${UNKNOWN_UUID}/rotate-secret`, {})).status, 404);
 
     const created = await post(`${h.baseUrl}/webhooks/subscriptions`, { url: 'https://example.com/hook', event: 'run.completed' });
     const { subscription, secret: original } = (await created.json()) as { subscription: ConductorWebhookSubscription; secret: string };
@@ -468,5 +554,320 @@ describe('outbound webhook subscriptions admin routes (#437)', () => {
     assert.equal(body.deliveries.length, 1);
     assert.equal(body.deliveries[0]!.id, 'd-1');
     assert.equal(body.deliveries[0]!.status, 'delivered');
+  });
+});
+
+describe('webhook admin hardening (#1707)', () => {
+  // The reported gap: `SELECT action FROM admin_audit WHERE action ILIKE '%webhook%'`
+  // returned no rows — creating, rotating, disabling and deleting endpoints and
+  // subscriptions were all unrecorded.
+
+  it('records an audit entry for every endpoint mutation, never the secret', async () => {
+    const h = await makeHarness();
+    const created = (await (await post(`${h.baseUrl}/webhooks/endpoints`, { eventId: 'orders.created' }, 'op-a')).json()) as {
+      endpoint: ConductorWebhookEndpoint;
+      secret: string;
+    };
+    const id = created.endpoint.endpointId;
+    await post(`${h.baseUrl}/webhooks/endpoints/${id}/rotate-secret`, {}, 'op-a');
+    await post(`${h.baseUrl}/webhooks/endpoints/${id}/status`, { enabled: false }, 'op-a');
+    await del(`${h.baseUrl}/webhooks/endpoints/${id}`, 'op-a');
+
+    assert.deepEqual(
+      h.audits.map((a) => `${a.kind}.${a.change}`),
+      ['endpoint.create', 'endpoint.rotate_secret', 'endpoint.status', 'endpoint.delete'],
+    );
+    assert.deepEqual(new Set(h.audits.map((a) => a.id)), new Set([id]));
+    assert.deepEqual(new Set(h.audits.map((a) => a.actor)), new Set(['op-a']));
+    // No secret may ever reach the trail — neither the created nor the rotated one.
+    const serialized = JSON.stringify(h.audits);
+    assert.equal(serialized.includes(created.secret), false);
+    assert.equal(serialized.includes(`rotated-${id}`), false);
+  });
+
+  it('records an audit entry for every subscription mutation', async () => {
+    const h = await makeHarness();
+    const created = (await (
+      await post(`${h.baseUrl}/webhooks/subscriptions`, { url: 'https://example.com/hook', event: 'run.completed' }, 'op-b')
+    ).json()) as { subscription: ConductorWebhookSubscription };
+    const id = created.subscription.id;
+    await post(`${h.baseUrl}/webhooks/subscriptions/${id}/rotate-secret`, {}, 'op-b');
+    await post(`${h.baseUrl}/webhooks/subscriptions/${id}/status`, { enabled: false }, 'op-b');
+    await post(`${h.baseUrl}/webhooks/subscriptions/${id}/payload-scope`, { includeContext: true }, 'op-b');
+    await del(`${h.baseUrl}/webhooks/subscriptions/${id}`, 'op-b');
+
+    assert.deepEqual(
+      h.audits.map((a) => `${a.kind}.${a.change}`),
+      [
+        'subscription.create',
+        'subscription.rotate_secret',
+        'subscription.status',
+        'subscription.payload_scope',
+        'subscription.delete',
+      ],
+    );
+  });
+
+  it('a delete audit entry describes what was deleted (read before the DELETE)', async () => {
+    const h = await makeHarness();
+    const created = (await (await post(`${h.baseUrl}/webhooks/endpoints`, { eventId: 'orders.created' })).json()) as {
+      endpoint: ConductorWebhookEndpoint;
+    };
+    await del(`${h.baseUrl}/webhooks/endpoints/${created.endpoint.endpointId}`);
+    const entry = h.audits.find((a) => a.change === 'delete');
+    assert.deepEqual(entry?.before, { eventId: 'orders.created', enabled: true });
+  });
+
+  it('an audit-sink failure never fails the mutation the operator already made', async () => {
+    const h = await makeHarness({ auditThrows: true });
+    const res = await post(`${h.baseUrl}/webhooks/endpoints`, { eventId: 'orders.created' });
+    assert.equal(res.status, 201);
+    assert.equal(h.audits.length, 1);
+  });
+
+  // Rotation grace: the old secret used to 401 on the sender's very next request.
+
+  it('rotate-secret passes the configured grace window to the store', async () => {
+    const h = await makeHarness({ secretGraceMs: 3_600_000 });
+    const created = (await (await post(`${h.baseUrl}/webhooks/endpoints`, { eventId: 'orders.created' })).json()) as {
+      endpoint: ConductorWebhookEndpoint;
+    };
+    const res = await post(`${h.baseUrl}/webhooks/endpoints/${created.endpoint.endpointId}/rotate-secret`, {});
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { secret: string; previousSecretValidUntil: string | null };
+    assert.equal(h.endpoints.rotate[0]?.graceMs, 3_600_000);
+    assert.notEqual(body.previousSecretValidUntil, null);
+    assert.equal(h.audits.at(-1)?.change, 'rotate_secret');
+  });
+
+  it('?immediate=true cuts over with no grace — the answer to a leaked secret', async () => {
+    const h = await makeHarness({ secretGraceMs: 3_600_000 });
+    const created = (await (await post(`${h.baseUrl}/webhooks/endpoints`, { eventId: 'orders.created' })).json()) as {
+      endpoint: ConductorWebhookEndpoint;
+    };
+    const res = await post(`${h.baseUrl}/webhooks/endpoints/${created.endpoint.endpointId}/rotate-secret?immediate=true`, {});
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { previousSecretValidUntil: string | null };
+    assert.equal(h.endpoints.rotate[0]?.graceMs, 0);
+    assert.equal(body.previousSecretValidUntil, null);
+  });
+
+  // The run-context opt-in: the delivery payload used to carry every step result,
+  // free-text human responses included, with nothing to turn that off.
+
+  it('a subscription is created WITHOUT the run context unless it opts in', async () => {
+    const h = await makeHarness();
+    const res = await post(`${h.baseUrl}/webhooks/subscriptions`, { url: 'https://example.com/a', event: 'run.completed' });
+    const body = (await res.json()) as { subscription: ConductorWebhookSubscription };
+    assert.equal(body.subscription.includeContext, false);
+  });
+
+  it('includeContext must be the boolean true — a truthy string does not opt in', async () => {
+    const h = await makeHarness();
+    const res = await post(`${h.baseUrl}/webhooks/subscriptions`, {
+      url: 'https://example.com/b',
+      event: 'run.completed',
+      includeContext: 'yes',
+    });
+    const body = (await res.json()) as { subscription: ConductorWebhookSubscription };
+    assert.equal(body.subscription.includeContext, false);
+  });
+
+  it('payload-scope flips the opt-in and 400s a non-boolean', async () => {
+    const h = await makeHarness();
+    const created = (await (
+      await post(`${h.baseUrl}/webhooks/subscriptions`, { url: 'https://example.com/c', event: 'run.completed' })
+    ).json()) as { subscription: ConductorWebhookSubscription };
+    const id = created.subscription.id;
+
+    assert.equal((await post(`${h.baseUrl}/webhooks/subscriptions/${id}/payload-scope`, { includeContext: 'yes' })).status, 400);
+    assert.equal((await post(`${h.baseUrl}/webhooks/subscriptions/${id}/payload-scope`, { includeContext: true })).status, 204);
+    const listed = (await (await get(`${h.baseUrl}/webhooks/subscriptions`)).json()) as {
+      subscriptions: ConductorWebhookSubscription[];
+    };
+    assert.equal(listed.subscriptions.find((sub) => sub.id === id)?.includeContext, true);
+    assert.equal((await post(`${h.baseUrl}/webhooks/subscriptions/${UNKNOWN_UUID}/payload-scope`, { includeContext: true })).status, 404);
+  });
+
+  // The kill switch was invisible: with CONDUCTOR_WEBHOOKS_ENABLED=false the admin
+  // page showed no state at all.
+
+  // Review finding: an unknown id used to answer 204 AND write an audit row, so the
+  // trail recorded a state change that never happened.
+
+  it('status on an unknown endpoint 404s and writes no audit row', async () => {
+    const h = await makeHarness();
+    const res = await post(`${h.baseUrl}/webhooks/endpoints/does-not-exist/status`, { enabled: false });
+    assert.equal(res.status, 404);
+    assert.deepEqual(h.audits, []);
+  });
+
+  it('status on an unknown subscription 404s and writes no audit row', async () => {
+    const h = await makeHarness();
+    const res = await post(`${h.baseUrl}/webhooks/subscriptions/${UNKNOWN_UUID}/status`, { enabled: false });
+    assert.equal(res.status, 404);
+    assert.deepEqual(h.audits, []);
+  });
+
+  it('deleting an id that is already gone 404s (#1706) and audits nothing', async () => {
+    const h = await makeHarness();
+    assert.equal((await del(`${h.baseUrl}/webhooks/endpoints/does-not-exist`)).status, 404);
+    assert.equal((await del(`${h.baseUrl}/webhooks/subscriptions/${UNKNOWN_UUID}`)).status, 404);
+    assert.deepEqual(h.audits, [], 'a delete that deleted nothing is not a trail entry');
+  });
+
+  it('a real status change still 204s and still audits', async () => {
+    const h = await makeHarness();
+    const created = (await (await post(`${h.baseUrl}/webhooks/endpoints`, { eventId: 'orders.created' })).json()) as {
+      endpoint: ConductorWebhookEndpoint;
+    };
+    const res = await post(`${h.baseUrl}/webhooks/endpoints/${created.endpoint.endpointId}/status`, { enabled: false });
+    assert.equal(res.status, 204);
+    assert.deepEqual(h.audits.at(-1)?.before, { enabled: true });
+    assert.deepEqual(h.audits.at(-1)?.after, { enabled: false });
+  });
+
+  // Review finding: `actor_email` was receiving the session SUB, which under Entra is
+  // a guid — unreadable for the operator who has to answer "who disabled this?".
+  // `auditRoleChange` (the sibling sink) has always preferred the email.
+  it('the audit actor label is the session email when there is one', async () => {
+    const h = await makeHarness();
+    await fetch(`${h.baseUrl}/webhooks/endpoints`, {
+      method: 'POST',
+      headers: headers('00000000-aaaa-bbbb-cccc-000000000001', 'ops@byte5.de'),
+      body: JSON.stringify({ eventId: 'orders.created' }),
+    });
+    assert.equal(h.audits.at(-1)?.actor, 'ops@byte5.de');
+  });
+
+  it('falls back to the sub, then to the operator marker, when no email is present', async () => {
+    const h = await makeHarness();
+    await post(`${h.baseUrl}/webhooks/endpoints`, { eventId: 'orders.created' }, 'sub-only');
+    assert.equal(h.audits.at(-1)?.actor, 'sub-only');
+
+    await post(`${h.baseUrl}/webhooks/endpoints`, { eventId: 'orders.created' });
+    assert.equal(h.audits.at(-1)?.actor, 'operator');
+  });
+
+  it('posture reports the enforced state', async () => {
+    const h = await makeHarness({ posture: { configured: true, inboundEnabled: false, requireTimestamp: true } });
+    const res = await get(`${h.baseUrl}/webhooks/posture`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { posture: Record<string, unknown> };
+    assert.equal(body.posture['inboundEnabled'], false);
+    assert.equal(body.posture['requireTimestamp'], true);
+  });
+
+  it('posture answers 200 even unwired — "webhooks are off" is the answer it exists to give', async () => {
+    const h = await makeHarness({ wired: false });
+    const res = await get(`${h.baseUrl}/webhooks/posture`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { posture: Record<string, unknown> };
+    assert.equal(body.posture['inboundEnabled'], false);
+    assert.equal(body.posture['configured'], false);
+  });
+});
+
+/**
+ * #1706 — the id-bearing webhook admin routes used to hand a caller-supplied id
+ * straight to the store. For a subscription (`id` is a `uuid` column) Postgres
+ * failed the query with `22P02 invalid input syntax for type uuid: "999"` and
+ * the handler's catch-all copied that sentence into a 500 body. For an endpoint
+ * (`endpoint_id` is TEXT) there was no error at all: the UPDATE/DELETE matched
+ * zero rows and the route reported 204, i.e. success for an endpoint that does
+ * not exist.
+ */
+describe('webhook admin routes — id handling (#1706)', () => {
+  const MALFORMED = '999';
+
+  it('400s a malformed subscription id WITHOUT reaching the store', async () => {
+    const h = await makeHarness();
+    // Every store method on this harness would be reached only if the guard let
+    // the id through; the id is refused before any of them runs.
+    const cases: ReadonlyArray<readonly [string, () => Promise<Response>]> = [
+      ['rotate-secret', () => post(`${h.baseUrl}/webhooks/subscriptions/${MALFORMED}/rotate-secret`, {})],
+      ['status', () => post(`${h.baseUrl}/webhooks/subscriptions/${MALFORMED}/status`, { enabled: false })],
+      ['delete', () => del(`${h.baseUrl}/webhooks/subscriptions/${MALFORMED}`)],
+      ['deliveries', () => get(`${h.baseUrl}/webhooks/subscriptions/${MALFORMED}/deliveries`)],
+    ];
+    for (const [label, call] of cases) {
+      const res = await call();
+      assert.equal(res.status, 400, label);
+      const body = (await res.json()) as { code: string; message: string };
+      assert.equal(body.code, 'conductor.invalid_input', label);
+      // the Postgres sentence this issue is about never appears again
+      assert.doesNotMatch(body.message, /invalid input syntax/, label);
+    }
+    assert.deepEqual(h.subscriptions.rotate, []);
+  });
+
+  it('404s a well-formed subscription id that names no row', async () => {
+    const h = await makeHarness();
+    assert.equal((await post(`${h.baseUrl}/webhooks/subscriptions/${UNKNOWN_UUID}/status`, { enabled: false })).status, 404);
+    assert.equal((await del(`${h.baseUrl}/webhooks/subscriptions/${UNKNOWN_UUID}`)).status, 404);
+    const deliveries = await get(`${h.baseUrl}/webhooks/subscriptions/${UNKNOWN_UUID}/deliveries`);
+    assert.equal(deliveries.status, 404);
+    assert.equal(((await deliveries.json()) as { code: string }).code, 'conductor.not_found');
+  });
+
+  it('404s an unknown endpoint id instead of reporting success', async () => {
+    const h = await makeHarness();
+    const status = await post(`${h.baseUrl}/webhooks/endpoints/nope/status`, { enabled: false });
+    assert.equal(status.status, 404);
+    assert.equal(((await status.json()) as { code: string }).code, 'conductor.not_found');
+
+    const removed = await del(`${h.baseUrl}/webhooks/endpoints/nope`);
+    assert.equal(removed.status, 404);
+
+    // and an unknown endpoint's delivery history is a 404, not an empty list
+    // that reads as "nothing has arrived yet".
+    const deliveries = await get(`${h.baseUrl}/webhooks/endpoints/nope/deliveries`);
+    assert.equal(deliveries.status, 404);
+  });
+
+  it('still 204s status and delete for an endpoint that exists', async () => {
+    const h = await makeHarness();
+    const created = await post(`${h.baseUrl}/webhooks/endpoints`, { eventId: 'orders.created' });
+    const { endpoint } = (await created.json()) as { endpoint: ConductorWebhookEndpoint };
+    assert.equal((await post(`${h.baseUrl}/webhooks/endpoints/${endpoint.endpointId}/status`, { enabled: false })).status, 204);
+    assert.equal((await del(`${h.baseUrl}/webhooks/endpoints/${endpoint.endpointId}`)).status, 204);
+  });
+
+  // The guard is a router-level param handler, so it runs BEFORE the
+  // "webhooks are not wired" check. Deliberate: a malformed id is unusable on
+  // every host, wired or not, and the 503 answer is unchanged for the
+  // well-formed ids a real caller sends (covered by the 503 sweep above).
+  it('refuses a malformed id even on a host where webhooks are unwired', async () => {
+    const h = await makeHarness({ wired: false });
+    assert.equal((await del(`${h.baseUrl}/webhooks/subscriptions/${MALFORMED}`)).status, 400);
+  });
+});
+
+// Issue #1713 — an inbound endpoint's eventId is minted by an OPERATOR, so no plugin
+// manifest declares it and `EventCatalogRegistry.list()` never knows it. The pickers
+// (designer trigger field, template event slot) must still suggest it, so the catalog
+// route reports those ids additively, beside the plugin-declared ones.
+describe('GET /events/catalog — inbound endpoint event ids (#1713)', () => {
+  it('reports configured endpoint eventIds as endpointEvents, deduped and sorted', async () => {
+    const h = await makeHarness();
+    for (const eventId of ['orders.created', 'alerts.raised', 'orders.created']) {
+      assert.equal((await post(`${h.baseUrl}/webhooks/endpoints`, { eventId }, 'op')).status, 201);
+    }
+    const res = await get(`${h.baseUrl}/events/catalog`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { events: string[]; byPlugin: Record<string, string[]>; endpointEvents: string[] };
+    assert.deepEqual(body.endpointEvents, ['alerts.raised', 'orders.created']);
+    // Kept OUT of the plugin-declared halves: `events`/`byPlugin` keep meaning
+    // "a plugin declared it emits this".
+    assert.deepEqual(body.events, []);
+    assert.deepEqual(body.byPlugin, {});
+  });
+
+  it('degrades to an empty endpointEvents list when the endpoint store is not wired', async () => {
+    const h = await makeHarness({ wired: false });
+    const res = await get(`${h.baseUrl}/events/catalog`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { endpointEvents: string[] };
+    assert.deepEqual(body.endpointEvents, []);
   });
 });

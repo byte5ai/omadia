@@ -79,6 +79,7 @@ export type {
   AgentIdentityRefusal,
   AgentIdentityRefusalCode,
   AgentIdentityStatus,
+  DefaultChannelKeyProvider,
 } from './agentIdentity.js';
 export { normalizeAgentIdentityKey } from './agentIdentity.js';
 // #2043 - native facilitators: authenticated inbound messages, readiness and

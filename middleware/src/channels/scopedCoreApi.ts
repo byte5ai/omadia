@@ -32,6 +32,7 @@ import type {
   ConversationMembershipEvent,
   ConversationMessageEvent,
   CoreApi,
+  DefaultChannelKeyProvider,
   MeetingSourceProvider,
   SessionEvent,
 } from '@omadia/channel-sdk';
@@ -171,6 +172,12 @@ export function scopeCoreApiToChannel(
     registerTargetedSendProvider: claimed('a targeted-send provider', core.registerTargetedSendProvider),
     registerConversationSendProvider: claimed('a conversation-send provider', core.registerConversationSendProvider),
     registerAgentIdentityProvider: claimed<AgentIdentityProvider>('an agent-identity provider', core.registerAgentIdentityProvider),
+    // The default bot is the one unknown bot the Conductor routes to the
+    // fallback agent: only the plugin that holds the channel type may name it.
+    registerDefaultChannelKeyProvider: claimed<DefaultChannelKeyProvider>(
+      'a default-key provider',
+      core.registerDefaultChannelKeyProvider,
+    ),
   };
   for (const [name, fn] of Object.entries(withClaim)) {
     if (fn) (scoped as unknown as Record<string, unknown>)[name] = fn;

@@ -257,6 +257,26 @@ export const CLI_BINARY_RESOLVER_SERVICE = 'cliBinaryResolver';
  * block, which may come up after this plugin.
  */
 export const CHAT_PEER_AGENTS_SERVICE = 'chatPeerAgents';
+/**
+ * #2042 — kernel-published snapshot of the human names (display, first and
+ * last name of every active user), `humanNames@1` in `optional_requires`.
+ * Returns `null` while the kernel's directory is not loaded. Resolved PER
+ * TURN: the kernel provides it from inside its database block, after this
+ * plugin activated.
+ */
+export const HUMAN_NAMES_SERVICE = 'humanNames';
+export type HumanNamesProvider = () => readonly string[] | null;
+
+/**
+ * #2042 — the registry agents' `humanNames`: the kernel's `humanNames@1`
+ * snapshot, looked up per turn. A service that is not published (yet) yields
+ * `null` — unknown, so the turn exempts no own name (fail safe).
+ */
+export function kernelHumanNames(
+  services: Pick<PluginContext['services'], 'getOptional'>,
+): () => readonly string[] | null {
+  return () => services.getOptional<HumanNamesProvider>(HUMAN_NAMES_SERVICE)?.() ?? null;
+}
 /** #2043 — kernel-published lookup, see `OrchestratorDeps.isEngineDrivenConversation`. */
 export const FACILITATOR_CONVERSATIONS_SERVICE = 'facilitatorConversations';
 
@@ -1428,6 +1448,10 @@ export async function activate(
           ...(cliTurnSeconds > 0 ? { cliTurnSeconds } : {}),
           ...(loopRepeatSoft > 0 ? { loopRepeatSoft } : {}),
           ...(loopRepeatHard > 0 ? { loopRepeatHard } : {}),
+          // #2042 — the registry runs only with a database, where the kernel
+          // publishes `humanNames@1`; not published = unknown, so the turn
+          // exempts no own name (fail safe).
+          humanNames: kernelHumanNames(ctx.services),
         },
         ...(pluginLookup ? { pluginLookup } : {}),
         log: (msg, fields) =>

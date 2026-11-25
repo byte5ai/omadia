@@ -125,6 +125,10 @@ export type Quorum = 'any' | 'all';
 export interface HumanStepConfig {
   principal: Principal;
   channel: string;
+  /** The prose the responder is shown. Supports `{{ctx.path}}` /
+   *  `{{steps.stepId.field}}` interpolation against the run context, rendered
+   *  once when the await is opened (#1709); an unresolved token renders as a
+   *  visible dash, never as raw `{{...}}` syntax. */
   message: string;
   /** ISO-8601 duration; null/absent = no reminders. */
   reminderInterval?: string | null;
@@ -180,9 +184,14 @@ export interface Step {
   /** required when kind='action'. The deterministic-action / connector tool id to invoke. */
   actionId?: string;
   /** kind='agent': the message sent to the orchestrator turn. Supports `{{ctx.path}}` /
-   *  `{{steps.stepId.field}}` interpolation against the run context. */
+   *  `{{steps.stepId.field}}` interpolation against the run context; an unresolved
+   *  token renders as a visible dash. */
   prompt?: string;
-  /** kind='action': the input object passed to the connector action. */
+  /** kind='action': the input object passed to the connector action. Every string
+   *  VALUE (at any depth) supports the same `{{ctx.path}}` / `{{steps.stepId.field}}`
+   *  interpolation as `prompt`, rendered per call (#1709); object keys are parameter
+   *  names and are never interpolated. Substitution is textual, so a token always
+   *  yields a string. */
   input?: JsonObject;
   /** required when kind='human'. */
   human?: HumanStepConfig;
@@ -284,7 +293,16 @@ export type ValidationWarningCode =
   | 'timeout_equals_approval'
   | 'approval_fail_open'
   /** #1698 — a human step with an unguarded outgoing edge has no path for a rejection. */
-  | 'rejection_unguarded_edge';
+  | 'rejection_unguarded_edge'
+  /**
+   * #1713 — an event/webhook trigger whose eventId nothing currently emits. NOT an
+   * error: an event id is sender-chosen free text (`POST /conductors/emit`, an inbound
+   * webhook endpoint's operator-configured id), not an install-local entity, so a
+   * known-refs miss only means "nothing declares this yet" — the designer accepts the
+   * same free text. A blocking error here made the bundled event templates
+   * un-instantiable on any stack whose event catalog was empty.
+   */
+  | 'unmatched_event_ref';
 
 export interface ValidationWarning {
   code: ValidationWarningCode;

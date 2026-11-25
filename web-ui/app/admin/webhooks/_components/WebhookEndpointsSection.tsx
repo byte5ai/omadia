@@ -29,7 +29,10 @@ import {
 
 type State =
   | { kind: 'loading' }
-  | { kind: 'ready'; endpoints: ConductorWebhookEndpoint[] }
+  /** `fetchedAt` is the clock read ONCE per load, in the async reload — a render must
+   *  not call `Date.now()` (react-hooks/purity), and "is the rotation grace still
+   *  open" needs a now to compare against. */
+  | { kind: 'ready'; endpoints: ConductorWebhookEndpoint[]; fetchedAt: number }
   | { kind: 'error'; error: FriendlyWebhookError };
 
 /**
@@ -37,6 +40,12 @@ type State =
  * view: create/enable-disable/rotate-secret/delete, plus per-endpoint delivery
  * history (the acceptance-criterion "visible in a delivery log (admin UI)").
  * A created/rotated secret is shown ONCE — the backend never returns it again.
+ *
+ * #1707 — rotation is no longer an instant outage: the superseded secret stays valid
+ * for the server's configured grace window, which the row shows while it is open, so
+ * an operator can see how long they have to reconfigure the sender. "Rotate now"
+ * forces the old immediate cutover, for the one case that wants it — a rotation that
+ * is itself the response to a leaked secret.
  */
 export function WebhookEndpointsSection(): React.ReactElement {
   const t = useTranslations('adminWebhooks.endpoints');
@@ -57,7 +66,7 @@ export function WebhookEndpointsSection(): React.ReactElement {
   const reload = useCallback(async (): Promise<void> => {
     try {
       const res = await listWebhookEndpoints();
-      setState({ kind: 'ready', endpoints: res.endpoints });
+      setState({ kind: 'ready', endpoints: res.endpoints, fetchedAt: Date.now() });
     } catch (err) {
       setState({ kind: 'error', error: toFriendlyError(err, tErr) });
     }
@@ -88,19 +97,28 @@ export function WebhookEndpointsSection(): React.ReactElement {
     }
   }, [eventId, description, reload, revealedSecret, tErr]);
 
-  const onRotate = useCallback(async (endpointId: string): Promise<void> => {
-    if (revealedSecret) return;
-    setActionError(null);
-    setPending(endpointId);
-    try {
-      const { secret } = await rotateWebhookEndpointSecret(endpointId);
-      setRevealedSecret({ id: endpointId, secret });
-    } catch (err) {
-      setActionError(toFriendlyError(err, tErr));
-    } finally {
-      setPending(null);
-    }
-  }, [revealedSecret, tErr]);
+  const onRotate = useCallback(
+    async (endpointId: string, opts?: { immediate?: boolean }): Promise<void> => {
+      if (revealedSecret) return;
+      // #1707 — an immediate rotation revokes the old secret on the spot, so every
+      // sender still using it starts getting 401s. That is the point when the secret
+      // has leaked, but it must not be one click away from the graceful path.
+      if (opts?.immediate === true && !confirm(t('confirmRotateNow'))) return;
+      setActionError(null);
+      setPending(endpointId);
+      try {
+        const { secret } = await rotateWebhookEndpointSecret(endpointId, opts);
+        setRevealedSecret({ id: endpointId, secret });
+        // The grace deadline lives on the endpoint row — reload so it shows.
+        await reload();
+      } catch (err) {
+        setActionError(toFriendlyError(err, tErr));
+      } finally {
+        setPending(null);
+      }
+    },
+    [reload, revealedSecret, t, tErr],
+  );
 
   const onToggle = useCallback(
     async (endpointId: string, enabled: boolean): Promise<void> => {
@@ -214,6 +232,15 @@ export function WebhookEndpointsSection(): React.ReactElement {
                   </div>
                   <code className="text-[12px] text-[color:var(--fg-muted)]">{inboundUrl(ep)}</code>
                   {ep.description && <span className="text-[13px] text-[color:var(--fg-muted)]">{ep.description}</span>}
+                  {/* #1707 — the rotation grace, while it is still open: the window in
+                      which BOTH secrets verify and the sender can be reconfigured. */}
+                  {ep.secretPreviousUntil !== null && new Date(ep.secretPreviousUntil).getTime() > state.fetchedAt && (
+                    <span className="text-[12px] text-[color:var(--warning)]">
+                      {t('previousSecretValidUntil', {
+                        when: format.dateTime(new Date(ep.secretPreviousUntil), { timeStyle: 'short', dateStyle: 'medium' }),
+                      })}
+                    </span>
+                  )}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <Button variant="secondary" onClick={() => void onToggleHistory(ep.endpointId)}>
@@ -224,6 +251,14 @@ export function WebhookEndpointsSection(): React.ReactElement {
                   </Button>
                   <Button variant="secondary" onClick={() => void onRotate(ep.endpointId)} disabled={revealedSecret !== null} busy={pending === ep.endpointId} busyLabel={t('rotating')}>
                     {t('rotateSecret')}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={() => void onRotate(ep.endpointId, { immediate: true })}
+                    disabled={revealedSecret !== null || pending === ep.endpointId}
+                    title={t('rotateNowHint')}
+                  >
+                    {t('rotateNow')}
                   </Button>
                   <Button variant="danger" onClick={() => void onDelete(ep.endpointId)} busy={pending === ep.endpointId} busyLabel={t('deleting')}>
                     {t('delete')}

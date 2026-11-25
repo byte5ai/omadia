@@ -2,6 +2,8 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import { auditActorFromRequest } from '../auth/adminAuditLog.js';
+import type { WebhookAuditEntryInput } from '../auth/adminAuditLog.js';
+import type { ConductorWebhookPosture } from './webhookRoutes.js';
 
 import { validate } from '@omadia/conductor-core';
 import type { JsonObject, KnownRefs, WorkflowGraph } from '@omadia/conductor-core';
@@ -25,6 +27,7 @@ import type { ConductorRoleStore } from './roleStore.js';
 import type { ConductorScheduleStore } from './scheduleStore.js';
 import type { ConductorEventRouter } from './eventRouter.js';
 import {
+  AwaitNotFoundError,
   AwaitNotPendingError,
   AwaitResponderNotHolderError,
   RunAlreadyEndedError,
@@ -40,6 +43,7 @@ import { registerTemplateRoutes } from './templateRoutes.js';
 import type { ConductorWebhookEndpointStore } from './webhookEndpointStore.js';
 import type { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
 import { registerWebhookRoutes } from './webhookRoutes.js';
+import { requireUuidParam } from '../http/uuidParam.js';
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -131,6 +135,23 @@ export interface ConductorRouterDeps {
     holderId: string;
     holdersAfter: string[];
   }) => Promise<void>;
+  /**
+   * #1707 — audit sink for webhook administration. Creating, rotating, disabling and
+   * deleting an inbound endpoint or an outbound subscription decides what may start a
+   * workflow run and where run data is sent; before this, `admin_audit` held no row
+   * matching `%webhook%` at all. Optional like `auditRoleChange` (tests and hosts
+   * without an audit log keep working) and best-effort at the call site.
+   */
+  auditWebhookChange?: (entry: WebhookAuditEntryInput) => Promise<void>;
+  /** #1707 — how long a rotated inbound endpoint secret keeps its predecessor valid
+   *  (`CONDUCTOR_WEBHOOK_SECRET_GRACE_SECONDS`). 0/absent restores the pre-#1707
+   *  instant cutover. */
+  webhookSecretGraceMs?: number;
+  /** #1707 — the operator-visible state of the webhook surface, served verbatim by
+   *  `GET /webhooks/posture`: whether the inbound route is live at all (the
+   *  `CONDUCTOR_WEBHOOKS_ENABLED` kill switch, previously invisible everywhere) plus
+   *  the hardening windows in force. */
+  webhookPosture?: ConductorWebhookPosture;
 }
 
 /**
@@ -170,6 +191,26 @@ const MAX_BUILDER_GRAPH_BYTES = 200_000;
 
 export function createConductorRouter(deps: ConductorRouterDeps): Router {
   const router = Router();
+
+  // #1706 — every id below names a Postgres `uuid` column (conductor_runs,
+  // conductor_awaits, conductor_workflows, conductor_webhook_subscriptions).
+  // Unchecked, a malformed id reached the query, Postgres failed it with
+  // `22P02 invalid input syntax for type uuid`, and each handler's catch-all
+  // turned that into a 500 carrying the database message. A non-UUID is not an
+  // unknown row but an unusable id, so it is a 400 here; a well-formed id with
+  // no row behind it keeps the handler's own 404. Codes stay inside the pair the
+  // admin UI already localizes (`conductor.invalid_input`/`conductor.not_found`).
+  //
+  // Registered per router, so they also cover the webhook-subscription routes
+  // `registerWebhookRoutes` adds below. Deliberately NOT registered for ':id':
+  // `registerTemplateRoutes` uses that name for slug-shaped template ids
+  // ('notify-and-escalate'), which is why the subscription routes name theirs
+  // ':subscriptionId'. ':slug' and ':key' are never uuids either.
+  const uuidId = requireUuidParam('conductor.invalid_input', 400);
+  router.param('runId', uuidId);
+  router.param('awaitId', uuidId);
+  router.param('workflowId', uuidId);
+  router.param('subscriptionId', uuidId);
 
   // List workflows. Rows with template provenance carry the additive
   // `template` update hint (#478) — viewer-scoped, one catalog read per request.
@@ -253,11 +294,29 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     }
   });
 
-  // Event catalog (US4) — the events plugins declared they emit, for the Designer's trigger picker.
-  // Registered before '/:slug' so it is not swallowed by the catch-all workflow route.
-  router.get('/events/catalog', (_req: Request, res: Response): void => {
+  // Event catalog (US4) — the events plugins declared they emit, for the Designer's trigger
+  // picker and the template form's event slots. Registered before '/:slug' so it is not
+  // swallowed by the catch-all workflow route.
+  //
+  // `endpointEvents` is ADDITIVE (#1713): the ids operators configured on inbound webhook
+  // endpoints (#437). They are emittable on this install too, but no manifest declares them,
+  // so they are kept out of `events`/`byPlugin` (which mean "declared by a plugin") and
+  // offered as further suggestions. A failed endpoint read degrades to an empty list —
+  // suggestions must never 500 a picker, and event ids stay free text either way.
+  router.get('/events/catalog', async (_req: Request, res: Response): Promise<void> => {
     try {
-      res.json({ events: deps.eventCatalog?.list() ?? [], byPlugin: deps.eventCatalog?.byPluginId() ?? {} });
+      let endpointEvents: string[] = [];
+      try {
+        const endpoints = (await deps.webhookEndpoints?.list()) ?? [];
+        endpointEvents = [...new Set(endpoints.map((ep) => ep.eventId))].sort();
+      } catch (err) {
+        console.warn('[conductor] inbound webhook endpoints unavailable for the event catalog:', errMsg(err));
+      }
+      res.json({
+        events: deps.eventCatalog?.list() ?? [],
+        byPlugin: deps.eventCatalog?.byPluginId() ?? {},
+        endpointEvents,
+      });
     } catch (err) {
       res.status(500).json({ code: 'conductor.event_catalog_failed', message: errMsg(err) });
     }
@@ -524,7 +583,12 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       const run = await deps.executor.resolveAwait(awaitId, responder, response);
       res.json({ run });
     } catch (err) {
-      if (err instanceof AwaitNotPendingError) {
+      if (err instanceof AwaitNotFoundError) {
+        // #1706 — no such await row at all. 409 await_not_pending read as "your
+        // await is closed" and sent the operator looking for a run that never
+        // had this id.
+        res.status(404).json({ code: 'conductor.not_found', message: err.message });
+      } else if (err instanceof AwaitNotPendingError) {
         res.status(409).json({ code: 'conductor.await_not_pending', message: err.message });
       } else if (err instanceof AwaitResponderNotHolderError) {
         // A non-holder tried to answer. The authz gate already refused; surface it as 403,
@@ -668,15 +732,19 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     }
   });
 
-  // List runs for a workflow's active version.
+  // #1710 — the workflow's runs across ALL of its versions, each row carrying
+  // its version number (see `runStore.listForWorkflow`).
   router.get('/:slug/runs', async (req: Request, res: Response): Promise<void> => {
     try {
       const wf = await deps.workflowStore.getBySlug(paramStr(req.params.slug));
-      if (!wf || !wf.activeVersionId) {
-        res.status(404).json({ code: 'conductor.not_found', message: 'workflow or active version missing' });
+      if (!wf) {
+        res.status(404).json({ code: 'conductor.not_found', message: 'workflow not found' });
         return;
       }
-      res.json({ runs: await deps.runStore.listForVersion(wf.activeVersionId) });
+      // No version yet → an empty history, not a 404 (the old
+      // `!wf.activeVersionId` guard 404'd a published workflow whose active
+      // version had been cleared).
+      res.json({ runs: await deps.runStore.listForWorkflow(wf.id) });
     } catch (err) {
       res.status(500).json({ code: 'conductor.list_runs_failed', message: errMsg(err) });
     }

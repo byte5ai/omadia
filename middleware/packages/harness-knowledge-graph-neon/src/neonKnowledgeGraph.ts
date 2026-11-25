@@ -106,6 +106,7 @@ import {
   type SessionView,
   type TaskStatus,
   type Tier,
+  type TurnAmend,
   type TurnIngest,
   type TurnIngestResult,
   type TurnSearchHit,
@@ -463,6 +464,22 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     }
   }
 
+  async amendTurn(turnExternalId: string, amend: TurnAmend): Promise<void> {
+    const patch: Record<string, unknown> = {
+      ...(amend.identityGuard !== undefined ? { identityGuard: amend.identityGuard } : {}),
+      ...(amend.withholdAnswer === true ? { assistantAnswer: '', tailOnly: true } : {}),
+    };
+    const withhold = amend.withholdAnswer === true;
+    await this.pool.query(
+      `UPDATE graph_nodes
+          SET properties = properties || $3::jsonb,
+              embedding = CASE WHEN $4::boolean THEN NULL ELSE embedding END,
+              updated_at = now()
+        WHERE tenant_id = $1 AND external_id = $2 AND type = 'Turn'`,
+      [this.tenantId, turnExternalId, JSON.stringify(patch), withhold],
+    );
+  }
+
   async ingestTurn(turn: TurnIngest): Promise<TurnIngestResult> {
     const sessionExtId = sessionNodeId(turn.scope);
     const turnExtId = turnNodeId(turn.scope, turn.time);
@@ -510,6 +527,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         // transcript (backfill, replay) carries no flag and must not clear one
         // the live turn recorded; a live re-ingest sets it either way.
         ...(turn.unprotected !== undefined ? { unprotected: turn.unprotected } : {}),
+        // Spec 2042 — the identity guard's verdict, for tracing a withheld answer.
+        ...(turn.identityGuard !== undefined ? { identityGuard: turn.identityGuard } : {}),
         // Member-scoped memory — who owns this turn's knowledge. Only written
         // when set: a re-ingest without it (backfill, replay) keeps the owners
         // the live turn recorded instead of erasing them.

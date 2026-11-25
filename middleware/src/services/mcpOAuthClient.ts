@@ -131,13 +131,21 @@ export class McpOAuthClient {
     readonly code: string;
     readonly codeVerifier: string;
     readonly redirectUri: string;
+    /** RFC 8707 resource indicator — the same value the authorization request
+     *  carried. MCP authorization requires it on token requests too. */
+    readonly resource?: string | null;
   }): Promise<TokenResult> {
-    return this.tokenRequest(input.server, input.client, {
-      grant_type: 'authorization_code',
-      code: input.code,
-      code_verifier: input.codeVerifier,
-      redirect_uri: input.redirectUri,
-    });
+    return this.tokenRequest(
+      input.server,
+      input.client,
+      {
+        grant_type: 'authorization_code',
+        code: input.code,
+        code_verifier: input.codeVerifier,
+        redirect_uri: input.redirectUri,
+      },
+      input.resource,
+    );
   }
 
   /** Refresh an access token. */
@@ -145,20 +153,29 @@ export class McpOAuthClient {
     readonly server: AuthServerMetadata;
     readonly client: OAuthClientCredentials;
     readonly refreshToken: string;
+    /** RFC 8707 resource indicator, sent on every refresh as well. */
+    readonly resource?: string | null;
   }): Promise<TokenResult> {
-    return this.tokenRequest(input.server, input.client, {
-      grant_type: 'refresh_token',
-      refresh_token: input.refreshToken,
-    });
+    return this.tokenRequest(
+      input.server,
+      input.client,
+      {
+        grant_type: 'refresh_token',
+        refresh_token: input.refreshToken,
+      },
+      input.resource,
+    );
   }
 
   private async tokenRequest(
     server: AuthServerMetadata,
     client: OAuthClientCredentials,
     params: Record<string, string>,
+    resource?: string | null,
   ): Promise<TokenResult> {
     const form = new URLSearchParams(params);
     form.set('client_id', client.clientId);
+    if (resource) form.set('resource', resource);
     if (client.clientSecret) form.set('client_secret', client.clientSecret);
     const doc = await this.postForm(server.tokenEndpoint, form);
     const accessToken = typeof doc['access_token'] === 'string' ? doc['access_token'] : null;

@@ -250,4 +250,152 @@ describe('ConductorWebhookEndpointStore (pg)', { skip: !pgAvailable }, () => {
     assert.equal(busyResults.filter((r) => r === 'claimed').length, 1);
     assert.equal(otherResult, 'claimed');
   });
+
+  // ── #1707: secret rotation grace ────────────────────────────────────────────
+  // Reported: `POST …/rotate-secret` took effect immediately — the old secret
+  // answered 401 on the sender's very next request, with no overlap window in which
+  // the sender could be reconfigured.
+  describe('rotation grace (#1707)', () => {
+    async function newEndpoint(): Promise<{ endpointId: string; secret: string }> {
+      const { endpoint, secret } = await store.create({ eventId: 'orders.created', createdBy: MARK });
+      return { endpointId: endpoint.endpointId, secret };
+    }
+
+    it('keeps the superseded secret valid until the grace deadline', async () => {
+      const { endpointId, secret: first } = await newEndpoint();
+      const second = await store.rotateSecret(endpointId, 60_000);
+      assert.notEqual(second, first);
+
+      const secrets = await store.getVerificationSecrets(endpointId);
+      assert.equal(secrets.current, second);
+      assert.equal(secrets.previous, first);
+
+      const row = await store.get(endpointId);
+      assert.ok(row?.secretPreviousUntil instanceof Date);
+      assert.ok((row?.secretPreviousUntil?.getTime() ?? 0) > Date.now());
+    });
+
+    it('a zero grace cuts over instantly — the answer to a leaked secret', async () => {
+      const { endpointId, secret: first } = await newEndpoint();
+      const second = await store.rotateSecret(endpointId, 0);
+      const secrets = await store.getVerificationSecrets(endpointId);
+      assert.equal(secrets.current, second);
+      assert.equal(secrets.previous, undefined);
+      assert.notEqual(second, first);
+      assert.equal((await store.get(endpointId))?.secretPreviousUntil, null);
+    });
+
+    it('a lapsed grace stops offering the old secret AND clears the deadline (one write, not one per request)', async () => {
+      const { endpointId, secret: first } = await newEndpoint();
+      await store.rotateSecret(endpointId, 60_000);
+      // Backdate the deadline rather than sleeping: the anchor is the DB clock.
+      await pool.query(
+        `UPDATE conductor_webhook_endpoints SET secret_previous_until = now() - interval '1 second' WHERE endpoint_id = $1`,
+        [endpointId],
+      );
+      const secrets = await store.getVerificationSecrets(endpointId);
+      assert.equal(secrets.previous, undefined);
+      assert.notEqual(secrets.current, first);
+      assert.equal((await store.get(endpointId))?.secretPreviousUntil, null);
+      // And the vault key is gone, so nothing can resurrect it.
+      const again = await store.getVerificationSecrets(endpointId);
+      assert.equal(again.previous, undefined);
+    });
+
+    it('a second rotation inside the window supersedes the FIRST old secret (no chain of live secrets)', async () => {
+      const { endpointId, secret: first } = await newEndpoint();
+      const second = await store.rotateSecret(endpointId, 60_000);
+      const third = await store.rotateSecret(endpointId, 60_000);
+      const secrets = await store.getVerificationSecrets(endpointId);
+      assert.equal(secrets.current, third);
+      assert.equal(secrets.previous, second);
+      assert.notEqual(secrets.previous, first);
+    });
+
+    // Review finding (the race the lifecycle lock closes): `rotateSecret` writes the
+    // new current secret, then the previous key, then stamps the deadline — across
+    // TWO stores, so no transaction spans it. A verification arriving in between used
+    // to see the EARLIER rotation's lapsed deadline, run its cleanup, and delete the
+    // previous key this rotation had just written: the sender got 401s for a grace
+    // window it had been promised. Both writers now hold the same advisory lock and
+    // the cleanup re-checks `<= now()` inside it, so neither interleaving can lose
+    // the key — which makes the assertion below hold whichever order wins.
+    it('a verification racing a re-rotation never deletes the secret that rotation just preserved', async () => {
+      const { endpointId } = await newEndpoint();
+      // Leave a LAPSED grace behind — the state that armed the bug (a first rotation
+      // leaves the deadline NULL, and the cleanup then matches no row).
+      await store.rotateSecret(endpointId, 60_000);
+      await pool.query(
+        `UPDATE conductor_webhook_endpoints SET secret_previous_until = now() - interval '1 second' WHERE endpoint_id = $1`,
+        [endpointId],
+      );
+      const supersededByRotation = await store.getSecret(endpointId);
+
+      // The read path prunes; the rotation preserves. Run them together.
+      const [, rotated] = await Promise.all([
+        store.getVerificationSecrets(endpointId),
+        store.rotateSecret(endpointId, 60_000),
+      ]);
+
+      const secrets = await store.getVerificationSecrets(endpointId);
+      assert.equal(secrets.current, rotated);
+      assert.equal(
+        secrets.previous,
+        supersededByRotation,
+        'the grace window must survive a concurrent prune — this is the regression',
+      );
+      const row = await store.get(endpointId);
+      assert.ok((row?.secretPreviousUntil?.getTime() ?? 0) > Date.now());
+    });
+
+    it('concurrent rotations are serialized: the survivor supersedes the other, not the original', async () => {
+      const { endpointId, secret: original } = await newEndpoint();
+      const [a, b] = await Promise.all([store.rotateSecret(endpointId, 60_000), store.rotateSecret(endpointId, 60_000)]);
+      const secrets = await store.getVerificationSecrets(endpointId);
+      // Whichever rotation committed last owns `current`, and the previous slot holds
+      // the OTHER rotation's secret — never the original both would have read without
+      // the lock.
+      assert.ok(secrets.current === a || secrets.current === b);
+      assert.equal(secrets.previous, secrets.current === a ? b : a);
+      assert.notEqual(secrets.previous, original);
+    });
+
+    // Review finding on the ORDER of the two writes: the current key used to be
+    // swapped before the deadline was stamped, so a delivery arriving in that gap saw
+    // `previous_live = false` against an already-new current key and 401'd the old
+    // secret — the exact outage the grace exists to remove. Parking the superseded
+    // secret and stamping its deadline first means every intermediate state still
+    // accepts the old secret.
+    it('leaves no instant in which the old secret is refused: both secrets verify right after rotating', async () => {
+      const { endpointId, secret: original } = await newEndpoint();
+      const rotated = await store.rotateSecret(endpointId, 60_000);
+      const secrets = await store.getVerificationSecrets(endpointId);
+      assert.equal(secrets.current, rotated);
+      assert.equal(secrets.previous, original, 'the secret the sender still holds must verify');
+    });
+
+    it('a zero-grace rotation kills the deadline before the swap, so no previous secret survives it', async () => {
+      const { endpointId } = await newEndpoint();
+      await store.rotateSecret(endpointId, 60_000); // a live grace to tear down
+      const supersededTwice = await store.getSecret(endpointId);
+      const rotated = await store.rotateSecret(endpointId, 0);
+
+      const secrets = await store.getVerificationSecrets(endpointId);
+      assert.equal(secrets.current, rotated);
+      assert.equal(secrets.previous, undefined, 'a leak rotation must leave nothing else accepted');
+      assert.notEqual(rotated, supersededTwice);
+      assert.equal((await store.get(endpointId))?.secretPreviousUntil, null);
+    });
+
+    it('an unknown endpoint yields no secrets at all — the route must 401 it exactly like a wrong secret', async () => {
+      assert.deepEqual(await store.getVerificationSecrets('does-not-exist'), {});
+    });
+
+    it('deleting the endpoint takes the grace secret with it', async () => {
+      const { endpointId } = await newEndpoint();
+      await store.rotateSecret(endpointId, 60_000);
+      await store.delete(endpointId);
+      assert.deepEqual(await store.getVerificationSecrets(endpointId), {});
+    });
+  });
 });
