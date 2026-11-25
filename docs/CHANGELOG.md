@@ -530,6 +530,27 @@ handler's catch-all copied that sentence into a 500 body — eight routes, from
   approve/reject card button still reads both as `already_resolved`.
 - No migration, no URL change, no web-ui change.
 
+### Added — memory ACL contract across backends (memory-ACL test plan, step 2) (2026-11-24)
+
+- **`middleware/test/memoryAccess/aclContract.ts`.** For every viewer (user × agent × DM,
+  rooms, web × Privacy Shield, plus another tenant) and every context-memory mode, the
+  memorable-knowledge and excerpt searches are called with the options that mode passes
+  (viewer ACL and `teamVisibility`; `sharedOnly` in `enforce-strict`; `audienceOwners` in
+  `members`; `viewerAgentSlug`; `excludeUnprotected` under a shield). The result must equal
+  the step-1 oracle item for item. Runs on the in-memory graph and on Neon, with team
+  recall on and off. First Postgres test of `sharedOnly`, `viewerAgentSlug`,
+  `shared:<x>` visibility and the operator exception against the ACL SQL.
+- **Result:** both backends match the oracle exactly for every viewer and mode a turn can
+  produce; no store-level leak. Step-1 divergence 3 is confirmed: with `audienceOwners: []`
+  the in-memory graph still returns operator-authored memories and their excerpts, Neon
+  returns none (the contract says an empty audience matches nothing). No turn sends an
+  empty audience today (a `members` turn with an unknown audience skips recall), so it is
+  latent. It stays a running `todo` test, not fixed here. The other divergences sit above
+  the store (recall legs, `query_knowledge_graph`, process memory): steps 3 and later.
+- **Checked that it bites:** an oracle ignoring the origin agent yields 5,008 "missing", one
+  denying team rows 20,160 "leak" mismatches.
+- `PG_TEST_FLOOR` 722 → 727.
+
 ### Added — memory-access matrix as code (memory-ACL test plan, step 1) (2026-11-23)
 
 - **`middleware/test/memoryAccess/`.** A fixed world (two tenants, three users, two agents,
