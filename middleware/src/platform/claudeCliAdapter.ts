@@ -33,7 +33,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { CLI_COMPLETION_USAGE_SOURCE, recordUsage } from '@omadia/usage-telemetry';
+import { CLI_COMPLETION_USAGE_SOURCE, normalizeUsage, recordUsage } from '@omadia/usage-telemetry';
 
 import { resolveClaudeCliBin } from './cliBinary.js';
 import type {
@@ -339,6 +339,8 @@ function spawnClaude(
         outputTokens: usage.outputTokens,
         cacheReadTokens: usage.cacheReadTokens ?? 0,
         cacheCreationTokens: parsed.usage?.cache_creation_input_tokens ?? 0,
+        // #2236 — the 1-hour write split (`cache_creation.ephemeral_1h_input_tokens`).
+        cacheCreation1hTokens: normalizeUsage(parsed.usage).cacheCreation1hTokens ?? 0,
         costUsd: 0,
         referenceCostUsd: parsed.total_cost_usd ?? 0,
       });

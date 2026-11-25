@@ -64,6 +64,7 @@ const COL = {
   turnId: 10,
   provider: 11,
   createdAt: 12,
+  cacheCreation1hTokens: 13,
 } as const;
 
 // One pool for the file: `initUsageRecorder` is idempotent (first pool wins),
@@ -442,7 +443,12 @@ describe('#1098 — claude-cli turns carry their own turn id', () => {
               result: 'ok',
               num_turns: 1,
               total_cost_usd: 0.01,
-              usage: { input_tokens: 5, output_tokens: 9 },
+              usage: {
+                input_tokens: 5,
+                output_tokens: 9,
+                cache_creation_input_tokens: 30,
+                cache_creation: { ephemeral_5m_input_tokens: 10, ephemeral_1h_input_tokens: 20 },
+              },
             }) + '\n',
           );
           child.exitCode = 0;
@@ -472,6 +478,9 @@ describe('#1098 — claude-cli turns carry their own turn id', () => {
       assert.equal(row[COL.provider], 'claude-cli');
       assert.equal(row[COL.sessionId], 'sess-cli');
       assert.match(String(row[COL.turnId]), uuid);
+      // #2236 — the 1-hour write split reaches the ledger on the CLI path too.
+      assert.equal(row[COL.cacheCreationTokens], 30);
+      assert.equal(row[COL.cacheCreation1hTokens], 20);
     }
     assert.notEqual(rows[0]?.[COL.turnId], rows[1]?.[COL.turnId]);
   });

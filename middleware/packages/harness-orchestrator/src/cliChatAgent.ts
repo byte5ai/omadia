@@ -46,7 +46,7 @@ import { UNKNOWN_READERS, unionLabels } from './discretion/labels.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
 import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import type { LoopbackMcpServerHandle } from './loopbackMcpServer.js';
-import { CLI_CHAT_USAGE_SOURCE, recordUsage } from '@omadia/usage-telemetry';
+import { CLI_CHAT_USAGE_SOURCE, normalizeUsage, recordUsage } from '@omadia/usage-telemetry';
 import { TOOLS_OFF_DIRECTIVE, isToolsOffTurn } from './toolsOffTurn.js';
 import {
   OMADIA_MCP_SERVER_NAME,
@@ -130,6 +130,7 @@ const EMPTY_USAGE: CliUsage = {
   outputTokens: 0,
   cacheReadInputTokens: 0,
   cacheCreationInputTokens: 0,
+  cacheCreation1hInputTokens: 0,
   costUsd: 0,
   numTurns: 0,
 };
@@ -336,6 +337,9 @@ export interface CliUsage {
   readonly outputTokens: number;
   readonly cacheReadInputTokens: number;
   readonly cacheCreationInputTokens: number;
+  /** The part of {@link cacheCreationInputTokens} written with the 1-hour TTL
+   *  (`usage.cache_creation.ephemeral_1h_input_tokens`), billed at 2x (#2236). */
+  readonly cacheCreation1hInputTokens: number;
   readonly costUsd: number;
   readonly numTurns: number;
 }
@@ -377,6 +381,7 @@ function recordCliTurnUsage(
     outputTokens: usage.outputTokens,
     cacheReadTokens: usage.cacheReadInputTokens,
     cacheCreationTokens: usage.cacheCreationInputTokens,
+    cacheCreation1hTokens: usage.cacheCreation1hInputTokens,
     // The subscription is a flat fee; nothing is billed per call.
     costUsd: 0,
     referenceCostUsd: usage.costUsd,
@@ -819,6 +824,8 @@ export class StreamJsonParser {
         usagePayload === undefined ? 0 : asNumber(usagePayload.cache_read_input_tokens) ?? 0,
       cacheCreationInputTokens:
         usagePayload === undefined ? 0 : asNumber(usagePayload.cache_creation_input_tokens) ?? 0,
+      // #2236 — the 1-hour write split, as the metered path records it.
+      cacheCreation1hInputTokens: normalizeUsage(usagePayload).cacheCreation1hTokens ?? 0,
       costUsd: asNumber(payload.total_cost_usd) ?? 0,
       numTurns: numTurns ?? this.messageStartCount,
     };

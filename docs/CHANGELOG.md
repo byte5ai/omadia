@@ -65,6 +65,15 @@ changelog.
   `GraphServiceRefusedError` (`kernel-only`), and only a boundary implementer may `replace`
   it. The admin topic routes keep the raw service. No plugin declares it.
 
+### Fixed — subscription CLI rows keep the 1-hour cache-write split (2026-11-25)
+
+- The two `claude-cli` write sites (chat turns via `recordCliTurnUsage`, completions in
+  `claudeCliAdapter.ts`) are not provider-boundary sites and kept recording every cache write
+  as 5-minute, so their `cache_creation_1h_tokens` stayed 0 and any token-based figure over
+  those rows priced the 1-hour writes at 1.25×. Both now read
+  `usage.cache_creation.ephemeral_1h_input_tokens` through `normalizeUsage`. Billed cost is
+  unchanged (subscription rows bill 0; `reference_cost_usd` is the CLI's own figure).
+
 ### Fixed — usage ledger priced 1-hour cache writes at the 5-minute rate (2026-11-25)
 
 - Anthropic bills cache writes by TTL: 1.25× the input rate for 5 minutes, 2× for 1 hour. The
