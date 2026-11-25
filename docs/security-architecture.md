@@ -2088,7 +2088,10 @@ finalized.
   the request still goes out as the plugin built it.
 - The subscription-CLI path has no Privacy Shield at all (§3a, #1087): its
   loopback dispatcher runs without a privacy handle, so both carriers pass raw
-  there.
+  there. Since ADR-0017 was enforced for it, a CLI turn is therefore refused
+  whenever a privacy guard is installed, not only under the org clamp
+  (`CliChatAgent.refusedByPolicy`, `CLI_PRIVACY_GUARD_ACTIVE_LOG`); the CLI
+  runs unmasked only on an instance without a guard.
 - C0 detects no names; C1 does when it is configured. Without C1 a returned
   error keeps a name that stands in running prose, or in a record the
   classifier does not recognise as one: positional fields
@@ -3006,7 +3009,8 @@ These tool results skip the digest:
   instance still boots, and the admin UI and the store keep working, so the
   guard can be repaired; only chat answers with the refusal until it is back.
   A turn on the subscription CLI (`claude-cli`), which has no shield, is
-  refused the same way under the clamp, before the child is spawned
+  refused the same way under the clamp, and whenever a privacy guard is
+  installed (ADR-0017), before the child is spawned
   (`CliChatAgent`, `cliPrivacyShieldRequiredAnswer`). Its answer names the
   cause and the API-key provider as the fix, in the turn's language
   (`Orchestrator.noticeLocale`, `en*` → English, else German), and every

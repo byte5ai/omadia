@@ -1309,6 +1309,9 @@ export function buildOrchestratorForAgent(
           // A refusal under OMADIA_PRIVACY_FORCE_GUARDED is worded in the
           // turn's language, by the same rule as the in-process notices.
           noticeLocale: (input) => orchestrator.noticeLocale(input),
+          // ADR-0017 — the CLI cannot mask, so a turn is refused while a
+          // privacy guard runs (not only under the org policy).
+          privacyGuarded: () => deps.privacyGuard() !== undefined,
           model: config.model.replace(/-cli$/, '') || 'sonnet',
           // #1391 — persist every successful CLI turn like an in-process one
           // (session log + graph nodes, facts, excerpt, auto-promotion,
