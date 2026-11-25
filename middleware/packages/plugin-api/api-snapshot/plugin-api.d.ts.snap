@@ -3349,6 +3349,7 @@ readonly query: string;
 readonly scope?: string;
 readonly limit?: number;
 readonly excludeUnprotected?: boolean;
+readonly agentScopePrefix?: string;
 }
 export interface ProcessQueryHit {
 readonly record: ProcessRecord;

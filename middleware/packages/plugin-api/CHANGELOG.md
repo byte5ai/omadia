@@ -8,6 +8,20 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.95.0 — 2026-11-25
+
+Additive.
+
+### Added
+
+- **`QueryProcessesInput.agentScopePrefix`**. `processMemory.query` keeps only
+  the processes of that agent (the `scopeBelongsToAgent` rule) before `limit`
+  applies. `query_processes` passes it in a turn bounded to one agent: it used
+  to over-fetch four times the limit and filter afterwards, and with the
+  store's 50-row cap other agents' processes could still crowd this agent's
+  out. A provider that ignores it returns other agents' processes; the in-tree
+  Neon store honours it.
+
 ## 1.94.0 — 2026-11-24
 
 Additive (#2204).
