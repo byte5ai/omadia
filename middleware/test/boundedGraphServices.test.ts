@@ -13,6 +13,7 @@ import {
   GraphServiceRefusedError,
   KgEntityNamespaceError,
   MemoryPathError,
+  neighborsOfType,
   type GraphNode,
   type KnowledgeGraph,
   type ProcessMemoryService,
@@ -72,6 +73,10 @@ function fakeGraph(): { kg: KnowledgeGraph; calls: string[] } {
       return async (...args: unknown[]) => {
         calls.push(prop);
         if (prop === 'getNeighbors') return neighbours[String(args[0])] ?? [];
+        if (prop === 'getNeighborsOfType') {
+          const [ids, type] = args as [string[], string];
+          return new Map(ids.map((id) => [id, (neighbours[id] ?? []).filter((n) => n.type === type)]));
+        }
         if (prop === 'getSession') return null;
         if (prop === 'getPlan') return plans[String(args[0])] ?? null;
         return answers[prop] ?? null;
@@ -156,6 +161,16 @@ describe('ADR-0044 · bounded knowledgeGraph@1', () => {
     assert.deepEqual(calls, ['ingestEntities', 'ingestFacts'], 'a refused write never reached the graph');
   });
 
+  it('leaves the batched neighbour read off the bounded object; neighborsOfType falls back', async () => {
+    const { kg, calls } = fakeGraph();
+    const bounded = boundKnowledgeGraph(kg, PLUGIN);
+    assert.equal(bounded.getNeighborsOfType, undefined);
+    const map = await inTurn(USER_BOUND, () => neighborsOfType(bounded, ['e-captured'], 'Turn'));
+    assert.deepEqual([...map.keys()], ['e-captured']);
+    assert.equal(calls.includes('getNeighborsOfType'), false);
+    assert.ok(calls.includes('getNeighbors'), 'the bounded per-node read ran');
+  });
+
   it('ADR-0167: a plugin declaring none still writes during the transition', async () => {
     const { kg, calls } = fakeGraph();
     const bounded = boundKnowledgeGraph(kg, '@test/undeclared');
@@ -165,7 +180,22 @@ describe('ADR-0044 · bounded knowledgeGraph@1', () => {
   });
 
   it('enforce-strict: an entity another conversation captured stays out; synced master data stays in', async () => {
-    const bounded = boundKnowledgeGraph(fakeGraph().kg, PLUGIN);
+    const { kg, calls } = fakeGraph();
+    const bounded = boundKnowledgeGraph(kg, PLUGIN);
+    const hits = await inTurn(STRICT_BOUND, () => bounded.findEntities({ model: 'res.partner' }));
+    assert.deepEqual(hits.map((n) => n.id), ['e-synced']);
+    // One batched neighbour read for every hit, not one per hit (N+1).
+    assert.equal(calls.filter((c) => c === 'getNeighborsOfType').length, 1);
+    assert.equal(calls.includes('getNeighbors'), false);
+  });
+
+  it('findEntities falls back to getNeighbors per hit for a provider without the batched read', async () => {
+    const { kg } = fakeGraph();
+    const withoutBatch = new Proxy(kg as object, {
+      get: (target, prop) => (prop === 'getNeighborsOfType' ? undefined : Reflect.get(target, prop)),
+      has: (target, prop) => prop !== 'getNeighborsOfType' && Reflect.has(target, prop),
+    }) as KnowledgeGraph;
+    const bounded = boundKnowledgeGraph(withoutBatch, PLUGIN);
     const hits = await inTurn(STRICT_BOUND, () => bounded.findEntities({ model: 'res.partner' }));
     assert.deepEqual(hits.map((n) => n.id), ['e-synced']);
   });

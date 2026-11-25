@@ -8,6 +8,32 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.98.0 — 2026-11-25
+
+Additive.
+
+### Added
+
+- **`KnowledgeGraph.getNeighborsOfType?(nodeIds, type)`** (optional): the
+  direct neighbours of type `type` of several nodes in one round-trip, keyed
+  by the requested id (`[]` for none or an unknown id). Both bundled
+  providers implement it. The bounded `knowledgeGraph@1` leaves it off, so a
+  plugin walks with `getNeighbors` and `neighborsOfType` falls back to that.
+- **`neighborsOfType(graph, nodeIds, type)`**: calls it where the provider has
+  it, otherwise `getNeighbors` per node.
+
+### Changed (behaviour)
+
+- The bounded `findEntities` reads the capturing turns of all hits with one
+  batched call instead of one `getNeighbors` per hit (N+1).
+- ADR-0167: entity and fact writes through `knowledgeGraph@1` and
+  `ctx.knowledgeGraph` stay in the plugin's `permissions.graph.entity_systems`
+  (`KgEntityNamespaceError`); `ctx.knowledgeGraph.ingestFacts` now checks the
+  systems of `mentionedEntityIds` and that `factId` is a fact id (`fact:…`). The
+  `KnowledgeGraphAccessor.ingestFacts` doc no longer allows mentions of other
+  systems. A plugin declaring none still writes through the service during the
+  transition, with a warning.
+
 ## 1.97.0 — 2026-11-25
 
 Security fix (#1851, ADR 0045). Caller-breaking on purpose, released as a minor.

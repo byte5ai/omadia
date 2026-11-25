@@ -1269,6 +1269,36 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     return result.rows.map(rowToNode);
   }
 
+  async getNeighborsOfType(
+    nodeIds: readonly string[],
+    type: GraphNodeType,
+  ): Promise<Map<string, GraphNode[]>> {
+    const out = new Map<string, GraphNode[]>(nodeIds.map((id) => [id, []]));
+    if (nodeIds.length === 0) return out;
+    // One round-trip for every node: the join of getNeighbors, tagged with the
+    // source node's external id and filtered by `= ANY($2)` and the type.
+    const cols = NODE_COLUMNS.split(', ')
+      .map((c) => `n.${c}`)
+      .join(', ');
+    const result = await this.pool.query<NodeRow & { src_ext: string }>(
+      `
+      SELECT DISTINCT src.external_id AS src_ext, ${cols}
+      FROM graph_nodes src
+      JOIN graph_edges e
+        ON e.tenant_id = src.tenant_id AND (e.from_node = src.id OR e.to_node = src.id)
+      JOIN graph_nodes n
+        ON n.tenant_id = src.tenant_id
+       AND n.id = CASE WHEN e.from_node = src.id THEN e.to_node ELSE e.from_node END
+       AND n.type = $3
+      WHERE src.tenant_id = $1
+        AND src.external_id = ANY($2::text[])
+      `,
+      [this.tenantId, [...new Set(nodeIds)], type],
+    );
+    for (const row of result.rows) out.get(row.src_ext)?.push(rowToNode(row));
+    return out;
+  }
+
   async stats(): Promise<GraphStats> {
     const nodeCounts = await this.pool.query<{ type: string; count: string }>(
       `SELECT type, COUNT(*)::text AS count

@@ -14,6 +14,7 @@
  * `services.replace` chain stays symmetric on dispose.
  */
 
+import { neighborsOfType } from '@omadia/plugin-api';
 import type {
   AclAuditEntry,
   AclMutationOptions,
@@ -35,6 +36,7 @@ import type {
   FactIngestResult,
   FindEntitiesOptions,
   GraphNode,
+  GraphNodeType,
   PlanIngest,
   PlanIngestResult,
   PlanDeleteResult,
@@ -270,6 +272,9 @@ export class InconsistencyTriggeringKnowledgeGraph implements KnowledgeGraph {
   }
   getNeighbors(nodeId: string): Promise<GraphNode[]> {
     return this.inner.getNeighbors(nodeId);
+  }
+  getNeighborsOfType(nodeIds: readonly string[], type: GraphNodeType): Promise<Map<string, GraphNode[]>> {
+    return neighborsOfType(this.inner, nodeIds, type);
   }
   stats(): Promise<GraphStats> {
     return this.inner.stats();

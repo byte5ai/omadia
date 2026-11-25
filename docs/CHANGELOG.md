@@ -47,6 +47,10 @@ changelog.
   otherwise). The accessor's `ingestFacts` now checks too. Plugins that declare no
   `entity_systems` (integration-odoo, integration-confluence today) still write through the
   service, with a `[security-audit]` warning, until their manifests declare them.
+- The bounded `findEntities` in a context-bound `enforce-strict` / `members` turn read the
+  capturing turns with one `getNeighbors` per hit (N+1). It now makes one batched call,
+  `KnowledgeGraph.getNeighborsOfType` (plugin-api 1.98.0, optional; one SQL query on Neon,
+  `neighborsOfType` falls back per node for a provider without it).
 
 ### Fixed — usage ledger priced 1-hour cache writes at the 5-minute rate (2026-11-25)
 

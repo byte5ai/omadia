@@ -35,6 +35,7 @@ import {
   KgEntityNamespaceError,
   MemoryPathError,
   agentScopePrefix,
+  neighborsOfType,
   scopeBelongsToAgent,
   type EditProcessInput,
   type EditProcessResult,
@@ -269,7 +270,13 @@ export function boundTurnSearch<
 
 type TurnReadGraph = Pick<
   KnowledgeGraph,
-  'searchTurns' | 'findEntityCapturedTurns' | 'searchTurnsByEmbedding' | 'getNeighbors' | 'getSession' | 'findEntities'
+  | 'searchTurns'
+  | 'findEntityCapturedTurns'
+  | 'searchTurnsByEmbedding'
+  | 'getNeighbors'
+  | 'getNeighborsOfType'
+  | 'getSession'
+  | 'findEntities'
 >;
 
 /**
@@ -334,11 +341,18 @@ export function boundedTurnReads(kg: () => TurnReadGraph, pluginId: string, capa
       const hits = await graph.findEntities(opts);
       const bound = currentBoundary();
       if (!bound || bound.kind === 'user') return hits;
+      if (hits.length === 0) return hits;
       const viewer = currentGraphNodeViewer();
       const visible = viewer ? graphNodeFilter(graph, viewer) : async () => false;
+      // One neighbour query for every hit; the filter reads each session once.
+      const capturing = await neighborsOfType(
+        graph,
+        hits.map((entity) => entity.id),
+        'Turn',
+      );
       const keep = await Promise.all(
         hits.map(async (entity) => {
-          const turns = (await graph.getNeighbors(entity.id)).filter((n) => n.type === 'Turn');
+          const turns = capturing.get(entity.id) ?? [];
           if (turns.length === 0) return true;
           for (const t of turns) if (await visible(t)) return true;
           return false;
@@ -382,8 +396,10 @@ export function boundedTurnReads(kg: () => TurnReadGraph, pluginId: string, capa
  *  - `plan`: plan reads and writes, inside a turn and its own conversation.
  *  - `own-plans`: plans of the turn's own conversation, in `off` / `enforce`.
  *  - `kernel-only`: across users or agents; refused.
+ *  - `absent`: an optional kernel helper left off the bounded object, so
+ *    `neighborsOfType` falls back to the bounded `getNeighbors`.
  */
-type KgMethodAccess = 'entity-write' | 'pass' | 'entities' | 'turn-read' | 'plan' | 'own-plans' | 'kernel-only';
+type KgMethodAccess = 'absent' | 'entity-write' | 'pass' | 'entities' | 'turn-read' | 'plan' | 'own-plans' | 'kernel-only';
 
 /** Every method of the contract, classified. A new method must pick one. */
 export const KG_METHOD_ACCESS: { readonly [K in keyof Required<KnowledgeGraph>]: KgMethodAccess } =
@@ -397,6 +413,10 @@ export const KG_METHOD_ACCESS: { readonly [K in keyof Required<KnowledgeGraph>]:
     findEntityCapturedTurns: 'turn-read',
     searchTurnsByEmbedding: 'turn-read',
     getNeighbors: 'turn-read',
+    // The batched read the bounded `findEntities` uses. Not on the bounded
+    // object: a plugin walks with `getNeighbors`, which the node filter
+    // bounds, and `neighborsOfType` falls back to it.
+    getNeighborsOfType: 'absent',
     getSession: 'turn-read',
 
     ingestPlan: 'plan',
@@ -497,6 +517,8 @@ export function boundKnowledgeGraph(
     if (typeof fn !== 'function') continue;
     const call = (fn as AnyMethod).bind(kg);
     switch (access) {
+      case 'absent':
+        break;
       case 'pass':
         out[method] = call;
         break;
