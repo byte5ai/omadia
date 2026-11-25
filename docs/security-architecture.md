@@ -1024,7 +1024,25 @@ The surfaces that boundary must cover, and how each one does:
   isolation (context-free: web, API).
 - **Plugin `KnowledgeGraphAccessor`:** `searchTurns` and
   `findEntityCapturedTurns` read the turn's `graphReadScope` holder and search
-  inside it.
+  inside it. With no boundary set (outside a turn, or before the turn's
+  boundary is bound) they throw `GraphServiceRefusedError` (ADR-0044).
+- **Plugin services (ADR-0044):** `ctx.services.get('knowledgeGraph' |
+  'processMemory' | 'memoryStore')` hands a plugin a bounded form
+  (`boundedGraphServices.ts`). Turn, session, neighbour, plan and process
+  reads follow the turn's boundary and are refused outside a turn; methods
+  across users or agents are kernel-only; `findEntities` in a context-bound
+  turn keeps synced master data and entities a visible turn captured; the
+  private `/memories` trees (`orchestrators`, `contexts`, `sessions`,
+  `chat-sessions`) and loose root files are never reachable, and the `_*`
+  trees are read-only; plan reads and writes reach only the turn's own
+  conversation, process writes only this agent's scopes, and only a
+  boundary implementer may `replace` these services. Only the
+  bundled providers and boundary implementers (`orchestrator`,
+  `orchestrator-extras`) hold the raw services. `graphPool` stays an
+  operator-granted SQL capability (C7). Residuals: sibling recall and
+  curation services are still raw (#2231); shared top-level `/memories`
+  trees are writable by every declaring plugin (#2232); plugin SQL on
+  kernel tables (#2230).
 - **Curated memory:** under `members`, `acl_owners ⊇ audience`, or an
   operator-authored row. "Operator-authored" means `manually_authored` and a
   `created_by` that is not `auto:…`, because T3 durable auto-promotion sets
@@ -1045,11 +1063,21 @@ The surfaces that boundary must cover, and how each one does:
   only where their turns or agent allow, a User node only the viewer's own.
   The walk never passes through a node it may not show, so another person's
   User node no longer leads to their other chats. Outside a turn with a graph
-  boundary there is no walk.
+  boundary there is no walk, and a plugin's `getNeighbors` is refused.
 - **Process tools (#2207):** `query_processes` and `run_stored_process` return
   only this agent's processes, and none in a context-bound `enforce-strict` /
   `members` turn, where recall skips processes too. A process the turn may not
-  read answers like a missing one.
+  read answers like a missing one. With no boundary set (the public MCP
+  endpoint, jobs) they return no process (ADR-0044).
+- **Topics (#1851, ADR 0045):** a topic's name and description are written
+  from its members' summaries, so a topic is content of every member.
+  Re-cluster (`topicClustering.ts`) groups only memories with the same owner
+  set, and `/api/v1/admin/topics` lists or opens a topic only for a caller
+  who reads every current member; anyone else gets no entry and a 404. A
+  topic that lost a member since it was written is hidden from everyone
+  until the next re-cluster. The dev graph overlay (`GET /api/dev/graph/topics`,
+  behind `DEV_ENDPOINTS_ENABLED` and an operator session) takes no viewer,
+  like the rest of the raw graph browser.
 
 The audience is the security input. A group counts as known only when its
 channel marks the roster complete (`ChatParticipantsProvider.completeRoster`).
@@ -1070,8 +1098,6 @@ Known residuals:
 - Only turns that carry a `TurnOrigin` are context-bound.
 - #1762: web chat tabs (`/api/chat/sessions`) have no owner; every account
   lists and reads every tab.
-- #1851: topic names and descriptions (`/api/v1/admin/topics`) are written
-  from every account's memories and shown to every account.
 
 All of these are pinned as known failures (`todo`, naming the issue) in the
 canary sweep under `middleware/test/memoryAccess/` (`canarySweep*.test.ts`,
@@ -2557,7 +2583,8 @@ they mask it whatever `mask_user_prompt` says
   inconsistency detector (`inconsistencyDetector.ts`, which runs
   fire-and-forget after a memory write, possibly after the writing turn
   finalized its map) and the topic detector the Teams channel calls before a
-  turn (`topicDetector.ts`) open one scope per run with `openStoredTextScope`
+  turn (`topicDetector.ts`) open one scope per run (topic naming: one per
+  owner set, ADR 0045) with `openStoredTextScope`
   (`@omadia/plugin-api` 1.25.0, privacy-guard 0.8.0, `storedTextScope.ts`):
   the same detectors through the run's own surrogate map, which restores the
   cluster name and description and the inconsistency summary before they are

@@ -2855,6 +2855,14 @@ readonly pluginId: string;
 readonly capability: string;
 constructor(pluginId: string, capability: string);
 }
+export type GraphServiceRefusal = 'kernel-only' | 'no-boundary' | 'out-of-scope';
+export declare class GraphServiceRefusedError extends Error {
+readonly pluginId: string;
+readonly capability: string;
+readonly method: string;
+readonly reason: GraphServiceRefusal;
+constructor(pluginId: string, capability: string, method: string, reason: GraphServiceRefusal);
+}
 export declare class LlmBudgetExceededError extends Error {
 constructor(callerAgentId: string, budget: number);
 }
@@ -4020,7 +4028,7 @@ haikuCalls: number;
 durationMs: number;
 }
 export interface TopicClusteringService {
-list(): Promise<TopicNode[]>;
+list(viewerOmadiaUserId: string): Promise<TopicNode[]>;
 getWithMembers(topicExternalId: string, viewerOmadiaUserId: string): Promise<TopicDetail | null>;
 recluster(opts?: TopicClusteringRunOptions): Promise<TopicClusteringRunResult>;
 }

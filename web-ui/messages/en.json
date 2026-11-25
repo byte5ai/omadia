@@ -6015,7 +6015,7 @@
     "memberCount": "{count, plural, one {# memory} other {# memories}}",
     "list": {
       "title": "Memory · Topics",
-      "intro": "Clusters of all MemorableKnowledge by embedding similarity. Re-clustering is destructive: all existing topics are replaced.",
+      "intro": "Clusters of MemorableKnowledge by embedding similarity, kept apart by owner. You only see topics whose memories you can all read. Re-clustering is destructive: all existing topics are replaced.",
       "recluster": {
         "heading": "Re-cluster",
         "cosineThreshold": "Cosine threshold (0.3-0.95)",
@@ -6029,12 +6029,12 @@
         "statUnclustered": "unclustered",
         "statHaikuCalls": "Haiku calls"
       },
-      "empty": "No topics. Start a re-cluster above.",
+      "empty": "No topics you can see. Start a re-cluster above.",
       "fallbackBadge": "fallback name"
     },
     "detail": {
       "membersHeading": "Members",
-      "emptyMembers": "No visible members (or an ACL hides them)."
+      "emptyMembers": "No members."
     }
   },
   "adminBulkPromote": {

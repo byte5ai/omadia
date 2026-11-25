@@ -27,12 +27,13 @@ import {
   runStoredProcessToolSpec,
 } from '@omadia/orchestrator/dist/tools/processMemoryTool.js';
 import { ContextRetriever } from '@omadia/orchestrator-extras';
-import type { EmbeddingClient, KnowledgeGraph, MemoryStore } from '@omadia/plugin-api';
+import type { EmbeddingClient, KnowledgeGraph, MemoryStore, ProcessMemoryService } from '@omadia/plugin-api';
 import { EntityRefBus, InMemoryNudgeRegistry, nativeToolResultText } from '@omadia/plugin-api';
 import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
 import { parseSessionScope } from '../../packages/harness-channel-sdk/src/scopeId.js';
 import type { TurnOrigin } from '../../packages/harness-channel-sdk/src/turnOrigin.js';
 
+import { KG_METHOD_ACCESS } from '../../src/platform/boundedGraphServices.js';
 import { createPluginContext } from '../../src/platform/pluginContext.js';
 import { ServiceRegistry } from '../../src/platform/serviceRegistry.js';
 import type { PluginCatalog } from '../../src/plugins/manifestLoader.js';
@@ -72,7 +73,13 @@ export type EntryPoint =
   /** A plugin's domain tool: `ctx.knowledgeGraph` turn searches and `ctx.memory`. */
   | 'plugin-accessor'
   /** The same plugin: `ctx.knowledgeGraph.getNeighbors` of every node it found. */
-  | 'plugin-neighbors';
+  | 'plugin-neighbors'
+  /**
+   * ADR-0044 — the same plugin's `ctx.services.get('knowledgeGraph' |
+   * 'memoryStore' | 'processMemory')`: what a plugin declaring
+   * `requires: ["knowledgeGraph@^1"]` (and the others) reads with the service.
+   */
+  | 'plugin-service';
 
 export interface Sighting {
   readonly entry: EntryPoint;
@@ -149,6 +156,7 @@ function firstProbe(): ModelStep {
       { tool: QUERY_PROCESSES_TOOL_NAME, input: { query: 'Ablauf Schritte', limit: 50 } },
       { tool: PROBE_TOOL, input: { part: 'search' } },
       { tool: PROBE_TOOL, input: { part: 'neighbors' } },
+      { tool: PROBE_TOOL, input: { part: 'service' } },
       ...ALL_KEYWORDS.flatMap((text) => [
         { tool: 'query_knowledge_graph', input: { query: 'search_turns', text, limit: 100 } },
         { tool: 'query_knowledge_graph', input: { query: 'search_turns_semantic', text, limit: 100 } },
@@ -337,6 +345,108 @@ const WIDE_RECALL = {
 export const PROBE_TOOL = 'query_probe_plugin';
 const PROBE_PLUGIN = '@omadia/memory-access-probe';
 
+/** Where `/memories` keeps each tree: every directory and file the store has. */
+async function allMemoryPaths(memory: MemoryStore): Promise<string[]> {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const walk = async (path: string): Promise<void> => {
+    if (seen.has(path)) return;
+    seen.add(path);
+    out.push(path);
+    for (const e of await memory.list(path)) {
+      if (e.isDirectory) await walk(e.virtualPath);
+      else if (!seen.has(e.virtualPath)) {
+        seen.add(e.virtualPath);
+        out.push(e.virtualPath);
+      }
+    }
+  };
+  await walk('/memories');
+  return out;
+}
+
+/**
+ * ADR-0044 — a plugin that declared the graph services reads with them. The
+ * probe aims every read at the whole seeded world: it learns the scopes, node
+ * ids, paths and process ids from the RAW stores (test-side knowledge), then
+ * asks the bounded services for each. Refusals are recorded as text; they
+ * carry no canary.
+ */
+async function probeServices(
+  services: ReturnType<typeof createPluginContext>['services'],
+  rawGraph: KnowledgeGraph,
+  rawMemory: MemoryStore,
+  rawProcesses: ProcessMemoryService | undefined,
+): Promise<unknown[]> {
+  const out: unknown[] = [];
+  const attempt = async (label: string, fn: () => Promise<unknown>): Promise<void> => {
+    try {
+      out.push({ [label]: await fn() });
+    } catch (err) {
+      out.push({ [label]: err instanceof Error ? `${err.name}: ${err.message}` : String(err) });
+    }
+  };
+  const kg = services.get<KnowledgeGraph>('knowledgeGraph');
+  const memory = services.get<MemoryStore>('memoryStore');
+  const processes = rawProcesses ? services.get<ProcessMemoryService>('processMemory') : undefined;
+  if (!kg || !memory) throw new Error('probe plugin: services not granted');
+
+  // Everything the raw graph holds: scopes, turn and entity node ids.
+  const scopes = new Set((await rawGraph.listSessions()).map((s) => s.scope));
+  const nodeIds = new Set<string>();
+  for (const query of ALL_KEYWORDS) {
+    for (const h of await rawGraph.searchTurns({ query, limit: 100 })) {
+      nodeIds.add(h.turnId);
+      scopes.add(h.scope);
+    }
+  }
+  for (const e of await rawGraph.findEntities({ model: 'res.partner', nameContains: 'CANARY', limit: 200 })) {
+    nodeIds.add(e.id);
+  }
+
+  for (const query of ALL_KEYWORDS) await attempt('searchTurns', () => kg.searchTurns({ query, limit: 100 }));
+  const everything = await sweepEmbedder.embed(ALL_KEYWORDS.join(' '));
+  await attempt('searchTurnsByEmbedding', () =>
+    kg.searchTurnsByEmbedding({ queryEmbedding: everything, limit: 200, minSimilarity: -1 }),
+  );
+  await attempt('findEntityCapturedTurns', () =>
+    kg.findEntityCapturedTurns({ terms: ['CANARY-ENTITY'], limit: 100 } as never),
+  );
+  await attempt('findEntities', () => kg.findEntities({ model: 'res.partner', nameContains: 'CANARY', limit: 200 }));
+  for (const scope of scopes) {
+    await attempt('getSession', () => kg.getSession(scope));
+    await attempt('listPlansForScope', () => kg.listPlansForScope(scope));
+  }
+  for (const id of nodeIds) await attempt('getNeighbors', () => kg.getNeighbors(id));
+  // Every kernel-only method, called bare: refused before it reads.
+  for (const [method, access] of Object.entries(KG_METHOD_ACCESS)) {
+    if (access !== 'kernel-only') continue;
+    const fn = (kg as unknown as Record<string, unknown>)[method];
+    if (typeof fn === 'function') {
+      await attempt(method, async () => (fn as (...a: unknown[]) => Promise<unknown>).call(kg, {}));
+    }
+  }
+
+  for (const path of await allMemoryPaths(rawMemory)) {
+    // Labels never name the path: seeded file names carry their canary.
+    await attempt('list', () => memory.list(path));
+    await attempt('read', () => memory.readFile(path));
+  }
+  // Escapes the path check must see through.
+  for (const path of ['/memories/core/../orchestrators', '/memories//sessions', 'memories/chat-sessions']) {
+    await attempt('list', () => memory.list(path));
+  }
+
+  if (processes && rawProcesses) {
+    await attempt('processes.query', () => processes.query({ query: 'Ablauf Schritte', limit: 200 }));
+    for (const hit of await rawProcesses.query({ query: 'Ablauf Schritte', limit: 200 })) {
+      await attempt('processes.get', () => processes.get(hit.record.id));
+      await attempt('processes.history', () => processes.history(hit.record.id));
+    }
+  }
+  return out;
+}
+
 /**
  * A plugin domain tool that reads what a domain tool may read mid-turn:
  * `ctx.knowledgeGraph` (`searchTurns`, `findEntityCapturedTurns`,
@@ -345,10 +455,11 @@ const PROBE_PLUGIN = '@omadia/memory-access-probe';
  * `createPluginContext`, so the turn's graph boundary applies as in
  * production.
  */
-function probePlugin(graph: KnowledgeGraph, memory: MemoryStore) {
+function probePlugin(graph: KnowledgeGraph, memory: MemoryStore, processes?: ProcessMemoryService) {
   const services = new ServiceRegistry();
   services.provide('knowledgeGraph', graph, '@omadia/knowledge-graph');
   services.provide('memoryStore', memory, '@omadia/memory');
+  if (processes) services.provide('processMemory', processes, '@omadia/knowledge-graph-neon');
   const entry = {
     plugin: {
       id: PROBE_PLUGIN,
@@ -367,7 +478,8 @@ function probePlugin(graph: KnowledgeGraph, memory: MemoryStore) {
       },
       depends_on: [],
       provides: [],
-      requires: [],
+      // ADR-0044 — declared, so `ctx.services.get` hands the services over.
+      requires: ['knowledgeGraph@^1', 'memoryStore@^1', 'processMemory@^1'],
     },
     manifest: { permissions: { memory: { reads: ['*'], writes: ['*'] } } },
     source_path: '/abs/probe/manifest.yaml',
@@ -401,6 +513,7 @@ function probePlugin(graph: KnowledgeGraph, memory: MemoryStore) {
   if (!kg || !mem) throw new Error('probe plugin: accessors not granted');
   const handle = async (input: unknown): Promise<string> => {
     const part = (input as { part?: string } | undefined)?.part;
+    if (part === 'service') return JSON.stringify(await probeServices(ctx.services, graph, memory, processes));
     const found: unknown[] = [];
     const nodeIds = new Set<string>();
     for (const query of ALL_KEYWORDS) {
@@ -508,7 +621,7 @@ function buildAgent(
     });
   }
   built.orchestrator.registerDomainTool(
-    probePlugin(graph, stores.memory) as unknown as Parameters<typeof built.orchestrator.registerDomainTool>[0],
+    probePlugin(graph, stores.memory, stores.processes) as unknown as Parameters<typeof built.orchestrator.registerDomainTool>[0],
   );
   return { orchestrator: built.orchestrator, nativeToolRegistry };
 }
@@ -581,7 +694,9 @@ export async function sweepTurn(
           : e.tool === PROBE_TOOL
             ? e.input['part'] === 'neighbors'
               ? 'plugin-neighbors'
-              : 'plugin-accessor'
+              : e.input['part'] === 'service'
+                ? 'plugin-service'
+                : 'plugin-accessor'
             : 'graph-tool',
       e.result,
     );
@@ -620,3 +735,15 @@ export async function sweepRegisteredGraphTool(
   return [...new Set(texts.join('\n').match(CANARY) ?? [])];
 }
 
+
+/**
+ * ADR-0044 — the probe plugin's services read outside any turn (activation,
+ * a job, a webhook): turn, session, plan, neighbour and process reads are
+ * refused, the private `/memories` trees too. Returns every canary it got.
+ */
+export async function sweepPluginServicesOutsideTurn(seeded: Seeded): Promise<string[]> {
+  const stores = seeded.stores.main;
+  const probe = probePlugin(sweepGraph(stores.graph), stores.memory, stores.processes);
+  const text = await probe.handle({ part: 'service' });
+  return [...new Set((text.match(CANARY) ?? []).map((c) => c.toUpperCase()))];
+}

@@ -10,10 +10,11 @@
  * (`adminUsers.ts`), so they are operator-only by design. Purge preview
  * returns counts only; promote copies between an agent's tiers.
  *
- * Known leaks, kept as `todo` until their fix: #1762 (chat sessions have no
- * owner; every account lists and reads every web chat tab) and #1851 (topic
- * names and descriptions are built from every account's memories and shown
- * to every account).
+ * Known leak, kept as `todo` until its fix: #1762 (chat sessions have no
+ * owner; every account lists and reads every web chat tab).
+ *
+ * Fixed and asserted: #1851 (a topic's name and description are content of
+ * every member, so a topic reaches only who reads all of them; ADR 0045).
  */
 import { strict as assert } from 'node:assert';
 import { before, describe, it } from 'node:test';
@@ -35,12 +36,9 @@ const KNOWN_LEAKS: readonly KnownLeak[] = [
     title: "chat sessions show only the caller's own tabs",
     matches: (s) => s.route.startsWith('GET /api/chat/'),
   },
-  {
-    issue: '#1851',
-    title: 'topics show no content of memories the caller cannot read',
-    matches: (s) => s.route.startsWith('GET /api/v1/admin/topics') && s.item.store === 'topic',
-  },
 ];
+
+const TOPIC_ROUTE = (s: HttpSighting): boolean => s.route.startsWith('GET /api/v1/admin/topics');
 
 const CONTENT_ROUTES: readonly HttpRoute[] = [
   'GET /api/chat/sessions',
@@ -93,6 +91,11 @@ describe('memory access — canary sweep over the per-person REST routes', () =>
       it(`${who}: CONTROL — every content route returns the caller's own canaries`, () => {
         const routes = new Set(sightings().filter((s) => s.verdict.allowed).map((s) => s.route));
         assert.deepEqual([...routes].sort(), [...CONTENT_ROUTES].sort());
+      });
+
+      it(`${who}: #1851: topics show no content of memories the caller cannot read`, () => {
+        const leaks = sightings().filter((s) => !s.verdict.allowed && TOPIC_ROUTE(s));
+        assert.deepEqual(leaks, [], report(who, leaks));
       });
 
       for (const k of KNOWN_LEAKS) {
