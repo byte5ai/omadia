@@ -2810,7 +2810,17 @@ function isAbortError(err: unknown): boolean {
 export async function* streamBuilderTurn(
   draftId: string,
   message: string,
-  opts: { model?: BuilderModelId; signal?: AbortSignal } = {},
+  opts: {
+    model?: BuilderModelId;
+    signal?: AbortSignal;
+    /**
+     * #2214 — another turn is already running on the draft (409
+     * `builder.turn_in_progress`). The message was NOT sent; the stream
+     * re-attaches to the running turn from its first frame instead. Without
+     * this callback a 409 throws like any other HTTP error.
+     */
+    onBusy?: (runningTurnId: string) => void;
+  } = {},
 ): AsyncGenerator<BuilderTurnEvent> {
   const body: { message: string; model?: BuilderModelId } = { message };
   if (opts.model) body.model = opts.model;
@@ -2849,19 +2859,26 @@ export async function* streamBuilderTurn(
     );
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => '');
-      throw new ApiError(
-        res.status,
-        `POST builder/drafts/${draftId}/turn failed: ${res.status}`,
-        text,
-      );
-    }
-    for await (const raw of parseNdjsonLines(res.body, opts.signal)) {
-      const ev = raw as BuilderTurnEvent;
-      if (typeof ev.id === 'number') lastId = ev.id;
-      if (ev.type === 'turn_started') turnId = ev.turnId;
-      if (ev.type === 'turn_done' || ev.type === 'error') done = true;
-      yield ev;
-      if (done) return;
+      const runningTurnId =
+        res.status === 409 ? runningTurnIdFromBusyBody(text) : null;
+      if (runningTurnId === null || !opts.onBusy) {
+        throw new ApiError(
+          res.status,
+          `POST builder/drafts/${draftId}/turn failed: ${res.status}`,
+          text,
+        );
+      }
+      opts.onBusy(runningTurnId);
+      turnId = runningTurnId;
+    } else {
+      for await (const raw of parseNdjsonLines(res.body, opts.signal)) {
+        const ev = raw as BuilderTurnEvent;
+        if (typeof ev.id === 'number') lastId = ev.id;
+        if (ev.type === 'turn_started') turnId = ev.turnId;
+        if (ev.type === 'turn_done' || ev.type === 'error') done = true;
+        yield ev;
+        if (done) return;
+      }
     }
   } catch (err) {
     if (isAbortError(err)) throw err;
@@ -3633,6 +3650,41 @@ export async function createBuilderIssue(input: {
       fingerprint: input.fingerprint,
       summary: input.summary,
     },
+  );
+}
+
+/** #2214 — the running turn's id from a 409 `builder.turn_in_progress`. */
+function runningTurnIdFromBusyBody(text: string): string | null {
+  try {
+    const body = JSON.parse(text) as { code?: unknown; turnId?: unknown };
+    return body.code === 'builder.turn_in_progress' &&
+      typeof body.turnId === 'string' &&
+      body.turnId.length > 0
+      ? body.turnId
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #2214 — `stopped`: the turn has ended on the server. `stopping`: it was
+ * aborted but had not ended within the server's wait. `not_running`: no such
+ * turn runs (it already ended).
+ */
+export interface BuilderTurnStopResult {
+  status: 'stopped' | 'stopping' | 'not_running';
+  turnId: string;
+}
+
+/** #2214 — stop a running builder turn on the server (not just the stream). */
+export async function stopBuilderTurn(
+  draftId: string,
+  turnId: string,
+): Promise<BuilderTurnStopResult> {
+  return postJson<BuilderTurnStopResult>(
+    `/v1/builder/drafts/${encodeURIComponent(draftId)}/turn/${encodeURIComponent(turnId)}/stop`,
+    {},
   );
 }
 
