@@ -23,7 +23,7 @@ import {
 } from '../src/services/secretRedaction.js';
 
 function jsonResponder(routes: Record<string, unknown | number>): typeof fetch {
-  return (async (input: RequestInfo | URL) => {
+  return (async (input: string | URL | Request) => {
     const url = String(input);
     for (const [frag, body] of Object.entries(routes)) {
       if (url.includes(frag)) {
@@ -144,7 +144,7 @@ describe('McpAuthDiscovery', () => {
   it('follows the RFC 9728 WWW-Authenticate resource_metadata pointer (M365-shaped)', async () => {
     // Root well-known 404s; the endpoint 401s with a path-specific metadata URL.
     const metaUrl = 'https://srv.example/.well-known/oauth-protected-resource/tenants/t/mcp';
-    const fetchImpl: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImpl: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith('/mcp') && init?.method === 'POST') {
         return new Response('', {
@@ -247,7 +247,7 @@ describe('McpOAuthClient', () => {
 
   it('exchanges an authorization code for tokens (form-encoded, client secret sent)', async () => {
     let seenBody = '';
-    const fetchImpl: typeof fetch = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImpl: typeof fetch = (async (_u: string | URL | Request, init?: RequestInit) => {
       seenBody = String(init?.body);
       return new Response(
         JSON.stringify({ access_token: 'AT', refresh_token: 'RT', expires_in: 3600, scope: 'read' }),
@@ -707,7 +707,7 @@ describe('W0-1 D3 — concurrent refresh is single-flight (MUTATION-CHECKED)', (
   }> {
     const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
     let tokenPosts = 0;
-    const fetchImpl: typeof fetch = (async (input: RequestInfo | URL) => {
+    const fetchImpl: typeof fetch = (async (input: string | URL | Request) => {
       const url = String(input);
       if (url === 'https://as.example/token') {
         tokenPosts += 1;
@@ -883,7 +883,7 @@ describe('refresh keeps what the provider leaves out (RFC 6749 §5.1/§6)', () =
   }> {
     const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
     const sentRefreshTokens: string[] = [];
-    const fetchImpl: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImpl: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       if (String(input) !== 'https://as.example/token') {
         return new Response('not found', { status: 404 });
       }
@@ -1122,7 +1122,7 @@ function clientGraph(stored?: {
 /** A fetch that serves a VALID CIMD document at one URL and 404s elsewhere —
  *  i.e. an install whose ingress really does route `/.well-known/*` inbound. */
 function cimdServing(metadataUrl: string, redirectUri = 'https://host/cb'): typeof fetch {
-  return (async (input: RequestInfo | URL) => {
+  return (async (input: string | URL | Request) => {
     if (String(input) === metadataUrl) {
       return new Response(
         JSON.stringify({
