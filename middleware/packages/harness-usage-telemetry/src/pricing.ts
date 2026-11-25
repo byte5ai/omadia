@@ -10,8 +10,12 @@
  * entry carries the relevant flags rather than the math being Anthropic-only:
  *
  *  - Anthropic: `input_tokens` EXCLUDES cached reads. Cache reads bill at ~0.1×
- *    the base input rate (CACHE_READ_MULTIPLIER); 5-minute cache writes
- *    (`cache_creation_input_tokens`) bill at ~1.25× (CACHE_WRITE_MULTIPLIER).
+ *    the base input rate (CACHE_READ_MULTIPLIER). Cache writes
+ *    (`cache_creation_input_tokens`) bill by TTL: 5-minute writes at 1.25×
+ *    (CACHE_WRITE_MULTIPLIER), 1-hour writes at 2× (CACHE_WRITE_1H_MULTIPLIER).
+ *    The response splits the writes in `usage.cache_creation`
+ *    (`ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`); the 1-hour
+ *    part travels as `cacheCreation1hTokens`, a subset of `cacheCreationTokens`.
  *    All components sum without double-counting. A model whose read fraction
  *    is not 0.1× carries an absolute `cachedInputPerMTok` instead of a second
  *    multiplier table — see that field for which ones and why.
@@ -36,6 +40,8 @@
  * Unknown models price at 0 and are logged once so the dashboard surfaces a
  * "0 cost" anomaly instead of crashing.
  */
+
+import type { LlmUsage } from '@omadia/llm-provider';
 
 export interface ModelPrice {
   /** USD per 1M input tokens (uncached). */
@@ -72,6 +78,9 @@ export interface ModelPrice {
 export const CACHE_READ_MULTIPLIER = 0.1;
 /** 5-minute cache-write tokens bill at this multiple of the base input rate. */
 export const CACHE_WRITE_MULTIPLIER = 1.25;
+/** 1-hour cache-write tokens (`cache_control.ttl: '1h'`, the orchestrator's
+ *  stable prefix since #1634) bill at this multiple of the base input rate. */
+export const CACHE_WRITE_1H_MULTIPLIER = 2;
 
 /** Point releases that price below the rest of their family. Each is spelled
  *  once here and used by BOTH tables below: the exact entry prices the bare id,
@@ -199,7 +208,45 @@ export interface UsageTokens {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
+  /** ALL cache-write tokens, whatever their TTL. */
   readonly cacheCreationTokens: number;
+  /** The part of {@link cacheCreationTokens} written with the 1-hour TTL.
+   *  Absent = 0: every write bills at the 5-minute rate. Clamped to the total,
+   *  so a malformed split can never bill more writes than were reported. */
+  readonly cacheCreation1hTokens?: number;
+}
+
+/**
+ * The ledger's token counters from a neutral `LlmUsage`. The ONE mapping every
+ * provider-boundary write site uses, so none of them can drop a counter (each
+ * of them dropped the 1-hour write split before this existed). Neutral usage
+ * names `cacheWriteTokens` what the ledger calls `cacheCreationTokens`; absent
+ * counters are 0.
+ */
+export function usageTokensFromLlm(usage: LlmUsage): UsageTokens {
+  return {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cacheReadTokens: usage.cacheReadTokens ?? 0,
+    cacheCreationTokens: usage.cacheWriteTokens ?? 0,
+    cacheCreation1hTokens: usage.cacheWrite1hTokens ?? 0,
+  };
+}
+
+/** The writes split by TTL, each at its own multiple of the input rate. */
+function splitCacheWrites(usage: Pick<UsageTokens, 'cacheCreationTokens' | 'cacheCreation1hTokens'>): {
+  readonly fiveMinute: number;
+  readonly oneHour: number;
+} {
+  const total = Math.max(0, usage.cacheCreationTokens);
+  const oneHour = Math.min(total, Math.max(0, usage.cacheCreation1hTokens ?? 0));
+  return { fiveMinute: total - oneHour, oneHour };
+}
+
+/** The write tokens weighted by their TTL multiplier, in input-token units. */
+function weightedCacheWrites(usage: Pick<UsageTokens, 'cacheCreationTokens' | 'cacheCreation1hTokens'>): number {
+  const { fiveMinute, oneHour } = splitCacheWrites(usage);
+  return fiveMinute * CACHE_WRITE_MULTIPLIER + oneHour * CACHE_WRITE_1H_MULTIPLIER;
 }
 
 /** The price a call bills at: the long-context tier when its prompt is over
@@ -237,14 +284,15 @@ export function computeCostUsd(model: string, usage: UsageTokens): number {
     fullRateInput * inRate +
     usage.outputTokens * outRate +
     usage.cacheReadTokens * cacheReadRate +
-    usage.cacheCreationTokens * inRate * CACHE_WRITE_MULTIPLIER;
+    weightedCacheWrites(usage) * inRate;
   return Math.round(cost * 1e8) / 1e8;
 }
 
 /**
  * What prompt caching saved on a model's cache traffic, in USD: the cache
  * reads billed at the full input rate instead of the cached rate, minus the
- * premium the cache writes paid over the full input rate (Anthropic's 1.25×).
+ * premium the cache writes paid over the full input rate (Anthropic's 1.25×
+ * for 5-minute writes, 2× for 1-hour writes).
  * Negative when a cache was written more than it was read.
  *
  * Takes summed counters, not a single call, so it prices at the model's BASE
@@ -255,7 +303,7 @@ export function computeCostUsd(model: string, usage: UsageTokens): number {
  */
 export function computeCacheSavingsUsd(
   model: string,
-  cache: Pick<UsageTokens, 'cacheReadTokens' | 'cacheCreationTokens'>,
+  cache: Pick<UsageTokens, 'cacheReadTokens' | 'cacheCreationTokens' | 'cacheCreation1hTokens'>,
 ): number {
   if (!hasKnownPrice(model)) return 0;
   const price = priceForModel(model);
@@ -265,13 +313,15 @@ export function computeCacheSavingsUsd(
       ? price.cachedInputPerMTok / 1_000_000
       : inRate * CACHE_READ_MULTIPLIER;
   const readSavings = cache.cacheReadTokens * (inRate - cacheReadRate);
-  const writePremium = cache.cacheCreationTokens * inRate * (CACHE_WRITE_MULTIPLIER - 1);
+  const writes = Math.max(0, cache.cacheCreationTokens);
+  const writePremium = (weightedCacheWrites(cache) - writes) * inRate;
   return Math.round((readSavings - writePremium) * 1e8) / 1e8;
 }
 
 /**
  * Normalises a raw Anthropic `message.usage` object (snake_case, nullable
- * fields) into the {@link UsageTokens} shape. Missing fields default to 0.
+ * fields) into the {@link UsageTokens} shape. Missing fields default to 0;
+ * the 1-hour write split comes from `cache_creation.ephemeral_1h_input_tokens`.
  */
 export function normalizeUsage(usage: unknown): UsageTokens {
   const u = (usage ?? {}) as Record<string, unknown>;
@@ -281,5 +331,17 @@ export function normalizeUsage(usage: unknown): UsageTokens {
     outputTokens: num(u['output_tokens']),
     cacheReadTokens: num(u['cache_read_input_tokens']),
     cacheCreationTokens: num(u['cache_creation_input_tokens']),
+    cacheCreation1hTokens: cacheWrite1hTokens(u),
   };
+}
+
+/**
+ * The 1-hour part of an Anthropic usage object's cache writes
+ * (`usage.cache_creation.ephemeral_1h_input_tokens`), 0 when absent.
+ */
+function cacheWrite1hTokens(usage: unknown): number {
+  const breakdown = (usage as Record<string, unknown> | null | undefined)?.['cache_creation'];
+  if (typeof breakdown !== 'object' || breakdown === null) return 0;
+  const v = (breakdown as Record<string, unknown>)['ephemeral_1h_input_tokens'];
+  return typeof v === 'number' && v > 0 ? v : 0;
 }

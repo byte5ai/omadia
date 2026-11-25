@@ -279,6 +279,7 @@ function mapResponse(message: Anthropic.Message): LlmResponse {
   const usage = message.usage as unknown as Record<string, unknown>;
   const cacheWrite = usage['cache_creation_input_tokens'];
   const cacheRead = usage['cache_read_input_tokens'];
+  const cacheWrite1h = cacheWrite1hTokens(usage);
   const refusal = toRefusal(message);
   return {
     ...(refusal !== undefined ? { refusal } : {}),
@@ -296,8 +297,18 @@ function mapResponse(message: Anthropic.Message): LlmResponse {
         ? { cacheWriteTokens: cacheWrite }
         : {}),
       ...(typeof cacheRead === 'number' ? { cacheReadTokens: cacheRead } : {}),
+      ...(cacheWrite1h !== undefined ? { cacheWrite1hTokens: cacheWrite1h } : {}),
     },
   };
+}
+
+/** `usage.cache_creation.ephemeral_1h_input_tokens` — the 1-hour part of the
+ *  cache writes (2× instead of 1.25×). Undefined when the response has no split. */
+function cacheWrite1hTokens(usage: Record<string, unknown>): number | undefined {
+  const breakdown = usage['cache_creation'];
+  if (typeof breakdown !== 'object' || breakdown === null) return undefined;
+  const v = (breakdown as Record<string, unknown>)['ephemeral_1h_input_tokens'];
+  return typeof v === 'number' ? v : undefined;
 }
 
 /** Maps the neutral `system` (plain string or structured blocks) to the

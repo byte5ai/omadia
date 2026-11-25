@@ -82,10 +82,10 @@ function metered(source: string): void {
   });
 }
 
-const COLS = 13;
+const COLS = 14;
 
 /**
- * Every row flushed so far, as its 13-value slice. Robust against the
+ * Every row flushed so far, as its 14-value slice. Robust against the
  * recorder's own 5s interval flush splitting a case across two queries.
  */
 async function flushedRows(): Promise<readonly (readonly unknown[])[]> {
@@ -133,7 +133,7 @@ describe('#1098 — cost-ledger rows carry turn attribution and call time', () =
     assert.equal(captured.length, 1);
     const row = captured[0];
     assert.ok(row);
-    const cols = 13;
+    const cols = 14;
     assert.equal(row.params[COL.turnId], 'turn-A');
     assert.equal(row.params[cols + COL.turnId], 'turn-B');
     assert.notEqual(row.params[COL.turnId], row.params[cols + COL.turnId]);

@@ -15,7 +15,7 @@
  */
 import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
-import { recordUsage } from '@omadia/usage-telemetry';
+import { recordUsage, usageTokensFromLlm } from '@omadia/usage-telemetry';
 
 export interface ModelRoutingConfig {
   /** Haiku-tier model used for the classification call itself. */
@@ -79,10 +79,7 @@ export async function routeTurnModel(
       source: 'model-router',
       model: cfg.classifierModel,
       provider: provider.id,
-      inputTokens: res.usage.inputTokens,
-      outputTokens: res.usage.outputTokens,
-      cacheReadTokens: res.usage.cacheReadTokens ?? 0,
-      cacheCreationTokens: res.usage.cacheWriteTokens ?? 0,
+      ...usageTokensFromLlm(res.usage),
     });
     const verdict = collectText(res.content).toUpperCase();
     if (verdict.includes('SIMPLE')) {
