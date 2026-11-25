@@ -96,6 +96,28 @@ function withUser(url: string, user: string, password: string, database?: string
   return u.toString();
 }
 
+/**
+ * End a pool and wait until every one of its sessions is gone. `pool.end()`
+ * resolves as soon as it has asked its idle clients to end, before the server
+ * closed their sessions; a `DROP DATABASE ... WITH (FORCE)` right after it
+ * terminates them, and the FATAL 57P01 each one receives is emitted as an
+ * `'error'` of a pool nobody listens on: an uncaught exception, reported
+ * against the test that opened the connection.
+ */
+async function endAndDisconnect(pool: Pool): Promise<void> {
+  const open = pool.totalCount;
+  let closed = 0;
+  const disconnected = new Promise<void>((resolve) => {
+    if (open === 0) resolve();
+    pool.on('remove', () => {
+      closed += 1;
+      if (closed >= open) resolve();
+    });
+  });
+  await pool.end();
+  await disconnected;
+}
+
 async function codeOf(work: () => Promise<unknown>): Promise<string | undefined> {
   try {
     await work();
@@ -163,7 +185,7 @@ describe('#2088 archetype plugin database', { skip: !pgAvailable }, () => {
 
   after(async () => {
     await db?.closeAll();
-    await admin?.end();
+    if (admin) await endAndDisconnect(admin);
     await rm(root, { recursive: true, force: true });
     await superuser.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
     for (const role of [NAMES.runtimeRole, NAMES.migrationRole, plainRole, adminRole]) {

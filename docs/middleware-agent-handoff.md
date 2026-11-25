@@ -6511,6 +6511,13 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+- **croner-`?`-Kompatibilität (`middleware/src/scheduler/cronerCompat.ts`).** Unter croner 11
+  ist `?` ein Alias für `*`; der Kernel ersetzt es weiter wie croner 9.x durch den Feldwert zum
+  Konstruktionszeitpunkt, damit gespeicherte Routinen, Agent-Schedules und Trigger ihren Takt
+  behalten. Geprüft 2026-11-25: kein Plugin-Manifest nutzt `?`, die Live-Datenbanken sind
+  nicht geprüft. Entfernen nur zusammen mit einer Migration, die gespeicherte `?`-Muster
+  umschreibt oder ablehnt.
+
 - **Memory-ACL automatisch prüfbar machen (Plan in 7 Schritten, ein PR pro Schritt).** Ziel:
   Jede Änderung, die einem Nutzer Memory zeigt, das ihm nicht zusteht, macht CI rot.
   Schritt 0 (#2179): Postgres-Beine der Memory-Suiten laufen in CI, Namens-Guard

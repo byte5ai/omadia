@@ -18,6 +18,16 @@ import { Cron, type CronCallback, type CronOptions } from 'croner';
  *
  * New syntax croner 11 added (7-field years, `W`, `+`, `@midnight`) passes
  * through unchanged.
+ *
+ * Why the `?` rewrite stays (re-checked 2026-11-25): every `new Cron` in the
+ * kernel goes through {@link createCron}, and no in-tree or sibling plugin
+ * manifest uses `?`. What a `?` pattern means is still decided by data this
+ * repo cannot see: `routines` / `agent_schedules` / `agent_triggers` rows of
+ * the running installations. Dropping the rewrite would silently turn
+ * `0 ? * * *` ("every day at the hour the job was constructed") into "every
+ * hour". Note the 9.x meaning itself: the value is taken at construction, so
+ * such a schedule moves with every restart. Remove the rewrite only together
+ * with a migration that rewrites or rejects stored `?` patterns.
  */
 
 const LEGACY_OPTIONS = { sloppyRanges: true } as const satisfies CronOptions;

@@ -558,6 +558,23 @@ handler's catch-all copied that sentence into a 500 body — eight routes, from
   approve/reject card button still reads both as `already_resolved`.
 - No migration, no URL change, no web-ui change.
 
+### Fixed — follow-ups from the pr-flow sweeps 2026-11-18…25 (2026-11-25)
+
+- `query_processes` filters to the turn's agent in the store query, before `LIMIT`
+  (`QueryProcessesInput.agentScopePrefix`, plugin-api 1.95.0). The #2207 fix over-fetched
+  4× and filtered afterwards, but the Neon store caps a query at 50 rows, so better-scoring
+  processes of other agents could leave an agent none of its own. `PG_TEST_FLOOR` 771 → 772.
+- The running-discussions overview lists and stops runs of every workflow version, not only
+  the active one (as #2181 did for the run history): a run still waiting on a superseded
+  version showed no status and survived a stop.
+- `PUT /api/v1/profiles/:id/agent-md` and `…/knowledge/:filename` read a body sent without
+  `Content-Type`; an empty file or such a client got `profile_storage.invalid_body`.
+- Privacy guard: the 50 ms vetting probe for operator regexes counts the smaller of
+  wall-clock and process CPU time, and rejects a pattern only when two runs overrun, so a
+  busy host no longer rejects a harmless pattern as `too_slow`.
+- Deflaked `archetypeDatabase.pg` and `systemNoticeOutbox.pg` (both red once on #2187);
+  croner's 9.x `?` rewrite stays, reason recorded in `cronerCompat.ts`.
+
 ### Fixed — process tools read every agent's processes (#2207) (2026-11-24)
 
 - `query_processes` and `run_stored_process` read process memory with no agent or
