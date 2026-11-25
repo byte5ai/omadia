@@ -5631,8 +5631,22 @@ async function main(): Promise<void> {
       dispatchDenial: mcpDispatchDenial,
       log: (m) => console.log(m),
     });
+    // Spec 2042 §5.4 / ADR-0018 — two agents may discuss only when each holds
+    // a consultation grant for the other (same grants as `consult`). One check
+    // for the chat capability, the operator route and every utterance.
+    const discussionMutualGrant = async (a: string, b: string, channelType: string): Promise<boolean> => {
+      const registry = getRegistry();
+      const left = registry?.get(a)?.agent.id;
+      const right = registry?.get(b)?.agent.id;
+      return (
+        left !== undefined &&
+        right !== undefined &&
+        consultationStore.hasMutualGrants(left, right, channelType)
+      );
+    };
     const conductorWiring = await wireConductor({
       pool: graphPool,
+      mutualGrant: discussionMutualGrant,
       // #2090 — one reservation per conversation, shared by agent discussions
       // and native facilitations. A reservation left by a discussion whose
       // attachment is gone is stale and is taken over.
@@ -5813,16 +5827,7 @@ async function main(): Promise<void> {
         peerGate,
         // Spec 2042 §5.4 — and every two of them hold consultation grants for
         // each other (same grants as `consult`).
-        mutualGrant: async (a, b, channelType) => {
-          const registry = getRegistry();
-          const left = registry?.get(a)?.agent.id;
-          const right = registry?.get(b)?.agent.id;
-          return (
-            left !== undefined &&
-            right !== undefined &&
-            consultationStore.hasMutualGrants(left, right, channelType)
-          );
-        },
+        mutualGrant: discussionMutualGrant,
         log: (msg: string) => console.log(msg),
       }),
     );

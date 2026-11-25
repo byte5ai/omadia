@@ -194,6 +194,11 @@ export class RealStepEffects implements StepEffects {
     // OUTCOME is recorded on the step, so a silent failure can never read as a
     // delivered utterance.
     const said = step.say && !isPreview ? await this.publish(step, context, meta, slug, answer.text) : undefined;
+    // ADR-0018 — a revoked consultation grant ends the discussion instead of
+    // letting it run on in silence until its turn ceiling.
+    if (said !== undefined && !said.said && said.reason === 'not_granted') {
+      throw new Error(said.message);
+    }
     return {
       result: {
         text: prose,
@@ -220,6 +225,9 @@ export class RealStepEffects implements StepEffects {
       return { said: false, reason: 'no_provider', message: 'no say service wired (no database / no channel plugin)' };
     }
     const conversationId = typeof context.conversationId === 'string' ? context.conversationId : '';
+    const participants = Array.isArray(context.participants)
+      ? context.participants.filter((p): p is string => typeof p === 'string')
+      : undefined;
     return this.deps.say
       .say({
         workflowId: meta.workflowId ?? null,
@@ -229,6 +237,7 @@ export class RealStepEffects implements StepEffects {
         channelType: say.channel,
         conversationId,
         text,
+        ...(participants ? { participants } : {}),
       })
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
