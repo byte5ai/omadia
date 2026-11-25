@@ -2012,11 +2012,11 @@ export interface KnowledgeGraphAccessor {
   ingestEntities(entities: EntityIngest[]): Promise<EntityIngestResult>;
 
   /**
-   * Persist atomic facts. `mentionedEntityIds` may reference entities the
-   * plugin previously ingested OR entities owned by other systems (the KG
-   * tolerates dangling references). The `subject`/`predicate`/`object`
-   * fields are free-form strings — no validation here, but the kernel may
-   * truncate over-long values defensively in a future pass.
+   * Persist atomic facts. ADR-0167 (1.98.0): every id in `mentionedEntityIds`
+   * must carry a system from `permissions.graph.entity_systems`
+   * (`<system>:<model>:<id>`), and `factId` must be a fact id (`fact:…`, see
+   * `factNodeId`); otherwise throws `KgEntityNamespaceError`. The
+   * `subject`/`predicate`/`object` fields are free-form strings.
    */
   ingestFacts(facts: FactIngest[]): Promise<FactIngestResult>;
 
@@ -2321,8 +2321,9 @@ export class RawModelServiceRefusedError extends Error {
 export type GraphServiceRefusal = 'kernel-only' | 'no-boundary' | 'out-of-scope';
 
 /**
- * ADR-0044 — thrown by the bounded `knowledgeGraph@1` / `processMemory@1`
- * service a plugin resolves through `ctx.services.get`. Inside a turn its
+ * ADR-0044 — thrown by the bounded `knowledgeGraph@1` / `processMemory@1` /
+ * `memoryStore@1` service a plugin resolves through `ctx.services.get`, and by
+ * `topicClustering@1`, which is kernel-only for plugins. Inside a turn its
  * reads are held to the turn's graph read boundary (ADR-0040); this error is
  * for the calls the boundary cannot answer.
  */

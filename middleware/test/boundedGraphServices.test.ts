@@ -11,7 +11,9 @@ import { InMemoryMemoryStore } from '@omadia/memory';
 import { turnContext, type GraphReadScope } from '@omadia/orchestrator';
 import {
   GraphServiceRefusedError,
+  KgEntityNamespaceError,
   MemoryPathError,
+  neighborsOfType,
   type GraphNode,
   type KnowledgeGraph,
   type ProcessMemoryService,
@@ -23,6 +25,7 @@ import {
   boundKnowledgeGraph,
   boundMemoryStore,
   boundProcessMemory,
+  boundTopicClustering,
 } from '../src/platform/boundedGraphServices.js';
 
 const PLUGIN = '@test/plugin';
@@ -54,6 +57,7 @@ function fakeGraph(): { kg: KnowledgeGraph; calls: string[] } {
     getNeighbors: [],
     listPlansForScope: [node('plan-1', 'Plan')],
     ingestEntities: { inserted: 1 },
+    ingestFacts: { inserted: 1 },
   };
   const plans: Record<string, GraphNode> = {
     'plan:own': node('plan:own', 'Plan', { scope: 'atlas::web-1' }),
@@ -70,6 +74,10 @@ function fakeGraph(): { kg: KnowledgeGraph; calls: string[] } {
       return async (...args: unknown[]) => {
         calls.push(prop);
         if (prop === 'getNeighbors') return neighbours[String(args[0])] ?? [];
+        if (prop === 'getNeighborsOfType') {
+          const [ids, type] = args as [string[], string];
+          return new Map(ids.map((id) => [id, (neighbours[id] ?? []).filter((n) => n.type === type)]));
+        }
         if (prop === 'getSession') return null;
         if (prop === 'getPlan') return plans[String(args[0])] ?? null;
         return answers[prop] ?? null;
@@ -128,8 +136,67 @@ describe('ADR-0044 · bounded knowledgeGraph@1', () => {
     assert.equal(enforce.length, 2);
   });
 
+  it('ADR-0167: a plugin declaring entity systems writes entities and facts only there', async () => {
+    const { kg, calls } = fakeGraph();
+    const bounded = boundKnowledgeGraph(kg, PLUGIN, ['odoo']);
+    assert.deepEqual(await bounded.ingestEntities([{ system: 'odoo', model: 'res.partner', id: 1 }]), { inserted: 1 });
+    const fact = (ids: string[], factId = 'fact:t:s:p:o') => ({
+      factId,
+      sourceTurnId: 't',
+      subject: 's',
+      predicate: 'p',
+      object: 'o',
+      mentionedEntityIds: ids,
+    });
+    assert.deepEqual(await bounded.ingestFacts([fact(['odoo:res.partner:1'])]), { inserted: 1 });
+    await assert.rejects(
+      () => bounded.ingestEntities([{ system: 'confluence', model: 'page', id: 2 }]),
+      KgEntityNamespaceError,
+    );
+    await assert.rejects(
+      () => bounded.ingestFacts([fact(['odoo:res.partner:1', 'confluence:page:2'])]),
+      KgEntityNamespaceError,
+    );
+    // A fact id that names an entity node would upsert into that node.
+    await assert.rejects(() => bounded.ingestFacts([fact([], 'odoo:res.partner:1')]), KgEntityNamespaceError);
+    assert.deepEqual(calls, ['ingestEntities', 'ingestFacts'], 'a refused write never reached the graph');
+  });
+
+  it('leaves the batched neighbour read off the bounded object; neighborsOfType falls back', async () => {
+    const { kg, calls } = fakeGraph();
+    const bounded = boundKnowledgeGraph(kg, PLUGIN);
+    assert.equal(bounded.getNeighborsOfType, undefined);
+    const map = await inTurn(USER_BOUND, () => neighborsOfType(bounded, ['e-captured'], 'Turn'));
+    assert.deepEqual([...map.keys()], ['e-captured']);
+    assert.equal(calls.includes('getNeighborsOfType'), false);
+    assert.ok(calls.includes('getNeighbors'), 'the bounded per-node read ran');
+  });
+
+  it('ADR-0167: a plugin declaring none still writes during the transition', async () => {
+    const { kg, calls } = fakeGraph();
+    const bounded = boundKnowledgeGraph(kg, '@test/undeclared');
+    await bounded.ingestEntities([{ system: 'odoo', model: 'res.partner', id: 1 }]);
+    await bounded.ingestFacts([]);
+    assert.deepEqual(calls, ['ingestEntities', 'ingestFacts']);
+  });
+
   it('enforce-strict: an entity another conversation captured stays out; synced master data stays in', async () => {
-    const bounded = boundKnowledgeGraph(fakeGraph().kg, PLUGIN);
+    const { kg, calls } = fakeGraph();
+    const bounded = boundKnowledgeGraph(kg, PLUGIN);
+    const hits = await inTurn(STRICT_BOUND, () => bounded.findEntities({ model: 'res.partner' }));
+    assert.deepEqual(hits.map((n) => n.id), ['e-synced']);
+    // One batched neighbour read for every hit, not one per hit (N+1).
+    assert.equal(calls.filter((c) => c === 'getNeighborsOfType').length, 1);
+    assert.equal(calls.includes('getNeighbors'), false);
+  });
+
+  it('findEntities falls back to getNeighbors per hit for a provider without the batched read', async () => {
+    const { kg } = fakeGraph();
+    const withoutBatch = new Proxy(kg as object, {
+      get: (target, prop) => (prop === 'getNeighborsOfType' ? undefined : Reflect.get(target, prop)),
+      has: (target, prop) => prop !== 'getNeighborsOfType' && Reflect.has(target, prop),
+    }) as KnowledgeGraph;
+    const bounded = boundKnowledgeGraph(withoutBatch, PLUGIN);
     const hits = await inTurn(STRICT_BOUND, () => bounded.findEntities({ model: 'res.partner' }));
     assert.deepEqual(hits.map((n) => n.id), ['e-synced']);
   });
@@ -142,6 +209,38 @@ describe('ADR-0044 · bounded knowledgeGraph@1', () => {
     assert.equal(own.length, 1, JSON.stringify(own));
     assert.deepEqual(other, []);
     assert.deepEqual(strict, []);
+  });
+});
+
+describe('ADR-0167 · kernel node namespaces are never an entity system', () => {
+  const fact = (factId: unknown, ids: string[] = []) =>
+    ({ factId, sourceTurnId: 't', subject: 's', predicate: 'p', object: 'o', mentionedEntityIds: ids }) as never;
+  const refused = (err: unknown): boolean => err instanceof KgEntityNamespaceError;
+
+  for (const [label, systems] of [
+    ['a declared writer', ['turn', 'session', 'notes']],
+    ['an undeclared writer', []],
+  ] as const) {
+    it(`${label}: turn, session, user, channel and fact namespaces are refused before the graph`, async () => {
+      const { kg, calls } = fakeGraph();
+      const bounded = boundKnowledgeGraph(kg, '@test/ns', systems);
+      for (const system of ['turn', 'session', 'user', 'teams', 'fact', 'mk', 'process', 'turn:atlas:']) {
+        await assert.rejects(() => bounded.ingestEntities([{ system, model: 'm', id: 1 }]), refused, system);
+      }
+      for (const factId of ['odoo:res.partner:1', 'turn:atlas::web-1:2026', undefined, 42]) {
+        await assert.rejects(() => bounded.ingestFacts([fact(factId)]), refused, String(factId));
+      }
+      assert.deepEqual(calls, [], 'nothing reached the graph');
+    });
+  }
+
+  it('an undeclared writer still writes its own master data (the Odoo / Confluence syncs)', async () => {
+    const { kg, calls } = fakeGraph();
+    const bounded = boundKnowledgeGraph(kg, '@test/undeclared-sync');
+    await bounded.ingestEntities([{ system: 'odoo', model: 'res.partner', id: 1 }]);
+    await bounded.ingestEntities([{ system: 'confluence', model: 'page', id: '123' }]);
+    await bounded.ingestFacts([fact('fact:t:s:p:o', ['odoo:res.partner:1'])]);
+    assert.deepEqual(calls, ['ingestEntities', 'ingestEntities', 'ingestFacts']);
   });
 });
 
@@ -310,6 +409,21 @@ describe('ADR-0044 · bounded memoryStore@1', () => {
       () => bounded.rename('/memories/pairings', '/memories/orchestrators/atlas/p'),
     ]) {
       await assert.rejects(change, MemoryPathError);
+    }
+  });
+});
+
+describe('bounded topicClustering@1: kernel-only', () => {
+  it('refuses list, getWithMembers and recluster, in and outside a turn', async () => {
+    const topics = boundTopicClustering(PLUGIN);
+    const kernelOnly = (err: unknown): boolean => err instanceof GraphServiceRefusedError && err.reason === 'kernel-only';
+    for (const run of [
+      () => topics.list('any-user'),
+      () => topics.getWithMembers('topic:1', 'any-user'),
+      () => topics.recluster(),
+    ]) {
+      await assert.rejects(run, kernelOnly);
+      await inTurn(USER_BOUND, () => assert.rejects(run, kernelOnly));
     }
   });
 });

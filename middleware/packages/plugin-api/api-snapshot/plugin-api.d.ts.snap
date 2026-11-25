@@ -1314,6 +1314,7 @@ getRunForTurn(turnExternalId: string): Promise<RunTraceView | null>;
 getSession(scope: string, options?: SessionReadOptions): Promise<SessionView | null>;
 listSessions(filter?: SessionFilter): Promise<SessionSummary[]>;
 getNeighbors(nodeId: string): Promise<GraphNode[]>;
+getNeighborsOfType?(nodeIds: readonly string[], type: GraphNodeType): Promise<Map<string, GraphNode[]>>;
 stats(): Promise<GraphStats>;
 searchTurns(opts: SearchTurnsOptions): Promise<TurnSearchHit[]>;
 findEntityCapturedTurns(opts: EntityCapturedTurnsOptions): Promise<EntityCapturedTurnsHit[]>;
@@ -1967,6 +1968,7 @@ userMessage: string;
 assistantAnswer: string;
 }>;
 }
+export declare function neighborsOfType(graph: Pick<KnowledgeGraph, 'getNeighbors' | 'getNeighborsOfType'>, nodeIds: readonly string[], type: GraphNodeType): Promise<Map<string, GraphNode[]>>;
 export declare const AGENT_SCOPE_SEP = "::";
 export declare function qualifyScope(agentSlug: string, conversationScope: string): string;
 export declare function agentScopePrefix(agentSlug: string): string;

@@ -177,6 +177,7 @@ function usage(input: number, output: number): CliUsage {
     outputTokens: output,
     cacheReadInputTokens: 3,
     cacheCreationInputTokens: 4,
+    cacheCreation1hInputTokens: 0,
     costUsd: 0,
     numTurns: 1,
   };

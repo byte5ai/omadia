@@ -768,6 +768,19 @@ th[aria-sort='descending'] {
 }
 
 /* ------------------------------------------------------------------------ */
+/* Conductor canvas (designer + template preview): edges from the theme     */
+/* tokens. Un-layered, so it wins over xyflow's `@layer xyflow` defaults.   */
+/* ------------------------------------------------------------------------ */
+.conductor-canvas {
+  /* Follow the app's theme (`[data-theme]`), not only the OS: xyflow sets
+     `color-scheme: light dark`, so its light-dark() picked the OS mode. */
+  color-scheme: inherit;
+  --xy-edge-stroke: var(--canvas-edge);
+  --xy-edge-stroke-selected: var(--canvas-edge-selected);
+  --xy-connectionline-stroke: var(--canvas-edge);
+}
+
+/* ------------------------------------------------------------------------ */
 /* Reduced motion (spec §2.11). Collapse animation/transition for users who   */
 /* request it — any new Lume motion degrades to a plain fade or nothing.      */
 /* ------------------------------------------------------------------------ */

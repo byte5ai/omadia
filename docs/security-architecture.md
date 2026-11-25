@@ -1043,8 +1043,13 @@ The surfaces that boundary must cover, and how each one does:
   private `/memories` trees (`orchestrators`, `contexts`, `sessions`,
   `chat-sessions`) and loose root files are never reachable, and the `_*`
   trees are read-only; plan reads and writes reach only the turn's own
-  conversation, process writes only this agent's scopes, and only a
-  boundary implementer may `replace` these services. Only the
+  conversation, process writes only this agent's scopes, entity and fact
+  writes only the plugin's declared `graph.entity_systems` (ADR-0167;
+  undeclared writers pass with a warning during the transition, whose end is
+  open; the kernel's own node namespaces are refused for everyone), and only a
+  boundary implementer may `replace` these services. `topicClustering@1`
+  is kernel-only for plugins: its reads take any viewer id, and `recluster`
+  rebuilds every account's topics. Only the
   bundled providers and boundary implementers (`orchestrator`,
   `orchestrator-extras`) hold the raw services. `graphPool` stays an
   operator-granted SQL capability (C7). Residuals: sibling recall and
@@ -7607,9 +7612,23 @@ the public-path mount and the `/api` gate):
    token's content nor its length leaks through timing.
 6. Deliberately **not** a `publicPaths` entry: that would wave the whole prefix
    through the gate's `next()`, including when no token is configured.
+7. Wrong tokens fill a per-client leaky bucket (`routes/adminTokenThrottle.ts`):
+   10 failures, drained one every 6 s. A client with a full bucket gets 429
+   with `Retry-After` before its token is compared, the right token included.
+   The client is keyed like the password limiter's client layer (§10m):
+   `AUTH_LOGIN_CLIENT_ADDRESS` and `AUTH_LOGIN_IPV6_PREFIX`. Only an address a
+   trusted proxy vouched for is braked (on Fly `header:Fly-Client-IP`).
 
-**Residual:** there is no rate limiter on wrong tokens; a long random token is
-the defence. A client that sends both a session cookie and an unrelated bearer
+**Residual:** the shared TCP peer (`AUTH_LOGIN_CLIENT_ADDRESS=socket`) is never
+braked, because one sender would otherwise lock every operator out; a long
+random token stays the defence there. On a vouched address the brake is the
+address's, not the operator's: anyone behind the same public IPv4 (office or
+carrier NAT) or IPv6 prefix can fill it with ten wrong bearers and keep it full
+with one every 6 s, and the operator's right token then gets 429 too. Unlike
+password sign-in (ADR-0109) there is no device cookie as a way out; another
+network or a restart is. Accepted for a break-glass surface. The buckets are
+in-memory and per process.
+A client that sends both a session cookie and an unrelated bearer
 header to `/api/admin/domains` is claimed by this mount (401/404). The surface
 has no user or whitelist management, so it is not a way out of an
 `ADMIN_ALLOWED_EMAILS` lockout.

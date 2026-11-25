@@ -158,6 +158,7 @@ export function TemplatePreview({ template }: { template: ConductorTemplate }): 
     <div className="h-[260px] rounded-lg border border-[color:var(--border)]" data-testid="template-preview">
       <ReactFlowProvider>
         <ReactFlow
+          className="conductor-canvas"
           nodes={nodes}
           edges={edges}
           nodeTypes={previewNodeTypes}
