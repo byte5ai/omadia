@@ -125,7 +125,9 @@ export class ConductorBuilderUnavailableError extends Error {
 export interface ConductorBuilderAgentDeps {
   /** the multi-orchestrator registry — resolves the Agent that drives the builder. */
   getRegistry: () => OrchestratorRegistry | undefined;
-  /** slug of the Agent (orchestrator) used to drive the builder. Default 'fallback' (the standard one). */
+  /** slug of the Agent (orchestrator) used to drive the builder. Default: the
+   *  instance's default agent (ADR-0012 — there is no special `fallback` agent
+   *  any more, #2055). */
   builderAgentSlug?: string;
   /** known references (event ids etc.) so validate() can flag unknown refs and the prompt can list them. */
   knownRefs?: () => KnownRefs | Promise<KnownRefs>;
@@ -150,8 +152,6 @@ export interface ConductorBuilderAgentDeps {
   log?: (msg: string) => void;
 }
 
-const DEFAULT_BUILDER_SLUG = 'fallback';
-
 /** The minimal SemanticAnswer shape we depend on (the orchestrator chat result). */
 interface ChatAnswerLike {
   text: string;
@@ -160,11 +160,9 @@ interface ChatAnswerLike {
 }
 
 export class ConductorBuilderAgent {
-  private readonly slug: string;
   private readonly chatTimeoutMs: number;
 
   constructor(private readonly deps: ConductorBuilderAgentDeps) {
-    this.slug = deps.builderAgentSlug ?? DEFAULT_BUILDER_SLUG;
     this.chatTimeoutMs = deps.chatTimeoutMs ?? DEFAULT_BUILDER_CHAT_TIMEOUT_MS;
   }
 
@@ -173,9 +171,17 @@ export class ConductorBuilderAgent {
     if (!registry) {
       throw new ConductorBuilderUnavailableError('orchestrator registry is unavailable (no graphPool / registry not built)');
     }
-    const entry = registry.get(this.slug);
+    // ADR-0012 — the builder runs on the instance's default agent, resolved per
+    // turn so a changed default applies at once. No agent is special by name.
+    const slug = this.deps.builderAgentSlug ?? registry.instanceDefaultSlug();
+    if (!slug) {
+      throw new ConductorBuilderUnavailableError(
+        'no default agent is set for this instance — choose one under Agents → Default agents to use the workflow builder',
+      );
+    }
+    const entry = registry.get(slug);
     if (!entry) {
-      throw new ConductorBuilderUnavailableError(`builder Agent '${this.slug}' is not active in the orchestrator registry`);
+      throw new ConductorBuilderUnavailableError(`builder Agent '${slug}' is not active in the orchestrator registry`);
     }
 
     const knownRefs = (await this.deps.knownRefs?.()) ?? {};
@@ -211,17 +217,17 @@ export class ConductorBuilderAgent {
       const correction = attempt === 0 ? null : (best?.result ?? null);
       const prompt = buildPrompt(baseGraph, input.message, input.history ?? [], knownRefs, correction, digest, known);
 
-      this.deps.log?.(`[conductor] builder turn → Agent '${this.slug}' (attempt ${String(attempt + 1)})`);
+      this.deps.log?.(`[conductor] builder turn → Agent '${slug}' (attempt ${String(attempt + 1)})`);
       // Unique per-turn session scope: the orchestrator qualifies sessionScope into its recall/memory
       // pipeline, so a constant scope would accumulate state and bleed across operators. A fresh id
       // keeps the turn genuinely stateless (history is passed explicitly, never recalled).
       const answer = (await withTimeout(
         entry.built.bundle.agent.chat({
           userMessage: prompt,
-          sessionScope: `conductor-builder:${this.slug}:${randomUUID()}`,
+          sessionScope: `conductor-builder:${slug}:${randomUUID()}`,
         }),
         this.chatTimeoutMs,
-        `conductor builder turn (Agent '${this.slug}')`,
+        `conductor builder turn (Agent '${slug}')`,
       )) as ChatAnswerLike;
 
       // #2085 — parse the prose, never side-channel rows rendered into `text`.
@@ -514,7 +520,7 @@ function buildPrompt(
     'GRAPH SHAPE (JSON):',
     '  WorkflowGraph = { entryStepId: string, steps: Step[], transitions: Transition[], triggers: Trigger[] }',
     "  Step = { id: string, kind: 'agent'|'action'|'human'|'timer', agentId?, actionId?, prompt?, input?, human?, timer?, postcondition?, fallbackTransitionId? }",
-    "    - kind 'agent': set agentId (the slug of an Agent/orchestrator, e.g. 'fallback') and an optional prompt.",
+    "    - kind 'agent': set agentId (the slug of an Agent from KNOWN AGENT SLUGS) and an optional prompt.",
     "    - kind 'action': set actionId (a connector/tool id) and an optional input object.",
     "    - kind 'human': set human = { principal: {kind:'user'|'role', ref}, channel, message, reminderInterval?, deadline?, quorum?:'any'|'all' }.",
     "    - kind 'timer' exists for curated ephemeral patterns (#330 C3) but is NOT yet supported by the Designer canvas — do NOT emit timer steps in proposals.",
@@ -535,7 +541,7 @@ function buildPrompt(
     'An event id is free text chosen by whoever emits it, so prefer a known id but use a descriptive <domain>.<thing>.<happened> id when none fits — say in your reply which id senders must then post.',
     renderKnownIdsBlock('KNOWN ACTION IDS (for action steps; `mcp:<serverId>:<tool>` ids are connected MCP tools)', known.actionIds),
     renderKnownIdsBlock('KNOWN AGENT SLUGS (for agent steps)', known.agentIds),
-    "If unsure of an Agent slug, use 'fallback' (the standard orchestrator).",
+    'If unsure which Agent should run a step, pick the closest one from KNOWN AGENT SLUGS and say in your reply which one you chose.',
     'If the user needs a capability that is NOT in KNOWN ACTION IDS (e.g. a system like Pleo, Jira, Odoo), STILL add the action step with a short descriptive actionId of the form <system>.<verb> (e.g. pleo.list_missing_receipts) and say in your reply that this connector is not connected yet — the operator can connect it inline. Never ask the user for connector details.',
     "For a human step with principal kind 'user' whose address you do not know, put the person's NAME exactly as the user wrote it into ref (e.g. 'Teresita Biel'); the system resolves names against the company directory. Never ask the user for a Teams or email address.",
     '#1698 — EVERY transition out of a human step needs a guard, and the rejection needs a path of its own: guard the approval path with {"op":"eq","path":"stepResult.approved","value":true} and add a second transition guarded on value:false that leads somewhere sensible (a notifying agent step, or a terminal step). A transition with no guard is never taken on a rejection, so an approval step with only an unguarded transition leaves a refused run stuck. Use {"op":"always"} only when BOTH outcomes deliberately go to the same step.',

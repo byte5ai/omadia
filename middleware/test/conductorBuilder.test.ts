@@ -182,6 +182,7 @@ function stubRegistry(responses: string[]): { registry: OrchestratorRegistry; ca
   let i = 0;
   const prompts: string[] = [];
   const registry = {
+    instanceDefaultSlug: () => 'assistant',
     get: (_slug: string) => ({
       built: {
         bundle: {
@@ -575,5 +576,29 @@ describe('ConductorBuilderAgent template awareness', () => {
     assert.equal(res.reply, 'looks good');
     assert.ok(!prompts[0].includes('WORKFLOW TEMPLATE CATALOG'));
     assert.ok(!('templateProposals' in res));
+  });
+});
+
+describe('ADR-0012 — the builder runs on the instance default agent', () => {
+  it('uses the default agent, not a slug named fallback', async () => {
+    const asked: string[] = [];
+    const registry = {
+      instanceDefaultSlug: () => 'assistant',
+      get: (slug: string) => {
+        asked.push(slug);
+        return slug === 'assistant'
+          ? { built: { bundle: { agent: { chat: async () => ({ text: JSON.stringify({ reply: 'ok', patches: [] }) }) } } } }
+          : undefined;
+      },
+    } as unknown as OrchestratorRegistry;
+    const agent = new ConductorBuilderAgent({ getRegistry: () => registry });
+    await agent.runTurn({ message: 'hi' });
+    assert.deepEqual([...new Set(asked)], ['assistant']);
+  });
+
+  it('refuses loudly when no default agent is set', async () => {
+    const registry = { instanceDefaultSlug: () => undefined, get: () => undefined } as unknown as OrchestratorRegistry;
+    const agent = new ConductorBuilderAgent({ getRegistry: () => registry });
+    await assert.rejects(() => agent.runTurn({ message: 'hi' }), /no default agent is set/);
   });
 });
