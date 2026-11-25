@@ -176,7 +176,7 @@ export class ConductorBuilderAgent {
     const slug = this.deps.builderAgentSlug ?? registry.instanceDefaultSlug();
     if (!slug) {
       throw new ConductorBuilderUnavailableError(
-        'no default agent is set for this instance — choose one under Agents → Default agents to use the workflow builder',
+        'no default agent is set for this instance — the workflow builder runs on the default agent, so set one first',
       );
     }
     const entry = registry.get(slug);

@@ -11,7 +11,7 @@ import type { Step } from '@omadia/conductor-core';
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
 
 import { DiscussionNotGrantedError, DiscussionPeerDisabledError } from '../src/conductor/discussionHere.js';
-import { ConductorDiscussionService } from '../src/conductor/discussionService.js';
+import { ConductorDiscussionService, DISCUSSION_AUTHORIZATION } from '../src/conductor/discussionService.js';
 import type { EphemeralAttachment } from '../src/conductor/ephemeralAttachmentsStore.js';
 import { RealStepEffects } from '../src/conductor/realStepEffects.js';
 import { ConductorSayService } from '../src/conductor/sayService.js';
@@ -137,12 +137,21 @@ describe('say — a revoked grant bites at the next utterance', () => {
   });
 });
 
-describe('agent step — a not_granted say ends the run', () => {
-  function registry(): OrchestratorRegistry {
+describe('agent step — a revoked grant ends the discussion run', () => {
+  function registry(turns: { n: number }): OrchestratorRegistry {
     const entry = {
       agent: { slug: 'hr', id: 'id-hr' },
       bindings: [],
-      built: { bundle: { agent: { chat: async () => ({ text: 'Beitrag' }) } } },
+      built: {
+        bundle: {
+          agent: {
+            chat: async () => {
+              turns.n += 1;
+              return { text: 'Beitrag' };
+            },
+          },
+        },
+      },
     };
     return {
       get: (slug: string) => (slug === 'hr' ? entry : undefined),
@@ -155,23 +164,49 @@ describe('agent step — a not_granted say ends the run', () => {
   }
   const step = { id: 'speak', kind: 'agent', agentId: 'hr', prompt: 'p', say: { channel: 'teams' } } as unknown as Step;
   const meta = { runId: 'run-1', workflowId: 'wf-1', triggerKind: 'manual' as const } as never;
+  const discussionContext = {
+    conversationId: 'conv-1',
+    participants: ['hr', 'accounting'],
+    authorization: DISCUSSION_AUTHORIZATION,
+  };
 
-  it('throws so the discussion stops instead of running on silently', async () => {
-    let seen: readonly string[] | undefined;
-    const effects = new RealStepEffects({
-      getRegistry: () => registry(),
-      say: {
-        say: async (i: { participants?: readonly string[] }) => {
-          seen = i.participants;
-          return { said: false, reason: 'not_granted', message: 'grants revoked' };
-        },
-        startTyping: () => () => undefined,
-      } as never,
-    });
-    await assert.rejects(
-      effects.runAgentStep(step, { conversationId: 'conv-1', participants: ['hr', 'accounting'] }, meta),
-      /grants revoked/,
-    );
-    assert.deepEqual(seen, ['hr', 'accounting']);
+  function effects(turns: { n: number }, ungranted: string | undefined, sayOutcome: unknown = { said: true }) {
+    const said: Array<{ participants?: readonly string[] }> = [];
+    return {
+      said,
+      effects: new RealStepEffects({
+        getRegistry: () => registry(turns),
+        say: {
+          ungrantedPartner: async () => ungranted,
+          say: async (i: { participants?: readonly string[] }) => {
+            said.push(i);
+            return sayOutcome;
+          },
+          startTyping: () => () => undefined,
+        } as never,
+      }),
+    };
+  }
+
+  it('refuses before the agent works when a grant is gone', async () => {
+    const turns = { n: 0 };
+    const { effects: fx } = effects(turns, 'accounting');
+    await assert.rejects(fx.runAgentStep(step, discussionContext, meta), /no longer hold consultation grants/);
+    assert.equal(turns.n, 0, 'no agent turn after a revocation');
+  });
+
+  it('ends the run when the grant is revoked during the turn (say refuses)', async () => {
+    const turns = { n: 0 };
+    const { effects: fx, said } = effects(turns, undefined, { said: false, reason: 'not_granted', message: 'grants revoked' });
+    await assert.rejects(fx.runAgentStep(step, discussionContext, meta), /grants revoked/);
+    assert.deepEqual(said[0]?.participants, ['hr', 'accounting']);
+  });
+
+  it('checks nothing for a workflow that only happens to have participants', async () => {
+    const turns = { n: 0 };
+    const { effects: fx, said } = effects(turns, 'accounting');
+    await fx.runAgentStep(step, { conversationId: 'conv-1', participants: ['hr', 'accounting'] }, meta);
+    assert.equal(turns.n, 1);
+    assert.equal(said[0]?.participants, undefined);
   });
 });

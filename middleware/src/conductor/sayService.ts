@@ -134,17 +134,28 @@ export function formatUtterance(text: string): string {
 export class ConductorSayService {
   constructor(private readonly deps: ConductorSayDeps) {}
 
-  /** The first other participant the speaker lacks mutual grants with; a
-   *  failed lookup counts as missing (fail closed). */
-  private async firstUngrantedPartner(input: ConductorSayInput): Promise<string | undefined> {
+  /** ADR-0018 — the first other participant `agentSlug` lacks mutual grants
+   *  with; a failed lookup counts as missing (fail closed). `undefined` when
+   *  all hold or no grant check is wired. */
+  async ungrantedPartner(
+    agentSlug: string,
+    channelType: string,
+    participants: readonly string[],
+  ): Promise<string | undefined> {
     const check = this.deps.mutualGrant;
-    if (!check || !input.participants) return undefined;
-    for (const other of input.participants) {
-      if (other === input.agentSlug) continue;
-      const granted = await check(input.agentSlug, other, input.channelType).catch(() => false);
+    if (!check) return undefined;
+    for (const other of participants) {
+      if (other === agentSlug) continue;
+      const granted = await check(agentSlug, other, channelType).catch(() => false);
       if (!granted) return other;
     }
     return undefined;
+  }
+
+  private firstUngrantedPartner(input: ConductorSayInput): Promise<string | undefined> {
+    return input.participants
+      ? this.ungrantedPartner(input.agentSlug, input.channelType, input.participants)
+      : Promise.resolve(undefined);
   }
 
   /**

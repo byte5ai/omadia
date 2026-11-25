@@ -3387,6 +3387,23 @@ beenden kann, hängen sie am Abschnitt „Laufende Prozesse“ der Agenten-Seite
   Kill-Switches (Instanz, Agent, Prozess) erreichen sie nicht; ihr Stopp ist
   endgültig und nicht fortsetzbar.
 
+**Eine Freigabe auf jedem Weg (ADR-0018).** `ConductorDiscussionService.start`
+prüft selbst, für den Start aus dem Chat und für
+`POST /api/v1/operator/conductors/discussions` gleich: das Peer-Gate jedes
+Teilnehmers (#1018) und die gegenseitigen Konsultations-Grants jedes Paars
+(`ConsultationStore.hasMutualGrants`, dieselbe Funktion wie `consult`). Ein
+fehlgeschlagener Lookup lehnt ab. Die Operator-Route antwortet dann 403
+`conductor.discussion_not_granted` (`agentA`, `agentB`) bzw. 403
+`conductor.discussion_peer_disabled` (`agentSlug`). Der Run-Context einer
+Diskussion trägt `authorization: 'mutual_consultation_grants'`; damit prüft
+`RealStepEffects.runAgentStep` vor jedem Beitrag die Grants des Sprechers
+gegen alle anderen Teilnehmer, bevor der Agent arbeitet, und
+`ConductorSayService.say` noch einmal vor dem Posten (`not_granted`). Fehlt
+eine Freigabe, wirft der Schritt und der Run endet; Binding und Reservierung
+räumt der normale Run-Ende-Pfad weg. Ein Workflow, der nur zufällig einen
+`participants`-Schlüssel hat, wird nicht geprüft. Tests:
+`test/conductorDiscussionGrants.test.ts`.
+
 Modul: `src/conductor/discussionAdmin.ts` (`ConductorDiscussionAdmin`, über
 `ConductorWiring.discussionAdmin` an die Operator-Routen gereicht, die früher
 gemountet werden und deshalb über eine Ref lesen). Web-UI:

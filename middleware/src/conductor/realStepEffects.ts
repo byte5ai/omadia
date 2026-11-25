@@ -11,6 +11,7 @@ import { renderActionInput, renderAgentPrompt, renderAgentRef } from './runInter
 import type { ConductorSayOutcome, ConductorSayService } from './sayService.js';
 import type { StepEffects, StepExecution, StepMeta } from './stepEffects.js';
 import { WEBHOOK_POST_ACTION_ID, WEBHOOK_POST_DEFAULT_POSTCONDITION } from './webhookPostAction.js';
+import { DISCUSSION_AUTHORIZATION } from './discussionService.js';
 
 /** Thrown when a single step's I/O exceeds the per-step hard budget (`stepTimeoutMs`). */
 export class StepTimeoutError extends Error {
@@ -147,6 +148,19 @@ export class RealStepEffects implements StepEffects {
       `[conductor] agent step '${step.id}' → Agent '${slug}' (run ${meta.runId}${isPreview ? ', preview without tools' : ''})`,
     );
 
+    // ADR-0018 — a discussion speaker whose consultation grants were revoked
+    // does not get another turn (tools, reads, model cost): the run ends here,
+    // before the agent works, not only when its answer would be posted.
+    const participants = discussionParticipants(context);
+    if (step.say && this.deps.say && !isPreview && participants) {
+      const ungranted = await this.deps.say.ungrantedPartner(slug, step.say.channel, participants);
+      if (ungranted !== undefined) {
+        throw new Error(
+          `agents '${slug}' and '${ungranted}' no longer hold consultation grants for each other — the discussion ends`,
+        );
+      }
+    }
+
     // A publishing step is one people are watching for. Show that this agent is
     // composing while it works — the turn regularly runs twenty seconds, and
     // silence in a chat reads as nothing happening. Stopped in `finally` so a
@@ -225,9 +239,7 @@ export class RealStepEffects implements StepEffects {
       return { said: false, reason: 'no_provider', message: 'no say service wired (no database / no channel plugin)' };
     }
     const conversationId = typeof context.conversationId === 'string' ? context.conversationId : '';
-    const participants = Array.isArray(context.participants)
-      ? context.participants.filter((p): p is string => typeof p === 'string')
-      : undefined;
+    const participants = discussionParticipants(context);
     return this.deps.say
       .say({
         workflowId: meta.workflowId ?? null,
@@ -284,6 +296,14 @@ export class RealStepEffects implements StepEffects {
       ...(defaultPostcondition ? { defaultPostcondition } : {}),
     };
   }
+}
+
+/** ADR-0018 — the cast of a run the discussion service started (it marks the
+ *  context with {@link DISCUSSION_AUTHORIZATION}); `undefined` for any other
+ *  run, so a user workflow with its own `participants` key needs no grants. */
+function discussionParticipants(context: JsonObject): readonly string[] | undefined {
+  if (context.authorization !== DISCUSSION_AUTHORIZATION || !Array.isArray(context.participants)) return undefined;
+  return context.participants.filter((p): p is string => typeof p === 'string');
 }
 
 /** #330 C3 — the LAST fenced ```json block in an agent answer, parsed. Size-

@@ -14,6 +14,10 @@ import type { AgentChannelIdentityResolver } from './sayService.js';
 
 export const DISCUSSION_PATTERN_ID = 'discussion';
 
+/** ADR-0018 — marks a run context as a discussion's, so every utterance
+ *  re-checks the participants' mutual consultation grants. */
+export const DISCUSSION_AUTHORIZATION = 'mutual_consultation_grants';
+
 /** Default lifetime of a discussion scaffold. Short: a bounded seven-turn
  *  exchange is minutes of work, and a stale scaffold holds the conversation's
  *  only attachment slot hostage. */
@@ -254,6 +258,7 @@ export class ConductorDiscussionService {
         conversationId,
         channelType,
         participants,
+        authorization: DISCUSSION_AUTHORIZATION,
         speaker: agentA,
         closer: agentA,
         maxTurns,
