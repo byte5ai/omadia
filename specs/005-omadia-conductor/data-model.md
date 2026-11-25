@@ -390,8 +390,11 @@ EventCatalogRegistry ──derives──> connector manifest `emits:`   (runtime
 - `conductor_workflows.slug`: unique, immutable, URL-safe.
 - A published version's `graph`: must pass `@omadia/conductor-core` `validate()` —
   reachable steps, no unguarded cycle, every deadline-bearing human step has a
-  `fallbackTransitionId`, every referenced `agentId`/`actionId`/`role`/`eventId` resolves
-  (FR-003). Validation runs in the Designer and again on publish/activate.
+  `fallbackTransitionId`, every referenced `agentId`/`actionId`/`role` resolves, and every
+  `event`/`webhook` trigger carries an `eventId` (FR-003). An eventId outside the known
+  catalogue is a non-blocking `unmatched_event_ref` warning, not a rejection — event ids
+  are chosen by the sender (#1713). Validation runs in the Designer and again on
+  publish/activate.
 - `conductor_runs` bind to an immutable `workflow_version_id`; a workflow edit creates a
   new version and never mutates an in-flight run's version (FR-027).
 - `conductor_awaits` with `deadline_at` set must carry `fallback_transition_id`.

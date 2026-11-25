@@ -18,8 +18,10 @@
 
 // Plugin entry point
 export { activate, DEFAULT_MAX_TOKENS } from './plugin.js';
+export { HUMAN_NAMES_SERVICE } from './plugin.js';
 export type {
   ChatAgentBundle,
+  HumanNamesProvider,
   OrchestratorPluginHandle,
 } from './plugin.js';
 
@@ -444,7 +446,7 @@ export type { ResolvedAgentRuntime } from './registry/agentRuntime.js';
 // Per-Agent Orchestrator factory (US3) — re-exported so US4-style external
 // callers (CLI, tests) can build Orchestrators without going through the
 // plugin's activate path.
-export { buildOrchestratorForAgent } from './buildOrchestrator.js';
+export { buildOrchestratorForAgent, rosterAgentNames } from './buildOrchestrator.js';
 export type {
   AgentRuntimeConfig,
   BuiltOrchestrator,
@@ -1074,3 +1076,4 @@ export * from './privacyAudience.js';
 export * from './consultation/consultationScope.js';
 export * from './consultation/consultTool.js';
 export * from './discretion/toolFlow.js';
+export * from './discretion/labelledProcessMemory.js';

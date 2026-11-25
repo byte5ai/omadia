@@ -11,6 +11,7 @@ import type {
   WorkflowGraph,
 } from './types.js';
 import { validateGraphShape } from './schema.js';
+import { isTemplateExpression } from './runTokens.js';
 import { unguardedHappyTransitions } from './transitions.js';
 
 function unique(xs: string[]): string[] {
@@ -35,11 +36,6 @@ function computeReachable(entry: string, transitions: Transition[], stepIds: Set
     }
   }
   return seen;
-}
-
-/** `{{ctx.path}}` — a value the run supplies, not one the graph names. */
-export function isTemplateExpression(value: string): boolean {
-  return /\{\{\s*[\w.]+\s*\}\}/.test(value);
 }
 
 /** Find a cycle reachable through transitions that carry NO guard (a cycle with no progress
@@ -287,18 +283,31 @@ export function validate(graph: WorkflowGraph, knownRefs?: KnownRefs): Validatio
     }
   }
 
-  // 5. triggers: event AND webhook triggers need an eventId (and a known one if refs
-  //    supplied). `webhook` triggers require the same eventId as `event` triggers
-  //    (review finding, issue #437): `eventRouter.ts#emit` matches a trigger by
+  // 5. triggers: event AND webhook triggers need an eventId. `webhook` triggers require
+  //    the same eventId as `event` triggers (review finding, issue #437):
+  //    `eventRouter.ts#emit` matches a trigger by
   //    `(tr.kind === 'event' || tr.kind === 'webhook') && tr.eventId === eventId` — a
-  //    `webhook` trigger with no/invalid eventId can never match, so it would be
-  //    accepted and published but silently unreachable at runtime.
+  //    `webhook` trigger with no eventId can never match, so it would be accepted and
+  //    published but silently unreachable at runtime. A MISSING id stays an error.
+  //
+  //    An id that no known ref matches is only a WARNING (#1713): event ids are
+  //    sender-chosen free text — `POST /conductors/emit` accepts any id, and an inbound
+  //    webhook endpoint carries an operator-configured id — so the catalog is a list of
+  //    suggestions, never the set of legal values. As an error it made every bundled
+  //    `kind:'events'` template un-instantiable on a stack with an empty event catalog
+  //    (the strict template resolve/instantiate path passes the live catalog as
+  //    `knownRefs`), while publishing the very same graph through `POST /conductors`
+  //    worked because that path passes no refs at all.
   for (const tr of graph.triggers ?? []) {
     if (tr.kind === 'event' || tr.kind === 'webhook') {
       if (!tr.eventId) {
         errors.push({ code: 'unknown_event_ref', message: `${tr.kind} trigger '${tr.id}' has no eventId`, nodeIds: [tr.id] });
       } else if (knownRefs?.eventIds && !knownRefs.eventIds.includes(tr.eventId)) {
-        errors.push({ code: 'unknown_event_ref', message: `${tr.kind} trigger '${tr.id}' references unknown event '${tr.eventId}'`, nodeIds: [tr.id] });
+        warnings.push({
+          code: 'unmatched_event_ref',
+          message: `${tr.kind} trigger '${tr.id}' references event '${tr.eventId}', which nothing installed declares — the run starts only once a sender emits that exact id (check the spelling, or point a webhook endpoint at it)`,
+          nodeIds: [tr.id],
+        });
       }
     }
   }

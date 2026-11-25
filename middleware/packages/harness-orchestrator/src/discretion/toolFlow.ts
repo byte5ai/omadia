@@ -20,7 +20,7 @@
 
 import { turnContext } from '../turnContext.js';
 import { checkFlow, violationSummary } from './flowRule.js';
-import { labelSummary, unionLabels, type DiscretionLabel, type Readers } from './labels.js';
+import { labelSummary, unionLabels, UNKNOWN_READERS, type DiscretionLabel, type LabelSet, type Readers } from './labels.js';
 import type { DiscretionPort, LabelSubjectKind } from './port.js';
 import { addTurnLabels, currentDiscretion, resolvedTurnLabels } from './turnLabels.js';
 
@@ -175,5 +175,67 @@ export async function labelSubjectWithTurn(
   if (labels.labels.length === 0) return;
   await port.persistLabels(kind, id, agentSlug, labels).catch((err: unknown) => {
     console.error(`[discretion] persisting the labels of ${kind} ${id} failed:`, err);
+  });
+}
+
+/**
+ * Spec 2042 §5.11 — reusing written subjects (recalled turns, memorables,
+ * processes) adds the labels they kept to the active turn. A lookup failure
+ * fails closed: the turn gets a label nobody is known to be allowed to read,
+ * so nothing of it can flow outside this conversation. Never throws.
+ */
+export async function labelTurnWithSubjects(
+  port: DiscretionPort | undefined,
+  kind: LabelSubjectKind,
+  ids: readonly string[],
+): Promise<void> {
+  if (!port || ids.length === 0 || !currentDiscretion()) return;
+  try {
+    const found = await port.labelsOf(kind, ids);
+    for (const labels of found.values()) addTurnLabels(labels);
+  } catch (err) {
+    console.error(`[discretion] ${kind} label lookup failed — labelling the turn unreadable:`, err);
+    addTurnLabels([{ kind: 'context', key: 'unreadable', readers: UNKNOWN_READERS }]);
+  }
+}
+
+/**
+ * #2198 — add `labels` to what a subject keeps: atomically through the
+ * port's `mergeLabels`, else read, union and persist. Throws what the port
+ * throws.
+ */
+export async function mergeSubjectLabels(
+  port: DiscretionPort,
+  kind: LabelSubjectKind,
+  id: string,
+  agentSlug: string,
+  labels: LabelSet,
+): Promise<void> {
+  if (port.mergeLabels) {
+    await port.mergeLabels(kind, id, agentSlug, labels);
+    return;
+  }
+  const existing = (await port.labelsOf(kind, [id])).get(id);
+  await port.persistLabels(kind, id, agentSlug, existing ? unionLabels(existing, labels) : labels);
+}
+
+/**
+ * Spec 2042 §5.11 / #2198 — a subject written again (an edited process)
+ * keeps what it kept and gains the active turn's labels, atomically where
+ * the port can. Outside a labelled turn, or with nothing to add: nothing.
+ * Never throws; a failure is logged.
+ */
+export async function mergeSubjectWithTurn(
+  port: DiscretionPort | undefined,
+  kind: LabelSubjectKind,
+  id: string,
+  agentSlug: string,
+): Promise<void> {
+  const state = currentDiscretion();
+  if (!port || !state) return;
+  const labels = await resolvedTurnLabels(state);
+  if (labels.labels.length === 0) return;
+  await mergeSubjectLabels(port, kind, id, agentSlug, labels).catch((err: unknown) => {
+    console.error(`[discretion] adding to the labels of ${kind} ${id} failed:`, err);
   });
 }

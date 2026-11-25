@@ -7,32 +7,10 @@ import {
 } from './channelBotOwnership.js';
 import type { JsonObject, JsonValue, Step } from '@omadia/conductor-core';
 
+import { renderActionInput, renderAgentPrompt, renderAgentRef } from './runInterpolation.js';
 import type { ConductorSayOutcome, ConductorSayService } from './sayService.js';
 import type { StepEffects, StepExecution, StepMeta } from './stepEffects.js';
 import { WEBHOOK_POST_ACTION_ID, WEBHOOK_POST_DEFAULT_POSTCONDITION } from './webhookPostAction.js';
-
-/** Resolve a dot-path over a plain object root (for prompt interpolation). */
-function resolve(root: JsonObject, path: string): JsonValue | undefined {
-  let cur: JsonValue | undefined = root;
-  for (const seg of path.split('.')) {
-    if (cur === null || cur === undefined || typeof cur !== 'object' || Array.isArray(cur)) return undefined;
-    cur = (cur as Record<string, JsonValue>)[seg];
-  }
-  return cur;
-}
-
-/** Replace `{{ctx.path}}` / `{{steps.id.field}}` tokens in a prompt template. */
-function renderTemplate(tpl: string, root: JsonObject): string {
-  return tpl.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_m, path: string) => {
-    const v = resolve(root, path);
-    if (v === undefined || v === null) return '';
-    return typeof v === 'string' ? v : JSON.stringify(v);
-  });
-}
-
-function asObject(v: JsonValue | undefined): JsonObject {
-  return typeof v === 'object' && v !== null && !Array.isArray(v) ? v : {};
-}
 
 /** Thrown when a single step's I/O exceeds the per-step hard budget (`stepTimeoutMs`). */
 export class StepTimeoutError extends Error {
@@ -115,7 +93,7 @@ export class RealStepEffects implements StepEffects {
     // without a slot per participant frozen into the pattern.
     const rawSlug = step.agentId;
     if (!rawSlug) throw new Error(`agent step '${step.id}' has no agentId (Agent slug)`);
-    const slug = renderTemplate(rawSlug, { ctx: context, steps: asObject(context.steps) }).trim();
+    const slug = renderAgentRef(rawSlug, context).trim();
     if (!slug) {
       throw new Error(
         `agent step '${step.id}' resolved '${rawSlug}' to an empty agent slug — the run context does not name a speaker`,
@@ -160,9 +138,8 @@ export class RealStepEffects implements StepEffects {
     // facilitator is run by its engine only (`agentTurn`), never as a step.
     assertArchetypeAllows(entry.agent, 'consultation');
 
-    const root: JsonObject = { ctx: context, steps: asObject(context.steps) };
     const userMessage = step.prompt
-      ? renderTemplate(step.prompt, root)
+      ? renderAgentPrompt(step.prompt, context)
       : `Conductor workflow step "${step.id}". Run your configured task. Run context: ${JSON.stringify(context)}`;
 
     this.deps.log?.(`[conductor] agent step '${step.id}' → Agent '${slug}' (run ${meta.runId})`);
@@ -249,12 +226,16 @@ export class RealStepEffects implements StepEffects {
       });
   }
 
-  async runActionStep(step: Step, _context: JsonObject, meta: StepMeta): Promise<StepExecution> {
+  async runActionStep(step: Step, context: JsonObject, meta: StepMeta): Promise<StepExecution> {
     const toolId = step.actionId;
     if (!toolId) throw new Error(`action step '${step.id}' has no actionId`);
     if (!this.deps.invokeAction) throw new Error('action execution is not wired (no deterministic-action invoker)');
 
-    const input = step.input ?? {};
+    // #1709 — the input is authored in the graph and carries `{{ctx.*}}` /
+    // `{{steps.*}}` the same way a prompt does. Rendered HERE, per call, against
+    // this run's context: a connector that received the raw token posted the
+    // template text to whatever it talks to.
+    const input = renderActionInput(step.input ?? {}, context);
     this.deps.log?.(`[conductor] action step '${step.id}' → tool '${toolId}' (run ${meta.runId})`);
     const out = await withTimeout(this.deps.invokeAction(toolId, input), this.stepTimeoutMs, `action step '${step.id}'`);
     if (out === undefined) {

@@ -1,6 +1,10 @@
+import { AsyncResource } from 'node:async_hooks';
+
 import type { FactExtractor } from '@omadia/orchestrator-extras';
 import type { CaptureDisclosure, EntityRef } from '@omadia/plugin-api';
 
+
+import { currentAnswerRecordGate } from './identityGuard/answerRecordGate.js';
 import type { WrittenTurn } from './requestTurnRecord.js';
 import type { SessionLogEntry, SessionLogger } from './sessionLogger.js';
 import type { ToolReplayLedger } from './toolReplayLedger.js';
@@ -44,9 +48,11 @@ export interface TurnRecordWriterDeps {
    */
   readonly onTurnWritten?: (turnId: string, discretion: DiscretionTurnState | undefined) => Promise<void>;
   /**
-   * Spec 2042 §5.11 — the row's answer as it may be kept: an answer refused at
-   * the people egress is stored as the line that replaced it, so it can never
-   * be recalled later. Identity when nothing is refused.
+   * Spec 2042 §5.11 — the row as it may be kept: an answer refused at the
+   * people egress is stored without its text (`withoutAnswer`), so neither it
+   * nor the line that replaced it can be recalled later (the line is the
+   * channel's notice, not something the agent said). Identity when nothing is
+   * refused.
    */
   readonly beforeTurnWritten?: (
     entry: SessionLogEntry,
@@ -93,6 +99,7 @@ export class TurnRecordWriter {
     try {
       const kept = this.deps.beforeTurnWritten ? await this.deps.beforeTurnWritten(entry, discretion) : entry;
       const { turnExternalId, captureDisclosure } = await logger.log(kept);
+      this.amendOnVerdict(logger, turnExternalId, what);
       if (captureDisclosure) this.noteDisclosure(turnExternalId, captureDisclosure);
       await this.deps.onTurnWritten?.(turnExternalId, discretion).catch((err: unknown) => {
         console.error(
@@ -108,6 +115,25 @@ export class TurnRecordWriter {
       );
       return undefined;
     }
+  }
+
+  /**
+   * Spec 2042 — inside an agent turn the identity guard decides after the row
+   * is written (it wraps the agent from outside). The row is amended once it
+   * has: it gets the verdict, and a withheld answer loses its text, so no later
+   * turn recalls the draft. Outside a guarded turn nothing happens.
+   */
+  private amendOnVerdict(logger: SessionLogger, turnExternalId: string, what: string): void {
+    currentAnswerRecordGate()?.recorded(async (verdict) => {
+      if (verdict.kept && verdict.guard === undefined) return;
+      if (!verdict.kept) {
+        console.log(`[orchestrator] ${what}: the withheld answer is kept out of the agent's memory`);
+      }
+      await logger.amendTurn(turnExternalId, {
+        ...(verdict.guard ? { identityGuard: verdict.guard } : {}),
+        ...(verdict.kept ? {} : { withholdAnswer: true }),
+      });
+    });
   }
 
   /** The capture disclosure of a written row, once: the `done` that takes it
@@ -173,6 +199,12 @@ export class TurnRecordWriter {
   ): void {
     const extractor = this.deps.factExtractor;
     if (!extractor || turnId === undefined || facts === undefined) return;
-    void extractor.extractAndIngest({ turnId, ...facts, entityRefs });
+    const extract = (): void => void extractor.extractAndIngest({ turnId, ...facts, entityRefs });
+    // Spec 2042 — facts are learned only from an answer the identity guard kept.
+    const gate = currentAnswerRecordGate();
+    // Bound to this turn's async context (turn context, execution context of
+    // the model gateway, cost attribution): it may run from the guard's.
+    if (gate) gate.whenKept(AsyncResource.bind(extract));
+    else extract();
   }
 }

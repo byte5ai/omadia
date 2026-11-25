@@ -67,6 +67,8 @@ interface Recorded {
   tool: string;
   callerKind: string | undefined;
   callerId: string | undefined;
+  graphReadScope: unknown;
+  userId: string | undefined;
 }
 
 function makeDeps(
@@ -85,6 +87,8 @@ function makeDeps(
           tool: toolName,
           callerKind: ctx?.mcpCallerKind,
           callerId: ctx?.mcpCallerId,
+          graphReadScope: ctx?.graphReadScope,
+          userId: ctx?.userId,
         });
         return 'ok';
       },
@@ -161,6 +165,36 @@ describe('skill capability bindings at hydration (#456)', () => {
     assert.equal(result, 'ok');
     assert.equal(recorded[0]?.callerKind, 'skill');
     assert.equal(recorded[0]?.callerId, 'crm-helper');
+  });
+
+  it('a bound tool keeps the turn\'s graph read boundary and viewer (#2204)', async () => {
+    const recorded: Recorded[] = [];
+    const h = host();
+    registerDbSubAgentTools(
+      { subAgents: [], skills: [], toolGrants: [] },
+      h,
+      makeDeps(recorded, {
+        personaSkills: [skill({ requires_tools: [{ contract: 'customer-lookup' }] })],
+        skillToolBindings: [binding()],
+      }),
+    );
+    const tool = h.registered.get('mcp__crm__lookup_customer');
+    assert.ok(tool);
+    const { turnContext } = await import('@omadia/orchestrator');
+    const box = {};
+    await turnContext.run(
+      {
+        turnId: 't1',
+        turnDate: '2026-07-06',
+        agentSlug: 'main',
+        activeWorkingModeSkillId: SKILL_ID,
+        graphReadScope: box,
+        userId: 'u-1',
+      },
+      () => tool.handle({ q: 'acme' }),
+    );
+    assert.equal(recorded[0]?.graphReadScope, box, 'the same box, not a copy');
+    assert.equal(recorded[0]?.userId, 'u-1');
   });
 
   it('a bound tool is denied when its skill is not the active working mode (codex fold)', async () => {

@@ -118,7 +118,8 @@ export function labelSummary(set: LabelSet): string[] {
 
 // ── persistence ────────────────────────────────────────────────────────────
 
-const MAX_PERSISTED_LABELS = 256;
+/** A stored set larger than this reads back as unreadable (fail closed). */
+export const MAX_PERSISTED_LABELS = 256;
 const MAX_TEXT = 512;
 const MAX_READERS = 1024;
 
