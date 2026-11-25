@@ -36,6 +36,23 @@ changelog.
 
 ## [Unreleased]
 
+### Security — topics show no content of memories the caller cannot read (#1851) (2026-11-25)
+
+- Re-cluster on `/admin/topics` grouped every account's memorable knowledge into one topic
+  and wrote its name and description from the member summaries (model output with Privacy
+  Shield values restored, or the summaries verbatim as fallback); `GET /api/v1/admin/topics`
+  returned it to every account.
+- Re-cluster now clusters each exact owner set (`acl_owners`) on its own, with one Privacy
+  Shield run per set; memories without owners get no topic. `list` and the detail route show
+  a topic only when the caller reads every current member (else no entry / 404); a topic
+  that lost a member since it was written is hidden until the next re-cluster. Topics from
+  before this change are hidden the same way until the next re-cluster rebuilds them.
+  Decision: ADR 0045.
+- `TopicClusteringService.list(viewerOmadiaUserId)` takes the viewer (`@omadia/plugin-api`
+  1.97.0). The canary sweep asserts the fix, in memory and on Neon
+  (`memoryAccess/canaryHttp.pg.test.ts`, `PG_TEST_FLOOR` 776 → 788); the `todo` and the
+  security-architecture residual are gone.
+
 ### Security — plugins read the graph only through bounded services (ADR-0044) (2026-11-25)
 
 - A plugin that declared `knowledgeGraph@^1`, `processMemory@^1` or `memoryStore@^1` got the

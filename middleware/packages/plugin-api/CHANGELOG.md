@@ -8,6 +8,24 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.97.0 — 2026-11-25
+
+Security fix (#1851, ADR 0045). Caller-breaking on purpose, released as a minor.
+
+### Changed
+
+- **`TopicClusteringService.list(viewerOmadiaUserId)`** takes the viewer and
+  returns only topics whose every current member that viewer may read. A
+  topic's name and description are written from its members' summaries, so
+  a topic is content of every member. `getWithMembers` returns `null` for a
+  viewer who misses any member instead of a topic with a shortened member
+  list. A topic that lost a member since it was written is hidden until the
+  next re-cluster.
+- Why a minor: the parameter is required, which breaks a caller that passes
+  none. The kernel's `/api/v1/admin/topics` route is the only caller in tree
+  and in the known plugin repositories; implementers are unaffected, and an
+  optional viewer would reopen the leak.
+
 ## 1.96.0 — 2026-11-25
 
 Additive (ADR-0044).

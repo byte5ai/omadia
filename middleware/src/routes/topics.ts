@@ -8,8 +8,9 @@ import type { TopicClusteringService } from '@omadia/plugin-api';
  * Slice 11 — REST surface for the Topic-clustering workflow. Mounted
  * at `/api/v1/admin/topics`.
  *
- *   GET    /                      list (Topics, ordered by member_count DESC)
- *   GET    /:id                   detail with member MKs (ACL-gated per-member)
+ *   GET    /                      list (Topics whose every member the caller reads)
+ *   GET    /:id                   detail with member MKs; 404 unless the caller
+ *                                 reads every member (ADR 0045)
  *   POST   /recluster             trigger a destructive re-cluster
  */
 
@@ -33,9 +34,10 @@ export function createTopicsRouter(deps: {
   const router = Router();
 
   router.get('/', async (req: Request, res: Response) => {
-    if (!requireSessionUserId(req, res)) return;
+    const sessionUserId = requireSessionUserId(req, res);
+    if (!sessionUserId) return;
     try {
-      const items = await deps.service.list();
+      const items = await deps.service.list(sessionUserId);
       res.json({ items });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

@@ -4028,7 +4028,7 @@ haikuCalls: number;
 durationMs: number;
 }
 export interface TopicClusteringService {
-list(): Promise<TopicNode[]>;
+list(viewerOmadiaUserId: string): Promise<TopicNode[]>;
 getWithMembers(topicExternalId: string, viewerOmadiaUserId: string): Promise<TopicDetail | null>;
 recluster(opts?: TopicClusteringRunOptions): Promise<TopicClusteringRunResult>;
 }

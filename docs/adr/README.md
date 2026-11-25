@@ -72,6 +72,7 @@ decision, write a new ADR and mark the old one **Superseded by …**.
 | 0042 | [Conductor event ids belong to the sender; the catalog only suggests](0042-conductor-event-ids-belong-to-the-sender.md) | Accepted | 2026-11-24 |
 | 0043 | [Draft previews run agent steps as tool-less turns](0043-draft-previews-run-agent-steps-as-tool-less-turns.md) | Accepted | 2026-11-25 |
 | 0044 | [Plugins read the graph only through bounded services](0044-plugins-read-the-graph-through-bounded-services.md) | Accepted | 2026-11-25 |
+| 0045 | [A topic is content of every member: cluster per owner set, show only to full readers](0045-a-topic-is-content-of-every-member.md) | Accepted | 2026-11-25 |
 
 ### The agent model (0012–0022)
 
