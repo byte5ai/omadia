@@ -2,11 +2,12 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-24
 - **Deciders:** Maintainers, memory-ACL test plan; PRs #2187 (plan), #2188 (step 1), #2202
-  (step 2) and #2206 (step 3), all open. Step 0 is #2179 (ADR-0035).
+  (step 2) and #2206 (step 3); the fixes it drove are #2209–#2213 (ADR-0040). Step 0 is
+  #2179 (ADR-0035).
 
 ## Context and Problem Statement
 
@@ -82,7 +83,8 @@ Chosen option: **A**, in steps.
 
 ### A — World, oracle, contract, sweep
 
-- 🟢 Checks every entry point against one statement of the rules.
+- 🟢 Checks every swept entry point against one statement of the rules. Not swept yet:
+  skill-bound tools and plugins holding the raw `knowledgeGraph` service (ADR-0040 residual).
 - 🔴 High up-front cost; three stacked PRs.
 
 ### B — More example tests

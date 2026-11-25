@@ -367,7 +367,7 @@ jobs:
           # main sweep assertion once the leak is fixed; measured ran=743.
           # 743 → 739: the four Neon known-leak tests for #2207 fold into the
           # main sweep assertion once the leak is fixed; measured ran=739.
-          PG_TEST_FLOOR: '739'
+          PG_TEST_FLOOR: '771'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out
