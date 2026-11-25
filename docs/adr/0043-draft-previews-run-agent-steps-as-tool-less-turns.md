@@ -2,10 +2,10 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-25
-- **Deciders:** Owner (byte5), plan approved 2026-11-25; issue #2217
+- **Deciders:** Owner (byte5), plan approved 2026-11-25, accepted 2026-11-25 with PR #2228; issue #2217
 - **Supersedes:** — (refines the preview behaviour #2007 introduced)
 
 ## Context and Problem Statement
