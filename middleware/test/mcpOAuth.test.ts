@@ -871,6 +871,114 @@ describe('W0-1 D3 — concurrent refresh is single-flight (MUTATION-CHECKED)', (
   });
 });
 
+describe('refresh keeps what the provider leaves out (RFC 6749 §5.1/§6)', () => {
+  /** A stateful token store, so a second refresh reads what the first one
+   *  persisted — exactly the sequence that broke in production. The provider
+   *  never rotates the refresh token and never repeats the scope. */
+  async function nonRotatingHarness(): Promise<{
+    getToken: () => Promise<string | null>;
+    row: () => Record<string, unknown>;
+    vaultValue: (ref: string) => string | undefined;
+    sentRefreshTokens: string[];
+  }> {
+    const { McpOAuthService } = await import('../src/services/mcpOAuthService.js');
+    const sentRefreshTokens: string[] = [];
+    const fetchImpl: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) !== 'https://as.example/token') {
+        return new Response('not found', { status: 404 });
+      }
+      const form = new URLSearchParams(String(init?.body));
+      sentRefreshTokens.push(form.get('refresh_token') ?? '');
+      // Short lifetime → the next call is inside the refresh margin again.
+      return new Response(
+        JSON.stringify({
+          access_token: `AT-${String(sentRefreshTokens.length)}`,
+          expires_in: 1,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch;
+
+    let row: Record<string, unknown> = {
+      serverId: 'srv-1',
+      userKey: 'user-a',
+      accessTokenRef: 'token/srv-1/user-a/access',
+      refreshTokenRef: 'token/srv-1/user-a/refresh',
+      expiresAt: new Date(Date.now() - 60_000),
+      scopes: 'read write',
+      issuer: 'https://as.example',
+    };
+    const graph = {
+      getMcpOAuthToken: async () => row,
+      upsertMcpOAuthToken: async (input: Record<string, unknown>) => {
+        row = { ...input };
+      },
+      getMcpOAuthClient: async () => ({ clientId: 'cid', clientSecretRef: null }),
+      deleteMcpOAuthToken: async () => {},
+    } as never;
+    const vaultStore = new Map<string, string>([
+      ['token/srv-1/user-a/access', 'STALE-AT'],
+      ['token/srv-1/user-a/refresh', 'RT-0'],
+    ]);
+    const svc = new McpOAuthService({
+      graph,
+      vault: {
+        get: async (_ns: string, k: string) => vaultStore.get(k),
+        set: async (_ns: string, k: string, v: string) => {
+          vaultStore.set(k, v);
+        },
+      } as never,
+      redirectUri: 'https://host/cb',
+      discovery: {
+        discover: async () => ({
+          resource: {
+            resource: 'https://srv.example',
+            authorizationServers: ['https://as.example'],
+            scopesSupported: ['read'],
+            bearerMethods: ['header'],
+          },
+          server: AS,
+        }),
+      } as never,
+      client: new McpOAuthClient({ fetchImpl }),
+    });
+    const server = {
+      id: 'srv-1',
+      name: 'srv',
+      endpoint: 'https://srv.example/mcp',
+      transport: 'http',
+      delegation: 'per_user',
+    } as never;
+    return {
+      getToken: () => svc.getValidAccessToken(server, 'user-a'),
+      row: () => row,
+      vaultValue: (ref) => vaultStore.get(ref),
+      sentRefreshTokens,
+    };
+  }
+
+  it('keeps the stored refresh token when the response carries none', async () => {
+    const h = await nonRotatingHarness();
+    assert.equal(await h.getToken(), 'AT-1');
+    const refreshRef = h.row()['refreshTokenRef'];
+    assert.equal(typeof refreshRef, 'string', 'refresh_token_ref must survive the refresh');
+    assert.equal(h.vaultValue(String(refreshRef)), 'RT-0');
+  });
+
+  it('the next refresh sends the same refresh token again', async () => {
+    const h = await nonRotatingHarness();
+    await h.getToken();
+    assert.equal(await h.getToken(), 'AT-2', 'the second expiry must refresh, not hand back a dead token');
+    assert.deepEqual(h.sentRefreshTokens, ['RT-0', 'RT-0']);
+  });
+
+  it('keeps the stored scope when the response omits it', async () => {
+    const h = await nonRotatingHarness();
+    await h.getToken();
+    assert.equal(h.row()['scopes'], 'read write');
+  });
+});
+
 describe('W0-1 D5 — no token, code, or code_verifier can reach a log line', () => {
   it('redacts an exact secret value wherever it appears', () => {
     const out = redactSecrets('refresh failed for RT-abcdefgh12345 (retry)', ['RT-abcdefgh12345']);
