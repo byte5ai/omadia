@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { isNotFound, type TigrisStore } from '@omadia/diagrams';
+import { attachmentDisposition } from './filename.js';
 import { verifyDocumentSig } from './signing.js';
 
 interface DocumentsRouterDeps {
@@ -65,13 +66,10 @@ export function createDocumentsRouter(deps: DocumentsRouterDeps): Router {
         res.setHeader('content-length', String(contentLength));
       }
       // Friendly download name = last segment of the key (the sanitized
-      // filename written at store time). Safe for the header — the renderer
-      // already stripped quotes / control chars / separators.
+      // filename written at store time). It may hold umlauts, "–" or "€",
+      // which a raw header value cannot carry.
       const downloadName = key.split('/').pop() ?? 'document';
-      res.setHeader(
-        'content-disposition',
-        `attachment; filename="${downloadName}"`,
-      );
+      res.setHeader('content-disposition', attachmentDisposition(downloadName));
       // Signed URL already encodes expiry — cache aggressively so a channel
       // re-fetch doesn't round-trip to Tigris on every card re-render.
       res.setHeader('cache-control', 'private, max-age=900, immutable');
