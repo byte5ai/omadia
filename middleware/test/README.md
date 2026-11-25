@@ -103,9 +103,12 @@ only Neon has; there only one agent's viewers run turns, the other agent's
 items stay seeded. A probe plugin built with the real `createPluginContext`
 calls `ctx.knowledgeGraph` and `ctx.memory` as a domain tool mid-turn.
 `canaryHttp.test.ts` calls the per-person REST routes (`/api/v1/memory`,
-`/api/v1/datasets`, `/api/chat/sessions`) as each person, including every
-read-by-id route with every id of both tenants; `oracle.ts` `expectedHttp`
-decides. Known leaks are listed once, in `canarySweepSuite.ts` `KNOWN_LEAKS`,
+`/api/v1/datasets`, `/api/chat/sessions`) and the admin routes that filter per
+viewer (`/api/v1/admin/topics`, `/api/v1/admin/duplicates`, with near-duplicate
+markers seeded across owners) as each person, including every read-by-id route
+with every id of both tenants; `oracle.ts` `expectedHttp` decides. Admin routes
+without a viewer (purge preview, promote, operator memory contexts) are
+operator-only by design. Known leaks are listed once, in `canarySweepSuite.ts` `KNOWN_LEAKS`,
 with the modes where they were confirmed; the same sighting anywhere else
 fails.
 
