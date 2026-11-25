@@ -391,19 +391,19 @@ describe('ConductorRunExecutor — every failed write names its cause (#1699)', 
 });
 
 describe('ConductorRunExecutor — a dry run says why too (#1699)', () => {
-  it('does not invoke a throwing agent during a preview', async () => {
-    let agentCalls = 0;
+  it('reports a throwing agent step as a failed preview instead of throwing out of the route', async () => {
+    // #2217 — the preview runs the agent step again (tool-less), so its
+    // failure is the preview's reason, as before #2007.
     const { executor } = makeHarness(agentStepGraph, {
       agent: () => {
-        agentCalls += 1;
         throw new Error('Agent \'doesnotexist\' is not active in the orchestrator registry');
       },
     });
     const preview = await executor.previewRun('wf', {});
-    assert.equal(agentCalls, 0);
-    assert.equal(preview.status, 'completed');
-    assert.equal(preview.steps[0]?.actor, 'agent (stubbed):fallback');
-    assert.deepEqual(preview.steps[0]?.result, { simulated: true, agentId: 'fallback' });
+    assert.equal(preview.status, 'failed');
+    assert.ok(preview.status === 'failed');
+    assert.equal(preview.error.code, 'effect_threw');
+    assert.match(String(preview.error.message), /doesnotexist/);
   });
 
   it('reports a budget-exhausted rehearsal as failed, not as a clean pass', async () => {

@@ -253,7 +253,15 @@ export class McpOAuthService {
           refreshToken,
           resource: discovered.resource.resource,
         });
-        await this.persistToken(server.id, userKey, tok, discovered.server.issuer);
+        // RFC 6749 §6/§5.1: a refresh response may omit `refresh_token` and
+        // `scope`, meaning both stay as they were. Persisting the bare response
+        // would null them, and the next expiry could no longer refresh.
+        await this.persistToken(
+          server.id,
+          userKey,
+          { ...tok, refreshToken: tok.refreshToken ?? refreshToken, scope: tok.scope ?? row.scopes },
+          discovered.server.issuer,
+        );
         return tok.accessToken;
       } catch (err) {
         // D5: an OAuth error body routinely echoes the token back — never let

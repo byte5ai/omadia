@@ -126,6 +126,9 @@ export function passThroughReason(input: ChatTurnInput): string | undefined {
     input.fixedSystemHint !== undefined ||
     input.expectedDomainTool !== undefined ||
     input.freshCheck === true ||
+    // #2217 — a tool-less turn is the inner agent's to answer as asked; the
+    // triage would answer it with its own tool-bearing decision.
+    input.toolsOff === true ||
     input.answerVerbosity !== undefined ||
     input.routeHint !== undefined ||
     input.planHint !== undefined

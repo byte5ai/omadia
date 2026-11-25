@@ -208,6 +208,12 @@ import {
   type NudgeTurnCounter,
 } from './nudgePipeline.js';
 import { LoopGuard } from './loopGuard.js';
+import {
+  TOOLS_OFF_DIRECTIVE,
+  assertNoToolUseInToolsOffTurn,
+  isToolsOffTurn,
+  toolsForTurn,
+} from './toolsOffTurn.js';
 import { createPrivacyBypassResolver } from './privacyBypassResolver.js';
 import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import {
@@ -2058,6 +2064,7 @@ async function wireExtraSystemHint(
     input.canvasSessionId !== undefined,
     fixedHint !== undefined && fixedHint.length > 0 ? fixedHint : undefined,
     memoryIndexBlock,
+    isToolsOffTurn(input),
   );
 }
 
@@ -2099,8 +2106,14 @@ function composeExtraSystemHint(
   isCanvasTurn = false,
   fixedHint?: string,
   memoryIndexBlock?: string,
+  toolsOff = false,
 ): string | undefined {
   const parts: string[] = [];
+  // #2217 — a tool-less turn says so first, so no later block (fresh check,
+  // canvas) reads as an invitation to call a tool.
+  if (toolsOff) {
+    parts.push(TOOLS_OFF_DIRECTIVE);
+  }
   // Phase 3 — the user's per-turn answer-size pick. Same home as Fresh
   // Check (uncached, per turn, static prose that carries no user data), so
   // the stable prompt and its cache key stay byte-identical. Already parsed:
@@ -6497,6 +6510,10 @@ export class Orchestrator {
     // fall back to this orchestrator's standing `requiredConsultToolName`
     // (if configured), so the forced-delegation primitive has a real,
     // opt-in producer beyond a caller wiring it per turn.
+    // #2217 — a tool-less turn has nothing to consult.
+    if (isToolsOffTurn(input)) {
+      return { obligationTool: undefined, forceObligation: undefined };
+    }
     const requested = input.expectedDomainTool ?? this.requiredConsultToolName;
     const requestedEntry = requested
       ? this.domainToolsByName.get(requested)
@@ -6779,7 +6796,9 @@ export class Orchestrator {
       privacyForPrompt,
     );
     // A canvas turn skips `onBeforeTurn` (see `chatStream`'s mirror).
-    if (input.canvasSessionId === undefined) {
+    // #2217 — nor a tool-less turn: it has no steps to plan, and the
+    // plan-runner's process reuse would write Plan nodes for it.
+    if (input.canvasSessionId === undefined && !isToolsOffTurn(input)) {
       progress.beforeTurnFired = this.turnHookRegistry !== undefined;
       await this.fireTurnHook('onBeforeTurn', turnId, input, {
         userMessage: input.userMessage,
@@ -6972,7 +6991,8 @@ export class Orchestrator {
         // #1211 — `tools` / `tool_choice` depend on the provider a request
         // goes to, so the primary request and the fallback below each get
         // their own pair instead of sharing the primary's.
-        const iterationTools = this.buildToolsList();
+        // #2217 — a tool-less turn sends no tool definitions at all.
+        const iterationTools = toolsForTurn(input, () => this.buildToolsList());
         const toolParamsForProvider = (provider: LlmProvider) =>
           toolParamsFor({
             tools: iterationTools,
@@ -7104,6 +7124,7 @@ export class Orchestrator {
             !finalizeThisIter &&
             !fileForceRetried &&
             !responseHasToolUse &&
+            !isToolsOffTurn(input) &&
             this.fileAnnouncedButNotBuilt(answer, drainedAttachments.files.length)
           ) {
             fileForceRetried = true;
@@ -7197,11 +7218,14 @@ export class Orchestrator {
           // Non-interleaving providers (Mistral/OpenAI-compatible) emit card
           // intent as prose; route it through the existing handlers before the
           // drains below pick it up. No-op on Anthropic and on trivial answers.
-          await this.maybeRouteCardsFromText(
-            wireUserMessage,
-            answer,
-            turnModel,
-          );
+          // #2217 — not in a tool-less turn: the router is a forced tool call.
+          if (!isToolsOffTurn(input)) {
+            await this.maybeRouteCardsFromText(
+              wireUserMessage,
+              answer,
+              turnModel,
+            );
+          }
           // #361 — card contents came out of an LLM pass over masked wire
           // text and are user-facing; restore surrogates → real values.
           const pendingUserChoice = await restorePendingChoiceForUser(
@@ -7251,6 +7275,8 @@ export class Orchestrator {
         const toolUses = response.content.filter(
           (block: ContentBlock) => block.type === 'tool_use',
         );
+        // #2217 — a tool-less turn never dispatches, whatever the model sent.
+        assertNoToolUseInToolsOffTurn(input, toolUses);
 
         // Dispatch all tools of this iteration in parallel. Non-streaming
         // path: no observer queue, no heartbeats, no tick-loop — just race
@@ -7887,7 +7913,8 @@ export class Orchestrator {
       // materialiser (and its KG writes) gate the first token, and the canvas
       // client discards `plan` annotations. Without a plan record the
       // plan-runner's onAfterToolCall / onAfterTurn are no-ops.
-      if (!screeningBlocked && input.canvasSessionId === undefined) {
+      // #2217 — nor on a tool-less turn (see chatInContextInner).
+      if (!screeningBlocked && input.canvasSessionId === undefined && !isToolsOffTurn(input)) {
         // #1547 — a mask that blocks after this point (recall, attachments,
         // replayed turns) refuses with the notice that does not claim the
         // message stayed unsent.
@@ -8410,7 +8437,8 @@ export class Orchestrator {
             priorContext,
             withFinalizeHint(effectiveExtraSystemHint, finalizePass),
           );
-        const iterationTools = this.buildToolsList();
+        // #2217 — a tool-less turn sends no tool definitions at all.
+        const iterationTools = toolsForTurn(input, () => this.buildToolsList());
         const toolParamsForProvider = (provider: LlmProvider) =>
           toolParamsFor({
             tools: iterationTools,
@@ -8554,6 +8582,7 @@ export class Orchestrator {
             !finalizeThisIter &&
             !fileForceRetried &&
             !responseHasToolUse &&
+            !isToolsOffTurn(input) &&
             this.fileAnnouncedButNotBuilt(answer, drainedAttachments.files.length)
           ) {
             fileForceRetried = true;
@@ -8639,11 +8668,14 @@ export class Orchestrator {
           // Non-interleaving providers (Mistral/OpenAI-compatible) emit card
           // intent as prose; route it through the existing handlers before the
           // drains below pick it up. No-op on Anthropic and on trivial answers.
-          await this.maybeRouteCardsFromText(
-            wireUserMessage,
-            answer,
-            turnModel,
-          );
+          // #2217 — not in a tool-less turn: the router is a forced tool call.
+          if (!isToolsOffTurn(input)) {
+            await this.maybeRouteCardsFromText(
+              wireUserMessage,
+              answer,
+              turnModel,
+            );
+          }
           // #361 — card contents came out of an LLM pass over masked wire
           // text and are user-facing; restore surrogates → real values.
           const pendingUserChoice = await restorePendingChoiceForUser(
@@ -8733,6 +8765,8 @@ export class Orchestrator {
         const toolUses = finalMessage.content.filter(
           (block: ContentBlock) => block.type === 'tool_use',
         );
+        // #2217 — a tool-less turn never dispatches, whatever the model sent.
+        assertNoToolUseInToolsOffTurn(input, toolUses);
         // #332 Layer 3 — obligation satisfied once the named sub-agent runs.
         if (
           obligationTool &&
