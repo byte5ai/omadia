@@ -56,6 +56,18 @@ export type PreviewResult =
   | { status: 'failed'; steps: PreviewStep[]; context: JsonObject; error: ConductorRunError };
 
 const MAX_STEPS = 1000;
+/**
+ * #2217 — a preview runs agent steps as real (tool-less) model turns inside one
+ * HTTP request. A loop guarded on agent output used to end instantly on
+ * placeholders; now every lap is a billed turn. A rehearsal needs a handful of
+ * laps to show its path, not the engine's whole step budget.
+ */
+export const MAX_PREVIEW_AGENT_STEPS = 25;
+
+/** #2217 — how a preview names an agent step it ran without tools. */
+function previewAgentActor(step: Step): string {
+  return `agent (preview, no tools):${step.agentId ?? '?'}`;
+}
 
 function asObject(v: JsonValue | undefined): JsonObject {
   return typeof v === 'object' && v !== null && !Array.isArray(v) ? v : {};
@@ -713,8 +725,11 @@ export class ConductorRunExecutor {
    * Dry-run / preview (US8 / FR-029): simulate the workflow path in memory with NO persistence
    * and NO side effects — no conductor_runs/awaits rows, no real notification, no durable await.
    * Human steps are answered inline (supplied `humanResponses[stepId]`, default `{approved:true}`);
-   * agent and action steps are stubbed (irreversible connector actions and LLM turns are not
-   * executed). Returns the full simulated step path so the operator gains confidence before activating.
+   * agent steps run a real turn WITHOUT tools (#2217, ADR 0043) — the agent's own prompt, model and
+   * verifier, so a guard on its answer routes as it would live, but no connector, memory write,
+   * sub-agent, chat message or typing indicator; action steps are stubbed (irreversible connector
+   * actions are not executed). Returns the full simulated step path so the operator gains confidence
+   * before activating.
    */
   async previewRun(slug: string, payload: JsonObject, humanResponses: Record<string, JsonValue> = {}): Promise<PreviewResult> {
     const wf = await this.workflowStore.getBySlug(slug);
@@ -734,6 +749,7 @@ export class ConductorRunExecutor {
     // no separate status flag that could disagree with it.
     let error: ConductorRunError | undefined;
     let guard = MAX_STEPS;
+    let agentStepsLeft = MAX_PREVIEW_AGENT_STEPS;
 
     while (currentStepId && guard-- > 0) {
       const stepId: string = currentStepId;
@@ -777,8 +793,25 @@ export class ConductorRunExecutor {
         result = normalizeHumanResult(humanResponses[stepId] ?? { approved: true }, step.human?.strictApproval === true);
         actor = 'human (inline)';
       } else if (step.kind === 'agent') {
-        result = { simulated: true, agentId: step.agentId ?? null };
-        actor = `agent (stubbed):${step.agentId ?? '?'}`;
+        if (agentStepsLeft-- <= 0) {
+          error = runError(
+            'max_steps_exceeded',
+            `preview ran ${String(MAX_PREVIEW_AGENT_STEPS)} agent steps, the preview budget, still pending at '${stepId}'`,
+            { maxSteps: MAX_PREVIEW_AGENT_STEPS, stepId },
+          );
+          break;
+        }
+        // #2217 — a real, tool-less turn (the effect honours `preview`). A
+        // rehearsal must report a throwing agent step, not 500 the preview route.
+        try {
+          const exec = await this.effects.runAgentStep(step, context, { runId: `preview:${slug}`, preview: true });
+          result = exec.result;
+        } catch (err) {
+          error = runErrorFromThrow(err, { stepKind: step.kind, ref: step.agentId ?? null });
+          this.log(`[conductor] preview '${slug}' step '${stepId}' threw: ${error.message ?? '(no message)'}`);
+          break;
+        }
+        actor = previewAgentActor(step);
       } else {
         result = { simulated: true, actionId: step.actionId ?? null };
         actor = `action (stubbed):${step.actionId ?? '?'}`;

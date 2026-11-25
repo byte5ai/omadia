@@ -319,3 +319,9 @@ describe('plan hint — a trusted wrapper field', () => {
     assert.equal(passThroughReason({ userMessage: 'x', sessionScope: 'tab_1', planHint: 'plan' }), 'system');
   });
 });
+
+describe('toolsOff — a tool-less turn (#2217)', () => {
+  it('is never triaged: the inner agent answers it without tools', () => {
+    assert.equal(passThroughReason({ userMessage: 'x', sessionScope: 'tab_1', toolsOff: true }), 'system');
+  });
+});
