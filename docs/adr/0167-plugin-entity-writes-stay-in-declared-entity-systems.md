@@ -54,13 +54,30 @@ Chosen option: **A**.
   `entityWriteGuard` in `middleware/src/platform/boundedGraphServices.ts` implements the
   rule. The accessor and the bounded service (method class `entity-write` in
   `KG_METHOD_ACCESS`) both use it.
+- **Kernel namespaces.** The kernel's own node-id namespaces (`session`, `turn`, `user`,
+  `plan`, `planstep`, `mk`, `excerpt`, `topic`, `run`, `agent`, `tool`, `fact`, `process`,
+  `dataset`, the review queues and every channel kind) and any system with a colon in it
+  are never an entity system. They are refused for every plugin, declared or not, as is a
+  `factId` that is not a fact id: `entityNodeId` would otherwise build, say, a `turn:` id
+  and merge the plugin's `extras` into another user's turn.
 - **Facts.** The accessor's `ingestFacts` now checks too. Before, it passed everything
   ("a future hardening pass MAY").
+- **`topicClustering@1`** is kernel-only for plugins: every method throws
+  `GraphServiceRefusedError` (`kernel-only`) and `replace` is refused. Its reads take
+  the viewer as an argument, and its re-cluster rebuilds every account's topics.
 - **Transition.** A plugin that declares no `entity_systems` still writes through the
-  bounded service. The first write per plugin and process logs a `[security-audit]`
-  warning that names the plugin and the method. The transition ends once the Odoo and
-  Confluence manifests declare their systems and are live. Then undeclared means
-  refused (option B), recorded by a new ADR.
+  bounded service, held only to the kernel-namespace and `factId` checks above. The first
+  write per plugin and process logs a `[security-audit]` warning that names the plugin
+  and the method.
+- **How the transition ends is open.** The manifest loader strips the host-reserved
+  systems `odoo` and `confluence` from every plugin's `entity_systems` (OB-29-2,
+  `RESERVED_SYSTEMS` in `middleware/src/plugins/manifestLoader.ts`). The two plugins
+  that write those systems therefore cannot declare them: a declaration leaves an empty
+  list, so they stay undeclared writers and the transition never ends. Open question for
+  the owner: a kernel map from reserved system to owning plugin id
+  (`odoo → @omadia/integration-odoo`, `confluence → @omadia/integration-confluence`)
+  that grants exactly that plugin its system, after which undeclared means refused
+  (option B), recorded by a new ADR.
 - **Unchanged.** Modules holding the raw service (`GRAPH_BOUNDARY_IMPLEMENTERS`: fact
   extraction in orchestrator-extras, the providers) are not bound by this rule.
 
@@ -70,8 +87,9 @@ Chosen option: **A**.
   plugin's system, through either path.
 - 🟢 **Good:** The accessor and the service enforce one rule from one function.
 - 🔴 **Bad (residual):** Until the transition ends, a plugin that declares nothing can
-  still write any system. The warning makes that visible in the logs. It does not
-  prevent it.
+  still write any system that is not a kernel namespace, `odoo` and `confluence`
+  included. The warning makes that visible in the logs. It does not prevent it. The end
+  of the transition is an open question (see above).
 - 🔴 **Bad (behaviour change):** A plugin whose facts mention entities of a system it
   does not declare, or whose `factId` is not a fact id, now gets an error from
   `ctx.knowledgeGraph.ingestFacts`. The contract had said such mentions were fine. No
@@ -80,8 +98,9 @@ Chosen option: **A**.
 - 🔴 **Bad (residual):** A fact's `sourceTurnId` is not checked. A plugin can link its own
   fact to any turn it knows the id of. That changes no entity's capturing turns, because
   the edge starts at the fact node, but the fact is shown wherever that turn is.
-- ⚪ **Neutral:** Follow-up: add `graph.entity_systems: [odoo]` to integration-odoo and
-  `[confluence]` to integration-confluence, publish both, then end the transition.
+- ⚪ **Neutral:** Follow-up: decide how a reserved system is granted to its owning plugin
+  (open question above). Until then integration-odoo#11 and integration-confluence#8
+  wait: declaring `odoo` / `confluence` in their manifests has no effect today.
 
 ## Pros and Cons of the Options
 

@@ -11,7 +11,7 @@ import type { GraphNode, KnowledgeGraph } from '@omadia/plugin-api';
 import { probePgTest } from './_helpers/pgTestDb.js';
 
 /**
- * `getNeighborsOfType` (plugin-api 1.97.0): the batched neighbour read the
+ * `getNeighborsOfType` (plugin-api 1.98.0): the batched neighbour read the
  * bounded `findEntities` uses instead of one `getNeighbors` per hit (N+1).
  * Same answer as `getNeighbors` filtered by type, keyed by the requested id,
  * `[]` for an id with none or an unknown one; on Neon inside the tenant.
