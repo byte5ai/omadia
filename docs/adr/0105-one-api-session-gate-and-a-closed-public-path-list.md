@@ -115,3 +115,7 @@ Chosen option: **A**.
   [ADR-0101](0101-api-keys-as-second-authentication-method.md),
   [ADR-0106](0106-operator-sessions-stateless-jwt-with-server-side-revocation.md).
 - Border: plugin platform (public-path grants, route registry).
+
+## Errata
+
+- 2026-11-25 (#2236): the `ADMIN_TOKEN` 🔴 above is fixed. `mountAdminTokenSurface` (`src/routes/adminTokenMount.ts`) runs before the blanket gate and claims only requests that present a bearer; without one the request reaches the gate unchanged. The surface is still not a public-path entry.

@@ -110,3 +110,7 @@ dispatch seams call it for every tool result of a turn.
   `v4RenderSideChannel.ts`; `docs/security-architecture.md` §6, §6f.
 - Tests: `middleware/test/privacyV4*.test.ts`, `privacyInternPolicy.test.ts`,
   `test/orchestrator/internFailureFailsClosed.test.ts`.
+
+## Errata
+
+- 2026-11-25 (#2237): the accepted residual above is narrower. A plugin's `ctx.llm` request inside a guarded turn is masked through the turn's privacy handle and its answer restored (`src/platform/pluginLlmPrivacy.ts`); outside a turn it still goes out as built. A subscription-CLI turn is refused while a guard is installed, so its runtime no longer runs unmasked on a guarded instance ([ADR-0165](0165-model-gateway-is-an-admission-check-per-adapter.md)).

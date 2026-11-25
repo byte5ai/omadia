@@ -108,3 +108,7 @@ Chosen option: **A**, with two tiers of what is masked.
 - Tests: `middleware/test/privacyPromptMask.test.ts`, `privacyStoredTextJobs.test.ts`,
   `test/orchestrator/promptMaskPipeline.test.ts`, `promptMaskBlockedBeforeHooks.test.ts`,
   `promptMaskToolInputRestore1544.test.ts`, `promptMaskRewrittenSurrogate.test.ts`.
+
+## Errata
+
+- 2026-11-25 (#2237): plugin `ctx.llm` requests inside a guarded turn are now masked (the turn's masked values always, the detectors with `mask_user_prompt` on, fail-closed on `blocked`) and restored (`src/platform/pluginLlmPrivacy.ts`). The subscription CLI is refused while a guard is installed instead of running uncovered ([ADR-0165](0165-model-gateway-is-an-admission-check-per-adapter.md)).
