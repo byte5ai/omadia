@@ -86,6 +86,31 @@ changelog.
   `usage.cache_creation.ephemeral_1h_input_tokens` through `normalizeUsage`. Billed cost is
   unchanged (subscription rows bill 0; `reference_cost_usd` is the CLI's own figure).
 
+### Fixed — code brought in line with ADRs 0002, 0012, 0017 and 0018 (2026-11-25)
+
+- **Plugin `ctx.llm` behind the Privacy Shield (ADR-0017).** Inside a guarded turn the
+  accessor masks the system prompt and every message through the turn's privacy handle
+  (values the turn already masked always, the detectors when `mask_user_prompt` is on),
+  refuses the call when masking is `blocked` (`LlmPrivacyBlockedError`), and restores the
+  answer and tool-call inputs before the plugin reads them (`pluginLlmPrivacy.ts`).
+- **Builder previews in the network sandbox (ADR-0017).** An open preview's extract is an
+  egress-guard root with the draft manifest's hosts and never model-provider access; any
+  other code under the previews directory gets no network (`previewEgressRoots.ts`).
+- **Subscription CLI refused under a privacy guard (ADR-0017).** A `claude-cli` turn is now
+  refused before the spawn whenever a privacy guard is installed, not only under
+  `OMADIA_PRIVACY_FORCE_GUARDED`; the operator log names the cause
+  (`CLI_PRIVACY_GUARD_ACTIVE_LOG`). Agents on the CLI need an API-key provider on such
+  instances.
+- **One authorization for discussions (ADR-0018).** Peer switches and mutual consultation
+  grants are checked on every start path, the operator route included (403
+  `conductor.discussion_not_granted` / `conductor.discussion_peer_disabled`), and before
+  every contribution; a revoked grant ends the running discussion.
+- **Workflow builder on the default agent (ADR-0012).** The builder runs on the instance's
+  default agent instead of the removed `fallback` slug and says so when none is set; its
+  prompt no longer suggests `fallback` as an agent id.
+- **Desktop licence (ADR-0002).** `desktop/package.json` declares MIT like the rest of the
+  repository.
+
 ### Fixed — usage ledger priced 1-hour cache writes at the 5-minute rate (2026-11-25)
 
 - Anthropic bills cache writes by TTL: 1.25× the input rate for 5 minutes, 2× for 1 hour. The

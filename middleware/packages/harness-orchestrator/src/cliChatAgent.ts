@@ -1079,6 +1079,13 @@ export interface CliChatAgentDeps {
    */
   readonly policyEnv?: NodeJS.ProcessEnv;
   /**
+   * ADR-0017 — whether a Privacy Shield guards this instance's turns (a
+   * privacy guard service is installed). The CLI path cannot mask, so a turn
+   * is refused while it holds, exactly as under the org policy. Absent →
+   * only the org policy decides (sub-agents, operator tools).
+   */
+  readonly privacyGuarded?: () => boolean;
+  /**
    * The language a notice to the user is written in, for `input`: the turn's
    * AI-disclosure locale, else the operator's configured one
    * (`Orchestrator.noticeLocale`). Absent or `undefined` → German.
@@ -1217,6 +1224,12 @@ export const CLI_PRIVACY_SHIELD_REQUIRED_LOG =
   'turn refused: OMADIA_PRIVACY_FORCE_GUARDED is set and the Claude subscription ' +
   'CLI (claude-cli) runs without the Privacy Shield. Assign this agent a provider ' +
   'with an API key under LLM access, or unset OMADIA_PRIVACY_FORCE_GUARDED.';
+
+/** ADR-0017 — the same refusal when a privacy guard is installed. */
+export const CLI_PRIVACY_GUARD_ACTIVE_LOG =
+  'turn refused: a Privacy Shield guards this instance and the Claude subscription ' +
+  'CLI (claude-cli) cannot mask what it sends. Assign this agent a provider with an ' +
+  'API key under LLM access, or remove the privacy guard plugin.';
 
 /** The stream of a refused turn: one `done`, after clearing any card state a
  *  previous turn left behind (as `streamTurn` does). */
@@ -1422,12 +1435,26 @@ export class CliChatAgent implements ChatAgent {
    * in-process path. Read per turn, like the in-process check.
    */
   private refusedByPolicy(): boolean {
+    return this.forceGuarded() || this.guardActive();
+  }
+
+  private forceGuarded(): boolean {
     return isPrivacyForceGuarded(this.deps.policyEnv ?? process.env);
+  }
+
+  /** ADR-0017 — a guard that fails to answer counts as active (fail closed). */
+  private guardActive(): boolean {
+    try {
+      return this.deps.privacyGuarded?.() === true;
+    } catch {
+      return true;
+    }
   }
 
   /** The refusal for `input`'s language, logged for the operator. */
   private refusalAnswer(input: ChatTurnInput): string {
-    (this.deps.logger ?? consoleSpawnLogger).warn(CLI_PRIVACY_SHIELD_REQUIRED_LOG, {
+    const cause = this.forceGuarded() ? CLI_PRIVACY_SHIELD_REQUIRED_LOG : CLI_PRIVACY_GUARD_ACTIVE_LOG;
+    (this.deps.logger ?? consoleSpawnLogger).warn(cause, {
       ...(input.sessionScope !== undefined ? { sessionScope: input.sessionScope } : {}),
     });
     return cliPrivacyShieldRequiredAnswer(this.deps.noticeLocale?.(input));

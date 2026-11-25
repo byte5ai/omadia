@@ -110,3 +110,7 @@ Chosen option: **A**.
 - Docs: `docs/security-architecture.md` §6d, §6f; `docs/trust-and-privacy.md`.
 - Tests: `middleware/test/privacyV4Bypass.test.ts`, `runtimePrivacyPostureRoute.test.ts`,
   `test/publicMcp/publicMcpPrivacyGate.test.ts`.
+
+## Errata
+
+- 2026-11-25 (#2237): a subscription-CLI turn is refused not only under the clamp but whenever a privacy guard is installed (`CliChatAgent.refusedByPolicy`, `CLI_PRIVACY_GUARD_ACTIVE_LOG`, [ADR-0165](0165-model-gateway-is-an-admission-check-per-adapter.md)). The 🔴 "Under the clamp, agents on the subscription CLI do not answer at all" therefore applies to every guarded instance.

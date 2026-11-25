@@ -109,3 +109,7 @@ Chosen option: **A** (`previewRuntime.ts`).
   `middleware/src/routes/builderPreview.ts`, `middleware/src/platform/operatorJobRoutes.ts`
   (`PLUGIN_BUILDER_PREVIEW`).
 - Tests: `middleware/test/builder/{previewRuntime,previewCache,previewChatService,previewDraftAgents,previewSecretBuffer,previewCtxJobsRegisterRepro,builderPreviewRoutes}.test.ts`.
+
+## Errata
+
+- 2026-11-25 (#2237): the egress-guard 🔴 above no longer holds. An open preview's extract is an egress-guard root of its own (`preview:<agentId>#n`) with the draft manifest's hosts and never model-provider access; any other code under the previews directory gets no network (`src/platform/previewEgressRoots.ts`, [ADR-0165](0165-model-gateway-is-an-admission-check-per-adapter.md)).

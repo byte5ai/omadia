@@ -20,9 +20,9 @@
  *     longer knows the value, so they keep the placeholder;
  *   - every tool result text the model gets, errors included, is re-masked
  *     with the turn's known values before it goes out.
- * A real value therefore reaches a tool, not the model — except through a
- * plugin tool that itself hands its input to a model via `ctx.llm`
- * (docs/security-architecture.md §6f).
+ * A real value therefore reaches a tool, not the model. A plugin tool that
+ * hands its input to a model via `ctx.llm` has it re-masked by the accessor
+ * (`src/platform/pluginLlmPrivacy.ts`, docs/security-architecture.md §6f).
  */
 
 import type { PrivacyTurnHandle } from './privacyHandle.js';

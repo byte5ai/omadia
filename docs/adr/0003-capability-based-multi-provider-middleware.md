@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [ADR-0053](0053-service-access-by-declaration-one-provider-per-capability.md) (one active provider per capability)
 
 - **Date:** 2026-06-03
 - **Deciders:** Core maintainers
