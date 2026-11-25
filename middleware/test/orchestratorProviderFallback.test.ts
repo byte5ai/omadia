@@ -139,6 +139,10 @@ describe('provider fallback through the orchestrator (#1033 W3)', () => {
     assert.equal(routing?.reason, 'provider_fallback');
     assert.equal(routing?.provider, 'openai');
     assert.equal(routing?.model, 'gpt-5.5');
+    // #1902 — the `done` event names the model that wrote the answer, the
+    // same one the chip names; the web UI shows it as the footer badge.
+    const done = events.find((e) => e.type === 'done');
+    assert.equal(done?.model, 'gpt-5.5');
   });
 
   it('a healthy primary answers itself — no hop, no chip, primary prompt', async () => {
@@ -148,6 +152,15 @@ describe('provider fallback through the orchestrator (#1033 W3)', () => {
     assert.equal(h.seen.at(-1)!.model, 'claude-opus-4-8');
     assert.match(systemText(h.seen.at(-1)!), /OPUS-PROMPT/);
     assert.equal(h.health.inCooldown('anthropic'), false);
+  });
+
+  it('streamed: a healthy primary is named in the `done` event (#1902)', async () => {
+    const h = harness({ primaryFails: false });
+    let doneModel: string | undefined;
+    for await (const ev of h.orchestrator.chatStream({ userMessage: 'hallo', sessionScope: 's-4' })) {
+      if (ev.type === 'done') doneModel = ev.model;
+    }
+    assert.equal(doneModel, 'claude-opus-4-8');
   });
 });
 
