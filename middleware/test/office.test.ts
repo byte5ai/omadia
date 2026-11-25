@@ -24,6 +24,14 @@ import { unzipToText, zipEntryDosStamps } from './_helpers/unzipToText.js';
 
 const SECRET = 'z'.repeat(32);
 
+/** Open rendered .xlsx bytes. exceljs declares its own `Buffer extends
+ *  ArrayBuffer`; same cast as datasetImportXlsx.ts. */
+async function loadWorkbook(buffer: Buffer): Promise<ExcelJS.Workbook> {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buffer as unknown as ArrayBuffer);
+  return wb;
+}
+
 describe('office xlsx renderer', () => {
   const descriptor: XlsxDescriptor = {
     filename: 'offene posten',
@@ -51,8 +59,7 @@ describe('office xlsx renderer', () => {
     assert.equal(result.filename, 'offene posten.xlsx');
     assert.equal(result.rowsWritten, 2);
 
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(result.buffer);
+    const wb = await loadWorkbook(result.buffer);
     const ws = wb.getWorksheet('Offene Posten');
     assert.ok(ws, 'worksheet exists');
 
@@ -90,8 +97,7 @@ describe('office xlsx renderer', () => {
 
   it('carries AI-Act provenance in the core properties (read back from the file)', async () => {
     const result = await renderXlsx(descriptor);
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(result.buffer);
+    const wb = await loadWorkbook(result.buffer);
     // Read the properties back out of the produced workbook, not the input.
     assert.equal(wb.description, PROVENANCE_DESCRIPTION);
     assert.equal(wb.keywords, PROVENANCE_KEYWORDS);
@@ -139,8 +145,7 @@ describe('office xlsx renderer', () => {
     const result = await renderXlsx(descriptor);
     assert.equal(result.rowsWritten, 3); // 2 data + 1 pivot
 
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(result.buffer);
+    const wb = await loadWorkbook(result.buffer);
     const pivot = wb.getWorksheet('Pivot');
     assert.ok(pivot, 'pivot sheet exists');
     const cell = pivot.getCell('B2'); // row 2, col B = "summe"
@@ -170,8 +175,7 @@ describe('office xlsx renderer', () => {
     const result = await renderXlsx(descriptor);
     assert.equal(result.rowsWritten, 2);
 
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(result.buffer);
+    const wb = await loadWorkbook(result.buffer);
     const ws = wb.getWorksheet('Daten');
     assert.ok(ws);
     // "Monat" is column C; the two data rows are Excel rows 2 and 3.
@@ -192,8 +196,7 @@ describe('office xlsx renderer', () => {
       });
       assert.equal(result.rowsWritten, 1);
 
-      const wb = new ExcelJS.Workbook();
-      await wb.xlsx.load(result.buffer);
+      const wb = await loadWorkbook(result.buffer);
       assert.deepEqual(
         wb.worksheets.map((ws) => ws.name),
         [expected],
@@ -223,8 +226,7 @@ describe('office xlsx renderer', () => {
       ],
     });
 
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(result.buffer);
+    const wb = await loadWorkbook(result.buffer);
     assert.deepEqual(
       wb.worksheets.map((ws) => ws.name),
       [
@@ -288,8 +290,7 @@ describe('office xlsx renderer', () => {
         sheetNamed('Summe', "SUM(History_!A2,'daten (2)'!A2,daten!A2)"),
       ],
     });
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(result.buffer);
+    const wb = await loadWorkbook(result.buffer);
     assert.equal(wb.getWorksheet('Summe')?.getCell('A2').formula, "SUM(History_!A2,'daten (2)'!A2,daten!A2)");
   });
 });
