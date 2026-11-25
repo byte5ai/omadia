@@ -600,6 +600,13 @@ auflösen — siehe Checkliste-Punkt 3.
 `client.ts` bleibt für die EIGENE API. Mehrere fremde Integrationen sind
 fine — `ctx.services.get(...)` mehrfach pro `activate()` ist OK.
 
+> **Graph-Services (ADR-0044)**: `knowledgeGraph`, `processMemory` und
+> `memoryStore` kommen als **gebundene Form**. Turn-, Session-, Plan- und
+> Process-Reads laufen nur innerhalb eines Turns (sonst
+> `GraphServiceRefusedError`, `reason: 'no-boundary'`); tenant-weite Methoden
+> werfen `kernel-only`; die privaten `/memories`-Bäume sind nie erreichbar.
+> Für Entities und Turn-Suche ist `ctx.knowledgeGraph` der Normalweg.
+
 > **Preview vs. Install**: Im Preview-Iframe ist `ctx.routes.register` ein
 > No-op-Stub — der Aufruf läuft durch ohne zu crashen, aber die Routes werden
 > NICHT gemountet. Die Admin-UI ist erst nach einem echten Install über den

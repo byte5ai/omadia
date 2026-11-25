@@ -70,6 +70,7 @@ decision, write a new ADR and mark the old one **Superseded by …**.
 | 0040 | [Private knowledge stays private: one graph read boundary per turn for every read path](0040-one-graph-read-boundary-per-turn.md) | Accepted | 2026-11-24 |
 | 0041 | [Conductor webhooks: context opt-in, bounded retention, signed timestamps, rotation grace](0041-conductor-webhook-hardening.md) | Accepted | 2026-11-24 |
 | 0042 | [Conductor event ids belong to the sender; the catalog only suggests](0042-conductor-event-ids-belong-to-the-sender.md) | Accepted | 2026-11-24 |
+| 0044 | [Plugins read the graph only through bounded services](0044-plugins-read-the-graph-through-bounded-services.md) | Accepted | 2026-11-25 |
 
 ### The agent model (0012–0022)
 
