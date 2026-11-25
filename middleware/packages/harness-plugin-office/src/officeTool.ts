@@ -164,6 +164,8 @@ export class OfficeTool {
       if (sheet.datasetId !== undefined) {
         const resolved = this.resolveDatasetSheet(sheet.datasetId);
         if (typeof resolved === 'string') return resolved; // error message
+        const columnError = unknownDatasetColumnsError(sheet.name, sheet.columns, resolved);
+        if (columnError) return columnError;
         expectedRows += resolved.rowCount;
         sheets.push({
           name: sheet.name,
@@ -250,6 +252,41 @@ export class OfficeTool {
   }
 }
 
+/** How many field paths the unknown-column error lists before it cuts off. */
+const MAX_LISTED_FIELD_PATHS = 50;
+
+/** An `Error:` string when a column of a dataset sheet reads a key that is
+ *  not a field path of the resolved dataset. Such a column would otherwise be
+ *  written with its header and an empty cell in every row, and the row-count
+ *  postcondition would still pass. Computed columns (`formula`) never read
+ *  the dataset and are exempt. */
+function unknownDatasetColumnsError(
+  sheetName: string,
+  columns: readonly ColumnSpec[],
+  dataset: OfficeResolvedDataset,
+): string | undefined {
+  const paths = dataset.columns.map((c) => c.path);
+  const known = new Set(paths);
+  const unknown = columns
+    .filter((col) => col.formula === undefined && !known.has(col.key))
+    .map((col) => col.key);
+  if (unknown.length === 0) return undefined;
+  const listed = paths.slice(0, MAX_LISTED_FIELD_PATHS).map(quote).join(', ');
+  const more =
+    paths.length > MAX_LISTED_FIELD_PATHS
+      ? ` (and ${String(paths.length - MAX_LISTED_FIELD_PATHS)} more)`
+      : '';
+  return (
+    `Error: sheet "${sheetName}": unknown column ${unknown.length === 1 ? 'key' : 'keys'} ` +
+    `${unknown.map(quote).join(', ')} — ` +
+    `the dataset has no such field. Use a field path of the dataset as key: ${listed || '(none)'}${more}`
+  );
+}
+
+function quote(value: string): string {
+  return `"${value}"`;
+}
+
 /** Map a resolved dataset row (keyed by field path, values are `unknown`) to a
  *  renderer row keyed by column key, coercing Odoo-shaped values to cells:
  *  many2one `[id, label]` → label; other arrays/objects → JSON string. */
@@ -298,6 +335,8 @@ function compactResult(artifact: OfficeArtifact): string {
     mediaType: artifact.mediaType,
     sizeBytes: artifact.sizeBytes,
     rows: artifact.rowsWritten,
+    // Only when a sheet was renamed, so the model names the sheet as written.
+    ...(artifact.renamedSheets?.length ? { renamedSheets: artifact.renamedSheets } : {}),
     url: artifact.url,
   });
 }
