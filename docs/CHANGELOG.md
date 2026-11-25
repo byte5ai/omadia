@@ -36,6 +36,18 @@ changelog.
 
 ## [Unreleased]
 
+### Security — follow-ups to the bounded graph services (ADR-0044, ADR-0167) (2026-11-25)
+
+- A turn the subscription CLI answered had no graph read boundary when the agent had no
+  memory tool (a facilitator, a memory plugin not ready). Every loopback read (process tools,
+  a plugin's bounded `knowledgeGraph@1`) failed closed and came back empty. The CLI turn now
+  gets its own boundary box, and the binding that fills it runs before the memory-tool gate.
+- ADR-0167: entity and fact writes through `knowledgeGraph@1` and `ctx.knowledgeGraph` stay
+  in the plugin's declared `permissions.graph.entity_systems` (`KgEntityNamespaceError`
+  otherwise). The accessor's `ingestFacts` now checks too. Plugins that declare no
+  `entity_systems` (integration-odoo, integration-confluence today) still write through the
+  service, with a `[security-audit]` warning, until their manifests declare them.
+
 ### Fixed — usage ledger priced 1-hour cache writes at the 5-minute rate (2026-11-25)
 
 - Anthropic bills cache writes by TTL: 1.25× the input rate for 5 minutes, 2× for 1 hour. The

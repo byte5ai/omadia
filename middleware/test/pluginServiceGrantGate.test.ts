@@ -732,6 +732,27 @@ describe('services.get — ADR-0044 bounded graph services', () => {
     assert.notEqual(ctx.services.get('memoryStore'), registry.get('memoryStore'));
   });
 
+  it('ADR-0167: the manifest\'s entity_systems reach the bounded service through services.get', async () => {
+    const catalog = catalogOf(
+      pluginOf('@test/notes', ['knowledgeGraph@^1'], [], { graph: { entity_systems: ['notes'] } }),
+    );
+    const { ctx, registry } = makeCtx('@test/notes', catalog);
+    const written: string[] = [];
+    registry.provide('knowledgeGraph', {
+      ingestEntities: async (entities: Array<{ system: string }>) => {
+        written.push(...entities.map((e) => e.system));
+        return { entityIds: [], inserted: entities.length, updated: 0 };
+      },
+    });
+    const kg = ctx.services.get<KnowledgeGraph>('knowledgeGraph')!;
+    await kg.ingestEntities([{ system: 'notes', model: 'Note', id: 1 }]);
+    await assert.rejects(
+      () => kg.ingestEntities([{ system: 'odoo', model: 'res.partner', id: 42 }]),
+      { name: 'KgEntityNamespaceError' },
+    );
+    assert.deepEqual(written, ['notes']);
+  });
+
   it('a bundled boundary implementer gets the raw service', () => {
     const catalog = catalogWithOrigin('bundled', [pluginOf('@omadia/orchestrator-extras', ['knowledgeGraph@^1'])]);
     const { ctx, registry } = makeCtx('@omadia/orchestrator-extras', catalog);

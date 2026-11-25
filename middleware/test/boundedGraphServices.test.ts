@@ -11,6 +11,7 @@ import { InMemoryMemoryStore } from '@omadia/memory';
 import { turnContext, type GraphReadScope } from '@omadia/orchestrator';
 import {
   GraphServiceRefusedError,
+  KgEntityNamespaceError,
   MemoryPathError,
   type GraphNode,
   type KnowledgeGraph,
@@ -54,6 +55,7 @@ function fakeGraph(): { kg: KnowledgeGraph; calls: string[] } {
     getNeighbors: [],
     listPlansForScope: [node('plan-1', 'Plan')],
     ingestEntities: { inserted: 1 },
+    ingestFacts: { inserted: 1 },
   };
   const plans: Record<string, GraphNode> = {
     'plan:own': node('plan:own', 'Plan', { scope: 'atlas::web-1' }),
@@ -126,6 +128,40 @@ describe('ADR-0044 · bounded knowledgeGraph@1', () => {
     assert.deepEqual(outside.map((n) => n.id), ['e-synced', 'e-captured']);
     const enforce = await inTurn(USER_BOUND, () => bounded.findEntities({ model: 'res.partner' }));
     assert.equal(enforce.length, 2);
+  });
+
+  it('ADR-0167: a plugin declaring entity systems writes entities and facts only there', async () => {
+    const { kg, calls } = fakeGraph();
+    const bounded = boundKnowledgeGraph(kg, PLUGIN, ['odoo']);
+    assert.deepEqual(await bounded.ingestEntities([{ system: 'odoo', model: 'res.partner', id: 1 }]), { inserted: 1 });
+    const fact = (ids: string[], factId = 'fact:t:s:p:o') => ({
+      factId,
+      sourceTurnId: 't',
+      subject: 's',
+      predicate: 'p',
+      object: 'o',
+      mentionedEntityIds: ids,
+    });
+    assert.deepEqual(await bounded.ingestFacts([fact(['odoo:res.partner:1'])]), { inserted: 1 });
+    await assert.rejects(
+      () => bounded.ingestEntities([{ system: 'confluence', model: 'page', id: 2 }]),
+      KgEntityNamespaceError,
+    );
+    await assert.rejects(
+      () => bounded.ingestFacts([fact(['odoo:res.partner:1', 'confluence:page:2'])]),
+      KgEntityNamespaceError,
+    );
+    // A fact id that names an entity node would upsert into that node.
+    await assert.rejects(() => bounded.ingestFacts([fact([], 'odoo:res.partner:1')]), KgEntityNamespaceError);
+    assert.deepEqual(calls, ['ingestEntities', 'ingestFacts'], 'a refused write never reached the graph');
+  });
+
+  it('ADR-0167: a plugin declaring none still writes during the transition', async () => {
+    const { kg, calls } = fakeGraph();
+    const bounded = boundKnowledgeGraph(kg, '@test/undeclared');
+    await bounded.ingestEntities([{ system: 'odoo', model: 'res.partner', id: 1 }]);
+    await bounded.ingestFacts([]);
+    assert.deepEqual(calls, ['ingestEntities', 'ingestFacts']);
   });
 
   it('enforce-strict: an entity another conversation captured stays out; synced master data stays in', async () => {

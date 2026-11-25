@@ -1035,7 +1035,9 @@ The surfaces that boundary must cover, and how each one does:
   private `/memories` trees (`orchestrators`, `contexts`, `sessions`,
   `chat-sessions`) and loose root files are never reachable, and the `_*`
   trees are read-only; plan reads and writes reach only the turn's own
-  conversation, process writes only this agent's scopes, and only a
+  conversation, process writes only this agent's scopes, entity and fact
+  writes only the plugin's declared `graph.entity_systems` (ADR-0167;
+  undeclared writers pass with a warning during the transition), and only a
   boundary implementer may `replace` these services. Only the
   bundled providers and boundary implementers (`orchestrator`,
   `orchestrator-extras`) hold the raw services. `graphPool` stays an

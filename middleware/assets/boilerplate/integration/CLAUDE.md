@@ -606,6 +606,11 @@ fine — `ctx.services.get(...)` mehrfach pro `activate()` ist OK.
 > `GraphServiceRefusedError`, `reason: 'no-boundary'`); tenant-weite Methoden
 > werfen `kernel-only`; die privaten `/memories`-Bäume sind nie erreichbar.
 > Für Entities und Turn-Suche ist `ctx.knowledgeGraph` der Normalweg.
+> Entity- und Fact-Writes (`ingestEntities`, `ingestFacts`) bleiben auf beiden
+> Wegen in den Systemen aus `permissions.graph.entity_systems` (ADR-0167) —
+> das eigene System dort deklarieren. Mit Deklaration wirft ein fremdes
+> System `KgEntityNamespaceError`; ohne Deklaration schreibt der Service im
+> Übergang noch, mit Warnung im Log.
 
 > **Preview vs. Install**: Im Preview-Iframe ist `ctx.routes.register` ein
 > No-op-Stub — der Aufruf läuft durch ohne zu crashen, aber die Routes werden

@@ -2012,11 +2012,11 @@ export interface KnowledgeGraphAccessor {
   ingestEntities(entities: EntityIngest[]): Promise<EntityIngestResult>;
 
   /**
-   * Persist atomic facts. `mentionedEntityIds` may reference entities the
-   * plugin previously ingested OR entities owned by other systems (the KG
-   * tolerates dangling references). The `subject`/`predicate`/`object`
-   * fields are free-form strings — no validation here, but the kernel may
-   * truncate over-long values defensively in a future pass.
+   * Persist atomic facts. ADR-0167 (1.98.0): every id in `mentionedEntityIds`
+   * must carry a system from `permissions.graph.entity_systems`
+   * (`<system>:<model>:<id>`), and `factId` must be a fact id (`fact:…`, see
+   * `factNodeId`); otherwise throws `KgEntityNamespaceError`. The
+   * `subject`/`predicate`/`object` fields are free-form strings.
    */
   ingestFacts(facts: FactIngest[]): Promise<FactIngestResult>;
 

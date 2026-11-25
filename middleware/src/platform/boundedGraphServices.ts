@@ -9,7 +9,8 @@
  *
  *  - `knowledgeGraph@1`: every method of the contract is classified
  *    ({@link KG_METHOD_ACCESS}; the compiler makes a new method pick one).
- *    Writes of the plugin's own entities and master-data reads pass; turn,
+ *    Entity and fact writes stay in the plugin's declared entity systems
+ *    (ADR-0167); master-data reads and stats pass; turn,
  *    session, neighbour and plan reads go through the turn's boundary and are
  *    refused outside a turn; cross-user methods are kernel-only.
  *  - `processMemory@1`: reads see what the process tools see
@@ -31,11 +32,14 @@ import { posix } from 'node:path';
 
 import {
   GraphServiceRefusedError,
+  KgEntityNamespaceError,
   MemoryPathError,
   agentScopePrefix,
   scopeBelongsToAgent,
   type EditProcessInput,
   type EditProcessResult,
+  type EntityIngest,
+  type FactIngest,
   type GraphNode,
   type KnowledgeGraph,
   type MemoryEntry,
@@ -100,12 +104,21 @@ export function holdsRawGraphServices(agentId: string, catalog: PluginCatalog): 
  * The form of `service` (registered under `name`) that `pluginId` gets.
  * Names without a bounded form come back unchanged. One wrapper per
  * (plugin, service object), so repeated lookups return the same object.
+ * `entitySystems` is the plugin's `permissions.graph.entity_systems`
+ * (ADR-0167: what its `knowledgeGraph@1` entity and fact writes may name).
  */
-export function boundGraphService<T>(name: string, service: T, pluginId: string): T {
+export function boundGraphService<T>(
+  name: string,
+  service: T,
+  pluginId: string,
+  entitySystems: readonly string[] = [],
+): T {
   if (!BOUNDED_GRAPH_SERVICE_NAMES.has(name) || typeof service !== 'object' || service === null) {
     return service;
   }
-  const key = `${pluginId}\u0000${name}`;
+  // The entity systems are part of the key: a plugin updated in place with
+  // other `entity_systems` must not keep the wrapper of its old manifest.
+  const key = `${pluginId}\u0000${name}\u0000${[...entitySystems].sort().join(',')}`;
   let perService = wrapperCache.get(service);
   if (!perService) {
     perService = new Map();
@@ -115,7 +128,7 @@ export function boundGraphService<T>(name: string, service: T, pluginId: string)
   if (cached !== undefined) return cached as T;
   const wrapped =
     name === 'knowledgeGraph'
-      ? boundKnowledgeGraph(service as unknown as KnowledgeGraph, pluginId)
+      ? boundKnowledgeGraph(service as unknown as KnowledgeGraph, pluginId, entitySystems)
       : name === 'processMemory'
         ? boundProcessMemory(service as unknown as ProcessMemoryService, pluginId)
         : boundMemoryStore(service as unknown as MemoryStore, pluginId);
@@ -124,6 +137,79 @@ export function boundGraphService<T>(name: string, service: T, pluginId: string)
 }
 
 const wrapperCache = new WeakMap<object, Map<string, unknown>>();
+
+// ---------------------------------------------------------------------------
+// Entity writes: the plugin's own entity systems (ADR-0167)
+// ---------------------------------------------------------------------------
+
+/** The system of an entity external id (`<system>:<model>:<id>`). */
+function systemOfEntityId(externalId: string): string {
+  const colon = externalId.indexOf(':');
+  return colon < 0 ? externalId : externalId.slice(0, colon);
+}
+
+/** The node-id namespace of a fact (`factNodeId`). */
+const FACT_ID_PREFIX = 'fact:';
+
+/**
+ * ADR-0167 — the check on a plugin's entity and fact writes: an entity's
+ * `system`, and the system prefix of every id a fact mentions, must be one
+ * of the plugin's declared `permissions.graph.entity_systems`. A fact's own
+ * id must be a fact id (`fact:…`): the providers upsert the node by that id
+ * whatever its type, so `odoo:res.partner:42` would write into the partner.
+ * Throws `KgEntityNamespaceError` naming the first system outside them.
+ */
+export function entityWriteGuard(pluginId: string, entitySystems: readonly string[]) {
+  const allowed = new Set(entitySystems);
+  const assertSystem = (system: string): void => {
+    if (!allowed.has(system)) throw new KgEntityNamespaceError(pluginId, system);
+  };
+  return {
+    entities(entities: readonly EntityIngest[]): void {
+      for (const entity of entities) assertSystem(entity.system);
+    },
+    facts(facts: readonly FactIngest[]): void {
+      for (const fact of facts) {
+        if (!fact.factId.startsWith(FACT_ID_PREFIX)) {
+          throw new KgEntityNamespaceError(pluginId, systemOfEntityId(fact.factId));
+        }
+        for (const id of fact.mentionedEntityIds ?? []) assertSystem(systemOfEntityId(id));
+      }
+    },
+  };
+}
+
+/** Plugins already warned about undeclared entity writes (once per process). */
+const undeclaredEntityWriters = new Set<string>();
+
+/**
+ * The bounded `ingestEntities` / `ingestFacts`. A plugin that declares
+ * `entity_systems` writes only there. One that declares none still writes
+ * (ADR-0167: the shipped Odoo and Confluence syncs declare none yet), with a
+ * warning once per plugin, until the strict rule replaces the transition.
+ */
+function boundedEntityWrites(kg: KnowledgeGraph, pluginId: string, entitySystems: readonly string[]) {
+  const guard = entitySystems.length > 0 ? entityWriteGuard(pluginId, entitySystems) : undefined;
+  const warnUndeclared = (method: string): void => {
+    if (undeclaredEntityWriters.has(pluginId)) return;
+    undeclaredEntityWriters.add(pluginId);
+    console.warn(
+      `[security-audit] plugin '${pluginId}' writes entities through knowledgeGraph@1.${method} without declaring permissions.graph.entity_systems — allowed during the ADR-0167 transition, refused once it ends`,
+    );
+  };
+  return {
+    async ingestEntities(entities: EntityIngest[]): ReturnType<KnowledgeGraph['ingestEntities']> {
+      if (guard) guard.entities(entities);
+      else if (entities.length > 0) warnUndeclared('ingestEntities');
+      return kg.ingestEntities(entities);
+    },
+    async ingestFacts(facts: FactIngest[]): ReturnType<KnowledgeGraph['ingestFacts']> {
+      if (guard) guard.facts(facts);
+      else if (facts.length > 0) warnUndeclared('ingestFacts');
+      return kg.ingestFacts(facts);
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // The turn's boundary
@@ -287,7 +373,9 @@ export function boundedTurnReads(kg: () => TurnReadGraph, pluginId: string, capa
 
 /**
  * How the bounded form treats a method:
- *  - `pass`: the plugin's own entity writes, graph stats.
+ *  - `entity-write`: entity and fact writes, held to the plugin's declared
+ *    entity systems ({@link boundedEntityWrites}, ADR-0167).
+ *  - `pass`: graph stats.
  *  - `entities`: master data; in a context-bound turn only what the boundary
  *    reaches ({@link boundedTurnReads}' `findEntities`).
  *  - `turn-read`: held to the turn's boundary ({@link boundedTurnReads}).
@@ -295,13 +383,13 @@ export function boundedTurnReads(kg: () => TurnReadGraph, pluginId: string, capa
  *  - `own-plans`: plans of the turn's own conversation, in `off` / `enforce`.
  *  - `kernel-only`: across users or agents; refused.
  */
-type KgMethodAccess = 'pass' | 'entities' | 'turn-read' | 'plan' | 'own-plans' | 'kernel-only';
+type KgMethodAccess = 'entity-write' | 'pass' | 'entities' | 'turn-read' | 'plan' | 'own-plans' | 'kernel-only';
 
 /** Every method of the contract, classified. A new method must pick one. */
 export const KG_METHOD_ACCESS: { readonly [K in keyof Required<KnowledgeGraph>]: KgMethodAccess } =
   Object.freeze({
-    ingestEntities: 'pass',
-    ingestFacts: 'pass',
+    ingestEntities: 'entity-write',
+    ingestFacts: 'entity-write',
     findEntities: 'entities',
     stats: 'pass',
 
@@ -393,9 +481,14 @@ type AnyMethod = (...args: unknown[]) => unknown;
  * only: a method the provider has beyond the contract is not reachable, and
  * an optional one the provider lacks stays absent.
  */
-export function boundKnowledgeGraph(kg: KnowledgeGraph, pluginId: string): KnowledgeGraph {
+export function boundKnowledgeGraph(
+  kg: KnowledgeGraph,
+  pluginId: string,
+  entitySystems: readonly string[] = [],
+): KnowledgeGraph {
   const capability = 'knowledgeGraph';
   const reads = boundedTurnReads(() => kg, pluginId, capability);
+  const writes = boundedEntityWrites(kg, pluginId, entitySystems);
   const plans = boundedPlans(kg, pluginId, reads.requireBoundary);
   const target = kg as unknown as Record<string, unknown>;
   const out: Record<string, AnyMethod> = {};
@@ -406,6 +499,9 @@ export function boundKnowledgeGraph(kg: KnowledgeGraph, pluginId: string): Knowl
     switch (access) {
       case 'pass':
         out[method] = call;
+        break;
+      case 'entity-write':
+        out[method] = (writes as unknown as Record<string, AnyMethod>)[method]!;
         break;
       case 'entities':
       case 'turn-read':
