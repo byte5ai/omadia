@@ -1816,9 +1816,10 @@ export class MemoryPathError extends Error {
  * `MemoryStore` pinned to the plugin's `/memories/agents/<agentId>/`
  * subtree. The `MemoryStore` contract lives on the plugin-api surface
  * because it is a cross-plugin service boundary: the memory-provider
- * plugin emits it, downstream plugins (via `ctx.services.get('memoryStore')`)
- * and kernel glue (chat-session store, graph backfill, admin router)
- * consume it. Keeping the interface here means neither side has to
+ * plugin emits it, and kernel glue (chat-session store, graph backfill,
+ * admin router) consumes it. A downstream plugin that resolves it via
+ * `ctx.services.get('memoryStore')` gets a bounded form without the private
+ * trees (ADR-0044). Keeping the interface here means neither side has to
  * depend on the provider plugin's package directly.
  */
 export interface MemoryStore {
@@ -2303,6 +2304,47 @@ export class RawModelServiceRefusedError extends Error {
     this.name = 'RawModelServiceRefusedError';
     this.pluginId = pluginId;
     this.capability = capability;
+  }
+}
+
+/**
+ * ADR-0044 — why the bounded form of a graph service refused a call:
+ *  - `kernel-only`: the method reads or changes data across users and agents
+ *    (memorable knowledge, ACL audit, purges, topics, review queues,
+ *    datasets, run traces). Only the kernel's own modules call it.
+ *  - `no-boundary`: the method reads turns, sessions, neighbours, plans or
+ *    processes, and no turn boundary is set (activation, jobs, routes, a
+ *    webhook). Plugins read these only inside a turn.
+ *  - `out-of-scope`: a plan read or write outside the turn's own
+ *    conversation, or a process written into another agent's scope.
+ */
+export type GraphServiceRefusal = 'kernel-only' | 'no-boundary' | 'out-of-scope';
+
+/**
+ * ADR-0044 — thrown by the bounded `knowledgeGraph@1` / `processMemory@1`
+ * service a plugin resolves through `ctx.services.get`. Inside a turn its
+ * reads are held to the turn's graph read boundary (ADR-0040); this error is
+ * for the calls the boundary cannot answer.
+ */
+export class GraphServiceRefusedError extends Error {
+  public readonly pluginId: string;
+  public readonly capability: string;
+  public readonly method: string;
+  public readonly reason: GraphServiceRefusal;
+  constructor(pluginId: string, capability: string, method: string, reason: GraphServiceRefusal) {
+    super(
+      reason === 'kernel-only'
+        ? `plugin '${pluginId}' called ${capability}.${method}: only the kernel's own modules call it (ADR-0044)`
+        : reason === 'out-of-scope'
+          ? `plugin '${pluginId}' called ${capability}.${method} outside the turn's own conversation or agent (ADR-0044)`
+          : `plugin '${pluginId}' called ${capability}.${method} outside a turn: plugins read turns, sessions, ` +
+            'plans and processes only inside a turn, within its graph read boundary (ADR-0044)',
+    );
+    this.name = 'GraphServiceRefusedError';
+    this.pluginId = pluginId;
+    this.capability = capability;
+    this.method = method;
+    this.reason = reason;
   }
 }
 

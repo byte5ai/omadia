@@ -8,6 +8,45 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.96.0 — 2026-11-25
+
+Additive (ADR-0044).
+
+### Added
+
+- **`GraphServiceRefusedError`** (`reason: 'kernel-only' | 'no-boundary' |
+  'out-of-scope'`).
+  `ctx.services.get('knowledgeGraph' | 'processMemory' | 'memoryStore')` now
+  returns a bounded form of the service for every plugin except the providers
+  and the kernel modules that implement the graph read boundary:
+  - `knowledgeGraph@1`: entity writes (`ingestEntities`, `ingestFacts`) and
+    `stats` pass; `findEntities` passes outside a turn and in `off` /
+    `enforce`, and in a context-bound turn keeps master data plus entities a
+    visible turn captured; turn, session, neighbour and plan reads follow the
+    turn's boundary and throw `no-boundary` outside a turn; plan reads and
+    writes reach only the turn's own conversation (`out-of-scope`); methods across
+    users or agents (curated memory, ACL audit, purges, topics, review queues,
+    datasets, run traces, `ingestTurn`, `listSessions`, `listRecentPlans`)
+    throw `kernel-only`. Methods a provider has beyond the contract are not
+    reachable.
+  - `processMemory@1`: reads see what `query_processes` sees (this agent's
+    processes; none in a context-bound `enforce-strict` / `members` turn) and
+    throw `no-boundary` outside a turn; an edit of a process the turn may not
+    read answers `not-found`; a write into another agent's scope throws
+    `out-of-scope`.
+  - `memoryStore@1`: the private trees (`orchestrators`, `contexts`,
+    `sessions`, `chat-sessions`) and loose files at the root throw
+    `MemoryPathError`; the `_*` trees and `core/audit` are read-only.
+  - `ctx.services.replace` of these three names throws `kernel-only` for
+    every plugin that does not hold the raw service.
+
+### Changed (behaviour)
+
+- `ctx.knowledgeGraph.searchTurns` / `findEntityCapturedTurns` /
+  `getNeighbors` throw `GraphServiceRefusedError` (`no-boundary`) outside a
+  turn instead of reading the whole tenant; inside a turn whose boundary is
+  not bound yet they see nothing.
+
 ## 1.95.0 — 2026-11-25
 
 Additive.
