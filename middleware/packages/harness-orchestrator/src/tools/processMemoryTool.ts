@@ -6,9 +6,10 @@ import type {
   ProcessMemoryService,
   ProcessRecord,
 } from '@omadia/plugin-api';
-import { PROCESS_TITLE_REGEX } from '@omadia/plugin-api';
+import { PROCESS_TITLE_REGEX, agentScopePrefix, scopeBelongsToAgent } from '@omadia/plugin-api';
 
 import { currentTurnIsShielded, isCurrentTurnUnprotected } from '../turnProtection.js';
+import { turnContext } from '../turnContext.js';
 
 /**
  * Palaia Phase 7 (OB-76) — vier native Orchestrator-Tools, die gegen die
@@ -211,6 +212,22 @@ Wenn du einen mehrschrittigen Workflow neu beschreiben würdest:
 const WITHHELD_PROCESS_NOTICE =
   'Ein bestehender Process wurde in einem Gespräch ohne Datenschutz-Schild gespeichert; Titel und Schritte stehen unter aktivem Schild nicht zur Verfügung.';
 
+/**
+ * #2207 — which stored processes the current turn may read, by the turn's
+ * graph boundary, as the recall process leg: none in a context-bound
+ * `enforce-strict` / `members` turn (processes carry no owners), otherwise
+ * only this agent's own. Outside a turn with a boundary (activation, jobs)
+ * every process of the tenant, as before.
+ */
+function processReadable(): ((record: Pick<ProcessRecord, 'scope'>) => boolean) | null {
+  const ctx = turnContext.current();
+  const bound = ctx?.graphReadScope?.value;
+  if (!ctx || !bound) return () => true;
+  if (bound.kind === 'conversation' || bound.kind === 'members') return null;
+  const prefix = agentScopePrefix(ctx.agentSlug ?? 'default');
+  return (record) => scopeBelongsToAgent(record.scope, prefix);
+}
+
 function withheldUnderShield(record: Pick<ProcessRecord, 'unprotected'>): boolean {
   return record.unprotected === true && currentTurnIsShielded();
 }
@@ -337,13 +354,20 @@ export function createQueryProcessesHandler(
         .join('; ');
       return `Error: invalid query_processes input — ${detail}`;
     }
+    const readable = processReadable();
+    if (!readable) {
+      return JSON.stringify({ query: parsed.data.query, mode: 'hybrid', hits: [] });
+    }
     const queryInput: Parameters<ProcessMemoryService['query']>[0] = {
       query: parsed.data.query,
-      limit: parsed.data.limit,
+      // Over-fetch: other agents' processes are dropped below.
+      limit: Math.min(parsed.data.limit * 4, 200),
       ...(parsed.data.scope !== undefined ? { scope: parsed.data.scope } : {}),
       ...(currentTurnIsShielded() ? { excludeUnprotected: true } : {}),
     };
-    const hits = await service.query(queryInput);
+    const hits = (await service.query(queryInput))
+      .filter((h) => readable(h.record))
+      .slice(0, parsed.data.limit);
     return JSON.stringify({
       query: parsed.data.query,
       mode: 'hybrid',
@@ -370,7 +394,10 @@ export function createRunStoredProcessHandler(
         .join('; ');
       return `Error: invalid run_stored_process input — ${detail}`;
     }
-    const record = await service.get(parsed.data.id);
+    const found = await service.get(parsed.data.id);
+    const readable = processReadable();
+    // A process this turn may not read answers like a missing one.
+    const record = found && readable?.(found) ? found : null;
     if (!record) {
       return `Error: run_stored_process — kein Process mit ID '${parsed.data.id}' im aktuellen Tenant.`;
     }

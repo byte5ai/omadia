@@ -87,6 +87,29 @@ describe('/documents router (office delivery path)', () => {
     assert.ok(body.equals(xlsxBytes), 'served bytes match stored bytes');
   });
 
+  // #1963: names outside ASCII used to end in a 500 (above U+00FF, Node
+  // refuses the header) or in a mangled saved name (Latin-1 bytes).
+  for (const filename of ['Umsatz – Q3 €.xlsx', 'Übersicht Größe.xlsx']) {
+    it(`serves "${filename}" with an ASCII fallback and a UTF-8 filename*`, async () => {
+      const unicodeKey = `documents/dev/abc/${filename}`;
+      await store.put(unicodeKey, xlsxBytes, MEDIA_TYPE.xlsx);
+      const url = signDocumentUrl({ key: unicodeKey, secret: SECRET, ttlSec: 60, publicBaseUrl: baseUrl });
+      const res = await fetch(url, { redirect: 'error' });
+      assert.equal(res.status, 200);
+
+      const disposition = res.headers.get('content-disposition') ?? '';
+      // The header itself must be plain ASCII so every client reads it the same way.
+      assert.match(disposition, /^[\x20-\x7e]+$/);
+      const fallback = /; filename="([^"]*)"/.exec(disposition)?.[1];
+      assert.ok(fallback !== undefined && fallback.endsWith('.xlsx'), `ASCII fallback in ${disposition}`);
+      const extended = /; filename\*=UTF-8''([^;]+)/.exec(disposition)?.[1];
+      assert.ok(extended !== undefined, `filename* in ${disposition}`);
+      assert.equal(decodeURIComponent(extended), filename);
+      const body = Buffer.from(await res.arrayBuffer());
+      assert.ok(body.equals(xlsxBytes), 'served bytes match stored bytes');
+    });
+  }
+
   it('returns 403 when the signature is missing', async () => {
     const res = await fetch(`${baseUrl}/documents/dl/${encodeURIComponent(key)}?exp=9999999999`);
     assert.equal(res.status, 403);

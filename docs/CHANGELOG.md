@@ -530,6 +530,46 @@ handler's catch-all copied that sentence into a 500 body — eight routes, from
   approve/reject card button still reads both as `already_resolved`.
 - No migration, no URL change, no web-ui change.
 
+### Fixed — process tools read every agent's processes (#2207) (2026-11-24)
+
+- `query_processes` and `run_stored_process` read process memory with no agent or
+  context-memory bound: other agents' processes in every mode, and any process in a
+  context-bound `enforce-strict` / `members` turn, where recall skips processes. Both now apply
+  the turn's graph boundary: this agent's processes only, none in those turns. Outside a turn
+  (jobs, activation) nothing changes.
+- The canary sweep has no known leaks left in recall, tools, plugins or the client stream;
+  #1762 (chat sessions) stays on the REST routes. `PG_TEST_FLOOR` 743 → 739.
+
+### Fixed — graph walks showed what the viewer may not see (#2208, #1825) (2026-11-24)
+
+- A plugin's `ctx.knowledgeGraph.getNeighbors` returned every neighbour of a node: private
+  memories of other people, plans and turns the turn may not read, in every context-memory
+  mode. The `kg_graph` / `kg_insert` walk the client receives around recalled memories did the
+  same, and through another person's User node reached their unrelated conversations.
+- Both now pass through one node filter per turn (`graphNodeAccess.ts` in
+  `@omadia/orchestrator`), built from the turn's graph boundary and the mode's recall rules.
+  The walk keeps the recall hits as roots and follows only admitted nodes. Outside the own
+  conversation, tail-only turns and (under a shield) unprotected turns stay out, as in recall.
+- **Behaviour change:** the knowledge-graph side panel shows fewer nodes, and none for a turn
+  without a graph boundary.
+- The canary sweep's `todo` tests for #2208 and #1825 are now part of the ordinary assertion.
+  `PG_TEST_FLOOR` 747 → 743.
+
+### Fixed — the graph tool read the whole tenant in `off` / `enforce` (#2204) (2026-11-24)
+
+- In context memory `off` and `enforce`, `query_knowledge_graph` and a plugin's
+  `ctx.knowledgeGraph.searchTurns` / `findEntityCapturedTurns` read every chat of the tenant:
+  other agents' conversations, pre-agent scopes and other users' private 1:1s. They now see
+  only this agent's turns the turn's user sent, plus the turn's own conversation in full (like
+  recall's tail). A turn without a user sees nothing.
+- The registered (subscription-CLI) handler knows no turn and now sees nothing in every mode,
+  not only in `enforce-strict` / `members`. **Behaviour change:** cross-agent and cross-user
+  search through the tool is gone.
+- plugin-api 1.94.0: `SessionReadOptions.userId` (both in-tree backends honour it) and
+  `scopeBelongsToAgent`.
+- `graphBoundarySideDoors.test.ts` drops its "unrestricted in enforce" control; the canary
+  sweep's `todo` for #2204 is now part of the ordinary assertion. `PG_TEST_FLOOR` 749 → 747.
+
 ### Fixed — `enforce-strict` recalled private durable knowledge into a room (#2205) (2026-11-24)
 
 - In a context-bound `enforce-strict` turn, the durable recall leg (operator-authored and

@@ -6,6 +6,7 @@ import type { TigrisStore } from '@omadia/diagrams';
 import {
   renderXlsx,
   renderDocx,
+  attachmentDisposition,
   sanitizeFilename,
   signDocumentUrl,
   verifyDocumentSig,
@@ -594,5 +595,33 @@ describe('office filename sanitizer', () => {
   it('falls back when empty', () => {
     assert.equal(sanitizeFilename('', 'docx', 'document'), 'document.docx');
     assert.equal(sanitizeFilename(undefined, 'docx', 'document'), 'document.docx');
+  });
+});
+
+describe('office download disposition (#1963)', () => {
+  it('keeps a plain ASCII name as a single quoted filename', () => {
+    assert.equal(attachmentDisposition('Offene Posten.xlsx'), 'attachment; filename="Offene Posten.xlsx"');
+  });
+  it('adds a UTF-8 filename* with an ASCII fallback for umlauts', () => {
+    assert.equal(
+      attachmentDisposition('Übersicht Größe.xlsx'),
+      `attachment; filename="Ubersicht Gro_e.xlsx"; filename*=UTF-8''%C3%9Cbersicht%20Gr%C3%B6%C3%9Fe.xlsx`,
+    );
+  });
+  it('encodes characters above U+00FF instead of putting them in the header', () => {
+    assert.equal(
+      attachmentDisposition('Umsatz – Q3 €.docx'),
+      `attachment; filename="Umsatz _ Q3 _.docx"; filename*=UTF-8''Umsatz%20%E2%80%93%20Q3%20%E2%82%AC.docx`,
+    );
+  });
+  it('percent-encodes characters RFC 8187 does not allow unescaped', () => {
+    const value = attachmentDisposition('Bericht (Entwurf) – Ä*.xlsx');
+    assert.match(value, /filename\*=UTF-8''Bericht%20%28Entwurf%29%20%E2%80%93%20%C3%84%2A\.xlsx$/);
+  });
+  it('never lets a quote or backslash reach the quoted fallback', () => {
+    assert.equal(
+      attachmentDisposition('a"b\\c–.xlsx'),
+      `attachment; filename="a_b_c_.xlsx"; filename*=UTF-8''a%22b%5Cc%E2%80%93.xlsx`,
+    );
   });
 });

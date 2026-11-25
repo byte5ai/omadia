@@ -1032,6 +1032,24 @@ The surfaces that boundary must cover, and how each one does:
   Under `enforce-strict` every curated-memory leg (memory, excerpts and
   durable knowledge) gets `sharedOnly`: only `team` / `public` rows, never
   one participant's private or `shared:<x>` memory (#2205).
+- **`off` / `enforce` (#2204):** no turn reads the whole tenant graph. The
+  in-turn `query_knowledge_graph` and a plugin's `searchTurns` /
+  `findEntityCapturedTurns` see this agent's turns the turn's user sent
+  (`agentScopePrefix` + `userId`, `getSession(scope, { userId })`), plus the
+  turn's own conversation in full. A turn without a user sees nothing; the
+  registered (CLI-path) handler knows no turn and sees nothing in every mode.
+- **Graph walks (#2208, #1825):** a plugin's `getNeighbors` and the `kg_graph` /
+  `kg_insert` walk sent to the client keep only nodes the turn may see
+  (`graphNodeAccess.ts`): turns and sessions through the same boundary as the
+  graph tool, memories by the recall ACL of the mode, entities, plans and facts
+  only where their turns or agent allow, a User node only the viewer's own.
+  The walk never passes through a node it may not show, so another person's
+  User node no longer leads to their other chats. Outside a turn with a graph
+  boundary there is no walk.
+- **Process tools (#2207):** `query_processes` and `run_stored_process` return
+  only this agent's processes, and none in a context-bound `enforce-strict` /
+  `members` turn, where recall skips processes too. A process the turn may not
+  read answers like a missing one.
 
 The audience is the security input. A group counts as known only when its
 channel marks the roster complete (`ChatParticipantsProvider.completeRoster`).
@@ -1050,20 +1068,6 @@ Known residuals:
 - A knowledge-graph provider that predates plugin-api 1.26.0 ignores
   `audienceOwners` and returns everything. The in-tree providers honour it.
 - Only turns that carry a `TurnOrigin` are context-bound.
-- #2204: in `off` and `enforce`, `query_knowledge_graph` (both
-  registrations) reads the whole tenant: other agents' turns, pre-agent
-  scopes and other users' chats. Breaks the decision above and SP INV-2.
-- #2204 also covers a plugin's `ctx.knowledgeGraph.searchTurns` /
-  `findEntityCapturedTurns` in `off` and `enforce`: `boundTurnSearch` passes
-  the plugin's options through unchanged there.
-- #2207: `query_processes` and `run_stored_process` read process memory with
-  no agent or context-memory bound (other agents' processes in every mode; any
-  process in a context-bound `enforce-strict` / `members` turn, which recall
-  skips).
-- #2208: a plugin's `ctx.knowledgeGraph.getNeighbors` applies only the shield
-  filter, in every mode: private memories, plans and turns next to any node
-  the plugin found. Related: #1825 (the `kg_graph` walk around recalled
-  memories, also without access checks).
 - #1762: web chat tabs (`/api/chat/sessions`) have no owner; every account
   lists and reads every tab.
 

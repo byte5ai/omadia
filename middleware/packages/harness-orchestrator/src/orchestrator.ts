@@ -85,6 +85,7 @@ import {
   KNOWLEDGE_GRAPH_TOOL_NAME,
   knowledgeGraphToolSpec,
 } from './knowledgeGraphTool.js';
+import { boundKgWalk, currentGraphNodeViewer, graphNodeFilter } from './graphNodeAccess.js';
 import type { MemoryToolHandler } from '@omadia/memory';
 import type { BoundTurnMemory, MemoryBinder } from './memoryBinder.js';
 import { memoryIndexHint, prefetchMemoryIndex } from './memoryIndexPrefetch.js';
@@ -305,7 +306,7 @@ import type {
   SeamMessage,
 } from './llmProviderSeam.js';
 import { completeWithFallback, streamMessageEvents } from './streaming.js';
-import type { ModelRef } from '@omadia/plugin-api';
+import type { KgWalkPayload, ModelRef } from '@omadia/plugin-api';
 import type { LlmProviderPool } from '@omadia/llm-provider';
 
 /**
@@ -3338,13 +3339,12 @@ export class Orchestrator {
    */
   private kernelNativeInstances(): KernelNativeInstances {
     return {
-      // This handler knows no turn. For an agent whose context memory
-      // restricts the graph tool per turn it would read every room of the
-      // tenant, so it sees nothing instead (`unrestrictedGraphToolAllowed`).
-      knowledgeGraphTool:
-        this.knowledgeGraphTool && !this.unrestrictedGraphToolAllowed()
-          ? { handle: (input: unknown) => this.knowledgeGraphTool!.handle(input, NOTHING_VISIBLE) }
-          : this.knowledgeGraphTool,
+      // This handler knows no turn, so no user and no conversation: it would
+      // read every chat of the tenant. It sees nothing instead, in every
+      // context-memory mode (#2204).
+      knowledgeGraphTool: this.knowledgeGraphTool
+        ? { handle: (input: unknown) => this.knowledgeGraphTool!.handle(input, NOTHING_VISIBLE) }
+        : undefined,
       askUserChoiceTool: this.askUserChoiceTool,
       suggestFollowUpsTool: this.suggestFollowUpsTool,
       findFreeSlotsTool: this.findFreeSlotsTool,
@@ -4803,7 +4803,9 @@ export class Orchestrator {
   ): Promise<ChatStreamEvent[]> {
     if (!recalled || !this.knowledgeGraph) return [];
     try {
-      const payload = await buildKgWalkPayload(recalled, this.knowledgeGraph);
+      const payload = await this.boundToViewer(
+        await buildKgWalkPayload(recalled, this.knowledgeGraph),
+      );
       if (!payload) return [];
       return [
         {
@@ -4823,6 +4825,19 @@ export class Orchestrator {
   }
 
   /**
+   * #1825 — a walk shows only what this turn's viewer may see, and never
+   * reaches a node through one they may not (another person's User node).
+   * The roots are this turn's own recall hits (or its own new memory). No
+   * graph boundary: no walk.
+   */
+  private async boundToViewer(payload: KgWalkPayload | undefined): Promise<KgWalkPayload | undefined> {
+    if (!payload || !this.knowledgeGraph) return undefined;
+    const viewer = currentGraphNodeViewer({ trusted: new Set(payload.rootIds) });
+    if (!viewer) return undefined;
+    return boundKgWalk(payload, this.knowledgeGraph, graphNodeFilter(this.knowledgeGraph, viewer));
+  }
+
+  /**
    * KG-insert chat visualization — the WRITE-side sibling of
    * {@link toKgGraphAnnotationEvents}. Emitted just before `done` once a turn
    * auto-promotes a MemorableKnowledge node: walks a tight 1-hop neighbourhood
@@ -4839,9 +4854,8 @@ export class Orchestrator {
   ): Promise<ChatStreamEvent[]> {
     if (!insertedMkId || !this.knowledgeGraph) return [];
     try {
-      const payload = await buildKgInsertPayload(
-        insertedMkId,
-        this.knowledgeGraph,
+      const payload = await this.boundToViewer(
+        await buildKgInsertPayload(insertedMkId, this.knowledgeGraph),
       );
       if (!payload) return [];
       return [
@@ -5512,13 +5526,12 @@ export class Orchestrator {
    *    wrong trade. The fallback is the NARROWER scope, never a wider one.
    */
   /**
-   * May a turn without an isolation use `query_knowledge_graph` unrestricted
-   * (the whole tenant graph, as before)? Not for an agent whose context memory
-   * restricts the tool per turn: there, a turn the restriction cannot reach —
-   * a context-free turn, or the subscription-CLI path whose registered handler
-   * knows no turn — sees nothing.
+   * May a turn without an isolation read its user's own chats with this agent
+   * through the graph (`off`, `enforce`; #2204)? Not for an agent whose context
+   * memory restricts the graph per turn: there, a turn the restriction cannot
+   * reach (context-free) sees nothing.
    */
-  private unrestrictedGraphToolAllowed(): boolean {
+  private perUserGraphViewAllowed(): boolean {
     const mode = this.memoryBinder?.contextMemoryMode;
     return mode !== 'enforce-strict' && mode !== 'members';
   }
@@ -5569,12 +5582,12 @@ export class Orchestrator {
     // Publish the graph boundary for reads outside the kernel's own recall
     // (the plugin `KnowledgeGraphAccessor`).
     const box = turnContext.current()?.graphReadScope;
-    if (box) box.value = this.graphReadScopeFor(binding);
+    if (box) box.value = this.graphReadScopeFor(binding, input);
     return binding;
   }
 
-  /** What a non-kernel graph read may see in this turn; undefined = unrestricted. */
-  private graphReadScopeFor(binding: TurnMemoryBinding): GraphReadScope | undefined {
+  /** What a graph read outside the kernel's recall may see in this turn. */
+  private graphReadScopeFor(binding: TurnMemoryBinding, input: ChatTurnInput): GraphReadScope {
     const isolation = binding.isolation;
     if (isolation?.kind === 'conversation') return { kind: 'conversation', scope: isolation.scope };
     if (isolation?.kind === 'members') {
@@ -5584,7 +5597,15 @@ export class Orchestrator {
         agentScopePrefix: agentScopePrefix(this.agentId),
       };
     }
-    return this.unrestrictedGraphToolAllowed() ? undefined : { kind: 'nothing' };
+    if (!this.perUserGraphViewAllowed()) return { kind: 'nothing' };
+    // `off` / `enforce`: the bounds recall's cross-session legs use — this
+    // agent, this user — plus the turn's own conversation, as its tail.
+    return {
+      kind: 'user',
+      userId: input.userId ?? null,
+      agentScopePrefix: agentScopePrefix(this.agentId),
+      ownScope: input.sessionScope ? graphScopeFor(this.agentId, input.sessionScope) : null,
+    };
   }
 
   private async resolveTurnMemory(input: ChatTurnInput): Promise<TurnMemoryBinding> {
@@ -8687,7 +8708,9 @@ export class Orchestrator {
             answer: restoredAnswer,
             toolCalls,
             iterations,
-            model: turnModel,
+            // #1902 — the model that wrote the answer: the fallback after a
+            // hop, not the primary that failed.
+            model: turnExec.model,
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(palaiaExcerpt ? { palaiaExcerpt } : {}),
             ...(autoPromotedMkId ? { autoPromotedMkId } : {}),
@@ -8952,7 +8975,7 @@ export class Orchestrator {
             answer: restoredAnswer,
             toolCalls,
             iterations,
-            model: turnModel,
+            model: turnExec.model,
             pendingUserChoice,
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
@@ -9010,7 +9033,7 @@ export class Orchestrator {
             answer: restoredAnswer,
             toolCalls,
             iterations,
-            model: turnModel,
+            model: turnExec.model,
             pendingMcpInput: card,
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
@@ -10105,9 +10128,10 @@ export class Orchestrator {
     // registration of this tool (`registerKernelNativeTools`) carries a
     // build-time handler that knows no turn.
     //
-    // An agent in either mode never reaches the unrestricted tool from here:
-    // a turn with no isolation (context-free — web, API, a turn whose binding
-    // carried no context) sees nothing, rather than every room of the tenant.
+    // No turn reaches the whole tenant graph from here (#2204). In either
+    // mode a turn with no isolation (context-free — web, API, a turn whose
+    // binding carried no context) sees nothing; in `off` / `enforce` a turn
+    // sees its user's own chats with this agent (`graphReadScopeFor`).
     if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) {
       const isolation = turnMemory?.isolation;
       if (isolation) {
@@ -10118,9 +10142,13 @@ export class Orchestrator {
             : { audienceOwners: isolation.audience, agentScopePrefix: agentScopePrefix(this.agentId) },
         );
       }
-      if (!this.unrestrictedGraphToolAllowed()) {
-        return this.knowledgeGraphTool.handle(input, NOTHING_VISIBLE);
-      }
+      const bound = turnContext.current()?.graphReadScope?.value;
+      return this.knowledgeGraphTool.handle(
+        input,
+        bound?.kind === 'user'
+          ? { userId: bound.userId, agentScopePrefix: bound.agentScopePrefix, ownScope: bound.ownScope }
+          : NOTHING_VISIBLE,
+      );
     }
     // Plugin-contributed handlers win first. Kernel branches below are the
     // legacy path for tools that have not yet been converted to
@@ -10159,9 +10187,6 @@ export class Orchestrator {
       // #2043 — the second argument tells the handler where the call comes
       // from; kernel-stated, never from `input`.
       return reg.handler(input, currentToolCallContext() ?? { agentSlug: this.agentId });
-    }
-    if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) {
-      return this.knowledgeGraphTool.handle(input);
     }
     if (name === QUERY_DATASET_TOOL_NAME && this.queryDatasetTool) {
       return this.queryDatasetTool.handle(input);

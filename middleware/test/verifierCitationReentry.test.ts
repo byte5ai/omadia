@@ -32,10 +32,14 @@ import {
 } from '../packages/harness-verifier/src/index.js';
 import { REQUEST, scriptedModel, text, toolCalls, toolResultContents } from './_helpers/replayTurnFixture.js';
 
+/** The graph tool reads the asker's own chats with the agent (#2204). */
+const ASKER: ChatTurnInput = { ...REQUEST, userId: 'user-anna-asker' };
+
 async function seededGraph(): Promise<{ graph: InMemoryKnowledgeGraph; reads: string[] }> {
   const graph = new InMemoryKnowledgeGraph();
   await graph.ingestTurn({
     scope: 'talk-a',
+    userId: ASKER.userId,
     time: '2026-10-07T09:16:00.000Z',
     userMessage: 'Wer ist Anna?',
     assistantAnswer: 'Eine Mitarbeiterin.',
@@ -83,7 +87,7 @@ describe('a correction re-entry may read the knowledge graph again', () => {
       toolCalls(['query_knowledge_graph', { query: 'search_turns', text: 'Mitarbeiterin' }]),
       text('Anna ist Mitarbeiterin [ref:x].'),
     ]);
-    const input: ChatTurnInput = { ...REQUEST };
+    const input: ChatTurnInput = { ...ASKER };
     const ledger = new ToolReplayLedger();
     orchestrator.bindToolReplayLedger(input, ledger);
 
@@ -107,7 +111,7 @@ describe('a correction re-entry may read the knowledge graph again', () => {
       toolCalls(call),
       text('Anna ist Mitarbeiterin.'),
     ]);
-    const input: ChatTurnInput = { ...REQUEST };
+    const input: ChatTurnInput = { ...ASKER };
     const ledger = new ToolReplayLedger();
     orchestrator.bindToolReplayLedger(input, ledger);
 
@@ -127,7 +131,7 @@ describe('a correction re-entry may read the knowledge graph again', () => {
       toolCalls(['query_knowledge_graph', { query: 'search_turns', text: 'Anna' }]),
       text('Anna ist Mitarbeiterin.'),
     ]);
-    const result = await orchestrator.runTurn({ ...REQUEST });
+    const result = await orchestrator.runTurn({ ...ASKER });
     const refs = knowledgeGraphRefsOf(result.runTrace!) ?? [];
     assert.equal(refs.length, 1, JSON.stringify(refs));
     assert.match(refs[0]!, /^turn:talk-a:2026-10-07T09:16:00\.000Z$/);
@@ -140,14 +144,14 @@ describe('a correction re-entry may read the knowledge graph again', () => {
       toolCalls(['query_knowledge_graph', { query: 'search_turns', text: 'nichts-dergleichen' }]),
       text('Dazu finde ich nichts.'),
     ]);
-    const result = await orchestrator.runTurn({ ...REQUEST });
+    const result = await orchestrator.runTurn({ ...ASKER });
     assert.deepEqual(knowledgeGraphRefsOf(result.runTrace!), []);
   });
 
   it('leaves a turn without a graph call without the field', async () => {
     const { graph } = await seededGraph();
     const { orchestrator } = orchestratorOver(graph, [text('Hallo.')]);
-    const result = await orchestrator.runTurn({ ...REQUEST });
+    const result = await orchestrator.runTurn({ ...ASKER });
     assert.equal(knowledgeGraphRefsOf(result.runTrace!), undefined);
   });
 });
@@ -199,7 +203,7 @@ describe('end to end: a citation_missing withhold is corrected from the graph re
         logs.push(line);
       },
     });
-    const answer = await service.chat({ ...REQUEST });
+    const answer = await service.chat({ ...ASKER });
     return { answer, logs, reads, model };
   }
 
@@ -229,7 +233,7 @@ describe('end to end: a citation_missing withhold is corrected from the graph re
       toolCalls(['query_knowledge_graph', { query: 'search_turns', text: 'Anna' }]),
       text(`Anna ist Mitarbeiterin [ref:${TURN}].`),
     ]);
-    const result = await orchestrator.runTurn({ ...REQUEST });
+    const result = await orchestrator.runTurn({ ...ASKER });
     assert.deepEqual(knowledgeGraphRefsOf(result.runTrace!), [TURN]);
     assert.doesNotMatch(JSON.stringify(result.runTrace), /knowledgeGraphRefs|turn:talk-a/);
   });

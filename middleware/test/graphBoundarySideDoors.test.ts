@@ -2,7 +2,8 @@
  * The side doors past a restricted turn's graph boundary, closed.
  *
  * The recall legs and the in-process `query_knowledge_graph` honour a turn's
- * `enforce-strict` / `members` boundary. Three other ways to read the graph
+ * boundary: `enforce-strict` / `members`, and in `off` / `enforce` this
+ * agent's chats of the turn's user (#2204). Three other ways to read the graph
  * did not:
  *
  *  - the kernel-native registration of `query_knowledge_graph`, which the
@@ -41,6 +42,7 @@ async function graphWithSecret(): Promise<InMemoryKnowledgeGraph> {
     assistantAnswer: 'ok',
     entityRefs: [],
     owners: ['u-a', 'u-b'],
+    userId: 'u-a',
   });
   return g;
 }
@@ -64,18 +66,15 @@ function agent(graph: InMemoryKnowledgeGraph, mode: ContextMemoryMode): NativeTo
 const search = { query: 'search_turns', text: 'Kranich' };
 
 describe('graph boundary — the registered (CLI-path) graph tool', () => {
-  for (const mode of ['enforce-strict', 'members'] as const) {
+  // It knows no turn, so no user either: nothing, in every mode (#2204).
+  // The plugin tests below show the same graph does hold the secret.
+  for (const mode of ['off', 'enforce', 'enforce-strict', 'members'] as const) {
     it(`sees nothing for an agent in ${mode}`, async () => {
       const handler = agent(await graphWithSecret(), mode).get('query_knowledge_graph')?.handler;
       assert.ok(handler, 'the graph tool is not registered');
       assert.doesNotMatch(nativeToolResultText(await handler(search)), /4,2 Mio/);
     });
   }
-
-  it('CONTROL: stays unrestricted for an agent in enforce', async () => {
-    const handler = agent(await graphWithSecret(), 'enforce').get('query_knowledge_graph')?.handler;
-    assert.match(String(await handler?.(search)), /4,2 Mio/);
-  });
 });
 
 describe('graph boundary — a plugin’s turn search inside a restricted turn', () => {
@@ -97,8 +96,22 @@ describe('graph boundary — a plugin’s turn search inside a restricted turn',
     assert.equal(await run(['u-a', 'u-newbie']), 0);
   });
 
-  it('an unknown room, a context-free turn of such an agent, or no conversation: nothing', async () => {
+  it('off / enforce: only turns of this agent the turn’s user sent (#2204)', async () => {
+    const graph = await graphWithSecret();
+    const run = (userId: string, prefix: string): Promise<number> =>
+      within({ kind: 'user', userId, agentScopePrefix: prefix, ownScope: null }, async () => {
+        const bounded = boundTurnSearch<SearchTurnsOptions>({ query: 'Kranich' });
+        if (!bounded) return -1;
+        return (await graph.searchTurns(bounded.options)).filter((h) => bounded.scopeAllowed(h.scope)).length;
+      });
+    assert.equal(await run('u-a', 'agent-x::'), 1);
+    assert.equal(await run('u-b', 'agent-x::'), 0, 'another user, though an owner of the room');
+    assert.equal(await run('u-a', 'agent-y::'), 0, 'another agent');
+  });
+
+  it('an unknown room, a context-free turn of such an agent, no conversation, or no user: nothing', async () => {
     for (const value of [
+      { kind: 'user', userId: null, agentScopePrefix: 'agent-x::', ownScope: null },
       { kind: 'members', audience: null, agentScopePrefix: 'agent-x::' },
       { kind: 'nothing' },
       { kind: 'conversation', scope: null },
