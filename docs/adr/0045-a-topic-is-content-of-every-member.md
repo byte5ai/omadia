@@ -7,7 +7,8 @@ Accepted
 - **Date:** 2026-11-25
 - **Deciders:** Maintainers, from issue #1851 (found by the canary sweep of PR #2225,
   memory-ACL plan step 3); implemented in PR #2235, accepted 2026-11-25. Owner decision of 2026-11-24
-  recorded in `middleware/test/memoryAccess/oracle.ts` (`expectedHttp`, `topic`).
+  ("private knowledge always stays private", ADR 0040), asserted by
+  `middleware/test/memoryAccess/oracle.ts` (`readsEveryMember`).
 
 ## Context and Problem Statement
 
@@ -115,6 +116,8 @@ Chosen option: **A**.
 - Related: [ADR 0016](0016-least-privilege-and-the-agent-envelope.md),
   [ADR 0019](0019-discretion-as-information-flow-control.md),
   [ADR 0039](0039-memory-access-verified-by-oracle-and-canary-sweep.md),
-  [ADR 0040](0040-one-graph-read-boundary-per-turn.md).
+  [ADR 0040](0040-one-graph-read-boundary-per-turn.md),
+  [ADR 0044](0044-plugins-read-the-graph-through-bounded-services.md) (topic graph methods are
+  `kernel-only` for plugins).
 - The duplicates queues (`/api/v1/admin/duplicates`) already filter per viewer; the same
   sweep found them clean, so they are not part of this decision.
