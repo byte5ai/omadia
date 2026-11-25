@@ -36,6 +36,500 @@ changelog.
 
 ## [Unreleased]
 
+### Security — Conductor-Webhook-Hardening (#1707)
+
+2026-11-17. Fünf Lücken der Webhook-Oberfläche, die zusammen entscheiden, was
+den Server verlässt und was ein Operator hinterher rekonstruieren kann.
+
+**Breaking:** Der Run-`context` (jedes Step-Ergebnis, inklusive Freitext aus
+Freigaben) verlässt den Server nur noch, wenn eine Subscription ihn explizit
+anfordert. `conductor_webhook_subscriptions.include_context` ist für **alle**
+Rows `false`, auch bestehende — ein Empfänger, der bisher still Step-Ergebnisse
+bekam, bekommt sie bis zum Einschalten in der Admin-UI (oder per `POST
+…/subscriptions/:id/payload-scope`) nicht mehr. Die Projektion läuft vor dem
+Schreiben der Delivery-Row, der Kontext landet also auch nicht mehr in
+`conductor_webhook_deliveries.payload`.
+
+Außerdem: Retention für gespeicherte Payloads (Redaktion nach
+`CONDUCTOR_WEBHOOK_PAYLOAD_RETENTION_DAYS=30`, Löschen terminaler Rows nach
+`CONDUCTOR_WEBHOOK_DELIVERY_RETENTION_DAYS=180`); neun `admin_audit`-Actions für
+Endpoint-/Subscription-Lifecycle (vorher keine einzige Row auf `%webhook%`);
+ein Replay-Fenster über `X-Webhook-Timestamp` mit Signatur über
+`<timestamp>.<body>` (`CONDUCTOR_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS=300`,
+`CONDUCTOR_WEBHOOK_REQUIRE_TIMESTAMP=false` schließt den Legacy-Pfad);
+Secret-Rotation mit Gnadenfrist (`CONDUCTOR_WEBHOOK_SECRET_GRACE_SECONDS=3600`,
+`?immediate=true` für den Leak-Fall); und ein sichtbarer Kill-Switch — mit
+`CONDUCTOR_WEBHOOKS_ENABLED=false` antwortet Inbound jetzt `503
+webhook.inbound_disabled` statt `200 {"outcome":"disabled"}`, die Boot-Zeile
+nennt den Zustand, `GET /api/v1/operator/conductors/webhooks/posture` liefert
+ihn samt geltender Fenster, und die Admin-Seite zeigt ihn als Banner.
+
+Kleine API-Änderung aus dem Review: `POST …/webhooks/{endpoints,subscriptions}/:id/status`
+antwortet für eine unbekannte Id jetzt `404` statt `204` — vorher wurde dafür
+sogar eine `admin_audit`-Row über eine nie passierte Zustandsänderung
+geschrieben. DELETE antwortet für eine unbekannte Id ebenfalls `404` (#1706) und
+auditiert nur, wenn es wirklich etwas gelöscht hat.
+
+Migration `src/conductor/migrations/0015_webhook_hardening.sql`
+(`include_context`, `secret_previous_until`, Retention-Index). Details:
+Handoff „Conductor Webhooks — Hardening (#1707)", `docs/security-architecture.md`
+§7d.
+
+### Fixed — a workflow from a template can be activated in the UI (#1711)
+
+- A workflow instantiated from a template without "Workflow sofort aktivieren" is created
+  `disabled`, and every run start then refuses with 409 `conductor.disabled`. The route that
+  flips it (`POST /api/v1/operator/conductors/:slug/status`, 204) had no caller in the web UI:
+  the workflow list printed the status as text and "Starten" surfaced the raw 409, so the only
+  way out of the default state was a hand-written API call. The list row now carries an
+  Activate/Deactivate button, and the status is rendered localized ("active"/"inactive")
+  instead of the wire value.
+- The three refusals of the run-start route — `conductor.disabled`, `conductor.not_published`
+  (409) and `conductor.not_found` (404) — now read as sentences that say what to do; the
+  disabled one points at the switch on the row. Any other failure keeps the generic sentence
+  and carries the server's text as a detail line below it, so no raw `… failed: 409` is ever
+  the primary message. Same for a failed await response, which shares that slot.
+
+### Fixed — Timer-Awaits erscheinen nicht mehr in der Operator-Inbox (#1712)
+
+2026-11-24.
+- **Operator-Inbox:** Ein auf einem Timer-Step geparkter Lauf schrieb eine
+  Await-Zeile mit `principal_kind = 'timer'`, und „Wartende Human-Steps" zeigte
+  sie mit Freigeben/Ablehnen. Ein Timer hat keinen Holder, deshalb antwortete
+  `POST /conductors/awaits/<id>/respond` darauf immer mit
+  403 `conductor.await_forbidden`. `listWaiting` filtert Timer-Awaits jetzt
+  heraus; auf den Tick wirkt allein der Deadline-Poll. Gefiltert wird auf den
+  Principal, nicht auf den `timer`-Channel — die Inbox bleibt channel-agnostisch.
+  Der geparkte Lauf ist danach nur noch über „Verlauf" pro Workflow sichtbar
+  (Status `waiting`), und dort ohne Deadline: die Deadline wird nur in der
+  Inbox-Zeile gerendert, die ein Timer jetzt nicht mehr erreicht. Eine
+  read-only-Zeile „läuft bis …" ist bewusst nicht gebaut.
+
+### Fixed — Conductor: Event-Vorlagen bei leerem Event-Katalog instanziierbar (#1713)
+
+2026-11-24. Die gebündelte Vorlage „Benachrichtigen und eskalieren bei Vorfall"
+deklariert einen Pflicht-Slot `kind: "events"`. Die strenge Validierung der
+Routes `POST /conductors/templates/:id/{resolve,instantiate}` prüft Event-Ids
+gegen den **lebenden** Event-Katalog, und auf einem Stack ohne Event-emittierendes
+Plugin ist der leer: jede Id wurde mit
+`400 conductor.invalid_graph` / `unknown_event_ref` abgelehnt, das Formular bot
+ein leeres Select. Die Vorlage stand damit in der Galerie, war aber über keine
+der beiden Oberflächen nutzbar — während derselbe Graph über `POST /conductors`
+(validiert ohne `KnownRefs`) publishbar war und danach normal lief.
+Eine Event-Id ist Freitext des Senders (`POST /conductors/emit` nimmt jede Id,
+ein eingehender Webhook-Endpoint aus #437 trägt eine vom Operator vergebene, die
+in keinem Manifest steht), der Katalog also eine Vorschlagsliste. Eine Id ohne
+Treffer ist jetzt die nicht blockierende Warnung `unmatched_event_ref`
+(`validate()` in `@omadia/conductor-core`), die `resolve`/`instantiate` als
+`warnings` zurückgeben und das Formular nach dem Anlegen anzeigt; ein
+**fehlendes** `eventId` an einem `event`/`webhook`-Trigger bleibt der harte
+Fehler `unknown_event_ref` (ein solcher Trigger kann nie feuern, #437).
+Weil der Slot jetzt Freitext ist, **trimmt** `applyTemplateSlots` die Werte der
+Ref-Slots (`mappedValue`, derselbe Trim, mit dem das Pflichtfeld-Gate „gemappt"
+entscheidet): ein eingefügtes `" my.incident"` hätte sonst einen Trigger
+publiziert, den `eventRouter#emit` (`tr.eventId === eventId`) nie trifft — ein
+still toter Workflow statt einer Ablehnung.
+Das Event-Slot-Feld ist Freitext mit Datalist — wie das Event-Trigger-Feld des
+Designers — und `GET /conductors/events/catalog` liefert zusätzlich
+`endpointEvents` (die `eventId`s der eingehenden Webhook-Endpoints), die auch in
+die `KnownRefs` von Validierung, Builder-Prompt und Proposal-Prefill eingehen
+(`knownEventIds()` in `src/conductor/index.ts`). FR-003 in
+`specs/005-omadia-conductor/{spec,data-model}.md` trägt die Ausnahme jetzt
+ausdrücklich (fehlendes `eventId` bleibt harter Fehler). Keine Migration.
+
+### Fixed — MCP tool scan for credential forwarding
+
+2026-11-12. Discovered MCP tool descriptions could direct an agent to read
+local credential files, forward their contents as tool arguments, and conceal
+the read while receiving a clean verdict.
+
+- The deterministic scan now raises these English and German instructions to
+  `high_risk`, so MCP grants require acknowledgement. Ordinary file references
+  and generic `note`/`sidenote` fields remain unflagged.
+- Concealment phrases ("do not tell the user", "halte … geheim") count only when the
+  same description also tells the agent to read or forward a file, so ordinary tool
+  docs such as "Keep your API key secret" or "Erwähne gegenüber dem Benutzer nicht die
+  interne ID" stay unflagged.
+- Hidden-content detection now includes `<important>` pseudo-tags, closing
+  `</system>`/`</developer>` tags, Unicode tag characters, and bidirectional
+  embedding/override/isolate controls. A bare `<system>` role name and the LRM/RLM/ALM
+  marks of ordinary Hebrew and Arabic text are not flagged.
+
+### Fixed — Agents können Transkripte nicht mehr löschen oder verschieben (#2216)
+
+2026-11-24. Im Modus „Aus“ und in jedem Turn ohne Kanal-Kontext hält der Turn
+den `core`-Grant, und der machte `/memories/sessions/` schreibbar. Ein
+`delete /memories/sessions` aus einem einzigen Chat löschte damit die
+Transkripte aller Agents; ein `rename` hätte sie verschoben oder eine
+gefälschte Datei in den Baum gelegt. `/memories/sessions/` und
+`/memories/chat-sessions/` stehen jetzt auf der Deny-Liste von
+`ScopedMemoryStore`, samt der Prüfung auf Eltern-Pfade und kanonische Pfade aus
+#1827. Lesen bleibt erlaubt. Kein Agent braucht dort Schreibrechte:
+`SessionLogger` und `ChatSessionStore` schreiben als Kernel und bekommen in
+`buildOrchestratorForAgent` jetzt den ungescopten Store statt des
+Agent-Scopes.
+
+### Changed — Anthropic SDK 1.x: no sampling parameters on Anthropic models (#2167)
+
+- `@anthropic-ai/sdk` 0.126 → 1.12 sends `anthropic-version: 2026-10-21`, which rejects
+  `temperature`/`top_p`/`top_k` with a 400 on every model. The Anthropic adapter never sends
+  them now; `LlmRequest.temperature` (and `ctx.llm` for plugins) is ignored for Anthropic. The
+  per-model `supportsTemperature` table is gone.
+- Custom Anthropic-compatible base URLs keep `X-Api-Key` instead of the SDK's new
+  `Authorization: Bearer` default.
+
+### Changed — Kernel ohne Plugin-IDs: Teams-Standard-Bot kommt vom Plugin, tote v0.1.0-Reste entfernt
+
+2026-11-24. Der Kernel kannte noch Plugin-IDs aus v0.1.0. Der Teams-Standard-Bot
+(der einzige unbekannte Bot-Key, den der Conductor an eine Bindung oder den
+Fallback-Agenten routet) wurde aus dem Registry-Eintrag
+`de.byte5.integration.microsoft365` gelesen, ersatzweise aus `MICROSOFT_APP_ID`.
+Jetzt nennt ihn das Plugin selbst: neuer optionaler Vertrag
+`registerDefaultChannelKeyProvider` (channel-sdk 0.3.14, plugin-api 1.93.0) für
+Kanäle ohne `agentIdentities@1`-Provider. `@omadia/channel-teams` 0.45.0
+registriert ihn (Teams-Agenten-Bots bleiben in `agent_teams_identities`). Ein
+Provider, der wirft oder nichts nennt, bedeutet „kein Standard-Bot“: der Bot
+wird abgelehnt, der Turn scheitert nicht. Der Provider ist wie die anderen an
+den Kanal-Claim gebunden: nur das Plugin, das `teams` hält, nennt den Bot.
+
+**Upgrade-Reihenfolge:** zuerst `@omadia/channel-teams` ≥ 0.45.0, dann dieser
+Kernel. Mit einem älteren Teams-Plugin kennt dieser Kernel keinen
+Teams-Standard-Bot mehr, Nachrichten an ihn verweigert der Conductor
+(`unknown-bot`); der normale Chat-Pfad des Plugins ist nicht betroffen.
+
+Entfernt, weil tot: der Boot-Log zum Kalender-/M365-Wiring (`de.byte5.agent.calendar`,
+meldete nach der Deinstallation der Alt-Einträge fälschlich „microsoft365 integration
+DISABLED“), die Env-Migrationen `bootstrapMicrosoft365FromEnv` und
+`bootstrapTelegramFromEnv` (Ziel-IDs `de.byte5.integration.microsoft365`,
+`de.byte5.agent.calendar`, `de.byte5.channel.teams`, `de.byte5.channel.telegram` stehen
+in keinem Katalog mehr) und der `Microsoft365AccessorShim`. Der Builder schlägt als
+`depends_on` jetzt die heutigen IDs vor (`@omadia/integration-odoo`,
+`-confluence`, `-microsoft365`). Bleiben bewusst: die Migration der Alt-ID
+`de.byte5.tool.knowledge-graph`, das reservierte Präfix `de.byte5.platform.` im
+Manifest-Linter, `ROUTINES_AGENT_ID` (Principal, kein Plugin) und die
+Channel-Typ-Normalisierung. Die Env-Werte `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_PUBLIC_BASE_URL` und `TEAMS_SSO_CONNECTION_NAME`
+liest der Kernel nicht mehr (sie fütterten nur die entfernten Migrationen); sie
+parsen weiter, wirken aber nicht. Plugins konfiguriert man über ihr Setup.
+
+### Fixed — Diskretion: Karten zurückgehaltener Antworten, Pläne ohne Turn, Label-Rennen (#2198)
+
+2026-11-24. Folgepunkte aus #2194 (Spec 2042 §5.11). Im Streaming-Pfad gingen
+Annotationen, die aus der Antwort abgeleitet sind, vor deren People-Egress-
+Check raus: die `onAfterTurn`-Annotationen (Plan-Karte am Turn-Ende) und der
+`kg_insert`-Puls des aus der Antwort promoteten memorables. Wurde die Antwort
+dann zurückgehalten, hatte der Client sie schon. Jetzt warten beide auf den
+Check und gehen nur mit einer Antwort raus, die rausgeht; das gilt auch, wenn
+der Verifier (enforce, Request-Ledger) den Request-Record erst nach seinem
+Urteil freigibt. Plan-Karten während
+des Turns (`onBeforeTurn`, nach jedem Tool) und jede andere Karte des Streams
+gehen nur an einen Raum, der lesen darf, was der Turn bis dahin gelesen hat.
+Ein Plan ohne bekannten Schreib-Turn (`plan.props.turnId` fehlt) wird nicht
+mehr abgerufen, wenn der Orchestrator Diskretions-Labels führt
+(`requireKnownPlanTurn`): ohne Turn sagt nichts, wer ihn lesen darf. Labels
+von Prozessen und Memory-Notizen wachsen jetzt atomar
+(`DiscretionPort.mergeLabels`: Zeilen-Lock in einer Transaktion), zwei
+gleichzeitige Schreiber verlieren keine Labels mehr; wächst ein Set über
+256 Labels (liest sich dann als unlesbar), schreibt der Store eine Logzeile.
+Ein Konsultationslauf über das Claude-Abo hat keinen Privacy-Shield und damit
+keine maskierte Antwort: der Broker macht aus `redacted` dann nur „B kann
+helfen“, es fließt nichts. Prozesse werden nirgends gelöscht, also gibt es
+keine Labels zu entfernen. Keine Migration.
+
+### Fixed — Diskretion: Pläne und Prozesse aus dem Recall, CLI-Turns (#2194)
+
+2026-11-24. Zwei Lücken der Recall-Karte „🧠 Aus früheren Sessions“
+(Spec 2042 §5.11). Erstens kamen abgerufene Pläne und Prozesse ohne Labels in
+den Turn: ein Plan aus einem HR-1:1 ging als Karte und im Prompt an eine Gruppe
+mit anderen Lesern, und die Antwort konnte ihn wiederholen. Ein Plan trägt
+schon die Id des Turns, der ihn schrieb (`plan.props.turnId`); der Recall gibt
+sie jetzt als `RecalledPlan.turnId` mit (plugin-api 1.92.0), und der Turn
+übernimmt dessen gespeicherte Labels. Prozesse werden über mehrere Turns
+bearbeitet und haben keinen Turn: der Kernel dekoriert den
+`processMemory@1`-Provider beim Registrieren
+(`ServiceRegistry.decorateOnProvide`, `LabelledProcessMemory`). Schreiben und
+Bearbeiten speichern die Labels des schreibenden Turns unter dem neuen Subjekt
+`process` (ein Edit behält die früheren dazu); jedes Lesen (Prozess-Tools,
+Wiederverwendung durch den Plan-Runner, Recall, Duplikat-Treffer) bringt sie
+in den lesenden Turn. Migration **0112_discretion_process_labels** erweitert
+dafür den Subjekt-Check von `discretion_labels`. Zweitens liefen Turns über
+das Claude-Abo (`CliChatAgent`) ohne Diskretions-Zustand, die Prüfung der
+Recall-Karte war dort wirkungslos und die Antwort ging ungeprüft raus. Der
+CLI-Turn bekommt jetzt denselben Zustand und dieselbe Audience-Floor wie ein
+In-Process-Turn (`orchestrator.cliDiscretionTurnFields`: Raum, Leser,
+Feldrechte, Trigger- und Konsultations-Seed); Recall, Memory-Binding,
+Loopback-Tools und Session-Record laufen darin. Kann der Zustand nicht gebaut
+werden, läuft der Turn mit einem Label, das niemand lesen darf (fail-closed).
+Die Antwort geht durch denselben People-Egress-Check
+(`orchestrator.guardCliAnswer`, mit Audit; ein Konsultationslauf gibt seine
+Labels an den Broker): zurückgehalten wird sie als Ersatzzeile, die gestreamte
+Vorschau wird per `text_retract` zurückgenommen, Karten und die Annotationen
+des Turn-Records gehen nicht mit.
+
+### Fixed — Agent-Namen bleiben im Klartext, auch in Hintergrund-Jobs und Konsultationen (#2191, #2192)
+
+2026-11-24. #2190 nahm nur den eigenen Namen eines Agents in seinem eigenen
+Turn von der Maskierung aus. Hintergrund-Jobs über die Turns eines Agents
+(Signifikanz-Bewertung, Canvas-Skelett) maskierten seinen Namen weiter, und in
+einer Konsultation sah A den Namen von B (und B den von A) als Platzhalter. Der
+Kernel stellt jetzt `agentNames@1` bereit: die Namen aller bestehenden Agents
+(Slug, Name, Identitätsname; gelöschte Agents nicht), ohne die Namen, die ein
+aktiver Benutzer trägt. Der Privacy Guard nimmt sie in jedem Turn und in jedem
+Stored-Text-Scope aus, nach den Regeln von #2190 (exakte Gleichheit, die
+Deny-Liste gewinnt). Menschen bleiben maskiert; solange die Namen unbekannt
+sind, ist kein Agent-Name ausgenommen. Restrisiko: Eine Person ohne
+omadia-Login, die genau wie ein Agent heißt, bleibt jetzt in allen Turns
+unmaskiert; dagegen hilft die Deny-Liste. plugin-api 1.91.0, privacy-guard
+0.16.4.
+
+### Fixed — Recall-Karte im Streaming nur für Leser, die den Inhalt kennen dürfen (#2042)
+
+2026-11-24. Die Karte „Aus früheren Sessions“ (`kg_recall`, dazu `kg_graph`)
+ging im Streaming-Pfad vor der Antwort hinaus, ohne die Diskretionsprüfung der
+Antwort. Ein Raum mit einem Leser, der einen erinnerten
+Eintrag nicht kennen darf, sah ihn so in der Karte, obwohl die Antwort
+zurückgehalten wurde. Die Karten bekommen jetzt dieselbe People-Egress-Prüfung
+direkt nach dem Recall. Der gepufferte Pfad (Teams) war schon abgedeckt: eine
+zurückgehaltene Antwort verwirft `recalled` ganz.
+
+### Fixed — Restlücken aus Spec 2042: Vorschau-Rücknahme, Trigger-Feldrechte, Budgets (#2042)
+
+2026-11-24.
+- **Zurückgehaltene Antwort im Stream:** Hält die Diskretionsprüfung eine
+  gestreamte Antwort zurück (`readers_not_covered`, fehlendes Feldrecht),
+  schickt der Kernel vor dem `done` jetzt ein `text_retract` über alle schon
+  gestreamten Zeichen. Bisher blieb der Entwurf in jeder Vorschau stehen, die
+  `done.answer` nicht übernimmt. Die Web-UI ersetzte ihn schon beim `done`.
+  Der Canvas zeigt die Rücknahme erst, wenn ui-channel einen eigenen Frame
+  dafür sendet (byte5ai/omadia-ui-support#6).
+- **Feldrechte beim Auslösen eines Triggers:** Ein Trigger nutzt die
+  Feldrechte, die die Leser seines Raums beim Auslösen haben, nie mehr als
+  bei der Erstellung gespeichert. Wird einem Leser das Recht
+  (`privacy:field:<class>`) nach dem Setzen entzogen, gilt das ab der
+  nächsten Auslösung. Gelesen wird aus denselben Grants wie beim
+  Audience-Floor. Ist der Floor aus, gilt nur der gespeicherte Stand.
+- **Mythos ohne `temperature`:** Der Anthropic-Adapter lässt die Temperatur
+  jetzt auch für Mythos 5 / 5.1 weg, wie für Fable. Bisher endete etwa
+  `temperature: 0` vom Screener oder von Plugins dort mit 400.
+- **Budget des Topic-Detektors:** Der Klassifikator (`continue` / `reset` /
+  `unsure`) hat jetzt 1024 statt 64 Tokens und sendet `effort: low`,
+  `thinking: off`. Auf einem Modell, das immer denkt, war die Antwort vorher
+  leer, und jede unklare Nachfrage wurde zu `unsure`. Die Budgets liegen
+  jetzt in `@omadia/orchestrator-extras` (`classifierBudgets.ts`); der
+  Orchestrator re-exportiert sie.
+- Veralteter Kommentar in `subAgentEffort.ts` korrigiert: Die Adapter
+  verwerfen einen nicht unterstützten Effort inzwischen selbst.
+
+### Fixed — `/memories/_rules/` ist für Agents nur lesbar (#1827)
+
+2026-11-17. Jede Datei unter `/memories/_rules/` wirkt für alle Agents und
+alle Accounts: der System-Prompt lässt Agents sie lesen, und der
+Durable-Rules-Hook kopiert jeden Write in team-weites kuratiertes Wissen. Im
+Modus „Aus“ (bis Migration 0099 der Default, bestehende Agents laufen weiter so)
+und in jedem Turn ohne Kanal-Kontext hält der Turn den
+`core`-Grant, der `_*` schreibbar macht, also konnte ein einzelner Chat (oder
+eingeschleuster Text) eine Regel für alle anlegen. `_rules/` steht jetzt auf
+der Deny-Liste von `ScopedMemoryStore`; Lesen bleibt erlaubt. Regeln kommen nur
+noch aus dem Repo-Seed (`MEMORY_SEED_DIR`). System-Prompt, CLI-Memory-Text und
+Seed-README sagen das. Bereits angelegte Regeln bleiben bestehen; wie Regeln
+künftig gepflegt werden, ist als Diskussion offen.
+
+### Fixed — Der eigene Name eines Agents bleibt maskiert, wenn ein Mensch ihn trägt (#2042)
+
+2026-11-23. Die Ausnahme für die eigenen Namen eines Agents (`ownNames`) ließ
+`humanNames` bisher leer, also blieb z. B. „Karen“ in Karens eigenem Turn
+unmaskiert, obwohl eine Kollegin „Karen Müller“ heißt. Der Kernel liest jetzt
+den Anzeigenamen aller **aktiven** Benutzer aus der `users`-Tabelle, samt jedem
+seiner Wörter („Müller, Karen“, „Anna van der Berg“), und stellt sie als
+`humanNames@1` bereit; jeder Agent der Registry liest sie einmal pro Turn. Ein
+eigener Name, der einem davon gleicht (ohne Groß-/Kleinschreibung), ist nicht
+ausgenommen, auch ein einzelner Vorname. Deaktivierte Benutzer zählen bewusst
+nicht. Abgedeckt sind nur Menschen mit omadia-Login.
+Der Snapshot wird pro Prozess gehalten, nach jedem Schreibzugriff über
+`UserStore` (Anlegen, OIDC-Login, Umbenennen, Deaktivieren, Löschen) und
+spätestens nach 5 Minuten neu geladen. Solange er nicht geladen ist oder das
+Laden fehlschlägt, gilt kein eigener Name als ausgenommen — die Maskierung
+gewinnt. Die Namen werden nicht geloggt. Regeln:
+`docs/security-architecture.md` §6f.
+
+### Fixed — Chat-Turns können das Promote-Audit-Log nicht mehr löschen (#1827)
+
+2026-11-17. Die Deny-Liste von `ScopedMemoryStore` prüfte nur den genannten
+Pfad. Ein `delete /memories/core` aus einem kontextfreien Turn (Modus „Aus“,
+der Default) entfernte im Postgres-Store alle Nachfahren, auch
+`/memories/core/audit/memory-promotions.jsonl`; ein `rename` hätte es
+verschoben, und `/memories/core//audit/…` umging die Prüfung, weil der Store
+den doppelten Slash erst danach zusammenfasst. `delete` und die
+`rename`-Quelle werden jetzt abgelehnt, wenn sie das Audit-Log enthalten, und
+die Deny-Prüfung läuft auf dem kanonischen Pfad. Andere Dateien unter
+`/memories/core/` bleiben schreib- und löschbar. Der zweite Teil von #1827
+(Regeln unter `_rules/` aus jedem Turn) braucht eine Entscheidung zum
+Zugriffsmodell und ist nicht Teil dieses Fixes.
+
+### Fixed — Ein Agent verliert seinen eigenen Namen nicht mehr an den Privacy Shield (#2042)
+
+2026-11-23. Der Shield maskierte im wiedergeholten Kontext eines Agents dessen
+eigenen Namen: C1 erkannte „Dark Clippy“ als Person, das Modell las „Ich bin
+<Platzhalter>“ in seinem Verlauf und „korrigierte“ sich in jedem Turn
+(„Falls ich mich als ‚Dark Clippy‘ vorgestellt habe: Das war falsch“). Der
+Turn-Handle reicht jetzt die eigenen Namen des Agents (Anzeigename, Slug,
+Identitätsname, sonst der Plattform-Assistentenname) als `ownNames` an
+`maskUserPrompt`, `maskReplayedAnswer` und `projectVerifierText`
+(plugin-api 1.90.0). Ein erkannter Span, dessen ganzer Wert einem davon
+gleicht (ohne Groß-/Kleinschreibung, umgebende Anführungszeichen und
+Satzzeichen), bleibt stehen und wird nicht gebucht; Known-Value-Sweep und
+Residual-Check lassen eigene Namen ebenfalls stehen. Die Deny-Liste gewinnt
+immer, Teilnamen und Possessive bleiben maskiert, ein eigener Name, der einem
+bekannten Menschen gleicht (`humanNames`), ist nicht ausgenommen. Regeln:
+`docs/security-architecture.md` §6f.
+
+### Fixed — `delete /memories` löscht nicht mehr den ganzen Agent-Baum (#1828)
+
+2026-11-17. Der Memory-Namespacer bildet das modellseitige `/memories` auf
+`/memories/orchestrators/<slug>` ab; der Root-Guard des Stores kennt nur das
+physische `/memories` und griff deshalb nie. Ein `delete /memories` entfernte
+alle Notizen des Agents samt dem `ctx.memory` jedes Plugins. Die Namespacer
+verweigern jetzt `delete`/`rename` eines gebundenen Roots (`/memories`,
+`~team`, `~agent`) und jedes Pfads im Plugin-Baum
+`/memories/orchestrators/<slug>/plugins/`, auch ohne Privacy Shield und auch
+als Rename-Ziel (`MemoryInvalidPathError`, für das Modell ein normales
+`Error:`-Ergebnis). Lesen und Schreiben im Plugin-Baum bleiben unverändert.
+
+### Fixed — 2026-11-23 — Conductor: re-publishing a workflow no longer hides its runs (#1710)
+
+- `GET /conductors/:slug/runs` listed only runs of the **active** version, so publishing the
+  same slug again emptied the history — including for a run still `waiting`, whose await stayed
+  in the inbox while `DELETE /:slug` kept refusing the workflow with `conductor.has_active_runs`
+  ("cancel them first"). The cancel button lives in that very list, so the only way out was to
+  read the run id out of the database and call the cancel route by hand.
+- The list now spans every version of the workflow (`runStore.listForWorkflow`, joining
+  `conductor_workflow_versions`), and each row carries `workflowVersion` — the version
+  **number**, rendered as a badge in "Verlauf". Active runs sort ahead of terminal ones so a
+  waiting run cannot be pushed out of the `LIMIT` window by newer completed ones. Both the
+  history and the delete guard now read the same exported `ACTIVE_RUN_STATUSES`: `hasActiveRuns`
+  always counted across versions, and the contradiction between the two queries was the bug.
+  The route answers 404 only for an unknown slug — a workflow with no active version has an
+  empty history, not an error. `listForVersion` stays for the ephemeral/discussion paths, where
+  a workflow has exactly one version and one run (#330).
+- UI: every history row carries a `v{n}` badge, and so does an opened run's trace (the
+  single-run route serves no version, so the badge is read off the row it was opened from).
+
+### Fixed — Conductor renders `{{ctx.*}}` / `{{steps.*}}` in human messages and action inputs (#1709)
+
+2026-11-23. A human step's `message` and an action step's `input` reached their
+consumers with the template syntax of the workflow intact: the operator inbox, the
+approval card (`question`) and the reminder worker all showed `New hire
+{{ctx.employeeName}} starts on {{ctx.startDate}}.`, and a connector received the raw
+token as its input value. All four bundled templates rely on that interpolation, so a
+fresh instance of `onboarding-checklist`, `expense-approval`, `notify-and-escalate` or
+`weekly-report` asked people to decide on text they could not read. Only `step.prompt`
+and `step.agentId` were ever rendered (`realStepEffects.ts`), while the type contract
+documented interpolation for the other fields too.
+
+- One renderer for all four fields now, `src/conductor/runInterpolation.ts`, with ONE
+  substitution pass and four named policies over it. The policies differ only in what an
+  unresolved token becomes, and that difference is the design: `renderAwaitMessage` →
+  a visible dash `—` (a person reads it, and raw `{{…}}` must never reach an approver);
+  `renderAgentPrompt`, `renderAgentRef`, `renderActionInput` → empty. A prompt stays
+  empty because the discussion pattern opens with "THE CONVERSATION SO FAR (empty if you
+  are opening)" and branches on that emptiness; a ref stays empty because that is what
+  lets an agent step refuse a run whose context names no speaker; an action input stays
+  empty because a dash would be POSTed onward (`…/hire/—`).
+- `openHumanAwait` renders the message once, against the context the run parks with —
+  the await ROW is what the inbox, the card and the reminder worker read, so one
+  rendering covers all three. The escalation awaits of `expense-approval` /
+  `notify-and-escalate` are reached through `expireAwait` → `driveFrom` and render the
+  same way.
+- **Awaits parked before this fix** still hold raw template text, and an await row is
+  written once and never rewritten. `ConductorAwaitStore` therefore joins the run's
+  context into every read (`conductor_awaits a LEFT JOIN conductor_runs r`) and renders
+  such a row on the way out, so no migration and no per-reader re-render is needed. A
+  current row costs one `includes('{{')` scan; a row whose run is gone renders dashes.
+- The token grammar moved to `@omadia/conductor-core` (`runTokens.ts`,
+  `isTemplateExpression` / `runTokenMatcher`) and is now shared with the authoring check
+  that exempts a templated `step.agentId` from `unknown_agent_ref`. The two had drifted:
+  path segments now accept `-`, so `{{steps.hr-checklist.approved}}` resolves at run time
+  AND passes validation (a step id is any non-empty string, and the bundled templates use
+  kebab ids). Still disjoint from the `slot:text:<key>` grammar — a `:` is not a path
+  character.
+- A rendered await message is capped at 4000 characters with a visible ellipsis.
+  Interpolation can inline a whole agent answer (`weekly-report`'s
+  `{{steps.compose.text}}`) into `conductor_awaits.message` and into
+  `Reminder: <message>`; before this change the stored string was short template prose,
+  so nothing bounded it.
+- Tests: `middleware/test/conductorRunInterpolation.test.ts` (read-back on the await row
+  and on the object the action invoker receives, driven through all four bundled
+  manifests plus the shipped `discussion` pattern) and
+  `middleware/test/conductorAwaitMessageRender.pg.test.ts` (the aliased join on a real
+  Postgres, through every read path).
+
+### Fixed — a withheld answer stays out of the agent's memory; the guard's verdict is on the turn (spec 2042 follow-up)
+
+- Live on the canvas, Dark Clippy's draft that the identity guard blocked ("Falls ich mich vorhin
+  hier als … vorgestellt habe: Das war falsch") was recorded as a turn, and every later
+  "wer bist du" recalled and repeated it ("…, und zwar mehrmals"). The orchestrator writes a
+  turn's record inside the turn, before the identity guard (outermost) decides. Now the record
+  writer reports every row to the turn's record gate and holds back the fact extraction; once
+  the guard has decided (on the authoritative answer, after the verifier and the privacy
+  render), the turn is patched in the graph without being classified again
+  (`KnowledgeGraph.amendTurn`, no capture-filter model call): it gets the verdict, and an
+  answer the identity guard withheld loses its text and its embedding and becomes `tailOnly` (no recall finds it; the user's message stays). Facts are learned only
+  from a kept answer. An answer refused at the people egress (discretion) is recorded without
+  its text too, instead of as the line that replaced it; the web-chat mirror keeps that line.
+- The verdict is stored with the turn: `TurnIngest.identityGuard` / `amendTurn`
+  (`@omadia/plugin-api` 1.89.0, Turn property `identityGuard`: outcome, deciding layer,
+  latency, rule or cause). A block like the one in the 2026-11-23 run can be traced without the
+  operator log.
+- Known residuals: auto-promotion (opt-in) and `onAfterTurn` hooks run before the verdict and
+  still see the draft; the markdown session transcript keeps it (and a startup backfill,
+  `BACKFILL_AT_STARTUP=1`, would re-ingest it); a stream the client abandons before `done` is
+  not patched; an answer the verifier withheld is the verifier's record, unchanged.
+
+### Fixed — a reasoning effort only for OpenAI's reasoning models (spec 2042 follow-up)
+
+- The verifier, the fast path and the PASS/BLOCK judges send `effort: 'low'`. Both OpenAI
+  adapters forwarded it to every native model, and `gpt-4o` / `gpt-4.1` answer
+  `reasoning_effort` (Responses: `reasoning.effort`) with a 400, so on such an agent those calls
+  failed. A shared `isOpenAiReasoningModel` (`@omadia/llm-provider-api` 1.6.0: o-series and
+  GPT-5, without `o1-mini`/`o1-preview` and the `*-chat-latest` aliases) now decides: other
+  models get no effort field (Chat Completions notes it once per model). The reasoning models
+  reject a temperature other than 1, so a caller's `temperature: 0` is dropped for them.
+
+### Fixed — Conductor operator API: a malformed id no longer returns the Postgres error
+
+2026-11-17. `conductor_runs.id`, `conductor_awaits.id`, `conductor_workflows.id`
+and `conductor_webhook_subscriptions.id` are `uuid` columns, and the operator
+routes handed the caller's id to the store unchecked. `999` therefore failed in
+Postgres with `22P02 invalid input syntax for type uuid: "999"`, and each
+handler's catch-all copied that sentence into a 500 body — eight routes, from
+`GET /conductors/<slug>/runs/:runId` to
+`POST /conductors/webhooks/subscriptions/:id/rotate-secret`. Same class as
+#1318/#1398 (#1706).
+
+- **The shape is checked first.** `createConductorRouter` registers
+  `requireUuidParam('conductor.invalid_input', 400)` for `runId`, `awaitId`,
+  `workflowId` and `subscriptionId`: a non-UUID is not an unknown row but an
+  unusable id, so it is a `400` that never reaches the store, while a
+  well-formed id with no row behind it keeps the handler's `404`. The two codes
+  are the pair the admin UI already localizes.
+- **`requireUuidParam` takes the refusal status.** Default `404` — unchanged for
+  admin-users (#1318) and routines (#1398), whose malformed-id answer is
+  deliberately the same 404 an unknown id gets.
+- **The subscription param is now `:subscriptionId`.** `:id` on that router
+  belongs to the template routes and carries slug-shaped ids
+  (`notify-and-escalate`), which must not be uuid-guarded. URLs are unchanged.
+- **An unknown inbound endpoint no longer reports success.** `endpoint_id` is
+  `TEXT`, so there was no Postgres error to surface: the `status` and `DELETE`
+  writes matched zero rows and still answered `204`. Both now answer
+  `404 conductor.not_found`, as does `deliveries`, which used to return
+  `{"deliveries": []}` — "nothing has arrived yet" for an endpoint that does not
+  exist. Subscriptions got the same existence check.
+- **`POST /conductors/awaits/:awaitId/respond` answers 404 for an await that is
+  not there.** The new `AwaitNotFoundError` separates "no such await row" from
+  "this await is closed", which were one `409 conductor.await_not_pending`. An
+  approve/reject card button still reads both as `already_resolved`.
+- No migration, no URL change, no web-ui change.
+
 ### Fixed — process tools read every agent's processes (#2207) (2026-11-24)
 
 - `query_processes` and `run_stored_process` read process memory with no agent or
@@ -71,7 +565,7 @@ changelog.
 - The registered (subscription-CLI) handler knows no turn and now sees nothing in every mode,
   not only in `enforce-strict` / `members`. **Behaviour change:** cross-agent and cross-user
   search through the tool is gone.
-- plugin-api 1.89.0: `SessionReadOptions.userId` (both in-tree backends honour it) and
+- plugin-api 1.94.0: `SessionReadOptions.userId` (both in-tree backends honour it) and
   `scopeBelongsToAgent`.
 - `graphBoundarySideDoors.test.ts` drops its "unrestricted in enforce" control; the canary
   sweep's `todo` for #2204 is now part of the ordinary assertion. `PG_TEST_FLOOR` 749 → 747.
@@ -522,6 +1016,7 @@ GHSA-fc5q-39xc-vjpf (picomatch) on 2026-11-18, so its three audit exceptions fro
   unless an operator released it.
 - Docs: ADR-0026; `AGENTS.md` points sessions work to ADR-0026;
   `docs/security-architecture.md` § native facilitators covers the link and read rules.
+
 ### Added — Facilitators: moderation working modes, per-facilitator defaults, readiness per channel (#2060, #2066, ADR-0023)
 
 - Facilitators may attach working modes that add moderation methods.
@@ -540,6 +1035,7 @@ GHSA-fc5q-39xc-vjpf (picomatch) on 2026-11-18, so its three audit exceptions fro
 - The agent list carries `own_identity_channels`; the web-ui shows a
   facilitator ready with an own identity on any channel and has a
   "Moderation" tab (defaults and working modes).
+
 ### Added — An agent's own bot on Telegram, Discord and Slack (epic #2042, S7)
 
 - **Migration 0105 `agent_channel_identities`:** (agent, channel type, routing key)
@@ -1661,6 +2157,7 @@ GHSA-fc5q-39xc-vjpf (picomatch) on 2026-11-18, so its three audit exceptions fro
   from opening its own connection with credentials it finds there.
 - **Not yet:** an archetype plugin that still requires `graphPool` is not
   refused. That follows once the facilitation engine has moved.
+
 ### Fixed — An archetype plugin is updated and stopped in the runtime it runs in (#2088)
 
 - **Update to an archetype version.** Uploading or installing from the Hub a
@@ -1774,6 +2271,7 @@ client has no server session of its own outside a transaction.
   now run on a direct connection of their own, by the same address rule.
 - New optional setting `DATABASE_URL_DIRECT`, needed only behind a pooler
   that cannot be recognised from its address.
+
 ### Added — Question cards: contract and kernel side (#2089, epic #2043)
 
 - An engine can post a typed question card (`message.card` on
@@ -2308,6 +2806,35 @@ styles, express table widths in fiftieths of a percent, and drop the control
 characters XML 1.0 forbids. Before this change those characters made Word
 refuse the file.
 
+### Fixed — Conductor: a cancelled run is delivered as `run.cancelled` (#1705)
+
+2026-11-16. A cancelled run went out as `x-omadia-event: run.failed` with
+`payload.status: "cancelled"`, because the outbound hook derived the event name as
+`status === 'completed' ? 'run.completed' : 'run.failed'` — every non-completed
+terminal status collapsed into the failure name. A receiver that treats an operator
+cancel differently from a crash therefore had to ignore the event it subscribed to
+and parse the payload instead. A subscription on `run.cancelled` was meanwhile
+accepted with a 201 and never fired, and the admin UI offered only the two names.
+
+- **A terminal run status now maps 1:1 to an event name** —
+  `completed`/`failed`/`cancelled` → `run.completed`/`run.failed`/`run.cancelled` —
+  in one place (`conductor/webhookEvents.ts`), used by both the live terminal-run
+  hook and the reconciliation pass. A non-terminal status maps to *nothing*; there
+  is no fallback name left to fall into.
+- **Breaking for receivers that relied on the old name:** a `run.failed`
+  subscription no longer receives cancels. A receiver that wants both needs a second
+  subscription on `run.cancelled` (the payload still carries `status`).
+- **`run.cancelled` is offered in the admin UI**, and a subscription to an event
+  nothing fires is now refused with a 400 naming the supported events, instead of
+  being accepted and staying silent forever. The DB column stays free text — the
+  vocabulary is enforced at the API edge, so rows written by an older build keep
+  working and existing `run.cancelled` rows simply start matching.
+- **A cancel lost to a crash is recoverable like any other outcome:** the
+  reconciliation pass considered only `completed`/`failed` runs, so a cancel lost in
+  the fire-and-forget window after the status was committed was gone for good.
+  Migration `0014_webhook_cancelled_event.sql` adds the partial index that pass
+  needs for the third status (no schema change to the webhook tables).
+
 ### Fixed — Conductor: a rejected approval no longer takes an unguarded transition (#1698)
 
 2026-11-10. The approval gate computed the decision and then ignored it: the
@@ -2436,6 +2963,7 @@ produced a value, so no turn carried one.
   `TurnIngestResult.embeddingScheduled`.
 - `graphRefs` stays unset: `done` also reaches Public API clients, which have no
   use for internal node ids. Non-streaming replies are unchanged.
+
 ### Fixed — raw-body webhooks: a missing `Content-Type` no longer fails the HMAC
 
 2026-11-10. Reported as #1700: a correctly signed inbound delivery sent without a
@@ -2500,6 +3028,17 @@ executor-owned keys — the two disagreed.
 - **Workflows carry their version number.** `GET /conductors` and
   `GET /conductors/:slug` return `activeVersionNumber` next to `activeVersionId`,
   null when nothing is published. Additive, no migration.
+
+### Fixed — Builder turn keeps running after the browser disconnects (#1812)
+
+2026-11-11. `POST /drafts/:id/turn` stopped the builder turn as soon as the
+HTTP client went away (tab reload, network drop), so the agent never wrote
+its answer to the draft transcript and the turn's replay buffer never got the
+terminal frames. The turn now runs to its end or to the turn timeout after a
+disconnect; writes to the closed response stop, while the ring buffer keeps
+recording and is finalised, so `GET /drafts/:id/turn/:turnId/resume` replays
+the finished turn.
+
 ### Fixed — MCP auth discovery: a failed read is not "not protected"
 
 2026-11-04. Found on Figma in the new admin: the Authorization section vanished
@@ -2547,6 +3086,7 @@ answered 401 while its metadata took ~8 s and `api.figma.com` answered 503.
   desktop wizard's key does not read "stored, not verified". A pass is stored; an
   offline install repeats the bounded probe on later page opens.
 - **`latest-mac.yml`** describes the stapled DMGs (`refresh-mac-feed-dmg.mjs`).
+
 ### Fixed — Builder Teams tabs fail closed on hosts without `teams-sso` (#1620)
 
 2026-11-04. A generated plugin's Teams data router refuses every request that
@@ -2588,6 +3128,7 @@ data mount like a granted `'public'` route, without authentication.
   SIGTERM. They now attach to the app's window as a sheet and bring it forward.
 - **`OMADIA_VERSION`** is stamped for the kernel and the web UI of the packaged
   app, so `/health`, `/system` and the update page report the real version.
+
 ### Fixed — A CLI already signed in gets the orchestrator
 
 2026-11-04. Found in the desktop functional test of v0.195.2.
@@ -3013,8 +3554,6 @@ model or the user (#1542–#1546, #1550, #1553–#1556, #1559–#1561, #1577).
   `privacyMode.ts` comment now describe what the code masks.
 
 `@omadia/plugin-privacy-guard` 0.13.0, `@omadia/plugin-api` 1.47.0.
-
-
 
 ### Fixed — Verifier no longer refutes a "reference" on a model without reference fields (#1574 follow-up)
 
@@ -3485,7 +4024,6 @@ Postgres), and the stamp in `middleware/test/orchestrator/mcpKgIngestPrivacyClam
   storing `insight` plus a clipped prefix of the raw answer. Boots without an
   extractor keep the answer-prefix fallback.
 
-
 ### Fixed — store catalog: one tab per plugin, honest Hub tags, Hub permissions, search (#1469, #1459, #1470, #1471, #1457, #1474)
 
 2026-10-28. Six faults in the store listing and detail pages.
@@ -3614,6 +4152,7 @@ next boot removes; `blank` no longer points at `/store/upload`. Apply skips a
 plugin whose capability is already provided (`skipped[].reason:
 'capability_provided'`), the shipped profile descriptions are translated, and
 the outcome says that the plugins become active after a restart.
+
 ### Fixed — follow-ups to #1522: old false "done" plan steps, the preamble preview, card lead-ins (#1502, #1500)
 
 2026-10-28. Three gaps #1522 left open.
@@ -3790,8 +4329,6 @@ start-time plugin set. Since #989 it rebuilds the orchestrator
 the new plugin set applies from the next turn. The snapshot's `pluginIds` stay
 as a start-time record that nothing reads.
 
-
-
 ### Fixed — the store says truthfully whether a plugin is running, and why not (#1456, #1497, #1496, #1492, #1460)
 
 2026-10-28. Five places reported a plugin's activation state wrong.
@@ -3866,6 +4403,7 @@ integration repos: `byte5ai/omadia-integration-odoo` and
 report runtime 401s through `ctx.status` (separate PRs and releases).
 
 No plugin-api change; no new env var, migration or secret.
+
 ### Fixed — the storage overlay pulls again: SeaweedFS replaces MinIO (#1506)
 
 2026-10-28. `minio/minio` and `minio/mc` were removed from Docker Hub, and
@@ -3986,7 +4524,6 @@ fresh instance. DB-less boots keep re-seeding, as before.
 target `registry:<name>`) with the actor from `auditActorFromRequest`, and the
 url and `has_token` before and after. The token itself never appears. Admin ·
 Audit gains a "Plugin registries" filter.
-
 
 ### Fixed — the plugin UI host page keeps the plugin's state, names it, and stops claiming isolation (#1480, #1479, #1501)
 
@@ -5567,6 +6104,7 @@ of the turn through the identity resolver (`resolveRunTraceOwner` →
 uses), each group participant to their own cluster. `ingestRun` still never
 creates a cluster, and the turn's `resolvedOmadiaUserId`, dataset ACLs, MCP
 keys and `Principal` are unchanged for these turns.
+
 ### Fixed — the Conductor routes the default Teams bot like chat does
 
 2026-10-07 — Three runs of the workflow `test-teams` failed at their entry
@@ -5581,6 +6119,7 @@ unavailable provisioned owner refused, the configured default bot
 to the binding of the run’s conversation, then its own binding, then the
 fallback — as chat routes it — and every other unknown bot refused. The bot key
 is compared lowercased, as stored.
+
 ### Fixed — a withheld answer says why, and only what is true
 
 2026-10-07 — In production (v0.170.0) three Teams answers withheld for missing
@@ -5632,6 +6171,7 @@ hint point at the real fields and tell the model to repeat its first-run
 queries, which are answered from the stored results. `toSemanticAnswer` now
 strips the markers for every connector (Teams never did); the web UI's
 stripper takes the same id shape.
+
 ### Security — `@modelcontextprotocol/sdk` 1.32.1 (GHSA-6qxp-vccf-f47h)
 
 2026-10-07 — The MCP TypeScript SDK's OAuth client before 1.31.0 could send
@@ -14827,6 +15367,13 @@ Three live defects in the MCP OAuth path, one migration
   stream toast now finishes that turn as a failure showing the same humanized
   sentence, instead of reporting it as 'done' (a successful turn) as it did
   before (#403).
+
+### Fixed — Conductor previews no longer execute agent steps
+
+2026-11-15. Conductor previews now stub agent steps alongside action steps, so
+previewing a workflow cannot start a real LLM turn, create token usage, or run
+agent tools and side effects. Normal conductor runs continue to execute agent
+steps normally.
 
 ---
 

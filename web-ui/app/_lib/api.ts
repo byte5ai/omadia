@@ -5485,6 +5485,15 @@ export interface ConductorRun {
   errorMessage?: string | null;
 }
 
+/**
+ * #1710 — a run-history row: the history spans every version of the workflow, so
+ * a row carries the version NUMBER it ran. Optional — a middleware older than
+ * #1710 serves rows without it.
+ */
+export interface ConductorRunListEntry extends ConductorRun {
+  workflowVersion?: number | null;
+}
+
 export interface ConductorRunStep {
   id: string;
   runId: string;
@@ -5523,8 +5532,18 @@ export async function getConductorWorkflowGraph(
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}`);
 }
 
-/** Declared emittable domain events (US4), for the Designer's event-trigger picker. */
-export async function getConductorEventCatalog(): Promise<{ events: string[]; byPlugin: Record<string, string[]> }> {
+/**
+ * Declared emittable domain events (US4), for the Designer's event-trigger picker and the
+ * template form's event slots. `endpointEvents` (#1713) are the ids configured on inbound
+ * webhook endpoints — emittable here too, but declared by an operator instead of a plugin
+ * manifest, so they are suggested separately. Both lists are suggestions: an event id is
+ * free text everywhere it is entered.
+ */
+export async function getConductorEventCatalog(): Promise<{
+  events: string[];
+  byPlugin: Record<string, string[]>;
+  endpointEvents?: string[];
+}> {
   return getJson(`${CONDUCTOR_BASE}/events/catalog`);
 }
 
@@ -5639,7 +5658,7 @@ export async function previewConductorWorkflow(slug: string, payload: unknown): 
   return postJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/preview`, { payload });
 }
 
-export async function listConductorRuns(slug: string): Promise<{ runs: ConductorRun[] }> {
+export async function listConductorRuns(slug: string): Promise<{ runs: ConductorRunListEntry[] }> {
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs`);
 }
 
@@ -5670,6 +5689,19 @@ export async function deleteConductorWorkflow(slug: string): Promise<{ deleted: 
     throw new ApiError(res.status, `DELETE ${path} failed: ${res.status}`, text);
   }
   return JSON.parse(text) as { deleted: boolean; mode: 'hard' | 'soft' };
+}
+
+/** Enable or disable a workflow (#1711). The middleware answers 204; postJson
+ *  maps that to `undefined`, so there is no body to read. A template
+ *  instantiated without `enable: true` lands in `disabled`, where every run
+ *  start answers 409 `conductor.disabled` — this is the operator UI's way back
+ *  out of that state. Reserved ephemeral slugs are refused with 400 by the
+ *  route (their status belongs to the reaper, #330). */
+export async function setConductorWorkflowStatus(
+  slug: string,
+  status: 'enabled' | 'disabled',
+): Promise<void> {
+  await postJson<void>(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/status`, { status });
 }
 
 /** #759 — cancel a run. 'waiting' finalizes immediately; 'running' flags the
@@ -5881,7 +5913,7 @@ export async function resolveConductorTemplate(
   id: string,
   mapping: ConductorTemplateSlotMapping,
   version?: number,
-): Promise<{ graph: unknown }> {
+): Promise<{ graph: unknown; warnings?: ConductorValidationWarning[] }> {
   return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/resolve`, {
     mapping,
     ...(version !== undefined ? { version } : {}),
@@ -5901,7 +5933,13 @@ export async function instantiateConductorTemplate(
     enable?: boolean;
     version?: number;
   },
-): Promise<{ workflow: ConductorWorkflow; version: { id: string; version: number } }> {
+): Promise<{
+  workflow: ConductorWorkflow;
+  version: { id: string; version: number };
+  /** #759/#1713 — non-blocking findings on the resolved graph (e.g. an event id nothing
+   *  installed declares yet). The instantiation stands; the operator must still see them. */
+  warnings?: ConductorValidationWarning[];
+}> {
   return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/instantiate`, body);
 }
 
@@ -6122,6 +6160,10 @@ export interface ConductorWebhookEndpoint {
   eventId: string;
   description: string | null;
   enabled: boolean;
+  /** #1707 — while this is in the future, the secret the last rotation superseded
+   *  still verifies, so a sender can be reconfigured without an outage. Null once the
+   *  grace has lapsed (or if nothing was ever rotated). Never the secret itself. */
+  secretPreviousUntil: string | null;
   createdBy: string;
   createdAt: string;
   /** Absolute inbound URL (`<middleware base>/api/hooks/:endpointId`), computed
@@ -6145,8 +6187,32 @@ export interface ConductorWebhookSubscription {
   event: string;
   description: string | null;
   enabled: boolean;
+  /** #1707 — whether this subscription's deliveries carry the run `context` (every
+   *  step result, free-text human responses included). False for every subscription
+   *  by default; it is an explicit opt-in. */
+  includeContext: boolean;
   createdBy: string;
   createdAt: string;
+}
+
+/**
+ * #1707 — the operator-visible state of the webhook surface. `inboundEnabled` is the
+ * `CONDUCTOR_WEBHOOKS_ENABLED` kill switch, which used to be invisible everywhere:
+ * with it off, every inbound request was answered `200 {"outcome":"disabled"}`, so
+ * senders saw success, the log printed its usual mount line and the admin page showed
+ * nothing. `configured: false` means the middleware has no Conductor wiring at all
+ * (no Postgres) — also "webhooks are off", for a different reason.
+ */
+export interface ConductorWebhookPosture {
+  configured: boolean;
+  inboundEnabled: boolean;
+  requireTimestamp?: boolean;
+  timestampToleranceSeconds?: number;
+  secretGraceSeconds?: number;
+  maxInboundDeliveriesPerMinute?: number;
+  payloadRetentionDays?: number;
+  deliveryRetentionDays?: number;
+  contextOptIn?: boolean;
 }
 
 export interface ConductorWebhookOutboundDelivery {
@@ -6179,6 +6245,10 @@ async function deleteRequest(path: string): Promise<void> {
   }
 }
 
+export async function getWebhookPosture(): Promise<{ posture: ConductorWebhookPosture }> {
+  return getJson(`${WEBHOOKS_BASE}/posture`);
+}
+
 export async function listWebhookEndpoints(): Promise<{ endpoints: ConductorWebhookEndpoint[] }> {
   return getJson(`${WEBHOOKS_BASE}/endpoints`);
 }
@@ -6190,8 +6260,14 @@ export async function createWebhookEndpoint(input: {
   return postJson(`${WEBHOOKS_BASE}/endpoints`, input);
 }
 
-export async function rotateWebhookEndpointSecret(endpointId: string): Promise<{ secret: string }> {
-  return postJson(`${WEBHOOKS_BASE}/endpoints/${encodeURIComponent(endpointId)}/rotate-secret`, {});
+/** #1707 — `immediate` opts out of the rotation grace and cuts over at once, which is
+ *  the right answer when the rotation IS the response to a leaked secret. */
+export async function rotateWebhookEndpointSecret(
+  endpointId: string,
+  opts?: { immediate?: boolean },
+): Promise<{ secret: string; previousSecretValidUntil: string | null }> {
+  const query = opts?.immediate === true ? '?immediate=true' : '';
+  return postJson(`${WEBHOOKS_BASE}/endpoints/${encodeURIComponent(endpointId)}/rotate-secret${query}`, {});
 }
 
 export async function setWebhookEndpointEnabled(endpointId: string, enabled: boolean): Promise<void> {
@@ -6216,8 +6292,16 @@ export async function createWebhookSubscription(input: {
   url: string;
   event: string;
   description?: string;
+  /** #1707 — opt in to the run context. Omitted/false means the delivery carries the
+   *  run's identity and outcome but none of its step results. */
+  includeContext?: boolean;
 }): Promise<{ subscription: ConductorWebhookSubscription; secret: string }> {
   return postJson(`${WEBHOOKS_BASE}/subscriptions`, input);
+}
+
+/** #1707 — flip the run-context opt-in on an existing subscription. */
+export async function setWebhookSubscriptionIncludeContext(id: string, includeContext: boolean): Promise<void> {
+  return postJson(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}/payload-scope`, { includeContext });
 }
 
 export async function rotateWebhookSubscriptionSecret(id: string): Promise<{ secret: string }> {

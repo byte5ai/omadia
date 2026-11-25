@@ -225,12 +225,11 @@ describe('#1089 · the env-driven bootstraps stamp bundled', () => {
 describe('#1089 · every fresh bootstrap write is stamped (source guard)', () => {
   // The runtime tests above reach only the exported installers. The other
   // boot writes (orchestrator, orchestrator-extras, verifier, diagrams,
-  // office, Microsoft 365, Telegram, the two auto-install-dependent helpers)
-  // sit behind env and filesystem preconditions, so this reads bootstrap.ts
+  // office) sit behind env and filesystem preconditions, so this reads bootstrap.ts
   // itself: a `registry.register({ … })` that does not start with a spread
   // creates a new entry and must say `origin: 'bundled'`; one that spreads an
   // existing entry must leave the origin it carries alone.
-  const FRESH_WRITE_SITES = 13;
+  const FRESH_WRITE_SITES = 9;
 
   void it("stamps origin 'bundled' on every fresh registry write", async () => {
     const file = path.resolve(

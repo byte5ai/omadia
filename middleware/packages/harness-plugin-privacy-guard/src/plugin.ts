@@ -1,6 +1,8 @@
 import {
+  AGENT_NAMES_SERVICE_NAME,
   PRIVACY_FIELD_SAMPLES_SERVICE_NAME,
   PRIVACY_REDACT_SERVICE_NAME,
+  type AgentNamesProvider,
   type PluginContext,
   type PrivacyFieldSampleService,
   type PrivacyGuardService,
@@ -79,6 +81,11 @@ export async function activate(
     // via the install UI applies on the very next turn (no restart).
     readConfig: (key) => ctx.config.get(key),
     c1Detector,
+    // Spec 2042 (#2191, #2192) — the roster's agent names, never masked.
+    // Kernel-published with a database, resolved per call; not published or
+    // not loaded yet = nothing exempt (fail safe).
+    agentNames: () =>
+      ctx.services.getOptional<AgentNamesProvider>(AGENT_NAMES_SERVICE_NAME)?.() ?? null,
     // #1556 follow-up — field-sample vetting asks the sidecar for weaker
     // name spans too (near-miss), off the interactive lane.
     c1NearMissDetector: createC1HttpDetector({

@@ -17,11 +17,14 @@ import { meterModelCalls, meterUsageCost } from '@omadia/usage-telemetry';
 import {
   checkFlow,
   fieldClassesFromList,
+  fieldClassesOfReaders,
   isAnswerWithheldText,
+  narrowFieldClasses,
   readersWithin,
   runWithSeededDiscretion,
   UNKNOWN_READERS,
   violationSummary,
+  type FieldRightSources,
   type Readers,
 } from '@omadia/orchestrator';
 
@@ -69,7 +72,13 @@ export interface KernelExecutorDeps {
    *  explicit target's readers are unknown (fail closed) and the trigger's
    *  own conversation keeps the readers its creating turn resolved. */
   readonly conversationReaders?: ConversationReaders;
+  /** The audience floor's grants and roles, read at firing for the room's
+   *  readers. Absent = the floor is off: only the creation snapshot applies. */
+  readonly fieldRightSources?: () => FieldRightSources | undefined;
 }
+
+/** What the field-rights check reads of a trigger's discretion record. */
+type TriggerDiscretionView = { readonly readers: Readers; readonly fieldClasses?: readonly string[] };
 
 /** The room a proactive message lands in, as the discretion check sees it. */
 interface Room {
@@ -112,8 +121,27 @@ export function roomFieldClasses(
   return readersWithin(room.readers, discretion.readers) ? discretion.fieldClasses : undefined;
 }
 
+/**
+ * Criterion 18 at firing time — the field rights a trigger's message may use:
+ * those of the room's readers as they are when it fires, never wider than
+ * the ones stored at creation ({@link roomFieldClasses}). A reader whose
+ * right was withdrawn after the trigger was set narrows the firing.
+ */
+export async function firingFieldClasses(
+  trigger: Trigger,
+  discretion: TriggerDiscretionView,
+  room: { readonly contextKey: string; readonly readers: Readers },
+  sources: FieldRightSources | undefined,
+): Promise<readonly string[] | undefined> {
+  const stored = roomFieldClasses(trigger, discretion, room);
+  if (!stored || stored.length === 0 || !sources) return stored;
+  return narrowFieldClasses(stored, await fieldClassesOfReaders(room.readers, sources));
+}
+
 export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
   const checks = storeContextChecks(deps.store, deps.liveness);
+  const fieldClassesAtFiring = (trigger: Trigger, discretion: TriggerDiscretionView, room: Room) =>
+    firingFieldClasses(trigger, discretion, room, deps.fieldRightSources?.());
   // Every proactive message names its agent (#2045 INV-4), stamped here from
   // the trigger's owner, never from model output.
   const send = (trigger: Trigger, message: SemanticAnswer) => {
@@ -157,7 +185,7 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
       kind: 'people',
       contextKey: room.contextKey,
       readers: room.readers,
-      fieldClasses: fieldClassesFromList(roomFieldClasses(trigger, discretion, room)),
+      fieldClasses: fieldClassesFromList(await fieldClassesAtFiring(trigger, discretion, room)),
     });
     return decision.allowed
       ? undefined
@@ -215,6 +243,7 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
       // goes to, as they are now (criterion 24). A headless turn answers nobody.
       const discretion = isHeadless(trigger) ? null : trigger.discretion;
       const room = discretion ? await roomOf(trigger, discretion) : undefined;
+      const fieldClasses = discretion && room ? ((await fieldClassesAtFiring(trigger, discretion, room)) ?? []) : [];
       const chat = (): Promise<SemanticAnswer> =>
         discretion && room
           ? runWithSeededDiscretion(
@@ -222,7 +251,7 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
                 agentSlug: trigger.agentSlug,
                 labels: discretion.labels,
                 ...room,
-                fieldClasses: roomFieldClasses(trigger, discretion, room) ?? [],
+                fieldClasses,
               },
               () => agent.chat(input),
             )

@@ -8,7 +8,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import type { CoreApi } from '@omadia/channel-sdk';
+import type { CoreApi, DefaultChannelKeyProvider } from '@omadia/channel-sdk';
 
 import { ConversationEventHub } from '../src/channels/conversationEventHub.js';
 import { createCoreApi } from '../src/channels/coreApi.js';
@@ -35,6 +35,7 @@ describe('CoreApi scoped to one channel plugin', () => {
     const membership: { channelId: string; channelType?: string; kind: string }[] = [];
     events.subscribe((e) => void membership.push({ channelId: e.channelId, kind: e.kind, ...(e.channelType ? { channelType: e.channelType } : {}) }));
     const readiness = new ChannelProviderRegistry<never>('readiness');
+    const defaultKeys = new ChannelProviderRegistry<DefaultChannelKeyProvider>('defaultChannelKey');
     const sessionEvents: unknown[] = [];
     const core = createCoreApi({
       dispatcher: {} as never,
@@ -43,6 +44,7 @@ describe('CoreApi scoped to one channel plugin', () => {
       conversationMessages: messages.hub,
       readinessProviders: readiness as never,
       meetingSources: new ChannelProviderRegistry<never>('meetingSource') as never,
+      defaultChannelKeys: defaultKeys,
       sessionCapabilities: {
         emitSnapshot: (s) => void sessionEvents.push(['snapshot', s.channelType]),
         emitSessionEvent: (e) => void sessionEvents.push(['event', e.channelId, e.channelType]),
@@ -69,7 +71,7 @@ describe('CoreApi scoped to one channel plugin', () => {
       occurredAt: '2026-11-18T09:00:00Z',
     });
     membership.length = 0;
-    return { messages, membership, readiness, sessionEvents, logs, claims, teams, rogue };
+    return { messages, membership, readiness, defaultKeys, sessionEvents, logs, claims, teams, rogue };
   }
 
   it('another channel plugin cannot emit a message event for a channel type it does not serve', async () => {
@@ -169,6 +171,22 @@ describe('CoreApi scoped to one channel plugin', () => {
     assert.deepEqual(s.readiness.types(), ['teams']);
     s.readiness.unregisterChannel('@omadia/channel-teams');
     assert.deepEqual(s.readiness.types(), []);
+  });
+
+  it('only the plugin holding the channel type names its default bot, under its own id', async () => {
+    const s = await setup();
+    const provider: DefaultChannelKeyProvider = { channelType: 'teams', defaultChannelKey: () => '28:rogue' };
+    assert.throws(
+      () => s.rogue.registerDefaultChannelKeyProvider!('@omadia/channel-teams', provider),
+      /cannot register a default-key provider for 'teams'/,
+    );
+    assert.equal(s.defaultKeys.get('teams'), undefined);
+    s.teams.registerDefaultChannelKeyProvider!('someone-else', { channelType: 'teams', defaultChannelKey: () => '28:app' });
+    // Owned by the real plugin id, so that plugin's deactivation drops it.
+    s.defaultKeys.unregisterChannel('someone-else');
+    assert.equal(s.defaultKeys.get('teams')?.defaultChannelKey(), '28:app');
+    s.defaultKeys.unregisterChannel('@omadia/channel-teams');
+    assert.equal(s.defaultKeys.get('teams'), undefined);
   });
 
   it('a channel type is held by the first plugin that acts for it, until that plugin deactivates', () => {

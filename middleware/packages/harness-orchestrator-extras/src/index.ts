@@ -84,6 +84,13 @@ export type {
 } from './factExtractor.js';
 
 export { TopicDetector } from './topicDetector.js';
+export {
+  SCREENER_MAX_TOKENS,
+  TOPIC_CLASSIFIER_MAX_TOKENS,
+  VERDICT_JUDGE_MAX_TOKENS,
+  VERDICT_JUDGE_REASONING,
+  WORKING_MODE_CLASSIFIER_MAX_TOKENS,
+} from './classifierBudgets.js';
 export type {
   TopicDecision,
   TopicClassifyInput,

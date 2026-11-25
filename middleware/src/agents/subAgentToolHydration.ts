@@ -564,6 +564,16 @@ export function registerDbSubAgentTools(
               // skill-bound MCP call reaches a `per_user` server with no
               // identity, audits as `unresolved` and fails closed.
               ...(current.mcpUserKey ? { mcpUserKey: current.mcpUserKey } : {}),
+              // #2204/#2208 — the turn's graph read boundary (the box, by
+              // reference) and viewer. An MCP call does not read the graph
+              // today; carried so nothing inside this scope can fall into the
+              // unbounded `!bound` branches of the plugin graph accessors.
+              ...(current.graphReadScope ? { graphReadScope: current.graphReadScope } : {}),
+              ...(current.userId ? { userId: current.userId } : {}),
+              ...(current.resolvedOmadiaUserId
+                ? { resolvedOmadiaUserId: current.resolvedOmadiaUserId }
+                : {}),
+              ...(current.sessionScope ? { sessionScope: current.sessionScope } : {}),
               activeWorkingModeSkillId: skillId,
               mcpCallerKind: 'skill',
               mcpCallerId: skillSlug,

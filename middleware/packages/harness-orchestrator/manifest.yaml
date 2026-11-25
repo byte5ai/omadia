@@ -96,6 +96,11 @@ optional_requires:
   # engine drive this conversation (the agent's message subscription exists)?
   # Then the kernel runs no chat turn of its own there.
   - "facilitatorConversations@1"
+  # #2042 — kernel-published with a database: the active users' display,
+  # first and last names. An agent's own name a user bears stays masked in
+  # its own turn. Resolved per turn; absent or not loaded → no own name is
+  # exempt (fail safe).
+  - "humanNames@1"
   - "llmProviderPool@1"
   - "llmProviderCatalog@1"
   - "installedPluginConfigReader@1"
