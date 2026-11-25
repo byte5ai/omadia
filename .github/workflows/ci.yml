@@ -371,7 +371,11 @@ jobs:
           # filtered before the limit).
           # 772 → 776: ADR-0044 adds one outside-a-turn plugin-service test to
           # each of the four Neon sweeps; measured ran=776.
-          PG_TEST_FLOOR: '776'
+          # 776 → 788 with the topic routes on Neon (memoryAccess/canaryHttp.pg,
+          # 12 tests, #1851), on top of #2233; measured ran=788.
+          # 788 → 790 with the 1-hour cache-write split (usageCacheWrite1h.pg,
+          # 2 tests, #2236).
+          PG_TEST_FLOOR: '790'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

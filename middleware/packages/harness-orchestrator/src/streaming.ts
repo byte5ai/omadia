@@ -4,7 +4,7 @@ import type {
   LlmResponse,
   ProviderHealth,
 } from '@omadia/llm-provider';
-import { providerRecordsOwnUsage, recordUsage } from '@omadia/usage-telemetry';
+import { providerRecordsOwnUsage, recordUsage, usageTokensFromLlm } from '@omadia/usage-telemetry';
 import { fromLlmResponse, toLlmRequest } from './llmProviderSeam.js';
 import type { AskObserver } from './tools/domainQueryTool.js';
 import { ensureWellFormedParams } from './privacyHandle.js';
@@ -393,10 +393,7 @@ function recordResponseUsage(response: LlmResponse, providerId: string, source: 
     source,
     model: response.model,
     provider: providerId,
-    inputTokens: response.usage.inputTokens,
-    outputTokens: response.usage.outputTokens,
-    cacheReadTokens: response.usage.cacheReadTokens ?? 0,
-    cacheCreationTokens: response.usage.cacheWriteTokens ?? 0,
+    ...usageTokensFromLlm(response.usage),
   });
 }
 

@@ -61,6 +61,58 @@ changelog.
 - **Desktop licence (ADR-0002).** `desktop/package.json` declares MIT like the rest of the
   repository.
 
+### Fixed — usage ledger priced 1-hour cache writes at the 5-minute rate (2026-11-25)
+
+- Anthropic bills cache writes by TTL: 1.25× the input rate for 5 minutes, 2× for 1 hour. The
+  orchestrator writes its stable prefix with `ttl: '1h'` since #1634, but `computeCostUsd` and
+  `computeCacheSavingsUsd` priced every write at 1.25×: `cost_usd` too low, the dashboard's
+  cache saving too high by 0.75× the input rate per 1-hour write token.
+- The response's `usage.cache_creation.ephemeral_1h_input_tokens` now travels through
+  `LlmUsage.cacheWrite1hTokens` (Anthropic adapter), `usageTokensFromLlm` (the one mapping all
+  seven provider-boundary write sites use) and `normalizeUsage` into the ledger as
+  `cacheCreation1hTokens`, priced at `CACHE_WRITE_1H_MULTIPLIER` (2). No split = 1.25× as before.
+- KG migration `0036_token_usage_cache_write_1h.sql`: `token_usage.cache_creation_1h_tokens`
+  (BIGINT, default 0; the recorder clamps it to `cache_creation_tokens`). The dashboard saving
+  reads it.
+- Historical rows are not rewritten: their split is unknown (0). Upper bound of the
+  under-recorded cost on the live ledger (all orchestrator writes since 2026-10-30 as 1-hour):
+  about $17.50, the same amount of overstated saving. A correction is an operator decision.
+
+### Fixed — ADMIN_TOKEN surface was unreachable behind the session gate (2026-11-25)
+
+- `/api/admin/*` (memory priming, `security/screening`, `run-trace`) was mounted after the
+  blanket `/api` session gate and is not a public path, so every bearer request got
+  `401 auth.missing` before the token was compared. Confirmed live on Fly (read-only).
+- Now mounted before the gate by `mountAdminTokenSurface` (`routes/adminTokenMount.ts`). It
+  claims only requests that present a bearer: a wrong token is a 401, a right one is served,
+  an unserved path is a 404 and never reaches the authenticated stack. Requests without a
+  bearer meet the gate as before, so `/api/admin/domains` keeps its session auth. Not a
+  `publicPaths` entry.
+- Every token use writes an `admin_token.use` audit row first (actor `system:admin-token`);
+  a failed audit write refuses the request with 503. Wrong tokens are logged and written as
+  `admin_token.refused` at most once a minute. A handler error reaches the JSON error handler
+  (500) instead of reading as a 404. The scheme is matched case-insensitively. Token compare
+  now hashes both sides (no length leak). Security doc §10zb.
+- The `ADMIN_ALLOWED_EMAILS` comment no longer promises a token break-glass for a whitelist
+  lockout: the surface has no user management. Local-password accounts are the way in.
+
+### Security — topics show no content of memories the caller cannot read (#1851) (2026-11-25)
+
+- Re-cluster on `/admin/topics` grouped every account's memorable knowledge into one topic
+  and wrote its name and description from the member summaries (model output with Privacy
+  Shield values restored, or the summaries verbatim as fallback); `GET /api/v1/admin/topics`
+  returned it to every account.
+- Re-cluster now clusters each exact owner set (`acl_owners`) on its own, with one Privacy
+  Shield run per set; memories without owners get no topic. `list` and the detail route show
+  a topic only when the caller reads every current member (else no entry / 404); a topic
+  that lost a member since it was written is hidden until the next re-cluster. Topics from
+  before this change are hidden the same way until the next re-cluster rebuilds them.
+  Decision: ADR 0045.
+- `TopicClusteringService.list(viewerOmadiaUserId)` takes the viewer (`@omadia/plugin-api`
+  1.97.0). The canary sweep asserts the fix, in memory and on Neon
+  (`memoryAccess/canaryHttp.pg.test.ts`, `PG_TEST_FLOOR` 776 → 788); the `todo` and the
+  security-architecture residual are gone.
+
 ### Security — plugins read the graph only through bounded services (ADR-0044) (2026-11-25)
 
 - A plugin that declared `knowledgeGraph@^1`, `processMemory@^1` or `memoryStore@^1` got the

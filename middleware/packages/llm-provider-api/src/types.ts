@@ -257,6 +257,11 @@ export interface LlmUsage {
   readonly outputTokens: number;
   /** Anthropic `cache_creation_input_tokens`; undefined elsewhere. */
   readonly cacheWriteTokens?: number;
+  /** The part of {@link cacheWriteTokens} written with the 1-hour TTL
+   *  (Anthropic `usage.cache_creation.ephemeral_1h_input_tokens`), which bills
+   *  at 2× the input rate instead of 1.25×. Undefined when the vendor reports
+   *  no split; absent = every write was a 5-minute write. */
+  readonly cacheWrite1hTokens?: number;
   /** Anthropic `cache_read_input_tokens`; undefined elsewhere. */
   readonly cacheReadTokens?: number;
 }

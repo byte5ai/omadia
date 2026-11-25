@@ -34,6 +34,7 @@ const MIGRATIONS = [
   '0028_token_usage.sql',
   '0032_token_usage_subscription.sql',
   '0033_token_usage_attribution.sql',
+  '0036_token_usage_cache_write_1h.sql',
 ];
 const migrationsDir = resolve(
   dirname(fileURLToPath(import.meta.url)),

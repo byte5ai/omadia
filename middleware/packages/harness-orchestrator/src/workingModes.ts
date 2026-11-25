@@ -25,7 +25,7 @@
  */
 import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
-import { recordUsage } from '@omadia/usage-telemetry';
+import { recordUsage, usageTokensFromLlm } from '@omadia/usage-telemetry';
 
 import { WORKING_MODE_CLASSIFIER_MAX_TOKENS } from './classifierBudgets.js';
 
@@ -113,10 +113,7 @@ export async function routeTurnWorkingMode(
       source: WORKING_MODE_USAGE_SOURCE,
       model: classifierModel,
       provider: provider.id,
-      inputTokens: res.usage.inputTokens,
-      outputTokens: res.usage.outputTokens,
-      cacheReadTokens: res.usage.cacheReadTokens ?? 0,
-      cacheCreationTokens: res.usage.cacheWriteTokens ?? 0,
+      ...usageTokensFromLlm(res.usage),
     });
     const verdict = normalizeVerdict(collectText(res.content));
     const picked = candidates.find(

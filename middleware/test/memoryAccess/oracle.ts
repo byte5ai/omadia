@@ -347,13 +347,14 @@ function topic(v: Viewer, mode: Mode, t: TopicItem): Verdict {
   if ((mode === 'members' || mode === 'enforce-strict') && isContextBound(v, mode)) {
     return pin(false, 'strict/members: no topic leg in recall');
   }
-  // A topic's name is written from its members' summaries, and today every
-  // topic is listed to everyone in the tenant. Nothing documents it.
-  void t;
-  return pin(
-    true,
-    'topics are listed tenant-wide; members are filtered per viewer, the topic itself is not',
-  );
+  return readsEveryMember(v.user, t)
+    ? doc(true, 'a topic over memories you own (ADR 0045: content of every member)')
+    : doc(false, 'a topic built from memories you cannot read (ADR 0045, #1851)');
+}
+
+/** A topic's name and description are written from its members' summaries. */
+function readsEveryMember(user: UserKey, t: TopicItem): boolean {
+  return t.members.every((m) => (m.owners === 'absent' ? [] : m.owners).includes(user));
 }
 
 /**
@@ -378,17 +379,10 @@ export function expectedHttp(user: UserKey, tenant: TenantKey, item: Item): Verd
     }
     case 'dataset':
       return dataset({ tenant, user, agent: 'atlas', context: 'web', shielded: false }, item);
-    case 'topic': {
-      // A topic's name and description are written from its members'
-      // summaries, so it is content of every member.
-      const readable = item.members.every((m) => (m.owners === 'absent' ? [] : m.owners).includes(user));
-      return readable
-        ? doc(true, 'a topic over memories you own (#1851 expected: no content of entries you cannot read)')
-        : doc(
-            false,
-            'a topic built from memories you cannot read (owner decision 2026-11-24; #1851 expected)',
-          );
-    }
+    case 'topic':
+      return readsEveryMember(user, item)
+        ? doc(true, 'a topic over memories you own (ADR 0045: content of every member)')
+        : doc(false, 'a topic built from memories you cannot read (ADR 0045, #1851)');
     case 'scratch':
       if (item.tier === 'chat-session') {
         return item.sender === user

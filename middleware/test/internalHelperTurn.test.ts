@@ -102,7 +102,7 @@ function systemText(req: LlmRequest): string {
 }
 
 // The usage recorder is a process singleton and first-wins: one fake pool for
-// the file, rows captured from the INSERT's parameters (13 per row).
+// the file, rows captured from the INSERT's parameters (14 per row).
 const insertParams: unknown[][] = [];
 initUsageRecorder({
   query: (_sql: string, params: readonly unknown[]) => {
@@ -110,7 +110,7 @@ initUsageRecorder({
     return Promise.resolve({ rows: [] });
   },
 } as unknown as Pool);
-const COLS = 13;
+const COLS = 14;
 const COL_MODEL = 1;
 const COL_SESSION = 8;
 const COL_TURN = 10;

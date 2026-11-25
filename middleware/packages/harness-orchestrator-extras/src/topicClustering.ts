@@ -3,13 +3,24 @@
  *
  * Operator-triggered pass that:
  *   1. Pulls every MK with a populated embedding.
- *   2. Builds a similarity graph (cosine ≥ threshold).
- *   3. Finds connected components via union-find.
+ *   2. Splits them by owner set (`acl_owners`, ADR 0045): a topic's name and
+ *      description are written from its members' summaries, so a topic only
+ *      ever groups memories with the same readers. MKs without owners are
+ *      readable by no one and get no topic.
+ *   3. Per owner set: builds a similarity graph (cosine ≥ threshold) and
+ *      finds connected components via union-find.
  *   4. For each component ≥ minClusterSize: asks Haiku to name + describe
  *      the cluster from its top-5 member summaries (or falls back to
  *      `Cluster <n>` if Haiku is unavailable).
  *   5. Persists Topic + HAS_TOPIC edges. Destructive — wipes old Topics
  *      first so a re-cluster delivers a clean rebuild.
+ *
+ * Reads are gated per viewer: `list` and `getWithMembers` show a topic only
+ * when the viewer can read every current member, so an ACL change after the
+ * re-cluster cannot turn a topic into a window onto memories the viewer lost.
+ * A topic that lost a member since it was written (deleted or purged) is
+ * hidden from everyone until the next re-cluster: its text still carries the
+ * gone member's summary.
  *
  * No Anthropic key required for the service to be published — fallback
  * naming keeps the feature operable without paid LLM access.
@@ -116,6 +127,67 @@ class UnionFind {
   }
 }
 
+/** The MK's owners; an MK without the array has none (readable by no one). */
+function ownersOf(mk: GraphNode): readonly string[] {
+  const owners = mk.props['acl_owners'];
+  return Array.isArray(owners) ? owners.filter((o): o is string => typeof o === 'string') : [];
+}
+
+/** True when the topic still has every member it was written from. */
+function isIntact(topic: TopicNode, members: readonly GraphNode[]): boolean {
+  return members.length > 0 && members.length === topic.props.member_count;
+}
+
+/** True when the topic is intact and the viewer may read every member. */
+function readableByViewer(
+  topic: TopicNode,
+  members: readonly GraphNode[],
+  viewer: string,
+): boolean {
+  return isIntact(topic, members) && members.every((m) => ownersOf(m).includes(viewer));
+}
+
+type EmbeddedMk = { mk: GraphNode; embedding: number[] };
+
+/**
+ * Groups MKs by their exact owner set. Returns the partitions and the MKs
+ * without owners, which no partition takes.
+ */
+function partitionByOwners(items: readonly EmbeddedMk[]): {
+  partitions: EmbeddedMk[][];
+  ownerless: number;
+} {
+  const byKey = new Map<string, EmbeddedMk[]>();
+  let ownerless = 0;
+  for (const item of items) {
+    const owners = [...new Set(ownersOf(item.mk))].sort();
+    if (owners.length === 0) {
+      ownerless++;
+      continue;
+    }
+    const key = JSON.stringify(owners);
+    byKey.set(key, [...(byKey.get(key) ?? []), item]);
+  }
+  return { partitions: [...byKey.values()], ownerless };
+}
+
+/** Connected components of the cosine ≥ threshold graph, as item lists. */
+function connectedComponents(items: readonly EmbeddedMk[], threshold: number): EmbeddedMk[][] {
+  const n = items.length;
+  const uf = new UnionFind(n);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (cosine(items[i]!.embedding, items[j]!.embedding) >= threshold) uf.union(i, j);
+    }
+  }
+  const groups = new Map<number, EmbeddedMk[]>();
+  for (let i = 0; i < n; i++) {
+    const root = uf.find(i);
+    groups.set(root, [...(groups.get(root) ?? []), items[i]!]);
+  }
+  return [...groups.values()];
+}
+
 interface ParsedNaming {
   name: string;
   description: string;
@@ -150,8 +222,14 @@ export function createTopicClusteringService(
     deps.log ?? ((msg: string): void => { console.error(msg); });
   const model = deps.model ?? DEFAULT_MODEL;
 
-  async function list(): Promise<TopicNode[]> {
-    return deps.kg.listTopics();
+  async function list(viewerOmadiaUserId: string): Promise<TopicNode[]> {
+    const topics = await deps.kg.listTopics();
+    const visible: TopicNode[] = [];
+    for (const topic of topics) {
+      const members = await deps.kg.listTopicMembers(topic.id);
+      if (readableByViewer(topic, members, viewerOmadiaUserId)) visible.push(topic);
+    }
+    return visible;
   }
 
   async function getWithMembers(
@@ -161,15 +239,17 @@ export function createTopicClusteringService(
     const topic = await deps.kg.getTopic(topicExternalId);
     if (!topic) return null;
     const rawMembers = await deps.kg.listTopicMembers(topicExternalId);
-    // Filter through the ACL gate: a member that the viewer can't see
-    // drops out, but the topic itself stays visible.
+    if (!isIntact(topic, rawMembers)) return null;
+    // The name and description are written from every member, so the topic
+    // is visible only when the viewer passes the ACL gate for all of them.
     const visible: GraphNode[] = [];
     for (const member of rawMembers) {
       const gated = await deps.kg.getMemorableKnowledge(
         member.id,
         viewerOmadiaUserId,
       );
-      if (gated) visible.push(gated);
+      if (!gated) return null;
+      visible.push(gated);
     }
     return { ...topic, members: visible };
   }
@@ -261,66 +341,50 @@ export function createTopicClusteringService(
       };
     }
 
-    // 2. Pairwise cosine → union-find.
-    const n = items.length;
-    const uf = new UnionFind(n);
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const sim = cosine(items[i]!.embedding, items[j]!.embedding);
-        if (sim >= threshold) uf.union(i, j);
-      }
-    }
-
-    // 3. Group by root.
-    const groups = new Map<number, number[]>();
-    for (let i = 0; i < n; i++) {
-      const root = uf.find(i);
-      const arr = groups.get(root);
-      if (arr) arr.push(i);
-      else groups.set(root, [i]);
-    }
+    // 2. Split by owner set, then 3. cluster each set on its own.
+    const { partitions, ownerless } = partitionByOwners(items);
+    const components = partitions.map((p) => connectedComponents(p, threshold));
 
     // 4. Wipe + rebuild.
     const topicsDeleted = await deps.kg.deleteAllTopics();
     let topicsCreated = 0;
-    let unclusteredMemories = 0;
+    let unclusteredMemories = ownerless;
     let haikuCalls = 0;
+    let clusterIndex = 0;
 
-    const eligibleGroups = [...groups.values()]
-      .filter((group) => group.length >= minClusterSize)
-      // Largest first so the operator sees meaningful clusters at the
-      // top of the eventual list (the KG layer's `listTopics` also
-      // orders by member_count DESC).
-      .sort((a, b) => b.length - a.length);
-
-    // One privacy run per recluster: a value keeps its surrogate across the
-    // clusters it appears in.
-    const run = deps.privacy?.('topic-clustering');
-    for (let g = 0; g < eligibleGroups.length; g++) {
-      const group = eligibleGroups[g]!;
-      const summaries = group.map((idx) =>
-        String(items[idx]!.mk.props['summary'] ?? ''),
-      );
-      const naming = await nameCluster(summaries, g, run);
-      if (naming.source === 'haiku') haikuCalls++;
-
-      try {
-        await deps.kg.createTopic({
-          name: naming.name,
-          description: naming.description,
-          namingSource: naming.source,
-          memberMkIds: group.map((idx) => items[idx]!.mk.id),
-        });
-        topicsCreated++;
-      } catch (err) {
-        log(
-          `[topic-clustering] createTopic failed for group ${String(g)}: ${err instanceof Error ? err.message : String(err)}`,
-        );
+    for (const groups of components) {
+      const eligibleGroups = groups
+        .filter((group) => group.length >= minClusterSize)
+        // Largest first so the operator sees meaningful clusters at the
+        // top of the eventual list (the KG layer's `listTopics` also
+        // orders by member_count DESC).
+        .sort((a, b) => b.length - a.length);
+      for (const group of groups) {
+        if (group.length < minClusterSize) unclusteredMemories += group.length;
       }
-    }
-
-    for (const group of groups.values()) {
-      if (group.length < minClusterSize) unclusteredMemories += group.length;
+      // One privacy run per owner set: a value keeps its surrogate across
+      // the set's clusters, and no restore can hand back a value from
+      // memories of other owners.
+      const run = eligibleGroups.length > 0 ? deps.privacy?.('topic-clustering') : undefined;
+      for (const group of eligibleGroups) {
+        const g = clusterIndex++;
+        const summaries = group.map((item) => String(item.mk.props['summary'] ?? ''));
+        const naming = await nameCluster(summaries, g, run);
+        if (naming.source === 'haiku') haikuCalls++;
+        try {
+          await deps.kg.createTopic({
+            name: naming.name,
+            description: naming.description,
+            namingSource: naming.source,
+            memberMkIds: group.map((item) => item.mk.id),
+          });
+          topicsCreated++;
+        } catch (err) {
+          log(
+            `[topic-clustering] createTopic failed for group ${String(g)}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
     }
 
     const durationMs = Date.now() - startedAt;
