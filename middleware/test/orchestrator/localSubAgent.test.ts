@@ -755,3 +755,52 @@ describe('LocalSubAgent.ask — OB-31 expectedTurnToolUse escalation', () => {
     assert.equal(calls[0]?.toolChoice, undefined);
   });
 });
+
+describe('LocalSubAgent.ask — AskOptions.signal (#2214)', () => {
+  const agentWith = (
+    provider: LlmProvider,
+    handle: () => Promise<string>,
+  ): LocalSubAgent =>
+    new LocalSubAgent({
+      name: 'test',
+      provider,
+      model: 'claude-haiku',
+      maxTokens: 1024,
+      maxIterations: 5,
+      systemPrompt: 'you are a test',
+      tools: [{ spec: baseToolSpec, handle }],
+    });
+
+  it('makes no model call once the signal is aborted', async () => {
+    const { provider, calls } = stubProvider([]);
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      agentWith(provider, async () => 'unused').ask('hi', undefined, { signal: controller.signal }),
+      { name: 'AbortError' },
+    );
+    assert.equal(calls.length, 0);
+  });
+
+  it('dispatches no tool of a model call that ended after the abort', async () => {
+    const controller = new AbortController();
+    const { provider, calls } = stubProvider([
+      { content: [toolUse('tu_1', 'patch_spec', { patches: [] })], stop_reason: 'tool_use' },
+    ]);
+    const streamOnce = provider.stream.bind(provider);
+    (provider as { stream: LlmProvider['stream'] }).stream = (req) => {
+      controller.abort();
+      return streamOnce(req);
+    };
+    let handled = 0;
+    await assert.rejects(
+      agentWith(provider, async () => {
+        handled += 1;
+        return 'ok';
+      }).ask('hi', undefined, { signal: controller.signal }),
+      { name: 'AbortError' },
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(handled, 0);
+  });
+});

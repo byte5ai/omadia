@@ -13,7 +13,7 @@ export { renderXlsx } from './xlsxRenderer.js';
 export { renderDocx } from './docxRenderer.js';
 export { createDocumentsRouter } from './documentsRouter.js';
 export { signDocumentUrl, verifyDocumentSig } from './signing.js';
-export { sanitizeFilename } from './filename.js';
+export { attachmentDisposition, sanitizeFilename } from './filename.js';
 // The machine-readable provenance contract a downstream reader branches on
 // (property names/values embedded in every generated file, and the free-text
 // core-property strings). `PROVENANCE_CUSTOM_PROPERTIES` is a docx-only
@@ -45,6 +45,7 @@ export type {
   OfficeFileAttachmentPayload,
   OfficeResolvedDataset,
   RenderResult,
+  SheetRename,
   XlsxDescriptor,
   XlsxToolInput,
 } from './types.js';

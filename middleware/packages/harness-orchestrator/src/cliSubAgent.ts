@@ -7,7 +7,7 @@ import { CliObserverBridge } from './cliSubAgentObserverBridge.js';
 import { NativeToolRegistry } from './nativeToolRegistry.js';
 import { ToolDispatchService } from './toolDispatchService.js';
 import type { DomainTool, DomainToolSpec } from './tools/domainQueryTool.js';
-import type { AskObserver, AskOptions, Askable } from './tools/domainQueryTool.js';
+import { throwIfAskAborted, type AskObserver, type AskOptions, type Askable } from './tools/domainQueryTool.js';
 
 export interface CliSubAgentOptions {
   /** Sub-agent label for logs/domains, e.g. the short agent name. */
@@ -91,7 +91,11 @@ export function createCliSubAgent(options: CliSubAgentOptions): Askable {
         ...(options.onForeignToolUse ? { onForeignToolUse: options.onForeignToolUse } : {}),
       });
       try {
+        // #2214 — a stopped caller gets no (further) spawn. A spawn already
+        // running is not cut off; the caller's tools refuse its calls.
+        throwIfAskAborted(askOptions, `cli-sub-agent ${label}`);
         const first = await runSpawn(bridge, question);
+        throwIfAskAborted(askOptions, `cli-sub-agent ${label}`);
         const expected = bareToolName(askOptions?.expectedTurnToolUse);
         const budget = askOptions?.maxEscalations ?? 1;
         if (expected === undefined || !(budget >= 1) || bridge.calledTools.has(expected)) {

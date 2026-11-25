@@ -3,6 +3,7 @@ import type { Router, Request, Response } from 'express';
 
 import type { BuilderAgent, BuilderEvent } from '../plugins/builder/builderAgent.js';
 import type { DraftStore } from '../plugins/builder/draftStore.js';
+import type { DraftTurnLock } from '../plugins/builder/draftTurnLock.js';
 import { BuilderModelRegistry } from '../plugins/builder/modelRegistry.js';
 import type { BuilderModelId } from '../plugins/builder/types.js';
 import type {
@@ -19,10 +20,18 @@ import type {
  *       prefix `turn_started` event so a re-attaching client knows the
  *       turnId before it sees the user echo.
  *
+ *       #2214: one running turn per draft. A POST on a busy draft answers
+ *       409 `builder.turn_in_progress` with the running `turnId`; the
+ *       client re-attaches through the resume endpoint instead.
+ *
  *   GET  /drafts/:id/turn/:turnId/resume?since=N
  *     → NDJSON stream of buffered frames with `id > N`, then live
  *       continuation if the turn is still running, then close. 404 if
  *       the turnId is unknown (never opened, or already GC'd).
+ *
+ *   POST /drafts/:id/turn/:turnId/stop
+ *     → #2214: aborts the running turn and waits briefly for it to end.
+ *       200 `{ status: 'stopped' | 'stopping' | 'not_running' }`.
  *
  * Stream framing follows the kernel's existing convention (`chat.ts`,
  * `builderPreview.ts`): one JSON object per line on `application/x-ndjson`.
@@ -37,11 +46,21 @@ export interface BuilderChatDeps {
    * absent. Tests instantiate one explicitly to exercise the resume path.
    */
   turnRingBuffer?: BuilderTurnRingBuffer;
+  /**
+   * #2214 — one running turn per draft, shared with AutoFix. The stop
+   * endpoint is mounted only when it is wired; tests that do not exercise
+   * the lock may omit it (each POST then runs unguarded, as before).
+   */
+  turnLock?: DraftTurnLock;
   /** Override the per-turn maximum NDJSON time-budget (ms). Default 900s. */
   turnTimeoutMs?: number;
+  /** How long the stop endpoint waits for the turn to end (ms). Default 25s,
+   *  above the agent's wait for running tool calls (`STOP_TOOL_DRAIN_MS`). */
+  stopWaitMs?: number;
 }
 
 const DEFAULT_TURN_TIMEOUT_MS = 900_000;
+const DEFAULT_STOP_WAIT_MS = 25_000;
 
 /**
  * Mounts the builder chat routes onto an existing router. Idempotent against
@@ -78,16 +97,19 @@ export function registerBuilderChatRoutes(
       }
       const message = body.message;
 
+      // Owner check before anything else: a foreign draft must answer 404,
+      // never 409 with the running turnId, and must not take the lock (#2214).
+      const draft = await deps.draftStore.load(email, draftId);
+      if (!draft) {
+        sendJson(res, 404, {
+          code: 'builder.draft_not_found',
+          message: `kein Draft mit id '${draftId}'`,
+        });
+        return;
+      }
+
       let modelChoice: BuilderModelId;
       if (body.model === undefined) {
-        const draft = await deps.draftStore.load(email, draftId);
-        if (!draft) {
-          sendJson(res, 404, {
-            code: 'builder.draft_not_found',
-            message: `kein Draft mit id '${draftId}'`,
-          });
-          return;
-        }
         modelChoice = draft.codegenModel;
       } else if (
         typeof body.model === 'string' &&
@@ -104,12 +126,37 @@ export function registerBuilderChatRoutes(
         return;
       }
 
-      // Open the NDJSON stream.
-      res.status(200);
-      res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
-      res.setHeader('Cache-Control', 'no-cache, no-transform');
-      res.setHeader('X-Accel-Buffering', 'no');
-      res.flushHeaders();
+      const turnId = randomUUID();
+      const acquired = deps.turnLock?.tryAcquire({
+        draftId,
+        turnId,
+        userEmail: email,
+        source: 'chat',
+      });
+      if (acquired && !acquired.ok) {
+        sendJson(res, 409, {
+          code: 'builder.turn_in_progress',
+          message: 'a builder turn is already running on this draft',
+          turnId: acquired.running.turnId,
+          source: acquired.running.source,
+        });
+        return;
+      }
+      const lease = acquired?.lease;
+
+      // Open the NDJSON stream. Until `turnTask` owns the lease, a throw
+      // here must not leave the draft locked.
+      try {
+        res.status(200);
+        res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.flushHeaders();
+        deps.turnRingBuffer?.start(turnId);
+      } catch (err) {
+        lease?.release();
+        throw err;
+      }
 
       let clientGone = false;
       let clientGoneResolve: (() => void) | null = null;
@@ -123,9 +170,6 @@ export function registerBuilderChatRoutes(
           clientGoneResolve = null;
         }
       });
-
-      const turnId = randomUUID();
-      deps.turnRingBuffer?.start(turnId);
 
       // Local fallback id when no ring buffer is wired — keeps the wire
       // format identical so consumers don't need to special-case the
@@ -143,6 +187,13 @@ export function registerBuilderChatRoutes(
 
       const turnTimeoutMs = deps.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
       const turnDeadline = Date.now() + turnTimeoutMs;
+      // #2214 — with a lock the timeout aborts the turn itself (the agent
+      // ends it with `builder.turn_timeout`); the in-loop deadline check
+      // below stays the fallback for a turn without a lock.
+      const timeoutTimer = lease
+        ? setTimeout(() => lease.abort('timeout'), turnTimeoutMs)
+        : undefined;
+      timeoutTimer?.unref();
 
       const turnTask = (async (): Promise<void> => {
         try {
@@ -152,10 +203,11 @@ export function registerBuilderChatRoutes(
             userMessage: message,
             modelChoice,
             turnId,
+            ...(lease ? { signal: lease.signal } : {}),
           });
 
           for await (const ev of iterator) {
-            if (Date.now() > turnDeadline) {
+            if (!lease && Date.now() > turnDeadline) {
               write(
                 stamp({
                   type: 'error',
@@ -195,15 +247,77 @@ export function registerBuilderChatRoutes(
             // Buffer already finalised — nothing else we can do.
           }
         } finally {
-          deps.turnRingBuffer?.finalize(turnId);
+          clearTimeout(timeoutTimer);
+          // #2214 — after a disconnect nobody awaits this task any more, so
+          // nothing in here may throw: a failing finalize would surface as an
+          // unhandled rejection, and the lock must be released regardless.
+          try {
+            deps.turnRingBuffer?.finalize(turnId);
+          } catch (err) {
+            console.error(
+              `[builder/chat] finalize of turn ${turnId} failed for ${email}/${draftId}:`,
+              err,
+            );
+          }
+          lease?.release();
         }
       })();
+      // Belt and braces for the detached case: the race below stops
+      // listening once the client is gone.
+      turnTask.catch((err: unknown) => {
+        console.error(`[builder/chat] detached turn ${turnId} rejected:`, err);
+      });
 
       // Disconnecting the HTTP client must not cancel the turn generator.
       await Promise.race([turnTask, clientGonePromise]);
       if (!clientGone && !res.writableEnded) res.end();
     },
   );
+
+  // ── POST /drafts/:id/turn/:turnId/stop ─────────────────────────────────
+  if (deps.turnLock) {
+    const turnLock = deps.turnLock;
+    const stopWaitMs = deps.stopWaitMs ?? DEFAULT_STOP_WAIT_MS;
+    router.post(
+      '/drafts/:id/turn/:turnId/stop',
+      async (req: Request, res: Response) => {
+        const email = readEmail(req);
+        if (!email) {
+          sendJson(res, 401, { code: 'auth.missing', message: 'no session' });
+          return;
+        }
+        const draftId = readId(req);
+        const turnId = readTurnId(req);
+        if (!draftId || !turnId) {
+          sendJson(res, 400, {
+            code: 'builder.invalid_id',
+            message: 'missing :id or :turnId',
+          });
+          return;
+        }
+        // Owner-scope guard, as on resume: only the draft's owner may stop
+        // its turns (DraftStore.load filters on email).
+        const draft = await deps.draftStore.load(email, draftId);
+        if (!draft) {
+          sendJson(res, 404, {
+            code: 'builder.draft_not_found',
+            message: `kein Draft mit id '${draftId}'`,
+          });
+          return;
+        }
+        const result = turnLock.stop(draftId, turnId);
+        if (result.status === 'not_running') {
+          sendJson(res, 200, { status: 'not_running', turnId });
+          return;
+        }
+        console.log(
+          `[builder/chat] stop requested for turn ${turnId} on ${email}/${draftId}`,
+        );
+        const ended = await turnLock.whenReleased(draftId, turnId, stopWaitMs);
+        sendJson(res, 200, { status: ended ? 'stopped' : 'stopping', turnId });
+      },
+    );
+  }
 
   // ── GET /drafts/:id/turn/:turnId/resume ────────────────────────────────
   router.get(

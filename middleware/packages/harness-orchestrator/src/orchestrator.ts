@@ -8708,7 +8708,9 @@ export class Orchestrator {
             answer: restoredAnswer,
             toolCalls,
             iterations,
-            model: turnModel,
+            // #1902 — the model that wrote the answer: the fallback after a
+            // hop, not the primary that failed.
+            model: turnExec.model,
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(palaiaExcerpt ? { palaiaExcerpt } : {}),
             ...(autoPromotedMkId ? { autoPromotedMkId } : {}),
@@ -8973,7 +8975,7 @@ export class Orchestrator {
             answer: restoredAnswer,
             toolCalls,
             iterations,
-            model: turnModel,
+            model: turnExec.model,
             pendingUserChoice,
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
@@ -9031,7 +9033,7 @@ export class Orchestrator {
             answer: restoredAnswer,
             toolCalls,
             iterations,
-            model: turnModel,
+            model: turnExec.model,
             pendingMcpInput: card,
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
