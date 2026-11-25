@@ -7,7 +7,7 @@
     "name": "byte5 GmbH",
     "email": "mwege@byte5.de"
   },
-  "license": "Apache-2.0",
+  "license": "MIT",
   "homepage": "https://github.com/byte5ai/omadia",
   "repository": {
     "type": "git",
