@@ -15,6 +15,7 @@ Ohne Doku-Update ist eine Änderung **nicht fertig**, selbst wenn der Build grü
 | Art der Änderung | Ziel-Dokument | Granularität |
 |---|---|---|
 | Neue Feature / Architektur-Entscheidung | `docs/middleware-agent-handoff.md` aktualisieren | Abschnitts-Level |
+| Architektur-Entscheidung (Regel, Vertrag, Default, bewusst akzeptiertes Restrisiko) | neues ADR in `docs/adr/` + Zeile im Index und in der Themenlandkarte von `docs/adr/README.md` — siehe „ADR-Abgleich“ unten | ein ADR pro Entscheidung |
 | Bugfix / Ops-Vorfall / Build-Problem | `docs/CHANGELOG.md` Eintrag anhängen | Datum + ein Absatz |
 | Security-Entscheidung / Credential-Verschiebung | `docs/security-architecture.md` aktualisieren | Abschnitt |
 | Neue ENV-Variable / Secret | `middleware/.env.example` + `docs/middleware-agent-handoff.md` §10 | Zeile + Erklärung |
@@ -31,9 +32,43 @@ Wenn die Zuordnung unklar ist: lieber in CHANGELOG notieren als gar nicht — sp
 2. `docs/README.md` — Index aller Docs
 3. `docs/middleware-agent-handoff.md` — Architektur + Tech-Stack + Commands
 4. `docs/CHANGELOG.md` — zuletzt passierte Änderungen (bremst vor Fehlern, die andere schon hatten)
-5. Spezifisches Doc für den aktuellen Task (Security, Graph, Frontend, …)
+5. `docs/adr/README.md` — Themenlandkarte der ADRs; die ADRs zum Thema des Tasks lesen (siehe „ADR-Abgleich“)
+6. Spezifisches Doc für den aktuellen Task (Security, Graph, Frontend, …)
 
 Ohne mindestens Punkte 1–3 darf kein Code geändert werden.
+
+## ADR-Abgleich (verbindlich, bei jeder Anfrage)
+
+Seit dem 2026-11-25 (Owner-Entscheidung) deckt `docs/adr/` jeden Themenkomplex des Repos ab.
+Die Themenlandkarte in [`docs/adr/README.md`](docs/adr/README.md) ordnet jedem Bereich
+(Plugins, Builder, Orchestrator, Modelle, Privacy, Auth, Memory, Conductor, Kanäle, MCP,
+Web-UI, Desktop, Betrieb, CI) seine ADRs zu. Jede Aufgabe — Feature, Bugfix, Refactoring,
+Review, Plan, auch eine reine Analyse — wird gegen diese ADRs abgeglichen:
+
+1. **Vor der Arbeit:** in der Themenlandkarte den betroffenen Bereich suchen und die dort
+   genannten ADRs lesen (mindestens Titel und „Decision Outcome“). Zusätzlich nach dem Konzept
+   *und* seinen Bezeichnern greppen: `rg -il '<begriff>' docs/adr/`.
+2. **Während der Arbeit:** die Änderung hält die ADRs ein. Verlangt die Aufgabe etwas, das ein
+   ADR ausschließt: stoppen und den Widerspruch benennen, nicht still dagegen bauen. Die
+   andere Richtung braucht ein **neues** ADR, das das alte ablöst (`Superseded by …`);
+   akzeptierte ADRs werden nie inhaltlich umgeschrieben.
+3. **Neue Entscheidung:** trifft die Änderung eine Architektur-Entscheidung, die kein ADR
+   festhält, gehört das ADR in **denselben** PR (Status `Proposed`, bei Merge `Accepted`).
+   Kriterien: echte Alternativen; bindet künftigen Code (Regel, Vertrag, Invariante,
+   Konvention); außen sichtbarer Vertrag oder Default (plugin-api, channel-sdk, HTTP-Status,
+   Payloads, Privacy-Regeln); bewusst akzeptiertes Restrisiko; Abweichung von einem
+   Präzedenzfall. Reine Bugfixes mit nur einer sinnvollen Lösung brauchen kein ADR.
+4. **Im Ergebnis ausweisen:** PR-Beschreibung (Abschnitt „ADR check“ im Template) und
+   Abschlussbericht nennen die geprüften ADRs und eines von: „konform“, „neues ADR NNNN“,
+   „ADR NNNN abgelöst durch MMMM“, „kein ADR nötig, weil …“. Fehlt die Angabe, ist die
+   Aufgabe nicht fertig.
+5. **Drift melden:** fällt beim Lesen auf, dass Code und ein ADR auseinanderlaufen, das als
+   Issue oder im Bericht festhalten — auch wenn es nicht zur Aufgabe gehört.
+
+Neues ADR: `docs/adr/0000-template.md` kopieren, nächste freie Nummer, Englisch, Zeile im
+Index **und** in der Themenlandkarte. `middleware/test/adrIndexGuard.test.ts` prüft, dass
+jede ADR-Datei in beiden steht. Der `adr-check`-Sweep im pr-flow bleibt das Netz für alles,
+was trotzdem durchrutscht; er ersetzt den Abgleich pro Aufgabe nicht.
 
 **Agentenmodell (verbindlich):** Wer Agenten, Plugins, Kanäle, Modelle, Routing, Memory,
 Trigger oder Antwortdarstellung anfasst, liest vorher `docs/terminology.md` und die ADRs

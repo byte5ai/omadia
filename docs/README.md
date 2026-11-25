@@ -31,6 +31,7 @@ Dieser Ordner ist das kollektive Gedächtnis des Omadia-Projekts. Mehrere Agents
 | [`fly-deploy.md`](fly-deploy.md) | Deploy **unserer** Fly-Instanz (`odoo-bot-middleware` + `odoo-bot-harness`) via `scripts/fly-deploy.sh`: Flags, Env-Vars, Lock, Live-Verifikation | Bei Änderungen am Skript oder am Deploy-Rezept | Wer das Skript ändert |
 | [`trust-and-privacy.md`](trust-and-privacy.md) | Defaults, Reichweite und Grenzen von Privacy Shield, Verifier, Receipts, Plugins. Die Positiv-Prüfungen von `docsClaimsGuard.test.ts` lesen diese Seite | Bei jeder Änderung an Default oder Grenze dieser Controls | Security-Thread |
 | [`readme-guidelines.md`](readme-guidelines.md) | Rolle, Dramaturgie und Wording des Root-README, durchgesetzt von `readmeShape.test.ts`; Begründung, Quellen und Benchmark in [ADR-0011](adr/0011-readme-as-landing-page.md) | Bei Regeländerung | Jeder, der das README ändert |
+| [`adr/`](adr/README.md) | Architecture Decision Records mit **Themenlandkarte**: jeder Bereich des Repos und die ADRs, die ihn binden. Pflicht-Abgleich bei jeder Aufgabe (`/AGENTS.md`, „ADR-Abgleich“); `adrIndexGuard.test.ts` hält Dateien, Index und Landkarte zusammen | Bei jeder Architektur-Entscheidung, im selben PR | Wer die Entscheidung trifft |
 | [`design.md`](design.md) | Lume, die visuelle Sprache der Operator-UI | Bei Theme-Änderungen | Frontend-Thread |
 
 ## Lebende Docs (öffentliche Untermenge)
