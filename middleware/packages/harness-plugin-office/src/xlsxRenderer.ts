@@ -7,12 +7,15 @@ import {
   type ColumnSpec,
   type ColumnType,
   type RenderResult,
+  type SheetRename,
+  type SheetSpec,
   type XlsxDescriptor,
 } from './types.js';
 import { sanitizeFilename } from './filename.js';
 import {
   assertComputedColumnStaysInWorkbook,
   assertFormulaStaysInWorkbook,
+  sheetReferences,
 } from './formulaPolicy.js';
 import { normalizeOoxml } from './ooxmlNormalize.js';
 import {
@@ -30,15 +33,76 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
   JPY: '¥',
 };
 
-// Excel forbids these in sheet names, caps the length at 31 and reserves the
-// name "History" (in any case) for its change-tracking sheet.
+// Excel forbids these in sheet names, refuses an apostrophe at either end,
+// caps the length at 31, reserves the name "History" (in any case) for its
+// change-tracking sheet and compares names without case.
 const ILLEGAL_SHEET_CHARS = /[\\/?*[\]:]+/g;
+const SHEET_NAME_EDGES = /^['\s]+|['\s]+$/g;
+const MAX_SHEET_NAME = 31;
 const RESERVED_SHEET_NAME = 'history';
 
-function sanitizeSheetName(name: string, index: number): string {
-  const cleaned = name.replace(ILLEGAL_SHEET_CHARS, ' ').replace(/\s+/g, ' ').trim();
-  const safe = (cleaned.length > 0 ? cleaned : `Sheet${String(index + 1)}`).slice(0, 31);
-  return safe.toLowerCase() === RESERVED_SHEET_NAME ? `${safe}_` : safe;
+/** How Excel tells sheet names apart. */
+function sheetNameKey(name: string): string {
+  return name.toLowerCase();
+}
+
+/** A name Excel accepts for one sheet, before uniqueness. */
+function cleanSheetName(name: string, index: number): string {
+  const cleaned = name
+    .replace(ILLEGAL_SHEET_CHARS, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(SHEET_NAME_EDGES, '')
+    .slice(0, MAX_SHEET_NAME)
+    .replace(SHEET_NAME_EDGES, '');
+  const safe = cleaned.length > 0 ? cleaned : `Sheet${String(index + 1)}`;
+  return sheetNameKey(safe) === RESERVED_SHEET_NAME ? `${safe}_` : safe;
+}
+
+/**
+ * The name every sheet is written under, in sheet order. A name another sheet
+ * already took gets ` (2)`, ` (3)` … within the 31 characters. All names are
+ * settled before exceljs sees one, so it never refuses a name and formulas
+ * can be checked against the names the file will have (#1982).
+ */
+function resolveSheetNames(sheets: readonly SheetSpec[]): Array<SheetRename & { sheet: SheetSpec }> {
+  const taken = new Set<string>();
+  return sheets.map((sheet, index) => {
+    const base = cleanSheetName(sheet.name, index);
+    let written = base;
+    for (let n = 2; taken.has(sheetNameKey(written)); n += 1) {
+      const suffix = ` (${String(n)})`;
+      written = `${base.slice(0, MAX_SHEET_NAME - suffix.length).trimEnd()}${suffix}`;
+    }
+    taken.add(sheetNameKey(written));
+    return { sheet, requested: sheet.name, written };
+  });
+}
+
+/**
+ * Throws for a formula that names a sheet by a name it was not written under:
+ * the reference would point at no sheet once the file is opened. A name that
+ * one sheet kept stays valid even when another sheet asked for it too.
+ */
+function sheetReferenceCheck(
+  names: readonly SheetRename[],
+): (formula: string, location: string) => void {
+  const written = new Set(names.map((name) => sheetNameKey(name.written)));
+  const renamed = new Map<string, SheetRename>();
+  for (const name of names) {
+    const key = sheetNameKey(name.requested);
+    if (name.requested !== name.written && !renamed.has(key)) renamed.set(key, name);
+  }
+  return (formula, location) => {
+    for (const reference of sheetReferences(formula)) {
+      const key = sheetNameKey(reference);
+      const rename = written.has(key) ? undefined : renamed.get(key);
+      if (rename === undefined) continue;
+      const quoted = `'${rename.written.replaceAll("'", "''")}'`;
+      throw new OfficeRenderError(
+        `formula in ${location} rejected: it references sheet "${reference}", which is written as "${rename.written}"; reference it as ${quoted}! instead`,
+      );
+    }
+  };
 }
 
 /** Derive an Excel number-format string from the column spec. Explicit
@@ -102,7 +166,11 @@ function cellValueOf(row: Readonly<Record<string, unknown>>, key: string): CellV
  * (formulaText.ts), so what they read is what exceljs writes and the opening
  * application reads.
  */
-function checkColumn(col: ColumnSpec, sheetName: string): void {
+function checkColumn(
+  col: ColumnSpec,
+  sheetName: string,
+  checkSheetReferences: (formula: string, location: string) => void,
+): void {
   if (typeof col.header !== 'string') {
     throw new OfficeRenderError(
       `header in sheet "${sheetName}", column "${String(col.key)}" rejected: a column header is text`,
@@ -114,6 +182,7 @@ function checkColumn(col: ColumnSpec, sheetName: string): void {
     throw new OfficeRenderError(`formula in ${location} rejected: a computed column's formula is text`);
   }
   assertComputedColumnStaysInWorkbook(col.formula, location);
+  checkSheetReferences(col.formula, location);
 }
 
 /** Coerce a cell value into the type Excel should store, so number formats
@@ -170,11 +239,14 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
   let rowsWritten = 0;
   let wroteFormula = false;
 
-  descriptor.sheets.forEach((sheet, index) => {
-    const ws = workbook.addWorksheet(sanitizeSheetName(sheet.name, index));
+  const sheetNames = resolveSheetNames(descriptor.sheets);
+  const checkSheetReferences = sheetReferenceCheck(sheetNames);
+
+  for (const { sheet, written } of sheetNames) {
+    const ws = workbook.addWorksheet(written);
     // Headers and computed-column templates are checked before exceljs sees
     // any of them.
-    for (const col of sheet.columns) checkColumn(col, ws.name);
+    for (const col of sheet.columns) checkColumn(col, ws.name, checkSheetReferences);
     ws.columns = sheet.columns.map((col) => ({
       header: col.header,
       key: col.key,
@@ -214,14 +286,16 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
         if (formula === undefined) continue;
         const cell = added.getCell(col.key);
         if (!col.formula) {
-          assertFormulaStaysInWorkbook(formula, `sheet "${ws.name}", cell ${cell.address}`);
+          const location = `sheet "${ws.name}", cell ${cell.address}`;
+          assertFormulaStaysInWorkbook(formula, location);
+          checkSheetReferences(formula, location);
         }
         cell.value = { formula };
         wroteFormula = true;
       }
       rowsWritten += 1;
     }
-  });
+  }
 
   // omadia evaluates no formulas and stores no cached values, so ask the
   // opening application for a full recalculation on load; exceljs 4.4 writes
@@ -242,5 +316,8 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
     ext: 'xlsx',
     filename: sanitizeFilename(descriptor.filename, 'xlsx', 'export'),
     rowsWritten,
+    renamedSheets: sheetNames
+      .filter((name) => name.requested !== name.written)
+      .map(({ requested, written }) => ({ requested, written })),
   };
 }

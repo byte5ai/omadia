@@ -182,6 +182,26 @@ describe('office create_xlsx dataset mode (B3)', () => {
     assert.equal(parsed.rows, 2);
   });
 
+  it('tells the model which sheets it renamed, and stays silent when it renamed none', async () => {
+    const tool = new OfficeTool(makeService(), 100_000, {});
+    const renamed = JSON.parse(
+      await tool.handleXlsx({
+        sheets: [
+          { name: 'History', columns: [{ key: 'a', header: 'A' }], rows: [{ a: 1 }] },
+          { name: 'Daten', columns: [{ key: 'a', header: 'A' }], rows: [{ a: 1 }] },
+        ],
+      }),
+    ) as { renamedSheets?: unknown };
+    assert.deepEqual(renamed.renamedSheets, [{ requested: 'History', written: 'History_' }]);
+
+    const kept = JSON.parse(
+      await tool.handleXlsx({
+        sheets: [{ name: 'Daten', columns: [{ key: 'a', header: 'A' }], rows: [{ a: 1 }] }],
+      }),
+    ) as Record<string, unknown>;
+    assert.equal('renamedSheets' in kept, false);
+  });
+
   it('writes a dataset cell shaped like a formula object as text, never as a formula', async () => {
     // Resolved dataset rows are data, not descriptors: an object value is
     // JSON-stringified, so a system of record can never inject a formula or a

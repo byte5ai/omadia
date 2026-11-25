@@ -222,6 +222,13 @@ export type DocxDescriptor = z.infer<typeof DocxDescriptorSchema>;
 // Render + service result shapes
 // ---------------------------------------------------------------------------
 
+/** A sheet written under another name than the descriptor asked for, because
+ *  Excel would refuse the requested one. */
+export interface SheetRename {
+  readonly requested: string;
+  readonly written: string;
+}
+
 /** Raw render output before persistence. */
 export interface RenderResult {
   readonly buffer: Buffer;
@@ -231,6 +238,8 @@ export interface RenderResult {
   readonly filename: string;
   /** Data rows written (excludes the header). Powers the postcondition. */
   readonly rowsWritten: number;
+  /** xlsx only: the sheets whose name changed, in sheet order. */
+  readonly renamedSheets?: readonly SheetRename[];
 }
 
 /** Payload carried inside the `NativeToolAttachment` (kind: `'file'`) that the
@@ -252,6 +261,8 @@ export interface OfficeArtifact {
   readonly mediaType: string;
   readonly sizeBytes: number;
   readonly rowsWritten: number;
+  /** xlsx only: the sheets whose name changed, in sheet order. */
+  readonly renamedSheets?: readonly SheetRename[];
   /** True when the content-addressed object already existed in Tigris. */
   readonly cacheHit: boolean;
 }

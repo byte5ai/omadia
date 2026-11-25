@@ -45,6 +45,7 @@ export type {
   OfficeFileAttachmentPayload,
   OfficeResolvedDataset,
   RenderResult,
+  SheetRename,
   XlsxDescriptor,
   XlsxToolInput,
 } from './types.js';

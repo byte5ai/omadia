@@ -200,6 +200,98 @@ describe('office xlsx renderer', () => {
       );
     }
   });
+
+  /** A one-cell sheet; `formula` puts a formula cell in column A. */
+  const sheetNamed = (name: string, formula?: string): XlsxDescriptor['sheets'][number] => ({
+    name,
+    columns: [{ key: 'x', header: 'X' }],
+    rows: [{ x: formula === undefined ? 1 : { formula } }],
+  });
+
+  it('gives every sheet a name Excel accepts, unique regardless of case, and reports each rename', async () => {
+    const long = 'Umsatz nach Kunde und Region 2026';
+    const result = await renderXlsx({
+      sheets: [
+        sheetNamed("'Quartal'"),
+        sheetNamed('Daten'),
+        sheetNamed('daten'),
+        sheetNamed('A/B'),
+        sheetNamed('A B'),
+        sheetNamed(`${long} Q1`),
+        sheetNamed(`${long} Q2`),
+        sheetNamed('Offen'),
+      ],
+    });
+
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(result.buffer);
+    assert.deepEqual(
+      wb.worksheets.map((ws) => ws.name),
+      [
+        'Quartal',
+        'Daten',
+        'daten (2)',
+        'A B',
+        'A B (2)',
+        'Umsatz nach Kunde und Region 20',
+        'Umsatz nach Kunde und Regio (2)',
+        'Offen',
+      ],
+    );
+    assert.deepEqual(result.renamedSheets, [
+      { requested: "'Quartal'", written: 'Quartal' },
+      { requested: 'daten', written: 'daten (2)' },
+      { requested: 'A/B', written: 'A B' },
+      { requested: 'A B', written: 'A B (2)' },
+      { requested: `${long} Q1`, written: 'Umsatz nach Kunde und Region 20' },
+      { requested: `${long} Q2`, written: 'Umsatz nach Kunde und Regio (2)' },
+    ]);
+  });
+
+  it('reports no renamed sheets when every name is kept', async () => {
+    const result = await renderXlsx(descriptor);
+    assert.deepEqual(result.renamedSheets, []);
+  });
+
+  it('refuses a formula that references a sheet by a name it was not written under', async () => {
+    await assert.rejects(
+      renderXlsx({ sheets: [sheetNamed('History'), sheetNamed('Summe', 'SUM(History!A2)')] }),
+      /formula in sheet "Summe", cell A2 rejected: it references sheet "History", which is written as "History_"; reference it as 'History_'!/,
+    );
+    // Excel compares sheet names without case, quoted or not.
+    await assert.rejects(
+      renderXlsx({ sheets: [sheetNamed('History'), sheetNamed('Summe', "SUM('history'!A2)")] }),
+      /references sheet "history", which is written as "History_"/,
+    );
+    // A computed column is checked as well.
+    await assert.rejects(
+      renderXlsx({
+        sheets: [
+          sheetNamed('History'),
+          {
+            name: 'Summe',
+            columns: [{ key: 'v', header: 'V', formula: 'History!A{row}*2' }],
+            rows: [{}],
+          },
+        ],
+      }),
+      /formula in sheet "Summe", computed column "v" rejected: it references sheet "History", which is written as "History_"/,
+    );
+  });
+
+  it('writes a formula that references a sheet by its written name', async () => {
+    const result = await renderXlsx({
+      sheets: [
+        sheetNamed('History'),
+        sheetNamed('Daten'),
+        sheetNamed('daten'),
+        sheetNamed('Summe', "SUM(History_!A2,'daten (2)'!A2,daten!A2)"),
+      ],
+    });
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(result.buffer);
+    assert.equal(wb.getWorksheet('Summe')?.getCell('A2').formula, "SUM(History_!A2,'daten (2)'!A2,daten!A2)");
+  });
 });
 
 describe('office docx renderer', () => {
