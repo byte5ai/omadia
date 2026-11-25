@@ -282,25 +282,25 @@ describe('#788 — a `provides:` entry is a claim, not a grant', () => {
 
   it('resolves once the plugin has actually provided the name', () => {
     const catalog = catalogOf([
-      pluginOf({ id: CLAIMANT, provides: ['memoryStore@1'] }),
+      pluginOf({ id: CLAIMANT, provides: ['nudgeStateStore@1'] }),
     ]);
     const { ctx, registry } = makeCtx(CLAIMANT, catalog);
 
     assert.throws(
-      () => ctx.services.get('memoryStore'),
+      () => ctx.services.get('nudgeStateStore'),
       ServiceNotDeclaredError,
       'before provide(): nothing of this plugin\'s exists to read back',
     );
 
     const impl = { own: true };
-    ctx.services.provide('memoryStore', impl);
+    ctx.services.provide('nudgeStateStore', impl);
 
     assert.equal(
-      ctx.services.get('memoryStore'),
+      ctx.services.get('nudgeStateStore'),
       impl,
       'after provide(): the gate must get out of the way — a provider that could not read back its own registration would be a worse bug than the one being fixed',
     );
-    assert.equal(classify(CLAIMANT, 'memoryStore', catalog, registry), 'self-provided');
+    assert.equal(classify(CLAIMANT, 'nudgeStateStore', catalog, registry), 'self-provided');
   });
 
   it('is evaluated per call, not snapshotted when the context is built', () => {
@@ -329,13 +329,13 @@ describe('#788 — a `provides:` entry is a claim, not a grant', () => {
     // dependency declaration was already paid for at activation and grants the
     // name outright.
     const catalog = catalogOf([
-      pluginOf({ id: CLAIMANT, requires: ['knowledgeGraph@^1'] }),
+      pluginOf({ id: CLAIMANT, requires: ['entityRefBus@^1'] }),
     ]);
     const { ctx, registry } = makeCtx(CLAIMANT, catalog);
     const kg = { graph: true };
-    registry.provide('knowledgeGraph', kg, VICTIM);
-    assert.equal(ctx.services.get('knowledgeGraph'), kg);
-    assert.equal(classify(CLAIMANT, 'knowledgeGraph', catalog, registry), 'declared');
+    registry.provide('entityRefBus', kg, VICTIM);
+    assert.equal(ctx.services.get('entityRefBus'), kg);
+    assert.equal(classify(CLAIMANT, 'entityRefBus', catalog, registry), 'declared');
   });
 
   it('leaves a name in BOTH `requires:` and `provides:` alone', () => {
@@ -346,19 +346,19 @@ describe('#788 — a `provides:` entry is a claim, not a grant', () => {
     const catalog = catalogOf([
       pluginOf({
         id: CLAIMANT,
-        requires: ['knowledgeGraph@^1'],
-        provides: ['knowledgeGraph@1'],
+        requires: ['entityRefBus@^1'],
+        provides: ['entityRefBus@1'],
       }),
     ]);
     const { ctx, registry } = makeCtx(CLAIMANT, catalog);
     const original = { original: true };
-    registry.provide('knowledgeGraph', original, VICTIM);
+    registry.provide('entityRefBus', original, VICTIM);
     assert.equal(
-      ctx.services.get('knowledgeGraph'),
+      ctx.services.get('entityRefBus'),
       original,
       'a wrapper must reach the thing it wraps',
     );
-    assert.equal(classify(CLAIMANT, 'knowledgeGraph', catalog, registry), 'declared');
+    assert.equal(classify(CLAIMANT, 'entityRefBus', catalog, registry), 'declared');
   });
 
   it('leaves `optional_requires:` alone', () => {
@@ -411,10 +411,10 @@ describe('#788 — a `provides:` entry is a claim, not a grant', () => {
   it('reports nothing provided after disposeBySource', () => {
     const registry = new ServiceRegistry();
     registry.provide('diagrams', { v: 1 }, VICTIM);
-    registry.provide('memoryStore', { v: 1 }, VICTIM);
+    registry.provide('nudgeStateStore', { v: 1 }, VICTIM);
     assert.equal(registry.disposeBySource(VICTIM), 2);
     assert.equal(registry.providedBy(VICTIM, 'diagrams'), false);
-    assert.equal(registry.providedBy(VICTIM, 'memoryStore'), false);
+    assert.equal(registry.providedBy(VICTIM, 'nudgeStateStore'), false);
   });
 
   it('does not credit core\'s own unowned registrations to any plugin', () => {
@@ -834,21 +834,21 @@ describe('#788 follow-up — `replace` may not take a name the plugin cannot rea
     const catalog = catalogOf([
       pluginOf({
         id: ATTACKER,
-        requires: ['knowledgeGraph@^1'],
+        requires: ['entityRefBus@^1'],
         provides: ['captureFilter@1'],
       }),
     ]);
     const { ctx, registry } = makeCtx(ATTACKER, catalog);
     const inner = { inner: true };
-    registry.provide('knowledgeGraph', inner, VICTIM);
+    registry.provide('entityRefBus', inner, VICTIM);
 
-    assert.equal(ctx.services.get('knowledgeGraph'), inner);
+    assert.equal(ctx.services.get('entityRefBus'), inner);
     const wrapped = { wraps: inner };
-    const undo = ctx.services.replace('knowledgeGraph', wrapped);
-    assert.equal(registry.get('knowledgeGraph'), wrapped);
+    const undo = ctx.services.replace('entityRefBus', wrapped);
+    assert.equal(registry.get('entityRefBus'), wrapped);
     undo();
     assert.equal(
-      registry.get('knowledgeGraph'),
+      registry.get('entityRefBus'),
       inner,
       'the decorator must still unwind to the original on deactivate',
     );
@@ -859,14 +859,14 @@ describe('#788 follow-up — `replace` may not take a name the plugin cannot rea
     // already 'self-provided' and replacing its own object takes nothing from
     // anyone.
     const catalog = catalogOf([
-      pluginOf({ id: ATTACKER, provides: ['memoryStore@1'] }),
+      pluginOf({ id: ATTACKER, provides: ['nudgeStateStore@1'] }),
     ]);
     const { ctx, registry } = makeCtx(ATTACKER, catalog);
     const first = { v: 1 };
-    ctx.services.provide('memoryStore', first);
+    ctx.services.provide('nudgeStateStore', first);
     const second = { v: 2 };
-    ctx.services.replace('memoryStore', second);
-    assert.equal(registry.get('memoryStore'), second);
+    ctx.services.replace('nudgeStateStore', second);
+    assert.equal(registry.get('nudgeStateStore'), second);
   });
 
   it('leaves `provide` ungated — it cannot displace anyone', () => {

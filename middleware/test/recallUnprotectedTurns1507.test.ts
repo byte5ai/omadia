@@ -308,6 +308,7 @@ describe('#1507 a plugin turn search follows the turn shield', () => {
       {
         turnId: 't',
         turnDate: '2026-10-28',
+        graphReadScope: { value: { kind: 'conversation', scope: 'agent-x::s' } },
         ...(shielded
           ? {
               privacyHandle: createPrivacyTurnHandle({

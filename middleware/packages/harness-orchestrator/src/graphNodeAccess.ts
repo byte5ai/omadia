@@ -69,6 +69,19 @@ function toolViewFor(bound: GraphReadScope): KnowledgeGraphToolView {
   }
 }
 
+/**
+ * ADR-0044 — the session read a boundary allows: which conversation scopes it
+ * admits and how a session there is read (agent, user, audience). The same
+ * access the graph tool and the node filter use, for a plugin's bounded
+ * `knowledgeGraph@1` service.
+ */
+export function graphSessionAccess(
+  graph: Pick<KnowledgeGraph, 'getSession'>,
+  bound: GraphReadScope,
+): Pick<ReturnType<typeof graphViewAccess>, 'scopeAllowed' | 'readSession'> {
+  return graphViewAccess(graph, toolViewFor(bound));
+}
+
 function stringProp(node: GraphNode, key: string): string | undefined {
   const v = node.props[key];
   return typeof v === 'string' && v.length > 0 ? v : undefined;

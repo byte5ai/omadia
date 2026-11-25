@@ -93,7 +93,14 @@ function inTurn<T>(
   fn: () => Promise<T>,
 ): Promise<T> {
   return turnContext.run(
-    { turnId: 't-1', turnDate: '2026-10-28', ...(handle ? { privacyHandle: handle } : {}) } as never,
+    {
+      turnId: 't-1',
+      turnDate: '2026-10-28',
+      // ADR-0044 — a turn with a bound graph boundary: process reads see this
+      // agent's processes (a turn without a user, `nothing`).
+      graphReadScope: { value: { kind: 'nothing' } },
+      ...(handle ? { privacyHandle: handle } : {}),
+    } as never,
     fn,
   ) as Promise<T>;
 }

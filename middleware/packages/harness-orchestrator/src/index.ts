@@ -693,8 +693,14 @@ export {
   boundKgWalk,
   currentGraphNodeViewer,
   graphNodeFilter,
+  graphSessionAccess,
   type GraphNodeViewer,
 } from './graphNodeAccess.js';
+export {
+  currentProcessBoundary,
+  currentProcessReadFilter,
+  type ProcessBoundary,
+} from './tools/processMemoryTool.js';
 
 // Native-tool registry — kernel-shared dispatch table
 export { NativeToolRegistry, isOfferedThisTurn } from './nativeToolRegistry.js';

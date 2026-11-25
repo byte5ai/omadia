@@ -31,6 +31,11 @@
  *   - anything else throws `ServiceNotDeclaredError`, naming both the
  *     capability and the manifest field that would grant it.
  *
+ * A grant decides WHETHER a plugin resolves a name, not WHAT it gets: for
+ * `knowledgeGraph`, `processMemory` and `memoryStore` the plugin gets a
+ * bounded form held to the turn's graph read boundary (ADR-0044,
+ * `boundedGraphServices.ts`), applied in `pluginContext.ts` after this gate.
+ *
  * WHY `provides:` IS NOT ENOUGH ON ITS OWN (issue #788)
  * ----------------------------------------------------
  * The original reading was "a plugin may always read back its own
