@@ -38,6 +38,7 @@ import {
   type ScratchItem,
   type TopicItem,
   type TurnItem,
+  type TenantKey,
   type UserKey,
   type Viewer,
 } from './world.js';
@@ -195,9 +196,9 @@ function memorableKnowledge(v: Viewer, mode: Mode, mk: MkItem, settings: Setting
     // (sharedOnly). Nothing documents which MK a strict turn may see.
     if (shared)
       return pin(true, `enforce-strict: only the shared tier (sharedOnly floor). ${sharedSource}`);
-    return pin(
+    return doc(
       false,
-      'enforce-strict: rows the user owns privately stay out of a context-bound turn (sharedOnly floor, C #575 reasoning)',
+      'enforce-strict: private knowledge stays out of a context-bound turn (owner decision 2026-11-24, #2205; sharedOnly floor, C #575)',
     );
   }
 
@@ -355,6 +356,42 @@ function topic(v: Viewer, mode: Mode, t: TopicItem): Verdict {
   );
 }
 
+/**
+ * What a logged-in person may read through the per-person REST routes
+ * (`/api/v1/memory`, `/api/v1/datasets`, `/api/chat/sessions`). No turn, no
+ * agent, no context-memory mode: the session's user is the only identity.
+ * Anything these routes are not for is forbidden.
+ */
+export function expectedHttp(user: UserKey, tenant: TenantKey, item: Item): Verdict {
+  if (item.tenant !== tenant) {
+    return doc(false, 'tenant isolation: every query is tenant-scoped (S tenant_id)');
+  }
+  switch (item.store) {
+    case 'memorable-knowledge':
+    case 'excerpt': {
+      const mk = item.store === 'excerpt' ? item.parent : item;
+      const owners = mk.owners === 'absent' ? [] : mk.owners;
+      return owners.includes(user)
+        ? doc(true, '/api/v1/memory: your own memory (UI "Curated knowledge — ACL-filtered to you as owner")')
+        : doc(false, '/api/v1/memory: owner-only; GET /:id answers 404 to non-owners (#1823)');
+    }
+    case 'dataset':
+      return dataset({ tenant, user, agent: 'atlas', context: 'web', shielded: false }, item);
+    case 'scratch':
+      if (item.tier === 'chat-session') {
+        return item.sender === user
+          ? doc(true, 'your own web chat tab')
+          : doc(
+              false,
+              "another person's web chat tab (owner decision 2026-11-24; S #1071 follow-up; #1762)",
+            );
+      }
+      return doc(false, 'not served by the per-person routes');
+    default:
+      return doc(false, 'not served by the per-person routes');
+  }
+}
+
 /** Which `/memories` trees a turn can read (H Effective Scope, W3 members). */
 function scratch(v: Viewer, mode: Mode, s: ScratchItem): Verdict {
   const bound = isContextBound(v, mode);
@@ -378,10 +415,13 @@ function scratch(v: Viewer, mode: Mode, s: ScratchItem): Verdict {
     case 'chat-session':
       if (strictOrMembers)
         return doc(false, 'strict/members: chat-sessions are not readable (H ro:core-notes)');
-      return doc(
-        true,
-        'chat-sessions are a shared tree passed through unchanged (H Effective Scope)',
-      );
+      // A web chat tab belongs to the person who chats in it.
+      return s.sender === v.user
+        ? doc(true, 'your own web chat tab')
+        : doc(
+            false,
+            "another person's web chat tab (owner decision 2026-11-24; S #1071 follow-up \"stamp an owner on each chat session\"; #1762)",
+          );
     case 'agent':
       if (s.agent !== v.agent) return doc(false, "another agent's tree (H orchestrator:<slug>:*)");
       if (strictOrMembers)
@@ -440,11 +480,15 @@ export const EXPECTED_DIVERGENCES: readonly Divergence[] = [
     oracle:
       "off/enforce: another agent's and another user's turns are not readable (SP INV-2; S \"user's other chats\")",
     code: 'query_knowledge_graph runs without a view in off/enforce: listSessions/getSession/search over the whole tenant',
+    confirmed:
+      "step 3, canarySweep.test.ts (todo, #2204): in off/enforce the in-turn tool returns other agents', legacy and other users' turns; the CLI-path registration returns them outside any turn",
   },
   {
     id: 'strict-durable-leg',
     oracle: 'enforce-strict context-bound: privately owned MK stays out',
     code: 'the durable recall leg gets no sharedOnly, so owned manually_authored private MK is recalled',
+    confirmed:
+      'step 3, canarySweep.test.ts (todo, #2205): operator-authored and auto-durable private / shared:<x> memories reach the recall of a context-bound enforce-strict turn',
   },
   {
     id: 'empty-audience-inmemory',
@@ -457,6 +501,8 @@ export const EXPECTED_DIVERGENCES: readonly Divergence[] = [
     id: 'process-cross-agent',
     oracle: "another agent's process is not readable (SP INV-2)",
     code: 'process memory query/get filter only on tenant, scope and unprotected',
+    confirmed:
+      "step 3, canarySweep*.pg.test.ts (todo, #2207): query_processes / run_stored_process return other agents' processes in every mode, and any process in strict/members context-bound turns; the recall process leg is clean",
   },
   {
     id: 'excerpt-parent-recheck',

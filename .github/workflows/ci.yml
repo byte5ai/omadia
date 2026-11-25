@@ -357,7 +357,9 @@ jobs:
           # 1 test); measured ran=722.
           # 722 → 727 with the memory ACL contract on Neon (memoryAccess/aclContract.pg,
           # 5 tests); measured ran=727.
-          PG_TEST_FLOOR: '727'
+          # 727 → 750 with the memory canary sweep on Neon
+          # (memoryAccess/canarySweep<Mode>.pg, 23 tests); measured ran=750.
+          PG_TEST_FLOOR: '750'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

@@ -1037,10 +1037,40 @@ read, so a channel that sets the flag must refresh the roster on membership
 events. Graph decorators must forward `getSession(scope, options)`; one that
 drops `options` drops the filter.
 
+Owner decision (2026-11-24): **private knowledge always stays private.** In
+every mode a turn sees only its own agent's memory, and only what the people
+reading may see. A private or `shared:<x>` memory never reaches a turn read
+by someone who does not own it, and never reaches a context-bound
+`enforce-strict` turn.
+
 Known residuals:
 - A knowledge-graph provider that predates plugin-api 1.26.0 ignores
   `audienceOwners` and returns everything. The in-tree providers honour it.
 - Only turns that carry a `TurnOrigin` are context-bound.
+- #2204: in `off` and `enforce`, `query_knowledge_graph` (both
+  registrations) reads the whole tenant: other agents' turns, pre-agent
+  scopes and other users' chats. Breaks the decision above and SP INV-2.
+- #2205: in `enforce-strict`, the durable recall leg gets no `sharedOnly`, so
+  operator-authored and durably auto-promoted private memories reach a
+  context-bound turn.
+
+- #2204 also covers a plugin's `ctx.knowledgeGraph.searchTurns` /
+  `findEntityCapturedTurns` in `off` and `enforce`: `boundTurnSearch` passes
+  the plugin's options through unchanged there.
+- #2207: `query_processes` and `run_stored_process` read process memory with
+  no agent or context-memory bound (other agents' processes in every mode; any
+  process in a context-bound `enforce-strict` / `members` turn, which recall
+  skips).
+- #2208: a plugin's `ctx.knowledgeGraph.getNeighbors` applies only the shield
+  filter, in every mode: private memories, plans and turns next to any node
+  the plugin found. Related: #1825 (the `kg_graph` walk around recalled
+  memories, also without access checks).
+- #1762: web chat tabs (`/api/chat/sessions`) have no owner; every account
+  lists and reads every tab.
+
+All of these are pinned as known failures (`todo`, naming the issue) in the
+canary sweep under `middleware/test/memoryAccess/` (`canarySweep*.test.ts`,
+`canarySweep*.pg.test.ts`, `canaryHttp.test.ts`).
 
 ### Consultation: a colleague adds judgement, never access (spec 2042 §5.4, #2047)
 

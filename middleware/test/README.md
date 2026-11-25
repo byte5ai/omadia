@@ -85,6 +85,35 @@ on (today's default) and off.
 Queries are batched under the 50-row cap; a full batch is split again, so the
 cap never hides a row.
 
+`memoryAccess/canarySweep.ts` runs one real turn per viewer and mode: the agent
+is built by `buildOrchestratorForAgent`, and only the model is scripted
+(`_helpers/scriptedModel.ts`, with a responder that follows what the tools
+list). The probe names every conversation and entity, views every memory path
+and every graph query, then follows every file and session it is shown. Any
+canary the oracle forbids in what the model was sent fails
+`canarySweep.test.ts`; each mode must also deliver allowed canaries through
+recall, the memory tool and the graph tool. Confirmed leaks stay as `todo`
+tests that name their issue, until the fix PR turns them into ordinary tests.
+
+The sweep runs one file per mode (`canarySweep<Mode>.test.ts`), each also with
+the production recall limits (`…ProductionRecall.test.ts`): the top few hits
+decide what the `kg_graph` walk around them reaches. On Neon
+(`canarySweep<Mode>.pg.test.ts`) it adds process memory and its tools, which
+only Neon has; there only one agent's viewers run turns, the other agent's
+items stay seeded. A probe plugin built with the real `createPluginContext`
+calls `ctx.knowledgeGraph` and `ctx.memory` as a domain tool mid-turn.
+`canaryHttp.test.ts` calls the per-person REST routes (`/api/v1/memory`,
+`/api/v1/datasets`, `/api/chat/sessions`) as each person, including every
+read-by-id route with every id of both tenants; `oracle.ts` `expectedHttp`
+decides. Known leaks are listed once, in `canarySweepSuite.ts` `KNOWN_LEAKS`,
+with the modes where they were confirmed; the same sighting anywhere else
+fails.
+
+The seed mints each person's omadia user id through identity resolution, as a
+login or Teams message would (`Seeded.users`); `USERS` in `world.ts` holds the
+Teams (AAD) ids. Memories list their owners in both forms, as production
+stores them depending on where they were promoted.
+
 ## Env vars
 
 `MEMORY_PG_TEST_URL` is the shared fallback every suite accepts. Individual

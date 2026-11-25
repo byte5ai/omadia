@@ -530,6 +530,49 @@ handler's catch-all copied that sentence into a 500 body — eight routes, from
   approve/reject card button still reads both as `already_resolved`.
 - No migration, no URL change, no web-ui change.
 
+### Added — memory canary sweep, part 2: REST routes, plugins, Neon (memory-ACL test plan, step 3) (2026-11-24)
+
+- **Client stream.** The sweep now also checks every stream event the client gets besides tool
+  calls (recall cards, the `kg_graph` walk, the answer), and runs each mode a second time with
+  the production recall limits, where the walk shows. One file per mode and recall setting.
+- **Per-person REST routes** (`canaryHttp.test.ts`): `/api/v1/memory`, `/api/v1/datasets` and
+  `/api/chat/sessions` from the production routers, called as every person of both tenants,
+  including every read-by-id route with every id. Memory and datasets are clean. Admin,
+  operator and dev routes are operator-only today (every account is an administrator).
+- **Plugin accessors:** a probe plugin built with the real `createPluginContext` reads
+  `ctx.knowledgeGraph` and `ctx.memory` as a domain tool mid-turn.
+- **Neon** (`canarySweep<Mode>.pg.test.ts`, about 20 s each): process memory and
+  `query_processes` / `run_stored_process`. `PG_TEST_FLOOR` 727 → 750.
+- **Leaks confirmed**, kept as `todo` tests naming their issue: #2207 (process tools ignore
+  agent and context-memory bounds), #2208 (plugin `getNeighbors` ignores ACL and the turn's
+  boundary, every mode), #1825 (the `kg_graph` walk), #1762 (chat sessions have no owner), and a
+  plugin's turn search in `off`/`enforce` under #2204.
+- The seed mints omadia user ids through identity resolution and links turns to their sender's
+  cluster (run trace), as production does; memories name owners in both id forms.
+- `test/_helpers/scriptedModel.ts` also answers the streaming path.
+
+### Added — memory canary sweep through real turns (memory-ACL test plan, step 3) (2026-11-24)
+
+- **`middleware/test/memoryAccess/canarySweep.ts`.** Every viewer of the memory-access world
+  runs one real turn per context-memory mode (256 turns, in-memory graph, about 10 s). The
+  agent is built by `buildOrchestratorForAgent` with the default-on audience floor; only the
+  model is scripted. It recalls, views every `/memories` path and runs every
+  `query_knowledge_graph` query, then follows every listed file and session. A forbidden
+  canary anywhere in what the model was sent fails the suite; each mode must also deliver
+  allowed canaries through recall, the memory tool and the graph tool. Removing the
+  `userId`/`audienceOwners` filter from any turn search (`searchTurns`,
+  `searchTurnsByEmbedding`, `findEntityCapturedTurns`) turns it red in every mode.
+- **Two leaks confirmed**, kept as `todo` tests until their fixes land:
+  #2204 (`query_knowledge_graph` reads other agents' and other users' chats in `off` and
+  `enforce`, in both registrations) and #2205 (the `enforce-strict` durable recall leg
+  returns private memories). `members` and the memory tool are clean.
+- **Owner decision recorded:** private knowledge always stays private
+  (`docs/security-architecture.md`, context memory). The oracle's `enforce-strict` row for
+  private memories is now documented, not pinned. Tail-only turns are no access rule for
+  session reads (plugin-api `TurnIngest.tailOnly`); the sweep pins that.
+- `test/_helpers/scriptedModel.ts` answers several tool calls in one step and takes an
+  optional responder for requests the queue does not cover.
+
 ### Added — memory ACL contract across backends (memory-ACL test plan, step 2) (2026-11-24)
 
 - **`middleware/test/memoryAccess/aclContract.ts`.** For every viewer (user × agent × DM,
