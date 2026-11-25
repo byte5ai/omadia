@@ -484,13 +484,6 @@ export const EXPECTED_DIVERGENCES: readonly Divergence[] = [
       "step 3, canarySweep.test.ts (todo, #2204): in off/enforce the in-turn tool returns other agents', legacy and other users' turns; the CLI-path registration returns them outside any turn",
   },
   {
-    id: 'strict-durable-leg',
-    oracle: 'enforce-strict context-bound: privately owned MK stays out',
-    code: 'the durable recall leg gets no sharedOnly, so owned manually_authored private MK is recalled',
-    confirmed:
-      'step 3, canarySweep.test.ts (todo, #2205): operator-authored and auto-durable private / shared:<x> memories reach the recall of a context-bound enforce-strict turn',
-  },
-  {
     id: 'empty-audience-inmemory',
     oracle: 'an empty audience matches nothing (PA ownersCoverAudience)',
     code: 'InMemory MK/excerpt search with audienceOwners [] still admits operator-authored rows; Neon returns []',

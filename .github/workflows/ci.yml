@@ -359,7 +359,9 @@ jobs:
           # 5 tests); measured ran=727.
           # 727 → 750 with the memory canary sweep on Neon
           # (memoryAccess/canarySweep<Mode>.pg, 23 tests); measured ran=750.
-          PG_TEST_FLOOR: '750'
+          # 750 → 749: the strict sweep's known-leak test for #2205 folds into
+          # its main assertion once the leak is fixed; measured ran=749.
+          PG_TEST_FLOOR: '749'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

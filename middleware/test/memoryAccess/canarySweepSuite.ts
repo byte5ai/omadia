@@ -53,23 +53,6 @@ export const KNOWN_LEAKS: readonly KnownLeak[] = [
       (sweep.mode === 'off' || sweep.mode === 'enforce'),
   },
   {
-    issue: '#2205',
-    title: 'enforce-strict recalls no private memory through the durable leg',
-    modes: ['enforce-strict'],
-    recall: 'any',
-    matches: (sweep, s) => {
-      if (sweep.mode !== 'enforce-strict' || viaGraphWalk(sweep, s)) return false;
-      if (s.entry !== 'context' && s.entry !== 'client-stream') return false;
-      const mk =
-        s.item.store === 'memorable-knowledge'
-          ? s.item
-          : s.item.store === 'excerpt'
-            ? s.item.parent
-            : undefined;
-      return mk !== undefined && mk.authorship !== 'conversation';
-    },
-  },
-  {
     issue: '#2207',
     title: 'query_processes / run_stored_process stay within the agent and the context-memory bound',
     modes: ['off', 'enforce', 'enforce-strict', 'members'],

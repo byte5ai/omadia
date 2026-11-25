@@ -530,6 +530,16 @@ handler's catch-all copied that sentence into a 500 body — eight routes, from
   approve/reject card button still reads both as `already_resolved`.
 - No migration, no URL change, no web-ui change.
 
+### Fixed — `enforce-strict` recalled private durable knowledge into a room (#2205) (2026-11-24)
+
+- In a context-bound `enforce-strict` turn, the durable recall leg (operator-authored and
+  durably auto-promoted knowledge) ran without `sharedOnly`, unlike the memory and excerpt
+  legs. A participant's private or `shared:<x>` notes reached the prompt, and the answer the
+  room sees could quote them. `ContextRetriever` now passes `sharedOnly` to that leg too.
+- The canary sweep's `todo` for #2205 is now part of the ordinary strict-mode assertion
+  (352 forbidden sightings before, 0 after). `PG_TEST_FLOOR` 750 → 749: the separate
+  known-leak test on Neon folds into the main one.
+
 ### Added — memory canary sweep, part 2: REST routes, plugins, Neon (memory-ACL test plan, step 3) (2026-11-24)
 
 - **Client stream.** The sweep now also checks every stream event the client gets besides tool
