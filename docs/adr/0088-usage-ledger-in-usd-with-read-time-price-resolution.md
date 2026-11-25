@@ -118,3 +118,7 @@ Chosen option: **A**.
 - Tests: `middleware/test/usageTelemetryPricing.test.ts`, `usagePriceResolution.test.ts`,
   `usageCacheSavingsAndFx.test.ts`, `usageRouteTimeZone.test.ts`, `usageDashboard*.pg.test.ts`,
   `middleware/test/costLedger/*`, `middleware/test/subscriptionParity/usageSubscription.test.ts`.
+
+## Errata
+
+- 2026-11-25 (#2236): the cache-write 🔴 above is fixed for new rows. The Anthropic adapter reports 1-hour writes (`cacheWrite1hTokens`), the ledger stores them (`token_usage.cache_creation_1h_tokens`, KG migration `0036`) and prices them at 2×; a row without the split keeps 1.25×. Rows written before are not repriced (option A).

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [ADR-0166](0166-archetype-plugin-database-roles-are-opt-in.md) (own database roles are opt-in)
 
 - **Date:** 2026-11-19
 - **Deciders:** Owner (byte5); spec author iret77

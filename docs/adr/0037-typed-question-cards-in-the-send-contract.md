@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — refined by [ADR-0144](0144-question-cards-go-out-as-text-where-a-channel-has-no-cards.md) (the kernel keeps open text questions)
 
 - **Date:** 2026-11-19
 - **Deciders:** Coordinator of the native facilitator rollout (#2043), design note
