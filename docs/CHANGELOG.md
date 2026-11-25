@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Conductor canvas edges readable in dark mode (2026-11-25)
+
+- The transitions in the Conductor designer and the template preview were xyflow's `#3e3e3e`
+  on its `#141414` dark pane (about 1.6:1). They now come from two theme tokens,
+  `--canvas-edge` / `--canvas-edge-selected` (dark `#8d919c` / `#d2d5dd`, light unchanged),
+  through `.conductor-canvas`. The canvas follows the app's theme (`data-theme`) instead of
+  only the OS. Checked in light, dark and both forced themes.
+
 ### Security — follow-ups to the bounded graph services (ADR-0044, ADR-0167) (2026-11-25)
 
 - A turn the subscription CLI answered had no graph read boundary when the agent had no
