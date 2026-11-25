@@ -34,8 +34,8 @@ Additive (ADR-0044).
     throw `no-boundary` outside a turn; an edit of a process the turn may not
     read answers `not-found`; a write into another agent's scope throws
     `out-of-scope`.
-  - `memoryStore@1`: the private trees (`orchestrators`, `contexts`,
-    `sessions`, `chat-sessions`) and loose files at the root throw
+  - `memoryStore@1`: the private trees (`orchestrators`, `agents`, `contexts`,
+    `sessions`, `chat-sessions`, `ui-prefs`) and loose files at the root throw
     `MemoryPathError`; the `_*` trees and `core/audit` are read-only.
   - `ctx.services.replace` of these three names throws `kernel-only` for
     every plugin that does not hold the raw service.

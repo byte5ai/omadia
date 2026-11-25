@@ -249,6 +249,8 @@ describe('ADR-0044 · bounded memoryStore@1', () => {
       ['/memories/contexts/atlas/user/u-a/n.md', 'context'],
       ['/memories/loose-alice.md', 'legacy note'],
       ['/memories/pairings/dm/u-a.json', '{}'],
+      ['/memories/agents/@omadia/channel-teams/refs-alice.json', 'plugin-wide'],
+      ['/memories/ui-prefs/default/u-a/operator.json', 'prefs'],
     ] as const) {
       await store.createFile(path, content);
     }
@@ -270,6 +272,9 @@ describe('ADR-0044 · bounded memoryStore@1', () => {
       '/memories/sessions/atlas/2026-11-25.md',
       '/memories/chat-sessions/chat-1.json',
       '/memories/contexts/atlas/user/u-a/n.md',
+      '/memories/agents/@omadia/channel-teams/refs-alice.json',
+      '/memories/Agents/@omadia/channel-teams/refs-alice.json',
+      '/memories/ui-prefs/default/u-a/operator.json',
       '/memories/loose-alice.md',
       '/memories/core/../orchestrators/atlas/secret-alice.md',
       '/memories//sessions/atlas/2026-11-25.md',
@@ -289,7 +294,7 @@ describe('ADR-0044 · bounded memoryStore@1', () => {
     const listed = (await bounded.list('/memories')).map((e) => e.virtualPath);
     assert.ok(listed.some((p) => p.startsWith('/memories/core')), listed.join(','));
     for (const p of listed) {
-      assert.doesNotMatch(p, /orchestrators|sessions|contexts|loose-alice/, p);
+      assert.doesNotMatch(p, /orchestrators|agents|ui-prefs|sessions|contexts|loose-alice/, p);
     }
   });
 

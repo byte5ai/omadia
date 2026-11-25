@@ -96,7 +96,8 @@ Chosen option: **A**.
   `not-found`. A write lands only in this agent's scopes, inside a turn; another
   agent's scope throws `out-of-scope`.
 - **`memoryStore@1`.** A plugin never reaches the private trees (`orchestrators`, where
-  every plugin's `ctx.memory` lives too, `contexts`, `sessions`, `chat-sessions`). It
+  every plugin's `ctx.memory` lives too, `agents`, the plugin-wide and legacy tree of
+  every plugin, `contexts`, `sessions`, `chat-sessions`, `ui-prefs`). It
   never reaches loose files at the root either. It reads `core` and the `_*` trees.
   The `_*` trees (operator-seeded: `_rules`, `_brand`) and `core/audit` are read-only
   (ADR-0033). It may use other top-level trees (`pairings`). This holds in and outside
@@ -119,7 +120,8 @@ Chosen option: **A**.
 
 ### Consequences
 
-- 🟢 **Good:** ADR-0040's residuals are closed for the four services it named. A
+- 🟢 **Good:** ADR-0040's residuals are closed for three of the four services it named (`graphPool` stays
+  operator-granted, see above). A
   `requires:` line on them no longer buys a read past the boundary, and "no boundary"
   means "nothing" for every plugin-facing path.
 - 🟢 **Good:** The plan runner reuses only this agent's processes (INV-2).

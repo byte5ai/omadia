@@ -563,10 +563,19 @@ const MEMORIES_ROOT = '/memories';
 /**
  * First segments under `/memories` a plugin never reaches through the
  * service: each agent's private root (and every plugin's `ctx.memory` inside
- * it), the per-context trees, the session transcripts and the web chat
- * copies. A plugin reads its own notes through `ctx.memory`.
+ * it), every plugin's plugin-wide and legacy tree (`agents`,
+ * `ctx.memory.pluginWide`), the per-context trees, the session transcripts,
+ * the web chat copies and the per-user UI preferences. A plugin reads its
+ * own notes through `ctx.memory`.
  */
-const PRIVATE_TREES: ReadonlySet<string> = new Set(['orchestrators', 'contexts', 'sessions', 'chat-sessions']);
+const PRIVATE_TREES: ReadonlySet<string> = new Set([
+  'orchestrators',
+  'agents',
+  'contexts',
+  'sessions',
+  'chat-sessions',
+  'ui-prefs',
+]);
 
 /**
  * A shared tree a plugin may read but not change (ADR-0033: the operator
