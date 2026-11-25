@@ -1,3 +1,5 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
+
 import { Router } from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
@@ -36,14 +38,10 @@ interface AdminDeps {
 export function createAdminRouter(deps: AdminDeps): Router {
   const router = Router();
 
+  // Defence in depth: `mountAdminTokenSurface` already checked the bearer
+  // before dispatching here, but the router must never serve without it.
   router.use((req: Request, res: Response, next: NextFunction) => {
-    const header = req.headers['authorization'];
-    if (typeof header !== 'string' || !header.startsWith('Bearer ')) {
-      res.status(401).json({ error: 'unauthorized' });
-      return;
-    }
-    const supplied = header.slice('Bearer '.length).trim();
-    if (!constantTimeEqual(supplied, deps.token)) {
+    if (!hasAdminTokenBearer(req, deps.token)) {
       res.status(401).json({ error: 'unauthorized' });
       return;
     }
@@ -157,11 +155,25 @@ export function createAdminRouter(deps: AdminDeps): Router {
   return router;
 }
 
+const BEARER_RE = /^Bearer\s+(\S+)\s*$/i;
+
+/** The bearer credential of a request, or `undefined` when it carries none. */
+export function bearerToken(req: Request): string | undefined {
+  const header = req.headers['authorization'];
+  if (typeof header !== 'string') return undefined;
+  // The auth scheme is case-insensitive (RFC 9110 §11.1), as in teamsSsoVerifier.
+  return BEARER_RE.exec(header)?.[1];
+}
+
+/** True when the request presents exactly `token` as its bearer credential. */
+export function hasAdminTokenBearer(req: Request, token: string): boolean {
+  const supplied = bearerToken(req);
+  return supplied !== undefined && constantTimeEqual(supplied, token);
+}
+
+/** Compares SHA-256 digests, so neither the content nor the length of the
+ *  configured token leaks through timing. */
 function constantTimeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return diff === 0;
+  const digest = (v: string): Buffer => createHash('sha256').update(v, 'utf8').digest();
+  return timingSafeEqual(digest(a), digest(b));
 }

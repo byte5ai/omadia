@@ -31,7 +31,7 @@ import { config, registrySeedFromEnv } from './config.js';
 import { LLM_SETUP_HINT } from './llmSetupHint.js';
 import { attachmentStoreHealth, selectAttachmentStore } from './platform/attachmentStore.js';
 import type { MemoryStore } from '@omadia/plugin-api';
-import { createAdminRouter } from './routes/admin.js';
+import { ADMIN_TOKEN_PATH, mountAdminTokenSurface } from './routes/adminTokenMount.js';
 import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
 import { createMemoryPromoteRouter } from './routes/memoryPromote.js';
 import { createAdminUpdateRouter } from './routes/adminUpdate.js';
@@ -4086,6 +4086,28 @@ async function main(): Promise<void> {
       notice: result.notice ?? buildSystemNotice('no_agent', locale ? { locale } : {}),
     };
   };
+
+  // The ADMIN_TOKEN break-glass surface. Like the public-path mount it must sit
+  // BEFORE the `/api` session gate below: mounted after it, a bearer request
+  // met the gate's `auth.missing` 401 before the token was compared. It claims
+  // only requests that present a bearer credential (terminal: 401/404/served)
+  // and passes every other request on to the gate untouched.
+  if (
+    mountAdminTokenSurface(app, {
+      token: config.ADMIN_TOKEN,
+      store: memoryStore,
+      audit: () => adminAudit,
+      // #1082 — per request: the orchestrator plugin publishes the tally
+      // on activate, possibly after this router is mounted.
+      runTraceStats: () =>
+        serviceRegistry.get<RunTraceOutcomeStats>(RUN_TRACE_STATS_SERVICE),
+    })
+  ) {
+    console.log(`[middleware] admin token endpoints enabled at ${ADMIN_TOKEN_PATH} (bearer, before the session gate)`);
+  } else {
+    console.log('[middleware] admin endpoints DISABLED (ADMIN_TOKEN not set)');
+  }
+
   // ── Epic #470 C4 / H1 — the terminating public-path mount ────────────────
   //
   // THE POSITION OF THIS LINE IS THE FEATURE. It sits immediately before the
@@ -7633,26 +7655,9 @@ async function main(): Promise<void> {
     `[middleware] agent-builder endpoints ready at /api/v1/builder (db=${DRAFTS_DB_PATH}, auth: required)`,
   );
 
-  if (config.ADMIN_TOKEN && config.ADMIN_TOKEN.length > 0) {
-    app.use(
-      '/api/admin',
-      createAdminRouter({
-        store: memoryStore,
-        token: config.ADMIN_TOKEN,
-        // #1082 — per request: the orchestrator plugin publishes the tally
-        // on activate, possibly after this router is mounted.
-        runTraceStats: () =>
-          serviceRegistry.get<RunTraceOutcomeStats>(RUN_TRACE_STATS_SERVICE),
-      }),
-    );
-    console.log('[middleware] admin endpoints enabled at /api/admin');
-    // S+7.7 — Telegram admin endpoints are now self-contained inside the
-    // plugin (mounted via core.registerRouter at /api/telegram/admin/*).
-    // No kernel-side route file. See packages/harness-channel-telegram/
-    // src/adminRouter.ts.
-  } else {
-    console.log('[middleware] admin endpoints DISABLED (ADMIN_TOKEN not set)');
-  }
+  // The ADMIN_TOKEN surface is mounted further up, before the `/api` session
+  // gate — see `mountAdminTokenSurface` there. S+7.7: Telegram admin endpoints
+  // live inside the plugin (core.registerRouter at /api/telegram/admin/*).
 
   // `/diagrams/<signed-key>` is now mounted by the @omadia/diagrams
   // plugin via ctx.routes.register (see packages/harness-diagrams/src/plugin.ts).

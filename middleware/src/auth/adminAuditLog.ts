@@ -75,6 +75,15 @@ export type AuditAction =
   // `target` is the client key, `after` the account only as the users row it
   // resolves to, and the provider. Never the typed text or the password.
   | 'auth.login_failed'
+  // A request on the machine-to-machine ADMIN_TOKEN surface (`/api/admin/*`,
+  // `routes/adminTokenMount.ts`). Written BEFORE the request runs; a request
+  // whose row cannot be written is refused. System actor `system:admin-token`;
+  // `target` is `admin-api:<METHOD> <path>`. Never the token or a body.
+  | 'admin_token.use'
+  // A wrong bearer token on that surface. At most one row per minute (the
+  // first refusal of each window), so a guessing flood cannot flood the trail;
+  // every refusal is also logged. Same actor/target shape, never the token.
+  | 'admin_token.refused'
   // #1347 — operator consent for a plugin's unauthenticated public paths and
   // its SQL grant. `before`/`after` carry the granted set, so the history
   // survives a revoke that DELETEs the grant row.

@@ -36,6 +36,23 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — ADMIN_TOKEN surface was unreachable behind the session gate (2026-11-25)
+
+- `/api/admin/*` (memory priming, `security/screening`, `run-trace`) was mounted after the
+  blanket `/api` session gate and is not a public path, so every bearer request got
+  `401 auth.missing` before the token was compared. Confirmed live on Fly (read-only).
+- Now mounted before the gate by `mountAdminTokenSurface` (`routes/adminTokenMount.ts`). It
+  claims only requests that present a bearer: a wrong token is a 401, a right one is served,
+  an unserved path is a 404 and never reaches the authenticated stack. Requests without a
+  bearer meet the gate as before, so `/api/admin/domains` keeps its session auth. Not a
+  `publicPaths` entry.
+- Every token use writes an `admin_token.use` audit row first (actor `system:admin-token`);
+  a failed audit write refuses the request with 503. Wrong tokens are logged and written as
+  `admin_token.refused` at most once a minute. A handler error reaches the JSON error handler
+  (500) instead of reading as a 404. The scheme is matched case-insensitively. Token compare
+  now hashes both sides (no length leak). Security doc §10zb.
+- The `ADMIN_ALLOWED_EMAILS` comment no longer promises a token break-glass for a whitelist
+  lockout: the surface has no user management. Local-password accounts are the way in.
 ### Security — plugins read the graph only through bounded services (ADR-0044) (2026-11-25)
 
 - A plugin that declared `knowledgeGraph@^1`, `processMemory@^1` or `memoryStore@^1` got the
