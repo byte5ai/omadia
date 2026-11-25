@@ -212,6 +212,38 @@ describe('ADR-0044 · bounded knowledgeGraph@1', () => {
   });
 });
 
+describe('ADR-0167 · kernel node namespaces are never an entity system', () => {
+  const fact = (factId: unknown, ids: string[] = []) =>
+    ({ factId, sourceTurnId: 't', subject: 's', predicate: 'p', object: 'o', mentionedEntityIds: ids }) as never;
+  const refused = (err: unknown): boolean => err instanceof KgEntityNamespaceError;
+
+  for (const [label, systems] of [
+    ['a declared writer', ['turn', 'session', 'notes']],
+    ['an undeclared writer', []],
+  ] as const) {
+    it(`${label}: turn, session, user, channel and fact namespaces are refused before the graph`, async () => {
+      const { kg, calls } = fakeGraph();
+      const bounded = boundKnowledgeGraph(kg, '@test/ns', systems);
+      for (const system of ['turn', 'session', 'user', 'teams', 'fact', 'mk', 'process', 'turn:atlas:']) {
+        await assert.rejects(() => bounded.ingestEntities([{ system, model: 'm', id: 1 }]), refused, system);
+      }
+      for (const factId of ['odoo:res.partner:1', 'turn:atlas::web-1:2026', undefined, 42]) {
+        await assert.rejects(() => bounded.ingestFacts([fact(factId)]), refused, String(factId));
+      }
+      assert.deepEqual(calls, [], 'nothing reached the graph');
+    });
+  }
+
+  it('an undeclared writer still writes its own master data (the Odoo / Confluence syncs)', async () => {
+    const { kg, calls } = fakeGraph();
+    const bounded = boundKnowledgeGraph(kg, '@test/undeclared-sync');
+    await bounded.ingestEntities([{ system: 'odoo', model: 'res.partner', id: 1 }]);
+    await bounded.ingestEntities([{ system: 'confluence', model: 'page', id: '123' }]);
+    await bounded.ingestFacts([fact('fact:t:s:p:o', ['odoo:res.partner:1'])]);
+    assert.deepEqual(calls, ['ingestEntities', 'ingestEntities', 'ingestFacts']);
+  });
+});
+
 describe('ADR-0044 · bounded plans: the turn’s own conversation only', () => {
   const own = <T>(fn: () => Promise<T>): Promise<T> => inTurn(STRICT_BOUND, fn, { sessionScope: 'web-1' });
 

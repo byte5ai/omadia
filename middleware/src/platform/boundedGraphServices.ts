@@ -40,6 +40,7 @@ import {
   neighborsOfType,
   scopeBelongsToAgent,
   type EditProcessInput,
+  type ChannelKind,
   type EditProcessResult,
   type EntityIngest,
   type FactIngest,
@@ -162,6 +163,49 @@ function systemOfEntityId(externalId: string): string {
 const FACT_ID_PREFIX = 'fact:';
 
 /**
+ * Channel identities are `<channelKind>:<channelUserId>` (`channelIdentityNodeId`),
+ * and a channel user id can itself hold a colon (Teams `29:…`). Keyed by
+ * `ChannelKind`, so a new channel kind must be added here to compile.
+ */
+const CHANNEL_KIND_NAMESPACES: { readonly [K in ChannelKind]: true } = {
+  teams: true,
+  telegram: true,
+  slack: true,
+  discord: true,
+  whatsapp: true,
+  imessage: true,
+  email: true,
+  web: true,
+  api: true,
+};
+
+/**
+ * The node-id namespaces the kernel writes itself (the `*NodeId` helpers in
+ * plugin-api, process ids, the `dataset` entity system). Never an entity
+ * system of a plugin: the providers upsert by id whatever the node type.
+ */
+const KERNEL_NODE_NAMESPACES: ReadonlySet<string> = new Set([
+  'session',
+  'turn',
+  'plan',
+  'planstep',
+  'user',
+  'mk',
+  'excerpt',
+  'inconsistency',
+  'merge',
+  'excerpt-merge',
+  'topic',
+  'run',
+  'agent',
+  'tool',
+  'fact',
+  'process',
+  'dataset',
+  ...Object.keys(CHANNEL_KIND_NAMESPACES),
+]);
+
+/**
  * ADR-0167 — the check on a plugin's entity and fact writes: an entity's
  * `system`, and the system prefix of every id a fact mentions, must be one
  * of the plugin's declared `permissions.graph.entity_systems`. A fact's own
@@ -169,10 +213,19 @@ const FACT_ID_PREFIX = 'fact:';
  * whatever its type, so `odoo:res.partner:42` would write into the partner.
  * Throws `KgEntityNamespaceError` naming the first system outside them.
  */
-export function entityWriteGuard(pluginId: string, entitySystems: readonly string[]) {
-  const allowed = new Set(entitySystems);
+export function entityWriteGuard(pluginId: string, entitySystems: readonly string[] | 'undeclared') {
+  const allowed = entitySystems === 'undeclared' ? undefined : new Set(entitySystems);
   const assertSystem = (system: string): void => {
-    if (!allowed.has(system)) throw new KgEntityNamespaceError(pluginId, system);
+    // The kernel's own node namespaces are never an entity system: the
+    // providers upsert by id whatever the node type, so `turn` + model/id
+    // would merge `extras` into another user's turn.
+    // A colon in the system would let the node id start with another
+    // namespace (`turn:atlas:` + model + id), so a system is one segment.
+    if (system.includes(':') || KERNEL_NODE_NAMESPACES.has(system)) {
+      throw new KgEntityNamespaceError(pluginId, system);
+    }
+    // ADR-0167 transition: an undeclared writer is held to the kernel check only.
+    if (allowed !== undefined && !allowed.has(system)) throw new KgEntityNamespaceError(pluginId, system);
   };
   return {
     entities(entities: readonly EntityIngest[]): void {
@@ -180,9 +233,10 @@ export function entityWriteGuard(pluginId: string, entitySystems: readonly strin
     },
     facts(facts: readonly FactIngest[]): void {
       for (const fact of facts) {
-        if (!fact.factId.startsWith(FACT_ID_PREFIX)) {
-          throw new KgEntityNamespaceError(pluginId, systemOfEntityId(fact.factId));
+        if (typeof fact.factId !== 'string' || !fact.factId.startsWith(FACT_ID_PREFIX)) {
+          throw new KgEntityNamespaceError(pluginId, systemOfEntityId(String(fact.factId)));
         }
+        if (allowed === undefined) continue;
         for (const id of fact.mentionedEntityIds ?? []) assertSystem(systemOfEntityId(id));
       }
     },
@@ -199,7 +253,8 @@ const undeclaredEntityWriters = new Set<string>();
  * warning once per plugin, until the strict rule replaces the transition.
  */
 function boundedEntityWrites(kg: KnowledgeGraph, pluginId: string, entitySystems: readonly string[]) {
-  const guard = entitySystems.length > 0 ? entityWriteGuard(pluginId, entitySystems) : undefined;
+  const declared = entitySystems.length > 0;
+  const guard = entityWriteGuard(pluginId, declared ? entitySystems : 'undeclared');
   const warnUndeclared = (method: string): void => {
     if (undeclaredEntityWriters.has(pluginId)) return;
     undeclaredEntityWriters.add(pluginId);
@@ -209,13 +264,13 @@ function boundedEntityWrites(kg: KnowledgeGraph, pluginId: string, entitySystems
   };
   return {
     async ingestEntities(entities: EntityIngest[]): ReturnType<KnowledgeGraph['ingestEntities']> {
-      if (guard) guard.entities(entities);
-      else if (entities.length > 0) warnUndeclared('ingestEntities');
+      guard.entities(entities);
+      if (!declared && entities.length > 0) warnUndeclared('ingestEntities');
       return kg.ingestEntities(entities);
     },
     async ingestFacts(facts: FactIngest[]): ReturnType<KnowledgeGraph['ingestFacts']> {
-      if (guard) guard.facts(facts);
-      else if (facts.length > 0) warnUndeclared('ingestFacts');
+      guard.facts(facts);
+      if (!declared && facts.length > 0) warnUndeclared('ingestFacts');
       return kg.ingestFacts(facts);
     },
   };

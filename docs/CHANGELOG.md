@@ -54,7 +54,10 @@ changelog.
   in the plugin's declared `permissions.graph.entity_systems` (`KgEntityNamespaceError`
   otherwise). The accessor's `ingestFacts` now checks too. Plugins that declare no
   `entity_systems` (integration-odoo, integration-confluence today) still write through the
-  service, with a `[security-audit]` warning, until their manifests declare them.
+  service, with a `[security-audit]` warning; how that transition ends is open (the manifest
+  loader strips the reserved `odoo` / `confluence` systems, ADR-0167). For every plugin,
+  declared or not, the kernel's own node namespaces (`turn`, `session`, `user`, channel
+  kinds, …), systems with a colon and non-`fact:` fact ids are refused.
 - The bounded `findEntities` in a context-bound `enforce-strict` / `members` turn read the
   capturing turns with one `getNeighbors` per hit (N+1). It now makes one batched call,
   `KnowledgeGraph.getNeighborsOfType` (plugin-api 1.98.0, optional; one SQL query on Neon,

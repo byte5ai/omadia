@@ -32,7 +32,9 @@ Additive.
   systems of `mentionedEntityIds` and that `factId` is a fact id (`fact:…`). The
   `KnowledgeGraphAccessor.ingestFacts` doc no longer allows mentions of other
   systems. A plugin declaring none still writes through the service during the
-  transition, with a warning.
+  transition, with a warning. The kernel's own node-id namespaces (`turn`,
+  `session`, `user`, channel kinds, …) and systems with a colon are refused for
+  every plugin.
 - `ctx.services.get('topicClustering')` returns a form whose methods throw
   `GraphServiceRefusedError` (`kernel-only`) for every plugin but the provider
   and the boundary implementers; `replace` of it is refused the same way.
