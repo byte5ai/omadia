@@ -15,6 +15,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { seedInMemory } from './backends.js';
 import {
+  sweepPluginServicesOutsideTurn,
   sweepRegisteredGraphTool,
   sweepTurn,
   type EntryPoint,
@@ -155,6 +156,7 @@ export function canarySweepSuite(modes: readonly Mode[], options: SweepOptions =
           'memory-tool',
           'plugin-accessor',
           'plugin-neighbors',
+          'plugin-service',
         ];
         if (backend === 'neon') expectedEntries.push('process-tool');
         assert.deepEqual([...seen].sort(), expectedEntries.sort());
@@ -174,6 +176,22 @@ export function canarySweepSuite(modes: readonly Mode[], options: SweepOptions =
     }
 
     if (recall !== 'wide') return;
+    // ADR-0044 — outside a turn a plugin's graph services read no turn,
+    // session, plan, neighbour or process, and no private memory tree: only
+    // the shared `/memories` trees every viewer may read (core, `_*`), and
+    // entity nodes, which are global in the tenant (ADR-0040).
+    it('outside a turn: a plugin’s graph services return only shared trees and entities', async (t) => {
+      if (!seeded) return t.skip('no test database');
+      const byCanary = new Map(seeded.world.items.map((i) => [i.canary.toUpperCase(), i]));
+      const got = await sweepPluginServicesOutsideTurn(seeded);
+      const unshared = got.filter((c) => {
+        const item = byCanary.get(c);
+        if (item?.store === 'entity') return false;
+        return !(item?.store === 'scratch' && (item.tier === 'core' || item.tier === 'rules'));
+      });
+      assert.deepEqual(unshared, []);
+      assert.ok(got.length > 0, 'CONTROL: the shared trees are read');
+    });
     for (const mode of modes) {
       // The kernel-native registration of the graph tool (subscription-CLI
       // path) knows no turn. Positive control: the in-turn graph tool above

@@ -27,6 +27,7 @@ import {
   runStoredProcessToolSpec,
   writeProcessToolSpec,
 } from '@omadia/orchestrator/dist/tools/processMemoryTool.js';
+import { turnContext } from '@omadia/orchestrator';
 
 // ---------------------------------------------------------------------------
 // FakeProcessMemoryService — programmable stub. Each method records its
@@ -203,6 +204,14 @@ describe('write_process handler', () => {
   });
 });
 
+/** A turn whose graph boundary is bound (no user: this agent's processes). */
+function inTurn<T>(fn: () => Promise<T>): Promise<T> {
+  return turnContext.run(
+    { turnId: 't-1', turnDate: '2026-11-25', graphReadScope: { value: { kind: 'nothing' } } },
+    fn,
+  );
+}
+
 describe('query_processes handler', () => {
   it('returns hybrid hits with score + 3-step preview', async () => {
     const service = makeFake({
@@ -219,7 +228,7 @@ describe('query_processes handler', () => {
       ],
     });
     const handler = createQueryProcessesHandler(service);
-    const result = await handler({ query: 'do thing' });
+    const result = await inTurn(() => handler({ query: 'do thing' }));
     const parsed = JSON.parse(result) as {
       mode: string;
       hits: Array<{ id: string; score: number; stepsPreview: string[] }>;
@@ -229,6 +238,18 @@ describe('query_processes handler', () => {
     assert.equal(parsed.hits[0]!.id, 'process:s:x');
     assert.ok(Math.abs(parsed.hits[0]!.score - 0.812) < 1e-6);
     assert.deepEqual(parsed.hits[0]!.stepsPreview, ['one', 'two', 'three']);
+  });
+
+  it('ADR-0044: without a graph boundary (no turn, public MCP) it finds nothing', async () => {
+    const service = makeFake({
+      queryResult: [{ record: makeRecord('process:s:x', 'Xyz: do thing', 1, ['one']), score: 0.9 }],
+    });
+    const result = await createQueryProcessesHandler(service)({ query: 'do thing' });
+    assert.deepEqual((JSON.parse(result) as { hits: unknown[] }).hits, []);
+    const run = await createRunStoredProcessHandler(
+      makeFake({ getResult: makeRecord('process:s:x', 'Xyz: do thing', 1, ['a']) }),
+    )({ id: 'process:s:x' });
+    assert.match(run, /Error: run_stored_process/);
   });
 });
 
@@ -259,10 +280,11 @@ describe('query_processes handler · agent boundary', () => {
     assert.deepEqual(parsed.hits.map((h) => h.id), ['process:b']);
   });
 
-  it('outside a bounded turn the query stays tenant-wide', async () => {
+  it('ADR-0044: outside a bounded turn the query reads nothing', async () => {
     const service = makeFake({ queryResult: ownAndForeign() });
-    await createQueryProcessesHandler(service)({ query: 'x', limit: 3 });
-    assert.equal(service.calls.query[0]!.agentScopePrefix, undefined);
+    const result = await createQueryProcessesHandler(service)({ query: 'x', limit: 3 });
+    assert.deepEqual((JSON.parse(result) as { hits: unknown[] }).hits, []);
+    assert.equal(service.calls.query.length, 0, 'the store is not asked');
   });
 });
 
@@ -280,7 +302,7 @@ describe('run_stored_process handler', () => {
       getResult: makeRecord('process:s:x', 'Xyz: do thing', 2, ['a', 'b', 'c']),
     });
     const handler = createRunStoredProcessHandler(service);
-    const result = await handler({ id: 'process:s:x' });
+    const result = await inTurn(() => handler({ id: 'process:s:x' }));
     const parsed = JSON.parse(result) as {
       status: string;
       title: string;

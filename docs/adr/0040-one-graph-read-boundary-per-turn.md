@@ -107,4 +107,7 @@ Chosen option: **A**.
 ## More Information
 
 - Docs: `docs/security-architecture.md` (rules added, residuals removed).
+- Closed by [ADR-0044](0044-plugins-read-the-graph-through-bounded-services.md): the raw
+  service grants (a plugin now gets a bounded form) and the reads with no boundary set
+  (plugin-facing paths fail closed).
 - Related: ADR-0016, ADR-0019, [ADR-0033](0033-memory-tool-protected-trees-and-seeded-rules.md).

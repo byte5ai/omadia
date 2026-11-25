@@ -129,8 +129,8 @@ describe('graph boundary — a plugin’s turn search inside a restricted turn',
     assert.equal(bounded?.scopeAllowed('agent-x::ab'), false);
   });
 
-  it('outside a restricted turn the options pass through', async () => {
-    const bounded = await within(undefined, async () => Promise.resolve(boundTurnSearch<SearchTurnsOptions>({ query: 'x' })));
-    assert.deepEqual(bounded?.options, { query: 'x' });
+  it('ADR-0044: no boundary set (a turn before binding, or no turn) sees nothing', async () => {
+    assert.equal(await within(undefined, async () => Promise.resolve(boundTurnSearch<SearchTurnsOptions>({ query: 'x' }))), null);
+    assert.equal(boundTurnSearch<SearchTurnsOptions>({ query: 'x' }), null);
   });
 });

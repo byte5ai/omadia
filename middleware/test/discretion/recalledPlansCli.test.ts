@@ -202,7 +202,8 @@ describe('recalled plans and processes carry discretion labels (#2194)', () => {
   describe('the labelled processMemory service', () => {
     const record: ProcessRecord = {
       id: PROCESS.id,
-      scope: 'hr',
+      // Mira's own process: the process tools read only this agent's (#2207).
+      scope: 'mira::hr',
       title: PROCESS.title,
       steps: ['Vertrag', 'Gespräch'],
       visibility: 'team',
@@ -223,6 +224,8 @@ describe('recalled plans and processes carry discretion labels (#2194)', () => {
           turnId: `t-${contextKey}`,
           turnDate: '2026-11-24',
           agentSlug: 'mira',
+          // A bound graph boundary (ADR-0044): no boundary, no process read.
+          graphReadScope: { value: { kind: 'nothing' as const } },
           discretion: createDiscretionTurnState({ contextKey, resolveReaders: async () => readers }),
         },
         fn,

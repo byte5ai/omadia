@@ -53,6 +53,23 @@ changelog.
   (`memoryAccess/canaryHttp.pg.test.ts`, `PG_TEST_FLOOR` 776 → 788); the `todo` and the
   security-architecture residual are gone.
 
+### Security — plugins read the graph only through bounded services (ADR-0044) (2026-11-25)
+
+- A plugin that declared `knowledgeGraph@^1`, `processMemory@^1` or `memoryStore@^1` got the
+  raw service from `ctx.services.get` and read past the turn's graph read boundary (residual
+  of ADR-0040). It now gets a bounded form: turn, session, neighbour, plan and process reads
+  follow the turn's boundary and are refused outside a turn; cross-user methods are
+  kernel-only; the private `/memories` trees are never reachable. Only the bundled providers,
+  `orchestrator` and `orchestrator-extras` keep the raw services.
+- With no boundary set, the plugin accessors, the node filter and `query_processes` /
+  `run_stored_process` no longer return the whole tenant (the public MCP endpoint reached the
+  tenant's processes).
+- The plan runner reuses only this agent's processes (INV-2). **Behaviour change** in
+  context-bound `enforce-strict` / `members` rooms: plan GC and the verifier-blocked marker
+  are skipped, and `findEntities` drops entities only another conversation captured.
+- plugin-api 1.96.0: `GraphServiceRefusedError`. Canary sweep: entry point `plugin-service`
+  plus an outside-a-turn run.
+
 ### Added — memory canary sweep over topics and duplicates (memory-ACL test plan, step 3) (2026-11-25)
 
 - `canaryHttp.test.ts` also calls `/api/v1/admin/topics` and `/api/v1/admin/duplicates`
