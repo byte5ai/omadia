@@ -18,6 +18,8 @@
  *  - `memoryStore@1`: the private trees (agents, contexts, transcripts, web
  *    chat copies) are never reachable; shared trees (`core`, `_*`, a plugin's
  *    own top-level tree such as `pairings`) are, in and outside a turn.
+ *  - `topicClustering@1`: kernel-only. Its reads take the viewer as an
+ *    argument and its re-cluster rebuilds every account's topics.
  *
  * Outside a turn there is no boundary, and the bounded form does not invent
  * one. Kernel code that must read the tenant's graph outside a turn (recall,
@@ -49,7 +51,9 @@ import {
   type ProcessQueryHit,
   type ProcessRecord,
   type QueryProcessesInput,
+  type TopicClusteringService,
   type TurnSearchHit,
+  TOPIC_CLUSTERING_SERVICE_NAME,
 } from '@omadia/plugin-api';
 import {
   currentGraphNodeViewer,
@@ -94,6 +98,9 @@ export const BOUNDED_GRAPH_SERVICE_NAMES: ReadonlySet<string> = new Set([
   'knowledgeGraph',
   'processMemory',
   'memoryStore',
+  // Topics are content of every member's memory (ADR-0045): `list` takes any
+  // viewer id and `recluster` rebuilds every account's topics. Kernel-only.
+  TOPIC_CLUSTERING_SERVICE_NAME,
 ]);
 
 /** Whether this plugin resolves the raw graph services. */
@@ -132,7 +139,9 @@ export function boundGraphService<T>(
       ? boundKnowledgeGraph(service as unknown as KnowledgeGraph, pluginId, entitySystems)
       : name === 'processMemory'
         ? boundProcessMemory(service as unknown as ProcessMemoryService, pluginId)
-        : boundMemoryStore(service as unknown as MemoryStore, pluginId);
+        : name === TOPIC_CLUSTERING_SERVICE_NAME
+          ? boundTopicClustering(pluginId)
+          : boundMemoryStore(service as unknown as MemoryStore, pluginId);
   perService.set(key, wrapped);
   return wrapped as T;
 }
@@ -783,4 +792,29 @@ export function boundMemoryStore(store: MemoryStore, pluginId: string): MemorySt
     delete: async (p: string) => store.delete(check(p, 'write')),
     rename: async (from: string, to: string) => store.rename(check(from, 'write'), check(to, 'write')),
   } satisfies MemoryStore);
+}
+
+// ---------------------------------------------------------------------------
+// topicClustering@1
+// ---------------------------------------------------------------------------
+
+/** Every method of the contract; a new one must be added here to exist. */
+const TOPIC_CLUSTERING_METHODS: ReadonlyArray<keyof TopicClusteringService> = [
+  'list',
+  'getWithMembers',
+  'recluster',
+];
+
+/**
+ * The bounded `topicClustering@1`: every method is kernel-only. `list` and
+ * `getWithMembers` take the viewer as an argument, so a plugin could name
+ * any account; `recluster` deletes and rebuilds every account's topics.
+ * The admin topic routes call the raw service.
+ */
+export function boundTopicClustering(pluginId: string): TopicClusteringService {
+  const refuse = (method: string) => (): Promise<never> =>
+    Promise.reject(new GraphServiceRefusedError(pluginId, TOPIC_CLUSTERING_SERVICE_NAME, method, 'kernel-only'));
+  return Object.freeze(
+    Object.fromEntries(TOPIC_CLUSTERING_METHODS.map((m) => [m, refuse(m)])),
+  ) as unknown as TopicClusteringService;
 }

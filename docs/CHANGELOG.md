@@ -59,6 +59,11 @@ changelog.
   capturing turns with one `getNeighbors` per hit (N+1). It now makes one batched call,
   `KnowledgeGraph.getNeighborsOfType` (plugin-api 1.98.0, optional; one SQL query on Neon,
   `neighborsOfType` falls back per node for a provider without it).
+- `topicClustering@1` was raw for any plugin that declared it: `list(viewerId)` and
+  `getWithMembers(id, viewerId)` took any account as the viewer, and `recluster()` deleted
+  and rebuilt every account's topics. Plugins now get a form where every method throws
+  `GraphServiceRefusedError` (`kernel-only`), and only a boundary implementer may `replace`
+  it. The admin topic routes keep the raw service. No plugin declares it.
 
 ### Fixed — usage ledger priced 1-hour cache writes at the 5-minute rate (2026-11-25)
 

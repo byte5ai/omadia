@@ -33,6 +33,9 @@ Additive.
   `KnowledgeGraphAccessor.ingestFacts` doc no longer allows mentions of other
   systems. A plugin declaring none still writes through the service during the
   transition, with a warning.
+- `ctx.services.get('topicClustering')` returns a form whose methods throw
+  `GraphServiceRefusedError` (`kernel-only`) for every plugin but the provider
+  and the boundary implementers; `replace` of it is refused the same way.
 
 ## 1.97.0 — 2026-11-25
 

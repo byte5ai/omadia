@@ -2321,8 +2321,9 @@ export class RawModelServiceRefusedError extends Error {
 export type GraphServiceRefusal = 'kernel-only' | 'no-boundary' | 'out-of-scope';
 
 /**
- * ADR-0044 — thrown by the bounded `knowledgeGraph@1` / `processMemory@1`
- * service a plugin resolves through `ctx.services.get`. Inside a turn its
+ * ADR-0044 — thrown by the bounded `knowledgeGraph@1` / `processMemory@1` /
+ * `memoryStore@1` service a plugin resolves through `ctx.services.get`, and by
+ * `topicClustering@1`, which is kernel-only for plugins. Inside a turn its
  * reads are held to the turn's graph read boundary (ADR-0040); this error is
  * for the calls the boundary cannot answer.
  */

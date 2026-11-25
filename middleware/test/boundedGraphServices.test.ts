@@ -25,6 +25,7 @@ import {
   boundKnowledgeGraph,
   boundMemoryStore,
   boundProcessMemory,
+  boundTopicClustering,
 } from '../src/platform/boundedGraphServices.js';
 
 const PLUGIN = '@test/plugin';
@@ -376,6 +377,21 @@ describe('ADR-0044 · bounded memoryStore@1', () => {
       () => bounded.rename('/memories/pairings', '/memories/orchestrators/atlas/p'),
     ]) {
       await assert.rejects(change, MemoryPathError);
+    }
+  });
+});
+
+describe('bounded topicClustering@1: kernel-only', () => {
+  it('refuses list, getWithMembers and recluster, in and outside a turn', async () => {
+    const topics = boundTopicClustering(PLUGIN);
+    const kernelOnly = (err: unknown): boolean => err instanceof GraphServiceRefusedError && err.reason === 'kernel-only';
+    for (const run of [
+      () => topics.list('any-user'),
+      () => topics.getWithMembers('topic:1', 'any-user'),
+      () => topics.recluster(),
+    ]) {
+      await assert.rejects(run, kernelOnly);
+      await inTurn(USER_BOUND, () => assert.rejects(run, kernelOnly));
     }
   });
 });

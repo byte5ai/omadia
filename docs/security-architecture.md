@@ -1038,7 +1038,9 @@ The surfaces that boundary must cover, and how each one does:
   conversation, process writes only this agent's scopes, entity and fact
   writes only the plugin's declared `graph.entity_systems` (ADR-0167;
   undeclared writers pass with a warning during the transition), and only a
-  boundary implementer may `replace` these services. Only the
+  boundary implementer may `replace` these services. `topicClustering@1`
+  is kernel-only for plugins: its reads take any viewer id, and `recluster`
+  rebuilds every account's topics. Only the
   bundled providers and boundary implementers (`orchestrator`,
   `orchestrator-extras`) hold the raw services. `graphPool` stays an
   operator-granted SQL capability (C7). Residuals: sibling recall and

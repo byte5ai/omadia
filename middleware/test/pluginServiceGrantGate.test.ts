@@ -753,6 +753,24 @@ describe('services.get — ADR-0044 bounded graph services', () => {
     assert.deepEqual(written, ['notes']);
   });
 
+  it('topicClustering@1 is kernel-only for a plugin; the provider keeps it raw', async () => {
+    const recluster = async () => ({ topicsDeleted: 9 });
+    const topicsImpl = { list: async () => [{ id: 'topic:1' }], getWithMembers: async () => null, recluster };
+    const catalog = catalogOf(pluginOf('@test/topics', ['topicClustering@^1']));
+    const { ctx, registry } = makeCtx('@test/topics', catalog);
+    registry.provide('topicClustering', topicsImpl);
+    const topics = ctx.services.get<typeof topicsImpl>('topicClustering')!;
+    assert.notEqual(topics, topicsImpl);
+    await assert.rejects(() => topics.list(), { name: 'GraphServiceRefusedError' });
+    await assert.rejects(() => topics.recluster(), { name: 'GraphServiceRefusedError' });
+    assert.throws(() => ctx.services.replace('topicClustering', topicsImpl), { name: 'GraphServiceRefusedError' });
+
+    const extras = catalogWithOrigin('bundled', [pluginOf('@omadia/orchestrator-extras', ['topicClustering@^1'])]);
+    const own = makeCtx('@omadia/orchestrator-extras', extras);
+    own.registry.provide('topicClustering', topicsImpl);
+    assert.equal(own.ctx.services.get('topicClustering'), topicsImpl);
+  });
+
   it('a bundled boundary implementer gets the raw service', () => {
     const catalog = catalogWithOrigin('bundled', [pluginOf('@omadia/orchestrator-extras', ['knowledgeGraph@^1'])]);
     const { ctx, registry } = makeCtx('@omadia/orchestrator-extras', catalog);
