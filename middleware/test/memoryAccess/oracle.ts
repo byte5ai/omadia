@@ -358,7 +358,8 @@ function topic(v: Viewer, mode: Mode, t: TopicItem): Verdict {
 
 /**
  * What a logged-in person may read through the per-person REST routes
- * (`/api/v1/memory`, `/api/v1/datasets`, `/api/chat/sessions`). No turn, no
+ * (`/api/v1/memory`, `/api/v1/datasets`, `/api/chat/sessions`) and the admin
+ * routes that filter per viewer (topics, duplicates). No turn, no
  * agent, no context-memory mode: the session's user is the only identity.
  * Anything these routes are not for is forbidden.
  */
@@ -377,6 +378,17 @@ export function expectedHttp(user: UserKey, tenant: TenantKey, item: Item): Verd
     }
     case 'dataset':
       return dataset({ tenant, user, agent: 'atlas', context: 'web', shielded: false }, item);
+    case 'topic': {
+      // A topic's name and description are written from its members'
+      // summaries, so it is content of every member.
+      const readable = item.members.every((m) => (m.owners === 'absent' ? [] : m.owners).includes(user));
+      return readable
+        ? doc(true, 'a topic over memories you own (#1851 expected: no content of entries you cannot read)')
+        : doc(
+            false,
+            'a topic built from memories you cannot read (owner decision 2026-11-24; #1851 expected)',
+          );
+    }
     case 'scratch':
       if (item.tier === 'chat-session') {
         return item.sender === user

@@ -1089,6 +1089,8 @@ Known residuals:
 - Only turns that carry a `TurnOrigin` are context-bound.
 - #1762: web chat tabs (`/api/chat/sessions`) have no owner; every account
   lists and reads every tab.
+- #1851: topic names and descriptions (`/api/v1/admin/topics`) are written
+  from every account's memories and shown to every account.
 
 All of these are pinned as known failures (`todo`, naming the issue) in the
 canary sweep under `middleware/test/memoryAccess/` (`canarySweep*.test.ts`,
