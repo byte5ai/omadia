@@ -6034,7 +6034,7 @@
     },
     "detail": {
       "membersHeading": "Mitglieder",
-      "emptyMembers": "Keine sichtbaren Mitglieder (oder ACL verbirgt sie)."
+      "emptyMembers": "Keine Mitglieder."
     }
   },
   "adminBulkPromote": {

@@ -28,9 +28,9 @@ export interface TopicNode {
   props: {
     name: string;
     description: string;
-    /** Count of HAS_TOPIC inbound edges. Stored at create-time; the
-     *  service's `list` and `getWithMembers` return the live count of
-     *  the members the viewer reads (all of them, or no topic). */
+    /** Count of HAS_TOPIC inbound edges at create-time. The service
+     *  hides a topic whose live member count no longer matches (a member
+     *  was deleted) until the next re-cluster rebuilds it. */
     member_count: number;
     created_at: string;
     updated_at: string;

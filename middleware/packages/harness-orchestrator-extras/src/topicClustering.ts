@@ -18,6 +18,9 @@
  * Reads are gated per viewer: `list` and `getWithMembers` show a topic only
  * when the viewer can read every current member, so an ACL change after the
  * re-cluster cannot turn a topic into a window onto memories the viewer lost.
+ * A topic that lost a member since it was written (deleted or purged) is
+ * hidden from everyone until the next re-cluster: its text still carries the
+ * gone member's summary.
  *
  * No Anthropic key required for the service to be published — fallback
  * naming keeps the feature operable without paid LLM access.
@@ -130,9 +133,18 @@ function ownersOf(mk: GraphNode): readonly string[] {
   return Array.isArray(owners) ? owners.filter((o): o is string => typeof o === 'string') : [];
 }
 
-/** True when the viewer may read every member and there is at least one. */
-function readableByViewer(members: readonly GraphNode[], viewer: string): boolean {
-  return members.length > 0 && members.every((m) => ownersOf(m).includes(viewer));
+/** True when the topic still has every member it was written from. */
+function isIntact(topic: TopicNode, members: readonly GraphNode[]): boolean {
+  return members.length > 0 && members.length === topic.props.member_count;
+}
+
+/** True when the topic is intact and the viewer may read every member. */
+function readableByViewer(
+  topic: TopicNode,
+  members: readonly GraphNode[],
+  viewer: string,
+): boolean {
+  return isIntact(topic, members) && members.every((m) => ownersOf(m).includes(viewer));
 }
 
 type EmbeddedMk = { mk: GraphNode; embedding: number[] };
@@ -210,19 +222,12 @@ export function createTopicClusteringService(
     deps.log ?? ((msg: string): void => { console.error(msg); });
   const model = deps.model ?? DEFAULT_MODEL;
 
-  /** The topic with its live member count, as the viewer may see it. */
-  function withLiveCount(topic: TopicNode, memberCount: number): TopicNode {
-    return { ...topic, props: { ...topic.props, member_count: memberCount } };
-  }
-
   async function list(viewerOmadiaUserId: string): Promise<TopicNode[]> {
     const topics = await deps.kg.listTopics();
     const visible: TopicNode[] = [];
     for (const topic of topics) {
       const members = await deps.kg.listTopicMembers(topic.id);
-      if (readableByViewer(members, viewerOmadiaUserId)) {
-        visible.push(withLiveCount(topic, members.length));
-      }
+      if (readableByViewer(topic, members, viewerOmadiaUserId)) visible.push(topic);
     }
     return visible;
   }
@@ -234,6 +239,7 @@ export function createTopicClusteringService(
     const topic = await deps.kg.getTopic(topicExternalId);
     if (!topic) return null;
     const rawMembers = await deps.kg.listTopicMembers(topicExternalId);
+    if (!isIntact(topic, rawMembers)) return null;
     // The name and description are written from every member, so the topic
     // is visible only when the viewer passes the ACL gate for all of them.
     const visible: GraphNode[] = [];
@@ -245,8 +251,7 @@ export function createTopicClusteringService(
       if (!gated) return null;
       visible.push(gated);
     }
-    if (visible.length === 0) return null;
-    return { ...withLiveCount(topic, visible.length), members: visible };
+    return { ...topic, members: visible };
   }
 
   async function nameCluster(

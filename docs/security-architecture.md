@@ -1054,7 +1054,11 @@ The surfaces that boundary must cover, and how each one does:
   from its members' summaries, so a topic is content of every member.
   Re-cluster (`topicClustering.ts`) groups only memories with the same owner
   set, and `/api/v1/admin/topics` lists or opens a topic only for a caller
-  who reads every current member; anyone else gets no entry and a 404.
+  who reads every current member; anyone else gets no entry and a 404. A
+  topic that lost a member since it was written is hidden from everyone
+  until the next re-cluster. The dev graph overlay (`GET /api/dev/graph/topics`,
+  behind `DEV_ENDPOINTS_ENABLED` and an operator session) takes no viewer,
+  like the rest of the raw graph browser.
 
 The audience is the security input. A group counts as known only when its
 channel marks the roster complete (`ChatParticipantsProvider.completeRoster`).
@@ -2560,7 +2564,8 @@ they mask it whatever `mask_user_prompt` says
   inconsistency detector (`inconsistencyDetector.ts`, which runs
   fire-and-forget after a memory write, possibly after the writing turn
   finalized its map) and the topic detector the Teams channel calls before a
-  turn (`topicDetector.ts`) open one scope per run with `openStoredTextScope`
+  turn (`topicDetector.ts`) open one scope per run (topic naming: one per
+  owner set, ADR 0045) with `openStoredTextScope`
   (`@omadia/plugin-api` 1.25.0, privacy-guard 0.8.0, `storedTextScope.ts`):
   the same detectors through the run's own surrogate map, which restores the
   cluster name and description and the inconsistency summary before they are

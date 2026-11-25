@@ -44,12 +44,14 @@ changelog.
   returned it to every account.
 - Re-cluster now clusters each exact owner set (`acl_owners`) on its own, with one Privacy
   Shield run per set; memories without owners get no topic. `list` and the detail route show
-  a topic only when the caller reads every current member (else no entry / 404), with the
-  live member count. Topics from before this change are hidden the same way until the next
-  re-cluster rebuilds them. Decision: ADR 0045.
+  a topic only when the caller reads every current member (else no entry / 404); a topic
+  that lost a member since it was written is hidden until the next re-cluster. Topics from
+  before this change are hidden the same way until the next re-cluster rebuilds them.
+  Decision: ADR 0045.
 - `TopicClusteringService.list(viewerOmadiaUserId)` takes the viewer (`@omadia/plugin-api`
-  1.95.0). The canary sweep asserts the fix; the `todo` and the security-architecture
-  residual are gone.
+  1.97.0). The canary sweep asserts the fix, in memory and on Neon
+  (`memoryAccess/canaryHttp.pg.test.ts`, `PG_TEST_FLOOR` 776 → 788); the `todo` and the
+  security-architecture residual are gone.
 
 ### Added — memory canary sweep over topics and duplicates (memory-ACL test plan, step 3) (2026-11-25)
 

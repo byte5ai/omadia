@@ -350,4 +350,75 @@ describe('Slice 11 · topics never cross owners (#1851, ADR 0045)', () => {
     assert.equal(result.topicsCreated, 0);
     assert.equal(result.unclusteredMemories, 3);
   });
+
+  it('an unshare after the re-cluster hides the topic from the removed owner', async () => {
+    const { kg, alice, bob } = await twoOwners();
+    const ids: string[] = [];
+    for (const [i, v] of [[1, 0], [0.99, 0.01], [0.98, 0.02]].entries()) {
+      ids.push(await makeMK(kg, [alice, bob], `shared ${String(i)}`, v));
+    }
+    const service = createTopicClusteringService({ kg });
+    await service.recluster({ similarityThreshold: 0.6, minClusterSize: 3 });
+    const [topic] = await service.list(bob);
+    assert.ok(topic);
+
+    await kg.removeOwner(ids[1]!, bob, { actorOmadiaUserId: alice });
+
+    assert.deepEqual(await service.list(bob), []);
+    assert.equal(await service.getWithMembers(topic.id, bob), null);
+    assert.deepEqual((await service.list(alice)).map((t) => t.id), [topic.id]);
+  });
+
+  it('a topic that lost a member is hidden from everyone until the next re-cluster', async () => {
+    const { kg, alice } = await twoOwners();
+    const ids: string[] = [];
+    for (const [i, v] of [[1, 0], [0.99, 0.01], [0.98, 0.02], [0.97, 0.03]].entries()) {
+      ids.push(await makeMK(kg, alice, `A${String(i)}`, v));
+    }
+    const service = createTopicClusteringService({ kg });
+    await service.recluster({ similarityThreshold: 0.6, minClusterSize: 3 });
+    const [topic] = await service.list(alice);
+    assert.ok(topic);
+
+    await kg.deleteMemory(ids[0]!, { actorOmadiaUserId: alice });
+
+    assert.deepEqual(await service.list(alice), []);
+    assert.equal(await service.getWithMembers(topic.id, alice), null);
+    await service.recluster({ similarityThreshold: 0.6, minClusterSize: 3 });
+    assert.equal((await service.list(alice))[0]?.props.member_count, 3);
+  });
+
+  it('opens one privacy run per owner set, so no restore sees another set', async () => {
+    const { kg, alice, bob } = await twoOwners();
+    for (const v of [[1, 0], [0.99, 0.01], [0.98, 0.02]]) await makeMK(kg, alice, 'Alice note', v);
+    for (const v of [[1, 0], [0.99, 0.01], [0.98, 0.02]]) await makeMK(kg, bob, 'Bob note', v);
+    const runs: string[][] = [];
+    const service = createTopicClusteringService({
+      kg,
+      llm: {
+        complete: async () => ({ content: [{ type: 'text', text: '{"name":"n","description":"d"}' }] }),
+      } as unknown as NonNullable<Parameters<typeof createTopicClusteringService>[0]['llm']>,
+      log: () => {},
+      privacy: () => {
+        const seen: string[] = [];
+        runs.push(seen);
+        return {
+          mask: async (text: string) => {
+            seen.push(text);
+            return { send: true as const, text };
+          },
+          restore: async (text: string) => text,
+        };
+      },
+    });
+
+    const result = await service.recluster({ similarityThreshold: 0.6, minClusterSize: 3 });
+
+    assert.equal(result.topicsCreated, 2);
+    assert.equal(runs.length, 2);
+    for (const seen of runs) {
+      const joined = seen.join('\n');
+      assert.ok(!(joined.includes('Alice') && joined.includes('Bob')), joined);
+    }
+  });
 });
