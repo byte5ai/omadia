@@ -1,7 +1,13 @@
 import { screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getMcpAuthStatus, type McpAuthStatus } from '@/app/_lib/agentBuilder';
+import {
+  disconnectMcpServer,
+  getMcpAuthStatus,
+  type McpAuthStatus,
+  type McpRevocationOutcome,
+} from '@/app/_lib/agentBuilder';
 
 import { renderWithIntl } from '../../../_lib/test-utils';
 import { McpAuthSection } from '../McpAuthSection';
@@ -15,6 +21,7 @@ vi.mock('@/app/_lib/agentBuilder', () => ({
 }));
 
 const mockGetAuthStatus = vi.mocked(getMcpAuthStatus);
+const mockDisconnect = vi.mocked(disconnectMcpServer);
 
 function status(overrides: Partial<McpAuthStatus> = {}): McpAuthStatus {
   return {
@@ -61,5 +68,38 @@ describe('McpAuthSection status row', () => {
     expect(screen.getByRole('button', { name: 'Connect' })).toBeInTheDocument();
     // The dead token is still stored, so it can still be removed.
     expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
+  });
+});
+
+describe('McpAuthSection disconnect', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** Render connected, click Disconnect, and let the status come back empty. */
+  async function disconnectWith(revocation: McpRevocationOutcome): Promise<void> {
+    mockGetAuthStatus
+      .mockResolvedValueOnce(status({ connected: true }))
+      .mockResolvedValue(status());
+    mockDisconnect.mockResolvedValue({ revocation });
+    renderWithIntl(<McpAuthSection serverId="s1" showDelegation={false} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Disconnect' }));
+    expect(await screen.findByText('🔒 Not authorized')).toBeInTheDocument();
+  }
+
+  it('confirms when the provider revoked the access', async () => {
+    await disconnectWith('revoked');
+    expect(screen.getByText(/as\.example has revoked the access/)).toBeInTheDocument();
+  });
+
+  it('says so when the provider offers no revocation', async () => {
+    await disconnectWith('unsupported');
+    expect(screen.getByText(/offers no way to revoke the access from here/)).toBeInTheDocument();
+    expect(screen.getByText(/account settings at as\.example/)).toBeInTheDocument();
+  });
+
+  it('says so when the provider did not confirm the revocation', async () => {
+    await disconnectWith('failed');
+    expect(screen.getByText(/did not confirm that the access is revoked/)).toBeInTheDocument();
   });
 });

@@ -5090,6 +5090,23 @@ async function main(): Promise<void> {
           after: { name: entry.serverName, source: entry.source },
         });
       },
+      // Issue #1925 — one row per removed MCP OAuth authorization.
+      auditMcpOAuthDisconnect: async (entry) => {
+        await adminAudit?.record({
+          actor: {
+            ...(entry.actorUserId ? { id: entry.actorUserId } : {}),
+            ...(entry.actor ? { email: entry.actor } : {}),
+          },
+          action: 'mcp_server.oauth_disconnect',
+          target: `mcp-server:${entry.serverId}`,
+          after: {
+            name: entry.serverName,
+            identity: entry.identity,
+            cause: entry.cause,
+            revocation: entry.revocation,
+          },
+        });
+      },
       // W5-1 — the operator surface for `public_mcp_key_bindings`, without
       // which the public MCP endpoint cannot be configured except by hand in
       // psql. A fresh store per call so a graphPool that arrives later is

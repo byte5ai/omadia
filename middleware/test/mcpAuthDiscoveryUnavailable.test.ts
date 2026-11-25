@@ -313,6 +313,8 @@ describe('MCP operator routes on discovery failures', () => {
         getValidAccessToken: () => Promise.resolve(null),
         tokenState: (id, u) => service.tokenState(id, u),
         markTokenRejected: (id, u) => service.markTokenRejected(id, u),
+        disconnect: (s, u, o) => service.disconnect(s, u, o),
+        disconnectAll: (s, o) => service.disconnectAll(s, o),
       },
       mcpOAuthUserKey: 'operator',
     };

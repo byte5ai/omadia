@@ -1175,8 +1175,16 @@ export async function setMcpOAuthClient(
   });
 }
 
-export async function disconnectMcpServer(serverId: string): Promise<void> {
-  await callJson(`/v1/operator/mcp-servers/${encodeURIComponent(serverId)}/token`, {
+/** What a disconnect did at the OAuth provider. omadia's own copy of the token
+ *  is removed in every case: `revoked` means the provider ended the grant too,
+ *  `unsupported` that it offers no revocation, `failed` that it did not
+ *  confirm one, `not_connected` that nothing was stored. */
+export type McpRevocationOutcome = 'revoked' | 'unsupported' | 'failed' | 'not_connected';
+
+export async function disconnectMcpServer(
+  serverId: string,
+): Promise<{ revocation: McpRevocationOutcome }> {
+  return callJson(`/v1/operator/mcp-servers/${encodeURIComponent(serverId)}/token`, {
     method: 'DELETE',
   });
 }

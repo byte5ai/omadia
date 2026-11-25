@@ -33,6 +33,7 @@ const AUTH_SERVER: AuthServerMetadata = {
   authorizationEndpoint: `${HARNESS_ISSUER}/authorize`,
   tokenEndpoint: `${HARNESS_ISSUER}/token`,
   registrationEndpoint: null,
+  revocationEndpoint: `${HARNESS_ISSUER}/revoke`,
   codeChallengeMethods: ['S256'],
   grantTypes: ['authorization_code', 'refresh_token'],
   scopesSupported: ['read'],
@@ -131,6 +132,10 @@ export function mcpOAuthHarness(opts: {
       get: async (_ns: string, key: string) => vault.get(key),
       set: async (_ns: string, key: string, value: string) => {
         vault.set(key, value);
+      },
+      listKeys: async () => [...vault.keys()].sort(),
+      deleteKey: async (_ns: string, key: string) => {
+        vault.delete(key);
       },
     } as never,
     redirectUri: 'https://host/cb',

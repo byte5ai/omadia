@@ -71,6 +71,7 @@ import {
   resolveMcpUserKey,
 } from '../services/mcpDelegation.js';
 import { DISCOVERY_UNAVAILABLE, McpAuthDiscoveryError } from '../services/mcpAuthDiscovery.js';
+import type { McpRevocationOutcome } from '../services/mcpOAuthService.js';
 import {
   checkOperatorOutboundUrl,
   createMcpConnectGuard,
@@ -207,6 +208,18 @@ export interface AgentBuilderRouterOptions {
     }>;
     /** #1923 — the MCP server refused a call that carried this user's token. */
     markTokenRejected(serverId: string, userKey: string): Promise<void>;
+    /** #1925 — revoke one user's grant at the provider (unless `revoke` is
+     *  false) and remove the stored token. Returns what the provider did. */
+    disconnect(
+      server: McpServerRow,
+      userKey: string,
+      opts: { readonly revoke: boolean },
+    ): Promise<McpRevocationOutcome>;
+    /** #1925 — the same for every user of a server, before it is deleted. */
+    disconnectAll(
+      server: McpServerRow,
+      opts: { readonly revoke: boolean },
+    ): Promise<readonly { userKey: string; revocation: McpRevocationOutcome }[]>;
   };
   readonly mcpOAuthUserKey?: string;
   /** Schema-driven MCP config with Vault-backed secrets (epic #459). */
@@ -255,6 +268,19 @@ export interface AgentBuilderRouterOptions {
     readonly serverId: string;
     readonly serverName: string;
     readonly source: 'manual' | 'marketplace';
+  }) => Promise<void>;
+  /** Issue #1925 — durable trace of a removed MCP OAuth authorization: who
+   *  removed whose token, why (a disconnect or the server's deletion), and
+   *  whether the provider revoked the grant. Best-effort like the hook above.
+   *  Never receives a token. Absent → only the log line is written. */
+  readonly auditMcpOAuthDisconnect?: (entry: {
+    readonly actor: string | null;
+    readonly actorUserId?: string;
+    readonly serverId: string;
+    readonly serverName: string;
+    readonly identity: string;
+    readonly cause: 'disconnect' | 'server_delete';
+    readonly revocation: McpRevocationOutcome;
   }) => Promise<void>;
 }
 
@@ -411,6 +437,13 @@ export function createAgentBuilderRouter(
         : {}),
     },
   });
+  /** #1315 — the one actor rule for an audit row: users.id (uid claim) and the
+   *  session email, not the knowledge-graph id. The sub only stands in when the
+   *  session carries no email. */
+  const auditActor = (req: Request): { actor: string | null; actorUserId?: string } => {
+    const { id, email } = auditActorFromRequest(req);
+    return { actor: email ?? sessionIdentity(req), ...(id ? { actorUserId: id } : {}) };
+  };
   /** Issue #1342 — a stdio server runs as a child process of the middleware,
    *  with its OS user, filesystem and network, so saving one leaves a trace:
    *  a log line always, an `admin_audit` row when the hook is wired. Id, name
@@ -425,19 +458,41 @@ export function createAgentBuilderRouter(
       `[mcp] stdio server saved: id=${row.id} name=${JSON.stringify(row.name)} source=${source} actor=${actor ?? 'unknown'}`,
     );
     if (!options.auditMcpStdioServerSaved) return;
-    // #1315 — the one actor rule: users.id (uid claim) and the session email,
-    // not the knowledge-graph id or the sub.
-    const { id: actorUserId, email: actorEmail } = auditActorFromRequest(req);
     try {
       await options.auditMcpStdioServerSaved({
-        actor: actorEmail ?? actor,
-        ...(actorUserId ? { actorUserId } : {}),
+        ...auditActor(req),
         serverId: row.id,
         serverName: row.name,
         source,
       });
     } catch (err) {
       console.warn(`[mcp] stdio server audit write failed for id=${row.id}: ${msg(err)}`);
+    }
+  };
+  /** Issue #1925 — a removed OAuth authorization leaves a trace: a log line
+   *  always, an `admin_audit` row when the hook is wired. One per token. */
+  const recordOAuthDisconnect = async (
+    req: Request,
+    server: McpServerRow,
+    entry: {
+      readonly identity: string;
+      readonly cause: 'disconnect' | 'server_delete';
+      readonly revocation: McpRevocationOutcome;
+    },
+  ): Promise<void> => {
+    console.log(
+      `[mcp] oauth disconnect: id=${server.id} name=${JSON.stringify(server.name)} identity=${JSON.stringify(entry.identity)} cause=${entry.cause} revocation=${entry.revocation} actor=${sessionIdentity(req) ?? 'unknown'}`,
+    );
+    if (!options.auditMcpOAuthDisconnect) return;
+    try {
+      await options.auditMcpOAuthDisconnect({
+        ...auditActor(req),
+        serverId: server.id,
+        serverName: server.name,
+        ...entry,
+      });
+    } catch (err) {
+      console.warn(`[mcp] oauth disconnect audit write failed for id=${server.id}: ${msg(err)}`);
     }
   };
   /** Issues #1341 / #1342 — the operator outbound host rule for a stored
@@ -1530,6 +1585,22 @@ export function createAgentBuilderRouter(
     if (!l) return;
     try {
       const id = str(req.params.id);
+      // #1925 — the cascade only removes the token rows. Before they go, end
+      // every user's grant at the provider and clear the vault, or deleting
+      // the server leaves live credentials behind on both sides.
+      const server = (await l.graph.listMcpServers()).find((s) => s.id === id);
+      if (server && options.mcpOAuth) {
+        const revoke = (await oauthEndpointRefusal(server)) === null;
+        for (const { userKey, revocation } of await options.mcpOAuth.disconnectAll(server, {
+          revoke,
+        })) {
+          await recordOAuthDisconnect(req, server, {
+            identity: userKey,
+            cause: 'server_delete',
+            revocation,
+          });
+        }
+      }
       await l.graph.deleteMcpServer(id);
       await invalidateMcpServer(id);
       await reload(l);
@@ -2091,7 +2162,9 @@ export function createAgentBuilderRouter(
     }
   });
 
-  /** Disconnect: drop the stored token for this user + server. */
+  /** Disconnect: revoke this user's grant at the provider where it offers that,
+   *  and drop the stored token. Answers with what the provider did, so the UI
+   *  can say when access is still live there (#1925). */
   router.delete('/mcp-servers/:id/token', async (req: Request, res: Response) => {
     const l = live(res);
     if (!l) return;
@@ -2109,11 +2182,26 @@ export function createAgentBuilderRouter(
         res.status(403).json({ error: 'delegation_identity_unresolved' });
         return;
       }
-      await l.graph.deleteMcpOAuthToken(server.id, userKey);
-      // The revoked token is still attached to a pooled connection; without
+      let revocation: McpRevocationOutcome = 'not_connected';
+      if (options.mcpOAuth) {
+        // Revocation fetches OAuth metadata from the endpoint (#1341 / #1342).
+        // A refused host is not contacted; the token is removed all the same.
+        const revoke = (await oauthEndpointRefusal(server)) === null;
+        revocation = await options.mcpOAuth.disconnect(server, userKey, { revoke });
+        if (revocation !== 'not_connected') {
+          await recordOAuthDisconnect(req, server, {
+            identity: userKey,
+            cause: 'disconnect',
+            revocation,
+          });
+        }
+      } else {
+        await l.graph.deleteMcpOAuthToken(server.id, userKey);
+      }
+      // The removed token is still attached to a pooled connection; without
       // this, "Disconnect" leaves an authorized session serving calls.
       await invalidateMcpServer(server.id);
-      res.status(204).end();
+      res.json({ revocation });
     } catch (err) {
       fail(res, err);
     }

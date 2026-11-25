@@ -171,16 +171,41 @@ export class McpOAuthClient {
     );
   }
 
+  /** RFC 7009 token revocation. Resolves when the AS confirmed it (it answers
+   *  200 for a token it does not know as well), throws `McpOAuthError`
+   *  otherwise. The caller checks that `revocationEndpoint` is set. */
+  async revoke(input: {
+    readonly revocationEndpoint: string;
+    readonly client: OAuthClientCredentials;
+    readonly token: string;
+    readonly tokenTypeHint: 'access_token' | 'refresh_token';
+  }): Promise<void> {
+    await this.postForm(
+      input.revocationEndpoint,
+      this.clientForm(input.client, { token: input.token, token_type_hint: input.tokenTypeHint }),
+    );
+  }
+
+  /** A form body that identifies the client the way every endpoint of the AS
+   *  expects it (`client_secret_post`, or `client_id` alone for a public one). */
+  private clientForm(
+    client: OAuthClientCredentials,
+    params: Record<string, string>,
+  ): URLSearchParams {
+    const form = new URLSearchParams(params);
+    form.set('client_id', client.clientId);
+    if (client.clientSecret) form.set('client_secret', client.clientSecret);
+    return form;
+  }
+
   private async tokenRequest(
     server: AuthServerMetadata,
     client: OAuthClientCredentials,
     params: Record<string, string>,
     resource?: string | null,
   ): Promise<TokenResult> {
-    const form = new URLSearchParams(params);
-    form.set('client_id', client.clientId);
+    const form = this.clientForm(client, params);
     if (resource) form.set('resource', resource);
-    if (client.clientSecret) form.set('client_secret', client.clientSecret);
     const doc = await this.postForm(server.tokenEndpoint, form);
     const accessToken = typeof doc['access_token'] === 'string' ? doc['access_token'] : null;
     if (!accessToken) {

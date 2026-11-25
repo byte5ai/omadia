@@ -170,6 +170,10 @@ export type AuditAction =
   // as a child process of the middleware, so who added it belongs in the
   // trail. `after` holds name + source, never the command line.
   | 'mcp_server.stdio_create'
+  // #1925 — an MCP OAuth authorization was removed, by "Disconnect" or with
+  // its server. `after` holds the server name, whose token it was, the cause
+  // and whether the provider revoked the grant. Never a token.
+  | 'mcp_server.oauth_disconnect'
   // #1487 — a plugin registry was added, changed or removed. Registries
   // decide where installable code comes from. `before`/`after` carry the url
   // and whether a token is set — never the token.
