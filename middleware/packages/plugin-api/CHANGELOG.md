@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.89.0 — 2026-11-24
+## 1.94.0 — 2026-11-24
 
 Additive (#2204).
 
@@ -23,6 +23,78 @@ Additive (#2204).
 - **`scopeBelongsToAgent(scope, prefix)`**. The rule the backends apply to
   `agentScopePrefix`, for a caller that re-checks a hit's scope: the default
   agent also owns the legacy unqualified scopes.
+
+## 1.93.0 — 2026-11-24
+
+Additive (channel-sdk 0.3.14): the kernel no longer knows a plugin id for the
+Teams default bot.
+
+### Added
+
+- **`DefaultChannelKeyProvider`** and the optional
+  **`ChannelCoreApi.registerDefaultChannelKeyProvider(channelId, provider)`**
+  (`@omadia/channel-sdk`): a channel plugin that registers no
+  `AgentIdentityProvider` (Teams, whose agent bots the kernel provisions)
+  names its own default bot, the only unknown bot key the Conductor routes
+  to a binding or the fallback agent. Same lifecycle as the other channel
+  providers: one owner per channel type, dropped when the channel
+  deactivates. `@omadia/channel-teams` 0.45.0 registers it.
+
+## 1.92.0 — 2026-11-24
+
+Additive (spec 2042 follow-up: recalled plans carry discretion labels, #2194).
+
+### Added
+
+- **`RecalledPlan.turnId`** (optional): the external id of the turn that
+  wrote the plan. The recall brings that turn's discretion labels into the
+  recalling turn, so a plan written in a 1:1 is not shown to, or restated
+  for, a room with other readers.
+
+## 1.91.0 — 2026-11-24
+
+Additive (spec 2042 follow-up: agent names are not masked, #2191, #2192).
+
+### Added
+
+- **`AGENT_NAMES_SERVICE_NAME`** (`agentNames@1`) and **`AgentNamesProvider`**:
+  the kernel's snapshot of the roster's agent names (slugs, display names,
+  identity names of the existing agents) minus every name an active user
+  bears; `null` while not known. A privacy provider exempts them under the
+  `ownNames` rules in every turn and in stored-text scopes, so a colleague
+  agent named in a consultation and an agent's own name in a background job
+  stay as written.
+
+## 1.90.0 — 2026-11-23
+
+Additive (spec 2042 follow-up: an agent's own name is not masked in its own turn).
+
+### Added
+
+- **`PrivacyPromptMaskRequest.ownNames`**,
+  **`PrivacyReplayedAnswerRequest.ownNames`** and
+  **`PrivacyVerifierProjectionRequest.ownNames`** (optional): the speaking
+  agent's own names (display name, slug and identity name). A privacy
+  provider leaves a detected span whose whole value equals one of them
+  (ignoring case, surrounding quotes and punctuation) as written and does
+  not book it; the operator deny-list always wins, other names are masked
+  as before.
+
+## 1.89.0 — 2026-11-23
+
+Additive (spec 2042 follow-up: a withheld answer is traceable, not remembered).
+
+### Added
+
+- **`TurnIngest.identityGuard`** (`TurnIdentityGuardVerdict`): the identity
+  guard's verdict on the turn's answer: `outcome` (pass, blocked,
+  unavailable), the deciding `layer` (deterministic, model), the total
+  `latencyMs` and a `reason` (the rule, or why the judge was unavailable). A
+  knowledge-graph provider stores it with the Turn.
+- **`KnowledgeGraph.amendTurn?(turnExternalId, TurnAmend)`** (optional): patches
+  a written Turn without classifying it again: the guard's verdict, and for a
+  withheld answer its removal (answer emptied, embedding dropped, turn
+  `tailOnly`).
 
 ## 1.88.0 — 2026-11-23
 

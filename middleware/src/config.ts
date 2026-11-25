@@ -412,6 +412,37 @@ export const ConfigSchema = z.object({
   // origin in dev, while the webhook route only ever lives on the middleware).
   CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL: z.string().url().optional(),
 
+  // Issue #1707 — inbound replay window. An inbound request carried a signature and
+  // a delivery id but no timestamp, so a captured request stayed valid forever and
+  // only the delivery-id ledger stopped a literal repeat. A sender may now stamp
+  // `X-Webhook-Timestamp` (unix seconds) and sign `<timestamp>.<body>`; this is how
+  // far that stamp may be from the server's clock, in BOTH directions (a far-future
+  // stamp is a capture that stays valid until that time arrives).
+  CONDUCTOR_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS: z.coerce.number().int().positive().default(300),
+  // The legacy path (no timestamp ⇒ signature over the bare body) stays open by
+  // default so senders that predate the header keep working. Replay protection is
+  // only actually CLOSED with this on — flip it once every sender stamps.
+  CONDUCTOR_WEBHOOK_REQUIRE_TIMESTAMP: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(false),
+  // Issue #1707 — rotation grace for an inbound endpoint secret. Rotation used to
+  // take effect instantly: the sender's next request with the old secret answered
+  // 401, so every rotation was an outage until the sender had been reconfigured. The
+  // superseded secret now stays valid this long (0 = the old instant cutover; the
+  // route's `?immediate=true` forces that per call, for a rotation that is itself the
+  // response to a leak).
+  CONDUCTOR_WEBHOOK_SECRET_GRACE_SECONDS: z.coerce.number().int().nonnegative().default(3600),
+  // Issue #1707 — retention for stored outbound delivery payloads
+  // (`conductor_webhook_deliveries.payload`, kept for the lifetime of the install
+  // before this, run context included). The payload is redacted down to
+  // `{runId, status, redacted}` at the first age and the terminal row is deleted at
+  // the second. Both clamped in `conductor/webhookRetention.ts` — the floor keeps the
+  // sweep outside the retry worker's 24h reconciliation lookback, which would
+  // otherwise recreate a row this deleted and re-send a delivered webhook.
+  CONDUCTOR_WEBHOOK_PAYLOAD_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
+  CONDUCTOR_WEBHOOK_DELIVERY_RETENTION_DAYS: z.coerce.number().int().positive().default(180),
+
   // #330 — guardrails for agent-generated ephemeral workflows
   // (conductor.createEphemeralRun): a mandatory, clamped TTL plus per-agent
   // concurrency and creation-rate caps make runaway generation structurally
@@ -536,11 +567,9 @@ export const ConfigSchema = z.object({
     .default('MultiTenant'),
   MICROSOFT_APP_TENANT_ID: z.string().optional(),
   /**
-   * Bot Framework OAuth Connection Name (configured in Azure Bot Service).
-   * When set, the Teams bot attempts to retrieve a Teams SSO assertion for
-   * each message and threads it into the orchestrator as `ssoAssertion`,
-   * enabling the calendar tools. Unset → calendar tools stay dormant (no
-   * OAuth flow, no consent prompts).
+   * Legacy: the Bot Framework OAuth connection name now lives in the Teams
+   * plugin's setup (`teams_sso_connection_name`). The kernel no longer reads
+   * this value; kept so an existing .env still parses.
    */
   TEAMS_SSO_CONNECTION_NAME: z.string().optional(),
 
@@ -558,10 +587,9 @@ export const ConfigSchema = z.object({
    */
   TEAMS_PUBLIC_BASE_URL: z.string().url().optional(),
 
-  // Telegram channel. When TELEGRAM_BOT_TOKEN is set, the channel package is
-  // auto-installed at boot. TELEGRAM_WEBHOOK_SECRET is required alongside it
-  // (HMAC-style header validation on the webhook). TELEGRAM_PUBLIC_BASE_URL
-  // is optional — when missing, the channel falls back to long-polling.
+  // Telegram channel env (legacy). The kernel no longer auto-installs a
+  // channel from these; the Telegram plugin is installed from the store and
+  // configured through its setup form. Kept so an existing .env still parses.
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_WEBHOOK_SECRET: z.string().optional(),
   TELEGRAM_PUBLIC_BASE_URL: z.string().url().optional(),

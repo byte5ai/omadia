@@ -178,6 +178,8 @@ export interface ContextBuildInput {
    * of no known turn).
    */
   excludeUnprotected?: boolean;
+  /** #2198 — see the field of the same name on {@link AssembleForBudgetInput}. */
+  requireKnownPlanTurn?: boolean;
   /** See the field of the same name on {@link AssembleForBudgetInput}. */
   tailLimit?: number;
   /** External id of the turn currently being answered — excluded from hits. */
@@ -313,6 +315,13 @@ export interface AssembleForBudgetInput {
   audienceOwners?: readonly string[];
   /** #1507 — see the field of the same name on {@link ContextBuildInput}. */
   excludeUnprotected?: boolean;
+  /**
+   * Spec 2042 §5.11 / #2198 — the plan leg leaves out a plan whose writing
+   * turn is not known (`plan.props.turnId` missing): the turn's labels are
+   * the plan's, so without one nothing says who may read it. Set by an
+   * orchestrator that keeps discretion labels.
+   */
+  requireKnownPlanTurn?: boolean;
   /**
    * Per-call cap on the verbatim session tail: at most this many of the
    * newest tail turns, and never more than the configured `tailSize`
@@ -638,6 +647,7 @@ export class ContextRetriever {
       ...(input.currentTurnId ? { currentTurnId: input.currentTurnId } : {}),
       ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
       ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
+      ...(input.requireKnownPlanTurn ? { requireKnownPlanTurn: true } : {}),
       ...(input.tailLimit !== undefined ? { tailLimit: input.tailLimit } : {}),
       // Per-orchestrator KG isolation is OPT-IN: only when the caller (the
       // orchestrator) passes an agent prefix do we constrain recall to that
@@ -1198,7 +1208,10 @@ export class ContextRetriever {
       // Cross-session only — drop same-session plans before fetching steps so
       // the batched read does no wasted work.
       const candidates = plans.filter(
-        (p) => p.props['scope'] !== input.sessionScope,
+        (p) =>
+          p.props['scope'] !== input.sessionScope &&
+          // #2198 — no known writing turn, no known readers: not recalled.
+          (!input.requireKnownPlanTurn || typeof p.props['turnId'] === 'string'),
       );
       // One round-trip for every candidate's steps instead of a serial
       // getPlanSteps per plan (the old loop was up to ~24 sequential Neon
@@ -1251,6 +1264,8 @@ export class ContextRetriever {
           hit: {
             planId: p.id,
             scope: String(p.props['scope'] ?? ''),
+            // #2194 — the writing turn, whose discretion labels the plan has.
+            ...(typeof p.props['turnId'] === 'string' ? { turnId: p.props['turnId'] } : {}),
             ...(typeof p.props['strategy'] === 'string'
               ? { strategy: p.props['strategy'] }
               : {}),

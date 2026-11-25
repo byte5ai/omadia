@@ -8,6 +8,5 @@ Memory-Store kopiert. Verhalten hängt von `MEMORY_SEED_MODE` ab:
   die nicht durch Claude oder manuelle API-Calls verändert werden sollen.
 - `skip`: kein Seeding.
 
-Der Assistent wird im System-Prompt instruiert, Dateien unter `_rules/` nicht
-eigenständig zu überschreiben — nur ergänzen, wenn der Nutzer das ausdrücklich
-bestätigt.
+Für Agents ist `_rules/` nur lesbar (#1827): jede Datei hier wirkt für alle
+Agents und alle Accounts, darum entstehen Regeln nur über diesen Repo-Ordner.

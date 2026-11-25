@@ -22,3 +22,6 @@ export {
   TEXT_SLOT_PREFIX,
   type TemplateTextSlotRef,
 } from './textSlots.js';
+// #1709 — the run-context token grammar, shared with the kernel's renderer so the
+// authoring check and the runtime substitution can never disagree about what a token is.
+export { isTemplateExpression, runTokenMatcher } from './runTokens.js';

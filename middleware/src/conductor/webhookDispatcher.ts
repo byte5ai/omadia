@@ -4,11 +4,14 @@ import { describeError } from '../platform/describeError.js';
 
 import type { ConductorWebhookDelivery, ConductorWebhookSubscription, ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
 import { describeHttpFailure, postWebhook, signWebhookBody, type PostWebhookResult } from './webhookOutbound.js';
+import { projectRunEventPayload } from './webhookPayload.js';
+import type { ConductorWebhookEvent } from './webhookEvents.js';
 
 /**
  * Issue #437 — outbound delivery: fans an internal event (today `run.completed` /
- * `run.failed`, fired from `ConductorRunExecutor`'s terminal-run hook) out to every
- * enabled subscription for that event, HMAC-signs the body, and retries a failed
+ * `run.failed` / `run.cancelled` — see `webhookEvents.ts`, #1705 — fired from
+ * `ConductorRunExecutor`'s terminal-run hook) out to every enabled subscription for
+ * that event, HMAC-signs the body, and retries a failed
  * attempt with exponential backoff up to `maxAttempts`. `deliverEvent` makes the
  * FIRST attempt inline (fire-and-forget); `ConductorWebhookRetryWorker` re-attempts
  * anything still `pending` on a poll loop, so a delivery survives a process restart.
@@ -50,7 +53,7 @@ export class ConductorWebhookDispatcher {
   /** Fan an event out to every enabled subscription. Best-effort — a lookup or
    *  per-subscription failure is logged and does not affect the others (the caller
    *  is the run executor's terminal hook; it must never throw). */
-  async deliverEvent(event: string, payload: JsonObject): Promise<void> {
+  async deliverEvent(event: ConductorWebhookEvent, payload: JsonObject): Promise<void> {
     let subs: ConductorWebhookSubscription[];
     try {
       subs = await this.deps.store.listEnabledForEvent(event);
@@ -60,7 +63,11 @@ export class ConductorWebhookDispatcher {
     }
     for (const sub of subs) {
       try {
-        const created = await this.deps.store.createDelivery({ subscriptionId: sub.id, event, payload });
+        const created = await this.deps.store.createDelivery({
+          subscriptionId: sub.id,
+          event,
+          payload: projectRunEventPayload(payload, { includeContext: sub.includeContext }),
+        });
         // Claim the row before attempting inline — closes the race with the retry
         // worker's poll loop, which sees this same row as immediately due (issue #437
         // finding: an unclaimed inline attempt and a concurrent worker tick could both

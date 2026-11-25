@@ -29,8 +29,9 @@
 
 import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
 
-import { UNKNOWN_READERS, unionLabels, type LabelSet } from './labels.js';
+import { UNKNOWN_READERS, type LabelSet } from './labels.js';
 import type { DiscretionPort } from './port.js';
+import { mergeSubjectLabels } from './toolFlow.js';
 import { addTurnLabels, currentDiscretion, resolvedTurnLabels } from './turnLabels.js';
 
 const SUBJECT = 'memory_file' as const;
@@ -118,7 +119,7 @@ export class LabelledMemoryStore implements MemoryStore {
     // The labels go to the new paths before the move: a moved note is never
     // readable there without them.
     for (const [file, labels] of found) {
-      await this.port.persistLabels(SUBJECT, `${to}${file.slice(from.length)}`, this.agentSlug, labels);
+      await mergeSubjectLabels(this.port, SUBJECT, `${to}${file.slice(from.length)}`, this.agentSlug, labels);
     }
     await this.inner.rename(fromVirtualPath, toVirtualPath);
     if (!this.port.dropLabels) return;
@@ -135,9 +136,8 @@ export class LabelledMemoryStore implements MemoryStore {
     if (!state) return;
     const turn = await resolvedTurnLabels(state);
     if (turn.labels.length === 0) return;
-    const path = canonicalMemoryPath(virtualPath);
-    const existing = (await this.port.labelsOf(SUBJECT, [path])).get(path);
-    await this.port.persistLabels(SUBJECT, path, this.agentSlug, existing ? unionLabels(existing, turn) : turn);
+    // #2198 — atomic where the port can: a concurrent write keeps its labels.
+    await mergeSubjectLabels(this.port, SUBJECT, canonicalMemoryPath(virtualPath), this.agentSlug, turn);
   }
 
   /** The canonical paths of a file, or of every file below a directory. */

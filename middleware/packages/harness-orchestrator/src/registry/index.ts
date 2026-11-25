@@ -429,6 +429,17 @@ export class OrchestratorRegistry {
     return [...live, ...deleted];
   }
 
+  /**
+   * Spec 2042 (#2191, #2192) — every name an agent of the roster goes by:
+   * the slugs, names and identity names of the agents that exist (enabled or
+   * not). Deleted agents are left out on purpose: their names stop being
+   * exempt from masking with them. Unfiltered; `rosterAgentNames` drops the
+   * human namesakes.
+   */
+  agentNames(): string[] {
+    return (this.snapshot?.agents ?? []).flatMap((a) => [a.slug, a.name, a.identityName ?? '']);
+  }
+
   /** The built agent with this id, if the registry serves it. */
   getById(agentId: string): ActiveAgent | undefined {
     for (const entry of this.active.values()) {
