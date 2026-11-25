@@ -6,7 +6,7 @@ import { after, before, describe, it } from 'node:test';
 
 import { Pool, type PoolClient } from 'pg';
 
-import { runMultiOrchestratorMigrations } from '@omadia/orchestrator';
+import { AgentGraphStore, runMultiOrchestratorMigrations } from '@omadia/orchestrator';
 
 import { probePgTest } from './_helpers/pgTestDb.js';
 
@@ -257,6 +257,40 @@ describe('MCP registry + OAuth schema (pg)', { skip: !pgAvailable }, () => {
     const flows = await pool.query('SELECT 1 FROM mcp_oauth_flows WHERE server_id = $1', [serverId]);
     assert.equal(tokens.rowCount, 0, 'tokens must cascade with the server');
     assert.equal(flows.rowCount, 0, 'pending flows must cascade with the server');
+  });
+
+  it('round-trips the RFC 8707 resource on an OAuth flow, and NULL for older flows (0111)', async () => {
+    const server = await pool.query<{ id: string }>(
+      `INSERT INTO mcp_servers (name, transport, endpoint)
+       VALUES ($1, 'http', 'https://resource.invalid/mcp') RETURNING id`,
+      [`${TENANT}resource-server`],
+    );
+    const serverId = server.rows[0]!.id;
+    const store = new AgentGraphStore(pool);
+    const base = {
+      serverId,
+      userKey: `${TENANT}resource-user`,
+      issuer: `${TENANT}https://issuer.invalid`,
+      codeVerifier: 'verifier',
+      redirectUri: 'https://cb.invalid',
+      scopes: null,
+      tokenEndpoint: 'https://issuer.invalid/token',
+      authorizationEndpoint: 'https://issuer.invalid/authorize',
+    };
+    await store.createMcpOAuthFlow({
+      ...base,
+      state: `${TENANT}resource-state`,
+      resource: 'https://resource.invalid/mcp',
+    });
+    const withResource = await store.takeMcpOAuthFlow(`${TENANT}resource-state`);
+    assert.equal(withResource?.resource, 'https://resource.invalid/mcp');
+
+    // A flow written without a resource (or before the migration) reads back null.
+    await store.createMcpOAuthFlow({ ...base, state: `${TENANT}resource-state-2` });
+    const without = await store.takeMcpOAuthFlow(`${TENANT}resource-state-2`);
+    assert.equal(without?.resource, null);
+
+    await pool.query('DELETE FROM mcp_servers WHERE id = $1', [serverId]);
   });
 });
 

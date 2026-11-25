@@ -125,6 +125,24 @@ export class ServiceRegistry {
    * top of it. Dropped once that provide is actually removed.
    */
   private readonly ownProvides = new Map<ServiceName, { owner: string; impl: unknown }>();
+  /** Kernel decorators applied to a provider as it registers (#2194). */
+  private readonly decorators = new Map<ServiceName, (impl: unknown) => unknown>();
+
+  /**
+   * Spec 2042 §5.11 / #2194 — kernel-only: wrap whatever provider registers
+   * `name` from now on, before any consumer can `get` it. Used to put the
+   * discretion labels around `processMemory`, which a plugin provides and
+   * several plugins read (a consumer caches the object at activation, so a
+   * later `replace` would not reach it). Applies to `provide`, not to
+   * `replace`: a replacing wrapper decorates what is already decorated.
+   * Register before plugin activation; one decorator per name.
+   */
+  decorateOnProvide<T>(name: ServiceName, decorate: (impl: T) => T): void {
+    if (this.decorators.has(name)) {
+      throw new Error(`ServiceRegistry: '${String(name)}' already has a decorator`);
+    }
+    this.decorators.set(name, decorate as (impl: unknown) => unknown);
+  }
 
   /** Register a provider. Throws on duplicate — if two plugins both provide
    *  'graph', the operator needs to uninstall one.
@@ -134,7 +152,9 @@ export class ServiceRegistry {
    *  the caller. Omitted for core's own registrations. */
   provide<T>(name: ServiceName, rawImpl: T, owner?: string): () => void {
     // Spec 2042 §5.10 — a model service is only ever held through the gate.
-    const impl = gateModelService(name, rawImpl);
+    const gated = gateModelService(name, rawImpl);
+    const decorate = this.decorators.get(name);
+    const impl = decorate && gated !== null && gated !== undefined ? decorate(gated) : gated;
     if (this.providers.has(name)) {
       throw new Error(
         `ServiceRegistry: duplicate provider for '${String(name)}' — uninstall the existing provider first`,

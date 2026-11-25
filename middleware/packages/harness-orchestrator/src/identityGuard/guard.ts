@@ -186,6 +186,12 @@ export function completeSentencePrefix(buffer: string): string {
   return buffer.slice(0, end);
 }
 
+/** Whether a check went to the model layer (the judge). */
+export function usedModelLayer(result: IdentityGuardResult): boolean {
+  if (result.outcome === 'pass') return result.modelLayer;
+  return result.outcome === 'unavailable' || result.layer === 'model';
+}
+
 export type GateStep =
   | { readonly kind: 'release'; readonly text: string }
   | { readonly kind: 'hold' }
@@ -200,6 +206,7 @@ export class SentenceGate {
   private buffer = '';
   private released = '';
   private stopped = false;
+  private judged = false;
   private readonly latencies: number[] = [];
 
   constructor(private readonly guard: IdentityGuard) {}
@@ -235,6 +242,11 @@ export class SentenceGate {
     return fromReleased;
   }
 
+  /** True once a check went to the model layer (the judge). */
+  get usedModelLayer(): boolean {
+    return this.judged;
+  }
+
   /** True once a check failed: nothing more is released. */
   get blocked(): boolean {
     return this.stopped;
@@ -252,6 +264,7 @@ export class SentenceGate {
       this.released.length > 0 ? chunk : undefined,
     );
     this.latencies.push(result.latencyMs);
+    if (usedModelLayer(result)) this.judged = true;
     if (result.outcome !== 'pass') {
       this.stopped = true;
       this.buffer = '';
