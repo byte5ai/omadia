@@ -180,6 +180,26 @@ describe('office xlsx renderer', () => {
     assert.equal(f2, 'TEXT(A2,"YYYY-MM")', 'row 2 → A2');
     assert.equal(f3, 'TEXT(A3,"YYYY-MM")', 'row 3 → A3');
   });
+
+  it('renames the sheet name Excel reserves ("History") instead of failing the file (#1982)', async () => {
+    // Excel reserves the name in any case; exceljs only refuses "History".
+    for (const [name, expected] of [
+      ['History', 'History_'],
+      [' history ', 'history_'],
+    ] as const) {
+      const result = await renderXlsx({
+        sheets: [{ name, columns: [{ key: 'x', header: 'X' }], rows: [{ x: 1 }] }],
+      });
+      assert.equal(result.rowsWritten, 1);
+
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(result.buffer);
+      assert.deepEqual(
+        wb.worksheets.map((ws) => ws.name),
+        [expected],
+      );
+    }
+  });
 });
 
 describe('office docx renderer', () => {
@@ -202,6 +222,48 @@ describe('office docx renderer', () => {
     assert.equal(result.buffer[0], 0x50);
     assert.equal(result.buffer[1], 0x4b);
     assert.ok(result.buffer.length > 1000, 'non-trivial document');
+  });
+
+  it('turns line breaks inside every text field into Word line breaks (#1982)', async () => {
+    const result = await renderDocx({
+      title: 'Titel eins\nTitel zwei',
+      blocks: [
+        { type: 'heading', level: 2, text: 'Kopf eins\nKopf zwei' },
+        { type: 'paragraph', text: 'Zeile eins\nZeile zwei\r\n\r\nZeile vier' },
+        { type: 'bullets', items: ['Punkt eins\nFortsetzung'] },
+        { type: 'table', headers: ['Spalte\nA'], rows: [['Zelle\rB']] },
+      ],
+    });
+    const xml = (await unzipToText(result.buffer)).get('word/document.xml') ?? '';
+
+    const texts = [...xml.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)].map((m) => m[1] ?? '');
+    assert.ok(
+      texts.every((t) => !/[\r\n]/.test(t)),
+      'no raw line break may stay inside <w:t>',
+    );
+
+    /** Runs of the paragraph that holds `first`: '\n' marks a <w:br/>. */
+    const paragraphOf = (first: string): string => {
+      const p = [...xml.matchAll(/<w:p>[\s\S]*?<\/w:p>/g)]
+        .map((m) => m[0])
+        .find((candidate) => candidate.includes(`>${first}</w:t>`));
+      assert.ok(p, `paragraph with "${first}" exists`);
+      return [...p.matchAll(/<w:br\/>|<w:t[^>]*>([^<]*)<\/w:t>/g)]
+        .map((m) => (m[0] === '<w:br/>' ? '\n' : (m[1] ?? '')))
+        .join('');
+    };
+    assert.equal(paragraphOf('Titel eins'), 'Titel eins\nTitel zwei');
+    assert.equal(paragraphOf('Kopf eins'), 'Kopf eins\nKopf zwei');
+    assert.equal(paragraphOf('Zeile eins'), 'Zeile eins\nZeile zwei\n\nZeile vier');
+    assert.equal(paragraphOf('Punkt eins'), 'Punkt eins\nFortsetzung');
+    assert.equal(paragraphOf('Spalte'), 'Spalte\nA');
+    assert.equal(paragraphOf('Zelle'), 'Zelle\nB');
+
+    // The table header keeps its bold style on every line.
+    const header = [...xml.matchAll(/<w:p>[\s\S]*?<\/w:p>/g)]
+      .map((m) => m[0])
+      .find((p) => p.includes('>Spalte</w:t>'));
+    assert.equal(header?.match(/<w:b\/>/g)?.length, 2, 'both header runs are bold');
   });
 
   const provenanceDescriptor: DocxDescriptor = {

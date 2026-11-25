@@ -30,13 +30,15 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
   JPY: '¥',
 };
 
-// Excel forbids these in sheet names and caps the length at 31.
+// Excel forbids these in sheet names, caps the length at 31 and reserves the
+// name "History" (in any case) for its change-tracking sheet.
 const ILLEGAL_SHEET_CHARS = /[\\/?*[\]:]+/g;
+const RESERVED_SHEET_NAME = 'history';
 
 function sanitizeSheetName(name: string, index: number): string {
   const cleaned = name.replace(ILLEGAL_SHEET_CHARS, ' ').replace(/\s+/g, ' ').trim();
-  const safe = cleaned.length > 0 ? cleaned : `Sheet${String(index + 1)}`;
-  return safe.slice(0, 31);
+  const safe = (cleaned.length > 0 ? cleaned : `Sheet${String(index + 1)}`).slice(0, 31);
+  return safe.toLowerCase() === RESERVED_SHEET_NAME ? `${safe}_` : safe;
 }
 
 /** Derive an Excel number-format string from the column spec. Explicit
