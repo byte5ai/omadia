@@ -4,8 +4,9 @@ import { strict as assert } from 'node:assert';
 import { validate } from '@omadia/conductor-core';
 import type { WorkflowGraph } from '@omadia/conductor-core';
 
-import { ConductorRunExecutor } from '../src/conductor/runExecutor.js';
+import { ConductorRunExecutor, MAX_PREVIEW_AGENT_STEPS } from '../src/conductor/runExecutor.js';
 import { extractFencedJson } from '../src/conductor/realStepEffects.js';
+import type { StepMeta } from '../src/conductor/stepEffects.js';
 
 // #330 C3 — the timer step: deterministic park-then-fallback that makes
 // bounded assess loops possible. Stateful fake-store harness in the
@@ -219,16 +220,32 @@ describe('ConductorRunExecutor — timer park + tick loop', () => {
     assert.equal(preview.status, 'completed');
   });
 
-  it('previewRun stubs agent and action steps without invoking effects', async () => {
+  it('previewRun runs agent steps as preview turns and stubs action steps (#2217)', async () => {
+    // The agent's verdict decides the branch: the preview must take the
+    // branch the live run would take, not a placeholder's.
     const previewGraph: WorkflowGraph = {
       entryStepId: 'agent',
       steps: [
         { id: 'agent', kind: 'agent', agentId: 'writer', prompt: 'draft' },
         { id: 'action', kind: 'action', actionId: 'send-message' },
+        { id: 'rejected', kind: 'action', actionId: 'never' },
       ],
-      transitions: [{ id: 'to-action', source: 'agent', target: 'action' }],
+      transitions: [
+        {
+          id: 'to-action',
+          source: 'agent',
+          target: 'action',
+          guard: { op: 'eq', path: 'stepResult.data.ok', value: true },
+        },
+        {
+          id: 'to-rejected',
+          source: 'agent',
+          target: 'rejected',
+          guard: { op: 'ne', path: 'stepResult.data.ok', value: true },
+        },
+      ],
     };
-    let agentCalls = 0;
+    const agentMetas: StepMeta[] = [];
     let actionCalls = 0;
     const executor = new ConductorRunExecutor({
       workflowStore: {
@@ -243,9 +260,9 @@ describe('ConductorRunExecutor — timer park + tick loop', () => {
       runStore: {} as never,
       awaitStore: {} as never,
       effects: {
-        runAgentStep: async () => {
-          agentCalls += 1;
-          throw new Error('preview must not execute an agent turn');
+        runAgentStep: async (_step: unknown, _ctx: unknown, meta: StepMeta) => {
+          agentMetas.push(meta);
+          return { result: { text: 'ok', data: { ok: true }, previewed: true }, actor: { kind: 'agent' } };
         },
         runActionStep: async () => {
           actionCalls += 1;
@@ -257,13 +274,50 @@ describe('ConductorRunExecutor — timer park + tick loop', () => {
 
     const preview = await executor.previewRun('eph-preview', {});
 
-    assert.equal(agentCalls, 0);
+    assert.equal(agentMetas.length, 1);
+    assert.equal(agentMetas[0]?.preview, true);
+    assert.equal(agentMetas[0]?.runId, 'preview:eph-preview');
     assert.equal(actionCalls, 0);
     assert.equal(preview.status, 'completed');
-    assert.equal(preview.steps[0]?.actor, 'agent (stubbed):writer');
-    assert.deepEqual(preview.steps[0]?.result, { simulated: true, agentId: 'writer' });
+    assert.equal(preview.steps[0]?.actor, 'agent (preview, no tools):writer');
+    assert.equal(preview.steps[0]?.transition, 'to-action');
+    assert.equal(preview.steps[1]?.stepId, 'action');
     assert.equal(preview.steps[1]?.actor, 'action (stubbed):send-message');
     assert.deepEqual(preview.steps[1]?.result, { simulated: true, actionId: 'send-message' });
+  });
+
+  it('previewRun caps agent steps: a loop on agent output stops at the preview budget (#2217)', async () => {
+    const loopGraph: WorkflowGraph = {
+      entryStepId: 'agent',
+      steps: [{ id: 'agent', kind: 'agent', agentId: 'writer', prompt: 'again' }],
+      transitions: [{ id: 'loop', source: 'agent', target: 'agent', guard: { op: 'ne', path: 'stepResult.data.done', value: true } }],
+    };
+    let agentCalls = 0;
+    const executor = new ConductorRunExecutor({
+      workflowStore: {
+        getBySlug: async () => ({ id: 'w1', slug: 'loop', status: 'enabled', activeVersionId: 'v1' }),
+        getVersion: async () => ({ id: 'v1', workflowId: 'w1', version: 1, graph: loopGraph }),
+      } as never,
+      runStore: {} as never,
+      awaitStore: {} as never,
+      effects: {
+        runAgentStep: async () => {
+          agentCalls += 1;
+          return { result: { text: 'not yet', data: { done: false } }, actor: { kind: 'agent' } };
+        },
+        runActionStep: async () => {
+          throw new Error('no actions here');
+        },
+      } as never,
+      resolveRoleHolders: async () => ({ holders: [], partial: false, bySource: [] }),
+    });
+
+    const preview = await executor.previewRun('loop', {});
+
+    assert.equal(agentCalls, MAX_PREVIEW_AGENT_STEPS);
+    assert.equal(preview.status, 'failed');
+    assert.ok(preview.status === 'failed');
+    assert.equal(preview.error.code, 'max_steps_exceeded');
   });
 });
 
