@@ -101,6 +101,7 @@ import {
 import { normalizeTypedSetupValue } from '../plugins/setupFieldValue.js';
 import { createLlmProviderFromNeutral } from './anthropicLlmProvider.js';
 import { pluginLlmUsageSource, recordPluginLlmUsage } from './pluginLlmUsage.js';
+import { shieldPluginLlmCall } from './pluginLlmPrivacy.js';
 import { builtinClassDefault } from './builtinLlmProviders.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
 import type { PluginRouteRegistry } from './pluginRouteRegistry.js';
@@ -1965,14 +1966,22 @@ function createLlmAccessor(
         pinnedClassDefault: builtinClassDefault,
       });
 
+      // ADR-0017 — the privacy shield covers plugin model calls too: inside a
+      // guarded turn the prompt is masked before it leaves and the answer is
+      // restored before the plugin reads it (`pluginLlmPrivacy.ts`).
+      const shielded = await shieldPluginLlmCall(
+        turnContext.current()?.privacyHandle,
+        callerAgentId,
+        req,
+      );
       callsUsed += 1;
       const result = await provider.complete({
-        ...req,
+        ...shielded.request,
         model,
         maxTokens: effectiveMaxTokens,
       });
       recordPluginLlmUsage(pluginLlmUsageSource(callerAgentId), activeProvider, result);
-      return result;
+      return shielded.restore(result);
     },
   };
 }

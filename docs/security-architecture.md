@@ -2072,9 +2072,12 @@ finalized.
 - On the public MCP endpoint a sub-agent cannot correct itself from an inner
   error hint, since the gate withholds that text, and the endpoint has no
   sub-agent dataset bridge: the sub-agent's answer is interned again as data.
-- A plugin tool that asks a model itself through `ctx.llm` sends its request
-  as it built it, on every entry point: the accessor consults no privacy
-  handle. Only the tool's result crosses the shield (handoff §13).
+- A plugin tool that asks a model itself through `ctx.llm` inside a guarded
+  turn has its request masked by the accessor (`pluginLlmPrivacy.ts`,
+  ADR-0017): the turn's masked values are re-masked always, the detectors run
+  when `mask_user_prompt` is on, and a `blocked` outcome refuses the call. The
+  answer is restored before the plugin reads it. Outside a turn (jobs, routes)
+  the request still goes out as the plugin built it.
 - The subscription-CLI path has no Privacy Shield at all (§3a, #1087): its
   loopback dispatcher runs without a privacy handle, so both carriers pass raw
   there.
@@ -2411,10 +2414,10 @@ requests, and only there, the shield acts on four kinds of text:
   restore runs only when the provider implements both methods (privacy guard
   0.13.0); an older provider keeps giving tools the surrogates. Residuals: a
   tool that echoes the value in another form (an abbreviation, a translation)
-  is not re-masked, a plugin tool that hands its input to a model through
-  `ctx.llm` sends that model the real value, as it would with the setting
-  off, and the subscription-CLI path does not restore (its tools keep the
-  surrogates).
+  is not re-masked, and the subscription-CLI path does not restore (its
+  tools keep the surrogates). A plugin tool that hands its input to a model
+  through `ctx.llm` inside the turn has it re-masked by the accessor
+  (`pluginLlmPrivacy.ts`).
 
 **Surrogate edge cases (#1528, #1529).** Restore (`resolvePromptPseudonyms`,
 `promptSurrogates.ts`) also maps back a surrogate the model rewrote: in any
@@ -3092,11 +3095,13 @@ masks text only, so it reads no image block. In-tree these are:
   `@omadia/orchestrator-extras`. With a privacy guard running the scorer masks
   it through a stored-text scope (#1540, "Memory jobs" above). The plugin's other memory jobs mask what they
   send (see "Memory jobs" above).
-- **Plugin requests through `ctx.llm`.** A plugin that holds the `llm`
-  permission sends its `ctx.llm` requests itself, and the accessor
-  (`createLlmAccessor`, `src/platform/pluginContext.ts`) consults no privacy
-  handle, so a request reaches the provider as the plugin built it (§6c,
-  residuals). In-tree, the canvas composer sends the user's message, or the
+- **Plugin requests through `ctx.llm`.** Inside a guarded turn the accessor
+  (`createLlmAccessor`, `src/platform/pluginContext.ts`) masks the system
+  prompt and every message through the turn's privacy handle before the
+  request leaves and restores the answer (`pluginLlmPrivacy.ts`, ADR-0017):
+  the turn's masked values always, the detectors with `mask_user_prompt` on,
+  fail-closed on `blocked`. Outside a turn the request reaches the provider
+  as the plugin built it (§6c, residuals). In-tree, the canvas composer sends the user's message, or the
   serialised UI action, to its composition model before the turn starts
   (`composeSkeleton`, `omadia-ui-orchestrator/src/composition.ts`). With a
   privacy guard running that text goes through the guard's stored-text scope
