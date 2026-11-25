@@ -486,8 +486,8 @@ export function hasNestedUnboundedQuantifier(source: string): boolean {
 }
 
 /** Compile + vet one operator regex: syntax first, then the static
- *  nested-quantifier check, then a wall-clock probe against the adversarial
- *  corpus. Rejected patterns are reported, never silently dropped — an
+ *  nested-quantifier check, then a timed probe against the adversarial
+ *  corpus (see {@link startProbeClock}). Rejected patterns are reported, never silently dropped — an
  *  operator who typed a protection deserves to know it is not active. */
 function vetPattern(source: string): { re: RegExp } | { rejected: RejectedCustomPattern } {
   let re: RegExp;
@@ -511,18 +511,44 @@ function vetPattern(source: string): { re: RegExp } | { rejected: RejectedCustom
       `[privacy-guard v4] customPatternNestedQuantifier pattern=${JSON.stringify(source)} — a repeated group with an unbounded quantifier inside can backtrack catastrophically; it stays active, and a turn whose text makes it exceed its runtime budget is blocked. Rewrite it without the outer repetition if you can`,
     );
   }
-  const startedAt = Date.now();
+  // A pause the pattern did not cause (GC, a busy host) can push one run over
+  // the budget; a pattern that backtracks pathologically overruns every run.
+  for (let run = 0; run < PROBE_RUNS; run++) {
+    if (probeWithinBudget(re)) {
+      re.lastIndex = 0;
+      return { re };
+    }
+  }
+  return { rejected: { source, reason: 'too_slow' } };
+}
+
+/** How often a pattern may overrun the probe budget before it is rejected. */
+const PROBE_RUNS = 2;
+
+/** Milliseconds the probe itself spent: the smaller of wall-clock and this
+ *  process's CPU time. Wall-clock alone counts time the host gave to other
+ *  processes; CPU time alone counts other threads of this process (workers,
+ *  parallel GC). Backtracking drives both, so a slow pattern still shows. */
+function startProbeClock(): () => number {
+  const wallStart = performance.now();
+  const cpuStart = process.cpuUsage();
+  return () => {
+    const cpu = process.cpuUsage(cpuStart);
+    return Math.min(performance.now() - wallStart, (cpu.user + cpu.system) / 1_000);
+  };
+}
+
+/** One pass over the probe corpus; false as soon as the budget is spent. */
+function probeWithinBudget(re: RegExp): boolean {
+  const elapsedMs = startProbeClock();
   for (const probe of PROBE_TEXTS) {
     for (const step of probeSteps(probe)) {
       re.lastIndex = 0;
       re.test(step);
-      if (Date.now() - startedAt > CUSTOM_PATTERN_PROBE_BUDGET_MS) {
-        return { rejected: { source, reason: 'too_slow' } };
-      }
+      if (elapsedMs() > CUSTOM_PATTERN_PROBE_BUDGET_MS) return false;
     }
   }
-  re.lastIndex = 0;
-  return { re };
+  return true;
 }
 
 function customSpan(start: number, end: number): PromptPiiSpan {
