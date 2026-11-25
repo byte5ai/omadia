@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import type { EmbeddingClient } from '@omadia/embeddings';
-import type { KnowledgeGraph, SessionSummary, SessionView } from '@omadia/plugin-api';
+import {
+  scopeBelongsToAgent,
+  type KnowledgeGraph,
+  type SessionSummary,
+  type SessionView,
+} from '@omadia/plugin-api';
 import { turnContext } from './turnContext.js';
 
 const KnowledgeGraphInputSchema = z.object({
@@ -65,14 +70,23 @@ export const knowledgeGraphToolSpec = {
  *  - `audienceOwners` — `members`: only turns of this agent
  *    (`agentScopePrefix`) whose owners include everyone present. `null` = the
  *    room's audience is not known.
+ *  - `userId` — `off` / `enforce` (#2204): only turns of this agent the user
+ *    sent, plus the turn's own conversation (`ownScope`) in full. `null` = no
+ *    user, so nothing.
  */
 export type KnowledgeGraphToolView =
   | { readonly restrictToScope: string | null }
-  | { readonly audienceOwners: readonly string[] | null; readonly agentScopePrefix: string };
+  | { readonly audienceOwners: readonly string[] | null; readonly agentScopePrefix: string }
+  | {
+      readonly userId: string | null;
+      readonly agentScopePrefix: string;
+      readonly ownScope: string | null;
+    };
 
-const RESTRICTED_NOTE: Record<'conversation' | 'members', string> = {
+const RESTRICTED_NOTE: Record<'conversation' | 'members' | 'user', string> = {
   conversation: 'context memory is enforce-strict: only this conversation is visible',
   members: 'context memory is members: only knowledge everyone present owns is visible',
+  user: "only this user's own conversations with this agent are visible",
 };
 
 /** One turn's access to the graph, derived once from its view. */
@@ -82,7 +96,11 @@ interface ToolAccess {
   /** The turn may see nothing at all. */
   readonly none: boolean;
   /** Pushed down into the backend's turn searches. */
-  readonly searchOptions: { agentScopePrefix?: string; audienceOwners?: readonly string[] };
+  readonly searchOptions: {
+    agentScopePrefix?: string;
+    audienceOwners?: readonly string[];
+    userId?: string;
+  };
   /** Cheap scope pre-filter; the owner rule is applied by `readSession`. */
   scopeAllowed(scope: string): boolean;
   /** The session as this turn may see it, or null. */
@@ -114,6 +132,24 @@ export class KnowledgeGraphTool {
         searchOptions: only ? { agentScopePrefix: only } : {},
         scopeAllowed: allowed,
         readSession: async (scope) => (allowed(scope) ? this.graph.getSession(scope) : null),
+      };
+    }
+    if ('userId' in view) {
+      const { userId, agentScopePrefix: prefix, ownScope } = view;
+      const allowed = (scope: string): boolean =>
+        userId !== null && scopeBelongsToAgent(scope, prefix);
+      return {
+        note: RESTRICTED_NOTE.user,
+        none: userId === null,
+        searchOptions: userId ? { agentScopePrefix: prefix, userId } : {},
+        scopeAllowed: allowed,
+        readSession: async (scope) => {
+          if (!allowed(scope) || !userId) return null;
+          // The own conversation reads in full, like recall's tail.
+          return scope === ownScope
+            ? this.graph.getSession(scope)
+            : this.graph.getSession(scope, { userId });
+        },
       };
     }
     const audience = view.audienceOwners;

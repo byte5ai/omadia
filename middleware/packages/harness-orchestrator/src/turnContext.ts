@@ -47,6 +47,9 @@ import type { ConsultationTurnState } from './consultation/consultTool.js';
  *    `scope: null` = none.
  *  - `members`: this agent's turns everyone present owns; `audience: null` =
  *    the room is not known, so none.
+ *  - `user` (`off`, `enforce`, #2204): this agent's turns the turn's user sent,
+ *    plus the turn's own conversation (`ownScope`) in full; `userId: null` =
+ *    none.
  *  - `nothing`: a turn the restriction cannot reach (context-free) — none.
  */
 export type GraphReadScope =
@@ -55,6 +58,12 @@ export type GraphReadScope =
       readonly kind: 'members';
       readonly audience: readonly string[] | null;
       readonly agentScopePrefix: string;
+    }
+  | {
+      readonly kind: 'user';
+      readonly userId: string | null;
+      readonly agentScopePrefix: string;
+      readonly ownScope: string | null;
     }
   | { readonly kind: 'nothing' };
 

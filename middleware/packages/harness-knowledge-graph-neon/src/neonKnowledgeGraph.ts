@@ -1138,6 +1138,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
   ): Promise<SessionView | null> {
     const audienceOwners = audienceFilter(options?.audienceOwners);
     if (audienceOwners === EMPTY_AUDIENCE) return null;
+    const userId = options?.userId ?? null;
     const sessionExtId = sessionNodeId(scope);
     const sessionRow = await this.findNodeByExternalId(sessionExtId);
     if (!sessionRow) return null;
@@ -1150,11 +1151,13 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         -- Member-scoped memory (see searchTurns): the tail of a room a new
         -- member joined holds only turns that member also owns.
         AND ($3::jsonb IS NULL OR properties @> jsonb_build_object('owners', $3::jsonb))
+        -- #2204: only the turns one user sent (user_id is a column, not a prop).
+        AND ($4::text IS NULL OR user_id = $4)
       ORDER BY (properties->>'time') ASC
       `,
-      [this.tenantId, scope, audienceOwners],
+      [this.tenantId, scope, audienceOwners, userId],
     );
-    if (audienceOwners !== null && turnRows.rows.length === 0) return null;
+    if ((audienceOwners !== null || userId !== null) && turnRows.rows.length === 0) return null;
 
     const turnUuids = turnRows.rows.map((r) => r.id);
     const entityByTurn = new Map<string, GraphNode[]>();
