@@ -64,13 +64,12 @@ import {
   SharedPoolRefusedError,
   LlmScopeRequiredError,
   RawModelServiceRefusedError,
+  GraphServiceRefusedError,
 } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 import type { DomainTool } from '@omadia/orchestrator';
 import {
   MEMORY_TOOL_NAME,
-  currentGraphNodeViewer,
-  graphNodeFilter,
   turnContext,
 } from '@omadia/orchestrator';
 import { MemoryToolHandler } from '@omadia/memory';
@@ -117,7 +116,12 @@ import {
   createPluginMemoryToolStore,
 } from './memoryAccessor.js';
 import { SCRATCH_DIR } from './paths.js';
-import { neighborsForPlugin } from './shieldedNeighbors.js';
+import {
+  BOUNDED_GRAPH_SERVICE_NAMES,
+  boundGraphService,
+  boundedTurnReads,
+  holdsRawGraphServices,
+} from './boundedGraphServices.js';
 import type { ServiceRegistry } from './serviceRegistry.js';
 import {
   createServiceGrantGate,
@@ -169,7 +173,7 @@ export {
   type ToolsAccessor,
   type UiRoutesAccessor,
 } from '@omadia/plugin-api';
-import { nativeToolResultText, scopeBelongsToAgent } from '@omadia/plugin-api';
+import { nativeToolResultText } from '@omadia/plugin-api';
 
 export interface CreatePluginContextOptions {
   agentId: string;
@@ -368,6 +372,8 @@ export function createPluginContext(
     pluginId: agentId,
   });
 
+  const rawGraphServices = holdsRawGraphServices(agentId, catalog);
+
   const services: ServicesAccessor = {
     get<T>(requested: string): T | undefined {
       // #2090 — `name@2` asks for that major, registered under that key. The
@@ -412,9 +418,16 @@ export function createPluginContext(
       // tears down the connection pool core writes user data through. Applied
       // here, at the plugin-facing seam, so core's own
       // `serviceRegistry.get('graphPool')` keeps the real object.
-      return resolved !== undefined && POOL_SHAPED_CAPABILITIES.has(name)
-        ? (borrowPool(resolved as Pool, agentId) as T)
-        : resolved;
+      if (resolved !== undefined && POOL_SHAPED_CAPABILITIES.has(name)) {
+        return borrowPool(resolved as Pool, agentId) as T;
+      }
+      // ADR-0044 — `knowledgeGraph`, `processMemory` and `memoryStore` come in
+      // their bounded form: turn reads within the turn's graph boundary, none
+      // outside a turn, no private memory tree. Only the providers and the
+      // modules that implement the boundary hold the raw services.
+      // A provider reading back its own registration holds the object anyway.
+      const holdsRaw = rawGraphServices || serviceRegistry.providedBy(agentId, name);
+      return resolved !== undefined && !holdsRaw ? boundGraphService(name, resolved, agentId) : resolved;
     },
     // #795 — the accessor an `optional_requires:` entry is consumed
     // through. Same gates in the same order as `get`: a name the manifest
@@ -459,6 +472,12 @@ export function createPluginContext(
     // plugin re-wrapping its OWN registration is already 'self-provided'.
     replace<T>(name: string, impl: T): () => void {
       assertServiceGranted(name, 'replace');
+      // ADR-0044 — a decorator around a graph service sees every raw call
+      // (turn text, transcripts) and answers the kernel's own reads. Only the
+      // modules that hold the raw service may wrap it.
+      if (BOUNDED_GRAPH_SERVICE_NAMES.has(name) && !rawGraphServices) {
+        throw new GraphServiceRefusedError(agentId, name, 'replace', 'kernel-only');
+      }
       return serviceRegistry.replace(name, impl, agentId);
     },
   };
@@ -1636,6 +1655,7 @@ function createKnowledgeGraphAccessor(
     if (!kg) throw new KgServiceUnavailableError(callerAgentId);
     return kg;
   }
+  const reads = boundedTurnReads(resolveKg, callerAgentId, 'ctx.knowledgeGraph');
   return {
     entitySystems,
     async ingestEntities(entities: EntityIngest[]): Promise<EntityIngestResult> {
@@ -1654,84 +1674,17 @@ function createKnowledgeGraphAccessor(
       // hardening pass MAY parse out the prefix and assert it's allowed.
       return resolveKg().ingestFacts(facts);
     },
-    // A domain tool running inside a turn searches within that turn's
-    // boundary, not the tenant: otherwise it would be a side door past the
-    // recall legs (`off` / `enforce`: the user's own chats, #2204).
-    searchTurns: async (opts2) => {
-      const bounded = boundTurnSearch(opts2);
-      if (bounded === null) return [];
-      const hits = await resolveKg().searchTurns(bounded.options);
-      return hits.filter((h) => bounded.scopeAllowed(h.scope));
-    },
-    findEntityCapturedTurns: async (opts2) => {
-      const bounded = boundTurnSearch(opts2);
-      if (bounded === null) return [];
-      const hits = await resolveKg().findEntityCapturedTurns(bounded.options);
-      return hits
-        .map((hit) => ({ ...hit, turns: hit.turns.filter((t) => bounded.scopeAllowed(t.scope)) }))
-        .filter((hit) => hit.turns.length > 0);
-    },
-    // #1540 — under a shield, as the turn search: no content of a turn
-    // stored `unprotected` (shieldedNeighbors.ts). #2208 — inside a turn, only
-    // the neighbours that turn may see (graphNodeAccess.ts), as its searches.
-    getNeighbors: async (nodeId) => {
-      const kg = resolveKg();
-      const shielded = await neighborsForPlugin(kg, nodeId, turnContext.current()?.privacyHandle !== undefined);
-      const viewer = currentGraphNodeViewer();
-      if (!viewer) return shielded;
-      const visible = graphNodeFilter(kg, viewer);
-      const keep = await Promise.all(shielded.map(visible));
-      return shielded.filter((_, i) => keep[i]);
-    },
+    // ADR-0040 / ADR-0044 — a domain tool searches within the turn's graph
+    // boundary, never the tenant, and outside a turn not at all: otherwise it
+    // would be a side door past the recall legs (#2204, #2208).
+    searchTurns: reads.searchTurns,
+    findEntityCapturedTurns: reads.findEntityCapturedTurns,
+    getNeighbors: reads.getNeighbors,
     stats: () => resolveKg().stats(),
   };
 }
 
-/**
- * The current turn's graph boundary (`TurnContextValue.graphReadScope`)
- * applied to a plugin's turn search: the options to pass down plus an exact
- * scope check for the hits (the `agentScopePrefix` pre-filter is a LIKE).
- * `null` = this turn may see no turns at all. Outside a restricted turn the
- * options pass through unchanged.
- */
-export function boundTurnSearch<
-  T extends {
-    agentScopePrefix?: string;
-    audienceOwners?: readonly string[];
-    userId?: string;
-    excludeUnprotected?: boolean;
-  },
->(
-  rawOptions: T,
-): { options: T; scopeAllowed: (scope: string) => boolean } | null {
-  // #1507 — inside a turn that runs under a Privacy Shield, a plugin's turn
-  // search skips turns stored `unprotected`, like the recall legs do.
-  const options: T =
-    turnContext.current()?.privacyHandle !== undefined
-      ? { ...rawOptions, excludeUnprotected: true }
-      : rawOptions;
-  const bound = turnContext.current()?.graphReadScope?.value;
-  if (!bound) return { options, scopeAllowed: () => true };
-  if (bound.kind === 'nothing') return null;
-  if (bound.kind === 'user') {
-    // `off` / `enforce` (#2204): this agent's turns the turn's user sent.
-    if (!bound.userId) return null;
-    return {
-      options: { ...options, agentScopePrefix: bound.agentScopePrefix, userId: bound.userId },
-      scopeAllowed: (scope) => scopeBelongsToAgent(scope, bound.agentScopePrefix),
-    };
-  }
-  if (bound.kind === 'members') {
-    if (!bound.audience) return null;
-    return {
-      options: { ...options, agentScopePrefix: bound.agentScopePrefix, audienceOwners: bound.audience },
-      scopeAllowed: (scope) => scope.startsWith(bound.agentScopePrefix),
-    };
-  }
-  const only = bound.scope;
-  if (!only) return null;
-  return { options: { ...options, agentScopePrefix: only }, scopeAllowed: (scope) => scope === only };
-}
+export { boundTurnSearch } from './boundedGraphServices.js';
 
 // ---------------------------------------------------------------------------
 // OB-29-3 — LlmAccessor wiring (host-LLM with model whitelist + budget).
