@@ -230,31 +230,31 @@ describe('services.get — undeclared capabilities are denied', () => {
 
 describe('services.get — declared capabilities resolve', () => {
   it('resolves a capability listed in `requires`', () => {
-    const catalog = catalogOf(pluginOf('@test/consumer', ['knowledgeGraph@^1']));
+    const catalog = catalogOf(pluginOf('@test/consumer', ['entityRefBus@^1']));
     const { ctx, registry } = makeCtx('@test/consumer', catalog);
     const impl = { kg: true };
-    registry.provide('knowledgeGraph', impl);
-    assert.equal(ctx.services.get('knowledgeGraph'), impl);
+    registry.provide('entityRefBus', impl);
+    assert.equal(ctx.services.get('entityRefBus'), impl);
   });
 
   it('accepts both `name@1` and `name@^1` spellings', () => {
-    const catalog = catalogOf(pluginOf('@test/consumer', ['memoryStore@1']));
+    const catalog = catalogOf(pluginOf('@test/consumer', ['nudgeStateStore@1']));
     const { ctx, registry } = makeCtx('@test/consumer', catalog);
-    registry.provide('memoryStore', { m: 1 });
-    assert.deepEqual(ctx.services.get('memoryStore'), { m: 1 });
+    registry.provide('nudgeStateStore', { m: 1 });
+    assert.deepEqual(ctx.services.get('nudgeStateStore'), { m: 1 });
   });
 
   it('lets a provider read back the capability it provides', () => {
     const catalog = catalogOf(
-      pluginOf('@test/provider', [], ['memoryStore@1']),
+      pluginOf('@test/provider', [], ['nudgeStateStore@1']),
     );
     const { ctx, registry } = makeCtx('@test/provider', catalog);
-    ctx.services.provide('memoryStore', { own: true });
-    assert.deepEqual(ctx.services.get('memoryStore'), { own: true });
+    ctx.services.provide('nudgeStateStore', { own: true });
+    assert.deepEqual(ctx.services.get('nudgeStateStore'), { own: true });
     assert.equal(
       classifyServiceGrant(
         '@test/provider',
-        'memoryStore',
+        'nudgeStateStore',
         declaredServiceNames('@test/provider', catalog),
         catalog,
         (name) => registry.providedBy('@test/provider', name),
@@ -264,9 +264,9 @@ describe('services.get — declared capabilities resolve', () => {
   });
 
   it('returns undefined — not a throw — for a declared capability with no provider installed', () => {
-    const catalog = catalogOf(pluginOf('@test/consumer', ['knowledgeGraph@^1']));
+    const catalog = catalogOf(pluginOf('@test/consumer', ['entityRefBus@^1']));
     const { ctx } = makeCtx('@test/consumer', catalog);
-    assert.equal(ctx.services.get('knowledgeGraph'), undefined);
+    assert.equal(ctx.services.get('entityRefBus'), undefined);
   });
 });
 
@@ -711,5 +711,74 @@ describe('services.get — kernel-only names (privacyFieldSamples)', () => {
       () => ctx.services.get(PRIVACY_FIELD_SAMPLES_SERVICE_NAME),
       (err: unknown) => err instanceof ServiceNotDeclaredError,
     );
+  });
+});
+
+// --- ADR-0044: the graph services come in their bounded form ----------------
+
+describe('services.get — ADR-0044 bounded graph services', () => {
+  const kgImpl = { stats: async () => ({ nodes: 1 }), searchTurns: async () => [] };
+
+  it('a plugin that declares knowledgeGraph@^1 gets the bounded form, not the provider object', async () => {
+    const catalog = catalogOf(pluginOf('@test/consumer', ['knowledgeGraph@^1', 'memoryStore@^1']));
+    const { ctx, registry } = makeCtx('@test/consumer', catalog);
+    registry.provide('knowledgeGraph', kgImpl);
+    registry.provide('memoryStore', new InMemoryMemoryStore());
+    const kg = ctx.services.get<typeof kgImpl>('knowledgeGraph');
+    assert.notEqual(kg, kgImpl);
+    assert.deepEqual(await kg?.stats(), { nodes: 1 });
+    await assert.rejects(() => kg!.searchTurns(), { name: 'GraphServiceRefusedError' });
+    assert.equal(ctx.services.get('knowledgeGraph'), kg, 'one wrapper per plugin and service');
+    assert.notEqual(ctx.services.get('memoryStore'), registry.get('memoryStore'));
+  });
+
+  it('a bundled boundary implementer gets the raw service', () => {
+    const catalog = catalogWithOrigin('bundled', [pluginOf('@omadia/orchestrator-extras', ['knowledgeGraph@^1'])]);
+    const { ctx, registry } = makeCtx('@omadia/orchestrator-extras', catalog);
+    registry.provide('knowledgeGraph', kgImpl);
+    assert.equal(ctx.services.get('knowledgeGraph'), kgImpl);
+  });
+
+  it('an installed package claiming an implementer id gets the bounded form (#789)', () => {
+    const catalog = catalogWithOrigin(
+      'installed',
+      [pluginOf('@omadia/orchestrator-extras', ['knowledgeGraph@^1'])],
+      ['@omadia/orchestrator-extras'],
+    );
+    const { ctx, registry } = makeCtx('@omadia/orchestrator-extras', catalog);
+    registry.provide('knowledgeGraph', kgImpl);
+    assert.notEqual(ctx.services.get('knowledgeGraph'), kgImpl);
+  });
+
+  it('a bundled module off the list (the plan runner) gets the bounded form', () => {
+    const catalog = catalogWithOrigin('bundled', [pluginOf('@omadia/plugin-plan-runner', ['knowledgeGraph@^1'])]);
+    const { ctx, registry } = makeCtx('@omadia/plugin-plan-runner', catalog);
+    registry.provide('knowledgeGraph', kgImpl);
+    assert.notEqual(ctx.services.get('knowledgeGraph'), kgImpl);
+  });
+
+  it('only a boundary implementer may replace a graph service', () => {
+    const catalog = catalogOf(pluginOf('@test/consumer', ['knowledgeGraph@^1', 'memoryStore@^1']));
+    const { ctx, registry } = makeCtx('@test/consumer', catalog);
+    registry.provide('knowledgeGraph', kgImpl);
+    registry.provide('memoryStore', new InMemoryMemoryStore());
+    for (const name of ['knowledgeGraph', 'memoryStore']) {
+      assert.throws(() => ctx.services.replace(name, {}), { name: 'GraphServiceRefusedError' }, name);
+    }
+    assert.equal(registry.get('knowledgeGraph'), kgImpl);
+
+    const bundled = catalogWithOrigin('bundled', [pluginOf('@omadia/orchestrator-extras', ['knowledgeGraph@^1'])]);
+    const extras = makeCtx('@omadia/orchestrator-extras', bundled);
+    extras.registry.provide('knowledgeGraph', kgImpl);
+    const wrapped = { ...kgImpl };
+    extras.ctx.services.replace('knowledgeGraph', wrapped);
+    assert.equal(extras.registry.get('knowledgeGraph'), wrapped);
+  });
+
+  it('a provider reading back its own registration gets it unchanged', () => {
+    const catalog = catalogOf(pluginOf('@test/provider', [], ['knowledgeGraph@1']));
+    const { ctx } = makeCtx('@test/provider', catalog);
+    ctx.services.provide('knowledgeGraph', kgImpl);
+    assert.equal(ctx.services.get('knowledgeGraph'), kgImpl);
   });
 });

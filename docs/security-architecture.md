@@ -1024,7 +1024,25 @@ The surfaces that boundary must cover, and how each one does:
   isolation (context-free: web, API).
 - **Plugin `KnowledgeGraphAccessor`:** `searchTurns` and
   `findEntityCapturedTurns` read the turn's `graphReadScope` holder and search
-  inside it.
+  inside it. With no boundary set (outside a turn, or before the turn's
+  boundary is bound) they throw `GraphServiceRefusedError` (ADR-0044).
+- **Plugin services (ADR-0044):** `ctx.services.get('knowledgeGraph' |
+  'processMemory' | 'memoryStore')` hands a plugin a bounded form
+  (`boundedGraphServices.ts`). Turn, session, neighbour, plan and process
+  reads follow the turn's boundary and are refused outside a turn; methods
+  across users or agents are kernel-only; `findEntities` in a context-bound
+  turn keeps synced master data and entities a visible turn captured; the
+  private `/memories` trees (`orchestrators`, `contexts`, `sessions`,
+  `chat-sessions`) and loose root files are never reachable, and the `_*`
+  trees are read-only; plan reads and writes reach only the turn's own
+  conversation, process writes only this agent's scopes, and only a
+  boundary implementer may `replace` these services. Only the
+  bundled providers and boundary implementers (`orchestrator`,
+  `orchestrator-extras`) hold the raw services. `graphPool` stays an
+  operator-granted SQL capability (C7). Residuals: sibling recall and
+  curation services are still raw (#2231); shared top-level `/memories`
+  trees are writable by every declaring plugin (#2232); plugin SQL on
+  kernel tables (#2230).
 - **Curated memory:** under `members`, `acl_owners ⊇ audience`, or an
   operator-authored row. "Operator-authored" means `manually_authored` and a
   `created_by` that is not `auto:…`, because T3 durable auto-promotion sets
@@ -1045,11 +1063,12 @@ The surfaces that boundary must cover, and how each one does:
   only where their turns or agent allow, a User node only the viewer's own.
   The walk never passes through a node it may not show, so another person's
   User node no longer leads to their other chats. Outside a turn with a graph
-  boundary there is no walk.
+  boundary there is no walk, and a plugin's `getNeighbors` is refused.
 - **Process tools (#2207):** `query_processes` and `run_stored_process` return
   only this agent's processes, and none in a context-bound `enforce-strict` /
   `members` turn, where recall skips processes too. A process the turn may not
-  read answers like a missing one.
+  read answers like a missing one. With no boundary set (the public MCP
+  endpoint, jobs) they return no process (ADR-0044).
 
 The audience is the security input. A group counts as known only when its
 channel marks the roster complete (`ChatParticipantsProvider.completeRoster`).

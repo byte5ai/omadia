@@ -63,8 +63,9 @@ setup:
 playbook:
   when_to_use: |
     Wird vom Kernel und anderen Plugins konsumiert — Agent-Plugins bekommen
-    `ctx.memory` (scoped auf ihren eigenen Agent-Slot); andere Konsumenten
-    lesen/schreiben via `ctx.services.get('memoryStore')` root-level.
+    `ctx.memory` (scoped auf ihren eigenen Agent-Slot); andere Plugins
+    bekommen über `ctx.services.get('memoryStore')` eine gebundene Form ohne
+    die privaten Bäume (ADR-0044).
 
 permissions:
   memory:

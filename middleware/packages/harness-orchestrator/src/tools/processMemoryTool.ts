@@ -216,23 +216,28 @@ const WITHHELD_PROCESS_NOTICE =
  * #2207 — which stored processes the current turn may read, by the turn's
  * graph boundary, as the recall process leg: none in a context-bound
  * `enforce-strict` / `members` turn (processes carry no owners), otherwise
- * only this agent's own. Outside a turn with a boundary (activation, jobs)
- * every process of the tenant, as before.
+ * only this agent's own. ADR-0044 — no boundary set (activation, jobs, the
+ * public MCP endpoint, a nested scope that lost the boundary box): none.
+ * Kernel code that must read the tenant's processes outside a turn uses the
+ * service itself, not these tools.
+ *
+ * Shared with the bounded `processMemory@1` service a plugin resolves
+ * (`boundedGraphServices.ts`), so both apply one rule.
  */
-type ProcessBoundary = { kind: 'all' } | { kind: 'none' } | { kind: 'agent'; prefix: string };
+export type ProcessBoundary = { kind: 'none' } | { kind: 'agent'; prefix: string };
 
-function processBoundary(): ProcessBoundary {
+/** The current turn's process boundary (see above). */
+export function currentProcessBoundary(): ProcessBoundary {
   const ctx = turnContext.current();
   const bound = ctx?.graphReadScope?.value;
-  if (!ctx || !bound) return { kind: 'all' };
+  if (!ctx || !bound) return { kind: 'none' };
   if (bound.kind === 'conversation' || bound.kind === 'members') return { kind: 'none' };
   return { kind: 'agent', prefix: agentScopePrefix(ctx.agentSlug ?? 'default') };
 }
 
-function processReadable(
-  boundary: ProcessBoundary = processBoundary(),
+export function currentProcessReadFilter(
+  boundary: ProcessBoundary = currentProcessBoundary(),
 ): ((record: Pick<ProcessRecord, 'scope'>) => boolean) | null {
-  if (boundary.kind === 'all') return () => true;
   if (boundary.kind === 'none') return null;
   return (record) => scopeBelongsToAgent(record.scope, boundary.prefix);
 }
@@ -363,8 +368,8 @@ export function createQueryProcessesHandler(
         .join('; ');
       return `Error: invalid query_processes input — ${detail}`;
     }
-    const boundary = processBoundary();
-    const readable = processReadable(boundary);
+    const boundary = currentProcessBoundary();
+    const readable = currentProcessReadFilter(boundary);
     if (!readable) {
       return JSON.stringify({ query: parsed.data.query, mode: 'hybrid', hits: [] });
     }
@@ -405,7 +410,7 @@ export function createRunStoredProcessHandler(
       return `Error: invalid run_stored_process input — ${detail}`;
     }
     const found = await service.get(parsed.data.id);
-    const readable = processReadable();
+    const readable = currentProcessReadFilter();
     // A process this turn may not read answers like a missing one.
     const record = found && readable?.(found) ? found : null;
     if (!record) {
