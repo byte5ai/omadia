@@ -228,6 +228,17 @@ that date.
 | 0164 | [Plugin OAuth runs in a kernel broker driven by a declarative provider descriptor](0164-declarative-oauth-broker-for-plugins.md) | Accepted | 2026-11-25 |
 | 0167 | [A plugin's entity writes stay in its declared entity systems](0167-plugin-entity-writes-stay-in-declared-entity-systems.md) | Proposed | 2026-11-25 |
 
+### Later notes on Accepted records
+
+Accepted records stay as written. These notes say where a later record changed
+what one of them describes.
+
+- **0039, "Not swept yet":** the canary sweep has covered plugins that hold the
+  graph services since [ADR-0044](0044-plugins-read-the-graph-through-bounded-services.md)
+  (#2233). The entry point is `plugin-service`, in all four modes and on both
+  backends, plus one run outside a turn. Such a plugin now gets the bounded form,
+  not the raw service. Skill-bound tools are still not swept.
+
 ### The agent model (0012–0022)
 
 ADRs 0012 to 0022 record one coherent model: agents are virtual employees, the
