@@ -369,7 +369,9 @@ jobs:
           # main sweep assertion once the leak is fixed; measured ran=739.
           # 771 → 772 with processAgentScopeQuery.pg (agentScopePrefix is
           # filtered before the limit).
-          PG_TEST_FLOOR: '772'
+          # 776 → 788 with the topic routes on Neon (memoryAccess/canaryHttp.pg,
+          # 12 tests, #1851), on top of #2233; measured ran=788.
+          PG_TEST_FLOOR: '788'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

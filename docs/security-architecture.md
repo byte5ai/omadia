@@ -1050,6 +1050,11 @@ The surfaces that boundary must cover, and how each one does:
   only this agent's processes, and none in a context-bound `enforce-strict` /
   `members` turn, where recall skips processes too. A process the turn may not
   read answers like a missing one.
+- **Topics (#1851, ADR 0045):** a topic's name and description are written
+  from its members' summaries, so a topic is content of every member.
+  Re-cluster (`topicClustering.ts`) groups only memories with the same owner
+  set, and `/api/v1/admin/topics` lists or opens a topic only for a caller
+  who reads every current member; anyone else gets no entry and a 404.
 
 The audience is the security input. A group counts as known only when its
 channel marks the roster complete (`ChatParticipantsProvider.completeRoster`).
@@ -1070,8 +1075,6 @@ Known residuals:
 - Only turns that carry a `TurnOrigin` are context-bound.
 - #1762: web chat tabs (`/api/chat/sessions`) have no owner; every account
   lists and reads every tab.
-- #1851: topic names and descriptions (`/api/v1/admin/topics`) are written
-  from every account's memories and shown to every account.
 
 All of these are pinned as known failures (`todo`, naming the issue) in the
 canary sweep under `middleware/test/memoryAccess/` (`canarySweep*.test.ts`,

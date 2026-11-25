@@ -36,6 +36,21 @@ changelog.
 
 ## [Unreleased]
 
+### Security — topics show no content of memories the caller cannot read (#1851) (2026-11-25)
+
+- Re-cluster on `/admin/topics` grouped every account's memorable knowledge into one topic
+  and wrote its name and description from the member summaries (model output with Privacy
+  Shield values restored, or the summaries verbatim as fallback); `GET /api/v1/admin/topics`
+  returned it to every account.
+- Re-cluster now clusters each exact owner set (`acl_owners`) on its own, with one Privacy
+  Shield run per set; memories without owners get no topic. `list` and the detail route show
+  a topic only when the caller reads every current member (else no entry / 404), with the
+  live member count. Topics from before this change are hidden the same way until the next
+  re-cluster rebuilds them. Decision: ADR 0045.
+- `TopicClusteringService.list(viewerOmadiaUserId)` takes the viewer (`@omadia/plugin-api`
+  1.95.0). The canary sweep asserts the fix; the `todo` and the security-architecture
+  residual are gone.
+
 ### Added — memory canary sweep over topics and duplicates (memory-ACL test plan, step 3) (2026-11-25)
 
 - `canaryHttp.test.ts` also calls `/api/v1/admin/topics` and `/api/v1/admin/duplicates`
