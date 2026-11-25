@@ -25,6 +25,14 @@ import { unzipToText, zipEntryDosStamps } from './_helpers/unzipToText.js';
 
 const SECRET = 'z'.repeat(32);
 
+/** Open rendered .xlsx bytes. exceljs declares its own `Buffer extends
+ *  ArrayBuffer`; same cast as datasetImportXlsx.ts. */
+async function loadWorkbook(buffer: Buffer): Promise<ExcelJS.Workbook> {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buffer as unknown as ArrayBuffer);
+  return wb;
+}
+
 describe('office xlsx renderer', () => {
   const descriptor: XlsxDescriptor = {
     filename: 'offene posten',
@@ -52,8 +60,7 @@ describe('office xlsx renderer', () => {
     assert.equal(result.filename, 'offene posten.xlsx');
     assert.equal(result.rowsWritten, 2);
 
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(result.buffer);
+    const wb = await loadWorkbook(result.buffer);
     const ws = wb.getWorksheet('Offene Posten');
     assert.ok(ws, 'worksheet exists');
 
@@ -91,8 +98,7 @@ describe('office xlsx renderer', () => {
 
   it('carries AI-Act provenance in the core properties (read back from the file)', async () => {
     const result = await renderXlsx(descriptor);
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(result.buffer);
+    const wb = await loadWorkbook(result.buffer);
     // Read the properties back out of the produced workbook, not the input.
     assert.equal(wb.description, PROVENANCE_DESCRIPTION);
     assert.equal(wb.keywords, PROVENANCE_KEYWORDS);
@@ -140,8 +146,7 @@ describe('office xlsx renderer', () => {
     const result = await renderXlsx(descriptor);
     assert.equal(result.rowsWritten, 3); // 2 data + 1 pivot
 
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(result.buffer);
+    const wb = await loadWorkbook(result.buffer);
     const pivot = wb.getWorksheet('Pivot');
     assert.ok(pivot, 'pivot sheet exists');
     const cell = pivot.getCell('B2'); // row 2, col B = "summe"
@@ -171,8 +176,7 @@ describe('office xlsx renderer', () => {
     const result = await renderXlsx(descriptor);
     assert.equal(result.rowsWritten, 2);
 
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(result.buffer);
+    const wb = await loadWorkbook(result.buffer);
     const ws = wb.getWorksheet('Daten');
     assert.ok(ws);
     // "Monat" is column C; the two data rows are Excel rows 2 and 3.
@@ -180,6 +184,115 @@ describe('office xlsx renderer', () => {
     const f3 = (ws.getCell('C3').value as { formula?: string } | undefined)?.formula;
     assert.equal(f2, 'TEXT(A2,"YYYY-MM")', 'row 2 → A2');
     assert.equal(f3, 'TEXT(A3,"YYYY-MM")', 'row 3 → A3');
+  });
+
+  it('renames the sheet name Excel reserves ("History") instead of failing the file (#1982)', async () => {
+    // Excel reserves the name in any case; exceljs only refuses "History".
+    for (const [name, expected] of [
+      ['History', 'History_'],
+      [' history ', 'history_'],
+    ] as const) {
+      const result = await renderXlsx({
+        sheets: [{ name, columns: [{ key: 'x', header: 'X' }], rows: [{ x: 1 }] }],
+      });
+      assert.equal(result.rowsWritten, 1);
+
+      const wb = await loadWorkbook(result.buffer);
+      assert.deepEqual(
+        wb.worksheets.map((ws) => ws.name),
+        [expected],
+      );
+    }
+  });
+
+  /** A one-cell sheet; `formula` puts a formula cell in column A. */
+  const sheetNamed = (name: string, formula?: string): XlsxDescriptor['sheets'][number] => ({
+    name,
+    columns: [{ key: 'x', header: 'X' }],
+    rows: [{ x: formula === undefined ? 1 : { formula } }],
+  });
+
+  it('gives every sheet a name Excel accepts, unique regardless of case, and reports each rename', async () => {
+    const long = 'Umsatz nach Kunde und Region 2026';
+    const result = await renderXlsx({
+      sheets: [
+        sheetNamed("'Quartal'"),
+        sheetNamed('Daten'),
+        sheetNamed('daten'),
+        sheetNamed('A/B'),
+        sheetNamed('A B'),
+        sheetNamed(`${long} Q1`),
+        sheetNamed(`${long} Q2`),
+        sheetNamed('Offen'),
+      ],
+    });
+
+    const wb = await loadWorkbook(result.buffer);
+    assert.deepEqual(
+      wb.worksheets.map((ws) => ws.name),
+      [
+        'Quartal',
+        'Daten',
+        'daten (2)',
+        'A B',
+        'A B (2)',
+        'Umsatz nach Kunde und Region 20',
+        'Umsatz nach Kunde und Regio (2)',
+        'Offen',
+      ],
+    );
+    assert.deepEqual(result.renamedSheets, [
+      { requested: "'Quartal'", written: 'Quartal' },
+      { requested: 'daten', written: 'daten (2)' },
+      { requested: 'A/B', written: 'A B' },
+      { requested: 'A B', written: 'A B (2)' },
+      { requested: `${long} Q1`, written: 'Umsatz nach Kunde und Region 20' },
+      { requested: `${long} Q2`, written: 'Umsatz nach Kunde und Regio (2)' },
+    ]);
+  });
+
+  it('reports no renamed sheets when every name is kept', async () => {
+    const result = await renderXlsx(descriptor);
+    assert.deepEqual(result.renamedSheets, []);
+  });
+
+  it('refuses a formula that references a sheet by a name it was not written under', async () => {
+    await assert.rejects(
+      renderXlsx({ sheets: [sheetNamed('History'), sheetNamed('Summe', 'SUM(History!A2)')] }),
+      /formula in sheet "Summe", cell A2 rejected: it references sheet "History", which is written as "History_"; reference it as 'History_'!/,
+    );
+    // Excel compares sheet names without case, quoted or not.
+    await assert.rejects(
+      renderXlsx({ sheets: [sheetNamed('History'), sheetNamed('Summe', "SUM('history'!A2)")] }),
+      /references sheet "history", which is written as "History_"/,
+    );
+    // A computed column is checked as well.
+    await assert.rejects(
+      renderXlsx({
+        sheets: [
+          sheetNamed('History'),
+          {
+            name: 'Summe',
+            columns: [{ key: 'v', header: 'V', formula: 'History!A{row}*2' }],
+            rows: [{}],
+          },
+        ],
+      }),
+      /formula in sheet "Summe", computed column "v" rejected: it references sheet "History", which is written as "History_"/,
+    );
+  });
+
+  it('writes a formula that references a sheet by its written name', async () => {
+    const result = await renderXlsx({
+      sheets: [
+        sheetNamed('History'),
+        sheetNamed('Daten'),
+        sheetNamed('daten'),
+        sheetNamed('Summe', "SUM(History_!A2,'daten (2)'!A2,daten!A2)"),
+      ],
+    });
+    const wb = await loadWorkbook(result.buffer);
+    assert.equal(wb.getWorksheet('Summe')?.getCell('A2').formula, "SUM(History_!A2,'daten (2)'!A2,daten!A2)");
   });
 });
 
@@ -203,6 +316,48 @@ describe('office docx renderer', () => {
     assert.equal(result.buffer[0], 0x50);
     assert.equal(result.buffer[1], 0x4b);
     assert.ok(result.buffer.length > 1000, 'non-trivial document');
+  });
+
+  it('turns line breaks inside every text field into Word line breaks (#1982)', async () => {
+    const result = await renderDocx({
+      title: 'Titel eins\nTitel zwei',
+      blocks: [
+        { type: 'heading', level: 2, text: 'Kopf eins\nKopf zwei' },
+        { type: 'paragraph', text: 'Zeile eins\nZeile zwei\r\n\r\nZeile vier' },
+        { type: 'bullets', items: ['Punkt eins\nFortsetzung'] },
+        { type: 'table', headers: ['Spalte\nA'], rows: [['Zelle\rB']] },
+      ],
+    });
+    const xml = (await unzipToText(result.buffer)).get('word/document.xml') ?? '';
+
+    const texts = [...xml.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)].map((m) => m[1] ?? '');
+    assert.ok(
+      texts.every((t) => !/[\r\n]/.test(t)),
+      'no raw line break may stay inside <w:t>',
+    );
+
+    /** Runs of the paragraph that holds `first`: '\n' marks a <w:br/>. */
+    const paragraphOf = (first: string): string => {
+      const p = [...xml.matchAll(/<w:p>[\s\S]*?<\/w:p>/g)]
+        .map((m) => m[0])
+        .find((candidate) => candidate.includes(`>${first}</w:t>`));
+      assert.ok(p, `paragraph with "${first}" exists`);
+      return [...p.matchAll(/<w:br\/>|<w:t[^>]*>([^<]*)<\/w:t>/g)]
+        .map((m) => (m[0] === '<w:br/>' ? '\n' : (m[1] ?? '')))
+        .join('');
+    };
+    assert.equal(paragraphOf('Titel eins'), 'Titel eins\nTitel zwei');
+    assert.equal(paragraphOf('Kopf eins'), 'Kopf eins\nKopf zwei');
+    assert.equal(paragraphOf('Zeile eins'), 'Zeile eins\nZeile zwei\n\nZeile vier');
+    assert.equal(paragraphOf('Punkt eins'), 'Punkt eins\nFortsetzung');
+    assert.equal(paragraphOf('Spalte'), 'Spalte\nA');
+    assert.equal(paragraphOf('Zelle'), 'Zelle\nB');
+
+    // The table header keeps its bold style on every line.
+    const header = [...xml.matchAll(/<w:p>[\s\S]*?<\/w:p>/g)]
+      .map((m) => m[0])
+      .find((p) => p.includes('>Spalte</w:t>'));
+    assert.equal(header?.match(/<w:b\/>/g)?.length, 2, 'both header runs are bold');
   });
 
   const provenanceDescriptor: DocxDescriptor = {
