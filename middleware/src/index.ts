@@ -552,6 +552,7 @@ import { createPublicPathMount } from './platform/publicPathMount.js';
 import { buildResolutionChain } from './platform/pluginContext.js';
 import { installPluginEgressGuard } from './platform/pluginEgressGuard.js';
 import { createPluginEgressSource } from './platform/pluginEgressSource.js';
+import { createPreviewEgressRoots } from './platform/previewEgressRoots.js';
 import { createTeamsSsoAudienceSource } from './platform/teamsSsoAudiences.js';
 import { createTeamsSsoGate } from './auth/teamsSsoGate.js';
 import { createTeamsSsoVerifier } from './auth/teamsSsoVerifier.js';
@@ -1340,9 +1341,17 @@ async function main(): Promise<void> {
   // of them activates: their own requests through the global `fetch` and
   // `node:http(s)` are refused outside their network permission, and model
   // providers are reached only through the gateway (enforced since S3b).
+  // ADR-0017 — Builder previews run in-process too; their extracts are
+  // guarded like installed packages (`previewEgressRoots.ts`).
+  const previewEgressRoots = createPreviewEgressRoots(BUILDER_PREVIEWS_DIR);
   installPluginEgressGuard({
     mode: 'enforce',
-    source: createPluginEgressSource({ catalog: pluginCatalog, installedRegistry, llmProviderCatalog }),
+    source: createPluginEgressSource({
+      catalog: pluginCatalog,
+      installedRegistry,
+      llmProviderCatalog,
+      previews: previewEgressRoots,
+    }),
     onObservation: (o) => {
       console.warn(
         `[plugin-egress] ${o.mode === 'enforce' ? 'refused' : 'observed'}: plugin '${o.pluginId}' reached '${o.host}' (${o.reason})`,
@@ -6887,6 +6896,7 @@ async function main(): Promise<void> {
   // trigger a fresh build through the BuildPipeline → BuildQueue path.
   const previewRuntime = new PreviewRuntime({
     previewsRoot: BUILDER_PREVIEWS_DIR,
+    egressRoots: previewEgressRoots,
     templateNodeModulesPath: path.join(BUILDER_BUILD_TEMPLATE_DIR, 'node_modules'),
     // Solution B: read through to the live kernel ServiceRegistry so an
     // integration-backed agent under test resolves the real services its

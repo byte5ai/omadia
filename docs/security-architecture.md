@@ -872,6 +872,14 @@ not read).
   lets the request through, so it never takes the kernel's own network down.
   `GET /api/v1/admin/model-gateway` lists what the gateway and the guard
   refused since boot.
+- **Builder previews** (`src/platform/previewEgressRoots.ts`, ADR-0017) are
+  guarded the same way: while a preview is open its extract is a root of its
+  own (`preview:<agentId>#n`, never the installed plugin's id) with the draft
+  manifest's `permissions.network.outbound` hosts, `public-web` only for a
+  `web_scanner` draft in that audit mode, and never a model plugin. Code
+  anywhere else under the previews directory (a closed preview whose timers
+  still run, a stale extract) has no network at all. `$config.*` hosts of a
+  draft manifest are not resolved in preview.
 
 Residual risks of the sandbox (in-process, a policy, not a boundary against
 hostile code): a plugin that imports its own `undici` or opens sockets with
