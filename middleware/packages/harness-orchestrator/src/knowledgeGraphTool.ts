@@ -90,7 +90,7 @@ const RESTRICTED_NOTE: Record<'conversation' | 'members' | 'user', string> = {
 };
 
 /** One turn's access to the graph, derived once from its view. */
-interface ToolAccess {
+export interface ToolAccess {
   /** Set when any restriction applies; reported back to the model. */
   readonly note?: string;
   /** The turn may see nothing at all. */
@@ -107,6 +107,67 @@ interface ToolAccess {
   readSession(scope: string): Promise<SessionView | null>;
 }
 
+/**
+ * One turn's access to the graph under a view: the scope pre-filter and the
+ * session read the graph tool and the node filter (`graphNodeAccess.ts`) share.
+ */
+export function graphViewAccess(
+  graph: Pick<KnowledgeGraph, 'getSession'>,
+  view: KnowledgeGraphToolView | undefined,
+): ToolAccess {
+  if (view === undefined) {
+    return {
+      none: false,
+      searchOptions: {},
+      scopeAllowed: () => true,
+      readSession: (scope) => graph.getSession(scope),
+    };
+  }
+  if ('restrictToScope' in view) {
+    const only = view.restrictToScope;
+    // Exact match: the search pre-filter is a LIKE prefix, not equality.
+    const allowed = (scope: string): boolean => only !== null && scope === only;
+    return {
+      note: RESTRICTED_NOTE.conversation,
+      none: only === null,
+      searchOptions: only ? { agentScopePrefix: only } : {},
+      scopeAllowed: allowed,
+      readSession: async (scope) => (allowed(scope) ? graph.getSession(scope) : null),
+    };
+  }
+  if ('userId' in view) {
+    const { userId, agentScopePrefix: prefix, ownScope } = view;
+    const allowed = (scope: string): boolean =>
+      userId !== null && scopeBelongsToAgent(scope, prefix);
+    return {
+      note: RESTRICTED_NOTE.user,
+      none: userId === null,
+      searchOptions: userId ? { agentScopePrefix: prefix, userId } : {},
+      scopeAllowed: allowed,
+      readSession: async (scope) => {
+        if (!allowed(scope) || !userId) return null;
+        // The own conversation reads in full, like recall's tail.
+        return scope === ownScope
+          ? graph.getSession(scope)
+          : graph.getSession(scope, { userId });
+      },
+    };
+  }
+  const audience = view.audienceOwners;
+  const allowed = (scope: string): boolean =>
+    audience !== null && scope.startsWith(view.agentScopePrefix);
+  return {
+    note: RESTRICTED_NOTE.members,
+    none: audience === null,
+    searchOptions: audience
+      ? { agentScopePrefix: view.agentScopePrefix, audienceOwners: audience }
+      : {},
+    scopeAllowed: allowed,
+    readSession: async (scope) =>
+      allowed(scope) && audience ? graph.getSession(scope, { audienceOwners: audience }) : null,
+  };
+}
+
 export class KnowledgeGraphTool {
   constructor(
     private readonly graph: KnowledgeGraph,
@@ -114,57 +175,7 @@ export class KnowledgeGraphTool {
   ) {}
 
   private access(view: KnowledgeGraphToolView | undefined): ToolAccess {
-    if (view === undefined) {
-      return {
-        none: false,
-        searchOptions: {},
-        scopeAllowed: () => true,
-        readSession: (scope) => this.graph.getSession(scope),
-      };
-    }
-    if ('restrictToScope' in view) {
-      const only = view.restrictToScope;
-      // Exact match: the search pre-filter is a LIKE prefix, not equality.
-      const allowed = (scope: string): boolean => only !== null && scope === only;
-      return {
-        note: RESTRICTED_NOTE.conversation,
-        none: only === null,
-        searchOptions: only ? { agentScopePrefix: only } : {},
-        scopeAllowed: allowed,
-        readSession: async (scope) => (allowed(scope) ? this.graph.getSession(scope) : null),
-      };
-    }
-    if ('userId' in view) {
-      const { userId, agentScopePrefix: prefix, ownScope } = view;
-      const allowed = (scope: string): boolean =>
-        userId !== null && scopeBelongsToAgent(scope, prefix);
-      return {
-        note: RESTRICTED_NOTE.user,
-        none: userId === null,
-        searchOptions: userId ? { agentScopePrefix: prefix, userId } : {},
-        scopeAllowed: allowed,
-        readSession: async (scope) => {
-          if (!allowed(scope) || !userId) return null;
-          // The own conversation reads in full, like recall's tail.
-          return scope === ownScope
-            ? this.graph.getSession(scope)
-            : this.graph.getSession(scope, { userId });
-        },
-      };
-    }
-    const audience = view.audienceOwners;
-    const allowed = (scope: string): boolean =>
-      audience !== null && scope.startsWith(view.agentScopePrefix);
-    return {
-      note: RESTRICTED_NOTE.members,
-      none: audience === null,
-      searchOptions: audience
-        ? { agentScopePrefix: view.agentScopePrefix, audienceOwners: audience }
-        : {},
-      scopeAllowed: allowed,
-      readSession: async (scope) =>
-        allowed(scope) && audience ? this.graph.getSession(scope, { audienceOwners: audience }) : null,
-    };
+    return graphViewAccess(this.graph, view);
   }
 
   /** Every session this turn may see, as it may see it. */

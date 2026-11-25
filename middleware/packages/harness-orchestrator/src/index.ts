@@ -689,6 +689,12 @@ export {
   KNOWLEDGE_GRAPH_TOOL_NAME,
   knowledgeGraphToolSpec,
 } from './knowledgeGraphTool.js';
+export {
+  boundKgWalk,
+  currentGraphNodeViewer,
+  graphNodeFilter,
+  type GraphNodeViewer,
+} from './graphNodeAccess.js';
 
 // Native-tool registry — kernel-shared dispatch table
 export { NativeToolRegistry, isOfferedThisTurn } from './nativeToolRegistry.js';
