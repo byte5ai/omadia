@@ -1296,6 +1296,13 @@ export class CliChatAgent implements ChatAgent {
       // A channel's outer scope carries a placeholder id (`''`); the audit
       // rows of this turn name the CLI turn instead.
       turnId: parent?.turnId || cliTurnId,
+      // ADR-0044 — the box the memory binding publishes this turn's graph read
+      // boundary into, shared by reference with every loopback tool call.
+      // Always a fresh one, as an in-process turn starts with: a caller's box
+      // would get this turn's boundary written over its own. Without a box the
+      // boundary had nowhere to go and every graph read of the turn failed
+      // closed.
+      graphReadScope: {},
       ...fields,
     };
   }
