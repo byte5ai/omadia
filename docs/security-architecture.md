@@ -2446,6 +2446,91 @@ whatever `mask_user_prompt` says (§6e). The subscription-CLI path has no
 shield at all (§3a), and without an active privacy-guard provider nothing is
 interned or masked (§6c, residuals).
 
+**The agent's own names (spec 2042, plugin-api 1.90.0).** In an agent's own
+turn the shield does not mask that agent's own names. Otherwise C1 tags "Dark
+Clippy" in the agent's recalled self-introductions as a person, and the model
+reads "Ich bin <surrogate>" and "corrects" its own name. The rules
+(`harness-plugin-privacy-guard/src/ownNames.ts`):
+
+- **Who supplies them.** Only operator-set agent identity:
+  `buildOrchestratorForAgent` derives `ownNames` from the agent's display
+  name, slug and identity name (else the platform
+  `ai_disclosure_assistant_name` it signs with), and the turn handle passes
+  them to `maskUserPrompt`, `maskReplayedAnswer` and `projectVerifierText`.
+  Nothing from a prompt, a message or a tool result can add one.
+- **Exact equality.** A detected span is exempt only if its whole value
+  equals an own name, ignoring case, whitespace, surrounding quotes
+  (`„“”"'‚‘’«»`) and trailing punctuation. A partial name ("Mira Schulz" for
+  an agent "Mira") and a possessive ("Dark Clippys") stay masked, which is the
+  safe direction. Names under 2 characters are ignored.
+- **Not booked.** An exempt span never enters the turn's surrogate map or the
+  receipt. The known-value sweep and the residual check skip own names, so a
+  name that an earlier call of the turn put into the map stays clear and does
+  not block.
+- **The deny-list wins.** A span from the operator deny-list is never exempt,
+  and an own name that the deny-list matches is not treated as an own name in
+  that call (sweep and residual check included).
+- **Human namesakes are not exempt.** An own name that equals a known human's
+  name (`AgentRuntimeConfig.humanNames`, case-insensitive, trimmed) is dropped
+  from the list, so an employee "Max" stays masked even when an agent is
+  called "Max". The humans are the **active** rows of the `users` table
+  (`status = 'active'`). That is a deliberate owner decision: disabling a
+  user lifts the masking veto for that name, and a deleted user no longer
+  counts either. Each user counts with the full display name and every word
+  of it, with surrounding punctuation stripped and words under 2 characters
+  dropped (the table has no separate name columns), so "Karen Müller",
+  "Müller, Karen" and "Anna van der Berg" are all covered. A single first
+  name counts: with a user "Karen Müller", an agent "Karen" is masked in its
+  own turns, as is an agent "Karen Müller". The kernel publishes the names
+  as `humanNames@1` (`src/auth/humanNameDirectory.ts`) before plugin
+  activation and attaches the users table once the database is up; every
+  live agent of the registry reads them once per turn. The directory keeps
+  a per-process snapshot: loaded when the users table is attached, reloaded
+  after every write through `UserStore` (create, first admin, OIDC sign-in
+  upsert, name or status change, delete — `UserStore.onChange`), and after
+  5 minutes as a safety net for writes from another process; until a reload
+  lands, the last snapshot is served. **Fail safe:** before the first load
+  has succeeded, after a failed load (deliberately: the last snapshot is
+  dropped, not served), and wherever the service is not published, the
+  names are unknown and the turn exempts no own name at all — masking wins.
+  The names are never logged.
+  Residuals: `humanNames` covers only people with an omadia login. Odoo
+  partners and employees without a login, customers, and people of a
+  directory (Entra, the Conductor people directory) who never signed in are
+  not covered: if one of them bears an agent's own name exactly, that name
+  reaches the agent's model unmasked in the agent's own turns (and, since
+  #2191/#2192, in every agent's turns: see the roster bullet below). A user write
+  from another process (a second instance, manual SQL) is picked up only by
+  the TTL reload, up to 5 minutes later.
+- **The roster's agent names (#2191, #2192, plugin-api 1.91.0).** Owner
+  decision (2026-11-24, spec 2042 round G1): the names of the roster's agents
+  are not personal data, in any turn of any agent and in background jobs. The
+  kernel publishes `agentNames@1` (`src/platform/agentNamesService.ts`): the
+  slugs, names and identity names of the agents that exist, enabled or not
+  (`OrchestratorRegistry.agentNames`; deleted agents are left out, so their
+  names are masked again), minus every name a known human bears
+  (`rosterAgentNames`, the namesake rule above, compared with the guard's
+  normalisation so quotes or punctuation cannot get a name past the veto).
+  The privacy guard declares it under `optional_requires` and exempts those
+  names under the same rules: in every turn's `maskUserPrompt`,
+  `maskReplayedAnswer` and `projectVerifierText` (in a consultation, A's turn
+  keeps colleague B's name and B's run keeps A's), and in every stored-text
+  scope (`openStoredTextScope`: the significance scorer, the canvas skeleton
+  and the other memory jobs over an agent's turns no longer feed a surrogate
+  of the agent's name back into its context). A turn reads the list once (a
+  change mid-turn cannot unmask a value the turn already masked), a job run
+  once when its scope opens. Exact equality, the deny-list wins, names under
+  2 characters are ignored. **Fail safe:** no registry yet, human names not
+  loaded (`null`), the service not published or a failing lookup exempts no
+  roster name; the turn's own `ownNames` still apply.
+  **Residual, wider than the own-name one above:** a person without an
+  omadia login who bears an agent's name exactly ("Karen" for an Odoo
+  employee and an agent "Karen") reaches the model unmasked in every agent's
+  turns and in the memory jobs, not only in that agent's own turns. A
+  caller-named `identityValues` entry of `projectVerifierText` that equals a
+  roster name is not masked either. The operator deny-list is the remedy for
+  such a name.
+
 **Memory jobs, independent of `mask_user_prompt`.** The memory jobs of
 `@omadia/orchestrator-extras` send stored text, which holds real values,
 through that plugin's own provider, and with a privacy-guard provider active
@@ -2554,6 +2639,10 @@ The same provenance reaches three more readers (#1540):
   the agent's private root and holds what the plugin fetched in clear, so
   under a shield the namespacers refuse that physical tree for every
   operation (`SHIELDED_PHYSICAL`), whatever model-facing path reaches it.
+  Without a shield the tree stays readable and writable, but the namespacers
+  never delete or move it, or move anything into it (#1828); they also refuse
+  `delete`/`rename` of a bound root (`/memories`, `~team`, `~agent`), which
+  the store's own guard only knows as the physical `/memories`.
 - **Stored processes.** `processes.unprotected` (migration 0035, plugin-api
   1.40.0) is set by `write_process`/`edit_process` in an unprotected turn and
   never cleared by an edit. Under a turn's privacy handle `query_processes`,
@@ -3128,6 +3217,144 @@ strip, because a stored context legitimately holds `steps`/`transcript` from
 step 1 onward and stripping there would rob a live run of its own state — so a
 pre-fix run keeps whatever it was seeded with until it ends, while no new run
 can be seeded at all.
+
+## 7d. Webhook hardening (#1707)
+
+Five gaps in the §7 surface that together decide what leaves the server and what
+an operator can reconstruct afterwards. Migration
+`src/conductor/migrations/0015_webhook_hardening.sql`.
+
+**Run context is opt-in.** An outbound delivery carried the run's whole
+`context` — every step result, including the free text a human typed into an
+approval step — to the external receiver AND into
+`conductor_webhook_deliveries.payload` indefinitely. The payload is now
+projected per subscription (`projectRunEventPayload`, `conductor/webhookPayload.ts`)
+against `conductor_webhook_subscriptions.include_context`, which is `false` for
+every row by default — existing rows included, deliberately breaking a receiver
+that was silently getting step results, because the alternative is keeping the
+leak in every install that upgrades. The projection runs BEFORE `createDelivery`,
+so an opted-out subscription's context reaches neither the wire nor the ledger;
+`contextOmitted: true` takes its place so a receiver can tell "not permitted"
+from "there was none". Both delivery-creating paths — the inline terminal-run
+hook and the retry worker's reconciliation pass — share that one function, so
+they cannot disagree about what a subscription receives.
+
+**Bounded retention for stored payloads** (`conductor/webhookRetention.ts`, an
+unref'd 6h sweep with an eager boot pass, the #757 reaper shape). Two windows:
+the payload is redacted to `{runId, status, redacted}` at
+`CONDUCTOR_WEBHOOK_PAYLOAD_RETENTION_DAYS` (the row survives — the delivery
+history is not the sensitive part), and the **terminal** row is deleted at
+`CONDUCTOR_WEBHOOK_DELIVERY_RETENTION_DAYS` (a `pending` row is never deleted;
+it still owes a delivery attempt). Two traps, both guarded: the redaction keeps
+`runId`, because `run_id` is a generated column over `payload->>'runId'` and the
+partial unique index on `(subscription_id, run_id)` is the only thing preventing
+a second delivery per run; and both windows are clamped to `MIN_RETENTION_DAYS`
+(2d), well outside the reconciliation pass's 24h lookback — a window inside it
+would let the sweep delete a row the pass then recreates, re-sending a webhook
+the receiver already got.
+
+**Administration is audited.** `admin_audit` held no row matching `%webhook%`:
+creating, rotating, enabling/disabling and deleting endpoints and subscriptions
+were unrecorded, although they decide what may start a workflow run and where
+run data is sent. Nine actions now exist
+(`conductor.webhook_endpoint_{create,rotate_secret,status,delete}`,
+`conductor.webhook_subscription_{create,rotate_secret,status,delete,payload_scope}`),
+mapped in `webhookChangeAuditEntry` (`auth/adminAuditLog.ts`) under the #775
+rule that an email sub must never reach the uuid `actor_id` column.
+`before`/`after` carry url, event id, enabled state and the payload scope —
+never a secret, never a delivery payload. The delete paths read the row BEFORE
+the DELETE, or the entry would describe nothing. The write is best-effort: a
+failure logs loudly and never fails a mutation that already happened.
+
+A trail is only worth reading if every row describes something that happened, so
+the mutation routes no longer audit no-ops. The status routes previously answered
+`204` for an unknown id and still wrote a row claiming a state change: they now
+`404` instead, before mutating or auditing. DELETE answers `404` for an
+id that is already gone (#1706) and writes no audit row then. Neither pre-read swallows its own failure: a failed
+read answers `500` before anything is mutated, rather than degrading into a row
+with no `before` state.
+
+**Replay window.** An inbound request carried a signature and a delivery id but
+no timestamp, so a captured request stayed valid forever and only the
+delivery-id ledger stopped a literal repeat. A sender may now stamp
+`X-Webhook-Timestamp` (unix seconds) and then signs
+`<timestamp>.<delivery id>.<raw body>` instead of the bare body. Putting the
+stamp INSIDE the MAC is the point: a replay can neither keep its original stamp
+(outside the tolerance) nor be given a fresh one (the signature no longer
+verifies), and a timestamped request is accepted under that scheme ONLY — also
+accepting the bare-body signature would hand an attacker exactly the rewrite the
+scheme exists to stop.
+
+The DELIVERY ID has to be in there too, and that is the half worth stating
+explicitly (review finding): the ledger is the only thing that stops a repeat,
+its key is the caller-supplied `X-Webhook-Delivery-Id`, and that header is not
+secret. Signing only `<timestamp>.<body>` therefore left the window open — a
+captured request replayed with a FRESH delivery id passed the signature, passed
+the tolerance, passed the dedupe, and started a real run on every repeat until
+the tolerance expired (bounded only by the per-endpoint rate limit). For the same
+reason a timestamped request MUST carry the header (`401
+webhook.delivery_id_required` when it does not): the server mints an id for a
+caller that sends none, so permitting the omission would hand the same hole
+back. The check runs
+BEFORE any endpoint lookup (it depends only on the header and this server's
+clock, so it cannot leak endpoint existence) and the tolerance applies in both
+directions, since a far-future stamp is a capture that stays valid until that
+time arrives. Without the header the legacy bare-body scheme still verifies —
+`CONDUCTOR_WEBHOOK_REQUIRE_TIMESTAMP=true` is what actually closes the window
+(`401 webhook.timestamp_required`); new code `webhook.stale_timestamp` covers a
+malformed or out-of-window stamp. Outbound deliveries still sign the body alone:
+a second scheme there would break every existing receiver and is not part of
+this change.
+
+**Rotation grace.** `POST …/rotate-secret` took effect instantly — the sender's
+very next request with the old secret answered 401, so a rotation was an outage
+until the sender had been reconfigured, which is the kind of friction that stops
+secrets from being rotated at all. The superseded secret now lives under its own
+vault key (`webhook-endpoint/<id>/secret.previous`) and stays valid until
+`conductor_webhook_endpoints.secret_previous_until`
+(`now() + CONDUCTOR_WEBHOOK_SECRET_GRACE_SECONDS`). Storing the DEADLINE rather
+than the rotation instant lets the verification path decide from that one column
+whether to look for a previous secret at all, and a lapsed grace is cleaned up
+exactly once (column NULLed, vault key deleted) instead of being re-evaluated on
+every request. `?immediate=true` forces the old instant cutover — the right
+answer when the rotation IS the response to a leak; the old key is then deleted
+rather than parked in the vault for an hour. Both candidates go through the same
+constant-time comparison and the answer is a plain boolean: which secret matched
+is never reported.
+
+The deadline and the previous vault key live in **different stores**, so no
+single transaction can write both atomically, and a first cut of this lost the
+grace window to a race: a rotation that had written the new previous key but not
+yet stamped the deadline was observed by a verification still seeing the EARLIER
+rotation's lapsed deadline, whose lazy cleanup then deleted the key the rotation
+had just written — the sender got 401s for an hour it had been promised.
+Serialising the only two writers of that pair is what makes it consistent
+instead: rotation and the lapsed-grace cleanup both hold a per-endpoint advisory
+lock (`pg_advisory_xact_lock(1707, hashtext(endpointId))` — its own namespace, so
+an operator's rotation never blocks the inbound `claim()` hot path for the same
+endpoint), and the cleanup re-checks `secret_previous_until <= now()` INSIDE that
+lock, with the vault delete conditional on that UPDATE having matched a row. A
+rotation that stamped a fresh deadline while the cleanup waited for the lock
+therefore fails the predicate and touches nothing. The same lock makes two
+concurrent rotations of one endpoint supersede each other instead of both reading
+the same original secret.
+
+**The kill switch is visible.** With `CONDUCTOR_WEBHOOKS_ENABLED=false` every
+inbound request — unsigned, wrong secret, made-up endpoint id alike — was
+answered `200 {"ok":true,"outcome":"disabled"}`. Senders saw success and their
+retry policies dropped the events; the log printed its usual "inbound router
+mounted" line; the admin page showed no state. It is now `503
+webhook.inbound_disabled`: honest and retryable. The boot line states the state,
+and `GET /api/v1/operator/conductors/webhooks/posture` reports it plus the
+hardening windows in force — built from the same values handed to the inbound
+router and the retention sweep, so the admin page cannot display a posture the
+server does not enforce. That route answers 200 even unwired
+(`configured: false`), because "webhooks are off" is the answer it exists to
+give and a 503 would be indistinguishable from the kill switch itself. On a
+DB-less install the whole Conductor operator router is unmounted, so that answer
+cannot arrive at all and the route 404s; the banner reads a 404 as exactly the
+same "no webhook surface here" state rather than as a failed request, so both
+ways of getting there render one banner instead of a red error line.
 
 ## 7b. Tamper-evident receipt chain (#758)
 
@@ -7159,10 +7386,13 @@ count, role key and channel type — deliberately no inviter identity.
 control characters replaced and its length capped before it reaches a log
 line; agentId is limited to 256 characters at the boundary.
 
-**Residual: webhooks carry the run context.** The facilitation start payload
-now includes `conversationId` and an optional `deadline`, and `run.context`
-goes out in conductor run webhooks like every other context key. Subscribers to
-conductor run events therefore see conversation ids of facilitations.
+**Webhooks and the run context (resolved by #1707).** The facilitation start
+payload includes `conversationId` and an optional `deadline`, and `run.context`
+used to go out in conductor run webhooks like every other context key — every
+subscriber to conductor run events saw the conversation ids of facilitations.
+Since #1707 (§7d) the context is opt-in per subscription and off by default, so
+a subscription only sees them if an operator deliberately switched that on for
+it.
 
 ## 10t. Decision model and MCP reads on the fast path (2026-11-03)
 

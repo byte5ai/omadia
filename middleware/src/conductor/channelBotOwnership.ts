@@ -55,6 +55,33 @@ function conversationBinding(
  *  `28:<appId>`), or undefined when none is configured. Read per call. */
 export type DefaultChannelBotKey = (channelType: string) => string | undefined;
 
+/** Something that may name a channel's default bot (a channel plugin's
+ *  `agentIdentities@1` or default-key provider), looked up per channel type. */
+export interface DefaultChannelKeySource {
+  get(channelType: string): { defaultChannelKey?(): string | undefined } | undefined;
+}
+
+/**
+ * The default bot key as the channel plugins name it: the first source whose
+ * provider answers a non-blank key wins. A provider that throws counts as
+ * "no default bot" — routing then refuses the unknown bot instead of failing
+ * the turn. The kernel knows no plugin id and no channel's credentials here.
+ */
+export function defaultChannelBotKeyFrom(sources: readonly DefaultChannelKeySource[]): DefaultChannelBotKey {
+  return (channelType) => {
+    for (const source of sources) {
+      let key: string | undefined;
+      try {
+        key = source.get(channelType)?.defaultChannelKey?.();
+      } catch {
+        key = undefined;
+      }
+      if (typeof key === 'string' && key.trim() !== '') return key.trim();
+    }
+    return undefined;
+  };
+}
+
 /** A bot routing key as identities are stored: `28:<appId>` lowercased (the
  *  Teams plugin's `teamsBotKey()`), whatever casing the payload carried. */
 export function channelBotKey(raw: string): string {

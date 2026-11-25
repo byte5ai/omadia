@@ -6,6 +6,7 @@ import type { JsonObject, JsonValue, Step, WorkflowGraph } from '@omadia/conduct
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRun, ConductorRunStore, TriggerKind } from './runStore.js';
 import { RunLeaseLostError } from './runStore.js';
+import { isTimerAwait } from './awaitStore.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { StepEffects } from './stepEffects.js';
 import { canonicalizePrincipalId } from './principalId.js';
@@ -18,6 +19,7 @@ import {
 } from './runError.js';
 import { appendTranscript } from './transcript.js';
 import { sanitizeRunContext } from './runContext.js';
+import { renderAwaitMessage } from './runInterpolation.js';
 import type { RoleHolderResolver } from './roleHolderResolver.js';
 import type { AggregateHolderLookup } from '@omadia/channel-sdk';
 
@@ -25,6 +27,11 @@ export class WorkflowNotFoundError extends Error {}
 export class WorkflowDisabledError extends Error {}
 export class WorkflowNotPublishedError extends Error {}
 export class AwaitNotPendingError extends Error {}
+/** #1706 — no await row carries this id at all (a stale or made-up awaitId), as
+ *  opposed to one that exists but has already been answered/expired/cancelled.
+ *  Separate so the operator route can answer 404 instead of the 409 that reads
+ *  as "this await of yours is closed". */
+export class AwaitNotFoundError extends Error {}
 /** A responder who is not a current holder tried to resolve an await (authorization gate). */
 export class AwaitResponderNotHolderError extends Error {}
 /** #759 — cancel asked for a run that is already terminal (surfaced as 409). */
@@ -554,7 +561,8 @@ export class ConductorRunExecutor {
   /** A human responded — resolve the await and resume the run. */
   async resolveAwait(awaitId: string, responderId: string, response: JsonValue): Promise<ConductorRun> {
     const aw = await this.awaitStore.get(awaitId);
-    if (!aw || aw.status !== 'waiting') throw new AwaitNotPendingError(`await '${awaitId}' is not pending`);
+    if (!aw) throw new AwaitNotFoundError(`await '${awaitId}' not found`);
+    if (aw.status !== 'waiting') throw new AwaitNotPendingError(`await '${awaitId}' is not pending`);
 
     // Holders resolved LIVE (baton moves re-target) and canonicalized so a lowercased-email responder
     // (the channel layer always lowercases) matches an operator-typed holder. Used for BOTH the
@@ -663,15 +671,15 @@ export class ConductorRunExecutor {
     const fallback = aw.fallbackTransitionId ? graph.transitions.find((tr) => tr.id === aw.fallbackTransitionId) : undefined;
     // #330 C3 — a timer expiry is the step doing exactly its job, not a
     // missed deadline; the actor says so, and the trace stays honest.
-    const actor: JsonValue = aw.principalKind === 'timer' ? { kind: 'timer', ticked: true } : { kind: 'human', timedOut: true };
+    const actor: JsonValue = isTimerAwait(aw) ? { kind: 'timer', ticked: true } : { kind: 'human', timedOut: true };
     // A timer expiring is the step working as designed — 'unmet' would lie.
-    const expiredOutcome = aw.principalKind === 'timer' ? 'n/a' : 'unmet';
+    const expiredOutcome = isTimerAwait(aw) ? 'n/a' : 'unmet';
     // #1699 — a human deadline passing unanswered is a cause worth recording, on
     // the fallback path too (the run can end `completed` and the operator still
     // needs to know nobody answered). A TIMER expiring is the step doing exactly
     // its job — same reasoning as `expiredOutcome` above — so it records none.
     const expiryError: ConductorRunError | null =
-      aw.principalKind === 'timer'
+      isTimerAwait(aw)
         ? null
         : runError(
             'await_timed_out',
@@ -705,7 +713,7 @@ export class ConductorRunExecutor {
    * Dry-run / preview (US8 / FR-029): simulate the workflow path in memory with NO persistence
    * and NO side effects — no conductor_runs/awaits rows, no real notification, no durable await.
    * Human steps are answered inline (supplied `humanResponses[stepId]`, default `{approved:true}`);
-   * agent steps run a real turn; action steps are stubbed (irreversible connector actions are not
+   * agent and action steps are stubbed (irreversible connector actions and LLM turns are not
    * executed). Returns the full simulated step path so the operator gains confidence before activating.
    */
   async previewRun(slug: string, payload: JsonObject, humanResponses: Record<string, JsonValue> = {}): Promise<PreviewResult> {
@@ -769,16 +777,8 @@ export class ConductorRunExecutor {
         result = normalizeHumanResult(humanResponses[stepId] ?? { approved: true }, step.human?.strictApproval === true);
         actor = 'human (inline)';
       } else if (step.kind === 'agent') {
-        // A rehearsal must report a throwing agent step, not 500 the preview route.
-        try {
-          const exec = await this.effects.runAgentStep(step, context, { runId: `preview:${slug}` });
-          result = exec.result;
-        } catch (err) {
-          error = runErrorFromThrow(err, { stepKind: step.kind, ref: step.agentId ?? null });
-          this.log(`[conductor] preview '${slug}' step '${stepId}' threw: ${error.message ?? '(no message)'}`);
-          break;
-        }
-        actor = `agent:${step.agentId ?? '?'}`;
+        result = { simulated: true, agentId: step.agentId ?? null };
+        actor = `agent (stubbed):${step.agentId ?? '?'}`;
       } else {
         result = { simulated: true, actionId: step.actionId ?? null };
         actor = `action (stubbed):${step.actionId ?? '?'}`;
@@ -852,7 +852,12 @@ export class ConductorRunExecutor {
       principalKind: h?.principal.kind ?? 'role',
       principalRef: h?.principal.ref ?? '',
       channelType: h?.channel ?? 'teams',
-      message: h?.message ?? '',
+      // #1709 — the approver reads THIS string. Rendered once, here, against the
+      // context the run is parked with: the await row is what the inbox, the card
+      // and the reminder worker all read, so an unrendered message would reach a
+      // person through every one of them. (A row written BEFORE this fix still holds
+      // raw template text; awaitStore renders those on read.)
+      message: renderAwaitMessage(h?.message ?? '', context),
       quorum: h?.quorum ?? 'any',
       reminderIntervalMs: reminderMs,
       deadlineAt: deadlineMs ? new Date(Date.now() + deadlineMs) : null,

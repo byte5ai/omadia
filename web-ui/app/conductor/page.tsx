@@ -22,8 +22,10 @@ import {
   type ConductorTemplate,
   type ConductorTemplateProposal,
   type ConductorTemplateSlotMapping,
+  type ConductorValidationWarning,
   type ConductorWorkflow,
 } from '@/app/_lib/api';
+import { describeConductorRunStartError } from '@/app/_lib/conductorRunStartError';
 
 import { ConductorCanvas, type CanvasGraphRequest } from './_components/ConductorCanvas';
 import { ConductorChatPane } from './_components/ConductorChatPane';
@@ -34,6 +36,7 @@ import { SaveAsTemplateDialog } from './_components/SaveAsTemplateDialog';
 import { TemplateGallery } from './_components/TemplateGallery';
 import { TemplateInstantiateForm } from './_components/TemplateInstantiateForm';
 import { TemplateUpdateHint } from './_components/TemplateUpdateHint';
+import { WorkflowStatusToggle } from './_components/WorkflowStatusToggle';
 
 export default function ConductorPage(): React.JSX.Element {
   const t = useTranslations('conductor');
@@ -58,7 +61,9 @@ export default function ConductorPage(): React.JSX.Element {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [runningSlug, setRunningSlug] = useState<string | null>(null);
   const [runResult, setRunResult] = useState<ConductorRunResult | null>(null);
-  const [runError, setRunError] = useState<string | null>(null);
+  // #1711 — the refusal is a catalog sentence plus, for an unmapped failure
+  // only, the technical text behind it; never the bare `… failed: 409`.
+  const [runError, setRunError] = useState<{ message: string; detail: string | null } | null>(null);
   const [historySlug, setHistorySlug] = useState<string | null>(null);
   const [awaits, setAwaits] = useState<ConductorAwait[]>([]);
   const [awaitBusy, setAwaitBusy] = useState<string | null>(null);
@@ -91,12 +96,19 @@ export default function ConductorPage(): React.JSX.Element {
   const [deleteSlug, setDeleteSlug] = useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // #1711 — enable/disable failures from a list row land in one shared slot,
+  // next to the delete error.
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [viewer, setViewer] = useState<string | null>(null);
   // Distinguishes "viewer unknown because getAuthMe is still in flight" from
   // "resolved without a viewer": the save-as-template dialog must not read an
   // owned id as taken while the identity probe is merely pending (#478 F1).
   const [viewerPending, setViewerPending] = useState(true);
   const [templateNotice, setTemplateNotice] = useState<string | null>(null);
+  // #1713 — non-blocking findings the instantiate route returned (typically an event id
+  // nothing installed declares yet). The workflow IS published; this is the one place the
+  // operator learns that no run starts until a sender emits that exact id.
+  const [instantiateWarnings, setInstantiateWarnings] = useState<ConductorValidationWarning[]>([]);
 
   const reload = useCallback(async () => {
     try {
@@ -126,12 +138,17 @@ export default function ConductorPage(): React.JSX.Element {
         await respondToAwait(awaitId, { approved });
         await reload();
       } catch (err) {
-        setRunError(err instanceof ApiError ? err.message : String(err));
+        // Shares the run-error slot below the list — so it obeys the same rule
+        // (#1711): a catalog sentence first, the server's text behind it.
+        setRunError({
+          message: t('awaitRespondFailed'),
+          detail: err instanceof ApiError ? (err.serverMessage ?? err.message) : String(err),
+        });
       } finally {
         setAwaitBusy(null);
       }
     },
-    [reload],
+    [reload, t],
   );
 
   const handleDelete = useCallback(
@@ -250,12 +267,16 @@ export default function ConductorPage(): React.JSX.Element {
         }
         await reload();
       } catch (err) {
-        setRunError(err instanceof ApiError ? err.message : String(err));
+        // A disabled workflow refuses with 409 conductor.disabled — say so in a
+        // sentence that points at the enable switch on the row (#1711), instead
+        // of surfacing the raw status line.
+        const described = describeConductorRunStartError(err);
+        setRunError({ message: t(described.key), detail: described.detail });
       } finally {
         setRunningSlug(null);
       }
     },
-    [reload],
+    [reload, t],
   );
 
   const card = 'rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4';
@@ -287,6 +308,7 @@ export default function ConductorPage(): React.JSX.Element {
               // Ordinary selection instantiates the latest version — clear any pin
               // a previous "Re-instantiate from v{n}" left behind, and any prefill
               // a previous chat proposal seeded.
+              setInstantiateWarnings([]);
               setInstantiatePrefill(null);
               setSelectedVersion(undefined);
               setSelectedTemplate(tpl);
@@ -303,9 +325,11 @@ export default function ConductorPage(): React.JSX.Element {
                 template={selectedTemplate}
                 version={selectedVersion}
                 initialMapping={instantiatePrefill?.mapping}
-                onCreated={() => {
+                onCreated={(_slug, warnings) => {
                   // Same success feedback as the canvas publish path (onSaved): reload
-                  // the lists so the new workflow appears immediately.
+                  // the lists so the new workflow appears immediately. Validator warnings
+                  // (#1713) outlive the closing form — they render below the gallery.
+                  setInstantiateWarnings(warnings ?? []);
                   setSelectedTemplate(null);
                   setSelectedVersion(undefined);
                   setInstantiatePrefill(null);
@@ -335,6 +359,24 @@ export default function ConductorPage(): React.JSX.Element {
               />
             </div>
           )}
+          {/* Post-instantiate validator warnings (#1713) — warning-colored TEXT only
+              (Lume state rule), outside the form so they survive it closing. */}
+          {instantiateWarnings.length > 0 && (
+            <div className="mt-3 rounded-md border border-[color:var(--warning,#f5a623)] p-3">
+              {/* Same shape and catalog key as the canvas publish path — one reading for
+                  "it is live, and here is what the validator still wants you to see". */}
+              <div className="mb-1 text-[13px] font-semibold text-[color:var(--warning,#f5a623)]">
+                {t('validationWarningsHeading')}
+              </div>
+              <ul className="list-inside list-disc text-[13px] text-[color:var(--fg-muted)]">
+                {instantiateWarnings.map((warning) => (
+                  <li key={`${warning.code}:${warning.nodeIds.join(',')}`}>
+                    <span className="font-mono">{warning.code}</span>: {warning.message}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </section>
       )}
 
@@ -358,13 +400,22 @@ export default function ConductorPage(): React.JSX.Element {
                 <div>
                   <div className="text-[15px] font-medium text-[color:var(--fg-strong)]">{wf.name}</div>
                   <div className="font-mono text-[12px] text-[color:var(--fg-muted)]">
-                    {wf.slug} · {t('statusLabel')}: {wf.status}
+                    {wf.slug} · {t('statusLabel')}: {t(wf.status === 'enabled' ? 'statusEnabled' : 'statusDisabled')}
                   </div>
                   {/* Template provenance update hint (#478): opt-in re-instantiation
                       from the latest version; this workflow stays untouched. */}
                   {wf.template ? <TemplateUpdateHint hint={wf.template} onReinstantiate={handleReinstantiate} /> : null}
                 </div>
                 <div className="flex shrink-0 gap-2">
+                  {/* #1711 — the only UI path out of the default-disabled state a
+                      template instantiation leaves behind. */}
+                  <WorkflowStatusToggle
+                    slug={wf.slug}
+                    status={wf.status}
+                    disabled={deleteBusy}
+                    onChanged={() => void reload()}
+                    onError={setStatusError}
+                  />
                   <Button
                     variant="ghost"
                     disabled={deleteBusy}
@@ -432,6 +483,7 @@ export default function ConductorPage(): React.JSX.Element {
           </div>
         )}
         {deleteError && <p className="mt-3 text-[14px] text-[color:var(--danger,#e5484d)]">{deleteError}</p>}
+        {statusError && <p className="mt-3 text-[14px] text-[color:var(--danger,#e5484d)]">{statusError}</p>}
         {/* Destructive-action gate: same ConfirmDialog as chat-reset / MCP revoke.
             The server keeps the run history as audit trace when runs exist. */}
         <ConfirmDialog
@@ -446,7 +498,14 @@ export default function ConductorPage(): React.JSX.Element {
           }}
           onCancel={() => setDeleteSlug(null)}
         />
-        {runError && <p className="mt-3 text-[14px] text-[color:var(--danger,#e5484d)]">{runError}</p>}
+        {runError && (
+          <div className="mt-3">
+            <p className="text-[14px] text-[color:var(--danger,#e5484d)]">{runError.message}</p>
+            {runError.detail && (
+              <p className="mt-1 font-mono text-[12px] text-[color:var(--fg-muted)]">{runError.detail}</p>
+            )}
+          </div>
+        )}
         {runResult && (
           <div className={`${card} mt-4`}>
             <div className="mb-3 text-[14px] font-semibold text-[color:var(--fg-strong)]">{t('lastRunHeading')}</div>

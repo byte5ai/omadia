@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
@@ -17,6 +17,7 @@ import {
   type ConductorTemplateSlot,
   type ConductorTemplateSlotMapping,
   type ConductorTemplateTextSlot,
+  type ConductorValidationWarning,
 } from '@/app/_lib/api';
 
 import { ChannelSelect, gcLbl } from './GuidedControls';
@@ -80,7 +81,10 @@ function fieldClass(invalid: boolean): string {
 
 export interface TemplateInstantiateFormProps {
   template: ConductorTemplate;
-  onCreated: (slug: string) => void;
+  /** `warnings` are the server's non-blocking findings on the instantiated graph (#1713:
+   *  an event id nothing installed declares yet). The form closes on success, so the
+   *  parent surfaces them beside its publish notice. */
+  onCreated: (slug: string, warnings?: ConductorValidationWarning[]) => void;
   /**
    * Receives the resolved (substituted + validated) graph for canvas hydration, plus the
    * instance slug/name from this form so the canvas's own form is publish-ready (and never
@@ -141,12 +145,20 @@ export function TemplateInstantiateForm({
   });
   const [previewOpen, setPreviewOpen] = useState(false);
   const [catalogs, setCatalogs] = useState<Catalogs>({});
+  // Unique per form instance — no datalist id collision on a double-mount (same rule
+  // the designer's event field follows).
+  const eventListId = useId();
   const [pending, setPending] = useState<'create' | 'resolve' | null>(null);
   // Server-error surfaces (fail-clear): per-slot flags, slug conflict, graph-validation
   // messages, and a single generic line for everything else.
   const [flaggedSlots, setFlaggedSlots] = useState<ReadonlySet<string>>(new Set());
   const [slugError, setSlugError] = useState<string | null>(null);
   const [graphErrors, setGraphErrors] = useState<string[]>([]);
+  // #1713 — non-blocking findings from the RESOLVE path. "Open in designer" republishes
+  // through POST /conductors, which validates without KnownRefs and so never warns about
+  // an event id nothing emits: this form is the only place that reading exists on that
+  // route. (The create path hands its warnings to the parent, which outlives the form.)
+  const [graphWarnings, setGraphWarnings] = useState<ConductorValidationWarning[]>([]);
   const [genericError, setGenericError] = useState<string | null>(null);
 
   // Load only the catalogs the template actually declares slots for.
@@ -173,7 +185,10 @@ export function TemplateInstantiateForm({
             : Promise.resolve(),
           (template.slots.events ?? []).length > 0
             ? getConductorEventCatalog().then((r) => {
-                next.events = r.events.map((event) => ({ value: event, label: event }));
+                // Plugin-declared ids AND the ids operators configured on inbound webhook
+                // endpoints (#1713) — both are emittable here, so both are suggested.
+                const ids = [...new Set([...r.events, ...(r.endpointEvents ?? [])])].sort();
+                next.events = ids.map((event) => ({ value: event, label: event }));
               })
             : Promise.resolve(),
         ]);
@@ -231,6 +246,7 @@ export function TemplateInstantiateForm({
     setFlaggedSlots(new Set());
     setSlugError(null);
     setGraphErrors([]);
+    setGraphWarnings([]);
     setGenericError(null);
   };
 
@@ -260,7 +276,11 @@ export function TemplateInstantiateForm({
   const buildMapping = (): ConductorTemplateSlotMapping => {
     const out: ConductorTemplateSlotMapping = {};
     for (const kind of SLOT_KINDS) {
-      if ((template.slots[kind] ?? []).length > 0) out[kind] = { ...mapping[kind] };
+      if ((template.slots[kind] ?? []).length === 0) continue;
+      // Trimmed, like the `complete` gate above judges them — a free-text event id
+      // (#1713) pasted with whitespace must not travel as ' my.incident'. The server
+      // trims ref slots as well; this keeps the wire body equal to what is on screen.
+      out[kind] = Object.fromEntries(Object.entries(mapping[kind]).map(([key, value]) => [key, value.trim()]));
     }
     if ((template.slots.text ?? []).length > 0) {
       const text: Record<string, string> = {};
@@ -278,7 +298,7 @@ export function TemplateInstantiateForm({
     setPending('create');
     clearErrors();
     try {
-      await instantiateConductorTemplate(template.id, {
+      const res = await instantiateConductorTemplate(template.id, {
         slug: trimmedSlug,
         name: name.trim(),
         mapping: buildMapping(),
@@ -286,7 +306,7 @@ export function TemplateInstantiateForm({
         // Explicit pin only (update flow) — the default path lets the server serve latest.
         ...(version !== undefined ? { version } : {}),
       });
-      onCreated(trimmedSlug);
+      onCreated(trimmedSlug, res.warnings);
     } catch (err) {
       handleFailure(err);
     } finally {
@@ -302,6 +322,7 @@ export function TemplateInstantiateForm({
         version !== undefined
           ? await resolveConductorTemplate(template.id, buildMapping(), version)
           : await resolveConductorTemplate(template.id, buildMapping());
+      setGraphWarnings(res.warnings ?? []);
       onOpenInDesigner(res.graph, { slug: slug.trim(), name: name.trim(), enable });
     } catch (err) {
       handleFailure(err);
@@ -325,6 +346,34 @@ export function TemplateInstantiateForm({
           {description ? <span className="text-[11px] text-[color:var(--fg-muted)]">{description}</span> : null}
           {flagged ? <span className="text-[12px] text-[color:var(--danger)]">{t('templateSlotMissing')}</span> : null}
         </div>
+      );
+    }
+    // #1713 — an event slot is FREE TEXT with the catalog as a datalist, exactly like the
+    // designer's event-trigger field. An event id is chosen by whoever emits it (`POST
+    // /conductors/emit`, an inbound webhook endpoint), so the catalog can only suggest:
+    // a select offered nothing at all on a stack without an event-emitting plugin, which
+    // made every event template un-instantiable through this form.
+    if (kind === 'events') {
+      const suggestions = catalogs.events ?? [];
+      return (
+        <label key={slot.key} className={gcLbl}>
+          <span className={flagged ? 'text-[color:var(--danger)]' : undefined}>{label}</span>
+          <input
+            className={`${fieldClass(flagged)} font-mono`}
+            list={eventListId}
+            value={mapping.events[slot.key] ?? ''}
+            aria-invalid={flagged || undefined}
+            placeholder={t('templateEventSlotPlaceholder')}
+            onChange={(e) => setSlotValue('events', slot.key, e.target.value)}
+          />
+          {description ? <span className="text-[11px] text-[color:var(--fg-muted)]">{description}</span> : null}
+          <span className="text-[11px] text-[color:var(--fg-muted)]">
+            {suggestions.length > 0
+              ? t('templateEventSlotHint', { count: suggestions.length })
+              : t('templateEventSlotHintEmpty')}
+          </span>
+          {flagged ? <span className="text-[12px] text-[color:var(--danger)]">{t('templateSlotMissing')}</span> : null}
+        </label>
       );
     }
     return (
@@ -424,6 +473,15 @@ export function TemplateInstantiateForm({
               {t(GROUP_LABEL_KEY[kind])}
             </legend>
             <div className="grid gap-3 sm:grid-cols-2">{slots.map((slot) => renderSlotField(kind, slot))}</div>
+            {/* ONE datalist for every event slot — an element id must be unique, and all
+                event slots draw on the same install-wide suggestion set. */}
+            {kind === 'events' ? (
+              <datalist id={eventListId}>
+                {(catalogs.events ?? []).map((option) => (
+                  <option key={option.value} value={option.value} />
+                ))}
+              </datalist>
+            ) : null}
             {kind === 'roles' && catalogs.roles !== undefined && catalogs.roles.length === 0 ? (
               <p className="mt-2 text-[12px] text-[color:var(--accent)]">{t('templateRolesEmptyHint')}</p>
             ) : null}
@@ -465,6 +523,18 @@ export function TemplateInstantiateForm({
           <ul className="mt-1 list-disc pl-5">
             {graphErrors.map((message) => (
               <li key={message}>{message}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {graphWarnings.length > 0 ? (
+        <div className="mt-3 text-[13px] text-[color:var(--warning)]">
+          <p>{t('validationWarningsHeading')}</p>
+          <ul className="mt-1 list-disc pl-5">
+            {graphWarnings.map((warning) => (
+              <li key={`${warning.code}:${warning.nodeIds.join(',')}`}>
+                <span className="font-mono">{warning.code}</span>: {warning.message}
+              </li>
             ))}
           </ul>
         </div>

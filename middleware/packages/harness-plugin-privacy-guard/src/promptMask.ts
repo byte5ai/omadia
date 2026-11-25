@@ -22,6 +22,8 @@
 
 import type { PromptPiiDetector, PromptPiiSpan } from '@omadia/plugin-api';
 
+import { DENY_LIST_DETECTOR_ID, NO_OWN_NAMES, type OwnNameMatcher } from './ownNames.js';
+
 import {
   createPromptPseudonymMap,
   type PromptSpanValue,
@@ -571,7 +573,7 @@ export function createCustomTermsDetector(config: CustomTermsConfig): {
   return {
     rejected,
     detector: {
-      id: 'custom-terms',
+      id: DENY_LIST_DETECTOR_ID,
       async detect(text: string): Promise<readonly PromptPiiSpan[]> {
         const spans: PromptPiiSpan[] = [];
         if (termsRe !== undefined) {
@@ -814,6 +816,15 @@ export function dedupSpans(
 // Substitution.
 // ---------------------------------------------------------------------------
 
+/** Options of {@link maskPrompt}. */
+export interface MaskPromptOptions {
+  /** The speaking agent's own names, resolved for this call
+   *  ({@link resolveOwnNames}): a resolved span whose whole value is one
+   *  stays as written unless the operator deny-list found it, and the
+   *  known-value sweep leaves them alone. */
+  readonly isOwnName?: OwnNameMatcher;
+}
+
 export interface MaskPromptResult {
   readonly maskedText: string;
   /** Server-held map (extended from `existingMap` when given). */
@@ -851,8 +862,10 @@ export async function maskPrompt(
   text: string,
   detectors: readonly PromptPiiDetector[],
   existingMap?: PseudonymMap,
+  options?: MaskPromptOptions,
 ): Promise<MaskPromptResult> {
   const detected = await collectDetectorSpans(text, detectors);
+  const isOwnName = options?.isOwnName ?? NO_OWN_NAMES;
   // #1528 / #1529 — a surrogate is not a new real value. A span that is (or,
   // after word-boundary extension, swallowed) a reserved surrogate shape — a
   // replayed answer that kept `LUKAS.BECKER@EXAMPLE.NET`, a deny-list term
@@ -860,8 +873,12 @@ export async function maskPrompt(
   // give the model a second stand-in for the same person. Realistic
   // surrogates ("Lukas Becker") are not exempt: a real person may bear the
   // name.
+  // The speaking agent's own name is not PII in its own turn: masked, its
+  // model reads "I am <surrogate>" in its history and "corrects" itself.
   const spans = dedupSpans(text, detected).filter(
-    (s) => !isReservedSurrogateShape(s.value),
+    (s) =>
+      !isReservedSurrogateShape(s.value) &&
+      !(isOwnName(s.value) && s.detector !== DENY_LIST_DETECTOR_ID),
   );
   if (spans.length === 0) {
     // NOTHING DETECTED IN *THIS* TEXT IS NOT NOTHING TO MASK.
@@ -880,7 +897,7 @@ export async function maskPrompt(
     // turn already decided are PII, and never touches anything else.
     const carried = existingMap ?? { forward: new Map(), reverse: new Map() };
     return {
-      maskedText: sweepKnownValues(text, carried),
+      maskedText: sweepKnownValues(text, carried, isOwnName),
       map: carried,
       spans,
     };
@@ -899,7 +916,7 @@ export async function maskPrompt(
     if (surrogate === undefined) continue;
     masked = masked.slice(0, span.start) + surrogate + masked.slice(span.end);
   }
-  return { maskedText: sweepKnownValues(masked, map), map, spans };
+  return { maskedText: sweepKnownValues(masked, map, isOwnName), map, spans };
 }
 
 /**
@@ -917,11 +934,18 @@ export async function maskPrompt(
  * one's surrogate; doing the long ones first leaves the short sweep to clean up
  * whatever it re-introduced, never the other way round.
  */
-function sweepKnownValues(text: string, map: PseudonymMap): string {
+function sweepKnownValues(
+  text: string,
+  map: PseudonymMap,
+  isOwnName: OwnNameMatcher,
+): string {
   let masked = text;
   for (const [real, surrogate] of [...map.forward.entries()].sort(
     (a, b) => b[0].length - a[0].length,
   )) {
+    // The agent's own name stays clear even if an earlier call of the turn
+    // (without own names) put it into the map.
+    if (isOwnName(real)) continue;
     if (masked.includes(real)) masked = replaceOutsideSurrogates(masked, real, surrogate, map);
   }
   return masked;

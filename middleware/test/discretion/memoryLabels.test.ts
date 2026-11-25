@@ -310,6 +310,28 @@ describe('memory through the real orchestrator', () => {
     assert.match(open.text, /verlässt/, 'without stored labels the same recall answers');
   });
 
+  it('the recall card of a recalled memorable is not shown to a room that may not read it', async () => {
+    // The cards precede the answer: on the streaming path they went out
+    // before the people-egress check of the answer ran.
+    const cardsOf = async (unlabelled: boolean) => {
+      const { orchestrator } = build([text('Kurz: P verlässt das Unternehmen.')], { insights: ['mk:1'], unlabelled });
+      const { input, participants } = groupTurn(['s1', 's2']);
+      const events: Array<{ type: string; channel?: string }> = [];
+      await turnContext.runWithChatParticipants(participants as never, async () => {
+        for await (const ev of orchestrator.chatStream(input)) events.push(ev as { type: string; channel?: string });
+      });
+      return events.filter((e) => e.type === 'turn_annotation' && e.channel === 'kg_recall');
+    };
+    assert.equal((await cardsOf(false)).length, 0, 'no card for the sales group');
+    assert.equal((await cardsOf(true)).length, 1, 'without stored labels the same recall shows its card');
+
+    // The buffered path (Teams) drops the card with the withheld answer.
+    const { orchestrator } = build([text('Kurz: P verlässt das Unternehmen.')], { insights: ['mk:1'] });
+    const { input, participants } = groupTurn(['s1', 's2']);
+    const result = await turnContext.runWithChatParticipants(participants as never, () => orchestrator.chat(input));
+    assert.equal((result as { recalled?: unknown }).recalled, undefined);
+  });
+
   it('a verifier re-entry that replays the memory read keeps the note\'s labels', async () => {
     const narrow = unionLabels([hrContext]);
     const { port } = fakePort([['memory_file', '/memories/p.md', narrow]]);

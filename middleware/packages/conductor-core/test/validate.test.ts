@@ -130,14 +130,46 @@ describe('validate', () => {
     expect(codes(g, { agentIds: ['ghost'] })).not.toContain('unknown_agent_ref');
   });
 
-  it('rejects an event trigger with an unknown event id', () => {
+  // #1713 — an id no known ref matches is a WARNING, never an error: event ids are
+  // sender-chosen free text ('POST /conductors/emit', an inbound webhook endpoint's
+  // operator-configured id), so the catalog only suggests. As an error it made every
+  // bundled event template un-instantiable on a stack with an empty event catalog.
+  it('warns, but does not reject, an event trigger with an unmatched event id', () => {
     const g: WorkflowGraph = {
       entryStepId: 's1',
       steps: [{ id: 's1', kind: 'agent', agentId: 'a1' }],
       transitions: [],
       triggers: [{ id: 'tr1', kind: 'event', eventId: 'x.y' }],
     };
-    expect(codes(g, { eventIds: ['a.b'] })).toContain('unknown_event_ref');
+    const res = validate(g, { eventIds: ['a.b'] });
+    expect(res.ok).toBe(true);
+    expect(codes(g, { eventIds: ['a.b'] })).not.toContain('unknown_event_ref');
+    expect((res.warnings ?? []).map((w) => w.code)).toContain('unmatched_event_ref');
+    expect((res.warnings ?? []).find((w) => w.code === 'unmatched_event_ref')?.nodeIds).toEqual(['tr1']);
+  });
+
+  // The empty-catalog case from the issue: nothing declares events, every id is unmatched,
+  // and the graph must still validate so resolve/instantiate can publish it.
+  it('accepts an event trigger against an EMPTY known-event catalog', () => {
+    const g: WorkflowGraph = {
+      entryStepId: 's1',
+      steps: [{ id: 's1', kind: 'agent', agentId: 'a1' }],
+      transitions: [],
+      triggers: [{ id: 'tr1', kind: 'event', eventId: 'my.incident' }],
+    };
+    const res = validate(g, { eventIds: [] });
+    expect(res.ok).toBe(true);
+    expect((res.warnings ?? []).map((w) => w.code)).toContain('unmatched_event_ref');
+  });
+
+  it('does not warn about an event id a known ref matches', () => {
+    const g: WorkflowGraph = {
+      entryStepId: 's1',
+      steps: [{ id: 's1', kind: 'agent', agentId: 'a1' }],
+      transitions: [],
+      triggers: [{ id: 'tr1', kind: 'event', eventId: 'a.b' }],
+    };
+    expect((validate(g, { eventIds: ['a.b'] }).warnings ?? []).map((w) => w.code)).not.toContain('unmatched_event_ref');
   });
 
   // Issue #437 review finding: a webhook trigger with no/invalid eventId was
@@ -155,14 +187,19 @@ describe('validate', () => {
     expect(codes(g)).toContain('unknown_event_ref');
   });
 
-  it('rejects a webhook trigger with an unknown event id', () => {
+  // Same #1713 downgrade for webhook triggers: the inbound endpoint's own eventId is
+  // operator-minted, so it is routinely absent from the plugin-declared catalog. The
+  // MISSING-eventId error above is what keeps an unreachable trigger out.
+  it('warns, but does not reject, a webhook trigger with an unmatched event id', () => {
     const g: WorkflowGraph = {
       entryStepId: 's1',
       steps: [{ id: 's1', kind: 'agent', agentId: 'a1' }],
       transitions: [],
       triggers: [{ id: 'tr1', kind: 'webhook', eventId: 'x.y' }],
     };
-    expect(codes(g, { eventIds: ['a.b'] })).toContain('unknown_event_ref');
+    const res = validate(g, { eventIds: ['a.b'] });
+    expect(res.ok).toBe(true);
+    expect((res.warnings ?? []).map((w) => w.code)).toContain('unmatched_event_ref');
   });
 
   it('accepts a webhook trigger with a known eventId', () => {

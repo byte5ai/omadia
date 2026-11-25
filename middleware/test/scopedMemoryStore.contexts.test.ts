@@ -387,17 +387,27 @@ test('orchestratorMemoryScope is byte-identical to the legacy contract', () => {
 test('legacy tokens keep their exact meaning', async () => {
   const cases: ReadonlyArray<readonly [string, string]> = [
     ['core', '/memories/core/brand.md'],
-    ['core', '/memories/sessions/s1/turn.md'],
-    ['core', '/memories/chat-sessions/c1/turn.md'],
-    ['core', '/memories/_rules/hr.md'],
+    // `_rules/` is read-only for agents (#1827); `_brand/` keeps the `_*` grant.
+    ['core', '/memories/_brand/hr.md'],
     ['agent:hr:*', '/memories/agents/hr/notes.md'],
     [`orchestrator:${AGENT}:*`, `/memories/orchestrators/${AGENT}/notes.md`],
-    ['session:*', '/memories/sessions/s1/turn.md'],
     ['/memories/prefixed/*', '/memories/prefixed/deep/notes.md'],
   ];
   for (const [pattern, path] of cases) {
     await assertFileReadable(harness([pattern]), path);
     await assertFileWritable(harness([pattern]), path);
+  }
+  // The transcript trees keep the read grant but are kernel-written only.
+  const transcripts: ReadonlyArray<readonly [string, string]> = [
+    ['core', '/memories/sessions/s1/turn.md'],
+    ['core', '/memories/chat-sessions/c1/turn.md'],
+    ['session:*', '/memories/sessions/s1/turn.md'],
+  ];
+  for (const [pattern, path] of transcripts) {
+    const h = harness([pattern]);
+    await assertFileReadable(h, path);
+    await assertFileNotWritable(h, path);
+    assert.equal(await h.root.readFile(path), 'payload');
   }
 });
 

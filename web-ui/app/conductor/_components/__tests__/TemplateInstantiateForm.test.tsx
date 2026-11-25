@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
   getConductorAgents,
+  getConductorEventCatalog,
   getConductorRoles,
   instantiateConductorTemplate,
   resolveConductorTemplate,
@@ -186,7 +187,8 @@ describe('<TemplateInstantiateForm />', () => {
       enable: false,
     });
     await waitFor(() => {
-      expect(onCreated).toHaveBeenCalledWith('expense-approval');
+      // Second argument: the server's validator warnings (#1713) — absent here.
+      expect(onCreated).toHaveBeenCalledWith('expense-approval', undefined);
     });
   });
 
@@ -553,5 +555,141 @@ describe('<TemplateUpdateHint /> (#478)', () => {
       <TemplateUpdateHint hint={{ ...hint, latestVersion: 1, updateAvailable: false }} onReinstantiate={vi.fn()} />,
     );
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+// Issue #1713 — the bundled incident template declares a required events slot. The slot
+// used to be a <select> over the live event catalog, so on a stack without an
+// event-emitting plugin it offered nothing at all and the template could not be
+// instantiated through this form. It is free text with the catalog as suggestions now,
+// exactly like the designer's event-trigger field.
+const incidentTemplate: ConductorTemplate = {
+  id: 'notify-and-escalate',
+  name: 'Notify and escalate on incident',
+  description: 'React to an incident event.',
+  useCase: 'escalation',
+  defaultSlug: 'notify-and-escalate',
+  graph: {
+    entryStepId: 'triage',
+    steps: [],
+    transitions: [],
+    triggers: [{ id: 'tr-incident', kind: 'event', eventId: 'slot:event:incident' }],
+  },
+  slots: {
+    agents: [{ key: 'triage', label: 'Triage agent' }],
+    events: [{ key: 'incident', label: 'Incident event' }],
+  },
+};
+
+describe('<TemplateInstantiateForm /> event slots (#1713)', () => {
+  it('maps an event slot with a typed id while the catalog is EMPTY', async () => {
+    const user = userEvent.setup();
+    vi.mocked(getConductorEventCatalog).mockResolvedValue({ events: [], byPlugin: {} });
+    vi.mocked(instantiateConductorTemplate).mockResolvedValue({
+      workflow: { slug: 'incident-probe' } as never,
+      version: { id: 'v1', version: 1 },
+    });
+    renderForm(incidentTemplate);
+
+    // A free-text field (an input with a datalist exposes role combobox), NOT a
+    // <select>: the empty catalog must not be able to block the form.
+    const field = await screen.findByRole('combobox', { name: /Incident event/ });
+    expect(field.tagName).toBe('INPUT');
+    expect(screen.getByText('No event ids known yet — type the id senders will post (e.g. my.incident).')).toBeInTheDocument();
+    await user.type(field, 'my.incident');
+    await user.selectOptions(screen.getByRole('combobox', { name: /Triage agent/ }), 'expense-bot');
+    await user.click(screen.getByRole('button', { name: 'Create workflow' }));
+
+    await waitFor(() => {
+      expect(instantiateConductorTemplate).toHaveBeenCalledWith('notify-and-escalate', {
+        slug: 'notify-and-escalate',
+        name: 'Notify and escalate on incident',
+        mapping: { agents: { triage: 'expense-bot' }, events: { incident: 'my.incident' } },
+        enable: false,
+      });
+    });
+  });
+
+  it('suggests plugin-declared AND inbound-endpoint event ids, deduped', async () => {
+    vi.mocked(getConductorEventCatalog).mockResolvedValue({
+      events: ['github.issue.opened'],
+      byPlugin: { github: ['github.issue.opened'] },
+      endpointEvents: ['alerts.raised', 'github.issue.opened'],
+    });
+    const { container } = renderForm(incidentTemplate);
+
+    await screen.findByRole('combobox', { name: /Incident event/ });
+    await waitFor(() => {
+      expect(screen.getByText('2 known event id(s) suggested — pick one or type the id senders will post.')).toBeInTheDocument();
+    });
+    // ONE datalist for the whole form (an element id must be unique), carrying the
+    // deduped union as suggestions — never as the set of legal values.
+    const lists = container.querySelectorAll('datalist');
+    expect(lists).toHaveLength(1);
+    expect([...lists[0]!.querySelectorAll('option')].map((o) => o.getAttribute('value'))).toEqual([
+      'alerts.raised',
+      'github.issue.opened',
+    ]);
+  });
+
+  it('trims a pasted event id before it reaches the wire', async () => {
+    const user = userEvent.setup();
+    vi.mocked(getConductorEventCatalog).mockResolvedValue({ events: [], byPlugin: {} });
+    vi.mocked(instantiateConductorTemplate).mockResolvedValue({
+      workflow: { slug: 'incident-probe' } as never,
+      version: { id: 'v1', version: 1 },
+    });
+    renderForm(incidentTemplate);
+
+    // An untrimmed id publishes a trigger `eventRouter#emit` can never match
+    // (`tr.eventId === eventId`) — a silently dead workflow.
+    await user.type(await screen.findByRole('combobox', { name: /Incident event/ }), '  my.incident ');
+    await user.selectOptions(screen.getByRole('combobox', { name: /Triage agent/ }), 'expense-bot');
+    await user.click(screen.getByRole('button', { name: 'Create workflow' }));
+
+    await waitFor(() => {
+      expect(instantiateConductorTemplate).toHaveBeenCalledWith(
+        'notify-and-escalate',
+        expect.objectContaining({ mapping: { agents: { triage: 'expense-bot' }, events: { incident: 'my.incident' } } }),
+      );
+    });
+  });
+
+  it('renders the resolve path warnings — the designer republish never produces them', async () => {
+    const user = userEvent.setup();
+    vi.mocked(getConductorEventCatalog).mockResolvedValue({ events: [], byPlugin: {} });
+    vi.mocked(resolveConductorTemplate).mockResolvedValue({
+      graph: { entryStepId: 'triage', steps: [], transitions: [] },
+      warnings: [{ code: 'unmatched_event_ref', message: 'nothing declares my.incident', nodeIds: ['tr-incident'] }],
+    });
+    renderForm(incidentTemplate);
+
+    await user.type(await screen.findByRole('combobox', { name: /Incident event/ }), 'my.incident');
+    await user.selectOptions(screen.getByRole('combobox', { name: /Triage agent/ }), 'expense-bot');
+    await user.click(screen.getByRole('button', { name: 'Open in designer' }));
+
+    expect(await screen.findByText('unmatched_event_ref')).toBeInTheDocument();
+    expect(screen.getByText(/nothing declares my.incident/)).toBeInTheDocument();
+  });
+
+  it('hands the server warnings for an unmatched event id to onCreated', async () => {
+    const user = userEvent.setup();
+    const onCreated = vi.fn();
+    const warnings = [{ code: 'unmatched_event_ref', message: 'nothing declares my.incident', nodeIds: ['tr-incident'] }];
+    vi.mocked(getConductorEventCatalog).mockResolvedValue({ events: [], byPlugin: {} });
+    vi.mocked(instantiateConductorTemplate).mockResolvedValue({
+      workflow: { slug: 'incident-probe' } as never,
+      version: { id: 'v1', version: 1 },
+      warnings,
+    });
+    renderForm(incidentTemplate, { onCreated });
+
+    await user.type(await screen.findByRole('combobox', { name: /Incident event/ }), 'my.incident');
+    await user.selectOptions(screen.getByRole('combobox', { name: /Triage agent/ }), 'expense-bot');
+    await user.click(screen.getByRole('button', { name: 'Create workflow' }));
+
+    await waitFor(() => {
+      expect(onCreated).toHaveBeenCalledWith('notify-and-escalate', warnings);
+    });
   });
 });

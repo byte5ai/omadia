@@ -198,6 +198,21 @@ describe('applyTemplateSlots', () => {
     expect(result).toEqual({ ok: true, errors: [] });
   });
 
+  // #1713 — event slots are free text in the instantiate form, so a pasted value can
+  // carry whitespace. The missing-slot gate already trims when it decides "mapped", so
+  // substituting the raw string would publish an eventId no emitted id can equal
+  // (eventRouter#emit compares tr.eventId === eventId) — a silently dead trigger.
+  it('trims mapped ref values before substituting them', () => {
+    const mapping = makeMapping();
+    mapping.events = { submitted: '  expense.submitted\n' };
+    mapping.agents = { worker: ' fallback ' };
+    const graph = applyTemplateSlots(makeManifest(), mapping);
+    expect(graph.triggers![0]!.eventId).toBe('expense.submitted');
+    expect(graph.steps[0]!.agentId).toBe('fallback');
+    // And the trimmed id is what validate() then matches against the live catalog.
+    expect(validate(graph, { eventIds: ['expense.submitted'] }).warnings ?? []).toEqual([]);
+  });
+
   it('throws TypeError on an unmapped placeholder', () => {
     const mapping = makeMapping();
     delete mapping.roles;

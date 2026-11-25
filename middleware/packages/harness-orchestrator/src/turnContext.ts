@@ -431,6 +431,14 @@ export const turnContext = {
     return storage.run(value, fn);
   },
   /**
+   * `run` for any return type (a sync value, a promise, a generator): the
+   * subscription-CLI turn wraps every call it makes in its captured context
+   * this way (#2194).
+   */
+  runScoped<T>(value: TurnContextValue, fn: () => T): T {
+    return storage.run(value, fn);
+  },
+  /**
    * Sets the turn context for the current async resource and its descendants.
    *
    * ⚠️ NOT usable from an async generator. `enterWith` binds the store to the

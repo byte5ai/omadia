@@ -6,6 +6,7 @@ import type { Step } from '@omadia/conductor-core';
 
 import {
   channelBotKey,
+  defaultChannelBotKeyFrom,
   resolveAddressedBot,
   speakingIdentityFor,
 } from '../src/conductor/channelBotOwnership.js';
@@ -187,6 +188,46 @@ describe('channelBotOwnership — outbound: which bot an agent speaks as', () =>
     const world = { ...PRODUCTION, active: [...PRODUCTION.active, 'sales'] };
     assert.equal(speakingIdentityFor(registry(world), 'sales', 'teams', defaultBotKey), undefined);
     assert.equal(speakingIdentityFor(registry(PRODUCTION), 'fallback', 'teams', undefined), undefined);
+  });
+});
+
+describe('channelBotOwnership — the default bot as the channel plugins name it', () => {
+  type Provider = { defaultChannelKey?(): string | undefined };
+  const source = (providers: Record<string, Provider>) => ({ get: (t: string) => providers[t] });
+
+  it('takes an identity provider first, then a default-key provider (Teams)', () => {
+    const identities = source({ telegram: { defaultChannelKey: () => 'tg:1' } });
+    const defaults = source({ teams: { defaultChannelKey: () => ` ${DEFAULT_BOT} ` } });
+    const key = defaultChannelBotKeyFrom([identities, defaults]);
+    assert.equal(key('telegram'), 'tg:1');
+    assert.equal(key('teams'), DEFAULT_BOT);
+    assert.equal(key('slack'), undefined);
+  });
+
+  it('knows no default bot when the plugin names none, names a blank one or throws', () => {
+    const key = defaultChannelBotKeyFrom([
+      source({
+        teams: { defaultChannelKey: () => { throw new Error('not ready'); } },
+        telegram: { defaultChannelKey: () => '  ' },
+        discord: {},
+      }),
+    ]);
+    assert.equal(key('teams'), undefined);
+    assert.equal(key('telegram'), undefined);
+    assert.equal(key('discord'), undefined);
+    // …and the Conductor then refuses the bot instead of routing it.
+    assert.deepEqual(resolveAddressedBot(registry(PRODUCTION), 'teams', DEFAULT_BOT, key), {
+      kind: 'refused',
+      reason: 'unknown-bot',
+    });
+  });
+
+  it('a later source answers when an earlier provider throws', () => {
+    const key = defaultChannelBotKeyFrom([
+      source({ teams: { defaultChannelKey: () => { throw new Error('boom'); } } }),
+      source({ teams: { defaultChannelKey: () => DEFAULT_BOT } }),
+    ]);
+    assert.equal(key('teams'), DEFAULT_BOT);
   });
 });
 

@@ -199,7 +199,7 @@ Service-Lookup als auch das Tool-Stub:
 ```
 patch_spec({
   patches: [
-    { op: "add", path: "/depends_on/-", value: "de.byte5.integration.odoo" },
+    { op: "add", path: "/depends_on/-", value: "@omadia/integration-odoo" },
     { op: "add", path: "/external_reads/-", value: {
         id: "list_employees",
         description: "Mitarbeiterliste aus Odoo HR",
@@ -227,7 +227,7 @@ klassischen Workflow unten.
 **Schritt 1 — Dependency deklarieren (`patch_spec`):**
 
 ```
-add /depends_on/-  →  "de.byte5.integration.<name>"
+add /depends_on/-  →  "@omadia/integration-<name>"
 ```
 
 **Schritt 2 — Surface lesen (`read_reference`, PFLICHT):**
