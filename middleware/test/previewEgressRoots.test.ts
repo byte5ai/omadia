@@ -24,7 +24,7 @@ describe('preview egress roots', () => {
       network: { outbound: ['api.example.com'], publicWeb: false },
     });
     const id = attributeStack(frameIn(`${ROOT}/d1-3/pkg/dist/index.js`), previews.roots());
-    assert.ok(id?.startsWith('preview:@acme/crm#'), id);
+    assert.ok(id !== undefined && id.startsWith('preview:@acme/crm#'), String(id));
     const permission = previews.permissionOf(id);
     assert.ok(permission);
     assert.equal(permission.isModelPlugin, false);
