@@ -13,7 +13,7 @@
 import type { JsonValue } from '@omadia/conductor-core';
 
 import type { ConductorEphemeralAttachmentsStore } from './ephemeralAttachmentsStore.js';
-import type { ConductorRun, ConductorRunStore } from './runStore.js';
+import { ACTIVE_RUN_STATUSES, type ConductorRun, type ConductorRunStore } from './runStore.js';
 import type { ConductorRunExecutor } from './runExecutor.js';
 import type { ConductorWorkflow, ConductorWorkflowStore } from './workflowStore.js';
 
@@ -47,7 +47,9 @@ export type StopDiscussionResult =
 
 export interface DiscussionAdminDeps {
   workflowStore: Pick<ConductorWorkflowStore, 'listEphemeralActive' | 'getById'>;
-  runStore: Pick<ConductorRunStore, 'listForVersion'>;
+  /** Runs across ALL of the workflow's versions, active runs first (#2181):
+   *  a run still waiting on a superseded version must show and be stoppable. */
+  runStore: Pick<ConductorRunStore, 'listForWorkflow'>;
   ephemeralAttachments: Pick<ConductorEphemeralAttachmentsStore, 'getByWorkflow'>;
   executor: Pick<ConductorRunExecutor, 'cancelRun'>;
   /** The reaper's disposal path (attachment cleanup, reservation release, removal). */
@@ -94,9 +96,7 @@ export class ConductorDiscussionAdmin {
       return fallback;
     };
     const attachments = await this.deps.ephemeralAttachments.getByWorkflow(wf.id).catch(soften('attachment lookup', []));
-    const runs = wf.activeVersionId
-      ? await this.deps.runStore.listForVersion(wf.activeVersionId).catch(soften('run listing', []))
-      : [];
+    const runs = await this.deps.runStore.listForWorkflow(wf.id).catch(soften('run listing', []));
     const attachment = attachments[0];
     const run = runs[0];
     const context: Record<string, JsonValue> = run?.context ?? {};
@@ -132,21 +132,19 @@ export class ConductorDiscussionAdmin {
     if (!wf || wf.origin !== 'ephemeral') return { outcome: 'not_found' };
     let cancelled = 0;
     let failed = 0;
-    if (wf.activeVersionId) {
-      const runs = await this.deps.runStore.listForVersion(wf.activeVersionId).catch((err: unknown) => {
-        this.deps.log?.(`[conductor] discussion stop: run listing failed for '${wf.slug}': ${message(err)}`);
+    const runs = await this.deps.runStore.listForWorkflow(wf.id).catch((err: unknown) => {
+      this.deps.log?.(`[conductor] discussion stop: run listing failed for '${wf.slug}': ${message(err)}`);
+      failed += 1;
+      return [];
+    });
+    for (const run of runs) {
+      if (!ACTIVE_RUN_STATUSES.includes(run.status)) continue;
+      try {
+        await this.deps.executor.cancelRun(run.id, actor);
+        cancelled += 1;
+      } catch (err) {
         failed += 1;
-        return [];
-      });
-      for (const run of runs) {
-        if (run.status !== 'running' && run.status !== 'waiting') continue;
-        try {
-          await this.deps.executor.cancelRun(run.id, actor);
-          cancelled += 1;
-        } catch (err) {
-          failed += 1;
-          this.deps.log?.(`[conductor] discussion stop: cancel of run ${run.id} failed: ${message(err)}`);
-        }
+        this.deps.log?.(`[conductor] discussion stop: cancel of run ${run.id} failed: ${message(err)}`);
       }
     }
     if (failed > 0) return { outcome: 'cancel_failed', cancelledRuns: cancelled, failedRuns: failed };

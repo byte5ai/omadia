@@ -31,23 +31,36 @@ const HEADING_BY_LEVEL: Record<number, (typeof HeadingLevel)[keyof typeof Headin
   4: HeadingLevel.HEADING_4,
 };
 
+const LINE_BREAK = /\r\n|\r|\n/;
+
+/**
+ * The runs for one text field. Word ignores a raw newline inside `<w:t>` and
+ * shows it as a space, so every line after the first becomes its own run that
+ * starts with a `<w:br/>` (#1982).
+ */
+function textRuns(text: string, style: { bold?: boolean } = {}): TextRun[] {
+  return text
+    .split(LINE_BREAK)
+    .map((line, index) => new TextRun({ ...style, text: line, ...(index > 0 ? { break: 1 } : {}) }));
+}
+
 function blockToChildren(block: DocxBlock): Array<Paragraph | Table> {
   switch (block.type) {
     case 'heading':
       return [
         new Paragraph({
           heading: HEADING_BY_LEVEL[block.level] ?? HeadingLevel.HEADING_2,
-          children: [new TextRun({ text: block.text })],
+          children: textRuns(block.text),
         }),
       ];
     case 'paragraph':
-      return [new Paragraph({ children: [new TextRun({ text: block.text })] })];
+      return [new Paragraph({ children: textRuns(block.text) })];
     case 'bullets':
       return block.items.map(
         (item) =>
           new Paragraph({
             bullet: { level: 0 },
-            children: [new TextRun({ text: item })],
+            children: textRuns(item),
           }),
       );
     case 'table': {
@@ -56,7 +69,7 @@ function blockToChildren(block: DocxBlock): Array<Paragraph | Table> {
         children: block.headers.map(
           (h) =>
             new TableCell({
-              children: [new Paragraph({ children: [new TextRun({ text: h, bold: true })] })],
+              children: [new Paragraph({ children: textRuns(h, { bold: true }) })],
             }),
         ),
       });
@@ -66,7 +79,7 @@ function blockToChildren(block: DocxBlock): Array<Paragraph | Table> {
             children: block.headers.map(
               (_h, colIndex) =>
                 new TableCell({
-                  children: [new Paragraph({ children: [new TextRun({ text: row[colIndex] ?? '' })] })],
+                  children: [new Paragraph({ children: textRuns(row[colIndex] ?? '') })],
                 }),
             ),
           }),
@@ -93,7 +106,7 @@ export async function renderDocx(descriptor: DocxDescriptor): Promise<RenderResu
     children.push(
       new Paragraph({
         heading: HeadingLevel.TITLE,
-        children: [new TextRun({ text: descriptor.title })],
+        children: textRuns(descriptor.title),
       }),
     );
   }

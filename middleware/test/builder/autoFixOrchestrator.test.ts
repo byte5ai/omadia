@@ -10,6 +10,7 @@ import type { BuilderAgent } from '../../src/plugins/builder/builderAgent.js';
 import type { DraftStore } from '../../src/plugins/builder/draftStore.js';
 import { SpecEventBus, type SpecBusEvent } from '../../src/plugins/builder/specEventBus.js';
 import { emptyAgentSpec } from '../../src/plugins/builder/types.js';
+import { DraftTurnLock } from '../../src/plugins/builder/draftTurnLock.js';
 
 type Fingerprintable =
   | Extract<SpecBusEvent, { type: 'build_status' }>
@@ -110,7 +111,7 @@ interface Harness {
   bus: SpecEventBus;
   draftStore: DraftStore;
   builderAgent: BuilderAgent;
-  fired: Array<{ draftId: string; userMessage: string }>;
+  fired: Array<{ draftId: string; userMessage: string; signal?: AbortSignal }>;
   setAutoFix(enabled: boolean): void;
   emitted: SpecBusEvent[];
   orchestrator: AutoFixOrchestrator;
@@ -119,6 +120,7 @@ interface Harness {
 function makeHarness(opts?: {
   autoFixEnabled?: boolean;
   runAsJob?: <T>(startedBy: string, work: () => Promise<T>) => Promise<T>;
+  turnLock?: DraftTurnLock;
 }): Harness {
   const bus = new SpecEventBus();
   const fired: Harness['fired'] = [];
@@ -161,8 +163,12 @@ function makeHarness(opts?: {
   } as unknown as DraftStore;
 
   const builderAgent = {
-    runTurn: (opts: { draftId: string; userMessage: string }) => {
-      fired.push({ draftId: opts.draftId, userMessage: opts.userMessage });
+    runTurn: (opts: { draftId: string; userMessage: string; signal?: AbortSignal }) => {
+      fired.push({
+        draftId: opts.draftId,
+        userMessage: opts.userMessage,
+        ...(opts.signal ? { signal: opts.signal } : {}),
+      });
       return (async function* () {
         yield { type: 'turn_started', turnId: 't' };
       })();
@@ -185,6 +191,7 @@ function makeHarness(opts?: {
     defaultModel: 'claude-haiku-4-5-20251001',
     logger: () => {},
     ...(opts?.runAsJob ? { runAsJob: opts.runAsJob } : {}),
+    ...(opts?.turnLock ? { turnLock: opts.turnLock } : {}),
   });
 
   return {
@@ -227,6 +234,33 @@ describe('AutoFixOrchestrator integration', () => {
       (e) => e.type === 'auto_fix_status' && e.phase === 'triggered',
     );
     assert.equal(triggers.length, 1);
+  });
+
+  it('#2214: skips while another turn holds the draft, then runs under the lock', async () => {
+    const turnLock = new DraftTurnLock();
+    const h = makeHarness({ turnLock });
+    h.orchestrator.ensureSubscribed('d1', 'op@example.com');
+    const operatorTurn = turnLock.tryAcquire({
+      draftId: 'd1',
+      turnId: 'operator-turn',
+      userEmail: 'op@example.com',
+      source: 'chat',
+    });
+    assert.ok(operatorTurn.ok);
+
+    h.bus.emit('d1', buildFailed([{ code: 'TS2322' }], 1));
+    await settle();
+    assert.equal(h.fired.length, 0);
+    assert.equal(h.emitted.filter((e) => e.type === 'auto_fix_status').length, 0);
+
+    operatorTurn.lease.release();
+    // The same build may re-trigger: the skip did not consume it.
+    h.bus.emit('d1', buildFailed([{ code: 'TS2322' }], 1));
+    await settle();
+    assert.equal(h.fired.length, 1);
+    assert.ok(h.fired[0]?.signal, 'the auto turn carries the lock signal');
+    await settle();
+    assert.equal(turnLock.running('d1'), undefined, 'released after the turn');
   });
 
   it('spec 2042 §5.10: each fix turn runs as one operator job of the draft’s operator', async () => {

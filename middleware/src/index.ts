@@ -305,6 +305,7 @@ import {
 import { WorkaroundStateStore } from './plugins/builder/workaroundStateStore.js';
 import { SpecEventBus } from './plugins/builder/specEventBus.js';
 import { BuilderTurnRingBuffer } from './plugins/builder/turnRingBuffer.js';
+import { DraftTurnLock } from './plugins/builder/draftTurnLock.js';
 import {
   ensureBuildTemplate,
   linkWorkspacePackageIntoTemplate,
@@ -7220,6 +7221,9 @@ async function main(): Promise<void> {
   // `GET /drafts/:id/turn/:turnId/resume?since=N` and pick up exactly where
   // it left off without spending a second LLM call.
   const builderTurnRingBuffer = new BuilderTurnRingBuffer();
+  // #2214 — one running builder turn per draft (chat route + AutoFix), and
+  // the abort behind `POST /drafts/:id/turn/:turnId/stop`.
+  const builderTurnLock = new DraftTurnLock();
 
   const builderRebuildScheduler = new PreviewRebuildScheduler({
     debounceMs: 2_000,
@@ -7483,6 +7487,7 @@ async function main(): Promise<void> {
     builderAgent,
     defaultModel: BuilderModelRegistry.default(),
     turnRingBuffer: builderTurnRingBuffer,
+    turnLock: builderTurnLock,
     logger: (...args: unknown[]) => {
       console.log('[builder/auto-fix]', ...args);
     },
@@ -7547,6 +7552,7 @@ async function main(): Promise<void> {
         draftStore,
         builderAgent,
         turnRingBuffer: builderTurnRingBuffer,
+        turnLock: builderTurnLock,
       },
       events: {
         draftStore,

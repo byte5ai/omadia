@@ -79,7 +79,6 @@
   "test/oauth/engine.test.ts": 1,
   "test/oauth/state.test.ts": 3,
   "test/office-dataset.test.ts": 1,
-  "test/office.test.ts": 4,
   "test/orchestrator/localSubAgent.test.ts": 2,
   "test/orchestrator/mcpInputRequired.test.ts": 1,
   "test/orchestrator/parallelTool.test.ts": 2,

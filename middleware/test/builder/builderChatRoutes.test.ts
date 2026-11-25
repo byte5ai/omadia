@@ -18,6 +18,7 @@ import {
   type BuilderSubAgentBuildOptions,
 } from '../../src/plugins/builder/builderAgent.js';
 import { BuilderTurnRingBuffer } from '../../src/plugins/builder/turnRingBuffer.js';
+import { DraftTurnLock } from '../../src/plugins/builder/draftTurnLock.js';
 import { createBuilderRouter } from '../../src/routes/builder.js';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { AskObserver } from '@omadia/orchestrator';
@@ -43,6 +44,7 @@ interface TestApp {
   rebuilds: Array<{ userEmail: string; draftId: string }>;
   tmpRoot: string;
   turnRingBuffer: BuilderTurnRingBuffer | undefined;
+  turnLock: DraftTurnLock | undefined;
   askStarted: Promise<void>;
   releaseAsk: () => void;
   close: () => Promise<void>;
@@ -80,7 +82,11 @@ async function createTestApp(opts: {
   finalText?: string;
   toolCalls?: Array<{ id: string; name: string; input: unknown; output: string; isError?: boolean }>;
   withTurnRingBuffer?: boolean;
+  /** Pass a ring buffer instance (e.g. one whose finalize throws). */
+  turnRingBuffer?: BuilderTurnRingBuffer;
+  withTurnLock?: boolean;
   holdAsk?: boolean;
+  turnTimeoutMs?: number;
 } = {}): Promise<TestApp> {
   const tmpRoot = mkdtempSync(path.join(tmpdir(), 'builder-chat-routes-'));
   const dbPath = path.join(tmpRoot, 'drafts.db');
@@ -140,9 +146,10 @@ async function createTestApp(opts: {
 
   const draftQuota = new DraftQuota({ store: draftStore, max: 50 });
 
-  const turnRingBuffer = opts.withTurnRingBuffer
-    ? new BuilderTurnRingBuffer()
-    : undefined;
+  const turnRingBuffer =
+    opts.turnRingBuffer ??
+    (opts.withTurnRingBuffer ? new BuilderTurnRingBuffer() : undefined);
+  const turnLock = opts.withTurnLock ? new DraftTurnLock() : undefined;
 
   const app: Express = express();
   app.use(express.json());
@@ -152,7 +159,13 @@ async function createTestApp(opts: {
     createBuilderRouter({
       store: draftStore,
       quota: draftQuota,
-      chat: { draftStore, builderAgent, ...(turnRingBuffer ? { turnRingBuffer } : {}) },
+      chat: {
+        draftStore,
+        builderAgent,
+        ...(turnRingBuffer ? { turnRingBuffer } : {}),
+        ...(turnLock ? { turnLock } : {}),
+        ...(opts.turnTimeoutMs !== undefined ? { turnTimeoutMs: opts.turnTimeoutMs } : {}),
+      },
     }),
   );
 
@@ -172,6 +185,7 @@ async function createTestApp(opts: {
     rebuilds,
     tmpRoot,
     turnRingBuffer,
+    turnLock,
     askStarted,
     releaseAsk() {
       releaseAskPromise?.();
@@ -558,5 +572,220 @@ describe('GET /api/v1/builder/drafts/:id/turn/:turnId/resume', () => {
     const draft = await app.draftStore.load(app.userEmail, app.draftId);
     assert.ok(draft);
     assert.equal(draft.transcript.at(-1)?.content, 'answer after reconnect');
+  });
+});
+
+// ── #2214 — one turn per draft + stop endpoint ───────────────────────────
+
+interface OpenTurn {
+  turnId: string;
+  /** Resolves with every frame of the turn once the stream ends. */
+  rest: Promise<FrameOnWire[]>;
+}
+
+/** POST a turn and read up to its `turn_started` frame. */
+async function openTurn(app: TestApp, message: string): Promise<OpenTurn> {
+  const res = await fetch(`${app.baseUrl}/api/v1/builder/drafts/${app.draftId}/turn`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ message }),
+  });
+  assert.equal(res.status, 200);
+  const reader = res.body?.getReader();
+  assert.ok(reader);
+  const decoder = new TextDecoder();
+  const frames: FrameOnWire[] = [];
+  let buffer = '';
+  const pump = async (untilStarted: boolean): Promise<void> => {
+    while (true) {
+      if (untilStarted && frames.some((f) => f.type === 'turn_started')) return;
+      const { done, value } = await reader.read();
+      if (done) return;
+      buffer += decoder.decode(value, { stream: true });
+      let nl = buffer.indexOf('\n');
+      while (nl !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        if (line.length > 0) frames.push(JSON.parse(line) as FrameOnWire);
+        buffer = buffer.slice(nl + 1);
+        nl = buffer.indexOf('\n');
+      }
+    }
+  };
+  await pump(true);
+  const started = frames.find((f) => f.type === 'turn_started') as
+    | (FrameOnWire & { turnId: string })
+    | undefined;
+  assert.ok(started);
+  return { turnId: started.turnId, rest: pump(false).then(() => frames) };
+}
+
+async function postStop(
+  app: TestApp,
+  turnId: string,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const res = await fetch(
+    `${app.baseUrl}/api/v1/builder/drafts/${app.draftId}/turn/${turnId}/stop`,
+    { method: 'POST' },
+  );
+  return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+}
+
+describe('#2214 builder turn lock + stop', () => {
+  let app: TestApp;
+  afterEach(async () => {
+    if (app) {
+      app.releaseAsk();
+      await app.close();
+    }
+  });
+
+  it('answers 409 with the running turnId while a turn holds the draft', async () => {
+    app = await createTestApp({ withTurnRingBuffer: true, withTurnLock: true, holdAsk: true });
+    const first = await openTurn(app, 'first');
+    await app.askStarted;
+
+    const second = await postTurn(app.baseUrl, app.draftId, { message: 'second' });
+    assert.equal(second.status, 409);
+    assert.equal(second.jsonBody?.code, 'builder.turn_in_progress');
+    assert.equal(second.jsonBody?.turnId, first.turnId);
+    assert.equal(second.jsonBody?.source, 'chat');
+
+    app.releaseAsk();
+    const frames = await first.rest;
+    assert.equal(frames.at(-1)?.type, 'turn_done');
+    assert.equal(app.turnLock?.running(app.draftId), undefined);
+
+    // Free again once the first turn ended.
+    const third = await postTurn(app.baseUrl, app.draftId, { message: 'third' });
+    assert.equal(third.status, 200);
+    assert.equal(third.ndjsonEvents.at(-1)?.type, 'turn_done');
+  });
+
+  it('stops a running turn: error frame, no assistant entry, lock released', async () => {
+    app = await createTestApp({
+      withTurnRingBuffer: true,
+      withTurnLock: true,
+      holdAsk: true,
+      finalText: 'never shown',
+    });
+    const turn = await openTurn(app, 'please stop me');
+    await app.askStarted;
+
+    const stopped = await postStop(app, turn.turnId);
+    assert.equal(stopped.status, 200);
+    assert.equal(stopped.body.status, 'stopped');
+
+    const frames = await turn.rest;
+    const last = frames.at(-1);
+    assert.equal(last?.type, 'error');
+    assert.equal(last?.code, 'builder.turn_stopped');
+    assert.equal(app.turnRingBuffer?.isFinal(turn.turnId), true);
+    assert.equal(app.turnLock?.running(app.draftId), undefined);
+
+    // The held ask finishes later; it must not write the transcript.
+    app.releaseAsk();
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    const draft = await app.draftStore.load(app.userEmail, app.draftId);
+    assert.ok(draft);
+    assert.equal(draft.transcript.at(-1)?.role, 'user');
+    assert.equal(draft.transcript.at(-1)?.content, 'please stop me');
+  });
+
+  it('ends a turn that runs past the timeout and frees the draft', async () => {
+    app = await createTestApp({
+      withTurnRingBuffer: true,
+      withTurnLock: true,
+      holdAsk: true,
+      turnTimeoutMs: 50,
+    });
+    const turn = await openTurn(app, 'slow one');
+    const frames = await turn.rest;
+    const last = frames.at(-1);
+    assert.equal(last?.type, 'error');
+    assert.equal(last?.code, 'builder.turn_timeout');
+    assert.equal(app.turnLock?.running(app.draftId), undefined);
+  });
+
+  it('reports not_running for a turn that is not (or no longer) running', async () => {
+    app = await createTestApp({ withTurnRingBuffer: true, withTurnLock: true });
+    const stopped = await postStop(app, 'no-such-turn');
+    assert.equal(stopped.status, 200);
+    assert.equal(stopped.body.status, 'not_running');
+  });
+
+  it('rejects a stop for a draft the caller does not own', async () => {
+    app = await createTestApp({ withTurnRingBuffer: true, withTurnLock: true });
+    const other = await app.draftStore.create('someone-else@example.com', 'Other');
+    const res = await fetch(
+      `${app.baseUrl}/api/v1/builder/drafts/${other.id}/turn/t1/stop`,
+      { method: 'POST' },
+    );
+    assert.equal(res.status, 404);
+  });
+
+  it('answers 404 for a foreign busy draft even with an explicit model', async () => {
+    app = await createTestApp({ withTurnRingBuffer: true, withTurnLock: true });
+    const own = await app.draftStore.load(app.userEmail, app.draftId);
+    assert.ok(own);
+    const other = await app.draftStore.create('someone-else@example.com', 'Other');
+    const held = app.turnLock?.tryAcquire({
+      draftId: other.id,
+      turnId: 'foreign-turn',
+      userEmail: 'someone-else@example.com',
+      source: 'chat',
+    });
+    assert.equal(held?.ok, true);
+
+    const res = await postTurn(app.baseUrl, other.id, {
+      message: 'hi',
+      model: own.codegenModel,
+    });
+    assert.equal(res.status, 404);
+    assert.equal(res.jsonBody?.code, 'builder.draft_not_found');
+    assert.equal(res.jsonBody?.turnId, undefined);
+    assert.equal(app.turnLock?.running(other.id)?.turnId, 'foreign-turn');
+  });
+
+  it('a foreign idle draft is not locked by a turn with an explicit model', async () => {
+    app = await createTestApp({ withTurnRingBuffer: true, withTurnLock: true });
+    const own = await app.draftStore.load(app.userEmail, app.draftId);
+    assert.ok(own);
+    const other = await app.draftStore.create('someone-else@example.com', 'Other');
+    const res = await postTurn(app.baseUrl, other.id, {
+      message: 'hi',
+      model: own.codegenModel,
+    });
+    assert.equal(res.status, 404);
+    assert.equal(app.turnLock?.running(other.id), undefined);
+  });
+
+  it('releases the lock and stays quiet when finalize throws', async () => {
+    class ThrowingFinalizeBuffer extends BuilderTurnRingBuffer {
+      override finalize(turnId: string): void {
+        super.finalize(turnId);
+        throw new Error('finalize exploded');
+      }
+    }
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    try {
+      app = await createTestApp({
+        turnRingBuffer: new ThrowingFinalizeBuffer(),
+        withTurnLock: true,
+      });
+      const first = await postTurn(app.baseUrl, app.draftId, { message: 'one' });
+      assert.equal(first.status, 200);
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      assert.equal(app.turnLock?.running(app.draftId), undefined);
+      const second = await postTurn(app.baseUrl, app.draftId, { message: 'two' });
+      assert.equal(second.status, 200);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(rejections, []);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
   });
 });

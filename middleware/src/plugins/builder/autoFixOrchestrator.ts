@@ -38,10 +38,14 @@ import type { BuilderAgent } from './builderAgent.js';
 import type { DraftStore } from './draftStore.js';
 import type { SpecEventBus, SpecBusEvent } from './specEventBus.js';
 import type { BuilderTurnRingBuffer } from './turnRingBuffer.js';
+import type { DraftTurnLease, DraftTurnLock } from './draftTurnLock.js';
 import { applySpecPatches } from './specPatcher.js';
 import { parseAgentSpec } from './agentSpec.js';
 
 export const MAX_IDENTICAL_ATTEMPTS = 3;
+
+/** #2214 — an auto turn holds the draft lock; same budget as a chat turn. */
+const DEFAULT_AUTO_TURN_TIMEOUT_MS = 900_000;
 
 type ModelRef = string;
 
@@ -54,6 +58,12 @@ export interface AutoFixOrchestratorDeps {
   /** Optional ring buffer so auto-turn frames are replayable across
    *  tabs the same way an HTTP-route turn is. */
   turnRingBuffer?: BuilderTurnRingBuffer;
+  /** #2214 — the draft lock the chat route uses too. An auto turn never
+   *  starts while another turn runs on the draft, and the stop endpoint can
+   *  end it. Absent (tests): auto turns run unguarded. */
+  turnLock?: DraftTurnLock;
+  /** Budget of one auto turn under the lock (ms). Default 900s. */
+  turnTimeoutMs?: number;
   logger?: (...args: unknown[]) => void;
   /** Spec 2042 §5.10 — runs `work` as one operator job started by
    *  `startedBy` (the kernel's `modelWork.run`), so its model calls have a
@@ -134,6 +144,8 @@ export class AutoFixOrchestrator {
   private readonly builderAgent: BuilderAgent;
   private readonly defaultModel: ModelRef;
   private readonly turnRingBuffer: BuilderTurnRingBuffer | undefined;
+  private readonly turnLock: DraftTurnLock | undefined;
+  private readonly turnTimeoutMs: number;
   private readonly log: (...args: unknown[]) => void;
   private readonly runAsJob: NonNullable<AutoFixOrchestratorDeps['runAsJob']>;
 
@@ -145,6 +157,8 @@ export class AutoFixOrchestrator {
     this.builderAgent = deps.builderAgent;
     this.defaultModel = deps.defaultModel;
     this.turnRingBuffer = deps.turnRingBuffer;
+    this.turnLock = deps.turnLock;
+    this.turnTimeoutMs = deps.turnTimeoutMs ?? DEFAULT_AUTO_TURN_TIMEOUT_MS;
     this.log = deps.logger ?? (() => {});
     this.runAsJob = deps.runAsJob ?? ((_by, work) => work());
   }
@@ -277,6 +291,16 @@ export class AutoFixOrchestrator {
     }
     if (!parsedSpec.builder_settings.auto_fix_enabled) return;
 
+    // #2214 — a turn already runs on the draft (an operator turn): skip
+    // before counting the fingerprint, so a skipped trigger does not use up
+    // one of the MAX_IDENTICAL_ATTEMPTS. The next build re-triggers.
+    const running = this.turnLock?.running(draftId);
+    if (running) {
+      this.log('autoFix: skipped, turn already running on draft', draftId, running.turnId);
+      kindSet.delete(buildN);
+      return;
+    }
+
     const fp = computeFingerprint(ev);
     if (state.lastFp === fp) {
       state.consecutiveCount += 1;
@@ -318,6 +342,24 @@ export class AutoFixOrchestrator {
     // the lock as held. Cleared in fireTurn's finally — including on
     // error paths — so a crashing turn does not wedge the lock.
     const turnId = randomUUID();
+    // #2214 — the draft lock, taken in the same tick as the pause-lock and
+    // the `running()` check above, so this only fails if that invariant
+    // breaks; skip rather than run a second turn on the draft.
+    const acquired = this.turnLock?.tryAcquire({
+      draftId,
+      turnId,
+      userEmail: state.userEmail,
+      source: 'auto_fix',
+    });
+    if (acquired && !acquired.ok) {
+      this.log(
+        'autoFix: skipped, turn already running on draft',
+        draftId,
+        acquired.running.turnId,
+      );
+      return;
+    }
+    const lease = acquired?.lease;
     state.inFlightTurnId = turnId;
 
     this.bus.emit(draftId, {
@@ -384,12 +426,14 @@ export class AutoFixOrchestrator {
         userMessage,
         modelChoice: this.resolveDraftModel(draft.codegenModel),
         turnId,
+        ...(lease ? { lease } : {}),
       }),
     )
       .catch((err: unknown) => {
         this.log('autoFix: fireTurn failed', draftId, err);
       })
       .finally(() => {
+        lease?.release();
         // Only clear if WE are still the owner — a `reset()` between
         // start and finish (test-only) may have already wiped state.
         if (state.inFlightTurnId === turnId) {
@@ -411,8 +455,16 @@ export class AutoFixOrchestrator {
      *  pause-lock — we do not generate it here to keep the lock <-> turn
      *  identity 1:1. */
     turnId: string;
+    /** #2214 — the draft lock this turn holds; its signal stops the turn. */
+    lease?: DraftTurnLease;
   }): Promise<void> {
-    const { turnId } = opts;
+    const { turnId, lease } = opts;
+    // #2214 — the lock blocks operator turns, so a hung auto turn must not
+    // hold it forever: abort it after the turn budget, like a chat turn.
+    const timeoutTimer = lease
+      ? setTimeout(() => lease.abort('timeout'), this.turnTimeoutMs)
+      : undefined;
+    timeoutTimer?.unref();
     this.turnRingBuffer?.start(turnId);
     const stamp = (ev: { type: string } & Record<string, unknown>): void => {
       // No-op when there's no ring buffer — auto-turn frames are still
@@ -430,11 +482,13 @@ export class AutoFixOrchestrator {
         userMessage: opts.userMessage,
         modelChoice: opts.modelChoice,
         turnId,
+        ...(lease ? { signal: lease.signal } : {}),
       });
       for await (const ev of iter) {
         stamp(ev);
       }
     } finally {
+      clearTimeout(timeoutTimer);
       this.turnRingBuffer?.finalize(turnId);
     }
   }

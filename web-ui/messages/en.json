@@ -3696,7 +3696,10 @@
         "providerGeneric": "Something went wrong while talking to the AI provider. Please try again.",
         "choiceSaveFailedDetail": "Could not save selection: {message}",
         "choiceSaveFailed": "Could not save selection.",
-        "llmAccessMissing": "The Plugin Builder needs LLM access (an API key or a connected subscription)."
+        "llmAccessMissing": "The Plugin Builder needs LLM access (an API key or a connected subscription).",
+        "turnInProgress": "A builder turn is still running on this draft. Your message was not sent; the running turn is shown below.",
+        "turnTimeout": "The builder turn took too long and was stopped.",
+        "stopFailed": "Could not stop the turn on the server: {message}"
       },
       "inputLabel": "Builder message",
       "scrollToBottomAriaLabel": "Jump to latest message",
@@ -3707,7 +3710,8 @@
       },
       "button": {
         "stop": "Stop",
-        "send": "Send"
+        "send": "Send",
+        "stopping": "Stopping …"
       },
       "liveness": {
         "streamLive": "Stream live · {elapsed} · model {model}",

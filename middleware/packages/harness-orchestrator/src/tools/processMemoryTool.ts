@@ -219,13 +219,22 @@ const WITHHELD_PROCESS_NOTICE =
  * only this agent's own. Outside a turn with a boundary (activation, jobs)
  * every process of the tenant, as before.
  */
-function processReadable(): ((record: Pick<ProcessRecord, 'scope'>) => boolean) | null {
+type ProcessBoundary = { kind: 'all' } | { kind: 'none' } | { kind: 'agent'; prefix: string };
+
+function processBoundary(): ProcessBoundary {
   const ctx = turnContext.current();
   const bound = ctx?.graphReadScope?.value;
-  if (!ctx || !bound) return () => true;
-  if (bound.kind === 'conversation' || bound.kind === 'members') return null;
-  const prefix = agentScopePrefix(ctx.agentSlug ?? 'default');
-  return (record) => scopeBelongsToAgent(record.scope, prefix);
+  if (!ctx || !bound) return { kind: 'all' };
+  if (bound.kind === 'conversation' || bound.kind === 'members') return { kind: 'none' };
+  return { kind: 'agent', prefix: agentScopePrefix(ctx.agentSlug ?? 'default') };
+}
+
+function processReadable(
+  boundary: ProcessBoundary = processBoundary(),
+): ((record: Pick<ProcessRecord, 'scope'>) => boolean) | null {
+  if (boundary.kind === 'all') return () => true;
+  if (boundary.kind === 'none') return null;
+  return (record) => scopeBelongsToAgent(record.scope, boundary.prefix);
 }
 
 function withheldUnderShield(record: Pick<ProcessRecord, 'unprotected'>): boolean {
@@ -354,20 +363,21 @@ export function createQueryProcessesHandler(
         .join('; ');
       return `Error: invalid query_processes input — ${detail}`;
     }
-    const readable = processReadable();
+    const boundary = processBoundary();
+    const readable = processReadable(boundary);
     if (!readable) {
       return JSON.stringify({ query: parsed.data.query, mode: 'hybrid', hits: [] });
     }
     const queryInput: Parameters<ProcessMemoryService['query']>[0] = {
       query: parsed.data.query,
-      // Over-fetch: other agents' processes are dropped below.
-      limit: Math.min(parsed.data.limit * 4, 200),
+      limit: parsed.data.limit,
       ...(parsed.data.scope !== undefined ? { scope: parsed.data.scope } : {}),
       ...(currentTurnIsShielded() ? { excludeUnprotected: true } : {}),
+      // The store filters to this agent before `limit`; `readable` below
+      // re-checks for a provider that ignores the option.
+      ...(boundary.kind === 'agent' ? { agentScopePrefix: boundary.prefix } : {}),
     };
-    const hits = (await service.query(queryInput))
-      .filter((h) => readable(h.record))
-      .slice(0, parsed.data.limit);
+    const hits = (await service.query(queryInput)).filter((h) => readable(h.record));
     return JSON.stringify({
       query: parsed.data.query,
       mode: 'hybrid',

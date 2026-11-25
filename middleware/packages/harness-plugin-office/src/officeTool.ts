@@ -335,6 +335,8 @@ function compactResult(artifact: OfficeArtifact): string {
     mediaType: artifact.mediaType,
     sizeBytes: artifact.sizeBytes,
     rows: artifact.rowsWritten,
+    // Only when a sheet was renamed, so the model names the sheet as written.
+    ...(artifact.renamedSheets?.length ? { renamedSheets: artifact.renamedSheets } : {}),
     url: artifact.url,
   });
 }
