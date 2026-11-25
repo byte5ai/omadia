@@ -5,6 +5,7 @@ import {
   type AdminAuditLog,
 } from '../auth/adminAuditLog.js';
 import { bearerToken, createAdminRouter, hasAdminTokenBearer } from './admin.js';
+import type { AdminTokenThrottle } from './adminTokenThrottle.js';
 
 /** Where the machine-to-machine admin surface lives. */
 export const ADMIN_TOKEN_PATH = '/api/admin';
@@ -26,6 +27,11 @@ export interface AdminTokenSurfaceDeps
   readonly log?: (line: string) => void;
   /** Clock for the refusal-row window; tests inject one. */
   readonly now?: () => number;
+  /**
+   * The per-client brake on wrong tokens (`adminTokenThrottle.ts`). A client
+   * over it gets 429 before its token is compared. Absent = no brake.
+   */
+  readonly throttle?: AdminTokenThrottle;
 }
 
 /** At most one `admin_token.refused` row per window: a flood of wrong tokens
@@ -63,7 +69,15 @@ export function mountAdminTokenSurface(app: Express, deps: AdminTokenSurfaceDeps
       next();
       return;
     }
+    const waitMs = deps.throttle?.retryAfterMs(req) ?? 0;
+    if (waitMs > 0) {
+      log(`[admin-token] throttled ${req.method} ${ADMIN_TOKEN_PATH}${req.path}: too many wrong tokens`);
+      res.setHeader('Retry-After', String(Math.ceil(waitMs / 1000)));
+      res.status(429).json({ error: 'too_many_requests' });
+      return;
+    }
     if (!hasAdminTokenBearer(req, token)) {
+      deps.throttle?.recordFailure(req);
       log(`[admin-token] refused ${req.method} ${ADMIN_TOKEN_PATH}${req.path}: wrong bearer token`);
       if (now() - lastRefusalAuditAt >= REFUSAL_AUDIT_WINDOW_MS) {
         lastRefusalAuditAt = now();

@@ -32,6 +32,8 @@ import { LLM_SETUP_HINT } from './llmSetupHint.js';
 import { attachmentStoreHealth, selectAttachmentStore } from './platform/attachmentStore.js';
 import type { MemoryStore } from '@omadia/plugin-api';
 import { ADMIN_TOKEN_PATH, mountAdminTokenSurface } from './routes/adminTokenMount.js';
+import { createAdminTokenThrottle } from './routes/adminTokenThrottle.js';
+import { parseClientAddressPolicy } from './auth/clientAddress.js';
 import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
 import { createMemoryPromoteRouter } from './routes/memoryPromote.js';
 import { createAdminUpdateRouter } from './routes/adminUpdate.js';
@@ -4097,6 +4099,12 @@ async function main(): Promise<void> {
       token: config.ADMIN_TOKEN,
       store: memoryStore,
       audit: () => adminAudit,
+      // The password limiter's client rule: per vouched address, never the
+      // shared TCP peer.
+      throttle: createAdminTokenThrottle({
+        clientAddress: parseClientAddressPolicy(config.AUTH_LOGIN_CLIENT_ADDRESS),
+        ipv6PrefixBits: config.AUTH_LOGIN_IPV6_PREFIX,
+      }),
       // #1082 — per request: the orchestrator plugin publishes the tally
       // on activate, possibly after this router is mounted.
       runTraceStats: () =>

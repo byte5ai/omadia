@@ -65,6 +65,15 @@ changelog.
   `GraphServiceRefusedError` (`kernel-only`), and only a boundary implementer may `replace`
   it. The admin topic routes keep the raw service. No plugin declares it.
 
+### Security — a brake on wrong ADMIN_TOKEN bearers (2026-11-25)
+
+- `/api/admin/*` compared every bearer it got, as often as a client sent one. Wrong tokens now
+  fill a per-client leaky bucket (`routes/adminTokenThrottle.ts`: 10 failures, one drained
+  every 6 s); a full bucket answers 429 with `Retry-After` before the token is compared. The
+  client is keyed by `AUTH_LOGIN_CLIENT_ADDRESS` / `AUTH_LOGIN_IPV6_PREFIX`, like the password
+  limiter's client layer, and the shared TCP peer is never braked (one sender would lock every
+  operator out). On Fly the key is `Fly-Client-IP`.
+
 ### Fixed — subscription CLI rows keep the 1-hour cache-write split (2026-11-25)
 
 - The two `claude-cli` write sites (chat turns via `recordCliTurnUsage`, completions in
