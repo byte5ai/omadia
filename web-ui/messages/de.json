@@ -6015,7 +6015,7 @@
     "memberCount": "{count, plural, one {# Memory} other {# Memories}}",
     "list": {
       "title": "Memory · Themen",
-      "intro": "Cluster aller MemorableKnowledge nach Embedding-Ähnlichkeit. Re-Cluster ist destruktiv: alle bestehenden Topics werden ersetzt.",
+      "intro": "Cluster der MemorableKnowledge nach Embedding-Ähnlichkeit, getrennt nach Besitzern. Du siehst nur Topics, deren Memories du alle lesen darfst. Re-Cluster ist destruktiv: alle bestehenden Topics werden ersetzt.",
       "recluster": {
         "heading": "Re-Cluster",
         "cosineThreshold": "Cosine-Threshold (0.3-0.95)",
@@ -6029,7 +6029,7 @@
         "statUnclustered": "ungeclustert",
         "statHaikuCalls": "Haiku-Calls"
       },
-      "empty": "Keine Topics. Starte einen Re-Cluster oben.",
+      "empty": "Keine Topics, die du sehen darfst. Starte einen Re-Cluster oben.",
       "fallbackBadge": "fallback-name"
     },
     "detail": {

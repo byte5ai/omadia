@@ -37,6 +37,7 @@ const MIGRATIONS_DIR = join(
 );
 
 const ALICE = '11111111-1111-1111-1111-111111111111';
+const BOB = '22222222-2222-2222-2222-222222222222';
 
 async function seed(
   kg: InMemoryKnowledgeGraph,
@@ -55,16 +56,17 @@ async function seed(
 
 async function makeMK(
   kg: InMemoryKnowledgeGraph,
-  owner: string,
+  owner: string | readonly string[],
   summary: string,
   embedding: number[],
 ): Promise<string> {
+  const owners = typeof owner === 'string' ? [owner] : [...owner];
   const r = await kg.createMemorableKnowledge({
     kind: 'insight',
     summary,
-    createdBy: `web:${owner}`,
-    involvedOmadiaUserIds: [owner],
-    aclOwners: [owner],
+    createdBy: `web:${owners[0]!}`,
+    involvedOmadiaUserIds: owners,
+    aclOwners: owners,
   });
   kg.setEmbedding(r.memorableKnowledgeNodeId, embedding);
   return r.memorableKnowledgeNodeId;
@@ -184,7 +186,7 @@ describe('Slice 11 · clustering service', () => {
     assert.equal(result.unclusteredMemories, 1);
     assert.equal(result.haikuCalls, 0); // no anthropic dep → fallback names
 
-    const topics = await service.list();
+    const topics = await service.list(owner);
     assert.equal(topics.length, 2);
     for (const t of topics) {
       assert.equal(t.props.naming_source, 'fallback');
@@ -252,5 +254,100 @@ describe('Slice 11 · clustering service', () => {
     assert.ok(loose.topicsCreated <= tight.topicsCreated);
     assert.equal(tight.topicsCreated, 2);
     assert.equal(tight.unclusteredMemories, 1);
+  });
+});
+
+describe('Slice 11 · topics never cross owners (#1851, ADR 0045)', () => {
+  async function twoOwners(): Promise<{ kg: InMemoryKnowledgeGraph; alice: string; bob: string }> {
+    const kg = new InMemoryKnowledgeGraph();
+    const alice = await seed(kg, ALICE, 'alice@example.com');
+    const bob = await seed(kg, BOB, 'bob@example.com');
+    return { kg, alice, bob };
+  }
+
+  it('clusters each owner set on its own, even when the embeddings match', async () => {
+    const { kg, alice, bob } = await twoOwners();
+    await makeMK(kg, alice, 'Nordlicht contract runs until 31.12.2026', [1, 0, 0]);
+    await makeMK(kg, alice, 'Nordlicht maintenance window Thursdays', [0.99, 0.01, 0]);
+    await makeMK(kg, alice, 'Nordlicht renewal by 30.09.2026', [0.98, 0.02, 0]);
+    await makeMK(kg, bob, 'Nordlicht invoice pending', [0.97, 0.03, 0]);
+    await makeMK(kg, [alice, bob], 'Nordlicht shared note', [0.99, 0, 0]);
+
+    const service = createTopicClusteringService({ kg });
+    const result = await service.recluster({ similarityThreshold: 0.6, minClusterSize: 3 });
+
+    assert.equal(result.topicsCreated, 1);
+    assert.equal(result.unclusteredMemories, 2);
+    const [topic] = await service.list(alice);
+    assert.ok(topic);
+    const members = await kg.listTopicMembers(topic.id);
+    assert.deepEqual(
+      members.map((m) => String(m.props['summary'])).sort(),
+      [
+        'Nordlicht contract runs until 31.12.2026',
+        'Nordlicht maintenance window Thursdays',
+        'Nordlicht renewal by 30.09.2026',
+      ],
+    );
+    assert.ok(!topic.props.description.includes('invoice'), topic.props.description);
+  });
+
+  it("hides a topic from a viewer who cannot read all of its members", async () => {
+    const { kg, alice, bob } = await twoOwners();
+    await makeMK(kg, alice, 'A1', [1, 0]);
+    await makeMK(kg, alice, 'A2', [0.99, 0.01]);
+    await makeMK(kg, alice, 'A3', [0.98, 0.02]);
+    const service = createTopicClusteringService({ kg });
+    await service.recluster({ similarityThreshold: 0.6, minClusterSize: 3 });
+
+    const [topic] = await service.list(alice);
+    assert.ok(topic);
+    assert.equal(topic.props.member_count, 3);
+    assert.deepEqual(await service.list(bob), []);
+    assert.equal(await service.getWithMembers(topic.id, bob), null);
+    assert.equal((await service.getWithMembers(topic.id, alice))?.members.length, 3);
+  });
+
+  it('a topic written before the ACL gate (mixed owners) is shown to no one who misses a member', async () => {
+    const { kg, alice, bob } = await twoOwners();
+    const a = await makeMK(kg, alice, 'A', [1, 0]);
+    const b = await makeMK(kg, bob, 'B', [1, 0]);
+    const shared = await makeMK(kg, [alice, bob], 'AB', [1, 0]);
+    const mixed = await kg.createTopic({
+      name: 'mixed',
+      description: 'A · B',
+      namingSource: 'fallback',
+      memberMkIds: [a, b],
+    });
+    const both = await kg.createTopic({
+      name: 'shared',
+      description: 'AB',
+      namingSource: 'fallback',
+      memberMkIds: [shared],
+    });
+    const service = createTopicClusteringService({ kg });
+
+    for (const viewer of [alice, bob]) {
+      assert.deepEqual((await service.list(viewer)).map((t) => t.id), [both.id]);
+      assert.equal(await service.getWithMembers(mixed.id, viewer), null);
+    }
+  });
+
+  it('memories without owners get no topic and count as unclustered', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    for (const s of ['X', 'Y', 'Z']) {
+      const r = await kg.createMemorableKnowledge({
+        kind: 'insight',
+        summary: s,
+        createdBy: 'system',
+        involvedOmadiaUserIds: [],
+        aclOwners: [],
+      });
+      kg.setEmbedding(r.memorableKnowledgeNodeId, [1, 0]);
+    }
+    const service = createTopicClusteringService({ kg });
+    const result = await service.recluster({ similarityThreshold: 0.6, minClusterSize: 3 });
+    assert.equal(result.topicsCreated, 0);
+    assert.equal(result.unclusteredMemories, 3);
   });
 });

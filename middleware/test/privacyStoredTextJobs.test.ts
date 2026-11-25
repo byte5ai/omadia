@@ -289,7 +289,10 @@ describe('inconsistency detector — stored-text scope', () => {
 /** Three memories close enough to form one cluster. */
 function clusteringKg(created: Array<{ name: string; description: string; namingSource: string }>) {
   const items = [1, 2, 3].map((i) => ({
-    mk: mkNode(`mk-${String(i)}`, { summary: `Rückruf ${String(i)} bei ${NAME}, ${MAIL}` }),
+    mk: mkNode(`mk-${String(i)}`, {
+      summary: `Rückruf ${String(i)} bei ${NAME}, ${MAIL}`,
+      acl_owners: ['owner-1'],
+    }),
     embedding: [1, 0, 0],
   }));
   return {

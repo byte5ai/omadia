@@ -10,6 +10,11 @@
  * Re-cluster is destructive: the trigger deletes all existing Topics
  * + edges for the tenant and rebuilds them. Operator browses the
  * result at `/admin/topics`.
+ *
+ * A topic's name and description are written from its members'
+ * summaries, so a topic is content of every member (ADR 0045): it only
+ * groups memories with the same owner set, and a viewer sees it only
+ * when they may read every current member.
  */
 
 import type { GraphNode } from './knowledgeGraph.js';
@@ -23,9 +28,9 @@ export interface TopicNode {
   props: {
     name: string;
     description: string;
-    /** Cached count of HAS_TOPIC inbound edges at create-time.
-     *  Stays in sync because re-clustering deletes-and-rebuilds, so
-     *  the cached value never drifts. */
+    /** Count of HAS_TOPIC inbound edges. Stored at create-time; the
+     *  service's `list` and `getWithMembers` return the live count of
+     *  the members the viewer reads (all of them, or no topic). */
     member_count: number;
     created_at: string;
     updated_at: string;
@@ -34,8 +39,8 @@ export interface TopicNode {
 }
 
 export interface TopicDetail extends TopicNode {
-  /** Member MKs the viewer is authorised to see. The KG layer filters
-   *  via the per-MK ACL gate; non-owners get a degraded view. */
+  /** The member MKs, each through the per-MK ACL gate. A viewer who
+   *  fails the gate for any member gets no topic at all. */
   members: GraphNode[];
 }
 
@@ -63,7 +68,9 @@ export interface TopicClusteringRunResult {
 }
 
 export interface TopicClusteringService {
-  list(): Promise<TopicNode[]>;
+  /** Topics whose every member the viewer may read, with live counts. */
+  list(viewerOmadiaUserId: string): Promise<TopicNode[]>;
+  /** `null` when the topic is unknown or the viewer cannot read every member. */
   getWithMembers(
     topicExternalId: string,
     viewerOmadiaUserId: string,
