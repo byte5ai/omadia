@@ -47,6 +47,7 @@ import type { PrivacyTurnHandle } from './privacyHandle.js';
 import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import type { LoopbackMcpServerHandle } from './loopbackMcpServer.js';
 import { CLI_CHAT_USAGE_SOURCE, recordUsage } from '@omadia/usage-telemetry';
+import { TOOLS_OFF_DIRECTIVE, isToolsOffTurn } from './toolsOffTurn.js';
 import {
   OMADIA_MCP_SERVER_NAME,
   OMADIA_MCP_TOOL_PREFIX,
@@ -493,6 +494,10 @@ export interface CliInitReport {
   readonly tools: readonly string[];
   readonly omadiaServerStatus: string;
 }
+
+/** #2217 — the mcp-config of a tool-less turn: no server at all, the same
+ *  shape the completion adapter spawns with. */
+const EMPTY_MCP_CONFIG = JSON.stringify({ mcpServers: {} });
 
 /** How often a running CLI turn checks the kill switches (spec 2042 §5.10). */
 const CLI_HALT_POLL_MS = 1_000;
@@ -1493,6 +1498,10 @@ export class CliChatAgent implements ChatAgent {
     // The canvas protocol directive moved out of userMessage into
     // fixedSystemHint; without this line a canvas turn on the CLI backend
     // would lose its instructions.
+    if (isToolsOffTurn(input)) {
+      lines.push(`System Hint: ${neutralizeRoleMarkers(TOOLS_OFF_DIRECTIVE)}`);
+    }
+
     if (typeof input.fixedSystemHint === 'string' && input.fixedSystemHint.trim().length > 0) {
       lines.push(`System Hint: ${neutralizeRoleMarkers(input.fixedSystemHint)}`);
     }
@@ -1791,7 +1800,11 @@ export class CliChatAgent implements ChatAgent {
     turnContext: CapturedTurnContext,
   ): AsyncGenerator<ChatStreamEvent, StreamJsonParser | undefined> {
     const parser = new StreamJsonParser();
-    let tools = this.deps.dispatch.listDispatchableToolSpecs();
+    // #2217 — a tool-less turn offers the CLI nothing: no loopback server,
+    // an mcp-config without servers, nothing pre-approved. The init check
+    // below then expects exactly zero omadia tools.
+    const toolsOff = isToolsOffTurn(input);
+    let tools = toolsOff ? [] : this.deps.dispatch.listDispatchableToolSpecs();
     const bearer = randomUUID();
     // #1098 — the cost-ledger turn key. Minted per lifecycle so two turns of
     // one session stay separable; the session mirrors the orchestrator's
@@ -1896,28 +1909,35 @@ export class CliChatAgent implements ChatAgent {
 
       // #1102 — `memory` only with a handler bound to THIS turn; refused
       // outright otherwise.
-      const memory = await this.bindMemory(input, turnContext);
-      if (memory !== undefined) {
-        tools = withCliMemoryTool(tools);
-      }
-      const dispatch: LoopbackDispatch = turnMemoryDispatch(this.deps.dispatch, memory?.handler);
+      // A tool-less turn binds no `memory` either: nothing could call it.
+      const memory = toolsOff ? undefined : await this.bindMemory(input, turnContext);
+      if (!toolsOff) {
+        if (memory !== undefined) {
+          tools = withCliMemoryTool(tools);
+        }
+        const dispatch: LoopbackDispatch = turnMemoryDispatch(this.deps.dispatch, memory?.handler);
 
-      server = createLoopbackServer({
-        dispatch,
-        bearer,
-        tools,
-        // #1016 — the context captured at the public entry, not whatever is
-        // ambient here in the generator body.
-        runInTurnContext: turnContext.runInTurnContext,
-        ...(turnContext.assertTurnOwner
-          ? { assertTurnOwner: turnContext.assertTurnOwner }
-          : {}),
-      });
-      handle = await server.start();
+        server = createLoopbackServer({
+          dispatch,
+          bearer,
+          tools,
+          // #1016 — the context captured at the public entry, not whatever is
+          // ambient here in the generator body.
+          runInTurnContext: turnContext.runInTurnContext,
+          ...(turnContext.assertTurnOwner
+            ? { assertTurnOwner: turnContext.assertTurnOwner }
+            : {}),
+        });
+        handle = await server.start();
+      }
 
       tempDir = await mkdtemp(join(tmpdir(), 'omadia-cli-'));
       const configPath = join(tempDir, 'mcp-config.json');
-      await writeFile(configPath, this.buildMcpConfig(handle.url, bearer), { mode: 0o600 });
+      await writeFile(
+        configPath,
+        handle === undefined ? EMPTY_MCP_CONFIG : this.buildMcpConfig(handle.url, bearer),
+        { mode: 0o600 },
+      );
 
       // #1087 — resolved BEFORE argv: the system prompt has to disclose whether
       // this turn carries the chat's earlier turns, and the composed prompt
@@ -1946,7 +1966,7 @@ export class CliChatAgent implements ChatAgent {
         // for and for what these flags do NOT close.
         ...buildCliToolGateArgv({
           mcpConfigPath: configPath,
-          allowedTools: `${OMADIA_MCP_TOOL_PREFIX}*`,
+          ...(toolsOff ? {} : { allowedTools: `${OMADIA_MCP_TOOL_PREFIX}*` }),
           ...(cliVersion !== undefined ? { cliVersion } : {}),
         }),
         '--model',

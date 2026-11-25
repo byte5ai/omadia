@@ -592,6 +592,19 @@ export interface ChatTurnInput {
    */
   freshCheck?: boolean;
   /**
+   * #2217 — run this turn WITHOUT tools. The model gets no tool definitions
+   * and answers in prose only: no domain tool, no `memory`, no sub-agent, no
+   * MCP server, no forced consult. A tool call the model emits anyway is
+   * refused before dispatch and fails the turn. Everything else is the real
+   * turn — the agent's prompt, model, persona, privacy shield and verifier.
+   *
+   * Set by the Conductor's draft preview (ADR 0043), so an agent step's
+   * output drives the preview's conditions the way it drives a live run
+   * without the rehearsal touching a connector. Absent / `false`: unchanged.
+   * Never set it from channel input.
+   */
+  toolsOff?: boolean;
+  /**
    * Answer-size override for THIS turn only — the level the user picked on a
    * channel affordance ("Kürzer" / "Mehr Details" on the Teams card) for a
    * re-run of the same question. Replaces the configured level (Agent, else

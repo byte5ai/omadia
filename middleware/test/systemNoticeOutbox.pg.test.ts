@@ -71,6 +71,24 @@ describe('system notice outbox (pg, 0109)', { skip: !pgAvailable }, () => {
     });
   const rows = async () =>
     (await pool.query<{ state: string; attempts: number; text: string }>('SELECT state, attempts, text FROM system_notice_outbox')).rows;
+  // A drain whose send has not returned cannot be awaited, and it claims when
+  // the pool gets to its statement, which on a loaded runner is well after a
+  // fixed sleep. Steps that depend on a claim or on a lease running out wait
+  // for the row itself, never for the wall clock.
+  const until = async (sql: string, what: string): Promise<void> => {
+    for (let i = 0; i < 500; i += 1) {
+      if ((await pool.query<{ ok: boolean | null }>(sql)).rows[0]?.ok === true) return;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.fail(`timed out waiting for ${what}`);
+  };
+  const claimed = (attempts: number) =>
+    until(
+      `SELECT bool_and(state = 'sending' AND attempts = ${String(attempts)}) AS ok FROM system_notice_outbox`,
+      `a claim with ${String(attempts)} attempt(s) spent`,
+    );
+  const leaseRanOut = () =>
+    until('SELECT bool_and(lease_until < now()) AS ok FROM system_notice_outbox', 'the lease to run out');
 
   it('two machines ending the same agent write one notice; it is localized and sent once', async () => {
     const sent: string[] = [];
@@ -96,7 +114,8 @@ describe('system notice outbox (pg, 0109)', { skip: !pgAvailable }, () => {
     const slow = outbox(() => new Promise<NoticeSendOutcome>((r) => (release = r)), { leaseMs: 50 });
     await slow.emit(NOTICE);
     const slowDrain = slow.drain();
-    await new Promise((r) => setTimeout(r, 120));
+    await claimed(0);
+    await leaseRanOut();
     const fast = outbox(async () => ({ delivered: true }));
     assert.equal(await fast.drain(), 1, 'the expired lease is taken over');
     release({ delivered: false, reason: 'bot framework 502' });
@@ -105,15 +124,17 @@ describe('system notice outbox (pg, 0109)', { skip: !pgAvailable }, () => {
   });
 
   it('a send that never returns spends its attempts and ends failed', async () => {
-    const hang = outbox(() => new Promise<NoticeSendOutcome>(() => undefined), { leaseMs: 20 });
-    await hang.emit(NOTICE);
-    void hang.drain();
-    for (let i = 0; i < 3; i += 1) {
-      await new Promise((r) => setTimeout(r, 40));
-      void outbox(() => new Promise<NoticeSendOutcome>(() => undefined), { leaseMs: 20 }).drain();
+    const hanging = () => outbox(() => new Promise<NoticeSendOutcome>(() => undefined), { leaseMs: 20 });
+    await hanging().emit(NOTICE); // emit starts the first drain; its send never returns
+    await claimed(0);
+    for (const attempts of [1, 2]) {
+      await leaseRanOut();
+      void hanging().drain(); // takes the row over, spending the attempt that had no outcome
+      await claimed(attempts);
     }
-    await new Promise((r) => setTimeout(r, 40));
+    await leaseRanOut();
+    // The last allowed lease ran out: the next drain ends the row instead of sending it.
     await outbox(async () => ({ delivered: true })).drain();
-    assert.deepEqual((await rows()).map((r) => r.state), ['failed']);
+    assert.deepEqual((await rows()).map((r) => [r.state, r.attempts]), [['failed', 3]]);
   });
 });

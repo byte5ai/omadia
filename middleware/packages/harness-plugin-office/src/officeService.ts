@@ -66,6 +66,7 @@ export class OfficeService {
       mediaType: result.mediaType,
       sizeBytes: result.buffer.length,
       rowsWritten: result.rowsWritten,
+      ...(result.renamedSheets ? { renamedSheets: result.renamedSheets } : {}),
       cacheHit,
     };
   }

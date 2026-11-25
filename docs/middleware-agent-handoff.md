@@ -4801,6 +4801,46 @@ Patch, der sie setzt, wird mit Verweis auf den Agent Builder abgelehnt.
   sie hält keine Grant-Zeile. Ausgabe nur im Builder-SSE hinter der
   Admin-Session.
 
+### Plugin Builder: ein Turn pro Draft, Stopp auf dem Server (#2214)
+
+Seit #1899 läuft ein Builder-Turn nach einem Disconnect weiter. `DraftTurnLock`
+(`plugins/builder/draftTurnLock.ts`, eine Instanz in `index.ts`, geteilt von
+Chat-Route und AutoFix) lässt pro Draft genau einen laufenden Turn zu.
+
+- **`POST /drafts/:id/turn`** auf einem belegten Draft antwortet
+  `409 builder.turn_in_progress` mit `turnId` und `source` (`chat` |
+  `auto_fix`). Die UI hängt sich über `GET …/turn/:turnId/resume` an den
+  laufenden Turn und gibt die nicht gesendete Nachricht zurück ins Eingabefeld.
+  Ablehnen statt Warten: eine wartende Nachricht liefe gegen eine Spec, die der
+  Operator noch nicht gesehen hat, und der Request bliebe bis zum Turn-Timeout
+  (15 min) offen. AutoFix überspringt einen Trigger auf einem belegten Draft,
+  ohne einen Versuch zu verbrauchen.
+- **`POST /drafts/:id/turn/:turnId/stop`** (nur Owner, `404` sonst) bricht den
+  Turn ab und wartet bis 25 s auf sein Ende: `200 { status: 'stopped' |
+  'stopping' | 'not_running' }`. Ein Stopp trifft nur die genannte `turnId`.
+- **Ablauf eines Stopps.** `RunBuilderTurnOptions.signal` (das `AbortSignal`
+  des Locks) beendet die Event-Loop von `runTurn` sofort. Tool-Aufrufe, die
+  schon laufen, wartet der Turn ab (`STOP_TOOL_DRAIN_MS` = 20 s,
+  `plugins/builder/turnStop.ts`), neue lehnt die Tool-Bridge ab; offene
+  Choice-Karten des Drafts bricht `UserChoiceCoordinator.cancelForDraft` ab.
+  Bereits gemeldete Patches und Tool-Ergebnisse gehen noch raus, dann
+  `error builder.turn_stopped`. Ein gestoppter Turn schreibt keinen
+  Assistant-Eintrag. Der Sub-Agent hält über `AskOptions.signal`
+  (harness-orchestrator) an der nächsten Grenze an: `LocalSubAgent` vor jedem
+  Model-Call und vor dem Tool-Dispatch, der CLI-Sub-Agent vor dem Re-Prompt.
+  Ein laufender Model-Call läuft aus, kann den Draft aber nicht mehr ändern.
+- **Timeout.** Chat- und AutoFix-Turns brechen nach dem Turn-Budget über
+  denselben Abort ab (`error builder.turn_timeout`).
+- **Detached-Turn.** Das `finally` des Turn-Tasks wirft nicht mehr:
+  `finalize()` ist abgesichert, der Lock wird immer freigegeben.
+- **Grenze.** Der Lock liegt im Speicher wie Ring-Buffer und Choice-Karten:
+  ein Turn überlebt keinen Neustart, sein Lock auch nicht. Mehrere
+  Middleware-Instanzen teilen ihn nicht.
+
+Tests: `test/builder/draftTurnLock.test.ts`, `test/builder/builderAgentStop.test.ts`,
+`test/builder/builderChatRoutes.test.ts` (§ #2214), Web-UI
+`BuilderChatPane.stop.test.tsx`.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -6470,6 +6510,13 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+- **croner-`?`-Kompatibilität (`middleware/src/scheduler/cronerCompat.ts`).** Unter croner 11
+  ist `?` ein Alias für `*`; der Kernel ersetzt es weiter wie croner 9.x durch den Feldwert zum
+  Konstruktionszeitpunkt, damit gespeicherte Routinen, Agent-Schedules und Trigger ihren Takt
+  behalten. Geprüft 2026-11-25: kein Plugin-Manifest nutzt `?`, die Live-Datenbanken sind
+  nicht geprüft. Entfernen nur zusammen mit einer Migration, die gespeicherte `?`-Muster
+  umschreibt oder ablehnt.
 
 - **Memory-ACL automatisch prüfbar machen (Plan in 7 Schritten, ein PR pro Schritt).** Ziel:
   Jede Änderung, die einem Nutzer Memory zeigt, das ihm nicht zusteht, macht CI rot.
@@ -11288,3 +11335,39 @@ Spec 2042 §5.10, ADR-0014/0017. Folgt auf S3b (#2152).
 - **integration-odoo:** eigenes `undici` mit `ODOO_INSECURE_TLS=true` umgeht
   die Egress-Prüfung, als Residualrisiko dokumentiert,
   byte5ai/omadia-integration-odoo#10.
+
+## Conductor-Vorschau: Agent-Schritte als Turn ohne Tools (#2217, 2026-11-25)
+
+Entscheidung: [ADR 0043](adr/0043-draft-previews-run-agent-steps-as-tool-less-turns.md).
+Ersetzt den Platzhalter aus #2007.
+
+- **`ChatTurnInput.toolsOff`** (channel-sdk 0.3.15): Turn ohne jedes Tool.
+  Nur vertrauenswürdige In-Process-Aufrufer setzen es, nie Kanal-Input.
+  Gemeinsame Helfer in `packages/harness-orchestrator/src/toolsOffTurn.ts`.
+  - Beide Tool-Loops: `tools: []` (auch für den Fallback-Provider), keine
+    Consult-Pflicht, kein File-Retry, kein Card-Router, `TOOLS_OFF_DIRECTIVE`
+    im per-Turn-Hint. Ein trotzdem gesendeter Tool-Call wird vor dem Dispatch
+    abgewiesen (`ToolsOffViolationError`), der Turn scheitert.
+  - `onBeforeTurn` feuert nicht. Sonst würde der Plan-Runner über die
+    Prozess-Wiederverwendung Plan-Knoten schreiben, obwohl `planHint: 'direct'`
+    gesetzt ist.
+  - `cliChatAgent`: kein Loopback-MCP-Server, kein `memory`-Binding, eine
+    mcp-config ohne Server, kein `--allowedTools`. Das Gate aus
+    `buildCliToolGateArgv` bleibt unverändert.
+  - Fast Path: `passThroughReason` → `'system'`.
+  - Verifier und Facilitator geben das Feld per Spread weiter
+    (`withCorrectionHint` ist getestet). Der Verifier darf für seine
+    Belegprüfung weiter lesend auf Odoo zugreifen.
+- **Conductor:** `StepMeta.preview` → `RealStepEffects` ruft `chat({ userMessage,
+  toolsOff: true })` **ohne `sessionScope`** auf. Dadurch entstehen keine
+  Transkript-Zeile, kein Graph-Turn und kein Recall. Es gibt kein `startTyping`
+  und kein `say`. Das Ergebnis trägt `previewed: true` und bei `say`-Schritten
+  `say: 'skipped_in_preview'`. `previewRun` deckelt Agent-Schritte auf
+  `MAX_PREVIEW_AGENT_STEPS` (25) und endet danach mit `max_steps_exceeded`. Ein
+  Agent-Schritt, der wirft, ist wieder der Fehlergrund der Vorschau.
+  Action-Schritte bleiben gestubbt.
+- **Offen:** Ein Häkchen „Agent-Schritte simulieren“ in der Vorschau-UI
+  (Folge-Issue). Die Effects-Schnittstelle schlägt offen fehl: Eine weitere
+  `StepEffects`-Implementierung muss `meta.preview` selbst beachten. Der
+  stabile System-Prompt beschreibt die Tools weiter, nur der per-Turn-Hint
+  widerspricht ihm.

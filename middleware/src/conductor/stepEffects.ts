@@ -46,11 +46,20 @@ export interface StepMeta {
    * tests have no workflow row, and a say there simply finds no floor.
    */
   workflowId?: string | null;
+  /**
+   * #2217 — the step runs inside a draft preview (`previewRun`). An agent
+   * effect then runs a real turn WITHOUT tools (`ChatTurnInput.toolsOff`),
+   * keeps it out of the session transcript and graph, and neither publishes
+   * a `say` nor shows a typing indicator: the rehearsal sees the answer the
+   * live run would route on, and nobody in a chat sees anything (ADR 0043).
+   */
+  preview?: boolean;
 }
 
 /**
  * The I/O side of step execution, injected into the run executor. Production wires real
- * orchestrator turns / connector actions (RealStepEffects); preview (US8) and tests wire fakes.
+ * orchestrator turns / connector actions (RealStepEffects); tests wire fakes. A preview (US8) runs
+ * through the same effects with `StepMeta.preview` set.
  * This is the seam that lets the deterministic engine stay pure while the executor performs
  * side effects.
  */

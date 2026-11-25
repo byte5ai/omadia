@@ -125,6 +125,12 @@ export interface QueryProcessesInput {
   /** #1540 — leave out processes stored `unprotected`. Set by a recall or a
    *  tool that runs under a Privacy Shield. */
   readonly excludeUnprotected?: boolean;
+  /** Only processes of the Agent with this {@link agentScopePrefix} (the
+   *  {@link scopeBelongsToAgent} rule), filtered before `limit` applies so
+   *  other agents' processes cannot crowd this agent's out. A provider that
+   *  ignores it returns other agents' processes; callers that must not show
+   *  them re-check each hit's scope. */
+  readonly agentScopePrefix?: string;
 }
 
 export interface ProcessQueryHit {

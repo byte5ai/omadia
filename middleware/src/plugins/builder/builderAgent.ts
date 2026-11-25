@@ -25,6 +25,12 @@ import { type AuditLogger, createAuditLogger } from './audit.js';
 import { BuilderLlmAccessError, builderResolverErrorCode } from './builderLlmAccess.js';
 import { loadBoilerplate, type SlotDef } from './boilerplateSource.js';
 import type { DraftStore } from './draftStore.js';
+import {
+  InFlightToolCalls,
+  isDeliverableAfterStop,
+  STOP_TOOL_DRAIN_MS,
+  stoppedTurnEvent,
+} from './turnStop.js';
 import type { BuildStatusSnapshot } from './buildPipeline.js';
 import type { SmokeStatusSnapshot } from './runtimeSmokeOrchestrator.js';
 import type { SlotTypecheckService } from './slotTypecheckPipeline.js';
@@ -360,6 +366,14 @@ export interface RunBuilderTurnOptions {
    * tests and ad-hoc consumers that do not need replay.
    */
   turnId?: string;
+  /**
+   * #2214 — aborts the turn (the draft lock's stop endpoint, or the route's
+   * turn timeout). The turn ends at once with a `builder.turn_stopped` /
+   * `builder.turn_timeout` error, its remaining tool calls are refused, its
+   * pending choice cards are cancelled and the sub-agent stops at its next
+   * model-call boundary. No assistant entry is written for a stopped turn.
+   */
+  signal?: AbortSignal;
 }
 
 export class BuilderAgent {
@@ -552,7 +566,10 @@ export class BuilderAgent {
       ...(this.lastSmokeStatus ? { lastSmokeStatus: this.lastSmokeStatus } : {}),
     };
 
-    const subAgentTools = this.tools.map((tool) => bridgeBuilderTool(tool, toolCtx));
+    const inFlightTools = new InFlightToolCalls();
+    const subAgentTools = this.tools.map((tool) =>
+      bridgeBuilderTool(tool, toolCtx, opts.signal, inFlightTools),
+    );
     const systemPrompt = await this.composedSystemPrompt(draft.spec, draft.slots ?? {});
 
     let resolved: BuilderProviderResolution;
@@ -566,6 +583,15 @@ export class BuilderAgent {
         code: builderResolverErrorCode(err),
         message: err instanceof Error ? err.message : String(err),
       };
+      return;
+    }
+
+    // #2214 — a function, so each check re-reads the signal (an inline
+    // check would let TypeScript narrow `aborted` to false after the first).
+    const isStopped = (): boolean => opts.signal?.aborted === true;
+    // Stopped while the turn was still being set up.
+    if (opts.signal && isStopped()) {
+      yield stoppedTurnEvent(opts.signal);
       return;
     }
 
@@ -746,11 +772,22 @@ export class BuilderAgent {
     // message — composeContextualMessage wraps it in XML for the model
     // but the heuristic ignores the surrounding history (the user's
     // *current* intent is what matters).
-    const askOptions: AskOptions | undefined = detectBuildIntent(
-      opts.userMessage,
-    )
-      ? { expectedTurnToolUse: 'fill_slot' }
-      : undefined;
+    const isBuildIntent = detectBuildIntent(opts.userMessage);
+    const askOptions: AskOptions | undefined =
+      isBuildIntent || opts.signal
+        ? {
+            ...(isBuildIntent ? { expectedTurnToolUse: 'fill_slot' } : {}),
+            ...(opts.signal ? { signal: opts.signal } : {}),
+          }
+        : undefined;
+
+    // #2214 — a stop wakes the event loop below and dismisses this draft's
+    // open choice cards, so a turn waiting on `ask_user_choice` ends too.
+    const onAbort = (): void => {
+      this.userChoice?.cancelForDraft(opts.draftId);
+      wake();
+    };
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
 
     const askPromise = subAgent
       .ask(contextualMessage, observer, askOptions)
@@ -767,6 +804,7 @@ export class BuilderAgent {
 
     try {
       while (true) {
+        if (isStopped()) break;
         if (queue.length > 0) {
           const ev = queue.shift();
           if (ev) yield ev;
@@ -776,6 +814,32 @@ export class BuilderAgent {
         await new Promise<void>((resolve) => {
           pendingResolver = resolve;
         });
+      }
+
+      if (opts.signal && isStopped()) {
+        // Stopped before the sub-agent answered: wait (bounded) for tool
+        // calls already running, so none of them writes to the draft after
+        // the lock is gone. New calls are refused by the bridge, and the
+        // detached `askPromise` settles on its own (its handlers never
+        // throw). A stop that lands after the answer is in saves that answer.
+        if (!askDone) {
+          const drained = await inFlightTools.settle(STOP_TOOL_DRAIN_MS);
+          if (!drained) {
+            this.log(
+              `[builder] turn ${turnId}: tool calls still running ${String(STOP_TOOL_DRAIN_MS)}ms after the stop`,
+            );
+          }
+        }
+        // Deliver what the turn changed before the stop (spec/slot patches,
+        // tool results) — the client and the ring buffer still need it.
+        for (const ev of queue.splice(0)) {
+          if (isDeliverableAfterStop(ev)) yield ev;
+        }
+        if (!askDone) {
+          this.log(`[builder] turn ${turnId} stopped`);
+          yield stoppedTurnEvent(opts.signal);
+          return;
+        }
       }
 
       await askPromise;
@@ -804,6 +868,7 @@ export class BuilderAgent {
 
       yield { type: 'turn_done', turnId };
     } finally {
+      opts.signal?.removeEventListener('abort', onAbort);
       clearInterval(heartbeatTimer);
       unsubscribeBus();
     }
@@ -860,6 +925,8 @@ export class BuilderAgent {
 function bridgeBuilderTool(
   tool: BuilderTool<unknown, unknown>,
   ctx: BuilderToolContext,
+  signal?: AbortSignal,
+  inFlight?: InFlightToolCalls,
 ): LocalSubAgentTool {
   const schema = zodToJsonSchema(tool.input);
   const properties =
@@ -878,57 +945,74 @@ function bridgeBuilderTool(
         required,
       },
     },
-    async handle(input: unknown): Promise<string> {
-      let stage: BridgeStage = 'input';
-      try {
-        let parsed;
-        try {
-          parsed = tool.input.parse(input);
-        } catch (parseErr) {
-          // OB-31 follow-up debugging: log raw input shape when zod parse
-          // fails so we can tell apart "model sent garbage" vs "max_tokens
-          // truncated the JSON mid-stream" vs "schema/aggregator mismatch".
-          const inputKeys =
-            input && typeof input === 'object'
-              ? Object.keys(input as Record<string, unknown>).join(',')
-              : typeof input;
-          const inputPreview = JSON.stringify(input).slice(0, 200);
-          console.warn(
-            `[builder/tool ${tool.id}] zod parse failed — keys=[${inputKeys}], input(<=200chars)=${inputPreview}`,
-          );
-          throw parseErr;
-        }
-        stage = 'run';
-        const result = await tool.run(parsed, ctx);
-        if (typeof result === 'string') return result;
-        // Builder tools (read_reference, lint_spec, …) return structured
-        // `{ ok: false, error }` ErrResults instead of throwing. The
-        // LocalSubAgent labels a tool result as an error iff the string
-        // starts with `Error:` — without that prefix the LLM sees a happy
-        // `is_error: false` tool_result, treats the failed call as
-        // "interesting output", and retries with a fresh path. Observed
-        // shape: 11 read_reference loops in one turn before the agent
-        // gives up. Prefix the message so isError detection downstream
-        // works AND the model gets a clear "stop trying that approach"
-        // signal in the next iteration.
-        if (
-          result !== null &&
-          typeof result === 'object' &&
-          (result as { ok?: unknown }).ok === false
-        ) {
-          const errVal = (result as { error?: unknown }).error;
-          const errText =
-            typeof errVal === 'string' && errVal.length > 0
-              ? errVal
-              : JSON.stringify(result);
-          return `Error: ${errText}`;
-        }
-        return JSON.stringify(result, null, 2);
-      } catch (err) {
-        return bridgedToolError(tool.id, err, stage, 'builder');
+    handle(input: unknown): Promise<string> {
+      // #2214 — a stopped turn must not change the draft any more, even
+      // while its model call is still finishing in the background. A call
+      // already running is tracked, and the stop waits for it.
+      if (signal?.aborted === true) {
+        return Promise.resolve(
+          'Error: this builder turn was stopped; no further tool calls run.',
+        );
       }
+      const call = runBridgedTool(tool, ctx, input);
+      return inFlight ? inFlight.track(call) : call;
     },
   };
+}
+
+async function runBridgedTool(
+  tool: BuilderTool<unknown, unknown>,
+  ctx: BuilderToolContext,
+  input: unknown,
+): Promise<string> {
+  let stage: BridgeStage = 'input';
+  try {
+    let parsed;
+    try {
+      parsed = tool.input.parse(input);
+    } catch (parseErr) {
+      // OB-31 follow-up debugging: log raw input shape when zod parse
+      // fails so we can tell apart "model sent garbage" vs "max_tokens
+      // truncated the JSON mid-stream" vs "schema/aggregator mismatch".
+      const inputKeys =
+        input && typeof input === 'object'
+          ? Object.keys(input as Record<string, unknown>).join(',')
+          : typeof input;
+      const inputPreview = JSON.stringify(input).slice(0, 200);
+      console.warn(
+        `[builder/tool ${tool.id}] zod parse failed — keys=[${inputKeys}], input(<=200chars)=${inputPreview}`,
+      );
+      throw parseErr;
+    }
+    stage = 'run';
+    const result = await tool.run(parsed, ctx);
+    if (typeof result === 'string') return result;
+    // Builder tools (read_reference, lint_spec, …) return structured
+    // `{ ok: false, error }` ErrResults instead of throwing. The
+    // LocalSubAgent labels a tool result as an error iff the string
+    // starts with `Error:` — without that prefix the LLM sees a happy
+    // `is_error: false` tool_result, treats the failed call as
+    // "interesting output", and retries with a fresh path. Observed
+    // shape: 11 read_reference loops in one turn before the agent
+    // gives up. Prefix the message so isError detection downstream
+    // works AND the model gets a clear "stop trying that approach"
+    // signal in the next iteration.
+    if (
+      result !== null &&
+      typeof result === 'object' &&
+      (result as { ok?: unknown }).ok === false
+    ) {
+      const errVal = (result as { error?: unknown }).error;
+      const errText =
+        typeof errVal === 'string' && errVal.length > 0
+          ? errVal
+          : JSON.stringify(result);
+      return `Error: ${errText}`;
+    }
+    return JSON.stringify(result, null, 2);
+  } catch (err) {
+    return bridgedToolError(tool.id, err, stage, 'builder');
+  }
 }
 
 /**
