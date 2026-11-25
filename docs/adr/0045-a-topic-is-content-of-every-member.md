@@ -2,11 +2,11 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-25
 - **Deciders:** Maintainers, from issue #1851 (found by the canary sweep of PR #2225,
-  memory-ACL plan step 3); implemented in the PR for #1851. Owner decision of 2026-11-24
+  memory-ACL plan step 3); implemented in PR #2235, accepted 2026-11-25. Owner decision of 2026-11-24
   recorded in `middleware/test/memoryAccess/oracle.ts` (`expectedHttp`, `topic`).
 
 ## Context and Problem Statement
