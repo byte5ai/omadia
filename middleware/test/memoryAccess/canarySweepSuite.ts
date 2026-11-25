@@ -36,44 +36,7 @@ interface KnownLeak {
   readonly matches: (sweep: TurnSweep, s: Sighting) => boolean;
 }
 
-/** In the client stream but not in what the model was sent: the graph walk. */
-const viaGraphWalk = (sweep: TurnSweep, s: Sighting): boolean =>
-  s.entry === 'client-stream' &&
-  !sweep.sightings.some((o) => o.entry === 'context' && o.canary === s.canary);
-
 export const KNOWN_LEAKS: readonly KnownLeak[] = [
-  {
-    issue: '#2204',
-    title: 'query_knowledge_graph stays within the agent and the user',
-    modes: ['off', 'enforce'],
-    recall: 'any',
-    // Both query_knowledge_graph registrations and a plugin's turn search.
-    matches: (sweep, s) =>
-      (s.entry === 'graph-tool' || s.entry === 'plugin-accessor') &&
-      (sweep.mode === 'off' || sweep.mode === 'enforce'),
-  },
-  {
-    issue: '#2207',
-    title: 'query_processes / run_stored_process stay within the agent and the context-memory bound',
-    modes: ['off', 'enforce', 'enforce-strict', 'members'],
-    recall: 'any',
-    backend: 'neon',
-    matches: (_sweep, s) => s.entry === 'process-tool',
-  },
-  {
-    issue: '#2208',
-    title: "a plugin's ctx.knowledgeGraph.getNeighbors returns only what the turn may see",
-    modes: ['off', 'enforce', 'enforce-strict', 'members'],
-    recall: 'any',
-    matches: (_sweep, s) => s.entry === 'plugin-neighbors',
-  },
-  {
-    issue: '#1825',
-    title: 'the kg_graph walk around recalled memories shows only what the viewer may see',
-    modes: ['off', 'enforce', 'enforce-strict', 'members'],
-    recall: 'production',
-    matches: viaGraphWalk,
-  },
 ];
 
 /**
@@ -215,10 +178,8 @@ export function canarySweepSuite(modes: readonly Mode[], options: SweepOptions =
       // The kernel-native registration of the graph tool (subscription-CLI
       // path) knows no turn. Positive control: the in-turn graph tool above
       // reads the same graph.
-      const strict = mode === 'enforce-strict' || mode === 'members';
       it(
         `${mode}: the CLI-path registration of query_knowledge_graph returns no canary`,
-        strict ? {} : { todo: '#2204' },
         async (t) => {
           if (!seeded) return t.skip('no test database');
           for (const agent of AGENT_KEYS) {

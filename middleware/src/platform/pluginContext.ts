@@ -67,7 +67,12 @@ import {
 } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 import type { DomainTool } from '@omadia/orchestrator';
-import { MEMORY_TOOL_NAME, turnContext } from '@omadia/orchestrator';
+import {
+  MEMORY_TOOL_NAME,
+  currentGraphNodeViewer,
+  graphNodeFilter,
+  turnContext,
+} from '@omadia/orchestrator';
 import { MemoryToolHandler } from '@omadia/memory';
 import {
   isClassRef,
@@ -163,7 +168,7 @@ export {
   type ToolsAccessor,
   type UiRoutesAccessor,
 } from '@omadia/plugin-api';
-import { nativeToolResultText } from '@omadia/plugin-api';
+import { nativeToolResultText, scopeBelongsToAgent } from '@omadia/plugin-api';
 
 export interface CreatePluginContextOptions {
   agentId: string;
@@ -1648,9 +1653,9 @@ function createKnowledgeGraphAccessor(
       // hardening pass MAY parse out the prefix and assert it's allowed.
       return resolveKg().ingestFacts(facts);
     },
-    // A domain tool running inside a turn whose agent restricts the graph
-    // (`enforce-strict`, `members`) searches within that turn's boundary, not
-    // the tenant: otherwise it would be a side door past the recall legs.
+    // A domain tool running inside a turn searches within that turn's
+    // boundary, not the tenant: otherwise it would be a side door past the
+    // recall legs (`off` / `enforce`: the user's own chats, #2204).
     searchTurns: async (opts2) => {
       const bounded = boundTurnSearch(opts2);
       if (bounded === null) return [];
@@ -1666,9 +1671,17 @@ function createKnowledgeGraphAccessor(
         .filter((hit) => hit.turns.length > 0);
     },
     // #1540 — under a shield, as the turn search: no content of a turn
-    // stored `unprotected` (shieldedNeighbors.ts).
-    getNeighbors: (nodeId) =>
-      neighborsForPlugin(resolveKg(), nodeId, turnContext.current()?.privacyHandle !== undefined),
+    // stored `unprotected` (shieldedNeighbors.ts). #2208 — inside a turn, only
+    // the neighbours that turn may see (graphNodeAccess.ts), as its searches.
+    getNeighbors: async (nodeId) => {
+      const kg = resolveKg();
+      const shielded = await neighborsForPlugin(kg, nodeId, turnContext.current()?.privacyHandle !== undefined);
+      const viewer = currentGraphNodeViewer();
+      if (!viewer) return shielded;
+      const visible = graphNodeFilter(kg, viewer);
+      const keep = await Promise.all(shielded.map(visible));
+      return shielded.filter((_, i) => keep[i]);
+    },
     stats: () => resolveKg().stats(),
   };
 }
@@ -1684,6 +1697,7 @@ export function boundTurnSearch<
   T extends {
     agentScopePrefix?: string;
     audienceOwners?: readonly string[];
+    userId?: string;
     excludeUnprotected?: boolean;
   },
 >(
@@ -1698,6 +1712,14 @@ export function boundTurnSearch<
   const bound = turnContext.current()?.graphReadScope?.value;
   if (!bound) return { options, scopeAllowed: () => true };
   if (bound.kind === 'nothing') return null;
+  if (bound.kind === 'user') {
+    // `off` / `enforce` (#2204): this agent's turns the turn's user sent.
+    if (!bound.userId) return null;
+    return {
+      options: { ...options, agentScopePrefix: bound.agentScopePrefix, userId: bound.userId },
+      scopeAllowed: (scope) => scopeBelongsToAgent(scope, bound.agentScopePrefix),
+    };
+  }
   if (bound.kind === 'members') {
     if (!bound.audience) return null;
     return {

@@ -476,27 +476,13 @@ export interface Divergence {
 
 export const EXPECTED_DIVERGENCES: readonly Divergence[] = [
   {
-    id: 'kg-tool-tenant-wide',
-    oracle:
-      "off/enforce: another agent's and another user's turns are not readable (SP INV-2; S \"user's other chats\")",
-    code: 'query_knowledge_graph runs without a view in off/enforce: listSessions/getSession/search over the whole tenant',
-    confirmed:
-      "step 3, canarySweep.test.ts (todo, #2204): in off/enforce the in-turn tool returns other agents', legacy and other users' turns; the CLI-path registration returns them outside any turn",
-  },
-  {
     id: 'empty-audience-inmemory',
     oracle: 'an empty audience matches nothing (PA ownersCoverAudience)',
     code: 'InMemory MK/excerpt search with audienceOwners [] still admits operator-authored rows; Neon returns []',
     confirmed:
       'step 2, aclContract.test.ts (todo): 50 operator-authored memories and their excerpts come back for audienceOwners []; Neon returns none',
   },
-  {
-    id: 'process-cross-agent',
-    oracle: "another agent's process is not readable (SP INV-2)",
-    code: 'process memory query/get filter only on tenant, scope and unprotected',
-    confirmed:
-      "step 3, canarySweep*.pg.test.ts (todo, #2207): query_processes / run_stored_process return other agents' processes in every mode, and any process in strict/members context-bound turns; the recall process leg is clean",
-  },
+
   {
     id: 'excerpt-parent-recheck',
     oracle: 'an excerpt of a team-visible MK is visible to a non-owner when its parent is',
