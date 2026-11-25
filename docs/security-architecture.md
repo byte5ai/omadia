@@ -1029,6 +1029,27 @@ The surfaces that boundary must cover, and how each one does:
   operator-authored row. "Operator-authored" means `manually_authored` and a
   `created_by` that is not `auto:…`, because T3 durable auto-promotion sets
   `manually_authored` too. `teamVisibility` does not widen the rule.
+  Under `enforce-strict` every curated-memory leg (memory, excerpts and
+  durable knowledge) gets `sharedOnly`: only `team` / `public` rows, never
+  one participant's private or `shared:<x>` memory (#2205).
+- **`off` / `enforce` (#2204):** no turn reads the whole tenant graph. The
+  in-turn `query_knowledge_graph` and a plugin's `searchTurns` /
+  `findEntityCapturedTurns` see this agent's turns the turn's user sent
+  (`agentScopePrefix` + `userId`, `getSession(scope, { userId })`), plus the
+  turn's own conversation in full. A turn without a user sees nothing; the
+  registered (CLI-path) handler knows no turn and sees nothing in every mode.
+- **Graph walks (#2208, #1825):** a plugin's `getNeighbors` and the `kg_graph` /
+  `kg_insert` walk sent to the client keep only nodes the turn may see
+  (`graphNodeAccess.ts`): turns and sessions through the same boundary as the
+  graph tool, memories by the recall ACL of the mode, entities, plans and facts
+  only where their turns or agent allow, a User node only the viewer's own.
+  The walk never passes through a node it may not show, so another person's
+  User node no longer leads to their other chats. Outside a turn with a graph
+  boundary there is no walk.
+- **Process tools (#2207):** `query_processes` and `run_stored_process` return
+  only this agent's processes, and none in a context-bound `enforce-strict` /
+  `members` turn, where recall skips processes too. A process the turn may not
+  read answers like a missing one.
 
 The audience is the security input. A group counts as known only when its
 channel marks the roster complete (`ChatParticipantsProvider.completeRoster`).
@@ -1037,10 +1058,22 @@ read, so a channel that sets the flag must refresh the roster on membership
 events. Graph decorators must forward `getSession(scope, options)`; one that
 drops `options` drops the filter.
 
+Owner decision (2026-11-24): **private knowledge always stays private.** In
+every mode a turn sees only its own agent's memory, and only what the people
+reading may see. A private or `shared:<x>` memory never reaches a turn read
+by someone who does not own it, and never reaches a context-bound
+`enforce-strict` turn.
+
 Known residuals:
 - A knowledge-graph provider that predates plugin-api 1.26.0 ignores
   `audienceOwners` and returns everything. The in-tree providers honour it.
 - Only turns that carry a `TurnOrigin` are context-bound.
+- #1762: web chat tabs (`/api/chat/sessions`) have no owner; every account
+  lists and reads every tab.
+
+All of these are pinned as known failures (`todo`, naming the issue) in the
+canary sweep under `middleware/test/memoryAccess/` (`canarySweep*.test.ts`,
+`canarySweep*.pg.test.ts`, `canaryHttp.test.ts`).
 
 ### Consultation: a colleague adds judgement, never access (spec 2042 §5.4, #2047)
 

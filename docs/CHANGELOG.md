@@ -530,6 +530,141 @@ handler's catch-all copied that sentence into a 500 body — eight routes, from
   approve/reject card button still reads both as `already_resolved`.
 - No migration, no URL change, no web-ui change.
 
+### Fixed — process tools read every agent's processes (#2207) (2026-11-24)
+
+- `query_processes` and `run_stored_process` read process memory with no agent or
+  context-memory bound: other agents' processes in every mode, and any process in a
+  context-bound `enforce-strict` / `members` turn, where recall skips processes. Both now apply
+  the turn's graph boundary: this agent's processes only, none in those turns. Outside a turn
+  (jobs, activation) nothing changes.
+- The canary sweep has no known leaks left in recall, tools, plugins or the client stream;
+  #1762 (chat sessions) stays on the REST routes. `PG_TEST_FLOOR` 743 → 739.
+
+### Fixed — graph walks showed what the viewer may not see (#2208, #1825) (2026-11-24)
+
+- A plugin's `ctx.knowledgeGraph.getNeighbors` returned every neighbour of a node: private
+  memories of other people, plans and turns the turn may not read, in every context-memory
+  mode. The `kg_graph` / `kg_insert` walk the client receives around recalled memories did the
+  same, and through another person's User node reached their unrelated conversations.
+- Both now pass through one node filter per turn (`graphNodeAccess.ts` in
+  `@omadia/orchestrator`), built from the turn's graph boundary and the mode's recall rules.
+  The walk keeps the recall hits as roots and follows only admitted nodes. Outside the own
+  conversation, tail-only turns and (under a shield) unprotected turns stay out, as in recall.
+- **Behaviour change:** the knowledge-graph side panel shows fewer nodes, and none for a turn
+  without a graph boundary.
+- The canary sweep's `todo` tests for #2208 and #1825 are now part of the ordinary assertion.
+  `PG_TEST_FLOOR` 747 → 743.
+
+### Fixed — the graph tool read the whole tenant in `off` / `enforce` (#2204) (2026-11-24)
+
+- In context memory `off` and `enforce`, `query_knowledge_graph` and a plugin's
+  `ctx.knowledgeGraph.searchTurns` / `findEntityCapturedTurns` read every chat of the tenant:
+  other agents' conversations, pre-agent scopes and other users' private 1:1s. They now see
+  only this agent's turns the turn's user sent, plus the turn's own conversation in full (like
+  recall's tail). A turn without a user sees nothing.
+- The registered (subscription-CLI) handler knows no turn and now sees nothing in every mode,
+  not only in `enforce-strict` / `members`. **Behaviour change:** cross-agent and cross-user
+  search through the tool is gone.
+- plugin-api 1.94.0: `SessionReadOptions.userId` (both in-tree backends honour it) and
+  `scopeBelongsToAgent`.
+- `graphBoundarySideDoors.test.ts` drops its "unrestricted in enforce" control; the canary
+  sweep's `todo` for #2204 is now part of the ordinary assertion. `PG_TEST_FLOOR` 749 → 747.
+
+### Fixed — `enforce-strict` recalled private durable knowledge into a room (#2205) (2026-11-24)
+
+- In a context-bound `enforce-strict` turn, the durable recall leg (operator-authored and
+  durably auto-promoted knowledge) ran without `sharedOnly`, unlike the memory and excerpt
+  legs. A participant's private or `shared:<x>` notes reached the prompt, and the answer the
+  room sees could quote them. `ContextRetriever` now passes `sharedOnly` to that leg too.
+- The canary sweep's `todo` for #2205 is now part of the ordinary strict-mode assertion
+  (352 forbidden sightings before, 0 after). `PG_TEST_FLOOR` 750 → 749: the separate
+  known-leak test on Neon folds into the main one.
+
+### Added — memory canary sweep, part 2: REST routes, plugins, Neon (memory-ACL test plan, step 3) (2026-11-24)
+
+- **Client stream.** The sweep now also checks every stream event the client gets besides tool
+  calls (recall cards, the `kg_graph` walk, the answer), and runs each mode a second time with
+  the production recall limits, where the walk shows. One file per mode and recall setting.
+- **Per-person REST routes** (`canaryHttp.test.ts`): `/api/v1/memory`, `/api/v1/datasets` and
+  `/api/chat/sessions` from the production routers, called as every person of both tenants,
+  including every read-by-id route with every id. Memory and datasets are clean. Admin,
+  operator and dev routes are operator-only today (every account is an administrator).
+- **Plugin accessors:** a probe plugin built with the real `createPluginContext` reads
+  `ctx.knowledgeGraph` and `ctx.memory` as a domain tool mid-turn.
+- **Neon** (`canarySweep<Mode>.pg.test.ts`, about 20 s each): process memory and
+  `query_processes` / `run_stored_process`. `PG_TEST_FLOOR` 727 → 750.
+- **Leaks confirmed**, kept as `todo` tests naming their issue: #2207 (process tools ignore
+  agent and context-memory bounds), #2208 (plugin `getNeighbors` ignores ACL and the turn's
+  boundary, every mode), #1825 (the `kg_graph` walk), #1762 (chat sessions have no owner), and a
+  plugin's turn search in `off`/`enforce` under #2204.
+- The seed mints omadia user ids through identity resolution and links turns to their sender's
+  cluster (run trace), as production does; memories name owners in both id forms.
+- `test/_helpers/scriptedModel.ts` also answers the streaming path.
+
+### Added — memory canary sweep through real turns (memory-ACL test plan, step 3) (2026-11-24)
+
+- **`middleware/test/memoryAccess/canarySweep.ts`.** Every viewer of the memory-access world
+  runs one real turn per context-memory mode (256 turns, in-memory graph, about 10 s). The
+  agent is built by `buildOrchestratorForAgent` with the default-on audience floor; only the
+  model is scripted. It recalls, views every `/memories` path and runs every
+  `query_knowledge_graph` query, then follows every listed file and session. A forbidden
+  canary anywhere in what the model was sent fails the suite; each mode must also deliver
+  allowed canaries through recall, the memory tool and the graph tool. Removing the
+  `userId`/`audienceOwners` filter from any turn search (`searchTurns`,
+  `searchTurnsByEmbedding`, `findEntityCapturedTurns`) turns it red in every mode.
+- **Two leaks confirmed**, kept as `todo` tests until their fixes land:
+  #2204 (`query_knowledge_graph` reads other agents' and other users' chats in `off` and
+  `enforce`, in both registrations) and #2205 (the `enforce-strict` durable recall leg
+  returns private memories). `members` and the memory tool are clean.
+- **Owner decision recorded:** private knowledge always stays private
+  (`docs/security-architecture.md`, context memory). The oracle's `enforce-strict` row for
+  private memories is now documented, not pinned. Tail-only turns are no access rule for
+  session reads (plugin-api `TurnIngest.tailOnly`); the sweep pins that.
+- `test/_helpers/scriptedModel.ts` answers several tool calls in one step and takes an
+  optional responder for requests the queue does not cover.
+
+### Added — memory ACL contract across backends (memory-ACL test plan, step 2) (2026-11-24)
+
+- **`middleware/test/memoryAccess/aclContract.ts`.** For every viewer (user × agent × DM,
+  rooms, web × Privacy Shield, plus another tenant) and every context-memory mode, the
+  memorable-knowledge and excerpt searches are called with the options that mode passes
+  (viewer ACL and `teamVisibility`; `sharedOnly` in `enforce-strict`; `audienceOwners` in
+  `members`; `viewerAgentSlug`; `excludeUnprotected` under a shield). The result must equal
+  the step-1 oracle item for item. Runs on the in-memory graph and on Neon, with team
+  recall on and off. First Postgres test of `sharedOnly`, `viewerAgentSlug`,
+  `shared:<x>` visibility and the operator exception against the ACL SQL.
+- **Result:** both backends match the oracle exactly for every viewer and mode a turn can
+  produce; no store-level leak. Step-1 divergence 3 is confirmed: with `audienceOwners: []`
+  the in-memory graph still returns operator-authored memories and their excerpts, Neon
+  returns none (the contract says an empty audience matches nothing). No turn sends an
+  empty audience today (a `members` turn with an unknown audience skips recall), so it is
+  latent. It stays a running `todo` test, not fixed here. The other divergences sit above
+  the store (recall legs, `query_knowledge_graph`, process memory): steps 3 and later.
+- **Checked that it bites:** an oracle ignoring the origin agent yields 5,008 "missing", one
+  denying team rows 20,160 "leak" mismatches.
+- `PG_TEST_FLOOR` 722 → 727.
+
+### Added — memory-access matrix as code (memory-ACL test plan, step 1) (2026-11-23)
+
+- **`middleware/test/memoryAccess/`.** A fixed world (two tenants, three users, two agents,
+  a DM, two Teams rooms with different members, a context-free web chat) with one canary per
+  item in every store: memorable knowledge (owners × visibility × origin agent × authorship
+  × Privacy-Shield provenance), excerpts, turns, entities, plans, process memory, `/memories`
+  tiers, datasets, topics. `seed.ts` writes it into the in-memory graph and Neon.
+- **Oracle.** `oracle.ts` answers `expected(viewer, mode, item)` for `off`, `enforce`,
+  `enforce-strict` and `members`. Each verdict cites its source. Rows no document decides
+  (default visibility `team`, `KG_RECALL_TEAM_VISIBILITY` on by default, `shared:<x>` on MK,
+  topics and plans unscoped per user, `enforce-strict` and curated memory) are tagged
+  `pinned, not decided`: today's behaviour, not a decision.
+- **Expected divergences** (read from code, not yet run; step 2 confirms or clears them):
+  `query_knowledge_graph` searches the whole tenant in `off`/`enforce`; the durable recall
+  leg skips the `sharedOnly` floor in `enforce-strict`; an empty audience still admits
+  operator rows in-memory but not on Neon; process memory has no agent filter; excerpt-only
+  hits re-check the parent owner-only.
+- **Self-checks.** `world.test.ts` (unique canaries, the oracle answers every combination and
+  discriminates per store, hand-pinned verdicts, in-memory read-back) and `seed.pg.test.ts`
+  (every canary reads back on Neon). `PG_TEST_FLOOR` 721 → 722.
+
 ### Fixed — Builder workspace footer reverted to `IDLE` after a reload following a failed build
 
 2026-11-10. #1737 — reported from the live workspace after an auto-rebuild

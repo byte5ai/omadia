@@ -353,7 +353,21 @@ jobs:
           # (memoryPurgeKg, kgWalkSubgraph, scratchPromotionReaper,
           # recallDerivedUnprotected1536, processProvenance1540,
           # provenanceBackfill1540, memoryPurgeRoute) add 27. Measured ran=721.
-          PG_TEST_FLOOR: '721'
+          # 721 → 722 with the memory-access seed on Neon (memoryAccess/seed.pg,
+          # 1 test); measured ran=722.
+          # 722 → 727 with the memory ACL contract on Neon (memoryAccess/aclContract.pg,
+          # 5 tests); measured ran=727.
+          # 727 → 750 with the memory canary sweep on Neon
+          # (memoryAccess/canarySweep<Mode>.pg, 23 tests); measured ran=750.
+          # 750 → 749: the strict sweep's known-leak test for #2205 folds into
+          # its main assertion once the leak is fixed; measured ran=749.
+          # 749 → 747: the off/enforce known-leak tests for #2204 fold into
+          # the main sweep assertion once the leak is fixed; measured ran=747.
+          # 747 → 743: the four Neon known-leak tests for #2208 fold into the
+          # main sweep assertion once the leak is fixed; measured ran=743.
+          # 743 → 739: the four Neon known-leak tests for #2207 fold into the
+          # main sweep assertion once the leak is fixed; measured ran=739.
+          PG_TEST_FLOOR: '739'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

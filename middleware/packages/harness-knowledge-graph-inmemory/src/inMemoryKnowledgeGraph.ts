@@ -500,10 +500,13 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     const session = this.nodes.get(sessionId);
     if (!session) return null;
     const audience = options?.audienceOwners;
+    const userId = options?.userId;
     const turnIds = (this.sessionTurns.get(sessionId) ?? []).filter(
-      (turnId) => audience === undefined || visibleToAudience(this.nodes.get(turnId), audience),
+      (turnId) =>
+        (audience === undefined || visibleToAudience(this.nodes.get(turnId), audience)) &&
+        (userId === undefined || this.nodes.get(turnId)?.props['userId'] === userId),
     );
-    if (audience !== undefined && turnIds.length === 0) return null;
+    if ((audience !== undefined || userId !== undefined) && turnIds.length === 0) return null;
     const turns = turnIds.map((turnId) => {
       const turnNode = this.nodes.get(turnId);
       const entityIds: string[] = [];
