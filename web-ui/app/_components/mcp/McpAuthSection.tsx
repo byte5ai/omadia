@@ -76,6 +76,10 @@ export function McpAuthSection({
 
   if (!status || !status.protected) return null;
 
+  // A token is stored but no longer works, which is not the same as never
+  // having connected: the row says so and keeps the disconnect action.
+  const tokenInvalid = !status.connected && Boolean(status.tokenInvalid);
+
   async function connect(): Promise<void> {
     setBusy(true);
     setError(null);
@@ -115,6 +119,19 @@ export function McpAuthSection({
     }
   }
 
+  async function disconnect(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await disconnectMcpServer(serverId);
+      await refresh();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveClient(): Promise<void> {
     if (!status?.issuer || clientId.trim() === '') return;
     setBusy(true);
@@ -140,7 +157,9 @@ export function McpAuthSection({
           {status.connected ? (
             <span className="text-[color:var(--success)]">{t('auth.connected')}</span>
           ) : (
-            <span className="text-[color:var(--warning)]">{t('auth.notConnected')}</span>
+            <span className="text-[color:var(--warning)]">
+              {tokenInvalid ? t('auth.expired') : t('auth.notConnected')}
+            </span>
           )}
         </span>
         {/* W2-4 — which acquisition mode this issuer is on. A badge rather than
@@ -170,28 +189,22 @@ export function McpAuthSection({
             {t('auth.modeDcr')}
           </span>
         ) : null}
-        {status.connected ? (
-          <Button
-            size="sm"
-            variant="ghost"
-            busy={busy}
-            onClick={() => {
-              setBusy(true);
-              void disconnectMcpServer(serverId)
-                .then(refresh)
-                .catch((err: unknown) => setError(errText(err)))
-                .finally(() => setBusy(false));
-            }}
-          >
-            {t('auth.disconnect')}
-          </Button>
-        ) : (
+        {status.connected ? null : (
           <Button size="sm" variant="secondary" busy={busy} onClick={() => void connect()}>
             {t('auth.connect')}
           </Button>
         )}
+        {/* A dead token is still a stored one, so it can still be removed. */}
+        {status.connected || tokenInvalid ? (
+          <Button size="sm" variant="ghost" busy={busy} onClick={() => void disconnect()}>
+            {t('auth.disconnect')}
+          </Button>
+        ) : null}
       </div>
-      {!status.connected && !showClientForm ? (
+      {tokenInvalid ? (
+        <div className="text-[11px] text-[color:var(--fg-muted)]">{t('auth.expiredHint')}</div>
+      ) : null}
+      {!status.connected && !tokenInvalid && !showClientForm ? (
         <div className="text-[11px] text-[color:var(--fg-muted)]">
           {status.acquisitionMode === 'cimd'
             ? t('auth.hintCimd')

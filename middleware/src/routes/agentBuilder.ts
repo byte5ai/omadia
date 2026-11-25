@@ -197,6 +197,16 @@ export interface AgentBuilderRouterOptions {
     completeAuthorization(state: string, code: string, iss?: string | null): Promise<{ serverId: string }>;
     setManualClient(issuer: string, clientId: string, clientSecret: string | null): Promise<void>;
     getValidAccessToken(server: McpServerRow, userKey: string): Promise<string | null>;
+    /** #1923 — whether the stored authorization of (server, user) still counts. */
+    tokenState(
+      serverId: string,
+      userKey: string,
+    ): Promise<{
+      connected: boolean;
+      invalid: 'expired' | 'refresh_failed' | 'rejected' | null;
+    }>;
+    /** #1923 — the MCP server refused a call that carried this user's token. */
+    markTokenRejected(serverId: string, userKey: string): Promise<void>;
   };
   readonly mcpOAuthUserKey?: string;
   /** Schema-driven MCP config with Vault-backed secrets (epic #459). */
@@ -375,6 +385,22 @@ export function createAgentBuilderRouter(
       // Discover/test-call surface needs-auth via the route's describeAuth path,
       // so the manager itself doesn't need to synthesize a prompt here.
       onAuthFailure: async (): Promise<string | null> => null,
+      // #1923 — a Discover or test-call that the server answered with 401 must
+      // show up in auth-status, the same way a chat call does.
+      onTokenRejected: async (cfg: McpServerConfig): Promise<void> => {
+        if (!options.mcpOAuth) return;
+        const graph = options.getGraphStore();
+        const server = graph
+          ? (await graph.listMcpServers()).find((s) => s.id === cfg.id)
+          : undefined;
+        if (!server) return;
+        const userKey = resolveMcpUserKey(
+          server,
+          turnContext.current()?.mcpUserKey,
+          options.mcpOAuthUserKey,
+        );
+        if (userKey !== null) await options.mcpOAuth.markTokenRejected(server.id, userKey);
+      },
       ...(options.mcpConfig
         ? {
             getConfigHeaders: (cfg: McpServerConfig): Promise<Record<string, string>> =>
@@ -1951,12 +1977,18 @@ export function createAgentBuilderRouter(
       // W0-1: null under `per_user` with no session identity — report it as
       // not-connected rather than probing the shared operator token.
       const userKey = oauthUserKeyFor(req, server);
+      // #1923 — a stored row is not an authorization: the token may have
+      // expired without a refresh token, or been refused since.
       const token =
-        userKey === null ? undefined : await l.graph.getMcpOAuthToken(server.id, userKey);
+        userKey === null
+          ? { connected: false, invalid: null }
+          : await options.mcpOAuth.tokenState(server.id, userKey);
       const client = desc.issuer ? await l.graph.getMcpOAuthClient(desc.issuer) : undefined;
       res.json({
         protected: true,
-        connected: token !== undefined,
+        connected: token.connected,
+        // Why a stored token no longer counts, null when it is fine or absent.
+        tokenInvalid: token.invalid,
         issuer: desc.issuer,
         issuerHost: desc.issuerHost,
         // W0-1 (D2): whose authority calls to this server act under, and

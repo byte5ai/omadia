@@ -5378,6 +5378,8 @@
     "auth": {
       "connected": "🔓 Autorisiert",
       "notConnected": "🔒 Nicht autorisiert",
+      "expired": "⚠️ Autorisierung abgelaufen",
+      "expiredHint": "Die gespeicherte Autorisierung funktioniert nicht mehr. Sie ist abgelaufen oder wurde beim Anbieter entzogen. Verbinde den Server neu, um sie zu erneuern.",
       "connect": "Verbinden",
       "disconnect": "Trennen",
       "hintBrokered": "Dieser Server bietet automatische Client-Registrierung — einfach verbinden und einloggen, meist ohne Setup. Falls die Registrierung abgelehnt wird, wirst du gebeten, einmalig eine App zu registrieren.",

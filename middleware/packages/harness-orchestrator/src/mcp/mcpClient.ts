@@ -290,6 +290,14 @@ export interface McpAuthProvider {
    */
   onAuthFailure(cfg: McpServerConfig): Promise<string | null>;
   /**
+   * Called when the server itself refused a call that carried the token
+   * `getToken` returned: a thrown transport or JSON-RPC error with an
+   * unauthorized signature. Not called for a tool's own `isError` result,
+   * whose text may quote some other system's 401. The provider records it, so
+   * a status display stops calling that token valid. Optional.
+   */
+  onTokenRejected?(cfg: McpServerConfig): Promise<void>;
+  /**
    * The identity this server's calls act as, for the audit trail (W0-1). Same
    * resolution `getToken` uses, exposed separately so EVERY audited call —
    * including denied ones and calls to servers with no OAuth at all — records
@@ -1147,8 +1155,14 @@ export class McpManager {
     // the request is in flight advances the generation, and the write below
     // then steps aside instead of resurrecting an invalidated entry.
     const purgeGen = this.toolListPurgeGen;
-    const { client } = await this.getOrConnect(await this.withResolvedConfig(cfg), token);
-    const res = await client.listTools();
+    let res: Awaited<ReturnType<McpSession['listTools']>>;
+    try {
+      const { client } = await this.getOrConnect(await this.withResolvedConfig(cfg), token);
+      res = await client.listTools();
+    } catch (err) {
+      await this.noteTokenRejected(cfg, token, msg(err));
+      throw err;
+    }
     const tools = Array.isArray(res?.tools) ? res.tools : [];
     const descriptors = tools.map((t) => ({
       name: String(t.name),
@@ -1340,6 +1354,7 @@ export class McpManager {
           lastFailure = failure;
           continue;
         }
+        await this.noteTokenRejected(cfg, token, failure);
         return this.handleFailure(cfg, toolName, token, failure, startedAt, actingIdentity);
       }
       try {
@@ -1439,11 +1454,30 @@ export class McpManager {
           lastFailure = failure;
           continue;
         }
+        await this.noteTokenRejected(cfg, token, failure);
         return this.handleFailure(cfg, toolName, token, failure, startedAt, actingIdentity);
       }
     }
     // Both attempts hit a transient failure.
     return this.handleFailure(cfg, toolName, token, lastFailure, startedAt, actingIdentity);
+  }
+
+  /**
+   * Tell the auth provider that the server refused the token this call carried.
+   * Only for failures the server threw at us; see `onTokenRejected`. The
+   * provider's bookkeeping must never change what the caller gets back.
+   */
+  private async noteTokenRejected(
+    cfg: McpServerConfig,
+    token: string | null,
+    failure: string,
+  ): Promise<void> {
+    if (token === null || !looksUnauthorized(failure)) return;
+    try {
+      await this.options?.auth?.onTokenRejected?.(cfg);
+    } catch {
+      /* a status mark is not worth failing the call over */
+    }
   }
 
   /**

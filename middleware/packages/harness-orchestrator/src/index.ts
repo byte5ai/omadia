@@ -283,6 +283,7 @@ export type {
   McpConfigField,
   McpDelegation,
   McpOAuthClientAcquisition,
+  McpOAuthTokenInvalidReason,
   McpRegistryRow,
   McpServerInput,
   McpServerRow,

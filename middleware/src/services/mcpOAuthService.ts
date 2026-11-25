@@ -20,7 +20,7 @@ import {
   serverOrigin,
   type DiscoveredAuth,
 } from './mcpAuthDiscovery.js';
-import { McpOAuthClient, type OAuthClientCredentials } from './mcpOAuthClient.js';
+import { McpOAuthClient, McpOAuthError, type OAuthClientCredentials } from './mcpOAuthClient.js';
 import {
   CIMD_CLIENT_NAME,
   CimdReachabilityCache,
@@ -29,7 +29,11 @@ import {
 import { redactedErrorText } from './secretRedaction.js';
 import { substituteMcpConfig } from '../agents/subAgentToolHydration.js';
 
-import type { AgentGraphStore, McpServerRow } from '@omadia/orchestrator';
+import type {
+  AgentGraphStore,
+  McpOAuthTokenInvalidReason,
+  McpServerRow,
+} from '@omadia/orchestrator';
 
 /** Minimal vault surface (matches SecretVault). */
 interface Vault {
@@ -83,6 +87,15 @@ export interface McpAuthDescription {
    *  cautious reading rather than something the server said: `protected: false`
    *  would hide the authorization UI of a server that may well need it. */
   readonly discoveryUnavailable?: boolean;
+}
+
+/** What the stored authorization of one (server, user) is worth (#1923).
+ *  `invalid` names why a stored token no longer counts: `expired` (past its
+ *  expiry with no refresh token), or one of the marks on the row. It is null
+ *  both when the token is fine and when there is none. */
+export interface McpTokenState {
+  readonly connected: boolean;
+  readonly invalid: 'expired' | McpOAuthTokenInvalidReason | null;
 }
 
 export interface BeginAuthResult {
@@ -269,6 +282,11 @@ export class McpOAuthService {
         this.deps.log?.(
           `[mcpOAuth] refresh failed for ${server.name}: ${redactedErrorText(err, [refreshToken])}`,
         );
+        // Only an answer from the token endpoint says the grant is gone. A
+        // timeout or a 5xx leaves the row alone: the next call tries again.
+        if (err instanceof McpOAuthError && err.refused) {
+          await this.markTokenInvalid(server.id, userKey, 'refresh_failed');
+        }
         return (await this.deps.vault.get(VAULT_NS, accessRefKey)) ?? null;
       }
     })().finally(() => {
@@ -277,6 +295,40 @@ export class McpOAuthService {
 
     this.refreshInFlight.set(key, attempt);
     return attempt;
+  }
+
+  /** The MCP server refused a call that carried this user's token (#1923). */
+  async markTokenRejected(serverId: string, userKey: string): Promise<void> {
+    await this.markTokenInvalid(serverId, userKey, 'rejected');
+  }
+
+  /** Bookkeeping for the status display. It never changes the outcome of the
+   *  call that noticed the problem, so a failed write is logged and dropped. */
+  private async markTokenInvalid(
+    serverId: string,
+    userKey: string,
+    reason: McpOAuthTokenInvalidReason,
+  ): Promise<void> {
+    try {
+      await this.deps.graph.markMcpOAuthTokenInvalid(serverId, userKey, reason);
+    } catch (err) {
+      this.deps.log?.(
+        `[mcpOAuth] could not mark the token of server ${serverId} as ${reason}: ${redactedErrorText(err)}`,
+      );
+    }
+  }
+
+  /** Whether (server, user) holds an authorization that still counts, read
+   *  from the stored row alone. Nothing is contacted. */
+  async tokenState(serverId: string, userKey: string): Promise<McpTokenState> {
+    const row = await this.deps.graph.getMcpOAuthToken(serverId, userKey);
+    if (!row) return { connected: false, invalid: null };
+    if (row.invalidReason) return { connected: false, invalid: row.invalidReason };
+    // An expired access token with a refresh token is one refresh away from
+    // working, so it still counts. Without one, nothing can renew it.
+    const expired = row.expiresAt !== null && row.expiresAt.getTime() <= Date.now();
+    if (expired && !row.refreshTokenRef) return { connected: false, invalid: 'expired' };
+    return { connected: true, invalid: null };
   }
 
   /** Start the authorization flow: returns the URL to send the user to. */

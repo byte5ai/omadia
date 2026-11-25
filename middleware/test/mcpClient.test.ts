@@ -299,9 +299,10 @@ describe('McpManager against a live MCP server (W0-5)', () => {
   async function startServer(
     t: { skip: (reason: string) => void },
     seen: Array<{ name: string; input: unknown }> = [],
+    dispatch: ToolDispatchService = fakeDispatch(seen),
   ): Promise<string | undefined> {
     const server = new LoopbackMcpServer({
-      dispatch: fakeDispatch(seen),
+      dispatch,
       bearer: BEARER,
       tools: [
         {
@@ -497,5 +498,112 @@ describe('McpManager against a live MCP server (W0-5)', () => {
       1,
       'a successful reconnect must not invalidate anything further',
     );
+  });
+
+  // #1923 — the provider has to hear about a refused token, or a status display
+  // keeps calling a revoked authorization valid.
+  it('reports a token the server refused on a tool call', async (t) => {
+    const url = await startServer(t);
+    if (!url) return;
+
+    const rejected: string[] = [];
+    manager = new McpManager({
+      auth: {
+        getToken: async () => 'stale-token',
+        onAuthFailure: async () => null,
+        onTokenRejected: async (cfg) => {
+          rejected.push(cfg.id);
+        },
+      },
+    });
+    const cfg = serverConfig(url);
+
+    await manager.callTool(cfg, TOOL, {});
+    assert.deepEqual(rejected, [cfg.id]);
+  });
+
+  it('reports a token the server refused on listTools', async (t) => {
+    const url = await startServer(t);
+    if (!url) return;
+
+    const rejected: string[] = [];
+    manager = new McpManager({
+      auth: {
+        getToken: async () => 'stale-token',
+        onAuthFailure: async () => null,
+        onTokenRejected: async (cfg) => {
+          rejected.push(cfg.id);
+        },
+      },
+    });
+    const cfg = serverConfig(url);
+
+    await assert.rejects(manager.listTools(cfg, { fresh: true }));
+    assert.deepEqual(rejected, [cfg.id]);
+  });
+
+  it('reports nothing when the call carried no token', async (t) => {
+    const url = await startServer(t);
+    if (!url) return;
+
+    let rejected = 0;
+    manager = new McpManager({
+      auth: {
+        getToken: async () => null,
+        onAuthFailure: async () => null,
+        onTokenRejected: async () => {
+          rejected += 1;
+        },
+      },
+    });
+
+    const result = await manager.callTool(serverConfig(url), TOOL, {});
+    assert.match(result, /^Error: could not connect to MCP server "loopback"/);
+    assert.equal(rejected, 0, 'without a token there is no authorization to call broken');
+  });
+
+  it("does not take a tool's own error text for a refused token", async (t) => {
+    // The tool ran and failed downstream. Its result quotes a 401 that is not
+    // about the token this call carried.
+    const downstream = {
+      async dispatch() {
+        return { content: 'the ticket system answered 401 Unauthorized', isError: true };
+      },
+    } as unknown as ToolDispatchService;
+    const url = await startServer(t, [], downstream);
+    if (!url) return;
+
+    let rejected = 0;
+    manager = new McpManager({
+      auth: {
+        getToken: async () => BEARER,
+        onAuthFailure: async () => null,
+        onTokenRejected: async () => {
+          rejected += 1;
+        },
+      },
+    });
+
+    const result = await manager.callTool(serverConfig(url), TOOL, {});
+    assert.match(result, /401 Unauthorized/);
+    assert.equal(rejected, 0);
+  });
+
+  it('a throwing onTokenRejected does not change the result of the call', async (t) => {
+    const url = await startServer(t);
+    if (!url) return;
+
+    manager = new McpManager({
+      auth: {
+        getToken: async () => 'stale-token',
+        onAuthFailure: async () => '🔒 authorize here: https://auth.example/authorize',
+        onTokenRejected: async () => {
+          throw new Error('database is down');
+        },
+      },
+    });
+
+    const result = await manager.callTool(serverConfig(url), TOOL, {});
+    assert.match(result, /authorize here/);
   });
 });

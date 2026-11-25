@@ -7,7 +7,7 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 
-import type { AuthServerMetadata } from './mcpAuthDiscovery.js';
+import { isRetryableStatus, type AuthServerMetadata } from './mcpAuthDiscovery.js';
 import { guardedOutboundFetch, readTextCapped } from './guardedOutboundFetch.js';
 
 /** Token and registration responses are small JSON documents by spec; 256 KB is
@@ -37,6 +37,10 @@ export class McpOAuthError extends Error {
   constructor(
     readonly code: string,
     message: string,
+    /** The endpoint answered and turned the request down. False for everything
+     *  a retry could change (timeout, network, 5xx, 429): only a refusal says
+     *  something about the credential that was sent. */
+    readonly refused = false,
   ) {
     super(message);
     this.name = 'McpOAuthError';
@@ -185,6 +189,7 @@ export class McpOAuthClient {
         `token endpoint returned no access_token${
           typeof doc['error'] === 'string' ? ` (${doc['error']})` : ''
         }`,
+        true,
       );
     }
     const expiresIn = typeof doc['expires_in'] === 'number' ? doc['expires_in'] : null;
@@ -228,7 +233,11 @@ export class McpOAuthClient {
         /* non-JSON body */
       }
       if (!res.ok && !doc['access_token']) {
-        throw new McpOAuthError('token_request_failed', `${url} → ${String(res.status)}: ${text.slice(0, 200)}`);
+        throw new McpOAuthError(
+          'token_request_failed',
+          `${url} → ${String(res.status)}: ${text.slice(0, 200)}`,
+          !isRetryableStatus(res.status),
+        );
       }
       return doc;
     } finally {

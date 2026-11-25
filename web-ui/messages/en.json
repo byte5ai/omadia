@@ -5378,6 +5378,8 @@
     "auth": {
       "connected": "🔓 Authorized",
       "notConnected": "🔒 Not authorized",
+      "expired": "⚠️ Authorization expired",
+      "expiredHint": "The stored authorization no longer works. It expired or was withdrawn at the provider. Connect again to renew it.",
       "connect": "Connect",
       "disconnect": "Disconnect",
       "hintBrokered": "This server advertises automatic client registration — just connect and log in, usually no setup needed. If it declines registration, you'll be asked to register an app once.",

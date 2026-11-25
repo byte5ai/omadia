@@ -3362,6 +3362,18 @@ async function main(): Promise<void> {
                 // `unresolved` when there was none.
                 return auditIdentity(server, turnContext.current()?.mcpUserKey, mcpOAuthUserKey);
               },
+              // #1923 — the server answered 401 to the stored token. Recorded
+              // so the MCP Control Center stops calling it authorized.
+              onTokenRejected: async (cfg: McpServerConfig) => {
+                const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
+                if (!server) return;
+                const userKey = resolveMcpUserKey(
+                  server,
+                  turnContext.current()?.mcpUserKey,
+                  mcpOAuthUserKey,
+                );
+                if (userKey !== null) await mcpOAuthService.markTokenRejected(server.id, userKey);
+              },
               onAuthFailure: async (cfg: McpServerConfig) => {
                 const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
                 if (!server) return null;

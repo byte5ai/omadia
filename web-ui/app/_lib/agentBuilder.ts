@@ -1095,6 +1095,11 @@ export type McpDelegation = 'per_user' | 'service';
 export interface McpAuthStatus {
   protected: boolean;
   connected: boolean;
+  /** Why a stored token no longer counts, so `connected` is false although one
+   *  is stored: it expired with nothing to renew it, the authorization server
+   *  refused the refresh, or the MCP server refused the token. Null when the
+   *  token is fine or there is none. */
+  tokenInvalid?: 'expired' | 'refresh_failed' | 'rejected' | null;
   issuer: string | null;
   issuerHost?: string | null;
   /** A client can be acquired with no operator setup — via a Client ID Metadata
