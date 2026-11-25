@@ -82,6 +82,26 @@ export interface AskOptions {
    * the model gave us.
    */
   maxEscalations?: number;
+  /**
+   * #2214 — the caller gave up on this ask (a stopped builder turn). The
+   * sub-agent stops at its next boundary instead of running on: `LocalSubAgent`
+   * before each model call and before dispatching tools, the CLI sub-agent
+   * before its re-prompt spawn. A model call already in flight is not cut
+   * off. The ask then rejects with an `AbortError`.
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * Throws the `AbortError` an `ask()` rejects with once `AskOptions.signal`
+ * is aborted. A function (not an inline check) so each call site re-reads
+ * the signal instead of TypeScript narrowing `aborted` after the first one.
+ */
+export function throwIfAskAborted(options: AskOptions | undefined, label: string): void {
+  if (options?.signal?.aborted !== true) return;
+  const err = new Error(`[${label}] ask aborted by the caller`);
+  err.name = 'AbortError';
+  throw err;
 }
 
 /**

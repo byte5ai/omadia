@@ -583,3 +583,34 @@ describe('createCliSubAgent expectedTurnToolUse post-turn check (#1072)', () => 
     assert.equal(inputs.length, 2);
   });
 });
+
+describe('createCliSubAgent AskOptions.signal (#2214)', () => {
+  it('spawns nothing once the signal is aborted', async () => {
+    const { agent, inputs } = scriptedSubAgent([{ answer: 'unused' }]);
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(agent.ask('q', undefined, { signal: controller.signal }), {
+      name: 'AbortError',
+    });
+    assert.equal(inputs.length, 0);
+  });
+
+  it('skips the obligation re-prompt after an abort during the first spawn', async () => {
+    const controller = new AbortController();
+    const { agent, inputs } = scriptedSubAgent([
+      { events: [{ type: 'text_delta', text: 'Ich baue.' }], answer: 'Ich baue.' },
+      fillSlotSpawn('never'),
+    ]);
+    const observer: AskObserver = {
+      onTokenChunk: () => controller.abort(),
+    };
+    await assert.rejects(
+      agent.ask('build it', observer, {
+        expectedTurnToolUse: 'fill_slot',
+        signal: controller.signal,
+      }),
+      { name: 'AbortError' },
+    );
+    assert.equal(inputs.length, 1);
+  });
+});

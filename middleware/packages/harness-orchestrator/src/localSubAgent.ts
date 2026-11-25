@@ -7,7 +7,7 @@ import type {
 import { appendLimitSignalNote, isUnknownOutcomeToolErrorNotice } from '@omadia/plugin-api';
 import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import { isProviderWideFailure, streamMessageWithObserver } from './streaming.js';
-import type { AskObserver, AskOptions } from './tools/domainQueryTool.js';
+import { throwIfAskAborted, type AskObserver, type AskOptions } from './tools/domainQueryTool.js';
 import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
 import {
   remaskEchoedValues,
@@ -204,6 +204,8 @@ export class LocalSubAgent {
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
         lastIteration = iteration;
+        // #2214 — the caller stopped this ask: no further model call.
+        throwIfAskAborted(options, `sub-agent ${this.name}`);
         // Observer callbacks must never bubble; a buggy listener should not kill
         // the turn. Log and swallow in every branch.
         try {
@@ -446,6 +448,9 @@ export class LocalSubAgent {
         // follows starts with a complete (assistant-tool_use → user-
         // tool_result) pair and the loop's existing mechanisms (max
         // iterations, repeat-failure detection) bound the recovery.
+
+        // #2214 — stopped while the model call ran: dispatch no tool of it.
+        throwIfAskAborted(options, `sub-agent ${this.name}`);
 
         // Defensive phase emit: stream-side helper already flips to
         // 'tool_running' when it sees a tool_use content_block_start, but

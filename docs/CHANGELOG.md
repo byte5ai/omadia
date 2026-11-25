@@ -36,6 +36,34 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Builder: one turn per draft, and Stop ends the turn on the server (#2214)
+
+2026-11-25. Since #1899 a builder turn keeps running after a disconnect, but
+nothing stopped a second turn on the same draft, and Stop only dropped the
+browser connection (#1804). Now:
+
+- `POST /drafts/:id/turn` admits one running turn per draft (AutoFix turns
+  included). A second request answers `409 builder.turn_in_progress` with the
+  running `turnId`; the chat re-attaches to that turn through the resume
+  endpoint and gives the unsent message back. Rejecting instead of queueing:
+  a queued message would run against a spec the operator has not seen yet,
+  and the request would stay open for up to the 15-minute turn timeout.
+- `POST /drafts/:id/turn/:turnId/stop` aborts the turn and waits up to 25 s
+  for it to end (`stopped` / `stopping` / `not_running`). The turn waits for
+  tool calls already running (up to 20 s), refuses every later one, cancels
+  its open choice cards, still delivers the patches it made and ends with a
+  `builder.turn_stopped` frame; it writes no assistant entry. The sub-agent
+  stops at its next model-call boundary (`AskOptions.signal`); a model call
+  already in flight runs out, but cannot change the draft. Chat and AutoFix
+  turns use the same abort for their timeout (`builder.turn_timeout`).
+- The Stop button calls that endpoint and unlocks the input once the turn has
+  ended.
+- A detached turn whose ring-buffer `finalize()` throws no longer causes an
+  unhandled rejection, and its draft lock is released regardless.
+
+The lock is in memory, like the ring buffer: a turn does not survive a
+restart, and neither does its lock.
+
 ### Security — Conductor-Webhook-Hardening (#1707)
 
 2026-11-17. Fünf Lücken der Webhook-Oberfläche, die zusammen entscheiden, was

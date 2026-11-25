@@ -179,6 +179,20 @@ export class UserChoiceCoordinator {
     return true;
   }
 
+  /**
+   * Cancel every pending choice of one draft (#2214). Used when the turn
+   * that asked is stopped: its card must not stay clickable, and a click
+   * must not resume a turn the operator ended. Returns how many it cancelled.
+   */
+  cancelForDraft(draftId: string): number {
+    let cancelled = 0;
+    for (const entry of Array.from(this.pending.values())) {
+      if (entry.choice.draftId !== draftId) continue;
+      if (this.cancel({ draftId, choiceId: entry.choice.choiceId })) cancelled += 1;
+    }
+    return cancelled;
+  }
+
   /** Test-only: number of live pending choices. */
   pendingCount(): number {
     return this.pending.size;
