@@ -11288,3 +11288,39 @@ Spec 2042 §5.10, ADR-0014/0017. Folgt auf S3b (#2152).
 - **integration-odoo:** eigenes `undici` mit `ODOO_INSECURE_TLS=true` umgeht
   die Egress-Prüfung, als Residualrisiko dokumentiert,
   byte5ai/omadia-integration-odoo#10.
+
+## Conductor-Vorschau: Agent-Schritte als Turn ohne Tools (#2217, 2026-11-25)
+
+Entscheidung: [ADR 0043](adr/0043-draft-previews-run-agent-steps-as-tool-less-turns.md).
+Ersetzt den Platzhalter aus #2007.
+
+- **`ChatTurnInput.toolsOff`** (channel-sdk 0.3.15): Turn ohne jedes Tool.
+  Nur vertrauenswürdige In-Process-Aufrufer setzen es, nie Kanal-Input.
+  Gemeinsame Helfer in `packages/harness-orchestrator/src/toolsOffTurn.ts`.
+  - Beide Tool-Loops: `tools: []` (auch für den Fallback-Provider), keine
+    Consult-Pflicht, kein File-Retry, kein Card-Router, `TOOLS_OFF_DIRECTIVE`
+    im per-Turn-Hint. Ein trotzdem gesendeter Tool-Call wird vor dem Dispatch
+    abgewiesen (`ToolsOffViolationError`), der Turn scheitert.
+  - `onBeforeTurn` feuert nicht. Sonst würde der Plan-Runner über die
+    Prozess-Wiederverwendung Plan-Knoten schreiben, obwohl `planHint: 'direct'`
+    gesetzt ist.
+  - `cliChatAgent`: kein Loopback-MCP-Server, kein `memory`-Binding, eine
+    mcp-config ohne Server, kein `--allowedTools`. Das Gate aus
+    `buildCliToolGateArgv` bleibt unverändert.
+  - Fast Path: `passThroughReason` → `'system'`.
+  - Verifier und Facilitator geben das Feld per Spread weiter
+    (`withCorrectionHint` ist getestet). Der Verifier darf für seine
+    Belegprüfung weiter lesend auf Odoo zugreifen.
+- **Conductor:** `StepMeta.preview` → `RealStepEffects` ruft `chat({ userMessage,
+  toolsOff: true })` **ohne `sessionScope`** auf. Dadurch entstehen keine
+  Transkript-Zeile, kein Graph-Turn und kein Recall. Es gibt kein `startTyping`
+  und kein `say`. Das Ergebnis trägt `previewed: true` und bei `say`-Schritten
+  `say: 'skipped_in_preview'`. `previewRun` deckelt Agent-Schritte auf
+  `MAX_PREVIEW_AGENT_STEPS` (25) und endet danach mit `max_steps_exceeded`. Ein
+  Agent-Schritt, der wirft, ist wieder der Fehlergrund der Vorschau.
+  Action-Schritte bleiben gestubbt.
+- **Offen:** Ein Häkchen „Agent-Schritte simulieren“ in der Vorschau-UI
+  (Folge-Issue). Die Effects-Schnittstelle schlägt offen fehl: Eine weitere
+  `StepEffects`-Implementierung muss `meta.preview` selbst beachten. Der
+  stabile System-Prompt beschreibt die Tools weiter, nur der per-Turn-Hint
+  widerspricht ihm.

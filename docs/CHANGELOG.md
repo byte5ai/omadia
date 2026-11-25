@@ -36,6 +36,23 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — Conductor-Vorschau führt Agent-Schritte als Turn ohne Tools aus (#2217)
+
+2026-11-25. Eine Draft-Vorschau ersetzt Agent-Schritte nicht mehr durch einen
+Platzhalter (#2007), sondern lässt den Agenten echt antworten, aber ohne jedes
+Werkzeug: kein Connector, kein Memory, keine Sub-Agents, keine Chat-Nachricht,
+kein Tipp-Indikator, kein Transkript-Eintrag. Bedingungen auf `stepResult.text`
+und `stepResult.data` routen in der Vorschau dadurch wie im echten Lauf. Ein
+Agent-Schritt, der wirft, ist wieder der Fehlergrund der Vorschau statt eines
+500. Eine Vorschau führt höchstens 25 Agent-Schritte aus. Action-Schritte bleiben simuliert. Jede Vorschau mit Agent-Schritten
+verursacht damit Modellkosten im Budget des Agenten (ADR 0017).
+
+Neues Vertragsfeld `ChatTurnInput.toolsOff` (`@omadia/channel-sdk` 0.3.15,
+additiv): beide Orchestrator-Tool-Loops senden keine Tools und verweigern einen
+trotzdem gesendeten Tool-Aufruf vor dem Dispatch, die `claude-cli`-Runtime
+startet ohne Loopback-MCP-Server, der Fast Path reicht den Turn ungeprüft
+durch. Entscheidung: [ADR 0043](adr/0043-draft-previews-run-agent-steps-as-tool-less-turns.md).
+
 ### Security — Conductor-Webhook-Hardening (#1707)
 
 2026-11-17. Fünf Lücken der Webhook-Oberfläche, die zusammen entscheiden, was
