@@ -143,3 +143,7 @@ data structure, and every defect above falls out of it directly.
 - Tests: `middleware/test/mcpPool.test.ts`,
   `middleware/test/mcpPoolInvalidationRoutes.test.ts`.
 - Deferred to #540: the SDK upgrade and the stateless per-call HTTP transport.
+
+## Errata
+
+- 2026-11-25: `middleware/test/mcpPoolInvalidationRoutes.test.ts` never existed. The invalidation tests are in `middleware/test/mcpPool.test.ts` ("MCP server mutations invalidate the pooled connection (#563)").
