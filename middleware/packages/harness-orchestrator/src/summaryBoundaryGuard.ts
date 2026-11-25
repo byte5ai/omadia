@@ -17,7 +17,7 @@
 import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
 import { getBoundaryPreset, type DataPlanVerdict, type ProfileQualityConfig } from '@omadia/plugin-api';
-import { recordUsage } from '@omadia/usage-telemetry';
+import { recordUsage, usageTokensFromLlm } from '@omadia/usage-telemetry';
 import { VERDICT_JUDGE_MAX_TOKENS, VERDICT_JUDGE_REASONING } from './classifierBudgets.js';
 import { parseJudgeVerdict } from './identityGuard/llmJudge.js';
 
@@ -71,10 +71,7 @@ export function createLlmSummaryJudge(options: {
         source: 'summary-boundary-guard',
         model: options.model,
         provider: options.provider.id,
-        inputTokens: res.usage.inputTokens,
-        outputTokens: res.usage.outputTokens,
-        cacheReadTokens: res.usage.cacheReadTokens ?? 0,
-        cacheCreationTokens: res.usage.cacheWriteTokens ?? 0,
+        ...usageTokensFromLlm(res.usage),
       });
       // No verdict (an empty reply) is a failed check, not a broken rule:
       // it throws, and the guard refuses as "the boundary check failed".

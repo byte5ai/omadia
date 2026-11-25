@@ -52,7 +52,7 @@ initUsageRecorder({
 
 /** Column order of the INSERT in `recorder.ts`. */
 const COL = { source: 0, model: 1, inputTokens: 2, cacheCreationTokens: 5, sessionId: 8, turnId: 10, provider: 11 };
-const COLS = 13;
+const COLS = 14;
 
 async function flushedRows(): Promise<(readonly unknown[])[]> {
   await flushUsageRecorder();

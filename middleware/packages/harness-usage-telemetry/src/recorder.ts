@@ -224,10 +224,11 @@ export async function flush(): Promise<void> {
   if (!pool || buffer.length === 0) return;
   const rows = buffer.splice(0, FLUSH_MAX_BATCH);
 
-  // Build a single parameterised multi-row INSERT: 13 columns per row
+  // Build a single parameterised multi-row INSERT: 14 columns per row
   // (OM-103 added `reference_cost_usd`, graph migration 0032; #1098 added
-  // `turn_id`/`provider`/explicit `created_at`, graph migration 0033).
-  const cols = 13;
+  // `turn_id`/`provider`/explicit `created_at`, graph migration 0033; the
+  // 1-hour cache-write split `cache_creation_1h_tokens`, graph migration 0036).
+  const cols = 14;
   const valuesSql = rows
     .map((_, i) => {
       const b = i * cols;
@@ -251,6 +252,7 @@ export async function flush(): Promise<void> {
       r.turnId ?? null,
       r.provider ?? null,
       r.occurredAt,
+      Math.min(r.cacheCreationTokens, Math.max(0, r.cacheCreation1hTokens ?? 0)),
     );
   }
 
@@ -259,7 +261,7 @@ export async function flush(): Promise<void> {
       `INSERT INTO token_usage
          (source, model, input_tokens, output_tokens,
           cache_read_tokens, cache_creation_tokens, cost_usd, tenant_id, session_id,
-          reference_cost_usd, turn_id, provider, created_at)
+          reference_cost_usd, turn_id, provider, created_at, cache_creation_1h_tokens)
        VALUES ${valuesSql}`,
       params,
     );
@@ -268,7 +270,7 @@ export async function flush(): Promise<void> {
     if (!warnedFlushError) {
       warnedFlushError = true;
       console.warn(
-        '[usage-telemetry] flush failed — dropping batch (have graph migrations 0028 + 0032 + 0033 run?):',
+        '[usage-telemetry] flush failed — dropping batch (have graph migrations 0028 + 0032 + 0033 + 0036 run?):',
         err instanceof Error ? err.message : err,
       );
     }

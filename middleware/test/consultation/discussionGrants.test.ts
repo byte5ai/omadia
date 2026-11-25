@@ -110,8 +110,15 @@ describe('discussions need mutual consultation grants', () => {
       return sites;
     });
     assert.equal(callSites.length, 1, 'one production call site');
-    assert.match(callSites[0]!, /\bmutualGrant:/);
-    assert.match(callSites[0]!, /consultationStore\.hasMutualGrants\(/);
+    assert.match(callSites[0]!, /\bmutualGrant: discussionMutualGrant\b/);
     assert.match(callSites[0]!, /\bpeerGate\b/);
+    // ADR-0018 — one grant check, shared with the Conductor wiring (operator
+    // route and every utterance), backed by the consultation store.
+    const index = readFileSync(join(srcRoot, 'index.ts'), 'utf8');
+    assert.match(
+      index,
+      /const discussionMutualGrant = async[\s\S]{0,400}?consultationStore\.hasMutualGrants\(/,
+    );
+    assert.match(index, /wireConductor\(\{[\s\S]{0,200}?mutualGrant: discussionMutualGrant\b/);
   });
 });

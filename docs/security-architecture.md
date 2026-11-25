@@ -872,6 +872,14 @@ not read).
   lets the request through, so it never takes the kernel's own network down.
   `GET /api/v1/admin/model-gateway` lists what the gateway and the guard
   refused since boot.
+- **Builder previews** (`src/platform/previewEgressRoots.ts`, ADR-0017) are
+  guarded the same way: while a preview is open its extract is a root of its
+  own (`preview:<agentId>#n`, never the installed plugin's id) with the draft
+  manifest's `permissions.network.outbound` hosts, `public-web` only for a
+  `web_scanner` draft in that audit mode, and never a model plugin. Code
+  anywhere else under the previews directory (a closed preview whose timers
+  still run, a stale extract) has no network at all. `$config.*` hosts of a
+  draft manifest are not resolved in preview.
 
 Residual risks of the sandbox (in-process, a policy, not a boundary against
 hostile code): a plugin that imports its own `undici` or opens sockets with
@@ -2098,12 +2106,18 @@ finalized.
 - On the public MCP endpoint a sub-agent cannot correct itself from an inner
   error hint, since the gate withholds that text, and the endpoint has no
   sub-agent dataset bridge: the sub-agent's answer is interned again as data.
-- A plugin tool that asks a model itself through `ctx.llm` sends its request
-  as it built it, on every entry point: the accessor consults no privacy
-  handle. Only the tool's result crosses the shield (handoff §13).
+- A plugin tool that asks a model itself through `ctx.llm` inside a guarded
+  turn has its request masked by the accessor (`pluginLlmPrivacy.ts`,
+  ADR-0017): the turn's masked values are re-masked always, the detectors run
+  when `mask_user_prompt` is on, and a `blocked` outcome refuses the call. The
+  answer is restored before the plugin reads it. Outside a turn (jobs, routes)
+  the request still goes out as the plugin built it.
 - The subscription-CLI path has no Privacy Shield at all (§3a, #1087): its
   loopback dispatcher runs without a privacy handle, so both carriers pass raw
-  there.
+  there. Since ADR-0017 was enforced for it, a CLI turn is therefore refused
+  whenever a privacy guard is installed, not only under the org clamp
+  (`CliChatAgent.refusedByPolicy`, `CLI_PRIVACY_GUARD_ACTIVE_LOG`); the CLI
+  runs unmasked only on an instance without a guard.
 - C0 detects no names; C1 does when it is configured. Without C1 a returned
   error keeps a name that stands in running prose, or in a record the
   classifier does not recognise as one: positional fields
@@ -2437,10 +2451,10 @@ requests, and only there, the shield acts on four kinds of text:
   restore runs only when the provider implements both methods (privacy guard
   0.13.0); an older provider keeps giving tools the surrogates. Residuals: a
   tool that echoes the value in another form (an abbreviation, a translation)
-  is not re-masked, a plugin tool that hands its input to a model through
-  `ctx.llm` sends that model the real value, as it would with the setting
-  off, and the subscription-CLI path does not restore (its tools keep the
-  surrogates).
+  is not re-masked, and the subscription-CLI path does not restore (its
+  tools keep the surrogates). A plugin tool that hands its input to a model
+  through `ctx.llm` inside the turn has it re-masked by the accessor
+  (`pluginLlmPrivacy.ts`).
 
 **Surrogate edge cases (#1528, #1529).** Restore (`resolvePromptPseudonyms`,
 `promptSurrogates.ts`) also maps back a surrogate the model rewrote: in any
@@ -3022,7 +3036,8 @@ These tool results skip the digest:
   instance still boots, and the admin UI and the store keep working, so the
   guard can be repaired; only chat answers with the refusal until it is back.
   A turn on the subscription CLI (`claude-cli`), which has no shield, is
-  refused the same way under the clamp, before the child is spawned
+  refused the same way under the clamp, and whenever a privacy guard is
+  installed (ADR-0017), before the child is spawned
   (`CliChatAgent`, `cliPrivacyShieldRequiredAnswer`). Its answer names the
   cause and the API-key provider as the fix, in the turn's language
   (`Orchestrator.noticeLocale`, `en*` → English, else German), and every
@@ -3119,11 +3134,13 @@ masks text only, so it reads no image block. In-tree these are:
   `@omadia/orchestrator-extras`. With a privacy guard running the scorer masks
   it through a stored-text scope (#1540, "Memory jobs" above). The plugin's other memory jobs mask what they
   send (see "Memory jobs" above).
-- **Plugin requests through `ctx.llm`.** A plugin that holds the `llm`
-  permission sends its `ctx.llm` requests itself, and the accessor
-  (`createLlmAccessor`, `src/platform/pluginContext.ts`) consults no privacy
-  handle, so a request reaches the provider as the plugin built it (§6c,
-  residuals). In-tree, the canvas composer sends the user's message, or the
+- **Plugin requests through `ctx.llm`.** Inside a guarded turn the accessor
+  (`createLlmAccessor`, `src/platform/pluginContext.ts`) masks the system
+  prompt and every message through the turn's privacy handle before the
+  request leaves and restores the answer (`pluginLlmPrivacy.ts`, ADR-0017):
+  the turn's masked values always, the detectors with `mask_user_prompt` on,
+  fail-closed on `blocked`. Outside a turn the request reaches the provider
+  as the plugin built it (§6c, residuals). In-tree, the canvas composer sends the user's message, or the
   serialised UI action, to its composition model before the turn starts
   (`composeSkeleton`, `omadia-ui-orchestrator/src/composition.ts`). With a
   privacy guard running that text goes through the guard's stored-text scope
@@ -7556,6 +7573,46 @@ rules are the kernel's, not the plugin's bookkeeping:
 Private replies: `replyToMessageId` is a channel statement; the plugin binds a reply only to
 a private message it sent that very person (outbox row with `target_principal`), so a forged
 reference to someone else's message binds nothing.
+
+## 10zb. The ADMIN_TOKEN surface sits before the session gate (2026-11-25)
+
+`/api/admin/*` (memory priming and inspection, `security/screening`, `run-trace`;
+`routes/admin.ts`) authenticates with `Authorization: Bearer <ADMIN_TOKEN>`, not
+with a session. It used to be mounted after the blanket `/api` session gate
+(OB-106) and was not a public path, so every bearer request got the gate's
+`401 auth.missing` before the token was compared: the surface was unreachable,
+live too.
+
+**What holds now** (`routes/adminTokenMount.ts`, mounted in `index.ts` before
+the public-path mount and the `/api` gate):
+
+1. `ADMIN_TOKEN` unset, empty or whitespace → nothing is mounted; `/api/admin/*`
+   meets the session gate like any `/api` path.
+2. Only a request that **presents** a bearer credential (scheme matched
+   case-insensitively) is claimed. Every other request calls `next()` and meets
+   the gate unchanged, so the session-authenticated neighbour
+   `/api/admin/domains` keeps its own auth.
+3. A claimed request is terminal. Wrong token → 401. Right token → served by
+   the admin router; a path it does not serve → 404; a handler error → the
+   terminal JSON error handler. It never travels on into the session stack, so
+   the token opens `/api/admin/*` admin routes only, not `/api/admin/domains`
+   and not `/api/v1/admin/*`.
+4. Audit-first: each use writes `admin_token.use` (actor `system:admin-token`,
+   target `admin-api:<METHOD> <path>`) **before** the route runs; a failed
+   write refuses the request with 503. A DB-less boot has no trail and logs
+   the use instead. Wrong tokens are logged each time and written as
+   `admin_token.refused` at most once a minute. Token and body never reach the
+   trail or the log.
+5. The compare runs over SHA-256 digests with `timingSafeEqual`, so neither the
+   token's content nor its length leaks through timing.
+6. Deliberately **not** a `publicPaths` entry: that would wave the whole prefix
+   through the gate's `next()`, including when no token is configured.
+
+**Residual:** there is no rate limiter on wrong tokens; a long random token is
+the defence. A client that sends both a session cookie and an unrelated bearer
+header to `/api/admin/domains` is claimed by this mount (401/404). The surface
+has no user or whitelist management, so it is not a way out of an
+`ADMIN_ALLOWED_EMAILS` lockout.
 
 ## 11. Reviewer checklist
 

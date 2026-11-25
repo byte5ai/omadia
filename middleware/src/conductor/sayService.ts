@@ -55,6 +55,13 @@ export interface ConductorSayInput {
   channelType: string;
   conversationId: string;
   text: string;
+  /**
+   * ADR-0018 — the cast of a discussion run (`ctx.participants`). When set,
+   * the speaker must still hold mutual consultation grants with every other
+   * participant at THIS utterance; a revoked grant refuses it (`not_granted`)
+   * and the step ends the run. Absent for patterns that are not discussions.
+   */
+  participants?: readonly string[];
 }
 
 export type ConductorSayOutcome =
@@ -71,6 +78,7 @@ export type ConductorSayOutcome =
         | 'no_provider'
         | 'no_identity'
         | 'peer_disabled'
+        | 'not_granted'
         | 'channel_error';
       message: string;
     };
@@ -96,6 +104,9 @@ export interface ConductorSayDeps {
    * (no store wired), which is the pre-W1 behaviour.
    */
   peerGate?: (channelType: string, conversationId: string, agentSlug: string) => Promise<boolean>;
+  /** ADR-0018 — the same mutual-grant check the discussion start makes,
+   *  re-evaluated per utterance of a discussion. Absent = no check. */
+  mutualGrant?: (agentSlugA: string, agentSlugB: string, channelType: string) => Promise<boolean>;
   log?: (msg: string) => void;
 }
 
@@ -122,6 +133,30 @@ export function formatUtterance(text: string): string {
 
 export class ConductorSayService {
   constructor(private readonly deps: ConductorSayDeps) {}
+
+  /** ADR-0018 — the first other participant `agentSlug` lacks mutual grants
+   *  with; a failed lookup counts as missing (fail closed). `undefined` when
+   *  all hold or no grant check is wired. */
+  async ungrantedPartner(
+    agentSlug: string,
+    channelType: string,
+    participants: readonly string[],
+  ): Promise<string | undefined> {
+    const check = this.deps.mutualGrant;
+    if (!check) return undefined;
+    for (const other of participants) {
+      if (other === agentSlug) continue;
+      const granted = await check(agentSlug, other, channelType).catch(() => false);
+      if (!granted) return other;
+    }
+    return undefined;
+  }
+
+  private firstUngrantedPartner(input: ConductorSayInput): Promise<string | undefined> {
+    return input.participants
+      ? this.ungrantedPartner(input.agentSlug, input.channelType, input.participants)
+      : Promise.resolve(undefined);
+  }
 
   /**
    * Show the chat that this agent is composing, until the returned stop is
@@ -257,6 +292,19 @@ export class ConductorSayService {
         said: false,
         reason: 'peer_disabled',
         message: `agent '${input.agentSlug}' is not enabled for agent-to-agent conversation in ${input.channelType}/${conversationId} — an operator switched it off for the agent or for this chat`,
+      };
+    }
+
+    // A REVOKED GRANT BITES AT THE NEXT UTTERANCE, like the peer switch.
+    const ungranted = await this.firstUngrantedPartner(input);
+    if (ungranted !== undefined) {
+      this.deps.log?.(
+        `[conductor] say by '${input.agentSlug}' into ${input.channelType}/${conversationId} refused: no mutual consultation grant with '${ungranted}' (run ${input.runId})`,
+      );
+      return {
+        said: false,
+        reason: 'not_granted',
+        message: `agents '${input.agentSlug}' and '${ungranted}' no longer hold consultation grants for each other — the discussion ends`,
       };
     }
 

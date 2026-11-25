@@ -51,7 +51,7 @@ initUsageRecorder({
 } as unknown as Pool);
 
 /** Column count and order of the INSERT in `recorder.ts`. */
-const COLS_PER_ROW = 13;
+const COLS_PER_ROW = 14;
 const COL = {
   source: 0,
   model: 1,

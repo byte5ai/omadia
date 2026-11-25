@@ -12,11 +12,13 @@ export {
   type UsageTokens,
   CACHE_READ_MULTIPLIER,
   CACHE_WRITE_MULTIPLIER,
+  CACHE_WRITE_1H_MULTIPLIER,
   priceForModel,
   hasKnownPrice,
   computeCostUsd,
   computeCacheSavingsUsd,
   normalizeUsage,
+  usageTokensFromLlm,
 } from './pricing.js';
 
 export {

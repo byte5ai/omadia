@@ -21,6 +21,7 @@ import type {
   LlmStreamEvent,
   LlmUsage,
 } from '@omadia/llm-provider';
+import { usageTokensFromLlm } from './pricing.js';
 import { providerRecordsOwnUsage, recordUsage } from './recorder.js';
 
 export interface UsageTrackingOptions {
@@ -48,12 +49,7 @@ function record(
       // the verifier scorers run after that scope has closed and stay NULL.
       // The provider id is known here at the boundary.
       provider: providerId,
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      // Neutral usage names cacheWriteTokens what the recorder calls
-      // cacheCreationTokens; both default to 0 when the provider omits them.
-      cacheReadTokens: usage.cacheReadTokens ?? 0,
-      cacheCreationTokens: usage.cacheWriteTokens ?? 0,
+      ...usageTokensFromLlm(usage),
     });
   } catch {
     // Telemetry must never disturb the call.

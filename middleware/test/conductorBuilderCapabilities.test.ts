@@ -115,7 +115,12 @@ function registryReturning(text: string, calls: string[] = []): () => Orchestrat
     agent: { slug: 'fallback', name: 'Fallback' },
     built: { bundle: { agent: { chat: async (args: { userMessage: string }) => { calls.push(args.userMessage); return { text }; } } } },
   };
-  return () => ({ get: (slug: string) => (slug === 'fallback' ? entry : undefined), list: () => [entry] }) as unknown as OrchestratorRegistry;
+  return () =>
+    ({
+      instanceDefaultSlug: () => 'fallback',
+      get: (slug: string) => (slug === 'fallback' ? entry : undefined),
+      list: () => [entry],
+    }) as unknown as OrchestratorRegistry;
 }
 
 describe('ConductorBuilderAgent capability + people fields', () => {
