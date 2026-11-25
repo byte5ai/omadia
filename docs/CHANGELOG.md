@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Added — memory canary sweep over topics and duplicates (memory-ACL test plan, step 3) (2026-11-25)
+
+- `canaryHttp.test.ts` also calls `/api/v1/admin/topics` and `/api/v1/admin/duplicates`
+  (memories and excerpts, lists and every id) as every person of both tenants. Both filter
+  per viewer although they sit under `/admin`. Near-duplicate markers are seeded across owners.
+- Duplicates are clean (removing the viewer from the detail hydration turns the sweep red).
+- **Leak confirmed:** #1851, topic names and descriptions built from memories the caller
+  cannot read; kept as a `todo` naming the issue, next to #1762.
+- Purge preview (counts only), promote and operator memory contexts take no viewer and stay
+  operator-only by design; recorded in the test header.
+
 ### Security — Conductor-Webhook-Hardening (#1707)
 
 2026-11-17. Fünf Lücken der Webhook-Oberfläche, die zusammen entscheiden, was

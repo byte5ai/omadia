@@ -4,21 +4,43 @@
  * a leak. Positive control: every route that returns content delivers the
  * caller's own canaries. (`/:id/audit` returns owner lists, not content.)
  *
- * The admin, operator and dev routes are not here: every account is an
- * administrator today (`adminUsers.ts`), so they are operator-only by design.
+ * Topics and duplicates live under `/api/v1/admin/*` but filter per viewer,
+ * so they are swept like the personal routes. The other admin, operator and
+ * dev routes take no viewer: every account is an administrator today
+ * (`adminUsers.ts`), so they are operator-only by design. Purge preview
+ * returns counts only; promote copies between an agent's tiers.
  *
- * Known leak, kept as `todo` until its fix: #1762 (chat sessions have no
- * owner; every account lists and reads every web chat tab).
+ * Known leaks, kept as `todo` until their fix: #1762 (chat sessions have no
+ * owner; every account lists and reads every web chat tab) and #1851 (topic
+ * names and descriptions are built from every account's memories and shown
+ * to every account).
  */
 import { strict as assert } from 'node:assert';
 import { before, describe, it } from 'node:test';
 
 import { seedInMemory } from './backends.js';
-import { sweepHttp, type HttpRoute, type HttpSighting } from './canaryHttp.js';
+import { seedDuplicates, sweepHttp, type HttpRoute, type HttpSighting } from './canaryHttp.js';
 import type { Seeded } from './seed.js';
 import { USER_KEYS, buildWorld, type TenantKey, type UserKey } from './world.js';
 
-const CHAT_SESSIONS_HAVE_NO_OWNER = (s: HttpSighting): boolean => s.route.startsWith('GET /api/chat/');
+interface KnownLeak {
+  readonly issue: string;
+  readonly title: string;
+  readonly matches: (s: HttpSighting) => boolean;
+}
+
+const KNOWN_LEAKS: readonly KnownLeak[] = [
+  {
+    issue: '#1762',
+    title: "chat sessions show only the caller's own tabs",
+    matches: (s) => s.route.startsWith('GET /api/chat/'),
+  },
+  {
+    issue: '#1851',
+    title: 'topics show no content of memories the caller cannot read',
+    matches: (s) => s.route.startsWith('GET /api/v1/admin/topics') && s.item.store === 'topic',
+  },
+];
 
 const CONTENT_ROUTES: readonly HttpRoute[] = [
   'GET /api/chat/sessions',
@@ -29,6 +51,12 @@ const CONTENT_ROUTES: readonly HttpRoute[] = [
   'GET /api/v1/memory',
   'GET /api/v1/memory/:id',
   'GET /api/v1/memory/:id/excerpts',
+  'GET /api/v1/admin/topics',
+  'GET /api/v1/admin/topics/:id',
+  'GET /api/v1/admin/duplicates',
+  'GET /api/v1/admin/duplicates/:id',
+  'GET /api/v1/admin/duplicates/excerpts',
+  'GET /api/v1/admin/duplicates/excerpts/:id',
 ];
 
 function report(who: string, leaks: readonly HttpSighting[]): string {
@@ -44,8 +72,11 @@ describe('memory access — canary sweep over the per-person REST routes', () =>
 
   before(async () => {
     seeded = await seedInMemory(buildWorld());
+    const duplicates = await seedDuplicates(seeded);
     for (const tenant of ['main', 'other'] as const) {
-      for (const user of USER_KEYS) swept.set(`${tenant}/${user}`, await sweepHttp(seeded, tenant, user));
+      for (const user of USER_KEYS) {
+        swept.set(`${tenant}/${user}`, await sweepHttp(seeded, tenant, user, duplicates));
+      }
     }
   });
 
@@ -54,8 +85,8 @@ describe('memory access — canary sweep over the per-person REST routes', () =>
       const who = `${tenant}/${user}`;
       const sightings = (): HttpSighting[] => swept.get(who) ?? [];
 
-      it(`${who}: no forbidden canary in any response, apart from the known leak`, () => {
-        const leaks = sightings().filter((s) => !s.verdict.allowed && !CHAT_SESSIONS_HAVE_NO_OWNER(s));
+      it(`${who}: no forbidden canary in any response, apart from the known leaks`, () => {
+        const leaks = sightings().filter((s) => !s.verdict.allowed && !KNOWN_LEAKS.some((k) => k.matches(s)));
         assert.deepEqual(leaks, [], report(who, leaks));
       });
 
@@ -64,10 +95,12 @@ describe('memory access — canary sweep over the per-person REST routes', () =>
         assert.deepEqual([...routes].sort(), [...CONTENT_ROUTES].sort());
       });
 
-      it(`${who}: known leak #1762: chat sessions show only the caller's own tabs`, { todo: '#1762' }, () => {
-        const leaks = sightings().filter((s) => !s.verdict.allowed && CHAT_SESSIONS_HAVE_NO_OWNER(s));
-        assert.deepEqual(leaks, [], report(who, leaks));
-      });
+      for (const k of KNOWN_LEAKS) {
+        it(`${who}: known leak ${k.issue}: ${k.title}`, { todo: k.issue }, () => {
+          const leaks = sightings().filter((s) => !s.verdict.allowed && k.matches(s));
+          assert.deepEqual(leaks, [], report(who, leaks));
+        });
+      }
     }
   }
 });
