@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 
 import type { SecretVault } from '../secrets/vault.js';
 
@@ -17,14 +17,52 @@ import type { SecretVault } from '../secrets/vault.js';
 export const CONDUCTOR_VAULT_AGENT_ID = 'core:conductor';
 
 const inboundSecretKey = (endpointId: string): string => `webhook-endpoint/${endpointId}/secret`;
+/** Issue #1707 — the secret a rotation superseded, kept VALID until the endpoint's
+ *  `secret_previous_until` deadline so a rotation is not an instant outage for the
+ *  sender. Its own vault key: the current secret must never be ambiguous. */
+const inboundPreviousSecretKey = (endpointId: string): string => `webhook-endpoint/${endpointId}/secret.previous`;
+
+/**
+ * Advisory-lock namespace for one endpoint's SECRET LIFECYCLE — rotation and the lazy
+ * cleanup of a lapsed grace (issue #1707 review finding).
+ *
+ * Those two are the only writers of the `(secret_previous_until, previous vault key)`
+ * pair, and the pair spans two stores, so no single transaction can make a write to
+ * both atomic. Serialising the two writers is what makes the pair consistent instead:
+ * without it, a rotation that had written the new previous key but not yet stamped the
+ * deadline could be observed by a reader still seeing the PREVIOUS rotation's lapsed
+ * deadline — the reader's cleanup then deleted the key the rotation had just written
+ * and the grace window silently vanished (the sender got 401s for an hour it was
+ * promised).
+ *
+ * Deliberately its own namespace rather than the one-arg `hashtext(endpointId)` space
+ * `claim()` locks: an operator's rotation must never block the inbound delivery hot
+ * path for the same endpoint. The two-arg `pg_advisory_xact_lock(int4, int4)` overload
+ * takes this constant plus `hashtext(endpointId)`, so the two lock spaces cannot
+ * collide. The number is the issue.
+ */
+const SECRET_LIFECYCLE_LOCK_NAMESPACE = 1707;
 
 export interface ConductorWebhookEndpoint {
   endpointId: string;
   eventId: string;
   description: string | null;
   enabled: boolean;
+  /** Issue #1707 — while this is in the future, the secret the last rotation
+   *  superseded still verifies, so the operator can reconfigure the sender without
+   *  an outage. NULL once the grace has lapsed (or if nothing was ever rotated).
+   *  Returned to the admin UI so the window is visible, never the secret itself. */
+  secretPreviousUntil: Date | null;
   createdBy: string;
   createdAt: Date;
+}
+
+/** Issue #1707 — the secrets an inbound request may verify against: the current one,
+ *  plus the superseded one while its rotation grace is still open. Both are tried in
+ *  constant time; neither presence nor absence is ever reported to the caller. */
+export interface WebhookVerificationSecrets {
+  current?: string;
+  previous?: string;
 }
 
 export type WebhookInboundOutcome =
@@ -112,6 +150,7 @@ interface EndpointRow {
   event_id: string;
   description: string | null;
   enabled: boolean;
+  secret_previous_until: Date | null;
   created_by: string;
   created_at: Date;
 }
@@ -129,6 +168,7 @@ function toEndpoint(r: EndpointRow): ConductorWebhookEndpoint {
     eventId: r.event_id,
     description: r.description,
     enabled: r.enabled,
+    secretPreviousUntil: r.secret_previous_until,
     createdBy: r.created_by,
     createdAt: r.created_at,
   };
@@ -167,7 +207,7 @@ export class ConductorWebhookEndpointStore {
     const r = await this.pool.query<EndpointRow>(
       `INSERT INTO conductor_webhook_endpoints (endpoint_id, event_id, description, created_by)
        VALUES ($1, $2, $3, $4)
-       RETURNING endpoint_id, event_id, description, enabled, created_by, created_at`,
+       RETURNING endpoint_id, event_id, description, enabled, secret_previous_until, created_by, created_at`,
       [endpointId, input.eventId, input.description ?? null, input.createdBy],
     );
     await this.vault.set(CONDUCTOR_VAULT_AGENT_ID, inboundSecretKey(endpointId), secret);
@@ -176,7 +216,7 @@ export class ConductorWebhookEndpointStore {
 
   async list(): Promise<ConductorWebhookEndpoint[]> {
     const r = await this.pool.query<EndpointRow>(
-      `SELECT endpoint_id, event_id, description, enabled, created_by, created_at
+      `SELECT endpoint_id, event_id, description, enabled, secret_previous_until, created_by, created_at
          FROM conductor_webhook_endpoints ORDER BY created_at DESC`,
     );
     return r.rows.map(toEndpoint);
@@ -185,7 +225,7 @@ export class ConductorWebhookEndpointStore {
   /** Metadata only — NEVER returns the secret. */
   async get(endpointId: string): Promise<ConductorWebhookEndpoint | null> {
     const r = await this.pool.query<EndpointRow>(
-      `SELECT endpoint_id, event_id, description, enabled, created_by, created_at
+      `SELECT endpoint_id, event_id, description, enabled, secret_previous_until, created_by, created_at
          FROM conductor_webhook_endpoints WHERE endpoint_id = $1`,
       [endpointId],
     );
@@ -198,11 +238,143 @@ export class ConductorWebhookEndpointStore {
     return this.vault.get(CONDUCTOR_VAULT_AGENT_ID, inboundSecretKey(endpointId));
   }
 
-  /** Replace the signing secret. Returns the new plaintext secret ONCE. */
-  async rotateSecret(endpointId: string): Promise<string> {
+  /**
+   * Replace the signing secret, keeping the superseded one valid for `graceMs`
+   * (issue #1707). Returns the new plaintext secret ONCE.
+   *
+   * Before this, rotation was an instant outage: the sender's very next request
+   * carried the old secret and got a 401, with no window in which both secrets
+   * worked, so a rotation could only be done by stopping the sender first. Now the
+   * old secret is copied to its own vault key and `secret_previous_until` is stamped
+   * `now() + graceMs`; `getVerificationSecrets` accepts either until that deadline.
+   *
+   * `graceMs <= 0` keeps the old behaviour (immediate cutover) and is the right
+   * choice for the one case that needs it: rotating BECAUSE the old secret leaked.
+   * The old key is then deleted rather than stored, so a leaked secret is not kept
+   * around in the vault for an hour.
+   */
+  async rotateSecret(endpointId: string, graceMs = 0): Promise<string> {
     const secret = mintSecret();
-    await this.vault.set(CONDUCTOR_VAULT_AGENT_ID, inboundSecretKey(endpointId), secret);
-    return secret;
+    // Under the secret-lifecycle lock (see SECRET_LIFECYCLE_LOCK_NAMESPACE): the
+    // deadline and the previous vault key live in different stores, so the lock —
+    // not a transaction — is what keeps the lazy cleanup from observing this
+    // rotation half-done and deleting the key it just wrote. It also serialises two
+    // concurrent rotations of the same endpoint, so the second one supersedes the
+    // first's secret rather than both reading the same original.
+    return this.withSecretLifecycleLock(endpointId, async (client) => {
+      const superseded = graceMs > 0 ? await this.vault.get(CONDUCTOR_VAULT_AGENT_ID, inboundSecretKey(endpointId)) : undefined;
+      if (superseded !== undefined) {
+        // ORDER IS LOAD-BEARING (review finding). The lock keeps the cleanup out, but
+        // `getVerificationSecrets` READS without it, so every intermediate state here
+        // is observable by a delivery in flight. Park the superseded secret and stamp
+        // its deadline BEFORE swapping the current key: that way no instant exists in
+        // which the deadline still says "no grace" while the current key already holds
+        // the new secret — which is precisely the window where the old secret would
+        // answer 401 despite the grace that was just granted. Written the other way
+        // round, the grace promised the operator an hour and the sender lost it for a
+        // few milliseconds of every rotation.
+        await this.vault.set(CONDUCTOR_VAULT_AGENT_ID, inboundPreviousSecretKey(endpointId), superseded);
+        await client.query(
+          `UPDATE conductor_webhook_endpoints
+              SET secret_previous_until = now() + make_interval(secs => $2), updated_at = now()
+            WHERE endpoint_id = $1`,
+          [endpointId, graceMs / 1000],
+        );
+        await this.vault.set(CONDUCTOR_VAULT_AGENT_ID, inboundSecretKey(endpointId), secret);
+      } else {
+        // No grace: nothing this call leaves behind may still verify — otherwise a
+        // zero-grace "the secret leaked" rotation would leave an EARLIER rotation's
+        // secret live. Here the order is the mirror image, for the mirror reason: kill
+        // the deadline FIRST, so no delivery in flight can still be handed a previous
+        // secret while we are tearing it down.
+        await client.query(
+          `UPDATE conductor_webhook_endpoints SET secret_previous_until = NULL, updated_at = now()
+            WHERE endpoint_id = $1`,
+          [endpointId],
+        );
+        await this.vault.deleteKey(CONDUCTOR_VAULT_AGENT_ID, inboundPreviousSecretKey(endpointId));
+        await this.vault.set(CONDUCTOR_VAULT_AGENT_ID, inboundSecretKey(endpointId), secret);
+      }
+      return secret;
+    });
+  }
+
+  /**
+   * The secrets an inbound request may verify against. The previous secret is read
+   * only while `secret_previous_until` is still in the future — so the common case
+   * (no rotation in flight) costs exactly one vault read, and a lapsed grace is
+   * cleaned up ONCE (key deleted, deadline NULLed) rather than re-evaluated on every
+   * request. Absent endpoint ⇒ `{}`, which fails verification exactly like a wrong
+   * secret does; the route must keep answering both with the same 401.
+   */
+  async getVerificationSecrets(endpointId: string): Promise<WebhookVerificationSecrets> {
+    const r = await this.pool.query<{ previous_live: boolean | null; has_previous: boolean | null }>(
+      `SELECT (secret_previous_until IS NOT NULL AND secret_previous_until > now()) AS previous_live,
+              (secret_previous_until IS NOT NULL)                                  AS has_previous
+         FROM conductor_webhook_endpoints WHERE endpoint_id = $1`,
+      [endpointId],
+    );
+    const row = r.rows[0];
+    if (!row) return {};
+    const current = await this.vault.get(CONDUCTOR_VAULT_AGENT_ID, inboundSecretKey(endpointId));
+    if (row.previous_live !== true) {
+      // Lapsed, or never rotated. `has_previous` gates the cleanup so the common case
+      // takes no lock and writes nothing: this is one write per rotation, not one per
+      // request. Best-effort — a failed prune leaves a key the deadline already
+      // refuses to accept, so it must never fail the delivery being verified.
+      if (row.has_previous === true) await this.pruneLapsedPreviousSecret(endpointId).catch(() => undefined);
+      return current === undefined ? {} : { current };
+    }
+    const previous = await this.vault.get(CONDUCTOR_VAULT_AGENT_ID, inboundPreviousSecretKey(endpointId));
+    return {
+      ...(current === undefined ? {} : { current }),
+      ...(previous === undefined ? {} : { previous }),
+    };
+  }
+
+  /**
+   * Drop a LAPSED grace: NULL the deadline and delete the superseded secret.
+   *
+   * Two things make this safe against a concurrent rotation (issue #1707 review
+   * finding — the previous version deleted the key a rotation had just written):
+   * it runs under the secret-lifecycle lock, and it re-checks `<= now()` INSIDE that
+   * lock. A rotation that stamped a fresh future deadline while this call waited for
+   * the lock therefore fails the predicate, the UPDATE matches no row, and the vault
+   * key the rotation just wrote is left alone. The vault delete is conditional on
+   * that UPDATE having matched, so the two stores can only ever be cleared together.
+   */
+  private async pruneLapsedPreviousSecret(endpointId: string): Promise<void> {
+    await this.withSecretLifecycleLock(endpointId, async (client) => {
+      const r = await client.query(
+        `UPDATE conductor_webhook_endpoints SET secret_previous_until = NULL
+          WHERE endpoint_id = $1
+            AND secret_previous_until IS NOT NULL
+            AND secret_previous_until <= now()`,
+        [endpointId],
+      );
+      if ((r.rowCount ?? 0) > 0) {
+        await this.vault.deleteKey(CONDUCTOR_VAULT_AGENT_ID, inboundPreviousSecretKey(endpointId));
+      }
+    });
+  }
+
+  /** Run `fn` holding this endpoint's secret-lifecycle advisory lock. The lock is
+   *  transaction-scoped, so it is released by the COMMIT/ROLLBACK and cannot leak
+   *  past a thrown callback. */
+  private async withSecretLifecycleLock<T>(endpointId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [SECRET_LIFECYCLE_LOCK_NAMESPACE, endpointId]);
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async setEnabled(endpointId: string, enabled: boolean): Promise<void> {
@@ -215,6 +387,9 @@ export class ConductorWebhookEndpointStore {
   async delete(endpointId: string): Promise<void> {
     await this.pool.query(`DELETE FROM conductor_webhook_endpoints WHERE endpoint_id = $1`, [endpointId]);
     await this.vault.deleteKey(CONDUCTOR_VAULT_AGENT_ID, inboundSecretKey(endpointId));
+    // #1707 — a rotation in grace leaves a second key behind; it must die with the
+    // endpoint, or a recreated endpoint id could inherit a live secret.
+    await this.vault.deleteKey(CONDUCTOR_VAULT_AGENT_ID, inboundPreviousSecretKey(endpointId));
   }
 
   // ── inbound delivery ledger (dedupe + audit) ──────────────────────────────

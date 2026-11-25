@@ -89,6 +89,7 @@ import {
   createTeamsAppPackageAssetLoader,
 } from './services/teamsAppPackageAssets.js';
 import { createBotPresenceStore } from './conductor/botPresenceStore.js';
+import { defaultChannelBotKeyFrom } from './conductor/channelBotOwnership.js';
 import { createChatPeerAgentsProvider, createPeerGate } from './conductor/peerPolicy.js';
 import { wireConductor, AwaitNotFoundError, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore, ambientTurnFrom, createDiscussionsCapability, bindEphemeralRunsToCaller } from './conductor/index.js';
 import { createMissReportRoutes } from './privacy/missReportRoutes.js';
@@ -395,7 +396,7 @@ import {
   EntraProvider,
 } from './auth/providers/EntraProvider.js';
 import { runAuthBootstrap } from './auth/bootstrap.js';
-import { AdminAuditLog, auditActorFromLabel, roleChangeAuditEntry, systemAuditActor, type AuditEntryInput } from './auth/adminAuditLog.js';
+import { AdminAuditLog, auditActorFromLabel, roleChangeAuditEntry, systemAuditActor, webhookChangeAuditEntry, type AuditEntryInput } from './auth/adminAuditLog.js';
 import {
   PlatformSettingsStore,
   SETTING_AUTH_ACTIVE_PROVIDERS,
@@ -665,7 +666,12 @@ import { PgObservedInvitePersistence } from './platform/observedInvitePersistenc
 import { startEphemeralAttachmentSweep } from './platform/ephemeralAttachmentSweep.js';
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
 import type { AggregateHolderLookup, ChannelRegistry, ChannelBindingResolver } from '@omadia/channel-sdk';
-import type { AgentIdentityProvider, ChannelReadinessProvider, MeetingSourceProvider } from '@omadia/channel-sdk';
+import type {
+  AgentIdentityProvider,
+  ChannelReadinessProvider,
+  DefaultChannelKeyProvider,
+  MeetingSourceProvider,
+} from '@omadia/channel-sdk';
 import { InMemoryDisclosureSeenStore, normalizeAgentIdentityKey, RoleSourceRegistry, type GrantStore } from '@omadia/channel-sdk';
 import { DynamicChannelPluginResolver } from './channels/dynamicChannelResolver.js';
 import type { TurnDispatcher } from './channels/coreApi.js';
@@ -691,17 +697,6 @@ import type {
   ChatSessionStore,
   DomainTool,
 } from '@omadia/orchestrator';
-
-// Phase 5B: structural shims for kernel-side reads of plugin-published
-// services. These replace direct type-imports from the 5 byte5-internal
-// plugins (`@omadia/integration-confluence`, `@omadia/integration-odoo`,
-// `@omadia/integration-microsoft365`, `@omadia/channel-teams`,
-// `@omadia/channel-telegram`) which are removed in this commit. The
-// kernel only ever reads the small subset of fields below; full plugin
-// types stay inside the plugins.
-interface Microsoft365AccessorShim {
-  readonly app: unknown;
-}
 
 /** Escape a value for safe inclusion inside a double-quoted XML/HTML attribute
  *  (used for the <mcp-auth-required> chat block, #459 W9). */
@@ -1014,6 +1009,12 @@ async function main(): Promise<void> {
   // Spec 2042 §5.3 — channel plugins that run one bot per agent.
   const agentIdentityProviderRegistry = new ChannelProviderRegistry<AgentIdentityProvider>(
     'agentIdentity',
+    registryLog,
+  );
+  // The default bot of a channel that runs no identity provider (Teams, whose
+  // agent bots the kernel provisions into `agent_teams_identities`).
+  const defaultChannelKeyRegistry = new ChannelProviderRegistry<DefaultChannelKeyProvider>(
+    'defaultChannelKey',
     registryLog,
   );
   // #330 C2a — kernel-side invite index: subscribes directly at the hub (before
@@ -2537,9 +2538,6 @@ async function main(): Promise<void> {
   // now constructed inside the @omadia/orchestrator plugin's
   // activate() — they're orchestrator-internal concerns, no kernel-side
   // consumer left them.
-  const ms365IntegrationId = 'de.byte5.integration.microsoft365';
-  const calendarAgentId = 'de.byte5.agent.calendar';
-
   // #796 (epic #470 C9 / G3) — core's own base schema, applied by core,
   // BEFORE any plugin activates and independent of every provider key.
   //
@@ -2567,7 +2565,7 @@ async function main(): Promise<void> {
   // Activate tool / extension / integration plugins FIRST. Their
   // activate() populates nativeToolRegistry + pluginRouteRegistry +
   // serviceRegistry (incl. the MemoryStore provided by @omadia/memory
-  // and the Microsoft365Accessor provided by de.byte5.integration.microsoft365).
+  // and the Microsoft365Accessor provided by @omadia/integration-microsoft365).
   // Agents below consume these services through ctx, so the tool runtime
   // must run before the agent runtime.
   // #2042 — `humanNames@1`: the active users' names, so an agent's own name a
@@ -3095,34 +3093,6 @@ async function main(): Promise<void> {
     // honest remaining causes are "plugin missing" or "no provider at all".
     console.log(
       '[middleware] fact extractor DISABLED (orchestrator-extras plugin missing, or no LLM provider assigned to the orchestrator / this plugin and no anthropic_api_key)',
-    );
-  }
-
-  // Calendar tools (find_free_slots + book_meeting) are constructed by the
-  // @omadia/orchestrator plugin's activate() against the
-  // microsoft365.graph capability. The kernel-side log lines below only
-  // describe the wiring status of the integration + calendar agent — the
-  // tools themselves live plugin-internal.
-  if (installedRegistry.has(ms365IntegrationId)) {
-    const microsoft365 = serviceRegistry.get<Microsoft365AccessorShim>(
-      'microsoft365.graph',
-    );
-    if (microsoft365 && installedRegistry.has(calendarAgentId)) {
-      console.log(
-        '[middleware] sub-agent calendar ready (find_free_slots + book_meeting wired plugin-side, credentials=vault)',
-      );
-    } else if (microsoft365) {
-      console.log(
-        '[middleware] sub-agent calendar DISABLED (de.byte5.agent.calendar not installed — integration ready but tools not wired)',
-      );
-    } else {
-      console.log(
-        '[middleware] microsoft365 integration installed but accessor not in service registry — activate() failed? calendar tools DISABLED',
-      );
-    }
-  } else {
-    console.log(
-      '[middleware] microsoft365 integration DISABLED (de.byte5.integration.microsoft365 not installed — set MICROSOFT_APP_* in .env for auto-bootstrap, or install via /store)',
     );
   }
 
@@ -3860,7 +3830,14 @@ async function main(): Promise<void> {
   // itself must still be registered here, before express.json(), for the raw-body HMAC
   // verification to ever see real request bytes once Conductor IS wired.
   app.use(createConductorWebhooksInboundRouter(() => conductorWebhookInboundDepsRef));
-  console.log('[middleware] conductor webhook inbound router mounted at /api/hooks/:endpointId (raw-body, before express.json)');
+  // #1707 — the mount line used to print identically whether or not the kill switch
+  // was on, so a `CONDUCTOR_WEBHOOKS_ENABLED=false` install looked healthy in the log
+  // while every inbound delivery was being dropped. State goes in the line.
+  console.log(
+    `[middleware] conductor webhook inbound router mounted at /api/hooks/:endpointId (raw-body, before express.json) — inbound deliveries ${
+      config.CONDUCTOR_WEBHOOKS_ENABLED ? 'ENABLED' : 'DISABLED (CONDUCTOR_WEBHOOKS_ENABLED=false; every request answers 503)'
+    }`,
+  );
 
   // `verify` records the RAW byte count (see `http/rawBodySize.ts`). Route-level
   // size gates downstream can only measure `JSON.stringify(req.body)`, which is
@@ -5669,19 +5646,11 @@ async function main(): Promise<void> {
       app,
       requireAuth,
       getRegistry,
-      // The deployment's own Teams bot — the Microsoft 365 integration's app
-      // id, which channel-teams serves as its default bot. Read per call, so
-      // an operator's change applies without a restart. Only this explicitly
-      // configured bot may route to its binding / the fallback agent in the
-      // Conductor; any other unknown bot stays refused.
-      // Other channels: the plugin's own default bot (`agentIdentities@1`).
-      defaultChannelBotKey: (channelType) => {
-        if (channelType !== 'teams') return agentIdentityProviderRegistry.get(channelType)?.defaultChannelKey?.();
-        const raw = installedRegistry.get(ms365IntegrationId)?.config?.['microsoft_app_id'];
-        const appId =
-          typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : config.MICROSOFT_APP_ID;
-        return appId ? `28:${appId}` : undefined;
-      },
+      // The channel's own default bot, as its plugin names it per call
+      // (`agentIdentities@1`, or the default-key provider of a channel without
+      // one, Teams). Only this bot may route to its binding / the fallback
+      // agent in the Conductor; any other unknown bot stays refused.
+      defaultChannelBotKey: defaultChannelBotKeyFrom([agentIdentityProviderRegistry, defaultChannelKeyRegistry]),
       // People directory union for the builder's person suggestions + `GET /people`.
       searchPeople: (query, opts) => peopleDirectoryRegistry.search(query, opts),
       peopleChannelTypes: () => peopleDirectoryRegistry.types(),
@@ -5733,6 +5702,19 @@ async function main(): Promise<void> {
         await adminAudit?.record(roleChangeAuditEntry(entry));
       },
       webhooksEnabled: config.CONDUCTOR_WEBHOOKS_ENABLED,
+      // #1707 — webhook administration lands in the admin trail. Closure, not the
+      // instance, for the same reason as auditRoleChange: `adminAudit` is constructed
+      // further down this block and the route only dereferences it at request time.
+      auditWebhookChange: async (entry) => {
+        // #775 — the mapping (and the "an email must never reach the uuid actor_id
+        // column" rule) lives in webhookChangeAuditEntry so it is testable.
+        await adminAudit?.record(webhookChangeAuditEntry(entry));
+      },
+      webhookTimestampToleranceMs: config.CONDUCTOR_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS * 1000,
+      webhookRequireTimestamp: config.CONDUCTOR_WEBHOOK_REQUIRE_TIMESTAMP,
+      webhookSecretGraceMs: config.CONDUCTOR_WEBHOOK_SECRET_GRACE_SECONDS * 1000,
+      webhookPayloadRetentionDays: config.CONDUCTOR_WEBHOOK_PAYLOAD_RETENTION_DAYS,
+      webhookDeliveryRetentionDays: config.CONDUCTOR_WEBHOOK_DELIVERY_RETENTION_DAYS,
       // #330 — guardrails for agent-generated ephemeral workflows (env-tunable).
       ephemeral: {
         defaultTtlMs: config.CONDUCTOR_EPHEMERAL_DEFAULT_TTL_MS,
@@ -7915,6 +7897,7 @@ async function main(): Promise<void> {
     readinessProviders: readinessProviderRegistry,
     meetingSources: meetingSourceRegistry,
     agentIdentities: agentIdentityProviderRegistry,
+    defaultChannelKeys: defaultChannelKeyRegistry,
     sessionCapabilities: sessionCapabilityHub,
     // #1086 — the channel-agnostic producer of the routines principal, for
     // every channel that drives its turn through `handleTurnStream` (in-tree:
@@ -7977,6 +7960,7 @@ async function main(): Promise<void> {
     readinessProviders: readinessProviderRegistry,
     meetingSources: meetingSourceRegistry,
     agentIdentities: agentIdentityProviderRegistry,
+    defaultChannelKeys: defaultChannelKeyRegistry,
   });
   channelPluginIdsRef.current = () => channelRegistry.activeIds();
   channelRegistryRef = channelRegistry;

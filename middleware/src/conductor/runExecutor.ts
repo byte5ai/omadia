@@ -6,6 +6,7 @@ import type { JsonObject, JsonValue, Step, WorkflowGraph } from '@omadia/conduct
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRun, ConductorRunStore, TriggerKind } from './runStore.js';
 import { RunLeaseLostError } from './runStore.js';
+import { isTimerAwait } from './awaitStore.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { StepEffects } from './stepEffects.js';
 import { canonicalizePrincipalId } from './principalId.js';
@@ -670,15 +671,15 @@ export class ConductorRunExecutor {
     const fallback = aw.fallbackTransitionId ? graph.transitions.find((tr) => tr.id === aw.fallbackTransitionId) : undefined;
     // #330 C3 — a timer expiry is the step doing exactly its job, not a
     // missed deadline; the actor says so, and the trace stays honest.
-    const actor: JsonValue = aw.principalKind === 'timer' ? { kind: 'timer', ticked: true } : { kind: 'human', timedOut: true };
+    const actor: JsonValue = isTimerAwait(aw) ? { kind: 'timer', ticked: true } : { kind: 'human', timedOut: true };
     // A timer expiring is the step working as designed — 'unmet' would lie.
-    const expiredOutcome = aw.principalKind === 'timer' ? 'n/a' : 'unmet';
+    const expiredOutcome = isTimerAwait(aw) ? 'n/a' : 'unmet';
     // #1699 — a human deadline passing unanswered is a cause worth recording, on
     // the fallback path too (the run can end `completed` and the operator still
     // needs to know nobody answered). A TIMER expiring is the step doing exactly
     // its job — same reasoning as `expiredOutcome` above — so it records none.
     const expiryError: ConductorRunError | null =
-      aw.principalKind === 'timer'
+      isTimerAwait(aw)
         ? null
         : runError(
             'await_timed_out',
@@ -712,7 +713,7 @@ export class ConductorRunExecutor {
    * Dry-run / preview (US8 / FR-029): simulate the workflow path in memory with NO persistence
    * and NO side effects — no conductor_runs/awaits rows, no real notification, no durable await.
    * Human steps are answered inline (supplied `humanResponses[stepId]`, default `{approved:true}`);
-   * agent steps run a real turn; action steps are stubbed (irreversible connector actions are not
+   * agent and action steps are stubbed (irreversible connector actions and LLM turns are not
    * executed). Returns the full simulated step path so the operator gains confidence before activating.
    */
   async previewRun(slug: string, payload: JsonObject, humanResponses: Record<string, JsonValue> = {}): Promise<PreviewResult> {
@@ -776,16 +777,8 @@ export class ConductorRunExecutor {
         result = normalizeHumanResult(humanResponses[stepId] ?? { approved: true }, step.human?.strictApproval === true);
         actor = 'human (inline)';
       } else if (step.kind === 'agent') {
-        // A rehearsal must report a throwing agent step, not 500 the preview route.
-        try {
-          const exec = await this.effects.runAgentStep(step, context, { runId: `preview:${slug}` });
-          result = exec.result;
-        } catch (err) {
-          error = runErrorFromThrow(err, { stepKind: step.kind, ref: step.agentId ?? null });
-          this.log(`[conductor] preview '${slug}' step '${stepId}' threw: ${error.message ?? '(no message)'}`);
-          break;
-        }
-        actor = `agent:${step.agentId ?? '?'}`;
+        result = { simulated: true, agentId: step.agentId ?? null };
+        actor = `agent (stubbed):${step.agentId ?? '?'}`;
       } else {
         result = { simulated: true, actionId: step.actionId ?? null };
         actor = `action (stubbed):${step.actionId ?? '?'}`;

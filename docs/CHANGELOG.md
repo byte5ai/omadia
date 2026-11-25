@@ -36,6 +36,182 @@ changelog.
 
 ## [Unreleased]
 
+### Security — Conductor-Webhook-Hardening (#1707)
+
+2026-11-17. Fünf Lücken der Webhook-Oberfläche, die zusammen entscheiden, was
+den Server verlässt und was ein Operator hinterher rekonstruieren kann.
+
+**Breaking:** Der Run-`context` (jedes Step-Ergebnis, inklusive Freitext aus
+Freigaben) verlässt den Server nur noch, wenn eine Subscription ihn explizit
+anfordert. `conductor_webhook_subscriptions.include_context` ist für **alle**
+Rows `false`, auch bestehende — ein Empfänger, der bisher still Step-Ergebnisse
+bekam, bekommt sie bis zum Einschalten in der Admin-UI (oder per `POST
+…/subscriptions/:id/payload-scope`) nicht mehr. Die Projektion läuft vor dem
+Schreiben der Delivery-Row, der Kontext landet also auch nicht mehr in
+`conductor_webhook_deliveries.payload`.
+
+Außerdem: Retention für gespeicherte Payloads (Redaktion nach
+`CONDUCTOR_WEBHOOK_PAYLOAD_RETENTION_DAYS=30`, Löschen terminaler Rows nach
+`CONDUCTOR_WEBHOOK_DELIVERY_RETENTION_DAYS=180`); neun `admin_audit`-Actions für
+Endpoint-/Subscription-Lifecycle (vorher keine einzige Row auf `%webhook%`);
+ein Replay-Fenster über `X-Webhook-Timestamp` mit Signatur über
+`<timestamp>.<body>` (`CONDUCTOR_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS=300`,
+`CONDUCTOR_WEBHOOK_REQUIRE_TIMESTAMP=false` schließt den Legacy-Pfad);
+Secret-Rotation mit Gnadenfrist (`CONDUCTOR_WEBHOOK_SECRET_GRACE_SECONDS=3600`,
+`?immediate=true` für den Leak-Fall); und ein sichtbarer Kill-Switch — mit
+`CONDUCTOR_WEBHOOKS_ENABLED=false` antwortet Inbound jetzt `503
+webhook.inbound_disabled` statt `200 {"outcome":"disabled"}`, die Boot-Zeile
+nennt den Zustand, `GET /api/v1/operator/conductors/webhooks/posture` liefert
+ihn samt geltender Fenster, und die Admin-Seite zeigt ihn als Banner.
+
+Kleine API-Änderung aus dem Review: `POST …/webhooks/{endpoints,subscriptions}/:id/status`
+antwortet für eine unbekannte Id jetzt `404` statt `204` — vorher wurde dafür
+sogar eine `admin_audit`-Row über eine nie passierte Zustandsänderung
+geschrieben. DELETE antwortet für eine unbekannte Id ebenfalls `404` (#1706) und
+auditiert nur, wenn es wirklich etwas gelöscht hat.
+
+Migration `src/conductor/migrations/0015_webhook_hardening.sql`
+(`include_context`, `secret_previous_until`, Retention-Index). Details:
+Handoff „Conductor Webhooks — Hardening (#1707)", `docs/security-architecture.md`
+§7d.
+
+### Fixed — a workflow from a template can be activated in the UI (#1711)
+
+- A workflow instantiated from a template without "Workflow sofort aktivieren" is created
+  `disabled`, and every run start then refuses with 409 `conductor.disabled`. The route that
+  flips it (`POST /api/v1/operator/conductors/:slug/status`, 204) had no caller in the web UI:
+  the workflow list printed the status as text and "Starten" surfaced the raw 409, so the only
+  way out of the default state was a hand-written API call. The list row now carries an
+  Activate/Deactivate button, and the status is rendered localized ("active"/"inactive")
+  instead of the wire value.
+- The three refusals of the run-start route — `conductor.disabled`, `conductor.not_published`
+  (409) and `conductor.not_found` (404) — now read as sentences that say what to do; the
+  disabled one points at the switch on the row. Any other failure keeps the generic sentence
+  and carries the server's text as a detail line below it, so no raw `… failed: 409` is ever
+  the primary message. Same for a failed await response, which shares that slot.
+
+### Fixed — Timer-Awaits erscheinen nicht mehr in der Operator-Inbox (#1712)
+
+2026-11-24.
+- **Operator-Inbox:** Ein auf einem Timer-Step geparkter Lauf schrieb eine
+  Await-Zeile mit `principal_kind = 'timer'`, und „Wartende Human-Steps" zeigte
+  sie mit Freigeben/Ablehnen. Ein Timer hat keinen Holder, deshalb antwortete
+  `POST /conductors/awaits/<id>/respond` darauf immer mit
+  403 `conductor.await_forbidden`. `listWaiting` filtert Timer-Awaits jetzt
+  heraus; auf den Tick wirkt allein der Deadline-Poll. Gefiltert wird auf den
+  Principal, nicht auf den `timer`-Channel — die Inbox bleibt channel-agnostisch.
+  Der geparkte Lauf ist danach nur noch über „Verlauf" pro Workflow sichtbar
+  (Status `waiting`), und dort ohne Deadline: die Deadline wird nur in der
+  Inbox-Zeile gerendert, die ein Timer jetzt nicht mehr erreicht. Eine
+  read-only-Zeile „läuft bis …" ist bewusst nicht gebaut.
+
+### Fixed — Conductor: Event-Vorlagen bei leerem Event-Katalog instanziierbar (#1713)
+
+2026-11-24. Die gebündelte Vorlage „Benachrichtigen und eskalieren bei Vorfall"
+deklariert einen Pflicht-Slot `kind: "events"`. Die strenge Validierung der
+Routes `POST /conductors/templates/:id/{resolve,instantiate}` prüft Event-Ids
+gegen den **lebenden** Event-Katalog, und auf einem Stack ohne Event-emittierendes
+Plugin ist der leer: jede Id wurde mit
+`400 conductor.invalid_graph` / `unknown_event_ref` abgelehnt, das Formular bot
+ein leeres Select. Die Vorlage stand damit in der Galerie, war aber über keine
+der beiden Oberflächen nutzbar — während derselbe Graph über `POST /conductors`
+(validiert ohne `KnownRefs`) publishbar war und danach normal lief.
+Eine Event-Id ist Freitext des Senders (`POST /conductors/emit` nimmt jede Id,
+ein eingehender Webhook-Endpoint aus #437 trägt eine vom Operator vergebene, die
+in keinem Manifest steht), der Katalog also eine Vorschlagsliste. Eine Id ohne
+Treffer ist jetzt die nicht blockierende Warnung `unmatched_event_ref`
+(`validate()` in `@omadia/conductor-core`), die `resolve`/`instantiate` als
+`warnings` zurückgeben und das Formular nach dem Anlegen anzeigt; ein
+**fehlendes** `eventId` an einem `event`/`webhook`-Trigger bleibt der harte
+Fehler `unknown_event_ref` (ein solcher Trigger kann nie feuern, #437).
+Weil der Slot jetzt Freitext ist, **trimmt** `applyTemplateSlots` die Werte der
+Ref-Slots (`mappedValue`, derselbe Trim, mit dem das Pflichtfeld-Gate „gemappt"
+entscheidet): ein eingefügtes `" my.incident"` hätte sonst einen Trigger
+publiziert, den `eventRouter#emit` (`tr.eventId === eventId`) nie trifft — ein
+still toter Workflow statt einer Ablehnung.
+Das Event-Slot-Feld ist Freitext mit Datalist — wie das Event-Trigger-Feld des
+Designers — und `GET /conductors/events/catalog` liefert zusätzlich
+`endpointEvents` (die `eventId`s der eingehenden Webhook-Endpoints), die auch in
+die `KnownRefs` von Validierung, Builder-Prompt und Proposal-Prefill eingehen
+(`knownEventIds()` in `src/conductor/index.ts`). FR-003 in
+`specs/005-omadia-conductor/{spec,data-model}.md` trägt die Ausnahme jetzt
+ausdrücklich (fehlendes `eventId` bleibt harter Fehler). Keine Migration.
+
+### Fixed — MCP tool scan for credential forwarding
+
+2026-11-12. Discovered MCP tool descriptions could direct an agent to read
+local credential files, forward their contents as tool arguments, and conceal
+the read while receiving a clean verdict.
+
+- The deterministic scan now raises these English and German instructions to
+  `high_risk`, so MCP grants require acknowledgement. Ordinary file references
+  and generic `note`/`sidenote` fields remain unflagged.
+- Concealment phrases ("do not tell the user", "halte … geheim") count only when the
+  same description also tells the agent to read or forward a file, so ordinary tool
+  docs such as "Keep your API key secret" or "Erwähne gegenüber dem Benutzer nicht die
+  interne ID" stay unflagged.
+- Hidden-content detection now includes `<important>` pseudo-tags, closing
+  `</system>`/`</developer>` tags, Unicode tag characters, and bidirectional
+  embedding/override/isolate controls. A bare `<system>` role name and the LRM/RLM/ALM
+  marks of ordinary Hebrew and Arabic text are not flagged.
+
+### Fixed — Agents können Transkripte nicht mehr löschen oder verschieben (#2216)
+
+2026-11-24. Im Modus „Aus“ und in jedem Turn ohne Kanal-Kontext hält der Turn
+den `core`-Grant, und der machte `/memories/sessions/` schreibbar. Ein
+`delete /memories/sessions` aus einem einzigen Chat löschte damit die
+Transkripte aller Agents; ein `rename` hätte sie verschoben oder eine
+gefälschte Datei in den Baum gelegt. `/memories/sessions/` und
+`/memories/chat-sessions/` stehen jetzt auf der Deny-Liste von
+`ScopedMemoryStore`, samt der Prüfung auf Eltern-Pfade und kanonische Pfade aus
+#1827. Lesen bleibt erlaubt. Kein Agent braucht dort Schreibrechte:
+`SessionLogger` und `ChatSessionStore` schreiben als Kernel und bekommen in
+`buildOrchestratorForAgent` jetzt den ungescopten Store statt des
+Agent-Scopes.
+
+### Changed — Anthropic SDK 1.x: no sampling parameters on Anthropic models (#2167)
+
+- `@anthropic-ai/sdk` 0.126 → 1.12 sends `anthropic-version: 2026-10-21`, which rejects
+  `temperature`/`top_p`/`top_k` with a 400 on every model. The Anthropic adapter never sends
+  them now; `LlmRequest.temperature` (and `ctx.llm` for plugins) is ignored for Anthropic. The
+  per-model `supportsTemperature` table is gone.
+- Custom Anthropic-compatible base URLs keep `X-Api-Key` instead of the SDK's new
+  `Authorization: Bearer` default.
+
+### Changed — Kernel ohne Plugin-IDs: Teams-Standard-Bot kommt vom Plugin, tote v0.1.0-Reste entfernt
+
+2026-11-24. Der Kernel kannte noch Plugin-IDs aus v0.1.0. Der Teams-Standard-Bot
+(der einzige unbekannte Bot-Key, den der Conductor an eine Bindung oder den
+Fallback-Agenten routet) wurde aus dem Registry-Eintrag
+`de.byte5.integration.microsoft365` gelesen, ersatzweise aus `MICROSOFT_APP_ID`.
+Jetzt nennt ihn das Plugin selbst: neuer optionaler Vertrag
+`registerDefaultChannelKeyProvider` (channel-sdk 0.3.14, plugin-api 1.93.0) für
+Kanäle ohne `agentIdentities@1`-Provider. `@omadia/channel-teams` 0.45.0
+registriert ihn (Teams-Agenten-Bots bleiben in `agent_teams_identities`). Ein
+Provider, der wirft oder nichts nennt, bedeutet „kein Standard-Bot“: der Bot
+wird abgelehnt, der Turn scheitert nicht. Der Provider ist wie die anderen an
+den Kanal-Claim gebunden: nur das Plugin, das `teams` hält, nennt den Bot.
+
+**Upgrade-Reihenfolge:** zuerst `@omadia/channel-teams` ≥ 0.45.0, dann dieser
+Kernel. Mit einem älteren Teams-Plugin kennt dieser Kernel keinen
+Teams-Standard-Bot mehr, Nachrichten an ihn verweigert der Conductor
+(`unknown-bot`); der normale Chat-Pfad des Plugins ist nicht betroffen.
+
+Entfernt, weil tot: der Boot-Log zum Kalender-/M365-Wiring (`de.byte5.agent.calendar`,
+meldete nach der Deinstallation der Alt-Einträge fälschlich „microsoft365 integration
+DISABLED“), die Env-Migrationen `bootstrapMicrosoft365FromEnv` und
+`bootstrapTelegramFromEnv` (Ziel-IDs `de.byte5.integration.microsoft365`,
+`de.byte5.agent.calendar`, `de.byte5.channel.teams`, `de.byte5.channel.telegram` stehen
+in keinem Katalog mehr) und der `Microsoft365AccessorShim`. Der Builder schlägt als
+`depends_on` jetzt die heutigen IDs vor (`@omadia/integration-odoo`,
+`-confluence`, `-microsoft365`). Bleiben bewusst: die Migration der Alt-ID
+`de.byte5.tool.knowledge-graph`, das reservierte Präfix `de.byte5.platform.` im
+Manifest-Linter, `ROUTINES_AGENT_ID` (Principal, kein Plugin) und die
+Channel-Typ-Normalisierung. Die Env-Werte `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_PUBLIC_BASE_URL` und `TEAMS_SSO_CONNECTION_NAME`
+liest der Kernel nicht mehr (sie fütterten nur die entfernten Migrationen); sie
+parsen weiter, wirken aber nicht. Plugins konfiguriert man über ihr Setup.
+
 ### Fixed — Diskretion: Karten zurückgehaltener Antworten, Pläne ohne Turn, Label-Rennen (#2198)
 
 2026-11-24. Folgepunkte aus #2194 (Spec 2042 §5.11). Im Streaming-Pfad gingen
@@ -2738,6 +2914,16 @@ executor-owned keys — the two disagreed.
 - **Workflows carry their version number.** `GET /conductors` and
   `GET /conductors/:slug` return `activeVersionNumber` next to `activeVersionId`,
   null when nothing is published. Additive, no migration.
+
+### Fixed — Builder turn keeps running after the browser disconnects (#1812)
+
+2026-11-11. `POST /drafts/:id/turn` stopped the builder turn as soon as the
+HTTP client went away (tab reload, network drop), so the agent never wrote
+its answer to the draft transcript and the turn's replay buffer never got the
+terminal frames. The turn now runs to its end or to the turn timeout after a
+disconnect; writes to the closed response stop, while the ring buffer keeps
+recording and is finalised, so `GET /drafts/:id/turn/:turnId/resume` replays
+the finished turn.
 
 ### Fixed — MCP auth discovery: a failed read is not "not protected"
 
@@ -15067,6 +15253,13 @@ Three live defects in the MCP OAuth path, one migration
   stream toast now finishes that turn as a failure showing the same humanized
   sentence, instead of reporting it as 'done' (a successful turn) as it did
   before (#403).
+
+### Fixed — Conductor previews no longer execute agent steps
+
+2026-11-15. Conductor previews now stub agent steps alongside action steps, so
+previewing a workflow cannot start a real LLM turn, create token usage, or run
+agent tools and side effects. Normal conductor runs continue to execute agent
+steps normally.
 
 ---
 

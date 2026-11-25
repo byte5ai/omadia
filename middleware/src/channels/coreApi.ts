@@ -3,6 +3,7 @@ import type { RequestHandler, Router } from 'express';
 import type {
   AgentIdentityProvider,
   ChatStreamEvent,
+  DefaultChannelKeyProvider,
   ChannelSocketHandler,
   ChannelUserRef,
   ConversationMembershipEvent,
@@ -190,6 +191,8 @@ export interface CreateCoreApiOptions {
   meetingSources?: ChannelProviderRegistry<MeetingSourceProvider>;
   /** Spec 2042 §5.3 — per-agent bots, same lifecycle as the roster registry. */
   agentIdentities?: ChannelProviderRegistry<AgentIdentityProvider>;
+  /** The default bot of a channel without identity provider (Teams), same lifecycle. */
+  defaultChannelKeys?: ChannelProviderRegistry<DefaultChannelKeyProvider>;
   sessionCapabilities?: Pick<SessionCapabilityHub, 'emitSnapshot' | 'emitSessionEvent'>;
   /**
    * #1086 — routines principal producer. Present only when the routines
@@ -439,6 +442,12 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
         throw new Error(`channel '${channelId}' cannot register agent identities for 'teams': Teams bots are provisioned by the kernel`);
       }
       agentIdentities.register(channelId, provider);
+    };
+  }
+  if (opts.defaultChannelKeys) {
+    const defaultChannelKeys = opts.defaultChannelKeys;
+    api.registerDefaultChannelKeyProvider = (channelId: string, provider: DefaultChannelKeyProvider): void => {
+      defaultChannelKeys.register(channelId, provider);
     };
   }
   if (opts.sessionCapabilities) {
