@@ -530,6 +530,27 @@ handler's catch-all copied that sentence into a 500 body — eight routes, from
   approve/reject card button still reads both as `already_resolved`.
 - No migration, no URL change, no web-ui change.
 
+### Added — memory-access matrix as code (memory-ACL test plan, step 1) (2026-11-23)
+
+- **`middleware/test/memoryAccess/`.** A fixed world (two tenants, three users, two agents,
+  a DM, two Teams rooms with different members, a context-free web chat) with one canary per
+  item in every store: memorable knowledge (owners × visibility × origin agent × authorship
+  × Privacy-Shield provenance), excerpts, turns, entities, plans, process memory, `/memories`
+  tiers, datasets, topics. `seed.ts` writes it into the in-memory graph and Neon.
+- **Oracle.** `oracle.ts` answers `expected(viewer, mode, item)` for `off`, `enforce`,
+  `enforce-strict` and `members`. Each verdict cites its source. Rows no document decides
+  (default visibility `team`, `KG_RECALL_TEAM_VISIBILITY` on by default, `shared:<x>` on MK,
+  topics and plans unscoped per user, `enforce-strict` and curated memory) are tagged
+  `pinned, not decided`: today's behaviour, not a decision.
+- **Expected divergences** (read from code, not yet run; step 2 confirms or clears them):
+  `query_knowledge_graph` searches the whole tenant in `off`/`enforce`; the durable recall
+  leg skips the `sharedOnly` floor in `enforce-strict`; an empty audience still admits
+  operator rows in-memory but not on Neon; process memory has no agent filter; excerpt-only
+  hits re-check the parent owner-only.
+- **Self-checks.** `world.test.ts` (unique canaries, the oracle answers every combination and
+  discriminates per store, hand-pinned verdicts, in-memory read-back) and `seed.pg.test.ts`
+  (every canary reads back on Neon). `PG_TEST_FLOOR` 721 → 722.
+
 ### Fixed — Builder workspace footer reverted to `IDLE` after a reload following a failed build
 
 2026-11-10. #1737 — reported from the live workspace after an auto-rebuild
