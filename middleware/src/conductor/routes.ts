@@ -22,6 +22,7 @@ import {
   DiscussionInvalidInputError,
 } from './discussionService.js';
 import type { ConductorDiscussionService } from './discussionService.js';
+import { DiscussionNotGrantedError, DiscussionPeerDisabledError } from './discussionHere.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { ConductorRoleStore } from './roleStore.js';
 import type { ConductorScheduleStore } from './scheduleStore.js';
@@ -540,6 +541,25 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       }
       if (err instanceof DiscussionConversationBusyError) {
         res.status(409).json({ code: 'conductor.discussion_conversation_busy', message: err.message });
+        return;
+      }
+      // ADR-0018 — the operator route needs the same authorization as a start
+      // from the chat: peer switches and mutual consultation grants.
+      if (err instanceof DiscussionNotGrantedError) {
+        res.status(403).json({
+          code: 'conductor.discussion_not_granted',
+          message: err.message,
+          agentA: err.agentA,
+          agentB: err.agentB,
+        });
+        return;
+      }
+      if (err instanceof DiscussionPeerDisabledError) {
+        res.status(403).json({
+          code: 'conductor.discussion_peer_disabled',
+          message: err.message,
+          agentSlug: err.agentSlug,
+        });
         return;
       }
       if (err instanceof DiscussionAgentHasNoIdentityError) {

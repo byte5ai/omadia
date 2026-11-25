@@ -10,6 +10,7 @@ import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import { extractAuditConfig, extractOutboundAllowlist } from './pluginContext.js';
 import { isPublicIp } from './ssrfGuard.js';
 import type { PluginEgressPermission, PluginEgressSource } from './pluginEgressGuard.js';
+import type { PreviewEgressRoots } from './previewEgressRoots.js';
 
 const ROOTS_TTL_MS = 5_000;
 
@@ -18,12 +19,14 @@ const ROOTS_TTL_MS = 5_000;
  * where installed packages live, each plugin's effective network permission
  * (the same resolution `ctx.http` uses) and the endpoints of the installed
  * model providers. Read per request, so an install, an uninstall or an
- * operator's host change applies to the next request.
+ * operator's host change applies to the next request. Builder previews
+ * (`previews`, ADR-0017) are read live, ahead of the installed roots.
  */
 export function createPluginEgressSource(deps: {
   readonly catalog: PluginCatalog;
   readonly installedRegistry: InstalledRegistry;
   readonly llmProviderCatalog: LlmProviderCatalog;
+  readonly previews?: PreviewEgressRoots;
 }): PluginEgressSource {
   const realRoots = new Map<string, string>();
   const real = (dir: string): string => {
@@ -68,10 +71,12 @@ export function createPluginEgressSource(deps: {
     pluginRoots: () => {
       const at = Date.now();
       if (!roots || at - roots.at > ROOTS_TTL_MS) roots = { at, value: buildRoots() };
-      return roots.value;
+      return deps.previews ? [...deps.previews.roots(), ...roots.value] : roots.value;
     },
 
     permissionOf: (pluginId): PluginEgressPermission | undefined => {
+      const preview = deps.previews?.permissionOf(pluginId);
+      if (preview !== undefined) return preview;
       const entry = deps.catalog.get(pluginId);
       if (!entry) return undefined;
       const config = deps.installedRegistry.get(pluginId)?.config ?? {};
