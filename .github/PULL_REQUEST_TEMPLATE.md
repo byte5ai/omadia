@@ -12,6 +12,12 @@
      - [ ] `docker compose -f infra/docker-compose.yml up postgres` + 9 migrations
      - [ ] manual: ___                                                            -->
 
+## ADR check
+<!-- Required (AGENTS.md "ADR-Abgleich"). Name the ADRs you checked in docs/adr/ and one of:
+     - conforms to ADR NNNN, NNNN
+     - adds ADR NNNN (new decision) / supersedes ADR NNNN with MMMM
+     - no ADR needed, because ___ (plain fix, one sensible solution)               -->
+
 ## Risk / blast radius
 <!-- Optional. Mention if this:
      - changes existing schema (migration safety)

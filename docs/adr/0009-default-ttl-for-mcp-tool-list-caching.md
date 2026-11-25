@@ -1,4 +1,4 @@
-# Default TTL for MCP tool-list caching when servers omit ttlMs
+# 0009 — Default TTL for MCP tool-list caching when servers omit ttlMs
 
 MCP 2026-07-28 says a `tools/list` result without `ttlMs` must be treated as `ttlMs: 0` — i.e. not cached. Almost all remote servers we connect to today speak protocol ≤ 2025-11-25 and emit no `ttlMs`, so a spec-strict client cache would be a no-op and the cost/latency win of #545 (fewer discovery round-trips, stable prompt-cache tool blocks) would not materialize. We deliberately deviate on the client side: `McpManager` applies a configurable default TTL (60s, `OMADIA_MCP_TOOLLIST_TTL_MS`, opt-out via `0`) to list results that carry no `ttlMs`, and clamps server-provided TTLs to 15 minutes.
 
