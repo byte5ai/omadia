@@ -31,6 +31,8 @@ export interface ZeroCostCall {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
+  /** The 1-hour part of the writes; absent = all 5-minute writes. */
+  readonly cacheCreation1hTokens?: number;
 }
 
 /** The parts of a breakdown row this module reads and adjusts. */

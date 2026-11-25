@@ -131,13 +131,17 @@ export const ConfigSchema = z.object({
   MEMORY_SEED_DIR: z.string().min(1).default('./seed/memory'),
   MEMORY_SEED_MODE: z.enum(['missing', 'overwrite', 'skip']).default('missing'),
 
-  // Admin endpoint auth. Empty/unset disables the admin endpoint entirely.
+  // Bearer token of the machine-to-machine admin surface at `/api/admin/*`
+  // (routes/adminTokenMount.ts — mounted before the `/api` session gate, every
+  // use audited as `admin_token.use`). Empty/unset disables it entirely.
   ADMIN_TOKEN: z.string().optional(),
 
   // Harness admin OAuth (A.1). ADMIN_ALLOWED_EMAILS holds a comma-separated
   // whitelist of byte5 emails that may mint a session. When the list is
-  // empty the /api/v1/auth/* routes still run but every sign-in gets 403 —
-  // use an ADMIN_TOKEN-authenticated break-glass path to recover.
+  // empty the /api/v1/auth/* routes still run but every Entra sign-in gets
+  // 403; local-password accounts are not whitelist-gated and stay the way in.
+  // NOTE: the ADMIN_TOKEN surface serves memory priming and health counters
+  // only — it has no user or whitelist management.
   ADMIN_ALLOWED_EMAILS: z.string().optional(),
 
   // OB-49 — provider-aware auth. Comma-separated list of active provider

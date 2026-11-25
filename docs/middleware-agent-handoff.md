@@ -3785,7 +3785,10 @@ Service-Registry auf.
 - **Auth:** `Authorization: Bearer <ADMIN_TOKEN>`, wie
   `/api/admin/security/screening`. Der Router wird nur gemountet, wenn
   `ADMIN_TOKEN` gesetzt ist; ohne Token gibt es die Route nicht, mit falschem
-  Token `401`.
+  Token `401`. Gemountet **vor** dem `/api`-Session-Gate
+  (`routes/adminTokenMount.ts`): nur Requests mit Bearer-Header werden dort
+  beansprucht, jeder Aufruf wird vorher als `admin_token.use` auditiert
+  (Audit-Schreibfehler → `503`).
 - **Antwort (200):** `{ outcomes, droppedTotal, captureTailOnlyTurns }`.
   `outcomes` hat die fünf Zähler `recorded`, `no-graph-sink`,
   `transcript-failed`, `turn-ingest-failed`, `run-ingest-failed`;

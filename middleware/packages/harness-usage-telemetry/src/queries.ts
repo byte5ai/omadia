@@ -407,7 +407,8 @@ async function fetchZeroCostCalls(
        model,
        ${SOURCE_KEY_EXPR} AS source_key,
        date_trunc('${b.bucket}', created_at AT TIME ZONE ${tz}) AT TIME ZONE ${tz} AS bucket,
-       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+       cache_creation_1h_tokens
      FROM token_usage ${where}`,
     params,
   );
@@ -419,6 +420,7 @@ async function fetchZeroCostCalls(
     outputTokens: num(r.output_tokens),
     cacheReadTokens: num(r.cache_read_tokens),
     cacheCreationTokens: num(r.cache_creation_tokens),
+    cacheCreation1hTokens: num(r.cache_creation_1h_tokens),
   }));
 }
 
@@ -440,7 +442,8 @@ async function fetchCacheSavingsByModel(
     `SELECT
        model,
        COALESCE(SUM(cache_read_tokens),0)     AS cache_read_tokens,
-       COALESCE(SUM(cache_creation_tokens),0) AS cache_creation_tokens
+       COALESCE(SUM(cache_creation_tokens),0) AS cache_creation_tokens,
+       COALESCE(SUM(cache_creation_1h_tokens),0) AS cache_creation_1h_tokens
      FROM token_usage ${where}
      GROUP BY 1`,
     params,
@@ -453,6 +456,7 @@ async function fetchCacheSavingsByModel(
         computeCacheSavingsUsd(model, {
           cacheReadTokens: num(r.cache_read_tokens),
           cacheCreationTokens: num(r.cache_creation_tokens),
+          cacheCreation1hTokens: num(r.cache_creation_1h_tokens),
         }),
       ] as const;
     }),

@@ -9,7 +9,7 @@
 
 import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
-import { recordUsage } from '@omadia/usage-telemetry';
+import { recordUsage, usageTokensFromLlm } from '@omadia/usage-telemetry';
 
 import { VERDICT_JUDGE_MAX_TOKENS, VERDICT_JUDGE_REASONING } from '../classifierBudgets.js';
 
@@ -73,10 +73,7 @@ export function createLlmIdentityJudge(options: {
         source: 'identity-guard',
         model: options.model,
         provider: options.provider.id,
-        inputTokens: res.usage.inputTokens,
-        outputTokens: res.usage.outputTokens,
-        cacheReadTokens: res.usage.cacheReadTokens ?? 0,
-        cacheCreationTokens: res.usage.cacheWriteTokens ?? 0,
+        ...usageTokensFromLlm(res.usage),
       });
       return parseJudgeVerdict(collectText(res.content));
     },

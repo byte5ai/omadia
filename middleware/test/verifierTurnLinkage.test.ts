@@ -176,7 +176,7 @@ describe('#1571 — runWithUsageContext attributes rows written after the turn c
     setUsageContextProvider(undefined);
     const params = captured.flatMap((q) => q.params);
     const TURN_ID = 10;
-    const COLS = 13;
+    const COLS = 14;
     assert.equal(params[TURN_ID], 'turn-1');
     assert.equal(params[COLS + TURN_ID], 'explicit');
     assert.equal(params[2 * COLS + TURN_ID] ?? null, null, 'outside the scope: no turn');

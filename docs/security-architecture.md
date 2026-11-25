@@ -7557,6 +7557,46 @@ Private replies: `replyToMessageId` is a channel statement; the plugin binds a r
 a private message it sent that very person (outbox row with `target_principal`), so a forged
 reference to someone else's message binds nothing.
 
+## 10zb. The ADMIN_TOKEN surface sits before the session gate (2026-11-25)
+
+`/api/admin/*` (memory priming and inspection, `security/screening`, `run-trace`;
+`routes/admin.ts`) authenticates with `Authorization: Bearer <ADMIN_TOKEN>`, not
+with a session. It used to be mounted after the blanket `/api` session gate
+(OB-106) and was not a public path, so every bearer request got the gate's
+`401 auth.missing` before the token was compared: the surface was unreachable,
+live too.
+
+**What holds now** (`routes/adminTokenMount.ts`, mounted in `index.ts` before
+the public-path mount and the `/api` gate):
+
+1. `ADMIN_TOKEN` unset, empty or whitespace → nothing is mounted; `/api/admin/*`
+   meets the session gate like any `/api` path.
+2. Only a request that **presents** a bearer credential (scheme matched
+   case-insensitively) is claimed. Every other request calls `next()` and meets
+   the gate unchanged, so the session-authenticated neighbour
+   `/api/admin/domains` keeps its own auth.
+3. A claimed request is terminal. Wrong token → 401. Right token → served by
+   the admin router; a path it does not serve → 404; a handler error → the
+   terminal JSON error handler. It never travels on into the session stack, so
+   the token opens `/api/admin/*` admin routes only, not `/api/admin/domains`
+   and not `/api/v1/admin/*`.
+4. Audit-first: each use writes `admin_token.use` (actor `system:admin-token`,
+   target `admin-api:<METHOD> <path>`) **before** the route runs; a failed
+   write refuses the request with 503. A DB-less boot has no trail and logs
+   the use instead. Wrong tokens are logged each time and written as
+   `admin_token.refused` at most once a minute. Token and body never reach the
+   trail or the log.
+5. The compare runs over SHA-256 digests with `timingSafeEqual`, so neither the
+   token's content nor its length leaks through timing.
+6. Deliberately **not** a `publicPaths` entry: that would wave the whole prefix
+   through the gate's `next()`, including when no token is configured.
+
+**Residual:** there is no rate limiter on wrong tokens; a long random token is
+the defence. A client that sends both a session cookie and an unrelated bearer
+header to `/api/admin/domains` is claimed by this mount (401/404). The surface
+has no user or whitelist management, so it is not a way out of an
+`ADMIN_ALLOWED_EMAILS` lockout.
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
