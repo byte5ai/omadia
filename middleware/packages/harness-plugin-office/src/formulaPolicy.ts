@@ -333,6 +333,23 @@ export function computedColumnReason(template: string): string | undefined {
   return lexedFormulaReason(lexed) ?? rowPlaceholderReason(lexed.code);
 }
 
+/** An unquoted sheet name, or a `First:Last` range of them, right before `!`.
+ *  Quoted names are blanked out of the lexed code, so they never match here. */
+const UNQUOTED_SHEET_REFERENCE =
+  /(?<![\p{L}\p{M}\p{N}\p{Cf}_.?])([\p{L}\p{M}\p{N}\p{Cf}_.?]+(?::[\p{L}\p{M}\p{N}\p{Cf}_.?]+)?)!/gu;
+
+/** The sheet names a formula references, as written in it: quoted
+ *  (`'Offene Posten'!A1`) and unquoted (`Data!A1`), with a sheet range split
+ *  into both ends. Sheet names cannot contain `:`, so the split is safe.
+ *  Returns nothing for a formula the lexer cannot read, which the policy
+ *  refuses anyway. */
+export function sheetReferences(formula: string): string[] {
+  const lexed = lexFormula(formula);
+  if (!lexed) return [];
+  const unquoted = [...lexed.code.matchAll(UNQUOTED_SHEET_REFERENCE)].map((match) => match[1] ?? '');
+  return [...lexed.quotedNames, ...unquoted].flatMap((reference) => reference.split(':'));
+}
+
 /** Throw {@link OfficeUnsafeFormulaError} unless the formula stays inside the
  *  workbook. `location` names the cell for the message. */
 export function assertFormulaStaysInWorkbook(formula: string, location: string): void {

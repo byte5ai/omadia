@@ -142,14 +142,18 @@ export class RealStepEffects implements StepEffects {
       ? renderAgentPrompt(step.prompt, context)
       : `Conductor workflow step "${step.id}". Run your configured task. Run context: ${JSON.stringify(context)}`;
 
-    this.deps.log?.(`[conductor] agent step '${step.id}' → Agent '${slug}' (run ${meta.runId})`);
+    const isPreview = meta.preview === true;
+    this.deps.log?.(
+      `[conductor] agent step '${step.id}' → Agent '${slug}' (run ${meta.runId}${isPreview ? ', preview without tools' : ''})`,
+    );
 
     // A publishing step is one people are watching for. Show that this agent is
     // composing while it works — the turn regularly runs twenty seconds, and
     // silence in a chat reads as nothing happening. Stopped in `finally` so a
     // thrown turn never leaves the dots running.
+    // #2217 — a preview shows nothing in any chat, typing included.
     const stopTyping =
-      step.say && this.deps.say
+      step.say && this.deps.say && !isPreview
         ? this.deps.say.startTyping({
             agentSlug: slug,
             channelType: step.say.channel,
@@ -160,10 +164,14 @@ export class RealStepEffects implements StepEffects {
     let answer;
     try {
       answer = await withTimeout(
-        entry.built.bundle.agent.chat({
-          userMessage,
-          sessionScope: `conductor:${meta.runId}:${step.id}`,
-        }),
+        entry.built.bundle.agent.chat(
+          // #2217 — a preview turn runs without tools and without a session
+          // scope: no transcript row, no graph turn, no recall into a later
+          // live run. A live step keeps its per-run bucket.
+          isPreview
+            ? { userMessage, toolsOff: true }
+            : { userMessage, sessionScope: `conductor:${meta.runId}:${step.id}` },
+        ),
         this.stepTimeoutMs,
         `agent step '${step.id}'`,
       );
@@ -185,12 +193,15 @@ export class RealStepEffects implements StepEffects {
     // it, the turn is published into the run's bound conversation — and the
     // OUTCOME is recorded on the step, so a silent failure can never read as a
     // delivered utterance.
-    const said = step.say ? await this.publish(step, context, meta, slug, answer.text) : undefined;
+    const said = step.say && !isPreview ? await this.publish(step, context, meta, slug, answer.text) : undefined;
     return {
       result: {
         text: prose,
         ...(data !== undefined ? { data } : {}),
         ...(said !== undefined ? { said: said.said, ...(said.said ? {} : { sayError: said.reason }) } : {}),
+        // The trace shows a say the preview deliberately did not publish.
+        ...(isPreview && step.say ? { say: 'skipped_in_preview' } : {}),
+        ...(isPreview ? { previewed: true } : {}),
       },
       actor: { kind: 'agent', agentSlug: slug },
     };

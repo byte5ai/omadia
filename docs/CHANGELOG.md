@@ -36,6 +36,51 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — Conductor-Vorschau führt Agent-Schritte als Turn ohne Tools aus (#2217)
+
+2026-11-25. Eine Draft-Vorschau ersetzt Agent-Schritte nicht mehr durch einen
+Platzhalter (#2007), sondern lässt den Agenten echt antworten, aber ohne jedes
+Werkzeug: kein Connector, kein Memory, keine Sub-Agents, keine Chat-Nachricht,
+kein Tipp-Indikator, kein Transkript-Eintrag. Bedingungen auf `stepResult.text`
+und `stepResult.data` routen in der Vorschau dadurch wie im echten Lauf. Ein
+Agent-Schritt, der wirft, ist wieder der Fehlergrund der Vorschau statt eines
+500. Eine Vorschau führt höchstens 25 Agent-Schritte aus. Action-Schritte bleiben simuliert. Jede Vorschau mit Agent-Schritten
+verursacht damit Modellkosten im Budget des Agenten (ADR 0017).
+
+Neues Vertragsfeld `ChatTurnInput.toolsOff` (`@omadia/channel-sdk` 0.3.15,
+additiv): beide Orchestrator-Tool-Loops senden keine Tools und verweigern einen
+trotzdem gesendeten Tool-Aufruf vor dem Dispatch, die `claude-cli`-Runtime
+startet ohne Loopback-MCP-Server, der Fast Path reicht den Turn ungeprüft
+durch. Entscheidung: [ADR 0043](adr/0043-draft-previews-run-agent-steps-as-tool-less-turns.md).
+
+### Fixed — Builder: one turn per draft, and Stop ends the turn on the server (#2214)
+
+2026-11-25. Since #1899 a builder turn keeps running after a disconnect, but
+nothing stopped a second turn on the same draft, and Stop only dropped the
+browser connection (#1804). Now:
+
+- `POST /drafts/:id/turn` admits one running turn per draft (AutoFix turns
+  included). A second request answers `409 builder.turn_in_progress` with the
+  running `turnId`; the chat re-attaches to that turn through the resume
+  endpoint and gives the unsent message back. Rejecting instead of queueing:
+  a queued message would run against a spec the operator has not seen yet,
+  and the request would stay open for up to the 15-minute turn timeout.
+- `POST /drafts/:id/turn/:turnId/stop` aborts the turn and waits up to 25 s
+  for it to end (`stopped` / `stopping` / `not_running`). The turn waits for
+  tool calls already running (up to 20 s), refuses every later one, cancels
+  its open choice cards, still delivers the patches it made and ends with a
+  `builder.turn_stopped` frame; it writes no assistant entry. The sub-agent
+  stops at its next model-call boundary (`AskOptions.signal`); a model call
+  already in flight runs out, but cannot change the draft. Chat and AutoFix
+  turns use the same abort for their timeout (`builder.turn_timeout`).
+- The Stop button calls that endpoint and unlocks the input once the turn has
+  ended.
+- A detached turn whose ring-buffer `finalize()` throws no longer causes an
+  unhandled rejection, and its draft lock is released regardless.
+
+The lock is in memory, like the ring buffer: a turn does not survive a
+restart, and neither does its lock.
+
 ### Security — Conductor-Webhook-Hardening (#1707)
 
 2026-11-17. Fünf Lücken der Webhook-Oberfläche, die zusammen entscheiden, was
@@ -529,6 +574,23 @@ handler's catch-all copied that sentence into a 500 body — eight routes, from
   "this await is closed", which were one `409 conductor.await_not_pending`. An
   approve/reject card button still reads both as `already_resolved`.
 - No migration, no URL change, no web-ui change.
+
+### Fixed — follow-ups from the pr-flow sweeps 2026-11-18…25 (2026-11-25)
+
+- `query_processes` filters to the turn's agent in the store query, before `LIMIT`
+  (`QueryProcessesInput.agentScopePrefix`, plugin-api 1.95.0). The #2207 fix over-fetched
+  4× and filtered afterwards, but the Neon store caps a query at 50 rows, so better-scoring
+  processes of other agents could leave an agent none of its own. `PG_TEST_FLOOR` 771 → 772.
+- The running-discussions overview lists and stops runs of every workflow version, not only
+  the active one (as #2181 did for the run history): a run still waiting on a superseded
+  version showed no status and survived a stop.
+- `PUT /api/v1/profiles/:id/agent-md` and `…/knowledge/:filename` read a body sent without
+  `Content-Type`; an empty file or such a client got `profile_storage.invalid_body`.
+- Privacy guard: the 50 ms vetting probe for operator regexes counts the smaller of
+  wall-clock and process CPU time, and rejects a pattern only when two runs overrun, so a
+  busy host no longer rejects a harmless pattern as `too_slow`.
+- Deflaked `archetypeDatabase.pg` and `systemNoticeOutbox.pg` (both red once on #2187);
+  croner's 9.x `?` rewrite stays, reason recorded in `cronerCompat.ts`.
 
 ### Fixed — process tools read every agent's processes (#2207) (2026-11-24)
 

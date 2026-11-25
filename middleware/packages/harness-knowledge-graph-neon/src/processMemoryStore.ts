@@ -507,6 +507,8 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
     //  $4 ftsQuery
     //  $5 limit
     //  $6 excludeUnprotected (#1540)
+    //  $7 agentScopePrefix (nullable) — the default agent also owns the
+    //     legacy unqualified scopes (scopeBelongsToAgent)
     const sql = `
       WITH scored AS (
         SELECT
@@ -536,6 +538,9 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
          WHERE tenant_id = $2
            AND ($3::text IS NULL OR scope = $3)
            AND (NOT $6::boolean OR unprotected = FALSE)
+           AND ($7::text IS NULL
+             OR starts_with(scope, $7::text)
+             OR ($7::text = 'default::' AND strpos(scope, '::') = 0))
            AND (
              ($1::text IS NOT NULL AND embedding IS NOT NULL)
              OR to_tsvector('simple',
@@ -577,6 +582,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
       trimmedQuery,
       limit,
       input.excludeUnprotected === true,
+      input.agentScopePrefix ?? null,
     ]);
     return result.rows.map((row) => ({
       record: rowToRecord(row),

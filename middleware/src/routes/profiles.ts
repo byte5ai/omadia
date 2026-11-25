@@ -92,6 +92,12 @@ interface ProfilesDeps {
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
+/** Raw-body parser for the agent.md and knowledge-file uploads. Parses EVERY
+ *  request, whatever its Content-Type: `type: '*\/*'` skips a request without
+ *  the header, so an empty file (or a client that sends none) left `req.body`
+ *  unset and the upload failed with `invalid_body`. */
+const rawUploadBody = expressRaw({ type: () => true, limit: MAX_BODY_BYTES });
+
 export interface ProfileApplyOutcome {
   profile_id: string;
   installed: Array<{ id: string; version: string }>;
@@ -696,7 +702,7 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
   // PUT /:id/agent-md — write raw markdown body
   router.put(
     '/:id/agent-md',
-    expressRaw({ type: '*/*', limit: MAX_BODY_BYTES }),
+    rawUploadBody,
     async (req: Request, res: Response) => {
       if (!liveStorageGuard(res)) return;
       const id = req.params['id'];
@@ -784,7 +790,7 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
   // PUT /:id/knowledge/:filename — write raw bytes
   router.put(
     '/:id/knowledge/:filename',
-    expressRaw({ type: '*/*', limit: MAX_BODY_BYTES }),
+    rawUploadBody,
     async (req: Request, res: Response) => {
       if (!liveStorageGuard(res)) return;
       const id = req.params['id'];

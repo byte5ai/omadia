@@ -53,6 +53,7 @@ interface Options {
   attachmentLookupFails?: boolean;
   origin?: 'manual' | 'ephemeral';
   cancelFailsFor?: string[];
+  activeVersionId?: string | null;
 }
 
 function harness(opts: Options = {}) {
@@ -60,11 +61,14 @@ function harness(opts: Options = {}) {
   const logs: string[] = [];
   const deps = {
     workflowStore: {
-      listEphemeralActive: () => Promise.resolve([WF]),
+      listEphemeralActive: () => Promise.resolve([{ ...WF, activeVersionId: opts.activeVersionId === undefined ? WF.activeVersionId : opts.activeVersionId }]),
       getById: (id: string) => Promise.resolve(id === 'wf-1' ? { ...WF, origin: opts.origin ?? 'ephemeral' } : null),
     },
     runStore: {
-      listForVersion: () => (opts.runListingFails ? Promise.reject(new Error('db down')) : Promise.resolve(opts.runs ?? [RUN])),
+      listForWorkflow: (workflowId: string) => {
+        calls.push(`listForWorkflow(${workflowId})`);
+        return opts.runListingFails ? Promise.reject(new Error('db down')) : Promise.resolve(opts.runs ?? [RUN]);
+      },
     },
     ephemeralAttachments: {
       getByWorkflow: () =>
@@ -121,6 +125,15 @@ describe('#2067 running agent discussions: list', () => {
     assert.equal(row?.incomplete, false);
   });
 
+  it('shows a run still waiting on a superseded version (#2181)', async () => {
+    const oldRun = { ...RUN, workflowVersionId: 'ver-0', status: 'waiting' as const };
+    for (const activeVersionId of ['ver-1', null]) {
+      const { admin, calls } = harness({ runs: [oldRun], activeVersionId });
+      assert.equal((await admin.list())[0]?.status, 'waiting');
+      assert.deepEqual(calls, ['listForWorkflow(wf-1)']);
+    }
+  });
+
   it('shows a requested stop that has not taken effect yet', async () => {
     const { admin } = harness({ runs: [{ ...RUN, cancelRequestedAt: new Date('2026-11-19T08:00:00.000Z') }] });
     assert.equal((await admin.list())[0]?.stopRequestedAt, '2026-11-19T08:00:00.000Z');
@@ -147,13 +160,24 @@ describe('#2067 running agent discussions: stop', () => {
       slug: 'eph-discussion-ab12cd34',
       cancelledRuns: 2,
     });
-    assert.deepEqual(calls, ['cancel(run-1, op@example.test)', 'cancel(run-2, op@example.test)', 'dispose(wf-1)']);
+    assert.deepEqual(calls, [
+      'listForWorkflow(wf-1)',
+      'cancel(run-1, op@example.test)',
+      'cancel(run-2, op@example.test)',
+      'dispose(wf-1)',
+    ]);
+  });
+
+  it('cancels a run still waiting on a superseded version (#2181)', async () => {
+    const { admin, calls } = harness({ runs: [{ ...RUN, workflowVersionId: 'ver-0', status: 'waiting' }] });
+    assert.deepEqual(await admin.stop('wf-1', 'op'), { outcome: 'stopped', slug: WF.slug, cancelledRuns: 1 });
+    assert.deepEqual(calls, ['listForWorkflow(wf-1)', 'cancel(run-1, op)', 'dispose(wf-1)']);
   });
 
   it('disposes of a workflow whose runs have all ended', async () => {
     const { admin, calls } = harness({ runs: [{ ...RUN, status: 'completed' }] });
     assert.deepEqual(await admin.stop('wf-1', 'op'), { outcome: 'stopped', slug: WF.slug, cancelledRuns: 0 });
-    assert.deepEqual(calls, ['dispose(wf-1)']);
+    assert.deepEqual(calls, ['listForWorkflow(wf-1)', 'dispose(wf-1)']);
   });
 
   it('disposes of nothing when a cancel fails, so the discussion stays listed', async () => {
@@ -165,7 +189,7 @@ describe('#2067 running agent discussions: stop', () => {
   it('disposes of nothing when the runs cannot be read', async () => {
     const { admin, calls } = harness({ runListingFails: true });
     assert.deepEqual(await admin.stop('wf-1', 'op'), { outcome: 'cancel_failed', cancelledRuns: 0, failedRuns: 1 });
-    assert.deepEqual(calls, []);
+    assert.deepEqual(calls, ['listForWorkflow(wf-1)']);
   });
 
   it('refuses an unknown workflow and one an operator authored', async () => {

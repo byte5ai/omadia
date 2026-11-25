@@ -232,6 +232,40 @@ describe('query_processes handler', () => {
   });
 });
 
+describe('query_processes handler · agent boundary', () => {
+  const ownAndForeign = (): ProcessQueryHit[] => [
+    { record: { ...makeRecord('process:a', 'Fremd: x', 1, ['a']), scope: 'sales::c1' }, score: 0.9 },
+    { record: { ...makeRecord('process:b', 'Eigen: y', 1, ['a']), scope: 'hr::c2' }, score: 0.5 },
+  ];
+
+  it('in a turn bound to an agent, the store filters by agent before the limit', async () => {
+    const { turnContext } = await import('@omadia/orchestrator');
+    const service = makeFake({ queryResult: ownAndForeign() });
+    const handler = createQueryProcessesHandler(service);
+    const result = await turnContext.run(
+      {
+        turnId: 't1',
+        turnDate: '2026-11-25',
+        agentSlug: 'hr',
+        graphReadScope: { value: { kind: 'user', userId: 'u-1', agentScopePrefix: 'hr::', ownScope: null } },
+      },
+      () => handler({ query: 'x', limit: 3 }),
+    );
+    assert.equal(service.calls.query.length, 1);
+    assert.equal(service.calls.query[0]!.limit, 3, 'no over-fetch');
+    assert.equal(service.calls.query[0]!.agentScopePrefix, 'hr::');
+    // A provider that ignores the option is still re-checked.
+    const parsed = JSON.parse(result) as { hits: Array<{ id: string }> };
+    assert.deepEqual(parsed.hits.map((h) => h.id), ['process:b']);
+  });
+
+  it('outside a bounded turn the query stays tenant-wide', async () => {
+    const service = makeFake({ queryResult: ownAndForeign() });
+    await createQueryProcessesHandler(service)({ query: 'x', limit: 3 });
+    assert.equal(service.calls.query[0]!.agentScopePrefix, undefined);
+  });
+});
+
 describe('run_stored_process handler', () => {
   it('returns 404-style error string when service.get returns null', async () => {
     const service = makeFake({ getResult: null });

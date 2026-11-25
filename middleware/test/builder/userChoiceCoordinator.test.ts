@@ -169,4 +169,29 @@ describe('UserChoiceCoordinator', () => {
     });
     assert.equal(ok, false);
   });
+
+  it('cancelForDraft cancels only that draft\'s open choices (#2214)', async () => {
+    const bus = new SpecEventBus();
+    const events: SpecBusEvent[] = [];
+    bus.subscribe('draft-1', (e) => events.push(e));
+    let n = 0;
+    const coord = track(
+      new UserChoiceCoordinator({ bus, timeoutMs: 10_000, generateId: () => `c${String(++n)}` }),
+    );
+    const options = [
+      { value: 'a', label: 'A' },
+      { value: 'b', label: 'B' },
+    ];
+    const mine = coord.create({ draftId: 'draft-1', question: 'q', options });
+    coord.create({ draftId: 'draft-2', question: 'q', options });
+
+    assert.equal(coord.cancelForDraft('draft-1'), 1);
+    const outcome = await mine.result;
+    assert.equal(outcome.ok, false);
+    assert.equal(coord.pendingCount(), 1);
+    assert.ok(
+      events.some((e) => e.type === 'user_choice_resolved' && e.value === null),
+      'the card is dismissed in every tab',
+    );
+  });
 });

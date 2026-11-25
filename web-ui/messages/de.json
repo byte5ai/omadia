@@ -755,7 +755,7 @@
     "dryRunButton": "Probelauf",
     "previewing": "Simuliere…",
     "dryRunHeading": "Probelauf-Vorschau",
-    "dryRunHint": "Simuliert — Human-Steps inline auto-freigegeben, Connector-Actions gestubbt, keine durable Awaits oder Notifications.",
+    "dryRunHint": "Agent-Steps laufen als echte Turns ohne Tools (Kosten beim Agenten, höchstens 25); Human-Steps inline auto-freigegeben, Connector-Actions gestubbt, nichts gepostet, keine durable Awaits oder Notifications.",
     "rolesHeading": "Rollen & der Baton",
     "rolesHint": "Ein Human-Step kann eine Rolle adressieren (role:<key>) statt einer festen Person. Die Rolle wird live zum aktuellen Holder aufgelöst — den Baton verschieben routet wartende und künftige Awaits um.",
     "holdersLabel": "Holder",
@@ -3696,7 +3696,10 @@
         "providerGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
         "choiceSaveFailedDetail": "Auswahl konnte nicht gespeichert werden: {message}",
         "choiceSaveFailed": "Auswahl konnte nicht gespeichert werden.",
-        "llmAccessMissing": "Der Plugin Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo)."
+        "llmAccessMissing": "Der Plugin Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo).",
+        "turnInProgress": "Auf diesem Draft läuft noch ein Builder-Turn. Deine Nachricht wurde nicht gesendet; der laufende Turn wird unten angezeigt.",
+        "turnTimeout": "Der Builder-Turn hat zu lange gedauert und wurde gestoppt.",
+        "stopFailed": "Der Turn konnte auf dem Server nicht gestoppt werden: {message}"
       },
       "inputLabel": "Builder-Nachricht",
       "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
@@ -3707,7 +3710,8 @@
       },
       "button": {
         "stop": "Stop",
-        "send": "Senden"
+        "send": "Senden",
+        "stopping": "Wird gestoppt …"
       },
       "liveness": {
         "streamLive": "Stream live · {elapsed} · Modell {model}",

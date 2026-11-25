@@ -182,6 +182,26 @@ describe('office create_xlsx dataset mode (B3)', () => {
     assert.equal(parsed.rows, 2);
   });
 
+  it('tells the model which sheets it renamed, and stays silent when it renamed none', async () => {
+    const tool = new OfficeTool(makeService(), 100_000, {});
+    const renamed = JSON.parse(
+      await tool.handleXlsx({
+        sheets: [
+          { name: 'History', columns: [{ key: 'a', header: 'A' }], rows: [{ a: 1 }] },
+          { name: 'Daten', columns: [{ key: 'a', header: 'A' }], rows: [{ a: 1 }] },
+        ],
+      }),
+    ) as { renamedSheets?: unknown };
+    assert.deepEqual(renamed.renamedSheets, [{ requested: 'History', written: 'History_' }]);
+
+    const kept = JSON.parse(
+      await tool.handleXlsx({
+        sheets: [{ name: 'Daten', columns: [{ key: 'a', header: 'A' }], rows: [{ a: 1 }] }],
+      }),
+    ) as Record<string, unknown>;
+    assert.equal('renamedSheets' in kept, false);
+  });
+
   it('writes a dataset cell shaped like a formula object as text, never as a formula', async () => {
     // Resolved dataset rows are data, not descriptors: an object value is
     // JSON-stringified, so a system of record can never inject a formula or a
@@ -269,6 +289,103 @@ describe('office create_xlsx dataset mode (B3)', () => {
     assert.equal(resolved, false, 'the dataset is never resolved');
     assert.equal(tool.drain(), undefined, 'no attachment is produced');
     assert.equal(store.size, 0, 'nothing is stored');
+  });
+
+  it('refuses a column key the dataset does not have, names it and lists the field paths', async () => {
+    // A key outside the dataset would be written as a header over an empty
+    // column, and the row-count postcondition would still pass.
+    const store = new InMemoryStore();
+    const tool = new OfficeTool(makeService(store), 100_000, {
+      currentTurnId: () => 't',
+      getPrivacyResolver: () => () => ({
+        rowCount: 1,
+        columns: [
+          { path: 'Kundennr', type: 'text' },
+          { path: 'Name', type: 'text' },
+          { path: 'Betrag', type: 'number' },
+        ],
+        rows: [{ Kundennr: 'K-1', Name: 'Acme GmbH', Betrag: 100 }],
+      }),
+      log: () => undefined,
+    });
+    const out = await tool.handleXlsx({
+      sheets: [
+        {
+          name: 'Kunden',
+          columns: [
+            { key: 'Kundennr', header: 'Nr' },
+            { key: 'Betrag_EUR', header: 'Betrag' },
+          ],
+          datasetId: 'x',
+        },
+      ],
+    });
+    assert.equal(
+      out,
+      'Error: sheet "Kunden": unknown column key "Betrag_EUR" — the dataset has no such field. ' +
+        'Use a field path of the dataset as key: "Kundennr", "Name", "Betrag"',
+    );
+    assert.equal(tool.drain(), undefined, 'no attachment is produced');
+    assert.equal(store.size, 0, 'nothing is stored');
+  });
+
+  it('names every unknown key and cuts a long field path list off', async () => {
+    const paths = Array.from({ length: 52 }, (_, i) => `f${String(i)}`);
+    const tool = new OfficeTool(makeService(), 100_000, {
+      currentTurnId: () => 't',
+      getPrivacyResolver: () => () => ({
+        rowCount: 1,
+        columns: paths.map((path) => ({ path, type: 'text' })),
+        rows: [{ f0: 'a' }],
+      }),
+      log: () => undefined,
+    });
+    const out = await tool.handleXlsx({
+      sheets: [
+        {
+          name: 'S',
+          columns: [
+            { key: 'x', header: 'X' },
+            { key: 'f0', header: 'F0' },
+            { key: 'y', header: 'Y' },
+          ],
+          datasetId: 'x',
+        },
+      ],
+    });
+    assert.match(out, /^Error: sheet "S": unknown column keys "x", "y" — /);
+    assert.match(out, /"f49" \(and 2 more\)$/);
+    assert.doesNotMatch(out, /"f50"/);
+  });
+
+  it('accepts a computed column whose key is not a dataset field', async () => {
+    const store = new InMemoryStore();
+    const tool = new OfficeTool(makeService(store), 100_000, {
+      currentTurnId: () => 't',
+      getPrivacyResolver: () => () => ({
+        rowCount: 2,
+        columns: [{ path: 'amount', type: 'number' }],
+        rows: [{ amount: 10 }, { amount: 20 }],
+      }),
+      log: () => undefined,
+    });
+    const out = await tool.handleXlsx({
+      sheets: [
+        {
+          name: 'S',
+          columns: [
+            { key: 'amount', header: 'Betrag' },
+            { key: 'gross', header: 'Brutto', formula: 'A{row}*1.19' },
+          ],
+          datasetId: 'x',
+        },
+      ],
+    });
+    const parsed = JSON.parse(out) as { rows: number };
+    assert.equal(parsed.rows, 2);
+    const wb = await loadStoredWorkbook(store, out);
+    const b2 = wb.getWorksheet('S')?.getCell('B2').value as { formula?: string } | undefined;
+    assert.equal(b2?.formula, 'A2*1.19');
   });
 });
 

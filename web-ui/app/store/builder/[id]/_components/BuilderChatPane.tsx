@@ -24,6 +24,7 @@ import {
 import {
   ApiError,
   resolveBuilderUserChoice,
+  stopBuilderTurn,
   streamBuilderTurn,
 } from '../../../../_lib/api';
 import type {
@@ -42,6 +43,8 @@ import { isSendKey } from '../../../../_lib/composerKeys';
 
 /** Heartbeat activity gap after which an in-flight turn reads as stuck. */
 const LIKELY_STUCK_AFTER_MS = 30_000;
+/** After a stop, how long the stream may take to end before we drop it. */
+const STOP_FALLBACK_MS = 5_000;
 
 type ChatItem =
   | { kind: 'message'; key: string; role: 'user' | 'assistant'; text: string; ts: number }
@@ -157,6 +160,8 @@ export function BuilderChatPane({
   );
   const [input, setInput] = useState('');
   const [inflight, setInflight] = useState(false);
+  // #2214 — Stop was pressed and the server is ending the turn.
+  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Quick-win: elapsed-counter for the inflight badge so a slow Opus turn
   // (30+ tool calls) reads as "still progressing" instead of "stuck".
@@ -203,6 +208,8 @@ export function BuilderChatPane({
     cacheReadInputTokens: number;
   } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // #2214 — the server's id of the turn on screen, so Stop can end it there.
+  const turnIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputId = useId();
   const counterRef = useRef(0);
@@ -235,17 +242,41 @@ export function BuilderChatPane({
     if (!trimmed || inflight) return;
     const controller = new AbortController();
     abortRef.current = controller;
+    turnIdRef.current = null;
     setError(null);
     setInflight(true);
     setTurnStartedAt(Date.now());
     setInput('');
     scrollToBottom();
+    // #2214 — set when the draft was busy and we re-attached to the turn
+    // that runs there. Its user message is already in the transcript.
+    let attached = false;
 
     try {
       for await (const ev of streamBuilderTurn(draftId, trimmed, {
         model,
         signal: controller.signal,
+        onBusy: (runningTurnId) => {
+          attached = true;
+          turnIdRef.current = runningTurnId;
+          setInput(trimmed);
+          setError(t('error.turnInProgress'));
+        },
       })) {
+        if (attached && ev.type === 'chat_message' && ev.role === 'user') {
+          // The running turn's message is usually in the loaded transcript
+          // already (this tab loaded after it started); show it otherwise.
+          const text = ev.text;
+          setItems((prev) =>
+            lastUserText(prev) === text
+              ? prev
+              : [
+                  ...prev,
+                  { kind: 'message', key: nextKey('msg'), role: 'user', text, ts: Date.now() },
+                ],
+          );
+          continue;
+        }
         applyEvent(ev);
         if (
           (ev.type === 'spec_patch' ||
@@ -256,6 +287,12 @@ export function BuilderChatPane({
           onAgentMutation?.(ev);
         }
         if (ev.type === 'turn_done') break;
+        // #2214 — the operator pressed Stop; not an error to show.
+        if (ev.type === 'error' && ev.code === 'builder.turn_stopped') break;
+        if (ev.type === 'error' && ev.code === 'builder.turn_timeout') {
+          setError(t('error.turnTimeout'));
+          break;
+        }
         if (ev.type === 'error') {
           console.warn(`[builder.chat] provider error (${ev.code})`, ev.message);
           // OM-101 — a missing LLM access is not a provider error to be
@@ -280,16 +317,23 @@ export function BuilderChatPane({
         setError(t('error.unknownTurn'));
       }
     } finally {
-      setInflight(false);
-      setTurnStartedAt(null);
-      setLiveness(null);
-      setTokensPerSec(0);
-      setLastUsage(null);
-      abortRef.current = null;
+      // #2214 — Stop's fallback may already have handed the pane to a newer
+      // turn; a late cleanup of this one must not reset that turn's state.
+      if (abortRef.current === controller) {
+        setInflight(false);
+        setStopping(false);
+        turnIdRef.current = null;
+        setTurnStartedAt(null);
+        setLiveness(null);
+        setTokensPerSec(0);
+        setLastUsage(null);
+        abortRef.current = null;
+      }
     }
 
     function applyEvent(ev: BuilderTurnEvent): void {
       if (ev.type === 'turn_started') {
+        turnIdRef.current = ev.turnId;
         setTurnStats({
           turnId: ev.turnId,
           isLive: true,
@@ -437,18 +481,53 @@ export function BuilderChatPane({
     }
   }, [draftId, inflight, input, model, nextKey, onAgentMutation, scrollToBottom, t]);
 
-  const onStop = useCallback(() => {
-    abortRef.current?.abort();
-    // Defense in depth: if the abort path takes longer than 5s to clean up
-    // (pathological hang in fetch / NDJSON parser / resume loop), force-clear
-    // inflight so the operator can resend. setInflight(false) is idempotent
-    // — the natural cleanup running first is harmless.
-    setTimeout(() => {
+  // #2214 — Stop ends the turn on the server: the stream then closes with a
+  // `builder.turn_stopped` frame, and the input unlocks only once the turn
+  // is over (#1804). Before the server named the turn, or when the stop
+  // request fails, it falls back to dropping the connection.
+  const onStop = useCallback(async () => {
+    const controller = abortRef.current;
+    const turnId = turnIdRef.current;
+    setStopping(true);
+    // Defense in depth: if the stream takes longer than STOP_FALLBACK_MS to
+    // end (pathological hang in fetch / NDJSON parser / resume loop), drop it
+    // and force-clear inflight. A resend on a still-busy draft gets a 409 and
+    // re-attaches, so this cannot start a second turn.
+    const forceClear = (): void => {
+      controller?.abort();
       setInflight(false);
+      setStopping(false);
       setTurnStartedAt(null);
-      abortRef.current = null;
-    }, 5000);
-  }, []);
+      if (abortRef.current === controller) abortRef.current = null;
+    };
+    if (turnId === null) {
+      forceClear();
+      return;
+    }
+    try {
+      const result = await stopBuilderTurn(draftId, turnId);
+      if (result.status === 'not_running') {
+        forceClear();
+        return;
+      }
+    } catch (err) {
+      setError(
+        t('error.stopFailed', {
+          message:
+            err instanceof ApiError
+              ? humanizeApiError(err)
+              : err instanceof Error
+                ? err.message
+                : String(err),
+        }),
+      );
+      forceClear();
+      return;
+    }
+    setTimeout(() => {
+      if (abortRef.current === controller) forceClear();
+    }, STOP_FALLBACK_MS);
+  }, [draftId, t]);
 
   // Apply a pre-filled prompt when the parent passes one in (e.g. Slot-
   // Editor's "Frag den Agent" button). When `autoSubmit` is true we
@@ -627,11 +706,12 @@ export function BuilderChatPane({
           {inflight ? (
             <Button
               variant="danger"
-              onClick={onStop}
+              onClick={() => void onStop()}
+              disabled={stopping}
               className="h-[44px] shrink-0 text-[12px]"
             >
               <StopCircle className="size-4" aria-hidden />
-              {t('button.stop')}
+              {stopping ? t('button.stopping') : t('button.stop')}
             </Button>
           ) : (
             <Button
@@ -967,6 +1047,15 @@ function phasePillClass(
 function formatTokenRate(rate: number): string {
   if (rate < 10) return rate.toFixed(1);
   return String(Math.round(rate));
+}
+
+/** Text of the newest user message on screen, if any. */
+function lastUserText(items: readonly ChatItem[]): string | null {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (item?.kind === 'message' && item.role === 'user') return item.text;
+  }
+  return null;
 }
 
 function humanizeApiError(err: ApiError): string {
