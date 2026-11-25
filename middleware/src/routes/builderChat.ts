@@ -97,16 +97,19 @@ export function registerBuilderChatRoutes(
       }
       const message = body.message;
 
+      // Owner check before anything else: a foreign draft must answer 404,
+      // never 409 with the running turnId, and must not take the lock (#2214).
+      const draft = await deps.draftStore.load(email, draftId);
+      if (!draft) {
+        sendJson(res, 404, {
+          code: 'builder.draft_not_found',
+          message: `kein Draft mit id '${draftId}'`,
+        });
+        return;
+      }
+
       let modelChoice: BuilderModelId;
       if (body.model === undefined) {
-        const draft = await deps.draftStore.load(email, draftId);
-        if (!draft) {
-          sendJson(res, 404, {
-            code: 'builder.draft_not_found',
-            message: `kein Draft mit id '${draftId}'`,
-          });
-          return;
-        }
         modelChoice = draft.codegenModel;
       } else if (
         typeof body.model === 'string' &&

@@ -723,6 +723,42 @@ describe('#2214 builder turn lock + stop', () => {
     assert.equal(res.status, 404);
   });
 
+  it('answers 404 for a foreign busy draft even with an explicit model', async () => {
+    app = await createTestApp({ withTurnRingBuffer: true, withTurnLock: true });
+    const own = await app.draftStore.load(app.userEmail, app.draftId);
+    assert.ok(own);
+    const other = await app.draftStore.create('someone-else@example.com', 'Other');
+    const held = app.turnLock?.tryAcquire({
+      draftId: other.id,
+      turnId: 'foreign-turn',
+      userEmail: 'someone-else@example.com',
+      source: 'chat',
+    });
+    assert.equal(held?.ok, true);
+
+    const res = await postTurn(app.baseUrl, other.id, {
+      message: 'hi',
+      model: own.codegenModel,
+    });
+    assert.equal(res.status, 404);
+    assert.equal(res.jsonBody?.code, 'builder.draft_not_found');
+    assert.equal(res.jsonBody?.turnId, undefined);
+    assert.equal(app.turnLock?.running(other.id)?.turnId, 'foreign-turn');
+  });
+
+  it('a foreign idle draft is not locked by a turn with an explicit model', async () => {
+    app = await createTestApp({ withTurnRingBuffer: true, withTurnLock: true });
+    const own = await app.draftStore.load(app.userEmail, app.draftId);
+    assert.ok(own);
+    const other = await app.draftStore.create('someone-else@example.com', 'Other');
+    const res = await postTurn(app.baseUrl, other.id, {
+      message: 'hi',
+      model: own.codegenModel,
+    });
+    assert.equal(res.status, 404);
+    assert.equal(app.turnLock?.running(other.id), undefined);
+  });
+
   it('releases the lock and stays quiet when finalize throws', async () => {
     class ThrowingFinalizeBuffer extends BuilderTurnRingBuffer {
       override finalize(turnId: string): void {
