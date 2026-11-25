@@ -2,12 +2,12 @@
 
 ## Status
 
-Proposed
+Accepted
 
 - **Date:** 2026-11-24
 - **Deciders:** Owner decision of 2026-11-24 ("private knowledge always stays private"),
-  recorded in #2206; fixes in PRs #2209, #2210, #2212 and #2213 (all open, stacked) for
-  #2205, #2204, #2208, #1825 and #2207.
+  recorded in #2206; fixes in PRs #2209, #2210, #2212 and #2213 for #2205, #2204, #2208,
+  #1825 and #2207.
 
 ## Context and Problem Statement
 
@@ -32,7 +32,7 @@ and where does it live?
 
 - One rule, not one per path: a new read path must not need its own reasoning.
 - The rule follows the mode's recall rules, which are already decided and tested.
-- Fail closed: no boundary, no read.
+- Inside a turn, fail closed: no boundary, no read through the kernel tool.
 
 ## Considered Options
 
@@ -45,14 +45,17 @@ and where does it live?
 
 Chosen option: **A**.
 
-- **The decision.** In every mode a turn sees only its own agent's memory, and only what the
-  people reading may see. A private or `shared:<x>` memory never reaches a turn read by someone
-  who does not own it, and never reaches a context-bound `enforce-strict` turn.
+- **The decision.** In every mode a turn sees its own agent's memory plus memories other
+  agents shared (`team` / `public`; a memory without a visibility counts as `team`, as in
+  recall), and only what the people reading may see. A private or `shared:<x>` memory never
+  reaches a turn read by someone who does not own it, and never reaches a context-bound
+  `enforce-strict` turn.
 - **`GraphReadScope` kinds.** `user` for `off` / `enforce`: this agent's turns that the turn's
-  user sent, plus the turn's own conversation in full. `conversation` / `members` for
-  context-bound `enforce-strict` / `members`. A turn without a user sees nothing.
+  user sent; session reads of the turn's own conversation return it in full, while
+  `search_turns` and semantic search there stay limited to the user's turns. `conversation` / `members` for
+  context-bound `enforce-strict` / `members`. A turn without a user sees nothing in the graph (process tools: see below).
 - **Knowledge-graph tool and plugin search** read through the boundary; sessions through
-  `getSession(scope, { userId })` (plugin-api 1.89.0: `SessionReadOptions.userId`,
+  `getSession(scope, { userId })` (plugin-api 1.94.0: `SessionReadOptions.userId`,
   `scopeBelongsToAgent`). The CLI-path registration knows no turn and sees nothing.
 - **Durable recall leg** passes `sharedOnly` whenever the room is restricted, like the other
   curated-memory legs.
@@ -60,7 +63,13 @@ Chosen option: **A**.
   boundary and the mode's recall rules. `getNeighbors` inside a turn and the `kg_graph` walk go
   through it; the walk starts from the turn's own recall hits and follows only admitted nodes.
 - **Process tools** read only this agent's processes; none in a context-bound `enforce-strict`
-  / `members` turn. A process the turn may not read answers like a missing one.
+  / `members` turn. A process the turn may not read answers like a missing one. In a turn
+  without a user (or under a `nothing` boundary) they still return this agent's processes.
+- **No boundary set** (jobs, activation, any scope outside a turn): only the kernel tool
+  dispatch fails closed. The plugin accessors (`searchTurns`, `findEntityCapturedTurns`,
+  `getNeighbors`), the node filter and the process tools return everything and rely on the
+  caller. Nested scopes that rebuild the turn context must carry the boundary box by
+  reference (skill-bound tools do since #2210).
 
 ### Consequences
 
@@ -70,6 +79,10 @@ Chosen option: **A**.
   graph tool (the tool tells the model why); the knowledge-graph side panel shows fewer nodes.
 - 🔴 **Bad:** Outside a turn (jobs, activation) the plugin accessors and process tools are
   unchanged; they rely on the caller.
+- 🔴 **Bad (residual):** A plugin that declares `requires: ["knowledgeGraph@^1"]` (likewise
+  `graphPool`, `processMemory`, `memoryStore`) gets the raw service from
+  `pluginServiceGrants.ts` and bypasses the boundary. Closing that needs a bounded service
+  form; until then such grants are a reviewed capability.
 - ⚪ **Neutral:** `edit_process` / `write_process` and other plan readers (`listRecentPlans`)
   are not covered yet. Web chat sessions without an owner (#1762) stay a residual.
 

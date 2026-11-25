@@ -482,13 +482,7 @@ export const EXPECTED_DIVERGENCES: readonly Divergence[] = [
     confirmed:
       'step 2, aclContract.test.ts (todo): 50 operator-authored memories and their excerpts come back for audienceOwners []; Neon returns none',
   },
-  {
-    id: 'process-cross-agent',
-    oracle: "another agent's process is not readable (SP INV-2)",
-    code: 'process memory query/get filter only on tenant, scope and unprotected',
-    confirmed:
-      "step 3, canarySweep*.pg.test.ts (todo, #2207): query_processes / run_stored_process return other agents' processes in every mode, and any process in strict/members context-bound turns; the recall process leg is clean",
-  },
+
   {
     id: 'excerpt-parent-recheck',
     oracle: 'an excerpt of a team-visible MK is visible to a non-owner when its parent is',
