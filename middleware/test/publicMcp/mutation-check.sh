@@ -222,7 +222,7 @@ run_mutation "an absent privacy provider no longer refuses the call" "$SERVER" \
 run_mutation "the privacy handle is never installed on the dispatcher" "$SERVER" \
   'if (gate && dispatcher.withPrivacy) {|||if (false && dispatcher.withPrivacy) {'
 run_mutation "intern-exempt tools become publicly servable" "$PRIVACY" \
-  'return !isInternExemptTool(name);|||return true;'
+  'return !isInternExemptTool(name) && !INTERN_EXEMPT_OPERATIONS.has(name);|||return true;'
 run_mutation "the intern-exemption filter is dropped from the allowlist" "$SERVER" \
   'if (!isPubliclyServableTool(tool)) continue;|||'
 

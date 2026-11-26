@@ -239,13 +239,20 @@ import { isOfferedThisTurn, type NativeToolRegistry } from './nativeToolRegistry
 // #1102 — type-only, so no runtime cycle: the CLI agent owns the card-drain
 // shape; `drainCliTurnCards` returns it verbatim onto the `done` event.
 import type { CliTurnCards } from './cliChatAgent.js';
+import type { CliTurnPrivacy } from './cliTurnPrivacy.js';
+import type { DispatchableToolSpec } from './toolDispatchService.js';
 import { CLI_MEMORY_RULES, type CliTurnMemory } from './cliMemoryTool.js';
 import type {
   CliCompletedTurn,
   CliRecalledContext,
   CliTurnRecord,
 } from './cliTurnRecord.js';
-import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
+import {
+  internFailedNotice,
+  isInternExemptCall,
+  isPromptMaskedUploadCall,
+  runsOnModelInput,
+} from './privacyInternPolicy.js';
 import {
   remaskEchoedValues,
   restorePromptSurrogatesInToolInput,
@@ -1587,6 +1594,37 @@ async function preMaskUserMessage(
   }
 }
 
+/**
+ * ADR-0198 — the text of a file the user uploaded in this turn (a
+ * `transcribe_recording` transcript), masked like the #268 attachment tail:
+ * PII spans become the turn's surrogates, the rest stays readable. A blocked
+ * mask fails closed — the text is withheld behind the kernel's notice, as an
+ * interning failure would be.
+ */
+async function maskOwnUploadText(
+  privacy: PrivacyTurnHandle,
+  toolName: string,
+  text: string,
+): Promise<string> {
+  try {
+    return remaskEchoedValues(privacy, await maskPromptForWire(privacy, text, 'context'));
+  } catch (err) {
+    console.warn(
+      `[orchestrator.dispatchTool:${toolName}] prompt masking of the upload text failed ${errorClassForLog(err)} — result WITHHELD`,
+    );
+    return internFailedNotice(toolName);
+  }
+}
+
+/**
+ * ADR-0198 — storage keys of the files uploaded in this turn: only the
+ * uploads the channel adapter stated as structured data (ADR-0178), never
+ * keys parsed from the message text.
+ */
+function turnUploadKeysOf(input: ChatTurnInput): ReadonlySet<string> {
+  return new Set((input.storedAttachments ?? []).map((info) => info.storageKey));
+}
+
 /** `maskPromptForWire` for the #268 ingested attachment tail — skips the
  *  empty/whitespace case (`ingestAttachments` returns '' without docs). */
 async function maskIngestedForWire(
@@ -2532,6 +2570,54 @@ function dedupFileExportClause(hasFileExport: boolean): string {
     : '';
 }
 
+/**
+ * Privacy Shield v4 — the data-plane contract the model gets before its first
+ * tool call (see `buildSystemPrompt`). Exported for the subscription-CLI path
+ * (ADR-0195), whose system prompt carries the same directive while the turn is
+ * guarded.
+ */
+export function privacyV4Directive(hasFileExport: boolean): string {
+  return `
+**Datenschutz-Datenschicht (Privacy Shield v4) — PFLICHT bei jeder Datenfrage:**
+
+Ergebnisse von Fach-Werkzeugen durchlaufen eine Datenschutz-Grenze: statt der Rohdaten erhältst du einen **Digest** (identitätsfreie Strukturbeschreibung). Felder mit \`"classification":"sensitive-masked"\` zeigen dir nur den Platzhalter \`[masked]\` — **nicht weil der User sie nicht sehen darf, sondern nur weil DU sie nicht sehen sollst.** Der angemeldete User IST berechtigt, diese Werte (Namen, E-Mails, …) zu sehen.
+
+a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf. **Chat-Ausgaben sind auf 50 Zeilen begrenzt:** der Server zeigt die ersten 50 und schreibt die Gesamtzahl darunter. ${privacyRowCapRule(hasFileExport)}
+
+a2) **Ist ein maskiertes Feld das SUBJEKT der Antwort** (z.B. „Welche Abteilung hat die meisten …?"), kannst du es im Prosa-Teil nicht nennen. Schreib dann einen **vollständigen Satz, der auf die Tabelle verweist**, z.B. „Die Abteilung mit den meisten aktiven Mitarbeitern steht in der Tabelle unten (7 Mitarbeiter)." — nie einen Satz mit einer Lücke, wo der Name stünde, und nie einen Satz ohne Verb.
+
+a3) **Personennamen immer vollständig schreiben.** Namen, die im Gespräch oder in Tool-Ergebnissen stehen, können Platzhalter sein, die der Server vor der Zustellung in die echten Namen zurückübersetzt. Das gelingt nur mit dem **vollständigen Namen genau so, wie er im Kontext steht** (Vor- UND Nachname). Schreibe deshalb nie nur den Vornamen oder nur den Nachnamen, keine Abkürzung, keinen Spitznamen und keine andere Schreibweise — auch nicht bei der zweiten Erwähnung („Laura Schmitt und Lukas Becker fehlen noch … Laura Schmitt und Lukas Becker können …", nicht „Laura und Lukas können …"). Dasselbe gilt für Namen, die du an Tools oder Fach-Werkzeuge weitergibst.
+
+b) **Behaupte NIEMALS, Daten seien „gefiltert", „maskiert" oder „aus Datenschutzgründen nicht verfügbar".** Kein „⚠️ Datenschutzfilter aktiv", kein „wende dich an einen Administrator". Du siehst \`[masked]\` — der User bekommt den echten Wert. Erfinde maskierte Werte niemals selbst.
+   **Ausnahme — vom Server gemeldet:** Nennt das Ergebnis von \`v4_render_answer\` Spalten unter „Could not be rendered", dann konnte der Server deren Inhalt NICHT darstellen (z.B. einen Confluence-Seiteninhalt) und hat das unter der Tabelle vermerkt. Diese Tatsache darfst du weitergeben: der Inhalt dieser Spalte wurde nicht angezeigt; ein Administrator kann den Datenschutz-Modus des Agenten auf „Bypass" stellen. Ein Feld mit \`"shape":"nested"\` im Digest ist eine verschachtelte Struktur — versprich nie seinen „wörtlichen" Inhalt.
+
+b2) **Aussagen über den Schutz-STATUS von Daten sind Tatsachenbehauptungen — nur belegte sind erlaubt.** Du weißt über den Datenschutz-Status einer Datei oder eines Tool-Ergebnisses **ausschließlich** das, was in einem \`PRIVACY STATUS\`-Satz, einem \`[dataset-imported]\`-, \`[attachment-content]\`- oder \`[attachment-not-ingested]\`-Block oder im Digest steht. Gib genau das wieder — wörtlich, nicht ausgeschmückt.
+
+   **Verboten**, weil du es nicht wissen kannst: „der Privacy Shield greift hier nicht", „der Inhalt liegt im Klartext vor", „die Daten wurden anonymisiert", „das ist DSGVO-konform", „bei Datei-Uploads gibt es keinen Schutz" — und jede andere Aussage darüber, was das System mit den Daten getan oder nicht getan hat, die nicht wörtlich in einem der genannten Blöcke steht.
+
+   Ein **falscher Alarm ist schlimmer als gar kein Hinweis**: der User handelt danach. Steht kein \`PRIVACY STATUS\` dabei, sag „dazu liegt mir keine Angabe vor" oder schweig zum Thema — rate nicht, und leite nichts aus früheren Gesprächen, Transkripten oder deinem Allgemeinwissen ab. Das Verhalten des Systems ändert sich mit Releases; ein Transkript von letzter Woche ist **kein** Beleg für heute.
+
+   Ungefragte Datenschutz-Hinweise („⚠️ Datenschutz-Hinweis", „DSGVO-Rechtsgrundlage beachten") gehören nicht in deine Antwort, außer der User fragt danach oder ein Block sagt dir ausdrücklich, dass etwas nicht verarbeitet wurde.
+
+c) **Join-Back-Rezept für Rankings/Aggregate mit Namen:** \`v4_aggregate\`/\`v4_group\`/\`v4_join\` arbeiten nur über **safe (nicht-maskierte)** Schlüssel — Gruppieren nach einem maskierten Namen ist nicht möglich, ein Aggregat verliert daher die Namens-Spalte. Um sie zurückzuholen:
+   1. Hole **beide** Datasets: die Transaktionsdaten (z.B. Urlaubsanträge) UND das Stammdaten-Directory (z.B. Mitarbeiterliste mit \`employee_id\` + Name) — das sind in der Regel zwei Fach-Werkzeug-Aufrufe.
+   2. \`v4_aggregate\` die Transaktionen über den safe Schlüssel (z.B. \`employee_id\`).
+   3. \`v4_join\` das Aggregat mit dem Directory auf \`employee_id\` → jede Zeile trägt wieder den Namen.
+   4. \`v4_sort\`/\`v4_top_n\`, dann \`v4_render_answer\` mit \`columns: ["employee", …]\`.
+
+d) **Dateien zusammenführen / Duplikate entfernen (Dedup):** Hochgeladene Tabellen tragen pro Textspalte eine **Schlüsselspalte \`__k_<Spalte>\`** — ein stabiler, identitätsfreier Schlüssel: derselbe Wert (Name, E-Mail, Firma) ergibt in **jeder** Datei dieses Users denselben Schlüssel, unabhängig von Groß-/Kleinschreibung und Leerzeichen. Diese Spalten sind safe und dürfen als Verb-Schlüssel dienen — die Namensspalte selbst nicht. Rezept:
+   1. \`query_dataset\` → \`query_rows\` je Datei (bei mehr als 200 Zeilen mit \`offset\` weiterblättern) — jedes Ergebnis liefert eine \`datasetId\` im Digest.
+   2. \`v4_union\` über alle Teile (bei abweichenden Spaltennamen \`renameRight\`, z.B. \`{"Phone":"Telefon"}\`).
+   3. \`v4_distinct\` mit \`by: ["__k_E-Mail"]\` (oder \`["__k_Vorname","__k_Nachname"]\`), \`keep: "first"\`.
+   4. Ausgabe über \`v4_render_answer\`${dedupFileExportClause(hasFileExport)}. \`__k_*\`-Spalten **nie** in \`columns\` aufnehmen.
+   Die Zeilenzahl vor und nach \`v4_distinct\` steht in den Digests — nenne die Differenz als Anzahl entfernter Duplikate. Fehlt einer Datei die \`__k_\`-Spalte (steht im \`[dataset-imported]\`-Block), ist dateiübergreifendes Dedup nicht möglich — sag genau das. **Frag den User nicht, ob er selbst deduplizieren möchte** — das ist deine Aufgabe.
+
+e) **Rückfragen zu einer früher gezeigten Tabelle.** Die Zeilen einer gerenderten Tabelle gelten nur für ihren Turn — im nächsten Turn sind sie weg, und du hast sie nie gesehen. Wie die Tabelle entstand, steht in ihrer \`Table provenance\`-Notiz (im Ergebnis von \`v4_render_answer\` bzw. im früheren Gesprächsverlauf als \`<!-- orchestrator:rendered_table … -->\`): Quell-Tool, Schritte (Filter-Felder und -Operatoren, Sortierung, Top-N, Spalten) und Zeilenzahl — ohne Werte. Bezieht sich der User auf „die Tabelle" („die erste Person aus der Tabelle", „Zeile 3"):
+   1. Führe **dieselbe Quell-Abfrage** erneut aus (dasselbe Fach-Werkzeug, gleiche Frage, gleicher Umfang) und wende **dieselben Schritte in derselben Reihenfolge** an (gleiche Filter, gleiche Sortierung und Richtung).
+   2. Weicht die neue Zeilenzahl von der Notiz ab, fehlt die Notiz, oder kannst du einen Schritt nicht nachbilden (z.B. weil seine Filterwerte nicht in der Notiz stehen), dann **sag ausdrücklich, dass deine Antwort auf einer neuen Abfrage beruht** und von der angezeigten Tabelle abweichen kann — und behaupte nicht, du beschreibst „die Tabelle".
+`;
+}
+
 function buildSystemPrompt(
   assistantIdentity: string,
   domainTools: DomainTool[],
@@ -2595,47 +2681,7 @@ function buildSystemPrompt(
   // first tool call so it knows to (a) always terminate a data answer with
   // `v4_render_answer` and (b) fetch the entity directory it needs for the
   // join-back that re-attaches a masked identity column to an aggregate.
-  const privacyV4Block = hasPrivacyV4
-    ? `
-**Datenschutz-Datenschicht (Privacy Shield v4) — PFLICHT bei jeder Datenfrage:**
-
-Ergebnisse von Fach-Werkzeugen durchlaufen eine Datenschutz-Grenze: statt der Rohdaten erhältst du einen **Digest** (identitätsfreie Strukturbeschreibung). Felder mit \`"classification":"sensitive-masked"\` zeigen dir nur den Platzhalter \`[masked]\` — **nicht weil der User sie nicht sehen darf, sondern nur weil DU sie nicht sehen sollst.** Der angemeldete User IST berechtigt, diese Werte (Namen, E-Mails, …) zu sehen.
-
-a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf. **Chat-Ausgaben sind auf 50 Zeilen begrenzt:** der Server zeigt die ersten 50 und schreibt die Gesamtzahl darunter. ${privacyRowCapRule(hasFileExport)}
-
-a2) **Ist ein maskiertes Feld das SUBJEKT der Antwort** (z.B. „Welche Abteilung hat die meisten …?"), kannst du es im Prosa-Teil nicht nennen. Schreib dann einen **vollständigen Satz, der auf die Tabelle verweist**, z.B. „Die Abteilung mit den meisten aktiven Mitarbeitern steht in der Tabelle unten (7 Mitarbeiter)." — nie einen Satz mit einer Lücke, wo der Name stünde, und nie einen Satz ohne Verb.
-
-a3) **Personennamen immer vollständig schreiben.** Namen, die im Gespräch oder in Tool-Ergebnissen stehen, können Platzhalter sein, die der Server vor der Zustellung in die echten Namen zurückübersetzt. Das gelingt nur mit dem **vollständigen Namen genau so, wie er im Kontext steht** (Vor- UND Nachname). Schreibe deshalb nie nur den Vornamen oder nur den Nachnamen, keine Abkürzung, keinen Spitznamen und keine andere Schreibweise — auch nicht bei der zweiten Erwähnung („Laura Schmitt und Lukas Becker fehlen noch … Laura Schmitt und Lukas Becker können …", nicht „Laura und Lukas können …"). Dasselbe gilt für Namen, die du an Tools oder Fach-Werkzeuge weitergibst.
-
-b) **Behaupte NIEMALS, Daten seien „gefiltert", „maskiert" oder „aus Datenschutzgründen nicht verfügbar".** Kein „⚠️ Datenschutzfilter aktiv", kein „wende dich an einen Administrator". Du siehst \`[masked]\` — der User bekommt den echten Wert. Erfinde maskierte Werte niemals selbst.
-   **Ausnahme — vom Server gemeldet:** Nennt das Ergebnis von \`v4_render_answer\` Spalten unter „Could not be rendered", dann konnte der Server deren Inhalt NICHT darstellen (z.B. einen Confluence-Seiteninhalt) und hat das unter der Tabelle vermerkt. Diese Tatsache darfst du weitergeben: der Inhalt dieser Spalte wurde nicht angezeigt; ein Administrator kann den Datenschutz-Modus des Agenten auf „Bypass" stellen. Ein Feld mit \`"shape":"nested"\` im Digest ist eine verschachtelte Struktur — versprich nie seinen „wörtlichen" Inhalt.
-
-b2) **Aussagen über den Schutz-STATUS von Daten sind Tatsachenbehauptungen — nur belegte sind erlaubt.** Du weißt über den Datenschutz-Status einer Datei oder eines Tool-Ergebnisses **ausschließlich** das, was in einem \`PRIVACY STATUS\`-Satz, einem \`[dataset-imported]\`-, \`[attachment-content]\`- oder \`[attachment-not-ingested]\`-Block oder im Digest steht. Gib genau das wieder — wörtlich, nicht ausgeschmückt.
-
-   **Verboten**, weil du es nicht wissen kannst: „der Privacy Shield greift hier nicht", „der Inhalt liegt im Klartext vor", „die Daten wurden anonymisiert", „das ist DSGVO-konform", „bei Datei-Uploads gibt es keinen Schutz" — und jede andere Aussage darüber, was das System mit den Daten getan oder nicht getan hat, die nicht wörtlich in einem der genannten Blöcke steht.
-
-   Ein **falscher Alarm ist schlimmer als gar kein Hinweis**: der User handelt danach. Steht kein \`PRIVACY STATUS\` dabei, sag „dazu liegt mir keine Angabe vor" oder schweig zum Thema — rate nicht, und leite nichts aus früheren Gesprächen, Transkripten oder deinem Allgemeinwissen ab. Das Verhalten des Systems ändert sich mit Releases; ein Transkript von letzter Woche ist **kein** Beleg für heute.
-
-   Ungefragte Datenschutz-Hinweise („⚠️ Datenschutz-Hinweis", „DSGVO-Rechtsgrundlage beachten") gehören nicht in deine Antwort, außer der User fragt danach oder ein Block sagt dir ausdrücklich, dass etwas nicht verarbeitet wurde.
-
-c) **Join-Back-Rezept für Rankings/Aggregate mit Namen:** \`v4_aggregate\`/\`v4_group\`/\`v4_join\` arbeiten nur über **safe (nicht-maskierte)** Schlüssel — Gruppieren nach einem maskierten Namen ist nicht möglich, ein Aggregat verliert daher die Namens-Spalte. Um sie zurückzuholen:
-   1. Hole **beide** Datasets: die Transaktionsdaten (z.B. Urlaubsanträge) UND das Stammdaten-Directory (z.B. Mitarbeiterliste mit \`employee_id\` + Name) — das sind in der Regel zwei Fach-Werkzeug-Aufrufe.
-   2. \`v4_aggregate\` die Transaktionen über den safe Schlüssel (z.B. \`employee_id\`).
-   3. \`v4_join\` das Aggregat mit dem Directory auf \`employee_id\` → jede Zeile trägt wieder den Namen.
-   4. \`v4_sort\`/\`v4_top_n\`, dann \`v4_render_answer\` mit \`columns: ["employee", …]\`.
-
-d) **Dateien zusammenführen / Duplikate entfernen (Dedup):** Hochgeladene Tabellen tragen pro Textspalte eine **Schlüsselspalte \`__k_<Spalte>\`** — ein stabiler, identitätsfreier Schlüssel: derselbe Wert (Name, E-Mail, Firma) ergibt in **jeder** Datei dieses Users denselben Schlüssel, unabhängig von Groß-/Kleinschreibung und Leerzeichen. Diese Spalten sind safe und dürfen als Verb-Schlüssel dienen — die Namensspalte selbst nicht. Rezept:
-   1. \`query_dataset\` → \`query_rows\` je Datei (bei mehr als 200 Zeilen mit \`offset\` weiterblättern) — jedes Ergebnis liefert eine \`datasetId\` im Digest.
-   2. \`v4_union\` über alle Teile (bei abweichenden Spaltennamen \`renameRight\`, z.B. \`{"Phone":"Telefon"}\`).
-   3. \`v4_distinct\` mit \`by: ["__k_E-Mail"]\` (oder \`["__k_Vorname","__k_Nachname"]\`), \`keep: "first"\`.
-   4. Ausgabe über \`v4_render_answer\`${dedupFileExportClause(hasFileExport)}. \`__k_*\`-Spalten **nie** in \`columns\` aufnehmen.
-   Die Zeilenzahl vor und nach \`v4_distinct\` steht in den Digests — nenne die Differenz als Anzahl entfernter Duplikate. Fehlt einer Datei die \`__k_\`-Spalte (steht im \`[dataset-imported]\`-Block), ist dateiübergreifendes Dedup nicht möglich — sag genau das. **Frag den User nicht, ob er selbst deduplizieren möchte** — das ist deine Aufgabe.
-
-e) **Rückfragen zu einer früher gezeigten Tabelle.** Die Zeilen einer gerenderten Tabelle gelten nur für ihren Turn — im nächsten Turn sind sie weg, und du hast sie nie gesehen. Wie die Tabelle entstand, steht in ihrer \`Table provenance\`-Notiz (im Ergebnis von \`v4_render_answer\` bzw. im früheren Gesprächsverlauf als \`<!-- orchestrator:rendered_table … -->\`): Quell-Tool, Schritte (Filter-Felder und -Operatoren, Sortierung, Top-N, Spalten) und Zeilenzahl — ohne Werte. Bezieht sich der User auf „die Tabelle" („die erste Person aus der Tabelle", „Zeile 3"):
-   1. Führe **dieselbe Quell-Abfrage** erneut aus (dasselbe Fach-Werkzeug, gleiche Frage, gleicher Umfang) und wende **dieselben Schritte in derselben Reihenfolge** an (gleiche Filter, gleiche Sortierung und Richtung).
-   2. Weicht die neue Zeilenzahl von der Notiz ab, fehlt die Notiz, oder kannst du einen Schritt nicht nachbilden (z.B. weil seine Filterwerte nicht in der Notiz stehen), dann **sag ausdrücklich, dass deine Antwort auf einer neuen Abfrage beruht** und von der angezeigten Tabelle abweichen kann — und behaupte nicht, du beschreibst „die Tabelle".
-`
-    : '';
+  const privacyV4Block = hasPrivacyV4 ? privacyV4Directive(hasFileExport) : '';
 
   return `${assistantIdentity}
 
@@ -4382,6 +4428,87 @@ export class Orchestrator {
   }
 
   /**
+   * ADR-0195 (#2239) — the Privacy Shield for one subscription-CLI turn: the
+   * same handle, masks, restore and receipt an in-process turn gets, shaped
+   * for `CliChatAgent` (see `cliTurnPrivacy.ts`). `undefined` when no privacy
+   * guard runs; the CLI agent then refuses a turn the org policy requires to
+   * be guarded. Called in the CLI turn's captured context.
+   */
+  public cliTurnPrivacy(
+    input: ChatTurnInput,
+    turnId: string,
+    model: string,
+  ): CliTurnPrivacy | undefined {
+    const service = this.privacyGuard?.();
+    if (service === undefined) return undefined;
+    const handle = this.buildPrivacyHandle(service, input.sessionScope ?? turnId, turnId);
+    const ran = { model, provider: 'claude-cli', fallbackUsed: false };
+    const tools: DispatchableToolSpec[] = handle.v4ToolSpecs().map((spec) => ({
+      name: spec.name,
+      description: spec.description,
+      input_schema: spec.input_schema as DispatchableToolSpec['input_schema'],
+    }));
+    return {
+      handle,
+      tools,
+      directive: privacyV4Directive(this.isFileExportOfferedThisTurn()),
+      maskUserMessage: (text) => maskPromptForWire(handle, text),
+      maskRecalled: async (text) => (await maskRecalledForWire(handle, text)) ?? text,
+      wrapDispatch: (base) => ({
+        dispatch: async (name, toolInput, options) => {
+          if (name.startsWith('v4_')) {
+            const v4Tool = splitV4ToolResult(name, await this.runV4ToolForTurn(handle, name, toolInput));
+            if (v4Tool.canvasSentinel !== undefined) {
+              await tapCanvasSentinel(name, v4Tool.canvasSentinel);
+            }
+            return { content: v4Tool.llmText };
+          }
+          // #1544 — tools run on the user's values; same rule as the
+          // in-process dispatch (`toolKeepsSurrogates`).
+          const restored = this.toolKeepsSurrogates(name)
+            ? toolInput
+            : restorePromptSurrogatesInToolInput(handle, toolInput);
+          const result = await base.dispatch(name, restored, options);
+          return { ...result, content: remaskEchoedValues(handle, result.content) };
+        },
+      }),
+      streamRestorer: async () =>
+        (await personalFieldsWithheld()) ? undefined : handle.snapshotPromptRestorer(),
+      releaseAnswer: async (answer) => {
+        const taken = await handle.takeRenderedAnswerV4();
+        const rendered = taken !== undefined ? await renderedAnswerForAudience(taken) : undefined;
+        const base = rendered?.text ?? answer;
+        let restored = base;
+        try {
+          restored = await restoreAnswerForUser(handle, base);
+        } catch (err) {
+          console.warn('[orchestrator] CLI restorePromptPseudonyms threw — answer left as-is:', err);
+        }
+        if (rendered === undefined) return { answer: restored };
+        return {
+          answer: restored,
+          answerSource: 'privacy-render',
+          ...(rendered.isError === true ? { answerIsError: true } : {}),
+          ...(rendered.maskedValues.length > 0 ? { maskedValues: rendered.maskedValues } : {}),
+        };
+      },
+      finalize: async (userMessage) => {
+        try {
+          const receipt = await handle.finalize(userMessage);
+          if (receipt === undefined) return {};
+          const rowed = await this.settleTurnReceipt(turnId, input, receipt, undefined, ran);
+          return { privacyReceipt: receipt, ...(rowed ? { receiptId: turnId } : {}) };
+        } catch (err) {
+          console.warn('[orchestrator] CLI privacy finalize threw — receipt dropped:', err);
+          return {};
+        }
+      },
+      refusalFor: (error) =>
+        error instanceof PromptMaskBlockedError ? promptMaskBlockedAnswer(error) : undefined,
+    };
+  }
+
+  /**
    * Issue #1391 — persist a turn the subscription CLI answered, the way the
    * in-process `done` branch persists its own: the session-log row (markdown
    * transcript, chat-session mirror and the graph's `Session` / `Turn` / `Run`
@@ -4391,9 +4518,11 @@ export class Orchestrator {
    * row and nothing else, so Memory and the session log stayed empty for every
    * turn on that provider.
    *
-   * No privacy handle exists on this path (the CLI child gets the turn
-   * unmasked, see `CliChatAgent.maskHistory`), so the row carries the real
-   * texts and no masked view, and the facts are extracted from the same texts.
+   * ADR-0195 — a guarded CLI turn hands its wire texts (`turn.wireView`):
+   * the row then carries the masked view and the protected flag, and the
+   * facts are extracted from the wire texts and restored, as in-process.
+   * Without a handle the row carries the real texts, no masked view, and is
+   * flagged `unprotected`.
    *
    * Never throws: every step is best-effort, as on the in-process path, and a
    * turn without a session scope (a CLI sub-agent's single shot) writes nothing.
@@ -4409,6 +4538,14 @@ export class Orchestrator {
     // `userId`, and `ingestRun` drops a trace owned by that.
     const { userId: _rawTraceOwner, ...traceWithoutOwner } = turn.runTrace;
     const runTrace = { ...traceWithoutOwner, ...runTraceUserSpread(input) };
+    // ADR-0195 — under the CLI turn's own handle the row gets the masked view
+    // and the protected flag an in-process turn gets; the fact extraction
+    // reads the wire texts and restores what it extracts.
+    const privacy = turn.wireView !== undefined ? turnContext.current()?.privacyHandle : undefined;
+    const rowView =
+      privacy !== undefined && turn.wireView !== undefined
+        ? maskedRowView(privacy, turn.wireView.userMessage, turn.wireView.answer)
+        : { unprotected: true };
     let persistedTurnId: string | undefined;
     if (this.sessionLogger) {
       persistedTurnId = await this.turnRecords.writeRow(
@@ -4422,17 +4559,26 @@ export class Orchestrator {
           ...turnOwnersField(turnMemory),
           runTrace,
           entityRefs: [],
-          // #1507 — a CLI turn runs without the Privacy Shield.
-          unprotected: true,
+          // #1507 — a CLI turn without a handle runs without the shield.
+          ...rowView,
         },
         'cli answer',
       );
     }
     this.turnRecords.startFactExtraction(
       persistedTurnId,
-      this.factExtractor
-        ? { userMessage: input.userMessage, assistantAnswer: turn.answer }
-        : undefined,
+      !this.factExtractor
+        ? undefined
+        : privacy !== undefined && turn.wireView !== undefined
+          ? (() => {
+              const restoreFacts = privacy.snapshotPromptRestorer();
+              return {
+                userMessage: turn.wireView.userMessage,
+                assistantAnswer: turn.wireView.answer,
+                ...(restoreFacts ? { restoreFacts } : {}),
+              };
+            })()
+          : { userMessage: input.userMessage, assistantAnswer: turn.answer },
       [],
     );
     const captureDisclosure = this.turnRecords.takeCaptureDisclosure(persistedTurnId);
@@ -5926,6 +6072,8 @@ export class Orchestrator {
         memoryFileRead: { value: false },
         // The turn's wire view (prompt + answer), for a verifier hand-over.
         wireView: {},
+        // ADR-0198 — the files the user uploaded in this turn.
+        turnUploadKeys: turnUploadKeysOf(input),
         // #1543 — this turn's render provenance notes, for the persisted row.
         renderProvenance: { notes: [] },
         graphReadScope: {},
@@ -7787,6 +7935,8 @@ export class Orchestrator {
       sessionScope: sessionId,
       // The turn's wire view (prompt + answer), for a verifier hand-over.
       wireView: {},
+      // ADR-0198 — see the matching `turnContext.run` above.
+      turnUploadKeys: turnUploadKeysOf(input),
       renderProvenance: { notes: [] },
       graphReadScope: {},
       orchestratorExecution: {},
@@ -9593,6 +9743,27 @@ export class Orchestrator {
     return result;
   }
 
+  /**
+   * #1544 — whether a tool's handler gets the model's input as written
+   * (placeholders kept) instead of the user's restored values: intern-exempt
+   * tools that run on model input, and a domain tool that asks a sub-agent
+   * model (its input is a question for a model). A top-level MCP grant is
+   * registered as a domain tool too but calls its server directly
+   * (`mcpGrantToDomainTool`), and `consult` hands its input to a colleague
+   * agent that cannot resolve this turn's placeholders (the broker checks
+   * first that the colleague may receive them) — both get restored values.
+   * Shared by the in-process and the CLI loopback dispatch.
+   */
+  private toolKeepsSurrogates(name: string): boolean {
+    if (runsOnModelInput(name)) return true;
+    const domainTool = this.domainToolsByName.get(name);
+    return (
+      domainTool !== undefined &&
+      domainTool.mcpServerId === undefined &&
+      domainTool !== this.consultTool
+    );
+  }
+
   private async dispatchToolDeadlined(
     name: string,
     input: unknown,
@@ -9698,15 +9869,8 @@ export class Orchestrator {
     // A top-level MCP grant is registered as a domain tool too, but calls its
     // server directly (`mcpGrantToDomainTool`): only a tool WITHOUT an MCP
     // server id runs a sub-agent model.
-    const domainTool = this.domainToolsByName.get(name);
-    // `consult` is the exception: its input goes to a colleague agent, which
-    // cannot resolve this turn's placeholders, so it gets the restored values
-    // (the broker checks first that the colleague may receive them).
-    const asksSubAgentModel =
-      domainTool !== undefined && domainTool.mcpServerId === undefined && domainTool !== this.consultTool;
-    const handlerInput =
-      asksSubAgentModel || isInternExemptTool(name)
-        ? input
+    const handlerInput = this.toolKeepsSurrogates(name)
+      ? input
       : restorePromptSurrogatesInToolInput(privacy, input);
     const execute = async (): Promise<NativeToolOutput> => {
       if (
@@ -9886,7 +10050,10 @@ export class Orchestrator {
       // exemption covers the normal result only: an exempt tool's `Error:`
       // text can quote what it failed on (a memory file, an attachment's
       // rows), so it takes the same redaction as below.
-      if (isInternExemptTool(name)) {
+      const exempt = isInternExemptCall(name, input);
+      const ownUpload =
+        !exempt && isPromptMaskedUploadCall(name, input, turnContext.current()?.turnUploadKeys);
+      if (exempt || ownUpload) {
         if (
           isGuardedControlFlowResult(result, mcpAuthPromptMint) &&
           result !== kernelRefusal.text
@@ -9899,6 +10066,9 @@ export class Orchestrator {
             authPromptMint: mcpAuthPromptMint,
           });
         }
+        // ADR-0198 — text of the user's own upload (a transcript): readable,
+        // with its PII spans masked like the attachment tail of a prompt.
+        if (ownUpload) return maskOwnUploadText(privacy, name, result);
         // #1544 — the handler ran on the user's values; what it echoes goes
         // back to the model as the placeholders it wrote.
         return remaskEchoedValues(privacy, result);
@@ -11106,9 +11276,16 @@ export class Orchestrator {
           `per-person keys that are the same across all of this user's uploads; use ` +
           `them as the \`by\`/join key in \`v4_distinct\`/\`v4_join\` to de-duplicate or ` +
           `match across files, and never display them.`
-        : ` No link-key columns were generated for this file (the install has no ` +
-          `dataset link-key secret), so cross-file de-duplication on text columns is ` +
-          `not available — state that plainly if asked.`);
+        : scannedCells === 0
+          ? // #1844 — link keys exist only for text columns; a file of only
+            // numbers, dates and booleans needs none, and blaming a missing
+            // secret sent the user after a configuration that was fine.
+            ` This file has no text columns, so it carries no link-key columns — its ` +
+            `number, date and boolean columns are already usable as \`by\`/join keys ` +
+            `in \`v4_distinct\`/\`v4_join\`.`
+          : ` No link-key columns were generated for this file (the install has no ` +
+            `dataset link-key secret), so cross-file de-duplication on text columns is ` +
+            `not available — state that plainly if asked.`);
 
     return (
       `\n\n[dataset-imported: ${label}]\n${lines.join('\n')}\n${privacyFact}\n` +

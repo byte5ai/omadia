@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { NextRequest } from 'next/server';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createMiddlewareProxy } from '../middlewareProxy';
+import { PROXY_MAX_BODY_BYTES } from '../proxyBodyLimit';
 
 /**
  * Regression tests for the /bot-api and /p runtime proxies.
@@ -213,5 +214,20 @@ describe('createMiddlewareProxy', () => {
     const res = await proxy(new NextRequest('http://web-ui.local/bot-api/v1/chat'), ctx(['v1', 'chat']));
     expect(res.status).toBe(503);
     expect(await res.text()).toBe('busy');
+  });
+
+  it('#1846 — answers 413 for a body over the proxy limit instead of a relay 500', async () => {
+    process.env.MIDDLEWARE_URL = baseUrl;
+    const proxy = createMiddlewareProxy('/api');
+    const req = new NextRequest('http://web-ui.local/bot-api/v1/datasets', {
+      method: 'POST',
+      headers: { 'content-length': String(PROXY_MAX_BODY_BYTES + 1) },
+      body: 'x',
+    });
+    const res = await proxy(req, ctx(['v1', 'datasets']));
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toMatchObject({ code: 'upload.too_large' });
+    expect(captured).toBeUndefined();
   });
 });

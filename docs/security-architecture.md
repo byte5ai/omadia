@@ -122,13 +122,29 @@ The gate, asserted by `test/cliBridge/cliSpawnGate.test.ts` and
 | Binary resolution (#1085) | Every spawn site — chat turn, completion provider, and the CLI sub-agents (`ask_<slug>`, agent builder, preview chat) — resolves the binary through the kernel's `resolveCliBin()` — `<CLI_TOOLS_DIR>/bin/claude` (default `<PLATFORM_DATA_DIR>/cli-tools`) when a runtime install put one there, else the bare name from PATH. Previously they spawned the bare name while the version badge, the login flow and the "Install now" button all used the resolved path, so an operator could install a CLI ≥ 2.1.248 through the UI and every turn kept running the older image binary — including the `--restricted` version probe above, which then dropped the flag against a deployment the UI reported as up to date. The rule is published as the `cliBinaryResolver` kernel service (`optional_requires` in the orchestrator manifest) because `@omadia/orchestrator` cannot import the app layer; kernel-side callers share `src/platform/cliBinary.ts` (`resolveClaudeCliBin()`). Absent, every site falls back to PATH. Resolution runs **per turn / per completion**, so an install takes effect on the next turn rather than the next restart, and the spawn log names the resolved path. Credentials are unaffected either way: both binaries read the same `CLAUDE_CONFIG_DIR`. The candidate must be executable (`X_OK`, which follows symlinks) and is made absolute, because every spawn runs in a temp `cwd` where a relative path would not resolve; otherwise PATH. **Trust consequence:** the install dir is now the binary every turn executes, so its writers — the authenticated `POST /api/v1/admin/cli-backends/:id/install` and anything with write access to the data volume — choose the binary the gate wraps. That route accepts any strict-semver version, so a runtime install below 2.1.248 drops `--restricted` for turns exactly as an old image pin does; the spawn log's `restrictedFlag` shows it. Like any kernel service, `cliBinaryResolver` can be swapped with `ctx.services.replace` by a plugin that declares it under `requires`/`optional_requires` (the #788 gate treats `replace` like `get`); that is no escalation over in-process plugin code, but if such a plugin activates before the orchestrator (which resolves the service once, in `activate()`), it chooses the binary for every chat turn, so a manifest declaring this service deserves review. |
 | Env allowlist (#1014) | `buildGatedCliEnv()` passes only `PATH`, `HOME`, `CLAUDE_CONFIG_DIR`, `TMPDIR`, locale/`TZ`, proxy and CA vars, and `USER`/`LOGNAME`. It replaced a deny list that removed credentials and billing switches but passed `NODE_OPTIONS` (which can `--require` arbitrary code into the child) and the whole `CLAUDE_CODE_*` family. The deny list is kept as a second layer, and a test asserts the two never overlap. |
 
-### No Privacy Shield on this path — chat history and graph recall are replayed (#1087, #1391)
+### Privacy Shield on this path (ADR-0195, #2239) — chat history and graph recall are replayed (#1087, #1391)
 
-"Privacy guard" in the list above does not mean the CLI child receives masked
-data. Only the in-process orchestrator installs a per-turn privacy handle, so on
-the subscription-CLI path the live user message, tool results, the replayed chat
-history (#1087) and the knowledge-graph recall (#1391) reach the vendor
-unmasked. `CliChatAgent` replays the newest completed turns of the session into
+Since ADR-0195 a CLI turn on an instance with a privacy guard runs through its
+own per-turn privacy handle (`Orchestrator.cliTurnPrivacy`, installed by
+`CliChatAgent.captureTurnContext` / `installPrivacy` on the turn context). The
+live user message and steering hint (under `mask_user_prompt`), the recalled
+context and the replayed history are masked before the spawn; every loopback
+tool result is interned by `ToolDispatchService` through the handle, with the v4
+verb and render tools served over the same loopback server; a data tool's input
+gets its prompt surrogates restored and every result is re-masked (#1544). The
+streamed text is restored on the way out (`StreamSurrogateRestorer`, a surrogate
+split across chunks restores whole), the final answer takes the server render
+and the restore, and the receipt rides the `done`. A blocked mask ends the turn
+before the spawn. A guarded turn without a handle (none could be built, or
+`OMADIA_PRIVACY_FORCE_GUARDED` without a running guard) is refused before the
+spawn. A CLI sub-agent asked inside a guarded turn masks through the calling
+turn's handle and returns its answer unrestored; the Builder and preview-chat
+CLI sub-agents are operator jobs outside the shield, refused only under the org
+policy (ADR-0196).
+
+Without a privacy guard (an unguarded instance) the paragraphs below describe
+what reaches the vendor: the live user message, tool results, the replayed chat
+history (#1087) and the knowledge-graph recall (#1391) go out unmasked. `CliChatAgent` replays the newest completed turns of the session into
 the child's stdin prompt — as many as the operator's `context_tail_size`
 (default 10, the `ContextRetriever`'s `tailSize`) — truncated to 600 characters
 per question and 1,200 per answer, with role markers neutralised so replayed
@@ -2071,7 +2087,7 @@ came in:
 |---|---|---|
 | Chat turn (`Orchestrator`, privacy provider installed) | The turn's handle, inherited through `turnContext` | Withheld or redacted at every seam, receipted |
 | Public MCP endpoint (`/api/v1/mcp`) | The call's fail-closed gate, as its nested handle `forNestedCalls()` | Withheld for the sub-agent's model (the gate redacts nothing); the API caller gets a masked result, a dispatcher notice for a throw, or a refusal for a returned `Error:` text |
-| Loopback MCP for the subscription CLI | None (§3a, #1087) | Raw — see Residuals |
+| Loopback MCP for the subscription CLI | The CLI turn's own handle (ADR-0195); a CLI sub-agent in a guarded turn inherits the caller's through `turnContext` | Withheld or redacted at every seam, receipted |
 | Any path without a privacy provider | None | Raw (parity) |
 
 On the public endpoint the gate's nested handle interns a sub-agent's inner
@@ -2175,12 +2191,12 @@ finalized.
   when `mask_user_prompt` is on, and a `blocked` outcome refuses the call. The
   answer is restored before the plugin reads it. Outside a turn (jobs, routes)
   the request still goes out as the plugin built it.
-- The subscription-CLI path has no Privacy Shield at all (§3a, #1087): its
-  loopback dispatcher runs without a privacy handle, so both carriers pass raw
-  there. Since ADR-0017 was enforced for it, a CLI turn is therefore refused
-  whenever a privacy guard is installed, not only under the org clamp
-  (`CliChatAgent.refusedByPolicy`, `CLI_PRIVACY_GUARD_ACTIVE_LOG`); the CLI
-  runs unmasked only on an instance without a guard.
+- The subscription-CLI path runs under the turn's own privacy handle since
+  ADR-0195 (§3a, #2239), so both carriers take the same seams as in-process. A
+  guarded CLI turn that gets no handle is refused before the spawn
+  (`CLI_PRIVACY_GUARD_ACTIVE_LOG`); the CLI runs unmasked only on an instance
+  without a guard, and the Builder/preview CLI sub-agents run as operator jobs
+  outside the shield (ADR-0196).
 - C0 detects no names; C1 does when it is configured. Without C1 a returned
   error keeps a name that stands in running prose, or in a record the
   classifier does not recognise as one: positional fields
@@ -2514,8 +2530,8 @@ requests, and only there, the shield acts on four kinds of text:
   restore runs only when the provider implements both methods (privacy guard
   0.13.0); an older provider keeps giving tools the surrogates. Residuals: a
   tool that echoes the value in another form (an abbreviation, a translation)
-  is not re-masked, and the subscription-CLI path does not restore (its
-  tools keep the surrogates). A plugin tool that hands its input to a model
+  is not re-masked. The subscription-CLI path restores the same way since
+  ADR-0195 (`Orchestrator.cliTurnPrivacy` → `wrapDispatch`). A plugin tool that hands its input to a model
   through `ctx.llm` inside the turn has it re-masked by the accessor
   (`pluginLlmPrivacy.ts`).
 
@@ -2551,8 +2567,8 @@ model as part of that shape. The prompt-mask refusal
 delivered in the turn's language, like the model refusal (#1401).
 
 The verifier's evidence-judge requests are projected through the turn's map
-whatever `mask_user_prompt` says (§6e). The subscription-CLI path has no
-shield at all (§3a), and without an active privacy-guard provider nothing is
+whatever `mask_user_prompt` says (§6e). The subscription-CLI path carries the
+shield since ADR-0195 (§3a), and without an active privacy-guard provider nothing is
 interned or masked (§6c, residuals).
 
 **The agent's own names (spec 2042, plugin-api 1.90.0).** In an agent's own
@@ -3062,6 +3078,12 @@ These tool results skip the digest:
   cells the dataset import of that file scanned and encrypted (§6b) do not
   reach the model through it. `mask_user_prompt` does not reach the tool:
   that setting masks prompt text, and a tool result is not prompt text.
+  The file and image producers `render_diagram`, `create_xlsx` and
+  `create_docx` (#1967) are exempt too: their result is the produced file's
+  metadata and link, never a cell value, and their handlers still run on the
+  user's restored values (`runsOnModelInput`). `query_dataset` is exempt only
+  for its `list_datasets` and `get_schema` operations
+  (`INTERN_EXEMPT_OPERATIONS`, ADR-0197); `query_rows` stays interned.
 - **Operator bypass.** A plugin set to `bypass`, a tool on its `per_tool`
   list, or a tool of an MCP server the operator flagged `privacyBypass`
   (`mcpPrivacyBypass.ts`; set through the agent builder's MCP server route,

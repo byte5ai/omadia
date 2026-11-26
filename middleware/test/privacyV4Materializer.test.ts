@@ -385,6 +385,48 @@ describe('Materializer — chat row cap', () => {
     assert.ok(r.text.includes('… 1 weitere Zeile nicht angezeigt (50 von 51)'), 'singular form');
   });
 
+  it('a paged result counts the envelope total, not the page (#1848)', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('query_dataset', {
+      rows: manyRows(200),
+      totalMatched: 1000,
+    });
+    const r = materialize(
+      store,
+      { datasetId, columns: cols('employee'), format: 'table' },
+      { fileExportAvailable: true },
+    );
+    assert.equal(r.rowCount, 1000);
+    assert.equal(r.renderedRowCount, MAX_CHAT_ROWS);
+    assert.ok(r.text.includes('… 950 weitere Zeilen nicht angezeigt (50 von 1000).'), r.text);
+    assert.ok(r.text.includes('Die 200 abgefragten Zeilen gibt es als Excel-Datei'), r.text);
+    assert.ok(!r.text.includes('vollständige Liste'), 'the file holds only the queried page');
+  });
+
+  it('a whole page shown of a larger result still gets a footer, no file offer (#1848)', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('query_dataset', {
+      rows: manyRows(20),
+      totalMatched: 1000,
+    });
+    const r = materialize(
+      store,
+      { datasetId, columns: cols('employee'), format: 'table' },
+      { fileExportAvailable: true },
+    );
+    assert.equal(r.renderedRowCount, 20);
+    assert.ok(r.text.includes('… 980 weitere Zeilen nicht angezeigt (20 von 1000)._'), r.text);
+    assert.ok(!r.text.includes('Excel'), 'a file would hold only the rows already shown');
+  });
+
+  it('ignores an envelope total smaller than the page', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('x', { rows: manyRows(10), total: 3 });
+    const r = materialize(store, { datasetId, columns: cols('employee'), format: 'table' });
+    assert.equal(r.rowCount, 10);
+    assert.ok(!r.text.includes('weitere Zeile'));
+  });
+
   it('never caps a scalar', () => {
     const { store, engine } = harness();
     const { datasetId } = store.internToolResult('x', manyRows(200));

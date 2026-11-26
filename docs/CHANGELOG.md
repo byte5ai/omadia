@@ -132,6 +132,92 @@ changelog.
   1,500-character entry cap, so the log holds the full transcript; the tool result says
   "vollständig im Session-Protokoll" only when the entries were written.
 
+### Fixed — query_dataset: group paging, encrypted-column refusal, honest import texts (#1844, #1849) (2026-11-26)
+
+- With `group_by`, `limit`/`offset` page through the groups (ordered by value, then key)
+  and `totalGroups` reports their number; `group_by` without `aggregate` is refused
+  (`group_by_requires_aggregate`).
+- A filter or `group_by` on a column holding `enc1:` cells is refused with
+  `encrypted_column` (`assertNoEncryptedQueryColumns`, mirrors the `__k_*` refusal of
+  ADR 0098) instead of matching ciphertext.
+- Digit runs over 15 significant digits stay `string` instead of being rounded. The
+  `[dataset-imported]` block no longer blames a missing secret when a file has no text
+  columns. Upload hint and receipt say only text cells are scanned and whether flagged cells
+  are stored encrypted or as pseudonyms; the receipt lists every sheet.
+- plugin-api 1.101.0 (additive).
+
+### Fixed — Dataset import: CSV dialects, ISO dates, linear masking, 25 MB uploads (#1845, #1846, #1847, #1867) (2026-11-26)
+
+- Date cells are stored as ISO-8601 (`d.m.yyyy`, slash dates, XLSX timestamps), so `date`
+  columns sort and filter in date order; impossible dates no longer type a column `date`.
+- `parseCsv` detects the separator (`,` `;` tab), decodes Windows-1252 when the file is not
+  UTF-8, keeps repeated header names as `a`, `a_2`, and returns coded failures
+  (`dataset.csv_unreadable`, `csv_ragged_rows`, `csv_empty`, `row_cap`, `reserved_column`)
+  that the admin UI translates.
+- The import masks the whole table with `maskTableCells` (privacy-guard) in linear time, one
+  surrogate per value per table (#1546), and yields to the event loop; per-cell `maskPrompt`
+  was quadratic and blocked `/health` and every chat (20,000 rows now ~1 s).
+- The web UI raises `proxyClientMaxBodySize` to 26 MiB (`app/_lib/proxyBodyLimit.ts`; the
+  login gate keeps covering `/bot-api`, ADR 0161), answers 413 for larger bodies and
+  refuses an over-limit file before uploading.
+
+### Changed — Subscription CLI runs under the Privacy Shield instead of being refused (#2239, #2241; ADR-0195, ADR-0196) (2026-11-26)
+
+- Agents on the Claude subscription (`claude-cli`) now answer on instances with a privacy
+  guard. The CLI turn gets its own privacy handle (`Orchestrator.cliTurnPrivacy`,
+  `cliTurnPrivacy.ts`); message, steering hint, recall and replayed history are masked
+  before the spawn, loopback tool results are interned, and the v4 tools are offered. The
+  stream is restored, including placeholders split across two chunks
+  (`StreamSurrogateRestorer`). The answer takes the server render and the restore; the
+  receipt is attached to `done`. A guard without a handle still refuses before the spawn.
+- Builder and preview-chat CLI sub-agents run as operator jobs outside the shield, like
+  their API-key path; only `OMADIA_PRIVACY_FORCE_GUARDED` refuses them (decided per
+  recommendation, reversible). The conductor workflow builder reports a CLI privacy refusal
+  as `ConductorBuilderUnavailableError` (503).
+- ADR-0195 supersedes the CLI part of ADR-0165.
+
+### Changed — Privacy Shield: per-operation intern exemptions, diagrams and transcripts (#1866, #1967, #1985; ADR-0197, ADR-0198) (2026-11-26)
+
+- `query_dataset` hands the model `list_datasets` and `get_schema` (column names and types,
+  no sample cell) in clear, so a dataset is found by the name the user gave it; `query_rows`
+  stays interned (`INTERN_EXEMPT_OPERATIONS`, `isInternExemptCall` in
+  `privacyInternPolicy.ts`).
+- `render_diagram`, `create_xlsx` and `create_docx` results (file metadata and link, never a
+  cell value) are exempt, while their handlers still run on the user's restored values
+  (`runsOnModelInput`), so a diagram reply no longer shows the signed URL as an
+  "Originaldaten" table.
+- A `transcribe_recording` transcript of a recording uploaded in the same turn
+  (adapter-stated `storedAttachments` key, ADR-0178) is prompt-masked instead of interned,
+  so the agent can answer about it; any other key, or one typed into the message, stays
+  interned.
+- The public MCP endpoint additionally refuses tools with exempt operations
+  (`query_dataset`) and no longer lists the now-exempt file producers (`render_diagram`,
+  `create_xlsx`, `create_docx`), whose uninterned result its masking check would refuse.
+
+### Fixed — Privacy Shield v4: nested siblings, true totals, every render (#1728, #1848, #1769) (2026-11-26)
+
+- A tool result with one record list next to a nested object (weather: `location`/`current`
+  plus `other_matches`) no longer drops the nested objects in Guarded mode; it stays one
+  nested row, so the main content reaches the model. Empty siblings (`warnings: []`) still
+  let the list become the rows (`v4/datasetStore.ts`).
+- `totalMatched` is envelope metadata instead of a column on every row. The render footer
+  counts the envelope total (`totalMatched`/`total`) instead of the queried page; when the
+  turn dataset holds only a page, the Excel offer names the queried rows instead of
+  promising the full list (`v4/materializer.ts`).
+- A turn that calls `v4_render_answer` more than once shows every render in call order on
+  the buffered and the streaming path (before, the last render overwrote the others). Prose
+  is joined, masked values merged, `isError` only when every render failed
+  (`v4/renderedAnswers.ts`).
+
+### Added — operator tool for owner-less legacy web chats (#1762 follow-up, ADR-0184) (2026-11-26)
+
+- `POST /api/v1/admin/chats/assign-orphans` `{ userId, dryRun? }` gives every web chat without
+  an owner (written before ADR-0180) to one account, stamping its `providerUserId` (the session
+  `sub` the chat routes compare). Owned chats never change; idempotent. `dryRun: true` answers
+  `{ wouldAssign, unreadable }` and changes nothing. A real run writes `admin_audit`
+  `chat.assign_orphans` (target `user:<users.id>`, `after: { owner, count }`) first and changes
+  nothing if that fails. Unknown account 404, disabled account 409.
+
 ### Fixed — the user purge erases one person (#1840, #1842, #1843, ADR-0186) (2026-11-26)
 
 - Memory purge, axis "User": the selector may be the omadia user id, the account id from

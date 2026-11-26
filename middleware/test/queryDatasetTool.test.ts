@@ -212,6 +212,28 @@ describe('QueryDatasetTool', () => {
     assert.match(out, /Error:.*unknown_filter_column/);
   });
 
+  it('#1849 — refuses a filter on an encrypted column with a precise error and no ciphertext', async () => {
+    const graph = new InMemoryKnowledgeGraph();
+    const { datasetId } = await graph.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'D',
+      sourceFileName: 'd.csv',
+      columns: [{ name: 'email', type: 'string' }],
+      rows: [{ email: 'enc1:c2VjcmV0' }],
+    });
+    const tool = new QueryDatasetTool(graph);
+    for (const args of [
+      { filters: [{ column: 'email', op: 'eq' as const, value: 'kai@example.com' }] },
+      { group_by: 'email', aggregate: { fn: 'count' as const } },
+    ]) {
+      const out = await asUser('user-1', () =>
+        tool.handle({ query: 'query_rows', dataset_id: datasetId, ...args }),
+      );
+      assert.match(out, /^Error: encrypted_column — cannot (filter on|group by) column 'email'/);
+      assert.doesNotMatch(out, /enc1:|get_schema/);
+    }
+  });
+
   it('refuses a filter on a __k_ link-key column before touching the graph', async () => {
     const graph = new InMemoryKnowledgeGraph();
     const { datasetId } = await graph.ingestDataset({

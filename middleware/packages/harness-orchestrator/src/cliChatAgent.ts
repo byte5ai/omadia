@@ -46,6 +46,12 @@ import { turnContext as turnContextStore, today, type TurnContextValue } from '.
 import { createDiscretionTurnState } from './discretion/turnLabels.js';
 import { UNKNOWN_READERS, unionLabels } from './discretion/labels.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
+import {
+  StreamSurrogateRestorer,
+  type CliPrivacyReceiptFields,
+  type CliReleasedAnswer,
+  type CliTurnPrivacy,
+} from './cliTurnPrivacy.js';
 import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import type { LoopbackMcpServerHandle } from './loopbackMcpServer.js';
 import { CLI_CHAT_USAGE_SOURCE, normalizeUsage, recordUsage } from '@omadia/usage-telemetry';
@@ -329,6 +335,42 @@ async function maskReplayedText(
   // #1541 — replayed history is earlier context, not the user's message.
   const result = await privacy.maskUserPrompt(text, { origin: 'context' });
   if (result.outcome === 'blocked') return undefined;
+  return result.outcome === 'masked' ? result.maskedText : text;
+}
+
+/**
+ * ADR-0095 — a replayed ANSWER is masked whatever `mask_user_prompt` says:
+ * after a rendered turn it carries real values the model never saw. A handle
+ * without `maskReplayedAnswer` falls back to {@link maskReplayedText}.
+ */
+async function maskReplayedAnswerText(
+  privacy: PrivacyTurnHandle,
+  text: string,
+): Promise<string | undefined> {
+  if (privacy.maskReplayedAnswer === undefined) return maskReplayedText(privacy, text);
+  const result = await privacy.maskReplayedAnswer(text);
+  if (result.outcome === 'blocked') return undefined;
+  return result.outcome === 'masked' ? result.maskedText : text;
+}
+
+/** ADR-0195 — a sub-agent's prompt the calling turn's handle could not mask. */
+export class CliCallerMaskBlockedError extends Error {
+  constructor(reason: string) {
+    super(`[privacy] CLI sub-agent prompt masking failed (${reason}) — not sent`);
+    this.name = 'CliCallerMaskBlockedError';
+  }
+}
+
+/** The answer a sub-agent hands back to the calling model when its prompt
+ *  could not be masked. Kernel-authored, values-free. */
+export const CLI_CALLER_MASK_BLOCKED_ANSWER =
+  'Error: the request was not sent: the Privacy Shield could not mask it.';
+
+/** Mask a sub-agent's text through the calling turn's handle. */
+async function maskCallerText(privacy: PrivacyTurnHandle, text: string): Promise<string> {
+  if (text.length === 0) return text;
+  const result = await privacy.maskUserPrompt(text);
+  if (result.outcome === 'blocked') throw new CliCallerMaskBlockedError(result.reason);
   return result.outcome === 'masked' ? result.maskedText : text;
 }
 
@@ -1087,12 +1129,22 @@ export interface CliChatAgentDeps {
    */
   readonly policyEnv?: NodeJS.ProcessEnv;
   /**
-   * ADR-0017 — whether a Privacy Shield guards this instance's turns (a
-   * privacy guard service is installed). The CLI path cannot mask, so a turn
-   * is refused while it holds, exactly as under the org policy. Absent →
-   * only the org policy decides (sub-agents, operator tools).
+   * ADR-0165 / ADR-0195 — whether a Privacy Shield guards this instance's
+   * turns (a privacy guard service is installed). While it holds, a turn runs
+   * only with a privacy handle — its own ({@link turnPrivacy}) or the one of
+   * the turn that called it — and is refused otherwise (fail closed), exactly
+   * as under the org policy. Absent → only the org policy decides (operator
+   * tools, ADR-0196).
    */
   readonly privacyGuarded?: () => boolean;
+  /**
+   * ADR-0195 (#2239) — the Privacy Shield for one top-level CLI turn: masks,
+   * tool-result interning, v4 tools, restore and receipt
+   * (`Orchestrator.cliTurnPrivacy`). Called once per turn with the CLI turn
+   * id, in the caller's context. `undefined` (or unset) → no handle of its
+   * own: a sub-agent then uses the calling turn's handle if there is one.
+   */
+  readonly turnPrivacy?: (input: ChatTurnInput, turnId: string) => CliTurnPrivacy | undefined;
   /**
    * The language a notice to the user is written in, for `input`: the turn's
    * AI-disclosure locale, else the operator's configured one
@@ -1189,6 +1241,18 @@ interface CapturedTurnContext {
    * from one call to the next.
    */
   readonly scope: { value?: TurnContextValue };
+  /** #1098 — the cost-ledger and receipt key of this turn. */
+  readonly cliTurnId: string;
+  /** ADR-0195 — the turn's own Privacy Shield ({@link CliChatAgentDeps.turnPrivacy}). */
+  readonly privacy?: CliTurnPrivacy;
+  /**
+   * ADR-0195 — the calling turn's handle, for a CLI sub-agent asked from
+   * inside a guarded turn: its prompt is masked through it, and its answer
+   * goes back to the calling model unrestored.
+   */
+  readonly callerPrivacy?: PrivacyTurnHandle;
+  /** A guarded turn with no handle at all: refused before anything runs. */
+  readonly refused: boolean;
 }
 
 /** #1535 — the answer of a CLI turn refused by the org policy, in German. */
@@ -1196,7 +1260,8 @@ export const CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_DE =
   'Diese Nachricht wurde nicht verarbeitet. Deine Organisation verlangt für ' +
   'jede Anfrage den Datenschutz-Schild, der personenbezogene Daten vor dem ' +
   'Sprachmodell maskiert. Dieser Agent läuft über das Claude-Abo (Claude ' +
-  'Subscription CLI), und dieser Weg hat keinen Datenschutz-Schild. Deshalb ' +
+  'Subscription CLI), und für diese Anfrage stand der Datenschutz-Schild ' +
+  'nicht bereit. Deshalb ' +
   'wurde nichts an das Sprachmodell gesendet. Bitte wende dich an deinen ' +
   'Betreiber: Er kann dem Agenten unter LLM-Zugang einen Anbieter mit ' +
   'API-Schlüssel zuweisen.';
@@ -1204,13 +1269,29 @@ export const CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_DE =
 export const CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_EN =
   'This message was not processed. Your organisation requires the Privacy ' +
   'Shield, which masks personal data before it reaches the language model, ' +
-  'on every request. This agent runs on the Claude subscription CLI, and that ' +
-  'path has no Privacy Shield, so nothing was sent to the language model. ' +
+  'on every request. This agent runs on the Claude subscription CLI, and the ' +
+  'Privacy Shield was not available for this request, so nothing was sent to ' +
+  'the language model. ' +
   'Please contact your operator, who can assign this agent a provider with an ' +
   'API key under LLM access.';
 
 /** #1535 — both languages, for a caller that has no turn locale. */
 export const CLI_PRIVACY_SHIELD_REQUIRED_ANSWER = `${CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_DE} / ${CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_EN}`;
+
+/**
+ * #2241 — does `text` carry a CLI privacy refusal (either language, or the
+ * sub-agent's mask-blocked answer)? For callers that get the answer as plain
+ * text and must not treat it as a model reply (the conductor builder maps it
+ * to `ConductorBuilderUnavailableError`). Containment, not equality: a
+ * wrapper may have marked the answer (AI disclosure).
+ */
+export function isCliPrivacyRefusal(text: string): boolean {
+  return (
+    text.includes(CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_DE) ||
+    text.includes(CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_EN) ||
+    text.includes(CLI_CALLER_MASK_BLOCKED_ANSWER)
+  );
+}
 
 /**
  * The refusal in the turn's language: `en*` → English, anything else
@@ -1229,15 +1310,19 @@ export function cliPrivacyShieldRequiredAnswer(locale: string | undefined): stri
  * where the operator learns which switch did it.
  */
 export const CLI_PRIVACY_SHIELD_REQUIRED_LOG =
-  'turn refused: OMADIA_PRIVACY_FORCE_GUARDED is set and the Claude subscription ' +
-  'CLI (claude-cli) runs without the Privacy Shield. Assign this agent a provider ' +
-  'with an API key under LLM access, or unset OMADIA_PRIVACY_FORCE_GUARDED.';
+  'turn refused: OMADIA_PRIVACY_FORCE_GUARDED is set and this Claude subscription ' +
+  'CLI (claude-cli) turn has no Privacy Shield handle (no privacy guard running, ' +
+  'or a CLI sub-agent/operator tool outside a guarded turn). Install the privacy ' +
+  'guard, assign this agent a provider with an API key under LLM access, or ' +
+  'unset OMADIA_PRIVACY_FORCE_GUARDED.';
 
-/** ADR-0017 — the same refusal when a privacy guard is installed. */
+/** ADR-0195 — the same refusal when a privacy guard is installed but this
+ *  turn got no handle from it (fail closed). */
 export const CLI_PRIVACY_GUARD_ACTIVE_LOG =
-  'turn refused: a Privacy Shield guards this instance and the Claude subscription ' +
-  'CLI (claude-cli) cannot mask what it sends. Assign this agent a provider with an ' +
-  'API key under LLM access, or remove the privacy guard plugin.';
+  'turn refused: a Privacy Shield guards this instance and no privacy handle could ' +
+  'be built for this Claude subscription CLI (claude-cli) turn, so it cannot be ' +
+  'masked. Check the privacy guard plugin, or assign this agent a provider with an ' +
+  'API key under LLM access.';
 
 /** The stream of a refused turn: one `done`, after clearing any card state a
  *  previous turn left behind (as `streamTurn` does). */
@@ -1285,7 +1370,46 @@ export class CliChatAgent implements ChatAgent {
         }),
       );
     const guard = this.deps.turnOwnerGuard?.(input);
-    return guard ? { runInTurnContext, assertTurnOwner: guard, scope } : { runInTurnContext, scope };
+    const cliTurnId = randomUUID();
+    // ADR-0195 — the turn's own shield first; a sub-agent falls back to the
+    // handle of the turn that asked it. A shield that fails to build counts as
+    // missing (fail closed below).
+    const privacy = this.buildTurnPrivacy(input, cliTurnId, runInTurnContext);
+    const callerPrivacy =
+      privacy === undefined
+        ? runInTurnContext(() => turnContextStore.current()?.privacyHandle)
+        : undefined;
+    const refused =
+      privacy === undefined &&
+      callerPrivacy === undefined &&
+      (this.forceGuarded() || this.guardActive());
+    return {
+      runInTurnContext,
+      scope,
+      cliTurnId,
+      refused,
+      ...(guard ? { assertTurnOwner: guard } : {}),
+      ...(privacy !== undefined ? { privacy } : {}),
+      ...(callerPrivacy !== undefined ? { callerPrivacy } : {}),
+    };
+  }
+
+  /** {@link CliChatAgentDeps.turnPrivacy}, `undefined` when it throws. */
+  private buildTurnPrivacy(
+    input: ChatTurnInput,
+    cliTurnId: string,
+    runInTurnContext: CapturedTurnContext['runInTurnContext'],
+  ): CliTurnPrivacy | undefined {
+    const build = this.deps.turnPrivacy;
+    if (build === undefined) return undefined;
+    try {
+      return runInTurnContext(() => build(input, cliTurnId));
+    } catch (error) {
+      (this.deps.logger ?? consoleSpawnLogger).warn('CLI privacy handle failed (turn refused if guarded)', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
   }
 
   /**
@@ -1339,6 +1463,77 @@ export class CliChatAgent implements ChatAgent {
     };
   }
 
+  /**
+   * ADR-0195 — put the turn's own privacy handle on the captured context, so
+   * the loopback tool dispatch interns every result through it
+   * (`ToolDispatchService`) and the history replay masks through it
+   * (`maskHistory`). Runs after `beginDiscretion`, onto the same object.
+   */
+  private installPrivacy(turnContext: CapturedTurnContext): void {
+    const privacy = turnContext.privacy;
+    if (privacy === undefined) return;
+    const current =
+      turnContext.scope.value ?? turnContext.runInTurnContext(() => turnContextStore.current());
+    const agentSlug = this.deps.dispatch.agentSlug;
+    turnContext.scope.value = {
+      ...(current ?? {
+        turnDate: today(),
+        ...(agentSlug !== undefined ? { agentSlug } : {}),
+      }),
+      turnId: current?.turnId || turnContext.cliTurnId,
+      graphReadScope: current?.graphReadScope ?? {},
+      privacyHandle: privacy.handle,
+    };
+  }
+
+  /**
+   * ADR-0195 — the user message (and steering hint) as the CLI child gets
+   * it: masked through the turn's own shield, or through the calling turn's
+   * handle for a sub-agent. Throws on a blocked mask (fail closed).
+   */
+  private async maskTurnInput(
+    input: ChatTurnInput,
+    turnContext: CapturedTurnContext,
+  ): Promise<ChatTurnInput> {
+    const privacy = turnContext.privacy;
+    const caller = turnContext.callerPrivacy;
+    if (privacy === undefined && caller === undefined) return input;
+    const mask = (text: string): Promise<string> =>
+      turnContext.runInTurnContext(() =>
+        privacy !== undefined ? privacy.maskUserMessage(text) : maskCallerText(caller!, text),
+      );
+    const extra = input.extraSystemHint;
+    return {
+      ...input,
+      userMessage: await mask(input.userMessage),
+      ...(typeof extra === 'string' && extra.trim().length > 0
+        ? { extraSystemHint: await mask(extra) }
+        : {}),
+    };
+  }
+
+  /**
+   * ADR-0195 / ADR-0095 — the answer of a turn whose prompt could not be
+   * masked, or `undefined` when `error` is something else. Logged without
+   * the text.
+   */
+  private maskRefusal(
+    error: unknown,
+    turnContext: CapturedTurnContext,
+    input: ChatTurnInput,
+  ): string | undefined {
+    const refusal =
+      error instanceof CliCallerMaskBlockedError
+        ? CLI_CALLER_MASK_BLOCKED_ANSWER
+        : turnContext.privacy?.refusalFor(error);
+    if (refusal !== undefined) {
+      (this.deps.logger ?? consoleSpawnLogger).warn('CLI turn refused: prompt masking blocked', {
+        ...(input.sessionScope !== undefined ? { sessionScope: input.sessionScope } : {}),
+      });
+    }
+    return refusal;
+  }
+
   /** #1960 — {@link CliChatAgentDeps.bindStatedUpload} for every stated upload. */
   private async bindStatedUploads(
     input: ChatTurnInput,
@@ -1379,13 +1574,14 @@ export class CliChatAgent implements ChatAgent {
    * ignored; it can never fail the turn.
    */
   public async chat(input: ChatTurnInput, hooks?: CliChatHooks): Promise<SemanticAnswer> {
-    if (this.refusedByPolicy()) return { text: this.refusalAnswer(input) };
+    const turnContext = this.captureTurnContext(input);
+    if (turnContext.refused) return { text: this.refusalAnswer(input) };
     // Spec 2042 §5.10 — the same gateway admission as `chatStream()`: one CLI
     // run is one `run_loop` call, only inside an execution context, never
     // with a kill switch on. Without it a turn through `chat()` (sub-agents,
     // helpers) bypassed the gate entirely.
     admitModelCall('run_loop');
-    const lifecycle = this.runLifecycle(input, this.captureTurnContext(input));
+    const lifecycle = this.runLifecycle(input, turnContext);
     // #2194 — the answer the lifecycle released (the withheld line when the
     // egress check refused it), not the CLI's raw result.
     let releasedAnswer: string | undefined;
@@ -1451,23 +1647,19 @@ export class CliChatAgent implements ChatAgent {
     input: ChatTurnInput,
     observer?: ChatStreamObserver,
   ): AsyncGenerator<ChatStreamEvent> {
-    if (this.refusedByPolicy()) {
+    const turnContext = this.captureTurnContext(input);
+    if (turnContext.refused) {
       return refusedTurnStream(this.refusalAnswer(input), this.deps.drainTurnCards);
     }
-    return this.streamTurn(input, this.captureTurnContext(input), observer);
+    return this.streamTurn(input, turnContext, observer);
   }
 
   /**
-   * #1535 — this path has no Privacy Shield: the user message, the replayed
-   * history and every tool result reach the CLI child unmasked. Under the
-   * org policy `OMADIA_PRIVACY_FORCE_GUARDED` the turn is therefore refused
-   * before anything is spawned, whether or not a guard runs for the
-   * in-process path. Read per turn, like the in-process check.
+   * #1535 / ADR-0195 — a turn that must be guarded (the org policy
+   * `OMADIA_PRIVACY_FORCE_GUARDED`, or an installed guard) and has no privacy
+   * handle is refused before anything is spawned (`CapturedTurnContext.refused`).
+   * Read per turn, like the in-process check.
    */
-  private refusedByPolicy(): boolean {
-    return this.forceGuarded() || this.guardActive();
-  }
-
   private forceGuarded(): boolean {
     return isPrivacyForceGuarded(this.deps.policyEnv ?? process.env);
   }
@@ -1701,17 +1893,10 @@ export class CliChatAgent implements ChatAgent {
    * (and reports `available: false`) rather than failing the turn — history is
    * an enhancement, and a blocked history must not become raw history.
    *
-   * INERT ON THIS PATH TODAY, deliberately: the handle is read from
-   * `turnContext`, and only the in-process orchestrator installs one
-   * (`orchestrator.ts`, `privacyHandle`). The subscription-CLI path therefore
-   * has no masking at all right now — the replayed history, the live user
-   * message and tool results all reach the child unmasked, in line with the
-   * UI's notice not to route personal data through this provider. The replay
-   * does widen that for one case: a session whose earlier turns were answered
-   * on an API-key provider with Privacy Shield active holds their RESTORED
-   * real values, so up to the tail window of them reach the CLI child raw.
-   * This seam covers the replay the moment a handle is installed here; masking
-   * parity stays open on #1087, which this change does not close.
+   * ADR-0195 — the handle is the turn's own (`installPrivacy`) or, for a
+   * sub-agent, the calling turn's. Without one (an unguarded instance) the
+   * replay goes out as stored; a guarded turn without a handle never gets
+   * here (`CapturedTurnContext.refused`).
    */
   private async maskHistory(
     turns: readonly CliPriorTurn[],
@@ -1751,7 +1936,7 @@ export class CliChatAgent implements ChatAgent {
     try {
       for (const turn of usable) {
         const userMessage = await maskReplayedText(privacy, turn.userMessage);
-        const assistantAnswer = await maskReplayedText(privacy, turn.assistantAnswer);
+        const assistantAnswer = await maskReplayedAnswerText(privacy, turn.assistantAnswer);
         if (userMessage === undefined || assistantAnswer === undefined) {
           (this.deps.logger ?? consoleSpawnLogger).warn(
             'prior-turn masking blocked; replaying no history this turn',
@@ -1885,10 +2070,18 @@ export class CliChatAgent implements ChatAgent {
     const toolsOff = isToolsOffTurn(input);
     let tools = toolsOff ? [] : this.deps.dispatch.listDispatchableToolSpecs();
     const bearer = randomUUID();
-    // #1098 — the cost-ledger turn key. Minted per lifecycle so two turns of
-    // one session stay separable; the session mirrors the orchestrator's
+    // #1098 — the cost-ledger turn key. Minted per turn (at the public entry,
+    // ADR-0195: the privacy handle is keyed by it) so two turns of one session
+    // stay separable; the session mirrors the orchestrator's
     // `sessionScope ?? turnId`.
-    const cliTurnId = randomUUID();
+    const cliTurnId = turnContext.cliTurnId;
+    const privacy = turnContext.privacy;
+    // ADR-0195 — the receipt is drained exactly once: onto the `done`, or in
+    // `finally` for a turn that failed or was refused.
+    let privacyFinalized = privacy === undefined;
+    // ADR-0195 — streamed text is restored before the client sees it; set
+    // once the prompt is masked (the map is complete then).
+    let streamRestorer: StreamSurrogateRestorer | undefined;
     const createLoopbackServer =
       this.deps.createLoopbackServer ??
       ((serverDeps: {
@@ -1985,6 +2178,9 @@ export class CliChatAgent implements ChatAgent {
       // #2194 — the discretion state first: the memory binding, the recall
       // and every loopback tool call label the turn through it.
       await this.beginDiscretion(input, turnContext, cliTurnId);
+      // ADR-0195 — the handle on the same context object, before the memory
+      // binding, the recall and every loopback call read it.
+      this.installPrivacy(turnContext);
       // #1960 (ADR-0178) — bind the adapter-stated uploads to this turn's room,
       // as the in-process ingest does, so the loopback `read_attachment` can
       // read them. A failure leaves them unreadable, never readable elsewhere.
@@ -1998,7 +2194,14 @@ export class CliChatAgent implements ChatAgent {
         if (memory !== undefined) {
           tools = withCliMemoryTool(tools);
         }
-        const dispatch: LoopbackDispatch = turnMemoryDispatch(this.deps.dispatch, memory?.handler);
+        // ADR-0195 — the v4 verb + render tools over the same server, and
+        // every call through the shield (inputs restored, results re-masked).
+        if (privacy !== undefined && privacy.tools.length > 0) {
+          tools = [...tools, ...privacy.tools];
+        }
+        const memoryDispatch = turnMemoryDispatch(this.deps.dispatch, memory?.handler);
+        const dispatch: LoopbackDispatch =
+          privacy !== undefined ? privacy.wrapDispatch(memoryDispatch) : memoryDispatch;
 
         server = createLoopbackServer({
           dispatch,
@@ -2031,6 +2234,29 @@ export class CliChatAgent implements ChatAgent {
         yield event;
       }
 
+      // ADR-0195 — nothing reaches the child unmasked under a guard: the
+      // message, the steering hint and the recalled context go through the
+      // turn's handle (the history did in `resolveHistory`). A blocked mask
+      // ends the turn here with the privacy notice, before the spawn.
+      let wireInput: ChatTurnInput;
+      let wireRecalled = recalled.text;
+      try {
+        wireInput = await this.maskTurnInput(input, turnContext);
+        if (privacy !== undefined && wireRecalled !== undefined && wireRecalled.trim().length > 0) {
+          const text = wireRecalled;
+          wireRecalled = await turnContext.runInTurnContext(() => privacy.maskRecalled(text));
+        }
+      } catch (error) {
+        const refusal = this.maskRefusal(error, turnContext, input);
+        if (refusal === undefined) throw error;
+        yield { type: 'done', answer: refusal, toolCalls: 0, iterations: 0 };
+        return parser;
+      }
+      if (privacy !== undefined) {
+        const restore = await turnContext.runInTurnContext(() => privacy.streamRestorer());
+        if (restore !== undefined) streamRestorer = new StreamSurrogateRestorer(restore);
+      }
+
       const cliBinary = this.deps.resolveCliBinary?.() ?? DEFAULT_CLI_BINARY;
       // OM-85 — probe (cached) before building argv; unknown → no `--restricted`.
       const cliVersion = await (this.deps.resolveCliVersion ?? resolveCliVersion)(cliBinary);
@@ -2060,7 +2286,10 @@ export class CliChatAgent implements ChatAgent {
         // omadia chat they were already in.
         '--system-prompt',
         composeCliSystemPrompt(
-          this.deps.systemPrompt,
+          // ADR-0195 — the data-plane contract, as the in-process prompt has it.
+          privacy !== undefined && !toolsOff && privacy.tools.length > 0
+            ? `${this.deps.systemPrompt ?? ''}\n${privacy.directive}`
+            : this.deps.systemPrompt,
           // #1102 — derive the honesty sentence from what THIS turn actually
           // advertised, so it names only genuinely-absent capabilities.
           absentKernelCapabilities(tools.map((tool) => tool.name)),
@@ -2177,7 +2406,7 @@ export class CliChatAgent implements ChatAgent {
 
       // We send one fully composed plain-text prompt so the child process stays stateless and
       // deterministic for tests; replaying prior turns here mirrors the CLI's single-shot mode.
-      child.stdin.end(this.composePrompt(input, history.turns, recalled.text));
+      child.stdin.end(this.composePrompt(wireInput, history.turns, wireRecalled));
 
       while (true) {
         while (lineQueue.length > 0) {
@@ -2195,6 +2424,17 @@ export class CliChatAgent implements ChatAgent {
               continue;
             }
             toolTrace.observe(event);
+            if (streamRestorer !== undefined) {
+              // ADR-0195 — a surrogate split across chunks restores whole;
+              // held-back text goes out before any other event, in order.
+              const shown =
+                event.type === 'text_delta' ? streamRestorer.push(event.text) : streamRestorer.flush();
+              if (shown.length > 0) {
+                streamedChars += shown.length;
+                yield { type: 'text_delta', text: shown };
+              }
+              if (event.type === 'text_delta') continue;
+            }
             if (event.type === 'text_delta') streamedChars += event.text.length;
             yield event;
           }
@@ -2315,11 +2555,30 @@ export class CliChatAgent implements ChatAgent {
       });
 
       if (terminalDone !== undefined) {
+        // ADR-0195 — the rest of a split surrogate, then the answer the user
+        // gets: the server-rendered one if a `v4_render_answer` ran, restored.
+        if (streamRestorer !== undefined) {
+          const rest = streamRestorer.flush();
+          if (rest.length > 0) {
+            streamedChars += rest.length;
+            yield { type: 'text_delta', text: rest };
+          }
+        }
+        const wireAnswer = terminalDone.answer;
+        let released: CliReleasedAnswer = { answer: terminalDone.answer };
+        if (privacy !== undefined) {
+          const raw = terminalDone.answer;
+          released = await turnContext.runInTurnContext(() => privacy.releaseAnswer(raw));
+          terminalDone = { ...terminalDone, answer: released.answer };
+        }
         // #1391 — persist the turn the way the in-process path does, then
         // release the answer with what the record produced.
         const record = await this.recordCompletedTurn(input, turnContext, {
           turnId: cliTurnId,
-          answer: parser.finalAnswer(),
+          answer: privacy !== undefined ? released.answer : parser.finalAnswer(),
+          ...(privacy !== undefined
+            ? { wireView: { userMessage: wireInput.userMessage, answer: wireAnswer } }
+            : {}),
           toolCalls: parser.toolCalls(),
           iterations: parser.iterations(),
           runTrace: toolTrace.finish({
@@ -2334,6 +2593,12 @@ export class CliChatAgent implements ChatAgent {
         // streamed preview taken back first; nothing derived from it (the
         // record's annotations, cards, excerpt, promotion) goes with it.
         const guarded = await this.guardTurnAnswer(terminalDone.answer, input, turnContext);
+        // ADR-0195 — the receipt rides the `done`, withheld or not.
+        let receipt: CliPrivacyReceiptFields = {};
+        if (privacy !== undefined) {
+          privacyFinalized = true;
+          receipt = await turnContext.runInTurnContext(() => privacy.finalize(input.userMessage));
+        }
         if (!guarded.withheld) {
           for (const event of record.events ?? []) {
             yield event;
@@ -2348,6 +2613,7 @@ export class CliChatAgent implements ChatAgent {
             iterations: terminalDone.iterations,
             model: this.deps.model ?? DEFAULT_MODEL,
             ...(record.turnId !== undefined ? { turnId: record.turnId } : {}),
+            ...receipt,
           };
           this.withheldDones.add(withheld);
           yield withheld;
@@ -2364,11 +2630,19 @@ export class CliChatAgent implements ChatAgent {
           ...(record.autoPromotedMkId !== undefined
             ? { autoPromotedMkId: record.autoPromotedMkId }
             : {}),
+          ...(released.answerSource !== undefined ? { answerSource: released.answerSource } : {}),
+          ...(released.answerIsError === true ? { answerIsError: true } : {}),
+          ...(released.maskedValues !== undefined ? { maskedValues: released.maskedValues } : {}),
+          ...receipt,
         };
       }
 
       return parser;
     } finally {
+      // ADR-0195 — a failed or refused turn still drops its privacy state.
+      if (!privacyFinalized && privacy !== undefined) {
+        await turnContext.runInTurnContext(() => privacy.finalize(input.userMessage));
+      }
       if (overallTimer !== undefined) {
         clearTimeout(overallTimer);
       }

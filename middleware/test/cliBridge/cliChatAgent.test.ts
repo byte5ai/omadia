@@ -1214,8 +1214,13 @@ describe('CliChatAgent conversation memory (#1087)', () => {
       {
         turnId: 't1',
         turnDate: '2026-09-24',
+        // ADR-0195 — only the replay is blocked: a blocked live message
+        // refuses the turn (cliPrivacyMasking.test.ts).
         privacyHandle: {
-          maskUserPrompt: async () => ({ outcome: 'blocked' as const, reason: 'provider down' }),
+          maskUserPrompt: async (_text: string, opts?: { origin?: string }) =>
+            opts?.origin === 'context'
+              ? { outcome: 'blocked' as const, reason: 'provider down' }
+              : { outcome: 'disabled' as const },
         } as never,
       },
       async () => {
@@ -1237,7 +1242,8 @@ describe('CliChatAgent conversation memory (#1087)', () => {
         turnId: 't1',
         turnDate: '2026-09-24',
         privacyHandle: {
-          maskUserPrompt: async () => {
+          maskUserPrompt: async (_text: string, opts?: { origin?: string }) => {
+            if (opts?.origin !== 'context') return { outcome: 'disabled' as const };
             throw new Error('masking service unreachable');
           },
         } as never,
