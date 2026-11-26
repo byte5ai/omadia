@@ -783,6 +783,35 @@ describe('builder preview routes', () => {
     });
   });
 
+  describe('DELETE /drafts/:id drops the test credentials (#1790)', () => {
+    it('soft delete purges the buffer; permanent delete needs a deleted draft', async () => {
+      harness = await startHarness({ tmpDir: tmp });
+      harness.setSession('alice@example.com');
+      const draft = await harness.store.create('alice@example.com', 'Creds');
+      await harness.buffer.merge('alice@example.com', draft.id, { API_KEY: 'k1' });
+
+      const early = await fetch(
+        `${harness.baseUrl}/api/v1/builder/drafts/${draft.id}/permanent`,
+        { method: 'DELETE' },
+      );
+      assert.equal(early.status, 404, 'an active draft is not deleted permanently');
+
+      const del = await fetch(`${harness.baseUrl}/api/v1/builder/drafts/${draft.id}`, {
+        method: 'DELETE',
+      });
+      assert.equal(del.status, 204);
+      assert.equal(harness.buffer.has('alice@example.com', draft.id), false);
+
+      const purge = await fetch(
+        `${harness.baseUrl}/api/v1/builder/drafts/${draft.id}/permanent`,
+        { method: 'DELETE' },
+      );
+      assert.equal(purge.status, 204);
+      const deleted = await harness.store.list('alice@example.com', { scope: 'deleted' });
+      assert.equal(deleted.length, 0);
+    });
+  });
+
   describe('PUT/DELETE /preview/secrets', () => {
     it('stores secrets in the buffer and clears them on DELETE', async () => {
       harness = await startHarness({ tmpDir: tmp });

@@ -286,6 +286,7 @@ import { PreviewCache } from './plugins/builder/previewCache.js';
 import { PreviewSecretBuffer } from './plugins/builder/previewSecretBuffer.js';
 import { PreviewRebuildScheduler } from './plugins/builder/previewRebuildScheduler.js';
 import { warmPreview } from './plugins/builder/previewWarmBuild.js';
+import { startDraftPurge } from './plugins/builder/draftPurge.js';
 import { PreviewChatService } from './plugins/builder/previewChatService.js';
 import { PreviewDraftAgents } from './plugins/builder/previewDraftAgents.js';
 import {
@@ -7016,6 +7017,13 @@ async function main(): Promise<void> {
   // encrypted at rest. Production plugins keep using their own per-agent
   // namespace via the RequiresWizard flow — this buffer is workspace-only.
   const previewSecretBuffer = new PreviewSecretBuffer({ vault: secretVault });
+  // #1790 — purge soft-deleted published drafts past their grace period,
+  // and their test credentials with them. Daily; never blocks shutdown.
+  startDraftPurge({
+    draftStore,
+    previewSecretBuffer,
+    log: (line) => console.log(line),
+  });
 
   // BuildQueue + BuildPipeline are shared by preview rebuilds (B.3) and
   // future install-commits (B.5).

@@ -522,18 +522,38 @@ export class DraftStore {
    * that never got published are never auto-purged — losing in-flight work
    * to a cron job would be a UX regression.
    */
-  async purgePublished(now = Date.now()): Promise<number> {
+  async purgePublished(
+    now = Date.now(),
+  ): Promise<ReadonlyArray<{ id: string; userEmail: string }>> {
     const db = this.required();
     const cutoff = now - this.publishedPurgeGraceMs;
-    const result = db
+    // #1790 — return what was purged, so the caller can drop each draft's
+    // test credentials from the vault as well.
+    const rows = db
       .prepare(
         `DELETE FROM drafts
          WHERE status = 'published'
            AND deleted_at IS NOT NULL
-           AND deleted_at < ?`,
+           AND deleted_at < ?
+         RETURNING id, user_email`,
       )
-      .run(cutoff);
-    return result.changes;
+      .all(cutoff) as Array<{ id: string; user_email: string }>;
+    return rows.map((r) => ({ id: r.id, userEmail: r.user_email }));
+  }
+
+  /**
+   * #1790 — "delete permanently" for a draft that is already in the deleted
+   * list. Refuses an active draft, so a stale client cannot skip the
+   * restorable soft-delete step.
+   */
+  async hardDeleteDeleted(userEmail: string, id: string): Promise<boolean> {
+    const db = this.required();
+    const result = db
+      .prepare(
+        'DELETE FROM drafts WHERE id = ? AND user_email = ? AND deleted_at IS NOT NULL',
+      )
+      .run(id, userEmail);
+    return result.changes > 0;
   }
 
   // ── internals ─────────────────────────────────────────────────────────────

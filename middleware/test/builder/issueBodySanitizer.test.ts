@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 
 import {
   hasSensitiveContent,
+  sanitizeIssueTitle,
   sanitizeIssueBody,
 } from '../../src/plugins/builder/issueBodySanitizer.js';
 
@@ -143,5 +144,48 @@ describe('issueBodySanitizer — combined patterns', () => {
 
     const truncated = sanitizeIssueBody('a'.repeat(70_000));
     assert.equal(hasSensitiveContent(truncated), true);
+  });
+
+  it('#1783: redacts provider keys, JWTs, key=value secrets, home paths and metadata IPs', () => {
+    const raw = [
+      'anthropic sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA',
+      'openai sk-proj-abcdefghijklmnopqrstuvwxyz12',
+      'jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
+      'cfg api_key=geheim123 password: "hunter22"',
+      'path /Users/marcel/project/x.ts and /home/bob/.ssh/id_rsa',
+      'meta http://169.254.169.254/latest/meta-data and 169.254.169.254',
+    ].join('\n');
+    const result = sanitizeIssueBody(raw);
+    for (const leaked of [
+      'sk-ant-api03',
+      'sk-proj-',
+      'eyJhbGci',
+      'geheim123',
+      'hunter22',
+      '/Users/marcel',
+      '/home/bob',
+      '169.254.169.254',
+    ]) {
+      assert.ok(!result.body.includes(leaked), `leaked: ${leaked}`);
+    }
+    // The setting's name stays readable.
+    assert.match(result.body, /api_key=\[REDACTED:secret-value\]/);
+    const kinds = new Set(result.redactions.map((r) => r.kind));
+    for (const k of ['anthropic-key', 'openai-key', 'jwt', 'secret-value', 'home-path', 'internal-url']) {
+      assert.ok(kinds.has(k as never), `missing redaction kind ${k}`);
+    }
+  });
+
+  it('#1783: an already redacted value is not redacted twice', () => {
+    const result = sanitizeIssueBody('api_key=sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA');
+    assert.equal(result.body, 'api_key=[REDACTED:anthropic-key]');
+  });
+
+  it('#1783: sanitizeIssueTitle redacts, flattens and caps the title', () => {
+    const { title, redactions } = sanitizeIssueTitle(`Crash with sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA\nsecond line ${'x'.repeat(400)}`);
+    assert.ok(!title.includes('sk-ant'));
+    assert.ok(!title.includes('\n'));
+    assert.ok(title.length <= 256);
+    assert.equal(redactions[0]?.kind, 'anthropic-key');
   });
 });

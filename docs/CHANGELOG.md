@@ -36,6 +36,23 @@ changelog.
 
 ## [Unreleased]
 
+### Security — Builder hygiene: issue-report redaction + daily cap, test-credential purge, SkillSpector high-risk (2026-11-26)
+
+The core-bug report sanitizer also redacts Anthropic / OpenAI keys, JWTs,
+`key=` / `token=` / `password=` values (the key name stays), absolute home
+paths and link-local / cloud-metadata addresses; the title is sanitized like
+the body in the tool, the confirm card, the `issues/new` URL and the
+create-issue route; and each prepared report is written to
+`builder_triage_log`, so the cap of 3 reports per operator per 24 h finally
+applies (#1783). Deleting a draft drops its test credentials from the vault;
+`DELETE /drafts/:id/permanent` (and "Delete permanently" in the deleted list)
+removes a deleted draft for good; a daily purge removes soft-deleted published
+drafts past the grace period together with their credentials (#1790). The
+SkillSpector sidecar treats exit 1 with a valid report as a completed
+above-threshold scan, so high-risk packages show `high_risk` with their
+findings instead of "Scan failed"; exit 2 and an exit-1 report without issues
+stay failures (#1813).
+
 ### Fixed — Builder runtime smoke: a green result needs a handler that ran, on stub credentials (2026-11-26)
 
 The post-build runtime smoke activates its own instance of the fresh build with

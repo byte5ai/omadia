@@ -4387,6 +4387,8 @@
           "failed": "Export failed: {message}"
         },
         "confirmDelete": "Delete draft \"{name}\"?",
+        "confirmPurge": "Delete draft \"{name}\" permanently? Its spec, slot code and test credentials are removed. This cannot be undone.",
+        "purge": "Delete permanently",
         "lastUpdated": "Last {relative}",
         "relative": {
           "justNow": "just now",

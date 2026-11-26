@@ -4823,6 +4823,32 @@ Patch, der sie setzt, wird mit Verweis auf den Agent Builder abgelehnt.
   sie hält keine Grant-Zeile. Ausgabe nur im Builder-SSE hinter der
   Admin-Session.
 
+### Plugin Builder: Build-Status, Smoke, Drafts löschen (Welle 5, W20)
+
+- **Build-Status** (ADR-0230): `plugins/builder/previewWarmBuild.ts` ist der
+  einzige Emitter von `build_status` (Auto-Rebuild in `index.ts` und
+  Preview-Routen). `building` nur bei echtem Build, jedes `failed` genau einmal
+  mit `buildN` und stabilem Code; fehlende Test-Credentials bleiben `ok` mit
+  `missingSetupKey`. `GET /drafts/:id/preview/status` meldet einen grünen
+  letzten Build bei kaltem Cache als `ok` + `warm: false`;
+  `PUT|DELETE /drafts/:id/preview/secrets` planen einen Rebuild.
+- **Runtime-Smoke** (ADR-0232): eigene Stub-Aktivierung der frischen ZIP
+  (`smokeMode`, Stub-Werte `'smoke-test'`, Verzeichnis `<draft>-<rev>-smoke`),
+  nie der warme Preview-Handle; Tools mit `side_effects: 'write'` werden nicht
+  aufgerufen; `validation_failed` ist ein Fehlschlag, `auth_rejected` nicht.
+- **`DELETE /drafts/:id`** verwirft zusätzlich die Test-Credentials des Drafts
+  (Vault-Namespace `core.builder-preview:<user>:<draft>`).
+- **`DELETE /drafts/:id/permanent`** (nur Owner, nur bereits gelöschte Drafts,
+  sonst `404`) entfernt einen Draft endgültig; UI: „Endgültig löschen“ in der
+  Liste gelöschter Drafts.
+- **Täglicher Purge** (`plugins/builder/draftPurge.ts`, gestartet in
+  `index.ts`): gelöschte, veröffentlichte Drafts nach der Grace-Period samt
+  Test-Credentials. Unveröffentlichte gelöschte Drafts bleiben bis zum
+  endgültigen Löschen.
+- **Profil-Snapshots/Bundles** tragen `knowledge/slots.json` (Slot-Code);
+  Import stellt ihn wieder her (Draft-Quota vor jeder Plugin-Installation),
+  Rollback schreibt Spec + Slots in den Draft (nur eigener Draft).
+
 ### Plugin Builder: ein Turn pro Draft, Stopp auf dem Server (#2214)
 
 Seit #1899 läuft ein Builder-Turn nach einem Disconnect weiter. `DraftTurnLock`

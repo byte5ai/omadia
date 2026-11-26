@@ -4387,6 +4387,8 @@
           "failed": "Export fehlgeschlagen: {message}"
         },
         "confirmDelete": "Draft \"{name}\" löschen?",
+        "confirmPurge": "Draft „{name}“ endgültig löschen? Spec, Slot-Code und Test-Zugangsdaten werden entfernt. Das lässt sich nicht rückgängig machen.",
+        "purge": "Endgültig löschen",
         "lastUpdated": "Zuletzt {relative}",
         "relative": {
           "justNow": "gerade eben",
