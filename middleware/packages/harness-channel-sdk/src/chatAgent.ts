@@ -206,6 +206,23 @@ export interface ChatTurnAttachment {
   bytesBase64?: string;
 }
 
+/**
+ * A file the channel adapter received from the user in THIS turn and persisted
+ * to the shared object store (#1962, ADR-0178). Stated by the adapter, never
+ * parsed from message text: the kernel ingests and binds only these keys to
+ * the turn's conversation, so a `[attachments-info]`-style block typed into a
+ * message reads nothing.
+ */
+export interface StoredTurnAttachment {
+  fileName: string;
+  contentType: string;
+  /** Object-store key the adapter wrote the bytes under. */
+  storageKey: string;
+  /** Optional fetchable URL for the same object (a signed link). */
+  signedUrl?: string;
+  sizeBytes?: number;
+}
+
 /** Diagram render produced by the `render_diagram` tool during a turn,
  *  surfaced as a sidecar attachment. */
 export interface DiagramAttachment {
@@ -646,6 +663,14 @@ export interface ChatTurnInput {
    * (Telegram); otherwise the orchestrator fetches `url` itself.
    */
   attachments?: ChatTurnAttachment[];
+  /**
+   * #1962 (ADR-0178) — uploads the channel adapter persisted in this turn,
+   * as structured data. The ONLY source the kernel ingests storage keys from:
+   * each key is bound to this turn's conversation before it is read, and
+   * `read_attachment` later reads only keys bound to the conversation it runs
+   * in. Set by channel adapters only; HTTP routes never fill it from a request.
+   */
+  storedAttachments?: StoredTurnAttachment[];
   /**
    * Omadia UI canvas session id for this turn. Set only by the canvas channel
    * (threaded from the channel's `IncomingTurn` metadata through the dispatcher);

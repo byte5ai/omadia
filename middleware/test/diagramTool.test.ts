@@ -36,7 +36,7 @@ describe('DiagramTool', () => {
     assert.match(parsed.url, /diagrams\/abc\.png/);
   });
 
-  it('exposes the last render via takeLastRender and clears it on read', async () => {
+  it('exposes the turn\'s renders via takeRenders and clears them on read', async () => {
     const service = stubService(async (input) => ({
       kind: input.kind,
       url: 'http://example/x.png',
@@ -46,10 +46,10 @@ describe('DiagramTool', () => {
     }));
     const tool = new DiagramTool(service);
     await tool.handle({ kind: 'graphviz', source: 'digraph{a->b}', title: 'demo' });
-    const first = tool.takeLastRender();
-    assert.ok(first);
-    assert.equal(first?.title, 'demo');
-    const second = tool.takeLastRender();
+    const first = tool.takeRenders(undefined);
+    assert.equal(first?.length, 1);
+    assert.equal(first?.[0]?.title, 'demo');
+    const second = tool.takeRenders(undefined);
     assert.equal(second, undefined, 'second read should be empty');
   });
 
@@ -78,7 +78,7 @@ describe('DiagramTool', () => {
     );
     const out = await tool.handle({ kind: 'mermaid', source: 'A-->B' });
     assert.ok(out.startsWith('Error: upstream renderer failed'));
-    assert.equal(tool.takeLastRender(), undefined);
+    assert.equal(tool.takeRenders(undefined), undefined);
   });
 
   it('withholds the text of an exception the tool did not author, and logs it', async () => {
