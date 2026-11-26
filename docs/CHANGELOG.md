@@ -36,6 +36,15 @@ changelog.
 
 ## [Unreleased]
 
+### Added — operator tool for owner-less legacy web chats (#1762 follow-up, ADR-0184) (2026-11-26)
+
+- `POST /api/v1/admin/chats/assign-orphans` `{ userId, dryRun? }` gives every web chat without
+  an owner (written before ADR-0180) to one account, stamping its `providerUserId` (the session
+  `sub` the chat routes compare). Owned chats never change; idempotent. `dryRun: true` answers
+  `{ wouldAssign, unreadable }` and changes nothing. A real run writes `admin_audit`
+  `chat.assign_orphans` (target `user:<users.id>`, `after: { owner, count }`) first and changes
+  nothing if that fails. Unknown account 404, disabled account 409.
+
 ### Fixed — the user purge erases one person (#1840, #1842, #1843, ADR-0186) (2026-11-26)
 
 - Memory purge, axis "User": the selector may be the omadia user id, the account id from
