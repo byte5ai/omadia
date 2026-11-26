@@ -1666,9 +1666,24 @@ interface AgentIdentityProjectionAgent {
  * fallback to render a preview, and that is exactly the duplication
  * `resolveAgentIdentity` exists to prevent.
  */
+/** What the RUNNING agent says about its identity (absent = not built). */
+export interface AgentIdentityRuntimeView {
+  /** #1890 — the identity head of the system prompt, from the built agent. */
+  readonly identityPrompt: string | null;
+}
+
+/** The running agent's view for {@link projectAgentIdentity}. */
+function identityRuntimeView(
+  registry: OrchestratorRegistry,
+  slug: string,
+): AgentIdentityRuntimeView {
+  return { identityPrompt: registry.get(slug)?.built?.identityPrompt ?? null };
+}
+
 export function projectAgentIdentity(
   agent: AgentIdentityProjectionAgent,
   identity: AgentIdentityRecord | undefined,
+  runtime?: AgentIdentityRuntimeView,
 ): Record<string, unknown> {
   const resolved = resolveAgentIdentity(identity, {
     name: agent.name,
@@ -1703,6 +1718,11 @@ export function projectAgentIdentity(
     // result rather than infer it.
     composed_prompt: identity?.composed.text ?? null,
     composed_family: identity?.composed.family ?? null,
+    // #1890 — the assembled identity section exactly as the running agent
+    // speaks it (base identity, compiled sections, description, name,
+    // identity rules, language and answer-size lines). `null` while the agent
+    // is not built (disabled, or the orchestrator is inactive).
+    identity_prompt: runtime?.identityPrompt ?? null,
     resolved: {
       display_name: resolved.displayName,
       short_description: resolved.shortDescription,
@@ -3270,7 +3290,7 @@ export function createOperatorAgentsRouter(
         return;
       }
       const identity = await deps.store.getByAgentId(agent.id);
-      res.json(projectAgentIdentity(agent, identity));
+      res.json(projectAgentIdentity(agent, identity, identityRuntimeView(live.registry, agent.slug)));
     } catch (err) {
       badRequest(res, err);
     }
@@ -3474,7 +3494,7 @@ export function createOperatorAgentsRouter(
         current.revision,
       );
       res.json({
-        ...projectAgentIdentity(agent, current),
+        ...projectAgentIdentity(agent, current, identityRuntimeView(live.registry, agent.slug)),
         republish,
         // Boundary presets this build could not resolve. A rule that silently
         // stopped applying is worse than one that never existed, so the
@@ -3530,7 +3550,7 @@ export function createOperatorAgentsRouter(
           identity.revision,
         );
         res.json({
-          ...projectAgentIdentity(agent, identity),
+          ...projectAgentIdentity(agent, identity, identityRuntimeView(live.registry, agent.slug)),
           republish,
           // Honest about the one case where the upload is only half used.
           outline_derived: derived.outline !== null,
@@ -3566,7 +3586,7 @@ export function createOperatorAgentsRouter(
         before?.revision,
         identity?.revision,
       );
-      res.json({ ...projectAgentIdentity(agent, identity), republish });
+      res.json({ ...projectAgentIdentity(agent, identity, identityRuntimeView(live.registry, agent.slug)), republish });
     } catch (err) {
       badRequest(res, err);
     }

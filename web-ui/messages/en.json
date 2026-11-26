@@ -2770,10 +2770,11 @@
         "prompt": "Prompt"
       },
       "prompt": {
-        "hint": "This is the agent's own part of its system prompt, assembled from its behaviour, character axes, limits and anti-flattery guard. In a turn, two blocks can come before it: the conversation's earlier context, and the Quality Guard plugin's rules for whatever this agent does not set itself.",
-        "hintWithFamily": "This is the agent's own part of its system prompt. The character axes are computed against the {family} model family's own default, so only deviations from it are written at all. In a turn, two blocks can come before it: the conversation's earlier context, and the Quality Guard plugin's rules for whatever this agent does not set itself.",
+        "hint": "This is the opening of the agent's system prompt as the running agent sends it: the platform identity, or the agent's own behaviour text in its place, then character, limits and anti-flattery guard, description, name, identity rules, and the language and answer-size lines. In a turn, only the Quality Guard plugin's rules come before it. A working mode picked for the turn is inserted right after the identity; the tool descriptions, the date and the conversation's earlier context follow after this text.",
+        "hintWithFamily": "This is the opening of the agent's system prompt as the running agent sends it: the platform identity, or the agent's own behaviour text in its place, then character, limits and anti-flattery guard, description, name, identity rules, and the language and answer-size lines. The character axes are computed against the {family} model family's own default, so only deviations from it are written at all. In a turn, only the Quality Guard plugin's rules come before it. A working mode picked for the turn is inserted right after the identity; the tool descriptions, the date and the conversation's earlier context follow after this text.",
         "stale": "Unsaved changes are not in here yet — save to see them.",
-        "empty": "Nothing set yet. This agent uses the platform-wide default text."
+        "empty": "Nothing set yet. This agent uses the platform-wide default text.",
+        "notRunning": "The agent is not running right now, so only its own compiled part is shown here, without the platform identity, name and the lines added around it."
       },
       "droppedPresets": "The server does not know these boundary presets: {ids}",
       "persona": {

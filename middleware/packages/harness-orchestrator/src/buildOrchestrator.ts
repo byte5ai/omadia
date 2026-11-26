@@ -124,7 +124,7 @@ import { IdentityGuard } from './identityGuard/guard.js';
 import { AnswerDetailsMemory, withAnswerDetailsNote, withAnswerDetailsRecall } from './answerDetailsRecall.js';
 import { maskRestoredValues, withIdentityGuard } from './identityGuard/guardedChatAgent.js';
 import { createLlmIdentityJudge } from './identityGuard/llmJudge.js';
-import { assembleAgentIdentity } from './agentIdentityLayers.js';
+import { assembleAgentIdentity, identityPreamble } from './agentIdentityLayers.js';
 import { AgentAnswerEmitter } from './management/answerEmitter.js';
 import { withSpeaker } from './management/speakingChatAgent.js';
 
@@ -532,6 +532,15 @@ export interface BuiltOrchestrator {
    *  per-turn routing the Agent is on without inspecting the orchestrator. */
   readonly effectiveModelRouting?: ModelRoutingConfig;
   /**
+   * #1890 — the head of this agent's stable system prompt as the turn loop
+   * sends it: the identity section ({@link assembleAgentIdentity}), the
+   * language line and the answer-size block ({@link identityPreamble}). What
+   * the operator's Prompt tab shows, read from the built agent so the preview
+   * cannot drift from the runtime. Excludes the per-turn parts (working mode,
+   * Quality Guard rules before it, tool docs and context after it).
+   */
+  readonly identityPrompt: string;
+  /**
    * #2085 — this agent's boundary check of a data plan (spec 2042 §5.13 1a):
    * the fast lane, `deliver_data` and trigger data actions run a plan only
    * when it passes.
@@ -923,6 +932,10 @@ export function buildOrchestratorForAgent(
   // operator's Prompt preview (#1890) reads the same result from the built
   // agent, so the two cannot drift.
   const assistantIdentityWithName = assembleAgentIdentity(deps.assistantIdentity, config);
+  const identityPrompt = identityPreamble(
+    assistantIdentityWithName,
+    config.answerVerbosity ?? deps.answerVerbosity,
+  ).trimEnd();
   // #1033 — each per-family variant runs through the same layering, so a
   // cross-family fallback keeps the base identity, the name and the
   // description instead of speaking the bare compiled text.
@@ -1239,6 +1252,7 @@ export function buildOrchestratorForAgent(
       },
       effectiveModel: config.model,
       ...(config.modelRouting ? { effectiveModelRouting: config.modelRouting } : {}),
+      identityPrompt,
       dataPlanGuard,
     };
   }
@@ -1276,6 +1290,7 @@ export function buildOrchestratorForAgent(
     bundle: { agent: finalize(agent), raw: orchestrator, sessionLogger, chatSessionStore },
     effectiveModel: config.model,
     ...(config.modelRouting ? { effectiveModelRouting: config.modelRouting } : {}),
+    identityPrompt,
     dataPlanGuard,
   };
 }

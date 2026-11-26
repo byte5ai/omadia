@@ -230,6 +230,40 @@ describe('AgentIdentity — character (#914)', () => {
     expect(screen.getByText(/Unsaved changes are not in here yet/)).toBeTruthy();
   });
 
+  it('#1890 — shows the running agent\'s identity head and the real block order', async () => {
+    mockGet.mockResolvedValue(
+      dto(
+        {},
+        {
+          composed_prompt: '## Boundaries\n- No legal advice.',
+          identity_prompt:
+            'Du heißt Omi.\n\n## Boundaries\n- No legal advice.\n\nSprache: Antworte immer auf Deutsch.',
+        },
+      ),
+    );
+    renderWithIntl(<AgentIdentity slug="sales" />);
+    await openTab('prompt');
+
+    const text = screen.getByTestId('agent-identity-composed-prompt').textContent ?? '';
+    expect(text).toContain('Du heißt Omi.');
+    expect(text).toContain('Sprache:');
+    expect(screen.queryByTestId('agent-identity-prompt-not-running')).toBeNull();
+    // The hint no longer claims the conversation context comes first.
+    expect(screen.queryByText(/two blocks can come before it/)).toBeNull();
+    expect(screen.getByText(/only the Quality Guard plugin's rules come before it/)).toBeTruthy();
+  });
+
+  it('#1890 — says so when the agent is not running and only its own part is known', async () => {
+    mockGet.mockResolvedValue(dto({}, { composed_prompt: '## Boundaries\n- x' }));
+    renderWithIntl(<AgentIdentity slug="sales" />);
+    await openTab('prompt');
+
+    expect(screen.getByTestId('agent-identity-prompt-not-running')).toBeTruthy();
+    expect(
+      screen.getByTestId('agent-identity-composed-prompt').textContent,
+    ).toContain('## Boundaries');
+  });
+
   it('explains the empty prompt rather than showing an empty box', async () => {
     mockGet.mockResolvedValue(dto());
     renderWithIntl(<AgentIdentity slug="sales" />);

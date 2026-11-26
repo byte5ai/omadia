@@ -780,6 +780,14 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
                       })
                     : t('prompt.hint')}
                 </p>
+                {!dto.identity_prompt && (
+                  <p
+                    data-testid="agent-identity-prompt-not-running"
+                    className="text-[11px] text-[color:var(--fg-muted)]"
+                  >
+                    {t('prompt.notRunning')}
+                  </p>
+                )}
                 {dirty && (
                   <p className="text-[11px] text-[color:var(--warning)]">
                     {t('prompt.stale')}
@@ -789,7 +797,7 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
                   data-testid="agent-identity-composed-prompt"
                   className="max-h-[28rem] overflow-auto whitespace-pre-wrap rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)]/40 p-3 font-mono text-[11px] leading-relaxed"
                 >
-                  {dto.composed_prompt ?? t('prompt.empty')}
+                  {dto.identity_prompt ?? dto.composed_prompt ?? t('prompt.empty')}
                 </pre>
               </div>
             )}

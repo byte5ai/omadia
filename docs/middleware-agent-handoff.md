@@ -289,6 +289,17 @@ Charakter, Grenzen oder Schmeichel-Bremse, hängt der kompilierte
 Grenze die Plattform-Identität. Die Varianten pro Modellfamilie (#1033) laufen
 durch dieselbe Funktion und behalten damit Basis, Name und Steckbrief.
 
+**Prompt-Vorschau (#1890):** `identityPreamble` (gleiche Datei) hängt an den
+Identitätsabschnitt die Sprachzeile, die Zeile gegen angekündigte Tool-Aufrufe
+und den Antwortumfang-Block; `buildSystemPrompt` beginnt mit genau diesem Text.
+Der gebaute Agent trägt ihn als `BuiltOrchestrator.identityPrompt`, und
+`GET/PUT /api/v1/operator/agents/:slug/identity` liefern ihn als
+`identity_prompt` (`null`, solange der Agent nicht gebaut ist; die Web-UI zeigt
+dann nur `composed_prompt` mit Hinweis). Die Vorschau liest also den laufenden
+Agenten, kein zweites Rendering. Davor steht im Turn nur der
+Quality-Guard-Block; ein Arbeitsmodus folgt direkt auf die Identität,
+Werkzeuge, Datum und Gesprächskontext danach (ADR-0077).
+
 ### Arbeitsmodi statt Persona-Wechsel (#2051, Epic #2042)
 
 `workingModes.ts` (vorher `personaRouter.ts`) wählt pro Turn höchstens einen

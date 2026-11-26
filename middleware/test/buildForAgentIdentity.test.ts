@@ -548,3 +548,32 @@ test('#1878 — gaining or losing authored text rebuilds the agent', () => {
   assert.equal(plan.actions.length, 1);
   assert.match((plan.actions[0] as { reason: string }).reason, /identity_instructions/);
 });
+
+// ---------------------------------------------------------------------------
+// #1890 — the built agent exposes the identity head of its system prompt
+// ---------------------------------------------------------------------------
+
+test('#1890 — identityPrompt is the identity section plus language and answer-size lines', () => {
+  const built = buildForAgent(
+    agentRow({ identityName: 'Nova', answerVerbosity: 'tldr' }),
+    deps(),
+    RUNTIME,
+  );
+  const raw = String(rawIdentityOf(built));
+  assert.ok(built.identityPrompt.startsWith(`${raw}\n\nSprache: `));
+  assert.match(built.identityPrompt, /Dein Name ist Nova\./);
+  assert.match(built.identityPrompt, /Antwortumfang/);
+  assert.equal(built.identityPrompt, built.identityPrompt.trimEnd());
+});
+
+test('#1890 — the stable system prompt opens with exactly the previewed text', () => {
+  const built = buildForAgent(agentRow({ identityName: 'Nova' }), deps(), RUNTIME);
+  const orchestrator = built.orchestrator as unknown as {
+    nativeTools: { listWithHandler: () => unknown[]; get: () => undefined };
+    getSystemPrompt: () => string;
+  };
+  orchestrator.nativeTools.listWithHandler = () => [];
+  orchestrator.nativeTools.get = () => undefined;
+  const prompt = orchestrator.getSystemPrompt();
+  assert.ok(prompt.startsWith(`${built.identityPrompt}\n`));
+});

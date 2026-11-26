@@ -300,11 +300,17 @@ describe('operator agent identity routes (#914)', () => {
   let provisionerInstalled = true;
 
   let reloads = 0;
+  /** #1890 — the identity head each built agent reports, by slug. */
+  let builtPrompts = new Map<string, string>();
   const registry = {
     reload: () => {
       reloads += 1;
       return Promise.resolve();
     },
+    get: (slug: string) =>
+      builtPrompts.has(slug)
+        ? { built: { identityPrompt: builtPrompts.get(slug), effectiveModel: 'claude-opus-5' } }
+        : undefined,
   } as unknown as OrchestratorRegistry;
 
   before(async () => {
@@ -342,6 +348,7 @@ describe('operator agent identity routes (#914)', () => {
     identityWired = true;
     provisionerInstalled = true;
     reloads = 0;
+    builtPrompts = new Map();
   });
 
   interface IdentityBody {
@@ -358,6 +365,7 @@ describe('operator agent identity routes (#914)', () => {
     };
     composed_prompt: string | null;
     composed_family: string | null;
+    identity_prompt: string | null;
     republish?: string;
     outline_derived?: boolean;
     dropped_boundary_presets?: string[];
@@ -375,6 +383,19 @@ describe('operator agent identity routes (#914)', () => {
     assert.equal(body.resolved.display_name, 'Sales Agent');
     assert.equal(body.resolved.short_description, 'Sells');
     assert.equal(body.resolved.has_avatar, false);
+  });
+
+  it('#1890 — GET serves the identity head of the running agent', async () => {
+    builtPrompts.set('sales', 'Du bist Omi.\n\nSprache: Antworte immer auf Deutsch.');
+    const res = await fetch(`${baseUrl}/sales/identity`);
+    const body = (await res.json()) as IdentityBody;
+    assert.equal(body.identity_prompt, 'Du bist Omi.\n\nSprache: Antworte immer auf Deutsch.');
+  });
+
+  it('#1890 — an agent that is not built reports no identity head', async () => {
+    const res = await fetch(`${baseUrl}/plain/identity`);
+    const body = (await res.json()) as IdentityBody;
+    assert.equal(body.identity_prompt, null);
   });
 
   it('PUT stores the authored fields and reports the resolved ones', async () => {

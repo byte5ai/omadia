@@ -2770,10 +2770,11 @@
         "prompt": "Prompt"
       },
       "prompt": {
-        "hint": "Das ist der agenteneigene Teil des System-Prompts, zusammengesetzt aus Verhalten, Charakter-Achsen, Grenzen und Schmeichel-Bremse. In einem Turn können zwei Blöcke davor stehen: der bisherige Gesprächskontext und die Regeln des Quality-Guard-Plugins für alles, was dieser Agent nicht selbst festlegt.",
-        "hintWithFamily": "Das ist der agenteneigene Teil des System-Prompts. Die Charakter-Achsen sind gegen die Grundhaltung der Modellfamilie {family} gerechnet, nur Abweichungen davon werden überhaupt geschrieben. In einem Turn können zwei Blöcke davor stehen: der bisherige Gesprächskontext und die Regeln des Quality-Guard-Plugins für alles, was dieser Agent nicht selbst festlegt.",
+        "hint": "Das ist der Anfang des System-Prompts, so wie der laufende Agent ihn sendet: die Plattform-Identität oder an ihrer Stelle der eigene Verhaltenstext des Agenten, danach Charakter, Grenzen und Schmeichel-Bremse, Beschreibung, Name, Identitätsregeln sowie die Zeilen zu Sprache und Antwortumfang. In einem Turn stehen nur die Regeln des Quality-Guard-Plugins davor. Ein für den Turn gewählter Arbeitsmodus wird direkt nach der Identität eingefügt; Werkzeugbeschreibungen, Datum und der bisherige Gesprächskontext folgen nach diesem Text.",
+        "hintWithFamily": "Das ist der Anfang des System-Prompts, so wie der laufende Agent ihn sendet: die Plattform-Identität oder an ihrer Stelle der eigene Verhaltenstext des Agenten, danach Charakter, Grenzen und Schmeichel-Bremse, Beschreibung, Name, Identitätsregeln sowie die Zeilen zu Sprache und Antwortumfang. Die Charakter-Achsen sind gegen die Grundhaltung der Modellfamilie {family} gerechnet, nur Abweichungen davon werden überhaupt geschrieben. In einem Turn stehen nur die Regeln des Quality-Guard-Plugins davor. Ein für den Turn gewählter Arbeitsmodus wird direkt nach der Identität eingefügt; Werkzeugbeschreibungen, Datum und der bisherige Gesprächskontext folgen nach diesem Text.",
         "stale": "Ungespeicherte Änderungen sind hier noch nicht drin — erst nach dem Speichern.",
-        "empty": "Noch nichts gesetzt. Der Agent nutzt den plattformweiten Standardtext."
+        "empty": "Noch nichts gesetzt. Der Agent nutzt den plattformweiten Standardtext.",
+        "notRunning": "Der Agent läuft gerade nicht. Deshalb steht hier nur sein eigener kompilierter Teil, ohne Plattform-Identität, Name und die Zeilen, die drumherum ergänzt werden."
       },
       "droppedPresets": "Diese Grenzen-Vorlagen kennt der Server nicht (mehr): {ids}",
       "persona": {

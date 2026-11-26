@@ -6,8 +6,8 @@ import {
   resolveMcpCallTimeouts,
 } from './mcp/mcpClient.js';
 import { resolveDisclosureLevelForChannel } from './aiDisclosurePosture.js';
+import { identityPreamble } from './agentIdentityLayers.js';
 import {
-  buildAnswerVerbosityBlock,
   buildAnswerVerbosityTurnBlock,
   DEFAULT_ANSWER_VERBOSITY,
   parseAnswerVerbosity,
@@ -2507,9 +2507,8 @@ function buildSystemPrompt(
   /** #1559 — `create_xlsx` is offered this turn. */
   hasFileExport = false,
 ): string {
-  // Operator's answer-size contract. `standard` is '' so the delivered state
-  // keeps the prompt (and its cache key) unchanged.
-  const answerVerbosityBlock = buildAnswerVerbosityBlock(answerVerbosity);
+  // #1890 — identity, language line and the operator's answer-size contract
+  // come from `identityPreamble`, the same text the Prompt tab previews.
   // W5 — off by default, so a turn that is not context-bound produces a
   // byte-identical prompt (and therefore a byte-identical prompt-cache key).
   const contextMemoryBlock = memoryPrompt ? MEMORY_PROMPT_BLOCKS[memoryPrompt] : '';
@@ -2591,11 +2590,7 @@ e) **Rückfragen zu einer früher gezeigten Tabelle.** Die Zeilen einer gerender
 `
     : '';
 
-  return `${assistantIdentity}
-
-Sprache: Antworte immer auf Deutsch, außer der Nutzer wechselt explizit die Sprache.
-Kündige Tool-Aufrufe nicht mit Zwischentext an (z.B. „Ich prüfe zuerst mein Memory.“) — solcher Text wird dem Nutzer nicht gezeigt. Schreib die Antwort, wenn die Daten da sind.
-${answerVerbosityBlock ? '\n' + answerVerbosityBlock : ''}
+  return `${identityPreamble(assistantIdentity, answerVerbosity)}
 Werkzeuge:
 - \`memory\` (virtuelles /memories-Verzeichnis): Persistiere Domänen-Learnings, Nutzer-Präferenzen, Geschäfts-Konventionen und häufige Anfragen. Der Memory wird über Sessions hinweg geteilt und ist global für diesen Agent. Lies zu Beginn jeder neuen Aufgabe einmal den Verzeichnisinhalt, bevor du antwortest, damit du auf relevante Learnings zurückgreifen kannst. Lege neue Learnings in themenbezogenen Dateien ab (z.B. /memories/customers/kundenname.md, /memories/observations/2026-q2.md).
 ${graphBlock}${chatParticipantsBlock}${askUserChoiceBlock}${suggestFollowUpsBlock}${calendarBlock}${extraToolDocs.length > 0 ? '\n' + extraToolDocs.map((doc) => `- ${doc.trim()}`).join('\n') + '\n' : ''}

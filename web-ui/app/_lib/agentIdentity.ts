@@ -133,6 +133,14 @@ export interface AgentIdentityDto {
   composed_prompt: string | null;
   /** Model family the persona deltas were compiled against. */
   composed_family: string | null;
+  /**
+   * #1890 — the identity head of the system prompt as the RUNNING agent
+   * sends it: base identity, the compiled text above, description, name,
+   * identity rules, language and answer-size lines. `null` (or absent from an
+   * older server) while the agent is not built; the tab then shows
+   * {@link composed_prompt}.
+   */
+  identity_prompt?: string | null;
 }
 
 /** What a write did to the agent's published Teams package. */
