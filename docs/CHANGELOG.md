@@ -36,6 +36,21 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — small review follow-ups: office files, admin token, builder prompt (2026-11-26)
+
+- xlsx: a sheet name cut to Excel's 31 characters could end on the first half of an emoji.
+  The lone surrogate is not valid XML and the workbook would not open. The cut (and the
+  ` (n)` uniqueness suffix) now drops a trailing high surrogate.
+- docx: a tab in text reached `<w:t>` raw and Word showed it as a space. Each tab is now a
+  `<w:tab/>` in the run, alongside the line-break handling from #1982.
+- ADMIN_TOKEN: with `AUTH_LOGIN_CLIENT_ADDRESS=socket` wrong tokens are never braked (the
+  shared TCP peer, accepted residual in docs/security-architecture.md §10zb). Boot now warns
+  about it and points at `xff:<n>` / `header:<name>`, and warns again for a token under 32
+  characters.
+- Builder prompt: the `ctx.knowledgeGraph.ingestFacts` example lacked `factId` and
+  `sourceTurnId`, so a plugin copying it was refused (ADR-0167 checks `fact:` ids). It now
+  builds the id with `factNodeId` and mentions only its own entity system.
+
 ### Fixed — Conductor canvas edges readable in dark mode (2026-11-25)
 
 - The transitions in the Conductor designer and the template preview were xyflow's `#3e3e3e`
