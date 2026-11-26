@@ -199,6 +199,7 @@ import {
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
 // phase-3.1-4). No kernel-side attachment router import needed anymore.
 import { createChatSessionsRouter } from './routes/chatSessions.js';
+import { soleAccountLegacyOwner, type LegacyChatOwner } from './routes/chatSessionAccess.js';
 import {
   DEV_GRAPH_PATH,
   DEV_PATH_PREFIX,
@@ -4195,6 +4196,12 @@ async function main(): Promise<void> {
     }),
   );
 
+  // #1762 (ADR-0180) — the owner of web chats written before owners existed:
+  // the instance's only account. Bound once the users table is wired below;
+  // until then (and without Postgres) such chats belong to nobody.
+  let resolveLegacyChatOwner: LegacyChatOwner = () => Promise.resolve(undefined);
+  const legacyChatOwner: LegacyChatOwner = () => resolveLegacyChatOwner();
+
   // OB-106: gate the chat-inference endpoints (`POST /api/chat`,
   // `POST /api/chat/stream`) behind `requireAuth`. Without this, anonymous
   // callers could trigger LLM inference (cost) and reach the tool surface
@@ -4205,6 +4212,7 @@ async function main(): Promise<void> {
     requireAuth,
     createChatRouter({
       agentResolver,
+      legacyChatOwner,
       routeTurn: routeWebTurn,
       // #2055 — `/agent …` in the web chat, the same management-layer
       // handling every other channel gets from its resolver.
@@ -4264,7 +4272,11 @@ async function main(): Promise<void> {
   // here is defence-in-depth: if a future refactor splits mounts or moves
   // the sessions router to a different base path, the auth guarantee
   // travels with it.
-  app.use('/api/chat', requireAuth, createChatSessionsRouter({ getStore: getChatSessionStore }));
+  app.use(
+    '/api/chat',
+    requireAuth,
+    createChatSessionsRouter({ getStore: getChatSessionStore, legacyOwner: legacyChatOwner }),
+  );
 
   // Plugin-contributed navigation. The web-ui shell renders a static nav for
   // its own compiled surfaces and merges this for everything a plugin adds,
@@ -6069,6 +6081,7 @@ async function main(): Promise<void> {
 
     const userStore = new UserStore(graphPool);
     sessionRevocation.attach(userStore);
+    resolveLegacyChatOwner = soleAccountLegacyOwner((limit) => userStore.list({ limit }));
     // #2042 — `humanNames@1` (published before plugin activation) now reads
     // this users table; every user write reloads the snapshot.
     humanNameDirectory.attach(userStore);

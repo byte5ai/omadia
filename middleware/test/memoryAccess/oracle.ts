@@ -82,9 +82,9 @@ const pin = (allowed: boolean, source: string): Verdict => ({
 // ---------------------------------------------------------------------------
 
 /**
- * Only turns with a `TurnOrigin` are context-bound; web/API turns emit none
- * and stay context-free in every mode (S "Only turns that carry a TurnOrigin
- * are context-bound"; H Rollout "HTTP/API-Turns emittieren kein origin").
+ * Only turns with a `TurnOrigin` are context-bound (S "Only turns that carry a
+ * TurnOrigin are context-bound"). Web turns carry the account's origin since
+ * #1774 (ADR-0182), so they are context-bound one-person rooms.
  * `off` is context-free for every turn (H Effective Scope, row 1).
  */
 export function isContextBound(v: Viewer, mode: Mode): boolean {
@@ -105,7 +105,8 @@ function isOwnConversation(
 ): boolean {
   if (agent !== v.agent || context !== v.context) return false;
   // A room is one conversation for everyone in it; a web chat belongs to its sender.
-  return CONTEXTS[context].kind === 'context-free' ? sender === v.user : true;
+  const kind = CONTEXTS[context].kind;
+  return kind === 'context-free' || kind === 'account' ? sender === v.user : true;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,15 +181,10 @@ function memorableKnowledge(v: Viewer, mode: Mode, mk: MkItem, settings: Setting
     );
   }
 
-  const shared =
-    mk.visibility === 'team' || mk.visibility === 'public' || mk.visibility === 'absent';
-  const sharedSource =
-    mk.visibility === 'absent'
-      ? pin(
-          true,
-          "an MK written without visibility counts as team (Neon COALESCE(visibility, 'team'))",
-        ).source
-      : 'team/public knowledge is shared by construction (C #575; PA teamVisibility)';
+  // #1823 (ADR-0183): an MK written without visibility is stored `private`;
+  // only `team` / `public` written on purpose is shared.
+  const shared = mk.visibility === 'team' || mk.visibility === 'public';
+  const sharedSource = 'team/public knowledge is shared by construction (C #575; PA teamVisibility)';
 
   if (mode === 'enforce-strict' && isContextBound(v, mode)) {
     // Strict narrows recall to the own conversation (H, S table). Curated MK
@@ -481,14 +477,6 @@ export interface Divergence {
 }
 
 export const EXPECTED_DIVERGENCES: readonly Divergence[] = [
-  {
-    id: 'empty-audience-inmemory',
-    oracle: 'an empty audience matches nothing (PA ownersCoverAudience)',
-    code: 'InMemory MK/excerpt search with audienceOwners [] still admits operator-authored rows; Neon returns []',
-    confirmed:
-      'step 2, aclContract.test.ts (todo): 50 operator-authored memories and their excerpts come back for audienceOwners []; Neon returns none',
-  },
-
   {
     id: 'excerpt-parent-recheck',
     oracle: 'an excerpt of a team-visible MK is visible to a non-owner when its parent is',

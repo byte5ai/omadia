@@ -2634,13 +2634,13 @@
       "semanticsHeading": "Read this before switching it on",
       "semanticsTeam": "A turn from a team context writes into its own tier and into the shared team tier — that is the tier teammates read each other in.",
       "semanticsAgent": "The agent's own memory stays readable but becomes read-only for context turns, so “remember this globally” can no longer carry knowledge from one team to another.",
-      "semanticsApi": "Turns from the API carry no chat context, so they only ever reach the private memory of the agent itself — never a team or channel tree.",
+      "semanticsApi": "Web chat accounts and Public API keys count as one-person chats: with any mode except Off, each account and each API key gets its own memory and never reads another one's. Under Off, every account and every API key of this agent shares one memory tree.",
       "semanticsMembers": "With “Shared by the people present”, a group only gets knowledge when the channel reports its complete member list; otherwise it gets none, so nobody can read what was never theirs.",
       "acknowledge": "I understand how memory will be split for this agent.",
       "modes": {
         "off": {
           "label": "Off",
-          "description": "One shared memory tree for every turn, as before this feature. Not available for an agent that holds capability grants."
+          "description": "One shared memory tree for every turn, as before this feature — every web chat account and every API key reads what the others asked the agent to remember. Not available for an agent that holds capability grants."
         },
         "enforce": {
           "label": "Separate per context",
@@ -2648,11 +2648,11 @@
         },
         "enforce-strict": {
           "label": "Separate and sealed",
-          "description": "Each chat context gets its own memory tree and cannot read the agent's own memory at all. Choose this when contexts must not share anything."
+          "description": "Each chat context — also each web chat account and each API key — gets its own memory tree and cannot read the agent's own memory at all. Choose this when contexts must not share anything."
         },
         "members": {
           "label": "Shared by the people present",
-          "description": "Knowledge belongs to the people present when it came up. Any chat where only those people take part can use it, a direct message included; once someone else is present, it stays out."
+          "description": "Knowledge belongs to the people present when it came up. Any chat where only those people take part can use it, a direct message, a web chat or an API key's turns included; once someone else is present, it stays out."
         }
       }
     },

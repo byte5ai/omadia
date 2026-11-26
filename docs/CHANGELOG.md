@@ -36,6 +36,70 @@ changelog.
 
 ## [Unreleased]
 
+### Security — web, routine and API turns are one-person rooms; memories private by default (#1774, #1826, #1823, ADR-0182, ADR-0183) (2026-11-26)
+
+- Web chat turns carry `TurnOrigin { channelType: 'http', scope: personal(<omadia user id>) }`,
+  built only from the session (`webTurnOrigin`, `routes/chat.ts`); web routines carry the same
+  origin from `routine.userId`; Public API turns carry `{ channelType: 'api', scope:
+  personal('key:<keyId>') }` (`apiKeyOrigin`). In `enforce` / `enforce-strict` each account and
+  each key gets its own `user` tier, in `members` a one-person audience (`isWebAccountTurn`).
+  `off` keeps one shared tree (ADR-0116). A channel plugin can no longer state `http`, and only
+  `@omadia/channel-api` may state `api` (`readTurnOrigin`; such a turn runs context-free).
+- The `[security-audit] effectiveMemoryScope` line names the mode that is set (`members` was
+  logged as `enforce-strict`). The memory tab texts (en/de) say what each mode does for web
+  accounts and API keys.
+- `createMemorableKnowledge` stores `private` when no visibility is given (both backends,
+  matching the plugin-api doc). "Save as memory" writes `private` and stamps `originAgent` from
+  its source turn. **Graph migration `0037_memorable_knowledge_private_by_default`** moves every
+  defaulted `team` MemorableKnowledge row that has owners to `private`; durable rules
+  (`system:rules-hook`), owner-less rows and `public` rows stay shared. plugin-api **1.99.0**
+  records the behaviour change (and `addOwner`/`removeOwner` from #1821). Recall's `teamVisibility` stays on and now only admits knowledge
+  shared on purpose.
+- **Upgrade note:** on `enforce-strict` / `members` agents, web and API turns no longer read
+  notes written to the agent tree before this change. A hand-set `team` row becomes private and
+  must be re-shared.
+
+### Security — memory owners are real users, chosen only by the saver (#1821, #1852, ADR-0181) (2026-11-26)
+
+- `POST /api/v1/memory` makes the saver the only owner and involved user. `aclOwners` or
+  `involvedOmadiaUserIds` naming anyone else answer `400 memory.foreign_owner`;
+  `derivedFromTurnIds` keeps only turns the saver sent (others are dropped and counted in
+  `droppedSourceTurns`).
+- `POST /api/v1/memory/:id/owners` refuses an id with no user behind it
+  (`400 memory.unknown_user`) and writes the `INVOLVED` edge, so the new owner finds the entry in
+  `GET /api/v1/memory` and `/memories`; `DELETE …/owners/:userId` drops the edge again.
+  `KnowledgeGraph.addOwner` throws `user_not_found` on both backends (plugin-api doc updated).
+
+### Security — web chats belong to the account that created them (#1762, ADR-0180) (2026-11-26)
+
+- `ChatSession.ownerUserId` (the session's `sub`) is stamped by the server on the first
+  `PUT /api/chat/sessions/:id`; a body cannot set or move it and `GET` does not return it.
+- `GET /api/chat/sessions` lists only the caller's chats. `GET`, `PUT`, `DELETE`,
+  `POST …/reset` and `POST …/re-snapshot` on another account's chat answer `404 not_found`;
+  a request without an account saves nothing (`401 no_account`).
+- `POST /api/chat`, `/api/chat/stream` and `/api/chat/steer` with another account's
+  `sessionId` answer 404 before an agent resolves, so its tail, pin and routines stay with
+  the owner; a web routine therefore only delivers into its creator's chat.
+- **Upgrade note:** chats written before this change have no owner. On an instance with exactly
+  one account they belong to it; with several accounts they are hidden from everyone (kept
+  under `/memories/chat-sessions/`, not deleted). The canary HTTP sweep's `#1762` todo is now
+  an assertion.
+
+### Security — process write tools bounded to the turn's agent (#2223, #2224) (2026-11-26)
+
+- `edit_process` loads the record first and changes only a process the turn may read
+  (`currentProcessReadFilter`): another agent's process, or any process in a context-bound
+  `enforce-strict` / `members` turn or outside a bounded turn, answers like a missing id.
+- `write_process` stores only in this agent's scopes (`processWriteScope`,
+  `@omadia/orchestrator`): an unqualified scope is qualified with the agent, another agent's
+  scope is refused, and nothing is written in a context-bound turn or without a boundary. The
+  bounded `processMemory@1` write for plugins applies the same rule.
+- `InMemoryKnowledgeGraph` returns no memorable knowledge and no excerpt for an empty
+  `audienceOwners`, like Neon (#2224); the `empty-audience-inmemory` divergence is gone.
+- The canary sweep (Neon) gained a write probe: every viewer edits every process of its tenant
+  and writes into another agent's scope through a dry store; only processes the oracle lets it
+  read and its own qualified scope may reach the store.
+
 ### Fixed — MCP and Builder audit coverage (#1740, #1951) (2026-11-26)
 
 - MCP server administration, tool discovery, verdict acknowledgements, grants,

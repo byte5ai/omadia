@@ -7652,11 +7652,11 @@ Broker erreichbar macht, bzw. gehören in die Credential-Anlage (#778 S2):
 Der Web-Sender (§ *Web-Sender (#1071)*) schreibt in einen Chat, den niemand besitzt.
 Bewusst akzeptiert, Security-Eintrag in `docs/security-architecture.md` §3a:
 
-- **Per-User-Ownership der Chat-Sessions.** Owner beim Anlegen stempeln und in
-  `GET`/`PUT`/`DELETE /api/chat/sessions` sowie in `validateConversationRef` prüfen.
-  Heute listet `GET` jede Session jedem angemeldeten User, und User A kann eine Routine
-  anlegen, die wiederkehrend in den Chat von User B schreibt, ohne dass B sie sehen,
-  pausieren oder löschen kann.
+- ~~**Per-User-Ownership der Chat-Sessions.**~~ Erledigt mit #1762 (ADR-0180): der Server
+  stempelt `ownerUserId` (Session-`sub`) beim ersten PUT, alle Routen unter
+  `/api/chat/sessions` und Chat-Turns/Steer mit fremder `sessionId` antworten 404. Eine
+  Routine entsteht damit nur im eigenen Chat und stellt nur dorthin zu. Alt-Chats ohne Owner
+  gehören dem einzigen Konto der Instanz, sonst niemandem (versteckt, nicht gelöscht).
 - **`validateConversationRef` prüft Existenz.** Heute nur die Syntax der `sessionId`
   (ein gelöschter Chat fällt erst beim ersten Fire auf — dann aber vor dem Agent-Turn,
   und die Routine wird pausiert).
@@ -9084,6 +9084,14 @@ operator-authentifizierte Listing-Route (gleiches Gate wie Purge) ist der nächs
 Die Channel-Plugins (`omadia-channel-teams`, `omadia-channel-telegram`) bauen den `TurnOrigin`
 in ihren EIGENEN Repos; die können erst nach Release des SDK mit `TurnOrigin` gebaut werden.
 
+**Web, Routinen, Public API (#1774, #1826, ADR-0182, 2026-11-26):** Der Web-Chat
+(`webTurnOrigin`, nur aus `req.session.omadia_user_id`) und Web-Routinen (`routineOrigin`)
+senden `TurnOrigin { channelType: 'http', scope: personal(<omadia-user-id>) }`, der
+Public-API-Router `apiKeyOrigin(keyId)` (`channelType: 'api'`, `personal('key:<keyId>')`).
+Jedes Konto und jeder Key ist damit unter `enforce` / `enforce-strict` / `members` ein
+Ein-Personen-Raum; `off` bleibt ein gemeinsamer Baum. Merkfähiges Wissen ist ohne
+explizite Sichtbarkeit `private` (ADR-0183, Graph-Migration `0037`).
+
 ## Teams-E2E-Smoke: Provisioning-Kette gegen eine Wegwerf-Umgebung (W2a, #860 / #874, 2026-08-27)
 
 `middleware/scripts/smoke-teams-e2e.ts` (+ `-stage2.ts`, beide gitignored, weil sie
@@ -9729,7 +9737,7 @@ durch den Web-Sender unten.
   `pause`/`resume`/`delete`/`trigger` owner-gescoped (#1025). Die `sessionId` kommt aus
   dem authentifizierten Turn des Erstellers.
 
-**Follow-up:** Chat-Sessions haben keinen Per-User-Owner — `GET /api/chat/sessions` listet
+**Follow-up (erledigt mit #1762, ADR-0180 — Chats gehören dem anlegenden Konto):** Chat-Sessions hatten keinen Per-User-Owner — `GET /api/chat/sessions` listete
 alle Sessions jedem angemeldeten User, `PUT` nimmt jede Id, und ein Turn mit fremder
 `sessionId` spiegelt schon heute in diesen Chat. #1071 **erweitert** diese Fläche leicht:
 die `conversationRef.sessionId` stammt aus dem Request-Body des Erstellers, also kann

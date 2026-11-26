@@ -47,10 +47,16 @@ describe('web chat /agent command', () => {
   before(async () => {
     const app = express();
     app.use(express.json());
+    // #1762 — the signed-in account that owns `sess1` (a one-account instance).
+    app.use((req, _res, next) => {
+      (req as unknown as { session: unknown }).session = { sub: 'account-1' };
+      next();
+    });
     app.use(
       '/api',
       createChatRouter({
         chatSessionStore: store,
+        legacyChatOwner: () => Promise.resolve('account-1'),
         routeTurn: (request) => {
           routed.push(request);
           return { kind: 'agent', chatAgent: agent, slug: 'old', speaker: { kind: 'agent', agentId: 'id-old', slug: 'old', displayName: 'Old' } };

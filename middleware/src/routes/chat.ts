@@ -11,7 +11,7 @@ import {
   type AgentCommand,
 } from '@omadia/channel-sdk';
 import { SYSTEM_SPEAKER, type AgentSpeaker, type SystemNotice } from '@omadia/plugin-api';
-import { MAX_STEER_LENGTH, steeringBus, today, turnContext } from '@omadia/orchestrator';
+import { MAX_STEER_LENGTH, steeringBus, today, turnContext, webAccountOrigin } from '@omadia/orchestrator';
 import type {
   AskObserver,
   ChatAgent,
@@ -20,6 +20,7 @@ import type {
 } from '@omadia/orchestrator';
 
 import type { AgentResolver } from '../agents/resolveAgentForTool.js';
+import { mayUseChatSession, type LegacyChatOwner } from './chatSessionAccess.js';
 import { sessionIdentity } from '../auth/sessionIdentity.js';
 import { recordForeignToolCall } from '../platform/foreignToolMetrics.js';
 import {
@@ -77,10 +78,9 @@ const ChatRequestSchema = z.object({
 /**
  * The orchestrator `sessionScope` for an HTTP turn.
  *
- * W5 memory-ACL (#860), coordinator decision 1 — note what this route does NOT
- * do: it never builds a `TurnOrigin`, so every HTTP turn resolves context-free
- * and gets the agent-private memory stack, byte-identical to today. That is a
- * decision, not an omission.
+ * W5 memory-ACL (#860), coordinator decision 1 — the scope is never a memory
+ * partition. Since #1774 (ADR-0182) the turn's origin comes from the signed-in
+ * account instead (`webTurnOrigin`), never from what this function returns.
  *
  * The scopes this function returns (`http-<scope>`, a client-chosen
  * `sessionId`, or the shared literal `'http-default'`) are transcript-bucketing
@@ -137,6 +137,18 @@ function resolveUserId(req: Request): string | undefined {
   const raw = req.header('x-user-id');
   if (!raw) return undefined;
   return USER_ID_RE.test(raw) ? raw : undefined;
+}
+
+/**
+ * #1774 (ADR-0182) — the turn's origin: the signed-in account's one-person
+ * room, from the session's canonical omadia user id only (never the
+ * `x-user-id` header, the scope or the `sessionId`, which the caller picks).
+ * Absent without such a session: the turn stays context-free.
+ */
+function webTurnOrigin(req: Request): { origin?: ReturnType<typeof webAccountOrigin> } {
+  const id = req.session?.omadia_user_id;
+  if (!id || !USER_ID_RE.test(id)) return {};
+  return { origin: webAccountOrigin(id) };
 }
 
 /**
@@ -309,6 +321,8 @@ export interface CreateChatRouterOptions {
    *  plugin publishes it post-boot (LLM-access-page key entry) without a
    *  restart. Falls back to `chatSessionStore` when absent. */
   getChatSessionStore?: () => ChatSessionStore | undefined;
+  /** #1762 — owner of chats written before owners existed (`chatSessionAccess.ts`). */
+  legacyChatOwner?: LegacyChatOwner;
   /** Phase A — builds a SessionConfigSnapshot for a given Agent slug.
    *  Same shape as `OrchestratorRegistry.snapshotForAgent`. */
   snapshotForAgent?: (slug: string) =>
@@ -414,6 +428,12 @@ async function resolveAgentForRequest(
   options: CreateChatRouterOptions,
   message: string,
 ): Promise<ResolvedTurn | undefined> {
+  // #1762 — a turn in another account's chat would read its tail, pin its
+  // agent and append to it. It answers like a missing chat.
+  if (sessionId && !(await mayUseOwnChat(req, sessionId, options))) {
+    res.status(404).json({ error: 'not_found', message: `chat session ${sessionId} not found` });
+    return undefined;
+  }
   const commandNotice = await handleWebAgentCommand(req, message, sessionId, options);
   if (commandNotice) return { kind: 'notice', notice: commandNotice };
 
@@ -451,6 +471,11 @@ async function resolveAgentForRequest(
   });
   if (routed.kind === 'notice') return routed;
   return { kind: 'agent', chatAgent: routed.chatAgent, effectiveSlug: routed.slug, speaker: routed.speaker };
+}
+
+function mayUseOwnChat(req: Request, sessionId: string, options: CreateChatRouterOptions): Promise<boolean> {
+  const store = options.getChatSessionStore?.() ?? options.chatSessionStore;
+  return mayUseChatSession(req, store, sessionId, options.legacyChatOwner);
 }
 
 export function createChatRouter(
@@ -504,6 +529,7 @@ export function createChatRouter(
               userMessage: parsed.data.message,
               sessionScope,
               ...(userId ? { userId } : {}),
+              ...webTurnOrigin(req),
               ...(parsed.data.answerVerbosity
                 ? { answerVerbosity: parsed.data.answerVerbosity }
                 : {}),
@@ -760,6 +786,7 @@ export function createChatRouter(
               userMessage: parsed.data.message,
               sessionScope: resolveScope(parsed.data),
               ...(userId ? { userId } : {}),
+              ...webTurnOrigin(req),
               ...(parsed.data.answerVerbosity
                 ? { answerVerbosity: parsed.data.answerVerbosity }
                 : {}),
@@ -854,13 +881,18 @@ export function createChatRouter(
    * turn is in flight for the session (the caller should then send the message
    * as a normal new turn via `/chat/stream`).
    */
-  router.post('/chat/steer', (req: Request, res: Response) => {
+  router.post('/chat/steer', async (req: Request, res: Response) => {
     const parsed = SteerRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({
         error: 'invalid_request',
         issues: parsed.error.issues,
       });
+      return;
+    }
+    // #1762 — no steering of a turn in another account's chat.
+    if (!parsed.data.scope && parsed.data.sessionId && !(await mayUseOwnChat(req, parsed.data.sessionId, options))) {
+      res.status(404).json({ error: 'not_found', message: `chat session ${parsed.data.sessionId} not found` });
       return;
     }
     const sessionScope = resolveScope(parsed.data);
