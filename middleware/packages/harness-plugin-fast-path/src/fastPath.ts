@@ -380,12 +380,23 @@ export type RecipeFetch =
       /** raw records behind `rows`, index-aligned (after the filter) */
       records: Array<Record<string, unknown>>;
       ms: number;
+      /** #1930 — the call as it ran and its raw output */
+      executed: ExecutedCall;
     }
   | {
       ok: false;
       reason: 'tool-unavailable' | 'invoke-error' | 'tool-error' | 'truncated' | 'unmappable';
       detail?: string;
+      /** #1930 — set once the tool returned (absent when the call threw) */
+      executed?: ExecutedCall;
     };
+
+/** #1930 — a fast-lane tool call that ran: resolved input and raw output. */
+export interface ExecutedCall {
+  tool: string;
+  input: unknown;
+  output: string;
+}
 
 /** Native-registry miss as thrown by the kernel's `ctx.tools.invoke`. */
 const UNAVAILABLE = /unknown or handler-less/;
@@ -421,26 +432,30 @@ export async function fetchRecipeRows(
 ): Promise<RecipeFetch> {
   const t0 = Date.now();
   let raw: string;
+  let resolved: unknown;
   try {
     // `{today}` tokens resolve per execution; the recipe itself keeps them
     const input = opts.rejectTruncated === true ? normalizeFastPathInput(recipe.tool, recipe.input) : recipe.input;
-    raw = await invoke(recipe.tool, resolveRecipeInput(input, new Date(), opts.timeZone));
+    resolved = resolveRecipeInput(input, new Date(), opts.timeZone);
+    raw = await invoke(recipe.tool, resolved);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     return { ok: false, reason: UNAVAILABLE.test(detail) ? 'tool-unavailable' : 'invoke-error', detail };
   }
+  const executed: ExecutedCall = { tool: recipe.tool, input: resolved, output: raw };
   // tools report failures as an `Error: …` string result, not a throw
-  if (/^\s*Error\b/.test(raw)) return { ok: false, reason: 'tool-error', detail: raw.slice(0, 200) };
-  if (opts.rejectTruncated === true && isTruncatedOutput(raw)) return { ok: false, reason: 'truncated' };
+  if (/^\s*Error\b/.test(raw)) return { ok: false, reason: 'tool-error', detail: raw.slice(0, 200), executed };
+  if (opts.rejectTruncated === true && isTruncatedOutput(raw)) return { ok: false, reason: 'truncated', executed };
   const mapped = mapRefreshRecords(raw, recipe);
   if (mapped === null) {
-    if (requiresCompleteResult(recipe) && isTruncatedOutput(raw)) return { ok: false, reason: 'truncated' };
+    if (requiresCompleteResult(recipe) && isTruncatedOutput(raw)) return { ok: false, reason: 'truncated', executed };
     // shape only — never a value of the output
     return {
       ok: false,
       reason: 'unmappable',
       detail: `itemsPath=${recipe.itemsPath ?? '-'} map=${Object.keys(recipe.map).join(',')} output=${outputShape(raw)}`,
+      executed,
     };
   }
-  return { ok: true, rows: mapped.rows, records: mapped.records, ms: Date.now() - t0 };
+  return { ok: true, rows: mapped.rows, records: mapped.records, ms: Date.now() - t0, executed };
 }

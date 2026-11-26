@@ -45,11 +45,14 @@ import type { AiDisclosureSetup } from './orchestrator.js';
  * view (which reports one row per entry). Two lists would drift into a posture
  * that omits a channel the parser accepts.
  *
- * NOTE, and it is the honest caveat this whole feature has to carry: only
- * `teams` / `slack` / `telegram` / `api` are ever produced as a per-turn
- * `channelKind` (`orchestratorDispatcher.toChannelKind` is the sole setter).
- * `email` and `web` turns carry none yet, as do discord / whatsapp /
- * canvas-custom / the HTTP dev path — those all resolve to the global level
+ * NOTE, and it is the honest caveat this whole feature has to carry: of the
+ * kinds below, only `teams` / `slack` / `telegram` / `api` are ever produced as
+ * a per-turn channel kind — by `orchestratorDispatcher.toChannelKind` or, for plugin
+ * channel turns without a channel identity, from `TurnOrigin.channelType`
+ * (`turnChannelKind`, #1994). `email` and `web` turns carry none yet, nor do
+ * canvas-custom and the HTTP dev path; discord / whatsapp turns carry a kind
+ * since #1994 but are not in this list, so no override can name them — all of
+ * those resolve to the global level
  * regardless of what an override says. {@link ChannelPosture.effective} says so
  * per row rather than letting a dashboard imply an override is doing something
  * it is not.
@@ -67,8 +70,8 @@ export type AiDisclosureChannelKind =
   (typeof AI_DISCLOSURE_CHANNEL_KINDS)[number];
 
 /**
- * Channel kinds that actually reach `resolveTurnDisclosure` with a
- * `channelIdentity.channelKind` set. An override for any other kind parses,
+ * Channel kinds that actually reach `resolveTurnDisclosure` with a channel
+ * kind (`turnChannelKind`: channel identity, else the turn origin, #1994). An override for any other kind parses,
  * stores and displays — but never fires.
  */
 const DISPATCHED_CHANNEL_KINDS: ReadonlySet<string> = new Set([

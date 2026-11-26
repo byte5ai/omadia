@@ -152,7 +152,9 @@ describe('R1 · team-visibility for curated-memory recall', () => {
       summary: 'shared team knowledge',
       createdBy: 'web:bob',
       involvedOmadiaUserIds: [],
-      aclOwners: ['bob'], // owned by bob, default (team) visibility
+      aclOwners: ['bob'], // owned by bob
+      // #1823 — shared on purpose: defaults are private now.
+      visibility: 'team',
     });
     kg.setEmbedding(created.memorableKnowledgeNodeId, ALIGNED);
     return created.memorableKnowledgeNodeId;
@@ -224,6 +226,8 @@ describe('R2 · ContextRetriever cross-session recall legs', () => {
 
     // Team-visible insight owned by someone else.
     const mk = await kg.createMemorableKnowledge({
+      // #1823 — shared on purpose: defaults are private now.
+      visibility: 'team',
       kind: 'reference',
       summary: 'staging DSN is in the vault under billing/staging',
       createdBy: 'web:bob',
@@ -400,6 +404,8 @@ describe('R2 · ContextRetriever cross-session recall legs', () => {
     // block is as full as it can get.
     for (let i = 0; i < 6; i++) {
       const mk = await kg.createMemorableKnowledge({
+        // #1823 — shared on purpose: defaults are private now.
+        visibility: 'team',
         kind: 'reference',
         summary: `Insight ${String(i)}: ${'kontextreiche Erkenntnis. '.repeat(10)}`,
         createdBy: 'web:bob',
@@ -549,6 +555,8 @@ describe('R7 · turn-level recall gate (plans + processes + insights)', () => {
     // A team insight + a strongly-matching process would both surface if the
     // gate were open — they must NOT on a term-less greeting.
     const mk = await kg.createMemorableKnowledge({
+      // #1823 — shared on purpose: defaults are private now.
+      visibility: 'team',
       kind: 'reference',
       summary: 'unrelated prior-session insight',
       createdBy: 'web:bob',
@@ -627,6 +635,8 @@ describe('R7 · turn-level recall gate (plans + processes + insights)', () => {
   it('recallRequiresTerms=false re-opens the gate for the semantic legs on a term-less turn', async () => {
     const kg = new InMemoryKnowledgeGraph();
     const mk = await kg.createMemorableKnowledge({
+      // #1823 — shared on purpose: defaults are private now.
+      visibility: 'team',
       kind: 'reference',
       summary: 'aligned prior-session insight',
       createdBy: 'web:bob',
@@ -932,6 +942,8 @@ describe('R9 · ContextRetriever applies the relevance judge to recalled', () =>
       status: 'pending',
     });
     const mk = await kg.createMemorableKnowledge({
+      // #1823 — shared on purpose: defaults are private now.
+      visibility: 'team',
       kind: 'reference',
       summary: 'generic note about billing access',
       createdBy: 'web:bob',

@@ -153,12 +153,16 @@ export { promoteTurnIfSignificant } from './promotion.js';
 export type { PromoteTurnInput, PromoteTurnResult } from './promotion.js';
 export {
   promoteRuleFileToDurable,
+  syncDurableRules,
   isDurableRulePath,
   DURABLE_RULES_PREFIX,
+  SYSTEM_ACTOR_OMADIA_USER_ID,
 } from './promoteDurableRule.js';
 export type {
   PromoteRuleInput,
   PromoteRuleResult,
+  SyncDurableRulesInput,
+  SyncDurableRulesResult,
 } from './promoteDurableRule.js';
 export {
   UNPROTECTED_NOTE_MARKER,

@@ -1095,9 +1095,26 @@ async function applySetupValues(
   // before anything is written.
   const typedFields = resolveTypedFields(deps.catalog, id);
   const typedValues: Record<string, unknown> = {};
+  // #1998 — an empty `enum` value is a clear: the key is removed, so the
+  // plugin applies its own default (as an install without the value does).
+  // A required enum cannot be cleared.
+  const clearedEnums = new Set<string>();
   for (const [k, v] of Object.entries(setEntries)) {
     const field = typedFields.get(k);
     if (!field) continue;
+    if (field.type === 'enum' && v === '') {
+      if (field.required) {
+        res.status(400).json({
+          code: 'runtime.setup_field_invalid',
+          message: `value for '${k}' is required`,
+          field: k,
+          reason: 'required',
+        });
+        return;
+      }
+      clearedEnums.add(k);
+      continue;
+    }
     const coerced = coerceSetupFieldValue(field, v);
     if ('error' in coerced) {
       res.status(400).json({
@@ -1117,7 +1134,8 @@ async function applySetupValues(
   const configSet: Record<string, unknown> = {};
   const configDelete: string[] = [];
   for (const [k, v] of Object.entries(setEntries)) {
-    if (isSecret(k)) vaultSet[k] = v;
+    if (clearedEnums.has(k)) configDelete.push(k);
+    else if (isSecret(k)) vaultSet[k] = v;
     else configSet[k] = Object.hasOwn(typedValues, k) ? typedValues[k] : v;
   }
 
@@ -1221,8 +1239,10 @@ function dependentRebuildFailure(err: ProviderDependentRebuildError): {
 }
 
 /**
- * The plugin's `boolean` / `integer` setup fields by key — the types whose
- * stored value is not the string the patch body carries. Empty without a
+ * The plugin's `boolean` / `integer` / `enum` setup fields by key — the types
+ * the install path coerces or checks beyond the string the patch body carries
+ * (#1998: an `enum` edit refuses a value the manifest does not list, as the
+ * install does — ADR-0054, one validation for both paths). Empty without a
  * catalog entry. Other types are stored as sent (their format check is the
  * `pattern` gate above).
  */
@@ -1234,7 +1254,7 @@ function resolveTypedFields(
   const schema = entry ? extractSetupSchema(entry) : null;
   return new Map(
     (schema?.fields ?? [])
-      .filter((f) => f.type === 'boolean' || f.type === 'integer')
+      .filter((f) => f.type === 'boolean' || f.type === 'integer' || f.type === 'enum')
       .map((f) => [f.key, f]),
   );
 }
@@ -1242,6 +1262,9 @@ function resolveTypedFields(
 /** English (no request locale) tail of the 400 message for a typed field. */
 function typedValueExpectation(field: InstallSetupField): string {
   if (field.type === 'boolean') return "must be 'true' or 'false'";
+  if (field.type === 'enum') {
+    return `must be one of: ${(field.enum ?? []).map((o) => o.value).join(', ')}`;
+  }
   return field.min !== undefined
     ? `must be a whole number of at least ${field.min}`
     : 'must be a whole number';

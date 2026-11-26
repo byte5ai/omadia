@@ -19,6 +19,7 @@ async function mk(
   g: InMemoryKnowledgeGraph,
   summary: string,
   originAgent: string | undefined,
+  visibility?: 'team',
 ): Promise<string> {
   const res = await g.createMemorableKnowledge({
     kind: 'insight',
@@ -26,6 +27,7 @@ async function mk(
     createdBy: `auto:${USER}`,
     aclOwners: [USER],
     ...(originAgent ? { originAgent } : {}),
+    ...(visibility ? { visibility } : {}),
   });
   // Seed an identical embedding so cosine = 1 for the query below.
   g.setEmbedding(res.memorableKnowledgeNodeId, [1, 0, 0]);
@@ -55,10 +57,11 @@ test('owner-gated recall is constrained to the viewing Agent\'s origin_agent', a
 
 test('team/public visibility bypasses origin_agent (sharing preserved)', async () => {
   const g = new InMemoryKnowledgeGraph();
-  await mk(g, 'A insight', 'agent-a');
-  await mk(g, 'B insight', 'agent-b');
+  await mk(g, 'A insight', 'agent-a', 'team');
+  await mk(g, 'B insight', 'agent-b', 'team');
 
-  // With teamVisibility on, default-`team` MK is shared across Agents.
+  // With teamVisibility on, MK shared on purpose (`team`) crosses Agents;
+  // since #1823 the default is `private` and does not.
   const hits = await g.searchMemorableKnowledgeByEmbedding({
     queryEmbedding: [1, 0, 0],
     viewerOmadiaUserId: USER,

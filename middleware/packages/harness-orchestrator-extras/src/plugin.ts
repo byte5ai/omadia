@@ -420,7 +420,9 @@ export async function activate(
   // Cross-session recall probe — Plan + Process recall + team-scoped
   // insights. `teamVisibility` defaults ON (operator-chosen team scope):
   // the memory-recall leg then admits `team`/`public` MemorableKnowledge
-  // tenant-wide, not just rows the viewer owns. Set
+  // tenant-wide, not just rows the viewer owns. Since #1823 (ADR-0183) only
+  // knowledge shared on purpose is `team` (durable rules); everything else
+  // is stored `private`, so this branch no longer spreads saved entries. Set
   // kg_recall_team_visibility=false (or env KG_RECALL_TEAM_VISIBILITY=false)
   // to revert to owner-only. Plan + process legs default ON; disable with
   // kg_recall_plan_enabled=false / kg_recall_process_enabled=false.

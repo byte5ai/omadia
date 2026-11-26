@@ -40,10 +40,19 @@ import { labelTurnWithSubjects, mergeSubjectWithTurn } from './toolFlow.js';
 const SUBJECT = 'process' as const;
 
 export class LabelledProcessMemory implements ProcessMemoryService {
+  // #1843 — the erasure primitives pass through unlabelled (operator-only).
+  readonly countByCreator?: ProcessMemoryService['countByCreator'];
+  readonly purgeByCreator?: ProcessMemoryService['purgeByCreator'];
+
   constructor(
     private readonly inner: ProcessMemoryService,
     private readonly port: DiscretionPort,
-  ) {}
+  ) {
+    const count = inner.countByCreator?.bind(inner);
+    if (count) this.countByCreator = count;
+    const purge = inner.purgeByCreator?.bind(inner);
+    if (purge) this.purgeByCreator = purge;
+  }
 
   async write(input: WriteProcessInput): Promise<WriteProcessResult> {
     const result = await this.inner.write(input);
