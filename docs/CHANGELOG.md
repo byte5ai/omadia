@@ -36,6 +36,29 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — MCP OAuth: dead tokens are reported, disconnect revokes the grant (#1923, #1925) (2026-11-26)
+
+- A stored token row used to read as "authorized" for as long as it existed. Migration
+  `0113_mcp_oauth_token_invalid.sql` adds `mcp_oauth_tokens.invalid_reason`
+  (`refresh_failed` | `rejected`, CHECK-constrained) and `invalid_at`. A refresh the token
+  endpoint refuses (4xx other than 408/425/429, or a 200 without `access_token`) marks
+  `refresh_failed`; a transport-level 401 from the MCP server to a call that carried the token
+  marks `rejected`. A JSON-RPC error or a tool's `isError` text never marks. The first mark
+  wins; only storing a new token (login or successful refresh) clears it. A refusal of a token
+  that was replaced meanwhile (an in-flight call during a re-login) does not mark the new one.
+- `GET /mcp-servers/:id/auth-status` adds `tokenInvalid`
+  (`expired` | `refresh_failed` | `rejected` | null), and `connected` is false for a marked
+  token or an expired one without a refresh token. The MCP Control Center says why.
+- `DELETE /mcp-servers/:id/token` now answers **200 `{ "revocation": … }`** instead of `204`,
+  with `revoked` | `unsupported` | `failed` | `not_connected`. Disconnect and
+  `DELETE /mcp-servers/:id` first revoke the grant at the authorization server (RFC 7009,
+  refresh token then access token, via the RFC 8414 `revocation_endpoint`, through the guarded
+  outbound fetch and the operator host rule), then remove the row and both vault values,
+  whether revocation worked or not.
+- New audit action `mcp_server.oauth_disconnect`, one row per removed authorization: server
+  name, identity, cause (`disconnect` | `server_delete`) and revocation outcome, never a token.
+- Decision record: ADR-0168.
+
 ### Fixed — usage ledger priced 1-hour cache writes at the 5-minute rate (2026-11-25)
 
 - Anthropic bills cache writes by TTL: 1.25× the input rate for 5 minutes, 2× for 1 hour. The
