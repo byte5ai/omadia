@@ -36,6 +36,22 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — generated Office/Diagram files are deleted with their chat and person (#1986, ADR-0187) (2026-11-26)
+
+- Office (`create_xlsx`, `create_docx`) and Diagrams (`render_diagram`) record every key a turn
+  gets through the new kernel service `generatedObjects@1` (plugin-api **1.101.0**), filed under
+  the turn's person and chat. Deleting a chat releases the caller's records of that chat; the
+  memory purge releases the person's (axis "User") or all records (axis "All") and counts them in
+  the preview. A key left without any record is deleted from the bucket; an inactive producer or a
+  failed delete keeps it pending (warning `generated_files_pending`) for the next release.
+- **Migration** core **0119_generated_objects** — `generated_objects (storage_key, producer,
+  owner_omadia_user_id, scope)`, one row per pair, two partial indexes.
+- `TigrisStore.delete?` (S3 `DeleteObjectCommand`, filesystem store removes bytes + metadata).
+  `@omadia/plugin-office` 0.1.7, `@omadia/diagrams` 0.2.4 (`optional_requires:
+  generatedObjects@1`).
+- Not tracked: files from before this change and records outside a turn — the bucket lifecycle
+  rule stays required as the backstop; dataset deletion does not reach exports made from it.
+
 ### Fixed — the user purge erases one person (#1840, #1842, #1843, ADR-0186) (2026-11-26)
 
 - Memory purge, axis "User": the selector may be the omadia user id, the account id from

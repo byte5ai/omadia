@@ -9042,6 +9042,12 @@ dazu Datensätze, Prozesse (`processes.created_by_omadia_user_id`, Neon-Migratio
 datasetCount|processCount|identityCount`, `resolvedUser`. `GET /api/v1/admin/users/:id` liefert
 `omadiaUserId`.
 
+Erzeugte Dateien (ADR-0187, #1986): Kernel-Service `generatedObjects@1`
+(`services/generatedObjects.ts`, Core-Migration 0119) — Office/Diagrams rufen `record(producer,
+key)` pro Datei, `registerDeleter` beim Aktivieren. Chat-Löschen (`DELETE /api/chat/sessions/:id`),
+Purge-Achse User und All geben frei (refcounted); Preview-Feld `generatedFileCount`, Result
+`generatedFilesDeleted`, Warnung `generated_files_pending`.
+
 **Ohne Eigentümer** (`GET|DELETE /api/v1/admin/memory/ownerless[/:id]`, ADR-0185, #1829/#1831,
 gleiches Gate): listet `MemorableKnowledge` mit leerem `acl_owners` (Scratch-Reaper, Regeln) und
 löscht einen Eintrag einzeln — `admin_audit` `memory.ownerless_delete` vorher (Fehler → 500,

@@ -1,5 +1,6 @@
 import type { Readable } from 'node:stream';
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
@@ -12,14 +13,19 @@ import {
  * docker-compose). Uses the `@aws-sdk/client-s3` v3 client because Tigris
  * auto-provisions the AWS-style env vars (`AWS_ACCESS_KEY_ID` etc.).
  *
- * Only three operations are surfaced: exists/put/stream. The proxy route
+ * Four operations are surfaced: exists/put/stream/delete. The proxy route
  * streams bytes from `getStream`; the service calls `exists` to short-circuit
- * re-renders and `put` to upload a fresh PNG.
+ * re-renders and `put` to upload a fresh PNG. `delete` is called by the
+ * kernel's generated-object release (ADR-0187, #1986) once no chat or person
+ * references the key any more.
  */
 export interface TigrisStore {
   exists(key: string): Promise<boolean>;
   put(key: string, body: Buffer, contentType?: string): Promise<void>;
   getStream(key: string): Promise<{ stream: Readable; contentType: string | undefined; contentLength: number | undefined }>;
+  /** Remove one object. A missing object is not an error (S3 semantics).
+   *  Optional: a store without it keeps generated files (lifecycle rule only). */
+  delete?(key: string): Promise<void>;
 }
 
 export interface TigrisStoreOptions {
@@ -66,6 +72,10 @@ export function createTigrisStore(options: TigrisStoreOptions): TigrisStore {
           CacheControl: 'private, max-age=86400, immutable',
         }),
       );
+    },
+
+    async delete(key: string): Promise<void> {
+      await client.send(new DeleteObjectCommand({ Bucket: options.bucket, Key: key }));
     },
 
     async getStream(key) {

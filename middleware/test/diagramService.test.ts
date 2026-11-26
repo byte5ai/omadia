@@ -116,6 +116,28 @@ describe('DiagramService', () => {
     assert.equal(store.putCalls, 1, 'store should only be written once');
   });
 
+  it('#1986 — reports the key of every render, cache hit included', async () => {
+    const persisted: string[] = [];
+    const svc = new DiagramService({
+      kroki,
+      store,
+      tenantId: 'byte5',
+      secret: 'x'.repeat(32),
+      publicBaseUrl: 'http://localhost:3979',
+      signedUrlTtlSec: 900,
+      maxSourceBytes: 64_000,
+      maxPngBytes: 900_000,
+      onPersisted: (key) => {
+        persisted.push(key);
+        return Promise.resolve();
+      },
+    });
+    const first = await svc.render({ kind: 'mermaid', source: 'graph TD; X-->Y' });
+    const second = await svc.render({ kind: 'mermaid', source: 'graph TD; X-->Y' });
+    assert.equal(second.cacheHit, true);
+    assert.deepEqual(persisted, [first.key, first.key]);
+  });
+
   it('produces different keys for different kinds of the same source', async () => {
     const a = await service.render({ kind: 'mermaid', source: 'A' });
     const b = await service.render({ kind: 'graphviz', source: 'A' });

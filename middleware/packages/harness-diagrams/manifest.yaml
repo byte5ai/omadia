@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/diagrams"
   name: "Diagrams"
-  version: "0.2.2"
+  version: "0.2.4"
   kind: "tool"
   domain: "visualization.diagrams"
   description:
@@ -36,6 +36,8 @@ depends_on:
 # render lands in one no-turn bucket (the pre-fix behaviour).
 optional_requires:
   - "turnContext@1"
+  # ADR-0187 (#1986) — renders are recorded and deleted with chat and person.
+  - "generatedObjects@1"
 
 lifecycle:
   entry: "dist/plugin.js"

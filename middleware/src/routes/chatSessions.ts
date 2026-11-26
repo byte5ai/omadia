@@ -200,6 +200,12 @@ interface ChatSessionDeps {
    *  key save on the LLM access page reactivates the plugin and makes this
    *  resolve non-null. */
   getStore: () => ChatSessionStore | undefined;
+  /**
+   * ADR-0187 (#1986) — drop the caller's records of generated files made in
+   * this chat; files no other chat or person references are deleted. Runs
+   * after the transcript is gone; a failure is logged, never fails the delete.
+   */
+  releaseGenerated?: (scope: string, ownerOmadiaUserId: string | undefined) => Promise<unknown>;
 }
 
 export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
@@ -299,10 +305,16 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     if (!store) return;
     try {
       await store.delete(id);
-      res.json({ ok: true });
     } catch (err) {
       failure(res, err, '[chat-sessions] delete');
+      return;
     }
+    if (deps.releaseGenerated) {
+      await deps.releaseGenerated(id, req.session?.omadia_user_id).catch((err: unknown) => {
+        console.error('[chat-sessions] generated files not released:', err instanceof Error ? err.message : err);
+      });
+    }
+    res.json({ ok: true });
   });
 
   /**
