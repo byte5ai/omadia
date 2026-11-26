@@ -68,12 +68,6 @@ export async function generateMetadata({
 }
 
 /**
- * #1492 — the orchestrators an installed agent/tool plugin is enabled on, so
- * the next-step hint stops asking to attach a plugin that is attached already.
- * `null` when the question does not apply or cannot be answered — the hint then
- * falls back to its generic wording rather than claiming either way.
- */
-/**
  * #2245 / ADR-0167 — entity systems this plugin declares that another
  * installed plugin already declares. Needs the catalog, so it is read only
  * when the plugin declares a system at all. A failed read shows no overlap
@@ -86,11 +80,21 @@ async function overlapsFor(plugin: Plugin): Promise<EntitySystemOverlap[]> {
   try {
     const { items } = await listStorePlugins();
     return entitySystemOverlaps(plugin, items);
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[store.detail] entity-system overlap check skipped for ${plugin.id}: catalog read failed`,
+      err,
+    );
     return [];
   }
 }
 
+/**
+ * #1492 — the orchestrators an installed agent/tool plugin is enabled on, so
+ * the next-step hint stops asking to attach a plugin that is attached already.
+ * `null` when the question does not apply or cannot be answered — the hint then
+ * falls back to its generic wording rather than claiming either way.
+ */
 async function orchestratorsUsing(plugin: Plugin): Promise<string[] | null> {
   const installed =
     plugin.install_state === 'installed' || plugin.install_state === 'update-available';
