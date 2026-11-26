@@ -235,7 +235,7 @@ that date.
 | 0166 | [Own database roles for archetype plugins are opt-in; `graphPool` for archetypes is deprecated](0166-archetype-plugin-database-roles-are-opt-in.md) | Accepted | 2026-11-25 |
 | 0167 | [A plugin's entity writes stay in its declared entity systems](0167-plugin-entity-writes-stay-in-declared-entity-systems.md) | Accepted — refined by [0169](0169-undeclared-plugins-write-no-entities-or-facts.md) | 2026-11-25 |
 | 0168 | [MCP OAuth token lifecycle: invalidation marks and revoke-on-disconnect](0168-mcp-oauth-token-lifecycle-invalidation-marks-and-revoke-on-disconnect.md) | Accepted | 2026-11-26 |
-| 0169 | [A plugin that declares no entity systems writes no entities or facts](0169-undeclared-plugins-write-no-entities-or-facts.md) | Proposed | 2026-11-26 |
+| 0169 | [A plugin that declares no entity systems writes no entities or facts](0169-undeclared-plugins-write-no-entities-or-facts.md) | Accepted | 2026-11-26 |
 
 ### The agent model (0012–0022)
 

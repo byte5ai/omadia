@@ -48,7 +48,7 @@ changelog.
   (declares `[confluence]`, integration-confluence#9). Both are the Hub's latest and active
   on Fly since 2026-11-26; older releases keep running, only their entity sync (off by
   default) is refused.
-- ADR-0169 (Proposed) refines ADR-0167; ADR-0167's status line and the index say so.
+- ADR-0169 (Accepted) refines ADR-0167; ADR-0167's status line and the index say so.
 
 ### Security — plugins declare `odoo` / `confluence` themselves (ADR-0167) (2026-11-26)
 
