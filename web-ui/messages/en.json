@@ -3061,7 +3061,7 @@
       },
       "unavailable": {
         "teams": {
-          "connector_unavailable": "Without an active M365 connector there is no team list — type the id into the field below.",
+          "connector_unavailable": "Without an active Microsoft 365 connector there is no team list, and nothing can be provisioned. Install and activate the connector first.",
           "connector_unsupported": "The installed connector cannot list teams. A list appears here after an upgrade; until then type the id below.",
           "sign_in_required": "The team list needs the tenant sign-in. Sign in once, or type the id below.",
           "scope_missing": "The stored sign-in is missing a permission the team list needs. Signing in again unlocks the list.",
@@ -3072,7 +3072,7 @@
           "not_requested": "The team list was not requested."
         },
         "chats": {
-          "connector_unavailable": "Without an active M365 connector there is no chat list — type the id into the field below.",
+          "connector_unavailable": "Without an active Microsoft 365 connector there is no chat list, and nothing can be provisioned. Install and activate the connector first.",
           "connector_unsupported": "The installed connector cannot list chats. A list appears here after an upgrade; until then type the chat id below.",
           "sign_in_required": "Chats can only be listed with a tenant sign-in — Graph offers no app-only route for them. Sign in once, or type the chat id below.",
           "scope_missing": "The stored sign-in does not yet carry the {scope} permission and cannot pick it up by refreshing. One fresh sign-in unlocks the chat list; until then type the chat id below.",

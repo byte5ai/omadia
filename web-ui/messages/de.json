@@ -3061,7 +3061,7 @@
       },
       "unavailable": {
         "teams": {
-          "connector_unavailable": "Ohne aktiven M365-Connector gibt es keine Teamliste — trage die ID unten von Hand ein.",
+          "connector_unavailable": "Ohne aktiven Microsoft-365-Connector gibt es keine Teamliste, und nichts lässt sich provisionieren. Installiere und aktiviere zuerst den Connector.",
           "connector_unsupported": "Der installierte Connector kann keine Teams auflisten. Nach einem Upgrade erscheint hier eine Auswahl; bis dahin trage die ID unten ein.",
           "sign_in_required": "Für die Teamliste fehlt die Tenant-Anmeldung. Melde dich einmal an oder trage die ID unten ein.",
           "scope_missing": "Die gespeicherte Anmeldung kennt eine Berechtigung nicht, die für die Teamliste nötig ist. Eine erneute Anmeldung schaltet die Liste frei.",
@@ -3072,7 +3072,7 @@
           "not_requested": "Die Team-Liste wurde nicht angefordert."
         },
         "chats": {
-          "connector_unavailable": "Ohne aktiven M365-Connector gibt es keine Chatliste — trage die ID unten von Hand ein.",
+          "connector_unavailable": "Ohne aktiven Microsoft-365-Connector gibt es keine Chatliste, und nichts lässt sich provisionieren. Installiere und aktiviere zuerst den Connector.",
           "connector_unsupported": "Der installierte Connector kann keine Chats auflisten. Nach einem Upgrade erscheint hier eine Auswahl; bis dahin trage die Chat-ID unten ein.",
           "sign_in_required": "Chats lassen sich nur mit einer Tenant-Anmeldung auflisten — Graph bietet dafür keinen App-Zugriff an. Melde dich einmal an oder trage die Chat-ID unten ein.",
           "scope_missing": "Die gespeicherte Anmeldung kennt die Berechtigung {scope} noch nicht und kann sie nicht nachträglich erneuern. Eine einmalige neue Anmeldung schaltet die Chatliste frei; bis dahin trage die Chat-ID unten ein.",

@@ -257,10 +257,13 @@ export function AgentTeamsIdentity(
   // field exists to catch while the operator is still looking at it.
   const createTarget = classifyKnownTeamsTarget(teamId, known);
   const teamIdReady = isSubmittableTarget(createTarget);
+  // #1903 — the targets answer already says whether the M365 connector is
+  // there; without it a run can only end in 503, so say it up front.
+  const provisionerMissing = targets?.provisioner_installed === false;
 
   function submitCreate(event: React.FormEvent): void {
     event.preventDefault();
-    if (!teamIdReady) return;
+    if (!teamIdReady || provisionerMissing) return;
     void provision({
       ...(botSlug.trim() ? { bot_slug: botSlug.trim() } : {}),
       ...(displayName.trim() ? { display_name: displayName.trim() } : {}),
@@ -333,6 +336,15 @@ export function AgentTeamsIdentity(
           <p className="text-xs text-[color:var(--fg-muted)] sm:col-span-3">
             {t('teamsIdentity.createHint')}
           </p>
+          {provisionerMissing && (
+            <p
+              role="status"
+              data-testid="teams-identity-provisioner-missing"
+              className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 p-3 text-sm text-[color:var(--warning)] sm:col-span-3"
+            >
+              {t('teamsIdentity.notice.teams_provisioner_unavailable')}
+            </p>
+          )}
           <TextField
             label={t('teamsIdentity.fieldBotSlug')}
             hint={t('teamsIdentity.fieldBotSlugHint')}
@@ -373,7 +385,7 @@ export function AgentTeamsIdentity(
               type="submit"
               size="sm"
               busy={busy}
-              disabled={!teamIdReady}
+              disabled={!teamIdReady || provisionerMissing}
               busyLabel={t('teamsIdentity.submitBusy')}
             >
               {t('teamsIdentity.submit')}
