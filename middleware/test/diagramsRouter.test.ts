@@ -11,6 +11,9 @@ import {
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
 const SECRET = 'z'.repeat(32);
+/** Real diagram keys are `<tenant>/<sha256>.png` (`buildCacheKey`). */
+const KEY = `byte5/${'a'.repeat(64)}.png`;
+const MISSING_KEY = `byte5/${'b'.repeat(64)}.png`;
 
 class InMemoryStore implements TigrisStore {
   private objects = new Map<string, Buffer>();
@@ -55,7 +58,7 @@ describe('/diagrams router', () => {
   const fakePng = Buffer.concat([PNG_MAGIC, Buffer.from('fake-body')]);
 
   before(async () => {
-    store.seed('byte5/abc.png', fakePng);
+    store.seed(KEY, fakePng);
     const app = express();
     app.use('/diagrams/dl', createDiagramsRouter({ store, secret: SECRET }));
     server = await listenLoopback(app);
@@ -69,7 +72,7 @@ describe('/diagrams router', () => {
 
   it('serves the PNG bytes for a valid signed URL', async () => {
     const url = signUrl({
-      key: 'byte5/abc.png',
+      key: KEY,
       secret: SECRET,
       ttlSec: 60,
       publicBaseUrl: baseUrl,
@@ -82,13 +85,13 @@ describe('/diagrams router', () => {
   });
 
   it('returns 403 when the signature is missing', async () => {
-    const res = await fetch(`${baseUrl}/diagrams/dl/${encodeURIComponent('byte5/abc.png')}?exp=9999999999`);
+    const res = await fetch(`${baseUrl}/diagrams/dl/${encodeURIComponent(KEY)}?exp=9999999999`);
     assert.equal(res.status, 403);
   });
 
   it('returns 403 when the signature is tampered', async () => {
     const url = signUrl({
-      key: 'byte5/abc.png',
+      key: KEY,
       secret: SECRET,
       ttlSec: 60,
       publicBaseUrl: baseUrl,
@@ -103,7 +106,7 @@ describe('/diagrams router', () => {
 
   it('returns 403 when the signature is expired', async () => {
     const url = signUrl({
-      key: 'byte5/abc.png',
+      key: KEY,
       secret: SECRET,
       ttlSec: -10, // expired by default
       publicBaseUrl: baseUrl,
@@ -114,7 +117,7 @@ describe('/diagrams router', () => {
 
   it('returns 404 for a key that is not stored', async () => {
     const url = signUrl({
-      key: 'byte5/does-not-exist.png',
+      key: MISSING_KEY,
       secret: SECRET,
       ttlSec: 60,
       publicBaseUrl: baseUrl,
@@ -125,7 +128,7 @@ describe('/diagrams router', () => {
 
   it('never emits a redirect (Teams does not follow them)', async () => {
     const url = signUrl({
-      key: 'byte5/abc.png',
+      key: KEY,
       secret: SECRET,
       ttlSec: 60,
       publicBaseUrl: baseUrl,

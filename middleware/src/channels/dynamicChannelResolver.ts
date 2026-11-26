@@ -71,7 +71,7 @@ export class DynamicChannelPluginResolver implements ChannelPluginResolver {
       return undefined;
     }
 
-    const packagePath = this.resolvePackagePath(agentId);
+    const packagePath = this.packagePathOf(agentId);
     if (!packagePath) {
       this.log(
         `[dynamic-channel-resolver] no package source for ${agentId} — uploadedStore + builtInStore both missing it`,
@@ -121,7 +121,8 @@ export class DynamicChannelPluginResolver implements ChannelPluginResolver {
     this.bustTokens.set(agentId, Date.now().toString(36));
   }
 
-  private resolvePackagePath(agentId: string): string | undefined {
+  /** The installed package root of `agentId` (uploaded first, then built-in). */
+  packagePathOf(agentId: string): string | undefined {
     const uploaded = this.deps.uploadedStore.get(agentId);
     if (uploaded) return uploaded.path;
     return this.deps.builtInStore?.get(agentId)?.path;

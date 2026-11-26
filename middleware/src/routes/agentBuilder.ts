@@ -195,7 +195,13 @@ export interface AgentBuilderRouterOptions {
     beginAuthorization(server: McpServerRow, userKey: string, actor?: AuditActor): Promise<{ authorizeUrl: string }>;
     /** `iss` is the RFC 9207 authorization-response parameter (W0-1, D1),
      *  validated against the flow-bound issuer before any exchange. */
-    completeAuthorization(state: string, code: string, iss?: string | null): Promise<{ serverId: string; actor?: AuditActor }>;
+    completeAuthorization(
+      state: string,
+      code: string,
+      iss: string | null,
+      /** #1908 (ADR-0175): the user key of the session finishing the flow. */
+      completingUserKeyFor: (flow: { serverId: string; userKey: string }) => Promise<string | null>,
+    ): Promise<{ serverId: string; actor?: AuditActor }>;
     setManualClient(issuer: string, clientId: string, clientSecret: string | null): Promise<void>;
     getValidAccessToken(server: McpServerRow, userKey: string): Promise<string | null>;
     /** #1923 — whether the stored authorization of (server, user) still counts. */
@@ -223,6 +229,14 @@ export interface AgentBuilderRouterOptions {
     ): Promise<readonly { userKey: string; revocation: McpRevocationOutcome }[]>;
   };
   readonly mcpOAuthUserKey?: string;
+  /**
+   * #1908 (ADR-0175) — the desktop kernel (`isDesktopLoopbackKernel`): the
+   * Connect link opens in the OS browser, which holds no session, and the only
+   * person who can reach the loopback callback is the one at the keyboard. A
+   * session-less callback then completes for the flow's starter; a callback
+   * that carries a DIFFERENT session is still refused.
+   */
+  readonly mcpOAuthSessionlessCallback?: boolean;
   /** Schema-driven MCP config with Vault-backed secrets (epic #459). */
   readonly mcpConfig?: {
     setSecret(serverId: string, key: string, value: string): Promise<void>;
@@ -2366,8 +2380,11 @@ export function createAgentBuilderRouter(
   });
 
   /** OAuth callback: exchange the code, store the token, show a done page.
-   *  Hit by the operator's own browser redirect (session cookie present); the
-   *  `state` param is the CSRF guard. */
+   *  Hit by the starter's own browser redirect. `state` only finds the flow;
+   *  the completing SESSION must map to the user who started it (#1908,
+   *  ADR-0175). The path is public (no 401 before the handler), so the session
+   *  is attached best-effort by `attachOptionalSession` in index.ts.
+   *  Successful token writes are audited with the initiator from the flow. */
   router.get('/mcp-oauth/callback', async (req: Request, res: Response) => {
     const l = live(res);
     if (!l) return;
@@ -2405,7 +2422,15 @@ export function createAgentBuilderRouter(
       }
       // The service validates `iss` against the flow-bound issuer BEFORE
       // exchanging the code, so a rejected callback stores nothing.
-      const authorization = await options.mcpOAuth.completeAuthorization(state, code, iss);
+      const completingUserKeyFor = async (flow: {
+        serverId: string;
+        userKey: string;
+      }): Promise<string | null> => {
+        if (!req.session) return options.mcpOAuthSessionlessCallback === true ? flow.userKey : null;
+        const server = (await l.graph.listMcpServers()).find((s) => s.id === flow.serverId);
+        return server ? oauthUserKeyFor(req, server) : null;
+      };
+      const authorization = await options.mcpOAuth.completeAuthorization(state, code, iss, completingUserKeyFor);
       await recordBroadReachAudit({
         actor: authorization.actor ?? {},
         action: 'mcp_server.oauth_connect',
@@ -2414,6 +2439,17 @@ export function createAgentBuilderRouter(
       });
       res.status(200).send(donePage(true, 'The server is now authorized for you.'));
     } catch (err) {
+      if (err instanceof Error && err.name === 'McpOAuthCompleterMismatchError') {
+        res
+          .status(403)
+          .send(
+            donePage(
+              false,
+              'This authorization link was started by a different account (or you are not signed in). Nothing was stored. Sign in and click Connect yourself.',
+            ),
+          );
+        return;
+      }
       // Never echo the raw error here: it can carry the code or the PKCE
       // verifier (D5). The issuer-mismatch case gets an explicit message.
       if (err instanceof Error && err.name === 'McpOAuthIssuerMismatchError') {

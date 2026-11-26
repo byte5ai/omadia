@@ -1326,6 +1326,12 @@ export function buildOrchestratorForAgent(
           // Spec 2042 §5.11 / #2194 — the in-process turn's discretion state
           // and the people-egress check of its answer, for this path too.
           discretionTurnFields: (input) => orchestrator.cliDiscretionTurnFields(input),
+          ...(deps.attachmentReader?.bindToCurrentConversation
+            ? {
+                bindStatedUpload: (key: string) =>
+                  deps.attachmentReader!.bindToCurrentConversation!(key),
+              }
+            : {}),
           guardAnswer: (answer, input) => orchestrator.guardCliAnswer(answer, input),
           // #1087 — the CLI child is stateless by design, so the composed
           // prompt is the only memory a turn has. Feed it from the RAW chat

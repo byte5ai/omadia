@@ -49,6 +49,9 @@ export const INTERN_EXEMPT_TOOLS: ReadonlySet<string> = new Set([
   'ask_user_choice',
   // #268 — a user-uploaded document the agent was explicitly asked to read.
   // Not a specialist-agent PII source; the user already has this content.
+  // That premise holds by construction since #1960 (ADR-0178): the reader
+  // serves only keys a channel adapter stated as uploads in THIS conversation,
+  // never Office/Diagrams output or another chat's file.
   'read_attachment',
 ]);
 
