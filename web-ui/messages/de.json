@@ -341,7 +341,7 @@
         "agent": "Agent",
         "subagent": "Helfer",
         "skill": "Skill",
-        "tool": "Tool",
+        "tool": "Werkzeug",
         "mcp": "MCP-Server",
         "schedule": "Zeitplan",
         "tools": "Tools",
@@ -414,13 +414,13 @@
         "platformDefault": "(Plattform-Standard: {model})",
         "effectiveModel": "Aktiv: {model}",
         "modelPolicy": "Policy: {primary} · Fallback {fallback}.",
-        "modelPolicyAuto": "Auto",
+        "modelPolicyAuto": "Automatisch",
         "modelPolicyNone": "keiner",
         "modelPolicyEdit": "Auf der Agenten-Seite bearbeiten →",
         "skillBody": "Skill-Inhalt (Markdown)",
         "skillFileReadOnly": "Datei-basierter Skill — hier schreibgeschützt.",
         "transport": "Transport",
-        "endpoint": "Endpoint",
+        "endpoint": "Endpunkt",
         "cron": "Cron",
         "timezone": "Zeitzone",
         "helperExplain": "Ein Helfer gehört intern zu diesem Agenten: Er erledigt einen Teil der Arbeit des Agenten auf einem eigenen, oft günstigeren Modell, nutzt nur Tools, die der Agent selbst hat, und wird Menschen gegenüber nie genannt. Seine Antwort ist die Arbeit des Agenten.",
@@ -3540,7 +3540,7 @@
     },
     "workspace": {
       "previewModelLabel": "Vorschau",
-      "backToDrafts": "Drafts",
+      "backToDrafts": "Entwürfe",
       "publish": "Bereitstellen",
       "viewModeAriaLabel": "Ansicht wählen",
       "viewModeSimple": "Einfach",
@@ -3552,36 +3552,36 @@
       "statusPublished": "Bereitgestellt",
       "statusArchived": "Archiviert",
       "tabOverview": "Übersicht",
-      "tabSpec": "Spec",
+      "tabSpec": "Spezifikation",
       "tabSlots": "Slots",
       "tabSkills": "Skills",
       "tabVersions": "Versionen",
       "paneChat": "Builder-Chat",
       "paneEditor": "Editor",
-      "panePreview": "Preview",
-      "paneUiSurfaces": "UI-Surfaces",
+      "panePreview": "Vorschau",
+      "paneUiSurfaces": "Oberflächen",
       "editorTabMissingAria": "{count} fehlt",
       "mobilePaneAriaLabel": "Workspace-Pane wählen",
       "mobilePaneChat": "Chat",
       "mobilePaneEditor": "Editor",
-      "mobilePanePreview": "Preview",
+      "mobilePanePreview": "Vorschau",
       "mobilePaneUi": "UI",
       "mobilePaneMissingAria": "{count} Pflicht-Felder fehlen",
       "installBuildMustSucceed": "Letzter Build muss erfolgreich sein",
       "installEditorWarnings": "{count, plural, one {# Editor-Warnung} other {# Editor-Warnungen}}",
       "installMissingCredentials": "{count, plural, one {# fehlende Test-Credential} other {# fehlende Test-Credentials}}",
-      "templateLabel": "Template",
+      "templateLabel": "Vorlage",
       "templateUnknown": "(unbekanntes Template)",
       "templateTooltipEnabled": "Template wechseln (verlustfrei — nur Slots / Tools / depends_on sind template-spezifisch)",
       "templateTooltipDisabled": "Template-Wechsel deaktiviert — der Draft hat bereits Slots, Tools oder `depends_on`-Einträge, die beim Switch verloren gingen. Lege einen neuen Draft an oder lösche die betreffenden Felder zuerst.",
       "modelSwitchAria": "{label}-Modell wechseln",
-      "autoFixLabel": "Auto-Fix",
-      "autoFixOn": "on",
-      "autoFixOff": "off",
+      "autoFixLabel": "Automatische Korrektur",
+      "autoFixOn": "an",
+      "autoFixOff": "aus",
       "autoFixTitleOn": "Auto-Fix aktiv: Build/Smoke-Failures triggern automatisch einen Builder-Turn",
       "autoFixTitleOff": "Auto-Fix aus: Failures zeigen nur den \"Fix mit Builder\"-Button",
       "autoFixKindBuild": "Build",
-      "autoFixKindSmoke": "Smoke",
+      "autoFixKindSmoke": "Funktionstest",
       "autoFixRunning": "Auto-Fix läuft (#{buildN} · {kind})",
       "autoFixStoppedTitle": "Auto-Fix nach {count} identischen {kind}-Fehlern gestoppt",
       "autoFixStoppedBody": "Der Plugin Builder kommt mit derselben Fehlerklasse nicht weiter. Auto-Fix wurde automatisch ausgeschaltet — prüf den Code manuell oder schalte den Toggle wieder ein, sobald du eingegriffen hast.",
@@ -3591,7 +3591,7 @@
       "buildBusReconnecting": "verbindet neu",
       "buildWaitingForCredential": "wartet auf Test-Zugangsdaten {key}",
       "buildBusIdle": "inaktiv",
-      "buildSse": "SSE {status}",
+      "buildSse": "Ereignisstream {status}",
       "buildErrorsHeading": "{count} TypeScript-Fehler",
       "buildErrorsHeadingWithBuild": "{count} TypeScript-Fehler · build #{buildN}",
       "buildErrorsCloseAria": "Fehlerliste schließen",
@@ -3601,7 +3601,8 @@
       "kindIntegration": "Integration",
       "kindTool": "Tool",
       "kindIntegrationHint": "Plugin-Art: Integration — ein externes System mit Zugangsdaten. Wird Agenten einzeln freigegeben.",
-      "kindToolHint": "Plugin-Art: Tool — lokale Logik ohne externes System. Wird Agenten einzeln freigegeben."
+      "kindToolHint": "Plugin-Art: Tool — lokale Logik ohne externes System. Wird Agenten einzeln freigegeben.",
+      "codegenModelLabel": "Codegenerierung"
     },
     "tools": {
       "form": {
@@ -3613,7 +3614,7 @@
         "inputSchema": "Input-Schema",
         "schemaModeLabel": "Schema-Modus",
         "tabForm": "Formular",
-        "tabRawJson": "Raw JSON",
+        "tabRawJson": "JSON-Quelltext",
         "saveAsTemplate": "Als Template speichern",
         "saved": "gespeichert",
         "templateNamePrompt": "Template-Name",
@@ -3643,7 +3644,7 @@
         "inputLabel": "Eingabe",
         "preview": "Vorschau",
         "previewEmpty": "Eingabe einfügen, um die Vorschau zu sehen.",
-        "invalidJson": "Eingabe ist kein gültiges JSON. YAML wird im B.11+ Cleanup unterstützt.",
+        "invalidJson": "Die Eingabe enthält ungültiges JSON.",
         "collisionNote": "Kollisionen werden übersprungen — bestehende Tools bleiben unverändert.",
         "confirmImport": "Import bestätigen",
         "collisionBadge": "Kollision",
@@ -3656,11 +3657,11 @@
         "titlePrefix": "Test",
         "subtitle": "Direkter Aufruf gegen die aktuelle Preview-Instanz.",
         "closeModal": "Modal schließen",
-        "inputHeading": "Input",
+        "inputHeading": "Eingabe",
         "resultHeading": "Ergebnis",
         "dismissHint": "Esc oder Klick außerhalb schließt das Modal.",
         "saveTestCase": "Als Test-Case speichern",
-        "run": "Run",
+        "run": "Ausführen",
         "unknownError": "Unbekannter Fehler",
         "emptyInput": "Tool akzeptiert leeres Input — Run drücken.",
         "selectPlaceholder": "— wählen —",
@@ -3673,7 +3674,65 @@
         "closeModal": "Modal schließen",
         "empty": "Keine Templates verfügbar.",
         "personalBadge": "Mein",
-        "deleteTemplate": "Template {label} löschen"
+        "deleteTemplate": "Template {label} löschen",
+        "curated": {
+          "rest-get-list": {
+            "label": "REST GET (Liste)",
+            "blurb": "GET /resource mit Seitengröße und Cursor.",
+            "description": "Listet Ressourcen einer REST-API mit optionalem Filter.",
+            "fields": {
+              "limit": "Höchstzahl der zurückgegebenen Einträge.",
+              "cursor": "Cursor aus der vorherigen Antwort.",
+              "filter": "Suchtext."
+            }
+          },
+          "rest-post-create": {
+            "label": "REST POST (Erstellen)",
+            "blurb": "POST /resource mit JSON-Daten und Idempotenzschlüssel.",
+            "description": "Erstellt eine REST-Ressource mit einem Idempotenzschlüssel.",
+            "fields": {
+              "payload": "JSON-Daten für die Ressource.",
+              "idempotency_key": "Schlüssel zur Deduplizierung. Verwende möglichst eine UUID."
+            }
+          },
+          "graphql-query": {
+            "label": "GraphQL-Abfrage",
+            "blurb": "GraphQL-POST mit Abfrage und Variablen.",
+            "description": "Führt eine GraphQL-Abfrage aus.",
+            "fields": {
+              "query": "GraphQL-Abfrage mit Variablen.",
+              "variables": "Namen und Werte der GraphQL-Variablen."
+            }
+          },
+          "kg-lookup": {
+            "label": "Knowledge-Graph-Abfrage",
+            "blurb": "Beziehungen nach Subjekt und Prädikat abfragen.",
+            "description": "Sucht Beziehungen im Knowledge Graph.",
+            "fields": {
+              "subject": "Name der Entität oder kanonische Entitäts-URI.",
+              "predicate": "Beziehungstyp. Leer lassen, um alle Typen einzubeziehen."
+            }
+          },
+          "memory-read": {
+            "label": "Gedächtnis lesen",
+            "blurb": "Einen Gedächtniseintrag des Agenten anhand seines Schlüssels lesen.",
+            "description": "Liest einen Gedächtniseintrag des Agenten.",
+            "fields": {
+              "key": "Schlüssel des Eintrags. Groß- und Kleinschreibung beachten."
+            }
+          },
+          "memory-write": {
+            "label": "Ins Gedächtnis schreiben",
+            "blurb": "Einen Eintrag im Gedächtnis des Agenten schreiben oder ersetzen.",
+            "description": "Schreibt oder ersetzt einen Gedächtniseintrag des Agenten.",
+            "fields": {
+              "key": "Schlüssel des Eintrags. Groß- und Kleinschreibung beachten.",
+              "value": "Textwert. Strukturdaten als JSON übergeben.",
+              "ttl_seconds": "Mit null Sekunden bleibt der Eintrag dauerhaft gespeichert."
+            }
+          }
+        },
+        "personalDescription": "Eigene Vorlage"
       },
       "schema": {
         "collapseConstraints": "Constraints einklappen",
@@ -3689,7 +3748,7 @@
         "booleanNoConstraints": "Boolean — keine zusätzlichen Constraints.",
         "objectNestedHint": "Object — verschachtelte Properties unten editieren.",
         "allowedValues": "Erlaubte Werte",
-        "patternRegexLabel": "pattern (regex)",
+        "patternRegexLabel": "Muster (Regex)",
         "removeValue": "Wert {value} entfernen",
         "valueEnterPlaceholder": "Wert + Enter",
         "itemType": "Item-Typ",
@@ -3698,7 +3757,7 @@
         "jsonParseError": "JSON-Parse-Fehler",
         "jsonModeHint": "Direkter JSON-Schema-Modus. Beim Wechsel zur Formular-Ansicht werden nicht-unterstützte Patterns (oneOf, $ref, polymorphic) read-only.",
         "noProperties": "Keine Properties — Tool akzeptiert leeres Input-Objekt.",
-        "addProperty": "Property"
+        "addProperty": "Eigenschaft"
       },
       "testResult": {
         "error": "Fehler",
@@ -3728,7 +3787,8 @@
         "llmAccessMissing": "Der Plugin Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo).",
         "turnInProgress": "Auf diesem Draft läuft noch ein Builder-Turn. Deine Nachricht wurde nicht gesendet; der laufende Turn wird unten angezeigt.",
         "turnTimeout": "Der Builder-Turn hat zu lange gedauert und wurde gestoppt.",
-        "stopFailed": "Der Turn konnte auf dem Server nicht gestoppt werden: {message}"
+        "stopFailed": "Der Turn konnte auf dem Server nicht gestoppt werden: {message}",
+        "resumeExhausted": "Der Builder konnte die Verbindung zu diesem Turn nicht wiederherstellen. Lade den Entwurf neu, um den aktuellen Stand zu sehen."
       },
       "inputLabel": "Builder-Nachricht",
       "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
@@ -3738,7 +3798,7 @@
         "idle": "Beschreibe, was das Plugin tun soll. Enter zum Senden, Shift+Enter für Zeilenumbruch."
       },
       "button": {
-        "stop": "Stop",
+        "stop": "Stoppen",
         "send": "Senden",
         "stopping": "Wird gestoppt …"
       },
@@ -3749,7 +3809,7 @@
         "awaitingChoice": "wartet auf deine Auswahl"
       },
       "turnStats": {
-        "live": "Turn live",
+        "live": "Turn läuft",
         "last": "Letzter Turn",
         "toolTime": "{seconds} s Tool-Zeit"
       },
@@ -3761,9 +3821,9 @@
     "preview": {
       "chat": {
         "agentLabel": "Vorschau: neutraler Entwurfs-Agent nur mit diesem Plugin",
-        "credentials": "Credentials",
+        "credentials": "Zugangsdaten",
         "credentialsTooltip": "Test-Credentials für die Preview verwalten",
-        "rebuild": "Rebuild",
+        "rebuild": "Neu bauen",
         "rebuildSuccess": "Rebuild #{buildN} ✓ — Preview ist bereit",
         "inputLabel": "Preview-Nachricht",
         "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
@@ -3771,9 +3831,9 @@
           "inflight": "Der Vorschau-Agent antwortet …",
           "idle": "Teste das Plugin. Enter zum Senden."
         },
-        "stop": "Stop",
+        "stop": "Stoppen",
         "send": "Senden",
-        "streamLive": "Stream live",
+        "streamLive": "Stream läuft",
         "error": {
           "connectionLost": "Verbindung verloren: {message}",
           "unknownTurn": "Unbekannter Fehler beim Preview-Turn",
@@ -3791,7 +3851,7 @@
         },
         "empty": {
           "title": "Teste das Plugin mit dem Vorschau-Agenten.",
-          "body": "Ein neutraler Entwurfs-Agent hat nur die Tools dieses Plugins. Spec + Slots werden vor jedem Turn neu kompiliert, falls etwas geändert wurde."
+          "body": "Probiere die Werkzeuge dieses Plugins aus. Änderungen fließen in die nächste Vorschau ein."
         },
         "smoke": {
           "running": "smoke #{buildN} läuft …",
@@ -3862,13 +3922,13 @@
           "name": "Name",
           "author": "Autor",
           "version": "Version",
-          "template": "Template",
+          "template": "Vorlage",
           "category": "Kategorie",
-          "domain": "Domain",
+          "domain": "Domäne",
           "tools": "Tools",
           "slots": "Slots",
           "setupFields": "Setup-Felder",
-          "outbound": "Outbound",
+          "outbound": "Ausgehende Verbindungen",
           "description": "Beschreibung",
           "kind": "Art"
         },
@@ -3938,7 +3998,7 @@
         "title": "Persona-Vorlage auswählen",
         "close": "Schließen",
         "role": "Rolle: {role}",
-        "customLabel": "Custom",
+        "customLabel": "Individuell",
         "customDescription": "Keine Vorlage anwenden — eigene Achsen verwenden.",
         "cancel": "Abbrechen",
         "apply": "Anwenden",
@@ -3957,11 +4017,11 @@
             "description": "Kreative Brand Voice mit strategischem Denken."
           },
           "researchAnalyst": {
-            "label": "Research Analyst",
+            "label": "Rechercheanalyst",
             "description": "Gründliche Recherche mit strukturierter Aufbereitung."
           },
           "softwareEngineer": {
-            "label": "Software Engineer",
+            "label": "Softwareentwickler",
             "description": "Teamorientierter Entwickler mit klarem Kommunikationsstil."
           },
           "teamLead": {
@@ -3971,7 +4031,7 @@
         }
       },
       "boundaries": {
-        "heading": "Boundaries",
+        "heading": "Grenzen",
         "selectedCount": "{count} ausgewählt",
         "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, gelten dessen plattformweite Vorgaben zusätzlich zu diesen Einstellungen — Grenzen und Schmeichel-Bremse addieren sich im Prompt, sie ersetzen sich nicht.",
         "unknownPresets": "Unbekannte Preset-IDs: {ids}",
@@ -4048,8 +4108,8 @@
         "conflictHint": "Konflikt — siehe Banner."
       },
       "radar": {
-        "title": "Persona Radar",
-        "comparisonPrefix": "Persona vs.",
+        "title": "Persönlichkeitsprofil",
+        "comparisonPrefix": "Profil im Vergleich zu",
         "comparisonNeutral": "Neutral (50)"
       },
       "conflicts": {
@@ -4061,50 +4121,86 @@
       },
       "axes": {
         "formality": {
-          "description": "Du-Form & Umgangssprache vs. Sie-Form & Fachsprache."
+          "description": "Du-Form & Umgangssprache vs. Sie-Form & Fachsprache.",
+          "name": "Förmlichkeit",
+          "left": "LOCKER",
+          "right": "FÖRMLICH"
         },
         "directness": {
-          "description": "Höflichkeitspuffer vs. Kernaussage zuerst."
+          "description": "Höflichkeitspuffer vs. Kernaussage zuerst.",
+          "name": "Direktheit",
+          "left": "DIPLOMATISCH",
+          "right": "DIREKT"
         },
         "warmth": {
-          "description": "Sachlich-distanziert vs. empathisch & anerkennend."
+          "description": "Sachlich-distanziert vs. empathisch & anerkennend.",
+          "name": "Wärme",
+          "left": "DISTANZIERT",
+          "right": "HERZLICH"
         },
         "humor": {
-          "description": "Ohne Witz vs. spielerisch (sparsam einsetzen)."
+          "description": "Ohne Witz vs. spielerisch (sparsam einsetzen).",
+          "name": "Humor",
+          "left": "ERNST",
+          "right": "VERSPIELT"
         },
         "sarcasm": {
-          "description": "Ehrlich-direkt vs. ironisch (selten passend)."
+          "description": "Ehrlich-direkt vs. ironisch (selten passend).",
+          "name": "Sarkasmus",
+          "left": "AUFRICHTIG",
+          "right": "SARKASTISCH"
         },
         "conciseness": {
-          "description": "Ausführlich vs. minimaler Wort-Output."
+          "description": "Ausführlich vs. minimaler Wort-Output.",
+          "name": "Kürze",
+          "left": "AUSFÜHRLICH",
+          "right": "KNAPP"
         },
         "proactivity": {
-          "description": "Antwortet auf Anfragen vs. schlägt von sich aus vor."
+          "description": "Antwortet auf Anfragen vs. schlägt von sich aus vor.",
+          "name": "Eigeninitiative",
+          "left": "REAKTIV",
+          "right": "PROAKTIV"
         },
         "autonomy": {
-          "description": "Fragt zurück vs. handelt eigenständig."
+          "description": "Fragt zurück vs. handelt eigenständig.",
+          "name": "Autonomie",
+          "left": "RÜCKSPRACHE",
+          "right": "EIGENSTÄNDIG"
         },
         "risk_tolerance": {
-          "description": "Sicherheits-zuerst vs. Risiko-tolerant."
+          "description": "Sicherheits-zuerst vs. Risiko-tolerant.",
+          "name": "Risikobereitschaft",
+          "left": "VORSICHTIG",
+          "right": "MUTIG"
         },
         "creativity": {
-          "description": "Bewährte Lösungen vs. unkonventionelle Ideen."
+          "description": "Bewährte Lösungen vs. unkonventionelle Ideen.",
+          "name": "Kreativität",
+          "left": "KONVENTIONELL",
+          "right": "EINFALLSREICH"
         },
         "drama": {
-          "description": "Sachlich vs. emotional aufgeladen."
+          "description": "Sachlich vs. emotional aufgeladen.",
+          "name": "Ausdruck",
+          "left": "ZURÜCKHALTEND",
+          "right": "DRAMATISCH"
         },
         "philosophy": {
-          "description": "Lösung-orientiert vs. abstrakt-grundsätzlich."
+          "description": "Lösung-orientiert vs. abstrakt-grundsätzlich.",
+          "name": "Philosophie",
+          "left": "PRAGMATISCH",
+          "right": "PHILOSOPHISCH"
         }
       }
     },
     "uiSurfaces": {
       "editor": {
         "adminUi": {
-          "title": "Admin UI",
+          "title": "Admin-Oberfläche",
           "subtitle": "Ein iframe in der Store-Detail, operator-only. Für Daten-Pflege die nicht aus der API kommt.",
           "toggleLabel": "Admin UI bereitstellen",
-          "toggleHelp": "Plugin mountet eine HTML-Page unter <code>admin_ui_path</code>. Web-UI embed sie als <code>&lt;iframe&gt;</code> auf der Store-Detail-Seite nach Install.",
+          "toggleHelp": "Das Plugin stellt unter <code>admin_ui_path</code> eine HTML-Seite bereit. Nach der Installation zeigt der Store sie in einem <code>iframe</code> an.",
           "pathLabel": "Pfad (absolut, endet auf <code>index.html</code>)",
           "bodyLabel": "Admin-UI-Body (HTML)",
           "bodyHint": "Inhalt zwischen den Marker-Regions. inline style + script erlaubt.",
@@ -4113,7 +4209,7 @@
           "stubEditHint": "Editier diesen Block via fill_slot('admin-ui-body', ...) oder direkt im Workspace."
         },
         "dashboardPages": {
-          "title": "Dashboard Pages",
+          "title": "Dashboard-Seiten",
           "subtitle": "Browser-/Teams-Tab-rendernde Routes. Für end-user-facing Anzeigen (PR-Inbox, KPIs, Listen)."
         }
       },
@@ -4128,7 +4224,7 @@
         "fields": {
           "routeIdLabel": "Route-ID (slug)",
           "routeIdHelp": "Lowercase, Bindestriche erlaubt. Bestimmt Slot-Keys + Filename.",
-          "pathLabel": "Path",
+          "pathLabel": "Pfad",
           "pathHelp": "Relativ zum Plugin-Mount. Endgültig: /p/<id><path>.",
           "tabLabelLabel": "Tab-Label (Teams Hub)",
           "tabLabelHelp": "Max 24 Zeichen. Wird in Teams-Tab + Hub-Card angezeigt.",
@@ -4159,12 +4255,12 @@
           "help": "SSR + Client-Side-Hydration via esm.sh-Importmap. Setze auf true wenn dein Component <code>useState</code>, <code>onClick</code> o.ä. nutzt. Root-Element MUSS <code>data-omadia-page=\"{routeId}\"</code> tragen."
         },
         "componentSlot": {
-          "label": "Component (TSX, default-export)",
-          "hint": "Props: { data: unknown; fetchError: string | null }"
+          "label": "Komponente (TSX, Standardexport)",
+          "hint": "Eigenschaften sind data (unknown) und fetchError (string oder null)."
         },
         "renderSlot": {
           "label": "Render-Slot (renderRoute-Callback-Body)",
-          "hint": "Return: HtmlFragment (e.g. htmlDoc({ title, body }))"
+          "hint": "Gibt ein HtmlFragment aus htmlDoc mit Titel und Inhalt zurück."
         },
         "itemTemplate": {
           "heading": "Item-Template (Path-Interpolation: <code>item.feldname</code>)",
@@ -4223,8 +4319,8 @@
       "relDaysAgo": "vor {count, plural, one {# Tag} other {# Tagen}}",
       "detailTemplate": "Vorlage: {template}",
       "detailAxes": "{count, plural, one {# Achse} other {# Achsen}}",
-      "detailCustomNotes": "Custom notes",
-      "detailSycophancy": "Sycophancy: {value}",
+      "detailCustomNotes": "Eigene Hinweise",
+      "detailSycophancy": "Zustimmungsneigung: {value}",
       "detailPresets": "{count, plural, one {# Preset} other {# Presets}}",
       "detailCustom": "{count} Custom",
       "detailOperations": "{count, plural, one {# Operation} other {# Operationen}}",
@@ -4238,12 +4334,12 @@
       "colBy": "Von",
       "colNote": "Notiz",
       "colStatus": "Status",
-      "diffVsLive": "Diff vs. Live",
-      "deployReady": "Deploy-ready",
-      "rollback": "Rollback",
+      "diffVsLive": "Mit laufender Version vergleichen",
+      "deployReady": "Bereit zur Veröffentlichung",
+      "rollback": "Version zurücksetzen",
       "downloadPlugin": "Plugin",
       "downloadPluginTitle": "Plugin-ZIP — direkt installierbar via /install/packages/upload",
-      "downloadBundle": "Bundle",
+      "downloadBundle": "Entwurfspaket",
       "downloadBundleTitle": "Profile-Bundle — für cross-instance-Migration via /api/v1/profiles/import-bundle",
       "toastMarkedDeployReady": "Als deploy-ready markiert",
       "toastNoDiff": "Kein Unterschied seit letztem Snapshot",
@@ -4260,7 +4356,7 @@
       "noDifferences": "Keine Unterschiede.",
       "colPath": "Pfad",
       "colSnapshot": "Snapshot",
-      "colLive": "Live",
+      "colLive": "Laufende Version",
       "rollbackConfirmTitle": "Rollback bestätigen",
       "rollbackBodyPrefix": "Live-",
       "rollbackBodySuffix": " + Knowledge-Dateien werden auf den Snapshot-Stand zurückgesetzt. Plugin-Pins bleiben unverändert.",
@@ -4284,8 +4380,8 @@
       "kvName": "Name",
       "kvVersion": "Version",
       "kvCategory": "Kategorie",
-      "kvDomain": "Domain",
-      "kvTemplate": "Template",
+      "kvDomain": "Domäne",
+      "kvTemplate": "Vorlage",
       "kvDescription": "Beschreibung",
       "sectionTools": "Tools",
       "toolsCount": "{count, plural, one {# Tool} other {# Tools}}",
@@ -4327,7 +4423,7 @@
       "manifestPreviewRefreshAria": "Manifest-Vorschau aktualisieren",
       "manifestPreviewCloseAria": "Manifest-Vorschau schließen",
       "manifestPreviewLoading": "# (Vorschau wird geladen)",
-      "previewError": "Preview-Fehler",
+      "previewError": "Die Manifest-Vorschau konnte nicht geladen werden.",
       "kvKind": "Art",
       "manifestComparison": "Manifest-Vergleich",
       "manifestReview": "Manifest prüfen",
@@ -4396,12 +4492,12 @@
         "footerStamp": "omadia · Plugin Builder"
       },
       "detail": {
-        "metaTitle": "Workspace · Plugin Builder · omadia",
+        "metaTitle": "Arbeitsbereich · Plugin Builder · omadia",
         "error": {
           "label": "Fehler",
           "loadFailed": "Workspace konnte nicht geladen werden.",
           "unknown": "Unbekannter Fehler",
-          "draftPrefix": "Draft",
+          "draftPrefix": "Entwurf",
           "backToList": "Zurück zur Draft-Liste"
         }
       },
@@ -4415,7 +4511,7 @@
         "cancel": "Abbrechen",
         "rename": "Umbenennen",
         "delete": "Löschen",
-        "workspace": "Workspace",
+        "workspace": "Arbeitsbereich",
         "restore": "Wiederherstellen",
         "export": {
           "label": "Export",
@@ -4439,7 +4535,9 @@
       "create": {
         "label": "Neues Plugin",
         "pending": "Wird angelegt…",
-        "quotaReachedTooltip": "Draft-Quota erreicht — lösche bestehende, bevor du einen neuen anlegst."
+        "quotaReachedTooltip": "Draft-Quota erreicht — lösche bestehende, bevor du einen neuen anlegst.",
+        "defaultName": "Neues Plugin",
+        "failed": "Der Plugin-Entwurf konnte nicht erstellt werden."
       },
       "import": {
         "button": "Bundle importieren",
@@ -4460,7 +4558,7 @@
         }
       },
       "quota": {
-        "label": "Drafts",
+        "label": "Entwürfe",
         "almostFull": "bald voll",
         "limitReached": "Limit erreicht",
         "tooltip": "{used} von {cap} aktiven Drafts, Warnung ab {warnAt}"

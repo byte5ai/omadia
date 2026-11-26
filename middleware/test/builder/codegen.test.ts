@@ -900,9 +900,12 @@ describe('codegen.generate', () => {
     };
     const field = doc.setup?.fields?.[0];
     assert.ok(field, 'expected one setup field in manifest');
-    assert.equal(field['label'], 'GitHub PAT');
+    assert.deepEqual(field['label'], { en: 'GitHub PAT', de: 'GitHub PAT' });
     assert.equal(field['placeholder'], 'ghp_…');
-    assert.equal(field['help'], 'Personal Access Token with repo:read scope');
+    assert.deepEqual(field['help'], {
+      en: 'Personal Access Token with repo:read scope',
+      de: 'Personal Access Token with repo:read scope',
+    });
   });
 
   it('derives manifest setup_field.label from the key when spec.label is absent', async () => {
@@ -920,6 +923,14 @@ describe('codegen.generate', () => {
       network: { outbound: ['api.github.com'] },
       setup_fields: [
         { key: 'api_token', type: 'secret', description: 'help-via-description' },
+        {
+          key: 'region',
+          type: 'enum',
+          label_localized: { en: 'Region', de: 'Gebiet' },
+          help_localized: { en: 'Choose a region.', de: 'Wähle ein Gebiet.' },
+          enum_values: ['europe', 'default'],
+          enum_labels: { europe: { en: 'Europe', de: 'Europa' } },
+        },
       ],
     });
     const files = await generate({ spec, slots });
@@ -930,9 +941,16 @@ describe('codegen.generate', () => {
     };
     const field = doc.setup?.fields?.[0];
     assert.ok(field);
-    assert.equal(field['label'], 'Api Token');
-    assert.equal(field['help'], 'help-via-description');
+    assert.deepEqual(field['label'], { en: 'Api Token', de: 'Api Token' });
+    assert.deepEqual(field['help'], { en: 'help-via-description', de: 'help-via-description' });
     assert.equal(field['placeholder'], undefined);
+    const localized = doc.setup?.fields?.[1];
+    assert.deepEqual(localized?.['label'], { en: 'Region', de: 'Gebiet' });
+    assert.deepEqual(localized?.['help'], { en: 'Choose a region.', de: 'Wähle ein Gebiet.' });
+    assert.deepEqual(localized?.['enum'], [
+      { value: 'europe', label: { en: 'Europe', de: 'Europa' } },
+      { value: 'default', label: { en: 'default', de: 'default' } },
+    ]);
   });
 
   it('emits top-level admin_ui_path in manifest.yaml when spec sets it (S+7.7)', async () => {

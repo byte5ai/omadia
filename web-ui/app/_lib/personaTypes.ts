@@ -53,33 +53,6 @@ export interface PersonaConfig {
   custom_notes?: string;
 }
 
-/**
- * Slider label pair per axis. Mirrors Kemia's persona-dimensions.ts —
- * left = lower-end behaviour, right = upper-end behaviour. Range 0–100,
- * 50 = neutral / family-default. The per-axis one-line description
- * (slider title hint) lives in the i18n catalog under
- * `builder.persona.axes.<axisKey>.description`.
- */
-export const PERSONA_AXIS_LABELS: Record<
-  PersonaAxisKey,
-  { left: string; right: string }
-> = {
-  // Core (8) ──────────────────────────────────────────────────────────
-  formality: { left: 'CASUAL', right: 'FORMAL' },
-  directness: { left: 'DIPLOMATIC', right: 'DIRECT' },
-  warmth: { left: 'COOL', right: 'WARM' },
-  humor: { left: 'SERIOUS', right: 'PLAYFUL' },
-  sarcasm: { left: 'SINCERE', right: 'SARCASTIC' },
-  conciseness: { left: 'EXPANSIVE', right: 'TERSE' },
-  proactivity: { left: 'REACTIVE', right: 'PROACTIVE' },
-  autonomy: { left: 'CONSULTING', right: 'AUTONOMOUS' },
-  // Extended (4) ──────────────────────────────────────────────────────
-  risk_tolerance: { left: 'CAUTIOUS', right: 'BOLD' },
-  creativity: { left: 'CONVENTIONAL', right: 'INVENTIVE' },
-  drama: { left: 'UNDERSTATED', right: 'DRAMATIC' },
-  philosophy: { left: 'PRAGMATIC', right: 'PHILOSOPHICAL' },
-};
-
 /** Default value when an axis is unset — visual mid-point, no delta emission. */
 export const PERSONA_AXIS_NEUTRAL = 50;
 

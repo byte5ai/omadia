@@ -587,19 +587,23 @@ function reproduceManifestCapabilities(manifestText: string, spec: AgentSpec): s
 function mapSetupFieldSpecToManifest(
   field: AgentSpec['setup_fields'][number],
 ): Record<string, unknown> {
-  const label = field.label ?? humanizeKey(field.key);
+  const label = field.label?.trim() || humanizeKey(field.key);
   const out: Record<string, unknown> = {
     key: field.key,
     type: field.type,
-    label,
+    label: field.label_localized ?? { en: label, de: label },
     required: field.required ?? true,
   };
-  const help = field.help ?? field.description;
+  const help = field.help_localized ?? localizedSetupText(field.help ?? field.description);
   if (help) out['help'] = help;
   if (field.placeholder) out['placeholder'] = field.placeholder;
   if (field.default !== undefined) out['default'] = field.default;
   if (field.enum_values && field.enum_values.length > 0) {
-    out['enum'] = field.enum_values.map((value) => ({ value, label: value }));
+    const enumLabels = new Map(Object.entries(field.enum_labels ?? {}));
+    out['enum'] = field.enum_values.map((value) => ({
+      value,
+      label: enumLabels.get(value) ?? { en: value, de: value },
+    }));
   }
   // Spec 005 (#371) — forward the descriptor reference + scopes for
   // type:oauth fields only. The loader reads provider/scopes solely inside
@@ -612,6 +616,11 @@ function mapSetupFieldSpecToManifest(
     if (field.scopes && field.scopes.length > 0) out['scopes'] = field.scopes;
   }
   return out;
+}
+
+function localizedSetupText(text: string | undefined): { en: string; de: string } | undefined {
+  const value = text?.trim();
+  return value ? { en: value, de: value } : undefined;
 }
 
 function humanizeKey(key: string): string {

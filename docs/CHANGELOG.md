@@ -36,6 +36,13 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Builder localization (2026-11-26)
+
+- The Plugin Builder and Agent Builder use the selected language for template
+  text, persona axes, draft names, and resume or manifest-preview errors.
+- Codegen emits bilingual maps for setup labels, help, and enum labels. Existing
+  drafts with single-language text keep that text (#1798, ADR-0239).
+
 ### Fixed — Agent Builder canvas configuration (2026-11-26)
 
 - Canvas deletions list the affected configuration, ask for confirmation, and

@@ -77,6 +77,7 @@ export function SimpleIntakePane({
   onStreamingChange,
 }: SimpleIntakePaneProps): React.ReactElement {
   const t = useTranslations('builder.simple.intake');
+  const tError = useTranslations('builder.chat.error');
   const [messages, setMessages] = useState<SimpleMessage[]>(() =>
     initialTranscript.map((entry, idx) => ({
       key: `init-${String(idx)}`,
@@ -149,7 +150,11 @@ export function SimpleIntakePane({
           if (ev.type === 'turn_done') break;
           if (ev.type === 'error') {
             console.warn(`[builder.simple.intake] provider error (${ev.code})`, ev.message);
-            setError(humanizeProviderError(ev.message, t('errorProviderGeneric')));
+            if (ev.code !== 'builder.turn_stopped') {
+              setError(ev.code === 'builder.resume_exhausted'
+                ? tError('resumeExhausted')
+                : humanizeProviderError(ev.message, t('errorProviderGeneric')));
+            }
             break;
           }
         }
@@ -184,7 +189,7 @@ export function SimpleIntakePane({
         }
       }
     },
-    [draftId, inflight, input, model, nextKey, scrollToBottom, t],
+    [draftId, inflight, input, model, nextKey, scrollToBottom, t, tError],
   );
 
   const onStop = useCallback(async () => {

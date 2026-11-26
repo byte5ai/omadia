@@ -13,7 +13,6 @@ import { PersonaTemplateGallery } from '@/app/_components/persona/PersonaTemplat
 import {
   CORE_PERSONA_AXES,
   EXTENDED_PERSONA_AXES,
-  PERSONA_AXIS_LABELS,
   PERSONA_AXIS_NEUTRAL,
   PERSONA_CUSTOM_NOTES_MAX_LENGTH,
   personaMessageId,
@@ -241,8 +240,8 @@ export function AgentPersonaEditor(
             <DimensionSlider
               key={axis}
               axis={axis}
-              labelLeft={PERSONA_AXIS_LABELS[axis].left}
-              labelRight={PERSONA_AXIS_LABELS[axis].right}
+              labelLeft={tAxes(`${axis}.left`)}
+              labelRight={tAxes(`${axis}.right`)}
               description={tAxes(`${axis}.description`)}
               value={axisValue(props.value, axis, bounded)}
               onChange={(next) => setAxis(axis, next)}
@@ -274,8 +273,8 @@ export function AgentPersonaEditor(
               <DimensionSlider
                 key={axis}
                 axis={axis}
-                labelLeft={PERSONA_AXIS_LABELS[axis].left}
-                labelRight={PERSONA_AXIS_LABELS[axis].right}
+                labelLeft={tAxes(`${axis}.left`)}
+                labelRight={tAxes(`${axis}.right`)}
                 description={tAxes(`${axis}.description`)}
                 value={axisValue(props.value, axis, bounded)}
                 onChange={(next) => setAxis(axis, next)}

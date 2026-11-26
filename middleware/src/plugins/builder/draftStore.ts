@@ -258,7 +258,7 @@ export class DraftStore {
     const db = this.required();
     const now = Date.now();
     const id = randomUUID();
-    const safeName = name.trim() || 'Neuer Agent';
+    const safeName = name.trim() || 'New plugin';
     const spec = emptyAgentSpec();
     // 2026-05-06: codegen-default ist Opus 4.7, preview-default bleibt
     // Sonnet 4.6 (Cost-Split — siehe modelRegistry.ts-Comment).

@@ -1438,7 +1438,7 @@ function WorkspaceHeader({
             onChange={onTemplateChange}
           />
           <ModelSelector
-            label="Codegen"
+            label={tw('codegenModelLabel')}
             value={draft.codegenModel}
             models={models}
             enabled={modelEditingEnabled}

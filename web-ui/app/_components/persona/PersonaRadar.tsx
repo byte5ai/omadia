@@ -6,7 +6,6 @@ import { useId } from 'react';
 import { cn } from '../../_lib/cn';
 import {
   ALL_PERSONA_AXES,
-  PERSONA_AXIS_LABELS,
   PERSONA_AXIS_NEUTRAL,
   type PersonaAxes,
 } from '../../_lib/personaTypes';
@@ -53,6 +52,7 @@ export function PersonaRadar({
   className,
 }: PersonaRadarProps): React.ReactElement {
   const t = useTranslations('builder.persona.radar');
+  const tAxes = useTranslations('builder.persona.axes');
   const id = useId();
   const titleId = `${id}-title`;
   const cx = size / 2;
@@ -90,7 +90,7 @@ export function PersonaRadar({
       data-testid="persona-radar"
     >
       <svg
-        viewBox={`0 0 ${size} ${size}`}
+        viewBox={`-24 0 ${size + 48} ${size}`}
         width={size}
         height={size}
         role="img"
@@ -161,7 +161,7 @@ export function PersonaRadar({
 
         {/* Axis labels (clickable when onAxisFocus provided) */}
         {points.map((p) => {
-          const label = p.axis;
+          const label = tAxes(`${p.axis}.name`);
           const text = (
             <text
               x={p.labelX}
@@ -216,5 +216,3 @@ export function PersonaRadar({
 export function personaAxisToSliderTestId(axis: string): string {
   return `dimension-slider-${axis}`;
 }
-
-export const PERSONA_AXIS_DESCRIPTIONS = PERSONA_AXIS_LABELS;

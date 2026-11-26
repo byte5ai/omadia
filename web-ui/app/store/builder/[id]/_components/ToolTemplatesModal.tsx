@@ -61,6 +61,26 @@ export function ToolTemplatesModal({
     return { ...tool, id: candidate };
   }
 
+  function localizeTool(template: ToolTemplate): ToolSpec {
+    if (template.source === 'personal') return template.tool;
+    const tool = template.tool;
+    const key = template.id.slice('curated.'.length);
+    const properties = tool.input?.properties as Record<string, Record<string, unknown>> | undefined;
+    return {
+      ...tool,
+      description: t(`curated.${key}.description`),
+      input: {
+        ...tool.input,
+        properties: Object.fromEntries(
+          Object.entries(properties ?? {}).map(([name, field]) => {
+            const message = `curated.${key}.fields.${name}`;
+            return [name, t.has(message) ? { ...field, description: t(message) } : field];
+          }),
+        ),
+      },
+    };
+  }
+
   return (
     <div
       role="dialog"
@@ -96,7 +116,13 @@ export function ToolTemplatesModal({
               {t('empty')}
             </p>
           ) : null}
-          {all.map((tpl) => (
+          {all.map((tpl) => {
+            const key = tpl.id.slice('curated.'.length);
+            const label = tpl.source === 'curated' ? t(`curated.${key}.label`) : tpl.label;
+            const blurb = tpl.source === 'curated'
+              ? t(`curated.${key}.blurb`)
+              : tpl.tool.description || t('personalDescription');
+            return (
             <div
               key={tpl.id}
               className="flex items-center justify-between gap-2 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 hover:border-[color:var(--accent)]"
@@ -105,14 +131,14 @@ export function ToolTemplatesModal({
               <button
                 type="button"
                 onClick={() => {
-                  onInsert(dedupedTool(tpl.tool));
+                  onInsert(dedupedTool(localizeTool(tpl)));
                   onClose();
                 }}
                 className="flex flex-1 flex-col items-start gap-0.5 text-left"
               >
                 <div className="flex items-center gap-2">
                   <span className="text-[12px] font-semibold text-[color:var(--fg-strong)]">
-                    {tpl.label}
+                    {label}
                   </span>
                   {tpl.source === 'personal' ? (
                     <span className="rounded bg-[color:var(--accent)]/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-[color:var(--accent)]">
@@ -121,7 +147,7 @@ export function ToolTemplatesModal({
                   ) : null}
                 </div>
                 <span className="text-[11px] text-[color:var(--fg-muted)]">
-                  {tpl.blurb}
+                  {blurb}
                 </span>
                 <span className="font-mono-num text-[10px] text-[color:var(--fg-subtle)]">
                   {tpl.tool.id}
@@ -142,7 +168,8 @@ export function ToolTemplatesModal({
                 </button>
               ) : null}
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>

@@ -122,6 +122,11 @@ das Plugin selbst spricht nie mit Menschen.
 
 ## Identity-Felder — Pflicht-Felder
 
+Schreibe sichtbare Texte in `setup_fields` zweisprachig. Verwende
+`label_localized: {en, de}`, bei Bedarf `help_localized: {en, de}` und
+`enum_labels: {<enum_value>: {en, de}}`. Die Werte in `enum_values`
+bleiben die stabilen Schlüssel für die Plugin-Konfiguration.
+
 Vor dem ersten `fill_slot` müssen alle Identity-Felder gesetzt sein,
 sonst meldet `lint_spec` `severity: "error"`-Issues und der Turn endet
 ohne Codegen.

@@ -280,6 +280,10 @@ export function BuilderChatPane({
           setError(t('error.turnTimeout'));
           break;
         }
+        if (ev.type === 'error' && ev.code === 'builder.resume_exhausted') {
+          setError(t('error.resumeExhausted'));
+          break;
+        }
         if (ev.type === 'error') {
           console.warn(`[builder.chat] provider error (${ev.code})`, ev.message);
           // OM-101 — a missing LLM access is not a provider error to be

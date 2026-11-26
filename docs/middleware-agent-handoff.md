@@ -10061,11 +10061,10 @@ Entschieden (Marcel, 2026-10-16): sichtbarer Manifest-Text wird als
   Pakete gehen nicht über den Hub.
 - Out-of-Tree-Pakete (Teams, Odoo, LLM-Provider, …) konvertieren in ihren
   eigenen Repos; die Checkliste steht in #1401.
-- Offen: der Agent-Builder (`src/plugins/builder/codegen.ts`
-  `mapSetupFieldSpecToManifest`) schreibt `label`/`help`/Enum-Labels weiter als
-  nackte Strings — er kennt pro Feld nur einen Text in unbekannter Sprache.
-  Builder-Agents lösen deshalb die Loader-Warnung aus, bis die Builder-Spec
-  zweisprachige Felder bekommt (Folge-Issue).
+- Der Plugin Builder übernimmt `label_localized`, `help_localized` und
+  `enum_labels` aus der Entwurfsspezifikation (ADR-0239). Codegen schreibt die
+  Werte als `{en, de}`-Map ins Manifest. Bei bestehenden einsprachigen Angaben
+  wird der vorhandene Text in beiden Sprachen angezeigt.
 
 ## Plugin-Registries: Status sichtbar, Seed nur beim ersten Boot, Änderungen im Audit (#1458 / #1482 / #1483 / #1487, 2026-10-28)
 

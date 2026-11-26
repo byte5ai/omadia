@@ -3601,7 +3601,8 @@
       "kindIntegration": "Integration",
       "kindTool": "Tool",
       "kindIntegrationHint": "Plugin kind: integration — an external system with credentials. Granted to agents per agent.",
-      "kindToolHint": "Plugin kind: tool — local logic without an external system. Granted to agents per agent."
+      "kindToolHint": "Plugin kind: tool — local logic without an external system. Granted to agents per agent.",
+      "codegenModelLabel": "Code generation"
     },
     "tools": {
       "form": {
@@ -3643,7 +3644,7 @@
         "inputLabel": "Input",
         "preview": "Preview",
         "previewEmpty": "Paste input to see the preview.",
-        "invalidJson": "Input is not valid JSON. YAML support is coming in the B.11+ cleanup.",
+        "invalidJson": "The input is invalid JSON.",
         "collisionNote": "Collisions are skipped — existing tools stay unchanged.",
         "confirmImport": "Confirm import",
         "collisionBadge": "Collision",
@@ -3673,7 +3674,65 @@
         "closeModal": "Close modal",
         "empty": "No templates available.",
         "personalBadge": "Mine",
-        "deleteTemplate": "Delete template {label}"
+        "deleteTemplate": "Delete template {label}",
+        "curated": {
+          "rest-get-list": {
+            "label": "REST GET (list)",
+            "blurb": "GET /resource with a page size and cursor.",
+            "description": "List resources from a REST API with optional filtering.",
+            "fields": {
+              "limit": "Maximum number of entries to return.",
+              "cursor": "Pagination cursor from the previous response.",
+              "filter": "Search text."
+            }
+          },
+          "rest-post-create": {
+            "label": "REST POST (create)",
+            "blurb": "POST /resource with a JSON body and an idempotency key.",
+            "description": "Create a REST resource with an idempotency key.",
+            "fields": {
+              "payload": "JSON body for the resource.",
+              "idempotency_key": "Deduplication key. A UUID is recommended."
+            }
+          },
+          "graphql-query": {
+            "label": "GraphQL query",
+            "blurb": "GraphQL POST with a query and variables.",
+            "description": "Run a GraphQL query.",
+            "fields": {
+              "query": "GraphQL query with variables.",
+              "variables": "GraphQL variable names and their values."
+            }
+          },
+          "kg-lookup": {
+            "label": "Knowledge graph lookup",
+            "blurb": "Look up relationships by subject and predicate.",
+            "description": "Find relationships in the knowledge graph.",
+            "fields": {
+              "subject": "Entity name or canonical entity URI.",
+              "predicate": "Relationship type. Leave blank to include all types."
+            }
+          },
+          "memory-read": {
+            "label": "Read memory",
+            "blurb": "Read an agent memory entry by key.",
+            "description": "Read a memory entry for the agent.",
+            "fields": {
+              "key": "Memory key. Case-sensitive."
+            }
+          },
+          "memory-write": {
+            "label": "Write memory",
+            "blurb": "Write or replace an agent memory entry.",
+            "description": "Write or replace a memory entry for the agent.",
+            "fields": {
+              "key": "Memory key. Case-sensitive.",
+              "value": "String value. Encode structured data as JSON.",
+              "ttl_seconds": "Zero keeps the entry indefinitely."
+            }
+          }
+        },
+        "personalDescription": "Personal template"
       },
       "schema": {
         "collapseConstraints": "Collapse constraints",
@@ -3728,7 +3787,8 @@
         "llmAccessMissing": "The Plugin Builder needs LLM access (an API key or a connected subscription).",
         "turnInProgress": "A builder turn is still running on this draft. Your message was not sent; the running turn is shown below.",
         "turnTimeout": "The builder turn took too long and was stopped.",
-        "stopFailed": "Could not stop the turn on the server: {message}"
+        "stopFailed": "Could not stop the turn on the server: {message}",
+        "resumeExhausted": "The Builder could not reconnect to this turn. Reload the draft to see its latest state."
       },
       "inputLabel": "Builder message",
       "scrollToBottomAriaLabel": "Jump to latest message",
@@ -3791,7 +3851,7 @@
         },
         "empty": {
           "title": "Test the plugin with the preview agent.",
-          "body": "A neutral draft agent holds only this plugin’s tools. Spec + slots are recompiled before each turn if anything changed."
+          "body": "Try the tools this plugin provides. Changes are included in the next preview."
         },
         "smoke": {
           "running": "smoke #{buildN} running …",
@@ -4061,40 +4121,76 @@
       },
       "axes": {
         "formality": {
-          "description": "Casual address & colloquial language vs. formal address & technical language."
+          "description": "Casual address & colloquial language vs. formal address & technical language.",
+          "name": "Formality",
+          "left": "CASUAL",
+          "right": "FORMAL"
         },
         "directness": {
-          "description": "Politeness buffer vs. key point first."
+          "description": "Politeness buffer vs. key point first.",
+          "name": "Directness",
+          "left": "DIPLOMATIC",
+          "right": "DIRECT"
         },
         "warmth": {
-          "description": "Matter-of-fact and distanced vs. empathetic & appreciative."
+          "description": "Matter-of-fact and distanced vs. empathetic & appreciative.",
+          "name": "Warmth",
+          "left": "COOL",
+          "right": "WARM"
         },
         "humor": {
-          "description": "No jokes vs. playful (use sparingly)."
+          "description": "No jokes vs. playful (use sparingly).",
+          "name": "Humor",
+          "left": "SERIOUS",
+          "right": "PLAYFUL"
         },
         "sarcasm": {
-          "description": "Honest and direct vs. ironic (rarely appropriate)."
+          "description": "Honest and direct vs. ironic (rarely appropriate).",
+          "name": "Sarcasm",
+          "left": "SINCERE",
+          "right": "SARCASTIC"
         },
         "conciseness": {
-          "description": "Detailed vs. minimal word output."
+          "description": "Detailed vs. minimal word output.",
+          "name": "Brevity",
+          "left": "EXPANSIVE",
+          "right": "TERSE"
         },
         "proactivity": {
-          "description": "Responds to requests vs. makes suggestions on its own."
+          "description": "Responds to requests vs. makes suggestions on its own.",
+          "name": "Initiative",
+          "left": "REACTIVE",
+          "right": "PROACTIVE"
         },
         "autonomy": {
-          "description": "Asks back vs. acts independently."
+          "description": "Asks back vs. acts independently.",
+          "name": "Autonomy",
+          "left": "CONSULTING",
+          "right": "AUTONOMOUS"
         },
         "risk_tolerance": {
-          "description": "Safety first vs. risk-tolerant."
+          "description": "Safety first vs. risk-tolerant.",
+          "name": "Risk tolerance",
+          "left": "CAUTIOUS",
+          "right": "BOLD"
         },
         "creativity": {
-          "description": "Proven solutions vs. unconventional ideas."
+          "description": "Proven solutions vs. unconventional ideas.",
+          "name": "Creativity",
+          "left": "CONVENTIONAL",
+          "right": "INVENTIVE"
         },
         "drama": {
-          "description": "Matter-of-fact vs. emotionally charged."
+          "description": "Matter-of-fact vs. emotionally charged.",
+          "name": "Drama",
+          "left": "UNDERSTATED",
+          "right": "DRAMATIC"
         },
         "philosophy": {
-          "description": "Solution-oriented vs. abstract and fundamental."
+          "description": "Solution-oriented vs. abstract and fundamental.",
+          "name": "Philosophy",
+          "left": "PRAGMATIC",
+          "right": "PHILOSOPHICAL"
         }
       }
     },
@@ -4104,7 +4200,7 @@
           "title": "Admin UI",
           "subtitle": "An iframe in the store detail, operator-only. For maintaining data that does not come from the API.",
           "toggleLabel": "Provide Admin UI",
-          "toggleHelp": "Plugin mounts an HTML page at <code>admin_ui_path</code>. The Web UI embeds it as an <code>&lt;iframe&gt;</code> on the store detail page after install.",
+          "toggleHelp": "The plugin serves an HTML page at <code>admin_ui_path</code>. After installation, the Store shows it in an <code>iframe</code>.",
           "pathLabel": "Path (absolute, ends with <code>index.html</code>)",
           "bodyLabel": "Admin UI Body (HTML)",
           "bodyHint": "Content between the marker regions. Inline style + script allowed.",
@@ -4160,11 +4256,11 @@
         },
         "componentSlot": {
           "label": "Component (TSX, default-export)",
-          "hint": "Props: { data: unknown; fetchError: string | null }"
+          "hint": "Props include data (unknown) and fetchError (string or null)."
         },
         "renderSlot": {
           "label": "Render Slot (renderRoute callback body)",
-          "hint": "Return: HtmlFragment (e.g. htmlDoc({ title, body }))"
+          "hint": "Returns an HtmlFragment from htmlDoc with a title and body."
         },
         "itemTemplate": {
           "heading": "Item Template (path interpolation: <code>item.fieldname</code>)",
@@ -4327,7 +4423,7 @@
       "manifestPreviewRefreshAria": "Refresh manifest preview",
       "manifestPreviewCloseAria": "Close manifest preview",
       "manifestPreviewLoading": "# (preview loading)",
-      "previewError": "Preview error",
+      "previewError": "The manifest preview could not be loaded.",
       "kvKind": "Kind",
       "manifestComparison": "Manifest comparison",
       "manifestReview": "Manifest review",
@@ -4439,7 +4535,9 @@
       "create": {
         "label": "New plugin",
         "pending": "Creating…",
-        "quotaReachedTooltip": "Draft quota reached — delete an existing one before creating a new draft."
+        "quotaReachedTooltip": "Draft quota reached — delete an existing one before creating a new draft.",
+        "defaultName": "New plugin",
+        "failed": "The plugin draft could not be created."
       },
       "import": {
         "button": "Import bundle",

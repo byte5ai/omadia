@@ -141,7 +141,11 @@ export interface ToolTestCase {
 export interface SetupField {
   key: string;
   label?: string;
+  label_localized?: { en: string; de: string };
   description?: string;
+  help?: string;
+  help_localized?: { en: string; de: string };
+  enum_labels?: Record<string, { en: string; de: string }>;
   type?: 'string' | 'secret' | 'url' | 'number' | 'boolean' | 'oauth';
   required?: boolean;
   /** Spec 005 (#371) — for `type: 'oauth'` fields: the oauth_providers[].id
