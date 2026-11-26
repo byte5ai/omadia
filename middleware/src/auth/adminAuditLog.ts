@@ -111,6 +111,7 @@ export type AuditAction =
   // #1347 — a plugin finished its install wizard / was removed. The uninstall
   // row lists the grants that left with it.
   | 'plugin.install'
+  | 'plugin.package_upload'
   // #2088 — end of service of an agent: what ended with it (processes of its
   // archetype, message subscriptions), then the change itself. A delete
   // keeps a tombstone; the purge is the hard delete of one.
@@ -194,6 +195,22 @@ export type AuditAction =
   // its server. `after` holds the server name, whose token it was, the cause
   // and whether the provider revoked the grant. Never a token.
   | 'mcp_server.oauth_disconnect'
+  | 'mcp_server.create'
+  | 'mcp_server.update'
+  | 'mcp_server.delete'
+  | 'mcp_server.discover'
+  | 'mcp_server.rescan_all'
+  | 'mcp_server.config_change'
+  | 'mcp_server.verdict_ack'
+  | 'mcp_server.agent_grant_change'
+  | 'mcp_server.plugin_grant_change'
+  | 'mcp_server.skill_binding_change'
+  | 'mcp_server.oauth_connect'
+  | 'mcp_server.oauth_client_change'
+  | 'mcp_server.delegation_change'
+  | 'mcp_server.registry_create'
+  | 'mcp_server.registry_delete'
+  | 'mcp_server.public_binding_change'
   // #1487 — a plugin registry was added, changed or removed. Registries
   // decide where installable code comes from. `before`/`after` carry the url
   // and whether a token is set — never the token.

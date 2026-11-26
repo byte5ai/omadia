@@ -7588,6 +7588,7 @@ async function main(): Promise<void> {
               draftStore,
               buildPipeline: builderBuildPipeline,
               packageUploadService,
+              ...(adminAudit ? { adminAudit } : {}),
               quota: draftQuota,
               workaroundStateStore: builderWorkaroundStateStore,
             },

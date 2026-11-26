@@ -36,6 +36,18 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — MCP and Builder audit coverage (#1740, #1951) (2026-11-26)
+
+- MCP server administration, tool discovery, verdict acknowledgements, grants,
+  registries, OAuth and public bindings write operator audit rows. The audit
+  page offers a common MCP filter for these and existing MCP events.
+- Core migration `0114_mcp_oauth_flow_audit_actor` retains the signed-in
+  initiator until the OAuth flow is consumed. Successful callbacks record that
+  operator independently of the callback session (ADR-0246).
+- Local ZIP uploads and Builder publishes record package version and source.
+  The owner's Builder history shows manual spec and slot edits and groups
+  consecutive saves from one editing burst (ADR-0245).
+
 ### Fixed — routine and operator audit coverage (#1752, #1764) (2026-11-26)
 
 - Routine pause, resume, trigger, template changes and deletion identify the

@@ -259,7 +259,7 @@ describe('MCP registry + OAuth schema (pg)', { skip: !pgAvailable }, () => {
     assert.equal(flows.rowCount, 0, 'pending flows must cascade with the server');
   });
 
-  it('round-trips the RFC 8707 resource on an OAuth flow, and NULL for older flows (0111)', async () => {
+  it('round-trips the resource and signed-in audit actor on an OAuth flow (0111, 0114)', async () => {
     const server = await pool.query<{ id: string }>(
       `INSERT INTO mcp_servers (name, transport, endpoint)
        VALUES ($1, 'http', 'https://resource.invalid/mcp') RETURNING id`,
@@ -281,14 +281,20 @@ describe('MCP registry + OAuth schema (pg)', { skip: !pgAvailable }, () => {
       ...base,
       state: `${TENANT}resource-state`,
       resource: 'https://resource.invalid/mcp',
+      auditActorId: '00000000-0000-4000-8000-000000000001',
+      auditActorEmail: 'operator@example.com',
     });
     const withResource = await store.takeMcpOAuthFlow(`${TENANT}resource-state`);
     assert.equal(withResource?.resource, 'https://resource.invalid/mcp');
+    assert.equal(withResource?.auditActorId, '00000000-0000-4000-8000-000000000001');
+    assert.equal(withResource?.auditActorEmail, 'operator@example.com');
 
     // A flow written without a resource (or before the migration) reads back null.
     await store.createMcpOAuthFlow({ ...base, state: `${TENANT}resource-state-2` });
     const without = await store.takeMcpOAuthFlow(`${TENANT}resource-state-2`);
     assert.equal(without?.resource, null);
+    assert.equal(without?.auditActorId, undefined);
+    assert.equal(without?.auditActorEmail, undefined);
 
     await pool.query('DELETE FROM mcp_servers WHERE id = $1', [serverId]);
   });
