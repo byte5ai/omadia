@@ -40,8 +40,8 @@ const ReadAttachmentInputSchema = z.object({
 export const readAttachmentToolSpec = {
   name: READ_ATTACHMENT_TOOL_NAME,
   description:
-    'Liest den TEXT-Inhalt eines vom User in DIESEM oder einem früheren Turn hochgeladenen Dokuments (.docx, .pdf, .md, .txt, .json) über seinen `storage_key`. ' +
-    'Die `storage_key`-Werte stehen im `[attachments-info]`-Block am Ende der User-Nachricht. ' +
+    'Liest den TEXT-Inhalt einer in diesem Gespräch hochgeladenen Datei (.docx, .pdf, .md, .txt, .json) über ihren `storage_key`. ' +
+    'Den `storage_key` nennt der Anhang-Hinweis der Nachricht, mit der die Datei kam; er ist interne Technik — nenne ihn dem User nicht und frag ihn nie danach. ' +
     'In der Regel ist der Dokumentinhalt bereits automatisch als `[attachment-content: …]`-Block in die Nachricht eingebettet — nutze dieses Tool nur, wenn der Inhalt fehlt, abgeschnitten wurde, oder du eine Datei aus einem früheren Turn erneut lesen willst. ' +
     'Tabellen (CSV, XLSX) liest es NICHT: sie werden beim Hochladen als Dataset importiert, ihre Zeilen liest du mit `query_dataset`. ' +
     'Bilder sind NICHT text-extrahierbar (die werden separat als Vision-Input behandelt).',
@@ -51,7 +51,7 @@ export const readAttachmentToolSpec = {
       storage_key: {
         type: 'string',
         description:
-          'Der `storage_key` der Datei aus dem `[attachments-info]`-Block (z.B. `uploads/2026/abc123.docx`).',
+          'Der `storage_key` aus dem Anhang-Hinweis der Nachricht (z.B. `uploads/2026/abc123.docx`).',
       },
     },
     required: ['storage_key'],
@@ -77,6 +77,19 @@ function tabularRefusal(storageKey: string, format: TabularFormat): string {
 }
 
 /**
+ * #1976 — the not-found answer. Says what the model may tell the user in any
+ * channel: no such file here. It must not send the user to re-upload or to
+ * internal markup they never see.
+ */
+export function attachmentNotFound(storageKey: string): string {
+  return (
+    `Error: no uploaded file with storage key \`${storageKey}\` is available in this conversation. ` +
+    'Tell the user that file is not available here, without naming the storage key or any internal block, ' +
+    'and do not guess its contents.'
+  );
+}
+
+/**
  * Orchestrator-side handler for `read_attachment`. Resolves the attachment's
  * bytes via the injected {@link AttachmentReader}, extracts plain text, and
  * returns it (or a clear, model-readable error string). Refuses a tabular
@@ -97,7 +110,7 @@ export class ReadAttachmentTool {
     try {
       const found = await this.reader.readByStorageKey(key);
       if (!found) {
-        return `Error: attachment \`${key}\` not found (storage unconfigured or key unknown).`;
+        return attachmentNotFound(key);
       }
       // The storage key stands in for a missing file name: keys end in the
       // upload's name or extension (`createAttachmentReader` derives the

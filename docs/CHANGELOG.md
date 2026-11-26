@@ -36,6 +36,26 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — office files, attachments and transcription (Welle 5 W07-08) (2026-11-26)
+
+- **File export follows the agent's grant (#1972).** The Excel offer under a truncated
+  Privacy Shield table, the "Datei-Erzeugung" prompt rules 14/15, the dedup recipe's
+  `create_xlsx` step and the forced "file announced but not built" retry now need
+  `create_xlsx`/`create_docx` to be *granted to this agent* (same gate as the tool list,
+  #1598), not only registered. `Orchestrator.isNativeToolOfferedThisTurn`.
+- **Attachment tools are channel-neutral (#1976).** `read_attachment` and
+  `transcribe_recording` are offered only on a turn that came in through a messaging
+  channel (`turnMayCarryUploads`, `attachmentToolAvailability.ts`); the web chat and the
+  HTTP API have no upload. Their texts no longer name the internal `[attachments-info]`
+  block, and the not-found answer (`attachmentNotFound`) tells the model to say the file is
+  not available instead of asking for a re-upload.
+- **Dropped attachments are visible (#1978).** Auto-ingest writes an
+  `[attachment-not-ingested: <name>]` block with a plain reason (damaged, unsupported type,
+  not found in storage, no text) and a server warning for every file it cannot read; a
+  failed storage read is logged in `attachmentReaderFactory.ts`. A corrupt XLSX states
+  "the file is damaged or not a valid XLSX workbook"; the jszip text goes to the log only.
+  `ExtractResult` failures carry a `kind` (`PLAIN_EXTRACT_FAILURE`).
+
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
 - The ADR-0167 transition is over (#2244). `entityWriteGuard`

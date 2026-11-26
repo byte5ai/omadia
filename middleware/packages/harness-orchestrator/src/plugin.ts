@@ -75,6 +75,7 @@ import type { VerifierBundle } from '@omadia/verifier';
 import type { Pool } from 'pg';
 import { initUsageRecorder, setAmbientExecutionContext, setUsageContextProvider } from '@omadia/usage-telemetry';
 import { currentAgentTurnExecutionContext, currentUsageContext } from './turnContext.js';
+import { turnMayCarryUploads } from './attachmentToolAvailability.js';
 
 import {
   buildOrchestratorForAgent,
@@ -1214,6 +1215,8 @@ export async function activate(
     {
       handler: (input): Promise<string> => transcribeRecordingTool.handle(input),
       spec: transcribeRecordingToolSpec,
+      // #1976 — offered only on a turn that can carry an uploaded recording.
+      isAvailable: turnMayCarryUploads,
     },
   );
   ctx.log(

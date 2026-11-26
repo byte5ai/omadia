@@ -199,9 +199,15 @@ export async function parseXlsx(bytes: Buffer): Promise<XlsxParseResult> {
     // accepted at runtime and is what every caller has.
     await workbook.xlsx.load(bytes as unknown as ArrayBuffer);
   } catch (err) {
+    // #1978 — the reason reaches the model, which may repeat it to the user:
+    // a plain statement only. The library's message (jszip text, doc URL)
+    // goes to the server log.
+    console.warn(
+      `[harness-orchestrator] parseXlsx: workbook unreadable — ${err instanceof Error ? err.message : String(err)}`,
+    );
     return {
       ok: false,
-      reason: `invalid or unreadable XLSX — ${err instanceof Error ? err.message : String(err)}`,
+      reason: 'the file is damaged or not a valid XLSX workbook',
     };
   }
 

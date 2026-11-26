@@ -157,7 +157,9 @@ describe('transcribe_recording', () => {
     const service = fakeTranscription(TWO_SPEAKERS);
     const { tool } = makeTool({ service, reader: fakeReader(false) });
     const result = await tool.handle({ storage_key: AUDIO_KEY });
-    assert.match(result, /not found/);
+    // #1976 — channel-neutral: no re-upload request, no internal markup.
+    assert.match(result, /^Error: no uploaded file with storage key/);
+    assert.ok(!result.includes('[attachments-info]'));
   });
 
   /** Reader that answers any key with the given object, plus a service that

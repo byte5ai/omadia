@@ -8,7 +8,7 @@ import { z } from 'zod';
 
 import { isRecordingAttachment } from '../attachmentExtract.js';
 import type { SessionLogger } from '../sessionLogger.js';
-import type { AttachmentReader } from './readAttachmentTool.js';
+import { attachmentNotFound, type AttachmentReader } from './readAttachmentTool.js';
 import { turnContext } from '../turnContext.js';
 
 export const TRANSCRIBE_RECORDING_TOOL_NAME = 'transcribe_recording';
@@ -45,7 +45,7 @@ export const transcribeRecordingToolSpec = {
   name: TRANSCRIBE_RECORDING_TOOL_NAME,
   description:
     'Transkribiert eine vom User hochgeladene AUDIO-Datei (Meeting-Mitschnitt, Anruf, Sprachnotiz) über ihren `storage_key` und legt das Transkript als Session-Protokoll ab (durchsuchbar, mit Sprecher-Attribution soweit verfügbar). ' +
-    'Die `storage_key`-Werte stehen im `[attachments-info]`-Block am Ende der User-Nachricht. ' +
+    'Den `storage_key` nennt der Anhang-Hinweis der Nachricht, mit der die Datei kam; er ist interne Technik — nenne ihn dem User nicht und frag ihn nie danach. ' +
     'Optional: `language_hints` (erwartete Sprachen, z.B. ["de","en"]), `keyword_hints` (Namen/Fachbegriffe, die im Audio vorkommen können) und `context` (Freitext zum Setting) verbessern die Genauigkeit deutlich — nutze sie, wenn Teilnehmer oder Thema bekannt sind.',
   input_schema: {
     type: 'object' as const,
@@ -53,7 +53,7 @@ export const transcribeRecordingToolSpec = {
       storage_key: {
         type: 'string',
         description:
-          'Der `storage_key` der Audio-Datei aus dem `[attachments-info]`-Block.',
+          'Der `storage_key` der Audio-Datei aus dem Anhang-Hinweis der Nachricht.',
       },
       language_hints: {
         type: 'array',
@@ -121,7 +121,7 @@ export class TranscribeRecordingTool {
     try {
       const found = await this.deps.reader.readByStorageKey(key);
       if (!found) {
-        return `Error: attachment \`${key}\` not found (storage unconfigured or key unknown).`;
+        return attachmentNotFound(key);
       }
       // Both gates sit BEFORE the provider call: transcription is an egress
       // to an external service, so anything that is not a recording must be

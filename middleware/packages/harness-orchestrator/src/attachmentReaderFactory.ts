@@ -181,7 +181,13 @@ export function createAttachmentReader(
           ...(contentType ? { contentType } : {}),
           ...(fileName ? { fileName } : {}),
         };
-      } catch {
+      } catch (err) {
+        // #1978 — a failed read used to leave no trace at all.
+        console.warn(
+          `[harness-orchestrator] attachment read failed for ${storageKey} — ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
         return undefined;
       }
     },

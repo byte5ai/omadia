@@ -148,10 +148,12 @@ import {
 } from './tools/queryDatasetTool.js';
 import { sortByToolName } from './toolOrdering.js';
 import { parseAttachmentsInfo } from './attachmentsInfo.js';
+import { turnMayCarryUploads } from './attachmentToolAvailability.js';
 import {
   checkVisionEmbeddable,
   detectTabularFormat,
   extractAttachmentText,
+  PLAIN_EXTRACT_FAILURE,
   type TabularFormat,
 } from './attachmentExtract.js';
 import {
@@ -2481,6 +2483,9 @@ const MEMORY_PROMPT_BLOCKS: Readonly<Record<MemoryPromptKind, string>> = {
  *  a file is only offered on a turn that actually carries it. */
 const FILE_EXPORT_TOOL_NAME = 'create_xlsx';
 
+/** #1972 — the office file tools whose prompt rules and forced retry need a grant. */
+const OFFICE_FILE_TOOL_NAMES = ['create_xlsx', 'create_docx'] as const;
+
 /**
  * #1559 — rule a)'s sentence about results above the chat row cap. Offers an
  * Excel file only when `create_xlsx` is offered this turn; without it the
@@ -2490,6 +2495,26 @@ function privacyRowCapRule(hasFileExport: boolean): string {
   return hasFileExport
     ? 'Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil und biete die vollständige Liste als Excel an — bzw. erzeuge sie direkt mit `create_xlsx` und derselben `datasetId`, wenn der User erkennbar die ganze Liste will (z.B. „alle", „komplett", „exportieren").'
     : 'Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil (wie viele Zeilen es insgesamt sind). **Biete KEINE Excel- oder andere Datei an** — in dieser Instanz gibt es kein Export-Werkzeug (`create_xlsx` ist nicht verfügbar). Will der User alles sehen, schlag eine engere Abfrage vor (Filter, Sortierung, Top-N).';
+}
+
+/**
+ * #1972 — the "file instead of chat answer" rules (14, 15). Only an agent that
+ * holds `create_xlsx` or `create_docx` this turn sees them; without the grant
+ * it must neither offer nor announce a file.
+ */
+const FILE_GENERATION_RULES_BLOCK = `
+
+**Datei-Erzeugung (Excel/Word) — höchste Priorität bei Datei-Anfragen:**
+
+14. **Datei statt Chat-Antwort.** Will der User Daten als **Datei/Download** (Excel/.xlsx, Word/.docx, "exportier", "als Excel", "schick mir eine Datei"), erzeuge sie mit \`create_xlsx\`/\`create_docx\` — bei Fach-Werkzeug-Daten mit der \`datasetId\` aus dem Digest. **NICHT \`v4_render_answer\`** verwenden: die Datenschicht-Regel "Datenantwort endet mit v4_render_answer" gilt für Datei-Anfragen **ausdrücklich NICHT** (\`v4_render_answer\` erzeugt nur Chat-Text, keine Datei).
+
+15. **Ankündigen heißt ausführen — im selben Turn.** Sätze wie "ich baue jetzt die Excel…", "ich erstelle die Datei…", "jetzt generiere ich…" MÜSSEN im selben Turn vom \`create_xlsx\`/\`create_docx\`-Tool-Call begleitet sein. **Beende einen Turn NIEMALS mit einer bloßen Ankündigung** ohne den dazugehörigen Tool-Call — eine beschriebene, aber nicht gebaute Datei ist für den User wertlos. Wenn du sagst, du baust eine Datei, dann RUF das Tool im selben Turn auf. Gelingt der Build nicht (Tool gibt \`Error:\` zurück), behaupte KEINEN Erfolg und verspreche keinen Download — sag dem User knapp, dass und warum die Datei nicht erzeugt werden konnte.`;
+
+/** #1972 — the dedup recipe's file branch, only with `create_xlsx` offered. */
+function dedupFileExportClause(hasFileExport: boolean): string {
+  return hasFileExport
+    ? ' bzw. — wenn der User eine Datei will — `create_xlsx` mit der Ergebnis-`datasetId`'
+    : '';
 }
 
 function buildSystemPrompt(
@@ -2507,7 +2532,10 @@ function buildSystemPrompt(
   answerVerbosity: AnswerVerbosity = DEFAULT_ANSWER_VERBOSITY,
   /** #1559 — `create_xlsx` is offered this turn. */
   hasFileExport = false,
+  /** #1972 — `create_xlsx` or `create_docx` is offered to this agent this turn. */
+  hasOfficeFileTools = false,
 ): string {
+  const fileGenerationBlock = hasOfficeFileTools ? FILE_GENERATION_RULES_BLOCK : '';
   // Operator's answer-size contract. `standard` is '' so the delivered state
   // keeps the prompt (and its cache key) unchanged.
   const answerVerbosityBlock = buildAnswerVerbosityBlock(answerVerbosity);
@@ -2583,7 +2611,7 @@ d) **Dateien zusammenführen / Duplikate entfernen (Dedup):** Hochgeladene Tabel
    1. \`query_dataset\` → \`query_rows\` je Datei (bei mehr als 200 Zeilen mit \`offset\` weiterblättern) — jedes Ergebnis liefert eine \`datasetId\` im Digest.
    2. \`v4_union\` über alle Teile (bei abweichenden Spaltennamen \`renameRight\`, z.B. \`{"Phone":"Telefon"}\`).
    3. \`v4_distinct\` mit \`by: ["__k_E-Mail"]\` (oder \`["__k_Vorname","__k_Nachname"]\`), \`keep: "first"\`.
-   4. Ausgabe über \`v4_render_answer\` bzw. — wenn der User eine Datei will — \`create_xlsx\` mit der Ergebnis-\`datasetId\`. \`__k_*\`-Spalten **nie** in \`columns\` aufnehmen.
+   4. Ausgabe über \`v4_render_answer\`${dedupFileExportClause(hasFileExport)}. \`__k_*\`-Spalten **nie** in \`columns\` aufnehmen.
    Die Zeilenzahl vor und nach \`v4_distinct\` steht in den Digests — nenne die Differenz als Anzahl entfernter Duplikate. Fehlt einer Datei die \`__k_\`-Spalte (steht im \`[dataset-imported]\`-Block), ist dateiübergreifendes Dedup nicht möglich — sag genau das. **Frag den User nicht, ob er selbst deduplizieren möchte** — das ist deine Aufgabe.
 
 e) **Rückfragen zu einer früher gezeigten Tabelle.** Die Zeilen einer gerenderten Tabelle gelten nur für ihren Turn — im nächsten Turn sind sie weg, und du hast sie nie gesehen. Wie die Tabelle entstand, steht in ihrer \`Table provenance\`-Notiz (im Ergebnis von \`v4_render_answer\` bzw. im früheren Gesprächsverlauf als \`<!-- orchestrator:rendered_table … -->\`): Quell-Tool, Schritte (Filter-Felder und -Operatoren, Sortierung, Top-N, Spalten) und Zeilenzahl — ohne Werte. Bezieht sich der User auf „die Tabelle" („die erste Person aus der Tabelle", „Zeile 3"):
@@ -2665,13 +2693,7 @@ Regeln:
     - **Mermaid**: eingeschränkt, im Zweifel ohne Logo rendern.
     Tool-Call-Shape: \`render_diagram({kind: "vegalite", source: "<spec mit brand://logo>", brand_logo_storage_key: "<aus memory>"})\`. Ohne den Parameter bleibt \`brand://logo\` ungeändert — Kroki rendert das Bild-Feld dann leer.
 
-**Konvergenz — keine Tool-Schleifen:** Rufe denselben Tool **nicht** wiederholt mit identischen Argumenten auf, wenn das Ergebnis sich nicht ändert. Bringt ein Tool-Aufruf keinen neuen Erkenntnisgewinn, wechsle die Strategie (andere Argumente, anderer Tool) oder gib mit den vorhandenen Informationen die bestmögliche Endantwort. Du hast pro Turn ein begrenztes Tool-Budget — arbeite zielgerichtet darauf hin, die Frage zu beantworten, statt im Kreis zu laufen.
-
-**Datei-Erzeugung (Excel/Word) — höchste Priorität bei Datei-Anfragen:**
-
-14. **Datei statt Chat-Antwort.** Will der User Daten als **Datei/Download** (Excel/.xlsx, Word/.docx, "exportier", "als Excel", "schick mir eine Datei"), erzeuge sie mit \`create_xlsx\`/\`create_docx\` — bei Fach-Werkzeug-Daten mit der \`datasetId\` aus dem Digest. **NICHT \`v4_render_answer\`** verwenden: die Datenschicht-Regel "Datenantwort endet mit v4_render_answer" gilt für Datei-Anfragen **ausdrücklich NICHT** (\`v4_render_answer\` erzeugt nur Chat-Text, keine Datei).
-
-15. **Ankündigen heißt ausführen — im selben Turn.** Sätze wie "ich baue jetzt die Excel…", "ich erstelle die Datei…", "jetzt generiere ich…" MÜSSEN im selben Turn vom \`create_xlsx\`/\`create_docx\`-Tool-Call begleitet sein. **Beende einen Turn NIEMALS mit einer bloßen Ankündigung** ohne den dazugehörigen Tool-Call — eine beschriebene, aber nicht gebaute Datei ist für den User wertlos. Wenn du sagst, du baust eine Datei, dann RUF das Tool im selben Turn auf. Gelingt der Build nicht (Tool gibt \`Error:\` zurück), behaupte KEINEN Erfolg und verspreche keinen Download — sag dem User knapp, dass und warum die Datei nicht erzeugt werden konnte.`;
+**Konvergenz — keine Tool-Schleifen:** Rufe denselben Tool **nicht** wiederholt mit identischen Argumenten auf, wenn das Ergebnis sich nicht ändert. Bringt ein Tool-Aufruf keinen neuen Erkenntnisgewinn, wechsle die Strategie (andere Argumente, anderer Tool) oder gib mit den vorhandenen Informationen die bestmögliche Endantwort. Du hast pro Turn ein begrenztes Tool-Budget — arbeite zielgerichtet darauf hin, die Frage zu beantworten, statt im Kreis zu laufen.${fileGenerationBlock}`;
 }
 
 /**
@@ -3774,12 +3796,9 @@ export class Orchestrator {
    */
   private fileAnnouncedButNotBuilt(answer: string, filesProduced: number): boolean {
     if (filesProduced > 0) return false;
-    if (
-      !this.nativeTools.has('create_xlsx') &&
-      !this.nativeTools.has('create_docx')
-    ) {
-      return false;
-    }
+    // #1972 — only an agent that may call an office file tool this turn gets
+    // the forced retry; for any other it would be a turn it cannot use.
+    if (!this.hasOfficeFileToolThisTurn()) return false;
     return FILE_ANNOUNCE_RE.test(answer);
   }
 
@@ -9508,15 +9527,30 @@ export class Orchestrator {
   }
 
   /**
-   * #1559 — is the spreadsheet export tool offered on THIS turn? Same gates
-   * as the tool list (`buildToolsList`) and the prompt docs: registered,
-   * its plugin ready, and offered by its per-turn predicate. Only then may a
-   * truncated render or the system prompt offer the full list as a file.
+   * #1559 — is the spreadsheet export tool offered on THIS turn? Only then
+   * may a truncated render or the system prompt offer the full list as a file.
    */
   private isFileExportOfferedThisTurn(): boolean {
-    const entry = this.nativeTools.get(FILE_EXPORT_TOOL_NAME);
+    return this.isNativeToolOfferedThisTurn(FILE_EXPORT_TOOL_NAME);
+  }
+
+  /** #1972 — may this agent build an Excel or Word file on THIS turn? */
+  private hasOfficeFileToolThisTurn(): boolean {
+    return OFFICE_FILE_TOOL_NAMES.some((name) => this.isNativeToolOfferedThisTurn(name));
+  }
+
+  /**
+   * Same gates as the tool list (`buildToolsList`) and the prompt docs:
+   * registered, its plugin ready, granted to this agent (#1598, #1972), and
+   * offered by its per-turn predicate.
+   */
+  private isNativeToolOfferedThisTurn(name: string): boolean {
+    const entry = this.nativeTools.get(name);
     return (
-      entry !== undefined && this.isToolAvailable(entry.agentId) && isOfferedThisTurn(entry)
+      entry !== undefined &&
+      this.isToolAvailable(entry.agentId) &&
+      this.isToolGranted(name, entry.agentId, entry.orchestratorScope) &&
+      isOfferedThisTurn(entry)
     );
   }
 
@@ -10366,6 +10400,7 @@ export class Orchestrator {
       memoryPrompt,
       this.answerVerbosity,
       this.isFileExportOfferedThisTurn(),
+      this.hasOfficeFileToolThisTurn(),
     );
   }
 
@@ -10732,7 +10767,19 @@ export class Orchestrator {
             : c.url
               ? await this.attachmentReader.readByUrl(c.url)
               : undefined;
-          if (!fetched) continue;
+          if (!fetched) {
+            // #1978 — an image keeps its own visible note path; a file gets
+            // a block, so the model knows the pre-read failed and why.
+            if (c.isImage) {
+              console.warn(
+                `[harness-orchestrator] ingestAttachments: image ${candidateLabel(c)} could not be loaded`,
+              );
+              rejectedImageReasons.push('the image could not be loaded');
+            } else {
+              textBlocks.push(notIngestedBlock(candidateLabel(c), 'the file was not found in storage'));
+            }
+            continue;
+          }
           const contentType = fetched.contentType ?? c.contentType;
           if (c.isImage) {
             const guard = checkVisionEmbeddable(
@@ -10819,7 +10866,12 @@ export class Orchestrator {
             contentType,
             attachmentFileName,
           );
-          if (!result.ok) continue;
+          if (!result.ok) {
+            textBlocks.push(
+              notIngestedBlock(label, PLAIN_EXTRACT_FAILURE[result.kind], result.reason),
+            );
+            continue;
+          }
           // #976 — the honest counterpart to `[dataset-imported]`'s privacy
           // fact. This IS the inlined-text path (PDF/DOCX/TXT/MD have no
           // structured equivalent), so say so rather than letting the model
@@ -10837,10 +10889,12 @@ export class Orchestrator {
               `\n[/attachment-content]`,
           );
         } catch (err) {
-          console.warn(
-            `[harness-orchestrator] ingestAttachments: skipped one attachment — ${
-              err instanceof Error ? err.message : String(err)
-            }`,
+          textBlocks.push(
+            notIngestedBlock(
+              candidateLabel(c),
+              'the file could not be read',
+              err instanceof Error ? err.message : String(err),
+            ),
           );
         }
       }
@@ -10902,17 +10956,11 @@ export class Orchestrator {
     storageKey?: string;
   }): Promise<string> {
     const { label, format } = args;
-    const refuse = (reason: string): string => {
-      console.warn(
-        `[harness-orchestrator] ingestAttachments: ${format} dataset import unavailable for ${label} — ${reason}`,
+    const refuse = (reason: string): string =>
+      notIngestedBlock(
+        label,
+        `this ${format.toUpperCase()} file could not be imported as a queryable dataset: ${reason}`,
       );
-      return (
-        `\n\n[attachment-not-ingested: ${label}]\n` +
-        `This ${format.toUpperCase()} file could not be imported as a queryable dataset (${reason}). ` +
-        `Its contents were NOT read. Tell the user the file could not be processed — ` +
-        `do not guess at or invent its contents.\n[/attachment-not-ingested]`
-      );
-    };
 
     if (!this.knowledgeGraph) return refuse('no knowledge graph available');
     const ownerOmadiaUserId = turnContext.current()?.resolvedOmadiaUserId;
@@ -10932,9 +10980,12 @@ export class Orchestrator {
         ...(args.storageKey ? { sourceStorageKey: args.storageKey } : {}),
       });
     } catch (err) {
-      return refuse(
-        `import error: ${err instanceof Error ? err.message : String(err)}`,
+      console.warn(
+        `[harness-orchestrator] ingestAttachments: ${format} import threw for ${label} — ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       );
+      return refuse('the import failed');
     }
     if (!imported.ok) return refuse(imported.reason);
 
@@ -11437,7 +11488,8 @@ export class Orchestrator {
     if (this.turnHasChatRoster()) tools.push(chatParticipantsToolSpec);
     if (this.askUserChoiceTool) tools.push(askUserChoiceToolSpec);
     if (this.suggestFollowUpsTool) tools.push(suggestFollowUpsToolSpec);
-    if (this.readAttachmentTool) tools.push(readAttachmentToolSpec);
+    // #1976 — only on a turn that can carry an upload.
+    if (this.readAttachmentTool && turnMayCarryUploads()) tools.push(readAttachmentToolSpec);
     if (this.findFreeSlotsTool) tools.push(findFreeSlotsToolSpec);
     if (this.bookMeetingTool) tools.push(bookMeetingToolSpec);
     // Plugin-contributed native tools (registered via ctx.tools.register).
@@ -11597,6 +11649,33 @@ export class Orchestrator {
  * table) — the signature of the "announced but didn't build" failure. Noun list
  * is restricted to unambiguous file words so it does not fire on inline tables.
  */
+/**
+ * #1978 — the block for an attachment auto-ingest could not read. Every drop
+ * leaves one, with a plain reason the model may pass on, plus a server
+ * warning carrying the technical `detail` (never in the block).
+ */
+function notIngestedBlock(label: string, plainReason: string, detail?: string): string {
+  console.warn(
+    `[harness-orchestrator] ingestAttachments: not ingested ${label} — ${plainReason}` +
+      (detail !== undefined ? ` (${detail})` : ''),
+  );
+  return (
+    `\n\n[attachment-not-ingested: ${label}]\n` +
+    `This file was not read: ${plainReason}. ` +
+    `Tell the user the file could not be processed and why, in plain words — ` +
+    `do not guess at or invent its contents.\n[/attachment-not-ingested]`
+  );
+}
+
+/** #1978 — the name a candidate is reported under. */
+function candidateLabel(c: {
+  readonly fileName?: string | undefined;
+  readonly storageKey?: string;
+  readonly url?: string;
+}): string {
+  return c.fileName ?? c.storageKey ?? c.url ?? 'attachment';
+}
+
 const FILE_ANNOUNCE_RE =
   /\b(baue|erstelle|erzeuge|generiere|exportiere)\b[^.!?\n]{0,100}\b(excel|xlsx|datei|word|docx|arbeitsmappe|workbook)\b/i;
 
