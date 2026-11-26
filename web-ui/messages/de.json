@@ -3561,6 +3561,7 @@
       "buildStatusLabel": "Build-Status",
       "buildBusLive": "live",
       "buildBusReconnecting": "verbindet neu",
+      "buildWaitingForCredential": "wartet auf Test-Zugangsdaten {key}",
       "buildBusIdle": "inaktiv",
       "buildSse": "SSE {status}",
       "buildErrorsHeading": "{count} TypeScript-Fehler",
@@ -3750,7 +3751,8 @@
           "unknownTurn": "Unbekannter Fehler beim Preview-Turn",
           "providerGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
           "llmAccessMissing": "Der Plugin Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo).",
-          "privacyShieldRequired": "Deine Organisation verlangt den Privacy Shield. Der Vorschau-Chat läuft ohne ihn und ist deshalb abgeschaltet."
+          "privacyShieldRequired": "Deine Organisation verlangt den Privacy Shield. Der Vorschau-Chat läuft ohne ihn und ist deshalb abgeschaltet.",
+          "testCredentialMissing": "Der Agent liest beim Start einen Setup-Wert, für den noch keine Test-Zugangsdaten hinterlegt sind. Trag ihn unter „Credentials“ ein, danach baut der Preview selbst neu."
         },
         "externalReadsHint": "Preview führt Cross-Integration-Lookups (<code>spec.external_reads</code>) nicht aus — das Plugin erkennt den fehlenden Service korrekt und wirft. Installiere das Plugin in deiner Instanz, um den echten Datenpfad zu testen.",
         "agentStuck": {

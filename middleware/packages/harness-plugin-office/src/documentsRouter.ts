@@ -10,6 +10,16 @@ interface DocumentsRouterDeps {
 }
 
 /**
+ * #1979 (ADR-0176): this route serves only keys of its own layout,
+ * `documents/<tenant>/<sha256>/<filename>` (`OfficeService`). With the route prefix in the signed payload a foreign link already
+ * fails the signature; the layout check keeps the route from serving another
+ * producer's object even under a shared secret and bucket.
+ */
+export function isDocumentKey(key: string): boolean {
+  return /^documents\/.+\/[0-9a-f]{64}\/[^/]+$/.test(key);
+}
+
+/**
  * HMAC-signed proxy that streams office documents (.xlsx/.docx) from
  * Tigris/SeaweedFS to channels.
  *
@@ -47,6 +57,10 @@ export function createDocumentsRouter(deps: DocumentsRouterDeps): Router {
     }
     // Express already URL-decodes each path segment before it lands here.
     const key = segments.join('/');
+    if (!isDocumentKey(key)) {
+      res.status(404).type('text/plain').send('not found');
+      return;
+    }
 
     const exp = Number(req.query['exp']);
     const sig = typeof req.query['sig'] === 'string' ? req.query['sig'] : '';

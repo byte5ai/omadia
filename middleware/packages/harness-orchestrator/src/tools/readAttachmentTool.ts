@@ -31,6 +31,13 @@ export interface AttachmentReader {
   readByUrl(
     url: string,
   ): Promise<{ bytes: Buffer; contentType?: string } | undefined>;
+  /**
+   * #1960 (ADR-0178) — bind an adapter-stated upload to the conversation of
+   * the current turn. This is the minting: `readByStorageKey` serves only keys
+   * bound to the conversation it runs in. Optional so a bare reader (tests,
+   * a host without a binding store) stays usable.
+   */
+  bindToCurrentConversation?(storageKey: string): Promise<void>;
 }
 
 const ReadAttachmentInputSchema = z.object({
@@ -40,9 +47,9 @@ const ReadAttachmentInputSchema = z.object({
 export const readAttachmentToolSpec = {
   name: READ_ATTACHMENT_TOOL_NAME,
   description:
-    'Liest den TEXT-Inhalt einer in diesem Gespräch hochgeladenen Datei (.docx, .pdf, .md, .txt, .json) über ihren `storage_key`. ' +
-    'Den `storage_key` nennt der Anhang-Hinweis der Nachricht, mit der die Datei kam; er ist interne Technik — nenne ihn dem User nicht und frag ihn nie danach. ' +
-    'In der Regel ist der Dokumentinhalt bereits automatisch als `[attachment-content: …]`-Block in die Nachricht eingebettet — nutze dieses Tool nur, wenn der Inhalt fehlt, abgeschnitten wurde, oder du eine Datei aus einem früheren Turn erneut lesen willst. ' +
+    'Liest den TEXT-Inhalt eines Dokuments (.docx, .pdf, .md, .txt, .json), das ein User in DIESEM Chat hochgeladen hat, über seinen `storage_key`. ' +
+    'Den `storage_key` nennt der Anhang-Hinweis der Nachricht, mit der die Datei kam; er ist interne Technik — nenne ihn dem User nicht und frag ihn nie danach. Dateien aus anderen Chats und von Tools erzeugte Dateien (Office, Diagramme) liest es nicht. ' +
+    'In der Regel ist der Dokumentinhalt bereits automatisch als `[attachment-content: …]`-Block in die Nachricht eingebettet — nutze dieses Tool nur, wenn der Inhalt fehlt, abgeschnitten wurde, oder du eine frühere Datei dieses Chats erneut lesen willst. ' +
     'Tabellen (CSV, XLSX) liest es NICHT: sie werden beim Hochladen als Dataset importiert, ihre Zeilen liest du mit `query_dataset`. ' +
     'Bilder sind NICHT text-extrahierbar (die werden separat als Vision-Input behandelt).',
   input_schema: {
@@ -110,6 +117,8 @@ export class ReadAttachmentTool {
     try {
       const found = await this.reader.readByStorageKey(key);
       if (!found) {
+        // Same answer for an unknown key and for a key bound to another chat
+        // (#1960): the model learns nothing about a foreign file's existence.
         return attachmentNotFound(key);
       }
       // The storage key stands in for a missing file name: keys end in the

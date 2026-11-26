@@ -107,7 +107,7 @@ export const askUserChoiceToolSpec = {
  * Orchestrator-side handler for `ask_user_choice`. Stores the validated
  * request on an instance field; the Orchestrator drains it after the current
  * tool batch finishes and terminates the turn early without issuing a new
- * Anthropic request. Mirrors the `DiagramTool.takeLastRender()` drain pattern.
+ * Anthropic request. Mirrors the `DiagramTool.takeRenders()` drain pattern.
  *
  * The tool's string return is fed back to the model only for the current
  * batch iteration's sake — since the orchestrator short-circuits afterwards,

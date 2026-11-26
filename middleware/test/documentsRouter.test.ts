@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { Readable } from 'node:stream';
 import express from 'express';
 import type { TigrisStore } from '@omadia/diagrams';
+import { createDiagramsRouter, signUrl } from '@omadia/diagrams';
 import {
   createDocumentsRouter,
   renderXlsx,
@@ -13,6 +14,8 @@ import {
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
 const SECRET = 'z'.repeat(32);
+/** Real office keys are `documents/<tenant>/<sha256>/<filename>`. */
+const SHA = 'a'.repeat(64);
 
 /** Minimal TigrisStore that records the content-type passed to put(), so the
  *  router round-trips the real xlsx media type back on GET. */
@@ -49,7 +52,7 @@ describe('/documents router (office delivery path)', () => {
   let server: import('node:http').Server;
   let baseUrl: string;
   const store = new InMemoryStore();
-  const key = 'documents/dev/abc/offene-posten.xlsx';
+  const key = `documents/dev/${SHA}/offene-posten.xlsx`;
   let xlsxBytes: Buffer;
 
   before(async () => {
@@ -91,7 +94,7 @@ describe('/documents router (office delivery path)', () => {
   // refuses the header) or in a mangled saved name (Latin-1 bytes).
   for (const filename of ['Umsatz – Q3 €.xlsx', 'Übersicht Größe.xlsx']) {
     it(`serves "${filename}" with an ASCII fallback and a UTF-8 filename*`, async () => {
-      const unicodeKey = `documents/dev/abc/${filename}`;
+      const unicodeKey = `documents/dev/${SHA}/${filename}`;
       await store.put(unicodeKey, xlsxBytes, MEDIA_TYPE.xlsx);
       const url = signDocumentUrl({ key: unicodeKey, secret: SECRET, ttlSec: 60, publicBaseUrl: baseUrl });
       const res = await fetch(url, { redirect: 'error' });
@@ -132,12 +135,63 @@ describe('/documents router (office delivery path)', () => {
 
   it('returns 404 for a key that is not stored', async () => {
     const url = signDocumentUrl({
-      key: 'documents/dev/zzz/missing.xlsx',
+      key: `documents/dev/${'b'.repeat(64)}/missing.xlsx`,
       secret: SECRET,
       ttlSec: 60,
       publicBaseUrl: baseUrl,
     });
     const res = await fetch(url);
     assert.equal(res.status, 404);
+  });
+});
+
+// #1979 (ADR-0176): Office and Diagrams can share one secret and one bucket
+// (env bootstrap). A signed link must work only on the route that issued it.
+describe('/documents and /diagrams links are bound to their own route', () => {
+  let server: import('node:http').Server;
+  let baseUrl: string;
+  const store = new InMemoryStore();
+  const docKey = `documents/dev/${SHA}/report.xlsx`;
+  const pngKey = `dev/${SHA}.png`;
+
+  before(async () => {
+    await store.put(docKey, Buffer.from('xlsx'), MEDIA_TYPE.xlsx);
+    await store.put(pngKey, Buffer.from('png'), 'image/png');
+    const app = express();
+    app.use('/documents/dl', createDocumentsRouter({ store, secret: SECRET }));
+    app.use('/diagrams/dl', createDiagramsRouter({ store, secret: SECRET }));
+    server = await listenLoopback(app);
+    baseUrl = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+  });
+
+  after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it('each link works on its own route', async () => {
+    const doc = signDocumentUrl({ key: docKey, secret: SECRET, ttlSec: 60, publicBaseUrl: baseUrl });
+    const png = signUrl({ key: pngKey, secret: SECRET, ttlSec: 60, publicBaseUrl: baseUrl });
+    assert.equal((await fetch(doc)).status, 200);
+    assert.equal((await fetch(png)).status, 200);
+  });
+
+  it('a diagram link moved to /documents/dl is refused', async () => {
+    const png = signUrl({ key: pngKey, secret: SECRET, ttlSec: 60, publicBaseUrl: baseUrl });
+    const swapped = png.replace('/diagrams/dl/', '/documents/dl/');
+    assert.notEqual((await fetch(swapped)).status, 200);
+  });
+
+  it('an office link moved to /diagrams/dl is refused', async () => {
+    const doc = signDocumentUrl({ key: docKey, secret: SECRET, ttlSec: 60, publicBaseUrl: baseUrl });
+    const swapped = doc.replace('/documents/dl/', '/diagrams/dl/');
+    assert.notEqual((await fetch(swapped)).status, 200);
+  });
+
+  it('a key of the right layout signed for the other route fails the signature', async () => {
+    // Even a diagram-shaped key that sits on the office route's layout check
+    // cannot be served with a signature minted for /diagrams/dl.
+    const png = new URL(signUrl({ key: docKey, secret: SECRET, ttlSec: 60, publicBaseUrl: baseUrl }));
+    const onDocs = `${baseUrl}/documents/dl/${encodeURIComponent(docKey)}${png.search}`;
+    assert.equal((await fetch(onDocs)).status, 403);
   });
 });

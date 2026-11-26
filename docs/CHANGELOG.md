@@ -113,8 +113,8 @@ changelog.
   the new setup field "Additional allowed hosts", or the adapter stops publishing after the
   update.
 - **Versions:** `@omadia/plugin-web-search` 0.2.2, `@omadia/transcription-adapter-openai`
-  0.1.1, `@omadia/embedding-adapter-openai` 0.1.1, `@omadia/diagrams` 0.2.2,
-  `@omadia/plugin-office` 0.1.5.
+  0.1.1, `@omadia/embedding-adapter-openai` 0.1.1, `@omadia/diagrams` 0.2.3,
+  `@omadia/plugin-office` 0.1.6.
 - **Transcripts are recording content, kept whole (#1983, #1987).** `transcribe_recording`
   stores every chunk with the marker line `[recording-transcript speaker="…"]`
   (`recordingTranscript.ts`) and `SessionLogEntry.source: 'recording'`; the session log
@@ -126,6 +126,94 @@ changelog.
   Transcript text is cut into chunks of at most 1,300 characters, below the session log's
   1,500-character entry cap, so the log holds the full transcript; the tool result says
   "vollständig im Session-Protokoll" only when the entries were written.
+
+### Security — attachments only from channel adapters, bound at upload (#1960, #1962, ADR-0178) (2026-11-26)
+
+- `ChatTurnInput.storedAttachments` (`StoredTurnAttachment`, `@omadia/channel-sdk` 0.3.16) is the
+  only source of storage keys the turn ingests. The `[attachments-info]` text parser
+  (`attachmentsInfo.ts`) is gone: a block typed into a message reads nothing, on any channel.
+- Each stated upload is bound to the turn's conversation before it is read
+  (`AttachmentReader.bindToCurrentConversation`). A read no longer binds; `read_attachment` and the
+  ingest serve only keys bound to the current conversation and answer "not found" otherwise
+  (unbound keys, Office/Diagrams output, other chats, `http-default`).
+- The `attachmentBindings` store is published with the audience floor on or off (Postgres, else
+  in-memory).
+- **Migration `0114_attachment_bindings_drop_generated_outputs`** deletes bindings for the Office
+  (`documents/<tenant>/<sha256>/<file>`) and Diagrams (`<tenant>/<sha256>.png`) layouts, which only
+  a foreign first read could have created.
+- Needs the omadia-channel-teams release after 0.45.1 (sets `storedAttachments`); older Teams versions get no
+  auto-ingest of uploads until updated.
+
+### Security — Office and Diagrams outputs stay with their turn; signed links are route-bound (#1961, #1979, ADR-0176, ADR-0177) (2026-11-26)
+
+- `create_xlsx` / `create_docx` files and `render_diagram` images are filed under the id of
+  the turn that produced them (`PerTurnBuffer`, `@omadia/diagrams`) and the end-of-turn drain
+  returns only the finishing turn's. A concurrent turn no longer receives another chat's file;
+  two diagrams in one turn give two images. Diagrams reads the turn id through
+  `optional_requires: ["turnContext@1"]`. The `NativeToolAttachmentSink` doc states the rule
+  (no plugin-api signature change).
+- Both signers include the route prefix in the HMAC payload (`/diagrams/dl/…`,
+  `/documents/dl/…`) and each router serves only its own key layout. A link moved to the other
+  route is refused, so revoking one route's public-path grant takes full effect. Links signed
+  before this deploy stop working.
+- `@omadia/diagrams` 0.2.2, `@omadia/plugin-office` 0.1.5.
+
+### Security — MCP OAuth callback completes only for the user who started the flow (#1908, ADR-0175) (2026-11-26)
+
+- `McpOAuthService.completeAuthorization` takes the completing session's user key
+  (`completingUserKeyFor`) and refuses a different user or a browser without a session
+  before the code exchange (`McpOAuthCompleterMismatchError`, 403 page "started by a
+  different account"). The flow is consumed, nothing is stored.
+- The callback stays a public path; `createOptionalSession` (`auth/requireAuth.ts`) attaches
+  a valid session to it without answering 401.
+- A tool-call auth failure no longer starts a flow or writes the authorize URL (with its
+  `state`) into the model's text; the chat's Connect card starts the flow from the user's own
+  session.
+
+### Fixed — channel plugins get the SQL grant check and kernel-run migrations (ADR-0050) (2026-11-26)
+
+- A channel plugin that declares `permissions.sql` (Teams, byte5ai/omadia-channel-teams#74)
+  now gets the same treatment as a tool plugin (#838). The kernel reads the operator's grant
+  before the context is built, and only a grant for the declared ledger counts. With the grant
+  the plugin gets `ctx.sql`, and the kernel runs the ledger handoff and the declared migrations
+  before `activate()`.
+- Before this, `DefaultChannelRegistry` never passed `sqlGranted`. A channel was ungranted
+  forever and reached `graphPool` only through the grandfather row in
+  `STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20`, which drifted from ADR-0050.
+- The steps now live in `middleware/src/plugins/pluginSqlBoot.ts`, shared by both runtimes.
+  The tool runtime is unchanged.
+- The `@omadia/channel-teams` `graphPool` row stays until Teams 0.46 is on the Hub and the
+  operator has granted its `permissions.sql`.
+
+### Docs — ADR 0225: a channel account is linked to an omadia user only through the kernel (2026-11-26)
+
+- Proposed (#1995). A pairing should link a channel account to an existing omadia user. The
+  kernel owns that link, and the plugin attests only the channel identity. Implementation
+  follows. Until it ships, a channel does not claim a link in its texts.
+
+### Fixed — Builder build status: one failed event, real build numbers, all SSE events (2026-11-26)
+
+The auto-rebuild scheduler and the preview routes now share one build-and-warm
+path (`plugins/builder/previewWarmBuild.ts`) that emits every `build_status`
+exactly once. Failed events carry `buildN` and a stable code as `reason`, so
+AutoFix fires once per failed build instead of once per process, a failure
+while AutoFix is off no longer blocks a later trigger (#1731), and the second
+`failed` event that carried the user's e-mail and draft id over the TypeScript
+error list is gone (#1733). `building` is emitted only when a build starts, so
+a warm cache hit no longer leaves the status on "building" (#1807). A setup
+value read at activation without a test credential throws the coded
+`PreviewSetupValueMissingError` and stays `ok` with `missingSetupKey`: no failed
+build, no "Fix with Builder", Publish says "missing test credential" (#1809).
+Saving or clearing test credentials schedules a rebuild, and the status route
+reports a green last build on a cold cache as `ok` instead of `idle` (#1792);
+an activation failure after a green build is `activate_failed:<code>` on the
+wire (message only in the server log and `get_build_status`), and a result for
+a superseded build is dropped. The workspace registers a listener for every
+spec-bus event type it handles, from one list the type checker keeps complete,
+so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
+appear (#1730). The builder prompt names `get_build_status` /
+`runtime_smoke_status` as the only source for build and smoke state (#1806).
+Contract: ADR-0230 (Proposed).
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 

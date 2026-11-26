@@ -1,4 +1,6 @@
 import { createPluginContext } from '../platform/pluginContext.js';
+import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
+import { readSqlGrant, runDeclaredSqlBoot } from '../plugins/pluginSqlBoot.js';
 import { ChannelTypeClaims, scopeCoreApiToChannel } from './scopedCoreApi.js';
 import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import type { EventCatalogRegistry } from '../platform/eventCatalogRegistry.js';
@@ -80,6 +82,16 @@ export interface ChannelRegistryDeps {
    */
   eventCatalogRegistry?: EventCatalogRegistry;
   resolver: ChannelPluginResolver;
+  /**
+   * omadia#838 / ADR-0050 — the operator's `permissions.sql` grants. A
+   * channel that declares `permissions.sql` (Teams) gets `ctx.sql` and its
+   * migrations applied before `activate()` only when granted, exactly as in
+   * the tool runtime. Absent (tests, no database): every channel is
+   * ungranted and no migration runs.
+   */
+  sqlGrantStore?: PluginSqlGrantStore;
+  /** The installed package root of a channel, where its migrations live. */
+  packagePathOf?: (agentId: string) => string | undefined;
   coreApi: CoreApi;
   routes: ExpressRouteRegistry;
   /** Optional — WebSocket lifecycle mirror of `routes` (Omadia UI canvas). */
@@ -172,12 +184,29 @@ export class DefaultChannelRegistry implements ChannelRegistry {
       return;
     }
 
+    // omadia#838 — the same database steps as the tool runtime: read the
+    // grant before the context exists, run handoff and migrations before
+    // `activate()` (pluginSqlBoot.ts, ADR-0050).
+    const declaredSql = catalogEntry?.plugin.permissions_summary?.sql;
+    const packageRoot = this.deps.packagePathOf?.(agentId);
+    const sqlGranted =
+      packageRoot !== undefined &&
+      (await readSqlGrant({
+        agentId,
+        declaredSql,
+        sqlGrantStore: this.deps.sqlGrantStore,
+        log: (m) => console.log(m),
+        tag: 'channels',
+      }));
+
     const ctx = createPluginContext({
       agentId,
       vault: this.deps.vault,
       registry: this.deps.installedRegistry,
       catalog: this.deps.catalog,
       serviceRegistry: this.deps.serviceRegistry,
+      sqlGranted,
+      ...(packageRoot !== undefined ? { packageRoot } : {}),
       nativeToolRegistry: this.deps.nativeToolRegistry,
       routeRegistry: this.deps.pluginRouteRegistry,
       notificationRouter: this.deps.notificationRouter,
@@ -194,6 +223,16 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     const coreApi = scopeCoreApiToChannel(this.deps.coreApi, agentId, this.channelTypeClaims, (m) =>
       console.warn(m),
     );
+    if (declaredSql && packageRoot !== undefined) {
+      await runDeclaredSqlBoot({
+        agentId,
+        declaredSql,
+        sql: ctx.sql,
+        packageRoot,
+        log: (m) => console.log(m),
+        tag: 'channels',
+      });
+    }
     const handle = await impl.activate(ctx, coreApi);
     // S3-G — claim the declared public paths AFTER activate(), exactly like the
     // tool runtime; without the claim a granted `auth:'custom'` route is never

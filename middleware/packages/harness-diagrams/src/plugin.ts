@@ -43,6 +43,11 @@ import { createTigrisStore } from './tigrisStore.js';
 
 const SYSTEM_PROMPT_DOC = `\`render_diagram\`: Erzeugt ein Diagramm und gibt eine signierte PNG-URL zurück. Wähle das Format passend zum Inhalt: **Mermaid** für Flow/Sequenz/State/Gantt, **Graphviz** für dichte gerichtete Graphen, **PlantUML** für klassische UML, **Vega-Lite** für quantitative Charts (Bar/Line/Pie/Scatter/Area aus Zahlen eines Fach-Werkzeugs). Nutze es, wenn der Nutzer Visualisierung anfragt (Flow, Org-Chart, Chart, "zeig mir als Balken/Kurve") **oder** wenn Ergebnisse von Fach-Werkzeugen als Bild deutlich klarer werden (Umsatz-Chart, Top-Kunden-Balken, Team-Struktur, Rechnungs-Workflow). Die Antwort enthält eine signierte URL — Teams + Web-UI rendern das Bild automatisch. **Zitiere die URL nicht** im Antworttext; formuliere stattdessen einen kurzen deutschen Satz wie "Hier das Diagramm:" und lass die Card das Bild anhängen.`;
 
+/** The one member of the kernel's `turnContext` service this plugin reads. */
+interface TurnIdSource {
+  currentTurnId(): string | undefined;
+}
+
 export interface DiagramsPluginHandle {
   close(): Promise<void>;
 }
@@ -92,27 +97,37 @@ export async function activate(ctx: PluginContext): Promise<DiagramsPluginHandle
   // (ADR-0053). Any `memoryStore@1` provider serves it (file or Postgres).
   const resolveMemoryStore = (): DiagramBrandMemory | undefined =>
     ctx.services.getOptional<DiagramBrandMemory>('memoryStore');
-  const tool = new DiagramTool(service, resolveMemoryStore, (msg) => ctx.log(msg));
+  // #1961 (ADR-0177): renders are filed per turn. The kernel publishes its
+  // `turnContext` accessor as a service; resolved at call time, because the
+  // tool call and the end-of-turn drain both run inside the turn.
+  const currentTurnId = (): string | undefined =>
+    ctx.services.get<TurnIdSource>('turnContext')?.currentTurnId();
+  const tool = new DiagramTool(
+    service,
+    resolveMemoryStore,
+    (msg) => ctx.log(msg),
+    undefined,
+    currentTurnId,
+  );
 
   const disposeTool = ctx.tools.register(
     diagramToolSpec,
     (input) => tool.handle(input),
     {
       promptDoc: SYSTEM_PROMPT_DOC,
+      // Drains only the finishing turn's renders (#1961).
       attachmentSink: (): NativeToolAttachment[] | undefined => {
-        const render = tool.takeLastRender();
-        if (!render) return undefined;
-        return [
-          {
-            kind: 'diagram',
-            payload: {
-              url: render.url,
-              altText: render.title ?? `${render.kind} diagram`,
-              diagramKind: render.kind,
-              cacheHit: render.cacheHit,
-            },
+        const renders = tool.takeRenders(currentTurnId());
+        if (!renders) return undefined;
+        return renders.map((render) => ({
+          kind: 'diagram',
+          payload: {
+            url: render.url,
+            altText: render.title ?? `${render.kind} diagram`,
+            diagramKind: render.kind,
+            cacheHit: render.cacheHit,
           },
-        ];
+        }));
       },
     },
   );

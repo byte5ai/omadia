@@ -113,12 +113,33 @@ export function audienceGuardedAttachmentReader(
       }
       return inner.readByUrl(url);
     },
+    ...(bindings
+      ? {
+          async bindToCurrentConversation(storageKey: string): Promise<void> {
+            // Floor first, as for reads: a room that may not read attachments
+            // gets no binding row either.
+            const refusal = await guardAttachmentRead();
+            if (refusal !== undefined) return;
+            const current = bindingForRawScope(turnContext.current()?.sessionScope);
+            // No addressable room ⇒ nothing to bind to; the key then stays
+            // unreadable, which is the safe side (#1960).
+            if (!current) return;
+            await bindings.bindIfAbsent(storageKey, current);
+          },
+        }
+      : {}),
   };
 }
 
 /**
- * Compare this turn's room against the one the handle was minted in, recording
- * the binding on first sighting.
+ * Compare this turn's room against the one the handle was minted in.
+ *
+ * #1960 (ADR-0178): a binding is written only at minting — when a channel
+ * adapter states the upload in the turn it arrived in
+ * (`bindToCurrentConversation`). A read no longer binds an unbound key to the
+ * reader's room: that let the first chat to read a foreign key (an Office
+ * report, a diagram, another chat's upload) claim it. An unbound key, or a
+ * turn without an addressable room, is refused.
  *
  * @returns an operator-readable reason to refuse, or `undefined` to allow.
  */
@@ -132,19 +153,14 @@ async function enforceScopeBinding(
 
   // A non-addressable scope identifies no room — `'http-default'` is shared by
   // every unscoped HTTP caller (#445), `teams-unknown` by every Teams activity
-  // missing a conversation id. Binding to one would declare all of them the
-  // same room, so the check stands down rather than approximating.
+  // missing a conversation id. No handle is ever bound to one, so nothing is
+  // readable from it (#1960; before, the check stood down here).
   const current = bindingForRawScope(turnContext.current()?.sessionScope);
-  if (!current) return undefined;
+  if (!current) return 'turn has no addressable room to hold attachment bindings';
 
   try {
     const minted = await bindings.get(storageKey);
-    if (!minted) {
-      // First sighting is the minting. Recorded only now that the floor has
-      // already permitted this room to read attachments.
-      await bindings.bindIfAbsent(storageKey, current);
-      return undefined;
-    }
+    if (!minted) return 'handle was never bound to a conversation (not an upload stated by a channel adapter)';
     if (bindingsEqual(minted, current)) return undefined;
     // The reason names both rooms for the operator log. The caller turns this
     // into the reader's ordinary "unavailable", so the model learns nothing

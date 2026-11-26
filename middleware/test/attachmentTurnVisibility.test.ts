@@ -162,7 +162,25 @@ describe('#1978 — every dropped attachment leaves a visible block', () => {
           contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
         },
       }),
-    ).runTurn({ userMessage: manifest, sessionScope: 's1978', userId: 'u1' });
+    ).runTurn({
+      userMessage: manifest,
+      // ADR-0178: the kernel ingests only what the channel adapter states.
+      storedAttachments: [
+        { fileName: 'broken.pdf', contentType: 'application/pdf', storageKey: 'uploads/broken.pdf' },
+        {
+          fileName: 'deck.pptx',
+          contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+          storageKey: 'uploads/deck.pptx',
+        },
+        {
+          fileName: 'gone.docx',
+          contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          storageKey: 'uploads/gone.docx',
+        },
+      ],
+      sessionScope: 's1978',
+      userId: 'u1',
+    } as unknown as Parameters<Orchestrator['runTurn']>[0]);
     const text = firstUserText(requests[0]);
     assert.ok(text.includes('[attachment-not-ingested: broken.pdf]'), text);
     assert.ok(text.includes('the file is damaged or unreadable'), text);
