@@ -12,6 +12,7 @@ export {
   WEB_SEARCH_SERVICE_NAME,
   WEB_SEARCH_CAPABILITY,
   activate,
+  verifyConnection,
   type WebSearchPluginHandle,
 } from './plugin.js';
 

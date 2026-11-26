@@ -119,8 +119,10 @@ import {
 } from './runTraceObservability.js';
 import {
   TRANSCRIBE_RECORDING_TOOL_NAME,
+  TRANSCRIPTION_PROVIDER_STATE_SERVICE,
   TranscribeRecordingTool,
   transcribeRecordingToolSpec,
+  type TranscriptionProviderState,
 } from './tools/transcribeRecordingTool.js';
 import {
   EDIT_PROCESS_TOOL_NAME,
@@ -1207,6 +1209,10 @@ export async function activate(
     reader: attachmentReader,
     getTranscription: (): TranscriptionService | undefined =>
       ctx.services.get<TranscriptionService>(TRANSCRIPTION_SERVICE_NAME),
+    getProviderState: () =>
+      ctx.services.getOptional<() => TranscriptionProviderState>(
+        TRANSCRIPTION_PROVIDER_STATE_SERVICE,
+      )?.(),
     makeSessionLogger: (agentSlug): SessionLogger =>
       new SessionLogger(memoryStore, knowledgeGraph, undefined, agentSlug, runTraceStats),
   });

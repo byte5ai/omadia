@@ -91,6 +91,24 @@ changelog.
   gitignored files are gone from `middleware/package.json`; 14 bundled manifests say `MIT`
   like their packages (guarded by `manifestLicenseParity.test.ts`); Web Search texts say the
   plugin must be assigned to an agent and a provider/key change only needs a save.
+- **Connection probes and "not configured" (#1974).** `@omadia/plugin-web-search` and
+  `@omadia/transcription-adapter-openai` export `verifyConnection` (a one-result search,
+  resp. `GET /v1/models`; 401 or an auth 403 ⇒ `rejected`, red badge, tools withheld), so
+  "Test connection" works; a missing key reports `needs_action` "Nicht konfiguriert"
+  instead of a plain "Active".
+- **Transcription provider texts (#1981).** The admin page shows the active provider by its
+  label and links the setup fields when it publishes nothing; a rolled-back switch is
+  described from `details.restoredProviderId`/`previousProviderId` (en/de). The kernel
+  publishes `transcriptionProviderState@1` so `transcribe_recording` says "installed but not
+  configured" instead of "no provider installed"; with no previous provider the server no
+  longer says it "could not be restored".
+- **OpenAI adapters reach only declared hosts (#1984, ADR-0200).** The transcription and
+  embedding adapters declare `api.openai.com` plus `$config.allowed_hosts` instead of
+  placeholder names, and refuse a Base URL (or realtime URL) on any other host at
+  activation (`ctx.status` error, no service). **Operator step:** an installation that uses
+  a custom endpoint (Azure, Ollama's OpenAI endpoint, a local server) must list its host in
+  the new setup field "Additional allowed hosts", or the adapter stops publishing after the
+  update.
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 

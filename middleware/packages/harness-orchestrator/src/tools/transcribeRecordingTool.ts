@@ -13,6 +13,21 @@ import { turnContext } from '../turnContext.js';
 
 export const TRANSCRIBE_RECORDING_TOOL_NAME = 'transcribe_recording';
 
+/** #1981 — mirrors the kernel's `transcriptionProviderState@1` values. */
+export type TranscriptionProviderState = 'ready' | 'not_configured' | 'not_installed';
+export const TRANSCRIPTION_PROVIDER_STATE_SERVICE = 'transcriptionProviderState';
+
+/** #1981 — the error for a turn without a live `transcription@1`. */
+function noProviderError(state: TranscriptionProviderState | undefined): string {
+  if (state === 'not_configured') {
+    return 'Error: ein Transkriptions-Provider ist installiert, aber nicht konfiguriert (API-Key fehlt oder Endpoint nicht freigegeben) — der Operator trägt ihn im Setup-Formular des Plugins ein (Admin → Transkription).';
+  }
+  if (state === 'not_installed') {
+    return 'Error: kein Transkriptions-Provider installiert — der Operator muss ein transcription@1-Plugin (z.B. "Transkription (OpenAI)") installieren und konfigurieren.';
+  }
+  return 'Error: kein Transkriptions-Provider verfügbar — entweder ist keiner installiert, oder er ist nicht konfiguriert (API-Key fehlt). Der Operator prüft das unter Admin → Transkription.';
+}
+
 /**
  * `transcribe_recording` — #584 Workstream I (batch ingestion of recorded
  * audio).
@@ -92,6 +107,12 @@ export interface TranscribeRecordingToolDeps {
   /** Late-bound: the provider plugin may (de)activate any time. */
   readonly getTranscription: () => TranscriptionService | undefined;
   /**
+   * #1981 — why no service is published: an installed adapter without a key
+   * is not "no provider installed". Absent (older kernel) or `undefined` =
+   * unknown, and the error names both causes.
+   */
+  readonly getProviderState?: () => TranscriptionProviderState | undefined;
+  /**
    * Per-call logger factory keyed by the CURRENT turn's agent slug, so
    * transcript turns land in the same per-agent graph partition the chat
    * turns of that agent use. `undefined` slug = legacy unqualified scope.
@@ -112,9 +133,7 @@ export class TranscribeRecordingTool {
         .join('; ')}`;
     }
     const service = this.deps.getTranscription();
-    if (!service) {
-      return 'Error: kein Transkriptions-Provider installiert — der Operator muss ein transcription@1-Plugin (z.B. "Transkription (OpenAI)") installieren und konfigurieren.';
-    }
+    if (!service) return noProviderError(this.deps.getProviderState?.());
 
     const key = parsed.data.storage_key;
     let transcript;

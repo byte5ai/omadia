@@ -46,6 +46,15 @@ setup:
         de: "Basis-URL des Endpoints, mit oder ohne '/v1' (kein trailing slash nötig). Default: https://api.openai.com"
       required: false
       default: "https://api.openai.com"
+    - key: "allowed_hosts"
+      type: "string"
+      label:
+        en: "Additional allowed hosts"
+        de: "Zusätzlich erlaubte Hosts"
+      help:
+        en: "Only needed for a Base URL outside api.openai.com (Azure, Ollama's OpenAI endpoint, a local server): list its host(s), comma-separated. Texts and the API key go only to api.openai.com and these hosts; a Base URL on any other host is refused at activation."
+        de: "Nur nötig für eine Base-URL außerhalb von api.openai.com (Azure, Ollamas OpenAI-Endpoint, ein lokaler Server): Host(s) kommagetrennt eintragen. Texte und API-Key gehen nur an api.openai.com und diese Hosts; eine Base-URL auf einem anderen Host wird beim Aktivieren abgelehnt."
+      required: false
     - key: "model"
       type: "string"
       label:
@@ -107,8 +116,12 @@ permissions:
     reads: []
     writes: []
   network:
+    # #1984 / ADR-0200 — the real hosts: the default endpoint plus whatever
+    # the operator listed in `allowed_hosts`. The adapter refuses a Base URL
+    # on any other host.
     outbound:
-      - "openai-compatible-embeddings"
+      - "api.openai.com"
+      - "$config.allowed_hosts"
   filesystem:
     scratch: false
 

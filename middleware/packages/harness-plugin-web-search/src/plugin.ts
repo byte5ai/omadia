@@ -1,6 +1,7 @@
-import type { PluginContext } from '@omadia/plugin-api';
+import type { PluginConnectionVerdict, PluginContext } from '@omadia/plugin-api';
 
 import { TtlLruCache } from './cache.js';
+import { probeWebSearch } from './connectionProbe.js';
 import { WebSearchConfigError } from './errors.js';
 import { createProvider, isProviderId } from './providers/registry.js';
 import { createWebSearchService } from './searchService.js';
@@ -45,17 +46,31 @@ export interface WebSearchPluginHandle {
   close(): Promise<void>;
 }
 
+/** The selected provider (unknown ids fall back to the default). */
+function selectedProvider(ctx: PluginContext): { providerId: ProviderId; raw: string } {
+  const raw = (ctx.config.get<string>('provider') ?? DEFAULT_PROVIDER).trim().toLowerCase();
+  return { providerId: isProviderId(raw) ? raw : DEFAULT_PROVIDER, raw };
+}
+
+function apiKeyNameOf(providerId: ProviderId): string {
+  return providerId === 'tavily' ? 'tavily_api_key' : 'brave_api_key';
+}
+
+/**
+ * #1974 — kernel-run connection probe (#1453): one minimal search with the
+ * stored key. A rejected key turns the plugin red; see `connectionProbe.ts`.
+ */
+export async function verifyConnection(ctx: PluginContext): Promise<PluginConnectionVerdict> {
+  const { providerId } = selectedProvider(ctx);
+  return probeWebSearch(ctx, providerId, apiKeyNameOf(providerId));
+}
+
 export async function activate(
   ctx: PluginContext,
 ): Promise<WebSearchPluginHandle> {
   ctx.log('[web-search] activating');
 
-  const providerRaw = (ctx.config.get<string>('provider') ?? DEFAULT_PROVIDER)
-    .trim()
-    .toLowerCase();
-  const providerId: ProviderId = isProviderId(providerRaw)
-    ? providerRaw
-    : DEFAULT_PROVIDER;
+  const { providerId, raw: providerRaw } = selectedProvider(ctx);
   if (!isProviderId(providerRaw)) {
     ctx.log(
       `[web-search] config.provider='${providerRaw}' is not a known id — falling back to '${DEFAULT_PROVIDER}'`,
@@ -87,19 +102,28 @@ export async function activate(
   }
   const httpFetch = ctx.http.fetch.bind(ctx.http);
 
-  const apiKeyName =
-    providerId === 'tavily' ? 'tavily_api_key' : 'brave_api_key';
+  const apiKeyName = apiKeyNameOf(providerId);
   const apiKey = (await ctx.secrets.get(apiKeyName))?.trim() ?? '';
   if (apiKey.length === 0) {
     ctx.log(
       `[web-search] secret '${apiKeyName}' is empty — plugin active but capability not published; consumers will see ctx.services.get('${WEB_SEARCH_SERVICE_NAME}') === undefined`,
     );
+    // #1974 — not "Active": the Store shows what is missing.
+    ctx.status.report({
+      state: 'needs_action',
+      title: 'Nicht konfiguriert',
+      detail: `API-Schlüssel für ${providerId} fehlt — im Setup-Formular eintragen und speichern.`,
+    });
     return {
       async close(): Promise<void> {
         ctx.log('[web-search] deactivating (no api key was configured)');
       },
     };
   }
+
+  // A key is set: drop a "not configured" status from an earlier activation.
+  // The kernel's probe (`verifyConnection`) runs next and reports its verdict.
+  ctx.status.clear();
 
   let provider;
   try {

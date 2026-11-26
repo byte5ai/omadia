@@ -3340,6 +3340,18 @@ Privacy-Choke-Points. Tests: `test/transcribeRecordingTool.test.ts`,
 `packages/plugin-api/test/transcriptionGuardrails.test.ts`, Adapter-Suite in
 `packages/transcription-adapter-openai/test/`.
 
+Welle 5 (#1974/#1981/#1984): Web Search und der OpenAI-Transkriptions-Adapter
+exportieren `verifyConnection` (Probe: eine Mini-Suche bzw. `GET /v1/models`;
+401/Auth-403 ⇒ `rejected`) und melden einen fehlenden Key per `ctx.status` als
+`needs_action` „Nicht konfiguriert“. Der Kernel publiziert
+`transcriptionProviderState@1` (`ready` / `not_configured` / `not_installed`,
+`adminTranscriptionProvider.ts`), damit `transcribe_recording` „nicht installiert“
+von „nicht konfiguriert“ trennt; die Orchestrator-Manifest-`optional_requires`
+nennt es. Ein Rollback ohne vorherigen Provider sagt das und liefert
+`details.previousProviderId: null`. Die OpenAI-Adapter (Transkription,
+Embeddings) deklarieren `api.openai.com` + `$config.allowed_hosts` und lehnen
+eine Base-URL auf einem anderen Host beim Aktivieren ab (ADR-0200).
+
 ### Laufende Agenten-Diskussionen: Sicht und Stopp für Operatoren (#2067)
 
 > **Ersetzt die Facilitation-Admin-Lens (#330 Runde 4).** Die Lens, ihre

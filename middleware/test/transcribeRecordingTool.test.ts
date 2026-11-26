@@ -71,6 +71,7 @@ const TWO_SPEAKERS: Transcript = {
 function makeTool(opts: {
   service?: TranscriptionService;
   reader?: AttachmentReader;
+  providerState?: 'ready' | 'not_configured' | 'not_installed';
 }): {
   tool: TranscribeRecordingTool;
   store: InMemoryMemoryStore;
@@ -81,6 +82,9 @@ function makeTool(opts: {
   const tool = new TranscribeRecordingTool({
     reader: opts.reader ?? fakeReader(true),
     getTranscription: () => opts.service,
+    ...(opts.providerState !== undefined
+      ? { getProviderState: () => opts.providerState }
+      : {}),
     makeSessionLogger: (agentSlug) =>
       new SessionLogger(store, graph, undefined, agentSlug),
   });
@@ -151,6 +155,17 @@ describe('transcribe_recording', () => {
     const { tool } = makeTool({ service: undefined });
     const result = await tool.handle({ storage_key: AUDIO_KEY });
     assert.match(result, /^Error: kein Transkriptions-Provider/);
+  });
+
+  it('#1981 — an installed but unconfigured provider is not "none installed"', async () => {
+    const configured = makeTool({ service: undefined, providerState: 'not_configured' });
+    const result = await configured.tool.handle({ storage_key: AUDIO_KEY });
+    assert.match(result, /^Error: ein Transkriptions-Provider ist installiert, aber nicht konfiguriert/);
+    const missing = makeTool({ service: undefined, providerState: 'not_installed' });
+    assert.match(
+      await missing.tool.handle({ storage_key: AUDIO_KEY }),
+      /^Error: kein Transkriptions-Provider installiert/,
+    );
   });
 
   it('reports an unknown attachment instead of throwing', async () => {

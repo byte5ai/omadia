@@ -46,6 +46,15 @@ setup:
         de: "Basis-URL des Endpoints, mit oder ohne '/v1'. Default: https://api.openai.com"
       required: false
       default: "https://api.openai.com"
+    - key: "allowed_hosts"
+      type: "string"
+      label:
+        en: "Additional allowed hosts"
+        de: "Zusätzlich erlaubte Hosts"
+      help:
+        en: "Only needed for a Base URL or Realtime URL outside api.openai.com (Azure, a local OpenAI-compatible server): list its host(s), comma-separated. Audio and the API key go only to api.openai.com and these hosts; an endpoint on any other host is refused at activation."
+        de: "Nur nötig für eine Base-URL oder Realtime-URL außerhalb von api.openai.com (Azure, ein lokaler OpenAI-kompatibler Server): Host(s) kommagetrennt eintragen. Audio und API-Key gehen nur an api.openai.com und diese Hosts; ein Endpoint auf einem anderen Host wird beim Aktivieren abgelehnt."
+      required: false
     - key: "batch_model"
       type: "string"
       label:
@@ -126,8 +135,12 @@ permissions:
     reads: []
     writes: []
   network:
+    # #1984 / ADR-0200 — the real hosts: the default endpoint plus whatever
+    # the operator listed in `allowed_hosts`. The adapter refuses a Base URL
+    # or Realtime URL on any other host.
     outbound:
-      - "openai-transcription"
+      - "api.openai.com"
+      - "$config.allowed_hosts"
   filesystem:
     scratch: false
 

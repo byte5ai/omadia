@@ -90,6 +90,9 @@ requires:
 # pre-#1085 PATH behaviour rather than losing chat.
 optional_requires:
   - "transcription@1"
+  # #1981 — kernel-published: is transcription@1 live, installed but not
+  # configured, or not installed? `transcribe_recording` names the next step.
+  - "transcriptionProviderState@1"
   - "routineTurnOwnerGuard@1"
   - "chatPeerAgents@1"
   # #2043 — kernel-published, with a database only: does the facilitation

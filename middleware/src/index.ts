@@ -245,7 +245,12 @@ import {
   type LocalEmbeddingModelFetcher,
   type MemoryFeatureStatusView,
 } from './routes/adminEmbeddingProvider.js';
-import { createAdminTranscriptionProviderRouter } from './routes/adminTranscriptionProvider.js';
+import {
+  createAdminTranscriptionProviderRouter,
+  TRANSCRIPTION_PROVIDER_STATE_SERVICE,
+  transcriptionProviderState,
+  type TranscriptionProviderState,
+} from './routes/adminTranscriptionProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { createAdminLastTurnRouter } from './routes/adminLastTurn.js';
 import { setCliLoginAuthorizedHook } from './platform/cliAuthService.js';
@@ -2585,6 +2590,19 @@ async function main(): Promise<void> {
   // activation; the users table is attached once the database is up (UserStore
   // below). Unknown until the first load, which exempts no own name. Names are
   // never logged.
+  // #1981 — `transcriptionProviderState@1`: whether `transcription@1` is live,
+  // installed but unconfigured, or not installed, so `transcribe_recording`
+  // names the right next step. Resolved per call.
+  serviceRegistry.provide<() => TranscriptionProviderState>(
+    TRANSCRIPTION_PROVIDER_STATE_SERVICE,
+    () =>
+      transcriptionProviderState({
+        installedRegistry,
+        catalog: pluginCatalog,
+        getTranscription: () =>
+          serviceRegistry.get<TranscriptionService>(TRANSCRIPTION_SERVICE_NAME),
+      }),
+  );
   const humanNameDirectory = new HumanNameDirectory({ log: (m) => console.warn(m) });
   serviceRegistry.provide<HumanNamesProvider>(HUMAN_NAMES_SERVICE, () =>
     humanNameDirectory.snapshot(),
