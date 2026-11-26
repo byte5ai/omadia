@@ -205,6 +205,27 @@ describe('office xlsx renderer', () => {
     }
   });
 
+  it('cuts a long sheet name without splitting an emoji into a lone surrogate', async () => {
+    // 30 letters + an emoji (two UTF-16 units) crosses the 31-unit cap mid-pair.
+    const long = `${'a'.repeat(30)}\u{1F600}x`;
+    const result = await renderXlsx({
+      sheets: [
+        { name: long, columns: [{ key: 'x', header: 'X' }], rows: [{ x: 1 }] },
+        { name: long, columns: [{ key: 'x', header: 'X' }], rows: [{ x: 2 }] },
+      ],
+    });
+    const wb = await loadWorkbook(result.buffer);
+    const names = wb.worksheets.map((ws) => ws.name);
+    assert.deepEqual(names, ['a'.repeat(30), `${'a'.repeat(27)} (2)`]);
+    for (const name of names) assert.ok(!/[\uD800-\uDFFF]/.test(name), `"${name}" has no lone surrogate`);
+
+    const emojiEnd = await renderXlsx({
+      sheets: [{ name: `${'b'.repeat(29)}\u{1F600}z`, columns: [{ key: 'x', header: 'X' }], rows: [{ x: 1 }] }],
+    });
+    const kept = (await loadWorkbook(emojiEnd.buffer)).worksheets.map((ws) => ws.name);
+    assert.deepEqual(kept, [`${'b'.repeat(29)}\u{1F600}`], 'a whole emoji within the cap stays');
+  });
+
   /** A one-cell sheet; `formula` puts a formula cell in column A. */
   const sheetNamed = (name: string, formula?: string): XlsxDescriptor['sheets'][number] => ({
     name,
@@ -358,6 +379,30 @@ describe('office docx renderer', () => {
       .map((m) => m[0])
       .find((p) => p.includes('>Spalte</w:t>'));
     assert.equal(header?.match(/<w:b\/>/g)?.length, 2, 'both header runs are bold');
+  });
+
+  it('turns tabs inside text into Word tabs, not raw tab characters', async () => {
+    const result = await renderDocx({
+      blocks: [
+        { type: 'paragraph', text: 'Name\tWert\nZwei\tDrei' },
+        { type: 'table', headers: ['Kopf\tA'], rows: [['x']] },
+      ],
+    });
+    const xml = (await unzipToText(result.buffer)).get('word/document.xml') ?? '';
+    const texts = [...xml.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)].map((m) => m[1] ?? '');
+    assert.ok(texts.every((t) => !t.includes('\t')), 'no raw tab may stay inside <w:t>');
+
+    const runsOf = (first: string): string => {
+      const p = [...xml.matchAll(/<w:p>[\s\S]*?<\/w:p>/g)]
+        .map((m) => m[0])
+        .find((candidate) => candidate.includes(`>${first}</w:t>`));
+      assert.ok(p, `paragraph with "${first}" exists`);
+      return [...p.matchAll(/<w:br\/>|<w:tab\/>|<w:t[^>]*>([^<]*)<\/w:t>/g)]
+        .map((m) => (m[0] === '<w:br/>' ? '\n' : m[0] === '<w:tab/>' ? '\t' : (m[1] ?? '')))
+        .join('');
+    };
+    assert.equal(runsOf('Name'), 'Name\tWert\nZwei\tDrei');
+    assert.equal(runsOf('Kopf'), 'Kopf\tA');
   });
 
   const provenanceDescriptor: DocxDescriptor = {
