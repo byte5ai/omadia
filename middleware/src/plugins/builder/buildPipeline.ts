@@ -101,7 +101,8 @@ export interface BuildStatusSnapshot {
    * failures this is the `BuildFailureReason` (`tsc` | `timeout` | …); for
    * pre-build throws it is the `BuildPipelineError` code (`codegen_failed` |
    * `template_not_ready` | `staging_failed` | `spec_invalid` |
-   * `draft_not_found`) or `unknown`.
+   * `draft_not_found`), `activate_failed` when the build compiled but the
+   * preview activation threw, or `unknown`.
    */
   phase: string;
   /** Monotonic build counter for the build this snapshot describes; absent
@@ -111,6 +112,9 @@ export interface BuildStatusSnapshot {
   errorCount?: number;
   /** Short failure reason / message. Absent on success. */
   reason?: string;
+  /** #1809 — `ok` build whose preview waits for a test credential for this
+   *  setup key (read at activation). Cleared by the next build. */
+  missingSetupKey?: string;
   /** ISO-8601 timestamp of when this outcome was recorded. */
   builtAt: string;
 }
@@ -123,15 +127,21 @@ export class BuildPipelineError extends Error {
     | 'template_not_ready'
     | 'staging_failed';
   override readonly cause?: unknown;
+  /** Set when the failure happened after the build number was assigned
+   *  (`template_not_ready`, `staging_failed`), so status and AutoFix dedup
+   *  can name the build (#1731). */
+  readonly buildN?: number;
   constructor(
     code: BuildPipelineError['code'],
     message: string,
     cause?: unknown,
+    buildN?: number,
   ) {
     super(message);
     this.name = 'BuildPipelineError';
     this.code = code;
     if (cause !== undefined) this.cause = cause;
+    if (buildN !== undefined) this.buildN = buildN;
   }
 }
 
@@ -193,6 +203,9 @@ export class BuildPipeline {
       this.lastStatus.set(opts.draftId, {
         status: 'failed',
         phase: err instanceof BuildPipelineError ? err.code : 'unknown',
+        ...(err instanceof BuildPipelineError && err.buildN !== undefined
+          ? { buildN: err.buildN }
+          : {}),
         reason: err instanceof Error ? err.message : String(err),
         builtAt: new Date().toISOString(),
       });
@@ -206,6 +219,43 @@ export class BuildPipeline {
    */
   getLastBuildStatus(draftId: string): BuildStatusSnapshot | undefined {
     return this.lastStatus.get(draftId);
+  }
+
+  /**
+   * #1809 — the build of `buildN` succeeded, but activating it as a preview
+   * threw. Recorded so `get_build_status` and the preview status route do not
+   * report the build as usable. A newer build already recorded wins.
+   */
+  recordActivationFailure(draftId: string, buildN: number, reason: string): void {
+    const last = this.lastStatus.get(draftId);
+    if (last?.buildN !== undefined && last.buildN > buildN) return;
+    this.lastStatus.set(draftId, {
+      status: 'failed',
+      phase: 'activate_failed',
+      buildN,
+      reason,
+      builtAt: new Date().toISOString(),
+    });
+  }
+
+  /** #1809 — build `buildN` is green, but its preview needs a test
+   *  credential for `key` before it can start. Stays `ok`. */
+  recordMissingSetupValue(draftId: string, buildN: number, key: string): void {
+    const last = this.lastStatus.get(draftId);
+    if (last?.buildN !== undefined && last.buildN > buildN) return;
+    this.lastStatus.set(draftId, {
+      status: 'ok',
+      phase: 'complete',
+      buildN,
+      missingSetupKey: key,
+      builtAt: new Date().toISOString(),
+    });
+  }
+
+  /** True when a build newer than `buildN` has been recorded for the draft. */
+  hasNewerBuild(draftId: string, buildN: number): boolean {
+    const last = this.lastStatus.get(draftId)?.buildN;
+    return last !== undefined && last > buildN;
   }
 
   private async executeRun(opts: PipelineRunOptions): Promise<PipelineRunResult> {
@@ -252,6 +302,7 @@ export class BuildPipeline {
           'template_not_ready',
           `BuildPipeline: build template not ready for draft '${opts.draftId}' (buildN=${String(buildN)}); boot-time npm install likely failed`,
           err,
+          buildN,
         );
       }
     }
@@ -272,6 +323,7 @@ export class BuildPipeline {
         'staging_failed',
         `BuildPipeline: prepareStagingDir failed for draft '${opts.draftId}' (buildN=${String(buildN)})`,
         err,
+        buildN,
       );
     }
 

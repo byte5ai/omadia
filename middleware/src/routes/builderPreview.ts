@@ -14,6 +14,10 @@ import type {
 import type { PreviewRebuildScheduler } from '../plugins/builder/previewRebuildScheduler.js';
 import type { PreviewSecretBuffer } from '../plugins/builder/previewSecretBuffer.js';
 import type { SpecEventBus } from '../plugins/builder/specEventBus.js';
+import {
+  missingSetupValueKey,
+  warmPreview,
+} from '../plugins/builder/previewWarmBuild.js';
 import { BuilderModelRegistry } from '../plugins/builder/modelRegistry.js';
 import type { BuilderModelId } from '../plugins/builder/types.js';
 
@@ -69,6 +73,8 @@ export type PreviewStreamEvent =
       phase: 'building' | 'ok' | 'failed';
       buildN?: number;
       reason?: string;
+      /** #1809 — `ok` whose preview waits for this test credential. */
+      missingSetupKey?: string;
       /** TSC/sandbox-level errors. Populated when the codegen step
        *  succeeded but the sandbox tsc compile failed. */
       errors?: ReadonlyArray<{
@@ -208,6 +214,7 @@ export function registerBuilderPreviewRoutes(
           write(ev);
         }
       } catch (err) {
+        const missingKey = missingSetupValueKey(err);
         if (err instanceof BuildPipelineError) {
           const detail = extractBuildFailureDetail(err.cause);
           write({
@@ -224,12 +231,36 @@ export function registerBuilderPreviewRoutes(
             code: `builder.${err.code}`,
             message: err.message,
           });
+        } else if (missingKey !== null) {
+          // #1809 — not a failed build: the code compiled, a test
+          // credential is missing. This stream said `building` above, so it
+          // ends on the same `ok` + `missingSetupKey` the bus carries.
+          const last = deps.buildPipeline.getLastBuildStatus(draftId);
+          write({
+            type: 'build_status',
+            phase: 'ok',
+            ...(last?.buildN !== undefined ? { buildN: last.buildN } : {}),
+            missingSetupKey: missingKey,
+          });
+          write({
+            type: 'error',
+            code: 'builder.preview_secret_missing',
+            message: err instanceof Error ? err.message : String(err),
+          });
         } else {
           const message = err instanceof Error ? err.message : String(err);
           console.error(
             `[builder/preview/chat] turn failed for ${email}/${draftId}:`,
             err,
           );
+          // Never leave this stream's `building` as the last word.
+          const last = deps.buildPipeline.getLastBuildStatus(draftId);
+          write({
+            type: 'build_status',
+            phase: 'failed',
+            ...(last?.buildN !== undefined ? { buildN: last.buildN } : {}),
+            reason: last?.status === 'failed' ? last.phase : 'preview_failed',
+          });
           write({
             type: 'error',
             code: 'builder.preview_chat_failed',
@@ -363,19 +394,31 @@ export function registerBuilderPreviewRoutes(
       // The last-outcome record is keyed by draft id alone, so check the
       // draft belongs to the caller before reporting from it.
       const last = deps.buildPipeline.getLastBuildStatus(draftId);
-      if (
-        last?.status === 'failed' &&
-        (await deps.draftStore.load(email, draftId)) !== null
-      ) {
+      if (!last || (await deps.draftStore.load(email, draftId)) === null) {
+        sendJson(res, 200, { phase: 'idle' });
+        return;
+      }
+      if (last.status === 'failed') {
         sendJson(res, 200, {
           phase: 'failed',
           buildN: last.buildN,
           errorCount: last.errorCount,
-          reason: last.reason,
+          // A stable code, never the pipeline's log message (#1733).
+          reason: last.phase,
         });
         return;
       }
-      sendJson(res, 200, { phase: 'idle' });
+      // #1792 — the last build succeeded and nothing failed since, but the
+      // preview is cold (test credential saved, rebuild pending, or the
+      // activation is waiting for a credential). The build is usable.
+      sendJson(res, 200, {
+        phase: 'ok',
+        buildN: last.buildN,
+        warm: false,
+        ...(last.missingSetupKey !== undefined
+          ? { missingSetupKey: last.missingSetupKey }
+          : {}),
+      });
     },
   );
 
@@ -448,9 +491,11 @@ export function registerBuilderPreviewRoutes(
       // "values set higher up vanish on every apply" bug. Merge keeps them;
       // "Clear all" (DELETE) is the only full wipe.
       await deps.previewSecretBuffer.merge(email, draftId, cleaned);
-      // Setting secrets invalidates a warm cache so the next turn picks
-      // them up from the build closure.
-      deps.previewCache.invalidate(email, draftId);
+      // #1792 — new test values reach the preview only through a fresh
+      // activation. Schedule the (debounced) rebuild instead of only
+      // invalidating, so the build status leaves `idle` on its own and
+      // Publish does not wait for a manual "Rebuild".
+      deps.rebuildScheduler.schedule(email, draftId);
       res.status(204).end();
     },
   );
@@ -473,7 +518,7 @@ export function registerBuilderPreviewRoutes(
         return;
       }
       await deps.previewSecretBuffer.drop(email, draftId);
-      deps.previewCache.invalidate(email, draftId);
+      deps.rebuildScheduler.schedule(email, draftId);
       res.status(204).end();
     },
   );
@@ -733,103 +778,11 @@ async function ensureWarmHandle(opts: {
   draftId: string;
 }): ReturnType<PreviewCache['ensureWarm']> {
   const { deps, email, draftId } = opts;
-  const handle = await ensureWarmHandleInner(opts);
+  const handle = await warmPreview(deps, { userEmail: email, draftId });
   // B.9-3: kick off runtime-smoke after every fresh build. Dedup'd per
   // (draftId, rev) inside the orchestrator — cached-handle returns no-op.
   deps.runtimeSmokeOrchestrator?.attemptSmoke({ handle, userEmail: email, draftId });
   return handle;
-}
-
-async function ensureWarmHandleInner(opts: {
-  deps: BuilderPreviewDeps;
-  email: string;
-  draftId: string;
-}): ReturnType<PreviewCache['ensureWarm']> {
-  const { deps, email, draftId } = opts;
-  // B.6-13.3 — emit `building` so the workspace UI can flip its build
-  // indicator immediately on the manual REBUILD path. The auto-rebuild
-  // path in index.ts emits the same event around its own callback; the
-  // SSE consumer treats the latest event as authoritative.
-  deps.bus.emit(draftId, { type: 'build_status', phase: 'building' });
-  return deps.previewCache.ensureWarm({
-    userEmail: email,
-    draftId,
-    build: async () => {
-      const result = await deps.buildPipeline.run({
-        userEmail: email,
-        draftId,
-      });
-      if (!result.buildResult.ok) {
-        deps.bus.emit(draftId, {
-          type: 'build_status',
-          phase: 'failed',
-          reason: result.buildResult.reason,
-          errorCount: result.buildResult.errors.length,
-          errors: result.buildResult.errors.slice(0, 50).map((e) => ({
-            file: e.path,
-            line: e.line,
-            column: e.col,
-            code: e.code,
-            message: e.message,
-          })),
-        });
-        // Log stdout/stderr tails so we can diagnose `reason=unknown`
-        // failures from middleware.log instead of having to surface them
-        // through the SSE wire (B.6-12.1 diag).
-        console.log(
-          `[builder] preview build failed reason=${result.buildResult.reason} ` +
-            `exit=${String(result.buildResult.exitCode)} ` +
-            `errors=${String(result.buildResult.errors.length)} ` +
-            `draft=${draftId}`,
-        );
-        if (result.buildResult.stdoutTail) {
-          console.log(
-            `[builder] preview stdout-tail draft=${draftId}:\n${result.buildResult.stdoutTail}`,
-          );
-        }
-        if (result.buildResult.stderrTail) {
-          console.log(
-            `[builder] preview stderr-tail draft=${draftId}:\n${result.buildResult.stderrTail}`,
-          );
-        }
-        throw new BuildPipelineError(
-          'codegen_failed',
-          `preview build failed: ${result.buildResult.reason}`,
-          result.buildResult,
-        );
-      }
-      // Lazy-load any secrets persisted in a previous run when the
-      // buffer is vault-backed. No-op for heap-only buffers (tests).
-      await deps.previewSecretBuffer.warm(email, draftId);
-      // Build success → emit `ok` with the buildN so the workspace
-      // header transitions out of `building` even when the rebuild was
-      // triggered manually (REBUILD button) or by a chat-turn rather
-      // than by the auto-rebuild scheduler.
-      deps.bus.emit(draftId, {
-        type: 'build_status',
-        phase: 'ok',
-        buildN: result.buildN,
-      });
-      // Split buffer values by setup_field type. The PreviewSecretBuffer
-      // holds ALL setup-field values (string + secret + oauth + …) under
-      // a single namespace, but the runtime distinguishes:
-      //   ctx.secrets.get(key) → looks in secretValues
-      //   ctx.config.get(key)  → looks in configValues
-      // Pre-fix this used draft.slots as configValues (entirely wrong —
-      // slots are code chunks). Now we route by field.type:
-      const allBufferValues = deps.previewSecretBuffer.get(email, draftId);
-      const { configValues, secretValues } = splitBufferByFieldType(
-        allBufferValues,
-        result.draft.spec.setup_fields ?? [],
-      );
-      return {
-        zipBuffer: result.buildResult.zip,
-        rev: result.buildN,
-        configValues,
-        secretValues,
-      };
-    },
-  });
 }
 
 /**
@@ -883,41 +836,6 @@ function extractBuildFailureDetail(cause: unknown): {
   return {};
 }
 
-/**
- * Splits the PreviewSecretBuffer's flat key→value map into the two
- * runtime channels (configValues / secretValues) based on each
- * setup_field's declared type. Fields not in the spec are dropped
- * — they shouldn't be in the buffer in the first place, but if a
- * stale entry survives a spec change the runtime safely ignores it.
- */
-function splitBufferByFieldType(
-  bufferValues: Readonly<Record<string, string>>,
-  setupFields: ReadonlyArray<unknown>,
-): {
-  configValues: Readonly<Record<string, unknown>>;
-  secretValues: Readonly<Record<string, string>>;
-} {
-  const configValues: Record<string, unknown> = {};
-  const secretValues: Record<string, string> = {};
-  const fieldByKey = new Map<string, string>();
-  for (const raw of setupFields) {
-    if (!raw || typeof raw !== 'object') continue;
-    const f = raw as { key?: unknown; type?: unknown };
-    if (typeof f.key !== 'string') continue;
-    fieldByKey.set(f.key, typeof f.type === 'string' ? f.type : 'string');
-  }
-  for (const [key, value] of Object.entries(bufferValues)) {
-    const declaredType = fieldByKey.get(key);
-    if (declaredType === undefined) continue;
-    if (declaredType === 'secret' || declaredType === 'oauth') {
-      secretValues[key] = value;
-    } else {
-      configValues[key] = value;
-    }
-  }
-  return { configValues, secretValues };
-}
-
 function readEmail(req: Request): string | null {
   const email = req.session?.email;
   return typeof email === 'string' && email.length > 0 ? email : null;
@@ -941,6 +859,13 @@ function sendError(res: Response, err: unknown, fallbackCode: string): void {
     sendJson(res, err.code === 'draft_not_found' ? 404 : 500, {
       code: `builder.${err.code}`,
       message: err.message,
+    });
+    return;
+  }
+  if (missingSetupValueKey(err) !== null) {
+    sendJson(res, 409, {
+      code: 'builder.preview_secret_missing',
+      message: err instanceof Error ? err.message : String(err),
     });
     return;
   }

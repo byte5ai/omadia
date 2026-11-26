@@ -267,6 +267,9 @@ export type SpecBusEvent =
       buildN?: number;
       reason?: string;
       errorCount?: number;
+      /** #1809 — only with `ok`: the build compiled, but the preview waits
+       *  for a test credential for this setup key. Not a failed build. */
+      missingSetupKey?: string;
       /** Structured tsc errors (per-file, per-line) — used by the Slot
        *  editor to hang Monaco markers on the exact source lines. Mirrors
        *  the BuildErrorRow shape so the Preview-pane and the Slot-editor
@@ -519,6 +522,8 @@ export type PreviewStreamEvent =
       phase: 'building' | 'ok' | 'failed';
       buildN?: number;
       reason?: string;
+      /** #1809 — `ok` whose preview waits for this test credential. */
+      missingSetupKey?: string;
       errors?: ReadonlyArray<BuildErrorRow>;
       codegenIssues?: ReadonlyArray<CodegenIssueRow>;
     }
