@@ -437,6 +437,24 @@
         "helper_name_conflict": "Its tool name collides with another helper or tool of this agent, so it is not offered. Choose a different name.",
         "reason": "Reason: {reason}"
       },
+      "configError": "The configuration was rejected.",
+      "configErrorDetail": "The configuration was rejected. {detail}",
+      "configErrors": {
+        "helper_name_exists": "A helper named {name} already exists for this agent.",
+        "mcp_server_name_exists": "An MCP server named {name} already exists.",
+        "mcp_tool_required": "Drag an individual MCP tool from the toolbox onto the agent or helper."
+      },
+      "delete": {
+        "confirm": "Remove the following from the agent configuration?\n\n{summary}",
+        "items": {
+          "channel_bind": "Unbind channel {name}",
+          "subagent": "Delete helper {name} and its tool grants",
+          "skill": "Detach skill {name} from the helper",
+          "tool_grant": "Remove the tool grant for {name}",
+          "schedule": "Delete schedule {name}",
+          "persona_skill": "Detach working mode {name}"
+        }
+      },
       "apiError": "Error {status}",
       "persona": {
         "title": "Working modes",

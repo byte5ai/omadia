@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Agent Builder canvas configuration (2026-11-26)
+
+- Canvas deletions list the affected configuration, ask for confirmation, and
+  reload the server graph after completion or a partial failure (#1799, #1800).
+- The canvas omits the inactive Channel palette action, rejects direct MCP-server
+  grants, supports detaching a working mode, and explains configuration conflicts
+  (#1802, ADR-0238).
+
 ### Fixed — Builder publishing and Store actions (2026-11-26)
 
 - Publish links to the plugin's Store page for activation and explicit agent grants,

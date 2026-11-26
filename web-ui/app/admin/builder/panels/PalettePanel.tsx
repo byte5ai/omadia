@@ -7,8 +7,7 @@ import { SkillImportModal } from '../../../_components/admin/SkillImportModal';
 import { SkillVerdictBadge } from '../../../_components/admin/SkillVerdictBadge';
 
 /** Node kinds the operator can drag onto the canvas to create new entities. */
-const ADDABLE: ReadonlyArray<Exclude<CanvasNodeKind, 'agent' | 'tool'>> = [
-  'channel',
+const ADDABLE: ReadonlyArray<Exclude<CanvasNodeKind, 'agent' | 'tool' | 'channel'>> = [
   'subagent',
   'skill',
   'mcp',

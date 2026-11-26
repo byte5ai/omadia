@@ -437,6 +437,24 @@
         "helper_name_conflict": "Sein Tool-Name kollidiert mit einem anderen Helfer oder Tool dieses Agenten, deshalb wird er nicht angeboten. Wähle einen anderen Namen.",
         "reason": "Grund: {reason}"
       },
+      "configError": "Die Konfiguration wurde abgelehnt.",
+      "configErrorDetail": "Die Konfiguration wurde abgelehnt. {detail}",
+      "configErrors": {
+        "helper_name_exists": "Ein Helfer mit dem Namen {name} ist für diesen Agenten bereits vorhanden.",
+        "mcp_server_name_exists": "Ein MCP-Server mit dem Namen {name} ist bereits vorhanden.",
+        "mcp_tool_required": "Ziehe ein einzelnes MCP-Werkzeug aus der Werkzeugliste auf den Agenten oder Helfer."
+      },
+      "delete": {
+        "confirm": "Folgendes aus der Agentenkonfiguration entfernen?\n\n{summary}",
+        "items": {
+          "channel_bind": "Kanalzuordnung für {name} lösen",
+          "subagent": "Helfer {name} und seine Werkzeugfreigaben löschen",
+          "skill": "Skill {name} vom Helfer lösen",
+          "tool_grant": "Werkzeugfreigabe für {name} entfernen",
+          "schedule": "Zeitplan {name} löschen",
+          "persona_skill": "Arbeitsmodus {name} lösen"
+        }
+      },
       "apiError": "Fehler {status}",
       "persona": {
         "title": "Arbeitsmodi",
