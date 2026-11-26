@@ -62,6 +62,9 @@ export interface OperatorAgentPluginDto {
   id: string;
   config: Record<string, unknown>;
   enabled: boolean;
+  /** #1942 — no package store holds the plugin: it runs nowhere, whatever
+   *  `enabled` says. Absent on an older middleware. */
+  package_missing?: boolean;
 }
 
 export interface OperatorAgentBindingDto {

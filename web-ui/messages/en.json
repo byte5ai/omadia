@@ -2366,7 +2366,7 @@
     "dependencyMissingTooltip": "This plugin depends on \"{parent}\" — parent is not attached in the same column.",
     "orphanDetachAll": "Remove all",
     "orphanDetachAllTooltip": "Detach every stale plugin row (old ids from earlier deployments) at once.",
-    "orphanExplain": "Plugin ids from earlier seeds that no longer exist in the current catalog (typically a rename like de.byte5.agent.* → @omadia/*). Dropped on next Save unless you tick \"Keep\".",
+    "orphanExplain": "Plugin ids that are not in the current catalog: a renamed id from an earlier seed (like de.byte5.agent.* → @omadia/*), or a package that is no longer installed (the canvas packages moved to byte5ai/omadia-ui-support). Reinstall a missing package in the store to keep using it. Dropped on next Save unless you tick \"Keep\".",
     "orphanKeep": "Keep",
     "seededDescription": "Auto-created on first boot. Receives channel traffic that has no explicit binding, until you configure one.",
     "mcp": {
@@ -3473,7 +3473,9 @@
         "channel_type": "Channel type: pick one of the listed types.",
         "channel_key": "Channel key: 1 to 500 characters."
       }
-    }
+    },
+    "detailPackageMissing": "Package missing — not running",
+    "detailPackageMissingHint": "This plugin is assigned, but its package is not installed on this instance, so it does not run. Install the package again in the store (the canvas packages come from byte5ai/omadia-ui-support), or detach the plugin."
   },
   "builder": {
     "issueReport": {

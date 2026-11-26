@@ -1743,6 +1743,12 @@ async function republishTeamsPackage(
 }
 
 export interface OperatorAgentsRouterOptions {
+  /**
+   * #1942 — whether a package store (uploaded or built-in) holds the plugin.
+   * An assigned plugin without one runs nowhere, whatever its row says; the
+   * plugin lists mark it `package_missing`. Absent = not checked.
+   */
+  hasPackage?: ((pluginId: string) => boolean) | undefined;
   /** The channel types of a channel plugin (see `AgentPluginCatalogEntry.channel_types`). */
   channelTypesOf?: ((pluginId: string) => readonly string[]) | undefined;
   /**
@@ -2163,6 +2169,21 @@ export function createOperatorAgentsRouter(
     return offending ? unknownChannelTypeBody(offending.channel_type, known) : undefined;
   }
 
+  /** An `agent_plugins` row as the plugin lists show it (#1942: plus `package_missing`). */
+  function assignedPluginView(p: { pluginId: string; config: Record<string, unknown>; enabled: boolean }): {
+    id: string;
+    config: Record<string, unknown>;
+    enabled: boolean;
+    package_missing?: boolean;
+  } {
+    return {
+      id: p.pluginId,
+      config: p.config,
+      enabled: p.enabled,
+      ...(options.hasPackage ? { package_missing: !options.hasPackage(p.pluginId) } : {}),
+    };
+  }
+
   function slugParam(req: Request, res: Response): string | undefined {
     const raw = req.params['slug'];
     if (typeof raw !== 'string' || raw.length === 0) {
@@ -2479,11 +2500,7 @@ export function createOperatorAgentsRouter(
           // #1033 W4 — what the dashboard card shows as "runs on".
           effective_model: live.registry.get(a.slug)?.built?.effectiveModel ?? null,
           model_policy: parseModelPolicy(a.modelPolicy ?? DEFAULT_MODEL_POLICY),
-          plugins: (pluginsByAgent.get(a.id) ?? []).map((p) => ({
-            id: p.pluginId,
-            config: p.config,
-            enabled: p.enabled,
-          })),
+          plugins: (pluginsByAgent.get(a.id) ?? []).map(assignedPluginView),
           bindings: (bindingsByAgent.get(a.id) ?? []).map((b) => ({
             channel_type: b.channelType,
             channel_key: b.channelKey,
@@ -3539,11 +3556,7 @@ export function createOperatorAgentsRouter(
       const plugins = await live.store.listAgentPlugins(existing.id);
       res.json({
         slug: existing.slug,
-        plugins: plugins.map((p) => ({
-          id: p.pluginId,
-          config: p.config,
-          enabled: p.enabled,
-        })),
+        plugins: plugins.map(assignedPluginView),
       });
     } catch (err) {
       badRequest(res, err);

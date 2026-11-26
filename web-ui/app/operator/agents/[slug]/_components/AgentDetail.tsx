@@ -239,6 +239,16 @@ function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
                   <code className="font-mono text-[10px] text-[color:var(--fg-muted)]">
                     {p.id}
                   </code>
+                  {/* #1942 — assigned, but no package: it runs nowhere. */}
+                  {p.package_missing === true && (
+                    <span
+                      data-testid={`plugin-package-missing-${p.id}`}
+                      title={t('detailPackageMissingHint')}
+                      className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 px-1.5 py-0.5 text-[10px] text-[color:var(--danger)]"
+                    >
+                      {t('detailPackageMissing')}
+                    </span>
+                  )}
                   <label className="ml-auto flex items-center gap-2 text-xs text-[color:var(--fg-muted)]">
                     <input
                       type="checkbox"

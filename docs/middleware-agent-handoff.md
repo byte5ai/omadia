@@ -682,7 +682,13 @@ Credential-Änderung automatisch mit.
   sie (`PackagelessEntries.tsx`). Abgeleitet bei jedem Lesen: die Registry wird
   nicht umgeschrieben, nichts wird automatisch gelöscht; „Paket“ heißt
   Uploaded- oder Built-in-Store, nicht Katalog (ein Manifest ohne Code zählt
-  nicht).
+  nicht). Seit #1942 auch auf der Agenten-Seite: die Plugin-Listen des
+  Operator-Agent-Routers (`GET /api/v1/operator/agents`, `GET …/:slug/plugins`)
+  tragen pro Zuweisung `package_missing` (Option `hasPackage`, dieselbe Prüfung),
+  „Zugewiesene Plugins“ zeigt dafür „Paket fehlt — läuft nicht“. Die Boot-Warnung
+  nennt für die Canvas-IDs (`@omadia/ui-orchestrator`, `@omadia/ui-channel`,
+  `@omadia/canvas-core`, `RELOCATED_PACKAGES`) die Quelle
+  `byte5ai/omadia-ui-support`.
 - **Eigener Readiness-State.** `computeReadiness` (`plugins/readiness.ts`)
   liest zusätzlich die gepushte Status-Lage und liefert
   **`connection_failed`**, wenn `ctx.status` auf `error` steht — egal ob aus

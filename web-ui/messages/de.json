@@ -2366,7 +2366,7 @@
     "dependencyMissingTooltip": "Dieses Plugin hängt von „{parent}“ ab — das Basis-Plugin ist nicht in derselben Spalte angehängt.",
     "orphanDetachAll": "Alle entfernen",
     "orphanDetachAllTooltip": "Entfernt alle veralteten Plugin-Zuordnungen (alte IDs aus früheren Deployments) auf einmal.",
-    "orphanExplain": "Plugin-IDs aus früheren Seeds, die im aktuellen Katalog nicht mehr existieren (typisch: Umbenennung de.byte5.agent.* → @omadia/*). Werden beim nächsten „Speichern\" verworfen, außer du markierst sie als „Behalten\".",
+    "orphanExplain": "Plugin-IDs, die nicht im aktuellen Katalog stehen: eine umbenannte ID aus einem früheren Seed (etwa de.byte5.agent.* → @omadia/*) oder ein Paket, das nicht mehr installiert ist (die Canvas-Pakete liegen jetzt in byte5ai/omadia-ui-support). Ein fehlendes Paket installierst du im Store neu, wenn du es weiter nutzen willst. Werden beim nächsten „Speichern“ verworfen, außer du markierst sie als „Behalten“.",
     "orphanKeep": "Behalten",
     "seededDescription": "Beim ersten Start automatisch angelegt. Empfängt Channel-Traffic ohne explizite Zuordnung, bis du eine einrichtest.",
     "mcp": {
@@ -3473,7 +3473,9 @@
         "channel_type": "Kanaltyp: wähle einen der angebotenen Typen.",
         "channel_key": "Kanal-Schlüssel: 1 bis 500 Zeichen."
       }
-    }
+    },
+    "detailPackageMissing": "Paket fehlt — läuft nicht",
+    "detailPackageMissingHint": "Dieses Plugin ist zugewiesen, aber sein Paket ist auf dieser Instanz nicht installiert, also läuft es nicht. Installiere das Paket im Store neu (die Canvas-Pakete kommen aus byte5ai/omadia-ui-support) oder hänge das Plugin ab."
   },
   "builder": {
     "issueReport": {

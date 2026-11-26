@@ -4649,6 +4649,8 @@ async function main(): Promise<void> {
       getFacilitationEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
+      // #1942 — an assigned plugin whose package is gone shows as such.
+      hasPackage: (id: string) => hasPackage(id, [uploadedPackageStore, builtInPackageStore]),
       // #2088 — end of service before a disable or a delete; the audit of both.
       endOfService: agentEndOfService,
       recordAudit: async (entry) => {

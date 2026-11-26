@@ -254,6 +254,23 @@ describe('AgentDetail plugin assignment', () => {
     expect(confluence).not.toBeChecked();
   });
 
+  it('#1942 — marks an assigned plugin whose package is missing', async () => {
+    await renderOnPluginsTab(
+      <AgentDetail
+        agent={agent({
+          plugins: [
+            { id: '@omadia/ui-orchestrator', config: {}, enabled: true, package_missing: true },
+            { id: '@omadia/odoo', config: {}, enabled: true, package_missing: false },
+          ],
+        })}
+      />,
+    );
+    const badge = await screen.findByTestId('plugin-package-missing-@omadia/ui-orchestrator');
+    expect(badge.textContent).toBe('Package missing — not running');
+    expect(badge.getAttribute('title')).toContain('byte5ai/omadia-ui-support');
+    expect(screen.queryByTestId('plugin-package-missing-@omadia/odoo')).toBeNull();
+  });
+
   it('renders the empty state when the agent has no plugins assigned', async () => {
     await renderOnPluginsTab(
       <AgentDetail agent={agent({ plugins: [] })} />,
