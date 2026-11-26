@@ -126,8 +126,21 @@ answer:
   recognises as a table by type or name, CSV or XLSX, and points the model
   to `query_dataset`) and the results of a short
   allowlist of the agent's own tools (`memory`, the stored-process tools,
-  `suggest_follow_ups`, `ask_user_choice`) reach the model in clear, and so
-  do the errors these tools return or throw. A tool an operator set to bypass
+  `suggest_follow_ups`, `ask_user_choice`, and the files the agent produced:
+  `render_diagram`, `create_xlsx`, `create_docx`, whose results are the file's
+  metadata and link, never a cell value) reach the model in clear, and so
+  do the errors these tools return or throw. An exemption can also cover only
+  some operations of a tool (ADR-0197): `query_dataset` lists the user's
+  datasets (`list_datasets`) and their columns (`get_schema`, names and types,
+  no sample value) in clear, so the model finds a dataset by the name the
+  user gave it, while `query_rows` stays interned. A transcript that
+  `transcribe_recording` makes of a recording the user uploaded in the same
+  turn is masked like text inlined from an upload instead of being interned
+  (ADR-0198): the model reads it, and while prompt masking is on its PII
+  spans are masked. A transcript of any other stored file is interned. Since
+  the public MCP endpoint must never hand a third party what the shield
+  passes in clear, it never serves an intern-exempt tool (the file producers
+  included) or a tool with exempt operations. A tool an operator set to bypass
   hands the model its result and the errors it returns as they are, while a
   message it throws is still withheld.
 

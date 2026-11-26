@@ -3000,6 +3000,12 @@ These tool results skip the digest:
   cells the dataset import of that file scanned and encrypted (§6b) do not
   reach the model through it. `mask_user_prompt` does not reach the tool:
   that setting masks prompt text, and a tool result is not prompt text.
+  The file and image producers `render_diagram`, `create_xlsx` and
+  `create_docx` (#1967) are exempt too: their result is the produced file's
+  metadata and link, never a cell value, and their handlers still run on the
+  user's restored values (`runsOnModelInput`). `query_dataset` is exempt only
+  for its `list_datasets` and `get_schema` operations
+  (`INTERN_EXEMPT_OPERATIONS`, ADR-0197); `query_rows` stays interned.
 - **Operator bypass.** A plugin set to `bypass`, a tool on its `per_tool`
   list, or a tool of an MCP server the operator flagged `privacyBypass`
   (`mcpPrivacyBypass.ts`; set through the agent builder's MCP server route,

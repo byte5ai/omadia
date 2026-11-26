@@ -130,7 +130,7 @@ export const queryDatasetToolSpec = {
     'Query structured datasets (CSV imports) the current user has uploaded — tables of rows with typed columns, as opposed to free-text documents. ' +
     'Three operations via `query`:\n' +
     '- `list_datasets`: list the caller\'s datasets (id, name, row count, column names+types). Call this FIRST when you don\'t already know the `dataset_id`.\n' +
-    '- `get_schema`: full column schema (name, inferred type, sample value) for one dataset — pass `dataset_id`.\n' +
+    '- `get_schema`: full column schema (name, inferred type) for one dataset — pass `dataset_id`.\n' +
     '- `query_rows`: filter/aggregate over a dataset\'s rows — pass `dataset_id` plus any of `filters` (column/op/value, `op` one of eq/neq/gt/gte/lt/lte/contains — gt/gte/lt/lte only on number columns, contains only on string columns), `group_by` (a column name), `aggregate` ({fn: count/sum/avg/min/max, column?}), `limit`, `offset`. ' +
     'A valid `dataset_id` is the uuid `list_datasets` returned for an UPLOADED dataset. A `ds_…` id from a privacy digest is a different id space and is NOT accepted here — use the `v4_*` verbs for those. ' +
     'NEVER invent column names — call `get_schema` first if unsure. Results are always paged/aggregated server-side; the response includes `totalMatched` so you can tell the user when there is more than what was returned. ' +
@@ -275,7 +275,10 @@ export class QueryDatasetTool {
             id: dataset.id,
             name: dataset.name,
             rowCount: dataset.rowCount,
-            columns: dataset.columns,
+            // ADR-0197 — this result reaches the model in clear, so it
+            // carries names and types only: a column's `sample` is a cell
+            // value (admin-UI preview), never metadata.
+            columns: dataset.columns.map((c) => ({ name: c.name, type: c.type })),
           });
         } catch (err) {
           // #1093 — this branch used to have no catch at all: a rejection

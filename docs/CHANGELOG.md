@@ -36,6 +36,23 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — Privacy Shield: per-operation intern exemptions, diagrams and transcripts (#1866, #1967, #1985; ADR-0197, ADR-0198) (2026-11-26)
+
+- `query_dataset` hands the model `list_datasets` and `get_schema` (column names and types,
+  no sample cell) in clear, so a dataset is found by the name the user gave it; `query_rows`
+  stays interned (`INTERN_EXEMPT_OPERATIONS`, `isInternExemptCall` in
+  `privacyInternPolicy.ts`).
+- `render_diagram`, `create_xlsx` and `create_docx` results (file metadata and link, never a
+  cell value) are exempt, while their handlers still run on the user's restored values
+  (`runsOnModelInput`), so a diagram reply no longer shows the signed URL as an
+  "Originaldaten" table.
+- A `transcribe_recording` transcript of a recording uploaded in the same turn
+  (`[attachments-info]` storage key) is prompt-masked instead of interned, so the agent can
+  answer about it; any other key stays interned. Ownership check #1960 is still open.
+- The public MCP endpoint additionally refuses tools with exempt operations
+  (`query_dataset`) and no longer lists the now-exempt file producers (`render_diagram`,
+  `create_xlsx`, `create_docx`), whose uninterned result its masking check would refuse.
+
 ### Fixed — Privacy Shield v4: nested siblings, true totals, every render (#1728, #1848, #1769) (2026-11-26)
 
 - A tool result with one record list next to a nested object (weather: `location`/`current`

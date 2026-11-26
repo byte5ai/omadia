@@ -238,7 +238,12 @@ import type {
   CliRecalledContext,
   CliTurnRecord,
 } from './cliTurnRecord.js';
-import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
+import {
+  internFailedNotice,
+  isInternExemptCall,
+  isPromptMaskedUploadCall,
+  runsOnModelInput,
+} from './privacyInternPolicy.js';
 import {
   remaskEchoedValues,
   restorePromptSurrogatesInToolInput,
@@ -1572,6 +1577,33 @@ async function preMaskUserMessage(
     if (err instanceof PromptMaskBlockedError) return err;
     throw err;
   }
+}
+
+/**
+ * ADR-0198 — the text of a file the user uploaded in this turn (a
+ * `transcribe_recording` transcript), masked like the #268 attachment tail:
+ * PII spans become the turn's surrogates, the rest stays readable. A blocked
+ * mask fails closed — the text is withheld behind the kernel's notice, as an
+ * interning failure would be.
+ */
+async function maskOwnUploadText(
+  privacy: PrivacyTurnHandle,
+  toolName: string,
+  text: string,
+): Promise<string> {
+  try {
+    return remaskEchoedValues(privacy, await maskPromptForWire(privacy, text, 'context'));
+  } catch (err) {
+    console.warn(
+      `[orchestrator.dispatchTool:${toolName}] prompt masking of the upload text failed ${errorClassForLog(err)} — result WITHHELD`,
+    );
+    return internFailedNotice(toolName);
+  }
+}
+
+/** ADR-0198 — storage keys of the files uploaded in this turn. */
+function turnUploadKeysOf(input: ChatTurnInput): ReadonlySet<string> {
+  return new Set(parseAttachmentsInfo(input.userMessage).map((info) => info.storageKey));
 }
 
 /** `maskPromptForWire` for the #268 ingested attachment tail — skips the
@@ -5890,6 +5922,8 @@ export class Orchestrator {
         memoryFileRead: { value: false },
         // The turn's wire view (prompt + answer), for a verifier hand-over.
         wireView: {},
+        // ADR-0198 — the files the user uploaded in this turn.
+        turnUploadKeys: turnUploadKeysOf(input),
         // #1543 — this turn's render provenance notes, for the persisted row.
         renderProvenance: { notes: [] },
         graphReadScope: {},
@@ -7751,6 +7785,8 @@ export class Orchestrator {
       sessionScope: sessionId,
       // The turn's wire view (prompt + answer), for a verifier hand-over.
       wireView: {},
+      // ADR-0198 — see the matching `turnContext.run` above.
+      turnUploadKeys: turnUploadKeysOf(input),
       renderProvenance: { notes: [] },
       graphReadScope: {},
       orchestratorExecution: {},
@@ -9654,7 +9690,7 @@ export class Orchestrator {
     const asksSubAgentModel =
       domainTool !== undefined && domainTool.mcpServerId === undefined && domainTool !== this.consultTool;
     const handlerInput =
-      asksSubAgentModel || isInternExemptTool(name)
+      asksSubAgentModel || runsOnModelInput(name)
         ? input
       : restorePromptSurrogatesInToolInput(privacy, input);
     const execute = async (): Promise<NativeToolOutput> => {
@@ -9835,7 +9871,10 @@ export class Orchestrator {
       // exemption covers the normal result only: an exempt tool's `Error:`
       // text can quote what it failed on (a memory file, an attachment's
       // rows), so it takes the same redaction as below.
-      if (isInternExemptTool(name)) {
+      const exempt = isInternExemptCall(name, input);
+      const ownUpload =
+        !exempt && isPromptMaskedUploadCall(name, input, turnContext.current()?.turnUploadKeys);
+      if (exempt || ownUpload) {
         if (
           isGuardedControlFlowResult(result, mcpAuthPromptMint) &&
           result !== kernelRefusal.text
@@ -9848,6 +9887,9 @@ export class Orchestrator {
             authPromptMint: mcpAuthPromptMint,
           });
         }
+        // ADR-0198 — text of the user's own upload (a transcript): readable,
+        // with its PII spans masked like the attachment tail of a prompt.
+        if (ownUpload) return maskOwnUploadText(privacy, name, result);
         // #1544 — the handler ran on the user's values; what it echoes goes
         // back to the model as the placeholders it wrote.
         return remaskEchoedValues(privacy, result);
