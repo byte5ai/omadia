@@ -58,6 +58,7 @@ import {
   currentGraphNodeViewer,
   currentProcessBoundary,
   currentProcessReadFilter,
+  creatorOfCurrentTurn,
   graphNodeFilter,
   processWriteScope,
   graphScopeFor,
@@ -448,6 +449,11 @@ export const KG_METHOD_ACCESS: { readonly [K in keyof Required<KnowledgeGraph>]:
     addOwner: 'kernel-only',
     removeOwner: 'kernel-only',
     deleteMemory: 'kernel-only',
+    listOwnerlessMemorableKnowledge: 'kernel-only',
+    deleteOwnerlessMemory: 'kernel-only',
+    findOmadiaUserIdByChannelIdentity: 'kernel-only',
+    countUserIdentity: 'kernel-only',
+    purgeUserIdentity: 'kernel-only',
     countMemorableKnowledge: 'kernel-only',
     purgeMemorableKnowledge: 'kernel-only',
     countConversationHistory: 'kernel-only',
@@ -652,7 +658,9 @@ export function boundProcessMemory(service: ProcessMemoryService, pluginId: stri
       if (processWriteScope(input.scope) !== input.scope) {
         throw new GraphServiceRefusedError(pluginId, capability, 'write', 'out-of-scope');
       }
-      return service.write(input);
+      // #1843 — the creator is the turn's caller, never what the plugin says.
+      const { createdByOmadiaUserId: _ignored, ...rest } = input;
+      return service.write({ ...rest, ...creatorOfCurrentTurn() });
     },
     async edit(input: EditProcessInput): Promise<EditProcessResult> {
       if (!(await readableRecord('edit', input.id))) return { ok: false, reason: 'not-found' };

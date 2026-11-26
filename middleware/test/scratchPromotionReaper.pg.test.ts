@@ -323,6 +323,40 @@ if (pgUp) {
     });
   });
 
+  describe('#1829 · plugin storage is not scratch (real PG)', () => {
+    it('never counts, promotes or drops a plugin ctx.memory file', async () => {
+      await pool.query('DROP TABLE IF EXISTS memory_files');
+      await pool.query(MEMORY_FILES_DDL);
+      const pluginPath = '/memories/orchestrators/a/plugins/crm/cache.md';
+      for (const path of [pluginPath, '/memories/orchestrators/a/note.md']) {
+        await pool.query(
+          `INSERT INTO memory_files (virtual_path, content, size_bytes, created_at, updated_at)
+           VALUES ($1, $2, $3, now() - interval '2 days', now() - interval '2 days')`,
+          [path, SIGNIFICANT_BODY, SIGNIFICANT_BODY.length],
+        );
+      }
+      const { kg, createCalls } = makeFakeKg();
+      const reaper = createScratchPromotionReaper({
+        pool,
+        tenantId: 'default',
+        kg,
+        scorer: makeFakeScorer(),
+        threshold: 0.6,
+        ageMs: 24 * 3_600_000,
+        intervalMs: 60 * 60_000,
+        defaultVisibility: 'team',
+        dropUnpromoted: true,
+        log: () => {},
+      });
+      assert.equal(await reaper.due('a'), 1, 'only the note is due');
+      const res = await reaper.runOnce();
+      assert.equal(res.scanned, 1);
+      assert.equal(createCalls.length, 1);
+      const left = await pool.query<{ virtual_path: string }>('SELECT virtual_path FROM memory_files');
+      assert.deepEqual(left.rows.map((r) => r.virtual_path), [pluginPath]);
+    });
+  });
+
   // Part A — visibility flows through the REAL Neon createMemorableKnowledge.
   describe('WS5 · Neon createMemorableKnowledge visibility flow (real PG)', () => {
     const NEON_TENANT = 'ws5b-vis-tenant';

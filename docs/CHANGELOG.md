@@ -36,6 +36,46 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the user purge erases one person (#1840, #1842, #1843, ADR-0186) (2026-11-26)
+
+- Memory purge, axis "User": the selector may be the omadia user id, the account id from
+  `/admin/users/<id>` or `<channel>~<id>` of a known channel identity; the preview names the
+  resolved person (`resolvedUser`, warning `user_selector_resolved`) and an unknown uuid
+  warns `user_unknown` (#1840). The user detail page shows the omadia user id.
+- Shared remembered facts only lose the purged owner (ACL audit `shrink` row); facts they own
+  alone are deleted, and the preview and result count excerpts and de-owned facts separately
+  (`kgDeownedCount`, `kgExcerptCount`) (#1842).
+- With a resolved person the purge also deletes their datasets, the processes they created
+  and their `User` / `ChannelIdentity` nodes; channel turns are matched by `<kind>:<id>`
+  (#1843). The account-delete dialog says memory and data stay and points to the purge.
+- **Migration** `harness-knowledge-graph-neon` **0038_process_created_by** — nullable
+  `processes.created_by_omadia_user_id` + partial index; `write_process` stamps the turn's
+  omadia user id, the bounded `processMemory@1` sets it from the turn, never from the plugin.
+- `memory_purge_audit.deleted_detail` (jsonb, added by the audit store's idempotent DDL) keeps
+  all layer counts. plugin-api 1.100.0 also adds `MemorableKnowledgeCount` /
+  `MemorableKnowledgePurgeResult`, `findOmadiaUserIdByChannelIdentity?`,
+  `count/purgeUserIdentity?`, `ProcessMemoryService.count/purgeByCreator?`,
+  `WriteProcessInput.createdByOmadiaUserId` and `SYSTEM_ACTOR_OMADIA_USER_ID`.
+
+### Fixed — memory tool hygiene: reaper, rules, error paths (#1829, #1831, #1832, ADR-0185) (2026-11-26)
+
+- The scratch promotion reaper no longer reads plugin storage
+  (`/memories/orchestrators/<slug>/plugins/<id>/`): plugin files are never scored, promoted or
+  dropped (#1829).
+- Rule entries follow their `/memories/_rules/` files (#1831): exact path match instead of an
+  unescaped `LIKE` prefix, a changed file updates the entry and its embedding, a removed file
+  removes the entry. `runDurableRulesSync` runs at boot and after a purge of axis `all`.
+- Owner-less memorable knowledge can be deleted one by one: `GET|DELETE
+  /api/v1/admin/memory/ownerless[/:id]` (audited first, owned entries → 409) and the Danger
+  Zone section "Memories without an owner". plugin-api **1.100.0** adds the optional
+  `listOwnerlessMemorableKnowledge` / `deleteOwnerlessMemory`; `admin_audit` action
+  `memory.ownerless_delete`.
+- Memory tool (#1832): error texts carry only model-facing `/memories/…` paths (the namespacer
+  maps physical roots back; a scope violation no longer names the agent), the per-call log line
+  carries command, path and outcome but no note content, `MemoryPathDenied` /
+  `MemoryScopeViolation` log one line without a stack trace, and `effectiveMemoryScope` audit
+  lines carry `[security-audit]` once.
+
 ### Added — core seams for channel plugins: enum PATCH validation, channels empty state, attachment byte read (ADR-0222) (2026-11-26)
 
 - **#1998 (core part)** — the post-install setup PATCH (`/api/v1/admin/runtime/installed/:id/secrets`)

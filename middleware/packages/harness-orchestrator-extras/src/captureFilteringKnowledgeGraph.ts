@@ -177,6 +177,13 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
   readonly purgeConversationHistory?: (
     filter: ConversationHistoryPurgeFilter,
   ) => Promise<{ deletedNodes: number }>;
+  // ADR-0185 — the operator view of owner-less memory, forwarded the same way.
+  readonly listOwnerlessMemorableKnowledge?: KnowledgeGraph['listOwnerlessMemorableKnowledge'];
+  readonly deleteOwnerlessMemory?: KnowledgeGraph['deleteOwnerlessMemory'];
+  // #1840 / #1843 — identity lookups and the identity purge, forwarded too.
+  readonly findOmadiaUserIdByChannelIdentity?: KnowledgeGraph['findOmadiaUserIdByChannelIdentity'];
+  readonly countUserIdentity?: KnowledgeGraph['countUserIdentity'];
+  readonly purgeUserIdentity?: KnowledgeGraph['purgeUserIdentity'];
 
   constructor(opts: CaptureFilteringKnowledgeGraphOptions) {
     this.inner = opts.inner;
@@ -188,6 +195,16 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     if (innerCountHistory) this.countConversationHistory = innerCountHistory;
     const innerPurgeHistory = opts.inner.purgeConversationHistory?.bind(opts.inner);
     if (innerPurgeHistory) this.purgeConversationHistory = innerPurgeHistory;
+    const innerListOwnerless = opts.inner.listOwnerlessMemorableKnowledge?.bind(opts.inner);
+    if (innerListOwnerless) this.listOwnerlessMemorableKnowledge = innerListOwnerless;
+    const innerDeleteOwnerless = opts.inner.deleteOwnerlessMemory?.bind(opts.inner);
+    if (innerDeleteOwnerless) this.deleteOwnerlessMemory = innerDeleteOwnerless;
+    const innerFindByIdentity = opts.inner.findOmadiaUserIdByChannelIdentity?.bind(opts.inner);
+    if (innerFindByIdentity) this.findOmadiaUserIdByChannelIdentity = innerFindByIdentity;
+    const innerCountIdentity = opts.inner.countUserIdentity?.bind(opts.inner);
+    if (innerCountIdentity) this.countUserIdentity = innerCountIdentity;
+    const innerPurgeIdentity = opts.inner.purgeUserIdentity?.bind(opts.inner);
+    if (innerPurgeIdentity) this.purgeUserIdentity = innerPurgeIdentity;
   }
 
   /** Spec 2042 — no classification, no trigger: a patch of a written turn. */
@@ -425,13 +442,13 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
 
   countMemorableKnowledge(
     filter: MemorableKnowledgePurgeFilter,
-  ): Promise<{ count: number }> {
+  ): ReturnType<KnowledgeGraph['countMemorableKnowledge']> {
     return this.inner.countMemorableKnowledge(filter);
   }
 
   purgeMemorableKnowledge(
     filter: MemorableKnowledgePurgeFilter,
-  ): Promise<{ deletedNodes: number }> {
+  ): ReturnType<KnowledgeGraph['purgeMemorableKnowledge']> {
     return this.inner.purgeMemorableKnowledge(filter);
   }
 

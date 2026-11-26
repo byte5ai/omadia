@@ -1017,9 +1017,9 @@ export function buildOrchestratorForAgent(
         }
       : {}),
     log: (msg, fields): void => {
-      console.error(
-        `[security-audit] ${msg}${fields ? ` ${JSON.stringify(fields)}` : ''}`,
-      );
+      // #1832 — some callers already carry the prefix; write it once.
+      const line = msg.startsWith('[security-audit]') ? msg : `[security-audit] ${msg}`;
+      console.error(`${line}${fields ? ` ${JSON.stringify(fields)}` : ''}`);
     },
   });
 

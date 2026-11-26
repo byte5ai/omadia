@@ -703,6 +703,7 @@ export { WEB_ACCOUNT_CHANNEL_TYPE, isWebAccountTurn, webAccountOrigin } from './
 export {
   currentProcessBoundary,
   currentProcessReadFilter,
+  creatorOfCurrentTurn,
   processWriteScope,
   type ProcessBoundary,
 } from './tools/processMemoryTool.js';

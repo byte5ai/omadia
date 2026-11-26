@@ -4981,8 +4981,12 @@ spätere Migrationen trivial.
   Für Agents nur lesbar (#1827, Deny-Prefix in `ScopedMemoryStore`): jede
   Datei hier wirkt für alle Agents und Accounts, darum entstehen Regeln nur
   über den Repo-Seed. Der `DurableRulesMemoryStore`-Hook feuert damit aus dem
-  Chat nicht mehr; Seed-Regeln erreichen den Durable-Tier über
-  `scripts/backfill-durable-rules.ts`.
+  Chat nicht mehr. Seit ADR-0185 (#1831) gleicht `runDurableRulesSync`
+  (`src/services/durableRulesSync.ts`) die Regel-Einträge beim Boot und nach
+  einem Purge `axis:'all'` mit den Dateien ab: exakter Pfad-Match, geänderte
+  Datei → Text + Embedding aktualisiert, gelöschte Datei → Eintrag gelöscht
+  (Audit-Actor Nil-UUID). `scripts/backfill-durable-rules.ts` bleibt für den
+  manuellen Lauf.
 - `/memories/customers/<name>.md` — stabile Fakten pro Kunde.
 - `/memories/observations/YYYY-QX.md` — Zeitstempelbezogen.
 - `/memories/sessions/<scope>/YYYY-MM-DD.md` — Transkripte, *geschrieben
@@ -9080,6 +9084,21 @@ derselben Auswahl (sonst `409 preview_required`), nimmt den Actor über `auditAc
 `reseed:true` (nur `axis:'all'`) setzt nur die Einträge des gebündelten Seed-Verzeichnisses
 (`MEMORY_SEED_DIR`, heute `_rules`) zurück und schreibt sie sofort neu — Chat-Sessions,
 Transkripte, `_brand`, `core`, `ui-prefs` bleiben immer. Details: `docs/security-architecture.md` §10q.
+
+Achse `user` seit ADR-0186 (#1840/#1842/#1843): `resolveUserSelector` (`services/memoryPurgeUser.ts`)
+liest omadia-User-ID, Konto-ID (`web:<users.id>`) oder `<kanal>~<id>`; geteilte
+`MemorableKnowledge` wird nur ent-eignet (`aclOwner`-Filter = Owner löschen, plugin-api 1.100.0),
+dazu Datensätze, Prozesse (`processes.created_by_omadia_user_id`, Neon-Migration 0038) und
+`User`/`ChannelIdentity`-Knoten. Response-Felder zusätzlich `kgDeownedCount|kgExcerptCount|
+datasetCount|processCount|identityCount`, `resolvedUser`. `GET /api/v1/admin/users/:id` liefert
+`omadiaUserId`.
+
+**Ohne Eigentümer** (`GET|DELETE /api/v1/admin/memory/ownerless[/:id]`, ADR-0185, #1829/#1831,
+gleiches Gate): listet `MemorableKnowledge` mit leerem `acl_owners` (Scratch-Reaper, Regeln) und
+löscht einen Eintrag einzeln — `admin_audit` `memory.ownerless_delete` vorher (Fehler → 500,
+nichts gelöscht), `memory_acl_audit` `delete` mit der `omadia_user_id` des Operators. Ein Eintrag
+mit Eigentümer → `409 memory.has_owners`. UI: Danger Zone, Abschnitt „Erinnerungen ohne
+Eigentümer“. Der Scratch-Reaper liest Plugin-Storage (`…/<slug>/plugins/`) nicht mehr.
 
 **Promote** (`POST|GET /api/v1/admin/memory/promotions/:slug`, gleiches `requireAuth`-Gate
 und gleicher Prefix wie Purge): kopiert/verschiebt Files und Subtrees zwischen den Tiers

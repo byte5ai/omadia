@@ -280,9 +280,10 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
     const inserted = await this.pool.query<ProcessRow>(
       `
       INSERT INTO processes
-        (id, tenant_id, scope, title, steps, visibility, embedding, version, created_at, updated_at, unprotected)
+        (id, tenant_id, scope, title, steps, visibility, embedding, version, created_at, updated_at, unprotected,
+         created_by_omadia_user_id)
       VALUES
-        ($1, $2, $3, $4, $5::jsonb, $6, $7::vector, 1, NOW(), NOW(), $8)
+        ($1, $2, $3, $4, $5::jsonb, $6, $7::vector, 1, NOW(), NOW(), $8, $9)
       RETURNING id, scope, title, steps, visibility, version, created_at, updated_at, unprotected
       `,
       [
@@ -294,6 +295,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
         visibility,
         queryLit,
         input.unprotected === true,
+        input.createdByOmadiaUserId ?? null,
       ],
     );
     const row = inserted.rows[0];
@@ -626,5 +628,47 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
       createdAt: toIso(row.superseded_at),
       updatedAt: toIso(row.superseded_at),
     }));
+  }
+
+  async countByCreator(omadiaUserId: string): Promise<{ count: number }> {
+    const result = await this.pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM processes
+        WHERE tenant_id = $1 AND created_by_omadia_user_id = $2`,
+      [this.tenantId, omadiaUserId],
+    );
+    return { count: Number(result.rows[0]?.count ?? '0') };
+  }
+
+  /**
+   * #1843 — the person's processes and their version history, in one
+   * transaction. The one exception to migration 0009's append-only rule for
+   * `process_history`: an erasure removes history too. The creator is the
+   * first writer; later editors' versions go with the process (ADR-0186).
+   */
+  async purgeByCreator(omadiaUserId: string): Promise<{ deleted: number }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const gone = await client.query<{ id: string }>(
+        `DELETE FROM processes
+          WHERE tenant_id = $1 AND created_by_omadia_user_id = $2
+          RETURNING id`,
+        [this.tenantId, omadiaUserId],
+      );
+      const ids = gone.rows.map((r) => r.id);
+      if (ids.length > 0) {
+        await client.query(
+          `DELETE FROM process_history WHERE tenant_id = $1 AND id = ANY($2::text[])`,
+          [this.tenantId, ids],
+        );
+      }
+      await client.query('COMMIT');
+      return { deleted: ids.length };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 }

@@ -21,11 +21,11 @@ export class MemoryToolHandler {
     try {
       cmd = parseCommand(input);
       const result = await this.dispatch(cmd);
-      logMemoryCall(cmd, result, null);
+      logMemoryCall(cmd, null);
       return result;
     } catch (err) {
       const formatted = formatError(err);
-      logMemoryCall(cmd, formatted, err);
+      logMemoryCall(cmd, err);
       return formatted;
     }
   }
@@ -247,30 +247,41 @@ function findLineNumbers(haystack: string, needle: string): number[] {
 }
 
 /**
- * The four domain error classes are part of the memory tool's normal return
- * contract: they are caught in `handle`, formatted, and handed back to the model
- * as a recoverable tool result (e.g. "create on an existing path" → the model
- * switches to `str_replace`). They are control-flow signals, NOT failures, so
- * they must never be logged as `console.error` with a stack trace — doing so
- * makes routine model behaviour look like an unhandled crash in production logs
- * and trips false-positive monitoring alerts.
+ * Memory errors that are part of the tool's normal return contract: they are
+ * caught in `handle`, formatted, and handed back to the model as a recoverable
+ * tool result (e.g. "create on an existing path" → the model switches to
+ * `str_replace`). They are control-flow signals, NOT failures, so they must
+ * never be logged as `console.error` with a stack trace — doing so makes
+ * routine model behaviour look like an unhandled crash in production logs and
+ * trips false-positive monitoring alerts.
+ *
+ * Besides the four classes of this package, the refusals of the layers above
+ * it count (#1832): `MemoryPathDenied` (namespacer) and `MemoryScopeViolation`
+ * (scoped store). They live in `@omadia/orchestrator`, which depends on this
+ * package, so they are recognised by name.
  */
+const EXPECTED_FOREIGN_ERRORS = new Set(['MemoryPathDenied', 'MemoryScopeViolation']);
+
 function isExpectedMemoryError(err: unknown): boolean {
   return (
     err instanceof MemoryAlreadyExistsError ||
     err instanceof MemoryPathNotFoundError ||
     err instanceof MemoryIsDirectoryError ||
-    err instanceof MemoryInvalidPathError
+    err instanceof MemoryInvalidPathError ||
+    (err instanceof Error && EXPECTED_FOREIGN_ERRORS.has(err.name))
   );
 }
 
-function logMemoryCall(cmd: MemoryCommand | undefined, result: string, err: unknown): void {
+/**
+ * One line per call: command, model-facing path and outcome. Never the
+ * result: for `view` and `str_replace` that is the note's content (#1832).
+ */
+function logMemoryCall(cmd: MemoryCommand | undefined, err: unknown): void {
   const cmdLabel = cmd
     ? `${cmd.command} ${'path' in cmd ? cmd.path : `${cmd.old_path} → ${cmd.new_path}`}`
     : 'UNPARSED_COMMAND';
   const outcome = err ? `ERROR (${err instanceof Error ? err.name : typeof err})` : 'ok';
-  const snippet = result.replace(/\n/g, ' ⏎ ').slice(0, 240);
-  console.log(`[memory] ${cmdLabel} → ${outcome}: ${snippet}`);
+  console.log(`[memory] ${cmdLabel} → ${outcome}`);
   // Only surface a full stack trace for UNEXPECTED errors (DB outage, bugs).
   // Expected domain errors are already conveyed by the one-line log above and
   // are returned to the model as a recoverable result.
