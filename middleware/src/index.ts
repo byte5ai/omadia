@@ -367,6 +367,7 @@ import {
 import { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './conductor/webhookPostAction.js';
 import { parseMcpActionId } from './conductor/mcpActionId.js';
 import { mcpRowToConfig } from './agents/subAgentToolHydration.js';
+import { createMcpInputReplayer } from './services/mcpInputReplayer.js';
 import { createMcpActionInvoker, mcpActionIds } from './conductor/mcpActionInvoker.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
@@ -603,7 +604,6 @@ import {
 // W2-1 (#544) — MRTR mid-call user input: the process-shared park store and the
 // replayer registration. See `mcp/pendingMcpInput.ts` for why these are shared.
 import {
-  planMcpInputReplay,
   setSharedMcpInputReplayer,
   sharedPendingMcpInputStore,
 } from '@omadia/orchestrator';
@@ -3457,39 +3457,16 @@ async function main(): Promise<void> {
     // Publish the handle so the operator router can invalidate a changed
     // server and `shutdownBuilder` can close the pooled stdio children.
     runtimeMcpManager = mcpManager;
-    // W2-1 (#544) — the replayer. Registered here because this is the only
-    // place that holds BOTH the manager and the server registry: a replay is
-    // a fresh `tools/call`, so it needs the server's live config (endpoint,
-    // headers, Vault-resolved env) re-resolved rather than a snapshot taken
-    // when the call was parked.
-    //
-    // A server the operator deleted (or renamed away) between the two turns
-    // returns `undefined`, which the orchestrator surfaces to the user as
-    // "no longer reachable" instead of silently dropping their input.
+    // W2-1 (#544) — the replayer (see `createMcpInputReplayer`). Registered
+    // here because this is the only place that holds both the manager and the
+    // server registry.
     if (mcpAuditStore) {
-      setSharedMcpInputReplayer({
-        replay: async (record, inputResponses) => {
-          const server = (await mcpAuditStore.listMcpServers()).find(
-            (s) => s.id === record.serverId,
-          );
-          if (!server) return undefined;
-          const cfg: McpServerConfig = {
-            id: server.id,
-            name: server.name,
-            transport: server.transport,
-            endpoint: server.endpoint,
-            ...(server.privacyBypass ? { privacyBypass: true } : {}),
-          };
-          // #562 phase 3 — the RECORD decides which dialect the retry
-          // speaks: omadia's flat `inputResponses` argument for a 2025-era
-          // peer, the spec's per-request `inputResponses` param plus a
-          // verbatim `requestState` echo for a 2026-07-28 one. See
-          // `planMcpInputReplay` for why that is derived from the card
-          // rather than from the connection.
-          const plan = planMcpInputReplay(record, inputResponses);
-          return mcpManager.callTool(cfg, record.toolName, plan.args, plan.replay);
-        },
-      });
+      setSharedMcpInputReplayer(
+        createMcpInputReplayer({
+          listServers: () => mcpAuditStore.listMcpServers(),
+          manager: mcpManager,
+        }),
+      );
     }
     // Host MCP service for plugin ctx.mcp (epic #459 W5, issue #458):
     // resolved lazily by createPluginContext, exactly like the 'llm'

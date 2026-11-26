@@ -47,6 +47,8 @@ import {
   isDeprecatedMcpTransport,
   looksUnauthorized,
   McpManager,
+  mcpNativeToolName,
+  mcpNativeToolNameCollision,
   mcpToolNameFromRef,
   turnContext,
   today,
@@ -89,7 +91,8 @@ import {
   McpRegistryError,
   type McpRegistryConfig,
 } from '../services/mcpRegistryClient.js';
-import { diffMcpToolAllowlist, scanDiscoveredTools } from '../services/mcpToolGuard.js';
+import { persistDiscoveredTools } from '../services/mcpDiscoveryPersist.js';
+import { diffMcpToolAllowlist } from '../services/mcpToolGuard.js';
 import { scanSkillForRisks } from '../services/skillGuard.js';
 import { importSkillMarkdown } from '../services/skillImport.js';
 import { serializeSkillMarkdown } from '../services/skillLoader.js';
@@ -1685,17 +1688,19 @@ export function createAgentBuilderRouter(
       // Scan gate (epic #459 W1, issue #454): every discovered tool is scanned
       // and its verdict persisted BEFORE the tool list itself is stored, so no
       // unscanned tool ever becomes visible or grantable.
-      const verdicts = scanDiscoveredTools(row.id, tools);
-      for (const verdict of verdicts) {
-        await l.graph.upsertMcpToolVerdict(verdict);
-      }
       // Prune verdicts for tools this server no longer exposes (codex fold):
-      // a hidden/renamed tool must not keep a stale clean verdict.
-      await l.graph.pruneMcpToolVerdicts(
-        row.id,
-        tools.map((t) => t.name),
-      );
-      await l.graph.setMcpDiscoveredTools(row.id, tools);
+      // a hidden/renamed tool must not keep a stale clean verdict. #1917 — an
+      // empty list after a non-empty one is not stored (`persistDiscoveredTools`).
+      const persisted = await persistDiscoveredTools(l.graph, row, tools);
+      if (persisted.emptyListIgnored) {
+        res.status(409).json({
+          error: 'mcp_tool_list_empty',
+          message:
+            'The server listed no tools. The previous tool list was kept; run Discover again once the server is back.',
+          serverId: row.id,
+        });
+        return;
+      }
       // Re-discovery can change verdicts (and thus the runtime blocklist) and
       // tool specs. Refresh the policy, then bump the server's grant epoch so
       // the reload's diff actually rebuilds the affected agents — verdict rows
@@ -2432,6 +2437,9 @@ export function createAgentBuilderRouter(
       for (const toolName of diff.toGrant) {
         await assertMcpToolAllowed(l, mcpServerId, toolName);
       }
+      // #1948 — two tools whose native names collide (`a.b` / `a_b`) cannot
+      // both be granted: the second would be silently dropped at hydration.
+      assertNoNativeNameCollision(server.name, diff.toGrant, [...diff.unchanged, ...diff.toGrant]);
       const broadReachAudit = await mcpGrantBroadReachGate(
         l,
         req,
@@ -3100,6 +3108,23 @@ export function createAgentBuilderRouter(
  * Returns the normalized bare tool name. Shared by the grant edge dispatcher
  * and the skill capability bind route.
  */
+/** #1948 — refuse a grant whose native tool name another granted tool of the
+ *  same holder already has. */
+function assertNoNativeNameCollision(
+  serverName: string,
+  toGrant: readonly string[],
+  granted: readonly string[],
+): void {
+  for (const toolName of toGrant) {
+    const other = mcpNativeToolNameCollision(serverName, toolName, granted);
+    if (other !== undefined) {
+      throw new ConfigValidationError(
+        `mcp_tool_name_collision: tools "${other}" and "${toolName}" on "${serverName}" get the same tool name "${mcpNativeToolName(serverName, toolName)}"; grant only one of them`,
+      );
+    }
+  }
+}
+
 async function assertMcpToolAllowed(
   l: Live,
   mcpServerId: string,
@@ -3291,6 +3316,19 @@ async function createEdge(
         // the bare-name grant (the 0014 unique index keys on the raw ref),
         // splitting one tool across two rows (W0c review).
         toolRef = await assertMcpToolAllowed(l, mcpServerId, toolRef);
+        const server = (await l.graph.listMcpServers()).find((s) => s.id === mcpServerId);
+        if (server) {
+          const holderGrants = (await l.graph.listAllToolGrants()).filter(
+            (g) =>
+              g.toolKind === 'mcp' &&
+              g.mcpServerId === mcpServerId &&
+              (subAgentId !== null ? g.subAgentId === subAgentId : g.agentId === agent.id && g.subAgentId === null),
+          );
+          assertNoNativeNameCollision(server.name, [toolRef], [
+            ...holderGrants.map((g) => mcpToolNameFromRef(g.toolRef, server.name)),
+            toolRef,
+          ]);
+        }
       }
       // #2050 — a helper's grant is a subset of its agent's: refused unless the
       // helper belongs to this agent and the agent holds the tool itself.

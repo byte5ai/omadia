@@ -13,7 +13,7 @@
  */
 import { mcpRowToConfig } from '../agents/subAgentToolHydration.js';
 import { refreshMcpGrantPolicy } from './mcpGrantPolicy.js';
-import { scanDiscoveredTools } from './mcpToolGuard.js';
+import { persistDiscoveredTools } from './mcpDiscoveryPersist.js';
 
 import type { AgentGraphStore, McpManager } from '@omadia/orchestrator';
 
@@ -38,23 +38,24 @@ export async function rescanAllMcpServers(
       // #545 — the security rescan bypasses the tool-list cache: re-scanning
       // a cached list would re-scan what was already scanned.
       const tools = await manager.listTools(mcpRowToConfig(server), { fresh: true });
-      const verdicts = scanDiscoveredTools(server.id, tools);
-      for (const verdict of verdicts) {
-        await graph.upsertMcpToolVerdict(verdict);
+      // Scan, prune verdicts of vanished tools, store (#1917: an empty list
+      // after a non-empty one is not stored — see `persistDiscoveredTools`).
+      const persisted = await persistDiscoveredTools(graph, server, tools);
+      if (persisted.emptyListIgnored) {
+        failures.push({
+          serverId: server.id,
+          serverName: server.name,
+          error: 'the server listed no tools; the previous tool list was kept',
+        });
+        log?.(`[mcpRescan] server "${server.name}" listed no tools — previous list kept`);
+        continue;
       }
-      // Prune verdicts for tools that disappeared since the last scan (codex
-      // fold): the fail-closed guard then denies a repurposed old name.
-      await graph.pruneMcpToolVerdicts(
-        server.id,
-        tools.map((t) => t.name),
-      );
-      await graph.setMcpDiscoveredTools(server.id, tools);
       // Signature-relevant epochs: rebuilds pick up spec/verdict changes for
       // both grant-holding and binding-only agents.
       await graph.bumpMcpGrantEpoch(server.id);
       await graph.bumpSkillBindingEpoch(server.id);
       scannedServers += 1;
-      scannedTools += verdicts.length;
+      scannedTools += persisted.scanned;
     } catch (err) {
       failures.push({ serverId: server.id, serverName: server.name, error: String(err) });
       log?.(`[mcpRescan] server "${server.name}" failed: ${String(err)}`);

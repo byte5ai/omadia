@@ -1792,15 +1792,51 @@ function httpRequestInit(
 
 // ── adapters ────────────────────────────────────────────────────────────────
 
-/** Anthropic tool names must match `^[a-zA-Z0-9_-]{1,64}$`. Build a stable,
- *  collision-resistant native name for an MCP tool. */
+/** The tool-name grammar every provider accepts (Anthropic's). Shared with
+ *  the public MCP write-scope grammar (#1940). */
+export const MCP_NATIVE_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+const MCP_NATIVE_TOOL_NAME_MAX = 64;
+const MCP_NATIVE_TOOL_NAME_HASH_LEN = 8;
+
+/**
+ * The native name of an MCP tool, `mcp__<server>__<tool>` in the grammar
+ * {@link MCP_NATIVE_TOOL_NAME_PATTERN}: every other character becomes `_`.
+ *
+ * #1948 — a name longer than 64 characters keeps its first 55 and ends in
+ * `_<8 hex>` (SHA-256 of `<server>\0<tool>`): a plain cut gave two long
+ * names that share 64 characters the same name, and the second tool was
+ * silently dropped. A name that fits stays exactly as before, so stored
+ * references to it (API-key bindings, privacy settings) keep working. Two
+ * tools whose names only differ in replaced characters (`a.b` / `a_b`) still
+ * share a name; the grant routes refuse the second one
+ * ({@link mcpNativeToolNameCollision}).
+ */
 export function mcpNativeToolName(
   serverName: string,
   toolName: string,
 ): string {
-  const raw = `mcp__${serverName}__${toolName}`;
-  const safe = raw.replace(/[^a-zA-Z0-9_-]/g, '_');
-  return safe.length <= 64 ? safe : safe.slice(0, 64);
+  const safe = `mcp__${serverName}__${toolName}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+  if (safe.length <= MCP_NATIVE_TOOL_NAME_MAX) return safe;
+  const hash = createHash('sha256')
+    .update(`${serverName}\0${toolName}`)
+    .digest('hex')
+    .slice(0, MCP_NATIVE_TOOL_NAME_HASH_LEN);
+  return `${safe.slice(0, MCP_NATIVE_TOOL_NAME_MAX - MCP_NATIVE_TOOL_NAME_HASH_LEN - 1)}_${hash}`;
+}
+
+/**
+ * #1948 — the already-granted tool of `serverName` whose native name equals
+ * that of `toolName`, if any (another tool, not `toolName` itself).
+ */
+export function mcpNativeToolNameCollision(
+  serverName: string,
+  toolName: string,
+  grantedToolNames: readonly string[],
+): string | undefined {
+  const target = mcpNativeToolName(serverName, toolName);
+  return grantedToolNames.find(
+    (other) => other !== toolName && mcpNativeToolName(serverName, other) === target,
+  );
 }
 
 function inputSchemaOrEmpty(tool: McpToolDescriptor): {

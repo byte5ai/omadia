@@ -898,6 +898,10 @@ function isUniqueViolation(err: unknown, constraint?: string): boolean {
   return (err as { constraint?: string }).constraint === constraint;
 }
 
+/** #1939 — stands in for "no MCP server" (native grants) in the sub-agent
+ *  grant unique index, which needs a non-NULL value to compare. */
+const NO_MCP_SERVER = '00000000-0000-0000-0000-000000000000';
+
 export class AgentGraphStore {
   constructor(private readonly pool: Pool) {}
 
@@ -1343,16 +1347,22 @@ export class AgentGraphStore {
    *  fold): after a re-discover, a name that disappeared must lose its
    *  verdict so the fail-closed dispatch guard treats a later re-appearance
    *  (possibly repurposed) as unscanned. Keeps only the current tool set. */
+  /**
+   * Drop the verdicts of tools the server no longer lists, so the fail-closed
+   * guard denies a repurposed old name until it is scanned again.
+   *
+   * #1917 — acknowledgements are KEPT. An ack is bound to the content hash of
+   * the verdict it accepted, so a tool that comes back unchanged is accepted
+   * again without the operator re-reviewing it, and one that comes back
+   * changed does not match. Deleting them together turned one empty
+   * `tools/list` (a server restarting) into a re-review of every risky tool.
+   */
   async pruneMcpToolVerdicts(
     serverId: string,
     keepToolNames: readonly string[],
   ): Promise<void> {
     await this.pool.query(
       'DELETE FROM mcp_tool_verdicts WHERE server_id = $1 AND NOT (tool_name = ANY($2))',
-      [serverId, keepToolNames],
-    );
-    await this.pool.query(
-      'DELETE FROM mcp_tool_verdict_acks WHERE server_id = $1 AND NOT (tool_name = ANY($2))',
       [serverId, keepToolNames],
     );
   }
@@ -2502,29 +2512,47 @@ export class AgentGraphStore {
       input.mcpServerId ?? null,
       input.config ? JSON.stringify(input.config) : null,
     ];
-    // ON CONFLICT DO NOTHING makes a top-level MCP grant idempotent at the DB
-    // level (unique index from migration 0014, codex W8 fold); a duplicate
-    // returns the existing row instead of erroring. Sub-agent/native grants
-    // are not covered by the index, so they insert as before.
+    // #1939 — a sub-agent grant (agent_id NULL, subagent_id set) is
+    // idempotent through its own unique index (migration 0115); a top-level
+    // MCP grant through 0014. A repeat returns the existing row either way.
+    const helperGrant = input.subAgentId !== undefined && input.subAgentId !== null && !input.agentId;
+    const conflict = helperGrant
+      ? `ON CONFLICT (subagent_id, tool_kind, tool_ref, COALESCE(mcp_server_id, '${NO_MCP_SERVER}'::uuid))
+           WHERE subagent_id IS NOT NULL AND agent_id IS NULL
+           DO NOTHING`
+      : `ON CONFLICT (agent_id, mcp_server_id, tool_ref)
+           WHERE agent_id IS NOT NULL AND tool_kind = 'mcp'
+           DO NOTHING`;
     const { rows } = await this.pool.query<ToolGrantDbRow>(
       `INSERT INTO agent_tool_grants
          (agent_id, subagent_id, tool_kind, tool_ref, mcp_server_id, config)
        VALUES ($1,$2,$3,$4,$5,COALESCE($6::jsonb,'{}'::jsonb))
-       ON CONFLICT (agent_id, mcp_server_id, tool_ref)
-         WHERE agent_id IS NOT NULL AND tool_kind = 'mcp'
-         DO NOTHING
+       ${conflict}
        RETURNING *`,
       params,
     );
     if (rows[0]) return mapToolGrant(rows[0]);
-    // Conflict: fetch the pre-existing identical grant.
-    const { rows: existing } = await this.pool.query<ToolGrantDbRow>(
-      `SELECT * FROM agent_tool_grants
-       WHERE agent_id = $1 AND mcp_server_id = $5 AND tool_ref = $4 AND tool_kind = 'mcp'
-       LIMIT 1`,
-      params,
-    );
-    return mapToolGrant(existing[0]!);
+    // Conflict: fetch the pre-existing identical grant. Only the parameters the
+    // statement uses are bound — an unused, untyped `$2` made Postgres reject
+    // the whole query ("could not determine data type of parameter $2").
+    const { rows: existing } = helperGrant
+      ? await this.pool.query<ToolGrantDbRow>(
+          `SELECT * FROM agent_tool_grants
+           WHERE subagent_id = $1 AND agent_id IS NULL AND tool_kind = $2 AND tool_ref = $3
+             AND mcp_server_id IS NOT DISTINCT FROM $4::uuid
+           LIMIT 1`,
+          [input.subAgentId, input.toolKind, input.toolRef, input.mcpServerId ?? null],
+        )
+      : await this.pool.query<ToolGrantDbRow>(
+          `SELECT * FROM agent_tool_grants
+           WHERE agent_id = $1 AND mcp_server_id = $2 AND tool_ref = $3 AND tool_kind = 'mcp'
+           LIMIT 1`,
+          [input.agentId, input.mcpServerId ?? null, input.toolRef],
+        );
+    if (!existing[0]) {
+      throw new ConfigValidationError('tool grant could not be created');
+    }
+    return mapToolGrant(existing[0]);
   }
 
   async deleteToolGrant(id: string): Promise<void> {

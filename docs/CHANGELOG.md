@@ -123,6 +123,28 @@ so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
 appear (#1730). The builder prompt names `get_build_status` /
 `runtime_smoke_status` as the only source for build and smoke state (#1806).
 Contract: ADR-0230 (Proposed).
+### Fixed — MCP grants and hydration (W09-10) (2026-11-26)
+
+- **#1910** Sub-agent (helper) MCP tools carry the discovered description and input
+  schema, like top-level grants, instead of a placeholder and an empty schema.
+- **#1918** A rebuild's post-build hook reads the snapshot the agent is being built from
+  (`OrchestratorRegistry.currentSnapshot()` during a diff), so a re-scan, an enabled or a
+  disabled server reaches the agent's tools with that change, not one change later.
+- **#1917** An empty `tools/list` from a server that listed tools before is not stored
+  and prunes nothing (Discover answers 409 `mcp_tool_list_empty`, the re-scan reports a
+  failure). Pruning keeps hash-bound acknowledgements. A granted tool the discovered
+  server no longer lists is not handed to a model.
+- **#1939** A repeated canvas drop is a no-op: core migration
+  `0115_subagent_tool_grant_unique.sql` removes duplicate sub-agent grant rows and adds the
+  unique index `agent_tool_grants_subagent_uidx`; `createToolGrant` binds only the
+  parameters its conflict query uses (the agent node answered 500). Hydration builds one
+  tool per granted tool.
+- **#1948** Native MCP tool names longer than 64 characters end in a stable `_<8 hex>`
+  suffix instead of a plain cut; names that fit are unchanged. Grants whose native names
+  collide after character replacement are refused (`mcp_tool_name_collision`). A tool name
+  may contain `:`; only a `<server>:` prefix is stripped from a grant ref.
+- **#1932** Replaying an answered MCP input request uses `mcpRowToConfig` (endpoint
+  placeholders, static headers), now in `src/services/mcpInputReplayer.ts`.
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
