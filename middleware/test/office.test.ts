@@ -381,6 +381,30 @@ describe('office docx renderer', () => {
     assert.equal(header?.match(/<w:b\/>/g)?.length, 2, 'both header runs are bold');
   });
 
+  it('turns tabs inside text into Word tabs, not raw tab characters', async () => {
+    const result = await renderDocx({
+      blocks: [
+        { type: 'paragraph', text: 'Name\tWert\nZwei\tDrei' },
+        { type: 'table', headers: ['Kopf\tA'], rows: [['x']] },
+      ],
+    });
+    const xml = (await unzipToText(result.buffer)).get('word/document.xml') ?? '';
+    const texts = [...xml.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)].map((m) => m[1] ?? '');
+    assert.ok(texts.every((t) => !t.includes('\t')), 'no raw tab may stay inside <w:t>');
+
+    const runsOf = (first: string): string => {
+      const p = [...xml.matchAll(/<w:p>[\s\S]*?<\/w:p>/g)]
+        .map((m) => m[0])
+        .find((candidate) => candidate.includes(`>${first}</w:t>`));
+      assert.ok(p, `paragraph with "${first}" exists`);
+      return [...p.matchAll(/<w:br\/>|<w:tab\/>|<w:t[^>]*>([^<]*)<\/w:t>/g)]
+        .map((m) => (m[0] === '<w:br/>' ? '\n' : m[0] === '<w:tab/>' ? '\t' : (m[1] ?? '')))
+        .join('');
+    };
+    assert.equal(runsOf('Name'), 'Name\tWert\nZwei\tDrei');
+    assert.equal(runsOf('Kopf'), 'Kopf\tA');
+  });
+
   const provenanceDescriptor: DocxDescriptor = {
     filename: 'bericht',
     title: 'Quartalsbericht',
