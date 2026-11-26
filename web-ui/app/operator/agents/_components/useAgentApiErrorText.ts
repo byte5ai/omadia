@@ -64,7 +64,12 @@ export function serverDetail(err: unknown): string {
   const fields = serverIssues(err).map((i) => (i.path ? `${i.path}: ${i.message}` : i.message));
   const parts = [serverReason(err), ...fields].filter((p): p is string => p !== null);
   if (parts.length > 0) return parts.join('; ');
-  if (err instanceof ApiError) return `HTTP ${String(err.status)}`;
+  // No reason to show: the machine code is the only hint there is, so it
+  // stays next to the status rather than leaving a bare "HTTP 409".
+  if (err instanceof ApiError) {
+    const code = serverCode(err);
+    return code !== null ? `${code} (HTTP ${String(err.status)})` : `HTTP ${String(err.status)}`;
+  }
   return err instanceof Error ? err.message : String(err);
 }
 
