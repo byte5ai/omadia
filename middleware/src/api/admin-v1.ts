@@ -248,6 +248,12 @@ export interface PluginPermissionsSummary {
   sql?: SqlPermission;
   memory_reads: string[];
   memory_writes: string[];
+  /** ADR-0256: top-level `/memories` trees this plugin's `memoryStore@1` may
+   *  read and change (`permissions.memory.trees`, e.g. `pairings`). The first
+   *  plugin to use a tree owns it. Private trees, `core` and `_*` names are
+   *  dropped at load time. Optional to keep legacy fixtures buildable; the
+   *  loader always populates it. */
+  memory_trees?: string[];
   graph_reads: EntityURI[];
   graph_writes: EntityURI[];
   network_outbound: string[];

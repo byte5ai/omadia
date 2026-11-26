@@ -4768,6 +4768,7 @@
       "permissions": {
         "memoryReads": "Memory · Reads",
         "memoryWrites": "Memory · Writes",
+        "memoryTrees": "Memory · Eigene Ordner",
         "graphReads": "Graph · Reads",
         "graphWrites": "Graph · Writes",
         "entitySystems": "Graph · Entity-Systeme",

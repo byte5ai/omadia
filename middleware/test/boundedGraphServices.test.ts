@@ -370,12 +370,60 @@ describe('ADR-0044 · bounded memoryStore@1', () => {
     return store;
   }
 
-  it('reads the shared trees and a plugin’s own top-level tree', async () => {
-    const bounded = boundMemoryStore(await seededStore(), PLUGIN);
+  it('reads the shared trees and changes a declared top-level tree', async () => {
+    const bounded = boundMemoryStore(await seededStore(), PLUGIN, ['notes']);
     assert.equal(await bounded.readFile('/memories/_brand/logo.md'), 'logo');
     assert.equal(await bounded.readFile('/memories/core/notes.md'), 'core');
-    await bounded.writeFile('/memories/pairings/dm/u-a.json', '{"a":1}');
-    assert.equal(await bounded.readFile('/memories/pairings/dm/u-a.json'), '{"a":1}');
+    await bounded.writeFile('/memories/notes/a.md', 'a');
+    assert.equal(await bounded.readFile('/memories/notes/a.md'), 'a');
+  });
+
+  it('ADR-0256: an undeclared tree is neither read nor changed', async () => {
+    const bounded = boundMemoryStore(await seededStore(), PLUGIN);
+    await assert.rejects(() => bounded.readFile('/memories/pairings/dm/u-a.json'), MemoryPathError);
+    await assert.rejects(() => bounded.writeFile('/memories/pairings/dm/u-a.json', '{}'), MemoryPathError);
+    await assert.rejects(() => bounded.writeFile('/memories/notes/a.md', 'a'), MemoryPathError);
+    await assert.rejects(() => bounded.list('/memories/pairings'), MemoryPathError);
+  });
+
+  it('ADR-0256: channel-telegram keeps pairings without declaring it, and nobody else can claim it', async () => {
+    const store = await seededStore();
+    const telegram = boundMemoryStore(store, '@omadia/channel-telegram');
+    await telegram.writeFile('/memories/pairings/dm/u-a.json', '{"a":1}');
+    assert.equal(await telegram.readFile('/memories/pairings/dm/u-a.json'), '{"a":1}');
+    const rival = boundMemoryStore(store, '@test/rival', ['pairings']);
+    await assert.rejects(() => rival.writeFile('/memories/pairings/x', 'hijack'), MemoryPathError);
+    await assert.rejects(() => rival.readFile('/memories/pairings/dm/u-a.json'), MemoryPathError);
+  });
+
+  it('ADR-0256: the first plugin to use a declared tree owns it; the record is kernel-private', async () => {
+    const store = await seededStore();
+    const first = boundMemoryStore(store, '@test/first', ['notes']);
+    const second = boundMemoryStore(store, '@test/second', ['notes']);
+    // Both race for the unclaimed tree: exactly one wins.
+    const results = await Promise.allSettled([
+      first.writeFile('/memories/notes/a.md', 'first'),
+      second.writeFile('/memories/notes/b.md', 'second'),
+    ]);
+    assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
+    const record = JSON.parse(await store.readFile('/memories/_plugin-trees/notes.json')) as { pluginId: string };
+    const [winner, loser] = record.pluginId === '@test/first' ? [first, second] : [second, first];
+    await winner.writeFile('/memories/notes/c.md', 'again');
+    await assert.rejects(() => loser.readFile('/memories/notes/c.md'), MemoryPathError);
+    // A fresh wrapper of the winner (a restart) still owns it.
+    await boundMemoryStore(store, record.pluginId, ['notes']).readFile('/memories/notes/c.md');
+    for (const bounded of [first, second]) {
+      await assert.rejects(() => bounded.readFile('/memories/_plugin-trees/notes.json'), MemoryPathError);
+      await assert.rejects(() => bounded.writeFile('/memories/_plugin-trees/notes.json', '{}'), MemoryPathError);
+      await assert.rejects(() => bounded.list('/memories/_plugin-trees'), MemoryPathError);
+    }
+  });
+
+  it('ADR-0256: core is read-only for plugins', async () => {
+    const bounded = boundMemoryStore(await seededStore(), PLUGIN, ['core']);
+    await assert.rejects(() => bounded.writeFile('/memories/core/notes.md', 'x'), MemoryPathError);
+    await assert.rejects(() => bounded.createFile('/memories/core/new.md', 'x'), MemoryPathError);
+    await assert.rejects(() => bounded.delete('/memories/core/notes.md'), MemoryPathError);
   });
 
   it('never reaches a private tree or a loose root file, and names no path in the refusal', async () => {
@@ -402,12 +450,12 @@ describe('ADR-0044 · bounded memoryStore@1', () => {
     }
   });
 
-  it('lists the root without private trees or loose files', async () => {
+  it('lists the root without private trees, other plugins’ trees or loose files', async () => {
     const bounded = boundMemoryStore(await seededStore(), PLUGIN);
     const listed = (await bounded.list('/memories')).map((e) => e.virtualPath);
     assert.ok(listed.some((p) => p.startsWith('/memories/core')), listed.join(','));
     for (const p of listed) {
-      assert.doesNotMatch(p, /orchestrators|agents|ui-prefs|sessions|contexts|loose-alice/, p);
+      assert.doesNotMatch(p, /orchestrators|agents|ui-prefs|sessions|contexts|loose-alice|pairings|_plugin-trees/, p);
     }
   });
 
@@ -421,6 +469,7 @@ describe('ADR-0044 · bounded memoryStore@1', () => {
       () => bounded.delete('/memories/core'),
       () => bounded.delete('/memories'),
       () => bounded.rename('/memories/pairings', '/memories/orchestrators/atlas/p'),
+      () => bounded.writeFile('/memories/core/notes.md', 'x'),
     ]) {
       await assert.rejects(change, MemoryPathError);
     }
