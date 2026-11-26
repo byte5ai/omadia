@@ -4172,6 +4172,14 @@ Postgres `test/auth/loginAccountFold.pg.test.ts`; UI
   `before`/`after` = gewährte Menge, `routes/runtimeGrants.ts`), `plugin.install`
   (Install-Wizard endet in `active`/`errored`) und `plugin.uninstall` (mit den Grants,
   die mit dem Plugin gehen, `routes/install.ts`).
+- **Operator-Änderungen (#1752, #1764, #1951, #1740):** Routine-Zeilen
+  unterscheiden den Operator vom Routine-Owner und halten bei Löschung Name,
+  Cron und Kanal fest. Agent-, Provider-, Kanal- und MCP-Änderungen verwenden
+  Zusammenfassungen der gespeicherten Felder. Der MCP-Filter liest
+  `mcp_server.*`. Der OAuth-Callback übernimmt den Akteur aus dem gestarteten
+  Flow (ADR-0246). `plugin.package_upload` hält Version und Quelle (`upload`
+  oder `builder`) nach erfolgreichem Ingest fest. Manuelle Spec- und Slot-Edits
+  stehen im eigenen Draft-Verlauf (ADR-0245).
 - **Logzeilen:** `[auth] login failed (…)` pro Audit-Zeile,
   `[grants] <actor> changed consent for "<id>": …` pro Consent-Änderung,
   `[auth] setup: first admin created via the setup wizard (…)` beim Wizard (#1092),

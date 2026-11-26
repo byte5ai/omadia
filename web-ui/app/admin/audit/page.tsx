@@ -34,6 +34,8 @@ const ACTION_FILTERS = [
   { key: 'profileSnapshot', prefix: 'profile_snapshot.' },
   { key: 'registry', prefix: 'registry.' },
   { key: 'channel', prefix: 'channel.' },
+  { key: 'mcp', prefix: 'mcp_server.' },
+  { key: 'routine', prefix: 'routine.' },
   // #2088 — end of service, delete (tombstone) and purge of an agent.
   { key: 'agent', prefix: 'agent.' },
   // Exact action name, not a prefix: one action covers every decision.
