@@ -225,6 +225,15 @@ Contract: ADR-0230 (Proposed).
   without a content term ("ok") has no lexical leg and recalls nothing. The `/health`
   warning without embeddings now says that recall is keyword-only and misses
   paraphrases.
+- **Recall under prompt masking finds turns about masked values (#1869).** With
+  `mask_user_prompt` on, the orchestrator handed the retriever the pseudonymised message,
+  so terms, the query embedding and the full-text query searched for
+  `PLATZHALTER-CUSTOM-1` and missed every stored turn (stored with real values) about it.
+  Every recall leg now searches with the real message; the relevance judge, a model call,
+  reads the wire variant (`AssembleForBudgetInput.judgeMessage`), and the recalled block is
+  still masked through the turn map before the model sees it.
+  `docs/security-architecture.md` (embeddings) updated: the recall query is embedded as
+  typed, like the stored turns it is matched against.
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 

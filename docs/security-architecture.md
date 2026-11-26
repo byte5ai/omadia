@@ -3151,7 +3151,7 @@ Tests: `test/securityPosture579.test.ts`,
 **Every other model call sends its text as it is.** A model request that runs
 neither under the turn's handle nor through a memory job's mask reaches its
 provider as its caller built it, with prompt masking on or off: `mask_user_prompt` reaches none of the texts
-below (the embedded recall query in the last entry aside), and the shield
+below, and the shield
 masks text only, so it reads no image block. In-tree these are:
 
 - **Operator backfill and the scratch-promotion reaper, without a guard.**
@@ -3193,9 +3193,15 @@ masks text only, so it reads no image block. In-tree these are:
   (`@omadia/embedding-adapter-openai`, default endpoint
   `https://api.openai.com`), stored turns and memories, a raw MCP result the
   ingestion above stored included, are embedded at that provider as stored,
-  real values included (`neonKnowledgeGraph.ts`). Only the recall query is
-  the turn's wire text (`retrievePriorContext`), so it alone follows
-  `mask_user_prompt`. The memory jobs above mask what they send to a model,
+  real values included (`neonKnowledgeGraph.ts`). Since #1869 the recall
+  query is the user's real message too (`retrievePriorContext`): term
+  extraction, the query embedding and the full-text query must match turns
+  stored with real values, and a pseudonym query missed every turn about a
+  masked value. The provider therefore sees the message as typed, the same
+  values it already embedded when the earlier turn was stored. Only the
+  relevance judge, a model call, gets the wire variant (`judgeMessage`), and
+  the recalled block is masked through the turn map before the model reads
+  it. The memory jobs above mask what they send to a model,
   not what they embed: the inconsistency detector embeds the memory it
   checks, and the Teams topic detector the messages it compares, as stored.
   The Ollama sidecar and the local adapter embed in-tenant.

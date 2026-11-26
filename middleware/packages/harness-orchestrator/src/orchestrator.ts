@@ -4502,9 +4502,11 @@ export class Orchestrator {
    */
   private async retrievePriorContext(
     input: ChatTurnInput,
-    // #361 — the wire-bound (possibly masked) message variant. The recalled
-    // text this returns flows INTO the LLM prompt, so the recall query must
-    // not itself carry a raw PII span the mask pass just removed.
+    // #361 / #1869 — the wire-bound (possibly masked) message variant. Only
+    // the relevance judge (a model call) reads it. Every search leg runs on
+    // the REAL message: stored turns hold real values, so a pseudonym query
+    // cannot match them. The recalled text is masked through the turn map
+    // (`maskRecalledForWire`) before it reaches the model.
     wireUserMessage?: string,
     // `enforce-strict` — see `TurnMemoryBinding.isolation`.
     isolation?: TurnMemoryBinding['isolation'],
@@ -4615,7 +4617,10 @@ export class Orchestrator {
       // directly should pass their manifest identity.id so per-agent
       // priorities apply.
       const result = await this.contextRetriever.assembleForBudget({
-        userMessage: wireUserMessage ?? input.userMessage,
+        userMessage: input.userMessage,
+        ...(wireUserMessage !== undefined && wireUserMessage !== input.userMessage
+          ? { judgeMessage: wireUserMessage }
+          : {}),
         // Per-orchestrator isolation: the real Agent identity drives the KG
         // scope-prefix filter (and agent_priorities). The retriever expects
         // the sessionScope already agent-qualified — `graphScopeFor` is the

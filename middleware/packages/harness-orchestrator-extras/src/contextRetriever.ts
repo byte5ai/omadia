@@ -258,7 +258,21 @@ export interface MemoryRecallHit {
 // ---------------------------------------------------------------------------
 
 export interface AssembleForBudgetInput {
+  /**
+   * The message every recall leg searches with: term extraction, the query
+   * embedding and the full-text query. Must be the REAL message — stored
+   * turns hold real values, so a pseudonymised query cannot match them
+   * (#1869). The rendered block is masked by the caller before it reaches
+   * the model.
+   */
   userMessage: string;
+  /**
+   * #1869 — the variant the relevance judge (a model call) reads. Under
+   * prompt masking the orchestrator passes the wire (pseudonymised) message
+   * so the user's typed values never reach that model (ADR-0095). Defaults
+   * to {@link userMessage}.
+   */
+  judgeMessage?: string;
   sessionScope?: string;
   userId?: string;
   /** External id of the turn currently being answered — excluded from hits. */
@@ -905,7 +919,7 @@ export class ContextRetriever {
       const deduped = candidates.filter((c) =>
         seenCand.has(c.id) ? false : (seenCand.add(c.id), true),
       );
-      const keep = await judge.filterRelevant(input.userMessage, deduped);
+      const keep = await judge.filterRelevant(input.judgeMessage ?? input.userMessage, deduped);
       if (judgeTermGated) {
         judgedPlans = planHits.filter((p) => keep.has(p.planId));
         judgedProcesses = processHits.filter((p) => keep.has(p.id));
