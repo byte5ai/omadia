@@ -156,7 +156,7 @@ describe('a refused refresh marks the token', () => {
 describe('a token the MCP server refused', () => {
   it('markTokenRejected marks the row and keeps it', async () => {
     const h = mcpOAuthHarness({ rows: [tokenRow('alice')] });
-    await h.svc.markTokenRejected(HARNESS_SERVER_ID, 'alice');
+    await h.svc.markTokenRejected(HARNESS_SERVER_ID, 'alice', 'AT-alice');
     assert.equal(h.row('alice')?.invalidReason, 'rejected');
     assert.equal(h.vault.get(`token/${HARNESS_SERVER_ID}/alice/access`), 'AT-alice');
   });
@@ -169,13 +169,42 @@ describe('a token the MCP server refused', () => {
       respond: () => jsonResponse(400, { error: 'invalid_grant' }),
     });
     await h.svc.getValidAccessToken(h.server, 'alice');
-    await h.svc.markTokenRejected(HARNESS_SERVER_ID, 'alice');
+    await h.svc.markTokenRejected(HARNESS_SERVER_ID, 'alice', 'AT-alice');
     assert.equal(h.row('alice')?.invalidReason, 'refresh_failed');
+  });
+
+  // #1923 review — a 401 for an old token must not mark the fresh one. A call
+  // still in flight with the old token after the user re-authorized is the
+  // case: its refusal is about a token the row no longer holds.
+  it('a refusal of a token that was replaced meanwhile leaves the fresh token alone', async () => {
+    const h = mcpOAuthHarness({ rows: [tokenRow('alice')] });
+    // The user re-authorized while the call with AT-alice was in flight.
+    h.vault.set(`token/${HARNESS_SERVER_ID}/alice/access`, 'AT-fresh');
+    await h.svc.markTokenRejected(HARNESS_SERVER_ID, 'alice', 'AT-alice');
+    assert.equal(h.row('alice')?.invalidReason, null);
+    assert.match(h.logs.join('\n'), /replaced since the failing call read it/);
+
+    await h.svc.markTokenRejected(HARNESS_SERVER_ID, 'alice', 'AT-fresh');
+    assert.equal(h.row('alice')?.invalidReason, 'rejected', 'the token held now is still markable');
+  });
+
+  it('a refused refresh that raced a new login leaves the new token alone', async () => {
+    const h = mcpOAuthHarness({
+      rows: [tokenRow('alice', { expiresAt: PAST() })],
+      respond: () => {
+        // The login lands while the refresh with RT-alice is on the wire.
+        h.vault.set(`token/${HARNESS_SERVER_ID}/alice/access`, 'AT-fresh');
+        h.vault.set(`token/${HARNESS_SERVER_ID}/alice/refresh`, 'RT-fresh');
+        return jsonResponse(400, { error: 'invalid_grant' });
+      },
+    });
+    await h.svc.getValidAccessToken(h.server, 'alice');
+    assert.equal(h.row('alice')?.invalidReason, null);
   });
 
   it('marking is a no-op without a stored token', async () => {
     const h = mcpOAuthHarness({});
-    await h.svc.markTokenRejected(HARNESS_SERVER_ID, 'alice');
+    await h.svc.markTokenRejected(HARNESS_SERVER_ID, 'alice', 'AT-alice');
     assert.equal(h.row('alice'), undefined);
   });
 
@@ -184,7 +213,7 @@ describe('a token the MCP server refused', () => {
     (h.graph as { markMcpOAuthTokenInvalid: unknown }).markMcpOAuthTokenInvalid = async () => {
       throw new Error('connection terminated');
     };
-    await h.svc.markTokenRejected(HARNESS_SERVER_ID, 'alice');
+    await h.svc.markTokenRejected(HARNESS_SERVER_ID, 'alice', 'AT-alice');
     assert.match(h.logs.join('\n'), /could not mark the token/);
   });
 });

@@ -300,9 +300,11 @@ export interface McpAuthProvider {
    * unauthorized signature (`isTransportUnauthorized`). Not called for a
    * JSON-RPC error response or a tool's own `isError` result, whose text may
    * quote some other system's 401. The provider records it, so
-   * a status display stops calling that token valid. Optional.
+   * a status display stops calling that token valid. `token` is the token the
+   * refused call carried, so the provider can tell a refusal of the token it
+   * holds now from one of a token that was replaced meanwhile. Optional.
    */
-  onTokenRejected?(cfg: McpServerConfig): Promise<void>;
+  onTokenRejected?(cfg: McpServerConfig, token: string): Promise<void>;
   /**
    * The identity this server's calls act as, for the audit trail (W0-1). Same
    * resolution `getToken` uses, exposed separately so EVERY audited call —
@@ -1511,7 +1513,7 @@ export class McpManager {
   ): Promise<void> {
     if (token === null || !isTransportUnauthorized(err)) return;
     try {
-      await this.options?.auth?.onTokenRejected?.(cfg);
+      await this.options?.auth?.onTokenRejected?.(cfg, token);
     } catch {
       /* a status mark is not worth failing the call over */
     }

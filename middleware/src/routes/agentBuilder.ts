@@ -206,8 +206,9 @@ export interface AgentBuilderRouterOptions {
       connected: boolean;
       invalid: 'expired' | 'refresh_failed' | 'rejected' | null;
     }>;
-    /** #1923 — the MCP server refused a call that carried this user's token. */
-    markTokenRejected(serverId: string, userKey: string): Promise<void>;
+    /** #1923 — the MCP server refused a call that carried `rejectedToken`,
+     *  this user's token at the time the call read it. */
+    markTokenRejected(serverId: string, userKey: string, rejectedToken: string): Promise<void>;
     /** #1925 — revoke one user's grant at the provider (unless `revoke` is
      *  false) and remove the stored token. Returns what the provider did. */
     disconnect(
@@ -413,7 +414,7 @@ export function createAgentBuilderRouter(
       onAuthFailure: async (): Promise<string | null> => null,
       // #1923 — a Discover or test-call that the server answered with 401 must
       // show up in auth-status, the same way a chat call does.
-      onTokenRejected: async (cfg: McpServerConfig): Promise<void> => {
+      onTokenRejected: async (cfg: McpServerConfig, token: string): Promise<void> => {
         if (!options.mcpOAuth) return;
         const graph = options.getGraphStore();
         const server = graph
@@ -425,7 +426,7 @@ export function createAgentBuilderRouter(
           turnContext.current()?.mcpUserKey,
           options.mcpOAuthUserKey,
         );
-        if (userKey !== null) await options.mcpOAuth.markTokenRejected(server.id, userKey);
+        if (userKey !== null) await options.mcpOAuth.markTokenRejected(server.id, userKey, token);
       },
       ...(options.mcpConfig
         ? {

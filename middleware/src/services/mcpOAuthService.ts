@@ -301,7 +301,10 @@ export class McpOAuthService {
         // Only an answer from the token endpoint says the grant is gone. A
         // timeout or a 5xx leaves the row alone: the next call tries again.
         if (err instanceof McpOAuthError && err.refused) {
-          await this.markTokenInvalid(server.id, userKey, 'refresh_failed');
+          await this.markTokenInvalid(server.id, userKey, 'refresh_failed', {
+            ref: refreshRefKey,
+            value: refreshToken,
+          });
         }
         return (await this.deps.vault.get(VAULT_NS, accessRefKey)) ?? null;
       }
@@ -313,19 +316,44 @@ export class McpOAuthService {
     return attempt;
   }
 
-  /** The MCP server refused a call that carried this user's token (#1923). */
-  async markTokenRejected(serverId: string, userKey: string): Promise<void> {
-    await this.markTokenInvalid(serverId, userKey, 'rejected');
+  /** The MCP server refused a call that carried `rejectedToken`, this user's
+   *  access token at the time the call read it (#1923). */
+  async markTokenRejected(serverId: string, userKey: string, rejectedToken: string): Promise<void> {
+    await this.markTokenInvalid(serverId, userKey, 'rejected', {
+      ref: this.tokenRef(serverId, userKey, 'access'),
+      value: rejectedToken,
+    });
   }
 
   /** Bookkeeping for the status display. It never changes the outcome of the
-   *  call that noticed the problem, so a failed write is logged and dropped. */
+   *  call that noticed the problem, so a failed write is logged and dropped.
+   *
+   *  `evidence` names the credential the failure was about. A refusal of an
+   *  OLD token — a call that was in flight while the user re-authorized, or a
+   *  refresh that raced a new login — must not mark the fresh token the row
+   *  holds now, so the mark is only written while the vault still holds that
+   *  same credential under a ref the row still points at. The vault and the
+   *  row are separate stores, so a login landing between this read and the
+   *  UPDATE can still be marked; that window is the length of one query, and
+   *  the next login clears it. */
   private async markTokenInvalid(
     serverId: string,
     userKey: string,
     reason: McpOAuthTokenInvalidReason,
+    evidence: { readonly ref: string; readonly value: string },
   ): Promise<void> {
     try {
+      const row = await this.deps.graph.getMcpOAuthToken(serverId, userKey);
+      if (!row) return;
+      const stillHeld =
+        (row.accessTokenRef === evidence.ref || row.refreshTokenRef === evidence.ref) &&
+        (await this.deps.vault.get(VAULT_NS, evidence.ref)) === evidence.value;
+      if (!stillHeld) {
+        this.deps.log?.(
+          `[mcpOAuth] not marking the token of server ${serverId} as ${reason}: it was replaced since the failing call read it`,
+        );
+        return;
+      }
       await this.deps.graph.markMcpOAuthTokenInvalid(serverId, userKey, reason);
     } catch (err) {
       this.deps.log?.(
