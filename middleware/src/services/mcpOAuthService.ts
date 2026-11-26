@@ -7,8 +7,10 @@
  *  - beginAuthorization(server, userKey) → discover, ensure an OAuth client
  *    (DCR self-registration, else an operator-provided one), build the PKCE
  *    authorize URL, persist the pending flow, return { authorizeUrl }.
- *  - completeAuthorization(state, code) → consume the flow, exchange the code,
- *    store the token in the vault. Called by the OAuth callback route.
+ *  - completeAuthorization(state, code, iss, completingUserKeyFor) → consume
+ *    the flow, check that the browser finishing it belongs to the user who
+ *    started it (#1908, ADR-0175), exchange the code, store the token in the
+ *    vault. Called by the OAuth callback route.
  */
 import {
   DISCOVERY_UNAVAILABLE,
@@ -146,6 +148,29 @@ export class McpOAuthIssuerMismatchError extends Error {
     this.name = 'McpOAuthIssuerMismatchError';
   }
 }
+
+/**
+ * #1908 (ADR-0175): the callback was finished by someone other than the user
+ * who started the flow, or by a browser with no session. The flow is consumed
+ * and nothing is stored, so the starter has to connect again.
+ */
+export class McpOAuthCompleterMismatchError extends Error {
+  constructor() {
+    super('the authorization was completed by a different user than the one who started it');
+    this.name = 'McpOAuthCompleterMismatchError';
+  }
+}
+
+/**
+ * Who is finishing a flow: the MCP user key the completing request maps to for
+ * the flow's server, or null when it carries no usable identity. Gets the
+ * flow's server and starter so a caller-side exemption (the desktop kernel,
+ * ADR-0175) can be expressed without the service knowing about it.
+ */
+export type CompletingUserKeyFor = (flow: {
+  readonly serverId: string;
+  readonly userKey: string;
+}) => Promise<string | null>;
 
 // `sameIssuer` now lives in `mcpAuthDiscovery`, next to the RFC 8414 §3.3 check
 // that binds a metadata document to the issuer it was fetched under. Imported
@@ -536,14 +561,24 @@ export class McpOAuthService {
    *
    *  @param iss the RFC 9207 `iss` authorization-response parameter, or null
    *  when the provider sent none. Validated against the issuer bound to the
-   *  flow BEFORE the code is exchanged, so a mismatch persists nothing. */
+   *  flow BEFORE the code is exchanged, so a mismatch persists nothing.
+   *  @param completingUserKeyFor resolves the user key of the session that is
+   *  finishing the flow (#1908, ADR-0175). `state` is a lookup key, not proof
+   *  of who clicked: anyone holding the authorize URL could otherwise store
+   *  their provider account under the starter's identity. A different or
+   *  missing completer consumes the flow and stores nothing. */
   async completeAuthorization(
     state: string,
     code: string,
-    iss?: string | null,
+    iss: string | null | undefined,
+    completingUserKeyFor: CompletingUserKeyFor,
   ): Promise<{ serverId: string }> {
     const flow = await this.deps.graph.takeMcpOAuthFlow(state);
     if (!flow) throw new Error('unknown or expired authorization state');
+    const completer = await completingUserKeyFor({ serverId: flow.serverId, userKey: flow.userKey });
+    if (completer === null || completer !== flow.userKey) {
+      throw new McpOAuthCompleterMismatchError();
+    }
     if (!flow.tokenEndpoint) throw new Error('flow is missing its bound token endpoint');
     // ── RFC 9207 issuer validation (W0-1, D1) ───────────────────────────────
     // `state` alone proves only that the response came back to a flow we

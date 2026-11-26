@@ -36,6 +36,49 @@ changelog.
 
 ## [Unreleased]
 
+### Security — attachments only from channel adapters, bound at upload (#1960, #1962, ADR-0178) (2026-11-26)
+
+- `ChatTurnInput.storedAttachments` (`StoredTurnAttachment`, `@omadia/channel-sdk` 0.3.16) is the
+  only source of storage keys the turn ingests. The `[attachments-info]` text parser
+  (`attachmentsInfo.ts`) is gone: a block typed into a message reads nothing, on any channel.
+- Each stated upload is bound to the turn's conversation before it is read
+  (`AttachmentReader.bindToCurrentConversation`). A read no longer binds; `read_attachment` and the
+  ingest serve only keys bound to the current conversation and answer "not found" otherwise
+  (unbound keys, Office/Diagrams output, other chats, `http-default`).
+- The `attachmentBindings` store is published with the audience floor on or off (Postgres, else
+  in-memory).
+- **Migration `0114_attachment_bindings_drop_generated_outputs`** deletes bindings for the Office
+  (`documents/<tenant>/<sha256>/<file>`) and Diagrams (`<tenant>/<sha256>.png`) layouts, which only
+  a foreign first read could have created.
+- Needs the omadia-channel-teams release after 0.45.1 (sets `storedAttachments`); older Teams versions get no
+  auto-ingest of uploads until updated.
+
+### Security — Office and Diagrams outputs stay with their turn; signed links are route-bound (#1961, #1979, ADR-0176, ADR-0177) (2026-11-26)
+
+- `create_xlsx` / `create_docx` files and `render_diagram` images are filed under the id of
+  the turn that produced them (`PerTurnBuffer`, `@omadia/diagrams`) and the end-of-turn drain
+  returns only the finishing turn's. A concurrent turn no longer receives another chat's file;
+  two diagrams in one turn give two images. Diagrams reads the turn id through
+  `optional_requires: ["turnContext@1"]`. The `NativeToolAttachmentSink` doc states the rule
+  (no plugin-api signature change).
+- Both signers include the route prefix in the HMAC payload (`/diagrams/dl/…`,
+  `/documents/dl/…`) and each router serves only its own key layout. A link moved to the other
+  route is refused, so revoking one route's public-path grant takes full effect. Links signed
+  before this deploy stop working.
+- `@omadia/diagrams` 0.2.2, `@omadia/plugin-office` 0.1.5.
+
+### Security — MCP OAuth callback completes only for the user who started the flow (#1908, ADR-0175) (2026-11-26)
+
+- `McpOAuthService.completeAuthorization` takes the completing session's user key
+  (`completingUserKeyFor`) and refuses a different user or a browser without a session
+  before the code exchange (`McpOAuthCompleterMismatchError`, 403 page "started by a
+  different account"). The flow is consumed, nothing is stored.
+- The callback stays a public path; `createOptionalSession` (`auth/requireAuth.ts`) attaches
+  a valid session to it without answering 401.
+- A tool-call auth failure no longer starts a flow or writes the authorize URL (with its
+  `state`) into the model's text; the chat's Connect card starts the flow from the user's own
+  session.
+
 ### Fixed — channel plugins get the SQL grant check and kernel-run migrations (ADR-0050) (2026-11-26)
 
 - A channel plugin that declares `permissions.sql` (Teams, byte5ai/omadia-channel-teams#74)

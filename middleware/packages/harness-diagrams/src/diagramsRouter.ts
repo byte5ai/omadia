@@ -9,6 +9,16 @@ interface DiagramsRouterDeps {
 }
 
 /**
+ * #1979 (ADR-0176): this route serves only keys of its own layout,
+ * `<tenant>/<sha256>.png` (`buildCacheKey`). With the route prefix in the signed payload a foreign link already
+ * fails the signature; the layout check keeps the route from serving another
+ * producer's object even under a shared secret and bucket.
+ */
+export function isDiagramKey(key: string): boolean {
+  return /^[^/]+\/[0-9a-f]{64}\.png$/.test(key);
+}
+
+/**
  * HMAC-signed proxy that serves diagram PNGs from Tigris/SeaweedFS to Teams.
  *
  * The URL format is `/diagrams/<url-encoded-key>?exp=<unix-seconds>&sig=<hex>`
@@ -38,6 +48,10 @@ export function createDiagramsRouter(deps: DiagramsRouterDeps): Router {
     }
     // Express already URL-decodes each path segment before it lands here.
     const key = segments.join('/');
+    if (!isDiagramKey(key)) {
+      res.status(404).type('text/plain').send('not found');
+      return;
+    }
 
     const exp = Number(req.query['exp']);
     const sig = typeof req.query['sig'] === 'string' ? req.query['sig'] : '';
