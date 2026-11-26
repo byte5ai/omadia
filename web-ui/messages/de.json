@@ -2052,7 +2052,8 @@
       }
     },
     "closeChatConfirm": "Diesen Chat schließen? Er wird endgültig gelöscht.",
-    "closeChatConfirmWithRoutines": "Diesen Chat schließen? Er wird endgültig gelöscht, und {count, plural, one {seine Routine {names} wird} other {seine # Routinen ({names}) werden}} pausiert."
+    "closeChatConfirmWithRoutines": "Diesen Chat schließen? Er wird endgültig gelöscht, und {count, plural, one {seine Routine {names} wird} other {seine # Routinen ({names}) werden}} pausiert.",
+    "closeChatConfirmRoutinesUnknown": "Diesen Chat schließen? Er wird endgültig gelöscht. Seine Routinen konnten nicht geprüft werden; Routinen, die hierher zustellen, werden pausiert."
   },
   "privacyReceipt": {
     "summary": "🛡 Privacy Shield · {summary}",
@@ -6108,6 +6109,7 @@
       "dangerHelp": "Löschen entfernt das Konto permanent. Das Audit-Log behält den Eintrag. Memory und Daten des Kontos (gemerkte Fakten, Gespräche, Datensätze, Prozesse) werden dabei NICHT gelöscht: zuerst in der Gefahrenzone, Achse User, mit der omadia-User-ID oben purgen.",
       "confirmDelete": "Dieses Konto wirklich löschen? Die Aktion ist nicht umkehrbar. Memory und Daten bleiben, außer du hast sie vorher in der Gefahrenzone gepurgt.",
       "confirmDeleteWithRoutines": "Dieses Konto wirklich löschen? {count, plural, one {Die # Routine wird} other {Die # Routinen werden}} mit ihm gelöscht. Die Aktion ist nicht umkehrbar. Memory und Daten bleiben, außer du hast sie vorher in der Gefahrenzone gepurgt.",
+      "confirmDeleteRoutinesUnknown": "Dieses Konto wirklich löschen? Seine Routinen konnten nicht gezählt werden; vorhandene werden mit ihm gelöscht. Die Aktion ist nicht umkehrbar. Memory und Daten bleiben, außer du hast sie vorher in der Gefahrenzone gepurgt.",
       "delete": "Nutzer löschen",
       "deleting": "Lösche …",
       "omadiaUserId": "omadia-User-ID: {id} — für den Memory-Purge (Achse User).",

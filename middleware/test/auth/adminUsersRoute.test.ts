@@ -158,6 +158,7 @@ describe('/api/v1/admin/users router', () => {
   let forgottenAccounts: string[];
   /** #1765 — routines owned per user id; deleted with the account. */
   const routinesByUser = new Map<string, number>();
+  const routinesFailFor = new Set<string>();
 
   before(async () => {
     store = new InMemoryUserStore();
@@ -206,8 +207,10 @@ describe('/api/v1/admin/users router', () => {
           },
         },
         routines: () => ({
-          countForUser: (id) => Promise.resolve(routinesByUser.get(id) ?? 0),
+          countForUser: (id) =>
+            routinesFailFor.has(id) ? Promise.reject(new Error('graph down')) : Promise.resolve(routinesByUser.get(id) ?? 0),
           deleteForUser: (id) => {
+            if (routinesFailFor.has(id)) return Promise.reject(new Error('graph down'));
             const n = routinesByUser.get(id) ?? 0;
             routinesByUser.delete(id);
             return Promise.resolve(n);
@@ -573,6 +576,27 @@ describe('/api/v1/admin/users router', () => {
     ]);
     assert.equal(forgottenAccounts.at(-1), 'local:new@example.com', 'its device cookies with it');
   });
+  it('DELETE /:id reports a failed routine cleanup instead of zero (#1765)', async () => {
+    setSession(adminSession());
+    const doomed = await store.create({
+      email: 'doomed@example.com',
+      provider: LOCAL_PROVIDER_ID,
+      providerUserId: 'doomed@example.com',
+      passwordHash: await hashPassword('seed-pass-4'),
+      displayName: 'Doomed',
+      role: 'admin',
+    });
+    routinesFailFor.add(doomed.id);
+    const preview = (await (await fetch(`${baseUrl}/api/v1/admin/users/${doomed.id}`)).json()) as {
+      routine_count: number | null;
+    };
+    assert.equal(preview.routine_count, null, 'an unknown count is not reported as zero');
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${doomed.id}`, { method: 'DELETE' });
+    assert.equal(res.status, 204);
+    assert.deepEqual(audit.entries.at(-1)?.after, { routines_deleted: 0, routines_delete_failed: true });
+    routinesFailFor.delete(doomed.id);
+  });
+
   // ── #1314 — PATCH refuses what it cannot apply ────────────────────────────
   it('PATCH /:id refuses an unsupported role with 400 and leaves the user unchanged (#1314)', async () => {
     setSession(adminSession());

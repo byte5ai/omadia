@@ -1173,14 +1173,20 @@ export type ClearOutcome = 'cleared' | 'partial' | 'not_loaded';
  * is deleted. Empty when the server cannot tell (no routines feature, error):
  * the close still asks, only without names.
  */
-export async function fetchChatRoutines(id: string): Promise<ReadonlyArray<{ id: string; name: string }>> {
+/**
+ * #1757 — the routines that deliver into a chat. `null` means the lookup
+ * failed: the caller must not read that as "no routines".
+ */
+export async function fetchChatRoutines(id: string): Promise<ReadonlyArray<{ id: string; name: string }> | null> {
   try {
     const res = await fetch(`/bot-api/chat/sessions/${encodeURIComponent(id)}/routines`);
-    if (!res.ok) return [];
+    // A chat the server never saw has no routines.
+    if (res.status === 404) return [];
+    if (!res.ok) return null;
     const body = (await res.json()) as { routines?: Array<{ id: string; name: string }> };
-    return Array.isArray(body.routines) ? body.routines : [];
+    return Array.isArray(body.routines) ? body.routines : null;
   } catch {
-    return [];
+    return null;
   }
 }
 

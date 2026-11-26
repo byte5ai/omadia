@@ -508,14 +508,16 @@ export default function ChatPage(): React.ReactElement {
       const routines = await fetchChatRoutines(id);
       const session = sessions.find((x) => x.id === id);
       const hasContent = (session?.messages.length ?? 0) > 0;
-      if (hasContent || routines.length > 0) {
+      if (hasContent || routines === null || routines.length > 0) {
         const question =
-          routines.length > 0
-            ? t('closeChatConfirmWithRoutines', {
-                count: routines.length,
-                names: routines.map((r) => r.name).join(', '),
-              })
-            : t('closeChatConfirm');
+          routines === null
+            ? t('closeChatConfirmRoutinesUnknown')
+            : routines.length > 0
+              ? t('closeChatConfirmWithRoutines', {
+                  count: routines.length,
+                  names: routines.map((r) => r.name).join(', '),
+                })
+              : t('closeChatConfirm');
         if (!window.confirm(question)) return;
       }
       // The tab is going away, so no UI can ever surface this record again.

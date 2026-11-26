@@ -112,7 +112,14 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       return null;
     });
     // #1765 — the delete confirmation names what goes with the account.
-    const routineCount = (await deps.routines?.()?.countForUser(user.id).catch(() => undefined)) ?? 0;
+    let routineCount: number | null;
+    try {
+      routineCount = (await deps.routines?.()?.countForUser(user.id)) ?? 0;
+    } catch (err) {
+      // null tells the confirmation the count is unknown, not zero.
+      routineCount = null;
+      console.error(`[admin-users] counting the routines of user ${user.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     res.json({ user: { ...toPublicUser(user), omadiaUserId: omadiaUserId ?? null }, routine_count: routineCount });
   });
 
@@ -310,9 +317,11 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
     // #1765 — the user's routines go with the account: they would keep
     // running, spending and delivering into a chat nobody owns.
     let routinesDeleted = 0;
+    let routinesDeleteFailed = false;
     try {
       routinesDeleted = (await deps.routines?.()?.deleteForUser(target.id)) ?? 0;
     } catch (err) {
+      routinesDeleteFailed = true;
       console.error(`[admin-users] deleting the routines of user ${target.id} failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     await deps.audit.record({
@@ -320,7 +329,7 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       action: 'user.delete',
       target: `user:${target.id}`,
       before: toPublicUser(target),
-      after: { routines_deleted: routinesDeleted },
+      after: { routines_deleted: routinesDeleted, ...(routinesDeleteFailed ? { routines_delete_failed: true } : {}) },
     });
     res.status(204).send();
   });

@@ -2138,8 +2138,8 @@ export interface AdminUsersListResponse {
 
 export interface AdminUserResponse {
   user: AdminUser;
-  /** #1765 — routines the user owns; deleted with the account. Only on GET /:id. */
-  routine_count?: number;
+  /** #1765 — routines the user owns; deleted with the account. Only on GET /:id; null when counting failed. */
+  routine_count?: number | null;
 }
 
 export async function listAdminUsers(): Promise<AdminUsersListResponse> {

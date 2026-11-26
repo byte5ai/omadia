@@ -6438,7 +6438,11 @@ async function main(): Promise<void> {
         routines: () => {
           const runner = routinesHandle?.runner;
           const ownerIds = (id: string): Promise<string[]> =>
-            graphPool ? routineOwnerIdsForAccount(graphPool, graphTenantId, id) : Promise.resolve([id]);
+            graphPool
+              ? routineOwnerIdsForAccount(graphPool, graphTenantId, id, async (other) =>
+                  Boolean(await userStore.findById(other)),
+                )
+              : Promise.resolve([id]);
           return runner
             ? {
                 countForUser: async (id) => {

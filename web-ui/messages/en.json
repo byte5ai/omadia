@@ -2052,7 +2052,8 @@
       }
     },
     "closeChatConfirm": "Close this chat? It is deleted permanently.",
-    "closeChatConfirmWithRoutines": "Close this chat? It is deleted permanently, and {count, plural, one {its routine {names} is} other {its # routines ({names}) are}} paused."
+    "closeChatConfirmWithRoutines": "Close this chat? It is deleted permanently, and {count, plural, one {its routine {names} is} other {its # routines ({names}) are}} paused.",
+    "closeChatConfirmRoutinesUnknown": "Close this chat? It is deleted permanently. Its routines could not be checked; any that deliver into it are paused."
   },
   "privacyReceipt": {
     "summary": "🛡 Privacy Shield · {summary}",
@@ -6108,6 +6109,7 @@
       "dangerHelp": "Deleting removes the account permanently. The audit log keeps the entry. The account’s memory and data (remembered facts, conversations, datasets, processes) are NOT deleted with it: purge them first in the Danger Zone, axis User, with the omadia user id above.",
       "confirmDelete": "Really delete this account? This cannot be undone. Its memory and data stay unless you purged them in the Danger Zone first.",
       "confirmDeleteWithRoutines": "Really delete this account? Its {count, plural, one {# routine is} other {# routines are}} deleted with it. This cannot be undone. Its memory and data stay unless you purged them in the Danger Zone first.",
+      "confirmDeleteRoutinesUnknown": "Really delete this account? Its routines could not be counted; any it owns are deleted with it. This cannot be undone. Its memory and data stay unless you purged them in the Danger Zone first.",
       "delete": "Delete user",
       "deleting": "Deleting …",
       "omadiaUserId": "omadia user id: {id} — use it for the memory purge (axis User).",

@@ -68,10 +68,14 @@ Chosen option: **A**.
 - 🔴 **Bad:** while a delivery is in the 24-hour window, the chat's turns carry a hint, so the
   decision-model fast path passes them through (it does not take turns with a hint).
 - 🔴 **Bad:** in-process, a delivery whose text cannot be masked (residual-leak block) fails
-  the chat's turns until it leaves the window; on the subscription CLI the block is passed as a
-  hint line without masking (CLI turns are refused anyway while a privacy guard runs).
+  the chat's turns until it leaves the window; on the subscription CLI the block goes with the
+  steering hint and is masked with it (ADR 0195).
 - 🔴 **Bad:** run history beyond 200 runs or 90 days is deleted: a new default that removes
   data.
+- ⚪ **Neutral:** the delivery block, the routine lookup of a chat and the pause on its
+  deletion all follow the chat's owner (ADR 0180): another account's chat id yields nothing.
+- 🔴 **Bad:** pruning old runs also lowers the routine's shown total cost (ADR 0243): the
+  total covers the kept runs, not the routine's lifetime.
 - ⚪ **Neutral:** at most three deliveries of the last day; older ones are not in context.
 
 ## Pros and Cons of the Options
