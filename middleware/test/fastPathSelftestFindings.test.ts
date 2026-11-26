@@ -67,7 +67,8 @@ describe('finding 2 — odoo_query limit normalised to 100 on the fast path', ()
     const invoke = (): Promise<string> =>
       Promise.resolve(JSON.stringify({ records: [{ id: 1, name: 'a' }], truncated: true }));
     const fetched = await fetchRecipeRows(invoke, detail, { rejectTruncated: true });
-    assert.deepEqual(fetched, { ok: false, reason: 'truncated' });
+    assert.equal(fetched.ok, false);
+    assert.equal(!fetched.ok && fetched.reason, 'truncated');
   });
 
   it('other tools and non-fast-path refreshes keep their input untouched', async () => {

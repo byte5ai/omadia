@@ -184,6 +184,12 @@ interface RootBinding {
  * `MemoryScopeViolation` on the write. Enforcement stays in the store; this
  * mapper never throws.
  */
+/** `root` as a whole path prefix: followed by `/`, the end, or a non-path character. */
+function rootPattern(root: string): RegExp {
+  const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`${escaped}(?=/|$|[^\\w.~-])`, 'g');
+}
+
 abstract class MemoryNamespacerBase implements MemoryStore {
   /** Physical roots, longest first, so nested roots resolve unambiguously. */
   private readonly bindings: readonly RootBinding[];
@@ -251,6 +257,53 @@ abstract class MemoryNamespacerBase implements MemoryStore {
   }
 
   /**
+   * #1832 — the stores below throw with the PHYSICAL path in the message
+   * (`File /memories/orchestrators/<slug>/x.md already exists`), and the
+   * memory tool hands that message to the model. Map every bound root back
+   * to its model-facing form, and turn a scope violation (which also names
+   * the agent) into the plain refusal. A copy of the error is thrown, of the
+   * same class, so the callers' `instanceof` checks still hold.
+   */
+  private async outward<T>(call: () => Promise<T>): Promise<T> {
+    try {
+      return await call();
+    } catch (err) {
+      throw this.toOuterError(err);
+    }
+  }
+
+  private toOuterError(err: unknown): unknown {
+    if (!(err instanceof Error)) return err;
+    const message =
+      err.name === 'MemoryScopeViolation'
+        ? `The path ${this.outerPathOf(err)} is not available to the memory tool.`
+        : this.toOuterText(err.message);
+    if (message === err.message) return err;
+    const copy = Object.assign(Object.create(Object.getPrototypeOf(err) as object) as Error, err);
+    Object.defineProperty(copy, 'message', { value: message, writable: true, configurable: true });
+    Object.defineProperty(copy, 'stack', {
+      value: err.stack?.replace(err.message, message),
+      writable: true,
+      configurable: true,
+    });
+    return copy;
+  }
+
+  private outerPathOf(err: Error): string {
+    const path = (err as { virtualPath?: unknown }).virtualPath;
+    return typeof path === 'string' ? this.toOuterText(path) : 'requested';
+  }
+
+  /** Every physical bound root inside `text` → its model-facing form. */
+  private toOuterText(text: string): string {
+    let out = text;
+    for (const binding of this.bindings) {
+      out = out.replace(rootPattern(binding.inner), binding.outer);
+    }
+    return out;
+  }
+
+  /**
    * #1540 — a note written in a turn without a shield, or after a tool
    * bypassed it, is marked unprotected. A note written in a protected turn is
    * stored as written: its model only saw masked values.
@@ -263,16 +316,16 @@ abstract class MemoryNamespacerBase implements MemoryStore {
 
   // `async`, so a denied path (`toInner` throws) rejects like any store error.
   async list(virtualPath: string): Promise<MemoryEntry[]> {
-    const entries = await this.inner.list(this.toInner(virtualPath));
+    const entries = await this.outward(() => this.inner.list(this.toInner(virtualPath)));
     return entries.map((e) => ({ ...e, virtualPath: this.toOuter(e.virtualPath) }));
   }
 
   async fileExists(virtualPath: string): Promise<boolean> {
-    return this.inner.fileExists(this.toInner(virtualPath));
+    return this.outward(() => this.inner.fileExists(this.toInner(virtualPath)));
   }
 
   async directoryExists(virtualPath: string): Promise<boolean> {
-    return this.inner.directoryExists(this.toInner(virtualPath));
+    return this.outward(() => this.inner.directoryExists(this.toInner(virtualPath)));
   }
 
   /**
@@ -282,7 +335,7 @@ abstract class MemoryNamespacerBase implements MemoryStore {
    * marker line.
    */
   async readFile(virtualPath: string): Promise<string> {
-    const content = await this.inner.readFile(this.toInner(virtualPath));
+    const content = await this.outward(() => this.inner.readFile(this.toInner(virtualPath)));
     if (!isUnprotectedNote(content)) return content;
     if (this.shieldActive?.() === true && this.noteProvenance?.readerShielded() !== false) {
       throw new MemoryPathDenied(virtualPath, 'unprotected-note');
@@ -291,11 +344,15 @@ abstract class MemoryNamespacerBase implements MemoryStore {
   }
 
   async createFile(virtualPath: string, content: string): Promise<void> {
-    return this.inner.createFile(this.toInner(virtualPath), this.withProvenance(content));
+    return this.outward(() =>
+      this.inner.createFile(this.toInner(virtualPath), this.withProvenance(content)),
+    );
   }
 
   async writeFile(virtualPath: string, content: string): Promise<void> {
-    return this.inner.writeFile(this.toInner(virtualPath), this.withProvenance(content));
+    return this.outward(() =>
+      this.inner.writeFile(this.toInner(virtualPath), this.withProvenance(content)),
+    );
   }
 
   /**
@@ -321,7 +378,7 @@ abstract class MemoryNamespacerBase implements MemoryStore {
   async delete(virtualPath: string): Promise<void> {
     const inner = this.toInner(virtualPath);
     this.refuseStructuralChange(virtualPath, inner, 'delete');
-    return this.inner.delete(inner);
+    return this.outward(() => this.inner.delete(inner));
   }
 
   async rename(fromVirtualPath: string, toVirtualPath: string): Promise<void> {
@@ -329,7 +386,7 @@ abstract class MemoryNamespacerBase implements MemoryStore {
     const to = this.toInner(toVirtualPath);
     this.refuseStructuralChange(fromVirtualPath, from, 'rename');
     this.refuseStructuralChange(toVirtualPath, to, 'rename into');
-    return this.inner.rename(from, to);
+    return this.outward(() => this.inner.rename(from, to));
   }
 }
 

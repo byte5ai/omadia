@@ -20,6 +20,7 @@ function tableCell(value: unknown): string | number | boolean | null {
 }
 import {
   fetchRecipeRows,
+  type ExecutedCall,
   parseBooleanSetting,
   parseFastPathTools,
   plannableTools,
@@ -114,6 +115,13 @@ export type ChatTriageOutcome =
       /** the decision model's plan-runner hint (does the agent need an
        *  explicit multi-step plan?) — absent when it decided none */
       planHint?: 'plan' | 'direct';
+      /**
+       * #1930 / ADR-0221 — the fast lane's tool call that ran before the miss
+       * (its result did not make an answer: wrong shape, no rows, a tool
+       * error, an unrenderable summary). The agent gets it instead of
+       * calling the same tool again. Absent for misses before any call.
+       */
+      executed?: ExecutedCall & { rows?: number };
     };
 
 /**
@@ -346,9 +354,9 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
         };
       }
       const decision = triage.plan;
-      const miss = (reason: string): ChatTriageOutcome => {
+      const miss = (reason: string, executed?: ExecutedCall & { rows?: number }): ChatTriageOutcome => {
         settleTriage(triage, { ok: false, reason });
-        return { ...agent(reason), ...traced };
+        return { ...agent(reason), ...traced, ...(executed ? { executed } : {}) };
       };
       if (!permitted.has(decision.fetch.tool)) return miss('tool-not-permitted');
       if (req.checkPlan) {
@@ -375,7 +383,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
           deps.log(`[fast-path] ${decision.fetch.tool} ${fetched.reason}: ${fetched.detail}`);
         }
         recordFetchOutcome([decision.fetch], false, fetched.reason);
-        return miss(fetched.reason);
+        return miss(fetched.reason, fetched.executed);
       }
       if (isCacheDoubt(triage, fetched.rows.length)) {
         settleTriage(triage, { ok: false, reason: CACHE_DOUBT_REASON });
@@ -384,7 +392,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
       }
       if (fetched.rows.length === 0) {
         deps.log(`[fast-path] miss channel=${channel} reason=${EMPTY_RESULT_REASON}`);
-        return miss(EMPTY_RESULT_REASON);
+        return miss(EMPTY_RESULT_REASON, { ...fetched.executed, rows: 0 });
       }
       const rendered = renderSummary(decision.summary, {
         rows: fetched.rows,
@@ -394,7 +402,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
       });
       if (!rendered.ok) {
         deps.log(`[fast-path] summary unresolvable: ${rendered.detail}`);
-        return miss('summary-unresolvable');
+        return miss('summary-unresolvable', { ...fetched.executed, rows: fetched.rows.length });
       }
       const answer = renderChatAnswer({
         summary: rendered.text,

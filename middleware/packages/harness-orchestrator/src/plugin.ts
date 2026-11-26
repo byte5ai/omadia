@@ -38,6 +38,7 @@ import {
   formatDisclosureBootWarning,
 } from './aiDisclosurePosture.js';
 import { parseAnswerVerbosity } from './answerVerbosity.js';
+import { parseAnswerLanguage } from './answerLanguage.js';
 import type {
   EntityRefBus,
   KnowledgeGraph,
@@ -853,6 +854,9 @@ export async function activate(
   const answerVerbosity = parseAnswerVerbosity(
     ctx.config.get<unknown>('answer_verbosity'),
   );
+  // #1992 / ADR-0220 — fallback answer language (`answer_language`). The agent
+  // mirrors the user's language; unset or unknown → German.
+  const answerLanguage = parseAnswerLanguage(ctx.config.get<unknown>('answer_language'));
   // AI-Act Art. 50 (#644) — resolve the operator's disclosure setup once at
   // build time (same arrival pattern as `assistantIdentity`). Undefined → the
   // orchestrator applies the shipping default (standard, active) on every
@@ -1300,6 +1304,7 @@ export async function activate(
     graphTenantId,
     ...(assistantIdentity ? { assistantIdentity } : {}),
     ...(answerVerbosity ? { answerVerbosity } : {}),
+    ...(answerLanguage ? { answerLanguage } : {}),
     ...(aiDisclosure ? { aiDisclosure } : {}),
     // #579 — org security posture (org floor + optional scope tighten + mode +
     // screen URL). Undefined → the orchestrator's shipping default (`auto`).
