@@ -5597,6 +5597,7 @@ export interface ConductorRun {
   currentStepId: string | null;
   context: unknown;
   triggerKind: string;
+  triggerSource?: { timezone?: string; slotAt?: string } | null;
   startedAt: string;
   endedAt: string | null;
   /** #759 — set while an operator cancel is pending on a 'running' run. */
@@ -5650,7 +5651,7 @@ export async function listConductorWorkflows(): Promise<{ workflows: ConductorWo
 
 export async function getConductorWorkflowGraph(
   slug: string,
-): Promise<{ workflow: ConductorWorkflow; graph: unknown }> {
+): Promise<{ workflow: ConductorWorkflow; graph: unknown; schedules?: Array<{ cron: string; timezone: string }> }> {
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}`);
 }
 
@@ -5680,7 +5681,7 @@ export async function getConductorAgents(): Promise<{ agents: Array<{ slug: stri
 }
 
 /** Registered deterministic-action / tool ids, for the Designer's action-step dropdown. */
-export async function getConductorActions(): Promise<{ actions: string[] }> {
+export async function getConductorActions(): Promise<{ actions: string[]; serverNames?: Record<string, string> }> {
   return getJson(`${CONDUCTOR_BASE}/actions`);
 }
 
@@ -5718,6 +5719,24 @@ export async function createConductorRole(key: string, label: string): Promise<v
   return postJson(`${CONDUCTOR_BASE}/roles`, { key, label });
 }
 
+export async function updateConductorRoleLabel(key: string, label: string): Promise<void> {
+  await getJson(`${CONDUCTOR_BASE}/roles/${encodeURIComponent(key)}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ label }),
+  });
+}
+
+export async function deleteConductorRole(key: string): Promise<void> {
+  const path = `${CONDUCTOR_BASE}/roles/${encodeURIComponent(key)}`;
+  const response = await fetch(botApi(path), { method: 'DELETE', credentials: 'include' });
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    maybeNavigateToLogin(response.status);
+    throw new ApiError(response.status, `DELETE ${path} failed: ${response.status}`, body);
+  }
+}
+
 export async function assignRoleHolder(key: string, holderId: string, action: 'add' | 'remove'): Promise<{ holders: string[] }> {
   return postJson(`${CONDUCTOR_BASE}/roles/${encodeURIComponent(key)}/holders`, { holderId, action });
 }
@@ -5726,6 +5745,7 @@ export interface ConductorEmitResult {
   eventId: string;
   matchedWorkflows: number;
   startedRuns: Array<{ workflowSlug: string; runId: string }>;
+  suppressed?: Array<{ workflowSlug: string; reason: 'workflow_disabled' | 'workflow_not_found' }>;
 }
 
 export async function emitConductorEvent(eventId: string, payload: unknown): Promise<ConductorEmitResult> {
@@ -5749,6 +5769,7 @@ export async function publishConductorWorkflow(body: {
   description?: string;
   graph: unknown;
   enable?: boolean;
+  expectNew?: boolean;
 }): Promise<{
   workflow: ConductorWorkflow;
   version: { id: string; version: number };
@@ -5875,6 +5896,7 @@ export interface ConductorTemplateSlots {
   agents?: ConductorTemplateSlot[];
   actions?: ConductorTemplateSlot[];
   roles?: ConductorTemplateSlot[];
+  people?: ConductorTemplateSlot[];
   events?: ConductorTemplateSlot[];
   channels?: ConductorTemplateSlot[];
   text?: ConductorTemplateTextSlot[];
@@ -5884,7 +5906,7 @@ export interface ConductorTemplateSlots {
  *  `text` maps declared text-slot keys to the substituted strings (#478,
  *  additive — absent for pure-ref v1 mappings). */
 export type ConductorTemplateSlotMapping = Partial<
-  Record<'agents' | 'actions' | 'roles' | 'events' | 'channels', Record<string, string>>
+  Record<'agents' | 'actions' | 'roles' | 'people' | 'events' | 'channels', Record<string, string>>
 > & {
   text?: Record<string, string>;
 };
@@ -5938,7 +5960,7 @@ export async function fetchConductorTemplate(id: string): Promise<{ template: Co
  *  is mounted at /conductors, so the path carries no '/workflows' prefix. */
 export async function saveWorkflowAsTemplate(
   slug: string,
-): Promise<{ draft: ConductorTemplate; sourceWorkflow: { slug: string; version: number } }> {
+): Promise<{ draft: ConductorTemplate; sourceWorkflow: { slug: string; version: number }; urlInputStepIds?: string[] }> {
   return postJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/save-as-template`, {});
 }
 
@@ -6009,15 +6031,15 @@ export async function submitConductorTemplate(id: string): Promise<{ template: C
 /** Approve a pending template (pending → shared). Open to ANY operator — the
  *  revised visibility rule makes pending templates install-wide, so a
  *  non-author reviewer can act; `reviewed_by` is recorded server-side. */
-export async function approveConductorTemplate(id: string): Promise<{ template: ConductorTemplate | null }> {
-  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/approve`, {});
+export async function approveConductorTemplate(id: string, reviewedVersion?: number): Promise<{ template: ConductorTemplate | null }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/approve`, { reviewedVersion });
 }
 
 /** Reject a pending template (pending → private). Open to any operator; the
  *  template may drop out of a non-author reviewer's visibility afterwards, so
  *  the returned `template` can be null. */
-export async function rejectConductorTemplate(id: string): Promise<{ template: ConductorTemplate | null }> {
-  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/reject`, {});
+export async function rejectConductorTemplate(id: string, reviewedVersion?: number): Promise<{ template: ConductorTemplate | null }> {
+  return postJson(`${CONDUCTOR_BASE}/templates/${encodeURIComponent(id)}/reject`, { reviewedVersion });
 }
 
 /** Immutable manifest versions of a template, ascending. Bundled/plugin sources
@@ -6079,6 +6101,7 @@ export interface ConductorValidationError {
 export interface ConductorValidationResult {
   ok: boolean;
   errors: ConductorValidationError[];
+  warnings?: ConductorValidationWarning[];
 }
 
 export interface ConductorGraphPatch {

@@ -60,7 +60,7 @@ making an account delete silently destructive.
 - 🟢 **Good:** One purge with the id from the user page removes what names or belongs to the
   person, and co-owners keep shared memory.
 - 🟢 **Good:** Every layer is counted in the preview and stored in the audit row.
-- 🔴 **Bad:** Processes written before migration 0037 have no creator and are not selected.
+- 🔴 **Bad:** Processes written before migration 0038 have no creator and are not selected.
 - 🔴 **Bad:** A person who logs in again after the purge gets a new cluster (new omadia user
   id). An open web session keeps the deleted id through every renewal until a real sign-in
   (renewal copies the claim): graph ingest of their turns fails and new datasets/processes
@@ -99,4 +99,4 @@ making an account delete silently destructive.
 - Issues #1840, #1842, #1843; ADR-0120, ADR-0185.
 - Code: `middleware/src/services/memoryPurgeUser.ts`, `routes/memoryPurge.ts`,
   `harness-knowledge-graph-neon` (`memorableKnowledgePurgeSets`, `purgeUserIdentity`,
-  migration `0037_process_created_by.sql`, `processMemoryStore.ts`).
+  migration `0038_process_created_by.sql`, `processMemoryStore.ts`).

@@ -16,3 +16,21 @@ export const CHANNEL_KEY_PREFIX = 'key:';
 export function channelKeyOf(keyId: string): string {
   return `${CHANNEL_KEY_PREFIX}${keyId}`;
 }
+
+/**
+ * #1826 (ADR-0182) — the origin of an API key's turns: that key's one-person
+ * room. `channelType` `api` is in the kernel's context-memory allowlist; the
+ * personal scope keys the `user` tier and the `members` audience on the key,
+ * so two keys never share a tier. Never derived from caller input.
+ */
+export function apiKeyOrigin(keyId: string): {
+  readonly channelType: 'api';
+  readonly scope: { readonly kind: 'personal'; readonly userId: string };
+  readonly conversationType: 'direct';
+} {
+  return {
+    channelType: 'api',
+    scope: { kind: 'personal', userId: channelKeyOf(keyId) },
+    conversationType: 'direct',
+  };
+}

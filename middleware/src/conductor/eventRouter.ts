@@ -4,13 +4,14 @@ import { evaluatePredicate } from '@omadia/conductor-core';
 import type { JsonObject, Predicate, WorkflowGraph } from '@omadia/conductor-core';
 
 import type { ConductorWorkflowStore } from './workflowStore.js';
-import type { ConductorRunExecutor } from './runExecutor.js';
+import { WorkflowDisabledError, WorkflowNotFoundError, type ConductorRunExecutor } from './runExecutor.js';
 import { sanitizeRunContext } from './runContext.js';
 
 export interface EmitResult {
   eventId: string;
   startedRuns: Array<{ workflowSlug: string; runId: string }>;
   matchedWorkflows: number;
+  suppressed: Array<{ workflowSlug: string; reason: 'workflow_disabled' | 'workflow_not_found' }>;
   /** Matching workflows not started because their agent steps run as a
    *  different agent than the bot the channel event was addressed to. */
   skippedWorkflows: Array<{ workflowSlug: string; addressedAgent: string; stepAgents: string[] }>;
@@ -90,11 +91,16 @@ export class ConductorEventRouter {
     const workflows = await this.deps.workflowStore.list();
     const started: Array<{ workflowSlug: string; runId: string }> = [];
     const skipped: EmitResult['skippedWorkflows'] = [];
+    const suppressed: EmitResult['suppressed'] = [];
+    const suppress = (workflowSlug: string, reason: EmitResult['suppressed'][number]['reason']): void => {
+      suppressed.push({ workflowSlug, reason });
+      this.deps.log?.(`[conductor] event '${eventId}' suppressed '${workflowSlug}': ${reason}`);
+    };
     let matched = 0;
     const addressedAgent = this.resolveAddressedAgent(eventId, payload);
 
     for (const wf of workflows) {
-      if (wf.status !== 'enabled' || !wf.activeVersionId) continue;
+      if (!wf.activeVersionId) continue;
       const version = await this.deps.workflowStore.getVersion(wf.activeVersionId);
       if (!version) continue;
 
@@ -106,6 +112,10 @@ export class ConductorEventRouter {
           this.filterMatches(tr.filter, payload),
       );
       if (!match) continue;
+      if (wf.status !== 'enabled') {
+        suppress(wf.slug, 'workflow_disabled');
+        continue;
+      }
       matched += 1;
 
       if (addressedAgent !== undefined) {
@@ -132,11 +142,15 @@ export class ConductorEventRouter {
         started.push({ workflowSlug: wf.slug, runId: run.id });
         this.deps.log?.(`[conductor] event '${eventId}' started run ${run.id} on '${wf.slug}'`);
       } catch (err) {
-        this.deps.log?.(`[conductor] event '${eventId}' failed to start '${wf.slug}': ${err instanceof Error ? err.message : String(err)}`);
+        if (err instanceof WorkflowDisabledError || err instanceof WorkflowNotFoundError) {
+          suppress(wf.slug, err instanceof WorkflowDisabledError ? 'workflow_disabled' : 'workflow_not_found');
+        } else {
+          this.deps.log?.(`[conductor] event '${eventId}' failed to start '${wf.slug}': ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
 
-    return { eventId, startedRuns: started, matchedWorkflows: matched, skippedWorkflows: skipped };
+    return { eventId, startedRuns: started, matchedWorkflows: matched, skippedWorkflows: skipped, suppressed };
   }
 
   private resolveAddressedAgent(eventId: string, payload: JsonObject): string | undefined {

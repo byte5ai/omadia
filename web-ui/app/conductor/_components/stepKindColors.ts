@@ -11,6 +11,7 @@ export const KIND_COLOR: Record<string, string> = {
   agent: 'var(--step-kind-agent)',
   action: 'var(--step-kind-action)',
   human: 'var(--step-kind-human)',
+  timer: 'var(--step-kind-timer)',
 };
 
 /** Text color on a kind-colored badge fill (dark in both modes by design). */

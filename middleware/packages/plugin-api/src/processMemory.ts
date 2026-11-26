@@ -74,7 +74,7 @@ export interface WriteProcessInput {
   /** #1540 — see {@link ProcessRecord.unprotected}. */
   readonly unprotected?: boolean;
   /**
-   * #1843 (1.99.0) — canonical omadia user id of the person whose turn wrote
+   * #1843 (1.100.0) — canonical omadia user id of the person whose turn wrote
    * the process, so an erasure finds it. Absent: creator unknown. The bounded
    * `processMemory@1` sets it from the turn; a plugin cannot choose it.
    */
@@ -167,7 +167,7 @@ export interface ProcessMemoryService {
   /** Version history (descending by version). Empty when id is unknown. */
   history(id: string): Promise<readonly ProcessRecord[]>;
 
-  /** #1843 (1.99.0, optional, kernel-only) — processes a person created. */
+  /** #1843 (1.100.0, optional, kernel-only) — processes a person created. */
   countByCreator?(omadiaUserId: string): Promise<{ count: number }>;
 
   /** #1843 — delete them with their version history (memory purge, axis "User"). */

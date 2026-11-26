@@ -2604,13 +2604,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         scope: null,
         userId: null,
         props,
-        // WS5 — forward an explicit initial visibility when the caller
-        // (the scratch-promotion reaper) wants the new MK shared team-wide.
-        // Omitted → undefined → upsertNode's `COALESCE($9, 'team')` keeps the
-        // exact pre-existing DB-default behaviour for every other caller.
-        ...(input.visibility !== undefined
-          ? { visibility: input.visibility }
-          : {}),
+        // #1823 (ADR-0183) — a new MK is private unless the caller shares it
+        // on purpose (durable rules pass `team`). Before, an omitted value fell
+        // to the column default `team`, and recall's team branch handed every
+        // saved, promoted or MCP-ingested entry to every account and agent.
+        visibility: input.visibility ?? 'private',
         // Durable-curation marker → top-level `manually_authored` column.
         // Set by the durable-promotion pipeline; defaults to false otherwise.
         ...(input.manuallyAuthored !== undefined
@@ -2875,6 +2873,13 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         memorableKnowledgeNodeId,
       );
       this.assertActorIsOwner(owners, actor.actorOmadiaUserId);
+      // #1821 — an owner is a real user, and lands in their `/memories`
+      // list, which needs the INVOLVED edge as well as `acl_owners`.
+      const userUuid = await this.findUuidByExternalId(client, userNodeId(omadiaUserIdToAdd));
+      if (!userUuid) {
+        throw Object.assign(new Error('user_not_found'), { code: 'user_not_found' });
+      }
+      await this.upsertEdge(client, { type: 'INVOLVED', fromUuid: uuid, toUuid: userUuid });
       const next = owners.includes(omadiaUserIdToAdd)
         ? owners
         : [...owners, omadiaUserIdToAdd];
@@ -2924,6 +2929,14 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           code: 'cannot_remove_last_owner',
         });
       }
+      // #1821 — symmetric to addOwner: the entry leaves the removed user's list.
+      await client.query(
+        `DELETE FROM graph_edges
+          WHERE tenant_id = $1 AND type = 'INVOLVED' AND from_node = $2
+            AND to_node = (SELECT id FROM graph_nodes
+                            WHERE tenant_id = $1 AND external_id = $3 AND type = 'User')`,
+        [this.tenantId, uuid, userNodeId(omadiaUserIdToRemove)],
+      );
       await client.query(
         `UPDATE graph_nodes
            SET properties = jsonb_set(properties, '{acl_owners}', $2::jsonb, true)
@@ -3215,6 +3228,14 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     for (const row of rows.rows) {
       const before = Array.isArray(row.owners) ? (row.owners as string[]) : [];
       const after = before.filter((id) => id !== owner);
+      // ADR-0181 — like removeOwner: the entry leaves the person's list too.
+      await client.query(
+        `DELETE FROM graph_edges
+          WHERE tenant_id = $1 AND type = 'INVOLVED' AND from_node = $2
+            AND to_node = (SELECT id FROM graph_nodes
+                            WHERE tenant_id = $1 AND external_id = $3 AND type = 'User')`,
+        [this.tenantId, row.id, userNodeId(owner)],
+      );
       await client.query(
         `UPDATE graph_nodes
             SET properties = jsonb_set(properties, '{acl_owners}', $2::jsonb, true)

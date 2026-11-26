@@ -17,7 +17,6 @@ import {
   missingSlotMappings,
   resolveLocalizedText,
   templateManifestVersion,
-  validate,
 } from '@omadia/conductor-core';
 import type {
   JsonObject,
@@ -28,11 +27,14 @@ import type {
   WorkflowGraph,
 } from '@omadia/conductor-core';
 
-import { EPHEMERAL_SLUG_PREFIX } from './ephemeralRunService.js';
+import { reservedWorkflowSlugCode } from './workflowSlug.js';
 import { WorkflowSlugExistsError } from './workflowStore.js';
 import { TemplateIdExistsError, TemplateInvalidError } from './templateStore.js';
 import type { TemplateSummary } from './templateCatalog.js';
 import type { ConductorRouterDeps } from './routes.js';
+import { lockPublishedRoles, PublishRoleUnavailableError, validatePublishGraph } from './publishValidation.js';
+import { auditActorFromRequest } from '../auth/adminAuditLog.js';
+import { recordGovernanceAudit } from './governanceAudit.js';
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -55,6 +57,12 @@ function asLocalizedText(v: unknown): LocalizedText | undefined {
   if (typeof v === 'string' && v.trim().length > 0) return v;
   if (typeof v === 'object' && v !== null && !Array.isArray(v)) return v as LocalizedText;
   return undefined;
+}
+
+function containsHttpUrl(value: unknown): boolean {
+  if (typeof value === 'string') return /https?:\/\//i.test(value);
+  if (value !== null && typeof value === 'object') return Object.values(value).some(containsHttpUrl);
+  return false;
 }
 
 export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps): void {
@@ -87,10 +95,7 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
   }
 
   // Shared resolution path of resolve/instantiate (#429): manifest lookup → mapping
-  // completeness gate → slot substitution → validation with LIVE KnownRefs. Deliberately
-  // stricter than 'POST /' (structural only): a template instance must be runnable against
-  // this install's agents/actions/roles/events, not merely well-formed. Writes the error
-  // response and returns null on any failure.
+  // completeness gate → slot substitution → the same validation as ordinary publish.
   async function resolveTemplateGraph(
     id: string,
     body: JsonObject,
@@ -108,8 +113,7 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
       return null;
     }
     const graph = applyTemplateSlots(manifest, mapping);
-    const knownRefs = deps.templateKnownRefs ? await deps.templateKnownRefs() : undefined;
-    const result = validate(graph, knownRefs);
+    const result = await validatePublishGraph(graph, deps);
     if (!result.ok) {
       res.status(400).json({ code: 'conductor.invalid_graph', errors: result.errors });
       return null;
@@ -204,8 +208,7 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
   });
 
   // Publish the next manifest version onto an owned template (author-only) — #478.
-  // Status is deliberately unchanged: the review gate governs SHARING, not each
-  // version (publisher-maintenance path; an accepted, documented v1 tradeoff).
+  // A new version starts private and needs review before sharing (ADR-0253).
   router.put('/templates/:id', async (req: Request, res: Response): Promise<void> => {
     if (!deps.templateStore || !deps.templateCatalog) {
       res.status(503).json({ code: 'conductor.templates_unavailable', message: 'template store is not wired' });
@@ -281,8 +284,7 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
   // submit is author-only; approve/reject are open to ANY authenticated operator —
   // reachable because 'pending' is visible install-wide (the revised visibility
   // rule), with `reviewed_by` recorded for audit. Self-approval stays permitted
-  // (single-operator installs must not deadlock); separation of duties is a
-  // documented deferral.
+  // when there is no second active operator.
   router.post('/templates/:id/submit', async (req: Request, res: Response): Promise<void> => {
     if (!deps.templateStore || !deps.templateCatalog) {
       res.status(503).json({ code: 'conductor.templates_unavailable', message: 'template store is not wired' });
@@ -300,7 +302,17 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
         });
         return;
       }
-      await deps.templateStore.setStatus(id, 'pending');
+      const record = await deps.templateStore.setStatus(id, 'pending', undefined, { status: 'private', version: summary.version });
+      if (!record) {
+        res.status(409).json({ code: 'conductor.template_status_conflict', message: 'template changed before submission' });
+        return;
+      }
+      await recordGovernanceAudit(deps, req, {
+        action: 'conductor.template_submitted',
+        target: `template:${id}`,
+        before: { status: 'private', version: summary.version },
+        after: { status: record.status, version: record.latestVersion },
+      });
       res.json({ template: await deps.templateCatalog.get(id, viewer) });
     } catch (err) {
       console.error('[conductor] template submit failed:', err);
@@ -337,7 +349,34 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
         });
         return;
       }
-      await deps.templateStore.setStatus(id, action === 'approve' ? 'shared' : 'private', viewer);
+      const reviewedVersion = asObject(req.body).reviewedVersion;
+      if (reviewedVersion !== undefined && (!Number.isInteger(reviewedVersion) || Number(reviewedVersion) < 1)) {
+        res.status(400).json({ code: 'conductor.invalid_input', message: 'reviewedVersion must be a positive integer' });
+        return;
+      }
+      if (reviewedVersion !== undefined && reviewedVersion !== summary.version) {
+        res.status(409).json({ code: 'conductor.template_status_conflict', message: 'template version changed before review' });
+        return;
+      }
+      const selfReview = summary.createdBy === viewer;
+      if (action === 'approve' && selfReview && await deps.hasOtherActiveOperator?.(auditActorFromRequest(req), viewer)) {
+        res.status(403).json({ code: 'conductor.template_self_approval_forbidden', message: 'another operator must approve this template' });
+        return;
+      }
+      const record = await deps.templateStore.setStatus(id, action === 'approve' ? 'shared' : 'private', viewer, {
+        status: 'pending',
+        version: summary.version,
+      });
+      if (!record) {
+        res.status(409).json({ code: 'conductor.template_status_conflict', message: 'template changed before review' });
+        return;
+      }
+      await recordGovernanceAudit(deps, req, {
+        action: action === 'approve' ? 'conductor.template_approved' : 'conductor.template_rejected',
+        target: `template:${id}`,
+        before: { status: 'pending', version: summary.version },
+        after: { status: record.status, version: record.latestVersion, selfReview },
+      });
       res.json({ template: (await deps.templateCatalog.get(id, viewer)) ?? null });
     } catch (err) {
       console.error(`[conductor] template ${action} failed:`, err);
@@ -376,8 +415,9 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
     }
     // #330 — same reservation as 'POST /': the 'eph-' namespace belongs to
     // agent-generated ephemeral workflows and their reaper.
-    if (slug.startsWith(EPHEMERAL_SLUG_PREFIX)) {
-      res.status(400).json({ code: 'conductor.reserved_slug_prefix', message: `slug prefix '${EPHEMERAL_SLUG_PREFIX}' is reserved for ephemeral workflows` });
+    const slugCode = reservedWorkflowSlugCode(slug);
+    if (slugCode) {
+      res.status(400).json({ code: slugCode, message: `workflow slug '${slug}' is reserved` });
       return;
     }
     try {
@@ -400,6 +440,7 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
         // fire while the workflow is enabled) and stamp {templateId, version} provenance
         // (#478 — copy-not-reference stands, the stamp only powers update hints).
         onPublished: async (client, workflowId) => {
+          if (deps.templateKnownRefs) await lockPublishedRoles(client, resolved.graph);
           await deps.scheduleStore.reconcileOnClient(client, workflowId, resolved.graph);
           if (deps.templateStore) {
             await deps.templateStore.stampWorkflowProvenance(client, workflowId, resolved.manifest.id, manifestVersion);
@@ -426,6 +467,10 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
         ...(resolved.warnings.length > 0 ? { warnings: resolved.warnings } : {}),
       });
     } catch (err) {
+      if (err instanceof PublishRoleUnavailableError) {
+        res.status(400).json({ code: 'conductor.invalid_graph', errors: err.errors });
+        return;
+      }
       if (err instanceof WorkflowSlugExistsError) {
         // Race loser of two concurrent creates of the same fresh slug (pre-check passed).
         res.status(409).json({ code: 'conductor.slug_exists', message: err.message });
@@ -473,15 +518,25 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
         return;
       }
       const requestedId = typeof body.id === 'string' && body.id.trim().length > 0 ? body.id.trim() : undefined;
+      const name = asLocalizedText(body.name) ?? wf.name;
+      const base = resolveLocalizedText(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'workflow';
+      const safeBase = reservedWorkflowSlugCode(base) ? `workflow-${base}` : base;
+      let defaultSlug = safeBase;
+      for (let n = 2; defaultSlug === slug || await deps.workflowStore.getBySlug(defaultSlug); n += 1) {
+        defaultSlug = `${safeBase}-${n}`;
+      }
       const draft = inferTemplateManifest(version.graph, {
         id: requestedId ?? (await defaultTemplateId(slug, viewer)),
-        name: asLocalizedText(body.name) ?? wf.name,
+        name,
         description: asLocalizedText(body.description) ?? wf.description ?? wf.name,
         // Free-string category; authors refine it in the dialog before publishing.
         useCase: asLocalizedText(body.useCase) ?? 'general',
-        defaultSlug: slug,
+        defaultSlug,
       });
-      res.json({ draft, sourceWorkflow: { slug, version: version.version } });
+      const urlInputStepIds = version.graph.steps
+        .filter((step) => step.kind === 'action' && containsHttpUrl(step.input))
+        .map((step) => step.id);
+      res.json({ draft, sourceWorkflow: { slug, version: version.version }, urlInputStepIds });
     } catch (err) {
       console.error('[conductor] save-as-template failed:', err);
       res.status(500).json({ code: 'conductor.save_as_template_failed', message: errMsg(err) });

@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted — refined by [ADR-0182](0182-web-and-api-turns-carry-an-account-or-key-origin.md) (web chat, web routines and Public API turns carry an
+origin, so they are no longer context-free)
 
 - **Date:** 2026-11-25
 - **Deciders:** omadia maintainers (recorded retroactively); epic #860 with design spec #870,

@@ -1150,12 +1150,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     this.upsertNode({
       id: mkExtId,
       type: 'MemorableKnowledge',
-      // WS5 — reflect an explicit initial visibility on the node so
-      // `GraphNode.visibility` carries the value the reaper requested
-      // (team-wide). Omitted → undefined, the historical default.
-      ...(input.visibility !== undefined
-        ? { visibility: input.visibility }
-        : {}),
+      // #1823 (ADR-0183) — private unless the caller shares it on purpose
+      // (durable rules: `team`). Like Neon.
+      visibility: input.visibility ?? 'private',
       // Durable-curation marker — mirrors the Neon `manually_authored` column.
       // Top-level GraphNode field (not props); keys the durable recall tier.
       ...(input.manuallyAuthored !== undefined
@@ -1329,6 +1326,12 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     if (!owners.includes(actor.actorOmadiaUserId)) {
       throw Object.assign(new Error('not_an_owner'), { code: 'not_an_owner' });
     }
+    // #1821 — like Neon: only a real user, and the INVOLVED edge with it.
+    const userExtId = userNodeId(omadiaUserIdToAdd);
+    if (!this.nodes.has(userExtId)) {
+      throw Object.assign(new Error('user_not_found'), { code: 'user_not_found' });
+    }
+    this.addEdge({ type: 'INVOLVED', from: node.id, to: userExtId });
     const next = owners.includes(omadiaUserIdToAdd)
       ? owners
       : [...owners, omadiaUserIdToAdd];
@@ -1368,6 +1371,12 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       throw Object.assign(new Error('cannot_remove_last_owner'), {
         code: 'cannot_remove_last_owner',
       });
+    }
+    const removedUser = userNodeId(omadiaUserIdToRemove);
+    for (const [key, edge] of this.edges) {
+      if (edge.type === 'INVOLVED' && edge.from === node.id && edge.to === removedUser) {
+        this.edges.delete(key);
+      }
     }
     this.upsertNode({
       id: node.id,
@@ -1544,9 +1553,16 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     filter: MemorableKnowledgePurgeFilter,
   ): Promise<MemorableKnowledgePurgeResult> {
     const { remove, deown } = this.memorableKnowledgePurgeSets(filter);
+    const removedUser = filter.aclOwner !== undefined ? userNodeId(filter.aclOwner) : undefined;
     for (const node of deown) {
       const before = ownersOf(node);
       const after = before.filter((id) => id !== filter.aclOwner);
+      // ADR-0181 — like removeOwner: the entry leaves the person's list too.
+      for (const [key, edge] of this.edges.entries()) {
+        if (edge.type === 'INVOLVED' && edge.from === node.id && edge.to === removedUser) {
+          this.edges.delete(key);
+        }
+      }
       this.upsertNode({ id: node.id, type: 'MemorableKnowledge', props: { ...node.props, acl_owners: after } });
       this.appendAclAudit({
         memoryExternalId: node.id,
@@ -1946,6 +1962,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     opts: MemorableKnowledgeSearchOptions,
   ): Promise<MemorableKnowledgeHit[]> {
     if (opts.queryEmbedding.length === 0) return [];
+    // An empty audience is not an audience and matches nothing (plugin-api
+    // `ownersCoverAudience`); Neon returns [] before querying (#2224).
+    if (isEmptyAudience(opts.audienceOwners)) return [];
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
     const minSimilarity = opts.minSimilarity ?? 0.3;
     const hits: MemorableKnowledgeHit[] = [];
@@ -2004,6 +2023,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     opts: ExcerptSearchOptions,
   ): Promise<PalaiaExcerptHit[]> {
     if (opts.queryEmbedding.length === 0) return [];
+    if (isEmptyAudience(opts.audienceOwners)) return [];
     const limit = Math.max(1, Math.min(opts.limit ?? 10, 50));
     const minSimilarity = opts.minSimilarity ?? 0.3;
     const hits: PalaiaExcerptHit[] = [];
@@ -3880,4 +3900,9 @@ function cosine(a: readonly number[], b: readonly number[]): number {
   }
   if (na === 0 || nb === 0) return Number.NaN;
   return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+/** An audience that canonicalises to no owner matches nothing (mirrors Neon's `EMPTY_AUDIENCE`). */
+function isEmptyAudience(audience: readonly string[] | undefined): boolean {
+  return audience !== undefined && canonicalOwners(audience).length === 0;
 }

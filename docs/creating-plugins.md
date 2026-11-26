@@ -426,6 +426,12 @@ for await (const ev of core.handleTurnStream(turn)) { /* ev: ChatStreamEvent */ 
 - `handleTurnStream(turn): AsyncIterable<ChatStreamEvent>` (siehe oben),
 - `registerRoute` / `registerRouter` — channel-scoped Express-Routen (auto-503 bei deactivate),
 - `resolveIdentity(ref)`, `log(level, msg, ctx?)`.
+- optional, per `typeof core.x === 'function'` prüfen: u. a. `registerWebSocket`,
+  `registerRosterProvider`, `registerTargetedSendProvider`, und
+  `readAttachment(url)` — liest die Bytes eines ausgehenden Anhangs in-process
+  (für Plattformen, die die URL nicht erreichen; ADR-0222). Bei
+  `not_kernel_attachment` die URL nehmen; scheitert beides, dem Nutzer eine
+  sichtbare „Datei konnte nicht zugestellt werden“-Notiz senden.
 
 **Inbound → Turn.** `IncomingTurn = { channelId, conversationId, userRef:{ kind,
 id, displayName? }, text, attachments?, metadata?, rawEvent? }`. `userRef.kind`

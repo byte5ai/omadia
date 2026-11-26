@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
+import { isDeepStrictEqual } from 'node:util';
 
+import { readOperatorAuditState, recordOperatorAudit, type AdminAuditLog } from '../auth/adminAuditLog.js';
 import { requireUuidParam } from '../http/uuidParam.js';
 import {
   parseRoutineOutputTemplate,
@@ -31,6 +33,7 @@ export interface RoutinesRouterDeps {
   store: RoutineStore;
   runsStore: RoutineRunsStore;
   runner: RoutineRunner;
+  audit?: Pick<AdminAuditLog, 'record'>;
   log?: (msg: string) => void;
 }
 
@@ -229,10 +232,17 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
         // #1025 — cross-tenant on purpose, same rationale as the list
         // above: this router sits behind requireAuth. The
         // scope is stated rather than omitted so it reads as a decision.
+        const previous = deps.audit ? await readOperatorAuditState(() => deps.store.get(id)) : undefined;
         const updated =
           status === 'paused'
             ? await deps.runner.pauseRoutine(id, OPERATOR_SCOPE)
             : await deps.runner.resumeRoutine(id, OPERATOR_SCOPE);
+        await recordOperatorAudit(deps.audit, req, {
+          action: status === 'paused' ? 'routine.pause' : 'routine.resume',
+          target: `routine:${id}`,
+          before: previous === 'unknown' ? previous : previous && routineAuditStatus(previous),
+          after: routineAuditStatus(updated),
+        });
         const body: RoutineResponse = { routine: toDto(updated) };
         res.json(body);
       } catch (err) {
@@ -310,6 +320,11 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
             `[routines/route] background trigger run for ${id} failed: ${errMsg(err)}`,
           );
         });
+      void recordOperatorAudit(deps.audit, req, {
+        action: 'routine.trigger',
+        target: `routine:${id}`,
+        after: { ...routineAuditStatus(routine), trigger: 'manual', accepted: true },
+      });
       const body: RoutineResponse = { routine: toDto(routine) };
       res.status(202).json(body);
     },
@@ -416,6 +431,7 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
         template = parsed.value;
       }
       try {
+        const previous = deps.audit ? await readOperatorAuditState(() => deps.store.get(id)) : undefined;
         const updated = await deps.store.setOutputTemplate(id, template);
         if (!updated) {
           res.status(404).json({
@@ -424,6 +440,17 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
           });
           return;
         }
+        await recordOperatorAudit(deps.audit, req, {
+          action: 'routine.template_change',
+          target: `routine:${id}`,
+          before: previous === 'unknown' ? previous : previous && routineAuditTemplate(previous),
+          after: {
+            ...routineAuditTemplate(updated),
+            contentChanged: previous === 'unknown'
+              ? null
+              : !isDeepStrictEqual(previous?.outputTemplate ?? null, updated.outputTemplate),
+          },
+        });
         const out: RoutineResponse = { routine: toDto(updated) };
         res.json(out);
       } catch (err) {
@@ -488,6 +515,7 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
     const id = typeof idRaw === 'string' ? idRaw : '';
     try {
       // #1025 — cross-tenant by design on this router (see PATCH).
+      const previous = deps.audit ? await readOperatorAuditState(() => deps.store.get(id)) : undefined;
       const ok = await deps.runner.deleteRoutine(id, OPERATOR_SCOPE);
       if (!ok) {
         res.status(404).json({
@@ -496,6 +524,16 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
         });
         return;
       }
+      await recordOperatorAudit(deps.audit, req, {
+        action: 'routine.delete',
+        target: `routine:${id}`,
+        before: previous === 'unknown' ? previous : previous && {
+          ...routineAuditStatus(previous),
+          name: previous.name,
+          cron: previous.cron,
+          channel: previous.channel,
+        },
+      });
       res.status(204).end();
     } catch (err) {
       log(`[routines/route] DELETE /:id failed: ${errMsg(err)}`);
@@ -507,6 +545,22 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
   });
 
   return router;
+}
+
+function routineAuditStatus(routine: Routine) {
+  return { tenant: routine.tenant, owner_id: routine.userId, status: routine.status };
+}
+
+function routineAuditTemplate(routine: Routine) {
+  const template = routine.outputTemplate;
+  return {
+    owner_id: routine.userId,
+    tenant: routine.tenant,
+    template: template ? {
+      format: template.format,
+      sections: template.sections.map(({ kind }) => kind),
+    } : null,
+  };
 }
 
 function errMsg(err: unknown): string {

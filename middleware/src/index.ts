@@ -208,6 +208,7 @@ import {
 // plugin via ctx.routes.register (see packages/harness-channel-teams/src/plugin.ts,
 // phase-3.1-4). No kernel-side attachment router import needed anymore.
 import { createChatSessionsRouter } from './routes/chatSessions.js';
+import { soleAccountLegacyOwner, type LegacyChatOwner } from './routes/chatSessionAccess.js';
 import {
   DEV_GRAPH_PATH,
   DEV_PATH_PREFIX,
@@ -376,7 +377,7 @@ import {
 import { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './conductor/webhookPostAction.js';
 import { parseMcpActionId } from './conductor/mcpActionId.js';
 import { mcpRowToConfig } from './agents/subAgentToolHydration.js';
-import { createMcpActionInvoker, mcpActionIds } from './conductor/mcpActionInvoker.js';
+import { createMcpActionInvoker, listMcpActions } from './conductor/mcpActionInvoker.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
 import { EmailWhitelist } from './auth/whitelist.js';
@@ -662,6 +663,7 @@ import { createUiPrefsRouter } from './routes/uiPrefs.js';
 import { ExpressRouteRegistry } from './channels/routeRegistry.js';
 import { WebSocketRegistry } from './channels/webSocketRegistry.js';
 import { createCoreApi } from './channels/coreApi.js';
+import { createAttachmentByteReader, loopbackOriginFor } from './channels/attachmentByteReader.js';
 import { createCoreRoutineTurnScope } from './plugins/routines/coreRoutineTurnScope.js';
 import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
 import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
@@ -4226,6 +4228,12 @@ async function main(): Promise<void> {
     }),
   );
 
+  // #1762 (ADR-0180) — the owner of web chats written before owners existed:
+  // the instance's only account. Bound once the users table is wired below;
+  // until then (and without Postgres) such chats belong to nobody.
+  let resolveLegacyChatOwner: LegacyChatOwner = () => Promise.resolve(undefined);
+  const legacyChatOwner: LegacyChatOwner = () => resolveLegacyChatOwner();
+
   // OB-106: gate the chat-inference endpoints (`POST /api/chat`,
   // `POST /api/chat/stream`) behind `requireAuth`. Without this, anonymous
   // callers could trigger LLM inference (cost) and reach the tool surface
@@ -4236,6 +4244,7 @@ async function main(): Promise<void> {
     requireAuth,
     createChatRouter({
       agentResolver,
+      legacyChatOwner,
       routeTurn: routeWebTurn,
       // #2055 — `/agent …` in the web chat, the same management-layer
       // handling every other channel gets from its resolver.
@@ -4300,6 +4309,7 @@ async function main(): Promise<void> {
     requireAuth,
     createChatSessionsRouter({
       getStore: getChatSessionStore,
+      legacyOwner: legacyChatOwner,
       releaseGenerated: (scope, ownerOmadiaUserId) =>
         generatedObjects.release({ scope, ...(ownerOmadiaUserId ? { ownerOmadiaUserId } : {}) }),
     }),
@@ -5002,6 +5012,7 @@ async function main(): Promise<void> {
     '/api/v1/operator/channels',
     requireAuth,
     createOperatorChannelsRouter({
+      getAudit: () => adminAudit,
       getConfigStore: () =>
         serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
       getRegistry: () =>
@@ -5874,8 +5885,11 @@ async function main(): Promise<void> {
               : Promise.resolve(undefined),
       listActions: async () => [
         WEBHOOK_POST_ACTION_ID,
-        ...deterministicActionRegistry.list(),
-        ...mcpActionIds(await conductorMcpServerStore.listMcpServers(), mcpDispatchDenial),
+        ...deterministicActionRegistry.list().map((id) => {
+          const requiredInputs = nativeToolRegistry.get(id)?.spec?.input_schema.required;
+          return requiredInputs?.length ? { id, requiredInputs } : id;
+        }),
+        ...listMcpActions(await conductorMcpServerStore.listMcpServers(), mcpDispatchDenial),
       ],
       eventCatalog: eventCatalogRegistry,
       // US5 reminders: resolve a channel's proactive sender from the routines senderRegistry. Adapt
@@ -5896,6 +5910,7 @@ async function main(): Promise<void> {
         // column and every audit write failed.
         await adminAudit?.record(roleChangeAuditEntry(entry));
       },
+      auditGovernanceChange: async (entry) => { await adminAudit?.record(entry); },
       webhooksEnabled: config.CONDUCTOR_WEBHOOKS_ENABLED,
       // #1707 — webhook administration lands in the admin trail. Closure, not the
       // instance, for the same reason as auditRoleChange: `adminAudit` is constructed
@@ -6133,6 +6148,7 @@ async function main(): Promise<void> {
 
     const userStore = new UserStore(graphPool);
     sessionRevocation.attach(userStore);
+    resolveLegacyChatOwner = soleAccountLegacyOwner((limit) => userStore.list({ limit }));
     // #2042 — `humanNames@1` (published before plugin activation) now reads
     // this users table; every user write reloads the snapshot.
     humanNameDirectory.attach(userStore);
@@ -6521,6 +6537,7 @@ async function main(): Promise<void> {
         store: routinesHandle.store,
         runsStore: routinesHandle.runsStore,
         runner: routinesHandle.runner,
+        ...(adminAudit ? { audit: adminAudit } : {}),
         log: (msg) => console.log(msg),
       }),
     );
@@ -6874,6 +6891,7 @@ async function main(): Promise<void> {
     '/api/v1/admin/providers',
     requireAuth,
     createAdminProvidersRouter({
+      ...(adminAudit ? { audit: adminAudit } : {}),
       installedRegistry,
       vault: secretVault,
       reactivate: reactivateAgent,
@@ -7692,6 +7710,7 @@ async function main(): Promise<void> {
               draftStore,
               buildPipeline: builderBuildPipeline,
               packageUploadService,
+              ...(adminAudit ? { adminAudit } : {}),
               quota: draftQuota,
               workaroundStateStore: builderWorkaroundStateStore,
             },
@@ -8001,6 +8020,12 @@ async function main(): Promise<void> {
     ...(routinesIntegration
       ? { routineTurn: createCoreRoutineTurnScope(routinesIntegration, graphTenantId) }
       : {}),
+    // #1993 / ADR-0222 — channels read attachment bytes in-process (loopback
+    // GET, granted public paths only) instead of relying on a reachable URL.
+    readAttachment: createAttachmentByteReader({
+      resolveGrantedPath: (path) => publicPathGrants.resolve(path),
+      loopbackOrigin: loopbackOriginFor(config.HOST, config.PORT),
+    }),
   });
 
   // Phase 5B: channel discovery flips to plugin-store-flow. The
