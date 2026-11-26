@@ -264,6 +264,9 @@ export interface McpServerNode {
   status: NodeStatus;
   lastDiscoveredAt: string | null;
   discoveredTools: McpDiscoveredTool[];
+  /** #1916 — outcome of the last security re-scan; absent on older middleware. */
+  lastScanAt?: string | null;
+  lastScanError?: string | null;
   /** Marketplace provenance (issue #455); absent on older middleware builds. */
   source?: 'manual' | 'marketplace';
   registryId?: string | null;
@@ -1347,6 +1350,8 @@ export async function restorePublicMcpKeyBinding(
 
 export interface McpServersListResponse {
   servers: McpServerNode[];
+  /** #1957 — `MCP_STDIO_ENABLED` of this deployment; absent on older middleware. */
+  stdioEnabled?: boolean;
 }
 
 export async function listMcpServers(): Promise<McpServersListResponse> {

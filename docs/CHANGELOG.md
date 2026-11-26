@@ -36,6 +36,33 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — MCP Control Center: input checks, re-scan results, risk and grant errors, stdio flag, i18n (#1916, #1941, #1943, #1953, #1954, #1955, #1957, #1959) (2026-11-26)
+
+- **Migration `0114_mcp_server_last_scan`** adds `mcp_servers.last_scan_at` and
+  `last_scan_error`. **#1916** "Re-scan all" and the periodic re-scan stamp every server's
+  outcome; the page shows a summary of the run and a "last re-scan failed" line per server.
+- **#1955** `POST /mcp-servers` validates name, transport, endpoint (http(s) URL, `{placeholder}`
+  allowed) with stable codes; duplicate server and registry names answer 409 `name_taken`; a
+  non-UUID id under `/mcp-servers/…` or `/mcp-registries/…` is a 404 (`routes/mcpServerInput.ts`).
+  The add button stays disabled until name and endpoint are filled.
+- **#1957** `GET /mcp-servers` returns `stdioEnabled`; with `MCP_STDIO_ENABLED=false` the stdio
+  option and catalog Connect for stdio entries are disabled and the hint says why.
+- **#1941** Enabling a server with unacknowledged risks names the tools and their severity.
+- **#1943** "Grant all" skips tools that need a review, grants the rest, lists the skipped ones
+  and always reloads.
+- **#1953** An MCP input-card answer is shown and stored as "Sent to <server>: <field names>";
+  the envelope with the values rides only in the `/api/chat` request, and
+  `PUT /api/chat/sessions/:id` replaces any envelope an older tab sends back
+  (`scrubMcpInputEnvelopes`).
+- **#1954** The agent page's tool-grant list reloads after "Save allowlist"; its copy no longer
+  calls itself read-only.
+- **#1959** Structured-output badge reads `skills.verdict.*`, risk codes and audit failure
+  reasons are translated, audit times and the "discovered" time use the locale, `unresolved`
+  renders as "not resolved", ICU plurals for tool/step/connector counts, the add-server dialog
+  uses "du". New ratchet: `scripts/i18n-missing-keys.mjs` (part of `npm run i18n:check`, ceiling
+  0) fails on `t('key')` calls whose key is in no catalog. Not done here: the English OAuth
+  callback page (left to W09-10, which reworks its texts in #1924).
+
 ### Fixed — public MCP endpoint: write limits, usage log, tool errors, binding writes (#1935–#1938, #1940, #1949, #1952) (2026-11-26)
 
 - **#1935** A changed write limit applies on the next call: `createRateLimiter` reads the

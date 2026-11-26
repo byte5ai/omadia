@@ -55,9 +55,11 @@ export async function rescanAllMcpServers(
       await graph.bumpSkillBindingEpoch(server.id);
       scannedServers += 1;
       scannedTools += verdicts.length;
+      await recordScan(graph, server.id, null, log);
     } catch (err) {
       failures.push({ serverId: server.id, serverName: server.name, error: String(err) });
       log?.(`[mcpRescan] server "${server.name}" failed: ${String(err)}`);
+      await recordScan(graph, server.id, String(err), log);
     }
   }
   await refreshMcpGrantPolicy(graph);
@@ -65,4 +67,22 @@ export async function rescanAllMcpServers(
     `[mcpRescan] ${String(scannedServers)} server(s), ${String(scannedTools)} tool verdict(s), ${String(failures.length)} failure(s)`,
   );
   return { scannedServers, scannedTools, failures };
+}
+
+/**
+ * #1916 — persist the per-server outcome so the Control Center can show it,
+ * for the button and the periodic re-scan alike. Best effort: a failed stamp
+ * must neither abort the sweep nor turn a good scan into a failure.
+ */
+async function recordScan(
+  graph: AgentGraphStore,
+  serverId: string,
+  error: string | null,
+  log?: (msg: string) => void,
+): Promise<void> {
+  try {
+    await graph.recordMcpServerScan(serverId, error);
+  } catch (err) {
+    log?.(`[mcpRescan] could not record the scan outcome of ${serverId}: ${String(err)}`);
+  }
 }

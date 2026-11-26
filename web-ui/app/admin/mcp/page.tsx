@@ -63,6 +63,13 @@ import {
   mcpGuardCode,
   type CatalogErrorKind,
 } from './mcpErrors';
+import {
+  mcpInputErrorKey,
+  parseUnackedRisks,
+  useAuditReasonText,
+  useRiskCodeLabel,
+  useSeverityLabel,
+} from './mcpAdminText';
 
 type Tab = 'servers' | 'marketplace' | 'grants' | 'plugins' | 'bindings' | 'audit';
 
@@ -130,14 +137,26 @@ function errText(err: unknown): string {
  */
 function useMcpErrorText(): (err: unknown) => string {
   const t = useTranslations('adminMcp');
+  const severityLabel = useSeverityLabel();
   return useCallback(
     (err: unknown) => {
       const code = mcpGuardCode(err);
       if (code === 'blocked_host') return t('guard.blockedHost', { detail: errText(err) });
       if (code === 'stdio_disabled') return t('guard.stdioDisabled', { detail: errText(err) });
+      // #1941 — enabling a server whose risky tools nobody reviewed yet.
+      const risky = parseUnackedRisks(err);
+      if (risky) {
+        return t('servers.unackedRisks', {
+          count: risky.length,
+          tools: risky.map((r) => `${r.toolName} (${severityLabel(r.severity)})`).join(', '),
+        });
+      }
+      // #1955 — the create/registry routes' input refusals.
+      const inputKey = mcpInputErrorKey(err);
+      if (inputKey) return t(`input.${inputKey}`);
       return errText(err);
     },
-    [t],
+    [t, severityLabel],
   );
 }
 
@@ -265,10 +284,19 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
   // still be able to register a legacy SSE server on purpose.
   const [showDeprecated, setShowDeprecated] = useState(false);
   const [endpoint, setEndpoint] = useState('');
+  // #1957 — whether this deployment allows stdio servers (MCP_STDIO_ENABLED).
+  // Unknown (older middleware) counts as allowed, as before.
+  const [stdioEnabled, setStdioEnabled] = useState(true);
+  // #1916 — the outcome of the last "Re-scan all", shown until the next action.
+  const [rescanResult, setRescanResult] = useState<Awaited<
+    ReturnType<typeof rescanAllMcpServers>
+  > | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      setServers((await listMcpServers()).servers);
+      const list = await listMcpServers();
+      setServers(list.servers);
+      setStdioEnabled(list.stdioEnabled !== false);
       setError(null);
     } catch (err) {
       setError(errText(err));
@@ -283,6 +311,7 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
     setBusy(key);
     setError(null);
     setAuthNotice(null);
+    setRescanResult(null);
     try {
       await fn();
       await refresh();
@@ -344,7 +373,9 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
             className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
           >
             <option value="http">http</option>
-            <option value="stdio">stdio</option>
+            <option value="stdio" disabled={!stdioEnabled}>
+              {stdioEnabled ? 'stdio' : t('servers.stdioOptionDisabled')}
+            </option>
             {showDeprecated
               ? DEPRECATED_MCP_TRANSPORTS.map((d) => (
                   <option key={d} value={d}>
@@ -354,8 +385,13 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
               : null}
           </select>
         </label>
-        {transport === 'stdio' ? (
+        {transport === 'stdio' && stdioEnabled ? (
           <p className="basis-full text-xs text-[color:var(--fg-muted)]">{t('servers.stdioHint')}</p>
+        ) : null}
+        {!stdioEnabled ? (
+          <p className="basis-full text-xs text-[color:var(--fg-muted)]">
+            {t('servers.stdioDisabledHint')}
+          </p>
         ) : null}
         <label className="flex items-center gap-2 self-center text-xs text-[color:var(--fg-muted)]">
           <input
@@ -383,6 +419,10 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
         <Button
           size="sm"
           busy={busy === 'create'}
+          // #1955 — name and endpoint are required; stdio only where allowed.
+          disabled={
+            name.trim() === '' || endpoint.trim() === '' || (transport === 'stdio' && !stdioEnabled)
+          }
           onClick={() =>
             void act('create', async () => {
               await createMcpServer({ name: name.trim(), transport, endpoint: endpoint.trim() || null });
@@ -397,13 +437,41 @@ function ServersPane({ onAssign }: { onAssign: (serverId: string) => void }): Re
           size="sm"
           variant="ghost"
           busy={busy === 'rescan'}
-          onClick={() => void act('rescan', () => rescanAllMcpServers())}
+          onClick={() =>
+            void act('rescan', async () => {
+              const result = await rescanAllMcpServers();
+              setRescanResult(result);
+            })
+          }
         >
           {t('servers.rescanAll')}
         </Button>
       </div>
 
       {error ? <div className="text-sm text-[color:var(--danger)]">{error}</div> : null}
+      {rescanResult ? (
+        <div
+          role="status"
+          className={`flex flex-col gap-0.5 rounded-md border px-3 py-2 text-xs ${
+            rescanResult.failures.length > 0
+              ? 'border-[color:var(--warning)] text-[color:var(--warning)]'
+              : 'border-[color:var(--border)] text-[color:var(--fg-muted)]'
+          }`}
+        >
+          <span>
+            {t('servers.rescanSummary', {
+              servers: rescanResult.scannedServers,
+              tools: rescanResult.scannedTools,
+              failed: rescanResult.failures.length,
+            })}
+          </span>
+          {rescanResult.failures.map((f) => (
+            <span key={f.serverId}>
+              {t('servers.rescanFailure', { name: f.serverName, error: f.error })}
+            </span>
+          ))}
+        </div>
+      ) : null}
       {authNotice ? (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-[color:var(--accent)] bg-[color:var(--accent)]/10 px-3 py-2 text-sm text-[color:var(--fg-default)]">
           <span>🔒 {t('servers.needsAuth', { name: authNotice.name, host: authNotice.host || '?' })}</span>
@@ -511,6 +579,7 @@ function ServerRows({
   onAssign: () => void;
 }): React.ReactElement {
   const t = useTranslations('adminMcp');
+  const format = useFormatter();
   const worst = worstSeverityOf(server);
   return (
     <>
@@ -520,6 +589,23 @@ function ServerRows({
           <button className="text-left underline-offset-2 hover:underline" onClick={onToggle}>
             {server.name}
           </button>
+          {/* #1916 — a server whose last security re-scan failed says so,
+              also when the periodic re-scan ran and nobody pressed the button. */}
+          {server.lastScanError ? (
+            <div
+              className="text-[10px] text-[color:var(--warning)]"
+              title={server.lastScanError}
+            >
+              {server.lastScanAt
+                ? t('servers.lastScanFailedAt', {
+                    at: format.dateTime(new Date(server.lastScanAt), {
+                      dateStyle: 'short',
+                      timeStyle: 'short',
+                    }),
+                  })
+                : t('servers.lastScanFailed')}
+            </div>
+          ) : null}
         </td>
         <td className={tdCls}>
           <span className="inline-flex flex-wrap items-center gap-1.5">
@@ -615,6 +701,24 @@ const cfgInputCls =
 /** Tool-card border + a STATIC subtle tint by verdict severity (epic #459 UI).
  *  No hover-fill — hovering only nudges the border, so the card is never flooded
  *  with colour on hover; the coloured left-border is the persistent marker. */
+/** Severities the server refuses to grant or enable before an operator ack. */
+const SEVERITIES_NEEDING_ACK: ReadonlySet<string> = new Set([
+  'high_risk',
+  'scan_failed',
+  'too_large_to_scan',
+]);
+
+/** Whether a discovered tool still needs an operator review (unacked or stale). */
+function toolNeedsAck(tool: McpServerNode['discoveredTools'][number]): boolean {
+  const v = tool.verdict;
+  return (
+    v?.severity !== undefined &&
+    v.severity !== null &&
+    SEVERITIES_NEEDING_ACK.has(v.severity) &&
+    (!v.acked || v.ackStale)
+  );
+}
+
 function toolCardCls(severity: string | null | undefined): string {
   const base = 'border-l-2 hover:border-[color:var(--accent)]/50';
   switch (severity) {
@@ -760,6 +864,9 @@ function ServerDetail({
   onAssign: () => void;
 }): React.ReactElement {
   const t = useTranslations('adminMcp');
+  const tVerdict = useTranslations('skills.verdict');
+  const riskCodeLabel = useRiskCodeLabel();
+  const format = useFormatter();
   const [ackArm, setAckArm] = useState<string | null>(null);
   const [ackBusy, setAckBusy] = useState<string | null>(null);
   const [testTool, setTestTool] = useState<string | null>(null);
@@ -770,7 +877,13 @@ function ServerDetail({
   const head = (
     <>
       <div className="text-xs text-[color:var(--fg-muted)]">
-        {server.endpoint ?? ''} {server.lastDiscoveredAt ? `· ${server.lastDiscoveredAt}` : ''}
+        {server.endpoint ?? ''}{' '}
+        {server.lastDiscoveredAt
+          ? `· ${format.dateTime(new Date(server.lastDiscoveredAt), {
+              dateStyle: 'medium',
+              timeStyle: 'short',
+            })}`
+          : ''}
       </div>
       <McpAuthSection serverId={server.id} />
       <ServerConfigForm server={server} />
@@ -841,11 +954,7 @@ function ServerDetail({
       </div>
       {server.discoveredTools.map((tool) => {
         const v = tool.verdict;
-        const needsAck =
-          v?.severity !== undefined &&
-          v.severity !== null &&
-          ['high_risk', 'scan_failed', 'too_large_to_scan'].includes(v.severity) &&
-          (!v.acked || v.ackStale);
+        const needsAck = toolNeedsAck(tool);
         return (
           <div
             key={tool.name}
@@ -863,10 +972,10 @@ function ServerDetail({
                     its text. No behaviour attached; purely informational. */}
                 {tool.outputSchema ? (
                   <span
-                    title={t('servers.structuredOutputHint')}
+                    title={tVerdict('structuredOutputHint')}
                     className="rounded-full border border-[color:var(--border)] px-2 py-0.5 text-[11px] text-[color:var(--fg-muted)]"
                   >
-                    {t('servers.structuredOutput')}
+                    {tVerdict('structuredOutput')}
                   </span>
                 ) : null}
                 {v?.acked && !v.ackStale ? (
@@ -881,7 +990,9 @@ function ServerDetail({
               <div className="text-sm leading-[1.5] text-[color:var(--fg-muted)]">{tool.description}</div>
             ) : null}
             {v && v.riskCodes.length > 0 ? (
-              <div className="text-[11px] text-[color:var(--fg-muted)]">{v.riskCodes.join(', ')}</div>
+              <div className="text-[11px] text-[color:var(--fg-muted)]">
+                {v.riskCodes.map(riskCodeLabel).join(', ')}
+              </div>
             ) : null}
             <div className="flex flex-wrap gap-1.5">
               {needsAck ? (
@@ -1107,6 +1218,13 @@ function MarketplacePane(): React.ReactElement {
   const [regName, setRegName] = useState('');
   const [regUrl, setRegUrl] = useState('');
   const [regToken, setRegToken] = useState('');
+  // #1957 — a stdio catalog entry cannot be imported where stdio is off.
+  const [stdioEnabled, setStdioEnabled] = useState(true);
+  useEffect(() => {
+    listMcpServers()
+      .then((list) => setStdioEnabled(list.stdioEnabled !== false))
+      .catch(() => setStdioEnabled(true));
+  }, []);
 
   /** Monotonic request id. Debounced typing plus a slow registry means an older
    *  response can land after a newer one; without this the list would flicker
@@ -1525,13 +1643,19 @@ function MarketplacePane(): React.ReactElement {
                   })()}
                   <span
                     className="shrink-0"
-                    title={!entry.transport ? t('marketplace.browseOnlyHint') : undefined}
+                    title={
+                      !entry.transport
+                        ? t('marketplace.browseOnlyHint')
+                        : entry.transport === 'stdio' && !stdioEnabled
+                          ? t('marketplace.stdioDisabledHint')
+                          : undefined
+                    }
                   >
                     <Button
                       size="sm"
                       variant="secondary"
                       busy={busy === `connect:${entry.id}`}
-                      disabled={!entry.transport}
+                      disabled={!entry.transport || (entry.transport === 'stdio' && !stdioEnabled)}
                       onClick={() => void connect(entry)}
                     >
                       {t('marketplace.connect')}
@@ -1617,7 +1741,10 @@ function GrantsPane({
   onConsumed?: () => void;
 }): React.ReactElement {
   const t = useTranslations('adminMcp');
+  const mcpErrorText = useMcpErrorText();
   const broadReach = useBroadReachConfirm();
+  // #1943 — tools "Grant all" left out because they still need a review.
+  const [grantAllSkipped, setGrantAllSkipped] = useState<string[]>([]);
   const [rows, setRows] = useState<McpGrantMatrixRow[] | null>(null);
   const [orchestrators, setOrchestrators] = useState<McpOrchestrator[]>([]);
   const [servers, setServers] = useState<McpServerNode[]>([]);
@@ -1699,23 +1826,41 @@ function GrantsPane({
     if (!chosenServer) return;
     setBusy('all');
     setError(null);
+    setGrantAllSkipped([]);
+    // #1943 — a tool whose risk verdict still needs a review is refused by the
+    // server; it is skipped up front instead of aborting the run halfway, and
+    // the operator is told which ones to review.
+    const pending = chosenServer.discoveredTools.filter((tool) => !grantedSet.has(tool.name));
+    const skipped: string[] = pending.filter((tool) => toolNeedsAck(tool)).map((tool) => tool.name);
     try {
-      for (const tool of chosenServer.discoveredTools) {
-        if (!grantedSet.has(tool.name)) {
+      for (const tool of pending) {
+        if (toolNeedsAck(tool)) continue;
+        try {
           // #2054 — declining the broad-reach confirmation stops the run.
           const done = await broadReach.guard(pickAgent, (confirm) =>
             grantMcpToolToOrchestrator(pickAgent, pickServer, tool.name, { confirmBroadReach: confirm }),
           );
           if (!done) break;
+        } catch (err) {
+          // One refused tool (e.g. a verdict that changed since the list
+          // loaded) must not stop the others.
+          if (err instanceof ApiError && err.status === 409) {
+            skipped.push(tool.name);
+            continue;
+          }
+          throw err;
         }
       }
-      await refresh();
     } catch (err) {
-      setError(errText(err));
+      setError(mcpErrorText(err));
     } finally {
+      setGrantAllSkipped(skipped);
+      // Always re-read: a partial run has changed the grants either way.
+      await refresh();
       setBusy(null);
     }
   }
+
 
   return (
     <div className="flex flex-col gap-3">
@@ -1762,6 +1907,14 @@ function GrantsPane({
             </Button>
           ) : null}
         </div>
+        {grantAllSkipped.length > 0 ? (
+          <div role="status" className="text-xs text-[color:var(--warning)]">
+            {t('grants.grantAllSkipped', {
+              count: grantAllSkipped.length,
+              tools: grantAllSkipped.join(', '),
+            })}
+          </div>
+        ) : null}
         {pickServer === '' ? (
           <div className="text-xs text-[color:var(--fg-muted)]">{t('grants.grantHint')}</div>
         ) : chosenServer && chosenServer.discoveredTools.length === 0 ? (
@@ -1998,6 +2151,8 @@ function PluginGrantsPane(): React.ReactElement {
 
 function AuditPane(): React.ReactElement {
   const t = useTranslations('adminMcp');
+  const format = useFormatter();
+  const reasonText = useAuditReasonText();
   const [entries, setEntries] = useState<McpCallLogEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -2057,7 +2212,12 @@ function AuditPane(): React.ReactElement {
             <tbody>
               {entries.map((e) => (
                 <tr key={e.id} className="border-b border-[color:var(--border)]/60">
-                  <td className={`${tdCls} whitespace-nowrap text-xs`}>{e.calledAt}</td>
+                  <td className={`${tdCls} whitespace-nowrap text-xs`} title={e.calledAt}>
+                    {format.dateTime(new Date(e.calledAt), {
+                      dateStyle: 'short',
+                      timeStyle: 'medium',
+                    })}
+                  </td>
                   <td className={tdCls}>{e.serverName}</td>
                   <td className={tdCls}>{e.toolName}</td>
                   <td className={tdCls}>
@@ -2070,7 +2230,11 @@ function AuditPane(): React.ReactElement {
                       "whose credentials touched this?" for a public MCP call
                       (`apikey:<id>`) as well as for a per-user MCP server. */}
                   <td className={`${tdCls} text-xs`}>
-                    {e.actingIdentity ?? (
+                    {/* The kernel writes the literal `unresolved` for a call
+                        without an identity; it is a state, not a value (#1959). */}
+                    {e.actingIdentity && e.actingIdentity !== 'unresolved' ? (
+                      e.actingIdentity
+                    ) : (
                       <span className="text-[color:var(--fg-muted)]">{t('audit.unresolved')}</span>
                     )}
                   </td>
@@ -2080,6 +2244,11 @@ function AuditPane(): React.ReactElement {
                     ) : (
                       <span className="text-[color:var(--danger)]" title={e.error ?? undefined}>
                         {t('audit.failed')}
+                        {reasonText(e.error) ? (
+                          <span className="block text-[11px] text-[color:var(--fg-muted)]">
+                            {reasonText(e.error)}
+                          </span>
+                        ) : null}
                       </span>
                     )}
                   </td>

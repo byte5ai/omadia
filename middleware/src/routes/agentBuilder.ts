@@ -79,6 +79,14 @@ import {
   MCP_STDIO_DISABLED_MESSAGE,
 } from '../services/mcpOutboundHostGuard.js';
 import { rescanAllMcpServers } from '../services/mcpRescan.js';
+import {
+  checkMcpName,
+  isMcpInputRefusal,
+  isUniqueViolation,
+  requireUuidMcpId,
+  validateMcpServerInput,
+  type McpInputRefusal,
+} from './mcpServerInput.js';
 import { redactSecrets } from '../services/secretRedaction.js';
 import {
   MCP_SEVERITIES_NEEDING_ACK,
@@ -1462,11 +1470,20 @@ export function createAgentBuilderRouter(
   });
 
   // ── mcp servers ───────────────────────────────────────────────────────────
+  // #1955 — a non-UUID `:id` is a 404 before any handler, not a pg 500.
+  router.use('/mcp-servers', requireUuidMcpId(new Set(['rescan-all', 'from-registry'])));
+  router.use('/mcp-registries', requireUuidMcpId(new Set()));
+
   router.get('/mcp-servers', async (_req: Request, res: Response) => {
     const l = live(res);
     if (!l) return;
     try {
-      res.json({ servers: (await withToolVerdicts(l, await l.graph.listMcpServers())).map(mcpNode) });
+      res.json({
+        servers: (await withToolVerdicts(l, await l.graph.listMcpServers())).map(mcpNode),
+        // #1957 — the UI greys out stdio (manual form and catalog Connect)
+        // when the deployment refuses it, instead of failing after submit.
+        stdioEnabled: mcpStdioEnabled,
+      });
     } catch (err) {
       fail(res, err);
     }
@@ -1476,9 +1493,13 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
-      const b = req.body ?? {};
-      const transport: unknown = b.transport;
-      const endpoint: unknown = b.endpoint ?? null;
+      const valid = validateMcpServerInput(req.body);
+      if (isMcpInputRefusal(valid)) {
+        sendRefusal(res, valid);
+        return;
+      }
+      const transport: unknown = valid.transport;
+      const endpoint: unknown = valid.endpoint;
       if (transport === 'stdio' && !mcpStdioEnabled) {
         res.status(400).json({
           error: 'mcp_stdio_disabled',
@@ -1504,14 +1525,22 @@ export function createAgentBuilderRouter(
         }
       }
       const row = await l.graph.createMcpServer({
-        name: String(b.name ?? '').trim(),
-        transport: b.transport,
-        endpoint: b.endpoint ?? null,
-        status: b.status ?? 'enabled',
+        name: valid.name,
+        transport: valid.transport,
+        endpoint: valid.endpoint,
+        status: valid.status,
       });
       if (row.transport === 'stdio') await recordStdioServerSaved(req, row, 'manual');
       res.json(mcpNode(row));
     } catch (err) {
+      if (isUniqueViolation(err)) {
+        res.status(409).json({
+          error: 'mcp_server_exists',
+          code: 'name_taken',
+          message: 'an MCP server with this name already exists',
+        });
+        return;
+      }
       fail(res, err);
     }
   });
@@ -2630,10 +2659,19 @@ export function createAgentBuilderRouter(
     if (!l) return;
     try {
       const b = req.body ?? {};
-      const name = String(b.name ?? '').trim();
+      const checkedName = checkMcpName(b.name, 'registry');
+      if (typeof checkedName !== 'string') {
+        sendRefusal(res, checkedName);
+        return;
+      }
+      const name = checkedName;
       const url = String(b.url ?? '').trim();
-      if (name === '' || !/^https?:\/\//.test(url)) {
-        res.status(400).json({ error: 'invalid_registry' });
+      if (!isHttpRegistryUrl(url)) {
+        res.status(400).json({
+          error: 'invalid_registry',
+          code: 'url_invalid',
+          message: 'the registry URL must be an http:// or https:// URL',
+        });
         return;
       }
       // Issue #1341 — the catalog fetch refuses link-local/metadata hosts
@@ -2664,6 +2702,14 @@ export function createAgentBuilderRouter(
         hasToken: token !== null,
       });
     } catch (err) {
+      if (isUniqueViolation(err)) {
+        res.status(409).json({
+          error: 'invalid_registry',
+          code: 'name_taken',
+          message: 'a registry with this name already exists',
+        });
+        return;
+      }
       fail(res, err);
     }
   });
@@ -2764,6 +2810,14 @@ export function createAgentBuilderRouter(
       if (err instanceof McpRegistryError) {
         const status = err.code === 'catalog_entry_not_found' ? 404 : 502;
         res.status(status).json({ error: err.code, message: err.message });
+        return;
+      }
+      if (isUniqueViolation(err)) {
+        res.status(409).json({
+          error: 'mcp_server_exists',
+          code: 'name_taken',
+          message: 'an MCP server with this name already exists',
+        });
         return;
       }
       fail(res, err);
@@ -3553,6 +3607,9 @@ export function mcpNode(s: McpServerRow) {
     status: s.status,
     lastDiscoveredAt: s.lastDiscoveredAt ? s.lastDiscoveredAt.toISOString() : null,
     discoveredTools: s.discoveredTools,
+    /** #1916 — outcome of the last security re-scan (button or periodic). */
+    lastScanAt: s.lastScanAt ? s.lastScanAt.toISOString() : null,
+    lastScanError: s.lastScanError ?? null,
     /** Per-server identity delegation (W0-1, D2) — the mode every assignment
      *  of this server acts under, resolved at dispatch by `resolveMcpUserKey`. */
     delegation: s.delegation,
@@ -3625,6 +3682,24 @@ function fail(res: Response, err: unknown): void {
     return;
   }
   res.status(500).json({ error: 'internal', message: msg(err) });
+}
+
+function sendRefusal(res: Response, refusal: McpInputRefusal): void {
+  res.status(refusal.status).json({
+    error: refusal.error,
+    code: refusal.code,
+    message: refusal.message,
+  });
+}
+
+/** A registry URL: parses, http(s), has a host. No placeholders here. */
+function isHttpRegistryUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname !== '';
+  } catch {
+    return false;
+  }
 }
 
 function msg(err: unknown): string {

@@ -286,17 +286,24 @@ export default function ChatPage(): React.ReactElement {
   );
 
   const send = useCallback(
-    (overrideText?: string, opts?: { answerVerbosity?: AnswerVerbosity }): void => {
+    (
+      overrideText?: string,
+      opts?: { answerVerbosity?: AnswerVerbosity; displayText?: string },
+    ): void => {
       // Two entry points use this: the Senden button (reads `input`) and the
       // Smart-Card option buttons (pass the chosen label via overrideText).
       const trimmed = (overrideText ?? input).trim();
       if (!trimmed || sending || hydrating) return;
 
       const targetSessionId = activeId;
+      // #1953 — what the chat shows and stores may differ from what is sent:
+      // an MCP input reply sends its envelope (values included) but keeps only
+      // a field-names label in the transcript, locally and on the server.
+      const shown = opts?.displayText ?? trimmed;
       const userMsg: Message = {
         id: newSessionId(),
         role: 'user',
-        content: trimmed,
+        content: shown,
         startedAt: Date.now(),
         finishedAt: Date.now(),
       };
@@ -347,7 +354,7 @@ export default function ChatPage(): React.ReactElement {
         const cleanedMessages = stripStaleInteractives(session.messages);
         return {
           ...session,
-          title: isFirst ? deriveTitle(trimmed) : session.title,
+          title: isFirst ? deriveTitle(shown) : session.title,
           messages: [...cleanedMessages, userMsg, pending],
           updatedAt: Date.now(),
         };
@@ -656,8 +663,8 @@ export default function ChatPage(): React.ReactElement {
                 key={m.id}
                 message={m}
                 disabled={sending || hydrating}
-                onChoose={(value) => {
-                  send(value);
+                onChoose={(value, displayText) => {
+                  send(value, displayText !== undefined ? { displayText } : undefined);
                 }}
                 // Only the LAST answer gets the size buttons: a re-ask lands
                 // at the bottom of the chat, so re-asking an older question
@@ -931,7 +938,7 @@ export function MessageRow({
 }: {
   message: Message;
   disabled: boolean;
-  onChoose: (value: string) => void;
+  onChoose: (value: string, displayText?: string) => void;
   /** Phase 3 — re-ask this answer's question at the given size level. */
   onResize?: (level: AnswerVerbosity) => void;
   /** Slice 4c — called when the user successfully Discards an
@@ -2097,7 +2104,7 @@ function FollowUpButtons({
 }: {
   options: FollowUpOption[];
   disabled: boolean;
-  onChoose: (value: string) => void;
+  onChoose: (value: string, displayText?: string) => void;
 }): React.ReactElement {
   const t = useTranslations('chat');
   return (

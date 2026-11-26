@@ -1,0 +1,4 @@
+{
+  "_comment": "Whole-app ratchet for scripts/i18n-missing-keys.mjs (#1959, ADR-0159). t('key') calls whose key is in no catalog. Counts may only go down.",
+  "missing": 0
+}

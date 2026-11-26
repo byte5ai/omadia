@@ -693,7 +693,7 @@
     "chatValidationOk": "Entwurf ist gültig.",
     "chatValidationFailed": "Validierungsprobleme:",
     "chatDraftHeading": "Entwurf",
-    "chatDraftSummary": "{steps} Step(s) · Trigger: {trigger}",
+    "chatDraftSummary": "{steps, plural, one {# Schritt} other {# Schritte}} · Trigger: {trigger}",
     "chatPublish": "Entwurf veröffentlichen",
     "chatPublishing": "Veröffentliche…",
     "chatPublished": "{slug} veröffentlicht.",
@@ -712,7 +712,7 @@
     "chatPersonPartial": "Verzeichnis unvollständig — ein fehlender Name beweist nichts.",
     "chatPersonApplied": "Übernommen: {name}",
     "chatPersonChange": "Ändern",
-    "chatDraftMissing": "{count} Connector(en) fehlen",
+    "chatDraftMissing": "{count, plural, one {# Connector fehlt} other {# Connectors fehlen}}",
     "chatConnectedNote": "{actionId} für Step {stepId} verbunden.",
     "actionMcpBadge": "MCP",
     "chatProposalCoverage": "{filled} von {total} Slots vorausgefüllt",
@@ -1781,7 +1781,9 @@
       "heading": "„{server}“ braucht für „{tool}“ noch weitere Angaben.",
       "secretHint": "Bei der Eingabe verborgen — an den Server geht der Wert unverändert.",
       "warning": "Was du hier eingibst, geht an den externen Server „{server}“. Gib nur Daten ein, die dieser Server bekommen darf.",
-      "submit": "An Server senden"
+      "submit": "An Server senden",
+      "sentLabel": "An „{server}“ gesendet: {fields}",
+      "sentLabelEmpty": "An „{server}“ gesendet (keine Felder ausgefüllt)"
     },
     "iterationLabel": "── Iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — klick für Originalgröße",
@@ -2416,7 +2418,7 @@
     },
     "grants": {
       "heading": "Tool-Grants",
-      "hint": "Nur-Lese-Ansicht der Tools, die dieser Agent aufrufen darf, und der MCP-Server, die seinen Plugins zugewiesen sind. Grants werden auf der MCP-Admin-Seite verwaltet.",
+      "hint": "Die Tools, die dieser Agent aufrufen darf, und die MCP-Server, die seinen Plugins zugewiesen sind. Grants änderst du im MCP-Server-Editor darunter oder auf der MCP-Admin-Seite; diese Liste aktualisiert sich nach jedem Speichern.",
       "loading": "Grants werden geladen…",
       "refresh": "Aktualisieren",
       "empty": "Dieser Agent hält noch keine Tool-Grants.",
@@ -5384,7 +5386,14 @@
       "state": {
         "enabled": "aktiv",
         "disabled": "deaktiviert"
-      }
+      },
+      "unackedRisks": "{count, plural, one {Dieser Server lässt sich noch nicht aktivieren: ein Tool muss zuerst geprüft werden: {tools}.} other {Dieser Server lässt sich noch nicht aktivieren: # Tools müssen zuerst geprüft werden: {tools}.}} Öffne den Server, prüfe die Tools und bestätige sie.",
+      "stdioOptionDisabled": "stdio (abgeschaltet)",
+      "stdioDisabledHint": "stdio-Server sind auf diesem Deployment abgeschaltet (MCP_STDIO_ENABLED=false). Du kannst nur http-Server hinzufügen.",
+      "rescanSummary": "{servers, plural, one {# Server} other {# Server}} neu gescannt, {tools, plural, one {# Tool} other {# Tools}} geprüft, {failed, plural, =0 {keine Fehler} one {# Server fehlgeschlagen} other {# Server fehlgeschlagen}}.",
+      "rescanFailure": "{name}: {error}",
+      "lastScanFailedAt": "Letzter Re-Scan fehlgeschlagen ({at})",
+      "lastScanFailed": "Letzter Re-Scan fehlgeschlagen"
     },
     "sandbox": {
       "toggle": "Testen",
@@ -5474,7 +5483,8 @@
       "errorTimeoutHint": "Die Registry hat die Verbindung angenommen, aber nicht rechtzeitig zu Ende geantwortet. Ihre Katalogliste funktioniert womöglich trotzdem — Suchfeld leeren, um den Katalog zu listen, oder erneut versuchen.",
       "errorBlocked": "Die Registry „{name}“ ist aus Sicherheitsgründen gesperrt.",
       "errorBlockedHint": "Eine Registry darf nicht auf eine Link-local- oder Cloud-Metadaten-Adresse wie 169.254.169.254 oder metadata.google.internal zeigen. Private und Intranet-Adressen sind erlaubt. Ändere die Registry-URL oder wähle oben eine andere Registry.",
-      "errorDetail": "Grund: {detail}"
+      "errorDetail": "Grund: {detail}",
+      "stdioDisabledHint": "Dieser Eintrag läuft als stdio-Server, und stdio ist auf diesem Deployment abgeschaltet."
     },
     "grants": {
       "grantHeading": "Tools einem Agenten zuweisen",
@@ -5483,7 +5493,7 @@
       "grantAll": "Alle Tools zuweisen",
       "grantHint": "Agent und Server wählen, dann die Tools zuweisen, die er nutzen darf. Das ist der Schritt, der einen registrierten Server im Chat nutzbar macht.",
       "noToolsDiscover": "Dieser Server hat noch keine erkannten Tools — führe zuerst auf dem Server-Tab Discover aus.",
-      "toolCount": "{count} Tools",
+      "toolCount": "{count, plural, one {# Tool} other {# Tools}}",
       "holder": "Vergeben an",
       "server": "Server",
       "tool": "Tool",
@@ -5507,7 +5517,8 @@
       "manageHint": {
         "skill": "im Skill-Editor verwalten",
         "plugin": "über Plugin-Grants verwalten"
-      }
+      },
+      "grantAllSkipped": "{count, plural, one {Ein Tool wurde nicht freigegeben, weil es zuerst geprüft werden muss: {tools}.} other {# Tools wurden nicht freigegeben, weil sie zuerst geprüft werden müssen: {tools}.}}"
     },
     "audit": {
       "time": "Zeit",
@@ -5529,6 +5540,18 @@
         "plugin": "Plugin",
         "unattributed": "Nicht zugeordnet",
         "api_key": "API-Key (Public MCP)"
+      },
+      "reason": {
+        "authRequired": "Der Server braucht zuerst eine Anmeldung.",
+        "maskingSkipped": "Die Privacy-Maskierung lief nicht; das Ergebnis wurde verworfen.",
+        "maskingFailed": "Die Privacy-Maskierung ist fehlgeschlagen; das Ergebnis wurde verworfen.",
+        "privacyProviderAbsent": "Es ist kein Privacy-Provider installiert.",
+        "writeRateLimited": "Schreib-Limit des Keys erreicht.",
+        "notAllowlisted": "Das Tool ist für diesen Key nicht freigegeben.",
+        "noBinding": "Der Key hat kein öffentliches MCP-Binding.",
+        "agentInactive": "Der gebundene Agent ist nicht aktiv.",
+        "capacity": "Der Endpunkt war ausgelastet.",
+        "toolError": "Das Tool hat einen Fehler gemeldet."
       }
     },
     "guard": {
@@ -5550,7 +5573,7 @@
         "registryTab": "Registry",
         "manualTab": "Manuell",
         "loadingRegistries": "Registries werden geladen…",
-        "noRegistries": "Es sind keine Registries konfiguriert. Fügen Sie den Server stattdessen manuell hinzu.",
+        "noRegistries": "Es sind keine Registries konfiguriert. Füge den Server stattdessen manuell hinzu.",
         "useManual": "Manuell einrichten",
         "registryLabel": "Registry",
         "searchLabel": "Registry durchsuchen",
@@ -5567,7 +5590,7 @@
         "statusEnabled": "aktiv",
         "statusDisabled": "deaktiviert",
         "serviceBadge": "Service",
-        "toolCount": "{count} Tool(s)"
+        "toolCount": "{count, plural, one {# Tool} other {# Tools}}"
       },
       "manual": {
         "nameLabel": "Servername",
@@ -5575,7 +5598,7 @@
         "transportHttp": "HTTP",
         "transportSse": "SSE",
         "transportStdio": "Standardein- und -ausgabe",
-        "sseDeprecated": "SSE ist für neue Server veraltet. Verwenden Sie nach Möglichkeit HTTP.",
+        "sseDeprecated": "SSE ist für neue Server veraltet. Verwende nach Möglichkeit HTTP.",
         "endpointLabel": "Endpunkt",
         "endpointPlaceholder": "https://beispiel.de/mcp",
         "create": "Server erstellen",
@@ -5587,12 +5610,12 @@
       "connect": {
         "server": "{name} wird verbunden",
         "busy": "Der Server wird aktiviert und seine Tools werden ermittelt…",
-        "needsAuth": "Melden Sie sich beim Anbieter an und starten Sie die Ermittlung danach erneut.",
+        "needsAuth": "Melde dich beim Anbieter an und starte die Ermittlung danach erneut.",
         "retry": "Ermittlung wiederholen",
         "retrying": "Wird wiederholt",
         "detailsUnknown": "Details nicht verfügbar",
         "configRequired": "Für folgende Felder ist eine Konfiguration erforderlich: {fields}.",
-        "endpointPlaceholder": "Ersetzen Sie diese Platzhalter im Endpunkt: {placeholders}.",
+        "endpointPlaceholder": "Ersetze diese Platzhalter im Endpunkt: {placeholders}.",
         "configure": "Im Control Center konfigurieren",
         "slow": "Die Ermittlung dauert länger als erwartet. Der Server ist möglicherweise nicht erreichbar – Endpunkt prüfen ({endpoint}) oder zurückgehen und korrigieren.",
         "authorizedButRefused": "Du bist autorisiert, aber der Server lehnt die Ermittlung weiterhin ab (HTTP 403). Meist stimmt der Endpunkt-Pfad nicht – viele Server bieten MCP unter /mcp an, nicht an der Wurzel ({endpoint}). Endpunkt im Control Center korrigieren und erneut versuchen."
@@ -5605,6 +5628,17 @@
         "delegationButton": "Service-Delegation aktivieren"
       },
       "initialServerMissing": "Der verbundene Server ist nicht mehr verfügbar – wähle oder erstelle einen."
+    },
+    "input": {
+      "nameRequired": "Gib einen Namen ein.",
+      "nameTooLong": "Der Name ist zu lang (höchstens 120 Zeichen).",
+      "endpointRequired": "Gib einen Endpunkt ein: eine URL für http, eine Kommandozeile für stdio.",
+      "endpointInvalid": "Der Endpunkt muss eine http://- oder https://-URL sein. Platzhalter in geschweiften Klammern sind erlaubt.",
+      "invalidTransport": "Wähle einen Transport: http, stdio oder sse.",
+      "invalidStatus": "Der Status muss aktiv oder deaktiviert sein.",
+      "nameTaken": "Dieser Name ist schon vergeben. Wähle einen anderen.",
+      "urlInvalid": "Die Registry-URL muss eine http://- oder https://-URL sein.",
+      "notFound": "Dieser Eintrag existiert nicht mehr. Lade die Seite neu."
     }
   },
   "adminRegistries": {

@@ -5305,6 +5305,16 @@ Die Schwellen der drei Schichten und die Reserve für Geräte-Cookies sind Konst
 | `REGISTRY_FETCH_TIMEOUT_MS` | Deadline für den Index-Abruf einer Registry, Body inklusive (#1458). Default `5000`, Werte über `8000` werden geklemmt, damit `GET /api/v1/store/plugins` unter dem 10-s-Budget der Web-UI (`RSC_FETCH_TIMEOUT_MS`) antwortet. Ergebnisse cacht `RegistryClient` pro Registry (5 min ok, 60 s Fehler), parallele Anfragen teilen einen Abruf, jede Admin-Änderung leert den Cache. Artefakt-Downloads haben eine eigene 120-s-Deadline. |
 | `MCP_RESCAN_INTERVAL_MS` | Intervall des periodischen Re-Scans aller aktiven MCP-Server in ms (`src/index.ts`), Default 6 h, `0` schaltet ihn ab. Prüft bei jedem Lauf dieselbe Outbound-Regel und denselben stdio-Schalter wie ein manueller Discover. |
 
+**Operator-Routen `/api/v1/operator/mcp-*` (Welle 5, #1916/#1955/#1957):** `GET /mcp-servers`
+liefert zusätzlich `stdioEnabled` (Wert von `MCP_STDIO_ENABLED`; die UI sperrt damit stdio im
+Formular und beim Katalog-Connect) und pro Server `lastScanAt`/`lastScanError` (Migration 0114,
+geschrieben von „Re-scan all“ und vom periodischen Re-Scan, `recordMcpServerScan`).
+`POST /mcp-servers` prüft die Eingabe in `routes/mcpServerInput.ts`: Name Pflicht (≤ 120),
+`transport` ∈ stdio/http/sse, Endpoint Pflicht, bei http/sse eine http(s)-URL (`{platzhalter}`
+erlaubt) → 400 mit `code` (`name_required`, `endpoint_invalid`, …); doppelter Name → 409
+`name_taken` (auch Katalog-Import und Registries). Ein Nicht-UUID-`:id` unter `/mcp-servers/…`
+und `/mcp-registries/…` → 404 `not_found` vor jedem Handler (ADR-0038).
+
 ### Öffentlicher MCP-Endpunkt (#542, #1952, ADR-0142/0143)
 
 | Variable | Wirkung |

@@ -693,7 +693,7 @@
     "chatValidationOk": "Draft is valid.",
     "chatValidationFailed": "Validation issues:",
     "chatDraftHeading": "Draft",
-    "chatDraftSummary": "{steps} step(s) · trigger: {trigger}",
+    "chatDraftSummary": "{steps, plural, one {# step} other {# steps}} · trigger: {trigger}",
     "chatPublish": "Publish draft",
     "chatPublishing": "Publishing…",
     "chatPublished": "Published {slug}.",
@@ -712,7 +712,7 @@
     "chatPersonPartial": "Directory incomplete — a missing name proves nothing.",
     "chatPersonApplied": "Applied: {name}",
     "chatPersonChange": "Change",
-    "chatDraftMissing": "{count} connector(s) missing",
+    "chatDraftMissing": "{count, plural, one {# connector missing} other {# connectors missing}}",
     "chatConnectedNote": "Connected {actionId} for step {stepId}.",
     "actionMcpBadge": "MCP",
     "chatProposalCoverage": "{filled} of {total} slots prefilled",
@@ -1781,7 +1781,9 @@
       "heading": "“{server}” needs additional details for “{tool}”.",
       "secretHint": "Hidden while typing — the value is still sent to the server as entered.",
       "warning": "Whatever you enter is sent to the external server “{server}”. Only provide details you want that server to have.",
-      "submit": "Send to server"
+      "submit": "Send to server",
+      "sentLabel": "Sent to “{server}”: {fields}",
+      "sentLabelEmpty": "Sent to “{server}” (no fields filled in)"
     },
     "iterationLabel": "── iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — click for full size",
@@ -2416,7 +2418,7 @@
     },
     "grants": {
       "heading": "Tool grants",
-      "hint": "Read-only view of the tools this agent may call and the MCP servers its plugins were granted. Manage grants on the MCP admin page.",
+      "hint": "The tools this agent may call and the MCP servers its plugins were granted. You change grants in the MCP server editor below or on the MCP admin page; this list updates after every save.",
       "loading": "Loading grants…",
       "refresh": "Refresh",
       "empty": "This agent holds no tool grants yet.",
@@ -5384,7 +5386,14 @@
       "state": {
         "enabled": "enabled",
         "disabled": "disabled"
-      }
+      },
+      "unackedRisks": "{count, plural, one {This server cannot be enabled yet: one tool needs a review first: {tools}.} other {This server cannot be enabled yet: # tools need a review first: {tools}.}} Open the server, check the tools and acknowledge them.",
+      "stdioOptionDisabled": "stdio (turned off)",
+      "stdioDisabledHint": "stdio servers are turned off on this deployment (MCP_STDIO_ENABLED=false). Only http servers can be added.",
+      "rescanSummary": "{servers, plural, one {# server} other {# servers}} re-scanned, {tools, plural, one {# tool} other {# tools}} checked, {failed, plural, =0 {no failures} one {# server failed} other {# servers failed}}.",
+      "rescanFailure": "{name}: {error}",
+      "lastScanFailedAt": "Last re-scan failed ({at})",
+      "lastScanFailed": "Last re-scan failed"
     },
     "sandbox": {
       "toggle": "Test",
@@ -5474,7 +5483,8 @@
       "errorTimeoutHint": "The registry accepted the connection but did not finish answering in time. Its browse listing may still work — clear the search box to list the catalog, or try again.",
       "errorBlocked": "The registry \"{name}\" is blocked for security reasons.",
       "errorBlockedHint": "A registry must not point at a link-local or cloud-metadata address such as 169.254.169.254 or metadata.google.internal. Private and intranet addresses are allowed. Change the registry URL or pick another registry above.",
-      "errorDetail": "Details: {detail}"
+      "errorDetail": "Details: {detail}",
+      "stdioDisabledHint": "This entry runs as a stdio server, and stdio is turned off on this deployment."
     },
     "grants": {
       "grantHeading": "Grant tools to an agent",
@@ -5483,7 +5493,7 @@
       "grantAll": "Grant all tools",
       "grantHint": "Pick an agent and a server, then grant the tools it may use. This is the step that makes a registered server usable in chat.",
       "noToolsDiscover": "This server has no discovered tools yet — run Discover on the Servers tab first.",
-      "toolCount": "{count} tools",
+      "toolCount": "{count, plural, one {# tool} other {# tools}}",
       "holder": "Granted to",
       "server": "Server",
       "tool": "Tool",
@@ -5507,7 +5517,8 @@
       "manageHint": {
         "skill": "manage in the skill editor",
         "plugin": "manage via plugin grants"
-      }
+      },
+      "grantAllSkipped": "{count, plural, one {One tool was not granted because it needs a review first: {tools}.} other {# tools were not granted because they need a review first: {tools}.}}"
     },
     "audit": {
       "time": "Time",
@@ -5521,7 +5532,7 @@
       "ok": "ok",
       "failed": "failed",
       "loadMore": "Load more",
-      "unresolved": "unresolved",
+      "unresolved": "not resolved",
       "kind": {
         "agent": "Agent",
         "subagent": "Helper",
@@ -5529,6 +5540,18 @@
         "plugin": "Plugin",
         "unattributed": "Unattributed",
         "api_key": "API key (public MCP)"
+      },
+      "reason": {
+        "authRequired": "The server needs a sign-in first.",
+        "maskingSkipped": "Privacy masking did not run; the result was discarded.",
+        "maskingFailed": "Privacy masking failed; the result was discarded.",
+        "privacyProviderAbsent": "No privacy provider is installed.",
+        "writeRateLimited": "Write limit of the key reached.",
+        "notAllowlisted": "The tool is not released for this key.",
+        "noBinding": "The key has no public MCP binding.",
+        "agentInactive": "The bound agent is not active.",
+        "capacity": "The endpoint was at capacity.",
+        "toolError": "The tool reported an error."
       }
     },
     "guard": {
@@ -5567,7 +5590,7 @@
         "statusEnabled": "enabled",
         "statusDisabled": "disabled",
         "serviceBadge": "service",
-        "toolCount": "{count} tool(s)"
+        "toolCount": "{count, plural, one {# tool} other {# tools}}"
       },
       "manual": {
         "nameLabel": "Server name",
@@ -5605,6 +5628,17 @@
         "delegationButton": "Enable service delegation"
       },
       "initialServerMissing": "The connected server is no longer available — pick or create one."
+    },
+    "input": {
+      "nameRequired": "Enter a name.",
+      "nameTooLong": "The name is too long (at most 120 characters).",
+      "endpointRequired": "Enter an endpoint: a URL for http, a command line for stdio.",
+      "endpointInvalid": "The endpoint must be an http:// or https:// URL. Placeholders in curly braces are allowed.",
+      "invalidTransport": "Choose a transport: http, stdio or sse.",
+      "invalidStatus": "The status must be enabled or disabled.",
+      "nameTaken": "This name is already taken. Choose another one.",
+      "urlInvalid": "The registry URL must be an http:// or https:// URL.",
+      "notFound": "This entry no longer exists. Reload the page."
     }
   },
   "adminRegistries": {
