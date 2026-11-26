@@ -112,6 +112,11 @@ changelog.
   a custom endpoint (Azure, Ollama's OpenAI endpoint, a local server) must list its host in
   the new setup field "Additional allowed hosts", or the adapter stops publishing after the
   update.
+- **Readable file-link errors (#1964, part).** `/diagrams/dl` and `/documents/dl` answer a
+  browser that opens an expired, missing or failing link with a short German/English HTML
+  page that says what happened and how to get the file again (`fileLinkErrorPage.ts`,
+  `sendFileLinkError`); images, Teams and other clients keep the plain-text body. Renewing
+  an expired link without re-creating the file is still open (#1964).
 - **Versions:** `@omadia/plugin-web-search` 0.2.2, `@omadia/transcription-adapter-openai`
   0.1.1, `@omadia/embedding-adapter-openai` 0.1.1, `@omadia/diagrams` 0.2.3,
   `@omadia/plugin-office` 0.1.6.

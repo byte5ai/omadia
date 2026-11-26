@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { isNotFound, type TigrisStore } from '@omadia/diagrams';
+import { isNotFound, sendFileLinkError, type TigrisStore } from '@omadia/diagrams';
 import { attachmentDisposition } from './filename.js';
 import { verifyDocumentSig } from './signing.js';
 
@@ -52,13 +52,13 @@ export function createDocumentsRouter(deps: DocumentsRouterDeps): Router {
         ? [rawSegments]
         : [];
     if (segments.length === 0) {
-      res.status(400).type('text/plain').send('missing key');
+      sendFileLinkError(req, res, 'bad_request');
       return;
     }
     // Express already URL-decodes each path segment before it lands here.
     const key = segments.join('/');
     if (!isDocumentKey(key)) {
-      res.status(404).type('text/plain').send('not found');
+      sendFileLinkError(req, res, 'not_found');
       return;
     }
 
@@ -66,7 +66,7 @@ export function createDocumentsRouter(deps: DocumentsRouterDeps): Router {
     const sig = typeof req.query['sig'] === 'string' ? req.query['sig'] : '';
     const ok = verifyDocumentSig({ key, exp, sig, secret: deps.secret });
     if (!ok) {
-      res.status(403).type('text/plain').send('invalid or expired signature');
+      sendFileLinkError(req, res, 'expired');
       return;
     }
 
@@ -90,7 +90,7 @@ export function createDocumentsRouter(deps: DocumentsRouterDeps): Router {
       stream.on('error', (err) => {
         console.error('[documents] stream error:', err);
         if (!res.headersSent) {
-          res.status(500).type('text/plain').send('internal error');
+          sendFileLinkError(req, res, 'failed');
         } else {
           res.destroy(err);
         }
@@ -98,11 +98,11 @@ export function createDocumentsRouter(deps: DocumentsRouterDeps): Router {
       stream.pipe(res);
     } catch (err) {
       if (isNotFound(err)) {
-        res.status(404).type('text/plain').send('not found');
+        sendFileLinkError(req, res, 'not_found');
         return;
       }
       console.error('[documents] proxy failed:', err);
-      res.status(500).type('text/plain').send('internal error');
+      sendFileLinkError(req, res, 'failed');
     }
   });
 
