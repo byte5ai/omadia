@@ -290,6 +290,7 @@ import { PreviewCache } from './plugins/builder/previewCache.js';
 import { PreviewSecretBuffer } from './plugins/builder/previewSecretBuffer.js';
 import { PreviewRebuildScheduler } from './plugins/builder/previewRebuildScheduler.js';
 import { warmPreview } from './plugins/builder/previewWarmBuild.js';
+import { startDraftPurge } from './plugins/builder/draftPurge.js';
 import { PreviewChatService } from './plugins/builder/previewChatService.js';
 import { PreviewDraftAgents } from './plugins/builder/previewDraftAgents.js';
 import {
@@ -320,6 +321,7 @@ import {
 import { loadBuildTemplateConfig } from './plugins/builder/buildTemplateConfig.js';
 import {
   registerServiceType,
+  serviceMajorFromProvides,
   unregisterServiceType,
 } from './plugins/builder/serviceTypeRegistry.js';
 import { BuildPipeline } from './plugins/builder/buildPipeline.js';
@@ -1981,9 +1983,11 @@ async function main(): Promise<void> {
       const serviceTypes = entry.plugin.service_types ?? [];
       if (serviceTypes.length === 0) return;
       for (const st of serviceTypes) {
+        const major = serviceMajorFromProvides(st.service, entry.plugin.provides);
         registerServiceType(st.service, {
           providedBy: entry.plugin.id,
           typeImport: { from: st.type.from, name: st.type.name },
+          ...(major !== undefined ? { major } : {}),
         });
       }
       registeredServiceTypesByPlugin.set(
@@ -7123,6 +7127,13 @@ async function main(): Promise<void> {
   // encrypted at rest. Production plugins keep using their own per-agent
   // namespace via the RequiresWizard flow — this buffer is workspace-only.
   const previewSecretBuffer = new PreviewSecretBuffer({ vault: secretVault });
+  // #1790 — purge soft-deleted published drafts past their grace period,
+  // and their test credentials with them. Daily; never blocks shutdown.
+  startDraftPurge({
+    draftStore,
+    previewSecretBuffer,
+    log: (line) => console.log(line),
+  });
 
   // BuildQueue + BuildPipeline are shared by preview rebuilds (B.3) and
   // future install-commits (B.5).
@@ -7279,6 +7290,13 @@ async function main(): Promise<void> {
       // packageUploadService is required only when bundles vendor plugins
       // — the import path is happy without it for source-only imports.
       draftStore,
+      // #1787 — bundle imports that create a draft respect the draft cap.
+      draftQuota,
+      // #1788 — a rollback that restored a draft rebuilds its preview. The
+      // scheduler is created further down; this runs at request time.
+      onDraftRestored: (userEmail: string, draftId: string) => {
+        builderRebuildScheduler.schedule(userEmail, draftId);
+      },
       uploadedPackageStore,
       ...(packageUploadService ? { packageUploadService } : {}),
     }),
@@ -7428,7 +7446,7 @@ async function main(): Promise<void> {
       // their build status on the spec bus. `warmPreview` emits every
       // `build_status` exactly once (#1731/#1733/#1807/#1809); a thrown
       // error here is already reported and only logged by the scheduler.
-      const handle = await warmPreview(
+      const { handle, builtZip } = await warmPreview(
         {
           previewCache,
           buildPipeline: builderBuildPipeline,
@@ -7438,13 +7456,16 @@ async function main(): Promise<void> {
         },
         { userEmail, draftId },
       );
-      // B.9-3: fire-and-forget runtime smoke. Dedup'd per (draftId, rev)
-      // inside the orchestrator — no-op on an unchanged handle.
-      builderRuntimeSmokeOrchestrator.attemptSmoke({
-        handle,
-        userEmail,
-        draftId,
-      });
+      // B.9-3: fire-and-forget runtime smoke on its own stub instance of the
+      // fresh build (#1778). Dedup'd per (draftId, rev) in the orchestrator.
+      if (builtZip) {
+        builderRuntimeSmokeOrchestrator.attemptSmoke({
+          rev: handle.rev,
+          zipBuffer: builtZip,
+          userEmail,
+          draftId,
+        });
+      }
     },
   });
 
@@ -7462,6 +7483,8 @@ async function main(): Promise<void> {
   const builderRuntimeSmokeOrchestrator = new RuntimeSmokeOrchestrator({
     draftStore,
     bus: builderSpecBus,
+    // #1778 — the smoke's own stub activation, never the warm preview.
+    activate: (activateOpts) => previewRuntime.activate(activateOpts),
     logger: (...args: unknown[]) => {
       console.log('[builder]', ...args);
     },
@@ -7683,6 +7706,7 @@ async function main(): Promise<void> {
           schedule: (userEmail: string, draftId: string) =>
             builderRebuildScheduler.schedule(userEmail, draftId),
         },
+        knownPluginIds: () => pluginCatalog.list().map((entry) => entry.plugin.id),
       },
       // Issue #56 — paginated audit-log surface
       audit: { draftStore },

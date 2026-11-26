@@ -3806,6 +3806,8 @@
           "running": "smoke #{buildN} läuft …",
           "okNoTools": "smoke #{buildN} ✓ (keine Tools deklariert)",
           "okTools": "Smoke #{buildN} ✓ ({count} {count, plural, one {Tool} other {Tools}} ok)",
+          "okWritesSkipped": "smoke #{buildN} ✓ — {count, plural, one {das einzige Tool schreibt, darum hat der Smoke es nicht aufgerufen} other {alle # Tools schreiben, darum hat der Smoke keines aufgerufen}}",
+          "writesSkippedSuffix": "{count, plural, one { · # schreibendes Tool nicht aufgerufen} other { · # schreibende Tools nicht aufgerufen}}",
           "activateFailed": "Smoke #{buildN} ✗ — Preview-Aktivierung fehlgeschlagen{detail}",
           "toolsFailed": "Smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {Tool} other {Tools}} fehlgeschlagen",
           "fixWithBuilder": "Fix mit Builder"
@@ -4159,7 +4161,11 @@
           "heading": "Datenquelle",
           "toolLabel": "Tool:",
           "noToolOption": "— Kein Tool gebunden —",
-          "help": "Das gewählte Tool wird bei jedem Page-Request mit leerem Input aufgerufen; Output fließt als Props in die Render-Funktion."
+          "help": "Das gewählte Tool wird bei jedem Seitenaufruf mit der festen Eingabe darunter aufgerufen; sein Output fließt als Props in die Render-Funktion.",
+          "argsLabel": "Eingabe:",
+          "argsPlaceholder": "'{' \"city\": \"Berlin\" '}'",
+          "argsInvalid": "Die Eingabe muss ein JSON-Objekt sein, zum Beispiel '{' \"city\": \"Berlin\" '}'.",
+          "argsMissing": "Das Tool verlangt {count, plural, one {dieses Feld} other {diese Felder}}, das die Eingabe nicht setzt: {fields}"
         },
         "interactive": {
           "label": "Interaktiv (Hydration)",
@@ -4258,6 +4264,8 @@
       "toastNoDiff": "Kein Unterschied seit letztem Snapshot",
       "toastSnapshotCreated": "Snapshot erstellt ({hash})",
       "toastRollbackDone": "Rollback abgeschlossen · {count, plural, one {# Datei} other {# Dateien}} wiederhergestellt",
+      "toastRollbackDraftRestored": "Rollback abgeschlossen · Spec und Slot-Code des Drafts wiederhergestellt",
+      "toastRollbackSpecOnly": "Rollback abgeschlossen · Spec des Drafts wiederhergestellt; dieser Snapshot enthält keinen Slot-Code, die Slots bleiben, wie sie sind",
       "noteOptional": "Notiz (optional)",
       "notePlaceholder": "Warum dieser Stand?",
       "vendorBundleLabel": "Plugin-ZIPs ins Bundle packen (Air-Gap-Export)",
@@ -4272,7 +4280,7 @@
       "colLive": "Live",
       "rollbackConfirmTitle": "Rollback bestätigen",
       "rollbackBodyPrefix": "Live-",
-      "rollbackBodySuffix": " + Knowledge-Dateien werden auf den Snapshot-Stand zurückgesetzt. Plugin-Pins bleiben unverändert.",
+      "rollbackBodySuffix": " + Knowledge-Dateien, die Spec des Drafts und sein Slot-Code werden auf den Snapshot-Stand zurückgesetzt. Ein Snapshot von vor der Slot-Code-Erfassung stellt nur die Spec wieder her. Plugin-Pins bleiben unverändert.",
       "rollbackTypeHint": "Tippe die ersten 12 Zeichen des Bundle-Hashes ein, um zu bestätigen.",
       "rollbackExpected": "Erwartet:",
       "rollbackExecute": "Rollback durchführen",
@@ -4422,6 +4430,8 @@
           "failed": "Export fehlgeschlagen: {message}"
         },
         "confirmDelete": "Draft \"{name}\" löschen?",
+        "confirmPurge": "Draft „{name}“ endgültig löschen? Spec, Slot-Code und Test-Zugangsdaten werden entfernt. Das lässt sich nicht rückgängig machen.",
+        "purge": "Endgültig löschen",
         "lastUpdated": "Zuletzt {relative}",
         "relative": {
           "justNow": "gerade eben",
@@ -4450,7 +4460,13 @@
         },
         "errors": {
           "notZip": "Bundle muss eine .zip-Datei sein.",
-          "conflict": "Profile hat bereits abweichenden Live-Content ({assets}). Aktiviere „Überschreiben\" um zu ersetzen."
+          "conflict": "Profile hat bereits abweichenden Live-Content ({assets}). Aktiviere „Überschreiben\" um zu ersetzen.",
+          "quotaExceeded": "Das Draft-Limit ist erreicht. Lösch einen Draft und importier dann erneut."
+        },
+        "notice": {
+          "replaced": "Das installierte Plugin {id} wurde durch dieses Bundle von {from} auf {to} umgestellt.",
+          "kept": "{id} {version} war schon installiert; das installierte Paket bleibt.",
+          "continue": "Weiter"
         }
       },
       "quota": {

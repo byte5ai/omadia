@@ -3806,6 +3806,8 @@
           "running": "smoke #{buildN} running …",
           "okNoTools": "smoke #{buildN} ✓ (no tools declared)",
           "okTools": "smoke #{buildN} ✓ ({count} {count, plural, one {tool} other {tools}} ok)",
+          "okWritesSkipped": "smoke #{buildN} ✓ — {count, plural, one {the only tool writes, so the smoke did not call it} other {all # tools write, so the smoke called none of them}}",
+          "writesSkippedSuffix": "{count, plural, one { · # write tool not called} other { · # write tools not called}}",
           "activateFailed": "smoke #{buildN} ✗ — preview activate failed{detail}",
           "toolsFailed": "smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {tool} other {tools}} failed",
           "fixWithBuilder": "Fix with builder"
@@ -4159,7 +4161,11 @@
           "heading": "Data Source",
           "toolLabel": "Tool:",
           "noToolOption": "— No tool bound —",
-          "help": "The selected tool is called with empty input on every page request; its output flows as props into the render function."
+          "help": "The selected tool is called with the fixed input below on every page request; its output flows as props into the render function.",
+          "argsLabel": "Input:",
+          "argsPlaceholder": "'{' \"city\": \"Berlin\" '}'",
+          "argsInvalid": "The input must be a JSON object, for example '{' \"city\": \"Berlin\" '}'.",
+          "argsMissing": "The tool requires {count, plural, one {this field} other {these fields}}, which the input does not set: {fields}"
         },
         "interactive": {
           "label": "Interactive (Hydration)",
@@ -4258,6 +4264,8 @@
       "toastNoDiff": "No difference since last snapshot",
       "toastSnapshotCreated": "Snapshot created ({hash})",
       "toastRollbackDone": "Rollback complete · {count, plural, one {# file} other {# files}} restored",
+      "toastRollbackDraftRestored": "Rollback complete · draft spec and slot code restored",
+      "toastRollbackSpecOnly": "Rollback complete · draft spec restored; this snapshot has no slot code, so the slots stay as they are",
       "noteOptional": "Note (optional)",
       "notePlaceholder": "Why this state?",
       "vendorBundleLabel": "Pack plugin ZIPs into the bundle (air-gap export)",
@@ -4272,7 +4280,7 @@
       "colLive": "Live",
       "rollbackConfirmTitle": "Confirm rollback",
       "rollbackBodyPrefix": "Live ",
-      "rollbackBodySuffix": " + knowledge files are reset to the snapshot state. Plugin pins stay unchanged.",
+      "rollbackBodySuffix": " + knowledge files, the draft's spec and its slot code are reset to the snapshot state. A snapshot taken before slot code was captured restores the spec only. Plugin pins stay unchanged.",
       "rollbackTypeHint": "Type the first 12 characters of the bundle hash to confirm.",
       "rollbackExpected": "Expected:",
       "rollbackExecute": "Perform rollback",
@@ -4422,6 +4430,8 @@
           "failed": "Export failed: {message}"
         },
         "confirmDelete": "Delete draft \"{name}\"?",
+        "confirmPurge": "Delete draft \"{name}\" permanently? Its spec, slot code and test credentials are removed. This cannot be undone.",
+        "purge": "Delete permanently",
         "lastUpdated": "Last {relative}",
         "relative": {
           "justNow": "just now",
@@ -4450,7 +4460,13 @@
         },
         "errors": {
           "notZip": "Bundle must be a .zip file.",
-          "conflict": "Profile already has diverging live content ({assets}). Enable “Overwrite” to replace it."
+          "conflict": "Profile already has diverging live content ({assets}). Enable “Overwrite” to replace it.",
+          "quotaExceeded": "The draft limit is reached. Delete a draft, then import again."
+        },
+        "notice": {
+          "replaced": "The installed plugin {id} was switched from {from} to {to} by this bundle.",
+          "kept": "{id} {version} was already installed; the installed package was kept.",
+          "continue": "Continue"
         }
       },
       "quota": {

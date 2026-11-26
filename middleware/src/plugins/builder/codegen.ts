@@ -17,6 +17,12 @@ import {
   TEAMS_SSO_MIN_CORE,
   teamsTabPublicPath,
 } from './codegenUiRoute.js';
+import {
+  findReservedBraces,
+  substitutePlaceholdersFor,
+  substitutePlaceholdersPlain,
+} from './codegenPlaceholders.js';
+import { deriveServiceRequires } from './codegenRequires.js';
 import { lookupServiceType } from './serviceTypeRegistry.js';
 
 /**
@@ -158,6 +164,8 @@ function resolveSource(spec: AgentSpec, source: string): string | undefined {
 
 interface PlaceholderMapResult {
   map: Map<string, string>;
+  /** Spec field each token was resolved from, for error messages. */
+  sources: Map<string, string>;
   /** Tokens declared in the template manifest whose source path resolved
    *  to undefined. The codegen step bails before per-file processing so
    *  the user gets one actionable error per missing source instead of
@@ -170,11 +178,13 @@ function buildPlaceholderMap(
   manifest: TemplateManifest,
 ): PlaceholderMapResult {
   const map = new Map<string, string>();
+  const sources = new Map<string, string>();
   const unresolved: Array<{ token: string; source: string }> = [];
   for (const [token, source] of Object.entries(manifest.placeholders)) {
     const value = resolveSource(spec, source);
     if (value !== undefined) {
       map.set(token, value);
+      sources.set(token, source);
     } else {
       unresolved.push({ token, source });
     }
@@ -190,8 +200,10 @@ function buildPlaceholderMap(
   if (firstTool) {
     map.set('CAPABILITY_ID', firstTool.id);
     map.set('CAPABILITY_DESCRIPTION_DE', firstTool.description);
+    sources.set('CAPABILITY_ID', 'tools[0].id');
+    sources.set('CAPABILITY_DESCRIPTION_DE', 'tools[0].description');
   }
-  return { map, unresolved };
+  return { map, sources, unresolved };
 }
 
 /**
@@ -224,17 +236,6 @@ function placeholderHintFor(rawSource: string): string {
     return 'Add the outbound host(s) the agent calls to spec.network.outbound.';
   }
   return `Set spec.${source} so the placeholder can be resolved.`;
-}
-
-function substitutePlaceholders(
-  text: string,
-  map: ReadonlyMap<string, string>,
-): string {
-  let result = text;
-  for (const [token, value] of map) {
-    result = result.split(`{{${token}}}`).join(value);
-  }
-  return result;
 }
 
 // Matches both TS-style `// #region builder:<key>` + `// #endregion` and
@@ -333,7 +334,11 @@ function injectSlots(
   return result;
 }
 
-function reproduceManifestCapabilities(manifestText: string, spec: AgentSpec): string {
+function reproduceManifestCapabilities(
+  manifestText: string,
+  spec: AgentSpec,
+  requires: readonly string[],
+): string {
   const doc = yaml.parseDocument(manifestText);
 
   // Spec 2042 §5.10 — the Plugin Builder generates capability plugins only.
@@ -350,6 +355,20 @@ function reproduceManifestCapabilities(manifestText: string, spec: AgentSpec): s
   // canonical for either shape.
   const dependsOnNode = doc.createNode(spec.depends_on);
   doc.set('depends_on', dependsOnNode);
+
+  // #1779 — every service the generated toolkit looks up through
+  // spec.external_reads is declared under `requires:`, so the installed
+  // plugin passes the service grant gate (ADR-0053) and the preview, which
+  // judges the same manifest (`previewServices.ts`), agrees with it.
+  if (requires.length > 0) {
+    doc.set('requires', doc.createNode(requires));
+  }
+
+  // #1729 — the playbook lists are copied whole, zero entries included. The
+  // boilerplate used to map fixed placeholders to list indices, which cut
+  // longer lists and failed shorter ones on placeholder_residue.
+  doc.setIn(['playbook', 'not_for'], doc.createNode(spec.playbook.not_for));
+  doc.setIn(['playbook', 'example_prompts'], doc.createNode(spec.playbook.example_prompts));
 
   // admin_ui_path injection (S+7.7) — when the agent ships an
   // operator-admin UI, the manifest needs the top-level `admin_ui_path`
@@ -653,9 +672,10 @@ function bakePerToolPlaceholders(
  * clone + a single `spec.tools[i]`. `input_schema` is always taken from
  * `tool.input` (ToolSpecSchema defaults it to `{}`, so it's never
  * undefined — an explicit "no args" schema, not a missing one).
- * `output_schema`/`side_effects`/`idempotent`/`autonomous`/`timeout_ms`
- * are genuinely optional on ToolSpec, so a tool that omits one falls
- * back to whatever the boilerplate template shipped for that field.
+ * `side_effects`/`idempotent`/`autonomous`/`timeout_ms` are genuinely
+ * optional on ToolSpec, so a tool that omits one falls back to whatever
+ * the boilerplate template shipped for that field. `output_schema` is the
+ * exception: without `tool.output` the entry has none (#1729).
  *
  * `side_effects` is already the manifest's own `'read' | 'write' | 'none'`
  * string enum on ToolSpec (see ToolSpecSchema in agentSpec.ts) and is
@@ -678,12 +698,18 @@ function synthesizeCapabilityEntry(
     string,
     unknown
   >;
+  // #1729 — a tool without `output` declares no output_schema. The
+  // template's default is the search-result shape ({id, title, url}[]),
+  // which would be a wrong contract for every other tool.
+  const withoutOutput = Object.fromEntries(
+    Object.entries(baked).filter(([key]) => key !== 'output_schema'),
+  );
   return {
-    ...baked,
+    ...withoutOutput,
     id: tool.id,
     description: tool.description,
     input_schema: tool.input,
-    output_schema: tool.output ?? baked['output_schema'],
+    ...(tool.output !== undefined ? { output_schema: tool.output } : {}),
     side_effects: tool.side_effects ?? baked['side_effects'],
     idempotent: tool.idempotent ?? baked['idempotent'],
     autonomous: tool.autonomous ?? baked['autonomous'],
@@ -1062,10 +1088,8 @@ export async function generate(
   //    issue per missing token — without this the per-file residue check
   //    below emits the same problem N times (N = files containing the
   //    token), which buries the actionable signal in noise.
-  const { map: placeholderMap, unresolved } = buildPlaceholderMap(
-    spec,
-    manifest,
-  );
+  const { map: placeholderMap, sources: placeholderSources, unresolved } =
+    buildPlaceholderMap(spec, manifest);
   if (unresolved.length > 0) {
     for (const { token, source } of unresolved) {
       issues.push({
@@ -1077,11 +1101,29 @@ export async function generate(
     }
     throw new CodegenError(issues);
   }
+  // #1736 — a value is written escaped for each file's format, so quotes and
+  // backslashes are fine. What cannot be used is a value that itself looks
+  // like a `{{TOKEN}}`: it would stay behind as template residue.
+  for (const token of findReservedBraces(placeholderMap)) {
+    const source = placeholderSources.get(token) ?? token;
+    issues.push({
+      code: 'spec_validation',
+      detail:
+        `spec.${source} contains '{{…}}' placeholder syntax, which codegen ` +
+        'reserves for the template. Remove the double braces from spec.' +
+        `${source}.`,
+    });
+  }
+  const serviceRequires = deriveServiceRequires(spec);
+  for (const problem of serviceRequires.problems) {
+    issues.push({ code: 'spec_validation', detail: problem });
+  }
+  if (issues.length > 0) throw new CodegenError(issues);
 
   // 5. Per-file processing
   const out = new Map<string, Buffer>();
   for (const [origPath, content] of bundle.files) {
-    const outPath = substitutePlaceholders(origPath, placeholderMap);
+    const outPath = substitutePlaceholdersPlain(origPath, placeholderMap);
 
     if (!isTextFile(origPath)) {
       out.set(outPath, content);
@@ -1092,7 +1134,7 @@ export async function generate(
 
     // 5a. manifest.yaml — capability reproduction before string mangling
     if (origPath === 'manifest.yaml') {
-      text = reproduceManifestCapabilities(text, spec);
+      text = reproduceManifestCapabilities(text, spec, serviceRequires.requires);
     }
 
     // 5a.2. package.json — peerDependencies merge for Theme A + B.12.
@@ -1113,15 +1155,15 @@ export async function generate(
 
     // 5b. Slot injection (uses original-path target_file matching too)
     const fileTargetSlots = manifest.slots.filter((s) => {
-      const target = substitutePlaceholders(s.target_file, placeholderMap);
+      const target = substitutePlaceholdersPlain(s.target_file, placeholderMap);
       return target === outPath || target === origPath || s.target_file === origPath;
     });
     if (fileTargetSlots.length > 0) {
       text = injectSlots(text, fileTargetSlots, allSlots, outPath, issues);
     }
 
-    // 5c. Placeholder substitution
-    text = substitutePlaceholders(text, placeholderMap);
+    // 5c. Placeholder substitution, encoded for the file's format (#1736)
+    text = substitutePlaceholdersFor(origPath, text, placeholderMap);
 
     // 5d. No-residue check
     const residue = collectResidue(text);

@@ -507,6 +507,68 @@ changelog.
   kernel owns that link, and the plugin attests only the channel identity. Implementation
   follows. Until it ships, a channel does not claim a link in its texts.
 
+### Fixed — Builder dashboard pages: preview mount slug and tool input (2026-11-26)
+
+The live preview of a dashboard page looked for route captures under the scoped
+package name (`/p/@omadia/agent-weather`) while the generated plugin mounts
+under the unscoped slug; it now uses the same `uiRouteMountSlug` and renders
+(#1789). The page form gets an input field for `data_binding.args` that names
+the bound tool's required fields still missing; `validateSpecForCodegen` flags
+`ui_route_data_binding_missing_args`; the builder prompt documents `args`; and
+the library templates (`list-card`, `kpi-tiles`) show "The data could not be
+loaded" with the missing field names instead of the raw Zod output under a
+hard-coded German heading (#1808).
+
+### Security — Builder hygiene: issue-report redaction + daily cap, test-credential purge, SkillSpector high-risk (2026-11-26)
+
+The core-bug report sanitizer also redacts Anthropic / OpenAI keys, JWTs,
+`key=` / `token=` / `password=` values (the key name stays), absolute home
+paths and link-local / cloud-metadata addresses; the title is sanitized like
+the body in the tool, the confirm card, the `issues/new` URL and the
+create-issue route; and each prepared report is written to
+`builder_triage_log`, so the cap of 3 reports per operator per 24 h finally
+applies (#1783). Deleting a draft drops its test credentials from the vault;
+`DELETE /drafts/:id/permanent` (and "Delete permanently" in the deleted list)
+removes a deleted draft for good; a daily purge removes soft-deleted published
+drafts past the grace period together with their credentials (#1790). The
+SkillSpector sidecar treats exit 1 with a valid report as a completed
+above-threshold scan, so high-risk packages show `high_risk` with their
+findings instead of "Scan failed"; exit 2 and an exit-1 report without issues
+stay failures (#1813).
+
+### Fixed — Builder runtime smoke: a green result needs a handler that ran, on stub credentials (2026-11-26)
+
+The post-build runtime smoke activates its own instance of the fresh build with
+stub setup values (`'smoke-test'`) and `ctx.smokeMode === true` instead of the
+warm preview handle with the operator's test credentials, and never calls a
+tool the spec declares `side_effects: 'write'` (`skipped`; all skipped →
+`writes_skipped`) (#1778). A tool whose input schema rejects the synthetic input
+(`validation_failed`) now fails the smoke, because its handler never ran; an
+upstream 401/403 on the stub credentials stays a controlled exit
+(`auth_rejected`) (#1727, decision by recommendation, reversible). ADR-0232
+(Proposed) supersedes the smoke criterion of ADR-0056.
+
+### Fixed — Builder codegen: playbook lists, escaped spec text, clean tsc errors, `requires:`, linted spec writes (2026-11-26)
+
+#1729: `manifest.yaml` now carries `playbook.not_for` and `playbook.example_prompts` exactly as in the spec, written through the YAML AST (the index-bound `NOT_FOR_CASE_1` / `EXAMPLE_PROMPT_1/2` placeholders are gone from both boilerplates); empty lists build, and a tool without `output` gets no `output_schema` instead of the search-result default. #1736: placeholder values are encoded for the file they land in (`codegenPlaceholders.ts`: JSON and YAML through their AST, TS/JS string-escaped, HTML-escaped), so a description with `"` or `\` no longer breaks `package.json` / `manifest.yaml`; a value that itself contains `{{…}}` is refused with the spec field named. #1739: `scripts/build-zip.mjs` (both boilerplates, identical) ends a failed step with one `✗ build-zip: …` line and exit 1 instead of throwing, and `parseTscErrors` no longer folds stack frames, `node:internal`, `throw new Error` or `file:///…` lines into the last tsc error. #1779: codegen writes `requires: ['<service>@^<major>']` for every `external_reads` service (`codegenRequires.ts`); the major comes from the provider's `provides:` (new `ServiceTypeRegistration.major`, filled at activation in `index.ts`), and a provider without one fails codegen with the field named, so preview and install judge the same declaration. #1795: `PATCH /api/v1/builder/drafts/:id/spec` runs the manifest linter like `patch_spec` and answers `422 builder.manifest_lint_failed` with the violations, nothing stored; `lint_spec` reports manifest-linter violations as `manifest.<kind>` errors.
+
+### Fixed — Builder slot code travels with the spec (preview, self-extension, bundles, rollback) (2026-11-26)
+
+The Builder keeps slot code in `draft.slots`, not in `spec.slots`; five paths
+passed only the spec and failed codegen with `missing_required_slot`. The
+manifest preview now passes the draft's slots (#1726). A self-extension
+proposal patches the live spec with the draft's slots merged in, installs as
+the next patch version, and removes its throwaway draft when the install fails
+(#1786). Profile snapshots and bundles carry `knowledge/slots.json`; the bundle
+import restores it into the new draft, checks the draft quota like create /
+restore / clone, and reports a replaced installed plugin version
+(`replaced_version`), which the import dialog shows before it opens the draft
+(#1787). A rollback restores the draft's spec and slots (spec only for older
+snapshots, and says so) and schedules a preview rebuild (#1788). A bundle whose
+plugin id + version is already installed keeps the installed package and
+creates the draft instead of failing on the duplicate-version guard
+(`kept_installed`, #1811).
+
 ### Fixed — Builder build status: one failed event, real build numbers, all SSE events (2026-11-26)
 
 The auto-rebuild scheduler and the preview routes now share one build-and-warm

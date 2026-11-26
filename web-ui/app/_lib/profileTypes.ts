@@ -69,6 +69,10 @@ export interface ImportBundlePluginInfo {
   version: string;
   was_existing: boolean;
   vendored: boolean;
+  /** #1787 — the installed version this import replaced. */
+  replaced_version?: string;
+  /** #1811 — the same version was already installed and was kept. */
+  kept_installed?: boolean;
 }
 
 export interface ImportBundleSuccess {
@@ -79,4 +83,6 @@ export interface ImportBundleSuccess {
   plugins_installed: ImportBundlePluginInfo[];
   diverged_assets: string[];
   spec_source: ImportBundleSpecSource;
+  /** #1787 — whether the bundle carried the draft's slot code. */
+  slots_restored?: boolean;
 }

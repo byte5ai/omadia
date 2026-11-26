@@ -519,9 +519,11 @@ export class PreviewRuntime {
    * on-disk preview directory.
    */
   async activate(opts: PreviewActivateOptions): Promise<PreviewHandle> {
+    // #1778 — the smoke activation runs next to the warm preview of the same
+    // rev; its own directory keeps its close() from wiping the warm one.
     const previewDir = path.join(
       this.previewsRoot,
-      `${opts.draftId}-${opts.rev}`,
+      `${opts.draftId}-${opts.rev}${opts.smokeMode === true ? '-smoke' : ''}`,
     );
     // Wipe any stale dir from a prior rev with the same number (e.g. after
     // a restart that survived only the in-memory cache eviction).
