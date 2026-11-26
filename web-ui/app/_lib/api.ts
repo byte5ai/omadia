@@ -4864,7 +4864,11 @@ export function operatorMemoryContextsFileUrl(path: string): string {
 export type MemoryBackend = 'postgres' | 'inmemory';
 
 export interface MemoryBackendState {
+  /** The backend that is running now. */
   current: MemoryBackend;
+  /** The saved choice the next boot applies; differs from `current` only
+   *  while `restartRequiredToApply`. Optional for older middleware builds. */
+  desired?: MemoryBackend;
   envDefault: string;
   databaseUrlPresent: boolean;
   activeProviderId: string | null;

@@ -6596,6 +6596,7 @@
     "loadFailed": "Laden fehlgeschlagen: {message}",
     "currentStateTitle": "Aktueller Stand",
     "activeBackend": "Aktives Backend",
+    "savedChoice": "Gespeicherte Auswahl (gilt nach einem Neustart)",
     "envDefault": "Env-Default",
     "activeProvider": "Aktiver Provider",
     "dbUrlSet": "gesetzt",

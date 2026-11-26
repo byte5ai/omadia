@@ -6596,6 +6596,7 @@
     "loadFailed": "Loading failed: {message}",
     "currentStateTitle": "Current state",
     "activeBackend": "Active backend",
+    "savedChoice": "Saved choice (applies after a restart)",
     "envDefault": "Env default",
     "activeProvider": "Active provider",
     "dbUrlSet": "set",

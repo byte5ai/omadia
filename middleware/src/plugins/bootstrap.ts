@@ -505,6 +505,63 @@ async function migrateAnthropicKeyToCanonical(
 // Memory (extension-kind built-in, no secrets → always auto-install)
 // ---------------------------------------------------------------------------
 
+type MemoryBackendChoice = 'postgres' | 'inmemory';
+
+/** The operator's saved backend choice, read from whichever memoryStore
+ *  provider entry carries it. `undefined` when no valid choice is saved. */
+function persistedMemoryBackend(
+  deps: BootstrapDeps,
+): MemoryBackendChoice | undefined {
+  const raw =
+    (deps.registry.get(MEMORY_POSTGRES_ID)?.config?.['memory_backend'] as
+      | string
+      | undefined) ??
+    (deps.registry.get(MEMORY_TOOL_ID)?.config?.['memory_backend'] as
+      | string
+      | undefined);
+  return raw === 'postgres' || raw === 'inmemory' ? raw : undefined;
+}
+
+/**
+ * Resolve the effective memory backend for this boot.
+ *
+ * Precedence:
+ *   1. Persisted operator choice (set via the admin UI, stored as
+ *      `memory_backend` config on the active provider's registry entry) wins —
+ *      so a UI switch survives every restart even when the container env
+ *      disagrees. The boot carries the choice over onto the provider it
+ *      installs, because it removes the entry the choice was saved on
+ *      (ADR-0192, #1834).
+ *   2. else, an explicit `MEMORY_BACKEND` env value, when set.
+ *   3. else, the derived default: `DATABASE_URL ? 'postgres' : 'inmemory'`.
+ *      This makes Postgres sharp by default whenever a DB is configured —
+ *      mirroring the KG neon/inmemory selection.
+ *
+ * Hard guard: the Postgres store consumes the shared `graphPool` that only
+ * the Neon KG publishes (i.e. `DATABASE_URL` must be set). When Postgres is
+ * requested without it, we fall back to `inmemory` rather than boot into a
+ * provider whose `requires: graphPool@^1` can never resolve.
+ */
+function resolveMemoryBackend(
+  deps: BootstrapDeps,
+  persisted: MemoryBackendChoice | undefined,
+): MemoryBackendChoice {
+  const log = deps.log ?? ((m) => console.log(m));
+  const derivedDefault: MemoryBackendChoice = deps.config.DATABASE_URL
+    ? 'postgres'
+    : 'inmemory';
+  let backend: MemoryBackendChoice =
+    persisted ?? deps.config.MEMORY_BACKEND ?? derivedDefault;
+
+  if (backend === 'postgres' && !deps.config.DATABASE_URL) {
+    log(
+      `[bootstrap] memory backend 'postgres' requested but DATABASE_URL is unset — the Postgres store needs the Neon graphPool; falling back to 'inmemory'`,
+    );
+    backend = 'inmemory';
+  }
+  return backend;
+}
+
 /**
  * Seeds the selected memoryStore provider into the registry on first boot,
  * migrating the legacy MEMORY_SEED_DIR / MEMORY_SEED_MODE env vars into
@@ -518,50 +575,6 @@ async function migrateAnthropicKeyToCanonical(
  * `DEV_ENDPOINTS_ENABLED` on every boot so a container-env flip takes
  * effect on restart (see the reconcile path below).
  */
-/**
- * Resolve the effective memory backend for this boot.
- *
- * Precedence:
- *   1. Persisted operator choice (set via the admin UI, stored as
- *      `memory_backend` config on the active provider's registry entry) wins —
- *      so a UI switch survives a restart even when the container env disagrees.
- *   2. else, an explicit `MEMORY_BACKEND` env value, when set.
- *   3. else, the derived default: `DATABASE_URL ? 'postgres' : 'inmemory'`.
- *      This makes Postgres sharp by default whenever a DB is configured —
- *      mirroring the KG neon/inmemory selection.
- *
- * Hard guard: the Postgres store consumes the shared `graphPool` that only
- * the Neon KG publishes (i.e. `DATABASE_URL` must be set). When Postgres is
- * requested without it, we fall back to `inmemory` rather than boot into a
- * provider whose `requires: graphPool@^1` can never resolve.
- */
-function resolveMemoryBackend(deps: BootstrapDeps): 'postgres' | 'inmemory' {
-  const log = deps.log ?? ((m) => console.log(m));
-  // Persisted operator choice (UI): read from whichever provider is active.
-  const persisted =
-    (deps.registry.get(MEMORY_POSTGRES_ID)?.config?.['memory_backend'] as
-      | string
-      | undefined) ??
-    (deps.registry.get(MEMORY_TOOL_ID)?.config?.['memory_backend'] as
-      | string
-      | undefined);
-  const derivedDefault: 'postgres' | 'inmemory' = deps.config.DATABASE_URL
-    ? 'postgres'
-    : 'inmemory';
-  let backend: 'postgres' | 'inmemory' =
-    persisted === 'postgres' || persisted === 'inmemory'
-      ? persisted
-      : (deps.config.MEMORY_BACKEND ?? derivedDefault);
-
-  if (backend === 'postgres' && !deps.config.DATABASE_URL) {
-    log(
-      `[bootstrap] memory backend 'postgres' requested but DATABASE_URL is unset — the Postgres store needs the Neon graphPool; falling back to 'inmemory'`,
-    );
-    backend = 'inmemory';
-  }
-  return backend;
-}
-
 export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void> {
   const log = deps.log ?? ((m) => console.log(m));
 
@@ -569,7 +582,9 @@ export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void>
     ? 'true'
     : 'false';
 
-  const backend = resolveMemoryBackend(deps);
+  // Read the saved choice BEFORE the swap below removes the entry it lives on.
+  const persisted = persistedMemoryBackend(deps);
+  const backend = resolveMemoryBackend(deps, persisted);
   const targetId =
     backend === 'postgres' ? MEMORY_POSTGRES_ID : MEMORY_TOOL_ID;
   const otherId =
@@ -587,23 +602,29 @@ export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void>
   }
 
   // Idempotent: target already installed → reconcile only the env-driven
-  // dev-endpoints flag (operator-owned keys like seed_dir stay untouched).
+  // dev-endpoints flag and the carried-over backend choice (operator-owned
+  // keys like seed_dir stay untouched).
   if (deps.registry.has(targetId)) {
     const entry = deps.registry.get(targetId);
-    if (
-      entry &&
-      entry.config?.['dev_memory_endpoints_enabled'] !== desiredDevEndpoints
-    ) {
+    if (!entry) return;
+    const devFlagDrift =
+      entry.config?.['dev_memory_endpoints_enabled'] !== desiredDevEndpoints;
+    const choiceDrift =
+      persisted !== undefined && entry.config?.['memory_backend'] !== persisted;
+    if (devFlagDrift || choiceDrift) {
       await deps.registry.register({
         ...entry,
         config: {
           ...entry.config,
           dev_memory_endpoints_enabled: desiredDevEndpoints,
+          ...(persisted !== undefined ? { memory_backend: persisted } : {}),
         },
       });
-      log(
-        `[bootstrap] ⚐ ${targetId} dev_memory_endpoints_enabled reconciled to '${desiredDevEndpoints}'`,
-      );
+      if (devFlagDrift) {
+        log(
+          `[bootstrap] ⚐ ${targetId} dev_memory_endpoints_enabled reconciled to '${desiredDevEndpoints}'`,
+        );
+      }
     }
     return;
   }
@@ -626,6 +647,10 @@ export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void>
       seed_dir: deps.config.MEMORY_SEED_DIR,
       seed_mode: deps.config.MEMORY_SEED_MODE,
       dev_memory_endpoints_enabled: desiredDevEndpoints,
+      // Carry the operator's saved choice over: the swap above removed the
+      // entry it was saved on, and without it the next boot would fall back
+      // to the environment (#1834).
+      ...(persisted !== undefined ? { memory_backend: persisted } : {}),
     },
   });
 

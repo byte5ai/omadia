@@ -148,6 +148,18 @@ so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
 appear (#1730). The builder prompt names `get_build_status` /
 `runtime_smoke_status` as the only source for build and smoke state (#1806).
 Contract: ADR-0230 (Proposed).
+### Fixed — memory admin: saved backend choice, env-seeded graph config, /memories paging, audit key, copy (#1834, #1858, #1853, #1854, #1839, ADR-0192, ADR-0193) (2026-11-26)
+
+- **#1834** A memory-backend switch saved on `/admin/memory-backend` now lasts until the
+  operator changes it. `bootstrapMemoryFromEnv` reads `memory_backend` before it removes the
+  non-selected sibling and carries it onto the sibling it installs or keeps; before, the
+  choice was removed with the old entry and the second boot silently swapped back.
+  `GET /api/v1/admin/memory/backend` reports `current` = the running backend and the new
+  `desired` = the saved choice; the admin page shows the saved choice separately while a
+  restart is pending, and the `/memory` badge names the running backend. ADR-0192 records
+  the rule and supersedes the "memory backend follows the environment on every boot"
+  sentence of ADR-0047 (ADR-0124 already stated the precedence).
+
 ### Fixed — embedding and model consumers follow provider changes live (#1815, #1817, #1855, ADR-0194) (2026-11-26)
 
 - **#1815** `@omadia/orchestrator-extras` no longer captures `embeddingClient@1` in
