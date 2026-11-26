@@ -169,8 +169,8 @@ describe('#1879 channel types on the binding and routing-tester routes', () => {
     assert.equal(((await res.json()) as { error: string }).error, 'unknown_channel_type');
   });
 
-  it('migration 0116 rewrites only unambiguous `channel-api` rows of the API key form', () => {
-    const sql = readFileSync(new URL('../migrations/0116_channel_api_binding_type.sql', import.meta.url), 'utf8');
+  it('migration 0117 rewrites only unambiguous `channel-api` rows of the API key form', () => {
+    const sql = readFileSync(new URL('../migrations/0117_channel_api_binding_type.sql', import.meta.url), 'utf8');
     assert.match(sql, /SET channel_type = '@omadia\/channel-api'/);
     assert.match(sql, /channel_key LIKE 'key:%'/);
     assert.match(sql, /NOT EXISTS/);
