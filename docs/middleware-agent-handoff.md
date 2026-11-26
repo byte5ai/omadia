@@ -2392,7 +2392,7 @@ der Pool das Primärmodell nicht bedienen, startet der Turn auf dem Fallback der
 Policy und ist als Fallback markiert (Receipt `fallbackUsed`, Chip
 `provider_fallback`); mit Fallback „Keiner“ (oder einem ebenfalls nicht
 nutzbaren Fallback) endet er mit der `system`-Notiz `model_unavailable`
-(plugin-api 1.99.0) statt still auf einem anderen Provider zu laufen.
+(plugin-api 1.102.0) statt still auf einem anderen Provider zu laufen.
 
 **Sub-Agents fallen auf das Orchestrator-Modell zurück.** Weil die Sub-Agents
 ihr Modell selbst auflösen, kann es nach einem Provider-Wechsel veralten — eine
