@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -167,6 +167,41 @@ describe('Agent detail tabs guard unsaved identity edits (#1889)', () => {
     expect(confirm).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId('model-panel')).toBeNull();
     expect(screen.getByLabelText('Short description')).toHaveValue('Draft');
+  });
+
+  it('Back with unsaved input asks, and a declined leave keeps the tab and restores the URL', async () => {
+    window.history.replaceState(null, '', '/operator/agents/sales');
+    mockGet.mockResolvedValue(dto());
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    renderTabs();
+
+    await userEvent.type(await screen.findByLabelText('Short description'), 'Draft');
+    // What the browser does on Back: the URL already names the other tab.
+    act(() => {
+      window.history.replaceState(null, '', '/operator/agents/sales?tab=model');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('model-panel')).toBeNull();
+    expect(screen.getByLabelText('Short description')).toHaveValue('Draft');
+    expect(window.location.search).toBe('');
+  });
+
+  it('Back without unsaved input follows the URL without asking', async () => {
+    window.history.replaceState(null, '', '/operator/agents/sales');
+    mockGet.mockResolvedValue(dto());
+    const confirm = vi.spyOn(window, 'confirm');
+    renderTabs();
+    await screen.findByLabelText('Short description');
+
+    act(() => {
+      window.history.replaceState(null, '', '/operator/agents/sales?tab=model');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(screen.getByTestId('model-panel')).toBeInTheDocument();
   });
 
   it('leaves without asking when nothing is unsaved', async () => {

@@ -54,6 +54,19 @@ function writeTabToLocation(tab: AgentDetailTab): void {
   }
 }
 
+/** Undo a back/forward the operator declined: the URL names the shown tab again. */
+function restoreTabInLocation(tab: AgentDetailTab): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const url = new URL(window.location.href);
+    if (tab === DEFAULT_TAB) url.searchParams.delete(TAB_PARAM);
+    else url.searchParams.set(TAB_PARAM, tab);
+    window.history.pushState(window.history.state, '', url);
+  } catch {
+    // Without history access the tab stays; only the URL is off.
+  }
+}
+
 interface AgentDetailTabsProps {
   /**
    * One render function per tab; only the active one is called. A tab
@@ -79,12 +92,6 @@ export function AgentDetailTabs(props: AgentDetailTabsProps): React.ReactElement
   // A deep link to a tab this agent does not have lands on the first one.
   const tab = tabs.includes(requested) ? requested : (tabs[0] ?? DEFAULT_TAB);
 
-  useEffect(() => {
-    const onPop = (): void => setTab(readTabFromLocation());
-    window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
-  }, []);
-
   // #1889 — the active panel reports unsaved input here; leaving it asks
   // first, because the panel unmounts and its local state goes with it.
   const unsaved = useRef(false);
@@ -92,6 +99,26 @@ export function AgentDetailTabs(props: AgentDetailTabsProps): React.ReactElement
     unsaved.current = dirty;
   }, []);
   const leaveMessage = t('unsavedLeaveConfirm');
+
+  // Back/forward asks too. The browser has already moved the URL when
+  // `popstate` fires, so a declined leave puts the current tab's URL back.
+  const shown = useRef<{ tab: AgentDetailTab; leaveMessage: string }>({ tab, leaveMessage });
+  useEffect(() => {
+    shown.current = { tab, leaveMessage };
+  }, [tab, leaveMessage]);
+  useEffect(() => {
+    const onPop = (): void => {
+      const next = readTabFromLocation();
+      const { tab: current, leaveMessage: message } = shown.current;
+      if (next !== current && unsaved.current && !window.confirm(message)) {
+        restoreTabInLocation(current);
+        return;
+      }
+      setTab(next);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   const select = (next: AgentDetailTab): boolean => {
     if (next === tab) return true;
