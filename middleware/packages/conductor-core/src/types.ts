@@ -258,6 +258,7 @@ export type ValidationCode =
   | 'unreachable_step'
   | 'unguarded_cycle'
   | 'deadline_without_fallback'
+  | 'human_step_invalid_duration'
   | 'timer_step_invalid_duration'
   | 'timer_requires_fallback'
   | 'quorum_all_requires_deadline_fallback'
@@ -268,6 +269,8 @@ export type ValidationCode =
   | 'unknown_agent_ref'
   | 'unknown_action_ref'
   | 'unknown_role_ref'
+  | 'invalid_user_ref'
+  | 'invalid_action_input'
   | 'unknown_event_ref'
   // Template-manifest integrity codes (checkTemplateManifest in template.ts).
   | 'template_missing_metadata'
@@ -337,7 +340,7 @@ export interface KnownRefs {
  *  (`step.agentId`, `step.actionId`, role `step.human.principal.ref`,
  *  `step.human.channel`, `trigger.eventId`) — never in `step.prompt` /
  *  `human.message`, whose `{{...}}` syntax is run-context interpolation. */
-export type TemplateSlotKind = 'agents' | 'actions' | 'roles' | 'events' | 'channels';
+export type TemplateSlotKind = 'agents' | 'actions' | 'roles' | 'people' | 'events' | 'channels';
 
 /** Per-locale text record carried by a manifest. `en` is the required base and the
  *  universal fallback; any further locale key ('de', ...) is optional. */
@@ -363,7 +366,7 @@ export interface TemplateSlot {
 
 /** A declared text slot, referenced from designated text fields (`step.prompt`,
  *  `step.human.message`) as the token `slot:text:<key>`. Text slots are NOT a
- *  TemplateSlotKind — the five ref kinds stay closed (they drive KnownRefs
+ *  TemplateSlotKind — the ref kinds stay closed (they drive KnownRefs
  *  validation); text slots carry no ref semantics, only string substitution. */
 export interface TemplateTextSlot {
   /** unique among text slots; token grammar `[A-Za-z0-9_-]+` (other characters
@@ -382,6 +385,7 @@ export interface TemplateSlots {
   agents?: TemplateSlot[];
   actions?: TemplateSlot[];
   roles?: TemplateSlot[];
+  people?: TemplateSlot[];
   events?: TemplateSlot[];
   channels?: TemplateSlot[];
   text?: TemplateTextSlot[];

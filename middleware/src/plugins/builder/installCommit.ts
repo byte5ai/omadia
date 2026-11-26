@@ -46,6 +46,7 @@ export interface InstallDraftDeps {
 export interface InstallDraftInput {
   userEmail: string;
   draftId: string;
+  onPackageIngested?: (result: Extract<IngestResult, { ok: true }>) => Promise<void>;
 }
 
 export type InstallFailureReason =
@@ -148,6 +149,7 @@ export async function installDraft(
   if (!ingestResult.ok) {
     return mapIngestFailure(ingestResult);
   }
+  await input.onPackageIngested?.(ingestResult);
 
   // Step 4: mark draft as published + pin published_agent_id.
   await deps.draftStore.update(userEmail, draftId, {

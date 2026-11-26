@@ -21,6 +21,8 @@ import { createChatSessionsRouter } from '../src/routes/chatSessions.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
 const T0 = 1_700_000_000_000;
+/** #1762 — chats are saved under the signed-in account (requireAuth's `sub`). */
+const OWNER = 'user-anna';
 
 function session(id: string): ChatSession {
   return {
@@ -57,6 +59,10 @@ describe('#1884 — the agent pin survives the client PUT', () => {
   before(async () => {
     const app = express();
     app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as unknown as { session: unknown }).session = { sub: OWNER };
+      next();
+    });
     app.use('/api/chat', createChatSessionsRouter({ getStore: () => store }));
     server = await listenLoopback(app);
     base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/api/chat`;
@@ -70,7 +76,7 @@ describe('#1884 — the agent pin survives the client PUT', () => {
 
   /** What the web UI does: create the chat, the turn pins it, then save the turn. */
   async function chatWith(id: string, agentSlug: string): Promise<void> {
-    await store.save({ ...session(id), messages: [] });
+    await store.save({ ...session(id), messages: [], ownerUserId: OWNER });
     await store.captureSnapshot(id, pin(agentSlug));
     const res = await fetch(`${base}/sessions/${id}`, {
       method: 'PUT',

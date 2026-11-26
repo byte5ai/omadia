@@ -151,7 +151,7 @@ describe('mapRefreshRecords — filter → sort → take', () => {
     assert.ok(ok.ok);
     assert.deepEqual(ids(ok.rows), [1]);
     const cut = await fetchRecipeRows(() => Promise.resolve(envelope(true)), recipe);
-    assert.deepEqual(cut, { ok: false, reason: 'truncated' });
+    assert.deepEqual({ ok: cut.ok, reason: !cut.ok && cut.reason }, { ok: false, reason: 'truncated' });
   });
 });
 

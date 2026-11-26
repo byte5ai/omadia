@@ -15,6 +15,10 @@ import {
   type AnswerVerbosity,
 } from './answerVerbosity.js';
 import {
+  DEFAULT_ANSWER_LANGUAGE,
+  type AnswerLanguage,
+} from './answerLanguage.js';
+import {
   deriveAgentsConsulted,
   toSemanticAnswer,
   applyAiDisclosure,
@@ -46,6 +50,7 @@ import {
   UNSCREENED_MARKER,
   DEFAULT_SECURITY_POSTURE_POLICY,
   withDataText,
+  stripKnownAiDisclosureLines,
 } from '@omadia/channel-sdk';
 import {
   TurnDataCollector,
@@ -365,7 +370,7 @@ import {
 } from './audienceFloorProvider.js';
 import { guardToolCommands } from './commandPolicyGuard.js';
 import {
-  CHANNEL_KIND_BY_ORIGIN,
+  turnChannelKind,
   resolveRunTraceOwner,
   resolveTurnOwnerIdentity,
   runTraceOwnerId,
@@ -1116,6 +1121,12 @@ export interface OrchestratorOptions {
    */
   answerVerbosity?: AnswerVerbosity;
   /**
+   * #1992 / ADR-0220 — the `answer_language` setup field: the language the
+   * agent falls back to when the user's message shows none. The agent
+   * otherwise mirrors the user's language. Absent → German.
+   */
+  answerLanguage?: AnswerLanguage;
+  /**
    * AI-Act Art. 50 (#644) — the operator's resolved disclosure config. Absent →
    * the shipping default (standard, active) on every channel. See
    * {@link AiDisclosureSetup}.
@@ -1649,7 +1660,8 @@ async function maskReplayedAnswerForWire(
  *  (answer-side restore covers these spans as well): a user message under
  *  `mask_user_prompt`, an answer whatever that flag says
  *  ({@link maskReplayedAnswerForWire}). Empty pairs are filtered so a failed
- *  prior turn can't poison context. */
+ *  prior turn can't poison context. Known AI-disclosure lines are stripped
+ *  from replayed answers first (#2003). */
 async function maskPriorTurnsForWire(
   privacy: PrivacyTurnHandle | undefined,
   priorTurns: ChatTurnInput['priorTurns'],
@@ -1662,10 +1674,13 @@ async function maskPriorTurnsForWire(
         content: await maskPromptForWire(privacy, t.userMessage, 'context'),
       });
     }
-    if (t.assistantAnswer.trim().length > 0) {
+    // #2003 — the AI-disclosure line is the delivery boundary's marking, not
+    // the agent's words; replayed, the model starts writing it itself.
+    const answer = stripKnownAiDisclosureLines(t.assistantAnswer);
+    if (answer.trim().length > 0) {
       pairs.push({
         role: 'assistant',
-        content: await maskReplayedAnswerForWire(privacy, t.assistantAnswer),
+        content: await maskReplayedAnswerForWire(privacy, answer),
       });
     }
   }
@@ -2507,6 +2522,8 @@ function buildSystemPrompt(
   answerVerbosity: AnswerVerbosity = DEFAULT_ANSWER_VERBOSITY,
   /** #1559 — `create_xlsx` is offered this turn. */
   hasFileExport = false,
+  /** #1992 — the operator's fallback answer language (ADR-0220). */
+  answerLanguage: AnswerLanguage = DEFAULT_ANSWER_LANGUAGE,
 ): string {
   // #1890 — identity, language line and the operator's answer-size contract
   // come from `identityPreamble`, the same text the Prompt tab previews.
@@ -2591,7 +2608,7 @@ e) **Rückfragen zu einer früher gezeigten Tabelle.** Die Zeilen einer gerender
 `
     : '';
 
-  return `${identityPreamble(assistantIdentity, answerVerbosity)}
+  return `${identityPreamble(assistantIdentity, answerVerbosity, answerLanguage)}
 Werkzeuge:
 - \`memory\` (virtuelles /memories-Verzeichnis): Persistiere Domänen-Learnings, Nutzer-Präferenzen, Geschäfts-Konventionen und häufige Anfragen. Der Memory wird über Sessions hinweg geteilt und ist global für diesen Agent. Lies zu Beginn jeder neuen Aufgabe einmal den Verzeichnisinhalt, bevor du antwortest, damit du auf relevante Learnings zurückgreifen kannst. Lege neue Learnings in themenbezogenen Dateien ab (z.B. /memories/customers/kundenname.md, /memories/observations/2026-q2.md).
 ${graphBlock}${chatParticipantsBlock}${askUserChoiceBlock}${suggestFollowUpsBlock}${calendarBlock}${extraToolDocs.length > 0 ? '\n' + extraToolDocs.map((doc) => `- ${doc.trim()}`).join('\n') + '\n' : ''}
@@ -3160,6 +3177,8 @@ export class Orchestrator {
   private readonly ownNames: (() => readonly string[]) | undefined;
   /** Operator's answer-size contract (see OrchestratorOptions.answerVerbosity). */
   private readonly answerVerbosity: AnswerVerbosity;
+  /** #1992 — fallback answer language (see OrchestratorOptions.answerLanguage). */
+  private readonly answerLanguage: AnswerLanguage;
   /** #644 — resolved operator disclosure config (undefined → shipping default
    *  on every channel). See {@link AiDisclosureSetup}. */
   private readonly aiDisclosure: AiDisclosureSetup | undefined;
@@ -3283,6 +3302,7 @@ export class Orchestrator {
     this.identityName = options.identityName?.trim() || undefined;
     this.ownNames = options.ownNames;
     this.answerVerbosity = options.answerVerbosity ?? DEFAULT_ANSWER_VERBOSITY;
+    this.answerLanguage = options.answerLanguage ?? DEFAULT_ANSWER_LANGUAGE;
     this.aiDisclosure = options.aiDisclosure;
     this.disclosureSeen =
       options.aiDisclosureSeenStore ?? new InMemoryDisclosureSeenStore();
@@ -4949,7 +4969,8 @@ export class Orchestrator {
    * `deriveAgentsConsulted` was extracted.
    *
    * The channel picks the level: a per-channel override (keyed on the turn's
-   * `channelIdentity.channelKind`) wins over the operator's global default,
+   * channel kind, `turnChannelKind`: the channel identity's kind or, #1994,
+   * the kind its `origin` names) wins over the operator's global default,
    * which wins over the shipping default. A turn whose channel does not resolve
    * to a `ChannelKind` uses the global level — the safe direction (marking
    * stays active). Returns `undefined` only for an operator `'off'` (AC2).
@@ -4959,7 +4980,7 @@ export class Orchestrator {
    * branded or human-sounding persona cannot suppress it (AC2 regression).
    */
   private resolveTurnDisclosure(input: ChatTurnInput): AiDisclosure | undefined {
-    return this.disclosureForChannel(input.channelIdentity?.channelKind);
+    return this.disclosureForChannel(turnChannelKind(input));
   }
 
   /**
@@ -5571,8 +5592,7 @@ export class Orchestrator {
         participants: parent?.chatParticipants,
         resolvePrincipal: knowledgeGraphPrincipalResolver(
           this.identityGraph,
-          input.channelIdentity?.channelKind ??
-            (input.origin ? CHANNEL_KIND_BY_ORIGIN[input.origin.channelType] : undefined),
+          turnChannelKind(input),
         ),
         roles: this.audienceRoleSources,
         grants: this.audienceGrants,
@@ -6472,7 +6492,7 @@ export class Orchestrator {
       await store.record({
         turnId,
         sessionScope: input.sessionScope,
-        channel: input.channelIdentity?.channelKind,
+        channel: turnChannelKind(input),
         // #1033 W0 — the model the turn ran on. `this.model` is the
         // configured default and was the wrong value for every triage-routed
         // turn; without a recorded attribution it stays the honest fallback
@@ -10355,6 +10375,7 @@ export class Orchestrator {
       memoryPrompt,
       this.answerVerbosity,
       this.isFileExportOfferedThisTurn(),
+      this.answerLanguage,
     );
   }
 

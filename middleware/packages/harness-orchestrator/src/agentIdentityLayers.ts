@@ -14,6 +14,11 @@ import {
   DEFAULT_ANSWER_VERBOSITY,
   type AnswerVerbosity,
 } from './answerVerbosity.js';
+import {
+  buildAnswerLanguageRule,
+  DEFAULT_ANSWER_LANGUAGE,
+  type AnswerLanguage,
+} from './answerLanguage.js';
 
 /**
  * Fold an Agent's own name into the identity text it speaks with (#967).
@@ -221,17 +226,14 @@ export function assembleAgentIdentity(
   );
 }
 
-/** The answer-language line every system prompt carries after the identity. */
-export const ANSWER_LANGUAGE_LINE =
-  'Sprache: Antworte immer auf Deutsch, außer der Nutzer wechselt explizit die Sprache.';
-
 /** Tool calls are not announced in prose (that text never reaches the user). */
 export const NO_TOOL_ANNOUNCEMENT_LINE =
   'Kündige Tool-Aufrufe nicht mit Zwischentext an (z.B. „Ich prüfe zuerst mein Memory.“) — solcher Text wird dem Nutzer nicht gezeigt. Schreib die Antwort, wenn die Daten da sind.';
 
 /**
  * #1890 — the head of the stable system prompt: the agent's identity section,
- * then the language line, the tool-announcement line and the answer-size
+ * then the language rule (ADR-0220: the user's language, else the operator's
+ * fallback), the tool-announcement line and the answer-size
  * block (empty for `standard`). `buildSystemPrompt` opens with exactly this
  * string, and the built agent exposes it (`BuiltOrchestrator.identityPrompt`)
  * for the operator's Prompt tab, so the preview is the runtime text.
@@ -240,11 +242,12 @@ export const NO_TOOL_ANNOUNCEMENT_LINE =
 export function identityPreamble(
   identity: string,
   answerVerbosity: AnswerVerbosity = DEFAULT_ANSWER_VERBOSITY,
+  answerLanguage: AnswerLanguage = DEFAULT_ANSWER_LANGUAGE,
 ): string {
   const verbosityBlock = buildAnswerVerbosityBlock(answerVerbosity);
   return `${identity}
 
-${ANSWER_LANGUAGE_LINE}
+${buildAnswerLanguageRule(answerLanguage)}
 ${NO_TOOL_ANNOUNCEMENT_LINE}
 ${verbosityBlock ? '\n' + verbosityBlock : ''}`;
 }

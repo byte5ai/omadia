@@ -1402,6 +1402,21 @@ emittiert** — der Transport ist vollständig.
 
 ### Conductor Workflow-Templates (Operator-API, #429)
 
+- **Zeitpläne:** `GET /:slug` liefert die gespeicherten Zonen als `schedules`.
+  Derselbe Cron-Ausdruck behält seine Zeile und Zone, neue Ausdrücke starten in UTC
+  (ADR-0250). Der Poller protokolliert verpasste oder deaktivierte Slots und startet
+  nur im aktuellen Zeitfenster. `POST /emit` liefert deaktivierte Event-Abonnenten
+  unter `suppressed` (ADR-0251).
+
+- **Rollenverwaltung:** `POST /roles` erstellt einen neuen Schlüssel (409 bei Duplikat).
+  `PATCH /roles/:key` ändert das Label, `DELETE /roles/:key` löscht unbenutzte Rollen
+  (409 bei aktiven Inhabern oder Referenzen in aktuellen Workflow-Versionen).
+  Unbekannte Rollen liefern 404. Änderungen schreiben Audit-Einträge nach ADR-0100.
+- **Abgeleitete Vorlagen und Freigaben:** `slot:person:<key>` bindet einen Nutzer beim
+  Instanziieren (ADR-0252). Die Ableitung markiert Schritte mit URLs in Aktionseingaben.
+  Autoren dürfen nur ohne weiteren aktiven Operator selbst freigeben. Jede Version
+  beginnt privat, Statuswechsel schreiben Audit-Einträge (ADR-0253).
+
 Kuratierter, file-basierter Template-Katalog für Conductor: `TemplateManifest`s
 (kompletter `WorkflowGraph` mit `slot:<kind>:<key>`-Platzhaltern in den fünf
 Ref-Feldern + Slot-Deklarationen, Contract in `@omadia/conductor-core`;
@@ -1447,11 +1462,12 @@ werden mit Log-Zeile übersprungen, CI-Gate ist
   `description` defaulten aufs Manifest (en-aufgelöst) →
   `201 { workflow, version, warnings? }` (die `warnings` wie bei `resolve`, #1713).
 
-**Validierungs-Unterschied zu `POST /`:** beide Template-Routes validieren mit
-**live `KnownRefs`** (Agent-Slugs aus der Registry, Action-Ids, Role-Keys,
-Event-Ids — `templateKnownRefs` in `src/conductor/index.ts`), `POST /` nur
-strukturell. Bewusst strenger: eine Template-Instanz muss lauffähig sein, nicht
-nur wohlgeformt.
+**Publish-Validierung:** beide Template-Routen und `POST /` teilen
+`validatePublishGraph` mit Live-Referenzen aus `templateKnownRefs` (Agent-Slugs,
+Action-IDs, Role-Keys, Event-Vorschläge). Statische `webhook.post`-URLs werden auf
+HTTP(S) geprüft. Bei registrierten Plugin- und MCP-Aktionen werden deklarierte
+Pflichteingaben auf Vorhandensein geprüft. UUIDs aus der Operator-Kontentabelle werden in Personen-Referenzen
+abgelehnt. Builder-Entwürfe dürfen fehlende Actions für die Inline-Einrichtung behalten.
 
 **Ausnahme Event-Ids (#1713):** eine Event-Id ist Freitext des Senders —
 `POST /conductors/emit` nimmt jede Id, und ein eingehender Webhook-Endpoint
@@ -1515,8 +1531,7 @@ conductor.template_not_found` wenn unsichtbar), **`POST /templates`** Body
 bundled/plugin/DB; `400 conductor.template_invalid` mit Issues-Array),
 **`PUT /templates/:id`** (author-only `403 conductor.template_forbidden`;
 `manifest.id` muss `:id` sein → 400; hängt Version `latestVersion+1` an —
-Status bleibt bewusst unverändert: das Gate regelt das Teilen, nicht jede
-Version), **`DELETE /templates/:id`** (author-only, nur User-Source → 204),
+Status startet wieder `private` (ADR-0253)), **`DELETE /templates/:id`** (author-only, nur User-Source → 204),
 **`GET /templates/:id/versions`**. `resolve`/`instantiate` akzeptieren
 optional `version` im Body (Default: latest); `instantiate` stempelt die
 Provenance **in derselben Transaktion** wie den Publish (via `onPublished`)
@@ -4208,6 +4223,14 @@ Postgres `test/auth/loginAccountFold.pg.test.ts`; UI
   `before`/`after` = gewährte Menge, `routes/runtimeGrants.ts`), `plugin.install`
   (Install-Wizard endet in `active`/`errored`) und `plugin.uninstall` (mit den Grants,
   die mit dem Plugin gehen, `routes/install.ts`).
+- **Operator-Änderungen (#1752, #1764, #1951, #1740):** Routine-Zeilen
+  unterscheiden den Operator vom Routine-Owner und halten bei Löschung Name,
+  Cron und Kanal fest. Agent-, Provider-, Kanal- und MCP-Änderungen verwenden
+  Zusammenfassungen der gespeicherten Felder. Der MCP-Filter liest
+  `mcp_server.*`. Der OAuth-Callback übernimmt den Akteur aus dem gestarteten
+  Flow (ADR-0246). `plugin.package_upload` hält Version und Quelle (`upload`
+  oder `builder`) nach erfolgreichem Ingest fest. Manuelle Spec- und Slot-Edits
+  stehen im eigenen Draft-Verlauf (ADR-0245).
 - **Logzeilen:** `[auth] login failed (…)` pro Audit-Zeile,
   `[grants] <actor> changed consent for "<id>": …` pro Consent-Änderung,
   `[auth] setup: first admin created via the setup wizard (…)` beim Wizard (#1092),
@@ -5053,8 +5076,12 @@ spätere Migrationen trivial.
   Für Agents nur lesbar (#1827, Deny-Prefix in `ScopedMemoryStore`): jede
   Datei hier wirkt für alle Agents und Accounts, darum entstehen Regeln nur
   über den Repo-Seed. Der `DurableRulesMemoryStore`-Hook feuert damit aus dem
-  Chat nicht mehr; Seed-Regeln erreichen den Durable-Tier über
-  `scripts/backfill-durable-rules.ts`.
+  Chat nicht mehr. Seit ADR-0185 (#1831) gleicht `runDurableRulesSync`
+  (`src/services/durableRulesSync.ts`) die Regel-Einträge beim Boot und nach
+  einem Purge `axis:'all'` mit den Dateien ab: exakter Pfad-Match, geänderte
+  Datei → Text + Embedding aktualisiert, gelöschte Datei → Eintrag gelöscht
+  (Audit-Actor Nil-UUID). `scripts/backfill-durable-rules.ts` bleibt für den
+  manuellen Lauf.
 - `/memories/customers/<name>.md` — stabile Fakten pro Kunde.
 - `/memories/observations/YYYY-QX.md` — Zeitstempelbezogen.
 - `/memories/sessions/<scope>/YYYY-MM-DD.md` — Transkripte, *geschrieben
@@ -5871,6 +5898,18 @@ Auslieferungszustand ohne jedes gesetzte Feld: `standard`, aktiv,
 Die aufgelöste Haltung ist ablesbar: `GET /health` → `disclosure`, plus
 Boot-Warnung und Dashboard-Hinweis **nur** bei Abweichung vom Auslieferungszustand.
 
+### 10.x Antwortsprache (`answer_language`, #1992, ADR-0220)
+
+Plugin-Setup-Feld des Orchestrators (enum `de`/`en`/`fr`/`es`/`it`/`nl`/`pl`,
+Default `de`), gelesen in `plugin.ts` über `parseAnswerLanguage`
+(`packages/harness-orchestrator/src/answerLanguage.ts`) und wie
+`answer_verbosity` über `OrchestratorDeps.answerLanguage` an jeden Agenten
+gereicht. Die Regel im System-Prompt (`buildAnswerLanguageRule`): Antwort in der
+Sprache der letzten Nutzernachricht; lässt sie keine erkennen, die Sprache des
+bisherigen Gesprächs; ohne Gespräch die Rückfallsprache dieses Felds.
+`ChatTurnInput.locale` bleibt nur Hinweis für Kernel-Notices. Ein fester Text pro
+Rückfallsprache, also ein Prompt-Cache-Key pro Installation.
+
 ### 10.x Antwortumfang (`answer_verbosity`)
 
 Plugin-Setup-Feld des Orchestrators, gelesen in `plugin.ts` über
@@ -6160,6 +6199,14 @@ ohne bestätigten Claim und nicht, wenn nur `not_checked` (auch eine
 Abdeckungslücke) offen ist. Der Omadia-UI-Channel verwirft das Event weiterhin
 (`omadia-ui-channel/src/protocol.ts`). Zustands-Tabelle und Regeln:
 `docs/security-architecture.md` §7c.
+
+**Stiller Turn (#1896).** Antwortet der Agent mit `NO_REPLY`, endet der Stream
+mit `done { answer: '', silent: true }` (`suppressNoReplyStream`,
+`@omadia/channel-sdk` 0.3.17, auf `/api/chat/stream` und der Public-API-Route).
+Deltas werden zurückgehalten, solange der Text noch das Sentinel werden kann;
+schon gezeigter Text (Form „Erklärung\nNO_REPLY“) wird per `text_retract`
+zurückgenommen. Die Web-UI zeigt für einen stillen Turn keine Blase; der
+Session-Mirror speichert ihn leer mit `silent: true`.
 
 **Degradierter Turn (#1094).** Wirft ein Turn, *nachdem* mindestens ein
 Tool-Call bereits committet hat, bleibt das terminale Event bewusst `done` —
@@ -6651,6 +6698,14 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+- **Fast-Lane-Übergabe als Verifier-Evidenz (ADR-0221, W15-17).** Der Answer-Verifier zählt den
+  `fastLaneHandoffHint` nicht als Beleg; Aussagen nur daraus können im `enforce`-Modus als
+  unbelegt gelten und einen Retry mit erneuter Abfrage auslösen. Den ausgeführten Aufruf in die
+  Evidenz des Verifiers geben.
+- **Telegram-Plugin-Teile von #1993/#1998/#2001** (W19-27p): Multipart-Upload über
+  `CoreApi.readAttachment` mit sichtbarer Fehlernotiz, `dm_policy` als Enum mit Fail-closed auf
+  `pairing`, `ChannelKeyDirectory` für `/operator/channels`.
 
 - **croner-`?`-Kompatibilität (`middleware/src/scheduler/cronerCompat.ts`).** Unter croner 11
   ist `?` ein Alias für `*`; der Kernel ersetzt es weiter wie croner 9.x durch den Feldwert zum
@@ -7726,11 +7781,11 @@ Broker erreichbar macht, bzw. gehören in die Credential-Anlage (#778 S2):
 Der Web-Sender (§ *Web-Sender (#1071)*) schreibt in einen Chat, den niemand besitzt.
 Bewusst akzeptiert, Security-Eintrag in `docs/security-architecture.md` §3a:
 
-- **Per-User-Ownership der Chat-Sessions.** Owner beim Anlegen stempeln und in
-  `GET`/`PUT`/`DELETE /api/chat/sessions` sowie in `validateConversationRef` prüfen.
-  Heute listet `GET` jede Session jedem angemeldeten User, und User A kann eine Routine
-  anlegen, die wiederkehrend in den Chat von User B schreibt, ohne dass B sie sehen,
-  pausieren oder löschen kann.
+- ~~**Per-User-Ownership der Chat-Sessions.**~~ Erledigt mit #1762 (ADR-0180): der Server
+  stempelt `ownerUserId` (Session-`sub`) beim ersten PUT, alle Routen unter
+  `/api/chat/sessions` und Chat-Turns/Steer mit fremder `sessionId` antworten 404. Eine
+  Routine entsteht damit nur im eigenen Chat und stellt nur dorthin zu. Alt-Chats ohne Owner
+  gehören dem einzigen Konto der Instanz, sonst niemandem (versteckt, nicht gelöscht).
 - **`validateConversationRef` prüft Existenz.** Heute nur die Syntax der `sessionId`
   (ein gelöschter Chat fällt erst beim ersten Fire auf — dann aber vor dem Agent-Turn,
   und die Routine wird pausiert).
@@ -9127,6 +9182,21 @@ derselben Auswahl (sonst `409 preview_required`), nimmt den Actor über `auditAc
 (`MEMORY_SEED_DIR`, heute `_rules`) zurück und schreibt sie sofort neu — Chat-Sessions,
 Transkripte, `_brand`, `core`, `ui-prefs` bleiben immer. Details: `docs/security-architecture.md` §10q.
 
+Achse `user` seit ADR-0186 (#1840/#1842/#1843): `resolveUserSelector` (`services/memoryPurgeUser.ts`)
+liest omadia-User-ID, Konto-ID (`web:<users.id>`) oder `<kanal>~<id>`; geteilte
+`MemorableKnowledge` wird nur ent-eignet (`aclOwner`-Filter = Owner löschen, plugin-api 1.100.0),
+dazu Datensätze, Prozesse (`processes.created_by_omadia_user_id`, Neon-Migration 0038) und
+`User`/`ChannelIdentity`-Knoten. Response-Felder zusätzlich `kgDeownedCount|kgExcerptCount|
+datasetCount|processCount|identityCount`, `resolvedUser`. `GET /api/v1/admin/users/:id` liefert
+`omadiaUserId`.
+
+**Ohne Eigentümer** (`GET|DELETE /api/v1/admin/memory/ownerless[/:id]`, ADR-0185, #1829/#1831,
+gleiches Gate): listet `MemorableKnowledge` mit leerem `acl_owners` (Scratch-Reaper, Regeln) und
+löscht einen Eintrag einzeln — `admin_audit` `memory.ownerless_delete` vorher (Fehler → 500,
+nichts gelöscht), `memory_acl_audit` `delete` mit der `omadia_user_id` des Operators. Ein Eintrag
+mit Eigentümer → `409 memory.has_owners`. UI: Danger Zone, Abschnitt „Erinnerungen ohne
+Eigentümer“. Der Scratch-Reaper liest Plugin-Storage (`…/<slug>/plugins/`) nicht mehr.
+
 **Promote** (`POST|GET /api/v1/admin/memory/promotions/:slug`, gleiches `requireAuth`-Gate
 und gleicher Prefix wie Purge): kopiert/verschiebt Files und Subtrees zwischen den Tiers
 EINES Agenten. Das ist der einzige Weg, auf dem Wissen eine Kontextgrenze überschreitet.
@@ -9157,6 +9227,14 @@ dev-only `GET /bot-api/dev/memory/list` — in Produktion nicht gemountet, also 
 operator-authentifizierte Listing-Route (gleiches Gate wie Purge) ist der nächste Schritt.
 Die Channel-Plugins (`omadia-channel-teams`, `omadia-channel-telegram`) bauen den `TurnOrigin`
 in ihren EIGENEN Repos; die können erst nach Release des SDK mit `TurnOrigin` gebaut werden.
+
+**Web, Routinen, Public API (#1774, #1826, ADR-0182, 2026-11-26):** Der Web-Chat
+(`webTurnOrigin`, nur aus `req.session.omadia_user_id`) und Web-Routinen (`routineOrigin`)
+senden `TurnOrigin { channelType: 'http', scope: personal(<omadia-user-id>) }`, der
+Public-API-Router `apiKeyOrigin(keyId)` (`channelType: 'api'`, `personal('key:<keyId>')`).
+Jedes Konto und jeder Key ist damit unter `enforce` / `enforce-strict` / `members` ein
+Ein-Personen-Raum; `off` bleibt ein gemeinsamer Baum. Merkfähiges Wissen ist ohne
+explizite Sichtbarkeit `private` (ADR-0183, Graph-Migration `0037`).
 
 ## Teams-E2E-Smoke: Provisioning-Kette gegen eine Wegwerf-Umgebung (W2a, #860 / #874, 2026-08-27)
 
@@ -9803,7 +9881,7 @@ durch den Web-Sender unten.
   `pause`/`resume`/`delete`/`trigger` owner-gescoped (#1025). Die `sessionId` kommt aus
   dem authentifizierten Turn des Erstellers.
 
-**Follow-up:** Chat-Sessions haben keinen Per-User-Owner — `GET /api/chat/sessions` listet
+**Follow-up (erledigt mit #1762, ADR-0180 — Chats gehören dem anlegenden Konto):** Chat-Sessions hatten keinen Per-User-Owner — `GET /api/chat/sessions` listete
 alle Sessions jedem angemeldeten User, `PUT` nimmt jede Id, und ein Turn mit fremder
 `sessionId` spiegelt schon heute in diesen Chat. #1071 **erweitert** diese Fläche leicht:
 die `conversationRef.sessionId` stammt aus dem Request-Body des Erstellers, also kann
@@ -11527,3 +11605,32 @@ Ersetzt den Platzhalter aus #2007.
   `StepEffects`-Implementierung muss `meta.preview` selbst beachten. Der
   stabile System-Prompt beschreibt die Tools weiter, nur der per-Turn-Hint
   widerspricht ihm.
+
+## Welle 5 · W15-17: Kanal-Seams, Antwortsprache, Fast-Lane-Übergabe (2026-11-26)
+
+- **`CoreApi.readAttachment(url)`** (channel-sdk 0.3.17, ADR-0222): optional,
+  feature-detected. Liest die Bytes eines ausgehenden Anhangs in-process
+  (`src/channels/attachmentByteReader.ts`: Loopback-GET nur unter einem vom
+  Operator freigegebenen Public-Path, ohne Credentials und Redirects, 15 s,
+  25 MiB). Ergebnis `AttachmentReadResult`; `not_kernel_attachment` heißt: die
+  URL nehmen. Telegram lädt damit Dateien hoch statt eine `localhost`-URL zu
+  übergeben (Plugin-Release in omadia-channel-telegram).
+- **`suppressNoReplyStream`** (channel-sdk 0.3.17): siehe §11 „Stiller Turn“.
+- **`stripKnownAiDisclosureLines`** (channel-sdk 0.3.17, #2003): entfernt jede
+  bekannte KI-Kennzeichnungszeile aus wiederholten Antworten, bevor sie an das
+  Modell gehen (`maskPriorTurnsForWire`, `cliChatAgent.maskHistory`).
+- **`turnChannelKind`** (`@omadia/orchestrator`, #1994): Kanalart eines Turns =
+  Kanal-Identität, sonst `TurnOrigin.channelType`. Quelle für Receipts,
+  Kennzeichnungs-Override und Audience.
+- **Fast-Lane-Übergabe** (`@omadia/fast-path` 0.7.0, ADR-0221 ergänzt ADR-0074):
+  ein Miss nach gelaufener Abfrage trägt `ChatTriageOutcome.executed`;
+  `fastLaneHandoffHint` gibt Aufruf und (ohne Privacy Shield) Ausgabe als
+  `extraSystemHint` an den Agenten, als Daten markiert. Router kennt
+  `agent_no_tool`, bei nur einem Tool gilt Konfidenz 0,8. Eine geplante Spalte,
+  die kein Datensatz füllt, ist eine falsche Map (`unmappable`).
+- **Setup-PATCH validiert `enum`** (#1998): wie der Install-Pfad; leerer Wert
+  löscht ein optionales Enum, ein Pflicht-Enum kann nicht geleert werden.
+- **Web-Chat:** keine Nudge-Karte mehr (#1900, ADR-0021); der Session-Mirror
+  speichert Antworten ohne `<!-- orchestrator:… -->`-Notizen (#1956).
+- **Offen (§13):** der Answer-Verifier zählt den Fast-Lane-Hint nicht als
+  Evidenz (ADR-0221, Folge-Punkt).

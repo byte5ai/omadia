@@ -6,10 +6,11 @@
  */
 export const MCP_ACTION_PREFIX = 'mcp:';
 
-export function describeActionId(actionId: string): { label: string; isMcp: boolean } {
+export function describeActionId(actionId: string, serverName?: string): { label: string; isMcp: boolean } {
   if (!actionId.startsWith(MCP_ACTION_PREFIX)) return { label: actionId, isMcp: false };
   const rest = actionId.slice(MCP_ACTION_PREFIX.length);
   const sep = rest.indexOf(':');
   const toolName = sep >= 0 ? rest.slice(sep + 1) : rest;
-  return { label: toolName.length > 0 ? toolName : actionId, isMcp: true };
+  const label = toolName || actionId;
+  return { label: serverName ? `${label} · ${serverName}` : label, isMcp: true };
 }

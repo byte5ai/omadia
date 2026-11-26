@@ -711,9 +711,12 @@ export {
   graphSessionAccess,
   type GraphNodeViewer,
 } from './graphNodeAccess.js';
+export { WEB_ACCOUNT_CHANNEL_TYPE, isWebAccountTurn, webAccountOrigin } from './webAccountOrigin.js';
 export {
   currentProcessBoundary,
   currentProcessReadFilter,
+  creatorOfCurrentTurn,
+  processWriteScope,
   type ProcessBoundary,
 } from './tools/processMemoryTool.js';
 
@@ -759,6 +762,13 @@ export {
   parseAnswerVerbosity,
 } from './answerVerbosity.js';
 export type { AnswerVerbosity } from './answerVerbosity.js';
+export {
+  ANSWER_LANGUAGES,
+  DEFAULT_ANSWER_LANGUAGE,
+  buildAnswerLanguageRule,
+  parseAnswerLanguage,
+  type AnswerLanguage,
+} from './answerLanguage.js';
 
 // Session logger + chat-session store
 export { SessionLogger, graphScopeFor, isChatSessionScope } from './sessionLogger.js';
@@ -778,8 +788,11 @@ export type {
   RunTraceOutcomeCounts,
 } from './runTraceObservability.js';
 export {
+  ChatSessionNotOwnedError,
   ChatSessionStore,
   InvalidSessionIdError,
+  chatSessionOwnedBy,
+  chatSessionOwner,
   ServerMirroredSessionError,
   isServerMirroredSession,
   isValidSessionId,
@@ -887,7 +900,7 @@ export {
   MEMBER_BASELINE_CAPABILITIES,
   MemberBaselineGrantStore,
 } from './memberBaselineGrantStore.js';
-export { CHANNEL_KIND_BY_ORIGIN } from './resolveTurnOwnerIdentity.js';
+export { CHANNEL_KIND_BY_ORIGIN, turnChannelKind } from './resolveTurnOwnerIdentity.js';
 export {
   audienceRoomFor,
   chatParticipantsFromRoster,

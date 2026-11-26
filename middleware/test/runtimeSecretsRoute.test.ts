@@ -38,6 +38,8 @@ interface HarnessOpts {
     key: string;
     type: 'secret' | 'oauth' | 'string' | 'url' | 'enum' | 'boolean' | 'integer';
     min?: number;
+    required?: boolean;
+    enum?: Array<{ value: string; label: string }>;
   }>;
   /** Initial registry config — simulates non-secret values seeded at install time. */
   initialConfig?: Record<string, unknown>;
@@ -621,5 +623,63 @@ describe('runtime secrets route — integer setup fields edited after install (#
     const res = await patch({ offset: '-5' });
     assert.equal(res.status, 200);
     assert.equal(h.registry.get('de.byte5.agent.test')?.config['offset'], -5);
+  });
+});
+
+describe('runtime secrets route — enum setup fields edited after install (#1998)', () => {
+  let h: Harness;
+  afterEach(async () => {
+    if (h) await h.close();
+  });
+  const policy = {
+    key: 'dm_policy',
+    type: 'enum' as const,
+    enum: [
+      { value: 'pairing', label: 'Pairing' },
+      { value: 'open', label: 'Open' },
+    ],
+  };
+  const patch = (set: Record<string, string>): Promise<Response> =>
+    fetch(`${h.baseUrl}/api/v1/admin/runtime/installed/de.byte5.agent.test/secrets`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ set }),
+    });
+
+  it('stores a listed value', async () => {
+    h = await makeHarness({ setupFields: [policy] });
+    const res = await patch({ dm_policy: 'open' });
+    assert.equal(res.status, 200);
+    assert.equal(h.registry.get('de.byte5.agent.test')?.config?.['dm_policy'], 'open');
+  });
+
+  it('refuses a value the manifest does not list and writes nothing', async () => {
+    h = await makeHarness({ setupFields: [policy], initialConfig: { dm_policy: 'pairing' } });
+    const res = await patch({ dm_policy: 'Pairing' });
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { code: string; field: string; reason: string; message: string };
+    assert.equal(body.code, 'runtime.setup_field_invalid');
+    assert.equal(body.field, 'dm_policy');
+    assert.equal(body.reason, 'enum_mismatch');
+    assert.match(body.message, /must be one of: pairing, open/);
+    assert.equal(h.registry.get('de.byte5.agent.test')?.config?.['dm_policy'], 'pairing');
+  });
+
+  it('an empty value clears an optional enum: the key is removed', async () => {
+    h = await makeHarness({ setupFields: [{ ...policy, required: false }], initialConfig: { dm_policy: 'open' } });
+    const res = await patch({ dm_policy: '' });
+    assert.equal(res.status, 200);
+    assert.equal(Object.hasOwn(h.registry.get('de.byte5.agent.test')?.config ?? {}, 'dm_policy'), false);
+  });
+
+  it('a required enum (the manifest default) cannot be cleared', async () => {
+    h = await makeHarness({
+      setupFields: [policy],
+      initialConfig: { dm_policy: 'open' },
+    });
+    const res = await patch({ dm_policy: '' });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as { reason: string }).reason, 'required');
+    assert.equal(h.registry.get('de.byte5.agent.test')?.config?.['dm_policy'], 'open');
   });
 });

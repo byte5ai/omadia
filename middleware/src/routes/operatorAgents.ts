@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { Router, raw } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
@@ -2156,6 +2157,20 @@ export function createOperatorAgentsRouter(
     return true;
   };
 
+  const auditAgent = (
+    req: Request,
+    slug: string,
+    action: AuditEntryInput['action'],
+    before?: unknown,
+    after?: unknown,
+  ): Promise<void> => recordAudit({
+    actor: auditActorFromRequest(req),
+    action,
+    target: 'agent:' + slug,
+    before,
+    after,
+  });
+
   /** #2054 — what an agent's reach is computed from; every source optional. */
   const reachSources = (): ReachSources => ({
     catalog: options.getPluginCatalog?.(),
@@ -2475,8 +2490,12 @@ export function createOperatorAgentsRouter(
         status: 'enabled',
         archetype: STANDARD_ARCHETYPE,
       });
+      await auditAgent(req, agent.slug, 'agent.create', undefined, {
+        id: agent.id, status: agent.status, archetype: archetypeOf(agent),
+      });
       for (const pluginId of pluginIds) {
         await live.store.upsertAgentPlugin(agent.id, { pluginId, config: {}, enabled: true });
+        await auditAgent(req, agent.slug, 'agent.plugin_change', null, { pluginId, enabled: true });
       }
       if (gate.ok && gate.audit) {
         await recordAudit({ ...gate.audit, target: `agent:${agent.id}` });
@@ -2739,6 +2758,9 @@ export function createOperatorAgentsRouter(
         ...(body.status ? { status: body.status } : {}),
         archetype,
       });
+      await auditAgent(req, created.slug, 'agent.create', undefined, {
+        id: created.id, status: created.status, archetype: archetypeOf(created),
+      });
       // Spec 2042 §5.11 — new agents start in `members` (migration 0099). An
       // archetype without memory (a facilitator) has no memory to scope, and
       // the context-memory route refuses every mode but `off` for it: keep
@@ -2787,7 +2809,7 @@ export function createOperatorAgentsRouter(
       const endOfService = disabling
         ? await options.endOfService?.run(existing, 'agent_disabled', actor)
         : undefined;
-      await live.store.updateAgent(existing.id, {
+      const updated = await live.store.updateAgent(existing.id, {
         ...(body.name !== undefined ? { name: body.name } : {}),
         ...(body.description !== undefined
           ? { description: body.description }
@@ -2797,6 +2819,18 @@ export function createOperatorAgentsRouter(
           : {}),
         ...(body.status ? { status: body.status } : {}),
       });
+      if (updated) {
+        const before = { name: existing.name, privacyProfile: existing.privacyProfile };
+        const after = { name: updated.name, privacyProfile: updated.privacyProfile };
+        const descriptionChanged = existing.description !== updated.description;
+        if (!isDeepStrictEqual(before, after) || descriptionChanged) {
+          await auditAgent(req, existing.slug, 'agent.update',
+            { ...before, status: existing.status, descriptionSet: Boolean(existing.description) },
+            { ...after, status: updated.status, descriptionSet: Boolean(updated.description), descriptionChanged });
+        }
+      }
+      // Keep the existing status event for both directions. Only disabling
+      // runs end of service. The audit row's before/after gives the direction.
       if (body.status && body.status !== existing.status) {
         await recordAudit({
           actor,
@@ -2996,6 +3030,9 @@ export function createOperatorAgentsRouter(
       const previous = parseAgentToAgentMode(agent.agentToAgent);
       if (body.mode === 'on') assertArchetypeAllows(agent, 'agent_to_agent');
       await live.store.updateAgent(agent.id, { agentToAgent: body.mode });
+      if (previous !== body.mode) {
+        await auditAgent(req, agent.slug, 'agent.peer_mode_change', { mode: previous }, { mode: body.mode });
+      }
       await live.registry.reload();
       if (previous !== body.mode) {
         // Whether an agent may talk to peers is a reach decision an incident
@@ -3047,6 +3084,9 @@ export function createOperatorAgentsRouter(
       if (body.enabled) assertArchetypeAllows(agent, 'fast_path');
       const previous = agent.fastLane !== false;
       await live.store.updateAgent(agent.id, { fastLane: body.enabled });
+      if (previous !== body.enabled) {
+        await auditAgent(req, agent.slug, 'agent.fast_lane_change', { enabled: previous }, { enabled: body.enabled });
+      }
       await live.registry.reload();
       if (previous !== body.enabled) {
         console.warn(`[security-audit] fast_lane ${String(previous)} -> ${String(body.enabled)} for agent ${agent.slug}`);
@@ -3129,6 +3169,10 @@ export function createOperatorAgentsRouter(
       const vision = await validateModelPolicy(policy, ctx);
       const previous = parseModelPolicy(agent.modelPolicy ?? DEFAULT_MODEL_POLICY);
       const updated = await live.store.updateAgent(agent.id, { modelPolicy: policy });
+      if (!isDeepStrictEqual(previous, policy)) {
+        await auditAgent(req, agent.slug, 'agent.model_policy_change',
+          { policy: previous }, { policy: parseModelPolicy(updated.modelPolicy ?? policy) });
+      }
       // The families the agent may speak with may have changed: recompile the
       // persona for each of them so a fallback never runs on the wrong prompt.
       // Deliberately does not bump the identity revision (nothing authored
@@ -3240,6 +3284,11 @@ export function createOperatorAgentsRouter(
           agentId: agent.id,
           agentToAgent: body.enabled,
         });
+        if (previous?.agentToAgent !== row.agentToAgent) {
+          await auditAgent(req, agent.slug, 'agent.channel_policy_change',
+            { channelType, channelKey, enabled: previous?.agentToAgent ?? null },
+            { channelType, channelKey, enabled: row.agentToAgent });
+        }
         if ((previous?.agentToAgent ?? false) !== body.enabled) {
           console.warn(
             `[security-audit] agent_channel_policy ${channelType}/${channelKey} ${previous?.agentToAgent ?? 'unset'} -> ${body.enabled} for agent ${agent.slug}`,
@@ -3272,6 +3321,9 @@ export function createOperatorAgentsRouter(
           res.status(404).json({ error: 'not_found' });
           return;
         }
+        const previous = options.recordAudit
+          ? await live.store.getAgentChannelPolicy(channelType, channelKey, agent.id)
+          : undefined;
         const removed = await live.store.deleteAgentChannelPolicy(
           channelType,
           channelKey,
@@ -3281,6 +3333,9 @@ export function createOperatorAgentsRouter(
           res.status(404).json({ error: 'not_found' });
           return;
         }
+        await auditAgent(req, agent.slug, 'agent.channel_policy_change',
+          { channelType, channelKey, enabled: previous?.agentToAgent ?? null },
+          { channelType, channelKey, enabled: null });
         console.warn(
           `[security-audit] agent_channel_policy ${channelType}/${channelKey} removed for agent ${agent.slug}`,
         );
@@ -3448,6 +3503,11 @@ export function createOperatorAgentsRouter(
           ? { expectedRevision: body.expected_revision }
           : {}),
       });
+      if (before?.revision !== identity.revision) {
+        await auditAgent(req, agent.slug, 'agent.identity_change',
+          { revision: before?.revision ?? null },
+          { revision: identity.revision });
+      }
       // `instructions` is the opening section of this agent's system prompt,
       // so a saved edit that never reaches the running registry would be a
       // change the operator can see and the agent never speaks. Same reload
@@ -3728,6 +3788,11 @@ export function createOperatorAgentsRouter(
         config,
         enabled: body.enabled,
       });
+      if (row?.enabled !== body.enabled) {
+        await auditAgent(req, existing.slug, 'agent.plugin_change',
+          row ? { pluginId: row.pluginId, enabled: row.enabled } : null,
+          { pluginId: body.id, enabled: body.enabled });
+      }
       if (gate.ok && gate.audit) await recordAudit(gate.audit);
       await live.registry.reload();
       res.json({
@@ -4891,6 +4956,8 @@ export function createOperatorAgentsRouter(
       for (const p of current) {
         if (!desired.has(p.pluginId)) {
           await live.store.removeAgentPlugin(existing.id, p.pluginId);
+          await auditAgent(req, existing.slug, 'agent.plugin_change',
+            { pluginId: p.pluginId, enabled: p.enabled }, null);
           if (invalidHeld.has(p.pluginId)) {
             console.warn(
               `[operator-agents] removed the invalid grant of archetype plugin '${p.pluginId}' from agent '${existing.slug}' with the replace of its grants`,
@@ -4906,11 +4973,19 @@ export function createOperatorAgentsRouter(
       }
       for (const p of plugins) {
         const config = p.config;
-        await live.store.upsertAgentPlugin(existing.id, {
+        const updated = await live.store.upsertAgentPlugin(existing.id, {
           pluginId: p.id,
           ...(config ? { config } : {}),
           ...(p.enabled !== undefined ? { enabled: p.enabled } : {}),
         });
+        const previous = current.find((row) => row.pluginId === p.id);
+        const enabled = updated?.enabled ?? p.enabled ?? true;
+        const configChanged = !isDeepStrictEqual(previous?.config ?? {}, updated?.config ?? config ?? {});
+        if (previous?.enabled !== enabled || configChanged) {
+          await auditAgent(req, existing.slug, 'agent.plugin_change',
+            previous ? { pluginId: p.id, enabled: previous.enabled } : null,
+            { pluginId: p.id, enabled, configChanged });
+        }
       }
       if (gate.ok && gate.audit) await recordAudit(gate.audit);
       await live.registry.reload();
@@ -4959,6 +5034,13 @@ export function createOperatorAgentsRouter(
       for (const b of current) {
         if (!desired.has(`${b.channelType}|${b.channelKey}`)) {
           await live.store.removeChannelBinding(b.channelType, b.channelKey);
+          await recordAudit({
+            actor: auditActorFromRequest(req),
+            action: 'channel.binding_change',
+            target: b.channelType + ':' + b.channelKey,
+            before: { agentId: existing.id, slug: existing.slug },
+            after: null,
+          });
         }
       }
       for (const b of body.bindings) {
@@ -4968,6 +5050,13 @@ export function createOperatorAgentsRouter(
           await live.store.createChannelBinding(existing.id, {
             channelType: b.channel_type,
             channelKey: b.channel_key,
+          });
+          await recordAudit({
+            actor: auditActorFromRequest(req),
+            action: 'channel.binding_change',
+            target: b.channel_type + ':' + b.channel_key,
+            before: null,
+            after: { agentId: existing.id, slug: existing.slug },
           });
         } catch (err) {
           if (err instanceof ConfigValidationError) {
@@ -5026,7 +5115,7 @@ export function createOperatorAgentsRouter(
           return;
         }
         const affected = await live.registry.forceInvalidate(slug, mode, sessionStore);
-        console.log(`[operator-agents] ${mode} ${slug}: ${String(affected)} web chat session(s)`);
+        await auditAgent(req, slug, `agent.sessions_${mode}`, undefined, { affected });
         res.json({ ok: true, affected });
       } catch (err) {
         badRequest(res, err);

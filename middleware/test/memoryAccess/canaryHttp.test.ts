@@ -10,10 +10,8 @@
  * (`adminUsers.ts`), so they are operator-only by design. Purge preview
  * returns counts only; promote copies between an agent's tiers.
  *
- * Known leak, kept as `todo` until its fix: #1762 (chat sessions have no
- * owner; every account lists and reads every web chat tab).
- *
- * Fixed and asserted: #1851 (a topic's name and description are content of
+ * Fixed and asserted: #1762 (a web chat tab belongs to the account that
+ * created it; ADR 0180), #1851 (a topic's name and description are content of
  * every member, so a topic reaches only who reads all of them; ADR 0045).
  */
 import { strict as assert } from 'node:assert';
@@ -30,13 +28,7 @@ interface KnownLeak {
   readonly matches: (s: HttpSighting) => boolean;
 }
 
-const KNOWN_LEAKS: readonly KnownLeak[] = [
-  {
-    issue: '#1762',
-    title: "chat sessions show only the caller's own tabs",
-    matches: (s) => s.route.startsWith('GET /api/chat/'),
-  },
-];
+const KNOWN_LEAKS: readonly KnownLeak[] = [];
 
 const TOPIC_ROUTE = (s: HttpSighting): boolean => s.route.startsWith('GET /api/v1/admin/topics');
 

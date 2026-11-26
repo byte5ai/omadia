@@ -177,6 +177,9 @@ export type ChatStreamEvent =
        * `parseTurnIncomplete` then recovers the same facts from the answer.
        */
       degraded?: true;
+      /** #1896 — the agent chose not to answer (`NO_REPLY`); `answer` is
+       *  empty and no assistant bubble is shown. */
+      silent?: true;
       /** #1094 — distinct tool names that committed, in commit order. */
       committedTools?: readonly string[];
       /** #1094 — the turn's support token, same value the `error` variant
@@ -438,6 +441,7 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
         ...m,
         content: incomplete ? incomplete.cleaned : event.answer,
         ...(degradedTurn ? { degradedTurn } : {}),
+        ...(event.silent === true ? { silent: true as const } : {}),
         telemetry: {
           tool_calls: event.toolCalls,
           iterations: event.iterations,

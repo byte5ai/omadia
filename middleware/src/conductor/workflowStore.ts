@@ -292,9 +292,7 @@ export class ConductorWorkflowStore {
    *  run history + versions retained as audit trace. Idempotent — a removed
    *  row is never re-stamped. */
   async removeLogical(workflowId: string): Promise<void> {
-    // One statement so the workflow and its cron schedules disable atomically —
-    // the schedules must not stay enabled (the worker's workflowEnabled check
-    // would then be the only thing keeping a deleted workflow's cron quiet).
+    // The logical removal and schedule deletion are one statement.
     await this.pool.query(
       `WITH removed AS (
          UPDATE conductor_workflows
@@ -302,9 +300,8 @@ export class ConductorWorkflowStore {
           WHERE id = $1 AND origin = 'manual' AND reaped_at IS NULL
         RETURNING id
        )
-       UPDATE conductor_schedules s
-          SET status = 'disabled'
-         FROM removed
+       DELETE FROM conductor_schedules s
+        USING removed
         WHERE s.workflow_id = removed.id`,
       [workflowId],
     );

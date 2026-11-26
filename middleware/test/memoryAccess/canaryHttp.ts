@@ -98,7 +98,8 @@ function appFor(seeded: Seeded, tenant: TenantKey, omadiaUserId: string): Expres
   app.use(express.json());
   // What `requireAuth` leaves behind: a verified session naming the user.
   app.use((req: Request, _res: Response, next: NextFunction) => {
-    (req as unknown as { session: unknown }).session = { omadia_user_id: omadiaUserId };
+    // The account id (`sub`) is the chat owner key (#1762); the graph routes read `omadia_user_id`.
+    (req as unknown as { session: unknown }).session = { sub: omadiaUserId, omadia_user_id: omadiaUserId };
     next();
   });
   app.use('/api/v1/memory', createMemoryRouter({ graph }));
