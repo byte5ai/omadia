@@ -69,6 +69,7 @@ import type {
   RecalledContext,
 } from '@omadia/orchestrator-extras';
 import {
+  RECALL_HEADINGS,
   buildKgInsertPayload,
   buildKgWalkPayload,
   promoteTurnIfSignificant,
@@ -1988,7 +1989,7 @@ function buildSystemBlocks(
     //     refer *directly* to these turns. Don't re-query Odoo for the base
     //     numbers, don't speculate about different time ranges — build on
     //     what's already here.
-    //   - "Früher besprochene Entitäten" + "Inhaltlich ähnliche Turns" come
+    //   - "Inhaltlich verwandte Turns" (incl. its compact variant) comes
     //     from OTHER chats of the same user. Treat as working hypothesis;
     //     if the current question hinges on a concrete number from there,
     //     re-verify via the domain agent.
@@ -1999,8 +2000,8 @@ function buildSystemBlocks(
 Dieser Block enthält die letzten Turns dieses Chats und relevante Rückbezüge aus früheren Chats des Users. Er hat **Vorrang** vor der allgemeinen Memory-Lese-Konvention im System-Prompt oben: wenn die aktuelle Nutzerfrage eine Follow-up auf einen der hier gelisteten Turns ist, brauchst du KEINEN Memory-Read, keine neue Fach-Werkzeug-Abfrage für Basis-Daten, und keinen anderen Zeitraum zu erfinden.
 
 **Vertrauensregeln:**
-- \`## Letzte Turns in diesem Chat\` — das sind deine eigenen letzten Antworten in diesem Chat. Vertraue diesen Daten vollständig. Follow-ups wie "das gleiche nochmal als Line", "ohne Gutschriften", "und für Q4?", "zeig das als Chart" beziehen sich DIREKT auf diese Turns. Hole die Basis-Daten NICHT erneut über ein Fach-Werkzeug. Bereinigungen/Varianten gehen entweder per \`render_diagram\` (Chart-Variante mit angepassten Werten) oder per direkter Neu-Formulierung.
-- \`## Früher besprochene Entitäten\` und \`## Inhaltlich ähnliche Turns\` — aus anderen Chats des gleichen Users. Arbeitshypothese; bei konkreten Zahlen über ein Fach-Werkzeug verifizieren.
+- \`${RECALL_HEADINGS.tail}\` — das sind deine eigenen letzten Antworten in diesem Chat. Vertraue diesen Daten vollständig. Follow-ups wie "das gleiche nochmal als Line", "ohne Gutschriften", "und für Q4?", "zeig das als Chart" beziehen sich DIREKT auf diese Turns. Hole die Basis-Daten NICHT erneut über ein Fach-Werkzeug. Bereinigungen/Varianten gehen entweder per \`render_diagram\` (Chart-Variante mit angepassten Werten) oder per direkter Neu-Formulierung.
+- \`${RECALL_HEADINGS.relatedTurns}\` (auch mit dem Zusatz „(compact)“) — aus anderen Chats des gleichen Users. Arbeitshypothese; bei konkreten Zahlen über ein Fach-Werkzeug verifizieren.
 
 ${priorContext}`,
       cache_control: ORCHESTRATOR_CACHE_CONTROL,
@@ -2616,10 +2617,10 @@ Memory-Namensräume (Konvention):
 ${contextMemoryBlock}**Regel für /memories/_rules/ lesen:**
 - Bei einer **neuen fachlichen Frage** (Erstfrage zu einer Domäne in dieser Session, oder Wechsel der Domäne) zuerst die relevanten Regel-Dateien unter /memories/_rules/ lesen und die Konventionen strikt befolgen.
 - Bei einem **Follow-up** im selben Chat (Variante, Bereinigung, Klarifikation, Nachfrage zum letzten Turn wie "und das Ganze nochmal ohne X", "und für Q4?", "zeig das als Line-Chart") **NICHT erneut** die Regeln lesen — der Verbatim-Tail im Gesprächskontext hat bereits den relevanten Stand. Direkt antworten (ggf. mit \`render_diagram\` für Chart-Varianten). Regel erneut lesen nur, wenn die Follow-up eine fachlich neue Dimension einführt (z. B. "jetzt das Gleiche auf HR-Ebene").
-- Heuristik: enthält der Kontext-Block einen \`## Letzte Turns in diesem Chat\`-Abschnitt und bezieht sich die aktuelle Frage auf einen dieser Turns → Memory-Read überspringen.
+- Heuristik: enthält der Kontext-Block einen \`${RECALL_HEADINGS.tail}\`-Abschnitt und bezieht sich die aktuelle Frage auf einen dieser Turns → Memory-Read überspringen.
 
 **Dauerhaftes Schema-Wissen vertrauen (kein Re-Discovery):**
-- Enthält der Kontext-Block den Abschnitt \`## Aus früheren Sessions — verwandte Erkenntnisse\` mit **kuratiertem Schema-/Referenzwissen** (z. B. Dynamics-Entitäten und ihre Felder: \`ud_tutorial\`/\`ud_tutorials\`, \`ud_name\`, \`ud_coursenumber\`, \`ud_startdatetime\` …), dann ist das **maßgeblich und sessionübergreifend stabil**. Nutze es direkt.
+- Enthält der Kontext-Block den Abschnitt \`${RECALL_HEADINGS.insights}\` mit **kuratiertem Schema-/Referenzwissen** (z. B. Dynamics-Entitäten und ihre Felder: \`ud_tutorial\`/\`ud_tutorials\`, \`ud_name\`, \`ud_coursenumber\`, \`ud_startdatetime\` …), dann ist das **maßgeblich und sessionübergreifend stabil**. Nutze es direkt.
 - **Rufe KEINE Discovery-Tools erneut** (z. B. \`dynamics_describe\`) für eine Entität, deren Struktur in diesem dauerhaften Wissen bereits beschrieben ist. Gehe direkt zur **Daten-Abfrage** (\`dynamics_query\` o. ä.) über. Discovery nur für Entitäten/Felder, die im dauerhaften Wissen NICHT vorkommen.
 - Widerspricht eine Fach-Werkzeug-Antwort dem dauerhaften Wissen, weise den Nutzer auf die Inkonsistenz hin — überschreibe das kuratierte Wissen nicht still.
 
@@ -2645,7 +2646,7 @@ Regeln:
 
 8. **Keine Selbst-Verifizierung im Antworttext.** Schreibe NIEMALS Wörter wie "verifiziert", "geprüft", "bestätigt", "live", "live-verifiziert", "nachgeschlagen", "aus Odoo geholt" in deine Antwort, um Daten als frisch zu kennzeichnen. Das entscheidet ausschließlich das Verifier-Badge nach Turn-Ende — und es prüft anhand deines Tool-Traces, ob du wirklich ein Fach-Werkzeug gefragt hast. Wenn du diese Wörter trotzdem nutzt und in Wirklichkeit keinen Fach-Werkzeug-Aufruf gemacht hast, widerspricht der Verifier hart.
 
-9. **Zahlen aus dem Kontext-Block sind NICHT live.** Konkret: Zahlen unter \`## Früher besprochene Entitäten\`, \`## Inhaltlich ähnliche Turns\`, \`## Letzte Turns in diesem Chat\` stammen aus der Vergangenheit. Präsentiere sie NICHT als aktuellen Stand. Wenn der User nach aktuellen Zahlen fragt (Umsatz, offene Rechnungen, Urlaubstage, Teamleistung), musst du im selben Turn mindestens EINEN passenden Fach-Werkzeug-Aufruf machen — sonst widerspricht der Verifier automatisch und erzwingt einen Retry.
+9. **Zahlen aus dem Kontext-Block sind NICHT live.** Konkret: Zahlen unter \`${RECALL_HEADINGS.relatedTurns}\` und \`${RECALL_HEADINGS.tail}\` stammen aus der Vergangenheit. Präsentiere sie NICHT als aktuellen Stand. Wenn der User nach aktuellen Zahlen fragt (Umsatz, offene Rechnungen, Urlaubstage, Teamleistung), musst du im selben Turn mindestens EINEN passenden Fach-Werkzeug-Aufruf machen — sonst widerspricht der Verifier automatisch und erzwingt einen Retry.
 
 10. **Gültiger Rückbezug:** Wenn der User explizit auf einen früheren Turn verweist ("wie eben berichtet", "die Zahl von gestern"), darfst du die Kontext-Zahl zitieren — aber formuliere dann klar als Rückbezug ("laut Stand vom <Datum>, keine Neu-Abfrage in diesem Turn"), niemals als "verifiziert/geprüft". Für Aggregate über mehrere Dimensionen (Team × Kunde × Zeitraum) immer einen Plausibilitäts-Check gegen bekannte Muster aus \`/memories/\`: wenn die Zahl >50 % vom Erwartungsband abweicht, EXPLIZIT als Auffälligkeit markieren und nachfragen statt bestätigen.
 

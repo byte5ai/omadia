@@ -234,6 +234,12 @@ Contract: ADR-0230 (Proposed).
   still masked through the turn map before the model sees it.
   `docs/security-architecture.md` (embeddings) updated: the recall query is embedded as
   typed, like the stored turns it is matched against.
+- **Trust rules name the headings the chat path renders (#1856).** The orchestrator's
+  trust rules and rule 9 named `## Früher besprochene Entitäten` / `## Inhaltlich ähnliche
+  Turns`, while the chat path renders cross-chat hits under `## Inhaltlich verwandte Turns`.
+  The retriever now exports `RECALL_HEADINGS` (`@omadia/orchestrator-extras`); the
+  renderers and the prompt rules both use it, and the test-only `build` path renders the
+  same headings.
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 

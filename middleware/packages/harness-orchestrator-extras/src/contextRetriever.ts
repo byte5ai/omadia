@@ -473,6 +473,25 @@ const DEFAULTS: Required<
   recallRelevanceJudgeDisabled: false,
 };
 
+/**
+ * #1856 — the section headings of the recalled-context block. The
+ * orchestrator's trust rules name these, so they import them from here
+ * instead of restating the strings: a rule must point at a heading the chat
+ * path actually renders. The compact variant of the related-turns heading
+ * appends ` (compact)`; rules match it by prefix.
+ */
+export const RECALL_HEADINGS = {
+  /** The verbatim tail of the current chat. */
+  tail: '## Letzte Turns in diesem Chat',
+  /** Entity- and full-text hits from the user's OTHER chats. */
+  relatedTurns: '## Inhaltlich verwandte Turns',
+  /** Entity hits of the test-only `build` path, a sub-section of the above. */
+  relatedEntityTurns: '## Inhaltlich verwandte Turns — besprochene Entitäten',
+  plans: '## Aus früheren Sessions — offene Pläne',
+  processes: '## Aus früheren Sessions — gespeicherte Prozesse',
+  insights: '## Aus früheren Sessions — verwandte Erkenntnisse',
+} as const;
+
 // Tiny, language-agnostic stopword list. We keep it short because the real
 // signal comes from proper nouns and IDs which survive any sensible filter.
 // Mixing German + English entries since both show up in user queries.
@@ -1647,7 +1666,7 @@ function renderContext(input: RenderInput): string {
   };
 
   if (input.verbatimTurns.length > 0) {
-    push('## Letzte Turns in diesem Chat');
+    push(RECALL_HEADINGS.tail);
     for (const t of input.verbatimTurns) {
       const chunk = `- [${t.time}]\n  Nutzer: ${truncate(t.userMessage, 600)}\n  Assistent: ${truncate(t.assistantAnswer, 1200)}`;
       if (!push(chunk)) break;
@@ -1655,7 +1674,7 @@ function renderContext(input: RenderInput): string {
   }
 
   if (input.entityHits.length > 0 && budget > 500) {
-    push('\n## Früher besprochene Entitäten (aus anderen Chats dieses Users)');
+    push(`\n${RECALL_HEADINGS.relatedEntityTurns}`);
     for (const hit of input.entityHits) {
       const label =
         String(hit.entity.props['displayName'] ?? '') ||
@@ -1672,7 +1691,7 @@ function renderContext(input: RenderInput): string {
   }
 
   if (input.ftsHits.length > 0 && budget > 500) {
-    push('\n## Inhaltlich ähnliche frühere Turns');
+    push(`\n${RECALL_HEADINGS.relatedTurns}`);
     for (const h of input.ftsHits) {
       const chunk = `- [${h.time}] (rank ${h.rank.toFixed(2)})\n  Frage: ${truncate(h.userMessage, 400)}\n  Antwort: ${truncate(h.assistantAnswer, 800)}`;
       if (!push(chunk)) break;
@@ -1765,7 +1784,7 @@ function renderRecallBlocks(
   };
 
   if (recalled.plans.length > 0) {
-    push('## Aus früheren Sessions — offene Pläne');
+    push(RECALL_HEADINGS.plans);
     for (const p of recalled.plans) {
       const label = p.strategy ? truncate(p.strategy, 120) : 'Plan';
       const when = p.createdAt ? ` · ${p.createdAt}` : '';
@@ -1807,7 +1826,7 @@ function renderRecallBlocks(
   }
 
   if (recalled.processes.length > 0 && budget > 200) {
-    push('\n## Aus früheren Sessions — gespeicherte Prozesse');
+    push(`\n${RECALL_HEADINGS.processes}`);
     for (const pr of recalled.processes) {
       const chunk = `- ${truncate(pr.title, 160)} (${String(pr.stepCount)} Schritte, score ${pr.score.toFixed(2)})`;
       if (!push(chunk)) break;
@@ -1815,7 +1834,7 @@ function renderRecallBlocks(
   }
 
   if (recalled.insights.length > 0 && budget > 200) {
-    push('\n## Aus früheren Sessions — verwandte Erkenntnisse');
+    push(`\n${RECALL_HEADINGS.insights}`);
     for (const ins of recalled.insights) {
       // Durable (curated schema/reference) insights render in full so the
       // agent can rely on them instead of re-running discovery tools; fuzzy
@@ -1923,7 +1942,7 @@ function renderAssembledParts(
   const recall = ordered.filter((o) => o.candidate.origin !== 'tail');
 
   if (tail.length > 0) {
-    parts.push('## Letzte Turns in diesem Chat');
+    parts.push(RECALL_HEADINGS.tail);
     for (const o of tail) {
       parts.push(renderHitChunk(o.candidate, compactMode));
     }
@@ -1931,8 +1950,8 @@ function renderAssembledParts(
   if (recall.length > 0) {
     parts.push(
       compactMode
-        ? '\n## Inhaltlich verwandte Turns (compact)'
-        : '\n## Inhaltlich verwandte Turns',
+        ? `\n${RECALL_HEADINGS.relatedTurns} (compact)`
+        : `\n${RECALL_HEADINGS.relatedTurns}`,
     );
     for (const o of recall) {
       parts.push(renderHitChunk(o.candidate, compactMode));
