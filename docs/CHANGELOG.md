@@ -36,6 +36,32 @@ changelog.
 
 ## [Unreleased]
 
+### Security — memory owners are real users, chosen only by the saver (#1821, #1852, ADR-0181) (2026-11-26)
+
+- `POST /api/v1/memory` makes the saver the only owner and involved user. `aclOwners` or
+  `involvedOmadiaUserIds` naming anyone else answer `400 memory.foreign_owner`;
+  `derivedFromTurnIds` keeps only turns the saver sent (others are dropped and counted in
+  `droppedSourceTurns`).
+- `POST /api/v1/memory/:id/owners` refuses an id with no user behind it
+  (`400 memory.unknown_user`) and writes the `INVOLVED` edge, so the new owner finds the entry in
+  `GET /api/v1/memory` and `/memories`; `DELETE …/owners/:userId` drops the edge again.
+  `KnowledgeGraph.addOwner` throws `user_not_found` on both backends (plugin-api doc updated).
+
+### Security — web chats belong to the account that created them (#1762, ADR-0180) (2026-11-26)
+
+- `ChatSession.ownerUserId` (the session's `sub`) is stamped by the server on the first
+  `PUT /api/chat/sessions/:id`; a body cannot set or move it and `GET` does not return it.
+- `GET /api/chat/sessions` lists only the caller's chats. `GET`, `PUT`, `DELETE`,
+  `POST …/reset` and `POST …/re-snapshot` on another account's chat answer `404 not_found`;
+  a request without an account saves nothing (`401 no_account`).
+- `POST /api/chat`, `/api/chat/stream` and `/api/chat/steer` with another account's
+  `sessionId` answer 404 before an agent resolves, so its tail, pin and routines stay with
+  the owner; a web routine therefore only delivers into its creator's chat.
+- **Upgrade note:** chats written before this change have no owner. On an instance with exactly
+  one account they belong to it; with several accounts they are hidden from everyone (kept
+  under `/memories/chat-sessions/`, not deleted). The canary HTTP sweep's `#1762` todo is now
+  an assertion.
+
 ### Security — process write tools bounded to the turn's agent (#2223, #2224) (2026-11-26)
 
 - `edit_process` loads the record first and changes only a process the turn may read

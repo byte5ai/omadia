@@ -2869,6 +2869,13 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         memorableKnowledgeNodeId,
       );
       this.assertActorIsOwner(owners, actor.actorOmadiaUserId);
+      // #1821 — an owner is a real user, and lands in their `/memories`
+      // list, which needs the INVOLVED edge as well as `acl_owners`.
+      const userUuid = await this.findUuidByExternalId(client, userNodeId(omadiaUserIdToAdd));
+      if (!userUuid) {
+        throw Object.assign(new Error('user_not_found'), { code: 'user_not_found' });
+      }
+      await this.upsertEdge(client, { type: 'INVOLVED', fromUuid: uuid, toUuid: userUuid });
       const next = owners.includes(omadiaUserIdToAdd)
         ? owners
         : [...owners, omadiaUserIdToAdd];
@@ -2918,6 +2925,14 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           code: 'cannot_remove_last_owner',
         });
       }
+      // #1821 — symmetric to addOwner: the entry leaves the removed user's list.
+      await client.query(
+        `DELETE FROM graph_edges
+          WHERE tenant_id = $1 AND type = 'INVOLVED' AND from_node = $2
+            AND to_node = (SELECT id FROM graph_nodes
+                            WHERE tenant_id = $1 AND external_id = $3 AND type = 'User')`,
+        [this.tenantId, uuid, userNodeId(omadiaUserIdToRemove)],
+      );
       await client.query(
         `UPDATE graph_nodes
            SET properties = jsonb_set(properties, '{acl_owners}', $2::jsonb, true)

@@ -1318,6 +1318,12 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     if (!owners.includes(actor.actorOmadiaUserId)) {
       throw Object.assign(new Error('not_an_owner'), { code: 'not_an_owner' });
     }
+    // #1821 — like Neon: only a real user, and the INVOLVED edge with it.
+    const userExtId = userNodeId(omadiaUserIdToAdd);
+    if (!this.nodes.has(userExtId)) {
+      throw Object.assign(new Error('user_not_found'), { code: 'user_not_found' });
+    }
+    this.addEdge({ type: 'INVOLVED', from: node.id, to: userExtId });
     const next = owners.includes(omadiaUserIdToAdd)
       ? owners
       : [...owners, omadiaUserIdToAdd];
@@ -1357,6 +1363,12 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       throw Object.assign(new Error('cannot_remove_last_owner'), {
         code: 'cannot_remove_last_owner',
       });
+    }
+    const removedUser = userNodeId(omadiaUserIdToRemove);
+    for (const [key, edge] of this.edges) {
+      if (edge.type === 'INVOLVED' && edge.from === node.id && edge.to === removedUser) {
+        this.edges.delete(key);
+      }
     }
     this.upsertNode({
       id: node.id,

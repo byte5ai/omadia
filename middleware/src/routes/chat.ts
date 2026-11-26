@@ -20,6 +20,7 @@ import type {
 } from '@omadia/orchestrator';
 
 import type { AgentResolver } from '../agents/resolveAgentForTool.js';
+import { mayUseChatSession, type LegacyChatOwner } from './chatSessionAccess.js';
 import { sessionIdentity } from '../auth/sessionIdentity.js';
 import { recordForeignToolCall } from '../platform/foreignToolMetrics.js';
 import {
@@ -309,6 +310,8 @@ export interface CreateChatRouterOptions {
    *  plugin publishes it post-boot (LLM-access-page key entry) without a
    *  restart. Falls back to `chatSessionStore` when absent. */
   getChatSessionStore?: () => ChatSessionStore | undefined;
+  /** #1762 — owner of chats written before owners existed (`chatSessionAccess.ts`). */
+  legacyChatOwner?: LegacyChatOwner;
   /** Phase A — builds a SessionConfigSnapshot for a given Agent slug.
    *  Same shape as `OrchestratorRegistry.snapshotForAgent`. */
   snapshotForAgent?: (slug: string) =>
@@ -414,6 +417,12 @@ async function resolveAgentForRequest(
   options: CreateChatRouterOptions,
   message: string,
 ): Promise<ResolvedTurn | undefined> {
+  // #1762 — a turn in another account's chat would read its tail, pin its
+  // agent and append to it. It answers like a missing chat.
+  if (sessionId && !(await mayUseOwnChat(req, sessionId, options))) {
+    res.status(404).json({ error: 'not_found', message: `chat session ${sessionId} not found` });
+    return undefined;
+  }
   const commandNotice = await handleWebAgentCommand(req, message, sessionId, options);
   if (commandNotice) return { kind: 'notice', notice: commandNotice };
 
@@ -451,6 +460,11 @@ async function resolveAgentForRequest(
   });
   if (routed.kind === 'notice') return routed;
   return { kind: 'agent', chatAgent: routed.chatAgent, effectiveSlug: routed.slug, speaker: routed.speaker };
+}
+
+function mayUseOwnChat(req: Request, sessionId: string, options: CreateChatRouterOptions): Promise<boolean> {
+  const store = options.getChatSessionStore?.() ?? options.chatSessionStore;
+  return mayUseChatSession(req, store, sessionId, options.legacyChatOwner);
 }
 
 export function createChatRouter(
@@ -854,13 +868,18 @@ export function createChatRouter(
    * turn is in flight for the session (the caller should then send the message
    * as a normal new turn via `/chat/stream`).
    */
-  router.post('/chat/steer', (req: Request, res: Response) => {
+  router.post('/chat/steer', async (req: Request, res: Response) => {
     const parsed = SteerRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({
         error: 'invalid_request',
         issues: parsed.error.issues,
       });
+      return;
+    }
+    // #1762 — no steering of a turn in another account's chat.
+    if (!parsed.data.scope && parsed.data.sessionId && !(await mayUseOwnChat(req, parsed.data.sessionId, options))) {
+      res.status(404).json({ error: 'not_found', message: `chat session ${parsed.data.sessionId} not found` });
       return;
     }
     const sessionScope = resolveScope(parsed.data);

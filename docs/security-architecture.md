@@ -534,6 +534,10 @@ working across it:
   `validateConversationRef`; have `validateConversationRef` check that the
   chat exists. (A routine whose chat was deleted is paused on its next fire,
   before the agent turn runs — `ProactiveTargetGoneError`.)
+  **Closed by #1762 (ADR-0180):** a chat belongs to the account that created
+  it, and a turn with another account's `sessionId` answers 404 before any
+  agent runs, so a routine can only be created in, and deliver into, the
+  creator's own chat.
 - **Only advertised tools are dispatchable (#1015).** `tools/call` used to
   forward any name into `dispatch()`. The dispatchable set is wider than the
   advertised one — handler-only registrations stay dispatchable but
@@ -1113,13 +1117,22 @@ reading may see. A private or `shared:<x>` memory never reaches a turn read
 by someone who does not own it, and never reaches a context-bound
 `enforce-strict` turn.
 
+Web chat tabs (#1762, ADR-0180): `/api/chat/sessions` and chat turns use
+only the caller's own tabs (`ChatSession.ownerUserId`, the session's `sub`);
+another account's tab answers 404. Tabs written before owners existed belong
+to the instance's only account, else to nobody (hidden, kept on disk).
+
+Memory owners (#1821, #1852, ADR-0181): `POST /api/v1/memory` makes the saver
+the only owner and involved user (foreign ids → `400 memory.foreign_owner`)
+and keeps only source turns the saver sent. Sharing goes only through
+`POST /api/v1/memory/:id/owners`, which takes real users only and writes the
+`INVOLVED` edge with the owner.
+
 Known residuals:
 - A knowledge-graph provider that predates plugin-api 1.26.0 ignores
   `audienceOwners` and returns everything. The in-tree providers honour it;
   both return nothing for an empty audience (in-memory since #2224).
 - Only turns that carry a `TurnOrigin` are context-bound.
-- #1762: web chat tabs (`/api/chat/sessions`) have no owner; every account
-  lists and reads every tab.
 
 All of these are pinned as known failures (`todo`, naming the issue) in the
 canary sweep under `middleware/test/memoryAccess/` (`canarySweep*.test.ts`,

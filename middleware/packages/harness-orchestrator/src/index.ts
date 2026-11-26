@@ -767,8 +767,11 @@ export type {
   RunTraceOutcomeCounts,
 } from './runTraceObservability.js';
 export {
+  ChatSessionNotOwnedError,
   ChatSessionStore,
   InvalidSessionIdError,
+  chatSessionOwnedBy,
+  chatSessionOwner,
   ServerMirroredSessionError,
   isServerMirroredSession,
   isValidSessionId,
