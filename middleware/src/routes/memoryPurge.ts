@@ -142,8 +142,9 @@ interface PurgePlan {
  * The KG filters for an axis. `null` for team/channel: no KG column models
  * that scoping yet, and a fabricated filter would delete the wrong rows.
  *
- * For `user` the selector is matched raw: as an MK `aclOwner` and as the
- * conversation nodes' `user_id`, both the omadia user id. The scratch half
+ * For `user` the selector is the omadia user id, as an MK `aclOwner` and as
+ * the conversation nodes' `user_id`; the graph widens both to the person's
+ * channel ids (AAD object id, `<kind>:<id>`, #2279). The scratch half
  * reads the same selector as a context key unless it is a user id, which is
  * why {@link userAxisWarning} reports a half that matched nothing.
  */

@@ -1706,6 +1706,9 @@ export interface MemorableKnowledgePurgeFilter {
    * #1842 (1.100.0): erases that OWNER, not every entry they share. An entry
    * they own alone is deleted; an entry with other owners stays and only
    * loses them as owner (one `memory_acl_audit` `shrink` row each).
+   * #2279: the owner is every id of the person, as for
+   * {@link ConversationHistoryPurgeFilter.userId}: the omadia user id plus
+   * each channel identity's `<kind>:<id>` and AAD object id.
    */
   aclOwner?: string;
   /** Actor of the `shrink` audit rows an `aclOwner` purge writes. Default:

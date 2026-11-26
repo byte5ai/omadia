@@ -36,6 +36,19 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — user purge reaches memories owned by the person's Teams id (#2279) (2026-11-26)
+
+- Teams auto-promotion (`off` / `enforce` mode) owns a memory by the turn's raw channel id, the
+  AAD object id, not the omadia user id. A user purge (ADR-0186) matched `aclOwner` against the
+  omadia user id alone, so those memories and their excerpts survived an erasure, and a memory
+  owned in both forms was only "de-owned" down to the AAD id (135 memories of one person in the
+  memory-ACL step 5 world). The memory purge (Neon and in-memory) now matches every id of the
+  person: the omadia user id plus each channel identity's `<kind>:<id>` and AAD object id, the
+  same set the conversation purge already used (`personIdsSql` / `personIds`, now shared by
+  both). Shared entries lose all of those ids, one `shrink` row each.
+- Regression cases in `memoryPurgeUserErasure.test.ts` (route, in-memory) and
+  `memoryPurgeUserErasure.pg.test.ts` (Neon). Docs: ADR-0186, `security-architecture.md` §10q.
+
 ### Fixed — query_dataset: group paging, encrypted-column refusal, honest import texts (#1844, #1849) (2026-11-26)
 
 - With `group_by`, `limit`/`offset` page through the groups (ordered by value, then key)

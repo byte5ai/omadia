@@ -7284,10 +7284,13 @@ leave a record of who did it.
   known channel identity (a Telegram user without an account); the response
   names the resolved id (`resolvedUser`, warning `user_selector_resolved`), and
   a uuid nobody has gets `user_unknown` instead of a silent "nothing to
-  delete". Turns are matched by the identity's `<kind>:<id>` too. A remembered
-  fact the person owns alone is deleted with its excerpts; one shared with
-  other owners only loses the person (a `memory_acl_audit` `shrink` row with
-  the operator as actor). With a resolved person the purge also deletes their
+  delete". Turns and remembered facts are matched by every id of the person:
+  the omadia user id, each channel identity's `<kind>:<id>` and its AAD object
+  id (a Teams turn stores it, and Teams auto-promotion owns a memory by it,
+  #2279). A remembered fact the person owns alone, under any of those ids, is
+  deleted with its excerpts; one shared with other owners only loses all of
+  the person's ids (a `memory_acl_audit` `shrink` row with the operator as
+  actor). With a resolved person the purge also deletes their
   datasets, the processes they created (`processes.created_by_omadia_user_id`,
   migration 0038; processes stored before it have no creator and are not
   selected) and their `User` / `ChannelIdentity` nodes (name, e-mail) — last,
