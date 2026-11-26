@@ -13,13 +13,14 @@ import { gcLbl } from './GuidedControls';
  * arrays and validation gates; these sections render them and report patches.
  */
 
-export type RefKind = 'roles' | 'agents' | 'actions' | 'events' | 'channels';
+export type RefKind = 'roles' | 'people' | 'agents' | 'actions' | 'events' | 'channels';
 
 /** Render order — matches the instantiate form's grouping order. */
-export const REF_KINDS: readonly RefKind[] = ['roles', 'agents', 'actions', 'events', 'channels'];
+export const REF_KINDS: readonly RefKind[] = ['roles', 'people', 'agents', 'actions', 'events', 'channels'];
 
 const KIND_BADGE_KEY: Record<RefKind, string> = {
   roles: 'templateSlotGroupRoles',
+  people: 'templateSlotGroupPeople',
   agents: 'templateSlotGroupAgents',
   actions: 'templateSlotGroupActions',
   events: 'templateSlotGroupEvents',
