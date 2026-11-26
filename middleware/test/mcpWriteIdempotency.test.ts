@@ -19,6 +19,7 @@ import { LoopbackMcpServer } from '../packages/harness-orchestrator/src/loopback
 import {
   McpManager,
   mcpNativeHandler,
+  type McpCallLogEntry,
   type McpServerConfig,
 } from '../packages/harness-orchestrator/src/mcp/mcpClient.js';
 import { NativeToolRegistry } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
@@ -95,13 +96,12 @@ interface LosingProxy {
  * server already handled it. This is the dangerous shape the retry cannot
  * distinguish: the write happened, the caller only saw a dropped connection.
  *
- * `targets` holds two upstreams because a `LoopbackMcpServer` accepts exactly one
- * Streamable-HTTP session — the retry legitimately reconnects, so it must land on
- * a second instance, modelling the hosted proxy failing over to a healthy node.
+ * The answer is a JSON-RPC error, so the connection itself stays healthy and a
+ * re-send travels over the same session to the same upstream (ADR-0205: only a
+ * connection that is really gone is dropped).
  */
-async function startLosingProxy(targets: readonly string[]): Promise<LosingProxy> {
+async function startLosingProxy(target: string): Promise<LosingProxy> {
   let toolCalls = 0;
-  let targetIdx = 0;
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const chunks: Buffer[] = [];
@@ -114,7 +114,6 @@ async function startLosingProxy(targets: readonly string[]): Promise<LosingProxy
     if (isToolCall) toolCalls += 1;
     const loseResponse = isToolCall && toolCalls === 1;
 
-    const target = targets[targetIdx] ?? targets[0]!;
     const upstream = await fetch(target, {
       method: req.method ?? 'GET',
       headers: forwardableHeaders(req.headers),
@@ -126,7 +125,6 @@ async function startLosingProxy(targets: readonly string[]): Promise<LosingProxy
     if (loseResponse) {
       // The write DID happen upstream. Now drop the answer on the floor and hand
       // back the transport error a flaky hosted proxy actually returns.
-      targetIdx = Math.min(targetIdx + 1, targets.length - 1);
       const id = (() => {
         try {
           return (JSON.parse(text) as { id?: unknown }).id ?? null;
@@ -175,6 +173,13 @@ async function startLosingProxy(targets: readonly string[]): Promise<LosingProxy
         server.close(() => resolve());
       }),
   };
+}
+
+/** ADR-0205 — what discovery records when the server annotates the tool with
+ *  `idempotentHint: true`; the only thing that lets an answerless call be
+ *  re-sent. */
+function declareResendSafe(mgr: McpManager, cfg: McpServerConfig): void {
+  mgr.rememberToolSchema(cfg.id, { name: REMOTE_TOOL, idempotentHint: true });
 }
 
 describe('write-capable MCP tool — duplicate-write protection (#542 prerequisite)', () => {
@@ -267,38 +272,75 @@ describe('write-capable MCP tool — duplicate-write protection (#542 prerequisi
     });
   }
 
-  it('CONTROL — without an idempotency key the lost response duplicates the write', async (t) => {
+  it('CONTROL — a tool its server declares idempotent is re-sent after the lost response', async (t) => {
     const writes: string[] = [];
     const first = await startWriteServer(t, writes);
     if (!first) return;
-    const second = await startWriteServer(t, writes);
-    if (!second) return;
-    proxy = await startLosingProxy([first, second]);
+    proxy = await startLosingProxy(first);
 
     manager = new McpManager();
+    const cfg = serverConfig(proxy.url);
+    declareResendSafe(manager, cfg);
+    const dispatcher = localDispatcher(manager, cfg, { declareWrite: true });
+
+    await dispatcher.dispatch(LOCAL_TOOL, { amount: 100 });
+
+    // The hazard, demonstrated rather than asserted in prose: the server
+    // executed the call, the response was lost, the re-send executed it AGAIN.
+    // ADR-0205 accepts that only because the server declared it harmless.
+    assert.equal(proxy.toolCallCount(), 2, 'the declared tool must still be re-sent');
+    assert.equal(writes.length, 2, 'baseline: the call really does run twice when re-sent');
+  });
+
+  it('#1904 — an undeclared tool is sent once and the outcome is reported as unknown', async (t) => {
+    const writes: string[] = [];
+    const first = await startWriteServer(t, writes);
+    if (!first) return;
+    proxy = await startLosingProxy(first);
+
+    const audit: McpCallLogEntry[] = [];
+    manager = new McpManager({ onToolCall: (e) => audit.push(e) });
     const dispatcher = localDispatcher(manager, serverConfig(proxy.url), {
       declareWrite: true,
     });
 
-    await dispatcher.dispatch(LOCAL_TOOL, { amount: 100 });
+    const result = await dispatcher.dispatch(LOCAL_TOOL, { amount: 100 });
 
-    // This is the hazard, demonstrated rather than asserted in prose: the server
-    // executed the write, the response was lost, the retry executed it AGAIN.
-    assert.equal(proxy.toolCallCount(), 2, 'the shipped once-retry must still fire here');
-    assert.equal(
-      writes.length,
-      2,
-      'baseline: the write really does happen twice when the response is lost',
+    assert.equal(proxy.toolCallCount(), 1, 'a write without a declaration must not be re-sent');
+    assert.equal(writes.length, 1);
+    assert.match(result.content, /^Error: outcome unknown/);
+    assert.match(result.content, /check the result/);
+    assert.equal(audit.length, 1);
+    assert.equal(audit[0]!.ok, false);
+    assert.match(audit[0]!.error ?? '', /^outcome_unknown:/);
+  });
+
+  it('#1904 — every attempt of a re-sent call gets its own audit row', async (t) => {
+    const writes: string[] = [];
+    const first = await startWriteServer(t, writes);
+    if (!first) return;
+    proxy = await startLosingProxy(first);
+
+    const audit: McpCallLogEntry[] = [];
+    manager = new McpManager({ onToolCall: (e) => audit.push(e) });
+    const cfg = serverConfig(proxy.url);
+    declareResendSafe(manager, cfg);
+
+    await manager.callTool(cfg, REMOTE_TOOL, { amount: 1 });
+
+    assert.deepEqual(
+      audit.map((e) => e.outcome),
+      ['fail', 'ok'],
+      'the first, lost attempt must be visible next to the successful re-send',
     );
+    assert.match(audit[0]!.error ?? '', /sent again/);
   });
 
   it('executes the write EXACTLY ONCE under an idempotency key, despite the lost response', async (t) => {
     const writes: string[] = [];
     const first = await startWriteServer(t, writes);
     if (!first) return;
-    const second = await startWriteServer(t, writes);
-    if (!second) return;
-    proxy = await startLosingProxy([first, second]);
+    proxy = await startLosingProxy(first);
 
     manager = new McpManager();
     const dispatcher = localDispatcher(manager, serverConfig(proxy.url), {
@@ -352,17 +394,15 @@ describe('write-capable MCP tool — duplicate-write protection (#542 prerequisi
       const writes: string[] = [];
       const first = await startWriteServer(t, writes);
       if (!first) return;
-      const second = await startWriteServer(t, writes);
-      if (!second) return;
-      proxy = await startLosingProxy([first, second]);
+      proxy = await startLosingProxy(first);
 
       manager = new McpManager();
       // No idempotency key: the `exactlyOnce` clamp is NOT what suppresses the
-      // retry here — this is a plain read-shaped dispatch, exactly the CONTROL
-      // configuration that produced two attempts.
-      const dispatcher = localDispatcher(manager, serverConfig(proxy.url), {
-        declareWrite: false,
-      });
+      // retry here — this is a plain read-shaped dispatch of a declared tool,
+      // exactly the CONTROL configuration that produced two attempts.
+      const cfg = serverConfig(proxy.url);
+      declareResendSafe(manager, cfg);
+      const dispatcher = localDispatcher(manager, cfg, { declareWrite: false });
 
       const result = await dispatcher.dispatch(LOCAL_TOOL, { amount: 100 });
 
@@ -385,14 +425,15 @@ describe('write-capable MCP tool — duplicate-write protection (#542 prerequisi
     const writes: string[] = [];
     const first = await startWriteServer(t, writes);
     if (!first) return;
-    const second = await startWriteServer(t, writes);
-    if (!second) return;
-    proxy = await startLosingProxy([first, second]);
+    proxy = await startLosingProxy(first);
 
     manager = new McpManager();
-    // No `writeCapabilities` ⇒ read-only, so the flaky-proxy mitigation applies
-    // even with a key present. Removing the retry outright would regress this.
-    const dispatcher = localDispatcher(manager, serverConfig(proxy.url), {
+    // No `writeCapabilities` ⇒ no exactly-once scope, and the server declares
+    // the tool read-only, so the flaky-proxy mitigation applies even with a key
+    // present. Removing the retry outright would regress this.
+    const cfg = serverConfig(proxy.url);
+    manager.rememberToolSchema(cfg.id, { name: REMOTE_TOOL, readOnlyHint: true });
+    const dispatcher = localDispatcher(manager, cfg, {
       declareWrite: false,
       store: new ToolIdempotencyStore(),
     });
@@ -449,12 +490,13 @@ describe('write-capable MCP tool — duplicate-write protection (#542 prerequisi
     const writes: string[] = [];
     const first = await startWriteServer(t, writes);
     if (!first) return undefined;
-    const second = await startWriteServer(t, writes);
-    if (!second) return undefined;
-    proxy = await startLosingProxy([first, second]);
+    proxy = await startLosingProxy(first);
 
     manager = new McpManager();
-    const dispatcher = localDispatcher(manager, serverConfig(proxy.url), { declareWrite: true });
+    const cfg = serverConfig(proxy.url);
+    // Declared, so only the ledger can be what suppresses the re-send.
+    declareResendSafe(manager, cfg);
+    const dispatcher = localDispatcher(manager, cfg, { declareWrite: true });
     const result = await turnContext.run(
       { turnId: 'turn-write-once', turnDate: '2026-10-01', toolReplayLedger: ledger },
       () => dispatcher.dispatch(LOCAL_TOOL, { amount: 100 }),

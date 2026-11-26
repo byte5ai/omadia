@@ -80,6 +80,24 @@ so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
 appear (#1730). The builder prompt names `get_build_status` /
 `runtime_smoke_status` as the only source for build and smoke state (#1806).
 Contract: ADR-0230 (Proposed).
+### Fixed — MCP calls are re-sent only when safe; one failure ends only its own request (ADR-0205) (2026-11-26)
+
+- **#1904** `McpManager.callTool` no longer re-sends an answerless `tools/call` (timeout,
+  dropped connection, socket reset) unless the server declared the tool `readOnlyHint` or
+  `idempotentHint`. Otherwise the model gets `Error: outcome unknown — …` and is told to
+  have the user check before trying again. Every attempt that reached the server gets its
+  own `mcp_call_log` row. Discovery now keeps `idempotentHint` on the descriptor.
+- **#1905** A failed call drops the pooled connection only when it is really gone
+  (transport closed, session lost), under its exact key and only if it still holds the
+  connection the call used. One user's timeout no longer closes the shared stdio /
+  token-less HTTP client under other users' in-flight calls.
+- **#1919** Every `tools/call` carries a progress token, so a server that reports progress
+  keeps its call alive past `OMADIA_MCP_CALL_TIMEOUT_MS` (up to the total ceiling).
+- **#1945** An HTTP 404 on a request with an `Mcp-Session-Id` starts a new session and
+  sends the call once more.
+- Drift fix: the agent-reach view read `annotations.readOnlyHint` from persisted
+  descriptors, which store the hint flat; it now reads both.
+- ADR-0205 (Proposed) supersedes ADR-0008's "dropped on a failed tool call" rule.
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 

@@ -327,6 +327,8 @@ function discoveredDescriptor(
         ? { outputSchema: hit['outputSchema'] }
         : {}),
       ...(hit['readOnlyHint'] === true ? { readOnlyHint: true } : {}),
+      // ADR-0205 — the re-send gate reads it after a restart, too.
+      ...(hit['idempotentHint'] === true ? { idempotentHint: true } : {}),
     };
   }
   return { name: toolRef };

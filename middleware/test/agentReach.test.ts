@@ -160,6 +160,12 @@ describe('reach inputs', () => {
       ],
     );
   });
+
+  it('reads the flat readOnlyHint McpManager.listTools persists', () => {
+    assert.deepEqual(discoveredMcpTools([{ name: 'd', readOnlyHint: true }]), [
+      { name: 'd', readOnly: true },
+    ]);
+  });
 });
 
 describe('isCapabilityPlugin', () => {
