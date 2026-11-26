@@ -81,6 +81,8 @@ function makeHandle(opts: {
     previewDir: opts.previewDir ?? `/tmp/${opts.draftId}-preview`,
     toolkit,
     routeCaptures: [],
+    jobCaptures: [],
+    statusReports: [],
     close: async () => {},
   };
 }

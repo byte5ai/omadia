@@ -15,6 +15,7 @@ import {
   emptyAgentSpec,
 } from './types.js';
 import { DEFAULT_BUILDER_MODEL, BuilderModelRegistry } from './modelRegistry.js';
+import { BuilderAuditAction } from './auditActions.js';
 
 /**
  * SQLite-backed store for Agent-Builder drafts. Phase B.0 of the builder MVP
@@ -37,6 +38,7 @@ import { DEFAULT_BUILDER_MODEL, BuilderModelRegistry } from './modelRegistry.js'
  */
 
 const CURRENT_SCHEMA_VERSION = 4;
+const MANUAL_AUDIT_IDLE_MS = 2_000;
 
 // v1 baseline drafts table. In v3 the historical `installed_agent_id` column
 // was renamed to `published_agent_id` — for fresh installs we create the
@@ -698,17 +700,40 @@ export class DraftStore {
     details: Readonly<Record<string, unknown>>;
   }): Promise<void> {
     const db = this.required();
-    db.prepare(
+    const now = Date.now();
+    const insert = () => db.prepare(
       `INSERT INTO builder_audit (draft_id, user_email, action, details_json, created_at)
        VALUES (?, ?, ?, ?, ?)`,
-    ).run(
-      event.draftId,
-      event.userEmail,
-      event.action,
-      JSON.stringify(event.details ?? {}),
-      Date.now(),
-    );
-    return Promise.resolve();
+    ).run(event.draftId, event.userEmail, event.action, JSON.stringify(event.details), now);
+    if (event.action !== BuilderAuditAction.SPEC_EDITED && event.action !== BuilderAuditAction.SLOT_EDITED) {
+      insert();
+      return;
+    }
+
+    db.transaction(() => {
+      const latest = db.prepare(
+        `SELECT id, action, details_json, created_at FROM builder_audit
+          WHERE draft_id = ? AND user_email = ?
+          ORDER BY created_at DESC, id DESC LIMIT 1`,
+      ).get(event.draftId, event.userEmail) as {
+        id: number; action: string; details_json: string; created_at: number;
+      } | undefined;
+      if (!latest || latest.action !== event.action || now - latest.created_at > MANUAL_AUDIT_IDLE_MS) {
+        insert();
+        return;
+      }
+
+      const previous = JSON.parse(latest.details_json) as Record<string, unknown>;
+      if (event.action === BuilderAuditAction.SLOT_EDITED && previous['slotKey'] !== event.details['slotKey']) {
+        insert();
+        return;
+      }
+      const details = event.action === BuilderAuditAction.SPEC_EDITED
+        ? { operationCount: Number(previous['operationCount']) + Number(event.details['operationCount']) }
+        : event.details;
+      db.prepare('UPDATE builder_audit SET details_json = ?, created_at = ? WHERE id = ?')
+        .run(JSON.stringify(details), now, latest.id);
+    }).immediate();
   }
 
   /**

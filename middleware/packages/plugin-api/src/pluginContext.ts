@@ -867,6 +867,12 @@ export interface NativeToolCallContext {
  * attachments to the channel adapter for inline rendering (Teams cards, web UI,
  * etc.). Return `undefined` if the tool did not fire during this turn — that's
  * the common case and MUST be cheap.
+ *
+ * The kernel calls the sink INSIDE the finishing turn's context, and the tool
+ * instance is shared by every concurrent turn. A sink therefore returns only
+ * what the finishing turn produced: file outputs under the id of the turn that
+ * made them (the `turnContext` service's `currentTurnId()`) and drain that id —
+ * never an instance-wide buffer (#1961, ADR-0177).
  */
 export type NativeToolAttachmentSink = () =>
   | NativeToolAttachment[]

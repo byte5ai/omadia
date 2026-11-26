@@ -8,16 +8,15 @@
  * against the real `admin_audit` DDL (migration 0002, applied verbatim).
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
-import { fileURLToPath } from 'node:url';
 
 import { Pool } from 'pg';
 
 import { probePgTest } from './_helpers/pgTestDb.js';
 
 import { AdminAuditLog, roleChangeAuditEntry } from '../src/auth/adminAuditLog.js';
+import { runAuthMigrations } from '../src/auth/migrator.js';
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
   label: 'roleChangeAudit775',
@@ -25,27 +24,23 @@ const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
   timeoutMs: 1_500,
 });
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-// The REAL DDL, not a copy: a hand-duplicated schema here could drift from
-// the migration and green-light an entry the production table rejects —
-// which is the exact failure class this suite exists to prevent.
-const SCHEMA = readFileSync(
-  path.join(HERE, '../src/auth/migrations/0002_admin_audit.sql'),
-  'utf8',
-);
-
 describe('#775 role-holders audit against real Postgres', { skip: !pgAvailable }, () => {
   let pool: Pool;
+  const roleKey = `release-approver-${randomUUID()}`;
+  const target = `conductor-role:${roleKey}`;
+  const action = 'conductor.role_holders_change';
 
   before(async () => {
     pool = new Pool({ connectionString: PG_URL });
-    await pool.query('DROP TABLE IF EXISTS admin_audit');
-    await pool.query(SCHEMA);
+    await runAuthMigrations(pool);
   });
 
   after(async () => {
-    await pool.query('DROP TABLE IF EXISTS admin_audit');
-    await pool.end();
+    try {
+      await pool.query('DELETE FROM admin_audit WHERE action = $1 AND target = $2', [action, target]);
+    } finally {
+      await pool.end();
+    }
   });
 
   it('an email-sub session lands a row (the exact case that used to throw)', async () => {
@@ -54,7 +49,7 @@ describe('#775 role-holders audit against real Postgres', { skip: !pgAvailable }
     await log.record(
       roleChangeAuditEntry({
         actor: 'demo@byte5.de',
-        roleKey: 'release-approver',
+        roleKey,
         action: 'add',
         holderId: 'user:u-2',
         holdersAfter: ['user:u-1', 'user:u-2'],
@@ -62,12 +57,13 @@ describe('#775 role-holders audit against real Postgres', { skip: !pgAvailable }
     );
 
     const rows = await pool.query(
-      "SELECT actor_id, actor_email, action, target FROM admin_audit WHERE action = 'conductor.role_holders_change'",
+      'SELECT actor_id, actor_email, action, target FROM admin_audit WHERE action = $1 AND target = $2',
+      [action, target],
     );
     assert.equal(rows.rowCount, 1, 'the audit row must actually land');
     assert.equal(rows.rows[0].actor_id, null);
     assert.equal(rows.rows[0].actor_email, 'demo@byte5.de');
-    assert.equal(rows.rows[0].target, 'conductor-role:release-approver');
+    assert.equal(rows.rows[0].target, target);
   });
 
   it('the OLD mapping is rejected by the real column — the regression stays impossible to miss', async () => {
@@ -79,8 +75,8 @@ describe('#775 role-holders audit against real Postgres', { skip: !pgAvailable }
       () =>
         log.record({
           actor: { id: 'demo@byte5.de' },
-          action: 'conductor.role_holders_change',
-          target: 'conductor-role:x',
+          action,
+          target,
         }),
       /invalid input syntax for type uuid/,
     );

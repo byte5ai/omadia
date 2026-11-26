@@ -193,6 +193,18 @@ export function validate(graph: WorkflowGraph, knownRefs?: KnownRefs): Validatio
     if (s.kind === 'human' && s.human && s.human.deadline != null && s.fallbackTransitionId === undefined) {
       errors.push({ code: 'deadline_without_fallback', message: `human step '${s.id}' has a deadline but no fallbackTransitionId`, nodeIds: [s.id] });
     }
+    if (s.kind === 'human' && s.human) {
+      for (const field of ['deadline', 'reminderInterval'] as const) {
+        const duration = s.human[field];
+        if (duration != null && parseIsoDurationMs(duration) === null) {
+          errors.push({
+            code: 'human_step_invalid_duration',
+            message: `human step '${s.id}' needs a positive ISO-8601 ${field} (e.g. "PT1H")`,
+            nodeIds: [s.id],
+          });
+        }
+      }
+    }
 
     // A quorum='all' human step must escalate if a required holder never responds — otherwise the run
     // hangs forever. Require both a deadline and a fallback so the timeout path (expireAwait) can fire.

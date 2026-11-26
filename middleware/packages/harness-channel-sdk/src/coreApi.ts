@@ -9,6 +9,7 @@ import type { TargetedSendProvider } from './targetedSend.js';
 import type { ConversationSendProvider } from './conversationSend.js';
 import type { AgentIdentityProvider, DefaultChannelKeyProvider } from './agentIdentity.js';
 import type { ConversationMessageEvent } from './conversationMessage.js';
+import type { AttachmentReadResult } from './outgoing.js';
 import type {
   ChannelReadinessProvider,
   MeetingSourceProvider,
@@ -186,6 +187,21 @@ export interface CoreApi {
     path: string,
     handler: ChannelSocketHandler,
   ): void;
+
+  /**
+   * #1993 / ADR-0222 — read the bytes of an outgoing attachment
+   * (`OutgoingAttachment.url`, `OutgoingFileAttachment.url`) in-process, for a
+   * platform that cannot fetch the URL itself (a `localhost` base URL, a
+   * private network) or that wants an upload anyway. Works for attachments
+   * served under an operator-granted public path of this kernel (diagrams,
+   * generated documents); anything else is `not_kernel_attachment` and the
+   * channel falls back to the URL. Never throws.
+   *
+   * Optional — feature-detect (`typeof core.readAttachment === 'function'`).
+   * A channel that still fails to deliver shows the user a visible "file
+   * could not be delivered" note instead of only logging.
+   */
+  readAttachment?(url: string): Promise<AttachmentReadResult>;
 
   /**
    * Register the channel's participant-roster capability (#330 B1). Optional:

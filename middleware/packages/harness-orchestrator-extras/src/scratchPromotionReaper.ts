@@ -14,7 +14,8 @@
  *
  * Flow per `runOnce()`:
  *   1. SELECT aged agent-scratch rows (updated_at older than `ageMs`,
- *      virtual_path under `/memories/orchestrators/%`). If the table does
+ *      virtual_path under `/memories/orchestrators/%`, plugin storage under
+ *      `…/<slug>/plugins/` excluded — #1829). If the table does
  *      not exist (PostgresMemoryStore not active / migration not applied),
  *      catch + no-op.
  *   2. For each row: derive the orchestrator/agent slug from the path,
@@ -50,8 +51,12 @@ import type { BatchJob, KnowledgeGraph, MemorableKind, Visibility } from '@omadi
 import type { SignificanceScorer } from './captureFilter.js';
 import { isUnprotectedNote, stripUnprotectedNoteMarker } from './noteProvenance.js';
 
-/** A plugin's `ctx.memory` tree inside an agent's scratch tree (#1540). */
-const PLUGIN_MEMORY_PATH = /^\/memories\/orchestrators\/[^/]+\/plugins\//;
+/**
+ * A plugin's `ctx.memory` tree inside an agent's scratch tree. It is plugin
+ * state, not a note: the reaper never reads, promotes or drops it (#1829).
+ * POSIX regex for the SQL filter; the slug segment holds no `/`.
+ */
+const PLUGIN_STORAGE_SQL = `virtual_path !~ '^/memories/orchestrators/[^/]+/plugins/'`;
 
 /** Physical prefix of the agent-scratch tree inside `memory_files`. */
 const SCRATCH_PREFIX = '/memories/orchestrators/';
@@ -204,6 +209,7 @@ export function createScratchPromotionReaper(
         `SELECT count(*)::text AS n
            FROM memory_files
           WHERE virtual_path LIKE $1
+            AND ${PLUGIN_STORAGE_SQL}
             AND updated_at < now() - make_interval(secs => $2)
             AND ${NOT_EVALUATED_SQL}`,
         [`${agentScratchPrefix(agentSlug)}%`, ageSeconds, paths, stamps],
@@ -236,6 +242,7 @@ export function createScratchPromotionReaper(
         `SELECT virtual_path, content, updated_at
            FROM memory_files
           WHERE virtual_path LIKE $1
+            AND ${PLUGIN_STORAGE_SQL}
             AND updated_at < now() - make_interval(secs => $2)
             AND ${NOT_EVALUATED_SQL}
           ORDER BY updated_at ASC
@@ -277,11 +284,9 @@ export function createScratchPromotionReaper(
       try {
         const slug = deriveAgentSlug(row.virtual_path);
         // #1540 — a note written in an unprotected turn: score and summarise
-        // it without the marker line, and stamp the memory `unprotected`. A
-        // plugin's own `ctx.memory` file holds what the plugin fetched in
-        // clear, whatever the turn: always `unprotected`.
-        const unprotected =
-          isUnprotectedNote(row.content) || PLUGIN_MEMORY_PATH.test(row.virtual_path);
+        // it without the marker line, and stamp the memory `unprotected`.
+        // Plugin storage never reaches this loop (PLUGIN_STORAGE_SQL).
+        const unprotected = isUnprotectedNote(row.content);
         const content = stripUnprotectedNoteMarker(row.content);
         const trimmed = content.trim();
 

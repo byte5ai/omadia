@@ -14,6 +14,11 @@ import {
   type AnswerVerbosity,
 } from './answerVerbosity.js';
 import {
+  buildAnswerLanguageRule,
+  DEFAULT_ANSWER_LANGUAGE,
+  type AnswerLanguage,
+} from './answerLanguage.js';
+import {
   deriveAgentsConsulted,
   toSemanticAnswer,
   applyAiDisclosure,
@@ -45,6 +50,7 @@ import {
   UNSCREENED_MARKER,
   DEFAULT_SECURITY_POSTURE_POLICY,
   withDataText,
+  stripKnownAiDisclosureLines,
 } from '@omadia/channel-sdk';
 import {
   TurnDataCollector,
@@ -147,7 +153,6 @@ import {
   queryDatasetToolSpec,
 } from './tools/queryDatasetTool.js';
 import { sortByToolName } from './toolOrdering.js';
-import { parseAttachmentsInfo } from './attachmentsInfo.js';
 import {
   checkVisionEmbeddable,
   detectTabularFormat,
@@ -365,7 +370,7 @@ import {
 } from './audienceFloorProvider.js';
 import { guardToolCommands } from './commandPolicyGuard.js';
 import {
-  CHANNEL_KIND_BY_ORIGIN,
+  turnChannelKind,
   resolveRunTraceOwner,
   resolveTurnOwnerIdentity,
   runTraceOwnerId,
@@ -1116,6 +1121,12 @@ export interface OrchestratorOptions {
    */
   answerVerbosity?: AnswerVerbosity;
   /**
+   * #1992 / ADR-0220 — the `answer_language` setup field: the language the
+   * agent falls back to when the user's message shows none. The agent
+   * otherwise mirrors the user's language. Absent → German.
+   */
+  answerLanguage?: AnswerLanguage;
+  /**
    * AI-Act Art. 50 (#644) — the operator's resolved disclosure config. Absent →
    * the shipping default (standard, active) on every channel. See
    * {@link AiDisclosureSetup}.
@@ -1649,7 +1660,8 @@ async function maskReplayedAnswerForWire(
  *  (answer-side restore covers these spans as well): a user message under
  *  `mask_user_prompt`, an answer whatever that flag says
  *  ({@link maskReplayedAnswerForWire}). Empty pairs are filtered so a failed
- *  prior turn can't poison context. */
+ *  prior turn can't poison context. Known AI-disclosure lines are stripped
+ *  from replayed answers first (#2003). */
 async function maskPriorTurnsForWire(
   privacy: PrivacyTurnHandle | undefined,
   priorTurns: ChatTurnInput['priorTurns'],
@@ -1662,10 +1674,13 @@ async function maskPriorTurnsForWire(
         content: await maskPromptForWire(privacy, t.userMessage, 'context'),
       });
     }
-    if (t.assistantAnswer.trim().length > 0) {
+    // #2003 — the AI-disclosure line is the delivery boundary's marking, not
+    // the agent's words; replayed, the model starts writing it itself.
+    const answer = stripKnownAiDisclosureLines(t.assistantAnswer);
+    if (answer.trim().length > 0) {
       pairs.push({
         role: 'assistant',
-        content: await maskReplayedAnswerForWire(privacy, t.assistantAnswer),
+        content: await maskReplayedAnswerForWire(privacy, answer),
       });
     }
   }
@@ -2507,6 +2522,8 @@ function buildSystemPrompt(
   answerVerbosity: AnswerVerbosity = DEFAULT_ANSWER_VERBOSITY,
   /** #1559 — `create_xlsx` is offered this turn. */
   hasFileExport = false,
+  /** #1992 — the operator's fallback answer language (ADR-0220). */
+  answerLanguage: AnswerLanguage = DEFAULT_ANSWER_LANGUAGE,
 ): string {
   // Operator's answer-size contract. `standard` is '' so the delivered state
   // keeps the prompt (and its cache key) unchanged.
@@ -2594,7 +2611,7 @@ e) **Rückfragen zu einer früher gezeigten Tabelle.** Die Zeilen einer gerender
 
   return `${assistantIdentity}
 
-Sprache: Antworte immer auf Deutsch, außer der Nutzer wechselt explizit die Sprache.
+${buildAnswerLanguageRule(answerLanguage)}
 Kündige Tool-Aufrufe nicht mit Zwischentext an (z.B. „Ich prüfe zuerst mein Memory.“) — solcher Text wird dem Nutzer nicht gezeigt. Schreib die Antwort, wenn die Daten da sind.
 ${answerVerbosityBlock ? '\n' + answerVerbosityBlock : ''}
 Werkzeuge:
@@ -3165,6 +3182,8 @@ export class Orchestrator {
   private readonly ownNames: (() => readonly string[]) | undefined;
   /** Operator's answer-size contract (see OrchestratorOptions.answerVerbosity). */
   private readonly answerVerbosity: AnswerVerbosity;
+  /** #1992 — fallback answer language (see OrchestratorOptions.answerLanguage). */
+  private readonly answerLanguage: AnswerLanguage;
   /** #644 — resolved operator disclosure config (undefined → shipping default
    *  on every channel). See {@link AiDisclosureSetup}. */
   private readonly aiDisclosure: AiDisclosureSetup | undefined;
@@ -3288,6 +3307,7 @@ export class Orchestrator {
     this.identityName = options.identityName?.trim() || undefined;
     this.ownNames = options.ownNames;
     this.answerVerbosity = options.answerVerbosity ?? DEFAULT_ANSWER_VERBOSITY;
+    this.answerLanguage = options.answerLanguage ?? DEFAULT_ANSWER_LANGUAGE;
     this.aiDisclosure = options.aiDisclosure;
     this.disclosureSeen =
       options.aiDisclosureSeenStore ?? new InMemoryDisclosureSeenStore();
@@ -3704,12 +3724,9 @@ export class Orchestrator {
   }
 
   /**
-   * Collect diagram renders produced during the current turn and reset the
-   * tool's buffer. Idempotent: returns undefined if the tool wasn't invoked.
-   *
-   * Today the orchestrator allows at most one diagram per turn (the LLM rarely
-   * needs more), but the return type is an array so multi-diagram turns just
-   * work once the tool starts returning multiple RenderOutputs.
+   * Collect the files and diagrams the current turn produced. Runs inside the
+   * turn's context: each sink returns only what this turn's tool calls filed
+   * under its turn id (#1961, ADR-0177), never a concurrent turn's output.
    */
   private drainAttachments(): {
     diagrams: DiagramAttachment[];
@@ -4957,7 +4974,8 @@ export class Orchestrator {
    * `deriveAgentsConsulted` was extracted.
    *
    * The channel picks the level: a per-channel override (keyed on the turn's
-   * `channelIdentity.channelKind`) wins over the operator's global default,
+   * channel kind, `turnChannelKind`: the channel identity's kind or, #1994,
+   * the kind its `origin` names) wins over the operator's global default,
    * which wins over the shipping default. A turn whose channel does not resolve
    * to a `ChannelKind` uses the global level — the safe direction (marking
    * stays active). Returns `undefined` only for an operator `'off'` (AC2).
@@ -4967,7 +4985,7 @@ export class Orchestrator {
    * branded or human-sounding persona cannot suppress it (AC2 regression).
    */
   private resolveTurnDisclosure(input: ChatTurnInput): AiDisclosure | undefined {
-    return this.disclosureForChannel(input.channelIdentity?.channelKind);
+    return this.disclosureForChannel(turnChannelKind(input));
   }
 
   /**
@@ -5579,8 +5597,7 @@ export class Orchestrator {
         participants: parent?.chatParticipants,
         resolvePrincipal: knowledgeGraphPrincipalResolver(
           this.identityGraph,
-          input.channelIdentity?.channelKind ??
-            (input.origin ? CHANNEL_KIND_BY_ORIGIN[input.origin.channelType] : undefined),
+          turnChannelKind(input),
         ),
         roles: this.audienceRoleSources,
         grants: this.audienceGrants,
@@ -6483,7 +6500,7 @@ export class Orchestrator {
       await store.record({
         turnId,
         sessionScope: input.sessionScope,
-        channel: input.channelIdentity?.channelKind,
+        channel: turnChannelKind(input),
         // #1033 W0 — the model the turn ran on. `this.model` is the
         // configured default and was the wrong value for every triage-routed
         // turn; without a recorded attribution it stays the honest fallback
@@ -10366,6 +10383,7 @@ export class Orchestrator {
       memoryPrompt,
       this.answerVerbosity,
       this.isFileExportOfferedThisTurn(),
+      this.answerLanguage,
     );
   }
 
@@ -10663,9 +10681,25 @@ export class Orchestrator {
           .map((a) => a.name.trim().toLowerCase()),
       );
 
-      // 1. Teams `[attachments-info]` manifest (storage_key-bearing) — files
-      //    and images alike (#504).
-      for (const info of parseAttachmentsInfo(input.userMessage)) {
+      // 1. Uploads the channel adapter stated as structured data
+      //    (storage_key-bearing) — files and images alike (#504). Never parsed
+      //    from the message text: a typed `[attachments-info]` block reads
+      //    nothing (#1962, ADR-0178). Each key is bound to this turn's
+      //    conversation first; that binding is what makes it readable here and
+      //    by `read_attachment` later (#1960).
+      const stated = input.storedAttachments ?? [];
+      for (const info of stated) {
+        try {
+          await this.attachmentReader.bindToCurrentConversation?.(info.storageKey);
+        } catch (err) {
+          // One unbindable key must not drop the turn's other attachments;
+          // it stays unbound and therefore unreadable (fail closed).
+          console.warn(
+            `[harness-orchestrator] attachment binding failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      for (const info of stated) {
         const isImage = info.contentType.toLowerCase().startsWith('image/');
         if (isImage && inlineImageFileNames.has(info.fileName.trim().toLowerCase())) {
           // Already embedded inline via `bytesBase64` — skip to avoid

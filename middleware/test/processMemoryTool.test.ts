@@ -139,6 +139,32 @@ describe('ProcessMemory tool specs', () => {
   });
 });
 
+/** A turn whose graph boundary is bound (no user: this agent's processes). */
+function inTurn<T>(fn: () => Promise<T>): Promise<T> {
+  return turnContext.run(
+    { turnId: 't-1', turnDate: '2026-11-25', graphReadScope: { value: { kind: 'nothing' } } },
+    fn,
+  );
+}
+
+/** A turn of agent `hr` bound to a user, or context-bound (`enforce-strict`). */
+function inAgentTurn<T>(fn: () => Promise<T>, kind: 'user' | 'conversation' = 'user'): Promise<T> {
+  return turnContext.run(
+    {
+      turnId: 't-2',
+      turnDate: '2026-11-26',
+      agentSlug: 'hr',
+      graphReadScope: {
+        value:
+          kind === 'user'
+            ? { kind: 'user', userId: 'u-1', agentScopePrefix: 'hr::', ownScope: null }
+            : { kind: 'conversation', scope: 'hr::room' },
+      },
+    },
+    fn,
+  );
+}
+
 describe('write_process handler', () => {
   it('rejects non-conforming title before hitting the service', async () => {
     const service = makeFake({});
@@ -165,11 +191,13 @@ describe('write_process handler', () => {
       },
     });
     const handler = createWriteProcessHandler(service);
-    const result = await handler({
-      title: 'Backend: Deploy to staging',
-      steps: ['Build', 'Deploy'],
-      scope: 's',
-    });
+    const result = await inTurn(() =>
+      handler({
+        title: 'Backend: Deploy to staging',
+        steps: ['Build', 'Deploy'],
+        scope: 's',
+      }),
+    );
     const parsed = JSON.parse(result) as { status: string; record: { id: string; version: number } };
     assert.equal(parsed.status, 'process_written');
     assert.equal(parsed.record.id, 'process:s:backend-deploy-to-staging');
@@ -188,11 +216,13 @@ describe('write_process handler', () => {
       },
     });
     const handler = createWriteProcessHandler(service);
-    const result = await handler({
-      title: 'Backend: Push to staging',
-      steps: ['fly deploy'],
-      scope: 's',
-    });
+    const result = await inTurn(() =>
+      handler({
+        title: 'Backend: Push to staging',
+        steps: ['fly deploy'],
+        scope: 's',
+      }),
+    );
     const parsed = JSON.parse(result) as {
       status: string;
       conflictingId: string;
@@ -204,13 +234,32 @@ describe('write_process handler', () => {
   });
 });
 
-/** A turn whose graph boundary is bound (no user: this agent's processes). */
-function inTurn<T>(fn: () => Promise<T>): Promise<T> {
-  return turnContext.run(
-    { turnId: 't-1', turnDate: '2026-11-25', graphReadScope: { value: { kind: 'nothing' } } },
-    fn,
-  );
-}
+describe('write_process handler · agent boundary (#2223)', () => {
+  const write = (scope: string) => ({ title: 'Backend: Deploy', steps: ['a'], scope });
+
+  it('keeps a scope of this agent and qualifies an unqualified one', async () => {
+    const service = makeFake({});
+    const handler = createWriteProcessHandler(service);
+    await inAgentTurn(() => handler(write('hr::c1')));
+    await inAgentTurn(() => handler(write('chat-7')));
+    assert.deepEqual(service.calls.write.map((w) => w.scope), ['hr::c1', 'hr::chat-7']);
+  });
+
+  it("refuses another agent's scope", async () => {
+    const service = makeFake({});
+    const result = await inAgentTurn(() => createWriteProcessHandler(service)(write('sales::c1')));
+    assert.match(result, /Error: write_process/);
+    assert.equal(service.calls.write.length, 0);
+  });
+
+  it('refuses in a context-bound turn and outside a bounded turn', async () => {
+    const service = makeFake({});
+    const handler = createWriteProcessHandler(service);
+    assert.match(await inAgentTurn(() => handler(write('hr::c1')), 'conversation'), /Error: write_process/);
+    assert.match(await handler(write('hr::c1')), /Error: write_process/);
+    assert.equal(service.calls.write.length, 0);
+  });
+});
 
 describe('query_processes handler', () => {
   it('returns hybrid hits with score + 3-step preview', async () => {
@@ -329,17 +378,52 @@ describe('edit_process handler', () => {
         ok: true,
         record: makeRecord('process:s:x', 'Xyz: do better', 5, ['a']),
       },
+      getResult: makeRecord('process:s:x', 'Xyz: do thing', 4, ['a']),
     });
     const handler = createEditProcessHandler(service);
-    const result = await handler({
-      id: 'process:s:x',
-      title: 'Xyz: do better',
-    });
+    const result = await inTurn(() =>
+      handler({
+        id: 'process:s:x',
+        title: 'Xyz: do better',
+      }),
+    );
     const parsed = JSON.parse(result) as {
       status: string;
       record: { version: number };
     };
     assert.equal(parsed.status, 'process_updated');
     assert.equal(parsed.record.version, 5);
+  });
+});
+
+describe('edit_process handler · agent boundary (#2223)', () => {
+  const foreign = { ...makeRecord('process:f', 'Fremd: x', 1, ['a']), scope: 'sales::c1' };
+  const own = { ...makeRecord('process:o', 'Eigen: y', 1, ['a']), scope: 'hr::c2' };
+
+  it("answers an edit of another agent's process like a missing one, and changes nothing", async () => {
+    const service = makeFake({ getResult: foreign });
+    const result = await inAgentTurn(() =>
+      createEditProcessHandler(service)({ id: 'process:f', title: 'Fremd: z' }),
+    );
+    assert.match(result, /kein Process mit ID 'process:f'/);
+    assert.doesNotMatch(result, /sales|Fremd/);
+    assert.equal(service.calls.edit.length, 0);
+  });
+
+  it('edits nothing in a context-bound turn or outside a bounded turn', async () => {
+    const service = makeFake({ getResult: own });
+    const handler = createEditProcessHandler(service);
+    assert.match(await inAgentTurn(() => handler({ id: 'process:o', title: 'Eigen: z' }), 'conversation'), /kein Process/);
+    assert.match(await handler({ id: 'process:o', title: 'Eigen: z' }), /kein Process/);
+    assert.equal(service.calls.edit.length, 0);
+  });
+
+  it("edits this agent's own process", async () => {
+    const service = makeFake({ getResult: own });
+    const result = await inAgentTurn(() =>
+      createEditProcessHandler(service)({ id: 'process:o', title: 'Eigen: z' }),
+    );
+    assert.match(result, /process_updated/);
+    assert.equal(service.calls.edit.length, 1);
   });
 });

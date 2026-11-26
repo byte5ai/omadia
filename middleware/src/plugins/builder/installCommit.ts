@@ -52,6 +52,7 @@ export interface InstallDraftInput {
   draftId: string;
   review?: { fingerprint: string; installed: InstalledManifestReview };
   downgradeConfirmation?: DowngradeConfirmation;
+  onPackageIngested?: (result: Extract<IngestResult, { ok: true }>) => Promise<void>;
 }
 
 export function publishReviewFingerprint(draft: Pick<Draft, 'spec' | 'slots'>): string {
@@ -173,6 +174,7 @@ export async function installDraft(
   if (!ingestResult.ok) {
     return mapIngestFailure(ingestResult);
   }
+  await input.onPackageIngested?.(ingestResult);
 
   if (ingestResult.activation?.ok === false || ingestResult.activation_error !== undefined) {
     return {

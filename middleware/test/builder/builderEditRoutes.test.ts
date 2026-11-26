@@ -166,6 +166,29 @@ describe('PATCH /api/v1/builder/drafts/:id/spec', () => {
     assert.deepEqual((await app.draftStore.load(app.userEmail, app.draftId))?.spec.setup_fields, patches[0]?.value);
   });
 
+  it('groups consecutive manual spec saves and records slots separately without code or values', async () => {
+    app = await createTestApp();
+    const draftPath = `/api/v1/builder/drafts/${app.draftId}`;
+    for (const value of ['Typing', 'Typing complete']) {
+      const response = await patchJson(app.baseUrl, draftPath + '/spec', {
+        patches: [{ op: 'replace', path: '/description', value }],
+      });
+      assert.equal(response.status, 200);
+    }
+    const source = 'export const value = "sample";';
+    const response = await patchJson(app.baseUrl, draftPath + '/slot', {
+      slotKey: 'toolkit-impl', source,
+    });
+    assert.equal(response.status, 200);
+
+    const { total, events } = await app.draftStore.listAudit(app.userEmail, app.draftId);
+    assert.equal(total, 2);
+    assert.deepEqual(events.map(({ action, details }) => ({ action, details })), [
+      { action: 'slot_edited', details: { slotKey: 'toolkit-impl', bytes: Buffer.byteLength(source) } },
+      { action: 'spec_edited', details: { operationCount: 2 } },
+    ]);
+  });
+
   it('rejects with 401 when no session', async () => {
     app = await createTestApp({ email: null });
     const result = await patchJson(

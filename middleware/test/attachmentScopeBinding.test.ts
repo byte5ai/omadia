@@ -1,5 +1,6 @@
 /**
- * #575 — a handle only redeems in the room that minted it.
+ * #575 / #1960 — a handle only redeems in the room that minted it, and only a
+ * channel adapter's statement of an upload mints (ADR-0178).
  *
  * Guard 3 already refused a room that may not read attachments at all. What it
  * could not stop was the case its own header named: a storage key issued in a
@@ -79,12 +80,20 @@ async function inScope<T>(scope: string | undefined, fn: () => Promise<T>): Prom
   );
 }
 
-describe('#575 handle binding — the room that minted it', () => {
-  it('binds on first sighting and lets the same room read again', async () => {
+/** Mint `key` in `scope` the way the ingest does for an adapter-stated upload. */
+async function mint(reader: AttachmentReader, scope: string, key: string): Promise<void> {
+  await inScope(scope, async () => {
+    await reader.bindToCurrentConversation?.(key);
+  });
+}
+
+describe('#575/#1960 handle binding — the room that minted it', () => {
+  it('reads a handle the adapter stated in this room, again and again', async () => {
     const spy = spyReader();
     const bindings = memoryBindings();
     const reader = audienceGuardedAttachmentReader(spy.reader, bindings);
 
+    await mint(reader, 'teams::conv-A', 'att/1');
     await inScope('teams::conv-A', () => reader.readByStorageKey('att/1'));
     await inScope('teams::conv-A', () => reader.readByStorageKey('att/1'));
 
@@ -99,25 +108,39 @@ describe('#575 handle binding — the room that minted it', () => {
     const spy = spyReader();
     const reader = audienceGuardedAttachmentReader(spy.reader, memoryBindings());
 
-    await inScope('teams::conv-A', () => reader.readByStorageKey('att/1'));
+    await mint(reader, 'teams::conv-A', 'att/1');
     const leaked = await inScope('teams::conv-B', () => reader.readByStorageKey('att/1'));
 
     assert.equal(leaked, undefined, 'a handle minted in conv-A must not redeem in conv-B');
-    assert.deepEqual(spy.reads, ['att/1'], 'the inner byte source must never be reached');
+    assert.deepEqual(spy.reads, [], 'the inner byte source must never be reached');
   });
 
-  it('does not let a second room re-bind the handle to itself', async () => {
-    // The leak, reintroduced through the fix: if the write overwrote, the
-    // refused room would own the binding and its NEXT read would succeed.
+  it('#1960: a read never binds — an unbound key (an Office report, a diagram) is refused', async () => {
+    // Before #1960 the first reader bound an unbound key to itself, so the
+    // first chat that learned a generated file's key from a download link
+    // claimed it.
     const spy = spyReader();
     const bindings = memoryBindings();
     const reader = audienceGuardedAttachmentReader(spy.reader, bindings);
 
-    await inScope('teams::conv-A', () => reader.readByStorageKey('att/1'));
-    await inScope('teams::conv-B', () => reader.readByStorageKey('att/1'));
-    const secondAttempt = await inScope('teams::conv-B', () => reader.readByStorageKey('att/1'));
+    const first = await inScope('teams::conv-B', () =>
+      reader.readByStorageKey('documents/default/abc/report.docx'),
+    );
+    assert.equal(first, undefined);
+    assert.equal(await bindings.get('documents/default/abc/report.docx'), undefined, 'nothing bound');
+    assert.deepEqual(spy.reads, []);
+  });
 
-    assert.equal(secondAttempt, undefined);
+  it('does not let a second room re-mint the handle for itself', async () => {
+    const spy = spyReader();
+    const bindings = memoryBindings();
+    const reader = audienceGuardedAttachmentReader(spy.reader, bindings);
+
+    await mint(reader, 'teams::conv-A', 'att/1');
+    await mint(reader, 'teams::conv-B', 'att/1');
+    const attempt = await inScope('teams::conv-B', () => reader.readByStorageKey('att/1'));
+
+    assert.equal(attempt, undefined);
     assert.equal((await bindings.get('att/1'))?.scopeRef, 'teams::conv-A');
   });
 
@@ -125,13 +148,8 @@ describe('#575 handle binding — the room that minted it', () => {
     // `formatSessionScope` renders a personal scope as `personal:<id>` and a
     // conversation scope as its bare conversation id — which could itself be
     // that same string. Comparing references alone would make two different
-    // kinds of room look like one.
-    //
-    // Asserted on `bindingsEqual` directly rather than through a raw scope
-    // string, because `parseSessionScope` classifies `personal:u1` as personal:
-    // the collision is not reachable from today's producers, so the kind check
-    // is defensive. Pinning it here says so honestly instead of dressing an
-    // unreachable case up as an end-to-end test.
+    // kinds of room look like one. The collision is not reachable from
+    // today's producers, so the kind check is defensive.
     assert.equal(
       bindingsEqual(
         { scopeKind: 'personal', scopeRef: 'personal:u1' },
@@ -143,40 +161,36 @@ describe('#575 handle binding — the room that minted it', () => {
   });
 });
 
-describe('#575 handle binding — where it deliberately stands down', () => {
-  it('does not bind a shared, non-addressable scope', async () => {
-    // `http-default` is shared by every unscoped HTTP caller — the live
-    // cross-user hole in #445. Binding to it would declare all of them one
-    // room: enforcement in appearance, universal access in fact.
+describe('#1960 handle binding — rooms that hold no bindings read nothing', () => {
+  it('a shared, non-addressable scope neither mints nor reads', async () => {
+    // `http-default` is shared by every unscoped HTTP caller (#445). Binding
+    // to it would declare all of them one room; reading from it without a
+    // binding would be the old stand-down. Both are refused.
     const spy = spyReader();
     const bindings = memoryBindings();
     const reader = audienceGuardedAttachmentReader(spy.reader, bindings);
 
-    const first = await inScope('http-default', () => reader.readByStorageKey('att/3'));
-    const second = await inScope('http-default', () => reader.readByStorageKey('att/3'));
+    await mint(reader, 'http-default', 'att/3');
+    const read = await inScope('http-default', () => reader.readByStorageKey('att/3'));
 
-    assert.ok(first);
-    assert.ok(second);
+    assert.equal(read, undefined);
     assert.equal(await bindings.get('att/3'), undefined, 'nothing may be written for a shared scope');
+    assert.deepEqual(spy.reads, []);
   });
 
-  it('does not bind when there is no scope at all', async () => {
+  it('refuses a turn with no scope at all', async () => {
     const spy = spyReader();
-    const bindings = memoryBindings();
-    const reader = audienceGuardedAttachmentReader(spy.reader, bindings);
-
-    assert.ok(await inScope(undefined, () => reader.readByStorageKey('att/4')));
-    assert.equal(await bindings.get('att/4'), undefined);
+    const reader = audienceGuardedAttachmentReader(spy.reader, memoryBindings());
+    assert.equal(await inScope(undefined, () => reader.readByStorageKey('att/4')), undefined);
   });
 
-  it('is inert without a binding store', async () => {
-    // A deployment that has not opted in must behave exactly as before.
+  it('is inert without a binding store (bare reader, no kernel store)', async () => {
     const spy = spyReader();
     const reader = audienceGuardedAttachmentReader(spy.reader);
 
+    assert.equal(reader.bindToCurrentConversation, undefined);
     assert.ok(await inScope('teams::conv-A', () => reader.readByStorageKey('att/5')));
-    assert.ok(await inScope('teams::conv-B', () => reader.readByStorageKey('att/5')));
-    assert.deepEqual(spy.reads, ['att/5', 'att/5']);
+    assert.deepEqual(spy.reads, ['att/5']);
   });
 
   it('leaves readByUrl alone — a URL is not a storage key', async () => {

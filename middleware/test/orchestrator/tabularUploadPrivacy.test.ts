@@ -19,6 +19,7 @@ import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 import type { LlmProvider, LlmResponse } from '@omadia/llm-provider';
 import { type AttachmentReader, NativeToolRegistry, Orchestrator } from '@omadia/orchestrator';
 import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
+import { statedUploads } from '../_helpers/statedUploads.js';
 
 const STORAGE_KEY = 'teams-attachments/t1/c1/2026-10-02T10-00-00-abc123.csv';
 const CSV =
@@ -117,7 +118,7 @@ describe('tabular upload behind the Privacy Shield, prompt masking off', () => {
     } as ConstructorParameters<typeof Orchestrator>[0]);
 
     await orch.runTurn({
-      userMessage: MESSAGE,
+      userMessage: MESSAGE, storedAttachments: statedUploads(MESSAGE),
       sessionScope: 'sess-tabular',
       userId: 'a1b2c3d4-0000-0000-0000-00000000000a',
     });

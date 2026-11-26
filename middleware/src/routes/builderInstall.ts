@@ -7,6 +7,7 @@ import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import { installedManifestForReview } from '../plugins/packageUploadService.js';
 
+import { recordOperatorAudit, type AdminAuditLog } from '../auth/adminAuditLog.js';
 import {
   installDraft,
   publishReviewFingerprint,
@@ -62,6 +63,7 @@ import {
 export interface BuilderInstallDeps extends InstallDraftDeps, CloneFromInstalledDeps {
   catalog?: Pick<PluginCatalog, 'get'>;
   registry?: Pick<InstalledRegistry, 'get'>;
+  adminAudit?: Pick<AdminAuditLog, 'record'>;
 }
 
 const InstallInputSchema = z.object({
@@ -156,6 +158,12 @@ export function registerBuilderInstallRoutes(
           draftId,
           ...(review ? { review } : {}),
           ...(allowDowngrade && downgradeConfirmation ? { downgradeConfirmation } : {}),
+          onPackageIngested: (ingest) => recordOperatorAudit(deps.adminAudit, req, {
+            action: 'plugin.package_upload',
+            target: 'plugin:' + ingest.plugin_id,
+            before: ingest.replaced_version ? { version: ingest.replaced_version } : null,
+            after: { version: ingest.version, source: 'builder', draftId },
+          }),
         }, deps);
       } catch (err) {
         return sendJson(res, 500, {

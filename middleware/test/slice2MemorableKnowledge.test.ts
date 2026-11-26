@@ -200,7 +200,7 @@ describe('Slice 2 · InMemory createMemorableKnowledge round-trip', () => {
     );
     assert.equal(teamNode?.visibility, 'team');
 
-    // Omitted → historical default (no explicit visibility on the node).
+    // Omitted → private, not the historical tenant-wide `team`.
     const plainMk = await kg.createMemorableKnowledge({
       kind: 'insight',
       summary: 'A memory created without an explicit visibility.',
@@ -209,7 +209,8 @@ describe('Slice 2 · InMemory createMemorableKnowledge round-trip', () => {
     const plainNode = await kg.getMemorableKnowledge(
       plainMk.memorableKnowledgeNodeId,
     );
-    assert.equal(plainNode?.visibility, undefined);
+    // #1823 (ADR-0183) — omitted → private.
+    assert.equal(plainNode?.visibility, 'private');
   });
 
   it('skips INVOLVED entries for missing user-clusters and counts them', async () => {

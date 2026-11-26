@@ -6,6 +6,7 @@ import type { AddressInfo } from 'node:net';
 import express from 'express';
 import type { Express, Request } from 'express';
 import type { PoolClient } from 'pg';
+import type { AuditEntryInput } from '../src/auth/adminAuditLog.js';
 import type { TemplateManifest, WorkflowGraph } from '@omadia/conductor-core';
 
 import { applyTemplateSlots } from '@omadia/conductor-core';
@@ -119,6 +120,8 @@ function fakeTemplateStore(): FakeTemplateStore {
       const r = rows.get(id);
       if (!r) return undefined;
       r.latestVersion += 1;
+      r.status = 'private';
+      r.reviewedBy = null;
       r.versions.set(r.latestVersion, manifest);
       return record(id);
     },
@@ -135,9 +138,10 @@ function fakeTemplateStore(): FakeTemplateStore {
       return rows.delete(id);
     },
 
-    async setStatus(id, status, reviewedBy) {
+    async setStatus(id, status, reviewedBy, expected) {
       const r = rows.get(id);
       if (!r) return undefined;
+      if (expected && (r.status !== expected.status || r.latestVersion !== expected.version)) return undefined;
       r.status = status;
       if (reviewedBy !== undefined) r.reviewedBy = reviewedBy;
       return record(id);
@@ -189,7 +193,12 @@ interface Harness {
 
 const servers: Server[] = [];
 
-async function makeHarness(opts?: { withCatalog?: boolean; manifest?: TemplateManifest }): Promise<Harness> {
+async function makeHarness(opts?: {
+  withCatalog?: boolean;
+  manifest?: TemplateManifest;
+  otherOperator?: boolean;
+  audit?: AuditEntryInput[];
+}): Promise<Harness> {
   const publishCalls: PublishCall[] = [];
   const reconcileCalls: Array<{ workflowId: string; graph: WorkflowGraph }> = [];
   const existingSlugs = new Set<string>();
@@ -262,6 +271,8 @@ async function makeHarness(opts?: { withCatalog?: boolean; manifest?: TemplateMa
       roleKeys: [KNOWN_ROLE],
       eventIds: [],
     }),
+    hasOtherActiveOperator: async () => opts?.otherOperator === true,
+    auditGovernanceChange: async (entry: AuditEntryInput) => { opts?.audit?.push(entry); },
   } as unknown as ConductorRouterDeps;
 
   const app: Express = express();
@@ -657,7 +668,7 @@ describe('POST /templates/:id/instantiate', () => {
 
     // onPublished is wired to the atomic cron-schedule reconcile.
     assert.equal(typeof call.onPublished, 'function');
-    await call.onPublished!({} as PoolClient, 'wf-1');
+    await call.onPublished!({ query: async () => ({ rows: [{ key: KNOWN_ROLE }] }) } as unknown as PoolClient, 'wf-1');
     assert.equal(h.reconcileCalls.length, 1);
     assert.equal(h.reconcileCalls[0]!.workflowId, 'wf-1');
     assert.equal(h.reconcileCalls[0]!.graph, call.graph);
@@ -677,7 +688,7 @@ describe('POST /templates/:id/instantiate', () => {
     ]);
 
     // Provenance stamp rides the SAME onPublished callback as the schedule reconcile.
-    await h.publishCalls[0]!.onPublished!({} as PoolClient, 'wf-1');
+    await h.publishCalls[0]!.onPublished!({ query: async () => ({ rows: [{ key: KNOWN_ROLE }] }) } as unknown as PoolClient, 'wf-1');
     assert.deepEqual(h.stamps, [{ workflowId: 'wf-1', templateId: 'fixture-approval', version: 1 }]);
 
     // The counter surfaces in the catalog list.
@@ -720,16 +731,24 @@ describe('POST /templates/:id/instantiate', () => {
     assert.equal(h.instantiations.length, 0); // no telemetry for a failed publish
   });
 
-  it("does not leak create-only semantics into POST / — the designer's upsert stays", async () => {
+  it('keeps default upserts for POST / and supports explicit create-only publishing', async () => {
     const h = await makeHarness();
     const res = await post(h.baseUrl, {
       slug: 'existing-or-not',
       name: 'Ordinary publish',
-      graph: fixtureManifest().graph, // structurally valid; placeholders are plain strings for POST /
+      graph: applyTemplateSlots(fixtureManifest(), completeMapping()),
     });
     assert.equal(res.status, 201);
     assert.equal(h.publishCalls.length, 1);
     assert.equal(h.publishCalls[0]!.expectNew, undefined);
+    const createOnly = await post(h.baseUrl, {
+      slug: 'fresh',
+      name: 'Create only',
+      graph: applyTemplateSlots(fixtureManifest(), completeMapping()),
+      expectNew: true,
+    });
+    assert.equal(createOnly.status, 201);
+    assert.equal(h.publishCalls[1]!.expectNew, true);
   });
 
   it('400s on a missing slug', async () => {
@@ -861,6 +880,20 @@ describe('review gate: POST /templates/:id/{submit,approve,reject}', () => {
     assert.equal(record.status, 'shared');
     assert.equal(record.reviewedBy, 'operator-a'); // auditable
   });
+
+  it('requires a second active operator and audits each successful transition', async () => {
+    const audit: AuditEntryInput[] = [];
+    const h = await makeHarness({ otherOperator: true, audit });
+    await h.templateStore.create(fixtureManifest('team'), 'operator-a');
+    assert.equal((await post(`${h.baseUrl}/templates/team/submit`, {}, 'operator-a')).status, 200);
+    const denied = await post(`${h.baseUrl}/templates/team/approve`, {}, 'operator-a');
+    assert.equal(denied.status, 403);
+    assert.equal(((await denied.json()) as { code: string }).code, 'conductor.template_self_approval_forbidden');
+    assert.equal((await post(`${h.baseUrl}/templates/team/approve`, { reviewedVersion: 2 }, 'operator-b')).status, 409);
+    assert.equal((await post(`${h.baseUrl}/templates/team/approve`, { reviewedVersion: 1 }, 'operator-b')).status, 200);
+    assert.deepEqual(audit.map((entry) => entry.action), ['conductor.template_submitted', 'conductor.template_approved']);
+    assert.deepEqual(audit[1]?.after, { status: 'shared', version: 1, selfReview: false });
+  });
 });
 
 /** Concrete (non-templated) graph as a designer would publish it — every ref
@@ -906,7 +939,7 @@ describe('POST /:slug/save-as-template (#478 slot inference)', () => {
 
     const { draft } = body;
     assert.equal(draft.id, 'expense-flow');
-    assert.equal(draft.defaultSlug, 'expense-flow');
+    assert.equal(draft.defaultSlug, 'expense-flow-2');
     assert.equal(draft.name, 'Expense flow'); // workflow-derived defaults
     assert.equal(draft.description, 'Approves expenses');
     assert.equal(draft.useCase, 'general');

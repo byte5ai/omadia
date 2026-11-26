@@ -64,7 +64,15 @@ describe('chat-session mirror — verifier fields', () => {
     } as unknown as ChatSessionStore;
     const app = express();
     app.use(express.json());
-    app.use('/api/chat', createChatSessionsRouter({ getStore: () => store }));
+    // #1762 — one signed-in account that owns the chats (a one-account instance).
+    app.use((req, _res, next) => {
+      (req as unknown as { session: unknown }).session = { sub: 'account-1' };
+      next();
+    });
+    app.use(
+      '/api/chat',
+      createChatSessionsRouter({ getStore: () => store, legacyOwner: () => Promise.resolve('account-1') }),
+    );
     server = await listenLoopback(app);
     const addr = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${String(addr.port)}/api/chat`;

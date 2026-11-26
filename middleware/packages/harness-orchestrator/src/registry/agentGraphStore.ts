@@ -1671,13 +1671,15 @@ export class AgentGraphStore {
     /** RFC 8707 resource indicator sent on the authorization request; the
      *  callback must send the same value on the code exchange. */
     resource?: string | null;
+    auditActorId?: string;
+    auditActorEmail?: string;
   }): Promise<void> {
     // Opportunistic prune of stale flows (older than 15 min) on each create.
     await this.pool.query("DELETE FROM mcp_oauth_flows WHERE created_at < now() - interval '15 minutes'");
     await this.pool.query(
       `INSERT INTO mcp_oauth_flows
-         (state, server_id, user_key, issuer, code_verifier, redirect_uri, scopes, token_endpoint, authorization_endpoint, iss_required, resource)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+         (state, server_id, user_key, issuer, code_verifier, redirect_uri, scopes, token_endpoint, authorization_endpoint, iss_required, resource, audit_actor_id, audit_actor_email)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
       [
         input.state,
         input.serverId,
@@ -1690,6 +1692,8 @@ export class AgentGraphStore {
         input.authorizationEndpoint,
         input.issRequired ?? false,
         input.resource ?? null,
+        input.auditActorId ?? null,
+        input.auditActorEmail ?? null,
       ],
     );
   }
@@ -1714,6 +1718,8 @@ export class AgentGraphStore {
         /** RFC 8707 resource indicator of the authorization request; null for
          *  flows started before migration 0111. */
         resource: string | null;
+        auditActorId?: string;
+        auditActorEmail?: string;
       }
     | undefined
   > {
@@ -1729,6 +1735,8 @@ export class AgentGraphStore {
       authorization_endpoint: string | null;
       iss_required?: boolean | null;
       resource?: string | null;
+      audit_actor_id?: string | null;
+      audit_actor_email?: string | null;
     }>(
       "DELETE FROM mcp_oauth_flows WHERE state = $1 AND created_at > now() - interval '15 minutes' RETURNING *",
       [state],
@@ -1749,6 +1757,8 @@ export class AgentGraphStore {
           // rejected for a missing `iss` (a MISMATCHED one still is).
           issRequired: r.iss_required === true,
           resource: r.resource ?? null,
+          ...(r.audit_actor_id ? { auditActorId: r.audit_actor_id } : {}),
+          ...(r.audit_actor_email ? { auditActorEmail: r.audit_actor_email } : {}),
         }
       : undefined;
   }
@@ -1802,11 +1812,12 @@ export class AgentGraphStore {
     );
   }
 
-  async deletePluginMcpGrant(pluginId: string, mcpServerId: string): Promise<void> {
-    await this.pool.query(
+  async deletePluginMcpGrant(pluginId: string, mcpServerId: string): Promise<boolean> {
+    const result = await this.pool.query(
       'DELETE FROM plugin_mcp_grants WHERE plugin_id = $1 AND mcp_server_id = $2',
       [pluginId, mcpServerId],
     );
+    return (result.rowCount ?? 0) > 0;
   }
 
   // ── MCP registries (epic #459 W3, issue #455) ──────────────────────────────

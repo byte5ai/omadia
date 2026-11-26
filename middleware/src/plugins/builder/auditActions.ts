@@ -15,6 +15,8 @@ export const BuilderAuditAction = {
   QUALITY_UPDATED: 'quality_updated',
   SPEC_PATCHED: 'spec_patched',
   SLOT_FILLED: 'slot_filled',
+  SPEC_EDITED: 'spec_edited',
+  SLOT_EDITED: 'slot_edited',
 } as const;
 
 export type BuilderAuditActionId =

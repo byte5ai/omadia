@@ -6,7 +6,12 @@ import type {
   ProcessMemoryService,
   ProcessRecord,
 } from '@omadia/plugin-api';
-import { PROCESS_TITLE_REGEX, agentScopePrefix, scopeBelongsToAgent } from '@omadia/plugin-api';
+import {
+  AGENT_SCOPE_SEP,
+  PROCESS_TITLE_REGEX,
+  agentScopePrefix,
+  scopeBelongsToAgent,
+} from '@omadia/plugin-api';
 
 import { currentTurnIsShielded, isCurrentTurnUnprotected } from '../turnProtection.js';
 import { turnContext } from '../turnContext.js';
@@ -242,6 +247,27 @@ export function currentProcessReadFilter(
   return (record) => scopeBelongsToAgent(record.scope, boundary.prefix);
 }
 
+/**
+ * #2223 — where `write_process` may store a process this turn: only in this
+ * agent's scopes, and nowhere in a turn whose boundary admits no process
+ * (context-bound `enforce-strict` / `members`, or no boundary at all), since
+ * processes carry no owners and every later turn of the agent would read
+ * what the room said. An unqualified scope is qualified with the agent; the
+ * default agent keeps owning the legacy unqualified scopes. `null`: refused.
+ */
+export function processWriteScope(
+  requested: string,
+  boundary: ProcessBoundary = currentProcessBoundary(),
+): string | null {
+  if (boundary.kind === 'none') return null;
+  if (scopeBelongsToAgent(requested, boundary.prefix)) return requested;
+  if (requested.includes(AGENT_SCOPE_SEP)) return null;
+  return `${boundary.prefix}${requested}`;
+}
+
+const WRITE_REFUSED_NOTICE =
+  'In diesem Gespräch kann kein Process gespeichert werden: ein Process gehört dem eigenen Agenten und ist in einem kontextgebundenen Raum nicht verfügbar.';
+
 function withheldUnderShield(record: Pick<ProcessRecord, 'unprotected'>): boolean {
   return record.unprotected === true && currentTurnIsShielded();
 }
@@ -264,6 +290,12 @@ function recordToBrief(record: ProcessRecord): {
   };
 }
 
+/** #1843 — the canonical omadia user id of the turn's caller, when known. */
+export function creatorOfCurrentTurn(): { createdByOmadiaUserId?: string } {
+  const id = turnContext.current()?.resolvedOmadiaUserId;
+  return id ? { createdByOmadiaUserId: id } : {};
+}
+
 export function createWriteProcessHandler(
   service: ProcessMemoryService,
 ): NativeTextToolHandler {
@@ -275,14 +307,17 @@ export function createWriteProcessHandler(
         .join('; ');
       return `Error: invalid write_process input — ${detail}`;
     }
+    const scope = processWriteScope(parsed.data.scope);
+    if (scope === null) return `Error: write_process — ${WRITE_REFUSED_NOTICE}`;
     const writeInput: Parameters<ProcessMemoryService['write']>[0] = {
       title: parsed.data.title,
       steps: parsed.data.steps,
-      scope: parsed.data.scope,
+      scope,
       ...(parsed.data.visibility !== undefined
         ? { visibility: parsed.data.visibility }
         : {}),
       ...(isCurrentTurnUnprotected() ? { unprotected: true } : {}),
+      ...creatorOfCurrentTurn(),
     };
     const result = await service.write(writeInput);
     if (result.ok) {
@@ -323,6 +358,13 @@ export function createEditProcessHandler(
         .map((i) => `${i.path.join('.')}: ${i.message}`)
         .join('; ');
       return `Error: invalid edit_process input — ${detail}`;
+    }
+    // #2223 — a process this turn may not read answers like a missing one,
+    // before anything is changed or confirmed.
+    const readable = currentProcessReadFilter();
+    const existing = readable ? await service.get(parsed.data.id) : null;
+    if (!existing || !readable?.(existing)) {
+      return `Error: edit_process — kein Process mit ID '${parsed.data.id}' im aktuellen Tenant.`;
     }
     const editInput: Parameters<ProcessMemoryService['edit']>[0] = {
       id: parsed.data.id,

@@ -228,3 +228,28 @@ export function createSessionGate(deps: SessionEvaluationDeps) {
     next();
   };
 }
+
+/**
+ * #1908 (ADR-0175) — attach the session's claims when the request carries a
+ * valid session cookie, and pass on WITHOUT one: never answers 401 itself.
+ *
+ * For public-path handlers that still need to know who is calling (the MCP
+ * OAuth callback compares the completing session with the user who started the
+ * flow). The handler decides what a missing session means; this gate only
+ * makes `req.session` trustworthy when it is set.
+ */
+export function createOptionalSession(deps: SessionEvaluationDeps) {
+  return async function attachOptionalSession(
+    req: Request,
+    _res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    const cookies = (req as Request & { cookies?: Record<string, string> }).cookies;
+    const token = cookies ? cookies[SESSION_COOKIE] : undefined;
+    if (token) {
+      const result = await evaluateSessionToken(token, deps);
+      if (result.ok) req.session = result.claims;
+    }
+    next();
+  };
+}

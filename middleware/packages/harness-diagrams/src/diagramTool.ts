@@ -12,6 +12,7 @@ import {
   type RenderOutput,
 } from './types.js';
 import type { DiagramService } from './diagramService.js';
+import { PerTurnBuffer } from './perTurnBuffer.js';
 import {
   compatToolErrorFromException,
   hostToolErrorHelpers,
@@ -105,12 +106,16 @@ export const diagramToolSpec = {
  *
  * Returns a compact JSON object: `{ url, kind, cacheHit, title? }`. The LLM
  * only needs the URL to mention the diagram by reference; the full RenderOutput
- * surfaces via the `lastRenderedDiagram()` accessor so the orchestrator can
- * attach an Image element to the outgoing Teams card without re-parsing the
- * tool-result string.
+ * surfaces via {@link DiagramTool.takeRenders} so the orchestrator can attach
+ * an Image element to the outgoing card without re-parsing the tool-result
+ * string.
+ *
+ * #1961 (ADR-0177): one instance serves every turn, so renders are filed under
+ * the id of the turn that made them and drained per turn — never handed to
+ * whichever concurrent turn finishes first. Two renders in one turn give two.
  */
 export class DiagramTool {
-  private lastRender: RenderOutput | undefined;
+  private readonly renders = new PerTurnBuffer<RenderOutput>();
 
   constructor(
     private readonly service: DiagramService,
@@ -126,6 +131,9 @@ export class DiagramTool {
     },
     /** The host's tool-error helpers; `null` on a host before plugin-api 1.20.0. */
     private readonly toolErrorHelpers: ToolErrorHelpers | null = hostToolErrorHelpers,
+    /** The id of the turn this call runs in (kernel `turnContext`), read at
+     *  call time; undefined outside a turn. */
+    private readonly currentTurnId: () => string | undefined = () => undefined,
   ) {}
 
   async handle(input: unknown): Promise<string> {
@@ -165,7 +173,7 @@ export class DiagramTool {
       }
 
       const output = await this.service.render(renderInput);
-      this.lastRender = output;
+      this.renders.push(this.currentTurnId(), output);
       return JSON.stringify({
         kind: output.kind,
         url: output.url,
@@ -237,15 +245,12 @@ export class DiagramTool {
   }
 
   /**
-   * Returns the most recent successful render done by this tool instance and
-   * clears it. Called once per orchestrator turn so the next turn starts
-   * clean even if the tool wasn't invoked. Safe to call when no render
-   * happened — returns undefined.
+   * Returns and forgets the successful renders of `turnId`, in call order.
+   * Called once at the end of each turn (inside it); undefined when the turn
+   * rendered nothing. Renders of other turns stay for their own drain.
    */
-  takeLastRender(): RenderOutput | undefined {
-    const render = this.lastRender;
-    this.lastRender = undefined;
-    return render;
+  takeRenders(turnId: string | undefined): RenderOutput[] | undefined {
+    return this.renders.drain(turnId);
   }
 
   /**

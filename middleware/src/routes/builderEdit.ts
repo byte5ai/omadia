@@ -1,5 +1,8 @@
 import type { Router, Request, Response } from 'express';
+import { isDeepStrictEqual } from 'node:util';
 
+import { createAuditLogger } from '../plugins/builder/audit.js';
+import { BuilderAuditAction } from '../plugins/builder/auditActions.js';
 import { StaleDraftSpecError, type DraftStore } from '../plugins/builder/draftStore.js';
 import { BuilderModelRegistry } from '../plugins/builder/modelRegistry.js';
 import {
@@ -45,6 +48,7 @@ export function registerBuilderEditRoutes(
   router: Router,
   deps: BuilderEditDeps,
 ): void {
+  const audit = createAuditLogger(deps.draftStore);
   // ── PATCH /drafts/:id/spec ──────────────────────────────────────────────
   router.patch('/drafts/:id/spec', async (req: Request, res: Response) => {
     const email = readEmail(req);
@@ -105,6 +109,11 @@ export function registerBuilderEditRoutes(
     if (!updated) {
       return sendJson(res, 404, { code: 'builder.draft_not_found', message: 'Draft not found.' });
     }
+    if (!isDeepStrictEqual(draft.spec, updated.spec)) {
+      await audit.log(draftId, email, BuilderAuditAction.SPEC_EDITED, {
+        operationCount: patches.length,
+      });
+    }
     deps.bus.emit(draftId, { type: 'spec_patch', patches, cause: 'user' });
     deps.rebuildScheduler.schedule(email, draftId);
 
@@ -144,6 +153,12 @@ export function registerBuilderEditRoutes(
 
     const nextSlots: Record<string, string> = { ...draft.slots, [slotKey]: source };
     const updated = await deps.draftStore.update(email, draftId, { slots: nextSlots });
+    if (updated && draft.slots[slotKey] !== updated.slots[slotKey]) {
+      await audit.log(draftId, email, BuilderAuditAction.SLOT_EDITED, {
+        slotKey,
+        bytes: Buffer.byteLength(updated.slots[slotKey] ?? ''),
+      });
+    }
     deps.bus.emit(draftId, {
       type: 'slot_patch',
       slotKey,

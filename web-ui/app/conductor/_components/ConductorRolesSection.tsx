@@ -4,7 +4,7 @@ import { useCallback, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
-import { ApiError, assignRoleHolder, createConductorRole, type ConductorRole } from '@/app/_lib/api';
+import { ApiError, assignRoleHolder, createConductorRole, deleteConductorRole, updateConductorRoleLabel, type ConductorRole } from '@/app/_lib/api';
 
 /**
  * Roles & the baton (US6) — split out of conductor/page.tsx to keep the page
@@ -27,6 +27,7 @@ export function ConductorRolesSection({
   const [newRoleKey, setNewRoleKey] = useState('');
   const [newRoleLabel, setNewRoleLabel] = useState('');
   const [holderInputs, setHolderInputs] = useState<Record<string, string>>({});
+  const [busyRole, setBusyRole] = useState<string | null>(null);
 
   const handleCreateRole = useCallback(async () => {
     if (!newRoleKey || !newRoleLabel) return;
@@ -36,9 +37,9 @@ export function ConductorRolesSection({
       setNewRoleLabel('');
       onChanged();
     } catch (err) {
-      onError(err instanceof ApiError ? err.message : String(err));
+      onError(t(err instanceof ApiError && err.code === 'conductor.role_exists' ? 'roleKeyTaken' : 'roleSaveFailed'));
     }
-  }, [newRoleKey, newRoleLabel, onChanged, onError]);
+  }, [newRoleKey, newRoleLabel, onChanged, onError, t]);
 
   const handleAssign = useCallback(
     async (key: string, action: 'add' | 'remove', holderId: string) => {
@@ -55,6 +56,23 @@ export function ConductorRolesSection({
   );
 
   const card = 'rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4';
+
+  const handleRoleChange = async (role: ConductorRole, action: 'rename' | 'delete'): Promise<void> => {
+    if (busyRole) return;
+    const label = action === 'rename' ? window.prompt(t('roleNewLabel'), role.label)?.trim() : undefined;
+    if (action === 'rename' && (!label || label === role.label)) return;
+    if (action === 'delete' && !window.confirm(t('roleDeleteConfirm', { key: role.key }))) return;
+    setBusyRole(role.key);
+    try {
+      if (label) await updateConductorRoleLabel(role.key, label);
+      else await deleteConductorRole(role.key);
+      onChanged();
+    } catch (err) {
+      onError(t(err instanceof ApiError && err.code === 'conductor.role_in_use' ? 'roleInUse' : 'roleSaveFailed'));
+    } finally {
+      setBusyRole(null);
+    }
+  };
 
   return (
     <section className="mb-10">
@@ -80,6 +98,12 @@ export function ConductorRolesSection({
               />
               <Button variant="primary" onClick={() => void handleAssign(role.key, 'add', holderInputs[role.key] ?? '')}>
                 {t('assignButton')}
+              </Button>
+              <Button variant="ghost" disabled={busyRole !== null} onClick={() => void handleRoleChange(role, 'rename')}>
+                {t('roleRename')}
+              </Button>
+              <Button variant="ghost" disabled={busyRole !== null} onClick={() => void handleRoleChange(role, 'delete')}>
+                {t('roleDelete')}
               </Button>
               {role.holders.map((h) => (
                 // eslint-disable-next-line no-restricted-syntax -- removable holder-token chip (✕ + id), not a §4.2 CTA
