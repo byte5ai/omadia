@@ -11,7 +11,7 @@ import type { JsonObject, Predicate } from '@omadia/conductor-core';
 import { asChannelKeyOf, isOwnBotAuthor } from './ownBot.js';
 import { validateTriggerRequest, type TriggerEnvelope, type TriggerLimits } from './triggerPolicy.js';
 import { eventOccurrenceKey, firstDue, nextDue, runsUntil } from './triggerSchedule.js';
-import type { CreateResult, TriggerStore } from './triggerStore.js';
+import { spendMonth, type CreateResult, type TriggerStore } from './triggerStore.js';
 import type {
   DataActionSpec,
   Trigger,
@@ -214,6 +214,13 @@ export class TriggerService {
         : undefined;
     const renewed = await this.deps.store.renew(id, until, by, maxRuns);
     return renewed ? { ok: true, trigger: renewed } : { ok: false, code: 'invalid', message: 'the trigger could not be renewed' };
+  }
+
+  /** #1776 — book the cost of a context's run that was not a firing (a routine's "run now"). */
+  async bookManualSpend(kind: TriggerContextKind, contextId: string, costUsd: number, detail: Record<string, unknown>): Promise<void> {
+    const trigger = (await this.listForContext(kind, contextId))[0];
+    if (!trigger) return;
+    await this.deps.store.bookManualSpend(trigger.id, costUsd, spendMonth(this.now()), detail);
   }
 
   get(id: string): Promise<Trigger | undefined> {

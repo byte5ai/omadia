@@ -7,7 +7,7 @@ import type {
 } from '@omadia/channel-sdk';
 import { toSemanticAnswer } from '@omadia/channel-sdk';
 import { turnContext, today } from '@omadia/orchestrator';
-import { runInExecutionContext } from '@omadia/usage-telemetry';
+import { meterUsageCost, runInExecutionContext } from '@omadia/usage-telemetry';
 import {
   SYSTEM_SPEAKER,
   type AgentSpeaker,
@@ -273,6 +273,11 @@ export interface RoutineRunnerOptions {
    * boot, tests): the slug alone resolves the orchestrator.
    */
   resolveAgent?: (routine: Pick<Routine, 'agentSlug' | 'agentId'>) => RoutineAgentResolution;
+  /**
+   * #1776 — a manual run's cost goes onto the routine's trigger (the operator
+   * trigger view, ADR 0020); a cron run's cost is settled by its firing.
+   */
+  bookManualRunCost?: (routineId: string, costUsd: number) => Promise<void>;
   log?: (msg: string) => void;
   /** Override the per-user active-routine cap. */
   maxActivePerUser?: number;
@@ -323,6 +328,7 @@ export class RoutineRunner {
   private readonly getOrchestrator: (agentSlug: string | null) => OrchestratorLike | undefined;
   private readonly deliveryRefusal: RoutineRunnerOptions['deliveryRefusal'];
   private readonly resolveAgent: RoutineRunnerOptions['resolveAgent'];
+  private readonly bookManualRunCost: RoutineRunnerOptions['bookManualRunCost'];
   private readonly senders: ProactiveSenderRegistry;
   private readonly log: (msg: string) => void;
   private readonly maxActivePerUser: number;
@@ -340,6 +346,7 @@ export class RoutineRunner {
     this.senders = opts.senderRegistry;
     this.deliveryRefusal = opts.deliveryRefusal;
     this.resolveAgent = opts.resolveAgent;
+    this.bookManualRunCost = opts.bookManualRunCost;
     this.log = opts.log ?? ((msg) => console.log(msg));
     this.maxActivePerUser =
       opts.maxActivePerUser ?? DEFAULT_MAX_ACTIVE_PER_USER;
@@ -756,6 +763,8 @@ export class RoutineRunner {
     // #1763 — a run through the agent's chat agent reports no tool calls or
     // iterations; they are recorded as unknown, not as zero.
     let countsKnown = true;
+    // #1776 — what this run cost (the turn and the emitter's guard).
+    let costUsd: number | null = null;
 
     try {
       // Re-read the row before invoking. A pause/delete that landed
@@ -818,7 +827,17 @@ export class RoutineRunner {
       const slug = orchestrator.speaker?.slug;
       const asAgentTurn = <T>(work: () => Promise<T>): Promise<T> =>
         slug ? runInExecutionContext({ kind: 'agent_turn', ownerId: slug, agentSlug: slug }, work) : work();
-      const turn = await asAgentTurn(() => this.runTurnWithOptionalCapture(fresh, orchestrator, signal));
+      // A turn that throws still spent what it spent: measured around the catch.
+      const metered = await meterUsageCost(async () => {
+        try {
+          return { turn: await asAgentTurn(() => this.runTurnWithOptionalCapture(fresh, orchestrator, signal)) };
+        } catch (err) {
+          return { failed: err };
+        }
+      });
+      costUsd = metered.costUsd;
+      if ('failed' in metered.value) throw metered.value.failed;
+      const turn = metered.value.turn;
       result = turn.result;
       cardBody = turn.cardBody;
       countsKnown = turn.published === undefined;
@@ -852,7 +871,11 @@ export class RoutineRunner {
       }
 
       const finished = result;
-      const answer = turn.published ?? (await asAgentTurn(() => publishRoutineAnswer(orchestrator, finished)));
+      const published = turn.published
+        ? { value: turn.published, costUsd: 0 }
+        : await meterUsageCost(() => asAgentTurn(() => publishRoutineAnswer(orchestrator, finished)));
+      costUsd += published.costUsd;
+      const answer = published.value;
       await sender.send({
         conversationRef: fresh.conversationRef,
         message: answer,
@@ -900,7 +923,13 @@ export class RoutineRunner {
           iterations: countsKnown ? (result?.iterations ?? null) : null,
           toolCalls: countsKnown ? (result?.toolCalls ?? null) : null,
           runTrace: result?.runTrace ?? null,
+          costUsd,
         });
+        if (trigger === 'manual' && costUsd !== null && costUsd > 0) {
+          await this.bookManualRunCost?.(routine.id, costUsd).catch((err: unknown) => {
+            this.log(`[routines/runner] booking the manual run cost of ${routine.id} failed: ${errMsg(err)}`);
+          });
+        }
 
         // Backwards-compat: keep updating last_run_* on the routines row
         // so the existing operator-UI tabular row keeps working without

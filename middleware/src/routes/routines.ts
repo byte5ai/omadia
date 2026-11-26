@@ -115,6 +115,8 @@ export interface RoutineRunSummaryDto {
   errorMessage: string | null;
   iterations: number | null;
   toolCalls: number | null;
+  /** #1776 — metered model cost in USD; null = not metered. */
+  costUsd: number | null;
 }
 
 export interface RoutineRunDetailDto extends RoutineRunSummaryDto {
@@ -127,6 +129,8 @@ export interface RoutineRunDetailDto extends RoutineRunSummaryDto {
 export interface ListRoutineRunsResponse {
   runs: RoutineRunSummaryDto[];
   count: number;
+  /** #1776 — what all recorded runs of the routine cost (USD). */
+  totalCostUsd: number;
 }
 
 export interface RoutineRunResponse {
@@ -145,6 +149,7 @@ function toRunSummary(r: RoutineRun): RoutineRunSummaryDto {
     errorMessage: r.errorMessage,
     iterations: r.iterations,
     toolCalls: r.toolCalls,
+    costUsd: r.costUsd,
   };
 }
 
@@ -366,9 +371,11 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
           id,
           Number.isFinite(limit) ? limit : 50,
         );
+        const total = await deps.runsStore.totalCost(id);
         const body: ListRoutineRunsResponse = {
           runs: rows.map(toRunSummary),
           count: rows.length,
+          totalCostUsd: total.costUsd,
         };
         res.json(body);
       } catch (err) {

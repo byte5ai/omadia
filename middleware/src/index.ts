@@ -3739,6 +3739,10 @@ async function main(): Promise<void> {
         ),
       // #1743 / ADR 0240 — a routine whose creator's zone is unknown runs in the instance's.
       defaultTimeZone: config.PROACTIVE_TIMEZONE,
+      // #1776 — a manual run's cost is booked on the routine's trigger.
+      bookManualRunCost: async (routineId, costUsd) => {
+        await triggersRef.current?.service.bookManualSpend('routine', routineId, costUsd, { routine: routineId });
+      },
       // #1744 / #1745 — the agent a routine is bound to, by id.
       resolveAgent: (routine) =>
         resolveRoutineAgent(routine, serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')),

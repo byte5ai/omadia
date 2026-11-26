@@ -1866,3 +1866,49 @@ describe('#1759 / #1760 / #1761 — template run outcomes', () => {
     assert.match(run.errorMessage ?? '', /'query_hr' was not called/);
   });
 });
+
+describe('#1776 — what a routine run cost', () => {
+  it('records the metered cost on the run, also for a failed turn, and books a manual run on its trigger', async () => {
+    const { addMeteredCost } = await import('@omadia/usage-telemetry');
+    const booked: Array<{ id: string; cost: number }> = [];
+    let fail = false;
+    const orchestrator: OrchestratorLike = {
+      runTurn(): Promise<ChatTurnResult> {
+        addMeteredCost(0.25);
+        if (fail) return Promise.reject(new Error('provider down'));
+        return Promise.resolve({ answer: 'ok', toolCalls: 1, iterations: 1 });
+      },
+    };
+    const store = new InMemoryRoutineStore();
+    const runsStore = new InMemoryRoutineRunsStore();
+    const scheduler = new StubScheduler();
+    const senderRegistry = new InMemoryProactiveSenderRegistry();
+    senderRegistry.register(new StubSender());
+    const runner = new RoutineRunner({
+      store: store as unknown as RoutineStore,
+      runsStore: runsStore as unknown as RoutineRunsStore,
+      scheduler,
+      getOrchestrator: () => orchestrator,
+      senderRegistry,
+      bookManualRunCost: (id, cost) => {
+        booked.push({ id, cost });
+        return Promise.resolve();
+      },
+      log: () => {},
+    });
+    const routine = await runner.createRoutine(baseInput);
+
+    await runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(runsStore.inserts[0]!.costUsd, 0.25);
+    assert.deepEqual(booked, [{ id: routine.id, cost: 0.25 }]);
+
+    await scheduler.fire(routine.id);
+    assert.equal(runsStore.inserts[1]!.costUsd, 0.25);
+    assert.equal(booked.length, 1, 'a cron run is settled by its firing, not booked again');
+
+    fail = true;
+    await runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(runsStore.inserts[2]!.status, 'error');
+    assert.equal(runsStore.inserts[2]!.costUsd, 0.25, 'a failed turn still spent');
+  });
+});

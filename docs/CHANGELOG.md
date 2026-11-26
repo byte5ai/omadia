@@ -100,6 +100,12 @@ changelog.
   sections report a source that was not called, returned prose instead of JSON rows, or names
   no list: the renderer returns `warnings`, the preview shows them, and a delivered run
   records them as `template: …` in its error field.
+- **Routine cost** (#1776, ADR 0243, decided after recommendation, reversible): every run
+  stores its metered model cost (`routine_runs.cost_usd`, routines migration
+  `0011_routine_runs_cost`; a failed turn still counts), `GET /api/v1/routines/:id/runs`
+  returns `costUsd` per run and `totalCostUsd`, and a manual run's cost is booked on the
+  routine's trigger (`TriggerService.bookManualSpend`: spend, monthly budgets, audit row
+  `fired` / `manual_run`), so the operator trigger view shows every run.
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
