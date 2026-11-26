@@ -11,6 +11,8 @@ import { mountAdminTokenSurface } from '../../src/routes/adminTokenMount.js';
 import {
   ADMIN_TOKEN_FAILURE_WINDOW_MS,
   ADMIN_TOKEN_MAX_FAILURES,
+  ADMIN_TOKEN_MIN_UNBRAKED_LENGTH,
+  adminTokenThrottleWarnings,
   createAdminTokenThrottle,
 } from '../../src/routes/adminTokenThrottle.js';
 import { listenLoopback } from '../_helpers/listenLoopback.js';
@@ -75,6 +77,29 @@ describe('admin-token throttle: per vouched client', () => {
     const peer = fakeReq(undefined);
     for (let i = 0; i < ADMIN_TOKEN_MAX_FAILURES * 3; i++) throttle.recordFailure(peer);
     assert.equal(throttle.retryAfterMs(peer), 0);
+  });
+});
+
+describe('admin-token throttle: boot warnings', () => {
+  const socket = parseClientAddressPolicy('socket');
+  const long = 'a'.repeat(ADMIN_TOKEN_MIN_UNBRAKED_LENGTH);
+
+  it('says nothing without a token or behind a vouched client address', () => {
+    assert.deepEqual(adminTokenThrottleWarnings(undefined, socket), []);
+    assert.deepEqual(adminTokenThrottleWarnings('  ', socket), []);
+    assert.deepEqual(adminTokenThrottleWarnings('short', parseClientAddressPolicy(`header:${HEADER}`)), []);
+    assert.deepEqual(adminTokenThrottleWarnings('short', parseClientAddressPolicy('xff:1')), []);
+  });
+
+  it('warns that the shared TCP peer is unbraked, and about a short token on top', () => {
+    const forLong = adminTokenThrottleWarnings(long, socket);
+    assert.equal(forLong.length, 1);
+    assert.match(forLong[0] ?? '', /AUTH_LOGIN_CLIENT_ADDRESS=socket/);
+
+    const forShort = adminTokenThrottleWarnings(long.slice(1), socket);
+    assert.equal(forShort.length, 2);
+    assert.match(forShort[1] ?? '', /shorter than 32/);
+    assert.ok(forShort.every((line) => !line.includes(long.slice(1))), 'the token never reaches the log');
   });
 });
 

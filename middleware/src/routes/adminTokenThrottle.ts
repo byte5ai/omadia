@@ -22,6 +22,11 @@ import { clientAddressFor, type ClientAddressPolicy } from '../auth/clientAddres
 export const ADMIN_TOKEN_MAX_FAILURES = 10;
 /** The bucket drains {@link ADMIN_TOKEN_MAX_FAILURES} failures per window. */
 export const ADMIN_TOKEN_FAILURE_WINDOW_MS = 60_000;
+/**
+ * Below this length a token on an unbraked surface is guessable enough to
+ * warn about: 32 characters of hex or base64 is 128 bits or more.
+ */
+export const ADMIN_TOKEN_MIN_UNBRAKED_LENGTH = 32;
 /** Distinct clients tracked at once; the least recently failed go first. */
 const MAX_TRACKED_CLIENTS = 10_000;
 
@@ -90,4 +95,29 @@ export function createAdminTokenThrottle(opts: AdminTokenThrottleOptions): Admin
       }
     },
   };
+}
+
+/**
+ * Boot-time lines for an ADMIN_TOKEN the throttle cannot protect. With
+ * `AUTH_LOGIN_CLIENT_ADDRESS=socket` every request comes from the shared TCP
+ * peer, which is never braked (see the file comment), so the token's length
+ * is the only defence. That stays the accepted trade-off; the operator is told
+ * once at boot instead of finding out from the security docs. Empty for no
+ * token or a vouched client address.
+ */
+export function adminTokenThrottleWarnings(
+  token: string | undefined,
+  clientAddress: ClientAddressPolicy,
+): string[] {
+  const value = token?.trim() ?? '';
+  if (value === '' || clientAddress.kind !== 'socket') return [];
+  const warnings = [
+    '[admin-token] wrong tokens are not braked: AUTH_LOGIN_CLIENT_ADDRESS=socket keys every client as the shared TCP peer. Set it to xff:<n> or header:<name> behind a proxy (Fly: header:Fly-Client-IP).',
+  ];
+  if (value.length < ADMIN_TOKEN_MIN_UNBRAKED_LENGTH) {
+    warnings.push(
+      `[admin-token] ADMIN_TOKEN is shorter than ${String(ADMIN_TOKEN_MIN_UNBRAKED_LENGTH)} characters while unbraked; use a long random token (openssl rand -hex 32).`,
+    );
+  }
+  return warnings;
 }
