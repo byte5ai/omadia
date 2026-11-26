@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Security — stdio MCP servers off in the Compose stack; trust model documented (#1914, ADR-0211) (2026-11-26)
+
+- A stdio MCP server runs under the middleware's OS user and can read `/proc/1/environ`
+  (`VAULT_KEY`, `DATABASE_URL`, …) and `/data` (dev vault key), so it can decrypt every stored
+  secret. Decision by recommendation (reversible): accept and document this instead of
+  isolating the child for now. ADR-0211 (Proposed) supersedes ADR-0139 in part.
+- **⚠️ Compose upgrade:** `middleware/compose.defaults.env` now sets `MCP_STDIO_ENABLED=false`.
+  An operator who uses stdio servers sets `MCP_STDIO_ENABLED=true` in `middleware/.env`;
+  until then existing stdio rows are refused at connect time. The built-in default
+  (from source, desktop, Fly) stays `true`.
+- The add-server stdio hint and the catalog card of a stdio entry say that such a server can
+  read the middleware's secrets. `docs/security-architecture.md` §10p, `.env.example`, handoff
+  §10 updated.
+
 ### Fixed — MCP Control Center: input checks, re-scan results, risk and grant errors, stdio flag, i18n (#1916, #1941, #1943, #1953, #1954, #1955, #1957, #1959) (2026-11-26)
 
 - **Migration `0114_mcp_server_last_scan`** adds `mcp_servers.last_scan_at` and

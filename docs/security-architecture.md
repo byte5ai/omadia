@@ -7265,10 +7265,19 @@ Endpoints that come from a registry catalog are not operator configuration and
 keep the stricter untrusted rule (`assertUntrustedEndpointSafe`,
 `mcpRegistryClient.ts`): `https` only, and no private or loopback host either.
 
-**stdio trust model.** For transport `stdio` the endpoint is a command line.
-The middleware splits it and starts it as its own child process, so it runs as
-the middleware's OS user with the same filesystem and network access. That is
-the same power the admin who saves it already has. Catalog imports only write
+**stdio trust model (ADR-0211, #1914).** For transport `stdio` the endpoint is
+a command line. The middleware splits it and starts it as its own child
+process, so it runs as the middleware's OS user with the same filesystem and
+network access. Its own environment is minimal (the SDK defaults plus the
+server's config values), but that is not a boundary: the middleware is PID 1
+under the same user, so the child can read `/proc/1/environ` (`VAULT_KEY`,
+`CREDENTIAL_KEYCHAIN_KEY`, `DATABASE_URL`, provider keys) and the data
+directory (`/data/.dev-vault.key` when no `VAULT_KEY` is set). With those it
+can decrypt every stored secret. A stdio server is therefore inside the
+middleware's trust domain; for a command the admin typed that is the admin's
+own power, for a catalog entry it is third-party npm code with the same
+access. The add-server form and the catalog card of a stdio entry say so.
+Catalog imports only write
 `npx -y -- <package>` and check the package name against a strict npm-name
 grammar (`NPM_NAME_RE`); a manual entry accepts any command. Saving a stdio
 server writes a log line with its id, name and source (manual or catalog), not
@@ -7280,8 +7289,10 @@ catalog import, with
 `400 {"error":"mcp_stdio_disabled","code":"stdio_disabled"}`, and an existing
 stdio row is refused at connect time (Discover → `502` with
 `code: stdio_disabled`, re-scans, runtime calls) without starting a process.
-The default is `true`, so existing installations keep working unchanged.
-Whether the Compose stack should ship with stdio off is an open decision.
+The built-in default is `true`, so from-source runs, the desktop app and
+existing deployments keep working unchanged. The docker-compose stack ships
+with `MCP_STDIO_ENABLED=false` in `middleware/compose.defaults.env`; an operator
+who wants stdio servers sets `true` in `middleware/.env` (ADR-0211).
 
 **Residual risks.**
 
@@ -7302,6 +7313,10 @@ Whether the Compose stack should ship with stdio off is an open decision.
 - With stdio on, an admin can run any command in the middleware container.
   Restricting manual stdio entries to the catalog grammar unless the operator
   opts in to free command lines is deferred.
+- With stdio on, every stdio server (and every catalog package it pulls) can
+  read the middleware's keys and so every stored secret (accepted, ADR-0211).
+  Isolating stdio children (separate UID, hidden `/proc`, no `/data`) is the
+  open follow-up.
 ## 10q. The admin audit trail: one actor rule, one read route (#1315, #1347)
 
 `admin_audit` is append-only; nothing in the code updates or deletes a row.
