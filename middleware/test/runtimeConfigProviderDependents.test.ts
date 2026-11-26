@@ -321,3 +321,38 @@ describe('#1891 — a provider plugin config write rebuilds the LLM plugins', ()
     assert.deepEqual(h.reactivated, ['@omadia/plugin-office']);
   });
 });
+
+describe('#2240 — provider keys are refused outside the kernel scope', () => {
+  let h: Harness | undefined;
+  afterEach(async () => {
+    await h?.close();
+    h = undefined;
+  });
+
+  it('PATCH secrets of extras with a provider API key answers 400 and writes nothing', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: EXTRAS }]);
+    const res = await patchWithBody(`${h.baseUrl}/installed/${encodeURIComponent(EXTRAS)}/secrets`, {
+      set: { 'provider:anthropic/api_key': 'sk-ant-dedicated' },
+    });
+    assert.equal(res.status, 400);
+    assert.equal((JSON.parse(res.body) as { code: string }).code, 'runtime.provider_key_in_kernel_scope');
+    assert.deepEqual(h.reactivated, []);
+  });
+
+  it('PATCH config of the verifier with the legacy key name answers 400', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }]);
+    const res = await patchWithBody(`${h.baseUrl}/installed/${encodeURIComponent(VERIFIER)}/config`, {
+      anthropic_api_key: 'sk-ant-dedicated',
+    });
+    assert.equal(res.status, 400);
+    assert.equal(h.registry.get(VERIFIER)?.config['anthropic_api_key'], undefined);
+  });
+
+  it('the kernel scope itself still takes the key', async () => {
+    h = await makeHarness([{ id: ORCH }]);
+    const status = await patch(`${h.baseUrl}/installed/${encodeURIComponent(ORCH)}/secrets`, {
+      set: { anthropic_api_key: 'sk-ant-kernel' },
+    });
+    assert.equal(status, 200);
+  });
+});

@@ -3,6 +3,8 @@ import {
   resolveLlmProvider,
   resolveModelRefStrict,
   UnresolvedModelRefError,
+  type LlmProvider,
+  type LlmProviderPool,
 } from '@omadia/llm-provider';
 import type { DecisionModelService, KnowledgeGraph } from '@omadia/plugin-api';
 import type { PluginContext } from '@omadia/plugin-api';
@@ -93,6 +95,33 @@ export interface VerifierPluginHandle {
   close(): Promise<void>;
 }
 
+/** The subscription CLI cannot run the verifier (#1583, ADR-0086). */
+const SUBSCRIPTION_CLI_PROVIDER_ID = 'claude-cli';
+
+/**
+ * #2240 / ADR-0215 — the verifier's provider comes from the kernel pool
+ * (`llmProviderPool@1`). Only a host that publishes no pool (legacy hosts,
+ * unit tests) falls back to this plugin's own vault scope. `claude-cli` is
+ * refused before either source: the pool could build it, the verifier cannot
+ * run on it.
+ */
+async function resolveVerifierProvider(
+  ctx: PluginContext,
+  providerId: string,
+): Promise<LlmProvider | undefined> {
+  if (providerId === SUBSCRIPTION_CLI_PROVIDER_ID) return undefined;
+  const kernelPool = ctx.services.getOptional<LlmProviderPool>('llmProviderPool');
+  if (kernelPool) {
+    return kernelPool.get(providerId).catch((err: unknown) => {
+      ctx.log(
+        `[harness-verifier] provider '${providerId}' from the kernel pool failed to build: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    });
+  }
+  return resolveLlmProvider({ providerId, getSecret: (k) => ctx.secrets.get(k) });
+}
+
 export async function activate(
   ctx: PluginContext,
 ): Promise<VerifierPluginHandle> {
@@ -110,15 +139,13 @@ export async function activate(
     };
   }
 
-  // Build the configured LLM provider (default Anthropic) from the vault. The
-  // factory reads the provider-namespaced key (with the legacy fallback for
-  // Anthropic); undefined means no key is configured for the chosen provider.
+  // The configured LLM provider (default Anthropic), from the kernel provider
+  // pool (#2240, ADR-0215): the key lives in the kernel's vault scope, so one
+  // rotation under LLM access reaches the verifier too. Undefined means no
+  // key is configured for the chosen provider.
   const providerId =
     (ctx.config.get<string>('llm_provider') ?? '').trim() || 'anthropic';
-  const baseProvider = await resolveLlmProvider({
-    providerId,
-    getSecret: (k) => ctx.secrets.get(k),
-  });
+  const baseProvider = await resolveVerifierProvider(ctx, providerId);
   if (!baseProvider) {
     ctx.log(
       providerId === 'claude-cli'

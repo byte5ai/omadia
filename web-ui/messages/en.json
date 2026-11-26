@@ -1445,6 +1445,10 @@
         "what": "The change was saved, but not every plugin that uses it restarted.",
         "next": "Save again to retry the restart. If it keeps failing, the support details name the plugin and its activation error."
       },
+      "provider_key_in_kernel_scope": {
+        "what": "Provider API keys are no longer stored per plugin. The agent runtime, the verifier and the background tasks all use the keys under LLM access.",
+        "next": "Enter the key under Admin → LLM access. Nothing was saved here."
+      },
       "empty_secrets_patch": {
         "what": "The save carried no changed value.",
         "next": "Change or clear at least one field before saving."

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — superseded in part by [ADR-0215](0215-system-modules-use-the-kernel-provider-pool.md) (system-module provider pools and credential scopes)
 
 - **Date:** 2026-11-25
 - **Deciders:** Owner (byte5), from the ADR-coverage audit of 2026-11-25

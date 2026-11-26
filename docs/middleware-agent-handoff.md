@@ -3542,9 +3542,11 @@ erste, der sich bauen lässt, gewinnt:
    die den Abo-Fall repariert;
 4. `anthropic` als historischer Default.
 
-Credential-Quellen je Kandidat, in dieser Reihenfolge: eigener Vault-Scope,
-dann der Kernel-Pool `llmProviderPool` (liest den Orchestrator-Scope, teilt
-dessen Circuit-Breaker). Der `llmProviderCatalog` wird durchgereicht — ohne ihn
+Credential-Quelle (seit ADR-0215, #2240): nur der Kernel-Pool
+`llmProviderPool` (liest den Kernel-Scope `@omadia/orchestrator`, teilt dessen
+Circuit-Breaker); der eigene Vault-Scope zählt nur auf einem Host ohne Pool
+(Legacy, Unit-Tests). Stufe 2 fragt entsprechend, ob der Kernel-Scope einen
+Anthropic-Key hat. Der `llmProviderCatalog` wird durchgereicht — ohne ihn
 löst `claude-cli` auf das Default-Wire-Format `openai-compatible` auf und
 scheitert an der fehlenden `baseURL`; Wire-Format und `requiresApiKey: false`
 stehen nur im Katalog-Descriptor. Eine werfende Quelle wird geloggt und
@@ -3698,6 +3700,21 @@ getauscht. Tests: `test/orchestratorExtrasProviderResolution.test.ts`,
 `test/adminEmbeddingProviderRoute.test.ts`, `web-ui/app/__tests__/page.test.tsx`.
 
 ### Provider-Pool-Invalidierung bei Credential-Änderung (#1080)
+
+**Ein Kernel-Pool für die Systemmodule (#2240, ADR-0215).** Orchestrator,
+Verifier und orchestrator-extras bauen ihre Provider nur noch aus dem
+Kernel-`llmProviderPool` (`optional_requires: llmProviderPool@1`); Provider-API-Keys
+liegen in einem Vault-Scope, `KERNEL_PROVIDER_CREDENTIAL_SCOPE`
+(`src/platform/kernelProviderCredentials.ts`, Id weiter `@omadia/orchestrator`).
+Der LLM-Zugang schreibt nur dorthin und baut alle installierten LLM-Plugins neu
+(`llmPluginsToRebuild`). `consolidateProviderCredentials` läuft bei jedem Boot nach
+`runLegacyBootstrap` und vor der ersten Plugin-Aktivierung: Kopien in den Scopes
+von Verifier und extras werden in den Kernel-Scope verschoben (fehlt dort),
+gelöscht (identisch) oder als `superseded:<key>` beiseitegelegt (abweichend, wird
+nicht mehr gelesen, Log nur mit Scope/Provider-Id). Ein Provider-API-Key an die
+Scopes von Verifier/extras über den Plugin-Editor wird mit
+`400 runtime.provider_key_in_kernel_scope` abgelehnt; beide Manifeste haben kein
+`anthropic_api_key`-Feld mehr. Der Verifier lehnt `claude-cli` vor dem Pool ab.
 
 Der Kernel-`llmProviderPool` memoisiert pro Provider-Id, auch ein negatives
 „kein Key". Deshalb hängt er an einem kernel-internen Write-Observer der
@@ -6591,6 +6608,13 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+- **Kernel-Pool-Rest (#2240, ADR-0215).** Der OAuth-Fan-out
+  (`fanOutProviderOAuthTokens`) und der Back-compat-Key-Seed von `/setup`
+  (`anthropicKeyConsumers`) schreiben weiter Kopien in die Scopes von Verifier und
+  extras; die Module lesen sie nicht, die API-Key-Kopien räumt der nächste Boot auf.
+  Beide auf den Kernel-Scope verengen (OAuth: Hydration „newest wins“ über die
+  Scopes vorher prüfen).
+
 - **croner-`?`-Kompatibilität (`middleware/src/scheduler/cronerCompat.ts`).** Unter croner 11
   ist `?` ein Alias für `*`; der Kernel ersetzt es weiter wie croner 9.x durch den Feldwert zum
   Konstruktionszeitpunkt, damit gespeicherte Routinen, Agent-Schedules und Trigger ihren Takt
@@ -7732,8 +7756,9 @@ Der Orchestrator greift die Dienste von extras **und** Verifier eager in
 (`src/platform/providerDependents.ts`) baut deshalb den abgreifenden Plugin
 immer **nach** den abgegriffenen neu und ergänzt ihn, wenn er fehlt. Genutzt
 von `reactivateAfterProviderWrite` (direkte Zuweisung an extras/Verifier →
-danach Orchestrator), vom Settings-`PATCH` (Key landet in allen drei Scopes →
-Verifier, extras, Orchestrator) und vom OAuth-Fan-out
+danach Orchestrator), vom Settings-`PATCH` (Key landet seit ADR-0215 nur im
+Kernel-Scope; jeder installierte LLM-Plugin wird neu gebaut → Verifier, extras,
+Orchestrator) und vom OAuth-Fan-out
 `fanOutProviderOAuthTokens`. Der Subscription-Hand-off verschiebt den Rebuild
 (`deferCapturerRebuild`) und baut den Orchestrator nur dann einmal am Ende,
 wenn dessen eigener Schritt übersprungen wurde.

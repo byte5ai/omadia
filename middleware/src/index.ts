@@ -541,6 +541,10 @@ import {
   createProviderPoolCredentialListener,
 } from './platform/providerPoolInvalidation.js';
 import {
+  consolidateProviderCredentials,
+  KERNEL_PROVIDER_CREDENTIAL_SCOPE,
+} from './platform/kernelProviderCredentials.js';
+import {
   providerCredentialPurgeBlocker,
   purgeProviderCredentials,
 } from './platform/providerCredentialPurge.js';
@@ -1496,8 +1500,11 @@ async function main(): Promise<void> {
   // runtime today; the model-policy validation (W2) reads `usable()` from it.
   // #1080 — created here, before the provider-plugin boot loop below, so the
   // catalog register/unregister helpers can invalidate it.
+  // #2240 / ADR-0215 — the ONE pool of the system modules: the orchestrator,
+  // the verifier and orchestrator-extras build their providers from it, so a
+  // key rotation (vault write → `invalidate` below) reaches all of them.
   const kernelProviderPool = createLlmProviderPool({
-    getSecret: (k) => secretVault.get('@omadia/orchestrator', k),
+    getSecret: (k) => secretVault.get(KERNEL_PROVIDER_CREDENTIAL_SCOPE, k),
     catalog: llmProviderCatalog,
     // The orchestrator's own retry budget (see harness-orchestrator plugin.ts);
     // the pool is shared with it from W3 on, so both sides agree.
@@ -1518,7 +1525,7 @@ async function main(): Promise<void> {
   secretVault.onWrite(
     createProviderPoolCredentialListener({
       pool: kernelProviderPool,
-      scope: '@omadia/orchestrator',
+      scope: KERNEL_PROVIDER_CREDENTIAL_SCOPE,
     }),
   );
   const registerProviderFromPlugin = (pluginId: string): void => {
@@ -2421,6 +2428,10 @@ async function main(): Promise<void> {
     },
     builtInOptOuts,
   });
+  // #2240 / ADR-0215 — provider API keys live in the kernel scope only; the
+  // verifier's and extras' own copies (the old three-scope fan-out, the env
+  // seeding above) move there before any plugin activates. Idempotent.
+  await consolidateProviderCredentials(secretVault);
 
   // S+8.5 sub-commit-3 — Auto-reset errored plugins whose root cause has
   // been addressed since the last boot (manifest mtime newer than the

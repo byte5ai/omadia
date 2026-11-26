@@ -1445,6 +1445,10 @@
         "what": "Die Änderung wurde gespeichert, aber nicht jedes Plugin, das sie nutzt, ist neu gestartet.",
         "next": "Speichere erneut, um den Neustart zu wiederholen. Bleibt es dabei, nennen die Support-Details das Plugin und seinen Aktivierungsfehler."
       },
+      "provider_key_in_kernel_scope": {
+        "what": "Provider-API-Keys werden nicht mehr pro Plugin gespeichert. Agentenlaufzeit, Verifier und Hintergrund-Jobs nutzen alle die Keys unter LLM-Zugang.",
+        "next": "Trag den Key unter Admin → LLM-Zugang ein. Hier wurde nichts gespeichert."
+      },
       "empty_secrets_patch": {
         "what": "Beim Speichern war kein geänderter Wert dabei.",
         "next": "Ändere oder leere mindestens ein Feld, bevor du speicherst."

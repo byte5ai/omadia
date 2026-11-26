@@ -24,6 +24,10 @@ import type { InstalledAgent, InstalledRegistry } from '../plugins/installedRegi
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import { pluginLlmProviderId } from '../platform/llmProviderManifest.js';
 import {
+  isProviderApiKeyVaultKey,
+  LEGACY_PROVIDER_CREDENTIAL_SCOPES,
+} from '../platform/kernelProviderCredentials.js';
+import {
   buildPrivacyPosture,
   readOpenFieldClassification,
   readNameDetectorPosture,
@@ -336,6 +340,8 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       // Shallow merge: existing config + body patch. `null` values clear
       // the key, anything else overwrites or adds.
       const patch = body as Record<string, unknown>;
+      const written = Object.keys(patch).filter((k) => patch[k] !== null);
+      if (refuseProviderKeyOutsideKernelScope(res, id, written)) return;
       const nextConfig: Record<string, unknown> = { ...installed.config };
       for (const [k, v] of Object.entries(patch)) {
         if (v === null) {
@@ -1049,6 +1055,27 @@ function resolveJsonFileField(
  * write to `res` afterwards.
  */
 /**
+ * #2240 / ADR-0215 — a provider API key written into the verifier's or
+ * extras' own scope would never be read (they use the kernel pool), so the
+ * write is refused with a pointer to LLM access instead of being saved as a
+ * silent no-op. Answers the 400 and returns `true` when it refused.
+ */
+function refuseProviderKeyOutsideKernelScope(
+  res: Response,
+  id: string,
+  keys: Iterable<string>,
+): boolean {
+  if (!LEGACY_PROVIDER_CREDENTIAL_SCOPES.includes(id)) return false;
+  const key = [...keys].find(isProviderApiKeyVaultKey);
+  if (key === undefined) return false;
+  res.status(400).json({
+    code: 'runtime.provider_key_in_kernel_scope',
+    message: `'${key}' is not stored per plugin any more — enter provider API keys under LLM access`,
+  });
+  return true;
+}
+
+/**
  * #1891 — the reactivation deps of a config or secret write: a provider
  * plugin's own write (e.g. its base URL) rebuilds every LLM plugin too.
  */
@@ -1078,6 +1105,7 @@ async function applySetupValues(
     });
     return;
   }
+  if (refuseProviderKeyOutsideKernelScope(res, id, Object.keys(setEntries))) return;
   // OM-17 — validate VALUES before anything is written. Until this landed, the
   // only checks were shape checks, so a masked field happily accepted a Google
   // account password and reported "gespeichert". The vault write is the
