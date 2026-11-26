@@ -2,13 +2,19 @@
 // the publish-time validation and the runtime executor — a drift between
 // "validate accepts" and "runtime parses" would park runs nothing wakes.
 
-/** Milliseconds for a positive ISO-8601 duration (days/hours/minutes/seconds
+/** Milliseconds for a positive ISO-8601 duration (weeks/days/hours/minutes/seconds
  *  subset), or null for anything absent, malformed or non-positive. */
 export function parseIsoDurationMs(iso: string | null | undefined): number | null {
   if (!iso) return null;
-  const m = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(iso.trim());
+  const value = iso.trim();
+  const weeks = /^P(\d+)W$/.exec(value);
+  if (weeks) {
+    const ms = Number(weeks[1]) * 7 * 86_400_000;
+    return Number.isSafeInteger(ms) && ms > 0 ? ms : null;
+  }
+  const m = /^P(?:(\d+)D)?(?:T(?=\d)(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(value);
   if (!m) return null;
   const [, d, h, min, s] = m;
   const ms = (Number(d ?? 0) * 86400 + Number(h ?? 0) * 3600 + Number(min ?? 0) * 60 + Number(s ?? 0)) * 1000;
-  return ms > 0 ? ms : null;
+  return Number.isSafeInteger(ms) && ms > 0 ? ms : null;
 }

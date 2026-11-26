@@ -100,6 +100,39 @@ changelog.
   and writes into another agent's scope through a dry store; only processes the oracle lets it
   read and its own qualified scope may reach the store.
 
+### Security — the last standalone grandfather row is gone (#838) (2026-11-26)
+
+- `STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20` is empty. Its last row,
+  `@omadia/channel-teams` → `graphPool`, was the C7 SQL ramp. Teams 0.46.0 declares
+  `permissions.sql` with its own migrations, the channel runtime honours the operator grant
+  (#2254), and the grant is given on the instance. Without a grant, Teams runs without a
+  database instead of failing.
+
+### Fixed — Conductor schedule zones and suppressed triggers (#1714, #1715)
+
+- Conductor evaluates each schedule in its stored IANA zone through the scheduler helper shared with routines. Republishing an unchanged expression keeps the original zone.
+- Migration `0016_schedule_poll_cursor.sql` records evaluated minutes across restarts. Missed slots expire and produce a bounded suppression summary. Disabled live slots and disabled event subscribers are logged. The emit response includes a `suppressed` list. See ADR-0250 and ADR-0251.
+
+### Fixed — Conductor role and template governance (#1708, #1718, #1719, #1725)
+
+- Role creation rejects duplicate keys, label updates are separate, and unknown role assignments return 404. Role deletion refuses roles with active holders or references in active workflow versions. Create, edit and delete write admin audit rows. Soft-deleting a workflow removes its schedules.
+- The role-holder audit regression test distinguishes the session email and account UUID from the routing subject and knowledge-graph ID.
+- Derived templates use person slots for user principals, suggest an available slug based on the template name, and flag action inputs containing HTTP(S) URLs. See ADR-0252.
+- Template submissions and reviews write admin audit rows. Authors can approve their own version on a single-operator install. New versions start private and require review before sharing. See ADR-0253.
+
+### Fixed — Conductor Designer round-trip and editing safeguards (#1716, #1717, #1720)
+
+- The visual designer preserves existing triggers, filters, IDs and graph fields on save. Timer steps have a duration and expiry edge in the inspector. Trigger and principal labels and the default agent prompt are localized.
+- Regenerated the shared plugin UI stylesheet to include the timer color token.
+- Deleting a selection offers a one-step undo. The canvas prompts before leaving or replacing an unsaved draft. Publishing a new version for an existing slug requires confirmation. Operator route segments are reserved workflow slugs.
+
+### Fixed — Conductor publish validation and builder diagnostics (#1722, #1723, #1724, #1928)
+
+- Workflow publish and template resolution check live agent, action and role references, reject internal operator account UUIDs in human steps, check required plugin and MCP action inputs and validate static `webhook.post` URLs. The builder can still draft unconnected actions for inline setup.
+- Human deadlines and reminder intervals must be positive ISO-8601 durations. The builder describes strict approvals and shows validation warnings in chat and after publishing.
+- The action catalog includes MCP server names for the builder and designer. Action IDs and runtime dispatch are unchanged.
+- The webhook validation fixtures use the graph's JSON object type, resolving a TypeScript error in the test gate.
+
 ### Security — attachments only from channel adapters, bound at upload (#1960, #1962, ADR-0178) (2026-11-26)
 
 - `ChatTurnInput.storedAttachments` (`StoredTurnAttachment`, `@omadia/channel-sdk` 0.3.16) is the

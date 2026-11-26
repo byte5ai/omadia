@@ -82,6 +82,7 @@ describe('<ConductorCanvas /> template handoff (#429)', () => {
         name: 'Weekly report',
         graph: expect.objectContaining({ entryStepId: 'compile' }),
         enable: false,
+        expectNew: true,
       });
     });
   });
@@ -95,6 +96,27 @@ describe('<ConductorCanvas /> template handoff (#429)', () => {
 
     await waitFor(() => {
       expect(publishConductorWorkflow).toHaveBeenCalledWith(expect.objectContaining({ enable: true }));
+    });
+  });
+
+  it('round-trips timer steps, filtered event triggers and secondary triggers unchanged', async () => {
+    const user = userEvent.setup();
+    const graph = {
+      entryStepId: 'wait',
+      steps: [
+        { id: 'wait', kind: 'timer', timer: { duration: 'PT30S' }, fallbackTransitionId: 'expiry' },
+        { id: 'compile', kind: 'agent', agentId: 'report-bot', say: { channel: 'slack' } },
+      ],
+      transitions: [{ id: 'expiry', source: 'wait', target: 'compile' }],
+      triggers: [
+        { id: 'urgent', kind: 'event', eventId: 'report.created', filter: { op: 'eq', path: 'ctx.urgent', value: true } },
+        { id: 'weekly', kind: 'cron', cron: '0 9 * * 1' },
+      ],
+    };
+    renderCanvas({ graph, nonce: 1, slug: 'weekly-report', name: 'Weekly report' });
+    await user.click(await screen.findByRole('button', { name: 'Save & publish' }));
+    await waitFor(() => {
+      expect(publishConductorWorkflow).toHaveBeenCalledWith(expect.objectContaining({ graph }));
     });
   });
 });

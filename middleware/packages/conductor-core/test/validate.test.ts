@@ -81,6 +81,28 @@ describe('validate', () => {
     expect(codes(g)).toContain('deadline_without_fallback');
   });
 
+  it('rejects invalid human durations even with a fallback and accepts weeks from the designer', () => {
+    const human = {
+      principal: { kind: 'role' as const, ref: 'approver' },
+      channel: 'teams',
+      message: 'Approve',
+      deadline: '24h',
+      reminderInterval: 'PT0S',
+    };
+    const graph: WorkflowGraph = {
+      entryStepId: 'approval',
+      steps: [
+        { id: 'approval', kind: 'human', human, fallbackTransitionId: 'timeout' },
+        { id: 'done', kind: 'action', actionId: 'done' },
+      ],
+      transitions: [{ id: 'timeout', source: 'approval', target: 'done' }],
+    };
+    expect(codes(graph)).toEqual(['human_step_invalid_duration', 'human_step_invalid_duration']);
+    human.deadline = 'P1W';
+    human.reminderInterval = 'PT30M';
+    expect(validate(graph).ok).toBe(true);
+  });
+
   it("rejects a quorum='all' human step without a deadline + fallback (would hang forever)", () => {
     const g: WorkflowGraph = {
       entryStepId: 's1',
