@@ -50,6 +50,27 @@ const PREVIEW_LIMITS: ExtractLimits = {
 };
 
 /**
+ * #1809 — a preview read a setup value (`ctx.secrets.require` /
+ * `ctx.config.require`) the operator has not entered as a test credential
+ * yet. Coded, so the build-status path reports "missing test credential"
+ * instead of a failed build: the code compiled, only the value is missing.
+ * `name` matches the plugin-api classes so `classifyActivationError` maps it
+ * to `secret_missing` / `config_missing` as well.
+ */
+export class PreviewSetupValueMissingError extends Error {
+  readonly code: 'preview.secret_missing' | 'preview.config_missing';
+  readonly key: string;
+  constructor(kind: 'secret' | 'config', key: string, agentId: string) {
+    super(
+      `preview: ${kind} '${key}' is not set for agent '${agentId}'. Fill in the workspace setup-fields before testing.`,
+    );
+    this.name = kind === 'secret' ? 'MissingSecretError' : 'MissingConfigError';
+    this.code = kind === 'secret' ? 'preview.secret_missing' : 'preview.config_missing';
+    this.key = key;
+  }
+}
+
+/**
  * A tool the previewed plugin registered via `ctx.tools.register(spec,
  * handler)` — the tool-runtime contract of a capability plugin. `inputSchema`
  * is the JSON schema the plugin declared (what an agent's model sees);
@@ -921,9 +942,7 @@ function createStubContext(opts: {
       require: async (key) => {
         const v = opts.secretValues[key];
         if (v === undefined) {
-          throw new Error(
-            `preview: secret '${key}' is not set for agent '${opts.agentId}'. Fill in the workspace setup-fields before testing.`,
-          );
+          throw new PreviewSetupValueMissingError('secret', key, opts.agentId);
         }
         return v;
       },
@@ -934,9 +953,7 @@ function createStubContext(opts: {
       require: <T,>(key: string): T => {
         const v = opts.configValues[key];
         if (v === undefined) {
-          throw new Error(
-            `preview: config '${key}' is not set for agent '${opts.agentId}'. Fill in the workspace setup-fields before testing.`,
-          );
+          throw new PreviewSetupValueMissingError('config', key, opts.agentId);
         }
         return v as T;
       },

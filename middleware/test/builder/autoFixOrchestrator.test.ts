@@ -620,3 +620,47 @@ describe('AutoFixOrchestrator integration', () => {
     );
   });
 });
+
+describe('AutoFixOrchestrator · build-number dedup (#1731)', () => {
+  it('a failure while Auto-Fix is off does not block the same build later', async () => {
+    const h = makeHarness({ autoFixEnabled: false });
+    h.orchestrator.ensureSubscribed('d1', 'op@example.com');
+    h.bus.emit('d1', buildFailed([{ code: 'TS2322' }], 7));
+    await settle();
+    assert.equal(h.fired.length, 0);
+
+    h.setAutoFix(true);
+    h.bus.emit('d1', buildFailed([{ code: 'TS2322' }], 7));
+    await settle();
+    assert.equal(h.fired.length, 1);
+  });
+
+  it('failures without a build number never collapse onto one key', async () => {
+    const h = makeHarness();
+    h.orchestrator.ensureSubscribed('d1', 'op@example.com');
+    const noBuildN: Extract<SpecBusEvent, { type: 'build_status' }> = {
+      type: 'build_status',
+      phase: 'failed',
+      reason: 'codegen_failed',
+    };
+    h.bus.emit('d1', noBuildN);
+    await settle();
+    await settle();
+    h.bus.emit('d1', noBuildN);
+    await settle();
+    assert.equal(h.fired.length, 2);
+  });
+
+  it('distinct build numbers each trigger; a replay of one does not', async () => {
+    const h = makeHarness();
+    h.orchestrator.ensureSubscribed('d1', 'op@example.com');
+    h.bus.emit('d1', buildFailed([{ code: 'TS2322' }], 1));
+    await settle();
+    await settle();
+    h.bus.emit('d1', buildFailed([{ code: 'TS2322' }], 1));
+    await settle();
+    h.bus.emit('d1', buildFailed([{ code: 'TS2322' }], 2));
+    await settle();
+    assert.equal(h.fired.length, 2);
+  });
+});
