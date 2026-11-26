@@ -339,6 +339,10 @@ export {
   // W4 — attempts per `callTool`. The timeout hierarchy reasons about the
   // retry-inclusive worst case, so the real number has to be readable.
   MCP_CALL_MAX_ATTEMPTS,
+  mcpOutcomeUnknownError,
+  mcpAuthUnattendedError,
+  mcpInputUnattendedError,
+  auditCaller,
 } from './mcp/mcpClient.js';
 export type {
   DeprecatedMcpTransport,
@@ -348,6 +352,9 @@ export type {
   McpCallLogEntry,
   McpCallObserver,
   McpCallOutcome,
+  McpCallOptions,
+  McpCallResult,
+  McpCallStatus,
   McpInputRequiredSidecar,
   McpManagerOptions,
   McpServerConfig,

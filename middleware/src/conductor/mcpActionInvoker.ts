@@ -8,13 +8,24 @@
 // anything unknown) fails closed. Results are plain text in the run context,
 // as with every other action step.
 
-import type { McpServerConfig, McpServerRow } from '@omadia/orchestrator';
+import type {
+  McpCallOptions,
+  McpCallResult,
+  McpServerConfig,
+  McpServerRow,
+} from '@omadia/orchestrator';
 
 import { parseMcpActionId } from './mcpActionId.js';
 
 /** The one McpManager method we depend on. */
 export interface McpCallSurface {
-  callTool(cfg: McpServerConfig, toolName: string, args: Record<string, unknown>): Promise<string>;
+  callToolResult(
+    cfg: McpServerConfig,
+    toolName: string,
+    args: Record<string, unknown>,
+    replay?: undefined,
+    opts?: McpCallOptions,
+  ): Promise<McpCallResult>;
 }
 
 export interface McpActionInvokerDeps {
@@ -33,9 +44,6 @@ export interface McpActionInvokerDeps {
   dispatchDenial: (serverId: string, toolName: string) => string | null;
   log?: (msg: string) => void;
 }
-
-/** A tool-call failure the MCP client reports as text rather than a rejection. */
-const MCP_ERROR_PREFIX = 'Error:';
 
 export function createMcpActionInvoker(deps: McpActionInvokerDeps): (actionId: string, input: unknown) => Promise<string> {
   return async (actionId, input) => {
@@ -57,14 +65,17 @@ export function createMcpActionInvoker(deps: McpActionInvokerDeps): (actionId: s
 
     const args = isRecord(input) ? input : {};
     deps.log?.(`[conductor] mcp action → server '${server.name}' (${server.id}) tool '${ref.toolName}'`);
-    const result = await mcp.callTool(deps.toConfig(server), ref.toolName, args);
-    // The MCP client folds tool failures into an "Error: …" string (the admin
-    // test-call route keys on the same prefix). A failed call must fail the
-    // step rather than being stored as its successful result.
-    if (result.startsWith(MCP_ERROR_PREFIX)) {
-      throw new Error(`action '${actionId}': ${result}`);
+    // ADR-0206 — a run has no human: the call is unattended, so an auth
+    // failure starts no OAuth flow and an `input_required` answer parks
+    // nothing. Only a delivered result is a step result (#1909); the outcome
+    // is read from the status, never from the text.
+    const result = await mcp.callToolResult(deps.toConfig(server), ref.toolName, args, undefined, {
+      unattended: true,
+    });
+    if (result.status !== 'ok') {
+      throw new Error(`action '${actionId}': ${result.text}`);
     }
-    return result;
+    return result.text;
   };
 }
 

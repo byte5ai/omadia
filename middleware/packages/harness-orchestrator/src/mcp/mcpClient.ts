@@ -63,6 +63,8 @@ import type {
 } from '@omadia/plugin-api';
 
 import { turnContext } from '../turnContext.js';
+import { currentDispatchCaller } from '../toolCallerContext.js';
+import type { ToolDispatchCallerContext } from '../toolDispatchService.js';
 import { currentIdempotencyScope, sendsEachCallOnce } from '../toolIdempotency.js';
 import { recordMcpAuthPrompt } from './mcpAuthPromptMint.js';
 import {
@@ -242,6 +244,46 @@ export type McpCallerKind =
  */
 export type McpCallOutcome = 'ok' | 'fail' | 'input_required';
 
+/**
+ * ADR-0206 — the typed outcome of one `callToolResult`, for callers that must
+ * not classify a result by its text (#1909, #1944). `callTool` keeps returning
+ * only the text.
+ *
+ * - `ok`              the server delivered a result (whatever its text says).
+ * - `tool_error`      the server answered with `isError: true`.
+ * - `failed`          nothing usable came back: guard denial, refused or failed
+ *                     connect, protocol/transport error.
+ * - `auth_required`   the server needs authorization; `text` is the connect
+ *                     prompt, or for an unattended caller a plain refusal.
+ * - `input_required`  the tool asked for user input; parked for a chat turn, or
+ *                     refused for an unattended caller.
+ * - `blocked`         nothing was sent: the auth provider had no identity to
+ *                     act as (`per_user` delegation, #1906).
+ * - `outcome_unknown` the request was sent and no answer came (ADR-0205).
+ */
+export type McpCallStatus =
+  | 'ok'
+  | 'tool_error'
+  | 'failed'
+  | 'auth_required'
+  | 'input_required'
+  | 'blocked'
+  | 'outcome_unknown';
+
+export interface McpCallResult {
+  readonly text: string;
+  readonly status: McpCallStatus;
+}
+
+export interface McpCallOptions {
+  /**
+   * ADR-0206 — the caller has no human who could sign in or answer a form
+   * (Conductor step, routine, trigger). No OAuth flow is started and no input
+   * request is parked. Defaults to `turnContext.mcpUnattended`.
+   */
+  readonly unattended?: boolean;
+}
+
 /** One audit entry per `callTool` invocation. Deliberately carries NO tool
  *  arguments — identity and outcome only. */
 export interface McpCallLogEntry {
@@ -301,6 +343,13 @@ export interface McpAuthProvider {
    * decision, so the manager needs no OAuth knowledge.
    */
   onAuthFailure(cfg: McpServerConfig): Promise<string | null>;
+  /**
+   * #1906 — asked before anything is resolved or sent. A non-null answer is
+   * the user-facing reason the call may not run at all (a `per_user` server
+   * with no caller identity), and the manager sends nothing. Optional:
+   * providers without it never block.
+   */
+  blockedReason?(cfg: McpServerConfig): Promise<string | null>;
   /**
    * Called when the server itself refused a call that carried the token
    * `getToken` returned: a thrown transport error with an HTTP 401 / SDK
@@ -593,6 +642,33 @@ function isSessionNotFound(err: unknown, session: McpSession): boolean {
 }
 
 /**
+ * #1906 — the thrown error is the server's own JSON-RPC answer, not a
+ * transport failure. The SDK raises its own "Connection closed" (-32000) and
+ * "Request timed out" (-32001) as the same error class; those are not answers.
+ */
+function isServerAnswer(err: unknown): boolean {
+  if (!(err instanceof McpError) && !(err instanceof ModernProtocolError)) return false;
+  return !looksTransient(err.message);
+}
+
+/** ADR-0206 — an unattended caller hit a server that wants authorization. */
+export function mcpAuthUnattendedError(serverName: string): string {
+  return (
+    `Error: the MCP server "${serverName}" needs authorization for the identity this run acts as. ` +
+    'Unattended runs (workflows, routines, triggers) cannot sign in; an operator has to connect ' +
+    'the server for that identity first.'
+  );
+}
+
+/** ADR-0206 — an unattended caller got `input_required`; nothing was parked. */
+export function mcpInputUnattendedError(serverName: string, toolName: string): string {
+  return (
+    `Error: the MCP tool "${toolName}" on "${serverName}" needs input from a user, which ` +
+    'unattended runs (workflows, routines, triggers) cannot ask for. Nothing was stored.'
+  );
+}
+
+/**
  * ADR-0205 — the model-facing result of a request that was sent and got no
  * answer, when it may not be sent again. Starts with `Error:` like every other
  * failed call, so callers that classify on it keep treating it as a failure.
@@ -612,6 +688,42 @@ export function mcpOutcomeUnknownError(
     'The server may or may not have carried it out. Tell the user to check the result ' +
     'in the target system before trying again.'
   );
+}
+
+/**
+ * #1921 — who an MCP call audit row names. Order of evidence: an explicit
+ * surface override (skill, plugin), a sub-agent's inner loop, an API-key
+ * dispatch, the orchestrator turn, the dispatching Agent. A placeholder turn
+ * id (the web chat's outer scope) is no turn.
+ */
+export function auditCaller(
+  ctx: ReturnType<typeof turnContext.current>,
+  dispatch: ToolDispatchCallerContext | undefined,
+): {
+  readonly kind: McpCallerKind;
+  readonly agent: string | null;
+  readonly turnId: string | null;
+  readonly principal: string | null;
+} {
+  const turnId =
+    ctx !== undefined && ctx.turnId !== '' && ctx.turnIdIsPlaceholder !== true ? ctx.turnId : null;
+  const apiKey = dispatch?.principalKind === 'api_key' && dispatch.principal !== undefined;
+  const subAgent = ctx?.mcpSubAgentName ?? (ctx?.subAgentOwnerPluginId !== undefined ? null : undefined);
+  const kind: McpCallerKind =
+    ctx?.mcpCallerKind ??
+    (subAgent !== undefined
+      ? 'subagent'
+      : apiKey
+        ? 'api_key'
+        : turnId !== null || dispatch?.agentSlug !== undefined
+          ? 'agent'
+          : 'unattributed');
+  return {
+    kind,
+    agent: ctx?.mcpCallerId ?? subAgent ?? ctx?.agentSlug ?? dispatch?.agentSlug ?? null,
+    turnId,
+    principal: apiKey ? `apikey:${dispatch.principal}` : null,
+  };
 }
 
 /**
@@ -1041,21 +1153,14 @@ export class McpManager {
     if (!this.options?.onToolCall) return;
     try {
       const ctx = turnContext.current();
-      const inTurn = ctx !== undefined && ctx.turnId !== '';
-      const callerKind: McpCallerKind =
-        ctx?.mcpCallerKind ??
-        (ctx?.subAgentOwnerPluginId !== undefined
-          ? 'subagent'
-          : inTurn
-            ? 'agent'
-            : 'unattributed');
+      const caller = auditCaller(ctx, currentDispatchCaller());
       this.options.onToolCall({
         serverId: cfg.id,
         serverName: cfg.name,
         toolName,
-        callerKind,
-        callerAgent: ctx?.mcpCallerId ?? ctx?.agentSlug ?? null,
-        turnId: inTurn ? ctx.turnId : null,
+        callerKind: caller.kind,
+        callerAgent: caller.agent,
+        turnId: caller.turnId,
         // W2-1: `fail` is the ONLY outcome that clears `ok`. A parked
         // `input_required` call did not fail, so it must not show up in any
         // failure-rate query built on `ok`.
@@ -1068,7 +1173,7 @@ export class McpManager {
         calledAt: new Date(),
         // W0-1: never left blank. An unattributable call is recorded AS
         // unattributable rather than silently omitted.
-        actingIdentity: actingIdentity ?? ctx?.mcpUserKey ?? null,
+        actingIdentity: actingIdentity ?? ctx?.mcpUserKey ?? caller.principal,
       });
     } catch {
       /* the audit trail must never break a tool call */
@@ -1150,12 +1255,12 @@ export class McpManager {
     startedAt: number,
     actingIdentity: string | null,
     replay: McpCallReplay | undefined,
-  ): string {
+  ): McpCallResult {
     const store = this.options?.pendingInput;
     if (!store) {
       const failure = mcpInputUnsupportedError(cfg.name, toolName);
       this.emitCall(cfg, toolName, 'fail', failure, startedAt, actingIdentity);
-      return failure;
+      return { text: failure, status: 'failed' };
     }
     const parsed = parseMcpInputRequests(
       (res as { inputRequests?: unknown }).inputRequests,
@@ -1163,7 +1268,7 @@ export class McpManager {
     if (!parsed.ok) {
       const failure = mcpInputMalformedError(cfg.name, toolName, parsed.reason);
       this.emitCall(cfg, toolName, 'fail', failure, startedAt, actingIdentity);
-      return failure;
+      return { text: failure, status: 'failed' };
     }
     const prompt = extractMcpInputPrompt(res);
     // #562 phase 3 — carry the server's opaque `requestState` so the retry can
@@ -1200,7 +1305,7 @@ export class McpManager {
     if (store.put(record) === 'replay_capped') {
       const failure = mcpInputReplayCappedError(record);
       this.emitCall(cfg, toolName, 'fail', failure, startedAt, actingIdentity);
-      return failure;
+      return { text: failure, status: 'failed' };
     }
     this.emitCall(cfg, toolName, 'input_required', null, startedAt, actingIdentity);
     this.emitInputRequired(cfg, toolName, record);
@@ -1213,7 +1318,7 @@ export class McpManager {
     // exempt and the sentinel is returned exactly as before.
     const mint = turnContext.current()?.mcpInputSentinelMint;
     if (mint !== undefined) mint.correlationId = record.correlationId;
-    return mcpInputRequiredSentinel(record);
+    return { text: mcpInputRequiredSentinel(record), status: 'input_required' };
   }
 
   /** Emit one `input_required` sidecar. Same never-throws contract as
@@ -1373,14 +1478,27 @@ export class McpManager {
   }
 
   /** Invoke a tool. Never throws — returns an `Error: …` string on failure so
-   *  the orchestrator turn keeps going. */
+   *  the orchestrator turn keeps going. Callers that act on the outcome use
+   *  {@link callToolResult} instead of reading the text. */
   async callTool(
     cfg: McpServerConfig,
     toolName: string,
     args: Record<string, unknown>,
     replay?: McpCallReplay,
   ): Promise<string> {
+    return (await this.callToolResult(cfg, toolName, args, replay)).text;
+  }
+
+  /** {@link callTool} with its typed outcome (ADR-0206). Never throws. */
+  async callToolResult(
+    cfg: McpServerConfig,
+    toolName: string,
+    args: Record<string, unknown>,
+    replay?: McpCallReplay,
+    opts?: McpCallOptions,
+  ): Promise<McpCallResult> {
     const startedAt = Date.now();
+    const unattended = opts?.unattended ?? turnContext.current()?.mcpUnattended === true;
     // Resolve the acting identity FIRST (W0-1), before the guard can short-
     // circuit: a denied call still has to say whose authority it would have
     // used. Only paid for when auditing is actually on.
@@ -1399,10 +1517,25 @@ export class McpManager {
       const denial = this.options?.guard?.(cfg.id, toolName);
       if (denial) {
         this.emitCall(cfg, toolName, 'fail', denial, startedAt, actingIdentity);
-        return denial;
+        return { text: denial, status: 'failed' };
       }
     } catch {
       /* a broken guard must not take down tool dispatch — fall through */
+    }
+    // #1906 — a call the auth provider has no identity for is not sent at
+    // all: no headers resolved, no connect, no request.
+    let blocked: string | null = null;
+    try {
+      blocked = (await this.options?.auth?.blockedReason?.(cfg)) ?? null;
+    } catch {
+      /* a broken check must not take down tool dispatch */
+    }
+    if (blocked !== null) {
+      this.emitCall(cfg, toolName, 'fail', 'blocked: no identity to act as', startedAt, actingIdentity);
+      // The prompt mint marks the text as kernel-authored, like the connect
+      // prompt: it carries no tool data.
+      recordMcpAuthPrompt(blocked);
+      return { text: blocked, status: 'blocked' };
     }
     // Generic auth (issue #459 W9): inject a bearer token if the auth provider
     // has one for this server + caller. Provider-agnostic — the manager knows
@@ -1466,7 +1599,7 @@ export class McpManager {
         if (this.isGuardRefusal(err)) {
           const refusal = `Error: could not connect to MCP server "${cfg.name}": ${msg(err)}`;
           this.emitCall(cfg, toolName, 'fail', refusal, startedAt, actingIdentity);
-          return refusal;
+          return { text: refusal, status: 'failed' };
         }
         // A server that requires OAuth often refuses the connection outright
         // (streamable-HTTP surfaces the 401 as "-32000 Connection closed"), so
@@ -1484,7 +1617,11 @@ export class McpManager {
           continue;
         }
         await this.noteTokenRejected(cfg, token, err);
-        return this.handleFailure(cfg, toolName, token, failure, startedAt, actingIdentity);
+        return this.handleFailure(cfg, toolName, token, failure, startedAt, actingIdentity, {
+          unattended,
+          serverAnswered: false,
+          status: 'failed',
+        });
       }
       try {
         const res = await pooled.client.callTool(
@@ -1521,7 +1658,13 @@ export class McpManager {
         const protocolError =
           res !== null && typeof res === 'object' && (res as { isError?: unknown }).isError === true;
         if (protocolError) {
-          return this.handleFailure(cfg, toolName, token, rendered, startedAt, actingIdentity);
+          // #1906 — the server answered: a tool error is that tool error, not
+          // a missing authorization, unless its text says so.
+          return this.handleFailure(cfg, toolName, token, rendered, startedAt, actingIdentity, {
+            unattended,
+            serverAnswered: true,
+            status: 'tool_error',
+          });
         }
         // ── W2-1 (#544) MRTR mid-call user input ─────────────────────────────
         // Checked BEFORE the success audit and INSIDE the attempt loop with an
@@ -1529,6 +1672,12 @@ export class McpManager {
         // by construction: no retry attempt is consumed (we never `continue`),
         // and no failure row is emitted (`handleFailure` is not on this path).
         if (isInputRequiredResult(res)) {
+          if (unattended) {
+            // ADR-0206 — nobody can fill in a form here; nothing is parked.
+            const refusal = mcpInputUnattendedError(cfg.name, toolName);
+            this.emitCall(cfg, toolName, 'fail', 'input_required: unattended caller', startedAt, actingIdentity);
+            return { text: refusal, status: 'input_required' };
+          }
           return this.parkInputRequired(
             cfg,
             toolName,
@@ -1548,7 +1697,7 @@ export class McpManager {
         if (structured !== undefined) {
           this.emitStructured(cfg, toolName, structured);
         }
-        return rendered;
+        return { text: rendered, status: 'ok' };
       } catch (err) {
         const failure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed: ${msg(err)}`;
         const sessionExpired = isSessionNotFound(err, pooled.client);
@@ -1576,11 +1725,19 @@ export class McpManager {
             lastFailure = failure;
             continue;
           }
-          return this.handleFailure(cfg, toolName, token, failure, startedAt, actingIdentity);
+          return this.handleFailure(cfg, toolName, token, failure, startedAt, actingIdentity, {
+            unattended,
+            serverAnswered: true,
+            status: 'failed',
+          });
         }
         if (!looksTransient(failure)) {
           await this.noteTokenRejected(cfg, token, err);
-          return this.handleFailure(cfg, toolName, token, failure, startedAt, actingIdentity);
+          return this.handleFailure(cfg, toolName, token, failure, startedAt, actingIdentity, {
+            unattended,
+            serverAnswered: isServerAnswer(err),
+            status: 'failed',
+          });
         }
         if (resendSafe && hasAttemptLeft) {
           this.emitCall(
@@ -1603,12 +1760,16 @@ export class McpManager {
           attempt === 1 ? startedAt : attemptStartedAt,
           actingIdentity,
         );
-        return unknown;
+        return { text: unknown, status: 'outcome_unknown' };
       }
     }
     // Every attempt failed before a request was sent (connect), or the last
     // re-send hit the budget.
-    return this.handleFailure(cfg, toolName, token, lastFailure, startedAt, actingIdentity);
+    return this.handleFailure(cfg, toolName, token, lastFailure, startedAt, actingIdentity, {
+      unattended,
+      serverAnswered: false,
+      status: 'failed',
+    });
   }
 
   /**
@@ -1651,11 +1812,16 @@ export class McpManager {
   }
 
   /**
-   * Any failed call goes through here. When the failure looks like auth OR the
-   * call ran without a token, ask the auth provider — an OAuth-protected server
-   * that the caller has not authorized should always surface a connect prompt,
-   * regardless of the exact error string (a 401 can arrive as "-32000
-   * Connection closed" over streamable HTTP). Otherwise the raw error stands.
+   * Any failed call goes through here. When the failure looks like auth, or the
+   * call ran without a token and the server never answered (a 401 can arrive
+   * as "-32000 Connection closed" over streamable HTTP), ask the auth provider
+   * for a connect prompt. An answer from the server — a tool's `isError`
+   * result, a JSON-RPC error — is that answer, not a missing authorization,
+   * unless its text says so (#1906). Otherwise the raw error stands.
+   *
+   * An unattended caller (ADR-0206) never gets a connect prompt: the provider
+   * would start an OAuth flow nobody can finish. It gets a typed
+   * `auth_required` refusal when the failure looks like auth.
    */
   private async handleFailure(
     cfg: McpServerConfig,
@@ -1664,29 +1830,43 @@ export class McpManager {
     rawFailure: string,
     startedAt: number,
     actingIdentity: string | null,
-  ): Promise<string> {
-    const maybeAuth = token === null || looksUnauthorized(rawFailure);
+    how: {
+      readonly unattended: boolean;
+      readonly serverAnswered: boolean;
+      readonly status: McpCallStatus;
+    },
+  ): Promise<McpCallResult> {
+    const looksAuth = looksUnauthorized(rawFailure);
+    const maybeAuth = looksAuth || (token === null && !how.serverAnswered);
     if (maybeAuth && this.options?.auth) {
       // A stale token was rejected — drop its pooled connection so re-auth uses
-      // a fresh one.
+      // a fresh one. A token-scoped key matches only itself.
       if (token) await this.close(this.poolKey(cfg, token));
-      let authMessage: string | null = null;
-      try {
-        authMessage = await this.options.auth.onAuthFailure(cfg);
-      } catch {
-        /* fall back to the raw failure */
-      }
-      if (authMessage) {
-        this.emitCall(cfg, toolName, 'fail', 'auth_required', startedAt, actingIdentity);
-        // Provenance for the dispatch seam: this exact text, produced in this
-        // dispatch, may reach the model verbatim. Text that merely starts like
-        // it (a remote body) is data. See `mcpAuthPromptMint.ts`.
-        recordMcpAuthPrompt(authMessage);
-        return authMessage;
+      if (how.unattended) {
+        if (looksAuth) {
+          const refusal = mcpAuthUnattendedError(cfg.name);
+          this.emitCall(cfg, toolName, 'fail', 'auth_required: unattended caller', startedAt, actingIdentity);
+          return { text: refusal, status: 'auth_required' };
+        }
+      } else {
+        let authMessage: string | null = null;
+        try {
+          authMessage = await this.options.auth.onAuthFailure(cfg);
+        } catch {
+          /* fall back to the raw failure */
+        }
+        if (authMessage) {
+          this.emitCall(cfg, toolName, 'fail', 'auth_required', startedAt, actingIdentity);
+          // Provenance for the dispatch seam: this exact text, produced in this
+          // dispatch, may reach the model verbatim. Text that merely starts like
+          // it (a remote body) is data. See `mcpAuthPromptMint.ts`.
+          recordMcpAuthPrompt(authMessage);
+          return { text: authMessage, status: 'auth_required' };
+        }
       }
     }
     this.emitCall(cfg, toolName, 'fail', rawFailure, startedAt, actingIdentity);
-    return rawFailure;
+    return { text: rawFailure, status: how.status };
   }
 
   /** Number of pooled entries. Exposed for tests and for ops observability

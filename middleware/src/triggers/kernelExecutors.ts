@@ -22,6 +22,8 @@ import {
   narrowFieldClasses,
   readersWithin,
   runWithSeededDiscretion,
+  today,
+  turnContext,
   UNKNOWN_READERS,
   violationSummary,
   type FieldRightSources,
@@ -244,6 +246,11 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
       const discretion = isHeadless(trigger) ? null : trigger.discretion;
       const room = discretion ? await roomOf(trigger, discretion) : undefined;
       const fieldClasses = discretion && room ? ((await fieldClassesAtFiring(trigger, discretion, room)) ?? []) : [];
+      // ADR-0206 — a firing has no human to sign in or fill in a form: its
+      // MCP calls are unattended. A fresh scope, so a firing never inherits
+      // the identity of whatever turn happens to be open.
+      const unattended = (work: () => Promise<SemanticAnswer>): Promise<SemanticAnswer> =>
+        turnContext.run({ turnId: '', turnDate: today(), mcpUnattended: true }, work);
       const chat = (): Promise<SemanticAnswer> =>
         discretion && room
           ? runWithSeededDiscretion(
@@ -253,9 +260,9 @@ export function createKernelExecutors(deps: KernelExecutorDeps): StepExecutors {
                 ...room,
                 fieldClasses,
               },
-              () => agent.chat(input),
+              () => unattended(() => agent.chat(input)),
             )
-          : agent.chat(input);
+          : unattended(() => agent.chat(input));
       // A throwing turn still spent what it spent: measure around the catch.
       const metered = await meterUsageCost(() =>
         meterModelCalls(

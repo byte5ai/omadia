@@ -80,6 +80,27 @@ so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
 appear (#1730). The builder prompt names `get_build_status` /
 `runtime_smoke_status` as the only source for build and smoke state (#1806).
 Contract: ADR-0230 (Proposed).
+### Fixed — typed MCP call outcomes, no interaction from unattended runs (ADR-0206) (2026-11-26)
+
+- **#1909** Conductor MCP action steps fail on an authorization request or an
+  `input_required` answer instead of storing the prompt as the step result. Unattended
+  calls (Conductor, routines, triggers) start no OAuth flow and park no input request.
+  New `McpManager.callToolResult` returns `{ text, status }`; `callTool` is unchanged.
+- **#1944** The Control Center test call reports `ok` from the call's status, so a
+  delivered result whose text starts with `Error:` is no longer shown as failed. The
+  response also carries `status`.
+- **#1906** A `per_user` MCP server with no caller identity receives nothing (new
+  `McpAuthProvider.blockedReason`). A tool error the server answered is reported as that
+  error, not as "Nothing was sent to the server". The delegation switch for servers
+  without OAuth follows in the OAuth-UX change.
+- **#1907** Routines record the creating turn's MCP identity (routines migration
+  `0007_routines_mcp_user_key.sql`, column `routines.mcp_user_key`) and run as their owner
+  on `per_user` servers. Older routines keep failing closed there, with a message that fits
+  an unattended run.
+- **#1921** The MCP call audit names sub-agents (not the orchestrator), API-key calls of
+  the public MCP endpoint (`apikey:<id>`), and records no turn instead of the web chat's
+  `http-chat-<scope>` placeholder.
+
 ### Fixed — MCP calls are re-sent only when safe; one failure ends only its own request (ADR-0205) (2026-11-26)
 
 - **#1904** `McpManager.callTool` no longer re-sends an answerless `tools/call` (timeout,

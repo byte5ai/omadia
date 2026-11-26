@@ -2798,12 +2798,15 @@ export function createAgentBuilderRouter(
             ? (req.body.args as Record<string, unknown>)
             : {};
         const startedAt = Date.now();
-        const result = await mcp.callTool(toMcpConfig(server), toolName, args);
+        // #1944 — `ok` is the call's outcome, not a reading of its text: a
+        // delivered result whose text starts with "Error:" is still a result.
+        const outcome = await mcp.callToolResult(toMcpConfig(server), toolName, args);
         res.json({
           serverId: id,
           toolName,
-          result,
-          ok: !result.startsWith('Error:'),
+          result: outcome.text,
+          ok: outcome.status === 'ok',
+          status: outcome.status,
           durationMs: Date.now() - startedAt,
         });
       } catch (err) {

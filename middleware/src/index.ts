@@ -606,6 +606,7 @@ import {
   SERVICE_USER_KEY,
   auditIdentity,
   delegationBlockedMessage,
+  delegationBlockedUnattendedMessage,
   resolveMcpUserKey,
 } from './services/mcpDelegation.js';
 import { McpOAuthService } from './services/mcpOAuthService.js';
@@ -3387,6 +3388,19 @@ async function main(): Promise<void> {
                 if (userKey !== null) {
                   await mcpOAuthService.markTokenRejected(server.id, userKey, token);
                 }
+              },
+              // #1906 — checked before anything is sent: a `per_user`
+              // server with no caller identity gets no request at all, so
+              // "Nothing was sent to the server" is now true.
+              blockedReason: async (cfg: McpServerConfig) => {
+                const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
+                if (!server) return null;
+                const ctx = turnContext.current();
+                const userKey = resolveMcpUserKey(server, ctx?.mcpUserKey, mcpOAuthUserKey);
+                if (userKey !== null) return null;
+                return ctx?.mcpUnattended === true
+                  ? delegationBlockedUnattendedMessage(server.name)
+                  : delegationBlockedMessage(server.name);
               },
               onAuthFailure: async (cfg: McpServerConfig) => {
                 const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);

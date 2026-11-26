@@ -137,6 +137,12 @@ export interface ToolDispatchCallerContext {
    * plugin memory to another namespace on this runtime.
    */
   readonly agentSlug?: string;
+  /**
+   * #1921 — what kind of principal `principal` names. `api_key` is set by the
+   * public MCP endpoint, so an MCP call beneath the dispatch is audited as an
+   * API-key call instead of as unattributed.
+   */
+  readonly principalKind?: 'api_key';
 }
 
 /** Per-dispatch options. All optional — omitting the whole argument is legacy behaviour. */

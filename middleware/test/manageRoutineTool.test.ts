@@ -205,6 +205,16 @@ describe('#1598 — a routine records the orchestrator that runs it', () => {
     assert.equal((calls[0]!.args[0] as { agentSlug?: string }).agentSlug, 'hr');
   });
 
+  it("#1907 — stores the creating turn's MCP identity on the routine", async () => {
+    const { runner, calls } = stubRunner();
+    const tool = new ManageRoutineTool({
+      runner,
+      resolveContext: () => ({ ...ctx, agentSlug: 'hr', mcpUserKey: 'owner-sub' }),
+    });
+    await tool.handle(args);
+    assert.equal((calls[0]!.args[0] as { mcpUserKey?: string }).mcpUserKey, 'owner-sub');
+  });
+
   it('refuses a create whose orchestrator is unknown when one is required', async () => {
     const { runner, calls } = stubRunner();
     const tool = new ManageRoutineTool({

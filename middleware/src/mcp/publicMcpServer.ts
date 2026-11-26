@@ -1128,6 +1128,7 @@ export class PublicMcpServer {
     const options: ToolDispatchOptions = {
       caller: {
         principal: principal.keyId,
+        principalKind: 'api_key',
         scopes: principal.scopes,
         requestId: scope.turnId,
       },

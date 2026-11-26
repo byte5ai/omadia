@@ -254,6 +254,27 @@ export interface TurnContextValue {
    */
   mcpUserKey?: string;
   /**
+   * ADR-0206 — set by an entry point that runs with no human to answer: a
+   * routine, a trigger firing, a Conductor step. `McpManager.callTool` then
+   * starts no OAuth flow and parks no input request; it returns a typed
+   * `auth_required` / `input_required` failure instead. Carried into the
+   * orchestrator's own turn scope like `mcpUserKey`.
+   */
+  mcpUnattended?: boolean;
+  /**
+   * #1921 — the sub-agent whose inner tool loop is running. Set by
+   * `LocalSubAgent` around each inner tool call so the MCP call audit names
+   * the sub-agent instead of the orchestrator that consulted it.
+   */
+  mcpSubAgentName?: string;
+  /**
+   * #1921 — `turnId` is an entry point's placeholder, not a turn. The web
+   * chat route's outer scope sets one that the orchestrator replaces in its
+   * own scope; a tool that runs in the outer scope (subscription CLI, fast
+   * path) must not be audited under it.
+   */
+  turnIdIsPlaceholder?: boolean;
+  /**
    * Epic #459 W4/W5 (codex fold), #2051 — the working mode (skill) the
    * per-turn selector chose for this turn, or undefined when the turn runs
    * without one. Skill-bound MCP DomainTools check it at dispatch: a tool
@@ -504,6 +525,7 @@ export const turnContext = {
         // an adapter-established outer scope, or every audited MCP call on a
         // channel turn records `unresolved` and a `per_user` server fails closed.
         ...(prev?.mcpUserKey ? { mcpUserKey: prev.mcpUserKey } : {}),
+        ...(prev?.mcpUnattended ? { mcpUnattended: true } : {}),
         ...(prev?.privacyHandle ? { privacyHandle: prev.privacyHandle } : {}),
         ...(prev?.captureRawToolResult
           ? { captureRawToolResult: prev.captureRawToolResult }
