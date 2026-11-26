@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Security — the last standalone grandfather row is gone (#838) (2026-11-26)
+
+- `STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20` is empty. Its last row,
+  `@omadia/channel-teams` → `graphPool`, was the C7 SQL ramp. Teams 0.46.0 declares
+  `permissions.sql` with its own migrations, the channel runtime honours the operator grant
+  (#2254), and the grant is given on the instance. Without a grant, Teams runs without a
+  database instead of failing.
+
 ### Security — attachments only from channel adapters, bound at upload (#1960, #1962, ADR-0178) (2026-11-26)
 
 - `ChatTurnInput.storedAttachments` (`StoredTurnAttachment`, `@omadia/channel-sdk` 0.3.16) is the
