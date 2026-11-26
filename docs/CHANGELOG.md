@@ -36,6 +36,11 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — audit test and orb setup (#2185, #2186) (2026-11-26)
+
+- The role-holders PostgreSQL test runs the auth migrator and deletes only its own audit rows.
+- Orb dependency installation skips the unused ONNX Runtime CUDA download and keeps CPU support.
+
 ### Fixed — Builder build status: one failed event, real build numbers, all SSE events (2026-11-26)
 
 The auto-rebuild scheduler and the preview routes now share one build-and-warm
