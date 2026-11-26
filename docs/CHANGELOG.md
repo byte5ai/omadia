@@ -44,6 +44,7 @@ changelog.
 ### Fixed — Conductor role and template governance (#1708, #1718, #1719, #1725)
 
 - Role creation rejects duplicate keys, label updates are separate, and unknown role assignments return 404. Role deletion refuses roles with active holders or references in active workflow versions. Create, edit and delete write admin audit rows. Soft-deleting a workflow removes its schedules.
+- The role-holder audit regression test distinguishes the session email and account UUID from the routing subject and knowledge-graph ID.
 - Derived templates use person slots for user principals, suggest an available slug based on the template name, and flag action inputs containing HTTP(S) URLs. See ADR-0252.
 - Template submissions and reviews write admin audit rows. Authors can approve their own version on a single-operator install. New versions start private and require review before sharing. See ADR-0253.
 
@@ -57,6 +58,7 @@ changelog.
 - Workflow publish and template resolution check live agent, action and role references, reject internal operator account UUIDs in human steps, check required plugin and MCP action inputs and validate static `webhook.post` URLs. The builder can still draft unconnected actions for inline setup.
 - Human deadlines and reminder intervals must be positive ISO-8601 durations. The builder describes strict approvals and shows validation warnings in chat and after publishing.
 - The action catalog includes MCP server names for the builder and designer. Action IDs and runtime dispatch are unchanged.
+- The webhook validation fixtures use the graph's JSON object type, resolving a TypeScript error in the test gate.
 
 ### Fixed — Builder build status: one failed event, real build numbers, all SSE events (2026-11-26)
 

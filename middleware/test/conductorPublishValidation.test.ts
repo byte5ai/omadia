@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import type { Step, WorkflowGraph } from '@omadia/conductor-core';
+import type { JsonObject, Step, WorkflowGraph } from '@omadia/conductor-core';
 
 import { validatePublishGraph } from '../src/conductor/publishValidation.js';
 
@@ -29,7 +29,8 @@ describe('Conductor publish validation', () => {
 
   it('checks static webhook URLs and permits run tokens', async () => {
     const step: Step = { id: 's', kind: 'action', actionId: 'webhook.post', input: {} };
-    for (const input of [{}, { url: '/relative' }, { url: 'file:///tmp' }]) {
+    const invalidInputs: JsonObject[] = [{}, { url: '/relative' }, { url: 'file:///tmp' }];
+    for (const input of invalidInputs) {
       step.input = input;
       assert.equal((await validatePublishGraph(graphFor(step), {})).errors[0]?.code, 'invalid_action_input');
     }
