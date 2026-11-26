@@ -87,6 +87,8 @@ export interface InitRoutinesOptions {
    *  initRoutines returns and before `runner.start()` — pass them here
    *  when the kernel knows them upfront. */
   proactiveSenders?: ProactiveSender[];
+  /** #1753 — see `RoutineRunnerOptions.purgeTranscripts`. */
+  purgeTranscripts?: RoutineRunnerOptions['purgeTranscripts'];
   /** #1776 — see `RoutineRunnerOptions.bookManualRunCost`. */
   bookManualRunCost?: RoutineRunnerOptions['bookManualRunCost'];
   /** #1744 / #1745 — see `RoutineRunnerOptions.resolveAgent`. */
@@ -140,6 +142,7 @@ export async function initRoutines(
     ...(opts.deliveryRefusal ? { deliveryRefusal: opts.deliveryRefusal } : {}),
     ...(opts.resolveAgent ? { resolveAgent: opts.resolveAgent } : {}),
     ...(opts.bookManualRunCost ? { bookManualRunCost: opts.bookManualRunCost } : {}),
+    ...(opts.purgeTranscripts ? { purgeTranscripts: opts.purgeTranscripts } : {}),
     log,
     maxActivePerUser: opts.maxActivePerUser,
   });

@@ -1168,6 +1168,22 @@ async function resetRemoteSessionWithRetry(id: string): Promise<number | null | 
  */
 export type ClearOutcome = 'cleared' | 'partial' | 'not_loaded';
 
+/**
+ * #1757 — the active routines that deliver into a chat, named before the chat
+ * is deleted. Empty when the server cannot tell (no routines feature, error):
+ * the close still asks, only without names.
+ */
+export async function fetchChatRoutines(id: string): Promise<ReadonlyArray<{ id: string; name: string }>> {
+  try {
+    const res = await fetch(`/bot-api/chat/sessions/${encodeURIComponent(id)}/routines`);
+    if (!res.ok) return [];
+    const body = (await res.json()) as { routines?: Array<{ id: string; name: string }> };
+    return Array.isArray(body.routines) ? body.routines : [];
+  } catch {
+    return [];
+  }
+}
+
 async function deleteRemoteSession(id: string): Promise<void> {
   const res = await fetch(`/bot-api/chat/sessions/${encodeURIComponent(id)}`, {
     method: 'DELETE',

@@ -316,6 +316,11 @@ export interface RoutineRunnerOptions {
    * trigger view, ADR 0020); a cron run's cost is settled by its firing.
    */
   bookManualRunCost?: (routineId: string, costUsd: number) => Promise<void>;
+  /**
+   * #1753 — remove the markdown transcripts of a conversation scope
+   * (`routine:<id>`) when the routine is deleted. Absent = nothing to remove.
+   */
+  purgeTranscripts?: (sessionScope: string) => Promise<void>;
   log?: (msg: string) => void;
   /** Override the per-user active-routine cap. */
   maxActivePerUser?: number;
@@ -367,6 +372,7 @@ export class RoutineRunner {
   private readonly deliveryRefusal: RoutineRunnerOptions['deliveryRefusal'];
   private readonly resolveAgent: RoutineRunnerOptions['resolveAgent'];
   private readonly bookManualRunCost: RoutineRunnerOptions['bookManualRunCost'];
+  private readonly purgeTranscripts: RoutineRunnerOptions['purgeTranscripts'];
   private readonly senders: ProactiveSenderRegistry;
   private readonly log: (msg: string) => void;
   private readonly maxActivePerUser: number;
@@ -385,6 +391,7 @@ export class RoutineRunner {
     this.deliveryRefusal = opts.deliveryRefusal;
     this.resolveAgent = opts.resolveAgent;
     this.bookManualRunCost = opts.bookManualRunCost;
+    this.purgeTranscripts = opts.purgeTranscripts;
     this.log = opts.log ?? ((msg) => console.log(msg));
     this.maxActivePerUser =
       opts.maxActivePerUser ?? DEFAULT_MAX_ACTIVE_PER_USER;
@@ -487,6 +494,48 @@ export class RoutineRunner {
   agentProblemOf(routine: Pick<Routine, 'agentSlug' | 'agentId'>): string | undefined {
     const bound = this.resolveAgent?.(routine);
     return bound && !bound.ok ? bound.problem : undefined;
+  }
+
+  /** #1757 — the active routines that deliver into a web chat (for the close confirmation). */
+  async routinesOfWebChat(sessionId: string): Promise<Routine[]> {
+    return this.store.listActiveForWebChat(sessionId);
+  }
+
+  /**
+   * #1757 — the web chat is deleted: its routines are paused with `message`
+   * now, instead of each failing its next delivery pre-check first.
+   */
+  async pauseRoutinesOfWebChat(sessionId: string, message: string): Promise<number> {
+    let paused = 0;
+    for (const r of await this.store.listActiveForWebChat(sessionId)) {
+      if (!(await this.store.markExpired(r.id, message))) continue;
+      this.unregisterFromScheduler(r.id);
+      this.inFlight.cancel(r.id, 'paused');
+      paused += 1;
+    }
+    return paused;
+  }
+
+  /** #1765 — how many routines a user owns (any status), for the delete confirmation. */
+  async countRoutinesOfUser(userId: string): Promise<number> {
+    return (await this.store.listIdsForUserId(userId)).length;
+  }
+
+  /**
+   * #1765 — the user's account is deleted: their routines go with it (the
+   * system acting, so unscoped), their triggers end and a run in flight is
+   * cancelled. Returns how many were deleted.
+   */
+  async deleteRoutinesOfUser(userId: string): Promise<number> {
+    let deleted = 0;
+    for (const id of await this.store.listIdsForUserId(userId)) {
+      if (!(await this.store.delete(id))) continue;
+      this.unregisterFromScheduler(id);
+      this.inFlight.cancel(id, 'deleted');
+      await this.removeTranscripts(id);
+      deleted += 1;
+    }
+    return deleted;
   }
 
   /**
@@ -703,6 +752,7 @@ export class RoutineRunner {
       // #1746 — the run in flight stops spending; its history row goes with
       // the routine (`routine_runs` cascades), like the rest of its history.
       this.inFlight.cancel(id, 'deleted');
+      await this.removeTranscripts(id);
     }
     return deleted;
   }
@@ -727,6 +777,13 @@ export class RoutineRunner {
   }
 
   // --- internals -----------------------------------------------------------
+
+  /** #1753 — a deleted routine's transcripts go with it; a failure is logged. */
+  private async removeTranscripts(id: string): Promise<void> {
+    await this.purgeTranscripts?.(`routine:${id}`).catch((err: unknown) => {
+      this.log(`[routines/runner] removing the transcripts of routine ${id} failed: ${errMsg(err)}`);
+    });
+  }
 
   private registerInScheduler(routine: Routine): void {
     if (this.disposers.has(routine.id)) {

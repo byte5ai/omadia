@@ -66,6 +66,10 @@ export function webChatConversationRef(
 
 const NO_STORE_ERROR = 'web chat is not configured (no chat session store)';
 
+/** #1757 — why a routine was paused when its chat was deleted. */
+export const WEB_CHAT_DELETED_PAUSE =
+  'paused: the web chat it delivers into was deleted; delete the routine or create it again from an existing chat';
+
 export const WEB_CHAT_NO_CONVERSATION_ERROR =
   'this routine was requested outside a saved web chat, so there is no conversation ' +
   'to deliver it into; start it from a chat tab';

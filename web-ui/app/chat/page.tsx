@@ -58,6 +58,7 @@ import {
   type Message,
   type SubAgentEvent,
   type ToolEvent,
+  fetchChatRoutines,
 } from '../_lib/chatSessions';
 import { useChatSessionsCtx } from '../_lib/chatSessionsContext';
 import { dismissSeenTurns, useStreamStore } from '../_lib/streamStore';
@@ -500,12 +501,30 @@ export default function ChatPage(): React.ReactElement {
   // dismissal rule, not just tab clicks — otherwise the tab being left keeps a
   // `done` record and immediately flags itself as unread (issue #286).
   const handleClose = (id: string): void => {
-    // The tab is going away, so no UI can ever surface this record again.
-    // Drop it outright rather than leaving it to occupy one of the store's 12
-    // slots until GC — a run of closes could otherwise evict a still-visible
-    // unread record early. This is display-only; it does not abort the stream.
-    streamStore.dismiss(id);
-    void deleteSession(id);
+    void (async () => {
+      // #1757 — closing a tab deletes the chat for good: ask first, and name
+      // the routines that deliver into it (they are paused with it). An empty
+      // chat without routines goes without asking.
+      const routines = await fetchChatRoutines(id);
+      const session = sessions.find((x) => x.id === id);
+      const hasContent = (session?.messages.length ?? 0) > 0;
+      if (hasContent || routines.length > 0) {
+        const question =
+          routines.length > 0
+            ? t('closeChatConfirmWithRoutines', {
+                count: routines.length,
+                names: routines.map((r) => r.name).join(', '),
+              })
+            : t('closeChatConfirm');
+        if (!window.confirm(question)) return;
+      }
+      // The tab is going away, so no UI can ever surface this record again.
+      // Drop it outright rather than leaving it to occupy one of the store's 12
+      // slots until GC — a run of closes could otherwise evict a still-visible
+      // unread record early. This is display-only; it does not abort the stream.
+      streamStore.dismiss(id);
+      void deleteSession(id);
+    })();
   };
 
   const handleCreate = (): void => {

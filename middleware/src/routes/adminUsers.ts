@@ -13,9 +13,17 @@ import type { SessionRevocation } from '../auth/sessionRevocation.js';
 import type { UserRecord, UserRole, UserStatus, UserStore } from '../auth/userStore.js';
 import { requireUuidParam } from '../http/uuidParam.js';
 
+/** #1765 — the routines a user owns, for the delete confirmation and the delete. */
+export interface UserRoutinesPort {
+  countForUser(userId: string): Promise<number>;
+  deleteForUser(userId: string): Promise<number>;
+}
+
 interface AdminUsersDeps {
   userStore: UserStore;
   audit: AdminAuditLog;
+  /** #1765 — absent = no routines feature (no database): nothing to count or delete. */
+  routines?: () => UserRoutinesPort | undefined;
   /**
    * Server-side session revocation — told whose sessions a reset, disable or
    * delete just ended, for consumers that hold sessions open (live sockets).
@@ -103,7 +111,9 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       console.warn('[admin-users] omadia user id lookup failed:', err instanceof Error ? err.message : err);
       return null;
     });
-    res.json({ user: { ...toPublicUser(user), omadiaUserId: omadiaUserId ?? null } });
+    // #1765 — the delete confirmation names what goes with the account.
+    const routineCount = (await deps.routines?.()?.countForUser(user.id).catch(() => undefined)) ?? 0;
+    res.json({ user: { ...toPublicUser(user), omadiaUserId: omadiaUserId ?? null }, routine_count: routineCount });
   });
 
   // ── POST /admin/users ─────────────────────────────────────────────────────
@@ -297,11 +307,20 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       sub: target.providerUserId,
     });
     forgetDevices(deps, target);
+    // #1765 — the user's routines go with the account: they would keep
+    // running, spending and delivering into a chat nobody owns.
+    let routinesDeleted = 0;
+    try {
+      routinesDeleted = (await deps.routines?.()?.deleteForUser(target.id)) ?? 0;
+    } catch (err) {
+      console.error(`[admin-users] deleting the routines of user ${target.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     await deps.audit.record({
       actor: auditActorFromRequest(req),
       action: 'user.delete',
       target: `user:${target.id}`,
       before: toPublicUser(target),
+      after: { routines_deleted: routinesDeleted },
     });
     res.status(204).send();
   });
