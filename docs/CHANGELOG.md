@@ -36,6 +36,35 @@ changelog.
 
 ## [Unreleased]
 
+### Security — bounded plugin services: graphPool table guard, declared memory trees, boundary-only recall (ADR-0255/0256/0257) (2026-11-26)
+
+- **#2230, ADR-0255:** a granted `graphPool` covers only the plugin's own tables. For every
+  plugin that is not bundled, `borrowPool` (`middleware/src/platform/borrowedPool.ts`) runs
+  each statement through `sqlTableGuard.ts` first. A statement that names a kernel relation
+  from `kernelSqlRelations.ts` is refused with `SqlTableRefusedError`
+  (`test/kernelSqlRelations.test.ts` keeps that list complete against every kernel
+  migration). So are dollar-quoted text, `DO`, `CREATE FUNCTION`, SQL-text functions
+  (`query_to_xml`, …), `standard_conforming_strings`/`set_config`, `pg_stats`,
+  `LISTEN`/`NOTIFY`, submittables and another plugin's `plg_` namespace. A query config is
+  copied before it runs. The guarded pool also hides its listeners, `options`, `Client` and
+  internals from `get` and reflection. It does not contain a hostile in-process upload
+  (ADR-0255 residual). channel-teams keeps `teams_conversation_refs`
+  / `teams_attachments`, and dev-platform keeps its `dev_*` tables. The canary sweep gains a
+  `graphPool` probe on Neon.
+- **#2232, ADR-0256:** through `memoryStore@1` a plugin reads `core` and the `_*` trees and
+  changes only the top-level trees its manifest declares: the new manifest field
+  `permissions.memory.trees` (`permissions_summary.memory_trees`, shown on the store page).
+  The first plugin to use a tree owns it (`/memories/_plugin-trees/<tree>.json`, private).
+  `core` is now read-only for plugins. `pairings` stays `@omadia/channel-telegram`'s
+  through a dated legacy row until its manifest declares it.
+- **#2231, ADR-0257:** `contextRetriever`, `sessionBriefing`, `palaiaExcerpt`,
+  `bulkPromotion`, `bulkInconsistencyDetect`, `bulkMergeDetect`, `bulkExcerptMergeDetect`,
+  `inconsistencyDetector`, `mergeCandidateDetector`, `nudgeProviders` and `graphLifecycle`
+  resolve only for the bundled boundary implementers
+  (`BOUNDARY_ONLY_SERVICE_NAMES`). `entityRefBus@1` is publish-only for every other plugin.
+  `GRAPH_BOUNDARY_IMPLEMENTERS` moved to `platform/graphBoundaryImplementers.ts`.
+- ADR-0044's status line now reads superseded in part by 0256, refined by 0255 and 0257.
+
 ### Fixed — channel plugins get the SQL grant check and kernel-run migrations (ADR-0050) (2026-11-26)
 
 - A channel plugin that declares `permissions.sql` (Teams, byte5ai/omadia-channel-teams#74)

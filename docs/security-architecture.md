@@ -1041,8 +1041,12 @@ The surfaces that boundary must cover, and how each one does:
   across users or agents are kernel-only; `findEntities` in a context-bound
   turn keeps synced master data and entities a visible turn captured; the
   private `/memories` trees (`orchestrators`, `contexts`, `sessions`,
-  `chat-sessions`) and loose root files are never reachable, and the `_*`
-  trees are read-only; plan reads and writes reach only the turn's own
+  `chat-sessions`, `_plugin-trees`) and loose root files are never reachable,
+  `core` and the `_*` trees are read-only, and a plugin reads and changes only
+  the top-level trees its manifest declares (`permissions.memory.trees`) and
+  owns: the first plugin to use a tree owns it, recorded in
+  `/memories/_plugin-trees/<tree>.json`; `pairings` stays channel-telegram's
+  through a dated legacy row (ADR-0256, #2232); plan reads and writes reach only the turn's own
   conversation, process writes only this agent's scopes, entity and fact
   writes only the plugin's declared `graph.entity_systems` (ADR-0167;
   a plugin that declares none writes no entity or fact, ADR-0169, #2244;
@@ -1053,11 +1057,24 @@ The surfaces that boundary must cover, and how each one does:
   is kernel-only for plugins: its reads take any viewer id, and `recluster`
   rebuilds every account's topics. Only the
   bundled providers and boundary implementers (`orchestrator`,
-  `orchestrator-extras`) hold the raw services. `graphPool` stays an
-  operator-granted SQL capability (C7). Residuals: sibling recall and
-  curation services are still raw (#2231); shared top-level `/memories`
-  trees are writable by every declaring plugin (#2232); plugin SQL on
-  kernel tables (#2230).
+  `orchestrator-extras`) hold the raw services. The recall and curation
+  services (`contextRetriever`, `sessionBriefing`, `palaiaExcerpt`, the
+  `bulk*` review services, `inconsistencyDetector`, `mergeCandidateDetector`,
+  `nudgeProviders`, `graphLifecycle`) resolve only
+  for those implementers; `entityRefBus@1` is publish-only for every other
+  plugin (ADR-0257, #2231). `graphPool` stays an operator-granted SQL
+  capability (C7); for a plugin that is not bundled every statement on the
+  borrowed pool passes `sqlTableGuard.ts` first: a statement naming a kernel
+  table (`kernelSqlRelations.ts`, checked against every kernel migration by a
+  test) is refused, as are dollar-quoted bodies, `DO`, `CREATE FUNCTION`,
+  SQL-text functions, `standard_conforming_strings`/`set_config`, `pg_stats`,
+  `LISTEN`/`NOTIFY`, submittables and another plugin's `plg_` namespace; a
+  query config is copied before it runs, and the pool's listeners, `options`
+  and internals are hidden from `get` and reflection (ADR-0255, #2230).
+  Residuals: the guard reads names, not meaning (unlisted extension
+  functions); and it does not contain a hostile in-process upload, which can
+  read the connection string from its environment — the operator's grant
+  stays the bound.
 - **Curated memory:** under `members`, `acl_owners ⊇ audience`, or an
   operator-authored row. "Operator-authored" means `manually_authored` and a
   `created_by` that is not `auto:…`, because T3 durable auto-promotion sets
