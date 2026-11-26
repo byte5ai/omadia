@@ -7704,6 +7704,23 @@ header to `/api/admin/domains` is claimed by this mount (401/404). The surface
 has no user or whitelist management, so it is not a way out of an
 `ADMIN_ALLOWED_EMAILS` lockout.
 
+## 10zc. Channel attachment reads over loopback; fast-lane output in the agent prompt (W15-17, 2026-11-26)
+
+- **`CoreApi.readAttachment`** (ADR-0222). A channel plugin can ask the kernel for an outgoing
+  attachment's bytes. The kernel GETs the URL's path from itself over loopback, only when the path
+  lies under an operator-granted public prefix (`PublicPathGrantRegistry.resolve`), with no cookie
+  or credential, `redirect: 'manual'`, a 15 s deadline and a 25 MiB cap. The owning plugin's router
+  still checks the signed, expiring URL. It reaches only what an anonymous internet client could
+  reach through the public URL. Residuals: plugin routes under a granted prefix must not trust
+  loopback peers (`req.ip`); with `TRUSTED_PROXY_ADDRESSES` containing `loopback` these reads count
+  as proxied; any channel plugin can read any plugin's granted paths regardless of its own network
+  allowlist.
+- **Fast-lane hand-off** (ADR-0221). After a miss whose query ran, the raw tool output (max 12 000
+  characters) reaches the agent as part of the per-turn system hint, masked through the turn's
+  privacy map like any `extraSystemHint`. Under a Privacy Shield the output is never included.
+  The block is tagged `<fast_lane_tool_output>` and declared data, not instruction; this is a prompt
+  rule, not an enforced boundary (accepted prompt-injection residual).
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:

@@ -654,6 +654,7 @@ import { createUiPrefsRouter } from './routes/uiPrefs.js';
 import { ExpressRouteRegistry } from './channels/routeRegistry.js';
 import { WebSocketRegistry } from './channels/webSocketRegistry.js';
 import { createCoreApi } from './channels/coreApi.js';
+import { createAttachmentByteReader, loopbackOriginFor } from './channels/attachmentByteReader.js';
 import { createCoreRoutineTurnScope } from './plugins/routines/coreRoutineTurnScope.js';
 import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
 import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
@@ -7949,6 +7950,12 @@ async function main(): Promise<void> {
     ...(routinesIntegration
       ? { routineTurn: createCoreRoutineTurnScope(routinesIntegration, graphTenantId) }
       : {}),
+    // #1993 / ADR-0222 — channels read attachment bytes in-process (loopback
+    // GET, granted public paths only) instead of relying on a reachable URL.
+    readAttachment: createAttachmentByteReader({
+      resolveGrantedPath: (path) => publicPathGrants.resolve(path),
+      loopbackOrigin: loopbackOriginFor(config.HOST, config.PORT),
+    }),
   });
 
   // Phase 5B: channel discovery flips to plugin-store-flow. The
