@@ -175,6 +175,9 @@ Contract: ADR-0230 (Proposed).
   deleted") with a badge. Owner checks on an existing entry of another user now answer 404
   `memory.not_found` like an unknown id (`/:id/audit`, owners, PATCH, DELETE, excerpts)
   instead of 403 `memory.not_an_owner` (ADR-0019 disclosure "none", ADR-0104).
+- **#1854** Graph explorer: the owner/audit section of a memory is keyed by the entry, so
+  selecting another entry shows its own audit (a new request) and empty owner/reason inputs
+  instead of the previous entry's history and typed text.
 
 ### Fixed — embedding and model consumers follow provider changes live (#1815, #1817, #1855, ADR-0194) (2026-11-26)
 
