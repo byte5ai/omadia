@@ -2129,6 +2129,7 @@ export function createOperatorAgentsRouter(
       console.error(`[operator-agents] checking the state left under slug '${slug}' failed:`, err instanceof Error ? err.message : String(err));
       res.status(503).json({
         error: 'slug_state_unverifiable',
+        slug,
         message: `could not check whether data of an earlier agent "${slug}" remains; try again`,
       });
       return true;
@@ -2136,6 +2137,7 @@ export function createOperatorAgentsRouter(
     if (!hasRemainingSlugState(remaining)) return false;
     res.status(409).json({
       error: 'slug_state_remains',
+      slug,
       message: `data of an earlier agent "${slug}" remains (memory, conversation history or MCP key bindings); purge it under Danger Zone → memory purge, axis "agent", selector "${slug}", and remove its MCP key bindings, or choose another slug`,
       remaining: {
         memory_trees: remaining.memoryTrees,

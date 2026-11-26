@@ -214,7 +214,7 @@ src/
   Typ, den kein installiertes Kanal-Plugin routet, mit `400 unknown_channel_type`
   (`channel_type`, `known_channel_types`) ab; ein Binding, das der Agent schon hat,
   darf bleiben. `POST /resolve-channel` antwortet für einen unbekannten Typ ebenso
-  mit 400 statt mit „fallback“. Migration `0114_channel_api_binding_type` schreibt
+  mit 400 statt mit „fallback“. Migration `0116_channel_api_binding_type` schreibt
   alte `channel-api`-Bindings mit `key:`-Schlüssel auf `@omadia/channel-api` um,
   wenn kein Binding desselben Schlüssels unter dem echten Typ existiert.
 - **Sprache der Notices:** `ChatTurnInput.locale` (additiv). Der Management-Layer

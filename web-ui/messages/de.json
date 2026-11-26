@@ -3467,6 +3467,8 @@
     "fieldSlugRule": "Kleinbuchstaben, Ziffern und Bindestriche, bis zu 64 Zeichen; kein Bindestrich am Anfang oder Ende.",
     "apiErrors": {
       "slugTaken": "Ein Agent mit dem Slug „{slug}“ existiert schon. Wähle einen anderen Slug.",
+      "slugStateRemains": "Von einem früheren Agenten „{slug}“ sind noch Daten vorhanden (Gedächtnis, Gesprächsverlauf oder MCP-Schlüsselzuordnungen). Lösche sie unter Danger Zone → Gedächtnis löschen (Achse „agent“, Auswahl „{slug}“) und entferne seine MCP-Schlüsselzuordnungen, oder wähle einen anderen Slug.",
+      "slugStateUnverifiable": "Konnte nicht prüfen, ob noch Daten eines früheren Agenten „{slug}“ vorhanden sind. Bitte erneut versuchen.",
       "unknownChannelType": "Kein installierter Kanal nutzt den Kanaltyp „{type}“. Kanaltypen dieser Instanz: {known}.",
       "invalidFields": "Der Server hat die Eingabe abgelehnt. {fields}",
       "refused": "Der Server hat die Änderung abgelehnt: {detail}",

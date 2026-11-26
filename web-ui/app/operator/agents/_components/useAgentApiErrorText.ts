@@ -79,6 +79,10 @@ export function useAgentApiErrorText(): (err: unknown) => string {
       const code = serverCode(err);
       const raw = body(err);
       if (code === 'slug_taken') return t('apiErrors.slugTaken', { slug: text(raw?.['slug']) ?? '' });
+      if (code === 'slug_state_remains') return t('apiErrors.slugStateRemains', { slug: text(raw?.['slug']) ?? '' });
+      if (code === 'slug_state_unverifiable') {
+        return t('apiErrors.slugStateUnverifiable', { slug: text(raw?.['slug']) ?? '' });
+      }
       if (code === 'unknown_channel_type') {
         const known = Array.isArray(raw?.['known_channel_types']) ? raw['known_channel_types'].join(', ') : '';
         return t('apiErrors.unknownChannelType', { type: text(raw?.['channel_type']) ?? '', known });

@@ -3467,6 +3467,8 @@
     "fieldSlugRule": "Lowercase letters, digits and hyphens, up to 64 characters; no hyphen at the start or end.",
     "apiErrors": {
       "slugTaken": "An agent with the slug \"{slug}\" already exists. Choose another slug.",
+      "slugStateRemains": "Data of an earlier agent \"{slug}\" still exists (memory, conversation history or MCP key bindings). Purge it under Danger Zone → memory purge (axis \"agent\", selector \"{slug}\") and remove its MCP key bindings, or choose another slug.",
+      "slugStateUnverifiable": "Could not check whether data of an earlier agent \"{slug}\" remains. Try again.",
       "unknownChannelType": "No installed channel uses the channel type \"{type}\". Channel types on this instance: {known}.",
       "invalidFields": "The server rejected the input. {fields}",
       "refused": "The server refused the change: {detail}",
