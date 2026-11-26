@@ -209,6 +209,14 @@ src/
   geclaimt hat, sonst `deriveChannelType` der ID; der API-Kanal bindet bewusst unter
   `@omadia/channel-api`). Default-Agent-Tabelle, Binding-Formular und Routing-Tester
   bieten nur diese an (`web-ui/app/_lib/channelTypes.ts`), nie eine geratene Plugin-ID.
+  Der Server prüft dieselbe Liste (#1879, `routes/registeredChannelTypes.ts`):
+  `PUT /api/v1/operator/agents/:slug/bindings` lehnt ein **neues** Binding unter einem
+  Typ, den kein installiertes Kanal-Plugin routet, mit `400 unknown_channel_type`
+  (`channel_type`, `known_channel_types`) ab; ein Binding, das der Agent schon hat,
+  darf bleiben. `POST /resolve-channel` antwortet für einen unbekannten Typ ebenso
+  mit 400 statt mit „fallback“. Migration `0114_channel_api_binding_type` schreibt
+  alte `channel-api`-Bindings mit `key:`-Schlüssel auf `@omadia/channel-api` um,
+  wenn kein Binding desselben Schlüssels unter dem echten Typ existiert.
 - **Sprache der Notices:** `ChatTurnInput.locale` (additiv). Der Management-Layer
   füllt sie aus der Resolve-Locale; der Identity-Guard formuliert seine Notice darin
   vor der Agent- bzw. Instanzsprache.

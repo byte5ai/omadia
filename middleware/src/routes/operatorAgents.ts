@@ -63,6 +63,7 @@ import { assertFacilitatorIdentity } from '../services/facilitatorContract.js';
 import { createFacilitationEngineStatusHandler } from './facilitationEngineStatus.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
+import { registeredChannelTypes, unknownChannelTypeBody } from './registeredChannelTypes.js';
 import { isCapabilityPlugin } from '../plugins/capabilityPlugins.js';
 import {
   loadAgentReach,
@@ -2132,6 +2133,28 @@ export function createOperatorAgentsRouter(
       installedRegistry: options.getInstalledRegistry?.(),
       catalog: options.getPluginCatalog?.(),
     };
+  }
+
+  /** #1879 — the channel types the binding routes accept (`undefined` = not wired, no check). */
+  function channelTypesKnown(): ReadonlySet<string> | undefined {
+    return registeredChannelTypes({
+      catalog: options.getPluginCatalog?.(),
+      installed: options.getInstalledRegistry?.(),
+      channelTypesOf: options.channelTypesOf,
+    });
+  }
+
+  function firstUnknownChannelType(
+    wanted: ReadonlyArray<{ channel_type: string; channel_key: string }>,
+    kept: ReadonlyArray<{ channelType: string; channelKey: string }>,
+  ): ReturnType<typeof unknownChannelTypeBody> | undefined {
+    const known = channelTypesKnown();
+    if (!known) return undefined;
+    const stored = new Set(kept.map((b) => `${b.channelType}|${b.channelKey}`));
+    const offending = wanted.find(
+      (b) => !known.has(b.channel_type) && !stored.has(`${b.channel_type}|${b.channel_key}`),
+    );
+    return offending ? unknownChannelTypeBody(offending.channel_type, known) : undefined;
   }
 
   function slugParam(req: Request, res: Response): string | undefined {
@@ -4780,6 +4803,13 @@ export function createOperatorAgentsRouter(
       // a binding. An empty set stays allowed, so stale rows can be cleared.
       if (body.bindings.length > 0) assertArchetypeAllows(existing, 'channel_binding');
       const current = await live.store.listChannelBindingsForAgent(existing.id);
+      // #1879 — a NEW binding must name a channel type an installed channel
+      // routes; one it keeps may stay (its channel may be uninstalled).
+      const unknownType = firstUnknownChannelType(body.bindings, current);
+      if (unknownType !== undefined) {
+        res.status(400).json(unknownType);
+        return;
+      }
       const desired = new Set(
         body.bindings.map((b) => `${b.channel_type}|${b.channel_key}`),
       );
@@ -4947,6 +4977,13 @@ export function createOperatorAgentsRouter(
     if (!live) return unavailable(res);
     try {
       const body = ResolveChannelSchema.parse(req.body);
+      // #1879 — an unknown type would answer "fallback", which reads like a
+      // routing result; it is a typo or a guessed type.
+      const known = channelTypesKnown();
+      if (known && !known.has(body.channel_type)) {
+        res.status(400).json(unknownChannelTypeBody(body.channel_type, known));
+        return;
+      }
       const result = new ChannelResolver({ registry: live.registry }).resolve(
         body.channel_type,
         body.channel_key,
