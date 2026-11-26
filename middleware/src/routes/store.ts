@@ -36,6 +36,8 @@ import type {
 interface StoreDeps {
   catalog: PluginCatalog;
   registry: InstalledRegistry;
+  hasBuilderDraft?: (email: string, pluginId: string) => Promise<boolean>;
+  hasSelfExtensionTemplates?: (pluginId: string) => boolean;
   /** Optional remote registries. When present, their plugins are merged into
    *  the list with `install_state: 'available'` + a `source` marker so the
    *  operator can install from the hub. A local plugin of the same id wins,
@@ -397,6 +399,12 @@ export function createStoreRouter(deps: StoreDeps): Router {
         plugin,
         manifest,
         install_available: installAvailable,
+        ...(deps.registry.get(id) && req.session?.email && deps.hasBuilderDraft
+          ? { has_builder_draft: await deps.hasBuilderDraft(req.session.email, id) }
+          : {}),
+        ...(deps.registry.get(id) && deps.hasSelfExtensionTemplates
+          ? { has_self_extension_templates: deps.hasSelfExtensionTemplates(id) }
+          : {}),
         ...(plugin.incompatibility_reasons || collision
           ? {
               blocking_reasons: [

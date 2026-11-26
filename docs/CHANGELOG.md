@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Builder publishing and Store actions (2026-11-26)
+
+- Publish links to the plugin's Store page for activation and explicit agent grants,
+  reports activation failures, and lets the operator confirm a downgrade (#1732,
+  #1784, #1785). Unknown activation errors have one headline (#1796).
+- The publish dialog reviews the generated manifest against the available installed
+  version and shows its permissions (#1797, ADR-0237).
+- Store detail offers Builder edits and spec proposals when the operator owns a
+  source draft. Standalone template proposals remain available for plugins that
+  expose templates (#1794).
+
 ### Fixed — Builder preview turns and choice cards (2026-11-26)
 
 - Preview model calls carry turn and draft-session IDs. The usage page counts Builder

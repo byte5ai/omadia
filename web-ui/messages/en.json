@@ -518,6 +518,8 @@
     }
   },
   "selfExtension": {
+    "sourceDraftMissing": "There is no Builder draft for this plugin in your account.",
+    "proposalFailed": "The self-extension proposal could not be submitted.",
     "intro": "Propose a self-extension for this installed plugin: add tools or capabilities by patching its spec. The escalation guard auto-denies any privilege widening — a plugin can never grant itself rights it does not already hold.",
     "composeTitle": "New proposal",
     "rationalePlaceholder": "Why is this extension needed?",
@@ -4253,9 +4255,8 @@
       "publishTitle": "Publish plugin",
       "closeModalAria": "Close modal",
       "closeAria": "Close",
-      "diffGateEyebrow": "Publish diff gate",
-      "publishLeadPrefix": "This surface will be written to the plugin store. After “Publish”,",
-      "publishLeadSuffix": "can be granted to agents in the tenant.",
+      "publishLeadPrefix": "Publishing sends",
+      "publishLeadSuffix": "to the Store. For a new plugin, install it there and choose which agents may use it.",
       "back": "Back",
       "publishing": "Publishing …",
       "succeeded": "Succeeded",
@@ -4297,12 +4298,11 @@
       "hintSpecInvalid": "The spec has a schema problem. Check required fields in the spec editor.",
       "hintTooLarge": "Reduce slot content or asset sizes — the server limit has been reached.",
       "bumpInvalidSemver": "Version '{version}' is not semver — adjust it manually in the spec editor.",
-      "bumpAndPublish": "Bump version ({current} → {next}) + publish",
+      "bumpAndPublish": "Bump version ({current} → {next}) and review",
       "retry": "Try again",
       "typescriptErrors": "{count, plural, one {# TypeScript error} other {# TypeScript errors}}",
       "codegenIssues": "{count, plural, one {# codegen issue} other {# codegen issues}}",
       "successHeading": "Plugin published",
-      "successBody": "is visible in the store. Redirecting …",
       "conflictLabel": "Conflict",
       "dismissConflictAria": "Dismiss conflict notice",
       "manifestPreviewOpenAria": "Open manifest preview",
@@ -4310,7 +4310,24 @@
       "manifestPreviewCloseAria": "Close manifest preview",
       "manifestPreviewLoading": "# (preview loading)",
       "previewError": "Preview error",
-      "kvKind": "Kind"
+      "kvKind": "Kind",
+      "manifestComparison": "Manifest comparison",
+      "manifestReview": "Manifest review",
+      "compareVersion": "Compared with installed version {version}.",
+      "baselineUnavailable": "The manifest for installed version {version} is unavailable. The draft manifest is shown below.",
+      "manifestUnavailable": "The draft manifest could not be loaded. Check the draft or try again.",
+      "loadingManifest": "Loading the draft manifest …",
+      "added": "Added",
+      "removed": "Removed",
+      "changed": "Changed",
+      "generatedFeatures": "Generated external reads and UI routes for the draft",
+      "downgradeHeading": "Older than the installed version",
+      "confirmDowngrade": "Downgrade to {version}",
+      "activationFailed": "The package was published, but the new version did not start.",
+      "successActivated": "was published and activated. Manage access for agents in the Store.",
+      "successNeedsInstall": "was published to the Store. Install or activate it there, then grant access to the agents you choose.",
+      "openStore": "Open plugin in Store",
+      "reviewStale": "The draft or installed version changed. Load the manifest review again before publishing."
     },
     "common": {
       "missingCountAria": "{count} missing",
@@ -5085,9 +5102,10 @@
       "patternUnavailable": "This field declares a format check that could not be applied — its value is not validated."
     },
     "editFromStore": {
+      "sourceDraftMissing": "There is no Builder draft for this plugin in your account.",
+      "cloneFailed": "The Builder draft could not be opened.",
       "cloning": "Cloning draft …",
       "editInBuilder": "Edit in Builder",
-      "hintSourceNotFound": "The original Builder draft no longer exists (deleted or installed by another operator). Reverse codegen from the installed manifest.yaml arrives in B.7.",
       "hintQuotaExceeded": "Delete existing drafts under “Drafts” before cloning this one."
     },
     "requiresWizard": {

@@ -15,7 +15,7 @@ import { PackageUploadService } from '../src/plugins/packageUploadService.js';
 import { createPackagesRouter } from '../src/routes/packages.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
-import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
+import { loadManifestFromPath, type PluginCatalog } from '../src/plugins/manifestLoader.js';
 import type {
   UploadedPackage,
   UploadedPackageStore,
@@ -381,6 +381,86 @@ describe('PackageUploadService ingest × version direction (issue #1455)', () =>
     assert.equal(entry?.installed_version, '2.0.0');
     assert.deepEqual(entry?.config, { tenant: 'acme' });
     assert.equal(activations, 0);
+  });
+
+  it('rejects a downgrade confirmation for a different installed version', async () => {
+    const seed = await seedInstalled('@test/scan-target', '2.0.0');
+    const { store, packages } = seededStore(seed);
+    const service = new PackageUploadService({
+      store,
+      catalog: fakeCatalog(),
+      packagesDir,
+      limits: { maxBytes: 1024 * 1024, maxExtractedBytes: 4 * 1024 * 1024, maxEntries: 50 },
+      hostDependencies: {},
+    });
+    const result = await service.ingest({
+      fileBuffer: await fixtureZip(),
+      originalFilename: 'scan-target-1.0.0.zip',
+      uploadedBy: 'operator@example.com',
+      allowDowngrade: true,
+      downgradeConfirmation: {
+        pluginId: '@test/scan-target',
+        fromVersion: '3.0.0',
+        toVersion: '1.0.0',
+      },
+    });
+    assert.equal(result.ok ? 'success' : result.code, 'package.downgrade_blocked');
+    assert.equal(packages.get('@test/scan-target')?.version, '2.0.0');
+  });
+
+  it('serializes concurrent swaps of the same package version', async () => {
+    const seed = await seedInstalled('@test/scan-target', '0.9.0');
+    const { store, packages } = seededStore(seed);
+    const service = new PackageUploadService({
+      store,
+      catalog: fakeCatalog(),
+      packagesDir,
+      limits: { maxBytes: 1024 * 1024, maxExtractedBytes: 4 * 1024 * 1024, maxEntries: 50 },
+      hostDependencies: {},
+      log: () => undefined,
+    });
+    const input = {
+      fileBuffer: await fixtureZip(),
+      originalFilename: 'scan-target-1.0.0.zip',
+      uploadedBy: 'operator@example.com',
+    };
+    const results = await Promise.all([service.ingest(input), service.ingest(input)]);
+    assert.equal(results.filter((result) => result.ok).length, 1);
+    assert.equal(results.find((result) => !result.ok)?.code, 'package.duplicate_version');
+    assert.equal(packages.get('@test/scan-target')?.version, '1.0.0');
+  });
+
+  it('rejects a changed installed manifest even when its version matches the review', async () => {
+    const seed = await seedInstalled('@test/scan-target', '2.0.0');
+    const { store, packages } = seededStore(seed);
+    const entry = await loadManifestFromPath(path.join(seed.path, 'manifest.yaml'));
+    assert.ok(entry);
+    const catalog = fakeCatalog();
+    catalog.get = () => entry;
+    const registry = new InMemoryInstalledRegistry();
+    await registry.register({
+      id: seed.id,
+      installed_version: seed.version,
+      installed_at: '2026-10-01T00:00:00.000Z',
+      status: 'active',
+      config: {},
+    });
+    const service = new PackageUploadService({
+      store,
+      catalog,
+      registry,
+      packagesDir,
+      limits: { maxBytes: 1024 * 1024, maxExtractedBytes: 4 * 1024 * 1024, maxEntries: 50 },
+      hostDependencies: {},
+    });
+    const result = await service.ingest({
+      fileBuffer: await fixtureZip(),
+      originalFilename: 'scan-target-1.0.0.zip',
+      uploadedBy: 'operator@example.com',
+      reviewedInstallation: { version: '2.0.0', manifestFingerprint: '0'.repeat(64) },
+    });
+    assert.equal(result.ok ? 'success' : result.code, 'package.install_review_stale');
+    assert.equal(packages.get(seed.id)?.version, seed.version);
   });
 
   it('installs the older version with allowDowngrade, and names the direction', async () => {

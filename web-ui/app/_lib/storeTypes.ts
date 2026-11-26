@@ -466,6 +466,8 @@ export interface StoreGetResponse {
   plugin: Plugin;
   manifest: unknown;
   install_available: boolean;
+  has_builder_draft?: boolean;
+  has_self_extension_templates?: boolean;
   blocking_reasons?: string[];
   /** Advisory-only — never blocks install (issue #453). */
   verdict?: PluginVerdict;

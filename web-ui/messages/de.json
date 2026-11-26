@@ -518,6 +518,8 @@
     }
   },
   "selfExtension": {
+    "sourceDraftMissing": "Für dieses Plugin gibt es in deinem Konto keinen Builder-Entwurf.",
+    "proposalFailed": "Der Vorschlag zur Selbst-Erweiterung konnte nicht eingereicht werden.",
     "intro": "Schlage eine Selbst-Erweiterung für dieses installierte Plugin vor: füge Tools oder Capabilities per Spec-Patch hinzu. Der Escalation-Guard lehnt jede Rechte-Ausweitung automatisch ab — ein Plugin kann sich keine Rechte selbst geben, die es nicht ohnehin schon hat.",
     "composeTitle": "Neuer Vorschlag",
     "rationalePlaceholder": "Warum wird diese Erweiterung benötigt?",
@@ -4253,9 +4255,8 @@
       "publishTitle": "Plugin bereitstellen",
       "closeModalAria": "Modal schließen",
       "closeAria": "Schließen",
-      "diffGateEyebrow": "Bereitstellungs-Diff-Gate",
-      "publishLeadPrefix": "Diese Surface wird in die Plugin-Registry deiner Instanz geschrieben. Nach „Bereitstellen“ ist",
-      "publishLeadSuffix": "kann Agenten in deinem Tenant freigegeben werden — nicht öffentlich.",
+      "publishLeadPrefix": "Beim Bereitstellen wird",
+      "publishLeadSuffix": "in den Store übertragen. Installiere ein neues Plugin dort und wähle aus, welche Agenten es nutzen dürfen.",
       "back": "Zurück",
       "publishing": "Stelle bereit …",
       "succeeded": "Erfolgreich",
@@ -4297,12 +4298,11 @@
       "hintSpecInvalid": "Die Spec hat ein Schema-Problem. Prüfe Pflichtfelder im Spec-Editor.",
       "hintTooLarge": "Reduziere Slot-Inhalte oder Asset-Größen — der Server-Limit ist erreicht.",
       "bumpInvalidSemver": "Version '{version}' ist kein Semver — manuell anpassen im Spec-Editor.",
-      "bumpAndPublish": "Version anheben ({current} → {next}) + Bereitstellen",
+      "bumpAndPublish": "Version erhöhen ({current} → {next}) und prüfen",
       "retry": "Erneut versuchen",
       "typescriptErrors": "{count, plural, one {# TypeScript-Fehler} other {# TypeScript-Fehler}}",
       "codegenIssues": "{count, plural, one {# Codegen-Issue} other {# Codegen-Issues}}",
       "successHeading": "Plugin bereitgestellt",
-      "successBody": "ist in deiner Instanz verfügbar. Weiterleitung läuft …",
       "conflictLabel": "Konflikt",
       "dismissConflictAria": "Konflikt-Hinweis ausblenden",
       "manifestPreviewOpenAria": "Manifest-Vorschau öffnen",
@@ -4310,7 +4310,24 @@
       "manifestPreviewCloseAria": "Manifest-Vorschau schließen",
       "manifestPreviewLoading": "# (Vorschau wird geladen)",
       "previewError": "Preview-Fehler",
-      "kvKind": "Art"
+      "kvKind": "Art",
+      "manifestComparison": "Manifest-Vergleich",
+      "manifestReview": "Manifest prüfen",
+      "compareVersion": "Vergleich mit der installierten Version {version}.",
+      "baselineUnavailable": "Das Manifest der installierten Version {version} ist nicht verfügbar. Unten steht das Manifest des Entwurfs.",
+      "manifestUnavailable": "Das Manifest des Entwurfs konnte nicht geladen werden. Prüfe den Entwurf oder versuche es erneut.",
+      "loadingManifest": "Manifest des Entwurfs wird geladen …",
+      "added": "Hinzugefügt",
+      "removed": "Entfernt",
+      "changed": "Geändert",
+      "generatedFeatures": "Generierte externe Lesezugriffe und UI-Routen des Entwurfs",
+      "downgradeHeading": "Älter als die installierte Version",
+      "confirmDowngrade": "Downgrade auf {version}",
+      "activationFailed": "Das Paket wurde bereitgestellt, aber die neue Version ist nicht gestartet.",
+      "successActivated": "wurde bereitgestellt und aktiviert. Verwalte die Freigaben für Agenten im Store.",
+      "successNeedsInstall": "wurde im Store bereitgestellt. Installiere oder aktiviere das Plugin dort und gib es anschließend für die gewünschten Agenten frei.",
+      "openStore": "Plugin im Store öffnen",
+      "reviewStale": "Der Entwurf oder die installierte Version hat sich geändert. Lade den Manifest-Vergleich vor dem Bereitstellen neu."
     },
     "common": {
       "missingCountAria": "{count} fehlt",
@@ -5085,9 +5102,10 @@
       "patternUnavailable": "Dieses Feld deklariert eine Formatprüfung, die nicht angewendet werden konnte — der Wert wird nicht validiert."
     },
     "editFromStore": {
+      "sourceDraftMissing": "Für dieses Plugin gibt es in deinem Konto keinen Builder-Entwurf.",
+      "cloneFailed": "Der Builder-Entwurf konnte nicht geöffnet werden.",
       "cloning": "Klone Draft …",
       "editInBuilder": "Im Builder bearbeiten",
-      "hintSourceNotFound": "Der Original-Draft des Builders existiert nicht mehr (gelöscht oder von einem anderen Operator installiert). Reverse-Codegen aus der installierten manifest.yaml kommt erst in B.7.",
       "hintQuotaExceeded": "Lösch bestehende Drafts unter „Drafts“, bevor du diesen klonst."
     },
     "requiresWizard": {

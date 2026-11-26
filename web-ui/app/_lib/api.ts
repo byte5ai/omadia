@@ -28,6 +28,8 @@ import type {
   SnapshotSummary,
 } from './snapshotTypes';
 import type {
+  BuilderInstallManifest,
+  BuilderInstallOptions,
   BuilderModelId,
   BuilderTurnEvent,
   CloneFromInstalledResponse,
@@ -2699,8 +2701,13 @@ export async function patchBuilderModel(
  * orchestrator outcome (404 / 409 / 413 / 422 / 500) returns a typed
  * InstallResponse.
  */
+export async function getBuilderInstallManifest(draftId: string): Promise<BuilderInstallManifest> {
+  return getJson(`/v1/builder/drafts/${encodeURIComponent(draftId)}/install/manifest`);
+}
+
 export async function installBuilderDraft(
   draftId: string,
+  options?: BuilderInstallOptions,
 ): Promise<InstallResponse> {
   const forwarded = await forwardCookieHeader();
   const res = await fetch(
@@ -2714,6 +2721,7 @@ export async function installBuilderDraft(
       },
       credentials: 'include',
       cache: 'no-store',
+      ...(options ? { body: JSON.stringify(options) } : {}),
     },
   );
   const text = await res.text();

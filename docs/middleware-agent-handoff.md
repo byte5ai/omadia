@@ -4517,6 +4517,20 @@ weg; ob es ein ZIP ist, entscheidet yauzl am Inhalt (`zip.invalid`, 422). Der
 Multipart-Fallback-Code ist `multipart` (→ `upload.multipart`), nicht mehr
 doppelt präfixiert.
 
+### Plugin Builder: Manifest prüfen und bereitstellen (ADR-0237)
+
+`GET /drafts/:id/install/manifest` zeigt dem Entwurfsinhaber das durch Codegen
+erzeugte Manifest und das zur installierten Version passende Katalog-Manifest.
+Der Install-POST prüft die Fingerabdrücke des betrachteten Entwurfs und
+des Katalog-Manifests sowie die installierte Version. Der gemeinsame Ingest akzeptiert ein Downgrade mit
+`allowDowngrade` und Bestätigung für genau die angezeigte Plugin-ID und das
+Versionspaar. Eine fehlgeschlagene Reaktivierung antwortet mit
+`422 builder.activation_failed`. Das Paket liegt im Store, der Entwurf behält
+seinen Status. Bei Erfolg führt der Dialog auf die Store-Detailseite, wo der
+Administrator installieren und anschließend explizite Freigaben vergeben kann.
+Die Store-Detailantwort meldet den eigenen Quellentwurf getrennt von verfügbaren
+Selbst-Erweiterungs-Templates.
+
 ### Install-Drawer und Store-Detailseite (#1494, #1495, #1490)
 
 - **Validierungsfehler beenden den Job nicht mehr (#1494).**

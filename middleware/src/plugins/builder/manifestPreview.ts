@@ -1,5 +1,5 @@
 import type { AgentSpecSkeleton } from './types.js';
-import { parseAgentSpec } from './agentSpec.js';
+import { parseAgentSpec, type AgentSpec } from './agentSpec.js';
 import { generate } from './codegen.js';
 
 /**
@@ -30,10 +30,10 @@ export async function renderManifestPreview(
       ...msg.split('\n').map((line) => `#   ${line}`),
     ].join('\n');
   }
-  const out = await generate({ spec: parsed });
-  const manifestBuf = out.get('manifest.yaml');
-  if (!manifestBuf) {
-    return '# manifest.yaml not produced by template';
-  }
-  return manifestBuf.toString('utf8');
+  return await generateManifestPreview(parsed) ?? '# manifest.yaml not produced by template';
+}
+
+export async function generateManifestPreview(spec: AgentSpec, slots?: Record<string, string>): Promise<string | undefined> {
+  const files = await generate({ spec, ...(slots ? { slots } : {}) });
+  return files.get('manifest.yaml')?.toString('utf8');
 }

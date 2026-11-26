@@ -131,7 +131,7 @@ export function registerSelfExtensionRoutes(
     if (!draft) {
       return sendJson(res, 404, {
         code: 'self_ext.source_not_found',
-        message: `no source draft for installed plugin '${agentId}' owned by this operator (a standalone plugin must propose via a template)`,
+        message: `There is no Builder draft for plugin '${agentId}' owned by this operator.`,
       });
     }
     let currentSpec;

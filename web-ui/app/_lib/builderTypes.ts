@@ -388,6 +388,7 @@ export interface InstallSuccess {
   publishedAgentId: string;
   version: string;
   packageBytes: number;
+  activated?: true;
 }
 
 export type InstallFailureReason =
@@ -399,6 +400,7 @@ export type InstallFailureReason =
   | 'conflict'
   | 'too_large'
   | 'manifest_invalid'
+  | 'activation_failed'
   | 'ingest_failed';
 
 export interface InstallFailure {
@@ -412,6 +414,26 @@ export interface InstallFailure {
 }
 
 export type InstallResponse = InstallSuccess | InstallFailure;
+
+export interface BuilderInstallManifest {
+  pluginId: string;
+  version: string;
+  fingerprint: string;
+  manifest: Record<string, unknown>;
+  generatedFeatures: { external_reads: unknown[]; ui_routes: unknown[] };
+  installedVersion: string | null;
+  installedManifest: Record<string, unknown> | null;
+  installedManifestFingerprint: string | null;
+}
+
+export interface BuilderInstallOptions {
+  review: {
+    fingerprint: string;
+    installed: { version: string | null; manifestFingerprint: string | null };
+  };
+  allowDowngrade?: true;
+  downgradeConfirmation?: { pluginId: string; fromVersion: string; toVersion: string };
+}
 
 // -----------------------------------------------------------------------------
 // Boilerplate types — GET /drafts/:id/types (B.6-11).

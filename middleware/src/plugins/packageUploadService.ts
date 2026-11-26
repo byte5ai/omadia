@@ -27,7 +27,7 @@ import {
   type InstalledRegistry,
 } from './installedRegistry.js';
 import { archetypeUpdateReasons } from './archetypeUpdateConfirmation.js';
-import type { PluginCatalog } from './manifestLoader.js';
+import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
 import { loadManifestFromPath } from './manifestLoader.js';
 import { checkPluginBoundary } from './pluginBoundary.js';
 import { isDataOnlyPlugin } from './pluginRuntimeOf.js';
@@ -52,6 +52,12 @@ import {
  * Docs: docs/harness-platform/plans/agent-zip-upload.md
  */
 
+export interface DowngradeConfirmation {
+  pluginId: string;
+  fromVersion: string;
+  toVersion: string;
+}
+
 export interface IngestInput {
   fileBuffer: Buffer;
   originalFilename: string;
@@ -69,6 +75,8 @@ export interface IngestInput {
    * button — it is a confirmation, not a privilege.
    */
   allowDowngrade?: boolean;
+  downgradeConfirmation?: DowngradeConfirmation;
+  reviewedInstallation?: InstalledManifestReview;
   /**
    * #2088 — the caller's explicit confirmation of an update that makes an
    * installed plugin an archetype plugin, changes what its archetype is
@@ -77,6 +85,21 @@ export interface IngestInput {
    * refused with `package.archetype_confirmation_required`.
    */
   confirmArchetype?: boolean;
+}
+
+export interface InstalledManifestReview {
+  version: string | null;
+  manifestFingerprint: string | null;
+}
+
+export function installedManifestForReview(entry: PluginCatalogEntry | undefined, version: string | null) {
+  const manifest = entry && version === entry.plugin.version ? entry.manifest : null;
+  return {
+    manifest,
+    manifestFingerprint: manifest == null
+      ? null
+      : createHash('sha256').update(JSON.stringify(manifest)).digest('hex'),
+  };
 }
 
 export interface IngestSuccess {
@@ -149,6 +172,7 @@ export const INGEST_CONFLICT_CODES: ReadonlySet<string> = new Set([
   'package.id_conflict_bundled',
   'package.duplicate_version',
   'package.downgrade_blocked',
+  'package.install_review_stale',
   'package.archetype_confirmation_required',
 ]);
 
@@ -251,6 +275,8 @@ function allowBundledIdOverride(): boolean {
 }
 
 export class PackageUploadService {
+  private readonly swaps = new Map<string, Promise<void>>();
+
   constructor(private readonly deps: PackageUploadServiceDeps) {}
 
   async ingest(input: IngestInput): Promise<IngestResult> {
@@ -277,10 +303,11 @@ export class PackageUploadService {
     const stagingRoot = path.join(
       this.deps.packagesDir,
       '.staging',
-      `${Date.now()}-${sha256.slice(0, 12)}`,
+      path.basename(tmpRoot),
     );
     await fs.mkdir(stagingRoot, { recursive: true });
 
+    let releaseSwap: (() => void) | undefined;
     try {
       // --- 3. Extract with guardrails ---------------------------------------
       let extractResult;
@@ -444,8 +471,26 @@ export class PackageUploadService {
       }
 
       // --- 9. ID-Konflikt-Check --------------------------------------------
+      const previousSwap = this.swaps.get(plugin.id);
+      let finishSwap!: () => void;
+      const swap = new Promise<void>((resolve) => { finishSwap = resolve; });
+      this.swaps.set(plugin.id, swap);
+      releaseSwap = () => {
+        if (this.swaps.get(plugin.id) === swap) this.swaps.delete(plugin.id);
+        finishSwap();
+      };
+      await previousSwap;
       const existingUploaded = this.deps.store.get(plugin.id);
       const catalogEntry = this.deps.catalog.get(plugin.id);
+      const installedBefore = this.deps.registry?.get(plugin.id);
+      if (input.reviewedInstallation) {
+        const installedVersion = installedBefore?.installed_version ?? null;
+        const { manifestFingerprint } = installedManifestForReview(catalogEntry, installedVersion);
+        if (input.reviewedInstallation.version !== installedVersion ||
+            input.reviewedInstallation.manifestFingerprint !== manifestFingerprint) {
+          return fail('package.install_review_stale', 'The installed package changed after the publish review.');
+        }
+      }
 
       // #789 — a package claiming an id this image SHIPS is refused, and this
       // check is deliberately not conditioned on `existingUploaded`.
@@ -514,10 +559,15 @@ export class PackageUploadService {
       const direction: VersionChangeDirection | null = existingUploaded
         ? versionDirection(existingUploaded.version, plugin.version)
         : null;
+      const confirmation = input.downgradeConfirmation;
+      const downgradeAllowed = input.allowDowngrade === true && (!confirmation ||
+        (confirmation.pluginId === plugin.id &&
+          confirmation.fromVersion === existingUploaded?.version &&
+          confirmation.toVersion === plugin.version));
       if (
         existingUploaded &&
         direction === 'downgrade' &&
-        input.allowDowngrade !== true
+        !downgradeAllowed
       ) {
         return fail(
           'package.downgrade_blocked',
@@ -565,7 +615,6 @@ export class PackageUploadService {
       // the hook too, with `fromVersion` above `toVersion`. The direction is
       // in the log line the runner writes, and a plugin that needs to tell the
       // two apart can compare the versions its `onMigrate` is handed.
-      const installedBefore = this.deps.registry?.get(plugin.id);
       const shouldMigrate =
         !!existingUploaded && !!installedBefore && existingUploaded.version !== plugin.version;
       let migratedConfig: Record<string, unknown> | null = null;
@@ -787,6 +836,7 @@ export class PackageUploadService {
         ...(activated ? { activated: true as const } : {}),
       };
     } finally {
+      releaseSwap?.();
       await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
       await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
     }

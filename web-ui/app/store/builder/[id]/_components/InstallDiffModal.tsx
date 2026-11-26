@@ -1,22 +1,23 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
-import { useRouter } from 'next/navigation';
 import { AlertTriangle, CheckCircle2, ShieldCheck, X } from 'lucide-react';
 
-import { installBuilderDraft, patchBuilderSpec } from '../../../../_lib/api';
+import { getBuilderInstallManifest, installBuilderDraft, patchBuilderSpec } from '../../../../_lib/api';
+import { ActivationFailureNotice } from '../../../../_components/store/ActivationFailureNotice';
 import { cn } from '../../../../_lib/cn';
 import { storeErrorText } from '../../../../_lib/packageErrorText';
 import type {
+  BuilderInstallManifest,
+  BuilderInstallOptions,
   Draft,
   InstallFailureReason,
   InstallResponse,
 } from '../../../../_lib/builderTypes';
-
-import { effectivePluginKind, normalizeTemplateId } from './pluginKind';
 
 /**
  * Frontend mirror of middleware's `bumpPatchVersion` (Theme C). Strips
@@ -33,31 +34,6 @@ function bumpPatchVersion(version: string): string {
   return `${major}.${minor}.${String(Number(patch) + 1)}`;
 }
 
-/**
- * Install-Diff-Gate (B.6-2 / M3 from the master plan).
- *
- * Shows the operator the full surface that will be committed to the plugin
- * registry, then POSTs `/api/v1/builder/drafts/:id/install` and reacts to
- * the orchestrator's discriminated `InstallResponse`:
- *
- *   reason: undefined (ok=true)  → flash success then push /store?highlight=…
- *   reason: 'conflict'          → inline banner ("ID schon installiert" /
- *                                  "Version bereits hochgeladen") with hint;
- *                                  user has to change spec and rebuild
- *   reason: 'build_failed' /     → banner with the structured tsc errors / Zod
- *           'codegen_failed' /    issues — operator goes back to the Editor pane
- *           'spec_invalid'
- *   reason: 'manifest_invalid' / → generic banner; rare in B.6 because we
- *           'too_large'           always build from a fresh codegen
- *   reason: 'pipeline_failed' /  → banner with raw message; treat as 5xx
- *           'ingest_failed'
- *
- * The modal does NOT pre-check for conflicts client-side: the server is the
- * single source of truth for the registry state, and the round-trip is
- * already required for the actual commit. Reserved-prefix/peer-dep checks
- * are server-side too (B.7+).
- */
-
 type InstallT = ReturnType<typeof useTranslations<'builder.install'>>;
 
 export interface InstallDiffModalProps {
@@ -65,14 +41,14 @@ export interface InstallDiffModalProps {
   open: boolean;
   onClose: () => void;
   /** Optional override for tests — defaults to the real installBuilderDraft. */
-  install?: (draftId: string) => Promise<InstallResponse>;
+  install?: (draftId: string, options?: BuilderInstallOptions) => Promise<InstallResponse>;
 }
 
 type Phase =
   | { kind: 'idle' }
   | { kind: 'installing' }
   | { kind: 'failed'; failure: InstallFailureBody }
-  | { kind: 'succeeded'; publishedAgentId: string; version: string };
+  | { kind: 'succeeded'; publishedAgentId: string; version: string; activated: boolean };
 
 interface InstallFailureBody {
   reason: InstallFailureReason;
@@ -89,30 +65,49 @@ export function InstallDiffModal({
   install,
 }: InstallDiffModalProps): React.ReactElement | null {
   const t = useTranslations('builder.install');
-  const router = useRouter();
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
+  const [review, setReview] = useState<{ key: string; manifest: BuilderInstallManifest | null } | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const reviewKey = `${draft.id}:${String(draft.updatedAt)}:${String(attempt)}`;
+  const manifest = review?.key === reviewKey ? review.manifest : null;
+  const manifestFailed = review?.key === reviewKey && review.manifest === null;
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void getBuilderInstallManifest(draft.id).then(
+      (data) => { if (!cancelled) setReview({ key: reviewKey, manifest: data }); },
+      () => { if (!cancelled) setReview({ key: reviewKey, manifest: null }); },
+    );
+    return () => { cancelled = true; };
+  }, [open, draft.id, reviewKey]);
 
   if (!open) return null;
 
   const busy = phase.kind === 'installing';
 
-  const handleInstall = async (): Promise<void> => {
+  const handleInstall = async (confirmation?: BuilderInstallOptions['downgradeConfirmation']): Promise<void> => {
+    if (!manifest) return;
     setPhase({ kind: 'installing' });
     try {
       const fn = install ?? installBuilderDraft;
-      const result = await fn(draft.id);
+      const result = await fn(draft.id, {
+        review: {
+          fingerprint: manifest.fingerprint,
+          installed: {
+            version: manifest.installedVersion,
+            manifestFingerprint: manifest.installedManifestFingerprint,
+          },
+        },
+        ...(confirmation ? { allowDowngrade: true, downgradeConfirmation: confirmation } : {}),
+      });
       if (result.ok) {
         setPhase({
           kind: 'succeeded',
           publishedAgentId: result.publishedAgentId,
           version: result.version,
+          activated: result.activated === true,
         });
-        // Brief delay so the user sees the success banner before the redirect.
-        window.setTimeout(() => {
-          router.push(
-            `/store?highlight=${encodeURIComponent(result.publishedAgentId)}`,
-          );
-        }, 600);
         return;
       }
       setPhase({
@@ -140,6 +135,7 @@ export function InstallDiffModal({
   const handleClose = (): void => {
     if (busy) return;
     setPhase({ kind: 'idle' });
+    setReview(null);
     onClose();
   };
 
@@ -171,15 +167,15 @@ export function InstallDiffModal({
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-[color:var(--accent)]">
               <ShieldCheck className="size-3.5" aria-hidden />
-              {t('diffGateEyebrow')}
+              {t(manifest?.installedManifest ? 'manifestComparison' : 'manifestReview')}
             </div>
             <h2 className="font-display mt-1 text-2xl font-medium leading-tight text-[color:var(--ink)]">
               {t('publishTitle')}
             </h2>
             <p className="mt-2 text-[12px] leading-relaxed text-[color:var(--muted-ink)]">
               {t('publishLeadPrefix')}{' '}
-              <span className="font-mono-num">{draft.spec.id}</span> v
-              {draft.spec.version} {t('publishLeadSuffix')}
+              <span className="font-mono-num">{manifest?.pluginId ?? draft.spec.id}</span> v
+              {manifest?.version ?? draft.spec.version} {t('publishLeadSuffix')}
             </p>
           </div>
           {/* eslint-disable-next-line no-restricted-syntax -- icon-only header close button (X), no text */}
@@ -199,25 +195,26 @@ export function InstallDiffModal({
             <FailureBanner
               t={t}
               failure={phase.failure}
-              onRetry={() => setPhase({ kind: 'idle' })}
-              currentVersion={draft.spec.version}
+              onRetry={() => {
+                setPhase({ kind: 'idle' });
+                setAttempt((count) => count + 1);
+              }}
+              onDowngrade={
+                manifest ? (confirmation) => handleInstall(confirmation) : undefined
+              }
+              currentVersion={manifest?.version ?? draft.spec.version}
               onBumpAndRetry={async () => {
-                // Theme C, retry-path: server-side auto-bump only
-                // triggers at clone-from-installed. Drafts that predate
-                // that fix (or where the operator manually re-edited
-                // the version back) still hit duplicate_version. This
-                // handler patches the spec.version inline and immediately
-                // retries the install — zero-friction self-fix without
-                // forcing the operator to navigate to the spec editor.
-                const next = bumpPatchVersion(draft.spec.version);
-                if (next === draft.spec.version) {
+                // Review the new manifest before publishing the bumped version.
+                const currentVersion = manifest?.version ?? draft.spec.version;
+                const next = bumpPatchVersion(currentVersion);
+                if (next === currentVersion) {
                   setPhase({
                     kind: 'failed',
                     failure: {
                       reason: 'conflict',
                       code: 'builder.bump_invalid_semver',
                       message: t('bumpInvalidSemver', {
-                        version: draft.spec.version,
+                        version: currentVersion,
                       }),
                     },
                   });
@@ -239,8 +236,8 @@ export function InstallDiffModal({
                   });
                   return;
                 }
-                // Server now has the bumped spec; re-trigger install.
-                await handleInstall();
+                setPhase({ kind: 'idle' });
+                setAttempt((count) => count + 1);
               }}
             />
           ) : null}
@@ -249,10 +246,22 @@ export function InstallDiffModal({
               t={t}
               publishedAgentId={phase.publishedAgentId}
               version={phase.version}
+              activated={phase.activated}
             />
           ) : null}
 
-          <DiffBody draft={draft} t={t} />
+          {manifest ? (
+            <ManifestReview data={manifest} t={t} />
+          ) : manifestFailed ? (
+            <div role="alert" className="space-y-3">
+              <p>{t('manifestUnavailable')}</p>
+              <Button variant="secondary" onClick={() => {
+                setAttempt((count) => count + 1);
+              }}>{t('retry')}</Button>
+            </div>
+          ) : (
+            <p role="status">{t('loadingManifest')}</p>
+          )}
         </div>
 
         <footer className="flex items-center justify-end gap-3 border-t border-[color:var(--rule)] px-6 py-4">
@@ -267,7 +276,12 @@ export function InstallDiffModal({
           <Button
             variant="primary"
             onClick={() => void handleInstall()}
-            disabled={busy || phase.kind === 'succeeded'}
+            disabled={
+              busy || !manifest || phase.kind === 'succeeded' ||
+              (phase.kind === 'failed' && (
+                phase.failure.code === 'package.downgrade_blocked' || phase.failure.reason === 'activation_failed'
+              ))
+            }
             className="text-[12px] uppercase tracking-[0.18em]"
           >
             {busy ? (
@@ -294,199 +308,92 @@ export function InstallDiffModal({
 // Body sections
 // ---------------------------------------------------------------------------
 
-function DiffBody({ draft, t }: { draft: Draft; t: InstallT }): React.ReactElement {
-  const spec = draft.spec;
-  // Skeleton arrays may be undefined on drafts that were persisted before
-  // the LLM filled every section (patch_spec can omit untouched fields).
-  // The rest of the builder UI follows the same `?? []` convention, see
-  // Workspace.tsx / SpecEditor.tsx / SpecOverview.tsx / manifestLinter.ts.
-  const tools = spec.tools ?? [];
-  const dependsOn = spec.depends_on ?? [];
-  const outbound = spec.network?.outbound ?? [];
-  const setupFields = spec.setup_fields ?? [];
+function flattenManifest(manifest: Record<string, unknown>): Map<string, string> {
+  const values = new Map<string, string>();
+  function add(path: string, value: unknown) {
+    if (value && typeof value === 'object') {
+      if (Array.isArray(value) && value.some((item) => item && typeof item === 'object')) {
+        value.forEach((item, index) => add(`${path}[${String(index)}]`, item));
+        return;
+      }
+      if (!Array.isArray(value)) {
+        const entries = Object.entries(value);
+        if (entries.length > 0) {
+          entries.forEach(([key, child]) => add(path ? `${path}.${key}` : key, child));
+          return;
+        }
+      }
+    }
+    values.set(path, typeof value === 'string' ? value : (JSON.stringify(value) ?? String(value)));
+  }
+  Object.entries(manifest).forEach(([key, value]) => add(key, value));
+  return values;
+}
+
+function ManifestReview({
+  data,
+  t,
+}: {
+  data: BuilderInstallManifest;
+  t: InstallT;
+}): React.ReactElement {
+  const after = flattenManifest(data.manifest);
+  const before = data.installedManifest ? flattenManifest(data.installedManifest) : null;
+  const paths = [...new Set([...after.keys(), ...(before?.keys() ?? [])])].sort();
+  const generatedFeatures = data.generatedFeatures;
+
   return (
-    <div className="space-y-6">
-      <Section title={t('sectionIdentity')}>
-        <KV k={t('kvId')} v={<span className="font-mono-num">{spec.id}</span>} />
-        <KV k={t('kvName')} v={spec.name} />
-        <KV k={t('kvVersion')} v={<span className="font-mono-num">{spec.version}</span>} />
-        <KV k={t('kvCategory')} v={spec.category} />
-        <KV
-          k={t('kvDomain')}
-          v={<span className="font-mono-num">{spec.domain || '—'}</span>}
-        />
-        <KV k={t('kvKind')} v={effectivePluginKind(spec)} />
-        <KV k={t('kvTemplate')} v={normalizeTemplateId(spec.template)} />
-        <KV k={t('kvDescription')} v={spec.description} />
-      </Section>
-
-      <Section
-        title={t('sectionTools')}
-        subtitle={t('toolsCount', { count: tools.length })}
-      >
-        {tools.length === 0 ? (
-          <EmptyHint>{t('noToolsDefined')}</EmptyHint>
-        ) : (
-          <ul className="space-y-2">
-            {tools.map((tool) => (
-              <li
-                key={tool.id}
-                className="rounded-md border border-[color:var(--divider)] bg-[color:var(--bg-soft)] px-3 py-2"
-              >
-                <div className="flex items-baseline justify-between gap-3">
-                  <span className="font-mono-num text-[12px] font-semibold text-[color:var(--fg-strong)]">
-                    {tool.id}
-                  </span>
-                </div>
-                <p className="mt-1 text-[11px] text-[color:var(--fg-muted)]">
-                  {tool.description}
-                </p>
-                {tool.input ? (
-                  <details className="mt-2">
-                    <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
-                      {t('toolInputSchema')}
-                    </summary>
-                    <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-[color:var(--divider)] bg-[color:var(--paper)] px-2 py-2 text-[10px] font-mono leading-relaxed text-[color:var(--fg-strong)]">
-                      {JSON.stringify(tool.input, null, 2)}
-                    </pre>
-                  </details>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
-
-      <Section
-        title={t('sectionDependencies')}
-        subtitle={t('sectionDependenciesSubtitle')}
-      >
-        {dependsOn.length === 0 ? (
-          <EmptyHint>{t('noDependencies')}</EmptyHint>
-        ) : (
-          <ul className="space-y-1">
-            {dependsOn.map((d) => (
-              <li
-                key={d}
-                className="font-mono-num text-[12px] text-[color:var(--fg-strong)]"
-              >
-                {d}
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
-
-      <Section
-        title={t('sectionNetwork')}
-        subtitle="permissions.network.outbound"
-      >
-        {outbound.length === 0 ? (
-          <EmptyHint>{t('noOutboundHosts')}</EmptyHint>
-        ) : (
-          <ul className="flex flex-wrap gap-2">
-            {outbound.map((h) => (
-              <li
-                key={h}
-                className="font-mono-num rounded-full border border-[color:var(--divider)] bg-[color:var(--bg-soft)] px-3 py-0.5 text-[11px] text-[color:var(--fg-strong)]"
-              >
-                {h}
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
-
-      <Section
-        title={t('sectionSetupFields')}
-        subtitle={t('sectionSetupFieldsSubtitle')}
-      >
-        {setupFields.length === 0 ? (
-          <EmptyHint>{t('noSetupNeeded')}</EmptyHint>
-        ) : (
-          <ul className="space-y-1">
-            {setupFields.map((f) => (
-              <li
-                key={f.key}
-                className="flex items-baseline justify-between gap-3 rounded-md border border-[color:var(--divider)] px-3 py-2"
-              >
-                <span className="font-mono-num text-[12px] text-[color:var(--fg-strong)]">
-                  {f.key}
-                </span>
-                <span className="text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-                  {f.type ?? 'string'}
-                  {f.required ? ` · ${t('required')}` : ''}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
+    <div className="space-y-4">
+      {data.installedVersion && (
+        <p role="status" className="text-sm">
+          {t(before ? 'compareVersion' : 'baselineUnavailable', { version: data.installedVersion })}
+        </p>
+      )}
+      <dl className="divide-y divide-[color:var(--divider)]">
+        {paths.map((path) => {
+          const previous = before?.get(path);
+          const next = after.get(path);
+          const changed = before && previous !== next;
+          return (
+            <div key={path} className="grid gap-2 py-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+              <dt className="break-all font-mono text-xs">{path}</dt>
+              <dd className="min-w-0 text-xs">
+                {changed && (
+                  <div className="mb-1 font-semibold">
+                    {t(previous === undefined ? 'added' : next === undefined ? 'removed' : 'changed')}
+                  </div>
+                )}
+                {changed && previous !== undefined && (
+                  <del className="block whitespace-pre-wrap break-words text-[color:var(--danger)]">{previous}</del>
+                )}
+                {next !== undefined && <div className="whitespace-pre-wrap break-words">{next}</div>}
+              </dd>
+            </div>
+          );
+        })}
+      </dl>
+      {(generatedFeatures.external_reads.length || generatedFeatures.ui_routes.length) ? (
+        <details>
+          <summary>{t('generatedFeatures')}</summary>
+          <pre className="mt-2 whitespace-pre-wrap break-words text-xs">{JSON.stringify(generatedFeatures, null, 2)}</pre>
+        </details>
+      ) : null}
     </div>
   );
 }
-
-function Section({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string;
-  subtitle?: string;
-  children: React.ReactNode;
-}): React.ReactElement {
-  return (
-    <section>
-      <div className="mb-2 flex items-baseline gap-2">
-        <h3 className="font-display text-[14px] font-semibold text-[color:var(--fg-strong)]">
-          {title}
-        </h3>
-        {subtitle ? (
-          <span className="text-[11px] text-[color:var(--fg-subtle)]">{subtitle}</span>
-        ) : null}
-      </div>
-      <div className="space-y-2 text-[12px]">{children}</div>
-    </section>
-  );
-}
-
-function KV({
-  k,
-  v,
-}: {
-  k: string;
-  v: React.ReactNode;
-}): React.ReactElement {
-  return (
-    <div className="grid grid-cols-[140px_1fr] items-baseline gap-3">
-      <dt className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-        {k}
-      </dt>
-      <dd className="text-[12px] text-[color:var(--fg-strong)]">{v}</dd>
-    </div>
-  );
-}
-
-function EmptyHint({ children }: { children: React.ReactNode }): React.ReactElement {
-  return (
-    <p className="text-[11px] italic text-[color:var(--fg-subtle)]">{children}</p>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Banners
-// ---------------------------------------------------------------------------
 
 function FailureBanner({
   t,
   failure,
   onRetry,
+  onDowngrade,
   currentVersion,
   onBumpAndRetry,
 }: {
   t: InstallT;
   failure: InstallFailureBody;
   onRetry: () => void;
+  onDowngrade?: (confirmation: NonNullable<BuilderInstallOptions['downgradeConfirmation']>) => Promise<void>;
   currentVersion: string;
   onBumpAndRetry: () => void | Promise<void>;
 }): React.ReactElement {
@@ -495,14 +402,29 @@ function FailureBanner({
   // #1477 — `package.incompatible_core` shares the 409 `conflict` reason with
   // the id/version collisions, but "change the id" is the wrong advice for
   // it: the error-help copy in `message` below says what to do instead.
-  const isCoreCompat = failure.code === 'package.incompatible_core';
-  const headingKey = isCoreCompat ? undefined : HEADING_KEYS[failure.reason];
+  if (failure.reason === 'activation_failed') {
+    const details = failure.details as { errorCode?: string; pluginId?: string } | undefined;
+    return (
+      <div className="mb-6 space-y-2">
+        <ActivationFailureNotice code={details?.errorCode} detail={failure.message} lead={t('activationFailed')} />
+        {details?.pluginId && (
+          <Link className="text-sm text-[color:var(--accent)] underline" href={`/store/${encodeURIComponent(details.pluginId)}#install`}>
+            {t('openStore')}
+          </Link>
+        )}
+      </div>
+    );
+  }
+  const isDowngrade = failure.code === 'package.downgrade_blocked';
+  const stale = failure.code === 'builder.install_review_stale' || failure.code === 'package.install_review_stale';
+  const showConflictHint = !isDowngrade && !stale && failure.code !== 'package.incompatible_core';
+  const headingKey = isDowngrade ? 'downgradeHeading' : showConflictHint ? HEADING_KEYS[failure.reason] : undefined;
   const heading = headingKey ? t(headingKey) : t('failureGenericHeading');
-  const hintKey = isCoreCompat ? undefined : HINT_KEYS[failure.reason];
+  const hintKey = showConflictHint ? HINT_KEYS[failure.reason] : undefined;
   const hint = hintKey ? t(hintKey) : undefined;
   // The ingest pipeline writes its messages in German; render known codes
   // from the catalog with their params, the server text only as fallback.
-  const message = storeErrorText(
+  const message = stale ? t('reviewStale') : storeErrorText(
     { code: failure.code, message: failure.message, ...(failure.params ? { params: failure.params } : {}) },
     failure.message,
     tUpload,
@@ -517,6 +439,10 @@ function FailureBanner({
     failure.code.includes('duplicate_version');
   const bumped = isDuplicateVersion ? bumpPatchVersion(currentVersion) : null;
   const canBump = bumped !== null && bumped !== currentVersion;
+  const { pluginId, fromVersion, toVersion } = failure.params ?? {};
+  const confirmation = pluginId && fromVersion && toVersion && toVersion === currentVersion
+    ? { pluginId, fromVersion, toVersion }
+    : undefined;
 
   return (
     <div className="mb-6 rounded-md border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/6 px-4 py-3">
@@ -554,6 +480,11 @@ function FailureBanner({
                 {t('bumpAndPublish', { current: currentVersion, next: bumped ?? '' })}
               </Button>
             ) : null}
+            {isDowngrade && confirmation && onDowngrade ? (
+              <Button variant="primary" size="sm" onClick={() => { void onDowngrade(confirmation); }}>
+                {t('confirmDowngrade', { version: confirmation.toVersion })}
+              </Button>
+            ) : (
             <Button
               variant="secondary"
               size="sm"
@@ -562,6 +493,7 @@ function FailureBanner({
             >
               {t('retry')}
             </Button>
+            )}
           </div>
         </div>
       </div>
@@ -659,10 +591,12 @@ function SuccessBanner({
   t,
   publishedAgentId,
   version,
+  activated,
 }: {
   t: InstallT;
   publishedAgentId: string;
   version: string;
+  activated: boolean;
 }): React.ReactElement {
   return (
     <div className="mb-6 rounded-md border border-[color:var(--success)]/40 bg-[color:var(--success)]/6 px-4 py-3">
@@ -677,8 +611,14 @@ function SuccessBanner({
           </p>
           <p className="mt-1 text-[12px] text-[color:var(--fg-strong)]">
             <span className="font-mono-num">{publishedAgentId}</span> v{version}{' '}
-            {t('successBody')}
+            {t(activated ? 'successActivated' : 'successNeedsInstall')}
           </p>
+          <Link
+            className="mt-2 inline-block text-sm text-[color:var(--accent)] underline"
+            href={`/store/${encodeURIComponent(publishedAgentId)}#install`}
+          >
+            {t('openStore')}
+          </Link>
         </div>
       </div>
     </div>

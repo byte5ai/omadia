@@ -1,7 +1,15 @@
 import type { Router, Request, Response } from 'express';
+import { parse as parseYaml } from 'yaml';
+import { z } from 'zod';
+import { generateManifestPreview } from '../plugins/builder/manifestPreview.js';
+import { parseAgentSpec } from '../plugins/builder/agentSpec.js';
+import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import type { InstalledRegistry } from '../plugins/installedRegistry.js';
+import { installedManifestForReview } from '../plugins/packageUploadService.js';
 
 import {
   installDraft,
+  publishReviewFingerprint,
   type InstallDraftDeps,
   type InstallFailureReason,
   type InstallResult,
@@ -51,14 +59,68 @@ import {
  * `/store/builder/<draftId>`.
  */
 
-export interface BuilderInstallDeps
-  extends InstallDraftDeps,
-    CloneFromInstalledDeps {}
+export interface BuilderInstallDeps extends InstallDraftDeps, CloneFromInstalledDeps {
+  catalog?: Pick<PluginCatalog, 'get'>;
+  registry?: Pick<InstalledRegistry, 'get'>;
+}
+
+const InstallInputSchema = z.object({
+  review: z.object({
+    fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    installed: z.object({
+      version: z.string().nullable(),
+      manifestFingerprint: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+    }),
+  }).optional(),
+  allowDowngrade: z.boolean().optional(),
+  downgradeConfirmation: z.object({
+    pluginId: z.string().min(1),
+    fromVersion: z.string().min(1),
+    toVersion: z.string().min(1),
+  }).optional(),
+}).refine((input) => input.allowDowngrade !== true || input.downgradeConfirmation !== undefined);
 
 export function registerBuilderInstallRoutes(
   router: Router,
   deps: BuilderInstallDeps,
 ): void {
+  router.get('/drafts/:id/install/manifest', async (req: Request, res: Response) => {
+    const email = readEmail(req);
+    if (!email) return sendJson(res, 401, { code: 'auth.missing', message: 'no session' });
+    const draftId = readId(req);
+    if (!draftId) return sendJson(res, 400, { code: 'builder.invalid_id', message: 'missing draft id' });
+    const draft = await deps.draftStore.load(email, draftId);
+    if (!draft) return sendJson(res, 404, { code: 'builder.draft_not_found', message: 'draft not found' });
+
+    try {
+      const spec = parseAgentSpec(draft.spec);
+      const manifest = await generateManifestPreview(spec, draft.slots);
+      if (!manifest) throw new Error('generated package has no manifest');
+      const installed = deps.registry?.get(spec.id);
+      const entry = deps.catalog?.get(spec.id);
+      const installedVersion = installed?.installed_version ?? null;
+      const baseline = installedManifestForReview(entry, installedVersion);
+      return sendJson(res, 200, {
+        pluginId: spec.id,
+        version: spec.version,
+        fingerprint: publishReviewFingerprint(draft),
+        manifest: parseYaml(manifest) as unknown,
+        generatedFeatures: {
+          external_reads: spec.external_reads,
+          ui_routes: spec.ui_routes,
+        },
+        installedVersion,
+        installedManifest: baseline.manifest,
+        installedManifestFingerprint: baseline.manifestFingerprint,
+      });
+    } catch (err) {
+      return sendJson(res, 422, {
+        code: 'builder.install_manifest_unavailable',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
   router.post(
     '/drafts/:id/install',
     async (req: Request, res: Response) => {
@@ -78,8 +140,23 @@ export function registerBuilderInstallRoutes(
       }
 
       let result: InstallResult;
+      const parsedInput = InstallInputSchema.safeParse(req.body ?? {});
+      if (!parsedInput.success) {
+        return sendJson(res, 400, {
+          ok: false,
+          reason: 'conflict',
+          code: 'builder.invalid_install_confirmation',
+          message: 'The publish review or downgrade confirmation is invalid.',
+        });
+      }
       try {
-        result = await installDraft({ userEmail: email, draftId }, deps);
+        const { review, allowDowngrade, downgradeConfirmation } = parsedInput.data;
+        result = await installDraft({
+          userEmail: email,
+          draftId,
+          ...(review ? { review } : {}),
+          ...(allowDowngrade && downgradeConfirmation ? { downgradeConfirmation } : {}),
+        }, deps);
       } catch (err) {
         return sendJson(res, 500, {
           code: 'builder.install_failed',
@@ -93,6 +170,7 @@ export function registerBuilderInstallRoutes(
           publishedAgentId: result.publishedAgentId,
           version: result.version,
           packageBytes: result.packageBytes,
+          ...(result.activated ? { activated: true } : {}),
         });
       }
 
@@ -177,6 +255,7 @@ function statusForReason(reason: InstallFailureReason): number {
     case 'codegen_failed':
     case 'build_failed':
     case 'manifest_invalid':
+    case 'activation_failed':
       return 422;
     case 'pipeline_failed':
     case 'ingest_failed':

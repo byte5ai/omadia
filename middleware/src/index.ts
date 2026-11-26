@@ -6308,6 +6308,10 @@ async function main(): Promise<void> {
     createStoreRouter({
       catalog: pluginCatalog,
       registry: installedRegistry,
+      hasBuilderDraft: async (email, pluginId) =>
+        Boolean(packageUploadService && await draftStore.findByPublishedAgentId(email, pluginId)),
+      hasSelfExtensionTemplates: (pluginId) =>
+        Boolean(packageUploadService && selfExtendRegistry.templates(pluginId).length > 0),
       client: registryClient,
       // #1490 — flags uploaded-but-not-installed packages as removable.
       // #1459 — and gives package provenance: only a hub download carries the
@@ -7585,6 +7589,8 @@ async function main(): Promise<void> {
               draftStore,
               buildPipeline: builderBuildPipeline,
               packageUploadService,
+              catalog: pluginCatalog,
+              registry: installedRegistry,
               quota: draftQuota,
               workaroundStateStore: builderWorkaroundStateStore,
             },
