@@ -83,6 +83,13 @@ changelog.
   When an agent ends service (disabled, deleted, archetype plugin removed) its active routines
   are paused with the reason (`EndOfServiceReport.routinesPaused`, `routines_paused` in the
   agent route response and the audit).
+- **Unattended turns** (#1770, #1771, #1772, ADR 0242): `ChatTurnInput.unattended`
+  (`@omadia/channel-sdk`), set by the routine runner and the trigger turn executor. Such a turn
+  offers no `ask_user_choice`/`suggest_follow_ups`, runs no card router, gets a directive to
+  state assumptions instead of asking, and gets no "recent turns" context block (earlier runs
+  are not trusted facts). A routine turn runs outside any routines principal, so a smart-card
+  "run now" inside a chat turn no longer offers `manage_routine` to the run, and the run is
+  told the current time in its zone.
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 

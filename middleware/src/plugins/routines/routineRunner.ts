@@ -26,6 +26,7 @@ import type { RoutineOutputTemplate } from './routineOutputTemplate.js';
 import { renderRoutineTemplate } from './routineTemplateRenderer.js';
 import { routineTurnContext } from './routineTurnContext.js';
 import type { RoutineAgentResolution } from './routineAgentBinding.js';
+import { formatInTimeZone, UTC_ZONE } from '../../scheduler/zonedCron.js';
 import {
   InFlightRuns,
   RoutineRunCancelledError,
@@ -978,6 +979,10 @@ export class RoutineRunner {
       userMessage,
       userId: routine.userId,
       sessionScope: `routine:${routine.id}`,
+      // #1770 / #1771 / ADR 0242 — nobody is present: no interactive tools,
+      // no earlier runs as trusted context; the run knows its time and zone.
+      unattended: true,
+      extraSystemHint: routineRunHint(routine, new Date()),
     });
     if (routine.outputTemplate === null) {
       // The scope is deliberate, and it must match the templated branch below.
@@ -988,9 +993,11 @@ export class RoutineRunner {
       // templated branch, which does open one, would behave differently for the
       // same routine. Same routine, same owner, two identities, decided by
       // whether an output template happens to be configured.
-      return turnContext.run(
-        { turnId: '', turnDate: today(), abortSignal: signal },
-        () => runAgentTurn(orchestrator, input(routine.prompt)),
+      return routineTurnContext.outside(() =>
+        turnContext.run(
+          { turnId: '', turnDate: today(), abortSignal: signal },
+          () => runAgentTurn(orchestrator, input(routine.prompt)),
+        ),
       );
     }
 
@@ -1007,7 +1014,7 @@ export class RoutineRunner {
       rawToolResults.set(toolName, rawResult);
     };
 
-    const llmTurn = await routineTurnContext.withRawToolResults(
+    const llmTurn = await routineTurnContext.outside(() => routineTurnContext.withRawToolResults(
       rawToolResults,
       () =>
         turnContext.run(
@@ -1023,7 +1030,7 @@ export class RoutineRunner {
           },
           () => runAgentTurn(orchestrator, input(augmentedPrompt)),
         ),
-    );
+    ));
 
     const composed = this.composeTemplatedAnswer(
       routine,
@@ -1114,6 +1121,16 @@ export class RoutineRunner {
       cardBody: rendered.items,
     };
   }
+}
+
+/**
+ * #1743 / #1770 — what a routine run is told about itself: that it is a
+ * scheduled run and the current time in the routine's zone (the turn context
+ * carries only the date). Kernel-written, no user text.
+ */
+export function routineRunHint(routine: Pick<Routine, 'timezone'>, now: Date): string {
+  const zone = routine.timezone ?? UTC_ZONE;
+  return `This is a scheduled run of a routine. Current time: ${formatInTimeZone(now, zone)}.`;
 }
 
 /** What one routine turn produced. */

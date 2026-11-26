@@ -210,8 +210,10 @@ import {
 import { LoopGuard } from './loopGuard.js';
 import {
   TOOLS_OFF_DIRECTIVE,
+  UNATTENDED_DIRECTIVE,
   assertNoToolUseInToolsOffTurn,
   isToolsOffTurn,
+  isUnattendedTurn,
   toolsForTurn,
 } from './toolsOffTurn.js';
 import { createPrivacyBypassResolver } from './privacyBypassResolver.js';
@@ -2065,6 +2067,7 @@ async function wireExtraSystemHint(
     fixedHint !== undefined && fixedHint.length > 0 ? fixedHint : undefined,
     memoryIndexBlock,
     isToolsOffTurn(input),
+    isUnattendedTurn(input),
   );
 }
 
@@ -2107,12 +2110,17 @@ function composeExtraSystemHint(
   fixedHint?: string,
   memoryIndexBlock?: string,
   toolsOff = false,
+  unattended = false,
 ): string | undefined {
   const parts: string[] = [];
   // #2217 — a tool-less turn says so first, so no later block (fresh check,
   // canvas) reads as an invitation to call a tool.
   if (toolsOff) {
     parts.push(TOOLS_OFF_DIRECTIVE);
+  }
+  // #1770 / ADR 0242 — nobody is present: no questions, assumptions stated.
+  if (unattended) {
+    parts.push(UNATTENDED_DIRECTIVE);
   }
   // Phase 3 — the user's per-turn answer-size pick. Same home as Fresh
   // Check (uncached, per turn, static prose that carries no user data), so
@@ -4551,6 +4559,12 @@ export class Orchestrator {
     // is the one pathway we cannot afford to lose visibility on.
     if (input.freshCheck) {
       console.error('[context] SKIP fresh-check');
+      return { text: undefined, recalled: undefined };
+    }
+    // #1771 / ADR 0242 — an unattended turn's "recent turns" are earlier runs
+    // of the same routine or trigger, not facts of this one.
+    if (isUnattendedTurn(input)) {
+      console.error('[context] SKIP unattended');
       return { text: undefined, recalled: undefined };
     }
     if (!this.contextRetriever) {
@@ -7244,7 +7258,8 @@ export class Orchestrator {
           // intent as prose; route it through the existing handlers before the
           // drains below pick it up. No-op on Anthropic and on trivial answers.
           // #2217 — not in a tool-less turn: the router is a forced tool call.
-          if (!isToolsOffTurn(input)) {
+          // #1770 — nor in an unattended one: nobody can pick a card.
+          if (!isToolsOffTurn(input) && !isUnattendedTurn(input)) {
             await this.maybeRouteCardsFromText(
               wireUserMessage,
               answer,
@@ -8695,7 +8710,8 @@ export class Orchestrator {
           // intent as prose; route it through the existing handlers before the
           // drains below pick it up. No-op on Anthropic and on trivial answers.
           // #2217 — not in a tool-less turn: the router is a forced tool call.
-          if (!isToolsOffTurn(input)) {
+          // #1770 — nor in an unattended one: nobody can pick a card.
+          if (!isToolsOffTurn(input) && !isUnattendedTurn(input)) {
             await this.maybeRouteCardsFromText(
               wireUserMessage,
               answer,

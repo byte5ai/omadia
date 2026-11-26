@@ -1788,3 +1788,28 @@ describe('#1744 / #1745 — a routine is bound to its agent by id', () => {
     assert.equal(h.scheduler.list().length, 0, 'both unregistered');
   });
 });
+
+describe('#1770 / #1771 / #1772 — a routine turn is unattended and outside any routines principal', () => {
+  it('runs unattended with its time, and without the clicking turn\'s principal (no manage_routine)', async () => {
+    const seen: Array<{ input: ChatTurnInput; principal: unknown }> = [];
+    const orchestrator: OrchestratorLike = {
+      runTurn(input: ChatTurnInput): Promise<ChatTurnResult> {
+        seen.push({ input, principal: routineTurnContext.current() });
+        return Promise.resolve({ answer: 'ok', toolCalls: 0, iterations: 1 });
+      },
+    };
+    const h = makeHarness({ orchestrator });
+    const routine = await h.runner.createRoutine({ ...baseInput, timezone: 'Europe/Berlin' });
+
+    // A smart-card "run now" inside a chat turn that carries a routines principal.
+    await routineTurnContext.run(
+      { tenant: TENANT, userId: USER, channel: 'teams', conversationRef: {} },
+      () => h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE),
+    );
+
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]!.principal, undefined, 'manage_routine is not offered in the run');
+    assert.equal(seen[0]!.input.unattended, true);
+    assert.match(seen[0]!.input.extraSystemHint ?? '', /scheduled run of a routine\. Current time: \d{4}-\d\d-\d\d \d\d:\d\d \(Europe\/Berlin\)/);
+  });
+});

@@ -605,6 +605,15 @@ export interface ChatTurnInput {
    */
   toolsOff?: boolean;
   /**
+   * #1770 / ADR 0242 — nobody is present to answer: a routine run or a trigger
+   * firing. The turn offers no interactive tool (`ask_user_choice`,
+   * `suggest_follow_ups`), tells the model to state its assumption instead of
+   * asking, and gets no "recent turns" context block (#1771): earlier runs of
+   * the same routine are not trusted facts of this one. Set only by the
+   * kernel's routine runner and trigger executors, never from channel input.
+   */
+  unattended?: boolean;
+  /**
    * Answer-size override for THIS turn only — the level the user picked on a
    * channel affordance ("Kürzer" / "Mehr Details" on the Teams card) for a
    * re-run of the same question. Replaces the configured level (Agent, else
