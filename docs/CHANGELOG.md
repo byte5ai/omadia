@@ -65,6 +65,32 @@ changelog.
   `12.03.2024`, `März 2024`, `1.234,56`, `0x1F`, `Infinity` stay text and the tool result
   lists them by address under `cellsKeptAsText` (never their values). `cellCoercion.ts`;
   the column `type` description now names the accepted formats.
+- **Diagrams overlay keeps `middleware/.env` values (#1965).** `docker-compose.diagrams.yaml`
+  no longer sets `DIAGRAM_URL_SECRET` (an empty `${…:-}` replaced the value from
+  `middleware/.env`) or a hard-coded `DIAGRAM_PUBLIC_BASE_URL` under `environment:`; the URL
+  default `http://localhost:8080` moved to `middleware/compose.defaults.env`. The boot's skip
+  lines name each missing variable (`environment lacks DIAGRAM_URL_SECRET`).
+- **Diagrams reinstallable on a Postgres-memory stack (#1973).** Diagrams declares
+  `optional_requires: memoryStore@1` instead of `depends_on: @omadia/memory` and resolves it
+  at first use (ADR-0053); its row in `BUNDLED_LEGACY_SERVICE_GRANTS_2026_08_20` is retired.
+  `agent-reference-maximum` drops the same dependency. `install.missing_dependencies` carries
+  `details.missing`, and the Store drawer names the missing plugins (en/de).
+- **Signed-link secret and defaults (#1975).** Rotation is documented as each plugin's setup
+  field (`DIAGRAM_URL_SECRET` is read only on the boot that auto-installs). Env and Store
+  installs now share their defaults: TTL 3600 s (`DIAGRAM_SIGNED_URL_TTL_SEC`, was 900),
+  tenant `default` (manifests and plugin fallbacks, was `dev`), PNG cap 900000 bytes and
+  source cap 1000000 bytes (manifests, were 10 MiB / 1 MiB). Existing installs keep their
+  stored config; a Store install without a stored tenant now prefixes keys with `default`,
+  so its diagram cache starts empty once.
+- **Public-path texts (#1980).** The claim log says an ungranted prefix is closed
+  (`404 public_path.not_granted`) and points to Store → plugin → Grants; the Store text says
+  consent is removed on uninstall (en/de); Getting Started, the Office README and the plugin
+  comments say `/diagrams/dl` and `/documents/dl` must be granted before links work.
+- **Docs and metadata (#1988).** `.docx` provenance lists no `category`; URL paths read
+  `/diagrams/dl/<key>` and `/documents/dl/<key>`; the six `smoke:*` scripts that point at
+  gitignored files are gone from `middleware/package.json`; 14 bundled manifests say `MIT`
+  like their packages (guarded by `manifestLicenseParity.test.ts`); Web Search texts say the
+  plugin must be assigned to an agent and a provider/key change only needs a save.
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 

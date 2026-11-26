@@ -149,7 +149,6 @@ export const BUNDLED_LEGACY_SERVICE_GRANTS_2026_08_20: Readonly<
   '@omadia/verifier': Object.freeze(['graphPool', 'odoo.client']),
   '@omadia/knowledge-graph-inmemory': Object.freeze(['turnContext']),
   '@omadia/knowledge-graph-neon': Object.freeze(['turnContext']),
-  '@omadia/diagrams': Object.freeze(['memoryStore']),
   '@omadia/plugin-plan-runner': Object.freeze([
     'knowledgeGraph',
     'processMemory',

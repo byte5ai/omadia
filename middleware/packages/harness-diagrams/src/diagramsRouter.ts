@@ -11,7 +11,7 @@ interface DiagramsRouterDeps {
 /**
  * HMAC-signed proxy that serves diagram PNGs from Tigris/SeaweedFS to Teams.
  *
- * The URL format is `/diagrams/<url-encoded-key>?exp=<unix-seconds>&sig=<hex>`
+ * The URL format is `/diagrams/dl/<url-encoded-key>?exp=<unix-seconds>&sig=<hex>`
  * where the signature covers `<decoded-key>.<exp>`. Expired or tampered
  * URLs return 403; unknown keys return 404; everything else returns 200 with
  * the raw PNG body streamed from object-storage.

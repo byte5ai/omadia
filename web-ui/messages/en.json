@@ -4777,7 +4777,7 @@
         "flagCredentialFlows": "Runs credential flows on its own routes",
         "publicPathsTitle": "Public (unauthenticated) paths",
         "publicPathsBody": "This plugin asks to answer the URL prefixes below without an operator session. Anyone who can reach this deployment can reach them, and the plugin alone is responsible for authenticating those requests.",
-        "publicPathsNotGranted": "Declaring is not granting: a prefix is not reachable at all until you consent to it, and consent is withdrawn automatically when the plugin is deactivated.",
+        "publicPathsNotGranted": "Declaring is not granting: a prefix is not reachable at all until you consent to it, and consent is removed when the plugin is uninstalled.",
         "none": "No permissions declared.",
         "runtimeCredentials": "Runtime credentials",
         "sqlNotGranted": "Declaring is not granting: the plugin gets no database connection until you consent under “Grants” after installing it."
@@ -4888,6 +4888,7 @@
       "success": "Installation successful",
       "installNow": "Install now",
       "unknownError": "Unknown error.",
+      "missingPlugins": "Missing plugins:",
       "unexpectedJobState": "Unexpected job state: {state}",
       "updateActivationFailedLead": "Updated, but the plugin did not start.",
       "activationFailedLead": "Installed, but the plugin did not start.",

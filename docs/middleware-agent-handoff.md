@@ -5200,7 +5200,6 @@ Jest.
 
 ```bash
 npm test         # alles
-npm run smoke:entity-refs   # E2E-Smoke ohne externe Creds
 ```
 
 ### Test-Dateien unter `middleware/test/`
@@ -5540,11 +5539,13 @@ MICROSOFT_APP_TENANT_ID
 DATASET_LINK_KEY_SECRET                    # openssl rand -hex 32
 # Diagram rendering (alle 7 müssen gesetzt sein, sonst wird Feature deaktiviert)
 KROKI_BASE_URL=http://localhost:8765       # Kroki-Gateway (lokal aus compose.yml)
-DIAGRAM_URL_SECRET                         # openssl rand -hex 32 — pro Env frisch
-DIAGRAM_PUBLIC_BASE_URL=http://localhost:3979  # Base-URL für signierte URLs
-DIAGRAM_SIGNED_URL_TTL_SEC=900             # 15 min
-DIAGRAM_MAX_SOURCE_BYTES=64000             # Quellcode-Cap
-DIAGRAM_MAX_PNG_BYTES=900000               # <1 MB Teams-Limit
+DIAGRAM_URL_SECRET                         # openssl rand -hex 32 — pro Env frisch; nur beim
+                                           # ersten Auto-Install gelesen, danach Vault →
+                                           # Rotation über das Setup-Feld des Plugins (#1975)
+DIAGRAM_PUBLIC_BASE_URL=http://localhost:8080  # Base-URL für signierte URLs (Compose-Default)
+DIAGRAM_SIGNED_URL_TTL_SEC=3600            # 1 h, wie Manifest-Default und ADR-0137 (#1975)
+DIAGRAM_MAX_SOURCE_BYTES=1000000           # Quellcode-Cap
+DIAGRAM_MAX_PNG_BYTES=900000               # <1 MB Teams-Limit (auch Manifest-Default)
 # Object-storage (Tigris auf Fly, SeaweedFS lokal via docker-compose.storage.yaml — Fly auto-provisioniert via `fly storage create`)
 BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 # Lokaler Attachment-Store ohne S3 (platform/attachmentStore.ts). Greift nur, wenn
@@ -8380,7 +8381,7 @@ Werte ersetzen.
 3. Fly-Secrets setzen: `DIAGRAM_URL_SECRET`, `KROKI_BASE_URL=http://<kroki-app>.flycast:8000`, `DIAGRAM_PUBLIC_BASE_URL=https://<middleware-app>.fly.dev`.
 4. Smoke-Probe in Teams: "Flow A→B→C als Mermaid" → Card mit PNG.
 
-Lokale Reproduktion jederzeit via `docker compose up -d` + `npm run smoke:diagrams`.
+Lokale Reproduktion via `docker compose` mit Storage- und Diagrams-Overlay, dann im Chat ein Diagramm anfordern (die früheren `smoke:*`-Skripte sind gitignored und wurden mit #1988 aus `package.json` entfernt).
 
 ### Phase 12 — tenantId im TurnContext
 
@@ -8539,8 +8540,7 @@ npm run typecheck             # tsc --noEmit
 npm run lint                  # eslint src/
 npm run lint:fix              # eslint --fix
 npm run format                # prettier --write
-npm test                      # Node --test mit tsx-Loader, 63 Tests
-npm run smoke:entity-refs     # E2E-Smoke für EntityRef-Capture-Pfad
+npm test                      # Node --test mit tsx-Loader
 ```
 
 `npm run build` baut zuerst die Workspace-Pakete in Abhängigkeitsreihenfolge,

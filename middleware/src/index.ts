@@ -7719,7 +7719,7 @@ async function main(): Promise<void> {
   // gate — see `mountAdminTokenSurface` there. S+7.7: Telegram admin endpoints
   // live inside the plugin (core.registerRouter at /api/telegram/admin/*).
 
-  // `/diagrams/<signed-key>` is now mounted by the @omadia/diagrams
+  // `/diagrams/dl/<signed-key>` is now mounted by the @omadia/diagrams
   // plugin via ctx.routes.register (see packages/harness-diagrams/src/plugin.ts).
 
   // `/attachments/<signed-key>` is now mounted by the de.byte5.channel.teams

@@ -20,7 +20,7 @@ import {
  * generation as native tools.
  *
  * Wires the OfficeService (renderers + Tigris signed-URL store), exposes
- * `create_xlsx` + `create_docx` as native tools and mounts `/documents/<signed-key>`
+ * `create_xlsx` + `create_docx` as native tools and mounts `/documents/dl/<signed-key>`
  * as an Express route. Mirrors `@omadia/diagrams` 1:1 — the only structural
  * difference is that produced bytes are files (kind: 'file' attachments) rather
  * than inline images.
@@ -31,7 +31,7 @@ import {
  *   - tigris_endpoint          e.g. `https://fly.storage.tigris.dev`
  *
  * Optional config:
- *   - tenant_id                key prefix; default `dev`
+ *   - tenant_id                key prefix; default `default` (as the env install, #1975)
  *   - signed_url_ttl_sec       default 3600
  *   - max_rows                 per-document row cap; default 100000
  *
@@ -53,7 +53,7 @@ export async function activate(ctx: PluginContext): Promise<OfficePluginHandle> 
   const publicBaseUrl = ctx.config.require<string>('public_base_url');
   const tigrisBucket = ctx.config.require<string>('tigris_bucket');
   const tigrisEndpoint = ctx.config.require<string>('tigris_endpoint');
-  const tenantId = ctx.config.get<string>('tenant_id') ?? 'dev';
+  const tenantId = ctx.config.get<string>('tenant_id') ?? 'default';
   const signedUrlTtlSec = ctx.config.get<number>('signed_url_ttl_sec') ?? 3600;
   const maxRows = ctx.config.get<number>('max_rows') ?? 100_000;
 
@@ -118,8 +118,8 @@ export async function activate(ctx: PluginContext): Promise<OfficePluginHandle> 
   // operator session, and the people who click these links — Teams/Telegram
   // users — never have one: every download answered `auth.missing`. Reachable
   // without a session only while the operator has granted `/documents/dl`
-  // (manifest `permissions.public_paths` + `PUT /installed/:id/public-paths`);
-  // until then the kernel keeps the session gate in front, fail-closed. The
+  // (manifest `permissions.public_paths`, Store → plugin → "Grants"); until
+  // then the prefix is closed — `404 public_path.not_granted` for everyone. The
   // `/dl` segment exists because a public-path claim must be at least two
   // segments deep — `/documents` alone is refused as too broad a surface.
   const disposeRoute = ctx.routes.register('/documents/dl', router, {

@@ -4777,7 +4777,7 @@
         "flagCredentialFlows": "Führt Credential-Flows auf eigenen Routes aus",
         "publicPathsTitle": "Öffentliche (nicht authentifizierte) Pfade",
         "publicPathsBody": "Dieses Plugin möchte die folgenden URL-Präfixe ohne Operator-Sitzung beantworten. Jede und jeder mit Zugriff auf diese Installation erreicht sie, und das Plugin allein verantwortet die Authentifizierung dieser Anfragen.",
-        "publicPathsNotGranted": "Deklarieren ist nicht Erteilen: Ein Präfix ist erst erreichbar, wenn Sie zustimmen. Die Zustimmung wird automatisch entzogen, sobald das Plugin deaktiviert wird.",
+        "publicPathsNotGranted": "Deklarieren ist nicht Erteilen: Ein Präfix ist erst erreichbar, wenn Sie zustimmen. Die Zustimmung wird entfernt, wenn das Plugin deinstalliert wird.",
         "none": "Keine Berechtigungen deklariert.",
         "runtimeCredentials": "Laufzeit-Credentials",
         "sqlNotGranted": "Deklarieren ist nicht Erteilen: Das Plugin erhält erst eine Datenbankverbindung, wenn Sie nach der Installation unter „Freigaben“ zustimmen."
@@ -4888,6 +4888,7 @@
       "success": "Installation erfolgreich",
       "installNow": "Jetzt installieren",
       "unknownError": "Unbekannter Fehler.",
+      "missingPlugins": "Fehlende Plugins:",
       "unexpectedJobState": "Unerwarteter Job-Zustand: {state}",
       "updateActivationFailedLead": "Aktualisiert, aber das Plugin ist nicht gestartet.",
       "activationFailedLead": "Installiert, aber das Plugin ist nicht gestartet.",

@@ -28,8 +28,9 @@ import type { ProviderId, SearchResponse } from './types.js';
  *
  * The plugin does NOT activate when the API key is missing — instead it logs
  * and returns a no-op handle. This keeps host boot resilient when the
- * operator installs the plugin but hasn't yet set the secret. Reactivation
- * after the secret lands is a regular re-install via the admin UI.
+ * operator installs the plugin but hasn't yet set the secret. Saving the
+ * setup form reactivates the plugin, so a key or provider change needs no
+ * re-install.
  */
 
 export const WEB_SEARCH_SERVICE_NAME = 'webSearch';

@@ -1357,7 +1357,12 @@ one rule about what counts as a runtime.
 
 User-visible artefacts (rendered diagrams, attachments, exports) are stored
 in object storage and served via HMAC-signed URLs with a short TTL
-(default: 3600s). The signing secret is a vault entry, not a config value.
+(default: 3600s, the same for the env auto-install and a Store install). The
+signing secret is a vault entry, not a config value: `DIAGRAM_URL_SECRET` is
+copied into the Diagrams and Office vaults once, on the boot that auto-installs
+them, and is not read again. **Rotation** is a new value in each plugin's setup
+field (Store → Diagrams / Headless Office); both plugins hold their own copy,
+so rotate both (#1975).
 
 URLs are scoped to a tenant prefix so that bucket browsing does not reveal
 other tenants' keys.
