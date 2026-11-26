@@ -4948,6 +4948,7 @@ async function main(): Promise<void> {
     '/api/v1/operator/channels',
     requireAuth,
     createOperatorChannelsRouter({
+      getAudit: () => adminAudit,
       getConfigStore: () =>
         serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
       getRegistry: () =>
@@ -6467,6 +6468,7 @@ async function main(): Promise<void> {
         store: routinesHandle.store,
         runsStore: routinesHandle.runsStore,
         runner: routinesHandle.runner,
+        ...(adminAudit ? { audit: adminAudit } : {}),
         log: (msg) => console.log(msg),
       }),
     );
@@ -6820,6 +6822,7 @@ async function main(): Promise<void> {
     '/api/v1/admin/providers',
     requireAuth,
     createAdminProvidersRouter({
+      ...(adminAudit ? { audit: adminAudit } : {}),
       installedRegistry,
       vault: secretVault,
       reactivate: reactivateAgent,
@@ -7638,6 +7641,7 @@ async function main(): Promise<void> {
               draftStore,
               buildPipeline: builderBuildPipeline,
               packageUploadService,
+              ...(adminAudit ? { adminAudit } : {}),
               quota: draftQuota,
               workaroundStateStore: builderWorkaroundStateStore,
             },

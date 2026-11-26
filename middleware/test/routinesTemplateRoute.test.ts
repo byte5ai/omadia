@@ -6,6 +6,7 @@ import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 import { createRoutinesRouter } from '../src/routes/routines.js';
+import type { AuditEntryInput } from '../src/auth/adminAuditLog.js';
 import type { RoutineRunner } from '../src/plugins/routines/routineRunner.js';
 import type { RoutineRunsStore } from '../src/plugins/routines/routineRunsStore.js';
 import type {
@@ -29,6 +30,7 @@ interface Harness {
   server: Server;
   baseUrl: string;
   store: StubStore;
+  audits: AuditEntryInput[];
   close(): Promise<void>;
 }
 
@@ -41,6 +43,10 @@ class StubStore {
 
   seed(routine: Routine): void {
     this.rows.set(routine.id, routine);
+  }
+
+  async get(id: string): Promise<Routine | null> {
+    return this.rows.get(id) ?? null;
   }
 
   async setOutputTemplate(
@@ -85,15 +91,26 @@ function makeRoutine(id: string, overrides?: Partial<Routine>): Routine {
 
 async function makeHarness(): Promise<Harness> {
   const store = new StubStore();
+  const audits: AuditEntryInput[] = [];
   const stubRunsStore = {} as RoutineRunsStore;
   const stubRunner = {} as RoutineRunner;
 
   const app: Express = express();
   app.use(express.json());
+  app.use((req, _res, next) => {
+    req.session = {
+      uid: '00000000-0000-4000-8000-000000000100',
+      sub: 'local@example.com',
+      email: 'operator@example.com',
+      omadia_user_id: 'knowledge-graph-id',
+    } as typeof req.session;
+    next();
+  });
   const router = createRoutinesRouter({
     store: store as unknown as RoutineStore,
     runsStore: stubRunsStore,
     runner: stubRunner,
+    audit: { record: async (entry) => { audits.push(entry); } },
     log: () => {},
   });
   app.use('/v1/routines', router);
@@ -106,6 +123,7 @@ async function makeHarness(): Promise<Harness> {
         server,
         baseUrl,
         store,
+        audits,
         close: () =>
           new Promise<void>((r) => {
             server.close(() => r());
@@ -144,6 +162,30 @@ describe('PUT /v1/routines/:id/template', () => {
     assert.deepEqual(body.routine.outputTemplate, VALID_TEMPLATE);
     assert.equal(h.store.setOutputTemplateCalls.length, 1);
     assert.deepEqual(h.store.setOutputTemplateCalls[0]!.template, VALID_TEMPLATE);
+  });
+
+  it('identifies the operator and a same-shape template edit without storing its text', async () => {
+    const id = '00000000-0000-4000-8000-000000000001';
+    h.store.seed(makeRoutine(id, { outputTemplate: VALID_TEMPLATE }));
+    const res = await fetch(`${h.baseUrl}/v1/routines/${id}/template`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ template: {
+        format: 'markdown',
+        sections: [{ kind: 'narrative-slot', id: 'intro', hint: 'new stored text' }],
+      } }),
+    });
+    assert.equal(res.status, 200);
+    const summary = { owner_id: 'user-1', tenant: 'tenant-A', template: {
+      format: 'markdown', sections: ['narrative-slot'],
+    } };
+    assert.deepEqual(h.audits, [{
+      action: 'routine.template_change',
+      target: 'routine:' + id,
+      actor: { id: '00000000-0000-4000-8000-000000000100', email: 'operator@example.com' },
+      before: summary,
+      after: { ...summary, contentChanged: true },
+    }]);
   });
 
   it('clears the template when body.template is null', async () => {

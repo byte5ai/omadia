@@ -7374,6 +7374,13 @@ LIKE metacharacters are escaped. `before`/`after` are returned verbatim; no
 writer puts password material, hashes or secrets into them (a password reset
 row has neither).
 
+**Operator changes.** Routine edits name the acting operator and the routine
+owner separately. Agent instructions and arbitrary plugin or MCP config values
+stay out of the trail. Vault writes record operation metadata. MCP connection
+events use the actor saved from the initiating session in the pending OAuth
+flow (ADR-0246). Local ZIP uploads and Builder publishes record the ingested
+package id, version and source.
+
 **Consent history.** Granting or revoking a plugin's unauthenticated public
 path or its SQL ledger writes one `plugin.grants_change` row with the granted
 set before and after, re-read from the stores rather than taken from the

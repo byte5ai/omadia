@@ -1,5 +1,6 @@
 import type { Router, Request, Response } from 'express';
 
+import { recordOperatorAudit, type AdminAuditLog } from '../auth/adminAuditLog.js';
 import {
   installDraft,
   type InstallDraftDeps,
@@ -53,7 +54,9 @@ import {
 
 export interface BuilderInstallDeps
   extends InstallDraftDeps,
-    CloneFromInstalledDeps {}
+    CloneFromInstalledDeps {
+  adminAudit?: Pick<AdminAuditLog, 'record'>;
+}
 
 export function registerBuilderInstallRoutes(
   router: Router,
@@ -79,7 +82,16 @@ export function registerBuilderInstallRoutes(
 
       let result: InstallResult;
       try {
-        result = await installDraft({ userEmail: email, draftId }, deps);
+        result = await installDraft({
+          userEmail: email,
+          draftId,
+          onPackageIngested: (ingest) => recordOperatorAudit(deps.adminAudit, req, {
+            action: 'plugin.package_upload',
+            target: 'plugin:' + ingest.plugin_id,
+            before: ingest.replaced_version ? { version: ingest.replaced_version } : null,
+            after: { version: ingest.version, source: 'builder', draftId },
+          }),
+        }, deps);
       } catch (err) {
         return sendJson(res, 500, {
           code: 'builder.install_failed',
