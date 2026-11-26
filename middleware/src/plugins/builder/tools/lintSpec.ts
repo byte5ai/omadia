@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import {
   safeParseAgentSpec,
+  uiRouteMissingArgs,
   validateSpecForCodegen,
   type AgentSpec,
   type SpecValidationIssue,
@@ -92,6 +93,19 @@ export const lintSpecTool: BuilderTool<Input, Result> = {
         code: ci.code,
         message: ci.reason,
         path: ci.toolId ? `/tools[id=${ci.toolId}]` : undefined,
+      });
+    }
+
+    // 2b. #1808 — dashboard pages bound to a tool whose required input
+    //     data_binding.args does not set (warning: the build still works).
+    for (const m of uiRouteMissingArgs(spec)) {
+      issues.push({
+        severity: 'warning',
+        code: 'ui_route_data_binding_missing_args',
+        message:
+          `ui_routes['${m.routeId}'] calls tool '${m.toolId}' without its required ` +
+          `input: ${m.missing.join(', ')}. Set them in data_binding.args, or the page never shows data.`,
+        path: `/ui_routes[id=${m.routeId}]/data_binding/args`,
       });
     }
 

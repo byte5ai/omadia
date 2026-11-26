@@ -89,6 +89,46 @@ describe('lintSpecTool', () => {
     assert.equal(result.ok, true);
   });
 
+  it('#1808: warns (not errors) when a page tool lacks required data_binding.args', async () => {
+    await patchSpecTool.run(
+      {
+        patches: [
+          ...validBaseline,
+          {
+            op: 'add',
+            path: '/tools/-',
+            value: {
+              id: 'get_current_weather',
+              description: 'weather',
+              input: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+            },
+          },
+          {
+            op: 'add',
+            path: '/ui_routes',
+            value: [
+              {
+                id: 'dashboard',
+                path: '/status',
+                tab_label: 'Weather',
+                page_title: 'Weather',
+                render_mode: 'library',
+                ui_template: 'kpi-tiles',
+                data_binding: { source: 'tool', tool_id: 'get_current_weather' },
+              },
+            ],
+          },
+        ],
+      },
+      harness.context(),
+    );
+    const result = await lintSpecTool.run({}, harness.context());
+    const found = result.issues.find((i) => i.code === 'ui_route_data_binding_missing_args');
+    assert.ok(found, JSON.stringify(result.issues));
+    assert.equal(found!.severity, 'warning');
+    assert.match(found!.message, /city/);
+  });
+
   it('flags reserved tool ID collision', async () => {
     await patchSpecTool.run(
       {

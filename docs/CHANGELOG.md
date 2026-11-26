@@ -36,6 +36,18 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Builder dashboard pages: preview mount slug and tool input (2026-11-26)
+
+The live preview of a dashboard page looked for route captures under the scoped
+package name (`/p/@omadia/agent-weather`) while the generated plugin mounts
+under the unscoped slug; it now uses the same `uiRouteMountSlug` and renders
+(#1789). The page form gets an input field for `data_binding.args` that names
+the bound tool's required fields still missing; `validateSpecForCodegen` flags
+`ui_route_data_binding_missing_args`; the builder prompt documents `args`; and
+the library templates (`list-card`, `kpi-tiles`) show "The data could not be
+loaded" with the missing field names instead of the raw Zod output under a
+hard-coded German heading (#1808).
+
 ### Security — Builder hygiene: issue-report redaction + daily cap, test-credential purge, SkillSpector high-risk (2026-11-26)
 
 The core-bug report sanitizer also redacts Anthropic / OpenAI keys, JWTs,

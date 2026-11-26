@@ -3769,7 +3769,7 @@
           "running": "smoke #{buildN} running …",
           "okNoTools": "smoke #{buildN} ✓ (no tools declared)",
           "okTools": "smoke #{buildN} ✓ ({count} {count, plural, one {tool} other {tools}} ok)",
-          "okWritesSkipped": "smoke #{buildN} ✓ — {count, plural, one {the tool writes} other {all # tools write}}, so the smoke did not call it",
+          "okWritesSkipped": "smoke #{buildN} ✓ — {count, plural, one {the only tool writes, so the smoke did not call it} other {all # tools write, so the smoke called none of them}}",
           "writesSkippedSuffix": "{count, plural, one { · # write tool not called} other { · # write tools not called}}",
           "activateFailed": "smoke #{buildN} ✗ — preview activate failed{detail}",
           "toolsFailed": "smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {tool} other {tools}} failed",
@@ -4124,7 +4124,11 @@
           "heading": "Data Source",
           "toolLabel": "Tool:",
           "noToolOption": "— No tool bound —",
-          "help": "The selected tool is called with empty input on every page request; its output flows as props into the render function."
+          "help": "The selected tool is called with the fixed input below on every page request; its output flows as props into the render function.",
+          "argsLabel": "Input:",
+          "argsPlaceholder": "'{' \"city\": \"Berlin\" '}'",
+          "argsInvalid": "The input must be a JSON object, for example '{' \"city\": \"Berlin\" '}'.",
+          "argsMissing": "The tool requires {count, plural, one {this field} other {these fields}}, which the input does not set: {fields}"
         },
         "interactive": {
           "label": "Interactive (Hydration)",
@@ -4423,7 +4427,7 @@
         "notice": {
           "replaced": "The installed plugin {id} was switched from {from} to {to} by this bundle.",
           "kept": "{id} {version} was already installed; the installed package was kept.",
-          "continue": "Open draft"
+          "continue": "Continue"
         }
       },
       "quota": {

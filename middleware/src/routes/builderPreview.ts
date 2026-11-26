@@ -3,6 +3,7 @@ import type { Router, Request, RequestHandler, Response } from 'express';
 import type { BuildPipeline } from '../plugins/builder/buildPipeline.js';
 import { BuildPipelineError } from '../plugins/builder/buildPipeline.js';
 import { CodegenError } from '../plugins/builder/codegen.js';
+import { uiRouteMountSlug } from '../plugins/builder/codegenUiRoute.js';
 import type { BuildResult } from '../plugins/builder/buildSandbox.js';
 import type { DraftStore } from '../plugins/builder/draftStore.js';
 import type { PreviewCache } from '../plugins/builder/previewCache.js';
@@ -591,7 +592,9 @@ export function registerBuilderPreviewRoutes(
         return;
       }
 
-      const mountPrefix = `/p/${handle.agentId}`;
+      // #1789 — the same slug the generated plugin mounts under
+      // (`codegenUiRoute.ts`): the package name without its npm scope.
+      const mountPrefix = `/p/${uiRouteMountSlug(handle.agentId)}`;
       // Each ui_route emits its OWN Express router mounted at the same
       // `/p/<agentId>` prefix (codegenUiRoute.ts:141). In production the
       // kernel chains them so Express tries each router until one handles

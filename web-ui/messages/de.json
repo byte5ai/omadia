@@ -3769,7 +3769,7 @@
           "running": "smoke #{buildN} läuft …",
           "okNoTools": "smoke #{buildN} ✓ (keine Tools deklariert)",
           "okTools": "Smoke #{buildN} ✓ ({count} {count, plural, one {Tool} other {Tools}} ok)",
-          "okWritesSkipped": "smoke #{buildN} ✓ — {count, plural, one {das Tool schreibt} other {alle # Tools schreiben}}, darum hat der Smoke es nicht aufgerufen",
+          "okWritesSkipped": "smoke #{buildN} ✓ — {count, plural, one {das einzige Tool schreibt, darum hat der Smoke es nicht aufgerufen} other {alle # Tools schreiben, darum hat der Smoke keines aufgerufen}}",
           "writesSkippedSuffix": "{count, plural, one { · # schreibendes Tool nicht aufgerufen} other { · # schreibende Tools nicht aufgerufen}}",
           "activateFailed": "Smoke #{buildN} ✗ — Preview-Aktivierung fehlgeschlagen{detail}",
           "toolsFailed": "Smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {Tool} other {Tools}} fehlgeschlagen",
@@ -4124,7 +4124,11 @@
           "heading": "Datenquelle",
           "toolLabel": "Tool:",
           "noToolOption": "— Kein Tool gebunden —",
-          "help": "Das gewählte Tool wird bei jedem Page-Request mit leerem Input aufgerufen; Output fließt als Props in die Render-Funktion."
+          "help": "Das gewählte Tool wird bei jedem Seitenaufruf mit der festen Eingabe darunter aufgerufen; sein Output fließt als Props in die Render-Funktion.",
+          "argsLabel": "Eingabe:",
+          "argsPlaceholder": "'{' \"city\": \"Berlin\" '}'",
+          "argsInvalid": "Die Eingabe muss ein JSON-Objekt sein, zum Beispiel '{' \"city\": \"Berlin\" '}'.",
+          "argsMissing": "Das Tool verlangt {count, plural, one {dieses Feld} other {diese Felder}}, das die Eingabe nicht setzt: {fields}"
         },
         "interactive": {
           "label": "Interaktiv (Hydration)",
@@ -4423,7 +4427,7 @@
         "notice": {
           "replaced": "Das installierte Plugin {id} wurde durch dieses Bundle von {from} auf {to} umgestellt.",
           "kept": "{id} {version} war schon installiert; das installierte Paket bleibt.",
-          "continue": "Draft öffnen"
+          "continue": "Weiter"
         }
       },
       "quota": {
