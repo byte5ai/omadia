@@ -11,16 +11,23 @@
  *
  * Before ADR-0215 the LLM access page wrote each key into three scopes and the
  * verifier and extras read their own copy. {@link consolidateProviderCredentials}
- * moves those copies into the kernel scope once per boot. It is idempotent: a
- * module scope that holds no provider API key is left alone, so the second run
- * changes nothing. It never loses a secret: a copy that DIFFERS from the
- * kernel's key is renamed aside (`superseded:<key>`, still in the vault, no
- * longer read) rather than deleted, and only key names are logged.
+ * clears those copies once per boot, key name by key name:
+ *
+ *   - a copy equal to the kernel's key for that provider is deleted;
+ *   - every other copy — a different key, or a key the kernel scope does not
+ *     hold at all — is renamed aside (`superseded:<key>`, a numbered suffix if
+ *     that name is taken). It stays in the vault and nothing reads it. A key
+ *     only a module held is deliberately NOT promoted into the kernel scope:
+ *     that would widen which providers the whole instance can reach without
+ *     the operator entering the key under LLM access (ADR-0084 posture). The
+ *     boot log asks the operator to do that.
+ *
+ * Idempotent: a module scope without provider API keys is left alone, so the
+ * second run changes nothing. Only key names reach the log.
  */
 
 import {
   legacyProviderApiKeyVaultKey,
-  providerApiKeyVaultKey,
   readProviderApiKey,
 } from '@omadia/llm-provider';
 
@@ -33,7 +40,7 @@ export const LEGACY_PROVIDER_CREDENTIAL_SCOPES: readonly string[] = [
   '@omadia/orchestrator-extras',
 ];
 
-/** Prefix a conflicting legacy copy is renamed to; never read as a credential. */
+/** Prefix a legacy copy is renamed to; never read as a credential. */
 export const SUPERSEDED_KEY_PREFIX = 'superseded:';
 
 const CANONICAL_API_KEY = /^provider:([^/]+)\/api_key$/;
@@ -50,12 +57,19 @@ export function isProviderApiKeyVaultKey(key: string): boolean {
   return providerOfApiKeyVaultKey(key) !== undefined;
 }
 
-/** Every vault key name a provider's API key may be stored under. */
-function apiKeyNamesOf(providerId: string): string[] {
-  const legacy = legacyProviderApiKeyVaultKey(providerId);
-  return legacy === undefined
-    ? [providerApiKeyVaultKey(providerId)]
-    : [providerApiKeyVaultKey(providerId), legacy];
+/** True when `key` is a superseded copy of `original` (`superseded:<original>` or `…#<n>`). */
+export function isSupersededCopyOf(key: string, original: string): boolean {
+  const base = `${SUPERSEDED_KEY_PREFIX}${original}`;
+  return key === base || (key.startsWith(`${base}#`) && /^\d+$/.test(key.slice(base.length + 1)));
+}
+
+/** The first free `superseded:` name for `original` in `taken`. */
+function supersededNameFor(original: string, taken: ReadonlySet<string>): string {
+  const base = `${SUPERSEDED_KEY_PREFIX}${original}`;
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}#${String(n)}`)) n += 1;
+  return `${base}#${String(n)}`;
 }
 
 /** The subset of `SecretVault` the consolidation needs. */
@@ -66,95 +80,91 @@ export interface CredentialVault {
   deleteKey(scope: string, key: string): Promise<void>;
 }
 
-/** What one consolidation run did, by key name only. */
+/** What one consolidation run did, as `<scope>/<key name>` — never a value. */
 export interface ConsolidationReport {
-  /** `<scope>/<provider>`: copied into the kernel scope, which had no key. */
-  readonly moved: readonly string[];
-  /** `<scope>/<provider>`: identical to the kernel's key, copy removed. */
+  /** Equal to the kernel's key for the provider: deleted. */
   readonly deduplicated: readonly string[];
-  /** `<scope>/<provider>`: differed from the kernel's key, renamed aside. */
+  /** Different from the kernel's key, or the kernel has none: renamed aside. */
   readonly superseded: readonly string[];
 }
 
-type Outcome = 'moved' | 'deduplicated' | 'superseded';
-
-async function presentKeys(
+async function consolidateScope(
   vault: CredentialVault,
   scope: string,
-  providerId: string,
-): Promise<Array<{ key: string; value: string }>> {
-  const out: Array<{ key: string; value: string }> = [];
-  for (const key of apiKeyNamesOf(providerId)) {
-    const value = await vault.get(scope, key);
-    if (value !== undefined) out.push({ key, value });
+  report: { deduplicated: string[]; superseded: string[] },
+): Promise<void> {
+  const keys = await vault.listKeys(scope);
+  const taken = new Set(keys);
+  const kernelKeys = new Map<string, string | undefined>();
+  const kernelKeyOf = async (providerId: string): Promise<string | undefined> => {
+    if (!kernelKeys.has(providerId)) {
+      kernelKeys.set(
+        providerId,
+        await readProviderApiKey((k) => vault.get(KERNEL_PROVIDER_CREDENTIAL_SCOPE, k), providerId),
+      );
+    }
+    return kernelKeys.get(providerId);
+  };
+  for (const key of keys) {
+    const providerId = providerOfApiKeyVaultKey(key);
+    if (providerId === undefined) continue;
+    const value = (await vault.get(scope, key)) ?? '';
+    if (value.trim().length === 0) {
+      await vault.deleteKey(scope, key);
+      continue;
+    }
+    if (value.trim() === (await kernelKeyOf(providerId))) {
+      report.deduplicated.push(`${scope}/${key}`);
+    } else {
+      // Written before the delete below, so the value is never only in memory.
+      const aside = supersededNameFor(key, taken);
+      await vault.setMany(scope, { [aside]: value });
+      taken.add(aside);
+      report.superseded.push(`${scope}/${key}`);
+    }
+    await vault.deleteKey(scope, key);
   }
-  return out;
-}
-
-async function consolidateOne(
-  vault: CredentialVault,
-  scope: string,
-  providerId: string,
-): Promise<Outcome | undefined> {
-  const read = (s: string) => (k: string) => vault.get(s, k);
-  const moduleKey = await readProviderApiKey(read(scope), providerId);
-  const stored = await presentKeys(vault, scope, providerId);
-  if (moduleKey === undefined) {
-    // Only blank values: nothing to keep, drop the empty names.
-    for (const { key } of stored) await vault.deleteKey(scope, key);
-    return undefined;
-  }
-  const kernelKey = await readProviderApiKey(read(KERNEL_PROVIDER_CREDENTIAL_SCOPE), providerId);
-  let outcome: Outcome;
-  if (kernelKey === undefined) {
-    await vault.setMany(KERNEL_PROVIDER_CREDENTIAL_SCOPE, {
-      [providerApiKeyVaultKey(providerId)]: moduleKey,
-    });
-    outcome = 'moved';
-  } else if (kernelKey === moduleKey) {
-    outcome = 'deduplicated';
-  } else {
-    // Renamed before the delete below, so the value is never only in memory.
-    await vault.setMany(
-      scope,
-      Object.fromEntries(stored.map(({ key, value }) => [`${SUPERSEDED_KEY_PREFIX}${key}`, value])),
-    );
-    outcome = 'superseded';
-  }
-  for (const { key } of stored) await vault.deleteKey(scope, key);
-  return outcome;
 }
 
 /**
- * Move every provider API key of the legacy system-module scopes into the
- * kernel scope (see the module comment). Safe to run on every boot.
+ * Clear every provider API key out of the legacy system-module scopes (see
+ * the module comment). Safe to run on every boot.
  */
 export async function consolidateProviderCredentials(
   vault: CredentialVault,
   log: (message: string) => void = (m) => console.log(m),
 ): Promise<ConsolidationReport> {
-  const report: Record<Outcome, string[]> = { moved: [], deduplicated: [], superseded: [] };
+  const report = { deduplicated: [] as string[], superseded: [] as string[] };
   for (const scope of LEGACY_PROVIDER_CREDENTIAL_SCOPES) {
-    const providers = new Set(
-      (await vault.listKeys(scope))
-        .map(providerOfApiKeyVaultKey)
-        .filter((id): id is string => id !== undefined),
-    );
-    for (const providerId of providers) {
-      const outcome = await consolidateOne(vault, scope, providerId);
-      if (outcome !== undefined) report[outcome].push(`${scope}/${providerId}`);
-    }
-  }
-  if (report.moved.length > 0) {
-    log(`[vault] provider keys moved into ${KERNEL_PROVIDER_CREDENTIAL_SCOPE} (ADR-0215): ${report.moved.join(', ')}`);
+    await consolidateScope(vault, scope, report);
   }
   if (report.deduplicated.length > 0) {
     log(`[vault] duplicate provider keys removed from system-module scopes (ADR-0215): ${report.deduplicated.join(', ')}`);
   }
   if (report.superseded.length > 0) {
     log(
-      `[vault] WARNING: provider keys that differ from the LLM access key were renamed to '${SUPERSEDED_KEY_PREFIX}<key>' and are no longer read (ADR-0215): ${report.superseded.join(', ')} — enter the key under LLM access if it should be used`,
+      `[vault] WARNING: provider keys held only by a system module, or differing from the key under LLM access, were renamed to '${SUPERSEDED_KEY_PREFIX}<key>' and are no longer read (ADR-0215): ${report.superseded.join(', ')} — enter the key under Admin → LLM access if it should be used`,
     );
   }
   return report;
+}
+
+/**
+ * The superseded copies of `originals` left in the legacy scopes — what a
+ * revoke or a provider uninstall must delete as well, so no copy of a revoked
+ * key stays behind.
+ */
+export async function deleteSupersededCopies(
+  vault: Pick<CredentialVault, 'listKeys' | 'deleteKey'>,
+  originals: readonly string[],
+): Promise<string[]> {
+  const removed: string[] = [];
+  for (const scope of LEGACY_PROVIDER_CREDENTIAL_SCOPES) {
+    for (const key of await vault.listKeys(scope)) {
+      if (!originals.some((o) => isSupersededCopyOf(key, o))) continue;
+      await vault.deleteKey(scope, key);
+      removed.push(`${scope} ${key}`);
+    }
+  }
+  return removed;
 }

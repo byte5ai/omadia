@@ -1,14 +1,16 @@
 /**
- * #2240 / ADR-0215 — provider API keys move from the verifier's and extras'
- * own vault scopes into the kernel scope: copied when the kernel has none,
- * dropped when identical, renamed aside (never lost) when different, and a
- * second run changes nothing.
+ * #2240 / ADR-0215 — provider API keys leave the verifier's and extras' own
+ * vault scopes: dropped when equal to the kernel's key, renamed aside (never
+ * lost, never promoted into the kernel scope) otherwise, and a second run
+ * changes nothing. Revoke and provider purge remove the renamed copies too.
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { purgeProviderCredentials } from '../src/platform/providerCredentialPurge.js';
 import {
   consolidateProviderCredentials,
+  deleteSupersededCopies,
   isProviderApiKeyVaultKey,
   KERNEL_PROVIDER_CREDENTIAL_SCOPE,
   SUPERSEDED_KEY_PREFIX,
@@ -30,21 +32,18 @@ async function snapshot(vault: InMemorySecretVault, scope: string): Promise<Reco
 const quiet = (): void => undefined;
 
 describe('consolidateProviderCredentials (#2240)', () => {
-  it('moves a key the kernel scope lacks and removes the module copy', async () => {
+  it('does NOT promote a key only a module held; it is renamed aside and the log asks for LLM access', async () => {
     const vault = new InMemorySecretVault();
     await vault.setMany(EXTRAS, { 'provider:openai/api_key': 'sk-openai', fact_extractor_model: 'x' });
-    const report = await consolidateProviderCredentials(vault, quiet);
-    assert.deepEqual(report.moved, [`${EXTRAS}/openai`]);
-    assert.deepEqual(await snapshot(vault, KERNEL), { 'provider:openai/api_key': 'sk-openai' });
-    assert.deepEqual(await snapshot(vault, EXTRAS), { fact_extractor_model: 'x' });
-  });
-
-  it('moves the legacy flat Anthropic key under the canonical name', async () => {
-    const vault = new InMemorySecretVault();
-    await vault.setMany(VERIFIER, { anthropic_api_key: 'sk-ant-legacy' });
-    await consolidateProviderCredentials(vault, quiet);
-    assert.deepEqual(await snapshot(vault, KERNEL), { 'provider:anthropic/api_key': 'sk-ant-legacy' });
-    assert.deepEqual(await snapshot(vault, VERIFIER), {});
+    const logs: string[] = [];
+    const report = await consolidateProviderCredentials(vault, (m) => logs.push(m));
+    assert.deepEqual(report.superseded, [`${EXTRAS}/provider:openai/api_key`]);
+    assert.deepEqual(await snapshot(vault, KERNEL), {});
+    assert.deepEqual(await snapshot(vault, EXTRAS), {
+      fact_extractor_model: 'x',
+      [`${SUPERSEDED_KEY_PREFIX}provider:openai/api_key`]: 'sk-openai',
+    });
+    assert.ok(logs.some((l) => l.includes('LLM access')), logs.join('\n'));
   });
 
   it('drops copies identical to the kernel key (the old three-scope fan-out)', async () => {
@@ -52,26 +51,39 @@ describe('consolidateProviderCredentials (#2240)', () => {
     for (const scope of [KERNEL, VERIFIER, EXTRAS]) {
       await vault.setMany(scope, { 'provider:anthropic/api_key': 'sk-ant-same' });
     }
+    await vault.setMany(VERIFIER, { anthropic_api_key: 'sk-ant-same' });
     const report = await consolidateProviderCredentials(vault, quiet);
-    assert.deepEqual(report.deduplicated.sort(), [`${EXTRAS}/anthropic`, `${VERIFIER}/anthropic`]);
+    assert.equal(report.deduplicated.length, 3);
+    assert.deepEqual(report.superseded, []);
     assert.deepEqual(await snapshot(vault, VERIFIER), {});
     assert.deepEqual(await snapshot(vault, EXTRAS), {});
     assert.equal(await vault.get(KERNEL, 'provider:anthropic/api_key'), 'sk-ant-same');
   });
 
-  it('keeps the kernel key and renames a differing copy aside, never losing it', async () => {
+  it('keeps a different legacy value even when the canonical copy matches the kernel', async () => {
     const vault = new InMemorySecretVault();
     await vault.setMany(KERNEL, { 'provider:anthropic/api_key': 'sk-ant-kernel' });
-    await vault.setMany(EXTRAS, { 'provider:anthropic/api_key': 'sk-ant-dedicated', anthropic_api_key: 'sk-ant-old' });
-    const logs: string[] = [];
-    const report = await consolidateProviderCredentials(vault, (m) => logs.push(m));
-    assert.deepEqual(report.superseded, [`${EXTRAS}/anthropic`]);
-    assert.equal(await vault.get(KERNEL, 'provider:anthropic/api_key'), 'sk-ant-kernel');
+    await vault.setMany(EXTRAS, { 'provider:anthropic/api_key': 'sk-ant-kernel', anthropic_api_key: 'sk-ant-old' });
+    await consolidateProviderCredentials(vault, quiet);
     assert.deepEqual(await snapshot(vault, EXTRAS), {
       [`${SUPERSEDED_KEY_PREFIX}anthropic_api_key`]: 'sk-ant-old',
-      [`${SUPERSEDED_KEY_PREFIX}provider:anthropic/api_key`]: 'sk-ant-dedicated',
     });
-    // Only key names reach the log, never a value.
+  });
+
+  it('renames a differing copy aside, never overwriting an earlier superseded one, and logs no value', async () => {
+    const vault = new InMemorySecretVault();
+    await vault.setMany(KERNEL, { 'provider:anthropic/api_key': 'sk-ant-kernel' });
+    await vault.setMany(EXTRAS, {
+      'provider:anthropic/api_key': 'sk-ant-dedicated-2',
+      [`${SUPERSEDED_KEY_PREFIX}provider:anthropic/api_key`]: 'sk-ant-dedicated-1',
+    });
+    const logs: string[] = [];
+    await consolidateProviderCredentials(vault, (m) => logs.push(m));
+    assert.deepEqual(await snapshot(vault, EXTRAS), {
+      [`${SUPERSEDED_KEY_PREFIX}provider:anthropic/api_key`]: 'sk-ant-dedicated-1',
+      [`${SUPERSEDED_KEY_PREFIX}provider:anthropic/api_key#2`]: 'sk-ant-dedicated-2',
+    });
+    assert.equal(await vault.get(KERNEL, 'provider:anthropic/api_key'), 'sk-ant-kernel');
     assert.ok(logs.every((l) => !l.includes('sk-ant')), logs.join('\n'));
     assert.ok(!isProviderApiKeyVaultKey(`${SUPERSEDED_KEY_PREFIX}provider:anthropic/api_key`));
   });
@@ -81,16 +93,10 @@ describe('consolidateProviderCredentials (#2240)', () => {
     await vault.setMany(KERNEL, { 'provider:anthropic/api_key': 'sk-ant-kernel' });
     await vault.setMany(VERIFIER, { 'provider:anthropic/api_key': 'sk-ant-other', 'provider:mistral/api_key': 'm' });
     await consolidateProviderCredentials(vault, quiet);
-    const before = {
-      kernel: await snapshot(vault, KERNEL),
-      verifier: await snapshot(vault, VERIFIER),
-    };
+    const before = { kernel: await snapshot(vault, KERNEL), verifier: await snapshot(vault, VERIFIER) };
     const second = await consolidateProviderCredentials(vault, quiet);
-    assert.deepEqual(second, { moved: [], deduplicated: [], superseded: [] });
-    assert.deepEqual(
-      { kernel: await snapshot(vault, KERNEL), verifier: await snapshot(vault, VERIFIER) },
-      before,
-    );
+    assert.deepEqual(second, { deduplicated: [], superseded: [] });
+    assert.deepEqual({ kernel: await snapshot(vault, KERNEL), verifier: await snapshot(vault, VERIFIER) }, before);
   });
 
   it('leaves non-credential keys and other scopes alone', async () => {
@@ -101,5 +107,32 @@ describe('consolidateProviderCredentials (#2240)', () => {
     assert.deepEqual(await snapshot(vault, KERNEL), {});
     assert.equal(await vault.get('@omadia/plugin-office', 'provider:openai/api_key'), 'sk-office');
     assert.equal(await vault.get(VERIFIER, 'provider:openai/verified_at'), 'x');
+  });
+});
+
+describe('superseded copies leave with a revoke or a provider purge (#2240)', () => {
+  it('deleteSupersededCopies removes every numbered copy of the revoked key only', async () => {
+    const vault = new InMemorySecretVault();
+    await vault.setMany(EXTRAS, {
+      [`${SUPERSEDED_KEY_PREFIX}provider:openai/api_key`]: 'a',
+      [`${SUPERSEDED_KEY_PREFIX}provider:openai/api_key#2`]: 'b',
+      [`${SUPERSEDED_KEY_PREFIX}provider:mistral/api_key`]: 'c',
+    });
+    await deleteSupersededCopies(vault, ['provider:openai/api_key']);
+    assert.deepEqual(await snapshot(vault, EXTRAS), {
+      [`${SUPERSEDED_KEY_PREFIX}provider:mistral/api_key`]: 'c',
+    });
+  });
+
+  it('purgeProviderCredentials removes the superseded copies of that provider', async () => {
+    const vault = new InMemorySecretVault();
+    await vault.setMany(VERIFIER, {
+      [`${SUPERSEDED_KEY_PREFIX}provider:acme/api_key#2`]: 'a',
+      [`${SUPERSEDED_KEY_PREFIX}provider:acme-cloud/api_key`]: 'b',
+    });
+    await purgeProviderCredentials(vault, 'acme');
+    assert.deepEqual(await snapshot(vault, VERIFIER), {
+      [`${SUPERSEDED_KEY_PREFIX}provider:acme-cloud/api_key`]: 'b',
+    });
   });
 });

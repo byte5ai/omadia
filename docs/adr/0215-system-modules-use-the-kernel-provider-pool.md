@@ -60,14 +60,23 @@ Chosen option: **A**.
 - **OM-102 precedence kept.** "This plugin holds an Anthropic key" now reads "the kernel
   scope holds one" (`kernelPool.usable('anthropic')`); the candidate chain is unchanged.
 - **Migration.** `consolidateProviderCredentials` runs on every boot after the legacy
-  bootstrap and before any plugin activates. Per provider key in the verifier's or extras'
-  scope: copied into the kernel scope when that has none, dropped when identical, and
-  renamed to `superseded:<key>` (kept in the vault, no longer read) when it differs. Logs
-  carry scope and provider id only. A second run changes nothing.
+  bootstrap and before any plugin activates. Per provider key name in the verifier's or
+  extras' scope: dropped when equal to the kernel's key for that provider; otherwise renamed
+  to `superseded:<key>` (a `#<n>` suffix when that name is taken; kept in the vault, no
+  longer read). A canonical copy and a legacy `anthropic_api_key` are judged separately, so
+  a differing legacy value is kept. Logs carry scope and key name only. A second run changes
+  nothing.
+- **No promotion (decision after recommendation, reversible).** A key that only a module
+  scope held is NOT copied into the kernel scope when the kernel has none for that
+  provider: that would silently widen which providers the whole instance (every agent,
+  the pool behind `ctx.llm`) can reach, outside the operator's view of LLM access and the
+  ADR-0084 posture shown there. It is renamed aside like a differing key, and the boot log
+  asks the operator to enter it under LLM access.
 - **No silent writes.** A provider API key sent to the verifier's or extras' scope through
   the per-plugin editor is refused with `400 runtime.provider_key_in_kernel_scope`; their
   manifests no longer declare an `anthropic_api_key` field. A revoke under LLM access also
-  deletes copies left in those scopes, so the migration cannot bring one back.
+  deletes copies left in those scopes and their `superseded:` copies; a provider plugin's
+  uninstall purge removes its `superseded:` copies too.
 
 ### Consequences
 
@@ -78,6 +87,9 @@ Chosen option: **A**.
 - 🔴 **Bad:** A dedicated Anthropic key for the background jobs (the old extras field) is
   no longer possible. An install that had one keeps it as `superseded:<key>` in extras'
   scope and from now on runs extras on the key under LLM access; the boot log warns.
+- 🔴 **Bad:** An install whose verifier or extras held a provider key that LLM access does
+  not hold loses that provider for those modules until the operator enters the key under
+  LLM access (the boot log says so).
 - 🔴 **Bad:** The verifier now shares the pool's retry budget (5) instead of the SDK
   default.
 - ⚪ **Neutral:** The OAuth fan-out (`fanOutProviderOAuthTokens`) and the back-compat

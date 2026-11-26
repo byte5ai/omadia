@@ -245,6 +245,19 @@ describe('admin settings route — PATCH /', () => {
     }
   });
 
+  it('#2240 — a revoke also deletes the superseded copies the boot migration left', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    await h.vault.setMany(ORCH, { [providerApiKeyVaultKey('anthropic')]: 'sk-ant-kernel' });
+    await h.vault.setMany(EXTRAS, {
+      'superseded:provider:anthropic/api_key': 'sk-ant-old',
+      'superseded:anthropic_api_key#2': 'sk-ant-older',
+      'superseded:provider:openai/api_key': 'sk-keep',
+    });
+    const { status } = await patch(h, [{ key: 'ANTHROPIC_API_KEY', value: null }]);
+    assert.equal(status, 200);
+    assert.deepEqual(await h.vault.listKeys(EXTRAS), ['superseded:provider:openai/api_key']);
+  });
+
   it('setting the key deletes the now-redundant legacy key (convergence)', async () => {
     const legacy = legacyProviderApiKeyVaultKey('anthropic');
     assert.ok(legacy !== undefined);

@@ -4537,13 +4537,15 @@ and the vault write listener invalidates the pool entry first, so one rotation
 reaches all three modules.
 
 Before, the key was written into three scopes. At every boot, after the legacy
-bootstrap and before any plugin activates, `consolidateProviderCredentials` moves
-the copies of the verifier's and extras' scopes into the kernel scope: copied when
-the kernel scope has none, deleted when identical, and renamed to
-`superseded:<key>` when they differ (the secret stays in the vault, nothing reads
-it, the boot log names scope and provider id, never a value). A revoke under LLM
-access also deletes copies in those two scopes, so a stale copy cannot be moved
-back. A provider API key sent to the verifier's or extras' scope through the
+bootstrap and before any plugin activates, `consolidateProviderCredentials` clears
+the verifier's and extras' scopes key name by key name: a copy equal to the kernel
+key is deleted, every other copy is renamed to `superseded:<key>` (numbered when
+taken; the secret stays in the vault, nothing reads it, the boot log names scope and
+key name, never a value). A key only a module held is deliberately not promoted into
+the kernel scope — that would widen the instance's provider reach without the
+operator entering it under LLM access (ADR-0084); the log asks for that. A revoke
+under LLM access deletes copies and `superseded:` copies in those two scopes, and a
+provider plugin's uninstall purge removes its `superseded:` copies. A provider API key sent to the verifier's or extras' scope through the
 per-plugin editor is refused (`400 runtime.provider_key_in_kernel_scope`) instead
 of being stored where nothing reads it. Residual: an install that ran extras on a
 dedicated Anthropic key now runs it on the key under LLM access; the OAuth token

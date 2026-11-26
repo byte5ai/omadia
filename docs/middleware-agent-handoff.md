@@ -3709,9 +3709,12 @@ liegen in einem Vault-Scope, `KERNEL_PROVIDER_CREDENTIAL_SCOPE`
 Der LLM-Zugang schreibt nur dorthin und baut alle installierten LLM-Plugins neu
 (`llmPluginsToRebuild`). `consolidateProviderCredentials` läuft bei jedem Boot nach
 `runLegacyBootstrap` und vor der ersten Plugin-Aktivierung: Kopien in den Scopes
-von Verifier und extras werden in den Kernel-Scope verschoben (fehlt dort),
-gelöscht (identisch) oder als `superseded:<key>` beiseitegelegt (abweichend, wird
-nicht mehr gelesen, Log nur mit Scope/Provider-Id). Ein Provider-API-Key an die
+von Verifier und extras werden pro Key-Name gelöscht (gleich dem Kernel-Key) oder
+als `superseded:<key>` (bei Kollision `#<n>`) beiseitegelegt — auch wenn der
+Kernel-Scope keinen Key hat: ein nur im Modul vorhandener Key wird bewusst nicht
+in den Kernel-Scope befördert (ADR-0084, Log verweist auf LLM-Zugang). Revoke im
+LLM-Zugang und der Provider-Purge beim Uninstall löschen auch die
+`superseded:`-Kopien. Ein Provider-API-Key an die
 Scopes von Verifier/extras über den Plugin-Editor wird mit
 `400 runtime.provider_key_in_kernel_scope` abgelehnt; beide Manifeste haben kein
 `anthropic_api_key`-Feld mehr. Der Verifier lehnt `claude-cli` vor dem Pool ab.
