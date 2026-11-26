@@ -160,9 +160,36 @@ describe('end of service: the procedure', () => {
           execution_scopes_ended: 0,
           reservations_released: [],
           system_notices_owed: 2,
+          routines_paused: 0,
         },
       },
     ]);
+  });
+
+  it('#1744: the agent\'s routines are paused with it, and a failure there does not stop the end of service', async () => {
+    const paused: string[] = [];
+    const { createAgentEndOfService } = await import('../src/platform/agentEndOfService.js');
+    const eos = createAgentEndOfService({
+      processesFor: () => undefined,
+      pauseRoutinesOf: async (agent, reason) => {
+        paused.push(`${agent.slug}:${reason}`);
+        return 3;
+      },
+      emitSystemNotice: () => undefined,
+      log: () => undefined,
+    });
+    const report = await eos.run(MARA, 'agent_disabled', ACTOR);
+    assert.equal(report.routinesPaused, 3);
+    assert.deepEqual(paused, ['mara:agent_disabled']);
+
+    const failing = createAgentEndOfService({
+      processesFor: () => undefined,
+      pauseRoutinesOf: () => Promise.reject(new Error('db down')),
+      emitSystemNotice: () => undefined,
+      log: () => undefined,
+    });
+    const r2 = await failing.run(MARA, 'agent_deleted', ACTOR);
+    assert.equal(r2.routinesPaused, 0);
   });
 
   it('a plugin that throws or does not answer does not keep the agent in service', async () => {

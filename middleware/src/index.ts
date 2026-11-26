@@ -648,6 +648,7 @@ import { ExpressRouteRegistry } from './channels/routeRegistry.js';
 import { WebSocketRegistry } from './channels/webSocketRegistry.js';
 import { createCoreApi } from './channels/coreApi.js';
 import { createCoreRoutineTurnScope } from './plugins/routines/coreRoutineTurnScope.js';
+import { agentEndedText, resolveRoutineAgent } from './plugins/routines/routineAgentBinding.js';
 import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
 import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
 import { PeopleDirectoryRegistry } from './channels/peopleDirectoryRegistry.js';
@@ -1413,6 +1414,10 @@ async function main(): Promise<void> {
       await adminAudit?.record(entry);
     },
     emitSystemNotice,
+    // #1744 — an agent that ends service takes its routines with it (paused,
+    // with the reason on the routine), instead of each failing at its next run.
+    pauseRoutinesOf: async (agent, reason) =>
+      (await routinesHandle?.runner.pauseRoutinesOfAgent(agent, agentEndedText(agent.name, reason))) ?? 0,
     log: (m) => console.log(m),
   });
   const facilitationEngineSources = (): FacilitationEngineSources => ({
@@ -3676,12 +3681,10 @@ async function main(): Promise<void> {
   const routineTriggerScheduler = createRoutineTriggerScheduler({
     service: () => triggersRef.current?.service,
     routines: () => routinesHandle?.store,
-    resolveAgent: (slug) => {
-      // #2055 — no fallback agent: a routine runs as the agent it names.
-      const registry = serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
-      const agent = slug !== null && slug !== 'default' ? registry?.get(slug)?.agent : undefined;
-      return agent ? { id: agent.id, slug: agent.slug } : undefined;
-    },
+    // #2055 — no fallback agent: a routine runs as the agent it is bound to
+    // (#1745: by id, not by whoever holds its slug now).
+    resolveAgent: (routine) =>
+      resolveRoutineAgent(routine, serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')),
     askOwner: async (routine, text) => {
       const sender = routinesHandle?.senderRegistry.get(routine.channel);
       if (!sender) throw new Error(`no proactive sender for channel '${routine.channel}'`);
@@ -3736,6 +3739,9 @@ async function main(): Promise<void> {
         ),
       // #1743 / ADR 0240 — a routine whose creator's zone is unknown runs in the instance's.
       defaultTimeZone: config.PROACTIVE_TIMEZONE,
+      // #1744 / #1745 — the agent a routine is bound to, by id.
+      resolveAgent: (routine) =>
+        resolveRoutineAgent(routine, serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')),
       // #1598 — the routine's own orchestrator, with its plugin grants.
       // #2045 / #2046 — with the agent's emitter and speaker, so a routine's
       // answer passes the same identity guard and carries the same speaker.

@@ -21,6 +21,7 @@ import type { JobHandler, JobSpec } from '@omadia/plugin-api';
 import { meterModelCalls, meterUsageCost } from '@omadia/usage-telemetry';
 
 import type { JobSchedulerLike } from '../plugins/routines/routineRunner.js';
+import type { RoutineAgentResolution } from '../plugins/routines/routineAgentBinding.js';
 import type { Routine } from '../plugins/routines/routineStore.js';
 import { createCron } from '../scheduler/cronerCompat.js';
 import type { TurnOutcome } from './triggerChain.js';
@@ -47,8 +48,9 @@ export interface RoutineRowAccess {
 export interface RoutineTriggerDeps {
   readonly service: () => TriggerService | undefined;
   readonly routines: () => RoutineRowAccess | undefined;
-  /** The agent a routine runs as; none for `null` (no fallback agent, #2055). */
-  readonly resolveAgent: (slug: string | null) => { readonly id: string; readonly slug: string } | undefined;
+  /** The agent a routine runs as, bound by id (#1745), or why none may (no
+   *  fallback agent, #2055). */
+  readonly resolveAgent: (routine: Routine) => RoutineAgentResolution;
   /** The renewal question goes out through the routine's own channel. */
   readonly askOwner: (routine: Routine, text: string) => Promise<void>;
   readonly limits: () => TriggerLimits;
@@ -137,9 +139,18 @@ export function createRoutineTriggerScheduler(deps: RoutineTriggerDeps): Routine
       if (existing.state === 'paused') await service.resume(existing.id, `routine:${routine.id}`);
       return;
     }
-    const agent = deps.resolveAgent(routine.agentSlug ?? null);
-    if (!agent) {
-      deps.log(`[routines/triggers] routine ${routine.id}: no agent '${routine.agentSlug ?? 'default'}' in service; not scheduled`);
+    const bound = deps.resolveAgent(routine);
+    if (!bound.ok) {
+      // #1745 — the owner sees why it does not run instead of an "active" row
+      // that never fires (a routine without an agent, or whose agent is gone).
+      deps.log(`[routines/triggers] routine ${routine.id} not scheduled: ${bound.problem}`);
+      await routines.markExpired(routine.id, routineTexts.notScheduled(lang(), bound.problem));
+      return;
+    }
+    const agent = bound.agent;
+    // A registry-less boot has no agent to own a trigger (as before #1745).
+    if (!agent.id) {
+      deps.log(`[routines/triggers] routine ${routine.id}: no agent registry; not scheduled`);
       return;
     }
     const res = await service.create(

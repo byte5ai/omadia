@@ -54,6 +54,12 @@ class StubRunner {
     return this.running.has(id);
   }
 
+  public agentProblems = new Map<string, string>();
+
+  agentProblemOf(routine: Routine): string | undefined {
+    return this.agentProblems.get(routine.id);
+  }
+
   seed(routine: Routine): void {
     this.rows.set(routine.id, routine);
   }
@@ -203,5 +209,18 @@ describe('POST /v1/routines/:id/trigger — chat-agent availability (issue #473)
     assert.equal(res.status, 202);
     const body = (await res.json()) as { routine: { running: boolean } };
     assert.equal(body.routine.running, true);
+  });
+
+  // #1744 — a routine whose agent is gone answers why, not the LLM-key 503.
+  it('returns 409 routines.agent_unavailable naming the agent problem', async () => {
+    h.runner.agentProblems.set('00000000-0000-4000-8000-000000000001', "its agent 'seo' is disabled or deleted");
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000001/trigger`, {
+      method: 'POST',
+    });
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { code: string; message: string };
+    assert.equal(body.code, 'routines.agent_unavailable');
+    assert.match(body.message, /disabled or deleted/);
+    assert.equal(h.runner.triggerCalls.length, 0);
   });
 });

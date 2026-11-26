@@ -54,6 +54,10 @@ export interface RoutineDto {
   outputTemplate: RoutineOutputTemplate | null;
   /** #1748 — a run is in flight on this instance; "run now" answers 409 meanwhile. */
   running: boolean;
+  /** #1744 — the agent that runs the routine (null = bound to none). */
+  agentSlug: string | null;
+  /** #1744 / #1745 — why no agent may run it (disabled, deleted, replaced, unbound), else null. */
+  agentProblem: string | null;
 }
 
 export interface PreviewRoutineTemplateRequest {
@@ -150,7 +154,7 @@ function toRunDetail(r: RoutineRun): RoutineRunDetailDto {
   };
 }
 
-function toDto(r: Routine, running = false): RoutineDto {
+function toDto(r: Routine, running = false, agentProblem: string | undefined = undefined): RoutineDto {
   return {
     id: r.id,
     tenant: r.tenant,
@@ -168,6 +172,8 @@ function toDto(r: Routine, running = false): RoutineDto {
     lastRunError: r.lastRunError,
     outputTemplate: r.outputTemplate,
     running,
+    agentSlug: r.agentSlug ?? null,
+    agentProblem: agentProblem ?? null,
   };
 }
 
@@ -206,7 +212,7 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
       // requireAuth — any valid operator session, see OPERATOR_SCOPE.
       const rows = await deps.store.listAll();
       const body: ListRoutinesResponse = {
-        routines: rows.map((r) => toDto(r, deps.runner.isRunning(r.id))),
+        routines: rows.map((r) => toDto(r, deps.runner.isRunning(r.id), deps.runner.agentProblemOf(r))),
         count: rows.length,
       };
       res.json(body);
@@ -237,7 +243,7 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
           status === 'paused'
             ? await deps.runner.pauseRoutine(id, OPERATOR_SCOPE)
             : await deps.runner.resumeRoutine(id, OPERATOR_SCOPE);
-        const body: RoutineResponse = { routine: toDto(updated, deps.runner.isRunning(updated.id)) };
+        const body: RoutineResponse = { routine: toDto(updated, deps.runner.isRunning(updated.id), deps.runner.agentProblemOf(updated)) };
         res.json(body);
       } catch (err) {
         if (err instanceof RoutineNotFoundError) {
@@ -300,6 +306,13 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
           code: 'routines.run_in_progress',
           message: new RoutineRunInProgressError(id).message,
         });
+        return;
+      }
+      // #1744 — the routine's agent is gone, disabled or replaced: say which,
+      // instead of accepting a run that records the same error.
+      const agentProblem = deps.runner.agentProblemOf(routine);
+      if (agentProblem !== undefined) {
+        res.status(409).json({ code: 'routines.agent_unavailable', message: agentProblem });
         return;
       }
       if (!deps.runner.chatAgentAvailable(routine.agentSlug ?? null)) {

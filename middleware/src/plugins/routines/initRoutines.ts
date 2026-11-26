@@ -87,6 +87,8 @@ export interface InitRoutinesOptions {
    *  initRoutines returns and before `runner.start()` — pass them here
    *  when the kernel knows them upfront. */
   proactiveSenders?: ProactiveSender[];
+  /** #1744 / #1745 — see `RoutineRunnerOptions.resolveAgent`. */
+  resolveAgent?: RoutineRunnerOptions['resolveAgent'];
   /** Spec 2042 §5.3 — see `RoutineRunnerOptions.deliveryRefusal`. */
   deliveryRefusal?: RoutineRunnerOptions['deliveryRefusal'];
   log?: (msg: string) => void;
@@ -134,6 +136,7 @@ export async function initRoutines(
     getOrchestrator: opts.getOrchestrator,
     senderRegistry,
     ...(opts.deliveryRefusal ? { deliveryRefusal: opts.deliveryRefusal } : {}),
+    ...(opts.resolveAgent ? { resolveAgent: opts.resolveAgent } : {}),
     log,
     maxActivePerUser: opts.maxActivePerUser,
   });

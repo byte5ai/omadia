@@ -44,6 +44,8 @@ export interface Routine {
   renewalAskedAt?: Date | null;
   /** #1743 / ADR 0240 — IANA zone of the cron pattern (migration 0008); null = UTC. */
   timezone?: string | null;
+  /** #1745 — id of the agent that runs it (migration 0009); null = bound on its next run. */
+  agentId?: string | null;
 }
 
 export interface CreateRoutineInput {
@@ -61,6 +63,8 @@ export interface CreateRoutineInput {
   agentSlug?: string | null;
   /** #1743 — see Routine.timezone. */
   timezone?: string | null;
+  /** #1745 — see Routine.agentId. */
+  agentId?: string | null;
 }
 
 export interface RecordRunInput {
@@ -123,13 +127,15 @@ interface RoutineRow {
   renewal_asked_at: Date | null;
   /** #1743 — migration 0008. */
   timezone: string | null;
+  /** #1745 — migration 0009. */
+  agent_id: string | null;
 }
 
 const SELECT_COLUMNS = `
   id, tenant, user_id, name, cron, prompt, channel, conversation_ref,
   status, timeout_ms, created_at, updated_at,
   last_run_at, last_run_status, last_run_error,
-  output_template, agent_slug, until, renewal_asked_at, timezone
+  output_template, agent_slug, until, renewal_asked_at, timezone, agent_id
 `;
 
 function rowToRoutine(row: RoutineRow): Routine {
@@ -168,6 +174,7 @@ function rowToRoutine(row: RoutineRow): Routine {
     until: row.until ?? null,
     renewalAskedAt: row.renewal_asked_at ?? null,
     timezone: row.timezone ?? null,
+    agentId: row.agent_id ?? null,
   };
 }
 
@@ -209,8 +216,8 @@ export class RoutineStore {
       const result = await this.pool.query<RoutineRow>(
         `INSERT INTO routines
            (tenant, user_id, name, cron, prompt, channel,
-            conversation_ref, timeout_ms, output_template, agent_slug, timezone)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10, $11)
+            conversation_ref, timeout_ms, output_template, agent_slug, timezone, agent_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10, $11, $12)
          RETURNING ${SELECT_COLUMNS}`,
         [
           input.tenant,
@@ -226,6 +233,7 @@ export class RoutineStore {
             : null,
           input.agentSlug ?? null,
           input.timezone ?? null,
+          input.agentId ?? null,
         ],
       );
       const row = result.rows[0];
@@ -466,6 +474,30 @@ export class RoutineStore {
     );
     const row = result.rows[0];
     return row ? rowToRoutine(row) : null;
+  }
+
+  /** #1745 — bind a routine created before agent ids to the agent that runs it now. */
+  async bindAgentId(id: string, agentId: string): Promise<void> {
+    await this.pool.query(
+      'UPDATE routines SET agent_id = $2 WHERE id = $1 AND agent_id IS NULL',
+      [id, agentId],
+    );
+  }
+
+  /**
+   * #1744 — the agent ended service (disabled, deleted): every active routine
+   * it runs is paused with `message`, so none fires into an error. Matches
+   * the id, and the slug for rows not yet bound by id. Returns the paused ids.
+   */
+  async pauseForAgent(agentId: string, agentSlug: string, message: string): Promise<string[]> {
+    const result = await this.pool.query<{ id: string }>(
+      `UPDATE routines SET status = 'paused', last_run_error = $3, updated_at = now()
+        WHERE status = 'active'
+          AND (agent_id = $1 OR (agent_id IS NULL AND agent_slug = $2))
+        RETURNING id`,
+      [agentId, agentSlug, message],
+    );
+    return result.rows.map((r) => r.id);
   }
 
   /**

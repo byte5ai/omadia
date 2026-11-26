@@ -26,7 +26,9 @@ import {
   type JobSchedulerLike,
   type OrchestratorLike,
   type RoutineActorScope,
+  type RoutineRunnerOptions,
 } from '../src/plugins/routines/routineRunner.js';
+import { resolveRoutineAgent } from '../src/plugins/routines/routineAgentBinding.js';
 import { RoutineNameConflictError } from '../src/plugins/routines/routineStore.js';
 import { routineTurnContext } from '../src/plugins/routines/routineTurnContext.js';
 import { turnContext } from '@omadia/orchestrator';
@@ -132,6 +134,8 @@ class InMemoryRoutineStore implements RoutineStore {
       lastRunError: null,
       outputTemplate: input.outputTemplate ?? null,
       agentSlug: input.agentSlug ?? null,
+      agentId: input.agentId ?? null,
+      timezone: input.timezone ?? null,
     };
     this.rows.set(id, routine);
     return routine;
@@ -197,6 +201,26 @@ class InMemoryRoutineStore implements RoutineStore {
       return false;
     }
     return this.rows.delete(id);
+  }
+
+  public bindCalls: Array<{ id: string; agentId: string }> = [];
+
+  async bindAgentId(id: string, agentId: string): Promise<void> {
+    this.bindCalls.push({ id, agentId });
+    const existing = this.rows.get(id);
+    if (existing && !existing.agentId) this.rows.set(id, { ...existing, agentId });
+  }
+
+  async pauseForAgent(agentId: string, agentSlug: string, message: string): Promise<string[]> {
+    const ids: string[] = [];
+    for (const [id, r] of this.rows) {
+      if (r.status !== 'active') continue;
+      if (r.agentId === agentId || (!r.agentId && r.agentSlug === agentSlug)) {
+        this.rows.set(id, { ...r, status: 'paused', lastRunError: message });
+        ids.push(id);
+      }
+    }
+    return ids;
   }
 
   async recordRun(input: RecordRunInput): Promise<void> {
@@ -344,6 +368,8 @@ interface MakeHarnessOptions {
   sender?: StubSender;
   registerSender?: boolean;
   maxActivePerUser?: number;
+  /** #1745 — the agent binding seam. */
+  resolveAgent?: RoutineRunnerOptions['resolveAgent'];
   /** When set, every `register()` call throws this error. Used to test the
    *  runner's row-rollback behaviour without depending on real cron parsing. */
   registerThrows?: Error;
@@ -375,6 +401,7 @@ function makeHarness(options: MakeHarnessOptions = {}): Harness {
     senderRegistry,
     log: () => {},
     maxActivePerUser: options.maxActivePerUser,
+    ...(options.resolveAgent ? { resolveAgent: options.resolveAgent } : {}),
   });
   return {
     store,
@@ -1693,5 +1720,71 @@ describe('#1763 — a routine on an agent whose tool loop runs outside the kerne
     assert.equal(run.answer, 'cli answer');
     assert.equal(run.iterations, null);
     assert.equal(run.toolCalls, null);
+  });
+});
+
+
+describe('#1744 / #1745 — a routine is bound to its agent by id', () => {
+  /** A registry whose slug `seo` is held by `holder`. */
+  const registryWith = (holder: { id: string; slug: string } | undefined) => ({
+    get: (slug: string) => (holder && slug === holder.slug ? { agent: holder } : undefined),
+  });
+
+  it('binds the creating agent by id and runs while that agent holds the slug', async () => {
+    let holder: { id: string; slug: string } | undefined = { id: 'agent-1', slug: 'seo' };
+    const sender = new StubSender();
+    const h = makeHarness({ sender, resolveAgent: (r) => resolveRoutineAgent(r, registryWith(holder)) });
+    const routine = await h.runner.createRoutine({ ...baseInput, agentSlug: 'seo' });
+    assert.equal(routine.agentId, 'agent-1');
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(sender.calls.length, 1);
+
+    // The agent is deleted and a new one takes the slug: the routine does not follow.
+    holder = { id: 'agent-2', slug: 'seo' };
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(sender.calls.length, 1, 'nothing delivered by the new agent');
+    const last = h.runsStore.inserts.at(-1)!;
+    assert.equal(last.status, 'error');
+    assert.match(last.errorMessage ?? '', /no agent can run this routine: its agent 'seo' was deleted, and the agent that now has that name is a different one/);
+  });
+
+  it('a disabled or deleted agent is named instead of the LLM-key hint', async () => {
+    const h = makeHarness({ resolveAgent: (r) => resolveRoutineAgent(r, registryWith(undefined)) });
+    const routine = await h.runner.createRoutine({ ...baseInput, agentSlug: 'seo' });
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    const run = h.runsStore.inserts[0]!;
+    assert.match(run.errorMessage ?? '', /its agent 'seo' is disabled or deleted/);
+    assert.doesNotMatch(run.errorMessage ?? '', /API key/);
+    assert.match(h.runner.agentProblemOf(routine) ?? '', /disabled or deleted/);
+  });
+
+  it('a routine without an agent does not fall back to the default agent', async () => {
+    const h = makeHarness({ resolveAgent: (r) => resolveRoutineAgent(r, registryWith({ id: 'a', slug: 'other' })) });
+    const routine = await h.runner.createRoutine(baseInput);
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.equal(h.agentCalls.length, 0);
+    assert.match(h.runsStore.inserts[0]!.errorMessage ?? '', /not bound to an agent/);
+  });
+
+  it('binds a pre-migration row (no agent id) on its next run', async () => {
+    const h = makeHarness({ resolveAgent: (r) => resolveRoutineAgent(r, registryWith({ id: 'agent-1', slug: 'seo' })) });
+    const routine = await h.runner.createRoutine({ ...baseInput, agentSlug: 'seo' });
+    h.store.rows.set(routine.id, { ...h.store.rows.get(routine.id)!, agentId: null });
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
+    assert.deepEqual(h.store.bindCalls, [{ id: routine.id, agentId: 'agent-1' }]);
+  });
+
+  it('pauses the routines of an agent that ends service, with the reason on the routine', async () => {
+    const h = makeHarness({ resolveAgent: (r) => resolveRoutineAgent(r, registryWith({ id: 'agent-1', slug: 'seo' })) });
+    const a = await h.runner.createRoutine({ ...baseInput, agentSlug: 'seo' });
+    const b = await h.runner.createRoutine({ ...baseInput, name: 'other', agentSlug: 'seo' });
+    const n = await h.runner.pauseRoutinesOfAgent({ id: 'agent-1', slug: 'seo' }, "paused: its agent 'SEO' was disabled");
+    assert.equal(n, 2);
+    for (const id of [a.id, b.id]) {
+      const row = h.store.rows.get(id)!;
+      assert.equal(row.status, 'paused');
+      assert.match(row.lastRunError ?? '', /was disabled/);
+    }
+    assert.equal(h.scheduler.list().length, 0, 'both unregistered');
   });
 });

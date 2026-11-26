@@ -73,6 +73,16 @@ changelog.
   `lastRunError` and the smart-card sidecar (`INTERN_FIELD_EXEMPT_TOOLS`,
   `fieldExemptModelCopy`, all three dispatch seams); the tool is not served on the public MCP
   endpoint.
+- **Routines are bound to their agent by id** (#1744, #1745, `routineAgentBinding.ts`, routines
+  migration `0009_routines_agent_id`): a new agent that takes a deleted agent's slug no longer
+  takes over its routines, a routine without an agent never runs on the default agent, and a
+  disabled or deleted agent is named in the run error (no more "configure the LLM API key").
+  Such a routine is paused with the reason when the trigger engine would schedule it, `POST
+  /:id/trigger` answers `409 routines.agent_unavailable`, and the routine DTO carries
+  `agentSlug` and `agentProblem`. Rows from before the migration are bound on their next run.
+  When an agent ends service (disabled, deleted, archetype plugin removed) its active routines
+  are paused with the reason (`EndOfServiceReport.routinesPaused`, `routines_paused` in the
+  agent route response and the audit).
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 

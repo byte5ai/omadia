@@ -2010,6 +2010,7 @@ function endOfServiceDto(report: EndOfServiceReport) {
       conversation_id: r.conversationId,
     })),
     system_notices_owed: report.noticesOwed,
+    routines_paused: report.routinesPaused,
   };
 }
 

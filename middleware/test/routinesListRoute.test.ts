@@ -72,7 +72,7 @@ async function makeHarness(): Promise<Harness> {
     createRoutinesRouter({
       store: store as unknown as RoutineStore,
       runsStore: {} as RoutineRunsStore,
-      runner: { isRunning: () => false } as unknown as RoutineRunner,
+      runner: { isRunning: () => false, agentProblemOf: () => undefined } as unknown as RoutineRunner,
       log: () => {},
     }),
   );

@@ -69,6 +69,8 @@ export interface EndOfServiceReport {
   readonly reservationsReleased: readonly EndedSubscription[];
   /** `system` notices owed (one per affected conversation), handed to the outbox. */
   readonly noticesOwed: number;
+  /** #1744 — the agent's active routines, paused (none of them could run). */
+  readonly routinesPaused: number;
 }
 
 export interface AgentEndOfServiceDeps {
@@ -86,6 +88,11 @@ export interface AgentEndOfServiceDeps {
     agentId: string,
     reason: string,
   ) => Promise<{ scopesEnded: number; reservationsReleased: readonly EndedSubscription[] }>;
+  /**
+   * #1744 — pause every active routine the agent runs; returns how many.
+   * Absent = no routines feature (no database).
+   */
+  readonly pauseRoutinesOf?: (agent: EndOfServiceAgent, reason: AgentEndOfServiceReason) => Promise<number>;
   readonly audit?: (entry: AuditEntryInput) => Promise<void>;
   /** Called once per conversation that is owed a notice (the outbox). */
   readonly emitSystemNotice: (notice: SystemNoticeRequest) => void | Promise<void>;
@@ -210,6 +217,15 @@ export function createAgentEndOfService(deps: AgentEndOfServiceDeps): AgentEndOf
         );
       }
 
+      let routinesPaused = 0;
+      try {
+        routinesPaused = (await deps.pauseRoutinesOf?.(agent, reason)) ?? 0;
+      } catch (err) {
+        log(
+          `[end-of-service] pausing the routines of '${agent.slug}' failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
       // One notice per conversation that loses the agent: where a process
       // ended, where the agent was receiving messages, and where it held the
       // reservation.
@@ -250,6 +266,7 @@ export function createAgentEndOfService(deps: AgentEndOfServiceDeps): AgentEndOf
         scopesEnded,
         reservationsReleased,
         noticesOwed: conversations.size,
+        routinesPaused,
       };
       try {
         await deps.audit?.({
@@ -268,6 +285,7 @@ export function createAgentEndOfService(deps: AgentEndOfServiceDeps): AgentEndOf
             execution_scopes_ended: report.scopesEnded,
             reservations_released: report.reservationsReleased,
             system_notices_owed: report.noticesOwed,
+            routines_paused: report.routinesPaused,
           },
         });
       } catch (err) {

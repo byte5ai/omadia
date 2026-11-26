@@ -25,6 +25,7 @@ import {
 import type { RoutineOutputTemplate } from './routineOutputTemplate.js';
 import { renderRoutineTemplate } from './routineTemplateRenderer.js';
 import { routineTurnContext } from './routineTurnContext.js';
+import type { RoutineAgentResolution } from './routineAgentBinding.js';
 import {
   InFlightRuns,
   RoutineRunCancelledError,
@@ -218,9 +219,13 @@ export class UnknownChannelError extends Error {
 }
 
 export class ChatAgentUnavailableError extends Error {
-  constructor() {
+  /** #1744 — `problem` names why no agent may run the routine (its binding);
+   *  absent = the agent exists but no chat agent is published (no key). */
+  constructor(problem?: string) {
     super(
-      'chat agent unavailable — configure the LLM API key in Settings to enable routine runs',
+      problem
+        ? `no agent can run this routine: ${problem}`
+        : 'chat agent unavailable — configure the LLM API key in Settings to enable routine runs',
     );
     this.name = 'ChatAgentUnavailableError';
   }
@@ -260,6 +265,12 @@ export interface RoutineRunnerOptions {
    * before the agent turn; a refusal pauses the routine like a gone target.
    */
   deliveryRefusal?: (routine: { agentSlug: string | null; channel: string; conversationRef: unknown }) => string | undefined;
+  /**
+   * #1744 / #1745 — which agent runs a routine (bound by id), or why none
+   * may (`routineAgentBinding.ts`). Absent = no binding check (registry-less
+   * boot, tests): the slug alone resolves the orchestrator.
+   */
+  resolveAgent?: (routine: Pick<Routine, 'agentSlug' | 'agentId'>) => RoutineAgentResolution;
   log?: (msg: string) => void;
   /** Override the per-user active-routine cap. */
   maxActivePerUser?: number;
@@ -309,6 +320,7 @@ export class RoutineRunner {
   private readonly scheduler: JobSchedulerLike;
   private readonly getOrchestrator: (agentSlug: string | null) => OrchestratorLike | undefined;
   private readonly deliveryRefusal: RoutineRunnerOptions['deliveryRefusal'];
+  private readonly resolveAgent: RoutineRunnerOptions['resolveAgent'];
   private readonly senders: ProactiveSenderRegistry;
   private readonly log: (msg: string) => void;
   private readonly maxActivePerUser: number;
@@ -325,6 +337,7 @@ export class RoutineRunner {
     this.getOrchestrator = opts.getOrchestrator;
     this.senders = opts.senderRegistry;
     this.deliveryRefusal = opts.deliveryRefusal;
+    this.resolveAgent = opts.resolveAgent;
     this.log = opts.log ?? ((msg) => console.log(msg));
     this.maxActivePerUser =
       opts.maxActivePerUser ?? DEFAULT_MAX_ACTIVE_PER_USER;
@@ -423,6 +436,26 @@ export class RoutineRunner {
     return this.getOrchestrator(agentSlug) !== undefined;
   }
 
+  /** #1744 — why no agent may run the routine, or undefined when its agent can. */
+  agentProblemOf(routine: Pick<Routine, 'agentSlug' | 'agentId'>): string | undefined {
+    const bound = this.resolveAgent?.(routine);
+    return bound && !bound.ok ? bound.problem : undefined;
+  }
+
+  /**
+   * #1744 — the agent ended service (disabled or deleted): its active
+   * routines are paused with `message` (the owner reads it on the routine),
+   * unregistered, and a run in flight is cancelled. Returns how many.
+   */
+  async pauseRoutinesOfAgent(agent: { readonly id: string; readonly slug: string }, message: string): Promise<number> {
+    const ids = await this.store.pauseForAgent(agent.id, agent.slug, message);
+    for (const id of ids) {
+      this.unregisterFromScheduler(id);
+      this.inFlight.cancel(id, 'paused');
+    }
+    return ids.length;
+  }
+
   /**
    * Dispose every registered routine. Called on graceful shutdown.
    * In-flight runs receive their AbortSignal via `stopForPlugin`.
@@ -478,9 +511,13 @@ export class RoutineRunner {
       throw new RoutineQuotaExceededError(this.maxActivePerUser);
     }
 
+    // #1745 — bound to the agent that creates it, by id.
+    const creator = input.agentSlug ? this.resolveAgent?.({ agentSlug: input.agentSlug, agentId: null }) : undefined;
+    const bound = creator?.ok && creator.agent.id ? { ...input, agentId: creator.agent.id } : input;
+
     let row: Routine;
     try {
-      row = await this.store.create(input);
+      row = await this.store.create(bound);
     } catch (err) {
       // Issue #506: a retried `create` for the same (tenant, user, name) —
       // e.g. the model or user retrying after the turn's own confirmation
@@ -737,6 +774,15 @@ export class RoutineRunner {
       // chatAgent@^1) are dark too, so a sender-first check would record
       // the misleading 'no proactive sender' error when the actual fix
       // is configuring the key.
+      // #1744 / #1745 — the agent the routine is bound to, by id; never one
+      // that took over its slug, never the instance default.
+      const bound = this.resolveAgent?.(fresh);
+      if (bound && !bound.ok) throw new ChatAgentUnavailableError(bound.problem);
+      if (bound?.ok && !fresh.agentId && bound.agent.id) {
+        await this.store.bindAgentId(fresh.id, bound.agent.id).catch((err: unknown) => {
+          this.log(`[routines/runner] binding routine ${fresh.id} to agent ${bound.agent.id} failed: ${errMsg(err)}`);
+        });
+      }
       const orchestrator = this.getOrchestrator(fresh.agentSlug ?? null);
       if (!orchestrator) {
         throw new ChatAgentUnavailableError();

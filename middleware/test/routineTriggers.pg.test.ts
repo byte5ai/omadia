@@ -88,7 +88,10 @@ describe('#2082 routines as triggers (pg)', { skip: !pgAvailable }, () => {
     scheduler = createRoutineTriggerScheduler({
       service: () => wiring?.service,
       routines: () => store,
-      resolveAgent: (slug) => (slug === null || slug === 'erika' ? { id: agentId, slug: 'erika' } : undefined),
+      resolveAgent: (routine) =>
+        routine.agentSlug === null || routine.agentSlug === undefined || routine.agentSlug === 'erika'
+          ? { ok: true, agent: { id: agentId, slug: 'erika' } }
+          : { ok: false, problem: `its agent '${routine.agentSlug}' is disabled or deleted` },
       askOwner: async (_r, text) => {
         sent.push(text);
       },
