@@ -199,7 +199,7 @@ export interface McpServerRow {
   readonly createdAt: Date;
   readonly updatedAt: Date;
   /** #1916 — when the last security re-scan ran, and its failure message
-   *  (`null` after a successful scan). Absent on pre-0114 rows in tests. */
+   *  (`null` after a successful scan). Absent on pre-0116 rows in tests. */
   readonly lastScanAt?: Date | null;
   readonly lastScanError?: string | null;
   /** Marketplace provenance (issue #455). `manual` for pre-0010 rows. */

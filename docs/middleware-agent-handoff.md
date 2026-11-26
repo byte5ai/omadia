@@ -2529,7 +2529,7 @@ unbekannter Key bzw. nicht installiertes Ziel-Plugin → `settings.no_valid_chan
 
 **Operator-Routen `/api/v1/operator/mcp-*` (Welle 5, #1916/#1955/#1957):** `GET /mcp-servers`
 liefert zusätzlich `stdioEnabled` (Wert von `MCP_STDIO_ENABLED`; die UI sperrt damit stdio im
-Formular und beim Katalog-Connect) und pro Server `lastScanAt`/`lastScanError` (Migration 0114,
+Formular und beim Katalog-Connect) und pro Server `lastScanAt`/`lastScanError` (Migration 0116,
 geschrieben von „Re-scan all“ und vom periodischen Re-Scan, `recordMcpServerScan`).
 `POST /mcp-servers` prüft die Eingabe in `routes/mcpServerInput.ts`: Name Pflicht (≤ 120),
 `transport` ∈ stdio/http/sse, Endpoint Pflicht, bei http/sse eine http(s)-URL (`{platzhalter}`

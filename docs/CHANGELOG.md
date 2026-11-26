@@ -68,7 +68,7 @@ changelog.
 
 ### Fixed — MCP Control Center: input checks, re-scan results, risk and grant errors, stdio flag, i18n (#1916, #1941, #1943, #1953, #1954, #1955, #1957, #1959) (2026-11-26)
 
-- **Migration `0114_mcp_server_last_scan`** adds `mcp_servers.last_scan_at` and
+- **Migration `0116_mcp_server_last_scan`** adds `mcp_servers.last_scan_at` and
   `last_scan_error`. **#1916** "Re-scan all" and the periodic re-scan stamp every server's
   outcome; the page shows a summary of the run and a "last re-scan failed" line per server.
 - **#1955** `POST /mcp-servers` validates name, transport, endpoint (http(s) URL, `{placeholder}`

@@ -1,4 +1,4 @@
--- 0114 — the outcome of the last security re-scan per MCP server (#1916).
+-- 0116 — the outcome of the last security re-scan per MCP server (#1916).
 --
 -- `POST /api/v1/operator/mcp-servers/rescan-all` and the periodic re-scan
 -- (`MCP_RESCAN_INTERVAL_MS`) used to report a server that failed to scan only
