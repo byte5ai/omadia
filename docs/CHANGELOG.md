@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Added — the store shows a plugin's entity systems before install (#2245, ADR-0167) (2026-11-26)
+
+- The store detail page lists `permissions.graph.entity_systems` (from
+  `permissions_summary.graph_entity_systems`) as the chip group "Graph · Entity systems".
+- When a plugin declares a system that another installed plugin already declares (say, a
+  second plugin with `odoo`), a highlighted note names that plugin on the detail page, at
+  the top of the install drawer's setup form and in the grants step. ADR-0167 ties no
+  system to one plugin, so this is how the operator sees it before both write the same
+  nodes. The check reads the store catalog (`entitySystemOverlaps` in
+  `web-ui/app/_lib/entitySystemOverlap.ts`); the kernel enforces nothing new.
+
 ### Security — plugins declare `odoo` / `confluence` themselves (ADR-0167) (2026-11-26)
 
 - Owner decision: the manifest loader no longer strips `odoo` and `confluence` from

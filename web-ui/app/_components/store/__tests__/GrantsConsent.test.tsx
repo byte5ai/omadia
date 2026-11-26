@@ -105,6 +105,30 @@ describe('#470 C16 — install wizard permissions step', () => {
     expect(sqlBox.checked).toBe(true);
   });
 
+  it('#2245 — highlights an entity system another installed plugin writes', () => {
+    renderWithIntl(
+      <PermissionsStep
+        grants={view()}
+        entitySystemOverlaps={[
+          { system: 'odoo', pluginNames: ['Odoo integration'] },
+        ]}
+        onFinish={vi.fn()}
+      />,
+    );
+    const notice = screen.getByTestId('entity-system-overlap');
+    expect(notice.textContent).toContain(
+      en.store.detail.permissions.entitySystemOverlapTitle,
+    );
+    expect(notice.textContent).toContain(
+      'odoo is already written by Odoo integration.',
+    );
+  });
+
+  it('#2245 — shows no overlap line when nothing overlaps', () => {
+    renderWithIntl(<PermissionsStep grants={view()} onFinish={vi.fn()} />);
+    expect(screen.queryByTestId('entity-system-overlap')).toBeNull();
+  });
+
   it('sends exactly what the boxes say, public paths as the complete set', async () => {
     mockSet.mockResolvedValue(
       view({
