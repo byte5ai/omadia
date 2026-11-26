@@ -3704,12 +3704,9 @@ export class Orchestrator {
   }
 
   /**
-   * Collect diagram renders produced during the current turn and reset the
-   * tool's buffer. Idempotent: returns undefined if the tool wasn't invoked.
-   *
-   * Today the orchestrator allows at most one diagram per turn (the LLM rarely
-   * needs more), but the return type is an array so multi-diagram turns just
-   * work once the tool starts returning multiple RenderOutputs.
+   * Collect the files and diagrams the current turn produced. Runs inside the
+   * turn's context: each sink returns only what this turn's tool calls filed
+   * under its turn id (#1961, ADR-0177), never a concurrent turn's output.
    */
   private drainAttachments(): {
     diagrams: DiagramAttachment[];

@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Security — Office and Diagrams outputs stay with their turn; signed links are route-bound (#1961, #1979, ADR-0176, ADR-0177) (2026-11-26)
+
+- `create_xlsx` / `create_docx` files and `render_diagram` images are filed under the id of
+  the turn that produced them (`PerTurnBuffer`, `@omadia/diagrams`) and the end-of-turn drain
+  returns only the finishing turn's. A concurrent turn no longer receives another chat's file;
+  two diagrams in one turn give two images. Diagrams reads the turn id through
+  `optional_requires: ["turnContext@1"]`. The `NativeToolAttachmentSink` doc states the rule
+  (no plugin-api signature change).
+- Both signers include the route prefix in the HMAC payload (`/diagrams/dl/…`,
+  `/documents/dl/…`) and each router serves only its own key layout. A link moved to the other
+  route is refused, so revoking one route's public-path grant takes full effect. Links signed
+  before this deploy stop working.
+- `@omadia/diagrams` 0.2.2, `@omadia/plugin-office` 0.1.5.
+
 ### Security — MCP OAuth callback completes only for the user who started the flow (#1908, ADR-0175) (2026-11-26)
 
 - `McpOAuthService.completeAuthorization` takes the completing session's user key

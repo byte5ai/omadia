@@ -1381,6 +1381,14 @@ meets `requireAuth`'s 401 first. What the link buys is
 what it always bought: whoever holds it can fetch that one object until it
 expires; there is no per-tenant or per-session authorisation on top.
 
+**A link works only on the route that issued it (#1979, ADR-0176).** Office and
+Diagrams may share one secret and one bucket (the env bootstrap does exactly
+that). Both signers put the route prefix into the HMAC payload
+(`/documents/dl/<key>.<exp>`, `/diagrams/dl/<key>.<exp>`), and each router serves
+only its own key layout (`documents/<tenant>/<sha256>/<file>` vs
+`<tenant>/<sha256>.png`). Revoking one route's public-path grant therefore ends
+session-less access to that plugin's objects; the other route does not serve them.
+
 ## 5a. Office exports: formula cells carry no caller-supplied value
 
 `create_xlsx` (`@omadia/plugin-office`) writes descriptor formulas into the

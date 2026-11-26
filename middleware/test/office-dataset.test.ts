@@ -133,7 +133,7 @@ describe('office create_xlsx dataset mode (B3)', () => {
     assert.equal(parsed.rows, 2, 'wrote all dataset rows');
     assert.match(parsed.filename, /offene-posten\.xlsx/);
 
-    const drained = tool.drain();
+    const drained = tool.drain('turn-x');
     assert.equal(drained?.length, 1);
     assert.equal(drained[0]?.kind, 'file');
   });
