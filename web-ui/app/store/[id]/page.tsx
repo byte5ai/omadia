@@ -23,7 +23,9 @@ import { LegacyKindNotice } from '../../_components/store/LegacyKindNotice';
 import { PluginVerdictBadge } from '../../_components/admin/PluginVerdictBadge';
 import { pickLocalized } from '../../_lib/localized';
 
-import { ApiError, getStorePlugin } from '../../_lib/api';
+import { ApiError, getStorePlugin, listStorePlugins } from '../../_lib/api';
+import { entitySystemOverlaps } from '../../_lib/entitySystemOverlap';
+import type { EntitySystemOverlap } from '../../_lib/entitySystemOverlap';
 import { listOperatorAgents } from '../../_lib/agents';
 import { APP_VERSION } from '../../_lib/appVersion';
 import { redirectIfUnauthorized } from '../../_lib/authRedirect';
@@ -37,6 +39,7 @@ import { ConnectionCheckButton } from '../../_components/store/ConnectionCheckBu
 import { ActionStatusBanner } from '../../_components/store/ActionStatusBanner';
 import { Chip } from '../../_components/store/Chip';
 import { AuditModeSwitch } from '../../_components/store/AuditModeSwitch';
+import { EntitySystemOverlapNotice } from '../../_components/store/EntitySystemOverlapNotice';
 import { CredentialsEditor } from '../../_components/store/CredentialsEditor';
 import { GrantsPanel } from '../../_components/store/GrantsPanel';
 import { EditFromStoreButton } from '../../_components/store/EditFromStoreButton';
@@ -70,6 +73,24 @@ export async function generateMetadata({
  * `null` when the question does not apply or cannot be answered — the hint then
  * falls back to its generic wording rather than claiming either way.
  */
+/**
+ * #2245 / ADR-0167 — entity systems this plugin declares that another
+ * installed plugin already declares. Needs the catalog, so it is read only
+ * when the plugin declares a system at all. A failed read shows no overlap
+ * rather than breaking the page: the declared systems still render as chips.
+ */
+async function overlapsFor(plugin: Plugin): Promise<EntitySystemOverlap[]> {
+  if ((plugin.permissions_summary.graph_entity_systems ?? []).length === 0) {
+    return [];
+  }
+  try {
+    const { items } = await listStorePlugins();
+    return entitySystemOverlaps(plugin, items);
+  } catch {
+    return [];
+  }
+}
+
 async function orchestratorsUsing(plugin: Plugin): Promise<string[] | null> {
   const installed =
     plugin.install_state === 'installed' || plugin.install_state === 'update-available';
@@ -128,7 +149,10 @@ export default async function PluginDetailPage({
   const localizedDescription =
     pickLocalized(plugin.description_localized, locale) ?? plugin.description;
   const t = await getTranslations('store.detail');
-  const attachedTo = await orchestratorsUsing(plugin);
+  const [attachedTo, overlaps] = await Promise.all([
+    orchestratorsUsing(plugin),
+    overlapsFor(plugin),
+  ]);
 
   // S+7.7 / 2026-05-04 — admin-ui mount path. Conditional on the manifest
   // declaring `admin_ui_path` AND the plugin being installed (or having an
@@ -358,6 +382,7 @@ export default async function PluginDetailPage({
           >
             <PermissionsBlock
               perms={plugin.permissions_summary}
+              overlaps={overlaps}
             />
           </Section>
 
@@ -456,6 +481,7 @@ export default async function PluginDetailPage({
             {...(plugin.provides ? { provides: plugin.provides } : {})}
             kind={plugin.kind}
             attachedTo={attachedTo}
+            entitySystemOverlaps={overlaps}
           />
 
           {/* #1562 — whether the guard's C1 name detector runs (off / active /
@@ -653,8 +679,10 @@ function SecretRow({
 
 async function PermissionsBlock({
   perms,
+  overlaps,
 }: {
   perms: Plugin['permissions_summary'];
+  overlaps: EntitySystemOverlap[];
 }): Promise<React.ReactElement> {
   const t = await getTranslations('store.detail.permissions');
   const tGrants = await getTranslations('store.grants');
@@ -686,6 +714,13 @@ async function PermissionsBlock({
       label: t('graphWrites'),
       icon: <Database className="size-3.5" aria-hidden />,
       items: perms.graph_writes,
+      mono: true,
+    },
+    {
+      // ADR-0167 — the systems whose entity nodes the plugin may write.
+      label: t('entitySystems'),
+      icon: <Network className="size-3.5" aria-hidden />,
+      items: perms.graph_entity_systems ?? [],
       mono: true,
     },
     {
@@ -741,6 +776,7 @@ async function PermissionsBlock({
 
   return (
     <div className="space-y-4">
+      <EntitySystemOverlapNotice overlaps={overlaps} />
       {publicPaths.length > 0 ? (
         <div
           className="rounded-md border border-[color:var(--oxblood)] p-3"

@@ -117,6 +117,11 @@ export interface PluginPermissionsSummary {
   memory_writes: string[];
   graph_reads: string[];
   graph_writes: string[];
+  /** ADR-0167 (#2245) — systems the plugin may write entity nodes for
+   *  (`permissions.graph.entity_systems`, e.g. `odoo`). Nothing ties a system
+   *  to one plugin, so the store shows it before install. Optional: absent on
+   *  store payloads from an older middleware. */
+  graph_entity_systems?: string[];
   network_outbound: string[];
   /** #91 — true when the plugin is an audit/scanner whose `ctx.http` may
    *  reach arbitrary public hosts (gated by the operator-selected
