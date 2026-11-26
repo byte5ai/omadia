@@ -12,8 +12,13 @@ import type { AddressInfo } from 'node:net';
 import {
   LoopbackMcpServer,
   McpManager,
+  isTransportUnauthorized,
   type McpServerConfig,
 } from '@omadia/orchestrator';
+import { SdkHttpError, SdkErrorCode, ProtocolError } from '@modelcontextprotocol/client';
+import { SseError } from '@modelcontextprotocol/sdk/client/sse.js';
+import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
+import { McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolDispatchService } from '../packages/harness-orchestrator/src/toolDispatchService.js';
 import { isSandboxListenDenied } from './_helpers/listenLoopback.js';
 
@@ -589,6 +594,34 @@ describe('McpManager against a live MCP server (W0-5)', () => {
     assert.equal(rejected, 0);
   });
 
+  it('does not take a JSON-RPC error about an upstream 401 for a refused token', async (t) => {
+    // The server accepted our token and answered with a JSON-RPC error that
+    // describes its OWN upstream failure. The composed failure string reads
+    // "...401 Unauthorized", but the token this call carried is fine.
+    const upstream = {
+      async dispatch() {
+        throw new McpError(-32603, 'upstream returned 401 Unauthorized');
+      },
+    } as unknown as ToolDispatchService;
+    const url = await startServer(t, [], upstream);
+    if (!url) return;
+
+    let rejected = 0;
+    manager = new McpManager({
+      auth: {
+        getToken: async () => BEARER,
+        onAuthFailure: async () => null,
+        onTokenRejected: async () => {
+          rejected += 1;
+        },
+      },
+    });
+
+    const result = await manager.callTool(serverConfig(url), TOOL, {});
+    assert.match(result, /upstream returned 401/);
+    assert.equal(rejected, 0, 'a JSON-RPC error response is not a transport 401');
+  });
+
   it('a throwing onTokenRejected does not change the result of the call', async (t) => {
     const url = await startServer(t);
     if (!url) return;
@@ -605,5 +638,69 @@ describe('McpManager against a live MCP server (W0-5)', () => {
 
     const result = await manager.callTool(serverConfig(url), TOOL, {});
     assert.match(result, /authorize here/);
+  });
+});
+
+// #1923 review — what counts as the server refusing the token. Structured
+// transport signals decide; JSON-RPC errors never do; plain transport errors
+// fall back to their own message, never to a composed failure string.
+/** The SSE event the SDK attaches is irrelevant to the status reading. */
+function sseError(code: number, message: string): SseError {
+  return new SseError(code, message, undefined as never);
+}
+
+describe('isTransportUnauthorized', () => {
+  it('accepts the structured 401 signals of both SDK families', () => {
+    assert.equal(isTransportUnauthorized(new UnauthorizedError()), true);
+    assert.equal(isTransportUnauthorized(sseError(401, 'Unauthorized')), true);
+    assert.equal(
+      isTransportUnauthorized(
+        new SdkHttpError(SdkErrorCode.ClientHttpNotImplemented, 'Error POSTing to endpoint: {}', {
+          status: 401,
+          statusText: 'Unauthorized',
+          text: '{}',
+        }),
+      ),
+      true,
+    );
+  });
+
+  it('rejects a structured transport error with another status, whatever its text says', () => {
+    assert.equal(
+      isTransportUnauthorized(sseError(502, 'upstream said 401 Unauthorized')),
+      false,
+    );
+    assert.equal(
+      isTransportUnauthorized(
+        new SdkHttpError(
+          SdkErrorCode.ClientHttpNotImplemented,
+          'Error POSTing to endpoint: upstream 401 invalid_token',
+          { status: 500, statusText: 'Internal Server Error', text: 'upstream 401 invalid_token' },
+        ),
+      ),
+      false,
+    );
+  });
+
+  it('never treats a JSON-RPC error response as a token rejection', () => {
+    assert.equal(isTransportUnauthorized(new McpError(-32603, 'upstream returned 401')), false);
+    assert.equal(isTransportUnauthorized(new McpError(-32001, 'Unauthorized')), false);
+    assert.equal(isTransportUnauthorized(new ProtocolError(-32603, 'upstream returned 401')), false);
+  });
+
+  it('reads the HTTP status marker of a plain transport error before its text', () => {
+    assert.equal(
+      isTransportUnauthorized(new Error('Error POSTing to endpoint (HTTP 401): Unauthorized')),
+      true,
+    );
+    assert.equal(
+      isTransportUnauthorized(new Error('Error POSTing to endpoint (HTTP 500): upstream 401')),
+      false,
+    );
+  });
+
+  it('ignores non-errors', () => {
+    assert.equal(isTransportUnauthorized('401 Unauthorized'), false);
+    assert.equal(isTransportUnauthorized(undefined), false);
   });
 });

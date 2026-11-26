@@ -37,10 +37,14 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import {
   Client as ModernClient,
+  ProtocolError as ModernProtocolError,
+  SdkHttpError as ModernSdkHttpError,
   StreamableHTTPClientTransport as ModernStreamableHTTPClientTransport,
+  UnauthorizedError as ModernUnauthorizedError,
 } from '@modelcontextprotocol/client';
+import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import { SSEClientTransport, SseError } from '@modelcontextprotocol/sdk/client/sse.js';
 import {
   StdioClientTransport,
   getDefaultEnvironment,
@@ -48,6 +52,7 @@ import {
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
   CallToolResultSchema,
+  McpError,
   ToolListChangedNotificationSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
@@ -291,9 +296,10 @@ export interface McpAuthProvider {
   onAuthFailure(cfg: McpServerConfig): Promise<string | null>;
   /**
    * Called when the server itself refused a call that carried the token
-   * `getToken` returned: a thrown transport or JSON-RPC error with an
-   * unauthorized signature. Not called for a tool's own `isError` result,
-   * whose text may quote some other system's 401. The provider records it, so
+   * `getToken` returned: a thrown transport error with an HTTP 401 / SDK
+   * unauthorized signature (`isTransportUnauthorized`). Not called for a
+   * JSON-RPC error response or a tool's own `isError` result, whose text may
+   * quote some other system's 401. The provider records it, so
    * a status display stops calling that token valid. Optional.
    */
   onTokenRejected?(cfg: McpServerConfig): Promise<void>;
@@ -508,6 +514,36 @@ export function looksUnauthorized(text: string): boolean {
     /authentication (error|required)/i.test(text) ||
     /invalid[_ ]token/i.test(text)
   );
+}
+
+const HTTP_UNAUTHORIZED = 401;
+
+/**
+ * True when a thrown error is the TRANSPORT telling us the server refused the
+ * credentials this request carried (#1923 review). Deliberately narrower than
+ * `looksUnauthorized`, which reads a composed failure string that also holds
+ * the server name, the tool name and whatever text a server put into a
+ * JSON-RPC error about its OWN upstream. Order of evidence:
+ *
+ *  1. Structured signals from both SDK families: an `UnauthorizedError`, a v1
+ *     `SseError` with `code === 401`, a v2 `SdkHttpError` with `status === 401`.
+ *  2. A JSON-RPC error response (`McpError` / v2 `ProtocolError`) is never a
+ *     token rejection: the server answered, so the HTTP layer accepted the
+ *     token, and the message is the server's account of something else.
+ *  3. Fallback for transport errors without a structured status (the v1 SSE
+ *     POST throws a plain `Error` "Error POSTing to endpoint (HTTP 401): …"):
+ *     an `(HTTP nnn)` marker decides on its own; without one, the error's own
+ *     message — never the composed string — is matched.
+ */
+export function isTransportUnauthorized(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err instanceof UnauthorizedError || err instanceof ModernUnauthorizedError) return true;
+  if (err instanceof SseError) return err.code === HTTP_UNAUTHORIZED;
+  if (err instanceof ModernSdkHttpError) return err.status === HTTP_UNAUTHORIZED;
+  if (err instanceof McpError || err instanceof ModernProtocolError) return false;
+  const status = /\(HTTP (\d{3})\)/.exec(err.message);
+  if (status) return Number(status[1]) === HTTP_UNAUTHORIZED;
+  return looksUnauthorized(err.message);
 }
 
 /** True when a failure looks like a transient transport hiccup worth one retry
@@ -1160,7 +1196,7 @@ export class McpManager {
       const { client } = await this.getOrConnect(await this.withResolvedConfig(cfg), token);
       res = await client.listTools();
     } catch (err) {
-      await this.noteTokenRejected(cfg, token, msg(err));
+      await this.noteTokenRejected(cfg, token, err);
       throw err;
     }
     const tools = Array.isArray(res?.tools) ? res.tools : [];
@@ -1354,7 +1390,7 @@ export class McpManager {
           lastFailure = failure;
           continue;
         }
-        await this.noteTokenRejected(cfg, token, failure);
+        await this.noteTokenRejected(cfg, token, err);
         return this.handleFailure(cfg, toolName, token, failure, startedAt, actingIdentity);
       }
       try {
@@ -1454,7 +1490,7 @@ export class McpManager {
           lastFailure = failure;
           continue;
         }
-        await this.noteTokenRejected(cfg, token, failure);
+        await this.noteTokenRejected(cfg, token, err);
         return this.handleFailure(cfg, toolName, token, failure, startedAt, actingIdentity);
       }
     }
@@ -1464,15 +1500,16 @@ export class McpManager {
 
   /**
    * Tell the auth provider that the server refused the token this call carried.
-   * Only for failures the server threw at us; see `onTokenRejected`. The
+   * Only for a transport-level refusal (`isTransportUnauthorized`), never for a
+   * JSON-RPC error or a tool's `isError` result; see `onTokenRejected`. The
    * provider's bookkeeping must never change what the caller gets back.
    */
   private async noteTokenRejected(
     cfg: McpServerConfig,
     token: string | null,
-    failure: string,
+    err: unknown,
   ): Promise<void> {
-    if (token === null || !looksUnauthorized(failure)) return;
+    if (token === null || !isTransportUnauthorized(err)) return;
     try {
       await this.options?.auth?.onTokenRejected?.(cfg);
     } catch {
