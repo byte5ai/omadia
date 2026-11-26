@@ -6592,9 +6592,10 @@
     "switchTo": "Aktivieren",
     "switching": "schaltet um…",
     "switchFailed": "Umschalten fehlgeschlagen: {message}",
-    "switchTargetUnavailableRestored": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (API-Key fehlt) — der vorherige Provider ({provider}) wurde wiederhergestellt und ist aktiv.",
-    "switchTargetUnavailableNoneLive": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (API-Key fehlt) — der vorherige Provider ließ sich nicht wiederherstellen, es ist jetzt kein Provider aktiv.",
-    "switchTargetUnavailableNoPrevious": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (API-Key fehlt). Vorher war kein Provider aktiv, also ist jetzt keiner aktiv — trage den API-Key in seinen Setup-Feldern ein und aktiviere ihn dann erneut.",
+    "switchTargetUnavailable": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (nicht konfiguriert) — der vorherige Provider wurde nach Möglichkeit wiederhergestellt.",
+    "switchTargetUnavailableRestored": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (nicht konfiguriert: API-Key fehlt oder Endpoint-Host nicht freigegeben) — der vorherige Provider ({provider}) wurde wiederhergestellt und ist aktiv.",
+    "switchTargetUnavailableNoneLive": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (nicht konfiguriert) — der vorherige Provider ließ sich nicht wiederherstellen, es ist jetzt kein Provider aktiv.",
+    "switchTargetUnavailableNoPrevious": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (nicht konfiguriert). Vorher war kein Provider aktiv, also ist jetzt keiner aktiv — vervollständige seine Setup-Felder und aktiviere ihn dann erneut.",
     "switchInProgress": "Ein anderer Wechsel läuft noch — der Zustand unten wurde neu gelesen; danach erneut versuchen.",
     "switchAlreadyActive": "Dieser Provider ist bereits aktiv."
   },

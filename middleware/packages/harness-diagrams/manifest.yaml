@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/diagrams"
   name: "Diagrams"
-  version: "0.2.1"
+  version: "0.2.2"
   kind: "tool"
   domain: "visualization.diagrams"
   description:
@@ -102,7 +102,7 @@ setup:
         en: "Max. PNG size (bytes)"
         de: "Max. PNG-Größe (Bytes)"
       required: false
-      default: 10000000
+      default: 900000
 
     - key: "diagram_url_secret"
       type: "secret"

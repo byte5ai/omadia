@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/embedding-adapter-openai"
   name: "Embeddings (OpenAI-compatible)"
-  version: "0.1.0"
+  version: "0.1.1"
   kind: "model"
   domain: "core.embeddings"
   description:

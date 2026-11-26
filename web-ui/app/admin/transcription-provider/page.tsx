@@ -213,8 +213,10 @@ function describeSwitchError(
       if (restored !== null) {
         return t('switchTargetUnavailableRestored', { provider: labelOf(restored) });
       }
-      return previous === null
-        ? t('switchTargetUnavailableNoPrevious')
+      if (previous === null) return t('switchTargetUnavailableNoPrevious');
+      // An older server sends no `previousProviderId`: say only what is known.
+      return previous === undefined
+        ? t('switchTargetUnavailable')
         : t('switchTargetUnavailableNoneLive');
     }
     if (err.code === 'transcriptionProvider.switch_in_progress') {

@@ -207,7 +207,7 @@ export async function parseXlsx(bytes: Buffer): Promise<XlsxParseResult> {
     );
     return {
       ok: false,
-      reason: 'the file is damaged or not a valid XLSX workbook',
+      reason: 'the file is damaged or unreadable (not a valid XLSX workbook)',
     };
   }
 

@@ -1,5 +1,6 @@
 import { admitModelCall, ModelCallRefusedError } from '@omadia/llm-provider';
 import { modelCallHaltFor } from '@omadia/usage-telemetry';
+import { replayUserLine } from './recordingTranscript.js';
 
 import { assertCliProfileClean } from './cliProfile.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -1552,8 +1553,9 @@ export class CliChatAgent implements ChatAgent {
     }
 
     for (const turn of priorTurns) {
+      // #1983 — a stored transcript chunk replays as quoted recording content.
       lines.push(
-        `User: ${neutralizeRoleMarkers(truncateReplay(turn.userMessage, REPLAY_USER_MAX_CHARS))}`,
+        replayUserLine(truncateReplay(turn.userMessage, REPLAY_USER_MAX_CHARS), neutralizeRoleMarkers),
       );
       lines.push(
         `Assistant: ${neutralizeRoleMarkers(

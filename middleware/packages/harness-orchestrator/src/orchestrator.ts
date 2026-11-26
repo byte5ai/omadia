@@ -2494,7 +2494,7 @@ const OFFICE_FILE_TOOL_NAMES = ['create_xlsx', 'create_docx'] as const;
 function privacyRowCapRule(hasFileExport: boolean): string {
   return hasFileExport
     ? 'Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil und biete die vollständige Liste als Excel an — bzw. erzeuge sie direkt mit `create_xlsx` und derselben `datasetId`, wenn der User erkennbar die ganze Liste will (z.B. „alle", „komplett", „exportieren").'
-    : 'Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil (wie viele Zeilen es insgesamt sind). **Biete KEINE Excel- oder andere Datei an** — in dieser Instanz gibt es kein Export-Werkzeug (`create_xlsx` ist nicht verfügbar). Will der User alles sehen, schlag eine engere Abfrage vor (Filter, Sortierung, Top-N).';
+    : 'Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil (wie viele Zeilen es insgesamt sind). **Biete KEINE Excel- oder andere Datei an** — dir steht kein Export-Werkzeug zur Verfügung (`create_xlsx` ist nicht verfügbar). Will der User alles sehen, schlag eine engere Abfrage vor (Filter, Sortierung, Top-N).';
 }
 
 /**

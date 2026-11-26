@@ -6592,9 +6592,10 @@
     "switchTo": "Activate",
     "switching": "switching…",
     "switchFailed": "Switch failed: {message}",
-    "switchTargetUnavailableRestored": "The target adapter activated but published no service (missing API key) — the previous provider ({provider}) was restored and is live.",
-    "switchTargetUnavailableNoneLive": "The target adapter activated but published no service (missing API key) — the previous provider could not be restored, so no provider is live now.",
-    "switchTargetUnavailableNoPrevious": "The target adapter activated but published no service (missing API key). No provider was active before, so none is live now — enter the API key in its setup fields, then activate it again.",
+    "switchTargetUnavailable": "The target adapter activated but published no service (not configured) — the previous provider was restored where possible.",
+    "switchTargetUnavailableRestored": "The target adapter activated but published no service (not configured: missing API key or an endpoint host that is not allowed) — the previous provider ({provider}) was restored and is live.",
+    "switchTargetUnavailableNoneLive": "The target adapter activated but published no service (not configured) — the previous provider could not be restored, so no provider is live now.",
+    "switchTargetUnavailableNoPrevious": "The target adapter activated but published no service (not configured). No provider was active before, so none is live now — complete its setup fields, then activate it again.",
     "switchInProgress": "Another switch is still running — the state below was re-read; retry when it settles.",
     "switchAlreadyActive": "That provider is already active."
   },

@@ -53,7 +53,7 @@ changelog.
   `[attachment-not-ingested: <name>]` block with a plain reason (damaged, unsupported type,
   not found in storage, no text) and a server warning for every file it cannot read; a
   failed storage read is logged in `attachmentReaderFactory.ts`. A corrupt XLSX states
-  "the file is damaged or not a valid XLSX workbook"; the jszip text goes to the log only.
+  "the file is damaged or unreadable (not a valid XLSX workbook)"; the jszip text goes to the log only.
   `ExtractResult` failures carry a `kind` (`PLAIN_EXTRACT_FAILURE`).
 - **`create_xlsx` formulas without the leading `=` (#1969).** The renderer strips one
   leading `=` from inline formula cells and computed-column templates before the ADR-0140
@@ -80,8 +80,11 @@ changelog.
   installs now share their defaults: TTL 3600 s (`DIAGRAM_SIGNED_URL_TTL_SEC`, was 900),
   tenant `default` (manifests and plugin fallbacks, was `dev`), PNG cap 900000 bytes and
   source cap 1000000 bytes (manifests, were 10 MiB / 1 MiB). Existing installs keep their
-  stored config; a Store install without a stored tenant now prefixes keys with `default`,
-  so its diagram cache starts empty once.
+  stored config; an install without a stored tenant (Store) or without `GRAPH_TENANT_ID`
+  (env) now prefixes keys with `default`, so its diagram cache starts empty once; signed
+  links already handed out keep working (the full key is in the URL). Because
+  `DIAGRAM_PUBLIC_BASE_URL` now has a stack default, a stack with only the storage overlay
+  and a `DIAGRAM_URL_SECRET` auto-installs Office, which it skipped before.
 - **Public-path texts (#1980).** The claim log says an ungranted prefix is closed
   (`404 public_path.not_granted`) and points to Store → plugin → Grants; the Store text says
   consent is removed on uninstall (en/de); Getting Started, the Office README and the plugin
@@ -109,11 +112,17 @@ changelog.
   a custom endpoint (Azure, Ollama's OpenAI endpoint, a local server) must list its host in
   the new setup field "Additional allowed hosts", or the adapter stops publishing after the
   update.
+- **Versions:** `@omadia/plugin-web-search` 0.2.2, `@omadia/transcription-adapter-openai`
+  0.1.1, `@omadia/embedding-adapter-openai` 0.1.1, `@omadia/diagrams` 0.2.2,
+  `@omadia/plugin-office` 0.1.5.
 - **Transcripts are recording content, kept whole (#1983, #1987).** `transcribe_recording`
   stores every chunk with the marker line `[recording-transcript speaker="…"]`
   (`recordingTranscript.ts`) and `SessionLogEntry.source: 'recording'`; the session log
-  labels it `**Recording:**`, and the context builder (`contextRetriever.ts`,
-  `parseRecordingTranscript`) renders it as quoted recording content instead of `Nutzer:`.
+  labels it `**Recording:**`, and every replay of stored turns — context tail and recall
+  (`contextRetriever.ts`), session resume (`sessionBriefing.ts`), session summary
+  (`sessionSummaryGenerator.ts`) via `renderUserLine`, and the subscription-CLI history
+  (`cliChatAgent.ts`, `replayUserLine`) — renders it as quoted recording content instead of
+  `Nutzer:`/`User:`.
   Transcript text is cut into chunks of at most 1,300 characters, below the session log's
   1,500-character entry cap, so the log holds the full transcript; the tool result says
   "vollständig im Session-Protokoll" only when the entries were written.

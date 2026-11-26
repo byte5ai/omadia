@@ -22,6 +22,8 @@ import {
   Orchestrator,
   parseXlsx,
   ReadAttachmentTool,
+  runWithToolCallContext,
+  turnMayCarryUploads,
 } from '@omadia/orchestrator';
 
 function recordingProvider(requests: LlmRequest[]): LlmProvider {
@@ -109,6 +111,29 @@ describe('#1976 — read_attachment only where an upload can exist', () => {
     assert.ok(toolNames(requests[0]).includes('read_attachment'));
   });
 
+  it('an older channel plugin without origin but with a channel user is offered it', async () => {
+    const requests: LlmRequest[] = [];
+    await orchestrator(requests, reader({})).runTurn({
+      userMessage: 'Lies den Anhang',
+      sessionScope: 's1976-legacy',
+      userId: 'tg-1',
+      channelIdentity: { channelKind: 'telegram', channelUserId: 'tg-1' },
+    } as unknown as Parameters<Orchestrator['runTurn']>[0]);
+    assert.ok(toolNames(requests[0]).includes('read_attachment'));
+  });
+
+  it('the subscription-CLI carrier counts too (runWithToolCallContext)', () => {
+    assert.equal(turnMayCarryUploads(), false, 'outside a turn: no');
+    assert.equal(
+      runWithToolCallContext({ agentSlug: 'a', channelType: 'teams' }, () => turnMayCarryUploads()),
+      true,
+    );
+    assert.equal(
+      runWithToolCallContext({ agentSlug: 'a', channelType: 'http' }, () => turnMayCarryUploads()),
+      false,
+    );
+  });
+
   it('not found: no re-upload request, no internal markup', async () => {
     const tool = new ReadAttachmentTool(reader({}));
     const result = await tool.handle({ storage_key: 'gibtesnicht.txt' });
@@ -153,7 +178,7 @@ describe('#1978 — every dropped attachment leaves a visible block', () => {
   it('a corrupt XLSX states a plain reason, never the jszip text', async () => {
     const result = await parseXlsx(Buffer.from('this is not a zip file'));
     assert.equal(result.ok, false);
-    assert.ok(!result.ok && result.reason === 'the file is damaged or not a valid XLSX workbook');
+    assert.ok(!result.ok && result.reason === 'the file is damaged or unreadable (not a valid XLSX workbook)');
     assert.ok(!result.ok && !/jszip|central directory|https?:/i.test(result.reason));
   });
 });

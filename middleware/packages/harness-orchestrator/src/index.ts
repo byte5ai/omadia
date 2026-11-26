@@ -1093,4 +1093,8 @@ export {
   TRANSCRIPT_CHUNK_CHARS,
   chunkTranscriptText,
   markRecordingText,
+  replayUserLine,
 } from './recordingTranscript.js';
+
+// #1976 — is this turn one that can carry an upload (channel turn)?
+export { turnMayCarryUploads } from './attachmentToolAvailability.js';
