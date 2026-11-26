@@ -194,7 +194,11 @@ export interface AgentBuilderRouterOptions {
       cimdBlockedReason: string | null;
       /** `protected` rests on a failed metadata read, not on an advertisement. */
       discoveryUnavailable?: boolean;
+      /** #1924 — the metadata was read and is unusable: why. */
+      discoveryError?: string;
     }>;
+    /** #1947 — drop the stored client of an issuer no server uses any more. */
+    forgetClient(issuer: string): Promise<boolean>;
     beginAuthorization(server: McpServerRow, userKey: string): Promise<{ authorizeUrl: string }>;
     /** `iss` is the RFC 9207 authorization-response parameter (W0-1, D1),
      *  validated against the flow-bound issuer before any exchange. */
@@ -291,6 +295,16 @@ export interface AgentBuilderRouterOptions {
    *  removed whose token, why (a disconnect or the server's deletion), and
    *  whether the provider revoked the grant. Best-effort like the hook above.
    *  Never receives a token. Absent → only the log line is written. */
+  /** #1933 — a server's delegation mode changed. Best-effort like the
+   *  disconnect hook. Absent → only the log line is written. */
+  readonly auditMcpDelegationChange?: (entry: {
+    readonly actor: string | null;
+    readonly actorUserId?: string;
+    readonly serverId: string;
+    readonly serverName: string;
+    readonly from: 'per_user' | 'service';
+    readonly to: 'per_user' | 'service';
+  }) => Promise<void>;
   readonly auditMcpOAuthDisconnect?: (entry: {
     readonly actor: string | null;
     readonly actorUserId?: string;
@@ -489,6 +503,44 @@ export function createAgentBuilderRouter(
   };
   /** Issue #1925 — a removed OAuth authorization leaves a trace: a log line
    *  always, an `admin_audit` row when the hook is wired. One per token. */
+  /** #1933 — log + admin audit of a delegation change. Best-effort. */
+  const recordDelegationChange = async (
+    req: Request,
+    server: McpServerRow,
+    to: 'per_user' | 'service',
+  ): Promise<void> => {
+    console.log(
+      `[mcp] delegation change: id=${server.id} name=${JSON.stringify(server.name)} from=${server.delegation} to=${to} actor=${sessionIdentity(req) ?? 'unknown'}`,
+    );
+    if (!options.auditMcpDelegationChange) return;
+    try {
+      await options.auditMcpDelegationChange({
+        ...auditActor(req),
+        serverId: server.id,
+        serverName: server.name,
+        from: server.delegation,
+        to,
+      });
+    } catch (err) {
+      console.warn(`[mcp] delegation audit write failed for id=${server.id}: ${msg(err)}`);
+    }
+  };
+  /** #1947 — once no remaining server resolves to `issuer`, its stored client
+   *  and vault secret go too. Best-effort: a failure leaves a client row. */
+  const forgetIssuerClientIfUnused = async (l: Live, issuer: string): Promise<void> => {
+    if (!options.mcpOAuth) return;
+    try {
+      for (const other of await l.graph.listMcpServers()) {
+        if (other.transport === 'stdio' || (await oauthEndpointRefusal(other)) !== null) continue;
+        if ((await options.mcpOAuth.issuerFor(other).catch(() => null)) === issuer) return;
+      }
+      if (await options.mcpOAuth.forgetClient(issuer)) {
+        console.log(`[mcp] oauth client removed: issuer=${JSON.stringify(issuer)} (no server uses it)`);
+      }
+    } catch (err) {
+      console.warn(`[mcp] oauth client cleanup failed for issuer=${JSON.stringify(issuer)}: ${msg(err)}`);
+    }
+  };
   const recordOAuthDisconnect = async (
     req: Request,
     server: McpServerRow,
@@ -1607,6 +1659,11 @@ export function createAgentBuilderRouter(
       // every user's grant at the provider and clear the vault, or deleting
       // the server leaves live credentials behind on both sides.
       const server = (await l.graph.listMcpServers()).find((s) => s.id === id);
+      // #1947 — read the issuer while the server still exists.
+      const issuer =
+        server && options.mcpOAuth && (await oauthEndpointRefusal(server)) === null
+          ? await options.mcpOAuth.issuerFor(server).catch(() => null)
+          : null;
       if (server && options.mcpOAuth) {
         const revoke = (await oauthEndpointRefusal(server)) === null;
         for (const { userKey, revocation } of await options.mcpOAuth.disconnectAll(server, {
@@ -1621,6 +1678,9 @@ export function createAgentBuilderRouter(
       }
       await l.graph.deleteMcpServer(id);
       await invalidateMcpServer(id);
+      if (issuer && options.mcpOAuth) {
+        await forgetIssuerClientIfUnused(l, issuer);
+      }
       await reload(l);
       res.status(204).end();
     } catch (err) {
@@ -2099,6 +2159,11 @@ export function createAgentBuilderRouter(
         needsClient: !desc.brokered && desc.issuer !== null && client === undefined,
         // Issuer and acquisition mode above are placeholders while this is set.
         discoveryUnavailable: desc.discoveryUnavailable === true,
+        // #1924 — the metadata is unusable, and why.
+        ...(desc.discoveryError ? { discoveryError: desc.discoveryError } : {}),
+        // #1933 — under `service` every caller shares one authorization; the
+        // UI must not call it "yours".
+        sharedAuthorization: server.delegation === 'service',
         redirectUri: options.mcpOAuth.redirectUri,
       });
     } catch (err) {
@@ -2147,6 +2212,12 @@ export function createAgentBuilderRouter(
         }
         if (err instanceof McpAuthDiscoveryError && err.code === DISCOVERY_UNAVAILABLE) {
           res.status(503).json({ error: 'mcp_auth_discovery_unavailable', message: err.message });
+          return;
+        }
+        // #1924 — a provider configuration that cannot be used is the
+        // server's problem, not an internal error.
+        if (err instanceof McpAuthDiscoveryError) {
+          res.status(422).json({ error: 'mcp_oauth_discovery_failed', code: err.code, message: err.message });
           return;
         }
         throw err;
@@ -2235,15 +2306,40 @@ export function createAgentBuilderRouter(
     const l = live(res);
     if (!l) return;
     try {
+      const id = str(req.params.id);
+      // #1933 — a malformed id names no server (ADR-0038).
+      if (!isUuid(id)) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
       const delegation = parseDelegation(req.body?.delegation);
       if (delegation === null) {
         res.status(400).json({ error: 'invalid_delegation' });
         return;
       }
-      const updated = await l.graph.setMcpServerDelegation(str(req.params.id), delegation);
+      const before = (await l.graph.listMcpServers()).find((s) => s.id === id);
+      if (!before) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      // #1933 — `service` makes every chat, routine and workflow that calls
+      // this server act under one shared authorization. The caller confirms
+      // it knowingly (the UI asks first).
+      if (delegation === 'service' && before.delegation !== 'service' && req.body?.confirm !== true) {
+        res.status(409).json({
+          error: 'delegation_confirmation_required',
+          affects: ['chats', 'routines', 'workflows'],
+        });
+        return;
+      }
+      const from = before.delegation;
+      const updated = await l.graph.setMcpServerDelegation(id, delegation);
       if (!updated) {
         res.status(404).json({ error: 'mcp_server_not_found' });
         return;
+      }
+      if (from !== updated.delegation) {
+        await recordDelegationChange(req, { ...before, delegation: from }, updated.delegation);
       }
       res.json({ id: updated.id, delegation: updated.delegation });
     } catch (err) {

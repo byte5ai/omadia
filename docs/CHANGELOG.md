@@ -123,6 +123,27 @@ so the smoke strip, the AutoFix indicator and the "agent stuck" banner finally
 appear (#1730). The builder prompt names `get_build_status` /
 `runtime_smoke_status` as the only source for build and smoke state (#1806).
 Contract: ADR-0230 (Proposed).
+### Fixed — MCP OAuth UX: honest reasons, confirmed service delegation, no DCR on status reads (ADR-0208) (2026-11-26)
+
+- **#1924** A provider configuration that cannot be used is reported with its reason:
+  `auth-status.discoveryError`, `POST /mcp-servers/:id/authorize` → `422
+  mcp_oauth_discovery_failed` (was 500), and a named chat message; only a missing client
+  registration gets the "one-time app registration" hint. The auth section says when the
+  metadata is unreadable instead of showing `?` placeholders.
+- **#1929** An MCP server off public https that refuses a call for authorization gets "OAuth
+  only for public https servers" (ADR-0108) instead of a raw 401. `McpAuthProvider.onAuthFailure`
+  now receives the failure text.
+- **#1933** `PUT /mcp-servers/:id/delegation` to `service` needs `confirm: true` (else 409
+  `delegation_confirmation_required`), is written to the admin audit
+  (`mcp_server.delegation_change`) and answers 404 for a malformed id. The UI asks first and
+  shows a shared authorization under `service`; Connect/Disconnect there ask before replacing
+  or removing it for all callers. The Conductor dialog says the switch covers the whole server.
+- **#1947** Viewing a server no longer registers an OAuth client at the provider (DCR is
+  reported as advertised; registration happens on Connect). Deleting the last server of an
+  issuer removes its stored client and vault secret. The registration hint shows only when
+  Connect opens the client form.
+- **#1906 (UI part)** The delegation switch is shown for MCP servers without OAuth too.
+
 ### Fixed — MCP result safety: binary content, one result cap, KG ingest (ADR-0207) (2026-11-26)
 
 - **#1920** MCP `image`/`audio` blocks and blob resources reach the model as a type/size

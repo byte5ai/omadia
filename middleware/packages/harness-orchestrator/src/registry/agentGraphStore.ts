@@ -1505,6 +1505,11 @@ export class AgentGraphStore {
       : undefined;
   }
 
+  /** #1947 — drop the stored OAuth client of an issuer. */
+  async deleteMcpOAuthClient(issuer: string): Promise<void> {
+    await this.pool.query('DELETE FROM mcp_oauth_clients WHERE issuer = $1', [issuer]);
+  }
+
   async upsertMcpOAuthClient(input: {
     issuer: string;
     clientId: string;

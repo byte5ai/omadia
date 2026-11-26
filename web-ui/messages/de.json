@@ -5420,7 +5420,17 @@
       "cimdUnreachable": "Dieser Server würde ein Client-ID-Metadaten-Dokument akzeptieren, aber diese Installation kann keines veröffentlichen, das er abrufen kann. Meist heißt das: omadia ist aus dem Internet nicht erreichbar — bei einer On-Premises-Installation normal, denn der Identity Provider muss das Dokument selbst abrufen.",
       "cimdUnreachableReason": "Grund",
       "manualStillSupported": "Es ist nichts kaputt: Registriere unten einmalig eine OAuth-App für diesen Issuer und verbinde wie gewohnt.",
-      "manualIsEnterprisePath": "Das ist der reguläre Enterprise-Weg, kein Notbehelf. Microsoft Entra ID und Okta setzen bewusst auf vorab registrierte App-Registrierungen und werden dieses Formular weiterhin nutzen."
+      "manualIsEnterprisePath": "Das ist der reguläre Enterprise-Weg, kein Notbehelf. Microsoft Entra ID und Okta setzen bewusst auf vorab registrierte App-Registrierungen und werden dieses Formular weiterhin nutzen.",
+      "connectedShared": "🔓 Autorisiert (gemeinsame Service-Autorisierung)",
+      "discoveryUnavailable": "Die OAuth-Metadaten des Anbieters sind gerade nicht lesbar. Bitte später erneut versuchen.",
+      "discoveryError": "Die OAuth-Konfiguration des Anbieters ist nicht nutzbar: {reason}",
+      "cancel": "Abbrechen",
+      "delegationConfirmTitle": "Eine Autorisierung für alle Aufrufer teilen?",
+      "delegationConfirmBody": "Mit Service-Delegation handelt jeder Chat, jede Routine und jeder Workflow, der diesen Server aufruft, unter einer gemeinsamen Autorisierung (der hier verbundenen) statt unter der eigenen des jeweiligen Nutzers.",
+      "sharedConnectConfirmTitle": "Gemeinsame Autorisierung ersetzen?",
+      "sharedConnectConfirmBody": "Dieser Server nutzt Service-Delegation. Verbinden ersetzt die Autorisierung, die jeder Chat, jede Routine und jeder Workflow nutzt.",
+      "sharedDisconnectConfirmTitle": "Gemeinsame Autorisierung entfernen?",
+      "sharedDisconnectConfirmBody": "Dieser Server nutzt Service-Delegation. Trennen entfernt die Autorisierung für jeden Chat, jede Routine und jeden Workflow."
     },
     "marketplace": {
       "registry": "Registry",
@@ -5589,7 +5599,7 @@
         "empty": "Dieser Server hat keine Tools gemeldet.",
         "match": "Treffer",
         "noDescription": "Keine Beschreibung verfügbar.",
-        "delegationNotice": "Conductor-Läufe haben keinen angemeldeten Benutzer – dieser Server muss unter seiner Service-Identität handeln, bevor ein Workflow seine Tools aufrufen kann. Service-Delegation aktivieren, um fortzufahren.",
+        "delegationNotice": "Conductor-Läufe haben keinen angemeldeten Benutzer – dieser Server muss unter seiner Service-Identität handeln, bevor ein Workflow seine Tools aufrufen kann. Die Umstellung gilt für den ganzen Server: Jeder Chat, jede Routine und jeder Workflow, der ihn aufruft, nutzt dann die eine gemeinsame Autorisierung. Service-Delegation aktivieren, um fortzufahren.",
         "delegationButton": "Service-Delegation aktivieren"
       },
       "initialServerMissing": "Der verbundene Server ist nicht mehr verfügbar – wähle oder erstelle einen."

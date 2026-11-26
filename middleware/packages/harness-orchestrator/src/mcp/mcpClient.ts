@@ -293,7 +293,7 @@ export interface McpAuthProvider {
    * stands. The provider owns the messaging + the protected/needs-client
    * decision, so the manager needs no OAuth knowledge.
    */
-  onAuthFailure(cfg: McpServerConfig): Promise<string | null>;
+  onAuthFailure(cfg: McpServerConfig, failure?: string): Promise<string | null>;
   /**
    * Called when the server itself refused a call that carried the token
    * `getToken` returned: a thrown transport error with an HTTP 401 / SDK
@@ -1541,7 +1541,9 @@ export class McpManager {
       if (token) await this.close(this.poolKey(cfg, token));
       let authMessage: string | null = null;
       try {
-        authMessage = await this.options.auth.onAuthFailure(cfg);
+        // #1929 — the failure text lets the provider tell a refused
+        // authorization from any other failure.
+        authMessage = await this.options.auth.onAuthFailure(cfg, rawFailure);
       } catch {
         /* fall back to the raw failure */
       }

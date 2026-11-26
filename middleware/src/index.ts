@@ -613,7 +613,12 @@ import {
   delegationBlockedMessage,
   resolveMcpUserKey,
 } from './services/mcpDelegation.js';
-import { McpOAuthService } from './services/mcpOAuthService.js';
+import {
+  McpOAuthService,
+  isPublicHttpsEndpoint,
+  mcpOAuthConfigBrokenMessage,
+  mcpOAuthPublicHttpsOnlyMessage,
+} from './services/mcpOAuthService.js';
 import { CIMD_METADATA_PATH, cimdMetadataUrl } from './services/mcpCimd.js';
 import { createMcpClientMetadataRouter } from './routes/mcpClientMetadata.js';
 import { McpConfigService } from './services/mcpConfigService.js';
@@ -689,7 +694,7 @@ import { createOrchestratorDispatcher } from './channels/orchestratorDispatcher.
 import { deriveChannelType } from './channels/channelType.js';
 import type { FactExtractor } from '@omadia/orchestrator-extras';
 import { backfillGraph } from '@omadia/orchestrator-extras';
-import { turnContext } from '@omadia/orchestrator';
+import { looksUnauthorized, turnContext } from '@omadia/orchestrator';
 import { ConsultationStore } from './consultation/consultationStore.js';
 import { createConsultationBroker } from './consultation/consultationBroker.js';
 import { DiscretionStore } from './discretion/discretionStore.js';
@@ -3398,7 +3403,7 @@ async function main(): Promise<void> {
                   await mcpOAuthService.markTokenRejected(server.id, userKey, token);
                 }
               },
-              onAuthFailure: async (cfg: McpServerConfig) => {
+              onAuthFailure: async (cfg: McpServerConfig, failure?: string) => {
                 const server = (await mcpAuditStore.listMcpServers()).find((s) => s.id === cfg.id);
                 if (!server) return null;
                 // W0-1 (D2): fail closed FIRST. A `per_user` server with no
@@ -3416,7 +3421,20 @@ async function main(): Promise<void> {
                 // discovery keeps this cheap per call). With the metadata
                 // unreadable there is nothing to prompt for: the raw failure
                 // is more honest than "isn't set up yet".
+                // #1929 / ADR-0108 — OAuth discovery talks only to public
+                // https hosts. A server elsewhere that refused the call for
+                // authorization gets that said plainly, not a raw 401.
+                if (
+                  server.transport !== 'stdio' &&
+                  failure !== undefined &&
+                  looksUnauthorized(failure) &&
+                  !(await isPublicHttpsEndpoint(mcpRowToConfig(server).endpoint))
+                ) {
+                  return mcpOAuthPublicHttpsOnlyMessage(server.name);
+                }
                 const desc = await mcpOAuthService.describeAuth(server);
+                // #1924 — an unusable provider configuration, named.
+                if (desc.discoveryError) return mcpOAuthConfigBrokenMessage(server.name, desc.discoveryError);
                 if (!desc.protected || desc.discoveryUnavailable) return null;
                 // Machine block the chat parses into an in-line "Connect" card
                 // + modal (web-ui McpAuthRequiredCard). Mirrors the <nudge>
@@ -5128,6 +5146,18 @@ async function main(): Promise<void> {
         });
       },
       // Issue #1925 — one row per removed MCP OAuth authorization.
+      auditMcpDelegationChange: async (entry) => {
+        await adminAudit?.record({
+          actor: {
+            ...(entry.actorUserId ? { id: entry.actorUserId } : {}),
+            ...(entry.actor ? { email: entry.actor } : {}),
+          },
+          action: 'mcp_server.delegation_change',
+          target: `mcp-server:${entry.serverId}`,
+          before: { delegation: entry.from },
+          after: { name: entry.serverName, delegation: entry.to },
+        });
+      },
       auditMcpOAuthDisconnect: async (entry) => {
         await adminAudit?.record({
           actor: {

@@ -174,6 +174,9 @@ export type AuditAction =
   // its server. `after` holds the server name, whose token it was, the cause
   // and whether the provider revoked the grant. Never a token.
   | 'mcp_server.oauth_disconnect'
+  // #1933 — a server's delegation mode changed (`per_user` ⇄ `service`).
+  // `service` makes every caller act under one shared authorization.
+  | 'mcp_server.delegation_change'
   // #1487 — a plugin registry was added, changed or removed. Registries
   // decide where installable code comes from. `before`/`after` carry the url
   // and whether a token is set — never the token.

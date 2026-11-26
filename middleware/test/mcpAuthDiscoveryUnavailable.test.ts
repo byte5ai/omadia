@@ -250,6 +250,7 @@ describe('McpOAuthService.describeAuth on discovery failures', () => {
 describe('MCP operator routes on discovery failures', () => {
   const SERVER_ID = '44444444-4444-4444-8444-444444444443';
   let close: (() => Promise<void>) | undefined;
+  const audits: Array<Record<string, unknown>> = [];
 
   afterEach(async () => {
     await close?.();
@@ -289,6 +290,10 @@ describe('MCP operator routes on discovery failures', () => {
     };
     const graph = {
       listMcpServers: () => Promise.resolve([row]),
+      setMcpServerDelegation: (_id: string, delegation: 'per_user' | 'service') => {
+        row.delegation = delegation;
+        return Promise.resolve({ ...row });
+      },
       getMcpOAuthToken: () => Promise.resolve(undefined),
       getMcpOAuthClient: () => Promise.resolve(undefined),
     };
@@ -315,6 +320,11 @@ describe('MCP operator routes on discovery failures', () => {
         markTokenRejected: (id, u, t) => service.markTokenRejected(id, u, t),
         disconnect: (s, u, o) => service.disconnect(s, u, o),
         disconnectAll: (s, o) => service.disconnectAll(s, o),
+        forgetClient: (i) => service.forgetClient(i),
+      },
+      auditMcpDelegationChange: (entry) => {
+        audits.push({ ...entry });
+        return Promise.resolve();
       },
       mcpOAuthUserKey: 'operator',
     };
@@ -385,6 +395,60 @@ describe('MCP operator routes on discovery failures', () => {
     });
     const res = await fetch(`${base}/discover`, { method: 'POST' });
     assert.equal(res.status, 502);
+  });
+
+  const broken = () =>
+    Promise.reject(new McpAuthDiscoveryError('issuer_mismatch', 'metadata claims a different issuer'));
+
+  it('#1924 — auth-status names an unusable provider configuration', async () => {
+    const base = await harness({ upstreamStatus: 401, discover: broken });
+    const body = (await (await fetch(`${base}/auth-status`)).json()) as Record<string, unknown>;
+    assert.equal(body['protected'], true);
+    assert.equal(body['needsClient'], false);
+    assert.match(String(body['discoveryError']), /different issuer/);
+  });
+
+  it('#1924 — POST authorize answers 422 with the reason, not 500', async () => {
+    const base = await harness({ upstreamStatus: 401, discover: broken });
+    const res = await fetch(`${base}/authorize`, { method: 'POST' });
+    assert.equal(res.status, 422);
+    const body = (await res.json()) as Record<string, unknown>;
+    assert.equal(body['error'], 'mcp_oauth_discovery_failed');
+    assert.equal(body['code'], 'issuer_mismatch');
+  });
+
+  async function putDelegation(base: string, body: unknown): Promise<Response> {
+    return fetch(`${base}/delegation`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('#1933 — switching to service needs a confirmation, and is audited', async () => {
+    const base = await harness({ upstreamStatus: 401, discover: unavailable });
+    assert.equal((await putDelegation(base, { delegation: 'per_user' })).status, 200);
+    audits.length = 0;
+    const refused = await putDelegation(base, { delegation: 'service' });
+    assert.equal(refused.status, 409);
+    assert.equal(((await refused.json()) as { error: string }).error, 'delegation_confirmation_required');
+    assert.equal(audits.length, 0);
+    const ok = await putDelegation(base, { delegation: 'service', confirm: true });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(
+      audits.map((a) => [a['from'], a['to']]),
+      [['per_user', 'service']],
+    );
+  });
+
+  it('#1933 — a malformed server id is 404', async () => {
+    const base = await harness({ upstreamStatus: 401, discover: unavailable });
+    const res = await fetch(base.replace(SERVER_ID, 'not-a-uuid') + '/delegation', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ delegation: 'per_user' }),
+    });
+    assert.equal(res.status, 404);
   });
 
   it('POST authorize answers 503 while the metadata is unreadable', async () => {
