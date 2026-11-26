@@ -49,7 +49,8 @@ export const createXlsxToolSpec: NativeToolSpec = {
                   type: {
                     type: 'string',
                     enum: ['text', 'number', 'currency', 'date', 'percent'],
-                    description: 'Treibt das Excel-Zahlenformat. percent erwartet Bruch (0.125 = 12,5%).',
+                    description:
+                      'Treibt das Excel-Zahlenformat. Akzeptierte Werte: date = ISO `YYYY-MM-DD` (optional mit Uhrzeit, ohne Zone als UTC); number/currency/percent = Dezimalzahl mit Punkt, ohne Tausendertrennzeichen (`1234.56`); percent erwartet Bruch (0.125 = 12,5%). Leer ("") wird eine leere Zelle. Andere Formate (z.B. `12.03.2024`, `1.234,56`) bleiben Text und werden im Ergebnis unter `cellsKeptAsText` gemeldet — konvertiere sie vorher.',
                   },
                   width: { type: 'number', description: 'Spaltenbreite in Zeichen.' },
                   numFmt: { type: 'string', description: 'Explizites Excel-Format, überschreibt type.' },
@@ -337,8 +338,32 @@ function compactResult(artifact: OfficeArtifact): string {
     rows: artifact.rowsWritten,
     // Only when a sheet was renamed, so the model names the sheet as written.
     ...(artifact.renamedSheets?.length ? { renamedSheets: artifact.renamedSheets } : {}),
+    ...keptAsTextReport(artifact.cellsKeptAsText),
     url: artifact.url,
   });
+}
+
+/** How many kept-as-text cell addresses the tool result lists. */
+const MAX_LISTED_TEXT_CELLS = 20;
+
+/**
+ * #1971 — tell the model which typed cells stayed text, so it can say so
+ * instead of claiming real dates or numbers. Addresses only, never values.
+ */
+function keptAsTextReport(
+  cells: OfficeArtifact['cellsKeptAsText'],
+): Record<string, unknown> {
+  if (!cells?.length) return {};
+  return {
+    cellsKeptAsText: {
+      count: cells.length,
+      cells: cells.slice(0, MAX_LISTED_TEXT_CELLS).map((c) => `'${c.sheet}'!${c.cell} (${c.type})`),
+      note:
+        'These values were not in an accepted format (date: YYYY-MM-DD, optionally with time; ' +
+        'number/currency/percent: plain decimal with "." as decimal point) and were written as text. ' +
+        'Tell the user which cells are text, or call again with converted values.',
+    },
+  };
 }
 
 function issues(error: { issues: Array<{ path: PropertyKey[]; message: string }> }): string {

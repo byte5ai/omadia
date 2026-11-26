@@ -55,6 +55,16 @@ changelog.
   failed storage read is logged in `attachmentReaderFactory.ts`. A corrupt XLSX states
   "the file is damaged or not a valid XLSX workbook"; the jszip text goes to the log only.
   `ExtractResult` failures carry a `kind` (`PLAIN_EXTRACT_FAILURE`).
+- **`create_xlsx` formulas without the leading `=` (#1969).** The renderer strips one
+  leading `=` from inline formula cells and computed-column templates before the ADR-0140
+  formula policy reads them, so the file holds `<f>SUM(A2:A3)</f>`, not `==SUM(…)`. A
+  formula of only `=` is refused.
+- **`create_xlsx` strict type coercion (#1971).** Typed columns convert only ISO dates
+  (`YYYY-MM-DD`, optional time; without a zone read as UTC) and plain decimals (`.` as
+  decimal point). `""` and Odoo's `false` become empty cells in date/numeric columns;
+  `12.03.2024`, `März 2024`, `1.234,56`, `0x1F`, `Infinity` stay text and the tool result
+  lists them by address under `cellsKeptAsText` (never their values). `cellCoercion.ts`;
+  the column `type` description now names the accepted formats.
 
 ### Security — undeclared plugins write no entities or facts (ADR-0169) (2026-11-26)
 
